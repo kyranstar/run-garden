@@ -123,13 +123,16 @@ export async function executeMoveJob(client: CorosClient, job: MoveJob): Promise
     // Network failure mid-write — state unknown. Re-read once before giving up.
     try {
       const reread = locate(await readWindow(), idInPlan);
-      if (reread?.date === job.destinationDate) {
-        const fp = reread.program ? corosProgramFingerprint(reread.program) : undefined;
+      const rereadFp = reread?.program ? corosProgramFingerprint(reread.program) : undefined;
+      // Same bar as the happy path (step 7): the move only counts as verified
+      // when BOTH the date landed AND the content is still what the user
+      // approved. A matching date with a changed fingerprint is not "verified".
+      if (reread?.date === job.destinationDate && rereadFp === preFingerprint) {
         return result({
           outcome: "verified",
           pathUsed: "direct_update",
           observedDate: reread.date,
-          observedFingerprint: fp,
+          observedFingerprint: rereadFp,
           observedVersion: versionOf(reread.program),
         });
       }
@@ -144,6 +147,7 @@ export async function executeMoveJob(client: CorosClient, job: MoveJob): Promise
         outcome: "ambiguous",
         errorCategory: "network",
         observedDate: reread?.date,
+        observedFingerprint: rereadFp,
       });
     } catch {
       return result({ outcome: "ambiguous", errorCategory: "network" });
