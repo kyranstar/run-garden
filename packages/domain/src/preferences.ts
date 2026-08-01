@@ -26,7 +26,11 @@ export const userPreferencesSchema = schedulingPreferencesSchema.extend({
   mirrorWeeksAhead: z.number().int().min(1).max(16).default(8),
   mirrorWeeksBehind: z.number().int().min(0).max(8).default(2),
   aiEnabled: z.boolean().default(true),
-  corosWritesEnabled: z.boolean().default(true),
+  // Ships OFF: Run Garden stays in Calendar-only mode until the reversible
+  // COROS write spike succeeds on the real account and the user opts in
+  // (see docs/COROS_INTEGRATION_FINDINGS.md §4). Never overwrite a COROS plan
+  // with an unproven write path by default.
+  corosWritesEnabled: z.boolean().default(false),
   gardenRestMode: z.boolean().default(false),
   gardenRestModeUntil: z.string().nullable().default(null),
   reducedMotion: z.boolean().default(false),

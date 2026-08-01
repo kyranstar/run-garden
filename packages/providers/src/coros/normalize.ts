@@ -28,6 +28,11 @@ const WORKOUT_SPORT: Record<number, string> = { 1: "run", 2: "bike", 3: "swim", 
 /** Optional i18n resolver: COROS names are often T-codes / sid_ keys. */
 export type NameResolver = (key: string) => string | undefined;
 
+/** COROS i18n placeholder keys that must never reach a user unresolved. */
+function isI18nKey(raw: string): boolean {
+  return /^T\d+$/.test(raw) || /^sid_/.test(raw) || /^H\d+$/.test(raw);
+}
+
 function resolveName(raw: string | undefined, resolve?: NameResolver): string {
   if (!raw) return "Workout";
   const resolved = resolve?.(raw);
@@ -38,6 +43,15 @@ function resolveName(raw: string | undefined, resolve?: NameResolver): string {
       .replaceAll("_", " ")
       .replace(/^\w/, (c) => c.toUpperCase());
   }
+  return raw;
+}
+
+/** Like resolveName, but for optional labels: an unresolved i18n key → none. */
+function resolveLabel(raw: string | undefined, resolve?: NameResolver): string | undefined {
+  if (!raw) return undefined;
+  const resolved = resolve?.(raw);
+  if (resolved) return resolved;
+  if (isI18nKey(raw)) return undefined;
   return raw;
 }
 
@@ -64,7 +78,7 @@ function normalizeExercise(ex: RawCorosExercise, resolve?: NameResolver): Planne
     order: ex.sortNo ?? Number(ex.id) ?? 0,
     kind,
     durationType: "none",
-    label: ex.name ? resolveName(ex.name, resolve) : undefined,
+    label: resolveLabel(ex.name, resolve),
   };
   if (kind === "repeat") {
     stage.repeatCount = ex.sets ?? 1;

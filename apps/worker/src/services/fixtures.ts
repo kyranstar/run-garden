@@ -13,7 +13,7 @@ import type { Env } from "../env.js";
 import type { Db } from "./db.js";
 import { importPlanSnapshot } from "./import-plan.js";
 import { ingestActivities } from "./completion.js";
-import { loadPreferences } from "./calendar-sync.js";
+import { loadPreferences, savePreferences } from "./calendar-sync.js";
 import { advanceGarden, ensureGarden } from "./garden-sync.js";
 import { reconcileCompletionStates } from "./reconcile-daily.js";
 import { dailyHealth, sleepRecords } from "@rg/database";
@@ -94,7 +94,11 @@ export interface SeedResult {
 }
 
 export async function seedFixtures(db: Db, env: Env, userId: string): Promise<SeedResult> {
-  const prefs = await loadPreferences(db, userId);
+  // The fixture user simulates someone who already passed the write spike and
+  // opted into COROS writes, so the demo shows the full synced flow.
+  const loaded = await loadPreferences(db, userId);
+  const prefs = { ...loaded, corosWritesEnabled: true };
+  await savePreferences(db, userId, prefs);
   const today = todayInZone(prefs.timezone);
 
   // Reset garden state so re-seeding rebuilds history from the plan start.

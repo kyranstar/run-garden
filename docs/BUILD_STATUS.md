@@ -28,6 +28,23 @@ context compaction. Not user documentation.
   (mulberry32 on stable hash), SVG renderer in packages/garden-renderer.
 - LLM: worker-side only, Haiku class, hard budget in D1 `llm_usage`.
 
+## STATUS: all phases complete (2026-08-01)
+
+- 216 automated tests passing across 25 test files (unit + worker integration +
+  coros-bridge contract + garden simulation). 6 Playwright e2e smoke tests pass
+  against the live fixture app.
+- Full `pnpm -r typecheck` clean. `pnpm --filter @rg/web build` produces the PWA.
+- Visual QA done: 38 screenshots at 360/390/768/1280/1440 + dark + reduced-motion,
+  reviewed and iterated (fixed narrow-row pill crushing, desktop garden column
+  balance, raw COROS i18n label leak, "A easy run" grammar).
+- Real bugs found & fixed during the live fixture run: D1 100-variable limit on
+  bulk inserts (chunkedInsert), fixture invalid-time construction, garden genesis
+  date for history backfill, delete-all wrong-column crash, corosWritesEnabled
+  unsafe default (now ships OFF, opt-in after write spike).
+- Live COROS write spike NOT run (no real credentials in this env); harness ready
+  via `pnpm coros:spike` and the desktop app. Desktop Tauri build needs Rust
+  toolchain (documented; not compiled here).
+
 ## Phase checklist
 
 - [x] Phase 0: repo init, root configs

@@ -15,3 +15,5 @@ apps/desktop/src-tauri/gen/
 *.tsbuildinfo
 .turbo/
 screenshots/
+apps/worker/wrangler.dev.toml
+.wrangler/

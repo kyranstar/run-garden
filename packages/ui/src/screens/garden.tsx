@@ -24,10 +24,12 @@ function usePrefersReducedMotion(): boolean {
 
 function eventSentence(e: GardenEvent): string | null {
   switch (e.kind) {
-    case "run_completed":
-      return e.detail === "unplanned"
-        ? "An extra run gave the garden a light watering."
-        : `A ${e.workoutCategory ?? ""} run watered the garden.`;
+    case "run_completed": {
+      if (e.detail === "unplanned") return "An extra run gave the garden a light watering.";
+      const cat = e.workoutCategory ?? "";
+      const article = /^[aeiou]/i.test(cat) ? "An" : "A";
+      return cat ? `${article} ${cat} run watered the garden.` : "A run watered the garden.";
+    }
     case "plant_added": {
       const name = e.speciesId ? (SPECIES_BY_ID.get(e.speciesId)?.name ?? "plant") : "plant";
       return e.detail === "tree_seed" ? `A ${name} seed was planted.` : `A ${name} took root.`;

@@ -405,32 +405,96 @@ settingsRoutes.get("/export", async (c) => {
   });
 });
 
-/** Full deletion of all cloud data. */
+/** Full deletion of all cloud data (single-user: every row belongs to them). */
 settingsRoutes.post("/delete-all", async (c) => {
   const db = c.get("db");
   const userId = c.get("userId");
   const confirm = (await c.req.json<{ confirm?: string }>()).confirm;
   if (confirm !== "delete everything") return c.json({ error: "confirmation_required" }, 400);
-  const tables = [
+
+  const {
+    activityLaps,
+    activitySourceLinks,
+    activityStreamSummaries,
+    calendarEventSuppressions,
+    corosScheduleSnapshots,
+    corosWriteAttempts,
+    computedMetrics,
+    deviceHandshakes,
+    dismissedInsights,
+    gardenDayInputs,
+    gardenPlants,
+    gardenSnapshots,
+    gardenUnlocks,
+    gardenWildlife,
+    motivationEvidence,
+    oauthStates,
+    plannedWorkoutStages,
+    providerCursorState,
+    scheduleOverrides,
+    sessions,
+    syncErrors,
+    syncRuns,
+    trainingPlanVersions,
+    webhookEvents,
+    workoutCompletionMatches,
+  } = await import("@rg/database");
+
+  // Child tables keyed by workout/activity/job (not userId) — single-user, so
+  // clearing them entirely is correct and leaves no orphans.
+  const childTables = [
+    activityLaps,
+    activitySourceLinks,
+    activityStreamSummaries,
+    calendarEventLinks,
+    calendarEventSuppressions,
+    corosWriteAttempts,
+    plannedWorkoutStages,
+    scheduleOverrides,
+    trainingPlanVersions,
+    webhookEvents,
+    workoutCompletionMatches,
+  ] as const;
+  for (const t of childTables) await db.delete(t as any);
+
+  // User-scoped tables.
+  const userTables = [
     plannedWorkouts,
     activities,
     dailyHealth,
     sleepRecords,
     gardenEvents,
     gardenState,
+    gardenPlants,
+    gardenSnapshots,
+    gardenDayInputs,
+    gardenUnlocks,
+    gardenWildlife,
     weeklyReviews,
     llmUsage,
     corosWriteJobs,
+    corosScheduleSnapshots,
+    computedMetrics,
+    motivationEvidence,
+    dismissedInsights,
     desktopDevices,
     providerConnections,
+    providerCursorState,
     userPreferences,
     trainingPlans,
-    calendarEventLinks,
+    syncErrors,
+    syncRuns,
     auditEvents,
+    sessions,
   ] as const;
-  for (const t of tables) {
-    await db.delete(t).where(eq((t as typeof plannedWorkouts).userId, userId));
+  for (const t of userTables) {
+    const table = t as unknown as { userId: never };
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    await (db.delete(t as any) as any).where(eq(table.userId, userId as never));
   }
+  // Tables without a userId column — single-user, clear entirely.
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  for (const t of [deviceHandshakes, oauthStates] as const) await db.delete(t as any);
   await db.delete(users).where(eq(users.id, userId));
   return c.json({ ok: true });
 });

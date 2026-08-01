@@ -470,7 +470,8 @@ button {
 .workout-row {
   display: flex;
   align-items: center;
-  gap: 0.7rem;
+  gap: 0.5rem 0.7rem;
+  flex-wrap: wrap;
   padding: 0.65rem 0.75rem;
   background: var(--bg-raised);
   border: 1px solid var(--border);
@@ -480,6 +481,11 @@ button {
   width: 100%;
   text-align: left;
   color: inherit;
+}
+/* Trailing status pills wrap to a second line when they don't fit beside the
+   body, instead of crushing the title/meta. */
+.workout-row > .pill {
+  margin-left: auto;
 }
 .workout-row:hover {
   border-color: var(--border-strong);
@@ -501,8 +507,8 @@ button {
   font-variant-numeric: tabular-nums;
 }
 .workout-row .body {
-  flex: 1;
-  min-width: 0;
+  flex: 1 1 130px;
+  min-width: 130px;
 }
 .workout-row .title {
   font-weight: 600;
@@ -517,6 +523,7 @@ button {
   display: flex;
   gap: 0.5rem;
   align-items: center;
+  white-space: nowrap;
 }
 .workout-row.done {
   opacity: 0.75;
@@ -581,9 +588,20 @@ button {
 @media (min-width: 1024px) {
   .garden-layout {
     display: grid;
-    grid-template-columns: 1fr 280px;
+    grid-template-columns: 1fr 320px;
     gap: 1.2rem;
     align-items: start;
+  }
+  /* Keep the scene visible while the detail panel scrolls. */
+  .garden-layout > .stack:first-child {
+    position: sticky;
+    top: 1.5rem;
+  }
+  /* Cap the tall history + species cards so the columns stay balanced. */
+  .garden-layout .garden-history,
+  .garden-layout .species-grid {
+    max-height: 340px;
+    overflow-y: auto;
   }
 }
 
