@@ -1,0 +1,149 @@
+import { useState } from "react";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { api, type WorkoutDto } from "@rg/api-client";
+import { Banner, formatDayShort, formatTime, Sheet, Spinner } from "../components.js";
+
+/**
+ * The rescheduling transaction: at most three recommendations with one short
+ * explanation each, plus "choose another time" and "skip". Approving a move
+ * updates Run Garden + Calendar immediately and queues the COROS write —
+ * status is shown, the UI never blocks on the Mac.
+ */
+export function MoveSheet({
+  workout,
+  open,
+  onClose,
+}: {
+  workout: WorkoutDto;
+  open: boolean;
+  onClose: () => void;
+}) {
+  const qc = useQueryClient();
+  const [custom, setCustom] = useState(false);
+  const [customDate, setCustomDate] = useState(workout.effectiveDate);
+  const [customTime, setCustomTime] = useState(workout.effectiveTime);
+  const [result, setResult] = useState<string | null>(null);
+
+  const candidates = useQuery({
+    queryKey: ["candidates", workout.id],
+    queryFn: () => api.candidates(workout.id),
+    enabled: open,
+    staleTime: 30_000,
+  });
+
+  const move = useMutation({
+    mutationFn: ({ date, time }: { date: string; time: string }) => api.move(workout.id, date, time),
+    onSuccess: (res, vars) => {
+      const stateText =
+        res.corosSyncState === "synced"
+          ? "COROS synced"
+          : res.corosSyncState === "syncing"
+            ? "Syncing to COROS"
+            : res.corosSyncState === "waiting_for_device"
+              ? "Waiting for Mac"
+              : res.corosSyncState === "calendar_only"
+                ? "Calendar only"
+                : "COROS needs attention";
+      setResult(`Moved to ${formatDayShort(vars.date)} · ${stateText}`);
+      void qc.invalidateQueries({ queryKey: ["today"] });
+      void qc.invalidateQueries({ queryKey: ["plan"] });
+    },
+  });
+
+  const skip = useMutation({
+    mutationFn: () => api.skip(workout.id),
+    onSuccess: () => {
+      setResult("Workout skipped — later workouts stay where they are.");
+      void qc.invalidateQueries({ queryKey: ["today"] });
+      void qc.invalidateQueries({ queryKey: ["plan"] });
+    },
+  });
+
+  const close = () => {
+    setResult(null);
+    setCustom(false);
+    onClose();
+  };
+
+  return (
+    <Sheet open={open} onClose={close} title={`Move “${workout.title}”`}>
+      {result ? (
+        <div className="stack">
+          <Banner kind="info">{result}</Banner>
+          <button className="btn btn-primary" onClick={close}>
+            Done
+          </button>
+        </div>
+      ) : candidates.isLoading ? (
+        <Spinner label="Finding good times" />
+      ) : candidates.data?.blockedReason ? (
+        <Banner kind="warn">{candidates.data.blockedReason}</Banner>
+      ) : (
+        <div className="stack">
+          {(candidates.data?.candidates ?? []).map((cand) => (
+            <button
+              key={`${cand.date}-${cand.time}`}
+              className="workout-row"
+              disabled={move.isPending}
+              onClick={() => move.mutate({ date: cand.date, time: cand.time })}
+            >
+              <div className="body">
+                <div className="title">
+                  {formatDayShort(cand.date)} at {formatTime(cand.time)}
+                </div>
+                <div className="meta">{cand.explanation}</div>
+                {cand.warnings.length > 0 ? (
+                  <div className="faint">{cand.warnings[0]}</div>
+                ) : null}
+              </div>
+            </button>
+          ))}
+          {candidates.data && candidates.data.candidates.length === 0 ? (
+            <p className="muted">No nearby open slots — pick a time yourself below.</p>
+          ) : null}
+
+          {custom ? (
+            <div>
+              <div className="field">
+                <label htmlFor="mv-date">Date</label>
+                <input
+                  id="mv-date"
+                  type="date"
+                  value={customDate}
+                  onChange={(e) => setCustomDate(e.target.value)}
+                />
+              </div>
+              <div className="field">
+                <label htmlFor="mv-time">Start time</label>
+                <input
+                  id="mv-time"
+                  type="time"
+                  value={customTime}
+                  onChange={(e) => setCustomTime(e.target.value)}
+                />
+              </div>
+              <button
+                className="btn btn-primary"
+                disabled={move.isPending}
+                onClick={() => move.mutate({ date: customDate, time: customTime })}
+              >
+                Move here
+              </button>
+            </div>
+          ) : (
+            <button className="btn" onClick={() => setCustom(true)}>
+              Choose another time
+            </button>
+          )}
+
+          <hr className="divider" />
+          <button className="btn" disabled={skip.isPending} onClick={() => skip.mutate()}>
+            Skip workout
+          </button>
+          <p className="faint">{candidates.data?.skipOption.explanation}</p>
+          {move.isError ? <Banner kind="warn">The move failed — please try again.</Banner> : null}
+        </div>
+      )}
+    </Sheet>
+  );
+}
