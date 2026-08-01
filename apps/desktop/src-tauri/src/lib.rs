@@ -8,7 +8,10 @@ mod keychain;
 use bridge::Bridge;
 use serde::Serialize;
 use serde_json::{json, Value};
+use tauri::menu::{MenuBuilder, MenuItemBuilder};
+use tauri::tray::TrayIconBuilder;
 use tauri::{Manager, State};
+use tauri_plugin_autostart::{MacosLauncher, ManagerExt};
 use tauri_plugin_shell::ShellExt;
 
 pub struct AppState {
@@ -111,10 +114,30 @@ async fn set_bridge_paused(state: State<'_, AppState>, paused: bool) -> Result<(
 }
 
 #[tauri::command]
-async fn set_launch_at_login(_enabled: bool) -> Result<(), String> {
-    // Implemented via the tauri-plugin-autostart plugin in packaging; the
-    // command exists so the UI has a stable contract.
-    Ok(())
+async fn set_launch_at_login(app: tauri::AppHandle, enabled: bool) -> Result<(), String> {
+    let mgr = app.autolaunch();
+    if enabled {
+        mgr.enable().map_err(|e| format!("autostart_enable_failed: {e}"))
+    } else {
+        mgr.disable().map_err(|e| format!("autostart_disable_failed: {e}"))
+    }
+}
+
+#[tauri::command]
+async fn get_launch_at_login(app: tauri::AppHandle) -> Result<bool, String> {
+    app.autolaunch()
+        .is_enabled()
+        .map_err(|e| format!("autostart_query_failed: {e}"))
+}
+
+/// Open a URL in the user's default browser. Used so the full web app (where
+/// Google sign-in works) opens outside the app window — Google refuses to render
+/// its sign-in inside an embedded web view.
+#[tauri::command]
+async fn open_external(app: tauri::AppHandle, url: String) -> Result<(), String> {
+    app.shell()
+        .open(url, None)
+        .map_err(|e| format!("open_failed: {e}"))
 }
 
 /// Connect this Mac to the Run Garden cloud so the plan flows up and schedule
@@ -246,11 +269,45 @@ async fn resume_from_keychain(bridge: &Bridge) {
     }
 }
 
+/// Reveal and focus the main window (from the tray menu or a dock-icon click).
+fn show_main(app: &tauri::AppHandle) {
+    if let Some(window) = app.get_webview_window("main") {
+        let _ = window.show();
+        let _ = window.set_focus();
+    }
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_shell::init())
-        .setup(|_app| {
+        // Launch-at-login support (the "Launch at login" toggle drives this).
+        .plugin(tauri_plugin_autostart::init(MacosLauncher::LaunchAgent, None))
+        .on_window_event(|window, event| {
+            // Closing the window doesn't quit: Run Garden keeps running in the
+            // menu bar so the COROS bridge keeps syncing. Quit from the tray.
+            if let tauri::WindowEvent::CloseRequested { api, .. } = event {
+                let _ = window.hide();
+                api.prevent_close();
+            }
+        })
+        .setup(|app| {
+            // Menu-bar tray so the app stays reachable while running in the
+            // background. Click the icon → menu with Open / Quit.
+            let open_item = MenuItemBuilder::with_id("open", "Open Run Garden").build(app)?;
+            let quit_item = MenuItemBuilder::with_id("quit", "Quit Run Garden").build(app)?;
+            let menu = MenuBuilder::new(app).items(&[&open_item, &quit_item]).build()?;
+            let _tray = TrayIconBuilder::with_id("main")
+                .icon(app.default_window_icon().cloned().ok_or("no default icon")?)
+                .tooltip("Run Garden")
+                .menu(&menu)
+                .on_menu_event(|app, event| match event.id().as_ref() {
+                    "open" => show_main(app),
+                    "quit" => app.exit(0),
+                    _ => {}
+                })
+                .build(app)?;
+
             let bridge = Bridge::new();
             // Resolve the packaged sidecar next to the app executable (Tauri
             // bundles externalBin into the same dir, with the target-triple
@@ -274,7 +331,7 @@ pub fn run() {
                     resume_from_keychain(&bridge_for_setup).await;
                 });
             }
-            _app.manage(AppState { bridge });
+            app.manage(AppState { bridge });
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -284,9 +341,17 @@ pub fn run() {
             erase_credentials,
             set_bridge_paused,
             set_launch_at_login,
+            get_launch_at_login,
+            open_external,
             connect_cloud,
             run_write_spike,
         ])
-        .run(tauri::generate_context!())
-        .expect("error while running Run Garden");
+        .build(tauri::generate_context!())
+        .expect("error while building Run Garden")
+        .run(|app, event| {
+            // Clicking the dock icon with no open window re-reveals it.
+            if let tauri::RunEvent::Reopen { .. } = event {
+                show_main(app);
+            }
+        });
 }

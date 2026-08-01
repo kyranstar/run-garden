@@ -21,12 +21,7 @@
       }
     ],
     "security": {
-      "csp": "default-src 'self'; frame-src http://localhost:8787 https://*.workers.dev https://*; img-src 'self' data:; style-src 'self' 'unsafe-inline'; connect-src 'self' http://localhost:8787 https://*"
-    },
-    "trayIcon": {
-      "iconPath": "icons/tray.png",
-      "tooltip": "Run Garden",
-      "menuOnLeftClick": false
+      "csp": "default-src 'self'; img-src 'self' data:; style-src 'self' 'unsafe-inline'; connect-src 'self' http://localhost:8787 https://*"
     }
   },
   "bundle": {

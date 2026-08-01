@@ -57,6 +57,12 @@ export const desktop = {
 
   setLaunchAtLogin: (enabled: boolean) => invoke<void>("set_launch_at_login", { enabled }),
 
+  /** Current launch-at-login state, so the toggle reflects reality on open. */
+  getLaunchAtLogin: () => invoke<boolean>("get_launch_at_login"),
+
+  /** Open a URL in the default browser (sign-in must happen outside the app). */
+  openExternal: (url: string) => invoke<void>("open_external", { url }),
+
   /**
    * Connect this Mac to the Run Garden cloud (pairs a device on first run,
    * opening the browser to approve; reuses the stored identity afterwards).

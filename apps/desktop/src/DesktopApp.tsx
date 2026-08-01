@@ -138,6 +138,9 @@ function ConnectionPanel() {
   const [spikeOpen, setSpikeOpen] = useState(false);
   const [spikeResult, setSpikeResult] = useState<string | null>(null);
   const [launchLogin, setLaunchLogin] = useState(false);
+  useEffect(() => {
+    desktop.getLaunchAtLogin().then(setLaunchLogin).catch(() => undefined);
+  }, []);
   const state = useQuery({
     queryKey: ["bridge-state"],
     queryFn: desktop.bridgeState,
@@ -203,9 +206,14 @@ function ConnectionPanel() {
               <input
                 type="checkbox"
                 checked={launchLogin}
-                onChange={(e) => {
-                  setLaunchLogin(e.target.checked);
-                  void desktop.setLaunchAtLogin(e.target.checked);
+                onChange={async (e) => {
+                  const next = e.target.checked;
+                  setLaunchLogin(next);
+                  try {
+                    await desktop.setLaunchAtLogin(next);
+                  } catch {
+                    setLaunchLogin(!next);
+                  }
                 }}
               />
             </label>
@@ -266,8 +274,24 @@ export function DesktopApp() {
     <QueryClientProvider client={queryClient}>
       <div className="desktop-root">
         <ConnectionPanel />
-        <div className="desktop-webview">
-          <iframe title="Run Garden" src={CLOUD_URL} />
+        <div className="desktop-hero">
+          <div className="desktop-hero-inner">
+            <div className="desktop-hero-mark" aria-hidden>
+              🌿
+            </div>
+            <h2>Run Garden lives in your browser</h2>
+            <p className="muted">
+              This companion runs quietly in your menu bar, keeping your COROS plan in sync and
+              applying approved reschedules to your watch. Open the full app — your plan, garden, and
+              insights — in your browser, where signing in with Google works.
+            </p>
+            <button className="btn btn-primary" onClick={() => void desktop.openExternal(CLOUD_URL)}>
+              Open Run Garden in your browser
+            </button>
+            <p className="faint">
+              Keep this app running (or turn on “Launch at login”) so reschedules reach your watch.
+            </p>
+          </div>
         </div>
       </div>
     </QueryClientProvider>
