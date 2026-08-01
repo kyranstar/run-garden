@@ -1,0 +1,17 @@
+node_modules/
+dist/
+build/
+.wrangler/
+.dev.vars
+.env
+.env.local
+*.local
+.DS_Store
+coverage/
+playwright-report/
+test-results/
+apps/desktop/src-tauri/target/
+apps/desktop/src-tauri/gen/
+*.tsbuildinfo
+.turbo/
+screenshots/
