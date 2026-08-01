@@ -62,9 +62,14 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           TAG: ${{ github.ref_name }}
         run: |
-          set -euo pipefail
+          set -uo pipefail
           VERSION="${TAG#v}"
-          SIG_FILE=$(ls apps/desktop/src-tauri/target/aarch64-apple-darwin/release/bundle/macos/*.app.tar.gz.sig | head -1)
+          SIG_FILE=$(find apps/desktop/src-tauri/target -type f -name '*.app.tar.gz.sig' 2>/dev/null | head -1)
+          if [ -z "$SIG_FILE" ]; then
+            echo "::error::no .app.tar.gz.sig found under target/"
+            find . -name '*.app.tar.gz*' 2>/dev/null | head
+            exit 1
+          fi
           SIG=$(cat "$SIG_FILE")
           ASSET=$(gh release view "$TAG" -R "$GITHUB_REPOSITORY" --json assets \
             -q '.assets[] | select(.name|endswith(".app.tar.gz")) | .name' | head -1)
