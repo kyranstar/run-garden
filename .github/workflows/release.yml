@@ -53,3 +53,25 @@ jobs:
           releaseDraft: false
           prerelease: false
           args: --target aarch64-apple-darwin
+
+      # tauri-action skips latest.json when the productName has a space
+      # ("Run Garden"): the uploaded asset is renamed (spaces -> dots) so it no
+      # longer matches the on-disk .sig. Build and upload the manifest ourselves.
+      - name: Generate + upload updater manifest (latest.json)
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          VERSION="${TAG#v}"
+          SIG_FILE=$(ls apps/desktop/src-tauri/target/aarch64-apple-darwin/release/bundle/macos/*.app.tar.gz.sig | head -1)
+          SIG=$(cat "$SIG_FILE")
+          ASSET=$(gh release view "$TAG" -R "$GITHUB_REPOSITORY" --json assets \
+            -q '.assets[] | select(.name|endswith(".app.tar.gz")) | .name' | head -1)
+          URL="https://github.com/${GITHUB_REPOSITORY}/releases/download/${TAG}/${ASSET}"
+          DATE=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+          jq -n --arg v "$VERSION" --arg sig "$SIG" --arg url "$URL" --arg date "$DATE" \
+            '{version:$v, notes:("Run Garden "+$v), pub_date:$date,
+              platforms:{"darwin-aarch64":{signature:$sig, url:$url}}}' > latest.json
+          cat latest.json
+          gh release upload "$TAG" latest.json -R "$GITHUB_REPOSITORY" --clobber
