@@ -1,4 +1,22 @@
-# Cloudflare Worker configuration.
+# Cloudflare Worker configuration (wrangler v4).
+#
+# One-time setup before the first deploy:
+#   1. cd apps/worker
+#   2. npx wrangler d1 create run-garden-db
+#      → copy the printed database_id and paste it into [[d1_databases]] below.
+#   3. Set secrets (see the root .env.example for the full list):
+#        npx wrangler secret put SESSION_SECRET
+#        npx wrangler secret put TOKEN_ENCRYPTION_KEY   # openssl rand -base64 32
+#        npx wrangler secret put ALLOWED_GOOGLE_EMAIL
+#        npx wrangler secret put GOOGLE_CLIENT_ID
+#        npx wrangler secret put GOOGLE_CLIENT_SECRET
+#        # optional: STRAVA_CLIENT_ID / STRAVA_CLIENT_SECRET /
+#        #           STRAVA_WEBHOOK_VERIFY_TOKEN / ANTHROPIC_API_KEY /
+#        #           COROS_MCP_URL / COROS_MCP_TOKEN / STRAVA_API_BASE
+#   4. npx wrangler d1 migrations apply run-garden-db --remote
+#   5. pnpm --filter @rg/web build   (assets below are served from ../web/dist)
+#   6. npx wrangler deploy
+#
 # The database name is brand-neutral on purpose; rename in one place if needed.
 name = "run-garden-api"
 main = "src/index.ts"

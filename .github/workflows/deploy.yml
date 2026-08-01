@@ -1,0 +1,63 @@
+name: Deploy
+
+# Deploys the worker (API + static web assets) to Cloudflare.
+#
+# REQUIRED repository secrets (Settings → Secrets and variables → Actions):
+#   CLOUDFLARE_API_TOKEN   — API token with "Workers Scripts: Edit" and
+#                            "D1: Edit" permissions (create at
+#                            https://dash.cloudflare.com/profile/api-tokens).
+#   CLOUDFLARE_ACCOUNT_ID  — your Cloudflare account id (dashboard sidebar).
+#
+# Worker runtime secrets (SESSION_SECRET, TOKEN_ENCRYPTION_KEY, GOOGLE_*, …)
+# are NOT set here — they are set once via `wrangler secret put` and persist
+# across deploys. See docs/DEPLOYMENT.md.
+#
+# apps/worker/wrangler.toml must contain a real database_id
+# (from `wrangler d1 create run-garden-db`) before this workflow can succeed.
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+
+concurrency:
+  group: deploy
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    name: Migrate D1 + deploy worker
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      # The worker serves apps/web/dist via the [assets] binding, so the web
+      # bundle must exist before `wrangler deploy` uploads it.
+      - name: Build web app
+        run: pnpm --filter @rg/web build
+
+      - name: Apply D1 migrations (remote)
+        uses: cloudflare/wrangler-action@v3
+        with:
+          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          workingDirectory: apps/worker
+          command: d1 migrations apply run-garden-db --remote
+
+      - name: Deploy worker
+        uses: cloudflare/wrangler-action@v3
+        with:
+          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          workingDirectory: apps/worker
+          command: deploy

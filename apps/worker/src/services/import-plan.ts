@@ -16,7 +16,7 @@ import {
 } from "@rg/domain";
 import { classifyWorkout, estimateDuration, summarizeStages } from "@rg/scheduling";
 import type { SourcePlannedWorkout, TrainingPlanInfo } from "@rg/providers";
-import type { Db } from "./db.js";
+import { chunkedInsert, type Db } from "./db.js";
 
 /**
  * Plan import + COROS reconciliation (rules 1–11 of the sync spec, see
@@ -342,23 +342,22 @@ export async function importPlanSnapshot(
 async function replaceStages(db: Db, workoutId: string, src: SourcePlannedWorkout): Promise<void> {
   await db.delete(plannedWorkoutStages).where(eq(plannedWorkoutStages.workoutId, workoutId));
   if (src.stages.length === 0) return;
-  await db.insert(plannedWorkoutStages).values(
-    src.stages.map((s) => ({
-      id: `${workoutId}:${s.id}`,
-      workoutId,
-      parentStageId: s.parentStageId ? `${workoutId}:${s.parentStageId}` : null,
-      ord: s.order,
-      kind: s.kind,
-      repeatCount: s.repeatCount ?? null,
-      durationType: s.durationType,
-      durationSeconds: s.durationSeconds ?? null,
-      distanceMeters: s.distanceMeters ?? null,
-      targetType: s.targetType ?? null,
-      targetLow: s.targetLow ?? null,
-      targetHigh: s.targetHigh ?? null,
-      paceZone: s.paceZone ?? null,
-      hrZone: s.hrZone ?? null,
-      label: s.label ?? null,
-    })),
-  );
+  const stageRows = src.stages.map((s) => ({
+    id: `${workoutId}:${s.id}`,
+    workoutId,
+    parentStageId: s.parentStageId ? `${workoutId}:${s.parentStageId}` : null,
+    ord: s.order,
+    kind: s.kind,
+    repeatCount: s.repeatCount ?? null,
+    durationType: s.durationType,
+    durationSeconds: s.durationSeconds ?? null,
+    distanceMeters: s.distanceMeters ?? null,
+    targetType: s.targetType ?? null,
+    targetLow: s.targetLow ?? null,
+    targetHigh: s.targetHigh ?? null,
+    paceZone: s.paceZone ?? null,
+    hrZone: s.hrZone ?? null,
+    label: s.label ?? null,
+  }));
+  await chunkedInsert(stageRows, 15, (batch) => db.insert(plannedWorkoutStages).values(batch));
 }

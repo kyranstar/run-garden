@@ -4,7 +4,7 @@
  * daily health for a date range, fully normalized via @rg/providers.
  */
 
-import { fingerprint, type DailyHealth } from "@rg/domain";
+import { fingerprint, type DailyHealth, type SourceActivity } from "@rg/domain";
 import {
   COROS_RUN_SPORT_TYPES,
   corosDayToLocalDate,
@@ -13,7 +13,6 @@ import {
   normalizeCorosSchedule,
   type NameResolver,
   type RawCorosActivityDetail,
-  type SourceActivity,
   type SourcePlannedWorkout,
   type TrainingPlanInfo,
 } from "@rg/providers";

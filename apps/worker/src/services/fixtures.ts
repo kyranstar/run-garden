@@ -14,7 +14,7 @@ import type { Db } from "./db.js";
 import { importPlanSnapshot } from "./import-plan.js";
 import { ingestActivities } from "./completion.js";
 import { loadPreferences } from "./calendar-sync.js";
-import { advanceGarden } from "./garden-sync.js";
+import { advanceGarden, ensureGarden } from "./garden-sync.js";
 import { reconcileCompletionStates } from "./reconcile-daily.js";
 import { dailyHealth, sleepRecords } from "@rg/database";
 
@@ -43,7 +43,8 @@ function syntheticActivity(
   index: number,
   provider: "coros" | "strava",
 ): SourceActivity {
-  const startHour = kind === "recovery" ? 19 : 7;
+  const localHour = kind === "recovery" ? 19 : 7;
+  const minute = index % 6;
   const base: Record<string, { dur: number; dist: number; hr: number; load: number }> = {
     quality: { dur: 3255, dist: 9860, hr: 158, load: 82 },
     easy: { dur: 2760, dist: 7300, hr: 138, load: 38 },
@@ -53,15 +54,20 @@ function syntheticActivity(
   };
   const spec = base[kind] ?? base.easy!;
   const jitter = (index * 37) % 120;
-  const startIso = `${date}T${String(startHour + 7).padStart(2, "0")}:0${index % 6}:00Z`; // ≈ local+7h in UTC
+  const hh = String(localHour).padStart(2, "0");
+  const mm = String(minute).padStart(2, "0");
+  const startTimeLocal = `${date}T${hh}:${mm}:00`;
+  // Local PDT (UTC-7): 07:00 local → 14:00Z same day; 19:00 local → 02:00Z next day.
+  const utcHour = localHour + 7;
+  const nextDay = utcHour >= 24;
+  const utcIso = nextDay
+    ? `${addDays(date, 1)}T${String(utcHour - 24).padStart(2, "0")}:${mm}:00Z`
+    : `${date}T${String(utcHour).padStart(2, "0")}:${mm}:00Z`;
   return {
     provider,
     providerActivityId: `${provider}-fx-${date}-${kind}`,
-    startTime: startIso,
-    startTimeLocal: `${date}T0${startHour === 7 ? "7" : "7"}:0${index % 6}:00`.replace(
-      "T07",
-      startHour === 19 ? "T19" : "T07",
-    ),
+    startTime: utcIso,
+    startTimeLocal,
     timezone: "America/Los_Angeles",
     sport: "run",
     durationSeconds: spec.dur + jitter,
@@ -90,6 +96,14 @@ export interface SeedResult {
 export async function seedFixtures(db: Db, env: Env, userId: string): Promise<SeedResult> {
   const prefs = await loadPreferences(db, userId);
   const today = todayInZone(prefs.timezone);
+
+  // Reset garden state so re-seeding rebuilds history from the plan start.
+  const { gardenState, gardenEvents, gardenSnapshots, gardenDayInputs, gardenPlants } = await import("@rg/database");
+  await db.delete(gardenState).where(eq(gardenState.userId, userId));
+  await db.delete(gardenEvents).where(eq(gardenEvents.userId, userId));
+  await db.delete(gardenSnapshots).where(eq(gardenSnapshots.userId, userId));
+  await db.delete(gardenDayInputs).where(eq(gardenDayInputs.userId, userId));
+  await db.delete(gardenPlants).where(eq(gardenPlants.userId, userId));
   // Plan started ~9 weeks ago (Monday), runs 12 weeks.
   const monday = addDays(today, -((9 * 7) + ((Number(new Date(today).getUTCDay()) + 6) % 7)));
 
@@ -233,8 +247,10 @@ export async function seedFixtures(db: Db, env: Env, userId: string): Promise<Se
       .onConflictDoNothing();
   }
 
-  // Resolve old unresolved workouts, then simulate the whole garden history.
+  // Resolve old unresolved workouts, then simulate the whole garden history
+  // from the plan start so months of history replay into the garden.
   await reconcileCompletionStates(db, userId, prefs);
+  await ensureGarden(db, userId, prefs, monday);
   const garden = await advanceGarden(db, userId, prefs);
 
   return {

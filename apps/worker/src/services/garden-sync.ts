@@ -31,7 +31,7 @@ import {
   type GardenDayInput,
   type GardenSnapshot,
 } from "@rg/garden-engine";
-import type { Db } from "./db.js";
+import { chunkedInsert, type Db } from "./db.js";
 
 /**
  * Garden synchronization: builds resolved day inputs from the database and
@@ -48,11 +48,17 @@ export async function loadGarden(db: Db, userId: string): Promise<GardenSnapshot
   return rows[0].snapshot as unknown as GardenSnapshot;
 }
 
-export async function ensureGarden(db: Db, userId: string, prefs: UserPreferences): Promise<GardenSnapshot> {
+export async function ensureGarden(
+  db: Db,
+  userId: string,
+  prefs: UserPreferences,
+  genesisDate?: LocalDate,
+): Promise<GardenSnapshot> {
   const existing = await loadGarden(db, userId);
   if (existing) return existing;
-  const today = todayInZone(prefs.timezone);
-  const snapshot = initialSnapshot(today);
+  // A new garden starts on its genesis date (today for real users; the plan
+  // start for a backfilled history) so the simulation can replay from there.
+  const snapshot = initialSnapshot(genesisDate ?? todayInZone(prefs.timezone));
   await persistSnapshot(db, userId, snapshot);
   return snapshot;
 }
@@ -71,29 +77,26 @@ async function persistSnapshot(db: Db, userId: string, snapshot: GardenSnapshot)
 
   // Projections for queries/diagnostics.
   await db.delete(gardenPlants).where(eq(gardenPlants.userId, userId));
-  if (snapshot.plants.length > 0) {
-    await db.insert(gardenPlants).values(
-      snapshot.plants.map((p) => ({
-        id: `${userId}:${p.id}`,
-        userId,
-        speciesId: p.speciesId,
-        category: p.category,
-        plantedAt: p.plantedAt,
-        sourceWorkoutId: p.sourceWorkoutId ?? null,
-        health: p.health,
-        hydration: p.hydration,
-        maturity: p.maturity,
-        bloomProgress: p.bloomProgress,
-        state: p.state,
-        posX: p.position.x,
-        posY: p.position.y,
-        region: p.position.region,
-        hostPlantId: p.hostPlantId ?? null,
-        diedAt: p.diedAt ?? null,
-        habitatRole: p.habitatRole ?? null,
-      })),
-    );
-  }
+  const plantRows = snapshot.plants.map((p) => ({
+    id: `${userId}:${p.id}`,
+    userId,
+    speciesId: p.speciesId,
+    category: p.category,
+    plantedAt: p.plantedAt,
+    sourceWorkoutId: p.sourceWorkoutId ?? null,
+    health: p.health,
+    hydration: p.hydration,
+    maturity: p.maturity,
+    bloomProgress: p.bloomProgress,
+    state: p.state,
+    posX: p.position.x,
+    posY: p.position.y,
+    region: p.position.region,
+    hostPlantId: p.hostPlantId ?? null,
+    diedAt: p.diedAt ?? null,
+    habitatRole: p.habitatRole ?? null,
+  }));
+  await chunkedInsert(plantRows, 17, (batch) => db.insert(gardenPlants).values(batch));
   for (const kind of Object.keys(snapshot.wildlife) as WildlifeKind[]) {
     const id = `${userId}:${kind}`;
     const present = snapshot.wildlife[kind];
@@ -297,27 +300,25 @@ export async function advanceGarden(
       });
 
     if (result.events.length > 0) {
-      await db
-        .insert(gardenEvents)
-        .values(
-          result.events.map((e) => ({
-            id: `${userId}:${e.id}`,
-            userId,
-            kind: e.kind,
-            date: e.date,
-            seq: e.seq,
-            workoutId: e.workoutId ?? null,
-            activityId: e.activityId ?? null,
-            workoutCategory: e.workoutCategory ?? null,
-            plantId: e.plantId ?? null,
-            speciesId: e.speciesId ?? null,
-            wildlifeId: e.wildlifeId ?? null,
-            detail: e.detail ?? null,
-            simulationVersion: e.simulationVersion,
-            createdAt: nowIso,
-          })),
-        )
-        .onConflictDoNothing();
+      const eventRows = result.events.map((e) => ({
+        id: `${userId}:${e.id}`,
+        userId,
+        kind: e.kind,
+        date: e.date,
+        seq: e.seq,
+        workoutId: e.workoutId ?? null,
+        activityId: e.activityId ?? null,
+        workoutCategory: e.workoutCategory ?? null,
+        plantId: e.plantId ?? null,
+        speciesId: e.speciesId ?? null,
+        wildlifeId: e.wildlifeId ?? null,
+        detail: e.detail ?? null,
+        simulationVersion: e.simulationVersion,
+        createdAt: nowIso,
+      }));
+      await chunkedInsert(eventRows, 14, (batch) =>
+        db.insert(gardenEvents).values(batch).onConflictDoNothing(),
+      );
       for (const e of result.events) {
         if (e.kind === "species_unlocked" && e.speciesId) {
           await db

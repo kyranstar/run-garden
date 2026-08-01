@@ -279,7 +279,10 @@ export function mockCorosServer(opts: { baseMonday?: string } = {}): MockCorosSe
     return envelope("1031");
   }
 
-  const fetchImpl = (async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
+  const fetchImpl = (async (
+    input: string | URL | Request,
+    init?: RequestInit,
+  ): Promise<Response> => {
     const url = new URL(
       typeof input === "string" ? input : input instanceof URL ? input.href : input.url,
     );

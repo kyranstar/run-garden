@@ -1,0 +1,38 @@
+# Local development secrets for `wrangler dev` (apps/worker).
+# Copy to .dev.vars (gitignored) and fill in what you need.
+#
+# With FIXTURE_MODE=1 (set below, overriding wrangler.toml) you can run the
+# entire vertical loop with NO real credentials: POST /api/dev/fixture-login
+# then /api/dev/seed. The Google/Strava/Anthropic values only need real values
+# when you exercise those integrations locally.
+#
+# See the root .env.example for what each key means and where to get it.
+
+# Required shape (dummy values are fine in fixture mode):
+SESSION_SECRET=dev-session-secret-not-for-production
+# Must decode to exactly 32 bytes. This example does; replace with your own:
+#   openssl rand -base64 32
+TOKEN_ENCRYPTION_KEY=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=
+ALLOWED_GOOGLE_EMAIL=you@example.com
+
+# Google OAuth (only needed for real sign-in / Calendar locally).
+# Redirect URI for local dev: http://localhost:8787/api/auth/google/callback
+GOOGLE_CLIENT_ID=dev-google-client-id.apps.googleusercontent.com
+GOOGLE_CLIENT_SECRET=dev-google-client-secret
+
+# Strava (optional; leave dummies unless testing Strava locally).
+STRAVA_CLIENT_ID=00000
+STRAVA_CLIENT_SECRET=dev-strava-client-secret
+STRAVA_WEBHOOK_VERIFY_TOKEN=dev-verify-token
+
+# Anthropic (optional; unset/dummy → weekly review stores facts, no narrative).
+ANTHROPIC_API_KEY=
+
+# Official COROS MCP (optional).
+COROS_MCP_URL=
+COROS_MCP_TOKEN=
+
+# Overrides of wrangler.toml [vars] for local dev:
+APP_URL=http://localhost:8787
+FIXTURE_MODE=1
+AI_DEFAULT_ENABLED=1

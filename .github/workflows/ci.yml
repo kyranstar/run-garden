@@ -1,0 +1,67 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build-and-test:
+    name: Typecheck, test, build web
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # pnpm version is read from "packageManager" in the root package.json.
+      - uses: pnpm/action-setup@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Typecheck all packages
+        run: pnpm -r typecheck
+
+      - name: Unit + integration tests (vitest)
+        run: pnpm test
+
+      - name: Build web app
+        run: pnpm --filter @rg/web build
+
+  migration-drift:
+    # Non-blocking: regenerates Drizzle migrations and fails only this job if
+    # the schema in packages/database/src/schema/*.ts has drifted from the
+    # committed migrations. Fix by running `pnpm db:generate` and committing.
+    name: Drizzle migration drift (advisory)
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Regenerate migrations
+        run: pnpm --filter @rg/database generate
+
+      - name: Check for drift
+        run: |
+          if ! git diff --exit-code -- packages/database/migrations; then
+            echo "::warning::Schema drift detected: run 'pnpm db:generate' and commit the result."
+            exit 1
+          fi

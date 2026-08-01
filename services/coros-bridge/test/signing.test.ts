@@ -126,7 +126,7 @@ describe("CloudSync loop", () => {
     await client.login(server.email, server.password);
 
     const calls: Array<{ path: string; body: Record<string, unknown>; headers: Headers }> = [];
-    const cloudFetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+    const cloudFetch = (async (input: string | URL | Request, init?: RequestInit) => {
       const path = new URL(typeof input === "string" ? input : (input as URL).href).pathname;
       calls.push({
         path,
@@ -175,7 +175,7 @@ describe("CloudSync loop", () => {
 
     let claims = 0;
     const results: Array<Record<string, unknown>> = [];
-    const cloudFetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+    const cloudFetch = (async (input: string | URL | Request, init?: RequestInit) => {
       const path = new URL(typeof input === "string" ? input : (input as URL).href).pathname;
       let payload: unknown = { ok: true };
       if (path === "/api/devices/bridge/jobs/claim") {

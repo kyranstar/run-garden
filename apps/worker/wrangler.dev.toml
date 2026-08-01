@@ -1,0 +1,16 @@
+# Dev-only override so the local worker doesn't require the real D1 id.
+name = "run-garden-api"
+main = "src/index.ts"
+compatibility_date = "2026-07-01"
+compatibility_flags = ["nodejs_compat"]
+
+[[d1_databases]]
+binding = "DB"
+database_name = "run-garden-db"
+database_id = "local-dev-db"
+migrations_dir = "../../packages/database/migrations"
+
+[vars]
+APP_URL = "http://localhost:5173"
+FIXTURE_MODE = "1"
+AI_DEFAULT_ENABLED = "0"

@@ -21,7 +21,7 @@ import {
   scoreActivityPair,
   singleSourceActivity,
 } from "@rg/providers";
-import type { Db } from "./db.js";
+import { chunkedInsert, type Db } from "./db.js";
 
 /**
  * Completed-activity ingestion: source records from COROS and Strava are
@@ -323,18 +323,17 @@ export async function ingestActivities(db: Db, input: IngestInput): Promise<Inge
     const laps = input.lapsByProviderId?.[src.providerActivityId];
     if (laps && laps.length > 0) {
       await db.delete(activityLaps).where(eq(activityLaps.activityId, activityId));
-      await db.insert(activityLaps).values(
-        laps.map((l) => ({
-          id: `${activityId}:${l.lapIndex}`,
-          activityId,
-          lapIndex: l.lapIndex,
-          durationSeconds: l.durationSeconds,
-          distanceMeters: l.distanceMeters ?? null,
-          avgHeartRate: l.avgHeartRate ?? null,
-          avgPaceSecPerKm: l.avgPaceSecPerKm ?? null,
-          splitType: l.splitType ?? null,
-        })),
-      );
+      const lapRows = laps.map((l) => ({
+        id: `${activityId}:${l.lapIndex}`,
+        activityId,
+        lapIndex: l.lapIndex,
+        durationSeconds: l.durationSeconds,
+        distanceMeters: l.distanceMeters ?? null,
+        avgHeartRate: l.avgHeartRate ?? null,
+        avgPaceSecPerKm: l.avgPaceSecPerKm ?? null,
+        splitType: l.splitType ?? null,
+      }));
+      await chunkedInsert(lapRows, 8, (batch) => db.insert(activityLaps).values(batch));
     }
     affectedDates.add((src.startTimeLocal ?? src.startTime).slice(0, 10));
   }
