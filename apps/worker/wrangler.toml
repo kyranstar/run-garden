@@ -34,7 +34,7 @@ run_worker_first = ["/api/*"]
 binding = "DB"
 database_name = "run-garden-db"
 # Replace after `wrangler d1 create run-garden-db`:
-database_id = "REPLACE_WITH_D1_DATABASE_ID"
+database_id = "00acb208-8450-4bc0-88da-6b1e75f76280"
 migrations_dir = "../../packages/database/migrations"
 
 [triggers]
@@ -49,7 +49,7 @@ crons = [
 #   SESSION_SECRET, TOKEN_ENCRYPTION_KEY, GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET,
 #   ALLOWED_GOOGLE_EMAIL, STRAVA_CLIENT_ID, STRAVA_CLIENT_SECRET,
 #   STRAVA_WEBHOOK_VERIFY_TOKEN, AI_GATEWAY_API_KEY
-APP_URL = "https://run-garden-api.YOUR_SUBDOMAIN.workers.dev"
+APP_URL = "https://run-garden-api.kyranadams.workers.dev"
 FIXTURE_MODE = "0"
 AI_DEFAULT_ENABLED = "1"
 # LLM via Vercel AI Gateway (OpenAI-compatible). Key is a secret; model is here.
