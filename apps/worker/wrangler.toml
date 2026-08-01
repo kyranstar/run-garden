@@ -1,0 +1,36 @@
+# Cloudflare Worker configuration.
+# The database name is brand-neutral on purpose; rename in one place if needed.
+name = "run-garden-api"
+main = "src/index.ts"
+compatibility_date = "2026-07-01"
+compatibility_flags = ["nodejs_compat"]
+
+# Static assets: the built web app is uploaded alongside the worker.
+[assets]
+directory = "../web/dist"
+binding = "ASSETS"
+not_found_handling = "single-page-application"
+run_worker_first = ["/api/*"]
+
+[[d1_databases]]
+binding = "DB"
+database_name = "run-garden-db"
+# Replace after `wrangler d1 create run-garden-db`:
+database_id = "REPLACE_WITH_D1_DATABASE_ID"
+migrations_dir = "../../packages/database/migrations"
+
+[triggers]
+crons = [
+  "*/30 * * * *",  # calendar + provider sync
+  "15 * * * *",    # hourly reconcile + garden simulation
+  "0 14 * * 1",    # weekly review (Mondays, 14:00 UTC ≈ morning US)
+]
+
+[vars]
+# Non-secret configuration. Secrets are set with `wrangler secret put`:
+#   SESSION_SECRET, TOKEN_ENCRYPTION_KEY, GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET,
+#   STRAVA_CLIENT_ID, STRAVA_CLIENT_SECRET, STRAVA_WEBHOOK_VERIFY_TOKEN,
+#   ANTHROPIC_API_KEY, ALLOWED_GOOGLE_EMAIL
+APP_URL = "https://run-garden-api.YOUR_SUBDOMAIN.workers.dev"
+FIXTURE_MODE = "0"
+AI_DEFAULT_ENABLED = "1"

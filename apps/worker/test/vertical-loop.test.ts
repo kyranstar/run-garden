@@ -1,0 +1,364 @@
+import { beforeEach, describe, expect, it } from "vitest";
+import { and, eq, isNull } from "drizzle-orm";
+import { schema } from "@rg/database";
+import { addDays, todayInZone, type UserPreferences } from "@rg/domain";
+import {
+  FixtureTrainingProvider,
+  fixtureCorosCompletedThreshold,
+  fixtureStravaCompletedThreshold,
+  normalizeCorosActivity,
+  normalizeStravaActivity,
+} from "@rg/providers";
+import type { Db } from "../src/services/db.js";
+import { importPlanSnapshot } from "../src/services/import-plan.js";
+import { applyMove, claimNextJob, applyJobResult } from "../src/services/jobs.js";
+import { ingestActivities } from "../src/services/completion.js";
+import { advanceGarden, loadGarden } from "../src/services/garden-sync.js";
+import { reconcileCompletionStates } from "../src/services/reconcile-daily.js";
+import { makeTestDb, makeTestUser, registerTestDevice } from "./helpers.js";
+
+/**
+ * The core vertical loop (product spec, Phase 3):
+ * import → calendar-ready workout → move → COROS write job → verify →
+ * activity arrives (Strava then COROS) → merge → completion → garden growth.
+ */
+
+const { plannedWorkouts, corosWriteJobs, activities, workoutCompletionMatches } = schema;
+
+let db: Db;
+let userId: string;
+let prefs: UserPreferences;
+let deviceId: string;
+let provider: FixtureTrainingProvider;
+let baseMonday: string;
+
+async function importFromProvider(corosWriteAvailable = true) {
+  const plan = await provider.getCurrentPlan();
+  const range = { start: baseMonday, end: addDays(baseMonday, 13) };
+  const workouts = await provider.getPlannedWorkouts(range);
+  return importPlanSnapshot(
+    db,
+    {
+      userId,
+      plan: plan!,
+      workouts,
+      rangeStart: range.start,
+      rangeEnd: range.end,
+      source: "fixture",
+      corosWriteAvailable,
+    },
+    prefs,
+  );
+}
+
+beforeEach(async () => {
+  db = makeTestDb();
+  ({ userId, prefs } = await makeTestUser(db));
+  deviceId = await registerTestDevice(db, userId);
+  // A plan whose first week starts next Monday-ish relative to "today".
+  const today = todayInZone(prefs.timezone);
+  baseMonday = addDays(today, 2);
+  provider = new FixtureTrainingProvider({ baseMonday });
+});
+
+describe("plan import", () => {
+  it("imports the active plan with native durations and correct states", async () => {
+    const stats = await importFromProvider();
+    expect(stats.created).toBe(11);
+    const rows = await db.select().from(plannedWorkouts).where(eq(plannedWorkouts.userId, userId));
+    const threshold = rows.find((w) => w.title === "Threshold 5x5")!;
+    expect(threshold.sourceEstimatedDurationSeconds).toBe(3240); // COROS-native
+    expect(threshold.category).toBe("quality");
+    expect(threshold.calendarBlockDurationSeconds).toBe(3240 + 25 * 60);
+    expect(threshold.corosSyncState).toBe("synced");
+    expect(threshold.completionState).toBe("scheduled");
+    expect(threshold.calendarSyncState).toBe("pending");
+    const rest = rows.find((w) => w.category === "rest")!;
+    expect(rest.calendarSyncState).toBe("not_created"); // no events for rest days
+
+    // Re-import is idempotent.
+    const again = await importFromProvider();
+    expect(again.created).toBe(0);
+    expect(again.unchanged).toBeGreaterThan(0);
+  });
+
+  it("falls back to calendar-only when writes are unavailable", async () => {
+    await importFromProvider(false);
+    const rows = await db.select().from(plannedWorkouts).where(eq(plannedWorkouts.userId, userId));
+    expect(rows.every((w) => w.corosSyncState === "calendar_only")).toBe(true);
+  });
+});
+
+describe("move → COROS write job → verification", () => {
+  it("runs the full happy path with a verified direct update", async () => {
+    await importFromProvider();
+    const threshold = (
+      await db.select().from(plannedWorkouts).where(eq(plannedWorkouts.title, "Threshold 5x5"))
+    )[0]!;
+    const toDate = addDays(threshold.effectiveDate, 1);
+
+    const outcome = await applyMove(db, {
+      userId,
+      workoutId: threshold.id,
+      toDate,
+      toTime: "07:00",
+      source: "app",
+      corosWritesEnabled: true,
+    });
+    expect(outcome.jobId).toBeTruthy();
+    expect(["syncing", "waiting_for_device"]).toContain(outcome.corosSyncState);
+
+    // Effective date moved immediately; lastVerified stays until verification.
+    let w = (await db.select().from(plannedWorkouts).where(eq(plannedWorkouts.id, threshold.id)))[0]!;
+    expect(w.effectiveDate).toBe(toDate);
+    expect(w.lastVerifiedCorosDate).toBe(threshold.effectiveDate);
+
+    // Bridge claims the job and executes against the (fixture) COROS API.
+    const job = await claimNextJob(db, userId, deviceId);
+    expect(job).not.toBeNull();
+    expect(job!.id).toBe(outcome.jobId);
+
+    const writeResult = await provider.updateScheduledWorkout({
+      sourcePlanId: job!.workout.planId,
+      sourceWorkoutId: job!.workout.sourceWorkoutId,
+      sourceIdInPlan: job!.workout.sourceIdInPlan ?? undefined,
+      fromDate: job!.originalDate,
+      toDate: job!.destinationDate,
+      operationId: job!.id,
+    });
+    expect(writeResult.outcome).toBe("verified");
+
+    const applied = await applyJobResult(
+      db,
+      userId,
+      {
+        jobId: job!.id,
+        deviceId,
+        outcome: "verified",
+        pathUsed: "direct_update",
+        observedDate: writeResult.observedDate,
+        finishedAt: new Date().toISOString(),
+        signature: "test",
+      },
+      prefs,
+    );
+    expect(applied.jobStatus).toBe("verified");
+
+    w = (await db.select().from(plannedWorkouts).where(eq(plannedWorkouts.id, threshold.id)))[0]!;
+    expect(w.corosSyncState).toBe("synced");
+    expect(w.lastVerifiedCorosDate).toBe(toDate);
+  });
+
+  it("is idempotent: a duplicate write reports already_in_desired_state", async () => {
+    await importFromProvider();
+    const w = (
+      await db.select().from(plannedWorkouts).where(eq(plannedWorkouts.title, "Threshold 5x5"))
+    )[0]!;
+    const toDate = addDays(w.effectiveDate, 1);
+    await applyMove(db, { userId, workoutId: w.id, toDate, toTime: "07:00", source: "app", corosWritesEnabled: true });
+    const job = (await claimNextJob(db, userId, deviceId))!;
+
+    await provider.updateScheduledWorkout({
+      sourcePlanId: job.workout.planId,
+      sourceWorkoutId: job.workout.sourceWorkoutId,
+      sourceIdInPlan: job.workout.sourceIdInPlan ?? undefined,
+      fromDate: job.originalDate,
+      toDate: job.destinationDate,
+      operationId: job.id,
+    });
+    // Retry after ambiguous network failure: re-read reveals desired state.
+    const retry = await provider.updateScheduledWorkout({
+      sourcePlanId: job.workout.planId,
+      sourceWorkoutId: job.workout.sourceWorkoutId,
+      sourceIdInPlan: job.workout.sourceIdInPlan ?? undefined,
+      fromDate: job.originalDate,
+      toDate: job.destinationDate,
+      operationId: job.id,
+    });
+    expect(retry.outcome).toBe("already_in_desired_state");
+    expect(provider.writeCount).toBe(1);
+  });
+
+  it("supersedes an older queued job when the user moves again", async () => {
+    await importFromProvider();
+    const w = (
+      await db.select().from(plannedWorkouts).where(eq(plannedWorkouts.title, "Threshold 5x5"))
+    )[0]!;
+    const first = await applyMove(db, { userId, workoutId: w.id, toDate: addDays(w.effectiveDate, 1), toTime: "07:00", source: "app", corosWritesEnabled: true });
+    const second = await applyMove(db, { userId, workoutId: w.id, toDate: addDays(w.effectiveDate, 2), toTime: "07:00", source: "app", corosWritesEnabled: true });
+    const firstJob = (await db.select().from(corosWriteJobs).where(eq(corosWriteJobs.id, first.jobId!)))[0]!;
+    expect(firstJob.status).toBe("superseded");
+    const claimed = await claimNextJob(db, userId, deviceId);
+    expect(claimed!.id).toBe(second.jobId);
+  });
+
+  it("degrades to calendar_only after repeated write failures", async () => {
+    await importFromProvider();
+    const w = (
+      await db.select().from(plannedWorkouts).where(eq(plannedWorkouts.title, "Threshold 5x5"))
+    )[0]!;
+    const move = await applyMove(db, { userId, workoutId: w.id, toDate: addDays(w.effectiveDate, 1), toTime: "07:00", source: "app", corosWritesEnabled: true });
+    for (let attempt = 0; attempt < 5; attempt++) {
+      const job = await claimNextJob(db, userId, deviceId);
+      expect(job).not.toBeNull();
+      await applyJobResult(
+        db,
+        userId,
+        { jobId: job!.id, deviceId, outcome: "write_failed", errorCategory: "network", finishedAt: new Date().toISOString(), signature: "t" },
+        prefs,
+      );
+    }
+    const job = (await db.select().from(corosWriteJobs).where(eq(corosWriteJobs.id, move.jobId!)))[0]!;
+    expect(job.status).toBe("failed");
+    const after = (await db.select().from(plannedWorkouts).where(eq(plannedWorkouts.id, w.id)))[0]!;
+    expect(after.corosSyncState).toBe("calendar_only");
+    // The Run Garden placement is kept.
+    expect(after.effectiveDate).toBe(addDays(w.effectiveDate, 1));
+  });
+
+  it("flags conflicts when upstream changed while a move was pending (rule 6)", async () => {
+    await importFromProvider();
+    const w = (
+      await db.select().from(plannedWorkouts).where(eq(plannedWorkouts.title, "Threshold 5x5"))
+    )[0]!;
+    await applyMove(db, { userId, workoutId: w.id, toDate: addDays(w.effectiveDate, 1), toTime: "07:00", source: "app", corosWritesEnabled: true });
+
+    // Upstream, someone moved it somewhere else entirely.
+    await provider.updateScheduledWorkout({
+      sourcePlanId: "800000000000001234",
+      sourceWorkoutId: w.sourceWorkoutId,
+      sourceIdInPlan: w.sourceIdInPlan ?? undefined,
+      fromDate: w.effectiveDate,
+      toDate: addDays(w.effectiveDate, 3),
+      operationId: "external",
+    });
+    await importFromProvider();
+
+    const after = (await db.select().from(plannedWorkouts).where(eq(plannedWorkouts.id, w.id)))[0]!;
+    expect(after.corosSyncState).toBe("needs_attention");
+    // Both dates preserved for the user to decide.
+    expect(after.effectiveDate).toBe(addDays(w.effectiveDate, 1));
+    expect(after.lastVerifiedCorosDate).toBe(addDays(w.effectiveDate, 3));
+  });
+
+  it("accepts upstream moves cleanly when nothing is pending (rule 5)", async () => {
+    await importFromProvider();
+    const w = (
+      await db.select().from(plannedWorkouts).where(eq(plannedWorkouts.title, "Threshold 5x5"))
+    )[0]!;
+    await provider.updateScheduledWorkout({
+      sourcePlanId: "800000000000001234",
+      sourceWorkoutId: w.sourceWorkoutId,
+      sourceIdInPlan: w.sourceIdInPlan ?? undefined,
+      fromDate: w.effectiveDate,
+      toDate: addDays(w.effectiveDate, 2),
+      operationId: "external",
+    });
+    const stats = await importFromProvider();
+    expect(stats.updatedDates).toBe(1);
+    const after = (await db.select().from(plannedWorkouts).where(eq(plannedWorkouts.id, w.id)))[0]!;
+    expect(after.effectiveDate).toBe(addDays(w.effectiveDate, 2));
+    expect(after.lastVerifiedCorosDate).toBe(addDays(w.effectiveDate, 2));
+    expect(after.corosSyncState).toBe("synced");
+  });
+});
+
+describe("completion: Strava webhook first, COROS merge second", () => {
+  it("provisionally completes from Strava, then upgrades on COROS arrival", async () => {
+    await importFromProvider();
+    const w = (
+      await db.select().from(plannedWorkouts).where(eq(plannedWorkouts.title, "Threshold 5x5"))
+    )[0]!;
+    const startIso = `${w.effectiveDate}T14:02:05Z`;
+
+    // 1. Strava webhook delivers the fast copy.
+    const strava = normalizeStravaActivity(fixtureStravaCompletedThreshold(startIso));
+    const s1 = await ingestActivities(db, { userId, sources: [strava] });
+    expect(s1.provisionalCompletions).toBe(1);
+
+    let updated = (await db.select().from(plannedWorkouts).where(eq(plannedWorkouts.id, w.id)))[0]!;
+    expect(updated.completionState).toBe("provisionally_completed");
+
+    // 2. The richer COROS record arrives and merges (no duplicate).
+    const { item, detail } = fixtureCorosCompletedThreshold(startIso);
+    const coros = normalizeCorosActivity(item, detail);
+    const s2 = await ingestActivities(db, { userId, sources: [coros] });
+    expect(s2.mergedPairs).toBe(1);
+    expect(s2.newActivities).toBe(0);
+
+    const acts = await db.select().from(activities).where(eq(activities.userId, userId));
+    expect(acts).toHaveLength(1); // one physical run, one record
+    expect(acts[0]!.corosActivityId).toBeTruthy();
+    expect(acts[0]!.stravaActivityId).toBeTruthy();
+    expect(acts[0]!.trainingLoad).toBe(82); // COROS authoritative
+    expect(acts[0]!.title).toBe("Morning Threshold"); // Strava enrichment
+
+    updated = (await db.select().from(plannedWorkouts).where(eq(plannedWorkouts.id, w.id)))[0]!;
+    expect(updated.completionState).toBe("completed");
+
+    const matches = await db
+      .select()
+      .from(workoutCompletionMatches)
+      .where(and(eq(workoutCompletionMatches.workoutId, w.id), isNull(workoutCompletionMatches.undoneAt)));
+    expect(matches).toHaveLength(1);
+    expect(matches[0]!.provisional).toBe(false);
+  });
+
+  it("re-delivered webhooks are idempotent", async () => {
+    await importFromProvider();
+    const w = (
+      await db.select().from(plannedWorkouts).where(eq(plannedWorkouts.title, "Threshold 5x5"))
+    )[0]!;
+    const strava = normalizeStravaActivity(fixtureStravaCompletedThreshold(`${w.effectiveDate}T14:02:05Z`));
+    await ingestActivities(db, { userId, sources: [strava] });
+    await ingestActivities(db, { userId, sources: [strava] });
+    const acts = await db.select().from(activities).where(eq(activities.userId, userId));
+    expect(acts).toHaveLength(1);
+  });
+});
+
+describe("garden integration", () => {
+  it("waters the garden when a completed run's day is simulated", async () => {
+    await importFromProvider();
+    const w = (
+      await db.select().from(plannedWorkouts).where(eq(plannedWorkouts.title, "Threshold 5x5"))
+    )[0]!;
+    const startIso = `${w.effectiveDate}T14:02:05Z`;
+    const { item, detail } = fixtureCorosCompletedThreshold(startIso);
+    await ingestActivities(db, {
+      userId,
+      sources: [normalizeCorosActivity(item, detail)],
+    });
+
+    // Simulate past the workout day.
+    const after = new Date(`${addDays(w.effectiveDate, 3)}T12:00:00Z`);
+    const result = await advanceGarden(db, userId, prefs, after);
+    expect(result.simulatedDays).toBeGreaterThan(0);
+
+    const garden = await loadGarden(db, userId);
+    expect(garden).not.toBeNull();
+    // The quality run planted something new beyond the starter meadow.
+    const planted = garden!.plants.filter((p) => p.sourceWorkoutId === w.id);
+    expect(planted.length).toBeGreaterThanOrEqual(1);
+    const events = await db.select().from(schema.gardenEvents).where(eq(schema.gardenEvents.userId, userId));
+    expect(events.some((e) => e.kind === "run_completed" && e.workoutId === w.id)).toBe(true);
+  });
+
+  it("does not punish unresolved workouts before the grace period", async () => {
+    await importFromProvider();
+    const w = (
+      await db.select().from(plannedWorkouts).where(eq(plannedWorkouts.title, "Threshold 5x5"))
+    )[0]!;
+    // The day after the workout: still inside sync grace — day not simulated.
+    const dayAfter = new Date(`${addDays(w.effectiveDate, 1)}T12:00:00Z`);
+    await reconcileCompletionStates(db, userId, prefs, dayAfter);
+    const state = (await db.select().from(plannedWorkouts).where(eq(plannedWorkouts.id, w.id)))[0]!;
+    expect(state.completionState).toBe("scheduled");
+
+    // Two days later without a match → unresolved (asks the user), not missed.
+    const later = new Date(`${addDays(w.effectiveDate, 2)}T12:00:00Z`);
+    await reconcileCompletionStates(db, userId, prefs, later);
+    const state2 = (await db.select().from(plannedWorkouts).where(eq(plannedWorkouts.id, w.id)))[0]!;
+    expect(state2.completionState).toBe("unresolved");
+  });
+});

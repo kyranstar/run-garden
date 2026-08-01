@@ -8,6 +8,14 @@
     "node": ">=20"
   },
   "packageManager": "pnpm@10.32.0",
+  "pnpm": {
+    "onlyBuiltDependencies": [
+      "better-sqlite3",
+      "esbuild",
+      "workerd",
+      "sharp"
+    ]
+  },
   "scripts": {
     "typecheck": "pnpm -r --parallel run typecheck",
     "test": "vitest run",

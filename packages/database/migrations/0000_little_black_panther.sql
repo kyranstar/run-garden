@@ -200,6 +200,8 @@ CREATE TABLE `planned_workouts` (
 	`calendar_sync_state` text DEFAULT 'not_created' NOT NULL,
 	`coros_sync_state` text DEFAULT 'synced' NOT NULL,
 	`completion_state` text DEFAULT 'scheduled' NOT NULL,
+	`missing_reads` integer DEFAULT 0 NOT NULL,
+	`resolution_date` text,
 	`archived_at` text,
 	`created_at` text NOT NULL,
 	`updated_at` text NOT NULL

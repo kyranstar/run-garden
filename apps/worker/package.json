@@ -1,0 +1,37 @@
+{
+  "name": "@rg/worker",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "wrangler dev --port 8787",
+    "deploy": "wrangler deploy",
+    "build": "wrangler deploy --dry-run --outdir dist",
+    "typecheck": "tsc --noEmit",
+    "db:migrate:local": "wrangler d1 migrations apply run-garden-db --local",
+    "db:migrate:remote": "wrangler d1 migrations apply run-garden-db --remote"
+  },
+  "dependencies": {
+    "@anthropic-ai/sdk": "^0.110.0",
+    "@rg/analytics": "workspace:*",
+    "@rg/calendar": "workspace:*",
+    "@rg/database": "workspace:*",
+    "@rg/domain": "workspace:*",
+    "@rg/garden-engine": "workspace:*",
+    "@rg/providers": "workspace:*",
+    "@rg/scheduling": "workspace:*",
+    "drizzle-orm": "^0.38.3",
+    "hono": "^4.6.14",
+    "luxon": "^3.5.0",
+    "zod": "^3.24.1"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "^4.20250620.0",
+    "@types/luxon": "^3.4.2",
+    "better-sqlite3": "^11.7.0",
+    "@types/better-sqlite3": "^7.6.12",
+    "typescript": "^5.7.3",
+    "vitest": "^3.0.0",
+    "wrangler": "^4.0.0"
+  }
+}

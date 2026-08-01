@@ -62,6 +62,10 @@ export const plannedWorkouts = sqliteTable(
     calendarSyncState: text("calendar_sync_state").notNull().default("not_created"),
     corosSyncState: text("coros_sync_state").notNull().default("synced"),
     completionState: text("completion_state").notNull().default("scheduled"),
+    /** Consecutive schedule reads where this workout was absent upstream. */
+    missingReads: integer("missing_reads").notNull().default(0),
+    /** The local date a completion/skip/missed resolution landed (garden input). */
+    resolutionDate: text("resolution_date"),
     archivedAt: text("archived_at"),
     createdAt: text("created_at").notNull(),
     updatedAt: text("updated_at").notNull(),

@@ -10,7 +10,6 @@ import type {
 export function mkWorkout(overrides: Partial<PlannedWorkout> & { id: string }): PlannedWorkout {
   const date = overrides.effectiveDate ?? overrides.originalPlanDate ?? "2026-03-02";
   return {
-    id: overrides.id,
     sourceProvider: "coros",
     sourcePlanId: "plan-1",
     sourceWorkoutId: `sw-${overrides.id}`,
@@ -33,7 +32,6 @@ export function mkWorkout(overrides: Partial<PlannedWorkout> & { id: string }): 
 
 export function mkActivity(overrides: Partial<NormalizedActivity> & { id: string }): NormalizedActivity {
   return {
-    id: overrides.id,
     startTime: "2026-03-02T07:00:00Z",
     sport: "run",
     durationSeconds: 3600,

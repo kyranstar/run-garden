@@ -245,15 +245,20 @@ function treeBirch({ r, v, m, P }: Ctx): ReactNode {
       <path key={`d${i}`} d={`M${n(dx - 1.4)},${n(y)} l2.6,-0.6`} stroke={P.c3} strokeWidth={1.1} strokeLinecap="round" />,
     );
   }
+  // Airy small-leaf clusters hung on the crown tip and the two branch tips.
+  const anchors: Array<[number, number]> = [
+    [0, -h - 5],
+    [-13, -h * 0.94],
+    [12, -h * 0.84],
+  ];
   const clusters: ReactNode[] = [];
-  const count = 5 + Math.floor(r() * 3);
+  const count = 6 + Math.floor(r() * 3);
   for (let i = 0; i < count; i++) {
-    const a = (i / count) * Math.PI * 2 + r() * 0.8;
-    const rad = v(13, 0.3);
-    const cx = Math.cos(a) * rad;
-    const cyC = -h - 6 - Math.abs(Math.sin(a)) * rad * 0.8 + P.droop * 4;
+    const [ax, ay] = anchors[i % anchors.length]!;
+    const cx = ax + (r() - 0.5) * 13;
+    const cyC = ay - r() * 9 + P.droop * 4;
     clusters.push(
-      <circle key={`c${i}`} cx={n(cx)} cy={n(cyC)} r={n(v(6.5, 0.3))} fill={i % 3 === 0 ? shade(P.c1, 1.12) : P.c1} opacity={0.88} />,
+      <circle key={`c${i}`} cx={n(cx)} cy={n(cyC)} r={n(v(5.4, 0.3))} fill={i % 3 === 0 ? shade(P.c1, 1.12) : P.c1} opacity={0.85} />,
     );
   }
   return (

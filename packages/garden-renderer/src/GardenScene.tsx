@@ -248,10 +248,11 @@ function beeShapes(p: string, animate: boolean, plants: GardenPlant[]): ReactNod
     firstById(plants, (pl) => pl.category === "flower" && pl.state !== "dead");
   const r = rng("wildlife:bees");
   const a = flower ? anchorOf(flower) : { x: 520, y: 460, s: 0.9 };
+  const ax = Math.min(940, Math.max(60, a.x));
   const bees: ReactNode[] = [];
   const count = 3;
   for (let i = 0; i < count; i++) {
-    const x = n(a.x + (r() - 0.5) * 64);
+    const x = n(ax + (r() - 0.5) * 64);
     const y = n(a.y - 14 - r() * 28);
     const style: CSSProperties | undefined = animate
       ? { animationDuration: `${n(2.4 + r() * 1.4)}s`, animationDelay: `-${n(r() * 3)}s` }
@@ -277,13 +278,14 @@ function butterflyShapes(p: string, animate: boolean, plants: GardenPlant[]): Re
     firstById(plants, (pl) => pl.category === "flower" && pl.state !== "dead");
   const r = rng("wildlife:butterflies");
   const a = flower ? anchorOf(flower) : { x: 480, y: 440, s: 0.9 };
+  const ax = Math.min(920, Math.max(80, a.x));
   const items: ReactNode[] = [];
   const colors: Array<[string, string]> = [
     ["#c9a3cf", "#b58cbd"],
     ["#e3c46f", "#d0ae57"],
   ];
   for (let i = 0; i < 2; i++) {
-    const x = n(a.x + (r() - 0.5) * 130);
+    const x = n(ax + (r() - 0.5) * 130);
     const y = n(a.y - 34 - r() * 36);
     const [w1, w2] = colors[i]!;
     const style: CSSProperties | undefined = animate ? { animationDelay: `-${n(r() * 4)}s` } : undefined;
