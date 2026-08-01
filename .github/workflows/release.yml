@@ -66,9 +66,11 @@ jobs:
         run: |
           set -uo pipefail
           VERSION="${TAG#v}"
-          TARBALL=$(find . -type f -name '*.app.tar.gz' 2>/dev/null | head -1)
+          # Absolute path — `pnpm --filter … exec` runs in apps/desktop, so a
+          # relative path would resolve wrong there.
+          TARBALL=$(find "$(pwd)" -type f -name '*.app.tar.gz' 2>/dev/null | head -1)
           if [ -z "$TARBALL" ]; then
-            echo "::error::no .app.tar.gz found"; find . -name '*.app.tar.gz*' 2>/dev/null | head; exit 1
+            echo "::error::no .app.tar.gz found"; find "$(pwd)" -name '*.app.tar.gz*' 2>/dev/null | head; exit 1
           fi
           # Re-sign the built tarball so we always have a valid .sig (independent
           # of where/whether tauri-action left one).
