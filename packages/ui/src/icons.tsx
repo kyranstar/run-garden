@@ -47,6 +47,13 @@ export const IconInsights = ({ size }: IconProps) => (
   </svg>
 );
 
+export const IconRuns = ({ size }: IconProps) => (
+  <svg {...base(size)}>
+    <circle cx="12" cy="13" r="8" />
+    <path d="M12 13V9M9.5 3h5" />
+  </svg>
+);
+
 export const IconSettings = ({ size }: IconProps) => (
   <svg {...base(size)}>
     <circle cx="12" cy="12" r="3.2" />

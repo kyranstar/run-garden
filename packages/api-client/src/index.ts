@@ -132,6 +132,20 @@ export interface PlanResponse {
   workouts: WorkoutDto[];
 }
 
+export interface ActivityDto {
+  id: string;
+  startTime: string;
+  startTimeLocal: string | null;
+  date: string;
+  title: string | null;
+  sport: string;
+  durationSeconds: number;
+  distanceMeters: number | null;
+  avgPaceSecPerKm: number | null;
+  /** The planned workout this run completed, or null if it was unplanned. */
+  matched: { workoutId: string; title: string; category: string; date: string } | null;
+}
+
 export interface SettingsResponse {
   prefs: UserPreferences;
   llm: {
@@ -185,8 +199,12 @@ export const api = {
     post("/api/garden/rest-mode", { active, until }),
   insights: () => get<Record<string, unknown>>("/api/insights"),
   dismissInsight: (cardId: string) => post("/api/insights/dismiss", { cardId }),
-  activities: (limit = 30) => get<{ activities: Array<Record<string, unknown>> }>(`/api/activities?limit=${limit}`),
+  activities: (limit = 40) => get<{ activities: ActivityDto[] }>(`/api/activities?limit=${limit}`),
   unmatchedActivities: () => get<{ activities: Array<Record<string, unknown>> }>("/api/activities/unmatched"),
+  backfillRuns: (days = 90) =>
+    post<{ ok: boolean; reason?: string; ingested: number; matched: number }>(
+      `/api/activities/backfill?days=${days}`,
+    ),
   settings: () => get<SettingsResponse>("/api/settings"),
   updateSettings: (partial: Partial<UserPreferences>) => put<{ ok: true; prefs: UserPreferences }>("/api/settings", partial),
   diagnostics: () => get<Record<string, unknown>>("/api/settings/diagnostics"),

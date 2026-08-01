@@ -1,5 +1,5 @@
 import { Hono } from "hono";
-import { and, desc, eq, gte, isNull, lte } from "drizzle-orm";
+import { and, desc, eq, gte, inArray, isNull, lte } from "drizzle-orm";
 import {
   activities,
   activityLaps,
@@ -42,13 +42,16 @@ import {
   pickEvidenceCard,
 } from "@rg/analytics";
 import { SIMULATION_VERSION } from "@rg/garden-engine";
-import { NORMALIZER_VERSION } from "@rg/providers";
+import { NORMALIZER_VERSION, normalizeStravaActivity } from "@rg/providers";
 import { ESTIMATOR_VERSION } from "@rg/scheduling";
 import type { AppContext } from "../auth/middleware.js";
 import { requireUser } from "../auth/middleware.js";
 import { googleCalendarClient } from "../services/google-calendar.js";
 import { loadPreferences, savePreferences, syncCalendar } from "../services/calendar-sync.js";
 import { llmBudgetStatus, LLM_BUDGET } from "../services/llm.js";
+import { stravaClient } from "../services/strava.js";
+import { ingestActivities } from "../services/completion.js";
+import { resimulateFrom } from "../services/garden-sync.js";
 
 // ── Calendar management ──────────────────────────────────────────────────────
 
@@ -130,14 +133,77 @@ export const activityRoutes = new Hono<AppContext>();
 activityRoutes.use("*", requireUser);
 
 activityRoutes.get("/", async (c) => {
-  const rows = await c
-    .get("db")
+  const db = c.get("db");
+  const userId = c.get("userId");
+  const limit = Math.min(100, Math.max(1, Number(c.req.query("limit") ?? 30)));
+  const rows = await db
     .select()
     .from(activities)
-    .where(eq(activities.userId, c.get("userId")))
+    .where(eq(activities.userId, userId))
     .orderBy(desc(activities.startTime))
-    .limit(Number(c.req.query("limit") ?? 30));
-  return c.json({ activities: rows });
+    .limit(limit);
+
+  // Attach the planned workout each activity completed (if any), so the UI can
+  // distinguish plan runs from unplanned ("bonus") runs.
+  const matchIds = rows.map((r) => r.completionMatchId).filter((x): x is string => !!x);
+  const matches = matchIds.length
+    ? await db.select().from(workoutCompletionMatches).where(inArray(workoutCompletionMatches.id, matchIds))
+    : [];
+  const woIds = matches.map((m) => m.workoutId);
+  const wos = woIds.length
+    ? await db.select().from(plannedWorkouts).where(inArray(plannedWorkouts.id, woIds))
+    : [];
+  const woById = new Map(wos.map((w) => [w.id, w]));
+  const matchById = new Map(matches.map((m) => [m.id, m]));
+
+  return c.json({
+    activities: rows.map((a) => {
+      const match = a.completionMatchId ? matchById.get(a.completionMatchId) : undefined;
+      const wo = match ? woById.get(match.workoutId) : undefined;
+      return {
+        id: a.id,
+        startTime: a.startTime,
+        startTimeLocal: a.startTimeLocal,
+        date: (a.startTimeLocal ?? a.startTime).slice(0, 10),
+        title: a.title,
+        sport: a.sport,
+        durationSeconds: a.durationSeconds,
+        distanceMeters: a.distanceMeters,
+        avgPaceSecPerKm: a.avgPaceSecPerKm,
+        matched: wo
+          ? { workoutId: wo.id, title: wo.title, category: wo.category, date: wo.effectiveDate }
+          : null,
+      };
+    }),
+  });
+});
+
+/** Backfill: pull recent Strava run history and ingest + match it. */
+activityRoutes.post("/backfill", async (c) => {
+  const db = c.get("db");
+  const userId = c.get("userId");
+  const client = await stravaClient(db, c.env, userId);
+  if (!client) return c.json({ ok: false, reason: "strava_unavailable", ingested: 0, matched: 0 });
+  const days = Math.min(365, Math.max(1, Number(c.req.query("days") ?? 90)));
+  const afterEpoch = Math.floor(Date.parse(nowInstant()) / 1000) - days * 86400;
+  let sources;
+  try {
+    const raws = await client.listActivities(afterEpoch, 100);
+    sources = raws.map(normalizeStravaActivity).filter((s) => s.sport === "run");
+  } catch {
+    return c.json({ ok: false, reason: "strava_error", ingested: 0, matched: 0 });
+  }
+  if (sources.length === 0) return c.json({ ok: true, ingested: 0, matched: 0 });
+  const stats = await ingestActivities(db, { userId, sources });
+  if (stats.affectedDates.length > 0) {
+    const prefs = await loadPreferences(db, userId);
+    await resimulateFrom(db, userId, stats.affectedDates[0]!, prefs).catch(() => undefined);
+  }
+  return c.json({
+    ok: true,
+    ingested: stats.newActivities + stats.mergedPairs,
+    matched: stats.matchesCreated,
+  });
 });
 
 /** Unmatched run activities that could complete an open workout. */

@@ -1,12 +1,13 @@
 import type { ReactNode } from "react";
 import { NavLink } from "react-router-dom";
 import { PRODUCT_NAME } from "@rg/domain";
-import { IconGarden, IconInsights, IconPlan, IconSettings, IconToday } from "./icons.js";
+import { IconGarden, IconInsights, IconPlan, IconRuns, IconSettings, IconToday } from "./icons.js";
 
 const NAV = [
   { to: "/", label: "Garden", icon: <IconGarden /> },
   { to: "/today", label: "Today", icon: <IconToday /> },
   { to: "/plan", label: "Plan", icon: <IconPlan /> },
+  { to: "/runs", label: "Runs", icon: <IconRuns /> },
   { to: "/insights", label: "Insights", icon: <IconInsights /> },
   { to: "/settings", label: "Settings", icon: <IconSettings /> },
 ];
