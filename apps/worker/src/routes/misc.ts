@@ -33,13 +33,25 @@ import {
   userPreferencesSchema,
 } from "@rg/domain";
 import {
+  computeAcwr,
   computeAerobicEfficiency,
+  computeBalance,
   computeConsistency,
+  computeEasyDiscipline,
+  computeHardDayStacking,
   computeHrDrift,
+  computeHrvTrend,
+  computeRampRate,
   computeRecords,
+  computeRestingHr,
   computeTimeOfDay,
   computeWeeklyTraining,
+  estimateHrMax,
+  interpret,
+  negativeSplit,
   pickEvidenceCard,
+  predictRaces,
+  type InterpretedMetric,
 } from "@rg/analytics";
 import { SIMULATION_VERSION } from "@rg/garden-engine";
 import { NORMALIZER_VERSION, normalizeStravaActivity } from "@rg/providers";
@@ -318,6 +330,144 @@ insightRoutes.get("/", async (c) => {
   });
   const evidence = evidenceRaw && !dismissedIds.has(evidenceRaw.id) ? evidenceRaw : null;
 
+  // ── Interpreted metrics (educational + gentle guidance) ──
+  const hrMax = estimateHrMax(acts as never) ?? 190;
+  const loadDay = new Map<string, number>();
+  const weekSec = new Map<string, number>();
+  const catSec = { easy: 0, quality: 0, long: 0 };
+  const hardDates: string[] = [];
+  const easyRuns: Array<{ avgHr: number }> = [];
+  let bestRun: { distanceMeters: number; durationSeconds: number } | null = null;
+  for (const a of acts) {
+    const day = (a.startTimeLocal ?? a.startTime).slice(0, 10);
+    loadDay.set(day, (loadDay.get(day) ?? 0) + (a.trainingLoad ?? a.durationSeconds / 60));
+    weekSec.set(startOfIsoWeek(day), (weekSec.get(startOfIsoWeek(day)) ?? 0) + a.durationSeconds);
+    const cat = a.completionMatchId ? categoryByMatchId.get(a.completionMatchId) : undefined;
+    if (cat === "quality" || cat === "race") {
+      catSec.quality += a.durationSeconds;
+      hardDates.push(day);
+    } else if (cat === "long") catSec.long += a.durationSeconds;
+    else catSec.easy += a.durationSeconds;
+    if ((cat === "easy" || cat === "recovery" || !cat) && a.avgHeartRate) easyRuns.push({ avgHr: a.avgHeartRate });
+    if ((a.distanceMeters ?? 0) >= 3000 && a.durationSeconds > 0) {
+      const pace = a.durationSeconds / (a.distanceMeters! / 1000);
+      const bestPace = bestRun ? bestRun.durationSeconds / (bestRun.distanceMeters / 1000) : Infinity;
+      if (pace < bestPace) bestRun = { distanceMeters: a.distanceMeters!, durationSeconds: a.durationSeconds };
+    }
+  }
+  const loadsByDay = [...loadDay.entries()].map(([date, load]) => ({ date, load }));
+  const weeklySeconds = [...weekSec.entries()].sort(([x], [y]) => x.localeCompare(y)).map(([, s]) => s);
+
+  const splitRuns: Array<{ firstHalfPace: number; secondHalfPace: number }> = [];
+  for (const a of acts) {
+    const rl = (lapsByActivity.get(a.id) ?? [])
+      .filter((l) => (l.distanceMeters ?? 0) > 0 && l.durationSeconds > 0)
+      .sort((x, y) => x.lapIndex - y.lapIndex);
+    if (rl.length < 2) continue;
+    const totalD = rl.reduce((s, l) => s + (l.distanceMeters ?? 0), 0);
+    let acc = 0;
+    const half: [typeof rl, typeof rl] = [[], []];
+    for (const l of rl) {
+      half[acc < totalD / 2 ? 0 : 1].push(l);
+      acc += l.distanceMeters ?? 0;
+    }
+    const pace = (ls: typeof rl) => {
+      const d = ls.reduce((s, l) => s + (l.distanceMeters ?? 0), 0);
+      const t = ls.reduce((s, l) => s + l.durationSeconds, 0);
+      return d > 0 ? t / (d / 1000) : 0;
+    };
+    const fp = pace(half[0]);
+    const sp = pace(half[1]);
+    if (fp > 0 && sp > 0) splitRuns.push({ firstHalfPace: fp, secondHalfPace: sp });
+  }
+
+  const health = await db
+    .select()
+    .from(dailyHealth)
+    .where(and(eq(dailyHealth.userId, userId), gte(dailyHealth.date, addDays(today, -35))));
+
+  const fmtDur = (sec: number): string => {
+    const h = Math.floor(sec / 3600);
+    const m = Math.floor((sec % 3600) / 60);
+    const s = Math.round(sec % 60);
+    return h > 0
+      ? `${h}:${String(m).padStart(2, "0")}:${String(s).padStart(2, "0")}`
+      : `${m}:${String(s).padStart(2, "0")}`;
+  };
+
+  const interpreted: InterpretedMetric[] = [
+    interpret("acwr", "Training load balance", computeAcwr(loadsByDay, today), (v) => ({
+      value: v.acwr.toFixed(2),
+      band: v.acwr > 1.5 ? "watch" : v.acwr < 0.8 ? "low" : "healthy",
+      range: "sweet spot 0.8–1.3",
+      meaning:
+        "How your recent 7-day training load compares to your month-long average. A spike means you ramped up fast.",
+      suggestion:
+        v.acwr > 1.5
+          ? "A ratio this high tends to precede injury — this week is a big jump on your norm."
+          : v.acwr < 0.8
+            ? "You're below your recent norm — fine for a planned down week."
+            : undefined,
+    })),
+    interpret("ramp", "Weekly ramp", computeRampRate(weeklySeconds), (v) => ({
+      value: `${v.pct > 0 ? "+" : ""}${v.pct}%`,
+      band: v.pct > 10 ? "watch" : "healthy",
+      range: "under ~10%/week",
+      meaning: "How much your running time changed from last week.",
+      suggestion: v.pct > 10 ? "Jumps much above ~10%/week tend to raise injury risk." : undefined,
+    })),
+    interpret("balance", "Easy / hard balance", computeBalance(catSec, acts.length), (v) => ({
+      value: `${v.easyPct}% easy`,
+      band: v.easyPct >= 75 ? "healthy" : "watch",
+      range: "~80% easy",
+      meaning: `Share of running time by type: ${v.easyPct}% easy, ${v.qualityPct}% quality, ${v.longPct}% long.`,
+      suggestion: v.easyPct < 75 ? "The most durable training keeps roughly 80% of time easy." : undefined,
+    })),
+    interpret(
+      "restingHr",
+      "Resting heart rate",
+      computeRestingHr(health.map((h) => ({ date: h.date, restingHeartRate: h.restingHeartRate }))),
+      (v) => ({
+        value: `${v.latest} bpm`,
+        band: v.deltaBpm >= 5 ? "watch" : "healthy",
+        range: `your baseline ${v.baseline} bpm`,
+        meaning:
+          "Your resting heart rate versus your 30-day median. A sustained rise can signal fatigue or illness.",
+        suggestion:
+          v.deltaBpm >= 5 ? `${v.deltaBpm} bpm above baseline — worth an easier day if it persists.` : undefined,
+      }),
+    ),
+    interpret("hrv", "HRV trend", computeHrvTrend(health.map((h) => ({ date: h.date, hrv: h.hrv }))), (v) => ({
+      value: `${v.latest} ms`,
+      band: v.pctVsBaseline <= -10 ? "watch" : "healthy",
+      range: `your baseline ${v.baseline} ms`,
+      meaning: "Your 7-day HRV versus your 30-day baseline. Lower HRV often reflects accumulated stress.",
+      suggestion: v.pctVsBaseline <= -10 ? "A sustained drop suggests you're carrying fatigue." : undefined,
+    })),
+    interpret("hardStack", "Hard-day stacking", computeHardDayStacking(hardDates, today), (v) => ({
+      value: `${v.consecutive} day${v.consecutive === 1 ? "" : "s"}`,
+      band: v.consecutive >= 2 ? "watch" : "healthy",
+      meaning: "Consecutive days ending today with a quality or race effort.",
+      suggestion: v.consecutive >= 2 ? "Back-to-back hard days leave less room to adapt — an easy day helps." : undefined,
+    })),
+    interpret("easyDiscipline", "Easy-run discipline", computeEasyDiscipline(easyRuns, hrMax), (v) => ({
+      value: `${v.inEasyPct}%`,
+      band: v.inEasyPct >= 80 ? "healthy" : "watch",
+      range: "≥80%",
+      meaning: "Share of your easy runs whose heart rate actually stayed easy (zones 1–2).",
+      suggestion: v.inEasyPct < 80 ? "Keeping easy runs genuinely easy builds your aerobic base faster." : undefined,
+    })),
+    interpret("races", "Race predictions", predictRaces(bestRun), (v) => ({
+      value: `5k ${fmtDur(v.k5)} · 10k ${fmtDur(v.k10)} · HM ${fmtDur(v.half)}`,
+      meaning: "A rough estimate scaled from your fastest recent run. Real races depend on training and the day.",
+    })),
+    interpret("splits", "Finish-faster tendency", negativeSplit(splitRuns), (v) => ({
+      value: `${v.negativePct}% of runs`,
+      band: v.negativePct >= 40 ? "healthy" : undefined,
+      meaning: "How often your second half is faster than your first — a sign of good pacing and durability.",
+    })),
+  ];
+
   const reviews = await db
     .select()
     .from(weeklyReviews)
@@ -325,7 +475,7 @@ insightRoutes.get("/", async (c) => {
     .orderBy(desc(weeklyReviews.weekStart))
     .limit(6);
 
-  return c.json({ consistency, weekly, efficiency, drift, timeOfDay, records, evidence, reviews });
+  return c.json({ consistency, weekly, efficiency, drift, timeOfDay, records, evidence, reviews, interpreted });
 });
 
 insightRoutes.post("/dismiss", async (c) => {

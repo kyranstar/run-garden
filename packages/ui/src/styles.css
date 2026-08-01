@@ -687,6 +687,47 @@ button {
   font: inherit;
 }
 
+/* Interpretable insight cards */
+.metric-grid {
+  display: grid;
+  gap: 0.7rem;
+  grid-template-columns: repeat(auto-fill, minmax(230px, 1fr));
+}
+.metric-card {
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: 0.7rem 0.8rem;
+  background: var(--bg-raised);
+}
+.metric-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 0.5rem;
+}
+.metric-title {
+  font-weight: 640;
+  font-size: 0.9rem;
+}
+.metric-value {
+  font-size: 1.15rem;
+  font-weight: 650;
+  margin: 0.2rem 0;
+  font-variant-numeric: tabular-nums;
+}
+.metric-card .muted {
+  font-size: 0.84rem;
+  margin: 0.2rem 0;
+}
+.metric-suggestion {
+  color: var(--green-ink);
+  font-size: 0.82rem;
+  margin: 0.25rem 0;
+}
+.metric-card .faint {
+  font-size: 0.76rem;
+}
+
 /* ── Charts ─────────────────────────────────────────────────────────────── */
 
 .chart-block {

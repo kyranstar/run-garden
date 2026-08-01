@@ -25,6 +25,52 @@ function InsufficientNote({ m }: { m: MetricInsufficient }) {
   );
 }
 
+interface InterpretedMetric {
+  id: string;
+  title: string;
+  status: "ok" | "insufficient_data";
+  value?: string;
+  band?: "low" | "healthy" | "high" | "watch";
+  range?: string;
+  meaning: string;
+  suggestion?: string;
+  sampleNote: string;
+}
+
+function BandPill({ band }: { band?: string }) {
+  if (!band) return null;
+  const label = band === "watch" ? "Watch" : band === "healthy" ? "Healthy" : band === "low" ? "Below norm" : "High";
+  const cls = band === "watch" ? "pill-warn" : band === "healthy" ? "pill-ok" : "pill-neutral";
+  return <span className={`pill ${cls}`}>{label}</span>;
+}
+
+function MetricCard({ m }: { m: InterpretedMetric }) {
+  return (
+    <div className="metric-card">
+      <div className="metric-head">
+        <span className="metric-title">{m.title}</span>
+        {m.status === "ok" ? <BandPill band={m.band} /> : null}
+      </div>
+      {m.status === "ok" ? (
+        <div className="metric-value">
+          {m.value}
+          {m.range ? <span className="faint"> · {m.range}</span> : null}
+        </div>
+      ) : null}
+      <p className="muted">{m.meaning}</p>
+      {m.status === "ok" && m.suggestion ? <p className="metric-suggestion">{m.suggestion}</p> : null}
+      <p className="faint">{m.sampleNote}</p>
+    </div>
+  );
+}
+
+const METRIC_GROUPS: Array<{ title: string; ids: string[] }> = [
+  { title: "Training load & injury risk", ids: ["acwr", "ramp", "balance"] },
+  { title: "Recovery & readiness", ids: ["restingHr", "hrv", "hardStack"] },
+  { title: "Aerobic fitness", ids: ["easyDiscipline"] },
+  { title: "Performance", ids: ["races", "splits"] },
+];
+
 export function InsightsScreen() {
   const insights = useQuery({ queryKey: ["insights"], queryFn: api.insights, staleTime: 60_000 });
 
@@ -54,6 +100,7 @@ export function InsightsScreen() {
   }>;
   const records = (d.records ?? []) as Array<{ id: string; title: string; value: string; achievedOn: string; rule: string }>;
   const reviews = (d.reviews ?? []) as Array<{ weekStart: string; narrative: string | null; facts: Record<string, unknown> }>;
+  const interpreted = (d.interpreted ?? []) as InterpretedMetric[];
 
   const recentWeeks = consistency.weeklyBreakdown.slice(-8);
   const recentTraining = weekly.weeks.slice(-8);
@@ -61,6 +108,20 @@ export function InsightsScreen() {
   return (
     <div className="stack">
       <h1 className="screen-title">Insights</h1>
+
+      {METRIC_GROUPS.map((g) => {
+        const metrics = interpreted.filter((m) => g.ids.includes(m.id));
+        if (metrics.length === 0) return null;
+        return (
+          <Card title={g.title} key={g.title}>
+            <div className="metric-grid">
+              {metrics.map((m) => (
+                <MetricCard key={m.id} m={m} />
+              ))}
+            </div>
+          </Card>
+        );
+      })}
 
       <Card title="Plan consistency · last 12 weeks">
         <div className="row" style={{ gap: "1.4rem", marginBottom: "0.8rem", flexWrap: "wrap" }}>
