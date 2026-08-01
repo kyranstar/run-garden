@@ -224,5 +224,11 @@ export function Sheet({
 }
 
 export function Banner({ kind, children }: { kind: "warn" | "info"; children: ReactNode }) {
-  return <div className={`banner banner-${kind}`}>{children}</div>;
+  // Wrap in a single element so multi-part prose (bold words, links) flows as
+  // text instead of each run becoming its own flex item.
+  return (
+    <div className={`banner banner-${kind}`}>
+      <span>{children}</span>
+    </div>
+  );
 }
