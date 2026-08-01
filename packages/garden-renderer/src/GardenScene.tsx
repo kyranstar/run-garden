@@ -30,7 +30,8 @@ function skyColors(weather: GardenWeatherState): [string, string] {
   switch (weather) {
     case "fresh_rain":
     case "recovery_rain":
-      return ["#9cafbc", "#ccd6cb"];
+      // Fresh, cheerful rain — a clear blue sky clearing to soft green, not grey.
+      return ["#a2d4ea", "#e6f1d8"];
     case "mild_drought":
       return ["#d9caa6", "#ece2c5"];
     case "dry_spell":
@@ -84,7 +85,7 @@ function rainOverlay(p: string, animate: boolean, recovery: boolean): ReactNode 
           y1={n(y)}
           x2={n(x - 4)}
           y2={n(y + 26)}
-          stroke={recovery ? "#7d94a0" : "#6f8496"}
+          stroke={recovery ? "#5fb0d8" : "#57a7d2"}
           strokeWidth={1.2}
           strokeLinecap="round"
           opacity={n(0.24 + r() * 0.2)}

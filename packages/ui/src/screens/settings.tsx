@@ -427,6 +427,54 @@ function DangerSection() {
   );
 }
 
+function GardenSection() {
+  const qc = useQueryClient();
+  const garden = useQuery({ queryKey: ["garden"], queryFn: api.garden });
+  const [untilDate, setUntilDate] = useState("");
+  const rest = (garden.data?.restMode as { active: boolean; until: string | null } | undefined) ?? {
+    active: false,
+    until: null,
+  };
+  const toggle = useMutation({
+    mutationFn: (next: boolean) => api.gardenRestMode(next, next ? untilDate || null : null),
+    onSuccess: () => void qc.invalidateQueries({ queryKey: ["garden"] }),
+  });
+  return (
+    <Card title="Garden rest mode">
+      {rest.active ? (
+        <div className="stack">
+          <Banner kind="info">
+            Rest mode is active — your garden is peacefully dormant and won't decline.
+            {rest.until ? ` Ends ${formatDayShort(rest.until)}.` : ""}
+          </Banner>
+          <button className="btn" disabled={toggle.isPending} onClick={() => toggle.mutate(false)}>
+            End rest mode
+          </button>
+        </div>
+      ) : (
+        <div className="stack">
+          <p className="muted">
+            For injury, illness, travel, or a planned break: pause all garden decline. No reasons
+            asked.
+          </p>
+          <div className="field">
+            <label htmlFor="rest-until">Optional end date</label>
+            <input
+              id="rest-until"
+              type="date"
+              value={untilDate}
+              onChange={(e) => setUntilDate(e.target.value)}
+            />
+          </div>
+          <button className="btn" disabled={toggle.isPending} onClick={() => toggle.mutate(true)}>
+            Start rest mode
+          </button>
+        </div>
+      )}
+    </Card>
+  );
+}
+
 export function SettingsScreen() {
   const settings = useQuery({ queryKey: ["settings"], queryFn: api.settings });
   const me = useQuery({ queryKey: ["me"], queryFn: api.me });
@@ -450,6 +498,7 @@ export function SettingsScreen() {
       <DevicesSection />
       <SchedulingSection prefs={settings.data.prefs} />
       <AiSection prefs={settings.data.prefs} />
+      <GardenSection />
       <DiagnosticsSection />
       <DangerSection />
       <div>

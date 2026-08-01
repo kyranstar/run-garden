@@ -130,9 +130,7 @@ export function WeeklyDurationChart({
           </g>
         );
       })}
-      <text x={M.left - 30} y={M.top + 2} fontSize={9.5} fill="var(--ink-faint)">
-        hours
-      </text>
+      {/* Unit ("h") is on the tick labels already — no separate axis label to overlap. */}
     </svg>
   );
 }

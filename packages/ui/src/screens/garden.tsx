@@ -1,8 +1,13 @@
 import { useMemo, useState } from "react";
 import { Link } from "react-router-dom";
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useQuery } from "@tanstack/react-query";
 import { api } from "@rg/api-client";
-import { GARDEN_CONDITION_LABELS, type GardenConditionWord, type GardenEvent } from "@rg/domain";
+import {
+  GARDEN_CONDITION_LABELS,
+  type GardenConditionWord,
+  type GardenEvent,
+  type GardenWeatherState,
+} from "@rg/domain";
 import type { GardenSnapshot } from "@rg/garden-engine";
 import { SPECIES_BY_ID } from "@rg/garden-engine";
 import { GardenScene, describePlant } from "@rg/garden-renderer";
@@ -15,21 +20,27 @@ import {
   Sheet,
   Spinner,
 } from "../components.js";
+import { EvidenceCard, NextWorkout, Readiness, SyncStatusLine, UnresolvedCard } from "./today.js";
 
 function usePrefersReducedMotion(): boolean {
   return useMemo(
-    () => typeof window !== "undefined" && window.matchMedia("(prefers-reduced-motion: reduce)").matches,
+    () =>
+      typeof window !== "undefined" && window.matchMedia("(prefers-reduced-motion: reduce)").matches,
     [],
   );
+}
+
+function cap(s: string): string {
+  return s.charAt(0).toUpperCase() + s.slice(1);
 }
 
 function eventSentence(e: GardenEvent): string | null {
   switch (e.kind) {
     case "run_completed": {
       if (e.detail === "unplanned") return "An extra run gave the garden a light watering.";
-      const cat = e.workoutCategory ?? "";
-      const article = /^[aeiou]/i.test(cat) ? "An" : "A";
-      return cat ? `${article} ${cat} run watered the garden.` : "A run watered the garden.";
+      const catg = e.workoutCategory ?? "";
+      const article = /^[aeiou]/i.test(catg) ? "An" : "A";
+      return catg ? `${article} ${catg} run watered the garden.` : "A run watered the garden.";
     }
     case "plant_added": {
       const name = e.speciesId ? (SPECIES_BY_ID.get(e.speciesId)?.name ?? "plant") : "plant";
@@ -60,57 +71,53 @@ function eventSentence(e: GardenEvent): string | null {
   }
 }
 
-function cap(s: string): string {
-  return s.charAt(0).toUpperCase() + s.slice(1);
-}
+const WEATHER_LABEL: Record<GardenWeatherState, string> = {
+  fresh_rain: "fresh rain",
+  recovery_rain: "recovery rain",
+  soft_sun: "soft sun",
+  clear_sun: "clear sun",
+  seasonal_breeze: "a seasonal breeze",
+  light_clouds: "light clouds",
+  dry_spell: "a dry spell",
+  mild_drought: "drought",
+};
 
-function RestModeControls({ active, until }: { active: boolean; until: string | null }) {
-  const qc = useQueryClient();
-  const [untilDate, setUntilDate] = useState<string>("");
-  const toggle = useMutation({
-    mutationFn: (next: boolean) => api.gardenRestMode(next, next ? untilDate || null : null),
-    onSuccess: () => void qc.invalidateQueries({ queryKey: ["garden"] }),
-  });
-  return (
-    <Card title="Garden rest mode">
-      {active ? (
-        <div className="stack">
-          <Banner kind="info">
-            Garden rest mode is active. Your garden is peacefully dormant and will not decline.
-            {until ? ` Ends ${formatDayLong(until)}.` : ""}
-          </Banner>
-          <button className="btn" disabled={toggle.isPending} onClick={() => toggle.mutate(false)}>
-            End rest mode
-          </button>
-        </div>
-      ) : (
-        <div className="stack">
-          <p className="muted">
-            For injury, illness, travel, or a planned break: pause all garden decline. No reasons
-            asked.
-          </p>
-          <div className="field">
-            <label htmlFor="rest-until">Optional end date</label>
-            <input
-              id="rest-until"
-              type="date"
-              value={untilDate}
-              onChange={(e) => setUntilDate(e.target.value)}
-            />
-          </div>
-          <button className="btn" disabled={toggle.isPending} onClick={() => toggle.mutate(true)}>
-            Start rest mode
-          </button>
-        </div>
-      )}
-    </Card>
-  );
+const WEATHER_WHY: Record<GardenWeatherState, string> = {
+  fresh_rain: "a planned run landed today, so rain is watering everything.",
+  recovery_rain: "you're back after a dry stretch — recovery rain is restoring the soil.",
+  soft_sun: "a rest day, so gentle sun while the soil recovers.",
+  clear_sun: "warm and steady between runs.",
+  seasonal_breeze: "calm and seasonal — all is well.",
+  light_clouds: "a day or two without a run, so clouds are gathering.",
+  dry_spell: "a few days without a run, so the air is drying out.",
+  mild_drought: "about two weeks without a run, so the garden is in drought.",
+};
+
+function conditionStory(
+  condition: GardenConditionWord,
+  snapshot: GardenSnapshot,
+  plants: number,
+  speciesCount: number,
+): string {
+  const days = snapshot.state.daysSinceCompletedRun;
+  const base: Record<GardenConditionWord, string> = {
+    flourishing: "Your running has been steady, so it's lush and flowering.",
+    well_watered: "Recent runs are keeping the soil moist and growing.",
+    growing: "It's coming along — keep running to fill it in.",
+    a_little_dry: `It's been ${days} day${days === 1 ? "" : "s"} since a run, so it's drying out — a run brings the rain.`,
+    in_drought: `${days} days without a run, so it's in drought. Your next run starts the recovery.`,
+    recovering: "You're back — it's drinking in recovery rain.",
+    dormant: "Rest mode is on, so it's peacefully dormant and won't decline.",
+  };
+  const counts = `${plants} plant${plants === 1 ? "" : "s"}${speciesCount ? `, ${speciesCount} species` : ""}.`;
+  return `${base[condition] ?? ""} ${counts}`;
 }
 
 export function GardenScreen() {
   const garden = useQuery({ queryKey: ["garden"], queryFn: api.garden });
   const today = useQuery({ queryKey: ["today"], queryFn: api.today });
   const [selectedPlantId, setSelectedPlantId] = useState<string | null>(null);
+  const [showWeather, setShowWeather] = useState(false);
   const reducedMotion = usePrefersReducedMotion();
 
   if (garden.isLoading) return <Spinner label="Loading the garden" />;
@@ -122,52 +129,91 @@ export function GardenScreen() {
   const species = (garden.data.species as Array<Record<string, unknown>>) ?? [];
   const restMode = garden.data.restMode as { active: boolean; until: string | null };
   const selectedPlant = snapshot.plants.find((p) => p.id === selectedPlantId);
+  const livingPlants = snapshot.plants.filter((p) => p.state !== "dead").length;
+  const weather = snapshot.state.weatherState;
 
   const historyItems = events
     .map((e) => ({ e, text: eventSentence(e) }))
     .filter((x): x is { e: GardenEvent; text: string } => !!x.text)
-    .slice(0, 14);
+    .slice(0, 12);
 
-  const recentText = historyItems[0]?.text ?? "The garden is waiting for its first run.";
+  const d = today.data;
 
   return (
-    <div className="garden-layout">
-      <div className="stack">
-        <div className="row-between">
-          <h1 className="garden-condition">{GARDEN_CONDITION_LABELS[condition]}</h1>
-        </div>
-        <div className="garden-scene-wrap">
-          <GardenScene
-            snapshot={snapshot}
-            reducedMotion={reducedMotion}
-            selectedPlantId={selectedPlantId}
-            onSelectPlant={setSelectedPlantId}
-          />
-        </div>
-        <p className="muted">{recentText}</p>
-        {today.data && today.data.unresolved.length > 0 ? (
+    <div className="garden-home">
+      <h1 className="visually-hidden">Garden</h1>
+
+      {/* The garden itself — big and central. */}
+      <div className="garden-scene-wrap garden-scene-big">
+        <GardenScene
+          snapshot={snapshot}
+          reducedMotion={reducedMotion}
+          selectedPlantId={selectedPlantId}
+          onSelectPlant={setSelectedPlantId}
+        />
+      </div>
+
+      {/* What the garden is telling you, and why it looks this way. */}
+      <div className="garden-readout">
+        <h2 className="garden-condition">{GARDEN_CONDITION_LABELS[condition]}</h2>
+        <p className="muted">{conditionStory(condition, snapshot, livingPlants, species.length)}</p>
+        <p className="faint">
+          Weather right now is <strong>{WEATHER_LABEL[weather]}</strong> — {WEATHER_WHY[weather]}{" "}
+          <button type="button" className="linklike" onClick={() => setShowWeather((v) => !v)}>
+            {showWeather ? "Hide" : "How the garden works"}
+          </button>
+        </p>
+        {showWeather ? (
           <Banner kind="info">
-            {today.data.unresolved.length === 1
-              ? "A run is waiting to be confirmed. "
-              : `${today.data.unresolved.length} runs are waiting to be confirmed. `}
-            <Link to="/today">Go to Today</Link>
-          </Banner>
-        ) : today.data && today.data.needsAttention.length > 0 ? (
-          <Banner kind="warn">
-            {today.data.needsAttention.length === 1
-              ? "A workout needs attention. "
-              : `${today.data.needsAttention.length} workouts need attention. `}
-            <Link to="/plan">Review</Link>
+            Completing a planned run brings <strong>rain</strong>, which waters the garden and grows
+            new plants; a rest day brings gentle <strong>sun</strong>. Go a few days without running
+            and clouds gather, then a dry spell, then <strong>drought</strong> after about two weeks —
+            your next run turns it back to recovery rain. Consistency unlocks new species; the same
+            running history always grows the exact same garden. Tap any plant to see what it came
+            from.
           </Banner>
         ) : null}
         {restMode.active ? (
-          <Banner kind="info">Garden rest mode is active — nothing declines while you're away.</Banner>
+          <Banner kind="info">Rest mode is on — nothing declines while you're away.</Banner>
         ) : null}
       </div>
 
-      <div className="stack">
-        <RestModeControls active={restMode.active} until={restMode.until} />
-        <Card title="Recent garden history">
+      {/* Today's actionable elements (formerly the Today page). */}
+      {d?.nextWorkout ? (
+        <NextWorkout w={d.nextWorkout} today={d.today} />
+      ) : d ? (
+        <EmptyState art="🌿" title="No active COROS training plan was found">
+          Start a plan in COROS, then refresh from the desktop app.
+        </EmptyState>
+      ) : null}
+      {d ? (
+        <div aria-live="polite">
+          <SyncStatusLine sync={d.sync} />
+        </div>
+      ) : null}
+      {d?.sync.stravaStatus === "error" ? (
+        <Banner kind="info">
+          Strava access has stopped (its subscription may have lapsed). Completed runs still sync from
+          COROS — just a little slower. <Link to="/settings">Reconnect Strava</Link> when you can.
+        </Banner>
+      ) : null}
+      {d && d.needsAttention.length > 0 ? (
+        <Banner kind="warn">
+          {d.needsAttention.length === 1
+            ? `“${d.needsAttention[0]!.title}” needs attention — COROS and Run Garden disagree.`
+            : `${d.needsAttention.length} workouts need attention.`}{" "}
+          <Link to="/plan">Review</Link>
+        </Banner>
+      ) : null}
+      {d?.unresolved.map((w) => (
+        <UnresolvedCard key={w.id} w={w} />
+      ))}
+      {d ? <Readiness readiness={d.readiness} /> : null}
+      <EvidenceCard />
+
+      {/* The event log — trace what happened, and your species. */}
+      <div className="garden-lower">
+        <Card title="Garden log">
           {historyItems.length === 0 ? (
             <p className="muted">Complete your first planned run to bring the rain.</p>
           ) : (
@@ -183,7 +229,9 @@ export function GardenScreen() {
         </Card>
         <Card title={`Species collection (${species.length})`}>
           {species.length === 0 ? (
-            <p className="muted">Species unlock as you train — hard runs bring flowers, long runs bring trees.</p>
+            <p className="muted">
+              Species unlock as you train — hard runs bring flowers, long runs bring trees.
+            </p>
           ) : (
             <div className="species-grid">
               {species.map((s) => (
@@ -217,7 +265,13 @@ export function GardenScreen() {
             ) : null}
             {selectedPlant.state === "dead" ? (
               <p className="muted">
-                It has died back, but stays as {selectedPlant.habitatRole === "perch" ? "a perch for birds" : selectedPlant.habitatRole === "nurse_log" ? "a nurse log for new growth" : "habitat for mushrooms"}.
+                It has died back, but stays as{" "}
+                {selectedPlant.habitatRole === "perch"
+                  ? "a perch for birds"
+                  : selectedPlant.habitatRole === "nurse_log"
+                    ? "a nurse log for new growth"
+                    : "habitat for mushrooms"}
+                .
               </p>
             ) : null}
           </div>

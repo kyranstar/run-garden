@@ -12,6 +12,7 @@ import {
   CorosPill,
   EmptyState,
   formatDayLong,
+  formatDayShort,
   formatMinutes,
   formatTime,
   relativeDay,
@@ -20,7 +21,7 @@ import {
 import { MoveSheet } from "./move-sheet.js";
 import { MatchSheet } from "./match-sheet.js";
 
-function SyncStatusLine({ sync }: { sync: TodayResponse["sync"] }) {
+export function SyncStatusLine({ sync }: { sync: TodayResponse["sync"] }) {
   if (!sync.calendarConnected) {
     return <Banner kind="info">Your training plan is safe, but Calendar mirroring is paused.</Banner>;
   }
@@ -48,7 +49,7 @@ function SyncStatusLine({ sync }: { sync: TodayResponse["sync"] }) {
   return <p className="muted">Calendar and COROS are synced.</p>;
 }
 
-function NextWorkout({ w, today }: { w: WorkoutDto; today: string }) {
+export function NextWorkout({ w, today }: { w: WorkoutDto; today: string }) {
   const [moving, setMoving] = useState(false);
   const qc = useQueryClient();
   const retry = useMutation({
@@ -58,7 +59,7 @@ function NextWorkout({ w, today }: { w: WorkoutDto; today: string }) {
 
   if (w.category === "rest") {
     return (
-      <Card title="Next up">
+      <Card title="Next up" className="card-next">
         <h2 className="hero-title">Rest day</h2>
         <p className="hero-when">{relativeDay(w.effectiveDate, today)}</p>
         <p className="muted" style={{ marginTop: "0.5rem" }}>
@@ -69,7 +70,7 @@ function NextWorkout({ w, today }: { w: WorkoutDto; today: string }) {
   }
 
   return (
-    <Card title="Next workout">
+    <Card title="Next workout" className="card-next">
       <div className="row" style={{ marginBottom: "0.2rem" }}>
         <CategoryDot category={w.category} />
         <span className="faint">{CATEGORY_LABELS[w.category] ?? w.category}</span>
@@ -108,7 +109,7 @@ function NextWorkout({ w, today }: { w: WorkoutDto; today: string }) {
   );
 }
 
-function UnresolvedCard({ w }: { w: WorkoutDto }) {
+export function UnresolvedCard({ w }: { w: WorkoutDto }) {
   const qc = useQueryClient();
   const [matching, setMatching] = useState(false);
   const [moving, setMoving] = useState(false);
@@ -120,7 +121,7 @@ function UnresolvedCard({ w }: { w: WorkoutDto }) {
   const defer = useMutation({ mutationFn: () => api.defer(w.id), onSuccess: invalidate });
 
   return (
-    <Card title="Did this run happen?">
+    <Card title="Did this run happen?" className="card-prompt">
       <div className="row" style={{ marginBottom: "0.4rem" }}>
         <CategoryDot category={w.category} />
         <strong>{w.title}</strong>
@@ -149,7 +150,7 @@ function UnresolvedCard({ w }: { w: WorkoutDto }) {
   );
 }
 
-function Readiness({ readiness }: { readiness: TodayResponse["readiness"] }) {
+export function Readiness({ readiness }: { readiness: TodayResponse["readiness"] }) {
   if (!readiness.latest || readiness.sampleDays < 3) return null;
   const l = readiness.latest;
   const b = readiness.baseline;
@@ -170,6 +171,7 @@ function Readiness({ readiness }: { readiness: TodayResponse["readiness"] }) {
   }
   if (l.recoveryScore != null) lines.push(`COROS recovery: ${Math.round(l.recoveryScore)}%.`);
   if (lines.length === 0) lines.push("Recovery signals look typical for you.");
+  const asOf = (l as { date?: string }).date;
   return (
     <Card title="Readiness">
       {lines.slice(0, 3).map((line) => (
@@ -178,13 +180,14 @@ function Readiness({ readiness }: { readiness: TodayResponse["readiness"] }) {
         </p>
       ))}
       <p className="faint" style={{ marginTop: "0.4rem" }}>
-        Context, not instructions — you know your body best.
+        {asOf ? `From COROS, as of ${formatDayShort(asOf)}. ` : ""}Context, not instructions — you know
+        your body best.
       </p>
     </Card>
   );
 }
 
-function EvidenceCard() {
+export function EvidenceCard() {
   const qc = useQueryClient();
   const insights = useQuery({
     queryKey: ["insights"],

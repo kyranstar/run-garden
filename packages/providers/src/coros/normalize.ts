@@ -240,8 +240,11 @@ export function normalizeCorosActivity(
   const summary = detail?.summary;
   const start = summary?.startTimestamp ?? item.startTime ?? 0;
   const offsetMin = tzOffsetMinutes(summary?.timezone ?? item.startTimezone);
-  const durationSeconds = summary?.workoutTime ?? item.workoutTime ?? item.totalTime ?? 0;
-  const elapsedSeconds = summary?.totalTime ?? item.totalTime;
+  // COROS reports times in centiseconds (matching its distance/lap fields), so
+  // divide by 100 to get seconds.
+  const durationSeconds = (summary?.workoutTime ?? item.workoutTime ?? item.totalTime ?? 0) / 100;
+  const rawElapsed = summary?.totalTime ?? item.totalTime;
+  const elapsedSeconds = rawElapsed != null ? rawElapsed / 100 : undefined;
 
   // Detail distances are centimetres [verified]; list distances are ambiguous —
   // treat implausibly large run distances as centimetres.

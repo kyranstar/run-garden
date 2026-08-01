@@ -13,8 +13,9 @@ import {
   Spinner,
 } from "../components.js";
 
-function km(m: number | null): string {
-  return m ? `${(m / 1000).toFixed(1)} km` : "";
+function dist(m: number | null): string {
+  if (!m) return "";
+  return `${(m / 1000).toFixed(1)} km · ${(m / 1609.344).toFixed(1)} mi`;
 }
 function pace(secPerKm: number | null): string {
   if (!secPerKm) return "";
@@ -169,7 +170,7 @@ export function RunsScreen() {
               <div className="meta">
                 <span>{formatDayLong(a.date)}</span>
                 <span>{formatMinutes(a.durationSeconds)}</span>
-                {a.distanceMeters ? <span>{km(a.distanceMeters)}</span> : null}
+                {a.distanceMeters ? <span>{dist(a.distanceMeters)}</span> : null}
                 {a.avgPaceSecPerKm ? <span>{pace(a.avgPaceSecPerKm)}</span> : null}
               </div>
             </div>

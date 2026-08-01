@@ -20,8 +20,8 @@ export function fixtureCorosCompletedThreshold(
     endTime: startUnix + 3312,
     startTimezone: -28, // UTC-7 (PDT) in 15-minute units
     distance: 9860,
-    totalTime: 3312,
-    workoutTime: 3255,
+    totalTime: 331200,
+    workoutTime: 325500,
     trainingLoad: 82,
     avgHr: 158,
     maxHr: 176,
@@ -32,8 +32,8 @@ export function fixtureCorosCompletedThreshold(
   const detail: RawCorosActivityDetail = {
     summary: {
       distance: 986000, // centimetres
-      totalTime: 3312,
-      workoutTime: 3255,
+      totalTime: 331200, // centiseconds
+      workoutTime: 325500, // centiseconds
       avgHr: 158,
       maxHr: 176,
       avgPace: 330,

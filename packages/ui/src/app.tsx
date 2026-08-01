@@ -4,7 +4,6 @@ import { QueryClient, QueryClientProvider, useQuery } from "@tanstack/react-quer
 import { api, ApiError } from "@rg/api-client";
 import { AppShell } from "./shell.js";
 import { Spinner } from "./components.js";
-import { TodayScreen } from "./screens/today.js";
 import { PlanScreen } from "./screens/plan.js";
 import { RunsScreen } from "./screens/runs.js";
 import { GardenScreen } from "./screens/garden.js";
@@ -46,7 +45,6 @@ function AuthedApp() {
     >
       <Routes>
         <Route path="/" element={<GardenScreen />} />
-        <Route path="/today" element={<TodayScreen />} />
         <Route path="/plan" element={<PlanScreen />} />
         <Route path="/runs" element={<RunsScreen />} />
         <Route path="/garden" element={<GardenScreen />} />

@@ -627,6 +627,66 @@ button {
   }
 }
 
+/* Garden home: big central scene, then Today's content, then log + species. */
+.garden-home {
+  display: flex;
+  flex-direction: column;
+  gap: 0.9rem;
+}
+.garden-scene-big {
+  width: 100%;
+  max-width: 900px;
+  margin: 0 auto;
+}
+.garden-readout {
+  text-align: center;
+  max-width: 660px;
+  margin: 0 auto 0.3rem;
+}
+.garden-readout .garden-condition {
+  margin-bottom: 0.15rem;
+}
+.garden-readout .banner {
+  text-align: left;
+  margin-top: 0.6rem;
+}
+.garden-lower {
+  display: grid;
+  gap: 0.9rem;
+}
+@media (min-width: 900px) {
+  .garden-lower {
+    grid-template-columns: 1fr 1fr;
+    align-items: start;
+  }
+}
+/* The next workout should feel special; the "did this run happen?" prompt should not. */
+.card-next {
+  border-color: var(--green);
+  box-shadow: inset 0 0 0 1px var(--green);
+  background: var(--green-soft);
+}
+.card-next .card-title {
+  color: var(--green-ink);
+}
+.card-next .hero-title {
+  color: var(--green-ink);
+}
+.card-prompt {
+  border-color: var(--warn);
+  background: var(--warn-soft);
+}
+.linklike {
+  background: none;
+  border: none;
+  padding: 0;
+  margin: 0;
+  color: var(--green-ink);
+  text-decoration: underline;
+  cursor: pointer;
+  font: inherit;
+}
+
 /* ── Charts ─────────────────────────────────────────────────────────────── */
 
 .chart-block {
