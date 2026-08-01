@@ -35,7 +35,15 @@ function SyncStatusLine({ sync }: { sync: TodayResponse["sync"] }) {
     return <p className="muted">Calendar updated · Syncing {sync.pendingCorosJobs} change{sync.pendingCorosJobs > 1 ? "s" : ""} to COROS.</p>;
   }
   if (!sync.deviceRegistered || !sync.corosWritesEnabled) {
-    return <p className="muted">Calendar synced · COROS updates are in Calendar-only mode.</p>;
+    return (
+      <p
+        className="muted"
+        title="Run Garden mirrors your plan to Google Calendar. It isn't auto-updating your COROS watch — you'd move workouts on the watch yourself."
+      >
+        Your Google Calendar is synced. Reschedules stay in Calendar — your COROS watch isn't updated
+        automatically.
+      </p>
+    );
   }
   return <p className="muted">Calendar and COROS are synced.</p>;
 }
@@ -91,7 +99,7 @@ function NextWorkout({ w, today }: { w: WorkoutDto; today: string }) {
         </button>
         {w.corosSyncState === "needs_attention" || w.corosSyncState === "calendar_only" ? (
           <button className="btn" disabled={retry.isPending} onClick={() => retry.mutate()}>
-            Retry COROS sync
+            Sync to COROS
           </button>
         ) : null}
       </div>

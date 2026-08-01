@@ -122,7 +122,7 @@ function WorkoutDetail({ w, onClose }: { w: WorkoutDto; onClose: () => void }) {
           ) : null}
           {w.corosSyncState === "needs_attention" || w.corosSyncState === "calendar_only" ? (
             <button className="btn" disabled={retry.isPending} onClick={() => retry.mutate()}>
-              Retry COROS sync
+              Sync to COROS
             </button>
           ) : null}
           {w.calendarSyncState === "user_deleted" ? (

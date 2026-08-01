@@ -65,19 +65,24 @@ export function relativeDay(date: string, today: string): string {
 
 // ── Status pills ────────────────────────────────────────────────────────────
 
-const COROS_PILL: Record<CorosSyncState, { label: string; cls: string; icon: ReactNode }> = {
-  synced: { label: "Synced", cls: "pill-ok", icon: <IconCheck /> },
-  syncing: { label: "Syncing", cls: "pill-progress", icon: <IconSync /> },
-  waiting_for_device: { label: "Waiting for Mac", cls: "pill-progress", icon: <IconLaptop /> },
-  calendar_only: { label: "Calendar only", cls: "pill-neutral", icon: <IconCalendarOnly /> },
-  needs_attention: { label: "Needs attention", cls: "pill-warn", icon: <IconAlert /> },
+const COROS_PILL: Record<CorosSyncState, { label: string; cls: string; icon: ReactNode; title: string }> = {
+  synced: { label: "Synced", cls: "pill-ok", icon: <IconCheck />, title: "This workout's date matches your COROS watch." },
+  syncing: { label: "Syncing", cls: "pill-progress", icon: <IconSync />, title: "Sending this change to your COROS watch." },
+  waiting_for_device: { label: "Waiting for Mac", cls: "pill-progress", icon: <IconLaptop />, title: "Queued — this will reach your COROS watch when the Mac companion app is running." },
+  calendar_only: {
+    label: "Calendar only",
+    cls: "pill-neutral",
+    icon: <IconCalendarOnly />,
+    title: "This change is in your Google Calendar. Your COROS watch plan isn't updated automatically — move it on the watch yourself.",
+  },
+  needs_attention: { label: "Needs attention", cls: "pill-warn", icon: <IconAlert />, title: "COROS and Run Garden disagree on this workout's date." },
 };
 
 export function CorosPill({ state, hideWhenHealthy }: { state: CorosSyncState; hideWhenHealthy?: boolean }) {
   if (hideWhenHealthy && state === "synced") return null;
   const p = COROS_PILL[state];
   return (
-    <span className={`pill ${p.cls}`}>
+    <span className={`pill ${p.cls}`} title={p.title}>
       {p.icon}
       {p.label}
     </span>

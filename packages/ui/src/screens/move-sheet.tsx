@@ -42,7 +42,7 @@ export function MoveSheet({
             : res.corosSyncState === "waiting_for_device"
               ? "Waiting for Mac"
               : res.corosSyncState === "calendar_only"
-                ? "Calendar only"
+                ? "In Calendar (watch not auto-updated)"
                 : "COROS needs attention";
       setResult(`Moved to ${formatDayShort(vars.date)} · ${stateText}`);
       void qc.invalidateQueries({ queryKey: ["today"] });

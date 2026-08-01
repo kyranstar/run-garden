@@ -154,7 +154,8 @@ function CorosStep({ onNext, onBack }: { onNext: () => void; onBack: () => void 
         <li>Run Garden reads your active plan and reports what it can do</li>
       </ul>
       <p className="faint" style={{ marginTop: "0.7rem" }}>
-        If automatic COROS schedule updates aren't available, Calendar-only mode still works fully.
+        Even if Run Garden can't update your COROS watch automatically, it still mirrors your whole
+        plan to Google Calendar — you'd just move workouts on the watch yourself.
       </p>
       <StepNav onNext={onNext} onBack={onBack} />
     </Card>

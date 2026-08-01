@@ -1,4 +1,5 @@
 import { useMemo, useState } from "react";
+import { Link } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { api } from "@rg/api-client";
 import { GARDEN_CONDITION_LABELS, type GardenConditionWord, type GardenEvent } from "@rg/domain";
@@ -108,6 +109,7 @@ function RestModeControls({ active, until }: { active: boolean; until: string | 
 
 export function GardenScreen() {
   const garden = useQuery({ queryKey: ["garden"], queryFn: api.garden });
+  const today = useQuery({ queryKey: ["today"], queryFn: api.today });
   const [selectedPlantId, setSelectedPlantId] = useState<string | null>(null);
   const reducedMotion = usePrefersReducedMotion();
 
@@ -143,6 +145,21 @@ export function GardenScreen() {
           />
         </div>
         <p className="muted">{recentText}</p>
+        {today.data && today.data.unresolved.length > 0 ? (
+          <Banner kind="info">
+            {today.data.unresolved.length === 1
+              ? "A run is waiting to be confirmed. "
+              : `${today.data.unresolved.length} runs are waiting to be confirmed. `}
+            <Link to="/today">Go to Today</Link>
+          </Banner>
+        ) : today.data && today.data.needsAttention.length > 0 ? (
+          <Banner kind="warn">
+            {today.data.needsAttention.length === 1
+              ? "A workout needs attention. "
+              : `${today.data.needsAttention.length} workouts need attention. `}
+            <Link to="/plan">Review</Link>
+          </Banner>
+        ) : null}
         {restMode.active ? (
           <Banner kind="info">Garden rest mode is active — nothing declines while you're away.</Banner>
         ) : null}

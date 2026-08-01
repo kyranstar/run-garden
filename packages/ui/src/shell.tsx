@@ -4,9 +4,9 @@ import { PRODUCT_NAME } from "@rg/domain";
 import { IconGarden, IconInsights, IconPlan, IconSettings, IconToday } from "./icons.js";
 
 const NAV = [
-  { to: "/", label: "Today", icon: <IconToday /> },
+  { to: "/", label: "Garden", icon: <IconGarden /> },
+  { to: "/today", label: "Today", icon: <IconToday /> },
   { to: "/plan", label: "Plan", icon: <IconPlan /> },
-  { to: "/garden", label: "Garden", icon: <IconGarden /> },
   { to: "/insights", label: "Insights", icon: <IconInsights /> },
   { to: "/settings", label: "Settings", icon: <IconSettings /> },
 ];

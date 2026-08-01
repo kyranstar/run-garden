@@ -44,7 +44,8 @@ function AuthedApp() {
       footer={<span>{me.data?.email}</span>}
     >
       <Routes>
-        <Route path="/" element={<TodayScreen />} />
+        <Route path="/" element={<GardenScreen />} />
+        <Route path="/today" element={<TodayScreen />} />
         <Route path="/plan" element={<PlanScreen />} />
         <Route path="/garden" element={<GardenScreen />} />
         <Route path="/insights" element={<InsightsScreen />} />
