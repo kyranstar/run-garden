@@ -26,6 +26,7 @@ pub struct BridgeInner {
     pub active_plan_name: Option<String>,
     pub upcoming_workout_count: u32,
     pub device_id: Option<String>,
+    pub cloud_connected: bool,
 }
 
 #[derive(Clone)]

@@ -6,9 +6,10 @@ import { desktop, isDesktop, type BridgeState } from "./tauri.js";
 
 const queryClient = new QueryClient();
 
-// The cloud URL the desktop app connects to. In a packaged build this is baked
-// in via the Tauri config; for dev it points at the local worker.
-const CLOUD_URL = import.meta.env.VITE_CLOUD_URL ?? "http://localhost:8787";
+// The cloud URL the desktop app connects to. Override with VITE_CLOUD_URL at
+// build time (e.g. for local dev against http://localhost:8787).
+const CLOUD_URL =
+  import.meta.env.VITE_CLOUD_URL ?? "https://run-garden-api.kyranadams.workers.dev";
 
 function BridgeStatusRow({ state }: { state: BridgeState }) {
   const dot = !state.running
@@ -82,6 +83,57 @@ function CorosConnectForm({ onConnected }: { onConnected: () => void }) {
   );
 }
 
+function CloudConnectCard({ state, onChanged }: { state: BridgeState; onChanged: () => void }) {
+  const [busy, setBusy] = useState(false);
+  const [note, setNote] = useState<string | null>(null);
+
+  const connect = async () => {
+    setBusy(true);
+    setNote("Opening your browser to approve this Mac…");
+    try {
+      const res = await desktop.connectCloud(CLOUD_URL);
+      if (res.status === "connected") setNote(null);
+      else if (res.status === "pending")
+        setNote("Approval didn't finish. Make sure you're signed in on the website, then try again.");
+      else setNote("The pairing link expired — try connecting again.");
+    } catch {
+      setNote("Couldn't reach the Run Garden cloud. Check your connection and retry.");
+    } finally {
+      setBusy(false);
+      onChanged();
+    }
+  };
+
+  if (state.cloudConnected) {
+    return (
+      <Card title="Run Garden cloud">
+        <div className="bridge-status">
+          <span className="dot dot-online" />
+          Connected — your plan syncs to the website &amp; phone
+        </div>
+        <p className="faint">
+          This Mac pushes your COROS plan up and quietly applies approved schedule moves.
+        </p>
+      </Card>
+    );
+  }
+
+  return (
+    <Card title="Run Garden cloud">
+      <p className="muted" style={{ marginBottom: "0.6rem" }}>
+        Link this Mac to your Run Garden account so your COROS plan appears on the website and your
+        iPhone, and reschedules sync back to your watch. You'll approve it once in the browser.
+      </p>
+      <button className="btn btn-primary btn-small" disabled={busy} onClick={connect}>
+        {busy ? "Waiting for approval…" : "Connect to Run Garden cloud"}
+      </button>
+      {note ? (
+        <Banner kind="info" >{note}</Banner>
+      ) : null}
+    </Card>
+  );
+}
+
 function ConnectionPanel() {
   const [spikeOpen, setSpikeOpen] = useState(false);
   const [spikeResult, setSpikeResult] = useState<string | null>(null);
@@ -132,6 +184,8 @@ function ConnectionPanel() {
               </button>
             </div>
           </Card>
+
+          <CloudConnectCard state={s} onChanged={() => state.refetch()} />
 
           <Card title="Schedule write test">
             <p className="muted" style={{ marginBottom: "0.6rem" }}>

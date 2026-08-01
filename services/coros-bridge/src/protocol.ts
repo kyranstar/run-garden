@@ -6,6 +6,7 @@
  * that serializes processing (and therefore all COROS writes).
  */
 
+import os from "node:os";
 import { z } from "zod";
 import type { NameResolver } from "@rg/providers";
 import {
@@ -14,11 +15,13 @@ import {
   CorosClient,
   type CorosRegion,
 } from "./coros-client.js";
+import { CloudSync, generateDeviceKeypair } from "./cloud-sync.js";
 import { buildSnapshot, loadNameResolver } from "./snapshot.js";
 import { executeMoveJob } from "./write-executor.js";
 
 export interface BridgeState {
   client: CorosClient | null;
+  cloudSync: CloudSync | null;
   shuttingDown: boolean;
   readonly fetchImpl: typeof fetch;
   readonly makeClient: (region: CorosRegion) => CorosClient;
@@ -34,6 +37,7 @@ export function createBridgeState(
   const fetchImpl = opts.fetchImpl ?? fetch;
   return {
     client: null,
+    cloudSync: null,
     shuttingDown: false,
     fetchImpl,
     makeClient: opts.makeClient ?? ((region) => new CorosClient({ region, fetchImpl })),
@@ -77,6 +81,27 @@ const executeJobParams = z.object({
     }),
   }),
 });
+
+const pairDeviceParams = z.object({
+  apiUrl: z.string().url(),
+  deviceName: z.string().optional(),
+  appVersion: z.string().optional(),
+});
+
+const claimDeviceParams = z.object({
+  apiUrl: z.string().url(),
+  handshakeId: z.string(),
+});
+
+const startCloudSyncParams = z.object({
+  apiUrl: z.string().url(),
+  deviceId: z.string(),
+  privateKeyPem: z.string(),
+});
+
+function platformName(): "macos" | "windows" | "linux" {
+  return process.platform === "darwin" ? "macos" : process.platform === "win32" ? "windows" : "linux";
+}
 
 function ok(id: string | null, result: unknown): BridgeResponse {
   return { id, ok: true, result };
@@ -155,7 +180,74 @@ export async function handleRequest(state: BridgeState, input: unknown): Promise
         return ok(id, await executeMoveJob(client, p.data.job));
       }
 
+      case "pairDevice": {
+        // Bootstrap device registration (not device-signed): generate an
+        // Ed25519 identity, register the public key with the cloud, and return
+        // the private key for the Rust core to store in the OS keychain.
+        const p = pairDeviceParams.safeParse(params ?? {});
+        if (!p.success) return err(id, "invalid_request", "pairDevice needs apiUrl");
+        const kp = generateDeviceKeypair();
+        const body = {
+          publicKey: kp.publicKeyRaw,
+          deviceName: p.data.deviceName ?? os.hostname() ?? "This Mac",
+          platform: platformName(),
+          appVersion: p.data.appVersion ?? "0.1.0",
+        };
+        const res = await state.fetchImpl(`${p.data.apiUrl.replace(/\/+$/, "")}/api/devices/handshake`, {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify(body),
+        });
+        if (!res.ok) return err(id, "pairing_failed", `handshake failed (${res.status})`);
+        const hs = (await res.json()) as { handshakeId: string; approveUrl: string };
+        return ok(id, {
+          handshakeId: hs.handshakeId,
+          approveUrl: hs.approveUrl,
+          privateKeyPem: kp.privateKeyPem,
+          publicKeyRaw: kp.publicKeyRaw,
+        });
+      }
+
+      case "claimDevice": {
+        const p = claimDeviceParams.safeParse(params ?? {});
+        if (!p.success) return err(id, "invalid_request", "claimDevice needs apiUrl/handshakeId");
+        const res = await state.fetchImpl(
+          `${p.data.apiUrl.replace(/\/+$/, "")}/api/devices/handshake/${encodeURIComponent(p.data.handshakeId)}`,
+        );
+        if (!res.ok) return err(id, "claim_failed", `claim failed (${res.status})`);
+        return ok(id, await res.json());
+      }
+
+      case "startCloudSync": {
+        const client = state.client;
+        if (!client) return err(id, "not_authenticated", "authenticate first");
+        const p = startCloudSyncParams.safeParse(params ?? {});
+        if (!p.success) return err(id, "invalid_request", "startCloudSync needs apiUrl/deviceId/privateKeyPem");
+        if (state.cloudSync) state.cloudSync.stop();
+        state.cloudSync = new CloudSync({
+          apiUrl: p.data.apiUrl,
+          deviceId: p.data.deviceId,
+          privateKeyPem: p.data.privateKeyPem,
+          client,
+          fetchImpl: state.fetchImpl,
+        });
+        state.cloudSync.start();
+        return ok(id, { started: true });
+      }
+
+      case "stopCloudSync": {
+        if (state.cloudSync) {
+          state.cloudSync.stop();
+          state.cloudSync = null;
+        }
+        return ok(id, { stopped: true });
+      }
+
       case "eraseCredentials": {
+        if (state.cloudSync) {
+          state.cloudSync.stop();
+          state.cloudSync = null;
+        }
         if (state.client) {
           await state.client.logout().catch(() => undefined);
           state.client = null;
@@ -164,6 +256,7 @@ export async function handleRequest(state: BridgeState, input: unknown): Promise
       }
 
       case "shutdown":
+        if (state.cloudSync) state.cloudSync.stop();
         state.shuttingDown = true;
         return ok(id, { shuttingDown: true });
 

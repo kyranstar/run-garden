@@ -33,6 +33,7 @@ export interface BridgeState {
   capabilities: Record<string, boolean> | null;
   activePlanName: string | null;
   upcomingWorkoutCount: number;
+  cloudConnected: boolean;
 }
 
 export const desktop = {
@@ -56,8 +57,16 @@ export const desktop = {
 
   setLaunchAtLogin: (enabled: boolean) => invoke<void>("set_launch_at_login", { enabled }),
 
-  /** Begin device pairing: opens the system browser to the cloud approve URL. */
-  startPairing: (apiUrl: string) => invoke<{ handshakeId: string }>("start_pairing", { apiUrl }),
+  /**
+   * Connect this Mac to the Run Garden cloud (pairs a device on first run,
+   * opening the browser to approve; reuses the stored identity afterwards).
+   * Resolves when synced, or with status "pending"/"expired" if approval
+   * didn't complete in time.
+   */
+  connectCloud: (apiUrl: string) =>
+    invoke<{ status: "connected" | "pending" | "expired"; deviceId?: string }>("connect_cloud", {
+      apiUrl,
+    }),
 
   /** Run the reversible schedule write test against the real account. */
   runWriteSpike: () => invoke<{ reportPath: string; ok: boolean; summary: string }>("run_write_spike"),
