@@ -5,21 +5,25 @@
  * ever sees status booleans and capability reports.
  */
 
-interface TauriGlobal {
-  core: { invoke<T>(cmd: string, args?: Record<string, unknown>): Promise<T> };
+type InvokeFn = <T>(cmd: string, args?: Record<string, unknown>) => Promise<T>;
+
+// Resolve Tauri's invoke bridge. `__TAURI__.core.invoke` requires
+// `withGlobalTauri` in tauri.conf.json; `__TAURI_INTERNALS__.invoke` is always
+// present inside the Tauri webview, so it's the reliable detection signal.
+function resolveInvoke(): InvokeFn | null {
+  const w = window as unknown as {
+    __TAURI__?: { core?: { invoke?: InvokeFn } };
+    __TAURI_INTERNALS__?: { invoke?: InvokeFn };
+  };
+  return w.__TAURI__?.core?.invoke ?? w.__TAURI_INTERNALS__?.invoke ?? null;
 }
 
-function tauri(): TauriGlobal | null {
-  const w = window as unknown as { __TAURI__?: TauriGlobal };
-  return w.__TAURI__ ?? null;
-}
-
-export const isDesktop = () => tauri() !== null;
+export const isDesktop = () => resolveInvoke() !== null;
 
 async function invoke<T>(cmd: string, args?: Record<string, unknown>): Promise<T> {
-  const t = tauri();
-  if (!t) throw new Error("not_running_in_tauri");
-  return t.core.invoke<T>(cmd, args);
+  const fn = resolveInvoke();
+  if (!fn) throw new Error("not_running_in_tauri");
+  return fn<T>(cmd, args);
 }
 
 export interface BridgeState {
