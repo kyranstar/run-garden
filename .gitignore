@@ -12,6 +12,8 @@ playwright-report/
 test-results/
 apps/desktop/src-tauri/target/
 apps/desktop/src-tauri/gen/
+# Compiled COROS bridge sidecar (rebuilt by `pnpm --filter @rg/desktop sidecar:build`)
+apps/desktop/src-tauri/binaries/coros-bridge-*
 *.tsbuildinfo
 .turbo/
 screenshots/
