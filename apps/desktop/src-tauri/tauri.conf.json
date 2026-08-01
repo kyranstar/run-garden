@@ -33,7 +33,7 @@
     "active": true,
     "targets": ["dmg", "app"],
     "icon": ["icons/icon.png"],
-    "category": "HealthAndFitness",
+    "category": "Healthcare and Fitness",
     "shortDescription": "Your COROS plan, fitted to your real week.",
     "macOS": {
       "minimumSystemVersion": "12.0"

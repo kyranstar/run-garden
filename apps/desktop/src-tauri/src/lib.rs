@@ -145,22 +145,25 @@ impl InnerExt for bridge::BridgeInner {
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_shell::init())
-        .setup(|app| {
+        .setup(|_app| {
             let bridge = Bridge::new();
-            // Resolve and start the packaged sidecar; on failure the app still
-            // runs in calendar-only mode (surfaced via bridge_state).
-            let sidecar = app
-                .shell()
-                .sidecar("coros-bridge")
-                .ok()
-                .and_then(|c| c.into_command().get_program().to_str().map(std::path::PathBuf::from));
+            // Resolve the packaged sidecar next to the app executable (Tauri
+            // bundles externalBin into the same dir, with the target-triple
+            // suffix stripped). On failure the app still runs in calendar-only
+            // mode (surfaced via bridge_state).
+            let suffix = if cfg!(windows) { ".exe" } else { "" };
+            let sidecar = std::env::current_exe().ok().and_then(|exe| {
+                exe.parent()
+                    .map(|dir| dir.join(format!("coros-bridge{suffix}")))
+                    .filter(|p| p.exists())
+            });
             let bridge_for_setup = bridge.clone();
             if let Some(path) = sidecar {
                 tauri::async_runtime::spawn(async move {
                     let _ = bridge_for_setup.start(path).await;
                 });
             }
-            app.manage(AppState { bridge });
+            _app.manage(AppState { bridge });
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
