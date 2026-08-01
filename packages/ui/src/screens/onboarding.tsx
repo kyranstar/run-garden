@@ -85,24 +85,57 @@ function ValueStep({ onNext }: { onNext: () => void }) {
   );
 }
 
+const DESKTOP_BUILD_CMD =
+  "pnpm --filter @rg/desktop sidecar:build && pnpm --filter @rg/desktop tauri build";
+
 function DesktopStep({ onNext, onBack }: { onNext: () => void; onBack: () => void }) {
   const devices = useQuery({ queryKey: ["devices"], queryFn: api.devices, refetchInterval: 5000 });
   const connected = (devices.data?.devices ?? []).some((d) => !d.revokedAt);
+  const [copied, setCopied] = useState(false);
+
+  const copy = async () => {
+    try {
+      await navigator.clipboard.writeText(DESKTOP_BUILD_CMD);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2500);
+    } catch {
+      /* clipboard blocked — the command is shown below regardless */
+    }
+  };
+
   return (
-    <Card title="Desktop companion">
+    <Card title="Desktop companion — and why it's needed">
       <p>
-        The desktop companion securely connects to COROS and updates your training calendar. Your
-        COROS password stays on this Mac.
+        COROS has no cloud API that lets an app change your training plan, and it blocks logins from
+        cloud servers. So a small companion app on your Mac does the talking to COROS — reading your
+        plan and pushing schedule changes back to your watch.
       </p>
-      <div className="btn-row" style={{ marginTop: "0.8rem" }}>
-        <button className="btn">Download desktop app</button>
-        <button className="btn">Open installed app</button>
+      <p className="muted" style={{ marginTop: "0.6rem" }}>
+        It also means your COROS password never leaves your Mac (it's kept in the macOS Keychain,
+        never sent to Run Garden's cloud). Run Garden's website works without it — you just won't see
+        your COROS plan until the Mac companion is connected.
+      </p>
+
+      <div style={{ marginTop: "0.9rem" }}>
+        <p className="faint" style={{ marginBottom: "0.3rem" }}>
+          Build &amp; install it from the project (produces a .dmg):
+        </p>
+        <div className="stage-summary" style={{ fontFamily: "ui-monospace, monospace", fontSize: "0.8rem" }}>
+          {DESKTOP_BUILD_CMD}
+        </div>
+        <div className="btn-row" style={{ marginTop: "0.5rem" }}>
+          <button className="btn btn-small" onClick={copy}>
+            {copied ? "Copied ✓" : "Copy command"}
+          </button>
+        </div>
       </div>
+
       {connected ? (
-        <Banner kind="info" >Desktop connected — you're all set.</Banner>
+        <Banner kind="info">Your Mac is connected — you're all set.</Banner>
       ) : (
         <p className="faint" style={{ marginTop: "0.7rem" }}>
-          Waiting for a Mac to connect… you can also finish setup on the desktop app itself.
+          Once the companion is running and paired, it shows up here automatically. You can also do
+          the COROS connection entirely inside the desktop app.
         </p>
       )}
       <StepNav onNext={onNext} onBack={onBack} nextLabel={connected ? "Continue" : "Skip for now"} />
