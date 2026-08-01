@@ -118,6 +118,15 @@ export async function stravaClient(db: Db, env: Env, userId: string): Promise<St
       accessToken = null;
       return call(path, true);
     }
+    // A persistent 401/403 after a fresh token means access was revoked — most
+    // commonly the Strava subscription lapsed. Flag the connection so the UI can
+    // degrade gracefully; COROS remains the authoritative completion source.
+    if ((res.status === 401 || res.status === 403) && retried) {
+      await db
+        .update(providerConnections)
+        .set({ status: "error", lastErrorCategory: `strava_access_${res.status}`, updatedAt: nowInstant() })
+        .where(eq(providerConnections.id, conn.id));
+    }
     return res;
   };
 

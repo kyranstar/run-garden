@@ -15,7 +15,12 @@ export interface Env {
   STRAVA_CLIENT_ID?: string;
   STRAVA_CLIENT_SECRET?: string;
   STRAVA_WEBHOOK_VERIFY_TOKEN?: string;
-  ANTHROPIC_API_KEY?: string;
+  /** Vercel AI Gateway (OpenAI-compatible) — the only LLM path. Secret. */
+  AI_GATEWAY_API_KEY?: string;
+  /** Model slug behind the gateway; defaults to anthropic/claude-haiku-4.5. Var. */
+  AI_GATEWAY_MODEL?: string;
+  /** Override the gateway base URL if needed. Var. */
+  AI_GATEWAY_BASE_URL?: string;
   /** Optional official COROS MCP bearer token for cloud reads / capability probing. */
   COROS_MCP_URL?: string;
   COROS_MCP_TOKEN?: string;

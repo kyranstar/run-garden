@@ -17,3 +17,4 @@ apps/desktop/src-tauri/gen/
 screenshots/
 apps/worker/wrangler.dev.toml
 .wrangler/
+apps/worker/.prod.secrets

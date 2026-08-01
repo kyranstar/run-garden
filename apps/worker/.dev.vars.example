@@ -26,7 +26,7 @@ STRAVA_CLIENT_SECRET=dev-strava-client-secret
 STRAVA_WEBHOOK_VERIFY_TOKEN=dev-verify-token
 
 # Anthropic (optional; unset/dummy → weekly review stores facts, no narrative).
-ANTHROPIC_API_KEY=
+AI_GATEWAY_API_KEY=
 
 # Official COROS MCP (optional).
 COROS_MCP_URL=

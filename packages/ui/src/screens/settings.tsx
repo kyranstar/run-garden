@@ -173,11 +173,14 @@ function ConnectionsSection() {
 
       <div className="switch-row">
         <div>
-          <strong>Strava</strong>
+          <strong>Strava</strong>{" "}
+          {strava?.status === "error" ? <span className="pill pill-warn">Reconnect needed</span> : null}
           <p className="faint">
             {strava?.status === "connected"
               ? "Connected · reading completed runs"
-              : "COROS already sends runs to Strava; connecting lets Run Garden see them sooner. Never uploads."}
+              : strava?.status === "error"
+                ? "Access stopped (subscription may have lapsed). COROS still provides completions; reconnect for faster updates and routes. Never uploads."
+                : "COROS already sends runs to Strava; connecting lets Run Garden see them sooner. Never uploads."}
           </p>
         </div>
         {strava?.status === "connected" ? (
@@ -186,7 +189,7 @@ function ConnectionsSection() {
           </button>
         ) : (
           <a className="btn btn-small" href="/api/strava/connect">
-            Connect
+            {strava?.status === "error" ? "Reconnect" : "Connect"}
           </a>
         )}
       </div>

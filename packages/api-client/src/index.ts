@@ -79,6 +79,7 @@ export interface TodayResponse {
     deviceRegistered: boolean;
     corosWritesEnabled: boolean;
     calendarConnected: boolean;
+    stravaStatus?: "connected" | "error" | "disconnected";
   };
   readiness: {
     latest: {

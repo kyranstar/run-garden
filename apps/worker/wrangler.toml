@@ -47,8 +47,10 @@ crons = [
 [vars]
 # Non-secret configuration. Secrets are set with `wrangler secret put`:
 #   SESSION_SECRET, TOKEN_ENCRYPTION_KEY, GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET,
-#   STRAVA_CLIENT_ID, STRAVA_CLIENT_SECRET, STRAVA_WEBHOOK_VERIFY_TOKEN,
-#   ANTHROPIC_API_KEY, ALLOWED_GOOGLE_EMAIL
+#   ALLOWED_GOOGLE_EMAIL, STRAVA_CLIENT_ID, STRAVA_CLIENT_SECRET,
+#   STRAVA_WEBHOOK_VERIFY_TOKEN, AI_GATEWAY_API_KEY
 APP_URL = "https://run-garden-api.YOUR_SUBDOMAIN.workers.dev"
 FIXTURE_MODE = "0"
 AI_DEFAULT_ENABLED = "1"
+# LLM via Vercel AI Gateway (OpenAI-compatible). Key is a secret; model is here.
+AI_GATEWAY_MODEL = "anthropic/claude-haiku-4.5"

@@ -10,6 +10,7 @@ import {
   gardenState,
   plannedWorkoutStages,
   plannedWorkouts,
+  providerConnections,
   trainingPlans,
   workoutCompletionMatches,
 } from "@rg/database";
@@ -118,6 +119,16 @@ planRoutes.get("/today", async (c) => {
     .orderBy(desc(dailyHealth.date))
     .limit(14);
 
+  const stravaConn = (
+    await db
+      .select()
+      .from(providerConnections)
+      .where(
+        and(eq(providerConnections.userId, userId), eq(providerConnections.provider, "strava")),
+      )
+      .limit(1)
+  )[0];
+
   const gardenRows = await db.select().from(gardenState).where(eq(gardenState.userId, userId)).limit(1);
   const snapshot = gardenRows[0]?.snapshot as unknown as GardenSnapshot | undefined;
   const gardenEventsRecent = await recentGardenEvents(db, userId, 6);
@@ -146,6 +157,8 @@ planRoutes.get("/today", async (c) => {
       deviceRegistered: devices.length > 0,
       corosWritesEnabled: prefs.corosWritesEnabled,
       calendarConnected: !!prefs.calendarId,
+      // "connected" | "error" (subscription lapsed / revoked) | undefined (never connected)
+      stravaStatus: stravaConn?.status,
     },
     readiness: {
       latest: health[0] ?? null,

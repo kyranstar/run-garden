@@ -41,7 +41,7 @@ npx wrangler secret put GOOGLE_CLIENT_SECRET
 npx wrangler secret put STRAVA_CLIENT_ID
 npx wrangler secret put STRAVA_CLIENT_SECRET
 npx wrangler secret put STRAVA_WEBHOOK_VERIFY_TOKEN   # openssl rand -hex 16
-npx wrangler secret put ANTHROPIC_API_KEY
+npx wrangler secret put AI_GATEWAY_API_KEY            # Vercel AI Gateway
 npx wrangler secret put COROS_MCP_URL
 npx wrangler secret put COROS_MCP_TOKEN
 ```
@@ -120,13 +120,15 @@ existing one. The choice is stored in preferences (`calendarId`).
    webhook the app still works — completions arrive on the polling cadence
    instead of near-instantly.
 
-## 6. Anthropic (optional)
+## 6. LLM via Vercel AI Gateway (optional)
 
-Create a key at [console.anthropic.com](https://console.anthropic.com/) and
-`wrangler secret put ANTHROPIC_API_KEY`. Only the Monday weekly review uses
-it (Haiku-class model, hard $10/rolling-7-days ceiling — see
-[COSTS.md](COSTS.md)). Skip it and the review shows deterministic facts
-without a narrative.
+Grab an AI Gateway key from your Vercel project (AI Gateway → API keys) and
+`wrangler secret put AI_GATEWAY_API_KEY`. The gateway is OpenAI-compatible; the
+model is set by the `AI_GATEWAY_MODEL` var in `wrangler.toml`
+(default `anthropic/claude-haiku-4.5`). Only the Monday weekly review uses it
+(Haiku-class model, hard $10/rolling-7-days ceiling — see [COSTS.md](COSTS.md)).
+Skip it and the review shows deterministic facts without a narrative — the app
+is fully functional with AI off.
 
 ## 7. Desktop pairing (COROS)
 
