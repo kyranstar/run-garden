@@ -60,17 +60,21 @@ jobs:
       - name: Generate + upload updater manifest (latest.json)
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
           TAG: ${{ github.ref_name }}
         run: |
           set -uo pipefail
           VERSION="${TAG#v}"
-          SIG_FILE=$(find apps/desktop/src-tauri/target -type f -name '*.app.tar.gz.sig' 2>/dev/null | head -1)
-          if [ -z "$SIG_FILE" ]; then
-            echo "::error::no .app.tar.gz.sig found under target/"
-            find . -name '*.app.tar.gz*' 2>/dev/null | head
-            exit 1
+          TARBALL=$(find . -type f -name '*.app.tar.gz' 2>/dev/null | head -1)
+          if [ -z "$TARBALL" ]; then
+            echo "::error::no .app.tar.gz found"; find . -name '*.app.tar.gz*' 2>/dev/null | head; exit 1
           fi
-          SIG=$(cat "$SIG_FILE")
+          # Re-sign the built tarball so we always have a valid .sig (independent
+          # of where/whether tauri-action left one).
+          pnpm --filter @rg/desktop exec tauri signer sign \
+            -k "$TAURI_SIGNING_PRIVATE_KEY" -p "$TAURI_SIGNING_PRIVATE_KEY_PASSWORD" "$TARBALL"
+          SIG=$(cat "$TARBALL.sig")
           ASSET=$(gh release view "$TAG" -R "$GITHUB_REPOSITORY" --json assets \
             -q '.assets[] | select(.name|endswith(".app.tar.gz")) | .name' | head -1)
           URL="https://github.com/${GITHUB_REPOSITORY}/releases/download/${TAG}/${ASSET}"

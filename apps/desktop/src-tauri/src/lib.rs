@@ -1,9 +1,10 @@
-//! Run Garden desktop core. Owns the OS keychain and the COROS bridge sidecar.
-//! The COROS password is read from the keychain and passed to the sidecar over
-//! stdin only; it is never exposed to the webview, cloud, argv, env, or logs.
+//! Run Garden desktop core. Owns the encrypted credential store and the COROS
+//! bridge sidecar. The COROS password is read from the store and passed to the
+//! sidecar over stdin only; it is never exposed to the webview, cloud, argv,
+//! env, or logs.
 
 mod bridge;
-mod keychain;
+mod creds;
 
 use bridge::Bridge;
 use serde::Serialize;
@@ -73,9 +74,9 @@ async fn connect_coros(
     // Test the connection first; only persist on success.
     let result = state.bridge.authenticate(&email, &password, &region).await?;
 
-    keychain::set(keychain::K_COROS_EMAIL, &email)?;
-    keychain::set(keychain::K_COROS_PASSWORD, &password)?;
-    keychain::set(keychain::K_COROS_REGION, &region)?;
+    creds::set(creds::K_COROS_EMAIL, &email)?;
+    creds::set(creds::K_COROS_PASSWORD, &password)?;
+    creds::set(creds::K_COROS_REGION, &region)?;
 
     // Read an initial snapshot to populate plan name / upcoming count.
     if let Ok(snapshot) = state
@@ -113,7 +114,7 @@ async fn test_connection(state: State<'_, AppState>) -> Result<Value, String> {
 
 #[tauri::command]
 async fn erase_credentials(state: State<'_, AppState>) -> Result<(), String> {
-    keychain::erase_all();
+    creds::erase_all();
     state.bridge.erase().await
 }
 
@@ -160,12 +161,12 @@ async fn connect_cloud(
     state: State<'_, AppState>,
     api_url: String,
 ) -> Result<Value, String> {
-    keychain::set(keychain::K_CLOUD_URL, &api_url)?;
+    creds::set(creds::K_CLOUD_URL, &api_url)?;
 
     // Already paired? Reuse the stored identity and start syncing.
     if let (Some(device_id), Some(pem)) = (
-        keychain::get(keychain::K_DEVICE_ID),
-        keychain::get(keychain::K_DEVICE_PRIVATE_KEY),
+        creds::get(creds::K_DEVICE_ID),
+        creds::get(creds::K_DEVICE_PRIVATE_KEY),
     ) {
         state
             .bridge
@@ -192,7 +193,7 @@ async fn connect_cloud(
     let private_pem = pair.get("privateKeyPem").and_then(|v| v.as_str()).ok_or("no_private_key")?;
 
     // Persist the private key immediately (it never leaves the keychain).
-    keychain::set(keychain::K_DEVICE_PRIVATE_KEY, private_pem)?;
+    creds::set(creds::K_DEVICE_PRIVATE_KEY, private_pem)?;
 
     // Open the browser so the signed-in user approves this device.
     open_url(approve_url)?;
@@ -207,7 +208,7 @@ async fn connect_cloud(
         match claim.get("status").and_then(|v| v.as_str()) {
             Some("claimed") => {
                 let device_id = claim.get("deviceId").and_then(|v| v.as_str()).ok_or("no_device_id")?;
-                keychain::set(keychain::K_DEVICE_ID, device_id)?;
+                creds::set(creds::K_DEVICE_ID, device_id)?;
                 state
                     .bridge
                     .call(
@@ -249,9 +250,9 @@ impl InnerExt for bridge::BridgeInner {
 /// waiting for a manual reconnect (surfaced via bridge_state).
 async fn resume_from_keychain(bridge: &Bridge) {
     let (email, password, region) = match (
-        keychain::get(keychain::K_COROS_EMAIL),
-        keychain::get(keychain::K_COROS_PASSWORD),
-        keychain::get(keychain::K_COROS_REGION),
+        creds::get(creds::K_COROS_EMAIL),
+        creds::get(creds::K_COROS_PASSWORD),
+        creds::get(creds::K_COROS_REGION),
     ) {
         (Some(e), Some(p), Some(r)) => (e, p, r),
         _ => return,
@@ -260,9 +261,9 @@ async fn resume_from_keychain(bridge: &Bridge) {
         return;
     }
     if let (Some(url), Some(device_id), Some(pem)) = (
-        keychain::get(keychain::K_CLOUD_URL),
-        keychain::get(keychain::K_DEVICE_ID),
-        keychain::get(keychain::K_DEVICE_PRIVATE_KEY),
+        creds::get(creds::K_CLOUD_URL),
+        creds::get(creds::K_DEVICE_ID),
+        creds::get(creds::K_DEVICE_PRIVATE_KEY),
     ) {
         let _ = bridge
             .call(
