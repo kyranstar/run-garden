@@ -1,0 +1,55 @@
+name: Release desktop app
+
+# Builds, signs, and publishes the macOS desktop app on a version tag (e.g.
+# `git tag v0.1.1 && git push --tags`). tauri-action attaches the updater
+# artifacts (.app.tar.gz + .sig) and a `latest.json` manifest to the GitHub
+# release; the installed app polls .../releases/latest/download/latest.json and
+# self-updates (see plugins.updater in apps/desktop/src-tauri/tauri.conf.json).
+#
+# Required secrets: TAURI_SIGNING_PRIVATE_KEY, TAURI_SIGNING_PRIVATE_KEY_PASSWORD
+# (GITHUB_TOKEN is provided automatically).
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+jobs:
+  release:
+    name: Build + sign + publish (macOS arm64)
+    runs-on: macos-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - uses: oven-sh/setup-bun@v2
+
+      - name: Ensure aarch64 target
+        run: rustup target add aarch64-apple-darwin
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Build COROS bridge sidecar
+        run: pnpm --filter @rg/desktop sidecar:build
+
+      - uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        with:
+          projectPath: apps/desktop
+          tagName: ${{ github.ref_name }}
+          releaseName: "Run Garden ${{ github.ref_name }}"
+          releaseDraft: false
+          prerelease: false
+          args: --target aarch64-apple-darwin

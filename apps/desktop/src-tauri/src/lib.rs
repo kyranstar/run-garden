@@ -12,6 +12,7 @@ use tauri::menu::{MenuBuilder, MenuItemBuilder};
 use tauri::tray::TrayIconBuilder;
 use tauri::{Manager, State};
 use tauri_plugin_autostart::{MacosLauncher, ManagerExt};
+use tauri_plugin_updater::UpdaterExt;
 
 /// Open a URL in the user's default browser via the native macOS opener.
 /// Deliberately not the shell plugin's `open` (deprecated and unreliable from
@@ -283,12 +284,28 @@ fn show_main(app: &tauri::AppHandle) {
     }
 }
 
+/// Check GitHub releases for a newer signed build and install it silently; the
+/// update applies on next launch. Best-effort — any failure is logged and
+/// ignored so the app runs normally offline or when no update exists.
+async fn check_for_updates(app: &tauri::AppHandle) -> Result<(), String> {
+    let updater = app.updater().map_err(|e| e.to_string())?;
+    if let Some(update) = updater.check().await.map_err(|e| e.to_string())? {
+        update
+            .download_and_install(|_downloaded, _total| {}, || {})
+            .await
+            .map_err(|e| e.to_string())?;
+    }
+    Ok(())
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_shell::init())
         // Launch-at-login support (the "Launch at login" toggle drives this).
         .plugin(tauri_plugin_autostart::init(MacosLauncher::LaunchAgent, None))
+        // Self-update from signed GitHub releases (see plugins.updater config).
+        .plugin(tauri_plugin_updater::Builder::new().build())
         .on_window_event(|window, event| {
             // Closing the window doesn't quit: Run Garden keeps running in the
             // menu bar so the COROS bridge keeps syncing. Quit from the tray.
@@ -337,6 +354,14 @@ pub fn run() {
                     resume_from_keychain(&bridge_for_setup).await;
                 });
             }
+            // Silently self-update on launch (applies next start).
+            let updater_handle = app.handle().clone();
+            tauri::async_runtime::spawn(async move {
+                if let Err(e) = check_for_updates(&updater_handle).await {
+                    eprintln!("updater: {e}");
+                }
+            });
+
             app.manage(AppState { bridge });
             Ok(())
         })
