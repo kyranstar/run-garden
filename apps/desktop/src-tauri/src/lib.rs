@@ -12,7 +12,17 @@ use tauri::menu::{MenuBuilder, MenuItemBuilder};
 use tauri::tray::TrayIconBuilder;
 use tauri::{Manager, State};
 use tauri_plugin_autostart::{MacosLauncher, ManagerExt};
-use tauri_plugin_shell::ShellExt;
+
+/// Open a URL in the user's default browser via the native macOS opener.
+/// Deliberately not the shell plugin's `open` (deprecated and unreliable from
+/// the app core) — `/usr/bin/open` always works and needs no plugin permission.
+fn open_url(url: &str) -> Result<(), String> {
+    std::process::Command::new("/usr/bin/open")
+        .arg(url)
+        .spawn()
+        .map(|_| ())
+        .map_err(|e| format!("open_failed: {e}"))
+}
 
 pub struct AppState {
     pub bridge: Bridge,
@@ -134,10 +144,8 @@ async fn get_launch_at_login(app: tauri::AppHandle) -> Result<bool, String> {
 /// Google sign-in works) opens outside the app window — Google refuses to render
 /// its sign-in inside an embedded web view.
 #[tauri::command]
-async fn open_external(app: tauri::AppHandle, url: String) -> Result<(), String> {
-    app.shell()
-        .open(url, None)
-        .map_err(|e| format!("open_failed: {e}"))
+async fn open_external(_app: tauri::AppHandle, url: String) -> Result<(), String> {
+    open_url(&url)
 }
 
 /// Connect this Mac to the Run Garden cloud so the plan flows up and schedule
@@ -147,7 +155,7 @@ async fn open_external(app: tauri::AppHandle, url: String) -> Result<(), String>
 /// reuses the keychain-stored identity and just starts the sync loop.
 #[tauri::command]
 async fn connect_cloud(
-    app: tauri::AppHandle,
+    _app: tauri::AppHandle,
     state: State<'_, AppState>,
     api_url: String,
 ) -> Result<Value, String> {
@@ -186,9 +194,7 @@ async fn connect_cloud(
     keychain::set(keychain::K_DEVICE_PRIVATE_KEY, private_pem)?;
 
     // Open the browser so the signed-in user approves this device.
-    app.shell()
-        .open(approve_url, None)
-        .map_err(|e| format!("open_browser_failed: {e}"))?;
+    open_url(approve_url)?;
 
     // Poll for approval + claim (up to ~3 minutes).
     for _ in 0..36 {
