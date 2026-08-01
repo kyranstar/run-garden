@@ -84,13 +84,23 @@ calendarRoutes.post("/choose", async (c) => {
   const client = await googleCalendarClient(db, c.env, userId);
   if (!client) return c.json({ error: "google_not_connected" }, 412);
 
+  // Adopt the timezone from the user's primary Google Calendar (best effort).
+  let timezone = prefs.timezone;
+  try {
+    const cals = await client.listCalendars();
+    const primaryTz = cals.find((cal) => cal.primary)?.timeZone;
+    if (primaryTz) timezone = primaryTz;
+  } catch {
+    /* keep the existing timezone */
+  }
+
   let chosen = calendarId;
   if (createNew) {
-    const created = await client.createCalendar(DEFAULT_CALENDAR_NAME, prefs.timezone);
+    const created = await client.createCalendar(DEFAULT_CALENDAR_NAME, timezone);
     chosen = created.id;
   }
   if (!chosen) return c.json({ error: "no_calendar" }, 400);
-  await savePreferences(db, userId, { ...prefs, calendarId: chosen });
+  await savePreferences(db, userId, { ...prefs, calendarId: chosen, timezone });
   const stats = await syncCalendar(db, c.env, userId, { fullResync: true });
   return c.json({ ok: true, calendarId: chosen, stats });
 });

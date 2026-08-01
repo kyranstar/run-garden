@@ -4,6 +4,22 @@ import { api } from "@rg/api-client";
 import type { UserPreferences } from "@rg/domain";
 import { Banner, Card, formatDayShort, Sheet, Spinner } from "../components.js";
 
+const TZ_OPTIONS: string[] = (() => {
+  const sv = (Intl as unknown as { supportedValuesOf?: (k: string) => string[] }).supportedValuesOf;
+  return typeof sv === "function"
+    ? sv("timeZone")
+    : [
+        "America/New_York",
+        "America/Chicago",
+        "America/Denver",
+        "America/Los_Angeles",
+        "Europe/London",
+        "Europe/Paris",
+        "Asia/Tokyo",
+        "UTC",
+      ];
+})();
+
 function TimeField({
   id,
   label,
@@ -102,8 +118,21 @@ function SchedulingSection({ prefs }: { prefs: UserPreferences }) {
       </div>
       <div className="field">
         <label htmlFor="s-tz">Timezone</label>
-        <input id="s-tz" type="text" value={draft.timezone} onChange={(e) => set("timezone", e.target.value)} />
-        <span className="hint">IANA name, e.g. America/Los_Angeles</span>
+        <input
+          id="s-tz"
+          type="text"
+          list="tz-options"
+          value={draft.timezone}
+          onChange={(e) => set("timezone", e.target.value)}
+          placeholder="Start typing a city…"
+          autoComplete="off"
+        />
+        <datalist id="tz-options">
+          {TZ_OPTIONS.map((tz) => (
+            <option key={tz} value={tz} />
+          ))}
+        </datalist>
+        <span className="hint">Type to search. Auto-synced from your Google Calendar when you connect it.</span>
       </div>
       <div className="row" style={{ gap: "0.6rem" }}>
         <button className="btn btn-primary" disabled={save.isPending} onClick={() => save.mutate()}>

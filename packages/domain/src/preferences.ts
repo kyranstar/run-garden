@@ -1,7 +1,7 @@
 import { z } from "zod";
 
 export const schedulingPreferencesSchema = z.object({
-  timezone: z.string().default("America/Los_Angeles"),
+  timezone: z.string().default("America/New_York"),
   weekdayMorningTime: z.string().default("07:00"),
   weekdayEveningTime: z.string().default("19:00"),
   weekendMorningTime: z.string().default("08:00"),

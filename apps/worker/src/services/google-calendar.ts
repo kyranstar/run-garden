@@ -16,7 +16,9 @@ export class GoogleAuthError extends Error {
 }
 
 export interface GoogleCalendarClient {
-  listCalendars(): Promise<Array<{ id: string; summary: string; primary?: boolean; accessRole?: string }>>;
+  listCalendars(): Promise<
+    Array<{ id: string; summary: string; primary?: boolean; accessRole?: string; timeZone?: string }>
+  >;
   createCalendar(summary: string, timeZone: string): Promise<{ id: string }>;
   listEvents(
     calendarId: string,
@@ -86,7 +88,15 @@ export async function googleCalendarClient(
     async listCalendars() {
       const res = await call("/users/me/calendarList?minAccessRole=writer");
       if (!res.ok) throw new GoogleAuthError(res.status);
-      const body = (await res.json()) as { items?: Array<{ id: string; summary: string; primary?: boolean; accessRole?: string }> };
+      const body = (await res.json()) as {
+        items?: Array<{
+          id: string;
+          summary: string;
+          primary?: boolean;
+          accessRole?: string;
+          timeZone?: string;
+        }>;
+      };
       return body.items ?? [];
     },
     async createCalendar(summary, timeZone) {
