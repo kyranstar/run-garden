@@ -50,7 +50,17 @@ export function initialSnapshot(createdDate: LocalDate): GardenSnapshot {
     state,
     plants: [],
     unlockedSpeciesIds: SPECIES.filter((s) => s.unlock.kind === "start").map((s) => s.id),
-    wildlife: { birds: false, bees: false, butterflies: false, fireflies: false },
+    wildlife: {
+      birds: false,
+      bees: false,
+      butterflies: false,
+      fireflies: false,
+      squirrels: false,
+      rabbits: false,
+      frogs: false,
+      dragonflies: false,
+      ladybugs: false,
+    },
   };
   // The garden begins with a small starter meadow so day one is not bare dirt.
   seedStarterPlants(snapshot, createdDate);
@@ -645,6 +655,15 @@ function evaluateWildlife(
       !inDecline &&
       s.eveningRunCount >= 10 &&
       (matureTreeCount(snapshot) >= 1 || floweringSpecies.size >= 2),
+    // Earned by an increasingly rich ecosystem.
+    squirrels: !inDecline && matureTreeCount(snapshot) >= 1,
+    rabbits:
+      !inDecline &&
+      s.moisture > 0.6 &&
+      living.some((p) => p.category === "groundcover" || p.category === "grass"),
+    frogs: !inDecline && s.moisture > 0.5 && living.some((p) => p.category === "fern"),
+    dragonflies: !inDecline && s.floweringDensity >= 0.3,
+    ladybugs: !inDecline && bloomingSpecies.size >= 1,
   };
 
   for (const kind of Object.keys(desired) as WildlifeKind[]) {

@@ -170,6 +170,7 @@ function App() {
   const [day, setDay] = useState(frames.length - 1);
   const [playing, setPlaying] = useState(false);
   const [reduced, setReduced] = useState(false);
+  const [tod, setTod] = useState(13);
   const timer = useRef<number | null>(null);
 
   useEffect(() => {
@@ -212,7 +213,12 @@ function App() {
           <p className="muted">Scrub through nine months, or press play and watch it grow.</p>
         </div>
         <div className="scene-frame big">
-          <GardenScene snapshot={frame.snapshot} reducedMotion={reduced} idPrefix="rg-timeline" />
+          <GardenScene
+            snapshot={frame.snapshot}
+            reducedMotion={reduced}
+            idPrefix="rg-timeline"
+            timeOfDay={tod}
+          />
         </div>
         <div className="stats">
           <Stat label="Day" value={frame.idx} />
@@ -236,6 +242,29 @@ function App() {
               setPlaying(false);
               setDay(Number(e.target.value));
             }}
+          />
+        </div>
+        <div className="controls">
+          <span className="tod-label">
+            ☀️ Time of day —{" "}
+            {tod < 6 || tod >= 20
+              ? "night"
+              : tod < 9
+                ? "dawn"
+                : tod < 16
+                  ? "midday"
+                  : tod < 19
+                    ? "afternoon"
+                    : "dusk"}
+          </span>
+          <input
+            className="scrub"
+            type="range"
+            min={0}
+            max={24}
+            step={0.5}
+            value={tod}
+            onChange={(e) => setTod(Number(e.target.value))}
           />
         </div>
       </section>

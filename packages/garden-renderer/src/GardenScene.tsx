@@ -65,6 +65,16 @@ function sceneCss(p: string): string {
 @keyframes ${p}-leaffall{0%{transform:translate(0,0) rotate(0deg);opacity:0}10%{opacity:0.8}85%{opacity:0.55}100%{transform:translate(150px,110px) rotate(140deg);opacity:0}}
 .${p}-glide{animation:${p}-glideby 13s ease-in-out infinite alternate;}
 @keyframes ${p}-glideby{from{transform:translate(0,0)}to{transform:translate(60px,-14px)}}
+.${p}-scamper{animation:${p}-scamper 6s ease-in-out infinite alternate;}
+@keyframes ${p}-scamper{from{transform:translate(0,0)}to{transform:translate(24px,-2px)}}
+.${p}-hop{animation:${p}-hop 2.8s ease-in-out infinite;}
+@keyframes ${p}-hop{0%,100%{transform:translate(0,0)}42%{transform:translate(7px,-7px)}50%{transform:translate(9px,0)}}
+.${p}-crawl{animation:${p}-crawl 10s linear infinite;}
+@keyframes ${p}-crawl{from{transform:translate(0,0)}to{transform:translate(16px,0)}}
+.${p}-twinkle{animation:${p}-twinkle 3.6s ease-in-out infinite alternate;}
+@keyframes ${p}-twinkle{from{opacity:0.2}to{opacity:0.95}}
+.${p}-croak{animation:${p}-croak 3.2s ease-in-out infinite;}
+@keyframes ${p}-croak{0%,90%,100%{transform:scaleY(1)}95%{transform:scaleY(1.12)}}
 `;
 }
 
@@ -96,35 +106,6 @@ function rainOverlay(p: string, animate: boolean, recovery: boolean): ReactNode 
   return (
     <g data-overlay="rain" pointerEvents="none">
       <g className={animate ? `${p}-rain` : undefined}>{streaks}</g>
-    </g>
-  );
-}
-
-function sunOverlay(p: string, soft: boolean): ReactNode {
-  const cx = 848;
-  const cy = 84;
-  const rays: ReactNode[] = [];
-  for (let i = 0; i < 8; i++) {
-    const a = (i * Math.PI) / 4 + Math.PI / 8;
-    rays.push(
-      <line
-        key={`r${i}`}
-        x1={n(cx + Math.cos(a) * 25)}
-        y1={n(cy + Math.sin(a) * 25)}
-        x2={n(cx + Math.cos(a) * 37)}
-        y2={n(cy + Math.sin(a) * 37)}
-        stroke="#eee0ae"
-        strokeWidth={1.6}
-        strokeLinecap="round"
-        opacity={soft ? 0.3 : 0.5}
-      />,
-    );
-  }
-  return (
-    <g data-overlay="sun" pointerEvents="none" opacity={soft ? 0.8 : 1}>
-      <circle cx={cx} cy={cy} r={44} fill={`url(#${p}-sunglow)`} />
-      <circle cx={cx} cy={cy} r={17} fill={soft ? "#f6ecca" : "#f4e5b4"} />
-      {rays}
     </g>
   );
 }
@@ -185,9 +166,8 @@ function weatherOverlay(p: string, weather: GardenWeatherState, animate: boolean
     case "recovery_rain":
       return rainOverlay(p, animate, true);
     case "clear_sun":
-      return sunOverlay(p, false);
     case "soft_sun":
-      return sunOverlay(p, true);
+      return null; // the sun is drawn by the time-of-day celestial layer
     case "light_clouds":
       return cloudsOverlay(p, animate, false);
     case "dry_spell":
@@ -334,6 +314,210 @@ function fireflyShapes(p: string, animate: boolean): ReactNode {
   );
 }
 
+/* ── earned creatures ─────────────────────────────────────────────────────── */
+
+function squirrelShapes(p: string, animate: boolean, plants: GardenPlant[]): ReactNode {
+  const tree =
+    firstById(plants, (pl) => pl.category === "tree" && pl.state !== "dead" && pl.maturity >= 0.5) ??
+    firstById(plants, (pl) => pl.category === "tree" && pl.state !== "dead");
+  const a = tree ? anchorOf(tree) : { x: 300, y: 470, s: 0.9 };
+  return (
+    <g data-wildlife="squirrels" pointerEvents="none">
+      <g
+        className={animate ? `${p}-scamper` : undefined}
+        transform={`translate(${n(a.x + 12 * a.s)} ${n(a.y - 4)}) scale(${n(a.s)})`}
+      >
+        <path d="M-6,-1 Q-13,-4 -10,-11 Q-6,-9 -5,-4" fill="#8a5a34" />
+        <ellipse cx={-2} cy={-2} rx={4.4} ry={3} fill="#96633b" />
+        <circle cx={3} cy={-4} r={2.4} fill="#9c6a40" />
+        <path d="M2,-6.2 l0.6,-1.6 l1,1.4 Z" fill="#9c6a40" />
+        <circle cx={4} cy={-4.3} r={0.5} fill="#2a2018" />
+        <path d="M-3,1 v2 M1,1 v2" stroke="#7a5230" strokeWidth={1} strokeLinecap="round" />
+      </g>
+    </g>
+  );
+}
+
+function rabbitShapes(p: string, animate: boolean, plants: GardenPlant[]): ReactNode {
+  const gc = firstById(
+    plants,
+    (pl) => (pl.category === "groundcover" || pl.category === "grass") && pl.state !== "dead",
+  );
+  const r = rng("wildlife:rabbits");
+  const a = gc ? anchorOf(gc) : { x: 640, y: 490, s: 1 };
+  return (
+    <g data-wildlife="rabbits" pointerEvents="none">
+      <g
+        className={animate ? `${p}-hop` : undefined}
+        transform={`translate(${n(a.x + (r() - 0.5) * 30)} ${n(a.y - 2)}) scale(${n(a.s)})`}
+      >
+        <ellipse cx={0} cy={0} rx={5} ry={3.4} fill="#c8bdad" />
+        <circle cx={4} cy={-2.4} r={2.4} fill="#cfc4b4" />
+        <ellipse cx={3.2} cy={-6} rx={0.9} ry={3.2} fill="#cfc4b4" transform="rotate(-12 3.2 -6)" />
+        <ellipse cx={5} cy={-6} rx={0.9} ry={3.2} fill="#cfc4b4" transform="rotate(6 5 -6)" />
+        <circle cx={5} cy={-2.6} r={0.5} fill="#3a2f26" />
+        <circle cx={-5} cy={0} r={1.4} fill="#e7dccb" />
+      </g>
+    </g>
+  );
+}
+
+function frogShapes(p: string, animate: boolean, plants: GardenPlant[]): ReactNode {
+  const fern = firstById(plants, (pl) => pl.category === "fern" && pl.state !== "dead");
+  const r = rng("wildlife:frogs");
+  const a = fern ? anchorOf(fern) : { x: 520, y: 500, s: 1 };
+  return (
+    <g data-wildlife="frogs" pointerEvents="none">
+      <g
+        className={animate ? `${p}-croak` : undefined}
+        style={{ transformBox: "fill-box", transformOrigin: "50% 100%" } as CSSProperties}
+        transform={`translate(${n(a.x + (r() - 0.5) * 20)} ${n(a.y + 2)}) scale(${n(a.s)})`}
+      >
+        <ellipse cx={0} cy={0} rx={4.6} ry={3} fill="#6f9e52" />
+        <circle cx={-2.4} cy={-2.8} r={1.5} fill="#7cae5c" />
+        <circle cx={2.4} cy={-2.8} r={1.5} fill="#7cae5c" />
+        <circle cx={-2.4} cy={-2.8} r={0.6} fill="#243018" />
+        <circle cx={2.4} cy={-2.8} r={0.6} fill="#243018" />
+        <path d="M-3,1.5 q3,2 6,0" stroke="#3f5c2e" strokeWidth={0.8} fill="none" strokeLinecap="round" />
+      </g>
+    </g>
+  );
+}
+
+function dragonflyShapes(p: string, animate: boolean, plants: GardenPlant[]): ReactNode {
+  const flower =
+    firstById(plants, (pl) => pl.state === "flowering") ??
+    firstById(plants, (pl) => pl.category === "flower" && pl.state !== "dead");
+  const r = rng("wildlife:dragonflies");
+  const a = flower ? anchorOf(flower) : { x: 460, y: 430, s: 0.9 };
+  const x = n(Math.min(920, Math.max(80, a.x + (r() - 0.5) * 80)));
+  const y = n(a.y - 40 - r() * 30);
+  return (
+    <g data-wildlife="dragonflies" pointerEvents="none">
+      <g className={animate ? `${p}-hover` : undefined} transform={`translate(${x} ${y})`}>
+        <rect x={-0.5} y={-1} width={1} height={9} rx={0.5} fill="#3b7f86" />
+        <circle cx={0} cy={-1.5} r={1.4} fill="#357b82" />
+        <ellipse cx={-3.5} cy={0} rx={4} ry={1.2} fill="#c3e2e8" opacity={0.7} transform="rotate(-8 -3.5 0)" />
+        <ellipse cx={3.5} cy={0} rx={4} ry={1.2} fill="#c3e2e8" opacity={0.7} transform="rotate(8 3.5 0)" />
+        <ellipse cx={-3.2} cy={2} rx={3.4} ry={1} fill="#c3e2e8" opacity={0.55} transform="rotate(-14 -3.2 2)" />
+        <ellipse cx={3.2} cy={2} rx={3.4} ry={1} fill="#c3e2e8" opacity={0.55} transform="rotate(14 3.2 2)" />
+      </g>
+    </g>
+  );
+}
+
+function ladybugShapes(p: string, animate: boolean, plants: GardenPlant[]): ReactNode {
+  const leaf = firstById(
+    plants,
+    (pl) =>
+      (pl.category === "shrub" || pl.category === "groundcover" || pl.category === "flower") &&
+      pl.state !== "dead",
+  );
+  const r = rng("wildlife:ladybugs");
+  const a = leaf ? anchorOf(leaf) : { x: 720, y: 470, s: 1 };
+  return (
+    <g data-wildlife="ladybugs" pointerEvents="none">
+      <g
+        className={animate ? `${p}-crawl` : undefined}
+        transform={`translate(${n(a.x + (r() - 0.5) * 24)} ${n(a.y - 6 - r() * 8)}) scale(${n(a.s)})`}
+      >
+        <ellipse cx={0} cy={0} rx={2.6} ry={2.2} fill="#cf3b32" />
+        <path d="M0,-2.2 V2.2" stroke="#2a1512" strokeWidth={0.5} />
+        <circle cx={0} cy={-2.4} r={1} fill="#2a1512" />
+        <circle cx={-1.1} cy={-0.4} r={0.4} fill="#2a1512" />
+        <circle cx={1.1} cy={-0.4} r={0.4} fill="#2a1512" />
+        <circle cx={-0.9} cy={1} r={0.4} fill="#2a1512" />
+        <circle cx={0.9} cy={1} r={0.4} fill="#2a1512" />
+      </g>
+    </g>
+  );
+}
+
+/* ── time of day (moving sun / moon / stars) ──────────────────────────────── */
+
+interface SkyTime {
+  isNight: boolean;
+  sun: { x: number; y: number } | null;
+  moon: { x: number; y: number } | null;
+  tint: string | null;
+  tintOpacity: number;
+}
+
+const arcX = (f: number) => 120 + f * 760;
+const arcY = (f: number) => 250 - Math.sin(Math.max(0, Math.min(1, f)) * Math.PI) * 205;
+
+function skyTime(hour: number): SkyTime {
+  const t = ((hour % 24) + 24) % 24;
+  const isDay = t >= 6 && t <= 18.5;
+  if (isDay) {
+    const f = (t - 6) / 12.5;
+    const edge = Math.min(f, 1 - f);
+    const warm = edge < 0.16;
+    return {
+      isNight: false,
+      sun: { x: n(arcX(f)), y: n(arcY(f)) },
+      moon: null,
+      tint: warm ? "#e79a4e" : null,
+      tintOpacity: warm ? 0.14 : 0,
+    };
+  }
+  const nt = t > 18.5 ? t - 18.5 : t + 5.5; // 0..11 across the night
+  const f = nt / 11;
+  return {
+    isNight: true,
+    sun: null,
+    moon: { x: n(arcX(f)), y: n(arcY(f) + 12) },
+    tint: "#1b2a4c",
+    tintOpacity: 0.42,
+  };
+}
+
+function celestialLayer(p: string, time: SkyTime): ReactNode {
+  if (time.isNight && time.moon) {
+    return (
+      <g data-celestial="moon" pointerEvents="none">
+        <circle cx={time.moon.x} cy={time.moon.y} r={38} fill={`url(#${p}-sunglow)`} opacity={0.5} />
+        <circle cx={time.moon.x} cy={time.moon.y} r={15} fill="#eef0e0" />
+        <circle cx={time.moon.x + 5} cy={time.moon.y - 3} r={13} fill="#1b2a4c" opacity={0.35} />
+      </g>
+    );
+  }
+  if (time.sun) {
+    return (
+      <g data-celestial="sun" pointerEvents="none">
+        <circle cx={time.sun.x} cy={time.sun.y} r={46} fill={`url(#${p}-sunglow)`} />
+        <circle cx={time.sun.x} cy={time.sun.y} r={18} fill="#f6e6b0" />
+      </g>
+    );
+  }
+  return null;
+}
+
+function starsLayer(p: string, animate: boolean): ReactNode {
+  const r = rng("sky:stars");
+  const stars: ReactNode[] = [];
+  for (let i = 0; i < 32; i++) {
+    const style: CSSProperties | undefined = animate ? { animationDelay: `-${n(r() * 3.5)}s` } : undefined;
+    stars.push(
+      <circle
+        key={i}
+        cx={n(r() * 1000)}
+        cy={n(r() * 250)}
+        r={n(0.6 + r() * 0.9)}
+        fill="#eef0e0"
+        className={animate ? `${p}-twinkle` : undefined}
+        style={style}
+        opacity={animate ? undefined : 0.7}
+      />,
+    );
+  }
+  return (
+    <g data-sky="stars" pointerEvents="none">
+      {stars}
+    </g>
+  );
+}
+
 /* ── scene ───────────────────────────────────────────────────────────────── */
 
 export interface GardenSceneProps {
@@ -343,6 +527,8 @@ export interface GardenSceneProps {
   onSelectPlant?: (plantId: string | null) => void;
   idPrefix?: string;
   className?: string;
+  /** Hour of day 0–24 for the sun/moon position. Defaults to midday. */
+  timeOfDay?: number;
 }
 
 export function GardenScene({
@@ -352,10 +538,12 @@ export function GardenScene({
   onSelectPlant,
   idPrefix = "rg-garden",
   className,
+  timeOfDay,
 }: GardenSceneProps) {
   const p = idPrefix;
   const animate = !reducedMotion;
   const weather = snapshot.state.weatherState;
+  const time = skyTime(timeOfDay ?? 13);
   const moisture = clamp01(snapshot.state.moisture);
   const desc = describeGarden(snapshot);
 
@@ -395,6 +583,8 @@ export function GardenScene({
 
       {/* sky */}
       <rect x={0} y={0} width={1000} height={300} fill={`url(#${p}-sky)`} />
+      {time.isNight ? starsLayer(p, animate) : null}
+      {celestialLayer(p, time)}
 
       {/* distant hills */}
       <path d="M0,296 C130,240 320,246 480,296 L480,300 L0,300 Z" fill={shade(hill, 1.06)} opacity={0.65} />
@@ -452,6 +642,11 @@ export function GardenScene({
         );
       })}
 
+      {/* time-of-day tint: warm at dawn/dusk, dusky blue at night */}
+      {time.tint && time.tintOpacity > 0 ? (
+        <rect x={0} y={0} width={1000} height={560} fill={time.tint} opacity={time.tintOpacity} pointerEvents="none" />
+      ) : null}
+
       {/* weather overlay */}
       {weatherOverlay(p, weather, animate)}
 
@@ -460,6 +655,11 @@ export function GardenScene({
       {snapshot.wildlife.bees ? beeShapes(p, animate, sorted) : null}
       {snapshot.wildlife.butterflies ? butterflyShapes(p, animate, sorted) : null}
       {snapshot.wildlife.fireflies ? fireflyShapes(p, animate) : null}
+      {snapshot.wildlife.squirrels ? squirrelShapes(p, animate, sorted) : null}
+      {snapshot.wildlife.rabbits ? rabbitShapes(p, animate, sorted) : null}
+      {snapshot.wildlife.frogs ? frogShapes(p, animate, sorted) : null}
+      {snapshot.wildlife.dragonflies ? dragonflyShapes(p, animate, sorted) : null}
+      {snapshot.wildlife.ladybugs ? ladybugShapes(p, animate, sorted) : null}
     </svg>
   );
 }

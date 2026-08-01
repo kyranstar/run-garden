@@ -58,6 +58,11 @@ const WILDLIFE_LABELS: Record<WildlifeKind, string> = {
   bees: "bees",
   butterflies: "butterflies",
   fireflies: "fireflies",
+  squirrels: "squirrels",
+  rabbits: "rabbits",
+  frogs: "frogs",
+  dragonflies: "dragonflies",
+  ladybugs: "ladybugs",
 };
 
 const HABITAT_LABELS = {

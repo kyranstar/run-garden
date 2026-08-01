@@ -591,6 +591,41 @@ button {
   flex: none;
   padding-top: 0.1rem;
 }
+.diversity {
+  margin-bottom: 0.7rem;
+}
+.diversity-bar {
+  display: flex;
+  height: 8px;
+  border-radius: 4px;
+  overflow: hidden;
+  gap: 1px;
+  background: var(--bg-sunken);
+}
+.diversity-seg {
+  display: block;
+  min-width: 3px;
+}
+.diversity-legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem 0.75rem;
+  margin-top: 0.5rem;
+  align-items: center;
+}
+.diversity-tag {
+  font-size: 0.72rem;
+  color: var(--ink-soft);
+  display: inline-flex;
+  align-items: center;
+  gap: 0.25rem;
+}
+.diversity-tag .dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 2px;
+  display: inline-block;
+}
 .species-grid {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(140px, 1fr));

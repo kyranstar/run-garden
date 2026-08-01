@@ -118,7 +118,17 @@ export const gardenEventSchema = z.object({
 });
 export type GardenEvent = z.infer<typeof gardenEventSchema>;
 
-export const WILDLIFE_KINDS = ["birds", "bees", "butterflies", "fireflies"] as const;
+export const WILDLIFE_KINDS = [
+  "birds",
+  "bees",
+  "butterflies",
+  "fireflies",
+  "squirrels",
+  "rabbits",
+  "frogs",
+  "dragonflies",
+  "ladybugs",
+] as const;
 export type WildlifeKind = (typeof WILDLIFE_KINDS)[number];
 
 export interface GardenWildlife {

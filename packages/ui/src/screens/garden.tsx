@@ -93,6 +93,54 @@ const WEATHER_WHY: Record<GardenWeatherState, string> = {
   mild_drought: "about two weeks without a run, so the garden is in drought.",
 };
 
+const CATEGORY_ORDER: Array<{ key: string; label: string; color: string }> = [
+  { key: "tree", label: "Trees", color: "#4e7a5a" },
+  { key: "shrub", label: "Shrubs", color: "#6f9a58" },
+  { key: "flower", label: "Flowers", color: "#c98bb0" },
+  { key: "fern", label: "Ferns", color: "#5f8f6a" },
+  { key: "vine", label: "Vines", color: "#7fa173" },
+  { key: "grass", label: "Grasses", color: "#9fb26a" },
+  { key: "groundcover", label: "Ground", color: "#8aa06a" },
+  { key: "fungus", label: "Fungi", color: "#b0895f" },
+];
+
+/** Unobtrusive breakdown of plant-family diversity in the garden. */
+function DiversityStrip({ snapshot }: { snapshot: GardenSnapshot }) {
+  const counts = new Map<string, number>();
+  let total = 0;
+  for (const pl of snapshot.plants) {
+    if (pl.state === "dead") continue;
+    counts.set(pl.category, (counts.get(pl.category) ?? 0) + 1);
+    total += 1;
+  }
+  if (total === 0) return null;
+  const present = CATEGORY_ORDER.filter((c) => (counts.get(c.key) ?? 0) > 0);
+  return (
+    <div className="diversity">
+      <div className="diversity-bar" role="img" aria-label={`${present.length} of 8 plant families`}>
+        {present.map((c) => (
+          <span
+            key={c.key}
+            className="diversity-seg"
+            style={{ flexGrow: counts.get(c.key)!, background: c.color }}
+            title={`${c.label}: ${counts.get(c.key)}`}
+          />
+        ))}
+      </div>
+      <div className="diversity-legend">
+        <span className="faint">
+          {present.length} of 8 plant families · {total} plants
+        </span>
+        {present.map((c) => (
+          <span key={c.key} className="diversity-tag">
+            <span className="dot" style={{ background: c.color }} /> {c.label} {counts.get(c.key)}
+          </span>
+        ))}
+      </div>
+    </div>
+  );
+}
+
 function conditionStory(
   condition: GardenConditionWord,
   snapshot: GardenSnapshot,
@@ -119,6 +167,7 @@ export function GardenScreen() {
   const [selectedPlantId, setSelectedPlantId] = useState<string | null>(null);
   const [showWeather, setShowWeather] = useState(false);
   const reducedMotion = usePrefersReducedMotion();
+  const hourOfDay = new Date().getHours() + new Date().getMinutes() / 60;
 
   if (garden.isLoading) return <Spinner label="Loading the garden" />;
   if (!garden.data) return <EmptyState title="Couldn't load the garden" />;
@@ -150,6 +199,7 @@ export function GardenScreen() {
           reducedMotion={reducedMotion}
           selectedPlantId={selectedPlantId}
           onSelectPlant={setSelectedPlantId}
+          timeOfDay={hourOfDay}
         />
       </div>
 
@@ -228,6 +278,7 @@ export function GardenScreen() {
           )}
         </Card>
         <Card title={`Species collection (${species.length})`}>
+          <DiversityStrip snapshot={snapshot} />
           {species.length === 0 ? (
             <p className="muted">
               Species unlock as you train — hard runs bring flowers, long runs bring trees.

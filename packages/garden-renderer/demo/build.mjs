@@ -78,6 +78,7 @@ const html = `<!doctype html>
   .play{flex:0 0 auto;border:1px solid var(--border);background:var(--green);color:#fff;font-weight:640;padding:10px 18px;border-radius:11px;cursor:pointer;font-size:.95rem}
   .play:hover{filter:brightness(1.05)}
   .scrub{flex:1 1 auto;accent-color:var(--green);height:26px}
+  .tod-label{flex:0 0 auto;color:var(--muted);font-size:.9rem;white-space:nowrap}
   .grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(300px,1fr));gap:16px;margin-top:16px}
   .card{margin:0;background:var(--bg);border:1px solid var(--border);border-radius:14px;overflow:hidden}
   .card figcaption{padding:11px 13px}
