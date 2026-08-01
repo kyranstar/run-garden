@@ -1,0 +1,44 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "Run Garden",
+  "version": "0.1.0",
+  "identifier": "com.rungarden.desktop",
+  "build": {
+    "beforeDevCommand": "pnpm dev",
+    "devUrl": "http://localhost:5180",
+    "beforeBuildCommand": "pnpm build",
+    "frontendDist": "../dist"
+  },
+  "app": {
+    "windows": [
+      {
+        "title": "Run Garden",
+        "width": 1180,
+        "height": 800,
+        "minWidth": 720,
+        "minHeight": 560,
+        "resizable": true
+      }
+    ],
+    "security": {
+      "csp": "default-src 'self'; frame-src http://localhost:8787 https://*.workers.dev https://*; img-src 'self' data:; style-src 'self' 'unsafe-inline'; connect-src 'self' http://localhost:8787 https://*"
+    },
+    "trayIcon": {
+      "iconPath": "icons/tray.png",
+      "tooltip": "Run Garden",
+      "menuOnLeftClick": false
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": ["dmg", "app"],
+    "icon": ["icons/icon.png"],
+    "category": "HealthAndFitness",
+    "shortDescription": "Your COROS plan, fitted to your real week.",
+    "macOS": {
+      "minimumSystemVersion": "12.0"
+    },
+    "externalBin": ["binaries/coros-bridge"]
+  },
+  "plugins": {}
+}

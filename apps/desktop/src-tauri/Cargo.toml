@@ -1,0 +1,27 @@
+[package]
+name = "run-garden-desktop"
+version = "0.1.0"
+description = "Run Garden desktop companion"
+authors = ["Run Garden"]
+edition = "2021"
+rust-version = "1.77"
+
+[lib]
+name = "run_garden_desktop_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = ["tray-icon"] }
+tauri-plugin-shell = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+# OS keychain: the COROS password and device private key live only here.
+keyring = { version = "3", features = ["apple-native", "windows-native", "sync-secret-service"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "process", "io-util", "sync", "time"] }
+uuid = { version = "1", features = ["v4"] }
+
+[features]
+custom-protocol = ["tauri/custom-protocol"]
