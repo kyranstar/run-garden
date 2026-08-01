@@ -1,4 +1,4 @@
-import { and, eq, gte, inArray, isNull, lte } from "drizzle-orm";
+import { and, eq, gt, gte, inArray, isNull, lte, sql } from "drizzle-orm";
 import {
   activities,
   activityLaps,
@@ -73,12 +73,60 @@ function rowToNormalized(row: typeof activities.$inferSelect): NormalizedActivit
   };
 }
 
+/**
+ * Guard against the COROS centisecond bug (older desktop bridge builds stored
+ * activity duration in centiseconds as if seconds). A run whose implied pace is
+ * impossibly slow (> 30 min/km) has a 100x-too-large duration — correct it. No
+ * real run sustains a 30 min/km average, so this never touches good data, and
+ * it's idempotent (a corrected row's implied pace is normal).
+ */
+/**
+ * One-shot corrective sweep for already-stored rows hit by the COROS centisecond
+ * bug (same 30-min/km signature as sanitizeRunDuration). Idempotent — once a row
+ * is corrected its implied pace is normal and it's excluded. Runs at the start of
+ * every ingest so it self-heals on the next sync.
+ */
+export async function repairDurations(db: Db, userId: string): Promise<void> {
+  await db
+    .update(activities)
+    .set({
+      durationSeconds: sql`round(${activities.durationSeconds} / 100.0)`,
+      elapsedSeconds: sql`case when ${activities.elapsedSeconds} is not null then round(${activities.elapsedSeconds} / 100.0) else ${activities.elapsedSeconds} end`,
+      updatedAt: nowInstant(),
+    })
+    .where(
+      and(
+        eq(activities.userId, userId),
+        eq(activities.sport, "run"),
+        gt(activities.distanceMeters, 0),
+        sql`(${activities.durationSeconds} * 1.0) / (${activities.distanceMeters} / 1000.0) > 1800`,
+      ),
+    );
+}
+
+export function sanitizeRunDuration(a: NormalizedActivity): NormalizedActivity {
+  if (
+    a.sport === "run" &&
+    a.distanceMeters != null &&
+    a.distanceMeters > 0 &&
+    a.durationSeconds / (a.distanceMeters / 1000) > 1800
+  ) {
+    return {
+      ...a,
+      durationSeconds: Math.round(a.durationSeconds / 100),
+      elapsedSeconds: a.elapsedSeconds != null ? Math.round(a.elapsedSeconds / 100) : a.elapsedSeconds,
+    };
+  }
+  return a;
+}
+
 async function upsertNormalized(
   db: Db,
   userId: string,
   normalized: NormalizedActivity,
   existingId?: string,
 ): Promise<string> {
+  normalized = sanitizeRunDuration(normalized);
   const now = nowInstant();
   if (existingId) {
     await db
@@ -178,6 +226,7 @@ async function upsertSourceLink(
 }
 
 export async function ingestActivities(db: Db, input: IngestInput): Promise<IngestStats> {
+  await repairDurations(db, input.userId);
   const now = nowInstant();
   const stats: IngestStats = {
     newActivities: 0,

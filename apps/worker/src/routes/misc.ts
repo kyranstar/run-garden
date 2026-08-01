@@ -62,7 +62,7 @@ import { googleCalendarClient } from "../services/google-calendar.js";
 import { loadPreferences, savePreferences, syncCalendar } from "../services/calendar-sync.js";
 import { llmBudgetStatus, LLM_BUDGET } from "../services/llm.js";
 import { stravaClient } from "../services/strava.js";
-import { ingestActivities } from "../services/completion.js";
+import { ingestActivities, repairDurations } from "../services/completion.js";
 import { resimulateFrom } from "../services/garden-sync.js";
 
 // ── Calendar management ──────────────────────────────────────────────────────
@@ -204,6 +204,7 @@ activityRoutes.get("/", async (c) => {
 activityRoutes.post("/backfill", async (c) => {
   const db = c.get("db");
   const userId = c.get("userId");
+  await repairDurations(db, userId); // correct any centisecond-bugged run durations
   const client = await stravaClient(db, c.env, userId);
   if (!client) return c.json({ ok: false, reason: "strava_unavailable", ingested: 0, matched: 0 });
   const days = Math.min(365, Math.max(1, Number(c.req.query("days") ?? 90)));
