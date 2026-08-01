@@ -127,6 +127,7 @@ export interface CandidateResponse {
 }
 
 export interface PlanResponse {
+  today: string;
   plan: { name: string; startDate: string | null; endDate: string | null } | null;
   workouts: WorkoutDto[];
 }

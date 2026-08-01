@@ -467,6 +467,28 @@ button {
   text-transform: uppercase;
   margin: 1.2rem 0 0.5rem;
 }
+.week-header.current {
+  color: var(--green-ink);
+}
+.today-tag {
+  display: inline-block;
+  margin-left: 0.5rem;
+  padding: 0.06rem 0.42rem;
+  border-radius: 999px;
+  background: var(--green);
+  color: #fff;
+  font-size: 0.62rem;
+  letter-spacing: 0.03em;
+  vertical-align: middle;
+}
+.workout-row.is-today {
+  border-color: var(--green);
+  box-shadow: inset 3px 0 0 var(--green);
+  background: var(--green-soft);
+}
+.workout-row.is-today .date .dom {
+  color: var(--green-ink);
+}
 .workout-row {
   display: flex;
   align-items: center;

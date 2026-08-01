@@ -197,7 +197,9 @@ planRoutes.get("/workouts", async (c) => {
   const db = c.get("db");
   const prefs = await loadPreferences(db, c.get("userId"));
   const today = todayInZone(prefs.timezone);
-  const start = c.req.query("start") ?? addDays(today, -14);
+  // Look back 8 weeks by default so completed/past runs are browsable; callers
+  // can widen with ?start=.
+  const start = c.req.query("start") ?? addDays(today, -56);
   const end = c.req.query("end") ?? addDays(today, 7 * prefs.mirrorWeeksAhead);
   const rows = await db
     .select()
@@ -216,6 +218,7 @@ planRoutes.get("/workouts", async (c) => {
     .from(trainingPlans)
     .where(and(eq(trainingPlans.userId, c.get("userId")), eq(trainingPlans.status, "active")));
   return c.json({
+    today,
     plan: plans[0] ? { name: plans[0].name, startDate: plans[0].startDate, endDate: plans[0].endDate } : null,
     workouts: rows.map(workoutDto),
   });

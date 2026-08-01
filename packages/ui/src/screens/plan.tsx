@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useSearchParams } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { api, type WorkoutDto } from "@rg/api-client";
@@ -147,6 +147,19 @@ export function PlanScreen() {
   const [params, setParams] = useSearchParams();
   const plan = useQuery({ queryKey: ["plan"], queryFn: () => api.workouts() });
   const selectedId = params.get("workout");
+  const todayRef = useRef<HTMLElement | null>(null);
+  const scrolled = useRef(false);
+  const today = plan.data?.today;
+  const todayWeek = today ? startOfIsoWeek(today) : null;
+
+  // Land on the current week on first load, so today's run is front and centre
+  // instead of buried under weeks of history.
+  useEffect(() => {
+    if (plan.data && !scrolled.current && todayRef.current) {
+      scrolled.current = true;
+      todayRef.current.scrollIntoView({ block: "start" });
+    }
+  }, [plan.data]);
 
   const weeks = useMemo(() => {
     const map = new Map<string, WorkoutDto[]>();
@@ -168,7 +181,17 @@ export function PlanScreen() {
     <div>
       <div className="row-between screen-title">
         <h1>Plan</h1>
-        {plan.data.plan ? <span className="muted">{plan.data.plan.name}</span> : null}
+        <div className="row">
+          {plan.data.plan ? <span className="muted">{plan.data.plan.name}</span> : null}
+          {plan.data.workouts.length > 0 ? (
+            <button
+              className="btn btn-small"
+              onClick={() => todayRef.current?.scrollIntoView({ block: "start", behavior: "smooth" })}
+            >
+              Today
+            </button>
+          ) : null}
+        </div>
       </div>
       {plan.data.workouts.length === 0 ? (
         <EmptyState art="🗓" title="No active COROS training plan was found">
@@ -176,12 +199,15 @@ export function PlanScreen() {
         </EmptyState>
       ) : (
         weeks.map(([weekStart, workouts]) => (
-          <section key={weekStart}>
-            <h2 className="week-header">Week of {formatDayLong(weekStart)}</h2>
+          <section key={weekStart} ref={weekStart === todayWeek ? todayRef : undefined}>
+            <h2 className={`week-header ${weekStart === todayWeek ? "current" : ""}`}>
+              Week of {formatDayLong(weekStart)}
+              {weekStart === todayWeek ? <span className="today-tag">This week</span> : null}
+            </h2>
             {workouts.map((w) => (
               <button
                 key={w.id}
-                className={`workout-row ${w.completionState === "completed" || w.completionState === "provisionally_completed" ? "done" : ""}`}
+                className={`workout-row ${w.completionState === "completed" || w.completionState === "provisionally_completed" ? "done" : ""} ${w.effectiveDate === today ? "is-today" : ""}`}
                 onClick={() => setParams({ workout: w.id })}
               >
                 <div className="date" aria-hidden>
