@@ -28,6 +28,19 @@ importers:
         specifier: ^5.7.3
         version: 5.9.3
 
+  packages/garden-engine:
+    dependencies:
+      '@rg/domain':
+        specifier: workspace:*
+        version: link:../domain
+    devDependencies:
+      typescript:
+        specifier: ^5.7.3
+        version: 5.9.3
+      vitest:
+        specifier: ^3.0.0
+        version: 3.2.7(@types/node@22.20.1)
+
   packages/scheduling:
     dependencies:
       '@rg/domain':
