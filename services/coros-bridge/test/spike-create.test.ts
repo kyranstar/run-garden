@@ -1040,3 +1040,235 @@ describe("runCreateSpike — stray sweep + cleanup-only mode", () => {
     expect(server.entityByIdInPlan("90")).toBeDefined();
   });
 });
+
+describe("runCreateSpike — plan-wide delete guards", () => {
+  /**
+   * Demonstrated attack: the ambiguity guard only saw the sweep window, so a
+   * real workout sharing the delete triple far outside it was invisible — and
+   * a status:3 delete is plan-wide, so it would have been destroyed.
+   */
+  it("sees a colliding workout 120 days out, outside every working window", async () => {
+    const { server, client } = await setup();
+    server.maintainsIdCounter = false;
+    server.reassignsIdInPlan = "counter"; // stores at maxIdInPlan+1 = 21
+    const victim: RawCorosEntity = {
+      id: "70000000000000555",
+      idInPlan: "21",
+      planId: FIXTURE_PLAN_ID,
+      planProgramId: "21",
+      happenDay: corosDay(addDaysIso(TODAY, 120)), // far outside ±30 and ±60
+      name: "Marathon Race",
+    };
+    server.state.schedule.entities!.push(victim);
+    const writesBefore = server.counts.scheduleWrites;
+
+    const report = await runCreateSpike(client, { today: TODAY, log: noop });
+
+    // The workout 120 days out is untouched — identified by its server id, not
+    // by an id-multiset that reassignment makes meaningless.
+    const survivor = (server.state.schedule.entities ?? []).find(
+      (e) => e.id === "70000000000000555",
+    );
+    expect(survivor).toBeDefined();
+    expect(survivor?.name).toBe("Marathon Race");
+    expect(Number(survivor?.happenDay)).toBe(corosDay(addDaysIso(TODAY, 120)));
+
+    // Only the workout whose id collided is refused; the other two are
+    // addressable and get removed.
+    expect(report.overall.leftovers).toHaveLength(1);
+    expect(report.overall.leftovers[0]).toContain("delete address");
+    expect(report.overall.leftovers[0]).toContain("remove it by hand");
+    expect(report.tests.strength.cleanedUp).toBe(false);
+    expect(report.tests.run.cleanedUp).toBe(true);
+    expect(report.tests.bike.cleanedUp).toBe(true);
+    expect(report.overall.baselineRestored).toBe(false);
+    expect(report.succeeded).toBe(false);
+    // 3 creates + exactly 2 deletes: the colliding one was never sent.
+    expect(server.counts.scheduleWrites).toBe(writesBefore + 5);
+  });
+
+  /**
+   * Demonstrated attack: a real, NAMED workout whose own program is missing
+   * from the response was classified as the spike's because a stamped program
+   * happened to share its idInPlan.
+   */
+  it("never claims a named workout whose program is absent from the response", async () => {
+    const { server, client } = await setup();
+    server.state.schedule.entities!.push(
+      {
+        id: "70000000000000601",
+        idInPlan: "50",
+        planId: FIXTURE_PLAN_ID,
+        planProgramId: "50",
+        happenDay: corosDay(addDaysIso(TODAY, 21)),
+        name: `${SPIKE_NAME} strength`,
+      },
+      {
+        // A real workout: same idInPlan, its own name, NO program in the read.
+        id: "70000000000000602",
+        idInPlan: "50",
+        planId: FIXTURE_PLAN_ID,
+        planProgramId: "51",
+        happenDay: corosDay(addDaysIso(TODAY, 30)),
+        name: "Recovery Spin",
+      },
+    );
+    server.state.schedule.programs!.push({
+      idInPlan: "50",
+      planId: FIXTURE_PLAN_ID,
+      name: `${SPIKE_NAME} strength`,
+      sportType: 4,
+    });
+
+    const report = await runCreateSpike(client, {
+      today: TODAY,
+      cleanupOnly: true,
+      log: noop,
+    });
+
+    // Exactly one stray recognised — the stamped entity, not the named one.
+    expect(report.strays?.found).toHaveLength(1);
+    expect(report.strays?.found.join(" ")).toContain(SPIKE_NAME);
+    expect(report.strays?.removed).toHaveLength(1);
+    // The real workout survives, identified by its server-assigned entity id.
+    const survivor = (server.state.schedule.entities ?? []).find(
+      (e) => e.id === "70000000000000602",
+    );
+    expect(survivor).toBeDefined();
+    expect(survivor?.name).toBe("Recovery Spin");
+    expect(
+      (server.state.schedule.entities ?? []).find((e) => e.id === "70000000000000601"),
+    ).toBeUndefined();
+  });
+});
+
+describe("runCreateSpike — dry run (read-only)", () => {
+  function seedStamped(server: MockCorosServer): void {
+    server.state.schedule.entities!.push(
+      {
+        id: "70000000000000701",
+        idInPlan: "49",
+        planId: FIXTURE_PLAN_ID,
+        planProgramId: "49",
+        happenDay: corosDay(addDaysIso(TODAY, 21)),
+        name: `${SPIKE_NAME} strength`,
+      },
+      {
+        // Unstamped, shares planId+idInPlan, DIFFERENT planProgramId.
+        id: "70000000000000702",
+        idInPlan: "49",
+        planId: FIXTURE_PLAN_ID,
+        planProgramId: "77",
+        happenDay: corosDay(addDaysIso(TODAY, 100)),
+        name: "Club Handicap",
+      },
+    );
+    server.state.schedule.programs!.push({
+      id: "sv-program-strength",
+      idInPlan: "49",
+      planId: FIXTURE_PLAN_ID,
+      name: `${SPIKE_NAME} strength`,
+      sportType: 4,
+      subType: 65535,
+      duration: 1234,
+      trainingLoad: 42,
+      exerciseNum: 1,
+      totalSets: 3,
+      exercises: [
+        { id: 1, exerciseType: 0, targetType: 2, targetValue: 60, sets: 3, isGroup: true, originId: "0" },
+        {
+          id: 2,
+          exerciseType: 2,
+          targetType: 3,
+          targetValue: 10,
+          intensityType: 1,
+          intensityValue: "",
+          intensityDisplayUnit: "6",
+          intensityCustom: 1,
+          originId: "426109589008859137",
+        },
+      ],
+    } as never);
+  }
+
+  it("reports ids, stored structure and collisions without writing anything", async () => {
+    const { server, client } = await setup();
+    seedStamped(server);
+    const writesBefore = server.counts.scheduleWrites;
+    const lines: string[] = [];
+
+    const report = await runCreateSpike(client, {
+      today: TODAY,
+      dryRun: true,
+      log: (line) => lines.push(line),
+    });
+
+    expect(report.mode).toBe("dry-run");
+    // ZERO writes — the whole point of the mode.
+    expect(server.counts.scheduleWrites).toBe(writesBefore);
+    expect(server.counts.scheduleWrites).toBe(0);
+
+    const dry = report.dryRun;
+    expect(dry?.stamped).toHaveLength(1);
+    const stray = dry!.stamped[0]!;
+    expect(stray.stampName).toBe(`${SPIKE_NAME} strength`);
+    expect(stray.date).toBe(addDaysIso(TODAY, 21));
+    expect(stray.planId).toBe(FIXTURE_PLAN_ID);
+    expect(stray.idInPlan).toBe("49");
+    expect(stray.planProgramId).toBe("49");
+    expect(stray.planProgramIdEqualsIdInPlan).toBe(true);
+    expect(stray.entityId).toBe("70000000000000701");
+
+    // Full structure, so the round-trip can be checked against what we submit.
+    expect(stray.program?.sportType).toBe(4);
+    expect(stray.program?.subType).toBe(65535);
+    expect(stray.program?.exercises).toHaveLength(2);
+    expect(stray.program?.exercises[0]).toMatchObject({
+      exerciseType: 0,
+      targetType: 2,
+      sets: 3,
+      isGroup: true,
+    });
+    expect(stray.program?.exercises[1]).toMatchObject({
+      exerciseType: 2,
+      targetType: 3,
+      targetValue: 10,
+      intensityType: 1,
+      intensityValue: "",
+      intensityDisplayUnit: "6",
+      originId: "426109589008859137",
+    });
+
+    // The collision question: is our delete triple unique?
+    expect(dry?.collisions).toHaveLength(1);
+    expect(dry?.collisions[0]).toMatchObject({
+      idInPlan: "49",
+      planProgramId: "77",
+      fullTripleMatches: false, // triple differs → a delete IS addressable
+      date: addDaysIso(TODAY, 100),
+    });
+
+    const output = lines.join("\n");
+    expect(output).toContain("read-only, no writes");
+    expect(output).toContain("planProgramId=49");
+    expect(output).toContain("COLLISION");
+    expect(output).toContain("triple differs, delete is addressable");
+    // A real workout's title still never reaches the report.
+    expect(JSON.stringify(report)).not.toContain("Club Handicap");
+  });
+
+  it("flags a full-triple collision as not safely deletable", async () => {
+    const { server, client } = await setup();
+    seedStamped(server);
+    // Make the unstamped workout share the WHOLE delete triple.
+    const other = (server.state.schedule.entities ?? []).find(
+      (e) => e.id === "70000000000000702",
+    );
+    other!.planProgramId = "49";
+
+    const report = await runCreateSpike(client, { today: TODAY, dryRun: true, log: noop });
+
+    expect(report.dryRun?.collisions[0]?.fullTripleMatches).toBe(true);
+    expect(server.counts.scheduleWrites).toBe(0);
+  });
+});

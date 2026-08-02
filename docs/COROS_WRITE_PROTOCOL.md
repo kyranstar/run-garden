@@ -198,6 +198,29 @@ the spike **does not send the delete** — it reports the leftover for manual
 removal instead. Every delete is followed by a read that checks both that our
 stamp is gone *and* that the unstamped count is unchanged.
 
+Two rules make the stamp safe to act on, both of them learned from a
+demonstrated attack rather than from reasoning:
+
+- **The delete address is checked plan-wide, not window-wide.** A `status: 3`
+  delete is plan-scoped, so a colliding real workout 120 days out is exactly as
+  destroyable as one next week — and invisible to a ±30 day read. The clash
+  check and the "did we destroy anything" count both run over the full
+  observation span.
+- **The program name only proves ownership when the entity says nothing about
+  itself.** A named real workout whose own program is simply absent from the
+  response would otherwise be attributed to a stamped program that happens to
+  share its `idInPlan`.
+
+### Looking before touching
+
+`pnpm coros:spike:dryrun` (`--dry-run`) issues **zero writes**. It reads the
+whole plan and reports, for every stamped workout: its date, its
+`(planId, idInPlan, planProgramId)` triple, whether `planProgramId` was
+rewritten, its full stored program structure (so structural round-trip can be
+checked offline against what was submitted), and every unstamped workout in the
+plan sharing `planId + idInPlan` — which answers whether a delete can address
+ours uniquely at all.
+
 ### Cleaning up after a bad run
 
 `pnpm coros:spike:cleanup` (`--cleanup-only`) logs in, scans

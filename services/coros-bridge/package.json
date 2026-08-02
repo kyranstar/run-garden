@@ -11,7 +11,8 @@
     "start": "tsx src/main.ts",
     "spike": "tsx src/spike.ts",
     "spike:create": "tsx src/spike-create.ts",
-    "spike:cleanup": "tsx src/spike-create.ts --cleanup-only"
+    "spike:cleanup": "tsx src/spike-create.ts --cleanup-only",
+    "spike:dryrun": "tsx src/spike-create.ts --dry-run"
   },
   "dependencies": {
     "@rg/domain": "workspace:*",
