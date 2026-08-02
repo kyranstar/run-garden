@@ -60,7 +60,7 @@ import {
   type StudioPlanPushStatus,
   type StudioSession,
 } from "@rg/domain";
-import type { Db } from "./db.js";
+import { chunkIds, type Db } from "./db.js";
 
 // ── The plan grid → calendar days ───────────────────────────────────────────
 
@@ -594,22 +594,6 @@ export interface PushSummary {
 
 const IN_FLIGHT = ["queued", "claimed", "in_progress", "verifying"] as const;
 
-/**
- * D1 caps a statement at ~100 bound variables, and an `inArray` binds one per
- * element — so a plan with more push rows than this silently becomes a failing
- * query in production while passing against better-sqlite3, which has no such
- * cap. 90 leaves room for the other bindings in the same statement, matching
- * `chunkedInsert`'s budget in db.ts.
- */
-export const IN_ARRAY_CHUNK = 90;
-
-/** Split ids into ≤`IN_ARRAY_CHUNK` batches. Exported so the batching itself is testable. */
-export function chunkIds(ids: string[], size: number = IN_ARRAY_CHUNK): string[][] {
-  const out: string[][] = [];
-  for (let i = 0; i < ids.length; i += Math.max(1, size)) out.push(ids.slice(i, i + Math.max(1, size)));
-  return out;
-}
-
 async function loadObserved(db: Db, userId: string): Promise<Map<string, ObservedWorkout>> {
   const rows = await db
     .select({
@@ -1069,7 +1053,18 @@ export async function applyStudioJobResult(
   // workout is. `happenDay` (half the row's identity) never moves; this is the
   // day a later delete must target, and without it that delete would be aimed
   // at an empty date and come back `stamp_mismatch`.
-  if (studio.serverHappenDay) rowUpdate.corosHappenDay = studio.serverHappenDay;
+  if (studio.ok) {
+    // Success means the workout is where it was asked to be, so ANY previously
+    // recorded cross-day address is now stale. Assigned from the result rather
+    // than only overwritten when present, so a bridge too old to report the
+    // field clears the stale day instead of leaving a delete aimed at it.
+    rowUpdate.corosHappenDay = studio.serverHappenDay ?? null;
+  } else if (studio.serverHappenDay) {
+    // On a failure the field is additive only: a retryable outcome carries no
+    // day, and clearing one recorded by an earlier attempt would lose the
+    // address of a stray that attempt may have left behind.
+    rowUpdate.corosHappenDay = studio.serverHappenDay;
+  }
   if (transition.clearIds) {
     rowUpdate.corosIdInPlan = null;
     rowUpdate.corosProgramId = null;

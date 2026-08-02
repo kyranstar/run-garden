@@ -20,14 +20,12 @@ import {
   type StudioJobResult,
   type StudioSession,
 } from "@rg/domain";
-import type { Db } from "../src/services/db.js";
+import { chunkIds, IN_ARRAY_CHUNK, type Db } from "../src/services/db.js";
 import { applyJobResult, claimNextJob } from "../src/services/jobs.js";
 import {
   applyStudioJobResult,
   bridgeJobPayload,
-  chunkIds,
   deleteTargetDay,
-  IN_ARRAY_CHUNK,
   desiredSessions,
   detectDrift,
   mapCreateResult,
@@ -1576,6 +1574,70 @@ describe("F2 — a create that landed on the wrong day stays addressable", () =>
     expect(row.corosIdInPlan).toBeNull(); // executor withheld the ids
   });
 
+  it("a success CLEARS a stale cross-day address, even from a bridge too old to report one", async () => {
+    // Older bridges omit serverHappenDay entirely. If the field were only ever
+    // overwritten when present, the row would keep pointing a future delete at
+    // a day the workout is no longer on.
+    const planId = await seedPlan();
+    await pushStudioPlan(db, { userId, studioPlanId: planId, today: TODAY });
+    const job = (await db.select().from(corosWriteJobs).orderBy(corosWriteJobs.requestedAt))[0]!;
+    const { id: jobId, studioPushId } = job;
+    const pushId = studioPushId!;
+    await db
+      .update(studioPlanPushes)
+      .set({ corosHappenDay: "2026-09-08" })
+      .where(eq(studioPlanPushes.id, pushId));
+
+    await applyStudioJobResult(db, userId, {
+      jobId,
+      deviceId: "dev",
+      outcome: "verified",
+      finishedAt: nowInstant(),
+      signature: "sig",
+      studio: {
+        pushId,
+        kind: "create_scheduled_workout",
+        ok: true,
+        code: "0000",
+        serverIdInPlan: "21",
+        serverProgramId: "21",
+        serverPlanId: "coros-plan",
+        // no serverHappenDay
+      },
+    });
+
+    const row = (await db.select().from(studioPlanPushes).where(eq(studioPlanPushes.id, pushId)))[0]!;
+    expect(row.status).toBe("verified");
+    expect(row.corosHappenDay).toBeNull();
+    expect(deleteTargetDay(row as never)).toBe(row.happenDay);
+  });
+
+  it("a retryable failure does NOT clear a day an earlier attempt recorded", async () => {
+    // The stray from the earlier attempt is still out there; forgetting where
+    // it is would strand it.
+    const planId = await seedPlan();
+    await pushStudioPlan(db, { userId, studioPlanId: planId, today: TODAY });
+    const job = (await db.select().from(corosWriteJobs).orderBy(corosWriteJobs.requestedAt))[0]!;
+    const { id: jobId, studioPushId } = job;
+    const pushId = studioPushId!;
+    await db
+      .update(studioPlanPushes)
+      .set({ corosHappenDay: "2026-09-08" })
+      .where(eq(studioPlanPushes.id, pushId));
+
+    await applyStudioJobResult(db, userId, {
+      jobId,
+      deviceId: "dev",
+      outcome: "write_failed",
+      finishedAt: nowInstant(),
+      signature: "sig",
+      studio: { pushId, kind: "create_scheduled_workout", ok: false, reason: "error" },
+    });
+
+    const row = (await db.select().from(studioPlanPushes).where(eq(studioPlanPushes.id, pushId)))[0]!;
+    expect(row.corosHappenDay).toBe("2026-09-08");
+  });
+
   it("deleteTargetDay prefers the recorded actual day and falls back to the identity day", () => {
     expect(deleteTargetDay(verifiedRow())).toBe("2026-09-07");
     expect(deleteTargetDay(verifiedRow({ corosHappenDay: "2026-09-08" }))).toBe("2026-09-08");
@@ -1615,13 +1677,17 @@ describe("F8 — account deletion removes studio data", () => {
     expect(await db.select().from(corosWriteJobs)).toHaveLength(0);
   });
 
-  it("leaves another user's studio plans alone", async () => {
+  it("leaves another user's push ROWS alone, not just their plans", async () => {
+    // studio_plan_pushes has no userId, so it is only reachable through its
+    // plan. The earlier version of this test seeded a plan and no rows, so it
+    // passed while every other account's push rows were being wiped.
     const mine = await seedPlan();
     await pushStudioPlan(db, { userId, studioPlanId: mine, today: TODAY });
+
     const other = await makeTestUser(db);
-    const theirs = newId();
+    const theirPlan = newId();
     await db.insert(studioPlans).values({
-      id: theirs,
+      id: theirPlan,
       userId: other.userId,
       brief: {},
       plan: plan() as unknown as Record<string, unknown>,
@@ -1629,10 +1695,41 @@ describe("F8 — account deletion removes studio data", () => {
       createdAt: nowInstant(),
       updatedAt: nowInstant(),
     });
+    for (const [i, day] of ["2026-11-02", "2026-11-09"].entries()) {
+      await db.insert(studioPlanPushes).values({
+        id: `their-row-${i}`,
+        planId: theirPlan,
+        planVersion: 1,
+        happenDay: day,
+        sessionTitle: `Theirs — wk ${i + 1}`,
+        corosIdInPlan: String(90 + i),
+        corosProgramId: String(90 + i),
+        corosPlanId: "their-coros-plan",
+        status: "verified",
+        updatedAt: nowInstant(),
+      });
+    }
+    expect(await db.select().from(studioPlanPushes)).toHaveLength(4); // 2 mine + 2 theirs
 
     await deleteAllUserData(db, userId);
 
-    expect(await db.select().from(studioPlans)).toHaveLength(1);
-    expect((await db.select().from(studioPlans))[0]!.id).toBe(theirs);
+    const survivors = await db.select().from(studioPlanPushes);
+    expect(survivors).toHaveLength(2);
+    expect(survivors.map((r) => r.id).sort()).toEqual(["their-row-0", "their-row-1"]);
+    // …and their plan is still there, so nothing is orphaned in either direction.
+    const plans = await db.select().from(studioPlans);
+    expect(plans.map((p) => p.id)).toEqual([theirPlan]);
+  });
+
+  it("deletes push rows for every plan the account owns, including extra plans", async () => {
+    const first = await seedPlan();
+    await pushStudioPlan(db, { userId, studioPlanId: first, today: TODAY });
+    const second = await seedPlan();
+    await pushStudioPlan(db, { userId, studioPlanId: second, today: TODAY });
+    expect((await db.select().from(studioPlanPushes)).length).toBeGreaterThan(2);
+
+    await deleteAllUserData(db, userId);
+
+    expect(await db.select().from(studioPlanPushes)).toHaveLength(0);
   });
 });

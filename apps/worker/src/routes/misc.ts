@@ -59,7 +59,7 @@ import { SIMULATION_VERSION } from "@rg/garden-engine";
 import { NORMALIZER_VERSION, normalizeStravaActivity } from "@rg/providers";
 import { ESTIMATOR_VERSION } from "@rg/scheduling";
 import type { AppContext } from "../auth/middleware.js";
-import type { Db } from "../services/db.js";
+import { chunkIds, type Db } from "../services/db.js";
 import { requireUser } from "../auth/middleware.js";
 import { googleCalendarClient } from "../services/google-calendar.js";
 import { loadPreferences, savePreferences, syncCalendar } from "../services/calendar-sync.js";
@@ -765,6 +765,12 @@ export async function deleteAllUserData(db: Db, userId: string): Promise<void> {
 
   // Child tables keyed by workout/activity/job (not userId) — single-user, so
   // clearing them entirely is correct and leaves no orphans.
+  //
+  // NOTHING BELONGING TO ANOTHER ACCOUNT MAY GO IN THIS LIST. Every table here
+  // is deleted with no WHERE clause, so a table that can hold a second user's
+  // rows would be wiped wholesale by one account's deletion. `studioPlanPushes`
+  // was briefly here and is not: it is keyed by studio plan, and studio plans
+  // are per-user, so it is deleted plan-scoped below instead.
   const childTables = [
     activityLaps,
     activitySourceLinks,
@@ -774,13 +780,24 @@ export async function deleteAllUserData(db: Db, userId: string): Promise<void> {
     corosWriteAttempts,
     plannedWorkoutStages,
     scheduleOverrides,
-    // Keyed by studio plan, not by user — cleared with its parent below.
-    studioPlanPushes,
     trainingPlanVersions,
     webhookEvents,
     workoutCompletionMatches,
   ] as const;
   for (const t of childTables) await db.delete(t as any);
+
+  // Push rows carry no userId — they are reached through their studio plan.
+  // Scoped to THIS user's plans, and done BEFORE the plans themselves are
+  // deleted, or the ids needed to find them would be gone.
+  const myStudioPlanIds = (
+    await db
+      .select({ id: studioPlans.id })
+      .from(studioPlans)
+      .where(eq(studioPlans.userId, userId))
+  ).map((p) => p.id);
+  for (const ids of chunkIds(myStudioPlanIds)) {
+    await db.delete(studioPlanPushes).where(inArray(studioPlanPushes.planId, ids));
+  }
 
   // User-scoped tables.
   const userTables = [

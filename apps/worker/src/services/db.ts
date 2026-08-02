@@ -30,3 +30,20 @@ export async function chunkedInsert<T>(
     await insertBatch(rows.slice(i, i + perBatch));
   }
 }
+
+/**
+ * The same ~100 bound-variable cap seen from the other side: an `inArray`
+ * binds one variable per element, so a list longer than this becomes a failing
+ * statement in production while passing in tests — better-sqlite3 has no such
+ * cap. 90 leaves room for the other bindings in the same statement, matching
+ * `chunkedInsert`'s budget above.
+ */
+export const IN_ARRAY_CHUNK = 90;
+
+/** Split ids into `size`-sized batches. Exported so the batching is testable. */
+export function chunkIds(ids: string[], size: number = IN_ARRAY_CHUNK): string[][] {
+  const width = Math.max(1, size);
+  const out: string[][] = [];
+  for (let i = 0; i < ids.length; i += width) out.push(ids.slice(i, i + width));
+  return out;
+}
