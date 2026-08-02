@@ -15,6 +15,16 @@ export interface AppContext {
     userId: string;
     userEmail: string;
     deviceId: string;
+    /**
+     * Test-only seam: when set, `/api/studio` routes pass this instead of the
+     * global `fetch` into `generatePlan`/`editPlan`'s own optional trailing
+     * `fetchImpl` parameter, so a route test can script an exact gateway
+     * response (e.g. a major-edit reply with a mutated `brief`) without a
+     * live network call. Never set by any production code path — omitted,
+     * every real request falls back to the global `fetch`, identical to
+     * before this existed.
+     */
+    llmFetch?: typeof fetch;
   };
 }
 

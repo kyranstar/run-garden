@@ -208,11 +208,17 @@ export interface StudioPushSummaryDto {
   blocked: number;
 }
 
-/** "Waiting for bridge" indicator: device online heuristic plus the raw
- * queued-studio-job facts — the UI decides what "stale" means. */
+/** "Waiting for bridge" indicator: device online heuristic plus two DISTINCT
+ * job-count facts — the UI decides what "stale"/"stuck" means.
+ * `pendingJobs` is unclaimed (`status: "queued"`) work — no device has
+ * picked it up yet, the actual "is a bridge even listening" signal.
+ * `inFlight` (fix round 1, F2) is work a device DID claim but hasn't
+ * finished — a stuck/crashed device, a different failure mode that would be
+ * invisible if folded into `pendingJobs`. */
 export interface StudioBridgeStatusDto {
   online: boolean;
   pendingJobs: { queued: number; oldestQueuedAt: string | null };
+  inFlight: { count: number; oldestClaimedAt: string | null };
 }
 
 /** Mirrors `SettingsResponse["llm"]` — same `llmBudgetStatus` service, same
@@ -234,6 +240,29 @@ export interface StudioGenerateResponse {
   plan: LiftingPlan;
   brief: PlanBrief;
   version: number;
+}
+
+/**
+ * Fix round 1, F5: if the CURRENT plan has any push row that's `verified`, or
+ * `pending`/`failed` but with a recorded COROS id (may have materialized
+ * before its outcome resolved), a `generate` call is refused with
+ * `{error: "plan_has_live_pushes"}` (409) unless `replace: true` is passed —
+ * regenerating over a plan with real COROS sessions would otherwise orphan
+ * them (nothing in the app would track them anymore).
+ *
+ * Passing `replace: true` does NOT delete anything synchronously: the worker
+ * enqueues guarded deletes for the old plan's live rows (the same
+ * triple-addressed, ownership-reproving path a normal push uses) BEFORE
+ * creating the new plan, then returns as soon as the new plan exists. The
+ * bridge executes those deletes on its own poll. Because of that gap, a
+ * `/push` on the new plan run before the old deletes verify MAY hit
+ * `duplicate_title` failures for sessions whose stamp collides with a
+ * not-yet-deleted old workout — this is expected and safe (the
+ * title-uniqueness guard fails closed rather than double-writing); a later
+ * `/push`/`push/retry` once the old deletes have verified succeeds normally.
+ */
+export interface StudioGenerateOptions {
+  replace?: boolean;
 }
 
 export interface StudioEditResponse {
@@ -298,7 +327,8 @@ export const api = {
   fixtureLogin: () => post<{ ok: true }>("/api/dev/fixture-login"),
   fixtureSeed: () => post<Record<string, unknown>>("/api/dev/seed"),
   studio: () => get<StudioStateResponse>("/api/studio"),
-  studioGenerate: (brief: PlanBrief) => post<StudioGenerateResponse>("/api/studio/generate", { brief }),
+  studioGenerate: (brief: PlanBrief, opts: StudioGenerateOptions = {}) =>
+    post<StudioGenerateResponse>("/api/studio/generate", { brief, replace: opts.replace }),
   studioEdit: (request: string, major = false) =>
     post<StudioEditResponse>("/api/studio/edit", { request, major }),
   studioPush: () => post<StudioPushResponse>("/api/studio/push"),

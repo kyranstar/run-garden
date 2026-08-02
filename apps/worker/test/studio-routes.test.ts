@@ -1,21 +1,29 @@
 /**
- * Plan Studio API routes (plan-studio-design §7, task-5-brief.md).
+ * Plan Studio API routes (plan-studio-design §7, task-5-brief.md, fix rounds
+ * for review carry-forwards F1–F6).
  *
- * FIXTURE_MODE=1 stands in for "stubbed studio-llm" here: studio-llm.ts's own
- * fixture path (buildFixturePlan / editPlan's canned "(edited)" rename) is
- * already deterministic and network-free — proven out by studio-llm.test.ts's
- * own fetchImpl-DI suite (Task 4). Re-stubbing fetchImpl a second time at the
- * route layer would need new route-only plumbing no real caller would ever
- * use (studio-llm.ts's own doc comment: "every real caller omits it"); the
- * repo already ships a designed-for-this-purpose seam (spec §8: "so the full
- * Studio UI works in fixture mode, is screenshot-testable"), so route tests
- * ride that instead of inventing a second one.
+ * FIXTURE_MODE=1 stands in for "stubbed studio-llm" for most tests here:
+ * studio-llm.ts's own fixture path (buildFixturePlan / editPlan's canned
+ * "(edited)" rename) is already deterministic and network-free — proven out
+ * by studio-llm.test.ts's own fetchImpl-DI suite (Task 4).
+ *
+ * F1's fix round needed one exception: proving the route forces the persisted
+ * brief back to the STORED plan's brief on a major edit requires scripting a
+ * gateway reply whose OWN brief is mutated — fixture mode's editPlan stub
+ * ignores `request`/`major` entirely and can't produce that. Rather than
+ * duplicate studio-llm.ts's whole fetchImpl-DI test rig at the route layer,
+ * `AppContext.Variables.llmFetch` (an additive, test-only seam — see
+ * `auth/middleware.ts`) lets `clientWithScriptedFetch` below inject exactly
+ * one scripted `Response` through the real route into `editPlan`/`generatePlan`,
+ * with `FIXTURE_MODE` off.
  */
 
 import { beforeEach, describe, expect, it } from "vitest";
+import { Hono } from "hono";
 import { eq } from "drizzle-orm";
 import { schema } from "@rg/database";
 import { newId, nowInstant, startOfIsoWeek, todayInZone, type LiftingPlan, type PlanBrief } from "@rg/domain";
+import type { AppContext } from "../src/auth/middleware.js";
 import type { Env } from "../src/env.js";
 import type { Db } from "../src/services/db.js";
 import { studioRoutes } from "../src/routes/studio.js";
@@ -120,6 +128,29 @@ async function seedPlan(over: Partial<LiftingPlan> = {}, version = 1): Promise<s
   return id;
 }
 
+/** A push row that's live on COROS — addressable and `verified` — for F5's
+ * regenerate guard tests (`hasLivePush` in studio.ts). */
+async function seedVerifiedPushRow(
+  planId: string,
+  over: Partial<{ happenDay: string; sessionTitle: string }> = {},
+): Promise<string> {
+  const id = newId();
+  await db.insert(studioPlanPushes).values({
+    id,
+    planId,
+    planVersion: 1,
+    happenDay: over.happenDay ?? "2026-09-07",
+    sessionTitle: over.sessionTitle ?? "Full Body — wk 1",
+    corosIdInPlan: "21",
+    corosProgramId: "21",
+    corosPlanId: "coros-plan",
+    status: "verified",
+    error: null,
+    updatedAt: nowInstant(),
+  });
+  return id;
+}
+
 function client(env: Env = makeEnv()) {
   const app = mountRoutes(db, "/api/studio", studioRoutes);
   return {
@@ -135,7 +166,60 @@ function client(env: Env = makeEnv()) {
         },
         env,
       ),
+    // F3 (fix round 1): sends `rawBody` verbatim (no JSON.stringify), so a
+    // genuinely malformed-JSON test can exercise `parseJsonBody`'s own catch.
+    postRaw: (path: string, rawBody: string, headers: Record<string, string> = { Cookie: cookie }) =>
+      app.request(
+        path,
+        { method: "POST", headers: { ...headers, "Content-Type": "application/json" }, body: rawBody },
+        env,
+      ),
   };
+}
+
+/**
+ * F1's fix-round test seam: mounts `studioRoutes` behind a middleware that
+ * also sets `llmFetch` (see `AppContext.Variables`), so a scripted `Response`
+ * reaches `generatePlan`/`editPlan` through the real route instead of
+ * fixture mode's canned output. `FIXTURE_MODE` must be off for the scripted
+ * fetch to actually be reached (fixture mode short-circuits before it).
+ */
+function clientWithScriptedFetch(
+  fetchImpl: typeof fetch,
+  env: Env = makeEnv({ FIXTURE_MODE: "0", AI_GATEWAY_API_KEY: "test-key" }),
+) {
+  const app = new Hono<AppContext>();
+  app.use("*", async (c, next) => {
+    c.set("db", db);
+    c.set("llmFetch", fetchImpl);
+    await next();
+  });
+  app.route("/api/studio", studioRoutes);
+  return {
+    post: (path: string, body?: unknown, headers: Record<string, string> = { Cookie: cookie }) =>
+      app.request(
+        path,
+        {
+          method: "POST",
+          headers: { ...headers, ...(body !== undefined ? { "Content-Type": "application/json" } : {}) },
+          body: body !== undefined ? JSON.stringify(body) : undefined,
+        },
+        env,
+      ),
+  };
+}
+
+/** One scripted OpenAI-compatible chat-completion response carrying `content`
+ * as its JSON-stringified message body — same wire shape studio-llm.ts's
+ * `chatCompletion` parses (mirrors `studio-llm.test.ts`'s own `chatBody`). */
+function chatResponse(content: unknown): Response {
+  return new Response(
+    JSON.stringify({
+      choices: [{ message: { content: JSON.stringify(content) }, finish_reason: "stop" }],
+      usage: { prompt_tokens: 10, completion_tokens: 10 },
+    }),
+    { status: 200, headers: { "content-type": "application/json" } },
+  );
 }
 
 beforeEach(async () => {
@@ -205,6 +289,59 @@ describe("GET /api/studio", () => {
     const body = (await res.json()) as { bridge: { pendingJobs: { queued: number; oldestQueuedAt: string } } };
     expect(body.bridge.pendingJobs).toEqual({ queued: 1, oldestQueuedAt: "2026-09-01T00:00:00.000Z" });
   });
+
+  // F2 (fix round 1): a claimed-but-stalled job is a different signal than an
+  // unclaimed one — it must show up in `inFlight`, NOT count toward
+  // `pendingJobs.queued` (which the device already claimed it out of).
+  it("puts a claimed/in-flight job in inFlight, not pendingJobs", async () => {
+    await seedPlan();
+    await db.insert(corosWriteJobs).values({
+      id: newId(),
+      userId,
+      workoutId: "push-2",
+      studioPushId: "push-2",
+      kind: "delete_scheduled_workout",
+      expectedContentFingerprint: "",
+      originalDate: "2026-09-07",
+      destinationDate: "2026-09-07",
+      payload: {},
+      requestedAt: "2026-09-01T00:00:00.000Z",
+      status: "claimed",
+      claimedByDeviceId: "device-1",
+      claimedAt: "2026-09-01T00:05:00.000Z",
+      updatedAt: nowInstant(),
+    });
+    const res = await client().get("/api/studio");
+    const body = (await res.json()) as {
+      bridge: {
+        pendingJobs: { queued: number; oldestQueuedAt: string | null };
+        inFlight: { count: number; oldestClaimedAt: string | null };
+      };
+    };
+    expect(body.bridge.pendingJobs).toEqual({ queued: 0, oldestQueuedAt: null });
+    expect(body.bridge.inFlight).toEqual({ count: 1, oldestClaimedAt: "2026-09-01T00:05:00.000Z" });
+  });
+
+  it("keeps a purely queued (unclaimed) job out of inFlight", async () => {
+    await seedPlan();
+    await db.insert(corosWriteJobs).values({
+      id: newId(),
+      userId,
+      workoutId: "push-3",
+      studioPushId: "push-3",
+      kind: "create_scheduled_workout",
+      expectedContentFingerprint: "",
+      originalDate: "2026-09-07",
+      destinationDate: "2026-09-07",
+      payload: {},
+      requestedAt: "2026-09-01T00:00:00.000Z",
+      status: "queued",
+      updatedAt: nowInstant(),
+    });
+    const res = await client().get("/api/studio");
+    const body = (await res.json()) as { bridge: { inFlight: { count: number } } };
+    expect(body.bridge.inFlight).toEqual({ count: 0, oldestClaimedAt: null });
+  });
 });
 
 describe("POST /api/studio/generate", () => {
@@ -212,6 +349,13 @@ describe("POST /api/studio/generate", () => {
     const res = await client().post("/api/studio/generate", { brief: { goal: "strength" } });
     expect(res.status).toBe(400);
     expect((await res.json()) as { error: string }).toMatchObject({ error: "invalid_request" });
+  });
+
+  // F3 (fix round 1): malformed JSON gets a structured 400, not an uncaught 500.
+  it("rejects a malformed JSON body with a structured 400 (not a 500)", async () => {
+    const res = await client().postRaw("/api/studio/generate", "{not json");
+    expect(res.status).toBe(400);
+    expect((await res.json()) as { error: string }).toMatchObject({ error: "invalid_json" });
   });
 
   it("rejects a startDate before today", async () => {
@@ -262,6 +406,69 @@ describe("POST /api/studio/generate", () => {
     const getRes = await client().get("/api/studio");
     const body = (await getRes.json()) as { brief: PlanBrief };
     expect(body.brief.startDate).toBe(startOfIsoWeek("2026-10-05"));
+  });
+});
+
+// F5 (fix round 1): regenerating over a plan with live COROS sessions must
+// not silently orphan them.
+describe("POST /api/studio/generate — guarded regenerate (F5)", () => {
+  it("409s without replace when the current plan has a verified push row", async () => {
+    await seedCatalog();
+    const oldPlanId = await seedPlan();
+    await seedVerifiedPushRow(oldPlanId);
+
+    const res = await client().post("/api/studio/generate", { brief: validBriefInput("2026-10-05") });
+    expect(res.status).toBe(409);
+    expect((await res.json()) as { error: string }).toMatchObject({ error: "plan_has_live_pushes" });
+    // Nothing was created — the guard fired before generatePlan ever ran.
+    expect(await db.select().from(studioPlans)).toHaveLength(1);
+  });
+
+  it("with replace:true, retires the old plan's live rows, creates the new plan, and keeps the old plan as history", async () => {
+    await seedCatalog();
+    const oldPlanId = await seedPlan();
+    const oldPushId = await seedVerifiedPushRow(oldPlanId);
+
+    const res = await client().post("/api/studio/generate", {
+      brief: validBriefInput("2026-10-05"),
+      replace: true,
+    });
+    expect(res.status).toBe(200);
+
+    // The old plan is retained (history), not deleted — just no longer current.
+    const allPlans = await db.select().from(studioPlans).where(eq(studioPlans.userId, userId));
+    expect(allPlans).toHaveLength(2);
+    expect(allPlans.some((p) => p.id === oldPlanId)).toBe(true);
+
+    // A guarded delete was enqueued for the old plan's verified row — the
+    // SAME removal machinery a normal push uses, not a bespoke bulk-delete.
+    const deleteJobs = await db
+      .select()
+      .from(corosWriteJobs)
+      .where(eq(corosWriteJobs.userId, userId));
+    expect(deleteJobs).toHaveLength(1);
+    expect(deleteJobs[0]).toMatchObject({ kind: "delete_scheduled_workout", studioPushId: oldPushId, status: "queued" });
+
+    // The row itself isn't marked deleted yet — that happens asynchronously
+    // once the bridge executes and reports back, not at enqueue time.
+    const oldRow = (await db.select().from(studioPlanPushes).where(eq(studioPlanPushes.id, oldPushId)))[0]!;
+    expect(oldRow.status).toBe("verified");
+
+    // GET now surfaces the NEW plan as current, not the old one.
+    const getRes = await client().get("/api/studio");
+    const body = (await getRes.json()) as { brief: PlanBrief };
+    expect(body.brief.startDate).toBe(startOfIsoWeek("2026-10-05"));
+  });
+
+  it("replace:true with no live rows behaves like a normal generate (no deletes enqueued)", async () => {
+    await seedCatalog();
+    await seedPlan(); // never pushed — no live rows
+    const res = await client().post("/api/studio/generate", {
+      brief: validBriefInput("2026-10-05"),
+      replace: true,
+    });
+    expect(res.status).toBe(200);
+    expect(await db.select().from(corosWriteJobs)).toHaveLength(0);
   });
 });
 
@@ -317,6 +524,14 @@ describe("POST /api/studio/edit", () => {
     expect(res.status).toBe(400);
   });
 
+  // F3 (fix round 1): malformed JSON gets a structured 400, not an uncaught 500.
+  it("rejects a malformed JSON body with a structured 400 (not a 500)", async () => {
+    await seedPlan();
+    const res = await client().postRaw("/api/studio/edit", "{not json");
+    expect(res.status).toBe(400);
+    expect((await res.json()) as { error: string }).toMatchObject({ error: "invalid_json" });
+  });
+
   it("returns catalog_not_synced when the catalog has since gone empty", async () => {
     await seedPlan();
     const res = await client().post("/api/studio/edit", { request: "add a day" });
@@ -338,6 +553,49 @@ describe("POST /api/studio/edit", () => {
     const rows = await db.select().from(studioPlans).where(eq(studioPlans.userId, userId));
     expect(rows).toHaveLength(1);
     expect(rows[0]!.version).toBe(2);
+  });
+
+  // F1 (fix round 1): a major:true edit regenerates the WHOLE plan via the
+  // strong model, so nothing but the route itself stops the model from
+  // echoing back a mutated brief. Scripts a gateway reply whose brief
+  // (constraints AND startDate) disagrees with the stored plan's, and asserts
+  // the persisted/returned plan keeps the STORED brief verbatim regardless.
+  it("major:true keeps the stored plan's brief verbatim, even when the model's reply mutates it", async () => {
+    await seedCatalog();
+    const storedPlan = plan();
+    const planId = await seedPlan(storedPlan);
+
+    const mutatedPlan: LiftingPlan = {
+      ...storedPlan,
+      name: "Model Renamed It",
+      brief: {
+        ...storedPlan.brief,
+        constraints: "MODEL-INJECTED: skip all leg work",
+        startDate: "2026-10-05",
+      },
+    };
+    const fetchImpl = (async () => chatResponse(mutatedPlan)) as typeof fetch;
+
+    const res = await clientWithScriptedFetch(fetchImpl).post("/api/studio/edit", {
+      request: "make it harder",
+      major: true,
+    });
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { ok: boolean; plan: LiftingPlan; brief: PlanBrief };
+    expect(body.ok).toBe(true);
+    // The rest of the model's output DID apply (proves this isn't just
+    // silently rejecting the whole reply)...
+    expect(body.plan.name).toBe("Model Renamed It");
+    // ...but the brief is exactly what was stored before the edit, not what
+    // the model emitted.
+    expect(body.brief).toEqual(storedPlan.brief);
+    expect(body.plan.brief).toEqual(storedPlan.brief);
+    expect(body.brief.constraints).not.toBe("MODEL-INJECTED: skip all leg work");
+    expect(body.brief.startDate).toBe(storedPlan.brief.startDate);
+
+    const row = (await db.select().from(studioPlans).where(eq(studioPlans.id, planId)))[0]!;
+    expect(row.brief).toEqual(storedPlan.brief);
+    expect((row.plan as unknown as LiftingPlan).brief).toEqual(storedPlan.brief);
   });
 });
 
@@ -389,6 +647,14 @@ describe("POST /api/studio/push/retry", () => {
     expect(res.status).toBe(400);
   });
 
+  // F3 (fix round 1): malformed JSON gets a structured 400, not an uncaught 500.
+  it("rejects a malformed JSON body with a structured 400 (not a 500)", async () => {
+    await seedPlan();
+    const res = await client().postRaw("/api/studio/push/retry", "{not json");
+    expect(res.status).toBe(400);
+    expect((await res.json()) as { error: string }).toMatchObject({ error: "invalid_json" });
+  });
+
   it("404s when there is no failed row for that day", async () => {
     await seedCatalog();
     await seedPlan();
@@ -417,5 +683,43 @@ describe("POST /api/studio/push/retry", () => {
     // Same deterministic refusal on the re-run — proves it re-ran the whole
     // diff rather than force-completing a single row.
     expect(body.summary.failures).toBe(2);
+  });
+});
+
+// F6 (fix round 1, test hygiene): the WRITE routes (edit/push/retry) must be
+// exactly as user-scoped as GET already was — a second user with no plan of
+// their own gets the structured `no_plan` refusal and has zero effect on the
+// first user's rows, not e.g. an ambiguous 500 or (worse) a write that lands
+// on the wrong account's plan.
+describe("cross-user write isolation (F6)", () => {
+  it("edit/push/retry from a plan-less second user affect nothing of the first user's plan", async () => {
+    await seedCatalog();
+    const planId = await seedPlan();
+    const pushId = await seedVerifiedPushRow(planId);
+
+    const userB = await makeTestUser(db);
+    const tokenB = await createSession(db, userB.userId);
+    const asB = { Cookie: `${SESSION_COOKIE}=${tokenB}` };
+
+    const editRes = await client().post("/api/studio/edit", { request: "hack it" }, asB);
+    expect(editRes.status).toBe(404);
+    expect((await editRes.json()) as { error: string }).toMatchObject({ error: "no_plan" });
+
+    const pushRes = await client().post("/api/studio/push", undefined, asB);
+    expect(pushRes.status).toBe(404);
+    expect((await pushRes.json()) as { error: string }).toMatchObject({ error: "no_plan" });
+
+    const retryRes = await client().post("/api/studio/push/retry", { happenDay: "2026-09-07" }, asB);
+    expect(retryRes.status).toBe(404);
+    expect((await retryRes.json()) as { error: string }).toMatchObject({ error: "no_plan" });
+
+    // User A's plan and push row are untouched: same version, same status,
+    // and no second plan or push row was created for anyone.
+    const planRow = (await db.select().from(studioPlans).where(eq(studioPlans.id, planId)))[0]!;
+    expect(planRow.version).toBe(1);
+    const pushRow = (await db.select().from(studioPlanPushes).where(eq(studioPlanPushes.id, pushId)))[0]!;
+    expect(pushRow.status).toBe("verified");
+    expect(await db.select().from(studioPlans)).toHaveLength(1);
+    expect(await db.select().from(studioPlanPushes)).toHaveLength(1);
   });
 });

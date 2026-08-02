@@ -638,7 +638,23 @@ async function loadObserved(db: Db, userId: string): Promise<Map<string, Observe
  */
 export async function pushStudioPlan(
   db: Db,
-  opts: { userId: string; studioPlanId: string; today: LocalDate },
+  opts: {
+    userId: string;
+    studioPlanId: string;
+    today: LocalDate;
+    /**
+     * Overrides `desiredSessions(plan)` with a caller-supplied desired set —
+     * added for the "retire a superseded plan" path (`/api/studio/generate`
+     * with `replace: true`): passing `[]` makes every existing row of the
+     * plan look removed, so the diff's already-guarded removal machinery
+     * (addressable → delete; pending-without-id → `unaddressable`;
+     * failed-without-id → local delete) enqueues deletes for every live
+     * session WITHOUT mutating the plan's own stored content (which stays
+     * exactly as it was pushed, for history). Omitted by every other caller,
+     * which keeps computing the desired set from the stored plan as before.
+     */
+    desiredOverride?: DesiredSession[];
+  },
 ): Promise<PushSummary> {
   const now = nowInstant();
   const today = opts.today;
@@ -719,7 +735,7 @@ export async function pushStudioPlan(
   );
 
   const batch = planPush({
-    desired: desiredSessions(plan),
+    desired: opts.desiredOverride ?? desiredSessions(plan),
     rows,
     otherLiveTitles,
     driftedPushIds,

@@ -43,11 +43,32 @@ import { pushStudioPlan } from "../services/studio-push.js";
  * (`loadCurrentPlan`). An older plan's push rows are not deleted when this
  * happens (nothing here is destructive), they simply stop being the one GET
  * surfaces; `studio-push.ts`'s own "otherLiveTitles" scoping already accounts
- * for older, still-live plans continuing to occupy COROS workout-name stamps.
+ * for older, still-live plans continuing to occupy COROS workout-name stamps
+ * — including one retired via `replace: true` (see `/generate` below).
  */
 
 export const studioRoutes = new Hono<AppContext>();
 studioRoutes.use("*", requireUser);
+
+/**
+ * F3 (fix round 1): every other route in this repo calls `c.req.json()`
+ * directly (`plan.ts`'s `moveSchema`, `misc.ts`'s `settingsRoutes.put`, …),
+ * which throws on genuinely malformed JSON and — unhandled — becomes an
+ * opaque 500. Studio's own binding carry-forward (i) is "structured reason
+ * codes only", so a malformed body here gets its own structured 400 instead
+ * of matching that pre-existing (but not this task's to fix elsewhere)
+ * pattern. Used by every POST route that reads a body (`/push` doesn't, so
+ * it has nothing to wrap).
+ */
+async function parseJsonBody(
+  c: Context<AppContext>,
+): Promise<{ ok: true; body: unknown } | { ok: false; response: Response }> {
+  try {
+    return { ok: true, body: await c.req.json() };
+  } catch {
+    return { ok: false, response: c.json({ error: "invalid_json" }, 400) };
+  }
+}
 
 // ── DTO mapping ─────────────────────────────────────────────────────────────
 
@@ -75,21 +96,27 @@ async function llmStatusDto(db: Db, userId: string) {
 }
 
 /**
- * "Waiting for bridge" (binding carry-forward g): the same online heuristic
- * `devices.ts`/`plan.ts` already use (last-seen within 3 minutes) plus the
- * raw queued-studio-job count and the oldest queued timestamp — the UI
- * decides what "stale" means from those, this just supplies the facts.
+ * "Waiting for bridge" (binding carry-forward g, extended by F2/fix round 1):
+ * the same online heuristic `devices.ts`/`plan.ts` already use (last-seen
+ * within 3 minutes) plus two DISTINCT job-count facts — the UI decides what
+ * "stale"/"stuck" means from those, this just supplies them.
  *
- * Deliberately `status === "queued"` only, NOT `studio-push.ts`'s broader
- * `IN_FLIGHT` set (queued/claimed/in_progress/verifying) that `plan.ts`'s
- * unrelated `pendingCorosJobs` count uses. Carry-forward (g)'s own wording is
- * specific: "whether any enqueued studio jobs are UNCLAIMED older than N
- * minutes" — i.e. exactly the "no device has even picked this up yet"
- * signal, which is what actually indicates an absent bridge. A job a device
- * DID claim is a different failure mode (a device stuck mid-execution, not a
- * missing one) and folding it in here would make "waiting for bridge" read
- * as still-true the moment a bridge shows up and claims the work — the
- * opposite of what this field is for.
+ * `pendingJobs` stays `status === "queued"` only, NOT `studio-push.ts`'s
+ * broader `IN_FLIGHT` set (queued/claimed/in_progress/verifying) that
+ * `plan.ts`'s unrelated `pendingCorosJobs` count uses. Carry-forward (g)'s own
+ * wording is specific: "whether any enqueued studio jobs are UNCLAIMED older
+ * than N minutes" — i.e. exactly the "no device has even picked this up yet"
+ * signal, which is what actually indicates an absent bridge.
+ *
+ * `inFlight` (F2) is the complementary signal this originally lacked: a job a
+ * device DID claim but never finishes (crashed mid-write, killed process, …)
+ * is a DIFFERENT failure mode — a stuck device, not a missing one — and
+ * folding it into `pendingJobs` would make "waiting for bridge" read as
+ * still-true the moment a bridge actually shows up and claims the work.
+ * Kept as its own field instead, over `claimed`/`in_progress`/`verifying`,
+ * ordered by `claimedAt` (when the device took it, not when it was
+ * originally requested) since that's what "how long has this been stuck"
+ * has to measure from.
  */
 async function bridgeStatusDto(db: Db, userId: string) {
   const devices = await db
@@ -110,9 +137,22 @@ async function bridgeStatusDto(db: Db, userId: string) {
     )
     .orderBy(asc(corosWriteJobs.requestedAt));
 
+  const inFlight = await db
+    .select({ claimedAt: corosWriteJobs.claimedAt })
+    .from(corosWriteJobs)
+    .where(
+      and(
+        eq(corosWriteJobs.userId, userId),
+        inArray(corosWriteJobs.status, ["claimed", "in_progress", "verifying"]),
+        inArray(corosWriteJobs.kind, [...STUDIO_JOB_KINDS]),
+      ),
+    )
+    .orderBy(asc(corosWriteJobs.claimedAt));
+
   return {
     online,
     pendingJobs: { queued: queued.length, oldestQueuedAt: queued[0]?.requestedAt ?? null },
+    inFlight: { count: inFlight.length, oldestClaimedAt: inFlight[0]?.claimedAt ?? null },
   };
 }
 
@@ -179,6 +219,23 @@ async function loadCurrentPlan(db: Db, userId: string) {
 
 async function loadCatalog(db: Db): Promise<CatalogEntry[]> {
   return db.select({ id: corosExercises.id, name: corosExercises.name }).from(corosExercises);
+}
+
+/**
+ * F5 (fix round 1): a push row this app must account for before its plan can
+ * be silently superseded — either it's confirmed on COROS (`verified`), or
+ * it's `pending`/`failed` but carries a recorded id, meaning a create MAY
+ * have materialized before the row's outcome was ever resolved (mirrors
+ * `studio-push.ts`'s own `addressable()` reasoning: an id on the row is what
+ * makes it removable at all). A `failed` row with no id, or a `deleted` row,
+ * never touched COROS (or no longer does) and isn't "live".
+ */
+function hasLivePush(row: typeof studioPlanPushes.$inferSelect): boolean {
+  if (row.status === "verified") return true;
+  if (row.status === "pending" || row.status === "failed") {
+    return Boolean(row.corosIdInPlan && row.corosProgramId && row.corosPlanId);
+  }
+  return false;
 }
 
 /**
@@ -267,18 +324,61 @@ studioRoutes.get("/", async (c) => {
 
 // ── POST /api/studio/generate ────────────────────────────────────────────────
 
-const generateBodySchema = z.object({ brief: planBriefSchema });
+const generateBodySchema = z.object({
+  brief: planBriefSchema,
+  /** F5 (fix round 1): required to proceed when the current plan has live
+   * (verified, or possibly-materialized) COROS sessions — see below. */
+  replace: z.boolean().optional(),
+});
 
 studioRoutes.post("/generate", async (c) => {
   const db = c.get("db");
   const userId = c.get("userId");
-  const parsed = generateBodySchema.safeParse(await c.req.json());
+  const bodyResult = await parseJsonBody(c);
+  if (!bodyResult.ok) return bodyResult.response;
+  const parsed = generateBodySchema.safeParse(bodyResult.body);
   if (!parsed.success) return c.json({ error: "invalid_request", details: parsed.error.issues }, 400);
 
   const prefs = await loadPreferences(db, userId);
   const today = todayInZone(prefs.timezone);
   if (compareLocalDates(parsed.data.brief.startDate, today) < 0) {
     return c.json({ error: "start_date_in_past" }, 400);
+  }
+
+  // F5 (fix round 1): a regenerate that silently orphans a pushed plan's live
+  // COROS workouts is a real bug, not just an inconvenience — those sessions
+  // would stay on the calendar forever with nothing in the app still tracking
+  // them (the new plan's own push rows start from zero). Guard: if the
+  // CURRENT plan (the one about to stop being "current") has any row that IS
+  // or MAY be materialized on COROS, refuse unless the caller explicitly
+  // opts in with `replace: true`.
+  const currentPlan = await loadCurrentPlan(db, userId);
+  if (currentPlan) {
+    const oldRows = await db
+      .select()
+      .from(studioPlanPushes)
+      .where(eq(studioPlanPushes.planId, currentPlan.id));
+    if (oldRows.some(hasLivePush)) {
+      if (!parsed.data.replace) return c.json({ error: "plan_has_live_pushes" }, 409);
+      // Retire the OLD plan's live sessions FIRST — before the new plan row
+      // is even created. `desiredOverride: []` makes every one of its
+      // existing rows look removed to the diff, so `pushStudioPlan`'s
+      // already-guarded removal machinery (the same triple-addressed,
+      // ownership-reproving delete path a normal push uses — not a bespoke
+      // bulk-delete) enqueues a delete for every addressable row. The old
+      // plan's own stored `plan`/`brief` content is untouched — it stays in
+      // `studio_plans` as history, just no longer "current".
+      //
+      // This is ASYNC: the bridge executes the deletes on its own poll, so
+      // the new plan below may finish generating — and even get pushed —
+      // before the old workouts are actually gone from COROS.
+      // `planPush`'s title-uniqueness guard is what makes that race SAFE
+      // rather than silently double-writing: a new session whose stamp
+      // collides with a not-yet-deleted old workout fails closed as
+      // `duplicate_title` instead, and a later `/push` retry (once the
+      // delete has verified) succeeds normally.
+      await pushStudioPlan(db, { userId, studioPlanId: currentPlan.id, today, desiredOverride: [] });
+    }
   }
 
   // Binding carry-forward (b): normalize intake to the ISO-week Monday BEFORE
@@ -294,7 +394,8 @@ studioRoutes.post("/generate", async (c) => {
   const catalog = await loadCatalog(db);
   if (catalog.length === 0) return catalogNotSynced(c);
 
-  const result = await generatePlan(c.env, db, userId, normalizedBrief, catalog);
+  const fetchImpl = c.get("llmFetch") ?? fetch;
+  const result = await generatePlan(c.env, db, userId, normalizedBrief, catalog, fetchImpl);
   if (!result.plan) return llmFailureResponse(c, result.reason);
 
   // Defense in depth: force the persisted brief to the route-normalized one
@@ -332,7 +433,9 @@ const editBodySchema = z.object({
 studioRoutes.post("/edit", async (c) => {
   const db = c.get("db");
   const userId = c.get("userId");
-  const parsed = editBodySchema.safeParse(await c.req.json());
+  const bodyResult = await parseJsonBody(c);
+  if (!bodyResult.ok) return bodyResult.response;
+  const parsed = editBodySchema.safeParse(bodyResult.body);
   if (!parsed.success) return c.json({ error: "invalid_request", details: parsed.error.issues }, 400);
 
   // Edit requires an existing plan; checked before the catalog so a plan-less
@@ -349,6 +452,7 @@ studioRoutes.post("/edit", async (c) => {
   const catalog = await loadCatalog(db);
   if (catalog.length === 0) return catalogNotSynced(c);
 
+  const fetchImpl = c.get("llmFetch") ?? fetch;
   const result = await editPlan(
     c.env,
     db,
@@ -357,10 +461,25 @@ studioRoutes.post("/edit", async (c) => {
     parsed.data.request,
     parsed.data.major ?? false,
     catalog,
+    fetchImpl,
   );
   if (!result.plan) return llmFailureResponse(c, result.reason);
 
-  const revalidated = liftingPlanSchema.safeParse(result.plan);
+  // F1 (fix round 1): force the persisted brief back to the STORED plan's
+  // brief verbatim, regardless of what the model emitted, then re-validate.
+  // The minor (ops) path can't touch `/brief` at all (`applyOps`'s
+  // `IMMUTABLE_ROOT_SEGMENT` guard) — this is a no-op there. `major: true`
+  // asks the strong model for a full regenerate, and nothing stops it from
+  // echoing back a mutated brief: a changed `startDate` would silently break
+  // the push grid's day math (`sessionHappenDay` reads `plan.brief.startDate`
+  // directly), and changed `constraints`/`equipment` would silently drop a
+  // safety-relevant field the user never asked to edit. Same defense-in-depth
+  // pattern as `/generate` forcing its own normalized brief onto the LLM's
+  // output, just anchored to the stored plan's brief instead of a freshly
+  // normalized one (an edit's brief is immutable by definition — nothing
+  // "normalizes" it here, it's simply not up for revision).
+  const finalPlan: LiftingPlan = { ...result.plan, brief: existing.data.brief };
+  const revalidated = liftingPlanSchema.safeParse(finalPlan);
   if (!revalidated.success) return c.json({ error: "invalid_output" }, 422);
 
   const now = nowInstant();
@@ -411,7 +530,9 @@ const retryBodySchema = z.object({
 studioRoutes.post("/push/retry", async (c) => {
   const db = c.get("db");
   const userId = c.get("userId");
-  const parsed = retryBodySchema.safeParse(await c.req.json());
+  const bodyResult = await parseJsonBody(c);
+  if (!bodyResult.ok) return bodyResult.response;
+  const parsed = retryBodySchema.safeParse(bodyResult.body);
   if (!parsed.success) return c.json({ error: "invalid_request", details: parsed.error.issues }, 400);
 
   const planRow = await loadCurrentPlan(db, userId);
