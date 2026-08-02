@@ -337,3 +337,42 @@ describe("plants under the light", () => {
     expect(renderScene(summer)).not.toBe(renderScene(winter));
   });
 });
+
+describe("finish overlays", () => {
+  it("golden hour renders sunbeams; night does not", () => {
+    // healthySnapshot() is pinned to April 12 (spring), whose sunset (18.6)
+    // is already past by hour 18.9 (sunX null) and whose fresh_rain weather
+    // forces beamStrength to 0 outright — so no hour of the raw snapshot can
+    // ever show a beam. A summer, clear-sun variant reaches a true golden
+    // hour (sun still up, beamStrength > 0.05) at 18.9.
+    const base = healthySnapshot();
+    const snapshot = {
+      ...base,
+      state: { ...base.state, season: "summer" as const, weatherState: "clear_sun" as const },
+    };
+    expect(renderScene(snapshot, { timeOfDay: 18.9 })).toContain("mix-blend-mode:screen");
+    expect(renderScene(snapshot, { timeOfDay: 23.5 })).not.toContain("mix-blend-mode:screen");
+  });
+
+  it("always applies grain and vignette", () => {
+    const markup = renderScene(healthySnapshot());
+    expect(markup).toContain('data-finish="true"');
+    expect(markup).toContain("-grain");
+    expect(markup).toContain("-vig");
+  });
+
+  it("rainbow renders only in a comeback recovery rain at low sun", () => {
+    // Same summer override as above: healthySnapshot()'s spring date puts
+    // hour 18.9 in the "dusk" period, not "golden", so rainbow could never
+    // gate on regardless of weather/inComeback.
+    const base = healthySnapshot();
+    const snapshot = { ...base, state: { ...base.state, season: "summer" as const } };
+    const comeback = {
+      ...snapshot,
+      state: { ...snapshot.state, weatherState: "recovery_rain" as const, inComeback: true },
+    };
+    expect(renderScene(comeback, { timeOfDay: 18.9 })).toContain('data-overlay="rainbow"');
+    expect(renderScene(comeback, { timeOfDay: 13 })).not.toContain('data-overlay="rainbow"');
+    expect(renderScene(snapshot, { timeOfDay: 18.9 })).not.toContain('data-overlay="rainbow"');
+  });
+});

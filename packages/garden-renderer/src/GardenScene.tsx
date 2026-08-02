@@ -1,10 +1,11 @@
 import type { CSSProperties, ReactNode } from "react";
-import type { GardenPlant, GardenWeatherState } from "@rg/domain";
+import type { GardenPlant } from "@rg/domain";
 import type { GardenSnapshot } from "@rg/garden-engine";
 import { rng, speciesOrThrow } from "@rg/garden-engine";
 import { shade } from "./color";
 import { describeGarden, plantStateLabel } from "./describe";
 import { lightingFor, moonPhase } from "./lighting";
+import { Finish, Rainbow, WeatherOverlay } from "./overlays";
 import { PlantSprite } from "./PlantSprite";
 import { SceneDefs, Sky } from "./sky";
 import { Terrain } from "./terrain";
@@ -58,83 +59,6 @@ function sceneCss(p: string, amp: number): string {
 .${p}-croak{animation:${p}-croak 3.2s ease-in-out infinite;}
 @keyframes ${p}-croak{0%,90%,100%{transform:scaleY(1)}95%{transform:scaleY(1.12)}}
 `;
-}
-
-/* ── weather overlays ────────────────────────────────────────────────────── */
-
-function rainOverlay(p: string, animate: boolean, recovery: boolean): ReactNode {
-  const r = rng("weather:rain");
-  const count = 16;
-  const streaks: ReactNode[] = [];
-  for (let copy = 0; copy < 2; copy++) {
-    for (let i = 0; i < count; i++) {
-      const x = n(r() * 1000);
-      const y = n(r() * 560) - copy * 560;
-      streaks.push(
-        <line
-          key={`s${copy}-${i}`}
-          x1={x}
-          y1={n(y)}
-          x2={n(x - 4)}
-          y2={n(y + 26)}
-          stroke={recovery ? "#5fb0d8" : "#57a7d2"}
-          strokeWidth={1.2}
-          strokeLinecap="round"
-          opacity={n(0.24 + r() * 0.2)}
-        />,
-      );
-    }
-  }
-  return (
-    <g data-overlay="rain" pointerEvents="none">
-      <g className={animate ? `${p}-rain` : undefined}>{streaks}</g>
-    </g>
-  );
-}
-
-function breezeOverlay(p: string, animate: boolean): ReactNode {
-  const r = rng("weather:breeze");
-  const leaves: ReactNode[] = [];
-  for (let i = 0; i < 4; i++) {
-    const x = 80 + r() * 700;
-    const y = 90 + r() * 220;
-    const style: CSSProperties | undefined = animate
-      ? { animationDuration: `${n(9 + r() * 5)}s`, animationDelay: `-${n(r() * 9)}s` }
-      : undefined;
-    leaves.push(
-      <g key={`l${i}`} className={animate ? `${p}-leafdrift` : undefined} style={style} opacity={animate ? undefined : 0.55}>
-        <ellipse cx={n(x)} cy={n(y)} rx={4} ry={1.8} transform={`rotate(${n(r() * 70 - 35)} ${n(x)} ${n(y)})`} fill="#a6a86a" />
-      </g>,
-    );
-  }
-  return (
-    <g data-overlay="breeze" pointerEvents="none">
-      {leaves}
-    </g>
-  );
-}
-
-function weatherOverlay(p: string, weather: GardenWeatherState, animate: boolean): ReactNode {
-  switch (weather) {
-    case "fresh_rain":
-      return rainOverlay(p, animate, false);
-    case "recovery_rain":
-      return rainOverlay(p, animate, true);
-    case "clear_sun":
-    case "soft_sun":
-    case "light_clouds":
-    case "dry_spell":
-      return null; // clouds now come from the Sky component, driven by light.cloudCount
-    case "mild_drought":
-      return (
-        <g data-overlay="haze" pointerEvents="none">
-          <rect x={0} y={0} width={1000} height={560} fill="#d8b97a" opacity={0.08} />
-          <ellipse cx={500} cy={250} rx={560} ry={130} fill="#e5d3a4" opacity={0.1} />
-        </g>
-      );
-    case "seasonal_breeze":
-      return breezeOverlay(p, animate);
-  }
 }
 
 /* ── wildlife ────────────────────────────────────────────────────────────── */
@@ -531,7 +455,8 @@ export function GardenScene({
       })}
 
       {/* weather overlay */}
-      {weatherOverlay(p, weather, animate)}
+      <WeatherOverlay p={p} weather={weather} animate={animate} />
+      <Rainbow p={p} light={light} />
 
       {/* wildlife */}
       {snapshot.wildlife.birds ? birdShapes(p, animate, sorted) : null}
@@ -543,6 +468,9 @@ export function GardenScene({
       {snapshot.wildlife.frogs ? frogShapes(p, animate, sorted) : null}
       {snapshot.wildlife.dragonflies ? dragonflyShapes(p, animate, sorted) : null}
       {snapshot.wildlife.ladybugs ? ladybugShapes(p, animate, sorted) : null}
+
+      {/* finish: beams, horizon haze, grain, vignette — over everything */}
+      <Finish p={p} light={light} />
     </svg>
   );
 }
