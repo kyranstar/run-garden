@@ -139,9 +139,26 @@ export interface PushRow {
   corosIdInPlan: string | null;
   corosProgramId: string | null;
   corosPlanId: string | null;
+  /**
+   * Where the workout ACTUALLY is, when the server filed it somewhere other
+   * than `happenDay`. `happenDay` is half the row's identity and never moves;
+   * this is what a delete has to be addressed at.
+   */
+  corosHappenDay: string | null;
   status: string;
   /** The structured failure code, when the row is in a failed state. */
   error: string | null;
+}
+
+/**
+ * The day a delete for this row must target: where the workout actually is,
+ * falling back to the day the plan asked for. Addressing the requested day for
+ * a workout the server filed elsewhere gets `stamp_mismatch` — which would
+ * mislabel this app's own stray as a user edit and make it permanently
+ * untouchable.
+ */
+export function deleteTargetDay(row: PushRow): string {
+  return row.corosHappenDay ?? row.happenDay;
 }
 
 /**
@@ -192,6 +209,10 @@ export function detectDrift(
     if (!seen) continue;
     if (seen.archived) findings.push({ pushId: row.id, kind: "missing" });
     else if (seen.title !== row.sessionTitle) findings.push({ pushId: row.id, kind: "renamed" });
+    // Compared against `happenDay`, NOT `deleteTargetDay(row)`. A verified row
+    // always has the two equal (ok:true means the stamp was found on the day
+    // that was asked for), and folding in `corosHappenDay` would make "moved"
+    // unfireable the moment a row ever recorded a different day.
     else if (seen.corosDate !== row.happenDay) findings.push({ pushId: row.id, kind: "moved" });
   }
   return findings;
@@ -235,6 +256,12 @@ export interface PushBatch {
   failures: PlannedFailure[];
   /** Ids of verified rows the draft still matches exactly. */
   unchanged: string[];
+  /**
+   * Ids skipped because they are `changed_on_coros`: this push would have
+   * acted on them and deliberately did not. Counted so the UI can say "3
+   * sessions changed on COROS" rather than silently doing less than asked.
+   */
+  blocked: string[];
 }
 
 export interface PlanPushInput {
@@ -254,8 +281,12 @@ export interface PlanPushInput {
   today: LocalDate;
 }
 
+/**
+ * The push-row identity key. `happenDay` is fixed-width (YYYY-MM-DD), so a
+ * plain space cannot make two different (day, title) pairs collide.
+ */
 const identity = (happenDay: string, sessionTitle: string): string =>
-  `${happenDay} ${sessionTitle}`;
+  `${happenDay} ${sessionTitle}`;
 
 /** A row can only be deleted if we recorded the whole address to delete by. */
 function addressable(row: PushRow): boolean {
@@ -277,6 +308,7 @@ export function planPush(input: PlanPushInput): PushBatch {
     localDeletes: [],
     failures: [],
     unchanged: [],
+    blocked: [],
   };
 
   const rowByKey = new Map(input.rows.map((r) => [identity(r.happenDay, r.sessionTitle), r]));
@@ -295,7 +327,10 @@ export function planPush(input: PlanPushInput): PushBatch {
     if (row.status === "deleted") continue;
     if (desiredKeys.has(identity(row.happenDay, row.sessionTitle))) continue;
     // Drift is surfaced, never clobbered: the user's own edit wins.
-    if (untouchable.has(row.id)) continue;
+    if (untouchable.has(row.id)) {
+      batch.blocked.push(row.id);
+      continue;
+    }
 
     if (addressable(row)) {
       batch.deletes.push({ row });
@@ -348,7 +383,10 @@ export function planPush(input: PlanPushInput): PushBatch {
   for (const [key, group] of groups) {
     const first = group[0]!;
     const row = rowByKey.get(key);
-    if (row && untouchable.has(row.id)) continue; // changed_on_coros: not ours
+    if (row && untouchable.has(row.id)) {
+      batch.blocked.push(row.id); // changed_on_coros: not ours to touch
+      continue;
+    }
 
     const fail = (error: PushFailureCode): void => {
       batch.failures.push({
@@ -548,10 +586,29 @@ export interface PushSummary {
   deletes: number;
   failures: number;
   unchanged: number;
+  /** Rows found to have drifted on COROS during THIS push. */
   drifted: number;
+  /** Rows skipped because they are already `changed_on_coros` (incl. `drifted`). */
+  blocked: number;
 }
 
 const IN_FLIGHT = ["queued", "claimed", "in_progress", "verifying"] as const;
+
+/**
+ * D1 caps a statement at ~100 bound variables, and an `inArray` binds one per
+ * element — so a plan with more push rows than this silently becomes a failing
+ * query in production while passing against better-sqlite3, which has no such
+ * cap. 90 leaves room for the other bindings in the same statement, matching
+ * `chunkedInsert`'s budget in db.ts.
+ */
+export const IN_ARRAY_CHUNK = 90;
+
+/** Split ids into ≤`IN_ARRAY_CHUNK` batches. Exported so the batching itself is testable. */
+export function chunkIds(ids: string[], size: number = IN_ARRAY_CHUNK): string[][] {
+  const out: string[][] = [];
+  for (let i = 0; i < ids.length; i += Math.max(1, size)) out.push(ids.slice(i, i + Math.max(1, size)));
+  return out;
+}
 
 async function loadObserved(db: Db, userId: string): Promise<Map<string, ObservedWorkout>> {
   const rows = await db
@@ -587,8 +644,9 @@ async function loadObserved(db: Db, userId: string): Promise<Map<string, Observe
  *   4. plan the batch purely, then write rows, then enqueue jobs with strictly
  *      increasing `requestedAt` so deletes are claimed before creates.
  *
- * `today` decides which days count as past. Callers with a user in hand should
- * pass `todayInZone(prefs.timezone)`; the UTC default is only a fallback.
+ * `today` decides which days count as past and is REQUIRED — there is no UTC
+ * default, because a silent UTC fallback misjudges a late-evening push by a
+ * day. Callers pass `todayInZone(prefs.timezone)`; the compiler enforces it.
  *
  * Retrying failures needs no separate entry point: a failed row is re-planned
  * by the next push (deleted first if it left an addressable stray, then
@@ -596,10 +654,10 @@ async function loadObserved(db: Db, userId: string): Promise<Map<string, Observe
  */
 export async function pushStudioPlan(
   db: Db,
-  opts: { userId: string; studioPlanId: string; today?: LocalDate },
+  opts: { userId: string; studioPlanId: string; today: LocalDate },
 ): Promise<PushSummary> {
   const now = nowInstant();
-  const today = opts.today ?? now.slice(0, 10);
+  const today = opts.today;
   const empty: PushSummary = {
     ok: false,
     creates: 0,
@@ -607,6 +665,7 @@ export async function pushStudioPlan(
     failures: 0,
     unchanged: 0,
     drifted: 0,
+    blocked: 0,
   };
 
   const planRow = (
@@ -632,14 +691,14 @@ export async function pushStudioPlan(
 
   // A re-push replaces whatever is in flight for these rows; otherwise an
   // older job's result would land on a row that has since been re-planned.
-  if (rows.length > 0) {
+  for (const ids of chunkIds(rows.map((r) => r.id))) {
     await db
       .update(corosWriteJobs)
       .set({ status: "superseded", completedAt: now, updatedAt: now })
       .where(
         and(
           eq(corosWriteJobs.userId, opts.userId),
-          inArray(corosWriteJobs.studioPushId, rows.map((r) => r.id)),
+          inArray(corosWriteJobs.studioPushId, ids),
           inArray(corosWriteJobs.status, [...IN_FLIGHT]),
         ),
       );
@@ -662,17 +721,14 @@ export async function pushStudioPlan(
   )
     .map((p) => p.id)
     .filter((id) => id !== opts.studioPlanId);
-  const otherLiveTitles =
-    otherPlanIds.length === 0
-      ? []
-      : (
-          await db
-            .select({ title: studioPlanPushes.sessionTitle, status: studioPlanPushes.status })
-            .from(studioPlanPushes)
-            .where(inArray(studioPlanPushes.planId, otherPlanIds))
-        )
-          .filter((r) => r.status !== "deleted")
-          .map((r) => r.title);
+  const otherLiveTitles: string[] = [];
+  for (const ids of chunkIds(otherPlanIds)) {
+    const found = await db
+      .select({ title: studioPlanPushes.sessionTitle, status: studioPlanPushes.status })
+      .from(studioPlanPushes)
+      .where(inArray(studioPlanPushes.planId, ids));
+    for (const r of found) if (r.status !== "deleted") otherLiveTitles.push(r.title);
+  }
 
   const catalogIds = new Set(
     (await db.select({ id: corosExercises.id }).from(corosExercises)).map((r) => r.id),
@@ -737,7 +793,7 @@ export async function pushStudioPlan(
     }
     const payload: StoredDeletePayload = {
       pushId: del.row.id,
-      happenDay: del.row.happenDay,
+      happenDay: deleteTargetDay(del.row),
       name: del.row.sessionTitle,
       idInPlan: del.row.corosIdInPlan!,
       programId: del.row.corosProgramId!,
@@ -806,6 +862,7 @@ export async function pushStudioPlan(
       failures: batch.failures.length,
       unchanged: batch.unchanged.length,
       drifted: drift.length,
+      blocked: batch.blocked.length,
     },
     createdAt: now,
   });
@@ -817,6 +874,7 @@ export async function pushStudioPlan(
     failures: batch.failures.length,
     unchanged: batch.unchanged.length,
     drifted: drift.length,
+    blocked: batch.blocked.length,
   };
 }
 
@@ -1006,11 +1064,18 @@ export async function applyStudioJobResult(
     if (studio.serverEntityId) rowUpdate.corosEntityId = studio.serverEntityId;
     if (studio.serverPlanId) rowUpdate.corosPlanId = studio.serverPlanId;
   }
+  // Recorded WHENEVER the executor located the stamp — including the cross-day
+  // `already_present` refusal, which withholds ids but still tells us where the
+  // workout is. `happenDay` (half the row's identity) never moves; this is the
+  // day a later delete must target, and without it that delete would be aimed
+  // at an empty date and come back `stamp_mismatch`.
+  if (studio.serverHappenDay) rowUpdate.corosHappenDay = studio.serverHappenDay;
   if (transition.clearIds) {
     rowUpdate.corosIdInPlan = null;
     rowUpdate.corosProgramId = null;
     rowUpdate.corosEntityId = null;
     rowUpdate.corosPlanId = null;
+    rowUpdate.corosHappenDay = null;
   }
   await db.update(studioPlanPushes).set(rowUpdate).where(eq(studioPlanPushes.id, studio.pushId));
 

@@ -427,6 +427,11 @@ export async function executeStudioJob(
       ...(result.serverProgramId !== undefined ? { serverProgramId: result.serverProgramId } : {}),
       ...(result.serverEntityId !== undefined ? { serverEntityId: result.serverEntityId } : {}),
       ...(result.serverPlanId !== undefined ? { serverPlanId: result.serverPlanId } : {}),
+      // Reported even when the ids were withheld (cross-day already_present):
+      // knowing WHERE the stamp is, is what makes that refusal actionable.
+      ...(result.serverHappenDay !== undefined
+        ? { serverHappenDay: result.serverHappenDay }
+        : {}),
     };
     if (result.error) log(`[coros-bridge] create ${job.id}: ${result.error}`);
     return { jobId: job.id, outcome: createOutcome(studio), studio };

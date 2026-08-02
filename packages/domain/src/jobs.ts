@@ -130,6 +130,14 @@ export const studioJobResultSchema = z
     serverProgramId: z.string().optional(),
     serverEntityId: z.string().optional(),
     serverPlanId: z.string().optional(),
+    /**
+     * The day the workout is ACTUALLY on, when the executor located a stamped
+     * placement. Differs from the requested day exactly when the outcome is
+     * `wrong_date` or a cross-day `already_present` — and in those cases it is
+     * the only address a later delete can use, so it is recorded rather than
+     * left inside the executor's prose.
+     */
+    serverHappenDay: localDate.optional(),
   })
   .strict();
 export type StudioJobResult = z.infer<typeof studioJobResultSchema>;

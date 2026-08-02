@@ -9,7 +9,7 @@
  */
 
 import { beforeEach, describe, expect, it } from "vitest";
-import { and, eq } from "drizzle-orm";
+import { and, eq, inArray } from "drizzle-orm";
 import { schema } from "@rg/database";
 import {
   DEFAULT_USER_PREFERENCES,
@@ -25,6 +25,9 @@ import { applyJobResult, claimNextJob } from "../src/services/jobs.js";
 import {
   applyStudioJobResult,
   bridgeJobPayload,
+  chunkIds,
+  deleteTargetDay,
+  IN_ARRAY_CHUNK,
   desiredSessions,
   detectDrift,
   mapCreateResult,
@@ -35,6 +38,7 @@ import {
   sessionStamp,
   type PushRow,
 } from "../src/services/studio-push.js";
+import { deleteAllUserData } from "../src/routes/misc.js";
 import { makeTestDb, makeTestUser, registerTestDevice } from "./helpers.js";
 
 const { corosExercises, corosWriteJobs, plannedWorkouts, studioPlanPushes, studioPlans, trainingPlans } =
@@ -42,6 +46,12 @@ const { corosExercises, corosWriteJobs, plannedWorkouts, studioPlanPushes, studi
 
 const SQUAT = "425898928110747648";
 const BENCH = "426109589008859137";
+
+function addDaysIso(iso: string, days: number): string {
+  const d = new Date(`${iso}T00:00:00Z`);
+  d.setUTCDate(d.getUTCDate() + days);
+  return d.toISOString().slice(0, 10);
+}
 
 function session(over: Partial<StudioSession> = {}): StudioSession {
   return {
@@ -63,11 +73,14 @@ function session(over: Partial<StudioSession> = {}): StudioSession {
 
 function plan(over: Partial<LiftingPlan> = {}): LiftingPlan {
   const startDate = "2026-09-07"; // a Monday
+  const weeks = over.weeks ?? [{ sessions: [session()] }, { sessions: [session()] }];
   return {
     name: "Autumn Strength",
     brief: {
       goal: "strength",
-      durationWeeks: 2,
+      // liftingPlanSchema requires weeks.length === durationWeeks, so the
+      // fixture derives it rather than letting overrides drift out of sync.
+      durationWeeks: weeks.length,
       sessionsPerWeek: 1,
       preferredDays: [1],
       sessionMinutes: 60,
@@ -76,8 +89,8 @@ function plan(over: Partial<LiftingPlan> = {}): LiftingPlan {
       notes: "",
       startDate,
     },
-    weeks: [{ sessions: [session()] }, { sessions: [session()] }],
     ...over,
+    weeks,
   } as LiftingPlan;
 }
 
@@ -91,6 +104,7 @@ function row(over: Partial<PushRow> = {}): PushRow {
     corosIdInPlan: null,
     corosProgramId: null,
     corosPlanId: null,
+    corosHappenDay: null,
     status: "pending",
     error: null,
     ...over,
@@ -180,7 +194,7 @@ describe("desiredSessions", () => {
     const heavier = session({
       exercises: [{ ...session().exercises[0]!, weight: { type: "kg", value: 60 } }],
     });
-    const b = desiredSessions(plan({ weeks: [{ sessions: [heavier] }] }))[0]!;
+    const b = desiredSessions(plan({ weeks: [{ sessions: [heavier] }, { sessions: [] }] }))[0]!;
     const same = desiredSessions(plan())[0]!;
 
     expect(b.fingerprint).not.toBe(a.fingerprint);
@@ -397,7 +411,7 @@ describe("planPush — refusals that never reach COROS", () => {
   it("fails BOTH sides of a within-batch title collision (neither is arbitrarily preferred)", () => {
     // Two sessions in the same week under one title produce one stamp.
     const p = plan({
-      weeks: [{ sessions: [session(), session({ weekday: 3 })] }],
+      weeks: [{ sessions: [session(), session({ weekday: 3 })] }, { sessions: [] }],
     });
     const batch = planPush({ ...base, desired: desiredSessions(p) });
 
@@ -406,7 +420,7 @@ describe("planPush — refusals that never reach COROS", () => {
   });
 
   it("collapses a same-day same-title duplicate into ONE failed row (the identity key is unique)", () => {
-    const p = plan({ weeks: [{ sessions: [session(), session()] }] });
+    const p = plan({ weeks: [{ sessions: [session(), session()] }, { sessions: [] }] });
     const batch = planPush({ ...base, desired: desiredSessions(p) });
 
     expect(batch.failures).toHaveLength(1);
@@ -428,7 +442,10 @@ describe("planPush — refusals that never reach COROS", () => {
 
   it("fails a session whose exercise is not in the synced COROS catalog", () => {
     const p = plan({
-      weeks: [{ sessions: [session({ exercises: [{ ...session().exercises[0]!, originId: "nope" }] })] }],
+      weeks: [
+        { sessions: [session({ exercises: [{ ...session().exercises[0]!, originId: "nope" }] })] },
+        { sessions: [] },
+      ],
     });
     const batch = planPush({ ...base, desired: desiredSessions(p) });
 
@@ -437,7 +454,7 @@ describe("planPush — refusals that never reach COROS", () => {
   });
 
   it("fails a session with no exercises rather than letting the builder throw on the bridge", () => {
-    const p = plan({ weeks: [{ sessions: [session({ exercises: [] })] }] });
+    const p = plan({ weeks: [{ sessions: [session({ exercises: [] })] }, { sessions: [] }] });
     const batch = planPush({ ...base, desired: desiredSessions(p) });
 
     expect(batch.failures[0]!.error).toBe("no_exercises");
@@ -459,6 +476,7 @@ describe("planPush — refusals that never reach COROS", () => {
     const p = plan({
       weeks: [
         { sessions: [session({ exercises: [] }), session({ weekday: 3, exercises: [] })] },
+        { sessions: [] },
       ],
     });
     const batch = planPush({ ...base, desired: desiredSessions(p) });
@@ -493,6 +511,7 @@ describe("planPush — drifted rows are never clobbered", () => {
     expect(batch.deletes).toEqual([]);
     expect(batch.creates).toEqual([]);
     expect(batch.failures).toEqual([]); // already marked changed_on_coros
+    expect(batch.blocked).toEqual(["row-0"]); // counted, never silently skipped
   });
 
   it("excludes a drifted REMOVED row from deletion too", () => {
@@ -501,6 +520,7 @@ describe("planPush — drifted rows are never clobbered", () => {
 
     expect(batch.deletes).toEqual([]);
     expect(batch.localDeletes).toEqual([]);
+    expect(batch.blocked).toEqual(["row-0"]);
   });
 
   it("keeps protecting a row an EARLIER push already marked changed_on_coros", () => {
@@ -515,6 +535,7 @@ describe("planPush — drifted rows are never clobbered", () => {
     expect(batch.deletes).toEqual([]);
     expect(batch.localDeletes).toEqual([]);
     expect(batch.failures).toEqual([]);
+    expect(batch.blocked).toEqual(["row-0"]);
   });
 
   it("does not recreate over a row an earlier push marked changed_on_coros", () => {
@@ -960,7 +981,7 @@ describe("pushStudioPlan", () => {
 
   it("records a duplicate_title failure without enqueueing anything for it", async () => {
     const planId = await seedPlan({
-      weeks: [{ sessions: [session(), session({ weekday: 3 })] }],
+      weeks: [{ sessions: [session(), session({ weekday: 3 })] }, { sessions: [] }],
     });
     const summary = await pushStudioPlan(db, { userId, studioPlanId: planId, today: TODAY });
 
@@ -1365,7 +1386,11 @@ describe("full push → result → re-push loop", () => {
     // Drop week 2 from the draft → a delete for exactly that row.
     await db
       .update(studioPlans)
-      .set({ plan: plan({ weeks: [{ sessions: [session()] }] }) as unknown as Record<string, unknown> })
+      .set({
+        plan: plan({
+          weeks: [{ sessions: [session()] }, { sessions: [] }],
+        }) as unknown as Record<string, unknown>,
+      })
       .where(eq(studioPlans.id, planId));
     const summary = await pushStudioPlan(db, { userId, studioPlanId: planId, today: TODAY });
 
@@ -1381,5 +1406,233 @@ describe("full push → result → re-push loop", () => {
     const payload = del.payload as { idInPlan: string; name: string };
     expect(payload.idInPlan).toBe("22");
     expect(payload.name).toBe("Upper A — wk 2");
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Fix round 1
+
+describe("chunkIds — the D1 bound-variable cap", () => {
+  it("splits at 90, the same budget chunkedInsert uses", () => {
+    // better-sqlite3 has no such cap, so an over-long inArray passes in tests
+    // and fails only in production. The batching itself is what is asserted.
+    const ids = Array.from({ length: 205 }, (_, i) => `row-${i}`);
+    const chunks = chunkIds(ids);
+
+    expect(IN_ARRAY_CHUNK).toBe(90);
+    expect(chunks.map((c) => c.length)).toEqual([90, 90, 25]);
+    expect(chunks.flat()).toEqual(ids); // order preserved, nothing dropped
+  });
+
+  it("is a no-op shape for small and empty inputs", () => {
+    expect(chunkIds([])).toEqual([]);
+    expect(chunkIds(["a", "b"])).toEqual([["a", "b"]]);
+    expect(chunkIds(Array.from({ length: 90 }, (_, i) => String(i)))).toHaveLength(1);
+  });
+});
+
+describe("supersede across more rows than one statement can bind", () => {
+  it("supersedes every in-flight job for a plan with >100 push rows", async () => {
+    const planId = await seedPlan();
+    const now = nowInstant();
+    // 120 rows, each with an in-flight job: one un-chunked inArray would bind
+    // 120 variables and be rejected by D1.
+    const ids = Array.from({ length: 120 }, (_, i) => `bulk-row-${i}`);
+    for (const [i, id] of ids.entries()) {
+      await db.insert(studioPlanPushes).values({
+        id,
+        planId,
+        planVersion: 1,
+        happenDay: addDaysIso("2027-01-04", i),
+        sessionTitle: `Bulk — wk ${i}`,
+        status: "pending",
+        updatedAt: now,
+      });
+      await db.insert(corosWriteJobs).values({
+        id: `bulk-job-${i}`,
+        userId,
+        workoutId: id,
+        studioPushId: id,
+        kind: "create_scheduled_workout",
+        expectedContentFingerprint: "",
+        originalDate: "2027-01-04",
+        destinationDate: "2027-01-04",
+        requestedAt: now,
+        status: "queued",
+        updatedAt: now,
+      });
+    }
+
+    await pushStudioPlan(db, { userId, studioPlanId: planId, today: TODAY });
+
+    const stillQueued = await db
+      .select()
+      .from(corosWriteJobs)
+      .where(and(eq(corosWriteJobs.status, "queued"), inArray(corosWriteJobs.studioPushId, ids)));
+    expect(stillQueued).toHaveLength(0);
+  });
+});
+
+describe("F2 — a create that landed on the wrong day stays addressable", () => {
+  it("records where the workout actually is, and the next push deletes it there", async () => {
+    const planId = await seedPlan();
+    await pushStudioPlan(db, { userId, studioPlanId: planId, today: TODAY });
+    const jobs = await db.select().from(corosWriteJobs).orderBy(corosWriteJobs.requestedAt);
+    const wk1 = jobs[0]!;
+
+    // The server filed wk1's create on 2026-09-08 instead of the requested
+    // 2026-09-07, and returned the stray's ids.
+    await applyStudioJobResult(db, userId, {
+      jobId: wk1.id,
+      deviceId: "dev",
+      outcome: "verification_failed",
+      finishedAt: nowInstant(),
+      signature: "sig",
+      studio: {
+        pushId: wk1.studioPushId!,
+        kind: "create_scheduled_workout",
+        ok: false,
+        reason: "wrong_date",
+        serverIdInPlan: "21",
+        serverProgramId: "21",
+        serverPlanId: "coros-plan",
+        serverHappenDay: "2026-09-08",
+      },
+    });
+
+    const row = (
+      await db.select().from(studioPlanPushes).where(eq(studioPlanPushes.id, wk1.studioPushId!))
+    )[0]!;
+    expect(row.status).toBe("failed");
+    expect(row.error).toBe("wrong_date");
+    // The identity day is unchanged — it is half the row's key.
+    expect(row.happenDay).toBe("2026-09-07");
+    // …and the day it is actually on is recorded alongside it.
+    expect(row.corosHappenDay).toBe("2026-09-08");
+
+    // The next push removes the stray BEFORE recreating, and addresses the day
+    // the workout is really on. Aiming at 2026-09-07 would find nothing there,
+    // come back stamp_mismatch, and permanently mislabel this app's own stray
+    // as a user edit.
+    await pushStudioPlan(db, { userId, studioPlanId: planId, today: TODAY });
+    const del = (
+      await db
+        .select()
+        .from(corosWriteJobs)
+        .where(
+          and(
+            eq(corosWriteJobs.status, "queued"),
+            eq(corosWriteJobs.kind, "delete_scheduled_workout"),
+          ),
+        )
+    )[0]!;
+    const payload = del.payload as { happenDay: string; idInPlan: string; followUpCreate?: { happenDay: string } };
+    expect(payload.happenDay).toBe("2026-09-08");
+    expect(payload.idInPlan).toBe("21");
+    // The recreate still targets the day the plan asked for.
+    expect(payload.followUpCreate?.happenDay).toBe("2026-09-07");
+
+    // And the delete succeeding clears the stray address entirely.
+    await applyStudioJobResult(db, userId, {
+      jobId: del.id,
+      deviceId: "dev",
+      outcome: "verified",
+      finishedAt: nowInstant(),
+      signature: "sig",
+      studio: { pushId: del.studioPushId!, kind: "delete_scheduled_workout", ok: true, code: "0000" },
+    });
+    const cleared = (
+      await db.select().from(studioPlanPushes).where(eq(studioPlanPushes.id, wk1.studioPushId!))
+    )[0]!;
+    expect(cleared.corosHappenDay).toBeNull();
+    expect(cleared.corosIdInPlan).toBeNull();
+  });
+
+  it("records the found day for a cross-day already_present, without ids", async () => {
+    const planId = await seedPlan();
+    await pushStudioPlan(db, { userId, studioPlanId: planId, today: TODAY });
+    const job = (await db.select().from(corosWriteJobs).orderBy(corosWriteJobs.requestedAt))[0]!;
+
+    await applyStudioJobResult(db, userId, {
+      jobId: job.id,
+      deviceId: "dev",
+      outcome: "verification_failed",
+      finishedAt: nowInstant(),
+      signature: "sig",
+      studio: {
+        pushId: job.studioPushId!,
+        kind: "create_scheduled_workout",
+        ok: false,
+        reason: "already_present",
+        serverHappenDay: "2026-09-10",
+      },
+    });
+
+    const row = (
+      await db.select().from(studioPlanPushes).where(eq(studioPlanPushes.id, job.studioPushId!))
+    )[0]!;
+    expect(row.error).toBe("changed_on_coros");
+    expect(row.corosHappenDay).toBe("2026-09-10"); // where it went
+    expect(row.corosIdInPlan).toBeNull(); // executor withheld the ids
+  });
+
+  it("deleteTargetDay prefers the recorded actual day and falls back to the identity day", () => {
+    expect(deleteTargetDay(verifiedRow())).toBe("2026-09-07");
+    expect(deleteTargetDay(verifiedRow({ corosHappenDay: "2026-09-08" }))).toBe("2026-09-08");
+  });
+});
+
+describe("F3 — blocked is reported by pushStudioPlan", () => {
+  it("counts rows the push declined to touch because they changed on COROS", async () => {
+    const planId = await seedPlan();
+    await pushStudioPlan(db, { userId, studioPlanId: planId, today: TODAY });
+    await db
+      .update(studioPlanPushes)
+      .set({ status: "failed", error: "changed_on_coros" })
+      .where(eq(studioPlanPushes.happenDay, "2026-09-07"));
+
+    const summary = await pushStudioPlan(db, { userId, studioPlanId: planId, today: TODAY });
+
+    expect(summary.blocked).toBe(1);
+    expect(summary.drifted).toBe(0); // found by an earlier push, not this one
+  });
+});
+
+describe("F8 — account deletion removes studio data", () => {
+  it("clears studio_plans and studio_plan_pushes with the rest of the account", async () => {
+    const planId = await seedPlan();
+    await pushStudioPlan(db, { userId, studioPlanId: planId, today: TODAY });
+    expect(await db.select().from(studioPlans)).toHaveLength(1);
+    expect((await db.select().from(studioPlanPushes)).length).toBeGreaterThan(0);
+    expect((await db.select().from(corosWriteJobs)).length).toBeGreaterThan(0);
+
+    await deleteAllUserData(db, userId);
+
+    // A studio table forgotten here would leave a user's LLM-authored plans
+    // and their COROS push history behind after they asked for deletion.
+    expect(await db.select().from(studioPlans)).toHaveLength(0);
+    expect(await db.select().from(studioPlanPushes)).toHaveLength(0);
+    expect(await db.select().from(corosWriteJobs)).toHaveLength(0);
+  });
+
+  it("leaves another user's studio plans alone", async () => {
+    const mine = await seedPlan();
+    await pushStudioPlan(db, { userId, studioPlanId: mine, today: TODAY });
+    const other = await makeTestUser(db);
+    const theirs = newId();
+    await db.insert(studioPlans).values({
+      id: theirs,
+      userId: other.userId,
+      brief: {},
+      plan: plan() as unknown as Record<string, unknown>,
+      version: 1,
+      createdAt: nowInstant(),
+      updatedAt: nowInstant(),
+    });
+
+    await deleteAllUserData(db, userId);
+
+    expect(await db.select().from(studioPlans)).toHaveLength(1);
+    expect((await db.select().from(studioPlans))[0]!.id).toBe(theirs);
   });
 });

@@ -43,6 +43,13 @@ export const studioPlanPushes = sqliteTable(
      */
     corosPlanId: text("coros_plan_id"),
     /**
+     * The day the workout is ACTUALLY on, when that differs from `happenDay`
+     * (a create the server filed elsewhere, or a stamp found on another day).
+     * `happenDay` stays the day the plan asked for — it is half the row's
+     * identity — so this is what a delete must be addressed at.
+     */
+    corosHappenDay: text("coros_happen_day"),
+    /**
      * Fingerprint of the exact session payload that was pushed. The diff's
      * "changed" test (same (happenDay, sessionTitle), different exercises) is
      * a comparison against this, so it must be recorded at push time.

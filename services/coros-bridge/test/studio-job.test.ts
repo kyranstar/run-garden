@@ -13,6 +13,7 @@
 
 import { describe, expect, it } from "vitest";
 import { FIXTURE_PLAN_ID } from "@rg/providers";
+import { studioJobResultSchema } from "@rg/domain";
 import type { CreateScheduledWorkoutJob, DeleteScheduledWorkoutJob } from "@rg/domain";
 import { CorosClient } from "../src/coros-client.js";
 import type { CreateWorkoutOptions, DeleteWorkoutOptions } from "../src/create-executor.js";
@@ -172,13 +173,10 @@ describe("executeStudioJob — create", () => {
     expect(server.counts.scheduleWrites).toBe(before); // nothing written
   });
 
-  it("reports a same-stamp-different-day refusal with NO ids to reconstruct", async () => {
+  it("reports a same-stamp-different-day refusal with NO ids, but WITH the day it is on", async () => {
     const { server, client } = await setup();
-    seedPushed(server, {
-      idInPlan: "60",
-      date: addDaysIso(TARGET_DAY, 2),
-      name: "Upper A — wk 1",
-    });
+    const elsewhere = addDaysIso(TARGET_DAY, 2);
+    seedPushed(server, { idInPlan: "60", date: elsewhere, name: "Upper A — wk 1" });
 
     const result = await executeStudioJob(client, createJob());
 
@@ -187,6 +185,22 @@ describe("executeStudioJob — create", () => {
     expect(result.studio!.serverIdInPlan).toBeUndefined();
     expect(result.studio!.serverProgramId).toBeUndefined();
     expect(result.studio!.serverPlanId).toBeUndefined();
+    // The ids are withheld (they would aim a delete at the wrong date), but
+    // WHERE the stamp is, is what makes the refusal actionable at all.
+    expect(result.studio!.serverHappenDay).toBe(elsewhere);
+  });
+
+  it("reports the actual day on a verified create too", async () => {
+    const { client } = await setup();
+    const result = await executeStudioJob(client, createJob());
+    expect(result.studio!.serverHappenDay).toBe(TARGET_DAY);
+  });
+
+  it("reports serverHappenDay as a LocalDate the domain schema accepts", async () => {
+    const { client } = await setup();
+    const result = await executeStudioJob(client, createJob());
+    expect(studioJobResultSchema.safeParse(result.studio).success).toBe(true);
+    expect(result.studio!.serverHappenDay).toMatch(/^\d{4}-\d{2}-\d{2}$/);
   });
 
   it("reports a local build failure as the retryable reason 'error'", async () => {

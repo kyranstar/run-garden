@@ -100,6 +100,15 @@ export interface CreateResult {
   serverEntityId?: string;
   /** The container plan the workout landed in — the delete triple's first element. */
   serverPlanId?: string;
+  /**
+   * The day the workout is ACTUALLY on (yyyy-mm-dd), whenever a stamped
+   * placement was located — which is not always the day that was requested.
+   * `wrong_date` and a cross-day `already_present` both mean "it exists, just
+   * not where you asked", and a caller that only recorded the requested day
+   * would address a later delete at an empty date and be told `stamp_mismatch`
+   * — mislabelling its own stray as a user edit.
+   */
+  serverHappenDay?: string;
   error?: string;
 }
 
@@ -987,6 +996,7 @@ export async function createWorkout(
         serverProgramId: String(existing.entity.planProgramId ?? existing.entity.idInPlan),
         serverEntityId: existing.entity.id != null ? String(existing.entity.id) : undefined,
         serverPlanId: String(existing.entity.planId ?? targetPlanId),
+        serverHappenDay: existing.date,
       };
       if (existing.date === date) {
         log(`  "${spec.name}" is already on ${date} (idInPlan ${ids.serverIdInPlan})`);
@@ -998,9 +1008,14 @@ export async function createWorkout(
       // workout sitting on a different day would invite a delete addressed at
       // the wrong date. The reason is enough for Task 3 to surface the drift;
       // resolving it needs a fresh read, not a stale id.
+      //
+      // `serverHappenDay` IS returned, because it is the one thing that makes
+      // the refusal actionable: without it the caller knows only that the
+      // stamp is somewhere else, and cannot address the somewhere.
       return {
         ok: false,
         reason: "already_present",
+        serverHappenDay: existing.date,
         error:
           `a workout named "${spec.name}" already exists in plan ${targetPlanId} on` +
           ` ${existing.date}, not ${date} — it was moved in COROS; refusing to create a` +
@@ -1101,6 +1116,10 @@ export async function createWorkout(
           serverProgramId: String(recovered.entity.planProgramId ?? recovered.entity.idInPlan),
           serverEntityId: recovered.entity.id != null ? String(recovered.entity.id) : undefined,
           serverPlanId: String(recovered.entity.planId ?? afterRaw.id ?? planId),
+          // Where it ACTUALLY is. Equal to the requested day on the happy
+          // path; on `wrong_date` it is the only address a later delete can
+          // use. Recorded structurally so no caller has to parse `error`.
+          serverHappenDay: recovered.date,
         }
       : {};
 

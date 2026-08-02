@@ -59,6 +59,7 @@ import { SIMULATION_VERSION } from "@rg/garden-engine";
 import { NORMALIZER_VERSION, normalizeStravaActivity } from "@rg/providers";
 import { ESTIMATOR_VERSION } from "@rg/scheduling";
 import type { AppContext } from "../auth/middleware.js";
+import type { Db } from "../services/db.js";
 import { requireUser } from "../auth/middleware.js";
 import { googleCalendarClient } from "../services/google-calendar.js";
 import { loadPreferences, savePreferences, syncCalendar } from "../services/calendar-sync.js";
@@ -725,13 +726,13 @@ settingsRoutes.get("/export", async (c) => {
   });
 });
 
-/** Full deletion of all cloud data (single-user: every row belongs to them). */
-settingsRoutes.post("/delete-all", async (c) => {
-  const db = c.get("db");
-  const userId = c.get("userId");
-  const confirm = (await c.req.json<{ confirm?: string }>()).confirm;
-  if (confirm !== "delete everything") return c.json({ error: "confirmation_required" }, 400);
-
+/**
+ * Delete every row belonging to this account. Exported rather than inlined in
+ * the route so the table list is directly testable — a table forgotten here
+ * leaves the user's data behind after they asked for it to be gone, and a
+ * route-shaped test cannot see that.
+ */
+export async function deleteAllUserData(db: Db, userId: string): Promise<void> {
   const {
     activityLaps,
     activitySourceLinks,
@@ -753,6 +754,8 @@ settingsRoutes.post("/delete-all", async (c) => {
     providerCursorState,
     scheduleOverrides,
     sessions,
+    studioPlanPushes,
+    studioPlans,
     syncErrors,
     syncRuns,
     trainingPlanVersions,
@@ -771,6 +774,8 @@ settingsRoutes.post("/delete-all", async (c) => {
     corosWriteAttempts,
     plannedWorkoutStages,
     scheduleOverrides,
+    // Keyed by studio plan, not by user — cleared with its parent below.
+    studioPlanPushes,
     trainingPlanVersions,
     webhookEvents,
     workoutCompletionMatches,
@@ -802,6 +807,7 @@ settingsRoutes.post("/delete-all", async (c) => {
     providerCursorState,
     userPreferences,
     trainingPlans,
+    studioPlans,
     syncErrors,
     syncRuns,
     auditEvents,
@@ -816,5 +822,12 @@ settingsRoutes.post("/delete-all", async (c) => {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   for (const t of [deviceHandshakes, oauthStates] as const) await db.delete(t as any);
   await db.delete(users).where(eq(users.id, userId));
+}
+
+/** Full deletion of all cloud data (single-user: every row belongs to them). */
+settingsRoutes.post("/delete-all", async (c) => {
+  const confirm = (await c.req.json<{ confirm?: string }>()).confirm;
+  if (confirm !== "delete everything") return c.json({ error: "confirmation_required" }, 400);
+  await deleteAllUserData(c.get("db"), c.get("userId"));
   return c.json({ ok: true });
 });

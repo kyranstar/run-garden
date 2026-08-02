@@ -185,11 +185,41 @@ describe("liftingPlanSchema", () => {
       exercises: [{ ...squat, reps: 999 }],
     };
     expect(() =>
-      liftingPlanSchema.parse({ ...validPlan, weeks: [{ sessions: [badSession] }] }),
+      liftingPlanSchema.parse({
+        ...validPlan,
+        weeks: Array.from({ length: 8 }, () => ({ sessions: [badSession] })),
+      }),
     ).toThrow();
   });
 
   it("rejects unknown fields", () => {
     expect(() => liftingPlanSchema.parse({ ...validPlan, extra: "nope" })).toThrow();
+  });
+
+  it("rejects a plan whose weeks disagree with its own brief", () => {
+    // The brief is what the user approved; a body that says something else is
+    // not that plan, and every extra week becomes real calendar writes.
+    expect(() =>
+      liftingPlanSchema.parse({ ...validPlan, weeks: validPlan.weeks.slice(0, 7) }),
+    ).toThrow(/weeks length must equal brief.durationWeeks/);
+    expect(() =>
+      liftingPlanSchema.parse({
+        ...validPlan,
+        weeks: [...validPlan.weeks, { sessions: [validSession] }],
+      }),
+    ).toThrow(/weeks length must equal brief.durationWeeks/);
+  });
+
+  it("caps weeks at 16, so a runaway generation cannot become hundreds of writes", () => {
+    const runaway = {
+      ...validPlan,
+      brief: { ...validBrief, durationWeeks: 16 },
+      weeks: Array.from({ length: 200 }, () => ({ sessions: [validSession] })),
+    };
+    expect(() => liftingPlanSchema.parse(runaway)).toThrow();
+    // 16 is the boundary and is accepted.
+    expect(
+      liftingPlanSchema.parse({ ...runaway, weeks: runaway.weeks.slice(0, 16) }).weeks,
+    ).toHaveLength(16);
   });
 });

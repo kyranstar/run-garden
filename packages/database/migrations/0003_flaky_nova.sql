@@ -1,0 +1,1 @@
+ALTER TABLE `studio_plan_pushes` ADD `coros_happen_day` text;

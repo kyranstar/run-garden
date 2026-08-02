@@ -81,13 +81,27 @@ export const studioWeekSchema = z
   .strict();
 export type StudioWeek = z.infer<typeof studioWeekSchema>;
 
+/**
+ * `weeks` is bounded twice, and both bounds are load-bearing:
+ *
+ *  - `.max(16)` matches `durationWeeks`'s own ceiling. Every week becomes real
+ *    workouts on the user's COROS calendar, so an LLM that returned 200 weeks
+ *    would become hundreds of writes; the array is capped where the brief is.
+ *  - `weeks.length === brief.durationWeeks` — the brief is what the user
+ *    agreed to. A plan whose body disagrees with its own brief is not a plan
+ *    the user approved, and the difference is silently pushed otherwise.
+ */
 export const liftingPlanSchema = z
   .object({
     name: z.string().min(1),
     brief: planBriefSchema,
-    weeks: z.array(studioWeekSchema),
+    weeks: z.array(studioWeekSchema).max(16),
   })
-  .strict();
+  .strict()
+  .refine((plan) => plan.weeks.length === plan.brief.durationWeeks, {
+    message: "weeks length must equal brief.durationWeeks",
+    path: ["weeks"],
+  });
 export type LiftingPlan = z.infer<typeof liftingPlanSchema> & { brief: PlanBrief };
 
 /** studio_plan_pushes.status lifecycle (spec §2). */
