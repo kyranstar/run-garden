@@ -2,6 +2,7 @@ import type { CSSProperties, ReactNode } from "react";
 import type { GardenPlant } from "@rg/domain";
 import type { GardenSnapshot } from "@rg/garden-engine";
 import { rng, speciesOrThrow } from "@rg/garden-engine";
+import { AtmosphereLayer } from "./AtmosphereLayer";
 import { shade } from "./color";
 import { describeGarden, plantStateLabel } from "./describe";
 import { lightingFor, moonPhase } from "./lighting";
@@ -327,6 +328,8 @@ export interface GardenSceneProps {
    * the ambient/screensaver view.
    */
   preserveAspectRatio?: string;
+  /** Mount the Tier-2 canvas atmosphere layer above the SVG. */
+  atmosphere?: boolean;
 }
 
 export function GardenScene({
@@ -338,6 +341,7 @@ export function GardenScene({
   className,
   timeOfDay,
   preserveAspectRatio = "xMidYMax meet",
+  atmosphere = false,
 }: GardenSceneProps) {
   const p = idPrefix;
   const animate = !reducedMotion;
@@ -361,7 +365,7 @@ export function GardenScene({
     (a, b) => a.position.y - b.position.y || a.id.localeCompare(b.id),
   );
 
-  return (
+  const svg = (
     <svg
       viewBox="0 0 1000 560"
       width="100%"
@@ -472,5 +476,22 @@ export function GardenScene({
       {/* finish: beams, horizon haze, grain, vignette — over everything */}
       <Finish p={p} light={light} />
     </svg>
+  );
+
+  if (!atmosphere) return svg;
+  return (
+    <div data-garden-wrapper="true" style={{ position: "relative", width: "100%", height: "100%" }}>
+      {svg}
+      {reducedMotion ? null : (
+        <AtmosphereLayer
+          weather={weather}
+          light={light}
+          fireflies={snapshot.wildlife.fireflies ?? false}
+          hasFlowering={sorted.some((pl) => pl.state === "flowering")}
+          restMode={snapshot.state.restMode}
+          idPrefix={p}
+        />
+      )}
+    </div>
   );
 }

@@ -376,3 +376,24 @@ describe("finish overlays", () => {
     expect(renderScene(snapshot, { timeOfDay: 18.9 })).not.toContain('data-overlay="rainbow"');
   });
 });
+
+describe("atmosphere layer", () => {
+  it("default render keeps the bare <svg> root with no canvas", () => {
+    const markup = renderScene(healthySnapshot());
+    expect(markup.startsWith("<svg")).toBe(true);
+    expect(markup).not.toContain("<canvas");
+  });
+
+  it("atmosphere=true wraps the scene and adds an aria-hidden canvas", () => {
+    const markup = renderScene(healthySnapshot(), { atmosphere: true });
+    expect(markup.startsWith("<div")).toBe(true);
+    expect(markup).toContain('data-garden-wrapper="true"');
+    expect(markup).toContain("<canvas");
+    expect(markup).toContain('aria-hidden="true"');
+  });
+
+  it("atmosphere + reducedMotion renders the wrapper without a canvas", () => {
+    const markup = renderScene(healthySnapshot(), { atmosphere: true, reducedMotion: true });
+    expect(markup).not.toContain("<canvas");
+  });
+});
