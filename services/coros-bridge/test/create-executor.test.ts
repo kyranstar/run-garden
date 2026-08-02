@@ -286,6 +286,32 @@ describe("buildStrengthProgram — server-side validation before any wire call",
       /no exercises/i,
     );
   });
+
+  it("re-validates the session itself rather than trusting the caller", () => {
+    // Out-of-range values the schema rejects — the safety core does not depend
+    // on every caller having parsed first.
+    const bad = (over: Record<string, unknown>): CreateWorkoutSpec =>
+      spec({
+        session: session([{ ...exercise(), ...over } as unknown as StudioExercise]),
+      });
+
+    expect(() => buildStrengthProgram(bad({ sets: 0 }), CATALOG)).toThrow(/invalid session/i);
+    expect(() => buildStrengthProgram(bad({ reps: -3 }), CATALOG)).toThrow(/invalid session/i);
+    expect(() => buildStrengthProgram(bad({ reps: 2.5 }), CATALOG)).toThrow(/invalid session/i);
+    expect(() => buildStrengthProgram(bad({ restSeconds: 100_000 }), CATALOG)).toThrow(
+      /invalid session/i,
+    );
+    expect(() =>
+      buildStrengthProgram(bad({ weight: { type: "kg", value: 9999 } }), CATALOG),
+    ).toThrow(/invalid session/i);
+    // …and an unknown field, which .strict() turns into an error rather than a
+    // silently dropped key.
+    expect(() => buildStrengthProgram(bad({ tempo: "3-1-1" }), CATALOG)).toThrow(
+      /invalid session/i,
+    );
+    // The message names the offending path, so a bad plan is diagnosable.
+    expect(() => buildStrengthProgram(bad({ sets: 0 }), CATALOG)).toThrow(/sets/);
+  });
 });
 
 describe("createWorkout — plan-scoped create + verify by stamp", () => {
@@ -408,7 +434,11 @@ describe("createWorkout — plan-scoped create + verify by stamp", () => {
     expect(result.ok).toBe(false);
     expect(result.reason).toBe("already_present");
     expect(result.error).toContain(addDaysIso(TODAY, 27));
-    expect(result.serverIdInPlan).toBe("21"); // the caller can still address it
+    // NO ids on a cross-day refusal: they would address a workout on a day
+    // this call was never asked about, and they feed deleteWorkout directly.
+    expect(result.serverIdInPlan).toBeUndefined();
+    expect(result.serverProgramId).toBeUndefined();
+    expect(result.serverPlanId).toBeUndefined();
     expect(server.counts.scheduleWrites).toBe(writesBefore);
   });
 
@@ -552,6 +582,98 @@ describe("createWorkout — plan-scoped create + verify by stamp", () => {
     expect(result.reason).toBe("error");
     expect(result.error).toContain("not-in-catalog");
     expect(server.counts.scheduleWrites).toBe(0);
+  });
+});
+
+describe("createWorkout — the write plan IS the guarded plan", () => {
+  const TEMPLATE_PLAN_ID = "479324793288704499";
+
+  /** Rewrite the top-level plan id of the reads matching `when`. */
+  function rewritingPlanId(
+    server: MockCorosServer,
+    when: (startDate: string) => boolean,
+    planId: string,
+  ): typeof fetch {
+    return async (input, init) => {
+      const url = new URL(
+        typeof input === "string" ? input : input instanceof URL ? input.href : input.url,
+      );
+      const res = await server.fetchImpl(input, init);
+      if (url.pathname !== "/training/schedule/query") return res;
+      if (!when(url.searchParams.get("startDate") ?? "")) return res;
+      const body = (await res.json()) as { data: Record<string, unknown> | null };
+      if (body.data) body.data.id = planId;
+      return new Response(JSON.stringify(body), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+    };
+  }
+
+  it("refuses when the caller asserts a plan the schedule read disagrees with", async () => {
+    const { server, client } = await setup();
+    // Every guard would scope to the template plan while the write landed in
+    // the container: the workout would be created outside its own guards,
+    // invisible to the read-after-write, and a retry would duplicate.
+    const result = await createWorkout(client, spec(), {
+      today: TODAY,
+      catalog: CATALOG,
+      planId: TEMPLATE_PLAN_ID,
+    });
+
+    expect(result.ok).toBe(false);
+    expect(result.reason).toBe("no_target_plan");
+    expect(result.error).toContain("plan identity changed mid-create");
+    expect(result.error).toContain(TEMPLATE_PLAN_ID);
+    expect(result.error).toContain(FIXTURE_PLAN_ID);
+    expect(server.counts.scheduleWrites).toBe(0);
+  });
+
+  it("refuses when the plan identity moves between the span sweep and the write", async () => {
+    const { server } = await setup();
+    const date = addDaysIso(TODAY, 28);
+    // The account's active plan changes after the sweep: only the narrow
+    // pre-write read (the one around the target day) sees the new id.
+    const swapping = rewritingPlanId(
+      server,
+      (start) => start === corosDay(addDaysIso(date, -3)),
+      "999999999999999999",
+    );
+    const moving = new CorosClient({ region: "us", fetchImpl: swapping, logger: noop });
+    await moving.login(server.email, server.password);
+
+    const result = await createWorkout(moving, spec({ happenDay: corosDay(date) }), {
+      today: TODAY,
+      catalog: CATALOG,
+    });
+
+    expect(result.ok).toBe(false);
+    expect(result.reason).toBe("no_target_plan");
+    expect(result.error).toContain("plan identity changed mid-create");
+    expect(result.error).toContain("999999999999999999");
+    expect(server.counts.scheduleWrites).toBe(0);
+    expect(server.entityByIdInPlan("21")).toBeUndefined();
+  });
+
+  it("ignores a stale plan id in the OLDEST sweep window", async () => {
+    const { server } = await setup();
+    // The 180-days-back window still names a plan the account has replaced.
+    // Taking it would scope every guard to a dead plan; the id must come from
+    // the window nearest today instead.
+    const stale = rewritingPlanId(
+      server,
+      (start) => start === corosDay(addDaysIso(TODAY, -180)),
+      "111111111111111111",
+    );
+    const client = new CorosClient({ region: "us", fetchImpl: stale, logger: noop });
+    await client.login(server.email, server.password);
+
+    const result = await createWorkout(client, spec(), { today: TODAY, catalog: CATALOG });
+
+    expect(result.ok).toBe(true);
+    expect(result.serverPlanId).toBe(FIXTURE_PLAN_ID); // the current plan, not the stale one
+    expect(result.serverIdInPlan).toBe("21");
+    expect(server.programByIdInPlan("21")?.name).toBe("Upper A — wk 1");
   });
 });
 
@@ -763,6 +885,104 @@ describe("deleteWorkout — guarded, triple-addressed removal", () => {
     expect(result.refused).toBeUndefined();
     expect(result.error).toContain("span");
     expect(server.counts.scheduleWrites).toBe(0);
+  });
+});
+
+describe("log sensitivity — foreign titles need an explicit opt-in", () => {
+  const date = addDaysIso(TODAY, 28);
+
+  /** Seed the occupancy race: a foreign workout takes the derived slot. */
+  function racingClient(server: MockCorosServer): Promise<CorosClient> {
+    let sawSpanSweep = false;
+    let injected = false;
+    const racing: typeof fetch = async (input, init) => {
+      const url = new URL(
+        typeof input === "string" ? input : input instanceof URL ? input.href : input.url,
+      );
+      if (url.pathname === "/training/schedule/query") {
+        const start = url.searchParams.get("startDate");
+        if (start === corosDay(addDaysIso(TODAY, -180))) sawSpanSweep = true;
+        else if (sawSpanSweep && !injected && start === corosDay(addDaysIso(date, -3))) {
+          injected = true;
+          server.state.schedule.entities!.push({
+            id: "70000000000000998",
+            idInPlan: "21",
+            planId: FIXTURE_PLAN_ID,
+            planProgramId: "21",
+            happenDay: Number(corosDay(date)),
+            name: "Legacy Tempo",
+          });
+        }
+      }
+      return server.fetchImpl(input, init);
+    };
+    const client = new CorosClient({ region: "us", fetchImpl: racing, logger: noop });
+    return client.login(server.email, server.password).then(() => client);
+  }
+
+  it("keeps foreign titles out of the log by default", async () => {
+    const { server } = await setup();
+    const client = await racingClient(server);
+    const lines: string[] = [];
+
+    await createWorkout(client, spec({ happenDay: corosDay(date) }), {
+      today: TODAY,
+      catalog: CATALOG,
+      log: (line) => lines.push(line),
+    });
+
+    const output = lines.join("\n");
+    expect(output).toContain("slot already occupied");
+    expect(output).not.toContain("Legacy Tempo");
+    expect(output).toContain("title printed to console"); // the report-safe form
+  });
+
+  it("emits titles only when the caller opts in with verbose", async () => {
+    const { server } = await setup();
+    const client = await racingClient(server);
+    const lines: string[] = [];
+
+    await createWorkout(client, spec({ happenDay: corosDay(date) }), {
+      today: TODAY,
+      catalog: CATALOG,
+      verbose: true,
+      log: (line) => lines.push(line),
+    });
+
+    expect(lines.join("\n")).toContain("Legacy Tempo");
+  });
+
+  it("keeps a delete clash's title out of the log by default", async () => {
+    const { server, client } = await setup();
+    seedPushed(server, { idInPlan: "21", date, name: "Upper A — wk 1" });
+    server.state.schedule.entities!.push({
+      id: "70000000000000555",
+      idInPlan: "21",
+      planId: FIXTURE_PLAN_ID,
+      planProgramId: "21",
+      happenDay: Number(corosDay(addDaysIso(TODAY, 120))),
+      name: "Marathon Race",
+    });
+    const quiet: string[] = [];
+    const loud: string[] = [];
+
+    const target = {
+      happenDay: corosDay(date),
+      name: "Upper A — wk 1",
+      idInPlan: "21",
+      programId: "21",
+      planId: FIXTURE_PLAN_ID,
+    };
+    await deleteWorkout(client, target, { today: TODAY, log: (l) => quiet.push(l) });
+    await deleteWorkout(client, target, {
+      today: TODAY,
+      verbose: true,
+      log: (l) => loud.push(l),
+    });
+
+    expect(quiet.join("\n")).toContain("NOT deleted");
+    expect(quiet.join("\n")).not.toContain("Marathon Race");
+    expect(loud.join("\n")).toContain("Marathon Race");
   });
 });
 

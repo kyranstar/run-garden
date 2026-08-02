@@ -32,7 +32,13 @@
  *     refusal the caller must handle; nothing is deleted on a maybe.
  */
 
-import { addDays, daysBetween, type StudioSession, type StudioWeight } from "@rg/domain";
+import {
+  addDays,
+  daysBetween,
+  studioSessionSchema,
+  type StudioSession,
+  type StudioWeight,
+} from "@rg/domain";
 import {
   corosDayToLocalDate,
   localDateToCorosDay,
@@ -102,9 +108,25 @@ export interface CreateWorkoutOptions {
   catalog: Map<string, string>;
   /** yyyy-mm-dd anchor for the plan-span sweep. Defaults to the system date. */
   today?: string;
-  /** Target container plan. Defaults to the plan the schedule read names. */
+  /**
+   * The caller's ASSERTION about which container plan to write to. It is
+   * cross-checked against the schedule read, and a disagreement is refused —
+   * it never overrides what the server says the active plan is. Omit to use
+   * the plan the read names.
+   */
   planId?: string;
+  /**
+   * Diagnostic sink. SENSITIVITY: lines written here never contain a workout
+   * title the caller did not author unless `verbose` is set — foreign workouts
+   * are described by identifier only, exactly as in a committed report.
+   */
   log?: (line: string) => void;
+  /**
+   * Allow foreign workout TITLES into `log`. Only for an interactive tool
+   * printing to the user's own terminal, where the title is what identifies
+   * the workout. Defaults to false; never enable for a persisted log.
+   */
+  verbose?: boolean;
 }
 
 /**
@@ -156,7 +178,17 @@ export interface DeleteResult {
 export interface DeleteWorkoutOptions {
   /** yyyy-mm-dd anchor for the plan-wide sweep. Defaults to the system date. */
   today?: string;
+  /**
+   * Diagnostic sink. SENSITIVITY: lines written here never contain a workout
+   * title the caller did not author unless `verbose` is set — foreign workouts
+   * are described by identifier only, exactly as in a committed report.
+   */
   log?: (line: string) => void;
+  /**
+   * Allow foreign workout TITLES into `log`. Only for an interactive tool
+   * printing to the user's own terminal. Defaults to false.
+   */
+  verbose?: boolean;
 }
 
 // ── Program construction (research §(d)) ────────────────────────────────────
@@ -189,13 +221,14 @@ export const EXERCISE_METADATA = {
 /**
  * §(d): the metric display unit is the STRING "6", not the number 6 — an easy
  * hand-built-payload bug, hence the constant.
+ *
+ * This is the ONLY display unit this module emits. `StudioWeight` is kilograms
+ * or bodyweight, so the research table's imperial row (display unit "7", with
+ * its own `intensityValue` and `intensityPercent` formulas) has no code path
+ * here and is deliberately not half-implemented: adding lbs means adding the
+ * whole row, not just a constant.
  */
 export const DISPLAY_UNIT_KG = "6";
-/**
- * §(d) imperial row. Unreachable from `StudioWeight`, which is kg/bodyweight
- * only; kept so the table in the research doc maps 1:1 onto this module.
- */
-export const DISPLAY_UNIT_LBS = "7";
 
 /** §5.4 `restType`: 3 = "skip rests" (restValue 0); 1 = explicit rest in seconds. */
 const REST_TYPE_SKIP = 3;
@@ -252,6 +285,13 @@ export function applyWeightIntensity(exercise: RawCorosExercise, weight: StudioW
  * the server. The catalog's name wins over the caller's label, because the
  * catalog is the authority at push time.
  *
+ * The session is RE-VALIDATED here with `studioSessionSchema` rather than
+ * trusted. This is the last code between an LLM-authored plan and the user's
+ * real calendar, and it is reached from several callers (jobs, the spike, a
+ * future retry path); a self-validating safety core is cheaper than proving
+ * every caller validated first. Out-of-range sets/reps/weights and unknown
+ * fields throw here, before any wire call.
+ *
  * `idInPlan`/`planId` are placeholders — the caller splices in the derived
  * values (as `addScheduleEntity` does anyway) immediately before the write.
  */
@@ -259,7 +299,14 @@ export function buildStrengthProgram(
   spec: CreateWorkoutSpec,
   catalog: Map<string, string>,
 ): RawCorosProgram {
-  const steps = spec.session.exercises;
+  const parsed = studioSessionSchema.safeParse(spec.session);
+  if (!parsed.success) {
+    const detail = parsed.error.issues
+      .map((issue) => `${issue.path.join(".") || "session"}: ${issue.message}`)
+      .join("; ");
+    throw new Error(`cannot build "${spec.name}": invalid session — ${detail}`);
+  }
+  const steps = parsed.data.exercises;
   if (steps.length === 0) {
     throw new Error(`cannot build "${spec.name}": the session has no exercises`);
   }
@@ -609,6 +656,16 @@ export function describeForeignForConsole(found: Located): string {
   return `name="${name}" date=${found.date}`;
 }
 
+/**
+ * Describe a workout that is NOT ours for a log line. The console form carries
+ * the user's real workout title, so it is emitted only when the caller has
+ * explicitly asked for it (`verbose`); otherwise the identifier-only form goes
+ * out, exactly as it would into a committed report.
+ */
+function describeForLog(found: Located, verbose: boolean): string {
+  return verbose ? describeForeignForConsole(found) : describeForeignForReport(found);
+}
+
 export function errText(e: unknown): string {
   return e instanceof Error ? e.message : "unknown failure";
 }
@@ -663,11 +720,25 @@ export interface IdInPlanObservation {
   windowEnd: string;
 }
 
+/** How far a window sits from `today`; 0 when it contains it. */
+function windowDistance(today: string, start: string, end: string): number {
+  if (start <= today && today <= end) return 0;
+  return Math.min(Math.abs(daysBetween(today, start)), Math.abs(daysBetween(today, end)));
+}
+
 /**
  * One merged view of the plan across the whole observation span. Required for
  * anything that reasons about deletion: a `status: 3` delete is **plan-wide**,
  * not window-scoped, so a colliding workout 200 days away is just as
  * destroyable as one next week — and invisible to a ±30 day read.
+ *
+ * PLAN IDENTITY IS TAKEN FROM THE WINDOW NEAREST TODAY, not from the first
+ * (oldest) one. The sweep starts 180 days back, and a window that far out can
+ * still name a plan the account has since replaced — while `id` is what every
+ * guard in this module scopes to. Taking the stale one would scope the guards
+ * to one plan while the write lands in another, which is exactly the divergence
+ * `createWorkout` now refuses on. `name`/`startDay` come from the same window,
+ * so the three describe one consistent plan.
  */
 export async function readFullSpan(
   client: CorosClient,
@@ -675,11 +746,16 @@ export async function readFullSpan(
 ): Promise<RawCorosSchedule> {
   const merged: RawCorosSchedule = { entities: [], programs: [] };
   const seenPrograms = new Set<string>();
+  let nearestIdDistance = Number.POSITIVE_INFINITY;
   for (const [start, end] of observationWindows(today)) {
     const raw = await client.getRawSchedule(start, end);
-    merged.id ??= raw.id;
-    merged.name ??= raw.name;
-    merged.startDay ??= raw.startDay;
+    const distance = windowDistance(today, start, end);
+    if (raw.id != null && String(raw.id) !== "" && distance < nearestIdDistance) {
+      nearestIdDistance = distance;
+      merged.id = raw.id;
+      merged.name = raw.name;
+      merged.startDay = raw.startDay;
+    }
     merged.maxIdInPlan = Math.max(
       Number(merged.maxIdInPlan ?? 0),
       Number(raw.maxIdInPlan ?? 0) || 0,
@@ -856,6 +932,7 @@ export async function createWorkout(
 ): Promise<CreateResult> {
   const today = opts.today ?? new Date().toISOString().slice(0, 10);
   const log = opts.log ?? ((): void => undefined);
+  const verbose = opts.verbose === true;
   const date = isoOf(spec.happenDay);
   const isOurs: StampPredicate = (name) => name === spec.name;
 
@@ -915,6 +992,12 @@ export async function createWorkout(
         log(`  "${spec.name}" is already on ${date} (idInPlan ${ids.serverIdInPlan})`);
         return { ok: true, reason: "already_present", ...ids };
       }
+      // NO ids on the cross-day refusal. `serverIdInPlan`/`serverProgramId`
+      // mean "the workout THIS call put on THIS day" — the contract that makes
+      // them safe to hand straight to `deleteWorkout`. Returning the ids of a
+      // workout sitting on a different day would invite a delete addressed at
+      // the wrong date. The reason is enough for Task 3 to surface the drift;
+      // resolving it needs a fresh read, not a stale id.
       return {
         ok: false,
         reason: "already_present",
@@ -922,7 +1005,6 @@ export async function createWorkout(
           `a workout named "${spec.name}" already exists in plan ${targetPlanId} on` +
           ` ${existing.date}, not ${date} — it was moved in COROS; refusing to create a` +
           " second workout under the same stamp",
-        ...ids,
       };
     }
 
@@ -930,15 +1012,32 @@ export async function createWorkout(
     const observation = observationFromSpan(fullSpan, targetPlanId, today);
     const idInPlan = nextIdInPlan(observation);
     const freshRaw = await readWindow();
+
+    // THE WRITE PLAN *IS* THE GUARDED PLAN. Everything above — derivation,
+    // stamp uniqueness, and the occupancy gate below — is scoped to
+    // targetPlanId, so writing anywhere else would put the workout outside
+    // every guard that just cleared it: the read-after-write could not see it,
+    // no ids would come back, and a retry would duplicate without bound.
+    // A fresh read naming a different plan means the account's active plan
+    // moved under us (or the caller asserted a plan the server disagrees
+    // with): that is unresolvable here, so nothing is written.
+    const freshPlanId = String(freshRaw.id ?? targetPlanId);
+    if (freshPlanId !== targetPlanId) {
+      return {
+        ok: false,
+        reason: "no_target_plan",
+        error: `plan identity changed mid-create (${targetPlanId} → ${freshPlanId}); refusing`,
+      };
+    }
+    const planId = targetPlanId;
     const fresh = planView(freshRaw, targetPlanId);
-    const planId = String(freshRaw.id ?? targetPlanId);
     log(
       `  idInPlan: counter=${observation.counter} observed=${observation.observedMax}` +
         ` → claiming ${idInPlan}`,
     );
     const occupant = locate(fresh, idInPlan);
     if (occupant) {
-      log(`  slot already occupied by ${describeForeignForConsole(occupant)}`);
+      log(`  slot already occupied by ${describeForLog(occupant, verbose)}`);
       return {
         ok: false,
         reason: "slot_occupied",
@@ -1058,6 +1157,7 @@ export async function deleteWorkout(
 ): Promise<DeleteResult> {
   const today = opts.today ?? new Date().toISOString().slice(0, 10);
   const log = opts.log ?? ((): void => undefined);
+  const verbose = opts.verbose === true;
   const date = isoOf(target.happenDay);
   const isOurs: StampPredicate = (name) => name === target.name;
 
@@ -1114,7 +1214,7 @@ export async function deleteWorkout(
       if (!outcome.sent) {
         log(
           `  !! delete address idInPlan=${String(found.entity.idInPlan)} is shared with` +
-            ` ${outcome.clash ? describeForeignForConsole(outcome.clash) : "another workout"}` +
+            ` ${outcome.clash ? describeForLog(outcome.clash, verbose) : "another workout"}` +
             " — NOT deleted",
         );
         return {
