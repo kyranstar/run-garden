@@ -6,7 +6,7 @@ import { IconGarden, IconInsights, IconPlan, IconRuns, IconSettings } from "./ic
 const NAV = [
   { to: "/", label: "Garden", icon: <IconGarden /> },
   { to: "/plan", label: "Plan", icon: <IconPlan /> },
-  { to: "/runs", label: "Runs", icon: <IconRuns /> },
+  { to: "/runs", label: "Activity", icon: <IconRuns /> },
   { to: "/insights", label: "Insights", icon: <IconInsights /> },
   { to: "/settings", label: "Settings", icon: <IconSettings /> },
 ];

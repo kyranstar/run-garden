@@ -420,7 +420,49 @@ button {
 .cat-rest { background: #b8b3a5; }
 .cat-cross_training,
 .cat-strength { background: #8a87b8; }
+.cat-yoga { background: #8f6fae; }
 .cat-unknown { background: #a3a49e; }
+
+/* Activity screen: discipline filter chips */
+.discipline-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+  margin-bottom: 0.9rem;
+}
+.chip {
+  display: inline-flex;
+  align-items: center;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  padding: 0.28rem 0.75rem;
+  font-size: 0.82rem;
+  font-weight: 600;
+  color: var(--ink-soft);
+  background: var(--bg-sunken);
+  cursor: pointer;
+  line-height: 1.2;
+}
+.chip.chip-all.active {
+  background: var(--ink-soft);
+  border-color: var(--ink-soft);
+  color: #fff;
+}
+.chip.chip-run.active {
+  background: var(--green);
+  border-color: var(--green);
+  color: #fff;
+}
+.chip.chip-strength.active {
+  background: #b5652f;
+  border-color: #b5652f;
+  color: #fff;
+}
+.chip.chip-yoga.active {
+  background: #8f6fae;
+  border-color: #8f6fae;
+  color: #fff;
+}
 
 /* ── Today hero ─────────────────────────────────────────────────────────── */
 

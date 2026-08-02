@@ -27,7 +27,44 @@ function dayDiff(a: string, b: string): number {
   return Math.round((Date.parse(a) - Date.parse(b)) / 86_400_000);
 }
 
-/** Sheet to attribute an unplanned run to a planned workout. */
+type DisciplineFilter = "all" | "run" | "strength" | "yoga";
+
+const FILTERS: { key: DisciplineFilter; label: string; chipClass: string }[] = [
+  { key: "all", label: "All", chipClass: "chip-all" },
+  { key: "run", label: "Runs", chipClass: "chip-run" },
+  { key: "strength", label: "Lifting", chipClass: "chip-strength" },
+  { key: "yoga", label: "Yoga", chipClass: "chip-yoga" },
+];
+
+/** The three disciplines the Activity screen understands; "All" shows just these. */
+const DISCIPLINE_SPORTS = new Set(["run", "strength", "yoga"]);
+
+const SPORT_LABELS: Record<string, string> = { run: "Run", strength: "Strength", yoga: "Yoga" };
+
+const EMPTY_COPY: Record<DisciplineFilter, { art: string; title: string; body: string }> = {
+  all: {
+    art: "🏃",
+    title: "No activity yet",
+    body: "Completed runs, lifts, and yoga sessions appear here. Use “Sync past runs” to pull your Strava run history.",
+  },
+  run: {
+    art: "🏃",
+    title: "No runs yet",
+    body: "Completed runs from COROS and Strava appear here. Use “Sync past runs” to pull your Strava history.",
+  },
+  strength: {
+    art: "🏋️",
+    title: "No lifts yet",
+    body: "Completed strength sessions from COROS appear here.",
+  },
+  yoga: {
+    art: "🧘",
+    title: "No yoga sessions yet",
+    body: "Completed yoga sessions from COROS appear here.",
+  },
+};
+
+/** Sheet to attribute an unplanned activity to a planned workout. */
 function LinkSheet({ activity, onClose }: { activity: ActivityDto; onClose: () => void }) {
   const qc = useQueryClient();
   const plan = useQuery({ queryKey: ["plan"], queryFn: () => api.workouts() });
@@ -60,18 +97,18 @@ function LinkSheet({ activity, onClose }: { activity: ActivityDto; onClose: () =
   });
 
   return (
-    <Sheet open onClose={onClose} title="Link this run to a workout">
+    <Sheet open onClose={onClose} title="Link this activity to a workout">
       {linkedTo ? (
         <div className="stack">
           <Banner kind="info">Linked to “{linkedTo.title}” — it's now marked done.</Banner>
           {linkedTo.effectiveDate !== activity.date ? (
             <p className="muted">
-              It was planned for {formatDayLong(linkedTo.effectiveDate)}, but you ran on{" "}
+              It was planned for {formatDayLong(linkedTo.effectiveDate)}, but you logged it on{" "}
               {formatDayLong(activity.date)}. To shuffle the rest of that week,{" "}
               <Link to={`/plan?workout=${linkedTo.id}`} onClick={onClose}>
                 open it in Plan
               </Link>{" "}
-              and move the surrounding runs.
+              and move the surrounding sessions.
             </p>
           ) : null}
           <button className="btn" onClick={onClose}>
@@ -81,8 +118,8 @@ function LinkSheet({ activity, onClose }: { activity: ActivityDto; onClose: () =
       ) : (
         <div className="stack">
           <p className="muted">
-            Which planned workout did this run cover? Nearest matches are first — the rest of your
-            plan stays where it is.
+            Which planned workout did this activity cover? Nearest matches are first — the rest of
+            your plan stays where it is.
           </p>
           {plan.isLoading ? (
             <Spinner label="Loading plan" />
@@ -125,6 +162,7 @@ export function RunsScreen() {
   const runs = useQuery({ queryKey: ["runs"], queryFn: () => api.activities(40) });
   const [linking, setLinking] = useState<ActivityDto | null>(null);
   const [note, setNote] = useState<string | null>(null);
+  const [filter, setFilter] = useState<DisciplineFilter>("all");
 
   const backfill = useMutation({
     mutationFn: () => api.backfillRuns(90),
@@ -146,27 +184,43 @@ export function RunsScreen() {
   });
 
   if (runs.isLoading) return <Spinner label="Loading runs" />;
-  const items = (runs.data?.activities ?? []).filter((a) => a.sport === "run");
+  const items = (runs.data?.activities ?? []).filter((a) =>
+    filter === "all" ? DISCIPLINE_SPORTS.has(a.sport) : a.sport === filter,
+  );
+  const empty = EMPTY_COPY[filter];
 
   return (
     <div>
       <div className="row-between screen-title">
-        <h1>Runs</h1>
+        <h1>Activity</h1>
         <button className="btn btn-small" disabled={backfill.isPending} onClick={() => backfill.mutate()}>
           {backfill.isPending ? "Syncing…" : "Sync past runs"}
         </button>
       </div>
+      <div className="discipline-chips" role="tablist" aria-label="Filter by discipline">
+        {FILTERS.map((f) => (
+          <button
+            key={f.key}
+            type="button"
+            role="tab"
+            aria-selected={filter === f.key}
+            className={`chip ${f.chipClass}${filter === f.key ? " active" : ""}`}
+            onClick={() => setFilter(f.key)}
+          >
+            {f.label}
+          </button>
+        ))}
+      </div>
       {note ? <Banner kind="info">{note}</Banner> : null}
       {items.length === 0 ? (
-        <EmptyState art="🏃" title="No runs yet">
-          Completed runs from COROS and Strava appear here. Use “Sync past runs” to pull your Strava
-          history.
+        <EmptyState art={empty.art} title={empty.title}>
+          {empty.body}
         </EmptyState>
       ) : (
         items.map((a) => (
           <div key={a.id} className="workout-row" style={{ cursor: "default" }}>
             <div className="body">
-              <div className="title">{a.title || "Run"}</div>
+              <div className="title">{a.title || SPORT_LABELS[a.sport] || "Activity"}</div>
               <div className="meta">
                 <span>{formatDayLong(a.date)}</span>
                 <span>{formatMinutes(a.durationSeconds)}</span>

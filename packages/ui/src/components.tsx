@@ -126,6 +126,7 @@ export const CATEGORY_LABELS: Record<string, string> = {
   race: "Race",
   cross_training: "Cross-training",
   strength: "Strength",
+  yoga: "Yoga",
   rest: "Rest",
   unknown: "Run",
 };
