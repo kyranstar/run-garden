@@ -357,8 +357,12 @@ describe("runCreateSpike — ownership guard (C1)", () => {
     seedCollision(server);
     const before = scheduleIds(server);
     const writesBefore = server.counts.scheduleWrites;
+    const lines: string[] = [];
 
-    const report = await runCreateSpike(client, { today: TODAY, log: noop });
+    const report = await runCreateSpike(client, {
+      today: TODAY,
+      log: (line) => lines.push(line),
+    });
 
     // The colliding workout is untouched and still on its own date.
     const survivor = server.entityByIdInPlan("21");
@@ -379,6 +383,15 @@ describe("runCreateSpike — ownership guard (C1)", () => {
     expect(report.tests.run.attempted).toBe(false);
     expect(report.tests.bike.attempted).toBe(false);
     expect(report.overall.leftovers).toEqual([]);
+
+    // The report is committed to the repo: it must carry the identifiers of a
+    // foreign workout, never its title.
+    const serialized = JSON.stringify(report);
+    expect(serialized).not.toContain("Legacy Tempo");
+    expect(serialized).toContain("title printed to console");
+    expect(serialized).toContain(`date=${addDaysIso(TODAY, -5)}`);
+    // The title is not lost — it goes to the user's own terminal.
+    expect(lines.join("\n")).toContain("Legacy Tempo");
   });
 
   it("refuses to register a foreign workout that appears in its slot mid-write", async () => {
@@ -402,13 +415,20 @@ describe("runCreateSpike — ownership guard (C1)", () => {
     };
     const raced = new CorosClient({ region: "us", fetchImpl: injecting, logger: noop });
     await raced.login(server.email, server.password);
+    const lines: string[] = [];
 
-    const report = await runCreateSpike(raced, { today: TODAY, log: noop });
+    const report = await runCreateSpike(raced, {
+      today: TODAY,
+      log: (line) => lines.push(line),
+    });
 
     expect(server.entityByIdInPlan("21")?.name).toBe("Someone Else's Workout");
     expect(report.tests.strength.notes.join(" ")).toContain("not registered, not deleted");
     expect(report.abortReason).toContain("did not create");
     expect(report.overall.leftovers).toEqual([]);
+    // Title stays out of the committed report, but reaches the terminal.
+    expect(JSON.stringify(report)).not.toContain("Someone Else's Workout");
+    expect(lines.join("\n")).toContain("Someone Else's Workout");
   });
 
   it("records accepted-but-not-visible without registering anything", async () => {
@@ -606,10 +626,11 @@ describe("runCreateSpike — plan/add unexpected success (C2/I3)", () => {
     };
     const swept = new CorosClient({ region: "us", fetchImpl: sweeping, logger: noop });
     await swept.login(server.email, server.password);
+    const lines: string[] = [];
 
     const report = await runCreateSpike(swept, {
       today: TODAY,
-      log: noop,
+      log: (line) => lines.push(line),
       includePlanAddProbe: true,
     });
 
@@ -625,6 +646,9 @@ describe("runCreateSpike — plan/add unexpected success (C2/I3)", () => {
     // The foreign workout was left strictly alone.
     expect(server.entityByIdInPlan("777")?.name).toBe("Race Simulation");
     expect(report.tests.planAdd.notes.join(" ")).toContain("left untouched");
+    // …and its title never reaches the committed report.
+    expect(JSON.stringify(report)).not.toContain("Race Simulation");
+    expect(lines.join("\n")).toContain("Race Simulation");
 
     // Never silent: the undeletable plan is surfaced at the top level.
     expect(report.overall.orphanPlanIds).toEqual(["plan-orphan-999"]);

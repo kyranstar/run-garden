@@ -455,7 +455,18 @@ function isSpikeOwned(found: Located): boolean {
   return entityName.startsWith(SPIKE_NAME) || programName.startsWith(SPIKE_NAME);
 }
 
-function describeForeign(found: Located): string {
+/**
+ * Report-safe description of a workout the spike does NOT own. A real user's
+ * workout title must never reach docs/reports/coros-create-spike-*.json, which
+ * is committed to the repo — so anything report-bound gets identifiers only.
+ * The title goes to the console, which is the user's own terminal.
+ */
+function describeForeignForReport(found: Located): string {
+  return `idInPlan ${String(found.entity.idInPlan)} date=${found.date} (foreign workout — title printed to console)`;
+}
+
+/** Console only: on the user's own terminal the title is what identifies it. */
+function describeForeignForConsole(found: Located): string {
   const name = String(found.entity.name ?? found.program?.name ?? "(unnamed)");
   return `name="${name}" date=${found.date}`;
 }
@@ -596,8 +607,11 @@ export async function runCreateSpike(
     // been reassigned between the create and now.
     if (!isSpikeOwned(present)) {
       entry.abandoned = true;
-      entry.error = `idInPlan now holds a workout the spike did not create (${describeForeign(present)}) — NOT deleted`;
-      log(`  !! ${entry.label} idInPlan=${entry.idInPlan}: ${entry.error}`);
+      entry.error = `NOT deleted — the slot now holds ${describeForeignForReport(present)}`;
+      log(
+        `  !! ${entry.label} idInPlan=${entry.idInPlan}: the slot now holds a workout the` +
+          ` spike did not create (${describeForeignForConsole(present)}) — NOT deleted`,
+      );
       return;
     }
     const del = await client.removeScheduleEntity(
@@ -968,8 +982,9 @@ async function createAndVerify(
   if (occupant) {
     result.verified = false;
     result.cleanedUp = true; // nothing created
-    const detail = `idInPlan ${idInPlan} (maxIdInPlan+1) is already occupied by ${describeForeign(occupant)}`;
+    const detail = `idInPlan ${idInPlan} (maxIdInPlan+1) is already occupied: ${describeForeignForReport(occupant)}`;
     result.notes.push(`${detail} — no write attempted`);
+    ctx.log(`  slot already occupied by ${describeForeignForConsole(occupant)}`);
     ctx.abort(`${detail}; refusing to write or delete`);
     return;
   }
@@ -1030,8 +1045,9 @@ async function createAndVerify(
   if (found && !isSpikeOwned(found)) {
     result.verified = false;
     result.cleanedUp = true; // we created nothing to clean
-    const detail = `idInPlan ${idInPlan} holds a workout the spike did not create (${describeForeign(found)})`;
+    const detail = `a workout the spike did not create is at ${describeForeignForReport(found)}`;
     result.notes.push(`${detail} — not registered, not deleted`);
+    ctx.log(`  slot holds ${describeForeignForConsole(found)} — not registered, not deleted`);
     ctx.abort(`${detail}; refusing to delete anything the spike did not create`);
     return;
   }
@@ -1201,9 +1217,15 @@ async function runPlanAddProbe(ctx: SpikeContext, today: string): Promise<void> 
       // Same guard as the create path: a new entity is only ours if it
       // carries the spike's name. Anything else is left strictly alone.
       if (!found || !isSpikeOwned(found)) {
-        const detail = found ? describeForeign(found) : `idInPlan=${String(entity.idInPlan)}`;
-        result.notes.push(`left untouched (not created by the spike): ${detail}`);
-        ctx.log(`  leaving untouched (not ours): ${detail}`);
+        const reportDetail = found
+          ? describeForeignForReport(found)
+          : `idInPlan ${String(entity.idInPlan)} (no program read back)`;
+        result.notes.push(`left untouched (not created by the spike): ${reportDetail}`);
+        ctx.log(
+          `  leaving untouched (not ours): ${
+            found ? describeForeignForConsole(found) : `idInPlan=${String(entity.idInPlan)}`
+          }`,
+        );
         continue;
       }
       ctx.created.push({
