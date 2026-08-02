@@ -30,6 +30,7 @@
     "db:generate": "pnpm --filter @rg/database generate",
     "db:migrate:local": "pnpm --filter @rg/worker db:migrate:local",
     "coros:spike": "pnpm --filter @rg/coros-bridge spike",
+    "coros:spike:create": "pnpm --filter @rg/coros-bridge spike:create",
     "e2e": "pnpm --filter @rg/web e2e"
   },
   "devDependencies": {

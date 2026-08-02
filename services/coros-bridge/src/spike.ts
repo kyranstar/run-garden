@@ -17,6 +17,7 @@ import { fileURLToPath } from "node:url";
 import { addDays } from "@rg/domain";
 import { normalizeCorosSchedule, type SourcePlannedWorkout } from "@rg/providers";
 import { CorosClient, type CorosRegion } from "./coros-client.js";
+import { redactUserId, stripUserIds } from "./sanitize.js";
 import { loadNameResolver } from "./snapshot.js";
 import { executeMoveJob, type MoveJobResult } from "./write-executor.js";
 
@@ -40,20 +41,6 @@ interface SpikeReport {
   rollbackAttempted?: boolean;
   succeeded: boolean;
   failure?: string;
-}
-
-/** Recursively drop COROS-internal user identifiers from raw snapshots. */
-function stripUserIds(value: unknown): unknown {
-  if (Array.isArray(value)) return value.map(stripUserIds);
-  if (value !== null && typeof value === "object") {
-    const out: Record<string, unknown> = {};
-    for (const [k, v] of Object.entries(value as Record<string, unknown>)) {
-      if (/userid/i.test(k)) continue;
-      out[k] = stripUserIds(v);
-    }
-    return out;
-  }
-  return value;
 }
 
 function fmtDuration(seconds: number | undefined): string {
@@ -96,7 +83,7 @@ async function main(): Promise<void> {
 
     client = new CorosClient({ region });
     const { userId } = await client.login(email, password);
-    report.userIdRedacted = `${userId.slice(0, 4)}…`;
+    report.userIdRedacted = redactUserId(userId);
     console.log("Logged in.");
 
     const raw = await client.getRawSchedule(addDays(today, -30), addDays(today, 30));

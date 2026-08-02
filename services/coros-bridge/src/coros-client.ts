@@ -76,6 +76,47 @@ export interface CorosWriteResponse {
   message: string;
 }
 
+/** Server-computed program metrics from POST /training/program/calculate. */
+export interface CorosProgramMetrics {
+  duration?: number; // seconds
+  trainingLoad?: number;
+  distance?: number; // coros units (m × 100)
+  totalSets?: number;
+  sets?: number;
+  exerciseBarChart?: unknown;
+}
+
+/** Raw data of /training/program/calculate — both documented field families. */
+interface CorosCalculateResponse {
+  planDuration?: number;
+  duration?: number;
+  planTrainingLoad?: number;
+  trainingLoad?: number;
+  planDistance?: number;
+  distance?: number;
+  planHybridTotalSets?: number;
+  totalSets?: number;
+  planSets?: number;
+  sets?: number;
+  exerciseBarChart?: unknown;
+}
+
+/** Envelope of POST /training/plan/add, `data` documented as the new planId. */
+export interface CorosPlanAddResponse extends CorosWriteResponse {
+  data: unknown;
+}
+
+/** Entry of GET /training/exercise/query — `id` doubles as an `originId`. */
+export interface CorosExerciseCatalogItem {
+  id: string | number;
+  name?: string;
+  sportType?: number;
+  exerciseType?: number;
+  targetType?: number;
+  intensityType?: number;
+  [key: string]: unknown;
+}
+
 export interface CorosDashboardSubset {
   rhr?: number;
   recoveryPct?: number;
@@ -280,13 +321,66 @@ export class CorosClient {
 
   /** Native duration estimate for a program (planDuration ?? duration, seconds). */
   async calculateProgram(program: RawCorosProgram): Promise<number | undefined> {
-    const data = await this.requireData<{ planDuration?: number; duration?: number } | null>(
+    return (await this.calculateProgramMetrics(program)).duration;
+  }
+
+  /**
+   * Full server-computed metrics for a program. The response uses `plan*`
+   * names on the calendar path and bare names on the library path (community
+   * survey §6.1) — read both. Used by calculate-then-add: splice the returned
+   * duration/load into the program before a status:1 create.
+   */
+  async calculateProgramMetrics(program: RawCorosProgram): Promise<CorosProgramMetrics> {
+    const data = await this.requireData<CorosCalculateResponse | null>(
       "program.calculate",
       "POST",
       "/training/program/calculate",
       { json: program },
     );
-    return data?.planDuration ?? data?.duration;
+    return {
+      duration: data?.planDuration ?? data?.duration,
+      trainingLoad: data?.planTrainingLoad ?? data?.trainingLoad,
+      distance: data?.planDistance ?? data?.distance,
+      totalSets: data?.planHybridTotalSets ?? data?.totalSets,
+      sets: data?.planSets ?? data?.sets,
+      exerciseBarChart: data?.exerciseBarChart,
+    };
+  }
+
+  /**
+   * Plan-level create probe (`POST /training/plan/add`). Speculative: the one
+   * community attempt on record against a non-CN account was rejected with
+   * `1031`. Returns the envelope verbatim (including `data`, documented as the
+   * new planId) instead of throwing, so a caller can record either outcome.
+   */
+  async planAdd(body: unknown): Promise<CorosPlanAddResponse> {
+    const envelope = await this.requestEnvelope<unknown>("plan.add", "POST", "/training/plan/add", {
+      json: body,
+    });
+    return {
+      ok: envelope.result === "0000",
+      result: envelope.result,
+      message: envelope.message,
+      data: envelope.data,
+    };
+  }
+
+  /**
+   * Exercise catalog for a workout-namespace sportType (4 = strength, ~400
+   * entries). Each entry's `id` is the stable `originId` a hand-built program
+   * references. Response `data` is a bare array on the observed captures.
+   */
+  async getExerciseCatalog(sportType: number): Promise<CorosExerciseCatalogItem[]> {
+    const data = await this.requireData<unknown>(
+      "exercise.query",
+      "GET",
+      "/training/exercise/query",
+      { query: { userId: this.userId ?? "", sportType: String(sportType) } },
+    );
+    if (Array.isArray(data)) return data as CorosExerciseCatalogItem[];
+    const list = (data as { list?: unknown; dataList?: unknown } | null)?.list ??
+      (data as { dataList?: unknown } | null)?.dataList;
+    return Array.isArray(list) ? (list as CorosExerciseCatalogItem[]) : [];
   }
 
   // ── Activities ───────────────────────────────────────────────────────────

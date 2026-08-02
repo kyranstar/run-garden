@@ -109,8 +109,25 @@ export interface MockCorosServer {
   addSilentlyFails: boolean;
   /** Cap the /activity/query page size below the requested one (pagination tests). */
   forcePageSize: number | null;
+  /** Envelope result POST /training/plan/add returns (1031 = the EU rejection). */
+  planAddResult: string;
+  /** `data` returned when planAddResult is "0000" (documented as the planId). */
+  planAddData: unknown;
+  /** Bodies received by POST /training/plan/add, in order. */
+  planAddBodies: unknown[];
   entityByIdInPlan(idInPlan: string | number): RawCorosEntity | undefined;
+  programByIdInPlan(idInPlan: string | number): RawCorosProgram | undefined;
 }
+
+/** Fixed metrics /training/program/calculate returns for a hand-built program. */
+const CALCULATED_DURATION = 1234;
+const CALCULATED_TRAINING_LOAD = 42;
+
+/** Two entries of the sportType=4 exercise catalog (ids double as originIds). */
+const STRENGTH_CATALOG = [
+  { id: "425898928110747648", name: "T2001", sportType: 4, exerciseType: 1, targetType: 2 },
+  { id: "426109589008859137", name: "T2101", sportType: 4, exerciseType: 2, targetType: 3 },
+];
 
 export function mockCorosServer(opts: { baseMonday?: string } = {}): MockCorosServer {
   const baseMonday = opts.baseMonday ?? nextMonday();
@@ -226,12 +243,19 @@ export function mockCorosServer(opts: { baseMonday?: string } = {}): MockCorosSe
     throwBeforeApplyOnce: false,
     addSilentlyFails: false,
     forcePageSize: null,
+    planAddResult: "1031", // "Parameter input error" — the one EU attempt on record
+    planAddData: null,
+    planAddBodies: [],
     expireTokens: () => {
       validTokens.clear();
     },
     entityByIdInPlan: (idInPlan) =>
       (server.state.schedule.entities ?? []).find(
         (e) => String(e.idInPlan) === String(idInPlan),
+      ),
+    programByIdInPlan: (idInPlan) =>
+      (server.state.schedule.programs ?? []).find(
+        (p) => String(p.idInPlan) === String(idInPlan),
       ),
     fetchImpl: undefined as unknown as typeof fetch,
   };
@@ -360,11 +384,27 @@ export function mockCorosServer(opts: { baseMonday?: string } = {}): MockCorosSe
         return handleScheduleUpdate(JSON.parse(bodyText) as ScheduleUpdateBody);
 
       case "/training/program/calculate": {
+        // Server-computed: a hand-built program submits 0/absent and gets the
+        // real numbers back. Programs that already carry an estimate keep it.
         const program = JSON.parse(bodyText) as RawCorosProgram;
         return envelope("0000", {
-          planDuration: program.duration ?? 1234,
-          planTrainingLoad: program.trainingLoad ?? 10,
+          planDuration: program.duration || CALCULATED_DURATION,
+          planTrainingLoad: program.trainingLoad || CALCULATED_TRAINING_LOAD,
         });
+      }
+
+      case "/training/plan/add": {
+        server.planAddBodies.push(JSON.parse(bodyText));
+        return envelope(
+          server.planAddResult,
+          server.planAddResult === "0000" ? server.planAddData : null,
+        );
+      }
+
+      case "/training/exercise/query": {
+        const sportType = Number(url.searchParams.get("sportType") ?? "0");
+        const list = sportType === 4 ? STRENGTH_CATALOG : [];
+        return envelope("0000", structuredClone(list)); // data is a bare array
       }
 
       case "/activity/query": {

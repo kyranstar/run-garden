@@ -123,7 +123,51 @@ test" (`services/coros-bridge/src/spike.ts`). It:
    (user ids stripped/redacted; no tokens or emails).
 
 Status: implemented but **not yet executed against a live account** (no real
-credentials in the build environment). Note: the findings doc specifies
+credentials in the build environment).
+
+## The reversible CREATE spike
+
+`pnpm coros:spike:create` (`services/coros-bridge/src/spike-create.ts`) answers
+a different question: can the bridge create **brand-new, hand-authored**
+workouts, not just move or clone existing ones
+([research §(c)](research/plan-write-capability.md))? It is **additive only** —
+it never reads-modifies-writes anything the user authored:
+
+1. **Baseline** — fresh ±30-day read: `planId`, `maxIdInPlan`, workout count and
+   the full `idInPlan` set are snapshotted.
+2. **TEST A, strength** (`today + 21`) — a hand-built `sportType: 4` program:
+   one repeat-group container (`sets: 3`) wrapping one 10-rep bodyweight step
+   (`intensityValue: ""`, `intensityDisplayUnit: "6"` — both strings).
+3. **TEST B, run** (`today + 22`) — the minimal confirmed topology: two blocks,
+   warmup + training, no group, no cooldown.
+4. **TEST C, bike probe** (`today + 23`) — uncaptured in the survey; the result
+   is recorded either way.
+5. **TEST D, plan/add probe** — one `POST /training/plan/add`, expected to be
+   rejected with `1031` outside CN. On unexpected success it deletes what it
+   created; a plan object with no known delete endpoint is reported as an
+   **orphan planId**, in the console and the report, for manual removal.
+
+Every write is preceded by `program/calculate` (calculate-then-add) and followed
+by a read-after-write that asserts **structural fields only**
+(`exerciseType`/`targetType`/`sets`/`intensityType`) — `duration`, `distance`
+and `trainingLoad` are server-recomputed and never allowed to fail the spike.
+Server ids (`plan`/`entity`/`program`) are recovered from that read, not the
+write response.
+
+**Cleanup is the point**: every created entity is registered for removal the
+moment a read proves it exists — including after a *rejected* write that
+materialized anyway — then removed in reverse order, each removal verified by a
+read, and finally the whole window is compared against the baseline. The spike
+prints a `RESTORATION PASS/FAIL` line and names anything it could not remove.
+An unexpected error and Ctrl-C (SIGINT) both run the same cleanup and write the
+same sanitized report (`docs/reports/coros-create-spike-<date>.json`,
+`baselineRestored` at the top level).
+
+Status: implemented, offline-tested against the mock server
+(`services/coros-bridge/test/spike-create.test.ts`), **not yet executed against
+a live account**.
+
+Note: the findings doc specifies
 shipping with writes defaulting to calendar-only until the spike passes;
 the current preferences schema defaults `corosWritesEnabled` to `true`
 (`packages/domain/src/preferences.ts`) — a known code/spec discrepancy. Until
