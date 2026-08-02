@@ -10,6 +10,7 @@ export const WORKOUT_CATEGORIES = [
   "race",
   "cross_training",
   "strength",
+  "yoga",
   "rest",
   "unknown",
 ] as const;

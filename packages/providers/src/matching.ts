@@ -44,7 +44,7 @@ export function scoreWorkoutActivity(
   if (parts.date === 0) return null; // more than a day off is never a match
 
   const runSports = new Set(["run"]);
-  const workoutIsRun = !["cross_training", "strength"].includes(w.category);
+  const workoutIsRun = !["cross_training", "strength", "yoga"].includes(w.category);
   parts.sport = workoutIsRun === runSports.has(a.sport) ? 0.15 : 0;
   if (parts.sport === 0) return null;
 

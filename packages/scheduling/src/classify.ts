@@ -29,12 +29,14 @@ const TITLE_RULES: Array<{ re: RegExp; category: WorkoutCategory; sub?: QualityS
   { re: /\bhill\b|\bhills\b|\bincline\b/i, category: "quality", sub: "hills" },
   { re: /\binterval\b|\brepeats?\b|\bfartlek\b|\bspeed\b|\btrack\b|\d+\s*[x×]\s*\d+/i, category: "quality", sub: "intervals" },
   { re: /\bstrength\b|\bcore\b|\bgym\b|\bweights\b/i, category: "strength" },
+  { re: /\byoga\b|\bmobility\b|\bstretch/i, category: "yoga" },
   { re: /\bbike\b|\bcycle\b|\bswim\b|\brow\b|\belliptical\b|\bcross[- ]?train/i, category: "cross_training" },
   { re: /\beasy\b|\baerobic\b|\bbase\b|\bconversational\b/i, category: "easy" },
 ];
 
 const NON_RUN_SPORTS = new Set(["bike", "cycling", "swim", "swimming", "rowing", "elliptical"]);
 const STRENGTH_SPORTS = new Set(["strength", "gym", "gym_cardio", "training"]);
+const YOGA_SPORTS = new Set(["yoga"]);
 
 /** Intensity heuristics on normalized stages. */
 function analyzeStructure(stages: PlannedStage[]): {
@@ -66,6 +68,7 @@ export function classifyWorkout(w: ClassifiableWorkout): Classification {
   const sport = (w.sport ?? "run").toLowerCase();
   if (NON_RUN_SPORTS.has(sport)) return { category: "cross_training", basis: "hint" };
   if (STRENGTH_SPORTS.has(sport)) return { category: "strength", basis: "hint" };
+  if (YOGA_SPORTS.has(sport)) return { category: "yoga", basis: "hint" };
 
   const titleMatch = TITLE_RULES.find((r) => r.re.test(w.title));
 

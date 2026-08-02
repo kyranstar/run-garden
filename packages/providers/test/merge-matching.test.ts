@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import type { PlannedWorkout } from "@rg/domain";
+import type { NormalizedActivity, PlannedWorkout } from "@rg/domain";
 import { normalizeCorosActivity } from "../src/coros/normalize.js";
 import { normalizeStravaActivity } from "../src/strava/normalize.js";
 import {
@@ -126,5 +126,19 @@ describe("planned-to-completed matching", () => {
     const matches = matchActivities([{ workout: workout({}) }], [{ activity: stravaOnly }]);
     expect(matches).toHaveLength(1);
     expect(matches[0]!.method).toBe("scored");
+  });
+
+  it("scores the sport point for a yoga workout against a yoga activity", () => {
+    const act: NormalizedActivity = {
+      id: "act-7",
+      startTime: "2026-08-04T15:00:00Z",
+      startTimeLocal: "2026-08-04T08:00:00",
+      sport: "yoga",
+      durationSeconds: 1800,
+      sourceMergeConfidence: 1,
+    };
+    const cand = scoreWorkoutActivity(workout({ category: "yoga", sport: "yoga" }), act);
+    expect(cand).not.toBeNull();
+    expect(cand!.parts!.sport).toBeGreaterThan(0);
   });
 });

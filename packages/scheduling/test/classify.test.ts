@@ -65,4 +65,15 @@ describe("classifyWorkout", () => {
     expect(classifyWorkout({ title: "Morning Run", plannedDurationSeconds: 3000 }).category).toBe("easy");
     expect(classifyWorkout({ title: "???" }).category).toBe("unknown");
   });
+
+  it("classifies yoga from title keywords and sport hint", () => {
+    expect(classifyWorkout({ title: "Morning Yoga" }).category).toBe("yoga");
+    expect(classifyWorkout({ title: "Hip mobility" }).category).toBe("yoga");
+    expect(classifyWorkout({ title: "Stretch session" }).category).toBe("yoga");
+    expect(classifyWorkout({ title: "Anything at all", sport: "yoga" }).category).toBe("yoga");
+  });
+
+  it("still classifies Strength as strength (no yoga regression)", () => {
+    expect(classifyWorkout({ title: "Strength" }).category).toBe("strength");
+  });
 });

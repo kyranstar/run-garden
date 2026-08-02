@@ -25,6 +25,7 @@ const DEFAULT_FALLBACK_SECONDS: Record<WorkoutCategory, number> = {
   race: 60 * 60,
   cross_training: 45 * 60,
   strength: 40 * 60,
+  yoga: 45 * 60,
   rest: 0,
   unknown: 50 * 60,
 };
