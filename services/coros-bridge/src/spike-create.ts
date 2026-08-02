@@ -30,7 +30,7 @@
 import { mkdirSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { addDays, daysBetween } from "@rg/domain";
+import { addDays, type StudioSession } from "@rg/domain";
 import {
   corosDayToLocalDate,
   localDateToCorosDay,
@@ -39,9 +39,42 @@ import {
   type RawCorosProgram,
   type RawCorosSchedule,
 } from "@rg/providers";
-import { CorosClient, type CorosProgramMetrics, type CorosRegion } from "./coros-client.js";
+import { CorosClient, type CorosRegion } from "./coros-client.js";
+import {
+  applyCalculated,
+  buildEntity,
+  buildStrengthProgram,
+  claimNextIdInPlan,
+  deleteWouldBeAmbiguous,
+  describeForeignForConsole,
+  describeForeignForReport,
+  errText,
+  EXERCISE_METADATA,
+  issueGuardedDelete,
+  nextIdInPlan,
+  observationSpan,
+  observationWindows,
+  observeIdInPlan,
+  planBreakdown,
+  planView,
+  programsFor,
+  readFullSpan,
+  stampAmbiguities as stampAmbiguitiesIn,
+  stampedPlacements,
+  stampOf,
+  TOP_SORT,
+  unstampedPlacements,
+  type Located,
+  type PlanView,
+} from "./create-executor.js";
 import { createPrompter } from "./prompt.js";
 import { redactUserId, stripUserIds } from "./sanitize.js";
+
+// The spike drives the SHARED executor (create-executor.ts): every identity,
+// derivation, ownership and delete-safety decision below is that module's, so
+// the spike and the product cannot drift apart. What stays here is the spike's
+// own skin: the CLI, the A/B/C/D test sequence, and the report.
+export { observationWindows };
 
 // ── Report shape ────────────────────────────────────────────────────────────
 
@@ -263,133 +296,53 @@ const STRAY_SWEEP_FORWARD_DAYS = 60;
  */
 const SPIKE_NAME = "RG SPIKE — SAFE TO DELETE";
 
-/** §5.3: top-level step n → 2^24 · n; sub-steps → groupSort + 2^16 · (j+1). */
-const TOP_SORT = 16_777_216;
-const SUB_SORT = 65_536;
-
-/**
- * §5.5 per-exercise metadata block. Documented for running programs; applied
- * to all hand-built programs here by analogy (the survey gives no separate
- * strength list — noted as inferred in the research doc).
- */
-const EXERCISE_METADATA = {
-  exerciseKind: 0,
-  gradeSystem: 0,
-  hrType: 0,
-  intensityMultiplier: 0,
-  intensityPercent: 0,
-  intensityPercentExtend: 0,
-  onsightGradeOffset: 0,
-  overview: "",
-  packageTime: 0,
-  sourceId: "0",
-  subType: 0,
-  targetDisplayUnit: 0,
-} as const;
-
 interface ExerciseChoice {
   originId: string;
   name: string;
 }
 
-/**
- * §(d) bodyweight weight-encoding. `intensityValue` is an empty STRING (not 0
- * — 0 renders "0.00 kg" and is a different case) and `intensityDisplayUnit` is
- * the STRING "6". Both are easy hand-built-payload bugs, hence the wire cast:
- * RawCorosExercise types intensityValue as a number for the read path.
- */
-function applyBodyweightIntensity(exercise: RawCorosExercise): void {
-  const wire = exercise as Record<string, unknown>;
-  wire.intensityType = 1; // 1 = weight
-  wire.intensityValue = "";
-  wire.intensityPercent = 0;
-  wire.intensityDisplayUnit = "6";
-  wire.intensityCustom = 1;
+/** ISO weekday 1 (Mon) … 7 (Sun) for a yyyy-mm-dd date. */
+function isoWeekday(date: string): number {
+  return ((new Date(`${date}T00:00:00Z`).getUTCDay() + 6) % 7) + 1;
 }
 
 /**
- * Strength (sportType 4), hand-built flat list: ONE repeat-group container
- * (3 sets) wrapping ONE child exercise at 10 reps bodyweight. "3 sets of 10"
- * is structure, not a field (§(d)). The container is not counted in
- * exerciseNum — real steps only (§5.4).
+ * The spike's strength probe, expressed as an ordinary studio session: ONE
+ * exercise, 3 sets of 10 bodyweight reps. It is deliberately built by the
+ * SHARED `buildStrengthProgram` — the same call the product makes — so the
+ * spike's live-verified wire assertions are assertions about the product's
+ * builder, not about a parallel copy of it.
  */
-export function buildStrengthProgram(
+function buildStrengthProbe(
   idInPlan: number,
   planId: string,
   exercise: ExerciseChoice,
+  date: string,
 ): RawCorosProgram {
-  const container: RawCorosExercise = {
-    ...EXERCISE_METADATA,
-    id: 1,
-    name: "Group",
-    exerciseType: 0, // repeat-group container
-    sportType: 4,
-    intensityType: 0,
-    intensityValue: 0,
-    targetType: 2, // TIME per iteration
-    targetValue: 60,
-    sets: 3,
-    sortNo: TOP_SORT,
-    restType: 3, // skip rests
-    restValue: 0,
-    groupId: "0",
-    isGroup: true,
-    originId: "0",
+  const session: StudioSession = {
+    title: "spike strength probe",
+    weekday: isoWeekday(date),
+    exercises: [
+      {
+        originId: exercise.originId,
+        name: exercise.name,
+        sets: 3,
+        reps: 10,
+        weight: { type: "bodyweight" },
+        restSeconds: 0,
+      },
+    ],
   };
-  const child: RawCorosExercise = {
-    ...EXERCISE_METADATA,
-    id: 2,
-    name: exercise.name,
-    exerciseType: 2, // main / training
-    sportType: 4,
-    targetType: 3, // REPS
-    targetValue: 10,
-    sets: 1,
-    sortNo: TOP_SORT + SUB_SORT,
-    restType: 3,
-    restValue: 0,
-    groupId: "1", // the container's id
-    isGroup: false,
-    originId: exercise.originId,
-  };
-  applyBodyweightIntensity(child);
-
-  return {
-    idInPlan,
-    planId,
-    name: `${SPIKE_NAME} strength`,
-    overview: "",
-    sportType: 4,
-    subType: 65535, // structured
-    duration: 0,
-    estimatedTime: 0,
-    trainingLoad: 0,
-    estimatedValue: 0,
-    estimatedType: 0,
-    distance: 0,
-    estimatedDistance: 0,
-    exerciseNum: 1, // real steps only — the container must NOT be counted
-    totalSets: 3,
-    hybridTotalSets: 0,
-    gradeSystemVersion: 0,
-    poolLength: 0,
-    poolLengthId: 0,
-    poolLengthUnit: 0,
-    referExercise: { gradeSystem: 0, hrType: 0, intensityType: 1, valueType: 1 },
-    fastIntensityTypeName: "weight",
-    sourceUrl: "",
-    videoCoverUrl: "",
-    videoUrl: "",
-    targetType: 0,
-    targetValue: 0,
-    type: 0,
-    unit: 0,
-    access: 1,
-    authorId: "0",
-    pbVersion: 2,
-    version: 0,
-    exercises: [container, child],
-  };
+  const program = buildStrengthProgram(
+    {
+      happenDay: String(localDateToCorosDay(date)),
+      name: `${SPIKE_NAME} strength`,
+      session,
+    },
+    // The probe's own one-entry catalog: whatever pickStrengthExercise found.
+    new Map([[exercise.originId, exercise.name]]),
+  );
+  return { ...program, idInPlan, planId };
 }
 
 /**
@@ -477,34 +430,6 @@ export function buildEnduranceProgram(opts: {
 const RUN_WARMUP_ORIGIN_ID = "425895398452936705";
 const RUN_WORK_ORIGIN_ID = "426109589008859136";
 
-function buildEntity(opts: {
-  idInPlan: number;
-  planId: string;
-  date: string;
-  planStartDay?: number;
-  sportType: number;
-  name: string;
-}): RawCorosEntity {
-  const entity: RawCorosEntity = {
-    idInPlan: opts.idInPlan,
-    planId: opts.planId,
-    planProgramId: String(opts.idInPlan),
-    happenDay: localDateToCorosDay(opts.date),
-    sortNo: 1,
-    sortNoInSchedule: 1,
-    completeRate: "-1.00",
-    standardRate: "0",
-    score: "0",
-    thirdParty: false,
-    name: opts.name,
-    sportType: opts.sportType,
-  };
-  if (opts.planStartDay != null && opts.planStartDay > 0) {
-    entity.dayNo = daysBetween(corosDayToLocalDate(opts.planStartDay), opts.date) + 1;
-  }
-  return entity;
-}
-
 /**
  * `region` on plan/add. The only capture is from a CN-region script, which
  * sends `2`; the survey has no mapping for us/eu. Rather than guess a number,
@@ -549,323 +474,36 @@ export function buildPlanAddBody(
 
 // ── Spike engine ────────────────────────────────────────────────────────────
 
-interface Located {
-  entity: RawCorosEntity;
-  program: RawCorosProgram | undefined;
-  date: string;
-}
-
 /**
- * A single plan's rows, carved out of a schedule read.
- *
- * THE CENTRAL FACT: `/training/schedule/query` MERGES every plan on the
- * account into one response. A live account carried two — a COROS-authored
- * template the athlete follows, and the account's own (initially empty) plan
- * container that the spike's creates land in — and their `idInPlan` values
- * overlap freely, because the counter is per plan. Only the top-level `id`,
- * `name` and `maxIdInPlan` of the response describe the target plan.
- *
- * Every read-derived decision (derivation, occupancy, recovery, ownership,
- * cleanup, ambiguity) must therefore be made inside ONE plan. Reasoning over
- * the merged view is what produced every anomaly of the first two live runs:
- * a bogus "slot occupied" (another plan's id), an "accepted but not visible"
- * create (searching the merged view), and a stray sweep that found nothing.
- */
-interface PlanView {
-  planId: string;
-  entities: RawCorosEntity[];
-  programs: RawCorosProgram[];
-}
-
-/**
- * Rows belonging to `planId` only. Membership is an exact `planId` match —
- * a row of unknown provenance is never assumed to be ours.
- */
-function planView(raw: RawCorosSchedule, planId: string): PlanView {
-  return {
-    planId,
-    entities: (raw.entities ?? []).filter((e) => String(e.planId ?? "") === planId),
-    programs: (raw.programs ?? []).filter((p) => String(p.planId ?? "") === planId),
-  };
-}
-
-/** planId → what that plan contributed to a read. For diagnostics. */
-export function planBreakdown(
-  raw: RawCorosSchedule,
-  /** Always listed, even contributing nothing — an empty target plan is the
-   * live shape and must not vanish from the diagnosis. */
-  ensurePlanId?: string,
-): Array<{ planId: string; entityCount: number; programCount: number; idInPlan: string[] }> {
-  const byPlan = new Map<string, { entities: RawCorosEntity[]; programs: RawCorosProgram[] }>();
-  const bucket = (planId: string): { entities: RawCorosEntity[]; programs: RawCorosProgram[] } => {
-    let found = byPlan.get(planId);
-    if (!found) {
-      found = { entities: [], programs: [] };
-      byPlan.set(planId, found);
-    }
-    return found;
-  };
-  if (ensurePlanId !== undefined && ensurePlanId !== "") bucket(ensurePlanId);
-  for (const entity of raw.entities ?? []) bucket(String(entity.planId ?? "")).entities.push(entity);
-  for (const program of raw.programs ?? []) bucket(String(program.planId ?? "")).programs.push(program);
-  return [...byPlan.entries()]
-    .map(([planId, rows]) => ({
-      planId,
-      entityCount: rows.entities.length,
-      programCount: rows.programs.length,
-      idInPlan: rows.entities.map((e) => String(e.idInPlan)).sort((a, b) => Number(a) - Number(b)),
-    }))
-    .sort((a, b) => b.entityCount - a.entityCount);
-}
-
-/**
- * `idInPlan` identifies the PROGRAM-IN-PLAN within ONE plan, not the entity:
- * several entities of the same plan may reference one program and so share an
- * `idInPlan`. Returns the first placement, which is sound here only because
- * the spike always claims an id unused *in its target plan*.
- */
-function locate(view: PlanView, idInPlan: string | number): Located | undefined {
-  const entity = view.entities.find((e) => String(e.idInPlan) === String(idInPlan));
-  if (!entity) return undefined;
-  return { entity, program: programsFor(view, entity)[0], date: corosDayToLocalDate(entity.happenDay) };
-}
-
-// ── idInPlan derivation ─────────────────────────────────────────────────────
-
-/**
- * How far either side of today the derivation read sweeps. A live plan was
- * observed reporting `maxIdInPlan: 0` while its entities carried ids up to 45,
- * so the counter cannot be trusted and the real maximum has to be observed
- * directly — across the plan's whole likely span, not just the ±30d window
- * used for the restoration comparison.
- */
-const OBSERVE_BACK_DAYS = 180;
-const OBSERVE_FORWARD_DAYS = 240;
-/** /training/schedule/query rejects spans over 90 days (5011). */
-const OBSERVE_CHUNK_DAYS = 90;
-
-/** Disjoint ≤90-day windows covering today-180 … today+240. */
-export function observationWindows(today: string): Array<[string, string]> {
-  const windows: Array<[string, string]> = [];
-  for (
-    let offset = -OBSERVE_BACK_DAYS;
-    offset <= OBSERVE_FORWARD_DAYS;
-    offset += OBSERVE_CHUNK_DAYS + 1
-  ) {
-    const endOffset = Math.min(offset + OBSERVE_CHUNK_DAYS, OBSERVE_FORWARD_DAYS);
-    windows.push([addDays(today, offset), addDays(today, endOffset)]);
-  }
-  return windows;
-}
-
-export interface IdInPlanObservation {
-  /** `maxIdInPlan` as reported by the server (highest seen across windows). */
-  counter: number;
-  /** Highest idInPlan actually carried by an entity. The reliable number. */
-  observedMax: number;
-  /** Distinct observed ids, sorted numerically. */
-  observedIds: string[];
-  /** Ids carried by more than one entity — legal, see locate(). */
-  duplicates: string[];
-  entityCount: number;
-  windowStart: string;
-  windowEnd: string;
-}
-
-/**
- * Sweep the target plan's likely span and report both the server's counter
- * and the true maximum in use IN THAT PLAN. The next safe id is
- * `max(counter, observedMax) + 1`.
- */
-export async function observeIdInPlan(
-  client: CorosClient,
-  today: string,
-  planId: string,
-): Promise<IdInPlanObservation> {
-  const windows = observationWindows(today);
-  let counter = 0;
-  const seen: string[] = [];
-  for (const [start, end] of windows) {
-    const raw = await client.getRawSchedule(start, end);
-    counter = Math.max(counter, Number(raw.maxIdInPlan ?? 0) || 0);
-    // TARGET PLAN ONLY: another plan's ids say nothing about which id is free
-    // in ours, and treating them as occupied is what blocked the first run.
-    for (const entity of planView(raw, planId).entities) seen.push(String(entity.idInPlan));
-  }
-  const counts = new Map<string, number>();
-  for (const id of seen) counts.set(id, (counts.get(id) ?? 0) + 1);
-  const observedMax = seen.reduce((max, id) => Math.max(max, Number(id) || 0), 0);
-  return {
-    counter,
-    observedMax,
-    observedIds: [...counts.keys()].sort((a, b) => Number(a) - Number(b)),
-    duplicates: [...counts.entries()]
-      .filter(([, n]) => n > 1)
-      .map(([id]) => id)
-      .sort((a, b) => Number(a) - Number(b)),
-    entityCount: seen.length,
-    windowStart: windows[0]?.[0] ?? today,
-    windowEnd: windows[windows.length - 1]?.[1] ?? today,
-  };
-}
-
-/** The next id it is safe to claim: past the counter AND past reality. */
-export function nextIdInPlan(observation: IdInPlanObservation): number {
-  return Math.max(observation.counter, observation.observedMax) + 1;
-}
-
-/**
- * One merged view of the plan across the whole observation span. Required for
- * anything that reasons about deletion: a `status: 3` delete is **plan-wide**,
- * not window-scoped, so a colliding workout 200 days away is just as
- * destroyable as one next week — and invisible to a ±30 day read.
- */
-export async function readFullSpan(
-  client: CorosClient,
-  today: string,
-): Promise<RawCorosSchedule> {
-  const merged: RawCorosSchedule = { entities: [], programs: [] };
-  const seenPrograms = new Set<string>();
-  for (const [start, end] of observationWindows(today)) {
-    const raw = await client.getRawSchedule(start, end);
-    merged.id ??= raw.id;
-    merged.name ??= raw.name;
-    merged.startDay ??= raw.startDay;
-    merged.maxIdInPlan = Math.max(
-      Number(merged.maxIdInPlan ?? 0),
-      Number(raw.maxIdInPlan ?? 0) || 0,
-    );
-    // Windows are disjoint, so entities never repeat. Programs can, when two
-    // entities in different windows share an idInPlan.
-    merged.entities?.push(...(raw.entities ?? []));
-    for (const program of raw.programs ?? []) {
-      const key = `${String(program.id ?? "")}|${String(program.idInPlan)}|${String(program.name ?? "")}`;
-      if (seenPrograms.has(key)) continue;
-      seenPrograms.add(key);
-      merged.programs?.push(program);
-    }
-  }
-  return merged;
-}
-
-/**
- * The ONLY authorization to delete: an entity **of the target plan** whose
- * plan-scoped program carries the stamp.
+ * The spike's stamp: a program name starting with SPIKE_NAME. This predicate
+ * is the ONLY thing that ever authorizes a delete.
  *
  * The inspect dump settled which half of the stamp survives the round trip:
  * PROGRAM names come back verbatim, entity names do not. So ownership rests on
  * the program alone — and the old entity-name and unnamed-entity fallbacks are
  * gone, which also removes the residual misclassification risk they carried.
  */
-function isSpikeOwned(found: Located): boolean {
-  return isStampedName(found.program?.name);
-}
-
-/**
- * Every placement in this plan whose program carries the spike's stamp.
- *
- * A link key must resolve UNANIMOUSLY. If a stamped and an unstamped program
- * share it, the entity's real workout is genuinely ambiguous — claiming it
- * would let a delete take a workout we did not create — so nothing is claimed
- * and `stampAmbiguities` reports the situation instead of hiding it.
- */
-function spikeStamped(view: PlanView): Located[] {
-  const found: Located[] = [];
-  for (const entity of view.entities) {
-    const programs = programsFor(view, entity);
-    if (programs.length === 0 || !programs.every((p) => isStampedName(p.name))) continue;
-    found.push({ entity, program: programs[0], date: corosDayToLocalDate(entity.happenDay) });
-  }
-  return found;
-}
-
-/**
- * Entities whose link key resolves to BOTH stamped and unstamped programs.
- * Never actioned; always reported, because such an entity may be residue of
- * ours that cannot be safely removed.
- */
-function stampAmbiguities(view: PlanView): Located[] {
-  const out: Located[] = [];
-  for (const entity of view.entities) {
-    const programs = programsFor(view, entity);
-    if (programs.length < 2) continue;
-    if (!programs.some((p) => isStampedName(p.name))) continue;
-    if (!programs.some((p) => !isStampedName(p.name))) continue;
-    out.push({ entity, program: programs[0], date: corosDayToLocalDate(entity.happenDay) });
-  }
-  return out;
-}
-
-/** The stamped name carried by this placement's program. */
-function stampOf(found: Located): string {
-  return String(found.program?.name ?? "");
-}
-
 function isStampedName(name: unknown): boolean {
   return typeof name === "string" && name.startsWith(SPIKE_NAME);
 }
 
-/**
- * Programs linked to an entity by the entity's OWN link key, WITHIN ITS PLAN.
- * `planProgramId` is the field that points at the program-in-plan (usually a
- * copy of `idInPlan`, but not always); matching on `idInPlan` alone made an
- * entity whose `planProgramId` differed look program-less.
- */
-function programsFor(view: PlanView, entity: RawCorosEntity): RawCorosProgram[] {
-  const linkKey = String(entity.planProgramId ?? entity.idInPlan);
-  return view.programs.filter((p) => String(p.idInPlan) === linkKey);
+/** Every placement in this plan whose program carries the spike's stamp. */
+function spikeStamped(view: PlanView): Located[] {
+  return stampedPlacements(view, isStampedName);
+}
+
+/** Link keys resolving to both a spike program and one the spike did not write. */
+function stampAmbiguities(view: PlanView): Located[] {
+  return stampAmbiguitiesIn(view, isStampedName);
 }
 
 /** Everything in this plan the spike did NOT stamp — never touchable. */
 function notSpikeStamped(view: PlanView): Located[] {
-  const stamped = new Set(spikeStamped(view).map((f) => f.entity));
-  return view.entities
-    .filter((e) => !stamped.has(e))
-    .map((entity) => ({
-      entity,
-      program: programsFor(view, entity).find((p) => !isStampedName(p.name)),
-      date: corosDayToLocalDate(entity.happenDay),
-    }));
-}
-
-/**
- * A delete is addressed by (planId, idInPlan, planProgramId) — NOT by date and
- * NOT by stamp. So if ANY other entity of the same plan shares that address,
- * the server cannot tell it from ours and the delete must not be sent.
- *
- * Deliberately stamp-independent: checking only *unstamped* neighbours would
- * miss an entity that classification got wrong, and the whole point of this
- * guard is to be the last line when classification is wrong.
- */
-function deleteWouldBeAmbiguous(view: PlanView, target: Located): Located | undefined {
-  const key = (entity: RawCorosEntity): string =>
-    [String(entity.idInPlan), String(entity.planProgramId ?? entity.idInPlan)].join("|");
-  const targetKey = key(target.entity);
-  const other = view.entities.find((e) => e !== target.entity && key(e) === targetKey);
-  if (!other) return undefined;
-  return {
-    entity: other,
-    program: programsFor(view, other).find((p) => !isStampedName(p.name)),
-    date: corosDayToLocalDate(other.happenDay),
-  };
-}
-
-function describeForeignForReport(found: Located): string {
-  return `idInPlan ${String(found.entity.idInPlan)} date=${found.date} (foreign workout — title printed to console)`;
-}
-
-/** Console only: on the user's own terminal the title is what identifies it. */
-function describeForeignForConsole(found: Located): string {
-  const name = String(found.entity.name ?? found.program?.name ?? "(unnamed)");
-  return `name="${name}" date=${found.date}`;
+  return unstampedPlacements(view, isStampedName);
 }
 
 function idInPlanSet(raw: RawCorosSchedule): string[] {
   return (raw.entities ?? []).map((e) => String(e.idInPlan)).sort();
-}
-
-function errText(e: unknown): string {
-  return e instanceof Error ? e.message : "unknown failure";
 }
 
 function blankResult(name: CreateTestName, description: string): CreateTestResult {
@@ -898,26 +536,6 @@ interface CreateSpec {
   sportType: number;
   build: (idInPlan: number, planId: string) => RawCorosProgram;
   checks: (program: RawCorosProgram | undefined) => Record<string, boolean>;
-}
-
-/** Splice the server's calculate output into the program before creating it. */
-function applyCalculated(program: RawCorosProgram, m: CorosProgramMetrics): RawCorosProgram {
-  const out: RawCorosProgram = { ...program };
-  if (m.duration != null && m.duration > 0) {
-    out.duration = m.duration;
-    out.estimatedTime = m.duration;
-  }
-  if (m.trainingLoad != null && m.trainingLoad > 0) {
-    out.trainingLoad = m.trainingLoad;
-    out.estimatedValue = m.trainingLoad;
-  }
-  if (m.distance != null && m.distance > 0) {
-    out.distance = m.distance;
-    out.estimatedDistance = m.distance;
-  }
-  // Never clobber a client-computed set count with 0/undefined from calculate.
-  if (m.totalSets != null && m.totalSets > 0 && out.totalSets != null) out.totalSets = m.totalSets;
-  return out;
 }
 
 /** Bounded retries per entity so a hard failure cannot loop the drain. */
@@ -1027,27 +645,31 @@ export async function runCreateSpike(
       return;
     }
     for (const target of targets) {
-      const clash = deleteWouldBeAmbiguous(span, target);
-      if (clash) {
+      // The shared last-line guard: refuses when the delete address
+      // (planId/idInPlan/planProgramId) is shared with anything else in the plan.
+      entry.serverIdInPlan = String(target.entity.idInPlan);
+      const outcome = await issueGuardedDelete(
+        client,
+        span,
+        target,
+        isStampedName,
+        entry.planId,
+      );
+      if (!outcome.sent) {
         // Sending this delete could take the user's workout with it.
+        const clash = outcome.clash;
         entry.abandoned = true;
         entry.error =
           `NOT deleted — its delete address (planId/idInPlan/planProgramId) is shared with` +
-          ` ${describeForeignForReport(clash)}; remove it by hand in the COROS app`;
+          ` ${clash ? describeForeignForReport(clash) : "another workout"}; remove it by hand in the COROS app`;
         log(
           `  !! ${entry.label} on ${entry.date}: delete address idInPlan=` +
-            `${String(target.entity.idInPlan)} is shared with ${describeForeignForConsole(clash)}` +
+            `${String(target.entity.idInPlan)} is shared with ${clash ? describeForeignForConsole(clash) : "another workout"}` +
             " — NOT deleted, remove it by hand",
         );
         return;
       }
-      entry.serverIdInPlan = String(target.entity.idInPlan);
-      const del = await client.removeScheduleEntity(
-        target.entity.idInPlan,
-        String(target.entity.planProgramId ?? target.entity.idInPlan),
-        String(target.entity.planId ?? entry.planId),
-      );
-      entry.resultCode = del.result;
+      entry.resultCode = outcome.code;
     }
   };
 
@@ -1324,7 +946,7 @@ export async function runCreateSpike(
       log(
         `Account held ${baselineCount} workouts in ±30 days before the sweep,` +
           ` ${nowIds.length} after; ${stillStamped.length} spike-stamped workout(s) remain` +
-          ` across ${observationWindows(today)[0]?.[0]}…${addDays(today, OBSERVE_FORWARD_DAYS)}.`,
+          ` across ${observationSpan(today).start}…${observationSpan(today).end}.`,
       );
       // "Restored" here means: nothing stamped is left behind. The workout
       // count is EXPECTED to drop by exactly the number of strays removed.
@@ -1414,7 +1036,8 @@ export async function runCreateSpike(
       label: "strength",
       date: addDays(today, 21),
       sportType: 4,
-      build: (idInPlan, pid) => buildStrengthProgram(idInPlan, pid, exercise),
+      build: (idInPlan, pid) =>
+        buildStrengthProbe(idInPlan, pid, exercise, addDays(today, 21)),
       checks: (program) => {
         const exercises = program?.exercises ?? [];
         const container = exercises.find((e) => Number(e.exerciseType) === 0);
@@ -1849,12 +1472,16 @@ async function createAndVerify(
   // Fresh derivation immediately before every write: read-then-write is racy
   // (§4.4 point 3), AND the server's counter may simply not be maintained —
   // observed live at 0 on a plan whose entities ran up to 45. So sweep the
-  // full span and take max(counter, observed) + 1 each time.
-  const observation = await observeIdInPlan(ctx.client, ctx.today, ctx.targetPlanId);
-  const idInPlan = nextIdInPlan(observation);
-  const freshRaw = await ctx.readWindow();
-  const fresh = ctx.scope(freshRaw);
-  const planId = String(freshRaw.id ?? ctx.planId);
+  // full span and take max(counter, observed) + 1 each time. The shared
+  // executor owns both the sweep and the final occupancy gate.
+  const claim = await claimNextIdInPlan(
+    ctx.client,
+    ctx.today,
+    ctx.targetPlanId,
+    ctx.readWindow,
+    ctx.planId,
+  );
+  const { idInPlan, observation, planId } = claim;
   result.idInPlan = idInPlan;
   result.idInPlanDerivedFrom = {
     counter: observation.counter,
@@ -1868,7 +1495,7 @@ async function createAndVerify(
   // Final gate: the slot we are about to claim must be empty. The derivation
   // above already excludes every id it saw, so an occupant here means
   // something landed between the observation and now — a genuine race.
-  const occupant = locate(fresh, idInPlan);
+  const occupant = claim.occupant;
   if (occupant) {
     result.verified = false;
     result.cleanedUp = true; // nothing created

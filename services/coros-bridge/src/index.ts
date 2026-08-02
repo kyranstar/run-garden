@@ -12,6 +12,19 @@ export {
 } from "./coros-client.js";
 export { executeMoveJob, type MoveJob, type MoveJobResult } from "./write-executor.js";
 export {
+  buildStrengthProgram,
+  createWorkout,
+  deleteWorkout,
+  type CreateFailureReason,
+  type CreateResult,
+  type CreateWorkoutOptions,
+  type CreateWorkoutSpec,
+  type DeleteRefusal,
+  type DeleteResult,
+  type DeleteWorkoutOptions,
+  type DeleteWorkoutTarget,
+} from "./create-executor.js";
+export {
   buildSnapshot,
   COROS_LOCALE_URL,
   loadNameResolver,
