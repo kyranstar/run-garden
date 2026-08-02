@@ -28,6 +28,7 @@ import {
 import {
   conditionWord,
   DEFAULT_GARDEN_CONFIG,
+  disciplineBalance,
   initialSnapshot,
   nextUnlocks,
   simulateDay,
@@ -35,6 +36,8 @@ import {
   SPECIES_BY_ID,
   speciesCodex,
   WILDLIFE_HINTS,
+  type Discipline,
+  type DisciplineBalance,
   type GardenDayInput,
   type GardenSnapshot,
   type SpeciesUnlockStatus,
@@ -49,6 +52,13 @@ import { chunkedInsert, type Db } from "./db.js";
  */
 
 const CHECKPOINT_WEEKDAY = 1; // Mondays
+
+/** Which discipline axis a workout belongs to, from its category or sport. */
+function disciplineFor(category: string, sport: string): Discipline {
+  if (category === "strength" || sport === "strength") return "strength";
+  if (category === "yoga" || sport === "yoga") return "yoga";
+  return "run";
+}
 
 export async function loadGarden(db: Db, userId: string): Promise<GardenSnapshot | null> {
   const rows = await db.select().from(gardenState).where(eq(gardenState.userId, userId)).limit(1);
@@ -167,6 +177,7 @@ export async function buildDayInput(
         workoutId: w.id,
         activityId: match?.activityId,
         category: w.category as WorkoutCategory,
+        discipline: disciplineFor(w.category, w.sport),
         window: w.effectiveTime < "12:00" ? "morning" : "evening",
         distanceMeters: activity?.distanceMeters ?? undefined,
         startHourLocal: activity
@@ -176,18 +187,19 @@ export async function buildDayInput(
     }
   }
 
-  // Unplanned extra runs: run-sport activities on this date with no match.
+  // Unplanned extra sessions: run/strength/yoga activities on this date with no match.
   const dayActivities = await db
     .select()
     .from(activities)
     .where(and(eq(activities.userId, userId), isNull(activities.completionMatchId)));
   for (const a of dayActivities) {
     const d = (a.startTimeLocal ?? a.startTime).slice(0, 10);
-    if (d !== date || a.sport !== "run") continue;
+    if (d !== date || (a.sport !== "run" && a.sport !== "strength" && a.sport !== "yoga")) continue;
     completedRuns.push({
       workoutId: `unplanned-${a.id}`,
       activityId: a.id,
       category: "easy",
+      discipline: a.sport as Discipline,
       window: (a.startTimeLocal ?? a.startTime).slice(11, 16) < "12:00" ? "morning" : "evening",
       unplanned: true,
       distanceMeters: a.distanceMeters ?? undefined,
@@ -457,6 +469,8 @@ export interface GardenView {
   nextUnlocks: SpeciesUnlockStatus[];
   /** Wildlife visitors: who's here now and what draws each kind. */
   wildlife: Array<{ kind: string; present: boolean; hint: string }>;
+  /** How balanced run/strength/yoga are right now, from the current snapshot state. */
+  balance: DisciplineBalance;
 }
 
 /**
@@ -545,5 +559,6 @@ export async function buildGardenView(
       present,
       hint: WILDLIFE_HINTS[kind as keyof typeof WILDLIFE_HINTS] ?? "",
     })),
+    balance: disciplineBalance(snapshot.state),
   };
 }

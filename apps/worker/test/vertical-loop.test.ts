@@ -1,7 +1,7 @@
 import { beforeEach, describe, expect, it } from "vitest";
 import { and, eq, isNull } from "drizzle-orm";
 import { schema } from "@rg/database";
-import { addDays, todayInZone, type UserPreferences } from "@rg/domain";
+import { addDays, newId, nowInstant, todayInZone, type UserPreferences } from "@rg/domain";
 import {
   FixtureTrainingProvider,
   fixtureCorosCompletedThreshold,
@@ -13,7 +13,7 @@ import type { Db } from "../src/services/db.js";
 import { importPlanSnapshot } from "../src/services/import-plan.js";
 import { applyMove, claimNextJob, applyJobResult } from "../src/services/jobs.js";
 import { ingestActivities } from "../src/services/completion.js";
-import { advanceGarden, buildGardenView, loadGarden } from "../src/services/garden-sync.js";
+import { advanceGarden, buildDayInput, buildGardenView, loadGarden } from "../src/services/garden-sync.js";
 import { reconcileCompletionStates } from "../src/services/reconcile-daily.js";
 import { makeTestDb, makeTestUser, registerTestDevice } from "./helpers.js";
 
@@ -458,5 +458,78 @@ describe("garden integration", () => {
     await reconcileCompletionStates(db, userId, prefs, later);
     const state2 = (await db.select().from(plannedWorkouts).where(eq(plannedWorkouts.id, w.id)))[0]!;
     expect(state2.completionState).toBe("unresolved");
+  });
+});
+
+describe("tri-discipline ingestion", () => {
+  async function insertActivity(sport: string, date: string) {
+    const now = nowInstant();
+    await db.insert(activities).values({
+      id: newId(),
+      userId,
+      startTime: `${date}T15:00:00Z`,
+      startTimeLocal: `${date}T08:00:00`,
+      sport,
+      durationSeconds: 1800,
+      createdAt: now,
+      updatedAt: now,
+    });
+  }
+
+  it("admits unplanned strength and yoga activities, tagged by discipline, excluding other sports", async () => {
+    const today = todayInZone(prefs.timezone);
+    await insertActivity("strength", today);
+    await insertActivity("yoga", today);
+    await insertActivity("bike", today);
+
+    const input = await buildDayInput(db, userId, today, prefs);
+    expect(input.completedRuns).toHaveLength(2);
+    expect(input.completedRuns.every((r) => r.unplanned)).toBe(true);
+    const disciplines = input.completedRuns.map((r) => r.discipline).sort();
+    expect(disciplines).toEqual(["strength", "yoga"]);
+  });
+
+  it("tags discipline strength for a matched strength workout completion", async () => {
+    const today = todayInZone(prefs.timezone);
+    const now = nowInstant();
+    await db.insert(plannedWorkouts).values({
+      id: newId(),
+      userId,
+      planId: "test-plan",
+      sourceWorkoutId: "src-strength-1",
+      title: "Full Body Strength",
+      category: "strength",
+      sport: "strength",
+      originalPlanDate: today,
+      lastVerifiedCorosDate: today,
+      effectiveDate: today,
+      effectiveTime: "07:00",
+      sourceContentFingerprint: "fp",
+      calendarBlockDurationSeconds: 2700,
+      calendarSyncState: "not_created",
+      corosSyncState: "synced",
+      completionState: "completed",
+      createdAt: now,
+      updatedAt: now,
+    });
+
+    const input = await buildDayInput(db, userId, today, prefs);
+    expect(input.completedRuns).toHaveLength(1);
+    expect(input.completedRuns[0]!.discipline).toBe("strength");
+  });
+
+  it("garden view reports balance, and a lift-only day still previews today", async () => {
+    const today = todayInZone(prefs.timezone);
+    await insertActivity("strength", today);
+
+    const view = await buildGardenView(db, userId, prefs);
+    expect(typeof view.balance.overall).toBe("number");
+    expect(view.balance.overall).toBeGreaterThanOrEqual(0);
+    expect(view.balance.overall).toBeLessThanOrEqual(1);
+    // Consistent with run days: any completed session today previews same-day
+    // feedback (including daily decay) without persisting it.
+    expect(view.previewEvents.some((e) => e.kind === "run_completed")).toBe(true);
+    const persisted = await loadGarden(db, userId);
+    expect(persisted!.state.lastSimulatedDate < today).toBe(true);
   });
 });

@@ -158,6 +158,15 @@ export interface SettingsResponse {
   };
 }
 
+/** How balanced run/strength/yoga are right now — mirrors @rg/garden-engine's DisciplineBalance. */
+export interface DisciplineBalance {
+  run: { days: number; health: number };
+  strength: { days: number; health: number };
+  yoga: { days: number; health: number };
+  /** How balanced the garden is overall: the weakest discipline sets the pace. */
+  overall: number;
+}
+
 export interface DeviceDto {
   id: string;
   name: string;
@@ -194,7 +203,7 @@ export const api = {
   unmatch: (id: string) => post(`/api/plan/workouts/${id}/unmatch`),
   restoreCalendar: (id: string) => post(`/api/plan/workouts/${id}/restore-calendar`),
   retryCoros: (id: string) => post(`/api/plan/workouts/${id}/retry-coros`),
-  garden: () => get<Record<string, unknown>>("/api/garden"),
+  garden: () => get<Record<string, unknown> & { balance: DisciplineBalance }>("/api/garden"),
   gardenRestMode: (active: boolean, until?: string | null) =>
     post("/api/garden/rest-mode", { active, until }),
   insights: () => get<Record<string, unknown>>("/api/insights"),
