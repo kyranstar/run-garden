@@ -39,12 +39,12 @@ export function disciplineBalance(state: EngineGardenState): DisciplineBalance {
     health: healthFor(state.daysSinceCompletedRun, GRACE_DAYS.run),
   };
   const strength = {
-    days: state.daysSinceStrength,
-    health: healthFor(state.daysSinceStrength, GRACE_DAYS.strength),
+    days: state.daysSinceStrength ?? 0,
+    health: healthFor(state.daysSinceStrength ?? 0, GRACE_DAYS.strength),
   };
   const yoga = {
-    days: state.daysSinceYoga,
-    health: healthFor(state.daysSinceYoga, GRACE_DAYS.yoga),
+    days: state.daysSinceYoga ?? 0,
+    health: healthFor(state.daysSinceYoga ?? 0, GRACE_DAYS.yoga),
   };
   return {
     run,

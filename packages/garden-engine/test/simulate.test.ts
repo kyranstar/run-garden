@@ -840,3 +840,46 @@ describe("discipline unlock gates", () => {
     expect(snapshot.unlockedSpeciesIds).toContain("harmony_willow");
   });
 });
+
+describe("v1 snapshot self-healing (missing tri-discipline fields)", () => {
+  /**
+   * Snapshots persisted before the tri-discipline engine shipped are plain
+   * JSON on disk without the five new state fields at all — not just
+   * `undefined` at the type level. The read path (buildGardenView calling
+   * disciplineBalance/gateProgress on the persisted snapshot, before any day
+   * has simulated and self-healed it) must never NaN on them.
+   */
+  it("disciplineBalance and gateProgress stay finite when the new fields are absent", () => {
+    const healthy = initialSnapshot(START);
+    const v1State = { ...healthy.state } as Record<string, unknown>;
+    delete v1State.daysSinceStrength;
+    delete v1State.daysSinceYoga;
+    delete v1State.strengthSessionCount;
+    delete v1State.yogaSessionCount;
+    delete v1State.balancedWeekCount;
+    const v1Snapshot: GardenSnapshot = {
+      ...healthy,
+      state: v1State as unknown as GardenSnapshot["state"],
+    };
+
+    const balance = disciplineBalance(v1Snapshot.state);
+    expect(Number.isFinite(balance.run.health)).toBe(true);
+    expect(Number.isFinite(balance.strength.health)).toBe(true);
+    expect(Number.isFinite(balance.yoga.health)).toBe(true);
+    expect(Number.isFinite(balance.overall)).toBe(true);
+    expect(balance.strength).toEqual({ days: 0, health: 1 });
+    expect(balance.yoga).toEqual({ days: 0, health: 1 });
+
+    const newGates = [
+      { kind: "strength_sessions", count: 5 } as const,
+      { kind: "yoga_sessions", count: 10 } as const,
+      { kind: "balanced_weeks", count: 3 } as const,
+    ];
+    for (const gate of newGates) {
+      const progress = gateProgress(gate, v1Snapshot);
+      expect(progress).toEqual({ current: 0, target: gate.count });
+      expect(Number.isNaN(progress?.current)).toBe(false);
+      expect(gateSatisfied(gate, v1Snapshot)).toBe(false);
+    }
+  });
+});

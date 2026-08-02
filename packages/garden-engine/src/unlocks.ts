@@ -49,11 +49,11 @@ export function gateSatisfied(gate: UnlockGate, snapshot: GardenSnapshot): boole
     case "comeback_streak":
       return (s.bestComebackStreak ?? 0) >= gate.count;
     case "strength_sessions":
-      return s.strengthSessionCount >= gate.count;
+      return (s.strengthSessionCount ?? 0) >= gate.count;
     case "yoga_sessions":
-      return s.yogaSessionCount >= gate.count;
+      return (s.yogaSessionCount ?? 0) >= gate.count;
     case "balanced_weeks":
-      return s.balancedWeekCount >= gate.count;
+      return (s.balancedWeekCount ?? 0) >= gate.count;
   }
 }
 
@@ -125,11 +125,11 @@ export function gateProgress(
     case "comeback_streak":
       return { current: s.bestComebackStreak ?? 0, target: gate.count };
     case "strength_sessions":
-      return { current: s.strengthSessionCount, target: gate.count };
+      return { current: s.strengthSessionCount ?? 0, target: gate.count };
     case "yoga_sessions":
-      return { current: s.yogaSessionCount, target: gate.count };
+      return { current: s.yogaSessionCount ?? 0, target: gate.count };
     case "balanced_weeks":
-      return { current: s.balancedWeekCount, target: gate.count };
+      return { current: s.balancedWeekCount ?? 0, target: gate.count };
     default:
       return null;
   }

@@ -255,7 +255,9 @@ activityRoutes.get("/unmatched", async (c) => {
     .where(and(eq(activities.userId, c.get("userId")), isNull(activities.completionMatchId)))
     .orderBy(desc(activities.startTime))
     .limit(20);
-  return c.json({ activities: rows.filter((a) => a.sport === "run") });
+  return c.json({
+    activities: rows.filter((a) => a.sport === "run" || a.sport === "strength" || a.sport === "yoga"),
+  });
 });
 
 // ── Insights ─────────────────────────────────────────────────────────────────

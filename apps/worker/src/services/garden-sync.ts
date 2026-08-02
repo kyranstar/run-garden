@@ -198,7 +198,10 @@ export async function buildDayInput(
     completedRuns.push({
       workoutId: `unplanned-${a.id}`,
       activityId: a.id,
-      category: "easy",
+      // Non-run unplanned sessions carry their own discipline as the category
+      // too, so downstream copy (garden history) can tell a lift from a run
+      // instead of reading every unplanned entry as an "easy run".
+      category: a.sport === "strength" ? "strength" : a.sport === "yoga" ? "yoga" : "easy",
       discipline: a.sport as Discipline,
       window: (a.startTimeLocal ?? a.startTime).slice(11, 16) < "12:00" ? "morning" : "evening",
       unplanned: true,

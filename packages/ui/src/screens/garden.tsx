@@ -44,8 +44,21 @@ function cap(s: string): string {
 function eventSentence(e: GardenEvent): string | null {
   switch (e.kind) {
     case "run_completed": {
-      if (e.detail === "unplanned") return "An extra run gave the garden a light watering.";
       const catg = e.workoutCategory ?? "";
+      // Strength/yoga sessions ride the same run_completed event as runs (see
+      // applyRun), so route them to discipline-true copy before falling
+      // through to the generic run sentences below.
+      if (catg === "strength") {
+        return e.detail === "unplanned"
+          ? "An extra strength session fed the soil."
+          : "A strength session fed the soil.";
+      }
+      if (catg === "yoga") {
+        return e.detail === "unplanned"
+          ? "An extra yoga session tended the meadow."
+          : "A yoga session tended the meadow.";
+      }
+      if (e.detail === "unplanned") return "An extra run gave the garden a light watering.";
       const article = /^[aeiou]/i.test(catg) ? "An" : "A";
       return catg ? `${article} ${catg} run watered the garden.` : "A run watered the garden.";
     }

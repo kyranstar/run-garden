@@ -183,7 +183,7 @@ export function RunsScreen() {
     onError: () => setNote("Backfill failed. Try again in a moment."),
   });
 
-  if (runs.isLoading) return <Spinner label="Loading runs" />;
+  if (runs.isLoading) return <Spinner label="Loading activity" />;
   const items = (runs.data?.activities ?? []).filter((a) =>
     filter === "all" ? DISCIPLINE_SPORTS.has(a.sport) : a.sport === filter,
   );
