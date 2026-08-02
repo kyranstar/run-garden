@@ -250,10 +250,141 @@ export function lightingFor(inp: LightingInputs): SceneLight {
   return applySeason(applyWeather(light, inp), inp);
 }
 
-/** Task 2 fills these in; identity passes keep Task 1 green. */
-function applyWeather(l: SceneLight, _inp: LightingInputs): SceneLight {
-  return l;
+interface SeasonBias {
+  foliageTint: string;
+  foliageAmount: number;
+  accents: string[];
+  grassAdjust: (c: string) => string;
+  skyAdjust: (c: string) => string;
 }
-function applySeason(l: SceneLight, _inp: LightingInputs): SceneLight {
-  return l;
+
+const SEASONS: Record<GardenSeason, SeasonBias> = {
+  spring: {
+    foliageTint: "#7fae62", foliageAmount: 0.1,
+    accents: ["#f2ede0", "#e0b23e", "#b58cbd"],
+    grassAdjust: (c) => mix(c, "#7fae62", 0.12),
+    skyAdjust: (c) => c,
+  },
+  summer: {
+    foliageTint: "#3f7a3a", foliageAmount: 0.12,
+    accents: ["#e0b23e", "#c86f5a", "#8f6fae"],
+    grassAdjust: (c) => mix(c, "#3f7a3a", 0.1),
+    skyAdjust: (c) => c,
+  },
+  autumn: {
+    foliageTint: "#b07a3a", foliageAmount: 0.18,
+    accents: ["#b5652f", "#d99a3d", "#9c6a80"],
+    grassAdjust: (c) => mix(c, "#b08a4a", 0.18),
+    skyAdjust: (c) => mix(c, "#d9b48a", 0.06),
+  },
+  winter: {
+    foliageTint: "#8a9484", foliageAmount: 0.16,
+    accents: ["#dfe4e6", "#d8c890"],
+    grassAdjust: (c) => desaturate(mix(c, "#9aa08c", 0.2), 0.15),
+    skyAdjust: (c) => shade(c, 0.94),
+  },
+};
+
+function applySeason(l: SceneLight, inp: LightingInputs): SceneLight {
+  const b = SEASONS[inp.season];
+  return {
+    ...l,
+    grassNear: b.grassAdjust(l.grassNear),
+    grassFar: b.grassAdjust(l.grassFar),
+    skyTop: b.skyAdjust(l.skyTop),
+    skyMid: b.skyAdjust(l.skyMid),
+    skyHorizon: b.skyAdjust(l.skyHorizon),
+    meadowAccents: b.accents,
+    foliageTint: mix(l.foliageTint, b.foliageTint, 0.5),
+    foliageTintAmount: Math.min(0.3, l.foliageTintAmount + b.foliageAmount * 0.5),
+  };
+}
+
+function applyWeather(l: SceneLight, inp: LightingInputs): SceneLight {
+  let out: SceneLight = { ...l };
+  switch (inp.weather) {
+    case "fresh_rain":
+      out = {
+        ...out,
+        skyTop: mix(out.skyTop, "#7f9db0", 0.4),
+        skyMid: mix(out.skyMid, "#9db4ba", 0.35),
+        skyHorizon: mix(out.skyHorizon, "#c2d4cd", 0.3),
+        grassNear: mix(out.grassNear, "#5f8f4a", 0.2),
+        grassFar: mix(out.grassFar, "#6f9a5c", 0.15),
+        beamStrength: 0,
+        cloudCount: 3,
+        cloudColor: mix(out.cloudColor, "#aebac0", 0.5),
+        shadowOpacity: out.shadowOpacity * 0.4,
+        hazeStrength: Math.min(0.5, out.hazeStrength + 0.1),
+      };
+      break;
+    case "recovery_rain":
+      out = {
+        ...out,
+        skyTop: mix(out.skyTop, "#8fa3b5", 0.25),
+        skyHorizon: mix(out.skyHorizon, "#e8d3a8", 0.3),
+        grassNear: mix(out.grassNear, "#5f8f4a", 0.15),
+        beamStrength: Math.min(1, out.beamStrength + 0.2),
+        cloudCount: 3,
+        cloudColor: mix(out.cloudColor, "#c8c2ae", 0.4),
+        shadowOpacity: out.shadowOpacity * 0.6,
+        hazeStrength: Math.min(0.5, out.hazeStrength + 0.15),
+      };
+      break;
+    case "clear_sun":
+      out = { ...out, cloudCount: 0, beamStrength: Math.min(1, out.beamStrength + 0.1), shadowOpacity: Math.min(0.16, out.shadowOpacity * 1.15) };
+      break;
+    case "soft_sun":
+      out = { ...out, cloudCount: 1 };
+      break;
+    case "light_clouds":
+      out = { ...out, cloudCount: 4, beamStrength: out.beamStrength * 0.5, shadowOpacity: out.shadowOpacity * 0.7, skyTop: mix(out.skyTop, "#a8b8c2", 0.2) };
+      break;
+    case "dry_spell":
+      out = {
+        ...out,
+        skyTop: mix(out.skyTop, "#c2c4a8", 0.3),
+        skyHorizon: mix(out.skyHorizon, "#e0d4a8", 0.35),
+        cloudCount: 2,
+        cloudShape: "wisp",
+        cloudColor: mix(out.cloudColor, "#d6ccba", 0.5),
+        hazeStrength: Math.min(0.5, out.hazeStrength + 0.15),
+        swayAmpDeg: out.swayAmpDeg * 0.7,
+        moteColor: "#e8d8a8",
+      };
+      break;
+    case "mild_drought":
+      out = {
+        ...out,
+        skyTop: mix(out.skyTop, "#c8b088", 0.35),
+        skyMid: mix(out.skyMid, "#d8bc8e", 0.35),
+        skyHorizon: mix(out.skyHorizon, "#e5cf9a", 0.4),
+        grassNear: mix(out.grassNear, "#b8a468", 0.25),
+        grassFar: mix(out.grassFar, "#c0ae78", 0.2),
+        hazeStrength: 0.4,
+        hazeColor: "#e5d3a4",
+        beamStrength: out.beamStrength * 0.5,
+        cloudCount: 0,
+        swayAmpDeg: out.swayAmpDeg * 0.5,
+        moteColor: "#e0c890",
+        sunColor: mix(out.sunColor, "#e8c890", 0.4),
+      };
+      break;
+    case "seasonal_breeze":
+      out = { ...out, cloudCount: 2, swayAmpDeg: Math.min(1.5, out.swayAmpDeg * 1.4) };
+      break;
+  }
+  if (inp.restMode) {
+    out = {
+      ...out,
+      swayAmpDeg: out.swayAmpDeg * 0.6,
+      beamStrength: out.beamStrength * 0.8,
+      ambientStrength: out.ambientStrength * 0.85,
+    };
+  }
+  out.rainbow =
+    inp.weather === "recovery_rain" &&
+    inp.inComeback &&
+    (out.period === "golden" || out.period === "dawn");
+  return out;
 }

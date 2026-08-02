@@ -96,3 +96,51 @@ describe("moonPhase", () => {
     expect(Math.min(d, 1 - d)).toBeCloseTo(1 / 29.5306, 2);
   });
 });
+
+describe("lightingFor — season and weather composition", () => {
+  it("every weather × season × sample hour yields valid colors", () => {
+    const weathers = ["fresh_rain", "clear_sun", "light_clouds", "dry_spell", "mild_drought", "recovery_rain", "seasonal_breeze", "soft_sun"] as const;
+    const seasons = ["spring", "summer", "autumn", "winter"] as const;
+    for (const weather of weathers) {
+      for (const season of seasons) {
+        for (const hour of [2, 6.5, 9, 13, 17.5, 20.5]) {
+          const l = lightingFor(inputs({ weather, season, hour }));
+          expect(l.skyTop).toMatch(HEX);
+          expect(l.grassNear).toMatch(HEX);
+          expect(l.swayAmpDeg).toBeLessThanOrEqual(1.5);
+          expect(l.meadowAccents.length).toBeGreaterThanOrEqual(2);
+        }
+      }
+    }
+  });
+
+  it("weather signatures are distinct", () => {
+    const at = (weather: LightingInputs["weather"]) => lightingFor(inputs({ weather }));
+    expect(at("seasonal_breeze").swayAmpDeg).toBeGreaterThan(at("soft_sun").swayAmpDeg);
+    expect(at("mild_drought").swayAmpDeg).toBeLessThan(at("soft_sun").swayAmpDeg);
+    expect(at("dry_spell").cloudShape).toBe("wisp");
+    expect(at("light_clouds").cloudCount).toBeGreaterThan(at("clear_sun").cloudCount);
+    expect(at("fresh_rain").skyTop).not.toBe(at("clear_sun").skyTop);
+  });
+
+  it("seasons shift the meadow accents", () => {
+    const spring = lightingFor(inputs({ season: "spring" }));
+    const autumn = lightingFor(inputs({ season: "autumn" }));
+    expect(spring.meadowAccents).not.toEqual(autumn.meadowAccents);
+  });
+
+  it("rainbow appears only for recovery_rain + inComeback + low sun", () => {
+    const golden = { hour: 18.9, weather: "recovery_rain" as const };
+    expect(lightingFor(inputs({ ...golden, inComeback: true })).rainbow).toBe(true);
+    expect(lightingFor(inputs({ ...golden, inComeback: false })).rainbow).toBe(false);
+    expect(lightingFor(inputs({ hour: 13, weather: "recovery_rain", inComeback: true })).rainbow).toBe(false);
+    expect(lightingFor(inputs({ ...golden, weather: "fresh_rain", inComeback: true })).rainbow).toBe(false);
+  });
+
+  it("restMode becalms motion and light", () => {
+    const on = lightingFor(inputs({ restMode: true }));
+    const off = lightingFor(inputs({ restMode: false }));
+    expect(on.swayAmpDeg).toBeLessThan(off.swayAmpDeg);
+    expect(on.beamStrength).toBeLessThanOrEqual(off.beamStrength);
+  });
+});
