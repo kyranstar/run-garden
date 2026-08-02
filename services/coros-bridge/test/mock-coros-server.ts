@@ -77,6 +77,15 @@ interface ScheduleUpdateBody {
   pbVersion?: number;
 }
 
+/** POST /training/plan/add body — day-offset relative, not date-absolute. */
+interface PlanAddBody {
+  name?: string;
+  entities?: Array<{ idInPlan?: number | string; dayNo?: number; happenDay?: string }>;
+  programs?: RawCorosProgram[];
+  totalDay?: number;
+  region?: number | string;
+}
+
 export interface MockCorosServer {
   fetchImpl: typeof fetch;
   email: string;
@@ -113,6 +122,10 @@ export interface MockCorosServer {
   planAddResult: string;
   /** `data` returned when planAddResult is "0000" (documented as the planId). */
   planAddData: unknown;
+  /** On a "0000" plan/add, also materialize the plan's entities + programs. */
+  planAddMaterializes: boolean;
+  /** Day offset from today the materialized plan entities land on. */
+  planAddAnchorOffsetDays: number;
   /** Bodies received by POST /training/plan/add, in order. */
   planAddBodies: unknown[];
   entityByIdInPlan(idInPlan: string | number): RawCorosEntity | undefined;
@@ -245,6 +258,8 @@ export function mockCorosServer(opts: { baseMonday?: string } = {}): MockCorosSe
     forcePageSize: null,
     planAddResult: "1031", // "Parameter input error" — the one EU attempt on record
     planAddData: null,
+    planAddMaterializes: false,
+    planAddAnchorOffsetDays: 40,
     planAddBodies: [],
     expireTokens: () => {
       validTokens.clear();
@@ -303,6 +318,11 @@ export function mockCorosServer(opts: { baseMonday?: string } = {}): MockCorosSe
       const submitted = body.entities?.[0];
       const submittedProgram = body.programs?.[0];
       if (!submitted || !submittedProgram) return envelope("1031");
+      // idInPlan is a plan-scoped unique key: a create onto an occupied slot
+      // is rejected, it does not silently overwrite. [inferred]
+      if (schedule.entities.some((e) => String(e.idInPlan) === String(vo.id))) {
+        return envelope("1031");
+      }
       serverIdCounter += 1;
       const entity = structuredClone(submitted);
       entity.id = `sv-entity-${serverIdCounter}`;
@@ -316,13 +336,62 @@ export function mockCorosServer(opts: { baseMonday?: string } = {}): MockCorosSe
 
     if (vo.status === 3) {
       if (server.deleteRejectResult) return envelope(server.deleteRejectResult);
-      schedule.entities = schedule.entities.filter((e) => String(e.idInPlan) !== String(vo.id));
-      schedule.programs = schedule.programs.filter((p) => String(p.idInPlan) !== String(vo.id));
+      // A delete is scoped to (planId, idInPlan) — an id aimed at the wrong
+      // plan removes nothing, and the envelope still reads 0000.
+      const wantsPlan = vo.planId != null && vo.planId !== "";
+      const matches = (e: RawCorosEntity): boolean =>
+        String(e.idInPlan) === String(vo.id) &&
+        (!wantsPlan || String(e.planId ?? "") === String(vo.planId));
+      const removedIds = new Set(schedule.entities.filter(matches).map((e) => String(e.idInPlan)));
+      schedule.entities = schedule.entities.filter((e) => !matches(e));
+      schedule.programs = schedule.programs.filter((p) => !removedIds.has(String(p.idInPlan)));
       // maxIdInPlan never decrements [verified]
       return envelope("0000");
     }
 
     return envelope("1031");
+  }
+
+  /**
+   * The plan/add success path: the server turns the day-offset-relative plan
+   * template into real, dated schedule entities. Names are carried over from
+   * the submitted programs, which is what makes ownership provable.
+   */
+  function materializePlan(body: PlanAddBody): void {
+    const schedule = server.state.schedule;
+    schedule.entities ??= [];
+    schedule.programs ??= [];
+    const anchor = addDaysIso(
+      new Date().toISOString().slice(0, 10),
+      server.planAddAnchorOffsetDays,
+    );
+    for (const submitted of body.entities ?? []) {
+      const dayNo = Number(submitted.dayNo ?? 1);
+      const template = (body.programs ?? []).find(
+        (p) => String(p.idInPlan) === String(submitted.idInPlan),
+      );
+      const idInPlan = Number(schedule.maxIdInPlan ?? 0) + 1;
+      schedule.maxIdInPlan = idInPlan;
+      serverIdCounter += 1;
+      schedule.entities.push({
+        id: `sv-entity-${serverIdCounter}`,
+        idInPlan: String(idInPlan),
+        planId: String(schedule.id ?? ""),
+        planProgramId: String(idInPlan),
+        happenDay: corosDay(addDaysIso(anchor, dayNo - 1)),
+        dayNo,
+        sortNoInSchedule: 1,
+        name: template?.name,
+      });
+      if (template) {
+        schedule.programs.push({
+          ...structuredClone(template),
+          id: `sv-program-${serverIdCounter}`,
+          idInPlan: String(idInPlan),
+          planId: String(schedule.id ?? ""),
+        });
+      }
+    }
   }
 
   const fetchImpl = (async (
@@ -394,11 +463,11 @@ export function mockCorosServer(opts: { baseMonday?: string } = {}): MockCorosSe
       }
 
       case "/training/plan/add": {
-        server.planAddBodies.push(JSON.parse(bodyText));
-        return envelope(
-          server.planAddResult,
-          server.planAddResult === "0000" ? server.planAddData : null,
-        );
+        const planBody = JSON.parse(bodyText) as PlanAddBody;
+        server.planAddBodies.push(planBody);
+        if (server.planAddResult !== "0000") return envelope(server.planAddResult);
+        if (server.planAddMaterializes) materializePlan(planBody);
+        return envelope("0000", server.planAddData);
       }
 
       case "/training/exercise/query": {

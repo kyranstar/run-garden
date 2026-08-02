@@ -5,7 +5,12 @@
  */
 
 import { describe, expect, it } from "vitest";
-import type { RawCorosExercise, RawCorosProgram } from "@rg/providers";
+import {
+  FIXTURE_PLAN_ID,
+  type RawCorosEntity,
+  type RawCorosExercise,
+  type RawCorosProgram,
+} from "@rg/providers";
 import { CorosClient } from "../src/coros-client.js";
 import {
   runCreateSpike,
@@ -16,6 +21,17 @@ import { mockCorosServer, nextMonday, type MockCorosServer } from "./mock-coros-
 
 const noop = (): void => undefined;
 const TODAY = new Date().toISOString().slice(0, 10);
+const SPIKE_NAME = "RG SPIKE — SAFE TO DELETE";
+
+function addDaysIso(iso: string, days: number): string {
+  const d = new Date(`${iso}T00:00:00Z`);
+  d.setUTCDate(d.getUTCDate() + days);
+  return d.toISOString().slice(0, 10);
+}
+
+function corosDay(iso: string): number {
+  return Number(iso.replaceAll("-", ""));
+}
 
 async function setup(): Promise<{ server: MockCorosServer; client: CorosClient }> {
   const server = mockCorosServer({ baseMonday: nextMonday() });
@@ -24,7 +40,7 @@ async function setup(): Promise<{ server: MockCorosServer; client: CorosClient }
   return { server, client };
 }
 
-function baselineIds(server: MockCorosServer): string[] {
+function scheduleIds(server: MockCorosServer): string[] {
   return (server.state.schedule.entities ?? []).map((e) => String(e.idInPlan)).sort();
 }
 
@@ -54,12 +70,13 @@ function findUserIdKeys(value: unknown, path = "$"): string[] {
 describe("runCreateSpike — happy path", () => {
   it("creates strength + run + bike, verifies each, and restores the baseline", async () => {
     const { server, client } = await setup();
-    const before = baselineIds(server);
+    const before = scheduleIds(server);
 
     const report = await runCreateSpike(client, { today: TODAY, log: noop });
 
     expect(report.kind).toBe("coros-create-spike");
     expect(report.failure).toBeUndefined();
+    expect(report.abortReason).toBeUndefined();
 
     // TEST A — strength from scratch.
     expect(report.tests.strength.attempted).toBe(true);
@@ -106,14 +123,29 @@ describe("runCreateSpike — happy path", () => {
     expect(report.overall.baselineRestored).toBe(true);
     expect(report.overall.finalWorkoutCount).toBe(before.length);
     expect(report.succeeded).toBe(true);
-    expect(baselineIds(server)).toEqual(before);
+    expect(scheduleIds(server)).toEqual(before);
     // maxIdInPlan never decrements — deletes are hard but the counter stands.
     expect(Number(server.state.schedule.maxIdInPlan)).toBe(23);
   });
 
-  it("records the plan/add probe rejection verbatim", async () => {
+  it("skips the plan/add probe unless the caller explicitly opts in", async () => {
     const { server, client } = await setup();
     const report = await runCreateSpike(client, { today: TODAY, log: noop });
+
+    expect(report.tests.planAdd.attempted).toBe(false);
+    expect(report.tests.planAdd.cleanedUp).toBe(true);
+    expect(report.tests.planAdd.notes.join(" ")).toContain("opt-in only");
+    expect(server.planAddBodies).toHaveLength(0);
+    expect(report.overall.baselineRestored).toBe(true);
+  });
+
+  it("records the plan/add probe rejection verbatim when opted in", async () => {
+    const { server, client } = await setup();
+    const report = await runCreateSpike(client, {
+      today: TODAY,
+      log: noop,
+      includePlanAddProbe: true,
+    });
 
     expect(report.tests.planAdd.attempted).toBe(true);
     expect(report.tests.planAdd.resultCode).toBe("1031");
@@ -128,6 +160,37 @@ describe("runCreateSpike — happy path", () => {
     expect(body.versionObjects).toEqual([{ id: 1, status: 1 }]);
     expect((body.entities as Array<Record<string, unknown>>)[0]?.happenDay).toBe("");
     expect((body.entities as Array<Record<string, unknown>>)[0]?.dayNo).toBe(1);
+    // I4: region is derived from the client, not hardcoded to the CN capture.
+    expect(body.region).toBe("us");
+    expect(report.tests.planAdd.notes.join(" ")).toContain("us/eu are unknown");
+  });
+
+  it("sends the CN wire region value on a cn client", async () => {
+    const server = mockCorosServer({ baseMonday: nextMonday() });
+    const client = new CorosClient({ region: "cn", fetchImpl: server.fetchImpl, logger: noop });
+    await client.login(server.email, server.password);
+
+    await runCreateSpike(client, { today: TODAY, log: noop, includePlanAddProbe: true });
+
+    expect((server.planAddBodies[0] as Record<string, unknown>).region).toBe(2);
+  });
+
+  it("runs the plan probe only after the A/B/C workouts are cleaned up", async () => {
+    const { server } = await setup();
+    const before = scheduleIds(server);
+    let idsAtProbeTime: string[] = [];
+    const observing: typeof fetch = async (input, init) => {
+      const href = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
+      if (href.includes("/training/plan/add")) idsAtProbeTime = scheduleIds(server);
+      return server.fetchImpl(input, init);
+    };
+    const observed = new CorosClient({ region: "us", fetchImpl: observing, logger: noop });
+    await observed.login(server.email, server.password);
+
+    await runCreateSpike(observed, { today: TODAY, log: noop, includePlanAddProbe: true });
+
+    // I2: by the time plan/add fires, the schedule is already back to baseline.
+    expect(idsAtProbeTime).toEqual(before);
   });
 });
 
@@ -141,6 +204,8 @@ describe("runCreateSpike — payload encodings (research §(b)/§(d))", () => {
     expect(program.subType).toBe(65535);
     // exerciseNum counts REAL steps only — the repeat-group container is excluded.
     expect(program.exerciseNum).toBe(1);
+    // Minor fix: calculate must not clobber the client-computed set count.
+    expect(program.totalSets).toBe(3);
 
     const exercises = program.exercises as RawCorosExercise[];
     expect(exercises).toHaveLength(2);
@@ -173,6 +238,16 @@ describe("runCreateSpike — payload encodings (research §(b)/§(d))", () => {
     expect(child.sortNo).toBe(16_777_216 + 65_536);
   });
 
+  it("names every created program with the ownership marker", async () => {
+    const { client } = await setup();
+    const report = await runCreateSpike(client, { today: TODAY, log: noop });
+    for (const test of ["strength", "run", "bike"] as const) {
+      const shape = shapeOf(report, test);
+      expect(String(shape.program.name)).toContain(SPIKE_NAME);
+      expect(String(shape.entity.name)).toContain(SPIKE_NAME);
+    }
+  });
+
   it("builds the run as 2 blocks, no group, no cooldown", async () => {
     const { client } = await setup();
     const report = await runCreateSpike(client, { today: TODAY, log: noop });
@@ -201,7 +276,11 @@ describe("runCreateSpike — payload encodings (research §(b)/§(d))", () => {
 
   it("schedules the tests far outside real training (+21/+22/+23)", async () => {
     const { client } = await setup();
-    const report = await runCreateSpike(client, { today: TODAY, log: noop });
+    const report = await runCreateSpike(client, {
+      today: TODAY,
+      log: noop,
+      includePlanAddProbe: true,
+    });
     const days = (d: string): number =>
       Math.round((Date.parse(`${d}T00:00:00Z`) - Date.parse(`${TODAY}T00:00:00Z`)) / 86_400_000);
 
@@ -230,7 +309,11 @@ describe("runCreateSpike — report sanitization", () => {
 
   it("has the documented report shape", async () => {
     const { client } = await setup();
-    const report = await runCreateSpike(client, { today: TODAY, log: noop });
+    const report = await runCreateSpike(client, {
+      today: TODAY,
+      log: noop,
+      includePlanAddProbe: true,
+    });
 
     expect(Object.keys(report.tests).sort()).toEqual(["bike", "planAdd", "run", "strength"]);
     for (const test of Object.values(report.tests)) {
@@ -250,10 +333,207 @@ describe("runCreateSpike — report sanitization", () => {
   });
 });
 
+describe("runCreateSpike — ownership guard (C1)", () => {
+  /**
+   * The reviewer's probe: a legacy workout already occupies idInPlan 21, above
+   * the active plan's maxIdInPlan of 20, on a different date with a different
+   * name. The spike must refuse to write or delete, and abort.
+   */
+  function seedCollision(server: MockCorosServer): RawCorosEntity {
+    const legacy: RawCorosEntity = {
+      id: "70000000000000999",
+      idInPlan: "21",
+      planId: FIXTURE_PLAN_ID,
+      planProgramId: "21",
+      happenDay: corosDay(addDaysIso(TODAY, -5)),
+      name: "Legacy Tempo",
+    };
+    server.state.schedule.entities!.push(legacy);
+    return legacy;
+  }
+
+  it("never deletes a workout it did not create when idInPlan collides", async () => {
+    const { server, client } = await setup();
+    seedCollision(server);
+    const before = scheduleIds(server);
+    const writesBefore = server.counts.scheduleWrites;
+
+    const report = await runCreateSpike(client, { today: TODAY, log: noop });
+
+    // The colliding workout is untouched and still on its own date.
+    const survivor = server.entityByIdInPlan("21");
+    expect(survivor).toBeDefined();
+    expect(survivor?.name).toBe("Legacy Tempo");
+    expect(Number(survivor?.happenDay)).toBe(corosDay(addDaysIso(TODAY, -5)));
+    expect(scheduleIds(server)).toEqual(before);
+    // Not one write was issued — not a create, and above all not a delete.
+    expect(server.counts.scheduleWrites).toBe(writesBefore);
+
+    // The run aborted loudly and said why.
+    expect(report.abortReason).toContain("21");
+    expect(report.failure).toBeDefined();
+    expect(report.succeeded).toBe(false);
+    expect(report.tests.strength.verified).toBe(false);
+    expect(report.tests.strength.notes.join(" ")).toContain("no write attempted");
+    // Remaining tests are skipped rather than blundering on.
+    expect(report.tests.run.attempted).toBe(false);
+    expect(report.tests.bike.attempted).toBe(false);
+    expect(report.overall.leftovers).toEqual([]);
+  });
+
+  it("refuses to register a foreign workout that appears in its slot mid-write", async () => {
+    const { server } = await setup();
+    // The slot is empty at the pre-write read, then a foreign workout lands in
+    // it before the read-after-write (the race the reviewer flagged).
+    server.addSilentlyFails = true; // the spike's own create never materializes
+    const injecting: typeof fetch = async (input, init) => {
+      const href = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
+      const res = await server.fetchImpl(input, init);
+      if (href.includes("/training/schedule/update") && !server.entityByIdInPlan("21")) {
+        server.state.schedule.entities!.push({
+          idInPlan: "21",
+          planId: FIXTURE_PLAN_ID,
+          planProgramId: "21",
+          happenDay: corosDay(addDaysIso(TODAY, -5)),
+          name: "Someone Else's Workout",
+        });
+      }
+      return res;
+    };
+    const raced = new CorosClient({ region: "us", fetchImpl: injecting, logger: noop });
+    await raced.login(server.email, server.password);
+
+    const report = await runCreateSpike(raced, { today: TODAY, log: noop });
+
+    expect(server.entityByIdInPlan("21")?.name).toBe("Someone Else's Workout");
+    expect(report.tests.strength.notes.join(" ")).toContain("not registered, not deleted");
+    expect(report.abortReason).toContain("did not create");
+    expect(report.overall.leftovers).toEqual([]);
+  });
+
+  it("records accepted-but-not-visible without registering anything", async () => {
+    const { server, client } = await setup();
+    const before = scheduleIds(server);
+    server.addSilentlyFails = true;
+
+    const report = await runCreateSpike(client, { today: TODAY, log: noop });
+
+    for (const test of ["strength", "run", "bike"] as const) {
+      expect(report.tests[test].resultCode).toBe("0000");
+      expect(report.tests[test].verified).toBe(false);
+      expect(report.tests[test].cleanedUp).toBe(true);
+      expect(report.tests[test].notes.join(" ")).toContain("nothing materialized");
+    }
+    expect(report.overall.capabilitiesConfirmed).toEqual({
+      strengthCreateFromScratch: false,
+      minimalRunCreateFromScratch: false,
+      minimalBikeCreateFromScratch: false,
+      planLevelCreate: false,
+    });
+    expect(report.overall.leftovers).toEqual([]);
+    expect(scheduleIds(server)).toEqual(before);
+    expect(report.overall.baselineRestored).toBe(true);
+  });
+});
+
+describe("runCreateSpike — abort / SIGINT drain (I1)", () => {
+  it("drains everything created when aborted mid-sequence", async () => {
+    const { server } = await setup();
+    const before = scheduleIds(server);
+    const handles: CreateSpikeHandle[] = [];
+    let creates = 0;
+
+    // Interrupt while the run create is in flight (2nd status:1 write).
+    const interrupting: typeof fetch = async (input, init) => {
+      const href = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
+      const res = await server.fetchImpl(input, init);
+      if (href.includes("/training/schedule/update")) {
+        creates += 1;
+        if (creates === 2) handles[0]?.abort("interrupted (SIGINT)");
+      }
+      return res;
+    };
+    const interrupted = new CorosClient({ region: "us", fetchImpl: interrupting, logger: noop });
+    await interrupted.login(server.email, server.password);
+
+    const report = await runCreateSpike(interrupted, {
+      today: TODAY,
+      log: noop,
+      onStart: (h) => handles.push(h),
+    });
+
+    expect(report.abortReason).toBe("interrupted (SIGINT)");
+    // Strength landed before the abort; the run create was already in flight
+    // and materialized — BOTH must be drained, not just the first.
+    expect(report.tests.strength.cleanedUp).toBe(true);
+    expect(report.tests.run.cleanedUp).toBe(true);
+    // No write was issued after the abort.
+    expect(report.tests.bike.attempted).toBe(false);
+    expect(report.tests.bike.notes.join(" ")).toContain("aborted");
+    // Restoration ran and the account really is back to baseline.
+    expect(report.overall.leftovers).toEqual([]);
+    expect(report.overall.finalWorkoutCount).toBe(before.length);
+    expect(scheduleIds(server)).toEqual(before);
+    // …but the run is still marked failed, because it did not complete.
+    expect(report.succeeded).toBe(false);
+  });
+
+  it("reports leftovers when an abort's drain cannot remove what it created", async () => {
+    const { server } = await setup();
+    const handles: CreateSpikeHandle[] = [];
+    let creates = 0;
+    const interrupting: typeof fetch = async (input, init) => {
+      const href = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
+      const res = await server.fetchImpl(input, init);
+      if (href.includes("/training/schedule/update")) {
+        creates += 1;
+        if (creates === 1) {
+          handles[0]?.abort("interrupted (SIGINT)");
+          server.deleteRejectResult = "1001"; // deletes start failing
+        }
+      }
+      return res;
+    };
+    const interrupted = new CorosClient({ region: "us", fetchImpl: interrupting, logger: noop });
+    await interrupted.login(server.email, server.password);
+
+    const report = await runCreateSpike(interrupted, {
+      today: TODAY,
+      log: noop,
+      onStart: (h) => handles.push(h),
+    });
+
+    expect(report.overall.leftovers).toHaveLength(1);
+    expect(report.overall.leftovers[0]).toContain("idInPlan=21");
+    expect(report.tests.strength.cleanedUp).toBe(false);
+    expect(report.overall.baselineRestored).toBe(false);
+    expect(report.succeeded).toBe(false);
+    expect(server.entityByIdInPlan("21")).toBeDefined(); // the report is truthful
+  });
+
+  it("publishes an idempotent cleanup handle", async () => {
+    const { server, client } = await setup();
+    const handles: CreateSpikeHandle[] = [];
+
+    const report = await runCreateSpike(client, {
+      today: TODAY,
+      log: noop,
+      onStart: (h) => handles.push(h),
+    });
+
+    expect(handles).toHaveLength(1);
+    expect(handles[0]?.report).toBe(report); // the live object, mutated in place
+    const writesBefore = server.counts.scheduleWrites;
+    await expect(handles[0]!.cleanup()).resolves.toBeUndefined();
+    await expect(handles[0]!.finalize()).resolves.toBeUndefined();
+    expect(server.counts.scheduleWrites).toBe(writesBefore); // no double-delete
+  });
+});
+
 describe("runCreateSpike — failure discipline", () => {
   it("reports leftovers instead of silently succeeding when cleanup is rejected", async () => {
     const { server, client } = await setup();
-    const before = baselineIds(server);
+    const before = scheduleIds(server);
     server.deleteRejectResult = "1001";
 
     const report = await runCreateSpike(client, { today: TODAY, log: noop });
@@ -265,7 +545,7 @@ describe("runCreateSpike — failure discipline", () => {
     expect(report.overall.baselineRestored).toBe(false);
     expect(report.succeeded).toBe(false);
     // The report tells the truth: the three spike workouts really are still there.
-    expect(baselineIds(server).length).toBe(before.length + 3);
+    expect(scheduleIds(server).length).toBe(before.length + 3);
   });
 
   it("attempts cleanup and records the exact state when the network dies mid-run", async () => {
@@ -297,56 +577,65 @@ describe("runCreateSpike — failure discipline", () => {
     expect(report.overall.leftovers.join(" ")).toContain("idInPlan=21");
     expect(report.overall.leftovers.join(" ")).toContain("idInPlan=22");
   });
+});
 
-  it("cleans up an unexpectedly-successful plan/add and records the orphan plan id", async () => {
-    const { server, client } = await setup();
+describe("runCreateSpike — plan/add unexpected success (C2/I3)", () => {
+  it("removes the plan's own workouts, leaves foreign ones alone, flags the orphan plan", async () => {
+    const { server } = await setup();
     server.planAddResult = "0000";
     server.planAddData = { id: "plan-orphan-999" };
+    server.planAddMaterializes = true;
 
-    const report = await runCreateSpike(client, { today: TODAY, log: noop });
+    // A workout that is NOT the spike's also appears in the sweep window
+    // between the before/after reads — the sweep must not touch it.
+    const foreignDay = corosDay(addDaysIso(TODAY, 45));
+    const sweeping: typeof fetch = async (input, init) => {
+      const href = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
+      const res = await server.fetchImpl(input, init);
+      if (href.includes("/training/plan/add")) {
+        server.state.schedule.entities!.push({
+          id: "70000000000000777",
+          idInPlan: "777",
+          planId: FIXTURE_PLAN_ID,
+          planProgramId: "777",
+          happenDay: foreignDay,
+          name: "Race Simulation",
+        });
+      }
+      return res;
+    };
+    const swept = new CorosClient({ region: "us", fetchImpl: sweeping, logger: noop });
+    await swept.login(server.email, server.password);
+
+    const report = await runCreateSpike(swept, {
+      today: TODAY,
+      log: noop,
+      includePlanAddProbe: true,
+    });
 
     expect(report.tests.planAdd.resultCode).toBe("0000");
     expect(report.tests.planAdd.verified).toBe(true);
     expect(report.tests.planAdd.serverIds?.planId).toBe("plan-orphan-999");
-    expect(report.tests.planAdd.cleanedUp).toBe(false);
+
+    // The plan's materialized workout carried the spike's name → removed.
+    const planWorkouts = (server.state.schedule.entities ?? []).filter((e) =>
+      String(e.name ?? "").startsWith(SPIKE_NAME),
+    );
+    expect(planWorkouts).toEqual([]);
+    // The foreign workout was left strictly alone.
+    expect(server.entityByIdInPlan("777")?.name).toBe("Race Simulation");
+    expect(report.tests.planAdd.notes.join(" ")).toContain("left untouched");
+
     // Never silent: the undeletable plan is surfaced at the top level.
     expect(report.overall.orphanPlanIds).toEqual(["plan-orphan-999"]);
     expect(report.overall.capabilitiesConfirmed.planLevelCreate).toBe(true);
+    expect(report.tests.planAdd.cleanedUp).toBe(false);
     expect(report.overall.baselineRestored).toBe(false);
     expect(report.succeeded).toBe(false);
+
     // …and the schedule-side cleanup still ran for the three workouts.
     for (const test of ["strength", "run", "bike"] as const) {
       expect(report.tests[test].cleanedUp).toBe(true);
     }
-  });
-
-  it("publishes an idempotent cleanup handle for the SIGINT path", async () => {
-    const { server, client } = await setup();
-    const handles: CreateSpikeHandle[] = [];
-
-    const report = await runCreateSpike(client, {
-      today: TODAY,
-      log: noop,
-      onStart: (h) => handles.push(h),
-    });
-
-    expect(handles).toHaveLength(1);
-    expect(handles[0]?.report).toBe(report); // the live object, mutated in place
-    const writesBefore = server.counts.scheduleWrites;
-    await expect(handles[0]!.cleanup()).resolves.toBeUndefined();
-    expect(server.counts.scheduleWrites).toBe(writesBefore); // no double-delete
-  });
-
-  it("skips the plan/add probe when the caller opts out", async () => {
-    const { server, client } = await setup();
-    const report = await runCreateSpike(client, {
-      today: TODAY,
-      log: noop,
-      includePlanAddProbe: false,
-    });
-
-    expect(report.tests.planAdd.attempted).toBe(false);
-    expect(server.planAddBodies).toHaveLength(0);
-    expect(report.overall.baselineRestored).toBe(true);
   });
 });

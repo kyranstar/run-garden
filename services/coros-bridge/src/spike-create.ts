@@ -10,13 +10,19 @@
  *  - ADDITIVE ONLY. Nothing the user authored is ever read-modified-written.
  *    Every write is a create of the spike's own throwaway workout, or the
  *    delete of one it just created.
+ *  - OWNERSHIP IS PROVEN, NEVER ASSUMED. `idInPlan` alone does not identify a
+ *    workout as ours: the counter can collide with pre-existing entities. A
+ *    workout is only ever registered for deletion when its entity or program
+ *    name starts with SPIKE_NAME, and that is re-checked immediately before
+ *    every delete. A collision aborts the run instead of deleting.
  *  - Far-future dates (today +21/+22/+23) so a leftover is unambiguous and
  *    never collides with real training.
- *  - Self-cleaning: every created entity is tracked and removed in reverse
- *    order, each removal verified by a read, then the whole window is compared
- *    against the baseline snapshot (PASS/FAIL restoration line).
- *  - Fail safe: any unexpected error, and SIGINT, both run the same cleanup
- *    and print the exact account state before exiting.
+ *  - Self-cleaning: created entities are drained until every one is verified
+ *    gone, then the whole window is compared against the baseline snapshot
+ *    (PASS/FAIL restoration line).
+ *  - Fail safe: any unexpected error, and SIGINT, stop further writes, drain
+ *    what exists, run the restoration read, and print the exact account state
+ *    before exiting.
  *
  * Run with: pnpm coros:spike:create
  */
@@ -34,11 +40,7 @@ import {
   type RawCorosProgram,
   type RawCorosSchedule,
 } from "@rg/providers";
-import {
-  CorosClient,
-  type CorosProgramMetrics,
-  type CorosRegion,
-} from "./coros-client.js";
+import { CorosClient, type CorosProgramMetrics, type CorosRegion } from "./coros-client.js";
 import { redactUserId, stripUserIds } from "./sanitize.js";
 
 // ── Report shape ────────────────────────────────────────────────────────────
@@ -88,7 +90,7 @@ export interface CreateSpikeReport {
   };
   tests: Record<CreateTestName, CreateTestResult>;
   overall: {
-    /** The account is byte-for-byte back to the baseline entity set. */
+    /** The account is back to the baseline entity set, with nothing orphaned. */
     baselineRestored: boolean;
     finalWorkoutCount?: number;
     /** Anything the spike created and could NOT remove. MUST be empty. */
@@ -102,31 +104,44 @@ export interface CreateSpikeReport {
       planLevelCreate: boolean;
     };
   };
+  /** Why the spike stopped issuing writes early (collision, SIGINT, error). */
+  abortReason?: string;
   /** True only if the spike ran to completion AND the account was restored. */
   succeeded: boolean;
   failure?: string;
 }
 
 export interface CreateSpikeHandle {
-  /** Idempotent removal of everything created so far. Safe to call anytime. */
-  cleanup: () => Promise<void>;
   /** The live report object, mutated in place as the spike progresses. */
   report: CreateSpikeReport;
+  /** Stop issuing NEW writes. Already-created entities are still cleaned up. */
+  abort: (reason: string) => void;
+  /** Drain: remove every registered entity until each is verified gone. */
+  cleanup: () => Promise<void>;
+  /** Restoration read + leftover/orphan summary. Runs at most once. */
+  finalize: () => Promise<void>;
 }
 
 export interface CreateSpikeOptions {
   /** yyyy-mm-dd anchor; the spike writes at +21/+22/+23 and probes +40/+41. */
   today?: string;
   log?: (line: string) => void;
-  /** Called once, early, so a CLI can bind cleanup to SIGINT. */
+  /** Called once, early, so a CLI can bind abort/cleanup to SIGINT. */
   onStart?: (handle: CreateSpikeHandle) => void;
-  /** Set false to skip the plan/add probe entirely. */
+  /**
+   * Plan-level create probe. OFF by default: on unexpected success it creates
+   * a plan object that no known endpoint can delete. Opt in explicitly.
+   */
   includePlanAddProbe?: boolean;
 }
 
 // ── Payload construction (research §(b) and §(d)) ────────────────────────────
 
-/** Loud enough that a leftover is unmistakable in the COROS UI. */
+/**
+ * Ownership marker. Every program (and entity) the spike creates is named with
+ * this prefix, and it is the ONLY thing that authorizes a delete. Loud enough
+ * that a leftover is unmistakable in the COROS UI.
+ */
 const SPIKE_NAME = "RG SPIKE — SAFE TO DELETE";
 
 /** §5.3: top-level step n → 2^24 · n; sub-steps → groupSort + 2^16 · (j+1). */
@@ -372,12 +387,27 @@ function buildEntity(opts: {
 }
 
 /**
+ * `region` on plan/add. The only capture is from a CN-region script, which
+ * sends `2`; the survey has no mapping for us/eu. Rather than guess a number,
+ * send the client's own region value there and record the ambiguity.
+ */
+export const PLAN_ADD_REGION: Record<CorosRegion, number | string> = {
+  cn: 2, // the one captured value (shenmiguo/scripts/coros.js:279-286)
+  us: "us",
+  eu: "eu",
+};
+
+/**
  * §(b) plan-level create body (`shenmiguo/scripts/coros.js:279-286`). Plan
  * templates are day-offset relative — `happenDay` is "" and `dayNo` carries
  * the offset — so the caller's intended calendar dates are recorded in the
  * report rather than encoded here.
  */
-export function buildPlanAddBody(program: RawCorosProgram, totalDay: number): unknown {
+export function buildPlanAddBody(
+  program: RawCorosProgram,
+  totalDay: number,
+  region: CorosRegion,
+): unknown {
   return {
     name: `${SPIKE_NAME} plan probe`,
     overview: "",
@@ -392,7 +422,7 @@ export function buildPlanAddBody(program: RawCorosProgram, totalDay: number): un
       "https://oss.coros.com/source/source_default/0/6097a29cf17a435f88b573c08679280b.jpg",
     minWeeks: 1,
     maxWeeks: Math.ceil(totalDay / 7),
-    region: 2,
+    region: PLAN_ADD_REGION[region],
     pbVersion: 9,
     versionObjects: [{ id: 1, status: 1 }],
   };
@@ -411,6 +441,23 @@ function locate(raw: RawCorosSchedule, idInPlan: string | number): Located | und
   if (!entity) return undefined;
   const program = (raw.programs ?? []).find((p) => String(p.idInPlan) === String(idInPlan));
   return { entity, program, date: corosDayToLocalDate(entity.happenDay) };
+}
+
+/**
+ * The ONLY authorization to delete. `idInPlan` is a plan-scoped counter that
+ * can collide with entities the spike never created (a stale/legacy workout
+ * above the active plan's counter), so ownership is proven by the name the
+ * spike stamps on both the entity and the program.
+ */
+function isSpikeOwned(found: Located): boolean {
+  const entityName = String(found.entity.name ?? "");
+  const programName = String(found.program?.name ?? "");
+  return entityName.startsWith(SPIKE_NAME) || programName.startsWith(SPIKE_NAME);
+}
+
+function describeForeign(found: Located): string {
+  const name = String(found.entity.name ?? found.program?.name ?? "(unnamed)");
+  return `name="${name}" date=${found.date}`;
 }
 
 function idInPlanSet(raw: RawCorosSchedule): string[] {
@@ -432,6 +479,15 @@ interface CreatedEntity {
   planProgramId: string;
   planId: string;
   date: string;
+  /** Window to read when verifying this entity's presence/absence. */
+  verifyStart: string;
+  verifyEnd: string;
+  cleaned: boolean;
+  attempts: number;
+  /** Stop retrying: the slot is now held by something we must not delete. */
+  abandoned: boolean;
+  resultCode?: string;
+  error?: string;
 }
 
 interface CreateSpec {
@@ -446,26 +502,30 @@ interface CreateSpec {
 /** Splice the server's calculate output into the program before creating it. */
 function applyCalculated(program: RawCorosProgram, m: CorosProgramMetrics): RawCorosProgram {
   const out: RawCorosProgram = { ...program };
-  if (m.duration != null) {
+  if (m.duration != null && m.duration > 0) {
     out.duration = m.duration;
     out.estimatedTime = m.duration;
   }
-  if (m.trainingLoad != null) {
+  if (m.trainingLoad != null && m.trainingLoad > 0) {
     out.trainingLoad = m.trainingLoad;
     out.estimatedValue = m.trainingLoad;
   }
-  if (m.distance != null) {
+  if (m.distance != null && m.distance > 0) {
     out.distance = m.distance;
     out.estimatedDistance = m.distance;
   }
-  if (m.totalSets != null && out.totalSets != null) out.totalSets = m.totalSets;
+  // Never clobber a client-computed set count with 0/undefined from calculate.
+  if (m.totalSets != null && m.totalSets > 0 && out.totalSets != null) out.totalSets = m.totalSets;
   return out;
 }
+
+/** Bounded retries per entity so a hard failure cannot loop the drain. */
+const MAX_CLEANUP_ATTEMPTS = 2;
 
 /**
  * Core spike sequence, decoupled from the interactive CLI so it can be driven
  * against the mock server offline. Never throws: failures are recorded on the
- * returned report after cleanup has been attempted.
+ * returned report after cleanup and the restoration read have been attempted.
  */
 export async function runCreateSpike(
   client: CorosClient,
@@ -507,48 +567,175 @@ export async function runCreateSpike(
   };
 
   const created: CreatedEntity[] = [];
-  let cleanupStarted = false;
+  const control = { aborted: false };
+  let baselineIds: string[] = [];
+  let baselineCount = 0;
 
-  const cleanup = async (): Promise<void> => {
-    if (cleanupStarted) return;
-    cleanupStarted = true;
+  /** Stop issuing new writes. Cleanup deliberately ignores this flag. */
+  const abort = (reason: string): void => {
+    if (control.aborted) return;
+    control.aborted = true;
+    report.abortReason = reason;
+    report.failure ??= reason;
+    log(`\n!! ABORTING further writes: ${reason}`);
+  };
+
+  const removeOne = async (entry: CreatedEntity): Promise<void> => {
+    entry.attempts += 1;
+    const read = (): Promise<RawCorosSchedule> =>
+      client.getRawSchedule(entry.verifyStart, entry.verifyEnd);
+
+    const before = await read();
+    const present = locate(before, entry.idInPlan);
+    if (!present) {
+      entry.cleaned = true;
+      log(`  already gone: ${entry.label} (idInPlan ${entry.idInPlan})`);
+      return;
+    }
+    // Re-prove ownership immediately before the delete: the slot could have
+    // been reassigned between the create and now.
+    if (!isSpikeOwned(present)) {
+      entry.abandoned = true;
+      entry.error = `idInPlan now holds a workout the spike did not create (${describeForeign(present)}) — NOT deleted`;
+      log(`  !! ${entry.label} idInPlan=${entry.idInPlan}: ${entry.error}`);
+      return;
+    }
+    const del = await client.removeScheduleEntity(
+      entry.idInPlan,
+      String(present.entity.planProgramId ?? entry.planProgramId),
+      String(present.entity.planId ?? entry.planId),
+    );
+    entry.resultCode = del.result;
+    const after = await read();
+    const still = locate(after, entry.idInPlan);
+    entry.cleaned = !still;
+    if (still) {
+      entry.error = `delete returned ${del.result} but the workout is still on ${still.date}`;
+      log(`  !! NOT REMOVED: ${entry.label} idInPlan=${entry.idInPlan} (${entry.error})`);
+    } else {
+      log(`  removed ${entry.label} (idInPlan ${entry.idInPlan}, ${entry.date})`);
+    }
+  };
+
+  /**
+   * Drain loop: entries can be appended while a cleanup is already running
+   * (an abort landing mid-create), so keep sweeping until nothing is pending.
+   */
+  const drain = async (): Promise<void> => {
+    const pending = (): CreatedEntity[] =>
+      created.filter((c) => !c.cleaned && !c.abandoned && c.attempts < MAX_CLEANUP_ATTEMPTS);
     if (created.length === 0) {
       log("Cleanup: nothing was created.");
       return;
     }
-    log(`Cleanup: removing ${created.length} spike workout(s) in reverse order…`);
-    for (const entry of [...created].reverse()) {
-      const result = report.tests[entry.test];
-      try {
-        const del = await client.removeScheduleEntity(
-          entry.idInPlan,
-          entry.planProgramId,
-          entry.planId,
-        );
-        result.cleanupResultCode = del.result;
-        const after = await readWindow();
-        const still = locate(after, entry.idInPlan);
-        result.cleanedUp = !still;
-        if (still) {
-          const note = `${entry.label} idInPlan=${entry.idInPlan} still on ${entry.date}`;
-          report.overall.leftovers.push(note);
-          log(`  !! NOT REMOVED: ${note} — delete "${SPIKE_NAME}" in the COROS app`);
-        } else {
-          log(`  removed ${entry.label} (idInPlan ${entry.idInPlan}, ${entry.date})`);
+    while (pending().length > 0) {
+      const batch = [...pending()].reverse(); // reverse creation order
+      log(`Cleanup: removing ${batch.length} spike workout(s)…`);
+      for (const entry of batch) {
+        try {
+          await removeOne(entry);
+        } catch (e) {
+          entry.error = errText(e);
+          log(`  !! CLEANUP ERROR: ${entry.label} idInPlan=${entry.idInPlan} (${entry.error})`);
         }
-      } catch (e) {
-        result.cleanedUp = false;
-        const note = `${entry.label} idInPlan=${entry.idInPlan} on ${entry.date} (${errText(e)})`;
-        report.overall.leftovers.push(note);
-        log(`  !! CLEANUP FAILED: ${note} — delete "${SPIKE_NAME}" in the COROS app`);
       }
+    }
+    for (const name of Object.keys(report.tests) as CreateTestName[]) {
+      const mine = created.filter((c) => c.test === name);
+      if (mine.length === 0) continue;
+      report.tests[name].cleanedUp = mine.every((c) => c.cleaned);
+      report.tests[name].cleanupResultCode ??= mine.find((c) => c.resultCode)?.resultCode;
+    }
+    for (const entry of created.filter((c) => !c.cleaned)) {
+      log(
+        `  !! LEFT BEHIND: ${entry.label} idInPlan=${entry.idInPlan} on ${entry.date}` +
+          ` — delete "${SPIKE_NAME}" in the COROS app`,
+      );
     }
   };
 
-  opts.onStart?.({ cleanup, report });
+  let cleanupInFlight: Promise<void> | null = null;
+  const cleanup = async (): Promise<void> => {
+    // Serialize concurrent callers (SIGINT arriving during the normal
+    // cleanup), then run again so late registrations are drained too.
+    if (cleanupInFlight) await cleanupInFlight.catch(() => undefined);
+    const run = drain();
+    cleanupInFlight = run;
+    try {
+      await run;
+    } finally {
+      if (cleanupInFlight === run) cleanupInFlight = null;
+    }
+  };
 
-  let baselineIds: string[] = [];
-  let baselineCount = 0;
+  let finalized = false;
+  const finalize = async (): Promise<void> => {
+    if (finalized) return;
+    finalized = true;
+
+    // An orphan plan object means the probe did not clean up after itself,
+    // whatever the entity-level drain concluded.
+    if (report.overall.orphanPlanIds.length > 0) report.tests.planAdd.cleanedUp = false;
+
+    report.overall.leftovers = created
+      .filter((c) => !c.cleaned)
+      .map(
+        (c) =>
+          `${c.label} idInPlan=${c.idInPlan} on ${c.date}${c.error ? ` (${c.error})` : ""}`,
+      );
+
+    try {
+      const final = await readWindow();
+      const finalIds = idInPlanSet(final);
+      report.overall.finalWorkoutCount = finalIds.length;
+      const sameSet =
+        finalIds.length === baselineCount && finalIds.join(",") === baselineIds.join(",");
+      // An orphaned plan object is also "not restored" — it is account state
+      // the spike created and cannot remove.
+      report.overall.baselineRestored =
+        sameSet &&
+        report.overall.leftovers.length === 0 &&
+        report.overall.orphanPlanIds.length === 0;
+      log(
+        report.overall.baselineRestored
+          ? `RESTORATION PASS: ${finalIds.length} workouts, idInPlan set identical to baseline.`
+          : `RESTORATION FAIL: baseline had ${baselineCount} workouts, now ${finalIds.length}.`,
+      );
+      if (!report.overall.baselineRestored) {
+        const extra = finalIds.filter((id) => !baselineIds.includes(id));
+        const missing = baselineIds.filter((id) => !finalIds.includes(id));
+        if (extra.length > 0) log(`  EXTRA idInPlan still present: ${extra.join(", ")}`);
+        if (missing.length > 0) log(`  MISSING idInPlan (unexpected!): ${missing.join(", ")}`);
+      }
+    } catch (e) {
+      report.overall.baselineRestored = false;
+      report.failure ??= `restoration check failed: ${errText(e)}`;
+      log(`RESTORATION FAIL: could not re-read the schedule (${errText(e)}).`);
+    }
+
+    if (report.overall.leftovers.length > 0) {
+      log("");
+      log("!! ACTION REQUIRED — the spike could not remove:");
+      for (const l of report.overall.leftovers) log(`     ${l}`);
+      log(`   They are all named "${SPIKE_NAME}" in the COROS app.`);
+    }
+    if (report.overall.orphanPlanIds.length > 0) {
+      log("");
+      log("!! ACTION REQUIRED: plan/add created plan object(s) with no delete endpoint:");
+      for (const id of report.overall.orphanPlanIds) log(`     planId=${id}`);
+      log("   Remove them by hand in the COROS Training Hub UI.");
+    }
+
+    const caps = report.overall.capabilitiesConfirmed;
+    caps.strengthCreateFromScratch = report.tests.strength.verified;
+    caps.minimalRunCreateFromScratch = report.tests.run.verified;
+    caps.minimalBikeCreateFromScratch = report.tests.bike.verified;
+    caps.planLevelCreate = report.tests.planAdd.resultCode === "0000";
+
+    report.succeeded = report.failure === undefined && report.overall.baselineRestored;
+  };
+
+  opts.onStart?.({ report, abort, cleanup, finalize });
 
   try {
     // ── 1. Baseline snapshot ────────────────────────────────────────────────
@@ -577,7 +764,19 @@ export async function runCreateSpike(
       );
     }
 
-    const ctx = { client, log, readWindow, created, report, planId, planStartDay };
+    const ctx: SpikeContext = {
+      client,
+      log,
+      readWindow,
+      windowStart,
+      windowEnd,
+      created,
+      report,
+      planId,
+      planStartDay,
+      control,
+      abort,
+    };
 
     // ── 2. TEST A — strength from scratch ───────────────────────────────────
     log("\nStep 2: TEST A — strength create from scratch (sportType 4)…");
@@ -645,69 +844,32 @@ export async function runCreateSpike(
       checks: enduranceChecks(2),
     });
 
-    // ── 5. TEST D — plan/add probe ──────────────────────────────────────────
-    if (opts.includePlanAddProbe === false) {
-      report.tests.planAdd.notes.push("skipped by caller");
+    // ── 5. Cleanup of A/B/C — BEFORE the plan probe, so the schedule is back
+    //      to baseline before anything plan-level is attempted. ─────────────
+    log("\nStep 5: cleanup of the created workouts…");
+    await cleanup();
+
+    // ── 6. TEST D — plan/add probe (opt-in only) ────────────────────────────
+    const probeRequested = opts.includePlanAddProbe === true;
+    if (!probeRequested) {
       report.tests.planAdd.cleanedUp = true;
+      report.tests.planAdd.notes.push("not requested (opt-in only; off by default)");
+    } else if (control.aborted) {
+      report.tests.planAdd.cleanedUp = true;
+      report.tests.planAdd.notes.push("skipped: the spike aborted before the probe");
     } else {
-      log("\nStep 5: TEST D — plan-level create probe (POST /training/plan/add)…");
+      log("\nStep 6: TEST D — plan-level create probe (POST /training/plan/add)…");
       await runPlanAddProbe(ctx, today);
+      await cleanup();
     }
-
-    // ── 6. Cleanup + restoration check ──────────────────────────────────────
-    log("\nStep 6: cleanup…");
-    await cleanup();
   } catch (e) {
-    report.failure = errText(e);
-    log(`\nSPIKE FAILED: ${report.failure}`);
+    report.failure ??= errText(e);
+    log(`\nSPIKE FAILED: ${errText(e)}`);
     log("Attempting cleanup of everything created so far…");
-    await cleanup();
+    await cleanup().catch(() => undefined);
   }
 
-  // Restoration check runs on every path, including failure.
-  try {
-    const final = await readWindow();
-    const finalIds = idInPlanSet(final);
-    report.overall.finalWorkoutCount = finalIds.length;
-    const restored =
-      finalIds.length === baselineCount && finalIds.join(",") === baselineIds.join(",");
-    // An orphaned plan object is also "not restored" — it is account state the
-    // spike created and cannot remove.
-    report.overall.baselineRestored =
-      restored &&
-      report.overall.leftovers.length === 0 &&
-      report.overall.orphanPlanIds.length === 0;
-    log(
-      report.overall.baselineRestored
-        ? `RESTORATION PASS: ${finalIds.length} workouts, idInPlan set identical to baseline.`
-        : `RESTORATION FAIL: baseline had ${baselineCount} workouts, now ${finalIds.length}.`,
-    );
-    if (!report.overall.baselineRestored) {
-      const extra = finalIds.filter((id) => !baselineIds.includes(id));
-      const missing = baselineIds.filter((id) => !finalIds.includes(id));
-      if (extra.length > 0) log(`  EXTRA idInPlan still present: ${extra.join(", ")}`);
-      if (missing.length > 0) log(`  MISSING idInPlan (unexpected!): ${missing.join(", ")}`);
-    }
-  } catch (e) {
-    report.overall.baselineRestored = false;
-    report.failure ??= `restoration check failed: ${errText(e)}`;
-    log(`RESTORATION FAIL: could not re-read the schedule (${errText(e)}).`);
-  }
-
-  if (report.overall.orphanPlanIds.length > 0) {
-    log("");
-    log("!! ACTION REQUIRED: plan/add created plan object(s) with no delete endpoint:");
-    for (const id of report.overall.orphanPlanIds) log(`     planId=${id}`);
-    log("   Remove them by hand in the COROS Training Hub UI.");
-  }
-
-  const caps = report.overall.capabilitiesConfirmed;
-  caps.strengthCreateFromScratch = report.tests.strength.verified;
-  caps.minimalRunCreateFromScratch = report.tests.run.verified;
-  caps.minimalBikeCreateFromScratch = report.tests.bike.verified;
-  caps.planLevelCreate = report.tests.planAdd.resultCode === "0000";
-
-  report.succeeded = report.failure === undefined && report.overall.baselineRestored;
+  await finalize();
   return report;
 }
 
@@ -734,10 +896,14 @@ interface SpikeContext {
   client: CorosClient;
   log: (line: string) => void;
   readWindow: () => Promise<RawCorosSchedule>;
+  windowStart: string;
+  windowEnd: string;
   created: CreatedEntity[];
   report: CreateSpikeReport;
   planId: string;
   planStartDay?: number;
+  control: { aborted: boolean };
+  abort: (reason: string) => void;
 }
 
 /**
@@ -770,15 +936,22 @@ async function pickStrengthExercise(
 }
 
 /**
- * One create test: fresh maxIdInPlan read → calculate-then-add → status:1 →
- * read-after-write structural verify → server-id recovery. Anything that
- * materializes is registered for cleanup FIRST, before any verdict.
+ * One create test: abort check → fresh maxIdInPlan read → calculate-then-add →
+ * abort check → status:1 → read-after-write → OWNERSHIP GUARD → registration →
+ * structural verify. Nothing is ever registered (and therefore nothing is ever
+ * deleted) unless the read-back workout carries the spike's own name.
  */
 async function createAndVerify(
   ctx: SpikeContext,
   result: CreateTestResult,
   spec: CreateSpec,
 ): Promise<void> {
+  if (ctx.control.aborted) {
+    result.notes.push("skipped: the spike aborted before this test");
+    result.cleanedUp = true;
+    ctx.log(`  skipped (${ctx.report.abortReason ?? "aborted"})`);
+    return;
+  }
   result.attempted = true;
   result.scheduledDate = spec.date;
 
@@ -788,6 +961,18 @@ async function createAndVerify(
   const idInPlan = Number(fresh.maxIdInPlan ?? 0) + 1;
   const planId = String(fresh.id ?? ctx.planId);
   result.idInPlan = idInPlan;
+
+  // The slot we are about to claim must be empty. If something already sits
+  // there, the counter has collided with content we do not own.
+  const occupant = locate(fresh, idInPlan);
+  if (occupant) {
+    result.verified = false;
+    result.cleanedUp = true; // nothing created
+    const detail = `idInPlan ${idInPlan} (maxIdInPlan+1) is already occupied by ${describeForeign(occupant)}`;
+    result.notes.push(`${detail} — no write attempted`);
+    ctx.abort(`${detail}; refusing to write or delete`);
+    return;
+  }
 
   let program = spec.build(idInPlan, planId);
 
@@ -814,6 +999,15 @@ async function createAndVerify(
   });
   result.requestShape = stripUserIds({ entity, program });
 
+  // Second abort check: the run may have been aborted while calculate was
+  // in flight (SIGINT). No new writes once aborted.
+  if (ctx.control.aborted) {
+    result.notes.push("aborted before the write; nothing was created");
+    result.cleanedUp = true;
+    ctx.log("  aborted before the write — nothing created");
+    return;
+  }
+
   let add;
   try {
     add = await ctx.client.addScheduleEntity(entity, program, idInPlan, planId);
@@ -821,7 +1015,7 @@ async function createAndVerify(
     ctx.log(`  status:1 create at ${spec.date} → result=${add.result}`);
   } catch (e) {
     // Network failure mid-write: state unknown. The read below decides, and
-    // anything visible is registered for cleanup.
+    // anything of OURS that is visible gets registered for cleanup.
     result.error = errText(e);
     result.notes.push("create threw mid-write; read-after-write decides");
     ctx.log(`  status:1 create threw (${errText(e)}) — reading back`);
@@ -830,16 +1024,33 @@ async function createAndVerify(
   const after = await ctx.readWindow();
   const found = locate(after, idInPlan);
 
+  // ── OWNERSHIP GUARD (C1) ──────────────────────────────────────────────────
+  // idInPlan alone proves nothing. If the workout sitting in our slot is not
+  // ours, do not register it, do not delete it, and stop the run.
+  if (found && !isSpikeOwned(found)) {
+    result.verified = false;
+    result.cleanedUp = true; // we created nothing to clean
+    const detail = `idInPlan ${idInPlan} holds a workout the spike did not create (${describeForeign(found)})`;
+    result.notes.push(`${detail} — not registered, not deleted`);
+    ctx.abort(`${detail}; refusing to delete anything the spike did not create`);
+    return;
+  }
+
   if (found) {
-    // Register for cleanup BEFORE judging success — a rejected-but-materialized
-    // create must still be removed.
+    // Ours (name-proven). Register for cleanup BEFORE judging success — a
+    // rejected-but-materialized create must still be removed.
     ctx.created.push({
       test: spec.test,
       label: spec.label,
       idInPlan,
       planProgramId: String(found.entity.planProgramId ?? idInPlan),
-      planId: String(after.id ?? planId),
+      planId: String(found.entity.planId ?? after.id ?? planId),
       date: found.date,
+      verifyStart: ctx.windowStart,
+      verifyEnd: ctx.windowEnd,
+      cleaned: false,
+      attempts: 0,
+      abandoned: false,
     });
     result.observedDate = found.date;
     result.serverIds = {
@@ -859,7 +1070,7 @@ async function createAndVerify(
     result.verified = false;
     result.notes.push(
       found
-        ? "server rejected the create but an entity materialized — will be cleaned up"
+        ? "server rejected the create but the spike's workout materialized — will be cleaned up"
         : "server rejected the create; nothing materialized",
     );
     if (!found) result.cleanedUp = true; // nothing to clean
@@ -892,25 +1103,38 @@ async function createAndVerify(
       .map(([k]) => k);
     ctx.log(`  failed structural checks: ${failed.join(", ")}`);
   }
+  if (found.date !== spec.date) {
+    // Ours, so it is still registered for cleanup — but the server put it
+    // somewhere we did not ask for. Stop before writing anything else.
+    result.notes.push(`landed on ${found.date}, expected ${spec.date}`);
+    ctx.abort(`spike workout landed on ${found.date} instead of ${spec.date}`);
+  }
 }
 
 /**
- * One-shot plan-level create probe. Expected to be rejected (1031 outside CN).
- * On unexpected success the probe diffs the schedule and removes whatever
- * appeared; a plan object it cannot delete is recorded loudly, never silently.
+ * One-shot plan-level create probe, run only after A/B/C have been cleaned up.
+ * Expected to be rejected (1031 outside CN). On unexpected success it sweeps
+ * the probe window for NEW entities — and, exactly like the create path, only
+ * registers the ones carrying the spike's own name. A plan object it cannot
+ * delete is recorded loudly, never silently.
  */
 async function runPlanAddProbe(ctx: SpikeContext, today: string): Promise<void> {
   const result = ctx.report.tests.planAdd;
   result.attempted = true;
   const probeStart = addDays(today, 40);
   const probeEnd = addDays(today, 41);
+  const sweepStart = addDays(today, 30);
+  const sweepEnd = addDays(today, 60);
   result.scheduledDate = probeStart;
   result.notes.push(
     `plan templates are day-offset relative (happenDay ""); intended anchor ${probeStart}..${probeEnd}`,
   );
+  result.notes.push(
+    `region sent as ${JSON.stringify(PLAN_ADD_REGION[ctx.client.region])} — only the CN wire value (2) is documented; us/eu are unknown`,
+  );
 
   const probeWindow = (): Promise<RawCorosSchedule> =>
-    ctx.client.getRawSchedule(addDays(today, 30), addDays(today, 60));
+    ctx.client.getRawSchedule(sweepStart, sweepEnd);
 
   let before: RawCorosSchedule;
   try {
@@ -933,7 +1157,7 @@ async function runPlanAddProbe(ctx: SpikeContext, today: string): Promise<void> 
     warmupSeconds: 300,
     workSeconds: 1200,
   });
-  const body = buildPlanAddBody(program, 2);
+  const body = buildPlanAddBody(program, 2, ctx.client.region);
   result.requestShape = stripUserIds(body);
 
   let res;
@@ -963,47 +1187,47 @@ async function runPlanAddProbe(ctx: SpikeContext, today: string): Promise<void> 
   // Unexpected success — clean up aggressively and loudly.
   result.verified = true;
   result.notes.push("UNEXPECTED: plan-level create was accepted");
-  ctx.log("  !! plan/add SUCCEEDED unexpectedly — removing whatever it created");
+  ctx.log("  !! plan/add SUCCEEDED unexpectedly — sweeping for what it created");
 
   const newPlanId = extractPlanId(res.data);
   if (newPlanId) result.serverIds = { planId: newPlanId };
 
-  let removedAll = true;
   try {
     const after = await probeWindow();
-    const activePlanId = String(after.id ?? beforePlanId);
-    const fresh = (after.entities ?? []).filter((e) => !beforeIds.has(String(e.idInPlan)));
-    ctx.log(`  plan/add produced ${fresh.length} new schedule entit(ies)`);
-    for (const entity of fresh) {
-      try {
-        await ctx.client.removeScheduleEntity(
-          entity.idInPlan,
-          String(entity.planProgramId ?? entity.idInPlan),
-          activePlanId,
-        );
-      } catch (e) {
-        removedAll = false;
-        ctx.report.overall.leftovers.push(
-          `plan-probe entity idInPlan=${String(entity.idInPlan)} (${errText(e)})`,
-        );
+    const appeared = (after.entities ?? []).filter((e) => !beforeIds.has(String(e.idInPlan)));
+    ctx.log(`  ${appeared.length} new schedule entit(ies) appeared in the probe window`);
+    for (const entity of appeared) {
+      const found = locate(after, entity.idInPlan);
+      // Same guard as the create path: a new entity is only ours if it
+      // carries the spike's name. Anything else is left strictly alone.
+      if (!found || !isSpikeOwned(found)) {
+        const detail = found ? describeForeign(found) : `idInPlan=${String(entity.idInPlan)}`;
+        result.notes.push(`left untouched (not created by the spike): ${detail}`);
+        ctx.log(`  leaving untouched (not ours): ${detail}`);
+        continue;
       }
+      ctx.created.push({
+        test: "planAdd",
+        label: "plan-probe workout",
+        idInPlan: Number(entity.idInPlan),
+        planProgramId: String(entity.planProgramId ?? entity.idInPlan),
+        planId: String(entity.planId ?? after.id ?? beforePlanId),
+        date: found.date,
+        verifyStart: sweepStart,
+        verifyEnd: sweepEnd,
+        cleaned: false,
+        attempts: 0,
+        abandoned: false,
+      });
     }
-    const verify = await probeWindow();
-    const stillThere = (verify.entities ?? []).filter((e) => !beforeIds.has(String(e.idInPlan)));
-    for (const entity of stillThere) {
-      removedAll = false;
-      ctx.report.overall.leftovers.push(
-        `plan-probe entity idInPlan=${String(entity.idInPlan)} still present`,
-      );
-    }
-    if (String(verify.id ?? "") !== beforePlanId) {
+    if (String(after.id ?? "") !== beforePlanId) {
       result.notes.push(
-        `active planId changed ${beforePlanId || "(none)"} → ${String(verify.id ?? "")}`,
+        `active planId changed ${beforePlanId || "(none)"} → ${String(after.id ?? "")}`,
       );
     }
   } catch (e) {
-    removedAll = false;
-    result.error = `post-probe cleanup read failed: ${errText(e)}`;
+    result.error = `post-probe sweep failed: ${errText(e)}`;
+    ctx.log(`  !! post-probe sweep failed (${errText(e)})`);
   }
 
   // A plan OBJECT may exist that no endpoint in this client can delete
@@ -1013,17 +1237,17 @@ async function runPlanAddProbe(ctx: SpikeContext, today: string): Promise<void> 
     result.notes.push(
       "a plan object was created; no delete endpoint is implemented — remove it in the COROS UI",
     );
-    removedAll = false;
   }
-  result.cleanedUp = removedAll;
+  // Entity-level cleanup status is set by the drain that follows; an orphan
+  // plan is re-applied in finalize() so the drain cannot mask it.
 }
 
 function extractPlanId(data: unknown): string | undefined {
   if (typeof data === "string" && data !== "") return data;
   if (typeof data === "number") return String(data);
   if (data !== null && typeof data === "object") {
-    const id = (data as { id?: unknown; planId?: unknown }).id ??
-      (data as { planId?: unknown }).planId;
+    const id =
+      (data as { id?: unknown; planId?: unknown }).id ?? (data as { planId?: unknown }).planId;
     if (typeof id === "string" && id !== "") return id;
     if (typeof id === "number") return String(id);
   }
@@ -1047,33 +1271,52 @@ function writeReport(report: CreateSpikeReport): string {
 
 // ── Interactive CLI ─────────────────────────────────────────────────────────
 
+/** How long the SIGINT path waits for an in-flight step before draining. */
+const INTERRUPT_SETTLE_MS = 15_000;
+
+function delay(ms: number): Promise<void> {
+  return new Promise((r) => {
+    const t = setTimeout(r, ms);
+    t.unref?.();
+  });
+}
+
 async function main(): Promise<void> {
   const today = new Date().toISOString().slice(0, 10);
   const rl = createInterface({ input: process.stdin, output: process.stdout });
   let client: CorosClient | null = null;
-  // Held in an object so the SIGINT closure and the catch block both see the
-  // handle the moment runCreateSpike publishes it.
-  const state: { handle: CreateSpikeHandle | null } = { handle: null };
+  // Held in an object so the SIGINT closure and the catch block both see what
+  // runCreateSpike published the moment it published it.
+  const state: {
+    handle: CreateSpikeHandle | null;
+    run: Promise<CreateSpikeReport> | null;
+  } = { handle: null, run: null };
   let interrupted = false;
 
   const onInterrupt = (): void => {
     if (interrupted) return;
     interrupted = true;
     void (async () => {
-      console.error("\nInterrupted — cleaning up anything the spike created…");
+      console.error("\nInterrupted — no further writes; draining what the spike created…");
       const live = state.handle;
       if (live) {
-        live.report.failure = "interrupted (SIGINT)";
+        live.abort("interrupted (SIGINT)");
+        // Let the in-flight step finish so anything it created is registered.
+        if (state.run) await Promise.race([state.run, delay(INTERRUPT_SETTLE_MS)]);
         try {
           await live.cleanup();
         } catch {
           console.error("Cleanup after interrupt FAILED.");
         }
+        // Restoration read + leftover summary BEFORE we exit.
+        await live.finalize().catch(() => undefined);
         if (live.report.overall.leftovers.length > 0) {
           console.error("CHECK YOUR COROS CALENDAR — leftovers:");
           for (const l of live.report.overall.leftovers) console.error(`  - ${l}`);
         }
         console.error(`Report written to ${writeReport(live.report)}`);
+      } else {
+        console.error("Nothing had been created yet.");
       }
       rl.close();
       if (client) await client.logout().catch(() => undefined);
@@ -1089,12 +1332,13 @@ async function main(): Promise<void> {
   console.log(" It CREATES up to three brand-new throwaway workouts, named");
   console.log(` "${SPIKE_NAME}", on ${addDays(today, 21)}, ${addDays(today, 22)} and`);
   console.log(` ${addDays(today, 23)} — far outside any real training — verifies`);
-  console.log(" each one, then DELETES every one of them again. It also probes");
-  console.log(" plan-level create once (expected to be rejected).");
+  console.log(" each one, then DELETES every one of them again.");
   console.log("");
-  console.log(" It NEVER reads, edits or deletes a workout you authored.");
-  console.log(" On any failure — or Ctrl-C — it cleans up what it made and");
-  console.log(" prints the exact state your calendar is in.");
+  console.log(" It NEVER reads, edits or deletes a workout you authored: it");
+  console.log(" only ever deletes a workout whose name it stamped itself, and");
+  console.log(" it re-checks that name immediately before every delete.");
+  console.log(" On any failure — or Ctrl-C — it stops writing, removes what it");
+  console.log(" made and prints the exact state your calendar is in.");
   console.log("──────────────────────────────────────────────────────────────");
 
   let report: CreateSpikeReport | null = null;
@@ -1110,29 +1354,45 @@ async function main(): Promise<void> {
     );
     if (confirm.trim() !== "CREATE") throw new Error("aborted by user (no writes performed)");
 
+    console.log("");
+    console.log("OPTIONAL EXTRA — plan-level create probe (POST /training/plan/add):");
+    console.log("  On unexpected success this creates a plan object that has no");
+    console.log("  delete endpoint — you would remove it manually in the COROS UI.");
+    console.log("  It is expected to be rejected (1031), but that is not guaranteed.");
+    const probeAnswer = await rl.question(
+      "Include the plan/add probe? Type PROBE to include it (anything else skips): ",
+    );
+    const includePlanAddProbe = probeAnswer.trim() === "PROBE";
+    console.log(
+      includePlanAddProbe ? "Plan/add probe: INCLUDED." : "Plan/add probe: skipped.",
+    );
+
     client = new CorosClient({ region });
     await client.login(email, password);
     console.log("Logged in.\n");
 
-    report = await runCreateSpike(client, {
+    const run = runCreateSpike(client, {
       today,
+      includePlanAddProbe,
       log: (line) => console.log(line),
       onStart: (h) => {
         state.handle = h;
       },
     });
+    state.run = run;
+    report = await run;
 
     console.log("");
     console.log(
       report.succeeded
         ? "SPIKE COMPLETE — account restored to its baseline state."
-        : "SPIKE COMPLETE WITH PROBLEMS — see the leftovers above and the report.",
+        : "SPIKE COMPLETE WITH PROBLEMS — see the report and any ACTION REQUIRED above.",
     );
     console.log(
       `  strength create: ${verdict(report.tests.strength)}   run create: ${verdict(report.tests.run)}`,
     );
     console.log(
-      `  bike probe: ${verdict(report.tests.bike)}   plan/add probe: ${report.tests.planAdd.resultCode ?? "-"}`,
+      `  bike probe: ${verdict(report.tests.bike)}   plan/add probe: ${report.tests.planAdd.resultCode ?? "not run"}`,
     );
     if (!report.succeeded) process.exitCode = 1;
   } catch (e) {
@@ -1140,8 +1400,10 @@ async function main(): Promise<void> {
     console.error(`\nSPIKE FAILED: ${message}`);
     const live = state.handle;
     if (live) {
+      live.abort(message);
       live.report.failure ??= message;
       await live.cleanup().catch(() => undefined);
+      await live.finalize().catch(() => undefined);
       report = live.report;
     }
     process.exitCode = 1;

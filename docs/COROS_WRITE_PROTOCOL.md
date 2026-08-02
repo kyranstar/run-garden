@@ -142,10 +142,30 @@ it never reads-modifies-writes anything the user authored:
    warmup + training, no group, no cooldown.
 4. **TEST C, bike probe** (`today + 23`) — uncaptured in the survey; the result
    is recorded either way.
-5. **TEST D, plan/add probe** — one `POST /training/plan/add`, expected to be
-   rejected with `1031` outside CN. On unexpected success it deletes what it
-   created; a plan object with no known delete endpoint is reported as an
-   **orphan planId**, in the console and the report, for manual removal.
+5. **Cleanup of A/B/C**, so the schedule is verified back at baseline *before*
+   anything plan-level is attempted.
+6. **TEST D, plan/add probe — opt-in only, OFF by default.** One
+   `POST /training/plan/add`, expected to be rejected with `1031` outside CN.
+   The CLI names the risk before asking: on unexpected success it creates a
+   plan object with **no known delete endpoint**, which you would remove by
+   hand in the COROS UI. It is reported as an **orphan planId** in the console
+   and the report, and forces `baselineRestored: false`.
+
+### Ownership: the rule that makes deletion safe
+
+`idInPlan` is a plan-scoped counter, **not** an identity — it can collide with
+a pre-existing workout (e.g. a stale entity numbered above the active plan's
+`maxIdInPlan`). So the spike never treats "the entity at my `idInPlan`" as its
+own:
+
+- every program and entity it creates is **named** `RG SPIKE — SAFE TO DELETE …`;
+- a workout is registered for deletion **only** when that name is present on
+  the entity or its program;
+- the name is **re-checked by a read immediately before every delete**, in case
+  the slot was reassigned in between;
+- a foreign workout in the target slot — found either before the write or on
+  the read-after-write — means **no write, no delete, and the run aborts** with
+  the reason in the report and on the console.
 
 Every write is preceded by `program/calculate` (calculate-then-add) and followed
 by a read-after-write that asserts **structural fields only**
@@ -155,13 +175,20 @@ Server ids (`plan`/`entity`/`program`) are recovered from that read, not the
 write response.
 
 **Cleanup is the point**: every created entity is registered for removal the
-moment a read proves it exists — including after a *rejected* write that
-materialized anyway — then removed in reverse order, each removal verified by a
-read, and finally the whole window is compared against the baseline. The spike
-prints a `RESTORATION PASS/FAIL` line and names anything it could not remove.
-An unexpected error and Ctrl-C (SIGINT) both run the same cleanup and write the
-same sanitized report (`docs/reports/coros-create-spike-<date>.json`,
-`baselineRestored` at the top level).
+moment a read proves it is ours — including after a *rejected* write that
+materialized anyway — then **drained** (a loop that keeps sweeping until every
+registered entity is verified gone, so an entity registered *while* cleanup is
+running is still removed), each removal verified by a read, and finally the
+whole window is compared against the baseline. The spike prints a
+`RESTORATION PASS/FAIL` line and names anything it could not remove.
+
+An unexpected error and Ctrl-C both take the same path: **abort** (stop issuing
+new writes — checked before every write, so an interrupt can never start one),
+let the in-flight step settle so whatever it created gets registered, drain,
+then run the restoration read and print the leftovers **before** exiting. The
+sanitized report (`docs/reports/coros-create-spike-<date>.json`) is written on
+every path, with `baselineRestored`, `leftovers[]`, `orphanPlanIds[]` and
+`abortReason` at the top level.
 
 Status: implemented, offline-tested against the mock server
 (`services/coros-bridge/test/spike-create.test.ts`), **not yet executed against
