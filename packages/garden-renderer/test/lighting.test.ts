@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { lightingFor, moonPhase, type LightingInputs } from "../src/lighting";
+import { hexToRgb } from "../src/color";
 
 const HEX = /^#[0-9a-f]{6}$/;
 
@@ -59,6 +60,13 @@ describe("lightingFor — periods and interpolation", () => {
     expect(midday.starDensity).toBe(0);
     expect(midday.sunX).not.toBeNull();
     expect(midday.moonX).toBeNull();
+  });
+
+  it("night land is darker than midday land (dusked down with the stars)", () => {
+    const sum = (hex: string) => hexToRgb(hex).reduce((a, b) => a + b, 0);
+    const night = lightingFor(inputs({ hour: 23.5 }));
+    const midday = lightingFor(inputs({ hour: 13 }));
+    expect(sum(night.grassNear)).toBeLessThan(sum(midday.grassNear));
   });
 
   it("golden-hour shadows are longer than midday shadows", () => {

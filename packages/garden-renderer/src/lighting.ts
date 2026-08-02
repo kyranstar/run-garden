@@ -247,7 +247,25 @@ export function lightingFor(inp: LightingInputs): SceneLight {
     foliageTintAmount: key.ambientStrength * 0.5,
     rainbow: false,
   };
-  return applySeason(applyWeather(light, inp), inp);
+  return applyNightDarkening(applySeason(applyWeather(light, inp), inp));
+}
+
+/**
+ * Final composition step — dusks the land down as stars come out, driven by
+ * the already-interpolated starDensity so it stays continuous across period
+ * boundaries. Runs last so nothing upstream (season/weather) re-brightens it.
+ */
+function applyNightDarkening(l: SceneLight): SceneLight {
+  const k = 1 - 0.3 * l.starDensity;
+  return {
+    ...l,
+    grassNear: shade(l.grassNear, k),
+    grassFar: shade(l.grassFar, k),
+    soil: shade(l.soil, k),
+    hill: shade(l.hill, k),
+    foliageTint: mix(l.foliageTint, "#16233f", 0.5 * l.starDensity),
+    foliageTintAmount: Math.min(0.3, l.foliageTintAmount + 0.2 * l.starDensity),
+  };
 }
 
 interface SeasonBias {
