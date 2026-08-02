@@ -104,7 +104,27 @@ export interface CreateSpikeReport {
     windowEnd: string;
   };
   /** "full" runs the create tests; the others never write. */
-  mode: "full" | "cleanup-only" | "dry-run";
+  mode: "full" | "cleanup-only" | "dry-run" | "inspect";
+  /**
+   * Raw wire dump for diagnosis. UNLIKE every other section of this report it
+   * contains the user's real workout titles verbatim (that is its purpose), so
+   * it is written to its own file and must not be committed.
+   */
+  inspect?: {
+    warning: string;
+    dates: string[];
+    spanStart: string;
+    spanEnd: string;
+    planId?: string;
+    planName?: string;
+    maxIdInPlan: number;
+    entityCountInSpan: number;
+    idInPlanOnDates: string[];
+    /** Every entity whose happenDay is one of `dates`, with its programs. */
+    onDates: Array<{ entity: unknown; programs: unknown[] }>;
+    /** Every entity elsewhere in the plan sharing one of those idInPlan values. */
+    sameIdElsewhere: Array<{ entity: unknown; programs: unknown[] }>;
+  };
   /** Read-only inspection of every stamped workout across the whole plan. */
   dryRun?: {
     windowStart: string;
@@ -207,7 +227,12 @@ export interface CreateSpikeOptions {
   cleanupOnly?: boolean;
   /** Login → read-only plan-wide inspection of every stamped workout. */
   dryRun?: boolean;
+  /** Login → read-only raw dump of the entities on these yyyy-mm-dd dates. */
+  inspectDates?: string[];
 }
+
+export const INSPECT_WARNING =
+  "CONTAINS REAL WORKOUT TITLES — diagnostic dump, do not commit this file";
 
 /** Window the pre-run stray sweep scans for leftovers of earlier runs. */
 const STRAY_SWEEP_FORWARD_DAYS = 60;
@@ -694,8 +719,16 @@ function isStampedName(name: unknown): boolean {
   return typeof name === "string" && name.startsWith(SPIKE_NAME);
 }
 
+/**
+ * Programs linked to an entity by the entity's OWN link key. `planProgramId`
+ * is the field that points at the program-in-plan (it is usually a copy of
+ * `idInPlan`, but not always) — matching on `idInPlan` alone made an entity
+ * whose `planProgramId` differed look program-less, which is one of the ways a
+ * real workout could get misclassified.
+ */
 function programsFor(raw: RawCorosSchedule, entity: RawCorosEntity): RawCorosProgram[] {
-  return (raw.programs ?? []).filter((p) => String(p.idInPlan) === String(entity.idInPlan));
+  const linkKey = String(entity.planProgramId ?? entity.idInPlan);
+  return (raw.programs ?? []).filter((p) => String(p.idInPlan) === linkKey);
 }
 
 /** The stamped name actually carried, entity first then program. */
@@ -834,7 +867,14 @@ export async function runCreateSpike(
     date: today,
     region: client.region,
     userIdRedacted: redactUserId(client.currentUserId),
-    mode: opts.dryRun === true ? "dry-run" : opts.cleanupOnly === true ? "cleanup-only" : "full",
+    mode:
+      opts.inspectDates !== undefined
+        ? "inspect"
+        : opts.dryRun === true
+          ? "dry-run"
+          : opts.cleanupOnly === true
+            ? "cleanup-only"
+            : "full",
     tests: {
       strength: blankResult(
         "strength",
@@ -1082,8 +1122,20 @@ export async function runCreateSpike(
   opts.onStart?.({ report, abort, cleanup, finalize });
 
   try {
+    if (opts.inspectDates !== undefined) {
+      await runInspect(client, today, opts.inspectDates, report, log);
+      for (const test of Object.values(report.tests)) test.cleanedUp = true;
+      baselineIds = idInPlanSet(await readWindow());
+      baselineCount = baselineIds.length;
+      await finalize();
+      return report;
+    }
+
     if (opts.dryRun === true) {
       await runDryRun(client, today, report, log);
+      for (const test of Object.values(report.tests)) test.cleanedUp = true;
+      baselineIds = idInPlanSet(await readWindow());
+      baselineCount = baselineIds.length;
       await finalize();
       return report;
     }
@@ -1327,6 +1379,86 @@ export async function runCreateSpike(
 
   await finalize();
   return report;
+}
+
+/**
+ * READ-ONLY raw dump for diagnosis. The stamp-ownership model rests on the
+ * server round-tripping the names we write; a live dry run found zero stamped
+ * workouts on a plan that demonstrably held our creates. This mode shows the
+ * wire truth: every field of every entity and program on the given dates, and
+ * every entity elsewhere in the plan sharing those `idInPlan` values, so the
+ * strays can be compared field-by-field against the real workouts beside them.
+ *
+ * Issues zero writes. `stripUserIds` is the ONLY redaction — real titles are
+ * present on purpose, which is why the report goes to its own file.
+ */
+async function runInspect(
+  client: CorosClient,
+  today: string,
+  dates: string[],
+  report: CreateSpikeReport,
+  log: (line: string) => void,
+): Promise<void> {
+  const windows = observationWindows(today);
+  const spanStart = windows[0]?.[0] ?? today;
+  const spanEnd = windows[windows.length - 1]?.[1] ?? today;
+  log(`Inspect: reading ${spanStart} … ${spanEnd} (read-only, no writes)…`);
+  log(`  dates: ${dates.join(", ")}`);
+
+  const span = await readFullSpan(client, today);
+  const entities = span.entities ?? [];
+  const onDates = entities.filter((e) => dates.includes(corosDayToLocalDate(e.happenDay)));
+  const idsOnDates = new Set(onDates.map((e) => String(e.idInPlan)));
+  const sameIdElsewhere = entities.filter(
+    (e) => !onDates.includes(e) && idsOnDates.has(String(e.idInPlan)),
+  );
+
+  /** Programs reachable from this entity by EITHER key — show both truths. */
+  const programsOf = (entity: RawCorosEntity): unknown[] => {
+    const keys = new Set([String(entity.idInPlan), String(entity.planProgramId ?? entity.idInPlan)]);
+    return (span.programs ?? [])
+      .filter((p) => keys.has(String(p.idInPlan)))
+      .map((p) => stripUserIds(p));
+  };
+  const dump = (entity: RawCorosEntity): { entity: unknown; programs: unknown[] } => ({
+    entity: stripUserIds(entity),
+    programs: programsOf(entity),
+  });
+
+  report.inspect = {
+    warning: INSPECT_WARNING,
+    dates,
+    spanStart,
+    spanEnd,
+    planId: span.id != null ? String(span.id) : undefined,
+    planName: typeof span.name === "string" ? span.name : undefined,
+    maxIdInPlan: Number(span.maxIdInPlan ?? 0),
+    entityCountInSpan: entities.length,
+    idInPlanOnDates: [...idsOnDates].sort((a, b) => Number(a) - Number(b)),
+    onDates: onDates.map(dump),
+    sameIdElsewhere: sameIdElsewhere.map(dump),
+  };
+
+  log(
+    `  plan="${report.inspect.planName ?? "(none)"}" planId=${report.inspect.planId ?? "-"}` +
+      ` maxIdInPlan=${report.inspect.maxIdInPlan} entitiesInSpan=${entities.length}`,
+  );
+  log(`\n  ── ${onDates.length} entit(ies) on the requested dates ──`);
+  for (const item of report.inspect.onDates) {
+    log(`  ENTITY: ${JSON.stringify(item.entity, null, 2)}`);
+    log(`  PROGRAMS (${item.programs.length}): ${JSON.stringify(item.programs, null, 2)}`);
+    log("");
+  }
+  log(
+    `  ── ${sameIdElsewhere.length} entit(ies) elsewhere sharing idInPlan` +
+      ` ${report.inspect.idInPlanOnDates.join(", ") || "(none)"} ──`,
+  );
+  for (const item of report.inspect.sameIdElsewhere) {
+    log(`  ENTITY: ${JSON.stringify(item.entity, null, 2)}`);
+    log(`  PROGRAMS (${item.programs.length}): ${JSON.stringify(item.programs, null, 2)}`);
+    log("");
+  }
+  log(`  !! ${INSPECT_WARNING}`);
 }
 
 /** The exercise fields that decide structural round-trip (research §(d)). */
@@ -1901,15 +2033,18 @@ function extractPlanId(data: unknown): string | undefined {
 
 // ── Report file ─────────────────────────────────────────────────────────────
 
-export function createSpikeReportPath(date: string): string {
+export function createSpikeReportPath(date: string, mode = "full"): string {
   const here = dirname(fileURLToPath(import.meta.url));
   const dir = join(here, "..", "..", "..", "docs", "reports");
   mkdirSync(dir, { recursive: true });
-  return join(dir, `coros-create-spike-${date}.json`);
+  // The inspect dump carries real workout titles — keep it out of the file
+  // people are used to committing.
+  const stem = mode === "inspect" ? "coros-inspect" : "coros-create-spike";
+  return join(dir, `${stem}-${date}.json`);
 }
 
 function writeReport(report: CreateSpikeReport): string {
-  const path = createSpikeReportPath(report.date);
+  const path = createSpikeReportPath(report.date, report.mode);
   writeFileSync(path, `${JSON.stringify(report, null, 2)}\n`);
   return path;
 }
@@ -1930,6 +2065,16 @@ async function main(): Promise<void> {
   const today = new Date().toISOString().slice(0, 10);
   const cleanupOnly = process.argv.includes("--cleanup-only");
   const dryRun = process.argv.includes("--dry-run");
+  // Parsed before anything is opened, so a bad flag is a clean usage error
+  // rather than an unhandled rejection.
+  let inspectDates: string[] | undefined;
+  try {
+    inspectDates = parseInspectDates(process.argv);
+  } catch (e) {
+    console.error(errText(e));
+    process.exitCode = 1;
+    return;
+  }
   const prompter = createPrompter();
   const rl = prompter.rl;
   let client: CorosClient | null = null;
@@ -1975,7 +2120,15 @@ async function main(): Promise<void> {
   rl.on("SIGINT", onInterrupt);
 
   console.log("──────────────────────────────────────────────────────────────");
-  if (dryRun) {
+  if (inspectDates) {
+    console.log(" COROS SPIKE INSPECT — READ ONLY, WRITES NOTHING");
+    console.log("");
+    console.log(` It dumps every field of every workout on ${inspectDates.join(", ")}`);
+    console.log(" plus every workout elsewhere in the plan sharing their");
+    console.log(" idInPlan, so the wire truth can be compared side by side.");
+    console.log("");
+    console.log(` !! The report ${INSPECT_WARNING.toLowerCase()}.`);
+  } else if (dryRun) {
     console.log(" COROS SPIKE DRY RUN — READ ONLY, WRITES NOTHING");
     console.log("");
     console.log(" It reads the whole plan and reports every workout named");
@@ -2026,7 +2179,9 @@ async function main(): Promise<void> {
     console.log("Logged in.");
 
     let includePlanAddProbe = false;
-    if (dryRun) {
+    if (inspectDates) {
+      console.log("\nInspect: reading only, nothing will be written.\n");
+    } else if (dryRun) {
       console.log("\nDry run: reading only, nothing will be written.\n");
     } else if (cleanupOnly) {
       const confirm = await prompter.ask(
@@ -2057,6 +2212,7 @@ async function main(): Promise<void> {
       includePlanAddProbe,
       cleanupOnly,
       dryRun,
+      ...(inspectDates ? { inspectDates } : {}),
       log: (line) => console.log(line),
       onStart: (h) => {
         state.handle = h;
@@ -2072,7 +2228,13 @@ async function main(): Promise<void> {
         `Leftovers from earlier runs: ${strays.removed.length} removed, ${strays.failed.length} could not be removed.`,
       );
     }
-    if (dryRun) {
+    if (inspectDates) {
+      console.log(
+        `INSPECT COMPLETE — ${report.inspect?.onDates.length ?? 0} entit(ies) on the requested` +
+          ` dates, ${report.inspect?.sameIdElsewhere.length ?? 0} elsewhere sharing their idInPlan.`,
+      );
+      console.log(`!! ${INSPECT_WARNING}`);
+    } else if (dryRun) {
       const dry = report.dryRun;
       console.log(
         `DRY RUN COMPLETE — ${dry?.stamped.length ?? 0} stamped workout(s),` +
@@ -2118,6 +2280,25 @@ async function main(): Promise<void> {
       if (report) console.log(`\nSanitized report written to ${writeReport(report)}`);
     }
   }
+}
+
+/** `--inspect 2026-08-23,2026-08-24` or `--inspect=2026-08-23,…`. */
+export function parseInspectDates(argv: string[]): string[] | undefined {
+  const index = argv.findIndex((a) => a === "--inspect" || a.startsWith("--inspect="));
+  if (index < 0) return undefined;
+  const arg = argv[index] ?? "";
+  const raw = arg.includes("=") ? arg.slice(arg.indexOf("=") + 1) : (argv[index + 1] ?? "");
+  const dates = raw
+    .split(",")
+    .map((d) => d.trim())
+    .filter((d) => d !== "");
+  const invalid = dates.filter((d) => !/^\d{4}-\d{2}-\d{2}$/.test(d));
+  if (dates.length === 0 || invalid.length > 0) {
+    throw new Error(
+      `--inspect needs comma-separated yyyy-mm-dd dates (got ${JSON.stringify(raw)})`,
+    );
+  }
+  return dates;
 }
 
 function verdict(result: CreateTestResult): string {

@@ -15,6 +15,7 @@ import {
 import { CorosClient } from "../src/coros-client.js";
 import {
   observationWindows,
+  parseInspectDates,
   runCreateSpike,
   type CreateSpikeHandle,
   type CreateSpikeReport,
@@ -38,6 +39,11 @@ function addDaysIso(iso: string, days: number): string {
 
 function corosDay(iso: string): number {
   return Number(iso.replaceAll("-", ""));
+}
+
+function corosDayToIso(day: number | string): string {
+  const s = String(day).padStart(8, "0");
+  return `${s.slice(0, 4)}-${s.slice(4, 6)}-${s.slice(6, 8)}`;
 }
 
 async function setup(): Promise<{ server: MockCorosServer; client: CorosClient }> {
@@ -1104,11 +1110,13 @@ describe("runCreateSpike — plan-wide delete guards", () => {
         name: `${SPIKE_NAME} strength`,
       },
       {
-        // A real workout: same idInPlan, its own name, NO program in the read.
+        // A real workout that LINKS TO THE SPIKE'S PROGRAM (planProgramId 50)
+        // and has no program of its own in the read. Only its own name saves
+        // it from being claimed — that is what this test pins.
         id: "70000000000000602",
-        idInPlan: "50",
+        idInPlan: "52",
         planId: FIXTURE_PLAN_ID,
-        planProgramId: "51",
+        planProgramId: "50",
         happenDay: corosDay(addDaysIso(TODAY, 30)),
         name: "Recovery Spin",
       },
@@ -1126,7 +1134,8 @@ describe("runCreateSpike — plan-wide delete guards", () => {
       log: noop,
     });
 
-    // Exactly one stray recognised — the stamped entity, not the named one.
+    // Exactly one stray recognised — the stamped entity, not the named one
+    // that merely links to the same (stamped) program.
     expect(report.strays?.found).toHaveLength(1);
     expect(report.strays?.found.join(" ")).toContain(SPIKE_NAME);
     expect(report.strays?.removed).toHaveLength(1);
@@ -1270,5 +1279,119 @@ describe("runCreateSpike — dry run (read-only)", () => {
 
     expect(report.dryRun?.collisions[0]?.fullTripleMatches).toBe(true);
     expect(server.counts.scheduleWrites).toBe(0);
+  });
+});
+
+describe("runCreateSpike — inspect mode (read-only wire dump)", () => {
+  /**
+   * The live dry run found ZERO stamped workouts on a plan that demonstrably
+   * held the spike's creates — so the stamp may not round-trip at all. This
+   * mode exists to show the wire truth: every field, unredacted except for
+   * user ids, for the dates in question and for every entity elsewhere
+   * sharing their idInPlan.
+   */
+  function seedUnnamedStrays(server: MockCorosServer): void {
+    // What the account appears to actually hold: extra entities at ids 1/2/3
+    // carrying NO name, beside the real workouts at those same ids.
+    server.state.schedule.entities!.push(
+      {
+        id: "70000000000000801",
+        idInPlan: "11",
+        planId: FIXTURE_PLAN_ID,
+        planProgramId: "11",
+        happenDay: corosDay(addDaysIso(TODAY, 21)),
+        // no name — the shape the live dry run implies
+      },
+      {
+        id: "70000000000000802",
+        idInPlan: "12",
+        planId: FIXTURE_PLAN_ID,
+        planProgramId: "12",
+        happenDay: corosDay(addDaysIso(TODAY, 22)),
+      },
+    );
+  }
+
+  it("dumps full entity + program objects for the given dates, and writes nothing", async () => {
+    const { server, client } = await setup();
+    seedUnnamedStrays(server);
+    const lines: string[] = [];
+
+    const report = await runCreateSpike(client, {
+      today: TODAY,
+      inspectDates: [addDaysIso(TODAY, 21), addDaysIso(TODAY, 22)],
+      log: (line) => lines.push(line),
+    });
+
+    expect(report.mode).toBe("inspect");
+    expect(server.counts.scheduleWrites).toBe(0); // read-only, pinned
+
+    const inspect = report.inspect;
+    expect(inspect?.dates).toEqual([addDaysIso(TODAY, 21), addDaysIso(TODAY, 22)]);
+    expect(inspect?.onDates).toHaveLength(2);
+    expect(inspect?.idInPlanOnDates).toEqual(["11", "12"]);
+    expect(inspect?.planId).toBe(FIXTURE_PLAN_ID);
+
+    // Every field is preserved verbatim — including the ABSENT name, which is
+    // the whole question.
+    const dumped = inspect!.onDates[0]!.entity as Record<string, unknown>;
+    expect(dumped.id).toBe("70000000000000801");
+    expect(dumped.idInPlan).toBe("11");
+    expect(dumped.planProgramId).toBe("11");
+    expect(dumped.happenDay).toBe(corosDay(addDaysIso(TODAY, 21)));
+    expect("name" in dumped).toBe(false);
+
+    // …and the real workouts elsewhere sharing those ids, to compare against.
+    expect(inspect!.sameIdElsewhere.length).toBeGreaterThan(0);
+    const others = inspect!.sameIdElsewhere.map(
+      (o) => (o.entity as Record<string, unknown>).idInPlan,
+    );
+    expect(others).toContain("11");
+    expect(inspect!.sameIdElsewhere[0]!.programs.length).toBeGreaterThan(0);
+
+    // Console carries the same dump for a live run.
+    const output = lines.join("\n");
+    expect(output).toContain("read-only, no writes");
+    expect(output).toContain('"idInPlan": "11"');
+    expect(output).toContain("ENTITY:");
+    expect(output).toContain("PROGRAMS");
+  });
+
+  it("keeps user ids out of the dump but nothing else", async () => {
+    const { server, client } = await setup();
+    server.state.schedule.entities![0]!.userId = server.userId;
+    server.state.schedule.entities![0]!.operateUserId = server.userId;
+    const date = corosDayToIso(server.state.schedule.entities![0]!.happenDay);
+
+    const report = await runCreateSpike(client, {
+      today: TODAY,
+      inspectDates: [date],
+      log: noop,
+    });
+
+    const serialized = JSON.stringify(report.inspect);
+    expect(serialized).not.toContain(server.userId);
+    expect(serialized).not.toContain("operateUserId");
+    // The warning travels with the data.
+    expect(report.inspect?.warning).toContain("do not commit");
+    expect(server.counts.scheduleWrites).toBe(0);
+  });
+});
+
+describe("parseInspectDates", () => {
+  it("accepts both --inspect <dates> and --inspect=<dates>", () => {
+    expect(parseInspectDates(["node", "spike", "--inspect", "2026-08-23,2026-08-24"])).toEqual([
+      "2026-08-23",
+      "2026-08-24",
+    ]);
+    expect(parseInspectDates(["node", "spike", "--inspect=2026-08-25"])).toEqual(["2026-08-25"]);
+    expect(parseInspectDates(["node", "spike", "--dry-run"])).toBeUndefined();
+  });
+
+  it("refuses anything that is not a yyyy-mm-dd list", () => {
+    expect(() => parseInspectDates(["node", "spike", "--inspect"])).toThrow(/yyyy-mm-dd/);
+    expect(() => parseInspectDates(["node", "spike", "--inspect", "tomorrow"])).toThrow(
+      /yyyy-mm-dd/,
+    );
   });
 });
