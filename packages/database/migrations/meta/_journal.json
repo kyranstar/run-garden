@@ -15,6 +15,13 @@
       "when": 1785689714676,
       "tag": "0001_luxuriant_archangel",
       "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "6",
+      "when": 1785693073958,
+      "tag": "0002_workable_venus",
+      "breakpoints": true
     }
   ]
 }

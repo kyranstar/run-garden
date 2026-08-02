@@ -13,11 +13,21 @@ import {
   sign as ed25519Sign,
   type KeyObject,
 } from "node:crypto";
-import { addDays, type CorosWriteResult } from "@rg/domain";
+import {
+  addDays,
+  createScheduledWorkoutJobSchema,
+  deleteScheduledWorkoutJobSchema,
+  type CorosWriteResult,
+} from "@rg/domain";
 import type { NameResolver } from "@rg/providers";
 import type { CorosClient } from "./coros-client.js";
 import { buildSnapshot, loadNameResolver } from "./snapshot.js";
-import { executeMoveJob, type MoveJobResult } from "./write-executor.js";
+import {
+  executeMoveJob,
+  executeStudioJob,
+  type MoveJobResult,
+  type StudioJob,
+} from "./write-executor.js";
 
 const DEFAULT_POLL_MS = 45_000;
 const DEFAULT_SNAPSHOT_MS = 30 * 60_000;
@@ -63,14 +73,34 @@ interface ClaimedJob {
   expectedContentFingerprint?: string;
   expectedSourceVersion?: string;
   attemptCount?: number;
-  workout: {
+  /** Absent for the studio kinds, which act on a session, not a workout row. */
+  workout?: {
     id?: string;
     sourcePlanId: string;
     sourceWorkoutId?: string;
     sourceIdInPlan?: string;
     sourceProgramId?: string;
     title?: string;
-  };
+  } | null;
+  /** Present for the studio kinds (plan-studio-design §5). */
+  studio?: unknown;
+}
+
+/**
+ * A claimed job as a validated studio job, or undefined if it is not one (or
+ * did not validate). The payload is re-parsed here even though the worker
+ * built it: this process is the last stop before the user's real calendar.
+ */
+function toStudioJob(job: ClaimedJob): StudioJob | undefined {
+  if (job.kind === "create_scheduled_workout") {
+    const parsed = createScheduledWorkoutJobSchema.safeParse(job.studio);
+    return parsed.success ? { id: job.id, kind: job.kind, studio: parsed.data } : undefined;
+  }
+  if (job.kind === "delete_scheduled_workout") {
+    const parsed = deleteScheduledWorkoutJobSchema.safeParse(job.studio);
+    return parsed.success ? { id: job.id, kind: job.kind, studio: parsed.data } : undefined;
+  }
+  return undefined;
 }
 
 export class CloudSync {
@@ -172,7 +202,19 @@ export class CloudSync {
       this.logger(`[coros-bridge] claimed job ${job.id}`);
 
       let executed: MoveJobResult;
-      if (!job.workout.sourceIdInPlan) {
+      const studioJob = toStudioJob(job);
+      if (studioJob) {
+        executed = await executeStudioJob(this.client, studioJob, { log: this.logger });
+      } else if (job.kind === "create_scheduled_workout" || job.kind === "delete_scheduled_workout") {
+        // Studio kind whose payload did not validate. A write instruction that
+        // reached this process malformed is never half-executed against the
+        // user's real calendar.
+        executed = {
+          jobId: job.id,
+          outcome: "unsupported",
+          errorCategory: "malformed_studio_payload",
+        };
+      } else if (!job.workout?.sourceIdInPlan) {
         executed = {
           jobId: job.id,
           outcome: "unsupported",

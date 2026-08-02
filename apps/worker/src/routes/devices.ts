@@ -17,6 +17,7 @@ import { ingestActivities } from "../services/completion.js";
 import { advanceGarden, buildGardenView, resimulateFrom } from "../services/garden-sync.js";
 import { finishSyncRun, recordSyncError, startSyncRun } from "../services/reconcile-daily.js";
 import { isExerciseCatalogStale, upsertExerciseCatalog } from "../services/exercise-catalog.js";
+import { bridgeJobPayload } from "../services/studio-push.js";
 import { dailyHealth } from "@rg/database";
 import { fingerprint } from "@rg/domain";
 
@@ -299,6 +300,7 @@ deviceRoutes.post("/bridge/jobs/claim", requireDevice, async (c) => {
   if (device?.bridgePaused) return c.json({ job: null, paused: true });
   const job = await claimNextJob(db, c.get("userId"), c.get("deviceId"));
   if (!job) return c.json({ job: null });
+  const studio = bridgeJobPayload(job);
   return c.json({
     job: {
       id: job.id,
@@ -308,14 +310,20 @@ deviceRoutes.post("/bridge/jobs/claim", requireDevice, async (c) => {
       expectedContentFingerprint: job.expectedContentFingerprint,
       expectedSourceVersion: job.expectedSourceVersion,
       attemptCount: job.attemptCount,
-      workout: {
-        id: job.workout.id,
-        sourcePlanId: job.workout.planId,
-        sourceWorkoutId: job.workout.sourceWorkoutId,
-        sourceIdInPlan: job.workout.sourceIdInPlan,
-        sourceProgramId: job.workout.sourceProgramId,
-        title: job.workout.title,
-      },
+      workout: job.workout
+        ? {
+            id: job.workout.id,
+            sourcePlanId: job.workout.planId,
+            sourceWorkoutId: job.workout.sourceWorkoutId,
+            sourceIdInPlan: job.workout.sourceIdInPlan,
+            sourceProgramId: job.workout.sourceProgramId,
+            title: job.workout.title,
+          }
+        : null,
+      // Studio kinds only, and only the fields the bridge needs: a changed
+      // session's follow-up create stays server-side, because whether it
+      // happens is the worker's decision, not the device's.
+      ...(studio ? { studio } : {}),
     },
   });
 });

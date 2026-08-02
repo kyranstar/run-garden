@@ -119,9 +119,9 @@ describe("move → COROS write job → verification", () => {
     expect(job!.id).toBe(outcome.jobId);
 
     const writeResult = await provider.updateScheduledWorkout({
-      sourcePlanId: job!.workout.planId,
-      sourceWorkoutId: job!.workout.sourceWorkoutId,
-      sourceIdInPlan: job!.workout.sourceIdInPlan ?? undefined,
+      sourcePlanId: job!.workout!.planId,
+      sourceWorkoutId: job!.workout!.sourceWorkoutId,
+      sourceIdInPlan: job!.workout!.sourceIdInPlan ?? undefined,
       fromDate: job!.originalDate,
       toDate: job!.destinationDate,
       operationId: job!.id,
@@ -159,18 +159,18 @@ describe("move → COROS write job → verification", () => {
     const job = (await claimNextJob(db, userId, deviceId))!;
 
     await provider.updateScheduledWorkout({
-      sourcePlanId: job.workout.planId,
-      sourceWorkoutId: job.workout.sourceWorkoutId,
-      sourceIdInPlan: job.workout.sourceIdInPlan ?? undefined,
+      sourcePlanId: job.workout!.planId,
+      sourceWorkoutId: job.workout!.sourceWorkoutId,
+      sourceIdInPlan: job.workout!.sourceIdInPlan ?? undefined,
       fromDate: job.originalDate,
       toDate: job.destinationDate,
       operationId: job.id,
     });
     // Retry after ambiguous network failure: re-read reveals desired state.
     const retry = await provider.updateScheduledWorkout({
-      sourcePlanId: job.workout.planId,
-      sourceWorkoutId: job.workout.sourceWorkoutId,
-      sourceIdInPlan: job.workout.sourceIdInPlan ?? undefined,
+      sourcePlanId: job.workout!.planId,
+      sourceWorkoutId: job.workout!.sourceWorkoutId,
+      sourceIdInPlan: job.workout!.sourceIdInPlan ?? undefined,
       fromDate: job.originalDate,
       toDate: job.destinationDate,
       operationId: job.id,

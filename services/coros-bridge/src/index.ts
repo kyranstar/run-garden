@@ -10,7 +10,15 @@ export {
   type CorosRegion,
   type CorosWriteResponse,
 } from "./coros-client.js";
-export { executeMoveJob, type MoveJob, type MoveJobResult } from "./write-executor.js";
+export {
+  executeMoveJob,
+  executeStudioJob,
+  type MoveJob,
+  type MoveJobResult,
+  type StudioExecutors,
+  type StudioJob,
+  type StudioJobOptions,
+} from "./write-executor.js";
 export {
   buildStrengthProgram,
   createWorkout,

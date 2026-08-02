@@ -12,6 +12,9 @@ import {
   maxLocalDate,
   minLocalDate,
   type CorosWriteResult,
+  type CreateScheduledWorkoutJob,
+  type DeleteScheduledWorkoutJob,
+  type StudioJobResult,
 } from "@rg/domain";
 import {
   corosDayToLocalDate,
@@ -22,6 +25,7 @@ import {
   type RawCorosSchedule,
 } from "@rg/providers";
 import type { CorosClient } from "./coros-client.js";
+import { createWorkout, deleteWorkout } from "./create-executor.js";
 
 export interface MoveJob {
   id: string;
@@ -37,6 +41,31 @@ export interface MoveJob {
 
 /** CorosWriteResult minus the transport fields the caller adds. */
 export type MoveJobResult = Omit<CorosWriteResult, "deviceId" | "finishedAt" | "signature">;
+
+/** One claimed Plan Studio job, as the cloud hands it to the bridge. */
+export type StudioJob =
+  | { id: string; kind: "create_scheduled_workout"; studio: CreateScheduledWorkoutJob }
+  | { id: string; kind: "delete_scheduled_workout"; studio: DeleteScheduledWorkoutJob };
+
+/**
+ * Seam for tests, mirroring `createBridgeState`'s `makeClient`. Production
+ * never passes this: dispatch calls the real create-executor.
+ */
+export interface StudioExecutors {
+  createWorkout: typeof createWorkout;
+  deleteWorkout: typeof deleteWorkout;
+}
+
+export interface StudioJobOptions {
+  /** yyyy-mm-dd anchor for the executor's plan-span sweep. */
+  today?: string;
+  /**
+   * The bridge's LOCAL diagnostic sink (stderr). Nothing written here crosses
+   * the device→cloud boundary; the reported result is structured codes only.
+   */
+  log?: (line: string) => void;
+  executors?: StudioExecutors;
+}
 
 interface Located {
   entity: RawCorosEntity;
@@ -310,4 +339,117 @@ async function removeAndAdd(
     observedVersion:
       cloneStill.program?.version != null ? String(cloneStill.program.version) : undefined,
   });
+}
+
+// ── Plan Studio dispatch (plan-studio-design §5) ────────────────────────────
+
+/**
+ * Coarse `outcome` for the attempt log. The studio state machine in the worker
+ * reads `result.studio`, NOT this field — the move vocabulary cannot express a
+ * create's `wrong_date` or a delete's `stamp_mismatch`, and collapsing them
+ * here would lose exactly the distinctions the push UI has to show.
+ */
+function createOutcome(studio: StudioJobResult): CorosWriteResult["outcome"] {
+  if (studio.ok) return studio.reason === "already_present" ? "already_in_desired_state" : "verified";
+  switch (studio.reason) {
+    case "error":
+    case "slot_occupied":
+    case "rejected":
+      return "write_failed"; // nothing verified landed
+    case "no_target_plan":
+    case "out_of_span":
+      return "unsupported"; // refused before any write; the bridge could not act
+    default:
+      return "verification_failed"; // wrote (or may have), cannot prove the desired state
+  }
+}
+
+function deleteOutcome(studio: StudioJobResult): CorosWriteResult["outcome"] {
+  if (studio.ok) return "verified";
+  switch (studio.refused) {
+    case "not_found":
+      return "already_in_desired_state"; // already gone; nothing was sent
+    case "stamp_mismatch":
+      return "upstream_changed";
+    case "ambiguous":
+      return "verification_failed";
+    default:
+      return "write_failed";
+  }
+}
+
+/**
+ * Run one studio job against the shared create-executor and report it.
+ *
+ * Two rules this function exists to hold:
+ *
+ *  - `verbose: false`, always. The executor's log lines can name workouts the
+ *    user authored; the bridge's sink is local stderr, and NOTHING from it —
+ *    nor any executor message — is put in the reported result. The result
+ *    carries structured codes and the server's own ids, nothing else.
+ *  - NO `planId` on creates. The executor resolves the account's active
+ *    container plan from its own fresh read and refuses if that identity moves
+ *    mid-create; asserting a plan here would put a stale worker-side id ahead
+ *    of the server's answer, defeating that guard.
+ *
+ * Never throws: the executors don't, and everything else is mapped.
+ */
+export async function executeStudioJob(
+  client: CorosClient,
+  job: StudioJob,
+  opts: StudioJobOptions = {},
+): Promise<MoveJobResult> {
+  const log = opts.log ?? ((): void => undefined);
+  const exec = opts.executors ?? { createWorkout, deleteWorkout };
+  const happenDay = String(localDateToCorosDay(job.studio.happenDay));
+
+  if (job.kind === "create_scheduled_workout") {
+    const result = await exec.createWorkout(
+      client,
+      { happenDay, name: job.studio.name, session: job.studio.session },
+      {
+        catalog: new Map(job.studio.catalog.map((e) => [e.id, e.name])),
+        today: opts.today,
+        log,
+        verbose: false,
+      },
+    );
+    // Ids are copied through exactly as the executor returned them — including
+    // its deliberate omission of them on a cross-day `already_present`, where
+    // reconstructing an address would invite a delete aimed at the wrong day.
+    const studio: StudioJobResult = {
+      pushId: job.studio.pushId,
+      kind: job.kind,
+      ok: result.ok,
+      ...(result.code !== undefined ? { code: result.code } : {}),
+      ...(result.reason !== undefined ? { reason: result.reason } : {}),
+      ...(result.serverIdInPlan !== undefined ? { serverIdInPlan: result.serverIdInPlan } : {}),
+      ...(result.serverProgramId !== undefined ? { serverProgramId: result.serverProgramId } : {}),
+      ...(result.serverEntityId !== undefined ? { serverEntityId: result.serverEntityId } : {}),
+      ...(result.serverPlanId !== undefined ? { serverPlanId: result.serverPlanId } : {}),
+    };
+    if (result.error) log(`[coros-bridge] create ${job.id}: ${result.error}`);
+    return { jobId: job.id, outcome: createOutcome(studio), studio };
+  }
+
+  const result = await exec.deleteWorkout(
+    client,
+    {
+      happenDay,
+      name: job.studio.name,
+      idInPlan: job.studio.idInPlan,
+      programId: job.studio.programId,
+      planId: job.studio.corosPlanId,
+    },
+    { today: opts.today, log, verbose: false },
+  );
+  const studio: StudioJobResult = {
+    pushId: job.studio.pushId,
+    kind: job.kind,
+    ok: result.ok,
+    ...(result.code !== undefined ? { code: result.code } : {}),
+    ...(result.refused !== undefined ? { refused: result.refused } : {}),
+  };
+  if (result.error) log(`[coros-bridge] delete ${job.id}: ${result.error}`);
+  return { jobId: job.id, outcome: deleteOutcome(studio), studio };
 }

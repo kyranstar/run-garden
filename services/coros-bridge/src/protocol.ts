@@ -8,6 +8,10 @@
 
 import os from "node:os";
 import { z } from "zod";
+import {
+  createScheduledWorkoutJobSchema,
+  deleteScheduledWorkoutJobSchema,
+} from "@rg/domain";
 import type { NameResolver } from "@rg/providers";
 import {
   COROS_BRIDGE_CAPABILITIES,
@@ -17,7 +21,7 @@ import {
 } from "./coros-client.js";
 import { CloudSync, generateDeviceKeypair } from "./cloud-sync.js";
 import { buildSnapshot, loadNameResolver } from "./snapshot.js";
-import { executeMoveJob } from "./write-executor.js";
+import { executeMoveJob, executeStudioJob } from "./write-executor.js";
 
 export interface BridgeState {
   client: CorosClient | null;
@@ -80,6 +84,26 @@ const executeJobParams = z.object({
       sourceProgramId: z.string().optional(),
     }),
   }),
+});
+
+/**
+ * Plan Studio jobs (plan-studio-design §5). Discriminated on `kind` so a
+ * malformed payload is refused here, before the executor is reached — the
+ * bridge never guesses at a half-formed write instruction.
+ */
+const studioJobParams = z.object({
+  job: z.discriminatedUnion("kind", [
+    z.object({
+      id: z.string(),
+      kind: z.literal("create_scheduled_workout"),
+      studio: createScheduledWorkoutJobSchema,
+    }),
+    z.object({
+      id: z.string(),
+      kind: z.literal("delete_scheduled_workout"),
+      studio: deleteScheduledWorkoutJobSchema,
+    }),
+  ]),
 });
 
 const pairDeviceParams = z.object({
@@ -175,6 +199,12 @@ export async function handleRequest(state: BridgeState, input: unknown): Promise
       case "executeJob": {
         const client = state.client;
         if (!client) return err(id, "not_authenticated", "authenticate first");
+        const kind = (params as { job?: { kind?: unknown } } | undefined)?.job?.kind;
+        if (kind === "create_scheduled_workout" || kind === "delete_scheduled_workout") {
+          const s = studioJobParams.safeParse(params ?? {});
+          if (!s.success) return err(id, "invalid_request", `executeJob: malformed ${kind} job`);
+          return ok(id, await executeStudioJob(client, s.data.job));
+        }
         const p = executeJobParams.safeParse(params ?? {});
         if (!p.success) return err(id, "invalid_request", "executeJob needs a move job");
         return ok(id, await executeMoveJob(client, p.data.job));

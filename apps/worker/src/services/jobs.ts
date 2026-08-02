@@ -7,8 +7,16 @@ import {
   plannedWorkouts,
   scheduleOverrides,
 } from "@rg/database";
-import { newId, nowInstant, todayInZone, type CorosWriteResult, type UserPreferences } from "@rg/domain";
+import {
+  isStudioJobKind,
+  newId,
+  nowInstant,
+  todayInZone,
+  type CorosWriteResult,
+  type UserPreferences,
+} from "@rg/domain";
 import type { Db } from "./db.js";
+import { applyStudioJobResult } from "./studio-push.js";
 
 /**
  * COROS write-job lifecycle. Jobs are the only path to COROS mutations:
@@ -151,12 +159,23 @@ export async function applyMove(db: Db, req: MoveRequest): Promise<MoveOutcome> 
   return { workoutId: workout.id, corosSyncState, jobId };
 }
 
-/** Revert stale claims, then hand the oldest queued job to the device. */
+/**
+ * Revert stale claims, then hand the oldest queued job to the device.
+ *
+ * `workout` is null for the Plan Studio kinds: they act on a `studio_plan_pushes`
+ * row and a job payload, not on a planned workout (COROS only grows one for
+ * them once the create has synced back).
+ */
 export async function claimNextJob(
   db: Db,
   userId: string,
   deviceId: string,
-): Promise<(typeof corosWriteJobs.$inferSelect & { workout: typeof plannedWorkouts.$inferSelect }) | null> {
+): Promise<
+  | (typeof corosWriteJobs.$inferSelect & {
+      workout: typeof plannedWorkouts.$inferSelect | null;
+    })
+  | null
+> {
   const now = nowInstant();
   const staleCutoff = new Date(Date.now() - CLAIM_TIMEOUT_MS).toISOString();
   await db
@@ -190,9 +209,11 @@ export async function claimNextJob(
     startedAt: now,
   });
 
-  const workout = (
-    await db.select().from(plannedWorkouts).where(eq(plannedWorkouts.id, job.workoutId)).limit(1)
-  )[0]!;
+  const workout = isStudioJobKind(job.kind)
+    ? null
+    : ((
+        await db.select().from(plannedWorkouts).where(eq(plannedWorkouts.id, job.workoutId)).limit(1)
+      )[0] ?? null);
   return { ...job, status: "claimed", workout };
 }
 
@@ -211,6 +232,13 @@ export async function applyJobResult(
     .limit(1);
   const job = rows[0];
   if (!job) throw new Error("job_not_found");
+  // The Plan Studio kinds have their own state machine: the move-outcome
+  // vocabulary cannot express a create's `wrong_date` or a delete's
+  // `stamp_mismatch`, and they own a push row rather than a planned workout.
+  if (isStudioJobKind(job.kind)) {
+    const studio = await applyStudioJobResult(db, userId, result);
+    return { jobStatus: studio.jobStatus, corosSyncState: "unchanged" };
+  }
   if (["verified", "failed", "superseded", "cancelled"].includes(job.status)) {
     return { jobStatus: job.status, corosSyncState: "unchanged" };
   }

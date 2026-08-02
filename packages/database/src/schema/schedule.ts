@@ -136,6 +136,12 @@ export const corosWriteJobs = sqliteTable(
   {
     id: text("id").primaryKey(),
     userId: text("user_id").notNull(),
+    /**
+     * `planned_workouts.id` for move jobs. The studio kinds have no planned
+     * workout of their own until COROS syncs one back, so they mirror
+     * `studioPushId` here to satisfy NOT NULL — code must read `studioPushId`,
+     * never this column, when `kind` is a studio kind.
+     */
     workoutId: text("workout_id").notNull(),
     kind: text("kind").notNull().default("move_scheduled_workout"),
     expectedSourceVersion: text("expected_source_version"),
@@ -153,11 +159,22 @@ export const corosWriteJobs = sqliteTable(
     verifiedAt: text("verified_at"),
     lastErrorCategory: text("last_error_category"),
     completedAt: text("completed_at"),
+    /** `studio_plan_pushes.id` this job acts on (studio kinds only). */
+    studioPushId: text("studio_push_id"),
+    /**
+     * The studio job payload, stored server-side. A superset of what the
+     * bridge is sent: a delete for a CHANGED session also carries the
+     * follow-up create, which is enqueued only once the delete reaches a
+     * terminal "gone" state, so a refused delete can never be followed by a
+     * create that silently adopts the stale workout via `already_present`.
+     */
+    payload: text("payload", { mode: "json" }).$type<Record<string, unknown>>(),
     updatedAt: text("updated_at").notNull(),
   },
   (t) => [
     index("write_jobs_status_idx").on(t.userId, t.status),
     index("write_jobs_workout_idx").on(t.workoutId),
+    index("write_jobs_studio_push_idx").on(t.studioPushId),
   ],
 );
 

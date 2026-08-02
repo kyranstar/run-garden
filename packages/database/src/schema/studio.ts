@@ -36,7 +36,24 @@ export const studioPlanPushes = sqliteTable(
     corosIdInPlan: text("coros_id_in_plan"),
     corosProgramId: text("coros_program_id"),
     corosEntityId: text("coros_entity_id"),
+    /**
+     * The COROS container plan the workout landed in — the FIRST element of
+     * the delete triple (planId, idInPlan, planProgramId). Without it a
+     * recorded workout cannot be addressed for deletion at all.
+     */
+    corosPlanId: text("coros_plan_id"),
+    /**
+     * Fingerprint of the exact session payload that was pushed. The diff's
+     * "changed" test (same (happenDay, sessionTitle), different exercises) is
+     * a comparison against this, so it must be recorded at push time.
+     */
+    sessionFingerprint: text("session_fingerprint"),
     status: text("status").notNull().default("pending"), // pending | verified | failed | deleted
+    /**
+     * Structured push-failure code only (duplicate_title, changed_on_coros,
+     * plan_identity_changed, …) — never an executor message or log line,
+     * which can name workouts the user authored.
+     */
     error: text("error"),
     updatedAt: text("updated_at").notNull(),
   },

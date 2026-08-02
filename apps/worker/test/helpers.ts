@@ -27,10 +27,13 @@ export async function makeTestUser(
   prefs: Partial<UserPreferences> = {},
 ): Promise<{ userId: string; prefs: UserPreferences }> {
   const userId = newId();
+  // Unique per user: `users.google_sub` is UNIQUE, so a fixed value made a
+  // second test user impossible (multi-user isolation is exactly what several
+  // suites need to assert).
   await db.insert(schema.users).values({
     id: userId,
-    email: "runner@example.com",
-    googleSub: "sub",
+    email: `runner-${userId}@example.com`,
+    googleSub: `sub-${userId}`,
     createdAt: nowInstant(),
   });
   const merged: UserPreferences = {
