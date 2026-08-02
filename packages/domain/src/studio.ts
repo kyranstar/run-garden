@@ -29,6 +29,37 @@ const MAX_REST_SECONDS = 900;
  * already guards against, just one level down.
  */
 const MAX_EXERCISES_PER_SESSION = 10;
+/**
+ * Found unbounded during whole-branch review: `title` becomes the ownership
+ * stamp on the COROS wire (`sessionStamp` in studio-push.ts appends " — wk N"
+ * on top of it) — that stamp is how a later push run recognizes and verifies
+ * a session it created. An over-long title that COROS truncates or otherwise
+ * normalizes on its end breaks that verify-by-stamp match, and the mismatch
+ * becomes an *unmanaged* calendar entry: the studio's own bookkeeping no
+ * longer recognizes it as one of its rows, so it can never be found and
+ * deleted again. 80 is a generous real title length with headroom to spare.
+ */
+const MAX_TITLE_LENGTH = 80;
+/**
+ * Same wire-identity reasoning as MAX_TITLE_LENGTH above — the plan `name` is
+ * user/LLM-facing display text, not itself part of the COROS stamp, but an
+ * unbounded name is the same "runaway LLM output with nothing stopping it"
+ * shape as every other cap in this file, so it gets the same ceiling.
+ */
+const MAX_PLAN_NAME_LENGTH = 80;
+/**
+ * Matches `planBriefSchema.sessionsPerWeek`'s own ceiling (min(1).max(6))
+ * below. Found unbounded during whole-branch review: nothing stopped an LLM
+ * from emitting a week with far more sessions than the brief asked for —
+ * every session becomes a real COROS scheduled-workout write on push, so a
+ * 16-week plan with, say, 100 sessions/week would become 1600 real writes
+ * despite `weeks.max(16)` already capping the week count. The
+ * `sessions.length === brief.sessionsPerWeek` invariant elsewhere in this
+ * module (documented on `PLAN_HARD_RULES` in studio-llm.ts, though not
+ * zod-enforced at the schema level the way `weeks.length` is) is a *prompted*
+ * expectation, not a validated one — this cap is the actual backstop.
+ */
+const MAX_SESSIONS_PER_WEEK = 6;
 
 export const planBriefSchema = z
   .object({
@@ -75,7 +106,7 @@ export type StudioExercise = z.infer<typeof studioExerciseSchema>;
 
 export const studioSessionSchema = z
   .object({
-    title: z.string().min(1),
+    title: z.string().min(1).max(MAX_TITLE_LENGTH),
     /** ISO weekday 1 (Mon) .. 7 (Sun). */
     weekday: z.number().int().min(1).max(7),
     exercises: z.array(studioExerciseSchema).max(MAX_EXERCISES_PER_SESSION),
@@ -85,7 +116,7 @@ export type StudioSession = z.infer<typeof studioSessionSchema>;
 
 export const studioWeekSchema = z
   .object({
-    sessions: z.array(studioSessionSchema),
+    sessions: z.array(studioSessionSchema).max(MAX_SESSIONS_PER_WEEK),
   })
   .strict();
 export type StudioWeek = z.infer<typeof studioWeekSchema>;
@@ -102,7 +133,7 @@ export type StudioWeek = z.infer<typeof studioWeekSchema>;
  */
 export const liftingPlanSchema = z
   .object({
-    name: z.string().min(1),
+    name: z.string().min(1).max(MAX_PLAN_NAME_LENGTH),
     brief: planBriefSchema,
     weeks: z.array(studioWeekSchema).max(16),
   })

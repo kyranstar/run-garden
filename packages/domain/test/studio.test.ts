@@ -159,6 +159,13 @@ describe("studioSessionSchema", () => {
     expect(studioSessionSchema.parse(ten).exercises).toHaveLength(10);
     expect(() => studioSessionSchema.parse(eleven)).toThrow();
   });
+
+  it("accepts an 80-char title but rejects 81 (title is the COROS wire ownership stamp)", () => {
+    const eighty = { ...validSession, title: "T".repeat(80) };
+    const eightyOne = { ...validSession, title: "T".repeat(81) };
+    expect(studioSessionSchema.parse(eighty).title).toHaveLength(80);
+    expect(() => studioSessionSchema.parse(eightyOne)).toThrow();
+  });
 });
 
 describe("studioWeekSchema", () => {
@@ -169,6 +176,13 @@ describe("studioWeekSchema", () => {
 
   it("rejects unknown fields", () => {
     expect(() => studioWeekSchema.parse({ sessions: [validSession], extra: "nope" })).toThrow();
+  });
+
+  it("accepts exactly 6 sessions but rejects 7, matching sessionsPerWeek's own ceiling", () => {
+    const six = { sessions: Array.from({ length: 6 }, () => validSession) };
+    const seven = { sessions: Array.from({ length: 7 }, () => validSession) };
+    expect(studioWeekSchema.parse(six).sessions).toHaveLength(6);
+    expect(() => studioWeekSchema.parse(seven)).toThrow();
   });
 });
 
@@ -228,5 +242,23 @@ describe("liftingPlanSchema", () => {
     expect(
       liftingPlanSchema.parse({ ...runaway, weeks: runaway.weeks.slice(0, 16) }).weeks,
     ).toHaveLength(16);
+  });
+
+  it("rejects a week with more sessions than sessionsPerWeek's own ceiling allows", () => {
+    const tooManySessions = {
+      ...validPlan,
+      weeks: [
+        { sessions: Array.from({ length: 7 }, () => validSession) },
+        ...validPlan.weeks.slice(1),
+      ],
+    };
+    expect(() => liftingPlanSchema.parse(tooManySessions)).toThrow();
+  });
+
+  it("accepts an 80-char plan name but rejects 81", () => {
+    const eighty = { ...validPlan, name: "N".repeat(80) };
+    const eightyOne = { ...validPlan, name: "N".repeat(81) };
+    expect(liftingPlanSchema.parse(eighty).name).toHaveLength(80);
+    expect(() => liftingPlanSchema.parse(eightyOne)).toThrow();
   });
 });

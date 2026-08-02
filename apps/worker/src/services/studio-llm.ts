@@ -350,11 +350,12 @@ const PLAN_JSON_SHAPE =
 
 const PLAN_HARD_RULES = [
   "- weeks.length MUST equal brief.durationWeeks exactly.",
-  "- Every week's sessions.length must equal brief.sessionsPerWeek; every session's weekday must be one of brief.preferredDays.",
+  "- Every week's sessions.length must equal brief.sessionsPerWeek and must never exceed 6; every session's weekday must be one of brief.preferredDays.",
   "- Every session needs at least one exercise.",
   "- Every exercise's originId MUST be one of the ids listed in the catalog below, copied exactly; its name must be that catalog entry's name.",
   "- Respect brief.constraints (injuries/exclusions) and brief.equipment. Apply sensible progressive overload across weeks. Never schedule two sessions on the same weekday.",
   "- Ranges: sets 1-10, reps 1-50, restSeconds 0-900, weight.value (kg) 0-500.",
+  "- Session titles and the plan name must each be 80 characters or fewer.",
 ].join("\n");
 
 export function buildGenerateSystemPrompt(catalog: CatalogEntry[]): string {
@@ -403,6 +404,7 @@ export function buildEditSystemPrompt(catalog: CatalogEntry[]): string {
     "- Any exercise originId you add or change MUST be one of the ids listed in the catalog below, copied exactly, with name kept in sync.",
     "- Keep the number of operations minimal — only the fields the request actually changes.",
     "- Ranges: sets 1-10, reps 1-50, restSeconds 0-900, weight.value (kg) 0-500.",
+    "- A week must never end up with more than 6 sessions. Session titles and the plan name must each be 80 characters or fewer.",
     "",
     "Available exercises (originId|name), one per line:",
     catalogLines(catalog),
