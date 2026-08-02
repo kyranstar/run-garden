@@ -16,7 +16,13 @@ gardenRoutes.get("/", async (c) => {
   const userId = c.get("userId");
   const prefs = await loadPreferences(db, userId);
   const view = await buildGardenView(db, userId, prefs);
-  const events = await recentGardenEvents(db, userId, 40);
+  const stored = await recentGardenEvents(db, userId, 40);
+  // Today's previewed events lead the feed (they aren't in the DB yet); the
+  // durable sim writes identical rows tomorrow, so ids collide cleanly.
+  const events = [
+    ...view.previewEvents.map((e) => ({ ...e, id: `${userId}:${e.id}`, preview: true })).reverse(),
+    ...stored,
+  ];
 
   return c.json({
     ...view,

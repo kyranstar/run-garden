@@ -13,7 +13,7 @@ import type { Db } from "../src/services/db.js";
 import { importPlanSnapshot } from "../src/services/import-plan.js";
 import { applyMove, claimNextJob, applyJobResult } from "../src/services/jobs.js";
 import { ingestActivities } from "../src/services/completion.js";
-import { advanceGarden, loadGarden } from "../src/services/garden-sync.js";
+import { advanceGarden, buildGardenView, loadGarden } from "../src/services/garden-sync.js";
 import { reconcileCompletionStates } from "../src/services/reconcile-daily.js";
 import { makeTestDb, makeTestUser, registerTestDevice } from "./helpers.js";
 
@@ -304,6 +304,58 @@ describe("completion: Strava webhook first, COROS merge second", () => {
     expect(matches[0]!.provisional).toBe(false);
   });
 
+  it("self-heals legacy year-7625 COROS rows: rescale, merge, promote", async () => {
+    await importFromProvider();
+    const w = (
+      await db.select().from(plannedWorkouts).where(eq(plannedWorkouts.title, "Threshold 5x5"))
+    )[0]!;
+    const startIso = `${w.effectiveDate}T14:02:05Z`;
+
+    // 1. Strava fast copy → provisional completion.
+    const strava = normalizeStravaActivity(fixtureStravaCompletedThreshold(startIso));
+    await ingestActivities(db, { userId, sources: [strava] });
+
+    // 2. A COROS copy as the pre-fix normalizer stored it: epoch ×100 (year
+    //    ~7625), so the ±1h merge window can never find the Strava row.
+    const { item, detail } = fixtureCorosCompletedThreshold(startIso);
+    const coros = normalizeCorosActivity(item, detail);
+    const startUnix = Math.floor(Date.parse(startIso) / 1000);
+    const offsetMin = -28 * 15; // PDT, in the fixture
+    const bogus = {
+      ...coros,
+      startTime: new Date(startUnix * 100 * 1000).toISOString().replace(".000Z", "Z"),
+      startTimeLocal: new Date((startUnix * 100 + offsetMin * 60) * 1000)
+        .toISOString()
+        .replace(".000Z", "")
+        .replace("Z", ""),
+    };
+    const s2 = await ingestActivities(db, { userId, sources: [bogus] });
+    expect(s2.newActivities).toBe(1); // duplicate row — merge impossible
+    expect((await db.select().from(activities).where(eq(activities.userId, userId))).length).toBe(2);
+    let updated = (await db.select().from(plannedWorkouts).where(eq(plannedWorkouts.id, w.id)))[0]!;
+    expect(updated.completionState).toBe("provisionally_completed"); // stuck
+
+    // 3. Any later sync self-heals: timestamps rescaled, rows merged, match
+    //    promoted — without any new sources arriving.
+    await ingestActivities(db, { userId, sources: [] });
+    const acts = await db.select().from(activities).where(eq(activities.userId, userId));
+    expect(acts).toHaveLength(1);
+    expect(acts[0]!.corosActivityId).toBeTruthy();
+    expect(acts[0]!.stravaActivityId).toBeTruthy();
+    expect(acts[0]!.startTime).toBe(startIso);
+    expect(acts[0]!.startTimeLocal?.slice(0, 10)).toBe(w.effectiveDate);
+    expect(acts[0]!.trainingLoad).toBe(82); // COROS metrics carried over
+
+    updated = (await db.select().from(plannedWorkouts).where(eq(plannedWorkouts.id, w.id)))[0]!;
+    expect(updated.completionState).toBe("completed");
+    const matches = await db
+      .select()
+      .from(workoutCompletionMatches)
+      .where(and(eq(workoutCompletionMatches.workoutId, w.id), isNull(workoutCompletionMatches.undoneAt)));
+    expect(matches).toHaveLength(1);
+    expect(matches[0]!.provisional).toBe(false);
+  });
+
   it("re-delivered webhooks are idempotent", async () => {
     await importFromProvider();
     const w = (
@@ -342,6 +394,33 @@ describe("garden integration", () => {
     expect(planted.length).toBeGreaterThanOrEqual(1);
     const events = await db.select().from(schema.gardenEvents).where(eq(schema.gardenEvents.userId, userId));
     expect(events.some((e) => e.kind === "run_completed" && e.workoutId === w.id)).toBe(true);
+  });
+
+  it("previews today's rain immediately after a run, without persisting", async () => {
+    await importFromProvider();
+    const today = todayInZone(prefs.timezone);
+    // Put the threshold workout on TODAY and complete it (rain follows planned
+    // runs; unplanned ones only water lightly).
+    const w = (
+      await db.select().from(plannedWorkouts).where(eq(plannedWorkouts.title, "Threshold 5x5"))
+    )[0]!;
+    await db
+      .update(plannedWorkouts)
+      .set({ effectiveDate: today })
+      .where(eq(plannedWorkouts.id, w.id));
+    const strava = normalizeStravaActivity(
+      fixtureStravaCompletedThreshold(`${today}T13:00:00Z`, 14_200_000_777),
+    );
+    const stats = await ingestActivities(db, { userId, sources: [strava] });
+    expect(stats.provisionalCompletions).toBe(1);
+
+    const view = await buildGardenView(db, userId, prefs);
+    // Feedback is same-day: the returned garden is already rained on…
+    expect(["fresh_rain", "recovery_rain"]).toContain(view.snapshot.state.weatherState);
+    expect(view.previewEvents.some((e) => e.kind === "run_completed")).toBe(true);
+    // …but durable history is untouched (today persists tomorrow).
+    const persisted = await loadGarden(db, userId);
+    expect(persisted!.state.lastSimulatedDate < today).toBe(true);
   });
 
   it("does not punish unresolved workouts before the grace period", async () => {

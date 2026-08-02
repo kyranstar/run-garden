@@ -40,8 +40,10 @@ export function fixtureCorosCompletedThreshold(
       adjustedPace: 326,
       trainingLoad: 82,
       elevGain: 64,
-      startTimestamp: startUnix,
-      endTimestamp: startUnix + 3312,
+      // Detail timestamps are centiseconds [verified in prod: seconds here
+      // produced activities dated year 7625], like the other summary fields.
+      startTimestamp: startUnix * 100,
+      endTimestamp: (startUnix + 3312) * 100,
       timezone: -28,
       sportType: 100,
       name: "Threshold 5x5",

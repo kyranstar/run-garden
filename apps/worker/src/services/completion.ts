@@ -104,6 +104,117 @@ export async function repairDurations(db: Db, userId: string): Promise<void> {
     );
 }
 
+/**
+ * Repair activities flung into the far future by the COROS centisecond
+ * startTimestamp bug (epoch ×100 → year ~7625): rescale their timestamps, then
+ * re-unite each repaired COROS-only row with the Strava-only copy of the same
+ * run it could never merge with (the ±1h counterpart window can't reach year
+ * 7625). The surviving row is the one holding a completion match; laps and
+ * source links are repointed, the duplicate is deleted. Idempotent, runs at the
+ * start of every ingest. Returns the affected local dates (for resimulation).
+ */
+export async function repairTimestamps(db: Db, userId: string): Promise<string[]> {
+  const now = nowInstant();
+  const affected = new Set<string>();
+
+  // ISO strings compare lexicographically, so year >= 3000 is simply >= "3000".
+  const bogus = await db
+    .select()
+    .from(activities)
+    .where(and(eq(activities.userId, userId), gte(activities.startTime, "3000")));
+
+  for (const row of bogus) {
+    const bogusStartMs = Date.parse(row.startTime);
+    const fixedStartMs = Math.round(bogusStartMs / 100);
+    const startTime = new Date(fixedStartMs).toISOString().replace(".000Z", "Z");
+    // The stored local time is offset from startTime by the *unscaled* tz
+    // offset, so recover the offset from the bogus pair and re-apply it.
+    let startTimeLocal: string | null = row.startTimeLocal;
+    if (startTimeLocal) {
+      const offsetMs = Date.parse(`${startTimeLocal}Z`) - bogusStartMs;
+      startTimeLocal = new Date(fixedStartMs + offsetMs)
+        .toISOString()
+        .replace(".000Z", "")
+        .replace("Z", "");
+    }
+    await db
+      .update(activities)
+      .set({ startTime, startTimeLocal, updatedAt: now })
+      .where(eq(activities.id, row.id));
+    affected.add((startTimeLocal ?? startTime).slice(0, 10));
+
+    // Merge with the other-provider copy of the same run, if one exists.
+    if (!(row.corosActivityId && !row.stravaActivityId)) continue;
+    const windowStart = new Date(fixedStartMs - 3600_000).toISOString();
+    const windowEnd = new Date(fixedStartMs + 3600_000).toISOString();
+    const counterparts = await db
+      .select()
+      .from(activities)
+      .where(
+        and(
+          eq(activities.userId, userId),
+          gte(activities.startTime, windowStart),
+          lte(activities.startTime, windowEnd),
+          isNull(activities.corosActivityId),
+          eq(activities.sport, row.sport),
+        ),
+      );
+    const counterpart = counterparts.find(
+      (c) =>
+        c.id !== row.id &&
+        c.stravaActivityId &&
+        (c.distanceMeters == null ||
+          row.distanceMeters == null ||
+          Math.abs(c.distanceMeters - row.distanceMeters) <
+            0.2 * Math.max(c.distanceMeters, row.distanceMeters)),
+    );
+    if (!counterpart) continue;
+
+    // Keep whichever row holds a completion match (the Strava copy usually
+    // matched a workout while the COROS copy sat in year 7625).
+    const survivor = row.completionMatchId ? row : counterpart;
+    const duplicate = survivor.id === row.id ? counterpart : row;
+    // Repoint children, then delete the duplicate BEFORE giving the survivor
+    // its provider id — (user_id, coros_activity_id) is unique.
+    await db
+      .update(activityLaps)
+      .set({ activityId: survivor.id })
+      .where(eq(activityLaps.activityId, duplicate.id));
+    await db
+      .update(activitySourceLinks)
+      .set({ activityId: survivor.id })
+      .where(eq(activitySourceLinks.activityId, duplicate.id));
+    await db.delete(activities).where(eq(activities.id, duplicate.id));
+    await db
+      .update(activities)
+      .set({
+        corosActivityId: row.corosActivityId,
+        stravaActivityId: counterpart.stravaActivityId,
+        // COROS metrics are authoritative for the merged record.
+        durationSeconds: row.durationSeconds,
+        elapsedSeconds: row.elapsedSeconds ?? survivor.elapsedSeconds,
+        distanceMeters: row.distanceMeters ?? survivor.distanceMeters,
+        avgHeartRate: row.avgHeartRate ?? survivor.avgHeartRate,
+        maxHeartRate: row.maxHeartRate ?? survivor.maxHeartRate,
+        avgPaceSecPerKm: row.avgPaceSecPerKm ?? survivor.avgPaceSecPerKm,
+        elevationGainMeters: row.elevationGainMeters ?? survivor.elevationGainMeters,
+        trainingLoad: row.trainingLoad ?? survivor.trainingLoad,
+        deviceName: row.deviceName ?? survivor.deviceName,
+        updatedAt: now,
+      })
+      .where(eq(activities.id, survivor.id));
+    // If the survivor is the repaired row, its in-memory timestamps are stale —
+    // use the freshly computed ones.
+    const survivorLocal =
+      survivor.id === row.id
+        ? (startTimeLocal ?? startTime)
+        : (survivor.startTimeLocal ?? survivor.startTime);
+    affected.add(survivorLocal.slice(0, 10));
+  }
+
+  return [...affected].sort();
+}
+
 export function sanitizeRunDuration(a: NormalizedActivity): NormalizedActivity {
   if (
     a.sport === "run" &&
@@ -227,6 +338,7 @@ async function upsertSourceLink(
 
 export async function ingestActivities(db: Db, input: IngestInput): Promise<IngestStats> {
   await repairDurations(db, input.userId);
+  const repairedDates = await repairTimestamps(db, input.userId);
   const now = nowInstant();
   const stats: IngestStats = {
     newActivities: 0,
@@ -236,7 +348,7 @@ export async function ingestActivities(db: Db, input: IngestInput): Promise<Inge
     completions: 0,
     affectedDates: [],
   };
-  const affectedDates = new Set<string>();
+  const affectedDates = new Set<string>(repairedDates);
   const corosProgramIdByActivity = new Map<string, string>();
 
   for (const src of input.sources) {
@@ -493,27 +605,41 @@ export async function ingestActivities(db: Db, input: IngestInput): Promise<Inge
       affectedDates.add(workout.effectiveDate);
     }
 
-    // Upgrade provisional matches when the COROS copy has arrived.
-    const provisional = await db
-      .select()
-      .from(workoutCompletionMatches)
-      .where(and(eq(workoutCompletionMatches.provisional, true), isNull(workoutCompletionMatches.undoneAt)));
-    for (const pm of provisional) {
-      const row = (await db.select().from(activities).where(eq(activities.id, pm.activityId)).limit(1))[0];
-      if (row?.corosActivityId) {
-        await db
-          .update(workoutCompletionMatches)
-          .set({ provisional: false })
-          .where(eq(workoutCompletionMatches.id, pm.id));
-        await db
-          .update(plannedWorkouts)
-          .set({ completionState: "completed", updatedAt: now })
-          .where(and(eq(plannedWorkouts.id, pm.workoutId), eq(plannedWorkouts.completionState, "provisionally_completed")));
-        stats.completions += 1;
-      }
-    }
   }
+
+  // Upgrade provisional matches when the COROS copy has arrived — always, not
+  // only when this ingest carried new sources, so a repair pass (which can give
+  // an already-matched activity its COROS link) promotes on the same sync.
+  stats.completions += await promoteProvisionalMatches(db);
 
   stats.affectedDates = [...affectedDates].sort();
   return stats;
+}
+
+/**
+ * Promote "provisionally_completed" workouts to "completed" once their matched
+ * activity has a COROS record. Returns the number promoted.
+ */
+export async function promoteProvisionalMatches(db: Db): Promise<number> {
+  const now = nowInstant();
+  let promoted = 0;
+  const provisional = await db
+    .select()
+    .from(workoutCompletionMatches)
+    .where(and(eq(workoutCompletionMatches.provisional, true), isNull(workoutCompletionMatches.undoneAt)));
+  for (const pm of provisional) {
+    const row = (await db.select().from(activities).where(eq(activities.id, pm.activityId)).limit(1))[0];
+    if (row?.corosActivityId) {
+      await db
+        .update(workoutCompletionMatches)
+        .set({ provisional: false })
+        .where(eq(workoutCompletionMatches.id, pm.id));
+      await db
+        .update(plannedWorkouts)
+        .set({ completionState: "completed", updatedAt: now })
+        .where(and(eq(plannedWorkouts.id, pm.workoutId), eq(plannedWorkouts.completionState, "provisionally_completed")));
+      promoted += 1;
+    }
+  }
+  return promoted;
 }

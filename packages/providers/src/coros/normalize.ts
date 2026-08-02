@@ -238,7 +238,12 @@ export function normalizeCorosActivity(
   detail?: RawCorosActivityDetail,
 ): SourceActivity {
   const summary = detail?.summary;
-  const start = summary?.startTimestamp ?? item.startTime ?? 0;
+  // Detail summary timestamps are centiseconds (like its distance/time fields);
+  // list startTime is plain unix seconds. Guard by plausibility rather than by
+  // field so a unit change on either side can never fling activities millennia
+  // into the future again (50e9 s ≈ year 3554).
+  const rawStart = summary?.startTimestamp ?? item.startTime ?? 0;
+  const start = rawStart > 50_000_000_000 ? rawStart / 100 : rawStart;
   const offsetMin = tzOffsetMinutes(summary?.timezone ?? item.startTimezone);
   // COROS reports times in centiseconds (matching its distance/lap fields), so
   // divide by 100 to get seconds.

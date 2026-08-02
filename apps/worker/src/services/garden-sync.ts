@@ -19,6 +19,7 @@ import {
   newId,
   nowInstant,
   todayInZone,
+  type GardenEvent,
   type LocalDate,
   type UserPreferences,
   type WildlifeKind,
@@ -425,6 +426,14 @@ export interface GardenView {
   snapshot: GardenSnapshot;
   condition: string;
   species: GardenSpeciesView[];
+  /**
+   * Non-persisted events from previewing *today* (rain from a run completed
+   * hours ago, plants taking root). The durable simulation only records a day
+   * once it's over, but feedback must be same-day: these are what tomorrow's
+   * persistence will record for today, computed early. Deterministic, so the
+   * durable replay converges to exactly this.
+   */
+  previewEvents: GardenEvent[];
 }
 
 /**
@@ -439,7 +448,26 @@ export async function buildGardenView(
   prefs: UserPreferences,
 ): Promise<GardenView> {
   await advanceGarden(db, userId, prefs).catch(() => undefined);
-  const snapshot = await ensureGarden(db, userId, prefs);
+  let snapshot = await ensureGarden(db, userId, prefs);
+
+  // Same-day feedback: if a run was completed today, preview today's simulation
+  // for display (rain, growth, events) without persisting it. Only when the
+  // durable sim is exactly caught up to yesterday — previewing across a gap
+  // would skip days and misrepresent.
+  let previewEvents: GardenEvent[] = [];
+  const today = todayInZone(prefs.timezone);
+  if (addDays(snapshot.state.lastSimulatedDate, 1) === today) {
+    try {
+      const todayInput = await buildDayInput(db, userId, today, prefs);
+      if (todayInput.completedRuns.length > 0) {
+        const preview = simulateDay(snapshot, todayInput);
+        snapshot = preview.snapshot;
+        previewEvents = preview.events;
+      }
+    } catch {
+      // Preview is cosmetic — never let it break the garden read.
+    }
+  }
   const unlocks = await db
     .select()
     .from(gardenUnlocks)
@@ -448,6 +476,7 @@ export async function buildGardenView(
   return {
     snapshot,
     condition: conditionWord(snapshot.state, DEFAULT_GARDEN_CONFIG),
+    previewEvents,
     species: unlocks.map((u) => {
       const s = SPECIES_BY_ID.get(u.speciesId);
       return {

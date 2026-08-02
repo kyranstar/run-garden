@@ -62,7 +62,12 @@ import { googleCalendarClient } from "../services/google-calendar.js";
 import { loadPreferences, savePreferences, syncCalendar } from "../services/calendar-sync.js";
 import { llmBudgetStatus, LLM_BUDGET } from "../services/llm.js";
 import { stravaClient } from "../services/strava.js";
-import { ingestActivities, repairDurations } from "../services/completion.js";
+import {
+  ingestActivities,
+  promoteProvisionalMatches,
+  repairDurations,
+  repairTimestamps,
+} from "../services/completion.js";
 import { resimulateFrom } from "../services/garden-sync.js";
 
 // ── Calendar management ──────────────────────────────────────────────────────
@@ -204,9 +209,19 @@ activityRoutes.get("/", async (c) => {
 activityRoutes.post("/backfill", async (c) => {
   const db = c.get("db");
   const userId = c.get("userId");
-  await repairDurations(db, userId); // correct any centisecond-bugged run durations
+  // Self-heal stored data first (centisecond durations/timestamps, split
+  // COROS/Strava pairs, stuck provisional matches) — even if Strava is offline.
+  await repairDurations(db, userId);
+  const repairedDates = await repairTimestamps(db, userId);
+  const promoted = await promoteProvisionalMatches(db);
+  if (repairedDates.length > 0) {
+    const prefs = await loadPreferences(db, userId);
+    await resimulateFrom(db, userId, repairedDates[0]!, prefs).catch(() => undefined);
+  }
+
   const client = await stravaClient(db, c.env, userId);
-  if (!client) return c.json({ ok: false, reason: "strava_unavailable", ingested: 0, matched: 0 });
+  if (!client)
+    return c.json({ ok: false, reason: "strava_unavailable", ingested: 0, matched: promoted });
   const days = Math.min(365, Math.max(1, Number(c.req.query("days") ?? 90)));
   const afterEpoch = Math.floor(Date.parse(nowInstant()) / 1000) - days * 86400;
   let sources;
@@ -214,9 +229,9 @@ activityRoutes.post("/backfill", async (c) => {
     const raws = await client.listActivities(afterEpoch, 100);
     sources = raws.map(normalizeStravaActivity).filter((s) => s.sport === "run");
   } catch {
-    return c.json({ ok: false, reason: "strava_error", ingested: 0, matched: 0 });
+    return c.json({ ok: false, reason: "strava_error", ingested: 0, matched: promoted });
   }
-  if (sources.length === 0) return c.json({ ok: true, ingested: 0, matched: 0 });
+  if (sources.length === 0) return c.json({ ok: true, ingested: 0, matched: promoted });
   const stats = await ingestActivities(db, { userId, sources });
   if (stats.affectedDates.length > 0) {
     const prefs = await loadPreferences(db, userId);
@@ -225,7 +240,7 @@ activityRoutes.post("/backfill", async (c) => {
   return c.json({
     ok: true,
     ingested: stats.newActivities + stats.mergedPairs,
-    matched: stats.matchesCreated,
+    matched: stats.matchesCreated + promoted,
   });
 });
 

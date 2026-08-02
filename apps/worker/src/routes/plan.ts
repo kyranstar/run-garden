@@ -64,7 +64,10 @@ planRoutes.get("/today", async (c) => {
         eq(plannedWorkouts.userId, userId),
         gte(plannedWorkouts.effectiveDate, today),
         isNull(plannedWorkouts.archivedAt),
-        inArray(plannedWorkouts.completionState, ["scheduled", "provisionally_completed"]),
+        // Only genuinely upcoming work: a provisionally-completed run is DONE
+        // (it's just awaiting its richer COROS record) — showing it as "next
+        // workout" right after you ran it reads as the app not noticing.
+        eq(plannedWorkouts.completionState, "scheduled"),
       ),
     )
     .orderBy(asc(plannedWorkouts.effectiveDate), asc(plannedWorkouts.effectiveTime))
