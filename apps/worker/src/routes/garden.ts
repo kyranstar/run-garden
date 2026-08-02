@@ -1,16 +1,11 @@
 import { Hono } from "hono";
-import { desc, eq } from "drizzle-orm";
-import { gardenState, gardenUnlocks } from "@rg/database";
+import { eq } from "drizzle-orm";
+import { gardenState } from "@rg/database";
 import { nowInstant } from "@rg/domain";
-import {
-  conditionWord,
-  DEFAULT_GARDEN_CONFIG,
-  SPECIES_BY_ID,
-  type GardenSnapshot,
-} from "@rg/garden-engine";
+import type { GardenSnapshot } from "@rg/garden-engine";
 import type { AppContext } from "../auth/middleware.js";
 import { requireUser } from "../auth/middleware.js";
-import { advanceGarden, ensureGarden, recentGardenEvents } from "../services/garden-sync.js";
+import { buildGardenView, recentGardenEvents } from "../services/garden-sync.js";
 import { loadPreferences, savePreferences } from "../services/calendar-sync.js";
 
 export const gardenRoutes = new Hono<AppContext>();
@@ -20,30 +15,12 @@ gardenRoutes.get("/", async (c) => {
   const db = c.get("db");
   const userId = c.get("userId");
   const prefs = await loadPreferences(db, userId);
-  await advanceGarden(db, userId, prefs).catch(() => undefined);
-  const snapshot = (await ensureGarden(db, userId, prefs)) as GardenSnapshot;
+  const view = await buildGardenView(db, userId, prefs);
   const events = await recentGardenEvents(db, userId, 40);
-  const unlocks = await db
-    .select()
-    .from(gardenUnlocks)
-    .where(eq(gardenUnlocks.userId, userId))
-    .orderBy(desc(gardenUnlocks.unlockedOn));
 
   return c.json({
-    snapshot,
-    condition: conditionWord(snapshot.state, DEFAULT_GARDEN_CONFIG),
+    ...view,
     events,
-    species: unlocks.map((u) => {
-      const s = SPECIES_BY_ID.get(u.speciesId);
-      return {
-        speciesId: u.speciesId,
-        name: s?.name ?? u.speciesId,
-        category: s?.category,
-        rarity: s?.rarity,
-        unlockedOn: u.unlockedOn,
-        livingCount: snapshot.plants.filter((p) => p.speciesId === u.speciesId && p.state !== "dead").length,
-      };
-    }),
     restMode: {
       active: prefs.gardenRestMode,
       until: prefs.gardenRestModeUntil,

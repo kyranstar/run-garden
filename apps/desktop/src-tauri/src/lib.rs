@@ -6,6 +6,9 @@
 mod bridge;
 mod creds;
 
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::Arc;
+
 use bridge::Bridge;
 use serde::Serialize;
 use serde_json::{json, Value};
@@ -26,8 +29,103 @@ fn open_url(url: &str) -> Result<(), String> {
         .map_err(|e| format!("open_failed: {e}"))
 }
 
+/// Open (or reveal) the borderless fullscreen ambient garden window. Built on
+/// demand and torn down on hide so every open shows a freshly-fetched garden.
+/// Window creation must happen on the main thread (AppKit requirement), so all
+/// work is dispatched there. The `__RG_AMBIENT__` init flag tells the shared
+/// web bundle to render the ambient view rather than the connection panel.
+fn reveal_ambient(app: &tauri::AppHandle) {
+    let handle = app.clone();
+    let _ = app.run_on_main_thread(move || {
+        if let Some(win) = handle.get_webview_window("ambient") {
+            let _ = win.show();
+            let _ = win.set_focus();
+            return;
+        }
+        if let Err(e) = tauri::WebviewWindowBuilder::new(
+            &handle,
+            "ambient",
+            tauri::WebviewUrl::App("index.html".into()),
+        )
+        .title("Run Garden")
+        .inner_size(1280.0, 800.0)
+        .decorations(false)
+        .fullscreen(true)
+        .skip_taskbar(true)
+        .initialization_script("window.__RG_AMBIENT__ = true;")
+        .build()
+        {
+            eprintln!("ambient window build failed: {e}");
+        }
+    });
+}
+
+/// Tear down the ambient window (closes cleanly — the CloseRequested handler
+/// only intercepts the main window, so this actually closes).
+fn conceal_ambient(app: &tauri::AppHandle) {
+    let handle = app.clone();
+    let _ = app.run_on_main_thread(move || {
+        if let Some(win) = handle.get_webview_window("ambient") {
+            let _ = win.close();
+        }
+    });
+}
+
+/// Seconds since the last user input (keyboard/mouse), via CoreGraphics — used
+/// only for the opt-in "auto-show ambient garden when idle" feature. The
+/// framework is always present on macOS, so no extra dependency is needed.
+#[cfg(target_os = "macos")]
+fn user_idle_seconds() -> f64 {
+    #[link(name = "CoreGraphics", kind = "framework")]
+    extern "C" {
+        // CGEventSourceStateID is a signed enum (kCGEventSourceStatePrivate = -1);
+        // kCGEventSourceStateCombinedSessionState = 0, kCGAnyInputEventType = 0xFFFFFFFF.
+        fn CGEventSourceSecondsSinceLastEventType(state: i32, event_type: u32) -> f64;
+    }
+    unsafe { CGEventSourceSecondsSinceLastEventType(0, 0xFFFF_FFFF) }
+}
+#[cfg(not(target_os = "macos"))]
+fn user_idle_seconds() -> f64 {
+    0.0
+}
+
+/// Background poller: when auto-show is on and the Mac has been idle past the
+/// threshold, open the ambient garden; when the user returns, hide the copy the
+/// poller opened. Cheap (a CoreGraphics read every 15s) and a no-op when off.
+async fn idle_watch(
+    app: tauri::AppHandle,
+    enabled: Arc<AtomicBool>,
+    threshold: Arc<AtomicU64>,
+    auto_shown: Arc<AtomicBool>,
+) {
+    loop {
+        tokio::time::sleep(std::time::Duration::from_secs(15)).await;
+        if !enabled.load(Ordering::Relaxed) {
+            continue;
+        }
+        let idle = user_idle_seconds() as u64;
+        let threshold = threshold.load(Ordering::Relaxed);
+        let open = app.get_webview_window("ambient").is_some();
+        if idle >= threshold && !open {
+            auto_shown.store(true, Ordering::Relaxed);
+            reveal_ambient(&app);
+        } else if idle < 5 && open && auto_shown.load(Ordering::Relaxed) {
+            auto_shown.store(false, Ordering::Relaxed);
+            conceal_ambient(&app);
+        }
+    }
+}
+
 pub struct AppState {
     pub bridge: Bridge,
+    /// Ambient garden "auto-show when idle" preference and its threshold, shared
+    /// with the background idle poller.
+    pub idle_autoshow: Arc<AtomicBool>,
+    pub idle_threshold_secs: Arc<AtomicU64>,
+    /// True while the ambient window is on screen *because the idle poller
+    /// opened it* — so activity auto-hides it, but a window the user opened by
+    /// hand stays until they close it.
+    pub ambient_auto_shown: Arc<AtomicBool>,
 }
 
 #[derive(Serialize)]
@@ -236,6 +334,53 @@ async fn run_write_spike(state: State<'_, AppState>) -> Result<Value, String> {
     Ok(res)
 }
 
+/// Fetch the current renderable garden over the device's signed channel, for the
+/// ambient window. Errors with "not_connected" if cloud sync isn't running yet;
+/// the ambient view treats that as "keep showing the last-good garden".
+#[tauri::command]
+async fn garden_snapshot(state: State<'_, AppState>) -> Result<Value, String> {
+    state.bridge.call("readGarden", None).await
+}
+
+/// Open the fullscreen ambient garden (from the "Open ambient garden" button).
+/// Marks it user-opened so returning to the keyboard won't auto-hide it.
+#[tauri::command]
+async fn show_ambient(app: tauri::AppHandle, state: State<'_, AppState>) -> Result<(), String> {
+    state.ambient_auto_shown.store(false, Ordering::Relaxed);
+    reveal_ambient(&app);
+    Ok(())
+}
+
+/// Close the ambient garden (Esc/click inside it, or the idle poller).
+#[tauri::command]
+async fn hide_ambient(app: tauri::AppHandle, state: State<'_, AppState>) -> Result<(), String> {
+    state.ambient_auto_shown.store(false, Ordering::Relaxed);
+    conceal_ambient(&app);
+    Ok(())
+}
+
+#[tauri::command]
+async fn set_idle_autoshow(
+    state: State<'_, AppState>,
+    enabled: bool,
+    threshold_secs: u64,
+) -> Result<(), String> {
+    let threshold = threshold_secs.clamp(30, 3600);
+    state.idle_autoshow.store(enabled, Ordering::Relaxed);
+    state.idle_threshold_secs.store(threshold, Ordering::Relaxed);
+    creds::set(creds::K_IDLE_AUTOSHOW, if enabled { "1" } else { "0" })?;
+    creds::set(creds::K_IDLE_THRESHOLD, &threshold.to_string())?;
+    Ok(())
+}
+
+#[tauri::command]
+async fn get_idle_autoshow(state: State<'_, AppState>) -> Result<Value, String> {
+    Ok(json!({
+        "enabled": state.idle_autoshow.load(Ordering::Relaxed),
+        "thresholdSecs": state.idle_threshold_secs.load(Ordering::Relaxed),
+    }))
+}
+
 trait InnerExt {
     fn stdin_is_some(&self) -> bool;
 }
@@ -308,11 +453,14 @@ pub fn run() {
         // Self-update from signed GitHub releases (see plugins.updater config).
         .plugin(tauri_plugin_updater::Builder::new().build())
         .on_window_event(|window, event| {
-            // Closing the window doesn't quit: Run Garden keeps running in the
-            // menu bar so the COROS bridge keeps syncing. Quit from the tray.
-            if let tauri::WindowEvent::CloseRequested { api, .. } = event {
-                let _ = window.hide();
-                api.prevent_close();
+            // Closing the main window doesn't quit: Run Garden keeps running in
+            // the menu bar so the COROS bridge keeps syncing. Quit from the tray.
+            // The ambient window is exempt — it closes for real.
+            if window.label() == "main" {
+                if let tauri::WindowEvent::CloseRequested { api, .. } = event {
+                    let _ = window.hide();
+                    api.prevent_close();
+                }
             }
         })
         .setup(|app| {
@@ -363,7 +511,33 @@ pub fn run() {
                 }
             });
 
-            app.manage(AppState { bridge });
+            // Ambient-garden idle auto-show: restore the saved preference and run
+            // the background poller. Off by default (10-minute threshold).
+            let idle_autoshow = Arc::new(AtomicBool::new(
+                creds::get(creds::K_IDLE_AUTOSHOW).as_deref() == Some("1"),
+            ));
+            let idle_threshold_secs = Arc::new(AtomicU64::new(
+                creds::get(creds::K_IDLE_THRESHOLD)
+                    .and_then(|v| v.parse().ok())
+                    .unwrap_or(600),
+            ));
+            let ambient_auto_shown = Arc::new(AtomicBool::new(false));
+            let idle_handle = app.handle().clone();
+            let (en, th, shown) = (
+                idle_autoshow.clone(),
+                idle_threshold_secs.clone(),
+                ambient_auto_shown.clone(),
+            );
+            tauri::async_runtime::spawn(async move {
+                idle_watch(idle_handle, en, th, shown).await;
+            });
+
+            app.manage(AppState {
+                bridge,
+                idle_autoshow,
+                idle_threshold_secs,
+                ambient_auto_shown,
+            });
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -377,6 +551,11 @@ pub fn run() {
             open_external,
             connect_cloud,
             run_write_spike,
+            garden_snapshot,
+            show_ambient,
+            hide_ambient,
+            set_idle_autoshow,
+            get_idle_autoshow,
         ])
         .build(tauri::generate_context!())
         .expect("error while building Run Garden")

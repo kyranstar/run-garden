@@ -5,6 +5,8 @@
  * ever sees status booleans and capability reports.
  */
 
+import type { AmbientGardenView } from "@rg/ui";
+
 type InvokeFn = <T>(cmd: string, args?: Record<string, unknown>) => Promise<T>;
 
 // Resolve Tauri's invoke bridge. `__TAURI__.core.invoke` requires
@@ -19,6 +21,17 @@ function resolveInvoke(): InvokeFn | null {
 }
 
 export const isDesktop = () => resolveInvoke() !== null;
+
+// The ambient window is created with an injected `window.__RG_AMBIENT__ = true`
+// flag (see src-tauri/src/lib.rs). The shared web bundle loads in both windows;
+// this tells them apart so the ambient window renders the garden, not the panel.
+export const isAmbientWindow = () =>
+  (window as unknown as { __RG_AMBIENT__?: boolean }).__RG_AMBIENT__ === true;
+
+export interface IdleAutoshow {
+  enabled: boolean;
+  thresholdSecs: number;
+}
 
 async function invoke<T>(cmd: string, args?: Record<string, unknown>): Promise<T> {
   const fn = resolveInvoke();
@@ -80,4 +93,20 @@ export const desktop = {
 
   /** Run the reversible schedule write test against the real account. */
   runWriteSpike: () => invoke<{ reportPath: string; ok: boolean; summary: string }>("run_write_spike"),
+
+  /** Current garden over the device's signed cloud channel (for ambient view). */
+  gardenSnapshot: () => invoke<AmbientGardenView>("garden_snapshot"),
+
+  /** Open the fullscreen ambient garden window. */
+  showAmbient: () => invoke<void>("show_ambient"),
+
+  /** Close the ambient garden window. */
+  hideAmbient: () => invoke<void>("hide_ambient"),
+
+  /** Enable/disable auto-showing the ambient garden after `thresholdSecs` idle. */
+  setIdleAutoshow: (enabled: boolean, thresholdSecs: number) =>
+    invoke<void>("set_idle_autoshow", { enabled, thresholdSecs }),
+
+  /** Current idle-auto-show setting, so the toggle reflects reality on open. */
+  getIdleAutoshow: () => invoke<IdleAutoshow>("get_idle_autoshow"),
 };

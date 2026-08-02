@@ -24,6 +24,11 @@ pub const K_COROS_REGION: &str = "coros_region";
 pub const K_DEVICE_ID: &str = "device_id";
 pub const K_DEVICE_PRIVATE_KEY: &str = "device_private_key";
 pub const K_CLOUD_URL: &str = "cloud_url";
+/// Ambient-garden idle auto-show preference ("1"/"0") and its threshold in
+/// seconds. Not secrets — kept here so the setting survives updates like the
+/// rest of the app state.
+pub const K_IDLE_AUTOSHOW: &str = "idle_autoshow";
+pub const K_IDLE_THRESHOLD: &str = "idle_threshold_secs";
 
 fn store_path() -> Option<PathBuf> {
     let home = std::env::var("HOME").ok()?;

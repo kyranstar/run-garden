@@ -1,4 +1,4 @@
-import { and, asc, eq, gte, isNull, lte } from "drizzle-orm";
+import { and, asc, desc, eq, gte, isNull, lte } from "drizzle-orm";
 import {
   activities,
   gardenDayInputs,
@@ -25,9 +25,12 @@ import {
   type WorkoutCategory,
 } from "@rg/domain";
 import {
+  conditionWord,
+  DEFAULT_GARDEN_CONFIG,
   initialSnapshot,
   simulateDay,
   SIMULATION_VERSION,
+  SPECIES_BY_ID,
   type GardenDayInput,
   type GardenSnapshot,
 } from "@rg/garden-engine";
@@ -407,4 +410,56 @@ export async function recentGardenEvents(db: Db, userId: string, limit = 40) {
     .where(eq(gardenEvents.userId, userId))
     .orderBy(gardenEvents.date, gardenEvents.seq)
     .then((rows) => rows.slice(-limit).reverse());
+}
+
+export interface GardenSpeciesView {
+  speciesId: string;
+  name: string;
+  category: string | undefined;
+  rarity: string | undefined;
+  unlockedOn: string;
+  livingCount: number;
+}
+
+export interface GardenView {
+  snapshot: GardenSnapshot;
+  condition: string;
+  species: GardenSpeciesView[];
+}
+
+/**
+ * The renderable garden: advances the simulation to now, then returns the
+ * current snapshot, its one-word condition, and the unlocked-species roster.
+ * Shared by the session-authed page route and the device-authed ambient read
+ * so both always show the exact same garden.
+ */
+export async function buildGardenView(
+  db: Db,
+  userId: string,
+  prefs: UserPreferences,
+): Promise<GardenView> {
+  await advanceGarden(db, userId, prefs).catch(() => undefined);
+  const snapshot = await ensureGarden(db, userId, prefs);
+  const unlocks = await db
+    .select()
+    .from(gardenUnlocks)
+    .where(eq(gardenUnlocks.userId, userId))
+    .orderBy(desc(gardenUnlocks.unlockedOn));
+  return {
+    snapshot,
+    condition: conditionWord(snapshot.state, DEFAULT_GARDEN_CONFIG),
+    species: unlocks.map((u) => {
+      const s = SPECIES_BY_ID.get(u.speciesId);
+      return {
+        speciesId: u.speciesId,
+        name: s?.name ?? u.speciesId,
+        category: s?.category,
+        rarity: s?.rarity,
+        unlockedOn: u.unlockedOn,
+        livingCount: snapshot.plants.filter(
+          (p) => p.speciesId === u.speciesId && p.state !== "dead",
+        ).length,
+      };
+    }),
+  };
 }

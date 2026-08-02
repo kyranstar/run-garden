@@ -14,7 +14,7 @@ import { loadPreferences, syncCalendar } from "../services/calendar-sync.js";
 import { applyJobResult, claimNextJob } from "../services/jobs.js";
 import { importPlanSnapshot } from "../services/import-plan.js";
 import { ingestActivities } from "../services/completion.js";
-import { advanceGarden, resimulateFrom } from "../services/garden-sync.js";
+import { advanceGarden, buildGardenView, resimulateFrom } from "../services/garden-sync.js";
 import { finishSyncRun, recordSyncError, startSyncRun } from "../services/reconcile-daily.js";
 import { dailyHealth } from "@rg/database";
 import { fingerprint } from "@rg/domain";
@@ -308,6 +308,17 @@ deviceRoutes.post("/bridge/jobs/:id/result", requireDevice, async (c) => {
   // Reconcile the Calendar if COROS produced a materially different result.
   await syncCalendar(db, c.env, c.get("userId")).catch(() => undefined);
   return c.json({ ok: true, ...result });
+});
+
+// Ambient garden: the same renderable garden the website shows, read over the
+// device's signed channel so the desktop's screensaver window can display it
+// without a browser session. Read-only — advances the sim and returns it.
+deviceRoutes.post("/bridge/garden", requireDevice, async (c) => {
+  const db = c.get("db");
+  const userId = c.get("userId");
+  const prefs = await loadPreferences(db, userId);
+  const view = await buildGardenView(db, userId, prefs);
+  return c.json(view);
 });
 
 deviceRoutes.post("/bridge/heartbeat", requireDevice, async (c) => {

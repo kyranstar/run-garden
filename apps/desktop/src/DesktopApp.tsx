@@ -1,8 +1,8 @@
 import { useEffect, useState } from "react";
 import { QueryClient, QueryClientProvider, useQuery } from "@tanstack/react-query";
-import { App as WebApp, Banner, Card, Sheet } from "@rg/ui";
+import { AmbientGarden, App as WebApp, Banner, Card, Sheet } from "@rg/ui";
 import { PRODUCT_NAME } from "@rg/domain";
-import { desktop, isDesktop, type BridgeState } from "./tauri.js";
+import { desktop, isAmbientWindow, isDesktop, type BridgeState } from "./tauri.js";
 
 const queryClient = new QueryClient();
 
@@ -134,6 +134,70 @@ function CloudConnectCard({ state, onChanged }: { state: BridgeState; onChanged:
   );
 }
 
+function AmbientCard({ cloudConnected }: { cloudConnected: boolean }) {
+  const [enabled, setEnabled] = useState(false);
+  const [thresholdMin, setThresholdMin] = useState(10);
+  useEffect(() => {
+    desktop
+      .getIdleAutoshow()
+      .then((s) => {
+        setEnabled(s.enabled);
+        setThresholdMin(Math.max(1, Math.round(s.thresholdSecs / 60)));
+      })
+      .catch(() => undefined);
+  }, []);
+
+  const persist = (nextEnabled: boolean, nextMin: number) => {
+    setEnabled(nextEnabled);
+    setThresholdMin(nextMin);
+    void desktop.setIdleAutoshow(nextEnabled, nextMin * 60).catch(() => undefined);
+  };
+
+  return (
+    <Card title="Ambient garden">
+      <p className="muted" style={{ marginBottom: "0.6rem" }}>
+        A full-screen, living view of your garden — leave it up like a screensaver. Press{" "}
+        <kbd>Esc</kbd> or click to exit.
+      </p>
+      <button
+        className="btn btn-primary btn-small"
+        disabled={!cloudConnected}
+        onClick={() => void desktop.showAmbient()}
+      >
+        Open ambient garden
+      </button>
+      {!cloudConnected ? (
+        <p className="faint" style={{ marginTop: "0.5rem" }}>
+          Connect to the Run Garden cloud above to grow the ambient garden.
+        </p>
+      ) : null}
+      <label className="switch-row" style={{ cursor: "pointer", marginTop: "0.8rem" }}>
+        <span>Show when I'm idle</span>
+        <input
+          type="checkbox"
+          checked={enabled}
+          onChange={(e) => persist(e.target.checked, thresholdMin)}
+        />
+      </label>
+      {enabled ? (
+        <div className="field" style={{ marginTop: "0.5rem" }}>
+          <label htmlFor="ambient-idle">Idle time before it appears</label>
+          <select
+            id="ambient-idle"
+            value={thresholdMin}
+            onChange={(e) => persist(true, Number(e.target.value))}
+          >
+            <option value={5}>5 minutes</option>
+            <option value={10}>10 minutes</option>
+            <option value={20}>20 minutes</option>
+            <option value={30}>30 minutes</option>
+          </select>
+        </div>
+      ) : null}
+    </Card>
+  );
+}
+
 function ConnectionPanel() {
   const [spikeOpen, setSpikeOpen] = useState(false);
   const [spikeResult, setSpikeResult] = useState<string | null>(null);
@@ -189,6 +253,8 @@ function ConnectionPanel() {
           </Card>
 
           <CloudConnectCard state={s} onChanged={() => state.refetch()} />
+
+          <AmbientCard cloudConnected={s.cloudConnected} />
 
           <Card title="Schedule write test">
             <p className="muted" style={{ marginBottom: "0.6rem" }}>
@@ -259,6 +325,18 @@ function ConnectionPanel() {
 }
 
 export function DesktopApp() {
+  // The ambient (screensaver) window loads this same bundle but renders only the
+  // full-bleed garden. This branch is deterministic per window, so the early
+  // return before hooks is safe.
+  if (isAmbientWindow()) {
+    return (
+      <AmbientGarden
+        fetchGarden={desktop.gardenSnapshot}
+        onExit={() => void desktop.hideAmbient()}
+      />
+    );
+  }
+
   const [running, setRunning] = useState(false);
   useEffect(() => {
     setRunning(isDesktop());

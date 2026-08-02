@@ -235,6 +235,14 @@ export async function handleRequest(state: BridgeState, input: unknown): Promise
         return ok(id, { started: true });
       }
 
+      case "readGarden": {
+        // Ambient garden read for the desktop screensaver window. Requires an
+        // active cloud sync (which holds the device signing key); returns the
+        // same { snapshot, condition, species } the website renders.
+        if (!state.cloudSync) return err(id, "not_connected", "cloud sync not started");
+        return ok(id, await state.cloudSync.readGarden());
+      }
+
       case "stopCloudSync": {
         if (state.cloudSync) {
           state.cloudSync.stop();

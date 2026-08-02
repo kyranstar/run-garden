@@ -203,6 +203,21 @@ describe("NDJSON protocol", () => {
     });
   });
 
+  it("readGarden needs an active cloud sync, then delegates to it", async () => {
+    const { state } = makeState();
+    // No cloud sync started yet → a clear, non-fatal signal for the ambient view.
+    expect(await handleRequest(state, { id: "g0", op: "readGarden" })).toMatchObject({
+      ok: false,
+      error: { category: "not_connected" },
+    });
+
+    // With a running sync, the op returns exactly what the signed cloud read gives.
+    const garden = { snapshot: { plants: [] }, condition: "flourishing", species: [] };
+    state.cloudSync = { readGarden: async () => garden } as unknown as BridgeState["cloudSync"];
+    const res = await handleRequest(state, { id: "g1", op: "readGarden" });
+    expect(res).toMatchObject({ ok: true, result: garden });
+  });
+
   it("shutdown flags the state for the main loop", async () => {
     const { state } = makeState();
     const res = await handleRequest(state, { id: "x1", op: "shutdown" });

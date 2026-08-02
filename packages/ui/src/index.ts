@@ -9,3 +9,8 @@ export { InsightsScreen } from "./screens/insights.js";
 export { SettingsScreen } from "./screens/settings.js";
 export { WelcomeScreen } from "./screens/welcome.js";
 export { Onboarding } from "./screens/onboarding.js";
+export {
+  AmbientGarden,
+  type AmbientGardenProps,
+  type AmbientGardenView,
+} from "./screens/ambient.js";

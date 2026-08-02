@@ -137,6 +137,15 @@ export class CloudSync {
     this.logger("[coros-bridge] cloud sync pushed snapshot");
   }
 
+  /**
+   * Read the current renderable garden over the signed device channel, for the
+   * desktop app's ambient window. Read-only — no COROS access, so it can run
+   * outside the write-serializing chain.
+   */
+  async readGarden(): Promise<unknown> {
+    return this.post("/api/devices/bridge/garden", {});
+  }
+
   /** Claim → execute → report, draining the queue one job at a time. */
   async pollJobs(): Promise<void> {
     for (let i = 0; i < 10; i++) {

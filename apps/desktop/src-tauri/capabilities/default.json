@@ -2,7 +2,7 @@
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
   "description": "Run Garden desktop capabilities",
-  "windows": ["main"],
+  "windows": ["main", "ambient"],
   "permissions": [
     "core:default",
     "shell:allow-open",

@@ -529,6 +529,12 @@ export interface GardenSceneProps {
   className?: string;
   /** Hour of day 0–24 for the sun/moon position. Defaults to midday. */
   timeOfDay?: number;
+  /**
+   * SVG fit. Defaults to "xMidYMax meet" (whole scene visible, ground-anchored).
+   * Pass "xMidYMax slice" for a full-bleed fill that crops extra sky — used by
+   * the ambient/screensaver view.
+   */
+  preserveAspectRatio?: string;
 }
 
 export function GardenScene({
@@ -539,6 +545,7 @@ export function GardenScene({
   idPrefix = "rg-garden",
   className,
   timeOfDay,
+  preserveAspectRatio = "xMidYMax meet",
 }: GardenSceneProps) {
   const p = idPrefix;
   const animate = !reducedMotion;
@@ -562,7 +569,7 @@ export function GardenScene({
     <svg
       viewBox="0 0 1000 560"
       width="100%"
-      preserveAspectRatio="xMidYMax meet"
+      preserveAspectRatio={preserveAspectRatio}
       role="img"
       aria-label={desc}
       className={className}
