@@ -46,12 +46,15 @@ import {
   computeRestingHr,
   computeTimeOfDay,
   computeWeeklyTraining,
+  easyCeiling,
   estimateHrMax,
   interpret,
   negativeSplit,
   pickEvidenceCard,
   predictRaces,
   type InterpretedMetric,
+  type MetricDetail,
+  type MetricRunDetail,
 } from "@rg/analytics";
 import { SIMULATION_VERSION } from "@rg/garden-engine";
 import { NORMALIZER_VERSION, normalizeStravaActivity } from "@rg/providers";
@@ -363,6 +366,8 @@ insightRoutes.get("/", async (c) => {
   const catSec = { easy: 0, quality: 0, long: 0 };
   const hardDates: string[] = [];
   const easyRuns: Array<{ avgHr: number }> = [];
+  // Identity of each easy run, in the same order — for the drilldown evidence.
+  const easyRunRows: Array<(typeof acts)[number]> = [];
   let bestRun: { distanceMeters: number; durationSeconds: number } | null = null;
   for (const a of acts) {
     const day = (a.startTimeLocal ?? a.startTime).slice(0, 10);
@@ -374,7 +379,10 @@ insightRoutes.get("/", async (c) => {
       hardDates.push(day);
     } else if (cat === "long") catSec.long += a.durationSeconds;
     else catSec.easy += a.durationSeconds;
-    if ((cat === "easy" || cat === "recovery" || !cat) && a.avgHeartRate) easyRuns.push({ avgHr: a.avgHeartRate });
+    if ((cat === "easy" || cat === "recovery" || !cat) && a.avgHeartRate) {
+      easyRuns.push({ avgHr: a.avgHeartRate });
+      easyRunRows.push(a);
+    }
     if ((a.distanceMeters ?? 0) >= 3000 && a.durationSeconds > 0) {
       const pace = a.durationSeconds / (a.distanceMeters! / 1000);
       const bestPace = bestRun ? bestRun.durationSeconds / (bestRun.distanceMeters / 1000) : Infinity;
@@ -384,7 +392,13 @@ insightRoutes.get("/", async (c) => {
   const loadsByDay = [...loadDay.entries()].map(([date, load]) => ({ date, load }));
   const weeklySeconds = [...weekSec.entries()].sort(([x], [y]) => x.localeCompare(y)).map(([, s]) => s);
 
-  const splitRuns: Array<{ firstHalfPace: number; secondHalfPace: number }> = [];
+  const splitRuns: Array<{
+    firstHalfPace: number;
+    secondHalfPace: number;
+    activityId?: string;
+    date?: string;
+    title?: string;
+  }> = [];
   for (const a of acts) {
     const rl = (lapsByActivity.get(a.id) ?? [])
       .filter((l) => (l.distanceMeters ?? 0) > 0 && l.durationSeconds > 0)
@@ -404,7 +418,14 @@ insightRoutes.get("/", async (c) => {
     };
     const fp = pace(half[0]);
     const sp = pace(half[1]);
-    if (fp > 0 && sp > 0) splitRuns.push({ firstHalfPace: fp, secondHalfPace: sp });
+    if (fp > 0 && sp > 0)
+      splitRuns.push({
+        firstHalfPace: fp,
+        secondHalfPace: sp,
+        activityId: a.id,
+        date: (a.startTimeLocal ?? a.startTime).slice(0, 10),
+        title: a.title ?? undefined,
+      });
   }
 
   const health = await db
@@ -493,6 +514,71 @@ insightRoutes.get("/", async (c) => {
       meaning: "How often your second half is faster than your first — a sign of good pacing and durability.",
     })),
   ];
+
+  // ── Per-run evidence (drilldowns) ──
+  // Easy-run discipline: every contributing run with its per-lap HR versus the
+  // easy ceiling, so "78%" is inspectable down to the exact lap that broke it.
+  const ceiling = easyCeiling(hrMax);
+  const edRuns: MetricRunDetail[] = easyRunRows.map((a) => {
+    const over = (a.avgHeartRate ?? 0) > ceiling;
+    const laps = (lapsByActivity.get(a.id) ?? [])
+      .filter((l) => l.durationSeconds > 0)
+      .sort((x, y) => x.lapIndex - y.lapIndex)
+      .map((l) => ({
+        lapIndex: l.lapIndex,
+        avgHr: l.avgHeartRate ?? undefined,
+        durationSeconds: l.durationSeconds,
+        distanceMeters: l.distanceMeters ?? undefined,
+        over: (l.avgHeartRate ?? 0) > ceiling,
+      }));
+    return {
+      activityId: a.id,
+      date: (a.startTimeLocal ?? a.startTime).slice(0, 10),
+      title: a.title ?? undefined,
+      value: `avg ${a.avgHeartRate} bpm`,
+      over,
+      note: over
+        ? `Averaged ${a.avgHeartRate} bpm — above your easy ceiling of ${ceiling}.`
+        : `Stayed easy — averaged ${a.avgHeartRate} bpm, under your ${ceiling} bpm ceiling.`,
+      laps: laps.length >= 2 ? laps : undefined,
+    };
+  });
+  const detailByMetric: Record<string, MetricDetail> = {
+    easyDiscipline: {
+      explain:
+        `Measured against your easy ceiling of ${ceiling} bpm — the top of zone 2, ` +
+        `estimated from your max heart rate of ${hrMax}. A run counts as disciplined ` +
+        `when its average HR stays under that line. Red laps are where it slipped over.`,
+      threshold: { label: "easy ceiling", value: ceiling, unit: "bpm" },
+      runs: edRuns,
+    },
+    splits: {
+      explain:
+        "Each run's first-half pace versus its second half, from your recorded laps. " +
+        "A faster second half (a negative split) shows pacing control and late-run strength.",
+      runs: splitRuns
+        .filter((s) => s.activityId)
+        .map((s) => {
+          const diff = s.firstHalfPace - s.secondHalfPace; // positive = negative split
+          const fmt = (x: number) => `${Math.round(Math.abs(x))} s/km`;
+          return {
+            activityId: s.activityId!,
+            date: s.date!,
+            title: s.title,
+            value: diff >= 0 ? `finished ${fmt(diff)} faster` : `faded ${fmt(diff)}`,
+            over: diff < 0,
+            note:
+              diff >= 0
+                ? "Second half faster — a negative split."
+                : "Second half slower — went out a touch hot.",
+          };
+        }),
+    },
+  };
+  for (const m of interpreted) {
+    const d = detailByMetric[m.id];
+    if (d && m.status === "ok" && d.runs.length > 0) m.detail = d;
+  }
 
   const reviews = await db
     .select()

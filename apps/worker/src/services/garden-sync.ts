@@ -29,11 +29,15 @@ import {
   conditionWord,
   DEFAULT_GARDEN_CONFIG,
   initialSnapshot,
+  nextUnlocks,
   simulateDay,
   SIMULATION_VERSION,
   SPECIES_BY_ID,
+  speciesCodex,
+  WILDLIFE_HINTS,
   type GardenDayInput,
   type GardenSnapshot,
+  type SpeciesUnlockStatus,
 } from "@rg/garden-engine";
 import { chunkedInsert, type Db } from "./db.js";
 
@@ -152,11 +156,22 @@ export async function buildDayInput(
           .where(and(eq(workoutCompletionMatches.workoutId, w.id), isNull(workoutCompletionMatches.undoneAt)))
           .limit(1)
       )[0];
+      // The matched activity's real distance/start hour drive the achievement
+      // unlocks (milestone distances, early-bird runs).
+      const activity = match?.activityId
+        ? (
+            await db.select().from(activities).where(eq(activities.id, match.activityId)).limit(1)
+          )[0]
+        : undefined;
       completedRuns.push({
         workoutId: w.id,
         activityId: match?.activityId,
         category: w.category as WorkoutCategory,
         window: w.effectiveTime < "12:00" ? "morning" : "evening",
+        distanceMeters: activity?.distanceMeters ?? undefined,
+        startHourLocal: activity
+          ? Number((activity.startTimeLocal ?? activity.startTime).slice(11, 13))
+          : undefined,
       });
     }
   }
@@ -175,6 +190,8 @@ export async function buildDayInput(
       category: "easy",
       window: (a.startTimeLocal ?? a.startTime).slice(11, 16) < "12:00" ? "morning" : "evening",
       unplanned: true,
+      distanceMeters: a.distanceMeters ?? undefined,
+      startHourLocal: Number((a.startTimeLocal ?? a.startTime).slice(11, 13)),
     });
   }
 
@@ -434,6 +451,12 @@ export interface GardenView {
    * durable replay converges to exactly this.
    */
   previewEvents: GardenEvent[];
+  /** Every species — unlocked and locked — with hints and real progress. */
+  codex: Array<SpeciesUnlockStatus & { unlockedOn: string | null; livingCount: number }>;
+  /** The nearest locked species: the "1 more week and it arrives" nudges. */
+  nextUnlocks: SpeciesUnlockStatus[];
+  /** Wildlife visitors: who's here now and what draws each kind. */
+  wildlife: Array<{ kind: string; present: boolean; hint: string }>;
 }
 
 /**
@@ -468,11 +491,34 @@ export async function buildGardenView(
       // Preview is cosmetic — never let it break the garden read.
     }
   }
-  const unlocks = await db
+  let unlocks = await db
     .select()
     .from(gardenUnlocks)
     .where(eq(gardenUnlocks.userId, userId))
     .orderBy(desc(gardenUnlocks.unlockedOn));
+
+  // Self-heal the collection: the snapshot's unlockedSpeciesIds is the truth,
+  // but genesis ("start") species predate the unlocks table, so seed any
+  // missing rows — otherwise the collection reads "0 species" on day one.
+  const have = new Set(unlocks.map((u) => u.speciesId));
+  const missing = snapshot.unlockedSpeciesIds.filter((id) => !have.has(id));
+  if (missing.length > 0) {
+    for (const speciesId of missing) {
+      await db
+        .insert(gardenUnlocks)
+        .values({ id: newId(), userId, speciesId, unlockedOn: snapshot.state.createdDate })
+        .onConflictDoNothing();
+    }
+    unlocks = await db
+      .select()
+      .from(gardenUnlocks)
+      .where(eq(gardenUnlocks.userId, userId))
+      .orderBy(desc(gardenUnlocks.unlockedOn));
+  }
+  const unlockedOnById = new Map(unlocks.map((u) => [u.speciesId, u.unlockedOn]));
+  const livingCount = (speciesId: string): number =>
+    snapshot.plants.filter((p) => p.speciesId === speciesId && p.state !== "dead").length;
+
   return {
     snapshot,
     condition: conditionWord(snapshot.state, DEFAULT_GARDEN_CONFIG),
@@ -485,10 +531,19 @@ export async function buildGardenView(
         category: s?.category,
         rarity: s?.rarity,
         unlockedOn: u.unlockedOn,
-        livingCount: snapshot.plants.filter(
-          (p) => p.speciesId === u.speciesId && p.state !== "dead",
-        ).length,
+        livingCount: livingCount(u.speciesId),
       };
     }),
+    codex: speciesCodex(snapshot).map((entry) => ({
+      ...entry,
+      unlockedOn: unlockedOnById.get(entry.speciesId) ?? null,
+      livingCount: livingCount(entry.speciesId),
+    })),
+    nextUnlocks: nextUnlocks(snapshot, 3),
+    wildlife: Object.entries(snapshot.wildlife).map(([kind, present]) => ({
+      kind,
+      present,
+      hint: WILDLIFE_HINTS[kind as keyof typeof WILDLIFE_HINTS] ?? "",
+    })),
   };
 }

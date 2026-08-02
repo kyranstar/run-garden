@@ -918,6 +918,226 @@ button {
   margin: 0.8rem 0;
 }
 
+/* ── Species codex & unlock nudges ────────────────────────────────────────── */
+.garden-nowline {
+  margin: 0.15rem 0 0.35rem;
+  font-size: 0.95rem;
+}
+.now-chip {
+  display: inline-block;
+  background: var(--accent, #4e7a5a);
+  color: #fff;
+  border-radius: 999px;
+  font-size: 0.68rem;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  padding: 0.1rem 0.5rem;
+  margin-right: 0.45rem;
+  vertical-align: 0.08em;
+}
+.codex-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(108px, 1fr));
+  gap: 0.55rem;
+  margin-top: 0.6rem;
+}
+.codex-card {
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 0.5rem 0.45rem 0.55rem;
+  text-align: center;
+  background: color-mix(in srgb, var(--card-bg, #fff) 92%, #7aa458 8%);
+}
+.codex-sprite {
+  width: 100%;
+  height: 64px;
+  display: block;
+}
+.codex-locked {
+  background: color-mix(in srgb, var(--card-bg, #fff) 94%, #444 6%);
+}
+.codex-sprite-locked {
+  filter: grayscale(1) brightness(0.35);
+  opacity: 0.55;
+}
+.codex-name {
+  font-weight: 650;
+  font-size: 0.83rem;
+  margin-top: 0.2rem;
+}
+.codex-sub {
+  font-size: 0.74rem;
+  color: var(--muted, #667);
+  line-height: 1.25;
+}
+.codex-toggle {
+  margin-top: 0.7rem;
+  display: inline-block;
+}
+.codex-progress {
+  height: 5px;
+  border-radius: 999px;
+  background: var(--border);
+  overflow: hidden;
+  margin-top: 0.35rem;
+}
+.codex-progress span {
+  display: block;
+  height: 100%;
+  border-radius: inherit;
+  background: linear-gradient(90deg, #7aa458, #4e7a5a);
+  transition: width 0.4s ease;
+}
+.nudges {
+  display: flex;
+  flex-direction: column;
+  gap: 0.6rem;
+}
+.nudge-row {
+  display: grid;
+  grid-template-columns: 56px 1fr;
+  gap: 0.7rem;
+  align-items: center;
+}
+.nudge-row .codex-sprite {
+  height: 52px;
+}
+.nudge-title {
+  font-weight: 650;
+  font-size: 0.92rem;
+  display: flex;
+  align-items: center;
+  gap: 0.45rem;
+}
+.rarity {
+  font-size: 0.66rem;
+  font-weight: 700;
+  border-radius: 999px;
+  padding: 0.06rem 0.45rem;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+.rarity-uncommon {
+  background: #e4ecf7;
+  color: #3c5f8a;
+}
+.rarity-rare {
+  background: #f3e8f2;
+  color: #7a4a74;
+}
+.wildlife-shelf {
+  margin-top: 0.9rem;
+  border-top: 1px solid var(--border);
+  padding-top: 0.7rem;
+}
+.wildlife-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+}
+.wildlife-chip {
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  padding: 0.18rem 0.6rem;
+  font-size: 0.78rem;
+  background: color-mix(in srgb, var(--card-bg, #fff) 90%, #7aa458 10%);
+}
+.wildlife-away {
+  opacity: 0.45;
+  filter: grayscale(0.8);
+  background: transparent;
+}
+@media (prefers-color-scheme: dark) {
+  .rarity-uncommon {
+    background: #2c3c50;
+    color: #a8c4e4;
+  }
+  .rarity-rare {
+    background: #402f3e;
+    color: #d9a8d2;
+  }
+}
+
+/* ── Insights drilldown (per-run evidence) ───────────────────────────────── */
+.metric-drillable {
+  cursor: pointer;
+  transition: border-color 0.15s ease;
+}
+.metric-drillable:hover,
+.metric-drillable:focus-visible {
+  border-color: var(--accent, #4e7a5a);
+}
+.metric-drill-hint {
+  font-size: 0.75rem;
+  color: var(--accent, #4e7a5a);
+  margin-top: 0.35rem;
+}
+.drill-runs {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.8rem;
+}
+.drill-run {
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 0.6rem 0.7rem;
+}
+.drill-run-over {
+  border-left: 3px solid #c96a52;
+}
+.drill-run-head {
+  display: flex;
+  align-items: baseline;
+  gap: 0.6rem;
+  flex-wrap: wrap;
+}
+.drill-run-head .date {
+  font-size: 0.78rem;
+  color: var(--muted, #667);
+  min-width: 4.2em;
+}
+.drill-run-title {
+  font-weight: 650;
+  font-size: 0.9rem;
+}
+.drill-run-value {
+  margin-left: auto;
+  font-variant-numeric: tabular-nums;
+  font-size: 0.85rem;
+}
+.lap-bars {
+  width: 100%;
+  max-width: 420px;
+  height: auto;
+  margin-top: 0.45rem;
+  display: block;
+}
+.lap-bar {
+  fill: #7aa458;
+  opacity: 0.85;
+}
+.lap-bar-over {
+  fill: #c96a52;
+}
+.lap-label {
+  font-size: 7px;
+  fill: var(--muted, #667);
+}
+.lap-ceiling {
+  stroke: #a8552f;
+  stroke-width: 1;
+  stroke-dasharray: 4 3;
+}
+.lap-ceiling-label {
+  font-size: 7px;
+  fill: #a8552f;
+  font-weight: 700;
+}
+
 /* ── Ambient garden (desktop screensaver window) ──────────────────────────── */
 .ambient-root {
   position: fixed;

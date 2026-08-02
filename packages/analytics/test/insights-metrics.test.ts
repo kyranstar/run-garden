@@ -121,3 +121,15 @@ describe("discipline + performance", () => {
     expect(r.status === "ok" && r.value.negativePct).toBe(50);
   });
 });
+
+describe("easyCeiling", () => {
+  it("is the top of zone 2 (80% of HRmax)", async () => {
+    const { easyCeiling, zoneOf } = await import("../src/hrZones.js");
+    const hrMax = 190;
+    const c = easyCeiling(hrMax);
+    expect(c).toBe(152);
+    // Everything at/below the ceiling is Z1–2; just above is Z3.
+    expect(zoneOf(c - 1, hrMax)).toBeLessThanOrEqual(2);
+    expect(zoneOf(c + 1, hrMax)).toBe(3);
+  });
+});

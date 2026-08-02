@@ -1,6 +1,7 @@
+import { useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { api } from "@rg/api-client";
-import { Card, EmptyState, formatDayLong, Spinner } from "../components.js";
+import { Card, EmptyState, formatDayLong, formatDayShort, Sheet, Spinner } from "../components.js";
 import { AdherenceChart, ChartFrame, RunSeriesChart, WeeklyDurationChart } from "../charts.js";
 
 interface MetricOk<T> {
@@ -25,6 +26,28 @@ function InsufficientNote({ m }: { m: MetricInsufficient }) {
   );
 }
 
+interface MetricLapDetail {
+  lapIndex: number;
+  avgHr?: number;
+  durationSeconds?: number;
+  distanceMeters?: number;
+  over?: boolean;
+}
+interface MetricRunDetail {
+  activityId: string;
+  date: string;
+  title?: string;
+  value?: string;
+  over?: boolean;
+  note?: string;
+  laps?: MetricLapDetail[];
+}
+interface MetricDetail {
+  explain: string;
+  threshold?: { label: string; value: number; unit?: string };
+  runs: MetricRunDetail[];
+}
+
 interface InterpretedMetric {
   id: string;
   title: string;
@@ -35,6 +58,7 @@ interface InterpretedMetric {
   meaning: string;
   suggestion?: string;
   sampleNote: string;
+  detail?: MetricDetail;
 }
 
 function BandPill({ band }: { band?: string }) {
@@ -44,9 +68,25 @@ function BandPill({ band }: { band?: string }) {
   return <span className={`pill ${cls}`}>{label}</span>;
 }
 
-function MetricCard({ m }: { m: InterpretedMetric }) {
+function MetricCard({ m, onDrill }: { m: InterpretedMetric; onDrill?: (m: InterpretedMetric) => void }) {
+  const drillable = !!m.detail && !!onDrill;
   return (
-    <div className="metric-card">
+    <div
+      className={`metric-card${drillable ? " metric-drillable" : ""}`}
+      {...(drillable
+        ? {
+            role: "button" as const,
+            tabIndex: 0,
+            onClick: () => onDrill!(m),
+            onKeyDown: (e: React.KeyboardEvent) => {
+              if (e.key === "Enter" || e.key === " ") {
+                e.preventDefault();
+                onDrill!(m);
+              }
+            },
+          }
+        : {})}
+    >
       <div className="metric-head">
         <span className="metric-title">{m.title}</span>
         {m.status === "ok" ? <BandPill band={m.band} /> : null}
@@ -60,7 +100,88 @@ function MetricCard({ m }: { m: InterpretedMetric }) {
       <p className="muted">{m.meaning}</p>
       {m.status === "ok" && m.suggestion ? <p className="metric-suggestion">{m.suggestion}</p> : null}
       <p className="faint">{m.sampleNote}</p>
+      {drillable ? <p className="metric-drill-hint">See the runs behind this →</p> : null}
     </div>
+  );
+}
+
+/**
+ * Per-lap HR bars for one run: each bar's height tracks the lap's average HR,
+ * red bars breached the easy ceiling, and the dashed line IS the ceiling —
+ * so "where it went wrong" is visible at a glance.
+ */
+function LapHrBars({ laps, threshold }: { laps: MetricLapDetail[]; threshold?: { value: number; unit?: string } }) {
+  const withHr = laps.filter((l) => (l.avgHr ?? 0) > 0);
+  if (withHr.length < 2) return null;
+  const max = Math.max(...withHr.map((l) => l.avgHr!), threshold?.value ?? 0) * 1.06;
+  const min = Math.min(...withHr.map((l) => l.avgHr!), threshold?.value ?? Infinity) * 0.92;
+  const h = 72;
+  const y = (hr: number) => h - ((hr - min) / (max - min)) * h;
+  const bw = Math.min(28, Math.max(10, 220 / withHr.length));
+  const width = withHr.length * (bw + 3);
+  return (
+    <svg
+      viewBox={`0 0 ${width} ${h + 14}`}
+      className="lap-bars"
+      role="img"
+      aria-label={`Per-lap heart rate${threshold ? `, ceiling ${threshold.value}` : ""}`}
+    >
+      {withHr.map((l, i) => {
+        const top = y(l.avgHr!);
+        return (
+          <g key={l.lapIndex}>
+            <rect
+              x={i * (bw + 3)}
+              y={top}
+              width={bw}
+              height={h - top}
+              rx={2}
+              className={l.over ? "lap-bar lap-bar-over" : "lap-bar"}
+            >
+              <title>{`Lap ${l.lapIndex}: ${l.avgHr} bpm${l.over ? " — over the ceiling" : ""}`}</title>
+            </rect>
+            <text x={i * (bw + 3) + bw / 2} y={h + 11} textAnchor="middle" className="lap-label">
+              {l.lapIndex}
+            </text>
+          </g>
+        );
+      })}
+      {threshold ? (
+        <>
+          <line x1={0} x2={width} y1={y(threshold.value)} y2={y(threshold.value)} className="lap-ceiling" />
+          <text x={width - 2} y={y(threshold.value) - 3} textAnchor="end" className="lap-ceiling-label">
+            {threshold.value}
+            {threshold.unit ? ` ${threshold.unit}` : ""}
+          </text>
+        </>
+      ) : null}
+    </svg>
+  );
+}
+
+function MetricDrilldown({ m, onClose }: { m: InterpretedMetric; onClose: () => void }) {
+  const d = m.detail!;
+  return (
+    <Sheet open onClose={onClose} title={m.title}>
+      <div className="stack">
+        <p className="muted">{d.explain}</p>
+        <ul className="drill-runs">
+          {d.runs.map((r) => (
+            <li key={r.activityId} className={r.over ? "drill-run drill-run-over" : "drill-run"}>
+              <div className="drill-run-head">
+                <span className="date">{formatDayShort(r.date)}</span>
+                <span className="drill-run-title">{r.title ?? "Run"}</span>
+                {r.value ? <span className="drill-run-value">{r.value}</span> : null}
+              </div>
+              {r.note ? <p className="faint">{r.note}</p> : null}
+              {r.laps && r.laps.length >= 2 ? (
+                <LapHrBars laps={r.laps} threshold={d.threshold} />
+              ) : null}
+            </li>
+          ))}
+        </ul>
+      </div>
+    </Sheet>
   );
 }
 
@@ -73,6 +194,7 @@ const METRIC_GROUPS: Array<{ title: string; ids: string[] }> = [
 
 export function InsightsScreen() {
   const insights = useQuery({ queryKey: ["insights"], queryFn: api.insights, staleTime: 60_000 });
+  const [drill, setDrill] = useState<InterpretedMetric | null>(null);
 
   if (insights.isLoading) return <Spinner label="Computing insights" />;
   if (!insights.data) return <EmptyState title="Couldn't load insights" />;
@@ -116,7 +238,7 @@ export function InsightsScreen() {
           <Card title={g.title} key={g.title}>
             <div className="metric-grid">
               {metrics.map((m) => (
-                <MetricCard key={m.id} m={m} />
+                <MetricCard key={m.id} m={m} onDrill={setDrill} />
               ))}
             </div>
           </Card>
@@ -265,6 +387,8 @@ export function InsightsScreen() {
           </div>
         </Card>
       ) : null}
+
+      {drill?.detail ? <MetricDrilldown m={drill} onClose={() => setDrill(null)} /> : null}
     </div>
   );
 }

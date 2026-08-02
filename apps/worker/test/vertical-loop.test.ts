@@ -423,6 +423,25 @@ describe("garden integration", () => {
     expect(persisted!.state.lastSimulatedDate < today).toBe(true);
   });
 
+  it("collection is never empty: genesis species seed the unlocks table, codex + nudges ship", async () => {
+    const view = await buildGardenView(db, userId, prefs);
+    // Starter meadow species count from day one (the "0 species" bug).
+    expect(view.species.length).toBeGreaterThanOrEqual(2); // clover + meadow grass
+    const rows = await db
+      .select()
+      .from(schema.gardenUnlocks)
+      .where(eq(schema.gardenUnlocks.userId, userId));
+    expect(rows.length).toBe(view.species.length);
+    // The codex covers the full catalog with hints on locked entries…
+    expect(view.codex.length).toBeGreaterThan(20);
+    const locked = view.codex.filter((c) => !c.unlocked);
+    expect(locked.length).toBeGreaterThan(0);
+    for (const c of locked) expect(c.hint.length).toBeGreaterThan(0);
+    // …and the nudges point at reachable locked species.
+    expect(view.nextUnlocks.length).toBe(3);
+    expect(view.wildlife.length).toBeGreaterThanOrEqual(9);
+  });
+
   it("does not punish unresolved workouts before the grace period", async () => {
     await importFromProvider();
     const w = (

@@ -20,6 +20,11 @@ export function estimateHrMax(activities: readonly NormalizedActivity[]): number
 
 const UPPER = [0.68, 0.8, 0.88, 0.95]; // upper bounds of Z1..Z4 as fraction of HRmax
 
+/** The bpm ceiling of Zone 2 — an easy run's average HR should stay under it. */
+export function easyCeiling(hrMax: number): number {
+  return Math.round(UPPER[1]! * hrMax);
+}
+
 export function zoneOf(hr: number, hrMax: number): 1 | 2 | 3 | 4 | 5 {
   if (hrMax <= 0) return 1;
   const frac = hr / hrMax;

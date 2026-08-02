@@ -8,6 +8,37 @@ import type { MetricResult } from "./metric.js";
 
 export type Band = "low" | "healthy" | "high" | "watch";
 
+/** One lap inside a drilldown run — for the per-lap HR bars. */
+export interface MetricLapDetail {
+  lapIndex: number;
+  avgHr?: number;
+  durationSeconds?: number;
+  distanceMeters?: number;
+  /** True when this lap breached the metric's threshold (highlighted red). */
+  over?: boolean;
+}
+
+/** One contributing run inside a metric's drilldown. */
+export interface MetricRunDetail {
+  activityId: string;
+  date: string;
+  title?: string;
+  /** The run's headline number for this metric ("avg 162 bpm", "+12 s/km"). */
+  value?: string;
+  /** True when this run counted against the metric. */
+  over?: boolean;
+  /** One-sentence verdict for the run ("above your easy ceiling of 155"). */
+  note?: string;
+  laps?: MetricLapDetail[];
+}
+
+/** The evidence behind a metric: what it's measured against, run by run. */
+export interface MetricDetail {
+  explain: string;
+  threshold?: { label: string; value: number; unit?: string };
+  runs: MetricRunDetail[];
+}
+
 export interface InterpretedMetric {
   id: string;
   title: string;
@@ -19,6 +50,8 @@ export interface InterpretedMetric {
   suggestion?: string;
   sampleNote: string;
   trend?: { direction: "up" | "down" | "flat"; better: "up" | "down" | "either" };
+  /** Per-run evidence for the drilldown sheet, when the metric has it. */
+  detail?: MetricDetail;
 }
 
 /** What a metric's `present` callback returns for the "ok" case. */

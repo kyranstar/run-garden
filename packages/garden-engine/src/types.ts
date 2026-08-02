@@ -62,10 +62,16 @@ export interface EngineGardenState {
   longRunCount: number;
   recoveryRunCount: number;
   eveningRunCount: number;
+  /** Runs started before 07:00 local (any run, planned or not). */
+  earlyRunCount: number;
+  /** Longest single run ever, in meters (any run, planned or not). */
+  longestRunMeters: number;
   totalCompletedRuns: number;
   consecutiveConsistentWeeks: number;
   /** Consecutive completed-run days since the last drought ended. */
   comebackStreak: number;
+  /** Best comeback streak ever reached (survives the streak's own reset). */
+  bestComebackStreak: number;
   /** True while recovering from a drought (affects visuals + fungi unlock). */
   inComeback: boolean;
   lastPlantDeathDate: LocalDate | null;
@@ -88,6 +94,10 @@ export interface CompletedRunInput {
   window?: "morning" | "evening";
   /** True when this run was not part of the plan (modest rewards only). */
   unplanned?: boolean;
+  /** Distance in meters, when known — drives distance-milestone unlocks. */
+  distanceMeters?: number;
+  /** Local start hour 0–23, when known — drives the early-bird unlock. */
+  startHourLocal?: number;
 }
 
 /** Everything that happened on one resolved calendar day. */

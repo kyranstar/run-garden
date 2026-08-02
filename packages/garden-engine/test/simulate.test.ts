@@ -334,3 +334,66 @@ describe("missed-run debt", () => {
     );
   });
 });
+
+describe("achievement species", () => {
+  it("awards the milestone oak for a single 10K (even unplanned)", () => {
+    let { snapshot } = replay(START, trainingWeeks(START, 1));
+    expect(snapshot.unlockedSpeciesIds).not.toContain("milestone_oak");
+    const day = addDays(START, 7);
+    ({ snapshot } = simulateDay(snapshot, {
+      ...emptyDay(day),
+      completedRuns: [
+        { workoutId: `u-${day}`, category: "easy", unplanned: true, distanceMeters: 10_400 },
+      ],
+    }));
+    expect(snapshot.state.longestRunMeters).toBe(10_400);
+    expect(snapshot.unlockedSpeciesIds).toContain("milestone_oak");
+    expect(snapshot.unlockedSpeciesIds).not.toContain("horizon_cedar"); // 21.1k still locked
+  });
+
+  it("counts early starts toward the sunrise poppy", () => {
+    let { snapshot } = replay(START, []);
+    for (let i = 0; i < 5; i++) {
+      const day = addDays(START, i);
+      ({ snapshot } = simulateDay(snapshot, {
+        ...emptyDay(day),
+        completedRuns: [
+          { workoutId: `w-${day}`, category: "easy", startHourLocal: 6, window: "morning" },
+        ],
+      }));
+    }
+    expect(snapshot.state.earlyRunCount).toBe(5);
+    expect(snapshot.unlockedSpeciesIds).toContain("sunrise_poppy");
+  });
+
+  it("phoenix fern survives the comeback streak's own reset", () => {
+    // Build a garden, let it drought, then come back 3 straight days.
+    let { snapshot } = replay(START, trainingWeeks(START, 2));
+    let date = addDays(START, 14);
+    for (let i = 0; i < 16; i++) {
+      ({ snapshot } = simulateDay(snapshot, emptyDay(date)));
+      date = addDays(date, 1);
+    }
+    for (let i = 0; i < 3; i++) {
+      ({ snapshot } = simulateDay(snapshot, runDay(date, "easy")));
+      date = addDays(date, 1);
+    }
+    expect(snapshot.state.bestComebackStreak).toBeGreaterThanOrEqual(3);
+    expect(snapshot.unlockedSpeciesIds).toContain("phoenix_fern");
+  });
+
+  it("nextUnlocks nudges the closest locked species with real progress", async () => {
+    const { nextUnlocks } = await import("../src/unlocks.js");
+    const { snapshot } = replay(START, trainingWeeks(START, 2));
+    const next = nextUnlocks(snapshot, 3);
+    expect(next.length).toBe(3);
+    for (const n of next) {
+      expect(n.unlocked).toBe(false);
+      expect(n.progress!.current).toBeLessThan(n.progress!.target);
+      expect(n.hint.length).toBeGreaterThan(0);
+    }
+    // Sorted by least remaining first.
+    const remaining = next.map((n) => 1 - n.progress!.current / n.progress!.target);
+    expect([...remaining].sort((a, b) => a - b)).toEqual(remaining);
+  });
+});

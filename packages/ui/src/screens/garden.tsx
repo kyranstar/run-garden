@@ -21,6 +21,13 @@ import {
   Spinner,
 } from "../components.js";
 import { EvidenceCard, NextWorkout, Readiness, SyncStatusLine, UnresolvedCard } from "./today.js";
+import {
+  NextUnlockNudges,
+  SpeciesCodex,
+  WildlifeShelf,
+  type CodexEntry,
+  type WildlifeEntry,
+} from "./codex.js";
 
 function usePrefersReducedMotion(): boolean {
   return useMemo(
@@ -186,6 +193,18 @@ export function GardenScreen() {
     .filter((x): x is { e: GardenEvent; text: string } => !!x.text)
     .slice(0, 12);
 
+  // Today's previewed happenings (rain, plantings) — the same-day feedback line.
+  const todayLines = events
+    .filter((e) => (e as { preview?: boolean }).preview)
+    .map((e) => eventSentence(e))
+    .filter((t): t is string => !!t)
+    .slice(0, 2);
+
+  const codex = (garden.data.codex as CodexEntry[]) ?? [];
+  const nudges = (garden.data.nextUnlocks as CodexEntry[]) ?? [];
+  const wildlife = (garden.data.wildlife as WildlifeEntry[]) ?? [];
+  const unlockedCount = codex.filter((c) => c.unlocked).length;
+
   const d = today.data;
 
   return (
@@ -206,6 +225,12 @@ export function GardenScreen() {
       {/* What the garden is telling you, and why it looks this way. */}
       <div className="garden-readout">
         <h2 className="garden-condition">{GARDEN_CONDITION_LABELS[condition]}</h2>
+        {todayLines.length > 0 ? (
+          <p className="garden-nowline">
+            <span className="now-chip">today</span>
+            {todayLines.join(" ")}
+          </p>
+        ) : null}
         <p className="muted">{conditionStory(condition, snapshot, livingPlants, species.length)}</p>
         <p className="faint">
           Weather right now is <strong>{WEATHER_LABEL[weather]}</strong> — {WEATHER_WHY[weather]}{" "}
@@ -227,6 +252,13 @@ export function GardenScreen() {
           <Banner kind="info">Rest mode is on — nothing declines while you're away.</Banner>
         ) : null}
       </div>
+
+      {/* The pull forward: what arrives next and exactly how to earn it. */}
+      {nudges.length > 0 ? (
+        <Card title="Growing next">
+          <NextUnlockNudges nudges={nudges} />
+        </Card>
+      ) : null}
 
       {/* Today's actionable elements (formerly the Today page). */}
       {d?.nextWorkout ? (
@@ -277,25 +309,10 @@ export function GardenScreen() {
             </ul>
           )}
         </Card>
-        <Card title={`Species collection (${species.length})`}>
+        <Card title={`Species collection · ${unlockedCount} of ${codex.length}`}>
           <DiversityStrip snapshot={snapshot} />
-          {species.length === 0 ? (
-            <p className="muted">
-              Species unlock as you train — hard runs bring flowers, long runs bring trees.
-            </p>
-          ) : (
-            <div className="species-grid">
-              {species.map((s) => (
-                <div className="species-tile" key={s.speciesId as string}>
-                  <div className="name">{s.name as string}</div>
-                  <div className="faint">
-                    {s.category as string}
-                    {(s.livingCount as number) > 0 ? ` · ${s.livingCount as number} living` : ""}
-                  </div>
-                </div>
-              ))}
-            </div>
-          )}
+          <SpeciesCodex codex={codex} />
+          <WildlifeShelf wildlife={wildlife} />
         </Card>
       </div>
 

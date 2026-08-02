@@ -17,7 +17,12 @@ export type UnlockGate =
   | { kind: "consistent_weeks"; count: number }
   | { kind: "mature_trees"; count: number }
   | { kind: "comeback" } // strong recovery after a drought
-  | { kind: "dead_wood" }; // requires a nurse log / dead plant in the garden
+  | { kind: "dead_wood" } // requires a nurse log / dead plant in the garden
+  // Achievement gates — named milestones shown as locked cards in the codex.
+  | { kind: "early_runs"; count: number } // runs started before 07:00
+  | { kind: "distance_run"; meters: number } // a single run of at least N meters
+  | { kind: "total_runs"; count: number } // lifetime completed planned runs
+  | { kind: "comeback_streak"; count: number }; // N straight days back after a break
 
 export interface Species {
   id: string;
@@ -103,6 +108,14 @@ export const SPECIES: Species[] = [
   { id: "lavender", name: "Lavender", category: "shrub", rarity: "common", unlock: { kind: "quality_runs", count: 5 }, growthDays: 18, spacing: 0.05, depthBand: [0.4, 0.75], flowers: true, archetype: "shrub_spike", palette: { primary: "#7b937a", secondary: "#a293c9" } },
   { id: "hydrangea", name: "Hydrangea", category: "shrub", rarity: "uncommon", unlock: { kind: "quality_runs", count: 9 }, growthDays: 22, spacing: 0.06, depthBand: [0.35, 0.7], flowers: true, archetype: "shrub_round", palette: { primary: "#6e8c60", secondary: "#a9bede" } },
   { id: "azalea", name: "Azalea", category: "shrub", rarity: "uncommon", unlock: { kind: "quality_runs", count: 12 }, growthDays: 20, spacing: 0.055, depthBand: [0.35, 0.7], flowers: true, archetype: "shrub_round", palette: { primary: "#69885c", secondary: "#d987a0" } },
+
+  // ── Achievement species ──────────────────────────────────────────────────
+  // Earned by named running milestones; appear as locked cards in the codex.
+  { id: "sunrise_poppy", name: "Sunrise poppy", category: "flower", rarity: "rare", unlock: { kind: "early_runs", count: 5 }, growthDays: 12, spacing: 0.035, depthBand: [0.45, 0.85], flowers: true, archetype: "flower_cup", palette: { primary: "#6a8a58", secondary: "#e8a06a", accent: "#f2c14e" } },
+  { id: "milestone_oak", name: "Milestone oak", category: "tree", rarity: "rare", unlock: { kind: "distance_run", meters: 10_000 }, growthDays: 60, spacing: 0.11, depthBand: [0.1, 0.45], flowers: false, archetype: "tree_round", palette: { primary: "#5e8050", secondary: "#7a5c40", accent: "#caa25a" } },
+  { id: "horizon_cedar", name: "Horizon cedar", category: "tree", rarity: "rare", unlock: { kind: "distance_run", meters: 21_097 }, growthDays: 75, spacing: 0.1, depthBand: [0.05, 0.35], flowers: false, archetype: "tree_conifer", palette: { primary: "#3f6e57", secondary: "#63513f", accent: "#8fb7a0" } },
+  { id: "century_rose", name: "Century rose", category: "shrub", rarity: "rare", unlock: { kind: "total_runs", count: 50 }, growthDays: 26, spacing: 0.055, depthBand: [0.35, 0.7], flowers: true, archetype: "shrub_round", palette: { primary: "#5f7f55", secondary: "#c95a6e", accent: "#e8b7c0" } },
+  { id: "phoenix_fern", name: "Phoenix fern", category: "fern", rarity: "rare", unlock: { kind: "comeback_streak", count: 3 }, growthDays: 14, spacing: 0.045, depthBand: [0.3, 0.7], flowers: false, archetype: "fern", palette: { primary: "#8a6a3f", secondary: "#c9803f", accent: "#e0a45a" } },
 
   // ── Fungi ────────────────────────────────────────────────────────────────
   { id: "mushroom_cluster", name: "Mushroom cluster", category: "fungus", rarity: "common", unlock: { kind: "comeback" }, growthDays: 3, spacing: 0.03, depthBand: [0.5, 0.9], flowers: false, archetype: "mushroom", palette: { primary: "#c9a878", secondary: "#e6d9c2" } },

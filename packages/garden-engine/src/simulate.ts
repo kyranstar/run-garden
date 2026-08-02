@@ -3,7 +3,8 @@ import { addDays, daysBetween } from "@rg/domain";
 import { conditionWord, deriveWeather, seasonOf } from "./condition.js";
 import { choosePosition, chooseDeadWoodHost, chooseHostTree } from "./layout.js";
 import { pick, roll } from "./prng.js";
-import { SPECIES, speciesOrThrow, type Species, type UnlockGate } from "./species.js";
+import { SPECIES, speciesOrThrow, type Species } from "./species.js";
+import { gateSatisfied, matureTreeCount as codexMatureTreeCount } from "./unlocks.js";
 import {
   DEFAULT_GARDEN_CONFIG,
   SIMULATION_VERSION,
@@ -38,9 +39,12 @@ export function initialSnapshot(createdDate: LocalDate): GardenSnapshot {
     longRunCount: 0,
     recoveryRunCount: 0,
     eveningRunCount: 0,
+    earlyRunCount: 0,
+    longestRunMeters: 0,
     totalCompletedRuns: 0,
     consecutiveConsistentWeeks: 0,
     comebackStreak: 0,
+    bestComebackStreak: 0,
     inComeback: false,
     lastPlantDeathDate: null,
     createdDate,
@@ -154,6 +158,11 @@ export function simulateDay(
 
   const snapshot: GardenSnapshot = structuredClone(prev);
   const { state } = snapshot;
+  // Counters added after a garden was born default to 0 (snapshots are stored
+  // JSON, so older ones simply lack the fields).
+  state.earlyRunCount ??= 0;
+  state.longestRunMeters ??= 0;
+  state.bestComebackStreak ??= 0;
   const events: GardenEvent[] = [];
   let seq = 0;
   const emit = (e: Omit<GardenEvent, "id" | "date" | "seq" | "simulationVersion">): void => {
@@ -286,6 +295,13 @@ function applyRun(
     detail: run.unplanned ? "unplanned" : undefined,
   });
 
+  // Achievement counters honor every real run, planned or not — a 10K is a
+  // 10K. (Species/intensity rewards below remain planned-only.)
+  if (run.distanceMeters != null && run.distanceMeters > state.longestRunMeters) {
+    state.longestRunMeters = run.distanceMeters;
+  }
+  if (run.startHourLocal != null && run.startHourLocal < 7) state.earlyRunCount += 1;
+
   if (run.unplanned) {
     // Modest ambient benefit only; never rare species, never extra-intensity rewards.
     state.moisture = Math.min(1, state.moisture + 0.1);
@@ -309,6 +325,7 @@ function applyRun(
   }
   if (state.inComeback) {
     state.comebackStreak += 1;
+    state.bestComebackStreak = Math.max(state.bestComebackStreak, state.comebackStreak);
     if (state.comebackStreak >= 2) {
       // Flowers reopen as the comeback takes hold.
       for (const p of living) {
@@ -587,30 +604,6 @@ function killPlant(
 // ─────────────────────────────────────────────────────────────────────────────
 // Unlocks, wildlife, regions, derived state
 
-function gateSatisfied(gate: UnlockGate, snapshot: GardenSnapshot): boolean {
-  const s = snapshot.state;
-  switch (gate.kind) {
-    case "start":
-      return true;
-    case "quality_runs":
-      return s.qualityRunCount >= gate.count;
-    case "easy_runs":
-      return s.easyRunCount >= gate.count;
-    case "long_runs":
-      return s.longRunCount >= gate.count;
-    case "recovery_runs":
-      return s.recoveryRunCount >= gate.count;
-    case "consistent_weeks":
-      return s.consecutiveConsistentWeeks >= gate.count;
-    case "mature_trees":
-      return matureTreeCount(snapshot) >= gate.count;
-    case "comeback":
-      return s.inComeback || s.comebackStreak > 0;
-    case "dead_wood":
-      return snapshot.plants.some((p) => p.state === "dead" && p.habitatRole);
-  }
-}
-
 function evaluateUnlocks(
   snapshot: GardenSnapshot,
   _date: LocalDate,
@@ -625,10 +618,7 @@ function evaluateUnlocks(
   }
 }
 
-function matureTreeCount(snapshot: GardenSnapshot): number {
-  return livingPlants(snapshot.plants).filter((p) => p.category === "tree" && p.maturity >= 0.7)
-    .length;
-}
+const matureTreeCount = codexMatureTreeCount;
 
 function evaluateWildlife(
   snapshot: GardenSnapshot,
