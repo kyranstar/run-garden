@@ -10,9 +10,11 @@ import {
   type RawCorosEntity,
   type RawCorosExercise,
   type RawCorosProgram,
+  type RawCorosSchedule,
 } from "@rg/providers";
 import { CorosClient } from "../src/coros-client.js";
 import {
+  observationWindows,
   runCreateSpike,
   type CreateSpikeHandle,
   type CreateSpikeReport,
@@ -42,6 +44,56 @@ async function setup(): Promise<{ server: MockCorosServer; client: CorosClient }
 
 function scheduleIds(server: MockCorosServer): string[] {
   return (server.state.schedule.entities ?? []).map((e) => String(e.idInPlan)).sort();
+}
+
+/**
+ * The exact shape of the plan the spike hit on its first live run
+ * (docs/reports/coros-create-spike-2026-08-02.json): a COROS-authored template
+ * plan "S4557" whose `maxIdInPlan` is 0 on the wire even though its entities
+ * carry ids up to 45 — and which reuses ids 2, 8 and 38 across two entities
+ * each, because idInPlan identifies the program-in-plan, not the entity.
+ */
+const LIVE_PLAN_ID = "800000000000004557";
+const LIVE_ID_IN_PLAN = [
+  1, 2, 2, 3, 4, 5, 6, 7, 8, 8, 9, 10, 11, 17, 18, 20, 21, 23, 24, 26, 35, 36, 37, 38, 38, 42, 45,
+];
+
+function liveShapeSchedule(): RawCorosSchedule {
+  const entities: RawCorosEntity[] = LIVE_ID_IN_PLAN.map((id, i) => ({
+    id: `7000000000000${1000 + i}`,
+    idInPlan: String(id),
+    planId: LIVE_PLAN_ID,
+    planProgramId: String(id),
+    // Spread across today-25 … today+27, i.e. entirely inside the ±30d window.
+    happenDay: corosDay(addDaysIso(TODAY, -25 + i * 2)),
+    dayNo: i + 1,
+    sortNo: 1,
+    sortNoInSchedule: 1,
+    completeRate: "-1.00",
+  }));
+  const programs: RawCorosProgram[] = [...new Set(LIVE_ID_IN_PLAN)].map((id) => ({
+    id: `9000000000000${id}`,
+    idInPlan: String(id),
+    planId: LIVE_PLAN_ID,
+    name: "T3001",
+    sportType: 1,
+    subType: 65535,
+    duration: 1800,
+    trainingLoad: 30,
+    version: 2,
+    exercises: [],
+  }));
+  return {
+    id: LIVE_PLAN_ID,
+    name: "S4557",
+    startDay: corosDay(addDaysIso(TODAY, -25)),
+    endDay: corosDay(addDaysIso(TODAY, 60)),
+    maxIdInPlan: 0, // the whole point: the counter is not maintained
+    pbVersion: 2,
+    version: 3,
+    entities,
+    programs,
+  };
 }
 
 interface RequestShape {
@@ -333,11 +385,120 @@ describe("runCreateSpike — report sanitization", () => {
   });
 });
 
+describe("runCreateSpike — idInPlan derivation (live plan shape)", () => {
+  it("sweeps ≤90-day windows covering today-180 … today+240", () => {
+    const windows = observationWindows(TODAY);
+    expect(windows[0]?.[0]).toBe(addDaysIso(TODAY, -180));
+    expect(windows[windows.length - 1]?.[1]).toBe(addDaysIso(TODAY, 240));
+    for (const [start, end] of windows) {
+      const span =
+        (Date.parse(`${end}T00:00:00Z`) - Date.parse(`${start}T00:00:00Z`)) / 86_400_000;
+      expect(span).toBeGreaterThanOrEqual(0);
+      expect(span).toBeLessThanOrEqual(90); // /schedule/query 5011s beyond this
+    }
+    // Disjoint and contiguous: no entity is counted twice (duplicate detection).
+    for (let i = 1; i < windows.length; i += 1) {
+      expect(windows[i]![0]).toBe(addDaysIso(windows[i - 1]![1], 1));
+    }
+  });
+
+  it("derives from the observed max when the plan does not maintain the counter", async () => {
+    const { server, client } = await setup();
+    server.state.schedule = liveShapeSchedule();
+    server.maintainsIdCounter = false; // the counter stays 0 even after creates
+    const before = scheduleIds(server);
+    const lines: string[] = [];
+
+    const report = await runCreateSpike(client, {
+      today: TODAY,
+      log: (line) => lines.push(line),
+    });
+
+    // The live diagnosis, reproduced.
+    expect(report.baseline?.planName).toBe("S4557");
+    expect(report.baseline?.workoutCount).toBe(27);
+    expect(report.baseline?.maxIdInPlan).toBe(0);
+    expect(report.baseline?.observedMaxIdInPlan).toBe(45);
+    expect(report.baseline?.counterMaintained).toBe(false);
+    expect(report.baseline?.duplicateIdInPlan).toEqual(["2", "8", "38"]);
+    expect(report.baseline?.observedEntityCount).toBe(27);
+
+    // 0 + 1 = 1 would have collided with a real workout; 45 + 1 does not. Each
+    // subsequent id comes from a fresh observation, NOT from the counter.
+    expect(report.tests.strength.idInPlan).toBe(46);
+    expect(report.tests.run.idInPlan).toBe(47);
+    expect(report.tests.bike.idInPlan).toBe(48);
+    expect(report.tests.strength.idInPlanDerivedFrom).toEqual({ counter: 0, observedMax: 45 });
+    expect(report.tests.run.idInPlanDerivedFrom).toEqual({ counter: 0, observedMax: 46 });
+
+    // The spike gets to actually test something, and cleans up after itself.
+    expect(report.tests.strength.verified).toBe(true);
+    expect(report.tests.run.verified).toBe(true);
+    expect(report.tests.bike.verified).toBe(true);
+    expect(report.abortReason).toBeUndefined();
+    expect(report.overall.baselineRestored).toBe(true);
+    expect(report.succeeded).toBe(true);
+    expect(scheduleIds(server)).toEqual(before);
+
+    // The next live run explains itself from the console alone.
+    const output = lines.join("\n");
+    expect(output).toContain("maxIdInPlan(counter)=0");
+    expect(output).toContain("maxIdInPlan(observed)=45");
+    expect(output).toContain("next candidate 46");
+    expect(output).toContain("does not maintain maxIdInPlan");
+    expect(output).toContain("idInPlan values reused by multiple entities: 2, 8, 38");
+  });
+
+  it("still derives correctly when the counter IS maintained and leads", async () => {
+    const { server, client } = await setup(); // fixture: counter 20, observed 20
+    const report = await runCreateSpike(client, { today: TODAY, log: noop });
+
+    expect(report.baseline?.counterMaintained).toBe(true);
+    expect(report.baseline?.duplicateIdInPlan).toEqual([]);
+    expect(report.tests.strength.idInPlan).toBe(21);
+    expect(report.tests.strength.verified).toBe(true);
+    expect(Number(server.state.schedule.maxIdInPlan)).toBe(23);
+  });
+
+  it("records a rejected create as informative and does not retry other ids", async () => {
+    const { server, client } = await setup();
+    server.state.schedule = liveShapeSchedule();
+    // Model a server that allocates ids itself and rejects our claim.
+    const rejecting: typeof fetch = async (input, init) => {
+      const href = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
+      if (href.includes("/training/schedule/update")) {
+        return new Response(
+          JSON.stringify({ apiCode: "TEST", message: "ERROR", result: "1031", data: null }),
+          { status: 200, headers: { "content-type": "application/json" } },
+        );
+      }
+      return server.fetchImpl(input, init);
+    };
+    const strict = new CorosClient({ region: "us", fetchImpl: rejecting, logger: noop });
+    await strict.login(server.email, server.password);
+    const before = scheduleIds(server);
+
+    const report = await runCreateSpike(strict, { today: TODAY, log: noop });
+
+    for (const test of ["strength", "run", "bike"] as const) {
+      expect(report.tests[test].resultCode).toBe("1031");
+      expect(report.tests[test].verified).toBe(false);
+      expect(report.tests[test].cleanedUp).toBe(true);
+      expect(report.tests[test].notes.join(" ")).toContain("not retrying with other ids");
+      // Every attempt used the same correctly-derived id, never a guess.
+      expect(report.tests[test].idInPlan).toBe(46);
+    }
+    expect(scheduleIds(server)).toEqual(before);
+    expect(report.overall.baselineRestored).toBe(true);
+  });
+});
+
 describe("runCreateSpike — ownership guard (C1)", () => {
   /**
-   * The reviewer's probe: a legacy workout already occupies idInPlan 21, above
-   * the active plan's maxIdInPlan of 20, on a different date with a different
-   * name. The spike must refuse to write or delete, and abort.
+   * A legacy workout at idInPlan 21, above the counter, on a different date
+   * with a different name. Since the fix this no longer blocks the spike: the
+   * wide observation sees id 21 and claims 22 instead — but the legacy workout
+   * must still be left completely alone.
    */
   function seedCollision(server: MockCorosServer): RawCorosEntity {
     const legacy: RawCorosEntity = {
@@ -352,45 +513,84 @@ describe("runCreateSpike — ownership guard (C1)", () => {
     return legacy;
   }
 
-  it("never deletes a workout it did not create when idInPlan collides", async () => {
+  it("observes a legacy id above the counter and claims past it", async () => {
     const { server, client } = await setup();
     seedCollision(server);
     const before = scheduleIds(server);
+
+    const report = await runCreateSpike(client, { today: TODAY, log: noop });
+
+    // counter=20 but id 21 is in use → claim 22.
+    expect(report.tests.strength.idInPlanDerivedFrom).toEqual({ counter: 20, observedMax: 21 });
+    expect(report.tests.strength.idInPlan).toBe(22);
+    expect(report.tests.strength.verified).toBe(true);
+    // The legacy workout is untouched, on its own date, with its own name.
+    const survivor = server.entityByIdInPlan("21");
+    expect(survivor?.name).toBe("Legacy Tempo");
+    expect(Number(survivor?.happenDay)).toBe(corosDay(addDaysIso(TODAY, -5)));
+    expect(scheduleIds(server)).toEqual(before);
+    expect(report.overall.baselineRestored).toBe(true);
+  });
+
+  it("aborts without writing when a foreign workout races into the derived slot", async () => {
+    const { server } = await setup();
+    const before = scheduleIds(server);
     const writesBefore = server.counts.scheduleWrites;
+    // The derived id (21) is free during the observation sweep, then a foreign
+    // workout lands on it before the pre-write read — the race the final
+    // occupancy gate exists for.
+    let sawObservation = false;
+    let injected = false;
+    const racing: typeof fetch = async (input, init) => {
+      const url = new URL(
+        typeof input === "string" ? input : input instanceof URL ? input.href : input.url,
+      );
+      if (url.pathname === "/training/schedule/query") {
+        const start = url.searchParams.get("startDate");
+        if (start === String(corosDay(addDaysIso(TODAY, -180)))) sawObservation = true;
+        else if (sawObservation && !injected && start === String(corosDay(addDaysIso(TODAY, -30)))) {
+          injected = true;
+          server.state.schedule.entities!.push({
+            id: "70000000000000998",
+            idInPlan: "21",
+            planId: FIXTURE_PLAN_ID,
+            planProgramId: "21",
+            happenDay: corosDay(addDaysIso(TODAY, -5)),
+            name: "Legacy Tempo",
+          });
+        }
+      }
+      return server.fetchImpl(input, init);
+    };
+    const raced = new CorosClient({ region: "us", fetchImpl: racing, logger: noop });
+    await raced.login(server.email, server.password);
     const lines: string[] = [];
 
-    const report = await runCreateSpike(client, {
+    const report = await runCreateSpike(raced, {
       today: TODAY,
       log: (line) => lines.push(line),
     });
 
-    // The colliding workout is untouched and still on its own date.
-    const survivor = server.entityByIdInPlan("21");
-    expect(survivor).toBeDefined();
-    expect(survivor?.name).toBe("Legacy Tempo");
-    expect(Number(survivor?.happenDay)).toBe(corosDay(addDaysIso(TODAY, -5)));
-    expect(scheduleIds(server)).toEqual(before);
+    expect(injected).toBe(true);
     // Not one write was issued — not a create, and above all not a delete.
     expect(server.counts.scheduleWrites).toBe(writesBefore);
+    expect(server.entityByIdInPlan("21")?.name).toBe("Legacy Tempo");
+    expect(scheduleIds(server)).toEqual([...before, "21"].sort());
 
-    // The run aborted loudly and said why.
     expect(report.abortReason).toContain("21");
     expect(report.failure).toBeDefined();
     expect(report.succeeded).toBe(false);
-    expect(report.tests.strength.verified).toBe(false);
     expect(report.tests.strength.notes.join(" ")).toContain("no write attempted");
     // Remaining tests are skipped rather than blundering on.
     expect(report.tests.run.attempted).toBe(false);
     expect(report.tests.bike.attempted).toBe(false);
     expect(report.overall.leftovers).toEqual([]);
 
-    // The report is committed to the repo: it must carry the identifiers of a
-    // foreign workout, never its title.
+    // The report is committed to the repo: identifiers only, never the title.
     const serialized = JSON.stringify(report);
     expect(serialized).not.toContain("Legacy Tempo");
     expect(serialized).toContain("title printed to console");
     expect(serialized).toContain(`date=${addDaysIso(TODAY, -5)}`);
-    // The title is not lost — it goes to the user's own terminal.
     expect(lines.join("\n")).toContain("Legacy Tempo");
   });
 

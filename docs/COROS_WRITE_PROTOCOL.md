@@ -151,6 +151,29 @@ it never reads-modifies-writes anything the user authored:
    hand in the COROS UI. It is reported as an **orphan planId** in the console
    and the report, and forces `baselineRestored: false`.
 
+### Choosing `idInPlan`: observe, do not trust the counter
+
+The first live run found a COROS-authored template plan reporting
+**`maxIdInPlan: 0`** on the wire while its entities carried ids up to **45** —
+so `maxIdInPlan + 1` pointed at a real workout and the spike correctly refused
+to write. The counter is not maintained on every plan.
+
+The spike therefore derives its id as
+**`max(counter, highest observed idInPlan) + 1`**, where "observed" comes from a
+sweep of `today-180 … today+240` in disjoint ≤90-day windows (the endpoint
+`5011`s past 90). The sweep is repeated fresh **before every insert**, so the
+second and third workouts see the first one and step past it even when the
+counter never moves. The occupancy check stays as the final gate: an entity in
+the derived slot can now only mean a genuine race, and it aborts.
+
+If the server rejects a correctly-derived id, that is recorded as an
+**informative result** (code + derivation in the report) and the spike does
+**not** retry with other ids — guessing at a shared counter is exactly how a
+write clobbers someone's workout.
+
+Also observed live: `idInPlan` identifies the **program-in-plan, not the
+entity** — several entities may share one (ids 2, 8 and 38 each appeared twice).
+
 ### Ownership: the rule that makes deletion safe
 
 `idInPlan` is a plan-scoped counter, **not** an identity — it can collide with

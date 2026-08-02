@@ -66,6 +66,8 @@ export interface CreateTestResult {
   serverRecomputed?: { duration?: number; trainingLoad?: number; distance?: unknown };
   serverIds?: { planId?: string; entityId?: string; programId?: string };
   idInPlan?: number;
+  /** How the candidate idInPlan was derived, for post-mortem reading. */
+  idInPlanDerivedFrom?: { counter: number; observedMax: number };
   scheduledDate?: string;
   observedDate?: string;
   cleanedUp: boolean;
@@ -82,7 +84,17 @@ export interface CreateSpikeReport {
   baseline?: {
     planName?: string;
     planIdPresent: boolean;
+    /** The `maxIdInPlan` counter as the server reports it. May be 0/stale. */
     maxIdInPlan: number;
+    /** Highest idInPlan actually observed on entities across the wide read. */
+    observedMaxIdInPlan: number;
+    /** False when the counter trails reality — seen live on template plans. */
+    counterMaintained: boolean;
+    /** idInPlan values carried by more than one entity (legal — see locate()). */
+    duplicateIdInPlan: string[];
+    observationWindowStart: string;
+    observationWindowEnd: string;
+    observedEntityCount: number;
     workoutCount: number;
     idInPlan: string[];
     windowStart: string;
@@ -436,11 +448,98 @@ interface Located {
   date: string;
 }
 
+/**
+ * `idInPlan` identifies the PROGRAM-IN-PLAN, not the entity: several schedule
+ * entities may reference the same program and therefore share an `idInPlan`
+ * (observed live — a real plan carried duplicates at 2, 8 and 38). This
+ * returns the first placement, which is sound here only because the spike
+ * always claims a fresh, previously-unused id.
+ */
 function locate(raw: RawCorosSchedule, idInPlan: string | number): Located | undefined {
   const entity = (raw.entities ?? []).find((e) => String(e.idInPlan) === String(idInPlan));
   if (!entity) return undefined;
   const program = (raw.programs ?? []).find((p) => String(p.idInPlan) === String(idInPlan));
   return { entity, program, date: corosDayToLocalDate(entity.happenDay) };
+}
+
+// ── idInPlan derivation ─────────────────────────────────────────────────────
+
+/**
+ * How far either side of today the derivation read sweeps. A live plan was
+ * observed reporting `maxIdInPlan: 0` while its entities carried ids up to 45,
+ * so the counter cannot be trusted and the real maximum has to be observed
+ * directly — across the plan's whole likely span, not just the ±30d window
+ * used for the restoration comparison.
+ */
+const OBSERVE_BACK_DAYS = 180;
+const OBSERVE_FORWARD_DAYS = 240;
+/** /training/schedule/query rejects spans over 90 days (5011). */
+const OBSERVE_CHUNK_DAYS = 90;
+
+/** Disjoint ≤90-day windows covering today-180 … today+240. */
+export function observationWindows(today: string): Array<[string, string]> {
+  const windows: Array<[string, string]> = [];
+  for (
+    let offset = -OBSERVE_BACK_DAYS;
+    offset <= OBSERVE_FORWARD_DAYS;
+    offset += OBSERVE_CHUNK_DAYS + 1
+  ) {
+    const endOffset = Math.min(offset + OBSERVE_CHUNK_DAYS, OBSERVE_FORWARD_DAYS);
+    windows.push([addDays(today, offset), addDays(today, endOffset)]);
+  }
+  return windows;
+}
+
+export interface IdInPlanObservation {
+  /** `maxIdInPlan` as reported by the server (highest seen across windows). */
+  counter: number;
+  /** Highest idInPlan actually carried by an entity. The reliable number. */
+  observedMax: number;
+  /** Distinct observed ids, sorted numerically. */
+  observedIds: string[];
+  /** Ids carried by more than one entity — legal, see locate(). */
+  duplicates: string[];
+  entityCount: number;
+  windowStart: string;
+  windowEnd: string;
+}
+
+/**
+ * Sweep the plan's likely span and report both the server's counter and the
+ * true maximum in use. The next safe id is `max(counter, observedMax) + 1`.
+ */
+export async function observeIdInPlan(
+  client: CorosClient,
+  today: string,
+): Promise<IdInPlanObservation> {
+  const windows = observationWindows(today);
+  let counter = 0;
+  const seen: string[] = [];
+  for (const [start, end] of windows) {
+    const raw = await client.getRawSchedule(start, end);
+    counter = Math.max(counter, Number(raw.maxIdInPlan ?? 0) || 0);
+    for (const entity of raw.entities ?? []) seen.push(String(entity.idInPlan));
+  }
+  const counts = new Map<string, number>();
+  for (const id of seen) counts.set(id, (counts.get(id) ?? 0) + 1);
+  const observedMax = seen.reduce((max, id) => Math.max(max, Number(id) || 0), 0);
+  return {
+    counter,
+    observedMax,
+    observedIds: [...counts.keys()].sort((a, b) => Number(a) - Number(b)),
+    duplicates: [...counts.entries()]
+      .filter(([, n]) => n > 1)
+      .map(([id]) => id)
+      .sort((a, b) => Number(a) - Number(b)),
+    entityCount: seen.length,
+    windowStart: windows[0]?.[0] ?? today,
+    windowEnd: windows[windows.length - 1]?.[1] ?? today,
+  };
+}
+
+/** The next id it is safe to claim: past the counter AND past reality. */
+export function nextIdInPlan(observation: IdInPlanObservation): number {
+  return Math.max(observation.counter, observation.observedMax) + 1;
 }
 
 /**
@@ -760,18 +859,47 @@ export async function runCreateSpike(
     const maxIdInPlan = Number(baseline.maxIdInPlan ?? 0);
     baselineIds = idInPlanSet(baseline);
     baselineCount = baselineIds.length;
+
+    // The counter alone is not trustworthy: a live template plan reported
+    // maxIdInPlan 0 while its entities carried ids up to 45. Observe the real
+    // maximum across the plan's whole likely span before deriving anything.
+    log("  observing idInPlan usage across the plan's full span…");
+    const observation = await observeIdInPlan(client, today);
     report.baseline = {
       planName: typeof baseline.name === "string" ? baseline.name : undefined,
       planIdPresent: planId !== "",
       maxIdInPlan,
+      observedMaxIdInPlan: observation.observedMax,
+      counterMaintained: observation.counter >= observation.observedMax,
+      duplicateIdInPlan: observation.duplicates,
+      observationWindowStart: observation.windowStart,
+      observationWindowEnd: observation.windowEnd,
+      observedEntityCount: observation.entityCount,
       workoutCount: baselineCount,
       idInPlan: baselineIds,
       windowStart,
       windowEnd,
     };
     log(
-      `  plan="${report.baseline.planName ?? "(none)"}" workouts=${baselineCount} maxIdInPlan=${maxIdInPlan}`,
+      `  plan="${report.baseline.planName ?? "(none)"}" workouts=${baselineCount}` +
+        ` maxIdInPlan(counter)=${observation.counter} maxIdInPlan(observed)=${observation.observedMax}` +
+        ` → next candidate ${nextIdInPlan(observation)}`,
     );
+    if (!report.baseline.counterMaintained) {
+      log(
+        `  NOTE: this plan does not maintain maxIdInPlan (counter=${observation.counter} <` +
+          ` observed=${observation.observedMax}); deriving ids from observation.`,
+      );
+      report.tests.strength.notes.push(
+        `plan does not maintain maxIdInPlan (counter=${observation.counter}, observed=${observation.observedMax})`,
+      );
+    }
+    if (observation.duplicates.length > 0) {
+      log(
+        `  NOTE: idInPlan values reused by multiple entities: ${observation.duplicates.join(", ")}` +
+          " (idInPlan identifies the program-in-plan, not the entity)",
+      );
+    }
     if (planId === "") {
       report.tests.strength.notes.push(
         'no active plan in the window; using planId "" (server auto-targets/auto-creates)',
@@ -781,6 +909,7 @@ export async function runCreateSpike(
     const ctx: SpikeContext = {
       client,
       log,
+      today,
       readWindow,
       windowStart,
       windowEnd,
@@ -909,6 +1038,7 @@ function enduranceChecks(
 interface SpikeContext {
   client: CorosClient;
   log: (line: string) => void;
+  today: string;
   readWindow: () => Promise<RawCorosSchedule>;
   windowStart: string;
   windowEnd: string;
@@ -969,20 +1099,32 @@ async function createAndVerify(
   result.attempted = true;
   result.scheduledDate = spec.date;
 
-  // Fresh read immediately before the write: maxIdInPlan is a monotonic
-  // shared counter and read-then-write is racy (§4.4 point 3).
+  // Fresh derivation immediately before every write: read-then-write is racy
+  // (§4.4 point 3), AND the server's counter may simply not be maintained —
+  // observed live at 0 on a plan whose entities ran up to 45. So sweep the
+  // full span and take max(counter, observed) + 1 each time.
+  const observation = await observeIdInPlan(ctx.client, ctx.today);
+  const idInPlan = nextIdInPlan(observation);
   const fresh = await ctx.readWindow();
-  const idInPlan = Number(fresh.maxIdInPlan ?? 0) + 1;
   const planId = String(fresh.id ?? ctx.planId);
   result.idInPlan = idInPlan;
+  result.idInPlanDerivedFrom = {
+    counter: observation.counter,
+    observedMax: observation.observedMax,
+  };
+  ctx.log(
+    `  idInPlan: counter=${observation.counter} observed=${observation.observedMax}` +
+      ` → claiming ${idInPlan}`,
+  );
 
-  // The slot we are about to claim must be empty. If something already sits
-  // there, the counter has collided with content we do not own.
+  // Final gate: the slot we are about to claim must be empty. The derivation
+  // above already excludes every id it saw, so an occupant here means
+  // something landed between the observation and now — a genuine race.
   const occupant = locate(fresh, idInPlan);
   if (occupant) {
     result.verified = false;
     result.cleanedUp = true; // nothing created
-    const detail = `idInPlan ${idInPlan} (maxIdInPlan+1) is already occupied: ${describeForeignForReport(occupant)}`;
+    const detail = `idInPlan ${idInPlan} (derived from counter=${observation.counter}, observed=${observation.observedMax}) is already occupied: ${describeForeignForReport(occupant)}`;
     result.notes.push(`${detail} — no write attempted`);
     ctx.log(`  slot already occupied by ${describeForeignForConsole(occupant)}`);
     ctx.abort(`${detail}; refusing to write or delete`);
@@ -1089,8 +1231,19 @@ async function createAndVerify(
         ? "server rejected the create but the spike's workout materialized — will be cleaned up"
         : "server rejected the create; nothing materialized",
     );
+    if (add !== undefined) {
+      // A rejection of a correctly-derived id is itself the answer: the server
+      // may enforce its own id allocation. Record it; never retry other ids —
+      // guessing at a shared counter is exactly how a spike overwrites a real
+      // workout.
+      result.notes.push(
+        `rejected result=${add.result} for idInPlan ${idInPlan}` +
+          ` (counter=${observation.counter}, observed=${observation.observedMax});` +
+          " not retrying with other ids — the server may allocate ids itself",
+      );
+    }
     if (!found) result.cleanedUp = true; // nothing to clean
-    ctx.log(`  NOT CREATED (result=${result.resultCode ?? "threw"})`);
+    ctx.log(`  NOT CREATED (result=${result.resultCode ?? "threw"}) — not retrying other ids`);
     return;
   }
 

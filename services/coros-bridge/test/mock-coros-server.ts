@@ -118,6 +118,11 @@ export interface MockCorosServer {
   addSilentlyFails: boolean;
   /** Cap the /activity/query page size below the requested one (pagination tests). */
   forcePageSize: number | null;
+  /**
+   * Whether a status:1 create bumps `maxIdInPlan`. Set false to model the live
+   * template plan that reported maxIdInPlan 0 while carrying ids up to 45.
+   */
+  maintainsIdCounter: boolean;
   /** Envelope result POST /training/plan/add returns (1031 = the EU rejection). */
   planAddResult: string;
   /** `data` returned when planAddResult is "0000" (documented as the planId). */
@@ -256,6 +261,7 @@ export function mockCorosServer(opts: { baseMonday?: string } = {}): MockCorosSe
     throwBeforeApplyOnce: false,
     addSilentlyFails: false,
     forcePageSize: null,
+    maintainsIdCounter: true,
     planAddResult: "1031", // "Parameter input error" — the one EU attempt on record
     planAddData: null,
     planAddMaterializes: false,
@@ -330,7 +336,9 @@ export function mockCorosServer(opts: { baseMonday?: string } = {}): MockCorosSe
       program.id = `sv-program-${serverIdCounter}`;
       schedule.entities.push(entity);
       schedule.programs.push(program);
-      schedule.maxIdInPlan = Math.max(Number(schedule.maxIdInPlan ?? 0), Number(vo.id));
+      if (server.maintainsIdCounter) {
+        schedule.maxIdInPlan = Math.max(Number(schedule.maxIdInPlan ?? 0), Number(vo.id));
+      }
       return envelope("0000");
     }
 
