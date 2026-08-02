@@ -2,9 +2,11 @@ import type { CSSProperties, ReactNode } from "react";
 import type { GardenPlant, GardenWeatherState } from "@rg/domain";
 import type { GardenSnapshot } from "@rg/garden-engine";
 import { rng, speciesOrThrow } from "@rg/garden-engine";
-import { desaturate, mix, shade } from "./color";
+import { shade } from "./color";
 import { describeGarden, plantStateLabel } from "./describe";
+import { lightingFor, moonPhase } from "./lighting";
 import { PlantSprite } from "./PlantSprite";
+import { SceneDefs, Sky } from "./sky";
 
 /**
  * The full scene: sky → hills → ground → plants (far to near) → weather →
@@ -24,27 +26,6 @@ function anchorOf(plant: GardenPlant): { x: number; y: number; s: number } {
     y: GROUND_TOP + plant.position.y * GROUND_SPAN,
     s: 0.65 + 0.45 * plant.position.y,
   };
-}
-
-function skyColors(weather: GardenWeatherState): [string, string] {
-  switch (weather) {
-    case "fresh_rain":
-    case "recovery_rain":
-      // Fresh, cheerful rain — a clear blue sky clearing to soft green, not grey.
-      return ["#a2d4ea", "#e6f1d8"];
-    case "mild_drought":
-      return ["#d9caa6", "#ece2c5"];
-    case "dry_spell":
-      return ["#ccd1bb", "#e8e6cc"];
-    case "light_clouds":
-      return ["#c2d4dd", "#e9efde"];
-    case "soft_sun":
-      return ["#cfe0e8", "#f2f0dc"];
-    case "seasonal_breeze":
-      return ["#c7dce4", "#ecf1de"];
-    case "clear_sun":
-      return ["#bcd8e6", "#eef3e0"];
-  }
 }
 
 function sceneCss(p: string): string {
@@ -110,33 +91,6 @@ function rainOverlay(p: string, animate: boolean, recovery: boolean): ReactNode 
   );
 }
 
-function cloudsOverlay(p: string, animate: boolean, dry: boolean): ReactNode {
-  const r = rng("weather:clouds");
-  const fill = dry ? "#d6ccba" : "#f1f3ee";
-  const clouds: ReactNode[] = [];
-  const count = 2 + Math.floor(r() * 2);
-  for (let i = 0; i < count; i++) {
-    const cx = 140 + r() * 700;
-    const cy = 52 + r() * 78;
-    const sc = 0.8 + r() * 0.5;
-    const style: CSSProperties | undefined = animate
-      ? { animationDuration: `${n(62 + r() * 26)}s`, animationDelay: `-${n(r() * 40)}s` }
-      : undefined;
-    clouds.push(
-      <g key={`c${i}`} className={animate ? `${p}-cloud` : undefined} style={style} opacity={dry ? 0.7 : 0.82}>
-        <ellipse cx={n(cx)} cy={n(cy)} rx={n(46 * sc)} ry={n(13 * sc)} fill={fill} />
-        <ellipse cx={n(cx - 24 * sc)} cy={n(cy + 4 * sc)} rx={n(27 * sc)} ry={n(9 * sc)} fill={fill} />
-        <ellipse cx={n(cx + 26 * sc)} cy={n(cy + 5 * sc)} rx={n(30 * sc)} ry={n(10 * sc)} fill={shade(fill, 0.97)} />
-      </g>,
-    );
-  }
-  return (
-    <g data-overlay="clouds" pointerEvents="none">
-      {clouds}
-    </g>
-  );
-}
-
 function breezeOverlay(p: string, animate: boolean): ReactNode {
   const r = rng("weather:breeze");
   const leaves: ReactNode[] = [];
@@ -167,11 +121,9 @@ function weatherOverlay(p: string, weather: GardenWeatherState, animate: boolean
       return rainOverlay(p, animate, true);
     case "clear_sun":
     case "soft_sun":
-      return null; // the sun is drawn by the time-of-day celestial layer
     case "light_clouds":
-      return cloudsOverlay(p, animate, false);
     case "dry_spell":
-      return cloudsOverlay(p, animate, true);
+      return null; // clouds now come from the Sky component, driven by light.cloudCount
     case "mild_drought":
       return (
         <g data-overlay="haze" pointerEvents="none">
@@ -433,91 +385,6 @@ function ladybugShapes(p: string, animate: boolean, plants: GardenPlant[]): Reac
   );
 }
 
-/* ── time of day (moving sun / moon / stars) ──────────────────────────────── */
-
-interface SkyTime {
-  isNight: boolean;
-  sun: { x: number; y: number } | null;
-  moon: { x: number; y: number } | null;
-  tint: string | null;
-  tintOpacity: number;
-}
-
-const arcX = (f: number) => 120 + f * 760;
-const arcY = (f: number) => 250 - Math.sin(Math.max(0, Math.min(1, f)) * Math.PI) * 205;
-
-function skyTime(hour: number): SkyTime {
-  const t = ((hour % 24) + 24) % 24;
-  const isDay = t >= 6 && t <= 18.5;
-  if (isDay) {
-    const f = (t - 6) / 12.5;
-    const edge = Math.min(f, 1 - f);
-    const warm = edge < 0.16;
-    return {
-      isNight: false,
-      sun: { x: n(arcX(f)), y: n(arcY(f)) },
-      moon: null,
-      tint: warm ? "#e79a4e" : null,
-      tintOpacity: warm ? 0.14 : 0,
-    };
-  }
-  const nt = t > 18.5 ? t - 18.5 : t + 5.5; // 0..11 across the night
-  const f = nt / 11;
-  return {
-    isNight: true,
-    sun: null,
-    moon: { x: n(arcX(f)), y: n(arcY(f) + 12) },
-    tint: "#1b2a4c",
-    tintOpacity: 0.42,
-  };
-}
-
-function celestialLayer(p: string, time: SkyTime): ReactNode {
-  if (time.isNight && time.moon) {
-    return (
-      <g data-celestial="moon" pointerEvents="none">
-        <circle cx={time.moon.x} cy={time.moon.y} r={38} fill={`url(#${p}-sunglow)`} opacity={0.5} />
-        <circle cx={time.moon.x} cy={time.moon.y} r={15} fill="#eef0e0" />
-        <circle cx={time.moon.x + 5} cy={time.moon.y - 3} r={13} fill="#1b2a4c" opacity={0.35} />
-      </g>
-    );
-  }
-  if (time.sun) {
-    return (
-      <g data-celestial="sun" pointerEvents="none">
-        <circle cx={time.sun.x} cy={time.sun.y} r={46} fill={`url(#${p}-sunglow)`} />
-        <circle cx={time.sun.x} cy={time.sun.y} r={18} fill="#f6e6b0" />
-      </g>
-    );
-  }
-  return null;
-}
-
-function starsLayer(p: string, animate: boolean): ReactNode {
-  const r = rng("sky:stars");
-  const stars: ReactNode[] = [];
-  for (let i = 0; i < 32; i++) {
-    const style: CSSProperties | undefined = animate ? { animationDelay: `-${n(r() * 3.5)}s` } : undefined;
-    stars.push(
-      <circle
-        key={i}
-        cx={n(r() * 1000)}
-        cy={n(r() * 250)}
-        r={n(0.6 + r() * 0.9)}
-        fill="#eef0e0"
-        className={animate ? `${p}-twinkle` : undefined}
-        style={style}
-        opacity={animate ? undefined : 0.7}
-      />,
-    );
-  }
-  return (
-    <g data-sky="stars" pointerEvents="none">
-      {stars}
-    </g>
-  );
-}
-
 /* ── scene ───────────────────────────────────────────────────────────────── */
 
 export interface GardenSceneProps {
@@ -550,16 +417,20 @@ export function GardenScene({
   const p = idPrefix;
   const animate = !reducedMotion;
   const weather = snapshot.state.weatherState;
-  const time = skyTime(timeOfDay ?? 13);
   const moisture = clamp01(snapshot.state.moisture);
   const desc = describeGarden(snapshot);
 
-  const [skyTop, skyBottom] = skyColors(weather);
-  // Lush greens when moist → desaturated straw in drought, interpolated in code.
-  const grass = mix("#c0ab6e", "#7aa458", moisture);
-  const grassFar = shade(grass, 1.08);
-  const soil = mix("#b3a084", "#8f7a5c", moisture);
-  const hill = desaturate(mix("#b0ab7f", "#8fae86", moisture), 0.18);
+  const light = {
+    ...lightingFor({
+      hour: timeOfDay ?? 13,
+      season: snapshot.state.season,
+      weather,
+      moisture,
+      inComeback: snapshot.state.inComeback,
+      restMode: snapshot.state.restMode,
+    }),
+  };
+  light.moonPhaseValue = moonPhase(snapshot.state.lastSimulatedDate);
 
   const sorted = [...snapshot.plants].sort(
     (a, b) => a.position.y - b.position.y || a.id.localeCompare(b.id),
@@ -577,34 +448,21 @@ export function GardenScene({
     >
       <desc>{desc}</desc>
       {animate ? <style>{sceneCss(p)}</style> : null}
-      <defs>
-        <linearGradient id={`${p}-sky`} x1="0" y1="0" x2="0" y2="1">
-          <stop offset="0%" stopColor={skyTop} />
-          <stop offset="100%" stopColor={skyBottom} />
-        </linearGradient>
-        <radialGradient id={`${p}-sunglow`}>
-          <stop offset="0%" stopColor="#f6ecc4" stopOpacity={0.55} />
-          <stop offset="100%" stopColor="#f6ecc4" stopOpacity={0} />
-        </radialGradient>
-      </defs>
+      <SceneDefs p={p} light={light} />
+      <Sky p={p} light={light} animate={animate} />
 
-      {/* sky */}
-      <rect x={0} y={0} width={1000} height={300} fill={`url(#${p}-sky)`} />
-      {time.isNight ? starsLayer(p, animate) : null}
-      {celestialLayer(p, time)}
-
-      {/* distant hills */}
-      <path d="M0,296 C130,240 320,246 480,296 L480,300 L0,300 Z" fill={shade(hill, 1.06)} opacity={0.65} />
-      <path d="M410,296 C590,238 820,234 1000,292 L1000,300 L410,300 Z" fill={hill} opacity={0.5} />
+      {/* distant hills, hazed and blurred */}
+      <path d="M0,296 C130,240 320,246 480,296 L480,302 L0,302 Z" fill={shade(light.hill, 1.06)} opacity={0.65} filter={`url(#${p}-hillblur)`} />
+      <path d="M410,296 C590,238 820,234 1000,292 L1000,302 L410,302 Z" fill={light.hill} opacity={0.5} filter={`url(#${p}-hillblur)`} />
 
       {/* ground */}
       <path
         data-ground="true"
         d="M0,288 C260,278 740,278 1000,288 L1000,560 L0,560 Z"
-        fill={grass}
+        fill={light.grassNear}
       />
-      <path d="M0,288 C260,278 740,278 1000,288 L1000,332 L0,332 Z" fill={grassFar} opacity={0.55} />
-      <rect x={0} y={500} width={1000} height={60} fill={soil} opacity={0.18} />
+      <path d="M0,288 C260,278 740,278 1000,288 L1000,332 L0,332 Z" fill={light.grassFar} opacity={0.55} />
+      <rect x={0} y={500} width={1000} height={60} fill={light.soil} opacity={0.18} />
 
       {/* plants, far to near */}
       {sorted.map((plant) => {
@@ -648,11 +506,6 @@ export function GardenScene({
           </g>
         );
       })}
-
-      {/* time-of-day tint: warm at dawn/dusk, dusky blue at night */}
-      {time.tint && time.tintOpacity > 0 ? (
-        <rect x={0} y={0} width={1000} height={560} fill={time.tint} opacity={time.tintOpacity} pointerEvents="none" />
-      ) : null}
 
       {/* weather overlay */}
       {weatherOverlay(p, weather, animate)}

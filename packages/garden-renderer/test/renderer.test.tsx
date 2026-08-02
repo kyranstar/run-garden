@@ -226,6 +226,30 @@ describe("PlantSprite archetypes", () => {
   });
 });
 
+describe("sky layer", () => {
+  it("renders stars and a moon at night, sun by day", () => {
+    const snapshot = healthySnapshot();
+    const night = renderScene(snapshot, { timeOfDay: 23.5 });
+    expect(night).toContain('data-sky="stars"');
+    expect(night).toContain('data-celestial="moon"');
+    expect(night).not.toContain('data-celestial="sun"');
+    const day = renderScene(snapshot, { timeOfDay: 13 });
+    expect(day).toContain('data-celestial="sun"');
+    expect(day).not.toContain('data-sky="stars"');
+  });
+
+  it("sky gradient has three stops driven by the color script", () => {
+    const markup = renderScene(healthySnapshot(), { timeOfDay: 13 });
+    const stops = markup.match(/<stop offset/g) ?? [];
+    expect(stops.length).toBeGreaterThanOrEqual(3);
+  });
+
+  it("dawn and midday skies differ", () => {
+    const snapshot = healthySnapshot();
+    expect(renderScene(snapshot, { timeOfDay: 6.5 })).not.toBe(renderScene(snapshot, { timeOfDay: 13 }));
+  });
+});
+
 describe("describeGarden / describePlant", () => {
   it("mentions the condition word and plant counts", () => {
     const snapshot = healthySnapshot();
