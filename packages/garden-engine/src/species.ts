@@ -22,7 +22,11 @@ export type UnlockGate =
   | { kind: "early_runs"; count: number } // runs started before 07:00
   | { kind: "distance_run"; meters: number } // a single run of at least N meters
   | { kind: "total_runs"; count: number } // lifetime completed planned runs
-  | { kind: "comeback_streak"; count: number }; // N straight days back after a break
+  | { kind: "comeback_streak"; count: number } // N straight days back after a break
+  // Discipline gates — strength, yoga, and cross-discipline balance.
+  | { kind: "strength_sessions"; count: number }
+  | { kind: "yoga_sessions"; count: number }
+  | { kind: "balanced_weeks"; count: number };
 
 export interface Species {
   id: string;
@@ -121,6 +125,19 @@ export const SPECIES: Species[] = [
   { id: "mushroom_cluster", name: "Mushroom cluster", category: "fungus", rarity: "common", unlock: { kind: "comeback" }, growthDays: 3, spacing: 0.03, depthBand: [0.5, 0.9], flowers: false, archetype: "mushroom", palette: { primary: "#c9a878", secondary: "#e6d9c2" } },
   { id: "shelf_fungus", name: "Shelf fungus", category: "fungus", rarity: "uncommon", unlock: { kind: "dead_wood" }, growthDays: 5, spacing: 0.025, depthBand: [0.4, 0.85], flowers: false, needsHost: "dead_wood", archetype: "shelf_fungus", palette: { primary: "#c2a06a", secondary: "#8a6f4d" } },
   { id: "mossy_log_moss", name: "Log moss", category: "fungus", rarity: "uncommon", unlock: { kind: "dead_wood" }, growthDays: 6, spacing: 0.025, depthBand: [0.4, 0.85], flowers: false, needsHost: "dead_wood", archetype: "moss", palette: { primary: "#5f8a50", secondary: "#7da868" } },
+
+  // ── Strength species ────────────────────────────────────────────────────
+  { id: "stonecrop", name: "Stonecrop", category: "groundcover", rarity: "common", unlock: { kind: "strength_sessions", count: 5 }, growthDays: 7, spacing: 0.045, depthBand: [0.55, 0.95], flowers: true, archetype: "groundcover_patch", palette: { primary: "#b5652f", secondary: "#8a4a22", accent: "#d99a3d" } },
+  { id: "ironwood", name: "Ironwood", category: "tree", rarity: "uncommon", unlock: { kind: "strength_sessions", count: 12 }, growthDays: 60, spacing: 0.11, depthBand: [0.1, 0.45], flowers: false, archetype: "tree_round", palette: { primary: "#6b6234", secondary: "#5a3d28" } },
+  { id: "terrace_fern", name: "Terrace fern", category: "fern", rarity: "rare", unlock: { kind: "strength_sessions", count: 20 }, growthDays: 14, spacing: 0.045, depthBand: [0.3, 0.7], flowers: false, archetype: "fern", palette: { primary: "#7a7038", secondary: "#4a4522" } },
+
+  // ── Yoga species ─────────────────────────────────────────────────────────
+  { id: "moon_lotus", name: "Moon lotus", category: "flower", rarity: "common", unlock: { kind: "yoga_sessions", count: 5 }, growthDays: 10, spacing: 0.035, depthBand: [0.45, 0.85], flowers: true, archetype: "flower_cup", palette: { primary: "#8f6fae", secondary: "#6d4f8a", accent: "#f2ede0" } },
+  { id: "meditation_moss", name: "Meditation moss", category: "fungus", rarity: "uncommon", unlock: { kind: "yoga_sessions", count: 10 }, growthDays: 6, spacing: 0.025, depthBand: [0.4, 0.85], flowers: false, archetype: "moss", palette: { primary: "#8a7f96", secondary: "#a89fb5" } },
+  { id: "lavender_drift", name: "Lavender drift", category: "flower", rarity: "rare", unlock: { kind: "yoga_sessions", count: 15 }, growthDays: 12, spacing: 0.035, depthBand: [0.4, 0.8], flowers: true, archetype: "flower_spike", palette: { primary: "#7c9483", secondary: "#9c8fc0" } },
+
+  // ── Balance species ──────────────────────────────────────────────────────
+  { id: "harmony_willow", name: "Harmony willow", category: "tree", rarity: "rare", unlock: { kind: "balanced_weeks", count: 3 }, growthDays: 65, spacing: 0.12, depthBand: [0.08, 0.4], flowers: false, archetype: "tree_weeping", palette: { primary: "#8fae9a", secondary: "#6f6353" } },
 ];
 
 export const SPECIES_BY_ID = new Map(SPECIES.map((s) => [s.id, s]));

@@ -48,6 +48,12 @@ export function gateSatisfied(gate: UnlockGate, snapshot: GardenSnapshot): boole
       return s.totalCompletedRuns >= gate.count;
     case "comeback_streak":
       return (s.bestComebackStreak ?? 0) >= gate.count;
+    case "strength_sessions":
+      return s.strengthSessionCount >= gate.count;
+    case "yoga_sessions":
+      return s.yogaSessionCount >= gate.count;
+    case "balanced_weeks":
+      return s.balancedWeekCount >= gate.count;
   }
 }
 
@@ -82,6 +88,12 @@ export function describeGate(gate: UnlockGate): string {
       return `Complete ${gate.count} planned runs, lifetime`;
     case "comeback_streak":
       return `Run ${gate.count} days in a row after a long break`;
+    case "strength_sessions":
+      return `Complete ${gate.count} strength session${gate.count === 1 ? "" : "s"}`;
+    case "yoga_sessions":
+      return `Complete ${gate.count} yoga session${gate.count === 1 ? "" : "s"}`;
+    case "balanced_weeks":
+      return `${gate.count} balanced week${gate.count === 1 ? "" : "s"} — run, lift, and yoga in the same week`;
   }
 }
 
@@ -112,6 +124,12 @@ export function gateProgress(
       return { current: s.totalCompletedRuns, target: gate.count };
     case "comeback_streak":
       return { current: s.bestComebackStreak ?? 0, target: gate.count };
+    case "strength_sessions":
+      return { current: s.strengthSessionCount, target: gate.count };
+    case "yoga_sessions":
+      return { current: s.yogaSessionCount, target: gate.count };
+    case "balanced_weeks":
+      return { current: s.balancedWeekCount, target: gate.count };
     default:
       return null;
   }

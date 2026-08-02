@@ -4,7 +4,10 @@ import type { WorkoutCategory } from "@rg/domain";
 import {
   DEFAULT_GARDEN_CONFIG,
   SPECIES,
+  describeGate,
   disciplineBalance,
+  gateProgress,
+  gateSatisfied,
   initialSnapshot,
   replay,
   simulateDay,
@@ -743,5 +746,97 @@ describe("discipline balance", () => {
     const balance = disciplineBalance(state);
     expect(balance.strength.health).toBeCloseTo(0.5, 6);
     expect(balance.overall).toBeCloseTo(0.5, 6);
+  });
+});
+
+describe("discipline unlock gates", () => {
+  const snapshotWith = (patch: Partial<GardenSnapshot["state"]>): GardenSnapshot => {
+    const base = initialSnapshot(START);
+    return { ...base, state: { ...base.state, ...patch } };
+  };
+
+  it("strength_sessions gate is satisfied only at or past the count", () => {
+    const gate = { kind: "strength_sessions", count: 5 } as const;
+    expect(gateSatisfied(gate, snapshotWith({ strengthSessionCount: 4 }))).toBe(false);
+    expect(gateSatisfied(gate, snapshotWith({ strengthSessionCount: 5 }))).toBe(true);
+  });
+
+  it("yoga_sessions gate is satisfied only at or past the count", () => {
+    const gate = { kind: "yoga_sessions", count: 10 } as const;
+    expect(gateSatisfied(gate, snapshotWith({ yogaSessionCount: 9 }))).toBe(false);
+    expect(gateSatisfied(gate, snapshotWith({ yogaSessionCount: 10 }))).toBe(true);
+  });
+
+  it("balanced_weeks gate is satisfied only at or past the count", () => {
+    const gate = { kind: "balanced_weeks", count: 3 } as const;
+    expect(gateSatisfied(gate, snapshotWith({ balancedWeekCount: 2 }))).toBe(false);
+    expect(gateSatisfied(gate, snapshotWith({ balancedWeekCount: 3 }))).toBe(true);
+  });
+
+  it("gateProgress returns count-based fractions for the new gates", () => {
+    expect(
+      gateProgress({ kind: "strength_sessions", count: 5 }, snapshotWith({ strengthSessionCount: 3 })),
+    ).toEqual({ current: 3, target: 5 });
+    expect(
+      gateProgress({ kind: "yoga_sessions", count: 10 }, snapshotWith({ yogaSessionCount: 6 })),
+    ).toEqual({ current: 6, target: 10 });
+    expect(
+      gateProgress({ kind: "balanced_weeks", count: 3 }, snapshotWith({ balancedWeekCount: 1 })),
+    ).toEqual({ current: 1, target: 3 });
+  });
+
+  it("describes the new gates in plain language", () => {
+    expect(describeGate({ kind: "strength_sessions", count: 5 })).toBe("Complete 5 strength sessions");
+    expect(describeGate({ kind: "strength_sessions", count: 1 })).toBe("Complete 1 strength session");
+    expect(describeGate({ kind: "yoga_sessions", count: 10 })).toBe("Complete 10 yoga sessions");
+    expect(describeGate({ kind: "yoga_sessions", count: 1 })).toBe("Complete 1 yoga session");
+    expect(describeGate({ kind: "balanced_weeks", count: 3 })).toBe(
+      "3 balanced weeks — run, lift, and yoga in the same week",
+    );
+  });
+
+  it("unlocks the strength-gated species once enough strength sessions land", () => {
+    let snapshot = initialSnapshot(START);
+    let date = START;
+    for (let i = 0; i < 5; i++) {
+      ({ snapshot } = simulateDay(snapshot, sessionDay(date, "strength")));
+      date = addDays(date, 1);
+    }
+    expect(snapshot.state.strengthSessionCount).toBe(5);
+    expect(snapshot.unlockedSpeciesIds).toContain("stonecrop");
+    expect(snapshot.unlockedSpeciesIds).not.toContain("ironwood"); // needs 12
+  });
+
+  it("unlocks the yoga-gated species once enough yoga sessions land", () => {
+    let snapshot = initialSnapshot(START);
+    let date = START;
+    for (let i = 0; i < 5; i++) {
+      ({ snapshot } = simulateDay(snapshot, sessionDay(date, "yoga")));
+      date = addDays(date, 1);
+    }
+    expect(snapshot.state.yogaSessionCount).toBe(5);
+    expect(snapshot.unlockedSpeciesIds).toContain("moon_lotus");
+    expect(snapshot.unlockedSpeciesIds).not.toContain("meditation_moss"); // needs 10
+  });
+
+  it("unlocks harmony_willow after three balanced Mon–Sun weeks", () => {
+    const week = (mon: string): GardenDayInput[] => [
+      runDay(mon, "easy"),
+      sessionDay(addDays(mon, 1), "strength"),
+      sessionDay(addDays(mon, 2), "yoga"),
+      emptyDay(addDays(mon, 3)),
+      emptyDay(addDays(mon, 4)),
+      emptyDay(addDays(mon, 5)),
+      emptyDay(addDays(mon, 6)),
+    ];
+    const days = [
+      ...week(START),
+      ...week(addDays(START, 7)),
+      ...week(addDays(START, 14)),
+      emptyDay(addDays(START, 21)), // closes the third balanced week
+    ];
+    const { snapshot } = replay(START, days);
+    expect(snapshot.state.balancedWeekCount).toBe(3);
+    expect(snapshot.unlockedSpeciesIds).toContain("harmony_willow");
   });
 });

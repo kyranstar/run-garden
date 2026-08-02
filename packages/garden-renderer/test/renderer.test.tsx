@@ -188,7 +188,7 @@ describe("PlantSprite archetypes", () => {
   it("covers all 20 archetypes across the species catalog", () => {
     const archetypes = new Set(SPECIES.map((s) => s.archetype));
     expect(archetypes.size).toBe(20);
-    expect(SPECIES.length).toBe(39); // 34 + 5 achievement species
+    expect(SPECIES.length).toBe(46); // 34 + 5 achievement species + 7 tri-discipline species
   });
 
   it("renders every species in mature, flowering, and dead states without throwing", () => {
