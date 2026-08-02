@@ -250,6 +250,31 @@ describe("sky layer", () => {
   });
 });
 
+describe("terrain", () => {
+  it("renders four ground bands, nearest tagged data-ground", () => {
+    const markup = renderScene(healthySnapshot());
+    expect((markup.match(/data-band=/g) ?? []).length).toBe(4);
+    expect(markup).toContain('data-ground="true"');
+  });
+
+  it("renders a dense meadow for a healthy garden and a sparser one in drought", () => {
+    const healthy = renderScene(healthySnapshot());
+    const drought = renderScene(droughtSnapshot());
+    const strokes = (m: string) => (m.match(/data-terrain="meadow"/g) ?? []).length;
+    expect(strokes(healthy)).toBe(1);
+    const meadowOf = (m: string) => m.split('data-terrain="meadow"')[1]!.split("</g>")[0]!;
+    const count = (m: string) => (meadowOf(m).match(/<path/g) ?? []).length;
+    expect(count(healthy)).toBeGreaterThan(350);
+    expect(count(healthy)).toBeLessThanOrEqual(800);
+    expect(count(drought)).toBeLessThan(count(healthy));
+  });
+
+  it("drought gardens show straw patches; healthy gardens do not", () => {
+    expect(renderScene(droughtSnapshot())).toContain('data-terrain="patches"');
+    expect(renderScene(healthySnapshot())).not.toContain('data-terrain="patches"');
+  });
+});
+
 describe("describeGarden / describePlant", () => {
   it("mentions the condition word and plant counts", () => {
     const snapshot = healthySnapshot();

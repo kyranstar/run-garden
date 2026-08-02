@@ -7,6 +7,7 @@ import { describeGarden, plantStateLabel } from "./describe";
 import { lightingFor, moonPhase } from "./lighting";
 import { PlantSprite } from "./PlantSprite";
 import { SceneDefs, Sky } from "./sky";
+import { Terrain } from "./terrain";
 
 /**
  * The full scene: sky → hills → ground → plants (far to near) → weather →
@@ -456,13 +457,18 @@ export function GardenScene({
       <path d="M410,296 C590,238 820,234 1000,292 L1000,302 L410,302 Z" fill={light.hill} opacity={0.5} filter={`url(#${p}-hillblur)`} />
 
       {/* ground */}
-      <path
-        data-ground="true"
-        d="M0,288 C260,278 740,278 1000,288 L1000,560 L0,560 Z"
-        fill={light.grassNear}
+      <Terrain
+        light={light}
+        moisture={clamp01(snapshot.state.moisture)}
+        soilHealth={clamp01(snapshot.state.soilHealth)}
+        floweringDensity={clamp01(snapshot.state.floweringDensity)}
+        biodiversity={clamp01(snapshot.state.biodiversity)}
+        droughtDays={snapshot.state.droughtDays}
+        canopy={clamp01(snapshot.state.canopy)}
+        trees={sorted
+          .filter((pl) => pl.category === "tree" && pl.state !== "dead" && pl.maturity >= 0.5)
+          .map((pl) => anchorOf(pl))}
       />
-      <path d="M0,288 C260,278 740,278 1000,288 L1000,332 L0,332 Z" fill={light.grassFar} opacity={0.55} />
-      <rect x={0} y={500} width={1000} height={60} fill={light.soil} opacity={0.18} />
 
       {/* plants, far to near */}
       {sorted.map((plant) => {
