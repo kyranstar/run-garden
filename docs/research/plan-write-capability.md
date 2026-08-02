@@ -411,3 +411,34 @@ multi-week plan-level creation is much shakier evidence, and (4) yoga appears to
 have no plan representation at all, independent of API access. A create-capable
 spike (per §c) mirroring the existing reversible move-spike is the right next
 step before committing product design to "the app owns all planning."
+
+---
+
+## LIVE VERIFICATION RESULTS (2026-08-02/03, four spike runs against the real account)
+
+Everything below is **live-verified**, superseding the confidence table above:
+
+1. **Create works — strength, structured run, AND bike** — `POST /training/schedule/update`
+   with `status:1` and hand-built programs: all accepted (`0000`) and materialized with
+   **perfect structural fidelity** (strength: repeat-group container `sets:3` wrapping a
+   `targetType:3/targetValue:10` child with catalog `originId`; run/bike: 2-block
+   warmup+training). Program **names round-trip** and are a reliable ownership stamp.
+2. **Delete works** — `status:3` with `(planId, idInPlan, planProgramId)`: six live deletes
+   (3 strays + 3 end-to-end), every one plan-scoped and precise; account restored to
+   baseline both times (verified across the full span, all foreign plans untouched).
+3. **THE key wire fact: `schedule/query` merges MULTIPLE plans** (this account: a COROS
+   template plan + two small COROS plans + the account's own container plan). ALL identity
+   logic must be planId-scoped. The container plan's `maxIdInPlan` counter works correctly
+   within its own scope; creates land in the target plan with sequential ids; `planId` is
+   a real routing key on both create and delete (verified: deletes never crossed plans).
+4. **Full end-to-end cycle green**: create → read-after-write verify (plan-scoped stamp
+   recovery) → delete → baseline restoration, exit 0, on the real account.
+5. **Unprobed (deliberately)**: `plan/add` (plan-object creation) — unnecessary for the
+   product: per-workout creates into the account's own container plan are sufficient.
+6. **Product write-path implications**: scope every read by planId; recover created
+   workouts by (target plan, happenDay, program-name stamp); store server-assigned ids;
+   never rely on entity names (they don't round-trip — program names do).
+
+Spike tooling: `pnpm coros:spike:dryrun` / `coros:spike:cleanup` / `coros:spike:create`
+(services/coros-bridge/src/spike-create.ts, 43 offline tests incl. multi-plan regressions).
+Reports: docs/reports/ (run history preserved in /tmp backups this session).
