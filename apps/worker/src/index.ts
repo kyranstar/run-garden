@@ -18,6 +18,7 @@ import { planRoutes } from "./routes/plan.js";
 import { gardenRoutes } from "./routes/garden.js";
 import { stravaRoutes } from "./routes/strava.js";
 import { activityRoutes, calendarRoutes, insightRoutes, settingsRoutes } from "./routes/misc.js";
+import { studioRoutes } from "./routes/studio.js";
 import { makeDb, type Db } from "./services/db.js";
 import { loadPreferences, syncCalendar } from "./services/calendar-sync.js";
 import { advanceGarden } from "./services/garden-sync.js";
@@ -53,6 +54,7 @@ app.route("/api/calendar", calendarRoutes);
 app.route("/api/activities", activityRoutes);
 app.route("/api/insights", insightRoutes);
 app.route("/api/settings", settingsRoutes);
+app.route("/api/studio", studioRoutes);
 
 app.get("/api/health", (c) => c.json({ ok: true, fixtureMode: fixtureModeEnabled(c.env) }));
 

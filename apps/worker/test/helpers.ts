@@ -2,8 +2,10 @@ import Database from "better-sqlite3";
 import { drizzle } from "drizzle-orm/better-sqlite3";
 import { readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
+import { Hono } from "hono";
 import { schema } from "@rg/database";
 import { newId, nowInstant, DEFAULT_USER_PREFERENCES, type UserPreferences } from "@rg/domain";
+import type { AppContext } from "../src/auth/middleware.js";
 import type { Db } from "../src/services/db.js";
 import { savePreferences } from "../src/services/calendar-sync.js";
 
@@ -69,4 +71,25 @@ export async function registerTestDevice(
     lastSeenAt: nowInstant(),
   });
   return deviceId;
+}
+
+/**
+ * Minimal Hono host for route-level tests. Real usage (`src/index.ts`) wires
+ * `withDb` (which builds a D1-backed db from `c.env.DB`) ahead of every route
+ * module; tests use better-sqlite3 instead, so this swaps that middleware for
+ * a direct `db` binding and mounts the routes under test at `path` — every
+ * other piece of the request pipeline (`requireUser`, the route's own
+ * handlers) runs unmodified. No route-level test existed anywhere in this
+ * repo before Plan Studio's (grep confirms it — every prior suite calls
+ * service functions directly against a test db); this is that pattern, kept
+ * here rather than duplicated per test file so later route suites reuse it.
+ */
+export function mountRoutes(db: Db, path: string, routes: Hono<AppContext>): Hono<AppContext> {
+  const app = new Hono<AppContext>();
+  app.use("*", async (c, next) => {
+    c.set("db", db);
+    await next();
+  });
+  app.route(path, routes);
+  return app;
 }

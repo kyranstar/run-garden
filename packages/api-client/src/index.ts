@@ -5,6 +5,8 @@ import type {
   GardenConditionWord,
   GardenEvent,
   GardenWeatherState,
+  LiftingPlan,
+  PlanBrief,
   UserPreferences,
 } from "@rg/domain";
 
@@ -180,6 +182,73 @@ export interface DeviceDto {
   online: boolean;
 }
 
+// ── Plan Studio (worker routes: apps/worker/src/routes/studio.ts) ──────────────
+
+/** One `studio_plan_pushes` row, trimmed to what the UI needs (no internal
+ * COROS addressing fields — see the route's `pushRowDto`). */
+export interface StudioPushRowDto {
+  id: string;
+  happenDay: string;
+  sessionTitle: string;
+  status: "pending" | "verified" | "failed" | "deleted";
+  error: string | null;
+  corosHappenDay: string | null;
+}
+
+/** Read back from the push's own audit-log row (never persisted separately);
+ * `null` until the plan has been pushed at least once. */
+export interface StudioPushSummaryDto {
+  ok: true;
+  planVersion: number;
+  creates: number;
+  deletes: number;
+  failures: number;
+  unchanged: number;
+  drifted: number;
+  blocked: number;
+}
+
+/** "Waiting for bridge" indicator: device online heuristic plus the raw
+ * queued-studio-job facts — the UI decides what "stale" means. */
+export interface StudioBridgeStatusDto {
+  online: boolean;
+  pendingJobs: { queued: number; oldestQueuedAt: string | null };
+}
+
+/** Mirrors `SettingsResponse["llm"]` — same `llmBudgetStatus` service, same
+ * shape, reused rather than re-declared. */
+export type StudioLlmStatusDto = SettingsResponse["llm"];
+
+export interface StudioStateResponse {
+  plan: LiftingPlan | null;
+  brief: PlanBrief | null;
+  version: number | null;
+  pushes: StudioPushRowDto[];
+  lastPushSummary: StudioPushSummaryDto | null;
+  bridge: StudioBridgeStatusDto;
+  llm: StudioLlmStatusDto;
+}
+
+export interface StudioGenerateResponse {
+  ok: true;
+  plan: LiftingPlan;
+  brief: PlanBrief;
+  version: number;
+}
+
+export interface StudioEditResponse {
+  ok: true;
+  plan: LiftingPlan;
+  brief: PlanBrief;
+  version: number;
+}
+
+export interface StudioPushResponse {
+  ok: true;
+  summary: StudioPushSummaryDto;
+  pushes: StudioPushRowDto[];
+}
+
 // ── Endpoints ────────────────────────────────────────────────────────────────
 
 export const api = {
@@ -228,4 +297,11 @@ export const api = {
   stravaDisconnect: () => post("/api/strava/disconnect"),
   fixtureLogin: () => post<{ ok: true }>("/api/dev/fixture-login"),
   fixtureSeed: () => post<Record<string, unknown>>("/api/dev/seed"),
+  studio: () => get<StudioStateResponse>("/api/studio"),
+  studioGenerate: (brief: PlanBrief) => post<StudioGenerateResponse>("/api/studio/generate", { brief }),
+  studioEdit: (request: string, major = false) =>
+    post<StudioEditResponse>("/api/studio/edit", { request, major }),
+  studioPush: () => post<StudioPushResponse>("/api/studio/push"),
+  studioPushRetry: (happenDay: string) =>
+    post<StudioPushResponse>("/api/studio/push/retry", { happenDay }),
 };
