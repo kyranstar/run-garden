@@ -42,6 +42,17 @@ export function activeSystems(g: GateInputs): SystemKind[] {
   return out;
 }
 
+/**
+ * The gating scalars, collapsed to a comparable string. AtmosphereLayer uses
+ * this to decide whether its particle systems need rebuilding on a frame —
+ * unlike `light` (a fresh object every parent render), this key is stable
+ * across re-renders that don't actually change which systems are active, so
+ * the canvas RAF loop's time origin never resets from parent churn.
+ */
+export function atmosphereKey(inp: GateInputs): string {
+  return `${inp.weather}|${inp.period}|${inp.fireflies}|${inp.hasFlowering}`;
+}
+
 const COUNTS: Record<SystemKind, number> = {
   rainSplash: 22, pollen: 40, mist: 3, cloudShadow: 2,
   gustFringe: 160, petals: 16, shimmer: 10, fireflyGlow: 6,

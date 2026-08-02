@@ -1,7 +1,7 @@
 import { useEffect, useRef } from "react";
 import type { GardenWeatherState } from "@rg/domain";
 import type { SceneLight } from "./lighting";
-import { activeSystems, GUST_SCALE, initSystem, sampleSystem, type ParticleSystem, type Sprite } from "./particles";
+import { activeSystems, atmosphereKey, GUST_SCALE, initSystem, type ParticleSystem, type Sprite, sampleSystem } from "./particles";
 import { mix, shade } from "./color";
 
 export interface AtmosphereLayerProps {
@@ -13,13 +13,34 @@ export interface AtmosphereLayerProps {
   idPrefix: string;
 }
 
+interface AtmosphereInputs {
+  weather: GardenWeatherState;
+  light: SceneLight;
+  fireflies: boolean;
+  hasFlowering: boolean;
+  restMode: boolean;
+}
+
 /**
  * The Tier-2 canvas: pollen, mist, splashes, gusts — everything the DOM can't
  * animate cheaply. Pure decoration: pointer-events none, aria-hidden, and the
  * scene is complete without it (reducedMotion never mounts it).
+ *
+ * The RAF loop and its `start` time origin live in ONE long-lived effect,
+ * keyed only on `idPrefix` (truly stable identity) — parent re-renders (a
+ * plant tap on the garden screen, the ambient screen's 30s clock tick, a
+ * cursor-hide toggle) must never tear the loop down and reset every
+ * particle's clock, since `light` is a fresh object literal every render.
+ * Changing props are mirrored into a ref each render and read fresh inside
+ * the frame callback; particle systems are only rebuilt when the gating
+ * scalars (weather/period/fireflies/hasFlowering) actually change, per
+ * `atmosphereKey` — restMode and light color changes apply instantly on the
+ * next frame with no rebuild and no time-origin reset.
  */
 export function AtmosphereLayer({ weather, light, fireflies, hasFlowering, restMode, idPrefix }: AtmosphereLayerProps) {
   const ref = useRef<HTMLCanvasElement | null>(null);
+  const inputsRef = useRef<AtmosphereInputs>({ weather, light, fireflies, hasFlowering, restMode });
+  inputsRef.current = { weather, light, fireflies, hasFlowering, restMode };
 
   useEffect(() => {
     const canvas = ref.current;
@@ -32,12 +53,11 @@ export function AtmosphereLayer({ weather, light, fireflies, hasFlowering, restM
     }
     if (!ctx) return; // graceful: SVG scene stands alone
 
-    const kinds = activeSystems({ weather, period: light.period, fireflies, hasFlowering });
-    const systems: ParticleSystem[] = kinds.map((k) => initSystem(k, `${idPrefix}:${k}`));
-    const gustScale = (GUST_SCALE[weather] ?? 1) * (restMode ? 0.6 : 1);
     const start = performance.now();
     let last = 0;
     let raf = 0;
+    let systems: ParticleSystem[] = [];
+    let key = "";
 
     const draw = (now: number) => {
       raf = requestAnimationFrame(draw);
@@ -45,6 +65,25 @@ export function AtmosphereLayer({ weather, light, fireflies, hasFlowering, restM
       if (now - last < 1000 / 30) return; // 30 fps cap
       last = now;
       const t = (now - start) / 1000;
+
+      const cur = inputsRef.current;
+      const nextKey = atmosphereKey({
+        weather: cur.weather,
+        period: cur.light.period,
+        fireflies: cur.fireflies,
+        hasFlowering: cur.hasFlowering,
+      });
+      if (nextKey !== key) {
+        key = nextKey;
+        const kinds = activeSystems({
+          weather: cur.weather,
+          period: cur.light.period,
+          fireflies: cur.fireflies,
+          hasFlowering: cur.hasFlowering,
+        });
+        systems = kinds.map((k) => initSystem(k, `${idPrefix}:${k}`));
+      }
+      const gustScale = (GUST_SCALE[cur.weather] ?? 1) * (cur.restMode ? 0.6 : 1);
 
       const dpr = Math.min(2, window.devicePixelRatio || 1);
       const W = Math.round(canvas.clientWidth * dpr);
@@ -56,11 +95,11 @@ export function AtmosphereLayer({ weather, light, fireflies, hasFlowering, restM
       }
       const g = ctx!;
       g.clearRect(0, 0, W, H);
-      for (const sys of systems) drawSystem(g, sys, t, W, H, light, gustScale);
+      for (const sys of systems) drawSystem(g, sys, t, W, H, cur.light, gustScale);
     };
     raf = requestAnimationFrame(draw);
     return () => cancelAnimationFrame(raf);
-  }, [weather, light, fireflies, hasFlowering, restMode, idPrefix]);
+  }, [idPrefix]);
 
   return (
     <canvas

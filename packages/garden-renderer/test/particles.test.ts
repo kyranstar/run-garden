@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { activeSystems, initSystem, sampleSystem, type GateInputs, type SystemKind } from "../src/particles";
+import { activeSystems, atmosphereKey, initSystem, sampleSystem, type GateInputs, type SystemKind } from "../src/particles";
 
 const gate = (extra: Partial<GateInputs> = {}): GateInputs => ({
   weather: "soft_sun",
@@ -95,5 +95,19 @@ describe("weather-signature systems", () => {
     // Not asserting exact values — only that size and alpha both change.
     expect(early.size).not.toBe(later.size);
     expect(early.alpha).not.toBe(later.alpha);
+  });
+});
+
+describe("atmosphereKey", () => {
+  it("identical inputs produce identical keys", () => {
+    expect(atmosphereKey(gate())).toBe(atmosphereKey(gate()));
+  });
+
+  it("changing any one field changes the key", () => {
+    const base = atmosphereKey(gate());
+    expect(atmosphereKey(gate({ weather: "fresh_rain" }))).not.toBe(base);
+    expect(atmosphereKey(gate({ period: "night" }))).not.toBe(base);
+    expect(atmosphereKey(gate({ fireflies: true }))).not.toBe(base);
+    expect(atmosphereKey(gate({ hasFlowering: false }))).not.toBe(base);
   });
 });
