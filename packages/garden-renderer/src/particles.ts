@@ -89,7 +89,28 @@ function sampleOne(kind: SystemKind, p: number[], t: number): Sprite {
       const bend = Math.sin(t * 0.9 + d * TAU) * 0.1 + gust;
       return { x: u * 1.04 - 0.02, y: 1 - h, alpha: 0.3, size: h, tilt: lean + bend };
     }
-    default:
-      throw new Error(`sampleOne: unimplemented kind ${kind}`);
+    case "rainSplash": {
+      const cycle = wrap(t * (0.8 + 0.6 * c) + d);
+      return {
+        x: a, y: 0.55 + 0.42 * b,
+        alpha: Math.max(0, 0.3 * (1 - cycle)),
+        size: 0.004 + cycle * 0.02, tilt: 0,
+      };
+    }
+    case "petals": {
+      const x = wrap(a - 0.03 * t + 0.01 * Math.sin(t * 2 + b * TAU));
+      const y = wrap(c + 0.05 * (0.5 + 0.5 * d) * t);
+      return { x, y: 0.15 + y * 0.8, alpha: 0.3, size: 2 + 2 * e, tilt: Math.sin(t * 3 + f * TAU) };
+    }
+    case "shimmer": {
+      const y = 0.5 + 0.06 * b + Math.sin(t * 2.2 + c * TAU) * 0.004;
+      return { x: a, y, alpha: 0.05, size: 0.05 + 0.08 * d, tilt: 0 };
+    }
+    case "fireflyGlow": {
+      const x = 0.1 + 0.8 * a + 0.04 * Math.sin(t * 0.21 + b * TAU);
+      const y = 0.6 + 0.28 * c + 0.03 * Math.sin(t * 0.17 + d * TAU);
+      const alpha = Math.max(0, 0.1 + 0.14 * Math.sin(t * (0.4 + 0.4 * e) + f * TAU));
+      return { x, y, alpha, size: 3 + 2 * a, tilt: 0 };
+    }
   }
 }

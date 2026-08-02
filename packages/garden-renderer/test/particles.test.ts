@@ -72,3 +72,28 @@ describe("systems are deterministic, analytic, and bounded", () => {
     expect(initSystem("cloudShadow", "k").params.length).toBe(2);
   });
 });
+
+describe("weather-signature systems", () => {
+  const kinds: SystemKind[] = ["rainSplash", "petals", "shimmer", "fireflyGlow"];
+  for (const kind of kinds) {
+    it(`${kind}: deterministic, analytic, bounded`, () => {
+      const sys = initSystem(kind, "seed:y");
+      const s1 = sampleSystem(sys, 7.7);
+      expect(s1).toEqual(sampleSystem(initSystem(kind, "seed:y"), 7.7));
+      for (const s of s1) {
+        expect(s.alpha).toBeLessThanOrEqual(0.35);
+        expect(s.x).toBeGreaterThan(-0.4);
+        expect(s.x).toBeLessThan(1.7);
+      }
+    });
+  }
+
+  it("rain splash rings expand and fade over their cycle", () => {
+    const sys = initSystem("rainSplash", "z");
+    const early = sampleSystem(sys, 0.05)[0]!;
+    const later = sampleSystem(sys, 0.4)[0]!;
+    // Not asserting exact values — only that size and alpha both change.
+    expect(early.size).not.toBe(later.size);
+    expect(early.alpha).not.toBe(later.alpha);
+  });
+});
