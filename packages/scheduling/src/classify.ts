@@ -29,9 +29,9 @@ const TITLE_RULES: Array<{ re: RegExp; category: WorkoutCategory; sub?: QualityS
   { re: /\bhill\b|\bhills\b|\bincline\b/i, category: "quality", sub: "hills" },
   { re: /\binterval\b|\brepeats?\b|\bfartlek\b|\bspeed\b|\btrack\b|\d+\s*[x×]\s*\d+/i, category: "quality", sub: "intervals" },
   { re: /\bstrength\b|\bcore\b|\bgym\b|\bweights\b/i, category: "strength" },
+  { re: /\bbike\b|\bcycle\b|\bswim\b|\brow\b|\belliptical\b|\bcross[- ]?train/i, category: "cross_training" },
   { re: /\beasy\b|\baerobic\b|\bbase\b|\bconversational\b/i, category: "easy" },
   { re: /\byoga\b|\bmobility\b|\bstretch/i, category: "yoga" },
-  { re: /\bbike\b|\bcycle\b|\bswim\b|\brow\b|\belliptical\b|\bcross[- ]?train/i, category: "cross_training" },
 ];
 
 const NON_RUN_SPORTS = new Set(["bike", "cycling", "swim", "swimming", "rowing", "elliptical"]);

@@ -81,4 +81,8 @@ describe("classifyWorkout", () => {
     expect(classifyWorkout({ title: "Easy run + mobility work" }).category).toBe("easy");
     expect(classifyWorkout({ title: "Morning Yoga" }).category).toBe("yoga");
   });
+
+  it("still classifies compound easy+cross-training titles as cross_training (yoga rule is last)", () => {
+    expect(classifyWorkout({ title: "Easy bike ride" }).category).toBe("cross_training");
+  });
 });
