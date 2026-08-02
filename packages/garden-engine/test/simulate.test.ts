@@ -4,6 +4,7 @@ import type { WorkoutCategory } from "@rg/domain";
 import {
   DEFAULT_GARDEN_CONFIG,
   SPECIES,
+  disciplineBalance,
   initialSnapshot,
   replay,
   simulateDay,
@@ -665,5 +666,82 @@ describe("tri-discipline ecosystem", () => {
     expect(a.snapshot.state.strengthSessionCount).toBe(8);
     expect(a.snapshot.state.yogaSessionCount).toBe(4);
     expect(a.snapshot.state.balancedWeekCount).toBe(3);
+  });
+
+  it("emits soil_tended once when a strength session lands after a real gap", () => {
+    const g = initialSnapshot(START);
+    const idle = advanceEmptyDays(g, START, 4);
+    expect(idle.snapshot.state.daysSinceStrength).toBe(4);
+
+    const { events } = simulateDay(idle.snapshot, sessionDay(idle.nextDate, "strength"));
+    expect(events.filter((e) => e.kind === "soil_tended")).toHaveLength(1);
+  });
+
+  it("does not emit soil_tended for a strength session the very next day", () => {
+    const g = initialSnapshot(START);
+    const idle = advanceEmptyDays(g, START, 4);
+    const first = simulateDay(idle.snapshot, sessionDay(idle.nextDate, "strength"));
+    const second = simulateDay(
+      first.snapshot,
+      sessionDay(addDays(idle.nextDate, 1), "strength"),
+    );
+    expect(second.events.filter((e) => e.kind === "soil_tended")).toHaveLength(0);
+  });
+
+  it("stays quiet when strength lands inside its own grace period", () => {
+    const g = initialSnapshot(START);
+    const idle = advanceEmptyDays(g, START, 2); // daysSinceStrength -> 2, below the grace of 3
+    const { events } = simulateDay(idle.snapshot, sessionDay(idle.nextDate, "strength"));
+    expect(events.filter((e) => e.kind === "soil_tended")).toHaveLength(0);
+  });
+
+  it("emits life_tended once when a yoga session lands after a real gap", () => {
+    const g = initialSnapshot(START);
+    const idle = advanceEmptyDays(g, START, 4);
+    const { events } = simulateDay(idle.snapshot, sessionDay(idle.nextDate, "yoga"));
+    expect(events.filter((e) => e.kind === "life_tended")).toHaveLength(1);
+  });
+
+  it("does not emit life_tended for a yoga session the very next day", () => {
+    const g = initialSnapshot(START);
+    const idle = advanceEmptyDays(g, START, 4);
+    const first = simulateDay(idle.snapshot, sessionDay(idle.nextDate, "yoga"));
+    const second = simulateDay(first.snapshot, sessionDay(addDays(idle.nextDate, 1), "yoga"));
+    expect(second.events.filter((e) => e.kind === "life_tended")).toHaveLength(0);
+  });
+});
+
+describe("discipline balance", () => {
+  it("is fully healthy when every clock is at zero", () => {
+    const balance = disciplineBalance(initialSnapshot(START).state);
+    expect(balance.run).toEqual({ days: 0, health: 1 });
+    expect(balance.strength).toEqual({ days: 0, health: 1 });
+    expect(balance.yoga).toEqual({ days: 0, health: 1 });
+    expect(balance.overall).toBe(1);
+  });
+
+  it("fades run health to zero once sixteen days have passed", () => {
+    const state = { ...initialSnapshot(START).state, daysSinceCompletedRun: 16 };
+    const balance = disciplineBalance(state);
+    // (16 − 2) / 14 = 1 → clamp01(1 − 1) = 0
+    expect(balance.run.health).toBeCloseTo(0, 6);
+    expect(balance.overall).toBeCloseTo(0, 6);
+  });
+
+  it("respects each discipline's grace period", () => {
+    const state = { ...initialSnapshot(START).state, daysSinceStrength: 3 };
+    expect(disciplineBalance(state).strength.health).toBe(1);
+  });
+
+  it("takes the overall score from the weakest discipline", () => {
+    const state = {
+      ...initialSnapshot(START).state,
+      daysSinceCompletedRun: 0,
+      daysSinceStrength: 10, // (10 − 3) / 14 = 0.5 → health 0.5
+      daysSinceYoga: 0,
+    };
+    const balance = disciplineBalance(state);
+    expect(balance.strength.health).toBeCloseTo(0.5, 6);
+    expect(balance.overall).toBeCloseTo(0.5, 6);
   });
 });

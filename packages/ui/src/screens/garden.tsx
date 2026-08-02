@@ -73,6 +73,10 @@ function eventSentence(e: GardenEvent): string | null {
       return "A missed run left the soil a little drier.";
     case "rest_observed":
       return "A rest day — soil health improved.";
+    case "soil_tended":
+      return "Strength work fed the soil.";
+    case "life_tended":
+      return "Yoga brought the meadow back to life.";
     default:
       return null;
   }

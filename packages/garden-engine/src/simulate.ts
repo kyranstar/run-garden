@@ -278,10 +278,16 @@ export function simulateDay(
   }
 
   // 5. Discipline clocks. Rest mode freezes them; everything else advances.
-  if (strengthSessions.length > 0) state.daysSinceStrength = 0;
-  else if (!state.restMode) state.daysSinceStrength += 1;
-  if (yogaSessions.length > 0) state.daysSinceYoga = 0;
-  else if (!state.restMode) state.daysSinceYoga += 1;
+  //    A gentle nod when a session lands after a real gap (clock read before
+  //    reset) — never on consecutive-day sessions, since the clock is already 0.
+  if (strengthSessions.length > 0) {
+    if (state.daysSinceStrength >= 3) emit({ kind: "soil_tended" });
+    state.daysSinceStrength = 0;
+  } else if (!state.restMode) state.daysSinceStrength += 1;
+  if (yogaSessions.length > 0) {
+    if (state.daysSinceYoga >= 3) emit({ kind: "life_tended" });
+    state.daysSinceYoga = 0;
+  } else if (!state.restMode) state.daysSinceYoga += 1;
 
   // 6. Neglect: each axis wilts on its own clock, gently and with a floor.
   if (!state.restMode && !input.planGap) {
