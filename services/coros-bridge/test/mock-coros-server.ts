@@ -93,7 +93,15 @@ export interface MockCorosServer {
   userId: string;
   baseMonday: string;
   state: {
+    /** The target plan: the account's own container. `schedule.id` is its id. */
     schedule: RawCorosSchedule;
+    /**
+     * Other plans on the account (e.g. a COROS-authored template the athlete
+     * follows). /training/schedule/query MERGES every plan's entities and
+     * programs into one response, and their idInPlan values overlap freely —
+     * this is what the second live run tripped over.
+     */
+    mergedPlans: RawCorosSchedule[];
     activities: RawCorosActivityListItem[];
     details: Record<string, RawCorosActivityDetail>;
     dayList: Array<Record<string, unknown>>;
@@ -224,6 +232,7 @@ export function mockCorosServer(opts: { baseMonday?: string } = {}): MockCorosSe
     baseMonday,
     state: {
       schedule: fixtureRawSchedule(baseMonday),
+      mergedPlans: [],
       activities: [runActivity, bikeActivity, strengthActivity, yogaActivity],
       details: {
         "act-run-1": {
@@ -305,7 +314,13 @@ export function mockCorosServer(opts: { baseMonday?: string } = {}): MockCorosSe
     }
     const vo = body.versionObjects?.[0];
     if (!vo) return envelope("1031");
-    const schedule = server.state.schedule;
+    // Route by planId. Deletes are allowed to reach ANY plan — if the spike
+    // ever addresses the wrong one, the test must be able to see the damage.
+    const target =
+      [server.state.schedule, ...server.state.mergedPlans].find(
+        (p) => vo.planId != null && vo.planId !== "" && String(p.id ?? "") === String(vo.planId),
+      ) ?? server.state.schedule;
+    const schedule = target;
     schedule.entities ??= [];
     schedule.programs ??= [];
 
@@ -482,12 +497,20 @@ export function mockCorosServer(opts: { baseMonday?: string } = {}): MockCorosSe
         const startNum = Number(start);
         const endNum = Number(end);
         const schedule = server.state.schedule;
-        const entities = (schedule.entities ?? []).filter((e) => {
-          const day = Number(e.happenDay);
-          return day >= startNum && day <= endNum;
-        });
-        const ids = new Set(entities.map((e) => String(e.idInPlan)));
-        const programs = (schedule.programs ?? []).filter((p) => ids.has(String(p.idInPlan)));
+        const entities: RawCorosEntity[] = [];
+        const programs: RawCorosProgram[] = [];
+        // Every plan's rows are merged into the one response, exactly as the
+        // real endpoint does. Only the top-level plan fields (id, name,
+        // maxIdInPlan) describe the target plan.
+        for (const plan of [schedule, ...server.state.mergedPlans]) {
+          const inWindow = (plan.entities ?? []).filter((e) => {
+            const day = Number(e.happenDay);
+            return day >= startNum && day <= endNum;
+          });
+          const ids = new Set(inWindow.map((e) => String(e.planProgramId ?? e.idInPlan)));
+          entities.push(...inWindow);
+          programs.push(...(plan.programs ?? []).filter((p) => ids.has(String(p.idInPlan))));
+        }
         return envelope("0000", structuredClone({ ...schedule, entities, programs }));
       }
 

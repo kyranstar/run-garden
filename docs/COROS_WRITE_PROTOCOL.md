@@ -151,6 +151,26 @@ it never reads-modifies-writes anything the user authored:
    hand in the COROS UI. It is reported as an **orphan planId** in the console
    and the report, and forces `baselineRestored: false`.
 
+### Plans, not "the schedule"
+
+`/training/schedule/query` **merges every plan on the account into one
+response**. A live account carried two: a COROS-authored template plan holding
+the athlete's 27 real workouts (ids up to 48), and the account's own — initially
+empty — plan container, which is what the response's top-level `id`, `name` and
+`maxIdInPlan` describe and where creates land. Their `idInPlan` values overlap
+freely, because the counter is per plan.
+
+Reasoning over the merged view produced every anomaly of the first two live
+runs: a bogus "slot occupied" (another plan's id), an "accepted but not visible"
+create (searching the merged view for something filed in the container), and a
+stray sweep that found nothing.
+
+**So every read-derived decision is scoped to the target plan**: derivation,
+occupancy, recovery, ownership, cleanup and the ambiguity guard all operate on
+rows whose `planId` matches exactly. A row of unknown provenance is never
+assumed to be ours. Dry-run and inspect print a per-plan breakdown so a
+multi-plan account is legible at a glance.
+
 ### Choosing `idInPlan`: observe, do not trust the counter
 
 The first live run found a COROS-authored template plan reporting
@@ -181,21 +201,25 @@ materialized) — and then **could not find them**, because the server **stored
 them under a different `idInPlan` than the one claimed**. Nothing got registered
 for cleanup, so three workouts were left on the account.
 
-So the spike never uses an id as a recovery key. It stamps every program and
-entity it creates with `RG SPIKE — SAFE TO DELETE …` and finds its own work by
-**(stamp, date)**, then deletes using the ids the *server* reported. Claimed and
-server-assigned ids are both recorded (`idInPlan`, `serverIdInPlan`).
+So the spike never uses an id as a recovery key. It stamps every program it
+creates with `RG SPIKE — SAFE TO DELETE …` and finds its own work by
+**(stamp, date)** within the target plan, then deletes using the ids the
+*server* reported. Claimed and server-assigned ids are both recorded
+(`idInPlan`, `serverIdInPlan`).
 
-Because `idInPlan` is shared legitimately, the stamp rules are asymmetric on
-purpose: the **entity's** name proves ownership on its own, but the
-**program's** name only counts when exactly one program carries that
-`idInPlan` — otherwise a stamped program sitting beside a real workout's entity
-could make a real workout look like ours.
+The inspect dump settled which half of the stamp survives: **program** names
+come back verbatim, entity names do not. Ownership therefore rests on the
+program alone, resolved by the entity's own link key (`planProgramId ?? idInPlan`)
+inside its plan. A link key must resolve **unanimously** — if a stamped and an
+unstamped program share it, the entity's real workout is genuinely ambiguous,
+nothing is claimed, and the situation is reported as an `AMBIGUOUS STAMP`
+rather than acted on.
 
-A delete is addressed by `(planId, idInPlan, planProgramId)`. If an unstamped
-workout shares that whole triple, the server cannot tell them apart either, so
-the spike **does not send the delete** — it reports the leftover for manual
-removal instead. Every delete is followed by a read that checks both that our
+A delete is addressed by `(planId, idInPlan, planProgramId)` — not by date and
+not by stamp. So if **any** other entity of the same plan shares that address,
+the spike **does not send the delete**; it reports the leftover for manual
+removal instead. That check is deliberately stamp-independent: it is the last
+line for when classification itself is wrong. Every delete is followed by a read that checks both that our
 stamp is gone *and* that the unstamped count is unchanged.
 
 Two rules make the stamp safe to act on, both of them learned from a

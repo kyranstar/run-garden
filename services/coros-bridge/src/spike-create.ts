@@ -119,6 +119,13 @@ export interface CreateSpikeReport {
     planName?: string;
     maxIdInPlan: number;
     entityCountInSpan: number;
+    /** Every plan whose rows the schedule read merged in, largest first. */
+    plans: Array<{
+      planId: string;
+      entityCount: number;
+      programCount: number;
+      idInPlan: string[];
+    }>;
     idInPlanOnDates: string[];
     /** Every entity whose happenDay is one of `dates`, with its programs. */
     onDates: Array<{ entity: unknown; programs: unknown[] }>;
@@ -129,7 +136,15 @@ export interface CreateSpikeReport {
   dryRun?: {
     windowStart: string;
     windowEnd: string;
+    /** The target plan — the one the spike would write to. */
     planId?: string;
+    /** Every plan whose rows the schedule read merged in, largest first. */
+    plans: Array<{
+      planId: string;
+      entityCount: number;
+      programCount: number;
+      idInPlan: string[];
+    }>;
     /** One entry per stamped workout found. */
     stamped: Array<{
       stampName: string;
@@ -155,6 +170,8 @@ export interface CreateSpikeReport {
       /** Present means the program could not be found for this entity. */
       programMissing?: true;
     }>;
+    /** Link keys resolving to both a spike program and someone else's. */
+    ambiguousStamps: Array<{ idInPlan: string; planProgramId: string; date: string }>;
     /**
      * Unstamped workouts anywhere in the plan sharing planId+idInPlan with one
      * of the above — i.e. whether the delete triple uniquely addresses ours.
@@ -539,17 +556,78 @@ interface Located {
 }
 
 /**
- * `idInPlan` identifies the PROGRAM-IN-PLAN, not the entity: several schedule
- * entities may reference the same program and therefore share an `idInPlan`
- * (observed live — a real plan carried duplicates at 2, 8 and 38). This
- * returns the first placement, which is sound here only because the spike
- * always claims a fresh, previously-unused id.
+ * A single plan's rows, carved out of a schedule read.
+ *
+ * THE CENTRAL FACT: `/training/schedule/query` MERGES every plan on the
+ * account into one response. A live account carried two — a COROS-authored
+ * template the athlete follows, and the account's own (initially empty) plan
+ * container that the spike's creates land in — and their `idInPlan` values
+ * overlap freely, because the counter is per plan. Only the top-level `id`,
+ * `name` and `maxIdInPlan` of the response describe the target plan.
+ *
+ * Every read-derived decision (derivation, occupancy, recovery, ownership,
+ * cleanup, ambiguity) must therefore be made inside ONE plan. Reasoning over
+ * the merged view is what produced every anomaly of the first two live runs:
+ * a bogus "slot occupied" (another plan's id), an "accepted but not visible"
+ * create (searching the merged view), and a stray sweep that found nothing.
  */
-function locate(raw: RawCorosSchedule, idInPlan: string | number): Located | undefined {
-  const entity = (raw.entities ?? []).find((e) => String(e.idInPlan) === String(idInPlan));
+interface PlanView {
+  planId: string;
+  entities: RawCorosEntity[];
+  programs: RawCorosProgram[];
+}
+
+/**
+ * Rows belonging to `planId` only. Membership is an exact `planId` match —
+ * a row of unknown provenance is never assumed to be ours.
+ */
+function planView(raw: RawCorosSchedule, planId: string): PlanView {
+  return {
+    planId,
+    entities: (raw.entities ?? []).filter((e) => String(e.planId ?? "") === planId),
+    programs: (raw.programs ?? []).filter((p) => String(p.planId ?? "") === planId),
+  };
+}
+
+/** planId → what that plan contributed to a read. For diagnostics. */
+export function planBreakdown(
+  raw: RawCorosSchedule,
+  /** Always listed, even contributing nothing — an empty target plan is the
+   * live shape and must not vanish from the diagnosis. */
+  ensurePlanId?: string,
+): Array<{ planId: string; entityCount: number; programCount: number; idInPlan: string[] }> {
+  const byPlan = new Map<string, { entities: RawCorosEntity[]; programs: RawCorosProgram[] }>();
+  const bucket = (planId: string): { entities: RawCorosEntity[]; programs: RawCorosProgram[] } => {
+    let found = byPlan.get(planId);
+    if (!found) {
+      found = { entities: [], programs: [] };
+      byPlan.set(planId, found);
+    }
+    return found;
+  };
+  if (ensurePlanId !== undefined && ensurePlanId !== "") bucket(ensurePlanId);
+  for (const entity of raw.entities ?? []) bucket(String(entity.planId ?? "")).entities.push(entity);
+  for (const program of raw.programs ?? []) bucket(String(program.planId ?? "")).programs.push(program);
+  return [...byPlan.entries()]
+    .map(([planId, rows]) => ({
+      planId,
+      entityCount: rows.entities.length,
+      programCount: rows.programs.length,
+      idInPlan: rows.entities.map((e) => String(e.idInPlan)).sort((a, b) => Number(a) - Number(b)),
+    }))
+    .sort((a, b) => b.entityCount - a.entityCount);
+}
+
+/**
+ * `idInPlan` identifies the PROGRAM-IN-PLAN within ONE plan, not the entity:
+ * several entities of the same plan may reference one program and so share an
+ * `idInPlan`. Returns the first placement, which is sound here only because
+ * the spike always claims an id unused *in its target plan*.
+ */
+function locate(view: PlanView, idInPlan: string | number): Located | undefined {
+  const entity = view.entities.find((e) => String(e.idInPlan) === String(idInPlan));
   if (!entity) return undefined;
-  const program = (raw.programs ?? []).find((p) => String(p.idInPlan) === String(idInPlan));
-  return { entity, program, date: corosDayToLocalDate(entity.happenDay) };
+  return { entity, program: programsFor(view, entity)[0], date: corosDayToLocalDate(entity.happenDay) };
 }
 
 // ── idInPlan derivation ─────────────────────────────────────────────────────
@@ -595,12 +673,14 @@ export interface IdInPlanObservation {
 }
 
 /**
- * Sweep the plan's likely span and report both the server's counter and the
- * true maximum in use. The next safe id is `max(counter, observedMax) + 1`.
+ * Sweep the target plan's likely span and report both the server's counter
+ * and the true maximum in use IN THAT PLAN. The next safe id is
+ * `max(counter, observedMax) + 1`.
  */
 export async function observeIdInPlan(
   client: CorosClient,
   today: string,
+  planId: string,
 ): Promise<IdInPlanObservation> {
   const windows = observationWindows(today);
   let counter = 0;
@@ -608,7 +688,9 @@ export async function observeIdInPlan(
   for (const [start, end] of windows) {
     const raw = await client.getRawSchedule(start, end);
     counter = Math.max(counter, Number(raw.maxIdInPlan ?? 0) || 0);
-    for (const entity of raw.entities ?? []) seen.push(String(entity.idInPlan));
+    // TARGET PLAN ONLY: another plan's ids say nothing about which id is free
+    // in ours, and treating them as occupied is what blocked the first run.
+    for (const entity of planView(raw, planId).entities) seen.push(String(entity.idInPlan));
   }
   const counts = new Map<string, number>();
   for (const id of seen) counts.set(id, (counts.get(id) ?? 0) + 1);
@@ -667,52 +749,56 @@ export async function readFullSpan(
 }
 
 /**
- * The ONLY authorization to delete. `idInPlan` is a plan-scoped counter that
- * can collide with entities the spike never created (a stale/legacy workout
- * above the active plan's counter), so ownership is proven by the name the
- * spike stamps on both the entity and the program.
+ * The ONLY authorization to delete: an entity **of the target plan** whose
+ * plan-scoped program carries the stamp.
+ *
+ * The inspect dump settled which half of the stamp survives the round trip:
+ * PROGRAM names come back verbatim, entity names do not. So ownership rests on
+ * the program alone — and the old entity-name and unnamed-entity fallbacks are
+ * gone, which also removes the residual misclassification risk they carried.
  */
 function isSpikeOwned(found: Located): boolean {
-  return isStampedName(found.entity.name) || isStampedName(found.program?.name);
+  return isStampedName(found.program?.name);
 }
 
 /**
- * Report-safe description of a workout the spike does NOT own. A real user's
- * workout title must never reach docs/reports/coros-create-spike-*.json, which
- * is committed to the repo — so anything report-bound gets identifiers only.
- * The title goes to the console, which is the user's own terminal.
+ * Every placement in this plan whose program carries the spike's stamp.
+ *
+ * A link key must resolve UNANIMOUSLY. If a stamped and an unstamped program
+ * share it, the entity's real workout is genuinely ambiguous — claiming it
+ * would let a delete take a workout we did not create — so nothing is claimed
+ * and `stampAmbiguities` reports the situation instead of hiding it.
  */
-/**
- * Every placement in the window carrying the spike's stamp. This — NOT
- * `idInPlan` — is how the spike recovers what it created: a live account was
- * observed **reassigning `idInPlan`** on create (we claimed 49, the server
- * stored something else), so the claimed id is not a recovery key. The stamp
- * is written by us, is checked by `isSpikeOwned`, and survives renumbering.
- */
-function spikeStamped(raw: RawCorosSchedule): Located[] {
+function spikeStamped(view: PlanView): Located[] {
   const found: Located[] = [];
-  for (const entity of raw.entities ?? []) {
-    const programs = programsFor(raw, entity);
-    const entityStamped = isStampedName(entity.name);
-    // The program name is only admissible as proof when the entity says
-    // NOTHING about itself and the id is unambiguous. An entity that carries
-    // its own (non-spike) name, or whose program simply is not in the
-    // response, must never be attributed to the spike because a stamped
-    // program happens to share its idInPlan.
-    const entityUnnamed = String(entity.name ?? "").trim() === "";
-    const programStamped =
-      entityUnnamed && programs.length === 1 && isStampedName(programs[0]?.name);
-    if (!entityStamped && !programStamped) continue;
-    found.push({
-      entity,
-      // Ours: prefer the stamped program when the id is shared.
-      program: entityStamped
-        ? (programs.find((p) => isStampedName(p.name)) ?? programs[0])
-        : programs[0],
-      date: corosDayToLocalDate(entity.happenDay),
-    });
+  for (const entity of view.entities) {
+    const programs = programsFor(view, entity);
+    if (programs.length === 0 || !programs.every((p) => isStampedName(p.name))) continue;
+    found.push({ entity, program: programs[0], date: corosDayToLocalDate(entity.happenDay) });
   }
   return found;
+}
+
+/**
+ * Entities whose link key resolves to BOTH stamped and unstamped programs.
+ * Never actioned; always reported, because such an entity may be residue of
+ * ours that cannot be safely removed.
+ */
+function stampAmbiguities(view: PlanView): Located[] {
+  const out: Located[] = [];
+  for (const entity of view.entities) {
+    const programs = programsFor(view, entity);
+    if (programs.length < 2) continue;
+    if (!programs.some((p) => isStampedName(p.name))) continue;
+    if (!programs.some((p) => !isStampedName(p.name))) continue;
+    out.push({ entity, program: programs[0], date: corosDayToLocalDate(entity.happenDay) });
+  }
+  return out;
+}
+
+/** The stamped name carried by this placement's program. */
+function stampOf(found: Located): string {
+  return String(found.program?.name ?? "");
 }
 
 function isStampedName(name: unknown): boolean {
@@ -720,57 +806,48 @@ function isStampedName(name: unknown): boolean {
 }
 
 /**
- * Programs linked to an entity by the entity's OWN link key. `planProgramId`
- * is the field that points at the program-in-plan (it is usually a copy of
- * `idInPlan`, but not always) — matching on `idInPlan` alone made an entity
- * whose `planProgramId` differed look program-less, which is one of the ways a
- * real workout could get misclassified.
+ * Programs linked to an entity by the entity's OWN link key, WITHIN ITS PLAN.
+ * `planProgramId` is the field that points at the program-in-plan (usually a
+ * copy of `idInPlan`, but not always); matching on `idInPlan` alone made an
+ * entity whose `planProgramId` differed look program-less.
  */
-function programsFor(raw: RawCorosSchedule, entity: RawCorosEntity): RawCorosProgram[] {
+function programsFor(view: PlanView, entity: RawCorosEntity): RawCorosProgram[] {
   const linkKey = String(entity.planProgramId ?? entity.idInPlan);
-  return (raw.programs ?? []).filter((p) => String(p.idInPlan) === linkKey);
+  return view.programs.filter((p) => String(p.idInPlan) === linkKey);
 }
 
-/** The stamped name actually carried, entity first then program. */
-function stampOf(found: Located): string {
-  const entityName = String(found.entity.name ?? "");
-  if (entityName.startsWith(SPIKE_NAME)) return entityName;
-  return String(found.program?.name ?? "");
-}
-
-/** Everything in the window the spike did NOT stamp — never touchable. */
-function notSpikeStamped(raw: RawCorosSchedule): Located[] {
-  const stamped = new Set(spikeStamped(raw).map((f) => f.entity));
-  return (raw.entities ?? [])
+/** Everything in this plan the spike did NOT stamp — never touchable. */
+function notSpikeStamped(view: PlanView): Located[] {
+  const stamped = new Set(spikeStamped(view).map((f) => f.entity));
+  return view.entities
     .filter((e) => !stamped.has(e))
-    .map((entity) => {
-      const programs = programsFor(raw, entity);
-      return {
-        entity,
-        // Never attribute one of the spike's programs to a real workout that
-        // merely shares its idInPlan.
-        program: programs.find((p) => !isStampedName(p.name)) ?? programs[0],
-        date: corosDayToLocalDate(entity.happenDay),
-      };
-    });
+    .map((entity) => ({
+      entity,
+      program: programsFor(view, entity).find((p) => !isStampedName(p.name)),
+      date: corosDayToLocalDate(entity.happenDay),
+    }));
 }
 
 /**
- * A delete is addressed by (planId, idInPlan, planProgramId). If a workout we
- * did NOT create shares that whole triple, the server cannot tell them apart
- * either — so neither can we, and we must not send the delete. `idInPlan` is
- * shared legitimately (it identifies the program-in-plan), which makes this a
- * real possibility once the server reassigns ids.
+ * A delete is addressed by (planId, idInPlan, planProgramId) — NOT by date and
+ * NOT by stamp. So if ANY other entity of the same plan shares that address,
+ * the server cannot tell it from ours and the delete must not be sent.
+ *
+ * Deliberately stamp-independent: checking only *unstamped* neighbours would
+ * miss an entity that classification got wrong, and the whole point of this
+ * guard is to be the last line when classification is wrong.
  */
-function deleteWouldBeAmbiguous(raw: RawCorosSchedule, target: Located): Located | undefined {
-  const key = (l: Located): string =>
-    [
-      String(l.entity.planId ?? ""),
-      String(l.entity.idInPlan),
-      String(l.entity.planProgramId ?? l.entity.idInPlan),
-    ].join("|");
-  const targetKey = key(target);
-  return notSpikeStamped(raw).find((other) => key(other) === targetKey);
+function deleteWouldBeAmbiguous(view: PlanView, target: Located): Located | undefined {
+  const key = (entity: RawCorosEntity): string =>
+    [String(entity.idInPlan), String(entity.planProgramId ?? entity.idInPlan)].join("|");
+  const targetKey = key(target.entity);
+  const other = view.entities.find((e) => e !== target.entity && key(e) === targetKey);
+  if (!other) return undefined;
+  return {
+    entity: other,
+    program: programsFor(view, other).find((p) => !isStampedName(p.name)),
+    date: corosDayToLocalDate(other.happenDay),
+  };
 }
 
 function describeForeignForReport(found: Located): string {
@@ -900,6 +977,14 @@ export async function runCreateSpike(
 
   const created: CreatedEntity[] = [];
   const control = { aborted: false };
+  /**
+   * The plan the spike operates in — the account's own container, which is
+   * what the top-level `id` of a schedule read names. Reads merge OTHER plans'
+   * rows into the same response; scoping to this id is what keeps every
+   * decision about them out of the picture.
+   */
+  let targetPlanId = "";
+  const scope = (raw: RawCorosSchedule): PlanView => planView(raw, targetPlanId);
   let baselineIds: string[] = [];
   let baselineCount = 0;
 
@@ -921,8 +1006,8 @@ export async function runCreateSpike(
    *   4. delete each match by ITS OWN server-assigned ids;
    *   5. re-read: our stamp must be gone AND the unstamped count unchanged.
    */
-  const matchesEntry = (raw: RawCorosSchedule, entry: CreatedEntity): Located[] =>
-    spikeStamped(raw).filter((f) => f.date === entry.date && stampOf(f) === entry.stampName);
+  const matchesEntry = (view: PlanView, entry: CreatedEntity): Located[] =>
+    spikeStamped(view).filter((f) => f.date === entry.date && stampOf(f) === entry.stampName);
 
   /**
    * Issue the deletes for one entry, given a PLAN-WIDE snapshot. Verification
@@ -933,7 +1018,7 @@ export async function runCreateSpike(
    * is plan-wide, so a colliding workout 200 days out is just as destroyable
    * as one next week — and invisible to a ±30 day read.
    */
-  const removeOne = async (entry: CreatedEntity, span: RawCorosSchedule): Promise<void> => {
+  const removeOne = async (entry: CreatedEntity, span: PlanView): Promise<void> => {
     entry.attempts += 1;
     const targets = matchesEntry(span, entry);
     if (targets.length === 0) {
@@ -983,7 +1068,7 @@ export async function runCreateSpike(
     while (pending().length > 0) {
       const batch = [...pending()].reverse(); // reverse creation order
       log(`Cleanup: removing ${batch.length} spike workout(s)…`);
-      const span = await readFullSpan(client, today);
+      const span = scope(await readFullSpan(client, today));
       const foreignBefore = notSpikeStamped(span).length;
       for (const entry of batch) {
         try {
@@ -993,7 +1078,7 @@ export async function runCreateSpike(
           log(`  !! CLEANUP ERROR: "${entry.stampName}" on ${entry.date} (${entry.error})`);
         }
       }
-      const after = await readFullSpan(client, today);
+      const after = scope(await readFullSpan(client, today));
       const foreignAfter = notSpikeStamped(after).length;
       if (foreignAfter < foreignBefore) {
         // Must never happen — the ambiguity guard exists to prevent exactly this.
@@ -1054,7 +1139,24 @@ export async function runCreateSpike(
     // whatever the entity-level drain concluded.
     if (report.overall.orphanPlanIds.length > 0) report.tests.planAdd.cleanedUp = false;
 
-    const catastrophes = report.overall.leftovers.filter((l) => l.startsWith("DELETE REMOVED"));
+    // A link key that resolves to both a stamped and an unstamped program is
+    // potential residue of ours that cannot be safely acted on — say so.
+    try {
+      const ambiguous = stampAmbiguities(scope(await readFullSpan(client, today)));
+      for (const item of ambiguous) {
+        const note =
+          `AMBIGUOUS STAMP: idInPlan ${String(item.entity.idInPlan)} on ${item.date} resolves to` +
+          " both a spike program and one the spike did not create — not actioned; check by hand";
+        if (!report.overall.leftovers.includes(note)) report.overall.leftovers.push(note);
+        log(`  !! ${note}`);
+      }
+    } catch {
+      // Best effort: the restoration read below is the authoritative check.
+    }
+
+    const catastrophes = report.overall.leftovers.filter(
+      (l) => l.startsWith("DELETE REMOVED") || l.startsWith("AMBIGUOUS STAMP"),
+    );
     report.overall.leftovers = [
       ...catastrophes,
       ...created
@@ -1160,7 +1262,23 @@ export async function runCreateSpike(
       failed: [],
     };
     const strayScan = await client.getRawSchedule(strayStart, strayEnd);
-    const strays = spikeStamped(strayScan);
+    // The response's top-level id names the TARGET plan; other plans' rows are
+    // merged into the same payload and must be scoped out of every decision.
+    targetPlanId = String(strayScan.id ?? "");
+    if (targetPlanId === "") {
+      throw new Error(
+        "no active plan id in the schedule read — cannot scope safely, refusing to write",
+      );
+    }
+    const plans = planBreakdown(strayScan, targetPlanId);
+    log(`  target plan ${targetPlanId}; the read merges ${plans.length} plan(s):`);
+    for (const plan of plans) {
+      log(
+        `    planId=${plan.planId || "(none)"} entities=${plan.entityCount}` +
+          `${plan.planId === targetPlanId ? "  ← target" : ""}`,
+      );
+    }
+    const strays = spikeStamped(scope(strayScan));
     if (strays.length === 0) {
       log("  none found.");
     } else {
@@ -1199,7 +1317,7 @@ export async function runCreateSpike(
       report.tests.bike.notes.push("cleanup-only mode: no create attempted");
       report.tests.planAdd.notes.push("cleanup-only mode: no probe attempted");
       for (const test of Object.values(report.tests)) test.cleanedUp = true;
-      const remaining = await readFullSpan(client, today);
+      const remaining = scope(await readFullSpan(client, today));
       const stillStamped = spikeStamped(remaining);
       const nowIds = idInPlanSet(await readWindow());
       report.overall.finalWorkoutCount = nowIds.length;
@@ -1219,7 +1337,7 @@ export async function runCreateSpike(
     // ── 2. Baseline snapshot (post-sweep) ───────────────────────────────────
     log("\nStep 2: fresh schedule read (baseline snapshot, ±30 days)…");
     const baseline = await readWindow();
-    const planId = String(baseline.id ?? "");
+    const planId = String(baseline.id ?? targetPlanId);
     const planStartDay = baseline.startDay != null ? Number(baseline.startDay) : undefined;
     const maxIdInPlan = Number(baseline.maxIdInPlan ?? 0);
     baselineIds = idInPlanSet(baseline);
@@ -1229,7 +1347,7 @@ export async function runCreateSpike(
     // maxIdInPlan 0 while its entities carried ids up to 45. Observe the real
     // maximum across the plan's whole likely span before deriving anything.
     log("  observing idInPlan usage across the plan's full span…");
-    const observation = await observeIdInPlan(client, today);
+    const observation = await observeIdInPlan(client, today, targetPlanId);
     report.baseline = {
       planName: typeof baseline.name === "string" ? baseline.name : undefined,
       planIdPresent: planId !== "",
@@ -1275,6 +1393,8 @@ export async function runCreateSpike(
       client,
       log,
       today,
+      targetPlanId,
+      scope,
       readWindow,
       windowStart,
       windowEnd,
@@ -1434,6 +1554,7 @@ async function runInspect(
     planName: typeof span.name === "string" ? span.name : undefined,
     maxIdInPlan: Number(span.maxIdInPlan ?? 0),
     entityCountInSpan: entities.length,
+    plans: planBreakdown(span, String(span.id ?? "")),
     idInPlanOnDates: [...idsOnDates].sort((a, b) => Number(a) - Number(b)),
     onDates: onDates.map(dump),
     sameIdElsewhere: sameIdElsewhere.map(dump),
@@ -1443,6 +1564,15 @@ async function runInspect(
     `  plan="${report.inspect.planName ?? "(none)"}" planId=${report.inspect.planId ?? "-"}` +
       ` maxIdInPlan=${report.inspect.maxIdInPlan} entitiesInSpan=${entities.length}`,
   );
+  log(`  the read merges ${report.inspect.plans.length} plan(s):`);
+  for (const plan of report.inspect.plans) {
+    log(
+      `    planId=${plan.planId || "(none)"} entities=${plan.entityCount}` +
+        ` programs=${plan.programCount}` +
+        `${plan.planId === report.inspect.planId ? "  ← target" : ""}` +
+        ` ids=[${plan.idInPlan.join(",")}]`,
+    );
+  }
   log(`\n  ── ${onDates.length} entit(ies) on the requested dates ──`);
   for (const item of report.inspect.onDates) {
     log(`  ENTITY: ${JSON.stringify(item.entity, null, 2)}`);
@@ -1497,23 +1627,41 @@ async function runDryRun(
   const windowEnd = windows[windows.length - 1]?.[1] ?? today;
   log(`Dry run: reading ${windowStart} … ${windowEnd} (read-only, no writes)…`);
 
-  const span = await readFullSpan(client, today);
+  const raw = await readFullSpan(client, today);
+  const targetPlanId = String(raw.id ?? "");
+  const span = planView(raw, targetPlanId);
   const stamped = spikeStamped(span);
   const unstamped = notSpikeStamped(span);
+  const plans = planBreakdown(raw, targetPlanId);
   const dry: NonNullable<CreateSpikeReport["dryRun"]> = {
     windowStart,
     windowEnd,
-    planId: span.id != null ? String(span.id) : undefined,
+    planId: targetPlanId !== "" ? targetPlanId : undefined,
+    plans,
     stamped: [],
     collisions: [],
+    ambiguousStamps: stampAmbiguities(span).map((a) => ({
+      idInPlan: String(a.entity.idInPlan),
+      planProgramId: String(a.entity.planProgramId ?? a.entity.idInPlan),
+      date: a.date,
+    })),
   };
   report.dryRun = dry;
 
-  log(`  ${stamped.length} spike-stamped workout(s) found.`);
+  // A schedule read merges every plan on the account; say so plainly, because
+  // a multi-plan account is what made the earlier runs unreadable.
+  log(`  the read merges ${plans.length} plan(s); target is ${targetPlanId || "(none)"}:`);
+  for (const plan of plans) {
+    log(
+      `    planId=${plan.planId || "(none)"} entities=${plan.entityCount}` +
+        ` programs=${plan.programCount}${plan.planId === targetPlanId ? "  ← target" : ""}`,
+    );
+  }
+  log(`  ${stamped.length} spike-stamped workout(s) in the target plan.`);
   for (const found of stamped) {
     const idInPlan = String(found.entity.idInPlan);
     const planProgramId = String(found.entity.planProgramId ?? idInPlan);
-    const planId = String(found.entity.planId ?? span.id ?? "");
+    const planId = String(found.entity.planId ?? targetPlanId);
     const entry: NonNullable<CreateSpikeReport["dryRun"]>["stamped"][number] = {
       stampName: stampOf(found),
       date: found.date,
@@ -1575,7 +1723,7 @@ async function runDryRun(
 
     // Does the delete triple address ours uniquely?
     for (const other of unstamped) {
-      const otherPlanId = String(other.entity.planId ?? span.id ?? "");
+      const otherPlanId = String(other.entity.planId ?? targetPlanId);
       const otherIdInPlan = String(other.entity.idInPlan);
       if (otherPlanId !== planId || otherIdInPlan !== idInPlan) continue;
       const otherPlanProgramId = String(other.entity.planProgramId ?? otherIdInPlan);
@@ -1596,6 +1744,12 @@ async function runDryRun(
     }
   }
 
+  if (dry.ambiguousStamps.length > 0) {
+    log(
+      `  !! ${dry.ambiguousStamps.length} ambiguous stamp(s): a link key resolves to both a` +
+        " spike program and one the spike did not create — those are never actioned.",
+    );
+  }
   if (dry.collisions.length === 0) {
     log("  no id collisions: every stamped workout is uniquely addressable for delete.");
   } else {
@@ -1629,6 +1783,9 @@ interface SpikeContext {
   client: CorosClient;
   log: (line: string) => void;
   today: string;
+  /** The plan the spike writes to; every read is scoped to it. */
+  targetPlanId: string;
+  scope: (raw: RawCorosSchedule) => PlanView;
   readWindow: () => Promise<RawCorosSchedule>;
   windowStart: string;
   windowEnd: string;
@@ -1693,10 +1850,11 @@ async function createAndVerify(
   // (§4.4 point 3), AND the server's counter may simply not be maintained —
   // observed live at 0 on a plan whose entities ran up to 45. So sweep the
   // full span and take max(counter, observed) + 1 each time.
-  const observation = await observeIdInPlan(ctx.client, ctx.today);
+  const observation = await observeIdInPlan(ctx.client, ctx.today, ctx.targetPlanId);
   const idInPlan = nextIdInPlan(observation);
-  const fresh = await ctx.readWindow();
-  const planId = String(fresh.id ?? ctx.planId);
+  const freshRaw = await ctx.readWindow();
+  const fresh = ctx.scope(freshRaw);
+  const planId = String(freshRaw.id ?? ctx.planId);
   result.idInPlan = idInPlan;
   result.idInPlanDerivedFrom = {
     counter: observation.counter,
@@ -1773,7 +1931,8 @@ async function createAndVerify(
   // create (claimed 49, stored elsewhere), which left the created workouts
   // unrecoverable and therefore uncleaned. The stamp we wrote is the only
   // ownership proof that survives server renumbering.
-  const after = await ctx.readWindow();
+  const afterRaw = await ctx.readWindow();
+  const after = ctx.scope(afterRaw);
   const stampName = String(program.name ?? SPIKE_NAME);
   const matches = spikeStamped(after).filter(
     (f) => f.date === spec.date && stampOf(f) === stampName,
@@ -1791,7 +1950,7 @@ async function createAndVerify(
       date: found.date,
       claimedIdInPlan: idInPlan,
       serverIdInPlan: String(found.entity.idInPlan),
-      planId: String(found.entity.planId ?? after.id ?? planId),
+      planId: String(found.entity.planId ?? afterRaw.id ?? planId),
       cleaned: false,
       attempts: 0,
       abandoned: false,
@@ -1799,7 +1958,7 @@ async function createAndVerify(
     result.observedDate = found.date;
     result.serverIdInPlan = String(found.entity.idInPlan);
     result.serverIds = {
-      planId: after.id != null ? String(after.id) : undefined,
+      planId: afterRaw.id != null ? String(afterRaw.id) : undefined,
       entityId: found.entity.id != null ? String(found.entity.id) : undefined,
       programId: found.program?.id != null ? String(found.program.id) : undefined,
     };
@@ -1914,7 +2073,7 @@ async function runPlanAddProbe(ctx: SpikeContext, today: string): Promise<void> 
     result.cleanedUp = true;
     return;
   }
-  const beforeIds = new Set(idInPlanSet(before));
+  const beforeIds = new Set(ctx.scope(before).entities.map((e) => String(e.idInPlan)));
   const beforePlanId = String(before.id ?? "");
 
   const program = buildEnduranceProgram({
@@ -1963,19 +2122,20 @@ async function runPlanAddProbe(ctx: SpikeContext, today: string): Promise<void> 
   if (newPlanId) result.serverIds = { planId: newPlanId };
 
   try {
-    const after = await probeWindow();
-    const appeared = (after.entities ?? []).filter((e) => !beforeIds.has(String(e.idInPlan)));
+    const afterRaw = await probeWindow();
+    const after = ctx.scope(afterRaw);
+    const appeared = after.entities.filter((e) => !beforeIds.has(String(e.idInPlan)));
     ctx.log(`  ${appeared.length} new schedule entit(ies) appeared in the probe window`);
-    // Same rule as the create path: only STAMPED placements are ours. Ids are
-    // not used to decide ownership anywhere, because the server reassigns them.
+    // Same rule as the create path, in the target plan only: a placement is
+    // ours when its plan-scoped program carries the stamp.
     const stamped = spikeStamped(after);
     for (const entity of appeared) {
       const mine = stamped.find((f) => f.entity === entity);
       if (!mine) {
         const located: Located = {
           entity,
-          program: (after.programs ?? []).find(
-            (p) => String(p.idInPlan) === String(entity.idInPlan),
+          program: after.programs.find(
+            (p) => String(p.idInPlan) === String(entity.planProgramId ?? entity.idInPlan),
           ),
           date: corosDayToLocalDate(entity.happenDay),
         };
@@ -1991,15 +2151,15 @@ async function runPlanAddProbe(ctx: SpikeContext, today: string): Promise<void> 
         stampName: stampOf(mine),
         date: mine.date,
         serverIdInPlan: String(entity.idInPlan),
-        planId: String(entity.planId ?? after.id ?? beforePlanId),
+        planId: String(entity.planId ?? afterRaw.id ?? beforePlanId),
         cleaned: false,
         attempts: 0,
         abandoned: false,
       });
     }
-    if (String(after.id ?? "") !== beforePlanId) {
+    if (String(afterRaw.id ?? "") !== beforePlanId) {
       result.notes.push(
-        `active planId changed ${beforePlanId || "(none)"} → ${String(after.id ?? "")}`,
+        `active planId changed ${beforePlanId || "(none)"} → ${String(afterRaw.id ?? "")}`,
       );
     }
   } catch (e) {

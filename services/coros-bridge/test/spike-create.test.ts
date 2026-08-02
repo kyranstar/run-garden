@@ -53,6 +53,31 @@ async function setup(): Promise<{ server: MockCorosServer; client: CorosClient }
   return { server, client };
 }
 
+/** A leftover from an earlier run: entity + its stamp-named program. */
+function stampedStray(
+  server: MockCorosServer,
+  idInPlan: string,
+  date: string,
+  label: string,
+  entityId: string,
+  planId: string = FIXTURE_PLAN_ID,
+): void {
+  server.state.schedule.entities!.push({
+    id: entityId,
+    idInPlan,
+    planId,
+    planProgramId: idInPlan,
+    happenDay: corosDay(date),
+  });
+  server.state.schedule.programs!.push({
+    id: `sv-program-${idInPlan}`,
+    idInPlan,
+    planId,
+    name: `${SPIKE_NAME} ${label}`,
+    sportType: label === "strength" ? 4 : 1,
+  });
+}
+
 function scheduleIds(server: MockCorosServer): string[] {
   return (server.state.schedule.entities ?? []).map((e) => String(e.idInPlan)).sort();
 }
@@ -929,14 +954,11 @@ describe("runCreateSpike — server reassigns idInPlan (stamp recovery)", () => 
 
     const report = await runCreateSpike(client, { today: TODAY, log: noop });
 
-    expect(report.tests.strength.serverIdInPlan).toBe("1");
-    expect(report.tests.strength.verified).toBe(true); // creation itself worked
-
-    // A delete addressed at (planId, idInPlan, planProgramId) would take the
-    // user's workout too, so none is sent. Loudly reported instead.
-    expect(report.overall.leftovers).toHaveLength(3);
-    expect(report.overall.leftovers.join(" ")).toContain("delete address");
-    expect(report.overall.leftovers.join(" ")).toContain("remove it by hand");
+    // The server filed our workouts under ids real workouts already use, so
+    // each link key now resolves to BOTH a spike program and a real one. That
+    // is ambiguous: nothing is claimed, nothing is deleted, and it is reported.
+    expect(report.tests.strength.verified).toBe(false);
+    expect(report.overall.leftovers.join(" ")).toContain("AMBIGUOUS STAMP");
     expect(report.overall.baselineRestored).toBe(false);
     expect(report.succeeded).toBe(false);
 
@@ -947,34 +969,27 @@ describe("runCreateSpike — server reassigns idInPlan (stamp recovery)", () => 
 });
 
 describe("runCreateSpike — stray sweep + cleanup-only mode", () => {
-  /** Two leftovers from an earlier run, plus a real workout beside them. */
+  /**
+   * Two leftovers from an earlier run, plus a real workout beside them. The
+   * stamp lives on the PROGRAM — entity names do not round-trip, as the live
+   * inspect proved.
+   */
   function seedStrays(server: MockCorosServer): void {
-    server.state.schedule.entities!.push(
-      {
-        id: "70000000000000901",
-        idInPlan: "90",
-        planId: FIXTURE_PLAN_ID,
-        planProgramId: "90",
-        happenDay: corosDay(addDaysIso(TODAY, 21)),
-        name: `${SPIKE_NAME} strength`,
-      },
-      {
-        id: "70000000000000902",
-        idInPlan: "91",
-        planId: FIXTURE_PLAN_ID,
-        planProgramId: "91",
-        happenDay: corosDay(addDaysIso(TODAY, 22)),
-        name: `${SPIKE_NAME} run`,
-      },
-      {
-        id: "70000000000000903",
-        idInPlan: "92",
-        planId: FIXTURE_PLAN_ID,
-        planProgramId: "92",
-        happenDay: corosDay(addDaysIso(TODAY, 25)),
-        name: "Race Simulation",
-      },
-    );
+    stampedStray(server, "90", addDaysIso(TODAY, 21), "strength", "70000000000000901");
+    stampedStray(server, "91", addDaysIso(TODAY, 22), "run", "70000000000000902");
+    server.state.schedule.entities!.push({
+      id: "70000000000000903",
+      idInPlan: "92",
+      planId: FIXTURE_PLAN_ID,
+      planProgramId: "92",
+      happenDay: corosDay(addDaysIso(TODAY, 25)),
+    });
+    server.state.schedule.programs!.push({
+      idInPlan: "92",
+      planId: FIXTURE_PLAN_ID,
+      name: "Race Simulation",
+      sportType: 1,
+    });
   }
 
   it("cleanup-only removes stamped strays and creates nothing", async () => {
@@ -998,7 +1013,7 @@ describe("runCreateSpike — stray sweep + cleanup-only mode", () => {
     // Both strays gone; the real workout beside them untouched.
     expect(server.entityByIdInPlan("90")).toBeUndefined();
     expect(server.entityByIdInPlan("91")).toBeUndefined();
-    expect(server.entityByIdInPlan("92")?.name).toBe("Race Simulation");
+    expect(server.entityByIdInPlan("92")).toBeDefined();
     // Exactly two writes: the two deletes. Nothing was created.
     expect(server.counts.scheduleWrites).toBe(2);
     for (const test of Object.values(report.tests)) {
@@ -1023,7 +1038,7 @@ describe("runCreateSpike — stray sweep + cleanup-only mode", () => {
     expect(report.tests.run.verified).toBe(true);
     expect(report.overall.baselineRestored).toBe(true);
     expect(report.succeeded).toBe(true);
-    expect(server.entityByIdInPlan("92")?.name).toBe("Race Simulation");
+    expect(server.entityByIdInPlan("92")).toBeDefined();
     expect(scheduleIds(server)).not.toContain("90");
   });
 
@@ -1057,6 +1072,10 @@ describe("runCreateSpike — plan-wide delete guards", () => {
     const { server, client } = await setup();
     server.maintainsIdCounter = false;
     server.reassignsIdInPlan = "counter"; // stores at maxIdInPlan+1 = 21
+    // A real workout far outside every working window, sharing the exact
+    // delete address our first create will be given — and with no program of
+    // its own in the read, so classification alone would not save it. The
+    // stamp-independent address check is the last line, and this is it.
     const victim: RawCorosEntity = {
       id: "70000000000000555",
       idInPlan: "21",
@@ -1079,8 +1098,8 @@ describe("runCreateSpike — plan-wide delete guards", () => {
     expect(survivor?.name).toBe("Marathon Race");
     expect(Number(survivor?.happenDay)).toBe(corosDay(addDaysIso(TODAY, 120)));
 
-    // Only the workout whose id collided is refused; the other two are
-    // addressable and get removed.
+    // Only the workout whose delete address collided is refused; the other two
+    // are addressable and get removed.
     expect(report.overall.leftovers).toHaveLength(1);
     expect(report.overall.leftovers[0]).toContain("delete address");
     expect(report.overall.leftovers[0]).toContain("remove it by hand");
@@ -1098,35 +1117,29 @@ describe("runCreateSpike — plan-wide delete guards", () => {
    * from the response was classified as the spike's because a stamped program
    * happened to share its idInPlan.
    */
-  it("never claims a named workout whose program is absent from the response", async () => {
+  it("never touches another plan's workout that shares an idInPlan", async () => {
     const { server, client } = await setup();
-    server.state.schedule.entities!.push(
-      {
-        id: "70000000000000601",
-        idInPlan: "50",
-        planId: FIXTURE_PLAN_ID,
-        planProgramId: "50",
-        happenDay: corosDay(addDaysIso(TODAY, 21)),
-        name: `${SPIKE_NAME} strength`,
-      },
-      {
-        // A real workout that LINKS TO THE SPIKE'S PROGRAM (planProgramId 50)
-        // and has no program of its own in the read. Only its own name saves
-        // it from being claimed — that is what this test pins.
-        id: "70000000000000602",
-        idInPlan: "52",
-        planId: FIXTURE_PLAN_ID,
-        planProgramId: "50",
-        happenDay: corosDay(addDaysIso(TODAY, 30)),
-        name: "Recovery Spin",
-      },
-    );
-    server.state.schedule.programs!.push({
-      idInPlan: "50",
-      planId: FIXTURE_PLAN_ID,
-      name: `${SPIKE_NAME} strength`,
-      sportType: 4,
+    // The account's own container is the target; a COROS template plan is
+    // merged into every read and reuses the same idInPlan values.
+    const templateId = "479324793288704499";
+    server.state.mergedPlans.push({
+      id: templateId,
+      name: "S4557",
+      maxIdInPlan: 48,
+      entities: [
+        {
+          id: "tpl-entity-1",
+          idInPlan: "1",
+          planId: templateId,
+          planProgramId: "1",
+          happenDay: corosDay(addDaysIso(TODAY, 21)),
+          name: "Template Tempo",
+        },
+      ],
+      programs: [{ id: "tpl-prog-1", idInPlan: "1", planId: templateId, name: "T3001", sportType: 1 }],
     });
+    // A leftover of ours in the CONTAINER at the very same idInPlan and date.
+    stampedStray(server, "1", addDaysIso(TODAY, 21), "strength", "container-1");
 
     const report = await runCreateSpike(client, {
       today: TODAY,
@@ -1134,20 +1147,17 @@ describe("runCreateSpike — plan-wide delete guards", () => {
       log: noop,
     });
 
-    // Exactly one stray recognised — the stamped entity, not the named one
-    // that merely links to the same (stamped) program.
+    // Exactly one stray — ours. The template plan's row is invisible to every
+    // decision because it belongs to a different planId.
     expect(report.strays?.found).toHaveLength(1);
-    expect(report.strays?.found.join(" ")).toContain(SPIKE_NAME);
     expect(report.strays?.removed).toHaveLength(1);
-    // The real workout survives, identified by its server-assigned entity id.
-    const survivor = (server.state.schedule.entities ?? []).find(
-      (e) => e.id === "70000000000000602",
-    );
-    expect(survivor).toBeDefined();
-    expect(survivor?.name).toBe("Recovery Spin");
     expect(
-      (server.state.schedule.entities ?? []).find((e) => e.id === "70000000000000601"),
+      (server.state.schedule.entities ?? []).find((e) => e.id === "container-1"),
     ).toBeUndefined();
+    // The template plan is untouched, by server-assigned entity id.
+    const template = server.state.mergedPlans[0]!;
+    expect((template.entities ?? []).map((e) => e.id)).toEqual(["tpl-entity-1"]);
+    expect((template.programs ?? []).map((p) => p.id)).toEqual(["tpl-prog-1"]);
   });
 });
 
@@ -1160,7 +1170,6 @@ describe("runCreateSpike — dry run (read-only)", () => {
         planId: FIXTURE_PLAN_ID,
         planProgramId: "49",
         happenDay: corosDay(addDaysIso(TODAY, 21)),
-        name: `${SPIKE_NAME} strength`,
       },
       {
         // Unstamped, shares planId+idInPlan, DIFFERENT planProgramId.
@@ -1266,18 +1275,26 @@ describe("runCreateSpike — dry run (read-only)", () => {
     expect(JSON.stringify(report)).not.toContain("Club Handicap");
   });
 
-  it("flags a full-triple collision as not safely deletable", async () => {
+  it("flags a link key that resolves to both a spike and a non-spike program", async () => {
     const { server, client } = await setup();
     seedStamped(server);
-    // Make the unstamped workout share the WHOLE delete triple.
+    // The unstamped workout now shares the link key AND has its own program:
+    // the key no longer resolves unanimously, so nothing may be claimed.
     const other = (server.state.schedule.entities ?? []).find(
       (e) => e.id === "70000000000000702",
     );
     other!.planProgramId = "49";
+    server.state.schedule.programs!.unshift({
+      idInPlan: "49",
+      planId: FIXTURE_PLAN_ID,
+      name: "Club Handicap",
+      sportType: 1,
+    });
 
     const report = await runCreateSpike(client, { today: TODAY, dryRun: true, log: noop });
 
-    expect(report.dryRun?.collisions[0]?.fullTripleMatches).toBe(true);
+    expect(report.dryRun?.ambiguousStamps.length).toBeGreaterThan(0);
+    expect(report.dryRun?.stamped).toHaveLength(0); // nothing claimed
     expect(server.counts.scheduleWrites).toBe(0);
   });
 });
@@ -1393,5 +1410,157 @@ describe("parseInspectDates", () => {
     expect(() => parseInspectDates(["node", "spike", "--inspect", "tomorrow"])).toThrow(
       /yyyy-mm-dd/,
     );
+  });
+});
+
+describe("runCreateSpike — multi-plan accounts (the live shape)", () => {
+  /**
+   * The account the spike actually ran against, reproduced exactly:
+   *
+   *  - a COROS-authored TEMPLATE plan "S4557" holding the 27 real workouts,
+   *    with idInPlan values up to 48 (and duplicates at 2, 8 and 38);
+   *  - the account's own plan CONTAINER, empty, counter at 0 — which is what
+   *    the top-level fields of a schedule read describe, and where creates land.
+   *
+   * `/training/schedule/query` merges both into one response. Every anomaly of
+   * the first two live runs came from reasoning over that merged view.
+   */
+  const TEMPLATE_PLAN_ID = "479324793288704499";
+  const CONTAINER_PLAN_ID = "473846232060707016";
+
+  function liveTwoPlanServer(): MockCorosServer {
+    const server = mockCorosServer({ baseMonday: nextMonday() });
+    // The container: the target plan, empty, counter 0.
+    server.state.schedule = {
+      id: CONTAINER_PLAN_ID,
+      name: "My Plan",
+      startDay: corosDay(addDaysIso(TODAY, -25)),
+      endDay: corosDay(addDaysIso(TODAY, 60)),
+      maxIdInPlan: 0,
+      pbVersion: 2,
+      version: 1,
+      entities: [],
+      programs: [],
+    };
+    // The template plan, merged into every read.
+    const template = liveShapeSchedule();
+    template.id = TEMPLATE_PLAN_ID;
+    for (const entity of template.entities ?? []) entity.planId = TEMPLATE_PLAN_ID;
+    for (const program of template.programs ?? []) program.planId = TEMPLATE_PLAN_ID;
+    server.state.mergedPlans.push(template);
+    return server;
+  }
+
+  async function connect(server: MockCorosServer): Promise<CorosClient> {
+    const client = new CorosClient({ region: "us", fetchImpl: server.fetchImpl, logger: noop });
+    await client.login(server.email, server.password);
+    return client;
+  }
+
+  function templateEntityIds(server: MockCorosServer): string[] {
+    return (server.state.mergedPlans[0]?.entities ?? []).map((e) => String(e.id)).sort();
+  }
+
+  it("derives idInPlan from the target plan alone, ignoring the template plan", async () => {
+    const server = liveTwoPlanServer();
+    const client = await connect(server);
+    const templateBefore = templateEntityIds(server);
+    const lines: string[] = [];
+
+    const report = await runCreateSpike(client, {
+      today: TODAY,
+      log: (line) => lines.push(line),
+    });
+
+    // The container is empty, so the first free id is 1 — even though the
+    // merged read shows ids up to 45. Deriving from the merged view is what
+    // made run 1 abort on a bogus "slot occupied".
+    expect(report.baseline?.observedMaxIdInPlan).toBe(0);
+    expect(report.tests.strength.idInPlan).toBe(1);
+    expect(report.tests.run.idInPlan).toBe(2);
+    expect(report.tests.bike.idInPlan).toBe(3);
+    expect(report.abortReason).toBeUndefined();
+
+    // The creates land in the container and are found there — run 2's
+    // "ACCEPTED BUT NOT VISIBLE" was locate() searching the merged view.
+    expect(report.tests.strength.verified).toBe(true);
+    expect(report.tests.run.verified).toBe(true);
+    expect(report.tests.bike.verified).toBe(true);
+    expect(report.tests.strength.serverIds?.planId).toBe(CONTAINER_PLAN_ID);
+
+    // Cleanup empties the container and never touches the template plan.
+    expect(report.overall.leftovers).toEqual([]);
+    expect(report.overall.baselineRestored).toBe(true);
+    expect(report.succeeded).toBe(true);
+    expect(server.state.schedule.entities).toEqual([]);
+    expect(templateEntityIds(server)).toEqual(templateBefore);
+
+    // The console explains the multi-plan account.
+    expect(lines.join("\n")).toContain(`target plan ${CONTAINER_PLAN_ID}`);
+    expect(lines.join("\n")).toContain("merges 2 plan(s)");
+  });
+
+  it("sweeps the three strays the live run left, and only those", async () => {
+    const server = liveTwoPlanServer();
+    // Exactly what the account holds now: three container entities at ids
+    // 1/2/3 whose programs carry the stamp, beside template ids 1/2/3.
+    stampedStray(server, "1", addDaysIso(TODAY, 21), "strength", "sv-e-1", CONTAINER_PLAN_ID);
+    stampedStray(server, "2", addDaysIso(TODAY, 22), "run", "sv-e-2", CONTAINER_PLAN_ID);
+    stampedStray(server, "3", addDaysIso(TODAY, 23), "bike", "sv-e-3", CONTAINER_PLAN_ID);
+    server.state.schedule.maxIdInPlan = 3;
+    const client = await connect(server);
+    const templateBefore = templateEntityIds(server);
+
+    const report = await runCreateSpike(client, {
+      today: TODAY,
+      cleanupOnly: true,
+      log: noop,
+    });
+
+    expect(report.strays?.found).toHaveLength(3);
+    expect(report.strays?.removed).toHaveLength(3);
+    expect(report.strays?.failed).toEqual([]);
+    expect(server.state.schedule.entities).toEqual([]);
+    // The template plan's 27 workouts — including its own ids 1, 2 and 3 —
+    // are untouched, asserted by server-assigned entity id.
+    expect(templateEntityIds(server)).toEqual(templateBefore);
+    expect(templateEntityIds(server)).toHaveLength(27);
+    // Deletes only: three of them, one per stray.
+    expect(server.counts.scheduleWrites).toBe(3);
+  });
+
+  it("keeps the template plan untouchable when its ids collide with new creates", async () => {
+    const server = liveTwoPlanServer();
+    const client = await connect(server);
+    const templateBefore = templateEntityIds(server);
+    const templateProgramsBefore = (server.state.mergedPlans[0]?.programs ?? []).length;
+
+    // Container ids 1/2/3 collide with template ids 1/2/3 throughout.
+    const report = await runCreateSpike(client, { today: TODAY, log: noop });
+
+    expect(report.tests.strength.idInPlan).toBe(1);
+    expect(report.succeeded).toBe(true);
+    expect(templateEntityIds(server)).toEqual(templateBefore);
+    expect(server.state.mergedPlans[0]?.programs).toHaveLength(templateProgramsBefore);
+  });
+
+  it("reports the per-plan breakdown in dry-run so a merged read is legible", async () => {
+    const server = liveTwoPlanServer();
+    stampedStray(server, "1", addDaysIso(TODAY, 21), "strength", "sv-e-1", CONTAINER_PLAN_ID);
+    const client = await connect(server);
+
+    const report = await runCreateSpike(client, { today: TODAY, dryRun: true, log: noop });
+
+    expect(server.counts.scheduleWrites).toBe(0);
+    expect(report.dryRun?.planId).toBe(CONTAINER_PLAN_ID);
+    const plans = report.dryRun?.plans ?? [];
+    expect(plans).toHaveLength(2);
+    expect(plans.find((p) => p.planId === TEMPLATE_PLAN_ID)?.entityCount).toBe(27);
+    expect(plans.find((p) => p.planId === CONTAINER_PLAN_ID)?.entityCount).toBe(1);
+    // Only the container's stray is reported as the spike's.
+    expect(report.dryRun?.stamped).toHaveLength(1);
+    expect(report.dryRun?.stamped[0]?.planId).toBe(CONTAINER_PLAN_ID);
+    // Template rows never appear as collisions: the delete address includes planId.
+    expect(report.dryRun?.collisions).toEqual([]);
   });
 });
