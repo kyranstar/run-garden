@@ -51,6 +51,54 @@ function trainingWeeks(startMonday: string, weeks: number): GardenDayInput[] {
   return days;
 }
 
+type Discipline = "run" | "strength" | "yoga";
+
+/** A single unplanned session of one discipline (the shape the worker sends). */
+function sessionDay(
+  date: string,
+  discipline: Discipline,
+  extra: Partial<GardenDayInput> = {},
+): GardenDayInput {
+  const category: WorkoutCategory =
+    discipline === "strength" ? "strength" : discipline === "yoga" ? "yoga" : "easy";
+  return {
+    ...emptyDay(date),
+    completedRuns: [{ workoutId: `${discipline}-${date}`, category, discipline, unplanned: true }],
+    ...extra,
+  };
+}
+
+/** A week that touches all three disciplines. */
+function mixedWeeks(startMonday: string, weeks: number): GardenDayInput[] {
+  const days: GardenDayInput[] = [];
+  for (let w = 0; w < weeks; w++) {
+    const mon = addDays(startMonday, w * 7);
+    days.push(sessionDay(mon, "strength"));
+    days.push(runDay(addDays(mon, 1), "quality"));
+    days.push(sessionDay(addDays(mon, 2), "yoga"));
+    days.push(runDay(addDays(mon, 3), "easy"));
+    days.push(sessionDay(addDays(mon, 4), "strength"));
+    days.push(runDay(addDays(mon, 5), "long"));
+    days.push(runDay(addDays(mon, 6), "recovery"));
+  }
+  return days;
+}
+
+function advanceDays(
+  snapshot: GardenSnapshot,
+  from: string,
+  count: number,
+  make: (date: string) => GardenDayInput,
+) {
+  let s = snapshot;
+  let date = from;
+  for (let i = 0; i < count; i++) {
+    s = simulateDay(s, make(date)).snapshot;
+    date = addDays(date, 1);
+  }
+  return { snapshot: s, nextDate: date };
+}
+
 function advanceEmptyDays(snapshot: GardenSnapshot, from: string, count: number) {
   let s = snapshot;
   let date = from;
@@ -395,5 +443,178 @@ describe("achievement species", () => {
     // Sorted by least remaining first.
     const remaining = next.map((n) => 1 - n.progress!.current / n.progress!.target);
     expect([...remaining].sort((a, b) => a - b)).toEqual(remaining);
+  });
+});
+
+describe("tri-discipline ecosystem", () => {
+  it("a strength session feeds the soil without watering the garden", () => {
+    const g = initialSnapshot(START);
+    const idle = advanceEmptyDays(g, START, 3);
+    const before = idle.snapshot.state;
+    const beforeHydration = idle.snapshot.plants[0]!.hydration;
+
+    const { snapshot } = simulateDay(idle.snapshot, sessionDay(idle.nextDate, "strength"));
+
+    expect(snapshot.state.daysSinceStrength).toBe(0);
+    expect(snapshot.state.strengthSessionCount).toBe(1);
+    expect(snapshot.state.soilHealth).toBeCloseTo(before.soilHealth + 0.05, 6);
+    // Lifting is not running: the run clock keeps ticking and no rain falls.
+    expect(snapshot.state.daysSinceCompletedRun).toBe(before.daysSinceCompletedRun + 1);
+    expect(snapshot.state.weatherState).not.toBe("fresh_rain");
+    expect(snapshot.state.weatherState).not.toBe("recovery_rain");
+    expect(snapshot.plants[0]!.hydration).toBeLessThan(beforeHydration);
+    // Modest hydration support all the same.
+    expect(snapshot.state.moisture).toBeGreaterThan(before.moisture);
+  });
+
+  it("a planned strength workout tends the soil instead of watering the garden", () => {
+    const g = initialSnapshot(START);
+    const idle = advanceEmptyDays(g, START, 3);
+    const before = idle.snapshot.state;
+
+    // No discipline tag at all: the category alone marks this as lifting.
+    const { snapshot } = simulateDay(idle.snapshot, {
+      ...emptyDay(idle.nextDate),
+      completedRuns: [{ workoutId: "planned-lift", category: "strength" }],
+    });
+
+    expect(snapshot.state.strengthSessionCount).toBe(1);
+    // Exactly one helping of soil — the session is counted once, not per path.
+    expect(snapshot.state.soilHealth).toBeCloseTo(before.soilHealth + 0.05, 6);
+    expect(snapshot.state.daysSinceCompletedRun).toBe(before.daysSinceCompletedRun + 1);
+    expect(snapshot.state.totalCompletedRuns).toBe(before.totalCompletedRuns);
+    expect(snapshot.state.weatherState).not.toBe("fresh_rain");
+  });
+
+  it("a yoga session lifts the life axis, which fades again when yoga lapses", () => {
+    const g = initialSnapshot(START);
+    const idle = advanceEmptyDays(g, START, 3);
+    const control = simulateDay(idle.snapshot, emptyDay(idle.nextDate)).snapshot;
+    const { snapshot } = simulateDay(idle.snapshot, sessionDay(idle.nextDate, "yoga"));
+
+    expect(snapshot.state.yogaSessionCount).toBe(1);
+    expect(snapshot.state.daysSinceYoga).toBe(0);
+    expect(snapshot.state.biodiversity).toBeCloseTo(control.state.biodiversity + 0.04, 6);
+    expect(snapshot.state.floweringDensity).toBeCloseTo(control.state.floweringDensity + 0.03, 6);
+    // Yoga is not running either.
+    expect(snapshot.state.daysSinceCompletedRun).toBe(control.state.daysSinceCompletedRun);
+
+    // Ten quiet days later the yoga-earned life has faded back to the garden's own.
+    const after = advanceEmptyDays(snapshot, addDays(idle.nextDate, 1), 10);
+    const afterControl = advanceEmptyDays(control, addDays(idle.nextDate, 1), 10);
+    expect(after.snapshot.state.daysSinceYoga).toBe(10);
+    expect(after.snapshot.state.biodiversity).toBeCloseTo(
+      afterControl.snapshot.state.biodiversity,
+      6,
+    );
+  });
+
+  it("neglected strength wilts the soil; rest mode and plan gaps pause it", () => {
+    const g = initialSnapshot(START);
+    const soil0 = g.state.soilHealth;
+
+    const ten = advanceEmptyDays(g, START, 10);
+    expect(ten.snapshot.state.daysSinceStrength).toBe(10);
+    // Decay starts once the clock passes 7: days 8, 9, 10.
+    expect(ten.snapshot.state.soilHealth).toBeCloseTo(soil0 - 0.06, 6);
+
+    // Floors at 0.2 no matter how long the neglect runs.
+    const long = advanceEmptyDays(g, START, 60);
+    expect(long.snapshot.state.soilHealth).toBeCloseTo(0.2, 6);
+
+    // Rest mode freezes the clock and the decay.
+    const rested = advanceDays(ten.snapshot, ten.nextDate, 5, (date) => ({
+      ...emptyDay(date),
+      restModeActive: true,
+    }));
+    expect(rested.snapshot.state.daysSinceStrength).toBe(10);
+    expect(rested.snapshot.state.soilHealth).toBeCloseTo(ten.snapshot.state.soilHealth, 6);
+
+    // Plan gaps skip the penalty, but time still passes.
+    const gapped = advanceDays(ten.snapshot, ten.nextDate, 5, (date) => ({
+      ...emptyDay(date),
+      planGap: true,
+    }));
+    expect(gapped.snapshot.state.daysSinceStrength).toBe(15);
+    expect(gapped.snapshot.state.soilHealth).toBeCloseTo(ten.snapshot.state.soilHealth, 6);
+  });
+
+  it("inputs without a discipline still behave exactly like runs", () => {
+    const plain = trainingWeeks(START, 3);
+    const tagged = plain.map((d) => ({
+      ...d,
+      completedRuns: d.completedRuns.map((r) => ({ ...r, discipline: "run" as const })),
+    }));
+    const a = replay(START, plain);
+    const b = replay(START, tagged);
+    expect(b.snapshot).toEqual(a.snapshot);
+    expect(b.events).toEqual(a.events);
+  });
+
+  it("long-run tree growth scales with soil health", () => {
+    const built = replay(START, trainingWeeks(START, 2)).snapshot;
+    const longRunDate = addDays(START, 14);
+    const sapling = [...built.plants]
+      .filter((p) => p.category === "tree" && p.maturity < 1)
+      .sort((x, y) => x.maturity - y.maturity || x.id.localeCompare(y.id))[0]!;
+
+    const growthAt = (soilHealth: number): number => {
+      const seeded = structuredClone(built);
+      seeded.state.soilHealth = soilHealth;
+      const { snapshot } = simulateDay(seeded, runDay(longRunDate, "long"));
+      return snapshot.plants.find((p) => p.id === sapling.id)!.maturity - sapling.maturity;
+    };
+
+    expect(growthAt(1)).toBeGreaterThan(growthAt(0.2));
+  });
+
+  it("wildlife stays in the garden while any discipline is fresh", () => {
+    const built = replay(START, trainingWeeks(START, 8)).snapshot;
+    expect(built.wildlife.squirrels).toBe(true);
+    const quietFrom = addDays(START, 8 * 7);
+
+    // Lifting every day: the run clock goes stale but the garden is still tended.
+    const lifting = advanceDays(built, quietFrom, 32, (date) => sessionDay(date, "strength"));
+    expect(lifting.snapshot.state.daysSinceCompletedRun).toBeGreaterThanOrEqual(
+      DEFAULT_GARDEN_CONFIG.dormancyStartDays,
+    );
+    expect(lifting.snapshot.state.daysSinceStrength).toBe(0);
+    expect(lifting.snapshot.wildlife.squirrels).toBe(true);
+
+    // Nothing at all for the same stretch: the visitors leave.
+    const idle = advanceEmptyDays(built, quietFrom, 32);
+    expect(idle.snapshot.wildlife.squirrels).toBe(false);
+  });
+
+  it("counts a balanced Mon–Sun week only when all three disciplines land", () => {
+    const week = (mon: string, withYoga: boolean): GardenDayInput[] => [
+      runDay(mon, "easy"),
+      sessionDay(addDays(mon, 1), "strength"),
+      withYoga ? sessionDay(addDays(mon, 2), "yoga") : emptyDay(addDays(mon, 2)),
+      emptyDay(addDays(mon, 3)),
+      emptyDay(addDays(mon, 4)),
+      emptyDay(addDays(mon, 5)),
+      emptyDay(addDays(mon, 6)),
+    ];
+
+    // The week is only counted once the next week starts.
+    expect(replay(START, week(START, true)).snapshot.state.balancedWeekCount).toBe(0);
+    const balanced = replay(START, [...week(START, true), emptyDay(addDays(START, 7))]);
+    expect(balanced.snapshot.state.balancedWeekCount).toBe(1);
+    expect(balanced.snapshot.state.weekDisciplines.weekStart).toBe(addDays(START, 7));
+
+    const missingYoga = replay(START, [...week(START, false), emptyDay(addDays(START, 7))]);
+    expect(missingYoga.snapshot.state.balancedWeekCount).toBe(0);
+  });
+
+  it("replays mixed-discipline histories deterministically", () => {
+    const days = mixedWeeks(START, 4);
+    const a = replay(START, days);
+    const b = replay(START, days);
+    expect(b.snapshot).toEqual(a.snapshot);
+    expect(b.events.map((e) => e.id)).toEqual(a.events.map((e) => e.id));
+    expect(a.snapshot.state.strengthSessionCount).toBe(8);
+    expect(a.snapshot.state.yogaSessionCount).toBe(4);
+    expect(a.snapshot.state.balancedWeekCount).toBe(3);
   });
 });

@@ -8,7 +8,10 @@ import type {
   WorkoutCategory,
 } from "@rg/domain";
 
-export const SIMULATION_VERSION = 1;
+export const SIMULATION_VERSION = 2;
+
+/** The three disciplines the garden listens to; each drives its own axis. */
+export type Discipline = "run" | "strength" | "yoga";
 
 /** Tunable pacing constants. Defaults implement the product's decay curve. */
 export interface GardenConfig {
@@ -49,7 +52,12 @@ export interface EngineGardenState {
   canopy: number;
   floweringDensity: number;
   droughtDays: number;
+  /** Water axis clock: days since the last completed run. */
   daysSinceCompletedRun: number;
+  /** Earth axis clock: days since the last strength session. */
+  daysSinceStrength: number;
+  /** Life axis clock: days since the last yoga session. */
+  daysSinceYoga: number;
   weatherState: GardenWeatherState;
   season: GardenSeason;
   lastSimulatedDate: LocalDate;
@@ -75,6 +83,25 @@ export interface EngineGardenState {
   /** True while recovering from a drought (affects visuals + fungi unlock). */
   inComeback: boolean;
   lastPlantDeathDate: LocalDate | null;
+
+  /** Strength sessions ever completed (planned or not). */
+  strengthSessionCount: number;
+  /** Yoga sessions ever completed (planned or not). */
+  yogaSessionCount: number;
+  /** Mon–Sun weeks that held at least one run, one lift and one yoga session. */
+  balancedWeekCount: number;
+  /** Discipline flags for the in-progress Mon–Sun week. */
+  weekDisciplines: { weekStart: LocalDate; run: boolean; strength: boolean; yoga: boolean };
+  /**
+   * Yoga's standing contribution to the life axis. `biodiversity` and
+   * `floweringDensity` are recomputed from the living plants every day, so the
+   * yoga-earned part is held separately and re-applied on top of that baseline
+   * (see `recomputeDerived`); neglect fades it back to zero, never below the
+   * variety the garden actually has.
+   */
+  lifeBonusBiodiversity: number;
+  lifeBonusFlowering: number;
+
   /** Garden birth date (never resets). */
   createdDate: LocalDate;
 }
@@ -91,6 +118,12 @@ export interface CompletedRunInput {
   workoutId: string;
   activityId?: string;
   category: WorkoutCategory;
+  /**
+   * Which discipline this session belongs to. Absent falls back to the
+   * category, so stored inputs from before the tri-discipline engine replay
+   * unchanged for runs and correctly for strength/yoga workouts.
+   */
+  discipline?: Discipline;
   window?: "morning" | "evening";
   /** True when this run was not part of the plan (modest rewards only). */
   unplanned?: boolean;

@@ -1,5 +1,5 @@
 import type { GardenEvent, GardenPlant, LocalDate, WildlifeKind } from "@rg/domain";
-import { addDays, daysBetween } from "@rg/domain";
+import { addDays, daysBetween, startOfIsoWeek } from "@rg/domain";
 import { conditionWord, deriveWeather, seasonOf } from "./condition.js";
 import { choosePosition, chooseDeadWoodHost, chooseHostTree } from "./layout.js";
 import { pick, roll } from "./prng.js";
@@ -10,6 +10,7 @@ import {
   SIMULATION_VERSION,
   type CompletedRunInput,
   type DayResult,
+  type Discipline,
   type EngineGardenState,
   type GardenConfig,
   type GardenDayInput,
@@ -28,6 +29,8 @@ export function initialSnapshot(createdDate: LocalDate): GardenSnapshot {
     floweringDensity: 0,
     droughtDays: 0,
     daysSinceCompletedRun: 0,
+    daysSinceStrength: 0,
+    daysSinceYoga: 0,
     weatherState: "soft_sun",
     season: seasonOf(createdDate),
     // One day before genesis so the created date itself can be simulated.
@@ -47,6 +50,17 @@ export function initialSnapshot(createdDate: LocalDate): GardenSnapshot {
     bestComebackStreak: 0,
     inComeback: false,
     lastPlantDeathDate: null,
+    strengthSessionCount: 0,
+    yogaSessionCount: 0,
+    balancedWeekCount: 0,
+    weekDisciplines: {
+      weekStart: startOfIsoWeek(createdDate),
+      run: false,
+      strength: false,
+      yoga: false,
+    },
+    lifeBonusBiodiversity: 0,
+    lifeBonusFlowering: 0,
     createdDate,
   };
   const snapshot: GardenSnapshot = {
@@ -163,6 +177,19 @@ export function simulateDay(
   state.earlyRunCount ??= 0;
   state.longestRunMeters ??= 0;
   state.bestComebackStreak ??= 0;
+  state.daysSinceStrength ??= 0;
+  state.daysSinceYoga ??= 0;
+  state.strengthSessionCount ??= 0;
+  state.yogaSessionCount ??= 0;
+  state.balancedWeekCount ??= 0;
+  state.lifeBonusBiodiversity ??= 0;
+  state.lifeBonusFlowering ??= 0;
+  state.weekDisciplines ??= {
+    weekStart: startOfIsoWeek(input.date),
+    run: false,
+    strength: false,
+    yoga: false,
+  };
   const events: GardenEvent[] = [];
   let seq = 0;
   const emit = (e: Omit<GardenEvent, "id" | "date" | "seq" | "simulationVersion">): void => {
@@ -177,6 +204,14 @@ export function simulateDay(
 
   state.season = seasonOf(input.date);
 
+  // A new Mon–Sun week: bank the week that just closed, then start fresh.
+  const weekStart = startOfIsoWeek(input.date);
+  if (weekStart !== state.weekDisciplines.weekStart) {
+    const closing = state.weekDisciplines;
+    if (closing.run && closing.strength && closing.yoga) state.balancedWeekCount += 1;
+    state.weekDisciplines = { weekStart, run: false, strength: false, yoga: false };
+  }
+
   // Rest-mode transitions.
   if (input.restModeActive && !state.restMode) {
     state.restMode = true;
@@ -187,7 +222,12 @@ export function simulateDay(
   }
 
   const runs = [...input.completedRuns].sort((a, b) => a.workoutId.localeCompare(b.workoutId));
-  const plannedRuns = runs.filter((r) => !r.unplanned);
+  const runSessions = runs.filter((r) => disciplineOf(r) === "run");
+  const strengthSessions = runs.filter((r) => disciplineOf(r) === "strength");
+  const yogaSessions = runs.filter((r) => disciplineOf(r) === "yoga");
+  // Only running brings the rain: moisture, weather, drought and the comeback
+  // arc stay run-driven. Lifting and yoga feed the earth and life axes instead.
+  const plannedRuns = runSessions.filter((r) => !r.unplanned);
   const comebackToday =
     plannedRuns.length > 0 && state.daysSinceCompletedRun >= cfg.droughtStartDays;
 
@@ -202,17 +242,31 @@ export function simulateDay(
     }
   }
 
-  // 2. Completed runs.
+  // 2. Completed sessions.
   for (const run of runs) {
     applyRun(snapshot, run, input.date, cfg, emit, comebackToday);
   }
-  if (runs.length > 0) {
+
+  // 3. Strength and yoga axis effects — every session counts, planned or not
+  //    (unlike the planting rewards, which stay planned-run only).
+  for (const _session of strengthSessions) {
+    state.strengthSessionCount += 1;
+    state.soilHealth = Math.min(1, state.soilHealth + 0.05);
+    state.moisture = Math.min(1, state.moisture + 0.08);
+  }
+  for (const _session of yogaSessions) {
+    state.yogaSessionCount += 1;
+    tendLifeAxis(snapshot, 0.04, 0.03);
+    state.moisture = Math.min(1, state.moisture + 0.08);
+  }
+
+  if (runSessions.length > 0) {
     if (plannedRuns.length > 0) {
       state.daysSinceCompletedRun = 0;
       state.droughtDays = 0;
     }
   } else if (!state.restMode) {
-    // 3. A day with no completed run.
+    // 4. A day with no completed run.
     if (input.restObserved) {
       state.soilHealth = Math.min(1, state.soilHealth + 0.01);
       emit({ kind: "rest_observed" });
@@ -223,7 +277,26 @@ export function simulateDay(
     // Plan gaps: the plan ended — never an endless penalty.
   }
 
-  // 4. Passive growth for hydrated plants (rain lingers between runs).
+  // 5. Discipline clocks. Rest mode freezes them; everything else advances.
+  if (strengthSessions.length > 0) state.daysSinceStrength = 0;
+  else if (!state.restMode) state.daysSinceStrength += 1;
+  if (yogaSessions.length > 0) state.daysSinceYoga = 0;
+  else if (!state.restMode) state.daysSinceYoga += 1;
+
+  // 6. Neglect: each axis wilts on its own clock, gently and with a floor.
+  if (!state.restMode && !input.planGap) {
+    if (state.daysSinceStrength > 7) {
+      state.soilHealth = Math.max(0.2, state.soilHealth - 0.02);
+    }
+    if (state.daysSinceYoga > 7) fadeLifeAxis(state, 0.015);
+  }
+
+  // 7. Which disciplines this Mon–Sun week has seen.
+  if (runSessions.length > 0) state.weekDisciplines.run = true;
+  if (strengthSessions.length > 0) state.weekDisciplines.strength = true;
+  if (yogaSessions.length > 0) state.weekDisciplines.yoga = true;
+
+  // 8. Passive growth for hydrated plants (rain lingers between runs).
   if (!state.restMode && state.daysSinceCompletedRun < cfg.droughtStartDays) {
     for (const p of livingPlants(snapshot.plants)) {
       if (p.hydration > 0.5 && p.maturity < 1) {
@@ -233,7 +306,7 @@ export function simulateDay(
     }
   }
 
-  // 5. Bloom decay without water; dryness closes flowers.
+  // 9. Bloom decay without water; dryness closes flowers.
   for (const p of livingPlants(snapshot.plants)) {
     if (p.bloomProgress > 0 && runs.length === 0) {
       const dry = state.daysSinceCompletedRun >= cfg.drynessStartDays;
@@ -241,13 +314,13 @@ export function simulateDay(
     }
   }
 
-  // 6. Weekly adherence feeds long-term consistency unlocks.
+  // 10. Weekly adherence feeds long-term consistency unlocks.
   if (input.weekAdherence !== undefined && !state.restMode) {
     if (input.weekAdherence >= 0.75) state.consecutiveConsistentWeeks += 1;
     else state.consecutiveConsistentWeeks = 0;
   }
 
-  // 7. Unlocks, wildlife, regions, derived metrics.
+  // 11. Unlocks, wildlife, regions, derived metrics.
   evaluateUnlocks(snapshot, input.date, emit);
   recomputeDerived(snapshot);
   evaluateWildlife(snapshot, cfg, emit);
@@ -255,7 +328,7 @@ export function simulateDay(
   for (const p of snapshot.plants) refreshLivingState(p, state, cfg);
   recomputeDerived(snapshot);
 
-  // 8. Weather.
+  // 12. Weather.
   const weather = deriveWeather(
     state,
     cfg,
@@ -271,6 +344,42 @@ export function simulateDay(
 
   state.lastSimulatedDate = input.date;
   return { snapshot, events };
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Disciplines
+
+/**
+ * Which discipline a completion belongs to. Callers tag sessions explicitly;
+ * older inputs have no tag, so the category answers for them — a strength or
+ * yoga workout is never mistaken for a run.
+ */
+function disciplineOf(run: CompletedRunInput): Discipline {
+  if (run.discipline) return run.discipline;
+  if (run.category === "strength") return "strength";
+  if (run.category === "yoga") return "yoga";
+  return "run";
+}
+
+/** Yoga's contribution on top of what the living garden already shows. */
+function tendLifeAxis(snapshot: GardenSnapshot, dBiodiversity: number, dFlowering: number): void {
+  const s = snapshot.state;
+  // Bounded by the headroom above the plant-derived baseline, so the bonus is
+  // never a hidden reservoir: the visible axes stay ≤ 1.
+  s.lifeBonusBiodiversity = Math.max(
+    0,
+    Math.min(s.lifeBonusBiodiversity + dBiodiversity, 1 - derivedBiodiversity(snapshot)),
+  );
+  s.lifeBonusFlowering = Math.max(
+    0,
+    Math.min(s.lifeBonusFlowering + dFlowering, 1 - derivedFloweringDensity(snapshot)),
+  );
+}
+
+/** Neglected yoga: the borrowed life fades, never below the garden's own. */
+function fadeLifeAxis(state: EngineGardenState, amount: number): void {
+  state.lifeBonusBiodiversity = Math.max(0, state.lifeBonusBiodiversity - amount);
+  state.lifeBonusFlowering = Math.max(0, state.lifeBonusFlowering - amount);
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -294,6 +403,10 @@ function applyRun(
     workoutCategory: run.category,
     detail: run.unplanned ? "unplanned" : undefined,
   });
+
+  // Lifting and yoga water nothing: their axis effects (earth, life) are
+  // applied once per session in simulateDay, planned or not.
+  if (disciplineOf(run) !== "run") return;
 
   // Achievement counters honor every real run, planned or not — a 10K is a
   // 10K. (Species/intensity rewards below remain planned-only.)
@@ -390,8 +503,12 @@ function applyRun(
       break;
     }
     case "cross_training":
-    case "strength":
       // Supports the ecosystem modestly: hydration only (already applied).
+      break;
+    case "strength":
+    case "yoga":
+      // Only reachable for a session tagged as a run; the earth/life effects
+      // belong to the discipline, not the category, and are applied there.
       break;
     case "rest":
       break;
@@ -488,13 +605,17 @@ function applyLongRun(
   const { state } = snapshot;
   const livingTrees = livingPlants(snapshot.plants).filter((p) => p.category === "tree");
 
-  // Strongly advance the least-mature sapling.
+  // Strongly advance the least-mature sapling — as fast as the soil allows.
   const sapling = [...livingTrees]
     .filter((t) => t.maturity < 1)
     .sort((a, b) => a.maturity - b.maturity || a.id.localeCompare(b.id))[0];
   if (sapling) {
     const species = speciesOrThrow(sapling.speciesId);
-    sapling.maturity = Math.min(1, sapling.maturity + Math.max(0.1, 4 / species.growthDays));
+    const soilFactor = 0.5 + 0.5 * state.soilHealth;
+    sapling.maturity = Math.min(
+      1,
+      sapling.maturity + Math.max(0.1, 4 / species.growthDays) * soilFactor,
+    );
   }
 
   // Tree-placement milestones: the first long run plants the first tree; after
@@ -635,7 +756,14 @@ function evaluateWildlife(
       .filter((p) => speciesOrThrow(p.speciesId).flowers && p.maturity >= 0.7)
       .map((p) => p.speciesId),
   );
-  const inDecline = s.daysSinceCompletedRun >= cfg.dormancyStartDays || s.restMode;
+  // Any discipline still being practiced keeps the garden alive for its
+  // visitors — the individual axes wilt on their own clocks instead.
+  const daysSinceAnyDiscipline = Math.min(
+    s.daysSinceCompletedRun,
+    s.daysSinceStrength,
+    s.daysSinceYoga,
+  );
+  const inDecline = daysSinceAnyDiscipline >= cfg.dormancyStartDays || s.restMode;
 
   const desired: Record<WildlifeKind, boolean> = {
     birds: !inDecline && matureTreeCount(snapshot) >= 2 && s.canopy >= 0.25,
@@ -680,16 +808,30 @@ function evaluateRegions(
   }
 }
 
+/** Variety the living garden itself shows, before yoga's contribution. */
+function derivedBiodiversity(snapshot: GardenSnapshot): number {
+  const speciesCount = new Set(livingPlants(snapshot.plants).map((p) => p.speciesId)).size;
+  return Math.min(1, speciesCount / 20);
+}
+
+/** Bloom the living garden itself shows, before yoga's contribution. */
+function derivedFloweringDensity(snapshot: GardenSnapshot): number {
+  const floweringCapable = livingPlants(snapshot.plants).filter(
+    (p) => speciesOrThrow(p.speciesId).flowers,
+  );
+  const inBloom = floweringCapable.filter((p) => p.state === "flowering");
+  return floweringCapable.length === 0 ? 0 : inBloom.length / Math.max(6, floweringCapable.length);
+}
+
 function recomputeDerived(snapshot: GardenSnapshot): void {
   const s = snapshot.state;
-  const living = livingPlants(snapshot.plants);
-  const speciesCount = new Set(living.map((p) => p.speciesId)).size;
-  s.biodiversity = Math.min(1, speciesCount / 20);
+  // The life axis is what the plants show plus what yoga has tended.
+  s.biodiversity = Math.min(1, derivedBiodiversity(snapshot) + (s.lifeBonusBiodiversity ?? 0));
   s.canopy = Math.min(1, matureTreeCount(snapshot) * 0.15);
-  const floweringCapable = living.filter((p) => speciesOrThrow(p.speciesId).flowers);
-  const inBloom = floweringCapable.filter((p) => p.state === "flowering");
-  s.floweringDensity =
-    floweringCapable.length === 0 ? 0 : inBloom.length / Math.max(6, floweringCapable.length);
+  s.floweringDensity = Math.min(
+    1,
+    derivedFloweringDensity(snapshot) + (s.lifeBonusFlowering ?? 0),
+  );
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
