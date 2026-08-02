@@ -256,7 +256,7 @@ export function simulateDay(
   }
   for (const _session of yogaSessions) {
     state.yogaSessionCount += 1;
-    tendLifeAxis(snapshot, 0.04, 0.03);
+    tendLifeAxis(state, 0.04, 0.03);
     state.moisture = Math.min(1, state.moisture + 0.08);
   }
 
@@ -361,18 +361,24 @@ function disciplineOf(run: CompletedRunInput): Discipline {
   return "run";
 }
 
+/**
+ * How far yoga alone can tint the garden toward life. Static reservoirs, not
+ * headroom above the living plants: credit already earned is never clawed back
+ * when the garden's own variety grows. The visible axes still cap at 1 in
+ * `recomputeDerived`, and the plants stay the louder signal.
+ */
+const LIFE_BONUS_CAP_BIODIVERSITY = 0.5;
+const LIFE_BONUS_CAP_FLOWERING = 0.35;
+
 /** Yoga's contribution on top of what the living garden already shows. */
-function tendLifeAxis(snapshot: GardenSnapshot, dBiodiversity: number, dFlowering: number): void {
-  const s = snapshot.state;
-  // Bounded by the headroom above the plant-derived baseline, so the bonus is
-  // never a hidden reservoir: the visible axes stay ≤ 1.
-  s.lifeBonusBiodiversity = Math.max(
-    0,
-    Math.min(s.lifeBonusBiodiversity + dBiodiversity, 1 - derivedBiodiversity(snapshot)),
+function tendLifeAxis(state: EngineGardenState, dBiodiversity: number, dFlowering: number): void {
+  state.lifeBonusBiodiversity = Math.min(
+    state.lifeBonusBiodiversity + dBiodiversity,
+    LIFE_BONUS_CAP_BIODIVERSITY,
   );
-  s.lifeBonusFlowering = Math.max(
-    0,
-    Math.min(s.lifeBonusFlowering + dFlowering, 1 - derivedFloweringDensity(snapshot)),
+  state.lifeBonusFlowering = Math.min(
+    state.lifeBonusFlowering + dFlowering,
+    LIFE_BONUS_CAP_FLOWERING,
   );
 }
 

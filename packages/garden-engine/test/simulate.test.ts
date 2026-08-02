@@ -3,6 +3,7 @@ import { addDays } from "@rg/domain";
 import type { WorkoutCategory } from "@rg/domain";
 import {
   DEFAULT_GARDEN_CONFIG,
+  SPECIES,
   initialSnapshot,
   replay,
   simulateDay,
@@ -507,6 +508,54 @@ describe("tri-discipline ecosystem", () => {
       afterControl.snapshot.state.biodiversity,
       6,
     );
+  });
+
+  it("never claws back banked life credit when the garden grows, then thins", () => {
+    // Bank credit while the garden is sparse.
+    const banked = advanceDays(initialSnapshot(START), START, 10, (d) =>
+      sessionDay(d, "yoga"),
+    ).snapshot;
+    expect(banked.state.lifeBonusBiodiversity).toBeCloseTo(0.4, 6);
+
+    // The garden's own variety then grows well past that credit's headroom.
+    const grown = structuredClone(banked);
+    const template = banked.plants[0]!;
+    grown.plants = SPECIES.slice(0, 18).map((sp, i) => ({
+      ...template,
+      id: `fx-${i}`,
+      speciesId: sp.id,
+      category: sp.category,
+    }));
+
+    const nextDate = addDays(START, 10);
+    const withYoga = simulateDay(grown, sessionDay(nextDate, "yoga")).snapshot;
+    const withoutYoga = simulateDay(grown, emptyDay(nextDate)).snapshot;
+    expect(withYoga.state.lifeBonusBiodiversity).toBeGreaterThanOrEqual(
+      withoutYoga.state.lifeBonusBiodiversity,
+    );
+
+    // And when the garden thins again, the extra session must never have left
+    // the meadow poorer than skipping it would have.
+    const thin = (snap: GardenSnapshot): GardenSnapshot => {
+      const t = structuredClone(snap);
+      for (const p of t.plants.slice(3)) {
+        p.state = "dead";
+        p.health = 0;
+      }
+      return t;
+    };
+    const later = addDays(nextDate, 1);
+    const afterWith = simulateDay(thin(withYoga), emptyDay(later)).snapshot;
+    const afterWithout = simulateDay(thin(withoutYoga), emptyDay(later)).snapshot;
+    expect(afterWith.state.biodiversity).toBeGreaterThanOrEqual(afterWithout.state.biodiversity);
+  });
+
+  it("caps how far yoga alone can tint the garden", () => {
+    const devoted = advanceDays(initialSnapshot(START), START, 200, (d) =>
+      sessionDay(d, "yoga"),
+    ).snapshot;
+    expect(devoted.state.lifeBonusBiodiversity).toBe(0.5);
+    expect(devoted.state.lifeBonusFlowering).toBe(0.35);
   });
 
   it("neglected strength wilts the soil; rest mode and plan gaps pause it", () => {

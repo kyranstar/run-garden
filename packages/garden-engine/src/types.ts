@@ -97,7 +97,8 @@ export interface EngineGardenState {
    * `floweringDensity` are recomputed from the living plants every day, so the
    * yoga-earned part is held separately and re-applied on top of that baseline
    * (see `recomputeDerived`); neglect fades it back to zero, never below the
-   * variety the garden actually has.
+   * variety the garden actually has. Bounded by static reservoirs (0.5 / 0.35)
+   * so credit already earned is never clawed back as the garden grows.
    */
   lifeBonusBiodiversity: number;
   lifeBonusFlowering: number;
