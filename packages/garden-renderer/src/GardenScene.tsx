@@ -29,10 +29,10 @@ function anchorOf(plant: GardenPlant): { x: number; y: number; s: number } {
   };
 }
 
-function sceneCss(p: string): string {
+function sceneCss(p: string, amp: number): string {
   return `
 .${p}-sway{transform-box:fill-box;transform-origin:50% 100%;animation:${p}-sway 7s ease-in-out infinite alternate;}
-@keyframes ${p}-sway{from{transform:rotate(-1.7deg)}to{transform:rotate(1.7deg)}}
+@keyframes ${p}-sway{from{transform:rotate(-${amp}deg)}to{transform:rotate(${amp}deg)}}
 .${p}-rain{animation:${p}-rainfall 0.9s linear infinite;}
 @keyframes ${p}-rainfall{from{transform:translateY(0)}to{transform:translateY(560px)}}
 .${p}-cloud{animation:${p}-drift 75s ease-in-out infinite alternate;}
@@ -448,7 +448,7 @@ export function GardenScene({
       onClick={() => onSelectPlant?.(null)}
     >
       <desc>{desc}</desc>
-      {animate ? <style>{sceneCss(p)}</style> : null}
+      {animate ? <style>{sceneCss(p, n(Math.max(0.3, light.swayAmpDeg)))}</style> : null}
       <SceneDefs p={p} light={light} />
       <Sky p={p} light={light} animate={animate} />
 
@@ -496,6 +496,17 @@ export function GardenScene({
               }
             }}
           >
+            {plant.state !== "dead" ? (
+              <ellipse
+                data-shadow="true"
+                cx={n(light.shadowDx * hw * (0.55 + 0.6 * light.shadowLen))}
+                cy={3}
+                rx={n(hw * (0.55 + 0.55 * light.shadowLen))}
+                ry={n(hw * 0.2)}
+                fill="#233a1d"
+                opacity={n(light.shadowOpacity)}
+              />
+            ) : null}
             {selectedPlantId === plant.id ? (
               <ellipse
                 cx={0}
@@ -508,7 +519,13 @@ export function GardenScene({
                 strokeWidth={1}
               />
             ) : null}
-            <PlantSprite plant={plant} species={species} animate={animate} idPrefix={p} />
+            <PlantSprite
+              plant={plant}
+              species={species}
+              animate={animate}
+              idPrefix={p}
+              tint={{ color: light.foliageTint, amount: light.foliageTintAmount }}
+            />
           </g>
         );
       })}

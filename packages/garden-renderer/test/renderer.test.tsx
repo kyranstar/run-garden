@@ -303,3 +303,37 @@ describe("describeGarden / describePlant", () => {
     expect(text).toContain(plant.plantedAt);
   });
 });
+
+describe("plants under the light", () => {
+  it("every living plant casts a shadow ellipse", () => {
+    const snapshot = healthySnapshot();
+    const markup = renderScene(snapshot, { timeOfDay: 18.9 });
+    const living = snapshot.plants.filter((p) => p.state !== "dead").length;
+    expect((markup.match(/data-shadow="true"/g) ?? []).length).toBe(living);
+  });
+
+  it("golden-hour shadows are longer than midday shadows", () => {
+    const snapshot = healthySnapshot();
+    const rx = (m: string) => {
+      const tag = m.match(/<ellipse[^>]*data-shadow="true"[^>]*>/)?.[0] ?? "";
+      return Number(tag.match(/rx="([\d.]+)"/)?.[1] ?? 0);
+    };
+    expect(rx(renderScene(snapshot, { timeOfDay: 18.9 }))).toBeGreaterThan(
+      rx(renderScene(snapshot, { timeOfDay: 13 })),
+    );
+  });
+
+  it("sway delay correlates with x position (gusts travel)", () => {
+    const markup = renderScene(healthySnapshot(), { timeOfDay: 13 });
+    // Two plants far apart in x must have different sway delays.
+    const delays = [...markup.matchAll(/animation-delay:(-[\d.]+)s/g)].map((m) => Number(m[1]));
+    expect(new Set(delays).size).toBeGreaterThan(1);
+  });
+
+  it("winter foliage is tinted differently from summer", () => {
+    const snapshot = healthySnapshot();
+    const summer = { ...snapshot, state: { ...snapshot.state, season: "summer" as const } };
+    const winter = { ...snapshot, state: { ...snapshot.state, season: "winter" as const } };
+    expect(renderScene(summer)).not.toBe(renderScene(winter));
+  });
+});

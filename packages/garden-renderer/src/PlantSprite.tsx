@@ -39,7 +39,7 @@ interface Ctx {
   P: Paint;
 }
 
-function paintFor(species: Species, plant: GardenPlant): Paint {
+function paintFor(species: Species, plant: GardenPlant, tint?: { color: string; amount: number }): Paint {
   const raw = {
     c1: species.palette.primary,
     c2: species.palette.secondary,
@@ -64,10 +64,11 @@ function paintFor(species: Species, plant: GardenPlant): Paint {
     default:
       break;
   }
+  const applyTint = (c: string) => (tint && plant.state !== "dead" ? mix(c, tint.color, clamp01(tint.amount)) : c);
   return {
-    c1: adjust(raw.c1),
-    c2: adjust(raw.c2),
-    c3: adjust(raw.c3),
+    c1: applyTint(adjust(raw.c1)),
+    c2: applyTint(adjust(raw.c2)),
+    c3: applyTint(adjust(raw.c3)),
     droop,
     blooming: plant.state === "flowering",
     bare,
@@ -849,25 +850,27 @@ export interface PlantSpriteProps {
   animate?: boolean;
   /** Must match the GardenScene idPrefix so animation class names line up. */
   idPrefix?: string;
+  /** Seasonal foliage tint from the color script; never applied to dead plants. */
+  tint?: { color: string; amount: number };
 }
 
-export function PlantSprite({ plant, species, animate = false, idPrefix = "rg-garden" }: PlantSpriteProps) {
+export function PlantSprite({ plant, species, animate = false, idPrefix = "rg-garden", tint }: PlantSpriteProps) {
   const sp = species ?? speciesOrThrow(plant.speciesId);
   const r = rng(`sprite:${plant.id}`);
   const v: Ctx["v"] = (base, pct = 0.15) => base * (1 + (r() * 2 - 1) * pct);
 
   // Consume sway timing first so archetype geometry is stable either way.
   const swayDuration = `${n(6 + r() * 3)}s`;
-  const swayDelay = `-${n(r() * 6)}s`;
+  const swayDelay = `-${n(plant.position.x * 3.5 + r() * 0.8)}s`;
 
   let art: ReactNode;
   let sways = false;
   if (plant.state === "seed") {
-    art = sprout(paintFor(sp, plant));
+    art = sprout(paintFor(sp, plant, tint));
   } else if (plant.state === "dead") {
     art = deadForm(sp, plant, r, v);
   } else {
-    const ctx: Ctx = { r, v, m: clamp01(plant.maturity), P: paintFor(sp, plant) };
+    const ctx: Ctx = { r, v, m: clamp01(plant.maturity), P: paintFor(sp, plant, tint) };
     art = ARCHETYPES[sp.archetype](ctx);
     sways = !NO_SWAY.has(sp.archetype);
   }
