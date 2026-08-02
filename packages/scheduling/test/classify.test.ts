@@ -76,4 +76,9 @@ describe("classifyWorkout", () => {
   it("still classifies Strength as strength (no yoga regression)", () => {
     expect(classifyWorkout({ title: "Strength" }).category).toBe("strength");
   });
+
+  it("yields to the easy rule for compound run+mobility titles, but still classifies pure yoga titles", () => {
+    expect(classifyWorkout({ title: "Easy run + mobility work" }).category).toBe("easy");
+    expect(classifyWorkout({ title: "Morning Yoga" }).category).toBe("yoga");
+  });
 });
