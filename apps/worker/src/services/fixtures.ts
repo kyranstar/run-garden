@@ -1,6 +1,26 @@
-import { eq } from "drizzle-orm";
-import { desktopDevices, users } from "@rg/database";
-import { addDays, fingerprint, newId, nowInstant, todayInZone, type SourceActivity } from "@rg/domain";
+import { and, eq, inArray } from "drizzle-orm";
+import {
+  auditEvents,
+  corosWriteJobs,
+  desktopDevices,
+  llmUsage,
+  studioPlanPushes,
+  studioPlans,
+  users,
+} from "@rg/database";
+import {
+  addDays,
+  fingerprint,
+  newId,
+  nowInstant,
+  startOfIsoWeek,
+  todayInZone,
+  type LiftingPlan,
+  type LocalDate,
+  type SourceActivity,
+  type StudioExercise,
+  type StudioSession,
+} from "@rg/domain";
 import {
   FixtureTrainingProvider,
   fixtureCorosCompletedStrength,
@@ -40,6 +60,354 @@ const FIXTURE_EXERCISE_CATALOG = [
   { id: "425898928110747654", name: "Romanian Deadlift" },
   { id: "425898928110747655", name: "Plank" },
 ];
+const [SQUAT, BENCH, DEADLIFT, OHP, PULLUP, ROW, RDL, PLANK] = FIXTURE_EXERCISE_CATALOG.map((e) => e.id) as [
+  string,
+  string,
+  string,
+  string,
+  string,
+  string,
+  string,
+  string,
+];
+
+function kg(originId: string, name: string, sets: number, reps: number, value: number, restSeconds = 90): StudioExercise {
+  return { originId, name, sets, reps, weight: { type: "kg", value }, restSeconds };
+}
+
+function bodyweight(
+  originId: string,
+  name: string,
+  sets: number,
+  reps: number,
+  restSeconds = 75,
+  note?: string,
+): StudioExercise {
+  return { originId, name, sets, reps, weight: { type: "bodyweight" }, restSeconds, ...(note ? { note } : {}) };
+}
+
+/**
+ * Plan Studio fixture world (plan-studio-design §8): a small 2-week, 3-day
+ * lifting plan built from `FIXTURE_EXERCISE_CATALOG`, exercising every
+ * `studio_plan_pushes` status the Studio UI renders differently:
+ *
+ *  - week 1 (the past week) is fully resolved — one `verified` session, one
+ *    `failed` session that IS still retryable and carries a `corosHappenDay`
+ *    (so `PushRowStatus`'s "Failed — still on calendar" branch renders), and
+ *    one `changed_on_coros` session (drifted after an earlier verify — the
+ *    disabled "Forget / re-adopt" affordance and "changed outside the
+ *    studio" copy).
+ *  - week 2 (the current week) is still a draft: its Monday session is
+ *    `pending` with a `queued` bridge job (so the studio's "waiting for your
+ *    Mac" banner and the pill-progress chip both render), and its remaining
+ *    two sessions have never been pushed at all — the diff strip's honest
+ *    "+2 new" count.
+ *
+ * `today` is the account's own local today (`todayInZone`, same as the rest
+ * of `seedFixtures`) — never a UTC default, for the same reason every other
+ * date-sensitive call in this module takes it as a parameter rather than
+ * recomputing its own.
+ */
+function buildFixtureStudioPlan(today: LocalDate): { plan: LiftingPlan; monday: LocalDate } {
+  // The plan's own grid is anchored to the ISO week containing its
+  // `startDate` (studio-push.ts's `sessionHappenDay`) — last week's Monday,
+  // so week 1 (index 0) has already happened and week 2 (index 1) is this
+  // week, still open to push.
+  const monday = addDays(startOfIsoWeek(today), -7);
+
+  const week1Sessions: StudioSession[] = [
+    {
+      title: "Upper A",
+      weekday: 1,
+      exercises: [kg(BENCH, "Bench Press", 4, 6, 60), kg(ROW, "Bent-Over Row", 4, 8, 50), kg(OHP, "Overhead Press", 3, 8, 35)],
+    },
+    {
+      title: "Lower A",
+      weekday: 3,
+      exercises: [
+        kg(SQUAT, "Back Squat", 4, 6, 70),
+        kg(DEADLIFT, "Deadlift", 3, 5, 90),
+        kg(RDL, "Romanian Deadlift", 3, 8, 60),
+        bodyweight(PLANK, "Plank", 3, 1, 60, "30s hold"),
+      ],
+    },
+    {
+      title: "Upper B",
+      weekday: 5,
+      exercises: [
+        bodyweight(PULLUP, "Pull Up", 4, 6, 90),
+        kg(BENCH, "Bench Press", 3, 10, 55),
+        kg(ROW, "Bent-Over Row", 3, 10, 45),
+      ],
+    },
+  ];
+  // Week 2 mirrors week 1's split with a small progressive-overload bump.
+  const week2Sessions: StudioSession[] = [
+    {
+      title: "Upper A",
+      weekday: 1,
+      exercises: [kg(BENCH, "Bench Press", 4, 6, 62.5), kg(ROW, "Bent-Over Row", 4, 8, 52.5), kg(OHP, "Overhead Press", 3, 8, 37.5)],
+    },
+    {
+      title: "Lower A",
+      weekday: 3,
+      exercises: [
+        kg(SQUAT, "Back Squat", 4, 6, 72.5),
+        kg(DEADLIFT, "Deadlift", 3, 5, 92.5),
+        kg(RDL, "Romanian Deadlift", 3, 8, 62.5),
+        bodyweight(PLANK, "Plank", 3, 1, 60, "35s hold"),
+      ],
+    },
+    {
+      title: "Upper B",
+      weekday: 5,
+      exercises: [
+        bodyweight(PULLUP, "Pull Up", 4, 7, 90),
+        kg(BENCH, "Bench Press", 3, 10, 57.5),
+        kg(ROW, "Bent-Over Row", 3, 10, 47.5),
+      ],
+    },
+  ];
+
+  const plan: LiftingPlan = {
+    name: "Full Body Strength — Fixture",
+    brief: {
+      goal: "strength",
+      durationWeeks: 2,
+      sessionsPerWeek: 3,
+      preferredDays: [1, 3, 5],
+      sessionMinutes: 55,
+      equipment: "full gym",
+      constraints: "",
+      notes: "Seeded by the fixture world (apps/worker/src/services/fixtures.ts).",
+      startDate: monday,
+    },
+    weeks: [{ sessions: week1Sessions }, { sessions: week2Sessions }],
+  };
+  return { plan, monday };
+}
+
+async function seedStudioFixtures(db: Db, userId: string, today: LocalDate): Promise<void> {
+  const { plan, monday } = buildFixtureStudioPlan(today);
+  const now = nowInstant();
+
+  // Wipe any prior fixture studio world for this user so re-seeding is
+  // idempotent — a fresh plan id every run means no unique-index collisions,
+  // so a clean delete-then-recreate is simpler than upserting in place.
+  const oldPlans = await db.select({ id: studioPlans.id }).from(studioPlans).where(eq(studioPlans.userId, userId));
+  const oldPlanIds = oldPlans.map((p) => p.id);
+  if (oldPlanIds.length > 0) {
+    await db.delete(studioPlanPushes).where(inArray(studioPlanPushes.planId, oldPlanIds));
+  }
+  await db.delete(studioPlans).where(eq(studioPlans.userId, userId));
+  await db
+    .delete(corosWriteJobs)
+    .where(
+      and(
+        eq(corosWriteJobs.userId, userId),
+        inArray(corosWriteJobs.kind, ["create_scheduled_workout", "delete_scheduled_workout"]),
+      ),
+    );
+  await db
+    .delete(auditEvents)
+    .where(and(eq(auditEvents.userId, userId), eq(auditEvents.kind, "studio_plan_pushed")));
+  await db
+    .delete(llmUsage)
+    .where(and(eq(llmUsage.userId, userId), inArray(llmUsage.kind, ["studio_generate", "studio_edit"])));
+
+  const planId = newId();
+  await db.insert(studioPlans).values({
+    id: planId,
+    userId,
+    brief: plan.brief as unknown as Record<string, unknown>,
+    plan: plan as unknown as Record<string, unknown>,
+    version: 1,
+    createdAt: now,
+    updatedAt: now,
+  });
+
+  const week1 = plan.weeks[0]!.sessions;
+  const week2 = plan.weeks[1]!.sessions;
+  const upperA1 = week1[0]!;
+  const lowerA1 = week1[1]!;
+  const upperB1 = week1[2]!;
+  const upperA2 = week2[0]!;
+
+  const stamp = (title: string, weekIndex: number): string => `${title} — wk ${weekIndex + 1}`;
+  const happenDay = (weekIndex: number, weekday: number): LocalDate =>
+    addDays(monday, weekIndex * 7 + (weekday - 1));
+
+  // 1. verified — the plain-good state.
+  const verifiedDay = happenDay(0, upperA1.weekday);
+  await db.insert(studioPlanPushes).values({
+    id: newId(),
+    planId,
+    planVersion: 1,
+    happenDay: verifiedDay,
+    sessionTitle: stamp(upperA1.title, 0),
+    corosIdInPlan: "8001",
+    corosProgramId: "8001",
+    corosEntityId: "90001",
+    corosPlanId: "fixture-container-plan-1",
+    corosHappenDay: verifiedDay,
+    sessionFingerprint: fingerprint(upperA1),
+    status: "verified",
+    error: null,
+    updatedAt: now,
+  });
+
+  // 2. failed, retryable, still on the calendar (mapCreateResult's
+  //    `wrong_date`: ids persisted, COROS filed it a day off from what was
+  //    asked). Exercises PushRowStatus's "Failed — still on calendar" copy.
+  const lowerA1Day = happenDay(0, lowerA1.weekday);
+  await db.insert(studioPlanPushes).values({
+    id: newId(),
+    planId,
+    planVersion: 1,
+    happenDay: lowerA1Day,
+    sessionTitle: stamp(lowerA1.title, 0),
+    corosIdInPlan: "8002",
+    corosProgramId: "8002",
+    corosEntityId: "90002",
+    corosPlanId: "fixture-container-plan-1",
+    corosHappenDay: addDays(lowerA1Day, 1),
+    sessionFingerprint: fingerprint(lowerA1),
+    status: "failed",
+    error: "wrong_date",
+    updatedAt: now,
+  });
+
+  // 3. changed_on_coros — previously verified, then found renamed/moved on a
+  //    later drift check. The forget/re-adopt button stays disabled for this
+  //    one; retry is intentionally not offered (see studio.tsx PushRowStatus).
+  const upperB1Day = happenDay(0, upperB1.weekday);
+  await db.insert(studioPlanPushes).values({
+    id: newId(),
+    planId,
+    planVersion: 1,
+    happenDay: upperB1Day,
+    sessionTitle: stamp(upperB1.title, 0),
+    corosIdInPlan: "8003",
+    corosProgramId: "8003",
+    corosEntityId: "90003",
+    corosPlanId: "fixture-container-plan-1",
+    corosHappenDay: upperB1Day,
+    sessionFingerprint: fingerprint(upperB1),
+    status: "failed",
+    error: "changed_on_coros",
+    updatedAt: now,
+  });
+
+  // 4. pending — a create job queued but not yet claimed by any bridge
+  //    device, so `GET /api/studio`'s `bridge.pendingJobs.queued` is
+  //    non-zero and the "Waiting for your Mac" banner renders.
+  const upperA2Day = happenDay(1, upperA2.weekday);
+  const pendingPushId = newId();
+  await db.insert(studioPlanPushes).values({
+    id: pendingPushId,
+    planId,
+    planVersion: 1,
+    happenDay: upperA2Day,
+    sessionTitle: stamp(upperA2.title, 1),
+    corosIdInPlan: null,
+    corosProgramId: null,
+    corosEntityId: null,
+    corosPlanId: null,
+    corosHappenDay: null,
+    sessionFingerprint: fingerprint(upperA2),
+    status: "pending",
+    error: null,
+    updatedAt: now,
+  });
+  await db.insert(corosWriteJobs).values({
+    id: newId(),
+    userId,
+    workoutId: pendingPushId, // studio kinds mirror studioPushId here (schedule.ts's own doc comment)
+    kind: "create_scheduled_workout",
+    expectedContentFingerprint: "",
+    originalDate: upperA2Day,
+    destinationDate: upperA2Day,
+    payload: {
+      pushId: pendingPushId,
+      happenDay: upperA2Day,
+      name: stamp(upperA2.title, 1),
+      session: upperA2,
+      catalog: upperA2.exercises.map((e) => ({ id: e.originId, name: e.name })),
+    },
+    requestedAt: now,
+    status: "queued",
+    studioPushId: pendingPushId,
+    updatedAt: now,
+  });
+
+  // The remaining two week-2 sessions are left entirely unpushed (no row at
+  // all) — the draft grid's honest "+2 new" in the diff strip.
+
+  // lastPushSummary: one `studio_plan_pushed` audit row matching the state
+  // above — 1 create (the pending row), 1 failure (wrong_date), 1 unchanged
+  // (verified), 1 drifted THIS pass with blocked=1 to match (blocked
+  // includes drifted — see studio-push.ts's own `blocked` doc comment).
+  await db.insert(auditEvents).values({
+    id: newId(),
+    userId,
+    kind: "studio_plan_pushed",
+    detail: {
+      studioPlanId: planId,
+      planVersion: 1,
+      creates: 1,
+      deletes: 0,
+      failures: 1,
+      unchanged: 1,
+      drifted: 1,
+      blocked: 1,
+    },
+    createdAt: now,
+  });
+
+  // A little LLM usage history so the Studio's usage meter isn't empty —
+  // well under both the $2 warn and $8 cutoff thresholds (llm.ts's
+  // LLM_BUDGET), spread across the rolling 7-day window `llmBudgetStatus`
+  // reads.
+  const nowMs = Date.parse(now);
+  await db.insert(llmUsage).values([
+    {
+      id: newId(),
+      userId,
+      kind: "studio_generate",
+      model: "anthropic/claude-opus-5",
+      inputTokens: 9500,
+      outputTokens: 4100,
+      costMicros: 650_000,
+      cacheHit: false,
+      requestFingerprint: fingerprint({ fixture: "studio_generate", planId }),
+      createdAt: new Date(nowMs - 4 * 86_400_000).toISOString(),
+    },
+    {
+      id: newId(),
+      userId,
+      kind: "studio_edit",
+      model: "anthropic/claude-haiku-4.5",
+      inputTokens: 1400,
+      outputTokens: 380,
+      costMicros: 45_000,
+      cacheHit: false,
+      requestFingerprint: fingerprint({ fixture: "studio_edit_minor", planId }),
+      createdAt: new Date(nowMs - 2 * 86_400_000).toISOString(),
+    },
+    {
+      id: newId(),
+      userId,
+      kind: "studio_edit",
+      model: "anthropic/claude-opus-5", // a `major: true` edit routes to the strong model
+      inputTokens: 6800,
+      outputTokens: 2900,
+      costMicros: 405_000,
+      cacheHit: false,
+      requestFingerprint: fingerprint({ fixture: "studio_edit_major", planId }),
+      createdAt: new Date(nowMs - 1 * 86_400_000).toISOString(),
+    },
+  ]);
+}
 
 /**
  * Development fixture seeding. NEVER active silently: requires FIXTURE_MODE=1
@@ -305,6 +673,11 @@ export async function seedFixtures(db: Db, env: Env, userId: string): Promise<Se
   await reconcileCompletionStates(db, userId, prefs);
   await ensureGarden(db, userId, prefs, monday);
   const garden = await advanceGarden(db, userId, prefs);
+
+  // Plan Studio fixture world (plan-studio-design §8) — independent of the
+  // running-plan/garden simulation above, so it runs last and keyed off the
+  // same account-local `today` already computed for it.
+  await seedStudioFixtures(db, userId, today);
 
   return {
     planImported: true,
