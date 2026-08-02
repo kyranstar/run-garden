@@ -60,7 +60,7 @@ export const llmUsage = sqliteTable(
   {
     id: text("id").primaryKey(),
     userId: text("user_id").notNull(),
-    kind: text("kind").notNull(), // weekly_review | metric_explanation | workout_summary
+    kind: text("kind").notNull(), // weekly_review | metric_explanation | workout_summary | studio_generate | studio_edit
     model: text("model").notNull(),
     inputTokens: integer("input_tokens").notNull(),
     outputTokens: integer("output_tokens").notNull(),

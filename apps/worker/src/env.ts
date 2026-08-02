@@ -21,6 +21,10 @@ export interface Env {
   AI_GATEWAY_MODEL?: string;
   /** Override the gateway base URL if needed. Var. */
   AI_GATEWAY_BASE_URL?: string;
+  /** Plan Studio strong-tier model (full generate/major-revise); defaults to anthropic/claude-opus-5. Var. */
+  AI_STUDIO_MODEL_STRONG?: string;
+  /** Plan Studio cheap-tier model (minor edits); defaults to anthropic/claude-haiku-4.5. Var. */
+  AI_STUDIO_MODEL_EDIT?: string;
   /** Optional official COROS MCP bearer token for cloud reads / capability probing. */
   COROS_MCP_URL?: string;
   COROS_MCP_TOKEN?: string;

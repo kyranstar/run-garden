@@ -18,7 +18,28 @@ import { ingestActivities } from "./completion.js";
 import { loadPreferences, savePreferences } from "./calendar-sync.js";
 import { advanceGarden, ensureGarden } from "./garden-sync.js";
 import { reconcileCompletionStates } from "./reconcile-daily.js";
+import { upsertExerciseCatalog } from "./exercise-catalog.js";
 import { dailyHealth, sleepRecords } from "@rg/database";
+
+/**
+ * A small curated Plan Studio exercise catalog (plan-studio-design §4/§8).
+ * Production syncs ~382 real COROS ids via the bridge; fixture mode has no
+ * bridge device, so nothing ever populates `coros_exercises` unless seeded
+ * here — without it, `generatePlan`'s FIXTURE_MODE path has no ids to build
+ * a canned plan from (studio-llm.ts's fixture builder returns `null` on an
+ * empty catalog). The first two ids match the ones already used as fixtures
+ * in the Task 3 push-orchestration tests, for a consistent fixture world.
+ */
+const FIXTURE_EXERCISE_CATALOG = [
+  { id: "425898928110747648", name: "Back Squat" },
+  { id: "426109589008859137", name: "Bench Press" },
+  { id: "425898928110747650", name: "Deadlift" },
+  { id: "425898928110747651", name: "Overhead Press" },
+  { id: "425898928110747652", name: "Pull Up" },
+  { id: "425898928110747653", name: "Bent-Over Row" },
+  { id: "425898928110747654", name: "Romanian Deadlift" },
+  { id: "425898928110747655", name: "Plank" },
+];
 
 /**
  * Development fixture seeding. NEVER active silently: requires FIXTURE_MODE=1
@@ -96,6 +117,10 @@ export interface SeedResult {
 }
 
 export async function seedFixtures(db: Db, env: Env, userId: string): Promise<SeedResult> {
+  // Global, not per-user (coros_exercises has no userId) — upserted every
+  // seed so it's always present regardless of which fixture user ran first.
+  await upsertExerciseCatalog(db, FIXTURE_EXERCISE_CATALOG);
+
   // The fixture user simulates someone who already passed the write spike and
   // opted into COROS writes, so the demo shows the full synced flow.
   const loaded = await loadPreferences(db, userId);
