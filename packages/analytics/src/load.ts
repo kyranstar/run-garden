@@ -32,7 +32,16 @@ export function computeAcwr(
   const d28 = cutoff(today, 27);
   const acute = entries.filter((e) => e.date >= d7).reduce((s, e) => s + e.load, 0);
   const chronic = entries.filter((e) => e.date >= d28).reduce((s, e) => s + e.load, 0) / 4;
-  const acwr = chronic > 0 ? Math.round((acute / chronic) * 100) / 100 : 0;
+  if (chronic <= 0) {
+    // Only stale history: there is no recent baseline to divide by. A literal
+    // 0 here would look like a confident measurement — suppress instead.
+    return insufficient(
+      14,
+      0,
+      "The training-load ratio needs runs within the last four weeks to form a baseline.",
+    );
+  }
+  const acwr = Math.round((acute / chronic) * 100) / 100;
   return ok(
     { acwr, acute: Math.round(acute), chronic: Math.round(chronic) },
     entries.length,

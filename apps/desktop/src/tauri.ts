@@ -43,6 +43,7 @@ export interface BridgeState {
   running: boolean;
   paused: boolean;
   connected: boolean;
+  hasSavedCoros: boolean;
   deviceId: string | null;
   lastError: string | null;
   lastSnapshotAt: string | null;

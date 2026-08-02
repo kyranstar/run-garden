@@ -7,7 +7,7 @@
  * reachable thing to grow.
  */
 
-import { useMemo, useState } from "react";
+import { useLayoutEffect, useMemo, useRef, useState } from "react";
 import type { GardenPlant } from "@rg/domain";
 import { SPECIES_BY_ID } from "@rg/garden-engine";
 import { PlantSprite } from "@rg/garden-renderer";
@@ -50,18 +50,42 @@ function displayPlant(speciesId: string): GardenPlant | null {
 
 export function SpeciesSpriteCard({ speciesId, locked }: { speciesId: string; locked?: boolean }) {
   const plant = useMemo(() => displayPlant(speciesId), [speciesId]);
+  const groupRef = useRef<SVGGElement>(null);
+  const [viewBox, setViewBox] = useState<string | null>(null);
+
+  // Sprites vary wildly in extent (weeping willows spread, fungi hug the
+  // ground), so a fixed viewBox clips some of them. Measure the real bounding
+  // box once rendered and fit to it — sprites are deterministic per id, so the
+  // measurement is stable.
+  useLayoutEffect(() => {
+    const g = groupRef.current;
+    if (!g) return;
+    try {
+      const b = g.getBBox();
+      if (b.width > 0 && b.height > 0) {
+        const pad = Math.max(b.width, b.height) * 0.1 + 1;
+        setViewBox(
+          `${(b.x - pad).toFixed(1)} ${(b.y - pad).toFixed(1)} ${(b.width + 2 * pad).toFixed(1)} ${(b.height + 2 * pad).toFixed(1)}`,
+        );
+      }
+    } catch {
+      // getBBox throws off-DOM (tests) — the fallback viewBox stands.
+    }
+  }, [speciesId]);
+
   if (!plant) return null;
   const sp = SPECIES_BY_ID.get(speciesId)!;
-  // Trees are tall, flowers small — one grounded viewBox fits everything.
-  const tall = sp.category === "tree";
+  const fallback = sp.category === "tree" ? "-20 -48 40 54" : "-14 -28 28 32";
   return (
     <svg
-      viewBox={tall ? "-18 -46 36 50" : "-12 -26 24 29"}
+      viewBox={viewBox ?? fallback}
       className={`codex-sprite${locked ? " codex-sprite-locked" : ""}`}
       aria-hidden
-      preserveAspectRatio="xMidYMax meet"
+      preserveAspectRatio="xMidYMid meet"
     >
-      <PlantSprite plant={plant} animate={!locked} idPrefix={`codex-${speciesId}`} />
+      <g ref={groupRef}>
+        <PlantSprite plant={plant} animate={!locked} idPrefix={`codex-${speciesId}`} />
+      </g>
     </svg>
   );
 }

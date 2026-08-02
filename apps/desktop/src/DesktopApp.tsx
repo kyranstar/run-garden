@@ -218,8 +218,24 @@ function ConnectionPanel() {
       <h1>{PRODUCT_NAME}</h1>
       {s ? <BridgeStatusRow state={s} /> : null}
 
-      {!s?.connected ? (
+      {!s ? null : !s.connected && s.hasSavedCoros && s.lastError !== "saved_signin_failed" ? (
+        // Saved credentials exist and the auto sign-in is still running — never
+        // flash a login form at someone who is already signed in.
+        <Card title="COROS">
+          <div className="bridge-status">
+            <span className="dot dot-offline" />
+            Signing in with your saved COROS credentials…
+          </div>
+          <p className="faint">This takes a few seconds after launch.</p>
+        </Card>
+      ) : !s.connected ? (
         <Card title="Connect COROS">
+          {s.lastError === "saved_signin_failed" ? (
+            <Banner kind="warn">
+              Your saved COROS sign-in stopped working — the password may have changed. Sign in
+              again below.
+            </Banner>
+          ) : null}
           <p className="muted" style={{ marginBottom: "0.8rem" }}>
             The desktop companion reads your COROS plan and updates your training calendar. Your
             password never leaves this Mac.

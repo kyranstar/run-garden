@@ -925,7 +925,7 @@ button {
 }
 .now-chip {
   display: inline-block;
-  background: var(--accent, #4e7a5a);
+  background: var(--green);
   color: #fff;
   border-radius: 999px;
   font-size: 0.68rem;
@@ -947,7 +947,8 @@ button {
   border-radius: 10px;
   padding: 0.5rem 0.45rem 0.55rem;
   text-align: center;
-  background: color-mix(in srgb, var(--card-bg, #fff) 92%, #7aa458 8%);
+  /* A living green shelf, not a white grid. */
+  background: var(--green-soft);
 }
 .codex-sprite {
   width: 100%;
@@ -955,20 +956,28 @@ button {
   display: block;
 }
 .codex-locked {
-  background: color-mix(in srgb, var(--card-bg, #fff) 94%, #444 6%);
+  background: var(--bg-sunken);
 }
 .codex-sprite-locked {
-  filter: grayscale(1) brightness(0.35);
-  opacity: 0.55;
+  filter: grayscale(1) brightness(0.45);
+  opacity: 0.6;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) .codex-sprite-locked {
+    /* Dark silhouettes disappear on dark cards — ghost them light instead. */
+    filter: grayscale(1) brightness(1.6);
+    opacity: 0.4;
+  }
 }
 .codex-name {
   font-weight: 650;
   font-size: 0.83rem;
   margin-top: 0.2rem;
+  color: var(--ink);
 }
 .codex-sub {
   font-size: 0.74rem;
-  color: var(--muted, #667);
+  color: var(--ink-soft);
   line-height: 1.25;
 }
 .codex-toggle {
@@ -1041,7 +1050,8 @@ button {
   border-radius: 999px;
   padding: 0.18rem 0.6rem;
   font-size: 0.78rem;
-  background: color-mix(in srgb, var(--card-bg, #fff) 90%, #7aa458 10%);
+  color: var(--ink);
+  background: var(--green-soft);
 }
 .wildlife-away {
   opacity: 0.45;
@@ -1066,11 +1076,11 @@ button {
 }
 .metric-drillable:hover,
 .metric-drillable:focus-visible {
-  border-color: var(--accent, #4e7a5a);
+  border-color: var(--green);
 }
 .metric-drill-hint {
   font-size: 0.75rem;
-  color: var(--accent, #4e7a5a);
+  color: var(--green-ink);
   margin-top: 0.35rem;
 }
 .drill-runs {
@@ -1125,7 +1135,7 @@ button {
 }
 .lap-label {
   font-size: 7px;
-  fill: var(--muted, #667);
+  fill: var(--ink-faint);
 }
 .lap-ceiling {
   stroke: #a8552f;

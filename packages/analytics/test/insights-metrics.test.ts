@@ -133,3 +133,31 @@ describe("easyCeiling", () => {
     expect(zoneOf(c + 1, hrMax)).toBe(3);
   });
 });
+
+describe("acwr honesty", () => {
+  it("suppresses instead of reporting a confident 0 when all history is stale", async () => {
+    const { computeAcwr } = await import("../src/load.js");
+    // Runs exist, but all of them are older than the 28-day chronic window.
+    const stale = [
+      { date: "2026-04-01", load: 80 },
+      { date: "2026-04-10", load: 60 },
+      { date: "2026-04-20", load: 70 },
+    ];
+    const r = computeAcwr(stale, "2026-08-01");
+    expect(r.status).toBe("insufficient_data");
+  });
+
+  it("still computes a real ratio when the window has data", async () => {
+    const { computeAcwr } = await import("../src/load.js");
+    const days = [
+      { date: "2026-07-05", load: 60 },
+      { date: "2026-07-12", load: 70 },
+      { date: "2026-07-20", load: 80 },
+      { date: "2026-07-28", load: 90 },
+      { date: "2026-08-01", load: 100 },
+    ];
+    const r = computeAcwr(days, "2026-08-01");
+    expect(r.status).toBe("ok");
+    if (r.status === "ok") expect(r.value.acwr).toBeGreaterThan(0);
+  });
+});

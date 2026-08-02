@@ -189,7 +189,7 @@ const METRIC_GROUPS: Array<{ title: string; ids: string[] }> = [
   { title: "Training load & injury risk", ids: ["acwr", "ramp", "balance"] },
   { title: "Recovery & readiness", ids: ["restingHr", "hrv", "hardStack"] },
   { title: "Aerobic fitness", ids: ["easyDiscipline"] },
-  { title: "Performance", ids: ["races", "splits"] },
+  { title: "Performance", ids: ["splits"] },
 ];
 
 export function InsightsScreen() {

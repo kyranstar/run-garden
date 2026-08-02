@@ -151,6 +151,9 @@ pub struct BridgeStateDto {
     running: bool,
     paused: bool,
     connected: bool,
+    /// COROS credentials exist in the encrypted store — the UI must show
+    /// "signing you in" rather than a login form while the resume runs.
+    has_saved_coros: bool,
     device_id: Option<String>,
     last_error: Option<String>,
     last_snapshot_at: Option<String>,
@@ -163,11 +166,14 @@ pub struct BridgeStateDto {
 
 #[tauri::command]
 async fn bridge_state(state: State<'_, AppState>) -> Result<BridgeStateDto, String> {
+    let has_saved_coros =
+        creds::get(creds::K_COROS_EMAIL).is_some() && creds::get(creds::K_COROS_PASSWORD).is_some();
     let inner = state.bridge.inner.lock().await;
     Ok(BridgeStateDto {
         running: inner.stdin_is_some(),
         paused: inner.paused,
         connected: inner.connected,
+        has_saved_coros,
         device_id: inner.device_id.clone(),
         last_error: inner.last_error.clone(),
         last_snapshot_at: inner.last_snapshot_at.clone(),
@@ -420,6 +426,10 @@ async fn resume_from_keychain(bridge: &Bridge) {
         _ => return,
     };
     if bridge.authenticate(&email, &password, &region).await.is_err() {
+        // Surface the failure so the UI stops saying "signing you in" and shows
+        // the login form with a clear reason instead of hanging forever.
+        let mut inner = bridge.inner.lock().await;
+        inner.last_error = Some("saved_signin_failed".into());
         return;
     }
     if let (Some(url), Some(device_id), Some(pem)) = (

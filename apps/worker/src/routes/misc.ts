@@ -51,7 +51,6 @@ import {
   interpret,
   negativeSplit,
   pickEvidenceCard,
-  predictRaces,
   type InterpretedMetric,
   type MetricDetail,
   type MetricRunDetail,
@@ -368,7 +367,6 @@ insightRoutes.get("/", async (c) => {
   const easyRuns: Array<{ avgHr: number }> = [];
   // Identity of each easy run, in the same order — for the drilldown evidence.
   const easyRunRows: Array<(typeof acts)[number]> = [];
-  let bestRun: { distanceMeters: number; durationSeconds: number } | null = null;
   for (const a of acts) {
     const day = (a.startTimeLocal ?? a.startTime).slice(0, 10);
     loadDay.set(day, (loadDay.get(day) ?? 0) + (a.trainingLoad ?? a.durationSeconds / 60));
@@ -382,11 +380,6 @@ insightRoutes.get("/", async (c) => {
     if ((cat === "easy" || cat === "recovery" || !cat) && a.avgHeartRate) {
       easyRuns.push({ avgHr: a.avgHeartRate });
       easyRunRows.push(a);
-    }
-    if ((a.distanceMeters ?? 0) >= 3000 && a.durationSeconds > 0) {
-      const pace = a.durationSeconds / (a.distanceMeters! / 1000);
-      const bestPace = bestRun ? bestRun.durationSeconds / (bestRun.distanceMeters / 1000) : Infinity;
-      if (pace < bestPace) bestRun = { distanceMeters: a.distanceMeters!, durationSeconds: a.durationSeconds };
     }
   }
   const loadsByDay = [...loadDay.entries()].map(([date, load]) => ({ date, load }));
@@ -433,15 +426,6 @@ insightRoutes.get("/", async (c) => {
     .from(dailyHealth)
     .where(and(eq(dailyHealth.userId, userId), gte(dailyHealth.date, addDays(today, -35))));
 
-  const fmtDur = (sec: number): string => {
-    const h = Math.floor(sec / 3600);
-    const m = Math.floor((sec % 3600) / 60);
-    const s = Math.round(sec % 60);
-    return h > 0
-      ? `${h}:${String(m).padStart(2, "0")}:${String(s).padStart(2, "0")}`
-      : `${m}:${String(s).padStart(2, "0")}`;
-  };
-
   const interpreted: InterpretedMetric[] = [
     interpret("acwr", "Training load balance", computeAcwr(loadsByDay, today), (v) => ({
       value: v.acwr.toFixed(2),
@@ -463,12 +447,19 @@ insightRoutes.get("/", async (c) => {
       meaning: "How much your running time changed from last week.",
       suggestion: v.pct > 10 ? "Jumps much above ~10%/week tend to raise injury risk." : undefined,
     })),
-    interpret("balance", "Easy / hard balance", computeBalance(catSec, acts.length), (v) => ({
+    interpret("balance", "Easy vs hard balance", computeBalance(catSec, acts.length), (v) => ({
       value: `${v.easyPct}% easy`,
       band: v.easyPct >= 75 ? "healthy" : "watch",
-      range: "~80% easy",
-      meaning: `Share of running time by type: ${v.easyPct}% easy, ${v.qualityPct}% quality, ${v.longPct}% long.`,
-      suggestion: v.easyPct < 75 ? "The most durable training keeps roughly 80% of time easy." : undefined,
+      range: "aim ≈80% easy",
+      meaning:
+        `${v.easyPct}% of your running time was at easy effort, ${v.qualityPct}% was hard sessions ` +
+        `(intervals, tempo, races — "quality" in training jargon), and ${v.longPct}% was long runs. ` +
+        `Easy running isn't the lesser kind — it's the engine: it builds your aerobic base, and the ` +
+        `hard sessions only work when they sit on plenty of it.`,
+      suggestion:
+        v.easyPct < 75
+          ? "Most well-tested plans keep roughly 80% of running time easy — more easy time, not less, is usually the fix."
+          : "A classic ~80/20 split — the easy volume is doing its quiet work.",
     })),
     interpret(
       "restingHr",
@@ -504,10 +495,9 @@ insightRoutes.get("/", async (c) => {
       meaning: "Share of your easy runs whose heart rate actually stayed easy (zones 1–2).",
       suggestion: v.inEasyPct < 80 ? "Keeping easy runs genuinely easy builds your aerobic base faster." : undefined,
     })),
-    interpret("races", "Race predictions", predictRaces(bestRun), (v) => ({
-      value: `5k ${fmtDur(v.k5)} · 10k ${fmtDur(v.k10)} · HM ${fmtDur(v.half)}`,
-      meaning: "A rough estimate scaled from your fastest recent run. Real races depend on training and the day.",
-    })),
+    // Race predictions removed: a Riegel scale from one recent run was too
+    // crude to be useful — COROS's own predictor (from full training history)
+    // is the right source if this ever returns.
     interpret("splits", "Finish-faster tendency", negativeSplit(splitRuns), (v) => ({
       value: `${v.negativePct}% of runs`,
       band: v.negativePct >= 40 ? "healthy" : undefined,
