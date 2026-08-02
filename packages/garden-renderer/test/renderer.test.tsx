@@ -13,6 +13,7 @@ import {
 } from "@rg/garden-engine";
 import { conditionWord, DEFAULT_GARDEN_CONFIG } from "@rg/garden-engine";
 import { describeGarden, describePlant, GardenScene, PlantSprite } from "../src/index";
+import { moonShadowOffset } from "../src/sky";
 
 const START = "2026-03-02"; // a Monday
 
@@ -247,6 +248,30 @@ describe("sky layer", () => {
   it("dawn and midday skies differ", () => {
     const snapshot = healthySnapshot();
     expect(renderScene(snapshot, { timeOfDay: 6.5 })).not.toBe(renderScene(snapshot, { timeOfDay: 13 }));
+  });
+});
+
+describe("moonShadowOffset", () => {
+  it("full moon (0.5) slides the shadow fully clear", () => {
+    expect(moonShadowOffset(0.5)).toBe(28);
+  });
+
+  it("new moon (0) leaves the shadow dead-center", () => {
+    // toBeCloseTo (not toBe) because the formula's sign term yields -0 at
+    // p=0, which is numerically 0 but fails Object.is equality.
+    expect(moonShadowOffset(0)).toBeCloseTo(0, 5);
+  });
+
+  it("~new moon (0.999) leaves the shadow nearly centered", () => {
+    expect(Math.abs(moonShadowOffset(0.999))).toBeLessThan(0.1);
+  });
+
+  it("waxing quarter (0.25) shadows from the left", () => {
+    expect(moonShadowOffset(0.25)).toBe(-14);
+  });
+
+  it("waning quarter (0.75) shadows from the right", () => {
+    expect(moonShadowOffset(0.75)).toBe(14);
   });
 });
 

@@ -24,7 +24,7 @@ describe("lightingFor — periods and interpolation", () => {
   it("returns valid hex colors and clamped numerics at every hour", () => {
     for (let h = 0; h <= 24; h += 0.5) {
       const l = lightingFor(inputs({ hour: h }));
-      for (const c of [l.skyTop, l.skyMid, l.skyHorizon, l.sunColor, l.ambient, l.grassNear, l.grassFar, l.soil, l.hill, l.hazeColor, l.cloudColor, l.moteColor, l.foliageTint]) {
+      for (const c of [l.skyTop, l.skyMid, l.skyHorizon, l.sunColor, l.ambient, l.grassNear, l.grassFar, l.hill, l.hazeColor, l.cloudColor, l.moteColor, l.foliageTint]) {
         expect(c).toMatch(HEX);
       }
       expect(l.ambientStrength).toBeGreaterThanOrEqual(0);
@@ -150,5 +150,6 @@ describe("lightingFor — season and weather composition", () => {
     const off = lightingFor(inputs({ restMode: false }));
     expect(on.swayAmpDeg).toBeLessThan(off.swayAmpDeg);
     expect(on.beamStrength).toBeLessThanOrEqual(off.beamStrength);
+    expect(on.grassNear).not.toBe(off.grassNear);
   });
 });

@@ -61,6 +61,18 @@ function Stars({ p, light, animate }: { p: string; light: SceneLight; animate: b
   return <g data-sky="stars" pointerEvents="none">{stars}</g>;
 }
 
+/**
+ * Horizontal offset of the shadow disc that occludes the moon, as a function
+ * of moon phase (0 = new, 0.5 = full, 1 ≈ new again). At full moon the
+ * shadow slides fully clear (+28) for a clean disc; at new moon it sits
+ * dead-center (0), covering the moon entirely. Waxing (p < 0.5) shadows
+ * recede to the left as they uncover the moon; waning (p > 0.5) shadows
+ * advance from the right as they cover it back up.
+ */
+export function moonShadowOffset(p: number): number {
+  return 28 * (1 - 2 * Math.abs(p - 0.5)) * (p < 0.5 ? -1 : 1);
+}
+
 function Celestial({ p, light }: { p: string; light: SceneLight }): ReactNode {
   if (light.sunX !== null && light.sunY !== null) {
     return (
@@ -71,7 +83,7 @@ function Celestial({ p, light }: { p: string; light: SceneLight }): ReactNode {
     );
   }
   if (light.moonX !== null && light.moonY !== null) {
-    const off = n(26 * (light.moonPhaseValue * 2 - 1));
+    const off = n(moonShadowOffset(light.moonPhaseValue));
     return (
       <g data-celestial="moon" pointerEvents="none">
         <circle cx={n(light.moonX)} cy={n(light.moonY)} r={38} fill={`url(#${p}-sunglow)`} opacity={0.5} />

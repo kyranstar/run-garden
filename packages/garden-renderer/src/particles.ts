@@ -33,7 +33,7 @@ export const GUST_SCALE: Partial<Record<GardenWeatherState, number>> = {
 export function activeSystems(g: GateInputs): SystemKind[] {
   const out: SystemKind[] = ["gustFringe"];
   if (g.weather === "fresh_rain" || g.weather === "recovery_rain") out.push("rainSplash");
-  if ((g.weather === "clear_sun" || g.weather === "soft_sun") && BEAMY.includes(g.period)) out.push("pollen");
+  if ((g.weather === "clear_sun" || g.weather === "soft_sun" || g.weather === "dry_spell") && BEAMY.includes(g.period)) out.push("pollen");
   if (g.period === "dawn" || g.weather === "recovery_rain") out.push("mist");
   if ((g.weather === "light_clouds" || g.weather === "dry_spell") && DAY.includes(g.period)) out.push("cloudShadow");
   if (g.weather === "seasonal_breeze" && g.hasFlowering) out.push("petals");

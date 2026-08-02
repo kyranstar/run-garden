@@ -34,7 +34,6 @@ export interface SceneLight {
   shadowOpacity: number;
   grassNear: string;
   grassFar: string;
-  soil: string;
   hill: string;
   hazeColor: string;
   hazeStrength: number;
@@ -210,7 +209,6 @@ export function lightingFor(inp: LightingInputs): SceneLight {
 
   // Moisture-driven land ramp (existing endpoints, kept).
   const grassBase = mix("#c0ab6e", "#7aa458", clamp01(inp.moisture));
-  const soilBase = mix("#b3a084", "#8f7a5c", clamp01(inp.moisture));
   const hillBase = desaturate(mix("#b0ab7f", "#8fae86", clamp01(inp.moisture)), 0.18);
 
   const light: SceneLight = {
@@ -232,7 +230,6 @@ export function lightingFor(inp: LightingInputs): SceneLight {
     shadowOpacity: key.shadowOpacity,
     grassNear: mix(grassBase, key.ambient, key.ambientStrength * 0.6),
     grassFar: mix(mix(shade(grassBase, 1.06), key.skyHorizon, 0.3 + key.hazeStrength * 0.3), key.ambient, key.ambientStrength * 0.4),
-    soil: mix(soilBase, key.ambient, key.ambientStrength * 0.5),
     hill: mix(hillBase, key.skyHorizon, 0.45),
     hazeColor: key.skyHorizon,
     hazeStrength: key.hazeStrength,
@@ -261,7 +258,6 @@ function applyNightDarkening(l: SceneLight): SceneLight {
     ...l,
     grassNear: shade(l.grassNear, k),
     grassFar: shade(l.grassFar, k),
-    soil: shade(l.soil, k),
     hill: shade(l.hill, k),
     foliageTint: mix(l.foliageTint, "#16233f", 0.5 * l.starDensity),
     foliageTintAmount: Math.min(0.3, l.foliageTintAmount + 0.2 * l.starDensity),
@@ -397,7 +393,8 @@ function applyWeather(l: SceneLight, inp: LightingInputs): SceneLight {
       ...out,
       swayAmpDeg: out.swayAmpDeg * 0.6,
       beamStrength: out.beamStrength * 0.8,
-      ambientStrength: out.ambientStrength * 0.85,
+      grassNear: desaturate(out.grassNear, 0.08),
+      grassFar: desaturate(out.grassFar, 0.08),
     };
   }
   out.rainbow =

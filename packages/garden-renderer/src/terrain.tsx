@@ -17,7 +17,6 @@ export interface TerrainProps {
   trees: Array<{ x: number; y: number; s: number }>;
 }
 
-const BAND_TOPS = [290, 318, 372, 452];
 const BAND_CURVES = [
   "M0,290 C260,280 740,280 1000,290 L1000,560 L0,560 Z",
   "M0,318 C300,306 700,308 1000,316 L1000,560 L0,560 Z",

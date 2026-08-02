@@ -16,6 +16,8 @@ describe("activeSystems", () => {
     expect(activeSystems(gate())).not.toContain("rainSplash");
     expect(activeSystems(gate({ weather: "soft_sun", period: "morning" }))).toContain("pollen");
     expect(activeSystems(gate({ weather: "soft_sun", period: "night" }))).not.toContain("pollen");
+    expect(activeSystems(gate({ weather: "dry_spell", period: "midday" }))).toContain("pollen");
+    expect(activeSystems(gate({ weather: "dry_spell", period: "night" }))).not.toContain("pollen");
     expect(activeSystems(gate({ period: "dawn" }))).toContain("mist");
     expect(activeSystems(gate({ weather: "light_clouds" }))).toContain("cloudShadow");
     expect(activeSystems(gate({ period: "night", fireflies: true }))).toContain("fireflyGlow");
