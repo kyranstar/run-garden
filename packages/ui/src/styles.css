@@ -1203,3 +1203,7 @@ button {
 .ambient-waiting .ambient-mark {
   font-size: 3rem;
 }
+.ambient-waiting-hint {
+  font-size: 0.8rem;
+  opacity: 0.55;
+}

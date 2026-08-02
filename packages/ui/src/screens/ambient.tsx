@@ -172,6 +172,9 @@ export function AmbientGarden({ fetchGarden, onExit }: AmbientGardenProps) {
             🌿
           </span>
           <p>{everLoaded ? "Refreshing your garden…" : "Growing your garden…"}</p>
+          <p className="ambient-waiting-hint">
+            Needs the desktop app connected to the Run Garden cloud · Esc to close
+          </p>
         </div>
       )}
     </div>

@@ -40,9 +40,13 @@ fn reveal_ambient(app: &tauri::AppHandle) {
         if let Some(win) = handle.get_webview_window("ambient") {
             let _ = win.show();
             let _ = win.set_focus();
+            let _ = win.set_fullscreen(true);
             return;
         }
-        if let Err(e) = tauri::WebviewWindowBuilder::new(
+        // Built hidden and NOT fullscreen: on macOS, entering native fullscreen
+        // while the webview is still initializing races the first paint and can
+        // leave a permanently grey window. Show first, then go fullscreen.
+        match tauri::WebviewWindowBuilder::new(
             &handle,
             "ambient",
             tauri::WebviewUrl::App("index.html".into()),
@@ -50,12 +54,23 @@ fn reveal_ambient(app: &tauri::AppHandle) {
         .title("Run Garden")
         .inner_size(1280.0, 800.0)
         .decorations(false)
-        .fullscreen(true)
+        .visible(false)
         .skip_taskbar(true)
         .initialization_script("window.__RG_AMBIENT__ = true;")
         .build()
         {
-            eprintln!("ambient window build failed: {e}");
+            Ok(win) => {
+                tauri::async_runtime::spawn(async move {
+                    // Let the webview load and paint its dark backdrop…
+                    tokio::time::sleep(std::time::Duration::from_millis(600)).await;
+                    let _ = win.show();
+                    let _ = win.set_focus();
+                    // …then transition to fullscreen with content on screen.
+                    tokio::time::sleep(std::time::Duration::from_millis(250)).await;
+                    let _ = win.set_fullscreen(true);
+                });
+            }
+            Err(e) => eprintln!("ambient window build failed: {e}"),
         }
     });
 }
@@ -99,7 +114,9 @@ async fn idle_watch(
     auto_shown: Arc<AtomicBool>,
 ) {
     loop {
-        tokio::time::sleep(std::time::Duration::from_secs(15)).await;
+        // 5s so the screensaver both appears promptly and dismisses promptly
+        // when you come back (a single CoreGraphics read — effectively free).
+        tokio::time::sleep(std::time::Duration::from_secs(5)).await;
         if !enabled.load(Ordering::Relaxed) {
             continue;
         }
@@ -467,14 +484,24 @@ pub fn run() {
             // Menu-bar tray so the app stays reachable while running in the
             // background. Click the icon → menu with Open / Quit.
             let open_item = MenuItemBuilder::with_id("open", "Open Run Garden").build(app)?;
+            let ambient_item = MenuItemBuilder::with_id("ambient", "Ambient Garden").build(app)?;
             let quit_item = MenuItemBuilder::with_id("quit", "Quit Run Garden").build(app)?;
-            let menu = MenuBuilder::new(app).items(&[&open_item, &quit_item]).build()?;
+            let menu = MenuBuilder::new(app)
+                .items(&[&open_item, &ambient_item, &quit_item])
+                .build()?;
             let _tray = TrayIconBuilder::with_id("main")
                 .icon(app.default_window_icon().cloned().ok_or("no default icon")?)
                 .tooltip("Run Garden")
                 .menu(&menu)
                 .on_menu_event(|app, event| match event.id().as_ref() {
                     "open" => show_main(app),
+                    "ambient" => {
+                        // Tray-opened counts as user-opened: stays until closed.
+                        if let Some(state) = app.try_state::<AppState>() {
+                            state.ambient_auto_shown.store(false, Ordering::Relaxed);
+                        }
+                        reveal_ambient(app);
+                    }
                     "quit" => app.exit(0),
                     _ => {}
                 })
@@ -512,9 +539,10 @@ pub fn run() {
             });
 
             // Ambient-garden idle auto-show: restore the saved preference and run
-            // the background poller. Off by default (10-minute threshold).
+            // the background poller. ON by default (10-minute threshold) — it's
+            // the screensaver; the Ambient card's toggle turns it off.
             let idle_autoshow = Arc::new(AtomicBool::new(
-                creds::get(creds::K_IDLE_AUTOSHOW).as_deref() == Some("1"),
+                creds::get(creds::K_IDLE_AUTOSHOW).as_deref().map(|v| v == "1").unwrap_or(true),
             ));
             let idle_threshold_secs = Arc::new(AtomicU64::new(
                 creds::get(creds::K_IDLE_THRESHOLD)
