@@ -2,6 +2,14 @@ import type { RawCorosActivityDetail, RawCorosActivityListItem } from "../coros/
 import type { RawStravaActivity } from "../strava/normalize.js";
 
 /**
+ * COROS reports times in centiseconds at the item level too (like the detail
+ * summary), so a plain minute count needs ×100×60 to become totalTime/workoutTime.
+ */
+function centiseconds(seconds: number): number {
+  return seconds * 100;
+}
+
+/**
  * A completed threshold session as it appears from BOTH providers — the same
  * physical run recorded by a COROS watch and auto-synced to Strava.
  * startIso must be a UTC instant like "2026-08-04T14:02:05Z" (07:02 PDT).
@@ -98,6 +106,63 @@ export function fixtureStravaCompletedThreshold(
     external_id: "coros_4711.fit",
     upload_id: 987654321,
     map: { summary_polyline: "abc123polyline" },
+  };
+}
+
+/**
+ * A completed strength/lifting session (sportType 402, activity namespace):
+ * ~45 minutes, HR present, no distance or pace — the tri-discipline garden
+ * counts this on the strength clock instead of the run clock.
+ * startIso must be a UTC instant (see fixtureCorosCompletedThreshold).
+ */
+export function fixtureCorosCompletedStrength(
+  startIso: string,
+  labelId = "coros-act-4712",
+): RawCorosActivityListItem {
+  const startUnix = Math.floor(Date.parse(startIso) / 1000);
+  const durationSeconds = 2700; // 45 min
+  return {
+    labelId,
+    date: Number(startIso.slice(0, 10).replaceAll("-", "")),
+    name: "Full Body Strength",
+    sportType: 402,
+    startTime: startUnix,
+    endTime: startUnix + durationSeconds,
+    startTimezone: -28, // UTC-7 (PDT) in 15-minute units
+    totalTime: centiseconds(durationSeconds),
+    workoutTime: centiseconds(durationSeconds),
+    avgHr: 118,
+    maxHr: 142,
+    device: "COROS PACE 3",
+    calorie: 380_000, // physical cal -> 380 kcal
+  };
+}
+
+/**
+ * A completed yoga/flexibility session (sportType 904, activity namespace):
+ * ~30 minutes, HR present, no distance or pace.
+ * startIso must be a UTC instant (see fixtureCorosCompletedThreshold).
+ */
+export function fixtureCorosCompletedYoga(
+  startIso: string,
+  labelId = "coros-act-4713",
+): RawCorosActivityListItem {
+  const startUnix = Math.floor(Date.parse(startIso) / 1000);
+  const durationSeconds = 1800; // 30 min
+  return {
+    labelId,
+    date: Number(startIso.slice(0, 10).replaceAll("-", "")),
+    name: "Morning Flow",
+    sportType: 904,
+    startTime: startUnix,
+    endTime: startUnix + durationSeconds,
+    startTimezone: -28,
+    totalTime: centiseconds(durationSeconds),
+    workoutTime: centiseconds(durationSeconds),
+    avgHr: 96,
+    maxHr: 112,
+    device: "COROS PACE 3",
+    calorie: 210_000, // physical cal -> 210 kcal
   };
 }
 

@@ -42,6 +42,14 @@ jobs:
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
+      # Same gate as CI (see ci.yml): typecheck and the full test suite must
+      # be green before anything touches prod (D1 migrate, worker deploy).
+      - name: Typecheck all packages
+        run: pnpm -r typecheck
+
+      - name: Unit + integration tests (vitest)
+        run: pnpm test
+
       # The worker serves apps/web/dist via the [assets] binding, so the web
       # bundle must exist before `wrangler deploy` uploads it.
       - name: Build web app

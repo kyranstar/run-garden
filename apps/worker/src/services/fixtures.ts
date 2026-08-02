@@ -3,7 +3,9 @@ import { desktopDevices, users } from "@rg/database";
 import { addDays, fingerprint, newId, nowInstant, todayInZone, type SourceActivity } from "@rg/domain";
 import {
   FixtureTrainingProvider,
+  fixtureCorosCompletedStrength,
   fixtureCorosCompletedThreshold,
+  fixtureCorosCompletedYoga,
   fixtureStravaCompletedThreshold,
   normalizeCorosActivity,
   normalizeCorosLaps,
@@ -210,6 +212,28 @@ export async function seedFixtures(db: Db, env: Env, userId: string): Promise<Se
       normalizeStravaActivity(fixtureStravaCompletedThreshold(`${lastQualityDate}T14:02:05Z`, 99_000_001)),
     );
     lapsByProviderId[`coros-fx-rich-${lastQualityDate}`] = normalizeCorosLaps(detail) as never[];
+  }
+
+  // A strength session and a yoga session — unplanned bonus activities that
+  // exercise the tri-discipline garden's strength/yoga clocks and the balance
+  // axis. Both land on the Friday of week 7 (the plan's second-to-last full
+  // week — recent enough that the balance bars show live health instead of
+  // having fully decayed, and inside the Activity screen's most-recent
+  // window): that Friday falls on the second Friday of its two-week fixture
+  // schedule block, which the template leaves entirely unscheduled, so there
+  // is no planned run to spuriously match against.
+  const strengthYogaDate = addDays(monday, 7 * 7 + 4);
+  if (strengthYogaDate < today) {
+    const yogaItem = fixtureCorosCompletedYoga(
+      `${strengthYogaDate}T14:15:00Z`,
+      `coros-fx-yoga-${strengthYogaDate}`,
+    );
+    sources.push(normalizeCorosActivity(yogaItem));
+    const strengthItem = fixtureCorosCompletedStrength(
+      `${strengthYogaDate}T19:00:00Z`,
+      `coros-fx-strength-${strengthYogaDate}`,
+    );
+    sources.push(normalizeCorosActivity(strengthItem));
   }
 
   const ingest = await ingestActivities(db, { userId, sources, lapsByProviderId });
