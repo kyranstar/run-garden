@@ -123,6 +123,15 @@ export interface MockCorosServer {
    * template plan that reported maxIdInPlan 0 while carrying ids up to 45.
    */
   maintainsIdCounter: boolean;
+  /**
+   * Ignore the claimed `idInPlan` on a status:1 create and store the entity
+   * under an id the server picks — observed live (claimed 49, stored
+   * elsewhere), which is why recovery must be by stamp, not by id.
+   *   "offset"  — a fresh, unused id (claimed + REASSIGN_OFFSET).
+   *   "counter" — the plan's own maxIdInPlan+1, which on an unmaintained plan
+   *               COLLIDES with existing workouts. The live shape.
+   */
+  reassignsIdInPlan: "offset" | "counter" | null;
   /** Envelope result POST /training/plan/add returns (1031 = the EU rejection). */
   planAddResult: string;
   /** `data` returned when planAddResult is "0000" (documented as the planId). */
@@ -136,6 +145,9 @@ export interface MockCorosServer {
   entityByIdInPlan(idInPlan: string | number): RawCorosEntity | undefined;
   programByIdInPlan(idInPlan: string | number): RawCorosProgram | undefined;
 }
+
+/** How far a "offset"-mode reassignment moves the id away from the claim. */
+export const REASSIGN_OFFSET = 7;
 
 /** Fixed metrics /training/program/calculate returns for a hand-built program. */
 const CALCULATED_DURATION = 1234;
@@ -262,6 +274,7 @@ export function mockCorosServer(opts: { baseMonday?: string } = {}): MockCorosSe
     addSilentlyFails: false,
     forcePageSize: null,
     maintainsIdCounter: true,
+    reassignsIdInPlan: null,
     planAddResult: "1031", // "Parameter input error" — the one EU attempt on record
     planAddData: null,
     planAddMaterializes: false,
@@ -325,19 +338,37 @@ export function mockCorosServer(opts: { baseMonday?: string } = {}): MockCorosSe
       const submittedProgram = body.programs?.[0];
       if (!submitted || !submittedProgram) return envelope("1031");
       // idInPlan is a plan-scoped unique key: a create onto an occupied slot
-      // is rejected, it does not silently overwrite. [inferred]
-      if (schedule.entities.some((e) => String(e.idInPlan) === String(vo.id))) {
+      // is rejected, it does not silently overwrite. [inferred] Skipped when
+      // the server allocates the id itself.
+      if (
+        server.reassignsIdInPlan === null &&
+        schedule.entities.some((e) => String(e.idInPlan) === String(vo.id))
+      ) {
         return envelope("1031");
       }
       serverIdCounter += 1;
       const entity = structuredClone(submitted);
-      entity.id = `sv-entity-${serverIdCounter}`;
       const program = structuredClone(submittedProgram);
+      let storedId = Number(vo.id);
+      if (server.reassignsIdInPlan !== null) {
+        storedId =
+          server.reassignsIdInPlan === "offset"
+            ? Number(vo.id) + REASSIGN_OFFSET
+            : Number(schedule.maxIdInPlan ?? 0) + 1;
+        entity.idInPlan = String(storedId);
+        entity.planProgramId = String(storedId);
+        program.idInPlan = String(storedId);
+        if (server.reassignsIdInPlan === "counter") {
+          // The live shape: the counter ticks, but never catches up to reality.
+          schedule.maxIdInPlan = Number(schedule.maxIdInPlan ?? 0) + 1;
+        }
+      }
+      entity.id = `sv-entity-${serverIdCounter}`;
       program.id = `sv-program-${serverIdCounter}`;
       schedule.entities.push(entity);
       schedule.programs.push(program);
-      if (server.maintainsIdCounter) {
-        schedule.maxIdInPlan = Math.max(Number(schedule.maxIdInPlan ?? 0), Number(vo.id));
+      if (server.maintainsIdCounter && server.reassignsIdInPlan !== "counter") {
+        schedule.maxIdInPlan = Math.max(Number(schedule.maxIdInPlan ?? 0), storedId);
       }
       return envelope("0000");
     }
@@ -347,9 +378,12 @@ export function mockCorosServer(opts: { baseMonday?: string } = {}): MockCorosSe
       // A delete is scoped to (planId, idInPlan) — an id aimed at the wrong
       // plan removes nothing, and the envelope still reads 0000.
       const wantsPlan = vo.planId != null && vo.planId !== "";
+      const wantsProgram = vo.planProgramId != null && vo.planProgramId !== "";
       const matches = (e: RawCorosEntity): boolean =>
         String(e.idInPlan) === String(vo.id) &&
-        (!wantsPlan || String(e.planId ?? "") === String(vo.planId));
+        (!wantsPlan || String(e.planId ?? "") === String(vo.planId)) &&
+        (!wantsProgram ||
+          String(e.planProgramId ?? e.idInPlan) === String(vo.planProgramId));
       const removedIds = new Set(schedule.entities.filter(matches).map((e) => String(e.idInPlan)));
       schedule.entities = schedule.entities.filter((e) => !matches(e));
       schedule.programs = schedule.programs.filter((p) => !removedIds.has(String(p.idInPlan)));

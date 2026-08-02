@@ -12,11 +12,11 @@
 
 import { mkdirSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
-import { createInterface } from "node:readline/promises";
 import { fileURLToPath } from "node:url";
 import { addDays } from "@rg/domain";
 import { normalizeCorosSchedule, type SourcePlannedWorkout } from "@rg/providers";
 import { CorosClient, type CorosRegion } from "./coros-client.js";
+import { createPrompter } from "./prompt.js";
 import { redactUserId, stripUserIds } from "./sanitize.js";
 import { loadNameResolver } from "./snapshot.js";
 import { executeMoveJob, type MoveJobResult } from "./write-executor.js";
@@ -58,7 +58,8 @@ function reportPath(date: string): string {
 
 async function main(): Promise<void> {
   const today = new Date().toISOString().slice(0, 10);
-  const rl = createInterface({ input: process.stdin, output: process.stdout });
+  const prompter = createPrompter();
+  const rl = prompter.rl;
   const report: SpikeReport = { kind: "coros-write-spike", date: today, region: "us", succeeded: false };
   let client: CorosClient | null = null;
   let movedOut = false;
@@ -74,9 +75,10 @@ async function main(): Promise<void> {
   console.log("──────────────────────────────────────────────────────────────");
 
   try {
-    const email = (await rl.question("COROS email: ")).trim();
-    const password = await rl.question("COROS password: ");
-    const regionInput = (await rl.question("Region [us/eu/cn] (default us): ")).trim() || "us";
+    const email = (await prompter.ask("COROS email: ")).trim();
+    const password = await prompter.askHidden("COROS password: ");
+    const regionInput =
+      (await prompter.ask("Region [us/eu/cn] (default us): ")).trim() || "us";
     if (!["us", "eu", "cn"].includes(regionInput)) throw new Error("invalid region");
     const region = regionInput as CorosRegion;
     report.region = region;

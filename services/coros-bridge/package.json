@@ -10,7 +10,8 @@
     "typecheck": "tsc --noEmit",
     "start": "tsx src/main.ts",
     "spike": "tsx src/spike.ts",
-    "spike:create": "tsx src/spike-create.ts"
+    "spike:create": "tsx src/spike-create.ts",
+    "spike:cleanup": "tsx src/spike-create.ts --cleanup-only"
   },
   "dependencies": {
     "@rg/domain": "workspace:*",

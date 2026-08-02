@@ -174,6 +174,39 @@ write clobbers someone's workout.
 Also observed live: `idInPlan` identifies the **program-in-plan, not the
 entity** — several entities may share one (ids 2, 8 and 38 each appeared twice).
 
+### Recovery: by stamp, never by id
+
+The second live run created all three workouts successfully (`0000`, all three
+materialized) — and then **could not find them**, because the server **stored
+them under a different `idInPlan` than the one claimed**. Nothing got registered
+for cleanup, so three workouts were left on the account.
+
+So the spike never uses an id as a recovery key. It stamps every program and
+entity it creates with `RG SPIKE — SAFE TO DELETE …` and finds its own work by
+**(stamp, date)**, then deletes using the ids the *server* reported. Claimed and
+server-assigned ids are both recorded (`idInPlan`, `serverIdInPlan`).
+
+Because `idInPlan` is shared legitimately, the stamp rules are asymmetric on
+purpose: the **entity's** name proves ownership on its own, but the
+**program's** name only counts when exactly one program carries that
+`idInPlan` — otherwise a stamped program sitting beside a real workout's entity
+could make a real workout look like ours.
+
+A delete is addressed by `(planId, idInPlan, planProgramId)`. If an unstamped
+workout shares that whole triple, the server cannot tell them apart either, so
+the spike **does not send the delete** — it reports the leftover for manual
+removal instead. Every delete is followed by a read that checks both that our
+stamp is gone *and* that the unstamped count is unchanged.
+
+### Cleaning up after a bad run
+
+`pnpm coros:spike:cleanup` (`--cleanup-only`) logs in, scans
+`today … today+60` for stamped workouts, deletes them under the same guards,
+verifies each is gone, writes the report and exits. It creates nothing. The
+full spike runs the same sweep as its **first** step, before taking the
+baseline snapshot — so a previous run's leftovers are cleared and the baseline
+is the clean state the account is returned to.
+
 ### Ownership: the rule that makes deletion safe
 
 `idInPlan` is a plan-scoped counter, **not** an identity — it can collide with

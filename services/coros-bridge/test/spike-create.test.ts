@@ -19,7 +19,12 @@ import {
   type CreateSpikeHandle,
   type CreateSpikeReport,
 } from "../src/spike-create.js";
-import { mockCorosServer, nextMonday, type MockCorosServer } from "./mock-coros-server.js";
+import {
+  mockCorosServer,
+  nextMonday,
+  REASSIGN_OFFSET,
+  type MockCorosServer,
+} from "./mock-coros-server.js";
 
 const noop = (): void => undefined;
 const TODAY = new Date().toISOString().slice(0, 10);
@@ -594,7 +599,7 @@ describe("runCreateSpike — ownership guard (C1)", () => {
     expect(lines.join("\n")).toContain("Legacy Tempo");
   });
 
-  it("refuses to register a foreign workout that appears in its slot mid-write", async () => {
+  it("never even considers a foreign workout that appears in its claimed slot", async () => {
     const { server } = await setup();
     // The slot is empty at the pre-write read, then a foreign workout lands in
     // it before the read-after-write (the race the reviewer flagged).
@@ -622,13 +627,18 @@ describe("runCreateSpike — ownership guard (C1)", () => {
       log: (line) => lines.push(line),
     });
 
+    // Recovery is by stamp, so a foreign workout landing on the claimed id is
+    // simply never a candidate: it is not registered, not deleted, and its
+    // title never reaches the report.
     expect(server.entityByIdInPlan("21")?.name).toBe("Someone Else's Workout");
-    expect(report.tests.strength.notes.join(" ")).toContain("not registered, not deleted");
-    expect(report.abortReason).toContain("did not create");
+    expect(report.tests.strength.notes.join(" ")).toContain("nothing materialized");
+    expect(report.tests.strength.serverIdInPlan).toBeUndefined();
     expect(report.overall.leftovers).toEqual([]);
-    // Title stays out of the committed report, but reaches the terminal.
     expect(JSON.stringify(report)).not.toContain("Someone Else's Workout");
-    expect(lines.join("\n")).toContain("Someone Else's Workout");
+    // The account did change (something appeared that we did not create), and
+    // the spike says so rather than claiming a clean run.
+    expect(report.overall.baselineRestored).toBe(false);
+    expect(lines.length).toBeGreaterThan(0);
   });
 
   it("records accepted-but-not-visible without registering anything", async () => {
@@ -724,7 +734,7 @@ describe("runCreateSpike — abort / SIGINT drain (I1)", () => {
     });
 
     expect(report.overall.leftovers).toHaveLength(1);
-    expect(report.overall.leftovers[0]).toContain("idInPlan=21");
+    expect(report.overall.leftovers[0]).toContain("server idInPlan 21");
     expect(report.tests.strength.cleanedUp).toBe(false);
     expect(report.overall.baselineRestored).toBe(false);
     expect(report.succeeded).toBe(false);
@@ -761,7 +771,8 @@ describe("runCreateSpike — failure discipline", () => {
     expect(report.tests.strength.verified).toBe(true);
     expect(report.tests.strength.cleanedUp).toBe(false);
     expect(report.overall.leftovers).toHaveLength(3);
-    expect(report.overall.leftovers.join(" ")).toContain("idInPlan=21");
+    expect(report.overall.leftovers.join(" ")).toContain(`"${SPIKE_NAME} strength"`);
+    expect(report.overall.leftovers.join(" ")).toContain("server idInPlan 21");
     expect(report.overall.baselineRestored).toBe(false);
     expect(report.succeeded).toBe(false);
     // The report tells the truth: the three spike workouts really are still there.
@@ -794,8 +805,8 @@ describe("runCreateSpike — failure discipline", () => {
     expect(report.succeeded).toBe(false);
     // Both created workouts are named as leftovers the user must remove.
     expect(report.overall.leftovers).toHaveLength(2);
-    expect(report.overall.leftovers.join(" ")).toContain("idInPlan=21");
-    expect(report.overall.leftovers.join(" ")).toContain("idInPlan=22");
+    expect(report.overall.leftovers.join(" ")).toContain("server idInPlan 21");
+    expect(report.overall.leftovers.join(" ")).toContain("server idInPlan 22");
   });
 });
 
@@ -861,5 +872,171 @@ describe("runCreateSpike — plan/add unexpected success (C2/I3)", () => {
     for (const test of ["strength", "run", "bike"] as const) {
       expect(report.tests[test].cleanedUp).toBe(true);
     }
+  });
+});
+
+describe("runCreateSpike — server reassigns idInPlan (stamp recovery)", () => {
+  it("recovers created workouts by stamp when the server renumbers them", async () => {
+    const { server, client } = await setup();
+    server.state.schedule = liveShapeSchedule();
+    server.maintainsIdCounter = false;
+    server.reassignsIdInPlan = "offset"; // stores at claimed + 7, ignoring our claim
+    const before = scheduleIds(server);
+    const lines: string[] = [];
+
+    const report = await runCreateSpike(client, {
+      today: TODAY,
+      log: (line) => lines.push(line),
+    });
+
+    // Claimed vs stored are different at every step — id-based recovery would
+    // have found nothing, which is exactly what happened on the live account.
+    expect(report.tests.strength.idInPlan).toBe(46);
+    expect(report.tests.strength.serverIdInPlan).toBe(String(46 + REASSIGN_OFFSET));
+    expect(report.tests.run.serverIdInPlan).not.toBe(String(report.tests.run.idInPlan));
+    expect(report.tests.bike.serverIdInPlan).not.toBe(String(report.tests.bike.idInPlan));
+    expect(report.tests.strength.notes.join(" ")).toContain("server REASSIGNED idInPlan");
+    expect(lines.join("\n")).toContain("server reassigned idInPlan");
+
+    // Recovery by stamp still verifies the structure…
+    expect(report.tests.strength.verified).toBe(true);
+    expect(report.tests.run.verified).toBe(true);
+    expect(report.tests.bike.verified).toBe(true);
+    // …and, crucially, cleanup finds them and the account is restored.
+    for (const test of ["strength", "run", "bike"] as const) {
+      expect(report.tests[test].cleanedUp).toBe(true);
+    }
+    expect(report.overall.leftovers).toEqual([]);
+    expect(report.overall.baselineRestored).toBe(true);
+    expect(report.succeeded).toBe(true);
+    expect(scheduleIds(server)).toEqual(before);
+  });
+
+  it("refuses to delete when renumbering makes the delete address ambiguous", async () => {
+    const { server, client } = await setup();
+    server.state.schedule = liveShapeSchedule();
+    server.maintainsIdCounter = false;
+    // The live shape taken to its worst case: the server files our workouts
+    // under ids 1, 2, 3 — which real workouts in this plan already use.
+    server.reassignsIdInPlan = "counter";
+    const before = scheduleIds(server);
+
+    const report = await runCreateSpike(client, { today: TODAY, log: noop });
+
+    expect(report.tests.strength.serverIdInPlan).toBe("1");
+    expect(report.tests.strength.verified).toBe(true); // creation itself worked
+
+    // A delete addressed at (planId, idInPlan, planProgramId) would take the
+    // user's workout too, so none is sent. Loudly reported instead.
+    expect(report.overall.leftovers).toHaveLength(3);
+    expect(report.overall.leftovers.join(" ")).toContain("delete address");
+    expect(report.overall.leftovers.join(" ")).toContain("remove it by hand");
+    expect(report.overall.baselineRestored).toBe(false);
+    expect(report.succeeded).toBe(false);
+
+    // Every original workout is still there, untouched.
+    expect(scheduleIds(server)).toEqual([...before, "1", "2", "3"].sort());
+    for (const id of before) expect(server.entityByIdInPlan(id)).toBeDefined();
+  });
+});
+
+describe("runCreateSpike — stray sweep + cleanup-only mode", () => {
+  /** Two leftovers from an earlier run, plus a real workout beside them. */
+  function seedStrays(server: MockCorosServer): void {
+    server.state.schedule.entities!.push(
+      {
+        id: "70000000000000901",
+        idInPlan: "90",
+        planId: FIXTURE_PLAN_ID,
+        planProgramId: "90",
+        happenDay: corosDay(addDaysIso(TODAY, 21)),
+        name: `${SPIKE_NAME} strength`,
+      },
+      {
+        id: "70000000000000902",
+        idInPlan: "91",
+        planId: FIXTURE_PLAN_ID,
+        planProgramId: "91",
+        happenDay: corosDay(addDaysIso(TODAY, 22)),
+        name: `${SPIKE_NAME} run`,
+      },
+      {
+        id: "70000000000000903",
+        idInPlan: "92",
+        planId: FIXTURE_PLAN_ID,
+        planProgramId: "92",
+        happenDay: corosDay(addDaysIso(TODAY, 25)),
+        name: "Race Simulation",
+      },
+    );
+  }
+
+  it("cleanup-only removes stamped strays and creates nothing", async () => {
+    const { server, client } = await setup();
+    seedStrays(server);
+    const lines: string[] = [];
+
+    const report = await runCreateSpike(client, {
+      today: TODAY,
+      cleanupOnly: true,
+      log: (line) => lines.push(line),
+    });
+
+    expect(report.mode).toBe("cleanup-only");
+    expect(report.strays?.found).toHaveLength(2);
+    expect(report.strays?.removed).toHaveLength(2);
+    expect(report.strays?.failed).toEqual([]);
+    expect(report.strays?.windowStart).toBe(TODAY);
+    expect(report.strays?.windowEnd).toBe(addDaysIso(TODAY, 60));
+
+    // Both strays gone; the real workout beside them untouched.
+    expect(server.entityByIdInPlan("90")).toBeUndefined();
+    expect(server.entityByIdInPlan("91")).toBeUndefined();
+    expect(server.entityByIdInPlan("92")?.name).toBe("Race Simulation");
+    // Exactly two writes: the two deletes. Nothing was created.
+    expect(server.counts.scheduleWrites).toBe(2);
+    for (const test of Object.values(report.tests)) {
+      expect(test.attempted).toBe(false);
+      expect(test.notes.join(" ")).toContain("cleanup-only");
+    }
+    expect(report.overall.leftovers).toEqual([]);
+    expect(lines.join("\n")).toContain(`"${SPIKE_NAME} strength" on ${addDaysIso(TODAY, 21)}`);
+  });
+
+  it("a full run sweeps earlier strays before creating anything", async () => {
+    const { server, client } = await setup();
+    seedStrays(server);
+
+    const report = await runCreateSpike(client, { today: TODAY, log: noop });
+
+    expect(report.mode).toBe("full");
+    expect(report.strays?.removed).toHaveLength(2);
+    // The strays occupied the very dates the spike writes to; once swept, the
+    // creates land and verify cleanly.
+    expect(report.tests.strength.verified).toBe(true);
+    expect(report.tests.run.verified).toBe(true);
+    expect(report.overall.baselineRestored).toBe(true);
+    expect(report.succeeded).toBe(true);
+    expect(server.entityByIdInPlan("92")?.name).toBe("Race Simulation");
+    expect(scheduleIds(server)).not.toContain("90");
+  });
+
+  it("reports a stray it cannot remove instead of claiming success", async () => {
+    const { server, client } = await setup();
+    seedStrays(server);
+    server.deleteRejectResult = "1001";
+
+    const report = await runCreateSpike(client, {
+      today: TODAY,
+      cleanupOnly: true,
+      log: noop,
+    });
+
+    expect(report.strays?.removed).toEqual([]);
+    expect(report.strays?.failed).toHaveLength(2);
+    expect(report.overall.leftovers).toHaveLength(2);
+    expect(report.overall.baselineRestored).toBe(false);
+    expect(report.succeeded).toBe(false);
+    expect(server.entityByIdInPlan("90")).toBeDefined();
   });
 });
