@@ -133,6 +133,7 @@ export class CloudSync {
       activities: snapshot.activities,
       lapsByProviderId: snapshot.lapsByProviderId,
       health: snapshot.health,
+      skippedSportTypes: snapshot.skippedSportTypes,
     });
     this.logger("[coros-bridge] cloud sync pushed snapshot");
   }

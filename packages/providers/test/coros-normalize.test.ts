@@ -8,6 +8,11 @@ import {
   normalizeCorosLaps,
   normalizeCorosSchedule,
 } from "../src/coros/normalize.js";
+import {
+  corosSportName,
+  COROS_GARDEN_SPORT_TYPES,
+  type RawCorosActivityListItem,
+} from "../src/coros/raw-types.js";
 import { fixtureRawSchedule, FIXTURE_PLAN_ID } from "../src/fixtures/coros-schedule.js";
 import { fixtureCorosCompletedThreshold } from "../src/fixtures/activities.js";
 
@@ -142,5 +147,46 @@ describe("COROS activity normalization (contract)", () => {
     expect(laps[0]).toMatchObject({ lapIndex: 1, durationSeconds: 900, distanceMeters: 2500 });
     expect(laps[1]!.avgPaceSecPerKm).toBe(197);
     expect(laps.every((l) => l.splitType === "workout")).toBe(true);
+  });
+
+  it("normalizes a yoga session (904) without distance or pace", () => {
+    const item: RawCorosActivityListItem = {
+      labelId: "coros-yoga-1",
+      date: 20260805,
+      name: "Morning Flow",
+      sportType: 904,
+      startTime: Math.floor(Date.parse("2026-08-05T13:00:00Z") / 1000),
+      totalTime: 180_000, // centiseconds → 1800s
+      workoutTime: 180_000,
+      avgHr: 98,
+      calorie: 220_000,
+    };
+    const a = normalizeCorosActivity(item);
+    expect(a.sport).toBe("yoga");
+    expect(a.distanceMeters).toBeUndefined();
+    expect(a.avgPaceSecPerKm).toBeUndefined();
+    expect(a.durationSeconds).toBe(1800);
+  });
+});
+
+describe("corosSportName / COROS_GARDEN_SPORT_TYPES", () => {
+  it("admits run/strength/yoga sportTypes into the garden import set", () => {
+    expect(COROS_GARDEN_SPORT_TYPES.get(100)).toBe("run");
+    expect(COROS_GARDEN_SPORT_TYPES.get(101)).toBe("run");
+    expect(COROS_GARDEN_SPORT_TYPES.get(102)).toBe("run");
+    expect(COROS_GARDEN_SPORT_TYPES.get(103)).toBe("run");
+    expect(COROS_GARDEN_SPORT_TYPES.get(402)).toBe("strength");
+    expect(COROS_GARDEN_SPORT_TYPES.get(403)).toBe("yoga");
+    expect(COROS_GARDEN_SPORT_TYPES.get(904)).toBe("yoga");
+    // Bike stays excluded — no entry in the admitted map.
+    expect(COROS_GARDEN_SPORT_TYPES.has(200)).toBe(false);
+  });
+
+  it("names known sportTypes and falls back to coros_<n> for unknowns", () => {
+    expect(corosSportName(100)).toBe("run");
+    expect(corosSportName(402)).toBe("strength");
+    expect(corosSportName(403)).toBe("yoga");
+    expect(corosSportName(904)).toBe("yoga");
+    expect(corosSportName(555)).toBe("coros_555");
   });
 });

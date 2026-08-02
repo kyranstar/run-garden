@@ -147,6 +147,28 @@ export function mockCorosServer(opts: { baseMonday?: string } = {}): MockCorosSe
     totalTime: 1800,
     workoutTime: 1800,
   };
+  const strengthActivity: RawCorosActivityListItem = {
+    labelId: "act-strength-1",
+    date: corosDay(activityDay),
+    name: "Full Body Strength",
+    sportType: 402,
+    startTime: activityStart + 10_000,
+    totalTime: 2700,
+    workoutTime: 2700,
+    avgHr: 120,
+    calorie: 350_000,
+  };
+  const yogaActivity: RawCorosActivityListItem = {
+    labelId: "act-yoga-1",
+    date: corosDay(activityDay),
+    name: "Evening Flow",
+    sportType: 904,
+    startTime: activityStart + 20_000,
+    totalTime: 1800,
+    workoutTime: 1800,
+    avgHr: 95,
+    calorie: 180_000,
+  };
 
   const server: MockCorosServer = {
     email,
@@ -155,7 +177,7 @@ export function mockCorosServer(opts: { baseMonday?: string } = {}): MockCorosSe
     baseMonday,
     state: {
       schedule: fixtureRawSchedule(baseMonday),
-      activities: [runActivity, bikeActivity],
+      activities: [runActivity, bikeActivity, strengthActivity, yogaActivity],
       details: {
         "act-run-1": {
           summary: {

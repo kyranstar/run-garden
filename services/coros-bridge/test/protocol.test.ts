@@ -128,12 +128,26 @@ describe("NDJSON protocol", () => {
     expect(strides?.stages.some((s) => s.label === "Warm Up")).toBe(true);
     expect(server.counts.localeFetches).toBe(1);
 
-    // Activities: run family only, with laps keyed by labelId.
-    expect(snapshot.activities.map((a) => a.providerActivityId)).toEqual(["act-run-1"]);
+    // Activities: run family plus admitted strength/yoga, with laps keyed by labelId.
+    expect(snapshot.activities.map((a) => a.providerActivityId)).toEqual([
+      "act-run-1",
+      "act-strength-1",
+      "act-yoga-1",
+    ]);
     expect(snapshot.activities[0]?.sport).toBe("run");
     expect(snapshot.activities[0]?.distanceMeters).toBe(10000);
+    expect(
+      snapshot.activities.find((a) => a.providerActivityId === "act-strength-1")?.sport,
+    ).toBe("strength");
+    expect(snapshot.activities.find((a) => a.providerActivityId === "act-yoga-1")?.sport).toBe(
+      "yoga",
+    );
     expect(snapshot.lapsByProviderId["act-run-1"]?.length).toBe(2);
     expect(snapshot.lapsByProviderId["act-run-1"]?.[0]?.durationSeconds).toBe(300);
+
+    // Bike (200) is still excluded, but now counted rather than silently dropped.
+    expect(snapshot.activities.some((a) => a.providerActivityId === "act-bike-1")).toBe(false);
+    expect(snapshot.skippedSportTypes).toEqual({ "200": 1 });
 
     // Health mapping: rhr/t7d/tiredRateNew/avgSleepHrv.
     expect(snapshot.health.length).toBe(2);

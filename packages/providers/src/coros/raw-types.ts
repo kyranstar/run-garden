@@ -151,11 +151,27 @@ export interface RawCorosActivityDetail {
 /** Run-family activity sportType codes (activity namespace). */
 export const COROS_RUN_SPORT_TYPES = new Set([100, 101, 102, 103]);
 
+/**
+ * Activity sportType codes the bridge admits into the tri-discipline garden
+ * import (activity namespace). Anything not in this map is skipped by
+ * `buildSnapshot` and tallied into `skippedSportTypes` instead.
+ */
+export const COROS_GARDEN_SPORT_TYPES: ReadonlyMap<number, "run" | "strength" | "yoga"> = new Map([
+  [100, "run"],
+  [101, "run"],
+  [102, "run"],
+  [103, "run"],
+  [402, "strength"],
+  [403, "yoga"],
+  [904, "yoga"],
+]);
+
 export function corosSportName(sportType: number): string {
   if (COROS_RUN_SPORT_TYPES.has(sportType)) return "run";
   if (sportType >= 200 && sportType < 300) return "bike";
   if (sportType >= 300 && sportType < 400) return "swim";
   if (sportType === 402) return "strength";
+  if (sportType === 403 || sportType === 904) return "yoga";
   if (sportType === 400 || sportType === 401) return "cardio";
   if (sportType === 900) return "walk";
   return `coros_${sportType}`;

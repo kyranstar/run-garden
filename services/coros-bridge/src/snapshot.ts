@@ -6,7 +6,7 @@
 
 import { fingerprint, type DailyHealth, type SourceActivity } from "@rg/domain";
 import {
-  COROS_RUN_SPORT_TYPES,
+  COROS_GARDEN_SPORT_TYPES,
   corosDayToLocalDate,
   normalizeCorosActivity,
   normalizeCorosLaps,
@@ -55,6 +55,8 @@ export interface BridgeSnapshot {
   activities: SourceActivity[];
   lapsByProviderId: Record<string, NormalizedLap[]>;
   health: DailyHealth[];
+  /** Counts of sportType codes not admitted into the garden import, by code. */
+  skippedSportTypes?: Record<string, number>;
 }
 
 export async function buildSnapshot(
@@ -80,12 +82,17 @@ export async function buildSnapshot(
   // and the raw objects carry COROS-internal user ids.
   const workouts = normalized.workouts.map(({ raw: _raw, ...workout }) => workout);
 
-  // ── Completed activities (run family), with laps ──────────────────────────
+  // ── Completed activities (run/strength/yoga), with laps ────────────────────
   const items = await client.getActivities(rangeStart, rangeEnd);
   const activities: SourceActivity[] = [];
   const lapsByProviderId: Record<string, NormalizedLap[]> = {};
+  const skipped: Record<string, number> = {};
   for (const item of items) {
-    if (!COROS_RUN_SPORT_TYPES.has(item.sportType)) continue;
+    if (!COROS_GARDEN_SPORT_TYPES.has(item.sportType)) {
+      const key = String(item.sportType);
+      skipped[key] = (skipped[key] ?? 0) + 1;
+      continue;
+    }
     let detail: RawCorosActivityDetail | undefined;
     try {
       detail = await client.getActivityDetail(item.labelId, item.sportType);
@@ -115,7 +122,14 @@ export async function buildSnapshot(
       return { ...base, contentFingerprint: fingerprint(base) };
     });
 
-  return { plan, workouts, activities, lapsByProviderId, health };
+  return {
+    plan,
+    workouts,
+    activities,
+    lapsByProviderId,
+    health,
+    ...(Object.keys(skipped).length > 0 ? { skippedSportTypes: skipped } : {}),
+  };
 }
 
 function numberOrUndefined(value: unknown): number | undefined {

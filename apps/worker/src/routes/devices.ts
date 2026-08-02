@@ -151,6 +151,9 @@ const bridgeSyncSchema = z.object({
   activities: z.array(sourceActivitySchema).optional(),
   lapsByProviderId: z.record(z.array(z.any())).optional(),
   health: z.array(z.any()).optional(),
+  // Counts of sportType codes the bridge saw but did not admit (e.g. bike),
+  // keyed by sportType string. Optional so older bridges stay valid.
+  skippedSportTypes: z.record(z.number()).optional(),
 });
 
 deviceRoutes.post("/bridge/sync", requireDevice, async (c) => {
@@ -159,6 +162,17 @@ deviceRoutes.post("/bridge/sync", requireDevice, async (c) => {
   const parsed = bridgeSyncSchema.safeParse(await c.req.json());
   if (!parsed.success) return c.json({ error: "invalid_request" }, 400);
   const body = parsed.data;
+  if (body.skippedSportTypes && Object.keys(body.skippedSportTypes).length > 0) {
+    // Surfaces unmapped/unadmitted COROS sportType codes for ops discovery.
+    console.warn(
+      JSON.stringify({
+        level: "warn",
+        msg: "coros: skipped sportTypes",
+        userId,
+        skippedSportTypes: body.skippedSportTypes,
+      }),
+    );
+  }
   const runId = await startSyncRun(db, "coros_read", userId, c.get("deviceId"));
 
   try {

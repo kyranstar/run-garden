@@ -74,10 +74,15 @@ describe("CorosClient reads", () => {
 
   it("paginates /activity/query via totalPage", async () => {
     const { server, client } = makeClient();
-    server.forcePageSize = 1; // 2 fixture activities → 2 pages
+    server.forcePageSize = 1; // 4 fixture activities → 4 pages
     await client.login(server.email, server.password);
     const activities = await client.getActivities("2026-08-01", "2026-08-31");
-    expect(activities.map((a) => a.labelId).sort()).toEqual(["act-bike-1", "act-run-1"]);
+    expect(activities.map((a) => a.labelId).sort()).toEqual([
+      "act-bike-1",
+      "act-run-1",
+      "act-strength-1",
+      "act-yoga-1",
+    ]);
   });
 
   it("fetches activity detail form-encoded and daily metrics", async () => {
