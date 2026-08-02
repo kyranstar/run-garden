@@ -1,7 +1,7 @@
 import { useMemo, useState } from "react";
 import { Link } from "react-router-dom";
 import { useQuery } from "@tanstack/react-query";
-import { api } from "@rg/api-client";
+import { api, type DisciplineBalance } from "@rg/api-client";
 import {
   GARDEN_CONDITION_LABELS,
   type GardenConditionWord,
@@ -152,6 +152,76 @@ function DiversityStrip({ snapshot }: { snapshot: GardenSnapshot }) {
   );
 }
 
+type DisciplineKey = "run" | "strength" | "yoga";
+
+const BALANCE_BARS: Array<{ key: DisciplineKey; label: string }> = [
+  { key: "run", label: "Run" },
+  { key: "strength", label: "Lift" },
+  { key: "yoga", label: "Yoga" },
+];
+
+const WEAKEST_COPY: Record<DisciplineKey, string> = {
+  run: "The garden misses your runs.",
+  strength: "The garden misses your lifting.",
+  yoga: "The garden misses your yoga.",
+};
+
+function healthDescriptor(health: number): string {
+  if (health >= 2 / 3) return "healthy";
+  if (health >= 1 / 3) return "fading";
+  return "wilting";
+}
+
+function daysCaption(days: number): string {
+  return days === 0 ? "today" : `${days} d ago`;
+}
+
+/** The discipline with the lowest health; ties broken run > strength > yoga. */
+function weakestDiscipline(balance: DisciplineBalance): DisciplineKey {
+  let weakest: DisciplineKey = "run";
+  for (const { key } of BALANCE_BARS) {
+    if (balance[key].health < balance[weakest].health) weakest = key;
+  }
+  return weakest;
+}
+
+/** Three mini-bars for run/lift/yoga health, plus a gentle nudge when one lags. */
+function BalanceStrip({ balance }: { balance: DisciplineBalance }) {
+  return (
+    <div className="balance-strip">
+      <div className="balance-bars">
+        {BALANCE_BARS.map(({ key, label }) => {
+          const { days, health } = balance[key];
+          return (
+            <div
+              key={key}
+              className="balance-bar"
+              role="img"
+              aria-label={`${label}: ${healthDescriptor(health)}, last ${label.toLowerCase()} ${daysCaption(days)}`}
+            >
+              <div className="balance-bar-label" aria-hidden="true">
+                {label}
+              </div>
+              <div className="balance-bar-track" aria-hidden="true">
+                <div
+                  className={`balance-bar-fill balance-${key}`}
+                  style={{ width: `${Math.round(health * 100)}%` }}
+                />
+              </div>
+              <div className="balance-bar-caption faint" aria-hidden="true">
+                {daysCaption(days)}
+              </div>
+            </div>
+          );
+        })}
+      </div>
+      {balance.overall < 0.5 ? (
+        <p className="balance-copy muted">{WEAKEST_COPY[weakestDiscipline(balance)]}</p>
+      ) : null}
+    </div>
+  );
+}
+
 function conditionStory(
   condition: GardenConditionWord,
   snapshot: GardenSnapshot,
@@ -188,6 +258,8 @@ export function GardenScreen() {
   const events = (garden.data.events as GardenEvent[]) ?? [];
   const species = (garden.data.species as Array<Record<string, unknown>>) ?? [];
   const restMode = garden.data.restMode as { active: boolean; until: string | null };
+  // Old cached payloads (pre-balance) may not carry this field — guard rather than crash.
+  const balance = garden.data.balance as DisciplineBalance | undefined;
   const selectedPlant = snapshot.plants.find((p) => p.id === selectedPlantId);
   const livingPlants = snapshot.plants.filter((p) => p.state !== "dead").length;
   const weather = snapshot.state.weatherState;
@@ -226,6 +298,8 @@ export function GardenScreen() {
           atmosphere
         />
       </div>
+
+      {balance ? <BalanceStrip balance={balance} /> : null}
 
       {/* What the garden is telling you, and why it looks this way. */}
       <div className="garden-readout">

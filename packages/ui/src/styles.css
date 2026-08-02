@@ -720,6 +720,60 @@ button {
   max-width: 660px;
   margin: 0 auto 0.3rem;
 }
+.balance-strip {
+  width: 100%;
+  max-width: 660px;
+  margin: 0 auto;
+}
+.balance-bars {
+  display: flex;
+  flex-wrap: nowrap;
+  gap: 8px;
+}
+.balance-bar {
+  flex: 1;
+  min-width: 0;
+}
+.balance-bar-label {
+  font-size: 0.72rem;
+  font-weight: 600;
+  color: var(--ink-soft);
+  margin-bottom: 0.2rem;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.balance-bar-track {
+  height: 6px;
+  border-radius: 999px;
+  background: var(--bg-sunken);
+  overflow: hidden;
+}
+.balance-bar-fill {
+  height: 100%;
+  border-radius: 999px;
+}
+.balance-bar-fill.balance-run {
+  background: var(--green);
+}
+.balance-bar-fill.balance-strength {
+  background: #b5652f;
+}
+.balance-bar-fill.balance-yoga {
+  background: #8f6fae;
+}
+.balance-bar-caption {
+  margin-top: 0.15rem;
+  font-size: 0.68rem;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.balance-copy {
+  text-align: center;
+  margin-top: 0.45rem;
+  font-size: 0.85rem;
+}
 .garden-readout .garden-condition {
   margin-bottom: 0.15rem;
 }
