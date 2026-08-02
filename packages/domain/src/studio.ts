@@ -20,6 +20,15 @@ const MAX_REPS = 50;
 const MAX_WEIGHT_KG = 500;
 /** 15 minutes — generous ceiling for a single set's rest period. */
 const MAX_REST_SECONDS = 900;
+/**
+ * Found unbounded during Task 4 review: an LLM could emit 50 exercises in one
+ * session with nothing to stop it. 10 is a generous real-world ceiling — no
+ * legitimate lifting session runs longer than that — and every exercise
+ * becomes real COROS program content on push, so an unbounded array is the
+ * same "runaway generation → runaway writes" shape `weeks.max(16)` below
+ * already guards against, just one level down.
+ */
+const MAX_EXERCISES_PER_SESSION = 10;
 
 export const planBriefSchema = z
   .object({
@@ -69,7 +78,7 @@ export const studioSessionSchema = z
     title: z.string().min(1),
     /** ISO weekday 1 (Mon) .. 7 (Sun). */
     weekday: z.number().int().min(1).max(7),
-    exercises: z.array(studioExerciseSchema),
+    exercises: z.array(studioExerciseSchema).max(MAX_EXERCISES_PER_SESSION),
   })
   .strict();
 export type StudioSession = z.infer<typeof studioSessionSchema>;

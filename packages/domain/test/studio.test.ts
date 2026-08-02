@@ -152,6 +152,13 @@ describe("studioSessionSchema", () => {
   it("rejects unknown fields", () => {
     expect(() => studioSessionSchema.parse({ ...validSession, extra: "nope" })).toThrow();
   });
+
+  it("accepts exactly 10 exercises but rejects 11 (found unbounded in Task 4 review)", () => {
+    const ten = { ...validSession, exercises: Array.from({ length: 10 }, () => squat) };
+    const eleven = { ...validSession, exercises: Array.from({ length: 11 }, () => squat) };
+    expect(studioSessionSchema.parse(ten).exercises).toHaveLength(10);
+    expect(() => studioSessionSchema.parse(eleven)).toThrow();
+  });
 });
 
 describe("studioWeekSchema", () => {

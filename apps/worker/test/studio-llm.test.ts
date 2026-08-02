@@ -15,7 +15,15 @@
 
 import { beforeEach, describe, expect, it } from "vitest";
 import { schema } from "@rg/database";
-import { fingerprint, newId, nowInstant, type LiftingPlan, type PlanBrief, type StudioExercise } from "@rg/domain";
+import {
+  fingerprint,
+  liftingPlanSchema,
+  newId,
+  nowInstant,
+  type LiftingPlan,
+  type PlanBrief,
+  type StudioExercise,
+} from "@rg/domain";
 import type { Env } from "../src/env.js";
 import { LLM_BUDGET } from "../src/services/llm.js";
 import {
@@ -129,11 +137,19 @@ function scriptedFetch(responses: ScriptedResponse[]): {
 function chatBody(
   content: unknown,
   usage: { prompt_tokens: number; completion_tokens: number } = { prompt_tokens: 100, completion_tokens: 200 },
+  finishReason: string = "stop",
 ): unknown {
   return {
-    choices: [{ message: { content: typeof content === "string" ? content : JSON.stringify(content) } }],
+    choices: [
+      { message: { content: typeof content === "string" ? content : JSON.stringify(content) }, finish_reason: finishReason },
+    ],
     usage,
   };
+}
+
+/** A response cut off mid-JSON by the token cap: unparseable, finish_reason "length". */
+function truncatedChatBody(usage: { prompt_tokens: number; completion_tokens: number } = { prompt_tokens: 100, completion_tokens: 200 }): unknown {
+  return chatBody('{"name": "Cut off plan", "brief": {"goal": "strength"', usage, "length");
 }
 
 const failingFetch = (async () => {
@@ -250,15 +266,13 @@ describe("applyOps — pure RFC-6902 subset", () => {
     }
   });
 
-  it("integration: a valid patch still passes the full liftingPlanSchema re-parse", async () => {
-    const { liftingPlanSchema } = await import("@rg/domain");
+  it("integration: a valid patch still passes the full liftingPlanSchema re-parse", () => {
     const result = applyOps(plan(), [{ op: "replace", path: "/weeks/0/sessions/0/exercises/0/reps", value: 12 }]);
     expect(result.ok).toBe(true);
     if (result.ok) expect(liftingPlanSchema.safeParse(result.plan).success).toBe(true);
   });
 
-  it("integration: applyOps has no schema awareness — breaking weeks.length vs durationWeeks passes applyOps but fails the re-parse", async () => {
-    const { liftingPlanSchema } = await import("@rg/domain");
+  it("integration: applyOps has no schema awareness — breaking weeks.length vs durationWeeks passes applyOps but fails the re-parse", () => {
     const result = applyOps(plan(), [{ op: "remove", path: "/weeks/1" }]);
     expect(result.ok).toBe(true); // applyOps itself has no opinion on this
     if (result.ok) expect(liftingPlanSchema.safeParse(result.plan).success).toBe(false); // the re-parse catches it
@@ -334,6 +348,36 @@ describe("applyOps — pure RFC-6902 subset", () => {
       const result = applyOps(plan(), [{ op: "replace", path: "/brief/../..", value: "x" }]);
       expect(result.ok).toBe(false);
     });
+
+    // Review round 1: /brief must be immutable in CODE, not just asked for in
+    // the prompt — `request` is user-controlled free text reaching the model,
+    // so a prompt-injected edit request rewriting e.g. brief.constraints
+    // (safety-relevant) previously passed both applyOps (no shape violation)
+    // and the schema (brief fields don't participate in the weeks refine).
+    it("rejects a direct /brief/* replace", () => {
+      const result = applyOps(plan(), [{ op: "replace", path: "/brief/equipment", value: "nothing at all" }]);
+      expect(result.ok).toBe(false);
+    });
+
+    it("rejects a direct /brief/* add", () => {
+      const result = applyOps(plan(), [{ op: "add", path: "/brief/notes", value: "injected" }]);
+      expect(result.ok).toBe(false);
+    });
+
+    it("rejects a direct /brief/* remove", () => {
+      const result = applyOps(plan(), [{ op: "remove", path: "/brief/constraints" }]);
+      expect(result.ok).toBe(false);
+    });
+
+    it("rejects replacing /brief wholesale", () => {
+      const result = applyOps(plan(), [{ op: "replace", path: "/brief", value: {} }]);
+      expect(result.ok).toBe(false);
+    });
+
+    it("still allows /name — only /brief is immutable", () => {
+      const result = applyOps(plan(), [{ op: "replace", path: "/name", value: "Renamed" }]);
+      expect(result.ok).toBe(true);
+    });
   });
 });
 
@@ -395,6 +439,9 @@ describe("generatePlan — fixture mode", () => {
         }
       }
     }
+    // Review round 1 (Minor): the claim that the canned plan is valid existed
+    // without the assertion to back it — assert it directly, not just its shape.
+    expect(liftingPlanSchema.safeParse(first.plan).success).toBe(true);
     expect(await db.select().from(llmUsage)).toHaveLength(0);
   });
 
@@ -411,6 +458,8 @@ describe("editPlan — fixture mode", () => {
     const base = plan({ name: "Autumn Strength" });
     const result = await editPlan(env, db, userId, base, "add more volume", true, CATALOG, failingFetch);
     expect(result.plan).toEqual({ ...base, name: "Autumn Strength (edited)" });
+    // Review round 1 (Minor): assert the canned edit output actually validates.
+    expect(liftingPlanSchema.safeParse(result.plan).success).toBe(true);
     expect(await db.select().from(llmUsage)).toHaveLength(0);
   });
 });
@@ -562,6 +611,42 @@ describe("generatePlan — success, prompts, and usage rows", () => {
     expect(await db.select().from(llmUsage)).toHaveLength(0);
   });
 
+  it("scales max_tokens with brief size instead of using a flat ceiling", async () => {
+    // The response body's own validity doesn't matter here — only what was
+    // SENT on the first request is under test (the retry-on-invalid path is
+    // covered elsewhere), so both calls reuse the same canned response.
+    const env = makeEnv();
+    const small = scriptedFetch([{ body: chatBody(VALID_GENERATED_PLAN) }]);
+    await generatePlan(env, db, userId, brief({ durationWeeks: 2, sessionsPerWeek: 1 }), CATALOG, small.fetchImpl);
+    const smallMaxTokens = small.calls[0]!.body.max_tokens as number;
+
+    const bigBrief = brief({ durationWeeks: 16, sessionsPerWeek: 6, preferredDays: [1, 2, 3, 4, 5, 6] });
+    const big = scriptedFetch([{ body: chatBody(VALID_GENERATED_PLAN) }]);
+    await generatePlan(env, db, userId, bigBrief, CATALOG, big.fetchImpl);
+    const bigMaxTokens = big.calls[0]!.body.max_tokens as number;
+
+    expect(bigMaxTokens).toBeGreaterThan(smallMaxTokens);
+    expect(bigMaxTokens).toBeLessThanOrEqual(24000); // clamped ceiling
+    expect(smallMaxTokens).toBeGreaterThanOrEqual(4000); // clamped floor
+  });
+
+  it("reports output_truncated (not invalid_output) when the response was cut off by the token cap", async () => {
+    const env = makeEnv();
+    const { fetchImpl, calls } = scriptedFetch([{ body: truncatedChatBody() }, { body: truncatedChatBody() }]);
+    const result = await generatePlan(env, db, userId, brief(), CATALOG, fetchImpl);
+
+    expect(result).toEqual({ plan: null, reason: "output_truncated" });
+    expect(calls).toHaveLength(2); // still gets exactly one retry, like any validation failure
+  });
+
+  it("does NOT report output_truncated for ordinary invalid JSON with a normal finish_reason", async () => {
+    const env = makeEnv();
+    const { fetchImpl } = scriptedFetch([{ body: chatBody("not json at all") }, { body: chatBody("still not json") }]);
+    const result = await generatePlan(env, db, userId, brief(), CATALOG, fetchImpl);
+
+    expect(result).toEqual({ plan: null, reason: "invalid_output" });
+  });
+
   it("never throws on a network error — returns llm_error, no retry", async () => {
     const env = makeEnv();
     const { fetchImpl, calls } = scriptedFetch([{ throws: true }]);
@@ -657,6 +742,15 @@ describe("editPlan — minor edit (cheap tier, ops)", () => {
     expect(result).toEqual({ plan: null, reason: "invalid_output" });
     expect(calls).toHaveLength(2);
   });
+
+  it("reports output_truncated (not invalid_output) when the ops response was cut off by the token cap", async () => {
+    const env = makeEnv();
+    const { fetchImpl, calls } = scriptedFetch([{ body: truncatedChatBody() }, { body: truncatedChatBody() }]);
+    const result = await editPlan(env, db, userId, plan(), "reduce reps", false, CATALOG, fetchImpl);
+
+    expect(result).toEqual({ plan: null, reason: "output_truncated" });
+    expect(calls).toHaveLength(2);
+  });
 });
 
 describe("editPlan — major revision (strong tier, full regenerate)", () => {
@@ -670,6 +764,20 @@ describe("editPlan — major revision (strong tier, full regenerate)", () => {
     expect(calls[0]!.body.model).toBe("anthropic/claude-opus-5");
     const rows = await db.select().from(llmUsage);
     expect(rows[0]).toMatchObject({ kind: "studio_edit", model: "anthropic/claude-opus-5" });
+  });
+
+  it("scales max_tokens from the CURRENT plan's brief, same as generatePlan", async () => {
+    const env = makeEnv();
+    const smallPlan = plan({ brief: brief({ durationWeeks: 2, sessionsPerWeek: 1 }), weeks: [{ sessions: [] }, { sessions: [] }] });
+    const small = scriptedFetch([{ body: chatBody(VALID_GENERATED_PLAN) }]);
+    await editPlan(env, db, userId, smallPlan, "revise", true, CATALOG, small.fetchImpl);
+
+    const bigBrief = brief({ durationWeeks: 16, sessionsPerWeek: 6, preferredDays: [1, 2, 3, 4, 5, 6] });
+    const bigPlan = plan({ brief: bigBrief, weeks: Array.from({ length: 16 }, () => ({ sessions: [] })) });
+    const big = scriptedFetch([{ body: chatBody(VALID_GENERATED_PLAN) }]);
+    await editPlan(env, db, userId, bigPlan, "revise", true, CATALOG, big.fetchImpl);
+
+    expect(big.calls[0]!.body.max_tokens).toBeGreaterThan(small.calls[0]!.body.max_tokens as number);
   });
 
   it("uses AI_STUDIO_MODEL_EDIT for the cheap tier and AI_STUDIO_MODEL_STRONG for major, independently", async () => {

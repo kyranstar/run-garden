@@ -60,11 +60,31 @@ const STRONG_OUTPUT_MICROS_PER_TOKEN = 25;
 const EDIT_INPUT_MICROS_PER_TOKEN = 1;
 const EDIT_OUTPUT_MICROS_PER_TOKEN = 5;
 
-// A full plan can run to 16 weeks x 6 sessions x several exercises of JSON;
-// an edit is a short ops list. Both are generous ceilings, documented rather
-// than silent (spec §4) — cost impact is trivial either way ($0.2 worst case
-// per generate call at the strong-tier price above, well inside the $8 cutoff).
-const MAX_OUTPUT_TOKENS_GENERATE = 8000;
+// A full plan's JSON size scales with how much of it there is — a fixed
+// ceiling either truncates realistic multi-week/multi-session plans or wastes
+// budget on tiny ones. Found under-provisioned in review (a flat 8000-token
+// cap truncates realistic plans well before 16 weeks). Scaled instead:
+// ~160 tokens/session (a session's JSON: title, weekday, several exercises)
+// plus a 2000-token base for the wrapper/brief/whitespace, clamped to a floor
+// that covers even a 1-session plan's model overhead and a ceiling that
+// bounds worst-case cost regardless of how large durationWeeks×sessionsPerWeek
+// gets — at the strong tier's $25/1M output price, 24000 tokens is ≤$0.60 per
+// generation, trivial next to the $8 rolling cutoff.
+const GENERATE_TOKENS_BASE = 2000;
+const GENERATE_TOKENS_PER_SESSION = 160;
+const GENERATE_TOKENS_MIN = 4000;
+const GENERATE_TOKENS_MAX = 24000;
+
+/** Used by both generatePlan and editPlan's major (full-regenerate) path — the
+ * session count of the plan being produced is what actually predicts its
+ * JSON size, not a fixed constant. */
+function computeGenerateMaxTokens(durationWeeks: number, sessionsPerWeek: number): number {
+  const estimate = GENERATE_TOKENS_BASE + durationWeeks * sessionsPerWeek * GENERATE_TOKENS_PER_SESSION;
+  return Math.min(Math.max(estimate, GENERATE_TOKENS_MIN), GENERATE_TOKENS_MAX);
+}
+
+// An edit's ops list stays small regardless of plan size — it's a diff, not
+// the whole plan — so this one stays a flat ceiling.
 const MAX_OUTPUT_TOKENS_EDIT = 1200;
 
 // The real COROS catalog is ~382 entries (spec §4); this only engages
@@ -112,6 +132,20 @@ export type ApplyOpsResult = { ok: true; plan: unknown } | { ok: false; error: s
 const FORBIDDEN_SEGMENTS = new Set(["__proto__", "constructor", "prototype"]);
 const VALID_PATCH_OPS = new Set(["add", "replace", "remove"]);
 
+/**
+ * `/brief` is immutable via ops — enforced here, not just asked for in the
+ * prompt. Found exploitable in review: `{op:"replace", path:"/brief/equipment"}`
+ * passes ops (no shape violation) and passes the schema (brief fields don't
+ * participate in the weeks.length===durationWeeks refine), so nothing else
+ * catches it. `request` is user-controlled free text reaching the cheap-tier
+ * model, so a prompt-injected edit request rewriting `brief.constraints`
+ * (safety-relevant: injuries/exclusions) is a real surface, not just a
+ * hallucination risk — this closes it in code regardless of what the model
+ * decides to emit. `name` is deliberately NOT included: renaming the plan is
+ * a legitimate edit.
+ */
+const IMMUTABLE_ROOT_SEGMENT = "brief";
+
 function isPlainObject(v: unknown): v is Record<string, unknown> {
   return typeof v === "object" && v !== null && !Array.isArray(v);
 }
@@ -134,6 +168,9 @@ function parsePath(path: string): { ok: true; parsed: ParsedPath } | { ok: false
   // "/weeks/0/reps".split("/") === ["", "weeks", "0", "reps"]; the leading
   // empty string is the split before the root slash, not a segment.
   const segments = path.split("/").slice(1);
+  if (segments[0] === IMMUTABLE_ROOT_SEGMENT) {
+    return { ok: false, error: `path escapes the plan shape: ${path} (brief is immutable via ops)` };
+  }
   for (const seg of segments) {
     if (FORBIDDEN_SEGMENTS.has(seg)) {
       return { ok: false, error: `path escapes the plan shape: ${path}` };
@@ -404,7 +441,10 @@ async function chatCompletion(
   model: string,
   maxTokens: number,
   messages: ChatMessage[],
-): Promise<{ ok: true; content: string; inputTokens: number; outputTokens: number } | { ok: false; reason: string }> {
+): Promise<
+  | { ok: true; content: string; inputTokens: number; outputTokens: number; truncated: boolean }
+  | { ok: false; reason: string }
+> {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), TIMEOUT_MS);
   try {
@@ -429,7 +469,7 @@ async function chatCompletion(
     }
     if (!response.ok) return { ok: false, reason: `gateway_${response.status}` };
     const body = (await response.json().catch(() => null)) as {
-      choices?: Array<{ message?: { content?: string } }>;
+      choices?: Array<{ message?: { content?: string }; finish_reason?: string }>;
       usage?: { prompt_tokens?: number; completion_tokens?: number };
     } | null;
     if (!body) return { ok: false, reason: "gateway_bad_response" };
@@ -438,6 +478,9 @@ async function chatCompletion(
       content: body.choices?.[0]?.message?.content ?? "",
       inputTokens: body.usage?.prompt_tokens ?? 0,
       outputTokens: body.usage?.completion_tokens ?? 0,
+      // OpenAI-compatible convention: finish_reason "length" means the
+      // response was cut off by max_tokens, not that the model finished.
+      truncated: body.choices?.[0]?.finish_reason === "length",
     };
   } finally {
     clearTimeout(timer);
@@ -531,13 +574,29 @@ async function runFullPlanAttempt(
   usageKind: "studio_generate" | "studio_edit",
   requestFingerprint: string,
   fetchImpl: typeof fetch,
+  maxTokens: number,
 ): Promise<AttemptResult> {
-  const chat = await chatCompletion(env, fetchImpl, model, MAX_OUTPUT_TOKENS_GENERATE, messages);
+  const chat = await chatCompletion(env, fetchImpl, model, maxTokens, messages);
   if (!chat.ok) return { kind: "transport_failure", reason: chat.reason };
   await recordUsage(db, userId, usageKind, model, "strong", chat, requestFingerprint);
 
   const parsed = extractJson(chat.content);
   if (parsed === null) {
+    // A JSON-parse failure that also hit the token cap is a truncation, not a
+    // hallucination — the route/UI can say something true ("try a shorter
+    // plan" / "we'll widen the budget") instead of a generic invalid-output
+    // message. Retrying with the SAME maxTokens rarely helps on its own, but
+    // the feedback text below asks the model to be more compact, which does.
+    if (chat.truncated) {
+      return {
+        kind: "validation_failure",
+        reason: "output_truncated",
+        feedback:
+          "output was truncated before it finished (hit the token limit) and could not be parsed as JSON. " +
+          "Reply with the same plan but more compactly — shorter titles/notes, no extra fields — so it fits.",
+        rawContent: chat.content,
+      };
+    }
     return { kind: "validation_failure", reason: "invalid_output", feedback: "output was not valid JSON.", rawContent: chat.content };
   }
   const result = liftingPlanSchema.safeParse(parsed);
@@ -580,6 +639,16 @@ async function runOpsEditAttempt(
 
   const parsed = extractJson(chat.content) as { ops?: unknown } | null;
   if (parsed === null || !Array.isArray(parsed.ops)) {
+    if (parsed === null && chat.truncated) {
+      return {
+        kind: "validation_failure",
+        reason: "output_truncated",
+        feedback:
+          "output was truncated before it finished (hit the token limit) and could not be parsed as JSON. " +
+          'Reply with a shorter ops list — fewer operations, or a more compact "value" — so it fits.',
+        rawContent: chat.content,
+      };
+    }
     return {
       kind: "validation_failure",
       reason: "invalid_output",
@@ -698,19 +767,20 @@ export async function generatePlan(
     const model = env.AI_STUDIO_MODEL_STRONG || DEFAULT_MODEL_STRONG;
     const catalogIds = new Set(catalog.map((c) => c.id));
     const requestFingerprint = fingerprint({ brief, catalogSize: catalog.length });
+    const maxTokens = computeGenerateMaxTokens(brief.durationWeeks, brief.sessionsPerWeek);
     const messages: ChatMessage[] = [
       { role: "system", content: buildGenerateSystemPrompt(catalog) },
       { role: "user", content: buildGenerateUserPrompt(brief) },
     ];
 
     let attempt = await runFullPlanAttempt(
-      env, db, userId, model, messages, catalogIds, "studio_generate", requestFingerprint, fetchImpl,
+      env, db, userId, model, messages, catalogIds, "studio_generate", requestFingerprint, fetchImpl, maxTokens,
     );
     if (attempt.kind === "validation_failure") {
       messages.push({ role: "assistant", content: attempt.rawContent });
       messages.push({ role: "user", content: feedbackMessage(attempt.feedback) });
       attempt = await runFullPlanAttempt(
-        env, db, userId, model, messages, catalogIds, "studio_generate", requestFingerprint, fetchImpl,
+        env, db, userId, model, messages, catalogIds, "studio_generate", requestFingerprint, fetchImpl, maxTokens,
       );
     }
     if (attempt.kind === "success") return { plan: attempt.plan };
@@ -727,11 +797,12 @@ export async function generatePlan(
  *
  * DEVIATION FROM THE BRIEF'S ONE-LINE SIGNATURE: the task brief sketches
  * `editPlan(env, db, userId, plan, request, major)` with no catalog
- * parameter. The task's own "Key semantics" section is explicit that
- * originId validation applies to "both entry points", and that is not
- * possible to implement without a catalog to check against — an ops-based
- * edit can add or change an exercise's originId just as freely as a full
- * generate can. `catalog` is added as a trailing parameter for this reason;
+ * parameter. Added anyway, on the reasoning's own merits (not a citation to
+ * any brief/spec section): an ops-based edit can add or change an exercise's
+ * originId exactly as freely as a full generate can, so an originId
+ * validation requirement has to apply here too for the guarantee to mean
+ * anything — and that isn't possible to implement without a catalog to check
+ * against. `catalog` is added as a trailing parameter for this reason;
  * every other part of the signature is unchanged.
  */
 export async function editPlan(
@@ -759,18 +830,19 @@ export async function editPlan(
 
     if (major) {
       const model = env.AI_STUDIO_MODEL_STRONG || DEFAULT_MODEL_STRONG;
+      const maxTokens = computeGenerateMaxTokens(plan.brief.durationWeeks, plan.brief.sessionsPerWeek);
       const messages: ChatMessage[] = [
         { role: "system", content: buildMajorReviseSystemPrompt(catalog) },
         { role: "user", content: buildMajorReviseUserPrompt(plan, request) },
       ];
       let attempt = await runFullPlanAttempt(
-        env, db, userId, model, messages, catalogIds, "studio_edit", requestFingerprint, fetchImpl,
+        env, db, userId, model, messages, catalogIds, "studio_edit", requestFingerprint, fetchImpl, maxTokens,
       );
       if (attempt.kind === "validation_failure") {
         messages.push({ role: "assistant", content: attempt.rawContent });
         messages.push({ role: "user", content: feedbackMessage(attempt.feedback) });
         attempt = await runFullPlanAttempt(
-          env, db, userId, model, messages, catalogIds, "studio_edit", requestFingerprint, fetchImpl,
+          env, db, userId, model, messages, catalogIds, "studio_edit", requestFingerprint, fetchImpl, maxTokens,
         );
       }
       if (attempt.kind === "success") return { plan: attempt.plan };
