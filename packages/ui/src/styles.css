@@ -943,6 +943,16 @@ button {
   font-size: 0.75rem;
   color: var(--ink-faint);
 }
+.field textarea {
+  font: inherit;
+  padding: 0.5rem 0.65rem;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--border-strong);
+  background: var(--bg-raised);
+  color: var(--ink);
+  resize: vertical;
+  min-height: 64px;
+}
 .switch-row {
   display: flex;
   align-items: center;
@@ -1012,6 +1022,173 @@ button {
   border: none;
   border-top: 1px solid var(--border);
   margin: 0.8rem 0;
+}
+
+/* ── Plan Studio ────────────────────────────────────────────────────────── */
+/* Lifting discipline accent (matches .chip-strength / .balance-strength). */
+
+.studio-card {
+  border-color: color-mix(in srgb, #b5652f 35%, var(--border));
+  margin-bottom: 1.2rem;
+}
+.studio-toggle {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  width: 100%;
+  gap: 0.6rem;
+  background: none;
+  border: none;
+  padding: 0;
+  cursor: pointer;
+  text-align: left;
+  color: inherit;
+  font: inherit;
+}
+.studio-heading {
+  display: flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: 0.1rem 0.5rem;
+  color: #b5652f;
+}
+.studio-heading .faint {
+  color: var(--ink-faint);
+}
+.studio-toggle .chevron {
+  display: inline-flex;
+  color: var(--ink-faint);
+  transition: transform 0.15s ease;
+  flex: none;
+}
+.studio-toggle[aria-expanded="true"] .chevron {
+  transform: rotate(90deg);
+}
+.studio-content {
+  margin-top: 0.9rem;
+}
+.btn-studio {
+  background: #b5652f;
+  border-color: #b5652f;
+  color: #fff;
+}
+.btn-studio:hover {
+  filter: brightness(1.05);
+  border-color: #b5652f;
+}
+.studio-week-label {
+  font-size: 0.78rem;
+  font-weight: 650;
+  color: var(--ink-faint);
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  margin: 0.9rem 0 0.45rem;
+}
+.studio-week-label:first-child {
+  margin-top: 0.1rem;
+}
+.studio-session {
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: 0.6rem 0.75rem;
+  margin-bottom: 0.5rem;
+  background: var(--bg-raised);
+}
+.studio-session-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: 0.4rem 0.6rem;
+  flex-wrap: wrap;
+}
+.studio-session-title {
+  font-weight: 650;
+  font-size: 0.94rem;
+}
+.studio-session-date {
+  font-size: 0.78rem;
+  color: var(--ink-faint);
+  white-space: nowrap;
+}
+.studio-exercise-list {
+  margin: 0.4rem 0 0;
+  padding: 0;
+  list-style: none;
+  font-size: 0.84rem;
+  color: var(--ink-soft);
+}
+.studio-exercise-list li {
+  padding: 0.1rem 0;
+}
+.studio-session-status {
+  margin-top: 0.5rem;
+}
+.studio-diff-strip {
+  display: flex;
+  gap: 0.7rem;
+  font-size: 0.82rem;
+  padding: 0.5rem 0.7rem;
+  background: var(--bg-sunken);
+  border-radius: var(--radius-sm);
+  flex-wrap: wrap;
+}
+.studio-diff-added {
+  color: var(--green-ink);
+  font-weight: 650;
+}
+.studio-diff-changed {
+  color: #b5652f;
+  font-weight: 650;
+}
+.studio-diff-removed {
+  color: var(--danger);
+  font-weight: 650;
+}
+
+.usage-meter {
+  border-top: 1px solid var(--border);
+  padding-top: 0.7rem;
+}
+.usage-meter-track {
+  height: 6px;
+  border-radius: 999px;
+  background: var(--bg-sunken);
+  overflow: hidden;
+  margin-top: 0.3rem;
+}
+.usage-meter-fill {
+  height: 100%;
+  border-radius: 999px;
+  background: #b5652f;
+}
+.usage-meter-fill.warn {
+  background: var(--warn);
+}
+.usage-meter-fill.cutoff {
+  background: var(--danger);
+}
+
+.day-picker {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+}
+.day-chip {
+  border: 1px solid var(--border-strong);
+  background: var(--bg-raised);
+  border-radius: 999px;
+  padding: 0.35rem 0;
+  width: 2.6rem;
+  text-align: center;
+  font-size: 0.78rem;
+  font-weight: 650;
+  cursor: pointer;
+  color: var(--ink-soft);
+}
+.day-chip.active {
+  background: #b5652f;
+  border-color: #b5652f;
+  color: #fff;
 }
 
 /* ── Species codex & unlock nudges ────────────────────────────────────────── */

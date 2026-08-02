@@ -21,6 +21,7 @@ import {
 } from "../components.js";
 import { MoveSheet } from "./move-sheet.js";
 import { MatchSheet } from "./match-sheet.js";
+import { StudioSection } from "./studio.js";
 
 function WorkoutDetail({ w, onClose }: { w: WorkoutDto; onClose: () => void }) {
   const qc = useQueryClient();
@@ -193,6 +194,7 @@ export function PlanScreen() {
           ) : null}
         </div>
       </div>
+      <StudioSection />
       {plan.data.workouts.length === 0 ? (
         <EmptyState art="🗓" title="No active COROS training plan was found">
           Start a plan in COROS, then refresh from the desktop app.
