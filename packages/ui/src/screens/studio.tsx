@@ -60,11 +60,24 @@ const GOAL_LABELS: Record<StudioGoal, string> = {
 };
 
 /** Mirrors `sessionStamp` in apps/worker/src/services/studio-push.ts exactly —
- * the push row's `sessionTitle` IS this stamp, and it's also half of the
- * server's diff identity (`planPush`'s `identity(happenDay, sessionTitle)`).
- * Used client-side only to compute the honest new/removed diff counts below. */
+ * the push row's `sessionTitle` IS this stamp. On its own it is only HALF of
+ * the server's real diff identity, though: a session whose weekday moves
+ * (permitted by an edit request) keeps the same stamp but a different
+ * `happenDay` — the server genuinely deletes-and-recreates it, so matching on
+ * the stamp alone would silently read that as "unchanged." See
+ * `diffIdentity` below, which folds the day back in to match
+ * `planPush`'s `identity(happenDay, sessionTitle)` exactly. */
 function sessionStamp(title: string, weekIndex: number): string {
   return `${title} — wk ${weekIndex + 1}`;
+}
+
+/** Mirrors studio-push.ts's `identity(happenDay, sessionTitle)` byte-for-byte
+ * (a single space joins them — `happenDay`'s fixed `YYYY-MM-DD` width is what
+ * keeps that unambiguous there, and the same reasoning applies here). This
+ * pair, not the stamp alone, is the real client-computable proxy for the
+ * server's diff key — used only for the honest new/removed counts below. */
+function diffIdentity(happenDay: string, sessionTitle: string): string {
+  return `${happenDay} ${sessionTitle}`;
 }
 
 const ISO_DAYS: { n: number; label: string }[] = [
@@ -567,42 +580,53 @@ function StudioDraft({ studio, onStartNew }: { studio: StudioStateResponse; onSt
   );
 
   /**
-   * Honest-counts rationale (fix round 1, Medium): the trimmed
-   * `StudioPushRowDto` has no `sessionFingerprint`, so per-session CONTENT
-   * changes genuinely can't be detected client-side — only the server's real
-   * diff (`planPush` in studio-push.ts) can say which sessions actually
-   * changed. A previous version of this approximated "changed" from a
-   * plan-wide "has the version moved since last push?" boolean, which was
-   * flatly wrong: editing ONE session made EVERY pushed session read as
-   * "changed" (push 24, edit 1 → "~24 changed" when the server would say 1).
-   * A number that far off right before a Push click misleads blast-radius
-   * perception, so the false precision is dropped entirely. This only
-   * reports counts it CAN compute exactly, matching the server's own
-   * identity key (`sessionStamp`, i.e. title+week — the same value stored in
-   * `sessionTitle`):
-   *  - "new": draft sessions whose stamp has no live pushed row (none at
-   *    all, or the existing one is `deleted` — either way the server would
-   *    have to create it).
-   *  - "removed": pushed rows whose stamp no longer appears in the draft —
-   *    excluding rows already `deleted`, AND excluding `changed_on_coros`
-   *    rows, which `planPush`'s own `untouchable` set reports as `blocked`,
-   *    not removed (the row falling out of the draft while drifted doesn't
-   *    make it disappear from COROS).
-   *  - the murky middle — a stamp present in both, whose content MAY have
-   *    changed — gets a qualitative flag, not a count: `editedSincePush`,
-   *    true whenever the plan's version has moved past the version last
-   *    pushed. Its copy says the exact per-session diff is computed at push
-   *    time, rather than implying a number this component cannot honestly
-   *    produce.
+   * Honest-counts rationale (fix round 1, Medium; corrected in fix round 2
+   * after re-review). The trimmed `StudioPushRowDto` has no
+   * `sessionFingerprint`, so per-session CONTENT changes genuinely can't be
+   * detected client-side — only the server's real diff (`planPush` in
+   * studio-push.ts) can say which sessions actually changed. Round 1
+   * approximated "changed" from a plan-wide "has the version moved since
+   * last push?" boolean, which was flatly wrong: editing ONE session made
+   * EVERY pushed session read as "changed."
+   *
+   * Round 1's fix then keyed new/removed on `sessionStamp` (title+week)
+   * ALONE, which turned out to be the same false-precision bug moved one
+   * level down: a session whose WEEKDAY moves (an edit request is explicitly
+   * allowed to do this) keeps the same stamp but a different `happenDay`.
+   * The server's real diff identity is the FULL pair
+   * (`planPush`'s `identity(happenDay, sessionTitle)`), so a moved-weekday
+   * session is a genuine delete-then-recreate on COROS — stamp-only matching
+   * read it as untouched instead. Fixed by keying on `diffIdentity(happenDay,
+   * stamp)` on both sides, matching the server's key exactly:
+   *  - "new": draft sessions whose (day, stamp) key has no live pushed row
+   *    (none at all, the existing one is `deleted`, or it exists only under
+   *    a DIFFERENT day — a weekday move counts here, correctly, since the
+   *    server really does re-create it).
+   *  - "removed": pushed rows whose (day, stamp) key no longer appears in
+   *    the draft — excluding rows already `deleted`, AND excluding
+   *    `changed_on_coros` rows, which `planPush`'s own `untouchable` set
+   *    reports as `blocked`, not removed.
+   *  - Note: a `startDate` change shifts every draft session's `happenDay`
+   *    at once, so it will legitimately show as "all new + all removed" —
+   *    that's correct, not a bug: the server re-diffs the whole plan against
+   *    the new day grid too, and would genuinely delete-and-recreate
+   *    everything.
+   *  - the murky middle — a session unchanged in day+stamp, whose CONTENT
+   *    may have changed — still gets a qualitative flag, not a count:
+   *    `editedSincePush`, true whenever the plan's version has moved past
+   *    the version last pushed. Its copy says the exact per-session diff is
+   *    computed at push time, rather than implying a number this component
+   *    cannot honestly produce.
    */
   const diff = useMemo(() => {
-    const draftStamps = new Set<string>();
-    const pushedByStamp = new Map(studio.pushes.map((p) => [p.sessionTitle, p]));
+    const draftKeys = new Set<string>();
+    const pushedByKey = new Map(studio.pushes.map((p) => [diffIdentity(p.happenDay, p.sessionTitle), p]));
     let added = 0;
     for (const wk of sessionsByWeek) {
-      for (const { stamp } of wk.sessions) {
-        draftStamps.add(stamp);
-        const row = pushedByStamp.get(stamp);
+      for (const { happenDay, stamp } of wk.sessions) {
+        const key = diffIdentity(happenDay, stamp);
+        draftKeys.add(key);
+        const row = pushedByKey.get(key);
         if (!row || row.status === "deleted") added++;
       }
     }
@@ -610,7 +634,7 @@ function StudioDraft({ studio, onStartNew }: { studio: StudioStateResponse; onSt
     for (const row of studio.pushes) {
       if (row.status === "deleted") continue;
       if (row.error === "changed_on_coros") continue;
-      if (!draftStamps.has(row.sessionTitle)) removed++;
+      if (!draftKeys.has(diffIdentity(row.happenDay, row.sessionTitle))) removed++;
     }
     const editedSincePush = studio.lastPushSummary != null && version !== studio.lastPushSummary.planVersion;
     return { added, removed, editedSincePush };
