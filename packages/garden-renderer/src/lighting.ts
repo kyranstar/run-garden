@@ -280,7 +280,7 @@ const SEASONS: Record<GardenSeason, SeasonBias> = {
   spring: {
     foliageTint: "#7fae62", foliageAmount: 0.1,
     accents: ["#f2ede0", "#e0b23e", "#b58cbd"],
-    grassAdjust: (c) => mix(c, "#7fae62", 0.12),
+    grassAdjust: (c) => mix(c, "#7fae62", 0.18),
     skyAdjust: (c) => c,
   },
   summer: {
@@ -290,16 +290,16 @@ const SEASONS: Record<GardenSeason, SeasonBias> = {
     skyAdjust: (c) => c,
   },
   autumn: {
-    foliageTint: "#b07a3a", foliageAmount: 0.18,
+    foliageTint: "#b07a3a", foliageAmount: 0.24,
     accents: ["#b5652f", "#d99a3d", "#9c6a80"],
-    grassAdjust: (c) => mix(c, "#b08a4a", 0.18),
+    grassAdjust: (c) => mix(c, "#b08a4a", 0.3),
     skyAdjust: (c) => mix(c, "#d9b48a", 0.06),
   },
   winter: {
     foliageTint: "#8a9484", foliageAmount: 0.16,
     accents: ["#dfe4e6", "#d8c890"],
-    grassAdjust: (c) => desaturate(mix(c, "#9aa08c", 0.2), 0.15),
-    skyAdjust: (c) => shade(c, 0.94),
+    grassAdjust: (c) => desaturate(mix(c, "#9aa08c", 0.32), 0.3),
+    skyAdjust: (c) => shade(c, 0.9),
   },
 };
 
@@ -374,10 +374,10 @@ function applyWeather(l: SceneLight, inp: LightingInputs): SceneLight {
     case "mild_drought":
       out = {
         ...out,
-        skyTop: mix(out.skyTop, "#c8b088", 0.35),
-        skyMid: mix(out.skyMid, "#d8bc8e", 0.35),
-        skyHorizon: mix(out.skyHorizon, "#e5cf9a", 0.4),
-        grassNear: mix(out.grassNear, "#b8a468", 0.25),
+        skyTop: mix(out.skyTop, "#c8b088", 0.45),
+        skyMid: mix(out.skyMid, "#d8bc8e", 0.45),
+        skyHorizon: mix(out.skyHorizon, "#e5cf9a", 0.5),
+        grassNear: mix(out.grassNear, "#b8a468", 0.32),
         grassFar: mix(out.grassFar, "#c0ae78", 0.2),
         hazeStrength: 0.4,
         hazeColor: "#e5d3a4",

@@ -144,10 +144,10 @@ export function Finish({ p, light }: { p: string; light: SceneLight }): ReactNod
 
 /* ── rainbow ─────────────────────────────────────────────────────────────── */
 
-const RAINBOW_ARCS: Array<{ r: number; stroke: string; opacity: number }> = [
-  { r: 320, stroke: "#c86f5a", opacity: 0.16 },
-  { r: 306, stroke: "#d99a3d", opacity: 0.13 },
-  { r: 292, stroke: "#8f6fae", opacity: 0.1 },
+const RAINBOW_ARCS: Array<{ d: string; stroke: string; opacity: number }> = [
+  { d: "M230,320 A270,270 0 0 1 770,320", stroke: "#c86f5a", opacity: 0.13 },
+  { d: "M242,320 A258,258 0 0 1 758,320", stroke: "#d99a3d", opacity: 0.1 },
+  { d: "M254,320 A246,246 0 0 1 746,320", stroke: "#8f6fae", opacity: 0.08 },
 ];
 
 export function Rainbow({ light }: { p: string; light: SceneLight }): ReactNode | null {
@@ -155,14 +155,7 @@ export function Rainbow({ light }: { p: string; light: SceneLight }): ReactNode 
   return (
     <g data-overlay="rainbow" pointerEvents="none">
       {RAINBOW_ARCS.map((arc) => (
-        <path
-          key={arc.r}
-          d={`M180,300 A${arc.r},${arc.r} 0 0 1 820,300`}
-          stroke={arc.stroke}
-          strokeWidth={10}
-          opacity={arc.opacity}
-          fill="none"
-        />
+        <path key={arc.d} d={arc.d} stroke={arc.stroke} strokeWidth={10} opacity={arc.opacity} fill="none" />
       ))}
     </g>
   );

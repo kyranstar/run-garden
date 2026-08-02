@@ -70,8 +70,13 @@ function variant(
   weather: GardenWeatherState,
   season: GardenSeason,
   extra: Partial<GardenSnapshot["state"]> = {},
+  wildlifeExtra?: Partial<GardenSnapshot["wildlife"]>,
 ): GardenSnapshot {
-  return { ...base, state: { ...base.state, weatherState: weather, season, ...extra } };
+  return {
+    ...base,
+    state: { ...base.state, weatherState: weather, season, ...extra },
+    wildlife: wildlifeExtra ? { ...base.wildlife, ...wildlifeExtra } : base.wildlife,
+  };
 }
 
 // The spec's 18 shots:
@@ -81,6 +86,7 @@ const SHOTS: Array<{
   season: GardenSeason;
   hour: number;
   extra?: Partial<GardenSnapshot["state"]>;
+  wildlifeExtra?: Partial<GardenSnapshot["wildlife"]>;
 }> = [
   { id: "fresh_rain--summer--13", weather: "fresh_rain", season: "summer", hour: 13 },
   {
@@ -113,15 +119,22 @@ const SHOTS: Array<{
     hour: 13,
     extra: { moisture: 0.15, droughtDays: 9 },
   },
-  { id: "soft_sun--spring--18", weather: "soft_sun", season: "spring", hour: 18 },
-  { id: "soft_sun--summer--18.9-golden", weather: "soft_sun", season: "summer", hour: 18.9 },
-  { id: "soft_sun--autumn--17", weather: "soft_sun", season: "autumn", hour: 17 },
-  { id: "soft_sun--winter--16", weather: "soft_sun", season: "winter", hour: 16 },
+  { id: "soft_sun--spring--13", weather: "soft_sun", season: "spring", hour: 13 },
+  {
+    id: "soft_sun--summer--13-restmode",
+    weather: "soft_sun",
+    season: "summer",
+    hour: 13,
+    extra: { restMode: true },
+  },
+  { id: "soft_sun--autumn--13", weather: "soft_sun", season: "autumn", hour: 13 },
+  { id: "soft_sun--winter--13", weather: "soft_sun", season: "winter", hour: 13 },
   {
     id: "clear_sun--summer--23.5-fireflies",
     weather: "clear_sun",
     season: "summer",
     hour: 23.5,
+    wildlifeExtra: { fireflies: true },
   },
 ];
 
@@ -142,7 +155,7 @@ function App() {
           <figure className="cell" key={shot.id}>
             <section id={shot.id} className="scene-frame" style={{ width: 900, aspectRatio: "1000/560" }}>
               <GardenScene
-                snapshot={variant(base, shot.weather, shot.season, shot.extra)}
+                snapshot={variant(base, shot.weather, shot.season, shot.extra, shot.wildlifeExtra)}
                 timeOfDay={shot.hour}
                 atmosphere
                 idPrefix={`mx${i}`}

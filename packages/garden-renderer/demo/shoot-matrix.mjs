@@ -47,10 +47,10 @@ const IDS = [
   "seasonal_breeze--summer--15",
   "dry_spell--summer--13",
   "mild_drought--summer--13",
-  "soft_sun--spring--18",
-  "soft_sun--summer--18.9-golden",
-  "soft_sun--autumn--17",
-  "soft_sun--winter--16",
+  "soft_sun--spring--13",
+  "soft_sun--summer--13-restmode",
+  "soft_sun--autumn--13",
+  "soft_sun--winter--13",
   "clear_sun--summer--23.5-fireflies",
 ];
 
