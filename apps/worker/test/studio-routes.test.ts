@@ -472,6 +472,94 @@ describe("POST /api/studio/generate — guarded regenerate (F5)", () => {
   });
 });
 
+// F5-REGRESSION (fix round 2): fix round 1's `replace: true` ran the retire
+// (real DELETE jobs against the user's live COROS calendar) BEFORE the
+// catalog check and the LLM call. Any routine failure after that point left
+// the old plan's deletes already enqueued with no new plan ever created —
+// data loss behind what the UI would show as a clean, retryable error. These
+// pin that retiring now happens ONLY once the new plan is fully validated
+// and about to be persisted — never on a path that ends in one of these
+// routine failures.
+describe("POST /api/studio/generate — replace ordering (F5-regression)", () => {
+  it("replace:true + catalog_not_synced: 412, zero delete jobs enqueued, old plan/row untouched", async () => {
+    // No seedCatalog() — the catalog is empty, so /generate must fail at the
+    // catalog check, strictly BEFORE the retire step runs.
+    const oldPlanId = await seedPlan();
+    const oldPushId = await seedVerifiedPushRow(oldPlanId);
+
+    const res = await client().post("/api/studio/generate", {
+      brief: validBriefInput("2026-10-05"),
+      replace: true,
+    });
+    expect(res.status).toBe(412);
+    expect((await res.json()) as { error: string }).toMatchObject({ error: "catalog_not_synced" });
+
+    expect(await db.select().from(corosWriteJobs)).toHaveLength(0);
+    expect(await db.select().from(studioPlans).where(eq(studioPlans.userId, userId))).toHaveLength(1);
+    const oldRow = (await db.select().from(studioPlanPushes).where(eq(studioPlanPushes.id, oldPushId)))[0]!;
+    expect(oldRow.status).toBe("verified");
+  });
+
+  it("replace:true + budget_cutoff: 402, zero delete jobs enqueued, old plan/row untouched", async () => {
+    await seedCatalog();
+    const oldPlanId = await seedPlan();
+    const oldPushId = await seedVerifiedPushRow(oldPlanId);
+    await db.insert(llmUsage).values({
+      id: newId(),
+      userId,
+      kind: "studio_generate",
+      model: "test-model",
+      inputTokens: 0,
+      outputTokens: 0,
+      costMicros: 9_000_000, // over LLM_BUDGET.cutoffMicros ($8)
+      cacheHit: false,
+      requestFingerprint: "over-budget-replace",
+      createdAt: nowInstant(),
+    });
+
+    const res = await client(makeEnv({ FIXTURE_MODE: "0", AI_GATEWAY_API_KEY: "test-key" })).post(
+      "/api/studio/generate",
+      { brief: validBriefInput("2026-10-05"), replace: true },
+    );
+    expect(res.status).toBe(402);
+    expect((await res.json()) as { error: string }).toMatchObject({ error: "budget_cutoff" });
+
+    expect(await db.select().from(corosWriteJobs)).toHaveLength(0);
+    expect(await db.select().from(studioPlans).where(eq(studioPlans.userId, userId))).toHaveLength(1);
+    const oldRow = (await db.select().from(studioPlanPushes).where(eq(studioPlanPushes.id, oldPushId)))[0]!;
+    expect(oldRow.status).toBe("verified");
+  });
+
+  it("a retire failure (invalid_plan) surfaces a structured error and does not create the new plan", async () => {
+    await seedCatalog();
+    // A plan row whose stored `plan` JSON fails liftingPlanSchema — the
+    // retire step's own `pushStudioPlan` call re-validates it and refuses.
+    const oldPlanId = newId();
+    await db.insert(studioPlans).values({
+      id: oldPlanId,
+      userId,
+      brief: plan().brief as unknown as Record<string, unknown>,
+      plan: { garbage: true } as unknown as Record<string, unknown>,
+      version: 1,
+      createdAt: nowInstant(),
+      updatedAt: nowInstant(),
+    });
+    const oldPushId = await seedVerifiedPushRow(oldPlanId);
+
+    const res = await client().post("/api/studio/generate", {
+      brief: validBriefInput("2026-10-05"),
+      replace: true,
+    });
+    expect(res.status).toBe(500);
+    expect((await res.json()) as { error: string }).toMatchObject({ error: "invalid_plan" });
+
+    // No new plan was created; the old row is untouched.
+    expect(await db.select().from(studioPlans).where(eq(studioPlans.userId, userId))).toHaveLength(1);
+    const oldRow = (await db.select().from(studioPlanPushes).where(eq(studioPlanPushes.id, oldPushId)))[0]!;
+    expect(oldRow.status).toBe("verified");
+  });
+});
+
 // `llmFailureResponse`'s status-code mapping (studio.ts). `no_api_key` and
 // `budget_cutoff` both return from generatePlan/editPlan BEFORE any gateway
 // fetch (studio-llm.ts checks the key, then the budget, ahead of the actual
@@ -555,12 +643,15 @@ describe("POST /api/studio/edit", () => {
     expect(rows[0]!.version).toBe(2);
   });
 
-  // F1 (fix round 1): a major:true edit regenerates the WHOLE plan via the
-  // strong model, so nothing but the route itself stops the model from
-  // echoing back a mutated brief. Scripts a gateway reply whose brief
-  // (constraints AND startDate) disagrees with the stored plan's, and asserts
-  // the persisted/returned plan keeps the STORED brief verbatim regardless.
-  it("major:true keeps the stored plan's brief verbatim, even when the model's reply mutates it", async () => {
+  // F1 (fix round 1), SELECTIVE (fix round 2): a major:true edit regenerates
+  // the WHOLE plan via the strong model, so nothing but the route itself
+  // stops the model from echoing back a mutated brief. Scripts a gateway
+  // reply whose free-text/schedule-anchor fields (constraints AND startDate)
+  // disagree with the stored plan's, and asserts the persisted/returned plan
+  // keeps exactly THOSE fields verbatim from the stored brief regardless —
+  // this is the "injection-sensitive fields locked" direction; the paired
+  // "structural fields editable" direction is the resize test below.
+  it("major:true reverts constraints/startDate to the stored brief, even when the model's reply mutates them", async () => {
     await seedCatalog();
     const storedPlan = plan();
     const planId = await seedPlan(storedPlan);
@@ -587,7 +678,8 @@ describe("POST /api/studio/edit", () => {
     // silently rejecting the whole reply)...
     expect(body.plan.name).toBe("Model Renamed It");
     // ...but the brief is exactly what was stored before the edit, not what
-    // the model emitted.
+    // the model emitted — every field is unchanged here (the mutation only
+    // touched the two locked ones), so whole-object equality still holds.
     expect(body.brief).toEqual(storedPlan.brief);
     expect(body.plan.brief).toEqual(storedPlan.brief);
     expect(body.brief.constraints).not.toBe("MODEL-INJECTED: skip all leg work");
@@ -596,6 +688,47 @@ describe("POST /api/studio/edit", () => {
     const row = (await db.select().from(studioPlans).where(eq(studioPlans.id, planId)))[0]!;
     expect(row.brief).toEqual(storedPlan.brief);
     expect((row.plan as unknown as LiftingPlan).brief).toEqual(storedPlan.brief);
+  });
+
+  // F1-REGRESSION (fix round 2): fix round 1's blanket brief lock forced the
+  // ENTIRE stored brief back onto every major-edit reply — including
+  // `durationWeeks`, which major-edit's own prompt explicitly permits
+  // changing on a resize request. That broke every resize with a spurious
+  // `invalid_output` the moment the model's (correct) new `durationWeeks`
+  // disagreed with the locked-back stale one. This is the paired "structural
+  // fields editable" direction of the F1 test above: a self-consistent
+  // resize (2 weeks → 3, `weeks.length` matching the new `durationWeeks`)
+  // must succeed and actually take effect.
+  it("major:true allows a legitimate resize (durationWeeks/weeks) the model returns", async () => {
+    await seedCatalog();
+    const storedPlan = plan(); // 2 weeks, 1 session/week (from the shared `plan()` helper)
+    const planId = await seedPlan(storedPlan);
+
+    const resizedPlan: LiftingPlan = {
+      ...storedPlan,
+      name: "Autumn Strength (extended)",
+      weeks: [...storedPlan.weeks, { sessions: [session()] }], // now 3 weeks
+      brief: { ...storedPlan.brief, durationWeeks: 3 },
+    };
+    const fetchImpl = (async () => chatResponse(resizedPlan)) as typeof fetch;
+
+    const res = await clientWithScriptedFetch(fetchImpl).post("/api/studio/edit", {
+      request: "add a third week",
+      major: true,
+    });
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { ok: boolean; plan: LiftingPlan; brief: PlanBrief };
+    expect(body.ok).toBe(true);
+    expect(body.brief.durationWeeks).toBe(3);
+    expect(body.plan.weeks).toHaveLength(3);
+    // The locked (injection-sensitive) fields are still exactly the stored
+    // ones — the resize didn't touch them, but the merge shouldn't either.
+    expect(body.brief.constraints).toBe(storedPlan.brief.constraints);
+    expect(body.brief.startDate).toBe(storedPlan.brief.startDate);
+
+    const row = (await db.select().from(studioPlans).where(eq(studioPlans.id, planId)))[0]!;
+    expect((row.brief as PlanBrief).durationWeeks).toBe(3);
+    expect((row.plan as unknown as LiftingPlan).weeks).toHaveLength(3);
   });
 });
 

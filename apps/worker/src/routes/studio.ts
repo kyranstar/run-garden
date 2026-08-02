@@ -352,33 +352,27 @@ studioRoutes.post("/generate", async (c) => {
   // CURRENT plan (the one about to stop being "current") has any row that IS
   // or MAY be materialized on COROS, refuse unless the caller explicitly
   // opts in with `replace: true`.
+  //
+  // F5-REGRESSION (fix round 2): this is a READ-ONLY decision here — whether
+  // a retire will be needed — not the retire itself. Fix round 1 ran the
+  // actual retire (`pushStudioPlan` with `desiredOverride: []`, which
+  // enqueues real DELETE jobs against the user's live COROS calendar) at
+  // this point, BEFORE the catalog check and the LLM call. Any routine
+  // failure after that (`catalog_not_synced`, `budget_cutoff`,
+  // `invalid_output`, …) left the deletes already enqueued with no new plan
+  // ever created — the old plan's live sessions started disappearing behind
+  // what the UI would show as a clean, retryable error. The retire action
+  // now happens ONLY once every other way this request can fail has already
+  // succeeded (see below, right before the new plan is persisted).
   const currentPlan = await loadCurrentPlan(db, userId);
+  let retireOldPlan = false;
   if (currentPlan) {
     const oldRows = await db
       .select()
       .from(studioPlanPushes)
       .where(eq(studioPlanPushes.planId, currentPlan.id));
-    if (oldRows.some(hasLivePush)) {
-      if (!parsed.data.replace) return c.json({ error: "plan_has_live_pushes" }, 409);
-      // Retire the OLD plan's live sessions FIRST — before the new plan row
-      // is even created. `desiredOverride: []` makes every one of its
-      // existing rows look removed to the diff, so `pushStudioPlan`'s
-      // already-guarded removal machinery (the same triple-addressed,
-      // ownership-reproving delete path a normal push uses — not a bespoke
-      // bulk-delete) enqueues a delete for every addressable row. The old
-      // plan's own stored `plan`/`brief` content is untouched — it stays in
-      // `studio_plans` as history, just no longer "current".
-      //
-      // This is ASYNC: the bridge executes the deletes on its own poll, so
-      // the new plan below may finish generating — and even get pushed —
-      // before the old workouts are actually gone from COROS.
-      // `planPush`'s title-uniqueness guard is what makes that race SAFE
-      // rather than silently double-writing: a new session whose stamp
-      // collides with a not-yet-deleted old workout fails closed as
-      // `duplicate_title` instead, and a later `/push` retry (once the
-      // delete has verified) succeeds normally.
-      await pushStudioPlan(db, { userId, studioPlanId: currentPlan.id, today, desiredOverride: [] });
-    }
+    retireOldPlan = oldRows.some(hasLivePush);
+    if (retireOldPlan && !parsed.data.replace) return c.json({ error: "plan_has_live_pushes" }, 409);
   }
 
   // Binding carry-forward (b): normalize intake to the ISO-week Monday BEFORE
@@ -408,6 +402,37 @@ studioRoutes.post("/generate", async (c) => {
   const finalPlan: LiftingPlan = { ...result.plan, brief: normalizedBrief };
   const revalidated = liftingPlanSchema.safeParse(finalPlan);
   if (!revalidated.success) return c.json({ error: "invalid_output" }, 422);
+
+  // Everything that could still fail this request has now succeeded — the
+  // new plan is fully validated and ready to persist. ONLY NOW retire the
+  // old plan's live sessions (see the F5-REGRESSION note above), immediately
+  // followed by inserting the new plan row, so no routine failure above this
+  // point can ever leave a retire enqueued with nothing to show for it.
+  if (retireOldPlan && currentPlan) {
+    const retireSummary = await pushStudioPlan(db, {
+      userId,
+      studioPlanId: currentPlan.id,
+      today,
+      desiredOverride: [],
+    });
+    if (!retireSummary.ok) {
+      // The retire call's own push machinery reports the true state
+      // (`plan_not_found` / `invalid_plan`) rather than this route guessing
+      // at one. The new plan is deliberately NOT created: retrying
+      // `/generate` with `replace: true` again is safe — a retire is itself
+      // idempotent (re-pushing the same "everything removed" desired set
+      // against whatever the old plan's rows now look like).
+      return pushOutcomeResponse(c, retireSummary);
+    }
+    // This is ASYNC beyond this point: the bridge executes the enqueued
+    // deletes on its own poll, so the new plan below may get pushed before
+    // the old workouts are actually gone from COROS. `planPush`'s
+    // title-uniqueness guard is what makes that race SAFE rather than
+    // silently double-writing: a new session whose stamp collides with a
+    // not-yet-deleted old workout fails closed as `duplicate_title` instead,
+    // and a later `/push`/`push/retry` (once the delete has verified)
+    // succeeds normally.
+  }
 
   const now = await nextPlanCreatedAt(db, userId, nowInstant());
   await db.insert(studioPlans).values({
@@ -465,20 +490,47 @@ studioRoutes.post("/edit", async (c) => {
   );
   if (!result.plan) return llmFailureResponse(c, result.reason);
 
-  // F1 (fix round 1): force the persisted brief back to the STORED plan's
-  // brief verbatim, regardless of what the model emitted, then re-validate.
-  // The minor (ops) path can't touch `/brief` at all (`applyOps`'s
-  // `IMMUTABLE_ROOT_SEGMENT` guard) — this is a no-op there. `major: true`
-  // asks the strong model for a full regenerate, and nothing stops it from
-  // echoing back a mutated brief: a changed `startDate` would silently break
-  // the push grid's day math (`sessionHappenDay` reads `plan.brief.startDate`
-  // directly), and changed `constraints`/`equipment` would silently drop a
-  // safety-relevant field the user never asked to edit. Same defense-in-depth
-  // pattern as `/generate` forcing its own normalized brief onto the LLM's
-  // output, just anchored to the stored plan's brief instead of a freshly
-  // normalized one (an edit's brief is immutable by definition — nothing
-  // "normalizes" it here, it's simply not up for revision).
-  const finalPlan: LiftingPlan = { ...result.plan, brief: existing.data.brief };
+  // F1 (fix round 1), SELECTIVE (fix round 2 — the blanket version below was
+  // a regression). The minor (ops) path can't touch `/brief` at all
+  // (`applyOps`'s `IMMUTABLE_ROOT_SEGMENT` guard) — none of this applies
+  // there. `major: true` asks the strong model for a full regenerate, and
+  // its own prompt (`buildMajorReviseSystemPrompt`) explicitly PERMITS it to
+  // change `durationWeeks`/`sessionsPerWeek`/`preferredDays` when the
+  // request asks for a resize — fix round 1's fix locked the WHOLE brief
+  // back to the stored one regardless, which blocked every legitimate resize
+  // with a spurious `invalid_output` (`weeks.length` disagreeing with the
+  // locked-back, stale `durationWeeks`).
+  //
+  // Locked back to the STORED plan's values regardless of what the model
+  // emits: `constraints`, `equipment`, `notes` — the free-text fields a
+  // prompt-injected edit request could use to rewrite something
+  // safety-relevant (the injuries/exclusions field) or just silently drop
+  // user-authored detail, exactly the surface `applyOps`'s `/brief` lock
+  // already closes on the minor path — and `startDate`, the scheduling
+  // anchor (`sessionHappenDay` reads `plan.brief.startDate` directly; an
+  // edit's start date is simply not up for revision, nothing here
+  // "normalizes" it the way `/generate`'s intake does).
+  //
+  // Left as the model returned them: `goal`, `durationWeeks`,
+  // `sessionsPerWeek`, `sessionMinutes`, `preferredDays` — none of these are
+  // free text (an enum, three numbers, an array of weekday numbers), so none
+  // are an injection surface, and these are exactly the structural fields a
+  // resize/rescope request needs to change. `liftingPlanSchema`'s own refine
+  // (`weeks.length===durationWeeks`) and `planBriefSchema`'s own refine
+  // (`preferredDays.length===sessionsPerWeek`) still enforce internal
+  // consistency on whatever the model produced for these — a
+  // self-inconsistent resize still fails re-validation, it's just no longer
+  // blocked by a stale locked value that had nothing to do with the request.
+  const finalPlan: LiftingPlan = {
+    ...result.plan,
+    brief: {
+      ...result.plan.brief,
+      constraints: existing.data.brief.constraints,
+      equipment: existing.data.brief.equipment,
+      notes: existing.data.brief.notes,
+      startDate: existing.data.brief.startDate,
+    },
+  };
   const revalidated = liftingPlanSchema.safeParse(finalPlan);
   if (!revalidated.success) return c.json({ error: "invalid_output" }, 422);
 
