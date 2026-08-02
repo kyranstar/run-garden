@@ -57,6 +57,18 @@ export interface BridgeSnapshot {
   health: DailyHealth[];
   /** Counts of sportType codes not admitted into the garden import, by code. */
   skippedSportTypes?: Record<string, number>;
+  /** COROS strength-exercise catalog (id/name pairs); see BuildSnapshotOptions. */
+  exerciseCatalog?: Array<{ id: string; name: string }>;
+}
+
+export interface BuildSnapshotOptions {
+  /**
+   * Fetch and include the sportType=4 (strength) exercise catalog
+   * (plan-studio-design §4, spike-verified: 382 entries live). The caller
+   * (CloudSync) decides this based on whether the worker's previous sync
+   * response said its stored catalog was stale.
+   */
+  includeExerciseCatalog?: boolean;
 }
 
 export async function buildSnapshot(
@@ -64,6 +76,7 @@ export async function buildSnapshot(
   rangeStart: string,
   rangeEnd: string,
   resolver: NameResolver | undefined,
+  opts: BuildSnapshotOptions = {},
 ): Promise<BridgeSnapshot> {
   // ── Plan + workouts ────────────────────────────────────────────────────────
   const raw = await client.getRawSchedule(rangeStart, rangeEnd);
@@ -122,6 +135,21 @@ export async function buildSnapshot(
       return { ...base, contentFingerprint: fingerprint(base) };
     });
 
+  // ── Exercise catalog (only when the worker last said its copy was stale) ──
+  let exerciseCatalog: Array<{ id: string; name: string }> | undefined;
+  if (opts.includeExerciseCatalog) {
+    try {
+      // sportType 4 = strength (spike-verified, 382 entries live).
+      const items = await client.getExerciseCatalog(4);
+      exerciseCatalog = items
+        .filter((i): i is typeof i & { name: string } => typeof i.name === "string")
+        .map((i) => ({ id: String(i.id), name: i.name }));
+    } catch {
+      // Best-effort: the worker's catalog stays stale, so the next sync retries.
+      exerciseCatalog = undefined;
+    }
+  }
+
   return {
     plan,
     workouts,
@@ -129,6 +157,7 @@ export async function buildSnapshot(
     lapsByProviderId,
     health,
     ...(Object.keys(skipped).length > 0 ? { skippedSportTypes: skipped } : {}),
+    ...(exerciseCatalog ? { exerciseCatalog } : {}),
   };
 }
 

@@ -8,6 +8,13 @@
       "when": 1785603609597,
       "tag": "0000_little_black_panther",
       "breakpoints": true
+    },
+    {
+      "idx": 1,
+      "version": "6",
+      "when": 1785689714676,
+      "tag": "0001_luxuriant_archangel",
+      "breakpoints": true
     }
   ]
 }

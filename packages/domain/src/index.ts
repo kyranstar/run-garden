@@ -12,3 +12,4 @@ export * from "./preferences.js";
 export * from "./jobs.js";
 export * from "./garden.js";
 export * from "./devices.js";
+export * from "./studio.js";

@@ -12,6 +12,7 @@ export default defineConfig({
     "./src/schema/garden.ts",
     "./src/schema/product.ts",
     "./src/schema/ops.ts",
+    "./src/schema/studio.ts",
   ],
   out: "./migrations",
 });

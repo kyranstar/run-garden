@@ -89,6 +89,14 @@ export class CloudSync {
   /** Serializes snapshot pushes and job execution: one COROS write at a time. */
   private chain: Promise<void> = Promise.resolve();
   private localePromise: Promise<NameResolver | undefined> | null = null;
+  /**
+   * Whether the worker's stored exercise catalog is believed stale. Starts
+   * `true`: at process start the bridge has no knowledge of the worker's
+   * state, so the first-ever sync includes the catalog (documented choice —
+   * see plan-studio-design §4). Updated from each sync response's
+   * `catalogStale` field.
+   */
+  private catalogStale = true;
 
   constructor(opts: CloudSyncOptions) {
     this.apiUrl = opts.apiUrl.replace(/\/+$/, "");
@@ -122,8 +130,10 @@ export class CloudSync {
     const rangeEnd = addDays(today, SNAPSHOT_FUTURE_DAYS);
     this.localePromise ??= loadNameResolver(this.client.fetchImpl);
     const resolver = await this.localePromise;
-    const snapshot = await buildSnapshot(this.client, rangeStart, rangeEnd, resolver);
-    await this.post("/api/devices/bridge/sync", {
+    const snapshot = await buildSnapshot(this.client, rangeStart, rangeEnd, resolver, {
+      includeExerciseCatalog: this.catalogStale,
+    });
+    const response = (await this.post("/api/devices/bridge/sync", {
       bridgeVersion: this.bridgeVersion,
       capabilities: this.client.getCapabilities(),
       plan: snapshot.plan,
@@ -134,7 +144,10 @@ export class CloudSync {
       lapsByProviderId: snapshot.lapsByProviderId,
       health: snapshot.health,
       skippedSportTypes: snapshot.skippedSportTypes,
-    });
+      exerciseCatalog: snapshot.exerciseCatalog,
+    })) as { catalogStale?: boolean };
+    // Conservative default: if the response is old/unparseable, keep trying.
+    this.catalogStale = response.catalogStale ?? true;
     this.logger("[coros-bridge] cloud sync pushed snapshot");
   }
 

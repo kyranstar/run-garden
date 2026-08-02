@@ -16,6 +16,7 @@ import { importPlanSnapshot } from "../services/import-plan.js";
 import { ingestActivities } from "../services/completion.js";
 import { advanceGarden, buildGardenView, resimulateFrom } from "../services/garden-sync.js";
 import { finishSyncRun, recordSyncError, startSyncRun } from "../services/reconcile-daily.js";
+import { isExerciseCatalogStale, upsertExerciseCatalog } from "../services/exercise-catalog.js";
 import { dailyHealth } from "@rg/database";
 import { fingerprint } from "@rg/domain";
 
@@ -154,6 +155,9 @@ const bridgeSyncSchema = z.object({
   // Counts of sportType codes the bridge saw but did not admit (e.g. bike),
   // keyed by sportType string. Optional so older bridges stay valid.
   skippedSportTypes: z.record(z.number()).optional(),
+  // The COROS strength-exercise catalog (id/name pairs), sent only when the
+  // bridge believes the worker's stored copy is stale (plan-studio-design §4).
+  exerciseCatalog: z.array(z.object({ id: z.string(), name: z.string() })).optional(),
 });
 
 deviceRoutes.post("/bridge/sync", requireDevice, async (c) => {
@@ -264,9 +268,15 @@ deviceRoutes.post("/bridge/sync", requireDevice, async (c) => {
       stats.health = (body.health as unknown[]).length;
     }
 
+    if (body.exerciseCatalog && body.exerciseCatalog.length > 0) {
+      const catalog = await upsertExerciseCatalog(db, body.exerciseCatalog);
+      stats.exerciseCatalog = catalog;
+    }
+
     await advanceGarden(db, userId, await loadPreferences(db, userId));
     await finishSyncRun(db, runId, "ok", stats);
-    return c.json({ ok: true, stats });
+    const catalogStale = await isExerciseCatalogStale(db);
+    return c.json({ ok: true, stats, catalogStale });
   } catch (e) {
     await recordSyncError(db, {
       syncRunId: runId,
