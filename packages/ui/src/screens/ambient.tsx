@@ -162,6 +162,7 @@ export function AmbientGarden({ fetchGarden, onExit }: AmbientGardenProps) {
             idPrefix="rg-ambient"
             className="ambient-scene"
             preserveAspectRatio="xMidYMax slice"
+            atmosphere
           />
           <AmbientCaption view={shown} />
           <div className="ambient-clock">{clock}</div>

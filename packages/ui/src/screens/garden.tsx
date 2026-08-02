@@ -219,6 +219,7 @@ export function GardenScreen() {
           selectedPlantId={selectedPlantId}
           onSelectPlant={setSelectedPlantId}
           timeOfDay={hourOfDay}
+          atmosphere
         />
       </div>
 
