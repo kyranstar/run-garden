@@ -111,3 +111,23 @@ export async function computeSyncStatus(
     registered: presence.registered,
   };
 }
+
+/**
+ * Per-workout view, in the LEGACY CorosSyncState vocabulary so CorosPill and
+ * COROS_SYNC_LABELS keep working unchanged (the line-level SyncStatusState is
+ * a separate type with its own five values).
+ */
+export function deriveWorkoutSync(v: {
+  effectiveDate: string;
+  lastVerifiedCorosDate: string;
+  hasOpenIntent: boolean;
+  hasPendingJob: boolean;
+  hasFailedJob: boolean;
+  presence: DevicePresence;
+  writesEnabled: boolean;
+}): "synced" | "syncing" | "waiting_for_device" | "calendar_only" | "sync_issue" {
+  if (v.effectiveDate === v.lastVerifiedCorosDate && !v.hasPendingJob) return "synced";
+  if (v.hasPendingJob) return v.presence.online ? "syncing" : "waiting_for_device";
+  if (v.hasFailedJob) return "sync_issue";
+  return "calendar_only";
+}

@@ -14,22 +14,80 @@ import {
   trainingPlans,
   workoutCompletionMatches,
 } from "@rg/database";
-import { addDays, newId, nowInstant, todayInZone } from "@rg/domain";
+import { addDays, newId, nowInstant, todayInZone, type UserPreferences } from "@rg/domain";
 import { conditionWord, DEFAULT_GARDEN_CONFIG, type GardenSnapshot } from "@rg/garden-engine";
 import { proposeReschedules } from "@rg/scheduling";
 import type { AppContext } from "../auth/middleware.js";
 import { requireUser } from "../auth/middleware.js";
 import { googleCalendarClient } from "../services/google-calendar.js";
 import { loadPreferences, restoreCalendarEvent, syncCalendar } from "../services/calendar-sync.js";
+import { chunkIds, type Db } from "../services/db.js";
 import { applyMove } from "../services/jobs.js";
 import { recentGardenEvents, resimulateFrom } from "../services/garden-sync.js";
-import { recordIntent } from "../services/sync-intents.js";
-import { devicePresence } from "../services/sync-status.js";
+import { openMoveIntents, recordIntent } from "../services/sync-intents.js";
+import { deriveWorkoutSync, devicePresence } from "../services/sync-status.js";
 
 export const planRoutes = new Hono<AppContext>();
 planRoutes.use("*", requireUser);
 
-function workoutDto(w: typeof plannedWorkouts.$inferSelect) {
+/** `corosWriteJobs.status` values that mean "a write is in flight" — same set
+ * `jobs.ts`/`sync-status.ts` already use, duplicated locally the same way
+ * those files each already do (no shared export exists for it). */
+const IN_FLIGHT_JOB_STATUSES = ["queued", "claimed", "in_progress", "verifying"] as const;
+
+/**
+ * Bulk-loads what `deriveWorkoutSync` needs for every workout in `workouts`
+ * in a small, fixed number of queries (chunked with `chunkIds` for D1's bound-
+ * variable cap) rather than one round-trip per workout. `presence` is a
+ * single shared computation — device liveness doesn't vary per workout.
+ */
+async function loadWorkoutSyncViews(
+  db: Db,
+  userId: string,
+  workouts: Array<typeof plannedWorkouts.$inferSelect>,
+  prefs: UserPreferences,
+): Promise<Map<string, ReturnType<typeof deriveWorkoutSync>>> {
+  const map = new Map<string, ReturnType<typeof deriveWorkoutSync>>();
+  if (workouts.length === 0) return map;
+
+  const ids = workouts.map((w) => w.id);
+  const openIntentTargets = new Set((await openMoveIntents(db, userId)).map((i) => i.targetId));
+
+  const pendingIds = new Set<string>();
+  const failedIds = new Set<string>();
+  for (const chunk of chunkIds(ids)) {
+    const jobs = await db
+      .select({ workoutId: corosWriteJobs.workoutId, status: corosWriteJobs.status })
+      .from(corosWriteJobs)
+      .where(and(eq(corosWriteJobs.userId, userId), inArray(corosWriteJobs.workoutId, chunk)));
+    for (const j of jobs) {
+      if ((IN_FLIGHT_JOB_STATUSES as readonly string[]).includes(j.status)) pendingIds.add(j.workoutId);
+      else if (j.status === "failed") failedIds.add(j.workoutId);
+    }
+  }
+
+  const presence = await devicePresence(db, userId);
+  for (const w of workouts) {
+    map.set(
+      w.id,
+      deriveWorkoutSync({
+        effectiveDate: w.effectiveDate,
+        lastVerifiedCorosDate: w.lastVerifiedCorosDate,
+        hasOpenIntent: openIntentTargets.has(w.id),
+        hasPendingJob: pendingIds.has(w.id),
+        hasFailedJob: failedIds.has(w.id),
+        presence,
+        writesEnabled: prefs.corosWritesEnabled,
+      }),
+    );
+  }
+  return map;
+}
+
+function workoutDto(
+  w: typeof plannedWorkouts.$inferSelect,
+  corosSyncView?: ReturnType<typeof deriveWorkoutSync>,
+) {
   return {
     id: w.id,
     title: w.title,
@@ -46,6 +104,12 @@ function workoutDto(w: typeof plannedWorkouts.$inferSelect) {
     stageSummary: w.stageSummary,
     calendarSyncState: w.calendarSyncState,
     corosSyncState: w.corosSyncState,
+    // Derived per-workout view (sync-transparency Task 10), alongside the
+    // legacy stored `corosSyncState` above — not a replacement for it.
+    // Optional: routes that don't bulk-load it (or callers that predate this
+    // change) simply omit the field, `workoutDto`'s signature stays
+    // backward-compatible either way.
+    ...(corosSyncView !== undefined ? { corosSyncView } : {}),
     completionState: w.completionState,
     archived: !!w.archivedAt,
   };
@@ -155,12 +219,18 @@ planRoutes.get("/today", async (c) => {
     )
     .limit(1);
 
+  // One bulk load covers every workout shown on Today (next is always a
+  // member of upcoming, included here via the same dedup-by-id map).
+  const syncViewSource = new Map<string, typeof plannedWorkouts.$inferSelect>();
+  for (const w of [...upcoming, ...unresolved, ...attention]) syncViewSource.set(w.id, w);
+  const syncViews = await loadWorkoutSyncViews(db, userId, [...syncViewSource.values()], prefs);
+
   return c.json({
     today,
-    nextWorkout: next ? workoutDto(next) : null,
-    upcoming: upcoming.map(workoutDto),
-    unresolved: unresolved.map(workoutDto),
-    needsAttention: attention.map(workoutDto),
+    nextWorkout: next ? workoutDto(next, syncViews.get(next.id)) : null,
+    upcoming: upcoming.map((w) => workoutDto(w, syncViews.get(w.id))),
+    unresolved: unresolved.map((w) => workoutDto(w, syncViews.get(w.id))),
+    needsAttention: attention.map((w) => workoutDto(w, syncViews.get(w.id))),
     sync: {
       pendingCorosJobs: pendingJobs.length,
       deviceOnline: presence.online,
@@ -238,24 +308,28 @@ planRoutes.get("/workouts", async (c) => {
   const primary = [...plans].sort(
     (a, b) => (countByPlanId.get(b.id) ?? 0) - (countByPlanId.get(a.id) ?? 0),
   )[0];
+  const syncViews = await loadWorkoutSyncViews(db, c.get("userId"), rows, prefs);
   return c.json({
     today,
     plan: primary ? { name: primary.name, startDate: primary.startDate, endDate: primary.endDate } : null,
     corosWritesEnabled: prefs.corosWritesEnabled,
-    workouts: rows.map(workoutDto),
+    workouts: rows.map((w) => workoutDto(w, syncViews.get(w.id))),
   });
 });
 
 planRoutes.get("/workouts/:id", async (c) => {
   const db = c.get("db");
+  const userId = c.get("userId");
   const w = (
     await db
       .select()
       .from(plannedWorkouts)
-      .where(and(eq(plannedWorkouts.id, c.req.param("id")), eq(plannedWorkouts.userId, c.get("userId"))))
+      .where(and(eq(plannedWorkouts.id, c.req.param("id")), eq(plannedWorkouts.userId, userId)))
       .limit(1)
   )[0];
   if (!w) return c.json({ error: "not_found" }, 404);
+  const prefs = await loadPreferences(db, userId);
+  const syncViews = await loadWorkoutSyncViews(db, userId, [w], prefs);
   const stages = await db
     .select()
     .from(plannedWorkoutStages)
@@ -281,7 +355,7 @@ planRoutes.get("/workouts/:id", async (c) => {
     .orderBy(desc(corosWriteJobs.requestedAt))
     .limit(3);
   return c.json({
-    workout: workoutDto(w),
+    workout: workoutDto(w, syncViews.get(w.id)),
     durationEstimate: w.durationEstimate,
     stages,
     match: match ? { ...match, activity } : null,

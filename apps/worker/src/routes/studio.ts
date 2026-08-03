@@ -7,7 +7,6 @@ import {
   corosExercises,
   corosWriteJobs,
   desktopDevices,
-  plannedWorkouts,
   studioPlanPushes,
   studioPlans,
 } from "@rg/database";
@@ -29,10 +28,9 @@ import { requireUser } from "../auth/middleware.js";
 import type { Db } from "../services/db.js";
 import { loadPreferences } from "../services/calendar-sync.js";
 import { llmBudgetStatus, LLM_BUDGET } from "../services/llm.js";
-import { recordIntent } from "../services/sync-intents.js";
 import { DEVICE_ONLINE_WINDOW_MS, devicePresence } from "../services/sync-status.js";
 import { editPlan, generatePlan, type CatalogEntry } from "../services/studio-llm.js";
-import { pushStudioPlan } from "../services/studio-push.js";
+import { pushStudioPlan, undoStudioAdoption } from "../services/studio-push.js";
 
 /**
  * Plan Studio API routes (plan-studio-design §7, task-5-brief.md).
@@ -709,113 +707,15 @@ studioRoutes.post("/adoption/:pushId/undo", async (c) => {
   const userId = c.get("userId");
   const pushId = c.req.param("pushId");
 
-  // A single query, joined through studioPlans and scoped by userId: an
-  // unknown pushId, one belonging to another user's plan, and one that exists
-  // but isn't "adopted" all fall through to the SAME { error: "not_found" },
-  // 404 below — distinguishing them in the response would let a caller
-  // enumerate other users' (or their own non-adopted) push ids by shape alone.
-  const row = (
-    await db
-      .select({
-        id: studioPlanPushes.id,
-        planId: studioPlanPushes.planId,
-        happenDay: studioPlanPushes.happenDay,
-        sessionTitle: studioPlanPushes.sessionTitle,
-        corosIdInPlan: studioPlanPushes.corosIdInPlan,
-        corosPlanId: studioPlanPushes.corosPlanId,
-        status: studioPlanPushes.status,
-      })
-      .from(studioPlanPushes)
-      .innerJoin(studioPlans, eq(studioPlanPushes.planId, studioPlans.id))
-      .where(and(eq(studioPlanPushes.id, pushId), eq(studioPlans.userId, userId)))
-      .limit(1)
-  )[0];
-  if (!row || row.status !== "adopted") return c.json({ error: "not_found" }, 404);
-
-  // The last snapshot's opinion of the source workout, keyed the same way
-  // `detectDrift` keys `observed`. Ids missing entirely (a legacy/edge row)
-  // are treated the same as an observation that says the workout is gone.
-  const sourceWorkoutId =
-    row.corosIdInPlan && row.corosPlanId ? `${row.corosPlanId}:${row.corosIdInPlan}` : null;
-  const observation = sourceWorkoutId
-    ? (
-        await db
-          .select({
-            title: plannedWorkouts.title,
-            lastVerifiedCorosDate: plannedWorkouts.lastVerifiedCorosDate,
-            archivedAt: plannedWorkouts.archivedAt,
-            archiveReason: plannedWorkouts.archiveReason,
-          })
-          .from(plannedWorkouts)
-          .where(
-            and(eq(plannedWorkouts.userId, userId), eq(plannedWorkouts.sourceWorkoutId, sourceWorkoutId)),
-          )
-          .limit(1)
-      )[0]
-    : undefined;
-
-  const missing =
-    !observation ||
-    (Boolean(observation.archivedAt) && observation.archiveReason === "absence_confirmed");
-  const renamed = !missing && observation!.title !== row.sessionTitle;
-
-  if (renamed) {
-    // A renamed workout no longer carries our ownership stamp; the safety
-    // core cannot prove a delete of it is ours. The honest answer is refusal
-    // — if the user deletes the renamed copy in COROS, absence confirms and
-    // undo becomes the recreate path.
-    return c.json({ error: "undo_unsupported_rename" }, 409);
-  }
-
-  const now = nowInstant();
-  if (missing) {
-    // COROS already removed it: nothing addressable to delete, so a plain
-    // recreate suffices. Clears the stale ids so the diff sees an
-    // unaddressable row and plans a create, not a delete.
-    await db
-      .update(studioPlanPushes)
-      .set({
-        status: "failed",
-        error: null,
-        corosIdInPlan: null,
-        corosProgramId: null,
-        corosEntityId: null,
-        corosPlanId: null,
-        corosHappenDay: null,
-        sessionFingerprint: "undo-forced",
-        updatedAt: now,
-      })
-      .where(eq(studioPlanPushes.id, pushId));
-  } else {
-    // MOVED: still there, still ours. Re-pushing will delete the workout at
-    // wherever it actually is and recreate the original: force the
-    // fingerprint stale so the diff plans exactly that.
-    await db
-      .update(studioPlanPushes)
-      .set({ status: "verified", error: null, sessionFingerprint: "undo-forced", updatedAt: now })
-      .where(eq(studioPlanPushes.id, pushId));
-  }
-
-  await recordIntent(db, {
-    userId,
-    targetKind: "studio_session",
-    targetId: pushId,
-    kind: "restore",
-    source: "undo",
-  });
-
   const prefs = await loadPreferences(db, userId);
-  const summary = await pushStudioPlan(db, {
-    userId,
-    studioPlanId: row.planId,
-    today: todayInZone(prefs.timezone),
-    // MOVED puts the row back to "verified" with its old (corosIdInPlan,
-    // corosPlanId) address still on it, which `detectDrift` would otherwise
-    // re-examine on this very push and re-adopt mid-flight — cancelling the
-    // correction this route just planned before it ever reaches COROS.
-    // (MISSING sets the row to "failed", which `detectDrift` already skips,
-    // so suppression is a no-op there — passed only for the MOVED case.)
-    ...(missing ? {} : { suppressDriftPushIds: new Set([pushId]) }),
-  });
-  return c.json({ ok: summary.ok, summary });
+  const result = await undoStudioAdoption(db, userId, pushId, todayInZone(prefs.timezone));
+  if (!result.ok) {
+    // A pushId that doesn't exist, belongs to another user's plan, or isn't
+    // "adopted" all fall through to the SAME `not_found` (see
+    // `undoStudioAdoption`'s own doc comment) — distinguishing them would let
+    // a caller enumerate other users' (or their own non-adopted) push ids by
+    // shape alone.
+    return c.json({ error: result.error }, result.error === "undo_unsupported_rename" ? 409 : 404);
+  }
+  return c.json({ ok: result.summary.ok, summary: result.summary });
 });
