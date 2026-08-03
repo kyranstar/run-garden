@@ -24,6 +24,7 @@ import { loadPreferences, syncCalendar } from "./services/calendar-sync.js";
 import { advanceGarden } from "./services/garden-sync.js";
 import { reconcileCompletionStates, startSyncRun, finishSyncRun } from "./services/reconcile-daily.js";
 import { generateWeeklyReview } from "./services/llm.js";
+import { healLegacySyncState } from "./services/heal-legacy-sync.js";
 import { purgeExpiredSessions, createSession, sessionCookie } from "./auth/sessions.js";
 import { purgeExpiredStates } from "./auth/google.js";
 import { ensureFixtureUser, seedFixtures } from "./services/fixtures.js";
@@ -107,6 +108,7 @@ async function hourly(db: Db, env: Env): Promise<void> {
       const prefs = await loadPreferences(db, userId);
       const rec = await reconcileCompletionStates(db, userId, prefs);
       const garden = await advanceGarden(db, userId, prefs);
+      await healLegacySyncState(db, userId);
       await finishSyncRun(db, runId, "ok", { ...rec, ...garden });
     } catch {
       await finishSyncRun(db, runId, "error");
