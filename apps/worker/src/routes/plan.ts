@@ -11,6 +11,7 @@ import {
   plannedWorkoutStages,
   plannedWorkouts,
   providerConnections,
+  scheduleOverrides,
   trainingPlans,
   workoutCompletionMatches,
 } from "@rg/database";
@@ -484,6 +485,47 @@ planRoutes.post("/workouts/:id/skip", async (c) => {
     .set({ completionState: "skipped", resolutionDate: today, updatedAt: now })
     .where(and(eq(plannedWorkouts.id, c.req.param("id")), eq(plannedWorkouts.userId, userId)));
   await resimulateFrom(db, userId, today, prefs).catch(() => undefined);
+  return c.json({ ok: true });
+});
+
+/**
+ * Reverse a skip: only valid while still `skipped` (a completed/matched
+ * workout has moved on and isn't "un-skippable"). Back to scheduled, the
+ * skip's resolutionDate cleared, and — since that resolutionDate is what fed
+ * `missedRuns` into the garden sim (garden-sync.ts's `buildDayInput`) —
+ * resimulated from that same date so the garden forgets the miss, mirroring
+ * how the skip route itself resimulates from the date it just wrote.
+ */
+planRoutes.post("/workouts/:id/unskip", async (c) => {
+  const db = c.get("db");
+  const userId = c.get("userId");
+  const w = (
+    await db
+      .select()
+      .from(plannedWorkouts)
+      .where(and(eq(plannedWorkouts.id, c.req.param("id")), eq(plannedWorkouts.userId, userId)))
+      .limit(1)
+  )[0];
+  if (!w) return c.json({ error: "not_found" }, 404);
+  if (w.completionState !== "skipped") return c.json({ error: "not_skipped" }, 422);
+  const now = nowInstant();
+  // buildDayInput falls back to effectiveDate when resolutionDate is unset;
+  // matching that fallback here keeps the resim target correct either way.
+  const resolvedOn = w.resolutionDate ?? w.effectiveDate;
+  await db
+    .update(plannedWorkouts)
+    .set({ completionState: "scheduled", resolutionDate: null, updatedAt: now })
+    .where(and(eq(plannedWorkouts.id, w.id), eq(plannedWorkouts.userId, userId)));
+  await db.insert(scheduleOverrides).values({
+    id: newId(),
+    workoutId: w.id,
+    kind: "restore",
+    fromDate: resolvedOn,
+    source: "app",
+    createdAt: now,
+  });
+  const prefs = await loadPreferences(db, userId);
+  await resimulateFrom(db, userId, resolvedOn, prefs).catch(() => undefined);
   return c.json({ ok: true });
 });
 

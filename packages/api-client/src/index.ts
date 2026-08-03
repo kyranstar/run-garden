@@ -376,6 +376,7 @@ export const api = {
       toTime,
     }),
   skip: (id: string) => post(`/api/plan/workouts/${id}/skip`),
+  unskipWorkout: (id: string) => post(`/api/plan/workouts/${id}/unskip`),
   defer: (id: string) => post(`/api/plan/workouts/${id}/defer`),
   match: (id: string, activityId: string) => post(`/api/plan/workouts/${id}/match`, { activityId }),
   unmatch: (id: string) => post(`/api/plan/workouts/${id}/unmatch`),

@@ -1,6 +1,5 @@
 /**
- * Route-level tests for two `apps/worker/src/routes/plan.ts` handlers touched
- * by the sync-transparency final-review fixes (2026-08-03):
+ * Route-level tests for `apps/worker/src/routes/plan.ts` handlers:
  *
  * - `POST /workouts/:id/remove` must resolve any open move intent for the
  *   workout being archived — otherwise it strands a permanent, uncloseable
@@ -9,13 +8,17 @@
  *   before calling `applyMove`, clearing `emitPendingWork`'s
  *   attempts-exhausted guard (jobs.ts) so a user-initiated retry actually
  *   re-arms future emission.
+ * - `POST /workouts/:id/unskip` (un-skip, 2026-08-03) must reverse
+ *   `/workouts/:id/skip`: restore `scheduled`, clear `resolutionDate`, and
+ *   record a `restore`-kind `schedule_overrides` row — and must refuse when
+ *   the workout isn't currently `skipped`.
  *
  * Mounts `planRoutes` the same way sync-routes.test.ts mounts `syncRoutes`.
  */
 import { beforeEach, describe, expect, it } from "vitest";
 import { eq } from "drizzle-orm";
 import { schema } from "@rg/database";
-import { newId, nowInstant } from "@rg/domain";
+import { newId, nowInstant, todayInZone } from "@rg/domain";
 import type { Env } from "../src/env.js";
 import type { Db } from "../src/services/db.js";
 import type { UserPreferences } from "@rg/domain";
@@ -25,7 +28,7 @@ import { openIntentFor } from "../src/services/sync-intents.js";
 import { createSession, SESSION_COOKIE } from "../src/auth/sessions.js";
 import { makeTestDb, makeTestUser, mountRoutes, registerTestDevice } from "./helpers.js";
 
-const { corosWriteJobs, plannedWorkouts } = schema;
+const { corosWriteJobs, plannedWorkouts, scheduleOverrides } = schema;
 
 function makeEnv(): Env {
   return {
@@ -179,5 +182,57 @@ describe("POST /api/plan/workouts/:id/retry-coros", () => {
     const queued = afterRetry.filter((j) => j.status === "queued");
     expect(queued).toHaveLength(1);
     expect(queued[0]!.destinationDate).toBe("2026-08-10");
+  });
+});
+
+describe("POST /api/plan/workouts/:id/unskip", () => {
+  it("skip → unskip round-trip: restores scheduled, clears resolutionDate, and writes a restore override", async () => {
+    const workoutId = await insertWorkout({ effectiveDate: "2026-08-01" });
+
+    const skipRes = await client().post(`/api/plan/workouts/${workoutId}/skip`);
+    expect(skipRes.status).toBe(200);
+    const today = todayInZone(prefs.timezone);
+    const skipped = (
+      await db.select().from(plannedWorkouts).where(eq(plannedWorkouts.id, workoutId))
+    )[0]!;
+    expect(skipped.completionState).toBe("skipped");
+    expect(skipped.resolutionDate).toBe(today);
+
+    const res = await client().post(`/api/plan/workouts/${workoutId}/unskip`);
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ ok: true });
+
+    const restored = (
+      await db.select().from(plannedWorkouts).where(eq(plannedWorkouts.id, workoutId))
+    )[0]!;
+    expect(restored.completionState).toBe("scheduled");
+    expect(restored.resolutionDate).toBeNull();
+
+    const overrides = await db
+      .select()
+      .from(scheduleOverrides)
+      .where(eq(scheduleOverrides.workoutId, workoutId));
+    const restoreOverride = overrides.find((o) => o.kind === "restore");
+    expect(restoreOverride).toBeDefined();
+    expect(restoreOverride!.source).toBe("app");
+    expect(restoreOverride!.fromDate).toBe(today);
+  });
+
+  it("4xxs when the workout isn't currently skipped", async () => {
+    const workoutId = await insertWorkout();
+
+    const res = await client().post(`/api/plan/workouts/${workoutId}/unskip`);
+    expect(res.status).toBeGreaterThanOrEqual(400);
+    expect(res.status).toBeLessThan(500);
+
+    const unchanged = (
+      await db.select().from(plannedWorkouts).where(eq(plannedWorkouts.id, workoutId))
+    )[0]!;
+    expect(unchanged.completionState).toBe("scheduled");
+  });
+
+  it("404s for a workout that doesn't exist", async () => {
+    const res = await client().post(`/api/plan/workouts/${newId()}/unskip`);
+    expect(res.status).toBe(404);
   });
 });

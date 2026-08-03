@@ -102,6 +102,7 @@ function WorkoutDetail({
   const restore = useMutation({ mutationFn: () => api.restoreCalendar(w.id), onSuccess: invalidate });
   const unmatch = useMutation({ mutationFn: () => api.unmatch(w.id), onSuccess: invalidate });
   const skip = useMutation({ mutationFn: () => api.skip(w.id), onSuccess: invalidate });
+  const unskip = useMutation({ mutationFn: () => api.unskipWorkout(w.id), onSuccess: invalidate });
   const remove = useMutation({
     mutationFn: () => api.removeWorkout(w.id),
     onSuccess: () => {
@@ -220,6 +221,11 @@ function WorkoutDetail({
           {(w.completionState === "completed" || w.completionState === "provisionally_completed") ? (
             <button className="btn" disabled={unmatch.isPending} onClick={() => unmatch.mutate()}>
               Undo match
+            </button>
+          ) : null}
+          {w.completionState === "skipped" ? (
+            <button className="btn" disabled={unskip.isPending} onClick={() => unskip.mutate()}>
+              Un-skip
             </button>
           ) : null}
           {w.completionState !== "completed" && w.completionState !== "provisionally_completed" ? (
