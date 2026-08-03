@@ -14,12 +14,67 @@ const STEPS = ["Value", "Desktop", "COROS", "Calendar", "Strava", "Preferences",
 
 export function Onboarding({ onDone }: { onDone: () => void }) {
   const [step, setStep] = useState(0);
+  const [forceWizard, setForceWizard] = useState(false);
   const next = () => setStep((s) => Math.min(s + 1, STEPS.length - 1));
   const back = () => setStep((s) => Math.max(s - 1, 0));
+
+  // An account configured elsewhere must never be walked through setup
+  // again: signing in on a new device (the phone PWA, another browser) is a
+  // sign-IN, not a first run. `deviceRegistered` is the tell — the desktop
+  // companion has already been paired.
+  const today = useQuery({ queryKey: ["today"], queryFn: api.today });
+  if (today.isLoading) {
+    return (
+      <div className="shell">
+        <main className="shell-main" style={{ maxWidth: 560 }}>
+          <Spinner label="One moment" />
+        </main>
+      </div>
+    );
+  }
+  if (today.data?.sync.deviceRegistered && !forceWizard) {
+    return (
+      <div className="shell">
+        <main className="shell-main" style={{ maxWidth: 560 }}>
+          <Card>
+            <h1 className="hero-title" style={{ fontSize: "1.6rem" }}>
+              You're already set up 🌿
+            </h1>
+            <p className="muted" style={{ marginTop: "0.7rem" }}>
+              The Run Garden desktop app on your Mac keeps COROS and your calendar synced in the
+              background — nothing to configure here.
+            </p>
+            <p className="muted">
+              On this device you get everything else: your garden, the full plan calendar, the
+              lifting studio, and activity insights — wherever you are.
+            </p>
+            <div style={{ marginTop: "1rem" }}>
+              <button className="btn btn-primary" style={{ width: "100%" }} onClick={onDone}>
+                Open your garden
+              </button>
+              <button
+                className="btn"
+                style={{ width: "100%", marginTop: "0.5rem" }}
+                onClick={() => setForceWizard(true)}
+              >
+                Run setup again anyway
+              </button>
+            </div>
+          </Card>
+        </main>
+      </div>
+    );
+  }
 
   return (
     <div className="shell">
       <main className="shell-main" style={{ maxWidth: 560 }}>
+        <div className="row-between" style={{ marginBottom: "0.6rem" }}>
+          <span />
+          <button className="btn btn-small" onClick={onDone}>
+            Skip setup
+          </button>
+        </div>
         <div className="row" style={{ gap: 4, marginBottom: "1.2rem" }} aria-hidden>
           {STEPS.map((_, i) => (
             <span
