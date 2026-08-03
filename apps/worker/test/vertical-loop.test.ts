@@ -155,6 +155,101 @@ describe("plan import", () => {
     }
   });
 
+  it("rewrites a row in place when COROS recycles its idInPlan slot for a different sport", async () => {
+    await importFromProvider();
+    const w = (
+      await db.select().from(plannedWorkouts).where(eq(plannedWorkouts.title, "Threshold 5x5"))
+    )[0]!;
+
+    // Upstream, the run entity was deleted and its slot reused by a lifting
+    // session — same wire id, different workout entirely.
+    const plan = await provider.getCurrentPlan();
+    const range = { start: baseMonday, end: addDays(baseMonday, 13) };
+    const others = (await provider.getPlannedWorkouts(range)).filter(
+      (x) => x.sourceWorkoutId !== w.sourceWorkoutId,
+    );
+    const recycled = {
+      sourcePlanId: w.sourceWorkoutId.split(":")[0]!,
+      sourceWorkoutId: w.sourceWorkoutId,
+      sourceIdInPlan: w.sourceIdInPlan ?? undefined,
+      sourceProgramId: "recycled-prog",
+      title: "W1 Wed - Posterior Chain — wk 1",
+      sport: "strength",
+      date: w.effectiveDate,
+      estimatedDurationSeconds: 2700,
+      stages: [],
+      contentFingerprint: "recycled-fp",
+      isRestDay: false,
+    };
+    const stats = await importPlanSnapshot(
+      db,
+      { userId, plan: plan!, workouts: [...others, recycled] as never, rangeStart: range.start, rangeEnd: range.end, source: "fixture" },
+      prefs,
+    );
+
+    expect(stats.replacedRecycled).toBe(1);
+    const after = (await db.select().from(plannedWorkouts).where(eq(plannedWorkouts.id, w.id)))[0]!;
+    expect(after.sport).toBe("strength");
+    expect(after.title).toBe("W1 Wed - Posterior Chain — wk 1");
+    expect(after.completionState).toBe("scheduled");
+    expect(after.archivedAt).toBeNull();
+  });
+
+  it("dedupes COROS's plan-definition/instance mirror so each session shows once", async () => {
+    await importFromProvider();
+    const plan = await provider.getCurrentPlan();
+    const range = { start: baseMonday, end: addDays(baseMonday, 13) };
+    const workouts = await provider.getPlannedWorkouts(range);
+    // The mirror: identical dates+titles under a different plan id.
+    const mirror = workouts.map((w, i) => ({
+      ...w,
+      sourcePlanId: "888",
+      sourceWorkoutId: `888:${i + 1}`,
+      sourceIdInPlan: String(i + 1),
+    }));
+    const stats = await importPlanSnapshot(
+      db,
+      { userId, plan: plan!, workouts: [...workouts, ...mirror] as never, rangeStart: range.start, rangeEnd: range.end, source: "fixture" },
+      prefs,
+    );
+
+    expect(stats.dedupedMirrors).toBeGreaterThan(0);
+    const active = await db
+      .select()
+      .from(plannedWorkouts)
+      .where(and(eq(plannedWorkouts.userId, userId), isNull(plannedWorkouts.archivedAt)));
+    const keys = active.map((w) => `${w.effectiveDate}|${w.title}`);
+    expect(new Set(keys).size).toBe(keys.length); // no visible duplicates
+  });
+
+  it("skips COROS template/sample plans entirely (no stamp, no mirror overlap)", async () => {
+    await importFromProvider();
+    const plan = await provider.getCurrentPlan();
+    const range = { start: baseMonday, end: addDays(baseMonday, 13) };
+    const workouts = await provider.getPlannedWorkouts(range);
+    const template = [0, 1, 2].map((i) => ({
+      sourcePlanId: "777",
+      sourceWorkoutId: `777:${i + 1}`,
+      sourceIdInPlan: String(i + 1),
+      title: `Easy Run - Sample Workout ${i + 1}`,
+      sport: "run",
+      date: addDays(baseMonday, i),
+      stages: [],
+      contentFingerprint: `sample-${i}`,
+      isRestDay: false,
+    }));
+    const stats = await importPlanSnapshot(
+      db,
+      { userId, plan: plan!, workouts: [...workouts, ...template] as never, rangeStart: range.start, rangeEnd: range.end, source: "fixture" },
+      prefs,
+    );
+
+    expect(stats.skippedForeignWorkouts).toBe(3);
+    expect(stats.created).toBe(0);
+    const plans = await db.select().from(trainingPlans).where(eq(trainingPlans.userId, userId));
+    expect(plans.find((p) => p.sourcePlanId === "777")).toBeUndefined();
+  });
+
   it("presence resurrects a wrongly archived scheduled workout (and drops its suppression)", async () => {
     await importFromProvider();
     const w = (

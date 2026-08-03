@@ -42,6 +42,12 @@ export interface ImportStats {
   archivedMissing: number;
   /** Rows resurrected because COROS demonstrably still schedules them. */
   unarchived: number;
+  /** Workouts skipped because their plan is a COROS template/sample plan. */
+  skippedForeignWorkouts: number;
+  /** Rows rewritten in place because COROS recycled their idInPlan slot. */
+  replacedRecycled: number;
+  /** Mirror copies archived so each real session shows exactly once. */
+  dedupedMirrors: number;
   verifiedJobs: number;
   conflicts: number;
   unchanged: number;
@@ -73,10 +79,41 @@ export async function importPlanSnapshot(
     updatedContent: 0,
     archivedMissing: 0,
     unarchived: 0,
+    skippedForeignWorkouts: 0,
+    replacedRecycled: 0,
+    dedupedMirrors: 0,
     verifiedJobs: 0,
     conflicts: 0,
     unchanged: 0,
   };
+
+  // ── Foreign-plan filter ────────────────────────────────────────────────────
+  // The merged read also carries COROS's own template/sample plans ("Warm Up
+  // Run - Sample Workout", …) that the user never scheduled. Admit a
+  // non-primary plan only when it demonstrably belongs to the user: it holds
+  // studio-stamped sessions (our own writes), or it mirrors the primary plan
+  // (COROS materializes the applied plan's instances into a second plan —
+  // date+title overlap identifies the mirror). Everything else is skipped;
+  // existing rows from skipped plans age out through absence detection.
+  const STUDIO_STAMP_RE = / — wk \d+$/;
+  const primaryKeys = new Set(
+    input.workouts
+      .filter((w) => w.sourcePlanId === input.plan.sourcePlanId)
+      .map((w) => `${w.date}|${w.title}`),
+  );
+  const admittedPlanIds = new Set<string>([input.plan.sourcePlanId]);
+  for (const sourcePlanId of new Set(input.workouts.map((w) => w.sourcePlanId))) {
+    if (admittedPlanIds.has(sourcePlanId)) continue;
+    const group = input.workouts.filter((w) => w.sourcePlanId === sourcePlanId);
+    const stamped = group.some((w) => STUDIO_STAMP_RE.test(w.title));
+    const overlap =
+      group.length > 0
+        ? group.filter((w) => primaryKeys.has(`${w.date}|${w.title}`)).length / group.length
+        : 0;
+    if (stamped || overlap >= 0.6) admittedPlanIds.add(sourcePlanId);
+    else stats.skippedForeignWorkouts += group.length;
+  }
+  const admitted = input.workouts.filter((w) => admittedPlanIds.has(w.sourcePlanId));
 
   // ── Plan rows — one per COROS plan present in this (merged) snapshot ──────
   // schedule/query merges every plan on the account (research §3): the run
@@ -93,13 +130,11 @@ export async function importPlanSnapshot(
     .where(and(eq(trainingPlans.userId, input.userId), eq(trainingPlans.status, "active")));
   const planRowsBySourceId = new Map(activePlans.map((p) => [p.sourcePlanId, p]));
 
-  const sourcePlanIds = new Set<string>(input.workouts.map((w) => w.sourcePlanId));
-  sourcePlanIds.add(input.plan.sourcePlanId);
-  for (const sourcePlanId of sourcePlanIds) {
+  for (const sourcePlanId of admittedPlanIds) {
     const isPrimary = sourcePlanId === input.plan.sourcePlanId;
     const existing = planRowsBySourceId.get(sourcePlanId);
     if (!existing) {
-      const group = input.workouts.filter((w) => w.sourcePlanId === sourcePlanId);
+      const group = admitted.filter((w) => w.sourcePlanId === sourcePlanId);
       const allStrength = group.length > 0 && group.every((w) => w.sport === "strength");
       const id = newId();
       await db.insert(trainingPlans).values({
@@ -147,14 +182,18 @@ export async function importPlanSnapshot(
     .where(eq(plannedWorkouts.userId, input.userId));
   const existingBySourceId = new Map(existing.map((w) => [w.sourceWorkoutId, w]));
 
-  // A workout the user explicitly removed stays removed even though COROS
-  // still reports it — that's the one archived state presence must not heal.
+  // Two archived states presence must not heal: a workout the user removed
+  // by hand (a decision, not an absence), and a mirror copy deduped while its
+  // keeper row is still alive (rule 8 releases the suppression when the
+  // keeper dies, letting the mirror take over on the following snapshot).
   const userRemovedIds = new Set(
     (
       await db
         .select({ workoutId: calendarEventSuppressions.workoutId })
         .from(calendarEventSuppressions)
-        .where(eq(calendarEventSuppressions.reason, "user_removed"))
+        .where(
+          inArray(calendarEventSuppressions.reason, ["user_removed", "duplicate_mirror"]),
+        )
     ).map((s) => s.workoutId),
   );
 
@@ -171,7 +210,7 @@ export async function importPlanSnapshot(
 
   const seenSourceIds = new Set<string>();
 
-  for (const src of input.workouts) {
+  for (const src of admitted) {
     seenSourceIds.add(src.sourceWorkoutId);
     const classification = classifyWorkout({
       title: src.title,
@@ -192,6 +231,65 @@ export async function importPlanSnapshot(
     const stageSummary = src.stages.length > 0 ? summarizeStages(src.stages) : undefined;
 
     const current = existingBySourceId.get(src.sourceWorkoutId);
+
+    // Recycled wire id: COROS reuses a plan's idInPlan slots after deletes,
+    // so the same `${planId}:${idInPlan}` can suddenly mean a different
+    // workout (live-observed: lifting creates landing in slots freed by
+    // removed runs, which content-updated run rows into lifting titles while
+    // keeping sport "run"). A sport flip is the tell — this is replacement,
+    // not an edit. The row is rewritten in place as the new workout (the
+    // unique index owns the slot); completed history is the one thing never
+    // rewritten — those rows keep their story and the slot's new occupant
+    // stays out of the app until the row ages out.
+    if (
+      current &&
+      current.sport !== src.sport &&
+      (current.completionState === "completed" || current.completionState === "provisionally_completed")
+    ) {
+      stats.skippedForeignWorkouts += 1;
+      continue;
+    }
+    if (current && current.sport !== src.sport) {
+      const effectiveTime = defaultTimeFor({ category, date: src.date }, prefs);
+      await db
+        .update(plannedWorkouts)
+        .set({
+          title: src.title,
+          category,
+          qualitySubtype: classification.qualitySubtype ?? null,
+          sport: src.sport,
+          originalPlanDate: src.date,
+          lastVerifiedCorosDate: src.date,
+          effectiveDate: src.date,
+          effectiveTime,
+          sourceProgramId: src.sourceProgramId ?? null,
+          sourceContentFingerprint: src.contentFingerprint,
+          sourceVersion: src.sourceVersion ?? null,
+          sourceEstimatedDurationSeconds: src.estimatedDurationSeconds ?? null,
+          fallbackEstimatedDurationSeconds:
+            estimate.source === "coros_native" ? null : estimate.workoutSeconds,
+          calendarBlockDurationSeconds: estimate.calendarSeconds,
+          durationEstimate: estimate as unknown as Record<string, unknown>,
+          expectedDistanceMeters: src.estimatedDistanceMeters ?? null,
+          stageSummary: stageSummary ?? null,
+          calendarSyncState:
+            current.calendarSyncState === "user_deleted"
+              ? "user_deleted"
+              : category === "rest"
+                ? "not_created"
+                : "pending",
+          corosSyncState: "synced",
+          completionState: "scheduled",
+          archivedAt: null,
+          missingReads: 0,
+          updatedAt: now,
+        })
+        .where(eq(plannedWorkouts.id, current.id));
+      await replaceStages(db, current.id, src);
+      stats.replacedRecycled += 1;
+      continue;
+    }
+
     if (!current) {
       // New workout from COROS.
       const id = newId();
@@ -366,11 +464,78 @@ export async function importPlanSnapshot(
         createdAt: now,
       });
       stats.archivedMissing += 1;
+      // If this row had shadowed a mirror copy, release the mirror so the
+      // next snapshot's presence-healing can take over seamlessly.
+      const partnerIds = existing
+        .filter(
+          (p) =>
+            p.id !== w.id &&
+            p.effectiveDate === w.effectiveDate &&
+            p.title === w.title &&
+            p.sport === w.sport,
+        )
+        .map((p) => p.id);
+      if (partnerIds.length > 0) {
+        await db
+          .delete(calendarEventSuppressions)
+          .where(
+            and(
+              inArray(calendarEventSuppressions.workoutId, partnerIds),
+              eq(calendarEventSuppressions.reason, "duplicate_mirror"),
+            ),
+          );
+      }
     } else {
       await db
         .update(plannedWorkouts)
         .set({ missingReads: reads, updatedAt: now })
         .where(eq(plannedWorkouts.id, w.id));
+    }
+  }
+
+  // ── Mirror de-duplication ──────────────────────────────────────────────────
+  // COROS surfaces the applied plan twice: the plan definition AND its
+  // materialized instances in a second plan (live-verified — the exact same
+  // titles and dates under two plan ids). Whatever the wire says, the user
+  // must see each session exactly once. Among active scheduled duplicates of
+  // the same (date, title, sport), the oldest row keeps its history, links
+  // and calendar event; newer copies are archived with a `duplicate_mirror`
+  // suppression, which presence-healing respects until the keeper dies.
+  const activeNow = await db
+    .select()
+    .from(plannedWorkouts)
+    .where(
+      and(
+        eq(plannedWorkouts.userId, input.userId),
+        isNull(plannedWorkouts.archivedAt),
+        eq(plannedWorkouts.completionState, "scheduled"),
+      ),
+    );
+  const byMirrorKey = new Map<string, typeof activeNow>();
+  for (const w of activeNow) {
+    const key = `${w.effectiveDate}|${w.title}|${w.sport}`;
+    const list = byMirrorKey.get(key) ?? [];
+    list.push(w);
+    byMirrorKey.set(key, list);
+  }
+  for (const copies of byMirrorKey.values()) {
+    if (copies.length < 2) continue;
+    const sorted = [...copies].sort((a, b) =>
+      a.createdAt === b.createdAt ? a.id.localeCompare(b.id) : a.createdAt.localeCompare(b.createdAt),
+    );
+    for (const dup of sorted.slice(1)) {
+      await db
+        .update(plannedWorkouts)
+        .set({ archivedAt: now, updatedAt: now })
+        .where(eq(plannedWorkouts.id, dup.id));
+      await db.insert(calendarEventSuppressions).values({
+        id: newId(),
+        workoutId: dup.id,
+        eventId: null,
+        reason: "duplicate_mirror",
+        createdAt: now,
+      });
+      stats.dedupedMirrors += 1;
     }
   }
 
