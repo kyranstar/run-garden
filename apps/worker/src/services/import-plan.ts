@@ -359,6 +359,7 @@ export async function importPlanSnapshot(
     // removed — that's a decision, not an absence.
     if (current.archivedAt && current.completionState === "scheduled" && !userRemovedIds.has(current.id)) {
       updates.archivedAt = null;
+      updates.archiveReason = null;
       updates.calendarSyncState = current.calendarSyncState === "user_deleted" ? "user_deleted" : "pending";
       await db
         .delete(calendarEventSuppressions)
@@ -466,7 +467,7 @@ export async function importPlanSnapshot(
     if (reads >= 2) {
       await db
         .update(plannedWorkouts)
-        .set({ archivedAt: now, missingReads: reads, updatedAt: now })
+        .set({ archivedAt: now, missingReads: reads, updatedAt: now, archiveReason: "absence_confirmed" })
         .where(eq(plannedWorkouts.id, w.id));
       await db.insert(calendarEventSuppressions).values({
         id: newId(),
@@ -551,7 +552,7 @@ export async function importPlanSnapshot(
       if (dup.completionState !== "scheduled" && dup.completionState !== "unresolved") continue;
       await db
         .update(plannedWorkouts)
-        .set({ archivedAt: now, updatedAt: now })
+        .set({ archivedAt: now, updatedAt: now, archiveReason: "duplicate_mirror" })
         .where(eq(plannedWorkouts.id, dup.id));
       await db.insert(calendarEventSuppressions).values({
         id: newId(),

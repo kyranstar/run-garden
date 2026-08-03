@@ -24,6 +24,7 @@ import { googleCalendarClient } from "../services/google-calendar.js";
 import { loadPreferences, restoreCalendarEvent, syncCalendar } from "../services/calendar-sync.js";
 import { applyMove } from "../services/jobs.js";
 import { recentGardenEvents, resimulateFrom } from "../services/garden-sync.js";
+import { recordIntent } from "../services/sync-intents.js";
 
 export const planRoutes = new Hono<AppContext>();
 planRoutes.use("*", requireUser);
@@ -534,18 +535,26 @@ planRoutes.post("/workouts/:id/remove", async (c) => {
   if (!w) return c.json({ error: "not_found" }, 404);
   if (w.archivedAt) return c.json({ ok: true });
   const now = nowInstant();
+  const workoutId = w.id;
   await db
     .update(plannedWorkouts)
-    .set({ archivedAt: now, updatedAt: now })
-    .where(eq(plannedWorkouts.id, w.id));
+    .set({ archivedAt: now, updatedAt: now, archiveReason: "user_removed" })
+    .where(eq(plannedWorkouts.id, workoutId));
   await db.insert(calendarEventSuppressions).values({
     id: newId(),
-    workoutId: w.id,
+    workoutId: workoutId,
     eventId: null,
     // "user_removed" (not the absence-detector's "workout_removed"): a hand
     // removal is a decision, and import's presence-healing must never undo it.
     reason: "user_removed",
     createdAt: now,
+  });
+  await recordIntent(db, {
+    userId,
+    targetKind: "workout",
+    targetId: workoutId,
+    kind: "remove_local",
+    source: "remove_from_plan",
   });
   await syncCalendar(db, c.env, userId).catch(() => undefined);
   const prefs = await loadPreferences(db, userId);
