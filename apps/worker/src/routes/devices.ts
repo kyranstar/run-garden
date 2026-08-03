@@ -11,7 +11,7 @@ import {
 import type { AppContext } from "../auth/middleware.js";
 import { requireDevice, requireUser } from "../auth/middleware.js";
 import { loadPreferences, syncCalendar } from "../services/calendar-sync.js";
-import { applyJobResult, claimNextJob } from "../services/jobs.js";
+import { applyJobResult, claimNextJob, emitPendingWork } from "../services/jobs.js";
 import { importPlanSnapshot } from "../services/import-plan.js";
 import { ingestActivities } from "../services/completion.js";
 import { advanceGarden, buildGardenView, resimulateFrom } from "../services/garden-sync.js";
@@ -217,6 +217,9 @@ deviceRoutes.post("/bridge/sync", requireDevice, async (c) => {
           category: "calendar_sync_failed",
           message: e instanceof Error ? e.message : "unknown",
         });
+      });
+      stats.emittedJobs = await emitPendingWork(db, userId, {
+        corosWritesEnabled: prefs.corosWritesEnabled,
       });
     }
 

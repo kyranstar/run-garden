@@ -9,7 +9,8 @@ export type CorosSyncState =
   | "syncing" // a provider operation is actively being attempted
   | "waiting_for_device" // queued; desktop bridge offline ("Waiting for Mac")
   | "calendar_only" // a local date change exists that COROS doesn't have (writing unavailable or disabled)
-  | "needs_attention"; // conflict, failed verification, or ambiguity
+  | "needs_attention" // legacy — no longer produced; healed by migration
+  | "sync_issue"; // terminal write failure; user can retry
 
 export const COROS_SYNC_LABELS: Record<CorosSyncState, string> = {
   synced: "Synced",
@@ -17,6 +18,7 @@ export const COROS_SYNC_LABELS: Record<CorosSyncState, string> = {
   waiting_for_device: "Waiting for Mac",
   calendar_only: "Not synced to COROS",
   needs_attention: "Needs attention",
+  sync_issue: "Sync issue",
 };
 
 /** Relationship between a planned workout and its managed Calendar event. */

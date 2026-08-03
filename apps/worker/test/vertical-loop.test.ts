@@ -425,7 +425,7 @@ describe("move → COROS write job → verification", () => {
     expect(claimed!.id).toBe(second.jobId);
   });
 
-  it("degrades to calendar_only after repeated write failures", async () => {
+  it("degrades to sync_issue after repeated write failures", async () => {
     await importFromProvider();
     const w = (
       await db.select().from(plannedWorkouts).where(eq(plannedWorkouts.title, "Threshold 5x5"))
@@ -444,7 +444,7 @@ describe("move → COROS write job → verification", () => {
     const job = (await db.select().from(corosWriteJobs).where(eq(corosWriteJobs.id, move.jobId!)))[0]!;
     expect(job.status).toBe("failed");
     const after = (await db.select().from(plannedWorkouts).where(eq(plannedWorkouts.id, w.id)))[0]!;
-    expect(after.corosSyncState).toBe("calendar_only");
+    expect(after.corosSyncState).toBe("sync_issue");
     // The Run Garden placement is kept.
     expect(after.effectiveDate).toBe(addDays(w.effectiveDate, 1));
   });

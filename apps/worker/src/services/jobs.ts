@@ -17,6 +17,8 @@ import {
 } from "@rg/domain";
 import type { Db } from "./db.js";
 import { applyStudioJobResult } from "./studio-push.js";
+import { openIntentFor, openMoveIntents, recordIntent, resolveIntent } from "./sync-intents.js";
+import { postSyncNote } from "./sync-notes.js";
 
 /**
  * COROS write-job lifecycle. Jobs are the only path to COROS mutations:
@@ -69,6 +71,49 @@ async function writeCapableDeviceExists(db: Db, userId: string): Promise<boolean
 }
 
 /**
+ * Supersede any older in-flight job for this workout, then queue a new
+ * `move_scheduled_workout` job. `attemptCount` defaults to 0 (a fresh move),
+ * but callers re-deriving a job from a prior job's failed attempt pass its
+ * count forward so the retry budget spans re-derivations.
+ */
+async function enqueueMoveJob(
+  db: Db,
+  v: {
+    userId: string;
+    workout: typeof plannedWorkouts.$inferSelect;
+    toDate: string;
+    now: string;
+    attemptCount?: number;
+  },
+): Promise<string> {
+  await db
+    .update(corosWriteJobs)
+    .set({ status: "superseded", updatedAt: v.now })
+    .where(
+      and(
+        eq(corosWriteJobs.workoutId, v.workout.id),
+        inArray(corosWriteJobs.status, ["queued", "claimed", "in_progress", "verifying"]),
+      ),
+    );
+  const jobId = newId();
+  await db.insert(corosWriteJobs).values({
+    id: jobId,
+    userId: v.userId,
+    workoutId: v.workout.id,
+    kind: "move_scheduled_workout",
+    expectedSourceVersion: v.workout.sourceVersion ?? null,
+    expectedContentFingerprint: v.workout.sourceContentFingerprint,
+    originalDate: v.workout.lastVerifiedCorosDate,
+    destinationDate: v.toDate,
+    requestedAt: v.now,
+    status: "queued",
+    attemptCount: v.attemptCount ?? 0,
+    updatedAt: v.now,
+  });
+  return jobId;
+}
+
+/**
  * Apply a user-approved move: update Run Garden's intended schedule, queue the
  * COROS write, and report the resulting sync state. Calendar sync is the
  * caller's follow-up step.
@@ -97,6 +142,15 @@ export async function applyMove(db: Db, req: MoveRequest): Promise<MoveOutcome> 
     createdAt: now,
   });
 
+  const intentId = await recordIntent(db, {
+    userId: req.userId,
+    targetKind: "workout",
+    targetId: workout.id,
+    kind: "move",
+    payload: { fromDate, toDate: req.toDate, toTime: req.toTime },
+    source: req.source === "calendar_edit" ? "calendar_drag" : "user_move",
+  });
+
   const dateChanged = req.toDate !== workout.lastVerifiedCorosDate;
   const writesPossible = req.corosWritesEnabled && (await writeCapableDeviceExists(db, req.userId));
 
@@ -106,33 +160,11 @@ export async function applyMove(db: Db, req: MoveRequest): Promise<MoveOutcome> 
   if (!dateChanged) {
     // Same-COROS-date time change: COROS has no time-of-day, nothing to write.
     corosSyncState = workout.corosSyncState === "needs_attention" ? "needs_attention" : "synced";
+    await resolveIntent(db, intentId, now);
   } else if (!writesPossible) {
     corosSyncState = "calendar_only";
   } else {
-    // Supersede any older pending jobs for this workout, then queue the new one.
-    await db
-      .update(corosWriteJobs)
-      .set({ status: "superseded", updatedAt: now })
-      .where(
-        and(
-          eq(corosWriteJobs.workoutId, workout.id),
-          inArray(corosWriteJobs.status, ["queued", "claimed", "in_progress", "verifying"]),
-        ),
-      );
-    jobId = newId();
-    await db.insert(corosWriteJobs).values({
-      id: jobId,
-      userId: req.userId,
-      workoutId: workout.id,
-      kind: "move_scheduled_workout",
-      expectedSourceVersion: workout.sourceVersion ?? null,
-      expectedContentFingerprint: workout.sourceContentFingerprint,
-      originalDate: workout.lastVerifiedCorosDate,
-      destinationDate: req.toDate,
-      requestedAt: now,
-      status: "queued",
-      updatedAt: now,
-    });
+    jobId = await enqueueMoveJob(db, { userId: req.userId, workout, toDate: req.toDate, now });
     corosSyncState = (await anyDeviceOnline(db, req.userId)) ? "syncing" : "waiting_for_device";
   }
 
@@ -162,6 +194,58 @@ export async function applyMove(db: Db, req: MoveRequest): Promise<MoveOutcome> 
   });
 
   return { workoutId: workout.id, corosSyncState, jobId };
+}
+
+/**
+ * The reconciler's job-emission pass: every open move intent that still
+ * disagrees with COROS and has no in-flight job gets one. Called after
+ * applyMove, after every bridge snapshot import, and when writes are enabled
+ * in Settings — so intents queued while writes were off (or no device was
+ * paired) heal the moment writing becomes possible.
+ */
+export async function emitPendingWork(
+  db: Db,
+  userId: string,
+  opts: { corosWritesEnabled: boolean },
+): Promise<number> {
+  if (!opts.corosWritesEnabled) return 0;
+  if (!(await writeCapableDeviceExists(db, userId))) return 0;
+  const now = nowInstant();
+  const intents = await openMoveIntents(db, userId);
+  if (intents.length === 0) return 0;
+  const inflight = await db
+    .select()
+    .from(corosWriteJobs)
+    .where(
+      and(
+        eq(corosWriteJobs.userId, userId),
+        inArray(corosWriteJobs.status, ["queued", "claimed", "in_progress", "verifying"]),
+      ),
+    );
+  const inflightByWorkout = new Map(inflight.map((j) => [j.workoutId, j]));
+  let emitted = 0;
+  for (const intent of intents) {
+    const toDate = intent.payload?.["toDate"];
+    if (typeof toDate !== "string") continue;
+    const workout = (
+      await db.select().from(plannedWorkouts).where(eq(plannedWorkouts.id, intent.targetId)).limit(1)
+    )[0];
+    if (!workout || workout.archivedAt) continue;
+    if (workout.lastVerifiedCorosDate === toDate) {
+      await resolveIntent(db, intent.id, now);
+      continue;
+    }
+    const existing = inflightByWorkout.get(workout.id);
+    if (existing?.destinationDate === toDate) continue;
+    await enqueueMoveJob(db, { userId, workout, toDate, now });
+    const online = await anyDeviceOnline(db, userId);
+    await db
+      .update(plannedWorkouts)
+      .set({ corosSyncState: online ? "syncing" : "waiting_for_device", updatedAt: now })
+      .where(eq(plannedWorkouts.id, workout.id));
+    emitted += 1;
+  }
+  return emitted;
 }
 
 /**
@@ -274,22 +358,56 @@ export async function applyJobResult(
       workoutUpdates.corosSyncState = "synced";
       if (result.observedVersion) workoutUpdates.sourceVersion = result.observedVersion;
       if (result.observedFingerprint) workoutUpdates.sourceContentFingerprint = result.observedFingerprint;
+      const intent = await openIntentFor(db, userId, job.workoutId, "move");
+      if (intent) await resolveIntent(db, intent.id, now);
       break;
     }
     case "upstream_changed":
     case "verification_failed": {
-      jobStatus = "needs_attention";
-      corosSyncState = "needs_attention";
-      workoutUpdates.corosSyncState = "needs_attention";
       if (result.observedDate) workoutUpdates.lastVerifiedCorosDate = result.observedDate;
+      const intent = await openIntentFor(db, userId, job.workoutId, "move");
+      if (intent && attemptCount < job.maxAttempts) {
+        // Last-edit-wins, tie to the app: the user's open intent stands. The
+        // job is re-derived against the newly observed origin and the
+        // displaced COROS value is surfaced as an undo note — never a stuck
+        // "needs attention".
+        jobStatus = "superseded";
+        corosSyncState = "syncing";
+        workoutUpdates.corosSyncState = "syncing";
+        const workout = (
+          await db.select().from(plannedWorkouts).where(eq(plannedWorkouts.id, job.workoutId)).limit(1)
+        )[0];
+        if (workout) {
+          await enqueueMoveJob(db, {
+            userId,
+            workout: {
+              ...workout,
+              lastVerifiedCorosDate: result.observedDate ?? workout.lastVerifiedCorosDate,
+            },
+            toDate: job.destinationDate,
+            now,
+            attemptCount,
+          });
+          await postSyncNote(db, {
+            userId,
+            workoutId: job.workoutId,
+            kind: "kept_local_change",
+            payload: { displacedDate: result.observedDate, keptDate: job.destinationDate },
+          });
+        }
+      } else {
+        jobStatus = "failed";
+        corosSyncState = "sync_issue";
+        workoutUpdates.corosSyncState = "sync_issue";
+      }
       break;
     }
     case "ambiguous":
     case "write_failed": {
       if (attemptCount >= job.maxAttempts) {
         jobStatus = "failed";
-        corosSyncState = "calendar_only";
-        workoutUpdates.corosSyncState = "calendar_only";
+        corosSyncState = "sync_issue";
+        workoutUpdates.corosSyncState = "sync_issue";
       } else {
         jobStatus = "queued"; // retry; the bridge re-reads before any rewrite
         corosSyncState = "syncing";
@@ -298,14 +416,14 @@ export async function applyJobResult(
     }
     case "rolled_back": {
       jobStatus = "failed";
-      corosSyncState = "calendar_only";
-      workoutUpdates.corosSyncState = "calendar_only";
+      corosSyncState = "sync_issue";
+      workoutUpdates.corosSyncState = "sync_issue";
       break;
     }
     case "unsupported": {
       jobStatus = "failed";
-      corosSyncState = "calendar_only";
-      workoutUpdates.corosSyncState = "calendar_only";
+      corosSyncState = "sync_issue";
+      workoutUpdates.corosSyncState = "sync_issue";
       break;
     }
   }
