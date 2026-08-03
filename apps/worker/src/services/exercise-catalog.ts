@@ -7,10 +7,10 @@
  * exercises apply to every account.
  */
 
-import { asc } from "drizzle-orm";
+import { asc, sql } from "drizzle-orm";
 import { corosExercises } from "@rg/database";
 import { nowInstant } from "@rg/domain";
-import type { Db } from "./db.js";
+import { chunkedInsert, type Db } from "./db.js";
 
 const STALE_AFTER_MS = 7 * 24 * 60 * 60 * 1000;
 
@@ -25,16 +25,29 @@ export async function upsertExerciseCatalog(
   items: ExerciseCatalogItem[],
 ): Promise<{ upserted: number }> {
   const now = nowInstant();
-  for (const item of items) {
-    const raw: Record<string, unknown> = { id: item.id, name: item.name };
-    await db
+  // Batched multi-row upserts (~382 catalog entries): one statement per row
+  // was ~382 D1 subrequests inside the bridge-sync request, enough to blow
+  // the Worker's budget and fail the whole sync — which re-marked the
+  // catalog stale and repeated the failure every 30 minutes.
+  const rows = items.map((item) => ({
+    id: item.id,
+    name: item.name,
+    raw: { id: item.id, name: item.name } as Record<string, unknown>,
+    updatedAt: now,
+  }));
+  await chunkedInsert(rows, 4, (batch) =>
+    db
       .insert(corosExercises)
-      .values({ id: item.id, name: item.name, raw, updatedAt: now })
+      .values(batch)
       .onConflictDoUpdate({
         target: corosExercises.id,
-        set: { name: item.name, raw, updatedAt: now },
-      });
-  }
+        set: {
+          name: sql`excluded.name`,
+          raw: sql`excluded.raw`,
+          updatedAt: sql`excluded.updated_at`,
+        },
+      }),
+  );
   return { upserted: items.length };
 }
 

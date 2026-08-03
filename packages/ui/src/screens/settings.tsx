@@ -278,12 +278,8 @@ function DevicesSection() {
           <div className="switch-row" key={d.id}>
             <div>
               <strong>{d.name}</strong>{" "}
-              {d.online ? (
-                <span className="pill pill-ok">Online</span>
-              ) : (
-                <span className="pill pill-neutral">Offline</span>
-              )}
-              {d.bridgePaused ? <span className="pill pill-neutral">Bridge paused</span> : null}
+              {!d.online ? <span className="pill pill-warn">Offline</span> : null}
+              {d.bridgePaused ? <span className="pill pill-neutral">Sync paused</span> : null}
               <p className="faint">
                 Last seen {new Date(d.lastSeenAt).toLocaleString()} · app {d.appVersion}
                 {d.capabilities?.updateExistingScheduledWorkout
@@ -296,10 +292,19 @@ function DevicesSection() {
                 className="btn btn-small"
                 onClick={() => pause.mutate({ id: d.id, paused: !d.bridgePaused })}
               >
-                {d.bridgePaused ? "Resume bridge" : "Pause bridge"}
+                {d.bridgePaused ? "Resume syncing" : "Pause syncing"}
               </button>
-              <button className="btn btn-small btn-danger" onClick={() => revoke.mutate(d.id)}>
-                Revoke
+              <button
+                className="btn btn-small btn-danger"
+                onClick={() => {
+                  // Revoking unpairs the Mac — the thing that makes COROS
+                  // sync work at all. Destructive enough to double-check.
+                  if (window.confirm(`Unpair "${d.name}"? COROS syncing stops until you pair the desktop app again.`)) {
+                    revoke.mutate(d.id);
+                  }
+                }}
+              >
+                Unpair
               </button>
             </div>
           </div>

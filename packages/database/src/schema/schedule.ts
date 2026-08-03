@@ -64,6 +64,10 @@ export const plannedWorkouts = sqliteTable(
     completionState: text("completion_state").notNull().default("scheduled"),
     /** Consecutive schedule reads where this workout was absent upstream. */
     missingReads: integer("missing_reads").notNull().default(0),
+    /** "Not yet" on the did-this-happen prompt: reconcile won't re-ask until
+     * this LocalDate. Without it the hourly cron re-flagged the workout
+     * within the hour and the defer button read as broken. */
+    snoozedUntil: text("snoozed_until"),
     /** The local date a completion/skip/missed resolution landed (garden input). */
     resolutionDate: text("resolution_date"),
     archivedAt: text("archived_at"),

@@ -130,7 +130,7 @@ function ValueStep({ onNext }: { onNext: () => void }) {
       </p>
       <div style={{ marginTop: "1rem" }}>
         <button className="btn btn-primary" onClick={onNext} style={{ width: "100%" }}>
-          Continue with Google
+          Get started
         </button>
         <p className="faint" style={{ marginTop: "0.6rem", textAlign: "center" }}>
           {PRODUCT_NAME} is private and single-user.

@@ -62,9 +62,10 @@ interface InterpretedMetric {
 }
 
 function BandPill({ band }: { band?: string }) {
-  if (!band) return null;
-  const label = band === "watch" ? "Watch" : band === "healthy" ? "Healthy" : band === "low" ? "Below norm" : "High";
-  const cls = band === "watch" ? "pill-warn" : band === "healthy" ? "pill-ok" : "pill-neutral";
+  // Normal earns silence: a metric that's fine doesn't need a badge saying so.
+  if (!band || band === "healthy") return null;
+  const label = band === "watch" ? "Watch" : band === "low" ? "Below norm" : "High";
+  const cls = band === "watch" ? "pill-warn" : "pill-neutral";
   return <span className={`pill ${cls}`}>{label}</span>;
 }
 

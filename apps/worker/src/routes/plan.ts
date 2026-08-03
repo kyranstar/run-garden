@@ -100,6 +100,11 @@ planRoutes.get("/today", async (c) => {
         eq(plannedWorkouts.userId, userId),
         eq(plannedWorkouts.corosSyncState, "needs_attention"),
         isNull(plannedWorkouts.archivedAt),
+        // Attention is for things the user can still act on: a conflict on a
+        // long-past (or already-resolved) workout must not pin a warning to
+        // the Today screen forever.
+        gte(plannedWorkouts.effectiveDate, addDays(today, -14)),
+        inArray(plannedWorkouts.completionState, ["scheduled", "unresolved"]),
       ),
     )
     .limit(5);
@@ -225,9 +230,20 @@ planRoutes.get("/workouts", async (c) => {
     .select()
     .from(trainingPlans)
     .where(and(eq(trainingPlans.userId, c.get("userId")), eq(trainingPlans.status, "active")));
+  // The header names the plan the user actually lives in: with several active
+  // plan rows (merged COROS reads create mirrors and a lifting container),
+  // an arbitrary plans[0] could surface a synthesized "COROS plan" label.
+  const countByPlanId = new Map<string, number>();
+  for (const w of rows) {
+    if (w.archivedAt) continue;
+    countByPlanId.set(w.planId, (countByPlanId.get(w.planId) ?? 0) + 1);
+  }
+  const primary = [...plans].sort(
+    (a, b) => (countByPlanId.get(b.id) ?? 0) - (countByPlanId.get(a.id) ?? 0),
+  )[0];
   return c.json({
     today,
-    plan: plans[0] ? { name: plans[0].name, startDate: plans[0].startDate, endDate: plans[0].endDate } : null,
+    plan: primary ? { name: primary.name, startDate: primary.startDate, endDate: primary.endDate } : null,
     corosWritesEnabled: prefs.corosWritesEnabled,
     workouts: rows.map(workoutDto),
   });
@@ -400,12 +416,16 @@ planRoutes.post("/workouts/:id/skip", async (c) => {
   return c.json({ ok: true });
 });
 
-/** "Not yet" on the did-this-run-happen prompt: back to scheduled for now. */
+/** "Not yet" on the did-this-run-happen prompt: back to scheduled, and
+ * snoozed until tomorrow — otherwise the hourly reconcile re-asked within
+ * the hour and the button read as broken. */
 planRoutes.post("/workouts/:id/defer", async (c) => {
+  const prefs = await loadPreferences(c.get("db"), c.get("userId"));
+  const tomorrow = addDays(todayInZone(prefs.timezone), 1);
   await c
     .get("db")
     .update(plannedWorkouts)
-    .set({ completionState: "scheduled", updatedAt: nowInstant() })
+    .set({ completionState: "scheduled", snoozedUntil: tomorrow, updatedAt: nowInstant() })
     .where(
       and(eq(plannedWorkouts.id, c.req.param("id")), eq(plannedWorkouts.userId, c.get("userId"))),
     );

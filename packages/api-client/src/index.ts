@@ -23,10 +23,16 @@ export class ApiError extends Error {
   }
 }
 
-async function request<T>(path: string, init?: RequestInit): Promise<T> {
+/** Default request deadline. A hung connection (mobile switching networks)
+ * otherwise left spinners spinning forever — React Query only retries once a
+ * request actually REJECTS. Long-running AI calls pass their own budget. */
+const DEFAULT_TIMEOUT_MS = 30_000;
+
+async function request<T>(path: string, init?: RequestInit, timeoutMs = DEFAULT_TIMEOUT_MS): Promise<T> {
   const res = await fetch(path, {
     credentials: "same-origin",
     headers: init?.body ? { "Content-Type": "application/json" } : undefined,
+    signal: AbortSignal.timeout(timeoutMs),
     ...init,
   });
   if (!res.ok) {
@@ -42,8 +48,15 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
 }
 
 export const get = <T>(path: string) => request<T>(path);
-export const post = <T>(path: string, body?: unknown) =>
-  request<T>(path, { method: "POST", body: body === undefined ? undefined : JSON.stringify(body) });
+export const post = <T>(path: string, body?: unknown, timeoutMs?: number) =>
+  request<T>(
+    path,
+    { method: "POST", body: body === undefined ? undefined : JSON.stringify(body) },
+    timeoutMs,
+  );
+
+/** AI generation legitimately runs for minutes — never cut it off client-side. */
+const AI_TIMEOUT_MS = 15 * 60_000;
 export const put = <T>(path: string, body?: unknown) =>
   request<T>(path, { method: "PUT", body: JSON.stringify(body) });
 
@@ -331,9 +344,9 @@ export const api = {
   fixtureSeed: () => post<Record<string, unknown>>("/api/dev/seed"),
   studio: () => get<StudioStateResponse>("/api/studio"),
   studioGenerate: (brief: PlanBrief, opts: StudioGenerateOptions = {}) =>
-    post<StudioGenerateResponse>("/api/studio/generate", { brief, replace: opts.replace }),
+    post<StudioGenerateResponse>("/api/studio/generate", { brief, replace: opts.replace }, AI_TIMEOUT_MS),
   studioEdit: (request: string, major = false) =>
-    post<StudioEditResponse>("/api/studio/edit", { request, major }),
+    post<StudioEditResponse>("/api/studio/edit", { request, major }, AI_TIMEOUT_MS),
   studioPush: () => post<StudioPushResponse>("/api/studio/push"),
   studioPushRetry: (happenDay: string) =>
     post<StudioPushResponse>("/api/studio/push/retry", { happenDay }),

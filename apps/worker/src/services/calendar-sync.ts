@@ -28,7 +28,7 @@ import {
   type ReconcileOp,
 } from "@rg/calendar";
 import type { Env } from "../env.js";
-import type { Db } from "./db.js";
+import { chunkIds, type Db } from "./db.js";
 import { googleCalendarClient, type GoogleCalendarClient } from "./google-calendar.js";
 import { applyMove } from "./jobs.js";
 
@@ -96,6 +96,8 @@ export interface CalendarSyncStats {
   userDeletions: number;
   notesPreserved: number;
   skipped: boolean;
+  /** Ops that failed and were skipped this run (each retried next run). */
+  opErrors?: number;
 }
 
 export async function syncCalendar(
@@ -136,23 +138,36 @@ export async function syncCalendar(
       ),
     );
 
-  const links = await db.select().from(calendarEventLinks).where(inArray(
-    calendarEventLinks.workoutId,
-    workouts.length > 0 ? workouts.map((w) => w.id) : ["__none__"],
-  ));
+  // D1 caps bound variables (~100/statement) and the workout window has
+  // outgrown it — an unchunked inArray here failed EVERY calendar sync once
+  // the lifting plan landed ("too many SQL variables", live-observed), which
+  // silently froze the user's Google Calendar. Chunked reads, same shape.
+  const workoutIds = workouts.map((w) => w.id);
+  const links: (typeof calendarEventLinks.$inferSelect)[] = [];
+  const suppressions: (typeof calendarEventSuppressions.$inferSelect)[] = [];
+  for (const ids of chunkIds(workoutIds)) {
+    links.push(
+      ...(await db.select().from(calendarEventLinks).where(inArray(calendarEventLinks.workoutId, ids))),
+    );
+    suppressions.push(
+      ...(await db
+        .select()
+        .from(calendarEventSuppressions)
+        .where(inArray(calendarEventSuppressions.workoutId, ids))),
+    );
+  }
   const linkByWorkout = new Map(links.map((l) => [l.workoutId, l]));
-  const suppressions = await db
-    .select()
-    .from(calendarEventSuppressions)
-    .where(inArray(
-      calendarEventSuppressions.workoutId,
-      workouts.length > 0 ? workouts.map((w) => w.id) : ["__none__"],
-    ));
 
   const desired: DesiredEvent[] = [];
   const removedWorkoutIds: string[] = [];
   for (const w of workouts) {
-    if (w.category === "rest") continue;
+    if (w.category === "rest") {
+      // A workout that BECAME a rest day upstream still has its old event —
+      // clean it up like an archived row, or the calendar shows a phantom
+      // session (with reminders) forever.
+      if (linkByWorkout.has(w.id)) removedWorkoutIds.push(w.id);
+      continue;
+    }
     if (w.archivedAt) {
       if (linkByWorkout.has(w.id)) removedWorkoutIds.push(w.id);
       continue;
@@ -290,6 +305,38 @@ async function executeOps(
 ): Promise<void> {
   const now = nowInstant();
   for (const op of ops) {
+    try {
+      await executeOneOp(db, userId, client, calendarId, op, prefs, stats, now);
+    } catch (e) {
+      // One poisoned event (quota 403, an id the token lost access to, a
+      // race-duplicated link) must never wedge the whole mirror: before this
+      // guard, the loop aborted at the same position on every run and
+      // everything downstream of one bad op silently stopped syncing forever.
+      stats.opErrors = (stats.opErrors ?? 0) + 1;
+      console.warn(
+        JSON.stringify({
+          level: "warn",
+          msg: "calendar: op failed, continuing",
+          op: op.op,
+          workoutId: "workoutId" in op ? op.workoutId : undefined,
+          detail: e instanceof Error ? e.message.slice(0, 200) : "unknown",
+        }),
+      );
+    }
+  }
+}
+
+async function executeOneOp(
+  db: Db,
+  userId: string,
+  client: GoogleCalendarClient,
+  calendarId: string,
+  op: ReconcileOp,
+  prefs: UserPreferences,
+  stats: CalendarSyncStats,
+  now: string,
+): Promise<void> {
+  {
     switch (op.op) {
       case "create": {
         const created = await client.insertEvent(calendarId, op.resource);

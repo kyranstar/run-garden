@@ -309,7 +309,21 @@ function WorkoutCell({
 
 export function PlanScreen() {
   const [params, setParams] = useSearchParams();
-  const plan = useQuery({ queryKey: ["plan"], queryFn: () => api.workouts() });
+  // Explicit horizon: the server's default window (8 weeks ahead) is shorter
+  // than the longest lifting plan (16 weeks) — without this, a synced plan's
+  // back half was visible nowhere in the app.
+  const plan = useQuery({
+    queryKey: ["plan"],
+    queryFn: () => {
+      const d = new Date();
+      const iso = (x: Date) => x.toISOString().slice(0, 10);
+      const start = new Date(d);
+      start.setDate(start.getDate() - 8 * 7);
+      const end = new Date(d);
+      end.setDate(end.getDate() + 18 * 7);
+      return api.workouts(iso(start), iso(end));
+    },
+  });
   const selectedId = params.get("workout");
   const todayRef = useRef<HTMLDivElement | null>(null);
   const scrolled = useRef(false);

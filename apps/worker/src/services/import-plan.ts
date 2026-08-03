@@ -332,6 +332,20 @@ export async function importPlanSnapshot(
       continue;
     }
 
+    // Completed history is immutable: when COROS reuses a slot for a NEW
+    // same-sport workout (different date AND different content), rewriting a
+    // completed row would silently turn last week's finished run into next
+    // week's scheduled one while keeping its completion. Leave the history
+    // alone; the recycled entity stays out of the app until the row ages out.
+    if (
+      (current.completionState === "completed" || current.completionState === "provisionally_completed") &&
+      src.date !== current.lastVerifiedCorosDate &&
+      src.contentFingerprint !== current.sourceContentFingerprint
+    ) {
+      stats.skippedForeignWorkouts += 1;
+      continue;
+    }
+
     const updates: Record<string, unknown> = {};
     let touched = false;
 
@@ -504,13 +518,7 @@ export async function importPlanSnapshot(
   const activeNow = await db
     .select()
     .from(plannedWorkouts)
-    .where(
-      and(
-        eq(plannedWorkouts.userId, input.userId),
-        isNull(plannedWorkouts.archivedAt),
-        eq(plannedWorkouts.completionState, "scheduled"),
-      ),
-    );
+    .where(and(eq(plannedWorkouts.userId, input.userId), isNull(plannedWorkouts.archivedAt)));
   const byMirrorKey = new Map<string, typeof activeNow>();
   for (const w of activeNow) {
     const key = `${w.effectiveDate}|${w.title}|${w.sport}`;
@@ -518,12 +526,31 @@ export async function importPlanSnapshot(
     list.push(w);
     byMirrorKey.set(key, list);
   }
+  // Resolution outranks scheduling: a completed/skipped/missed row is the
+  // day's truth, and a scheduled mirror twin beside it is pure noise (it
+  // would even re-ask "did this run happen?"). Among equals, oldest wins.
+  const RESOLUTION_RANK: Record<string, number> = {
+    completed: 0,
+    provisionally_completed: 1,
+    skipped: 2,
+    missed: 3,
+    unresolved: 4,
+    scheduled: 5,
+  };
   for (const copies of byMirrorKey.values()) {
     if (copies.length < 2) continue;
-    const sorted = [...copies].sort((a, b) =>
-      a.createdAt === b.createdAt ? a.id.localeCompare(b.id) : a.createdAt.localeCompare(b.createdAt),
-    );
+    // Only ever archive scheduled/unresolved copies — resolved rows carry
+    // history and are never dedupe casualties.
+    if (!copies.some((c) => c.completionState === "scheduled" || c.completionState === "unresolved")) {
+      continue;
+    }
+    const sorted = [...copies].sort((a, b) => {
+      const rank = (RESOLUTION_RANK[a.completionState] ?? 9) - (RESOLUTION_RANK[b.completionState] ?? 9);
+      if (rank !== 0) return rank;
+      return a.createdAt === b.createdAt ? a.id.localeCompare(b.id) : a.createdAt.localeCompare(b.createdAt);
+    });
     for (const dup of sorted.slice(1)) {
+      if (dup.completionState !== "scheduled" && dup.completionState !== "unresolved") continue;
       await db
         .update(plannedWorkouts)
         .set({ archivedAt: now, updatedAt: now })

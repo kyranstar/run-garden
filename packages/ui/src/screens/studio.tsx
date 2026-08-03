@@ -601,10 +601,18 @@ type StudioPhase = "draft" | "syncing" | "attention" | "synced" | "over";
 /** Which single thing deserves the user's attention right now. */
 function studioPhase(studio: StudioStateResponse, today: string): StudioPhase {
   const rows = studio.pushes.filter((p) => p.status !== "deleted");
-  const failed = rows.filter((p) => p.status === "failed" || p.error != null);
+  // changed_on_coros is "you edited it on the watch, we stepped back" — a
+  // fact, not a failure; counting it as attention pinned a permanent warning
+  // with a retry that is a documented no-op.
+  const failed = rows.filter(
+    (p) => (p.status === "failed" || p.error != null) && p.error !== "changed_on_coros",
+  );
   const verified = rows.filter((p) => p.status === "verified");
   const inFlight = studio.bridge.pendingJobs.queued + studio.bridge.inFlight.count;
-  if (inFlight > 0) return "syncing";
+  // "Syncing" is only true while a live Mac is moving work. With the bridge
+  // offline, jobs just wait — the offline banner says what to do, and the
+  // normal draft/synced view (with its buttons) stays usable.
+  if (inFlight > 0 && studio.bridge.online) return "syncing";
   if (failed.length > 0) return "attention";
   if (verified.length === 0) return "draft";
   const brief = studio.brief!;
@@ -669,7 +677,12 @@ function StudioDraft({
   const [pushError, setPushError] = useState<string | null>(null);
 
   const monday = useMemo(() => startOfIsoWeek(brief.startDate), [brief.startDate]);
-  const pushByDay = useMemo(() => new Map(studio.pushes.map((p) => [p.happenDay, p])), [studio.pushes]);
+  const pushByDay = useMemo(
+    // Deleted rows out: a re-created session on the same day must show its
+    // live status, not a stale "Removed from COROS" from a prior version.
+    () => new Map(studio.pushes.filter((p) => p.status !== "deleted").map((p) => [p.happenDay, p])),
+    [studio.pushes],
+  );
 
   const sessionsByWeek = useMemo(
     () =>
@@ -784,7 +797,9 @@ function StudioDraft({
   const phase = studioPhase(studio, today);
   const liveRows = studio.pushes.filter((p) => p.status !== "deleted");
   const verifiedCount = liveRows.filter((p) => p.status === "verified").length;
-  const failedRows = liveRows.filter((p) => p.status === "failed" || p.error != null);
+  const failedRows = liveRows.filter(
+    (p) => (p.status === "failed" || p.error != null) && p.error !== "changed_on_coros",
+  );
   const totalSessions = sessionsByWeek.reduce((n, wk) => n + wk.sessions.length, 0);
   const dirty = diff.added > 0 || diff.removed > 0 || diff.editedSincePush;
   const planEnd = addDays(monday, brief.durationWeeks * 7 - 1);

@@ -35,7 +35,21 @@ function AuthedApp() {
     );
   }
   if (me.isError) {
-    return <Navigate to="/welcome" replace />;
+    // Only an actual 401 means signed out. A flaky connection or a 500 must
+    // not dump a signed-in user onto the login screen.
+    if (me.error instanceof ApiError && me.error.status === 401) {
+      return <Navigate to="/welcome" replace />;
+    }
+    return (
+      <div className="shell">
+        <main className="shell-main">
+          <p className="muted">Couldn't reach Run Garden — check your connection.</p>
+          <button className="btn" onClick={() => me.refetch()}>
+            Try again
+          </button>
+        </main>
+      </div>
+    );
   }
 
   return (

@@ -367,6 +367,14 @@ export async function ingestActivities(db: Db, input: IngestInput): Promise<Inge
     let activityId: string;
     if (link[0]) {
       activityId = link[0].activityId;
+      // Unchanged since the last snapshot: nothing to re-normalize, no laps
+      // to rewrite, and — critically — no reason to drag this date into the
+      // garden resimulation window. Before this check, every 30-minute
+      // snapshot fed all 14 days of history into affectedDates and the
+      // garden rewound to a weeks-old checkpoint and replayed, 48×/day.
+      if (link[0].contentFingerprint === src.contentFingerprint) {
+        continue;
+      }
       const row = (await db.select().from(activities).where(eq(activities.id, activityId)).limit(1))[0];
       if (row) {
         const other =

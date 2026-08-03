@@ -184,6 +184,17 @@ export function RunsScreen() {
   });
 
   if (runs.isLoading) return <Spinner label="Loading activity" />;
+  if (runs.isError) {
+    // A failed load must never masquerade as "you have no activity".
+    return (
+      <div className="stack">
+        <Banner kind="warn">Couldn't load your activity — check your connection.</Banner>
+        <button className="btn" onClick={() => void runs.refetch()}>
+          Try again
+        </button>
+      </div>
+    );
+  }
   const items = (runs.data?.activities ?? []).filter((a) =>
     filter === "all" ? DISCIPLINE_SPORTS.has(a.sport) : a.sport === filter,
   );

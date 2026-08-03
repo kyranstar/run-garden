@@ -50,6 +50,8 @@ export async function reconcileCompletionStates(
     );
   for (const w of toAsk) {
     if (w.category === "rest") continue;
+    // The user said "not yet" — honor it until the snooze lapses.
+    if (w.snoozedUntil && w.snoozedUntil > today) continue;
     await db
       .update(plannedWorkouts)
       .set({ completionState: "unresolved", updatedAt: nowIso })
