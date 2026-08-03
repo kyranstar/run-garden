@@ -82,6 +82,10 @@ planRoutes.get("/today", async (c) => {
       and(
         eq(plannedWorkouts.userId, userId),
         eq(plannedWorkouts.completionState, "unresolved"),
+        // Never ask "did this run happen?" about a date that hasn't happened:
+        // a workout can sit unresolved with a future date briefly when it was
+        // rescheduled after the question was raised.
+        lte(plannedWorkouts.effectiveDate, today),
         isNull(plannedWorkouts.archivedAt),
       ),
     )
