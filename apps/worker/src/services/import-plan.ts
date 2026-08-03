@@ -17,6 +17,9 @@ import {
 import { classifyWorkout, estimateDuration, summarizeStages } from "@rg/scheduling";
 import type { SourcePlannedWorkout, TrainingPlanInfo } from "@rg/providers";
 import { chunkedInsert, type Db } from "./db.js";
+import { openMoveIntents, resolveIntent } from "./sync-intents.js";
+import { postSyncNote } from "./sync-notes.js";
+import { reconcileWorkout } from "./reconcile.js";
 
 /**
  * Plan import + COROS reconciliation (rules 1–11 of the sync spec, see
@@ -206,6 +209,14 @@ export async function importPlanSnapshot(
     );
   const pendingJobByWorkout = new Map(pendingJobs.map((j) => [j.workoutId, j]));
 
+  // Bulk-loaded once — never queried per row inside the loop below.
+  const intentByWorkout = new Map(
+    (await openMoveIntents(db, input.userId)).flatMap((i) => {
+      const toDate = i.payload?.["toDate"];
+      return typeof toDate === "string" ? [[i.targetId, { id: i.id, toDate }] as const] : [];
+    }),
+  );
+
   const seenSourceIds = new Set<string>();
 
   for (const src of admitted) {
@@ -377,55 +388,91 @@ export async function importPlanSnapshot(
     const pendingJob = pendingJobByWorkout.get(current.id);
     const corosDate = src.date;
 
-    if (corosDate !== current.lastVerifiedCorosDate) {
-      if (pendingJob && corosDate === pendingJob.destinationDate) {
-        // Rule 4: COROS now reports our requested destination → job verified.
-        await db
-          .update(corosWriteJobs)
-          .set({ status: "verified", verifiedAt: now, completedAt: now, updatedAt: now })
-          .where(eq(corosWriteJobs.id, pendingJob.id));
+    const action = reconcileWorkout({
+      workoutId: current.id,
+      effectiveDate: current.effectiveDate,
+      lastVerifiedCorosDate: current.lastVerifiedCorosDate,
+      observedDate: corosDate,
+      openIntent: intentByWorkout.get(current.id) ?? null,
+      pendingJob: pendingJob
+        ? { id: pendingJob.id, destinationDate: pendingJob.destinationDate }
+        : null,
+    });
+
+    switch (action.act) {
+      case "verify_job": {
+        if (action.jobId) {
+          await db
+            .update(corosWriteJobs)
+            .set({ status: "verified", verifiedAt: now, completedAt: now, updatedAt: now })
+            .where(eq(corosWriteJobs.id, action.jobId));
+        }
+        if (action.intentId) await resolveIntent(db, action.intentId, now);
         updates.lastVerifiedCorosDate = corosDate;
         updates.corosSyncState = "synced";
         stats.verifiedJobs += 1;
         touched = true;
-      } else if (pendingJob) {
-        // Rule 6: upstream changed while a local move is pending → conflict.
-        updates.corosSyncState = "needs_attention";
+        break;
+      }
+      case "app_wins": {
+        // Last-edit-wins, tie to the app (spec §2): the open intent is the
+        // most recent thing the user did; COROS's displaced value becomes an
+        // undo note, and emitPendingWork (run by the bridge/sync route right
+        // after this import) re-derives the write against the new origin.
         updates.lastVerifiedCorosDate = corosDate;
-        await db
-          .update(corosWriteJobs)
-          .set({ status: "needs_attention", updatedAt: now })
-          .where(eq(corosWriteJobs.id, pendingJob.id));
+        updates.corosSyncState = "calendar_only"; // until the re-emit lands
+        if (action.supersedeJobId) {
+          await db
+            .update(corosWriteJobs)
+            .set({ status: "superseded", updatedAt: now })
+            .where(eq(corosWriteJobs.id, action.supersedeJobId));
+        }
+        await postSyncNote(db, {
+          userId: input.userId,
+          workoutId: current.id,
+          kind: "kept_local_change",
+          payload: { displacedDate: action.note.displacedDate, keptDate: action.keepDate },
+        });
         stats.conflicts += 1;
         touched = true;
-      } else {
-        // Rule 5: accept the upstream change; keep the time of day.
+        break;
+      }
+      case "adopt_coros": {
         updates.lastVerifiedCorosDate = corosDate;
         updates.effectiveDate = corosDate;
-        updates.originalPlanDate = current.originalPlanDate; // history preserved
+        updates.originalPlanDate = current.originalPlanDate;
         updates.calendarSyncState =
           current.calendarSyncState === "user_deleted" ? "user_deleted" : "pending";
-        // Both sides agree on the new date now.
         updates.corosSyncState = "synced";
-        // A workout we were about to ask "did this run happen?" about has been
-        // rescheduled upstream — the question no longer applies to the new
-        // date. Reconcile will re-ask if the new date also passes unanswered.
         if (current.completionState === "unresolved") updates.completionState = "scheduled";
+        if (action.note) {
+          await postSyncNote(db, {
+            userId: input.userId,
+            workoutId: current.id,
+            kind: "adopted_coros_change",
+            payload: { previousDate: action.note.previousDate, newDate: corosDate },
+          });
+        }
         stats.updatedDates += 1;
         touched = true;
+        break;
       }
-    } else if (pendingJob && corosDate === pendingJob.originalDate) {
-      // Still waiting for the move to land; nothing to change.
-    } else if (
-      !pendingJob &&
-      current.effectiveDate === corosDate &&
-      (current.corosSyncState === "calendar_only" || current.corosSyncState === "needs_attention")
-    ) {
-      // Healing: COROS and Run Garden agree on the date (verified by this very
-      // read), so whatever left the row flagged — an import made while writes
-      // were unavailable, a resolved conflict — is provably over.
-      updates.corosSyncState = "synced";
-      touched = true;
+      case "none": {
+        if (
+          !pendingJob &&
+          current.effectiveDate === corosDate &&
+          (current.corosSyncState === "calendar_only" ||
+            current.corosSyncState === "needs_attention" ||
+            current.corosSyncState === "sync_issue")
+        ) {
+          // Healing: both sides provably agree; whatever flagged the row is over.
+          updates.corosSyncState = "synced";
+          const open = intentByWorkout.get(current.id);
+          if (open && open.toDate === corosDate) await resolveIntent(db, open.id, now);
+          touched = true;
+        }
+        break;
+      }
     }
 
     if (src.contentFingerprint !== current.sourceContentFingerprint) {
