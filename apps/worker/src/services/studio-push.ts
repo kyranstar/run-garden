@@ -693,6 +693,11 @@ export async function pushStudioPlan(
      * which keeps computing the desired set from the stored plan as before.
      */
     desiredOverride?: DesiredSession[];
+    /**
+     * An undo in flight: the caller has planned a corrective delete+create for
+     * this row; re-adopting it mid-flight would cancel the correction.
+     */
+    suppressDriftPushIds?: Set<string>;
   },
 ): Promise<PushSummary> {
   const now = nowInstant();
@@ -751,6 +756,9 @@ export async function pushStudioPlan(
   );
   const driftedPushIds = new Set<string>();
   for (const finding of drift) {
+    // An undo in flight: the caller has planned a corrective delete+create for
+    // this row; re-adopting it mid-flight would cancel the correction.
+    if (opts.suppressDriftPushIds?.has(finding.pushId)) continue;
     const row = rows.find((r) => r.id === finding.pushId)!;
     if (finding.kind === "app_moved") {
       // Our own move, recognized from the intent ledger: still ours. Record
@@ -922,6 +930,11 @@ export async function pushStudioPlan(
     });
   }
 
+  // `app_moved` is the app recognizing its OWN move — not a genuine adoption
+  // — so it must not inflate the reported/audited `drifted` count the way it
+  // would if this just counted every `detectDrift` finding.
+  const drifted = drift.filter((d) => d.kind !== "app_moved").length;
+
   await db.insert(auditEvents).values({
     id: newId(),
     userId: opts.userId,
@@ -933,7 +946,7 @@ export async function pushStudioPlan(
       deletes: batch.deletes.length,
       failures: batch.failures.length,
       unchanged: batch.unchanged.length,
-      drifted: drift.length,
+      drifted,
       blocked: batch.blocked.length,
     },
     createdAt: now,
@@ -945,7 +958,7 @@ export async function pushStudioPlan(
     deletes: batch.deletes.length,
     failures: batch.failures.length,
     unchanged: batch.unchanged.length,
-    drifted: drift.length,
+    drifted,
     blocked: batch.blocked.length,
   };
 }

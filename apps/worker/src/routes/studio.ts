@@ -7,6 +7,7 @@ import {
   corosExercises,
   corosWriteJobs,
   desktopDevices,
+  plannedWorkouts,
   studioPlanPushes,
   studioPlans,
 } from "@rg/database";
@@ -674,49 +675,115 @@ studioRoutes.post("/push/retry", async (c) => {
 // ── POST /api/studio/adoption/:pushId/undo ───────────────────────────────────
 //
 // An "adopted" row (spec §2) is never a permanent unmanaged state: this route
-// flips it back under studio management and immediately re-pushes the whole
-// plan, so every other row's diff is re-derived exactly as `pushStudioPlan`
-// already knows how to do it — no separate row-scoped code path to keep in
-// sync with the real one.
+// figures out WHICH of three cases produced the adoption, by re-examining the
+// last snapshot of the source workout, and handles each on its own terms
+// rather than a single generic "flip it back" state transition:
+//
+//  - MISSING: COROS confirmed the workout gone. Nothing to delete — a plain
+//    recreate suffices.
+//  - MOVED: the workout is still there, still carrying our stamp, just on a
+//    different day. Re-verifying the row and staling its fingerprint makes
+//    the next push plan exactly delete (at the day it's actually on) then
+//    recreate (at the day the plan wants).
+//  - RENAMED: the workout no longer carries our stamp at all, so nothing here
+//    can prove a delete of it is ours to make. Refused outright — see below.
+//
+// Once the row is repositioned, the whole plan is re-pushed so every other
+// row's diff is re-derived exactly as `pushStudioPlan` already knows how to
+// do it — no separate row-scoped code path to keep in sync with the real one.
 
 studioRoutes.post("/adoption/:pushId/undo", async (c) => {
   const db = c.get("db");
   const userId = c.get("userId");
   const pushId = c.req.param("pushId");
+
+  // A single query, joined through studioPlans and scoped by userId: an
+  // unknown pushId, one belonging to another user's plan, and one that exists
+  // but isn't "adopted" all fall through to the SAME { error: "not_found" },
+  // 404 below — distinguishing them in the response would let a caller
+  // enumerate other users' (or their own non-adopted) push ids by shape alone.
   const row = (
-    await db.select().from(studioPlanPushes).where(eq(studioPlanPushes.id, pushId)).limit(1)
-  )[0];
-  if (!row || row.status !== "adopted") return c.json({ error: "not_adopted" }, 404);
-  const plan = (
     await db
-      .select()
-      .from(studioPlans)
-      .where(and(eq(studioPlans.id, row.planId), eq(studioPlans.userId, userId)))
+      .select({
+        id: studioPlanPushes.id,
+        planId: studioPlanPushes.planId,
+        happenDay: studioPlanPushes.happenDay,
+        sessionTitle: studioPlanPushes.sessionTitle,
+        corosIdInPlan: studioPlanPushes.corosIdInPlan,
+        corosPlanId: studioPlanPushes.corosPlanId,
+        status: studioPlanPushes.status,
+      })
+      .from(studioPlanPushes)
+      .innerJoin(studioPlans, eq(studioPlanPushes.planId, studioPlans.id))
+      .where(and(eq(studioPlanPushes.id, pushId), eq(studioPlans.userId, userId)))
       .limit(1)
   )[0];
-  if (!plan) return c.json({ error: "not_found" }, 404);
-  const stillObserved = Boolean(row.corosIdInPlan);
-  await db
-    .update(studioPlanPushes)
-    .set(
-      stillObserved
-        ? // Re-pushing will delete the user's edited copy and recreate the
-          // original: force the fingerprint stale so the diff plans exactly that.
-          { status: "verified", error: null, sessionFingerprint: "undo-forced", updatedAt: nowInstant() }
-        : // Deleted on COROS: nothing to remove; a plain recreate suffices.
-          {
-            status: "failed",
-            error: null,
-            corosIdInPlan: null,
-            corosProgramId: null,
-            corosEntityId: null,
-            corosPlanId: null,
-            corosHappenDay: null,
-            sessionFingerprint: "undo-forced",
-            updatedAt: nowInstant(),
-          },
-    )
-    .where(eq(studioPlanPushes.id, pushId));
+  if (!row || row.status !== "adopted") return c.json({ error: "not_found" }, 404);
+
+  // The last snapshot's opinion of the source workout, keyed the same way
+  // `detectDrift` keys `observed`. Ids missing entirely (a legacy/edge row)
+  // are treated the same as an observation that says the workout is gone.
+  const sourceWorkoutId =
+    row.corosIdInPlan && row.corosPlanId ? `${row.corosPlanId}:${row.corosIdInPlan}` : null;
+  const observation = sourceWorkoutId
+    ? (
+        await db
+          .select({
+            title: plannedWorkouts.title,
+            lastVerifiedCorosDate: plannedWorkouts.lastVerifiedCorosDate,
+            archivedAt: plannedWorkouts.archivedAt,
+            archiveReason: plannedWorkouts.archiveReason,
+          })
+          .from(plannedWorkouts)
+          .where(
+            and(eq(plannedWorkouts.userId, userId), eq(plannedWorkouts.sourceWorkoutId, sourceWorkoutId)),
+          )
+          .limit(1)
+      )[0]
+    : undefined;
+
+  const missing =
+    !observation ||
+    (Boolean(observation.archivedAt) && observation.archiveReason === "absence_confirmed");
+  const renamed = !missing && observation!.title !== row.sessionTitle;
+
+  if (renamed) {
+    // A renamed workout no longer carries our ownership stamp; the safety
+    // core cannot prove a delete of it is ours. The honest answer is refusal
+    // — if the user deletes the renamed copy in COROS, absence confirms and
+    // undo becomes the recreate path.
+    return c.json({ error: "undo_unsupported_rename" }, 409);
+  }
+
+  const now = nowInstant();
+  if (missing) {
+    // COROS already removed it: nothing addressable to delete, so a plain
+    // recreate suffices. Clears the stale ids so the diff sees an
+    // unaddressable row and plans a create, not a delete.
+    await db
+      .update(studioPlanPushes)
+      .set({
+        status: "failed",
+        error: null,
+        corosIdInPlan: null,
+        corosProgramId: null,
+        corosEntityId: null,
+        corosPlanId: null,
+        corosHappenDay: null,
+        sessionFingerprint: "undo-forced",
+        updatedAt: now,
+      })
+      .where(eq(studioPlanPushes.id, pushId));
+  } else {
+    // MOVED: still there, still ours. Re-pushing will delete the workout at
+    // wherever it actually is and recreate the original: force the
+    // fingerprint stale so the diff plans exactly that.
+    await db
+      .update(studioPlanPushes)
+      .set({ status: "verified", error: null, sessionFingerprint: "undo-forced", updatedAt: now })
+      .where(eq(studioPlanPushes.id, pushId));
+  }
+
   await recordIntent(db, {
     userId,
     targetKind: "studio_session",
@@ -724,11 +791,19 @@ studioRoutes.post("/adoption/:pushId/undo", async (c) => {
     kind: "restore",
     source: "undo",
   });
+
   const prefs = await loadPreferences(db, userId);
   const summary = await pushStudioPlan(db, {
     userId,
     studioPlanId: row.planId,
     today: todayInZone(prefs.timezone),
+    // MOVED puts the row back to "verified" with its old (corosIdInPlan,
+    // corosPlanId) address still on it, which `detectDrift` would otherwise
+    // re-examine on this very push and re-adopt mid-flight — cancelling the
+    // correction this route just planned before it ever reaches COROS.
+    // (MISSING sets the row to "failed", which `detectDrift` already skips,
+    // so suppression is a no-op there — passed only for the MOVED case.)
+    ...(missing ? {} : { suppressDriftPushIds: new Set([pushId]) }),
   });
   return c.json({ ok: summary.ok, summary });
 });
