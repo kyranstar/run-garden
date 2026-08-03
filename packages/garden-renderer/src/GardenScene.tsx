@@ -31,6 +31,15 @@ function anchorOf(plant: GardenPlant): { x: number; y: number; s: number } {
   };
 }
 
+/** Shadow footprint follows the sprite's own growth curve (see PlantSprite's smooth(m))
+ *  instead of the species' full-grown planting spacing. */
+function shadowGrowthScale(plant: GardenPlant): number {
+  if (plant.state === "seed") return 0.2;
+  const m = clamp01(plant.maturity);
+  const smooth = m * m * (3 - 2 * m);
+  return 0.2 + 0.8 * smooth;
+}
+
 function sceneCss(p: string, amp: number): string {
   return `
 .${p}-sway{transform-box:fill-box;transform-origin:50% 100%;animation:${p}-sway 7s ease-in-out infinite alternate;}
@@ -403,6 +412,7 @@ export function GardenScene({
         const species = speciesOrThrow(plant.speciesId);
         const a = anchorOf(plant);
         const hw = Math.max(14, species.spacing * 1000 * 0.55);
+        const shadowHw = hw * shadowGrowthScale(plant);
         return (
           <g
             key={plant.id}
@@ -427,10 +437,10 @@ export function GardenScene({
             {plant.state !== "dead" ? (
               <ellipse
                 data-shadow="true"
-                cx={n(light.shadowDx * hw * (0.55 + 0.6 * light.shadowLen))}
+                cx={n(light.shadowDx * shadowHw * (0.55 + 0.6 * light.shadowLen))}
                 cy={3}
-                rx={n(hw * (0.55 + 0.55 * light.shadowLen))}
-                ry={n(hw * 0.2)}
+                rx={n(shadowHw * (0.55 + 0.55 * light.shadowLen))}
+                ry={n(shadowHw * 0.2)}
                 fill="#233a1d"
                 opacity={n(light.shadowOpacity)}
               />
