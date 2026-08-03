@@ -30,6 +30,7 @@ import type { Db } from "../services/db.js";
 import { loadPreferences } from "../services/calendar-sync.js";
 import { llmBudgetStatus, LLM_BUDGET } from "../services/llm.js";
 import { recordIntent } from "../services/sync-intents.js";
+import { DEVICE_ONLINE_WINDOW_MS, devicePresence } from "../services/sync-status.js";
 import { editPlan, generatePlan, type CatalogEntry } from "../services/studio-llm.js";
 import { pushStudioPlan } from "../services/studio-push.js";
 
@@ -99,9 +100,10 @@ async function llmStatusDto(db: Db, userId: string) {
 
 /**
  * "Waiting for bridge" (binding carry-forward g, extended by F2/fix round 1):
- * the same online heuristic `devices.ts`/`plan.ts` already use (last-seen
- * within 3 minutes) plus two DISTINCT job-count facts — the UI decides what
- * "stale"/"stuck" means from those, this just supplies them.
+ * `online` is `sync-status.ts`'s `devicePresence` — the same liveness
+ * computation every other route uses (last-seen within 3 minutes, and now
+ * false while the bridge is paused) — plus two DISTINCT job-count facts the
+ * UI decides what "stale"/"stuck" means from.
  *
  * `pendingJobs` stays `status === "queued"` only, NOT `studio-push.ts`'s
  * broader `IN_FLIGHT` set (queued/claimed/in_progress/verifying) that
@@ -121,11 +123,7 @@ async function llmStatusDto(db: Db, userId: string) {
  * has to measure from.
  */
 async function bridgeStatusDto(db: Db, userId: string) {
-  const devices = await db
-    .select({ lastSeenAt: desktopDevices.lastSeenAt })
-    .from(desktopDevices)
-    .where(and(eq(desktopDevices.userId, userId), isNull(desktopDevices.revokedAt)));
-  const online = devices.some((d) => Date.parse(d.lastSeenAt) > Date.now() - 3 * 60_000);
+  const { online } = await devicePresence(db, userId);
 
   const queued = await db
     .select({ requestedAt: corosWriteJobs.requestedAt })
@@ -268,13 +266,27 @@ async function nextPlanCreatedAt(db: Db, userId: string, now: string): Promise<s
  */
 async function catalogNotSynced(c: Context<AppContext>) {
   const db = c.get("db");
+  const userId = c.get("userId");
+  // `bridge_offline` vs `syncing`/`bridge_outdated` is gated on aggregate
+  // presence (sync-status.ts) — a paused bridge now reads offline here too
+  // (the intended fix: Today/status must never call a paused bridge "syncing").
+  const presence = await devicePresence(db, userId);
   const devices = await db
-    .select({ lastSeenAt: desktopDevices.lastSeenAt, capabilities: desktopDevices.capabilities })
+    .select({
+      lastSeenAt: desktopDevices.lastSeenAt,
+      capabilities: desktopDevices.capabilities,
+      bridgePaused: desktopDevices.bridgePaused,
+    })
     .from(desktopDevices)
-    .where(and(eq(desktopDevices.userId, c.get("userId")), isNull(desktopDevices.revokedAt)));
-  const online = devices.filter((d) => Date.parse(d.lastSeenAt) > Date.now() - 3 * 60_000);
+    .where(and(eq(desktopDevices.userId, userId), isNull(desktopDevices.revokedAt)));
+  const cutoff = Date.now() - DEVICE_ONLINE_WINDOW_MS;
+  // Restricted to the same devices `presence.online` counts (not paused,
+  // fresh lastSeenAt): distinguishes "an online bridge just hasn't sent the
+  // catalog yet" (syncing) from "the connected bridge predates catalog sync"
+  // (bridge_outdated).
+  const online = devices.filter((d) => !d.bridgePaused && Date.parse(d.lastSeenAt) > cutoff);
   const reason =
-    online.length === 0
+    !presence.online
       ? "bridge_offline"
       : online.some(
             (d) => (d.capabilities as Record<string, boolean> | null)?.["exerciseCatalog"] === true,

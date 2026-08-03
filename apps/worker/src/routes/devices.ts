@@ -1,7 +1,7 @@
 import { Hono } from "hono";
 import { z } from "zod";
-import { and, eq, inArray, isNull } from "drizzle-orm";
-import { corosWriteJobs, deviceHandshakes, desktopDevices } from "@rg/database";
+import { and, eq } from "drizzle-orm";
+import { deviceHandshakes, desktopDevices } from "@rg/database";
 import {
   corosWriteResultSchema,
   newId,
@@ -12,6 +12,7 @@ import type { AppContext } from "../auth/middleware.js";
 import { requireDevice, requireUser } from "../auth/middleware.js";
 import { loadPreferences, syncCalendar } from "../services/calendar-sync.js";
 import { applyJobResult, claimNextJob, emitPendingWork } from "../services/jobs.js";
+import { DEVICE_ONLINE_WINDOW_MS } from "../services/sync-status.js";
 import { importPlanSnapshot } from "../services/import-plan.js";
 import { ingestActivities } from "../services/completion.js";
 import { advanceGarden, buildGardenView, resimulateFrom } from "../services/garden-sync.js";
@@ -107,7 +108,7 @@ deviceRoutes.get("/", requireUser, async (c) => {
       bridgePaused: d.bridgePaused,
       lastSeenAt: d.lastSeenAt,
       revokedAt: d.revokedAt,
-      online: !d.revokedAt && Date.parse(d.lastSeenAt) > Date.now() - 3 * 60_000,
+      online: !d.revokedAt && Date.parse(d.lastSeenAt) > Date.now() - DEVICE_ONLINE_WINDOW_MS,
     })),
   });
 });
@@ -354,18 +355,4 @@ deviceRoutes.post("/bridge/garden", requireDevice, async (c) => {
   const prefs = await loadPreferences(db, userId);
   const view = await buildGardenView(db, userId, prefs);
   return c.json(view);
-});
-
-deviceRoutes.post("/bridge/heartbeat", requireDevice, async (c) => {
-  const db = c.get("db");
-  const pending = await db
-    .select({ id: corosWriteJobs.id })
-    .from(corosWriteJobs)
-    .where(
-      and(
-        eq(corosWriteJobs.userId, c.get("userId")),
-        inArray(corosWriteJobs.status, ["queued", "claimed"]),
-      ),
-    );
-  return c.json({ ok: true, pendingJobs: pending.length });
 });

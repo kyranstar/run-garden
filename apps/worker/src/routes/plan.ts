@@ -7,7 +7,6 @@ import {
   calendarEventSuppressions,
   corosWriteJobs,
   dailyHealth,
-  desktopDevices,
   gardenState,
   plannedWorkoutStages,
   plannedWorkouts,
@@ -25,6 +24,7 @@ import { loadPreferences, restoreCalendarEvent, syncCalendar } from "../services
 import { applyMove } from "../services/jobs.js";
 import { recentGardenEvents, resimulateFrom } from "../services/garden-sync.js";
 import { recordIntent } from "../services/sync-intents.js";
+import { devicePresence } from "../services/sync-status.js";
 
 export const planRoutes = new Hono<AppContext>();
 planRoutes.use("*", requireUser);
@@ -120,11 +120,7 @@ planRoutes.get("/today", async (c) => {
       ),
     );
 
-  const devices = await db
-    .select()
-    .from(desktopDevices)
-    .where(and(eq(desktopDevices.userId, userId), isNull(desktopDevices.revokedAt)));
-  const deviceOnline = devices.some((d) => Date.parse(d.lastSeenAt) > Date.now() - 3 * 60_000);
+  const presence = await devicePresence(db, userId);
 
   const health = await db
     .select()
@@ -167,8 +163,8 @@ planRoutes.get("/today", async (c) => {
     needsAttention: attention.map(workoutDto),
     sync: {
       pendingCorosJobs: pendingJobs.length,
-      deviceOnline,
-      deviceRegistered: devices.length > 0,
+      deviceOnline: presence.online,
+      deviceRegistered: presence.registered,
       corosWritesEnabled: prefs.corosWritesEnabled,
       calendarConnected: !!prefs.calendarId,
       // "connected" | "error" (subscription lapsed / revoked) | undefined (never connected)

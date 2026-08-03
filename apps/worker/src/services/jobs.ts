@@ -1,9 +1,8 @@
-import { and, eq, gt, inArray, lt } from "drizzle-orm";
+import { and, eq, inArray, lt } from "drizzle-orm";
 import {
   auditEvents,
   corosWriteAttempts,
   corosWriteJobs,
-  desktopDevices,
   plannedWorkouts,
   scheduleOverrides,
 } from "@rg/database";
@@ -16,6 +15,7 @@ import {
   type UserPreferences,
 } from "@rg/domain";
 import type { Db } from "./db.js";
+import { devicePresence } from "./sync-status.js";
 import { applyStudioJobResult } from "./studio-push.js";
 import { openIntentFor, openMoveIntents, recordIntent, resolveIntent } from "./sync-intents.js";
 import { postSyncNote } from "./sync-notes.js";
@@ -27,7 +27,6 @@ import { postSyncNote } from "./sync-notes.js";
  */
 
 const CLAIM_TIMEOUT_MS = 10 * 60_000;
-const DEVICE_ONLINE_WINDOW_MS = 3 * 60_000;
 
 export interface MoveRequest {
   userId: string;
@@ -45,29 +44,11 @@ export interface MoveOutcome {
 }
 
 async function anyDeviceOnline(db: Db, userId: string): Promise<boolean> {
-  const cutoff = new Date(Date.now() - DEVICE_ONLINE_WINDOW_MS).toISOString();
-  const rows = await db
-    .select({ id: desktopDevices.id })
-    .from(desktopDevices)
-    .where(
-      and(
-        eq(desktopDevices.userId, userId),
-        gt(desktopDevices.lastSeenAt, cutoff),
-        eq(desktopDevices.bridgePaused, false),
-      ),
-    );
-  return rows.some(() => true);
+  return (await devicePresence(db, userId)).online;
 }
 
 async function writeCapableDeviceExists(db: Db, userId: string): Promise<boolean> {
-  const rows = await db.select().from(desktopDevices).where(eq(desktopDevices.userId, userId));
-  return rows.some(
-    (d) =>
-      !d.revokedAt &&
-      (d.capabilities?.["updateExistingScheduledWorkout"] === true ||
-        (d.capabilities?.["addScheduledWorkout"] === true &&
-          d.capabilities?.["removeScheduledWorkout"] === true)),
-  );
+  return (await devicePresence(db, userId)).writeCapable;
 }
 
 /**
