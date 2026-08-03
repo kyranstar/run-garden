@@ -1,7 +1,7 @@
 import { Hono } from "hono";
 import { z } from "zod";
 import { and, eq } from "drizzle-orm";
-import { deviceHandshakes, desktopDevices } from "@rg/database";
+import { corosWriteJobs, deviceHandshakes, desktopDevices } from "@rg/database";
 import {
   corosWriteResultSchema,
   newId,
@@ -300,9 +300,15 @@ deviceRoutes.post("/bridge/jobs/claim", requireDevice, async (c) => {
   )[0];
   if (device?.bridgePaused) return c.json({ job: null, paused: true });
   const job = await claimNextJob(db, c.get("userId"), c.get("deviceId"));
-  if (!job) return c.json({ job: null });
+  const remaining = await db
+    .select({ id: corosWriteJobs.id })
+    .from(corosWriteJobs)
+    .where(and(eq(corosWriteJobs.userId, c.get("userId")), eq(corosWriteJobs.status, "queued")));
+  const pendingCount = remaining.length;
+  if (!job) return c.json({ job: null, pendingCount });
   const studio = bridgeJobPayload(job);
   return c.json({
+    pendingCount,
     job: {
       id: job.id,
       kind: job.kind,

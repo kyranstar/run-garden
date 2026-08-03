@@ -291,11 +291,12 @@ export async function claimNextJob(
     startedAt: now,
   });
 
-  const workout = isStudioJobKind(job.kind)
-    ? null
-    : ((
-        await db.select().from(plannedWorkouts).where(eq(plannedWorkouts.id, job.workoutId)).limit(1)
-      )[0] ?? null);
+  const workout =
+    isStudioJobKind(job.kind) || job.kind === "read_now"
+      ? null
+      : ((
+          await db.select().from(plannedWorkouts).where(eq(plannedWorkouts.id, job.workoutId)).limit(1)
+        )[0] ?? null);
   return { ...job, status: "claimed", workout };
 }
 
@@ -320,6 +321,21 @@ export async function applyJobResult(
   if (isStudioJobKind(job.kind)) {
     const studio = await applyStudioJobResult(db, userId, result);
     return { jobStatus: studio.jobStatus, corosSyncState: "unchanged" };
+  }
+  // `read_now` acts on no workout (its `workoutId` self-references the job
+  // row to satisfy NOT NULL, per the studio kinds' same trick) — the
+  // move-outcome state machine below does not apply.
+  if (job.kind === "read_now") {
+    await db
+      .update(corosWriteJobs)
+      .set({
+        status: result.outcome === "verified" ? "verified" : "failed",
+        attemptCount: job.attemptCount + 1,
+        completedAt: now,
+        updatedAt: now,
+      })
+      .where(eq(corosWriteJobs.id, job.id));
+    return { jobStatus: result.outcome === "verified" ? "verified" : "failed", corosSyncState: "unchanged" };
   }
   if (["verified", "failed", "superseded", "cancelled"].includes(job.status)) {
     return { jobStatus: job.status, corosSyncState: "unchanged" };
