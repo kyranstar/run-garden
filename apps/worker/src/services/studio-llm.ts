@@ -62,6 +62,24 @@ const STREAM_STALL_MS = 150_000;
 // Pause before the single transient-failure retry in chatCompletion.
 const RETRY_BACKOFF_MS = 1500;
 
+/** One log line per rejected generation so `wrangler tail` shows WHY a
+ * syntactically-successful LLM response was refused (zod paths, JSON parse,
+ * truncation) — the raw content never reaches the client, so without this
+ * the reason is invisible from the outside. */
+function logValidationFailure(stage: string, content: string, detail: string): void {
+  console.warn(
+    JSON.stringify({
+      level: "warn",
+      msg: "studio: llm output rejected",
+      stage,
+      detail: detail.slice(0, 400),
+      chars: content.length,
+      head: content.slice(0, 200),
+      tail: content.slice(-200),
+    }),
+  );
+}
+
 /** Race a promise against a timer without leaking the timer. */
 async function withTimeout<T>(promise: Promise<T>, ms: number): Promise<T | "timed_out"> {
   let timer: ReturnType<typeof setTimeout> | undefined;
@@ -744,6 +762,7 @@ async function runFullPlanAttempt(
     // plan" / "we'll widen the budget") instead of a generic invalid-output
     // message. Retrying with the SAME maxTokens rarely helps on its own, but
     // the feedback text below asks the model to be more compact, which does.
+    logValidationFailure("json_parse", chat.content, chat.truncated ? "truncated" : "not JSON");
     if (chat.truncated) {
       return {
         kind: "validation_failure",
@@ -758,6 +777,7 @@ async function runFullPlanAttempt(
   }
   const result = liftingPlanSchema.safeParse(parsed);
   if (!result.success) {
+    logValidationFailure("schema", chat.content, summarizeZodError(result.error));
     return {
       kind: "validation_failure",
       reason: "invalid_output",
