@@ -88,30 +88,28 @@ export async function importPlanSnapshot(
   };
 
   // ── Foreign-plan filter ────────────────────────────────────────────────────
-  // The merged read also carries COROS's own template/sample plans ("Warm Up
-  // Run - Sample Workout", …) that the user never scheduled. Admit a
-  // non-primary plan only when it demonstrably belongs to the user: it holds
-  // studio-stamped sessions (our own writes), or it mirrors the primary plan
-  // (COROS materializes the applied plan's instances into a second plan —
-  // date+title overlap identifies the mirror). Everything else is skipped;
-  // existing rows from skipped plans age out through absence detection.
-  const STUDIO_STAMP_RE = / — wk \d+$/;
-  const primaryKeys = new Set(
-    input.workouts
-      .filter((w) => w.sourcePlanId === input.plan.sourcePlanId)
-      .map((w) => `${w.date}|${w.title}`),
-  );
+  // The merged read also carries COROS's own demo plans, and those are the
+  // ONLY junk observed on the wire — every entity in them is literally
+  // titled "… - Sample Workout". Everything else is the user's: the
+  // top-level plan, studio-stamped sessions, and the second plan COROS
+  // materializes the applied schedule into. An earlier heuristic ("admit
+  // non-primary plans only if they overlap the primary") backfired
+  // live when COROS moved ALL the runs into that second plan and left the
+  // top-level holding only lifting — the real run schedule scored zero
+  // overlap and got archived. Admission is therefore permissive: skip a
+  // non-primary plan only when it is majority sample-titled; skipped plans'
+  // stale rows age out through absence detection, and a wrongly skipped
+  // plan self-heals via presence-based un-archiving the moment it's
+  // admitted again.
+  const SAMPLE_TITLE_RE = /sample workout/i;
   const admittedPlanIds = new Set<string>([input.plan.sourcePlanId]);
   for (const sourcePlanId of new Set(input.workouts.map((w) => w.sourcePlanId))) {
     if (admittedPlanIds.has(sourcePlanId)) continue;
     const group = input.workouts.filter((w) => w.sourcePlanId === sourcePlanId);
-    const stamped = group.some((w) => STUDIO_STAMP_RE.test(w.title));
-    const overlap =
-      group.length > 0
-        ? group.filter((w) => primaryKeys.has(`${w.date}|${w.title}`)).length / group.length
-        : 0;
-    if (stamped || overlap >= 0.6) admittedPlanIds.add(sourcePlanId);
-    else stats.skippedForeignWorkouts += group.length;
+    const sampleShare =
+      group.length > 0 ? group.filter((w) => SAMPLE_TITLE_RE.test(w.title)).length / group.length : 0;
+    if (sampleShare > 0.5) stats.skippedForeignWorkouts += group.length;
+    else admittedPlanIds.add(sourcePlanId);
   }
   const admitted = input.workouts.filter((w) => admittedPlanIds.has(w.sourcePlanId));
 
