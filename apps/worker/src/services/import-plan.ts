@@ -279,6 +279,7 @@ export async function importPlanSnapshot(
           corosSyncState: "synced",
           completionState: "scheduled",
           archivedAt: null,
+          archiveReason: null,
           missingReads: 0,
           updatedAt: now,
         })
