@@ -142,6 +142,18 @@ export async function applyMove(db: Db, req: MoveRequest): Promise<MoveOutcome> 
     // Same-COROS-date time change: COROS has no time-of-day, nothing to write.
     corosSyncState = workout.corosSyncState === "needs_attention" ? "needs_attention" : "synced";
     await resolveIntent(db, intentId, now);
+    // Moving back to the COROS-verified date makes any in-flight move stale
+    // — without this, a pending job would re-move COROS after the user
+    // undid the change.
+    await db
+      .update(corosWriteJobs)
+      .set({ status: "superseded", updatedAt: now })
+      .where(
+        and(
+          eq(corosWriteJobs.workoutId, workout.id),
+          inArray(corosWriteJobs.status, ["queued", "claimed", "in_progress", "verifying"]),
+        ),
+      );
   } else if (!writesPossible) {
     corosSyncState = "calendar_only";
   } else {

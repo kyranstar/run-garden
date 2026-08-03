@@ -15,11 +15,13 @@ import type { Env } from "../src/env.js";
 import type { Db } from "../src/services/db.js";
 import { syncRoutes } from "../src/routes/sync.js";
 import { createSession, SESSION_COOKIE } from "../src/auth/sessions.js";
+import { loadPreferences, savePreferences } from "../src/services/calendar-sync.js";
 import { activeSyncNotes, postSyncNote } from "../src/services/sync-notes.js";
 import { openIntentFor, recordIntent } from "../src/services/sync-intents.js";
-import { makeTestDb, makeTestUser, mountRoutes } from "./helpers.js";
+import { makeTestDb, makeTestUser, mountRoutes, registerTestDevice } from "./helpers.js";
 
-const { corosWriteJobs, plannedWorkouts, studioPlanPushes, studioPlans, syncRuns, trainingPlans } = schema;
+const { corosWriteJobs, plannedWorkouts, studioPlanPushes, studioPlans, syncIntents, syncRuns, trainingPlans } =
+  schema;
 
 function makeEnv(): Env {
   return {
@@ -301,15 +303,88 @@ describe("POST /api/sync/notes/:id/undo", () => {
     expect(await res.json()).toEqual({ error: "not_found" });
   });
 
-  it("kept_local_change: records a move intent to the displaced date and dismisses the note", async () => {
-    const workoutId = await insertWorkout();
-    // The open intent applyMove would have left behind, targeting keptDate.
+  it("kept_local_change undo-before-re-emit-lands: COROS already at displacedDate — effectiveDate moves back, the stale queued job is superseded, the intent resolves, state is synced", async () => {
+    const workoutId = await insertWorkout({ effectiveDate: "2026-08-10" });
+    // COROS was already read back to the displaced date (jobs.ts's
+    // upstream_changed handling advances lastVerifiedCorosDate immediately),
+    // but the re-derived job chasing keptDate hasn't landed yet.
+    await db
+      .update(plannedWorkouts)
+      .set({ lastVerifiedCorosDate: "2026-08-09" })
+      .where(eq(plannedWorkouts.id, workoutId));
     await recordIntent(db, {
       userId,
       targetKind: "workout",
       targetId: workoutId,
       kind: "move",
-      payload: { toDate: "2026-08-10" },
+      payload: { fromDate: "2026-08-09", toDate: "2026-08-10", toTime: "07:00" },
+      source: "user_move",
+    });
+    const staleJobId = newId();
+    await db.insert(corosWriteJobs).values({
+      id: staleJobId,
+      userId,
+      workoutId,
+      kind: "move_scheduled_workout",
+      expectedContentFingerprint: "fp",
+      originalDate: "2026-08-09",
+      destinationDate: "2026-08-10",
+      requestedAt: nowInstant(),
+      status: "queued",
+      updatedAt: nowInstant(),
+    });
+    const noteId = await postSyncNote(db, {
+      userId,
+      workoutId,
+      kind: "kept_local_change",
+      payload: { displacedDate: "2026-08-09", keptDate: "2026-08-10" },
+    });
+
+    const res = await client().post(`/api/sync/notes/${noteId}/undo`);
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ ok: true });
+
+    const workout = (
+      await db.select().from(plannedWorkouts).where(eq(plannedWorkouts.id, workoutId))
+    )[0]!;
+    expect(workout.effectiveDate).toBe("2026-08-09");
+    expect(workout.corosSyncState).toBe("synced");
+
+    const staleJob = (
+      await db.select().from(corosWriteJobs).where(eq(corosWriteJobs.id, staleJobId))
+    )[0]!;
+    expect(staleJob.status).toBe("superseded");
+
+    // applyMove always records an intent — here it's immediately resolved
+    // since the requested date already matches COROS.
+    expect(await openIntentFor(db, userId, workoutId, "move")).toBeNull();
+    const intents = await db
+      .select()
+      .from(syncIntents)
+      .where(eq(syncIntents.targetId, workoutId));
+    const latest = intents.find((i) => i.payload?.["toDate"] === "2026-08-09");
+    expect(latest).toBeTruthy();
+    expect(latest!.resolvedAt).not.toBeNull();
+
+    expect(await activeSyncNotes(db, userId)).toHaveLength(0);
+  });
+
+  it("kept_local_change undo after the re-emit verified: effectiveDate moves back and a new move job is enqueued toward the displaced date", async () => {
+    const workoutId = await insertWorkout({ effectiveDate: "2026-08-10" });
+    // The re-derived job succeeded and was verified: COROS now agrees with keptDate.
+    await db
+      .update(plannedWorkouts)
+      .set({ lastVerifiedCorosDate: "2026-08-10" })
+      .where(eq(plannedWorkouts.id, workoutId));
+    const prefs = await loadPreferences(db, userId);
+    await savePreferences(db, userId, { ...prefs, corosWritesEnabled: true });
+    await registerTestDevice(db, userId);
+    await recordIntent(db, {
+      userId,
+      targetKind: "workout",
+      targetId: workoutId,
+      kind: "move",
+      payload: { fromDate: "2026-08-09", toDate: "2026-08-10", toTime: "07:00" },
       source: "user_move",
     });
     const noteId = await postSyncNote(db, {
@@ -323,11 +398,38 @@ describe("POST /api/sync/notes/:id/undo", () => {
     expect(res.status).toBe(200);
     expect(await res.json()).toEqual({ ok: true });
 
+    const workout = (
+      await db.select().from(plannedWorkouts).where(eq(plannedWorkouts.id, workoutId))
+    )[0]!;
+    expect(workout.effectiveDate).toBe("2026-08-09");
+
+    const jobs = await db.select().from(corosWriteJobs).where(eq(corosWriteJobs.workoutId, workoutId));
+    const queued = jobs.filter((j) => j.status === "queued");
+    expect(queued).toHaveLength(1);
+    expect(queued[0]!.destinationDate).toBe("2026-08-09");
+
+    // applyMove records an intent for the undo move; it stays open pending the new job.
     const open = await openIntentFor(db, userId, workoutId, "move");
     expect(open?.payload?.["toDate"]).toBe("2026-08-09");
-    expect(open?.source).toBe("undo");
+    expect(open?.source).toBe("user_move");
 
     expect(await activeSyncNotes(db, userId)).toHaveLength(0);
+  });
+
+  it("kept_local_change: 400s invalid_note when the note payload has no displacedDate string", async () => {
+    const workoutId = await insertWorkout();
+    const noteId = await postSyncNote(db, {
+      userId,
+      workoutId,
+      kind: "kept_local_change",
+      payload: { keptDate: "2026-08-10" },
+    });
+
+    const res = await client().post(`/api/sync/notes/${noteId}/undo`);
+    expect(res.status).toBe(400);
+    expect(await res.json()).toEqual({ error: "invalid_note" });
+
+    expect(await activeSyncNotes(db, userId)).toHaveLength(1);
   });
 
   it("adopted_coros_change: moves the workout back to previousDate and dismisses the note", async () => {

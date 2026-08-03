@@ -5,9 +5,8 @@ import { newId, nowInstant, todayInZone } from "@rg/domain";
 import type { AppContext } from "../auth/middleware.js";
 import { requireUser } from "../auth/middleware.js";
 import { loadPreferences } from "../services/calendar-sync.js";
-import { applyMove, emitPendingWork } from "../services/jobs.js";
+import { applyMove } from "../services/jobs.js";
 import { activeSyncNotes, dismissSyncNote } from "../services/sync-notes.js";
-import { recordIntent } from "../services/sync-intents.js";
 import { computeSyncStatus } from "../services/sync-status.js";
 import { undoStudioAdoption } from "../services/studio-push.js";
 
@@ -52,9 +51,11 @@ syncRoutes.post("/notes/:id/dismiss", async (c) => {
 // Behavior is per note kind:
 //  - kept_local_change: the app kept its own edit over a displaced COROS
 //    value (jobs.ts's last-edit-wins tie-break); undo asks to move back to
-//    what COROS had, by recording a fresh move intent and letting
-//    `emitPendingWork` re-derive the write (or resolve the intent as already
-//    settled, if COROS already agrees).
+//    what COROS had, by going through the same `applyMove` path a manual
+//    drag would — this is what actually updates `effectiveDate` (recording
+//    an intent alone does nothing visible, and if COROS's re-derived job
+//    hasn't landed yet, `applyMove`'s same-date branch also supersedes it so
+//    it can't re-move COROS after the undo).
 //  - adopted_coros_change: an import adopted a COROS-side date change; undo
 //    is a normal user move back to the previous date, so it goes through the
 //    same `applyMove` path a manual drag would.
@@ -77,17 +78,31 @@ syncRoutes.post("/notes/:id/undo", async (c) => {
   switch (note.kind) {
     case "kept_local_change": {
       const displacedDate = payload["displacedDate"];
-      if (typeof displacedDate !== "string" || !note.workoutId) return c.json({ error: "not_found" }, 404);
-      await recordIntent(db, {
-        userId,
-        targetKind: "workout",
-        targetId: note.workoutId,
-        kind: "move",
-        payload: { toDate: displacedDate },
-        source: "undo",
-      });
+      if (typeof displacedDate !== "string") return c.json({ error: "invalid_note" }, 400);
+      const workout = note.workoutId
+        ? (
+            await db
+              .select()
+              .from(plannedWorkouts)
+              .where(and(eq(plannedWorkouts.id, note.workoutId), eq(plannedWorkouts.userId, userId)))
+              .limit(1)
+          )[0]
+        : undefined;
+      if (!workout || workout.archivedAt) return c.json({ error: "not_found" }, 404);
       const prefs = await loadPreferences(db, userId);
-      await emitPendingWork(db, userId, { corosWritesEnabled: prefs.corosWritesEnabled });
+      try {
+        await applyMove(db, {
+          userId,
+          workoutId: note.workoutId!,
+          toDate: displacedDate,
+          toTime: workout.effectiveTime,
+          source: "app",
+          corosWritesEnabled: prefs.corosWritesEnabled,
+        });
+      } catch (e) {
+        const msg = e instanceof Error ? e.message : "move_failed";
+        return c.json({ error: msg }, msg === "races_cannot_move" ? 422 : 500);
+      }
       await dismissSyncNote(db, userId, noteId);
       return c.json({ ok: true });
     }
