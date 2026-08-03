@@ -1,6 +1,6 @@
 import { Hono } from "hono";
 import { z } from "zod";
-import { and, eq, inArray, isNull } from "drizzle-orm";
+import { and, eq } from "drizzle-orm";
 import { corosWriteJobs, deviceHandshakes, desktopDevices } from "@rg/database";
 import {
   corosWriteResultSchema,
@@ -11,7 +11,8 @@ import {
 import type { AppContext } from "../auth/middleware.js";
 import { requireDevice, requireUser } from "../auth/middleware.js";
 import { loadPreferences, syncCalendar } from "../services/calendar-sync.js";
-import { applyJobResult, claimNextJob } from "../services/jobs.js";
+import { applyJobResult, claimNextJob, emitPendingWork } from "../services/jobs.js";
+import { DEVICE_ONLINE_WINDOW_MS } from "../services/sync-status.js";
 import { importPlanSnapshot } from "../services/import-plan.js";
 import { ingestActivities } from "../services/completion.js";
 import { advanceGarden, buildGardenView, resimulateFrom } from "../services/garden-sync.js";
@@ -107,7 +108,7 @@ deviceRoutes.get("/", requireUser, async (c) => {
       bridgePaused: d.bridgePaused,
       lastSeenAt: d.lastSeenAt,
       revokedAt: d.revokedAt,
-      online: !d.revokedAt && Date.parse(d.lastSeenAt) > Date.now() - 3 * 60_000,
+      online: !d.revokedAt && Date.parse(d.lastSeenAt) > Date.now() - DEVICE_ONLINE_WINDOW_MS,
     })),
   });
 });
@@ -218,6 +219,9 @@ deviceRoutes.post("/bridge/sync", requireDevice, async (c) => {
           message: e instanceof Error ? e.message : "unknown",
         });
       });
+      stats.emittedJobs = await emitPendingWork(db, userId, {
+        corosWritesEnabled: prefs.corosWritesEnabled,
+      });
     }
 
     if (body.activities && body.activities.length > 0) {
@@ -296,9 +300,15 @@ deviceRoutes.post("/bridge/jobs/claim", requireDevice, async (c) => {
   )[0];
   if (device?.bridgePaused) return c.json({ job: null, paused: true });
   const job = await claimNextJob(db, c.get("userId"), c.get("deviceId"));
-  if (!job) return c.json({ job: null });
+  const remaining = await db
+    .select({ id: corosWriteJobs.id })
+    .from(corosWriteJobs)
+    .where(and(eq(corosWriteJobs.userId, c.get("userId")), eq(corosWriteJobs.status, "queued")));
+  const pendingCount = remaining.length;
+  if (!job) return c.json({ job: null, pendingCount });
   const studio = bridgeJobPayload(job);
   return c.json({
+    pendingCount,
     job: {
       id: job.id,
       kind: job.kind,
@@ -351,18 +361,4 @@ deviceRoutes.post("/bridge/garden", requireDevice, async (c) => {
   const prefs = await loadPreferences(db, userId);
   const view = await buildGardenView(db, userId, prefs);
   return c.json(view);
-});
-
-deviceRoutes.post("/bridge/heartbeat", requireDevice, async (c) => {
-  const db = c.get("db");
-  const pending = await db
-    .select({ id: corosWriteJobs.id })
-    .from(corosWriteJobs)
-    .where(
-      and(
-        eq(corosWriteJobs.userId, c.get("userId")),
-        inArray(corosWriteJobs.status, ["queued", "claimed"]),
-      ),
-    );
-  return c.json({ ok: true, pendingJobs: pending.length });
 });

@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Link, useSearchParams } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { api, type WorkoutDto } from "@rg/api-client";
+import { api, ApiError, type WorkoutDto } from "@rg/api-client";
 import { addDays, startOfIsoWeek } from "@rg/domain";
 import {
   Banner,
@@ -17,11 +17,13 @@ import {
   monthTitle,
   Sheet,
   Spinner,
+  SyncNotesStack,
 } from "../components.js";
 import { IconAlert, IconCheck, IconClock } from "../icons.js";
 import { MoveSheet } from "./move-sheet.js";
 import { MatchSheet } from "./match-sheet.js";
 import { StudioSection } from "./studio.js";
+import { SyncPanel } from "./today.js";
 
 /**
  * "Did this run happen?" only ever makes sense for a date that has passed.
@@ -55,11 +57,47 @@ function WorkoutDetail({
     queryKey: ["workout", w.id],
     queryFn: () => api.workout(w.id),
   });
+  // Same queryKey/queryFn as today.tsx's SyncPanel, so this shares its cache
+  // rather than firing a second independent fetch for the same data.
+  const notes = useQuery({ queryKey: ["sync-notes"], queryFn: api.syncNotes, refetchInterval: 30_000 });
+  const [undoErrors, setUndoErrors] = useState<Record<string, string>>({});
+  const workoutNotes = (notes.data?.notes ?? []).filter((n) => n.workoutId === w.id);
   const invalidate = () => {
     void qc.invalidateQueries({ queryKey: ["plan"] });
     void qc.invalidateQueries({ queryKey: ["today"] });
     void qc.invalidateQueries({ queryKey: ["workout", w.id] });
   };
+  const dismissNote = useMutation({
+    mutationFn: (id: string) => api.dismissSyncNote(id),
+    onSuccess: () => void qc.invalidateQueries({ queryKey: ["sync-notes"] }),
+  });
+  const undoNote = useMutation({
+    mutationFn: (id: string) => api.undoSyncNote(id),
+    onSuccess: (_data, id) => {
+      setUndoErrors((e) => {
+        if (!(id in e)) return e;
+        const next = { ...e };
+        delete next[id];
+        return next;
+      });
+      void qc.invalidateQueries({ queryKey: ["sync-notes"] });
+      void qc.invalidateQueries({ queryKey: ["sync-status"] });
+      invalidate();
+    },
+    onError: (err: unknown, id: string) => {
+      // Same copy as today.tsx's SyncPanel: adopted_coros_edit/removal notes
+      // forward to the studio-adoption undo, which 409s the same way on a
+      // renamed-on-COROS row.
+      const code = err instanceof ApiError ? (err.body as { error?: string } | null)?.error : undefined;
+      setUndoErrors((e) => ({
+        ...e,
+        [id]:
+          code === "undo_unsupported_rename"
+            ? "Renamed on COROS — delete it there to re-push."
+            : "Couldn't undo — try again.",
+      }));
+    },
+  });
   const retry = useMutation({ mutationFn: () => api.retryCoros(w.id), onSuccess: invalidate });
   const restore = useMutation({ mutationFn: () => api.restoreCalendar(w.id), onSuccess: invalidate });
   const unmatch = useMutation({ mutationFn: () => api.unmatch(w.id), onSuccess: invalidate });
@@ -76,7 +114,10 @@ function WorkoutDetail({
   const match = detail.data?.match as { activity?: Record<string, unknown> } | null | undefined;
   const asks = askable(w, today);
   const completion = displayCompletionState(w, today);
-  const outOfSync = w.corosSyncState === "needs_attention" || w.corosSyncState === "calendar_only";
+  // Derived view (sync-transparency Task 10) takes precedence; the stored
+  // legacy column is the fallback for any DTO that hasn't opted into it.
+  const syncView = w.corosSyncView ?? w.corosSyncState;
+  const outOfSync = syncView === "needs_attention" || syncView === "calendar_only" || syncView === "sync_issue";
 
   return (
     <Sheet open onClose={onClose} title={w.title}>
@@ -85,18 +126,27 @@ function WorkoutDetail({
           <CategoryDot category={w.category} />
           <span className="muted">{CATEGORY_LABELS[w.category] ?? w.category}</span>
           <CompletionPill state={completion} />
-          <CorosPill state={w.corosSyncState} hideWhenHealthy />
+          <CorosPill state={syncView} hideWhenHealthy />
         </div>
         <p>
           {formatDayLong(w.effectiveDate)} at {formatTime(w.effectiveTime)}
         </p>
+        <SyncNotesStack
+          notes={workoutNotes}
+          onDismiss={(id) => dismissNote.mutate(id)}
+          onUndo={(id) => undoNote.mutate(id)}
+          undoPendingId={undoNote.isPending ? undoNote.variables : null}
+          undoErrors={undoErrors}
+        />
         {w.effectiveDate !== w.lastVerifiedCorosDate ? (
-          <Banner kind={w.corosSyncState === "needs_attention" ? "warn" : "info"}>
-            {w.corosSyncState === "needs_attention"
+          <Banner kind={syncView === "needs_attention" || syncView === "sync_issue" ? "warn" : "info"}>
+            {syncView === "needs_attention"
               ? `COROS has this on ${formatDayLong(w.lastVerifiedCorosDate)}; Run Garden has ${formatDayLong(w.effectiveDate)}. Pick where it should live.`
-              : w.corosSyncState === "calendar_only"
+              : syncView === "calendar_only"
                 ? `Your COROS watch still has this on ${formatDayLong(w.lastVerifiedCorosDate)} — this move hasn't been written to COROS.`
-                : `COROS still shows ${formatDayLong(w.lastVerifiedCorosDate)} — the update is on its way.`}
+                : syncView === "sync_issue"
+                  ? `The last update to COROS failed — your watch still shows ${formatDayLong(w.lastVerifiedCorosDate)}. Retry below.`
+                  : `COROS still shows ${formatDayLong(w.lastVerifiedCorosDate)} — the update is on its way.`}
           </Banner>
         ) : null}
         <div className="hero-durations">
@@ -266,7 +316,8 @@ function WorkoutCell({
   const done = completion === "completed" || completion === "provisionally_completed";
   const faded = completion === "skipped" || completion === "missed";
   const asks = askable(w, today);
-  const attention = w.corosSyncState === "needs_attention";
+  const syncView = w.corosSyncView ?? w.corosSyncState;
+  const attention = syncView === "needs_attention" || syncView === "sync_issue";
 
   if (w.category === "rest") {
     return (
@@ -366,6 +417,7 @@ export function PlanScreen() {
           ) : null}
         </div>
       </div>
+      <SyncPanel />
       <StudioSection />
       {plan.data.workouts.length === 0 ? (
         <EmptyState art="🗓" title="No active COROS training plan was found">

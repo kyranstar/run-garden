@@ -30,6 +30,14 @@ export function MoveSheet({
     enabled: open,
     staleTime: 30_000,
   });
+  // Move-time never-paired prompt (sync-transparency Task 12): when the
+  // account-wide sync state is `not_synced`, a move here only ever touches
+  // the app calendar — set expectations before the user picks a time.
+  const syncStatus = useQuery({
+    queryKey: ["sync-status"],
+    queryFn: api.syncStatus,
+    enabled: open,
+  });
 
   const move = useMutation({
     mutationFn: ({ date, time }: { date: string; time: string }) => api.move(workout.id, date, time),
@@ -67,6 +75,13 @@ export function MoveSheet({
 
   return (
     <Sheet open={open} onClose={close} title={`Move “${workout.title}”`}>
+      {!result && syncStatus.data?.state === "not_synced" ? (
+        <Banner kind="info">
+          {syncStatus.data.registered
+            ? "This will only change the app calendar — COROS updates are off."
+            : "This will only change the app calendar — pair your Mac to update COROS."}
+        </Banner>
+      ) : null}
       {result ? (
         <div className="stack">
           <Banner kind="info">{result}</Banner>

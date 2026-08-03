@@ -19,11 +19,13 @@ import { gardenRoutes } from "./routes/garden.js";
 import { stravaRoutes } from "./routes/strava.js";
 import { activityRoutes, calendarRoutes, insightRoutes, settingsRoutes } from "./routes/misc.js";
 import { studioRoutes } from "./routes/studio.js";
+import { syncRoutes } from "./routes/sync.js";
 import { makeDb, type Db } from "./services/db.js";
 import { loadPreferences, syncCalendar } from "./services/calendar-sync.js";
 import { advanceGarden } from "./services/garden-sync.js";
 import { reconcileCompletionStates, startSyncRun, finishSyncRun } from "./services/reconcile-daily.js";
 import { generateWeeklyReview } from "./services/llm.js";
+import { healLegacySyncState } from "./services/heal-legacy-sync.js";
 import { purgeExpiredSessions, createSession, sessionCookie } from "./auth/sessions.js";
 import { purgeExpiredStates } from "./auth/google.js";
 import { ensureFixtureUser, seedFixtures } from "./services/fixtures.js";
@@ -55,6 +57,7 @@ app.route("/api/activities", activityRoutes);
 app.route("/api/insights", insightRoutes);
 app.route("/api/settings", settingsRoutes);
 app.route("/api/studio", studioRoutes);
+app.route("/api/sync", syncRoutes);
 
 app.get("/api/health", (c) => c.json({ ok: true, fixtureMode: fixtureModeEnabled(c.env) }));
 
@@ -107,6 +110,7 @@ async function hourly(db: Db, env: Env): Promise<void> {
       const prefs = await loadPreferences(db, userId);
       const rec = await reconcileCompletionStates(db, userId, prefs);
       const garden = await advanceGarden(db, userId, prefs);
+      await healLegacySyncState(db, userId);
       await finishSyncRun(db, runId, "ok", { ...rec, ...garden });
     } catch {
       await finishSyncRun(db, runId, "error");

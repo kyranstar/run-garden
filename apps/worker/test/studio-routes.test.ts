@@ -30,7 +30,8 @@ import { studioRoutes } from "../src/routes/studio.js";
 import { createSession, SESSION_COOKIE } from "../src/auth/sessions.js";
 import { makeTestDb, makeTestUser, mountRoutes } from "./helpers.js";
 
-const { corosExercises, corosWriteJobs, llmUsage, studioPlanPushes, studioPlans } = schema;
+const { corosExercises, corosWriteJobs, llmUsage, plannedWorkouts, studioPlanPushes, studioPlans, trainingPlans } =
+  schema;
 
 const SQUAT = "425898928110747648";
 const BENCH = "426109589008859137";
@@ -149,6 +150,82 @@ async function seedVerifiedPushRow(
     updatedAt: nowInstant(),
   });
   return id;
+}
+
+/** A push row already `adopted` (spec §2, Task 7) — the fixture shape the
+ * undo route (`/adoption/:pushId/undo`) case-detects against. */
+async function seedAdoptedPushRow(
+  planId: string,
+  over: Partial<{
+    happenDay: string;
+    sessionTitle: string;
+    corosIdInPlan: string;
+    corosPlanId: string;
+    corosHappenDay: string | null;
+  }> = {},
+): Promise<string> {
+  const id = newId();
+  await db.insert(studioPlanPushes).values({
+    id,
+    planId,
+    planVersion: 1,
+    happenDay: over.happenDay ?? "2026-09-07",
+    sessionTitle: over.sessionTitle ?? "Full Body — wk 1",
+    corosIdInPlan: over.corosIdInPlan ?? "21",
+    corosProgramId: over.corosIdInPlan ?? "21",
+    corosPlanId: over.corosPlanId ?? "coros-plan",
+    corosHappenDay: over.corosHappenDay ?? null,
+    sessionFingerprint: "original-fingerprint",
+    status: "adopted",
+    error: null,
+    updatedAt: nowInstant(),
+  });
+  return id;
+}
+
+/** The `planned_workouts` observation an undo case-detects against — the
+ * import snapshot row `detectDrift` (and the undo route) key by
+ * `${corosPlanId}:${corosIdInPlan}` → `sourceWorkoutId`. */
+async function seedObservation(over: {
+  sourceWorkoutId: string;
+  title?: string;
+  lastVerifiedCorosDate?: string;
+  archivedAt?: string | null;
+  archiveReason?: string | null;
+}): Promise<void> {
+  const [sourcePlanId, sourceIdInPlan] = over.sourceWorkoutId.split(":");
+  const trainingPlanId = newId();
+  await db.insert(trainingPlans).values({
+    id: trainingPlanId,
+    userId,
+    provider: "coros",
+    sourcePlanId: sourcePlanId!,
+    name: "My Plan",
+    status: "active",
+    createdAt: nowInstant(),
+    updatedAt: nowInstant(),
+  });
+  const date = over.lastVerifiedCorosDate ?? "2026-09-07";
+  await db.insert(plannedWorkouts).values({
+    id: newId(),
+    userId,
+    planId: trainingPlanId,
+    sourceWorkoutId: over.sourceWorkoutId,
+    sourceIdInPlan,
+    title: over.title ?? "Full Body — wk 1",
+    category: "strength",
+    sport: "strength",
+    originalPlanDate: date,
+    lastVerifiedCorosDate: date,
+    effectiveDate: date,
+    effectiveTime: "07:00",
+    sourceContentFingerprint: "fp",
+    calendarBlockDurationSeconds: 3600,
+    archivedAt: over.archivedAt ?? null,
+    archiveReason: over.archiveReason ?? null,
+    createdAt: nowInstant(),
+    updatedAt: nowInstant(),
+  });
 }
 
 function client(env: Env = makeEnv()) {
@@ -839,6 +916,104 @@ describe("POST /api/studio/push/retry", () => {
     // Same deterministic refusal on the re-run — proves it re-ran the whole
     // diff rather than force-completing a single row.
     expect(body.summary.failures).toBe(2);
+  });
+});
+
+// Task 7 fix round: the undo route case-detects from the last observation of
+// the source workout rather than a single generic "flip it back" transition.
+describe("POST /api/studio/adoption/:pushId/undo", () => {
+  it("MOVED: re-verifies the row and plans a delete at the observed day, chained to a recreate", async () => {
+    await seedCatalog();
+    const planId = await seedPlan();
+    const pushId = await seedAdoptedPushRow(planId, { corosHappenDay: "2026-09-10" });
+    // Same title (not a rename), a different date than happenDay (a move).
+    await seedObservation({
+      sourceWorkoutId: "coros-plan:21",
+      title: "Full Body — wk 1",
+      lastVerifiedCorosDate: "2026-09-10",
+    });
+
+    const res = await client().post(`/api/studio/adoption/${pushId}/undo`);
+    expect(res.status).toBe(200);
+    expect((await res.json()) as { ok: boolean }).toMatchObject({ ok: true });
+
+    // The row leaves "adopted" — re-verified and mid-flight on the corrective
+    // delete+create the re-push planned for it.
+    const row = (await db.select().from(studioPlanPushes).where(eq(studioPlanPushes.id, pushId)))[0]!;
+    expect(row.status).toBe("pending");
+
+    const jobs = await db.select().from(corosWriteJobs).where(eq(corosWriteJobs.userId, userId));
+    const deleteJob = jobs.find((j) => j.kind === "delete_scheduled_workout");
+    expect(deleteJob).toBeTruthy();
+    const payload = deleteJob!.payload as {
+      happenDay: string;
+      followUpCreate?: { happenDay: string; name: string };
+    };
+    // Targets where the workout ACTUALLY is, not the day the plan originally
+    // asked for — addressing the wrong day would come back stamp_mismatch.
+    expect(payload.happenDay).toBe("2026-09-10");
+    expect(payload.followUpCreate).toBeTruthy();
+    expect(payload.followUpCreate!.happenDay).toBe("2026-09-07");
+    expect(payload.followUpCreate!.name).toBe("Full Body — wk 1");
+  });
+
+  it("MISSING: enqueues a create only — no delete job for a workout COROS already removed", async () => {
+    await seedCatalog();
+    const planId = await seedPlan();
+    const pushId = await seedAdoptedPushRow(planId, { corosIdInPlan: "22" });
+    await seedObservation({
+      sourceWorkoutId: "coros-plan:22",
+      archivedAt: nowInstant(),
+      archiveReason: "absence_confirmed",
+    });
+
+    const res = await client().post(`/api/studio/adoption/${pushId}/undo`);
+    expect(res.status).toBe(200);
+    expect((await res.json()) as { ok: boolean }).toMatchObject({ ok: true });
+
+    const jobs = await db.select().from(corosWriteJobs).where(eq(corosWriteJobs.userId, userId));
+    expect(jobs.some((j) => j.kind === "delete_scheduled_workout")).toBe(false);
+    const createJob = jobs.find((j) => j.kind === "create_scheduled_workout" && j.studioPushId === pushId);
+    expect(createJob).toBeTruthy();
+
+    const row = (await db.select().from(studioPlanPushes).where(eq(studioPlanPushes.id, pushId)))[0]!;
+    expect(row.status).toBe("pending");
+    expect(row.corosIdInPlan).toBeNull();
+  });
+
+  it("RENAMED: refuses with 409 undo_unsupported_rename and leaves the row adopted", async () => {
+    await seedCatalog();
+    const planId = await seedPlan();
+    const pushId = await seedAdoptedPushRow(planId, { corosIdInPlan: "23" });
+    await seedObservation({ sourceWorkoutId: "coros-plan:23", title: "Renamed By User" });
+
+    const res = await client().post(`/api/studio/adoption/${pushId}/undo`);
+    expect(res.status).toBe(409);
+    expect((await res.json()) as { error: string }).toMatchObject({ error: "undo_unsupported_rename" });
+
+    const row = (await db.select().from(studioPlanPushes).where(eq(studioPlanPushes.id, pushId)))[0]!;
+    expect(row.status).toBe("adopted");
+    expect(await db.select().from(corosWriteJobs)).toHaveLength(0);
+  });
+
+  it("404s (not_found) for a pushId belonging to another user's plan — same shape as unknown/non-adopted", async () => {
+    await seedCatalog();
+    const other = await makeTestUser(db);
+    const otherPlanId = newId();
+    await db.insert(studioPlans).values({
+      id: otherPlanId,
+      userId: other.userId,
+      brief: plan().brief as unknown as Record<string, unknown>,
+      plan: plan() as unknown as Record<string, unknown>,
+      version: 1,
+      createdAt: nowInstant(),
+      updatedAt: nowInstant(),
+    });
+    const foreignPushId = await seedAdoptedPushRow(otherPlanId);
+
+    const res = await client().post(`/api/studio/adoption/${foreignPushId}/undo`);
+    expect(res.status).toBe(404);
+    expect((await res.json()) as { error: string }).toMatchObject({ error: "not_found" });
   });
 });
 

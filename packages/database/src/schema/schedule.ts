@@ -71,6 +71,8 @@ export const plannedWorkouts = sqliteTable(
     /** The local date a completion/skip/missed resolution landed (garden input). */
     resolutionDate: text("resolution_date"),
     archivedAt: text("archived_at"),
+    /** Why archivedAt is set: absence_confirmed | user_removed | duplicate_mirror. */
+    archiveReason: text("archive_reason"),
     createdAt: text("created_at").notNull(),
     updatedAt: text("updated_at").notNull(),
   },
@@ -227,4 +229,41 @@ export const calendarEventSuppressions = sqliteTable(
     createdAt: text("created_at").notNull(),
   },
   (t) => [index("suppressions_workout_idx").on(t.workoutId)],
+);
+
+export const syncIntents = sqliteTable(
+  "sync_intents",
+  {
+    id: text("id").primaryKey(),
+    userId: text("user_id").notNull(),
+    targetKind: text("target_kind").notNull(), // workout | studio_session
+    targetId: text("target_id").notNull(), // planned_workouts.id | studio_plan_pushes.id
+    kind: text("kind").notNull(), // move | create | delete | remove_local | restore
+    payload: text("payload", { mode: "json" }).$type<Record<string, unknown>>(),
+    source: text("source").notNull(), // user_move | calendar_drag | studio_push | studio_retire | remove_from_plan | auto_resolve | undo
+    createdAt: text("created_at").notNull(),
+    /** Newer intent of the same (targetId, kind) that replaced this one. */
+    supersededBy: text("superseded_by"),
+    /** Set when the reconciler verified this intent landed on COROS (or it needs no write). */
+    resolvedAt: text("resolved_at"),
+  },
+  (t) => [
+    index("sync_intents_target_idx").on(t.targetId),
+    index("sync_intents_user_open_idx").on(t.userId, t.resolvedAt),
+  ],
+);
+
+export const syncNotes = sqliteTable(
+  "sync_notes",
+  {
+    id: text("id").primaryKey(),
+    userId: text("user_id").notNull(),
+    workoutId: text("workout_id"),
+    kind: text("kind").notNull(), // kept_local_change | adopted_coros_change | adopted_coros_edit | adopted_coros_removal
+    payload: text("payload", { mode: "json" }).$type<Record<string, unknown>>(),
+    createdAt: text("created_at").notNull(),
+    expiresAt: text("expires_at").notNull(),
+    dismissedAt: text("dismissed_at"),
+  },
+  (t) => [index("sync_notes_user_idx").on(t.userId, t.dismissedAt)],
 );

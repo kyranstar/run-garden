@@ -78,6 +78,12 @@ export interface WorkoutDto {
   stageSummary?: string | null;
   calendarSyncState: CalendarSyncState;
   corosSyncState: CorosSyncState;
+  /** Derived per-workout view (sync-transparency Task 10) — same legacy
+   * five-value vocabulary as `corosSyncState` (so `CorosPill`/
+   * `COROS_SYNC_LABELS` keep working unchanged), computed fresh from open
+   * intents + in-flight/failed jobs rather than echoed from the stored
+   * column. Optional: absent on any DTO a route hasn't opted into deriving. */
+  corosSyncView?: CorosSyncState;
   completionState: CompletionState;
   archived: boolean;
 }
@@ -205,7 +211,11 @@ export interface StudioPushRowDto {
   id: string;
   happenDay: string;
   sessionTitle: string;
-  status: "pending" | "verified" | "failed" | "deleted";
+  /** `adopted` (sync-transparency Task 7): a genuine external edit/move/removal
+   * on COROS was detected; the studio stepped back from managing this session
+   * (`error` is always `null` in this state) until undone via
+   * `studioUndoAdoption`/`undoSyncNote`. */
+  status: "pending" | "verified" | "failed" | "deleted" | "adopted";
   error: string | null;
   corosHappenDay: string | null;
 }
@@ -293,6 +303,61 @@ export interface StudioPushResponse {
   pushes: StudioPushRowDto[];
 }
 
+// ── Sync transparency (worker routes: apps/worker/src/routes/sync.ts) ──────────
+
+/** Mirrors `sync-status.ts`'s `SyncStatusState` — the account-wide summary,
+ * distinct from `WorkoutDto.corosSyncView`'s per-workout vocabulary. */
+export type SyncStatusState = "in_sync" | "syncing" | "waiting_for_mac" | "not_synced" | "sync_issue";
+
+export interface SyncStatusDto {
+  state: SyncStatusState;
+  pendingCount: number;
+  issueCount: number;
+  lastCorosReadAt: string | null;
+  paused: boolean;
+  writesEnabled: boolean;
+  registered: boolean;
+}
+
+export type SyncNoteKind =
+  | "kept_local_change"
+  | "adopted_coros_change"
+  | "adopted_coros_edit"
+  | "adopted_coros_removal";
+
+export interface SyncNoteDto {
+  id: string;
+  kind: SyncNoteKind;
+  workoutId: string | null;
+  payload: Record<string, unknown> | null;
+  createdAt: string;
+}
+
+export interface ReadNowResponse {
+  enqueued: boolean;
+  lastCorosReadAt: string | null;
+}
+
+/** Response from `POST /api/studio/adoption/:pushId/undo` — mirrors the
+ * worker's own `PushSummary` (apps/worker/src/services/studio-push.ts), which
+ * is a distinct, lighter shape than `StudioPushSummaryDto` above (no
+ * `planVersion`; carries its own `error` for the rare `plan_not_found` /
+ * `invalid_plan` re-push failure). A 404/409 (not_found /
+ * undo_unsupported_rename) throws `ApiError` instead of reaching this shape. */
+export interface StudioAdoptionUndoResponse {
+  ok: boolean;
+  summary: {
+    ok: boolean;
+    error?: "plan_not_found" | "invalid_plan";
+    creates: number;
+    deletes: number;
+    failures: number;
+    unchanged: number;
+    drifted: number;
+    blocked: number;
+  };
+}
+
 // ── Endpoints ────────────────────────────────────────────────────────────────
 
 export const api = {
@@ -350,7 +415,14 @@ export const api = {
   studioPush: () => post<StudioPushResponse>("/api/studio/push"),
   studioPushRetry: (happenDay: string) =>
     post<StudioPushResponse>("/api/studio/push/retry", { happenDay }),
+  studioUndoAdoption: (pushId: string) =>
+    post<StudioAdoptionUndoResponse>(`/api/studio/adoption/${pushId}/undo`),
   studioHistory: () => get<{ plans: StudioHistoryEntryDto[] }>("/api/studio/history"),
+  syncStatus: () => get<SyncStatusDto>("/api/sync/status"),
+  syncNotes: () => get<{ notes: SyncNoteDto[] }>("/api/sync/notes"),
+  dismissSyncNote: (id: string) => post<{ ok: true }>(`/api/sync/notes/${id}/dismiss`),
+  undoSyncNote: (id: string) => post<{ ok: true }>(`/api/sync/notes/${id}/undo`),
+  readNow: () => post<ReadNowResponse>("/api/sync/read-now"),
 };
 
 /** One previously generated plan + the brief (prompt) that produced it. */

@@ -23,8 +23,10 @@
  *     create that adopts the stale workout via `already_present` and reports a
  *     content change that never happened.
  *  4. DRIFT IS NEVER CLOBBERED. A verified row whose observed workout has been
- *     renamed, moved or deleted in COROS is marked `changed_on_coros` and
- *     excluded from both the delete batch and any recreate.
+ *     renamed, moved or deleted on COROS by something other than the app
+ *     itself is ADOPTED (`status: "adopted"`, spec §2) and excluded from both
+ *     the delete batch and any recreate — never silently overwritten, and
+ *     never left unmanaged forever: an undo route offers to re-push it.
  *  5. STRUCTURED CODES ONLY. Nothing an executor produced as prose is ever
  *     written to a row or shown to a user — executor messages can name
  *     workouts the user authored.
@@ -61,6 +63,8 @@ import {
   type StudioSession,
 } from "@rg/domain";
 import { chunkIds, type Db } from "./db.js";
+import { appRequestedDates, recordIntent } from "./sync-intents.js";
+import { postSyncNote } from "./sync-notes.js";
 
 // ── The plan grid → calendar days ───────────────────────────────────────────
 
@@ -145,6 +149,7 @@ export interface PushRow {
    * this is what a delete has to be addressed at.
    */
   corosHappenDay: string | null;
+  /** pending | verified | failed | deleted | adopted (spec §2). */
   status: string;
   /** The structured failure code, when the row is in a failed state. */
   error: string | null;
@@ -162,10 +167,13 @@ export function deleteTargetDay(row: PushRow): string {
 }
 
 /**
- * A row the studio no longer provably owns. Set when drift is detected, and
- * when a create refused because the same stamp turned up on another day.
- * Rows carrying it are excluded from every subsequent push, not just the one
- * that discovered the drift — the workout on COROS is the user's now.
+ * LEGACY. A row the studio no longer provably owns, written by an older
+ * build directly into `error` on a `failed` row. Superseded by the
+ * `status === "adopted"` transition (spec §2) — a genuine external edit is
+ * now ADOPTED rather than parked as a permanent failure, with an undo route
+ * offering to re-push the original. Kept only so rows a pre-Task-7 push
+ * already marked this way stay untouchable until Task 8's healing migrates
+ * them; every NEW discovery of the same fact uses `"adopted"` instead.
  */
 export const CHANGED_ON_COROS = "changed_on_coros";
 
@@ -176,44 +184,66 @@ export interface ObservedWorkout {
   title: string;
   /** What COROS last reported, NOT the locally-moved effective date. */
   corosDate: LocalDate;
-  /** The importer confirmed it absent over two consecutive reads. */
-  archived: boolean;
+  /**
+   * Why the source workout is archived, or `null` if it is not. Only
+   * `"absence_confirmed"` (the importer confirmed it gone from COROS over two
+   * consecutive reads) means COROS-side drift; `"user_removed"` and
+   * `"duplicate_mirror"` are the app's own bookkeeping and never drift.
+   */
+  archiveReason: string | null;
 }
 
-export type DriftKind = "missing" | "renamed" | "moved";
+export type DriftKind = "missing" | "renamed" | "moved" | "app_moved";
 export interface DriftFinding {
   pushId: string;
   kind: DriftKind;
+  /** Where the workout was actually observed, when the kind carries one. */
+  observedDay?: string;
 }
 
 /**
  * Compare verified push rows against the last snapshot's container-plan
  * contents. A mismatch means the user edited COROS directly, and the row must
- * not be clobbered by a push.
+ * not be clobbered by a push — UNLESS the app itself is the one that moved
+ * it, recognized via `appMoves` (the intent ledger's record of every date the
+ * app asked a workout to move to), in which case it is `"app_moved"`: still
+ * ours, not a user edit.
  *
  * ABSENCE IS NOT DRIFT. A row the snapshot has no opinion about (outside its
  * window, or not yet synced) is left alone; only an ARCHIVED observation —
  * which the importer writes after two consecutive reads confirmed the workout
  * gone — counts as deleted-on-COROS. Treating plain absence as drift would
- * mark every session beyond the snapshot window on the first push.
+ * mark every session beyond the snapshot window on the first push. And an
+ * archive reason that is the app's OWN bookkeeping (`user_removed`,
+ * `duplicate_mirror`) is not a COROS-side deletion either — only
+ * `absence_confirmed` is.
  */
 export function detectDrift(
   rows: PushRow[],
   observed: Map<string, ObservedWorkout>,
+  appMoves: Map<string, Set<string>>,
 ): DriftFinding[] {
   const findings: DriftFinding[] = [];
   for (const row of rows) {
     if (row.status !== "verified") continue;
     if (!row.corosIdInPlan || !row.corosPlanId) continue;
-    const seen = observed.get(`${row.corosPlanId}:${row.corosIdInPlan}`);
+    const key = `${row.corosPlanId}:${row.corosIdInPlan}`;
+    const seen = observed.get(key);
     if (!seen) continue;
-    if (seen.archived) findings.push({ pushId: row.id, kind: "missing" });
-    else if (seen.title !== row.sessionTitle) findings.push({ pushId: row.id, kind: "renamed" });
-    // Compared against `happenDay`, NOT `deleteTargetDay(row)`. A verified row
-    // always has the two equal (ok:true means the stamp was found on the day
-    // that was asked for), and folding in `corosHappenDay` would make "moved"
-    // unfireable the moment a row ever recorded a different day.
-    else if (seen.corosDate !== row.happenDay) findings.push({ pushId: row.id, kind: "moved" });
+    if (seen.archiveReason === "absence_confirmed") {
+      findings.push({ pushId: row.id, kind: "missing" });
+    } else if (seen.archiveReason) {
+      // user_removed / duplicate_mirror: the app's own bookkeeping, not a
+      // COROS-side deletion. Not drift.
+    } else if (seen.title !== row.sessionTitle) {
+      findings.push({ pushId: row.id, kind: "renamed", observedDay: seen.corosDate });
+    } else if (seen.corosDate !== row.happenDay) {
+      findings.push(
+        appMoves.get(key)?.has(seen.corosDate)
+          ? { pushId: row.id, kind: "app_moved", observedDay: seen.corosDate }
+          : { pushId: row.id, kind: "moved", observedDay: seen.corosDate },
+      );
+    }
   }
   return findings;
 }
@@ -257,9 +287,10 @@ export interface PushBatch {
   /** Ids of verified rows the draft still matches exactly. */
   unchanged: string[];
   /**
-   * Ids skipped because they are `changed_on_coros`: this push would have
-   * acted on them and deliberately did not. Counted so the UI can say "3
-   * sessions changed on COROS" rather than silently doing less than asked.
+   * Ids skipped because they are `adopted` (or, legacy, `changed_on_coros`):
+   * this push would have acted on them and deliberately did not. Counted so
+   * the UI can say "3 sessions changed on COROS" rather than silently doing
+   * less than asked.
    */
   blocked: string[];
 }
@@ -271,9 +302,10 @@ export interface PlanPushInput {
   /** Stamps committed by live (non-deleted) rows of the user's OTHER plans. */
   otherLiveTitles: string[];
   /**
-   * Rows drifted on COROS THIS pass. Rows already carrying the
-   * `changed_on_coros` code are excluded automatically — a push that
-   * discovered drift last week must not delete the workout this week.
+   * Rows drifted on COROS THIS pass. Rows already `status === "adopted"` (or,
+   * legacy, carrying the `changed_on_coros` code) are excluded automatically —
+   * a push that discovered drift last week must not delete the workout this
+   * week.
    */
   driftedPushIds: Set<string>;
   /** originIds present in the synced COROS catalog. */
@@ -319,7 +351,7 @@ export function planPush(input: PlanPushInput): PushBatch {
   // user had taken over.
   const untouchable = new Set([
     ...input.driftedPushIds,
-    ...input.rows.filter((r) => r.error === CHANGED_ON_COROS).map((r) => r.id),
+    ...input.rows.filter((r) => r.status === "adopted" || r.error === CHANGED_ON_COROS).map((r) => r.id),
   ]);
 
   // ── 1. Removals: rows the draft no longer contains ────────────────────────
@@ -384,7 +416,7 @@ export function planPush(input: PlanPushInput): PushBatch {
     const first = group[0]!;
     const row = rowByKey.get(key);
     if (row && untouchable.has(row.id)) {
-      batch.blocked.push(row.id); // changed_on_coros: not ours to touch
+      batch.blocked.push(row.id); // adopted (or legacy changed_on_coros): not ours to touch
       continue;
     }
 
@@ -487,8 +519,9 @@ export function mapCreateResult(
       return retryable("slot_occupied", false);
     case "already_present":
       // ok:false + already_present = the same stamp on ANOTHER day: the user
-      // moved it in COROS. Drift, surfaced; never retried.
-      return terminal(CHANGED_ON_COROS);
+      // moved it in COROS. Same "the user took this over" fact drift
+      // detection surfaces elsewhere — ADOPTED, not a permanent failure.
+      return { status: "adopted", error: null, persistIds: false, clearIds: false, job: "failed" };
     case "no_target_plan":
       // The account's active plan is not the one this row was written against.
       // Retrying would loop against a moving target — surface it instead.
@@ -541,7 +574,9 @@ export function mapDeleteResult(
       // no delete was sent because there was nothing to send one for.
       return gone();
     case "stamp_mismatch":
-      return terminal(CHANGED_ON_COROS);
+      // Same "the user took this over" fact as create's cross-day
+      // already_present, discovered here at write time instead — ADOPTED.
+      return { status: "adopted", error: null, persistIds: false, clearIds: false, job: "failed" };
     case "ambiguous":
       return terminal("delete_ambiguous");
     default:
@@ -588,7 +623,7 @@ export interface PushSummary {
   unchanged: number;
   /** Rows found to have drifted on COROS during THIS push. */
   drifted: number;
-  /** Rows skipped because they are already `changed_on_coros` (incl. `drifted`). */
+  /** Rows skipped because they are already `adopted` (incl. `drifted`). */
   blocked: number;
 }
 
@@ -601,6 +636,7 @@ async function loadObserved(db: Db, userId: string): Promise<Map<string, Observe
       title: plannedWorkouts.title,
       corosDate: plannedWorkouts.lastVerifiedCorosDate,
       archivedAt: plannedWorkouts.archivedAt,
+      archiveReason: plannedWorkouts.archiveReason,
     })
     .from(plannedWorkouts)
     .where(eq(plannedWorkouts.userId, userId));
@@ -611,7 +647,10 @@ async function loadObserved(db: Db, userId: string): Promise<Map<string, Observe
         sourceWorkoutId: r.sourceWorkoutId,
         title: r.title,
         corosDate: r.corosDate,
-        archived: r.archivedAt != null,
+        // Legacy archived rows written before Task 3's reasons existed carry
+        // no `archiveReason`; today's semantics (archived at all ⇒ confirmed
+        // gone) are preserved for them until Task 8's healing backfills one.
+        archiveReason: r.archiveReason ?? (r.archivedAt ? "absence_confirmed" : null),
       },
     ]),
   );
@@ -654,6 +693,11 @@ export async function pushStudioPlan(
      * which keeps computing the desired set from the stored plan as before.
      */
     desiredOverride?: DesiredSession[];
+    /**
+     * An undo in flight: the caller has planned a corrective delete+create for
+     * this row; re-adopting it mid-flight would cancel the correction.
+     */
+    suppressDriftPushIds?: Set<string>;
   },
 ): Promise<PushSummary> {
   const now = nowInstant();
@@ -705,14 +749,50 @@ export async function pushStudioPlan(
   }
 
   // ── Drift, before anything is planned ─────────────────────────────────────
-  const drift = detectDrift(rows, await loadObserved(db, opts.userId));
+  const drift = detectDrift(
+    rows,
+    await loadObserved(db, opts.userId),
+    await appRequestedDates(db, opts.userId),
+  );
+  const driftedPushIds = new Set<string>();
   for (const finding of drift) {
+    // An undo in flight: the caller has planned a corrective delete+create for
+    // this row; re-adopting it mid-flight would cancel the correction.
+    if (opts.suppressDriftPushIds?.has(finding.pushId)) continue;
+    const row = rows.find((r) => r.id === finding.pushId)!;
+    if (finding.kind === "app_moved") {
+      // Our own move, recognized from the intent ledger: still ours. Record
+      // where the workout actually is so a future delete is addressed right.
+      await db
+        .update(studioPlanPushes)
+        .set({ corosHappenDay: finding.observedDay, updatedAt: now })
+        .where(eq(studioPlanPushes.id, finding.pushId));
+      continue;
+    }
+    // A genuine external edit is ADOPTED (spec §2): COROS's version becomes
+    // the truth, the studio stops managing the session, and an undo note
+    // offers to re-push the original. Never a permanent unmanaged state.
+    driftedPushIds.add(finding.pushId);
     await db
       .update(studioPlanPushes)
-      .set({ status: "failed", error: CHANGED_ON_COROS, updatedAt: now })
+      .set({
+        status: "adopted",
+        error: null,
+        ...(finding.observedDay ? { corosHappenDay: finding.observedDay } : {}),
+        updatedAt: now,
+      })
       .where(eq(studioPlanPushes.id, finding.pushId));
+    await postSyncNote(db, {
+      userId: opts.userId,
+      kind: finding.kind === "missing" ? "adopted_coros_removal" : "adopted_coros_edit",
+      payload: {
+        pushId: row.id,
+        studioPlanId: opts.studioPlanId,
+        sessionTitle: row.sessionTitle,
+        happenDay: row.happenDay,
+      },
+    });
   }
-  const driftedPushIds = new Set(drift.map((d) => d.pushId));
 
   // Live stamps committed by the user's OTHER studio plans. Scoped to the user
   // because the container plan is theirs; "regardless of planId" within that.
@@ -850,6 +930,11 @@ export async function pushStudioPlan(
     });
   }
 
+  // `app_moved` is the app recognizing its OWN move — not a genuine adoption
+  // — so it must not inflate the reported/audited `drifted` count the way it
+  // would if this just counted every `detectDrift` finding.
+  const drifted = drift.filter((d) => d.kind !== "app_moved").length;
+
   await db.insert(auditEvents).values({
     id: newId(),
     userId: opts.userId,
@@ -861,7 +946,7 @@ export async function pushStudioPlan(
       deletes: batch.deletes.length,
       failures: batch.failures.length,
       unchanged: batch.unchanged.length,
-      drifted: drift.length,
+      drifted,
       blocked: batch.blocked.length,
     },
     createdAt: now,
@@ -873,7 +958,7 @@ export async function pushStudioPlan(
     deletes: batch.deletes.length,
     failures: batch.failures.length,
     unchanged: batch.unchanged.length,
-    drifted: drift.length,
+    drifted,
     blocked: batch.blocked.length,
   };
 }
@@ -1136,4 +1221,158 @@ export async function applyStudioJobResult(
   });
 
   return { jobStatus, pushStatus: String(rowUpdate.status) };
+}
+
+// ── Adoption undo ────────────────────────────────────────────────────────────
+
+/**
+ * An "adopted" row (spec §2) is never a permanent unmanaged state: this
+ * figures out WHICH of three cases produced the adoption, by re-examining the
+ * last snapshot of the source workout, and handles each on its own terms
+ * rather than a single generic "flip it back" state transition:
+ *
+ *  - MISSING: COROS confirmed the workout gone. Nothing to delete — a plain
+ *    recreate suffices.
+ *  - MOVED: the workout is still there, still carrying our stamp, just on a
+ *    different day. Re-verifying the row and staling its fingerprint makes
+ *    the next push plan exactly delete (at the day it's actually on) then
+ *    recreate (at the day the plan wants).
+ *  - RENAMED: the workout no longer carries our stamp at all, so nothing here
+ *    can prove a delete of it is ours to make. Refused outright.
+ *
+ * Once the row is repositioned, the whole plan is re-pushed so every other
+ * row's diff is re-derived exactly as `pushStudioPlan` already knows how to
+ * do it — no separate row-scoped code path to keep in sync with the real one.
+ *
+ * Shared by two callers (studio-transparency Task 10): the studio route
+ * itself (`POST /api/studio/adoption/:pushId/undo`) and the sync-notes undo
+ * route (`POST /api/sync/notes/:id/undo`, for `adopted_coros_edit` /
+ * `adopted_coros_removal` notes) — one state transition, two entry points.
+ *
+ * `today` is a required parameter, not loaded here, to avoid a circular
+ * import: `loadPreferences` lives in `calendar-sync.ts`, which imports
+ * `applyMove` from `jobs.ts`, which imports this module — callers load
+ * preferences themselves and pass `todayInZone(prefs.timezone)`, the same
+ * "no silent UTC default" discipline `pushStudioPlan`'s own `today` param
+ * already documents.
+ */
+export type UndoStudioAdoptionResult =
+  | { ok: true; summary: PushSummary }
+  | { ok: false; error: "not_found" }
+  | { ok: false; error: "undo_unsupported_rename" };
+
+export async function undoStudioAdoption(
+  db: Db,
+  userId: string,
+  pushId: string,
+  today: LocalDate,
+): Promise<UndoStudioAdoptionResult> {
+  // A single query, joined through studioPlans and scoped by userId: an
+  // unknown pushId, one belonging to another user's plan, and one that exists
+  // but isn't "adopted" all fall through to the SAME `not_found` result —
+  // distinguishing them would let a caller enumerate other users' (or their
+  // own non-adopted) push ids by shape alone.
+  const row = (
+    await db
+      .select({
+        id: studioPlanPushes.id,
+        planId: studioPlanPushes.planId,
+        happenDay: studioPlanPushes.happenDay,
+        sessionTitle: studioPlanPushes.sessionTitle,
+        corosIdInPlan: studioPlanPushes.corosIdInPlan,
+        corosPlanId: studioPlanPushes.corosPlanId,
+        status: studioPlanPushes.status,
+      })
+      .from(studioPlanPushes)
+      .innerJoin(studioPlans, eq(studioPlanPushes.planId, studioPlans.id))
+      .where(and(eq(studioPlanPushes.id, pushId), eq(studioPlans.userId, userId)))
+      .limit(1)
+  )[0];
+  if (!row || row.status !== "adopted") return { ok: false, error: "not_found" };
+
+  // The last snapshot's opinion of the source workout, keyed the same way
+  // `detectDrift` keys `observed`. Ids missing entirely (a legacy/edge row)
+  // are treated the same as an observation that says the workout is gone.
+  const sourceWorkoutId =
+    row.corosIdInPlan && row.corosPlanId ? `${row.corosPlanId}:${row.corosIdInPlan}` : null;
+  const observation = sourceWorkoutId
+    ? (
+        await db
+          .select({
+            title: plannedWorkouts.title,
+            lastVerifiedCorosDate: plannedWorkouts.lastVerifiedCorosDate,
+            archivedAt: plannedWorkouts.archivedAt,
+            archiveReason: plannedWorkouts.archiveReason,
+          })
+          .from(plannedWorkouts)
+          .where(
+            and(eq(plannedWorkouts.userId, userId), eq(plannedWorkouts.sourceWorkoutId, sourceWorkoutId)),
+          )
+          .limit(1)
+      )[0]
+    : undefined;
+
+  const missing =
+    !observation ||
+    (Boolean(observation.archivedAt) && observation.archiveReason === "absence_confirmed");
+  const renamed = !missing && observation!.title !== row.sessionTitle;
+
+  if (renamed) {
+    // A renamed workout no longer carries our ownership stamp; the safety
+    // core cannot prove a delete of it is ours. The honest answer is refusal
+    // — if the user deletes the renamed copy in COROS, absence confirms and
+    // undo becomes the recreate path.
+    return { ok: false, error: "undo_unsupported_rename" };
+  }
+
+  const now = nowInstant();
+  if (missing) {
+    // COROS already removed it: nothing addressable to delete, so a plain
+    // recreate suffices. Clears the stale ids so the diff sees an
+    // unaddressable row and plans a create, not a delete.
+    await db
+      .update(studioPlanPushes)
+      .set({
+        status: "failed",
+        error: null,
+        corosIdInPlan: null,
+        corosProgramId: null,
+        corosEntityId: null,
+        corosPlanId: null,
+        corosHappenDay: null,
+        sessionFingerprint: "undo-forced",
+        updatedAt: now,
+      })
+      .where(eq(studioPlanPushes.id, pushId));
+  } else {
+    // MOVED: still there, still ours. Re-pushing will delete the workout at
+    // wherever it actually is and recreate the original: force the
+    // fingerprint stale so the diff plans exactly that.
+    await db
+      .update(studioPlanPushes)
+      .set({ status: "verified", error: null, sessionFingerprint: "undo-forced", updatedAt: now })
+      .where(eq(studioPlanPushes.id, pushId));
+  }
+
+  await recordIntent(db, {
+    userId,
+    targetKind: "studio_session",
+    targetId: pushId,
+    kind: "restore",
+    source: "undo",
+  });
+
+  const summary = await pushStudioPlan(db, {
+    userId,
+    studioPlanId: row.planId,
+    today,
+    // MOVED puts the row back to "verified" with its old (corosIdInPlan,
+    // corosPlanId) address still on it, which `detectDrift` would otherwise
+    // re-examine on this very push and re-adopt mid-flight — cancelling the
+    // correction this route just planned before it ever reaches COROS.
+    // (MISSING sets the row to "failed", which `detectDrift` already skips,
+    // so suppression is a no-op there — passed only for the MOVED case.)
+    ...(missing ? {} : { suppressDriftPushIds: new Set([pushId]) }),
+  });
+  return { ok: true, summary };
 }

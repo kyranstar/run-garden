@@ -30,6 +30,7 @@ import {
 } from "./write-executor.js";
 
 const DEFAULT_POLL_MS = 45_000;
+const FAST_POLL_MS = 10_000;
 const DEFAULT_SNAPSHOT_MS = 30 * 60_000;
 const SNAPSHOT_PAST_DAYS = 14;
 const SNAPSHOT_FUTURE_DAYS = 8 * 7;
@@ -114,8 +115,11 @@ export class CloudSync {
   private readonly snapshotMs: number;
   private readonly logger: (line: string) => void;
 
-  private pollTimer: ReturnType<typeof setInterval> | null = null;
+  private pollTimer: ReturnType<typeof setTimeout> | null = null;
   private snapshotTimer: ReturnType<typeof setInterval> | null = null;
+  private stopped = true;
+  /** Queued jobs remaining per the most recent claim response — drives adaptive polling. */
+  private pendingCount = 0;
   /** Serializes snapshot pushes and job execution: one COROS write at a time. */
   private chain: Promise<void> = Promise.resolve();
   private localePromise: Promise<NameResolver | undefined> | null = null;
@@ -196,10 +200,25 @@ export class CloudSync {
       const claim = (await this.post("/api/devices/bridge/jobs/claim", {})) as {
         job: ClaimedJob | null;
         paused?: boolean;
+        pendingCount?: number;
       };
+      this.pendingCount = claim.pendingCount ?? 0;
       if (!claim.job) return;
       const job = claim.job;
       this.logger(`[coros-bridge] claimed job ${job.id}`);
+
+      if (job.kind === "read_now") {
+        await this.pushSnapshot();
+        await this.post(`/api/devices/bridge/jobs/${job.id}/result`, {
+          jobId: job.id,
+          deviceId: this.deviceId,
+          outcome: "verified",
+          finishedAt: new Date().toISOString(),
+          signature: "sig-in-headers",
+        });
+        this.logger(`[coros-bridge] job ${job.id} → read_now snapshot pushed`);
+        continue;
+      }
 
       let executed: MoveJobResult;
       const studioJob = toStudioJob(job);
@@ -249,13 +268,31 @@ export class CloudSync {
     }
   }
 
+  /**
+   * Adaptive poll scheduling: while a `read_now` (or anything else) leaves
+   * jobs queued, poll every `FAST_POLL_MS`; otherwise fall back to the normal
+   * `pollMs` cadence. A `setTimeout` loop (rather than `setInterval`) so the
+   * delay can change between runs based on the last claim's `pendingCount`.
+   */
+  private schedulePoll(): void {
+    if (this.stopped) return;
+    const delay = this.pendingCount > 0 ? FAST_POLL_MS : this.pollMs;
+    this.pollTimer = setTimeout(() => {
+      this.enqueue("pollJobs", async () => {
+        try {
+          await this.pollJobs();
+        } finally {
+          this.schedulePoll();
+        }
+      });
+    }, delay);
+  }
+
   start(): void {
+    this.stopped = false;
     this.enqueue("pushSnapshot", () => this.pushSnapshot());
     this.enqueue("pollJobs", () => this.pollJobs());
-    this.pollTimer = setInterval(
-      () => this.enqueue("pollJobs", () => this.pollJobs()),
-      this.pollMs,
-    );
+    this.schedulePoll();
     this.snapshotTimer = setInterval(
       () => this.enqueue("pushSnapshot", () => this.pushSnapshot()),
       this.snapshotMs,
@@ -263,7 +300,8 @@ export class CloudSync {
   }
 
   stop(): void {
-    if (this.pollTimer) clearInterval(this.pollTimer);
+    this.stopped = true;
+    if (this.pollTimer) clearTimeout(this.pollTimer);
     if (this.snapshotTimer) clearInterval(this.snapshotTimer);
     this.pollTimer = null;
     this.snapshotTimer = null;

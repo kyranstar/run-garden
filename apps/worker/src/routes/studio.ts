@@ -28,8 +28,9 @@ import { requireUser } from "../auth/middleware.js";
 import type { Db } from "../services/db.js";
 import { loadPreferences } from "../services/calendar-sync.js";
 import { llmBudgetStatus, LLM_BUDGET } from "../services/llm.js";
+import { DEVICE_ONLINE_WINDOW_MS, devicePresence } from "../services/sync-status.js";
 import { editPlan, generatePlan, type CatalogEntry } from "../services/studio-llm.js";
-import { pushStudioPlan } from "../services/studio-push.js";
+import { pushStudioPlan, undoStudioAdoption } from "../services/studio-push.js";
 
 /**
  * Plan Studio API routes (plan-studio-design §7, task-5-brief.md).
@@ -97,9 +98,10 @@ async function llmStatusDto(db: Db, userId: string) {
 
 /**
  * "Waiting for bridge" (binding carry-forward g, extended by F2/fix round 1):
- * the same online heuristic `devices.ts`/`plan.ts` already use (last-seen
- * within 3 minutes) plus two DISTINCT job-count facts — the UI decides what
- * "stale"/"stuck" means from those, this just supplies them.
+ * `online` is `sync-status.ts`'s `devicePresence` — the same liveness
+ * computation every other route uses (last-seen within 3 minutes, and now
+ * false while the bridge is paused) — plus two DISTINCT job-count facts the
+ * UI decides what "stale"/"stuck" means from.
  *
  * `pendingJobs` stays `status === "queued"` only, NOT `studio-push.ts`'s
  * broader `IN_FLIGHT` set (queued/claimed/in_progress/verifying) that
@@ -119,11 +121,7 @@ async function llmStatusDto(db: Db, userId: string) {
  * has to measure from.
  */
 async function bridgeStatusDto(db: Db, userId: string) {
-  const devices = await db
-    .select({ lastSeenAt: desktopDevices.lastSeenAt })
-    .from(desktopDevices)
-    .where(and(eq(desktopDevices.userId, userId), isNull(desktopDevices.revokedAt)));
-  const online = devices.some((d) => Date.parse(d.lastSeenAt) > Date.now() - 3 * 60_000);
+  const { online } = await devicePresence(db, userId);
 
   const queued = await db
     .select({ requestedAt: corosWriteJobs.requestedAt })
@@ -266,13 +264,27 @@ async function nextPlanCreatedAt(db: Db, userId: string, now: string): Promise<s
  */
 async function catalogNotSynced(c: Context<AppContext>) {
   const db = c.get("db");
+  const userId = c.get("userId");
+  // `bridge_offline` vs `syncing`/`bridge_outdated` is gated on aggregate
+  // presence (sync-status.ts) — a paused bridge now reads offline here too
+  // (the intended fix: Today/status must never call a paused bridge "syncing").
+  const presence = await devicePresence(db, userId);
   const devices = await db
-    .select({ lastSeenAt: desktopDevices.lastSeenAt, capabilities: desktopDevices.capabilities })
+    .select({
+      lastSeenAt: desktopDevices.lastSeenAt,
+      capabilities: desktopDevices.capabilities,
+      bridgePaused: desktopDevices.bridgePaused,
+    })
     .from(desktopDevices)
-    .where(and(eq(desktopDevices.userId, c.get("userId")), isNull(desktopDevices.revokedAt)));
-  const online = devices.filter((d) => Date.parse(d.lastSeenAt) > Date.now() - 3 * 60_000);
+    .where(and(eq(desktopDevices.userId, userId), isNull(desktopDevices.revokedAt)));
+  const cutoff = Date.now() - DEVICE_ONLINE_WINDOW_MS;
+  // Restricted to the same devices `presence.online` counts (not paused,
+  // fresh lastSeenAt): distinguishes "an online bridge just hasn't sent the
+  // catalog yet" (syncing) from "the connected bridge predates catalog sync"
+  // (bridge_outdated).
+  const online = devices.filter((d) => !d.bridgePaused && Date.parse(d.lastSeenAt) > cutoff);
   const reason =
-    online.length === 0
+    !presence.online
       ? "bridge_offline"
       : online.some(
             (d) => (d.capabilities as Record<string, boolean> | null)?.["exerciseCatalog"] === true,
@@ -668,4 +680,42 @@ studioRoutes.post("/push/retry", async (c) => {
     .where(eq(studioPlanPushes.planId, planRow.id))
     .orderBy(asc(studioPlanPushes.happenDay));
   return c.json({ ok: true, summary, pushes: pushes.map(pushRowDto) });
+});
+
+// ── POST /api/studio/adoption/:pushId/undo ───────────────────────────────────
+//
+// An "adopted" row (spec §2) is never a permanent unmanaged state: this route
+// figures out WHICH of three cases produced the adoption, by re-examining the
+// last snapshot of the source workout, and handles each on its own terms
+// rather than a single generic "flip it back" state transition:
+//
+//  - MISSING: COROS confirmed the workout gone. Nothing to delete — a plain
+//    recreate suffices.
+//  - MOVED: the workout is still there, still carrying our stamp, just on a
+//    different day. Re-verifying the row and staling its fingerprint makes
+//    the next push plan exactly delete (at the day it's actually on) then
+//    recreate (at the day the plan wants).
+//  - RENAMED: the workout no longer carries our stamp at all, so nothing here
+//    can prove a delete of it is ours to make. Refused outright — see below.
+//
+// Once the row is repositioned, the whole plan is re-pushed so every other
+// row's diff is re-derived exactly as `pushStudioPlan` already knows how to
+// do it — no separate row-scoped code path to keep in sync with the real one.
+
+studioRoutes.post("/adoption/:pushId/undo", async (c) => {
+  const db = c.get("db");
+  const userId = c.get("userId");
+  const pushId = c.req.param("pushId");
+
+  const prefs = await loadPreferences(db, userId);
+  const result = await undoStudioAdoption(db, userId, pushId, todayInZone(prefs.timezone));
+  if (!result.ok) {
+    // A pushId that doesn't exist, belongs to another user's plan, or isn't
+    // "adopted" all fall through to the SAME `not_found` (see
+    // `undoStudioAdoption`'s own doc comment) — distinguishing them would let
+    // a caller enumerate other users' (or their own non-adopted) push ids by
+    // shape alone.
+    return c.json({ error: result.error }, result.error === "undo_unsupported_rename" ? 409 : 404);
+  }
+  return c.json({ ok: result.summary.ok, summary: result.summary });
 });

@@ -23,7 +23,7 @@ import { makeTestDb, makeTestUser, registerTestDevice } from "./helpers.js";
  * activity arrives (Strava then COROS) → merge → completion → garden growth.
  */
 
-const { plannedWorkouts, corosWriteJobs, activities, workoutCompletionMatches, trainingPlans, calendarEventSuppressions } = schema;
+const { plannedWorkouts, corosWriteJobs, activities, workoutCompletionMatches, trainingPlans, calendarEventSuppressions, syncNotes } = schema;
 
 let db: Db;
 let userId: string;
@@ -425,7 +425,7 @@ describe("move → COROS write job → verification", () => {
     expect(claimed!.id).toBe(second.jobId);
   });
 
-  it("degrades to calendar_only after repeated write failures", async () => {
+  it("degrades to sync_issue after repeated write failures", async () => {
     await importFromProvider();
     const w = (
       await db.select().from(plannedWorkouts).where(eq(plannedWorkouts.title, "Threshold 5x5"))
@@ -444,7 +444,7 @@ describe("move → COROS write job → verification", () => {
     const job = (await db.select().from(corosWriteJobs).where(eq(corosWriteJobs.id, move.jobId!)))[0]!;
     expect(job.status).toBe("failed");
     const after = (await db.select().from(plannedWorkouts).where(eq(plannedWorkouts.id, w.id)))[0]!;
-    expect(after.corosSyncState).toBe("calendar_only");
+    expect(after.corosSyncState).toBe("sync_issue");
     // The Run Garden placement is kept.
     expect(after.effectiveDate).toBe(addDays(w.effectiveDate, 1));
   });
@@ -468,7 +468,10 @@ describe("move → COROS write job → verification", () => {
     await importFromProvider();
 
     const after = (await db.select().from(plannedWorkouts).where(eq(plannedWorkouts.id, w.id)))[0]!;
-    expect(after.corosSyncState).toBe("needs_attention");
+    // Task 6: last-edit-wins ties to the app — the pending job is superseded
+    // and the row goes to calendar_only (not needs_attention) until
+    // emitPendingWork re-derives the write against the kept date.
+    expect(after.corosSyncState).toBe("calendar_only");
     // Both dates preserved for the user to decide.
     expect(after.effectiveDate).toBe(addDays(w.effectiveDate, 1));
     expect(after.lastVerifiedCorosDate).toBe(addDays(w.effectiveDate, 3));
@@ -493,6 +496,10 @@ describe("move → COROS write job → verification", () => {
     expect(after.effectiveDate).toBe(addDays(w.effectiveDate, 2));
     expect(after.lastVerifiedCorosDate).toBe(addDays(w.effectiveDate, 2));
     expect(after.corosSyncState).toBe("synced");
+    // Task 6: an adopted upstream change now leaves a note behind (nothing
+    // was displaced before Task 6 — the old inline rule 5 never posted one).
+    const notes = await db.select().from(syncNotes).where(eq(syncNotes.workoutId, w.id));
+    expect(notes.some((n) => n.kind === "adopted_coros_change")).toBe(true);
   });
 
   it("an upstream reschedule resets an unresolved workout to scheduled (rule 5)", async () => {

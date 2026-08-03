@@ -1,5 +1,6 @@
 import { useEffect, type ReactNode } from "react";
 import type { CorosSyncState, CompletionState } from "@rg/domain";
+import type { SyncNoteDto, SyncStatusDto } from "@rg/api-client";
 import {
   IconAlert,
   IconCalendarOnly,
@@ -84,6 +85,12 @@ const COROS_PILL: Record<CorosSyncState, { label: string; cls: string; icon: Rea
       "This date change lives in Run Garden and your Google Calendar only — your COROS watch still has the old date. Enable COROS sync in Settings (or retry) to push it.",
   },
   needs_attention: { label: "Needs attention", cls: "pill-warn", icon: <IconAlert />, title: "COROS and Run Garden disagree on this workout's date." },
+  sync_issue: {
+    label: "Sync issue",
+    cls: "pill-danger",
+    icon: <IconAlert />,
+    title: "The last write to your COROS watch failed. Retry from the workout to try again.",
+  },
 };
 
 export function CorosPill({ state, hideWhenHealthy }: { state: CorosSyncState; hideWhenHealthy?: boolean }) {
@@ -94,6 +101,130 @@ export function CorosPill({ state, hideWhenHealthy }: { state: CorosSyncState; h
       {p.icon}
       {p.label}
     </span>
+  );
+}
+
+/** "2m ago" / "3h ago" / "5d ago" — coarse enough that a 30s status poll
+ * never needs to re-render it, precise enough to reassure "this is fresh". */
+function relativeTime(iso: string): string {
+  const ms = Date.now() - Date.parse(iso);
+  const mins = Math.round(ms / 60_000);
+  if (mins < 1) return "just now";
+  if (mins < 60) return `${mins}m ago`;
+  const hours = Math.round(mins / 60);
+  if (hours < 24) return `${hours}h ago`;
+  return `${Math.round(hours / 24)}d ago`;
+}
+
+/**
+ * The single account-wide sync line (sync-transparency Task 12) — replaces
+ * every screen's own bespoke read of the legacy `TodayResponse.sync` shape
+ * with one quiet sentence backed by `GET /api/sync/status`. `onRetry` is only
+ * ever invoked from the `sync_issue` state; wiring it to `readNow()` + a
+ * status refetch is the caller's job (this component is presentational).
+ */
+export function SyncStatusLine({ status, onRetry }: { status: SyncStatusDto; onRetry?: () => void }) {
+  const line = (() => {
+    switch (status.state) {
+      case "in_sync":
+        return `Calendar, COROS and watch in sync${status.lastCorosReadAt ? ` · ${relativeTime(status.lastCorosReadAt)}` : ""}`;
+      case "syncing":
+        return `Syncing ${status.pendingCount} change${status.pendingCount === 1 ? "" : "s"}…`;
+      case "waiting_for_mac":
+        return status.paused
+          ? "Sync is paused — resume in Settings"
+          : `${status.pendingCount} change${status.pendingCount === 1 ? "" : "s"} waiting — wake your Mac to update your watch`;
+      case "not_synced":
+        return status.registered
+          ? "COROS updates are off — enable in Settings"
+          : "No Mac paired — pair in Settings to update COROS";
+      case "sync_issue":
+        return `${status.issueCount} change${status.issueCount === 1 ? "" : "s"} couldn't sync`;
+    }
+  })();
+  return (
+    <div className="row">
+      <span className="muted">{line}</span>
+      {status.state === "sync_issue" && onRetry ? (
+        <button className="btn btn-small" onClick={onRetry}>
+          Retry
+        </button>
+      ) : null}
+    </div>
+  );
+}
+
+/** Copy per `SyncNoteDto.kind` (sync-transparency Task 3/10) — the payload
+ * shapes here mirror exactly what `postSyncNote` callers write server-side
+ * (import-plan.ts, jobs.ts, studio-push.ts); `null` for any kind this build
+ * doesn't know how to render, so an unrecognized future kind fails quiet
+ * rather than showing "undefined". */
+function syncNoteText(note: SyncNoteDto): string | null {
+  const p = (note.payload ?? {}) as Record<string, unknown>;
+  switch (note.kind) {
+    case "kept_local_change":
+      return `Kept your ${formatDayShort(p.keptDate as string)} — COROS had moved it to ${formatDayShort(p.displacedDate as string)}`;
+    case "adopted_coros_change":
+      return `Moved to ${formatDayShort(p.newDate as string)} on COROS`;
+    case "adopted_coros_edit":
+      return `“${p.sessionTitle as string}” was edited on COROS — the studio stopped managing it`;
+    case "adopted_coros_removal":
+      return `“${p.sessionTitle as string}” was removed on COROS`;
+    default:
+      return null;
+  }
+}
+
+/**
+ * Dismissible feed of active sync notes (sync-transparency Task 12) —
+ * presentational: the owning screen supplies the mutations. `undoErrors` is
+ * keyed by note id so a 409 (`undo_unsupported_rename`, adopted_coros_edit/
+ * removal only) explains itself inline on just that row instead of a generic
+ * toast.
+ */
+export function SyncNotesStack({
+  notes,
+  onDismiss,
+  onUndo,
+  undoPendingId,
+  undoErrors,
+}: {
+  notes: SyncNoteDto[];
+  onDismiss: (id: string) => void;
+  onUndo: (id: string) => void;
+  undoPendingId?: string | null;
+  undoErrors?: Record<string, string>;
+}) {
+  if (notes.length === 0) return null;
+  return (
+    <div className="stack" style={{ gap: "0.4rem" }}>
+      {notes.map((note) => {
+        const text = syncNoteText(note);
+        if (!text) return null;
+        const err = undoErrors?.[note.id];
+        return (
+          <div key={note.id} className="sync-note row-between">
+            <span>{text}</span>
+            <div className="btn-row">
+              {err ? (
+                <span className="faint">{err}</span>
+              ) : (
+                <button
+                  className="btn btn-small"
+                  disabled={undoPendingId === note.id}
+                  onClick={() => onUndo(note.id)}
+                >
+                  Undo
+                </button>
+              )}
+              <button className="btn btn-small" onClick={() => onDismiss(note.id)} aria-label="Dismiss note">
+                <IconClose size={14} />
+              </button>
+            </div>
+          </div>
+        );
+      })}
+    </div>
   );
 }
 
