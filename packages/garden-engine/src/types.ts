@@ -58,6 +58,12 @@ export interface EngineGardenState {
   daysSinceStrength: number;
   /** Life axis clock: days since the last yoga session. */
   daysSinceYoga: number;
+  /** Whether a strength/yoga session has EVER been recorded. Optional so
+   * persisted pre-tri-discipline snapshots stay valid; absent means false.
+   * Without these, a migrated garden's clock starts at zero and the UI
+   * fabricates "lifted 1 d ago" for someone who never lifted. */
+  hasStrength?: boolean;
+  hasYoga?: boolean;
   weatherState: GardenWeatherState;
   season: GardenSeason;
   lastSimulatedDate: LocalDate;

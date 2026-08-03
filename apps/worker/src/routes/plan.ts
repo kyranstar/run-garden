@@ -522,7 +522,9 @@ planRoutes.post("/workouts/:id/remove", async (c) => {
     id: newId(),
     workoutId: w.id,
     eventId: null,
-    reason: "workout_removed",
+    // "user_removed" (not the absence-detector's "workout_removed"): a hand
+    // removal is a decision, and import's presence-healing must never undo it.
+    reason: "user_removed",
     createdAt: now,
   });
   await syncCalendar(db, c.env, userId).catch(() => undefined);

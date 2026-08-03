@@ -164,8 +164,9 @@ export interface SettingsResponse {
 /** How balanced run/strength/yoga are right now — mirrors @rg/garden-engine's DisciplineBalance. */
 export interface DisciplineBalance {
   run: { days: number; health: number };
-  strength: { days: number; health: number };
-  yoga: { days: number; health: number };
+  /** `days: null` = never recorded — render "not yet", not a recency. */
+  strength: { days: number | null; health: number };
+  yoga: { days: number | null; health: number };
   /** How balanced the garden is overall: the weakest discipline sets the pace. */
   overall: number;
 }

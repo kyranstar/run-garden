@@ -122,6 +122,24 @@ export function AmbientGarden({ fetchGarden, onExit }: AmbientGardenProps) {
     return () => window.removeEventListener("keydown", onKey);
   }, [onExit]);
 
+  // Screensaver semantics: moving the mouse exits. A short grace period and a
+  // small distance threshold keep the synthetic move event that macOS fires
+  // when the window appears — or a nudged desk — from bouncing it instantly.
+  useEffect(() => {
+    const armedAt = Date.now() + 1500;
+    let origin: { x: number; y: number } | null = null;
+    const onMove = (e: MouseEvent) => {
+      if (Date.now() < armedAt) return;
+      if (!origin) {
+        origin = { x: e.screenX, y: e.screenY };
+        return;
+      }
+      if (Math.hypot(e.screenX - origin.x, e.screenY - origin.y) > 24) onExit();
+    };
+    window.addEventListener("mousemove", onMove);
+    return () => window.removeEventListener("mousemove", onMove);
+  }, [onExit]);
+
   // Hide the cursor when the pointer goes still; reveal it on movement.
   useEffect(() => {
     let idle: ReturnType<typeof setTimeout>;

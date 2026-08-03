@@ -119,6 +119,50 @@ describe("COROS schedule normalization (contract)", () => {
   });
 });
 
+describe("merged multi-plan schedules (research §3: schedule/query merges every plan)", () => {
+  // Two plans in one response with COLLIDING idInPlan values — the live
+  // failure mode that aliased studio lifting sessions onto run workouts.
+  const merged = {
+    id: "111",
+    name: "Marathon Block",
+    startDay: 20260803,
+    endDay: 20260928,
+    entities: [
+      { idInPlan: 1, planId: "111", happenDay: 20260804 },
+      // Same idInPlan, DIFFERENT plan — must not alias.
+      { idInPlan: 1, planId: "222", happenDay: 20260805 },
+    ],
+    programs: [
+      { idInPlan: 1, planId: "111", name: "Easy Run", sportType: 1, duration: 2400 },
+      { idInPlan: 1, planId: "222", name: "W1 Wed - Lift — wk 1", sportType: 4, duration: 2700 },
+    ],
+  };
+  const normalized = normalizeCorosSchedule(merged as never);
+
+  it("keys workouts and programs by (planId, idInPlan), never bare idInPlan", () => {
+    expect(normalized.workouts).toHaveLength(2);
+    const [run, lift] = normalized.workouts;
+    expect(run!.sourceWorkoutId).toBe("111:1");
+    expect(lift!.sourceWorkoutId).toBe("222:1");
+    expect(run!.sourcePlanId).toBe("111");
+    expect(lift!.sourcePlanId).toBe("222");
+  });
+
+  it("attaches each entity's own plan's program (sport, title, duration)", () => {
+    const [run, lift] = normalized.workouts;
+    expect(run!.sport).toBe("run");
+    expect(run!.title).toBe("Easy Run");
+    expect(lift!.sport).toBe("strength");
+    expect(lift!.title).toBe("W1 Wed - Lift — wk 1");
+    expect(lift!.estimatedDurationSeconds).toBe(2700);
+  });
+
+  it("falls back to the top-level plan id when rows omit planId (single-plan responses)", () => {
+    const single = normalizeCorosSchedule(fixtureRawSchedule(BASE));
+    expect(single.workouts.every((w) => w.sourcePlanId === FIXTURE_PLAN_ID)).toBe(true);
+  });
+});
+
 describe("COROS activity normalization (contract)", () => {
   const { item, detail } = fixtureCorosCompletedThreshold("2026-08-04T14:02:05Z");
 

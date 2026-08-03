@@ -462,6 +462,10 @@ describe("tri-discipline ecosystem", () => {
 
     expect(snapshot.state.daysSinceStrength).toBe(0);
     expect(snapshot.state.strengthSessionCount).toBe(1);
+    // The first-ever session flips the has-flag: balance now reports a real
+    // recency instead of "not yet".
+    expect(snapshot.state.hasStrength).toBe(true);
+    expect(disciplineBalance(snapshot.state).strength.days).toBe(0);
     expect(snapshot.state.soilHealth).toBeCloseTo(before.soilHealth + 0.05, 6);
     // Lifting is not running: the run clock keeps ticking and no rain falls.
     expect(snapshot.state.daysSinceCompletedRun).toBe(before.daysSinceCompletedRun + 1);
@@ -715,11 +719,13 @@ describe("tri-discipline ecosystem", () => {
 });
 
 describe("discipline balance", () => {
-  it("is fully healthy when every clock is at zero", () => {
+  it("is fully healthy when every clock is at zero — and honest that lift/yoga never happened", () => {
     const balance = disciplineBalance(initialSnapshot(START).state);
     expect(balance.run).toEqual({ days: 0, health: 1 });
-    expect(balance.strength).toEqual({ days: 0, health: 1 });
-    expect(balance.yoga).toEqual({ days: 0, health: 1 });
+    // days: null = never recorded; the UI renders "not yet" instead of
+    // fabricating a recency for a discipline the user has never done.
+    expect(balance.strength).toEqual({ days: null, health: 1 });
+    expect(balance.yoga).toEqual({ days: null, health: 1 });
     expect(balance.overall).toBe(1);
   });
 
@@ -867,8 +873,10 @@ describe("v1 snapshot self-healing (missing tri-discipline fields)", () => {
     expect(Number.isFinite(balance.strength.health)).toBe(true);
     expect(Number.isFinite(balance.yoga.health)).toBe(true);
     expect(Number.isFinite(balance.overall)).toBe(true);
-    expect(balance.strength).toEqual({ days: 0, health: 1 });
-    expect(balance.yoga).toEqual({ days: 0, health: 1 });
+    // Migrated v1 snapshots have no strength/yoga history — the honest answer
+    // is "never" (days: null), not "0 days ago".
+    expect(balance.strength).toEqual({ days: null, health: 1 });
+    expect(balance.yoga).toEqual({ days: null, health: 1 });
 
     const newGates = [
       { kind: "strength_sessions", count: 5 } as const,

@@ -36,7 +36,19 @@ export interface MoveJob {
     sourceIdInPlan: string;
     sourcePlanId: string;
     sourceProgramId?: string;
+    /** `${corosPlanId}:${idInPlan}` — the authoritative plan scope for this
+     * workout in a merged multi-plan schedule read. */
+    sourceWorkoutId?: string;
   };
+}
+
+/** The COROS plan this job's workout belongs to. The sourceWorkoutId prefix is
+ * authoritative; older payloads without it fall back to the response's
+ * top-level plan (correct for single-plan accounts, the pre-studio world). */
+function jobPlanId(job: MoveJob, raw: RawCorosSchedule): string {
+  const prefix = job.workout.sourceWorkoutId?.split(":")[0];
+  if (prefix) return prefix;
+  return String(raw.id ?? job.workout.sourcePlanId);
 }
 
 /** CorosWriteResult minus the transport fields the caller adds. */
@@ -73,10 +85,24 @@ interface Located {
   date: string;
 }
 
-function locate(raw: RawCorosSchedule, idInPlan: string): Located | undefined {
-  const entity = (raw.entities ?? []).find((e) => String(e.idInPlan) === String(idInPlan));
+/**
+ * Find one plan's entity/program in a (possibly merged multi-plan) schedule
+ * read. idInPlan is only unique within its own plan — schedule/query merges
+ * every plan on the account (research §3), so an unscoped match can locate a
+ * DIFFERENT plan's workout that happens to share the number, and a move would
+ * then rewrite the wrong plan. `planId` scopes the match; rows without their
+ * own planId belong to the response's top-level plan.
+ */
+function locate(raw: RawCorosSchedule, planId: string, idInPlan: string): Located | undefined {
+  const topId = String(raw.id ?? "");
+  const inPlan = (rowPlanId: unknown) => String(rowPlanId ?? topId) === planId;
+  const entity = (raw.entities ?? []).find(
+    (e) => inPlan(e.planId) && String(e.idInPlan) === String(idInPlan),
+  );
   if (!entity) return undefined;
-  const program = (raw.programs ?? []).find((p) => String(p.idInPlan) === String(idInPlan));
+  const program = (raw.programs ?? []).find(
+    (p) => inPlan(p.planId) && String(p.idInPlan) === String(idInPlan),
+  );
   return { entity, program, date: corosDayToLocalDate(entity.happenDay) };
 }
 
@@ -96,7 +122,8 @@ export async function executeMoveJob(client: CorosClient, job: MoveJob): Promise
 
   // 1. Fresh read covering both dates.
   const raw = await readWindow();
-  const found = locate(raw, idInPlan);
+  const planScope = jobPlanId(job, raw);
+  const found = locate(raw, planScope, idInPlan);
 
   // 2. Workout no longer exists upstream.
   if (!found) {
@@ -134,7 +161,7 @@ export async function executeMoveJob(client: CorosClient, job: MoveJob): Promise
     });
   }
 
-  const planId = String(raw.id ?? job.workout.sourcePlanId);
+  const planId = planScope;
   const planStartDay = raw.startDay != null ? Number(raw.startDay) : undefined;
   const destDay = localDateToCorosDay(job.destinationDate);
 
@@ -151,7 +178,7 @@ export async function executeMoveJob(client: CorosClient, job: MoveJob): Promise
   } catch {
     // Network failure mid-write — state unknown. Re-read once before giving up.
     try {
-      const reread = locate(await readWindow(), idInPlan);
+      const reread = locate(await readWindow(), planScope, idInPlan);
       const rereadFp = reread?.program ? corosProgramFingerprint(reread.program) : undefined;
       // Same bar as the happy path (step 7): the move only counts as verified
       // when BOTH the date landed AND the content is still what the user
@@ -186,7 +213,7 @@ export async function executeMoveJob(client: CorosClient, job: MoveJob): Promise
   if (update.ok) {
     // 7. Read-after-write: destination date AND unchanged program fingerprint.
     try {
-      const after = locate(await readWindow(), idInPlan);
+      const after = locate(await readWindow(), planScope, idInPlan);
       const afterFingerprint = after?.program
         ? corosProgramFingerprint(after.program)
         : undefined;
@@ -237,7 +264,7 @@ async function removeAndAdd(
   } catch {
     return result({ outcome: "write_failed", errorCategory: "network" });
   }
-  const original = locate(fresh, idInPlan);
+  const original = locate(fresh, planId, idInPlan);
   if (!original || !original.program) {
     return result({ outcome: "upstream_changed", errorCategory: "workout_not_found" });
   }
@@ -269,7 +296,7 @@ async function removeAndAdd(
   } catch {
     return result({ outcome: "ambiguous", errorCategory: "network" });
   }
-  const clone = locate(afterAdd, String(newIdInPlan));
+  const clone = locate(afterAdd, planId, String(newIdInPlan));
   if (!clone || clone.date !== job.destinationDate) {
     if (clone) {
       // Visible but wrong — roll the clone back before reporting failure.
@@ -317,8 +344,8 @@ async function removeAndAdd(
   } catch {
     return result({ outcome: "ambiguous", errorCategory: "network" });
   }
-  const originalStill = locate(final, idInPlan);
-  const cloneStill = locate(final, String(newIdInPlan));
+  const originalStill = locate(final, planId, idInPlan);
+  const cloneStill = locate(final, planId, String(newIdInPlan));
   if (originalStill) {
     return result({
       outcome: "verification_failed",

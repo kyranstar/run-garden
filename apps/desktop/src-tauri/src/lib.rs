@@ -35,6 +35,17 @@ fn open_url(url: &str) -> Result<(), String> {
 /// work is dispatched there. The `__RG_AMBIENT__` init flag tells the shared
 /// web bundle to render the ambient view rather than the connection panel.
 fn reveal_ambient(app: &tauri::AppHandle) {
+    // Remember what the desktop looked like before the screensaver so closing
+    // it can put things back rather than foregrounding Run Garden.
+    if let Some(state) = app.try_state::<AppState>() {
+        let main_visible = app
+            .get_webview_window("main")
+            .and_then(|w| w.is_visible().ok())
+            .unwrap_or(false);
+        state
+            .main_visible_before_ambient
+            .store(main_visible, Ordering::Relaxed);
+    }
     let handle = app.clone();
     let _ = app.run_on_main_thread(move || {
         if let Some(win) = handle.get_webview_window("ambient") {
@@ -76,13 +87,30 @@ fn reveal_ambient(app: &tauri::AppHandle) {
 }
 
 /// Tear down the ambient window (closes cleanly — the CloseRequested handler
-/// only intercepts the main window, so this actually closes).
+/// only intercepts the main window, so this actually closes). If the main
+/// window wasn't on screen before the screensaver appeared, hide the whole
+/// app afterwards so focus returns to whatever the user had open before —
+/// exiting a screensaver must never land you in Run Garden.
 fn conceal_ambient(app: &tauri::AppHandle) {
+    let restore_hidden = app
+        .try_state::<AppState>()
+        .map(|s| !s.main_visible_before_ambient.load(Ordering::Relaxed))
+        .unwrap_or(false);
     let handle = app.clone();
     let _ = app.run_on_main_thread(move || {
         if let Some(win) = handle.get_webview_window("ambient") {
+            // Leave native fullscreen before closing: closing a window while
+            // it owns a macOS Space can leave the animation half-done and the
+            // app's other windows activated.
+            let _ = win.set_fullscreen(false);
             let _ = win.close();
         }
+        #[cfg(target_os = "macos")]
+        if restore_hidden {
+            let _ = handle.hide();
+        }
+        #[cfg(not(target_os = "macos"))]
+        let _ = restore_hidden;
     });
 }
 
@@ -143,6 +171,12 @@ pub struct AppState {
     /// opened it* — so activity auto-hides it, but a window the user opened by
     /// hand stays until they close it.
     pub ambient_auto_shown: Arc<AtomicBool>,
+    /// Whether the main window was visible when the ambient garden opened.
+    /// On close we restore that state instead of shoving Run Garden into the
+    /// foreground: if the main window wasn't open before the screensaver, the
+    /// whole app hides again so macOS returns focus to whatever the user was
+    /// actually doing.
+    pub main_visible_before_ambient: Arc<AtomicBool>,
 }
 
 #[derive(Serialize)]
@@ -575,6 +609,7 @@ pub fn run() {
                 idle_autoshow,
                 idle_threshold_secs,
                 ambient_auto_shown,
+                main_visible_before_ambient: Arc::new(AtomicBool::new(false)),
             });
             Ok(())
         })

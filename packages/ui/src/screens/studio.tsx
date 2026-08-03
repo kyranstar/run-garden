@@ -97,13 +97,14 @@ function validateBrief(brief: PlanBrief): string[] {
   if (!Number.isInteger(brief.durationWeeks) || brief.durationWeeks < 2 || brief.durationWeeks > 16) {
     errs.push("Duration must be 2–16 weeks.");
   }
-  if (!Number.isInteger(brief.sessionsPerWeek) || brief.sessionsPerWeek < 1 || brief.sessionsPerWeek > 6) {
-    errs.push("Sessions per week must be 1–6.");
+  // Sessions per week is derived from the day picker — one source of truth.
+  if (brief.preferredDays.length < 1 || brief.preferredDays.length > 6) {
+    errs.push("Pick 1–6 training days.");
   }
   if (brief.preferredDays.length !== brief.sessionsPerWeek) {
-    errs.push(
-      `Pick exactly ${brief.sessionsPerWeek} day${brief.sessionsPerWeek === 1 ? "" : "s"} (currently ${brief.preferredDays.length}).`,
-    );
+    // Unreachable through the UI (toggleDay keeps them in lockstep); kept so
+    // a template brief from an older plan can never sneak through skewed.
+    errs.push("Training days and sessions per week fell out of sync — re-pick your days.");
   }
   if (!Number.isInteger(brief.sessionMinutes) || brief.sessionMinutes < 20 || brief.sessionMinutes > 120) {
     errs.push("Session length must be 20–120 minutes.");
@@ -268,12 +269,14 @@ function IntakeForm({
   };
 
   const toggleDay = (n: number) => {
-    setBrief((b) => ({
-      ...b,
-      preferredDays: b.preferredDays.includes(n)
+    setBrief((b) => {
+      const preferredDays = b.preferredDays.includes(n)
         ? b.preferredDays.filter((d) => d !== n)
-        : [...b.preferredDays, n].sort((a, c) => a - c),
-    }));
+        : [...b.preferredDays, n].sort((a, c) => a - c);
+      // Sessions per week IS the number of days you train — one source of
+      // truth, derived from the picker instead of a redundant second input.
+      return { ...b, preferredDays, sessionsPerWeek: preferredDays.length };
+    });
   };
 
   return (
@@ -315,21 +318,9 @@ function IntakeForm({
         <span className="hint">2–16 weeks</span>
       </div>
 
-      <div className="field">
-        <label htmlFor="studio-spw">Sessions per week</label>
-        <input
-          id="studio-spw"
-          type="number"
-          min={1}
-          max={6}
-          value={brief.sessionsPerWeek}
-          onChange={(e) => setBrief((b) => ({ ...b, sessionsPerWeek: Number(e.target.value) }))}
-        />
-        <span className="hint">1–6 sessions</span>
-      </div>
 
       <div className="field">
-        <label>Preferred days</label>
+        <label>Training days</label>
         <div className="day-picker">
           {ISO_DAYS.map((d) => (
             <button
@@ -343,7 +334,9 @@ function IntakeForm({
           ))}
         </div>
         <span className="hint">
-          {brief.preferredDays.length} of {brief.sessionsPerWeek} picked
+          {brief.preferredDays.length === 0
+            ? "Pick the days you'll train (1–6)"
+            : `${brief.preferredDays.length} session${brief.preferredDays.length === 1 ? "" : "s"} per week`}
         </span>
       </div>
 
@@ -787,7 +780,9 @@ function StudioBody({ studio }: { studio: StudioStateResponse }) {
 /** Mounted at the top of the Plan screen (packages/ui/src/screens/plan.tsx).
  * Collapsible — the calendar list below is unaffected by open/closed state. */
 export function StudioSection() {
-  const [open, setOpen] = useState(true);
+  // Collapsed by default: the Plan page's primary content is the calendar,
+  // and the studio is an occasional tool, not the landing experience.
+  const [open, setOpen] = useState(false);
   const studio = useQuery({ queryKey: ["studio"], queryFn: api.studio, refetchInterval: 15_000 });
 
   return (

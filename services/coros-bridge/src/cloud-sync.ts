@@ -230,6 +230,7 @@ export class CloudSync {
             sourceIdInPlan: job.workout.sourceIdInPlan,
             sourcePlanId: job.workout.sourcePlanId,
             sourceProgramId: job.workout.sourceProgramId,
+            sourceWorkoutId: job.workout.sourceWorkoutId,
           },
         });
       }

@@ -185,7 +185,8 @@ function healthDescriptor(health: number): string {
   return "wilting";
 }
 
-function daysCaption(days: number): string {
+function daysCaption(days: number | null): string {
+  if (days === null) return "not yet";
   return days === 0 ? "today" : `${days} d ago`;
 }
 
@@ -210,7 +211,7 @@ function BalanceStrip({ balance }: { balance: DisciplineBalance }) {
               key={key}
               className="balance-bar"
               role="img"
-              aria-label={`${label}: ${healthDescriptor(health)}, last ${label.toLowerCase()} ${daysCaption(days)}`}
+              aria-label={`${label}: ${healthDescriptor(health)}, ${days === null ? `no ${label.toLowerCase()} yet` : `last ${label.toLowerCase()} ${daysCaption(days)}`}`}
             >
               <div className="balance-bar-label" aria-hidden="true">
                 {label}

@@ -283,10 +283,12 @@ export function simulateDay(
   if (strengthSessions.length > 0) {
     if (state.daysSinceStrength >= 3) emit({ kind: "soil_tended" });
     state.daysSinceStrength = 0;
+    state.hasStrength = true;
   } else if (!state.restMode) state.daysSinceStrength += 1;
   if (yogaSessions.length > 0) {
     if (state.daysSinceYoga >= 3) emit({ kind: "life_tended" });
     state.daysSinceYoga = 0;
+    state.hasYoga = true;
   } else if (!state.restMode) state.daysSinceYoga += 1;
 
   // 6. Neglect: each axis wilts on its own clock, gently and with a floor.

@@ -310,7 +310,10 @@ deviceRoutes.post("/bridge/jobs/claim", requireDevice, async (c) => {
       workout: job.workout
         ? {
             id: job.workout.id,
-            sourcePlanId: job.workout.planId,
+            // The COROS plan id (sourceWorkoutId is `${corosPlanId}:${idInPlan}`)
+            // — NOT the internal plan row uuid, which means nothing on the wire.
+            // The executor scopes merged multi-plan schedule reads with this.
+            sourcePlanId: job.workout.sourceWorkoutId.split(":")[0],
             sourceWorkoutId: job.workout.sourceWorkoutId,
             sourceIdInPlan: job.workout.sourceIdInPlan,
             sourceProgramId: job.workout.sourceProgramId,

@@ -40,6 +40,8 @@ export interface ImportStats {
   updatedDates: number;
   updatedContent: number;
   archivedMissing: number;
+  /** Rows resurrected because COROS demonstrably still schedules them. */
+  unarchived: number;
   verifiedJobs: number;
   conflicts: number;
   unchanged: number;
@@ -70,71 +72,91 @@ export async function importPlanSnapshot(
     updatedDates: 0,
     updatedContent: 0,
     archivedMissing: 0,
+    unarchived: 0,
     verifiedJobs: 0,
     conflicts: 0,
     unchanged: 0,
   };
 
-  // ── Plan row (archive a previously-active different plan: rule 9) ─────────
+  // ── Plan rows — one per COROS plan present in this (merged) snapshot ──────
+  // schedule/query merges every plan on the account (research §3): the run
+  // plan, COROS template plans, and the account's own container plan that
+  // studio-pushed lifting sessions live in. Each workout arrives tagged with
+  // its own sourcePlanId; a plan row is upserted per distinct id. A plan that
+  // stops appearing is left active — its workouts age out via absence
+  // detection (rule 8), which is evidence-based, unlike the old "archive
+  // every other active plan" rule that mass-archived good workouts whenever
+  // the merged response's top-level plan flipped.
   const activePlans = await db
     .select()
     .from(trainingPlans)
     .where(and(eq(trainingPlans.userId, input.userId), eq(trainingPlans.status, "active")));
+  const planRowsBySourceId = new Map(activePlans.map((p) => [p.sourcePlanId, p]));
 
-  let planRow = activePlans.find((p) => p.sourcePlanId === input.plan.sourcePlanId);
-  for (const stale of activePlans) {
-    if (stale.sourcePlanId === input.plan.sourcePlanId) continue;
-    await db
-      .update(trainingPlans)
-      .set({ status: "archived", archivedAt: now, updatedAt: now })
-      .where(eq(trainingPlans.id, stale.id));
-    // Archive its future workouts; completed history is preserved untouched.
-    await db
-      .update(plannedWorkouts)
-      .set({ archivedAt: now, updatedAt: now })
-      .where(
-        and(
-          eq(plannedWorkouts.planId, stale.id),
-          eq(plannedWorkouts.completionState, "scheduled"),
-          isNull(plannedWorkouts.archivedAt),
-        ),
-      );
-  }
-  if (!planRow) {
-    const id = newId();
-    await db.insert(trainingPlans).values({
-      id,
-      userId: input.userId,
-      provider: "coros",
-      sourcePlanId: input.plan.sourcePlanId,
-      name: input.plan.name,
-      startDate: input.plan.startDate ?? null,
-      endDate: input.plan.endDate ?? null,
-      status: "active",
-      pbVersion: input.plan.pbVersion ?? null,
-      sourceVersion: input.plan.sourceVersion ?? null,
-      createdAt: now,
-      updatedAt: now,
-    });
-    planRow = (await db.select().from(trainingPlans).where(eq(trainingPlans.id, id)))[0]!;
-  } else if (planRow.name !== input.plan.name || planRow.pbVersion !== (input.plan.pbVersion ?? null)) {
-    await db
-      .update(trainingPlans)
-      .set({
-        name: input.plan.name,
-        pbVersion: input.plan.pbVersion ?? null,
-        endDate: input.plan.endDate ?? planRow.endDate,
+  const sourcePlanIds = new Set<string>(input.workouts.map((w) => w.sourcePlanId));
+  sourcePlanIds.add(input.plan.sourcePlanId);
+  for (const sourcePlanId of sourcePlanIds) {
+    const isPrimary = sourcePlanId === input.plan.sourcePlanId;
+    const existing = planRowsBySourceId.get(sourcePlanId);
+    if (!existing) {
+      const group = input.workouts.filter((w) => w.sourcePlanId === sourcePlanId);
+      const allStrength = group.length > 0 && group.every((w) => w.sport === "strength");
+      const id = newId();
+      await db.insert(trainingPlans).values({
+        id,
+        userId: input.userId,
+        provider: "coros",
+        sourcePlanId,
+        // Only the top-level plan's metadata is present in the response; other
+        // plans get an honest generic name rather than a leaked i18n code.
+        name: isPrimary ? input.plan.name : allStrength ? "Lifting plan" : "COROS plan",
+        startDate: isPrimary ? (input.plan.startDate ?? null) : null,
+        endDate: isPrimary ? (input.plan.endDate ?? null) : null,
+        status: "active",
+        pbVersion: isPrimary ? (input.plan.pbVersion ?? null) : null,
+        sourceVersion: isPrimary ? (input.plan.sourceVersion ?? null) : null,
+        createdAt: now,
         updatedAt: now,
-      })
-      .where(eq(trainingPlans.id, planRow.id));
+      });
+      planRowsBySourceId.set(
+        sourcePlanId,
+        (await db.select().from(trainingPlans).where(eq(trainingPlans.id, id)))[0]!,
+      );
+    } else if (
+      isPrimary &&
+      (existing.name !== input.plan.name || existing.pbVersion !== (input.plan.pbVersion ?? null))
+    ) {
+      await db
+        .update(trainingPlans)
+        .set({
+          name: input.plan.name,
+          pbVersion: input.plan.pbVersion ?? null,
+          endDate: input.plan.endDate ?? existing.endDate,
+          updatedAt: now,
+        })
+        .where(eq(trainingPlans.id, existing.id));
+    }
   }
-  stats.planId = planRow.id;
+  stats.planId = planRowsBySourceId.get(input.plan.sourcePlanId)!.id;
 
+  // sourceWorkoutIds are globally unique (`${corosPlanId}:${idInPlan}`), so
+  // one user-wide map covers every plan in the snapshot.
   const existing = await db
     .select()
     .from(plannedWorkouts)
-    .where(and(eq(plannedWorkouts.userId, input.userId), eq(plannedWorkouts.planId, planRow.id)));
+    .where(eq(plannedWorkouts.userId, input.userId));
   const existingBySourceId = new Map(existing.map((w) => [w.sourceWorkoutId, w]));
+
+  // A workout the user explicitly removed stays removed even though COROS
+  // still reports it — that's the one archived state presence must not heal.
+  const userRemovedIds = new Set(
+    (
+      await db
+        .select({ workoutId: calendarEventSuppressions.workoutId })
+        .from(calendarEventSuppressions)
+        .where(eq(calendarEventSuppressions.reason, "user_removed"))
+    ).map((s) => s.workoutId),
+  );
 
   const pendingJobs = await db
     .select()
@@ -177,7 +199,7 @@ export async function importPlanSnapshot(
       await db.insert(plannedWorkouts).values({
         id,
         userId: input.userId,
-        planId: planRow.id,
+        planId: planRowsBySourceId.get(src.sourcePlanId)!.id,
         sourceWorkoutId: src.sourceWorkoutId,
         sourceProgramId: src.sourceProgramId ?? null,
         sourceIdInPlan: src.sourceIdInPlan ?? null,
@@ -218,6 +240,25 @@ export async function importPlanSnapshot(
     // Reset absence counter — it's present in this read.
     if (current.missingReads > 0) {
       updates.missingReads = 0;
+      touched = true;
+    }
+
+    // Presence heals absence: a row archived by absence detection (or by the
+    // old plan-switch rule) that COROS demonstrably still schedules comes
+    // back, along with its calendar event. Rows the user removed by hand stay
+    // removed — that's a decision, not an absence.
+    if (current.archivedAt && current.completionState === "scheduled" && !userRemovedIds.has(current.id)) {
+      updates.archivedAt = null;
+      updates.calendarSyncState = current.calendarSyncState === "user_deleted" ? "user_deleted" : "pending";
+      await db
+        .delete(calendarEventSuppressions)
+        .where(
+          and(
+            eq(calendarEventSuppressions.workoutId, current.id),
+            eq(calendarEventSuppressions.reason, "workout_removed"),
+          ),
+        );
+      stats.unarchived += 1;
       touched = true;
     }
 
@@ -334,14 +375,17 @@ export async function importPlanSnapshot(
   }
 
   // Plan version capture when the content fingerprint of the set changed.
+  // Versions track the PRIMARY (top-level) plan — the one whose metadata the
+  // merged response actually describes.
+  const primaryPlanId = stats.planId;
   const versionCount = await db
     .select({ id: trainingPlanVersions.id })
     .from(trainingPlanVersions)
-    .where(eq(trainingPlanVersions.planId, planRow.id));
+    .where(eq(trainingPlanVersions.planId, primaryPlanId));
   if (stats.created + stats.updatedContent + stats.archivedMissing > 0 || versionCount.length === 0) {
     await db.insert(trainingPlanVersions).values({
       id: newId(),
-      planId: planRow.id,
+      planId: primaryPlanId,
       versionNum: versionCount.length + 1,
       capturedAt: now,
       contentFingerprint: `${input.plan.sourceVersion ?? ""}:${input.workouts.length}`,

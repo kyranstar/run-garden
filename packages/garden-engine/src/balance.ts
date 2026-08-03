@@ -12,8 +12,10 @@ const DECAY_WINDOW_DAYS = 14;
 
 export interface DisciplineBalance {
   run: { days: number; health: number };
-  strength: { days: number; health: number };
-  yoga: { days: number; health: number };
+  /** `days: null` means no session of this discipline has ever been recorded
+   * — the UI must say "not yet", never a fabricated recency. */
+  strength: { days: number | null; health: number };
+  yoga: { days: number | null; health: number };
   /** How balanced the garden is overall: the weakest discipline sets the pace. */
   overall: number;
 }
@@ -39,11 +41,11 @@ export function disciplineBalance(state: EngineGardenState): DisciplineBalance {
     health: healthFor(state.daysSinceCompletedRun, GRACE_DAYS.run),
   };
   const strength = {
-    days: state.daysSinceStrength ?? 0,
+    days: state.hasStrength ? (state.daysSinceStrength ?? 0) : null,
     health: healthFor(state.daysSinceStrength ?? 0, GRACE_DAYS.strength),
   };
   const yoga = {
-    days: state.daysSinceYoga ?? 0,
+    days: state.hasYoga ? (state.daysSinceYoga ?? 0) : null,
     health: healthFor(state.daysSinceYoga ?? 0, GRACE_DAYS.yoga),
   };
   return {

@@ -23,7 +23,7 @@ import { makeTestDb, makeTestUser, registerTestDevice } from "./helpers.js";
  * activity arrives (Strava then COROS) → merge → completion → garden growth.
  */
 
-const { plannedWorkouts, corosWriteJobs, activities, workoutCompletionMatches } = schema;
+const { plannedWorkouts, corosWriteJobs, activities, workoutCompletionMatches, trainingPlans, calendarEventSuppressions } = schema;
 
 let db: Db;
 let userId: string;
@@ -97,6 +97,113 @@ describe("plan import", () => {
     await importFromProvider();
     const healed = await db.select().from(plannedWorkouts).where(eq(plannedWorkouts.userId, userId));
     expect(healed.every((w) => w.corosSyncState === "synced")).toBe(true);
+  });
+
+  it("imports a merged multi-plan snapshot into separate plan rows without cross-plan archival", async () => {
+    await importFromProvider();
+    const before = await db.select().from(plannedWorkouts).where(eq(plannedWorkouts.userId, userId));
+
+    // Same snapshot again, now carrying a second plan's lifting sessions —
+    // exactly what schedule/query returns after a studio push (research §3).
+    const plan = await provider.getCurrentPlan();
+    const range = { start: baseMonday, end: addDays(baseMonday, 13) };
+    const workouts = await provider.getPlannedWorkouts(range);
+    const lifting = [0, 1].map((i) => ({
+      sourcePlanId: "999",
+      sourceWorkoutId: `999:${i + 1}`,
+      sourceIdInPlan: String(i + 1),
+      sourceProgramId: `p99${i}`,
+      title: `W1 Lift ${i + 1} — wk 1`,
+      sport: "strength",
+      date: addDays(baseMonday, i + 1),
+      estimatedDurationSeconds: 2700,
+      stages: [],
+      contentFingerprint: `lift-fp-${i}`,
+      isRestDay: false,
+    }));
+    const stats = await importPlanSnapshot(
+      db,
+      {
+        userId,
+        plan: plan!,
+        workouts: [...workouts, ...lifting] as never,
+        rangeStart: range.start,
+        rangeEnd: range.end,
+        source: "fixture",
+      },
+      prefs,
+    );
+
+    expect(stats.created).toBe(2); // the two lifting sessions, nothing else
+    expect(stats.archivedMissing).toBe(0); // the run plan was NOT mass-archived
+
+    const plans = await db.select().from(trainingPlans).where(eq(trainingPlans.userId, userId));
+    expect(plans).toHaveLength(2);
+    const liftPlan = plans.find((p) => p.sourcePlanId === "999")!;
+    expect(liftPlan.name).toBe("Lifting plan");
+    expect(liftPlan.status).toBe("active");
+
+    const after = await db.select().from(plannedWorkouts).where(eq(plannedWorkouts.userId, userId));
+    const strengthRows = after.filter((w) => w.sport === "strength");
+    expect(strengthRows).toHaveLength(2);
+    expect(strengthRows.every((w) => w.planId === liftPlan.id)).toBe(true);
+    // Run workouts untouched: same rows, same dates.
+    for (const b of before) {
+      const a = after.find((w) => w.id === b.id)!;
+      expect(a.effectiveDate).toBe(b.effectiveDate);
+      expect(a.archivedAt).toBeNull();
+    }
+  });
+
+  it("presence resurrects a wrongly archived scheduled workout (and drops its suppression)", async () => {
+    await importFromProvider();
+    const w = (
+      await db.select().from(plannedWorkouts).where(eq(plannedWorkouts.title, "Threshold 5x5"))
+    )[0]!;
+    const now = nowInstant();
+    await db
+      .update(plannedWorkouts)
+      .set({ archivedAt: now })
+      .where(eq(plannedWorkouts.id, w.id));
+    await db.insert(calendarEventSuppressions).values({
+      id: newId(),
+      workoutId: w.id,
+      eventId: null,
+      reason: "workout_removed",
+      createdAt: now,
+    });
+
+    const stats = await importFromProvider();
+    expect(stats.unarchived).toBe(1);
+    const after = (await db.select().from(plannedWorkouts).where(eq(plannedWorkouts.id, w.id)))[0]!;
+    expect(after.archivedAt).toBeNull();
+    expect(after.calendarSyncState).toBe("pending"); // event gets recreated
+    const suppressions = await db
+      .select()
+      .from(calendarEventSuppressions)
+      .where(eq(calendarEventSuppressions.workoutId, w.id));
+    expect(suppressions).toHaveLength(0);
+  });
+
+  it("a user-removed workout stays removed even though COROS still schedules it", async () => {
+    await importFromProvider();
+    const w = (
+      await db.select().from(plannedWorkouts).where(eq(plannedWorkouts.title, "Threshold 5x5"))
+    )[0]!;
+    const now = nowInstant();
+    await db.update(plannedWorkouts).set({ archivedAt: now }).where(eq(plannedWorkouts.id, w.id));
+    await db.insert(calendarEventSuppressions).values({
+      id: newId(),
+      workoutId: w.id,
+      eventId: null,
+      reason: "user_removed",
+      createdAt: now,
+    });
+
+    const stats = await importFromProvider();
+    expect(stats.unarchived).toBe(0);
+    const after = (await db.select().from(plannedWorkouts).where(eq(plannedWorkouts.id, w.id)))[0]!;
+    expect(after.archivedAt).not.toBeNull();
   });
 
   it("does NOT heal a genuinely divergent workout (local move COROS never got)", async () => {

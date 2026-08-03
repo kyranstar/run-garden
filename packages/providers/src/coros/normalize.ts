@@ -166,13 +166,24 @@ export function normalizeCorosSchedule(
   resolve?: NameResolver,
 ): NormalizedCorosSchedule {
   const planId = String(raw.id ?? "");
-  const programsByIdInPlan = new Map<string, RawCorosProgram>();
-  for (const p of raw.programs ?? []) programsByIdInPlan.set(String(p.idInPlan), p);
+  // THE key wire fact (docs/research/plan-write-capability.md §3, live-verified):
+  // schedule/query MERGES every plan on the account into one response, and
+  // idInPlan is only unique within its own plan. Entities and programs carry
+  // their own planId; keying by bare idInPlan aliases workouts across plans —
+  // live-observed as run workouts "moving" onto lifting-session dates, wrong
+  // programs attached, and wrongly archived rows. All identity below is
+  // (planId, idInPlan)-scoped, falling back to the top-level id for
+  // single-plan responses (and fixtures) that omit per-row planId.
+  const programsByKey = new Map<string, RawCorosProgram>();
+  for (const p of raw.programs ?? []) {
+    programsByKey.set(`${String(p.planId ?? planId)}:${String(p.idInPlan)}`, p);
+  }
 
   const workouts: SourcePlannedWorkout[] = [];
   for (const entity of raw.entities ?? []) {
+    const entityPlanId = String(entity.planId ?? planId);
     const idInPlan = String(entity.idInPlan);
-    const program = programsByIdInPlan.get(idInPlan);
+    const program = programsByKey.get(`${entityPlanId}:${idInPlan}`);
     const date = corosDayToLocalDate(entity.happenDay);
     const sportType = program?.sportType ?? 1;
     const exercises = program?.exercises ?? [];
@@ -188,8 +199,8 @@ export function normalizeCorosSchedule(
       (typeof program?.distance === "string" ? parseFloat(program.distance) : program?.distance);
 
     workouts.push({
-      sourcePlanId: planId,
-      sourceWorkoutId: `${planId}:${idInPlan}`,
+      sourcePlanId: entityPlanId,
+      sourceWorkoutId: `${entityPlanId}:${idInPlan}`,
       sourceProgramId: program?.id ? String(program.id) : undefined,
       sourceIdInPlan: idInPlan,
       title: resolveName(program?.name ?? String(entity["name"] ?? ""), resolve),
