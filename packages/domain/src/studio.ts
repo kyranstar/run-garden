@@ -144,6 +144,12 @@ export const liftingPlanSchema = z
   });
 export type LiftingPlan = z.infer<typeof liftingPlanSchema> & { brief: PlanBrief };
 
-/** studio_plan_pushes.status lifecycle (spec §2). */
-export const STUDIO_PLAN_PUSH_STATUSES = ["pending", "verified", "failed", "deleted"] as const;
+/**
+ * studio_plan_pushes.status lifecycle (spec §2). `"adopted"` (added Task 7,
+ * sync-transparency): a row whose COROS-side workout was found renamed,
+ * moved, or removed by something other than the app itself — ownership
+ * passes to the user, the row is excluded from further pushes, and an undo
+ * route offers to flip it back under studio management and re-push.
+ */
+export const STUDIO_PLAN_PUSH_STATUSES = ["pending", "verified", "failed", "deleted", "adopted"] as const;
 export type StudioPlanPushStatus = (typeof STUDIO_PLAN_PUSH_STATUSES)[number];

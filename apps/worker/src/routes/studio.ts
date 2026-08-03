@@ -28,6 +28,7 @@ import { requireUser } from "../auth/middleware.js";
 import type { Db } from "../services/db.js";
 import { loadPreferences } from "../services/calendar-sync.js";
 import { llmBudgetStatus, LLM_BUDGET } from "../services/llm.js";
+import { recordIntent } from "../services/sync-intents.js";
 import { editPlan, generatePlan, type CatalogEntry } from "../services/studio-llm.js";
 import { pushStudioPlan } from "../services/studio-push.js";
 
@@ -668,4 +669,66 @@ studioRoutes.post("/push/retry", async (c) => {
     .where(eq(studioPlanPushes.planId, planRow.id))
     .orderBy(asc(studioPlanPushes.happenDay));
   return c.json({ ok: true, summary, pushes: pushes.map(pushRowDto) });
+});
+
+// ── POST /api/studio/adoption/:pushId/undo ───────────────────────────────────
+//
+// An "adopted" row (spec §2) is never a permanent unmanaged state: this route
+// flips it back under studio management and immediately re-pushes the whole
+// plan, so every other row's diff is re-derived exactly as `pushStudioPlan`
+// already knows how to do it — no separate row-scoped code path to keep in
+// sync with the real one.
+
+studioRoutes.post("/adoption/:pushId/undo", async (c) => {
+  const db = c.get("db");
+  const userId = c.get("userId");
+  const pushId = c.req.param("pushId");
+  const row = (
+    await db.select().from(studioPlanPushes).where(eq(studioPlanPushes.id, pushId)).limit(1)
+  )[0];
+  if (!row || row.status !== "adopted") return c.json({ error: "not_adopted" }, 404);
+  const plan = (
+    await db
+      .select()
+      .from(studioPlans)
+      .where(and(eq(studioPlans.id, row.planId), eq(studioPlans.userId, userId)))
+      .limit(1)
+  )[0];
+  if (!plan) return c.json({ error: "not_found" }, 404);
+  const stillObserved = Boolean(row.corosIdInPlan);
+  await db
+    .update(studioPlanPushes)
+    .set(
+      stillObserved
+        ? // Re-pushing will delete the user's edited copy and recreate the
+          // original: force the fingerprint stale so the diff plans exactly that.
+          { status: "verified", error: null, sessionFingerprint: "undo-forced", updatedAt: nowInstant() }
+        : // Deleted on COROS: nothing to remove; a plain recreate suffices.
+          {
+            status: "failed",
+            error: null,
+            corosIdInPlan: null,
+            corosProgramId: null,
+            corosEntityId: null,
+            corosPlanId: null,
+            corosHappenDay: null,
+            sessionFingerprint: "undo-forced",
+            updatedAt: nowInstant(),
+          },
+    )
+    .where(eq(studioPlanPushes.id, pushId));
+  await recordIntent(db, {
+    userId,
+    targetKind: "studio_session",
+    targetId: pushId,
+    kind: "restore",
+    source: "undo",
+  });
+  const prefs = await loadPreferences(db, userId);
+  const summary = await pushStudioPlan(db, {
+    userId,
+    studioPlanId: row.planId,
+    today: todayInZone(prefs.timezone),
+  });
+  return c.json({ ok: summary.ok, summary });
 });

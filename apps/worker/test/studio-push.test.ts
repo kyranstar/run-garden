@@ -22,6 +22,7 @@ import {
 } from "@rg/domain";
 import { chunkIds, IN_ARRAY_CHUNK, type Db } from "../src/services/db.js";
 import { applyJobResult, claimNextJob } from "../src/services/jobs.js";
+import { recordIntent } from "../src/services/sync-intents.js";
 import {
   applyStudioJobResult,
   bridgeJobPayload,
@@ -39,8 +40,15 @@ import {
 import { deleteAllUserData } from "../src/routes/misc.js";
 import { makeTestDb, makeTestUser, registerTestDevice } from "./helpers.js";
 
-const { corosExercises, corosWriteJobs, plannedWorkouts, studioPlanPushes, studioPlans, trainingPlans } =
-  schema;
+const {
+  corosExercises,
+  corosWriteJobs,
+  plannedWorkouts,
+  studioPlanPushes,
+  studioPlans,
+  syncNotes,
+  trainingPlans,
+} = schema;
 
 const SQUAT = "425898928110747648";
 const BENCH = "426109589008859137";
@@ -203,6 +211,8 @@ describe("desiredSessions", () => {
 // ─────────────────────────────────────────────────────────────────────────────
 
 describe("detectDrift", () => {
+  const noAppMoves = new Map<string, Set<string>>();
+
   const observed = (over: Record<string, unknown> = {}): Map<string, never> =>
     new Map(
       Object.entries({
@@ -210,54 +220,93 @@ describe("detectDrift", () => {
           sourceWorkoutId: "coros-plan:21",
           title: "Upper A — wk 1",
           corosDate: "2026-09-07",
-          archived: false,
+          archiveReason: null as string | null,
           ...over,
         },
       }) as never,
     );
 
   it("finds no drift when the observed workout still matches", () => {
-    expect(detectDrift([verifiedRow()], observed())).toEqual([]);
+    expect(detectDrift([verifiedRow()], observed(), noAppMoves)).toEqual([]);
   });
 
   it("flags a workout the importer confirmed gone from COROS", () => {
-    expect(detectDrift([verifiedRow()], observed({ archived: true }))).toEqual([
-      { pushId: "row-1", kind: "missing" },
-    ]);
+    expect(
+      detectDrift([verifiedRow()], observed({ archiveReason: "absence_confirmed" }), noAppMoves),
+    ).toEqual([{ pushId: "row-1", kind: "missing" }]);
+  });
+
+  it("does NOT flag missing for the app's own bookkeeping reasons (user_removed / duplicate_mirror)", () => {
+    // These mean the APP archived the source workout for its own reasons —
+    // not a COROS-side deletion — so a push row backed by it is not drift.
+    for (const reason of ["user_removed", "duplicate_mirror"]) {
+      expect(detectDrift([verifiedRow()], observed({ archiveReason: reason }), noAppMoves)).toEqual(
+        [],
+      );
+    }
   });
 
   it("flags a rename (the stamp is the only thing that authorizes a delete)", () => {
-    expect(detectDrift([verifiedRow()], observed({ title: "Leg Day" }))).toEqual([
-      { pushId: "row-1", kind: "renamed" },
+    expect(detectDrift([verifiedRow()], observed({ title: "Leg Day" }), noAppMoves)).toEqual([
+      { pushId: "row-1", kind: "renamed", observedDay: "2026-09-07" },
     ]);
   });
 
-  it("flags a move to another day", () => {
-    expect(detectDrift([verifiedRow()], observed({ corosDate: "2026-09-09" }))).toEqual([
-      { pushId: "row-1", kind: "moved" },
-    ]);
+  it("flags a move to another day the app never asked for", () => {
+    expect(
+      detectDrift([verifiedRow()], observed({ corosDate: "2026-09-09" }), noAppMoves),
+    ).toEqual([{ pushId: "row-1", kind: "moved", observedDay: "2026-09-09" }]);
+  });
+
+  it("recognizes a move the APP itself requested as \"app_moved\", not \"moved\"", () => {
+    // appMoves is keyed the same way `observed` is — plan-scoped
+    // (corosPlanId:idInPlan) — and records every date the app's own move
+    // intent asked the workout to land on.
+    const appMoves = new Map([["coros-plan:21", new Set(["2026-09-09"])]]);
+    expect(
+      detectDrift([verifiedRow()], observed({ corosDate: "2026-09-09" }), appMoves),
+    ).toEqual([{ pushId: "row-1", kind: "app_moved", observedDay: "2026-09-09" }]);
+  });
+
+  it("still flags a move to a day the app move intent does NOT cover", () => {
+    const appMoves = new Map([["coros-plan:21", new Set(["2026-09-30"])]]); // a different date
+    expect(
+      detectDrift([verifiedRow()], observed({ corosDate: "2026-09-09" }), appMoves),
+    ).toEqual([{ pushId: "row-1", kind: "moved", observedDay: "2026-09-09" }]);
   });
 
   it("does NOT flag a row the snapshot simply has not seen — absence proves nothing", () => {
-    expect(detectDrift([verifiedRow()], new Map())).toEqual([]);
+    expect(detectDrift([verifiedRow()], new Map(), noAppMoves)).toEqual([]);
   });
 
   it("ignores rows that are not verified", () => {
     for (const status of ["pending", "failed", "deleted"] as const) {
-      expect(detectDrift([verifiedRow({ status })], observed({ archived: true }))).toEqual([]);
+      expect(
+        detectDrift(
+          [verifiedRow({ status })],
+          observed({ archiveReason: "absence_confirmed" }),
+          noAppMoves,
+        ),
+      ).toEqual([]);
     }
   });
 
   it("ignores verified rows with no recorded address", () => {
     expect(
-      detectDrift([verifiedRow({ corosIdInPlan: null })], observed({ archived: true })),
+      detectDrift(
+        [verifiedRow({ corosIdInPlan: null })],
+        observed({ archiveReason: "absence_confirmed" }),
+        noAppMoves,
+      ),
     ).toEqual([]);
   });
 
   it("scopes the match to the recorded container plan", () => {
     // Same idInPlan, different plan: COROS idInPlan counters are per-plan and
     // overlap freely, so an unscoped match would compare unrelated workouts.
-    expect(detectDrift([verifiedRow({ corosPlanId: "other-plan" })], observed())).toEqual([]);
+    expect(
+      detectDrift([verifiedRow({ corosPlanId: "other-plan" })], observed(), noAppMoves),
+    ).toEqual([]);
   });
 });
 
@@ -553,6 +602,34 @@ describe("planPush — drifted rows are never clobbered", () => {
     expect(batch.deletes).toEqual([]);
   });
 
+  it("treats a row with status \"adopted\" as untouchable — blocked, never recreated", () => {
+    const desired = desiredSessions(plan()).slice(0, 1);
+    const rows = [
+      verifiedRow({
+        id: "row-0",
+        status: "adopted",
+        error: null,
+        happenDay: desired[0]!.happenDay,
+        sessionTitle: desired[0]!.sessionTitle,
+        sessionFingerprint: desired[0]!.fingerprint,
+      }),
+    ];
+    const batch = planPush({ ...base, desired, rows, driftedPushIds: new Set() });
+
+    expect(batch.creates).toEqual([]);
+    expect(batch.deletes).toEqual([]);
+    expect(batch.blocked).toEqual(["row-0"]);
+  });
+
+  it("excludes an \"adopted\" row from deletion when the draft no longer wants it", () => {
+    const rows = [verifiedRow({ id: "row-0", status: "adopted", error: null })];
+    const batch = planPush({ ...base, desired: [], rows, driftedPushIds: new Set() });
+
+    expect(batch.deletes).toEqual([]);
+    expect(batch.localDeletes).toEqual([]);
+    expect(batch.blocked).toEqual(["row-0"]);
+  });
+
   it("still re-plans an ordinary failure — only changed_on_coros is untouchable", () => {
     const desired = desiredSessions(plan()).slice(0, 1);
     const rows = [
@@ -636,12 +713,14 @@ describe("mapCreateResult — every create outcome", () => {
     }
   });
 
-  it("a cross-day already_present → failed / changed_on_coros, and NO ids are stored", () => {
-    // The executor deliberately strips ids here; storing anything would invite
-    // a delete addressed at the wrong day.
+  it("a cross-day already_present → adopted, error null, and NO ids are stored", () => {
+    // The user moved this workout in COROS; ownership passes to them (spec
+    // §2 — never a permanent unmanaged state, adoption offers an undo). The
+    // executor deliberately strips ids here; storing anything would invite a
+    // delete addressed at the wrong day.
     expect(mapCreateResult(result({ ok: false, reason: "already_present" }), false)).toEqual({
-      status: "failed",
-      error: "changed_on_coros",
+      status: "adopted",
+      error: null,
       persistIds: false,
       clearIds: false,
       job: "failed",
@@ -711,11 +790,14 @@ describe("mapDeleteResult — every delete outcome", () => {
     });
   });
 
-  it("stamp_mismatch → failed / changed_on_coros, NEVER auto-retried", () => {
+  it("stamp_mismatch → adopted, error null, NEVER auto-retried", () => {
+    // The stamp is on another day than expected — the user took this over.
+    // Same "the user took this over" fact as create's cross-day
+    // already_present, discovered at write time instead of drift-check time.
     for (const exhausted of [false, true]) {
       expect(mapDeleteResult(del({ refused: "stamp_mismatch" }), exhausted)).toEqual({
-        status: "failed",
-        error: "changed_on_coros",
+        status: "adopted",
+        error: null,
         persistIds: false,
         clearIds: false,
         job: "failed",
@@ -869,7 +951,7 @@ describe("pushStudioPlan", () => {
     expect(payload.followUpCreate?.name).toBe("Upper A — wk 1");
   });
 
-  it("marks drifted rows changed_on_coros and never enqueues a delete for them", async () => {
+  it("adopts a drifted (renamed) row and never enqueues a delete for it", async () => {
     const planId = await seedPlan();
     await pushStudioPlan(db, { userId, studioPlanId: planId, today: TODAY });
     await db
@@ -924,13 +1006,149 @@ describe("pushStudioPlan", () => {
         .from(studioPlanPushes)
         .where(eq(studioPlanPushes.happenDay, "2026-09-07"))
     )[0]!;
-    expect(drifted.status).toBe("failed");
-    expect(drifted.error).toBe("changed_on_coros");
+    // A genuine external edit is ADOPTED (spec §2): COROS's version becomes
+    // the truth and the studio stops managing the session — never left as a
+    // permanently-blocked `changed_on_coros` failure.
+    expect(drifted.status).toBe("adopted");
+    expect(drifted.error).toBeNull();
     const deletes = await db
       .select()
       .from(corosWriteJobs)
       .where(eq(corosWriteJobs.kind, "delete_scheduled_workout"));
     expect(deletes).toHaveLength(0);
+
+    const notes = await db.select().from(syncNotes).where(eq(syncNotes.userId, userId));
+    const note = notes.find((n) => n.kind === "adopted_coros_edit");
+    expect(note).toBeTruthy();
+    expect(note!.payload).toMatchObject({
+      pushId: drifted.id,
+      studioPlanId: planId,
+      sessionTitle: "Upper A — wk 1",
+    });
+  });
+
+  it("adopts a verified row whose observation moved WITHOUT a matching app move intent", async () => {
+    // Task 7 brief case 4a: a genuine COROS-side move, with no intent-ledger
+    // entry to explain it, must be adopted — not silently left alone and not
+    // blocked with the legacy `changed_on_coros` code.
+    const planId = await seedPlan();
+    await pushStudioPlan(db, { userId, studioPlanId: planId, today: TODAY });
+    await db
+      .update(studioPlanPushes)
+      .set({ status: "verified", corosIdInPlan: "21", corosProgramId: "21", corosPlanId: "coros-plan" })
+      .where(eq(studioPlanPushes.happenDay, "2026-09-07"));
+    await db.update(corosWriteJobs).set({ status: "verified" });
+
+    const trainingPlanId = newId();
+    await db.insert(trainingPlans).values({
+      id: trainingPlanId,
+      userId,
+      provider: "coros",
+      sourcePlanId: "coros-plan",
+      name: "My Plan",
+      status: "active",
+      createdAt: nowInstant(),
+      updatedAt: nowInstant(),
+    });
+    await db.insert(plannedWorkouts).values({
+      id: newId(),
+      userId,
+      planId: trainingPlanId,
+      sourceWorkoutId: "coros-plan:21",
+      sourceIdInPlan: "21",
+      title: "Upper A — wk 1", // title unchanged — only the date drifted
+      category: "strength",
+      sport: "strength",
+      originalPlanDate: "2026-09-07",
+      lastVerifiedCorosDate: "2026-09-09", // moved 2 days later on COROS
+      effectiveDate: "2026-09-09",
+      effectiveTime: "07:00",
+      sourceContentFingerprint: "fp",
+      calendarBlockDurationSeconds: 3600,
+      createdAt: nowInstant(),
+      updatedAt: nowInstant(),
+    });
+
+    const summary = await pushStudioPlan(db, { userId, studioPlanId: planId, today: TODAY });
+
+    expect(summary.drifted).toBe(1);
+    const row = (
+      await db.select().from(studioPlanPushes).where(eq(studioPlanPushes.happenDay, "2026-09-07"))
+    )[0]!;
+    expect(row.status).toBe("adopted");
+    expect(row.error).toBeNull();
+    expect(row.corosHappenDay).toBe("2026-09-09");
+
+    const notes = await db.select().from(syncNotes).where(eq(syncNotes.userId, userId));
+    expect(notes.some((n) => n.kind === "adopted_coros_edit")).toBe(true);
+  });
+
+  it("keeps a verified row \"verified\" when the observed move matches a recorded app move intent", async () => {
+    // Task 7 brief case 4b: the SAME observed move, but this time the app's
+    // own intent ledger recorded asking for exactly that date — recognized as
+    // the app's own move, not a user edit, so the row stays under studio
+    // management and no note is posted.
+    const planId = await seedPlan();
+    await pushStudioPlan(db, { userId, studioPlanId: planId, today: TODAY });
+    await db
+      .update(studioPlanPushes)
+      .set({ status: "verified", corosIdInPlan: "21", corosProgramId: "21", corosPlanId: "coros-plan" })
+      .where(eq(studioPlanPushes.happenDay, "2026-09-07"));
+    await db.update(corosWriteJobs).set({ status: "verified" });
+
+    const trainingPlanId = newId();
+    await db.insert(trainingPlans).values({
+      id: trainingPlanId,
+      userId,
+      provider: "coros",
+      sourcePlanId: "coros-plan",
+      name: "My Plan",
+      status: "active",
+      createdAt: nowInstant(),
+      updatedAt: nowInstant(),
+    });
+    const workoutId = newId();
+    await db.insert(plannedWorkouts).values({
+      id: workoutId,
+      userId,
+      planId: trainingPlanId,
+      sourceWorkoutId: "coros-plan:21",
+      sourceIdInPlan: "21",
+      title: "Upper A — wk 1",
+      category: "strength",
+      sport: "strength",
+      originalPlanDate: "2026-09-07",
+      lastVerifiedCorosDate: "2026-09-09",
+      effectiveDate: "2026-09-09",
+      effectiveTime: "07:00",
+      sourceContentFingerprint: "fp",
+      calendarBlockDurationSeconds: 3600,
+      createdAt: nowInstant(),
+      updatedAt: nowInstant(),
+    });
+    // The app itself asked for this move — recorded in the intent ledger
+    // BEFORE the push, exactly as the reconciler would have left it.
+    await recordIntent(db, {
+      userId,
+      targetKind: "workout",
+      targetId: workoutId,
+      kind: "move",
+      payload: { toDate: "2026-09-09" },
+      source: "user_move",
+    });
+
+    await pushStudioPlan(db, { userId, studioPlanId: planId, today: TODAY });
+
+    const row = (
+      await db.select().from(studioPlanPushes).where(eq(studioPlanPushes.happenDay, "2026-09-07"))
+    )[0]!;
+    expect(row.status).toBe("verified");
+    expect(row.error).toBeNull();
+    expect(row.corosHappenDay).toBe("2026-09-09");
+
+    // No adoption note: this was never treated as a user edit.
+    const notes = await db.select().from(syncNotes).where(eq(syncNotes.userId, userId));
+    expect(notes).toHaveLength(0);
   });
 
   it("refuses a stored plan that no longer matches the studio schema", async () => {
@@ -1115,7 +1333,7 @@ describe("applyStudioJobResult", () => {
     expect(row.error).toBe("create_failed");
   });
 
-  it("never retries a stamp_mismatch and surfaces it as changed_on_coros", async () => {
+  it("never retries a stamp_mismatch and adopts the row instead", async () => {
     const { jobId, pushId } = await pushed();
     await applyStudioJobResult(db, userId, {
       jobId,
@@ -1127,10 +1345,10 @@ describe("applyStudioJobResult", () => {
     });
 
     const job = (await db.select().from(corosWriteJobs).where(eq(corosWriteJobs.id, jobId)))[0]!;
-    expect(job.status).toBe("failed");
+    expect(job.status).toBe("failed"); // the job is still terminally failed…
     const row = (await db.select().from(studioPlanPushes).where(eq(studioPlanPushes.id, pushId)))[0]!;
-    expect(row.status).toBe("failed");
-    expect(row.error).toBe("changed_on_coros");
+    expect(row.status).toBe("adopted"); // …but the row is adopted, not blocked
+    expect(row.error).toBeNull();
   });
 
   it("enqueues the follow-up create only once a delete has terminally gone", async () => {
@@ -1569,7 +1787,8 @@ describe("F2 — a create that landed on the wrong day stays addressable", () =>
     const row = (
       await db.select().from(studioPlanPushes).where(eq(studioPlanPushes.id, job.studioPushId!))
     )[0]!;
-    expect(row.error).toBe("changed_on_coros");
+    expect(row.status).toBe("adopted");
+    expect(row.error).toBeNull();
     expect(row.corosHappenDay).toBe("2026-09-10"); // where it went
     expect(row.corosIdInPlan).toBeNull(); // executor withheld the ids
   });
