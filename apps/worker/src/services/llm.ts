@@ -150,7 +150,12 @@ export async function generateWeeklyReview(
               content: `Weekly training facts (JSON):\n${JSON.stringify(input.facts, null, 2)}`,
             },
           ],
-          response_format: { type: "json_object" },
+          // No response_format: the Vercel AI Gateway's chat-completions
+          // surface only supports json_schema / legacy json — the OpenAI
+          // json_object mode is rejected with a 400 (live-verified via
+          // sync_runs: every call since launch failed with gateway_400).
+          // The system prompt demands JSON-only and extraction tolerates
+          // prose/fences, so prompt discipline carries it.
         }),
       });
     } finally {
@@ -158,6 +163,18 @@ export async function generateWeeklyReview(
     }
 
     if (!response.ok) {
+      // Surface the gateway's own error message in `wrangler tail` — a bare
+      // status code turned out to be undebuggable from the outside.
+      const detail = await response.text().catch(() => "");
+      console.warn(
+        JSON.stringify({
+          level: "warn",
+          msg: "llm: ai gateway error",
+          status: response.status,
+          model,
+          detail: detail.slice(0, 600),
+        }),
+      );
       await persist(null, null);
       return { narrative: null, cached: false, reason: `gateway_${response.status}` };
     }

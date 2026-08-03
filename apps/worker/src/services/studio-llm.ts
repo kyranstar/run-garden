@@ -48,7 +48,11 @@ import type { Db } from "./db.js";
 const DEFAULT_MODEL_STRONG = "anthropic/claude-opus-5";
 const DEFAULT_MODEL_EDIT = "anthropic/claude-haiku-4.5";
 const DEFAULT_GATEWAY = "https://ai-gateway.vercel.sh/v1";
-const TIMEOUT_MS = 20_000;
+// Opus-5-class models think adaptively before answering (uncontrollable on
+// the gateway's chat-completions surface), so a multi-thousand-token plan
+// takes well over the 20s this originally allowed. Workers place no wall
+// clock limit on awaited subrequests while the client stays connected.
+const TIMEOUT_MS = 120_000;
 
 // Cost-estimate constants, same "safe over-estimate, the rolling budget caps
 // the worst case regardless" reasoning as llm.ts's own. Opus-5-class pricing
@@ -463,13 +467,32 @@ async function chatCompletion(
           model,
           max_tokens: maxTokens,
           messages,
-          response_format: { type: "json_object" },
+          // No response_format: the Vercel AI Gateway's chat-completions
+          // surface only supports json_schema / legacy json — the OpenAI
+          // json_object mode is rejected with a 400 (live-verified: both this
+          // service and llm.ts failed every call with gateway_400 until it
+          // was removed). Prompts demand JSON-only and extractJson tolerates
+          // prose/fences; zod validation + the retry loop catch the rest.
         }),
       });
     } catch {
       return { ok: false, reason: "llm_error" };
     }
-    if (!response.ok) return { ok: false, reason: `gateway_${response.status}` };
+    if (!response.ok) {
+      // Surface the gateway's own error message in `wrangler tail` — a bare
+      // status code turned out to be undebuggable from the outside.
+      const detail = await response.text().catch(() => "");
+      console.warn(
+        JSON.stringify({
+          level: "warn",
+          msg: "studio: ai gateway error",
+          status: response.status,
+          model,
+          detail: detail.slice(0, 600),
+        }),
+      );
+      return { ok: false, reason: `gateway_${response.status}` };
+    }
     const body = (await response.json().catch(() => null)) as {
       choices?: Array<{ message?: { content?: string }; finish_reason?: string }>;
       usage?: { prompt_tokens?: number; completion_tokens?: number };
