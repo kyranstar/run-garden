@@ -269,6 +269,29 @@ describe("GET /api/studio", () => {
     expect(body.plan).toBeNull();
   });
 
+  it("history returns every generated plan with the brief that produced it, newest first", async () => {
+    await seedPlan();
+    const res = await client().get("/api/studio/history");
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as {
+      plans: Array<{ id: string; name: string; weeks: number | null; brief: { notes?: string } }>;
+    };
+    expect(body.plans.length).toBeGreaterThanOrEqual(1);
+    expect(body.plans[0]!.name.length).toBeGreaterThan(0);
+    expect(body.plans[0]!.brief).toBeTruthy(); // the prompt is durably saved
+  });
+
+  it("history never leaks another user's plans", async () => {
+    await seedPlan();
+    const other = await makeTestUser(db);
+    const otherToken = await createSession(db, other.userId);
+    const res = await client().get("/api/studio/history", {
+      Cookie: `${SESSION_COOKIE}=${otherToken}`,
+    });
+    const body = (await res.json()) as { plans: unknown[] };
+    expect(body.plans).toHaveLength(0);
+  });
+
   it("surfaces queued studio jobs and bridge liveness", async () => {
     await seedPlan();
     await db.insert(corosWriteJobs).values({

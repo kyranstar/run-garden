@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   api,
@@ -17,7 +17,7 @@ import {
   type StudioGoal,
   type StudioSession,
 } from "@rg/domain";
-import { Banner, formatDayShort, Sheet, Spinner } from "../components.js";
+import { Banner, formatDayLong, formatDayShort, Sheet, Spinner } from "../components.js";
 import { IconAlert, IconCheck, IconChevron, IconSync } from "../icons.js";
 
 /**
@@ -164,11 +164,14 @@ function studioErrorCopy(err: unknown, llm: StudioLlmStatusDto): string {
 // ── Bridge status (two distinct signals — launch requirement c) ─────────────
 
 function BridgeStatusLine({ bridge }: { bridge: StudioBridgeStatusDto }) {
-  if (bridge.pendingJobs.queued > 0) {
+  // Attention is earned: when the Mac is online and working, the syncing
+  // phase card already says so — this line only speaks when the user must
+  // actually DO something (the bridge is offline with work waiting).
+  if (bridge.pendingJobs.queued > 0 && !bridge.online) {
     return (
-      <Banner kind="info">
-        Waiting for your Mac — open the desktop app to send {bridge.pendingJobs.queued} pending change
-        {bridge.pendingJobs.queued === 1 ? "" : "s"}.
+      <Banner kind="warn">
+        {bridge.pendingJobs.queued} change{bridge.pendingJobs.queued === 1 ? "" : "s"} waiting for
+        your Mac — open the Run Garden desktop app to sync them to COROS.
       </Banner>
     );
   }
@@ -402,16 +405,20 @@ function IntakeForm({
       {errors.length > 0 ? <Banner kind="warn">{errors[0]}</Banner> : null}
       {serverError ? <Banner kind="warn">{serverError}</Banner> : null}
 
-      <div className="btn-row">
-        <button className="btn btn-studio" disabled={generate.isPending} onClick={submit}>
-          {generate.isPending ? "Generating…" : hasCurrentPlan ? "Generate new plan" : "Create plan"}
-        </button>
-        {onCancel ? (
-          <button className="btn" onClick={onCancel} disabled={generate.isPending}>
-            Cancel
+      {generate.isPending ? (
+        <GenerationProgress />
+      ) : (
+        <div className="btn-row">
+          <button className="btn btn-studio" onClick={submit}>
+            {hasCurrentPlan ? "Generate new plan" : "Create plan"}
           </button>
-        ) : null}
-      </div>
+          {onCancel ? (
+            <button className="btn" onClick={onCancel}>
+              Cancel
+            </button>
+          ) : null}
+        </div>
+      )}
 
       {confirmReplace ? (
         <Sheet open onClose={() => setConfirmReplace(false)} title="Replace your current plan?">
@@ -549,9 +556,108 @@ function SessionCard({
   );
 }
 
+// ── Generation progress ──────────────────────────────────────────────────────
+
+/**
+ * Honest, staged feedback while the strong model writes the plan. The stages
+ * are keyed to elapsed time (the server doesn't stream progress), and the
+ * copy never claims more than we know: a big plan genuinely takes minutes.
+ */
+function GenerationProgress() {
+  const [elapsed, setElapsed] = useState(0);
+  useEffect(() => {
+    const started = Date.now();
+    const id = setInterval(() => setElapsed(Math.floor((Date.now() - started) / 1000)), 1000);
+    return () => clearInterval(id);
+  }, []);
+  const stage =
+    elapsed < 8
+      ? "Reading your brief and recent training…"
+      : elapsed < 45
+        ? "Writing every session — warmups, progressions, cooldowns…"
+        : elapsed < 120
+          ? "Still writing — a full plan is a lot of sessions…"
+          : "Long plans can take a few minutes. Leave this open; it will finish.";
+  const mm = Math.floor(elapsed / 60);
+  const ss = String(elapsed % 60).padStart(2, "0");
+  return (
+    <div className="studio-progress" role="status">
+      <Spinner label="" />
+      <div>
+        <div style={{ fontWeight: 600 }}>Drafting your plan</div>
+        <p className="muted">{stage}</p>
+        <p className="faint">
+          {mm}:{ss} elapsed · usually 1–3 minutes
+        </p>
+      </div>
+    </div>
+  );
+}
+
+// ── Lifecycle phases ─────────────────────────────────────────────────────────
+
+type StudioPhase = "draft" | "syncing" | "attention" | "synced" | "over";
+
+/** Which single thing deserves the user's attention right now. */
+function studioPhase(studio: StudioStateResponse, today: string): StudioPhase {
+  const rows = studio.pushes.filter((p) => p.status !== "deleted");
+  const failed = rows.filter((p) => p.status === "failed" || p.error != null);
+  const verified = rows.filter((p) => p.status === "verified");
+  const inFlight = studio.bridge.pendingJobs.queued + studio.bridge.inFlight.count;
+  if (inFlight > 0) return "syncing";
+  if (failed.length > 0) return "attention";
+  if (verified.length === 0) return "draft";
+  const brief = studio.brief!;
+  const end = addDays(startOfIsoWeek(brief.startDate), brief.durationWeeks * 7 - 1);
+  if (today > end) return "over";
+  return "synced";
+}
+
+/** Past plans + the briefs that produced them — reusable as templates. */
+function PastPlans({ onUseTemplate }: { onUseTemplate: (brief: PlanBrief) => void }) {
+  const [open, setOpen] = useState(false);
+  const history = useQuery({ queryKey: ["studio-history"], queryFn: api.studioHistory, enabled: open });
+  return (
+    <details onToggle={(e) => setOpen((e.target as HTMLDetailsElement).open)}>
+      <summary className="muted" style={{ cursor: "pointer" }}>
+        Past plans
+      </summary>
+      {history.isLoading ? (
+        <Spinner label="Loading history" />
+      ) : (history.data?.plans ?? []).length === 0 ? (
+        <p className="faint">Nothing yet — every plan you generate is kept here.</p>
+      ) : (
+        <ul className="studio-history">
+          {history.data!.plans.map((p) => (
+            <li key={p.id} className="row-between">
+              <span>
+                <strong>{p.name}</strong>{" "}
+                <span className="faint">
+                  {p.weeks ? `${p.weeks} wks` : ""} · {p.createdAt.slice(0, 10)}
+                </span>
+              </span>
+              <button className="btn btn-small" onClick={() => onUseTemplate(p.brief)}>
+                Reuse brief
+              </button>
+            </li>
+          ))}
+        </ul>
+      )}
+    </details>
+  );
+}
+
 // ── Draft view (plan exists) ─────────────────────────────────────────────────
 
-function StudioDraft({ studio, onStartNew }: { studio: StudioStateResponse; onStartNew: () => void }) {
+function StudioDraft({
+  studio,
+  onStartNew,
+  onUseTemplate,
+}: {
+  studio: StudioStateResponse;
+  onStartNew: () => void;
+  onUseTemplate: (brief: PlanBrief) => void;
+}) {
   const qc = useQueryClient();
   const plan = studio.plan!;
   const brief = studio.brief!;
@@ -674,9 +780,18 @@ function StudioDraft({ studio, onStartNew }: { studio: StudioStateResponse; onSt
     onError: (err: unknown) => setPushError(studioErrorCopy(err, studio.llm)),
   });
 
-  // Launch requirement f: shown whenever verified content currently exists —
-  // never a watch-delivery claim, only "the calendar was updated."
-  const everVerified = studio.pushes.some((p) => p.status === "verified");
+  const today = localTodayGuess();
+  const phase = studioPhase(studio, today);
+  const liveRows = studio.pushes.filter((p) => p.status !== "deleted");
+  const verifiedCount = liveRows.filter((p) => p.status === "verified").length;
+  const failedRows = liveRows.filter((p) => p.status === "failed" || p.error != null);
+  const totalSessions = sessionsByWeek.reduce((n, wk) => n + wk.sessions.length, 0);
+  const dirty = diff.added > 0 || diff.removed > 0 || diff.editedSincePush;
+  const planEnd = addDays(monday, brief.durationWeeks * 7 - 1);
+  // The session-by-session grid earns its place only while there's something
+  // to review or repair. Once the plan is synced, the calendar below IS the
+  // plan — repeating it here is noise.
+  const showGrid = phase === "draft" || phase === "attention" || (phase === "synced" && dirty);
 
   return (
     <div className="stack">
@@ -684,7 +799,7 @@ function StudioDraft({ studio, onStartNew }: { studio: StudioStateResponse; onSt
         <div>
           <div style={{ fontWeight: 650 }}>{plan.name}</div>
           <p className="faint">
-            {brief.durationWeeks} weeks · {brief.sessionsPerWeek}×/week · v{version}
+            {brief.durationWeeks} weeks · {brief.sessionsPerWeek}×/week · through {formatDayLong(planEnd)}
           </p>
         </div>
         <button className="btn btn-small" onClick={onStartNew}>
@@ -692,64 +807,130 @@ function StudioDraft({ studio, onStartNew }: { studio: StudioStateResponse; onSt
         </button>
       </div>
 
-      {sessionsByWeek.map((wk) => (
-        <div key={wk.weekIndex}>
-          <div className="studio-week-label">Week {wk.weekIndex + 1}</div>
-          {wk.sessions.length === 0 ? (
-            <p className="muted">No sessions this week.</p>
-          ) : (
-            wk.sessions.map(({ session, happenDay }, i) => (
-              <SessionCard
-                key={`${wk.weekIndex}-${i}`}
-                session={session}
-                happenDay={happenDay}
-                row={pushByDay.get(happenDay) ?? null}
-                onRetry={(d) => retry.mutate(d)}
-                retrying={retry.isPending}
-              />
-            ))
-          )}
+      {phase === "syncing" ? (
+        <div className="studio-progress" role="status">
+          <Spinner label="" />
+          <div>
+            <div style={{ fontWeight: 600 }}>
+              Syncing to COROS — {verifiedCount} of {liveRows.length || totalSessions} sessions on the calendar
+            </div>
+            <p className="muted">
+              Your Mac is writing each session to COROS and verifying it landed. You can close this
+              page — it finishes on its own.
+            </p>
+          </div>
         </div>
-      ))}
+      ) : null}
 
-      <div className="field">
-        <label htmlFor="studio-edit-request">Ask for changes</label>
-        <textarea
-          id="studio-edit-request"
-          rows={2}
-          maxLength={2000}
-          value={request}
-          placeholder="e.g. swap Friday's session for a lower-body focus"
-          onChange={(e) => setRequest(e.target.value)}
-        />
-        <label className="row" style={{ fontWeight: 500, cursor: "pointer" }}>
-          <input type="checkbox" checked={major} onChange={(e) => setMajor(e.target.checked)} />
-          Major revision (bigger changes — uses the stronger model)
-        </label>
-      </div>
-      {editError ? <Banner kind="warn">{editError}</Banner> : null}
-      <button
-        className="btn btn-studio"
-        disabled={edit.isPending || request.trim().length === 0}
-        onClick={() => edit.mutate()}
-      >
-        {edit.isPending ? "Applying…" : "Apply edit"}
-      </button>
+      {phase === "attention" ? (
+        <Banner kind="warn">
+          {failedRows.length} session{failedRows.length === 1 ? "" : "s"} didn't reach COROS. Retry
+          below — everything else is synced.
+        </Banner>
+      ) : null}
 
-      <div className="studio-diff-strip">
-        <span className="studio-diff-added">+{diff.added} new</span>
-        <span className="studio-diff-removed">−{diff.removed} removed</span>
-        {diff.editedSincePush ? (
-          <span className="studio-diff-changed">Edited since last push — exact changes are computed when you push.</span>
-        ) : null}
-      </div>
+      {phase === "synced" && !dirty ? (
+        <div className="studio-synced-card">
+          <span className="studio-synced-check" aria-hidden>
+            ✓
+          </span>
+          <div>
+            <div style={{ fontWeight: 600 }}>
+              On COROS — {verifiedCount} sessions through {formatDayLong(planEnd)}
+            </div>
+            <p className="faint">
+              Your sessions live in the calendar below. Ask for changes here any time; they sync
+              back to COROS when you confirm.
+            </p>
+          </div>
+        </div>
+      ) : null}
 
-      {everVerified ? <Banner kind="info">COROS calendar updated · open COROS to sync your watch.</Banner> : null}
+      {phase === "over" ? (
+        <Banner kind="info">
+          This plan finished {formatDayLong(planEnd)} — nice work. Start the next one whenever
+          you're ready; your past plans and briefs are saved below.
+        </Banner>
+      ) : null}
+
+      {showGrid
+        ? sessionsByWeek.map((wk) => (
+            <div key={wk.weekIndex}>
+              <div className="studio-week-label">Week {wk.weekIndex + 1}</div>
+              {wk.sessions.length === 0 ? (
+                <p className="muted">No sessions this week.</p>
+              ) : (
+                wk.sessions.map(({ session, happenDay }, i) => (
+                  <SessionCard
+                    key={`${wk.weekIndex}-${i}`}
+                    session={session}
+                    happenDay={happenDay}
+                    row={pushByDay.get(happenDay) ?? null}
+                    onRetry={(d) => retry.mutate(d)}
+                    retrying={retry.isPending}
+                  />
+                ))
+              )}
+            </div>
+          ))
+        : null}
+
+      {phase !== "syncing" ? (
+        <div className="field">
+          <label htmlFor="studio-edit-request">Ask for changes</label>
+          <textarea
+            id="studio-edit-request"
+            rows={2}
+            maxLength={2000}
+            value={request}
+            placeholder="e.g. swap Friday's session for a lower-body focus"
+            onChange={(e) => setRequest(e.target.value)}
+          />
+          <label className="row" style={{ fontWeight: 500, cursor: "pointer" }}>
+            <input type="checkbox" checked={major} onChange={(e) => setMajor(e.target.checked)} />
+            Major revision (bigger changes — uses the stronger model)
+          </label>
+          {editError ? <Banner kind="warn">{editError}</Banner> : null}
+          <button
+            className="btn btn-studio"
+            disabled={edit.isPending || request.trim().length === 0}
+            onClick={() => edit.mutate()}
+          >
+            {edit.isPending ? "Applying…" : "Apply edit"}
+          </button>
+        </div>
+      ) : null}
+
+      {dirty && phase !== "syncing" ? (
+        <div className="studio-diff-strip">
+          <span className="studio-diff-added">+{diff.added} new</span>
+          <span className="studio-diff-removed">−{diff.removed} removed</span>
+          {diff.editedSincePush ? (
+            <span className="studio-diff-changed">
+              Edited since last sync — exact changes are computed when you sync.
+            </span>
+          ) : null}
+        </div>
+      ) : null}
 
       {pushError ? <Banner kind="warn">{pushError}</Banner> : null}
-      <button className="btn btn-studio" disabled={push.isPending} onClick={() => push.mutate()}>
-        {push.isPending ? "Pushing…" : "Push to COROS"}
-      </button>
+      {phase === "draft" ? (
+        <button className="btn btn-studio" disabled={push.isPending} onClick={() => push.mutate()}>
+          {push.isPending
+            ? "Starting sync…"
+            : `Sync to COROS — ${totalSessions} session${totalSessions === 1 ? "" : "s"}`}
+        </button>
+      ) : phase === "attention" ? (
+        <button className="btn btn-studio" disabled={push.isPending} onClick={() => push.mutate()}>
+          {push.isPending ? "Retrying…" : `Retry ${failedRows.length} failed`}
+        </button>
+      ) : phase === "synced" && dirty ? (
+        <button className="btn btn-studio" disabled={push.isPending} onClick={() => push.mutate()}>
+          {push.isPending ? "Starting sync…" : "Sync changes to COROS"}
+        </button>
+      ) : null}
+
+      <PastPlans onUseTemplate={onUseTemplate} />
     </div>
   );
 }
@@ -758,23 +939,49 @@ function StudioDraft({ studio, onStartNew }: { studio: StudioStateResponse; onSt
 
 function StudioBody({ studio }: { studio: StudioStateResponse }) {
   const [showIntake, setShowIntake] = useState(false);
+  const [templateBrief, setTemplateBrief] = useState<PlanBrief | null>(null);
+  const useTemplate = (brief: PlanBrief) => {
+    setTemplateBrief(brief);
+    setShowIntake(true);
+  };
   return (
     <div className="studio-content stack">
       <BridgeStatusLine bridge={studio.bridge} />
       {!studio.plan || showIntake ? (
-        <IntakeForm
-          initial={studio.brief}
-          hasCurrentPlan={Boolean(studio.plan)}
-          llm={studio.llm}
-          onCancel={studio.plan ? () => setShowIntake(false) : undefined}
-          onDone={() => setShowIntake(false)}
-        />
+        <>
+          <IntakeForm
+            key={templateBrief ? JSON.stringify(templateBrief) : "fresh"}
+            initial={templateBrief ?? studio.brief}
+            hasCurrentPlan={Boolean(studio.plan)}
+            llm={studio.llm}
+            onCancel={studio.plan ? () => setShowIntake(false) : undefined}
+            onDone={() => {
+              setShowIntake(false);
+              setTemplateBrief(null);
+            }}
+          />
+          {!studio.plan ? <PastPlans onUseTemplate={useTemplate} /> : null}
+        </>
       ) : (
-        <StudioDraft studio={studio} onStartNew={() => setShowIntake(true)} />
+        <StudioDraft studio={studio} onStartNew={() => setShowIntake(true)} onUseTemplate={useTemplate} />
       )}
       <UsageMeter llm={studio.llm} />
     </div>
   );
+}
+
+/** One-line status for the collapsed header — the section only demands
+ * attention when something is actually happening or wrong. */
+function studioHeaderStatus(studio: StudioStateResponse | undefined): string | null {
+  if (!studio?.plan) return null;
+  const phase = studioPhase(studio, localTodayGuess());
+  const live = studio.pushes.filter((p) => p.status !== "deleted");
+  const verified = live.filter((p) => p.status === "verified").length;
+  if (phase === "syncing") return `Syncing ${verified}/${live.length}…`;
+  if (phase === "attention") return "Needs attention";
+  if (phase === "draft") return "Draft ready to sync";
+  if (phase === "over") return "Plan finished";
+  return null; // synced & quiet: no badge — normal earns silence
 }
 
 /** Mounted at the top of the Plan screen (packages/ui/src/screens/plan.tsx).
@@ -783,7 +990,17 @@ export function StudioSection() {
   // Collapsed by default: the Plan page's primary content is the calendar,
   // and the studio is an occasional tool, not the landing experience.
   const [open, setOpen] = useState(false);
-  const studio = useQuery({ queryKey: ["studio"], queryFn: api.studio, refetchInterval: 15_000 });
+  const studio = useQuery({
+    queryKey: ["studio"],
+    queryFn: api.studio,
+    // Poll fast only while a sync is actually moving; otherwise stay quiet.
+    refetchInterval: (query) => {
+      const data = query.state.data as StudioStateResponse | undefined;
+      const busy = data ? data.bridge.pendingJobs.queued + data.bridge.inFlight.count > 0 : false;
+      return busy ? 4_000 : 30_000;
+    },
+  });
+  const headerStatus = studioHeaderStatus(studio.data);
 
   return (
     <section className="card studio-card">
@@ -798,6 +1015,7 @@ export function StudioSection() {
           <strong>Studio</strong>
           <span className="faint">Lifting plans, written to COROS</span>
         </span>
+        {headerStatus ? <span className="pill pill-neutral studio-header-pill">{headerStatus}</span> : null}
         <span className="chevron" aria-hidden>
           <IconChevron size={18} />
         </span>

@@ -1,5 +1,6 @@
 import type { ZodError } from "zod";
-import { llmUsage } from "@rg/database";
+import { and, desc, eq, gte } from "drizzle-orm";
+import { activities, dailyHealth, llmUsage } from "@rg/database";
 import {
   fingerprint,
   liftingPlanSchema,
@@ -401,8 +402,77 @@ export function buildGenerateSystemPrompt(catalog: CatalogEntry[]): string {
   ].join("\n");
 }
 
-export function buildGenerateUserPrompt(brief: PlanBrief): string {
-  return `Brief (JSON):\n${JSON.stringify(brief, null, 2)}`;
+export function buildGenerateUserPrompt(brief: PlanBrief, athleteContext?: string): string {
+  const base = `Brief (JSON):\n${JSON.stringify(brief, null, 2)}`;
+  return athleteContext ? `${base}\n\n${athleteContext}` : base;
+}
+
+/**
+ * Compact, read-only telemetry from the athlete's own synced COROS data —
+ * recent load, recovery markers, and what they've actually been doing — so
+ * the plan is calibrated to the real person, not a hypothetical one.
+ * Best-effort: any failure returns "" and generation proceeds without it.
+ */
+export async function buildAthleteContext(db: Db, userId: string): Promise<string> {
+  try {
+    const today = new Date().toISOString().slice(0, 10);
+    const since14 = addDaysLocal(today, -14);
+    const since28 = addDaysLocal(today, -28);
+
+    const health = await db
+      .select()
+      .from(dailyHealth)
+      .where(and(eq(dailyHealth.userId, userId), gte(dailyHealth.date, since14)))
+      .orderBy(desc(dailyHealth.date))
+      .limit(14);
+    const acts = await db
+      .select({
+        sport: activities.sport,
+        durationSeconds: activities.durationSeconds,
+        distanceMeters: activities.distanceMeters,
+        startTime: activities.startTime,
+      })
+      .from(activities)
+      .where(and(eq(activities.userId, userId), gte(activities.startTime, `${since28}T00:00:00Z`)));
+
+    const lines: string[] = [];
+    const avg = (xs: number[]) =>
+      xs.length > 0 ? Math.round(xs.reduce((a, b) => a + b, 0) / xs.length) : null;
+    const rhr = avg(health.map((h) => h.restingHeartRate).filter((v): v is number => v != null));
+    const hrv = avg(health.map((h) => h.hrv).filter((v): v is number => v != null));
+    const load = health.find((h) => h.trainingLoad7d != null)?.trainingLoad7d;
+    if (rhr != null) lines.push(`- Resting heart rate (14-day avg): ${rhr} bpm`);
+    if (hrv != null) lines.push(`- Sleep HRV (14-day avg): ${hrv} ms`);
+    if (load != null) lines.push(`- COROS 7-day training load: ${Math.round(load)}`);
+
+    const runs = acts.filter((a) => a.sport === "run");
+    if (runs.length > 0) {
+      const km = runs.reduce((a, r) => a + (r.distanceMeters ?? 0), 0) / 1000;
+      const hours = runs.reduce((a, r) => a + r.durationSeconds, 0) / 3600;
+      lines.push(
+        `- Running, last 28 days: ${runs.length} runs, ${km.toFixed(0)} km, ${hours.toFixed(1)} h — this training continues alongside the lifting plan`,
+      );
+    }
+    const lifts = acts.filter((a) => a.sport === "strength").length;
+    const yogas = acts.filter((a) => a.sport === "yoga").length;
+    if (lifts > 0) lines.push(`- Strength sessions, last 28 days: ${lifts}`);
+    if (yogas > 0) lines.push(`- Yoga sessions, last 28 days: ${yogas}`);
+
+    if (lines.length === 0) return "";
+    return [
+      "Athlete telemetry (read-only, from their synced COROS account — use it to calibrate volume and intensity; the brief always wins on explicit preferences):",
+      ...lines,
+    ].join("\n");
+  } catch {
+    return "";
+  }
+}
+
+/** Local-date arithmetic without pulling the whole domain package in here. */
+function addDaysLocal(date: string, days: number): string {
+  const d = new Date(`${date}T00:00:00Z`);
+  d.setUTCDate(d.getUTCDate() + days);
+  return d.toISOString().slice(0, 10);
 }
 
 export function buildMajorReviseSystemPrompt(catalog: CatalogEntry[]): string {
@@ -419,8 +489,13 @@ export function buildMajorReviseSystemPrompt(catalog: CatalogEntry[]): string {
   ].join("\n");
 }
 
-export function buildMajorReviseUserPrompt(plan: LiftingPlan, request: string): string {
-  return `Current plan (JSON):\n${JSON.stringify(plan, null, 2)}\n\nRevision request:\n${request}`;
+export function buildMajorReviseUserPrompt(
+  plan: LiftingPlan,
+  request: string,
+  athleteContext?: string,
+): string {
+  const base = `Current plan (JSON):\n${JSON.stringify(plan, null, 2)}\n\nRevision request:\n${request}`;
+  return athleteContext ? `${base}\n\n${athleteContext}` : base;
 }
 
 export function buildEditSystemPrompt(catalog: CatalogEntry[]): string {
@@ -945,9 +1020,10 @@ export async function generatePlan(
     const catalogIds = new Set(catalog.map((c) => c.id));
     const requestFingerprint = fingerprint({ brief, catalogSize: catalog.length });
     const maxTokens = MAX_OUTPUT_TOKENS_GENERATE;
+    const athlete = await buildAthleteContext(db, userId);
     const messages: ChatMessage[] = [
       { role: "system", content: buildGenerateSystemPrompt(catalog) },
-      { role: "user", content: buildGenerateUserPrompt(brief) },
+      { role: "user", content: buildGenerateUserPrompt(brief, athlete) },
     ];
 
     let attempt = await runFullPlanAttempt(
@@ -1008,9 +1084,10 @@ export async function editPlan(
     if (major) {
       const model = env.AI_STUDIO_MODEL_STRONG || DEFAULT_MODEL_STRONG;
       const maxTokens = MAX_OUTPUT_TOKENS_GENERATE;
+      const athlete = await buildAthleteContext(db, userId);
       const messages: ChatMessage[] = [
         { role: "system", content: buildMajorReviseSystemPrompt(catalog) },
-        { role: "user", content: buildMajorReviseUserPrompt(plan, request) },
+        { role: "user", content: buildMajorReviseUserPrompt(plan, request, athlete) },
       ];
       let attempt = await runFullPlanAttempt(
         env, db, userId, model, messages, catalogIds, "studio_edit", requestFingerprint, fetchImpl, maxTokens,

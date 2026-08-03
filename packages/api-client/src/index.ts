@@ -337,4 +337,15 @@ export const api = {
   studioPush: () => post<StudioPushResponse>("/api/studio/push"),
   studioPushRetry: (happenDay: string) =>
     post<StudioPushResponse>("/api/studio/push/retry", { happenDay }),
+  studioHistory: () => get<{ plans: StudioHistoryEntryDto[] }>("/api/studio/history"),
 };
+
+/** One previously generated plan + the brief (prompt) that produced it. */
+export interface StudioHistoryEntryDto {
+  id: string;
+  name: string;
+  weeks: number | null;
+  version: number;
+  createdAt: string;
+  brief: PlanBrief;
+}

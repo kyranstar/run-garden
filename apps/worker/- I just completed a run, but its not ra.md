@@ -1,0 +1,5 @@
+- I just completed a run, but its not raining? I don't really see any feedback at all? Also, in my plan page, I see my run, but it looks like its stuck on "Completed - syncing details".  On my garden page, it still says "next workout" referencing the exact same workout I jsut completed that it obviously knows about.
+
+- Really confused on whatever the ordering is of runs on the runs page. It should be chronological, most recent first.
+- Would love to see some more gamified aspect of the garden encouraging me - like be consistent for 1 more week and unlock butterflies or something. This should be central to the app, is the whole garden thing. We need to expand how interactive, engaging, complete, and interesting it is.
+- Also, for stuff like easy run discipline, I should be able to hover to see more details, like all of my previous runs and basically explain why it wasn't disciplined and what this is being measured against. If its HR, we should show the HR graph for each run and highlight where it was undisciplined.

@@ -1372,6 +1372,50 @@ button {
   font-weight: 650;
 }
 
+/* Generation / sync progress and the quiet synced state */
+.studio-progress {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.8rem;
+  padding: 0.85rem 0.9rem;
+  background: var(--bg-sunken);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+}
+.studio-progress p {
+  margin: 0.15rem 0 0;
+}
+.studio-synced-card {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.7rem;
+  padding: 0.85rem 0.9rem;
+  background: var(--green-soft);
+  border: 1px solid color-mix(in srgb, var(--green) 30%, transparent);
+  border-radius: var(--radius-sm);
+}
+.studio-synced-card p {
+  margin: 0.15rem 0 0;
+}
+.studio-synced-check {
+  color: var(--green-ink);
+  font-weight: 700;
+  font-size: 1.05rem;
+  line-height: 1.3;
+}
+.studio-header-pill {
+  margin-left: auto;
+  margin-right: 0.5rem;
+  flex: none;
+}
+.studio-history {
+  list-style: none;
+  padding: 0.4rem 0 0;
+  margin: 0;
+  display: grid;
+  gap: 0.45rem;
+}
+
 .usage-meter {
   border-top: 1px solid var(--border);
   padding-top: 0.7rem;

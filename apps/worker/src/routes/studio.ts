@@ -341,6 +341,33 @@ studioRoutes.get("/", async (c) => {
   });
 });
 
+// ── GET /api/studio/history ──────────────────────────────────────────────────
+// Every generated plan (and the brief that produced it) is kept forever —
+// the raw material for future progressive planning ("build on my last block")
+// and for reusing a past brief as a template today.
+studioRoutes.get("/history", async (c) => {
+  const db = c.get("db");
+  const rows = await db
+    .select()
+    .from(studioPlans)
+    .where(eq(studioPlans.userId, c.get("userId")))
+    .orderBy(desc(studioPlans.createdAt))
+    .limit(20);
+  return c.json({
+    plans: rows.map((r) => {
+      const plan = r.plan as { name?: string; weeks?: unknown[] } | null;
+      return {
+        id: r.id,
+        name: plan?.name ?? "Untitled plan",
+        weeks: Array.isArray(plan?.weeks) ? plan.weeks.length : null,
+        version: r.version,
+        createdAt: r.createdAt,
+        brief: r.brief,
+      };
+    }),
+  });
+});
+
 // ── POST /api/studio/generate ────────────────────────────────────────────────
 
 const generateBodySchema = z.object({
