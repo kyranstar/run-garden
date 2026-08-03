@@ -4,6 +4,7 @@ import { and, asc, desc, eq, gte, inArray, isNull, lte } from "drizzle-orm";
 import {
   activities,
   calendarEventLinks,
+  calendarEventSuppressions,
   corosWriteJobs,
   dailyHealth,
   desktopDevices,
@@ -223,6 +224,7 @@ planRoutes.get("/workouts", async (c) => {
   return c.json({
     today,
     plan: plans[0] ? { name: plans[0].name, startDate: plans[0].startDate, endDate: plans[0].endDate } : null,
+    corosWritesEnabled: prefs.corosWritesEnabled,
     workouts: rows.map(workoutDto),
   });
 });
@@ -486,6 +488,45 @@ planRoutes.post("/workouts/:id/unmatch", async (c) => {
     .where(and(eq(plannedWorkouts.id, c.req.param("id")), eq(plannedWorkouts.userId, userId)));
   const prefs = await loadPreferences(db, userId);
   await resimulateFrom(db, userId, todayInZone(prefs.timezone), prefs).catch(() => undefined);
+  return c.json({ ok: true });
+});
+
+/**
+ * Remove a workout from the plan: archived locally, calendar event suppressed.
+ * Never touches the COROS calendar — for COROS-sourced workouts the archived
+ * row keeps its sourceWorkoutId, so future imports update it in place without
+ * resurrecting it into the visible plan.
+ */
+planRoutes.post("/workouts/:id/remove", async (c) => {
+  const db = c.get("db");
+  const userId = c.get("userId");
+  const w = (
+    await db
+      .select()
+      .from(plannedWorkouts)
+      .where(and(eq(plannedWorkouts.id, c.req.param("id")), eq(plannedWorkouts.userId, userId)))
+      .limit(1)
+  )[0];
+  if (!w) return c.json({ error: "not_found" }, 404);
+  if (w.archivedAt) return c.json({ ok: true });
+  const now = nowInstant();
+  await db
+    .update(plannedWorkouts)
+    .set({ archivedAt: now, updatedAt: now })
+    .where(eq(plannedWorkouts.id, w.id));
+  await db.insert(calendarEventSuppressions).values({
+    id: newId(),
+    workoutId: w.id,
+    eventId: null,
+    reason: "workout_removed",
+    createdAt: now,
+  });
+  await syncCalendar(db, c.env, userId).catch(() => undefined);
+  const prefs = await loadPreferences(db, userId);
+  const today = todayInZone(prefs.timezone);
+  // A removed past workout must stop counting against the garden.
+  const resimFrom = w.effectiveDate < today ? w.effectiveDate : today;
+  await resimulateFrom(db, userId, resimFrom, prefs).catch(() => undefined);
   return c.json({ ok: true });
 });
 

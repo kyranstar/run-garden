@@ -131,6 +131,7 @@ export interface CandidateResponse {
 export interface PlanResponse {
   today: string;
   plan: { name: string; startDate: string | null; endDate: string | null } | null;
+  corosWritesEnabled: boolean;
   workouts: WorkoutDto[];
 }
 
@@ -301,6 +302,7 @@ export const api = {
   unmatch: (id: string) => post(`/api/plan/workouts/${id}/unmatch`),
   restoreCalendar: (id: string) => post(`/api/plan/workouts/${id}/restore-calendar`),
   retryCoros: (id: string) => post(`/api/plan/workouts/${id}/retry-coros`),
+  removeWorkout: (id: string) => post(`/api/plan/workouts/${id}/remove`),
   garden: () => get<Record<string, unknown> & { balance: DisciplineBalance }>("/api/garden"),
   gardenRestMode: (active: boolean, until?: string | null) =>
     post("/api/garden/rest-mode", { active, until }),

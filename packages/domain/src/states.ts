@@ -5,17 +5,17 @@
 
 /** Alignment between Run Garden's intended schedule and the COROS calendar. */
 export type CorosSyncState =
-  | "synced" // COROS agrees with Run Garden; last write verified
+  | "synced" // COROS agrees with Run Garden; verified by read or write
   | "syncing" // a provider operation is actively being attempted
   | "waiting_for_device" // queued; desktop bridge offline ("Waiting for Mac")
-  | "calendar_only" // COROS writing unavailable or intentionally disabled
+  | "calendar_only" // a local date change exists that COROS doesn't have (writing unavailable or disabled)
   | "needs_attention"; // conflict, failed verification, or ambiguity
 
 export const COROS_SYNC_LABELS: Record<CorosSyncState, string> = {
   synced: "Synced",
   syncing: "Syncing",
   waiting_for_device: "Waiting for Mac",
-  calendar_only: "Calendar only",
+  calendar_only: "Not synced to COROS",
   needs_attention: "Needs attention",
 };
 

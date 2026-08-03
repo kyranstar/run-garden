@@ -258,9 +258,28 @@ async function nextPlanCreatedAt(db: Db, userId: string, now: string): Promise<s
  * structured `catalog_not_synced` error, not a crash or a confusing
  * `unknown_exercise` from the LLM layer — checked before spending any LLM
  * budget on a request that cannot possibly succeed.
+ *
+ * The `reason` tells the UI what the user can actually do about it:
+ * `bridge_offline` (open the desktop app), `bridge_outdated` (the connected
+ * bridge predates catalog sync — opening it again will never help; it needs
+ * an update), or `syncing` (a catalog-capable bridge is online; wait a beat).
  */
-function catalogNotSynced(c: Context<AppContext>) {
-  return c.json({ error: "catalog_not_synced" }, 412);
+async function catalogNotSynced(c: Context<AppContext>) {
+  const db = c.get("db");
+  const devices = await db
+    .select({ lastSeenAt: desktopDevices.lastSeenAt, capabilities: desktopDevices.capabilities })
+    .from(desktopDevices)
+    .where(and(eq(desktopDevices.userId, c.get("userId")), isNull(desktopDevices.revokedAt)));
+  const online = devices.filter((d) => Date.parse(d.lastSeenAt) > Date.now() - 3 * 60_000);
+  const reason =
+    online.length === 0
+      ? "bridge_offline"
+      : online.some(
+            (d) => (d.capabilities as Record<string, boolean> | null)?.["exerciseCatalog"] === true,
+          )
+        ? "syncing"
+        : "bridge_outdated";
+  return c.json({ error: "catalog_not_synced", reason }, 412);
 }
 
 /**

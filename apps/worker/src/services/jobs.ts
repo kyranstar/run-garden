@@ -144,6 +144,11 @@ export async function applyMove(db: Db, req: MoveRequest): Promise<MoveOutcome> 
       corosSyncState,
       calendarSyncState:
         workout.calendarSyncState === "user_deleted" ? "user_deleted" : "pending",
+      // Rescheduling an unresolved workout answers "did this run happen?"
+      // with "not yet — it's moving". Without this reset the prompt follows
+      // the workout to its new (possibly future) date, which reads as the app
+      // asking whether a run in the future already happened.
+      ...(workout.completionState === "unresolved" ? { completionState: "scheduled" } : {}),
       updatedAt: now,
     })
     .where(eq(plannedWorkouts.id, workout.id));

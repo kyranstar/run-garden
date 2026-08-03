@@ -204,9 +204,6 @@ deviceRoutes.post("/bridge/sync", requireDevice, async (c) => {
           rangeStart: body.rangeStart,
           rangeEnd: body.rangeEnd,
           source: "bridge",
-          corosWriteAvailable:
-            body.capabilities?.["updateExistingScheduledWorkout"] === true &&
-            prefs.corosWritesEnabled,
         },
         prefs,
       );

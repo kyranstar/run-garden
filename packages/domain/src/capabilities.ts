@@ -10,6 +10,10 @@ export type TrainingProviderCapabilities = {
   addScheduledWorkout: boolean;
   removeScheduledWorkout: boolean;
   verifyWatchSync: boolean;
+  /** Bridge can fetch and forward the COROS strength-exercise catalog.
+   * Optional: bridges built before Plan Studio never send it, and the worker
+   * uses its absence to tell "outdated desktop app" apart from "still syncing". */
+  exerciseCatalog?: boolean;
 };
 
 export const NO_CAPABILITIES: TrainingProviderCapabilities = {
@@ -24,6 +28,7 @@ export const NO_CAPABILITIES: TrainingProviderCapabilities = {
   addScheduledWorkout: false,
   removeScheduledWorkout: false,
   verifyWatchSync: false,
+  exerciseCatalog: false,
 };
 
 /** Can any COROS schedule write path work with these capabilities? */

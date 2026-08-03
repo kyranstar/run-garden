@@ -536,7 +536,6 @@ export async function seedFixtures(db: Db, env: Env, userId: string): Promise<Se
       rangeStart: monday,
       rangeEnd: addDays(monday, 83),
       source: "fixture",
-      corosWriteAvailable: true,
     },
     prefs,
   );

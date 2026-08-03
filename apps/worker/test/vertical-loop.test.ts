@@ -32,7 +32,7 @@ let deviceId: string;
 let provider: FixtureTrainingProvider;
 let baseMonday: string;
 
-async function importFromProvider(corosWriteAvailable = true) {
+async function importFromProvider() {
   const plan = await provider.getCurrentPlan();
   const range = { start: baseMonday, end: addDays(baseMonday, 13) };
   const workouts = await provider.getPlannedWorkouts(range);
@@ -45,7 +45,6 @@ async function importFromProvider(corosWriteAvailable = true) {
       rangeStart: range.start,
       rangeEnd: range.end,
       source: "fixture",
-      corosWriteAvailable,
     },
     prefs,
   );
@@ -82,10 +81,42 @@ describe("plan import", () => {
     expect(again.unchanged).toBeGreaterThan(0);
   });
 
-  it("falls back to calendar-only when writes are unavailable", async () => {
-    await importFromProvider(false);
+  it("heals stale calendar_only/needs_attention rows when a read proves the dates agree", async () => {
+    await importFromProvider();
     const rows = await db.select().from(plannedWorkouts).where(eq(plannedWorkouts.userId, userId));
-    expect(rows.every((w) => w.corosSyncState === "calendar_only")).toBe(true);
+    // Simulate rows stamped before agreement-based sync states existed.
+    await db
+      .update(plannedWorkouts)
+      .set({ corosSyncState: "calendar_only" })
+      .where(eq(plannedWorkouts.id, rows[0]!.id));
+    await db
+      .update(plannedWorkouts)
+      .set({ corosSyncState: "needs_attention" })
+      .where(eq(plannedWorkouts.id, rows[1]!.id));
+
+    await importFromProvider();
+    const healed = await db.select().from(plannedWorkouts).where(eq(plannedWorkouts.userId, userId));
+    expect(healed.every((w) => w.corosSyncState === "synced")).toBe(true);
+  });
+
+  it("does NOT heal a genuinely divergent workout (local move COROS never got)", async () => {
+    await importFromProvider();
+    const w = (
+      await db.select().from(plannedWorkouts).where(eq(plannedWorkouts.title, "Threshold 5x5"))
+    )[0]!;
+    // Local move with writes disabled: effectiveDate diverges from COROS.
+    await applyMove(db, {
+      userId,
+      workoutId: w.id,
+      toDate: addDays(w.effectiveDate, 1),
+      toTime: "07:00",
+      source: "app",
+      corosWritesEnabled: false,
+    });
+    await importFromProvider();
+    const after = (await db.select().from(plannedWorkouts).where(eq(plannedWorkouts.id, w.id)))[0]!;
+    expect(after.corosSyncState).toBe("calendar_only");
+    expect(after.effectiveDate).toBe(addDays(w.effectiveDate, 1));
   });
 });
 
@@ -260,6 +291,53 @@ describe("move → COROS write job → verification", () => {
     expect(after.effectiveDate).toBe(addDays(w.effectiveDate, 2));
     expect(after.lastVerifiedCorosDate).toBe(addDays(w.effectiveDate, 2));
     expect(after.corosSyncState).toBe("synced");
+  });
+
+  it("an upstream reschedule resets an unresolved workout to scheduled (rule 5)", async () => {
+    await importFromProvider();
+    const w = (
+      await db.select().from(plannedWorkouts).where(eq(plannedWorkouts.title, "Threshold 5x5"))
+    )[0]!;
+    // Its date passed unanswered → the app was about to ask "did this happen?".
+    await db
+      .update(plannedWorkouts)
+      .set({ completionState: "unresolved" })
+      .where(eq(plannedWorkouts.id, w.id));
+    // COROS then reschedules it (e.g. the plan shifted) to a future date.
+    await provider.updateScheduledWorkout({
+      sourcePlanId: "800000000000001234",
+      sourceWorkoutId: w.sourceWorkoutId,
+      sourceIdInPlan: w.sourceIdInPlan ?? undefined,
+      fromDate: w.effectiveDate,
+      toDate: addDays(w.effectiveDate, 9),
+      operationId: "external",
+    });
+    await importFromProvider();
+    const after = (await db.select().from(plannedWorkouts).where(eq(plannedWorkouts.id, w.id)))[0]!;
+    // The question no longer applies to a date that hasn't happened yet.
+    expect(after.completionState).toBe("scheduled");
+    expect(after.effectiveDate).toBe(addDays(w.effectiveDate, 9));
+  });
+
+  it("moving an unresolved workout resets it to scheduled", async () => {
+    await importFromProvider();
+    const w = (
+      await db.select().from(plannedWorkouts).where(eq(plannedWorkouts.title, "Threshold 5x5"))
+    )[0]!;
+    await db
+      .update(plannedWorkouts)
+      .set({ completionState: "unresolved" })
+      .where(eq(plannedWorkouts.id, w.id));
+    await applyMove(db, {
+      userId,
+      workoutId: w.id,
+      toDate: addDays(w.effectiveDate, 4),
+      toTime: "07:00",
+      source: "app",
+      corosWritesEnabled: false,
+    });
+    const after = (await db.select().from(plannedWorkouts).where(eq(plannedWorkouts.id, w.id)))[0]!;
+    expect(after.completionState).toBe("scheduled");
   });
 });
 

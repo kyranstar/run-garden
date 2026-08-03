@@ -32,7 +32,14 @@ function parts(date: string): { y: number; m: number; d: number; dow: number } {
 export function formatDayLong(date: string): string {
   const p = parts(date);
   const dows = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"];
-  return `${dows[p.dow]}, ${MONTHS[p.m - 1]} ${p.d}`;
+  const base = `${dows[p.dow]}, ${MONTHS[p.m - 1]} ${p.d}`;
+  // A date in another year must never masquerade as this year's.
+  return p.y === new Date().getFullYear() ? base : `${base}, ${p.y}`;
+}
+
+export function monthTitle(date: string): { month: string; year: number } {
+  const p = parts(date);
+  return { month: MONTHS[p.m - 1]!, year: p.y };
 }
 
 export function formatDayShort(date: string): string {
@@ -70,10 +77,11 @@ const COROS_PILL: Record<CorosSyncState, { label: string; cls: string; icon: Rea
   syncing: { label: "Syncing", cls: "pill-progress", icon: <IconSync />, title: "Sending this change to your COROS watch." },
   waiting_for_device: { label: "Waiting for Mac", cls: "pill-progress", icon: <IconLaptop />, title: "Queued — this will reach your COROS watch when the Mac companion app is running." },
   calendar_only: {
-    label: "Calendar only",
+    label: "Not synced to COROS",
     cls: "pill-neutral",
     icon: <IconCalendarOnly />,
-    title: "This change is in your Google Calendar. Your COROS watch plan isn't updated automatically — move it on the watch yourself.",
+    title:
+      "This date change lives in Run Garden and your Google Calendar only — your COROS watch still has the old date. Enable COROS sync in Settings (or retry) to push it.",
   },
   needs_attention: { label: "Needs attention", cls: "pill-warn", icon: <IconAlert />, title: "COROS and Run Garden disagree on this workout's date." },
 };

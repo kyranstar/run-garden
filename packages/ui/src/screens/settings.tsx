@@ -309,6 +309,39 @@ function DevicesSection() {
   );
 }
 
+function CorosSyncSection({ prefs }: { prefs: UserPreferences }) {
+  const qc = useQueryClient();
+  const toggle = useMutation({
+    mutationFn: (corosWritesEnabled: boolean) => api.updateSettings({ corosWritesEnabled }),
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: ["settings"] });
+      void qc.invalidateQueries({ queryKey: ["plan"] });
+      void qc.invalidateQueries({ queryKey: ["today"] });
+    },
+  });
+  return (
+    <Card title="COROS sync">
+      <div className="switch-row">
+        <div>
+          <strong>Write date changes back to COROS</strong>
+          <p className="faint">
+            When you move a workout here, the desktop app updates your COROS calendar to match
+            (verified after every write). When off, moves only change Run Garden and Google
+            Calendar — workouts you move show “Not synced to COROS”.
+          </p>
+        </div>
+        <button
+          className="btn btn-small"
+          disabled={toggle.isPending}
+          onClick={() => toggle.mutate(!prefs.corosWritesEnabled)}
+        >
+          {prefs.corosWritesEnabled ? "Disable" : "Enable"}
+        </button>
+      </div>
+    </Card>
+  );
+}
+
 function AiSection({ prefs }: { prefs: UserPreferences }) {
   const qc = useQueryClient();
   const settings = useQuery({ queryKey: ["settings"], queryFn: api.settings });
@@ -526,6 +559,7 @@ export function SettingsScreen() {
       <ConnectionsSection />
       <DevicesSection />
       <SchedulingSection prefs={settings.data.prefs} />
+      <CorosSyncSection prefs={settings.data.prefs} />
       <AiSection prefs={settings.data.prefs} />
       <GardenSection />
       <DiagnosticsSection />

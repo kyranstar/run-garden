@@ -596,6 +596,233 @@ button {
   text-decoration: none;
 }
 
+/* ── Plan calendar (almanac grid) ───────────────────────────────────────── */
+
+.cal-month {
+  margin-top: 1.5rem;
+}
+@media (prefers-reduced-motion: no-preference) {
+  .cal-month {
+    animation: cal-in 240ms ease both;
+  }
+}
+@keyframes cal-in {
+  from {
+    opacity: 0;
+    transform: translateY(5px);
+  }
+}
+.cal-month-title {
+  font-family: var(--font-display);
+  font-size: 1.35rem;
+  font-weight: 600;
+  letter-spacing: 0.01em;
+  margin: 0 0 0.55rem;
+}
+.cal-year {
+  color: var(--ink-faint);
+  font-size: 0.95rem;
+  font-weight: 500;
+  margin-left: 0.1rem;
+}
+.cal-weekdays {
+  display: grid;
+  grid-template-columns: repeat(7, minmax(0, 1fr));
+  gap: 6px;
+  margin-bottom: 4px;
+}
+.cal-weekdays span {
+  font-size: 0.64rem;
+  font-weight: 650;
+  letter-spacing: 0.07em;
+  text-transform: uppercase;
+  color: var(--ink-faint);
+  text-align: center;
+}
+.cal-week {
+  display: grid;
+  grid-template-columns: repeat(7, minmax(0, 1fr));
+  gap: 6px;
+  margin-bottom: 6px;
+}
+.cal-week.current .cal-day.has-items {
+  border-color: color-mix(in srgb, var(--green) 28%, var(--border));
+}
+.cal-day {
+  position: relative;
+  min-height: 96px;
+  padding: 0.28rem 0.28rem 0.34rem;
+  background: var(--bg-raised);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  display: flex;
+  flex-direction: column;
+  gap: 0.28rem;
+}
+.cal-day:not(.has-items) {
+  background: transparent;
+  border-style: dashed;
+}
+.cal-day.is-past:not(.has-items) {
+  opacity: 0.55;
+}
+.cal-day.is-today {
+  border-style: solid;
+  border-color: var(--green);
+  background: color-mix(in srgb, var(--green-soft) 45%, var(--bg-raised));
+  box-shadow: var(--shadow);
+}
+.cal-date {
+  display: flex;
+  justify-content: flex-end;
+  align-items: baseline;
+  gap: 0.35rem;
+}
+.cal-dow {
+  display: none;
+}
+.cal-dom {
+  font-size: 0.76rem;
+  font-weight: 650;
+  font-variant-numeric: tabular-nums;
+  color: var(--ink-faint);
+  min-width: 1.55em;
+  line-height: 1.55em;
+  text-align: center;
+}
+.cal-day.is-today .cal-dom {
+  background: var(--green);
+  color: #fff;
+  border-radius: 999px;
+}
+.cal-card {
+  position: relative;
+  display: block;
+  width: 100%;
+  text-align: left;
+  padding: 0.3rem 0.4rem 0.34rem 0.55rem;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  color: inherit;
+  cursor: pointer;
+  overflow: hidden;
+  transition:
+    border-color 120ms ease,
+    transform 120ms ease,
+    box-shadow 120ms ease;
+}
+.cal-card:hover {
+  transform: translateY(-1px);
+  border-color: var(--border-strong);
+  box-shadow: var(--shadow);
+}
+@media (prefers-reduced-motion: reduce) {
+  .cal-card,
+  .cal-card:hover {
+    transition: none;
+    transform: none;
+  }
+}
+.cal-card-edge {
+  position: absolute;
+  left: 0;
+  top: 0;
+  bottom: 0;
+  width: 3px;
+}
+.cal-card-title {
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  overflow: hidden;
+  font-size: 0.78rem;
+  font-weight: 600;
+  line-height: 1.28;
+}
+.cal-card-meta {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 0.3rem;
+  font-size: 0.68rem;
+  color: var(--ink-soft);
+  margin-top: 0.16rem;
+  font-variant-numeric: tabular-nums;
+}
+.cal-glyph {
+  display: inline-flex;
+  align-items: center;
+}
+.cal-glyph.ok {
+  color: var(--green);
+}
+.cal-glyph.ask,
+.cal-glyph.warn {
+  color: var(--warn);
+}
+.cal-note {
+  font-style: italic;
+  color: var(--ink-faint);
+}
+.cal-card.done {
+  background: color-mix(in srgb, var(--green-soft) 55%, var(--bg-raised));
+  border-color: color-mix(in srgb, var(--green) 22%, var(--border));
+}
+.cal-card.faded {
+  opacity: 0.62;
+}
+.cal-card.asks {
+  border-color: color-mix(in srgb, var(--warn) 45%, var(--border));
+}
+.cal-rest {
+  background: transparent;
+  border-style: dashed;
+  color: var(--ink-faint);
+}
+.cal-rest .cal-card-title {
+  font-weight: 500;
+  font-style: italic;
+  font-size: 0.74rem;
+}
+
+/* Narrow screens: the grid folds into an agenda — empty days disappear,
+   each remaining day carries its weekday label inline. */
+@media (max-width: 640px) {
+  .cal-weekdays {
+    display: none;
+  }
+  .cal-week {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    margin-bottom: 0;
+  }
+  .cal-week + .cal-week {
+    margin-top: 6px;
+  }
+  .cal-day {
+    min-height: 0;
+  }
+  .cal-day:not(.has-items):not(.is-today) {
+    display: none;
+  }
+  .cal-date {
+    justify-content: flex-start;
+  }
+  .cal-dow {
+    display: inline;
+    font-size: 0.66rem;
+    font-weight: 650;
+    letter-spacing: 0.07em;
+    text-transform: uppercase;
+    color: var(--ink-faint);
+  }
+  .cal-day.is-today .cal-dom {
+    padding: 0 0.45em;
+  }
+}
+
 /* ── Garden ─────────────────────────────────────────────────────────────── */
 
 .garden-scene-wrap {

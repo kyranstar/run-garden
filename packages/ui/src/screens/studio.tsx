@@ -130,8 +130,16 @@ function studioErrorCopy(err: unknown, llm: StudioLlmStatusDto): string {
       return `Weekly AI budget reached ($${llm.spentDollars.toFixed(2)} of $${llm.cutoffDollars.toFixed(0)}) — generation is paused until the rolling week clears.`;
     case "output_truncated":
       return "The plan was too large to generate — try fewer weeks or sessions per week.";
-    case "catalog_not_synced":
-      return "Open the desktop app to sync your exercise catalog first.";
+    case "catalog_not_synced": {
+      const reason = (err.body as { reason?: string } | null)?.reason;
+      if (reason === "bridge_outdated") {
+        return "Your desktop app is running an older build that can't sync the exercise catalog — update the desktop app, then leave it open for a minute.";
+      }
+      if (reason === "syncing") {
+        return "Your Mac is connected and the exercise catalog is on its way — try again in a minute.";
+      }
+      return "Open the desktop app on your Mac so it can sync your exercise catalog, then try again.";
+    }
     case "invalid_output":
       return "The AI produced an invalid plan — try again, or adjust your request.";
     case "no_api_key":

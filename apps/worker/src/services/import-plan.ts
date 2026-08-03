@@ -32,7 +32,6 @@ export interface ImportInput {
   rangeStart: string;
   rangeEnd: string;
   source: "bridge" | "fixture" | "official";
-  corosWriteAvailable: boolean;
 }
 
 export interface ImportStats {
@@ -200,7 +199,10 @@ export async function importPlanSnapshot(
         expectedDistanceMeters: src.estimatedDistanceMeters ?? null,
         stageSummary: stageSummary ?? null,
         calendarSyncState: category === "rest" ? "not_created" : "pending",
-        corosSyncState: input.corosWriteAvailable ? "synced" : "calendar_only",
+        // We just read this workout's date FROM COROS, so by construction the
+        // two sides agree. `calendar_only` is reserved for a local date change
+        // that couldn't be written back — never for freshly imported rows.
+        corosSyncState: "synced",
         completionState: "scheduled",
         createdAt: now,
         updatedAt: now,
@@ -250,11 +252,27 @@ export async function importPlanSnapshot(
         updates.originalPlanDate = current.originalPlanDate; // history preserved
         updates.calendarSyncState =
           current.calendarSyncState === "user_deleted" ? "user_deleted" : "pending";
+        // Both sides agree on the new date now.
+        updates.corosSyncState = "synced";
+        // A workout we were about to ask "did this run happen?" about has been
+        // rescheduled upstream — the question no longer applies to the new
+        // date. Reconcile will re-ask if the new date also passes unanswered.
+        if (current.completionState === "unresolved") updates.completionState = "scheduled";
         stats.updatedDates += 1;
         touched = true;
       }
     } else if (pendingJob && corosDate === pendingJob.originalDate) {
       // Still waiting for the move to land; nothing to change.
+    } else if (
+      !pendingJob &&
+      current.effectiveDate === corosDate &&
+      (current.corosSyncState === "calendar_only" || current.corosSyncState === "needs_attention")
+    ) {
+      // Healing: COROS and Run Garden agree on the date (verified by this very
+      // read), so whatever left the row flagged — an import made while writes
+      // were unavailable, a resolved conflict — is provably over.
+      updates.corosSyncState = "synced";
+      touched = true;
     }
 
     if (src.contentFingerprint !== current.sourceContentFingerprint) {

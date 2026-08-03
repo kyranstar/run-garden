@@ -67,6 +67,7 @@ export const COROS_BRIDGE_CAPABILITIES: TrainingProviderCapabilities = {
   addScheduledWorkout: true,
   removeScheduledWorkout: true,
   verifyWatchSync: false, // no server-side watch push exists
+  exerciseCatalog: true,
 };
 
 /** Raw envelope status of a schedule write; the executor branches on `result`. */
