@@ -447,7 +447,7 @@ async function chatCompletion(
   // dropped connections). Deterministic failures are returned immediately:
   // a non-retryable 4xx won't change on a resend, and our own timeout abort
   // has already spent the full patience budget.
-  const RETRYABLE_STATUSES = new Set([408, 429, 500, 502, 503, 504, 529]);
+  const RETRYABLE_STATUSES = new Set([408, 429, 500, 502, 503, 504, 520, 522, 524, 529]);
   let lastFailure: { ok: false; reason: string } = { ok: false, reason: "llm_error" };
   for (let attempt = 0; attempt < 2; attempt++) {
     if (attempt > 0) await new Promise((resolve) => setTimeout(resolve, RETRY_BACKOFF_MS));
@@ -467,6 +467,13 @@ async function chatCompletion(
             model,
             max_tokens: maxTokens,
             messages,
+            // Streaming is load-bearing, not cosmetic: a buffered completion
+            // must finish inside the gateway's own response window, and a
+            // large plan on an Opus-5-class model takes minutes — the
+            // non-streaming form was live-verified to die as a gateway 524.
+            // With SSE the bytes flow as they're generated, nothing times
+            // out, and this worker just assembles the full text below.
+            stream: true,
             // No response_format: the Vercel AI Gateway's chat-completions
             // surface only supports json_schema / legacy json — the OpenAI
             // json_object mode is rejected with a 400 (live-verified: both
@@ -499,6 +506,71 @@ async function chatCompletion(
         if (RETRYABLE_STATUSES.has(response.status)) continue;
         return lastFailure;
       }
+      const contentType = response.headers.get("content-type") ?? "";
+      if (contentType.includes("text/event-stream") && response.body) {
+        // SSE accumulation. `data:` lines carry OpenAI-compatible chunk
+        // objects; content arrives as choices[0].delta.content pieces and
+        // finish_reason/usage ride the final chunks. The AbortController
+        // above still bounds the whole read.
+        let content = "";
+        let finishReason: string | undefined;
+        let inputTokens = 0;
+        let outputTokens = 0;
+        try {
+          const reader = response.body.getReader();
+          const decoder = new TextDecoder();
+          let buffered = "";
+          for (;;) {
+            const { done, value } = await reader.read();
+            if (done) break;
+            buffered += decoder.decode(value, { stream: true });
+            let newline: number;
+            while ((newline = buffered.indexOf("\n")) >= 0) {
+              const line = buffered.slice(0, newline).trim();
+              buffered = buffered.slice(newline + 1);
+              if (!line.startsWith("data:")) continue;
+              const data = line.slice(5).trim();
+              if (data === "[DONE]") continue;
+              let chunk: {
+                choices?: Array<{ delta?: { content?: string }; finish_reason?: string | null }>;
+                usage?: { prompt_tokens?: number; completion_tokens?: number };
+              };
+              try {
+                chunk = JSON.parse(data) as typeof chunk;
+              } catch {
+                continue; // partial or non-JSON keepalive line
+              }
+              const choice = chunk.choices?.[0];
+              if (choice?.delta?.content) content += choice.delta.content;
+              if (choice?.finish_reason) finishReason = choice.finish_reason;
+              if (chunk.usage) {
+                inputTokens = chunk.usage.prompt_tokens ?? inputTokens;
+                outputTokens = chunk.usage.completion_tokens ?? outputTokens;
+              }
+            }
+          }
+        } catch {
+          // Stream died mid-read (network blip or our timeout abort).
+          lastFailure = { ok: false, reason: "llm_error" };
+          if (controller.signal.aborted) return lastFailure;
+          continue;
+        }
+        if (content.length === 0) {
+          lastFailure = { ok: false, reason: "gateway_bad_response" };
+          continue;
+        }
+        // Budget accounting must never be the thing that breaks a working
+        // generation: if the stream carried no usage chunk, over-estimate
+        // at ~4 chars/token so the rolling cutoff still sees real spend.
+        if (outputTokens === 0) outputTokens = Math.ceil(content.length / 4);
+        if (inputTokens === 0) {
+          inputTokens = Math.ceil(messages.reduce((n, m) => n + m.content.length, 0) / 4);
+        }
+        return { ok: true, content, inputTokens, outputTokens, truncated: finishReason === "length" };
+      }
+
+      // Non-streaming JSON body — kept as a fallback in case the gateway
+      // ever answers a stream request with a plain completion.
       const body = (await response.json().catch(() => null)) as {
         choices?: Array<{ message?: { content?: string }; finish_reason?: string }>;
         usage?: { prompt_tokens?: number; completion_tokens?: number };

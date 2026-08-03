@@ -690,6 +690,45 @@ describe("generatePlan — success, prompts, and usage rows", () => {
     expect(result.plan).not.toBeNull();
     expect(calls).toHaveLength(2);
   });
+
+  it("assembles a plan from an SSE stream (the wire format the gateway actually sends)", async () => {
+    const env = makeEnv();
+    const json = JSON.stringify(VALID_GENERATED_PLAN);
+    // Split the plan JSON across several delta chunks, then finish with
+    // usage — the shape of an OpenAI-compatible streaming response.
+    const mid = Math.floor(json.length / 2);
+    const sse =
+      `data: ${JSON.stringify({ choices: [{ delta: { content: json.slice(0, mid) } }] })}\n\n` +
+      `data: ${JSON.stringify({ choices: [{ delta: { content: json.slice(mid) } }] })}\n\n` +
+      `data: ${JSON.stringify({ choices: [{ delta: {}, finish_reason: "stop" }], usage: { prompt_tokens: 500, completion_tokens: 900 } })}\n\n` +
+      "data: [DONE]\n\n";
+    const calls: Array<{ body: Record<string, unknown> }> = [];
+    const fetchImpl = (async (_input: RequestInfo | URL, init?: RequestInit) => {
+      calls.push({ body: JSON.parse(init?.body as string) as Record<string, unknown> });
+      return new Response(sse, { status: 200, headers: { "content-type": "text/event-stream" } });
+    }) as typeof fetch;
+
+    const result = await generatePlan(env, db, userId, brief(), CATALOG, fetchImpl);
+
+    expect(result.plan).not.toBeNull();
+    expect(calls[0]!.body.stream).toBe(true);
+    const rows = await db.select().from(llmUsage);
+    expect(rows[0]).toMatchObject({ inputTokens: 500, outputTokens: 900 });
+  });
+
+  it("reports output_truncated when an SSE stream ends with finish_reason length", async () => {
+    const env = makeEnv();
+    const sse =
+      `data: ${JSON.stringify({ choices: [{ delta: { content: '{"name": "cut off' } }] })}\n\n` +
+      `data: ${JSON.stringify({ choices: [{ delta: {}, finish_reason: "length" }] })}\n\n` +
+      "data: [DONE]\n\n";
+    const fetchImpl = (async () =>
+      new Response(sse, { status: 200, headers: { "content-type": "text/event-stream" } })) as typeof fetch;
+
+    const result = await generatePlan(env, db, userId, brief(), CATALOG, fetchImpl);
+
+    expect(result).toEqual({ plan: null, reason: "output_truncated" });
+  });
 });
 
 // ─────────────────────────────────────────────────────────────────────────
