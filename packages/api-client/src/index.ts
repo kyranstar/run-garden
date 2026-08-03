@@ -211,7 +211,11 @@ export interface StudioPushRowDto {
   id: string;
   happenDay: string;
   sessionTitle: string;
-  status: "pending" | "verified" | "failed" | "deleted";
+  /** `adopted` (sync-transparency Task 7): a genuine external edit/move/removal
+   * on COROS was detected; the studio stepped back from managing this session
+   * (`error` is always `null` in this state) until undone via
+   * `studioUndoAdoption`/`undoSyncNote`. */
+  status: "pending" | "verified" | "failed" | "deleted" | "adopted";
   error: string | null;
   corosHappenDay: string | null;
 }
@@ -334,6 +338,26 @@ export interface ReadNowResponse {
   lastCorosReadAt: string | null;
 }
 
+/** Response from `POST /api/studio/adoption/:pushId/undo` — mirrors the
+ * worker's own `PushSummary` (apps/worker/src/services/studio-push.ts), which
+ * is a distinct, lighter shape than `StudioPushSummaryDto` above (no
+ * `planVersion`; carries its own `error` for the rare `plan_not_found` /
+ * `invalid_plan` re-push failure). A 404/409 (not_found /
+ * undo_unsupported_rename) throws `ApiError` instead of reaching this shape. */
+export interface StudioAdoptionUndoResponse {
+  ok: boolean;
+  summary: {
+    ok: boolean;
+    error?: "plan_not_found" | "invalid_plan";
+    creates: number;
+    deletes: number;
+    failures: number;
+    unchanged: number;
+    drifted: number;
+    blocked: number;
+  };
+}
+
 // ── Endpoints ────────────────────────────────────────────────────────────────
 
 export const api = {
@@ -391,6 +415,8 @@ export const api = {
   studioPush: () => post<StudioPushResponse>("/api/studio/push"),
   studioPushRetry: (happenDay: string) =>
     post<StudioPushResponse>("/api/studio/push/retry", { happenDay }),
+  studioUndoAdoption: (pushId: string) =>
+    post<StudioAdoptionUndoResponse>(`/api/studio/adoption/${pushId}/undo`),
   studioHistory: () => get<{ plans: StudioHistoryEntryDto[] }>("/api/studio/history"),
   syncStatus: () => get<SyncStatusDto>("/api/sync/status"),
   syncNotes: () => get<{ notes: SyncNoteDto[] }>("/api/sync/notes"),

@@ -1211,6 +1211,13 @@ button {
   background: var(--accent-soft);
   color: var(--accent);
 }
+.sync-note {
+  padding: 0.5rem 0.7rem;
+  border-radius: var(--radius-sm);
+  background: var(--bg-sunken);
+  border: 1px solid var(--border);
+  font-size: 0.85rem;
+}
 .empty {
   text-align: center;
   padding: 2.2rem 1rem;

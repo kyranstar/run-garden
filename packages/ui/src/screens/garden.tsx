@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { Link } from "react-router-dom";
 import { useQuery } from "@tanstack/react-query";
 import { api, type DisciplineBalance } from "@rg/api-client";
@@ -20,7 +20,7 @@ import {
   Sheet,
   Spinner,
 } from "../components.js";
-import { EvidenceCard, NextWorkout, Readiness, SyncStatusLine, UnresolvedCard } from "./today.js";
+import { EvidenceCard, NextWorkout, Readiness, SyncPanel, UnresolvedCard } from "./today.js";
 import {
   NextUnlockNudges,
   SpeciesCodex,
@@ -264,6 +264,14 @@ export function GardenScreen() {
   const reducedMotion = usePrefersReducedMotion();
   const hourOfDay = new Date().getHours() + new Date().getMinutes() / 60;
 
+  // App-open freshness: this is the actual "/" landing screen (Today's
+  // content lives here — see the garden-lower section below), so this is
+  // where a mount-time COROS read nudge belongs. Server-deduped, errors
+  // ignored, safe on every mount.
+  useEffect(() => {
+    void api.readNow().catch(() => undefined);
+  }, []);
+
   if (garden.isLoading) return <Spinner label="Loading the garden" />;
   if (!garden.data) return <EmptyState title="Couldn't load the garden" />;
 
@@ -362,9 +370,11 @@ export function GardenScreen() {
         </EmptyState>
       ) : null}
       {d ? (
-        <div aria-live="polite">
-          <SyncStatusLine sync={d.sync} />
-        </div>
+        d.sync.calendarConnected ? (
+          <SyncPanel />
+        ) : (
+          <Banner kind="info">Your training plan is safe, but Calendar mirroring is paused.</Banner>
+        )
       ) : null}
       {d?.sync.stravaStatus === "error" ? (
         <Banner kind="info">

@@ -1,7 +1,7 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { Link } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { api, type TodayResponse, type WorkoutDto } from "@rg/api-client";
+import { api, ApiError, type TodayResponse, type WorkoutDto } from "@rg/api-client";
 import { GARDEN_CONDITION_LABELS } from "@rg/domain";
 import {
   Banner,
@@ -17,36 +17,81 @@ import {
   formatTime,
   relativeDay,
   Spinner,
+  SyncNotesStack,
+  SyncStatusLine,
 } from "../components.js";
 import { MoveSheet } from "./move-sheet.js";
 import { MatchSheet } from "./match-sheet.js";
 
-export function SyncStatusLine({ sync }: { sync: TodayResponse["sync"] }) {
-  if (!sync.calendarConnected) {
-    return <Banner kind="info">Your training plan is safe, but Calendar mirroring is paused.</Banner>;
-  }
-  if (sync.pendingCorosJobs > 0 && !sync.deviceOnline) {
-    return (
-      <p className="muted">
-        Calendar updated · Waiting for Mac to update COROS ({sync.pendingCorosJobs} pending).
-      </p>
-    );
-  }
-  if (sync.pendingCorosJobs > 0) {
-    return <p className="muted">Calendar updated · Syncing {sync.pendingCorosJobs} change{sync.pendingCorosJobs > 1 ? "s" : ""} to COROS.</p>;
-  }
-  if (!sync.deviceRegistered || !sync.corosWritesEnabled) {
-    return (
-      <p
-        className="muted"
-        title="Run Garden mirrors your plan to Google Calendar. It isn't auto-updating your COROS watch — you'd move workouts on the watch yourself."
-      >
-        Your Google Calendar is synced. Reschedules stay in Calendar — your COROS watch isn't updated
-        automatically.
-      </p>
-    );
-  }
-  return <p className="muted">Calendar and COROS are synced.</p>;
+/**
+ * Shared sync status + notes (sync-transparency Task 12) — mounted once per
+ * screen (Today, Garden, Plan, Studio) so the account's sync state boils
+ * down to one line + one dismissible notes feed everywhere, backed by
+ * `GET /api/sync/status` and `GET /api/sync/notes` rather than each screen's
+ * own read of the legacy `TodayResponse.sync` shape.
+ */
+export function SyncPanel() {
+  const qc = useQueryClient();
+  const status = useQuery({ queryKey: ["sync-status"], queryFn: api.syncStatus, refetchInterval: 30_000 });
+  const notes = useQuery({ queryKey: ["sync-notes"], queryFn: api.syncNotes, refetchInterval: 30_000 });
+  const [undoErrors, setUndoErrors] = useState<Record<string, string>>({});
+
+  const invalidateAfterUndo = () => {
+    void qc.invalidateQueries({ queryKey: ["sync-status"] });
+    void qc.invalidateQueries({ queryKey: ["sync-notes"] });
+    void qc.invalidateQueries({ queryKey: ["today"] });
+    void qc.invalidateQueries({ queryKey: ["plan"] });
+    void qc.invalidateQueries({ queryKey: ["studio"] });
+  };
+
+  const retry = useMutation({
+    mutationFn: api.readNow,
+    onSuccess: () => void qc.invalidateQueries({ queryKey: ["sync-status"] }),
+  });
+  const dismiss = useMutation({
+    mutationFn: (id: string) => api.dismissSyncNote(id),
+    onSuccess: () => void qc.invalidateQueries({ queryKey: ["sync-notes"] }),
+  });
+  const undo = useMutation({
+    mutationFn: (id: string) => api.undoSyncNote(id),
+    onSuccess: (_data, id) => {
+      setUndoErrors((e) => {
+        if (!(id in e)) return e;
+        const next = { ...e };
+        delete next[id];
+        return next;
+      });
+      invalidateAfterUndo();
+    },
+    onError: (err: unknown, id: string) => {
+      // adopted_coros_edit/removal notes forward to the same studio-adoption
+      // undo the Studio screen's per-row button uses — a renamed-on-COROS row
+      // 409s the same way there (studio.tsx's `undoAdoption` mutation).
+      const code = err instanceof ApiError ? (err.body as { error?: string } | null)?.error : undefined;
+      setUndoErrors((e) => ({
+        ...e,
+        [id]:
+          code === "undo_unsupported_rename"
+            ? "Renamed on COROS — delete it there to re-push."
+            : "Couldn't undo — try again.",
+      }));
+    },
+  });
+
+  if (!status.data) return null;
+
+  return (
+    <div className="stack" style={{ gap: "0.5rem" }} aria-live="polite">
+      <SyncStatusLine status={status.data} onRetry={() => retry.mutate()} />
+      <SyncNotesStack
+        notes={notes.data?.notes ?? []}
+        onDismiss={(id) => dismiss.mutate(id)}
+        onUndo={(id) => undo.mutate(id)}
+        undoPendingId={undo.isPending ? undo.variables : null}
+        undoErrors={undoErrors}
+      />
+    </div>
+  );
 }
 
 export function NextWorkout({ w, today }: { w: WorkoutDto; today: string }) {
@@ -56,6 +101,9 @@ export function NextWorkout({ w, today }: { w: WorkoutDto; today: string }) {
     mutationFn: () => api.retryCoros(w.id),
     onSuccess: () => void qc.invalidateQueries({ queryKey: ["today"] }),
   });
+  // Derived view (sync-transparency Task 10) takes precedence; the stored
+  // legacy column is the fallback for any DTO that hasn't opted into it.
+  const syncView = w.corosSyncView ?? w.corosSyncState;
 
   if (w.category === "rest") {
     return (
@@ -74,7 +122,7 @@ export function NextWorkout({ w, today }: { w: WorkoutDto; today: string }) {
       <div className="row" style={{ marginBottom: "0.2rem" }}>
         <CategoryDot category={w.category} />
         <span className="faint">{CATEGORY_LABELS[w.category] ?? w.category}</span>
-        <CorosPill state={w.corosSyncState} hideWhenHealthy />
+        <CorosPill state={syncView} hideWhenHealthy />
       </div>
       <h2 className="hero-title">{w.title}</h2>
       <p className="hero-when">
@@ -98,7 +146,7 @@ export function NextWorkout({ w, today }: { w: WorkoutDto; today: string }) {
         <button className="btn" onClick={() => setMoving(true)}>
           Move
         </button>
-        {w.corosSyncState === "needs_attention" || w.corosSyncState === "calendar_only" ? (
+        {syncView === "needs_attention" || syncView === "calendar_only" || syncView === "sync_issue" ? (
           <button className="btn" disabled={retry.isPending} onClick={() => retry.mutate()}>
             Sync to COROS
           </button>
@@ -241,6 +289,14 @@ function GardenPreview({ garden }: { garden: NonNullable<TodayResponse["garden"]
 export function TodayScreen() {
   const today = useQuery({ queryKey: ["today"], queryFn: api.today, refetchInterval: 60_000 });
 
+  // App-open freshness: nudge a COROS read the moment this screen mounts, so
+  // today's plan is maximally current. Server-side deduped (a recent-enough
+  // successful read, or one already in flight, both short-circuit to a
+  // no-op) — safe to fire on every mount, errors ignored.
+  useEffect(() => {
+    void api.readNow().catch(() => undefined);
+  }, []);
+
   if (today.isLoading) return <Spinner label="Loading today" />;
   if (today.isError || !today.data) {
     return (
@@ -261,9 +317,11 @@ export function TodayScreen() {
           Start a plan in COROS, then refresh from the desktop app.
         </EmptyState>
       )}
-      <div aria-live="polite">
-        <SyncStatusLine sync={d.sync} />
-      </div>
+      {d.sync.calendarConnected ? (
+        <SyncPanel />
+      ) : (
+        <Banner kind="info">Your training plan is safe, but Calendar mirroring is paused.</Banner>
+      )}
       {d.sync.stravaStatus === "error" ? (
         <Banner kind="info">
           Strava access has stopped (its subscription may have lapsed). Completed runs still sync

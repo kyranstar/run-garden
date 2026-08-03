@@ -380,11 +380,24 @@ function AiSection({ prefs }: { prefs: UserPreferences }) {
 }
 
 function DiagnosticsSection() {
+  const qc = useQueryClient();
   const [open, setOpen] = useState(false);
   const diagnostics = useQuery({
     queryKey: ["diagnostics"],
     queryFn: api.diagnostics,
     enabled: open,
+  });
+  const syncStatus = useQuery({
+    queryKey: ["sync-status"],
+    queryFn: api.syncStatus,
+    enabled: open,
+  });
+  const syncNow = useMutation({
+    mutationFn: api.readNow,
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: ["sync-status"] });
+      void qc.invalidateQueries({ queryKey: ["diagnostics"] });
+    },
   });
 
   const download = () => {
@@ -408,7 +421,15 @@ function DiagnosticsSection() {
       ) : diagnostics.data ? (
         <div className="stack">
           <DiagRows data={diagnostics.data} />
+          {syncStatus.data?.lastCorosReadAt ? (
+            <p className="muted" style={{ fontSize: "0.85rem" }}>
+              Last successful COROS read: {new Date(syncStatus.data.lastCorosReadAt).toLocaleString()}
+            </p>
+          ) : null}
           <div className="btn-row">
+            <button className="btn btn-small" disabled={syncNow.isPending} onClick={() => syncNow.mutate()}>
+              {syncNow.isPending ? "Syncing…" : "Sync now"}
+            </button>
             <button className="btn btn-small" onClick={download}>
               Download sanitized JSON
             </button>

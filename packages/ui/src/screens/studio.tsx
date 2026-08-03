@@ -452,10 +452,16 @@ function PushRowStatus({
   row,
   onRetry,
   retrying,
+  onUndo,
+  undoing,
+  undoError,
 }: {
   row: StudioPushRowDto | null;
   onRetry: (happenDay: string) => void;
   retrying: boolean;
+  onUndo: (pushId: string) => void;
+  undoing: boolean;
+  undoError: string | null;
 }) {
   if (!row) return null; // never pushed — the diff strip already counts it as "new"
 
@@ -476,31 +482,26 @@ function PushRowStatus({
   if (row.status === "deleted") {
     return <span className="pill pill-neutral">Removed from COROS</span>;
   }
-
-  // status === "failed" from here down.
-  if (row.error === "changed_on_coros") {
-    // Launch requirement b: no forget/re-adopt endpoint exists on the worker
-    // yet (confirmed against apps/worker/src/routes/studio.ts — only
-    // GET / , /generate, /edit, /push, /push/retry). Shipping the affordance
-    // disabled with honest copy rather than inventing a route. Also: retrying
-    // this row is a no-op server-side (pushStudioPlan's `untouchable` set
-    // treats any changed_on_coros row as blocked regardless), so no retry
-    // button is offered here — it would look actionable but do nothing.
+  if (row.status === "adopted") {
+    // A genuine external edit/move/removal on COROS (sync-transparency Task
+    // 7/12) — a fact, not a failure, so no red pill and no retry: the studio
+    // just stepped back from managing this session until undone. Undo
+    // forwards to `POST /api/studio/adoption/:pushId/undo`; a 409
+    // (`undo_unsupported_rename`) means the session's stamp is gone on
+    // COROS too, so there's nothing here that can prove a delete is ours —
+    // the fix is deleting it on COROS, not retrying here.
     return (
       <div className="stack" style={{ gap: "0.3rem" }}>
-        <span className="pill pill-warn">
-          <IconAlert /> Changed outside the studio
-        </span>
-        <button className="btn btn-small" disabled>
-          Forget / re-adopt
+        <span className="pill pill-neutral">Edited on COROS</span>
+        <button className="btn btn-small" disabled={undoing} onClick={() => onUndo(row.id)}>
+          {undoing ? "Undoing…" : "Undo"}
         </button>
-        <span className="faint">
-          Coming soon — this session changed outside the studio and is no longer managed.
-        </span>
+        {undoError ? <span className="faint">{undoError}</span> : null}
       </div>
     );
   }
 
+  // status === "failed" from here down.
   // The trimmed DTO only exposes `corosHappenDay`, not the raw COROS address
   // fields — that's the one signal available to distinguish "still really on
   // the calendar somewhere" from "never made it" for a failed row.
@@ -524,12 +525,18 @@ function SessionCard({
   row,
   onRetry,
   retrying,
+  onUndo,
+  undoing,
+  undoError,
 }: {
   session: StudioSession;
   happenDay: string;
   row: StudioPushRowDto | null;
   onRetry: (happenDay: string) => void;
   retrying: boolean;
+  onUndo: (pushId: string) => void;
+  undoing: boolean;
+  undoError: string | null;
 }) {
   return (
     <div className="studio-session">
@@ -550,7 +557,14 @@ function SessionCard({
         ))}
       </ul>
       <div className="studio-session-status">
-        <PushRowStatus row={row} onRetry={onRetry} retrying={retrying} />
+        <PushRowStatus
+          row={row}
+          onRetry={onRetry}
+          retrying={retrying}
+          onUndo={onUndo}
+          undoing={undoing}
+          undoError={undoError}
+        />
       </div>
     </div>
   );
@@ -793,6 +807,35 @@ function StudioDraft({
     onError: (err: unknown) => setPushError(studioErrorCopy(err, studio.llm)),
   });
 
+  // Per-row undo for `adopted` sessions (sync-transparency Task 12) — a
+  // separate mutation from `retry` (different endpoint, different row
+  // states), one shared instance across every row like `retry` already is:
+  // only one undo can plausibly be in flight from a user's own clicking.
+  const [undoErrors, setUndoErrors] = useState<Record<string, string>>({});
+  const undoAdoption = useMutation({
+    mutationFn: (pushId: string) => api.studioUndoAdoption(pushId),
+    onSuccess: (_data, pushId) => {
+      setUndoErrors((e) => {
+        if (!(pushId in e)) return e;
+        const next = { ...e };
+        delete next[pushId];
+        return next;
+      });
+      setPushError(null);
+      void qc.invalidateQueries({ queryKey: ["studio"] });
+    },
+    onError: (err: unknown, pushId: string) => {
+      const code = err instanceof ApiError ? (err.body as { error?: string } | null)?.error : undefined;
+      setUndoErrors((e) => ({
+        ...e,
+        [pushId]:
+          code === "undo_unsupported_rename"
+            ? "Renamed on COROS — delete it there to re-push."
+            : "Couldn't undo — try again.",
+      }));
+    },
+  });
+
   const today = localTodayGuess();
   const phase = studioPhase(studio, today);
   const liveRows = studio.pushes.filter((p) => p.status !== "deleted");
@@ -875,16 +918,22 @@ function StudioDraft({
               {wk.sessions.length === 0 ? (
                 <p className="muted">No sessions this week.</p>
               ) : (
-                wk.sessions.map(({ session, happenDay }, i) => (
-                  <SessionCard
-                    key={`${wk.weekIndex}-${i}`}
-                    session={session}
-                    happenDay={happenDay}
-                    row={pushByDay.get(happenDay) ?? null}
-                    onRetry={(d) => retry.mutate(d)}
-                    retrying={retry.isPending}
-                  />
-                ))
+                wk.sessions.map(({ session, happenDay }, i) => {
+                  const row = pushByDay.get(happenDay) ?? null;
+                  return (
+                    <SessionCard
+                      key={`${wk.weekIndex}-${i}`}
+                      session={session}
+                      happenDay={happenDay}
+                      row={row}
+                      onRetry={(d) => retry.mutate(d)}
+                      retrying={retry.isPending}
+                      onUndo={(id) => undoAdoption.mutate(id)}
+                      undoing={undoAdoption.isPending && undoAdoption.variables === row?.id}
+                      undoError={row ? (undoErrors[row.id] ?? null) : null}
+                    />
+                  );
+                })
               )}
             </div>
           ))
@@ -961,6 +1010,12 @@ function StudioBody({ studio }: { studio: StudioStateResponse }) {
   };
   return (
     <div className="studio-content stack">
+      {/* No separate `<SyncPanel />` here: `StudioSection` only ever mounts
+          inside `PlanScreen` (never standalone), which already renders the
+          shared status line + notes feed above it — a second copy here would
+          just duplicate it whenever this panel is expanded. BridgeStatusLine
+          keeps its own narrower stuck-jobs warning, which needs facts
+          (`pendingJobs`/`inFlight`) `SyncStatusDto` doesn't carry. */}
       <BridgeStatusLine bridge={studio.bridge} />
       {!studio.plan || showIntake ? (
         <>
