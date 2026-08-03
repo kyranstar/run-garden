@@ -21,7 +21,7 @@ import type { Db } from "./db.js";
  * Structurally mirrors `llm.ts`: same Vercel AI Gateway transport, budget
  * gate BEFORE any call (reusing `llmBudgetStatus`/`LLM_BUDGET` from llm.ts —
  * literally the same thresholds, not a re-declared copy), the same
- * `llm_usage` row shape, a 20s AbortController timeout, and never-throws
+ * `llm_usage` row shape, a generous AbortController timeout, and never-throws
  * graceful degradation (every exported function's body is one big try/catch
  * that turns any escaping error into `{plan: null, reason: "llm_error"}`).
  *
@@ -49,10 +49,13 @@ const DEFAULT_MODEL_STRONG = "anthropic/claude-opus-5";
 const DEFAULT_MODEL_EDIT = "anthropic/claude-haiku-4.5";
 const DEFAULT_GATEWAY = "https://ai-gateway.vercel.sh/v1";
 // Opus-5-class models think adaptively before answering (uncontrollable on
-// the gateway's chat-completions surface), so a multi-thousand-token plan
-// takes well over the 20s this originally allowed. Workers place no wall
-// clock limit on awaited subrequests while the client stays connected.
-const TIMEOUT_MS = 120_000;
+// the gateway's chat-completions surface), so a large plan can legitimately
+// take minutes. Never cut off a generation that is still making progress:
+// Workers place no wall-clock limit on awaited subrequests while the client
+// stays connected, and the browser fetch has no default timeout either.
+const TIMEOUT_MS = 300_000;
+// Pause before the single transient-failure retry in chatCompletion.
+const RETRY_BACKOFF_MS = 1500;
 
 // Cost-estimate constants, same "safe over-estimate, the rolling budget caps
 // the worst case regardless" reasoning as llm.ts's own. Opus-5-class pricing
@@ -64,32 +67,20 @@ const STRONG_OUTPUT_MICROS_PER_TOKEN = 25;
 const EDIT_INPUT_MICROS_PER_TOKEN = 1;
 const EDIT_OUTPUT_MICROS_PER_TOKEN = 5;
 
-// A full plan's JSON size scales with how much of it there is — a fixed
-// ceiling either truncates realistic multi-week/multi-session plans or wastes
-// budget on tiny ones. Found under-provisioned in review (a flat 8000-token
-// cap truncates realistic plans well before 16 weeks). Scaled instead:
-// ~160 tokens/session (a session's JSON: title, weekday, several exercises)
-// plus a 2000-token base for the wrapper/brief/whitespace, clamped to a floor
-// that covers even a 1-session plan's model overhead and a ceiling that
-// bounds worst-case cost regardless of how large durationWeeks×sessionsPerWeek
-// gets — at the strong tier's $25/1M output price, 24000 tokens is ≤$0.60 per
-// generation, trivial next to the $8 rolling cutoff.
-const GENERATE_TOKENS_BASE = 2000;
-const GENERATE_TOKENS_PER_SESSION = 160;
-const GENERATE_TOKENS_MIN = 4000;
-const GENERATE_TOKENS_MAX = 24000;
-
-/** Used by both generatePlan and editPlan's major (full-regenerate) path — the
- * session count of the plan being produced is what actually predicts its
- * JSON size, not a fixed constant. */
-function computeGenerateMaxTokens(durationWeeks: number, sessionsPerWeek: number): number {
-  const estimate = GENERATE_TOKENS_BASE + durationWeeks * sessionsPerWeek * GENERATE_TOKENS_PER_SESSION;
-  return Math.min(Math.max(estimate, GENERATE_TOKENS_MIN), GENERATE_TOKENS_MAX);
-}
+// One flat, deliberately over-provisioned ceiling. A tight scaled cap was
+// live-verified to truncate real plans (finish_reason "length" surfaced as
+// output_truncated in the UI): on Opus-5-class models max_tokens covers any
+// adaptive thinking PLUS the answer, and the per-session estimate ran low.
+// The cap exists to never be hit — the largest possible plan (16 weeks × 6
+// sessions, verbose exercises) plus thinking is well under half of this.
+// Worst-case cost at $25/1M output is $1.60, still bounded by the $8 rolling
+// weekly cutoff, and real generations bill only what they produce.
+const MAX_OUTPUT_TOKENS_GENERATE = 64_000;
 
 // An edit's ops list stays small regardless of plan size — it's a diff, not
-// the whole plan — so this one stays a flat ceiling.
-const MAX_OUTPUT_TOKENS_EDIT = 1200;
+// the whole plan — but the same never-truncate rule applies, and the cheap
+// tier's $5/1M output price makes headroom effectively free.
+const MAX_OUTPUT_TOKENS_EDIT = 16_000;
 
 // The real COROS catalog is ~382 entries (spec §4); this only engages
 // defensively if a larger catalog is ever synced. Capped, never silent.
@@ -428,9 +419,10 @@ function feedbackMessage(feedback: string): string {
 
 // ─────────────────────────────────────────────────────────────────────────
 // Gateway transport — same shape as llm.ts's inline fetch (OpenAI-compatible
-// chat completions, JSON-only response_format, 20s AbortController timeout),
-// factored into a helper because both entry points may call it twice (the
-// one feedback-retry).
+// chat completions, generous AbortController timeout), factored into a
+// helper because both entry points may call it twice (the one
+// feedback-retry). Transient gateway failures get one automatic in-place
+// retry here, below the feedback-retry layer.
 //
 // Prompt-cache passthrough: investigated per spec §3 ("try it once, don't
 // invent wire fields if you can't verify one"). llm.ts — the only other
@@ -451,65 +443,84 @@ async function chatCompletion(
   | { ok: true; content: string; inputTokens: number; outputTokens: number; truncated: boolean }
   | { ok: false; reason: string }
 > {
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), TIMEOUT_MS);
-  try {
-    let response: Response;
+  // One bounded in-place retry on transient failures (rate limits, 5xx,
+  // dropped connections). Deterministic failures are returned immediately:
+  // a non-retryable 4xx won't change on a resend, and our own timeout abort
+  // has already spent the full patience budget.
+  const RETRYABLE_STATUSES = new Set([408, 429, 500, 502, 503, 504, 529]);
+  let lastFailure: { ok: false; reason: string } = { ok: false, reason: "llm_error" };
+  for (let attempt = 0; attempt < 2; attempt++) {
+    if (attempt > 0) await new Promise((resolve) => setTimeout(resolve, RETRY_BACKOFF_MS));
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), TIMEOUT_MS);
     try {
-      response = await fetchImpl(`${env.AI_GATEWAY_BASE_URL || DEFAULT_GATEWAY}/chat/completions`, {
-        method: "POST",
-        signal: controller.signal,
-        headers: {
-          Authorization: `Bearer ${env.AI_GATEWAY_API_KEY}`,
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({
-          model,
-          max_tokens: maxTokens,
-          messages,
-          // No response_format: the Vercel AI Gateway's chat-completions
-          // surface only supports json_schema / legacy json — the OpenAI
-          // json_object mode is rejected with a 400 (live-verified: both this
-          // service and llm.ts failed every call with gateway_400 until it
-          // was removed). Prompts demand JSON-only and extractJson tolerates
-          // prose/fences; zod validation + the retry loop catch the rest.
-        }),
-      });
-    } catch {
-      return { ok: false, reason: "llm_error" };
+      let response: Response;
+      try {
+        response = await fetchImpl(`${env.AI_GATEWAY_BASE_URL || DEFAULT_GATEWAY}/chat/completions`, {
+          method: "POST",
+          signal: controller.signal,
+          headers: {
+            Authorization: `Bearer ${env.AI_GATEWAY_API_KEY}`,
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({
+            model,
+            max_tokens: maxTokens,
+            messages,
+            // No response_format: the Vercel AI Gateway's chat-completions
+            // surface only supports json_schema / legacy json — the OpenAI
+            // json_object mode is rejected with a 400 (live-verified: both
+            // this service and llm.ts failed every call with gateway_400
+            // until it was removed). Prompts demand JSON-only and
+            // extractJson tolerates prose/fences; zod validation + the
+            // feedback-retry loop catch the rest.
+          }),
+        });
+      } catch {
+        lastFailure = { ok: false, reason: "llm_error" };
+        if (controller.signal.aborted) return lastFailure;
+        continue;
+      }
+      if (!response.ok) {
+        // Surface the gateway's own error message in `wrangler tail` — a
+        // bare status code turned out to be undebuggable from the outside.
+        const detail = await response.text().catch(() => "");
+        console.warn(
+          JSON.stringify({
+            level: "warn",
+            msg: "studio: ai gateway error",
+            status: response.status,
+            model,
+            attempt,
+            detail: detail.slice(0, 600),
+          }),
+        );
+        lastFailure = { ok: false, reason: `gateway_${response.status}` };
+        if (RETRYABLE_STATUSES.has(response.status)) continue;
+        return lastFailure;
+      }
+      const body = (await response.json().catch(() => null)) as {
+        choices?: Array<{ message?: { content?: string }; finish_reason?: string }>;
+        usage?: { prompt_tokens?: number; completion_tokens?: number };
+      } | null;
+      if (!body) {
+        lastFailure = { ok: false, reason: "gateway_bad_response" };
+        continue;
+      }
+      return {
+        ok: true,
+        content: body.choices?.[0]?.message?.content ?? "",
+        inputTokens: body.usage?.prompt_tokens ?? 0,
+        outputTokens: body.usage?.completion_tokens ?? 0,
+        // OpenAI-compatible convention: finish_reason "length" means the
+        // response was cut off by max_tokens, not that the model finished.
+        truncated: body.choices?.[0]?.finish_reason === "length",
+      };
+    } finally {
+      clearTimeout(timer);
     }
-    if (!response.ok) {
-      // Surface the gateway's own error message in `wrangler tail` — a bare
-      // status code turned out to be undebuggable from the outside.
-      const detail = await response.text().catch(() => "");
-      console.warn(
-        JSON.stringify({
-          level: "warn",
-          msg: "studio: ai gateway error",
-          status: response.status,
-          model,
-          detail: detail.slice(0, 600),
-        }),
-      );
-      return { ok: false, reason: `gateway_${response.status}` };
-    }
-    const body = (await response.json().catch(() => null)) as {
-      choices?: Array<{ message?: { content?: string }; finish_reason?: string }>;
-      usage?: { prompt_tokens?: number; completion_tokens?: number };
-    } | null;
-    if (!body) return { ok: false, reason: "gateway_bad_response" };
-    return {
-      ok: true,
-      content: body.choices?.[0]?.message?.content ?? "",
-      inputTokens: body.usage?.prompt_tokens ?? 0,
-      outputTokens: body.usage?.completion_tokens ?? 0,
-      // OpenAI-compatible convention: finish_reason "length" means the
-      // response was cut off by max_tokens, not that the model finished.
-      truncated: body.choices?.[0]?.finish_reason === "length",
-    };
-  } finally {
-    clearTimeout(timer);
   }
+  return lastFailure;
 }
 
 /** Tolerates a fenced ```json block or leading/trailing prose, same as llm.ts. */
@@ -792,7 +803,7 @@ export async function generatePlan(
     const model = env.AI_STUDIO_MODEL_STRONG || DEFAULT_MODEL_STRONG;
     const catalogIds = new Set(catalog.map((c) => c.id));
     const requestFingerprint = fingerprint({ brief, catalogSize: catalog.length });
-    const maxTokens = computeGenerateMaxTokens(brief.durationWeeks, brief.sessionsPerWeek);
+    const maxTokens = MAX_OUTPUT_TOKENS_GENERATE;
     const messages: ChatMessage[] = [
       { role: "system", content: buildGenerateSystemPrompt(catalog) },
       { role: "user", content: buildGenerateUserPrompt(brief) },
@@ -855,7 +866,7 @@ export async function editPlan(
 
     if (major) {
       const model = env.AI_STUDIO_MODEL_STRONG || DEFAULT_MODEL_STRONG;
-      const maxTokens = computeGenerateMaxTokens(plan.brief.durationWeeks, plan.brief.sessionsPerWeek);
+      const maxTokens = MAX_OUTPUT_TOKENS_GENERATE;
       const messages: ChatMessage[] = [
         { role: "system", content: buildMajorReviseSystemPrompt(catalog) },
         { role: "user", content: buildMajorReviseUserPrompt(plan, request) },

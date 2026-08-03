@@ -601,17 +601,41 @@ describe("generatePlan — success, prompts, and usage rows", () => {
     expect(calls).toHaveLength(2);
   });
 
-  it("does not retry a transport failure (gateway 5xx) — fails immediately, no usage row", async () => {
+  it("retries a transient gateway 5xx once, then fails with the status — no usage row", async () => {
     const env = makeEnv();
-    const { fetchImpl, calls } = scriptedFetch([{ status: 500, body: { error: "boom" } }]);
+    const { fetchImpl, calls } = scriptedFetch([
+      { status: 500, body: { error: "boom" } },
+      { status: 500, body: { error: "boom" } },
+    ]);
     const result = await generatePlan(env, db, userId, brief(), CATALOG, fetchImpl);
 
     expect(result).toEqual({ plan: null, reason: "gateway_500" });
-    expect(calls).toHaveLength(1);
+    expect(calls).toHaveLength(2); // the in-place transient retry, not the feedback retry
     expect(await db.select().from(llmUsage)).toHaveLength(0);
   });
 
-  it("scales max_tokens with brief size instead of using a flat ceiling", async () => {
+  it("recovers when a transient gateway 5xx is followed by a good response", async () => {
+    const env = makeEnv();
+    const { fetchImpl, calls } = scriptedFetch([
+      { status: 503, body: { error: "overloaded" } },
+      { body: chatBody(VALID_GENERATED_PLAN) },
+    ]);
+    const result = await generatePlan(env, db, userId, brief(), CATALOG, fetchImpl);
+
+    expect(result.plan).not.toBeNull();
+    expect(calls).toHaveLength(2);
+  });
+
+  it("does not retry a deterministic gateway 4xx — fails immediately", async () => {
+    const env = makeEnv();
+    const { fetchImpl, calls } = scriptedFetch([{ status: 400, body: { error: "bad request" } }]);
+    const result = await generatePlan(env, db, userId, brief(), CATALOG, fetchImpl);
+
+    expect(result).toEqual({ plan: null, reason: "gateway_400" });
+    expect(calls).toHaveLength(1);
+  });
+
+  it("sends a flat, over-provisioned max_tokens so no plan can ever truncate", async () => {
     // The response body's own validity doesn't matter here — only what was
     // SENT on the first request is under test (the retry-on-invalid path is
     // covered elsewhere), so both calls reuse the same canned response.
@@ -625,9 +649,11 @@ describe("generatePlan — success, prompts, and usage rows", () => {
     await generatePlan(env, db, userId, bigBrief, CATALOG, big.fetchImpl);
     const bigMaxTokens = big.calls[0]!.body.max_tokens as number;
 
-    expect(bigMaxTokens).toBeGreaterThan(smallMaxTokens);
-    expect(bigMaxTokens).toBeLessThanOrEqual(24000); // clamped ceiling
-    expect(smallMaxTokens).toBeGreaterThanOrEqual(4000); // clamped floor
+    // Never-truncate rule: the cap doesn't scale with brief size (max_tokens
+    // also covers adaptive thinking on Opus-5-class models, so a "right
+    // sized" cap was live-verified to cut off real plans).
+    expect(smallMaxTokens).toBe(bigMaxTokens);
+    expect(bigMaxTokens).toBeGreaterThanOrEqual(64000);
   });
 
   it("reports output_truncated (not invalid_output) when the response was cut off by the token cap", async () => {
@@ -647,13 +673,22 @@ describe("generatePlan — success, prompts, and usage rows", () => {
     expect(result).toEqual({ plan: null, reason: "invalid_output" });
   });
 
-  it("never throws on a network error — returns llm_error, no retry", async () => {
+  it("never throws on a network error — retries once, then returns llm_error", async () => {
     const env = makeEnv();
-    const { fetchImpl, calls } = scriptedFetch([{ throws: true }]);
+    const { fetchImpl, calls } = scriptedFetch([{ throws: true }, { throws: true }]);
     const result = await generatePlan(env, db, userId, brief(), CATALOG, fetchImpl);
 
     expect(result).toEqual({ plan: null, reason: "llm_error" });
-    expect(calls).toHaveLength(1);
+    expect(calls).toHaveLength(2); // one in-place transient retry, then honest failure
+  });
+
+  it("recovers when a dropped connection is followed by a good response", async () => {
+    const env = makeEnv();
+    const { fetchImpl, calls } = scriptedFetch([{ throws: true }, { body: chatBody(VALID_GENERATED_PLAN) }]);
+    const result = await generatePlan(env, db, userId, brief(), CATALOG, fetchImpl);
+
+    expect(result.plan).not.toBeNull();
+    expect(calls).toHaveLength(2);
   });
 });
 
@@ -766,7 +801,7 @@ describe("editPlan — major revision (strong tier, full regenerate)", () => {
     expect(rows[0]).toMatchObject({ kind: "studio_edit", model: "anthropic/claude-opus-5" });
   });
 
-  it("scales max_tokens from the CURRENT plan's brief, same as generatePlan", async () => {
+  it("uses the same flat never-truncate max_tokens for a major edit as generatePlan", async () => {
     const env = makeEnv();
     const smallPlan = plan({ brief: brief({ durationWeeks: 2, sessionsPerWeek: 1 }), weeks: [{ sessions: [] }, { sessions: [] }] });
     const small = scriptedFetch([{ body: chatBody(VALID_GENERATED_PLAN) }]);
@@ -777,7 +812,8 @@ describe("editPlan — major revision (strong tier, full regenerate)", () => {
     const big = scriptedFetch([{ body: chatBody(VALID_GENERATED_PLAN) }]);
     await editPlan(env, db, userId, bigPlan, "revise", true, CATALOG, big.fetchImpl);
 
-    expect(big.calls[0]!.body.max_tokens).toBeGreaterThan(small.calls[0]!.body.max_tokens as number);
+    expect(small.calls[0]!.body.max_tokens).toBe(big.calls[0]!.body.max_tokens);
+    expect(big.calls[0]!.body.max_tokens).toBeGreaterThanOrEqual(64000);
   });
 
   it("uses AI_STUDIO_MODEL_EDIT for the cheap tier and AI_STUDIO_MODEL_STRONG for major, independently", async () => {

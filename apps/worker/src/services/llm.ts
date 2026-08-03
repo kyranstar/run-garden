@@ -22,7 +22,9 @@ const DEFAULT_GATEWAY = "https://ai-gateway.vercel.sh/v1";
 // cutoff protects regardless. Slight over-estimate is intentionally safe.
 const INPUT_MICROS_PER_TOKEN = 1; // ≈ $1 / 1M input tokens
 const OUTPUT_MICROS_PER_TOKEN = 5; // ≈ $5 / 1M output tokens
-const MAX_OUTPUT_TOKENS = 400;
+// Generous headroom — the prompt caps the narrative at 200 words, but the
+// cap exists to never be hit, and Haiku output costs $5/1M tokens.
+const MAX_OUTPUT_TOKENS = 2000;
 const TIMEOUT_MS = 20_000;
 
 export const LLM_BUDGET = {
