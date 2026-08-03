@@ -14,8 +14,10 @@ import { newId, nowInstant, type LiftingPlan, type PlanBrief } from "@rg/domain"
 import type { Env } from "../src/env.js";
 import type { Db } from "../src/services/db.js";
 import { syncRoutes } from "../src/routes/sync.js";
+import { settingsRoutes } from "../src/routes/misc.js";
 import { createSession, SESSION_COOKIE } from "../src/auth/sessions.js";
 import { loadPreferences, savePreferences } from "../src/services/calendar-sync.js";
+import { applyMove } from "../src/services/jobs.js";
 import { activeSyncNotes, postSyncNote } from "../src/services/sync-notes.js";
 import { openIntentFor, recordIntent } from "../src/services/sync-intents.js";
 import { makeTestDb, makeTestUser, mountRoutes, registerTestDevice } from "./helpers.js";
@@ -56,6 +58,22 @@ function client() {
             ...(body !== undefined ? { "Content-Type": "application/json" } : {}),
           },
           body: body !== undefined ? JSON.stringify(body) : undefined,
+        },
+        makeEnv(),
+      ),
+  };
+}
+
+function settingsClient() {
+  const app = mountRoutes(db, "/api/settings", settingsRoutes);
+  return {
+    put: (path: string, body: unknown) =>
+      app.request(
+        path,
+        {
+          method: "PUT",
+          headers: { Cookie: cookie, "Content-Type": "application/json" },
+          body: JSON.stringify(body),
         },
         makeEnv(),
       ),
@@ -173,6 +191,43 @@ beforeEach(async () => {
   userId = user.userId;
   const token = await createSession(db, userId);
   cookie = `${SESSION_COOKIE}=${token}`;
+});
+
+describe("PUT /api/settings — corosWritesEnabled toggle", () => {
+  it("flipping writes false→true emits pending work: an open move intent with no job (writes were off) gets a queued job", async () => {
+    await registerTestDevice(db, userId);
+    const workoutId = await insertWorkout({ effectiveDate: "2026-08-08" });
+    // Writes are off by default (makeTestUser's default prefs): applyMove
+    // records the intent but emitPendingWork's sole other call site (the
+    // bridge-sync route) never runs here, so no job exists yet.
+    await applyMove(db, {
+      userId,
+      workoutId,
+      toDate: "2026-08-10",
+      toTime: "07:00",
+      source: "app",
+      corosWritesEnabled: false,
+    });
+    const before = await db
+      .select()
+      .from(corosWriteJobs)
+      .where(eq(corosWriteJobs.workoutId, workoutId));
+    expect(before).toHaveLength(0);
+
+    const res = await settingsClient().put("/api/settings", { corosWritesEnabled: true });
+    expect(res.status).toBe(200);
+    expect(((await res.json()) as { prefs: { corosWritesEnabled: boolean } }).prefs.corosWritesEnabled).toBe(
+      true,
+    );
+
+    const after = await db
+      .select()
+      .from(corosWriteJobs)
+      .where(eq(corosWriteJobs.workoutId, workoutId));
+    const queued = after.filter((j) => j.status === "queued" && j.kind === "move_scheduled_workout");
+    expect(queued).toHaveLength(1);
+    expect(queued[0]!.destinationDate).toBe("2026-08-10");
+  });
 });
 
 describe("GET /api/sync/status", () => {

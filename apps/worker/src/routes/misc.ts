@@ -63,6 +63,7 @@ import { chunkIds, type Db } from "../services/db.js";
 import { requireUser } from "../auth/middleware.js";
 import { googleCalendarClient } from "../services/google-calendar.js";
 import { loadPreferences, savePreferences, syncCalendar } from "../services/calendar-sync.js";
+import { emitPendingWork } from "../services/jobs.js";
 import { llmBudgetStatus, LLM_BUDGET } from "../services/llm.js";
 import { stravaClient } from "../services/strava.js";
 import {
@@ -622,6 +623,13 @@ settingsRoutes.put("/", async (c) => {
   const parsed = userPreferencesSchema.safeParse({ ...current, ...body });
   if (!parsed.success) return c.json({ error: "invalid_preferences", details: parsed.error.issues }, 400);
   await savePreferences(db, userId, parsed.data);
+  // Flipping COROS writes on must heal any moves that queued while writes
+  // were off (or no device was paired) — emitPendingWork's only other call
+  // site is the bridge-sync route, so without this the toggle silently did
+  // nothing until the next bridge sync happened to run.
+  if (!current.corosWritesEnabled && parsed.data.corosWritesEnabled) {
+    await emitPendingWork(db, userId, { corosWritesEnabled: true });
+  }
   // Buffer/time changes flow into the calendar mirror.
   await syncCalendar(db, c.env, userId).catch(() => undefined);
   return c.json({ ok: true, prefs: parsed.data });

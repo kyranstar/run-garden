@@ -211,6 +211,132 @@ describe("jobs + intent ledger", () => {
     expect(workout.corosSyncState).not.toBe("needs_attention");
   });
 
+  it("applyJobResult verification_failed with no observedDate re-derives the job but skips posting a kept_local_change note (undefined displacedDate would be broken copy and 400-forever on undo)", async () => {
+    const db = makeTestDb();
+    const { userId, prefs } = await makeTestUser(db);
+    const deviceId = await registerTestDevice(db, userId);
+    const workoutId = await insertWorkout(db, userId, { lastVerifiedCorosDate: "2026-08-08" });
+    const outcome = await applyMove(db, {
+      userId,
+      workoutId,
+      toDate: "2026-08-10",
+      toTime: "07:00",
+      source: "app",
+      corosWritesEnabled: true,
+    });
+    const oldJobId = outcome.jobId!;
+
+    await applyJobResult(
+      db,
+      userId,
+      {
+        jobId: oldJobId,
+        deviceId,
+        outcome: "verification_failed",
+        // No observedDate — the bridge couldn't establish what COROS shows.
+        finishedAt: nowInstant(),
+        signature: "s",
+      } as never,
+      prefs,
+    );
+
+    // The re-derivation itself still happens — last-edit-wins stands.
+    const jobs = await db
+      .select()
+      .from(schema.corosWriteJobs)
+      .where(eq(schema.corosWriteJobs.workoutId, workoutId));
+    const newJob = jobs.find((j) => j.id !== oldJobId);
+    expect(newJob).toBeTruthy();
+    expect(newJob!.status).toBe("queued");
+
+    const notes = await db
+      .select()
+      .from(schema.syncNotes)
+      .where(eq(schema.syncNotes.workoutId, workoutId));
+    expect(notes.find((n) => n.kind === "kept_local_change")).toBeUndefined();
+  });
+
+  it("emitPendingWork resolves the open intent for an archived workout instead of leaving it stranded open forever", async () => {
+    const db = makeTestDb();
+    const { userId } = await makeTestUser(db);
+    await registerTestDevice(db, userId);
+    const workoutId = await insertWorkout(db, userId, { lastVerifiedCorosDate: "2026-08-08" });
+
+    // Writes off at move time: the intent is recorded but no job exists yet.
+    await applyMove(db, {
+      userId,
+      workoutId,
+      toDate: "2026-08-10",
+      toTime: "07:00",
+      source: "app",
+      corosWritesEnabled: false,
+    });
+    expect(await openIntentFor(db, userId, workoutId, "move")).not.toBeNull();
+
+    // The workout gets archived (e.g. removed from the plan) before writes
+    // ever turn on — the open move intent behind it has nothing left to sync.
+    await db
+      .update(schema.plannedWorkouts)
+      .set({ archivedAt: nowInstant() })
+      .where(eq(schema.plannedWorkouts.id, workoutId));
+
+    const emitted = await emitPendingWork(db, userId, { corosWritesEnabled: true });
+    expect(emitted).toBe(0);
+    expect(await openIntentFor(db, userId, workoutId, "move")).toBeNull();
+    const jobs = await db
+      .select()
+      .from(schema.corosWriteJobs)
+      .where(eq(schema.corosWriteJobs.workoutId, workoutId));
+    expect(jobs).toHaveLength(0);
+  });
+
+  it("emitPendingWork does not re-emit a terminally failed job for the same destination (would otherwise retry an unsupported workout forever)", async () => {
+    const db = makeTestDb();
+    const { userId, prefs } = await makeTestUser(db);
+    const deviceId = await registerTestDevice(db, userId);
+    const workoutId = await insertWorkout(db, userId, { lastVerifiedCorosDate: "2026-08-08" });
+    const outcome = await applyMove(db, {
+      userId,
+      workoutId,
+      toDate: "2026-08-10",
+      toTime: "07:00",
+      source: "app",
+      corosWritesEnabled: true,
+    });
+    const jobId = outcome.jobId!;
+
+    for (let attempt = 0; attempt < 5; attempt++) {
+      await applyJobResult(
+        db,
+        userId,
+        {
+          jobId,
+          deviceId,
+          outcome: "write_failed",
+          errorCategory: "network",
+          finishedAt: nowInstant(),
+          signature: "s",
+        } as never,
+        prefs,
+      );
+    }
+    expect(
+      (await db.select().from(schema.corosWriteJobs).where(eq(schema.corosWriteJobs.id, jobId)))[0]!.status,
+    ).toBe("failed");
+    expect(await openIntentFor(db, userId, workoutId, "move")).not.toBeNull();
+
+    const emitted = await emitPendingWork(db, userId, { corosWritesEnabled: true });
+    expect(emitted).toBe(0);
+    const jobs = await db
+      .select()
+      .from(schema.corosWriteJobs)
+      .where(eq(schema.corosWriteJobs.workoutId, workoutId));
+    expect(jobs.filter((j) => j.status === "queued")).toHaveLength(0);
+    // The intent stays open — a user-initiated retry (retry-coros) is still
+    // possible, just not an unattended re-emit.
+    expect(await openIntentFor(db, userId, workoutId, "move")).not.toBeNull();
+  });
+
   it("applyJobResult write_failed exhausts retries into sync_issue, leaving the intent open", async () => {
     const db = makeTestDb();
     const { userId, prefs } = await makeTestUser(db);

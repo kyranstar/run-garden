@@ -152,6 +152,70 @@ describe("computeSyncStatus", () => {
     expect(status.state).toBe("sync_issue");
     expect(status.issueCount).toBe(1);
   });
+
+  it("failed move job whose workout was later archived → issueCount 0, not sync_issue (nothing left to retry behind an archived row)", async () => {
+    const db = makeTestDb();
+    const { userId, prefs } = await makeTestUser(db, { corosWritesEnabled: true });
+    const deviceId = await registerTestDevice(db, userId);
+    const workoutId = await insertWorkout(db, userId);
+    const outcome = await applyMove(db, {
+      userId,
+      workoutId,
+      toDate: "2026-08-10",
+      toTime: "07:00",
+      source: "app",
+      corosWritesEnabled: true,
+    });
+    const jobId = outcome.jobId!;
+
+    for (let attempt = 0; attempt < 5; attempt++) {
+      await applyJobResult(
+        db,
+        userId,
+        {
+          jobId,
+          deviceId,
+          outcome: "write_failed",
+          errorCategory: "network",
+          finishedAt: nowInstant(),
+          signature: "s",
+        } as never,
+        prefs,
+      );
+    }
+
+    await db
+      .update(schema.plannedWorkouts)
+      .set({ archivedAt: nowInstant() })
+      .where(eq(schema.plannedWorkouts.id, workoutId));
+
+    const status = await computeSyncStatus(db, userId, prefs);
+    expect(status.state).not.toBe("sync_issue");
+    expect(status.issueCount).toBe(0);
+  });
+
+  it("a queued read_now job alone doesn't count toward pendingCount — state stays in_sync", async () => {
+    const db = makeTestDb();
+    const { userId, prefs } = await makeTestUser(db, { corosWritesEnabled: true });
+    await registerTestDevice(db, userId);
+    const jobId = newId();
+    await db.insert(schema.corosWriteJobs).values({
+      id: jobId,
+      userId,
+      workoutId: jobId, // read_now self-references its own job row (no real workout)
+      kind: "read_now",
+      expectedContentFingerprint: "",
+      originalDate: "2026-08-08",
+      destinationDate: "2026-08-08",
+      requestedAt: nowInstant(),
+      status: "queued",
+      updatedAt: nowInstant(),
+    });
+
+    const status = await computeSyncStatus(db, userId, prefs);
+    expect(status.state).toBe("in_sync");
+    expect(status.pendingCount).toBe(0);
+  });
 });
 
 describe("devicePresence", () => {

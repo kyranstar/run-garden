@@ -1,7 +1,8 @@
-import { and, desc, eq, inArray, isNull } from "drizzle-orm";
+import { and, desc, eq, inArray, isNull, ne } from "drizzle-orm";
 import {
   corosWriteJobs,
   desktopDevices,
+  plannedWorkouts,
   studioPlanPushes,
   studioPlans,
   syncRuns,
@@ -62,14 +63,32 @@ export async function computeSyncStatus(
   const pending = await db
     .select({ id: corosWriteJobs.id })
     .from(corosWriteJobs)
-    .where(and(eq(corosWriteJobs.userId, userId), inArray(corosWriteJobs.status, [...IN_FLIGHT])));
+    .where(
+      and(
+        eq(corosWriteJobs.userId, userId),
+        inArray(corosWriteJobs.status, [...IN_FLIGHT]),
+        // A queued read_now job is the bridge's own catch-up read, not a
+        // user-visible "change" — the bridge-side claim pendingCount
+        // (devices.ts) keeps counting it since it drives adaptive polling.
+        ne(corosWriteJobs.kind, "read_now"),
+      ),
+    );
 
   // Issues = terminal move failures the user can still retry (their intent is
-  // open) + terminally failed studio rows.
+  // open) + terminally failed studio rows. Archived workouts are excluded: a
+  // failed job behind a workout that's been removed from the plan has
+  // nothing left to retry, so it must never count toward issueCount.
   const failedJobs = await db
     .select({ workoutId: corosWriteJobs.workoutId })
     .from(corosWriteJobs)
-    .where(and(eq(corosWriteJobs.userId, userId), eq(corosWriteJobs.status, "failed")));
+    .innerJoin(plannedWorkouts, eq(corosWriteJobs.workoutId, plannedWorkouts.id))
+    .where(
+      and(
+        eq(corosWriteJobs.userId, userId),
+        eq(corosWriteJobs.status, "failed"),
+        isNull(plannedWorkouts.archivedAt),
+      ),
+    );
   const openIntentTargets = new Set((await openMoveIntents(db, userId)).map((i) => i.targetId));
   const failedMoveCount = new Set(
     failedJobs.map((j) => j.workoutId).filter((id) => openIntentTargets.has(id)),

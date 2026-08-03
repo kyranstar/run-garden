@@ -72,6 +72,11 @@ read paths matter:
   uses this to recognize its own moves as `app_moved` rather than misreading
   them as a user editing COROS directly (see "Plan Studio adoption" below).
 
+Despite being named above, Plan Studio pushes/retires do not actually write
+intents — push rows (`studio_plan_pushes`) plus `appRequestedDates` already
+cover studio drift end to end, so `studio_push`/`studio_retire` in
+`IntentSource` are reserved, not currently produced by any code path.
+
 ## Last-edit-wins policy + undo notes
 
 One sentence covers the whole conflict policy: **the app's last edit always

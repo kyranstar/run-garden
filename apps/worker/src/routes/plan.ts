@@ -24,7 +24,7 @@ import { loadPreferences, restoreCalendarEvent, syncCalendar } from "../services
 import { chunkIds, type Db } from "../services/db.js";
 import { applyMove } from "../services/jobs.js";
 import { recentGardenEvents, resimulateFrom } from "../services/garden-sync.js";
-import { openMoveIntents, recordIntent } from "../services/sync-intents.js";
+import { openIntentFor, openMoveIntents, recordIntent, resolveIntent } from "../services/sync-intents.js";
 import { deriveWorkoutSync, devicePresence } from "../services/sync-status.js";
 
 export const planRoutes = new Hono<AppContext>();
@@ -626,6 +626,13 @@ planRoutes.post("/workouts/:id/remove", async (c) => {
     kind: "remove_local",
     source: "remove_from_plan",
   });
+  // Close out any open move intent for this workout too — once it's removed
+  // from the plan there's nothing left to sync, and leaving the move intent
+  // open behind an archived workout would strand a permanent, uncloseable
+  // sync_issue (emitPendingWork resolves it too, but this closes the gap
+  // immediately rather than waiting for the next bridge sync).
+  const openMove = await openIntentFor(db, userId, workoutId, "move");
+  if (openMove) await resolveIntent(db, openMove.id, now);
   await syncCalendar(db, c.env, userId).catch(() => undefined);
   const prefs = await loadPreferences(db, userId);
   const today = todayInZone(prefs.timezone);
@@ -654,6 +661,14 @@ planRoutes.post("/workouts/:id/retry-coros", async (c) => {
       .limit(1)
   )[0];
   if (!w) return c.json({ error: "not_found" }, 404);
+  // A terminally failed job for this workout's current destination blocks
+  // emitPendingWork's retry-forever guard (jobs.ts) from ever re-arming
+  // future emission for it — superseding it here before applyMove clears
+  // that block, so this user-initiated retry actually re-arms emission.
+  await db
+    .update(corosWriteJobs)
+    .set({ status: "superseded", updatedAt: nowInstant() })
+    .where(and(eq(corosWriteJobs.workoutId, w.id), eq(corosWriteJobs.status, "failed")));
   const outcome = await applyMove(db, {
     userId,
     workoutId: w.id,

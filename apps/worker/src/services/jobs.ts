@@ -1,4 +1,4 @@
-import { and, eq, inArray, lt } from "drizzle-orm";
+import { and, desc, eq, inArray, lt } from "drizzle-orm";
 import {
   auditEvents,
   corosWriteAttempts,
@@ -223,13 +223,33 @@ export async function emitPendingWork(
     const workout = (
       await db.select().from(plannedWorkouts).where(eq(plannedWorkouts.id, intent.targetId)).limit(1)
     )[0];
-    if (!workout || workout.archivedAt) continue;
+    if (!workout || workout.archivedAt) {
+      // An intent for a workout that no longer exists has nothing left to
+      // sync — leaving it open would strand a permanent, uncloseable
+      // sync_issue behind an archived (or deleted) workout.
+      await resolveIntent(db, intent.id, now);
+      continue;
+    }
     if (workout.lastVerifiedCorosDate === toDate) {
       await resolveIntent(db, intent.id, now);
       continue;
     }
     const existing = inflightByWorkout.get(workout.id);
     if (existing?.destinationDate === toDate) continue;
+    // A terminally failed job for exactly this destination means the retry
+    // budget was already exhausted for this change — re-emitting would hand
+    // it a fresh attempt count and retry an unsupported workout forever.
+    // Leave the intent open; the per-workout retry-coros route supersedes
+    // the failed job to clear this guard for a user-initiated retry.
+    const lastJob = (
+      await db
+        .select()
+        .from(corosWriteJobs)
+        .where(eq(corosWriteJobs.workoutId, workout.id))
+        .orderBy(desc(corosWriteJobs.requestedAt))
+        .limit(1)
+    )[0];
+    if (lastJob?.status === "failed" && lastJob.destinationDate === toDate) continue;
     await enqueueMoveJob(db, { userId, workout, toDate, now });
     const online = await anyDeviceOnline(db, userId);
     await db
@@ -397,12 +417,18 @@ export async function applyJobResult(
             now,
             attemptCount,
           });
-          await postSyncNote(db, {
-            userId,
-            workoutId: job.workoutId,
-            kind: "kept_local_change",
-            payload: { displacedDate: result.observedDate, keptDate: job.destinationDate },
-          });
+          // observedDate is optional on the wire (z.string().optional()) — a
+          // note with an undefined displacedDate renders broken copy and
+          // 400s forever on undo (invalid_note has no displacedDate string
+          // to act on), so only post the note when there's an actual date.
+          if (typeof result.observedDate === "string" && result.observedDate.length > 0) {
+            await postSyncNote(db, {
+              userId,
+              workoutId: job.workoutId,
+              kind: "kept_local_change",
+              payload: { displacedDate: result.observedDate, keptDate: job.destinationDate },
+            });
+          }
         }
       } else {
         jobStatus = "failed";

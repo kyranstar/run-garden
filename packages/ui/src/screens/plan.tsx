@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Link, useSearchParams } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { api, type WorkoutDto } from "@rg/api-client";
+import { api, ApiError, type WorkoutDto } from "@rg/api-client";
 import { addDays, startOfIsoWeek } from "@rg/domain";
 import {
   Banner,
@@ -17,6 +17,7 @@ import {
   monthTitle,
   Sheet,
   Spinner,
+  SyncNotesStack,
 } from "../components.js";
 import { IconAlert, IconCheck, IconClock } from "../icons.js";
 import { MoveSheet } from "./move-sheet.js";
@@ -56,11 +57,47 @@ function WorkoutDetail({
     queryKey: ["workout", w.id],
     queryFn: () => api.workout(w.id),
   });
+  // Same queryKey/queryFn as today.tsx's SyncPanel, so this shares its cache
+  // rather than firing a second independent fetch for the same data.
+  const notes = useQuery({ queryKey: ["sync-notes"], queryFn: api.syncNotes, refetchInterval: 30_000 });
+  const [undoErrors, setUndoErrors] = useState<Record<string, string>>({});
+  const workoutNotes = (notes.data?.notes ?? []).filter((n) => n.workoutId === w.id);
   const invalidate = () => {
     void qc.invalidateQueries({ queryKey: ["plan"] });
     void qc.invalidateQueries({ queryKey: ["today"] });
     void qc.invalidateQueries({ queryKey: ["workout", w.id] });
   };
+  const dismissNote = useMutation({
+    mutationFn: (id: string) => api.dismissSyncNote(id),
+    onSuccess: () => void qc.invalidateQueries({ queryKey: ["sync-notes"] }),
+  });
+  const undoNote = useMutation({
+    mutationFn: (id: string) => api.undoSyncNote(id),
+    onSuccess: (_data, id) => {
+      setUndoErrors((e) => {
+        if (!(id in e)) return e;
+        const next = { ...e };
+        delete next[id];
+        return next;
+      });
+      void qc.invalidateQueries({ queryKey: ["sync-notes"] });
+      void qc.invalidateQueries({ queryKey: ["sync-status"] });
+      invalidate();
+    },
+    onError: (err: unknown, id: string) => {
+      // Same copy as today.tsx's SyncPanel: adopted_coros_edit/removal notes
+      // forward to the studio-adoption undo, which 409s the same way on a
+      // renamed-on-COROS row.
+      const code = err instanceof ApiError ? (err.body as { error?: string } | null)?.error : undefined;
+      setUndoErrors((e) => ({
+        ...e,
+        [id]:
+          code === "undo_unsupported_rename"
+            ? "Renamed on COROS — delete it there to re-push."
+            : "Couldn't undo — try again.",
+      }));
+    },
+  });
   const retry = useMutation({ mutationFn: () => api.retryCoros(w.id), onSuccess: invalidate });
   const restore = useMutation({ mutationFn: () => api.restoreCalendar(w.id), onSuccess: invalidate });
   const unmatch = useMutation({ mutationFn: () => api.unmatch(w.id), onSuccess: invalidate });
@@ -94,6 +131,13 @@ function WorkoutDetail({
         <p>
           {formatDayLong(w.effectiveDate)} at {formatTime(w.effectiveTime)}
         </p>
+        <SyncNotesStack
+          notes={workoutNotes}
+          onDismiss={(id) => dismissNote.mutate(id)}
+          onUndo={(id) => undoNote.mutate(id)}
+          undoPendingId={undoNote.isPending ? undoNote.variables : null}
+          undoErrors={undoErrors}
+        />
         {w.effectiveDate !== w.lastVerifiedCorosDate ? (
           <Banner kind={syncView === "needs_attention" || syncView === "sync_issue" ? "warn" : "info"}>
             {syncView === "needs_attention"
