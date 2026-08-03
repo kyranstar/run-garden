@@ -53,9 +53,27 @@ const DEFAULT_GATEWAY = "https://ai-gateway.vercel.sh/v1";
 // take minutes. Never cut off a generation that is still making progress:
 // Workers place no wall-clock limit on awaited subrequests while the client
 // stays connected, and the browser fetch has no default timeout either.
-const TIMEOUT_MS = 300_000;
+const TIMEOUT_MS = 600_000;
+// A live SSE stream delivers deltas continuously; total silence this long
+// means the connection is wedged, not thinking. Enforced with a per-read
+// race — an AbortController alone was live-verified NOT to cut loose an
+// in-progress body read in workerd (a stuck generate hung 13+ minutes).
+const STREAM_STALL_MS = 150_000;
 // Pause before the single transient-failure retry in chatCompletion.
 const RETRY_BACKOFF_MS = 1500;
+
+/** Race a promise against a timer without leaking the timer. */
+async function withTimeout<T>(promise: Promise<T>, ms: number): Promise<T | "timed_out"> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const timeout = new Promise<"timed_out">((resolve) => {
+    timer = setTimeout(() => resolve("timed_out"), ms);
+  });
+  try {
+    return await Promise.race([promise, timeout]);
+  } finally {
+    clearTimeout(timer);
+  }
+}
 
 // Cost-estimate constants, same "safe over-estimate, the rolling budget caps
 // the worst case regardless" reasoning as llm.ts's own. Opus-5-class pricing
@@ -516,13 +534,32 @@ async function chatCompletion(
         let finishReason: string | undefined;
         let inputTokens = 0;
         let outputTokens = 0;
+        const startedAt = Date.now();
+        let chunks = 0;
+        let stalled = false;
+        const reader = response.body.getReader();
         try {
-          const reader = response.body.getReader();
           const decoder = new TextDecoder();
           let buffered = "";
           for (;;) {
-            const { done, value } = await reader.read();
+            const elapsed = Date.now() - startedAt;
+            const next = await withTimeout(
+              reader.read(),
+              Math.max(1000, Math.min(STREAM_STALL_MS, TIMEOUT_MS - elapsed)),
+            );
+            if (next === "timed_out") {
+              stalled = true;
+              await reader.cancel().catch(() => undefined);
+              break;
+            }
+            const { done, value } = next;
             if (done) break;
+            chunks += 1;
+            if (chunks === 1) {
+              console.warn(
+                JSON.stringify({ level: "info", msg: "studio: llm stream first byte", model, ms: elapsed }),
+              );
+            }
             buffered += decoder.decode(value, { stream: true });
             let newline: number;
             while ((newline = buffered.indexOf("\n")) >= 0) {
@@ -555,8 +592,20 @@ async function chatCompletion(
           if (controller.signal.aborted) return lastFailure;
           continue;
         }
-        if (content.length === 0) {
-          lastFailure = { ok: false, reason: "gateway_bad_response" };
+        console.warn(
+          JSON.stringify({
+            level: "info",
+            msg: "studio: llm stream done",
+            model,
+            ms: Date.now() - startedAt,
+            chunks,
+            chars: content.length,
+            stalled,
+            finishReason: finishReason ?? null,
+          }),
+        );
+        if (stalled || content.length === 0) {
+          lastFailure = { ok: false, reason: stalled ? "llm_error" : "gateway_bad_response" };
           continue;
         }
         // Budget accounting must never be the thing that breaks a working
