@@ -1194,13 +1194,17 @@ export function BaselineBandChart({
 
   if (sorted.length === 0) return null;
 
+  // "typical range", not "healthy range" or "band" standing alone: the
+  // shaded region is a NOISE threshold (which wobbles are small enough to
+  // ignore), not a verdict on whether a reading is good or bad. Wording it
+  // as a health judgment would claim something the metric doesn't.
   const inBand = values.filter((v) => v >= bandLo && v <= bandHi).length;
   const summary =
     `${seriesLabel}: ${sorted.length} daily readings from ${formatShortDate(sorted[0]!.date)} to ` +
     `${formatShortDate(sorted[sorted.length - 1]!.date)}, against a baseline of ` +
-    `${baseline.toFixed(decimals)} ${unit} and a band from ${bandLo.toFixed(decimals)} to ` +
+    `${baseline.toFixed(decimals)} ${unit} and a typical range of ${bandLo.toFixed(decimals)} to ` +
     `${bandHi.toFixed(decimals)} ${unit}. ` +
-    `${inBand} of ${sorted.length} readings sat inside that band.`;
+    `${inBand} of ${sorted.length} readings fell within the typical range.`;
 
   return (
     <ChartFrame

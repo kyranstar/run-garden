@@ -143,6 +143,39 @@ describe("pickStatusStripMetric", () => {
   it("returns clear for an empty metric list", () => {
     expect(pickStatusStripMetric([])).toEqual({ severity: "clear" });
   });
+
+  it("skips a high-severity metric outside renderedIds and picks the next eligible one", () => {
+    // A future worker metric could arrive with no group in the grid (see
+    // insights.tsx's METRIC_GROUPS) — without renderedIds it would headline
+    // the strip and offer a "scroll to signal-futureMetric" click target
+    // that doesn't exist anywhere on the page.
+    const futureHigh = metric({ id: "futureMetric", band: "high" });
+    const renderedWatch = metric({ id: "hardStack", band: "watch" });
+    const result = pickStatusStripMetric([futureHigh, renderedWatch], new Set(["hardStack"]));
+    expect(result.severity).toBe("watch");
+    expect(result.metric?.id).toBe("hardStack");
+  });
+
+  it("also accepts renderedIds as a plain array, not just a Set", () => {
+    const futureHigh = metric({ id: "futureMetric", band: "high" });
+    const renderedWatch = metric({ id: "hardStack", band: "watch" });
+    const result = pickStatusStripMetric([futureHigh, renderedWatch], ["hardStack"]);
+    expect(result.severity).toBe("watch");
+    expect(result.metric?.id).toBe("hardStack");
+  });
+
+  it("falls all the way to clear when the only high/watch metrics are outside renderedIds", () => {
+    const futureHigh = metric({ id: "futureMetric", band: "high" });
+    const renderedHealthy = metric({ id: "hardStack", band: "healthy" });
+    const result = pickStatusStripMetric([futureHigh, renderedHealthy], new Set(["hardStack"]));
+    expect(result.severity).toBe("clear");
+    expect(result.metric).toBeUndefined();
+  });
+
+  it("behaves exactly as before when renderedIds is omitted", () => {
+    const high = metric({ id: "anything", band: "high" });
+    expect(pickStatusStripMetric([high])).toEqual({ severity: "high", metric: high });
+  });
 });
 
 describe("statusStripBaseText", () => {

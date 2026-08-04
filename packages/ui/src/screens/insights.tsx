@@ -139,6 +139,15 @@ const METRIC_GROUPS: Array<{ title: string; ids: string[] }> = [
   { title: "Execution", ids: ["lowIntensityShare", "easyDiscipline", "pacing"] },
 ];
 
+/**
+ * Derived from `METRIC_GROUPS`, not hand-duplicated: the strip must only
+ * headline a metric with a tile to scroll to, and the grid above is the
+ * single source of truth for which ids that is. A future worker metric with
+ * no entry in `METRIC_GROUPS` is invisible on the grid; without this gate it
+ * could still win the strip and offer a scroll-to-nowhere button.
+ */
+const RENDERED_METRIC_IDS: ReadonlySet<string> = new Set(METRIC_GROUPS.flatMap((g) => g.ids));
+
 function ReviewBody({ r }: { r: WeeklyReview }) {
   return (
     <div>
@@ -179,7 +188,17 @@ export function InsightsScreen() {
     <div className="stack">
       <h1 className="screen-title">Insights</h1>
 
-      <StatusStrip interpreted={interpreted} adherencePct={adherencePct} />
+      {/* `resolved` (computed above, and reused by the Consistency card's own
+          headline math) gates the percentage here too: when nothing has
+          resolved yet, `adherenceRate` is 0/0 → 0, and printing "adherence
+          0%" on the strip would contradict the card underneath it, which
+          correctly suppresses the number in favor of "Nothing has resolved
+          yet…". `undefined` makes StatusStrip drop the clause entirely. */}
+      <StatusStrip
+        interpreted={interpreted}
+        adherencePct={resolved > 0 ? adherencePct : undefined}
+        renderedIds={RENDERED_METRIC_IDS}
+      />
 
       <Card title="Signals">
         {METRIC_GROUPS.map((g) => {

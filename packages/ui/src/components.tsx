@@ -387,16 +387,22 @@ export function Sheet({
  * whole app. Class component because that is still the only way to catch a
  * render error in React 18 — there is no hook equivalent.
  *
- * `onRetry` is the caller's re-fetch (a `queryClient` invalidation); resetting
- * `error` alone would re-render the same bad data straight back into the same
- * crash, so the two always happen together. There is no `resetKey`: the
- * boundary is mounted as a route element, so navigating away unmounts it and
- * coming back gets a clean instance.
+ * `onRetry` is the caller's re-fetch (a `queryClient` invalidation). It may
+ * return a `Promise` — when it does, the error state is cleared only once
+ * that promise SETTLES, not synchronously. Resetting `error` up front and
+ * firing the refetch alongside it (the original approach) remounts the
+ * subtree immediately against the *same* stale/bad cached payload: for a
+ * data-driven crash (bad shape, not a code bug) that re-throws before the
+ * fresh data lands, so the first Retry press silently fails and looks like
+ * it needs a second press. Waiting for the promise means the remount only
+ * happens once there is something new to render against. There is no
+ * `resetKey`: the boundary is mounted as a route element, so navigating away
+ * unmounts it and coming back gets a clean instance.
  */
 interface ErrorBoundaryProps {
   title?: string;
   children?: ReactNode;
-  onRetry?: () => void;
+  onRetry?: () => void | Promise<unknown>;
 }
 
 interface ErrorBoundaryState {
@@ -418,8 +424,25 @@ export class ErrorBoundary extends Component<ErrorBoundaryProps, ErrorBoundarySt
   }
 
   private readonly retry = (): void => {
-    this.setState({ error: null });
-    this.props.onRetry?.();
+    let result: void | Promise<unknown>;
+    try {
+      result = this.props.onRetry?.();
+    } catch {
+      // A synchronous throw from onRetry is still a settled outcome — clear
+      // the error state so the crashed subtree gets a chance to remount
+      // (against whatever the query cache already holds) rather than being
+      // stuck on the boundary forever.
+      this.setState({ error: null });
+      return;
+    }
+    if (result && typeof (result as Promise<unknown>).finally === "function") {
+      // Clear on both success AND failure: a rejected refetch still settles,
+      // and getting stuck on the boundary because a retry attempt itself
+      // failed would be worse than remounting against the old data once more.
+      (result as Promise<unknown>).finally(() => this.setState({ error: null }));
+    } else {
+      this.setState({ error: null });
+    }
   };
 
   override render(): ReactNode {

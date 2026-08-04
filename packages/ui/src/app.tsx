@@ -74,7 +74,11 @@ function AuthedApp() {
           element={
             <ErrorBoundary
               title="Couldn't render insights"
-              onRetry={() => void queryClient.refetchQueries({ queryKey: ["insights"] })}
+              // Not voided: ErrorBoundary awaits this promise before
+              // clearing its error state, so the remount happens against
+              // freshly refetched data rather than the same cached payload
+              // that crashed the first render.
+              onRetry={() => queryClient.refetchQueries({ queryKey: ["insights"] })}
             >
               <InsightsScreen />
             </ErrorBoundary>

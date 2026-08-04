@@ -74,11 +74,30 @@ export interface StatusStripPick {
   metric?: InterpretedMetric;
 }
 
-/** First `band==="high"` metric wins; else first `band==="watch"`; else "clear". */
-export function pickStatusStripMetric(interpreted: readonly InterpretedMetric[]): StatusStripPick {
-  const high = interpreted.find((m) => m.band === "high");
+function isRenderedId(id: string, renderedIds?: ReadonlySet<string> | string[]): boolean {
+  if (!renderedIds) return true;
+  return Array.isArray(renderedIds) ? renderedIds.includes(id) : renderedIds.has(id);
+}
+
+/**
+ * First `band==="high"` metric wins; else first `band==="watch"`; else
+ * "clear".
+ *
+ * `renderedIds`, when given, restricts which metrics are even eligible to
+ * headline the strip. The screen's grid renders a fixed whitelist of ids
+ * (see `insights.tsx`'s `METRIC_GROUPS`) — without this filter, a metric the
+ * worker started sending but the grid doesn't yet have a group for could
+ * still win here, and the strip's click target (`scrollToSignal`) would
+ * scroll to a `signal-${id}` element that was never rendered.
+ */
+export function pickStatusStripMetric(
+  interpreted: readonly InterpretedMetric[],
+  renderedIds?: ReadonlySet<string> | string[],
+): StatusStripPick {
+  const eligible = interpreted.filter((m) => isRenderedId(m.id, renderedIds));
+  const high = eligible.find((m) => m.band === "high");
   if (high) return { severity: "high", metric: high };
-  const watch = interpreted.find((m) => m.band === "watch");
+  const watch = eligible.find((m) => m.band === "watch");
   if (watch) return { severity: "watch", metric: watch };
   return { severity: "clear" };
 }
@@ -398,15 +417,21 @@ function scrollToSignal(id: string): void {
  * else an all-clear line. Clicking/Enter-ing scrolls the referenced
  * `signal-${id}` tile into view and moves focus there; the all-clear state
  * has no single target and renders as a plain (non-interactive) strip.
+ *
+ * `renderedIds`, when passed, is forwarded to `pickStatusStripMetric` so the
+ * strip can never headline (and offer a click target for) a metric the
+ * caller isn't actually rendering as a tile.
  */
 export function StatusStrip({
   interpreted,
   adherencePct,
+  renderedIds,
 }: {
   interpreted: readonly InterpretedMetric[];
   adherencePct?: number;
+  renderedIds?: ReadonlySet<string> | string[];
 }) {
-  const pick = pickStatusStripMetric(interpreted);
+  const pick = pickStatusStripMetric(interpreted, renderedIds);
   const { base, awaitingCount } = statusStripBaseText(pick, interpreted);
   const targetId = pick.metric?.id;
 
