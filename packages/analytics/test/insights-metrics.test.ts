@@ -1,11 +1,11 @@
 import { describe, expect, it } from "vitest";
 import {
-  computeAcwr,
-  computeBalance,
   computeEasyDiscipline,
   computeHardDayStacking,
   computeHrvTrend,
-  computeRampRate,
+  computeLoadRatio,
+  computeMonotony,
+  computeRamp,
   computeRestingHr,
   interpret,
   negativeSplit,
@@ -42,7 +42,7 @@ describe("hr zones", () => {
 });
 
 describe("load", () => {
-  it("computes ACWR over sufficient history", () => {
+  it("computes the EWMA load ratio over sufficient history", () => {
     const today = "2026-08-01";
     const days: { date: string; load: number }[] = [];
     // 28 days, 50/day chronic, last 7 days bumped to ~57 each for a mild ramp.
@@ -50,26 +50,41 @@ describe("load", () => {
       const d = new Date(Date.parse(today) - i * 86_400_000).toISOString().slice(0, 10);
       days.push({ date: d, load: i < 7 ? 57 : 50 });
     }
-    const r = computeAcwr(days, today);
+    const r = computeLoadRatio(days, today);
     expect(r.status).toBe("ok");
     if (r.status === "ok") {
-      // acute = 7*57 = 399; chronic = (7*57 + 21*50)/4 = (399+1050)/4 = 362.25
-      expect(r.value.acwr).toBeCloseTo(399 / 362.25, 2);
+      // A mild bump above a steady baseline nudges the ratio a bit above parity,
+      // well short of the >1.3 spike threshold.
+      expect(r.value.ratio).toBeGreaterThan(1.0);
+      expect(r.value.ratio).toBeLessThan(1.3);
     }
   });
-  it("suppresses ACWR without enough history", () => {
-    const r = computeAcwr([{ date: "2026-08-01", load: 50 }], "2026-08-01");
+  it("suppresses the load ratio without enough history", () => {
+    const r = computeLoadRatio([{ date: "2026-08-01", load: 50 }], "2026-08-01");
     expect(r.status).toBe("insufficient_data");
   });
-  it("ramp rate is week over week", () => {
-    const r = computeRampRate([3600, 3600, 3960]);
+  it("ramp is this week vs. the prior 21-day norm", () => {
+    const today = "2026-08-01";
+    const days: { date: string; seconds: number }[] = [];
+    for (let i = 0; i < 28; i++) {
+      const d = new Date(Date.parse(today) - i * 86_400_000).toISOString().slice(0, 10);
+      days.push({ date: d, seconds: i < 7 ? 3960 : 3600 });
+    }
+    const r = computeRamp(days, today);
     expect(r.status === "ok" && r.value.pct).toBe(10);
   });
-  it("balance sums to ~100%", () => {
-    const r = computeBalance({ easy: 6000, quality: 2000, long: 2000 }, 6);
+  it("monotony/strain summarize the trailing week's variability", () => {
+    const today = "2026-08-01";
+    const days: { date: string; load: number }[] = [
+      { date: "2026-07-01", load: 80 }, // clears the 14-day history gate
+    ];
+    for (let i = 0; i < 7; i++) {
+      const d = new Date(Date.parse(today) - i * 86_400_000).toISOString().slice(0, 10);
+      days.push({ date: d, load: i % 2 === 0 ? 100 : 0 });
+    }
+    const r = computeMonotony(days, today);
     if (r.status === "ok") {
-      expect(r.value.easyPct + r.value.qualityPct + r.value.longPct).toBe(100);
-      expect(r.value.easyPct).toBe(60);
+      expect(r.value.strain).toBe(Math.round(r.value.weeklyLoad * r.value.monotony));
     }
   });
 });
@@ -134,21 +149,24 @@ describe("easyCeiling", () => {
   });
 });
 
-describe("acwr honesty", () => {
-  it("suppresses instead of reporting a confident 0 when all history is stale", async () => {
-    const { computeAcwr } = await import("../src/load.js");
-    // Runs exist, but all of them are older than the 28-day chronic window.
+describe("load ratio honesty", () => {
+  it("suppresses instead of reporting a confident-looking ratio when all history is stale", async () => {
+    const { computeLoadRatio } = await import("../src/load.js");
+    // Runs exist, but all of them are older than the 28-day recent window —
+    // the old ACWR regime here would silently 2x-inflate a chronic average
+    // computed from a mostly-empty window instead of admitting it has no
+    // recent baseline.
     const stale = [
       { date: "2026-04-01", load: 80 },
       { date: "2026-04-10", load: 60 },
       { date: "2026-04-20", load: 70 },
     ];
-    const r = computeAcwr(stale, "2026-08-01");
+    const r = computeLoadRatio(stale, "2026-08-01");
     expect(r.status).toBe("insufficient_data");
   });
 
-  it("still computes a real ratio when the window has data", async () => {
-    const { computeAcwr } = await import("../src/load.js");
+  it("still computes a real ratio when the recent window has data", async () => {
+    const { computeLoadRatio } = await import("../src/load.js");
     const days = [
       { date: "2026-07-05", load: 60 },
       { date: "2026-07-12", load: 70 },
@@ -156,8 +174,8 @@ describe("acwr honesty", () => {
       { date: "2026-07-28", load: 90 },
       { date: "2026-08-01", load: 100 },
     ];
-    const r = computeAcwr(days, "2026-08-01");
+    const r = computeLoadRatio(days, "2026-08-01");
     expect(r.status).toBe("ok");
-    if (r.status === "ok") expect(r.value.acwr).toBeGreaterThan(0);
+    if (r.status === "ok") expect(r.value.ratio).toBeGreaterThan(0);
   });
 });
