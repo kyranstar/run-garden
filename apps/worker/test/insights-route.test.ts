@@ -502,6 +502,13 @@ describe("pacing drill-down", () => {
         lapDurationFactors: [0.95, 0.95, 1, 1.05, 1.05],
       }),
     ];
+    // Raw delta ≈ +0.03 s/km: it fades by an amount that rounds away entirely.
+    // The published `delta` is 0, so `over` must be false — deriving `over`
+    // from the raw number instead would ship over=true with delta=0.
+    const barelyFaded = await seedMatchedRun(userId, "easy", {
+      date: addDays(today, -15),
+      lapDurationFactors: [1, 1, 1, 1.0001, 1.0001],
+    });
     const negativeSplit = [
       await seedMatchedRun(userId, "easy", {
         date: addDays(today, -9),
@@ -530,6 +537,9 @@ describe("pacing drill-down", () => {
     for (const id of negativeSplit) {
       expect(runs!.find((r) => r.activityId === id)!.delta).toBeLessThan(0);
     }
+    const barely = runs!.find((r) => r.activityId === barelyFaded)!;
+    expect(barely.delta).toBe(0);
+    expect(barely.over).toBe(false);
     // Rounded to one decimal, never a raw float.
     for (const r of runs!) {
       expect(r.delta).toBe(Math.round(r.delta! * 10) / 10);

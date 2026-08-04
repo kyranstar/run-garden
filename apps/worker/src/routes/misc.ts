@@ -952,14 +952,19 @@ insightRoutes.get("/", async (c) => {
 
   const pacingDetailRuns: MetricRunDetail[] = splitRuns.map((s) => {
     const delta = s.secondHalfPace - s.firstHalfPace; // positive = faded
+    // `over` is derived from the ROUNDED delta, not the raw one: a raw delta
+    // of 0.03 s/km rounds to a published `delta` of 0, and `over: true`
+    // alongside `delta: 0` would break the sign-agreement MetricRunDetail
+    // promises (and paint a red row for a split that is, as published, even).
+    const rounded = Math.round(delta * 10) / 10;
     const magnitude = `${Math.round(Math.abs(delta))} s/km`;
     return {
       activityId: s.activityId,
       date: s.date,
       title: s.title,
       value: delta <= 0 ? `finished ${magnitude} faster` : `faded ${magnitude}`,
-      delta: Math.round(delta * 10) / 10,
-      over: delta > 0,
+      delta: rounded,
+      over: rounded > 0,
       note:
         delta <= 0
           ? "Second half faster — a negative split."
