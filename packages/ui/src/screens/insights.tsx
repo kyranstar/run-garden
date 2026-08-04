@@ -22,7 +22,7 @@ import {
 } from "../charts.js";
 import { TrendChip } from "../chart-kit.js";
 import { SignalTile, StatusStrip } from "../signal-tiles.js";
-import { formatHours } from "../charts-math.js";
+import { currentStreak, formatHours } from "../charts-math.js";
 
 /**
  * The Insights dashboard. Reading order, top to bottom: one line of status →
@@ -183,6 +183,7 @@ export function InsightsScreen() {
   // "22 of 24 resolved" beside the percentage means the reader can check it.
   const resolved = consistency.completed + consistency.skipped + consistency.missed;
   const totalRuns = recentTraining.reduce((s, w) => s + w.runCount, 0);
+  const streak = currentStreak(consistency.days);
 
   return (
     <div className="stack">
@@ -234,6 +235,10 @@ export function InsightsScreen() {
                 {consistency.pending === 1 ? "" : "s"} still waiting on an answer.
               </p>
             )}
+            {/* Quiet by design: a streak under 2 days is just normal
+                training, and normal earns silence (see charts-math.ts'
+                currentStreak for the rest/pending/missed walk-back rule). */}
+            {streak >= 2 ? <p className="streak-note">{streak}-day streak</p> : null}
             <OutcomeBar
               completed={consistency.completed}
               moved={consistency.moved}

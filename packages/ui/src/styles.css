@@ -1602,6 +1602,15 @@ button {
   font-size: 0.85rem;
   color: var(--ink-soft);
 }
+/* Streak note: quiet by design, only shown at 2+ days (see currentStreak in
+   charts-math.ts) — a single day is just normal training, and normal earns
+   silence, same rule the rest of this dashboard follows. */
+.streak-note {
+  margin: 0.2rem 0 0;
+  font-size: 0.85rem;
+  color: var(--ink-soft);
+  font-variant-numeric: tabular-nums;
+}
 
 /* Weekly review disclosure. The latest week is always open prose; older ones
    fold away behind one line. */
