@@ -3,7 +3,7 @@ import { BrowserRouter, Navigate, Route, Routes, useNavigate } from "react-route
 import { QueryClient, QueryClientProvider, useQuery } from "@tanstack/react-query";
 import { api, ApiError } from "@rg/api-client";
 import { AppShell } from "./shell.js";
-import { Spinner } from "./components.js";
+import { ErrorBoundary, Spinner } from "./components.js";
 import { PlanScreen } from "./screens/plan.js";
 import { RunsScreen } from "./screens/runs.js";
 import { GardenScreen } from "./screens/garden.js";
@@ -62,7 +62,24 @@ function AuthedApp() {
         <Route path="/plan" element={<PlanScreen />} />
         <Route path="/runs" element={<RunsScreen />} />
         <Route path="/garden" element={<GardenScreen />} />
-        <Route path="/insights" element={<InsightsScreen />} />
+        {/* The boundary sits OUTSIDE the screen rather than inside it: a
+            boundary never catches an error thrown by its own render, so
+            wrapping the screen's returned tree would have missed anything
+            the screen body itself threw (the payload destructuring, say).
+            Only this route is wrapped — a chart bug on Insights must not
+            take the rest of the app down with it, and the rest of the app
+            keeps failing loudly in dev. */}
+        <Route
+          path="/insights"
+          element={
+            <ErrorBoundary
+              title="Couldn't render insights"
+              onRetry={() => void queryClient.refetchQueries({ queryKey: ["insights"] })}
+            >
+              <InsightsScreen />
+            </ErrorBoundary>
+          }
+        />
         <Route path="/settings" element={<SettingsScreen />} />
         <Route path="*" element={<Navigate to="/" replace />} />
       </Routes>

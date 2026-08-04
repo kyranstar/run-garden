@@ -37,6 +37,33 @@ export function pickTileVisual(m: {
   return "none";
 }
 
+/**
+ * Whether a tile has a drilldown worth opening — i.e. whether the sheet would
+ * have anything in it that the tile doesn't already show.
+ *
+ * Two routes in. Per-run evidence (`detail`) is one. The other is a daily
+ * `series` **paired with its `baseline` band**: the recovery metrics
+ * (`restingHr`, `hrv`) carry no `detail` at all — their evidence is a run of
+ * morning readings, not a list of runs — and the sheet draws them as a
+ * baseline-band chart. Gating on `detail` alone (as this file originally did)
+ * made the spec's "recovery drill-downs get the baseline-band daily chart"
+ * unreachable: the tile was never clickable.
+ *
+ * The `baseline` half of that condition is load-bearing, not belt-and-braces:
+ * `loadRatio` also ships a `series` (56 daily ratios) but no baseline band, so
+ * a series-only test would put a chevron on it promising a sheet containing
+ * nothing but the meaning text already printed on the tile.
+ *
+ * An empty `series` array counts as absent, matching `pickTileVisual`.
+ */
+export function hasDrilldown(m: {
+  detail?: unknown;
+  series?: MetricSeriesPoint[];
+  baseline?: unknown;
+}): boolean {
+  return !!m.detail || (!!m.baseline && (m.series?.length ?? 0) > 0);
+}
+
 // ── Status-strip priority (pure; unit-tested) ───────────────────────────────
 
 export type StatusStripSeverity = "high" | "watch" | "clear";
@@ -155,12 +182,21 @@ function Gauge({ g }: { g: MetricGauge }) {
       </div>
       <div className="gauge-scale">
         <span className="gauge-end gauge-end-lo">{formatGaugeLabel(g.min)}</span>
-        <span className="gauge-tick" style={{ left: `${bandLeft}%` }}>
-          {formatGaugeLabel(g.healthyLo)}
-        </span>
-        <span className="gauge-tick" style={{ left: `${bandRight}%` }}>
-          {formatGaugeLabel(g.healthyHi)}
-        </span>
+        {/* A band edge sitting exactly on a track end has its number printed
+            twice, in the same place: restingHr's healthyLo IS its min, hrv's
+            and lowIntensityShare's healthyHi IS their max. Two absolutely
+            positioned labels then overlap into unreadable pulp ("386" for two
+            36s). The end label wins — it's the one that anchors the scale. */}
+        {g.healthyLo > g.min ? (
+          <span className="gauge-tick" style={{ left: `${bandLeft}%` }}>
+            {formatGaugeLabel(g.healthyLo)}
+          </span>
+        ) : null}
+        {g.healthyHi < g.max ? (
+          <span className="gauge-tick" style={{ left: `${bandRight}%` }}>
+            {formatGaugeLabel(g.healthyHi)}
+          </span>
+        ) : null}
         <span className="gauge-end gauge-end-hi">{formatGaugeLabel(g.max)}</span>
       </div>
     </div>
@@ -255,7 +291,7 @@ function BandPill({ band }: { band?: string }) {
 // ── SignalTile ───────────────────────────────────────────────────────────
 
 export function SignalTile({ m, onDrill }: { m: InterpretedMetric; onDrill?: (m: InterpretedMetric) => void }) {
-  const drillable = !!m.detail && !!onDrill;
+  const drillable = !!onDrill && hasDrilldown(m);
   const visual = pickTileVisual(m);
   const insufficient = m.status === "insufficient_data";
 

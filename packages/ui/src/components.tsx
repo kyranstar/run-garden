@@ -1,4 +1,4 @@
-import { useEffect, type ReactNode } from "react";
+import { Component, useEffect, type ErrorInfo, type ReactNode } from "react";
 import type { CorosSyncState, CompletionState } from "@rg/domain";
 import type { SyncNoteDto, SyncStatusDto } from "@rg/api-client";
 import {
@@ -380,6 +380,63 @@ export function Sheet({
       </div>
     </div>
   );
+}
+
+/**
+ * Per-screen error boundary: one screen failing to render must not blank the
+ * whole app. Class component because that is still the only way to catch a
+ * render error in React 18 — there is no hook equivalent.
+ *
+ * `onRetry` is the caller's re-fetch (a `queryClient` invalidation); resetting
+ * `error` alone would re-render the same bad data straight back into the same
+ * crash, so the two always happen together. There is no `resetKey`: the
+ * boundary is mounted as a route element, so navigating away unmounts it and
+ * coming back gets a clean instance.
+ */
+interface ErrorBoundaryProps {
+  title?: string;
+  children?: ReactNode;
+  onRetry?: () => void;
+}
+
+interface ErrorBoundaryState {
+  error: Error | null;
+}
+
+export class ErrorBoundary extends Component<ErrorBoundaryProps, ErrorBoundaryState> {
+  override state: ErrorBoundaryState = { error: null };
+
+  static getDerivedStateFromError(error: Error): ErrorBoundaryState {
+    return { error };
+  }
+
+  override componentDidCatch(error: Error, info: ErrorInfo): void {
+    // No telemetry in this app (see docs/SECURITY.md — nothing leaves the
+    // device it wasn't asked to). The console is the only sink, and a
+    // swallowed stack trace is worse than a noisy one.
+    console.error("Screen failed to render:", error, info.componentStack);
+  }
+
+  private readonly retry = (): void => {
+    this.setState({ error: null });
+    this.props.onRetry?.();
+  };
+
+  override render(): ReactNode {
+    if (!this.state.error) return this.props.children;
+    return (
+      <div className="stack">
+        <EmptyState art="⚠" title={this.props.title ?? "Couldn't render this screen"}>
+          Something here failed to draw. Your data is safe — this is a display problem.
+        </EmptyState>
+        <div className="row" style={{ justifyContent: "center" }}>
+          <button className="btn" onClick={this.retry}>
+            Retry
+          </button>
+        </div>
+      </div>
+    );
+  }
 }
 
 export function Banner({ kind, children }: { kind: "warn" | "info"; children: ReactNode }) {

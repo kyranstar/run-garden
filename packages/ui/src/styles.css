@@ -1125,12 +1125,10 @@ button {
   font: inherit;
 }
 
-/* Interpretable insight cards */
-.metric-grid {
-  display: grid;
-  gap: 0.7rem;
-  grid-template-columns: repeat(auto-fill, minmax(230px, 1fr));
-}
+/* Interpretable insight cards. (`.metric-grid`, the 230px-minimum grid the
+   retired MetricCard used, is gone — the Signals card lays its tiles out with
+   `.signal-grid` below, which packs three across a desktop card instead of
+   two.) */
 .metric-card {
   border: 1px solid var(--border);
   border-radius: var(--radius-sm);
@@ -1170,6 +1168,21 @@ button {
 
 .chart-block {
   overflow-x: auto;
+}
+/* Caption row: title/subtitle on the left, an optional small mark (today the
+   efficiency TrendChip) pinned right. Baseline-aligned so the chip sits on
+   the title's baseline rather than floating above it. */
+.chart-caption {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 0.6rem;
+}
+.chart-caption-text {
+  min-width: 0;
+}
+.chart-caption-aside {
+  flex: none;
 }
 .chart-title {
   font-weight: 650;
@@ -1521,6 +1534,94 @@ button {
    with the headline count. */
 .status-strip-awaiting {
   font-weight: 400;
+}
+
+/* ── Insights dashboard layout (screens/insights.tsx) ──────────────────────
+   Every value here is a token or a plain length; both themes come free.
+   The screen is one column of Cards — these rules only describe what happens
+   INSIDE a card: the signal grid, the aerobic pair, and two bits of
+   typography (the adherence headline, the earlier-weeks disclosure). */
+
+/* Thin inline subgroup heading — deliberately NOT a nested card. Three cards
+   inside a card is three boxes of chrome around nine tiles; a label is
+   enough to group them. */
+.signal-group + .signal-group {
+  margin-top: 1rem;
+}
+.signal-group-label {
+  font-size: 0.72rem;
+  font-weight: 650;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--ink-faint);
+  margin: 0 0 0.45rem;
+}
+/* auto-FIT, not auto-fill: every subgroup holds exactly three metrics, and
+   auto-fill on a wide card lays out a fourth, empty track — squeezing three
+   tiles into three quarters of the row and wrapping their titles for nothing.
+   auto-fit collapses the empty track and the three tiles take the full width. */
+.signal-grid {
+  display: grid;
+  gap: 0.6rem;
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+}
+
+/* Efficiency | decoupling. One column on a phone; two from 720px, where a
+   half-width chart is still ~330px and the pair can be read against each
+   other without scrolling between them. */
+.aerobic-pair {
+  display: grid;
+  gap: 1rem;
+  grid-template-columns: 1fr;
+}
+.aerobic-cell {
+  min-width: 0; /* let a wide chart scroll inside its own .chart-block */
+}
+@media (min-width: 720px) {
+  .aerobic-pair {
+    grid-template-columns: 1fr 1fr;
+  }
+}
+
+/* Adherence headline: the number big, everything qualifying it small and
+   quiet, on one line. */
+.headline-stat {
+  margin: 0;
+  display: flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  font-variant-numeric: tabular-nums;
+}
+.headline-stat-value {
+  font-size: 1.9rem;
+  font-weight: 660;
+  line-height: 1.1;
+  color: var(--ink);
+}
+.headline-stat-suffix {
+  font-size: 0.85rem;
+  color: var(--ink-soft);
+}
+
+/* Weekly review disclosure. The latest week is always open prose; older ones
+   fold away behind one line. */
+.review-week {
+  font-weight: 650;
+  margin: 0 0 0.2rem;
+}
+.reviews-earlier > summary {
+  cursor: pointer;
+  font-size: 0.82rem;
+  color: var(--ink-faint);
+  padding: 0.25rem 0;
+  list-style-position: inside;
+}
+.reviews-earlier > summary:hover,
+.reviews-earlier > summary:focus-visible {
+  color: var(--ink-soft);
+}
+.reviews-earlier[open] > summary {
+  margin-bottom: 0.6rem;
 }
 
 /* ── Sheets & dialogs ───────────────────────────────────────────────────── */
@@ -2047,11 +2148,9 @@ button {
 .metric-drillable:focus-visible {
   border-color: var(--green);
 }
-.metric-drill-hint {
-  font-size: 0.75rem;
-  color: var(--green-ink);
-  margin-top: 0.35rem;
-}
+/* (`.metric-drill-hint` — the "See the runs behind this →" line under every
+   drillable card — is gone with the card that carried it: SignalTile's
+   bottom-right chevron says the same thing once, quietly.) */
 .drill-runs {
   list-style: none;
   margin: 0;

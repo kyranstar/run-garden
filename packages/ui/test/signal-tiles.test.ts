@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  hasDrilldown,
   pickTileVisual,
   pickStatusStripMetric,
   statusStripBaseText,
@@ -59,6 +60,49 @@ describe("pickTileVisual", () => {
   it("returns none when gauge, series, and strip are all absent", () => {
     const m = metric({ id: "x" });
     expect(pickTileVisual(m)).toBe("none");
+  });
+});
+
+describe("hasDrilldown", () => {
+  it("is true for a metric with per-run detail", () => {
+    const m = metric({ id: "easyDiscipline", detail: { explain: "why", runs: [] } });
+    expect(hasDrilldown(m)).toBe(true);
+  });
+
+  it("is true for a recovery metric with a daily series AND its baseline band but NO detail", () => {
+    // restingHr/hrv carry no `detail` at all — this is the case the original
+    // `!!m.detail` gate made unreachable.
+    const m = metric({
+      id: "restingHr",
+      series: [{ date: "2026-01-01", value: 48 }],
+      baseline: { value: 48, lo: 43, hi: 53, unit: "bpm" },
+    });
+    expect(m.detail).toBeUndefined();
+    expect(hasDrilldown(m)).toBe(true);
+  });
+
+  it("is false for a series with no baseline band — loadRatio's 56 daily ratios draw no sheet", () => {
+    const m = metric({ id: "loadRatio", series: [{ date: "2026-01-01", value: 1.1 }] });
+    expect(hasDrilldown(m)).toBe(false);
+  });
+
+  it("is false when the series is present but empty", () => {
+    const m = metric({
+      id: "restingHr",
+      series: [],
+      baseline: { value: 48, lo: 43, hi: 53, unit: "bpm" },
+    });
+    expect(hasDrilldown(m)).toBe(false);
+  });
+
+  it("is false for a metric with neither detail nor series", () => {
+    expect(hasDrilldown(metric({ id: "monotony" }))).toBe(false);
+  });
+
+  it("is false for a strip-only metric — a strip is a tile visual, not evidence", () => {
+    expect(hasDrilldown(metric({ id: "hardStack", strip: [{ date: "2026-01-01", on: true }] }))).toBe(
+      false,
+    );
   });
 });
 

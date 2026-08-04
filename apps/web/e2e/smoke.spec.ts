@@ -31,10 +31,14 @@ test("Garden renders a scene and a species collection", async ({ page }) => {
   await expect(page.getByText(/Species collection/)).toBeVisible();
 });
 
-test("Insights renders consistency and suppresses thin metrics honestly", async ({ page }) => {
+test("Insights renders the dashboard and suppresses thin metrics honestly", async ({ page }) => {
   await page.goto("/insights");
-  await expect(page.getByText("Plan consistency · last 12 weeks")).toBeVisible();
-  // HR drift is suppressed with a sample-size explanation in the fixture data.
+  // Card order per the dashboard spec: status strip, signals, consistency.
+  await expect(page.locator(".status-strip")).toBeVisible();
+  await expect(page.getByText("Signals", { exact: true })).toBeVisible();
+  await expect(page.getByText("Consistency · last 12 weeks")).toBeVisible();
+  // Aerobic decoupling either draws or explains its own sample size; either
+  // way the words "steady runs" appear, and never a bare empty card.
   await expect(page.getByText(/steady runs/).first()).toBeVisible();
 });
 
