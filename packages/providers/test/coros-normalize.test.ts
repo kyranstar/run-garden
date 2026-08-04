@@ -234,3 +234,27 @@ describe("corosSportName / COROS_GARDEN_SPORT_TYPES", () => {
     expect(corosSportName(555)).toBe("coros_555");
   });
 });
+
+describe("COROS_GARDEN_SPORT_TYPES", () => {
+  // The backfill ingests exactly what this map admits and silently tallies the
+  // rest, so a missing code means years of history quietly never arrive.
+  it("admits every run code as run", () => {
+    for (const code of [100, 101, 102, 103]) {
+      expect(COROS_GARDEN_SPORT_TYPES.get(code)).toBe("run");
+    }
+  });
+
+  it("admits strength 402", () => {
+    expect(COROS_GARDEN_SPORT_TYPES.get(402)).toBe("strength");
+  });
+
+  it("admits both yoga codes", () => {
+    expect(COROS_GARDEN_SPORT_TYPES.get(403)).toBe("yoga");
+    expect(COROS_GARDEN_SPORT_TYPES.get(904)).toBe("yoga");
+  });
+
+  it("does not admit bike or swim — they are outside the garden's three disciplines", () => {
+    expect(COROS_GARDEN_SPORT_TYPES.has(200)).toBe(false);
+    expect(COROS_GARDEN_SPORT_TYPES.has(300)).toBe(false);
+  });
+});

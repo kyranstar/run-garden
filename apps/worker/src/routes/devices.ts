@@ -7,6 +7,7 @@ import {
   newId,
   nowInstant,
   sourceActivitySchema,
+  todayInZone,
 } from "@rg/domain";
 import type { AppContext } from "../auth/middleware.js";
 import { requireDevice, requireUser } from "../auth/middleware.js";
@@ -15,6 +16,7 @@ import { applyJobResult, claimNextJob, emitPendingWork } from "../services/jobs.
 import { DEVICE_ONLINE_WINDOW_MS } from "../services/sync-status.js";
 import { importPlanSnapshot } from "../services/import-plan.js";
 import { ingestActivities } from "../services/completion.js";
+import { advanceBackfill, recordChunk } from "../services/backfill.js";
 import { advanceGarden, buildGardenView, resimulateFrom } from "../services/garden-sync.js";
 import { finishSyncRun, recordSyncError, startSyncRun } from "../services/reconcile-daily.js";
 import { isExerciseCatalogStale, upsertExerciseCatalog } from "../services/exercise-catalog.js";
@@ -326,6 +328,55 @@ deviceRoutes.post("/bridge/sync", requireDevice, async (c) => {
     });
     await finishSyncRun(db, runId, "error");
     return c.json({ error: "sync_failed" }, 500);
+  }
+});
+
+/**
+ * Deep-backfill chunk.
+ *
+ * ACTIVITIES ONLY — this endpoint must never call importPlanSnapshot. An old
+ * range contains none of today's workouts, and import-plan rules 8/9 would read
+ * that absence as "removed upstream" and archive the live plan.
+ */
+const backfillChunkSchema = z.object({
+  chunkStart: z.string(),
+  chunkEnd: z.string(),
+  activities: z.array(sourceActivitySchema).default([]),
+  lapsByProviderId: z.record(z.array(z.any())).default({}),
+  skippedSportTypes: z.record(z.number()).default({}),
+});
+
+deviceRoutes.post("/bridge/backfill-chunk", requireDevice, async (c) => {
+  const db = c.get("db");
+  const userId = c.get("userId");
+  const parsed = backfillChunkSchema.safeParse(await c.req.json());
+  if (!parsed.success) return c.json({ error: "invalid_chunk" }, 400);
+  const body = parsed.data;
+
+  const runId = await startSyncRun(db, "coros_backfill", userId, c.get("deviceId"));
+  try {
+    await recordChunk(db, userId, {
+      chunkStart: body.chunkStart,
+      chunkEnd: body.chunkEnd,
+      activities: body.activities,
+      lapsByProviderId: body.lapsByProviderId as never,
+      skippedSportTypes: body.skippedSportTypes,
+    });
+    const today = todayInZone((await loadPreferences(db, userId)).timezone);
+    await advanceBackfill(db, userId, "", { activitiesFound: body.activities.length }, today);
+    await finishSyncRun(db, runId, "ok");
+    return c.json({ ok: true, ingested: body.activities.length });
+  } catch (e) {
+    await recordSyncError(db, {
+      syncRunId: runId,
+      userId,
+      provider: "coros",
+      operation: "backfill_chunk",
+      category: "backfill_chunk_failed",
+      message: e instanceof Error ? e.message : "unknown",
+    });
+    await finishSyncRun(db, runId, "error");
+    return c.json({ error: "backfill_chunk_failed" }, 500);
   }
 });
 
