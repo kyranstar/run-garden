@@ -90,23 +90,30 @@ describe("load", () => {
 });
 
 describe("recovery", () => {
+  const TODAY = "2026-08-01";
   const health = (n: number, rhr: number, hrv: number) =>
     Array.from({ length: n }, (_, i) => ({
-      date: new Date(Date.parse("2026-08-01") - i * 86_400_000).toISOString().slice(0, 10),
+      date: new Date(Date.parse(TODAY) - i * 86_400_000).toISOString().slice(0, 10),
       restingHeartRate: rhr,
       hrv,
     }));
   it("resting HR delta vs baseline", () => {
     const rows = health(10, 50, 60);
-    rows[0]!.restingHeartRate = 56; // today elevated
-    const r = computeRestingHr(rows);
+    // Elevate the 3 most recent readings (current = median of the 3 most
+    // recent, not just today's single reading, under the new semantics).
+    rows[0]!.restingHeartRate = 56;
+    rows[1]!.restingHeartRate = 56;
+    rows[2]!.restingHeartRate = 56;
+    const r = computeRestingHr(rows, TODAY);
     expect(r.status === "ok" && r.value.deltaBpm).toBe(6);
   });
-  it("hrv trend needs 7 days", () => {
-    expect(computeHrvTrend(health(3, 50, 60)).status).toBe("insufficient_data");
+  it("hrv trend needs 17 readings (7 recent + 10 baseline)", () => {
+    const r = computeHrvTrend(health(16, 50, 60), TODAY);
+    expect(r.status).toBe("insufficient_data");
+    expect(r.status === "insufficient_data" && r.needed).toBe(17);
   });
   it("counts consecutive hard days", () => {
-    const r = computeHardDayStacking(["2026-08-01", "2026-07-31", "2026-07-30", "2026-07-28"], "2026-08-01");
+    const r = computeHardDayStacking(["2026-08-01", "2026-07-31", "2026-07-30", "2026-07-28"], TODAY);
     expect(r.status === "ok" && r.value.consecutive).toBe(3);
   });
 });
