@@ -658,14 +658,23 @@ export function HatchDefs({
 
 const VALENCE_PILL = { good: "pill-ok", bad: "pill-danger", flat: "pill-neutral" } as const;
 
+/**
+ * Below this, a trend is flat. The chip prints one decimal place, so anything
+ * under 0.05% renders as "0.0%" — and a green ▲ beside "0.0%" is a claim of
+ * improvement the number itself doesn't make. `pct > 0` alone put an arrow and
+ * a valence colour on 0.004% of drift.
+ */
+const TREND_FLAT_EPSILON = 0.05;
+
 export function TrendChip({ pct, betterWhen }: { pct: number; betterWhen: "up" | "down" }) {
-  const direction: "up" | "down" | "flat" = pct > 0 ? "up" : pct < 0 ? "down" : "flat";
+  const direction: "up" | "down" | "flat" =
+    pct >= TREND_FLAT_EPSILON ? "up" : pct <= -TREND_FLAT_EPSILON ? "down" : "flat";
   const valence: "good" | "bad" | "flat" =
     direction === "flat" ? "flat" : direction === betterWhen ? "good" : "bad";
   const glyph = direction === "up" ? "▲" : direction === "down" ? "▼" : "–";
   const sign = direction === "up" ? "+" : direction === "down" ? "−" : "";
   const text = `${sign}${Math.abs(pct).toFixed(1)}%`;
-  const valenceLabel = valence === "good" ? "improved" : valence === "bad" ? "worsened" : "unchanged";
+  const valenceLabel = valence === "good" ? "improved" : valence === "bad" ? "worsened" : "no change";
 
   return (
     <span className={`pill ${VALENCE_PILL[valence]} trend-chip`} aria-label={`${text}, ${valenceLabel}`}>

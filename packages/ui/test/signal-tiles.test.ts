@@ -23,12 +23,33 @@ function metric(overrides: Partial<InterpretedMetric> & { id: string }): Interpr
 }
 
 describe("pickTileVisual", () => {
-  it("picks gauge when a gauge is present, even if series/strip are also present", () => {
+  it("draws gauge AND sparkline when both are present, outranking any strip", () => {
+    // Spec §B2 asks the recovery tiles for both: the gauge says where today
+    // sits against the band, the sparkline says how it got there. A gauge
+    // alone can't tell "46 bpm, steady" from "46 bpm, climbing all week".
     const m = metric({
-      id: "x",
+      id: "restingHr",
       gauge: { min: 0, max: 100, healthyLo: 60, healthyHi: 100, value: 80 },
       series: [{ date: "2026-01-01", value: 1 }],
       strip: [{ date: "2026-01-01", on: true }],
+    });
+    expect(pickTileVisual(m)).toBe("gauge+spark");
+  });
+
+  it("picks a bare gauge when there is no series to pair it with", () => {
+    const m = metric({
+      id: "ramp",
+      gauge: { min: 0, max: 100, healthyLo: 60, healthyHi: 100, value: 80 },
+      strip: [{ date: "2026-01-01", on: true }],
+    });
+    expect(pickTileVisual(m)).toBe("gauge");
+  });
+
+  it("treats an empty series as absent beside a gauge, giving a bare gauge not gauge+spark", () => {
+    const m = metric({
+      id: "ramp",
+      gauge: { min: 0, max: 100, healthyLo: 60, healthyHi: 100, value: 80 },
+      series: [],
     });
     expect(pickTileVisual(m)).toBe("gauge");
   });
@@ -81,9 +102,26 @@ describe("hasDrilldown", () => {
     expect(hasDrilldown(m)).toBe(true);
   });
 
-  it("is false for a series with no baseline band — loadRatio's 56 daily ratios draw no sheet", () => {
-    const m = metric({ id: "loadRatio", series: [{ date: "2026-01-01", value: 1.1 }] });
+  it("is false for a series with no baseline band — a bare line draws no sheet worth opening", () => {
+    const m = metric({ id: "someFutureMetric", series: [{ date: "2026-01-01", value: 1.1 }] });
     expect(hasDrilldown(m)).toBe(false);
+  });
+
+  it("is true for loadRatio, whose baseline of 1 IS the norm the ratio is built against", () => {
+    // The worker now emits `baseline` for loadRatio (misc.ts) because 1.0 is
+    // the norm by construction, not an estimate — which turns its 56 daily
+    // ratios from a sparkline with nowhere to go into a real baseline-band
+    // sheet against the 0.8–1.3 sweet spot.
+    const m = metric({
+      id: "loadRatio",
+      series: [
+        { date: "2026-01-01", value: 1.1 },
+        { date: "2026-01-02", value: 1.05 },
+      ],
+      baseline: { value: 1, lo: 0.8, hi: 1.3, unit: "× norm" },
+    });
+    expect(m.detail).toBeUndefined();
+    expect(hasDrilldown(m)).toBe(true);
   });
 
   it("is false when the series is present but empty", () => {
@@ -205,6 +243,36 @@ describe("statusStripBaseText", () => {
     const result = statusStripBaseText(pickStatusStripMetric(interpreted), interpreted);
     expect(result.base).toBe("All 1 signals in range");
     expect(result.awaitingCount).toBe(2);
+  });
+
+  it("counts only rendered metrics when renderedIds is given, in both the count and awaitingCount", () => {
+    // A worker metric the grid has no group for is invisible on the page.
+    // Counting it here made the strip promise "All 3 signals in range" over a
+    // grid of two tiles — and the awaiting clause point at a metric with no
+    // tile to be awaiting anything on. Same filter as pickStatusStripMetric,
+    // or the headline and its count disagree about what "the signals" are.
+    const interpreted = [
+      metric({ id: "loadRatio", band: "healthy" }),
+      metric({ id: "ramp", band: "healthy" }),
+      metric({ id: "notOnTheGrid", band: "healthy" }),
+      metric({ id: "alsoNotOnTheGrid", status: "insufficient_data", band: undefined }),
+    ];
+    const rendered = ["loadRatio", "ramp"];
+    const pick = pickStatusStripMetric(interpreted, rendered);
+    const result = statusStripBaseText(pick, interpreted, rendered);
+    expect(result.base).toBe("All 2 signals in range");
+    expect(result.awaitingCount).toBeUndefined();
+  });
+
+  it("omitting renderedIds counts everything, exactly as before", () => {
+    const interpreted = [
+      metric({ id: "a", band: "healthy" }),
+      metric({ id: "b", band: "healthy" }),
+      metric({ id: "c", status: "insufficient_data", band: undefined }),
+    ];
+    const result = statusStripBaseText(pickStatusStripMetric(interpreted), interpreted);
+    expect(result.base).toBe("All 2 signals in range");
+    expect(result.awaitingCount).toBe(1);
   });
 
   it("does not report awaitingCount on the high-severity branch, even alongside insufficient_data metrics", () => {

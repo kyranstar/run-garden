@@ -921,12 +921,18 @@ export function LapHrBars({
   const barW = Math.min(24, step * 0.66);
   const yCenter = y(center);
   const labelEvery = Math.ceil(withHr.length / 12);
+  // With no threshold the bars diverge from the run's OWN median lap, which is
+  // a description of the run, not a target it was measured against. Calling
+  // that line a "ceiling" in the tooltip and the accessible name — as both did
+  // — invented a standard the reader was never held to, and the visible
+  // summary a few lines below already said "median" for the same number.
+  const centerLabel = threshold ? "ceiling" : "median";
 
   registerMarks(
     withHr.map((l, i) => ({
       x: left + i * step + step / 2,
       y: (yCenter + y(l.avgHr!)) / 2,
-      label: `Lap ${l.lapIndex}: ${l.avgHr} ${unit}, ${signed(l.avgHr! - center)} vs ceiling`,
+      label: `Lap ${l.lapIndex}: ${l.avgHr} ${unit}, ${signed(l.avgHr! - center)} vs ${centerLabel}`,
     })),
   );
 
@@ -946,7 +952,7 @@ export function LapHrBars({
       <div {...wrapperProps}>
         <svg
           role="img"
-          aria-label={`Heart rate for ${withHr.length} laps against a ${center} ${unit} ceiling`}
+          aria-label={`Heart rate for ${withHr.length} laps against a ${center} ${unit} ${threshold ? "easy ceiling" : "median"}`}
           viewBox={`0 0 ${width} ${height}`}
           style={svgStyle(width)}
         >

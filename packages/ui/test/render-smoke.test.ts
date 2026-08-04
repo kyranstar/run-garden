@@ -11,6 +11,7 @@ import {
   RunSeriesChart,
   WeeklyDurationChart,
 } from "../src/charts.js";
+import { TrendChip } from "../src/chart-kit.js";
 
 /**
  * Renders every chart to static markup and asserts the invariants that only
@@ -146,6 +147,23 @@ function chartElements(): Array<[string, ReactElement]> {
         seriesLabel: "HRV",
       }),
     ],
+    [
+      // loadRatio's drilldown: the same chart with a sub-10 baseline, which is
+      // why the screen passes `decimals` — at the default 0 this entire chart
+      // reads "1 to 1 around a baseline of 1".
+      "BaselineBandChart(loadRatio)",
+      createElement(BaselineBandChart, {
+        series: Array.from({ length: 56 }, (_, i) => ({
+          date: new Date(Date.UTC(2026, 5, 1) + i * 86_400_000).toISOString().slice(0, 10),
+          value: 1 + Math.sin(i / 5) * 0.25,
+        })),
+        baseline: 1,
+        band: { lo: 0.8, hi: 1.3 },
+        unit: "× norm",
+        decimals: 2,
+        seriesLabel: "Load vs your norm",
+      }),
+    ],
   ];
 }
 
@@ -198,5 +216,65 @@ describe("chart rendering smoke", () => {
 
   it("raises no React warnings (bad keys, invalid props) beyond the SSR useLayoutEffect notice", () => {
     expect(warnings.filter((w) => !w.includes("useLayoutEffect"))).toEqual([]);
+  });
+
+  it("calls LapHrBars' no-threshold centre line a median, never a ceiling", () => {
+    // Without a threshold the bars diverge from the run's OWN median lap.
+    // Naming that a "ceiling" in the accessible name invented a standard the
+    // runner was never measured against — and contradicted the visible
+    // summary, which already said median.
+    const html = cases.find(([name]) => name === "LapHrBars(no threshold)")![1];
+    expect(html).toContain("median");
+    expect(html).not.toContain("ceiling");
+  });
+
+  it("still calls LapHrBars' thresholded centre line an easy ceiling", () => {
+    const html = cases.find(([name]) => name === "LapHrBars")![1];
+    expect(html).toContain("easy ceiling");
+    expect(html).not.toContain("median");
+  });
+
+  it("renders loadRatio's baseline band at two decimals, not a collapsed 1-to-1", () => {
+    const html = cases.find(([name]) => name === "BaselineBandChart(loadRatio)")![1];
+    expect(html).toContain("0.80");
+    expect(html).toContain("1.30");
+    expect(html).toContain("baseline 1.00");
+  });
+});
+
+describe("TrendChip", () => {
+  const chip = (pct: number, betterWhen: "up" | "down" = "up"): string =>
+    render(createElement(TrendChip, { pct, betterWhen }));
+
+  it("treats a sub-0.05% move as flat: neutral pill, – glyph, 'no change'", () => {
+    // The chip prints one decimal, so 0.004% renders as "0.0%" — a green ▲
+    // beside that is a claim of improvement the number doesn't make.
+    const html = chip(0.004);
+    expect(html).toContain("pill-neutral");
+    expect(html).toContain("–");
+    expect(html).toContain("no change");
+    expect(html).not.toContain("▲");
+    expect(html).not.toContain("pill-ok");
+  });
+
+  it("treats a sub-0.05% NEGATIVE move as flat too", () => {
+    const html = chip(-0.02);
+    expect(html).toContain("pill-neutral");
+    expect(html).toContain("no change");
+    expect(html).not.toContain("▼");
+  });
+
+  it("still calls 0.05% itself a real move (the boundary is inclusive)", () => {
+    const html = chip(0.05);
+    expect(html).toContain("▲");
+    expect(html).toContain("pill-ok");
+    expect(html).toContain("improved");
+  });
+
+  it("keeps direction and valence for a clearly non-flat move", () => {
+    expect(chip(3.2, "up")).toContain("pill-ok");
+    expect(chip(3.2, "down")).toContain("pill-danger");
+    expect(chip(-3.2, "up")).toContain("pill-danger");
+    expect(chip(-3.2, "down")).toContain("pill-ok");
   });
 });

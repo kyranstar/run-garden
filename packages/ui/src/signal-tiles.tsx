@@ -18,10 +18,22 @@ export type MetricStripCell = NonNullable<InterpretedMetric["strip"]>[number];
 
 // ── Tile-visual selection (pure; unit-tested) ───────────────────────────────
 
-export type TileVisual = "gauge" | "sparkline" | "strip" | "none";
+export type TileVisual = "gauge" | "gauge+spark" | "sparkline" | "strip" | "none";
 
 /**
- * Which inline visual a tile draws, by priority: gauge > sparkline > strip.
+ * Which inline visual(s) a tile draws.
+ *
+ * A gauge and a sparkline answer different questions and the spec asks for
+ * both on the recovery tiles: the gauge says where today sits against the
+ * healthy band, the sparkline says how it got there. A gauge alone can't
+ * distinguish "46 bpm, steady all month" from "46 bpm, climbing for a week",
+ * which is the entire point of a recovery signal — so when a metric carries
+ * both, both are drawn (`"gauge+spark"`, sparkline beneath the gauge).
+ *
+ * This is a shape rule, not an id list: any metric shipping a gauge and a
+ * daily series gets both (today that is restingHr, hrv and loadRatio, whose
+ * series is 56 daily ratios). Falling back: gauge > sparkline > strip.
+ *
  * A present-but-empty `series`/`strip` array counts as absent — there is
  * nothing honest to draw from zero points, so selection falls through to
  * the next candidate (or `"none"`) exactly as if the field were unset.
@@ -31,8 +43,9 @@ export function pickTileVisual(m: {
   series?: MetricSeriesPoint[];
   strip?: MetricStripCell[];
 }): TileVisual {
-  if (m.gauge) return "gauge";
-  if (m.series && m.series.length > 0) return "sparkline";
+  const hasSeries = !!m.series && m.series.length > 0;
+  if (m.gauge) return hasSeries ? "gauge+spark" : "gauge";
+  if (hasSeries) return "sparkline";
   if (m.strip && m.strip.length > 0) return "strip";
   return "none";
 }
@@ -348,8 +361,8 @@ export function SignalTile({ m, onDrill }: { m: InterpretedMetric; onDrill?: (m:
             {m.value}
             {m.range ? <span className="faint"> · {m.range}</span> : null}
           </div>
-          {visual === "gauge" ? <Gauge g={m.gauge!} /> : null}
-          {visual === "sparkline" ? <Sparkline series={m.series!} /> : null}
+          {visual === "gauge" || visual === "gauge+spark" ? <Gauge g={m.gauge!} /> : null}
+          {visual === "gauge+spark" || visual === "sparkline" ? <Sparkline series={m.series!} /> : null}
           {visual === "strip" ? <StripBoxes strip={m.strip!} kind={stripKindForMetricId(m.id)} /> : null}
           <p className="muted signal-meaning">{m.meaning}</p>
           {m.suggestion ? <p className="metric-suggestion">{m.suggestion}</p> : null}
@@ -386,11 +399,22 @@ export interface StatusStripText {
  * `insufficient_data` metric has no band at all, so it was never actually
  * confirmed "in range"; folding it into the headline count would be a
  * false claim, not silence-earned-by-being-normal.
+ *
+ * `renderedIds` restricts the count to the metrics the caller actually draws,
+ * for the same reason `pickStatusStripMetric` takes it: "All 9 signals in
+ * range" beside a grid of 8 tiles sends the reader hunting for a ninth that
+ * was never on the page. The two must be filtered by the same set or the
+ * strip's headline and its count disagree about what "the signals" means.
  */
-export function statusStripBaseText(pick: StatusStripPick, interpreted: readonly InterpretedMetric[]): StatusStripText {
+export function statusStripBaseText(
+  pick: StatusStripPick,
+  interpreted: readonly InterpretedMetric[],
+  renderedIds?: ReadonlySet<string> | string[],
+): StatusStripText {
   if (pick.severity === "clear" || !pick.metric) {
-    const okCount = interpreted.filter((m) => m.status === "ok").length;
-    const awaitingCount = interpreted.length - okCount;
+    const eligible = interpreted.filter((m) => isRenderedId(m.id, renderedIds));
+    const okCount = eligible.filter((m) => m.status === "ok").length;
+    const awaitingCount = eligible.length - okCount;
     return {
       base: `All ${okCount} signals in range`,
       awaitingCount: awaitingCount > 0 ? awaitingCount : undefined,
@@ -432,7 +456,7 @@ export function StatusStrip({
   renderedIds?: ReadonlySet<string> | string[];
 }) {
   const pick = pickStatusStripMetric(interpreted, renderedIds);
-  const { base, awaitingCount } = statusStripBaseText(pick, interpreted);
+  const { base, awaitingCount } = statusStripBaseText(pick, interpreted, renderedIds);
   const targetId = pick.metric?.id;
 
   return (

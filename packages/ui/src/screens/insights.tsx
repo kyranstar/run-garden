@@ -77,6 +77,13 @@ function MetricDrilldown({ m, onClose }: { m: InterpretedMetric; onClose: () => 
   const paceRuns = (detail?.runs ?? [])
     .filter((r) => typeof r.delta === "number")
     .map((r) => ({ activityId: r.activityId, date: r.date, deltaSecPerKm: r.delta! }));
+  // Every label in BaselineBandChart runs through `toFixed(decimals)`, and the
+  // default is 0 — right for bpm and ms, which are whole numbers off the
+  // watch, but it would render loadRatio's entire 0.8–1.3 sweet spot as
+  // "1 to 1" around a baseline of "1". A magnitude rule rather than a per-id
+  // map: a baseline under 10 in its own unit has nothing left to say at zero
+  // decimal places, whatever metric it belongs to.
+  const bandDecimals = Math.abs(baseline?.value ?? 0) < 10 ? 2 : 0;
 
   return (
     <Sheet open onClose={onClose} title={m.title}>
@@ -89,6 +96,7 @@ function MetricDrilldown({ m, onClose }: { m: InterpretedMetric; onClose: () => 
             baseline={baseline.value}
             band={{ lo: baseline.lo, hi: baseline.hi }}
             unit={baseline.unit}
+            decimals={bandDecimals}
             seriesLabel={m.title}
             // The sheet's own header already says the metric's name; repeating
             // it as the chart caption says nothing. The caption says what the
@@ -171,7 +179,25 @@ export function InsightsScreen() {
   const [drill, setDrill] = useState<InterpretedMetric | null>(null);
 
   if (insights.isLoading) return <Spinner label="Computing insights" />;
-  if (!insights.data) return <EmptyState title="Couldn't load insights" />;
+  if (!insights.data) {
+    // A failed fetch is usually transient (asleep laptop, dropped wifi, a
+    // worker cold start), and this screen's only other escape was a full page
+    // reload — the query is already cached-and-retryable, so offer the retry
+    // instead of making the reader find it. `isFetching` disables the button
+    // while a retry is in flight so a second press can't queue another.
+    return (
+      <EmptyState title="Couldn't load insights">
+        Check your connection, then try again.{" "}
+        <button
+          className="btn btn-small"
+          onClick={() => void insights.refetch()}
+          disabled={insights.isFetching}
+        >
+          {insights.isFetching ? "Retrying…" : "Retry"}
+        </button>
+      </EmptyState>
+    );
+  }
 
   const { consistency, weekly, efficiency, decoupling, records, reviews, interpreted } = insights.data;
 
@@ -309,9 +335,16 @@ export function InsightsScreen() {
                   ) : null
                 }
                 summary={`Aerobic efficiency across ${efficiency.sampleSize} comparable easy runs.${efficiency.value.trend ? ` Trend ${efficiency.value.trend.pct >= 0 ? "up" : "down"} ${Math.abs(efficiency.value.trend.pct).toFixed(1)} percent over ${efficiency.value.trend.n} runs.` : ""}`}
+                // The excluded count is disclosed, not swallowed: "n=12 runs"
+                // reads as "all 12 of your runs" unless the chart says how
+                // many it couldn't score.
                 note={`n=${efficiency.sampleSize} runs · metres per heartbeat; higher is easier speed at the same heart rate · noisy week to week${
                   efficiency.value.trend
                     ? ` · trend ${signed(efficiency.value.trend.pct)}% over ${efficiency.value.trend.n} runs`
+                    : ""
+                }${
+                  efficiency.value.excludedCount > 0
+                    ? ` · ${efficiency.value.excludedCount} runs lacked usable laps`
                     : ""
                 }`}
               >
@@ -336,7 +369,11 @@ export function InsightsScreen() {
                 title="Aerobic decoupling (Pa:HR)"
                 subtitle={decoupling.comparisonNote}
                 summary={`Median Pa:HR decoupling ${decoupling.value.medianPct.toFixed(1)} percent across ${decoupling.sampleSize} steady runs.`}
-                note={`n=${decoupling.sampleSize} steady runs · median ${decoupling.value.medianPct.toFixed(1)}% · shaded 0–5% is the range that means "held together"`}
+                note={`n=${decoupling.sampleSize} steady runs · median ${decoupling.value.medianPct.toFixed(1)}% · shaded 0–5% is the range that means "held together"${
+                  decoupling.value.excluded.count > 0
+                    ? ` · ${decoupling.value.excluded.count} runs excluded`
+                    : ""
+                }`}
               >
                 <RunSeriesChart
                   points={decoupling.value.perRun.map((p) => ({
