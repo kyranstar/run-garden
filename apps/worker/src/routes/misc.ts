@@ -689,6 +689,9 @@ insightRoutes.get("/", async (c) => {
       adherence: wk.adherence,
     })),
     completedRunDates: runRows.map(localDate),
+    // Task 12 makes this follow the requested discipline; today the route is
+    // still run-only.
+    discipline: "run",
   });
   const storedRecords = parseStoredRecords(storedRows[0]?.value);
   const records = mergeRecords(fresh, storedRecords);

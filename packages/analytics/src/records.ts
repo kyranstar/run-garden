@@ -1,6 +1,7 @@
 import type { ActivityLap, LocalDate, NormalizedActivity, WorkoutCategory } from "@rg/domain";
 import { addDays, daysBetween } from "@rg/domain";
 import { computeAerobicEfficiency } from "./aerobicEfficiency.js";
+import { sessionNoun, type Discipline } from "./discipline.js";
 
 /**
  * "Invisible personal records": achievements a watch never surfaces, each with
@@ -25,12 +26,17 @@ export interface PersonalRecord {
 }
 
 export interface RecordsInput {
-  /** Full run history in the module 3/4 input shape. */
+  /** Full session history for this discipline, in the module 3/4 input shape. */
   runs: RunSample[];
   /** Weekly adherence series, e.g. from computeConsistency().weeklyBreakdown. */
   weeklyAdherence: Array<{ weekStart: LocalDate; adherence: number }>;
-  /** LocalDates of every completed run in history. */
+  /** LocalDates of every completed session in this discipline's history. */
   completedRunDates: LocalDate[];
+  /**
+   * Which discipline these records describe. Ids are namespaced by it so one
+   * discipline's never-regress merge can never suppress another's.
+   */
+  discipline: Discipline;
 }
 
 /** A personal record with the raw comparison value used for never-regress merges. Higher `numeric` is always better. */
@@ -48,6 +54,14 @@ export interface StoredRecord {
 
 const MIN_EFFICIENCY_RUNS = 5;
 const MIN_ADHERENCE_WEEKS = 8;
+/**
+ * History needed before "longest" or "most" means anything. Naming a longest
+ * session out of three is not a record, it is just the biggest of three — and
+ * this module does not produce records it cannot stand behind.
+ */
+const MIN_SESSIONS_FOR_RECORD = 5;
+/** A week or a streak below this is ordinary, not an achievement. */
+const MIN_NOTABLE_COUNT = 3;
 const BREAK_DAYS = 7;
 const STREAK_LENGTH = 3;
 const STREAK_MAX_GAP_DAYS = 3;
@@ -127,14 +141,85 @@ function fastestComebackDays(completedRunDates: LocalDate[]): ScoredRecord | nul
   };
 }
 
+/** Longest single session by moving time. Real for every discipline. */
+function longestSession(runs: RunSample[], discipline: Discipline): ScoredRecord | null {
+  if (runs.length < MIN_SESSIONS_FOR_RECORD) return null;
+  let best = runs[0]!;
+  for (const r of runs) {
+    if (r.activity.durationSeconds > best.activity.durationSeconds) best = r;
+  }
+  const secs = best.activity.durationSeconds;
+  const h = Math.floor(secs / 3600);
+  const m = Math.round((secs % 3600) / 60);
+  return {
+    id: "longest_session",
+    title: `Longest ${sessionNoun(discipline)}`,
+    value: h > 0 ? `${h}h ${m}m` : `${m}m`,
+    achievedOn: (best.activity.startTimeLocal ?? best.activity.startTime).slice(0, 10),
+    rule: `Longest single ${sessionNoun(discipline)} by moving time.`,
+    numeric: secs,
+  };
+}
+
+/** Busiest rolling 7-day window. Two sessions is not a record worth naming. */
+function mostSessionsInAWeek(dates: LocalDate[], discipline: Discipline): ScoredRecord | null {
+  const sorted = [...new Set(dates)].sort();
+  if (sorted.length < MIN_SESSIONS_FOR_RECORD) return null;
+  let best: { count: number; endedOn: LocalDate } | null = null;
+  for (const windowEnd of sorted) {
+    const count = sorted.filter((d) => d <= windowEnd && daysBetween(d, windowEnd) < 7).length;
+    if (best == null || count > best.count) best = { count, endedOn: windowEnd };
+  }
+  if (best == null || best.count < MIN_NOTABLE_COUNT) return null;
+  return {
+    id: "most_sessions_in_a_week",
+    title: `Most ${sessionNoun(discipline, true)} in a week`,
+    value: `${best.count}`,
+    achievedOn: best.endedOn,
+    rule: `Highest count of ${sessionNoun(discipline, true)} in any rolling 7-day window.`,
+    numeric: best.count,
+  };
+}
+
+/** Longest unbroken run of sessions, each within a week of the last. */
+function longestStreak(dates: LocalDate[], discipline: Discipline): ScoredRecord | null {
+  const sorted = [...new Set(dates)].sort();
+  if (sorted.length < MIN_SESSIONS_FOR_RECORD) return null;
+  let best: { length: number; endedOn: LocalDate } | null = null;
+  let current = 1;
+  for (let i = 1; i < sorted.length; i++) {
+    if (daysBetween(sorted[i - 1]!, sorted[i]!) <= 7) {
+      current += 1;
+      if (best == null || current > best.length) best = { length: current, endedOn: sorted[i]! };
+    } else {
+      current = 1;
+    }
+  }
+  if (best == null || best.length < MIN_NOTABLE_COUNT) return null;
+  return {
+    id: "longest_streak",
+    title: `Longest ${sessionNoun(discipline)} streak`,
+    value: `${best.length} sessions`,
+    achievedOn: best.endedOn,
+    rule: `Most consecutive ${sessionNoun(discipline, true)} each within 7 days of the previous.`,
+    numeric: best.length,
+  };
+}
+
 export function computeRecords(input: RecordsInput): ScoredRecord[] {
   const records: ScoredRecord[] = [];
   const push = (r: ScoredRecord | null) => {
-    if (r != null) records.push(r);
+    // Namespaced by discipline: mergeRecords keys on id, so a shared id would
+    // let a run's longest session outrank — and hide — a yoga one.
+    if (r != null) records.push({ ...r, id: `${input.discipline}:${r.id}` });
   };
-  push(bestAerobicEfficiency(input.runs));
+  // Pace-based: meaningless without distance, so runs only.
+  if (input.discipline === "run") push(bestAerobicEfficiency(input.runs));
   push(mostConsistentFourWeeks(input.weeklyAdherence));
   push(fastestComebackDays(input.completedRunDates));
+  push(longestSession(input.runs, input.discipline));
+  push(mostSessionsInAWeek(input.completedRunDates, input.discipline));
+  push(longestStreak(input.completedRunDates, input.discipline));
   return records;
 }
 

@@ -42,8 +42,19 @@ function card(kind: string, keyValue: string, text: string, sampleNote: string):
   return { id: `ev-${stableHash(`${kind}:${keyValue}`)}`, text, sampleNote, dismissible: true };
 }
 
+/**
+ * Find a record by its bare id, tolerating the `<discipline>:` namespace.
+ *
+ * Record ids gained that prefix when insights became per-discipline; records
+ * persisted before then still carry bare ids, and both must resolve here or a
+ * card silently stops appearing.
+ */
+function findRecord(records: PersonalRecord[], bareId: string): PersonalRecord | undefined {
+  return records.find((r) => r.id === bareId || r.id.endsWith(`:${bareId}`));
+}
+
 function comebackCard(records: PersonalRecord[]): EvidenceCard | null {
-  const record = records.find((r) => r.id === "fastest_comeback_days");
+  const record = findRecord(records, "fastest_comeback_days");
   if (!record) return null;
   return card(
     "comeback",

@@ -46,31 +46,37 @@ const fullInput: RecordsInput = {
     { weekStart: "2026-02-23", adherence: 1 },
   ],
   completedRunDates: ["2026-01-01", "2026-01-03", "2026-01-15", "2026-01-17", "2026-01-19"],
+  discipline: "run",
 };
 
 describe("computeRecords", () => {
   it("produces every record when enough history exists, with deterministic rules", () => {
     const records = computeRecords(fullInput);
+    // Ids are namespaced by discipline: mergeRecords keys on id, so sharing one
+    // across disciplines would let a run's longest session hide a yoga one.
     expect(records.map((r) => r.id)).toEqual([
-      "best_aerobic_efficiency",
-      "most_consistent_four_weeks",
-      "fastest_comeback_days",
+      "run:best_aerobic_efficiency",
+      "run:most_consistent_four_weeks",
+      "run:fastest_comeback_days",
+      "run:longest_session",
+      "run:most_sessions_in_a_week",
+      "run:longest_streak",
     ]);
 
     const byId = new Map(records.map((r) => [r.id, r]));
     // Best efficiency: (3000/900)/145 * 60 = 1.3793... on the hr-145 run,
     // rounded to 4 decimals by runEfficiency().
-    expect(byId.get("best_aerobic_efficiency")).toMatchObject({
+    expect(byId.get("run:best_aerobic_efficiency")).toMatchObject({
       value: "1.38 m/beat",
       achievedOn: "2026-01-11",
       numeric: 1.3793,
     });
-    expect(byId.get("most_consistent_four_weeks")).toMatchObject({
+    expect(byId.get("run:most_consistent_four_weeks")).toMatchObject({
       value: "80% adherence in the weakest week",
       achievedOn: "2026-02-01",
       numeric: 0.8,
     });
-    expect(byId.get("fastest_comeback_days")).toMatchObject({
+    expect(byId.get("run:fastest_comeback_days")).toMatchObject({
       value: "4 days",
       achievedOn: "2026-01-19",
       // Faster comebacks must score higher, so the stored value is negated.
@@ -83,7 +89,10 @@ describe("computeRecords", () => {
     const thin: RecordsInput = {
       runs: fullInput.runs.slice(0, 4), // < 5 eligible runs
       weeklyAdherence: fullInput.weeklyAdherence.slice(0, 7), // < 8 weeks
-      completedRunDates: ["2026-01-01", "2026-01-04", "2026-01-07"], // no 7-day break
+      // No 7-day break, and below MIN_SESSIONS_FOR_RECORD so the "longest"
+      // and "most" records stay silent too.
+      completedRunDates: ["2026-01-01", "2026-01-04", "2026-01-07"],
+      discipline: "run",
     };
     expect(computeRecords(thin)).toEqual([]);
   });
