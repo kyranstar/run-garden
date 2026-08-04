@@ -252,7 +252,11 @@ export function InsightsScreen() {
             title="Meters per heartbeat on comparable easy runs"
             subtitle={efficiency.comparisonNote}
             summary={`Aerobic efficiency across ${efficiency.sampleSize} comparable easy runs.${efficiency.value.trend ? ` Trend ${efficiency.value.trend.pct >= 0 ? "up" : "down"} ${Math.abs(efficiency.value.trend.pct).toFixed(1)} percent over ${efficiency.value.trend.n} runs.` : ""}`}
-            note={`n=${efficiency.sampleSize} runs · higher is easier speed at the same heart rate · noisy week to week`}
+            note={`n=${efficiency.sampleSize} runs · higher is easier speed at the same heart rate · noisy week to week${
+              efficiency.value.trend
+                ? ` · trend ${signed(efficiency.value.trend.pct)}% over ${efficiency.value.trend.n} runs`
+                : ""
+            }`}
           >
             <RunSeriesChart
               points={efficiency.value.perRun.map((p) => ({ date: p.date, value: p.efficiency }))}
@@ -271,11 +275,7 @@ export function InsightsScreen() {
             title="Pace-adjusted speed-to-heart-rate decoupling, first half vs second half of steady runs"
             subtitle={decoupling.comparisonNote}
             summary={`Median Pa:HR decoupling ${decoupling.value.medianPct.toFixed(1)} percent across ${decoupling.sampleSize} steady runs.`}
-            note={`n=${decoupling.sampleSize} steady runs · median ${decoupling.value.medianPct.toFixed(1)}%${
-              efficiency.status === "ok" && efficiency.value.trend
-                ? ` · efficiency trend ${signed(efficiency.value.trend.pct)}% over ${efficiency.value.trend.n} runs`
-                : ""
-            }`}
+            note={`n=${decoupling.sampleSize} steady runs · median ${decoupling.value.medianPct.toFixed(1)}%`}
           >
             <RunSeriesChart
               points={decoupling.value.perRun.map((p) => ({ date: p.date, value: p.decouplingPct }))}
