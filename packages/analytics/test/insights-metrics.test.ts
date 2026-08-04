@@ -120,7 +120,13 @@ describe("recovery", () => {
 
 describe("discipline + performance", () => {
   it("easy discipline is the Z1-2 share", () => {
-    const runs = [{ avgHr: 130 }, { avgHr: 135 }, { avgHr: 138 }, { avgHr: 140 }, { avgHr: 175 }];
+    const runs = [
+      { activityId: "a1", date: "2026-07-01", avgHr: 130 },
+      { activityId: "a2", date: "2026-07-02", avgHr: 135 },
+      { activityId: "a3", date: "2026-07-03", avgHr: 138 },
+      { activityId: "a4", date: "2026-07-04", avgHr: 140 },
+      { activityId: "a5", date: "2026-07-05", avgHr: 175 },
+    ];
     const r = computeEasyDiscipline(runs, 190); // 0.80*190 = 152 cutoff; 4 of 5 under
     expect(r.status === "ok" && r.value.inEasyPct).toBe(80);
   });
