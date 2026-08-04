@@ -100,9 +100,15 @@ export function computeRestingHr(
   if (recentPool.length < MIN_RECENT_READINGS) {
     const nextOlder = valid[recentPool.length];
     const gap = nextOlder ? ` — the next-oldest is ${daysBetween(nextOlder.date, today)} days old` : "";
+    // Its own counts, not the module's staleness convention of `have: 0`:
+    // this is a COUNT gate on the recent window, so `have` is smaller than
+    // `needed` already and reporting it keeps "Need 2; have 1." agreeing with
+    // the explanation beside it. (`have: 0` here rendered "Need 7; have 0."
+    // over prose about 1 reading and a threshold of 2 — three numbers, none
+    // of which matched.) Same shape as the baseline-pool gate below.
     return insufficient(
-      7,
-      0,
+      MIN_RECENT_READINGS,
+      recentPool.length,
       `Only ${recentPool.length} resting heart-rate reading${recentPool.length === 1 ? "" : "s"} in the last ` +
         `${RECENT_WINDOW_DAYS} days${gap}; a current value needs at least ${MIN_RECENT_READINGS} from that window.`,
     );

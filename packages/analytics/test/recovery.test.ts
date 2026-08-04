@@ -79,6 +79,11 @@ describe("computeRestingHr", () => {
     const r = computeRestingHr(rows, TODAY);
     expect(r.status).toBe("insufficient_data");
     if (r.status !== "insufficient_data") return;
+    // The gate reports ITS OWN counts, so the card's "Need N; have M." line
+    // agrees with the sentence beside it instead of quoting the 60-day gate's
+    // threshold against a zeroed count.
+    expect(r.needed).toBe(2);
+    expect(r.have).toBe(1);
     // Names the gap, so the card can explain itself rather than just going quiet.
     expect(r.explanation).toContain("1 resting heart-rate reading in the last 5 days");
     expect(r.explanation).toContain("next-oldest is 45 days old");
