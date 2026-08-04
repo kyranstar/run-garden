@@ -344,6 +344,10 @@ export function horizontalBarPath(
   parts.push(`L${n(x + left)},${n(y + h)}`);
   if (ends.left) {
     parts.push(`Q${n(x)},${n(y + h)} ${n(x)},${n(y + h - rr)}`);
+    // The straight left edge BETWEEN the two corner arcs. Without it the two
+    // curves join directly and the end bows into a half-pill — invisible when
+    // rr === h/2, wrong for every smaller radius.
+    parts.push(`L${n(x)},${n(y + rr)}`);
     parts.push(`Q${n(x)},${n(y)} ${n(x + rr)},${n(y)}`);
   }
   parts.push("Z");

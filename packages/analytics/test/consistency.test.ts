@@ -48,22 +48,72 @@ describe("computeConsistency", () => {
         mkWorkout({ id: "w4", effectiveDate: "2026-03-08", completionState: "scheduled" }),
       ],
       range,
-      today,
+      "2026-03-05", // w3/w4 are genuinely ahead of today, not past due
     );
     expect(report.planned).toBe(4);
     expect(report.completed).toBe(1);
     expect(report.skipped).toBe(1);
+    expect(report.unresolved).toBe(0);
     // denominator is 2 resolved workouts, not 4
     expect(report.adherenceRate).toBe(0.5);
+  });
+
+  it("counts a past-due scheduled workout as pending, exactly as the day grid reads it", () => {
+    const report = computeConsistency(
+      [
+        mkWorkout({ id: "w1", effectiveDate: "2026-03-02", completionState: "completed" }),
+        mkWorkout({ id: "w2", effectiveDate: "2026-03-03", completionState: "scheduled" }), // past due
+        mkWorkout({ id: "w3", effectiveDate: "2026-03-07", completionState: "scheduled" }), // still ahead
+      ],
+      range,
+      "2026-03-05",
+    );
+    expect(report.planned).toBe(3);
+    expect(report.unresolved).toBe(1);
+    expect(report.pending).toBe(1);
+    // Only w1 has resolved; w2 is pending and w3 is ahead, so both are excluded.
+    expect(report.adherenceRate).toBe(1);
+
+    // The counts and the grid must agree — they sit one above the other on the
+    // Insights screen, and a workout that is pending in one and future in the
+    // other is a contradiction the reader has to resolve.
+    const status = (date: string) => report.days.find((d) => d.date === date)?.status;
+    expect(status("2026-03-03")).toBe("pending");
+    expect(status("2026-03-07")).toBe("future");
+    expect(report.days.filter((d) => d.status === "pending")).toHaveLength(report.pending);
   });
 
   it("guards division by zero when everything is still in the future", () => {
     const report = computeConsistency(
       [mkWorkout({ id: "w1", effectiveDate: "2026-03-05", completionState: "scheduled" })],
       range,
-      today,
+      "2026-03-02",
     );
     expect(report.adherenceRate).toBe(0);
+  });
+
+  it("runs the day grid on to the end of the ISO week containing range.end", () => {
+    // Range stops on Thursday; the heatmap draws whole week columns, so the
+    // grid has to reach Sunday or the current week's remaining slots are
+    // indistinguishable from "outside the data".
+    const report = computeConsistency(
+      [
+        mkWorkout({ id: "w1", effectiveDate: "2026-03-02", completionState: "completed" }),
+        mkWorkout({ id: "w2", effectiveDate: "2026-03-07", completionState: "scheduled" }),
+      ],
+      { start: "2026-03-02", end: "2026-03-05" },
+      "2026-03-05",
+    );
+    expect(report.days.map((d) => d.date)).toEqual([
+      "2026-03-02", "2026-03-03", "2026-03-04", "2026-03-05",
+      "2026-03-06", "2026-03-07", "2026-03-08",
+    ]);
+    // Inside the range an empty day is still "none"; past it, "future".
+    expect(report.days.map((d) => d.status)).toEqual([
+      "completed", "none", "none", "none", "future", "future", "future",
+    ]);
+    // The trailing days are grid-only: they never reach the counts.
+    expect(report.planned).toBe(1);
   });
 
   it("tallies unresolved and missed states", () => {

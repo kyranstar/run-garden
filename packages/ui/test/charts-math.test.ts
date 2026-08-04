@@ -270,9 +270,17 @@ describe("horizontalBarPath", () => {
     );
   });
 
+  it("keeps the straight left edge when the radius is smaller than half the height", () => {
+    // rr (3) < h/2 (6): without the L between the two corner arcs the left
+    // edge bows inward into a half-pill instead of a rounded rectangle.
+    expect(horizontalBarPath(0, 0, 20, 12, 3, { left: true, right: false })).toBe(
+      "M3,0 L20,0 L20,12 L3,12 Q0,12 0,9 L0,3 Q0,0 3,0 Z",
+    );
+  });
+
   it("clamps the radius to half the height of a thin bar", () => {
     expect(horizontalBarPath(0, 0, 20, 4, 6, { left: true, right: false })).toBe(
-      "M2,0 L20,0 L20,4 L2,4 Q0,4 0,2 Q0,0 2,0 Z",
+      "M2,0 L20,0 L20,4 L2,4 Q0,4 0,2 L0,2 Q0,0 2,0 Z",
     );
   });
 });

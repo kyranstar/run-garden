@@ -79,7 +79,7 @@ interface InterpretedMetricBody {
   staleNote?: string;
   detail?: {
     explain: string;
-    runs: Array<{ activityId: string; over?: boolean; note?: string }>;
+    runs: Array<{ activityId: string; over?: boolean; note?: string; delta?: number }>;
   };
 }
 
@@ -144,6 +144,12 @@ interface SeedActivityOpts {
   lapCount?: number;
   lapHeartRate?: number;
   startLocalTime?: string;
+  /**
+   * Per-lap multipliers on lap DURATION (distance stays even), so a run can
+   * have a genuinely faster or slower second half. Default: every lap 1.0,
+   * i.e. a dead-even split.
+   */
+  lapDurationFactors?: number[];
 }
 
 /**
@@ -181,7 +187,7 @@ async function seedActivity(userId: string, o: SeedActivityOpts): Promise<string
 
   const lapCount = o.lapCount ?? 5;
   for (let i = 0; i < lapCount; i++) {
-    const lapSeconds = durationSeconds / lapCount;
+    const lapSeconds = (durationSeconds / lapCount) * (o.lapDurationFactors?.[i] ?? 1);
     const lapMeters = distanceMeters / lapCount;
     await db.insert(activityLaps).values({
       id: newId(),
@@ -480,6 +486,54 @@ describe("easy-discipline drill-down", () => {
     expect(row, "borderline run missing from the drill-down").toBeDefined();
     expect(row!.over).toBe(true);
     expect(row!.note).toContain("above your easy ceiling");
+  });
+});
+
+describe("pacing drill-down", () => {
+  it("ships a numeric delta whose sign always agrees with `over`", async () => {
+    // Two runs that fade, two that finish faster — `computePacing` needs 4.
+    const faded = [
+      await seedMatchedRun(userId, "easy", {
+        date: addDays(today, -3),
+        lapDurationFactors: [0.9, 0.9, 1, 1.1, 1.1],
+      }),
+      await seedMatchedRun(userId, "easy", {
+        date: addDays(today, -6),
+        lapDurationFactors: [0.95, 0.95, 1, 1.05, 1.05],
+      }),
+    ];
+    const negativeSplit = [
+      await seedMatchedRun(userId, "easy", {
+        date: addDays(today, -9),
+        lapDurationFactors: [1.1, 1.1, 1, 0.9, 0.9],
+      }),
+      await seedMatchedRun(userId, "easy", {
+        date: addDays(today, -12),
+        lapDurationFactors: [1.05, 1.05, 1, 0.95, 0.95],
+      }),
+    ];
+
+    const runs = metric(await client(cookie).get(), "pacing").detail?.runs;
+    expect(runs, "pacing drill-down missing").toBeDefined();
+    expect(runs!.length).toBeGreaterThanOrEqual(4);
+
+    // The number a chart plots and the flag the prose uses must never
+    // disagree — that is the whole reason `delta` exists instead of the
+    // caller parsing the sign back out of "faded 12 s/km".
+    for (const r of runs!) {
+      expect(r.delta, `run ${r.activityId} has no delta`).toBeDefined();
+      expect(r.delta! > 0).toBe(r.over === true);
+    }
+    for (const id of faded) {
+      expect(runs!.find((r) => r.activityId === id)!.delta).toBeGreaterThan(0);
+    }
+    for (const id of negativeSplit) {
+      expect(runs!.find((r) => r.activityId === id)!.delta).toBeLessThan(0);
+    }
+    // Rounded to one decimal, never a raw float.
+    for (const r of runs!) {
+      expect(r.delta).toBe(Math.round(r.delta! * 10) / 10);
+    }
   });
 });
 

@@ -100,7 +100,11 @@ function MetricDrilldown({ m, onClose }: { m: InterpretedMetric; onClose: () => 
               </div>
               {r.note ? <p className="faint">{r.note}</p> : null}
               {r.laps && r.laps.length >= 2 ? (
-                <LapHrBars laps={r.laps} threshold={d.threshold} />
+                <LapHrBars
+                  laps={r.laps}
+                  threshold={d.threshold}
+                  title={`Heart rate, lap by lap — ${r.title ?? formatShortDate(r.date)}`}
+                />
               ) : null}
             </li>
           ))}
@@ -159,7 +163,7 @@ export function InsightsScreen() {
             />
             <ConsistencyHeatmap
               days={consistency.days}
-              note="One square per day, weeks left to right. A tick above a column marks the week still in progress."
+              note="One square per day, weeks left to right. The outlined squares in the last column are the rest of this week."
             />
           </div>
         ) : (
@@ -190,7 +194,11 @@ export function InsightsScreen() {
                 : `n=${recentTraining.reduce((s, w) => s + w.runCount, 0)} runs`
             }
           >
-            <WeeklyDurationChart weeks={recentTraining} avgSeconds={weekly.fourWeekAvgDuration} />
+            <WeeklyDurationChart
+              weeks={recentTraining}
+              avgSeconds={weekly.fourWeekAvgDuration}
+              avgLabel="4-wk avg"
+            />
           </ChartFrame>
         )}
       </Card>

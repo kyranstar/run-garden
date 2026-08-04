@@ -25,6 +25,13 @@ export interface MetricRunDetail {
   title?: string;
   /** The run's headline number for this metric ("avg 162 bpm", "+12 s/km"). */
   value?: string;
+  /**
+   * The signed magnitude behind `value`, in the metric's own unit — pacing is
+   * seconds per kilometre, positive = faded (second half slower). Present so a
+   * chart can plot the number instead of parsing it back out of the display
+   * string; its sign always agrees with `over`.
+   */
+  delta?: number;
   /** True when this run counted against the metric. */
   over?: boolean;
   /** One-sentence verdict for the run ("above your easy ceiling of 155"). */

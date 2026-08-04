@@ -958,6 +958,7 @@ insightRoutes.get("/", async (c) => {
       date: s.date,
       title: s.title,
       value: delta <= 0 ? `finished ${magnitude} faster` : `faded ${magnitude}`,
+      delta: Math.round(delta * 10) / 10,
       over: delta > 0,
       note:
         delta <= 0

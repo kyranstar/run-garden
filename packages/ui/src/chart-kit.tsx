@@ -1,5 +1,5 @@
 import type { CSSProperties, PointerEvent as ReactPointerEvent, ReactElement, RefObject } from "react";
-import { useEffect, useLayoutEffect, useRef, useState } from "react";
+import { useEffect, useId, useLayoutEffect, useRef, useState } from "react";
 
 /**
  * Chart kit — the shared, dependency-free building blocks every Insights
@@ -156,14 +156,23 @@ import { useEffect, useLayoutEffect, useRef, useState } from "react";
  *
  * The pattern id is a REQUIRED prop, generated per chart instance by
  * `useHatchId()`. It used to be the fixed string "chartHatch", which meant
- * rendering `<HatchDefs />` in two charts on one screen produced duplicate
- * DOM ids — and the Insights screen now has three hatch-using charts
- * (weekly duration, outcome bar, heatmap legend). `useHatchId()` hands each
- * instance its own id from a module counter, so charts stay self-contained:
- * no chart depends on some other chart having rendered the defs first (which
- * would fail open — an unresolvable `url(#…)` paints nothing at all).
- * `angle` rotates the hatch, so two patterns on one screen can differ by
- * direction as well as by base fill.
+ * rendering `<HatchDefs />` more than once on a screen produced duplicate DOM
+ * ids — and the Insights screen draws three hatch patterns already:
+ * `WeeklyDurationChart` (one, for partial weeks) and `OutcomeBar` (two, one
+ * per direction, for moved and skipped). `ConsistencyHeatmap` does NOT hatch;
+ * its skipped cells carry a drawn slash glyph, not a pattern fill.
+ *
+ * `useHatchId()` is built on React's `useId`, with the colons stripped: a
+ * React id is unique per component instance and stable across renders, but
+ * its default form (":r3:") is awkward inside `url(#…)` and unusable with
+ * `querySelector` without escaping. The uniqueness `useId` promises is
+ * per React ROOT, which is exactly the scope that matters here (this app
+ * mounts one) — two independent roots on one page could collide, so mount a
+ * second root only with that in mind. Charts therefore stay self-contained —
+ * no chart depends on another having rendered the defs first, which would
+ * fail OPEN rather than loud (an unresolvable `url(#…)` paints nothing at
+ * all). `angle` rotates the hatch, so two patterns on one screen can differ
+ * by direction as well as by base fill.
  *
  * `TrendChip` is built on the existing `.pill`/`.pill-ok`/`.pill-danger`/
  * `.pill-neutral` vocabulary: the pill's tinted `color` carries good/bad
@@ -555,18 +564,27 @@ export function useChartTooltip(): ChartTooltipHandle {
 
 const CHART_GRID = "var(--chart-grid)";
 
+/**
+ * `emphasis` lifts the line off the grid: an anchor the reader is meant to
+ * measure against (zero, a 4-week average) drawn at grid weight in the grid
+ * token is indistinguishable from a gridline, so it stops being a reference
+ * at all. Recessive by default — most reference lines are context, not
+ * subject.
+ */
 export function ReferenceLine({
   x1,
   x2,
   y,
   label,
   dashed = false,
+  emphasis = false,
 }: {
   x1: number;
   x2: number;
   y: number;
   label?: string;
   dashed?: boolean;
+  emphasis?: boolean;
 }) {
   return (
     <g>
@@ -575,8 +593,8 @@ export function ReferenceLine({
         x2={x2}
         y1={y}
         y2={y}
-        stroke={CHART_GRID}
-        strokeWidth={1}
+        stroke={emphasis ? "var(--ink-faint)" : CHART_GRID}
+        strokeWidth={emphasis ? 1.5 : 1}
         strokeDasharray={dashed ? "4 3" : undefined}
       />
       {label ? (
@@ -601,16 +619,14 @@ export function ShadedBand({ x1, x2, y1, y2 }: { x1: number; x2: number; y1: num
   );
 }
 
-let hatchSeq = 0;
-
 /**
  * A pattern id unique to this component instance — see the file header for
- * why the id can't be a shared constant. Generated once per mount (lazy
- * `useState` initializer, not a render-time counter bump).
+ * why the id can't be a shared constant. `useId` gives uniqueness and
+ * render-stability for free; the non-alphanumerics are stripped because
+ * React's default form (":r3:") is awkward inside `url(#…)`.
  */
 export function useHatchId(): string {
-  const [id] = useState(() => `chartHatch${++hatchSeq}`);
-  return id;
+  return `chartHatch${useId().replace(/[^a-zA-Z0-9]/g, "")}`;
 }
 
 /** Reference the pattern via ``fill={`url(#${id})`}``; get `id` from `useHatchId()`. */

@@ -305,7 +305,7 @@ export function RunSeriesChart({
           x2={width - M.right}
           format={(t) => t.toFixed(decimals)}
         />
-        {zeroLine ? <ReferenceLine x1={M.left} x2={width - M.right} y={y(0)} label="0" /> : null}
+        {zeroLine ? <ReferenceLine x1={M.left} x2={width - M.right} y={y(0)} label="0" emphasis /> : null}
         {sorted.length > 1 ? (
           <path d={medianPath} fill="none" stroke={color} strokeWidth={2} strokeLinejoin="round" />
         ) : null}
@@ -375,9 +375,12 @@ export interface WeeklyDurationWeek {
 export function WeeklyDurationChart({
   weeks,
   avgSeconds,
+  avgLabel = "avg",
 }: {
   weeks: WeeklyDurationWeek[];
   avgSeconds?: number;
+  /** Names the window the average covers — the chart can't know it. */
+  avgLabel?: string;
 }) {
   const { wrapperProps, tooltip, registerMarks } = useChartTooltip();
   const hatchId = useHatchId();
@@ -457,7 +460,8 @@ export function WeeklyDurationChart({
             x1={M.left}
             x2={width - M.right}
             y={y(avgHours)}
-            label={`4-wk avg ${avgHours.toFixed(1)}h`}
+            label={`${avgLabel} ${avgHours.toFixed(1)}h`}
+            emphasis
           />
         ) : null}
       </svg>
@@ -592,10 +596,12 @@ const HEATMAP_LEGEND: ConsistencyStatus[] = [
 
 /**
  * Twelve-ish weeks of plan consistency, one column per ISO week (oldest
- * left), one row per weekday. The current week is marked with a faint tick
- * above its column rather than by hatching its future cells — the tick is one
- * quiet mark instead of four noisy ones, and the future cells already read as
- * empty outlines.
+ * left), one row per weekday. The current week needs no marker of its own:
+ * `consistency.days` now runs to the end of the current ISO week, so the days
+ * still ahead of you draw as hairline outlines and the week reads as
+ * in-progress on its own. `inProgressColumnIndex` survives only to add
+ * "· this week" to those cells' tooltips — one quiet mark beat four noisy
+ * ones, and no mark at all beats one.
  */
 export function ConsistencyHeatmap({
   days,
@@ -619,10 +625,14 @@ export function ConsistencyHeatmap({
   const width = ROW_GUTTER + columns.length * CELL_STEP + 2;
   const height = MONTH_BAND + 7 * CELL_STEP;
 
+  // Counted from the columns actually drawn, not from `days` — the summary is
+  // the screen-reader's version of this chart, so it has to describe the cells
+  // on screen and not the ones `heatmapColumns` trimmed off the left.
+  const drawn = columns.flatMap((c) => c.days.filter((d) => d != null));
   const counts = new Map<ConsistencyStatus, number>();
-  for (const d of days) counts.set(d.status, (counts.get(d.status) ?? 0) + 1);
+  for (const d of drawn) counts.set(d.status, (counts.get(d.status) ?? 0) + 1);
   const summary =
-    `${days.length} days across ${columns.length} weeks. ` +
+    `${drawn.length} days across ${columns.length} weeks. ` +
     HEATMAP_LEGEND.filter((s) => (counts.get(s) ?? 0) > 0)
       .map((s) => `${counts.get(s)} ${STATUS_LABEL[s].toLowerCase()}`)
       .join(", ") +
@@ -677,17 +687,6 @@ export function ConsistencyHeatmap({
               {label}
             </text>
           ))}
-          {inProgress >= 0 ? (
-            <line
-              x1={ROW_GUTTER + inProgress * CELL_STEP}
-              x2={ROW_GUTTER + inProgress * CELL_STEP + CELL}
-              y1={MONTH_BAND - 1.5}
-              y2={MONTH_BAND - 1.5}
-              stroke={INK_FAINT}
-              strokeWidth={1.5}
-              opacity={0.5}
-            />
-          ) : null}
           {ROW_LABELS.map((label, row) => (
             <text
               key={label}
@@ -1030,16 +1029,21 @@ export function DivergingPaceBars({
     runs.map((r, i) => ({
       x: (center + x(r.deltaSecPerKm)) / 2,
       y: i * rowH + rowH / 2,
-      label: `${formatShortDate(r.date)}: ${signed(r.deltaSecPerKm)} s/km`,
+      label:
+        r.deltaSecPerKm === 0
+          ? `${formatShortDate(r.date)}: even split`
+          : `${formatShortDate(r.date)}: ${signed(r.deltaSecPerKm)} s/km`,
     })),
   );
 
   if (runs.length === 0) return null;
 
   const faded = runs.filter((r) => r.deltaSecPerKm > 0);
+  const even = runs.filter((r) => r.deltaSecPerKm === 0);
   const summary =
     `${runs.length} steady runs, second-half pace against first half. ` +
-    `${runs.length - faded.length} finished faster, ${faded.length} faded. ` +
+    `${runs.length - faded.length - even.length} finished faster, ${faded.length} faded` +
+    `${even.length > 0 ? `, ${even.length} even` : ""}. ` +
     runs.map((r) => `${formatShortDate(r.date)} ${signed(r.deltaSecPerKm)} seconds per kilometre`).join("; ") +
     ".";
 
@@ -1061,21 +1065,26 @@ export function DivergingPaceBars({
             strokeWidth={1}
           />
           {runs.map((r, i) => {
-            const end = x(r.deltaSecPerKm);
-            const w = Math.max(2, Math.abs(end - center));
-            const faster = r.deltaSecPerKm <= 0;
-            const barX = faster ? center - w : center;
+            const barY = i * rowH + (rowH - barH) / 2;
+            const even = r.deltaSecPerKm === 0;
+            const faster = r.deltaSecPerKm < 0;
+            // A dead-even split belongs ON the axis in a neutral token: give
+            // it a side and a series color and the chart claims a direction
+            // the run never went.
+            const w = even ? 2 : Math.max(2, Math.abs(x(r.deltaSecPerKm) - center));
+            const barX = even ? center - 1 : faster ? center - w : center;
             return (
               <g key={r.activityId}>
                 <text x={gutter - 8} y={i * rowH + barH + 1} textAnchor="end" fontSize={9} fill={INK_FAINT}>
                   {formatShortDate(r.date)}
                 </text>
                 <path
-                  d={horizontalBarPath(barX, i * rowH + (rowH - barH) / 2, w, barH, 3, {
-                    left: faster,
-                    right: !faster,
+                  d={horizontalBarPath(barX, barY, w, barH, 3, {
+                    left: !even && faster,
+                    right: !even && !faster,
                   })}
-                  fill={faster ? "var(--chart-1)" : "var(--chart-2)"}
+                  fill={even ? INK_FAINT : faster ? "var(--chart-1)" : "var(--chart-2)"}
+                  opacity={even ? 0.55 : 1}
                 />
               </g>
             );
@@ -1100,7 +1109,9 @@ export function DivergingPaceBars({
 
 /**
  * A daily recovery series against its own baseline: muted dots for the raw
- * readings, a 7-day rolling median as the line worth reading, and a shaded
+ * readings, a 7-READING rolling median as the line worth reading (the window
+ * counts points, not calendar days — a gap in the readings shortens the span
+ * it covers, and the note says "readings" so nobody reads it as a week), and a shaded
  * band at baseline ± the metric's own noise threshold. The band is the point —
  * it says which wobbles mean nothing, so a single spiky morning doesn't get
  * read as a trend.
@@ -1175,7 +1186,7 @@ export function BaselineBandChart({
       title={title ?? seriesLabel}
       subtitle={subtitle}
       summary={summary}
-      note={note ?? `Shaded band: ${baseline.toFixed(decimals)} ${unit} ± ${bandPct}% · line is a 7-day rolling median`}
+      note={note ?? `Shaded band: ${baseline.toFixed(decimals)} ${unit} ± ${bandPct}% · line is a 7-reading rolling median`}
     >
       <div {...wrapperProps}>
         <svg
