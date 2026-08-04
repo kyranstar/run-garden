@@ -85,6 +85,7 @@ import {
   rowToNormalized,
 } from "../services/completion.js";
 import { resimulateFrom } from "../services/garden-sync.js";
+import { enqueueBackfill } from "../services/backfill.js";
 
 // ── Calendar management ──────────────────────────────────────────────────────
 
@@ -221,42 +222,30 @@ activityRoutes.get("/", async (c) => {
   });
 });
 
-/** Backfill: pull recent Strava run history and ingest + match it. */
+/**
+ * Backfill: queue a deep walk of COROS history — every run, lift, and yoga
+ * session the account holds, not just the rolling 14-day window. The walk
+ * itself runs on the desktop bridge, one 90-day chunk per job.
+ */
 activityRoutes.post("/backfill", async (c) => {
   const db = c.get("db");
   const userId = c.get("userId");
-  // Self-heal stored data first (centisecond durations/timestamps, split
-  // COROS/Strava pairs, stuck provisional matches) — even if Strava is offline.
+  // Self-heal stored data first (centisecond durations/timestamps, stuck
+  // provisional matches) — independent of whether a device is available.
   await repairDurations(db, userId);
   const repairedDates = await repairTimestamps(db, userId);
   const promoted = await promoteProvisionalMatches(db);
+  const prefs = await loadPreferences(db, userId);
   if (repairedDates.length > 0) {
-    const prefs = await loadPreferences(db, userId);
     await resimulateFrom(db, userId, repairedDates[0]!, prefs).catch(() => undefined);
   }
 
-  const client = await stravaClient(db, c.env, userId);
-  if (!client)
-    return c.json({ ok: false, reason: "strava_unavailable", ingested: 0, matched: promoted });
-  const days = Math.min(365, Math.max(1, Number(c.req.query("days") ?? 90)));
-  const afterEpoch = Math.floor(Date.parse(nowInstant()) / 1000) - days * 86400;
-  let sources;
-  try {
-    const raws = await client.listActivities(afterEpoch, 100);
-    sources = raws.map(normalizeStravaActivity).filter((s) => s.sport === "run");
-  } catch {
-    return c.json({ ok: false, reason: "strava_error", ingested: 0, matched: promoted });
-  }
-  if (sources.length === 0) return c.json({ ok: true, ingested: 0, matched: promoted });
-  const stats = await ingestActivities(db, { userId, sources });
-  if (stats.affectedDates.length > 0) {
-    const prefs = await loadPreferences(db, userId);
-    await resimulateFrom(db, userId, stats.affectedDates[0]!, prefs).catch(() => undefined);
-  }
+  const result = await enqueueBackfill(db, userId, todayInZone(prefs.timezone));
   return c.json({
     ok: true,
-    ingested: stats.newActivities + stats.mergedPairs,
-    matched: stats.matchesCreated + promoted,
+    enqueued: result.enqueued,
+    reason: result.reason,
+    matched: promoted,
   });
 });
 

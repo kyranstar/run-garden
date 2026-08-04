@@ -367,6 +367,16 @@ export interface ReadNowResponse {
   lastCorosReadAt: string | null;
 }
 
+/** Progress of the one-shot deep history backfill. */
+export interface BackfillStatusResponse {
+  status: "idle" | "running" | "done" | "error";
+  earliestDateReached: string | null;
+  chunksCompleted: number;
+  activitiesIngested: number;
+  /** COROS sportType codes seen but not admitted, by code. */
+  skippedSportTypes: Record<string, number>;
+}
+
 /** Response from `POST /api/studio/adoption/:pushId/undo` — mirrors the
  * worker's own `PushSummary` (apps/worker/src/services/studio-push.ts), which
  * is a distinct, lighter shape than `StudioPushSummaryDto` above (no
@@ -446,10 +456,12 @@ export const api = {
   dismissInsight: (cardId: string) => post("/api/insights/dismiss", { cardId }),
   activities: (limit = 40) => get<{ activities: ActivityDto[] }>(`/api/activities?limit=${limit}`),
   unmatchedActivities: () => get<{ activities: Array<Record<string, unknown>> }>("/api/activities/unmatched"),
-  backfillRuns: (days = 90) =>
-    post<{ ok: boolean; reason?: string; ingested: number; matched: number }>(
-      `/api/activities/backfill?days=${days}`,
+  /** Queue the one-shot deep walk of COROS history (all three disciplines). */
+  backfillHistory: () =>
+    post<{ ok: boolean; enqueued: boolean; reason?: string; matched: number }>(
+      "/api/activities/backfill",
     ),
+  backfillStatus: () => get<BackfillStatusResponse>("/api/sync/backfill-status"),
   settings: () => get<SettingsResponse>("/api/settings"),
   updateSettings: (partial: Partial<UserPreferences>) => put<{ ok: true; prefs: UserPreferences }>("/api/settings", partial),
   diagnostics: () => get<Record<string, unknown>>("/api/settings/diagnostics"),

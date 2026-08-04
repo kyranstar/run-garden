@@ -1,6 +1,6 @@
 import { Hono } from "hono";
 import { and, desc, eq, inArray } from "drizzle-orm";
-import { corosWriteJobs, plannedWorkouts, syncRuns } from "@rg/database";
+import { backfillState, corosWriteJobs, plannedWorkouts, syncRuns } from "@rg/database";
 import { newId, nowInstant, todayInZone } from "@rg/domain";
 import type { AppContext } from "../auth/middleware.js";
 import { requireUser } from "../auth/middleware.js";
@@ -155,6 +155,29 @@ syncRoutes.post("/notes/:id/undo", async (c) => {
 
 const READ_NOW_FRESH_MS = 5 * 60_000;
 const READ_NOW_IN_FLIGHT = ["queued", "claimed", "in_progress", "verifying"] as const;
+
+/**
+ * Progress of the one-shot deep history backfill. Polled by Settings while it
+ * runs; `skippedSportTypes` is how a sport code the app does not admit becomes
+ * visible instead of silently dropped.
+ */
+syncRoutes.get("/backfill-status", async (c) => {
+  const row = (
+    await c
+      .get("db")
+      .select()
+      .from(backfillState)
+      .where(eq(backfillState.userId, c.get("userId")))
+      .limit(1)
+  )[0];
+  return c.json({
+    status: row?.status ?? "idle",
+    earliestDateReached: row?.earliestDateReached ?? null,
+    chunksCompleted: row?.chunksCompleted ?? 0,
+    activitiesIngested: row?.activitiesIngested ?? 0,
+    skippedSportTypes: row?.skippedSportTypes ?? {},
+  });
+});
 
 syncRoutes.post("/read-now", async (c) => {
   const db = c.get("db");

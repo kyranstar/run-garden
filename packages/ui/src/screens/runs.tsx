@@ -165,16 +165,16 @@ export function RunsScreen() {
   const [filter, setFilter] = useState<DisciplineFilter>("all");
 
   const backfill = useMutation({
-    mutationFn: () => api.backfillRuns(90),
+    mutationFn: () => api.backfillHistory(),
     onSuccess: (r) => {
+      // The walk runs on the desktop bridge, chunk by chunk, so this only
+      // reports that it was queued — Settings shows the progress.
       setNote(
-        !r.ok
-          ? "Couldn't reach Strava — connect it in Settings to backfill history."
-          : r.ingested === 0
-            ? "No new past runs found in the last 90 days."
-            : `Backfilled ${r.ingested} run${r.ingested === 1 ? "" : "s"}${
-                r.matched ? `, matched ${r.matched} to your plan` : ""
-              }.`,
+        !r.enqueued
+          ? r.reason === "already_running"
+            ? "Already reading your history — see Settings for progress."
+            : "Couldn't start the backfill. Open the desktop app and try again."
+          : "Reading your COROS history — runs, lifts, and yoga. Progress is in Settings.",
       );
       void qc.invalidateQueries({ queryKey: ["runs"] });
       void qc.invalidateQueries({ queryKey: ["plan"] });

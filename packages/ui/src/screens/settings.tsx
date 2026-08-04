@@ -145,6 +145,52 @@ function SchedulingSection({ prefs }: { prefs: UserPreferences }) {
   );
 }
 
+/**
+ * The one-shot deep history walk. Distinct from the rolling 14-day snapshot:
+ * this reaches back as far as the account goes, across all three disciplines,
+ * and runs on the desktop bridge one 90-day chunk at a time.
+ */
+function BackfillRow() {
+  const qc = useQueryClient();
+  const status = useQuery({
+    queryKey: ["backfill-status"],
+    queryFn: api.backfillStatus,
+    // Poll only while there is something to watch.
+    refetchInterval: (q) => (q.state.data?.status === "running" ? 5000 : false),
+  });
+  const start = useMutation({
+    mutationFn: api.backfillHistory,
+    onSuccess: () => {
+      void status.refetch();
+      void qc.invalidateQueries({ queryKey: ["runs"] });
+    },
+  });
+
+  const s = status.data;
+  const running = s?.status === "running";
+  const detail = running
+    ? `Reading your COROS history — ${s.chunksCompleted} ${s.chunksCompleted === 1 ? "chunk" : "chunks"}, ${s.activitiesIngested} sessions so far${s.earliestDateReached ? `, back to ${s.earliestDateReached}` : ""}.`
+    : s?.status === "done"
+      ? `History loaded: ${s.activitiesIngested} sessions${s.earliestDateReached ? ` back to ${s.earliestDateReached}` : ""}.`
+      : "Pull your full run, lift, and yoga history from COROS. Runs once; your Mac needs to be awake.";
+
+  return (
+    <div className="switch-row">
+      <div>
+        <strong>History</strong>
+        <p className="faint">{detail}</p>
+      </div>
+      <button
+        className="btn btn-small"
+        disabled={start.isPending || running}
+        onClick={() => start.mutate()}
+      >
+        {running ? "Reading…" : s?.status === "done" ? "Run again" : "Backfill history"}
+      </button>
+    </div>
+  );
+}
+
 function ConnectionsSection() {
   const qc = useQueryClient();
   const me = useQuery({ queryKey: ["me"], queryFn: api.me });
@@ -222,6 +268,8 @@ function ConnectionsSection() {
           </a>
         )}
       </div>
+
+      <BackfillRow />
 
       <Sheet open={chooseOpen} onClose={() => setChooseOpen(false)} title="Choose a calendar">
         <div className="stack">
