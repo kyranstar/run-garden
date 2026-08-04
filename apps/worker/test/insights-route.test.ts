@@ -697,20 +697,20 @@ describe("payload shape", () => {
       expect(typed.interpreted.map((m) => m.id)).not.toContain(dead);
     }
 
-    // Banded cards carry the numeric gauge edges the dashboard draws.
+    // Banded cards carry the numeric gauge edges the dashboard draws — except
+    // hardStack/easyDiscipline, which draw as strips (boxes), not gauges;
+    // shipping both would leave the gauge>strip tile-visual priority hiding
+    // the strip the dashboard actually wants for these two.
     const easyDiscipline = metric(typed, "easyDiscipline");
-    expect(easyDiscipline.gauge).toEqual({
-      min: 0,
-      max: 100,
-      healthyLo: 80,
-      healthyHi: 100,
-      value: 100,
-    });
+    expect(easyDiscipline.gauge).toBeUndefined();
     expect(easyDiscipline.strip).toHaveLength(5);
     expect(easyDiscipline.strip!.every((t) => t.on)).toBe(true);
 
-    // hardStack is always computable (0 is a valid answer) and ships a strip.
-    expect(metric(typed, "hardStack").strip).toHaveLength(7);
+    // hardStack is always computable (0 is a valid answer) and ships a strip,
+    // not a gauge.
+    const hardStack = metric(typed, "hardStack");
+    expect(hardStack.gauge).toBeUndefined();
+    expect(hardStack.strip).toHaveLength(7);
   });
 });
 

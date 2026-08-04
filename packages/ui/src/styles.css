@@ -1396,6 +1396,12 @@ button {
 .status-strip-clear {
   border-left-color: var(--green);
 }
+/* "· N awaiting data" — de-emphasized (still an ink-family token, --ink-faint
+   via .faint, not a severity color) so the honest caveat doesn't compete
+   with the headline count. */
+.status-strip-awaiting {
+  font-weight: 400;
+}
 
 /* ── Sheets & dialogs ───────────────────────────────────────────────────── */
 

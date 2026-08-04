@@ -851,7 +851,9 @@ insightRoutes.get("/", async (c) => {
       value: days(v.consecutive),
       band: v.consecutive >= 2 ? "watch" : "healthy",
       range: "one hard day at a time",
-      gauge: { min: 0, max: 4, healthyLo: 0, healthyHi: 1, value: v.consecutive },
+      // No gauge: the dashboard draws this one as a strip (7 daily boxes),
+      // not a bullet gauge — see signal-tiles.tsx's gauge>sparkline>strip
+      // priority, which would otherwise hide the strip behind a gauge.
       strip: v.strip.map((d) => ({ date: d.date, on: d.hard })),
       meaning:
         "Consecutive hard days ending today — or yesterday, if today hasn't happened yet. A day counts as hard " +
@@ -886,7 +888,8 @@ insightRoutes.get("/", async (c) => {
         value: `${v.inEasyPct}%`,
         band: v.inEasyPct < 80 ? "watch" : "healthy",
         range: "≥80%",
-        gauge: { min: 0, max: 100, healthyLo: 80, healthyHi: 100, value: v.inEasyPct },
+        // No gauge: this one draws as a strip (one box per run) on the
+        // dashboard — see the hardStack comment above for why.
         strip: v.ticks.map((t) => ({ date: t.date, on: t.easy })),
         meaning:
           `Share of your planned easy and recovery runs whose average heart rate actually stayed at or under ` +

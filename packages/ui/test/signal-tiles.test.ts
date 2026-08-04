@@ -1,5 +1,11 @@
 import { describe, expect, it } from "vitest";
-import { pickTileVisual, pickStatusStripMetric, firstSentence, stripKindForMetricId } from "../src/signal-tiles.js";
+import {
+  pickTileVisual,
+  pickStatusStripMetric,
+  statusStripBaseText,
+  firstSentence,
+  stripKindForMetricId,
+} from "../src/signal-tiles.js";
 import type { InterpretedMetric } from "../src/signal-tiles.js";
 
 // Minimal builder — only the fields the functions under test read are
@@ -92,6 +98,69 @@ describe("pickStatusStripMetric", () => {
 
   it("returns clear for an empty metric list", () => {
     expect(pickStatusStripMetric([])).toEqual({ severity: "clear" });
+  });
+});
+
+describe("statusStripBaseText", () => {
+  it("counts only status==='ok' metrics in the all-clear line, not insufficient_data ones", () => {
+    const interpreted = [
+      metric({ id: "a", band: "healthy" }),
+      metric({ id: "b", band: "low" }),
+      metric({ id: "c", status: "insufficient_data", band: undefined }),
+    ];
+    const pick = pickStatusStripMetric(interpreted);
+    const result = statusStripBaseText(pick, interpreted);
+    expect(result.base).toBe("All 2 signals in range");
+  });
+
+  it("reports no awaitingCount when every metric is status==='ok'", () => {
+    const interpreted = [metric({ id: "a", band: "healthy" }), metric({ id: "b", band: "low" })];
+    const result = statusStripBaseText(pickStatusStripMetric(interpreted), interpreted);
+    expect(result.awaitingCount).toBeUndefined();
+  });
+
+  it("reports awaitingCount equal to the number of insufficient_data metrics on the all-clear line", () => {
+    const interpreted = [
+      metric({ id: "a", band: "healthy" }),
+      metric({ id: "b", status: "insufficient_data", band: undefined }),
+      metric({ id: "c", status: "insufficient_data", band: undefined }),
+    ];
+    const result = statusStripBaseText(pickStatusStripMetric(interpreted), interpreted);
+    expect(result.base).toBe("All 1 signals in range");
+    expect(result.awaitingCount).toBe(2);
+  });
+
+  it("does not report awaitingCount on the high-severity branch, even alongside insufficient_data metrics", () => {
+    const interpreted = [
+      metric({ id: "bad", band: "high" }),
+      metric({ id: "pending", status: "insufficient_data", band: undefined }),
+    ];
+    const result = statusStripBaseText(pickStatusStripMetric(interpreted), interpreted);
+    expect(result.awaitingCount).toBeUndefined();
+  });
+
+  it("builds the high-severity line with the ⚠ glyph, title, value, and first-sentence phrase", () => {
+    const bad = metric({
+      id: "bad",
+      title: "Load vs your norm",
+      band: "high",
+      value: "1.8x",
+      suggestion: "Way over your norm. Back off for a few days.",
+    });
+    const result = statusStripBaseText(pickStatusStripMetric([bad]), [bad]);
+    expect(result.base).toBe("⚠ Load vs your norm: 1.8x — Way over your norm.");
+  });
+
+  it("builds the watch-severity line with a softer glyph than high", () => {
+    const watching = metric({
+      id: "watching",
+      title: "Hard-day stacking",
+      band: "watch",
+      value: "2 days",
+      suggestion: "Back-to-back hard days leave less room to absorb the work.",
+    });
+    const result = statusStripBaseText(pickStatusStripMetric([watching]), [watching]);
+    expect(result.base).toBe("• Hard-day stacking: 2 days — Back-to-back hard days leave less room to absorb the work.");
   });
 });
 

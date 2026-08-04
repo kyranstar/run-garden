@@ -110,7 +110,24 @@ function formatGaugeLabel(n: number): string {
  * the track and shows a small overflow arrow when the real value fell
  * outside [min, max] — the track's extent is honest, not stretched to fit
  * an outlier.
+ *
+ * `aria-label` (not `aria-hidden`): the marker's raw position is not
+ * always recoverable from the tile's other visible text — e.g. loadRatio
+ * shows "+X% vs norm" as its headline value while the gauge draws the
+ * underlying 0.5–2 ratio, so the ratio itself has no visible text form
+ * anywhere else on the tile. `role="img"` pairs with it so the label is
+ * exposed as the element's accessible name (a bare `<div>`'s implicit
+ * `generic` role doesn't reliably support `aria-label` on its own, per
+ * ARIA's global-attribute rules — the same `role="img"` pairing every
+ * other chart in this app already uses, see charts.tsx).
  */
+function gaugeAriaLabel(g: MetricGauge): string {
+  return (
+    `${formatGaugeLabel(g.value)} on a ${formatGaugeLabel(g.min)}–${formatGaugeLabel(g.max)} scale, ` +
+    `healthy ${formatGaugeLabel(g.healthyLo)}–${formatGaugeLabel(g.healthyHi)}`
+  );
+}
+
 function Gauge({ g }: { g: MetricGauge }) {
   const span = g.max - g.min;
   const pct = (v: number): number => (span > 0 ? clamp01((v - g.min) / span) * 100 : 50);
@@ -122,7 +139,7 @@ function Gauge({ g }: { g: MetricGauge }) {
   const bandRight = pct(g.healthyHi);
 
   return (
-    <div className="gauge" aria-hidden="true">
+    <div className="gauge" role="img" aria-label={gaugeAriaLabel(g)}>
       <div className="gauge-track">
         <div
           className="gauge-band"
@@ -296,10 +313,36 @@ export function SignalTile({ m, onDrill }: { m: InterpretedMetric; onDrill?: (m:
 
 // ── StatusStrip ──────────────────────────────────────────────────────────
 
-function statusStripBaseText(pick: StatusStripPick, total: number): string {
-  if (pick.severity === "clear" || !pick.metric) return `All ${total} signals in range`;
+export interface StatusStripText {
+  base: string;
+  /**
+   * Set only on the all-clear line, only when at least one metric is still
+   * `insufficient_data` — those metrics were never assessed, so counting
+   * them into "All N signals in range" would claim more than is honestly
+   * known. Rendered as a separate, visually faint clause rather than
+   * folded into `base` so the distinction survives to the DOM, not just
+   * this function's prose.
+   */
+  awaitingCount?: number;
+}
+
+/**
+ * The clear-branch count is `status === "ok"` metrics only — an
+ * `insufficient_data` metric has no band at all, so it was never actually
+ * confirmed "in range"; folding it into the headline count would be a
+ * false claim, not silence-earned-by-being-normal.
+ */
+export function statusStripBaseText(pick: StatusStripPick, interpreted: readonly InterpretedMetric[]): StatusStripText {
+  if (pick.severity === "clear" || !pick.metric) {
+    const okCount = interpreted.filter((m) => m.status === "ok").length;
+    const awaitingCount = interpreted.length - okCount;
+    return {
+      base: `All ${okCount} signals in range`,
+      awaitingCount: awaitingCount > 0 ? awaitingCount : undefined,
+    };
+  }
   const glyph = pick.severity === "high" ? "⚠" : "•";
-  return `${glyph} ${pick.metric.title}: ${pick.metric.value ?? ""} — ${actionablePhrase(pick.metric)}`;
+  return { base: `${glyph} ${pick.metric.title}: ${pick.metric.value ?? ""} — ${actionablePhrase(pick.metric)}` };
 }
 
 function scrollToSignal(id: string): void {
@@ -328,8 +371,7 @@ export function StatusStrip({
   adherencePct?: number;
 }) {
   const pick = pickStatusStripMetric(interpreted);
-  const suffix = typeof adherencePct === "number" ? ` · adherence ${adherencePct}%` : "";
-  const text = statusStripBaseText(pick, interpreted.length) + suffix;
+  const { base, awaitingCount } = statusStripBaseText(pick, interpreted);
   const targetId = pick.metric?.id;
 
   return (
@@ -349,7 +391,9 @@ export function StatusStrip({
           }
         : {})}
     >
-      {text}
+      {base}
+      {awaitingCount ? <span className="faint status-strip-awaiting"> · {awaitingCount} awaiting data</span> : null}
+      {typeof adherencePct === "number" ? ` · adherence ${adherencePct}%` : null}
     </div>
   );
 }
