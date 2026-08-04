@@ -393,7 +393,7 @@ function BalanceDetail({
 
   const next = trio[k];
   const wk = s.weekDisciplines;
-  const wkMark = (done: boolean) => (done ? "✓" : "·");
+  const wkMark = (done: boolean) => (done ? "✓" : "–");
   const wkDone = [wk.run, wk.strength, wk.yoga].filter(Boolean).length;
 
   return (
@@ -958,6 +958,7 @@ export function GardenScreen() {
                 todayDate={todayDate}
                 daysAhead={daysSinceSimulated}
                 nextWorkout={d?.nextWorkout}
+                balance={liveBalance}
                 className="hud-forecast"
               />
             ) : null}
