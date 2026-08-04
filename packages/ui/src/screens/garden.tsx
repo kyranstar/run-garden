@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState, type ReactNode } from "react";
+import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { Link } from "react-router-dom";
 import { useQuery } from "@tanstack/react-query";
 import { api, type DisciplineBalance, type WorkoutDto } from "@rg/api-client";
@@ -18,14 +18,18 @@ import {
   Card,
   EmptyState,
   formatDayShort,
+  formatTime,
+  relativeDay,
   Sheet,
   Spinner,
 } from "../components.js";
+import { Drawer } from "../drawer.js";
 import { BotanicalCard } from "./botanical.js";
 import { EvidenceCard, NextWorkout, Readiness, SyncPanel, UnresolvedCard } from "./today.js";
 import {
   CATEGORY_ORDER,
   NextUnlockNudges,
+  progressText,
   SpeciesCodex,
   WildlifeShelf,
   type CodexEntry,
@@ -46,6 +50,47 @@ function usePrefersReducedMotion(): boolean {
       typeof window !== "undefined" && window.matchMedia("(prefers-reduced-motion: reduce)").matches,
     [],
   );
+}
+
+/** ≥1024px — where the garden becomes a full-viewport stage. */
+function useIsDesktop(): boolean {
+  const [isDesktop, setIsDesktop] = useState(
+    () => typeof window !== "undefined" && window.matchMedia("(min-width: 1024px)").matches,
+  );
+  useEffect(() => {
+    const mq = window.matchMedia("(min-width: 1024px)");
+    const onChange = () => setIsDesktop(mq.matches);
+    mq.addEventListener("change", onChange);
+    return () => mq.removeEventListener("change", onChange);
+  }, []);
+  return isDesktop;
+}
+
+/** A timeline day worth a tick mark — derived from snapshot deltas. */
+interface TimelineChapter {
+  index: number;
+  label: string;
+}
+
+function deriveChapters(points: TimelinePoint[]): TimelineChapter[] {
+  const out: TimelineChapter[] = [];
+  const dead = (s: GardenSnapshot) => s.plants.filter((p) => p.state === "dead").length;
+  for (let i = 1; i < points.length; i++) {
+    const prev = points[i - 1]!.snapshot;
+    const cur = points[i]!.snapshot;
+    if (cur.unlockedSpeciesIds.length > prev.unlockedSpeciesIds.length) {
+      out.push({ index: i, label: "New species unlocked" });
+    } else if (cur.state.unlockedRegions > prev.state.unlockedRegions) {
+      out.push({ index: i, label: "The garden expanded into new ground" });
+    } else if (prev.state.weatherState !== "mild_drought" && cur.state.weatherState === "mild_drought") {
+      out.push({ index: i, label: "Drought set in" });
+    } else if (prev.state.weatherState === "mild_drought" && cur.state.weatherState === "recovery_rain") {
+      out.push({ index: i, label: "The comeback began" });
+    } else if (dead(cur) > dead(prev)) {
+      out.push({ index: i, label: "A plant died back" });
+    }
+  }
+  return out;
 }
 
 function cap(s: string): string {
@@ -355,8 +400,31 @@ export function GardenScreen() {
   const [showWeather, setShowWeather] = useState(false);
   const [timelineOpen, setTimelineOpen] = useState(false);
   const [dayIndexOverride, setDayIndexOverride] = useState<number | null>(null);
+  const [openDrawer, setOpenDrawer] = useState<"collection" | "log" | null>(null);
+  const [dockOpen, setDockOpenState] = useState(
+    () => typeof window === "undefined" || window.localStorage.getItem("rg-dock") !== "collapsed",
+  );
+  const [beatDismissed, setBeatDismissed] = useState(false);
+  const [replaying, setReplaying] = useState(false);
+  // The date this garden was last looked at — powers the overnight beat.
+  const lastVisit = useMemo(
+    () => (typeof window === "undefined" ? null : window.localStorage.getItem("rg-last-visit")),
+    [],
+  );
   const reducedMotion = usePrefersReducedMotion();
+  const isDesktop = useIsDesktop();
+  const dayIndexRef = useRef(0);
+  const maxDayIndexRef = useRef(0);
   const hourOfDay = new Date().getHours() + new Date().getMinutes() / 60;
+
+  const setDockOpen = (open: boolean) => {
+    setDockOpenState(open);
+    try {
+      window.localStorage.setItem("rg-dock", open ? "open" : "collapsed");
+    } catch {
+      // Private-mode storage failures only cost the remembered state.
+    }
+  };
 
   // Fetched only once the scrubber is opened, then cached — scrubbing itself
   // is then all client-side (no per-frame requests).
@@ -374,6 +442,34 @@ export function GardenScreen() {
   useEffect(() => {
     void api.readNow().catch(() => undefined);
   }, []);
+
+  // Remember this visit once the garden has loaded (after `lastVisit` was
+  // captured for the beat above).
+  useEffect(() => {
+    if (!garden.data) return;
+    try {
+      const seen = (garden.data.snapshot as GardenSnapshot).state.lastSimulatedDate;
+      const prev = window.localStorage.getItem("rg-last-visit");
+      if (!prev || seen > prev) window.localStorage.setItem("rg-last-visit", seen);
+    } catch {
+      // Storage may be unavailable; the beat simply won't fire.
+    }
+  }, [garden.data]);
+
+  // Timeline week replay: step one day forward on a calm cadence. The refs
+  // are written during render below, so the interval always sees the live
+  // clamp without re-subscribing.
+  useEffect(() => {
+    if (!replaying) return;
+    const id = window.setInterval(() => {
+      if (dayIndexRef.current >= maxDayIndexRef.current) {
+        setReplaying(false);
+        return;
+      }
+      setDayIndexOverride((v) => (v === null ? null : v + 1));
+    }, 650);
+    return () => window.clearInterval(id);
+  }, [replaying]);
 
   if (garden.isLoading) return <Spinner label="Loading the garden" />;
   if (!garden.data) return <EmptyState title="Couldn't load the garden" />;
@@ -399,6 +495,8 @@ export function GardenScreen() {
   const timelinePoints: TimelinePoint[] = [...pastDays, { date: liveDate, snapshot, condition }];
   const maxDayIndex = Math.max(0, timelinePoints.length - 1);
   const dayIndex = Math.min(dayIndexOverride ?? maxDayIndex, maxDayIndex);
+  dayIndexRef.current = dayIndex;
+  maxDayIndexRef.current = maxDayIndex;
   const dayView = timelinePoints[dayIndex] ?? timelinePoints[timelinePoints.length - 1]!;
   const viewingLive = !timelineOpen || dayIndex === maxDayIndex;
   const timelineLoading = timelineOpen && timeline.isLoading;
@@ -439,6 +537,24 @@ export function GardenScreen() {
   const wildlife = (garden.data.wildlife as WildlifeEntry[]) ?? [];
   const unlockedCount = codex.filter((c) => c.unlocked).length;
 
+  // The overnight beat: what happened since the last visit, told in 2–3
+  // sentences on arrival. Unlocks lead — the reveal is the reward.
+  const BEAT_PRIORITY: Record<string, number> = {
+    species_unlocked: 0,
+    wildlife_arrived: 1,
+    plant_added: 2,
+    region_unlocked: 3,
+  };
+  const beatLines =
+    lastVisit && lastVisit < liveDate && !beatDismissed
+      ? events
+          .filter((e) => e.date > lastVisit && !(e as { preview?: boolean }).preview)
+          .sort((a, b) => (BEAT_PRIORITY[a.kind] ?? 9) - (BEAT_PRIORITY[b.kind] ?? 9))
+          .map((e) => eventSentence(e))
+          .filter((t): t is string => !!t)
+          .slice(0, 3)
+      : [];
+
   const d = today.data;
 
   // The clocks are as-of the end of `lastSimulatedDate` (≤ yesterday). Project
@@ -463,131 +579,107 @@ export function GardenScreen() {
   const lossVoiced =
     viewingLive && !restMode.active && !fc.recovering && (fc.next !== null || fc.victim !== null);
 
-  return (
-    <div className="garden-home">
-      <h1 className="visually-hidden">Garden</h1>
+  // Timeline chapters: worth-a-tick days, derived from snapshot deltas.
+  const chapters = timelineOpen && !timelineLoading ? deriveChapters(timelinePoints) : [];
+  const currentChapter = chapters.find((c) => c.index === dayIndex);
+  const startReplay = () => {
+    if (reducedMotion || maxDayIndex === 0) {
+      setDayIndexOverride(maxDayIndex);
+      return;
+    }
+    setDayIndexOverride(Math.max(0, maxDayIndex - 7));
+    setReplaying(true);
+  };
 
-      {/* The garden itself — big and central. */}
-      <div className="garden-scene-wrap garden-scene-big">
-        <GardenScene
-          snapshot={displaySnapshot}
-          reducedMotion={reducedMotion}
-          selectedPlantId={selectedPlantId}
-          onSelectPlant={setSelectedPlantId}
-          timeOfDay={hourOfDay}
-          atmosphere={!timelineOpen}
-        />
-      </div>
+  const attentionCount = (d?.needsAttention.length ?? 0) + (d?.unresolved.length ?? 0);
+  const firstNudge = nudges[0];
 
-      {/* Drag through the garden's history: one fetch, then the scrubber is
-          all client-side re-renders of already-loaded days. */}
-      <div className="timeline-bar">
-        {timelineOpen ? (
-          <div className="timeline-panel">
-            <div className="timeline-panel-head">
-              <span className="timeline-label">
-                {timelineLoading
-                  ? "Loading timeline…"
-                  : `${formatDayShort(dayView.date)} — day ${dayIndex}${viewingLive ? " (today)" : ""}`}
-              </span>
-              <button
-                type="button"
-                className="btn btn-small"
-                onClick={closeTimeline}
-                aria-label="Close timeline"
-              >
-                <IconClose size={14} />
-              </button>
-            </div>
-            {!timelineLoading ? (
-              <input
-                type="range"
-                className="timeline-slider"
-                min={0}
-                max={maxDayIndex}
-                step={1}
-                value={dayIndex}
-                disabled={maxDayIndex === 0}
-                onChange={(e) => setDayIndexOverride(Number(e.target.value))}
-                aria-label="Day in the garden's history"
-              />
-            ) : null}
-          </div>
-        ) : (
-          <button type="button" className="btn btn-small" onClick={() => setTimelineOpen(true)}>
-            <IconClock size={14} /> Timeline
-          </button>
-        )}
-      </div>
-
-      {liveBalance ? (
-        <BalanceStrip balance={liveBalance} runPaused={!planActive} quiet={lossVoiced} />
-      ) : null}
-
-      {/* What the garden is telling you, and why it looks this way. */}
-      <div className="garden-readout">
-        <h2 className="garden-condition">{GARDEN_CONDITION_LABELS[displayCondition]}</h2>
-        {viewingLive && !restMode.active ? (
-          <ForecastLine
-            snapshot={snapshot}
-            todayDate={todayDate}
-            daysAhead={daysSinceSimulated}
-            nextWorkout={d?.nextWorkout}
-          />
-        ) : null}
-        {todayLines.length > 0 ? (
-          <p className="garden-nowline">
-            <span className="now-chip">today</span>
-            {todayLines.join(" ")}
-          </p>
-        ) : null}
-        <p className="muted">
-          {conditionStory(
-            displayCondition,
-            displaySnapshot,
-            livingPlantsCount,
-            viewingLive ? species.length : displaySnapshot.unlockedSpeciesIds.length,
-          )}
-        </p>
-        <p className="faint">
-          {viewingLive ? "Weather right now is" : "Weather that day was"}{" "}
-          <strong>{WEATHER_LABEL[weather]}</strong> — {WEATHER_WHY[weather]}{" "}
-          {viewingLive ? (
-            <button type="button" className="linklike" onClick={() => setShowWeather((v) => !v)}>
-              {showWeather ? "Hide" : "How the garden works"}
+  const timelinePanel = (
+    <div className="timeline-panel">
+      <div className="timeline-panel-head">
+        <span className="timeline-label">
+          {timelineLoading
+            ? "Loading timeline…"
+            : `${formatDayShort(dayView.date)} — day ${dayIndex}${viewingLive ? " (today)" : ""}`}
+        </span>
+        <div className="row" style={{ gap: "0.35rem" }}>
+          {!timelineLoading && maxDayIndex > 7 ? (
+            <button type="button" className="btn btn-small" onClick={startReplay} disabled={replaying}>
+              Replay week
             </button>
           ) : null}
-        </p>
-        {showWeather ? (
-          <Banner kind="info">
-            Completing a planned run brings <strong>rain</strong>, which waters the garden and grows
-            new plants; a rest day brings gentle <strong>sun</strong>. Go a few days without running
-            and clouds gather, then a dry spell, then <strong>drought</strong> after about two weeks —
-            your next run turns it back to recovery rain. Consistency unlocks new species; the same
-            running history always grows the exact same garden. Tap any plant to see what it came
-            from.
-          </Banner>
-        ) : null}
-        {restMode.active ? (
-          <Banner kind="info">Rest mode is on — nothing declines while you're away.</Banner>
-        ) : null}
+          <button
+            type="button"
+            className="btn btn-small"
+            onClick={closeTimeline}
+            aria-label="Close timeline"
+          >
+            <IconClose size={14} />
+          </button>
+        </div>
       </div>
-
-      {/* The pull forward: what arrives next and exactly how to earn it. */}
-      {nudges.length > 0 ? (
-        <Card title="Growing next">
-          <NextUnlockNudges nudges={nudges} />
-        </Card>
+      {!timelineLoading ? (
+        <>
+          <div className="timeline-track">
+            <input
+              type="range"
+              className="timeline-slider"
+              min={0}
+              max={maxDayIndex}
+              step={1}
+              value={dayIndex}
+              disabled={maxDayIndex === 0}
+              onChange={(e) => {
+                setReplaying(false);
+                setDayIndexOverride(Number(e.target.value));
+              }}
+              aria-label="Day in the garden's history"
+            />
+            {maxDayIndex > 0 && chapters.length > 0 ? (
+              <div className="timeline-ticks" aria-hidden="true">
+                {chapters.map((c) => (
+                  <span key={c.index} style={{ left: `${(c.index / maxDayIndex) * 100}%` }} />
+                ))}
+              </div>
+            ) : null}
+          </div>
+          {currentChapter ? <div className="timeline-chapter">{currentChapter.label}</div> : null}
+        </>
       ) : null}
+    </div>
+  );
 
-      {/* Today's actionable elements (formerly the Today page). */}
-      {d?.nextWorkout ? (
-        <NextWorkout w={d.nextWorkout} today={d.today} />
-      ) : d ? (
-        <EmptyState art="🌿" title="No active COROS training plan was found">
-          Start a plan in COROS, then refresh from the desktop app.
-        </EmptyState>
-      ) : null}
+  const renderLog = (items: Array<{ e: GardenEvent; text: string }>) =>
+    items.length === 0 ? (
+      <p className="muted">Complete your first planned run to bring the rain.</p>
+    ) : (
+      <ul className="garden-history">
+        {items.map(({ e, text }) => (
+          <li key={e.id}>
+            <span className="date">{formatDayShort(e.date)}</span>
+            <span>{text}</span>
+          </li>
+        ))}
+      </ul>
+    );
+
+  const fullLog = events
+    .map((e) => ({ e, text: eventSentence(e) }))
+    .filter((x): x is { e: GardenEvent; text: string } => !!x.text);
+
+  const howItWorks = showWeather ? (
+    <Banner kind="info">
+      Completing a planned run brings <strong>rain</strong>, which waters the garden and grows
+      new plants; a rest day brings gentle <strong>sun</strong>. Go a few days without running
+      and clouds gather, then a dry spell, then <strong>drought</strong> after about two weeks —
+      your next run turns it back to recovery rain. Consistency unlocks new species; the same
+      running history always grows the exact same garden. Tap any plant to see what it came
+      from.
+    </Banner>
+  ) : null;
+
+  const plumbing = (
+    <>
       {d ? (
         d.sync.calendarConnected ? (
           <SyncPanel />
@@ -614,30 +706,11 @@ export function GardenScreen() {
       ))}
       {d ? <Readiness readiness={d.readiness} /> : null}
       <EvidenceCard />
+    </>
+  );
 
-      {/* The event log — trace what happened, and your species. */}
-      <div className="garden-lower">
-        <Card title="Garden log">
-          {historyItems.length === 0 ? (
-            <p className="muted">Complete your first planned run to bring the rain.</p>
-          ) : (
-            <ul className="garden-history">
-              {historyItems.map(({ e, text }) => (
-                <li key={e.id}>
-                  <span className="date">{formatDayShort(e.date)}</span>
-                  <span>{text}</span>
-                </li>
-              ))}
-            </ul>
-          )}
-        </Card>
-        <Card title={`Species collection · ${unlockedCount} of ${codex.length}`}>
-          <DiversityStrip snapshot={snapshot} />
-          <SpeciesCodex codex={codex} today={todayDate} onOpenSpecies={setOpenSpeciesId} />
-          <WildlifeShelf wildlife={wildlife} />
-        </Card>
-      </div>
-
+  const sheets = (
+    <>
       {openSpeciesId ? (
         <Sheet
           open
@@ -650,7 +723,6 @@ export function GardenScreen() {
           />
         </Sheet>
       ) : null}
-
       {selectedPlant ? (
         <Sheet
           open
@@ -664,6 +736,275 @@ export function GardenScreen() {
           />
         </Sheet>
       ) : null}
+    </>
+  );
+
+  /* ── Desktop: the garden is the page — a full-viewport stage with a
+     typographic HUD. Hierarchy: scene → condition word → forecast → bars →
+     dock (the action) → rail (utilities). Text sits directly on the scene
+     with soft shadows, ambient-caption style; boxes only where lists live. */
+  if (isDesktop) {
+    return (
+      <div className="garden-home garden-home--stage">
+        <h1 className="visually-hidden">Garden</h1>
+        <div className="garden-stage">
+          <div className="stage-scene">
+            <GardenScene
+              snapshot={displaySnapshot}
+              reducedMotion={reducedMotion}
+              selectedPlantId={selectedPlantId}
+              onSelectPlant={setSelectedPlantId}
+              timeOfDay={hourOfDay}
+              atmosphere={!timelineOpen}
+              preserveAspectRatio="xMidYMax slice"
+              className="stage-scene-svg"
+            />
+          </div>
+          <div className="stage-scrim stage-scrim-top" aria-hidden="true" />
+          <div className="stage-scrim stage-scrim-bottom" aria-hidden="true" />
+
+          <div className="hud-topleft">
+            <h2 className="hud-condition">{GARDEN_CONDITION_LABELS[displayCondition]}</h2>
+            <p className="hud-weather">
+              {viewingLive
+                ? cap(WEATHER_LABEL[weather])
+                : `That day: ${WEATHER_LABEL[weather]}`}{" "}
+              — {WEATHER_WHY[weather]}
+            </p>
+            {viewingLive && !restMode.active ? (
+              <ForecastLine
+                snapshot={snapshot}
+                todayDate={todayDate}
+                daysAhead={daysSinceSimulated}
+                nextWorkout={d?.nextWorkout}
+                className="hud-forecast"
+              />
+            ) : null}
+            {restMode.active ? (
+              <p className="hud-weather">Rest mode — nothing declines while you're away.</p>
+            ) : null}
+            {viewingLive && beatLines.length > 0 && lastVisit ? (
+              <p className="hud-beat">
+                <span className="hud-beat-label">Since {formatDayShort(lastVisit)}</span>
+                <span>{beatLines.join(" ")}</span>
+                <button
+                  type="button"
+                  className="hud-beat-dismiss"
+                  onClick={() => setBeatDismissed(true)}
+                  aria-label="Dismiss"
+                >
+                  <IconClose size={12} />
+                </button>
+              </p>
+            ) : viewingLive && todayLines.length > 0 ? (
+              <p className="hud-beat">
+                <span className="hud-beat-label">Today</span>
+                <span>{todayLines.join(" ")}</span>
+              </p>
+            ) : null}
+          </div>
+
+          {liveBalance && viewingLive ? (
+            <div className="hud-topright">
+              <BalanceStrip balance={liveBalance} runPaused={!planActive} quiet variant="hud" />
+            </div>
+          ) : null}
+
+          <div className="hud-dock">
+            {dockOpen && d?.nextWorkout ? (
+              <div className="dock-panel">
+                <NextWorkout w={d.nextWorkout} today={d.today} />
+                <button type="button" className="linklike dock-collapse" onClick={() => setDockOpen(false)}>
+                  Minimize
+                </button>
+              </div>
+            ) : (
+              <button type="button" className="dock-pill" onClick={() => setDockOpen(true)}>
+                {d?.nextWorkout
+                  ? d.nextWorkout.category === "rest"
+                    ? `Rest day · ${relativeDay(d.nextWorkout.effectiveDate, d.today)}`
+                    : `Next: ${d.nextWorkout.title} · ${relativeDay(d.nextWorkout.effectiveDate, d.today)} ${formatTime(d.nextWorkout.effectiveTime)}`
+                  : "No active training plan"}
+              </button>
+            )}
+            {attentionCount > 0 ? (
+              <a className="dock-attention" href="#garden-attention">
+                {attentionCount === 1 ? "1 workout needs attention" : `${attentionCount} workouts need attention`} ↓
+              </a>
+            ) : null}
+          </div>
+
+          <div className="hud-corner">
+            {firstNudge ? (
+              <button type="button" className="hud-nudge" onClick={() => setOpenDrawer("collection")}>
+                Growing next: {firstNudge.name}
+                {firstNudge.progress ? ` · ${progressText(firstNudge.progress)}` : ""}
+              </button>
+            ) : null}
+            <nav className="hud-rail" aria-label="Garden panels">
+              <button type="button" onClick={() => setOpenDrawer("collection")}>
+                Collection · {unlockedCount}/{codex.length}
+              </button>
+              <button type="button" onClick={() => setOpenDrawer("log")}>
+                Log
+              </button>
+              <button
+                type="button"
+                onClick={() => (timelineOpen ? closeTimeline() : setTimelineOpen(true))}
+              >
+                Timeline
+              </button>
+            </nav>
+          </div>
+
+          {timelineOpen ? <div className="stage-timeline">{timelinePanel}</div> : null}
+        </div>
+
+        <div className="garden-below" id="garden-attention">
+          <p className="muted garden-below-intro">
+            {conditionStory(
+              displayCondition,
+              displaySnapshot,
+              livingPlantsCount,
+              viewingLive ? species.length : displaySnapshot.unlockedSpeciesIds.length,
+            )}{" "}
+            <button type="button" className="linklike" onClick={() => setShowWeather((v) => !v)}>
+              {showWeather ? "Hide" : "How the garden works"}
+            </button>
+          </p>
+          {howItWorks}
+          {plumbing}
+        </div>
+
+        <Drawer
+          open={openDrawer === "collection"}
+          onClose={() => setOpenDrawer(null)}
+          title={`Collection · ${unlockedCount} of ${codex.length}`}
+        >
+          {nudges.length > 0 ? (
+            <div className="drawer-section">
+              <div className="card-title">Growing next</div>
+              <NextUnlockNudges nudges={nudges} />
+            </div>
+          ) : null}
+          <DiversityStrip snapshot={snapshot} />
+          <SpeciesCodex codex={codex} today={todayDate} onOpenSpecies={setOpenSpeciesId} />
+          <WildlifeShelf wildlife={wildlife} />
+        </Drawer>
+        <Drawer open={openDrawer === "log"} onClose={() => setOpenDrawer(null)} title="Garden log">
+          {renderLog(fullLog)}
+        </Drawer>
+        {sheets}
+      </div>
+    );
+  }
+
+  /* ── Mobile: the familiar stack, with the upgraded pieces. */
+  return (
+    <div className="garden-home">
+      <h1 className="visually-hidden">Garden</h1>
+
+      {/* The garden itself — big and central. */}
+      <div className="garden-scene-wrap garden-scene-big">
+        <GardenScene
+          snapshot={displaySnapshot}
+          reducedMotion={reducedMotion}
+          selectedPlantId={selectedPlantId}
+          onSelectPlant={setSelectedPlantId}
+          timeOfDay={hourOfDay}
+          atmosphere={!timelineOpen}
+        />
+      </div>
+
+      {/* Drag through the garden's history: one fetch, then the scrubber is
+          all client-side re-renders of already-loaded days. */}
+      <div className="timeline-bar">
+        {timelineOpen ? (
+          timelinePanel
+        ) : (
+          <button type="button" className="btn btn-small" onClick={() => setTimelineOpen(true)}>
+            <IconClock size={14} /> Timeline
+          </button>
+        )}
+      </div>
+
+      {liveBalance ? (
+        <BalanceStrip balance={liveBalance} runPaused={!planActive} quiet={lossVoiced} />
+      ) : null}
+
+      {/* What the garden is telling you, and why it looks this way. */}
+      <div className="garden-readout">
+        <h2 className="garden-condition">{GARDEN_CONDITION_LABELS[displayCondition]}</h2>
+        {viewingLive && !restMode.active ? (
+          <ForecastLine
+            snapshot={snapshot}
+            todayDate={todayDate}
+            daysAhead={daysSinceSimulated}
+            nextWorkout={d?.nextWorkout}
+          />
+        ) : null}
+        {viewingLive && beatLines.length > 0 && lastVisit ? (
+          <p className="garden-nowline">
+            <span className="now-chip">since {formatDayShort(lastVisit)}</span>
+            {beatLines.join(" ")}
+          </p>
+        ) : todayLines.length > 0 ? (
+          <p className="garden-nowline">
+            <span className="now-chip">today</span>
+            {todayLines.join(" ")}
+          </p>
+        ) : null}
+        <p className="muted">
+          {conditionStory(
+            displayCondition,
+            displaySnapshot,
+            livingPlantsCount,
+            viewingLive ? species.length : displaySnapshot.unlockedSpeciesIds.length,
+          )}
+        </p>
+        <p className="faint">
+          {viewingLive ? "Weather right now is" : "Weather that day was"}{" "}
+          <strong>{WEATHER_LABEL[weather]}</strong> — {WEATHER_WHY[weather]}{" "}
+          {viewingLive ? (
+            <button type="button" className="linklike" onClick={() => setShowWeather((v) => !v)}>
+              {showWeather ? "Hide" : "How the garden works"}
+            </button>
+          ) : null}
+        </p>
+        {howItWorks}
+        {restMode.active ? (
+          <Banner kind="info">Rest mode is on — nothing declines while you're away.</Banner>
+        ) : null}
+      </div>
+
+      {/* The pull forward: what arrives next and exactly how to earn it. */}
+      {nudges.length > 0 ? (
+        <Card title="Growing next">
+          <NextUnlockNudges nudges={nudges} />
+        </Card>
+      ) : null}
+
+      {/* Today's actionable elements (formerly the Today page). */}
+      {d?.nextWorkout ? (
+        <NextWorkout w={d.nextWorkout} today={d.today} />
+      ) : d ? (
+        <EmptyState art="🌿" title="No active COROS training plan was found">
+          Start a plan in COROS, then refresh from the desktop app.
+        </EmptyState>
+      ) : null}
+      {plumbing}
+
+      {/* The event log — trace what happened, and your species. */}
+      <div className="garden-lower">
+        <Card title="Garden log">{renderLog(historyItems)}</Card>
+        <Card title={`Species collection · ${unlockedCount} of ${codex.length}`}>
+          <DiversityStrip snapshot={snapshot} />
+          <SpeciesCodex codex={codex} today={todayDate} onOpenSpecies={setOpenSpeciesId} />
+          <WildlifeShelf wildlife={wildlife} />
+        </Card>
+      </div>
+
+      {sheets}
     </div>
   );
 }

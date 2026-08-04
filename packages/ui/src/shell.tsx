@@ -1,5 +1,5 @@
 import type { ReactNode } from "react";
-import { NavLink } from "react-router-dom";
+import { NavLink, useLocation } from "react-router-dom";
 import { PRODUCT_NAME } from "@rg/domain";
 import { IconGarden, IconInsights, IconPlan, IconRuns, IconSettings } from "./icons.js";
 
@@ -20,6 +20,10 @@ export function AppShell({
   fixtureMode?: boolean;
   footer?: ReactNode;
 }) {
+  // The garden route escapes the reading column on desktop — the scene is a
+  // stage, not a card (see .garden-stage). Every other route keeps the column.
+  const { pathname } = useLocation();
+  const immersive = pathname === "/" || pathname === "/garden";
   return (
     <div className="shell">
       <nav className="side-nav" aria-label="Main">
@@ -33,7 +37,7 @@ export function AppShell({
         <div className="nav-footer">{footer}</div>
       </nav>
 
-      <main className="shell-main">
+      <main className={`shell-main${immersive ? " shell-main--immersive" : ""}`}>
         {fixtureMode ? (
           <div className="banner banner-info" style={{ marginBottom: "0.9rem" }} role="status">
             Fixture mode — showing sample data, no real providers connected.
