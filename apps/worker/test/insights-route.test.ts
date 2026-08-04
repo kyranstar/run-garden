@@ -75,6 +75,7 @@ interface InterpretedMetricBody {
   sampleNote: string;
   gauge?: { min: number; max: number; healthyLo: number; healthyHi: number; value: number };
   series?: Array<{ date: string; value: number }>;
+  baseline?: { value: number; lo: number; hi: number; unit: string };
   strip?: Array<{ date: string; on: boolean }>;
   staleNote?: string;
   detail?: {
@@ -806,6 +807,52 @@ describe("payload shape", () => {
     const hardStack = metric(typed, "hardStack");
     expect(hardStack.gauge).toBeUndefined();
     expect(hardStack.strip).toHaveLength(7);
+  });
+
+  it("ships restingHr/hrv baseline bands in the SERIES' units, not the gauge's", async () => {
+    // 40 consecutive days of flat readings: enough for both metrics' gates
+    // (restingHr needs 7, hrv needs 17) and perfectly deterministic — zero
+    // variability sends hrv's thresholdPct to its documented 10% default.
+    for (let i = 0; i < 40; i++) {
+      const date = addDays(today, -i);
+      await db.insert(schema.dailyHealth).values({
+        id: `${userId}:${date}`,
+        userId,
+        date,
+        restingHeartRate: 48,
+        hrv: 60,
+        recoveryScore: null,
+        fatigueScore: null,
+        trainingLoad7d: null,
+        provider: "coros",
+        contentFingerprint: `seed-${date}`,
+        updatedAt: nowInstant(),
+      });
+    }
+
+    const typed = await client(cookie).get();
+
+    const restingHr = metric(typed, "restingHr");
+    expect(restingHr.status).toBe("ok");
+    // bpm — the same unit as `series`, so the drilldown chart can shade the
+    // band directly against the readings. ±5 bpm is the metric's own watch
+    // threshold (deltaBpm >= 5).
+    expect(restingHr.baseline).toEqual({ value: 48, lo: 43, hi: 53, unit: "bpm" });
+    expect(restingHr.series![0]!.value).toBe(48);
+
+    const hrv = metric(typed, "hrv");
+    expect(hrv.status).toBe("ok");
+    // ms — NOT the gauge's units. This is the whole reason the field exists:
+    // hrv's gauge is drawn in percent-vs-baseline (a −25…25 scale), while its
+    // series is raw milliseconds, so the gauge's healthy edges would shade
+    // the wrong part of the chart entirely.
+    expect(hrv.baseline).toEqual({ value: 60, lo: 54, hi: 66, unit: "ms" });
+    expect(hrv.gauge!.min).toBe(-25);
+    expect(hrv.gauge!.max).toBe(25);
+    expect(hrv.series![0]!.value).toBe(60);
+
+    // A metric with no daily series carries no baseline to draw one against.
+    expect(metric(typed, "monotony").baseline).toBeUndefined();
   });
 });
 

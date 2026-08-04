@@ -806,6 +806,11 @@ insightRoutes.get("/", async (c) => {
                 value: v.current,
               },
           series: v.series,
+          // Band edges in the SERIES' unit (bpm), which the gauge above can't
+          // supply: its `min` is a drawn floor (baseline − 10), not a claim
+          // that a reading 10 bpm low means anything. ±5 bpm IS the metric's
+          // own threshold — `deltaBpm >= 5` is what turns the band to "watch".
+          baseline: { value: v.baseline, lo: v.baseline - 5, hi: v.baseline + 5, unit: "bpm" },
           staleNote: stale ? `last reading ${days(v.staleDays)} ago` : undefined,
           meaning:
             "The median of your three most recent resting heart-rate readings against your 30-day median. " +
@@ -835,6 +840,16 @@ insightRoutes.get("/", async (c) => {
             ? undefined
             : { min: -25, max: 25, healthyLo: -v.thresholdPct, healthyHi: 25, value: v.pctVsBaseline },
           series: v.series,
+          // In milliseconds, like `series` — the gauge above is drawn in
+          // percent-vs-baseline, so its healthy edges are in the wrong unit
+          // for a chart of the raw readings. Rounded to whole ms because the
+          // readings themselves are integers.
+          baseline: {
+            value: v.baseline,
+            lo: Math.round(v.baseline * (1 - v.thresholdPct / 100)),
+            hi: Math.round(v.baseline * (1 + v.thresholdPct / 100)),
+            unit: "ms",
+          },
           staleNote: stale ? `last reading ${days(v.staleDays)} ago` : undefined,
           meaning:
             "Your recent heart-rate variability against a baseline built from earlier, separate readings. " +

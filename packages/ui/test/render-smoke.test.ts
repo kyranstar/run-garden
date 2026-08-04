@@ -141,7 +141,7 @@ function chartElements(): Array<[string, ReactElement]> {
           value: 48 + Math.sin(i / 4) * 3,
         })),
         baseline: 48,
-        bandPct: 8,
+        band: { lo: 44, hi: 52 },
         unit: "ms",
         seriesLabel: "HRV",
       }),

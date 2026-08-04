@@ -77,6 +77,25 @@ export interface MetricStripCell {
   on: boolean;
 }
 
+/**
+ * The numeric baseline and noise band behind a `series`, for the drilldown's
+ * baseline-band chart. **In the same units as `series`** — which is NOT always
+ * the units of `gauge`: HRV's gauge is drawn in percent-vs-baseline while its
+ * series is milliseconds, so the gauge's `healthyLo`/`healthyHi` cannot be
+ * reused as the band and the numbers have to travel separately.
+ *
+ * `lo`/`hi` are absolute edges rather than a percentage because the two
+ * metrics that carry them derive their band differently: HRV's is ±N% of the
+ * baseline (N from the reader's own variability), resting HR's is a flat ±5
+ * bpm. A single percentage couldn't express both honestly.
+ */
+export interface MetricBaseline {
+  value: number;
+  lo: number;
+  hi: number;
+  unit: string;
+}
+
 export interface InterpretedMetric {
   id: string;
   title: string;
@@ -92,6 +111,8 @@ export interface InterpretedMetric {
   gauge?: MetricGauge;
   /** Daily sparkline points (recovery metrics). */
   series?: MetricSeriesPoint[];
+  /** Baseline + noise band for `series`, in the series' own units. */
+  baseline?: MetricBaseline;
   /** Boolean strip cells (hardStack days, easyDiscipline run ticks). */
   strip?: MetricStripCell[];
   /**
@@ -114,6 +135,7 @@ export interface Presentation {
   trend?: { direction: "up" | "down" | "flat"; better: "up" | "down" | "either" };
   gauge?: MetricGauge;
   series?: MetricSeriesPoint[];
+  baseline?: MetricBaseline;
   strip?: MetricStripCell[];
   staleNote?: string;
 }
@@ -147,6 +169,7 @@ export function interpret<T>(
     trend: p.trend,
     gauge: p.gauge,
     series: p.series,
+    baseline: p.baseline,
     strip: p.strip,
     staleNote: p.staleNote,
   };

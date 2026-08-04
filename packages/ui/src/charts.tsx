@@ -83,15 +83,26 @@ export interface ChartFrameProps {
   summary: string;
   note?: string;
   legend?: ChartLegendItem[];
+  /**
+   * A small node pinned to the right of the caption row — today, the
+   * `TrendChip` on aerobic efficiency. It lives here rather than in
+   * `subtitle` because `subtitle` is prose (a string) and a chip is a mark:
+   * a reader scanning two charts side by side should find the trend in the
+   * same place on both, not buried mid-sentence.
+   */
+  aside?: ReactNode;
   children: ReactNode;
 }
 
-export function ChartFrame({ title, subtitle, summary, note, legend, children }: ChartFrameProps) {
+export function ChartFrame({ title, subtitle, summary, note, legend, aside, children }: ChartFrameProps) {
   return (
     <figure style={{ margin: 0 }} className="chart-block">
-      <figcaption>
-        <div className="chart-title">{title}</div>
-        {subtitle ? <div className="chart-subtitle">{subtitle}</div> : null}
+      <figcaption className="chart-caption">
+        <div className="chart-caption-text">
+          <div className="chart-title">{title}</div>
+          {subtitle ? <div className="chart-subtitle">{subtitle}</div> : null}
+        </div>
+        {aside ? <div className="chart-caption-aside">{aside}</div> : null}
       </figcaption>
       {legend && legend.length > 1 ? (
         <div className="chart-legend">
@@ -1112,14 +1123,22 @@ export function DivergingPaceBars({
  * readings, a 7-READING rolling median as the line worth reading (the window
  * counts points, not calendar days — a gap in the readings shortens the span
  * it covers, and the note says "readings" so nobody reads it as a week), and a shaded
- * band at baseline ± the metric's own noise threshold. The band is the point —
- * it says which wobbles mean nothing, so a single spiky morning doesn't get
- * read as a trend.
+ * band at the metric's own noise threshold around the baseline. The band is
+ * the point — it says which wobbles mean nothing, so a single spiky morning
+ * doesn't get read as a trend.
+ *
+ * `band` carries ABSOLUTE edges, in the same unit as `series` (task B4 —
+ * replacing the original `bandPct`). The two metrics that feed this chart
+ * derive their band differently: HRV's is ±N% of the baseline, resting HR's
+ * is a flat ±5 bpm. A single percentage could only have expressed one of
+ * them, and computing the edges here would have meant the chart re-deriving
+ * a number the analytics layer already owns — so the server sends both edges
+ * (`InterpretedMetric.baseline`) and this component just draws them.
  */
 export function BaselineBandChart({
   series,
   baseline,
-  bandPct,
+  band,
   unit,
   seriesLabel,
   colorVar = "--chart-3",
@@ -1130,7 +1149,8 @@ export function BaselineBandChart({
 }: {
   series: Array<{ date: string; value: number }>;
   baseline: number;
-  bandPct: number;
+  /** Absolute band edges in `series`' unit — NOT a percentage. */
+  band: { lo: number; hi: number };
   unit: string;
   seriesLabel: string;
   colorVar?: string;
@@ -1148,8 +1168,8 @@ export function BaselineBandChart({
   const innerH = height - top - M.bottom;
   const color = `var(${colorVar})`;
 
-  const bandLo = baseline * (1 - bandPct / 100);
-  const bandHi = baseline * (1 + bandPct / 100);
+  const bandLo = Math.min(band.lo, band.hi);
+  const bandHi = Math.max(band.lo, band.hi);
   const values = sorted.map((p) => p.value);
   const { ticks, y } = yAxis(
     values.length ? [...values, bandLo, bandHi] : [bandLo, bandHi],
@@ -1178,7 +1198,8 @@ export function BaselineBandChart({
   const summary =
     `${seriesLabel}: ${sorted.length} daily readings from ${formatShortDate(sorted[0]!.date)} to ` +
     `${formatShortDate(sorted[sorted.length - 1]!.date)}, against a baseline of ` +
-    `${baseline.toFixed(decimals)} ${unit} plus or minus ${bandPct} percent. ` +
+    `${baseline.toFixed(decimals)} ${unit} and a band from ${bandLo.toFixed(decimals)} to ` +
+    `${bandHi.toFixed(decimals)} ${unit}. ` +
     `${inBand} of ${sorted.length} readings sat inside that band.`;
 
   return (
@@ -1186,7 +1207,11 @@ export function BaselineBandChart({
       title={title ?? seriesLabel}
       subtitle={subtitle}
       summary={summary}
-      note={note ?? `Shaded band: ${baseline.toFixed(decimals)} ${unit} ± ${bandPct}% · line is a 7-reading rolling median`}
+      note={
+        note ??
+        `Shaded band: ${bandLo.toFixed(decimals)}–${bandHi.toFixed(decimals)} ${unit} around a baseline of ` +
+          `${baseline.toFixed(decimals)} ${unit} · line is a 7-reading rolling median`
+      }
     >
       <div {...wrapperProps}>
         <svg
