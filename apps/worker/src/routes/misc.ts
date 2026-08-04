@@ -5,6 +5,7 @@ import {
   activityLaps,
   auditEvents,
   calendarEventLinks,
+  computedMetrics,
   corosWriteJobs,
   dailyHealth,
   desktopDevices,
@@ -31,29 +32,38 @@ import {
   startOfIsoWeek,
   todayInZone,
   userPreferencesSchema,
+  type ActivityLap,
+  type PlannedWorkout,
+  type WorkoutCategory,
 } from "@rg/domain";
 import {
-  computeAcwr,
   computeAerobicEfficiency,
-  computeBalance,
   computeConsistency,
+  computeDecoupling,
   computeEasyDiscipline,
   computeHardDayStacking,
-  computeHrDrift,
   computeHrvTrend,
-  computeRampRate,
+  computeLoadRatio,
+  computeLowIntensityShare,
+  computeMonotony,
+  computePacing,
+  computeRamp,
   computeRecords,
   computeRestingHr,
-  computeTimeOfDay,
   computeWeeklyTraining,
   easyCeiling,
   estimateHrMax,
   interpret,
-  negativeSplit,
+  isEasyHr,
+  mergeRecords,
   pickEvidenceCard,
+  stableHash,
   type InterpretedMetric,
+  type IntensityRunInput,
   type MetricDetail,
   type MetricRunDetail,
+  type StoredRecord,
+  type TimeOfDayPair,
 } from "@rg/analytics";
 import { SIMULATION_VERSION } from "@rg/garden-engine";
 import { NORMALIZER_VERSION, normalizeStravaActivity } from "@rg/providers";
@@ -71,6 +81,7 @@ import {
   promoteProvisionalMatches,
   repairDurations,
   repairTimestamps,
+  rowToNormalized,
 } from "../services/completion.js";
 import { resimulateFrom } from "../services/garden-sync.js";
 
@@ -267,321 +278,648 @@ activityRoutes.get("/unmatched", async (c) => {
 export const insightRoutes = new Hono<AppContext>();
 insightRoutes.use("*", requireUser);
 
+/** `computed_metrics.metric_key` under which the never-regressing record set lives. */
+const RECORDS_METRIC_KEY = "records:v1";
+/** Categories whose pace is steady enough to compare halves of. */
+const STEADY_CATEGORIES: ReadonlySet<WorkoutCategory> = new Set(["easy", "long", "recovery"]);
+/** A run this long is a hard day on its own, whatever it was matched to. */
+const LONG_RUN_HARD_SECONDS = 6000;
+/** Fraction of window duration that must carry COROS training load before load (not minutes) is the basis. */
+const LOAD_COVERAGE_THRESHOLD = 0.9;
+/** A recovery reading older than this date-stamps the card and drops its band. */
+const RECOVERY_STALE_DAYS = 2;
+
+function rowToLap(row: typeof activityLaps.$inferSelect): ActivityLap {
+  return {
+    id: row.id,
+    activityId: row.activityId,
+    lapIndex: row.lapIndex,
+    durationSeconds: row.durationSeconds,
+    distanceMeters: row.distanceMeters ?? undefined,
+    avgHeartRate: row.avgHeartRate ?? undefined,
+    avgPaceSecPerKm: row.avgPaceSecPerKm ?? undefined,
+    splitType: row.splitType ?? undefined,
+  };
+}
+
+function rowToPlannedWorkout(row: typeof plannedWorkouts.$inferSelect): PlannedWorkout {
+  return {
+    id: row.id,
+    sourceProvider: "coros",
+    sourcePlanId: row.planId,
+    sourceWorkoutId: row.sourceWorkoutId,
+    sourceProgramId: row.sourceProgramId ?? undefined,
+    sourceIdInPlan: row.sourceIdInPlan ?? undefined,
+    title: row.title,
+    category: row.category as WorkoutCategory,
+    qualitySubtype: (row.qualitySubtype ?? undefined) as PlannedWorkout["qualitySubtype"],
+    sport: row.sport,
+    originalPlanDate: row.originalPlanDate,
+    lastVerifiedCorosDate: row.lastVerifiedCorosDate,
+    effectiveDate: row.effectiveDate,
+    effectiveTime: row.effectiveTime,
+    sourceContentFingerprint: row.sourceContentFingerprint,
+    sourceVersion: row.sourceVersion ?? undefined,
+    sourceEstimatedDurationSeconds: row.sourceEstimatedDurationSeconds ?? undefined,
+    fallbackEstimatedDurationSeconds: row.fallbackEstimatedDurationSeconds ?? undefined,
+    calendarBlockDurationSeconds: row.calendarBlockDurationSeconds,
+    durationEstimate: (row.durationEstimate ?? undefined) as PlannedWorkout["durationEstimate"],
+    expectedDistanceMeters: row.expectedDistanceMeters ?? undefined,
+    stageSummary: row.stageSummary ?? undefined,
+    stages: [],
+    calendarSyncState: row.calendarSyncState as PlannedWorkout["calendarSyncState"],
+    corosSyncState: row.corosSyncState as PlannedWorkout["corosSyncState"],
+    completionState: row.completionState as PlannedWorkout["completionState"],
+    archivedAt: row.archivedAt,
+  };
+}
+
+/**
+ * Records as they were last persisted. Defensive rather than trusting: this
+ * JSON outlives every deploy, so a row written by an older shape must degrade
+ * to "no stored record" instead of throwing a 500 at a user who just wanted
+ * to look at their week.
+ */
+function parseStoredRecords(value: unknown): StoredRecord[] {
+  const raw = (value as { records?: unknown } | null | undefined)?.records;
+  if (!Array.isArray(raw)) return [];
+  return raw.filter((r): r is StoredRecord => {
+    if (r == null || typeof r !== "object") return false;
+    const rec = r as Partial<StoredRecord>;
+    return (
+      typeof rec.id === "string" &&
+      typeof rec.title === "string" &&
+      typeof rec.value === "string" &&
+      typeof rec.achievedOn === "string" &&
+      typeof rec.rule === "string" &&
+      typeof rec.numeric === "number" &&
+      Number.isFinite(rec.numeric)
+    );
+  });
+}
+
+/** Append a disclosure (load basis, excluded time) to a card's sample note. */
+function withNote(metric: InterpretedMetric, extra: string): InterpretedMetric {
+  return extra ? { ...metric, sampleNote: `${metric.sampleNote} ${extra}` } : metric;
+}
+
+function signed(n: number): string {
+  return n > 0 ? `+${n}` : `${n}`;
+}
+
+function days(n: number): string {
+  return `${n} day${n === 1 ? "" : "s"}`;
+}
+
 insightRoutes.get("/", async (c) => {
   const db = c.get("db");
   const userId = c.get("userId");
   const prefs = await loadPreferences(db, userId);
   const today = todayInZone(prefs.timezone);
   const twelveWeeksAgo = addDays(startOfIsoWeek(today), -7 * 12);
+  const range = { start: twelveWeeksAgo, end: today };
 
-  const workouts = await db
-    .select()
-    .from(plannedWorkouts)
-    .where(
-      and(
-        eq(plannedWorkouts.userId, userId),
-        gte(plannedWorkouts.effectiveDate, twelveWeeksAgo),
-        isNull(plannedWorkouts.archivedAt),
+  // Every independent query at once. Activities are stored as UTC instants but
+  // bucketed by LOCAL date, so the fetch is padded a day on the early side and
+  // re-filtered on local date below — without the pad, a late-evening run near
+  // the window edge appears or vanishes depending on the user's UTC offset.
+  const [workoutRows, actRows, dismissed, healthRows, reviews, storedRows] = await Promise.all([
+    db
+      .select()
+      .from(plannedWorkouts)
+      .where(
+        and(
+          eq(plannedWorkouts.userId, userId),
+          gte(plannedWorkouts.effectiveDate, twelveWeeksAgo),
+          isNull(plannedWorkouts.archivedAt),
+        ),
       ),
-    );
-  const acts = await db
-    .select()
-    .from(activities)
-    .where(and(eq(activities.userId, userId), gte(activities.startTime, `${twelveWeeksAgo}T00:00:00Z`)));
-  const matches = await db
-    .select()
-    .from(workoutCompletionMatches)
-    .where(isNull(workoutCompletionMatches.undoneAt));
-  const laps = await db.select().from(activityLaps);
-  const dismissed = await db
-    .select()
-    .from(dismissedInsights)
-    .where(eq(dismissedInsights.userId, userId));
+    db
+      .select()
+      .from(activities)
+      .where(
+        and(
+          eq(activities.userId, userId),
+          gte(activities.startTime, `${addDays(twelveWeeksAgo, -1)}T00:00:00Z`),
+        ),
+      ),
+    db.select().from(dismissedInsights).where(eq(dismissedInsights.userId, userId)),
+    db
+      .select()
+      .from(dailyHealth)
+      .where(
+        and(
+          eq(dailyHealth.userId, userId),
+          gte(dailyHealth.date, addDays(today, -60)),
+          lte(dailyHealth.date, today),
+        ),
+      ),
+    db
+      .select()
+      .from(weeklyReviews)
+      .where(eq(weeklyReviews.userId, userId))
+      .orderBy(desc(weeklyReviews.weekStart))
+      .limit(6),
+    db
+      .select()
+      .from(computedMetrics)
+      .where(
+        and(eq(computedMetrics.userId, userId), eq(computedMetrics.metricKey, RECORDS_METRIC_KEY)),
+      ),
+  ]);
 
+  // Laps and matches are scoped BY ID to what was just fetched. The previous
+  // full-table scans were both the slowest queries in the app and the only
+  // place another account's rows could reach this response. Chunked because an
+  // `inArray` binds one variable per id and D1 caps a statement at ~100.
+  const [lapChunks, matchChunks] = await Promise.all([
+    Promise.all(
+      chunkIds(actRows.map((a) => a.id)).map((ids) =>
+        db.select().from(activityLaps).where(inArray(activityLaps.activityId, ids)),
+      ),
+    ),
+    Promise.all(
+      chunkIds(workoutRows.map((w) => w.id)).map((ids) =>
+        db
+          .select()
+          .from(workoutCompletionMatches)
+          .where(
+            and(
+              inArray(workoutCompletionMatches.workoutId, ids),
+              isNull(workoutCompletionMatches.undoneAt),
+            ),
+          ),
+      ),
+    ),
+  ]);
+  const lapRows = lapChunks.flat();
+  const matchRows = matchChunks.flat();
+
+  const workouts = workoutRows.map(rowToPlannedWorkout);
   const workoutById = new Map(workouts.map((w) => [w.id, w]));
-  const categoryByMatchId = new Map(
-    matches
-      .map((m) => [m.id, workoutById.get(m.workoutId)?.category] as const)
-      .filter(([, cat]) => cat != null),
-  );
-  const lapsByActivity = new Map<string, typeof laps>();
-  for (const lap of laps) {
-    const list = lapsByActivity.get(lap.activityId) ?? [];
-    list.push(lap);
-    lapsByActivity.set(lap.activityId, list);
+  const categoryByMatchId = new Map<string, WorkoutCategory>();
+  for (const m of matchRows) {
+    const category = workoutById.get(m.workoutId)?.category;
+    if (category != null) categoryByMatchId.set(m.id, category);
+  }
+  /**
+   * An activity's category, or "unknown". Nothing ever defaults to "easy":
+   * guessing that an unmatched run was easy silently fed hard efforts into
+   * the easy-run metrics, which is exactly the number a runner would act on.
+   * Every category-gated metric rejects "unknown" on its own terms.
+   */
+  const categoryOf = (a: (typeof actRows)[number]): WorkoutCategory =>
+    a.completionMatchId ? (categoryByMatchId.get(a.completionMatchId) ?? "unknown") : "unknown";
+
+  const lapsByActivity = new Map<string, ActivityLap[]>();
+  for (const row of lapRows) {
+    const lap = rowToLap(row);
+    const list = lapsByActivity.get(lap.activityId);
+    if (list) list.push(lap);
+    else lapsByActivity.set(lap.activityId, [lap]);
+  }
+  const lapsOf = (activityId: string): ActivityLap[] => lapsByActivity.get(activityId) ?? [];
+
+  const localDate = (a: (typeof actRows)[number]): string =>
+    (a.startTimeLocal ?? a.startTime).slice(0, 10);
+  const allSport = actRows.filter((a) => {
+    const date = localDate(a);
+    return date >= twelveWeeksAgo && date <= today;
+  });
+  // Run-only for every execution/aerobic/pacing metric and for records; the
+  // load signals below deliberately keep all sports (a hard lift is load your
+  // legs still have to absorb) and say so in their notes.
+  const runRows = allSport.filter((a) => a.sport === "run");
+  const runs = runRows.map(rowToNormalized);
+
+  // ── Load basis: one basis for the whole window, never a mix ──
+  const totalDuration = allSport.reduce((s, a) => s + a.durationSeconds, 0);
+  const coveredDuration = allSport
+    .filter((a) => a.trainingLoad != null)
+    .reduce((s, a) => s + a.durationSeconds, 0);
+  const useTrainingLoad =
+    totalDuration > 0 && coveredDuration / totalDuration >= LOAD_COVERAGE_THRESHOLD;
+  const loadBasisNote = useTrainingLoad
+    ? "Basis: COROS training load, all sports."
+    : "Basis: minutes of activity (too little of this window carries COROS training load), all sports.";
+
+  const loadByDay = new Map<string, number>();
+  for (const a of allSport) {
+    const day = localDate(a);
+    const load = useTrainingLoad ? (a.trainingLoad ?? 0) : a.durationSeconds / 60;
+    loadByDay.set(day, (loadByDay.get(day) ?? 0) + load);
+  }
+  const loadsByDay = [...loadByDay.entries()].map(([date, load]) => ({ date, load }));
+
+  const runSecondsByDay = new Map<string, number>();
+  for (const a of runRows) {
+    const day = localDate(a);
+    runSecondsByDay.set(day, (runSecondsByDay.get(day) ?? 0) + a.durationSeconds);
+  }
+  const secondsByDay = [...runSecondsByDay.entries()].map(([date, seconds]) => ({ date, seconds }));
+
+  // ── Zones ──
+  const hrMax = estimateHrMax(runs) ?? 190;
+  const ceiling = easyCeiling(hrMax);
+
+  const intensityInputs: IntensityRunInput[] = runRows.map((a) => ({
+    activityId: a.id,
+    durationSeconds: a.durationSeconds,
+    avgHeartRate: a.avgHeartRate,
+    laps: lapsOf(a.id).map((l) => ({
+      avgHeartRate: l.avgHeartRate ?? null,
+      durationSeconds: l.durationSeconds,
+    })),
+  }));
+  const intensity = computeLowIntensityShare(intensityInputs, hrMax);
+
+  // A day is hard when it carried a matched quality/race session, a run whose
+  // category we can't vouch for but whose heart rate was above the easy
+  // ceiling, or simply a very long run.
+  const hardDates: string[] = [];
+  for (const a of runRows) {
+    const category = categoryOf(a);
+    const hard =
+      category === "quality" ||
+      category === "race" ||
+      a.durationSeconds >= LONG_RUN_HARD_SECONDS ||
+      (category === "unknown" && a.avgHeartRate != null && !isEasyHr(a.avgHeartRate, hrMax));
+    if (hard) hardDates.push(localDate(a));
   }
 
-  const workoutsDomain = workouts.map((w) => ({
-    ...w,
-    sourceProvider: "coros" as const,
-    stages: [],
-  })) as never[];
-
-  const range = { start: twelveWeeksAgo, end: today };
-  const consistency = computeConsistency(workoutsDomain as never, range);
-
-  const categoryRecord: Record<string, string> = {};
-  for (const [matchId, cat] of categoryByMatchId) categoryRecord[matchId] = cat as string;
-  const weekly = computeWeeklyTraining(acts as never, categoryRecord as never);
-
-  const runSamples = acts.map((a) => ({
-    activity: a as never,
-    laps: (lapsByActivity.get(a.id) ?? []) as never,
-    category: (a.completionMatchId
-      ? (categoryByMatchId.get(a.completionMatchId) ?? "easy")
-      : "easy") as never,
+  const runSamples = runRows.map((a) => ({
+    activity: rowToNormalized(a),
+    laps: lapsOf(a.id),
+    category: categoryOf(a),
   }));
-  const efficiency = computeAerobicEfficiency(runSamples as never);
-  const drift = computeHrDrift(runSamples as never);
+  const efficiency = computeAerobicEfficiency(runSamples);
+  const decoupling = computeDecoupling(runSamples);
 
-  const timeOfDayPairs = (workoutsDomain as Array<{ id: string }>).map((w) => {
-    const m = matches.find((mm) => mm.workoutId === w.id);
-    return {
-      workout: w as never,
-      activity: m ? (acts.find((a) => a.id === m.activityId) as never) : undefined,
-    };
+  const easyRunRows = runRows.filter((a) => {
+    const category = categoryOf(a);
+    return (category === "easy" || category === "recovery") && (a.avgHeartRate ?? 0) > 0;
   });
-  const timeOfDay = computeTimeOfDay(timeOfDayPairs as never);
+  const easyDiscipline = computeEasyDiscipline(
+    easyRunRows.map((a) => ({
+      activityId: a.id,
+      date: localDate(a),
+      avgHr: a.avgHeartRate ?? 0,
+    })),
+    hrMax,
+  );
 
-  const records = computeRecords({
-    runs: runSamples as never,
-    executions: [],
+  // ── Pacing: steady runs only. Comparing halves of an interval session
+  // measures the workout's design, not the runner's pacing. ──
+  interface SplitRun {
+    activityId: string;
+    date: string;
+    title?: string;
+    firstHalfPace: number;
+    secondHalfPace: number;
+  }
+  const splitRuns: SplitRun[] = [];
+  for (const a of runRows) {
+    if (!STEADY_CATEGORIES.has(categoryOf(a))) continue;
+    const laps = lapsOf(a.id)
+      .filter((l) => (l.distanceMeters ?? 0) > 0 && l.durationSeconds > 0)
+      .sort((x, y) => x.lapIndex - y.lapIndex);
+    if (laps.length < 2) continue;
+    const totalDistance = laps.reduce((s, l) => s + (l.distanceMeters ?? 0), 0);
+    const halves: [ActivityLap[], ActivityLap[]] = [[], []];
+    let covered = 0;
+    for (const lap of laps) {
+      halves[covered < totalDistance / 2 ? 0 : 1].push(lap);
+      covered += lap.distanceMeters ?? 0;
+    }
+    const paceOf = (ls: ActivityLap[]): number => {
+      const distance = ls.reduce((s, l) => s + (l.distanceMeters ?? 0), 0);
+      const time = ls.reduce((s, l) => s + l.durationSeconds, 0);
+      return distance > 0 ? time / (distance / 1000) : 0;
+    };
+    const firstHalfPace = paceOf(halves[0]);
+    const secondHalfPace = paceOf(halves[1]);
+    if (firstHalfPace > 0 && secondHalfPace > 0) {
+      splitRuns.push({
+        activityId: a.id,
+        date: localDate(a),
+        title: a.title ?? undefined,
+        firstHalfPace,
+        secondHalfPace,
+      });
+    }
+  }
+  const pacing = computePacing(splitRuns);
+
+  // ── Plan-shaped reports ──
+  const consistency = computeConsistency(workouts, range, today);
+
+  const categoryRecord: Record<string, WorkoutCategory> = {};
+  for (const [matchId, category] of categoryByMatchId) categoryRecord[matchId] = category;
+  const weekly = computeWeeklyTraining(runs, categoryRecord, {
+    today,
+    intensityByActivity: intensity.status === "ok" ? intensity.value.perActivity : undefined,
+  });
+
+  // Prebuilt maps, not `find` inside a loop over every workout.
+  const actById = new Map(actRows.map((a) => [a.id, a]));
+  const matchByWorkoutId = new Map(matchRows.map((m) => [m.workoutId, m]));
+  const timeOfDayPairs: TimeOfDayPair[] = workouts.map((workout) => {
+    const match = matchByWorkoutId.get(workout.id);
+    const activityRow = match ? actById.get(match.activityId) : undefined;
+    return activityRow ? { workout, activity: rowToNormalized(activityRow) } : { workout };
+  });
+
+  // ── Records: never regress. The window is 12 weeks, but an achievement
+  // doesn't stop having happened when the run that earned it rolls out of it,
+  // so the freshly computed set is merged into the persisted one. ──
+  const fresh = computeRecords({
+    runs: runSamples,
     weeklyAdherence: consistency.weeklyBreakdown.map((wk) => ({
       weekStart: wk.weekStart,
       adherence: wk.adherence,
     })),
-    completedRunDates: acts.map((a) => (a.startTimeLocal ?? a.startTime).slice(0, 10)),
+    completedRunDates: runRows.map(localDate),
   });
-
-  const dismissedIds = new Set(dismissed.map((d) => d.cardId));
-  const evidenceRaw = pickEvidenceCard({
-    workouts: workoutsDomain as never,
-    range,
-    timeOfDayPairs: timeOfDayPairs as never,
-    records,
-  });
-  const evidence = evidenceRaw && !dismissedIds.has(evidenceRaw.id) ? evidenceRaw : null;
-
-  // ── Interpreted metrics (educational + gentle guidance) ──
-  const hrMax = estimateHrMax(acts as never) ?? 190;
-  const loadDay = new Map<string, number>();
-  const weekSec = new Map<string, number>();
-  const catSec = { easy: 0, quality: 0, long: 0 };
-  const hardDates: string[] = [];
-  const easyRuns: Array<{ avgHr: number }> = [];
-  // Identity of each easy run, in the same order — for the drilldown evidence.
-  const easyRunRows: Array<(typeof acts)[number]> = [];
-  for (const a of acts) {
-    const day = (a.startTimeLocal ?? a.startTime).slice(0, 10);
-    loadDay.set(day, (loadDay.get(day) ?? 0) + (a.trainingLoad ?? a.durationSeconds / 60));
-    weekSec.set(startOfIsoWeek(day), (weekSec.get(startOfIsoWeek(day)) ?? 0) + a.durationSeconds);
-    const cat = a.completionMatchId ? categoryByMatchId.get(a.completionMatchId) : undefined;
-    if (cat === "quality" || cat === "race") {
-      catSec.quality += a.durationSeconds;
-      hardDates.push(day);
-    } else if (cat === "long") catSec.long += a.durationSeconds;
-    else catSec.easy += a.durationSeconds;
-    if ((cat === "easy" || cat === "recovery" || !cat) && a.avgHeartRate) {
-      easyRuns.push({ avgHr: a.avgHeartRate });
-      easyRunRows.push(a);
-    }
-  }
-  const loadsByDay = [...loadDay.entries()].map(([date, load]) => ({ date, load }));
-  const weeklySeconds = [...weekSec.entries()].sort(([x], [y]) => x.localeCompare(y)).map(([, s]) => s);
-
-  const splitRuns: Array<{
-    firstHalfPace: number;
-    secondHalfPace: number;
-    activityId?: string;
-    date?: string;
-    title?: string;
-  }> = [];
-  for (const a of acts) {
-    const rl = (lapsByActivity.get(a.id) ?? [])
-      .filter((l) => (l.distanceMeters ?? 0) > 0 && l.durationSeconds > 0)
-      .sort((x, y) => x.lapIndex - y.lapIndex);
-    if (rl.length < 2) continue;
-    const totalD = rl.reduce((s, l) => s + (l.distanceMeters ?? 0), 0);
-    let acc = 0;
-    const half: [typeof rl, typeof rl] = [[], []];
-    for (const l of rl) {
-      half[acc < totalD / 2 ? 0 : 1].push(l);
-      acc += l.distanceMeters ?? 0;
-    }
-    const pace = (ls: typeof rl) => {
-      const d = ls.reduce((s, l) => s + (l.distanceMeters ?? 0), 0);
-      const t = ls.reduce((s, l) => s + l.durationSeconds, 0);
-      return d > 0 ? t / (d / 1000) : 0;
+  const storedRecords = parseStoredRecords(storedRows[0]?.value);
+  const records = mergeRecords(fresh, storedRecords);
+  if (JSON.stringify(records) !== JSON.stringify(storedRecords)) {
+    const persisted = {
+      computedAt: nowInstant(),
+      inputFingerprint: stableHash(JSON.stringify(fresh)),
+      status: "ok",
+      sampleSize: records.length,
+      value: { records },
     };
-    const fp = pace(half[0]);
-    const sp = pace(half[1]);
-    if (fp > 0 && sp > 0)
-      splitRuns.push({
-        firstHalfPace: fp,
-        secondHalfPace: sp,
-        activityId: a.id,
-        date: (a.startTimeLocal ?? a.startTime).slice(0, 10),
-        title: a.title ?? undefined,
+    await db
+      .insert(computedMetrics)
+      .values({
+        id: `${RECORDS_METRIC_KEY}:${userId}`,
+        userId,
+        metricKey: RECORDS_METRIC_KEY,
+        ...persisted,
+      })
+      .onConflictDoUpdate({
+        target: [computedMetrics.userId, computedMetrics.metricKey],
+        set: persisted,
       });
   }
 
-  const health = await db
-    .select()
-    .from(dailyHealth)
-    .where(and(eq(dailyHealth.userId, userId), gte(dailyHealth.date, addDays(today, -35))));
+  const dismissedIds = new Set(dismissed.map((d) => d.cardId));
+  const evidence = pickEvidenceCard({ workouts, range, timeOfDayPairs, records }, dismissedIds);
+
+  // ── Interpreted metrics (educational + gentle guidance) ──
+  const noHrNote =
+    intensity.status === "ok" && intensity.value.noHrSeconds > 0
+      ? `${Math.round(intensity.value.noHrSeconds / 60)} min of running had no heart rate and was excluded.`
+      : "";
 
   const interpreted: InterpretedMetric[] = [
-    interpret("acwr", "Training load balance", computeAcwr(loadsByDay, today), (v) => ({
-      value: v.acwr.toFixed(2),
-      band: v.acwr > 1.5 ? "watch" : v.acwr < 0.8 ? "low" : "healthy",
-      range: "sweet spot 0.8–1.3",
+    withNote(
+      interpret("loadRatio", "Load vs your norm", computeLoadRatio(loadsByDay, today), (v) => ({
+        value: `${signed(v.pctVsNorm)}% vs your norm`,
+        band: v.ratio > 1.5 ? "high" : v.ratio >= 1.3 ? "watch" : v.ratio < 0.8 ? "low" : "healthy",
+        range: "sweet spot 0.8–1.3",
+        gauge: { min: 0.5, max: 2, healthyLo: 0.8, healthyHi: 1.3, value: v.ratio },
+        meaning:
+          "Your last week of training compared with the month behind it, smoothed so one big day neither " +
+          "spikes the number nor abruptly falls out of it. Around 1.0 means this week looks like your norm.",
+        suggestion:
+          v.ratio > 1.5
+            ? "That's a large jump on your recent norm — the range where injuries tend to cluster. A few easier days brings it back."
+            : v.ratio >= 1.3
+              ? "You're running meaningfully above your norm. Fine as a planned build; worth noticing if it wasn't deliberate."
+              : v.ratio < 0.8
+                ? "You're below your recent norm — which is exactly right for a down week or a taper."
+                : undefined,
+      })),
+      loadBasisNote,
+    ),
+    interpret("ramp", "7-day ramp", computeRamp(secondsByDay, today), (v) => ({
+      value: `${signed(Math.round(v.deltaSeconds / 60))} min (${signed(v.pct)}%)`,
+      band: v.pct > 30 ? "high" : v.pct > 15 ? "watch" : "healthy",
+      range: "under ~15%",
+      gauge: { min: -50, max: 60, healthyLo: -50, healthyHi: 15, value: v.pct },
       meaning:
-        "How your recent 7-day training load compares to your month-long average. A spike means you ramped up fast.",
+        "How much running time you did in the last 7 days versus your average week across the 3 weeks before it.",
       suggestion:
-        v.acwr > 1.5
-          ? "A ratio this high tends to precede injury — this week is a big jump on your norm."
-          : v.acwr < 0.8
-            ? "You're below your recent norm — fine for a planned down week."
+        v.pct > 30
+          ? "A jump this size is where tissue tends to complain — hold the next week flat and let it catch up."
+          : v.pct > 15
+            ? "A little above the usual guidance of ~15% a week. Sustainable for a week; less so as a habit."
             : undefined,
     })),
-    interpret("ramp", "Weekly ramp", computeRampRate(weeklySeconds), (v) => ({
-      value: `${v.pct > 0 ? "+" : ""}${v.pct}%`,
-      band: v.pct > 10 ? "watch" : "healthy",
-      range: "under ~10%/week",
-      meaning: "How much your running time changed from last week.",
-      suggestion: v.pct > 10 ? "Jumps much above ~10%/week tend to raise injury risk." : undefined,
-    })),
-    interpret("balance", "Easy vs hard balance", computeBalance(catSec, acts.length), (v) => ({
-      value: `${v.easyPct}% easy`,
-      band: v.easyPct >= 75 ? "healthy" : "watch",
-      range: "aim ≈80% easy",
-      meaning:
-        `${v.easyPct}% of your running time was at easy effort, ${v.qualityPct}% was hard sessions ` +
-        `(intervals, tempo, races — "quality" in training jargon), and ${v.longPct}% was long runs. ` +
-        `Easy running isn't the lesser kind — it's the engine: it builds your aerobic base, and the ` +
-        `hard sessions only work when they sit on plenty of it.`,
-      suggestion:
-        v.easyPct < 75
-          ? "Most well-tested plans keep roughly 80% of running time easy — more easy time, not less, is usually the fix."
-          : "A classic ~80/20 split — the easy volume is doing its quiet work.",
-    })),
+    withNote(
+      interpret("monotony", "Load variety", computeMonotony(loadsByDay, today), (v) => ({
+        value: v.monotony.toFixed(2),
+        band: v.monotony > 2 ? "high" : v.monotony >= 1.5 ? "watch" : "healthy",
+        range: "under 1.5",
+        gauge: { min: 0.5, max: 3, healthyLo: 0.5, healthyHi: 1.5, value: v.monotony },
+        meaning:
+          `How alike your last 7 days looked. It rises when every day carries the same load and there are no ` +
+          `genuinely easy days between the hard ones. This week totalled ${v.weeklyLoad}, for a strain of ` +
+          `${v.strain} (weekly load × monotony).`,
+        suggestion:
+          v.monotony > 2
+            ? "Every day is landing at much the same effort. A real rest day — or one clearly easy one — does more than trimming every day equally."
+            : v.monotony >= 1.5
+              ? "Your days are looking quite alike. Making the easy ones easier is usually better than making the hard ones harder."
+              : undefined,
+      })),
+      loadBasisNote,
+    ),
     interpret(
       "restingHr",
       "Resting heart rate",
-      computeRestingHr(health.map((h) => ({ date: h.date, restingHeartRate: h.restingHeartRate }))),
-      (v) => ({
-        value: `${v.latest} bpm`,
-        band: v.deltaBpm >= 5 ? "watch" : "healthy",
-        range: `your baseline ${v.baseline} bpm`,
-        meaning:
-          "Your resting heart rate versus your 30-day median. A sustained rise can signal fatigue or illness.",
-        suggestion:
-          v.deltaBpm >= 5 ? `${v.deltaBpm} bpm above baseline — worth an easier day if it persists.` : undefined,
-      }),
+      computeRestingHr(
+        healthRows.map((h) => ({ date: h.date, restingHeartRate: h.restingHeartRate })),
+        today,
+      ),
+      (v) => {
+        const stale = v.staleDays > RECOVERY_STALE_DAYS;
+        return {
+          value: `${v.current} bpm`,
+          band: stale ? undefined : v.deltaBpm >= 5 ? "watch" : "healthy",
+          range: `your baseline ${v.baseline} bpm`,
+          gauge: stale
+            ? undefined
+            : {
+                min: v.baseline - 10,
+                max: v.baseline + 10,
+                healthyLo: v.baseline - 10,
+                healthyHi: v.baseline + 5,
+                value: v.current,
+              },
+          series: v.series,
+          staleNote: stale ? `last reading ${days(v.staleDays)} ago` : undefined,
+          meaning:
+            "The median of your three most recent resting heart-rate readings against your 30-day median. " +
+            "A sustained rise often shows up before you feel it — fatigue, a cold coming on, a poor stretch of sleep.",
+          suggestion:
+            !stale && v.deltaBpm >= 5
+              ? `${v.deltaBpm} bpm above your baseline. One day means little; if it holds for a few, take the easier option.`
+              : undefined,
+        };
+      },
     ),
-    interpret("hrv", "HRV trend", computeHrvTrend(health.map((h) => ({ date: h.date, hrv: h.hrv }))), (v) => ({
-      value: `${v.latest} ms`,
-      band: v.pctVsBaseline <= -10 ? "watch" : "healthy",
-      range: `your baseline ${v.baseline} ms`,
-      meaning: "Your 7-day HRV versus your 30-day baseline. Lower HRV often reflects accumulated stress.",
-      suggestion: v.pctVsBaseline <= -10 ? "A sustained drop suggests you're carrying fatigue." : undefined,
-    })),
+    interpret(
+      "hrv",
+      "HRV trend",
+      computeHrvTrend(
+        healthRows.map((h) => ({ date: h.date, hrv: h.hrv })),
+        today,
+      ),
+      (v) => {
+        const stale = v.staleDays > RECOVERY_STALE_DAYS;
+        const below = v.pctVsBaseline <= -v.thresholdPct;
+        return {
+          value: `${signed(v.pctVsBaseline)}% vs baseline`,
+          band: stale ? undefined : below ? "watch" : "healthy",
+          range: `within ${v.thresholdPct}% of your ${v.baseline} ms baseline`,
+          gauge: stale
+            ? undefined
+            : { min: -25, max: 25, healthyLo: -v.thresholdPct, healthyHi: 25, value: v.pctVsBaseline },
+          series: v.series,
+          staleNote: stale ? `last reading ${days(v.staleDays)} ago` : undefined,
+          meaning:
+            "Your recent heart-rate variability against a baseline built from earlier, separate readings. " +
+            `Day-to-day HRV wanders, so the line that means anything for you is ±${v.thresholdPct}% — ` +
+            "derived from your own variability, not a number from a magazine.",
+          suggestion:
+            !stale && below
+              ? "A drop past your own noise threshold usually means accumulated stress — training, sleep, life. Easy days work here."
+              : undefined,
+        };
+      },
+    ),
     interpret("hardStack", "Hard-day stacking", computeHardDayStacking(hardDates, today), (v) => ({
-      value: `${v.consecutive} day${v.consecutive === 1 ? "" : "s"}`,
+      value: days(v.consecutive),
       band: v.consecutive >= 2 ? "watch" : "healthy",
-      meaning: "Consecutive days ending today with a quality or race effort.",
-      suggestion: v.consecutive >= 2 ? "Back-to-back hard days leave less room to adapt — an easy day helps." : undefined,
+      range: "one hard day at a time",
+      gauge: { min: 0, max: 4, healthyLo: 0, healthyHi: 1, value: v.consecutive },
+      strip: v.strip.map((d) => ({ date: d.date, on: d.hard })),
+      meaning:
+        "Consecutive hard days ending today — or yesterday, if today hasn't happened yet. A day counts as hard " +
+        `when it was a matched quality or race session, a run of ${LONG_RUN_HARD_SECONDS / 60} minutes or more, ` +
+        "or a run with no planned session behind it whose heart rate sat above your easy ceiling.",
+      suggestion:
+        v.consecutive >= 2
+          ? "Back-to-back hard days leave less room to absorb the work — the easy day between them is what makes the hard ones count."
+          : undefined,
     })),
-    interpret("easyDiscipline", "Easy-run discipline", computeEasyDiscipline(easyRuns, hrMax), (v) => ({
+    withNote(
+      interpret("lowIntensityShare", "Low-intensity share", intensity, (v) => ({
+        value: `${v.lowPct}%`,
+        band: v.lowPct < 65 ? "high" : v.lowPct < 75 ? "watch" : "healthy",
+        range: "aim ≥75%, classic target ~80%",
+        gauge: { min: 40, max: 100, healthyLo: 75, healthyHi: 100, value: v.lowPct },
+        meaning:
+          `Share of your heart-rate-tracked running time spent at or under your easy ceiling of ${ceiling} bpm, ` +
+          "measured lap by lap so a hard surge inside an otherwise-easy run still counts as hard. Easy running " +
+          "isn't the lesser kind — it's the engine the hard sessions run on.",
+        suggestion:
+          v.lowPct < 65
+            ? "Most of the well-tested approaches keep three quarters or more of running time easy. More easy time, not less, is usually the fix."
+            : v.lowPct < 75
+              ? "A little intensity-heavy. Slowing the easy runs down costs nothing and pays into everything else."
+              : undefined,
+      })),
+      noHrNote,
+    ),
+    interpret("easyDiscipline", "Easy-run discipline", easyDiscipline, (v) => ({
       value: `${v.inEasyPct}%`,
-      band: v.inEasyPct >= 80 ? "healthy" : "watch",
+      band: v.inEasyPct < 80 ? "watch" : "healthy",
       range: "≥80%",
-      meaning: "Share of your easy runs whose heart rate actually stayed easy (zones 1–2).",
-      suggestion: v.inEasyPct < 80 ? "Keeping easy runs genuinely easy builds your aerobic base faster." : undefined,
+      gauge: { min: 0, max: 100, healthyLo: 80, healthyHi: 100, value: v.inEasyPct },
+      strip: v.ticks.map((t) => ({ date: t.date, on: t.easy })),
+      meaning:
+        `Share of your planned easy and recovery runs whose average heart rate actually stayed at or under ` +
+        `your easy ceiling of ${ceiling} bpm.`,
+      suggestion:
+        v.inEasyPct < 80
+          ? "Easy runs drifting hard is the most common way a plan quietly stops working. The fix is slower, not shorter."
+          : undefined,
     })),
-    // Race predictions removed: a Riegel scale from one recent run was too
-    // crude to be useful — COROS's own predictor (from full training history)
-    // is the right source if this ever returns.
-    interpret("splits", "Finish-faster tendency", negativeSplit(splitRuns), (v) => ({
-      value: `${v.negativePct}% of runs`,
-      band: v.negativePct >= 40 ? "healthy" : undefined,
-      meaning: "How often your second half is faster than your first — a sign of good pacing and durability.",
-    })),
+    interpret("pacing", "Pacing", pacing, (v) => {
+      const delta = Math.round(v.medianDeltaSecPerKm);
+      return {
+        value: delta === 0 ? "even" : delta > 0 ? `+${delta} s/km late` : `${delta} s/km late`,
+        meaning:
+          "How your second half typically compares with your first on steady runs — positive means you faded, " +
+          `negative means you finished faster. ${v.negativePct}% of those runs finished faster than they started. ` +
+          "Descriptive, not a target: a fade on a hilly or hot run says more about the day than about you.",
+      };
+    }),
   ];
 
   // ── Per-run evidence (drilldowns) ──
-  // Easy-run discipline: every contributing run with its per-lap HR versus the
+  // Easy-run discipline: every contributing run with its per-lap HR against the
   // easy ceiling, so "78%" is inspectable down to the exact lap that broke it.
-  const ceiling = easyCeiling(hrMax);
-  const edRuns: MetricRunDetail[] = easyRunRows.map((a) => {
-    const over = (a.avgHeartRate ?? 0) > ceiling;
-    const laps = (lapsByActivity.get(a.id) ?? [])
+  // `over` uses the same isEasyHr predicate the metric itself used — a
+  // drill-down that disagrees with its own headline is worse than none.
+  const easyDetailRuns: MetricRunDetail[] = easyRunRows.map((a) => {
+    const avgHr = Math.round(a.avgHeartRate ?? 0);
+    const over = !isEasyHr(avgHr, hrMax);
+    const laps = lapsOf(a.id)
       .filter((l) => l.durationSeconds > 0)
       .sort((x, y) => x.lapIndex - y.lapIndex)
       .map((l) => ({
         lapIndex: l.lapIndex,
-        avgHr: l.avgHeartRate ?? undefined,
+        avgHr: l.avgHeartRate,
         durationSeconds: l.durationSeconds,
-        distanceMeters: l.distanceMeters ?? undefined,
-        over: (l.avgHeartRate ?? 0) > ceiling,
+        distanceMeters: l.distanceMeters,
+        over: l.avgHeartRate != null ? !isEasyHr(l.avgHeartRate, hrMax) : false,
       }));
     return {
       activityId: a.id,
-      date: (a.startTimeLocal ?? a.startTime).slice(0, 10),
+      date: localDate(a),
       title: a.title ?? undefined,
-      value: `avg ${a.avgHeartRate} bpm`,
+      value: `avg ${avgHr} bpm`,
       over,
       note: over
-        ? `Averaged ${a.avgHeartRate} bpm — above your easy ceiling of ${ceiling}.`
-        : `Stayed easy — averaged ${a.avgHeartRate} bpm, under your ${ceiling} bpm ceiling.`,
+        ? `Averaged ${avgHr} bpm — above your easy ceiling of ${ceiling}.`
+        : `Stayed easy — averaged ${avgHr} bpm, under your ${ceiling} bpm ceiling.`,
       laps: laps.length >= 2 ? laps : undefined,
     };
   });
+
+  const pacingDetailRuns: MetricRunDetail[] = splitRuns.map((s) => {
+    const delta = s.secondHalfPace - s.firstHalfPace; // positive = faded
+    const magnitude = `${Math.round(Math.abs(delta))} s/km`;
+    return {
+      activityId: s.activityId,
+      date: s.date,
+      title: s.title,
+      value: delta <= 0 ? `finished ${magnitude} faster` : `faded ${magnitude}`,
+      over: delta > 0,
+      note:
+        delta <= 0
+          ? "Second half faster — a negative split."
+          : "Second half slower — went out a touch hot.",
+    };
+  });
+
   const detailByMetric: Record<string, MetricDetail> = {
     easyDiscipline: {
       explain:
-        `Measured against your easy ceiling of ${ceiling} bpm — the top of zone 2, ` +
-        `estimated from your max heart rate of ${hrMax}. A run counts as disciplined ` +
-        `when its average HR stays under that line. Red laps are where it slipped over.`,
+        `Measured against your easy ceiling of ${ceiling} bpm — the top of zone 2, estimated from a max ` +
+        `heart rate of ${hrMax}. A run counts as disciplined when its average heart rate stays at or under ` +
+        `that line. Red laps are where it slipped over.`,
       threshold: { label: "easy ceiling", value: ceiling, unit: "bpm" },
-      runs: edRuns,
+      runs: easyDetailRuns,
     },
-    splits: {
+    pacing: {
       explain:
-        "Each run's first-half pace versus its second half, from your recorded laps. " +
-        "A faster second half (a negative split) shows pacing control and late-run strength.",
-      runs: splitRuns
-        .filter((s) => s.activityId)
-        .map((s) => {
-          const diff = s.firstHalfPace - s.secondHalfPace; // positive = negative split
-          const fmt = (x: number) => `${Math.round(Math.abs(x))} s/km`;
-          return {
-            activityId: s.activityId!,
-            date: s.date!,
-            title: s.title,
-            value: diff >= 0 ? `finished ${fmt(diff)} faster` : `faded ${fmt(diff)}`,
-            over: diff < 0,
-            note:
-              diff >= 0
-                ? "Second half faster — a negative split."
-                : "Second half slower — went out a touch hot.",
-          };
-        }),
+        "Each steady run's first-half pace against its second half, from your recorded laps. Interval and " +
+        "race sessions are left out — their halves differ by design, which says nothing about pacing.",
+      runs: pacingDetailRuns,
     },
   };
   for (const m of interpreted) {
-    const d = detailByMetric[m.id];
-    if (d && m.status === "ok" && d.runs.length > 0) m.detail = d;
+    const detail = detailByMetric[m.id];
+    if (detail && m.status === "ok" && detail.runs.length > 0) m.detail = detail;
   }
 
-  const reviews = await db
-    .select()
-    .from(weeklyReviews)
-    .where(eq(weeklyReviews.userId, userId))
-    .orderBy(desc(weeklyReviews.weekStart))
-    .limit(6);
-
-  return c.json({ consistency, weekly, efficiency, drift, timeOfDay, records, evidence, reviews, interpreted });
+  return c.json({ consistency, weekly, efficiency, decoupling, records, evidence, reviews, interpreted });
 });
 
 insightRoutes.post("/dismiss", async (c) => {

@@ -48,7 +48,8 @@ export interface IngestStats {
   affectedDates: string[];
 }
 
-function rowToNormalized(row: typeof activities.$inferSelect): NormalizedActivity {
+/** DB row → domain activity: SQL nulls become the domain's optional absences. */
+export function rowToNormalized(row: typeof activities.$inferSelect): NormalizedActivity {
   return {
     id: row.id,
     corosActivityId: row.corosActivityId ?? undefined,

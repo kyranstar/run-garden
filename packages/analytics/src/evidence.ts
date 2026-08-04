@@ -102,11 +102,23 @@ function easyConsistencyCard(workouts: PlannedWorkout[], range: DateRange): Evid
   );
 }
 
-export function pickEvidenceCard(input: EvidenceInput): EvidenceCard | null {
+/**
+ * The highest-value card the user has not dismissed. `dismissedIds` is applied
+ * INSIDE the fallback chain, not to its result: filtering afterwards would
+ * make dismissing the top card collapse the whole rotation to null, when the
+ * point of dismissing it is to see the next one. Required (not defaulted) so a
+ * caller cannot silently re-serve a card the user has already waved away.
+ */
+export function pickEvidenceCard(
+  input: EvidenceInput,
+  dismissedIds: ReadonlySet<string>,
+): EvidenceCard | null {
+  const live = (c: EvidenceCard | null): EvidenceCard | null =>
+    c != null && !dismissedIds.has(c.id) ? c : null;
   return (
-    comebackCard(input.records) ??
-    morningCard(input.timeOfDayPairs) ??
-    easyConsistencyCard(input.workouts, input.range) ??
+    live(comebackCard(input.records)) ??
+    live(morningCard(input.timeOfDayPairs)) ??
+    live(easyConsistencyCard(input.workouts, input.range)) ??
     null
   );
 }

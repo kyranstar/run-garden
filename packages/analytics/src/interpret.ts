@@ -39,6 +39,37 @@ export interface MetricDetail {
   runs: MetricRunDetail[];
 }
 
+/**
+ * Numeric band edges for a bullet gauge. `min`/`max` are the drawn extent of
+ * the track (a value outside them is the renderer's problem to clamp, not a
+ * reason to lie about the number); `healthyLo`/`healthyHi` bound the shaded
+ * healthy band; `value` is the marker. Present only on banded metrics —
+ * a metric with no band has nothing honest to shade.
+ */
+export interface MetricGauge {
+  min: number;
+  max: number;
+  healthyLo: number;
+  healthyHi: number;
+  value: number;
+}
+
+/** One daily point of a metric's sparkline (resting HR, HRV). */
+export interface MetricSeriesPoint {
+  date: string;
+  value: number;
+}
+
+/**
+ * One cell of a boolean strip: hard/easy days (hardStack) or per-run
+ * easy/over ticks (easyDiscipline). `on` means the highlighted state — a hard
+ * day, or an easy run that stayed easy.
+ */
+export interface MetricStripCell {
+  date: string;
+  on: boolean;
+}
+
 export interface InterpretedMetric {
   id: string;
   title: string;
@@ -50,6 +81,18 @@ export interface InterpretedMetric {
   suggestion?: string;
   sampleNote: string;
   trend?: { direction: "up" | "down" | "flat"; better: "up" | "down" | "either" };
+  /** Band edges for the inline bullet gauge; set whenever `band` is set. */
+  gauge?: MetricGauge;
+  /** Daily sparkline points (recovery metrics). */
+  series?: MetricSeriesPoint[];
+  /** Boolean strip cells (hardStack days, easyDiscipline run ticks). */
+  strip?: MetricStripCell[];
+  /**
+   * Set when the newest reading is old enough that the headline number
+   * describes the past rather than the present. A card with a `staleNote`
+   * carries no `band`: it is still shown, but it makes no claim about today.
+   */
+  staleNote?: string;
   /** Per-run evidence for the drilldown sheet, when the metric has it. */
   detail?: MetricDetail;
 }
@@ -62,6 +105,10 @@ export interface Presentation {
   meaning: string;
   suggestion?: string;
   trend?: { direction: "up" | "down" | "flat"; better: "up" | "down" | "either" };
+  gauge?: MetricGauge;
+  series?: MetricSeriesPoint[];
+  strip?: MetricStripCell[];
+  staleNote?: string;
 }
 
 export function interpret<T>(
@@ -91,5 +138,9 @@ export function interpret<T>(
     suggestion: p.suggestion,
     sampleNote: m.comparisonNote,
     trend: p.trend,
+    gauge: p.gauge,
+    series: p.series,
+    strip: p.strip,
+    staleNote: p.staleNote,
   };
 }
