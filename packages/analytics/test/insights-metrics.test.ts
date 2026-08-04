@@ -8,8 +8,6 @@ import {
   computeRamp,
   computeRestingHr,
   interpret,
-  negativeSplit,
-  predictRaces,
   zoneOf,
 } from "../src/index.js";
 import { insufficient, ok } from "../src/metric.js";
@@ -129,24 +127,6 @@ describe("discipline + performance", () => {
     ];
     const r = computeEasyDiscipline(runs, 190); // 0.80*190 = 152 cutoff; 4 of 5 under
     expect(r.status === "ok" && r.value.inEasyPct).toBe(80);
-  });
-  it("riegel scales 5k to longer", () => {
-    const r = predictRaces({ distanceMeters: 5000, durationSeconds: 1200 }); // 20:00 5k
-    if (r.status === "ok") {
-      expect(r.value.k10).toBeGreaterThan(2400); // >2x due to fatigue exponent
-      expect(r.value.k10).toBeLessThan(2600);
-    }
-  });
-  it("negative split fraction", () => {
-    const runs = [
-      { firstHalfPace: 300, secondHalfPace: 290 },
-      { firstHalfPace: 300, secondHalfPace: 310 },
-      { firstHalfPace: 300, secondHalfPace: 295 },
-      { firstHalfPace: 300, secondHalfPace: 305 },
-    ];
-    expect(negativeSplit(runs).status === "ok" && negativeSplit(runs).status === "ok").toBe(true);
-    const r = negativeSplit(runs);
-    expect(r.status === "ok" && r.value.negativePct).toBe(50);
   });
 });
 

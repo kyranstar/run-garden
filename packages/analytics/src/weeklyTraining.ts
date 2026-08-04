@@ -5,7 +5,10 @@ import { activityLocalDate, mean } from "./stats.js";
 /**
  * Weekly training totals bucketed by ISO week (Monday start). The easy/quality
  * split relies on the completion-matching category map; activities without a
- * match count as easy — we never guess intensity from raw data.
+ * match count as easy — we never guess intensity from raw data. The low/high
+ * intensity split is separate: it prefers per-activity zone-time when supplied
+ * (opts.intensityByActivity) and otherwise falls back to the same category
+ * heuristic (quality/race → high, everything else low).
  */
 
 export interface WeeklyTotals {
@@ -17,40 +20,60 @@ export interface WeeklyTotals {
   runCount: number;
   easySeconds: number;
   qualitySeconds: number;
+  lowSeconds: number;
+  highSeconds: number;
+  /** True for the ISO week containing opts.today — excluded from the rolling averages. */
+  partial: boolean;
 }
 
 export interface WeeklyTrainingReport {
   /** Continuous ISO weeks from first to last activity (gap weeks are zeroed). */
   weeks: WeeklyTotals[];
-  /** Mean weekly durationSeconds over the most recent 4 weeks; needs >= 4 weeks. */
+  /** Mean weekly durationSeconds over the most recent 4 COMPLETE weeks (the partial current week, if any, is skipped); needs >= 4 complete weeks. */
   fourWeekAvgDuration?: number;
-  /** Mean weekly durationSeconds over the most recent 12 weeks; needs >= 12 weeks. */
+  /** Mean weekly durationSeconds over the most recent 12 COMPLETE weeks; needs >= 12 complete weeks. */
   twelveWeekAvgDuration?: number;
 }
+
+export interface ComputeWeeklyTrainingOptions {
+  /** Today's date; the ISO week containing it is marked partial and excluded from averages. */
+  today?: LocalDate;
+  /** Per-activity zone time, keyed by NormalizedActivity.id. Takes precedence over the category heuristic. */
+  intensityByActivity?: Record<string, { lowSeconds: number; highSeconds: number }>;
+}
+
+type WeeklyBucket = Omit<WeeklyTotals, "partial">;
 
 function isQualityCategory(category: WorkoutCategory | undefined): boolean {
   return category === "quality" || category === "race";
 }
 
+function emptyBucket(weekStart: LocalDate): WeeklyBucket {
+  return {
+    weekStart,
+    durationSeconds: 0,
+    distanceMeters: 0,
+    trainingLoad: 0,
+    runCount: 0,
+    easySeconds: 0,
+    qualitySeconds: 0,
+    lowSeconds: 0,
+    highSeconds: 0,
+  };
+}
+
 export function computeWeeklyTraining(
   activities: NormalizedActivity[],
   categoryByMatchId: Record<string, WorkoutCategory>,
+  opts?: ComputeWeeklyTrainingOptions,
 ): WeeklyTrainingReport {
-  const byWeek = new Map<LocalDate, WeeklyTotals>();
+  const byWeek = new Map<LocalDate, WeeklyBucket>();
 
   for (const a of activities) {
     const weekStart = startOfIsoWeek(activityLocalDate(a));
     let bucket = byWeek.get(weekStart);
     if (!bucket) {
-      bucket = {
-        weekStart,
-        durationSeconds: 0,
-        distanceMeters: 0,
-        trainingLoad: 0,
-        runCount: 0,
-        easySeconds: 0,
-        qualitySeconds: 0,
-      };
+      bucket = emptyBucket(weekStart);
       byWeek.set(weekStart, bucket);
     }
     bucket.durationSeconds += a.durationSeconds;
@@ -61,7 +84,19 @@ export function computeWeeklyTraining(
     const category = a.completionMatchId ? categoryByMatchId[a.completionMatchId] : undefined;
     if (isQualityCategory(category)) bucket.qualitySeconds += a.durationSeconds;
     else bucket.easySeconds += a.durationSeconds;
+
+    const intensity = opts?.intensityByActivity?.[a.id];
+    if (intensity) {
+      bucket.lowSeconds += intensity.lowSeconds;
+      bucket.highSeconds += intensity.highSeconds;
+    } else if (isQualityCategory(category)) {
+      bucket.highSeconds += a.durationSeconds;
+    } else {
+      bucket.lowSeconds += a.durationSeconds;
+    }
   }
+
+  const partialWeekStart = opts?.today ? startOfIsoWeek(opts.today) : undefined;
 
   const starts = [...byWeek.keys()].sort();
   const weeks: WeeklyTotals[] = [];
@@ -69,26 +104,18 @@ export function computeWeeklyTraining(
     const first = starts[0]!;
     const last = starts[starts.length - 1]!;
     for (let ws = first; ws <= last; ws = addDays(ws, 7)) {
-      weeks.push(
-        byWeek.get(ws) ?? {
-          weekStart: ws,
-          durationSeconds: 0,
-          distanceMeters: 0,
-          trainingLoad: 0,
-          runCount: 0,
-          easySeconds: 0,
-          qualitySeconds: 0,
-        },
-      );
+      const bucket = byWeek.get(ws) ?? emptyBucket(ws);
+      weeks.push({ ...bucket, partial: ws === partialWeekStart });
     }
   }
 
   const report: WeeklyTrainingReport = { weeks };
-  if (weeks.length >= 4) {
-    report.fourWeekAvgDuration = mean(weeks.slice(-4).map((w) => w.durationSeconds));
+  const completeWeeks = weeks.filter((w) => !w.partial);
+  if (completeWeeks.length >= 4) {
+    report.fourWeekAvgDuration = mean(completeWeeks.slice(-4).map((w) => w.durationSeconds));
   }
-  if (weeks.length >= 12) {
-    report.twelveWeekAvgDuration = mean(weeks.slice(-12).map((w) => w.durationSeconds));
+  if (completeWeeks.length >= 12) {
+    report.twelveWeekAvgDuration = mean(completeWeeks.slice(-12).map((w) => w.durationSeconds));
   }
   return report;
 }

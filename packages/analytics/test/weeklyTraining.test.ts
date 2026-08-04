@@ -82,4 +82,60 @@ describe("computeWeeklyTraining", () => {
     expect(report.weeks).toEqual([]);
     expect(report.fourWeekAvgDuration).toBeUndefined();
   });
+
+  it("marks the week containing opts.today as partial and excludes it from the 4-week average", () => {
+    const report = computeWeeklyTraining(
+      [
+        mkActivity({ id: "a1", startTimeLocal: "2026-03-02T07:00:00", durationSeconds: 3600 }),
+        mkActivity({ id: "a2", startTimeLocal: "2026-03-09T07:00:00", durationSeconds: 3600 }),
+        mkActivity({ id: "a3", startTimeLocal: "2026-03-16T07:00:00", durationSeconds: 7200 }),
+        mkActivity({ id: "a4", startTimeLocal: "2026-03-23T07:00:00", durationSeconds: 7200 }),
+        // 2026-03-31 is a Tuesday in the same ISO week as "today" below (mid-week).
+        mkActivity({ id: "a5", startTimeLocal: "2026-03-31T07:00:00", durationSeconds: 1000 }),
+      ],
+      {},
+      { today: "2026-04-01" },
+    );
+    expect(report.weeks).toHaveLength(5);
+    expect(report.weeks.map((w) => w.partial)).toEqual([false, false, false, false, true]);
+    // Average of the 4 complete weeks only — the partial current week is skipped.
+    expect(report.fourWeekAvgDuration).toBe(5400);
+  });
+
+  it("uses intensityByActivity for low/high seconds when supplied, overriding the category fallback", () => {
+    const report = computeWeeklyTraining(
+      [
+        mkActivity({
+          id: "a1",
+          startTimeLocal: "2026-03-03T07:00:00",
+          durationSeconds: 1800,
+          completionMatchId: "m1",
+        }),
+      ],
+      { m1: "quality" }, // would default a1's whole duration to highSeconds without the override
+      { intensityByActivity: { a1: { lowSeconds: 1200, highSeconds: 600 } } },
+    );
+    const week = report.weeks[0]!;
+    expect(week.lowSeconds).toBe(1200);
+    expect(week.highSeconds).toBe(600);
+  });
+
+  it("falls back to the category heuristic for low/high seconds when no intensity data is supplied", () => {
+    const report = computeWeeklyTraining(
+      [
+        mkActivity({
+          id: "a1",
+          startTimeLocal: "2026-03-03T07:00:00",
+          durationSeconds: 1800,
+          completionMatchId: "m1",
+        }),
+        mkActivity({ id: "a2", startTimeLocal: "2026-03-04T07:00:00", durationSeconds: 900 }),
+      ],
+      { m1: "quality" },
+      {},
+    );
+    const week = report.weeks[0]!;
+    expect(week.highSeconds).toBe(1800); // quality match -> high
+    expect(week.lowSeconds).toBe(900); // unmatched -> low
+  });
 });
