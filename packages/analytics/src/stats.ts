@@ -54,6 +54,28 @@ export function leastSquares(ys: readonly number[]): { slope: number; intercept:
   return { slope, intercept: yBar - slope * xBar };
 }
 
+/**
+ * Theil–Sen estimator: slope is the median of all pairwise slopes (pairs
+ * sharing an x are skipped), intercept is the median of y_i - slope*x_i.
+ * Robust to outliers in a way ordinary least squares is not — a single wild
+ * point can only ever contribute n-1 of the O(n^2) pairwise slopes.
+ */
+export function theilSen(
+  points: ReadonlyArray<{ x: number; y: number }>,
+): { slope: number; intercept: number } {
+  const slopes: number[] = [];
+  for (let i = 0; i < points.length; i++) {
+    for (let j = i + 1; j < points.length; j++) {
+      const dx = points[j]!.x - points[i]!.x;
+      if (dx === 0) continue;
+      slopes.push((points[j]!.y - points[i]!.y) / dx);
+    }
+  }
+  const slope = slopes.length > 0 ? median(slopes) : 0;
+  const intercept = median(points.map((p) => p.y - slope * p.x));
+  return { slope, intercept };
+}
+
 export function roundTo(x: number, decimals: number): number {
   const f = 10 ** decimals;
   return Math.round(x * f) / f;

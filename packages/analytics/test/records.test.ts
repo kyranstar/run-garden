@@ -5,6 +5,15 @@ import { computeRecords } from "../src/records.js";
 import { mkActivity, mkLap, mkStage, mkWorkout } from "./builders.js";
 
 function easyRun(id: string, date: string, hr: number, pace = 300): RunSample {
+  // Aerobic efficiency now requires laps (no whole-run fallback): 4 laps of
+  // 450s at a uniform pace so the trimmed middle two laps (900s, 3000m)
+  // reproduce the same speed/HR ratio as the whole-run figures below.
+  const laps = [
+    mkLap(id, 0, { durationSeconds: 450, distanceMeters: 1500, avgHeartRate: hr }), // dropped: warm-up
+    mkLap(id, 1, { durationSeconds: 450, distanceMeters: 1500, avgHeartRate: hr }),
+    mkLap(id, 2, { durationSeconds: 450, distanceMeters: 1500, avgHeartRate: hr }),
+    mkLap(id, 3, { durationSeconds: 450, distanceMeters: 1500, avgHeartRate: hr }), // dropped: final lap
+  ];
   return {
     activity: mkActivity({
       id,
@@ -14,7 +23,7 @@ function easyRun(id: string, date: string, hr: number, pace = 300): RunSample {
       avgHeartRate: hr,
       avgPaceSecPerKm: pace,
     }),
-    laps: [],
+    laps,
     category: "easy",
   };
 }

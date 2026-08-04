@@ -3,7 +3,7 @@ export * from "./stats.js";
 export * from "./consistency.js";
 export * from "./weeklyTraining.js";
 export * from "./aerobicEfficiency.js";
-export * from "./hrDrift.js";
+export * from "./decoupling.js";
 export * from "./timeOfDay.js";
 export * from "./execution.js";
 export * from "./records.js";
