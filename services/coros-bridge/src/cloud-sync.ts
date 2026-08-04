@@ -22,6 +22,7 @@ import {
 import type { NameResolver } from "@rg/providers";
 import type { CorosClient } from "./coros-client.js";
 import { buildSnapshot, loadNameResolver } from "./snapshot.js";
+import { buildActivityBackfill } from "./backfill.js";
 import {
   executeMoveJob,
   executeStudioJob,
@@ -88,6 +89,8 @@ interface ClaimedJob {
     sourceProgramId?: string;
     title?: string;
   } | null;
+  /** Present for the backfill kind: the history chunk this job covers. */
+  payload?: { chunkStart?: string; chunkEnd?: string };
   /** Present for the studio kinds (plan-studio-design §5). */
   studio?: unknown;
 }
@@ -224,6 +227,42 @@ export class CloudSync {
           signature: "sig-in-headers",
         });
         this.logger(`[coros-bridge] job ${job.id} → read_now snapshot pushed`);
+        continue;
+      }
+
+      if (job.kind === "backfill") {
+        // Activities-only, never pushSnapshot: an old range through the
+        // snapshot path trips import-plan rules 8/9 and archives the live plan.
+        const chunkStart = job.payload?.chunkStart ?? job.originalDate;
+        const chunkEnd = job.payload?.chunkEnd ?? job.destinationDate;
+        this.localePromise ??= loadNameResolver(this.client.fetchImpl);
+        const resolver = await this.localePromise;
+        let outcome: "verified" | "write_failed" = "verified";
+        try {
+          const chunk = await buildActivityBackfill(this.client, chunkStart, chunkEnd, resolver);
+          await this.post("/api/devices/bridge/backfill-chunk", {
+            chunkStart,
+            chunkEnd,
+            activities: chunk.activities,
+            lapsByProviderId: chunk.lapsByProviderId,
+            skippedSportTypes: chunk.skippedSportTypes,
+          });
+          this.logger(
+            `[coros-bridge] job ${job.id} → backfill ${chunkStart}..${chunkEnd}, ${chunk.activities.length} activities`,
+          );
+        } catch (e) {
+          outcome = "write_failed";
+          this.logger(
+            `[coros-bridge] job ${job.id} → backfill failed: ${e instanceof Error ? e.name : "unknown"}`,
+          );
+        }
+        await this.post(`/api/devices/bridge/jobs/${job.id}/result`, {
+          jobId: job.id,
+          deviceId: this.deviceId,
+          outcome,
+          finishedAt: new Date().toISOString(),
+          signature: "sig-in-headers",
+        });
         continue;
       }
 
