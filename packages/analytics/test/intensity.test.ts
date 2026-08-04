@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { computeEasyDiscipline } from "../src/easyDiscipline.js";
-import { easyCeiling, estimateHrMax } from "../src/hrZones.js";
+import { easyCeiling, estimateHrMax, isEasyHr } from "../src/hrZones.js";
 import type { IntensityRunInput } from "../src/lowIntensityShare.js";
 import { computeLowIntensityShare } from "../src/lowIntensityShare.js";
 import { mkActivity } from "./builders.js";
@@ -102,11 +102,26 @@ describe("computeLowIntensityShare", () => {
   });
 });
 
+describe("isEasyHr", () => {
+  it("agrees with easyCeiling's displayed integer bpm for every hrMax in 120..220", () => {
+    // zoneOf's raw-fraction check disagrees with the rounded integer ceiling
+    // for most hrMax values (rounding can push the ceiling to either side of
+    // the 0.8 fraction boundary) — isEasyHr must always agree with the
+    // ceiling bpm value shown in the drill-down UI, for every hrMax, not
+    // just the ones where zoneOf happens to round the same way.
+    for (let hrMax = 120; hrMax <= 220; hrMax++) {
+      const ceiling = easyCeiling(hrMax);
+      expect(isEasyHr(ceiling, hrMax)).toBe(true);
+      expect(isEasyHr(ceiling + 1, hrMax)).toBe(false);
+    }
+  });
+});
+
 describe("computeEasyDiscipline", () => {
   it("counts avgHr exactly at easyCeiling as EASY, in both pct and ticks (one shared predicate)", () => {
-    const hrMax = 193;
-    const ceiling = easyCeiling(hrMax); // 154; 154/193 = 0.7979 < 0.8, so still zone 2
-    expect(ceiling).toBe(154);
+    const hrMax = 190; // previously failing: zoneOf(152, 190) is zone 3, not <=2
+    const ceiling = easyCeiling(hrMax);
+    expect(ceiling).toBe(152);
     const runs = [
       { activityId: "a1", date: "2026-07-01", avgHr: 130 },
       { activityId: "a2", date: "2026-07-02", avgHr: 135 },

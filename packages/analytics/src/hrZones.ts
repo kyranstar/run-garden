@@ -37,7 +37,14 @@ export function zoneOf(hr: number, hrMax: number): 1 | 2 | 3 | 4 | 5 {
   return 5;
 }
 
-/** Shared "was this easy?" predicate: average HR sat in zones 1–2. */
+/**
+ * Shared "was this easy?" predicate: at or under the Zone-2 ceiling. Defined
+ * against `easyCeiling`'s rounded integer bpm value (not `zoneOf`'s raw
+ * fraction) so it always agrees with the ceiling the drill-down UI displays
+ * ("under your N bpm ceiling") — `zoneOf(easyCeiling(hrMax), hrMax) <= 2`
+ * disagrees with the rounded ceiling for most hrMax values, since rounding
+ * can push the integer ceiling to the far side of the 0.8 fraction boundary.
+ */
 export function isEasyHr(avgHr: number, hrMax: number): boolean {
-  return zoneOf(avgHr, hrMax) <= 2;
+  return avgHr <= easyCeiling(hrMax);
 }
