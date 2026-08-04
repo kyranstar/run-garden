@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  BALANCE_TUNING,
   DAMAGE_NOTCH,
   disciplineBalance,
   initialSnapshot,
@@ -96,5 +97,21 @@ describe("DAMAGE_NOTCH", () => {
     // Soil/life decay starts past day 7: health 1 − (7−3)/14 = 5/7.
     expect(DAMAGE_NOTCH.strength).toBeCloseTo(5 / 7, 5);
     expect(DAMAGE_NOTCH.yoga).toBeCloseTo(5 / 7, 5);
+  });
+});
+
+describe("BALANCE_TUNING", () => {
+  it("exposes the day math the notches derive from", () => {
+    expect(BALANCE_TUNING.run).toEqual({ graceDays: 2, decayWindowDays: 14, damageStartDay: 4 });
+    expect(BALANCE_TUNING.strength).toEqual({ graceDays: 3, decayWindowDays: 14, damageStartDay: 7 });
+    expect(BALANCE_TUNING.yoga).toEqual({ graceDays: 3, decayWindowDays: 14, damageStartDay: 7 });
+    // The two exports must agree forever.
+    for (const key of ["run", "strength", "yoga"] as const) {
+      const t = BALANCE_TUNING[key];
+      expect(DAMAGE_NOTCH[key]).toBeCloseTo(
+        1 - Math.max(0, t.damageStartDay - t.graceDays) / t.decayWindowDays,
+        8,
+      );
+    }
   });
 });

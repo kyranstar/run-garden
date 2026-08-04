@@ -1161,6 +1161,26 @@ button {
     font-size: 0.8rem;
     color: var(--ink-faint);
   }
+  .dock-grows {
+    display: block;
+    margin: 0.1rem 0.6rem 0.5rem;
+    font-size: 0.85rem;
+    font-weight: 600;
+    color: var(--green-ink);
+  }
+
+  /* The bar detail panel floats below the HUD instrument cluster. */
+  .balance-detail-hud {
+    position: absolute;
+    top: calc(100% + 0.55rem);
+    right: 0;
+    width: 320px;
+    margin: 0;
+    background: color-mix(in srgb, var(--bg-raised) 92%, transparent);
+    backdrop-filter: blur(16px) saturate(1.05);
+    box-shadow: 0 18px 44px rgba(9, 14, 10, 0.28);
+    text-shadow: none;
+  }
   .dock-attention {
     color: #f4dcae;
     font-size: 0.85rem;
@@ -1417,6 +1437,100 @@ button {
 .balance-bar {
   flex: 1;
   min-width: 0;
+  /* Bars are buttons now — strip the UA chrome, keep the layout. */
+  background: none;
+  border: none;
+  padding: 0;
+  margin: 0;
+  font: inherit;
+  color: inherit;
+  text-align: left;
+  cursor: pointer;
+  display: block;
+  width: 100%;
+}
+.balance-bar:hover .balance-bar-label,
+.balance-bar-active .balance-bar-label {
+  color: var(--ink);
+}
+.balance-bar-active .balance-bar-label {
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+
+/* Per-discipline detail panel (opens from a bar). */
+.balance-detail {
+  max-width: 660px;
+  margin: 0.6rem auto 0;
+  background: var(--bg-raised);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: 0.75rem 0.9rem;
+  font-size: 0.88rem;
+  color: var(--ink-soft);
+  text-align: left;
+}
+.balance-detail-head {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  margin-bottom: 0.35rem;
+  color: var(--ink);
+}
+.balance-detail-status {
+  font-size: 0.78rem;
+  color: var(--ink-faint);
+}
+.balance-detail-close {
+  margin-left: auto;
+  background: none;
+  border: none;
+  padding: 0.2rem;
+  cursor: pointer;
+  color: var(--ink-faint);
+  line-height: 0;
+}
+.balance-detail-close:hover {
+  color: var(--ink);
+}
+.balance-detail-line {
+  margin: 0.2rem 0;
+}
+.balance-detail-line strong {
+  color: var(--warn);
+  font-weight: 650;
+}
+.balance-detail-stat {
+  display: inline-block;
+  margin-left: 0.3rem;
+  font-size: 0.76rem;
+  font-weight: 650;
+  color: var(--green-ink);
+  background: var(--green-soft);
+  border-radius: 999px;
+  padding: 0.05rem 0.5rem;
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+}
+.balance-detail-next {
+  display: block;
+  margin: 0.35rem 0 0.1rem;
+  background: none;
+  border: none;
+  padding: 0;
+  font: inherit;
+  font-weight: 600;
+  color: var(--green-ink);
+  cursor: pointer;
+  text-align: left;
+}
+.balance-detail-next:hover {
+  text-decoration: underline;
+}
+.balance-detail-week {
+  margin: 0.4rem 0 0;
+  font-size: 0.78rem;
+  color: var(--ink-faint);
 }
 .balance-bar-label {
   font-size: 0.72rem;
@@ -2658,6 +2772,40 @@ button {
   grid-template-columns: 56px 1fr;
   gap: 0.7rem;
   align-items: center;
+}
+.nudge-btn {
+  background: none;
+  border: none;
+  padding: 0;
+  margin: 0;
+  font: inherit;
+  color: inherit;
+  text-align: left;
+  cursor: pointer;
+  width: 100%;
+}
+.nudge-btn:hover .nudge-title {
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+/* Which workout type this unlock answers to. */
+.nudge-disc {
+  font-size: 0.64rem;
+  font-weight: 700;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  border-radius: 4px;
+  padding: 0.08rem 0.4rem;
+  color: #fff;
+}
+.nudge-disc-run {
+  background: var(--green);
+}
+.nudge-disc-strength {
+  background: #b5652f;
+}
+.nudge-disc-yoga {
+  background: #8f6fae;
 }
 .nudge-row .codex-sprite {
   height: 52px;

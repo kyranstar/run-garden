@@ -397,10 +397,12 @@ export function GardenScene({
       onClick={() => onSelectPlant?.(null)}
     >
       <desc>{desc}</desc>
-      {/* Keyboard focus gets the same silhouette outline as click selection
-          (instead of the browser's bounding-box ring). Always present, unlike
-          the animation styles. */}
-      <style>{`.${p}-plant:focus-visible{outline:none}.${p}-plant:focus-visible>g:last-of-type{filter:url(#${p}-outline)}`}</style>
+      {/* The silhouette outline is the ONLY selection affordance: it shows on
+          hover, keyboard focus, and click selection. The browser's default
+          bounding-box focus ring is suppressed on :focus as well as
+          :focus-visible (Chrome draws its blue ring on clicked tabindex SVG
+          groups via plain :focus). Always present, unlike animation styles. */}
+      <style>{`.${p}-plant{-webkit-tap-highlight-color:transparent}.${p}-plant:focus,.${p}-plant:focus-visible{outline:none}.${p}-plant:hover>g:last-of-type,.${p}-plant:focus-visible>g:last-of-type{filter:url(#${p}-outline)}`}</style>
       {animate ? <style>{sceneCss(p, n(Math.max(0.3, light.swayAmpDeg)))}</style> : null}
       <SceneDefs p={p} light={light} />
       <Sky p={p} light={light} animate={animate} />

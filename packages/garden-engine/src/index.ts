@@ -3,6 +3,7 @@ export * from "./species.js";
 export * from "./prng.js";
 export * from "./layout.js";
 export {
+  BALANCE_TUNING,
   DAMAGE_NOTCH,
   disciplineBalance,
   projectedBalance,

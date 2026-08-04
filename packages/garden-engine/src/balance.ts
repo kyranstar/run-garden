@@ -31,6 +31,20 @@ export const DAMAGE_NOTCH: { run: number; strength: number; yoga: number } = {
   yoga: healthFor(DAMAGE_START_DAYS.yoga, GRACE_DAYS.yoga),
 };
 
+/**
+ * The decay clock in days, per axis, for UI countdowns: full health through
+ * `graceDays`, empty at `graceDays + decayWindowDays`, visible garden damage
+ * from `damageStartDay`. Same numbers the notches derive from.
+ */
+export const BALANCE_TUNING: Record<
+  "run" | "strength" | "yoga",
+  { graceDays: number; decayWindowDays: number; damageStartDay: number }
+> = {
+  run: { graceDays: GRACE_DAYS.run, decayWindowDays: DECAY_WINDOW_DAYS, damageStartDay: DAMAGE_START_DAYS.run },
+  strength: { graceDays: GRACE_DAYS.strength, decayWindowDays: DECAY_WINDOW_DAYS, damageStartDay: DAMAGE_START_DAYS.strength },
+  yoga: { graceDays: GRACE_DAYS.yoga, decayWindowDays: DECAY_WINDOW_DAYS, damageStartDay: DAMAGE_START_DAYS.yoga },
+};
+
 export interface DisciplineBalance {
   run: { days: number; health: number };
   /** `days: null` means no session of this discipline has ever been recorded

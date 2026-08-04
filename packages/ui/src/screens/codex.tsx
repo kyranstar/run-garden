@@ -9,7 +9,7 @@
 
 import { useLayoutEffect, useMemo, useRef, useState } from "react";
 import type { GardenPlant } from "@rg/domain";
-import { SPECIES_BY_ID } from "@rg/garden-engine";
+import { SPECIES_BY_ID, type UnlockGate } from "@rg/garden-engine";
 import { PlantSprite } from "@rg/garden-renderer";
 
 export interface CodexEntry {
@@ -138,6 +138,135 @@ export const CATEGORY_ORDER: Array<{ key: string; label: string; color: string }
 
 function rarityClass(rarity: CodexEntry["rarity"]): string {
   return rarity === "common" ? "" : ` codex-${rarity}`;
+}
+
+export type NudgeDiscipline = "run" | "strength" | "yoga";
+
+/** Which training axis advances a species' unlock gate, if any single one does. */
+export function disciplineOfGate(gate: UnlockGate): NudgeDiscipline | null {
+  switch (gate.kind) {
+    case "strength_sessions":
+      return "strength";
+    case "yoga_sessions":
+      return "yoga";
+    case "quality_runs":
+    case "easy_runs":
+    case "long_runs":
+    case "recovery_runs":
+    case "consistent_weeks":
+    case "early_runs":
+    case "distance_run":
+    case "total_runs":
+    case "comeback_streak":
+      return "run";
+    default:
+      // start / comeback / dead_wood / mature_trees / balanced_weeks —
+      // not something one workout type can chase directly.
+      return null;
+  }
+}
+
+/** Gate kinds a specific planned-workout category actually advances. */
+const GATE_KINDS_BY_CATEGORY: Record<string, string[]> = {
+  quality: ["quality_runs", "total_runs"],
+  race: ["distance_run", "total_runs"],
+  long: ["long_runs", "distance_run", "total_runs"],
+  easy: ["easy_runs", "total_runs"],
+  recovery: ["recovery_runs", "total_runs"],
+  strength: ["strength_sessions"],
+  yoga: ["yoga_sessions"],
+};
+
+function remainingFraction(c: CodexEntry): number {
+  return c.progress ? 1 - Math.min(1, c.progress.current / c.progress.target) : 2;
+}
+
+/** The nearest locked species each discipline could unlock next. */
+export function nextUnlocksByDiscipline(
+  codex: CodexEntry[],
+): Partial<Record<NudgeDiscipline, CodexEntry>> {
+  const out: Partial<Record<NudgeDiscipline, CodexEntry>> = {};
+  for (const c of codex) {
+    if (c.unlocked || !c.progress) continue;
+    const gate = SPECIES_BY_ID.get(c.speciesId)?.unlock;
+    const d = gate ? disciplineOfGate(gate) : null;
+    if (!d) continue;
+    if (!out[d] || remainingFraction(c) < remainingFraction(out[d]!)) out[d] = c;
+  }
+  return out;
+}
+
+/** The nearest locked species that THIS planned workout's category advances. */
+export function unlockGrownBy(codex: CodexEntry[], category: string): CodexEntry | null {
+  const kinds = GATE_KINDS_BY_CATEGORY[category];
+  if (!kinds) return null;
+  let best: CodexEntry | null = null;
+  for (const c of codex) {
+    if (c.unlocked || !c.progress) continue;
+    const gate = SPECIES_BY_ID.get(c.speciesId)?.unlock;
+    if (!gate || !kinds.includes(gate.kind)) continue;
+    if (!best || remainingFraction(c) < remainingFraction(best)) best = c;
+  }
+  return best;
+}
+
+export const NUDGE_DISCIPLINE_LABEL: Record<NudgeDiscipline, string> = {
+  run: "Run",
+  strength: "Lift",
+  yoga: "Yoga",
+};
+
+/**
+ * "The best next thing", per axis: one row per discipline showing the species
+ * that workout type would unlock soonest. Every row opens the species card.
+ */
+export function DisciplineNudges({
+  codex,
+  onOpenSpecies,
+}: {
+  codex: CodexEntry[];
+  onOpenSpecies?: (speciesId: string) => void;
+}) {
+  const trio = nextUnlocksByDiscipline(codex);
+  const rows = (["run", "strength", "yoga"] as const)
+    .map((d) => ({ d, c: trio[d] }))
+    .filter((r): r is { d: NudgeDiscipline; c: CodexEntry } => !!r.c);
+  if (rows.length === 0) return null;
+  return (
+    <div className="nudges" aria-label="Next unlock per workout type">
+      {rows.map(({ d, c }) => {
+        const p = c.progress!;
+        const remaining = Math.max(0, p.target - p.current);
+        const closing =
+          p.target >= 1000
+            ? c.hint
+            : remaining === 1
+              ? `1 more — ${c.hint.toLowerCase()}`
+              : `${remaining} more to go — ${c.hint.toLowerCase()}`;
+        return (
+          <button
+            type="button"
+            className="nudge-row nudge-btn"
+            key={c.speciesId}
+            onClick={() => onOpenSpecies?.(c.speciesId)}
+          >
+            <SpeciesSpriteCard speciesId={c.speciesId} locked />
+            <div className="nudge-body">
+              <div className="nudge-title">
+                <span className={`nudge-disc nudge-disc-${d}`}>{NUDGE_DISCIPLINE_LABEL[d]}</span>
+                {c.name}
+                {c.rarity !== "common" ? (
+                  <span className={`rarity rarity-${c.rarity}`}>{RARITY_LABEL[c.rarity]}</span>
+                ) : null}
+              </div>
+              <div className="codex-sub">{closing}</div>
+              <ProgressBar current={p.current} target={p.target} />
+            </div>
+          </button>
+        );
+      })}
+    </div>
+  );
 }
 
 function isNewUnlock(c: CodexEntry, today?: string): boolean {

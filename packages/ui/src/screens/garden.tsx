@@ -10,7 +10,13 @@ import {
   type GardenWeatherState,
 } from "@rg/domain";
 import type { GardenSnapshot } from "@rg/garden-engine";
-import { DAMAGE_NOTCH, gardenForecast, projectedBalance, SPECIES_BY_ID } from "@rg/garden-engine";
+import {
+  BALANCE_TUNING,
+  DAMAGE_NOTCH,
+  gardenForecast,
+  projectedBalance,
+  SPECIES_BY_ID,
+} from "@rg/garden-engine";
 import { GardenScene } from "@rg/garden-renderer";
 import { IconClock, IconClose } from "../icons.js";
 import {
@@ -28,11 +34,15 @@ import { BotanicalCard } from "./botanical.js";
 import { EvidenceCard, NextWorkout, Readiness, SyncPanel, UnresolvedCard } from "./today.js";
 import {
   CATEGORY_ORDER,
-  NextUnlockNudges,
+  DisciplineNudges,
+  nextUnlocksByDiscipline,
+  NUDGE_DISCIPLINE_LABEL,
   progressText,
   SpeciesCodex,
+  unlockGrownBy,
   WildlifeShelf,
   type CodexEntry,
+  type NudgeDiscipline,
   type WildlifeEntry,
 } from "./codex.js";
 
@@ -248,14 +258,17 @@ function weakestDiscipline(balance: DisciplineBalance): DisciplineKey {
 /**
  * Three mini-bars for run/lift/yoga health. Each track carries a notch at the
  * point where neglect starts visibly damaging the garden; a fill that has
- * shrunk past its notch turns amber. `variant="hud"` renders the on-scene
- * treatment for the desktop stage.
+ * shrunk past its notch turns amber. Every bar is a button opening its detail
+ * panel (countdowns + what that discipline feeds). `variant="hud"` renders
+ * the on-scene treatment for the desktop stage.
  */
 function BalanceStrip({
   balance,
   runPaused,
   quiet,
   variant,
+  activeKey,
+  onToggle,
 }: {
   balance: DisciplineBalance;
   /** No active plan — the run clock is paused, say so instead of a count. */
@@ -263,6 +276,8 @@ function BalanceStrip({
   /** A forecast line is already speaking for the garden — stay visual only. */
   quiet?: boolean;
   variant?: "hud";
+  activeKey?: DisciplineKey | null;
+  onToggle?: (key: DisciplineKey) => void;
 }) {
   return (
     <div className={`balance-strip${variant === "hud" ? " balance-strip-hud" : ""}`}>
@@ -273,11 +288,13 @@ function BalanceStrip({
           const low = days !== null && health < notch;
           const caption = key === "run" && runPaused ? "plan paused" : daysCaption(days);
           return (
-            <div
+            <button
+              type="button"
               key={key}
-              className="balance-bar"
-              role="img"
-              aria-label={`${label}: ${healthDescriptor(health)}${low ? ", the garden is paying for it" : ""}, ${days === null ? `no ${label.toLowerCase()} yet` : `last ${label.toLowerCase()} ${daysCaption(days)}`}`}
+              className={`balance-bar${activeKey === key ? " balance-bar-active" : ""}`}
+              aria-expanded={activeKey === key}
+              onClick={() => onToggle?.(key)}
+              aria-label={`${label}: ${healthDescriptor(health)}${low ? ", the garden is paying for it" : ""}, ${days === null ? `no ${label.toLowerCase()} yet` : `last ${label.toLowerCase()} ${daysCaption(days)}`}. Details`}
             >
               <div className="balance-bar-label" aria-hidden="true">
                 {label}
@@ -292,13 +309,132 @@ function BalanceStrip({
               <div className="balance-bar-caption faint" aria-hidden="true">
                 {caption}
               </div>
-            </div>
+            </button>
           );
         })}
       </div>
       {!quiet && balance.overall < 0.5 ? (
         <p className="balance-copy muted">{WEAKEST_COPY[weakestDiscipline(balance)]}</p>
       ) : null}
+    </div>
+  );
+}
+
+/** What each axis feeds in the ecosystem — the tri-discipline story, spelled out. */
+const AXIS_ECO: Record<DisciplineKey, { feeds: string; damageNow: string }> = {
+  run: {
+    feeds: "Runs are the rain — hydration, growth, and every new planting.",
+    damageNow: "The garden is drying now — one run brings the rain back.",
+  },
+  strength: {
+    feeds: "Lifting feeds the soil — saplings grow faster and the meadow thickens.",
+    damageNow: "The soil is thinning now — one session feeds it.",
+  },
+  yoga: {
+    feeds: "Yoga tends the meadow's life — variety, blooms, and the butterflies they bring.",
+    damageNow: "The meadow is quieting now — one session wakes it.",
+  },
+};
+
+/**
+ * The per-discipline detail panel behind each bar: how long until this axis
+ * starts costing the garden, what it feeds (with the live stat), the nearest
+ * unlock this workout type is walking toward, and the week's trio.
+ */
+function BalanceDetail({
+  k,
+  balance,
+  snapshot,
+  trio,
+  todayDate,
+  onOpenSpecies,
+  onClose,
+  variant,
+}: {
+  k: DisciplineKey;
+  balance: DisciplineBalance;
+  snapshot: GardenSnapshot;
+  trio: Partial<Record<NudgeDiscipline, CodexEntry>>;
+  todayDate: string;
+  onOpenSpecies: (speciesId: string) => void;
+  onClose: () => void;
+  variant?: "hud";
+}) {
+  const label = BALANCE_BARS.find((b) => b.key === k)!.label;
+  const { days, health } = balance[k];
+  const t = BALANCE_TUNING[k];
+  const eco = AXIS_ECO[k];
+  const s = snapshot.state;
+
+  let countdown: ReactNode;
+  if (days === null) {
+    countdown = (
+      <>No {label.toLowerCase()} sessions yet — the garden only counts what you start.</>
+    );
+  } else {
+    const toDamage = t.damageStartDay - days;
+    countdown =
+      toDamage > 0 ? (
+        <>
+          Damage begins in <strong>{toDamage === 1 ? "1 day" : `${toDamage} days`}</strong> —{" "}
+          {weekdayFull(addDays(todayDate, toDamage))}.
+        </>
+      ) : (
+        <>{eco.damageNow}</>
+      );
+  }
+
+  const stat =
+    k === "run"
+      ? `Moisture ${Math.round(s.moisture * 100)}%`
+      : k === "strength"
+        ? `Soil health ${Math.round(s.soilHealth * 100)}%`
+        : `Life bonus +${Math.round((s.lifeBonusBiodiversity + s.lifeBonusFlowering) * 100)}%`;
+
+  const next = trio[k];
+  const wk = s.weekDisciplines;
+  const wkMark = (done: boolean) => (done ? "✓" : "·");
+  const wkDone = [wk.run, wk.strength, wk.yoga].filter(Boolean).length;
+
+  return (
+    <div
+      className={`balance-detail${variant === "hud" ? " balance-detail-hud" : ""}`}
+      role="region"
+      aria-label={`${label} details`}
+    >
+      <div className="balance-detail-head">
+        <strong>{label}</strong>
+        <span className="balance-detail-status">{healthDescriptor(health)}</span>
+        <button
+          type="button"
+          className="balance-detail-close"
+          onClick={onClose}
+          aria-label="Close details"
+        >
+          <IconClose size={13} />
+        </button>
+      </div>
+      <p className="balance-detail-line">{countdown}</p>
+      <p className="balance-detail-line balance-detail-eco">
+        {eco.feeds} <span className="balance-detail-stat">{stat}</span>
+      </p>
+      {next?.progress ? (
+        <button
+          type="button"
+          className="balance-detail-next"
+          onClick={() => onOpenSpecies(next.speciesId)}
+        >
+          Next unlock: {next.name} ·{" "}
+          {next.progress.target >= 1000
+            ? progressText(next.progress)
+            : `${Math.max(0, next.progress.target - next.progress.current)} to go`}{" "}
+          →
+        </button>
+      ) : null}
+      <p className="balance-detail-week">
+        This week: Run {wkMark(wk.run)} · Lift {wkMark(wk.strength)} · Yoga {wkMark(wk.yoga)}
+        {wkDone === 2 ? " — one more discipline makes a balanced week (the Harmony willow is watching)." : ""}
+      </p>
     </div>
   );
 }
@@ -335,18 +471,43 @@ function ForecastLine({
   todayDate,
   daysAhead,
   nextWorkout,
+  balance,
   className,
 }: {
   snapshot: GardenSnapshot;
   todayDate: string;
   daysAhead: number;
   nextWorkout: WorkoutDto | null | undefined;
+  /** Projected balance — lets soil/life decay speak when the rain is fine. */
+  balance?: DisciplineBalance;
   className?: string;
 }) {
   const f = gardenForecast(snapshot, daysAhead);
+  // Active soil/life decay outranks a merely-pending dry spell: when the rain
+  // is basically fine but the soil is already thinning, the header should say
+  // so — running is not the only thing this garden eats.
+  const soilOver =
+    balance && balance.strength.days !== null
+      ? balance.strength.days - BALANCE_TUNING.strength.damageStartDay
+      : -1;
+  const lifeOver =
+    balance && balance.yoga.days !== null
+      ? balance.yoga.days - BALANCE_TUNING.yoga.damageStartDay
+      : -1;
   let line: ReactNode = null;
   if (f.recovering) {
     line = <>Recovery rain — the garden is drinking it in.</>;
+  } else if (f.next?.stage === "dry" && (soilOver > 0 || lifeOver > 0)) {
+    line =
+      soilOver >= lifeOver ? (
+        <>
+          The <strong>soil is thinning</strong> — strength work feeds it.
+        </>
+      ) : (
+        <>
+          The <strong>meadow is quieting</strong> — a yoga session brings it back to life.
+        </>
+      );
   } else if (f.next) {
     const threshold = addDays(todayDate, f.next.inDays);
     // No plan at all: the run clock is paused, a countdown would over-alarm.
@@ -416,6 +577,7 @@ export function GardenScreen() {
   const [timelineOpen, setTimelineOpen] = useState(false);
   const [dayIndexOverride, setDayIndexOverride] = useState<number | null>(null);
   const [openDrawer, setOpenDrawer] = useState<"collection" | "log" | null>(null);
+  const [openBalanceKey, setOpenBalanceKey] = useState<DisciplineKey | null>(null);
   const [dockOpen, setDockOpenState] = useState(
     () => typeof window === "undefined" || window.localStorage.getItem("rg-dock") !== "collapsed",
   );
@@ -607,7 +769,11 @@ export function GardenScreen() {
   };
 
   const attentionCount = (d?.needsAttention.length ?? 0) + (d?.unresolved.length ?? 0);
-  const firstNudge = nudges[0];
+  // The best next thing, per axis — and what today's planned workout grows.
+  const trio = nextUnlocksByDiscipline(codex);
+  const grows = d?.nextWorkout ? unlockGrownBy(codex, d.nextWorkout.category) : null;
+  const toggleBalanceKey = (k: DisciplineKey) =>
+    setOpenBalanceKey((cur) => (cur === k ? null : k));
 
   const timelinePanel = (
     <div className="timeline-panel">
@@ -821,7 +987,26 @@ export function GardenScreen() {
 
           {liveBalance && viewingLive ? (
             <div className="hud-topright">
-              <BalanceStrip balance={liveBalance} runPaused={!planActive} quiet variant="hud" />
+              <BalanceStrip
+                balance={liveBalance}
+                runPaused={!planActive}
+                quiet
+                variant="hud"
+                activeKey={openBalanceKey}
+                onToggle={toggleBalanceKey}
+              />
+              {openBalanceKey ? (
+                <BalanceDetail
+                  k={openBalanceKey}
+                  balance={liveBalance}
+                  snapshot={snapshot}
+                  trio={trio}
+                  todayDate={todayDate}
+                  onOpenSpecies={setOpenSpeciesId}
+                  onClose={() => setOpenBalanceKey(null)}
+                  variant="hud"
+                />
+              ) : null}
             </div>
           ) : null}
 
@@ -829,6 +1014,20 @@ export function GardenScreen() {
             {dockOpen && d?.nextWorkout ? (
               <div className="dock-panel">
                 <NextWorkout w={d.nextWorkout} today={d.today} />
+                {grows?.progress ? (
+                  <button
+                    type="button"
+                    className="linklike dock-grows"
+                    onClick={() => setOpenSpeciesId(grows.speciesId)}
+                  >
+                    This workout grows the {grows.name}
+                    {Math.max(0, grows.progress.target - grows.progress.current) === 1
+                      ? " — the last one needed"
+                      : grows.progress.target >= 1000
+                        ? ` · ${progressText(grows.progress)}`
+                        : ` · ${Math.max(0, grows.progress.target - grows.progress.current)} more to go`}
+                  </button>
+                ) : null}
                 <button type="button" className="linklike dock-collapse" onClick={() => setDockOpen(false)}>
                   Minimize
                 </button>
@@ -850,12 +1049,24 @@ export function GardenScreen() {
           </div>
 
           <div className="hud-corner">
-            {firstNudge ? (
-              <button type="button" className="hud-nudge" onClick={() => setOpenDrawer("collection")}>
-                Growing next: {firstNudge.name}
-                {firstNudge.progress ? ` · ${progressText(firstNudge.progress)}` : ""}
-              </button>
-            ) : null}
+            {(["run", "strength", "yoga"] as const).map((dk) => {
+              const c = trio[dk];
+              if (!c?.progress) return null;
+              const remaining =
+                c.progress.target >= 1000
+                  ? progressText(c.progress)
+                  : `${Math.max(0, c.progress.target - c.progress.current)} to go`;
+              return (
+                <button
+                  type="button"
+                  key={dk}
+                  className="hud-nudge"
+                  onClick={() => setOpenSpeciesId(c.speciesId)}
+                >
+                  {NUDGE_DISCIPLINE_LABEL[dk]} grows {c.name} · {remaining}
+                </button>
+              );
+            })}
             <nav className="hud-rail" aria-label="Garden panels">
               <button type="button" onClick={() => setOpenDrawer("collection")}>
                 Collection · {unlockedCount}/{codex.length}
@@ -896,12 +1107,10 @@ export function GardenScreen() {
           onClose={() => setOpenDrawer(null)}
           title={`Collection · ${unlockedCount} of ${codex.length}`}
         >
-          {nudges.length > 0 ? (
-            <div className="drawer-section">
-              <div className="card-title">Growing next</div>
-              <NextUnlockNudges nudges={nudges} />
-            </div>
-          ) : null}
+          <div className="drawer-section">
+            <div className="card-title">Growing next — per workout type</div>
+            <DisciplineNudges codex={codex} onOpenSpecies={setOpenSpeciesId} />
+          </div>
           <DiversityStrip snapshot={snapshot} />
           <SpeciesCodex codex={codex} today={todayDate} onOpenSpecies={setOpenSpeciesId} />
           <WildlifeShelf wildlife={wildlife} />
@@ -944,7 +1153,26 @@ export function GardenScreen() {
       </div>
 
       {liveBalance ? (
-        <BalanceStrip balance={liveBalance} runPaused={!planActive} quiet={lossVoiced} />
+        <>
+          <BalanceStrip
+            balance={liveBalance}
+            runPaused={!planActive}
+            quiet={lossVoiced}
+            activeKey={openBalanceKey}
+            onToggle={toggleBalanceKey}
+          />
+          {openBalanceKey ? (
+            <BalanceDetail
+              k={openBalanceKey}
+              balance={liveBalance}
+              snapshot={snapshot}
+              trio={trio}
+              todayDate={todayDate}
+              onOpenSpecies={setOpenSpeciesId}
+              onClose={() => setOpenBalanceKey(null)}
+            />
+          ) : null}
+        </>
       ) : null}
 
       {/* What the garden is telling you, and why it looks this way. */}
@@ -956,6 +1184,7 @@ export function GardenScreen() {
             todayDate={todayDate}
             daysAhead={daysSinceSimulated}
             nextWorkout={d?.nextWorkout}
+            balance={liveBalance}
           />
         ) : null}
         {viewingLive && beatLines.length > 0 && lastVisit ? (
@@ -992,12 +1221,10 @@ export function GardenScreen() {
         ) : null}
       </div>
 
-      {/* The pull forward: what arrives next and exactly how to earn it. */}
-      {nudges.length > 0 ? (
-        <Card title="Growing next">
-          <NextUnlockNudges nudges={nudges} />
-        </Card>
-      ) : null}
+      {/* The pull forward: the best next thing, per workout type. */}
+      <Card title="Growing next — per workout type">
+        <DisciplineNudges codex={codex} onOpenSpecies={setOpenSpeciesId} />
+      </Card>
 
       {/* Today's actionable elements (formerly the Today page). */}
       {d?.nextWorkout ? (
