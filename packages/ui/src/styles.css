@@ -1211,6 +1211,25 @@ button {
   overflow-y: auto;
   padding: 1rem 1rem calc(1rem + env(safe-area-inset-bottom, 0px));
 }
+@media (prefers-reduced-motion: no-preference) {
+  .sheet-backdrop {
+    animation: sheet-dim 180ms ease both;
+  }
+  .sheet {
+    animation: sheet-in 220ms cubic-bezier(0.32, 0.72, 0.28, 1) both;
+  }
+}
+@keyframes sheet-dim {
+  from {
+    background: rgba(20, 22, 20, 0);
+  }
+}
+@keyframes sheet-in {
+  from {
+    transform: translateY(22px);
+    opacity: 0;
+  }
+}
 @media (min-width: 1024px) {
   .sheet-backdrop {
     align-items: center;
@@ -1218,6 +1237,10 @@ button {
   .sheet {
     border-radius: 16px;
     max-height: 80vh;
+  }
+  /* The drag-handle is a touch idiom — it has no meaning on a centered dialog. */
+  .sheet-handle {
+    display: none;
   }
 }
 .sheet-handle {
@@ -1635,6 +1658,65 @@ button {
   background: linear-gradient(90deg, #7aa458, #4e7a5a);
   transition: width 0.4s ease;
 }
+/* ── Botanical card (plant & species detail) ─────────────────────────────── */
+.bot-card {
+  display: grid;
+  grid-template-columns: 132px 1fr;
+  gap: 1rem;
+  align-items: start;
+}
+@media (max-width: 480px) {
+  .bot-card {
+    grid-template-columns: 1fr;
+  }
+  .bot-portrait {
+    max-width: 180px;
+  }
+}
+.bot-portrait {
+  background: var(--green-soft);
+  border: 1px solid color-mix(in srgb, var(--green) 18%, var(--border));
+  border-radius: var(--radius);
+  padding: 0.7rem 0.5rem 0.4rem;
+}
+.bot-portrait .codex-sprite {
+  height: 108px;
+}
+.bot-portrait-dead {
+  background: var(--bg-sunken);
+  border-color: var(--border);
+}
+.bot-chips {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  margin-bottom: 0.55rem;
+}
+.bot-facts {
+  list-style: none;
+  margin: 0.55rem 0 0;
+  padding: 0;
+  font-size: 0.88rem;
+  color: var(--ink-soft);
+}
+.bot-facts li {
+  padding: 0.42rem 0;
+  border-top: 1px dashed var(--border);
+}
+.bot-facts li:first-child {
+  border-top: none;
+  padding-top: 0;
+}
+.bot-earn-label {
+  display: block;
+  font-size: 0.7rem;
+  font-weight: 650;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  color: var(--ink-faint);
+  margin-bottom: 0.15rem;
+}
+
 .nudges {
   display: flex;
   flex-direction: column;

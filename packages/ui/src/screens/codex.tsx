@@ -48,8 +48,17 @@ function displayPlant(speciesId: string): GardenPlant | null {
   };
 }
 
-export function SpeciesSpriteCard({ speciesId, locked }: { speciesId: string; locked?: boolean }) {
-  const plant = useMemo(() => displayPlant(speciesId), [speciesId]);
+export function SpeciesSpriteCard({
+  speciesId,
+  locked,
+  plant: livePlant,
+}: {
+  speciesId: string;
+  locked?: boolean;
+  /** Render this actual plant (its real state/maturity) instead of the species at its best. */
+  plant?: GardenPlant;
+}) {
+  const plant = useMemo(() => livePlant ?? displayPlant(speciesId), [livePlant, speciesId]);
   const groupRef = useRef<SVGGElement>(null);
   const [viewBox, setViewBox] = useState<string | null>(null);
 
@@ -71,7 +80,7 @@ export function SpeciesSpriteCard({ speciesId, locked }: { speciesId: string; lo
     } catch {
       // getBBox throws off-DOM (tests) — the fallback viewBox stands.
     }
-  }, [speciesId]);
+  }, [speciesId, livePlant?.id, livePlant?.state]);
 
   if (!plant) return null;
   const sp = SPECIES_BY_ID.get(speciesId)!;
@@ -90,9 +99,9 @@ export function SpeciesSpriteCard({ speciesId, locked }: { speciesId: string; lo
   );
 }
 
-const RARITY_LABEL = { common: "Common", uncommon: "Uncommon", rare: "Rare" } as const;
+export const RARITY_LABEL = { common: "Common", uncommon: "Uncommon", rare: "Rare" } as const;
 
-function ProgressBar({ current, target }: { current: number; target: number }) {
+export function ProgressBar({ current, target }: { current: number; target: number }) {
   const pct = Math.max(0, Math.min(1, target > 0 ? current / target : 0));
   return (
     <div
@@ -108,7 +117,7 @@ function ProgressBar({ current, target }: { current: number; target: number }) {
 }
 
 /** "2 of 6" for counters; "8.4 of 21.1 km" for distance gates. */
-function progressText(p: { current: number; target: number }): string {
+export function progressText(p: { current: number; target: number }): string {
   if (p.target >= 1000) {
     return `${(p.current / 1000).toFixed(1)} of ${(p.target / 1000).toFixed(1)} km`;
   }

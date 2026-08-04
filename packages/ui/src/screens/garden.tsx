@@ -11,17 +11,17 @@ import {
 } from "@rg/domain";
 import type { GardenSnapshot } from "@rg/garden-engine";
 import { DAMAGE_NOTCH, gardenForecast, projectedBalance, SPECIES_BY_ID } from "@rg/garden-engine";
-import { GardenScene, describePlant } from "@rg/garden-renderer";
+import { GardenScene } from "@rg/garden-renderer";
 import { IconClock, IconClose } from "../icons.js";
 import {
   Banner,
   Card,
   EmptyState,
-  formatDayLong,
   formatDayShort,
   Sheet,
   Spinner,
 } from "../components.js";
+import { BotanicalCard } from "./botanical.js";
 import { EvidenceCard, NextWorkout, Readiness, SyncPanel, UnresolvedCard } from "./today.js";
 import {
   NextUnlockNudges,
@@ -653,27 +653,11 @@ export function GardenScreen() {
           onClose={() => setSelectedPlantId(null)}
           title={SPECIES_BY_ID.get(selectedPlant.speciesId)?.name ?? "Plant"}
         >
-          <div className="stack">
-            <p>{describePlant(selectedPlant)}</p>
-            <p className="muted">Planted {formatDayLong(selectedPlant.plantedAt)}.</p>
-            {selectedPlant.sourceWorkoutId && !selectedPlant.sourceWorkoutId.startsWith("genesis") ? (
-              <p className="muted">This plant was planted by one of your workouts.</p>
-            ) : null}
-            {selectedPlant.hostPlantId ? (
-              <p className="muted">It grows on a neighbour — part of the garden's little ecosystem.</p>
-            ) : null}
-            {selectedPlant.state === "dead" ? (
-              <p className="muted">
-                It has died back, but stays as{" "}
-                {selectedPlant.habitatRole === "perch"
-                  ? "a perch for birds"
-                  : selectedPlant.habitatRole === "nurse_log"
-                    ? "a nurse log for new growth"
-                    : "habitat for mushrooms"}
-                .
-              </p>
-            ) : null}
-          </div>
+          <BotanicalCard
+            speciesId={selectedPlant.speciesId}
+            plant={selectedPlant}
+            entry={codex.find((c) => c.speciesId === selectedPlant.speciesId)}
+          />
         </Sheet>
       ) : null}
     </div>
