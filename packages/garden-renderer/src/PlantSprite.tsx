@@ -2,7 +2,7 @@ import type { CSSProperties, ReactNode } from "react";
 import type { GardenPlant } from "@rg/domain";
 import type { Species } from "@rg/garden-engine";
 import { rng, speciesOrThrow } from "@rg/garden-engine";
-import { desaturate, mix, shade } from "./color";
+import { desaturate, hexToRgb, hslToRgb, mix, rgbToHex, rgbToHsl, shade } from "./color";
 
 /**
  * One plant, hand-drawn per archetype. Local coordinates: the stem base sits
@@ -40,10 +40,22 @@ interface Ctx {
 }
 
 function paintFor(species: Species, plant: GardenPlant, tint?: { color: string; amount: number }): Paint {
+  // Per-instance color variation so two plants of one species are never
+  // chromatic clones. Fresh rng key — extending the `sprite:` stream would
+  // silently reshuffle every existing garden's geometry.
+  const jr = rng(`tint:${plant.id}`);
+  const dh = (jr() * 2 - 1) * 6; // ±6° hue
+  const dl = (jr() * 2 - 1) * 0.08; // ±8% lightness
+  const jit = (c: string, k = 1): string => {
+    const [r0, g0, b0] = hexToRgb(c);
+    const [h, s, l] = rgbToHsl(r0, g0, b0);
+    const [r1, g1, b1] = hslToRgb(h + dh * k, s, clamp01(l * (1 + dl * k)));
+    return rgbToHex(r1, g1, b1);
+  };
   const raw = {
-    c1: species.palette.primary,
-    c2: species.palette.secondary,
-    c3: species.palette.accent ?? species.palette.secondary,
+    c1: jit(species.palette.primary),
+    c2: jit(species.palette.secondary, 0.4),
+    c3: jit(species.palette.accent ?? species.palette.secondary),
   };
   let adjust = (c: string) => c;
   let droop = 0;

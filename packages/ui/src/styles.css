@@ -955,6 +955,383 @@ button {
   flex-direction: column;
   gap: 0.9rem;
 }
+
+/* ── The desktop stage ────────────────────────────────────────────────────
+   The garden is the page. Everything written on the scene follows the
+   ambient-caption treatment — type with a soft shadow, no boxes — with
+   hierarchy carried by scale, weight, and opacity: condition word (serif,
+   dominant) → forecast → bars → dock → rail. Contained, blurred surfaces
+   appear only where lists live (dock panel, drawers, timeline). */
+@media (min-width: 1024px) {
+  .shell-main--immersive {
+    max-width: none;
+    padding: 0;
+  }
+  .garden-home--stage {
+    gap: 0;
+  }
+  .garden-stage {
+    position: relative;
+    height: 100dvh;
+    overflow: hidden;
+    background: #0f1512;
+  }
+  .stage-scene {
+    position: absolute;
+    inset: 0;
+  }
+  .stage-scene > [data-garden-wrapper] {
+    position: absolute !important;
+    inset: 0;
+  }
+  .stage-scene-svg {
+    position: absolute;
+    inset: 0;
+    width: 100%;
+    height: 100%;
+    display: block;
+  }
+  .stage-scrim {
+    position: absolute;
+    left: 0;
+    right: 0;
+    pointer-events: none;
+  }
+  .stage-scrim-top {
+    top: 0;
+    height: 24%;
+    background: linear-gradient(rgba(13, 19, 14, 0.36), rgba(13, 19, 14, 0.12) 55%, transparent);
+  }
+  .stage-scrim-bottom {
+    bottom: 0;
+    height: 22%;
+    background: linear-gradient(transparent, rgba(13, 19, 14, 0.14) 45%, rgba(13, 19, 14, 0.4));
+  }
+
+  /* Hierarchy 2–3: the garden's voice, top-left where reading starts. */
+  .hud-topleft {
+    position: absolute;
+    top: clamp(1.4rem, 3.2vh, 2.4rem);
+    left: clamp(1.6rem, 3.2vw, 3.2rem);
+    max-width: min(36rem, 44vw);
+    color: #fff;
+    text-shadow:
+      0 1px 10px rgba(9, 14, 10, 0.5),
+      0 1px 2px rgba(9, 14, 10, 0.45);
+  }
+  .hud-condition {
+    font-family: var(--font-display);
+    font-size: clamp(1.6rem, 2.5vw, 2.2rem);
+    font-weight: 650;
+    letter-spacing: -0.01em;
+    line-height: 1.15;
+  }
+  .hud-weather {
+    margin-top: 0.3rem;
+    font-size: 0.95rem;
+    line-height: 1.45;
+    opacity: 0.84;
+  }
+  .hud-forecast.forecast-line {
+    margin: 0.45rem 0 0;
+    font-size: 0.98rem;
+    color: #fff;
+    opacity: 0.96;
+  }
+  .hud-forecast.forecast-line strong {
+    color: #f4dcae;
+    font-weight: 650;
+  }
+  .hud-beat {
+    display: flex;
+    align-items: baseline;
+    gap: 0.5rem;
+    margin-top: 0.7rem;
+    font-size: 0.92rem;
+    opacity: 0.92;
+  }
+  @media (prefers-reduced-motion: no-preference) {
+    .hud-beat {
+      animation: beat-in 500ms ease 250ms both;
+    }
+  }
+  .hud-beat-label {
+    flex: none;
+    font-size: 0.68rem;
+    font-weight: 700;
+    letter-spacing: 0.09em;
+    text-transform: uppercase;
+    opacity: 0.75;
+  }
+  .hud-beat-dismiss {
+    flex: none;
+    align-self: center;
+    background: none;
+    border: none;
+    color: #fff;
+    opacity: 0.6;
+    cursor: pointer;
+    padding: 0.15rem;
+    line-height: 0;
+  }
+  .hud-beat-dismiss:hover {
+    opacity: 1;
+  }
+
+  /* Hierarchy 4: the instrument cluster, top-right, quieter than the voice. */
+  .hud-topright {
+    position: absolute;
+    top: clamp(1.5rem, 3.4vh, 2.5rem);
+    right: clamp(1.6rem, 3.2vw, 3.2rem);
+    width: 232px;
+  }
+  .balance-strip-hud .balance-bar-label {
+    color: rgba(255, 255, 255, 0.86);
+    text-shadow: 0 1px 6px rgba(9, 14, 10, 0.55);
+  }
+  .balance-strip-hud .balance-bar-caption {
+    color: rgba(255, 255, 255, 0.62);
+    text-shadow: 0 1px 6px rgba(9, 14, 10, 0.55);
+  }
+  .balance-strip-hud .balance-bar-track {
+    background: rgba(255, 255, 255, 0.22);
+  }
+  .balance-strip-hud .balance-notch {
+    background: rgba(255, 255, 255, 0.65);
+  }
+  .balance-strip-hud .balance-bar-fill.balance-run {
+    background: #9ecfab;
+  }
+  .balance-strip-hud .balance-bar-fill.balance-strength {
+    background: #d9a678;
+  }
+  .balance-strip-hud .balance-bar-fill.balance-yoga {
+    background: #c2a3d8;
+  }
+  .balance-strip-hud .balance-bar-fill.balance-low {
+    background: #e6c26a;
+  }
+
+  /* Hierarchy 5: the action dock, bottom-left. */
+  .hud-dock {
+    position: absolute;
+    left: clamp(1.6rem, 3.2vw, 3.2rem);
+    bottom: clamp(1.3rem, 3vh, 2.2rem);
+    display: flex;
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 0.5rem;
+    max-width: min(30rem, 40vw);
+  }
+  .dock-pill {
+    background: none;
+    border: none;
+    cursor: pointer;
+    text-align: left;
+    padding: 0.3rem 0;
+    color: #fff;
+    font-size: 0.98rem;
+    font-weight: 600;
+    text-shadow: 0 1px 8px rgba(9, 14, 10, 0.55);
+  }
+  .dock-pill:hover {
+    text-decoration: underline;
+    text-underline-offset: 3px;
+  }
+  .dock-panel {
+    width: min(26rem, 38vw);
+    border-radius: 14px;
+    background: color-mix(in srgb, var(--bg-raised) 90%, transparent);
+    backdrop-filter: blur(16px) saturate(1.05);
+    border: 1px solid var(--border);
+    box-shadow: 0 18px 44px rgba(9, 14, 10, 0.28);
+    padding: 0.4rem;
+  }
+  .dock-panel .card {
+    border: none;
+    box-shadow: none;
+    background: transparent;
+  }
+  .dock-panel .card-next {
+    background: transparent;
+  }
+  .dock-collapse {
+    display: block;
+    margin: 0 0.6rem 0.45rem;
+    font-size: 0.8rem;
+    color: var(--ink-faint);
+  }
+  .dock-attention {
+    color: #f4dcae;
+    font-size: 0.85rem;
+    font-weight: 600;
+    text-decoration: none;
+    text-shadow: 0 1px 8px rgba(9, 14, 10, 0.55);
+  }
+  .dock-attention:hover {
+    text-decoration: underline;
+  }
+
+  /* Hierarchy 6: quiet utilities, bottom-right. */
+  .hud-corner {
+    position: absolute;
+    right: clamp(1.6rem, 3.2vw, 3.2rem);
+    bottom: clamp(1.3rem, 3vh, 2.2rem);
+    display: flex;
+    flex-direction: column;
+    align-items: flex-end;
+    gap: 0.55rem;
+    text-align: right;
+  }
+  .hud-nudge {
+    background: none;
+    border: none;
+    cursor: pointer;
+    color: rgba(255, 255, 255, 0.88);
+    font-size: 0.88rem;
+    text-shadow: 0 1px 8px rgba(9, 14, 10, 0.55);
+    padding: 0.2rem 0;
+  }
+  .hud-nudge:hover {
+    color: #fff;
+    text-decoration: underline;
+    text-underline-offset: 3px;
+  }
+  .hud-rail {
+    display: flex;
+    gap: 1.5rem;
+  }
+  .hud-rail button {
+    background: none;
+    border: none;
+    cursor: pointer;
+    padding: 0.3rem 0;
+    color: rgba(255, 255, 255, 0.7);
+    font-size: 0.76rem;
+    font-weight: 650;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+    text-shadow: 0 1px 7px rgba(9, 14, 10, 0.6);
+    font-variant-numeric: tabular-nums;
+  }
+  .hud-rail button:hover,
+  .hud-rail button:focus-visible {
+    color: #fff;
+  }
+
+  /* The timeline floats over the scene as the one central panel. */
+  .stage-timeline {
+    position: absolute;
+    left: 50%;
+    transform: translateX(-50%);
+    bottom: clamp(4.6rem, 9vh, 6.5rem);
+    width: min(640px, 58vw);
+  }
+  .stage-timeline .timeline-panel {
+    background: color-mix(in srgb, var(--bg-raised) 88%, transparent);
+    backdrop-filter: blur(16px) saturate(1.05);
+    box-shadow: 0 18px 44px rgba(9, 14, 10, 0.28);
+  }
+
+  /* Below the stage: the maintenance content, back in the reading column. */
+  .garden-below {
+    max-width: 880px;
+    margin: 0 auto;
+    padding: 2rem 2.5rem 3rem;
+    display: flex;
+    flex-direction: column;
+    gap: 0.9rem;
+    scroll-margin-top: 1rem;
+  }
+  .garden-below-intro {
+    max-width: 62ch;
+  }
+}
+@keyframes beat-in {
+  from {
+    opacity: 0;
+    transform: translateY(4px);
+  }
+}
+
+/* Timeline chapters (both layouts). */
+.timeline-track {
+  position: relative;
+}
+.timeline-ticks {
+  position: absolute;
+  left: 9px;
+  right: 9px;
+  top: 100%;
+  height: 5px;
+  pointer-events: none;
+}
+.timeline-ticks span {
+  position: absolute;
+  top: 1px;
+  width: 3px;
+  height: 3px;
+  border-radius: 50%;
+  background: var(--green);
+  transform: translateX(-50%);
+}
+.timeline-chapter {
+  font-size: 0.78rem;
+  color: var(--green-ink);
+  font-weight: 600;
+  margin-top: 0.35rem;
+}
+
+/* ── Drawers (desktop stage) ──────────────────────────────────────────────── */
+.drawer-backdrop {
+  position: fixed;
+  inset: 0;
+  background: rgba(20, 22, 20, 0.28);
+  z-index: 60;
+}
+.drawer {
+  position: fixed;
+  top: 1rem;
+  bottom: 1rem;
+  right: 1rem;
+  width: min(430px, 92vw);
+  border-radius: 14px;
+  background: color-mix(in srgb, var(--bg-raised) 93%, transparent);
+  backdrop-filter: blur(18px) saturate(1.05);
+  border: 1px solid var(--border);
+  box-shadow: 0 24px 60px rgba(9, 14, 10, 0.3);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+@media (prefers-reduced-motion: no-preference) {
+  .drawer {
+    animation: drawer-in 240ms cubic-bezier(0.32, 0.72, 0.28, 1) both;
+  }
+  .drawer-backdrop {
+    animation: sheet-dim 180ms ease both;
+  }
+}
+@keyframes drawer-in {
+  from {
+    transform: translateX(18px);
+    opacity: 0;
+  }
+}
+.drawer-head {
+  padding: 0.9rem 1rem 0.6rem;
+  border-bottom: 1px solid var(--border);
+  flex: none;
+}
+.drawer-body {
+  padding: 0.9rem 1rem 1.2rem;
+  overflow-y: auto;
+}
+.drawer-section {
+  margin-bottom: 1rem;
+  padding-bottom: 0.9rem;
+  border-bottom: 1px solid var(--border);
+}
 .garden-scene-big {
   width: 100%;
   max-width: 900px;
@@ -1051,14 +1428,37 @@ button {
   text-overflow: ellipsis;
 }
 .balance-bar-track {
+  position: relative;
   height: 6px;
   border-radius: 999px;
   background: var(--bg-sunken);
-  overflow: hidden;
 }
 .balance-bar-fill {
   height: 100%;
   border-radius: 999px;
+  max-width: 100%;
+}
+/* The damage point: where the shrinking fill crosses from "fading" into
+   "the garden is visibly paying for this". */
+.balance-notch {
+  position: absolute;
+  top: -3px;
+  bottom: -3px;
+  width: 2px;
+  border-radius: 1px;
+  background: color-mix(in srgb, var(--ink) 38%, transparent);
+}
+.balance-bar-fill.balance-low {
+  background: var(--warn);
+}
+.forecast-line {
+  font-size: 0.92rem;
+  color: var(--ink-soft);
+  margin: 0.1rem 0 0.35rem;
+}
+.forecast-line strong {
+  color: var(--warn);
+  font-weight: 650;
 }
 .balance-bar-fill.balance-run {
   background: var(--green);
@@ -1653,6 +2053,25 @@ button {
   overflow-y: auto;
   padding: 1rem 1rem calc(1rem + env(safe-area-inset-bottom, 0px));
 }
+@media (prefers-reduced-motion: no-preference) {
+  .sheet-backdrop {
+    animation: sheet-dim 180ms ease both;
+  }
+  .sheet {
+    animation: sheet-in 220ms cubic-bezier(0.32, 0.72, 0.28, 1) both;
+  }
+}
+@keyframes sheet-dim {
+  from {
+    background: rgba(20, 22, 20, 0);
+  }
+}
+@keyframes sheet-in {
+  from {
+    transform: translateY(22px);
+    opacity: 0;
+  }
+}
 @media (min-width: 1024px) {
   .sheet-backdrop {
     align-items: center;
@@ -1660,6 +2079,10 @@ button {
   .sheet {
     border-radius: 16px;
     max-height: 80vh;
+  }
+  /* The drag-handle is a touch idiom — it has no meaning on a centered dialog. */
+  .sheet-handle {
+    display: none;
   }
 }
 .sheet-handle {
@@ -2021,13 +2444,102 @@ button {
   gap: 0.55rem;
   margin-top: 0.6rem;
 }
+.codex-fam + .codex-fam {
+  margin-top: 1.1rem;
+}
+.codex-fam-head {
+  display: flex;
+  align-items: center;
+  gap: 0.45rem;
+  padding-bottom: 0.3rem;
+  border-bottom: 1px solid var(--border);
+}
+.codex-fam-head .dot {
+  width: 9px;
+  height: 9px;
+  border-radius: 3px;
+  flex: none;
+}
+.codex-fam-name {
+  font-weight: 650;
+  font-size: 0.9rem;
+}
+.codex-fam-count {
+  font-size: 0.75rem;
+  color: var(--ink-faint);
+  font-variant-numeric: tabular-nums;
+}
 .codex-card {
+  position: relative;
   border: 1px solid var(--border);
   border-radius: 10px;
   padding: 0.5rem 0.45rem 0.55rem;
   text-align: center;
   /* A living green shelf, not a white grid. */
   background: var(--green-soft);
+  font: inherit;
+  color: inherit;
+  cursor: pointer;
+}
+.codex-card:hover {
+  border-color: var(--green);
+}
+/* Rarity reads as one consistent tier everywhere: pill + border tint. */
+.codex-uncommon {
+  border-color: color-mix(in srgb, #3c5f8a 45%, var(--border));
+}
+.codex-rare {
+  border-color: color-mix(in srgb, #7a4a74 50%, var(--border));
+}
+.codex-next {
+  border-style: dashed;
+  border-color: color-mix(in srgb, var(--green) 45%, var(--border));
+}
+.codex-newring {
+  position: absolute;
+  top: 0.35rem;
+  right: 0.35rem;
+  z-index: 1;
+  background: var(--green);
+  color: #fff;
+  font-size: 0.6rem;
+  font-weight: 700;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  border-radius: 999px;
+  padding: 0.08rem 0.4rem;
+}
+.codex-minirow {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+  margin-top: 0.5rem;
+}
+.codex-mini {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0.15rem;
+  width: 4.6rem;
+  padding: 0.35rem 0.2rem;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--bg-sunken);
+  font: inherit;
+  color: var(--ink-faint);
+  cursor: pointer;
+}
+.codex-mini:hover {
+  border-color: var(--border-strong);
+  color: var(--ink-soft);
+}
+.codex-mini .codex-sprite {
+  height: 30px;
+}
+.codex-mini-name {
+  font-size: 0.62rem;
+  line-height: 1.15;
+  text-align: center;
 }
 .codex-sprite {
   width: 100%;
@@ -2077,6 +2589,65 @@ button {
   background: linear-gradient(90deg, #7aa458, #4e7a5a);
   transition: width 0.4s ease;
 }
+/* ── Botanical card (plant & species detail) ─────────────────────────────── */
+.bot-card {
+  display: grid;
+  grid-template-columns: 132px 1fr;
+  gap: 1rem;
+  align-items: start;
+}
+@media (max-width: 480px) {
+  .bot-card {
+    grid-template-columns: 1fr;
+  }
+  .bot-portrait {
+    max-width: 180px;
+  }
+}
+.bot-portrait {
+  background: var(--green-soft);
+  border: 1px solid color-mix(in srgb, var(--green) 18%, var(--border));
+  border-radius: var(--radius);
+  padding: 0.7rem 0.5rem 0.4rem;
+}
+.bot-portrait .codex-sprite {
+  height: 108px;
+}
+.bot-portrait-dead {
+  background: var(--bg-sunken);
+  border-color: var(--border);
+}
+.bot-chips {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  margin-bottom: 0.55rem;
+}
+.bot-facts {
+  list-style: none;
+  margin: 0.55rem 0 0;
+  padding: 0;
+  font-size: 0.88rem;
+  color: var(--ink-soft);
+}
+.bot-facts li {
+  padding: 0.42rem 0;
+  border-top: 1px dashed var(--border);
+}
+.bot-facts li:first-child {
+  border-top: none;
+  padding-top: 0;
+}
+.bot-earn-label {
+  display: block;
+  font-size: 0.7rem;
+  font-weight: 650;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  color: var(--ink-faint);
+  margin-bottom: 0.15rem;
+}
+
 .nudges {
   display: flex;
   flex-direction: column;
@@ -2131,11 +2702,16 @@ button {
   font-size: 0.78rem;
   color: var(--ink);
   background: var(--green-soft);
+  font: inherit;
+  cursor: pointer;
 }
 .wildlife-away {
   opacity: 0.45;
   filter: grayscale(0.8);
   background: transparent;
+}
+.wildlife-hint {
+  margin-top: 0.45rem;
 }
 @media (prefers-color-scheme: dark) {
   .rarity-uncommon {

@@ -45,9 +45,13 @@ export default defineConfig({
     }),
   ],
   server: {
-    port: 5173,
+    // Overridable so parallel checkouts can run side by side.
+    port: Number(process.env.RG_WEB_PORT ?? 5173),
     proxy: {
-      "/api": { target: "http://localhost:8787", changeOrigin: false },
+      "/api": {
+        target: `http://localhost:${process.env.RG_API_PORT ?? "8787"}`,
+        changeOrigin: false,
+      },
     },
   },
   build: {

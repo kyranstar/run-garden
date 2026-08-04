@@ -3,7 +3,7 @@ import type { GardenPlant } from "@rg/domain";
 import type { GardenSnapshot } from "@rg/garden-engine";
 import { rng, speciesOrThrow } from "@rg/garden-engine";
 import { AtmosphereLayer } from "./AtmosphereLayer";
-import { shade } from "./color";
+import { mix, shade } from "./color";
 import { describeGarden, plantStateLabel } from "./describe";
 import { lightingFor, moonPhase } from "./lighting";
 import { Finish, Rainbow, WeatherOverlay } from "./overlays";
@@ -30,6 +30,18 @@ function anchorOf(plant: GardenPlant): { x: number; y: number; s: number } {
     s: 0.65 + 0.45 * plant.position.y,
   };
 }
+
+/** Approximate sprite heights per category, for the invisible tap pads. */
+const PAD_H: Record<string, number> = {
+  tree: 96,
+  shrub: 44,
+  flower: 36,
+  fern: 26,
+  vine: 58,
+  grass: 24,
+  groundcover: 12,
+  fungus: 14,
+};
 
 /** Shadow footprint follows the sprite's own growth curve (see PlantSprite's smooth(m))
  *  instead of the species' full-grown planting spacing. */
@@ -385,6 +397,10 @@ export function GardenScene({
       onClick={() => onSelectPlant?.(null)}
     >
       <desc>{desc}</desc>
+      {/* Keyboard focus gets the same silhouette outline as click selection
+          (instead of the browser's bounding-box ring). Always present, unlike
+          the animation styles. */}
+      <style>{`.${p}-plant:focus-visible{outline:none}.${p}-plant:focus-visible>g:last-of-type{filter:url(#${p}-outline)}`}</style>
       {animate ? <style>{sceneCss(p, n(Math.max(0.3, light.swayAmpDeg)))}</style> : null}
       <SceneDefs p={p} light={light} />
       <Sky p={p} light={light} animate={animate} />
@@ -413,10 +429,25 @@ export function GardenScene({
         const a = anchorOf(plant);
         const hw = Math.max(14, species.spacing * 1000 * 0.55);
         const shadowHw = hw * shadowGrowthScale(plant);
+        // Cast lobe pinned just behind the base edge, elongating only away
+        // from the sun; contact core stays under the stem. Both take the
+        // scene-derived shadowColor so drought/night/dusk read correctly.
+        const castR = shadowHw * (0.5 + 0.9 * light.shadowLen);
+        // Aerial perspective: back rows haze toward the horizon color.
+        const depth = 1 - plant.position.y;
+        const tintColor = mix(light.foliageTint, light.hazeColor, 0.55 * depth);
+        const tintAmount = Math.min(0.5, light.foliageTintAmount + 0.2 * depth * depth);
+        // Invisible tap pad — painted-pixel hit areas make seedlings and
+        // grass tufts needle-thin targets; pad by category height × growth.
+        const padH = Math.max(
+          14,
+          (PAD_H[plant.category] ?? 30) * (0.3 + 0.7 * clamp01(plant.maturity)),
+        );
         return (
           <g
             key={plant.id}
             data-plant-id={plant.id}
+            className={`${p}-plant`}
             role="button"
             tabIndex={0}
             aria-label={`${species.name}, ${plantStateLabel(plant)}`}
@@ -434,36 +465,45 @@ export function GardenScene({
               }
             }}
           >
-            {plant.state !== "dead" ? (
-              <ellipse
-                data-shadow="true"
-                cx={n(light.shadowDx * shadowHw * (0.55 + 0.6 * light.shadowLen))}
-                cy={3}
-                rx={n(shadowHw * (0.55 + 0.55 * light.shadowLen))}
-                ry={n(shadowHw * 0.2)}
-                fill="#233a1d"
-                opacity={n(light.shadowOpacity)}
-              />
-            ) : null}
-            {selectedPlantId === plant.id ? (
-              <ellipse
-                cx={0}
-                cy={3}
-                rx={n(hw)}
-                ry={n(hw * 0.3)}
-                fill="#f7f3df"
-                opacity={0.45}
-                stroke="#d9d2b2"
-                strokeWidth={1}
-              />
-            ) : null}
-            <PlantSprite
-              plant={plant}
-              species={species}
-              animate={animate}
-              idPrefix={p}
-              tint={{ color: light.foliageTint, amount: light.foliageTintAmount }}
+            <ellipse
+              data-hitpad="true"
+              cx={0}
+              cy={n(-padH / 2)}
+              rx={n(Math.max(11, shadowHw * 0.55))}
+              ry={n(padH / 2 + 6)}
+              fill="transparent"
             />
+            {plant.state !== "dead" ? (
+              <>
+                <ellipse
+                  data-shadow="cast"
+                  cx={n(light.shadowDx * castR * 0.85)}
+                  cy={3.5}
+                  rx={n(castR)}
+                  ry={n(shadowHw * 0.16)}
+                  fill={light.shadowColor}
+                  opacity={n(light.shadowOpacity * 0.75)}
+                />
+                <ellipse
+                  data-shadow="contact"
+                  cx={0}
+                  cy={3}
+                  rx={n(shadowHw * 0.5)}
+                  ry={n(shadowHw * 0.13)}
+                  fill={light.shadowColor}
+                  opacity={n(Math.min(0.35, light.shadowOpacity * 1.7))}
+                />
+              </>
+            ) : null}
+            <g filter={selectedPlantId === plant.id ? `url(#${p}-outline)` : undefined}>
+              <PlantSprite
+                plant={plant}
+                species={species}
+                animate={animate}
+                idPrefix={p}
+                tint={{ color: tintColor, amount: n(tintAmount) }}
+              />
+            </g>
           </g>
         );
       })}

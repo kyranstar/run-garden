@@ -34,6 +34,29 @@ export function SceneDefs({ p, light }: { p: string; light: SceneLight }): React
         <feTurbulence type="fractalNoise" baseFrequency="0.8" numOctaves="2" />
         <feColorMatrix type="saturate" values="0" />
       </filter>
+      {/* True-silhouette selection outline: dilate the sprite's alpha, harden
+          it (semi-opaque parts would otherwise ghost), flood, composite.
+          Two layers — wide soft cream halo + tight green line — then the art.
+          Applied to at most one plant at a time (see GardenScene). */}
+      <filter id={`${p}-outline`} x="-40%" y="-40%" width="180%" height="180%">
+        <feMorphology in="SourceAlpha" operator="dilate" radius="2.4" result="d1" />
+        <feComponentTransfer in="d1" result="s1">
+          <feFuncA type="linear" slope="20" intercept="0" />
+        </feComponentTransfer>
+        <feFlood floodColor="#f7f2dd" floodOpacity="0.9" result="f1" />
+        <feComposite in="f1" in2="s1" operator="in" result="halo" />
+        <feMorphology in="SourceAlpha" operator="dilate" radius="1.1" result="d2" />
+        <feComponentTransfer in="d2" result="s2">
+          <feFuncA type="linear" slope="20" intercept="0" />
+        </feComponentTransfer>
+        <feFlood floodColor="#2c5c3c" floodOpacity="0.95" result="f2" />
+        <feComposite in="f2" in2="s2" operator="in" result="line" />
+        <feMerge>
+          <feMergeNode in="halo" />
+          <feMergeNode in="line" />
+          <feMergeNode in="SourceGraphic" />
+        </feMerge>
+      </filter>
     </defs>
   );
 }

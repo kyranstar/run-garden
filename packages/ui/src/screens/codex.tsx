@@ -48,8 +48,17 @@ function displayPlant(speciesId: string): GardenPlant | null {
   };
 }
 
-export function SpeciesSpriteCard({ speciesId, locked }: { speciesId: string; locked?: boolean }) {
-  const plant = useMemo(() => displayPlant(speciesId), [speciesId]);
+export function SpeciesSpriteCard({
+  speciesId,
+  locked,
+  plant: livePlant,
+}: {
+  speciesId: string;
+  locked?: boolean;
+  /** Render this actual plant (its real state/maturity) instead of the species at its best. */
+  plant?: GardenPlant;
+}) {
+  const plant = useMemo(() => livePlant ?? displayPlant(speciesId), [livePlant, speciesId]);
   const groupRef = useRef<SVGGElement>(null);
   const [viewBox, setViewBox] = useState<string | null>(null);
 
@@ -71,7 +80,7 @@ export function SpeciesSpriteCard({ speciesId, locked }: { speciesId: string; lo
     } catch {
       // getBBox throws off-DOM (tests) — the fallback viewBox stands.
     }
-  }, [speciesId]);
+  }, [speciesId, livePlant?.id, livePlant?.state]);
 
   if (!plant) return null;
   const sp = SPECIES_BY_ID.get(speciesId)!;
@@ -90,9 +99,9 @@ export function SpeciesSpriteCard({ speciesId, locked }: { speciesId: string; lo
   );
 }
 
-const RARITY_LABEL = { common: "Common", uncommon: "Uncommon", rare: "Rare" } as const;
+export const RARITY_LABEL = { common: "Common", uncommon: "Uncommon", rare: "Rare" } as const;
 
-function ProgressBar({ current, target }: { current: number; target: number }) {
+export function ProgressBar({ current, target }: { current: number; target: number }) {
   const pct = Math.max(0, Math.min(1, target > 0 ? current / target : 0));
   return (
     <div
@@ -108,51 +117,98 @@ function ProgressBar({ current, target }: { current: number; target: number }) {
 }
 
 /** "2 of 6" for counters; "8.4 of 21.1 km" for distance gates. */
-function progressText(p: { current: number; target: number }): string {
+export function progressText(p: { current: number; target: number }): string {
   if (p.target >= 1000) {
     return `${(p.current / 1000).toFixed(1)} of ${(p.target / 1000).toFixed(1)} km`;
   }
   return `${Math.min(p.current, p.target)} of ${p.target}`;
 }
 
-export function SpeciesCodex({ codex }: { codex: CodexEntry[] }) {
-  const [showLocked, setShowLocked] = useState(true);
-  const unlocked = codex.filter((c) => c.unlocked);
-  const locked = codex.filter((c) => !c.unlocked);
-  // Locked entries sorted nearest-first so the shelf pulls you forward.
-  const lockedSorted = [...locked].sort((a, b) => {
+/** Plant families in display order, with the diversity-strip colors. */
+export const CATEGORY_ORDER: Array<{ key: string; label: string; color: string }> = [
+  { key: "tree", label: "Trees", color: "#4e7a5a" },
+  { key: "shrub", label: "Shrubs", color: "#6f9a58" },
+  { key: "flower", label: "Flowers", color: "#c98bb0" },
+  { key: "fern", label: "Ferns", color: "#5f8f6a" },
+  { key: "vine", label: "Vines", color: "#7fa173" },
+  { key: "grass", label: "Grasses", color: "#9fb26a" },
+  { key: "groundcover", label: "Ground", color: "#8aa06a" },
+  { key: "fungus", label: "Fungi", color: "#b0895f" },
+];
+
+function rarityClass(rarity: CodexEntry["rarity"]): string {
+  return rarity === "common" ? "" : ` codex-${rarity}`;
+}
+
+function isNewUnlock(c: CodexEntry, today?: string): boolean {
+  if (!today || !c.unlockedOn || !c.unlocked) return false;
+  const days = (Date.parse(today) - Date.parse(c.unlockedOn)) / 86_400_000;
+  return days >= 0 && days <= 7;
+}
+
+/**
+ * The collection, organized as a field guide: one section per family, each
+ * holding its unlocked species, the one or two nearest locked ("next up",
+ * full card with the earn hint visible), and the distant rest compressed to
+ * small silhouettes. Every tile opens the species' botanical card.
+ */
+export function SpeciesCodex({
+  codex,
+  today,
+  onOpenSpecies,
+}: {
+  codex: CodexEntry[];
+  /** Today's ISO date — powers the "New" ring on recent unlocks. */
+  today?: string;
+  onOpenSpecies?: (speciesId: string) => void;
+}) {
+  const nearestFirst = (a: CodexEntry, b: CodexEntry) => {
     const ra = a.progress ? 1 - Math.min(1, a.progress.current / a.progress.target) : 2;
     const rb = b.progress ? 1 - Math.min(1, b.progress.current / b.progress.target) : 2;
     return ra - rb;
-  });
-
+  };
   return (
     <div className="codex">
-      <div className="codex-grid">
-        {unlocked.map((c) => (
-          <div className="codex-card" key={c.speciesId} title={`${c.name} — ${c.hint}`}>
-            <SpeciesSpriteCard speciesId={c.speciesId} />
-            <div className="codex-name">{c.name}</div>
-            <div className="codex-sub">
-              {c.livingCount > 0 ? `${c.livingCount} living` : "collected"}
-              {c.rarity !== "common" ? ` · ${RARITY_LABEL[c.rarity]}` : ""}
+      {CATEGORY_ORDER.map((fam) => {
+        const entries = codex.filter((c) => c.category === fam.key);
+        if (entries.length === 0) return null;
+        const unlocked = entries.filter((c) => c.unlocked);
+        const locked = entries.filter((c) => !c.unlocked).sort(nearestFirst);
+        const nextUp = locked.slice(0, 2);
+        const distant = locked.slice(2);
+        return (
+          <section key={fam.key} className="codex-fam" aria-label={fam.label}>
+            <div className="codex-fam-head">
+              <span className="dot" style={{ background: fam.color }} aria-hidden />
+              <span className="codex-fam-name">{fam.label}</span>
+              <span className="codex-fam-count">
+                {unlocked.length} of {entries.length}
+              </span>
             </div>
-          </div>
-        ))}
-      </div>
-      {locked.length > 0 ? (
-        <>
-          <button
-            type="button"
-            className="linklike codex-toggle"
-            onClick={() => setShowLocked((v) => !v)}
-          >
-            {showLocked ? "Hide" : "Show"} {locked.length} still to discover
-          </button>
-          {showLocked ? (
             <div className="codex-grid">
-              {lockedSorted.map((c) => (
-                <div className="codex-card codex-locked" key={c.speciesId} title={c.hint}>
+              {unlocked.map((c) => (
+                <button
+                  type="button"
+                  className={`codex-card${rarityClass(c.rarity)}`}
+                  key={c.speciesId}
+                  onClick={() => onOpenSpecies?.(c.speciesId)}
+                >
+                  {isNewUnlock(c, today) ? <span className="codex-newring">New</span> : null}
+                  <SpeciesSpriteCard speciesId={c.speciesId} />
+                  <div className="codex-name">{c.name}</div>
+                  <div className="codex-sub">
+                    {c.livingCount > 0 ? `${c.livingCount} living` : "collected"}
+                    {c.rarity !== "common" ? ` · ${RARITY_LABEL[c.rarity]}` : ""}
+                  </div>
+                </button>
+              ))}
+              {nextUp.map((c) => (
+                <button
+                  type="button"
+                  className={`codex-card codex-locked codex-next${rarityClass(c.rarity)}`}
+                  key={c.speciesId}
+                  onClick={() => onOpenSpecies?.(c.speciesId)}
+                >
                   <SpeciesSpriteCard speciesId={c.speciesId} locked />
                   <div className="codex-name">{c.name}</div>
                   <div className="codex-sub">{c.hint}</div>
@@ -162,12 +218,27 @@ export function SpeciesCodex({ codex }: { codex: CodexEntry[] }) {
                       <div className="codex-sub faint">{progressText(c.progress)}</div>
                     </>
                   ) : null}
-                </div>
+                </button>
               ))}
             </div>
-          ) : null}
-        </>
-      ) : null}
+            {distant.length > 0 ? (
+              <div className="codex-minirow">
+                {distant.map((c) => (
+                  <button
+                    type="button"
+                    className="codex-mini"
+                    key={c.speciesId}
+                    onClick={() => onOpenSpecies?.(c.speciesId)}
+                  >
+                    <SpeciesSpriteCard speciesId={c.speciesId} locked />
+                    <span className="codex-mini-name">{c.name}</span>
+                  </button>
+                ))}
+              </div>
+            ) : null}
+          </section>
+        );
+      })}
     </div>
   );
 }
@@ -219,8 +290,10 @@ const WILDLIFE_EMOJI: Record<string, string> = {
 };
 
 export function WildlifeShelf({ wildlife }: { wildlife: WildlifeEntry[] }) {
+  const [openKind, setOpenKind] = useState<string | null>(null);
   if (wildlife.length === 0) return null;
   const here = wildlife.filter((w) => w.present);
+  const open = wildlife.find((w) => w.kind === openKind);
   return (
     <div className="wildlife-shelf">
       <div className="codex-sub" style={{ marginBottom: "0.35rem" }}>
@@ -228,15 +301,26 @@ export function WildlifeShelf({ wildlife }: { wildlife: WildlifeEntry[] }) {
       </div>
       <div className="wildlife-row">
         {wildlife.map((w) => (
-          <span
+          <button
+            type="button"
             key={w.kind}
             className={`wildlife-chip${w.present ? "" : " wildlife-away"}`}
-            title={w.present ? `${w.kind} are here` : w.hint}
+            aria-expanded={openKind === w.kind}
+            onClick={() => setOpenKind(openKind === w.kind ? null : w.kind)}
           >
             <span aria-hidden>{WILDLIFE_EMOJI[w.kind] ?? "•"}</span> {w.kind}
-          </span>
+          </button>
         ))}
       </div>
+      {open ? (
+        <p className="codex-sub wildlife-hint">
+          {open.present ? `${cap(open.kind)} are visiting right now.` : open.hint}
+        </p>
+      ) : null}
     </div>
   );
+}
+
+function cap(s: string): string {
+  return s.charAt(0).toUpperCase() + s.slice(1);
 }

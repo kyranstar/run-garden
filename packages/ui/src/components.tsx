@@ -1,4 +1,12 @@
-import { Component, useEffect, type ErrorInfo, type ReactNode } from "react";
+import {
+  Component,
+  useEffect,
+  useId,
+  useRef,
+  type ErrorInfo,
+  type ReactNode,
+  type RefObject,
+} from "react";
 import type { CorosSyncState, CompletionState } from "@rg/domain";
 import type { SyncNoteDto, SyncStatusDto } from "@rg/api-client";
 import {
@@ -335,6 +343,51 @@ export function Spinner({ label = "Loading" }: { label?: string }) {
   );
 }
 
+const FOCUSABLE =
+  'a[href], button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])';
+
+/**
+ * Dialog focus contract shared by Sheet and Drawer: move focus into the
+ * dialog on open, keep Tab cycling inside it, close on Escape, and restore
+ * focus to the opener on close. Body scroll locks while open.
+ */
+export function useDialogFocus(ref: RefObject<HTMLElement | null>, open: boolean, onClose: () => void) {
+  useEffect(() => {
+    if (!open) return;
+    const dialog = ref.current;
+    const opener = document.activeElement as HTMLElement | null;
+    dialog?.focus();
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") {
+        onClose();
+        return;
+      }
+      if (e.key !== "Tab" || !dialog) return;
+      const focusables = [...dialog.querySelectorAll<HTMLElement>(FOCUSABLE)].filter(
+        (el) => el.offsetParent !== null,
+      );
+      if (focusables.length === 0) return;
+      const first = focusables[0]!;
+      const last = focusables[focusables.length - 1]!;
+      const active = document.activeElement;
+      if (e.shiftKey && (active === first || active === dialog)) {
+        e.preventDefault();
+        last.focus();
+      } else if (!e.shiftKey && active === last) {
+        e.preventDefault();
+        first.focus();
+      }
+    };
+    document.addEventListener("keydown", onKey);
+    document.body.style.overflow = "hidden";
+    return () => {
+      document.removeEventListener("keydown", onKey);
+      document.body.style.overflow = "";
+      opener?.focus();
+    };
+  }, [ref, open, onClose]);
+}
+
 /** Bottom sheet on mobile, centered dialog on desktop. */
 export function Sheet({
   open,
@@ -347,18 +400,9 @@ export function Sheet({
   title: string;
   children: ReactNode;
 }) {
-  useEffect(() => {
-    if (!open) return;
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") onClose();
-    };
-    document.addEventListener("keydown", onKey);
-    document.body.style.overflow = "hidden";
-    return () => {
-      document.removeEventListener("keydown", onKey);
-      document.body.style.overflow = "";
-    };
-  }, [open, onClose]);
+  const ref = useRef<HTMLDivElement>(null);
+  const titleId = useId();
+  useDialogFocus(ref, open, onClose);
 
   if (!open) return null;
   return (
@@ -368,10 +412,17 @@ export function Sheet({
         if (e.target === e.currentTarget) onClose();
       }}
     >
-      <div role="dialog" aria-modal="true" aria-label={title} className="sheet">
+      <div
+        ref={ref}
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby={titleId}
+        className="sheet"
+        tabIndex={-1}
+      >
         <div className="sheet-handle" aria-hidden />
         <div className="row-between" style={{ marginBottom: "0.7rem" }}>
-          <h2>{title}</h2>
+          <h2 id={titleId}>{title}</h2>
           <button className="btn btn-small" onClick={onClose} aria-label="Close">
             <IconClose size={16} />
           </button>
