@@ -308,6 +308,21 @@ function daysBetween(a: string, b: string): number {
   return Math.round((Date.parse(b) - Date.parse(a)) / 86_400_000);
 }
 
+const WEEKDAYS_FULL = [
+  "Sunday",
+  "Monday",
+  "Tuesday",
+  "Wednesday",
+  "Thursday",
+  "Friday",
+  "Saturday",
+];
+
+/** "Friday" — a deadline reads as an appointment, never an abbreviation. */
+function weekdayFull(date: string): string {
+  return WEEKDAYS_FULL[new Date(`${date}T12:00:00Z`).getUTCDay()]!;
+}
+
 const RUN_CATEGORIES = new Set(["easy", "long", "quality", "recovery", "race", "unknown"]);
 
 /**
@@ -343,8 +358,8 @@ function ForecastLine({
     } else if (f.next.stage === "dry") {
       line = (
         <>
-          Rain needed by <strong>{formatDayShort(threshold).split(" ")[0]}</strong> — after that
-          the soil starts to dry.
+          Rain needed by <strong>{weekdayFull(threshold)}</strong> — after that the soil starts
+          to dry.
         </>
       );
     } else if (f.next.stage === "drought") {

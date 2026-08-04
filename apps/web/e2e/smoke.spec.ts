@@ -19,16 +19,26 @@ test("Today shows the next workout with a COROS duration estimate", async ({ pag
   await expect(page.getByText(/Calendar|COROS/).first()).toBeVisible();
 });
 
-test("Plan lists workouts grouped by week", async ({ page }) => {
+test("Plan renders the almanac calendar", async ({ page }) => {
   await page.goto("/plan");
   await expect(page.getByRole("heading", { name: "Plan" })).toBeVisible();
-  await expect(page.getByText(/Week of/).first()).toBeVisible();
+  // The plan is an almanac month grid (the old week-list "Week of" copy is gone).
+  await expect(page.locator(".cal-month-title").first()).toBeVisible();
 });
 
 test("Garden renders a scene and a species collection", async ({ page }) => {
   await page.goto("/garden");
   await expect(page.locator("svg[role=img]").first()).toBeVisible();
-  await expect(page.getByText(/Species collection/)).toBeVisible();
+  // Desktop stage keeps the collection in a drawer behind the HUD rail;
+  // mobile keeps the inline card.
+  const rail = page.getByRole("button", { name: /Collection · / });
+  if (await rail.isVisible().catch(() => false)) {
+    await rail.click();
+    await expect(page.getByRole("dialog")).toBeVisible();
+    await expect(page.getByText(/Growing next/i).first()).toBeVisible();
+  } else {
+    await expect(page.getByText(/Species collection/)).toBeVisible();
+  }
 });
 
 test("Insights renders consistency and suppresses thin metrics honestly", async ({ page }) => {
@@ -41,7 +51,7 @@ test("Insights renders consistency and suppresses thin metrics honestly", async 
 test("Settings exposes connections, devices, and data controls", async ({ page }) => {
   await page.goto("/settings");
   await expect(page.getByText("Connections")).toBeVisible();
-  await expect(page.getByText("Desktop companion")).toBeVisible();
+  await expect(page.getByText("Desktop companion", { exact: true })).toBeVisible();
   await expect(page.getByText("Export everything (JSON)")).toBeVisible();
 });
 
