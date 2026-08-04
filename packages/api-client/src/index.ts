@@ -13,6 +13,7 @@ import type {
   AerobicEfficiencyValue,
   ConsistencyReport,
   DecouplingValue,
+  Discipline,
   EvidenceCard,
   InterpretedMetric,
   MetricResult,
@@ -413,10 +414,17 @@ export interface WeeklyReviewDto {
 
 /** Exact shape of `GET /api/insights`'s `c.json({...})` payload. */
 export interface InsightsResponse {
+  discipline: Discipline;
+  /** Only disciplines with sessions in the window — never offer an empty view. */
+  availableDisciplines: Discipline[];
   consistency: ConsistencyReport;
   weekly: WeeklyTrainingReport;
-  efficiency: MetricResult<AerobicEfficiencyValue>;
-  decoupling: MetricResult<DecouplingValue>;
+  /**
+   * Pace-based, so ABSENT (not empty) for strength and yoga: an empty card
+   * reads as "your data is missing", when the question simply does not apply.
+   */
+  efficiency?: MetricResult<AerobicEfficiencyValue>;
+  decoupling?: MetricResult<DecouplingValue>;
   records: StoredRecord[];
   evidence: EvidenceCard | null;
   reviews: WeeklyReviewDto[];
@@ -452,7 +460,10 @@ export const api = {
   gardenRestMode: (active: boolean, until?: string | null) =>
     post("/api/garden/rest-mode", { active, until }),
   gardenTimeline: () => get<GardenTimelineResponse>("/api/garden/timeline"),
-  insights: () => get<InsightsResponse>("/api/insights"),
+  insights: (discipline?: Discipline) =>
+    get<InsightsResponse>(
+      `/api/insights${discipline ? `?discipline=${discipline}` : ""}`,
+    ),
   dismissInsight: (cardId: string) => post("/api/insights/dismiss", { cardId }),
   activities: (limit = 40) => get<{ activities: ActivityDto[] }>(`/api/activities?limit=${limit}`),
   unmatchedActivities: () => get<{ activities: Array<Record<string, unknown>> }>("/api/activities/unmatched"),

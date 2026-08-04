@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { api, type InsightsResponse } from "@rg/api-client";
+import { disciplineLabel, sessionNoun, type Discipline } from "@rg/analytics";
 import {
   Card,
   EmptyState,
@@ -106,6 +107,8 @@ function MetricDrilldown({ m, onClose }: { m: InterpretedMetric; onClose: () => 
           />
         ) : null}
 
+        {/* `pacing` is run-only (RUN_ONLY_METRICS), so this drilldown only ever
+            opens on the run discipline — "run by run" is always true here. */}
         {m.id === "pacing" && paceRuns.length > 0 ? (
           <DivergingPaceBars
             runs={paceRuns}
@@ -175,7 +178,12 @@ function ReviewBody({ r }: { r: WeeklyReview }) {
 }
 
 export function InsightsScreen() {
-  const insights = useQuery({ queryKey: ["insights"], queryFn: api.insights, staleTime: 60_000 });
+  const [discipline, setDiscipline] = useState<Discipline>("run");
+  const insights = useQuery({
+    queryKey: ["insights", discipline],
+    queryFn: () => api.insights(discipline),
+    staleTime: 60_000,
+  });
   const [drill, setDrill] = useState<InterpretedMetric | null>(null);
 
   if (insights.isLoading) return <Spinner label="Computing insights" />;
@@ -200,6 +208,7 @@ export function InsightsScreen() {
   }
 
   const { consistency, weekly, efficiency, decoupling, records, reviews, interpreted } = insights.data;
+  const available = insights.data.availableDisciplines ?? [];
 
   const recentTraining = weekly.weeks.slice(-8);
   const adherencePct = Math.round(consistency.adherenceRate * 100);
@@ -214,6 +223,25 @@ export function InsightsScreen() {
   return (
     <div className="stack">
       <h1 className="screen-title">Insights</h1>
+
+      {/* Only when there is a real choice: a single-discipline history should
+          not be asked to pick from a list of one. */}
+      {available.length > 1 ? (
+        <div className="discipline-chips" role="tablist" aria-label="Discipline">
+          {available.map((key) => (
+            <button
+              key={key}
+              type="button"
+              role="tab"
+              aria-selected={discipline === key}
+              className={`chip chip-${key}${discipline === key ? " active" : ""}`}
+              onClick={() => setDiscipline(key)}
+            >
+              {disciplineLabel(key)}
+            </button>
+          ))}
+        </div>
+      ) : null}
 
       {/* `resolved` (computed above, and reused by the Consistency card's own
           headline math) gates the percentage here too: when nothing has
@@ -293,7 +321,7 @@ export function InsightsScreen() {
         ) : (
           <ChartFrame
             title="Training time per week"
-            subtitle="Stacked: low vs high intensity time (from completed, matched runs)"
+            subtitle={`Stacked: low vs high intensity time (from completed, matched ${sessionNoun(discipline, true)})`}
             legend={[
               { label: "Low intensity", colorVar: "--chart-1" },
               { label: "High intensity", colorVar: "--chart-2" },
@@ -319,6 +347,10 @@ export function InsightsScreen() {
         )}
       </Card>
 
+      {/* Absent, not empty, for strength and yoga: both cards are built on pace,
+          so for a lift the question does not apply — and an empty card would
+          claim the data is missing instead. */}
+      {efficiency && decoupling ? (
       <Card title="Aerobic response">
         {/* Side by side from 720px, stacked below — the two answer the same
             question (is the engine getting better, and does it hold together)
@@ -400,6 +432,7 @@ export function InsightsScreen() {
             already carries `activityId` through, so wiring it is one prop the
             day that route exists. */}
       </Card>
+      ) : null}
 
       {records.length > 0 ? (
         <Card title="Records">
