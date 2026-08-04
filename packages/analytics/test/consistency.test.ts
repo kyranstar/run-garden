@@ -83,6 +83,22 @@ describe("computeConsistency", () => {
     expect(report.days.filter((d) => d.status === "pending")).toHaveLength(report.pending);
   });
 
+  it("reads a scheduled workout dated TODAY as pending, not future (the <= boundary)", () => {
+    // The boundary both `isStillAhead` (effectiveDate > today) and
+    // `dayStatusForWorkout` (effectiveDate <= today -> pending) turn on. Today
+    // has started, so a session still sitting in `scheduled` is sync limbo
+    // like any other past-due one — a `<` in either place would flip it to
+    // "future" in the grid while the counts still called it unresolved.
+    const report = computeConsistency(
+      [mkWorkout({ id: "w1", effectiveDate: "2026-03-05", completionState: "scheduled" })],
+      range,
+      "2026-03-05",
+    );
+    expect(report.unresolved).toBe(1);
+    expect(report.pending).toBe(1);
+    expect(report.days.find((d) => d.date === "2026-03-05")?.status).toBe("pending");
+  });
+
   it("guards division by zero when everything is still in the future", () => {
     const report = computeConsistency(
       [mkWorkout({ id: "w1", effectiveDate: "2026-03-05", completionState: "scheduled" })],

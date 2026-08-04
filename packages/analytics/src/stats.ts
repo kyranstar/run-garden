@@ -37,23 +37,6 @@ export function weightedMean(entries: ReadonlyArray<{ value: number; weight: num
   return total > 0 ? sum / total : 0;
 }
 
-/** Least-squares fit of ys against x = 0..n-1. */
-export function leastSquares(ys: readonly number[]): { slope: number; intercept: number } {
-  const n = ys.length;
-  if (n === 0) return { slope: 0, intercept: 0 };
-  if (n === 1) return { slope: 0, intercept: ys[0]! };
-  const xBar = (n - 1) / 2;
-  const yBar = mean(ys);
-  let num = 0;
-  let den = 0;
-  for (let i = 0; i < n; i++) {
-    num += (i - xBar) * (ys[i]! - yBar);
-    den += (i - xBar) * (i - xBar);
-  }
-  const slope = den > 0 ? num / den : 0;
-  return { slope, intercept: yBar - slope * xBar };
-}
-
 /**
  * Theil–Sen estimator: slope is the median of all pairwise slopes (pairs
  * sharing an x are skipped), intercept is the median of y_i - slope*x_i.

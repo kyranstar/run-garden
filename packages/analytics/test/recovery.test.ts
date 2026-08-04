@@ -64,6 +64,59 @@ describe("computeRestingHr", () => {
     expect(r.needed).toBe(7);
     expect(r.have).toBe(5);
   });
+
+  it("does NOT reach across a gap for `current`: one fresh reading beside a 45-day-old cluster suppresses", () => {
+    // The demonstrated failure. Seven valid readings (passes the >=7 gate) and
+    // a newest reading from today (passes the >7-days-stale gate), but the
+    // other six sit 45-50 days back. `slice(0, 3)` without a recency filter
+    // would take 47, 58, 58 -> a "58 bpm, watch" verdict built almost entirely
+    // out of data from seven weeks ago, against a "baseline" of the same data.
+    const rows: { date: string; restingHeartRate: number | null }[] = [
+      { date: daysAgo(0), restingHeartRate: 47 },
+    ];
+    for (let i = 0; i < 6; i++) rows.push({ date: daysAgo(45 + i), restingHeartRate: 58 });
+
+    const r = computeRestingHr(rows, TODAY);
+    expect(r.status).toBe("insufficient_data");
+    if (r.status !== "insufficient_data") return;
+    // Names the gap, so the card can explain itself rather than just going quiet.
+    expect(r.explanation).toContain("1 resting heart-rate reading in the last 5 days");
+    expect(r.explanation).toContain("next-oldest is 45 days old");
+  });
+
+  it("`current` ignores readings older than 5 days even when 3 newer-ranked ones exist", () => {
+    // Two fresh readings (48, 50) then a wall of 60s starting 6 days back: the
+    // recent window holds exactly 2, so `current` is their median (49) and the
+    // third-ranked 60 never enters it.
+    const rows: { date: string; restingHeartRate: number | null }[] = [
+      { date: daysAgo(0), restingHeartRate: 48 },
+      { date: daysAgo(1), restingHeartRate: 50 },
+    ];
+    for (let i = 0; i < 20; i++) rows.push({ date: daysAgo(6 + i), restingHeartRate: 60 });
+
+    const r = computeRestingHr(rows, TODAY);
+    expect(r.status).toBe("ok");
+    if (r.status !== "ok") return;
+    expect(r.value.current).toBe(49);
+    expect(r.value.baseline).toBe(60);
+  });
+
+  it("suppresses when the 30-day baseline pool has fewer than 7 readings", () => {
+    // 3 fresh readings (so `current` is computable) + 4 more inside 30 days =
+    // a 6-reading baseline pool, topped up past the 60-day length gate by
+    // readings from 40+ days back that the 30-day pool cannot use.
+    const rows: { date: string; restingHeartRate: number | null }[] = [];
+    for (let i = 0; i < 3; i++) rows.push({ date: daysAgo(i), restingHeartRate: 50 });
+    for (let i = 0; i < 3; i++) rows.push({ date: daysAgo(10 + i), restingHeartRate: 50 });
+    for (let i = 0; i < 6; i++) rows.push({ date: daysAgo(40 + i), restingHeartRate: 50 });
+
+    const r = computeRestingHr(rows, TODAY);
+    expect(r.status).toBe("insufficient_data");
+    if (r.status !== "insufficient_data") return;
+    expect(r.needed).toBe(7);
+    expect(r.have).toBe(6);
+    expect(r.explanation).toContain("last 30 days");
+  });
 });
 
 describe("computeHrvTrend", () => {

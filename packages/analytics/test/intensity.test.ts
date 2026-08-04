@@ -84,6 +84,24 @@ describe("computeLowIntensityShare", () => {
     expect(r).toMatchObject({ status: "insufficient_data", needed: 4, have: 3 });
   });
 
+  it("reports the total-time gate in HOURS, matching its own explanation's unit", () => {
+    // 4 runs clears the run-count gate; 4 x 2250s = 9000s = 2.5h misses the
+    // 4-hour one. `needed`/`have` used to be raw seconds (14400 / 9000), so
+    // the UI printed "9000 of 14400 available so far" under a sentence about
+    // 4 hours and 2.5 hours.
+    const runs: IntensityRunInput[] = [
+      avgOnlyRun("run-a", 140, 2250),
+      avgOnlyRun("run-b", 140, 2250),
+      avgOnlyRun("run-c", 140, 2250),
+      avgOnlyRun("run-d", 140, 2250),
+    ];
+    const r = computeLowIntensityShare(runs, 190);
+    expect(r).toMatchObject({ status: "insufficient_data", needed: 4, have: 2.5 });
+    if (r.status !== "insufficient_data") return;
+    expect(r.explanation).toContain("at least 4 hours");
+    expect(r.explanation).toContain("only have 2.5 hours");
+  });
+
   it("counts time with no heart rate at all as noHrSeconds and excludes it from the ratio", () => {
     const runs: IntensityRunInput[] = [
       avgOnlyRun("run-a", 140, 3600),

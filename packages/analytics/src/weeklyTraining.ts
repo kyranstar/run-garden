@@ -27,7 +27,10 @@ export interface WeeklyTotals {
 }
 
 export interface WeeklyTrainingReport {
-  /** Continuous ISO weeks from first to last activity (gap weeks are zeroed). */
+  /** Continuous ISO weeks from the first activity through the week containing
+   *  `opts.today` (or the last activity week when no `today` is given). Gap
+   *  weeks — including a trailing run of them after training stopped — are
+   *  zeroed, not omitted. */
   weeks: WeeklyTotals[];
   /** Mean weekly durationSeconds over the most recent 4 COMPLETE weeks (the partial current week, if any, is skipped); needs >= 4 complete weeks. */
   fourWeekAvgDuration?: number;
@@ -102,7 +105,16 @@ export function computeWeeklyTraining(
   const weeks: WeeklyTotals[] = [];
   if (starts.length > 0) {
     const first = starts[0]!;
-    const last = starts[starts.length - 1]!;
+    const lastWithActivity = starts[starts.length - 1]!;
+    // Run the loop through the CURRENT week, not just the last week that
+    // happened to contain a run. Stopping at the last activity week made a
+    // layoff invisible twice over: the trailing zero weeks never emitted (so
+    // the bars ended at the last week trained, reading as "up to date"), and
+    // the 4-week average was taken over the last four weeks *trained* — a
+    // month off could leave the card claiming 5h/week. Zero weeks are real
+    // weeks; they count. `>` guards the case where every activity is already
+    // in or ahead of the current week, which leaves the range untouched.
+    const last = partialWeekStart && partialWeekStart > lastWithActivity ? partialWeekStart : lastWithActivity;
     for (let ws = first; ws <= last; ws = addDays(ws, 7)) {
       const bucket = byWeek.get(ws) ?? emptyBucket(ws);
       weeks.push({ ...bucket, partial: ws === partialWeekStart });

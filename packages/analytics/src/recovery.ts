@@ -15,6 +15,13 @@ import { mean, median, populationStdDev, roundTo } from "./stats.js";
 
 const DAY = 86_400_000;
 
+/** `current` is only built from readings this recent. */
+const RECENT_WINDOW_DAYS = 5;
+/** …and needs at least this many of them (a median of one is just a reading). */
+const MIN_RECENT_READINGS = 2;
+/** Minimum readings in the 30-day pool the baseline median is taken from. */
+const MIN_BASELINE_READINGS = 7;
+
 function addDays(date: string, n: number): string {
   return new Date(Date.parse(date) + n * DAY).toISOString().slice(0, 10);
 }
@@ -28,9 +35,9 @@ function clamp(x: number, lo: number, hi: number): number {
 }
 
 export interface RestingHrValue {
-  /** Median of the 3 most recent readings. */
+  /** Median of the 3 most recent readings, all of them within 5 days of `today`. */
   current: number;
-  /** Median of readings within the last 30 days (may overlap `current`'s window). */
+  /** Median of readings within the last 30 days (>= 7 of them; may overlap `current`'s window). */
   baseline: number;
   deltaBpm: number;
   /** Whole days between the newest reading's date and `today`. */
@@ -42,7 +49,20 @@ export interface RestingHrValue {
 /** Resting heart rate vs. its 30-day baseline. Suppressed when there isn't
  * enough recent history (<7 valid readings in the last 60 days) or when the
  * newest reading is more than a week old — a "current" value built from
- * week-old-or-older data isn't current. */
+ * week-old-or-older data isn't current.
+ *
+ * Both halves of the comparison are separately recency-gated, because
+ * "enough readings somewhere in the window" is not the same claim as
+ * "enough readings recently enough to describe now":
+ *  - `current` is the median of up to 3 readings **from the last 5 days**,
+ *    and needs at least 2 of them. One fresh reading beside a cluster from
+ *    seven weeks ago would otherwise let `slice(0, 3)` reach back across the
+ *    gap and blend a 47 with two 58s into a "58 bpm — watch" verdict that
+ *    describes neither.
+ *  - the 30-day baseline pool needs at least 7 readings. A baseline built
+ *    from one or two survivors is a coin flip the card would print as a
+ *    number.
+ * (Mirrors `computeHrvTrend`'s recent-window span gate below.) */
 export function computeRestingHr(
   rows: ReadonlyArray<{ date: string; restingHeartRate: number | null }>,
   today: string,
@@ -71,9 +91,34 @@ export function computeRestingHr(
     );
   }
 
-  const current = Math.round(median(valid.slice(0, 3).map((r) => r.restingHeartRate)));
+  // Filter to the recent window BEFORE slicing: slicing first would take the
+  // 3 newest readings whatever their age, so a single fresh reading next to a
+  // seven-week-old cluster would produce a "current" median made mostly of the
+  // cluster. `valid` is newest-first, so this window is a prefix of it.
+  const recentStart = addDays(today, -RECENT_WINDOW_DAYS);
+  const recentPool = valid.filter((r) => r.date >= recentStart);
+  if (recentPool.length < MIN_RECENT_READINGS) {
+    const nextOlder = valid[recentPool.length];
+    const gap = nextOlder ? ` — the next-oldest is ${daysBetween(nextOlder.date, today)} days old` : "";
+    return insufficient(
+      7,
+      0,
+      `Only ${recentPool.length} resting heart-rate reading${recentPool.length === 1 ? "" : "s"} in the last ` +
+        `${RECENT_WINDOW_DAYS} days${gap}; a current value needs at least ${MIN_RECENT_READINGS} from that window.`,
+    );
+  }
+  const current = Math.round(median(recentPool.slice(0, 3).map((r) => r.restingHeartRate)));
+
   const baselineStart = addDays(today, -29);
   const baselinePool = valid.filter((r) => r.date >= baselineStart);
+  if (baselinePool.length < MIN_BASELINE_READINGS) {
+    return insufficient(
+      MIN_BASELINE_READINGS,
+      baselinePool.length,
+      `Resting heart-rate baseline needs at least ${MIN_BASELINE_READINGS} readings in the last 30 days; ` +
+        `you have ${baselinePool.length}.`,
+    );
+  }
   const baseline = Math.round(median(baselinePool.map((r) => r.restingHeartRate)));
 
   const series = [...valid].reverse().map((r) => ({ date: r.date, value: r.restingHeartRate }));
@@ -81,7 +126,7 @@ export function computeRestingHr(
   return ok(
     { current, baseline, deltaBpm: current - baseline, staleDays, series },
     valid.length,
-    "Median of your 3 most recent resting heart-rate readings versus your 30-day median.",
+    "Median of your 3 most recent resting heart-rate readings (all from the last 5 days) versus your 30-day median.",
   );
 }
 

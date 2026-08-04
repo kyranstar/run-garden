@@ -39,7 +39,7 @@ describe("computeLoadRatio", () => {
     expect(r.value.ratio).toBeGreaterThan(1.3);
   });
 
-  it("suppresses when the last run was 30 days ago and nothing since (no recent baseline)", () => {
+  it("suppresses when the last run was 40 days ago and nothing since (no recent baseline)", () => {
     // A single run far enough back to clear the 28-day history gate, then nothing —
     // including nothing in the trailing 28-day window itself.
     const days = [{ date: daysAgo(40), load: 100 }];

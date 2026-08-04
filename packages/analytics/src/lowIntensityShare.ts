@@ -81,10 +81,16 @@ export function computeLowIntensityShare(
   }
   const totalSeconds = lowSeconds + highSeconds;
   if (totalSeconds < MIN_TOTAL_SECONDS) {
+    // `needed`/`have` are in HOURS, matching the explanation's own unit. They
+    // were raw seconds, so the UI's "N of M available so far" line rendered
+    // "9000 of 14400 available" underneath a sentence about 4 hours and 2.5 —
+    // two different units for one gate, one of them meaningless to a reader.
+    const neededHours = MIN_TOTAL_SECONDS / 3600;
+    const haveHours = Math.round((totalSeconds / 3600) * 10) / 10;
     return insufficient(
-      MIN_TOTAL_SECONDS,
-      totalSeconds,
-      `Low-intensity share needs at least ${MIN_TOTAL_SECONDS / 3600} hours of heart-rate-tracked running; only have ${Math.round((totalSeconds / 3600) * 10) / 10} hours.`,
+      neededHours,
+      haveHours,
+      `Low-intensity share needs at least ${neededHours} hours of heart-rate-tracked running; only have ${haveHours} hours.`,
     );
   }
 

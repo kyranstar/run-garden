@@ -102,6 +102,58 @@ describe("computeWeeklyTraining", () => {
     expect(report.fourWeekAvgDuration).toBe(5400);
   });
 
+  it("extends through the current week: a layoff emits zero weeks, a partial row, and a 0 average", () => {
+    // Six trained weeks (2026-03-02 … 2026-04-06), then nothing. "Today" is
+    // 2026-05-12, in the ISO week starting 2026-05-11 — five weeks after the
+    // last run. Before the fix, `weeks` stopped at 2026-04-06: no zero bars,
+    // no partial row, and `fourWeekAvgDuration` was the mean of the last four
+    // weeks TRAINED (5400s = 1.5h) while the runner had done nothing for over
+    // a month.
+    const report = computeWeeklyTraining(
+      [
+        mkActivity({ id: "a1", startTimeLocal: "2026-03-02T07:00:00", durationSeconds: 3600 }),
+        mkActivity({ id: "a2", startTimeLocal: "2026-03-09T07:00:00", durationSeconds: 3600 }),
+        mkActivity({ id: "a3", startTimeLocal: "2026-03-16T07:00:00", durationSeconds: 3600 }),
+        mkActivity({ id: "a4", startTimeLocal: "2026-03-23T07:00:00", durationSeconds: 7200 }),
+        mkActivity({ id: "a5", startTimeLocal: "2026-03-30T07:00:00", durationSeconds: 7200 }),
+        mkActivity({ id: "a6", startTimeLocal: "2026-04-06T07:00:00", durationSeconds: 7200 }),
+      ],
+      {},
+      { today: "2026-05-12" },
+    );
+
+    // 6 trained + 4 silent complete weeks + the partial current week.
+    expect(report.weeks.map((w) => w.weekStart)).toEqual([
+      "2026-03-02",
+      "2026-03-09",
+      "2026-03-16",
+      "2026-03-23",
+      "2026-03-30",
+      "2026-04-06",
+      "2026-04-13",
+      "2026-04-20",
+      "2026-04-27",
+      "2026-05-04",
+      "2026-05-11",
+    ]);
+    // Only the current week is partial; the silent weeks in between are over.
+    expect(report.weeks.filter((w) => w.partial).map((w) => w.weekStart)).toEqual(["2026-05-11"]);
+    // Zero-week bars, not absent bars.
+    expect(report.weeks.slice(6).every((w) => w.durationSeconds === 0 && w.runCount === 0)).toBe(true);
+    // The four most recent COMPLETE weeks are all zero, so the average is too.
+    expect(report.fourWeekAvgDuration).toBe(0);
+  });
+
+  it("does not extend backwards when the last activity is already in the current week", () => {
+    const report = computeWeeklyTraining(
+      [mkActivity({ id: "a1", startTimeLocal: "2026-05-13T07:00:00", durationSeconds: 3600 })],
+      {},
+      { today: "2026-05-12" }, // same ISO week (starts 2026-05-11) as the run
+    );
+    expect(report.weeks.map((w) => w.weekStart)).toEqual(["2026-05-11"]);
+    expect(report.weeks[0]!.partial).toBe(true);
+  });
+
   it("uses intensityByActivity for low/high seconds when supplied, overriding the category fallback", () => {
     const report = computeWeeklyTraining(
       [

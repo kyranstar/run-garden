@@ -22,8 +22,11 @@ function daysBetween(from: string, to: string): number {
   return Math.round((Date.parse(to) - Date.parse(from)) / DAY);
 }
 
-/** Dense daily values from `from` to `to` inclusive; days with no entry (or
- * only non-positive entries) are 0. Same-day entries are summed. */
+/** Dense daily values from `from` to `to` inclusive; days with no entry at all
+ * are 0. Same-day entries are summed as given — this function does no sign
+ * filtering, so a day whose only entries are negative sums to a negative
+ * value, not to 0. (Callers pass durations and provider loads, which are
+ * non-negative by construction.) */
 function zeroFillDays(entries: ReadonlyArray<{ date: string; value: number }>, from: string, to: string): number[] {
   const byDate = new Map<string, number>();
   for (const e of entries) byDate.set(e.date, (byDate.get(e.date) ?? 0) + e.value);
