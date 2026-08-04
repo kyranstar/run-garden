@@ -10,6 +10,40 @@ The worker route (`apps/worker/src/routes/misc.ts`) wraps each `ok`/
 plain-language meaning, a band, and (where one exists) a gauge or strip — the
 computation and the phrasing are different files on purpose.
 
+## Disciplines
+
+`GET /api/insights?discipline=run|strength|yoga` (default `run`). Running is
+not the baseline the other two are measured against — it is one of three. What
+separates them for analytics is narrow and physical: **a run has pace and
+distance; a lift and a yoga session do not.**
+
+| Scope | Metrics |
+|---|---|
+| **Run only** (`RUN_ONLY_METRICS`, `discipline.ts`) | `aerobicEfficiency`, `decoupling`, `lowIntensityShare`, `easyDiscipline`, `hrZones`, `pacing` |
+| **All sports, every discipline** | `loadRatio`, `ramp`, `monotony`, `hardStack` — a hard lift is load the legs absorb whichever discipline is being viewed, and `loadBasisNote` says so |
+| **Per discipline** | `consistency`, `weeklyTraining`, `timeOfDay`, records |
+
+Run-only metrics are **absent from the payload** for strength and yoga, never
+present-and-empty: an empty card reads as "your data is missing", when the
+truth is that the question does not apply to a lift. The UI unmounts those
+cards rather than rendering a hollow frame.
+
+`availableDisciplines` lists only disciplines with sessions in the window, so
+the selector can never offer a view that would render nothing. It is derived
+from the same filtered array as the metrics, so the two cannot disagree.
+
+**Which discipline a planned workout belongs to** is `disciplineOf(category,
+sport)` (`discipline.ts`), shared with the garden's own simulation. It checks
+category *before* sport, because COROS's plan namespace is `1=run 2=bike
+3=swim 4=strength` with **no yoga type**: a scheduled yoga session arrives as
+`sport: "run"` and is identifiable only from the category the title classifier
+gave it. Filtering planned workouts on `sport` alone files every planned yoga
+session under running.
+
+Copy rule: user-facing text uses `sessionNoun(discipline)` — run/runs,
+lift/lifts, yoga session/yoga sessions — wherever it may mean something other
+than a run. "Run" is reserved for actual runs.
+
 ## Modules
 
 ### Training load (`load.ts`) — `loadRatio`, `ramp`, `monotony`
@@ -196,7 +230,13 @@ one-sentence deterministic rule:
 |---|---|---|
 | Best aerobic efficiency | Highest m/beat on any eligible easy/recovery run | 5 efficiency runs |
 | Most consistent four weeks | Max over all 4-consecutive-week windows of the *minimum* weekly adherence | 8 adherence weeks |
-| Fastest comeback | Fewest days from the first run after a 7+ day break to three runs each within 3 days of the previous | one qualifying break |
+| Fastest comeback | Fewest days from the first session after a 7+ day break to three sessions each within 3 days of the previous | one qualifying break |
+| Longest session | Longest single session by moving time | 5 sessions |
+| Most sessions in a week | Highest count in any rolling 7-day window | 5 sessions, count ≥ 3 |
+| Longest streak | Most consecutive sessions each within 7 days of the previous | 5 sessions, streak ≥ 3 |
+
+Best aerobic efficiency is run-only (it needs distance). The other five are
+computed for every discipline.
 
 Records never regress: `mergeRecords` merges each freshly computed record
 into the persisted set by id, keeping whichever has the higher `numeric`
@@ -204,6 +244,16 @@ value (ties favor the stored one), so an achievement doesn't stop having
 happened once the run that earned it rolls out of the 12-week display
 window. A stored record with no fresh counterpart this run survives
 unchanged.
+
+Records are **per discipline**. Ids are namespaced `${discipline}:${id}` and
+persisted under `computed_metrics.metric_key = records:v2:{discipline}`,
+because `mergeRecords` keys on id — sharing one id space would let a run's
+longest session outrank, and so hide, a yoga one. The pre-discipline
+`records:v1` row is never written again, but it still **seeds** the run
+discipline the first time that discipline is read, so achievements earned
+before the split are not silently dropped by a key rename. `evidence.ts`'s
+`findRecord` resolves both the namespaced and the bare form for the same
+reason.
 
 ### Evidence cards (`evidence.ts`)
 
@@ -272,10 +322,8 @@ LLM**, and it only *phrases* the deterministic weekly facts:
   The system prompt forbids inventing metrics, diagnoses, causal explanations,
   plan changes, or injury advice; output is schema-constrained JSON, capped at
   200 words (defensively truncated at 220).
-- **Strava-sourced fields are excluded from LLM input**: the weekly cron
-  strips `title`, `summaryPolyline`, and `stravaActivityId` before computing
-  facts (`apps/worker/src/index.ts`), per the Strava API agreement caution in
-  [research/strava-api.md](research/strava-api.md).
+- Weekly facts cover all three disciplines, each session labelled with its
+  own, so the narrative can tell a lift from a run.
 - Results are cached by facts fingerprint; cost is recorded per call in
   `llm_usage`; the rolling-7-day budget (warn $2 / cutoff $8 / max $10)
   disables calls automatically. With AI off, over budget, or errored, the

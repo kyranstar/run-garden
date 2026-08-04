@@ -8,7 +8,7 @@ import {
   workoutCompletionMatches,
 } from "@rg/database";
 import { addDays, startOfIsoWeek, todayInZone } from "@rg/domain";
-import { computeWeeklyFacts } from "@rg/analytics";
+import { computeWeeklyFacts, DISCIPLINES } from "@rg/analytics";
 import type { Env } from "./env.js";
 import { fixtureModeEnabled } from "./env.js";
 import { withDb, requireUser, type AppContext } from "./auth/middleware.js";
@@ -165,9 +165,17 @@ async function weekly(db: Db, env: Env): Promise<void> {
       // would notice and stop trusting.
       const localDate = (a: { startTimeLocal: string | null; startTime: string }): string =>
         (a.startTimeLocal ?? a.startTime).slice(0, 10);
+      // All three disciplines, not runs only: a week with two lifts and a
+      // yoga session and no runs is a real training week, and a review that
+      // called it empty would be wrong.
       const acts = (
         await db.select().from(activities).where(eq(activities.userId, userId))
-      ).filter((a) => a.sport === "run" && localDate(a) >= weekStart && localDate(a) <= weekEnd);
+      ).filter(
+        (a) =>
+          DISCIPLINES.includes(a.sport as (typeof DISCIPLINES)[number]) &&
+          localDate(a) >= weekStart &&
+          localDate(a) <= weekEnd,
+      );
       const events = await db
         .select()
         .from(gardenEvents)
