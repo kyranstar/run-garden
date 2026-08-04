@@ -73,6 +73,7 @@ interface InterpretedMetricBody {
   value?: string;
   band?: "low" | "healthy" | "high" | "watch";
   meaning: string;
+  suggestion?: string;
   sampleNote: string;
   gauge?: { min: number; max: number; healthyLo: number; healthyHi: number; value: number };
   series?: Array<{ date: string; value: number }>;
@@ -100,10 +101,14 @@ interface WeekTotals {
 }
 
 interface InsightsBody {
+  discipline: "run" | "strength" | "yoga";
+  availableDisciplines: Array<"run" | "strength" | "yoga">;
   consistency: { planned: number; completed: number; pending: number; days: unknown[] };
   weekly: { weeks: WeekTotals[]; fourWeekAvgDuration?: number };
-  efficiency: MetricEnvelope<{ perRun: Array<{ activityId: string; efficiency: number }> }>;
-  decoupling: MetricEnvelope<{
+  // Absent (not empty) for strength and yoga: pace-based, so the question does
+  // not apply rather than the data being missing.
+  efficiency?: MetricEnvelope<{ perRun: Array<{ activityId: string; efficiency: number }> }>;
+  decoupling?: MetricEnvelope<{
     perRun: Array<{ activityId: string }>;
     excluded: { count: number; reasons: string[] };
   }>;
@@ -118,8 +123,9 @@ let db: Db;
 function client(cookie: string) {
   const app = mountRoutes(db, "/api/insights", insightRoutes);
   return {
-    get: async (): Promise<InsightsBody> => {
-      const res = await app.request("/api/insights", { headers: { Cookie: cookie } }, makeEnv());
+    get: async (discipline?: string): Promise<InsightsBody> => {
+      const path = discipline ? `/api/insights?discipline=${discipline}` : "/api/insights";
+      const res = await app.request(path, { headers: { Cookie: cookie } }, makeEnv());
       expect(res.status).toBe(200);
       return (await res.json()) as InsightsBody;
     },
@@ -638,8 +644,8 @@ describe("category scoping", () => {
 
     const body = await client(cookie).get();
 
-    expect(body.efficiency.status).toBe("ok");
-    const perRunIds = body.efficiency.value!.perRun.map((p) => p.activityId);
+    expect(body.efficiency!.status).toBe("ok");
+    const perRunIds = body.efficiency!.value!.perRun.map((p) => p.activityId);
     expect(perRunIds).not.toContain(tempoId);
     expect(perRunIds.sort()).toEqual([...easyIds].sort());
   });
@@ -677,8 +683,8 @@ describe("user scoping", () => {
     const body = await client(cookie).get();
     const json = JSON.stringify(body);
 
-    expect(body.efficiency.status).toBe("ok");
-    expect(body.efficiency.value!.perRun.map((p) => p.activityId).sort()).toEqual(
+    expect(body.efficiency!.status).toBe("ok");
+    expect(body.efficiency!.value!.perRun.map((p) => p.activityId).sort()).toEqual(
       [...mine].sort(),
     );
     // Consistency saw only this user's three planned workouts.
@@ -775,20 +781,25 @@ describe("records persistence", () => {
 
     const body = await client(cookie).get();
 
-    const best = body.records.find((r) => r.id === "best_aerobic_efficiency");
+    // Namespaced on the way in: the legacy row's bare ids were all runs, and
+    // seeding them into records:v2:run keeps one id space.
+    const best = body.records.find((r) => r.id === "run:best_aerobic_efficiency");
     expect(best, "stored record dropped from the response").toBeDefined();
     expect(best!.value).toBe("1.45 m/beat");
     expect(best!.achievedOn).toBe(achievedOn);
 
     // …and it is still persisted after the read-merge-write, in ONE row (the
     // upsert must land on the existing (userId, metricKey) row, not beside it).
+    // Two rows now: the inert legacy one, plus this discipline's own. The
+    // upsert must still land ON the v2 row rather than beside it.
     const rows = await db
       .select()
       .from(computedMetrics)
       .where(eq(computedMetrics.userId, userId));
-    expect(rows).toHaveLength(1);
-    const stored = (rows[0]!.value as { records: Array<{ id: string; numeric: number }> }).records;
-    expect(stored.find((r) => r.id === "best_aerobic_efficiency")!.numeric).toBeCloseTo(1.45, 5);
+    const v2 = rows.filter((r) => r.metricKey === "records:v2:run");
+    expect(v2).toHaveLength(1);
+    const stored = (v2[0]!.value as { records: Array<{ id: string; numeric: number }> }).records;
+    expect(stored.find((r) => r.id === "run:best_aerobic_efficiency")!.numeric).toBeCloseTo(1.45, 5);
   });
 });
 
@@ -804,8 +815,10 @@ describe("payload shape", () => {
 
     expect(Object.keys(body).sort()).toEqual(
       [
+        "availableDisciplines",
         "consistency",
         "decoupling",
+        "discipline",
         "efficiency",
         "evidence",
         "interpreted",
@@ -818,9 +831,9 @@ describe("payload shape", () => {
     expect(body).not.toHaveProperty("drift");
 
     const typed = body as unknown as InsightsBody;
-    expect(typed.decoupling.status).toBeDefined();
-    if (typed.decoupling.status === "ok") {
-      expect(typed.decoupling.value!.excluded.reasons.length).toBeLessThanOrEqual(5);
+    expect(typed.decoupling!.status).toBeDefined();
+    if (typed.decoupling!.status === "ok") {
+      expect(typed.decoupling!.value!.excluded.reasons.length).toBeLessThanOrEqual(5);
     }
 
     expect(typed.interpreted.map((m) => m.id)).toEqual([
@@ -1213,5 +1226,127 @@ describe("POST /api/devices/bridge/sync — dailyHealth upsert null-guard", () =
       await db.select().from(schema.dailyHealth).where(eq(schema.dailyHealth.id, `${userId}:2026-07-03`))
     )[0]!;
     expect(updatedRow.restingHeartRate).toBe(51);
+  });
+});
+
+// ── (g) Discipline-aware insights ────────────────────────────────────────────
+
+describe("discipline-aware insights", () => {
+  /** Six runs, four lifts, no yoga — inside the 12-week window. */
+  async function seedThreeDisciplines(): Promise<void> {
+    for (let i = 0; i < 6; i++) {
+      await seedActivity(userId, { date: addDays(today, -(i * 3 + 2)), lapCount: 0 });
+    }
+    for (let i = 0; i < 4; i++) {
+      await seedActivity(userId, {
+        date: addDays(today, -(i * 5 + 3)),
+        sport: "strength",
+        durationSeconds: 3300,
+        distanceMeters: 0,
+        lapCount: 0,
+        title: "Lift",
+      });
+    }
+  }
+
+  it("defaults to run and reports only the disciplines that have data", async () => {
+    await seedThreeDisciplines();
+    const body = await client(cookie).get();
+
+    expect(body.discipline).toBe("run");
+    expect(body.availableDisciplines).toEqual(["run", "strength"]);
+    // Never offer a view that would render nothing.
+    expect(body.availableDisciplines).not.toContain("yoga");
+  });
+
+  it("omits pace-based cards for strength rather than returning empty ones", async () => {
+    await seedThreeDisciplines();
+    const body = await client(cookie).get("strength");
+
+    expect(body.discipline).toBe("strength");
+    expect(body.efficiency).toBeUndefined();
+    expect(body.decoupling).toBeUndefined();
+    // Discipline-agnostic metrics survive.
+    expect(body.consistency).toBeDefined();
+    expect(body.weekly).toBeDefined();
+  });
+
+  it("keeps every run card for the run discipline", async () => {
+    await seedThreeDisciplines();
+    const body = await client(cookie).get("run");
+
+    expect(body.efficiency).toBeDefined();
+    expect(body.decoupling).toBeDefined();
+  });
+
+  it("scopes records to the requested discipline", async () => {
+    await seedThreeDisciplines();
+    const body = await client(cookie).get("strength");
+
+    for (const r of body.records) expect(r.id.startsWith("strength:")).toBe(true);
+  });
+
+  it("falls back to run for an unknown discipline instead of erroring", async () => {
+    await seedThreeDisciplines();
+    const body = await client(cookie).get("cycling");
+
+    expect(body.discipline).toBe("run");
+  });
+
+  it("keeps a lift out of the run window's execution metrics but inside shared load", async () => {
+    await seedThreeDisciplines();
+    const runBody = await client(cookie).get("run");
+
+    // Efficiency is computed from runs only — a lift has no distance to give it.
+    const perRun = runBody.efficiency?.status === "ok" ? (runBody.efficiency.value?.perRun ?? []) : [];
+    expect(perRun.length).toBeLessThanOrEqual(6);
+  });
+});
+
+describe("discipline-aware copy and card selection", () => {
+  async function seedLifts(): Promise<void> {
+    for (let i = 0; i < 6; i++) {
+      await seedActivity(userId, {
+        date: addDays(today, -(i * 3 + 2)),
+        sport: "strength",
+        durationSeconds: 3300,
+        distanceMeters: 0,
+        lapCount: 0,
+        title: "Lift",
+      });
+    }
+  }
+
+  it("drops the pace-based interpreted cards for strength", async () => {
+    await seedLifts();
+    const body = await client(cookie).get("strength");
+
+    const ids = body.interpreted.map((m) => m.id);
+    expect(ids).not.toContain("easyDiscipline");
+    expect(ids).not.toContain("lowIntensityShare");
+    expect(ids).not.toContain("pacing");
+    // The load signals span every sport and stay.
+    expect(ids).toContain("loadRatio");
+    expect(ids).toContain("ramp");
+  });
+
+  it("never calls a lift a run in any interpreted card it does ship", async () => {
+    await seedLifts();
+    const body = await client(cookie).get("strength");
+
+    for (const m of body.interpreted) {
+      const prose = `${m.meaning ?? ""} ${m.suggestion ?? ""}`;
+      expect(prose, `card "${m.id}" calls a lift a run`).not.toMatch(/\brun(s|ning)?\b/i);
+    }
+  });
+
+  it("keeps saying runs for the run discipline", async () => {
+    // Five weeks of runs — ramp needs about four before it says anything.
+    for (let i = 0; i < 18; i++) {
+      await seedActivity(userId, { date: addDays(today, -(i * 2 + 1)), lapCount: 0 });
+    }
+    const body = await client(cookie).get("run");
+    const ramp = body.interpreted.find((m) => m.id === "ramp");
+    expect(ramp!.meaning).toContain("running time");
   });
 });

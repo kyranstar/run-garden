@@ -34,6 +34,8 @@ export const RUN_ONLY_METRICS: readonly string[] = [
   "lowIntensityShare",
   "easyDiscipline",
   "hrZones",
+  // Compares the halves of a session by pace. A lift has no pace to fade from.
+  "pacing",
 ] as const;
 
 export function supportsMetric(d: Discipline, metric: string): boolean {
