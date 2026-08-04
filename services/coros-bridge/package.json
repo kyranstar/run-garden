@@ -9,6 +9,7 @@
   "scripts": {
     "typecheck": "tsc --noEmit",
     "start": "tsx src/main.ts",
+    "census": "tsx src/census.ts",
     "spike": "tsx src/spike.ts",
     "spike:create": "tsx src/spike-create.ts",
     "spike:cleanup": "tsx src/spike-create.ts --cleanup-only",
