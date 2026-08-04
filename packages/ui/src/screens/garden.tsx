@@ -12,9 +12,12 @@ import {
 import type { GardenSnapshot } from "@rg/garden-engine";
 import {
   BALANCE_TUNING,
+  conditionWord,
   DAMAGE_NOTCH,
+  DEFAULT_GARDEN_CONFIG,
   gardenForecast,
   projectedBalance,
+  simulateDay,
   SPECIES_BY_ID,
 } from "@rg/garden-engine";
 import { GardenScene } from "@rg/garden-renderer";
@@ -22,6 +25,7 @@ import { IconClock, IconClose } from "../icons.js";
 import {
   Banner,
   Card,
+  CATEGORY_LABELS,
   EmptyState,
   formatDayShort,
   formatTime,
@@ -35,10 +39,13 @@ import { EvidenceCard, NextWorkout, Readiness, SyncPanel, UnresolvedCard } from 
 import {
   CATEGORY_ORDER,
   DisciplineNudges,
+  landingUnlock,
   nextUnlocksByDiscipline,
   NUDGE_DISCIPLINE_LABEL,
   progressText,
+  RARITY_LABEL,
   SpeciesCodex,
+  SpeciesSpriteCard,
   unlockGrownBy,
   WildlifeShelf,
   type CodexEntry,
@@ -98,9 +105,15 @@ function deriveChapters(points: TimelinePoint[]): TimelineChapter[] {
       out.push({ index: i, label: "The comeback began" });
     } else if (dead(cur) > dead(prev)) {
       out.push({ index: i, label: "A plant died back" });
+    } else if (dormant(cur) > dormant(prev)) {
+      out.push({ index: i, label: "Plants go dormant" });
     }
   }
   return out;
+}
+
+function dormant(s: GardenSnapshot): number {
+  return s.plants.filter((p) => p.state === "dormant").length;
 }
 
 function cap(s: string): string {
@@ -548,6 +561,170 @@ function ForecastLine({
   return <p className={`forecast-line${className ? ` ${className}` : ""}`}>{line}</p>;
 }
 
+/** Monday of the ISO week containing `date`. */
+function mondayOf(date: string): string {
+  const dow = (new Date(`${date}T12:00:00Z`).getUTCDay() + 6) % 7;
+  return addDays(date, -dow);
+}
+
+const DOW_LETTERS = ["M", "T", "W", "T", "F", "S", "S"];
+const DONE_STATES = new Set(["completed", "provisionally_completed", "skipped", "missed"]);
+
+function ordinalOf(n: number): string {
+  const s = ["th", "st", "nd", "rd"];
+  const v = n % 100;
+  return `${n}${s[(v - 20) % 10] ?? s[v] ?? s[0]}`;
+}
+
+/**
+ * The week as a quest: seven dots from the plan, and — when completing the
+ * plan genuinely crosses an unlock gate — that day carries the species'
+ * sprite. At most one sprite per week; a quest, not a slot row.
+ */
+function WeekRibbon({
+  todayDate,
+  codex,
+  onOpenSpecies,
+}: {
+  todayDate: string;
+  codex: CodexEntry[];
+  onOpenSpecies: (speciesId: string) => void;
+}) {
+  const monday = mondayOf(todayDate);
+  const week = useQuery({
+    queryKey: ["week-workouts", monday],
+    queryFn: () => api.workouts(monday, addDays(monday, 6)),
+    staleTime: 5 * 60_000,
+  });
+  const workouts = (week.data?.workouts ?? []) as WorkoutDto[];
+  const landing = useMemo(
+    () =>
+      landingUnlock(
+        codex,
+        workouts.map((w) => ({
+          effectiveDate: w.effectiveDate,
+          category: w.category,
+          pending: !DONE_STATES.has(w.completionState),
+        })),
+        todayDate,
+      ),
+    [codex, workouts, todayDate],
+  );
+  if (workouts.length === 0) return null;
+  return (
+    <div className="week-ribbon">
+      <div className="week-ribbon-strip" aria-label="This week's plan">
+        {Array.from({ length: 7 }, (_, i) => addDays(monday, i)).map((date, i) => {
+          const w = workouts
+            .filter((x) => x.effectiveDate === date)
+            .sort((a, b) => (a.category === "rest" ? 1 : 0) - (b.category === "rest" ? 1 : 0))[0];
+          const lands = landing?.date === date;
+          return (
+            <div key={date} className={`week-day${date === todayDate ? " week-day-today" : ""}`}>
+              {lands && landing ? (
+                <span className="week-day-sprite" aria-hidden="true">
+                  <SpeciesSpriteCard speciesId={landing.entry.speciesId} locked />
+                </span>
+              ) : null}
+              <span
+                className={`week-day-dot${w ? ` cat-${w.category}` : " week-day-empty"}`}
+                title={w?.title}
+              />
+              <span className="week-day-dow" aria-hidden="true">
+                {DOW_LETTERS[i]}
+              </span>
+            </div>
+          );
+        })}
+      </div>
+      {landing ? (
+        <button
+          type="button"
+          className="week-pull"
+          onClick={() => onOpenSpecies(landing.entry.speciesId)}
+        >
+          <strong>{weekdayFull(landing.date)}&rsquo;s{" "}
+          {(CATEGORY_LABELS[landing.category] ?? landing.category).toLowerCase()}</strong> is your{" "}
+          {ordinalOf(landing.ordinal)} — the {landing.entry.name} arrives.
+        </button>
+      ) : null}
+    </div>
+  );
+}
+
+/**
+ * The unlock ceremony: a new species leads the arrival beat as a small
+ * celebration — sprite on a soft burst, serif name, what earned it, and a
+ * pull straight to the living plant in the scene.
+ */
+function UnlockCeremony({
+  entry,
+  extraCount,
+  snapshot,
+  onSeePlant,
+  onDismiss,
+  variant,
+}: {
+  entry: CodexEntry;
+  extraCount: number;
+  snapshot: GardenSnapshot;
+  onSeePlant: (plantId: string) => void;
+  onDismiss: () => void;
+  variant?: "hud";
+}) {
+  const livePlant = snapshot.plants.find(
+    (p) => p.speciesId === entry.speciesId && p.state !== "dead",
+  );
+  return (
+    <div className={`ceremony${variant === "hud" ? " ceremony-hud" : ""}`} role="status">
+      <div className="ceremony-portrait">
+        <svg className="ceremony-burst" viewBox="0 0 100 100" aria-hidden="true">
+          {Array.from({ length: 10 }, (_, i) => (
+            <ellipse
+              key={i}
+              cx="50"
+              cy="18"
+              rx="3.4"
+              ry="9"
+              fill="#e8c86a"
+              opacity="0.55"
+              transform={`rotate(${i * 36} 50 50)`}
+            />
+          ))}
+          <circle cx="50" cy="50" r="21" fill="#f7f2dd" opacity="0.85" />
+        </svg>
+        <span className="ceremony-mote ceremony-mote-1" aria-hidden="true" />
+        <span className="ceremony-mote ceremony-mote-2" aria-hidden="true" />
+        <span className="ceremony-mote ceremony-mote-3" aria-hidden="true" />
+        <SpeciesSpriteCard speciesId={entry.speciesId} />
+      </div>
+      <div className="ceremony-body">
+        <div className="ceremony-eyebrow">A new species has taken root</div>
+        <div className="ceremony-name">
+          {entry.name}
+          {entry.rarity !== "common" ? (
+            <span className={`rarity rarity-${entry.rarity}`}>{RARITY_LABEL[entry.rarity]}</span>
+          ) : null}
+          {extraCount > 0 ? <span className="ceremony-extra">+{extraCount} more</span> : null}
+        </div>
+        <div className="ceremony-earned">{entry.hint}</div>
+        {livePlant ? (
+          <button
+            type="button"
+            className="ceremony-see"
+            onClick={() => onSeePlant(livePlant.id)}
+          >
+            See it in the garden →
+          </button>
+        ) : null}
+      </div>
+      <button type="button" className="ceremony-close" onClick={onDismiss} aria-label="Dismiss">
+        <IconClose size={13} />
+      </button>
+    </div>
+  );
+}
+
 function conditionStory(
   condition: GardenConditionWord,
   snapshot: GardenSnapshot,
@@ -582,6 +759,7 @@ export function GardenScreen() {
     () => typeof window === "undefined" || window.localStorage.getItem("rg-dock") !== "collapsed",
   );
   const [beatDismissed, setBeatDismissed] = useState(false);
+  const [ceremonyDismissed, setCeremonyDismissed] = useState(false);
   const [replaying, setReplaying] = useState(false);
   // The date this garden was last looked at — powers the overnight beat.
   const lastVisit = useMemo(
@@ -611,6 +789,55 @@ export function GardenScreen() {
     enabled: timelineOpen,
     staleTime: 5 * 60_000,
   });
+
+  // The next two weeks of the plan — keeps the forward scrub honest about
+  // planned rest days (the run clock pauses on them) and plan gaps.
+  const clientToday = new Date().toISOString().slice(0, 10);
+  const scrubPlan = useQuery({
+    queryKey: ["scrub-plan", clientToday],
+    queryFn: () => api.workouts(clientToday, addDays(clientToday, 14)),
+    enabled: timelineOpen,
+    staleTime: 5 * 60_000,
+  });
+
+  // The do-nothing future: fold simulateDay over empty days, client-side and
+  // never persisted. Capped so the projection stops short of the death window
+  // — deterioration is the story here, not corpses.
+  const futurePoints = useMemo<TimelinePoint[]>(() => {
+    if (!timelineOpen || !garden.data) return [];
+    const snap = garden.data.snapshot as unknown as GardenSnapshot;
+    const rest = (garden.data.restMode as { active: boolean } | undefined)?.active ?? false;
+    const planned = (scrubPlan.data?.workouts ?? []) as WorkoutDto[];
+    const restDays = new Set(
+      planned.filter((w) => w.category === "rest").map((w) => w.effectiveDate),
+    );
+    const planEnd =
+      (scrubPlan.data?.plan as { endDate?: string } | null | undefined)?.endDate ?? null;
+    const horizon = Math.max(
+      0,
+      Math.min(14, DEFAULT_GARDEN_CONFIG.deathStartDays - 1 - snap.state.daysSinceCompletedRun),
+    );
+    const out: TimelinePoint[] = [];
+    let cur = snap;
+    let date = snap.state.lastSimulatedDate;
+    for (let i = 0; i < horizon; i++) {
+      date = addDays(date, 1);
+      cur = simulateDay(cur, {
+        date,
+        completedRuns: [],
+        missedRuns: [],
+        restObserved: restDays.has(date),
+        restModeActive: rest,
+        planGap: planEnd ? date > planEnd : false,
+      }).snapshot;
+      out.push({
+        date,
+        snapshot: cur,
+        condition: conditionWord(cur.state, DEFAULT_GARDEN_CONFIG),
+      });
+    }
+    return out;
+  }, [timelineOpen, garden.data, scrubPlan.data]);
 
   // App-open freshness: this is the actual "/" landing screen (Today's
   // content lives here — see the garden-lower section below), so this is
@@ -669,13 +896,21 @@ export function GardenScreen() {
     condition: d.view.condition,
   }));
   const liveDate = today.data?.today ?? snapshot.state.lastSimulatedDate;
-  const timelinePoints: TimelinePoint[] = [...pastDays, { date: liveDate, snapshot, condition }];
+  // Past → today → the projected do-nothing future. The slider spans all of
+  // it; `todayIndex` is where history ends and the projection begins.
+  const timelinePoints: TimelinePoint[] = [
+    ...pastDays,
+    { date: liveDate, snapshot, condition },
+    ...futurePoints,
+  ];
+  const todayIndex = pastDays.length;
   const maxDayIndex = Math.max(0, timelinePoints.length - 1);
-  const dayIndex = Math.min(dayIndexOverride ?? maxDayIndex, maxDayIndex);
+  const dayIndex = Math.min(dayIndexOverride ?? todayIndex, maxDayIndex);
   dayIndexRef.current = dayIndex;
-  maxDayIndexRef.current = maxDayIndex;
+  maxDayIndexRef.current = todayIndex; // replay stops at today, never the projection
   const dayView = timelinePoints[dayIndex] ?? timelinePoints[timelinePoints.length - 1]!;
-  const viewingLive = !timelineOpen || dayIndex === maxDayIndex;
+  const viewingLive = !timelineOpen || dayIndex === todayIndex;
+  const viewingFuture = timelineOpen && dayIndex > todayIndex;
   const timelineLoading = timelineOpen && timeline.isLoading;
 
   function closeTimeline() {
@@ -714,23 +949,37 @@ export function GardenScreen() {
   const wildlife = (garden.data.wildlife as WildlifeEntry[]) ?? [];
   const unlockedCount = codex.filter((c) => c.unlocked).length;
 
-  // The overnight beat: what happened since the last visit, told in 2–3
-  // sentences on arrival. Unlocks lead — the reveal is the reward.
+  // The overnight beat: what happened since the last visit. Unlocks lead —
+  // the reveal is the reward — so they graduate from a sentence into the
+  // ceremony card, and the remaining lines stay text.
   const BEAT_PRIORITY: Record<string, number> = {
     species_unlocked: 0,
     wildlife_arrived: 1,
     plant_added: 2,
     region_unlocked: 3,
   };
-  const beatLines =
-    lastVisit && lastVisit < liveDate && !beatDismissed
-      ? events
-          .filter((e) => e.date > lastVisit && !(e as { preview?: boolean }).preview)
-          .sort((a, b) => (BEAT_PRIORITY[a.kind] ?? 9) - (BEAT_PRIORITY[b.kind] ?? 9))
-          .map((e) => eventSentence(e))
-          .filter((t): t is string => !!t)
-          .slice(0, 3)
+  const sinceVisit =
+    lastVisit && lastVisit < liveDate
+      ? events.filter((e) => e.date > lastVisit && !(e as { preview?: boolean }).preview)
       : [];
+  const ceremonyEntries = !ceremonyDismissed
+    ? sinceVisit
+        .filter((e) => e.kind === "species_unlocked" && e.speciesId)
+        .map((e) => codex.find((c) => c.speciesId === e.speciesId))
+        .filter((c): c is CodexEntry => !!c)
+    : [];
+  const beatLines = !beatDismissed
+    ? sinceVisit
+        .filter((e) => !(ceremonyEntries.length > 0 && e.kind === "species_unlocked"))
+        .sort((a, b) => (BEAT_PRIORITY[a.kind] ?? 9) - (BEAT_PRIORITY[b.kind] ?? 9))
+        .map((e) => eventSentence(e))
+        .filter((t): t is string => !!t)
+        .slice(0, 3)
+    : [];
+  const seePlantFromCeremony = (plantId: string) => {
+    setCeremonyDismissed(true);
+    setSelectedPlantId(plantId);
+  };
 
   const d = today.data;
 
@@ -760,11 +1009,11 @@ export function GardenScreen() {
   const chapters = timelineOpen && !timelineLoading ? deriveChapters(timelinePoints) : [];
   const currentChapter = chapters.find((c) => c.index === dayIndex);
   const startReplay = () => {
-    if (reducedMotion || maxDayIndex === 0) {
-      setDayIndexOverride(maxDayIndex);
+    if (reducedMotion || todayIndex === 0) {
+      setDayIndexOverride(todayIndex);
       return;
     }
-    setDayIndexOverride(Math.max(0, maxDayIndex - 7));
+    setDayIndexOverride(Math.max(0, todayIndex - 7));
     setReplaying(true);
   };
 
@@ -775,16 +1024,28 @@ export function GardenScreen() {
   const toggleBalanceKey = (k: DisciplineKey) =>
     setOpenBalanceKey((cur) => (cur === k ? null : k));
 
+  const todayFrac = maxDayIndex > 0 ? todayIndex / maxDayIndex : 1;
   const timelinePanel = (
-    <div className="timeline-panel">
+    <div className={`timeline-panel${viewingFuture ? " timeline-projected" : ""}`}>
       <div className="timeline-panel-head">
         <span className="timeline-label">
           {timelineLoading
             ? "Loading timeline…"
-            : `${formatDayShort(dayView.date)} — day ${dayIndex}${viewingLive ? " (today)" : ""}`}
+            : viewingFuture
+              ? `+${dayIndex - todayIndex} days — ${formatDayShort(dayView.date)} · projected`
+              : `${formatDayShort(dayView.date)} — day ${dayIndex}${viewingLive ? " (today)" : ""}`}
         </span>
         <div className="row" style={{ gap: "0.35rem" }}>
-          {!timelineLoading && maxDayIndex > 7 ? (
+          {!timelineLoading && viewingFuture ? (
+            <button
+              type="button"
+              className="btn btn-small"
+              onClick={() => setDayIndexOverride(todayIndex)}
+            >
+              Back to today
+            </button>
+          ) : null}
+          {!timelineLoading && !viewingFuture && todayIndex > 7 ? (
             <button type="button" className="btn btn-small" onClick={startReplay} disabled={replaying}>
               Replay week
             </button>
@@ -802,6 +1063,20 @@ export function GardenScreen() {
       {!timelineLoading ? (
         <>
           <div className="timeline-track">
+            {futurePoints.length > 0 ? (
+              <>
+                <div
+                  className="timeline-future"
+                  style={{ left: `${todayFrac * 100}%` }}
+                  aria-hidden="true"
+                />
+                <span
+                  className="timeline-todaymark"
+                  style={{ left: `${todayFrac * 100}%` }}
+                  aria-hidden="true"
+                />
+              </>
+            ) : null}
             <input
               type="range"
               className="timeline-slider"
@@ -814,17 +1089,30 @@ export function GardenScreen() {
                 setReplaying(false);
                 setDayIndexOverride(Number(e.target.value));
               }}
-              aria-label="Day in the garden's history"
+              aria-label="Day in the garden's history and projected future"
             />
             {maxDayIndex > 0 && chapters.length > 0 ? (
               <div className="timeline-ticks" aria-hidden="true">
                 {chapters.map((c) => (
-                  <span key={c.index} style={{ left: `${(c.index / maxDayIndex) * 100}%` }} />
+                  <span
+                    key={c.index}
+                    className={c.index > todayIndex ? "tick-future" : undefined}
+                    style={{ left: `${(c.index / maxDayIndex) * 100}%` }}
+                  />
                 ))}
               </div>
             ) : null}
           </div>
-          {currentChapter ? <div className="timeline-chapter">{currentChapter.label}</div> : null}
+          {currentChapter ? (
+            <div className={`timeline-chapter${viewingFuture ? " timeline-chapter-future" : ""}`}>
+              {currentChapter.label}
+            </div>
+          ) : null}
+          {viewingFuture ? (
+            <div className="timeline-foot">
+              This is the garden if nothing changes — one run rewrites it.
+            </div>
+          ) : null}
         </>
       ) : null}
     </div>
@@ -949,7 +1237,9 @@ export function GardenScreen() {
             <p className="hud-weather">
               {viewingLive
                 ? cap(WEATHER_LABEL[weather])
-                : `That day: ${WEATHER_LABEL[weather]}`}{" "}
+                : viewingFuture
+                  ? `Projected: ${WEATHER_LABEL[weather]}`
+                  : `That day: ${WEATHER_LABEL[weather]}`}{" "}
               — {WEATHER_WHY[weather]}
             </p>
             {viewingLive && !restMode.active ? (
@@ -964,6 +1254,16 @@ export function GardenScreen() {
             ) : null}
             {restMode.active ? (
               <p className="hud-weather">Rest mode — nothing declines while you're away.</p>
+            ) : null}
+            {viewingLive && ceremonyEntries.length > 0 ? (
+              <UnlockCeremony
+                entry={ceremonyEntries[0]!}
+                extraCount={ceremonyEntries.length - 1}
+                snapshot={snapshot}
+                onSeePlant={seePlantFromCeremony}
+                onDismiss={() => setCeremonyDismissed(true)}
+                variant="hud"
+              />
             ) : null}
             {viewingLive && beatLines.length > 0 && lastVisit ? (
               <p className="hud-beat">
@@ -1029,6 +1329,9 @@ export function GardenScreen() {
                         : ` · ${Math.max(0, grows.progress.target - grows.progress.current)} more to go`}
                   </button>
                 ) : null}
+                <div className="dock-week">
+                  <WeekRibbon todayDate={todayDate} codex={codex} onOpenSpecies={setOpenSpeciesId} />
+                </div>
                 <button type="button" className="linklike dock-collapse" onClick={() => setDockOpen(false)}>
                   Minimize
                 </button>
@@ -1188,6 +1491,15 @@ export function GardenScreen() {
             balance={liveBalance}
           />
         ) : null}
+        {viewingLive && ceremonyEntries.length > 0 ? (
+          <UnlockCeremony
+            entry={ceremonyEntries[0]!}
+            extraCount={ceremonyEntries.length - 1}
+            snapshot={snapshot}
+            onSeePlant={seePlantFromCeremony}
+            onDismiss={() => setCeremonyDismissed(true)}
+          />
+        ) : null}
         {viewingLive && beatLines.length > 0 && lastVisit ? (
           <p className="garden-nowline">
             <span className="now-chip">since {formatDayShort(lastVisit)}</span>
@@ -1234,6 +1546,11 @@ export function GardenScreen() {
         <EmptyState art="🌿" title="No active COROS training plan was found">
           Start a plan in COROS, then refresh from the desktop app.
         </EmptyState>
+      ) : null}
+      {d?.nextWorkout ? (
+        <Card title="This week">
+          <WeekRibbon todayDate={todayDate} codex={codex} onOpenSpecies={setOpenSpeciesId} />
+        </Card>
       ) : null}
       {plumbing}
 

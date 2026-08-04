@@ -216,6 +216,62 @@ export const NUDGE_DISCIPLINE_LABEL: Record<NudgeDiscipline, string> = {
   yoga: "Yoga",
 };
 
+/** A planned workout, reduced to what the landing calculation needs. */
+export interface PlannedLite {
+  effectiveDate: string;
+  category: string;
+  /** Anything not completed/skipped/missed counts as still-to-do. */
+  pending: boolean;
+}
+
+export interface LandingUnlock {
+  entry: CodexEntry;
+  /** The date whose planned workout crosses the gate. */
+  date: string;
+  category: string;
+  /** "your Nth" — the gate's target count. */
+  ordinal: number;
+}
+
+/**
+ * Which upcoming planned workout actually crosses an unlock gate. Walks the
+ * pending plan in date order, decrementing each locked count-gate's remaining
+ * as matching workouts pass — honest by construction: a day is only marked
+ * when completing the plan up to it truly reaches the target. Distance gates
+ * are excluded (we can't know a future run's distance).
+ */
+export function landingUnlock(
+  codex: CodexEntry[],
+  planned: PlannedLite[],
+  today: string,
+): LandingUnlock | null {
+  const upcoming = planned
+    .filter((w) => w.pending && w.effectiveDate >= today)
+    .sort((a, b) => a.effectiveDate.localeCompare(b.effectiveDate));
+  if (upcoming.length === 0) return null;
+
+  let best: LandingUnlock | null = null;
+  for (const c of codex) {
+    if (c.unlocked || !c.progress || c.progress.target >= 1000) continue;
+    const gate = SPECIES_BY_ID.get(c.speciesId)?.unlock;
+    if (!gate) continue;
+    let remaining = Math.max(0, c.progress.target - c.progress.current);
+    if (remaining === 0) continue;
+    for (const w of upcoming) {
+      const kinds = GATE_KINDS_BY_CATEGORY[w.category];
+      if (!kinds?.includes(gate.kind)) continue;
+      remaining -= 1;
+      if (remaining === 0) {
+        if (!best || w.effectiveDate < best.date) {
+          best = { entry: c, date: w.effectiveDate, category: w.category, ordinal: c.progress.target };
+        }
+        break;
+      }
+    }
+  }
+  return best;
+}
+
 /**
  * "The best next thing", per axis: one row per discipline showing the species
  * that workout type would unlock soonest. Every row opens the species card.
