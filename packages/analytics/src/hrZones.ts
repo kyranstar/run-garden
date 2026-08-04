@@ -21,11 +21,26 @@ export interface HrMaxSample {
   maxHeartRate?: number | null;
 }
 
-export function estimateHrMax(activities: readonly HrMaxSample[]): number | null {
-  const maxes = activities
+/** A "max" at or below this is implausible (a walk's peak, a dropped strap). */
+export const MIN_PLAUSIBLE_HR_MAX = 120;
+
+/**
+ * The readings `estimateHrMax` actually consumes, highest first. Exported so a
+ * caller that wants to say how much evidence the estimate rests on counts the
+ * same readings the estimate used — counting "runs with any heart rate" instead
+ * would let a pile of average-only runs suppress the caveat while the ceiling
+ * still balanced on two max readings, which overstates confidence in one
+ * direction only.
+ */
+export function usableHrMaxReadings(activities: readonly HrMaxSample[]): number[] {
+  return activities
     .map((a) => a.maxHeartRate)
-    .filter((h): h is number => h != null && h > 120)
+    .filter((h): h is number => h != null && h > MIN_PLAUSIBLE_HR_MAX)
     .sort((a, b) => b - a);
+}
+
+export function estimateHrMax(activities: readonly HrMaxSample[]): number | null {
+  const maxes = usableHrMaxReadings(activities);
   if (maxes.length === 0) return null;
   return maxes.length === 1 ? maxes[0]! : maxes[1]!;
 }

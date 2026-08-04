@@ -58,6 +58,7 @@ import {
   mergeRecords,
   pickEvidenceCard,
   stableHash,
+  usableHrMaxReadings,
   type InterpretedMetric,
   type IntensityRunInput,
   type MetricDetail,
@@ -290,7 +291,7 @@ const LOAD_COVERAGE_THRESHOLD = 0.9;
 const RECOVERY_STALE_DAYS = 2;
 /** Trailing window (inclusive of today) behind the low-intensity headline: 4 weeks. */
 const INTENSITY_HEADLINE_DAYS = 27;
-/** Runs with heart rate needed in the 26-week window before the ceiling is quoted without a caveat. */
+/** Usable max-HR readings needed in the 26-week window before the ceiling is quoted without a caveat. */
 const MIN_HRMAX_RUNS = 10;
 
 function rowToLap(row: typeof activityLaps.$inferSelect): ActivityLap {
@@ -432,15 +433,12 @@ insightRoutes.get("/", async (c) => {
       .where(
         and(eq(computedMetrics.userId, userId), eq(computedMetrics.metricKey, RECORDS_METRIC_KEY)),
       ),
-    // Heart-rate columns only, over 26 weeks of runs: the easy ceiling every
+    // One column, over 26 weeks of runs: the easy ceiling every
     // execution metric is measured against deserves a longer, steadier history
     // than the 12-week display window, and there is no reason to load 26 weeks
-    // of full activity rows to read two numbers off each.
+    // of full activity rows to read one number off each.
     db
-      .select({
-        maxHeartRate: activities.maxHeartRate,
-        avgHeartRate: activities.avgHeartRate,
-      })
+      .select({ maxHeartRate: activities.maxHeartRate })
       .from(activities)
       .where(
         and(
@@ -546,17 +544,18 @@ insightRoutes.get("/", async (c) => {
   // window: it is the line every execution metric is measured against, so it
   // should move slowly. When too few runs carry heart rate to stand behind it,
   // the estimate is still used — but it says so, on every card that uses it.
+  // Counted with the estimator's own filter, not "runs with any heart rate":
+  // average-only runs tell you nothing about a maximum, so letting them count
+  // would suppress the caveat while the ceiling still rested on two readings.
+  const hrMaxSampleCount = usableHrMaxReadings(hrMaxRows).length;
   const hrMaxEstimate = estimateHrMax(hrMaxRows);
   const hrMax = hrMaxEstimate ?? 190;
   const ceiling = easyCeiling(hrMax);
-  const hrRunCount = hrMaxRows.filter(
-    (r) => r.maxHeartRate != null || r.avgHeartRate != null,
-  ).length;
   const ceilingNote =
     hrMaxEstimate == null
       ? "Easy ceiling from a default max heart rate of 190 — no usable max-heart-rate readings in the last 26 weeks."
-      : hrRunCount < MIN_HRMAX_RUNS
-        ? `Ceiling estimated from only ${hrRunCount} run${hrRunCount === 1 ? "" : "s"} with heart rate in the last 26 weeks.`
+      : hrMaxSampleCount < MIN_HRMAX_RUNS
+        ? `Ceiling estimated from only ${hrMaxSampleCount} run${hrMaxSampleCount === 1 ? "" : "s"} with a usable max heart rate in the last 26 weeks.`
         : "";
 
   const toIntensityInput = (a: (typeof actRows)[number]): IntensityRunInput => ({

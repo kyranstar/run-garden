@@ -395,7 +395,8 @@ describe("low-intensity share windows", () => {
 // ── Easy ceiling: 26-week basis and its honesty caveat ───────────────────────
 
 describe("easy ceiling", () => {
-  it("discloses a thin sample on every card measured against the ceiling", async () => {
+  it("counts only usable max-HR readings, so average-only runs cannot suppress the caveat", async () => {
+    // Five runs that actually evidence a maximum…
     for (let i = 0; i < 5; i++) {
       await seedMatchedRun(userId, "easy", {
         date: addDays(today, -(2 + i * 3)),
@@ -404,10 +405,22 @@ describe("easy ceiling", () => {
         avgHeartRate: 130,
       });
     }
+    // …and six that carry an average but no max at all. Counting "runs with
+    // heart rate" would reach 11 here and drop the caveat, while the ceiling
+    // still rests on the five readings above — confidence overstated, in the
+    // one direction that matters.
+    for (let i = 0; i < 6; i++) {
+      await seedActivity(userId, {
+        date: addDays(today, -(20 + i * 3)),
+        avgHeartRate: 132,
+        maxHeartRate: null,
+      });
+    }
 
     const body = await client(cookie).get();
 
-    const disclosure = "Ceiling estimated from only 5 runs with heart rate in the last 26 weeks.";
+    const disclosure =
+      "Ceiling estimated from only 5 runs with a usable max heart rate in the last 26 weeks.";
     expect(metric(body, "easyDiscipline").sampleNote).toContain(disclosure);
     expect(metric(body, "lowIntensityShare").sampleNote).toContain(disclosure);
   });
