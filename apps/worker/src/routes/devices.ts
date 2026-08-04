@@ -1,6 +1,6 @@
 import { Hono } from "hono";
 import { z } from "zod";
-import { and, eq, sql } from "drizzle-orm";
+import { and, eq, inArray, sql } from "drizzle-orm";
 import { corosWriteJobs, deviceHandshakes, desktopDevices } from "@rg/database";
 import {
   corosWriteResultSchema,
@@ -19,6 +19,7 @@ import { advanceGarden, buildGardenView, resimulateFrom } from "../services/gard
 import { finishSyncRun, recordSyncError, startSyncRun } from "../services/reconcile-daily.js";
 import { isExerciseCatalogStale, upsertExerciseCatalog } from "../services/exercise-catalog.js";
 import { bridgeJobPayload } from "../services/studio-push.js";
+import { chunkIds } from "../services/db.js";
 import { dailyHealth } from "@rg/database";
 import { fingerprint } from "@rg/domain";
 
@@ -237,12 +238,41 @@ deviceRoutes.post("/bridge/sync", requireDevice, async (c) => {
 
     if (body.health && body.health.length > 0) {
       const now = nowInstant();
-      for (const h of body.health as Array<Record<string, unknown>>) {
+      // The bridge re-sends the same daily-health window on every sync, so the
+      // overwhelmingly common case is a push where nothing changed. Writing it
+      // anyway cost one UPDATE per day per sync — pure D1 write budget spent to
+      // set a row to the value it already held, and every one of those bumped
+      // `updatedAt`, so the column stopped meaning "when this reading last
+      // changed" and started meaning "when the bridge last ran".
+      //
+      // One read answers it: fetch the stored fingerprints for exactly the
+      // pushed dates (chunked, because `inArray` binds one variable per id and
+      // D1 caps them) and skip any row whose stored fingerprint already equals
+      // the incoming one. Everything else takes the COALESCE upsert unchanged.
+      const incoming = (body.health as Array<Record<string, unknown>>).map((h) => {
         const date = String(h.date);
+        return { h, date, id: `${userId}:${date}`, fp: fingerprint(h) };
+      });
+      const storedFingerprints = new Map<string, string | null>();
+      for (const ids of chunkIds(incoming.map((r) => r.id))) {
+        const existing = await db
+          .select({ id: dailyHealth.id, contentFingerprint: dailyHealth.contentFingerprint })
+          .from(dailyHealth)
+          .where(inArray(dailyHealth.id, ids));
+        for (const row of existing) storedFingerprints.set(row.id, row.contentFingerprint);
+      }
+
+      let written = 0;
+      let skipped = 0;
+      for (const { h, date, id, fp } of incoming) {
+        if (storedFingerprints.get(id) === fp) {
+          skipped++;
+          continue;
+        }
         await db
           .insert(dailyHealth)
           .values({
-            id: `${userId}:${date}`,
+            id,
             userId,
             date,
             restingHeartRate: (h.restingHeartRate as number) ?? null,
@@ -251,7 +281,7 @@ deviceRoutes.post("/bridge/sync", requireDevice, async (c) => {
             fatigueScore: (h.fatigueScore as number) ?? null,
             trainingLoad7d: (h.trainingLoad7d as number) ?? null,
             provider: "coros",
-            contentFingerprint: fingerprint(h),
+            contentFingerprint: fp,
             updatedAt: now,
           })
           .onConflictDoUpdate({
@@ -265,12 +295,15 @@ deviceRoutes.post("/bridge/sync", requireDevice, async (c) => {
               recoveryScore: sql`COALESCE(excluded.recovery_score, ${dailyHealth.recoveryScore})`,
               fatigueScore: sql`COALESCE(excluded.fatigue_score, ${dailyHealth.fatigueScore})`,
               trainingLoad7d: sql`COALESCE(excluded.training_load_7d, ${dailyHealth.trainingLoad7d})`,
-              contentFingerprint: fingerprint(h),
+              contentFingerprint: fp,
               updatedAt: now,
             },
           });
+        written++;
+        // Keeps a push that repeats the same date twice from writing twice.
+        storedFingerprints.set(id, fp);
       }
-      stats.health = (body.health as unknown[]).length;
+      stats.health = { received: incoming.length, written, skipped };
     }
 
     if (body.exerciseCatalog && body.exerciseCatalog.length > 0) {

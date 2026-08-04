@@ -630,10 +630,18 @@ insightRoutes.get("/", async (c) => {
       .sort((x, y) => x.lapIndex - y.lapIndex);
     if (laps.length < 2) continue;
     const totalDistance = laps.reduce((s, l) => s + (l.distanceMeters ?? 0), 0);
+    // A lap belongs to the half its MIDPOINT falls in — the same rule
+    // decoupling.ts uses (see `decouplingPct`). Testing the cumulative
+    // distance *before* the lap instead put every lap but the first into the
+    // second half whenever the first lap was already past halfway: a 2-lap run
+    // of 6km + 4km left the second half empty, `paceOf([])` returned 0, and
+    // the `> 0` guard below dropped the run from the metric entirely. Two
+    // unequal laps are exactly one lap per half under the midpoint rule.
     const halves: [ActivityLap[], ActivityLap[]] = [[], []];
     let covered = 0;
     for (const lap of laps) {
-      halves[covered < totalDistance / 2 ? 0 : 1].push(lap);
+      const midpoint = covered + (lap.distanceMeters ?? 0) / 2;
+      halves[midpoint < totalDistance / 2 ? 0 : 1].push(lap);
       covered += lap.distanceMeters ?? 0;
     }
     const paceOf = (ls: ActivityLap[]): number => {
@@ -736,6 +744,15 @@ insightRoutes.get("/", async (c) => {
         range: "sweet spot 0.8–1.3",
         gauge: { min: 0.5, max: 2, healthyLo: 0.8, healthyHi: 1.3, value: v.ratio },
         series: v.series.map((p) => ({ date: p.date, value: p.ratio })),
+        // The baseline IS 1: the ratio is this week against the month behind
+        // it, so 1.0 means "this week looks like your norm" by construction —
+        // not an estimate that could have come out anywhere else. Emitting it
+        // (in the series' own unit, like restingHr's bpm and hrv's ms) is what
+        // makes the tile drillable: `hasDrilldown` opens the baseline-band
+        // chart for series+baseline, and 56 daily ratios against the 0.8–1.3
+        // sweet spot is a real chart — where the number has been all block,
+        // not just where it is today.
+        baseline: { value: 1, lo: 0.8, hi: 1.3, unit: "× norm" },
         meaning:
           "Your last week of training compared with the month behind it, smoothed so one big day neither " +
           "spikes the number nor abruptly falls out of it. Around 1.0 means this week looks like your norm.",
@@ -813,7 +830,8 @@ insightRoutes.get("/", async (c) => {
           baseline: { value: v.baseline, lo: v.baseline - 5, hi: v.baseline + 5, unit: "bpm" },
           staleNote: stale ? `last reading ${days(v.staleDays)} ago` : undefined,
           meaning:
-            "The median of your three most recent resting heart-rate readings against your 30-day median. " +
+            "The median of your three most recent resting heart-rate readings — all from the last five days — " +
+            "against your 30-day median. " +
             "A sustained rise often shows up before you feel it — fatigue, a cold coming on, a poor stretch of sleep.",
           suggestion:
             !stale && v.deltaBpm >= 5
@@ -862,23 +880,30 @@ insightRoutes.get("/", async (c) => {
         };
       },
     ),
-    interpret("hardStack", "Hard-day stacking", computeHardDayStacking(hardDates, today), (v) => ({
-      value: days(v.consecutive),
-      band: v.consecutive >= 2 ? "watch" : "healthy",
-      range: "one hard day at a time",
-      // No gauge: the dashboard draws this one as a strip (7 daily boxes),
-      // not a bullet gauge — see signal-tiles.tsx's gauge>sparkline>strip
-      // priority, which would otherwise hide the strip behind a gauge.
-      strip: v.strip.map((d) => ({ date: d.date, on: d.hard })),
-      meaning:
-        "Consecutive hard days ending today — or yesterday, if today hasn't happened yet. A day counts as hard " +
-        `when it was a matched quality or race session, a run of ${LONG_RUN_HARD_SECONDS / 60} minutes or more, ` +
-        "or a run with no planned session behind it whose heart rate sat above your easy ceiling.",
-      suggestion:
-        v.consecutive >= 2
-          ? "Back-to-back hard days leave less room to absorb the work — the easy day between them is what makes the hard ones count."
-          : undefined,
-    })),
+    withNote(
+      interpret("hardStack", "Hard-day stacking", computeHardDayStacking(hardDates, today), (v) => ({
+        value: days(v.consecutive),
+        band: v.consecutive >= 2 ? "watch" : "healthy",
+        range: "one hard day at a time",
+        // No gauge: the dashboard draws this one as a strip (7 daily boxes),
+        // not a bullet gauge — see signal-tiles.tsx's gauge>sparkline>strip
+        // priority, which would otherwise hide the strip behind a gauge.
+        strip: v.strip.map((d) => ({ date: d.date, on: d.hard })),
+        meaning:
+          "Consecutive hard days ending today — or yesterday, if today hasn't happened yet. A day counts as hard " +
+          `when it was a matched quality or race session, a run of ${LONG_RUN_HARD_SECONDS / 60} minutes or more, ` +
+          "or a run with no planned session behind it whose heart rate sat above your easy ceiling.",
+        suggestion:
+          v.consecutive >= 2
+            ? "Back-to-back hard days leave less room to absorb the work — the easy day between them is what makes the hard ones count."
+            : undefined,
+      })),
+      // One of hardStack's three "hard day" tests is `avgHeartRate` above the
+      // easy ceiling, so when that ceiling rests on a default or on two
+      // readings, this card's number does too — same disclosure
+      // easyDiscipline and lowIntensityShare already carry.
+      ceilingNote,
+    ),
     withNote(
       interpret("lowIntensityShare", "Low-intensity share", recentIntensity, (v) => ({
         value: `${v.lowPct}%`,

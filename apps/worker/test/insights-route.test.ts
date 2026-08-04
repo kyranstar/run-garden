@@ -10,8 +10,9 @@
  *      run-only execution metrics;
  *  (b) category scoping: an unmatched run is category "unknown", never a
  *      defaulted "easy", so it cannot enter aerobic efficiency;
- *  (c) user scoping: laps and completion matches are fetched by *this* user's
- *      ids, so a second user's data can never appear in the response;
+ *  (c) user scoping: a second user's activities, laps and matches do not
+ *      appear in this user's response — a property guard on this route's
+ *      assembly, not a proof that no code path anywhere could leak a row;
  *  (d) evidence rotation: dismissing the top card surfaces the next one
  *      instead of collapsing to null;
  *  (e) records persistence: a stored record survives a regeneration whose
@@ -24,7 +25,7 @@ import { createHash, createPrivateKey, generateKeyPairSync, sign as ed25519Sign 
 import { beforeEach, describe, expect, it } from "vitest";
 import { eq } from "drizzle-orm";
 import { schema } from "@rg/database";
-import { addDays, newId, nowInstant, todayInZone } from "@rg/domain";
+import { addDays, newId, nowInstant, startOfIsoWeek, todayInZone } from "@rg/domain";
 import type { UserPreferences } from "@rg/domain";
 import type { Env } from "../src/env.js";
 import type { Db } from "../src/services/db.js";
@@ -100,7 +101,7 @@ interface WeekTotals {
 
 interface InsightsBody {
   consistency: { planned: number; completed: number; pending: number; days: unknown[] };
-  weekly: { weeks: WeekTotals[] };
+  weekly: { weeks: WeekTotals[]; fourWeekAvgDuration?: number };
   efficiency: MetricEnvelope<{ perRun: Array<{ activityId: string; efficiency: number }> }>;
   decoupling: MetricEnvelope<{
     perRun: Array<{ activityId: string }>;
@@ -157,6 +158,13 @@ interface SeedActivityOpts {
    * i.e. a dead-even split.
    */
   lapDurationFactors?: number[];
+  /**
+   * Per-lap multipliers on lap DISTANCE, normalized so the run's total
+   * distance is unchanged. Default: every lap the same size. Needed to build a
+   * run whose laps are genuinely uneven — the shape that exposes how halves
+   * are split.
+   */
+  lapDistanceFactors?: number[];
 }
 
 /**
@@ -193,9 +201,12 @@ async function seedActivity(userId: string, o: SeedActivityOpts): Promise<string
   });
 
   const lapCount = o.lapCount ?? 5;
+  const distanceFactorSum = o.lapDistanceFactors
+    ? o.lapDistanceFactors.slice(0, lapCount).reduce((s, f) => s + f, 0)
+    : lapCount;
   for (let i = 0; i < lapCount; i++) {
     const lapSeconds = (durationSeconds / lapCount) * (o.lapDurationFactors?.[i] ?? 1);
-    const lapMeters = distanceMeters / lapCount;
+    const lapMeters = (distanceMeters * (o.lapDistanceFactors?.[i] ?? 1)) / distanceFactorSum;
     await db.insert(activityLaps).values({
       id: newId(),
       activityId: id,
@@ -517,8 +528,8 @@ describe("pacing drill-down", () => {
       date: addDays(today, -15),
       lapDurationFactors: [1, 1, 1, 1.0001, 1.0001],
     });
-    // Raw delta ≈ +0.4 s/km: a real fade too small to survive rounding to a
-    // whole second. It must keep its decimal rather than read "faded 0 s/km".
+    // A real fade too small to survive rounding to a whole second (see the
+    // assertion below for the exact figure).
     const smallFade = await seedMatchedRun(userId, "easy", {
       date: addDays(today, -18),
       lapDurationFactors: [1, 1, 1, 1.0013333333333334, 1.0013333333333334],
@@ -557,10 +568,15 @@ describe("pacing drill-down", () => {
     expect(barely.value).toBe("even split");
     expect(barely.note).toBe("First and second half effectively even.");
 
+    // A real fade too small to survive rounding to a whole second: it must
+    // keep its decimal rather than read "faded 0 s/km". (The exact figure
+    // moved from 0.4 to 0.3 when halves started splitting by lap midpoint —
+    // with 5 even laps the middle one now lands in the second half, where
+    // decoupling.ts has always put it. The property under test is unchanged.)
     const small = runs!.find((r) => r.activityId === smallFade)!;
-    expect(small.delta).toBe(0.4);
+    expect(small.delta).toBe(0.3);
     expect(small.over).toBe(true);
-    expect(small.value).toBe("faded 0.4 s/km");
+    expect(small.value).toBe("faded 0.3 s/km");
 
     // No row may ever claim a direction in prose while publishing 0, nor
     // quote a magnitude of "0 s/km" for a delta it also calls nonzero.
@@ -576,6 +592,29 @@ describe("pacing drill-down", () => {
     for (const r of runs!) {
       expect(r.delta).toBe(Math.round(r.delta! * 10) / 10);
     }
+  });
+
+  it("keeps a run whose two laps are unequal — halves split by lap midpoint", async () => {
+    // The old rule asked where a lap STARTED. Lap 1 starts at 0, so it always
+    // went to the first half; a second lap starting before the halfway mark
+    // went there too, leaving the second half EMPTY. `paceOf([])` returns 0,
+    // the `> 0` guard then dropped the run, and a 4km/6km split — a warm-up
+    // lap and the run — silently vanished from pacing.
+    //
+    // Under the midpoint rule (decoupling.ts's, now shared) lap 1's midpoint
+    // is at 2km and lap 2's at 7km of a 10km run: one lap per half, as any
+    // reader would expect from "two laps".
+    for (let i = 0; i < 4; i++) {
+      await seedMatchedRun(userId, "easy", {
+        date: addDays(today, -(i * 3 + 2)),
+        lapCount: 2,
+        lapDistanceFactors: [0.8, 1.2], // 4km then 6km of a 10km run
+      });
+    }
+
+    const pacing = metric(await client(cookie).get(), "pacing");
+    expect(pacing.status, pacing.sampleNote).toBe("ok");
+    expect(pacing.detail?.runs).toHaveLength(4);
   });
 });
 
@@ -610,6 +649,13 @@ describe("category scoping", () => {
 
 describe("user scoping", () => {
   it("never surfaces a second user's activities, laps or matches", async () => {
+    // What this guards, stated honestly: with two users holding
+    // identically-shaped data, nothing of the other user's reaches THIS
+    // response. That is the property that breaks if one of the route's
+    // chunked `inArray` fetches (laps, completion matches) loses its userId
+    // predicate — which is the failure mode worth a test. It is not a claim
+    // that this is the only place another account's rows could ever reach:
+    // proving that is a job for scoping at the query layer, not one case here.
     const mine: string[] = [];
     for (let i = 0; i < 3; i++) {
       mine.push(await seedMatchedRun(userId, "easy", { date: addDays(today, -(i * 4 + 2)) }));
@@ -854,6 +900,90 @@ describe("payload shape", () => {
     // A metric with no daily series carries no baseline to draw one against.
     expect(metric(typed, "monotony").baseline).toBeUndefined();
   });
+
+  it("ships loadRatio's baseline of 1 — the norm by construction — so the tile drills down", async () => {
+    // Enough daily running for computeLoadRatio's own gates; the exact ratio
+    // doesn't matter here, only that the band travels with it.
+    for (let i = 0; i < 42; i++) {
+      await seedMatchedRun(userId, "easy", { date: addDays(today, -i), lapCount: 0 });
+    }
+
+    const loadRatio = metric(await client(cookie).get(), "loadRatio");
+    expect(loadRatio.status, loadRatio.sampleNote).toBe("ok");
+    // 1.0 means "this week looks like your norm" by construction — the ratio
+    // is this week over the month behind it — and 0.8–1.3 is the sweet spot
+    // the gauge already draws. Emitting them as a baseline in the SERIES' unit
+    // is what makes `hasDrilldown` open the band chart for this tile.
+    expect(loadRatio.baseline).toEqual({ value: 1, lo: 0.8, hi: 1.3, unit: "× norm" });
+    expect(loadRatio.series!.length).toBeGreaterThan(0);
+    // The UI gate, restated here so a payload change can't silently un-drill it.
+    expect(!!loadRatio.baseline && loadRatio.series!.length > 0).toBe(true);
+  });
+
+  it("suppresses restingHr when the only recent reading stands alone across a 45-day gap", async () => {
+    // The recency failure, at the route: one fresh 47 and six readings from
+    // 45-50 days ago clears the "7 valid readings in 60 days" count gate and
+    // the "newest reading is recent" staleness gate, yet a median of the 3
+    // newest would be 58 — a "watch" verdict describing seven weeks ago.
+    const insert = async (date: string, bpm: number) => {
+      await db.insert(schema.dailyHealth).values({
+        id: `${userId}:${date}`,
+        userId,
+        date,
+        restingHeartRate: bpm,
+        hrv: null,
+        recoveryScore: null,
+        fatigueScore: null,
+        trainingLoad7d: null,
+        provider: "coros",
+        contentFingerprint: `seed-${date}`,
+        updatedAt: nowInstant(),
+      });
+    };
+    await insert(today, 47);
+    for (let i = 0; i < 6; i++) await insert(addDays(today, -(45 + i)), 58);
+
+    const restingHr = metric(await client(cookie).get(), "restingHr");
+    expect(restingHr.status).toBe("insufficient_data");
+    // Never the stale number, and never the verdict built on it.
+    expect(restingHr.value).toBeUndefined();
+    expect(restingHr.band).toBeUndefined();
+    expect(JSON.stringify(restingHr)).not.toContain("58 bpm");
+    // The card explains the gap rather than going quiet (`interpret` puts the
+    // metric's explanation in `meaning` for the insufficient branch).
+    expect(restingHr.meaning).toContain("last 5 days");
+    expect(restingHr.meaning).toContain("45 days old");
+  });
+
+  it("emits the partial current week and the silent weeks before it after a layoff", async () => {
+    // Six weeks of running that stopped five weeks ago. The weekly bars used
+    // to end at the last week trained, which reads as "up to date", and the
+    // 4-week average was taken over the last four weeks TRAINED.
+    for (let i = 0; i < 6; i++) {
+      await seedMatchedRun(userId, "easy", {
+        date: addDays(today, -(35 + i * 7)),
+        durationSeconds: 3600,
+        lapCount: 0,
+      });
+    }
+
+    const body = await client(cookie).get();
+    const weeks = body.weekly.weeks;
+    expect(weeks.length).toBeGreaterThan(6);
+
+    // The last row is the current, partial week — and it is the only partial one.
+    const last = weeks[weeks.length - 1]!;
+    expect(last.partial).toBe(true);
+    expect(weeks.filter((w) => w.partial)).toHaveLength(1);
+    expect(last.weekStart).toBe(startOfIsoWeek(today));
+
+    // The silent weeks are present as zero rows, not missing.
+    const trailingZeros = weeks.slice(-4).filter((w) => w.durationSeconds === 0);
+    expect(trailingZeros.length).toBeGreaterThanOrEqual(3);
+
+    // And the average now says so: zero weeks count.
+    expect(body.weekly.fourWeekAvgDuration).toBe(0);
+  });
 });
 
 // ─────────────────────────────────────────────────────────────────────────
@@ -955,5 +1085,133 @@ describe("POST /api/devices/bridge/sync — dailyHealth upsert null-guard", () =
     expect(row.restingHeartRate).toBe(48);
     // ...while the field that actually arrived with data updates normally.
     expect(row.hrv).toBe(55);
+  });
+
+  it("the three score columns update on a real push and survive a null one", async () => {
+    // A COALESCE typo on any of these three (say `excluded.recovery_score`
+    // written as `excluded.hrv`, or the arguments swapped) is invisible to the
+    // test above, which only exercises restingHeartRate and hrv. Both halves
+    // have to be pinned per column: a swapped COALESCE fails the first push,
+    // a dropped one fails the second.
+    const db = makeTestDb();
+    const { userId } = await makeTestUser(db);
+    const { deviceId, privateKeyPem } = await registerSignedDevice(db, userId);
+    const date = "2026-07-02";
+    const app = mountRoutes(db, "/api/devices", deviceRoutes);
+    const path = "/api/devices/bridge/sync";
+
+    const push = async (health: Record<string, unknown>) => {
+      const body = JSON.stringify({ health: [health] });
+      const res = await app.request(
+        path,
+        {
+          method: "POST",
+          headers: {
+            ...signedHeaders(privateKeyPem, deviceId, "POST", path, body),
+            "content-type": "application/json",
+          },
+          body,
+        },
+        makeEnv(),
+      );
+      expect(res.status).toBe(200);
+      return (
+        await db.select().from(schema.dailyHealth).where(eq(schema.dailyHealth.id, `${userId}:${date}`))
+      )[0]!;
+    };
+
+    // Seed with stale values so "did it update" is distinguishable from
+    // "did it happen to already hold the right number".
+    await db.insert(schema.dailyHealth).values({
+      id: `${userId}:${date}`,
+      userId,
+      date,
+      restingHeartRate: 48,
+      hrv: 60,
+      recoveryScore: 11,
+      fatigueScore: 22,
+      trainingLoad7d: 33,
+      provider: "coros",
+      contentFingerprint: "seed-fingerprint",
+      updatedAt: nowInstant(),
+    });
+
+    const updated = await push({ date, recoveryScore: 88, fatigueScore: 41, trainingLoad7d: 315 });
+    expect(updated.recoveryScore).toBe(88);
+    expect(updated.fatigueScore).toBe(41);
+    expect(updated.trainingLoad7d).toBe(315);
+
+    // Now a push where the watch reported none of them: COALESCE must keep all
+    // three, and must keep each in its OWN column.
+    const afterNulls = await push({
+      date,
+      restingHeartRate: 47,
+      recoveryScore: null,
+      fatigueScore: null,
+      trainingLoad7d: null,
+    });
+    expect(afterNulls.recoveryScore).toBe(88);
+    expect(afterNulls.fatigueScore).toBe(41);
+    expect(afterNulls.trainingLoad7d).toBe(315);
+    expect(afterNulls.restingHeartRate).toBe(47);
+  });
+
+  it("skips a re-push of identical rows instead of rewriting them", async () => {
+    // The bridge re-sends the same daily-health window every sync. Writing
+    // rows that didn't change spent a D1 write each and bumped `updatedAt`,
+    // so the column stopped meaning "when this reading last changed".
+    const db = makeTestDb();
+    const { userId } = await makeTestUser(db);
+    const { deviceId, privateKeyPem } = await registerSignedDevice(db, userId);
+    const app = mountRoutes(db, "/api/devices", deviceRoutes);
+    const path = "/api/devices/bridge/sync";
+    const health = [
+      { date: "2026-07-03", restingHeartRate: 48, hrv: 60 },
+      { date: "2026-07-04", restingHeartRate: 47, hrv: 62 },
+    ];
+
+    const push = async (rows: unknown[]) => {
+      const body = JSON.stringify({ health: rows });
+      const res = await app.request(
+        path,
+        {
+          method: "POST",
+          headers: {
+            ...signedHeaders(privateKeyPem, deviceId, "POST", path, body),
+            "content-type": "application/json",
+          },
+          body,
+        },
+        makeEnv(),
+      );
+      expect(res.status).toBe(200);
+      return (await res.json()) as { stats: { health?: { received: number; written: number; skipped: number } } };
+    };
+
+    const first = await push(health);
+    expect(first.stats.health).toEqual({ received: 2, written: 2, skipped: 0 });
+
+    const rowsAfterFirst = await db.select().from(schema.dailyHealth);
+    const writtenAt = new Map(rowsAfterFirst.map((r) => [r.id, r.updatedAt]));
+    expect(writtenAt.size).toBe(2);
+
+    // Same payload, second time.
+    const second = await push(health);
+    expect(second.stats.health).toEqual({ received: 2, written: 0, skipped: 2 });
+
+    // The observable proof, independent of the stats object: nothing was
+    // rewritten, so no row's updatedAt moved.
+    for (const row of await db.select().from(schema.dailyHealth)) {
+      expect(row.updatedAt, `row ${row.id} was rewritten`).toBe(writtenAt.get(row.id));
+    }
+
+    // A genuine change still gets through — the skip is fingerprint-based,
+    // not "this date already exists".
+    const changed = await push([{ ...health[0]!, restingHeartRate: 51 }, health[1]!]);
+    expect(changed.stats.health).toEqual({ received: 2, written: 1, skipped: 1 });
+    const updatedRow = (
+      await db.select().from(schema.dailyHealth).where(eq(schema.dailyHealth.id, `${userId}:2026-07-03`))
+    )[0]!;
+    expect(updatedRow.restingHeartRate).toBe(51);
   });
 });
