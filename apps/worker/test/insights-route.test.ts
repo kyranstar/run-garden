@@ -79,7 +79,13 @@ interface InterpretedMetricBody {
   staleNote?: string;
   detail?: {
     explain: string;
-    runs: Array<{ activityId: string; over?: boolean; note?: string; delta?: number }>;
+    runs: Array<{
+      activityId: string;
+      over?: boolean;
+      value?: string;
+      note?: string;
+      delta?: number;
+    }>;
   };
 }
 
@@ -503,11 +509,18 @@ describe("pacing drill-down", () => {
       }),
     ];
     // Raw delta ≈ +0.03 s/km: it fades by an amount that rounds away entirely.
-    // The published `delta` is 0, so `over` must be false — deriving `over`
-    // from the raw number instead would ship over=true with delta=0.
+    // The published `delta` is 0, so the whole row — flag AND prose — has to
+    // read as even. Deriving any of them from the raw number instead ships
+    // over=true / "faded 0 s/km" beside a published delta of 0.
     const barelyFaded = await seedMatchedRun(userId, "easy", {
       date: addDays(today, -15),
       lapDurationFactors: [1, 1, 1, 1.0001, 1.0001],
+    });
+    // Raw delta ≈ +0.4 s/km: a real fade too small to survive rounding to a
+    // whole second. It must keep its decimal rather than read "faded 0 s/km".
+    const smallFade = await seedMatchedRun(userId, "easy", {
+      date: addDays(today, -18),
+      lapDurationFactors: [1, 1, 1, 1.0013333333333334, 1.0013333333333334],
     });
     const negativeSplit = [
       await seedMatchedRun(userId, "easy", {
@@ -540,6 +553,24 @@ describe("pacing drill-down", () => {
     const barely = runs!.find((r) => r.activityId === barelyFaded)!;
     expect(barely.delta).toBe(0);
     expect(barely.over).toBe(false);
+    expect(barely.value).toBe("even split");
+    expect(barely.note).toBe("First and second half effectively even.");
+
+    const small = runs!.find((r) => r.activityId === smallFade)!;
+    expect(small.delta).toBe(0.4);
+    expect(small.over).toBe(true);
+    expect(small.value).toBe("faded 0.4 s/km");
+
+    // No row may ever claim a direction in prose while publishing 0, nor
+    // quote a magnitude of "0 s/km" for a delta it also calls nonzero.
+    for (const r of runs!) {
+      if (r.delta === 0) {
+        expect(r.value, `run ${r.activityId}`).toBe("even split");
+      } else {
+        // \b so "50 s/km" doesn't read as a zero magnitude.
+        expect(r.value, `run ${r.activityId}`).not.toMatch(/\b0 s\/km/);
+      }
+    }
     // Rounded to one decimal, never a raw float.
     for (const r of runs!) {
       expect(r.delta).toBe(Math.round(r.delta! * 10) / 10);

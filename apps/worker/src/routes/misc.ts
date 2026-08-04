@@ -951,24 +951,37 @@ insightRoutes.get("/", async (c) => {
   });
 
   const pacingDetailRuns: MetricRunDetail[] = splitRuns.map((s) => {
-    const delta = s.secondHalfPace - s.firstHalfPace; // positive = faded
-    // `over` is derived from the ROUNDED delta, not the raw one: a raw delta
-    // of 0.03 s/km rounds to a published `delta` of 0, and `over: true`
-    // alongside `delta: 0` would break the sign-agreement MetricRunDetail
-    // promises (and paint a red row for a split that is, as published, even).
-    const rounded = Math.round(delta * 10) / 10;
-    const magnitude = `${Math.round(Math.abs(delta))} s/km`;
+    const raw = s.secondHalfPace - s.firstHalfPace; // positive = faded
+    // EVERY published field branches on the rounded delta, never the raw one.
+    // A raw 0.03 s/km rounds to a published `delta` of 0, and a row that calls
+    // that a fade — `over: true`, "faded 0 s/km", "went out a touch hot" —
+    // contradicts the 0 sitting next to it, breaks the sign agreement
+    // MetricRunDetail.delta promises, and paints itself red for a difference
+    // it just told you was nothing.
+    const scaled = Math.round(raw * 10);
+    // `|| 0` normalizes the -0 a small negative delta produces: it compares
+    // equal to 0 with ===, but not with Object.is, which is what serializers
+    // and test matchers reach for.
+    const delta = (scaled || 0) / 10;
+    const abs = Math.abs(delta);
+    // Sub-1 s/km keeps its decimal, so a real (if tiny) difference is never
+    // rendered as "0 s/km" — the bug this branch exists to avoid, one
+    // magnitude up.
+    const magnitude = `${abs < 1 ? abs : Math.round(abs)} s/km`;
     return {
       activityId: s.activityId,
       date: s.date,
       title: s.title,
-      value: delta <= 0 ? `finished ${magnitude} faster` : `faded ${magnitude}`,
-      delta: rounded,
-      over: rounded > 0,
+      value:
+        delta === 0 ? "even split" : delta < 0 ? `finished ${magnitude} faster` : `faded ${magnitude}`,
+      delta,
+      over: delta > 0,
       note:
-        delta <= 0
-          ? "Second half faster — a negative split."
-          : "Second half slower — went out a touch hot.",
+        delta === 0
+          ? "First and second half effectively even."
+          : delta < 0
+            ? "Second half faster — a negative split."
+            : "Second half slower — went out a touch hot.",
     };
   });
 
