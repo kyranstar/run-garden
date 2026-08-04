@@ -10,6 +10,7 @@ export {
   type DisciplineBalance,
 } from "./balance.js";
 export { conditionWord, deriveWeather, seasonOf } from "./condition.js";
+export { gardenForecast, type ForecastStage, type GardenForecast } from "./forecast.js";
 export { initialSnapshot, simulateDay, replay } from "./simulate.js";
 export {
   describeGate,
