@@ -4,7 +4,7 @@ import type { DecouplingRunInput } from "../src/decoupling.js";
 import { computeDecoupling } from "../src/decoupling.js";
 import type { EfficiencyRunInput } from "../src/aerobicEfficiency.js";
 import { computeAerobicEfficiency } from "../src/aerobicEfficiency.js";
-import { theilSen } from "../src/stats.js";
+import { roundTo, theilSen } from "../src/stats.js";
 import { mkActivity, mkLap } from "./builders.js";
 
 describe("theilSen", () => {
@@ -147,6 +147,58 @@ describe("computeAerobicEfficiency", () => {
     expect(result.value.trend!.n).toBe(6);
     expect(result.value.trend!.pct).toBeGreaterThan(9);
     expect(result.value.trend!.pct).toBeLessThan(11);
+  });
+
+  it("keys the trend on days elapsed, not array index (uneven spacing changes the answer)", () => {
+    // Gaps between consecutive dates: 1, 1, 1, 1, 16 — all <=21, so a trend
+    // is still reported, but day-based x (0,1,2,3,4,20) diverges sharply
+    // from index-based x (0,1,2,3,4,5) once the spacing is uneven.
+    const dates = ["2026-03-01", "2026-03-02", "2026-03-03", "2026-03-04", "2026-03-05", "2026-03-21"];
+    const midDistances = [1500, 1530, 1560, 1590, 1620, 2100];
+    const runs = dates.map((date, i) => lapRun(`u${i}`, date, { midDistancePerLap: midDistances[i]! }));
+
+    const result = computeAerobicEfficiency(runs);
+    expect(result.status).toBe("ok");
+    if (result.status !== "ok") return;
+    expect(result.value.trend).toBeDefined();
+
+    // Recompute what day-based and index-based Theil-Sen would each report,
+    // directly from the reported per-run efficiencies, to prove the
+    // implementation is keyed on elapsed days and not array position.
+    const perRun = result.value.perRun;
+    const first = perRun[0]!.date;
+    const dayPoints = perRun.map((p) => ({
+      x: Math.round((Date.parse(p.date) - Date.parse(first)) / 86_400_000),
+      y: p.efficiency,
+    }));
+    const indexPoints = perRun.map((p, i) => ({ x: i, y: p.efficiency }));
+    const dayFit = theilSen(dayPoints);
+    const indexFit = theilSen(indexPoints);
+    const dayXLast = dayPoints[dayPoints.length - 1]!.x;
+    const indexXLast = indexPoints[indexPoints.length - 1]!.x;
+    const dayPct = roundTo(((dayFit.slope * dayXLast) / dayFit.intercept) * 100, 1);
+    const indexPct = roundTo(((indexFit.slope * indexXLast) / indexFit.intercept) * 100, 1);
+
+    expect(Math.abs(dayPct - indexPct)).toBeGreaterThan(2); // measurably different
+    expect(result.value.trend!.pct).toBeCloseTo(dayPct, 1);
+    expect(result.value.trend!.pct).not.toBeCloseTo(indexPct, 1);
+  });
+
+  it("suppresses the trend when the largest gap between consecutive runs exceeds 21 days", () => {
+    // Five runs clustered in early March, one isolated run on Apr 5 (a
+    // 31-day gap from the last March run) — a +10% linear rise across the
+    // full span. Theil-Sen would otherwise extrapolate the slope across the
+    // unobserved gap and report an inflated trend (this reproduced pct:70
+    // before the >21-day guard was added).
+    const dates = ["2026-03-01", "2026-03-02", "2026-03-03", "2026-03-04", "2026-03-05", "2026-04-05"];
+    const runs = dates.map((date, i) =>
+      lapRun(`g${i}`, date, { midDistancePerLap: 1500 * (1 + 0.1 * (i / (dates.length - 1))) }),
+    );
+    const result = computeAerobicEfficiency(runs);
+    expect(result.status).toBe("ok");
+    if (result.status !== "ok") return;
+    expect(result.value.perRun).toHaveLength(6);
+    expect(result.value.trend).toBeUndefined();
   });
 
   it("excludes runs shorter than 25 minutes, without HR, or paused more than 15%", () => {

@@ -16,6 +16,14 @@ const MIN_RUNS = 3;
 const MIN_DURATION_SECONDS = 25 * 60;
 const MAX_PAUSE_FRACTION = 0.15;
 const MIN_TREND_RUNS = 6;
+/**
+ * Theil–Sen extrapolates the per-day slope across whatever span the points
+ * cover, including gaps with no observed runs — so a trend is only claimed
+ * over reasonably continuous training. If the largest gap between two
+ * consecutive perRun dates exceeds this many days, `trend` is left
+ * undefined rather than extrapolating across a break in training.
+ */
+const MAX_TREND_GAP_DAYS = 21;
 /** Laps ending at or before this many cumulative seconds are warm-up and dropped. */
 const WARMUP_TRIM_SECONDS = 600;
 
@@ -35,7 +43,11 @@ export interface EfficiencyPoint {
 
 export interface AerobicEfficiencyValue {
   perRun: EfficiencyPoint[];
-  /** Theil–Sen trend over day-index; only present once perRun has 6+ points. */
+  /**
+   * Theil–Sen trend over day-index; only present once perRun has 6+ points
+   * AND the largest gap between consecutive perRun dates is 21 days or
+   * fewer (a trend is only claimed over reasonably continuous training).
+   */
   trend?: { pct: number; n: number };
   /** Eligible-category runs dropped for lacking usable laps. */
   excludedCount: number;
@@ -94,6 +106,16 @@ function daysSince(first: string, date: string): number {
   return Math.round((Date.parse(date) - Date.parse(first)) / 86_400_000);
 }
 
+/** Largest gap in days between consecutive (already sorted) dates; 0 when fewer than 2. */
+function maxConsecutiveGapDays(dates: readonly string[]): number {
+  let max = 0;
+  for (let i = 1; i < dates.length; i++) {
+    const gap = daysSince(dates[i - 1]!, dates[i]!);
+    if (gap > max) max = gap;
+  }
+  return max;
+}
+
 export function computeAerobicEfficiency(
   runs: EfficiencyRunInput[],
 ): MetricResult<AerobicEfficiencyValue> {
@@ -119,7 +141,10 @@ export function computeAerobicEfficiency(
   }
 
   let trend: { pct: number; n: number } | undefined;
-  if (perRun.length >= MIN_TREND_RUNS) {
+  if (
+    perRun.length >= MIN_TREND_RUNS &&
+    maxConsecutiveGapDays(perRun.map((p) => p.date)) <= MAX_TREND_GAP_DAYS
+  ) {
     const first = perRun[0]!.date;
     const points = perRun.map((p) => ({ x: daysSince(first, p.date), y: p.efficiency }));
     const { slope, intercept } = theilSen(points);
