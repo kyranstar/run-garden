@@ -2,7 +2,7 @@
  * Read-only sport census: which COROS sportType codes does this account
  * actually have, over its whole history, and which does Run Garden admit?
  *
- * The deep backfill only ingests codes listed in COROS_GARDEN_SPORT_TYPES;
+ * The deep backfill only ingests codes listed in COROS_ADMITTED_SPORT_TYPES;
  * everything else is silently tallied and dropped. Before building history on
  * that map, this proves what the map has to cover — in particular whether
  * historical yoga sits under 403/904 as assumed, or somewhere else entirely.
@@ -16,7 +16,7 @@
 import { mkdirSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { COROS_GARDEN_SPORT_TYPES, corosSportName } from "@rg/providers";
+import { COROS_ADMITTED_SPORT_TYPES, corosSportName } from "@rg/providers";
 import { CorosClient, type CorosRegion } from "./coros-client.js";
 import { createPrompter } from "./prompt.js";
 import { redactUserId } from "./sanitize.js";
@@ -44,23 +44,51 @@ function isoDay(day: string | number): string {
   return `${s.slice(0, 4)}-${s.slice(4, 6)}-${s.slice(6, 8)}`;
 }
 
-async function main(): Promise<void> {
+/**
+ * Credentials from the environment when present, prompting only for what is
+ * missing. Without this the census can only run from a real terminal — an
+ * agent shell or any piped runner has no TTY, and the first prompt fails with
+ * "stdin ended before answering".
+ */
+async function credentials(): Promise<{
+  email: string;
+  password: string;
+  region: CorosRegion;
+}> {
+  const envEmail = process.env.COROS_EMAIL?.trim();
+  const envPassword = process.env.COROS_PASSWORD;
+  const envRegion = process.env.COROS_REGION?.trim();
+
+  if (envEmail && envPassword) {
+    const region = (envRegion || "us") as CorosRegion;
+    if (!["us", "eu", "cn"].includes(region)) throw new Error(`invalid COROS_REGION: ${region}`);
+    return { email: envEmail, password: envPassword, region };
+  }
+
+  if (!process.stdin.isTTY) {
+    throw new Error(
+      "No TTY and no credentials in the environment.\n" +
+        "Run this from a terminal, or set COROS_EMAIL and COROS_PASSWORD\n" +
+        "(optionally COROS_REGION=us|eu|cn) and re-run.",
+    );
+  }
+
   const prompter = createPrompter();
-  let client: CorosClient | undefined;
-  let userId: string | undefined;
-
   try {
-    const email = (await prompter.ask("COROS email: ")).trim();
-    const password = await prompter.askHidden("COROS password: ");
-    const regionInput = (await prompter.ask("Region [us/eu/cn] (default us): ")).trim() || "us";
+    const email = envEmail ?? (await prompter.ask("COROS email: ")).trim();
+    const password = envPassword ?? (await prompter.askHidden("COROS password: "));
+    const regionInput = envRegion || (await prompter.ask("Region [us/eu/cn] (default us): ")).trim() || "us";
     if (!["us", "eu", "cn"].includes(regionInput)) throw new Error("invalid region");
-    const region = regionInput as CorosRegion;
-
-    client = new CorosClient({ region });
-    ({ userId } = await client.login(email, password));
+    return { email, password, region: regionInput as CorosRegion };
   } finally {
     prompter.close();
   }
+}
+
+async function main(): Promise<void> {
+  const { email, password, region } = await credentials();
+  const client = new CorosClient({ region });
+  const { userId } = await client.login(email, password);
 
   const today = new Date().toISOString().slice(0, 10);
   console.error(`[census] sweeping ${CENSUS_START}..${today}`);
@@ -81,8 +109,8 @@ async function main(): Promise<void> {
       byCode.set(item.sportType, {
         sportType: item.sportType,
         name: corosSportName(item.sportType),
-        admitted: COROS_GARDEN_SPORT_TYPES.has(item.sportType),
-        discipline: COROS_GARDEN_SPORT_TYPES.get(item.sportType) ?? null,
+        admitted: COROS_ADMITTED_SPORT_TYPES.has(item.sportType),
+        discipline: COROS_ADMITTED_SPORT_TYPES.get(item.sportType) ?? null,
         count: 1,
         earliest: iso,
         latest: iso,
@@ -126,7 +154,7 @@ async function main(): Promise<void> {
   }
   if (report.droppedActivities > 0) {
     console.log(
-      `\n${report.droppedActivities} activities are being dropped. Any code above that is really a run, a lift, or yoga must be added to COROS_GARDEN_SPORT_TYPES.`,
+      `\n${report.droppedActivities} activities are being dropped. Any code above that is really a run, a lift, or yoga must be added to COROS_ADMITTED_SPORT_TYPES.`,
     );
   }
   console.log(`\nwrote ${outPath}`);

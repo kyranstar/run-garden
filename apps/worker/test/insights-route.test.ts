@@ -1399,3 +1399,46 @@ describe("consistency is scoped to the discipline", () => {
     expect(yogaBody.consistency.planned).toBe(1);
   });
 });
+
+describe("sports outside the three disciplines", () => {
+  it("counts a ski day toward all-sport load but never as its own discipline", async () => {
+    for (let i = 0; i < 5; i++) {
+      await seedActivity(userId, { date: addDays(today, -(i * 3 + 2)), lapCount: 0 });
+    }
+    await seedActivity(userId, {
+      date: addDays(today, -4),
+      sport: "ski",
+      durationSeconds: 9000,
+      distanceMeters: 0,
+      lapCount: 0,
+      title: "Whistler Ski",
+    });
+
+    const body = await client(cookie).get("run");
+
+    // Not offered as a discipline — the garden has three axes, not four.
+    expect(body.availableDisciplines).not.toContain("ski");
+    expect(body.availableDisciplines).toEqual(["run"]);
+    // But the load basis still claims all sports, and must mean it.
+    const load = body.interpreted.find((m) => m.id === "loadRatio");
+    expect(load!.sampleNote).toContain("all sports");
+  });
+
+  it("keeps ski out of the run discipline's own metrics", async () => {
+    for (let i = 0; i < 5; i++) {
+      await seedActivity(userId, { date: addDays(today, -(i * 3 + 2)), lapCount: 0 });
+    }
+    await seedActivity(userId, {
+      date: addDays(today, -4),
+      sport: "ski",
+      durationSeconds: 9000,
+      distanceMeters: 0,
+      lapCount: 0,
+      title: "Whistler Ski",
+    });
+
+    const body = await client(cookie).get("run");
+    const perRun = body.efficiency?.status === "ok" ? (body.efficiency.value?.perRun ?? []) : [];
+    expect(perRun.length).toBeLessThanOrEqual(5);
+  });
+});

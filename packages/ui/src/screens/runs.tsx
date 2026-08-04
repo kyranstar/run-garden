@@ -36,10 +36,18 @@ const FILTERS: { key: DisciplineFilter; label: string; chipClass: string }[] = [
   { key: "yoga", label: "Yoga", chipClass: "chip-yoga" },
 ];
 
-/** The three disciplines the Activity screen understands; "All" shows just these. */
-const DISCIPLINE_SPORTS = new Set(["run", "strength", "yoga"]);
-
-const SPORT_LABELS: Record<string, string> = { run: "Run", strength: "Strength", yoga: "Yoga" };
+/**
+ * "All" shows every session Run Garden stores, including sports outside the
+ * garden's three disciplines (ski, admitted for its training load). Those have
+ * no chip of their own — they are real training to see in your history, not a
+ * fourth thing the garden asks you to keep up.
+ */
+const SPORT_LABELS: Record<string, string> = {
+  run: "Run",
+  strength: "Strength",
+  yoga: "Yoga",
+  ski: "Ski",
+};
 
 const EMPTY_COPY: Record<DisciplineFilter, { art: string; title: string; body: string }> = {
   all: {
@@ -196,7 +204,7 @@ export function RunsScreen() {
     );
   }
   const items = (runs.data?.activities ?? []).filter((a) =>
-    filter === "all" ? DISCIPLINE_SPORTS.has(a.sport) : a.sport === filter,
+    filter === "all" ? true : a.sport === filter,
   );
   const empty = EMPTY_COPY[filter];
 

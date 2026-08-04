@@ -14,7 +14,7 @@
 
 import type { SourceActivity } from "@rg/domain";
 import {
-  COROS_GARDEN_SPORT_TYPES,
+  COROS_ADMITTED_SPORT_TYPES,
   normalizeCorosActivity,
   normalizeCorosLaps,
   type NameResolver,
@@ -56,7 +56,7 @@ export async function buildActivityBackfill(
   const skippedSportTypes: Record<string, number> = {};
 
   for (const item of items) {
-    if (!COROS_GARDEN_SPORT_TYPES.has(item.sportType)) {
+    if (!COROS_ADMITTED_SPORT_TYPES.has(item.sportType)) {
       const key = String(item.sportType);
       skippedSportTypes[key] = (skippedSportTypes[key] ?? 0) + 1;
       continue;

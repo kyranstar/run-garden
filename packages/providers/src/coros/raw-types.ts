@@ -152,11 +152,21 @@ export interface RawCorosActivityDetail {
 export const COROS_RUN_SPORT_TYPES = new Set([100, 101, 102, 103]);
 
 /**
- * Activity sportType codes the bridge admits into the tri-discipline garden
- * import (activity namespace). Anything not in this map is skipped by
- * `buildSnapshot` and tallied into `skippedSportTypes` instead.
+ * Activity sportType codes the bridge admits into the import (activity
+ * namespace). Anything not in this map is skipped by `buildSnapshot` /
+ * `buildActivityBackfill` and tallied into `skippedSportTypes` instead.
+ *
+ * `"other"` means: ingest it, count it as training load, show it in activity
+ * history — but it is not one of the garden's three disciplines and gets no
+ * balance axis, unlock species, or insight view of its own. Ski earns that
+ * because the load signals (loadRatio, ramp, monotony, hardStack) explicitly
+ * span every sport, and a ski day the app never stored made those numbers
+ * understate a winter block by a third.
  */
-export const COROS_GARDEN_SPORT_TYPES: ReadonlyMap<number, "run" | "strength" | "yoga"> = new Map([
+export const COROS_ADMITTED_SPORT_TYPES: ReadonlyMap<
+  number,
+  "run" | "strength" | "yoga" | "other"
+> = new Map([
   [100, "run"],
   [101, "run"],
   [102, "run"],
@@ -164,6 +174,7 @@ export const COROS_GARDEN_SPORT_TYPES: ReadonlyMap<number, "run" | "strength" | 
   [402, "strength"],
   [403, "yoga"],
   [904, "yoga"],
+  [500, "other"], // ski — load only
 ]);
 
 export function corosSportName(sportType: number): string {
@@ -172,6 +183,7 @@ export function corosSportName(sportType: number): string {
   if (sportType >= 300 && sportType < 400) return "swim";
   if (sportType === 402) return "strength";
   if (sportType === 403 || sportType === 904) return "yoga";
+  if (sportType === 500) return "ski";
   if (sportType === 400 || sportType === 401) return "cardio";
   if (sportType === 900) return "walk";
   return `coros_${sportType}`;

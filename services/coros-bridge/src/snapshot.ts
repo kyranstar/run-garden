@@ -6,7 +6,7 @@
 
 import { fingerprint, type DailyHealth, type SourceActivity } from "@rg/domain";
 import {
-  COROS_GARDEN_SPORT_TYPES,
+  COROS_ADMITTED_SPORT_TYPES,
   corosDayToLocalDate,
   normalizeCorosActivity,
   normalizeCorosLaps,
@@ -110,7 +110,7 @@ export async function buildSnapshot(
   const lapsByProviderId: Record<string, NormalizedLap[]> = {};
   const skipped: Record<string, number> = {};
   for (const item of items) {
-    if (!COROS_GARDEN_SPORT_TYPES.has(item.sportType)) {
+    if (!COROS_ADMITTED_SPORT_TYPES.has(item.sportType)) {
       const key = String(item.sportType);
       skipped[key] = (skipped[key] ?? 0) + 1;
       continue;
