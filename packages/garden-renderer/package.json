@@ -17,6 +17,8 @@
   "devDependencies": {
     "@types/react": "^18.3.12",
     "@types/react-dom": "^18.3.1",
+    "gifenc": "^1.0.3",
+    "pngjs": "^7.0.0",
     "react-dom": "^18.3.1",
     "typescript": "^5.7.3",
     "vitest": "^3.0.0"
