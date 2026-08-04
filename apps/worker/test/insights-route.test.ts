@@ -234,6 +234,7 @@ async function seedWorkout(
     completionState?: string;
     effectiveTime?: string;
     title?: string;
+    sport?: string;
   },
 ): Promise<string> {
   const id = newId();
@@ -244,7 +245,7 @@ async function seedWorkout(
     sourceWorkoutId: `src-${id.slice(0, 8)}`,
     title: o.title ?? "Easy run",
     category: o.category ?? "easy",
-    sport: "run",
+    sport: o.sport ?? "run",
     originalPlanDate: o.date,
     lastVerifiedCorosDate: o.date,
     effectiveDate: o.date,
@@ -1348,5 +1349,53 @@ describe("discipline-aware copy and card selection", () => {
     const body = await client(cookie).get("run");
     const ramp = body.interpreted.find((m) => m.id === "ramp");
     expect(ramp!.meaning).toContain("running time");
+  });
+});
+
+describe("consistency is scoped to the discipline", () => {
+  it("counts only this discipline's planned workouts, not the whole plan", async () => {
+    // 4 planned runs (3 done) + 2 planned lifts (1 done). Unscoped, every
+    // discipline saw the same 6/4 and the dashboard reported at two different
+    // scopes at once — a per-discipline grid above a plan-wide adherence line.
+    for (let i = 0; i < 4; i++) {
+      await seedWorkout(userId, {
+        date: addDays(today, -(i + 2)),
+        completionState: i < 3 ? "completed" : "missed",
+      });
+    }
+    for (let i = 0; i < 2; i++) {
+      await seedWorkout(userId, {
+        date: addDays(today, -(i + 10)),
+        category: "strength",
+        sport: "strength",
+        title: "Lift",
+        completionState: i < 1 ? "completed" : "missed",
+      });
+    }
+
+    const runBody = await client(cookie).get("run");
+    const liftBody = await client(cookie).get("strength");
+
+    expect(runBody.consistency.planned).toBe(4);
+    expect(liftBody.consistency.planned).toBe(2);
+    expect(runBody.consistency.planned).not.toBe(liftBody.consistency.planned);
+  });
+
+  it("files a planned yoga session by category, since COROS has no yoga sport type", async () => {
+    // sport stays "run" on the wire — only the classifier's category knows.
+    await seedWorkout(userId, {
+      date: addDays(today, -3),
+      category: "yoga",
+      sport: "run",
+      title: "Yoga",
+      completionState: "completed",
+    });
+    await seedWorkout(userId, { date: addDays(today, -4) });
+
+    const runBody = await client(cookie).get("run");
+    const yogaBody = await client(cookie).get("yoga");
+
+    expect(runBody.consistency.planned).toBe(1);
+    expect(yogaBody.consistency.planned).toBe(1);
   });
 });

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { sessionNoun, supportsMetric } from "../src/discipline.js";
+import { disciplineOf, sessionNoun, supportsMetric } from "../src/discipline.js";
 import { computeRecords, type RunSample } from "../src/records.js";
 
 function sample(id: string, date: string, seconds: number, sport = "strength"): RunSample {
@@ -122,5 +122,25 @@ describe("computeRecords", () => {
     // fastestComebackDays needs a break; with none, no record — but every id
     // that IS produced must carry the run namespace.
     for (const r of records) expect(r.id.startsWith("run:")).toBe(true);
+  });
+});
+
+describe("disciplineOf", () => {
+  it("reads a planned yoga session from its category, since COROS has no yoga sport type", () => {
+    // COROS's plan namespace is 1=run 2=bike 3=swim 4=strength, so a scheduled
+    // yoga session arrives as sport "run" and only the classifier's category
+    // identifies it. Trusting `sport` alone files it under running.
+    expect(disciplineOf("yoga", "run")).toBe("yoga");
+  });
+
+  it("reads strength from either category or sport", () => {
+    expect(disciplineOf("strength", "run")).toBe("strength");
+    expect(disciplineOf("easy", "strength")).toBe("strength");
+  });
+
+  it("defaults to run", () => {
+    expect(disciplineOf("easy", "run")).toBe("run");
+    expect(disciplineOf("long", "run")).toBe("run");
+    expect(disciplineOf("unknown", "")).toBe("run");
   });
 });

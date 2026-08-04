@@ -41,3 +41,18 @@ export const RUN_ONLY_METRICS: readonly string[] = [
 export function supportsMetric(d: Discipline, metric: string): boolean {
   return d === "run" || !RUN_ONLY_METRICS.includes(metric);
 }
+
+/**
+ * Which discipline a PLANNED workout belongs to.
+ *
+ * Category is checked before sport on purpose: COROS's plan namespace has no
+ * yoga sport type (1=run 2=bike 3=swim 4=strength), so a scheduled yoga session
+ * arrives as sport "run" and is only recognisable from the category the title
+ * classifier assigned it. Filtering planned workouts on `sport` alone therefore
+ * files every planned yoga session under running.
+ */
+export function disciplineOf(category: string, sport: string): Discipline {
+  if (category === "strength" || sport === "strength") return "strength";
+  if (category === "yoga" || sport === "yoga") return "yoga";
+  return "run";
+}

@@ -185,8 +185,54 @@ export function InsightsScreen() {
     staleTime: 60_000,
   });
   const [drill, setDrill] = useState<InterpretedMetric | null>(null);
+  // Switching discipline is a new query key with nothing cached, so the query
+  // goes back to `isLoading` and the whole screen — selector included — used to
+  // be replaced by a spinner. Remembering the last known list keeps the chips
+  // on screen and interactive while the new discipline loads, so a mis-tap is
+  // one tap to undo rather than a wait. Deliberately NOT keepPreviousData:
+  // showing running's numbers under a Yoga chip, even for a moment, is worse
+  // than showing nothing.
+  const [knownDisciplines, setKnownDisciplines] = useState<Discipline[]>([]);
+  const available = insights.data?.availableDisciplines ?? knownDisciplines;
+  if (
+    insights.data?.availableDisciplines &&
+    insights.data.availableDisciplines.join() !== knownDisciplines.join()
+  ) {
+    setKnownDisciplines(insights.data.availableDisciplines);
+  }
 
-  if (insights.isLoading) return <Spinner label="Computing insights" />;
+  // The selected discipline always appears, even if this window no longer has
+  // sessions for it — otherwise selecting it can hide the very control needed
+  // to leave it.
+  const chips = available.includes(discipline) ? available : [...available, discipline];
+
+  const selector =
+    chips.length > 1 ? (
+      <div className="discipline-chips" role="tablist" aria-label="Discipline">
+        {chips.map((key) => (
+          <button
+            key={key}
+            type="button"
+            role="tab"
+            aria-selected={discipline === key}
+            className={`chip chip-${key}${discipline === key ? " active" : ""}`}
+            onClick={() => setDiscipline(key)}
+          >
+            {disciplineLabel(key)}
+          </button>
+        ))}
+      </div>
+    ) : null;
+
+  if (insights.isLoading) {
+    return (
+      <div className="stack">
+        <h1 className="screen-title">Insights</h1>
+        {selector}
+        <Spinner label="Computing insights" />
+      </div>
+    );
+  }
   if (!insights.data) {
     // A failed fetch is usually transient (asleep laptop, dropped wifi, a
     // worker cold start), and this screen's only other escape was a full page
@@ -208,7 +254,6 @@ export function InsightsScreen() {
   }
 
   const { consistency, weekly, efficiency, decoupling, records, reviews, interpreted } = insights.data;
-  const available = insights.data.availableDisciplines ?? [];
 
   const recentTraining = weekly.weeks.slice(-8);
   const adherencePct = Math.round(consistency.adherenceRate * 100);
@@ -226,22 +271,7 @@ export function InsightsScreen() {
 
       {/* Only when there is a real choice: a single-discipline history should
           not be asked to pick from a list of one. */}
-      {available.length > 1 ? (
-        <div className="discipline-chips" role="tablist" aria-label="Discipline">
-          {available.map((key) => (
-            <button
-              key={key}
-              type="button"
-              role="tab"
-              aria-selected={discipline === key}
-              className={`chip chip-${key}${discipline === key ? " active" : ""}`}
-              onClick={() => setDiscipline(key)}
-            >
-              {disciplineLabel(key)}
-            </button>
-          ))}
-        </div>
-      ) : null}
+      {selector}
 
       {/* `resolved` (computed above, and reused by the Consistency card's own
           headline math) gates the percentage here too: when nothing has

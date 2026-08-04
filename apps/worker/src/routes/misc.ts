@@ -60,6 +60,7 @@ import {
   stableHash,
   usableHrMaxReadings,
   DISCIPLINES,
+  disciplineOf,
   sessionNoun,
   supportsMetric,
   type Discipline,
@@ -686,7 +687,14 @@ insightRoutes.get("/", async (c) => {
   const pacing = computePacing(splitRuns);
 
   // ── Plan-shaped reports ──
-  const consistency = computeConsistency(workouts, range, today);
+  // Scoped to the discipline like everything else on the page. Unscoped, this
+  // card and the strip's adherence headline showed identical plan-wide numbers
+  // under all three chips while the grid beside them was per-discipline — one
+  // dashboard quietly reporting at two different scopes.
+  const disciplineWorkouts = workouts.filter(
+    (w) => disciplineOf(w.category, w.sport) === discipline,
+  );
+  const consistency = computeConsistency(disciplineWorkouts, range, today);
 
   const categoryRecord: Record<string, WorkoutCategory> = {};
   for (const [matchId, category] of categoryByMatchId) categoryRecord[matchId] = category;
