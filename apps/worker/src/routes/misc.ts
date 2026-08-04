@@ -288,6 +288,10 @@ const LONG_RUN_HARD_SECONDS = 6000;
 const LOAD_COVERAGE_THRESHOLD = 0.9;
 /** A recovery reading older than this date-stamps the card and drops its band. */
 const RECOVERY_STALE_DAYS = 2;
+/** Trailing window (inclusive of today) behind the low-intensity headline: 4 weeks. */
+const INTENSITY_HEADLINE_DAYS = 27;
+/** Runs with heart rate needed in the 26-week window before the ceiling is quoted without a caveat. */
+const MIN_HRMAX_RUNS = 10;
 
 function rowToLap(row: typeof activityLaps.$inferSelect): ActivityLap {
   return {
@@ -377,13 +381,15 @@ insightRoutes.get("/", async (c) => {
   const prefs = await loadPreferences(db, userId);
   const today = todayInZone(prefs.timezone);
   const twelveWeeksAgo = addDays(startOfIsoWeek(today), -7 * 12);
+  const twentySixWeeksAgo = addDays(startOfIsoWeek(today), -7 * 26);
   const range = { start: twelveWeeksAgo, end: today };
 
   // Every independent query at once. Activities are stored as UTC instants but
   // bucketed by LOCAL date, so the fetch is padded a day on the early side and
   // re-filtered on local date below — without the pad, a late-evening run near
   // the window edge appears or vanishes depending on the user's UTC offset.
-  const [workoutRows, actRows, dismissed, healthRows, reviews, storedRows] = await Promise.all([
+  const [workoutRows, actRows, dismissed, healthRows, reviews, storedRows, hrMaxRows] =
+    await Promise.all([
     db
       .select()
       .from(plannedWorkouts)
@@ -425,6 +431,23 @@ insightRoutes.get("/", async (c) => {
       .from(computedMetrics)
       .where(
         and(eq(computedMetrics.userId, userId), eq(computedMetrics.metricKey, RECORDS_METRIC_KEY)),
+      ),
+    // Heart-rate columns only, over 26 weeks of runs: the easy ceiling every
+    // execution metric is measured against deserves a longer, steadier history
+    // than the 12-week display window, and there is no reason to load 26 weeks
+    // of full activity rows to read two numbers off each.
+    db
+      .select({
+        maxHeartRate: activities.maxHeartRate,
+        avgHeartRate: activities.avgHeartRate,
+      })
+      .from(activities)
+      .where(
+        and(
+          eq(activities.userId, userId),
+          eq(activities.sport, "run"),
+          gte(activities.startTime, `${addDays(twentySixWeeksAgo, -1)}T00:00:00Z`),
+        ),
       ),
   ]);
 
@@ -519,10 +542,24 @@ insightRoutes.get("/", async (c) => {
   const secondsByDay = [...runSecondsByDay.entries()].map(([date, seconds]) => ({ date, seconds }));
 
   // ── Zones ──
-  const hrMax = estimateHrMax(runs) ?? 190;
+  // The ceiling is estimated from 26 weeks of runs, not the 12-week display
+  // window: it is the line every execution metric is measured against, so it
+  // should move slowly. When too few runs carry heart rate to stand behind it,
+  // the estimate is still used — but it says so, on every card that uses it.
+  const hrMaxEstimate = estimateHrMax(hrMaxRows);
+  const hrMax = hrMaxEstimate ?? 190;
   const ceiling = easyCeiling(hrMax);
+  const hrRunCount = hrMaxRows.filter(
+    (r) => r.maxHeartRate != null || r.avgHeartRate != null,
+  ).length;
+  const ceilingNote =
+    hrMaxEstimate == null
+      ? "Easy ceiling from a default max heart rate of 190 — no usable max-heart-rate readings in the last 26 weeks."
+      : hrRunCount < MIN_HRMAX_RUNS
+        ? `Ceiling estimated from only ${hrRunCount} run${hrRunCount === 1 ? "" : "s"} with heart rate in the last 26 weeks.`
+        : "";
 
-  const intensityInputs: IntensityRunInput[] = runRows.map((a) => ({
+  const toIntensityInput = (a: (typeof actRows)[number]): IntensityRunInput => ({
     activityId: a.id,
     durationSeconds: a.durationSeconds,
     avgHeartRate: a.avgHeartRate,
@@ -530,8 +567,17 @@ insightRoutes.get("/", async (c) => {
       avgHeartRate: l.avgHeartRate ?? null,
       durationSeconds: l.durationSeconds,
     })),
-  }));
-  const intensity = computeLowIntensityShare(intensityInputs, hrMax);
+  });
+  // Two calls, two jobs. The headline the user reads is the last 4 weeks —
+  // a 12-week average would let a disciplined block from two months ago hide
+  // a month of running everything too hard. The full-window call exists only
+  // to give the weekly stacked bars a zone split for every week they draw.
+  const intensityHeadlineStart = addDays(today, -INTENSITY_HEADLINE_DAYS);
+  const recentIntensity = computeLowIntensityShare(
+    runRows.filter((a) => localDate(a) >= intensityHeadlineStart).map(toIntensityInput),
+    hrMax,
+  );
+  const windowIntensity = computeLowIntensityShare(runRows.map(toIntensityInput), hrMax);
 
   // A day is hard when it carried a matched quality/race session, a run whose
   // category we can't vouch for but whose heart rate was above the easy
@@ -615,10 +661,18 @@ insightRoutes.get("/", async (c) => {
 
   const categoryRecord: Record<string, WorkoutCategory> = {};
   for (const [matchId, category] of categoryByMatchId) categoryRecord[matchId] = category;
-  const weekly = computeWeeklyTraining(runs, categoryRecord, {
-    today,
-    intensityByActivity: intensity.status === "ok" ? intensity.value.perActivity : undefined,
-  });
+  // Only runs that actually produced zone time. `perActivity` carries a
+  // {0, 0} entry for every heart-rate-less run, and weeklyTraining treats the
+  // presence of an entry as "zone time known" — so passing those through made
+  // HR-less runs contribute their duration to the week's total but nothing to
+  // either stack segment, and they silently vanished from the bars.
+  const intensityByActivity: Record<string, { lowSeconds: number; highSeconds: number }> = {};
+  if (windowIntensity.status === "ok") {
+    for (const [activityId, split] of Object.entries(windowIntensity.value.perActivity)) {
+      if (split.lowSeconds + split.highSeconds > 0) intensityByActivity[activityId] = split;
+    }
+  }
+  const weekly = computeWeeklyTraining(runs, categoryRecord, { today, intensityByActivity });
 
   // Prebuilt maps, not `find` inside a loop over every workout.
   const actById = new Map(actRows.map((a) => [a.id, a]));
@@ -668,9 +722,11 @@ insightRoutes.get("/", async (c) => {
   const evidence = pickEvidenceCard({ workouts, range, timeOfDayPairs, records }, dismissedIds);
 
   // ── Interpreted metrics (educational + gentle guidance) ──
+  // Disclosures appended to a card's sample note, joined with the metric's own.
+  const joinNotes = (...parts: string[]): string => parts.filter(Boolean).join(" ");
   const noHrNote =
-    intensity.status === "ok" && intensity.value.noHrSeconds > 0
-      ? `${Math.round(intensity.value.noHrSeconds / 60)} min of running had no heart rate and was excluded.`
+    recentIntensity.status === "ok" && recentIntensity.value.noHrSeconds > 0
+      ? `${Math.round(recentIntensity.value.noHrSeconds / 60)} min of running had no heart rate and was excluded.`
       : "";
 
   const interpreted: InterpretedMetric[] = [
@@ -680,6 +736,7 @@ insightRoutes.get("/", async (c) => {
         band: v.ratio > 1.5 ? "high" : v.ratio >= 1.3 ? "watch" : v.ratio < 0.8 ? "low" : "healthy",
         range: "sweet spot 0.8–1.3",
         gauge: { min: 0.5, max: 2, healthyLo: 0.8, healthyHi: 1.3, value: v.ratio },
+        series: v.series.map((p) => ({ date: p.date, value: p.ratio })),
         meaning:
           "Your last week of training compared with the month behind it, smoothed so one big day neither " +
           "spikes the number nor abruptly falls out of it. Around 1.0 means this week looks like your norm.",
@@ -807,13 +864,13 @@ insightRoutes.get("/", async (c) => {
           : undefined,
     })),
     withNote(
-      interpret("lowIntensityShare", "Low-intensity share", intensity, (v) => ({
+      interpret("lowIntensityShare", "Low-intensity share", recentIntensity, (v) => ({
         value: `${v.lowPct}%`,
         band: v.lowPct < 65 ? "high" : v.lowPct < 75 ? "watch" : "healthy",
         range: "aim ≥75%, classic target ~80%",
         gauge: { min: 40, max: 100, healthyLo: 75, healthyHi: 100, value: v.lowPct },
         meaning:
-          `Share of your heart-rate-tracked running time spent at or under your easy ceiling of ${ceiling} bpm, ` +
+          `Share of your running time over the last 4 weeks spent at or under your easy ceiling of ${ceiling} bpm, ` +
           "measured lap by lap so a hard surge inside an otherwise-easy run still counts as hard. Easy running " +
           "isn't the lesser kind — it's the engine the hard sessions run on.",
         suggestion:
@@ -823,22 +880,25 @@ insightRoutes.get("/", async (c) => {
               ? "A little intensity-heavy. Slowing the easy runs down costs nothing and pays into everything else."
               : undefined,
       })),
-      noHrNote,
+      joinNotes(noHrNote, ceilingNote),
     ),
-    interpret("easyDiscipline", "Easy-run discipline", easyDiscipline, (v) => ({
-      value: `${v.inEasyPct}%`,
-      band: v.inEasyPct < 80 ? "watch" : "healthy",
-      range: "≥80%",
-      gauge: { min: 0, max: 100, healthyLo: 80, healthyHi: 100, value: v.inEasyPct },
-      strip: v.ticks.map((t) => ({ date: t.date, on: t.easy })),
-      meaning:
-        `Share of your planned easy and recovery runs whose average heart rate actually stayed at or under ` +
-        `your easy ceiling of ${ceiling} bpm.`,
-      suggestion:
-        v.inEasyPct < 80
-          ? "Easy runs drifting hard is the most common way a plan quietly stops working. The fix is slower, not shorter."
-          : undefined,
-    })),
+    withNote(
+      interpret("easyDiscipline", "Easy-run discipline", easyDiscipline, (v) => ({
+        value: `${v.inEasyPct}%`,
+        band: v.inEasyPct < 80 ? "watch" : "healthy",
+        range: "≥80%",
+        gauge: { min: 0, max: 100, healthyLo: 80, healthyHi: 100, value: v.inEasyPct },
+        strip: v.ticks.map((t) => ({ date: t.date, on: t.easy })),
+        meaning:
+          `Share of your planned easy and recovery runs whose average heart rate actually stayed at or under ` +
+          `your easy ceiling of ${ceiling} bpm.`,
+        suggestion:
+          v.inEasyPct < 80
+            ? "Easy runs drifting hard is the most common way a plan quietly stops working. The fix is slower, not shorter."
+            : undefined,
+      })),
+      ceilingNote,
+    ),
     interpret("pacing", "Pacing", pacing, (v) => {
       const delta = Math.round(v.medianDeltaSecPerKm);
       return {
@@ -857,8 +917,14 @@ insightRoutes.get("/", async (c) => {
   // `over` uses the same isEasyHr predicate the metric itself used — a
   // drill-down that disagrees with its own headline is worse than none.
   const easyDetailRuns: MetricRunDetail[] = easyRunRows.map((a) => {
-    const avgHr = Math.round(a.avgHeartRate ?? 0);
-    const over = !isEasyHr(avgHr, hrMax);
+    // `over` is decided on the RAW average, exactly as computeEasyDiscipline
+    // decided the tick; rounding is for display only. Deciding it on the
+    // rounded value made a run at 144.4 bpm against a 144 ceiling show a red
+    // tick above a row reading "Stayed easy" — the metric disagreeing with its
+    // own evidence is the failure this whole drill-down exists to prevent.
+    const rawAvgHr = a.avgHeartRate ?? 0;
+    const avgHr = Math.round(rawAvgHr);
+    const over = !isEasyHr(rawAvgHr, hrMax);
     const laps = lapsOf(a.id)
       .filter((l) => l.durationSeconds > 0)
       .sort((x, y) => x.lapIndex - y.lapIndex)

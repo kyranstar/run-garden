@@ -75,12 +75,23 @@ interface InterpretedMetricBody {
   series?: Array<{ date: string; value: number }>;
   strip?: Array<{ date: string; on: boolean }>;
   staleNote?: string;
-  detail?: { explain: string; runs: Array<{ activityId: string; over?: boolean }> };
+  detail?: {
+    explain: string;
+    runs: Array<{ activityId: string; over?: boolean; note?: string }>;
+  };
+}
+
+interface WeekTotals {
+  weekStart: string;
+  partial: boolean;
+  durationSeconds: number;
+  lowSeconds: number;
+  highSeconds: number;
 }
 
 interface InsightsBody {
   consistency: { planned: number; completed: number; pending: number; days: unknown[] };
-  weekly: { weeks: Array<{ weekStart: string; partial: boolean }> };
+  weekly: { weeks: WeekTotals[] };
   efficiency: MetricEnvelope<{ perRun: Array<{ activityId: string; efficiency: number }> }>;
   decoupling: MetricEnvelope<{
     perRun: Array<{ activityId: string }>;
@@ -304,6 +315,156 @@ describe("sport scoping", () => {
 
     // Nothing anywhere in the payload references the yoga session.
     expect(JSON.stringify(body)).not.toContain(yogaId);
+  });
+});
+
+// ── Low-intensity share: 4-week headline over a 12-week zone split ───────────
+
+describe("low-intensity share windows", () => {
+  it("reads the headline over the last 4 weeks, so an old easy block cannot hide a hard month", async () => {
+    // Five weeks ago and older: 15 hours of genuinely easy running.
+    for (let i = 0; i < 15; i++) {
+      await seedMatchedRun(userId, "easy", {
+        date: addDays(today, -(35 + i * 2)),
+        durationSeconds: 3600,
+        distanceMeters: 12_000,
+        avgHeartRate: 130,
+      });
+    }
+    // The last four weeks: 5 hours, every minute of it above the easy ceiling
+    // (hrMax 180 → ceiling 144).
+    for (let i = 0; i < 5; i++) {
+      await seedMatchedRun(userId, "quality", {
+        date: addDays(today, -(2 + i * 3)),
+        durationSeconds: 3600,
+        distanceMeters: 12_000,
+        avgHeartRate: 165,
+        lapHeartRate: 165,
+      });
+    }
+
+    const body = await client(cookie).get();
+    const lowIntensity = metric(body, "lowIntensityShare");
+
+    // Over the whole 12 weeks this reads 15h/20h = 75% — a healthy-looking
+    // number describing a month that did not happen.
+    expect(lowIntensity.status).toBe("ok");
+    expect(lowIntensity.value).toBe("0%");
+    expect(lowIntensity.band).toBe("high");
+    expect(lowIntensity.meaning).toContain("last 4 weeks");
+
+    // …while the weekly stacked bars still get a zone split for the older
+    // weeks, which is what the full-window computation is for.
+    const easyWeeks = body.weekly.weeks.filter((w) => w.lowSeconds > 0);
+    expect(easyWeeks.length).toBeGreaterThan(0);
+  });
+
+  it("keeps a heart-rate-less run in its week's stacked total instead of dropping it", async () => {
+    // Four hours of HR-tracked running opens the zone-split computation…
+    for (let i = 0; i < 5; i++) {
+      await seedMatchedRun(userId, "easy", {
+        date: addDays(today, -(3 + i * 2)),
+        durationSeconds: 3600,
+        distanceMeters: 12_000,
+        avgHeartRate: 130,
+      });
+    }
+    // …and this run, recorded without a heart-rate strap, must still appear in
+    // its week's bar via the category fallback rather than silently vanishing.
+    const noHrDate = addDays(today, -4);
+    await seedActivity(userId, {
+      date: noHrDate,
+      durationSeconds: 2400,
+      avgHeartRate: null,
+      lapCount: 0,
+      title: "No strap",
+      startLocalTime: "18:00:00",
+    });
+
+    const body = await client(cookie).get();
+    expect(metric(body, "lowIntensityShare").status).toBe("ok");
+
+    const week = body.weekly.weeks.find(
+      (w) => w.weekStart <= noHrDate && addDays(w.weekStart, 6) >= noHrDate,
+    );
+    expect(week, "no weekly bucket covers the strapless run").toBeDefined();
+    expect(week!.lowSeconds + week!.highSeconds).toBe(week!.durationSeconds);
+  });
+});
+
+// ── Easy ceiling: 26-week basis and its honesty caveat ───────────────────────
+
+describe("easy ceiling", () => {
+  it("discloses a thin sample on every card measured against the ceiling", async () => {
+    for (let i = 0; i < 5; i++) {
+      await seedMatchedRun(userId, "easy", {
+        date: addDays(today, -(2 + i * 3)),
+        durationSeconds: 3600,
+        distanceMeters: 12_000,
+        avgHeartRate: 130,
+      });
+    }
+
+    const body = await client(cookie).get();
+
+    const disclosure = "Ceiling estimated from only 5 runs with heart rate in the last 26 weeks.";
+    expect(metric(body, "easyDiscipline").sampleNote).toContain(disclosure);
+    expect(metric(body, "lowIntensityShare").sampleNote).toContain(disclosure);
+  });
+
+  it("drops the caveat once enough runs carry heart rate, and still measures against the 26-week estimate", async () => {
+    // 12 runs with heart rate, half of them older than the 12-week display
+    // window — the ceiling is a 26-week estimate, so they count.
+    for (let i = 0; i < 6; i++) {
+      await seedMatchedRun(userId, "easy", {
+        date: addDays(today, -(2 + i * 3)),
+        durationSeconds: 3600,
+        distanceMeters: 12_000,
+        avgHeartRate: 130,
+      });
+    }
+    for (let i = 0; i < 6; i++) {
+      await seedActivity(userId, {
+        date: addDays(today, -(120 + i * 5)),
+        avgHeartRate: 140,
+        maxHeartRate: 180,
+      });
+    }
+
+    const body = await client(cookie).get();
+    expect(metric(body, "easyDiscipline").sampleNote).not.toContain("Ceiling estimated from only");
+    expect(metric(body, "lowIntensityShare").sampleNote).not.toContain(
+      "Ceiling estimated from only",
+    );
+  });
+});
+
+describe("easy-discipline drill-down", () => {
+  it("decides a run's verdict on the same raw average the tick used, not a rounded one", async () => {
+    for (let i = 0; i < 4; i++) {
+      await seedMatchedRun(userId, "easy", {
+        date: addDays(today, -(2 + i * 3)),
+        avgHeartRate: 130,
+      });
+    }
+    // hrMax 180 → ceiling 144. This run is over it — but rounds down onto it,
+    // so a drill-down that rounds first would call it easy while the metric
+    // counted it against the percentage.
+    const borderlineId = await seedMatchedRun(userId, "easy", {
+      date: addDays(today, -15),
+      avgHeartRate: 144.4,
+      lapHeartRate: 144.4,
+    });
+
+    const body = await client(cookie).get();
+    const easyDiscipline = metric(body, "easyDiscipline");
+
+    expect(easyDiscipline.status).toBe("ok");
+    expect(easyDiscipline.value).toBe("80%");
+    const row = easyDiscipline.detail?.runs.find((r) => r.activityId === borderlineId);
+    expect(row, "borderline run missing from the drill-down").toBeDefined();
+    expect(row!.over).toBe(true);
+    expect(row!.note).toContain("above your easy ceiling");
   });
 });
 

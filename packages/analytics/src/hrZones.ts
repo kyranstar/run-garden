@@ -1,5 +1,3 @@
-import type { NormalizedActivity } from "@rg/domain";
-
 /**
  * Heart-rate zones estimated from observed data (no age/lab input). Max HR is
  * the second-highest recorded max-heart-rate reading across activities: a
@@ -11,7 +9,19 @@ import type { NormalizedActivity } from "@rg/domain";
  * %HRmax: Z1 <68, Z2 68–79, Z3 80–87, Z4 88–94, Z5 95%+.
  */
 
-export function estimateHrMax(activities: readonly NormalizedActivity[]): number | null {
+/**
+ * Only the one field the estimate reads. Deliberately narrower than
+ * `NormalizedActivity` (which still satisfies it) so a caller can pass a
+ * column projection: estimating the ceiling over a 26-week history has no
+ * business loading 26 weeks of full activity rows to look at one number.
+ * `null` is accepted alongside `undefined` because that is what a SQL row
+ * carries.
+ */
+export interface HrMaxSample {
+  maxHeartRate?: number | null;
+}
+
+export function estimateHrMax(activities: readonly HrMaxSample[]): number | null {
   const maxes = activities
     .map((a) => a.maxHeartRate)
     .filter((h): h is number => h != null && h > 120)
