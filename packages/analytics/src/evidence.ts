@@ -16,6 +16,9 @@ const MIN_MORNING_PLANNED = 10;
 const MIN_MORNING_RATE = 0.7;
 const MIN_EASY_PLANNED = 10;
 const MIN_EASY_RATE = 0.7;
+/** Comparative morning-vs-evening phrasing requires at least this many
+ * planned samples in BOTH windows; below that, the card is not produced. */
+const MIN_WINDOW_PLANNED_FOR_COMPARISON = 3;
 
 export interface EvidenceCard {
   /** Stable hash of the card kind + headline value, so dismissals persist. */
@@ -53,13 +56,26 @@ function comebackCard(records: PersonalRecord[]): EvidenceCard | null {
 function morningCard(pairs: TimeOfDayPair[]): EvidenceCard | null {
   const result = computeTimeOfDay(pairs);
   if (result.status !== "ok") return null;
-  const { morning } = result.value;
+  const { morning, evening, medianStartDeltaMinutes } = result.value;
+  // Comparative phrasing needs a real comparison: without at least a few
+  // planned samples in EACH window, the other window's rate is too thin to
+  // stand behind, so no card is produced at all.
+  if (
+    morning.planned < MIN_WINDOW_PLANNED_FOR_COMPARISON ||
+    evening.planned < MIN_WINDOW_PLANNED_FOR_COMPARISON
+  ) {
+    return null;
+  }
   if (morning.planned < MIN_MORNING_PLANNED || morning.rate < MIN_MORNING_RATE) return null;
   const pct = Math.round(morning.rate * 100);
+  let text = `You complete ${pct}% of morning runs (${morning.completed} of ${morning.planned} scheduled before noon).`;
+  if (medianStartDeltaMinutes != null) {
+    text += ` You typically start within ${medianStartDeltaMinutes} minutes of plan.`;
+  }
   return card(
     "morning_completion",
     String(pct),
-    `You complete ${pct}% of morning runs (${morning.completed} of ${morning.planned} scheduled before noon).`,
+    text,
     `Sample: ${morning.planned} scheduled morning runs.`,
   );
 }

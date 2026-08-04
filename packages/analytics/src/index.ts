@@ -5,7 +5,6 @@ export * from "./weeklyTraining.js";
 export * from "./aerobicEfficiency.js";
 export * from "./decoupling.js";
 export * from "./timeOfDay.js";
-export * from "./execution.js";
 export * from "./records.js";
 export * from "./evidence.js";
 export * from "./weeklyFacts.js";

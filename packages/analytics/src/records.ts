@@ -1,9 +1,6 @@
 import type { ActivityLap, LocalDate, NormalizedActivity, WorkoutCategory } from "@rg/domain";
 import { addDays, daysBetween } from "@rg/domain";
 import { computeAerobicEfficiency } from "./aerobicEfficiency.js";
-import type { ExecutionInput } from "./execution.js";
-import { computeExecution } from "./execution.js";
-import { activityLocalDate, median } from "./stats.js";
 
 /**
  * "Invisible personal records": achievements a watch never surfaces, each with
@@ -30,30 +27,32 @@ export interface PersonalRecord {
 export interface RecordsInput {
   /** Full run history in the module 3/4 input shape. */
   runs: RunSample[];
-  /** Structured workouts with their laps (module 6 input shape). */
-  executions: ExecutionInput[];
   /** Weekly adherence series, e.g. from computeConsistency().weeklyBreakdown. */
   weeklyAdherence: Array<{ weekStart: LocalDate; adherence: number }>;
   /** LocalDates of every completed run in history. */
   completedRunDates: LocalDate[];
 }
 
+/** A personal record with the raw comparison value used for never-regress merges. Higher `numeric` is always better. */
+export type ScoredRecord = PersonalRecord & { numeric: number };
+
+/** Persisted shape of a record, carrying the `numeric` value that survives across regenerations. */
+export interface StoredRecord {
+  id: string;
+  title: string;
+  value: string;
+  achievedOn: LocalDate;
+  rule: string;
+  numeric: number;
+}
+
 const MIN_EFFICIENCY_RUNS = 5;
-const MIN_COMPARABLE_RUNS = 5;
-const MIN_INTERVAL_WORKOUTS = 3;
 const MIN_ADHERENCE_WEEKS = 8;
 const BREAK_DAYS = 7;
 const STREAK_LENGTH = 3;
 const STREAK_MAX_GAP_DAYS = 3;
 
-function formatPace(secPerKm: number): string {
-  const total = Math.round(secPerKm);
-  const min = Math.floor(total / 60);
-  const sec = total % 60;
-  return `${min}:${sec.toString().padStart(2, "0")}`;
-}
-
-function bestAerobicEfficiency(runs: RunSample[]): PersonalRecord | null {
+function bestAerobicEfficiency(runs: RunSample[]): ScoredRecord | null {
   const result = computeAerobicEfficiency(runs);
   if (result.status !== "ok" || result.sampleSize < MIN_EFFICIENCY_RUNS) return null;
   let best = result.value.perRun[0]!;
@@ -66,59 +65,13 @@ function bestAerobicEfficiency(runs: RunSample[]): PersonalRecord | null {
     value: `${best.efficiency.toFixed(2)} m/beat`,
     achievedOn: best.date,
     rule: "Highest meters travelled per heart beat on any eligible easy or recovery run of 25+ minutes with heart rate.",
-  };
-}
-
-function lowestHrAtComparablePace(runs: RunSample[]): PersonalRecord | null {
-  const candidates = runs.filter(
-    (r) =>
-      (r.category === "easy" || r.category === "recovery") &&
-      r.activity.avgPaceSecPerKm != null &&
-      r.activity.avgPaceSecPerKm > 0 &&
-      r.activity.avgHeartRate != null &&
-      r.activity.avgHeartRate > 0,
-  );
-  if (candidates.length === 0) return null;
-  const medianPace = median(candidates.map((r) => r.activity.avgPaceSecPerKm!));
-  const comparable = candidates.filter(
-    (r) => Math.abs(r.activity.avgPaceSecPerKm! - medianPace) / medianPace <= 0.03,
-  );
-  if (comparable.length < MIN_COMPARABLE_RUNS) return null;
-  let best = comparable[0]!;
-  for (const r of comparable) {
-    if (r.activity.avgHeartRate! < best.activity.avgHeartRate!) best = r;
-  }
-  return {
-    id: "lowest_hr_at_comparable_pace",
-    title: "Lowest heart rate at your usual easy pace",
-    value: `${Math.round(best.activity.avgHeartRate!)} bpm at ${formatPace(best.activity.avgPaceSecPerKm!)}/km`,
-    achievedOn: activityLocalDate(best.activity),
-    rule: "Lowest average heart rate among easy runs paced within 3% of your median easy pace.",
-  };
-}
-
-function mostEvenIntervalSet(executions: ExecutionInput[]): PersonalRecord | null {
-  const scored: Array<{ date: LocalDate; cv: number }> = [];
-  for (const e of executions) {
-    const result = computeExecution(e);
-    if (result.status !== "ok" || result.value.plannedWorkIntervals < 2) continue;
-    scored.push({ date: e.workout.effectiveDate, cv: result.value.intervalConsistencyCvPct });
-  }
-  if (scored.length < MIN_INTERVAL_WORKOUTS) return null;
-  scored.sort((a, b) => a.cv - b.cv || (a.date < b.date ? -1 : 1));
-  const best = scored[0]!;
-  return {
-    id: "most_even_interval_set",
-    title: "Most even interval set",
-    value: `${best.cv.toFixed(1)}% pace variation`,
-    achievedOn: best.date,
-    rule: "Lowest coefficient of variation of work-lap paces across executed interval workouts with 2+ planned work bouts.",
+    numeric: best.efficiency,
   };
 }
 
 function mostConsistentFourWeeks(
   weeks: Array<{ weekStart: LocalDate; adherence: number }>,
-): PersonalRecord | null {
+): ScoredRecord | null {
   const sorted = [...weeks].sort((a, b) => (a.weekStart < b.weekStart ? -1 : 1));
   if (sorted.length < MIN_ADHERENCE_WEEKS) return null;
   let best: { start: LocalDate; minAdherence: number } | null = null;
@@ -140,10 +93,11 @@ function mostConsistentFourWeeks(
     value: `${Math.round(best.minAdherence * 100)}% adherence in the weakest week`,
     achievedOn: addDays(best.start, 27),
     rule: "Across every stretch of 4 consecutive weeks, the highest value of the lowest weekly adherence.",
+    numeric: best.minAdherence,
   };
 }
 
-function fastestComebackDays(completedRunDates: LocalDate[]): PersonalRecord | null {
+function fastestComebackDays(completedRunDates: LocalDate[]): ScoredRecord | null {
   const dates = [...new Set(completedRunDates)].sort();
   let best: { days: number; achievedOn: LocalDate } | null = null;
   for (let i = 0; i + 1 < dates.length; i++) {
@@ -168,18 +122,44 @@ function fastestComebackDays(completedRunDates: LocalDate[]): PersonalRecord | n
     value: `${best.days} days`,
     achievedOn: best.achievedOn,
     rule: "Fewest days from the first run after a break of 7+ days until three runs each within 3 days of the previous.",
+    // Faster comebacks (fewer days) must score higher, so negate.
+    numeric: -best.days,
   };
 }
 
-export function computeRecords(input: RecordsInput): PersonalRecord[] {
-  const records: PersonalRecord[] = [];
-  const push = (r: PersonalRecord | null) => {
+export function computeRecords(input: RecordsInput): ScoredRecord[] {
+  const records: ScoredRecord[] = [];
+  const push = (r: ScoredRecord | null) => {
     if (r != null) records.push(r);
   };
   push(bestAerobicEfficiency(input.runs));
-  push(lowestHrAtComparablePace(input.runs));
-  push(mostEvenIntervalSet(input.executions));
   push(mostConsistentFourWeeks(input.weeklyAdherence));
   push(fastestComebackDays(input.completedRunDates));
   return records;
+}
+
+/**
+ * Merge freshly computed records into the persisted set without ever
+ * regressing: per id, keep whichever record has the better (higher)
+ * `numeric` value; ties favor the stored record. A stored record with no
+ * fresh counterpart survives unchanged, and a fresh record with no stored
+ * counterpart is added. The result is sorted by id for determinism.
+ */
+export function mergeRecords(fresh: ScoredRecord[], stored: StoredRecord[]): StoredRecord[] {
+  const byId = new Map<string, StoredRecord>();
+  for (const s of stored) byId.set(s.id, s);
+  for (const f of fresh) {
+    const existing = byId.get(f.id);
+    if (existing == null || f.numeric > existing.numeric) {
+      byId.set(f.id, {
+        id: f.id,
+        title: f.title,
+        value: f.value,
+        achievedOn: f.achievedOn,
+        rule: f.rule,
+        numeric: f.numeric,
+      });
+    }
+  }
+  return [...byId.values()].sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
 }
