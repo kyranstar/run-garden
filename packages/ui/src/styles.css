@@ -21,6 +21,10 @@
   --warn-soft: #f7ecda;
   --danger: #a44434;
   --danger-soft: #f7e4df;
+  /* Deeper than --danger so a 1.5px glyph stroke (the heatmap's missed ✕)
+     still clears contrast at hairline weight; --danger is tuned for fills
+     and pill text, which carry far more pixels. */
+  --danger-ink: #8f3527;
   --focus: #3e7a52;
 
   /* Chart series — re-stepped 2026-08-04: the previous values (#3e7a52 /
@@ -71,6 +75,7 @@
     --warn-soft: #3a3020;
     --danger: #d08070;
     --danger-soft: #3c2722;
+    --danger-ink: #e5a294;
     --shadow: 0 1px 2px rgba(0, 0, 0, 0.3);
     /* Re-stepped alongside the light block above — see that comment. */
     --chart-1: #3da868;
@@ -99,6 +104,7 @@
   --warn-soft: #3a3020;
   --danger: #d08070;
   --danger-soft: #3c2722;
+  --danger-ink: #e5a294;
   --shadow: 0 1px 2px rgba(0, 0, 0, 0.3);
   /* Re-stepped alongside the light block above — see that comment. */
   --chart-1: #3da868;
@@ -1203,6 +1209,120 @@ button {
   color: var(--ink);
   white-space: normal;
 }
+/* Only a tooltip that carries an action button takes the pointer — the
+   default stays pass-through so a plain tooltip can never sit between the
+   cursor and the marks underneath it. */
+.chart-tip-interactive {
+  pointer-events: auto;
+}
+.chart-tip-action {
+  display: block;
+  margin-top: 0.25rem;
+  padding: 0;
+  border: 0;
+  background: none;
+  font: inherit;
+  font-weight: 650;
+  color: var(--green-ink);
+  cursor: pointer;
+}
+
+/* Transparent per-mark hit target: invisible until focused, at which point
+   it has to be visible — this is the keyboard's only route to a clickable
+   mark, and the tooltip's action button is the enhancement, not the path. */
+.chart-hit {
+  cursor: pointer;
+  outline: none;
+}
+.chart-hit:focus-visible {
+  stroke: var(--focus);
+  stroke-width: 2;
+}
+
+/* Legend: a color chip, or a bespoke swatch drawn from the same code as the
+   mark it stands for (see HeatSwatch in charts.tsx) so the key can never
+   drift from the chart. */
+.chart-legend {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.3rem 0.9rem;
+  margin-bottom: 0.35rem;
+}
+.chart-legend-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.32rem;
+  font-size: 0.76rem;
+  color: var(--ink-faint);
+}
+.chart-legend-swatch {
+  display: inline-flex;
+  align-items: center;
+}
+.chart-legend-chip {
+  width: 10px;
+  height: 10px;
+  border-radius: 3px;
+  display: inline-block;
+}
+
+/* OutcomeBar's count line — the bar is 12px tall, so the counts beneath it
+   are the direct labels that keep it from depending on color alone. */
+.outcome-counts {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0 0.1rem;
+  margin: 0.45rem 0 0;
+  font-size: 0.78rem;
+  color: var(--ink-soft);
+  font-variant-numeric: tabular-nums;
+}
+.outcome-count {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3rem;
+}
+.outcome-sep {
+  color: var(--ink-faint);
+  margin-right: 0.2rem;
+}
+.outcome-chip {
+  width: 9px;
+  height: 9px;
+  flex: none;
+  border-radius: 2px;
+  display: inline-block;
+}
+.outcome-chip-completed {
+  background: var(--chart-1);
+}
+.outcome-chip-moved {
+  background: repeating-linear-gradient(
+    45deg,
+    var(--chart-grid) 0 1.5px,
+    color-mix(in srgb, var(--chart-1) 55%, transparent) 1.5px 4.5px
+  );
+}
+.outcome-chip-pending {
+  background: var(--chart-track);
+}
+.outcome-chip-skipped {
+  background: repeating-linear-gradient(
+    -45deg,
+    var(--chart-grid) 0 1.5px,
+    var(--chart-track) 1.5px 4.5px
+  );
+}
+.outcome-chip-missed {
+  background: var(--danger);
+  opacity: 0.85;
+}
+.outcome-chip-upcoming {
+  background: transparent;
+  border: 1px solid var(--chart-grid);
+}
 
 /* Trend chip (TrendChip in chart-kit.tsx): renders as `pill pill-ok` /
    `pill-danger` / `pill-neutral trend-chip` — it's built directly on the
@@ -1946,7 +2066,7 @@ button {
   padding: 0.6rem 0.7rem;
 }
 .drill-run-over {
-  border-left: 3px solid #c96a52;
+  border-left: 3px solid var(--danger);
 }
 .drill-run-head {
   display: flex;
@@ -1956,7 +2076,7 @@ button {
 }
 .drill-run-head .date {
   font-size: 0.78rem;
-  color: var(--muted, #667);
+  color: var(--ink-faint);
   min-width: 4.2em;
 }
 .drill-run-title {
@@ -1968,34 +2088,10 @@ button {
   font-variant-numeric: tabular-nums;
   font-size: 0.85rem;
 }
-.lap-bars {
-  width: 100%;
-  max-width: 420px;
-  height: auto;
-  margin-top: 0.45rem;
-  display: block;
-}
-.lap-bar {
-  fill: #7aa458;
-  opacity: 0.85;
-}
-.lap-bar-over {
-  fill: #c96a52;
-}
-.lap-label {
-  font-size: 7px;
-  fill: var(--ink-faint);
-}
-.lap-ceiling {
-  stroke: #a8552f;
-  stroke-width: 1;
-  stroke-dasharray: 4 3;
-}
-.lap-ceiling-label {
-  font-size: 7px;
-  fill: #a8552f;
-  font-weight: 700;
-}
+/* The .lap-* rules that used to live here (hardcoded #7aa458 / #c96a52 /
+   #a8552f — the only hexes left in the chart layer, and invisible to the
+   theme system) are gone: LapHrBars moved into charts.tsx and draws from
+   --chart-1 / --danger / --ink-faint like every other chart. */
 
 /* ── Ambient garden (desktop screensaver window) ──────────────────────────── */
 .ambient-root {

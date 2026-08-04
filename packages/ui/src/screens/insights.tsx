@@ -1,16 +1,29 @@
 import { useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { api, type InsightsResponse } from "@rg/api-client";
-import { Card, EmptyState, formatDayLong, formatDayShort, Sheet, Spinner } from "../components.js";
-import { AdherenceChart, ChartFrame, RunSeriesChart, WeeklyDurationChart } from "../charts.js";
+import {
+  Card,
+  EmptyState,
+  formatDayLong,
+  formatDayShort,
+  formatShortDate,
+  Sheet,
+  Spinner,
+} from "../components.js";
+import {
+  ChartFrame,
+  ConsistencyHeatmap,
+  LapHrBars,
+  OutcomeBar,
+  RunSeriesChart,
+  WeeklyDurationChart,
+} from "../charts.js";
+import { formatHours } from "../charts-math.js";
 
 // Derived from InsightsResponse (the worker's actual payload) rather than
 // redeclared here — this is exactly what task A9 replaced the blind `as`
 // casts with.
 type InterpretedMetric = InsightsResponse["interpreted"][number];
-type MetricDetail = NonNullable<InterpretedMetric["detail"]>;
-type MetricRunDetail = MetricDetail["runs"][number];
-type MetricLapDetail = NonNullable<MetricRunDetail["laps"]>[number];
 /** The insufficient-data branch is identical across every MetricResult<T>, whatever T is. */
 type MetricInsufficient = Extract<InsightsResponse["decoupling"], { status: "insufficient_data" }>;
 
@@ -71,60 +84,6 @@ function MetricCard({ m, onDrill }: { m: InterpretedMetric; onDrill?: (m: Interp
   );
 }
 
-/**
- * Per-lap HR bars for one run: each bar's height tracks the lap's average HR,
- * red bars breached the easy ceiling, and the dashed line IS the ceiling —
- * so "where it went wrong" is visible at a glance.
- */
-function LapHrBars({ laps, threshold }: { laps: MetricLapDetail[]; threshold?: { value: number; unit?: string } }) {
-  const withHr = laps.filter((l) => (l.avgHr ?? 0) > 0);
-  if (withHr.length < 2) return null;
-  const max = Math.max(...withHr.map((l) => l.avgHr!), threshold?.value ?? 0) * 1.06;
-  const min = Math.min(...withHr.map((l) => l.avgHr!), threshold?.value ?? Infinity) * 0.92;
-  const h = 72;
-  const y = (hr: number) => h - ((hr - min) / (max - min)) * h;
-  const bw = Math.min(28, Math.max(10, 220 / withHr.length));
-  const width = withHr.length * (bw + 3);
-  return (
-    <svg
-      viewBox={`0 0 ${width} ${h + 14}`}
-      className="lap-bars"
-      role="img"
-      aria-label={`Per-lap heart rate${threshold ? `, ceiling ${threshold.value}` : ""}`}
-    >
-      {withHr.map((l, i) => {
-        const top = y(l.avgHr!);
-        return (
-          <g key={l.lapIndex}>
-            <rect
-              x={i * (bw + 3)}
-              y={top}
-              width={bw}
-              height={h - top}
-              rx={2}
-              className={l.over ? "lap-bar lap-bar-over" : "lap-bar"}
-            >
-              <title>{`Lap ${l.lapIndex}: ${l.avgHr} bpm${l.over ? " — over the ceiling" : ""}`}</title>
-            </rect>
-            <text x={i * (bw + 3) + bw / 2} y={h + 11} textAnchor="middle" className="lap-label">
-              {l.lapIndex}
-            </text>
-          </g>
-        );
-      })}
-      {threshold ? (
-        <>
-          <line x1={0} x2={width} y1={y(threshold.value)} y2={y(threshold.value)} className="lap-ceiling" />
-          <text x={width - 2} y={y(threshold.value) - 3} textAnchor="end" className="lap-ceiling-label">
-            {threshold.value}
-            {threshold.unit ? ` ${threshold.unit}` : ""}
-          </text>
-        </>
-      ) : null}
-    </svg>
-  );
-}
-
 function MetricDrilldown({ m, onClose }: { m: InterpretedMetric; onClose: () => void }) {
   const d = m.detail!;
   return (
@@ -166,7 +125,6 @@ export function InsightsScreen() {
 
   const { consistency, weekly, efficiency, decoupling, records, reviews, interpreted } = insights.data;
 
-  const recentWeeks = consistency.weeklyBreakdown.slice(-8);
   const recentTraining = weekly.weeks.slice(-8);
 
   return (
@@ -188,24 +146,24 @@ export function InsightsScreen() {
       })}
 
       <Card title="Plan consistency · last 12 weeks">
-        <div className="row" style={{ gap: "1.4rem", marginBottom: "0.8rem", flexWrap: "wrap" }}>
-          <Stat label="Planned" value={consistency.planned} />
-          <Stat label="Completed" value={consistency.completed} />
-          <Stat label="Moved" value={consistency.moved} note="not a failure" />
-          <Stat label="Skipped" value={consistency.skipped} />
-          <Stat label="Missed" value={consistency.missed} />
-          {consistency.unresolved > 0 ? <Stat label="Unresolved" value={consistency.unresolved} /> : null}
-        </div>
-        {recentWeeks.length > 0 ? (
-          <ChartFrame
-            title="Completed vs planned by week"
-            summary={`Adherence ${(consistency.adherenceRate * 100).toFixed(0)} percent across ${consistency.planned} planned workouts. ${recentWeeks.map((w) => `Week of ${w.weekStart}: ${w.completed} of ${w.planned}.`).join(" ")}`}
-            note={`Overall adherence ${(consistency.adherenceRate * 100).toFixed(0)}% · moving a workout still counts as completing it`}
-          >
-            <AdherenceChart weeks={recentWeeks} />
-          </ChartFrame>
+        {consistency.planned > 0 ? (
+          <div className="stack">
+            <OutcomeBar
+              completed={consistency.completed}
+              moved={consistency.moved}
+              pending={consistency.pending}
+              skipped={consistency.skipped}
+              missed={consistency.missed}
+              planned={consistency.planned}
+              subtitle={`Adherence ${(consistency.adherenceRate * 100).toFixed(0)}% · moving a workout still counts as completing it`}
+            />
+            <ConsistencyHeatmap
+              days={consistency.days}
+              note="One square per day, weeks left to right. A tick above a column marks the week still in progress."
+            />
+          </div>
         ) : (
-          <p className="muted">Weekly breakdown appears once the plan has run for a week.</p>
+          <p className="muted">Plan consistency appears once the plan has workouts in it.</p>
         )}
       </Card>
 
@@ -215,33 +173,24 @@ export function InsightsScreen() {
         ) : (
           <ChartFrame
             title="Training time per week"
-            subtitle="Stacked: easy vs quality time (from completed, matched runs)"
+            subtitle="Stacked: low vs high intensity time (from completed, matched runs)"
             legend={[
-              { label: "Easy", colorVar: "--chart-1" },
-              { label: "Quality", colorVar: "--chart-2" },
+              { label: "Low intensity", colorVar: "--chart-1" },
+              { label: "High intensity", colorVar: "--chart-2" },
             ]}
             summary={recentTraining
               .map(
                 (w) =>
-                  `Week of ${w.weekStart}: ${Math.round(w.durationSeconds / 60)} minutes over ${w.runCount} runs.`,
+                  `Week of ${formatShortDate(w.weekStart)}: ${formatHours(w.durationSeconds)} over ${w.runCount} runs.`,
               )
               .join(" ")}
             note={
               weekly.fourWeekAvgDuration
-                ? `4-week average: ${Math.round(weekly.fourWeekAvgDuration / 3600 * 10) / 10} h/week · n=${recentTraining.reduce((s, w) => s + w.runCount, 0)} runs`
+                ? `4-week average: ${formatHours(weekly.fourWeekAvgDuration)}/week · n=${recentTraining.reduce((s, w) => s + w.runCount, 0)} runs`
                 : `n=${recentTraining.reduce((s, w) => s + w.runCount, 0)} runs`
             }
           >
-            <WeeklyDurationChart
-              weeks={recentTraining.map((w) => ({
-                weekStart: w.weekStart,
-                // WeeklyDurationChart still takes the old easy/quality prop names;
-                // low/high (zone-based, from A7) is now the more accurate split.
-                // B3 renames the chart's own props properly.
-                easySeconds: w.lowSeconds,
-                qualitySeconds: w.highSeconds,
-              }))}
-            />
+            <WeeklyDurationChart weeks={recentTraining} avgSeconds={weekly.fourWeekAvgDuration} />
           </ChartFrame>
         )}
       </Card>
@@ -259,7 +208,11 @@ export function InsightsScreen() {
             }`}
           >
             <RunSeriesChart
-              points={efficiency.value.perRun.map((p) => ({ date: p.date, value: p.efficiency }))}
+              points={efficiency.value.perRun.map((p) => ({
+                date: p.date,
+                value: p.efficiency,
+                activityId: p.activityId,
+              }))}
               unit="m/beat"
               seriesLabel="Aerobic efficiency"
             />
@@ -275,14 +228,20 @@ export function InsightsScreen() {
             title="Pace-adjusted speed-to-heart-rate decoupling, first half vs second half of steady runs"
             subtitle={decoupling.comparisonNote}
             summary={`Median Pa:HR decoupling ${decoupling.value.medianPct.toFixed(1)} percent across ${decoupling.sampleSize} steady runs.`}
-            note={`n=${decoupling.sampleSize} steady runs · median ${decoupling.value.medianPct.toFixed(1)}%`}
+            note={`n=${decoupling.sampleSize} steady runs · median ${decoupling.value.medianPct.toFixed(1)}% · shaded 0–5% is the range that means "held together"`}
           >
             <RunSeriesChart
-              points={decoupling.value.perRun.map((p) => ({ date: p.date, value: p.decouplingPct }))}
+              points={decoupling.value.perRun.map((p) => ({
+                date: p.date,
+                value: p.decouplingPct,
+                activityId: p.activityId,
+              }))}
               unit="% decoupling"
               seriesLabel="Aerobic decoupling"
               colorVar="--chart-2"
               decimals={1}
+              band={{ y1: 0, y2: 5 }}
+              zeroLine
             />
           </ChartFrame>
         ) : (
@@ -327,18 +286,6 @@ export function InsightsScreen() {
       ) : null}
 
       {drill?.detail ? <MetricDrilldown m={drill} onClose={() => setDrill(null)} /> : null}
-    </div>
-  );
-}
-
-function Stat({ label, value, note }: { label: string; value: number; note?: string }) {
-  return (
-    <div>
-      <div style={{ fontSize: "1.3rem", fontWeight: 650, fontVariantNumeric: "tabular-nums" }}>{value}</div>
-      <div className="faint">
-        {label}
-        {note ? ` · ${note}` : ""}
-      </div>
     </div>
   );
 }

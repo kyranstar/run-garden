@@ -48,6 +48,25 @@ export function formatDayShort(date: string): string {
   return `${WEEKDAYS[p.dow]} ${MONTHS[p.m - 1]!.slice(0, 3)} ${p.d}`;
 }
 
+/**
+ * "May 12" — THE date format for the chart layer, tooltips and hidden
+ * summaries included. It exists to kill the three formats charts.tsx had
+ * grown independently ("05/12" from a slice+replace, "05-12" from a bare
+ * slice, and raw ISO in the accessible summaries), which made two charts
+ * sitting side by side look like they came from different products.
+ * No weekday (a bar already sits in a dated column) and no year (charts
+ * cover weeks, not decades; the figure's own caption carries the period).
+ */
+export function formatShortDate(date: string): string {
+  const p = parts(date);
+  return `${MONTHS[p.m - 1]!.slice(0, 3)} ${p.d}`;
+}
+
+/** "May" — the month-boundary tick label on a date-scaled axis. */
+export function formatShortMonth(date: string): string {
+  return MONTHS[parts(date).m - 1]!.slice(0, 3);
+}
+
 export function weekdayShort(date: string): string {
   return WEEKDAYS[parts(date).dow]!;
 }

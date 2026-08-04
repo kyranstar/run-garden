@@ -96,6 +96,17 @@ import { useEffect, useLayoutEffect, useRef, useState } from "react";
  *     render (not inside an effect) — it writes straight into a ref with no
  *     re-render, so it must run on every render to stay current for the
  *     *next* pointer event, but calling it is cheap and side-effect-free.
+ *   - A mark may carry an optional `action: { label, onClick }`, which the
+ *     tooltip renders as a real `<button>` under the label (e.g. "view run
+ *     ›"). A tooltip with an action becomes pointer-interactive
+ *     (`.chart-tip-interactive` lifts the default `pointer-events: none`),
+ *     and both pointer handlers ignore events whose target is inside the
+ *     tooltip — otherwise moving the cursor off the mark and onto the button
+ *     would dismiss the tooltip before the click landed, and on touch the
+ *     `pointerdown` on the button would unpin it before `click` fired. The
+ *     action is an ENHANCEMENT, never the only route to the same navigation:
+ *     charts that offer one also give each mark a focusable, labeled hit
+ *     target so the keyboard reaches it without the tooltip.
  *   - Desktop (`pointerType !== "touch"` and `!== "pen"`): `pointermove`
  *     shows the tooltip for the nearest registered mark within a 24px hit
  *     radius. Coordinates are mapped between client (pointer-event) space
@@ -131,21 +142,29 @@ import { useEffect, useLayoutEffect, useRef, useState } from "react";
  * task's explicit requirements. It does not add keyboard focus handlers to
  * individual marks — screens that need keyboard-reachable tooltip content
  * must additionally expose the same values as visible text (direct labels,
- * a table view, etc.), consistent with "tooltips enhance, they never gate."
+ * a table view, etc.) or as focusable marks with their own `aria-label`,
+ * consistent with "tooltips enhance, they never gate."
  *
  * ────────────────────────────────────────────────────────────────────────
- * ReferenceLine / ShadedBand / HatchDefs / TrendChip
+ * ReferenceLine / ShadedBand / HatchDefs / useHatchId / TrendChip
  * ────────────────────────────────────────────────────────────────────────
  * Small SVG fragments: `ReferenceLine`/`ShadedBand` render against the
  * recessive `--chart-grid` token (a shaded band is that same token at low
- * opacity — no new hardcoded color); `HatchDefs` renders a single
- * `<pattern id="chartHatch">` for 45°-hatched fills (e.g. a partial-week
- * bar) — reference it with `fill="url(#chartHatch)"`. The id is a fixed
- * string (not namespaced per instance) so that reference works verbatim;
- * that means it is only valid HTML/SVG to render `<HatchDefs />` ONCE per
- * page — if two hatched charts render their own copy you get a duplicate
- * DOM id. Render it once (e.g. only in the first chart that needs hatching,
- * or hoisted into a shared root `<svg>`), not once per chart instance.
+ * opacity — no new hardcoded color); `HatchDefs` renders one `<pattern>` for
+ * hatched fills (a partial week, a moved workout) — reference it with
+ * `fill={`url(#${id})`}`.
+ *
+ * The pattern id is a REQUIRED prop, generated per chart instance by
+ * `useHatchId()`. It used to be the fixed string "chartHatch", which meant
+ * rendering `<HatchDefs />` in two charts on one screen produced duplicate
+ * DOM ids — and the Insights screen now has three hatch-using charts
+ * (weekly duration, outcome bar, heatmap legend). `useHatchId()` hands each
+ * instance its own id from a module counter, so charts stay self-contained:
+ * no chart depends on some other chart having rendered the defs first (which
+ * would fail open — an unresolvable `url(#…)` paints nothing at all).
+ * `angle` rotates the hatch, so two patterns on one screen can differ by
+ * direction as well as by base fill.
+ *
  * `TrendChip` is built on the existing `.pill`/`.pill-ok`/`.pill-danger`/
  * `.pill-neutral` vocabulary: the pill's tinted `color` carries good/bad
  * valence and the glyph inherits it, but the percent *text* is pinned back
@@ -250,11 +269,17 @@ export interface ChartMark {
   x: number;
   y: number;
   label: string;
+  /** Optional call-to-action rendered as a button inside the tooltip. */
+  action?: { label: string; onClick: () => void };
 }
 
 export interface ChartTooltipHandle {
   wrapperProps: {
-    ref: RefObject<HTMLDivElement | null>;
+    // `RefObject<HTMLDivElement>` (not `| null`): React's RefObject is
+    // covariant in T, so a `RefObject<HTMLDivElement | null>` is NOT
+    // assignable to the `ref` prop of a <div> even though the two are
+    // structurally identical — spreading wrapperProps would not typecheck.
+    ref: RefObject<HTMLDivElement>;
     className: string;
     style: CSSProperties;
     onPointerMove: (e: ReactPointerEvent<HTMLDivElement>) => void;
@@ -355,6 +380,11 @@ function sameMark(a: ChartMark, b: ChartMark): boolean {
   return a.x === b.x && a.y === b.y && a.label === b.label;
 }
 
+/** True for a pointer event that originated inside the tooltip itself. */
+function fromTooltip(e: ReactPointerEvent): boolean {
+  return e.target instanceof Element && e.target.closest(".chart-tip") != null;
+}
+
 /**
  * Nearest mark to (x, y), searching only within an elliptical hit radius of
  * `hitRadiusX` by `hitRadiusY` viewBox units — i.e. the per-axis-scaled
@@ -387,7 +417,7 @@ function isTouchLike(e: ReactPointerEvent): boolean {
 }
 
 export function useChartTooltip(): ChartTooltipHandle {
-  const wrapperRef = useRef<HTMLDivElement | null>(null);
+  const wrapperRef = useRef<HTMLDivElement>(null);
   const marksRef = useRef<ChartMark[]>([]);
   const [active, setActive] = useState<ActiveTip | null>(null);
   const [tipPos, setTipPos] = useState<{ left: number; top: number } | null>(null);
@@ -398,6 +428,8 @@ export function useChartTooltip(): ChartTooltipHandle {
 
   const onPointerMove = (e: ReactPointerEvent<HTMLDivElement>): void => {
     if (isTouchLike(e)) return;
+    // Reaching for the tooltip's own action button must not dismiss it.
+    if (fromTooltip(e)) return;
     const svg = firstSvg(wrapperRef.current);
     if (!svg) return;
     const pos = toViewBox(svg, e.clientX, e.clientY);
@@ -421,6 +453,9 @@ export function useChartTooltip(): ChartTooltipHandle {
 
   const onPointerDown = (e: ReactPointerEvent<HTMLDivElement>): void => {
     if (!isTouchLike(e)) return;
+    // Tapping the tooltip's action button must not unpin (and unmount) it
+    // before the click event that button is waiting for ever fires.
+    if (fromTooltip(e)) return;
     const svg = firstSvg(wrapperRef.current);
     const pos = svg ? toViewBox(svg, e.clientX, e.clientY) : null;
     const mark = pos
@@ -486,10 +521,19 @@ export function useChartTooltip(): ChartTooltipHandle {
     });
   }, [active]);
 
+  const action = active?.mark.action;
   const tooltip: ReactElement | null =
     active && tipPos ? (
-      <div className="chart-tip" style={{ left: tipPos.left, top: tipPos.top }}>
+      <div
+        className={`chart-tip${action ? " chart-tip-interactive" : ""}`}
+        style={{ left: tipPos.left, top: tipPos.top }}
+      >
         {active.mark.label}
+        {action ? (
+          <button type="button" className="chart-tip-action" onClick={action.onClick}>
+            {action.label}
+          </button>
+        ) : null}
       </div>
     ) : null;
 
@@ -557,12 +601,38 @@ export function ShadedBand({ x1, x2, y1, y2 }: { x1: number; x2: number; y1: num
   );
 }
 
-/** Render at most ONCE per page (fixed id — see file header); reference the pattern via `fill="url(#chartHatch)"`. */
-export function HatchDefs() {
+let hatchSeq = 0;
+
+/**
+ * A pattern id unique to this component instance — see the file header for
+ * why the id can't be a shared constant. Generated once per mount (lazy
+ * `useState` initializer, not a render-time counter bump).
+ */
+export function useHatchId(): string {
+  const [id] = useState(() => `chartHatch${++hatchSeq}`);
+  return id;
+}
+
+/** Reference the pattern via ``fill={`url(#${id})`}``; get `id` from `useHatchId()`. */
+export function HatchDefs({
+  id,
+  angle = 45,
+  stroke = CHART_GRID,
+}: {
+  id: string;
+  angle?: number;
+  stroke?: string;
+}) {
   return (
     <defs>
-      <pattern id="chartHatch" width={6} height={6} patternTransform="rotate(45)" patternUnits="userSpaceOnUse">
-        <line x1={0} y1={0} x2={0} y2={6} stroke={CHART_GRID} strokeWidth={1.5} />
+      <pattern
+        id={id}
+        width={6}
+        height={6}
+        patternTransform={`rotate(${angle})`}
+        patternUnits="userSpaceOnUse"
+      >
+        <line x1={0} y1={0} x2={0} y2={6} stroke={stroke} strokeWidth={1.5} />
       </pattern>
     </defs>
   );
