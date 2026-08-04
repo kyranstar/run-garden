@@ -78,6 +78,12 @@ describe("computeRamp", () => {
     ];
     const r = computeRamp(days, TODAY);
     expect(r.status).toBe("insufficient_data");
+    // The gap is in recent running, not total history — "have" must report
+    // what's actually missing (0), not the (larger, gate-passing) history
+    // length, or "Need 28; have 41" reads as self-contradictory.
+    if (r.status !== "insufficient_data") return;
+    expect(r.needed).toBe(28);
+    expect(r.have).toBe(0);
   });
 });
 

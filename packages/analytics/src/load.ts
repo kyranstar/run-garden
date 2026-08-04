@@ -144,11 +144,10 @@ export function computeRamp(
   const norm = priorSum / 3;
 
   if (norm <= 0) {
-    return insufficient(
-      28,
-      daysOfHistory,
-      "Ramp needs a recent baseline — you're returning from a break, build back gradually.",
-    );
+    // History clears the 28-day gate, but nothing in the prior-21-day norm
+    // window — the thing that's missing is recent running, not history
+    // length, so "have" reports that (0), not daysOfHistory.
+    return insufficient(28, 0, "Ramp needs a recent baseline — you're returning from a break, build back gradually.");
   }
 
   return ok(
