@@ -394,6 +394,34 @@ describe("plants under the light", () => {
     expect(sprite(pair![0]!)).toBe(sprite(pair![0]!));
   });
 
+  it("vine reach scales with the consistency chain, deterministically", () => {
+    const vinePlant: GardenPlant = {
+      id: "vine-test",
+      speciesId: "ivy",
+      category: "vine",
+      plantedAt: "2026-03-02",
+      health: 0.9,
+      hydration: 0.8,
+      maturity: 1,
+      bloomProgress: 0,
+      state: "mature",
+      position: { x: 0.5, y: 0.5, region: 0 },
+    } as GardenPlant;
+    const at = (reach: number) =>
+      renderToStaticMarkup(
+        <PlantSprite plant={vinePlant} species={speciesOrThrow("ivy")} reach={reach} />,
+      );
+    expect(at(0.4)).not.toBe(at(1));
+    expect(at(0.4)).toBe(at(0.4)); // same reach → byte-identical
+    // Non-vines ignore reach entirely.
+    const tree = { ...vinePlant, id: "t1", speciesId: "birch", category: "tree" } as GardenPlant;
+    const treeAt = (reach: number) =>
+      renderToStaticMarkup(
+        <PlantSprite plant={tree} species={speciesOrThrow("birch")} reach={reach} />,
+      );
+    expect(treeAt(0.4)).toBe(treeAt(1));
+  });
+
   it("far plants are hazed more than near plants of the same species", () => {
     const markup = renderScene(healthySnapshot(), { timeOfDay: 13 });
     // Structural smoke: per-plant tint means fills vary; exact values are

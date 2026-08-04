@@ -864,9 +864,24 @@ export interface PlantSpriteProps {
   idPrefix?: string;
   /** Seasonal foliage tint from the color script; never applied to dead plants. */
   tint?: { color: string; amount: number };
+  /**
+   * Vines only: how far up the host the vine currently reaches (0..1) —
+   * driven by the consistency chain. The plant stays alive when the chain
+   * breaks; its climb draws back and consistent weeks regrow it. Scaling the
+   * effective maturity is deterministic-safe: the vine's draw sequence is
+   * fixed regardless of m.
+   */
+  reach?: number;
 }
 
-export function PlantSprite({ plant, species, animate = false, idPrefix = "rg-garden", tint }: PlantSpriteProps) {
+export function PlantSprite({
+  plant,
+  species,
+  animate = false,
+  idPrefix = "rg-garden",
+  tint,
+  reach = 1,
+}: PlantSpriteProps) {
   const sp = species ?? speciesOrThrow(plant.speciesId);
   const r = rng(`sprite:${plant.id}`);
   const v: Ctx["v"] = (base, pct = 0.15) => base * (1 + (r() * 2 - 1) * pct);
@@ -882,7 +897,11 @@ export function PlantSprite({ plant, species, animate = false, idPrefix = "rg-ga
   } else if (plant.state === "dead") {
     art = deadForm(sp, plant, r, v);
   } else {
-    const ctx: Ctx = { r, v, m: clamp01(plant.maturity), P: paintFor(sp, plant, tint) };
+    const mEff =
+      sp.archetype === "vine"
+        ? clamp01(plant.maturity) * clamp01(reach)
+        : clamp01(plant.maturity);
+    const ctx: Ctx = { r, v, m: mEff, P: paintFor(sp, plant, tint) };
     art = ARCHETYPES[sp.archetype](ctx);
     sways = !NO_SWAY.has(sp.archetype);
   }

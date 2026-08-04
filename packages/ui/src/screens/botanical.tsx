@@ -45,12 +45,15 @@ export function BotanicalCard({
   speciesId,
   plant,
   entry,
+  chainWeeks,
 }: {
   speciesId: string;
   /** A live plant from the scene — shows its real state and provenance. */
   plant?: GardenPlant;
   /** The species' codex entry — shows collection facts and earn progress. */
   entry?: CodexEntry;
+  /** Current consecutive-consistent-weeks chain — vines climb with it. */
+  chainWeeks?: number;
 }) {
   const sp = SPECIES_BY_ID.get(speciesId);
   const workoutId =
@@ -94,6 +97,13 @@ export function BotanicalCard({
           ) : null}
           {plant?.hostPlantId ? (
             <li>It grows on a neighbour — part of the garden's little ecosystem.</li>
+          ) : null}
+          {sp.category === "vine" && chainWeeks !== undefined ? (
+            <li>
+              {chainWeeks > 0
+                ? `Climbs with your consistency — ${chainWeeks} week${chainWeeks === 1 ? "" : "s"} and rising.`
+                : "Its climb has drawn back — consistent weeks regrow it."}
+            </li>
           ) : null}
           {plant ? <HabitatNote plant={plant} /> : null}
           {entry && !plant && entry.unlocked && entry.livingCount > 0 ? (

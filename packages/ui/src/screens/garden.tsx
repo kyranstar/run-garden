@@ -1189,6 +1189,7 @@ export function GardenScreen() {
           <BotanicalCard
             speciesId={openSpeciesId}
             entry={codex.find((c) => c.speciesId === openSpeciesId)}
+            chainWeeks={snapshot.state.consecutiveConsistentWeeks}
           />
         </Sheet>
       ) : null}
@@ -1202,6 +1203,7 @@ export function GardenScreen() {
             speciesId={selectedPlant.speciesId}
             plant={selectedPlant}
             entry={codex.find((c) => c.speciesId === selectedPlant.speciesId)}
+            chainWeeks={snapshot.state.consecutiveConsistentWeeks}
           />
         </Sheet>
       ) : null}

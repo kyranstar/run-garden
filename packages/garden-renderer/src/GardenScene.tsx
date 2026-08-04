@@ -386,6 +386,11 @@ export function GardenScene({
     (a, b) => a.position.y - b.position.y || a.id.localeCompare(b.id),
   );
 
+  // Vines climb with the consistency chain: each consistent week reaches
+  // ~10% further up the host; a broken chain draws them back (recoverable —
+  // the plant itself stays). Pure display of tracked state.
+  const vineReach = Math.min(1, 0.3 + 0.1 * snapshot.state.consecutiveConsistentWeeks);
+
   const svg = (
     <svg
       viewBox="0 0 1000 560"
@@ -504,6 +509,7 @@ export function GardenScene({
                 animate={animate}
                 idPrefix={p}
                 tint={{ color: tintColor, amount: n(tintAmount) }}
+                reach={vineReach}
               />
             </g>
           </g>
