@@ -1,6 +1,6 @@
 import { Hono } from "hono";
 import { z } from "zod";
-import { and, eq } from "drizzle-orm";
+import { and, eq, sql } from "drizzle-orm";
 import { corosWriteJobs, deviceHandshakes, desktopDevices } from "@rg/database";
 import {
   corosWriteResultSchema,
@@ -256,12 +256,15 @@ deviceRoutes.post("/bridge/sync", requireDevice, async (c) => {
           })
           .onConflictDoUpdate({
             target: dailyHealth.id,
+            // A push with a null field (e.g. the watch missed last night's HRV
+            // read) must never clobber a previously stored good value — COALESCE
+            // keeps the existing row's value whenever the incoming one is null.
             set: {
-              restingHeartRate: (h.restingHeartRate as number) ?? null,
-              hrv: (h.hrv as number) ?? null,
-              recoveryScore: (h.recoveryScore as number) ?? null,
-              fatigueScore: (h.fatigueScore as number) ?? null,
-              trainingLoad7d: (h.trainingLoad7d as number) ?? null,
+              restingHeartRate: sql`COALESCE(excluded.resting_heart_rate, ${dailyHealth.restingHeartRate})`,
+              hrv: sql`COALESCE(excluded.hrv, ${dailyHealth.hrv})`,
+              recoveryScore: sql`COALESCE(excluded.recovery_score, ${dailyHealth.recoveryScore})`,
+              fatigueScore: sql`COALESCE(excluded.fatigue_score, ${dailyHealth.fatigueScore})`,
+              trainingLoad7d: sql`COALESCE(excluded.training_load_7d, ${dailyHealth.trainingLoad7d})`,
               contentFingerprint: fingerprint(h),
               updatedAt: now,
             },

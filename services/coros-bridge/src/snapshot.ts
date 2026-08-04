@@ -69,6 +69,15 @@ export interface BuildSnapshotOptions {
    * response said its stored catalog was stale.
    */
   includeExerciseCatalog?: boolean;
+  /**
+   * Overrides `rangeStart` for the daily-health (wellness) query only. Daily
+   * health (resting HR, HRV, recovery/fatigue scores) is one cheap query
+   * regardless of window size and is useful much further back than the
+   * activity/plan window, so callers can pull a deeper wellness history
+   * (e.g. 60 days) without widening the activities/laps range. Defaults to
+   * `rangeStart` when omitted.
+   */
+  healthRangeStart?: string;
 }
 
 export async function buildSnapshot(
@@ -120,7 +129,7 @@ export async function buildSnapshot(
   }
 
   // ── Daily health ──────────────────────────────────────────────────────────
-  const days = await client.getDailyMetrics(rangeStart, rangeEnd);
+  const days = await client.getDailyMetrics(opts.healthRangeStart ?? rangeStart, rangeEnd);
   const health: DailyHealth[] = days
     .filter((d) => d.happenDay != null)
     .map((d) => {

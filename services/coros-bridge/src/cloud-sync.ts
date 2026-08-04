@@ -34,6 +34,11 @@ const FAST_POLL_MS = 10_000;
 const DEFAULT_SNAPSHOT_MS = 30 * 60_000;
 const SNAPSHOT_PAST_DAYS = 14;
 const SNAPSHOT_FUTURE_DAYS = 8 * 7;
+// Daily health (resting HR, HRV, recovery/fatigue) is one cheap query no
+// matter the window, and the insights dashboard's load/recovery trends read
+// much further back than the 14-day activity/plan window — so wellness gets
+// its own, deeper backfill on every snapshot push.
+const HEALTH_PAST_DAYS = 60;
 
 /** ASN.1 PKCS#8 wrapper for a raw Ed25519 32-byte seed. */
 const PKCS8_ED25519_PREFIX = Buffer.from("302e020100300506032b657004220420", "hex");
@@ -162,10 +167,12 @@ export class CloudSync {
     const today = new Date().toISOString().slice(0, 10);
     const rangeStart = addDays(today, -SNAPSHOT_PAST_DAYS);
     const rangeEnd = addDays(today, SNAPSHOT_FUTURE_DAYS);
+    const healthRangeStart = addDays(today, -HEALTH_PAST_DAYS);
     this.localePromise ??= loadNameResolver(this.client.fetchImpl);
     const resolver = await this.localePromise;
     const snapshot = await buildSnapshot(this.client, rangeStart, rangeEnd, resolver, {
       includeExerciseCatalog: this.catalogStale,
+      healthRangeStart,
     });
     const response = (await this.post("/api/devices/bridge/sync", {
       bridgeVersion: this.bridgeVersion,

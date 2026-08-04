@@ -20,6 +20,7 @@
  *
  * Mounts `insightRoutes` the same way plan-routes.test.ts mounts `planRoutes`.
  */
+import { createHash, createPrivateKey, generateKeyPairSync, sign as ed25519Sign } from "node:crypto";
 import { beforeEach, describe, expect, it } from "vitest";
 import { eq } from "drizzle-orm";
 import { schema } from "@rg/database";
@@ -28,6 +29,7 @@ import type { UserPreferences } from "@rg/domain";
 import type { Env } from "../src/env.js";
 import type { Db } from "../src/services/db.js";
 import { insightRoutes } from "../src/routes/misc.js";
+import { deviceRoutes } from "../src/routes/devices.js";
 import { createSession, SESSION_COOKIE } from "../src/auth/sessions.js";
 import { makeTestDb, makeTestUser, mountRoutes } from "./helpers.js";
 
@@ -709,5 +711,107 @@ describe("payload shape", () => {
 
     // hardStack is always computable (0 is a valid answer) and ships a strip.
     expect(metric(typed, "hardStack").strip).toHaveLength(7);
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────
+
+describe("POST /api/devices/bridge/sync — dailyHealth upsert null-guard", () => {
+  /** Minimal Ed25519 device identity + request signer, mirroring the desktop
+   * bridge's own signRequest (services/coros-bridge/src/cloud-sync.ts) —
+   * duplicated rather than imported since apps/worker has no dependency on
+   * that service package (same pattern as jobs-reconcile.test.ts). */
+  function makeDeviceIdentity(): { publicKeyRaw: string; privateKeyPem: string } {
+    const { publicKey, privateKey } = generateKeyPairSync("ed25519");
+    const jwk = publicKey.export({ format: "jwk" }) as { x: string };
+    return {
+      publicKeyRaw: jwk.x,
+      privateKeyPem: privateKey.export({ type: "pkcs8", format: "pem" }).toString(),
+    };
+  }
+
+  function signedHeaders(
+    privateKeyPem: string,
+    deviceId: string,
+    method: string,
+    path: string,
+    body: string,
+  ): Record<string, string> {
+    const timestamp = new Date().toISOString();
+    const bodySha256 = createHash("sha256").update(body, "utf8").digest("hex");
+    const message = `${method.toUpperCase()}\n${path}\n${timestamp}\n${bodySha256}`;
+    const signature = ed25519Sign(null, Buffer.from(message, "utf8"), createPrivateKey(privateKeyPem));
+    return {
+      "x-device-id": deviceId,
+      "x-device-timestamp": timestamp,
+      "x-device-signature": signature.toString("base64url"),
+    };
+  }
+
+  async function registerSignedDevice(
+    db: Db,
+    userId: string,
+  ): Promise<{ deviceId: string; privateKeyPem: string }> {
+    const { publicKeyRaw, privateKeyPem } = makeDeviceIdentity();
+    const deviceId = newId();
+    await db.insert(schema.desktopDevices).values({
+      id: deviceId,
+      userId,
+      name: "Test Mac",
+      publicKey: publicKeyRaw,
+      platform: "macos",
+      appVersion: "0.0.0-test",
+      createdAt: nowInstant(),
+      lastSeenAt: nowInstant(),
+    });
+    return { deviceId, privateKeyPem };
+  }
+
+  it("a null field in an incoming push never overwrites a previously stored good value", async () => {
+    const db = makeTestDb();
+    const { userId } = await makeTestUser(db);
+    const { deviceId, privateKeyPem } = await registerSignedDevice(db, userId);
+    const date = "2026-07-01";
+
+    // Stored row: restingHeartRate 48, hrv 60 — both good watch reads.
+    await db.insert(schema.dailyHealth).values({
+      id: `${userId}:${date}`,
+      userId,
+      date,
+      restingHeartRate: 48,
+      hrv: 60,
+      recoveryScore: null,
+      fatigueScore: null,
+      trainingLoad7d: null,
+      provider: "coros",
+      contentFingerprint: "seed-fingerprint",
+      updatedAt: nowInstant(),
+    });
+
+    const app = mountRoutes(db, "/api/devices", deviceRoutes);
+    const path = "/api/devices/bridge/sync";
+    // The watch missed last night's resting-HR read (null) but has a fresh HRV.
+    const body = JSON.stringify({ health: [{ date, restingHeartRate: null, hrv: 55 }] });
+    const res = await app.request(
+      path,
+      {
+        method: "POST",
+        headers: {
+          ...signedHeaders(privateKeyPem, deviceId, "POST", path, body),
+          "content-type": "application/json",
+        },
+        body,
+      },
+      makeEnv(),
+    );
+    expect(res.status).toBe(200);
+
+    const row = (
+      await db.select().from(schema.dailyHealth).where(eq(schema.dailyHealth.id, `${userId}:${date}`))
+    )[0]!;
+    // The null field keeps the previously stored good value...
+    expect(row.restingHeartRate).toBe(48);
+    // ...while the field that actually arrived with data updates normally.
+    expect(row.hrv).toBe(55);
   });
 });

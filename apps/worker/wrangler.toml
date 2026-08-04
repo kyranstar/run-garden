@@ -41,7 +41,7 @@ migrations_dir = "../../packages/database/migrations"
 crons = [
   "*/30 * * * *",  # calendar + provider sync
   "15 * * * *",    # hourly reconcile + garden simulation
-  "0 14 * * 1",    # weekly review (Mondays, 14:00 UTC ≈ morning US)
+  "0 20 * * 1",    # weekly review (Mondays, 20:00 UTC ≈ afternoon US)
 ]
 
 [vars]

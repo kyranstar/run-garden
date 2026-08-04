@@ -1,5 +1,5 @@
 import { Hono } from "hono";
-import { and, eq, gte, isNull, lte } from "drizzle-orm";
+import { and, eq, gte, inArray, isNull, lte } from "drizzle-orm";
 import {
   activities,
   gardenEvents,
@@ -20,7 +20,7 @@ import { stravaRoutes } from "./routes/strava.js";
 import { activityRoutes, calendarRoutes, insightRoutes, settingsRoutes } from "./routes/misc.js";
 import { studioRoutes } from "./routes/studio.js";
 import { syncRoutes } from "./routes/sync.js";
-import { makeDb, type Db } from "./services/db.js";
+import { makeDb, chunkIds, type Db } from "./services/db.js";
 import { loadPreferences, syncCalendar } from "./services/calendar-sync.js";
 import { advanceGarden } from "./services/garden-sync.js";
 import { reconcileCompletionStates, startSyncRun, finishSyncRun } from "./services/reconcile-daily.js";
@@ -138,16 +138,36 @@ async function weekly(db: Db, env: Env): Promise<void> {
             isNull(plannedWorkouts.archivedAt),
           ),
         );
-      const matches = await db
-        .select()
-        .from(workoutCompletionMatches)
-        .where(isNull(workoutCompletionMatches.undoneAt));
-      const matchedIds = new Set(
-        matches.filter((m) => workouts.some((w) => w.id === m.workoutId)).map((m) => m.activityId),
+      // Scoped by this week's workout ids (chunked: an `inArray` binds one
+      // variable per id and D1 caps a statement at ~100) rather than a full
+      // unscoped scan of every match ever made for every user — the same
+      // pattern the insights route uses. computeWeeklyFacts's adherence,
+      // completed, and moved counts all flow from `workouts` itself, so this
+      // is surfaced only in the sync-run stats below, not fed into facts.
+      const matchChunks = await Promise.all(
+        chunkIds(workouts.map((w) => w.id)).map((ids) =>
+          db
+            .select()
+            .from(workoutCompletionMatches)
+            .where(
+              and(
+                inArray(workoutCompletionMatches.workoutId, ids),
+                isNull(workoutCompletionMatches.undoneAt),
+              ),
+            ),
+        ),
       );
+      const matches = matchChunks.flat();
+      // Every run in the week counts toward the review — not just the ones
+      // the matcher happened to link to a planned workout. Filtering to
+      // matched-only activities silently dropped unplanned/bonus runs from
+      // the weekly totals, which is exactly the kind of undercount a runner
+      // would notice and stop trusting.
+      const localDate = (a: { startTimeLocal: string | null; startTime: string }): string =>
+        (a.startTimeLocal ?? a.startTime).slice(0, 10);
       const acts = (
         await db.select().from(activities).where(eq(activities.userId, userId))
-      ).filter((a) => matchedIds.has(a.id));
+      ).filter((a) => a.sport === "run" && localDate(a) >= weekStart && localDate(a) <= weekEnd);
       const events = await db
         .select()
         .from(gardenEvents)
@@ -182,7 +202,12 @@ async function weekly(db: Db, env: Env): Promise<void> {
         { weekStart, facts: facts as unknown as Record<string, unknown> },
         prefs.aiEnabled && env.AI_DEFAULT_ENABLED !== "0",
       );
-      await finishSyncRun(db, runId, "ok", { narrative: !!result.narrative, reason: result.reason });
+      await finishSyncRun(db, runId, "ok", {
+        narrative: !!result.narrative,
+        reason: result.reason,
+        activityCount: acts.length,
+        matchedActivityCount: matches.length,
+      });
     } catch {
       await finishSyncRun(db, runId, "error");
     }
@@ -200,7 +225,7 @@ export default {
       case "15 * * * *":
         ctx.waitUntil(hourly(db, env));
         break;
-      case "0 14 * * 1":
+      case "0 20 * * 1":
         ctx.waitUntil(weekly(db, env));
         break;
       default:
