@@ -32,6 +32,9 @@ export interface SceneLight {
   /** Shadow length as a multiple of sprite footprint. */
   shadowLen: number;
   shadowOpacity: number;
+  /** Ground-shadow fill mixed from the land and sky — tracks drought straw,
+   * night blue and dusk violet instead of one fixed green. */
+  shadowColor: string;
   grassNear: string;
   grassFar: string;
   hill: string;
@@ -228,6 +231,8 @@ export function lightingFor(inp: LightingInputs): SceneLight {
     shadowDx: sunX !== null ? Math.max(-1, Math.min(1, -((sunX / 1000) * 2 - 1))) : 0.15,
     shadowLen: key.shadowLen,
     shadowOpacity: key.shadowOpacity,
+    shadowColor: "#233a1d", // recomputed from the final land colors in applyNightDarkening
+
     grassNear: mix(grassBase, key.ambient, key.ambientStrength * 0.6),
     grassFar: mix(mix(shade(grassBase, 1.06), key.skyHorizon, 0.3 + key.hazeStrength * 0.3), key.ambient, key.ambientStrength * 0.4),
     hill: mix(hillBase, key.skyHorizon, 0.45),
@@ -254,11 +259,15 @@ export function lightingFor(inp: LightingInputs): SceneLight {
  */
 function applyNightDarkening(l: SceneLight): SceneLight {
   const k = 1 - 0.3 * l.starDensity;
+  const grassNear = shade(l.grassNear, k);
   return {
     ...l,
-    grassNear: shade(l.grassNear, k),
+    grassNear,
     grassFar: shade(l.grassFar, k),
     hill: shade(l.hill, k),
+    // Derived last so it tracks every upstream adjustment (weather straw,
+    // season, night dusk). Sky-lit: real outdoor shade is never pure green.
+    shadowColor: mix(shade(grassNear, 0.45), l.skyTop, 0.25),
     foliageTint: mix(l.foliageTint, "#16233f", 0.5 * l.starDensity),
     foliageTintAmount: Math.min(0.3, l.foliageTintAmount + 0.2 * l.starDensity),
   };

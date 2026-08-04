@@ -87,6 +87,17 @@ describe("lightingFor — periods and interpolation", () => {
     const wet = lightingFor(inputs({ moisture: 0.9 }));
     expect(dry.grassNear).not.toBe(wet.grassNear);
   });
+
+  it("shadowColor is a valid hex that tracks the scene, not a fixed green", () => {
+    const midday = lightingFor(inputs({ hour: 13 }));
+    const night = lightingFor(inputs({ hour: 23.5 }));
+    const drought = lightingFor(inputs({ weather: "mild_drought" }));
+    for (const l of [midday, night, drought]) expect(l.shadowColor).toMatch(HEX);
+    expect(night.shadowColor).not.toBe(midday.shadowColor);
+    expect(drought.shadowColor).not.toBe(midday.shadowColor);
+    // Drought straw shifts the shadow warm: more red relative to the midday shadow.
+    expect(hexToRgb(drought.shadowColor)[0]).toBeGreaterThan(hexToRgb(midday.shadowColor)[0]);
+  });
 });
 
 describe("moonPhase", () => {

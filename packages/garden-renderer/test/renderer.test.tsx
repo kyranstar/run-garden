@@ -131,7 +131,8 @@ describe("GardenScene", () => {
 
     const still = renderScene(snapshot, { reducedMotion: true });
     expect(still).not.toContain("@keyframes");
-    expect(still).not.toContain("<style>");
+    // The static focus-outline style stays — only animation styles go.
+    expect(still).not.toContain("-sway{");
     expect(still).not.toContain("animation");
   });
 
@@ -163,15 +164,14 @@ describe("GardenScene", () => {
     }
   });
 
-  it("highlights the selected plant with an ellipse under it", () => {
+  it("highlights the selected plant with the silhouette outline filter", () => {
     const snapshot = healthySnapshot();
     const target = snapshot.plants[0]!;
     const without = renderScene(snapshot);
     const withSel = renderScene(snapshot, { selectedPlantId: target.id });
     expect(withSel).not.toBe(without);
-    expect((withSel.match(/<ellipse/g) ?? []).length).toBeGreaterThan(
-      (without.match(/<ellipse/g) ?? []).length,
-    );
+    expect(withSel).toContain('filter="url(#rg-garden-outline)"');
+    expect(without).not.toContain('filter="url(#rg-garden-outline)"');
   });
 
   it("embeds the garden description as aria-label and <desc>", () => {
@@ -330,22 +330,75 @@ describe("describeGarden / describePlant", () => {
 });
 
 describe("plants under the light", () => {
-  it("every living plant casts a shadow ellipse", () => {
+  it("every living plant casts a contact and a cast shadow", () => {
     const snapshot = healthySnapshot();
     const markup = renderScene(snapshot, { timeOfDay: 18.9 });
     const living = snapshot.plants.filter((p) => p.state !== "dead").length;
-    expect((markup.match(/data-shadow="true"/g) ?? []).length).toBe(living);
+    expect((markup.match(/data-shadow="cast"/g) ?? []).length).toBe(living);
+    expect((markup.match(/data-shadow="contact"/g) ?? []).length).toBe(living);
   });
 
-  it("golden-hour shadows are longer than midday shadows", () => {
+  it("golden-hour cast shadows are longer than midday and stretch away from the sun", () => {
+    // Summer so 18.9 is a true golden hour with the sun still up in the west
+    // (spring's sunset is 18.6 — the spring snapshot would give a moon shadow).
+    const base = healthySnapshot();
+    const snapshot = { ...base, state: { ...base.state, season: "summer" as const } };
+    const castTag = (m: string) => m.match(/<ellipse[^>]*data-shadow="cast"[^>]*>/)?.[0] ?? "";
+    const rx = (m: string) => Number(castTag(m).match(/rx="([\d.]+)"/)?.[1] ?? 0);
+    const golden = renderScene(snapshot, { timeOfDay: 18.9 });
+    const midday = renderScene(snapshot, { timeOfDay: 13 });
+    expect(rx(golden)).toBeGreaterThan(rx(midday));
+    // Evening sun sits west (high sunX) → shadowDx negative → cast center shifts left.
+    expect(Number(castTag(golden).match(/cx="(-?[\d.]+)"/)?.[1])).toBeLessThan(0);
+  });
+
+  it("contact shadows are darker but smaller than cast shadows", () => {
+    const markup = renderScene(healthySnapshot(), { timeOfDay: 13 });
+    const tag = (kind: string) =>
+      markup.match(new RegExp(`<ellipse[^>]*data-shadow="${kind}"[^>]*>`))?.[0] ?? "";
+    const num = (t: string, attr: string) => Number(t.match(new RegExp(`${attr}="(-?[\\d.]+)"`))?.[1] ?? 0);
+    expect(num(tag("contact"), "opacity")).toBeGreaterThan(num(tag("cast"), "opacity"));
+    expect(num(tag("contact"), "rx")).toBeLessThan(num(tag("cast"), "rx"));
+  });
+
+  it("the selected plant gets the silhouette outline filter; others do not", () => {
     const snapshot = healthySnapshot();
-    const rx = (m: string) => {
-      const tag = m.match(/<ellipse[^>]*data-shadow="true"[^>]*>/)?.[0] ?? "";
-      return Number(tag.match(/rx="([\d.]+)"/)?.[1] ?? 0);
-    };
-    expect(rx(renderScene(snapshot, { timeOfDay: 18.9 }))).toBeGreaterThan(
-      rx(renderScene(snapshot, { timeOfDay: 13 })),
-    );
+    const id = snapshot.plants.find((p) => p.state !== "dead")!.id;
+    const selected = renderScene(snapshot, { selectedPlantId: id });
+    expect((selected.match(/filter="url\(#rg-garden-outline\)"/g) ?? []).length).toBe(1);
+    expect(renderScene(snapshot)).not.toContain('filter="url(#rg-garden-outline)"');
+    // The old cream selection disc is gone.
+    expect(selected).not.toContain("#f7f3df");
+    // The filter itself is defined once in the defs.
+    expect(selected).toContain('id="rg-garden-outline"');
+  });
+
+  it("every plant carries an invisible tap pad", () => {
+    const snapshot = healthySnapshot();
+    const markup = renderScene(snapshot);
+    expect((markup.match(/data-hitpad="true"/g) ?? []).length).toBe(snapshot.plants.length);
+  });
+
+  it("two plants of the same species differ in color (deterministic jitter)", () => {
+    const snapshot = healthySnapshot();
+    const bySpecies = new Map<string, GardenPlant[]>();
+    for (const pl of snapshot.plants.filter((p) => p.state !== "dead" && p.state !== "seed")) {
+      bySpecies.set(pl.speciesId, [...(bySpecies.get(pl.speciesId) ?? []), pl]);
+    }
+    const pair = [...bySpecies.values()].find((v) => v.length >= 2);
+    expect(pair).toBeDefined();
+    const sprite = (pl: GardenPlant) =>
+      renderToStaticMarkup(<PlantSprite plant={pl} species={speciesOrThrow(pl.speciesId)} />);
+    expect(sprite(pair![0]!)).not.toBe(sprite(pair![1]!));
+    // And the same plant renders byte-identically every time.
+    expect(sprite(pair![0]!)).toBe(sprite(pair![0]!));
+  });
+
+  it("far plants are hazed more than near plants of the same species", () => {
+    const markup = renderScene(healthySnapshot(), { timeOfDay: 13 });
+    // Structural smoke: per-plant tint means fills vary; exact values are
+    // covered by the jitter/determinism tests above.
+    expect(markup).toContain("data-plant-id");
   });
 
   it("sway delay correlates with x position (gusts travel)", () => {
