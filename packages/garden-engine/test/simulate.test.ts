@@ -742,12 +742,13 @@ describe("discipline balance", () => {
     expect(disciplineBalance(state).strength.health).toBe(1);
   });
 
-  it("takes the overall score from the weakest discipline", () => {
+  it("takes the overall score from the weakest practiced discipline", () => {
     const state = {
       ...initialSnapshot(START).state,
       daysSinceCompletedRun: 0,
       daysSinceStrength: 10, // (10 − 3) / 14 = 0.5 → health 0.5
       daysSinceYoga: 0,
+      hasStrength: true, // practiced — a never-practiced axis is excluded from overall
     };
     const balance = disciplineBalance(state);
     expect(balance.strength.health).toBeCloseTo(0.5, 6);
