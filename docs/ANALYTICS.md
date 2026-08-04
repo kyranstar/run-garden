@@ -53,7 +53,13 @@ reading count — "Need 7; have 12" would read as self-contradictory.
 - **`restingHr`** — median of your 3 most recent readings vs. the median of
   readings within the trailing 30 days (the two pools may overlap). Needs ≥7
   valid readings in the trailing 60 days *and* a newest reading ≤7 days old.
-  Watch band: ≥5 bpm above baseline.
+  Both halves are then separately recency-gated, because "enough readings
+  somewhere in the window" is not the same claim as "enough readings recent
+  enough to describe now": the 3 that make `current` must come from the last
+  **5 days** and there must be **≥2** of them (filtered before the slice, so
+  one fresh reading beside a seven-week-old cluster can't reach back across
+  the gap), and the 30-day baseline pool needs **≥7** of its own. Both
+  suppressions name the gap. Watch band: ≥5 bpm above baseline.
 - **`hrv`** — median of your 7 most recent readings (all within 14 days of
   today) vs. an *uncontaminated* baseline built from readings ranked 8th–37th
   most recent — a disjoint, fixed 30-reading window, deliberately capped so a
@@ -69,8 +75,11 @@ reading count — "Need 7; have 12" would read as self-contradictory.
   (or was a rest day). Never suppressed — 0 is a valid, informative answer.
   A day counts as hard when it carried a matched quality/race session, ran
   100+ minutes, or (only when there's no plan match to trust) averaged HR
-  above the easy ceiling. Watch band: ≥2 consecutive; rendered as a 7-day
-  strip on the dashboard, not a gauge.
+  above the easy ceiling. **Runs only** — the route feeds it `runRows`, so a
+  hard lifting or cycling day is not in the streak. Because one of its three
+  tests is the easy ceiling, it carries the same ceiling caveat
+  `easyDiscipline` and `lowIntensityShare` do. Watch band: ≥2 consecutive;
+  rendered as a 7-day strip on the dashboard, not a gauge.
 
 The route (`misc.ts`) layers one more staleness rule on top of `restingHr`
 and `hrv`'s own 7-day suppression gate: past 2 days old, the card still shows
@@ -136,7 +145,10 @@ decoupling needs the whole second half to compare against the first. Runs
 whose lap paces vary more than 25% from the run's own median (surging) are
 excluded, with an explicit reason recorded and disclosed (capped at 5).
 Needs ≥3 qualifying runs; reports the median % across them plus the excluded
-count/reasons.
+count/reasons (the Insights chart discloses that count beside its `n=`). The
+dashboard shades **0–5%** on the decoupling chart — the range conventionally
+read as "held together" — with a zero line, so a reader can see whether a
+run stayed inside it without being told a verdict.
 
 ### Consistency (`consistency.ts`)
 
@@ -161,9 +173,11 @@ kept as literal aliases of the same count.
 ### Weekly training totals (`weeklyTraining.ts`)
 
 ISO-week (Monday-start) buckets of duration/distance/training-load/run
-count, continuous from the first activity's week to the last (gap weeks are
-zeroed rather than omitted, so a chart never lies by silently skipping a
-blank week). The easy/quality split relies on the completion-match category
+count, continuous from the first activity's week through the week containing
+`opts.today` (gap weeks are zeroed rather than omitted, so a chart never lies
+by silently skipping a blank week — and that includes a *trailing* run of
+them: stopping at the last week trained made a month off read as "up to
+date" and let the 4-week average describe the last four weeks *trained*). The easy/quality split relies on the completion-match category
 map — an unmatched activity counts as easy, since intensity is never guessed
 from raw data. The low/high intensity split feeding the weekly stacked bars
 is separate: it prefers real per-activity zone time when supplied, falling
@@ -194,8 +208,9 @@ unchanged.
 ### Evidence cards (`evidence.ts`)
 
 At most **one** factual, dismissible card on Today, chosen by information
-value: comeback record → morning completion rate (needs ≥10 scheduled
-morning *and* evening samples, morning rate ≥70%) → easy-run consistency
+value: comeback record → morning completion rate (needs ≥3 scheduled samples
+in *both* windows — below that the comparison is too thin to stand behind —
+plus ≥10 scheduled morning ones at a ≥70% morning rate) → easy-run consistency
 (≥10 planned easy runs at ≥70%). `dismissedIds` is applied *inside* the
 fallback chain, not to its result — dismissing the top card reveals the
 next one instead of collapsing the whole rotation to `null`. Returns `null`
@@ -233,12 +248,17 @@ A handful of rules recur across modules and are worth calling out once:
 - **Partial weeks are excluded from averages, not zeroed into them.**
   `weeklyTraining.ts` flags the in-progress ISO week `partial` and skips it
   when computing the 4-week and 12-week rolling averages, so an unfinished
-  week can't drag its own average down before it's actually over.
+  week can't drag its own average down before it's actually over. Weeks that
+  are *over* and empty are a different matter: those count as the zeroes they
+  are, so a layoff shows up in the average instead of being skipped.
 - **The easy-ceiling HR max is a 26-week, robustness-checked estimate that
   discloses its own confidence.** `hrZones.ts` takes the *second*-highest
-  qualifying max-HR reading over the trailing 26 weeks (never the single
-  highest — one spike, one device glitch, one sprint for the bus shouldn't
-  set the ceiling) from readings above 120 bpm. `misc.ts` counts how many
+  qualifying max-HR reading over the trailing 26 weeks — so one spike, one
+  device glitch, one sprint for the bus can't set the ceiling on its own —
+  from readings above 120 bpm. The exception is having exactly **one**
+  qualifying reading, where there is no second to fall back to and that
+  reading is used as-is; the caveat below is what keeps that honest. With
+  none, the estimate is `null`. `misc.ts` counts how many
   readings actually backed that estimate and appends a caveat to every card
   that uses the ceiling when fewer than 10 did, or a stronger one ("default
   max heart rate of 190") when there were none at all.

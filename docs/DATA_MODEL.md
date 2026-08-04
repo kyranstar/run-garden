@@ -39,7 +39,7 @@ dates are `YYYY-MM-DD`; JSON columns are typed `text(…, { mode: "json" })`.
 |---|---|
 | `activities` | One normalized row per **physical run**, possibly merged from both providers (`coros_activity_id` and/or `strava_activity_id`, both unique per user); COROS-authoritative metrics; `source_merge_confidence` |
 | `activity_source_links` | **Provenance per source record**: provider, provider activity id (unique), `first_seen_at`/`last_seen_at`, `content_fingerprint`, `normalizer_version`, sanitized `raw_summary` |
-| `activity_laps` | Per-lap duration/distance/HR/pace (feeds HR drift, execution, efficiency) |
+| `activity_laps` | Per-lap duration/distance/HR/pace (feeds `decoupling`, `aerobicEfficiency`, `lowIntensityShare`, and the route's pacing halves) |
 | `activity_stream_summaries` | Stream stats by type (sample count + aggregate stats; raw streams are not stored) |
 | `workout_completion_matches` | Planned↔completed links: confidence, method (`coros_plan_link` \| `scored_auto` \| `scored_confirmed` \| `manual`), `provisional` (Strava-only, awaiting COROS), `undone_at` for reversals |
 | `daily_health` | Per-day RHR/HRV/recovery/fatigue/7-day load from COROS (id = `userId:date`) |

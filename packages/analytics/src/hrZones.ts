@@ -4,8 +4,11 @@
  * single spike (a device glitch, a sprint for the bus) shouldn't set the
  * ceiling, so we require two activities to agree near the top. Readings
  * ≤120bpm are ignored as implausible "max" values (e.g. a walk's peak).
- * With fewer than two qualifying readings, the estimate is unknown — the
- * caller decides what to do; there is no scaled-average fallback. Zones are
+ * With exactly ONE qualifying reading there is no second to fall back to, so
+ * that reading is used as-is — a thin estimate, which is why `misc.ts`
+ * counts the qualifying readings and captions every card built on the ceiling
+ * when fewer than 10 backed it. With none, the estimate is `null` and the
+ * caller decides; there is no scaled-average fallback. Zones are
  * %HRmax: Z1 <68, Z2 68–79, Z3 80–87, Z4 88–94, Z5 95%+.
  */
 
