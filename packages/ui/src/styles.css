@@ -23,10 +23,20 @@
   --danger-soft: #f7e4df;
   --focus: #3e7a52;
 
-  /* Chart series (validated: CVD-safe, ≥3:1 on the raised surface) */
-  --chart-1: #3e7a52;
-  --chart-2: #b06a4d;
-  --chart-3: #5c6ab0;
+  /* Chart series — re-stepped 2026-08-04: the previous values (#3e7a52 /
+     #b06a4d / #5c6ab0) FAILED the dataviz skill's palette validator
+     (`validate_palette.js "<hexes>" --mode light --pairs all`): chroma
+     below the floor and worst all-pairs CVD ΔE 0.9 (protan) — #3e7a52 and
+     #b06a4d were nearly indistinguishable to a protanopic reader. These
+     values pass `--pairs all` on the raised surface in both light and dark
+     (CVD separation sits in the 6–8 "floor" band, which the method treats
+     as legal only with secondary encoding — direct labels / legend / line
+     keys in tooltips, which this chart kit already provides). Validated:
+     ≥3:1 contrast, normal-vision floor ≥15, in-band lightness/chroma.
+     Non-negotiable: color is never the only signal (see chart-kit.tsx). */
+  --chart-1: #2b8a55;
+  --chart-2: #c25a2e;
+  --chart-3: #5560c9;
   --chart-track: #eeeae1;
   --chart-grid: #e5e1d6;
 
@@ -62,9 +72,10 @@
     --danger: #d08070;
     --danger-soft: #3c2722;
     --shadow: 0 1px 2px rgba(0, 0, 0, 0.3);
-    --chart-1: #6aa87d;
-    --chart-2: #c98a6a;
-    --chart-3: #98a3dd;
+    /* Re-stepped alongside the light block above — see that comment. */
+    --chart-1: #3da868;
+    --chart-2: #cc7a3a;
+    --chart-3: #7f8ce0;
     --chart-track: #2b2f2c;
     --chart-grid: #32362f;
     color-scheme: dark;
@@ -89,9 +100,10 @@
   --danger: #d08070;
   --danger-soft: #3c2722;
   --shadow: 0 1px 2px rgba(0, 0, 0, 0.3);
-  --chart-1: #6aa87d;
-  --chart-2: #c98a6a;
-  --chart-3: #98a3dd;
+  /* Re-stepped alongside the light block above — see that comment. */
+  --chart-1: #3da868;
+  --chart-2: #cc7a3a;
+  --chart-3: #7f8ce0;
   --chart-track: #2b2f2c;
   --chart-grid: #32362f;
   color-scheme: dark;
@@ -1166,6 +1178,44 @@ button {
   font-size: 0.78rem;
   color: var(--ink-faint);
   margin-top: 0.4rem;
+}
+
+/* Shared pointer-overlay tooltip (useChartTooltip in chart-kit.tsx) — an
+   HTML element positioned over the chart, never an SVG <title> (those are
+   being retired: unreachable on touch, inconsistent across browsers). The
+   chart's wrapper div is position:relative (.chart-tip-wrap) so this,
+   position:absolute, is never clipped by the svg. */
+.chart-tip-wrap {
+  position: relative;
+}
+.chart-tip {
+  position: absolute;
+  z-index: 5;
+  pointer-events: none;
+  transform: translate(-50%, calc(-100% - 8px));
+  background: var(--bg-raised);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  box-shadow: var(--shadow);
+  padding: 0.3rem 0.55rem;
+  max-width: 220px;
+  font-size: 0.78rem;
+  color: var(--ink);
+  white-space: normal;
+}
+
+/* Trend chip (TrendChip in chart-kit.tsx): renders as `pill pill-ok` /
+   `pill-danger` / `pill-neutral trend-chip` — it's built directly on the
+   .pill vocabulary above rather than reinventing a background+border
+   variant set. The pill's tinted `color` is what makes the glyph carry
+   good/bad valence (it just inherits); `.trend-chip-value` pins the
+   percent text back to the ink token, because text never wears a
+   status/series color even when it sits inside a tinted chip. */
+.trend-chip {
+  font-variant-numeric: tabular-nums;
+}
+.trend-chip-value {
+  color: var(--ink);
 }
 
 /* ── Sheets & dialogs ───────────────────────────────────────────────────── */
