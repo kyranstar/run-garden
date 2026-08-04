@@ -43,6 +43,13 @@
       "when": 1785775673966,
       "tag": "0005_sturdy_stranger",
       "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "6",
+      "when": 1785854263254,
+      "tag": "0006_gorgeous_genesis",
+      "breakpoints": true
     }
   ]
 }
