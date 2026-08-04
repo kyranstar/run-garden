@@ -1033,14 +1033,37 @@ button {
   text-overflow: ellipsis;
 }
 .balance-bar-track {
+  position: relative;
   height: 6px;
   border-radius: 999px;
   background: var(--bg-sunken);
-  overflow: hidden;
 }
 .balance-bar-fill {
   height: 100%;
   border-radius: 999px;
+  max-width: 100%;
+}
+/* The damage point: where the shrinking fill crosses from "fading" into
+   "the garden is visibly paying for this". */
+.balance-notch {
+  position: absolute;
+  top: -3px;
+  bottom: -3px;
+  width: 2px;
+  border-radius: 1px;
+  background: color-mix(in srgb, var(--ink) 38%, transparent);
+}
+.balance-bar-fill.balance-low {
+  background: var(--warn);
+}
+.forecast-line {
+  font-size: 0.92rem;
+  color: var(--ink-soft);
+  margin: 0.1rem 0 0.35rem;
+}
+.forecast-line strong {
+  color: var(--warn);
+  font-weight: 650;
 }
 .balance-bar-fill.balance-run {
   background: var(--green);

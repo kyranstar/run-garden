@@ -1,15 +1,16 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useState, type ReactNode } from "react";
 import { Link } from "react-router-dom";
 import { useQuery } from "@tanstack/react-query";
-import { api, type DisciplineBalance } from "@rg/api-client";
+import { api, type DisciplineBalance, type WorkoutDto } from "@rg/api-client";
 import {
+  addDays,
   GARDEN_CONDITION_LABELS,
   type GardenConditionWord,
   type GardenEvent,
   type GardenWeatherState,
 } from "@rg/domain";
 import type { GardenSnapshot } from "@rg/garden-engine";
-import { SPECIES_BY_ID } from "@rg/garden-engine";
+import { DAMAGE_NOTCH, gardenForecast, projectedBalance, SPECIES_BY_ID } from "@rg/garden-engine";
 import { GardenScene, describePlant } from "@rg/garden-renderer";
 import { IconClock, IconClose } from "../icons.js";
 import {
@@ -121,8 +122,8 @@ const WEATHER_WHY: Record<GardenWeatherState, string> = {
   soft_sun: "a rest day, so gentle sun while the soil recovers.",
   clear_sun: "warm and steady between runs.",
   seasonal_breeze: "calm and seasonal — all is well.",
-  light_clouds: "a day or two without a run, so clouds are gathering.",
-  dry_spell: "a few days without a run, so the air is drying out.",
+  light_clouds: "a few days without a run — the air is starting to dry.",
+  dry_spell: "a few days without a run — the air is starting to dry.",
   mild_drought: "about two weeks without a run, so the garden is in drought.",
 };
 
@@ -199,50 +200,141 @@ function daysCaption(days: number | null): string {
   return days === 0 ? "today" : `${days} d ago`;
 }
 
-/** The discipline with the lowest health; ties broken run > strength > yoga. */
+/** The lowest-health *practiced* discipline; ties broken run > strength > yoga. */
 function weakestDiscipline(balance: DisciplineBalance): DisciplineKey {
   let weakest: DisciplineKey = "run";
   for (const { key } of BALANCE_BARS) {
+    if (balance[key].days === null) continue;
     if (balance[key].health < balance[weakest].health) weakest = key;
   }
   return weakest;
 }
 
-/** Three mini-bars for run/lift/yoga health, plus a gentle nudge when one lags. */
-function BalanceStrip({ balance }: { balance: DisciplineBalance }) {
+/**
+ * Three mini-bars for run/lift/yoga health. Each track carries a notch at the
+ * point where neglect starts visibly damaging the garden; a fill that has
+ * shrunk past its notch turns amber. `variant="hud"` renders the on-scene
+ * treatment for the desktop stage.
+ */
+function BalanceStrip({
+  balance,
+  runPaused,
+  quiet,
+  variant,
+}: {
+  balance: DisciplineBalance;
+  /** No active plan — the run clock is paused, say so instead of a count. */
+  runPaused?: boolean;
+  /** A forecast line is already speaking for the garden — stay visual only. */
+  quiet?: boolean;
+  variant?: "hud";
+}) {
   return (
-    <div className="balance-strip">
+    <div className={`balance-strip${variant === "hud" ? " balance-strip-hud" : ""}`}>
       <div className="balance-bars">
         {BALANCE_BARS.map(({ key, label }) => {
           const { days, health } = balance[key];
+          const notch = DAMAGE_NOTCH[key];
+          const low = days !== null && health < notch;
+          const caption = key === "run" && runPaused ? "plan paused" : daysCaption(days);
           return (
             <div
               key={key}
               className="balance-bar"
               role="img"
-              aria-label={`${label}: ${healthDescriptor(health)}, ${days === null ? `no ${label.toLowerCase()} yet` : `last ${label.toLowerCase()} ${daysCaption(days)}`}`}
+              aria-label={`${label}: ${healthDescriptor(health)}${low ? ", the garden is paying for it" : ""}, ${days === null ? `no ${label.toLowerCase()} yet` : `last ${label.toLowerCase()} ${daysCaption(days)}`}`}
             >
               <div className="balance-bar-label" aria-hidden="true">
                 {label}
               </div>
               <div className="balance-bar-track" aria-hidden="true">
                 <div
-                  className={`balance-bar-fill balance-${key}`}
+                  className={`balance-bar-fill balance-${key}${low ? " balance-low" : ""}`}
                   style={{ width: `${Math.round(health * 100)}%` }}
                 />
+                <span className="balance-notch" style={{ left: `${notch * 100}%` }} />
               </div>
               <div className="balance-bar-caption faint" aria-hidden="true">
-                {daysCaption(days)}
+                {caption}
               </div>
             </div>
           );
         })}
       </div>
-      {balance.overall < 0.5 ? (
+      {!quiet && balance.overall < 0.5 ? (
         <p className="balance-copy muted">{WEAKEST_COPY[weakestDiscipline(balance)]}</p>
       ) : null}
     </div>
   );
+}
+
+/** Whole days from `a` to `b` (ISO dates, b ≥ a). */
+function daysBetween(a: string, b: string): number {
+  return Math.round((Date.parse(b) - Date.parse(a)) / 86_400_000);
+}
+
+const RUN_CATEGORIES = new Set(["easy", "long", "quality", "recovery", "race", "unknown"]);
+
+/**
+ * The garden's one-sentence forecast — the countdown, spoken as weather.
+ * Exactly one loss-flavored line at a time; rest mode and plan gaps silence
+ * it; a taper (no run due before the threshold) flips it to reassurance.
+ */
+function ForecastLine({
+  snapshot,
+  todayDate,
+  daysAhead,
+  nextWorkout,
+  className,
+}: {
+  snapshot: GardenSnapshot;
+  todayDate: string;
+  daysAhead: number;
+  nextWorkout: WorkoutDto | null | undefined;
+  className?: string;
+}) {
+  const f = gardenForecast(snapshot, daysAhead);
+  let line: ReactNode = null;
+  if (f.recovering) {
+    line = <>Recovery rain — the garden is drinking it in.</>;
+  } else if (f.next) {
+    const threshold = addDays(todayDate, f.next.inDays);
+    // No plan at all: the run clock is paused, a countdown would over-alarm.
+    if (!nextWorkout) return null;
+    const runComing =
+      RUN_CATEGORIES.has(nextWorkout.category) && nextWorkout.effectiveDate <= threshold;
+    if (!runComing && nextWorkout.category === "rest") {
+      line = <>Taper week — the garden holds its water.</>;
+    } else if (f.next.stage === "dry") {
+      line = (
+        <>
+          Rain needed by <strong>{formatDayShort(threshold).split(" ")[0]}</strong> — after that
+          the soil starts to dry.
+        </>
+      );
+    } else if (f.next.stage === "drought") {
+      line = (
+        <>
+          <strong>{f.next.inDays === 1 ? "Drought tomorrow" : `Drought in ${f.next.inDays} days`}</strong>{" "}
+          — your next run turns it around.
+        </>
+      );
+    } else {
+      const name = f.victim ? SPECIES_BY_ID.get(f.victim.speciesId)?.name : null;
+      line = name ? (
+        <>
+          If the dry spell holds, the <strong>{name.toLowerCase()}</strong> goes dormant soon — one
+          run brings it back.
+        </>
+      ) : (
+        <>The dry spell is deepening — one run turns it around.</>
+      );
+    }
+  } else if (f.victim) {
+    line = <>Deep drought — your next run begins the recovery.</>;
+  }
+  if (!line) return null;
+  return <p className={`forecast-line${className ? ` ${className}` : ""}`}>{line}</p>;
 }
 
 function conditionStory(
@@ -358,6 +450,28 @@ export function GardenScreen() {
 
   const d = today.data;
 
+  // The clocks are as-of the end of `lastSimulatedDate` (≤ yesterday). Project
+  // wall-clock elapsed time on top so the bars keep shrinking between visits
+  // and the day captions stop calling yesterday's run "today". Display-only.
+  const todayDate = d?.today ?? liveDate;
+  const daysSinceSimulated = Math.max(
+    0,
+    daysBetween(snapshot.state.lastSimulatedDate, todayDate) - 1 + hourOfDay / 24,
+  );
+  const planActive = !!d?.nextWorkout;
+  const liveBalance = balance
+    ? projectedBalance(snapshot.state, {
+        daysSinceSimulated,
+        freezeRun: !planActive,
+        freezeAll: restMode.active,
+      })
+    : undefined;
+  // One loss voice at a time: when the forecast line is speaking a decay
+  // stage, the balance strip stays purely visual.
+  const fc = gardenForecast(snapshot, daysSinceSimulated);
+  const lossVoiced =
+    viewingLive && !restMode.active && !fc.recovering && (fc.next !== null || fc.victim !== null);
+
   return (
     <div className="garden-home">
       <h1 className="visually-hidden">Garden</h1>
@@ -415,11 +529,21 @@ export function GardenScreen() {
         )}
       </div>
 
-      {balance ? <BalanceStrip balance={balance} /> : null}
+      {liveBalance ? (
+        <BalanceStrip balance={liveBalance} runPaused={!planActive} quiet={lossVoiced} />
+      ) : null}
 
       {/* What the garden is telling you, and why it looks this way. */}
       <div className="garden-readout">
         <h2 className="garden-condition">{GARDEN_CONDITION_LABELS[displayCondition]}</h2>
+        {viewingLive && !restMode.active ? (
+          <ForecastLine
+            snapshot={snapshot}
+            todayDate={todayDate}
+            daysAhead={daysSinceSimulated}
+            nextWorkout={d?.nextWorkout}
+          />
+        ) : null}
         {todayLines.length > 0 ? (
           <p className="garden-nowline">
             <span className="now-chip">today</span>
