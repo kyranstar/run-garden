@@ -98,12 +98,21 @@ import { useEffect, useLayoutEffect, useRef, useState } from "react";
  *     *next* pointer event, but calling it is cheap and side-effect-free.
  *   - Desktop (`pointerType !== "touch"` and `!== "pen"`): `pointermove`
  *     shows the tooltip for the nearest registered mark within a 24px hit
- *     radius, converted from CSS px to viewBox units independently per axis
- *     via the `<svg>`'s current `getBoundingClientRect()` / viewBox size —
- *     so a chart that does *not* preserve its viewBox aspect ratio (a fixed
- *     height that doesn't match the viewBox's, e.g. a sparkline squeezed
- *     into a KPI tile) still gets a true ~24px *circular* hit radius on
- *     screen, not an ellipse; leaving the wrapper hides it.
+ *     radius. Coordinates are mapped between client (pointer-event) space
+ *     and the `<svg>`'s own user/viewBox space via the browser's own
+ *     Current Transformation Matrix (`svg.getScreenCTM()`/its inverse,
+ *     applied through `createSVGPoint()`/`matrixTransform`) — exact under
+ *     ANY `preserveAspectRatio`, including the SVG default `xMidYMid meet`
+ *     (which letterboxes with a *centering translation*, not just a
+ *     uniform stretch — a plain per-axis `getBoundingClientRect()`/viewBox
+ *     ratio gets this wrong, not just imprecise, whenever the rendered box
+ *     and the viewBox don't share an aspect ratio, e.g. a sparkline
+ *     squeezed into a KPI tile) or non-uniform stretching under `"none"`.
+ *     There is no requirement that a chart preserve its viewBox aspect
+ *     ratio. The hand-rolled per-axis ratio is used only as a fallback
+ *     when `getScreenCTM()` is unavailable or throws (e.g. jsdom, which
+ *     doesn't implement SVG geometry APIs) — that fallback IS only exact
+ *     under `preserveAspectRatio="none"`; leaving the wrapper hides it.
  *   - Touch (`pointerType === "touch"`, `"pen"` treated the same): a tap
  *     (`pointerdown`) shows and *pins* the nearest mark within the hit
  *     radius. A second tap elsewhere moves the pin to the new nearest mark;
@@ -261,7 +270,16 @@ interface ActiveTip {
   pinned: boolean;
 }
 
-/** A `<svg>`'s current on-screen rect and its viewBox-per-CSS-px scale, one axis at a time. */
+/**
+ * Fallback-only per-axis approximation: the `<svg>`'s current on-screen
+ * rect and a naive viewBox-per-CSS-px scale computed independently for x
+ * and y. This is exact ONLY under `preserveAspectRatio="none"` (a uniform
+ * stretch to fill the box) — it ignores the centering translation
+ * `xMidYMid meet` (the SVG default) applies when the rendered box's aspect
+ * ratio doesn't match the viewBox's, so it's wrong (a real mismatch, not
+ * just imprecise) for a letterboxed chart. Used only when `svgCtm` below
+ * is unavailable.
+ */
 interface SvgScale {
   rect: DOMRect;
   vb: SVGRect;
@@ -280,6 +298,25 @@ function firstSvg(wrapper: HTMLDivElement | null): SVGSVGElement | null {
   return wrapper?.querySelector("svg") ?? null;
 }
 
+/**
+ * The `<svg>`'s Current Transformation Matrix — the browser's own mapping
+ * between its user space (viewBox coordinates) and screen space (the same
+ * coordinate system as pointer events / `getBoundingClientRect`). Exact
+ * under ANY `preserveAspectRatio` (it bakes in whatever scale *and*
+ * translation `meet`/`slice`/`none` actually produced) and under any
+ * ancestor CSS transform — unlike `measureSvgScale`'s hand-rolled ratio.
+ * `null` if the element has no box yet, or in an environment that doesn't
+ * implement SVG geometry APIs (e.g. jsdom, which throws rather than
+ * returning null — caught here so both behave the same way to callers).
+ */
+function svgCtm(svg: SVGSVGElement): DOMMatrix | null {
+  try {
+    return svg.getScreenCTM();
+  } catch {
+    return null;
+  }
+}
+
 function measureSvgScale(svg: SVGSVGElement): SvgScale | null {
   const rect = svg.getBoundingClientRect();
   if (rect.width === 0 || rect.height === 0) return null;
@@ -290,6 +327,20 @@ function measureSvgScale(svg: SVGSVGElement): SvgScale | null {
 }
 
 function toViewBox(svg: SVGSVGElement, clientX: number, clientY: number): ViewBoxPoint | null {
+  const ctm = svgCtm(svg);
+  if (ctm) {
+    const inv = ctm.inverse();
+    const pt = svg.createSVGPoint();
+    pt.x = clientX;
+    pt.y = clientY;
+    const u = pt.matrixTransform(inv);
+    // The linear (non-translating) part of the inverse CTM turns a
+    // screen-space length into a viewBox-space one, per axis — exact for
+    // the scale+translate transforms preserveAspectRatio produces (chart
+    // markup never rotates/skews the <svg>).
+    return { x: u.x, y: u.y, scaleX: Math.abs(inv.a), scaleY: Math.abs(inv.d) };
+  }
+  // Fallback (jsdom, or a detached/zero-size svg) — see SvgScale's caveat.
   const s = measureSvgScale(svg);
   if (!s) return null;
   return {
@@ -398,11 +449,10 @@ export function useChartTooltip(): ChartTooltipHandle {
   }, [active?.pinned]);
 
   // Re-measure the tooltip's screen position whenever the active mark
-  // changes — a fresh getBoundingClientRect() read, not a stored/stale
-  // scale, so a resize between hovers doesn't leave it misplaced. (Since
-  // `active` now only changes reference on a genuine mark transition — see
-  // onPointerMove above — this effect no longer re-runs on every no-op
-  // pointermove either.)
+  // changes — a fresh read, not a stored/stale scale, so a resize between
+  // hovers doesn't leave it misplaced. (Since `active` now only changes
+  // reference on a genuine mark transition — see onPointerMove above —
+  // this effect no longer re-runs on every no-op pointermove either.)
   useLayoutEffect(() => {
     if (!active) {
       setTipPos(null);
@@ -410,12 +460,26 @@ export function useChartTooltip(): ChartTooltipHandle {
     }
     const wrapper = wrapperRef.current;
     const svg = firstSvg(wrapper);
-    const s = svg ? measureSvgScale(svg) : null;
-    if (!wrapper || !s) {
+    if (!wrapper || !svg) {
       setTipPos(null);
       return;
     }
     const wrapperRect = wrapper.getBoundingClientRect();
+    const ctm = svgCtm(svg);
+    if (ctm) {
+      const pt = svg.createSVGPoint();
+      pt.x = active.mark.x;
+      pt.y = active.mark.y;
+      const c = pt.matrixTransform(ctm); // viewBox space -> screen/client space, forward
+      setTipPos({ left: c.x - wrapperRect.left, top: c.y - wrapperRect.top });
+      return;
+    }
+    // Fallback (jsdom, or a detached/zero-size svg) — see SvgScale's caveat.
+    const s = measureSvgScale(svg);
+    if (!s) {
+      setTipPos(null);
+      return;
+    }
     setTipPos({
       left: s.rect.left - wrapperRect.left + (active.mark.x - s.vb.x) / s.scaleX,
       top: s.rect.top - wrapperRect.top + (active.mark.y - s.vb.y) / s.scaleY,
