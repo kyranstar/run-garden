@@ -87,6 +87,24 @@ describe("computeHrvTrend", () => {
     expect(r.value.pctVsBaseline).toBeCloseTo(-9.4, 1);
   });
 
+  it("caps the baseline pool at ranks 8-37, excluding rank-38+ readings even when present", () => {
+    const rows: { date: string; hrv: number | null }[] = [];
+    // Recent 7 (ranks 1-7, days 0-6 ago): arbitrary, doesn't affect this assertion.
+    for (let i = 0; i < 7; i++) rows.push({ date: daysAgo(i), hrv: 60 });
+    // Baseline (ranks 8-37, days 7-36 ago): 30 readings, all 60 -> median 60.
+    for (let i = 0; i < 30; i++) rows.push({ date: daysAgo(7 + i), hrv: 60 });
+    // Rank 38+ (days 37-67 ago): 31 readings at a very different value (150).
+    // 31 > 30 (the baseline pool size) is deliberate: if these leaked into an
+    // uncapped baseline pool, they'd outnumber the rank-8..37 readings and
+    // drag the combined median all the way to 150, making the leak obvious
+    // rather than accidentally still landing near 60.
+    for (let i = 0; i < 31; i++) rows.push({ date: daysAgo(37 + i), hrv: 150 });
+    const r = computeHrvTrend(rows, TODAY);
+    expect(r.status).toBe("ok");
+    if (r.status !== "ok") return;
+    expect(r.value.baseline).toBe(60);
+  });
+
   it("thresholdPct falls back to 10 when baseline readings are identical (CV incomputable)", () => {
     const rows: { date: string; hrv: number | null }[] = [];
     for (let i = 0; i < 7; i++) rows.push({ date: daysAgo(i), hrv: 60 });

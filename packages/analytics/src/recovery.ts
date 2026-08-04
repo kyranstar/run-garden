@@ -88,7 +88,7 @@ export function computeRestingHr(
 export interface HrvValue {
   /** Median of the 7 most recent readings (all within 14 days of `today`). */
   recent: number;
-  /** Median of readings ranked 8+ (everything past the recent window — no overlap). */
+  /** Median of readings ranked 8..37 (30-reading window, no overlap with `recent`). */
   baseline: number;
   /** 1dp. */
   pctVsBaseline: number;
@@ -104,7 +104,10 @@ export interface HrvValue {
  * out of the *same* overlapping pool of readings, so the baseline was
  * partly made of the very readings it was being compared against and pulled
  * toward "recent"), the baseline here is built exclusively from readings
- * ranked 8th-most-recent and older — a disjoint pool. */
+ * ranked 8th-37th-most-recent — a disjoint, fixed-size 30-reading window.
+ * (Deliberately capped, not "everything past rank 7": for a daily-syncing
+ * user, an uncapped baseline would silently drift into an all-time average
+ * after ~6 weeks, which defeats detecting a real recovery-trend shift.) */
 export function computeHrvTrend(
   rows: ReadonlyArray<{ date: string; hrv: number | null }>,
   today: string,
@@ -142,7 +145,7 @@ export function computeHrvTrend(
     );
   }
 
-  const baselineReadings = valid.slice(7); // guaranteed >= 10 given the length-17 gate above
+  const baselineReadings = valid.slice(7, 37); // ranks 8..37; guaranteed >= 10 given the length-17 gate above
   const recent = median(recentReadings.map((r) => r.hrv));
   const baseline = median(baselineReadings.map((r) => r.hrv));
   const pctVsBaseline = baseline > 0 ? roundTo(((recent - baseline) / baseline) * 100, 1) : 0;
