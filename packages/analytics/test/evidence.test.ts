@@ -6,6 +6,8 @@ import type { TimeOfDayPair } from "../src/timeOfDay.js";
 import { mkActivity, mkWorkout } from "./builders.js";
 
 const range = { start: "2026-01-01", end: "2026-03-31" };
+/** No dismissals: the default state for every case except the rotation test. */
+const none: ReadonlySet<string> = new Set<string>();
 
 function pair(
   id: string,
@@ -51,17 +53,15 @@ const comebackRecord: PersonalRecord = {
 describe("pickEvidenceCard", () => {
   it("returns null with thin data — no platitudes", () => {
     expect(
-      pickEvidenceCard({ workouts: [], range, timeOfDayPairs: [], records: [] }),
+      pickEvidenceCard({ workouts: [], range, timeOfDayPairs: [], records: [] }, none),
     ).toBeNull();
   });
 
   it("returns the morning-completion card with rich data, in the exact factual format", () => {
-    const card = pickEvidenceCard({
-      workouts: [],
-      range,
-      timeOfDayPairs: morningPairs(10, 2),
-      records: [],
-    });
+    const card = pickEvidenceCard(
+      { workouts: [], range, timeOfDayPairs: morningPairs(10, 2), records: [] },
+      none,
+    );
     expect(card).not.toBeNull();
     expect(card!.text).toBe("You complete 83% of morning runs (10 of 12 scheduled before noon).");
     expect(card!.sampleNote).toBe("Sample: 12 scheduled morning runs.");
@@ -70,10 +70,10 @@ describe("pickEvidenceCard", () => {
 
   it("suppresses the morning card below 10 scheduled morning runs or below 70% completion", () => {
     expect(
-      pickEvidenceCard({ workouts: [], range, timeOfDayPairs: morningPairs(8, 1), records: [] }),
+      pickEvidenceCard({ workouts: [], range, timeOfDayPairs: morningPairs(8, 1), records: [] }, none),
     ).toBeNull();
     expect(
-      pickEvidenceCard({ workouts: [], range, timeOfDayPairs: morningPairs(7, 5), records: [] }),
+      pickEvidenceCard({ workouts: [], range, timeOfDayPairs: morningPairs(7, 5), records: [] }, none),
     ).toBeNull();
   });
 
@@ -83,14 +83,14 @@ describe("pickEvidenceCard", () => {
     // least 3 planned samples — evening has only 2 here.
     const pairs = [...windowPairs("m", "07:00", 10, 0), ...windowPairs("e", "18:00", 2, 0)];
     expect(
-      pickEvidenceCard({ workouts: [], range, timeOfDayPairs: pairs, records: [] }),
+      pickEvidenceCard({ workouts: [], range, timeOfDayPairs: pairs, records: [] }, none),
     ).toBeNull();
   });
 
   it("suppresses the morning card when the morning window itself has fewer than 3 planned samples", () => {
     const pairs = [...windowPairs("m", "07:00", 2, 0), ...windowPairs("e", "18:00", 10, 0)];
     expect(
-      pickEvidenceCard({ workouts: [], range, timeOfDayPairs: pairs, records: [] }),
+      pickEvidenceCard({ workouts: [], range, timeOfDayPairs: pairs, records: [] }, none),
     ).toBeNull();
   });
 
@@ -101,7 +101,7 @@ describe("pickEvidenceCard", () => {
       ...Array.from({ length: 8 }, (_, i) => pair(`m${i + 2}`, "07:00", "completed")),
     ];
     const pairs = [...morning, ...windowPairs("e", "18:00", 3, 0)];
-    const card = pickEvidenceCard({ workouts: [], range, timeOfDayPairs: pairs, records: [] });
+    const card = pickEvidenceCard({ workouts: [], range, timeOfDayPairs: pairs, records: [] }, none);
     expect(card).not.toBeNull();
     expect(card!.text).toBe(
       "You complete 100% of morning runs (10 of 10 scheduled before noon). You typically start within 15 minutes of plan.",
@@ -109,12 +109,10 @@ describe("pickEvidenceCard", () => {
   });
 
   it("omits the start-delta sentence when no completed workout carries a local start time", () => {
-    const card = pickEvidenceCard({
-      workouts: [],
-      range,
-      timeOfDayPairs: morningPairs(10, 2),
-      records: [],
-    });
+    const card = pickEvidenceCard(
+      { workouts: [], range, timeOfDayPairs: morningPairs(10, 2), records: [] },
+      none,
+    );
     expect(card!.text).toBe("You complete 83% of morning runs (10 of 12 scheduled before noon).");
     expect(card!.text).not.toContain("typically start");
   });
@@ -126,7 +124,7 @@ describe("pickEvidenceCard", () => {
       timeOfDayPairs: morningPairs(10, 2),
       records: [comebackRecord],
     };
-    const card = pickEvidenceCard(input);
+    const card = pickEvidenceCard(input, none);
     expect(card!.text).toBe(
       "After a break of 7 or more days, your fastest return to three runs took 4 days.",
     );
@@ -142,8 +140,36 @@ describe("pickEvidenceCard", () => {
         completionState: i < 10 ? "completed" : "missed",
       }),
     );
-    const card = pickEvidenceCard({ workouts, range, timeOfDayPairs: [], records: [] });
+    const card = pickEvidenceCard({ workouts, range, timeOfDayPairs: [], records: [] }, none);
     expect(card!.text).toBe("You completed 10 of 12 planned easy runs (83%).");
+  });
+
+  it("falls through to the next card when the top one is dismissed, instead of returning null", () => {
+    const input: EvidenceInput = {
+      workouts: [],
+      range,
+      timeOfDayPairs: morningPairs(10, 2),
+      records: [comebackRecord],
+    };
+    const top = pickEvidenceCard(input, none)!;
+    expect(top.text).toContain("After a break of 7 or more days");
+
+    const next = pickEvidenceCard(input, new Set([top.id]));
+    expect(next).not.toBeNull();
+    expect(next!.id).not.toBe(top.id);
+    expect(next!.text).toBe("You complete 83% of morning runs (10 of 12 scheduled before noon).");
+  });
+
+  it("returns null only once every card in the chain is dismissed", () => {
+    const input: EvidenceInput = {
+      workouts: [],
+      range,
+      timeOfDayPairs: morningPairs(10, 2),
+      records: [comebackRecord],
+    };
+    const first = pickEvidenceCard(input, none)!;
+    const second = pickEvidenceCard(input, new Set([first.id]))!;
+    expect(pickEvidenceCard(input, new Set([first.id, second.id]))).toBeNull();
   });
 
   it("gives cards a stable id derived from kind and value", () => {
@@ -153,8 +179,8 @@ describe("pickEvidenceCard", () => {
       timeOfDayPairs: morningPairs(10, 2),
       records: [],
     };
-    const a = pickEvidenceCard(input);
-    const b = pickEvidenceCard(input);
+    const a = pickEvidenceCard(input, none);
+    const b = pickEvidenceCard(input, none);
     expect(a!.id).toBe(b!.id);
     expect(a!.id).toMatch(/^ev-[0-9a-f]+$/);
   });
