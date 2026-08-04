@@ -1,22 +1,18 @@
 import { useState } from "react";
 import { useQuery } from "@tanstack/react-query";
-import { api } from "@rg/api-client";
+import { api, type InsightsResponse } from "@rg/api-client";
 import { Card, EmptyState, formatDayLong, formatDayShort, Sheet, Spinner } from "../components.js";
 import { AdherenceChart, ChartFrame, RunSeriesChart, WeeklyDurationChart } from "../charts.js";
 
-interface MetricOk<T> {
-  status: "ok";
-  value: T;
-  sampleSize: number;
-  comparisonNote: string;
-}
-interface MetricInsufficient {
-  status: "insufficient_data";
-  needed: number;
-  have: number;
-  explanation: string;
-}
-type Metric<T> = MetricOk<T> | MetricInsufficient;
+// Derived from InsightsResponse (the worker's actual payload) rather than
+// redeclared here — this is exactly what task A9 replaced the blind `as`
+// casts with.
+type InterpretedMetric = InsightsResponse["interpreted"][number];
+type MetricDetail = NonNullable<InterpretedMetric["detail"]>;
+type MetricRunDetail = MetricDetail["runs"][number];
+type MetricLapDetail = NonNullable<MetricRunDetail["laps"]>[number];
+/** The insufficient-data branch is identical across every MetricResult<T>, whatever T is. */
+type MetricInsufficient = Extract<InsightsResponse["decoupling"], { status: "insufficient_data" }>;
 
 function InsufficientNote({ m }: { m: MetricInsufficient }) {
   return (
@@ -26,39 +22,8 @@ function InsufficientNote({ m }: { m: MetricInsufficient }) {
   );
 }
 
-interface MetricLapDetail {
-  lapIndex: number;
-  avgHr?: number;
-  durationSeconds?: number;
-  distanceMeters?: number;
-  over?: boolean;
-}
-interface MetricRunDetail {
-  activityId: string;
-  date: string;
-  title?: string;
-  value?: string;
-  over?: boolean;
-  note?: string;
-  laps?: MetricLapDetail[];
-}
-interface MetricDetail {
-  explain: string;
-  threshold?: { label: string; value: number; unit?: string };
-  runs: MetricRunDetail[];
-}
-
-interface InterpretedMetric {
-  id: string;
-  title: string;
-  status: "ok" | "insufficient_data";
-  value?: string;
-  band?: "low" | "healthy" | "high" | "watch";
-  range?: string;
-  meaning: string;
-  suggestion?: string;
-  sampleNote: string;
-  detail?: MetricDetail;
+function signed(n: number): string {
+  return n > 0 ? `+${n}` : `${n}`;
 }
 
 function BandPill({ band }: { band?: string }) {
@@ -187,10 +152,9 @@ function MetricDrilldown({ m, onClose }: { m: InterpretedMetric; onClose: () => 
 }
 
 const METRIC_GROUPS: Array<{ title: string; ids: string[] }> = [
-  { title: "Training load & injury risk", ids: ["acwr", "ramp", "balance"] },
-  { title: "Recovery & readiness", ids: ["restingHr", "hrv", "hardStack"] },
-  { title: "Aerobic fitness", ids: ["easyDiscipline"] },
-  { title: "Performance", ids: ["splits"] },
+  { title: "Load", ids: ["loadRatio", "ramp", "monotony"] },
+  { title: "Recovery", ids: ["restingHr", "hrv", "hardStack"] },
+  { title: "Execution", ids: ["lowIntensityShare", "easyDiscipline", "pacing"] },
 ];
 
 export function InsightsScreen() {
@@ -200,30 +164,7 @@ export function InsightsScreen() {
   if (insights.isLoading) return <Spinner label="Computing insights" />;
   if (!insights.data) return <EmptyState title="Couldn't load insights" />;
 
-  const d = insights.data as Record<string, unknown>;
-  const consistency = d.consistency as {
-    planned: number;
-    completed: number;
-    moved: number;
-    skipped: number;
-    missed: number;
-    unresolved: number;
-    adherenceRate: number;
-    weeklyBreakdown: Array<{ weekStart: string; planned: number; completed: number; adherence: number }>;
-  };
-  const weekly = d.weekly as {
-    weeks: Array<{ weekStart: string; durationSeconds: number; distanceMeters: number; easySeconds: number; qualitySeconds: number; runCount: number }>;
-    fourWeekAvgDuration?: number;
-  };
-  const efficiency = d.efficiency as Metric<{ perRun: Array<{ date: string; efficiency: number }>; trendPct: number }>;
-  const drift = d.drift as Metric<{ perRun: Array<{ date: string; driftPct: number }>; medianDriftPct: number }>;
-  const timeOfDay = d.timeOfDay as Metric<{
-    morning: { planned: number; completed: number; rate: number };
-    evening: { planned: number; completed: number; rate: number };
-  }>;
-  const records = (d.records ?? []) as Array<{ id: string; title: string; value: string; achievedOn: string; rule: string }>;
-  const reviews = (d.reviews ?? []) as Array<{ weekStart: string; narrative: string | null; facts: Record<string, unknown> }>;
-  const interpreted = (d.interpreted ?? []) as InterpretedMetric[];
+  const { consistency, weekly, efficiency, decoupling, records, reviews, interpreted } = insights.data;
 
   const recentWeeks = consistency.weeklyBreakdown.slice(-8);
   const recentTraining = weekly.weeks.slice(-8);
@@ -291,7 +232,16 @@ export function InsightsScreen() {
                 : `n=${recentTraining.reduce((s, w) => s + w.runCount, 0)} runs`
             }
           >
-            <WeeklyDurationChart weeks={recentTraining} />
+            <WeeklyDurationChart
+              weeks={recentTraining.map((w) => ({
+                weekStart: w.weekStart,
+                // WeeklyDurationChart still takes the old easy/quality prop names;
+                // low/high (zone-based, from A7) is now the more accurate split.
+                // B3 renames the chart's own props properly.
+                easySeconds: w.lowSeconds,
+                qualitySeconds: w.highSeconds,
+              }))}
+            />
           </ChartFrame>
         )}
       </Card>
@@ -301,7 +251,7 @@ export function InsightsScreen() {
           <ChartFrame
             title="Meters per heartbeat on comparable easy runs"
             subtitle={efficiency.comparisonNote}
-            summary={`Aerobic efficiency across ${efficiency.sampleSize} comparable easy runs. Trend ${efficiency.value.trendPct >= 0 ? "up" : "down"} ${Math.abs(efficiency.value.trendPct).toFixed(1)} percent.`}
+            summary={`Aerobic efficiency across ${efficiency.sampleSize} comparable easy runs.${efficiency.value.trend ? ` Trend ${efficiency.value.trend.pct >= 0 ? "up" : "down"} ${Math.abs(efficiency.value.trend.pct).toFixed(1)} percent over ${efficiency.value.trend.n} runs.` : ""}`}
             note={`n=${efficiency.sampleSize} runs · higher is easier speed at the same heart rate · noisy week to week`}
           >
             <RunSeriesChart
@@ -315,41 +265,28 @@ export function InsightsScreen() {
         )}
       </Card>
 
-      <Card title="Heart-rate drift">
-        {drift.status === "ok" ? (
+      <Card title="Aerobic decoupling (Pa:HR)">
+        {decoupling.status === "ok" ? (
           <ChartFrame
-            title="Second-half vs first-half heart rate on steady runs"
-            subtitle={drift.comparisonNote}
-            summary={`Median heart-rate drift ${drift.value.medianDriftPct.toFixed(1)} percent across ${drift.sampleSize} steady runs.`}
-            note={`n=${drift.sampleSize} steady runs · intervals excluded · median ${drift.value.medianDriftPct.toFixed(1)}%`}
+            title="Pace-adjusted speed-to-heart-rate decoupling, first half vs second half of steady runs"
+            subtitle={decoupling.comparisonNote}
+            summary={`Median Pa:HR decoupling ${decoupling.value.medianPct.toFixed(1)} percent across ${decoupling.sampleSize} steady runs.`}
+            note={`n=${decoupling.sampleSize} steady runs · median ${decoupling.value.medianPct.toFixed(1)}%${
+              efficiency.status === "ok" && efficiency.value.trend
+                ? ` · efficiency trend ${signed(efficiency.value.trend.pct)}% over ${efficiency.value.trend.n} runs`
+                : ""
+            }`}
           >
             <RunSeriesChart
-              points={drift.value.perRun.map((p) => ({ date: p.date, value: p.driftPct }))}
-              unit="% drift"
-              seriesLabel="Heart-rate drift"
+              points={decoupling.value.perRun.map((p) => ({ date: p.date, value: p.decouplingPct }))}
+              unit="% decoupling"
+              seriesLabel="Aerobic decoupling"
               colorVar="--chart-2"
               decimals={1}
             />
           </ChartFrame>
         ) : (
-          <InsufficientNote m={drift} />
-        )}
-      </Card>
-
-      <Card title="Time of day">
-        {timeOfDay.status === "ok" ? (
-          <div>
-            <p>
-              Morning: {timeOfDay.value.morning.completed} of {timeOfDay.value.morning.planned} completed (
-              {Math.round(timeOfDay.value.morning.rate * 100)}%) · Evening: {timeOfDay.value.evening.completed} of{" "}
-              {timeOfDay.value.evening.planned} ({Math.round(timeOfDay.value.evening.rate * 100)}%)
-            </p>
-            <p className="faint" style={{ marginTop: "0.3rem" }}>
-              {timeOfDay.comparisonNote}
-            </p>
-          </div>
-        ) : (
-          <InsufficientNote m={timeOfDay} />
+          <InsufficientNote m={decoupling} />
         )}
       </Card>
 

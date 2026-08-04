@@ -192,6 +192,9 @@ importers:
 
   packages/api-client:
     dependencies:
+      '@rg/analytics':
+        specifier: workspace:*
+        version: link:../analytics
       '@rg/domain':
         specifier: workspace:*
         version: link:../domain

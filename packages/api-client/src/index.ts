@@ -9,6 +9,16 @@ import type {
   PlanBrief,
   UserPreferences,
 } from "@rg/domain";
+import type {
+  AerobicEfficiencyValue,
+  ConsistencyReport,
+  DecouplingValue,
+  EvidenceCard,
+  InterpretedMetric,
+  MetricResult,
+  StoredRecord,
+  WeeklyTrainingReport,
+} from "@rg/analytics";
 
 /**
  * Typed client for the Run Garden worker API. Same-origin; cookie sessions.
@@ -377,6 +387,32 @@ export interface StudioAdoptionUndoResponse {
   };
 }
 
+// ── Insights (worker route: apps/worker/src/routes/misc.ts insightRoutes) ──────
+
+/** A weekly narrative row as persisted by `weeklyReviews` — echoed verbatim. */
+export interface WeeklyReviewDto {
+  id: string;
+  userId: string;
+  weekStart: string;
+  facts: Record<string, unknown>;
+  narrative: string | null;
+  llmModel: string | null;
+  llmCostMicros: number | null;
+  createdAt: string;
+}
+
+/** Exact shape of `GET /api/insights`'s `c.json({...})` payload. */
+export interface InsightsResponse {
+  consistency: ConsistencyReport;
+  weekly: WeeklyTrainingReport;
+  efficiency: MetricResult<AerobicEfficiencyValue>;
+  decoupling: MetricResult<DecouplingValue>;
+  records: StoredRecord[];
+  evidence: EvidenceCard | null;
+  reviews: WeeklyReviewDto[];
+  interpreted: InterpretedMetric[];
+}
+
 // ── Endpoints ────────────────────────────────────────────────────────────────
 
 export const api = {
@@ -406,7 +442,7 @@ export const api = {
   gardenRestMode: (active: boolean, until?: string | null) =>
     post("/api/garden/rest-mode", { active, until }),
   gardenTimeline: () => get<GardenTimelineResponse>("/api/garden/timeline"),
-  insights: () => get<Record<string, unknown>>("/api/insights"),
+  insights: () => get<InsightsResponse>("/api/insights"),
   dismissInsight: (cardId: string) => post("/api/insights/dismiss", { cardId }),
   activities: (limit = 40) => get<{ activities: ActivityDto[] }>(`/api/activities?limit=${limit}`),
   unmatchedActivities: () => get<{ activities: Array<Record<string, unknown>> }>("/api/activities/unmatched"),
