@@ -203,6 +203,25 @@ export interface DeviceDto {
   online: boolean;
 }
 
+/**
+ * One day of `GET /api/garden/timeline` (worker route:
+ * apps/worker/src/routes/garden.ts). `view` mirrors
+ * `GardenTimelineDay["view"]` (garden-sync.ts) — loosely typed like
+ * `api.garden()`'s payload above; the UI casts `snapshot` to `GardenSnapshot`
+ * from `@rg/garden-engine` (not a dependency here) the same way it already
+ * casts `api.garden()`'s snapshot. */
+export interface GardenTimelineDayDto {
+  date: string;
+  view: {
+    snapshot: Record<string, unknown>;
+    condition: GardenConditionWord;
+  };
+}
+
+export interface GardenTimelineResponse {
+  days: GardenTimelineDayDto[];
+}
+
 // ── Plan Studio (worker routes: apps/worker/src/routes/studio.ts) ──────────────
 
 /** One `studio_plan_pushes` row, trimmed to what the UI needs (no internal
@@ -386,6 +405,7 @@ export const api = {
   garden: () => get<Record<string, unknown> & { balance: DisciplineBalance }>("/api/garden"),
   gardenRestMode: (active: boolean, until?: string | null) =>
     post("/api/garden/rest-mode", { active, until }),
+  gardenTimeline: () => get<GardenTimelineResponse>("/api/garden/timeline"),
   insights: () => get<Record<string, unknown>>("/api/insights"),
   dismissInsight: (cardId: string) => post("/api/insights/dismiss", { cardId }),
   activities: (limit = 40) => get<{ activities: ActivityDto[] }>(`/api/activities?limit=${limit}`),

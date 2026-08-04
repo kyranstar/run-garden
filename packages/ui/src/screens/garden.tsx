@@ -11,6 +11,7 @@ import {
 import type { GardenSnapshot } from "@rg/garden-engine";
 import { SPECIES_BY_ID } from "@rg/garden-engine";
 import { GardenScene, describePlant } from "@rg/garden-renderer";
+import { IconClock, IconClose } from "../icons.js";
 import {
   Banner,
   Card,
@@ -28,6 +29,14 @@ import {
   type CodexEntry,
   type WildlifeEntry,
 } from "./codex.js";
+
+/** One point on the timeline scrubber — either a replayed past day (from
+ * `api.gardenTimeline()`) or the live "today" view already loaded above. */
+interface TimelinePoint {
+  date: string;
+  snapshot: GardenSnapshot;
+  condition: GardenConditionWord;
+}
 
 function usePrefersReducedMotion(): boolean {
   return useMemo(
@@ -261,8 +270,19 @@ export function GardenScreen() {
   const today = useQuery({ queryKey: ["today"], queryFn: api.today });
   const [selectedPlantId, setSelectedPlantId] = useState<string | null>(null);
   const [showWeather, setShowWeather] = useState(false);
+  const [timelineOpen, setTimelineOpen] = useState(false);
+  const [dayIndexOverride, setDayIndexOverride] = useState<number | null>(null);
   const reducedMotion = usePrefersReducedMotion();
   const hourOfDay = new Date().getHours() + new Date().getMinutes() / 60;
+
+  // Fetched only once the scrubber is opened, then cached — scrubbing itself
+  // is then all client-side (no per-frame requests).
+  const timeline = useQuery({
+    queryKey: ["garden-timeline"],
+    queryFn: api.gardenTimeline,
+    enabled: timelineOpen,
+    staleTime: 5 * 60_000,
+  });
 
   // App-open freshness: this is the actual "/" landing screen (Today's
   // content lives here — see the garden-lower section below), so this is
@@ -282,21 +302,54 @@ export function GardenScreen() {
   const restMode = garden.data.restMode as { active: boolean; until: string | null };
   // Old cached payloads (pre-balance) may not carry this field — guard rather than crash.
   const balance = garden.data.balance as DisciplineBalance | undefined;
-  const selectedPlant = snapshot.plants.find((p) => p.id === selectedPlantId);
-  const livingPlants = snapshot.plants.filter((p) => p.state !== "dead").length;
-  const weather = snapshot.state.weatherState;
+
+  // Timeline: every replayed past day, plus the live view already loaded
+  // above standing in for "today" (its date is always later than the last
+  // replayed day, since `buildGardenTimeline` never includes the in-progress
+  // preview day — see the route).
+  const pastDays: TimelinePoint[] = (timeline.data?.days ?? []).map((d) => ({
+    date: d.date,
+    snapshot: d.view.snapshot as unknown as GardenSnapshot,
+    condition: d.view.condition,
+  }));
+  const liveDate = today.data?.today ?? snapshot.state.lastSimulatedDate;
+  const timelinePoints: TimelinePoint[] = [...pastDays, { date: liveDate, snapshot, condition }];
+  const maxDayIndex = Math.max(0, timelinePoints.length - 1);
+  const dayIndex = Math.min(dayIndexOverride ?? maxDayIndex, maxDayIndex);
+  const dayView = timelinePoints[dayIndex] ?? timelinePoints[timelinePoints.length - 1]!;
+  const viewingLive = !timelineOpen || dayIndex === maxDayIndex;
+  const timelineLoading = timelineOpen && timeline.isLoading;
+
+  function closeTimeline() {
+    setTimelineOpen(false);
+    setDayIndexOverride(null);
+  }
+
+  // What's actually drawn: the live garden, or the scrubbed day. Disabling
+  // the canvas atmosphere layer while the scrubber is open keeps dragging
+  // instant — its particle systems re-key on every weather/light change
+  // (see AtmosphereLayer), which would otherwise re-init on every step.
+  const displaySnapshot = timelineOpen ? dayView.snapshot : snapshot;
+  const displayCondition = timelineOpen ? dayView.condition : condition;
+
+  const selectedPlant = displaySnapshot.plants.find((p) => p.id === selectedPlantId);
+  const livingPlantsCount = displaySnapshot.plants.filter((p) => p.state !== "dead").length;
+  const weather = displaySnapshot.state.weatherState;
 
   const historyItems = events
     .map((e) => ({ e, text: eventSentence(e) }))
     .filter((x): x is { e: GardenEvent; text: string } => !!x.text)
     .slice(0, 12);
 
-  // Today's previewed happenings (rain, plantings) — the same-day feedback line.
-  const todayLines = events
-    .filter((e) => (e as { preview?: boolean }).preview)
-    .map((e) => eventSentence(e))
-    .filter((t): t is string => !!t)
-    .slice(0, 2);
+  // Today's previewed happenings (rain, plantings) — the same-day feedback
+  // line. Only meaningful while looking at the live garden, not a past day.
+  const todayLines = viewingLive
+    ? events
+        .filter((e) => (e as { preview?: boolean }).preview)
+        .map((e) => eventSentence(e))
+        .filter((t): t is string => !!t)
+        .slice(0, 2)
+    : [];
 
   const codex = (garden.data.codex as CodexEntry[]) ?? [];
   const nudges = (garden.data.nextUnlocks as CodexEntry[]) ?? [];
@@ -312,32 +365,83 @@ export function GardenScreen() {
       {/* The garden itself — big and central. */}
       <div className="garden-scene-wrap garden-scene-big">
         <GardenScene
-          snapshot={snapshot}
+          snapshot={displaySnapshot}
           reducedMotion={reducedMotion}
           selectedPlantId={selectedPlantId}
           onSelectPlant={setSelectedPlantId}
           timeOfDay={hourOfDay}
-          atmosphere
+          atmosphere={!timelineOpen}
         />
+      </div>
+
+      {/* Drag through the garden's history: one fetch, then the scrubber is
+          all client-side re-renders of already-loaded days. */}
+      <div className="timeline-bar">
+        {timelineOpen ? (
+          <div className="timeline-panel">
+            <div className="timeline-panel-head">
+              <span className="timeline-label">
+                {timelineLoading
+                  ? "Loading timeline…"
+                  : `${formatDayShort(dayView.date)} — day ${dayIndex}${viewingLive ? " (today)" : ""}`}
+              </span>
+              <button
+                type="button"
+                className="btn btn-small"
+                onClick={closeTimeline}
+                aria-label="Close timeline"
+              >
+                <IconClose size={14} />
+              </button>
+            </div>
+            {!timelineLoading ? (
+              <input
+                type="range"
+                className="timeline-slider"
+                min={0}
+                max={maxDayIndex}
+                step={1}
+                value={dayIndex}
+                disabled={maxDayIndex === 0}
+                onChange={(e) => setDayIndexOverride(Number(e.target.value))}
+                aria-label="Day in the garden's history"
+              />
+            ) : null}
+          </div>
+        ) : (
+          <button type="button" className="btn btn-small" onClick={() => setTimelineOpen(true)}>
+            <IconClock size={14} /> Timeline
+          </button>
+        )}
       </div>
 
       {balance ? <BalanceStrip balance={balance} /> : null}
 
       {/* What the garden is telling you, and why it looks this way. */}
       <div className="garden-readout">
-        <h2 className="garden-condition">{GARDEN_CONDITION_LABELS[condition]}</h2>
+        <h2 className="garden-condition">{GARDEN_CONDITION_LABELS[displayCondition]}</h2>
         {todayLines.length > 0 ? (
           <p className="garden-nowline">
             <span className="now-chip">today</span>
             {todayLines.join(" ")}
           </p>
         ) : null}
-        <p className="muted">{conditionStory(condition, snapshot, livingPlants, species.length)}</p>
+        <p className="muted">
+          {conditionStory(
+            displayCondition,
+            displaySnapshot,
+            livingPlantsCount,
+            viewingLive ? species.length : displaySnapshot.unlockedSpeciesIds.length,
+          )}
+        </p>
         <p className="faint">
-          Weather right now is <strong>{WEATHER_LABEL[weather]}</strong> — {WEATHER_WHY[weather]}{" "}
-          <button type="button" className="linklike" onClick={() => setShowWeather((v) => !v)}>
-            {showWeather ? "Hide" : "How the garden works"}
-          </button>
+          {viewingLive ? "Weather right now is" : "Weather that day was"}{" "}
+          <strong>{WEATHER_LABEL[weather]}</strong> — {WEATHER_WHY[weather]}{" "}
+          {viewingLive ? (
+            <button type="button" className="linklike" onClick={() => setShowWeather((v) => !v)}>
+              {showWeather ? "Hide" : "How the garden works"}
+            </button>
+          ) : null}
         </p>
         {showWeather ? (
           <Banner kind="info">

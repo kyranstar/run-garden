@@ -5,7 +5,7 @@ import { nowInstant } from "@rg/domain";
 import type { GardenSnapshot } from "@rg/garden-engine";
 import type { AppContext } from "../auth/middleware.js";
 import { requireUser } from "../auth/middleware.js";
-import { buildGardenView, recentGardenEvents } from "../services/garden-sync.js";
+import { buildGardenTimeline, buildGardenView, recentGardenEvents } from "../services/garden-sync.js";
 import { loadPreferences, savePreferences } from "../services/calendar-sync.js";
 
 export const gardenRoutes = new Hono<AppContext>();
@@ -32,6 +32,18 @@ gardenRoutes.get("/", async (c) => {
       until: prefs.gardenRestModeUntil,
     },
   });
+});
+
+/**
+ * The day-slider scrubber: replays every durably simulated day so the UI can
+ * drag through the garden's history client-side after one fetch. Read-only —
+ * see `buildGardenTimeline` — so it's safe to call as often as the UI likes.
+ */
+gardenRoutes.get("/timeline", async (c) => {
+  const db = c.get("db");
+  const userId = c.get("userId");
+  const days = await buildGardenTimeline(db, userId);
+  return c.json({ days });
 });
 
 gardenRoutes.post("/rest-mode", async (c) => {

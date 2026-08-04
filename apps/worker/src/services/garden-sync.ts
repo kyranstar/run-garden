@@ -19,6 +19,7 @@ import {
   newId,
   nowInstant,
   todayInZone,
+  type GardenConditionWord,
   type GardenEvent,
   type LocalDate,
   type UserPreferences,
@@ -564,4 +565,55 @@ export async function buildGardenView(
     })),
     balance: disciplineBalance(snapshot.state),
   };
+}
+
+export interface GardenTimelineDay {
+  date: LocalDate;
+  /** Just what `GardenScene` (+ its condition label) needs — not the full
+   * `GardenView` (codex/species/nextUnlocks/wildlife-hints), which is
+   * derived from the *current* unlocks table and doesn't make sense per
+   * historical day. */
+  view: { snapshot: GardenSnapshot; condition: GardenConditionWord };
+}
+
+/**
+ * Read-only replay of the garden's whole simulated history, one entry per
+ * durably simulated day (ascending). Purely a fold of the stored, resolved
+ * `gardenDayInputs` rows through the pure `simulateDay` — the same rows
+ * `resimulateFrom` replays from — starting from `initialSnapshot`, so it
+ * never reads `plannedWorkouts`/`activities` again and never touches
+ * `gardenState`/`gardenPlants`/`gardenWildlife` (no `persistSnapshot` call).
+ * Deterministic: two calls with unchanged inputs return identical output.
+ *
+ * Today's still-preview day is intentionally excluded — it isn't in
+ * `gardenDayInputs` yet (only committed once it's simulated, per
+ * `advanceGarden`'s grace rules), and `buildGardenView`'s live snapshot
+ * already covers "right now" for the caller.
+ *
+ * No cap: a garden can only be as old as this single-user product itself, so
+ * even a full year (365 rows) replays and serializes cheaply; a multi-year
+ * history would want pagination or checkpoint-based windowing instead.
+ */
+export async function buildGardenTimeline(db: Db, userId: string): Promise<GardenTimelineDay[]> {
+  const current = await loadGarden(db, userId);
+  if (!current) return [];
+
+  const rows = await db
+    .select()
+    .from(gardenDayInputs)
+    .where(eq(gardenDayInputs.userId, userId))
+    .orderBy(asc(gardenDayInputs.date));
+
+  let snapshot = initialSnapshot(current.state.createdDate);
+  const days: GardenTimelineDay[] = [];
+  for (const row of rows) {
+    const input = row.input as unknown as GardenDayInput;
+    const result = simulateDay(snapshot, input);
+    snapshot = result.snapshot;
+    days.push({
+      date: row.date,
+      view: { snapshot, condition: conditionWord(snapshot.state, DEFAULT_GARDEN_CONFIG) },
+    });
+  }
+  return days;
 }
