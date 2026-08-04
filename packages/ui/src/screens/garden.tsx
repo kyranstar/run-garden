@@ -24,6 +24,7 @@ import {
 import { BotanicalCard } from "./botanical.js";
 import { EvidenceCard, NextWorkout, Readiness, SyncPanel, UnresolvedCard } from "./today.js";
 import {
+  CATEGORY_ORDER,
   NextUnlockNudges,
   SpeciesCodex,
   WildlifeShelf,
@@ -126,17 +127,6 @@ const WEATHER_WHY: Record<GardenWeatherState, string> = {
   dry_spell: "a few days without a run — the air is starting to dry.",
   mild_drought: "about two weeks without a run, so the garden is in drought.",
 };
-
-const CATEGORY_ORDER: Array<{ key: string; label: string; color: string }> = [
-  { key: "tree", label: "Trees", color: "#4e7a5a" },
-  { key: "shrub", label: "Shrubs", color: "#6f9a58" },
-  { key: "flower", label: "Flowers", color: "#c98bb0" },
-  { key: "fern", label: "Ferns", color: "#5f8f6a" },
-  { key: "vine", label: "Vines", color: "#7fa173" },
-  { key: "grass", label: "Grasses", color: "#9fb26a" },
-  { key: "groundcover", label: "Ground", color: "#8aa06a" },
-  { key: "fungus", label: "Fungi", color: "#b0895f" },
-];
 
 /** Unobtrusive breakdown of plant-family diversity in the garden. */
 function DiversityStrip({ snapshot }: { snapshot: GardenSnapshot }) {
@@ -361,6 +351,7 @@ export function GardenScreen() {
   const garden = useQuery({ queryKey: ["garden"], queryFn: api.garden });
   const today = useQuery({ queryKey: ["today"], queryFn: api.today });
   const [selectedPlantId, setSelectedPlantId] = useState<string | null>(null);
+  const [openSpeciesId, setOpenSpeciesId] = useState<string | null>(null);
   const [showWeather, setShowWeather] = useState(false);
   const [timelineOpen, setTimelineOpen] = useState(false);
   const [dayIndexOverride, setDayIndexOverride] = useState<number | null>(null);
@@ -642,10 +633,23 @@ export function GardenScreen() {
         </Card>
         <Card title={`Species collection · ${unlockedCount} of ${codex.length}`}>
           <DiversityStrip snapshot={snapshot} />
-          <SpeciesCodex codex={codex} />
+          <SpeciesCodex codex={codex} today={todayDate} onOpenSpecies={setOpenSpeciesId} />
           <WildlifeShelf wildlife={wildlife} />
         </Card>
       </div>
+
+      {openSpeciesId ? (
+        <Sheet
+          open
+          onClose={() => setOpenSpeciesId(null)}
+          title={SPECIES_BY_ID.get(openSpeciesId)?.name ?? "Species"}
+        >
+          <BotanicalCard
+            speciesId={openSpeciesId}
+            entry={codex.find((c) => c.speciesId === openSpeciesId)}
+          />
+        </Sheet>
+      ) : null}
 
       {selectedPlant ? (
         <Sheet
