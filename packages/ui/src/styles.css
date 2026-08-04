@@ -1218,6 +1218,185 @@ button {
   color: var(--ink);
 }
 
+/* ── Signal tiles (signal-tiles.tsx) ───────────────────────────────────────
+   Built on the existing .metric-card/.metric-drillable/.metric-suggestion
+   vocabulary above — this section only adds what MetricCard didn't need:
+   the inline gauge/sparkline/strip visuals and the drill chevron. Every
+   color here is an existing token (--chart-1/2/3, --green-soft, --danger,
+   --ink-*, --bg-raised, --chart-track) — both themes come free from the
+   token system; no dark-only overrides were needed. */
+.signal-tile {
+  position: relative;
+}
+.signal-tile.metric-drillable {
+  /* Room for the bottom-right chevron so it never overlaps the last line
+     of suggestion/staleNote text. */
+  padding-bottom: 1.5rem;
+}
+.signal-drill-chevron {
+  position: absolute;
+  right: 0.65rem;
+  bottom: 0.5rem;
+  font-size: 1.05rem;
+  line-height: 1;
+  color: var(--ink-faint);
+}
+.signal-meaning {
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  overflow: hidden;
+}
+.signal-stale {
+  font-style: italic;
+}
+
+/* Gauge: 6px track, shaded healthy band, 2px value marker. */
+.gauge {
+  margin: 0.4rem 0 0.25rem;
+}
+.gauge-track {
+  position: relative;
+  height: 6px;
+  margin: 0 3px;
+  border-radius: 3px;
+  background: var(--chart-track);
+}
+.gauge-band {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  background: var(--green-soft);
+  border-radius: 3px;
+}
+.gauge-marker {
+  position: absolute;
+  top: -2px;
+  bottom: -2px;
+  width: 2px;
+  margin-left: -1px;
+  background: var(--ink);
+  border-radius: 1px;
+}
+.gauge-overflow {
+  position: absolute;
+  top: -8px;
+  font-size: 0.62rem;
+  font-weight: 700;
+  color: var(--ink-faint);
+}
+.gauge-overflow-lo {
+  left: -3px;
+}
+.gauge-overflow-hi {
+  right: -3px;
+}
+.gauge-scale {
+  position: relative;
+  height: 1.05rem;
+  margin-top: 0.15rem;
+  font-size: 0.64rem;
+  color: var(--ink-faint);
+  font-variant-numeric: tabular-nums;
+}
+.gauge-end {
+  position: absolute;
+  top: 0;
+}
+.gauge-end-lo {
+  left: 0;
+}
+.gauge-end-hi {
+  right: 0;
+}
+.gauge-tick {
+  position: absolute;
+  top: 0;
+  transform: translateX(-50%);
+  white-space: nowrap;
+}
+
+/* Sparkline: last 14 points, no axes, ~28px tall, fills tile width. */
+.spark {
+  display: block;
+  width: 100%;
+  height: 28px;
+  margin: 0.4rem 0 0.25rem;
+}
+
+/* Strip boxes: hardStack (7, on=hard, --chart-2 family) or easyDiscipline
+   (one per run, capped visually at ~20, on=stayed-easy in --chart-1,
+   off=over the ceiling in --danger PLUS a ✕ glyph — never color alone). */
+.strip-boxes {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 3px;
+  margin: 0.4rem 0 0.25rem;
+}
+.strip-box {
+  position: relative;
+  width: 10px;
+  height: 10px;
+  flex: none;
+  border-radius: 2px;
+  background: var(--chart-track);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+.strip-box-hard {
+  background: var(--chart-2);
+}
+.strip-box-easy {
+  background: var(--chart-1);
+}
+.strip-box-over {
+  background: var(--danger);
+}
+.strip-box-glyph {
+  font-size: 7px;
+  line-height: 1;
+  color: var(--bg-raised);
+}
+.strip-more {
+  font-size: 0.68rem;
+  color: var(--ink-faint);
+  margin-left: 2px;
+}
+
+/* Status strip: one-line summary, sticky-friendly (screen owns placement).
+   Text always stays on the ink token; only the left accent border carries
+   severity color. */
+.status-strip {
+  display: block;
+  width: 100%;
+  background: var(--bg-raised);
+  border: 1px solid var(--border);
+  border-left: 3px solid var(--border-strong);
+  border-radius: var(--radius-sm);
+  padding: 0.6rem 0.85rem;
+  font-size: 0.86rem;
+  color: var(--ink);
+  font-variant-numeric: tabular-nums;
+}
+.status-strip[role="button"] {
+  cursor: pointer;
+  transition: border-color 0.15s ease;
+}
+.status-strip[role="button"]:hover {
+  border-color: var(--border-strong);
+}
+.status-strip-high {
+  border-left-color: var(--danger);
+}
+.status-strip-watch {
+  border-left-color: var(--warn);
+}
+.status-strip-clear {
+  border-left-color: var(--green);
+}
+
 /* ── Sheets & dialogs ───────────────────────────────────────────────────── */
 
 .sheet-backdrop {
