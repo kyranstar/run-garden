@@ -113,3 +113,45 @@ describe("atmosphereKey", () => {
     expect(atmosphereKey(gate({ hasFlowering: false }))).not.toBe(base);
   });
 });
+
+/**
+ * One-shot impulse channel (reward-loop spec §6): impulseFrame must be a
+ * pure function of (impulse, elapsed) — analytic like every other system,
+ * so pause/resume/frame-rate changes render identically — must sweep the
+ * rain front left→right, keep sparkles near their anchor, and expire.
+ */
+import { IMPULSE_DURATION_MS, impulseFrame, type SceneImpulse } from "../src/particles";
+
+const RAIN: SceneImpulse = { kind: "rain_front", key: "test-rain" };
+const SPARK: SceneImpulse = { kind: "sparkle", key: "test-spark", x: 0.3, y: 0.6 };
+
+describe("impulseFrame", () => {
+  it("is pure: identical output for identical (impulse, elapsed)", () => {
+    expect(impulseFrame(RAIN, 900)).toEqual(impulseFrame(RAIN, 900));
+    expect(impulseFrame(SPARK, 700)).toEqual(impulseFrame(SPARK, 700));
+  });
+
+  it("rain front sweeps left to right", () => {
+    const meanX = (ms: number) => {
+      const s = impulseFrame(RAIN, ms);
+      expect(s.length).toBeGreaterThan(0);
+      return s.reduce((a, p) => a + p.x, 0) / s.length;
+    };
+    expect(meanX(300)).toBeLessThan(meanX(1800));
+  });
+
+  it("expires past its duration and before zero", () => {
+    expect(impulseFrame(RAIN, IMPULSE_DURATION_MS.rain_front + 1)).toEqual([]);
+    expect(impulseFrame(SPARK, IMPULSE_DURATION_MS.sparkle + 1)).toEqual([]);
+    expect(impulseFrame(RAIN, -5)).toEqual([]);
+  });
+
+  it("sparkle motes stay near their anchor and rise", () => {
+    const s = impulseFrame(SPARK, 600);
+    expect(s.length).toBeGreaterThan(0);
+    for (const m of s) {
+      expect(Math.abs(m.x - 0.3)).toBeLessThan(0.15);
+      expect(m.y).toBeLessThanOrEqual(0.6);
+    }
+  });
+});

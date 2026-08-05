@@ -53,6 +53,78 @@ export function atmosphereKey(inp: GateInputs): string {
   return `${inp.weather}|${inp.period}|${inp.fireflies}|${inp.hasFlowering}`;
 }
 
+/**
+ * One-shot impulses (reward-loop spec §6): a moment, not a state. The layer
+ * captures t₀ when `key` changes; every sprite here is a pure function of
+ * the seeded params and the elapsed time since t₀ — the same analytic
+ * contract as the weather systems, so pause/resume renders identically.
+ */
+export interface SceneImpulse {
+  kind: "rain_front" | "sparkle";
+  key: string;
+  /** Normalized anchor for sparkles (defaults to mid-scene). */
+  x?: number;
+  y?: number;
+}
+
+export const IMPULSE_DURATION_MS: Record<SceneImpulse["kind"], number> = {
+  rain_front: 2500,
+  sparkle: 2000,
+};
+
+export interface ImpulseSprite {
+  x: number;
+  y: number;
+  alpha: number;
+  size: number;
+  kind: "streak" | "mote";
+}
+
+export function impulseFrame(imp: SceneImpulse, elapsedMs: number): ImpulseSprite[] {
+  if (elapsedMs < 0 || elapsedMs > IMPULSE_DURATION_MS[imp.kind]) return [];
+  const r = rng(`impulse:${imp.kind}:${imp.key}`);
+  const out: ImpulseSprite[] = [];
+  if (imp.kind === "rain_front") {
+    const f = elapsedMs / IMPULSE_DURATION_MS.rain_front;
+    for (let i = 0; i < 46; i++) {
+      // Fixed draw count per streak; skip AFTER consuming (render-N-draw-K).
+      const u = r();
+      const v = r();
+      const w = r();
+      const behind = f * 1.15 - u;
+      if (behind <= 0) continue; // the front hasn't reached this column yet
+      const fall = (behind * (2.2 + w)) % 1;
+      out.push({
+        kind: "streak",
+        x: u + fall * 0.04,
+        y: 0.05 + fall * 0.85 * (0.7 + 0.3 * v),
+        alpha: Math.min(0.5, behind * 3) * (1 - 0.25 * fall),
+        size: 0.02 + 0.02 * v,
+      });
+    }
+    return out;
+  }
+  const f = elapsedMs / IMPULSE_DURATION_MS.sparkle;
+  const cx = imp.x ?? 0.5;
+  const cy = imp.y ?? 0.6;
+  for (let i = 0; i < 12; i++) {
+    const a = r();
+    const b = r();
+    const c = r();
+    const phase = Math.min(1, Math.max(0, f * 1.4 - a * 0.4));
+    const alpha = Math.sin(Math.PI * phase) * 0.8;
+    if (alpha <= 0.01) continue;
+    out.push({
+      kind: "mote",
+      x: cx + (a - 0.5) * 0.12 + Math.sin((f * 3 + c) * TAU) * 0.006,
+      y: cy - phase * (0.1 + 0.08 * b),
+      alpha,
+      size: 1.6 + 2 * b,
+    });
+  }
+  return out;
+}
+
 const COUNTS: Record<SystemKind, number> = {
   rainSplash: 22, pollen: 40, mist: 3, cloudShadow: 2,
   gustFringe: 160, petals: 16, shimmer: 10, fireflyGlow: 6,

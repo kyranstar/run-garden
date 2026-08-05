@@ -3,6 +3,7 @@ import type { GardenPlant } from "@rg/domain";
 import type { GardenSnapshot } from "@rg/garden-engine";
 import { rng, speciesOrThrow } from "@rg/garden-engine";
 import { AtmosphereLayer } from "./AtmosphereLayer";
+import type { SceneImpulse } from "./particles";
 import { mix, shade } from "./color";
 import type { LightHint } from "./organic";
 import { describeGarden, plantStateLabel } from "./describe";
@@ -544,6 +545,8 @@ export interface GardenSceneProps {
   /** System-driven glow (the arrival moment). The user's own selection
    * always wins — the outline filter is applied to at most ONE plant. */
   highlightPlantId?: string | null;
+  /** One-shot atmosphere moment (rain front / sparkle); needs `atmosphere`. */
+  impulse?: SceneImpulse | null;
 }
 
 export function GardenScene({
@@ -559,6 +562,7 @@ export function GardenScene({
   visitor = null,
   enteringPlantIds,
   highlightPlantId = null,
+  impulse = null,
 }: GardenSceneProps) {
   const p = idPrefix;
   const animate = !reducedMotion;
@@ -820,6 +824,7 @@ export function GardenScene({
           hasFlowering={sorted.some((pl) => pl.state === "flowering")}
           restMode={snapshot.state.restMode}
           idPrefix={p}
+          impulse={impulse}
         />
       )}
     </div>

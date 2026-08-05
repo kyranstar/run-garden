@@ -20,7 +20,7 @@ import {
   simulateDay,
   SPECIES_BY_ID,
 } from "@rg/garden-engine";
-import { GardenScene } from "@rg/garden-renderer";
+import { GardenScene, type SceneImpulse } from "@rg/garden-renderer";
 import { IconClock, IconClose } from "../icons.js";
 import {
   Banner,
@@ -746,14 +746,22 @@ export function GardenScreen() {
     setBlockDismissed(false);
   }, [garden.data]);
 
-  // Glow schedule for newly arrived plants: rarest first, 4s each, max 3.
-  useEffect(() => {
-    if (!garden.data) return;
+  // One arrival plan per payload — shared by the render, the glow schedule,
+  // the impulses and the mark-seen post below.
+  const arrivalPlan = useMemo(() => {
+    if (!garden.data) return null;
     const seenState = garden.data.seen ?? null;
     const evts = (garden.data.events as ArrivalEvent[]) ?? [];
     const snap = garden.data.snapshot as unknown as GardenSnapshot;
     const live = today.data?.today ?? snap.state.lastSimulatedDate;
-    const plan = selectArrival(evts, seenState, live);
+    return selectArrival(evts, seenState, live);
+  }, [garden.data, today.data]);
+
+  // Glow schedule for newly arrived plants: rarest first, 4s each, max 3.
+  useEffect(() => {
+    if (!garden.data || !arrivalPlan) return;
+    const plan = arrivalPlan;
+    const snap = garden.data.snapshot as unknown as GardenSnapshot;
     const rank = { rare: 0, uncommon: 1, common: 2 } as const;
     const ranked = plan.enteringPlantIds
       .map((id) => snap.plants.find((pl) => pl.id === id))
@@ -782,7 +790,46 @@ export function GardenScreen() {
       window.clearTimeout(timer);
       setHighlightPlantId(null);
     };
-  }, [garden.data, today.data]);
+  }, [garden.data, arrivalPlan]);
+
+  // The impulse channel (spec §6): rain sweeping in when the weather turns
+  // to rain across refetches — exactly the moment a synced run lands — and
+  // a sparkle over the first rare arrival, staggered clear of the front.
+  const [impulse, setImpulse] = useState<SceneImpulse | null>(null);
+  const prevWeatherRef = useRef<GardenWeatherState | null>(null);
+  const impulseSeqRef = useRef(0);
+  useEffect(() => {
+    if (!garden.data) return;
+    const w = (garden.data.snapshot as unknown as GardenSnapshot).state.weatherState;
+    const prev = prevWeatherRef.current;
+    prevWeatherRef.current = w;
+    if (prev && prev !== w && (w === "fresh_rain" || w === "recovery_rain")) {
+      impulseSeqRef.current += 1;
+      setImpulse({ kind: "rain_front", key: `rain:${impulseSeqRef.current}` });
+    }
+  }, [garden.data]);
+  const sparkleFiredRef = useRef<string | null>(null);
+  useEffect(() => {
+    if (!garden.data || !arrivalPlan || arrivalPlan.sparkles.length === 0) return;
+    const s = arrivalPlan.sparkles[0]!;
+    const sparkKey = s.kind === "plant" ? `sp:${s.plantId}` : `sw:${s.wildlifeId}`;
+    if (sparkleFiredRef.current === sparkKey) return;
+    const snap = garden.data.snapshot as unknown as GardenSnapshot;
+    let x = 0.5;
+    let y = 0.45;
+    if (s.kind === "plant") {
+      const pl = snap.plants.find((p) => p.id === s.plantId);
+      if (pl) {
+        x = pl.position.x;
+        y = Math.min(0.9, 0.5 + 0.4 * pl.position.y);
+      }
+    }
+    const id = window.setTimeout(() => {
+      sparkleFiredRef.current = sparkKey;
+      setImpulse({ kind: "sparkle", key: sparkKey, x, y });
+    }, 3000);
+    return () => window.clearTimeout(id);
+  }, [garden.data, arrivalPlan]);
 
   // Mark the arrival seen: brand-new gardens immediately and silently;
   // otherwise on dismissing the last ceremony (or the block), or 6s after a
@@ -790,12 +837,8 @@ export function GardenScreen() {
   // arrival posts exactly once; a failed POST (after one retry) just means
   // the same arrivals re-present next visit — never lossy.
   useEffect(() => {
-    if (!garden.data) return;
-    const seenState = garden.data.seen ?? null;
-    const evts = (garden.data.events as ArrivalEvent[]) ?? [];
-    const snap = garden.data.snapshot as unknown as GardenSnapshot;
-    const live = today.data?.today ?? snap.state.lastSimulatedDate;
-    const plan = selectArrival(evts, seenState, live);
+    if (!arrivalPlan) return;
+    const plan = arrivalPlan;
     const key = `${plan.nextSeen.lastSeenDate}:${plan.nextSeen.lastSeenSeq}:${plan.nextSeen.celebratedSpeciesIds.join(",")}`;
     if (seenPostedKeyRef.current === key) return;
     const post = () => {
@@ -816,7 +859,7 @@ export function GardenScreen() {
     }
     const id = window.setTimeout(post, 6000);
     return () => window.clearTimeout(id);
-  }, [garden.data, today.data, ceremonyIndex, blockDismissed]);
+  }, [arrivalPlan, ceremonyIndex, blockDismissed]);
 
   // Timeline week replay: step one day forward on a calm cadence. The refs
   // are written during render below, so the interval always sees the live
@@ -904,7 +947,8 @@ export function GardenScreen() {
   // against the server-side watermark — refresh-proof, cross-device, and
   // same-day unlocks celebrate immediately (arrival.ts).
   const seen = garden.data.seen ?? null;
-  const arrival = selectArrival(events as ArrivalEvent[], seen, liveDate);
+  // Non-null past the early returns: the memo runs whenever garden.data exists.
+  const arrival = arrivalPlan!;
   const currentCeremony =
     viewingLive && !blockDismissed ? (arrival.ceremonies[ceremonyIndex] ?? null) : null;
   const ceremoniesDone = ceremonyIndex >= arrival.ceremonies.length;
@@ -1165,6 +1209,7 @@ export function GardenScreen() {
               visitor={viewingLive && visitor ? visitor.kind : null}
               enteringPlantIds={viewingLive ? arrival.enteringPlantIds : undefined}
               highlightPlantId={viewingLive ? highlightPlantId : null}
+              impulse={viewingLive ? impulse : null}
               preserveAspectRatio="xMidYMax slice"
               className="stage-scene-svg"
             />
@@ -1411,6 +1456,7 @@ export function GardenScreen() {
           visitor={viewingLive && visitor ? visitor.kind : null}
           enteringPlantIds={viewingLive ? arrival.enteringPlantIds : undefined}
           highlightPlantId={viewingLive ? highlightPlantId : null}
+          impulse={viewingLive ? impulse : null}
         />
       </div>
 
