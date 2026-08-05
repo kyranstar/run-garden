@@ -15,6 +15,7 @@ import {
   type GardenConfig,
   type GardenDayInput,
   type GardenSnapshot,
+  type GroundKind,
 } from "./types.js";
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -61,6 +62,8 @@ export function initialSnapshot(createdDate: LocalDate): GardenSnapshot {
     },
     lifeBonusBiodiversity: 0,
     lifeBonusFlowering: 0,
+    grounds: [],
+    countersAtExpansion: { long: 0, strength: 0, yoga: 0, balanced: 0 },
     createdDate,
   };
   const snapshot: GardenSnapshot = {
@@ -332,7 +335,7 @@ export function simulateDay(
   evaluateUnlocks(snapshot, input.date, emit);
   recomputeDerived(snapshot);
   evaluateWildlife(snapshot, cfg, emit);
-  evaluateRegions(snapshot, cfg, emit);
+  evaluateRegions(snapshot, cfg, input.date, emit);
   for (const p of snapshot.plants) refreshLivingState(p, state, cfg);
   recomputeDerived(snapshot);
 
@@ -809,16 +812,44 @@ function evaluateWildlife(
   }
 }
 
+/**
+ * What kind of ground the next expansion carves, from the training since the
+ * last expansion. Deliberate priority: the rarer disciplines claim ground
+ * when they truly led the block, long runs carve water, and steady mixed
+ * running earns plain meadow.
+ */
+export function groundKindFor(state: EngineGardenState): GroundKind {
+  const base = state.countersAtExpansion ?? { long: 0, strength: 0, yoga: 0, balanced: 0 };
+  const dLong = state.longRunCount - base.long;
+  const dStrength = state.strengthSessionCount - base.strength;
+  const dYoga = state.yogaSessionCount - base.yoga;
+  if (dStrength >= 4 && dStrength >= dLong && dStrength >= dYoga) return "terrace";
+  if (dYoga >= 4 && dYoga >= dLong && dYoga > dStrength) return "glade";
+  if (dLong >= 3) return "stream";
+  return "meadow";
+}
+
 function evaluateRegions(
   snapshot: GardenSnapshot,
   cfg: GardenConfig,
+  date: LocalDate,
   emit: (e: Omit<GardenEvent, "id" | "date" | "seq" | "simulationVersion">) => void,
 ): void {
   const living = livingPlants(snapshot.plants).length;
   const capacity = snapshot.state.unlockedRegions * cfg.regionCapacity;
   if (living > capacity * 0.75 && snapshot.state.unlockedRegions < cfg.maxRegions) {
+    // The new region's 0-based band index is the old region count.
+    const region = snapshot.state.unlockedRegions;
+    const kind = groundKindFor(snapshot.state);
     snapshot.state.unlockedRegions += 1;
-    emit({ kind: "region_unlocked", detail: String(snapshot.state.unlockedRegions) });
+    snapshot.state.grounds = [...(snapshot.state.grounds ?? []), { region, kind, earnedDate: date }];
+    snapshot.state.countersAtExpansion = {
+      long: snapshot.state.longRunCount,
+      strength: snapshot.state.strengthSessionCount,
+      yoga: snapshot.state.yogaSessionCount,
+      balanced: snapshot.state.balancedWeekCount,
+    };
+    emit({ kind: "region_unlocked", detail: kind });
   }
 }
 

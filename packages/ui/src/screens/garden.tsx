@@ -39,6 +39,7 @@ import { EvidenceCard, NextWorkout, Readiness, SyncPanel, UnresolvedCard } from 
 import {
   CATEGORY_ORDER,
   DisciplineNudges,
+  GroundsShelf,
   landingUnlock,
   VisitorsShelf,
   nextUnlocksByDiscipline,
@@ -157,8 +158,15 @@ function eventSentence(e: GardenEvent): string | null {
       return `${cap(e.wildlifeId ?? "wildlife")} moved on for now.`;
     case "plant_died":
       return "A plant died back — it stays as habitat.";
-    case "region_unlocked":
-      return "The garden expanded into new ground.";
+    case "region_unlocked": {
+      const ceremonies: Record<string, string> = {
+        stream: "Long runs carved the stream — new ground, new water.",
+        terrace: "Strength work built the stone terrace.",
+        glade: "Steady yoga cleared the still glade.",
+        meadow: "The garden expanded into new meadow.",
+      };
+      return ceremonies[e.detail ?? ""] ?? "The garden expanded into new ground.";
+    }
     case "rest_mode_started":
       return "Garden rest mode began.";
     case "rest_mode_ended":
@@ -1431,6 +1439,7 @@ export function GardenScreen() {
           </div>
           <DiversityStrip snapshot={snapshot} />
           <SpeciesCodex codex={codex} today={todayDate} onOpenSpecies={setOpenSpeciesId} />
+          <GroundsShelf grounds={snapshot.state.grounds ?? []} />
           <WildlifeShelf wildlife={wildlife} />
           <VisitorsShelf visitors={visitorLedger} />
         </Drawer>
@@ -1576,6 +1585,7 @@ export function GardenScreen() {
         <Card title={`Species collection · ${unlockedCount} of ${codex.length}`}>
           <DiversityStrip snapshot={snapshot} />
           <SpeciesCodex codex={codex} today={todayDate} onOpenSpecies={setOpenSpeciesId} />
+          <GroundsShelf grounds={snapshot.state.grounds ?? []} />
           <WildlifeShelf wildlife={wildlife} />
           <VisitorsShelf visitors={visitorLedger} />
         </Card>

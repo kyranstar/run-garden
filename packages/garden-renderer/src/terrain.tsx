@@ -1,5 +1,5 @@
 import type { ReactNode } from "react";
-import { rng } from "@rg/garden-engine";
+import { REGION_BANDS, rng, type EarnedGround } from "@rg/garden-engine";
 import { mix, shade } from "./color";
 import type { SceneLight } from "./lighting";
 
@@ -15,6 +15,116 @@ export interface TerrainProps {
   droughtDays: number;
   canopy: number;
   trees: Array<{ x: number; y: number; s: number }>;
+  /** Earned grounds (region expansions) — each carves its band's identity. */
+  grounds?: EarnedGround[];
+}
+
+/**
+ * The earned-ground features: a stream carved by long runs, a stone terrace
+ * built by strength, a still glade cleared by yoga, or denser meadow. Static,
+ * seeded with fresh keys, drawn under the meadow strokes so plants sit on top.
+ */
+function groundFeature(g: EarnedGround, light: SceneLight): ReactNode | null {
+  const band = REGION_BANDS[g.region];
+  if (!band) return null;
+  const x0 = band[0] * 1000;
+  const x1 = band[1] * 1000;
+  const cx = (x0 + x1) / 2;
+  const w = x1 - x0;
+  const r = rng(`ground:${g.kind}:${g.region}`);
+  switch (g.kind) {
+    case "stream": {
+      const water = mix("#8fb7c9", light.skyHorizon, 0.35);
+      const drift = (r() - 0.5) * 55;
+      const topW = Math.min(28, w * 0.12);
+      const botW = Math.min(120, w * 0.45);
+      const d = `M${n(cx - topW / 2)},302 C${n(cx + drift - topW)},390 ${n(cx + drift - botW * 0.4)},470 ${n(cx - botW / 2)},560 L${n(cx + botW / 2)},560 C${n(cx + drift + botW * 0.4)},470 ${n(cx + drift + topW)},390 ${n(cx + topW / 2)},302 Z`;
+      const mid = `M${n(cx)},306 C${n(cx + drift * 0.8)},395 ${n(cx + drift * 0.5)},470 ${n(cx)},556`;
+      return (
+        <g key={`ground-${g.region}`} data-ground-kind="stream">
+          <path d={d} fill={water} opacity={0.82} />
+          <path d={mid} stroke={mix(water, "#ffffff", 0.4)} strokeWidth={2.2} fill="none" opacity={0.5} />
+          <path d={`M${n(cx - botW / 2 - 6)},556 q${n(botW * 0.2)},-10 ${n(botW * 0.5)},-6`} stroke={shade(light.grassNear, 0.82)} strokeWidth={1.6} fill="none" opacity={0.5} />
+        </g>
+      );
+    }
+    case "terrace": {
+      const stoneBase = mix("#9a8465", light.grassNear, 0.22);
+      const rows: ReactNode[] = [];
+      for (let row = 0; row < 3; row++) {
+        const y = 462 + row * 30;
+        const rowW = w * (0.55 + row * 0.08);
+        const stones = 4 + (row % 2);
+        for (let sIdx = 0; sIdx < stones; sIdx++) {
+          const sw = rowW / stones - 4;
+          const sx = cx - rowW / 2 + sIdx * (rowW / stones) + (r() - 0.5) * 4;
+          rows.push(
+            <rect
+              key={`t${row}-${sIdx}`}
+              x={n(sx)}
+              y={n(y + (r() - 0.5) * 2.4)}
+              width={n(sw)}
+              height={n(8 + r() * 2.5)}
+              rx={3}
+              fill={shade(stoneBase, 0.9 + r() * 0.22)}
+              opacity={0.9}
+            />,
+          );
+        }
+      }
+      return (
+        <g key={`ground-${g.region}`} data-ground-kind="terrace">
+          {rows}
+        </g>
+      );
+    }
+    case "glade": {
+      const pale = shade(light.grassNear, 1.12);
+      const stones: ReactNode[] = [];
+      for (let i = 0; i < 5; i++) {
+        const a = (i / 5) * Math.PI * 2 + r() * 0.5;
+        stones.push(
+          <circle
+            key={`s${i}`}
+            cx={n(cx + Math.cos(a) * w * 0.26)}
+            cy={n(488 + Math.sin(a) * 22)}
+            r={n(2.4 + r() * 1.6)}
+            fill="#8a8577"
+            opacity={0.8}
+          />,
+        );
+      }
+      return (
+        <g key={`ground-${g.region}`} data-ground-kind="glade">
+          <ellipse cx={n(cx)} cy={488} rx={n(w * 0.32)} ry={26} fill={pale} opacity={0.5} />
+          <ellipse cx={n(cx)} cy={488} rx={n(w * 0.18)} ry={14} fill={shade(pale, 1.06)} opacity={0.45} />
+          {stones}
+        </g>
+      );
+    }
+    case "meadow": {
+      const dots: ReactNode[] = [];
+      for (let i = 0; i < 14; i++) {
+        const x = x0 + r() * w;
+        const y = 415 + r() * 130;
+        dots.push(
+          <circle
+            key={`d${i}`}
+            cx={n(x)}
+            cy={n(y)}
+            r={n(1.2 + r() * 1.6)}
+            fill={light.meadowAccents[i % light.meadowAccents.length]!}
+            opacity={0.8}
+          />,
+        );
+      }
+      return (
+        <g key={`ground-${g.region}`} data-ground-kind="meadow">
+          {dots}
+        </g>
+      );
+    }
+  }
 }
 
 const BAND_CURVES = [
@@ -24,7 +134,8 @@ const BAND_CURVES = [
   "M0,452 C300,438 680,440 1000,450 L1000,560 L0,560 Z",
 ];
 
-export function Terrain({ light, moisture, soilHealth, floweringDensity, biodiversity, droughtDays, canopy, trees }: TerrainProps): ReactNode {
+export function Terrain({ light, moisture, soilHealth, floweringDensity, biodiversity, droughtDays, canopy, trees, grounds = [] }: TerrainProps): ReactNode {
+  const groundEls = grounds.map((g) => groundFeature(g, light)).filter(Boolean);
   const bands = BAND_CURVES.map((d, i) => {
     const t = i / (BAND_CURVES.length - 1);
     const fill = mix(light.grassFar, light.grassNear, t);
@@ -105,6 +216,7 @@ export function Terrain({ light, moisture, soilHealth, floweringDensity, biodive
   return (
     <>
       {bands}
+      {groundEls.length > 0 ? <g data-terrain="grounds" pointerEvents="none">{groundEls}</g> : null}
       {pools.length > 0 ? <g data-terrain="pools" pointerEvents="none">{pools}</g> : null}
       <g data-terrain="meadow" pointerEvents="none">{strokes}</g>
       {flowers.length > 0 ? <g data-terrain="flowers" pointerEvents="none">{flowers}</g> : null}

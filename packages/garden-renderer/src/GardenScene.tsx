@@ -504,6 +504,7 @@ export function GardenScene({
         trees={sorted
           .filter((pl) => pl.category === "tree" && pl.state !== "dead" && pl.maturity >= 0.5)
           .map((pl) => anchorOf(pl))}
+        grounds={snapshot.state.grounds ?? []}
       />
 
       {/* plants, far to near */}

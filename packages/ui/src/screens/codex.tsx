@@ -511,6 +511,118 @@ function cap(s: string): string {
   return s.charAt(0).toUpperCase() + s.slice(1);
 }
 
+/* ── Earned grounds ───────────────────────────────────────────────────── */
+
+export interface GroundEntry {
+  region: number;
+  kind: string;
+  earnedDate: string;
+}
+
+const GROUND_META: Record<string, { name: string; cause: string; icon: ReactNode }> = {
+  meadow: {
+    name: "New meadow",
+    cause: "steady running",
+    icon: (
+      <svg width="34" height="20" viewBox="0 0 34 20" aria-hidden>
+        <path d="M0,12 C10,8 24,9 34,12 L34,20 L0,20 Z" fill="#9dbb7f" />
+        <circle cx="10" cy="14" r="1.4" fill="#c98bb0" />
+        <circle cx="22" cy="16" r="1.2" fill="#e0b23e" />
+        <circle cx="28" cy="14" r="1.2" fill="#c86f5a" />
+      </svg>
+    ),
+  },
+  stream: {
+    name: "The Stream",
+    cause: "carved by long runs",
+    icon: (
+      <svg width="34" height="20" viewBox="0 0 34 20" aria-hidden>
+        <path d="M0,12 C10,8 24,9 34,12 L34,20 L0,20 Z" fill="#9dbb7f" />
+        <path d="M18,12 C22,14 24,17 24,20 L31,20 C31,16 28,13 32,12 L34,12 L34,20 L18,20 Z" fill="#8fb7c9" />
+      </svg>
+    ),
+  },
+  terrace: {
+    name: "The Stone Terrace",
+    cause: "built by strength work",
+    icon: (
+      <svg width="34" height="20" viewBox="0 0 34 20" aria-hidden>
+        <path d="M0,12 C10,8 24,9 34,12 L34,20 L0,20 Z" fill="#9dbb7f" />
+        <rect x="17" y="10" width="11" height="3.4" rx="1.4" fill="#8a7455" />
+        <rect x="20" y="14.4" width="11" height="3.4" rx="1.4" fill="#9a8465" />
+      </svg>
+    ),
+  },
+  glade: {
+    name: "The Still Glade",
+    cause: "cleared by steady yoga",
+    icon: (
+      <svg width="34" height="20" viewBox="0 0 34 20" aria-hidden>
+        <path d="M0,12 C10,8 24,9 34,12 L34,20 L0,20 Z" fill="#9dbb7f" />
+        <ellipse cx="24" cy="15" rx="6" ry="3" fill="#b7cf9a" opacity="0.9" />
+        <circle cx="24" cy="15" r="1.3" fill="#f2ede0" />
+      </svg>
+    ),
+  },
+};
+
+const GROUND_LOCKED_HINTS: Array<{ kind: string; hint: string }> = [
+  { kind: "stream", hint: "A long-run-led training block carves it when the garden next expands." },
+  { kind: "terrace", hint: "A strength-led block builds it at the next expansion." },
+  { kind: "glade", hint: "A yoga-led block clears it at the next expansion." },
+];
+
+/**
+ * The grounds the garden has grown into — each names its cause and date.
+ * Unearned ground kinds show as dashed cards with an honest hint.
+ */
+export function GroundsShelf({ grounds }: { grounds: GroundEntry[] }) {
+  const [openKind, setOpenKind] = useState<string | null>(null);
+  const earnedKinds = new Set(grounds.map((g) => g.kind));
+  const locked = GROUND_LOCKED_HINTS.filter((l) => !earnedKinds.has(l.kind));
+  const open = locked.find((l) => l.kind === openKind);
+  return (
+    <div className="wildlife-shelf">
+      <div className="codex-sub" style={{ marginBottom: "0.35rem" }}>
+        Grounds — how the garden grew
+      </div>
+      <div className="visitor-row">
+        <div className="visitor-card" style={{ cursor: "default" }}>
+          {GROUND_META.meadow!.icon}
+          <span className="visitor-name">First Meadow</span>
+          <span className="visitor-sub">from the start</span>
+        </div>
+        {grounds.map((g) => {
+          const meta = GROUND_META[g.kind] ?? GROUND_META.meadow!;
+          return (
+            <div key={g.region} className="visitor-card" style={{ cursor: "default" }}>
+              {meta.icon}
+              <span className="visitor-name">{meta.name}</span>
+              <span className="visitor-sub">
+                {meta.cause} · {formatDayShort(g.earnedDate)}
+              </span>
+            </div>
+          );
+        })}
+        {locked.map((l) => (
+          <button
+            type="button"
+            key={l.kind}
+            className="visitor-card visitor-unseen"
+            aria-expanded={openKind === l.kind}
+            onClick={() => setOpenKind(openKind === l.kind ? null : l.kind)}
+          >
+            {GROUND_META[l.kind]!.icon}
+            <span className="visitor-name">{GROUND_META[l.kind]!.name}</span>
+            <span className="visitor-sub">not yet</span>
+          </button>
+        ))}
+      </div>
+      {open ? <p className="codex-sub wildlife-hint">{open.hint}</p> : null}
+    </div>
+  );
+}
+
 /* ── Rare visitors ─────────────────────────────────────────────────────── */
 
 export interface VisitorEntry {

@@ -8,10 +8,20 @@ import type {
   WorkoutCategory,
 } from "@rg/domain";
 
-export const SIMULATION_VERSION = 2;
+export const SIMULATION_VERSION = 3;
 
 /** The three disciplines the garden listens to; each drives its own axis. */
 export type Discipline = "run" | "strength" | "yoga";
+
+/** What kind of ground an expansion carved — chosen by the training that led the block. */
+export type GroundKind = "meadow" | "stream" | "terrace" | "glade";
+
+export interface EarnedGround {
+  /** 0-based region index into layout.ts REGION_BANDS. */
+  region: number;
+  kind: GroundKind;
+  earnedDate: LocalDate;
+}
 
 /** Tunable pacing constants. Defaults implement the product's decay curve. */
 export interface GardenConfig {
@@ -69,6 +79,12 @@ export interface EngineGardenState {
   lastSimulatedDate: LocalDate;
   restMode: boolean;
   unlockedRegions: number;
+  /** Grounds earned by expansion (region 0, the first meadow, is implicit).
+   * Optional so persisted pre-v3 snapshots stay readable. */
+  grounds?: EarnedGround[];
+  /** Counter watermarks at the last expansion — the "since then" baseline
+   * that decides what kind of ground the next expansion carves. */
+  countersAtExpansion?: { long: number; strength: number; yoga: number; balanced: number };
 
   // Long-term counters driving unlocks (planned runs only).
   qualityRunCount: number;

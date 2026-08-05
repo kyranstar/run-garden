@@ -314,6 +314,14 @@ export async function advanceGarden(
   now: Date = new Date(),
 ): Promise<GardenSimResult> {
   let snapshot = await ensureGarden(db, userId, prefs);
+
+  // Simulation upgraded since this garden was last written: rebuild the whole
+  // history from the stored inputs so version-3 state (earned grounds) exists
+  // for past expansions too. Deterministic — same inputs, same garden.
+  if ((snapshot.version ?? 1) < SIMULATION_VERSION) {
+    return resimulateFrom(db, userId, snapshot.state.createdDate, prefs, now);
+  }
+
   const today = todayInZone(prefs.timezone, now);
   const nowIso = nowInstant(now);
 

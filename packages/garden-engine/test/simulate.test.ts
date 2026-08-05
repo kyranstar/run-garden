@@ -8,6 +8,7 @@ import {
   disciplineBalance,
   gateProgress,
   gateSatisfied,
+  groundKindFor,
   initialSnapshot,
   replay,
   simulateDay,
@@ -740,6 +741,43 @@ describe("discipline balance", () => {
   it("respects each discipline's grace period", () => {
     const state = { ...initialSnapshot(START).state, daysSinceStrength: 3 };
     expect(disciplineBalance(state).strength.health).toBe(1);
+  });
+
+  it("every expansion earns a ground, and the ceremony event names its kind", () => {
+    const built = replay(START, trainingWeeks(START, 10));
+    const state = built.snapshot.state;
+    expect(state.unlockedRegions).toBeGreaterThan(1); // the trigger fired at least once
+    const grounds = state.grounds ?? [];
+    expect(grounds.length).toBe(state.unlockedRegions - 1);
+    const kinds = new Set(["meadow", "stream", "terrace", "glade"]);
+    for (const [i, g] of grounds.entries()) {
+      expect(kinds.has(g.kind)).toBe(true);
+      expect(g.region).toBe(i + 1); // 0-based band index, region 0 is genesis
+      expect(g.earnedDate >= START).toBe(true);
+    }
+    // Events and ledger agree, in order.
+    const regionEvents = built.events.filter((e) => e.kind === "region_unlocked");
+    expect(regionEvents.map((e) => e.detail)).toEqual(grounds.map((g) => g.kind));
+    // Deterministic: the same replay grows the same grounds.
+    expect(replay(START, trainingWeeks(START, 10)).snapshot.state.grounds).toEqual(grounds);
+  });
+
+  it("groundKindFor honors the discipline that led the block", () => {
+    const base = initialSnapshot(START).state;
+    const mk = (over: Partial<typeof base>) => ({ ...base, ...over });
+    expect(groundKindFor(mk({ strengthSessionCount: 5, longRunCount: 2 }))).toBe("terrace");
+    expect(groundKindFor(mk({ yogaSessionCount: 6, longRunCount: 3 }))).toBe("glade");
+    expect(groundKindFor(mk({ longRunCount: 4, strengthSessionCount: 2 }))).toBe("stream");
+    expect(groundKindFor(mk({ easyRunCount: 9 }))).toBe("meadow");
+    // Deltas are measured from the last expansion's watermark.
+    expect(
+      groundKindFor(
+        mk({
+          longRunCount: 10,
+          countersAtExpansion: { long: 8, strength: 0, yoga: 0, balanced: 0 },
+        }),
+      ),
+    ).toBe("meadow");
   });
 
   it("takes the overall score from the weakest practiced discipline", () => {
