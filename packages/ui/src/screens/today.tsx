@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { Link } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { api, ApiError, type TodayResponse, type WorkoutDto } from "@rg/api-client";
+import { reviewUnseen } from "../charts-math.js";
 import { shouldInvalidateGarden } from "./arrival.js";
 import { GARDEN_CONDITION_LABELS } from "@rg/domain";
 import {
@@ -273,6 +274,42 @@ export function EvidenceCard() {
         Dismiss
       </button>
     </Card>
+  );
+}
+
+/**
+ * The weekly review's discovery line (earned-moments spec §2): shown on the
+ * landing screen when a review the user hasn't opened exists. Client-side
+ * seen mark — repetition on another device is harmless, unlike ceremonies.
+ */
+export function ReviewPull() {
+  const insights = useQuery({
+    queryKey: ["insights"],
+    queryFn: () => api.insights(),
+    staleTime: 5 * 60_000,
+  });
+  const latest = insights.data?.reviews?.[0] ?? null;
+  let stored: string | null = null;
+  try {
+    stored = window.localStorage.getItem("rg-review-seen");
+  } catch {
+    stored = null;
+  }
+  if (!latest?.narrative || !reviewUnseen(latest.weekStart, stored)) return null;
+  const markSeen = () => {
+    try {
+      window.localStorage.setItem("rg-review-seen", latest.weekStart);
+    } catch {
+      // Storage unavailable — the pull will simply show again.
+    }
+  };
+  return (
+    <p className="review-pull">
+      The week's story is written —{" "}
+      <Link to="/insights" onClick={markSeen}>
+        read it →
+      </Link>
+    </p>
   );
 }
 

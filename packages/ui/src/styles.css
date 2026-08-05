@@ -2890,6 +2890,27 @@ button {
   border-style: dashed;
   border-color: color-mix(in srgb, var(--green) 45%, var(--border));
 }
+/* Inline "New" pill for records and the weekly review — the codex ring's
+   quiet inline cousin. */
+.new-ring {
+  display: inline-block;
+  margin-left: 0.4rem;
+  background: var(--green);
+  color: #fff;
+  font-size: 0.6rem;
+  font-weight: 700;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  padding: 0.08rem 0.4rem;
+  border-radius: 999px;
+  vertical-align: 0.1em;
+}
+/* The landing screen's pull to an unread weekly review. */
+.review-pull {
+  margin: 0;
+  font-size: 0.85rem;
+  color: var(--ink-soft);
+}
 .codex-newring {
   position: absolute;
   top: 0.35rem;

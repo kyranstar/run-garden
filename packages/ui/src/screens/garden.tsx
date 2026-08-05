@@ -37,7 +37,7 @@ import { Drawer } from "../drawer.js";
 import { cap, eventSentence, selectArrival, type ArrivalEvent } from "./arrival.js";
 import { CeremonyCard } from "./arrival-block.js";
 import { BotanicalCard } from "./botanical.js";
-import { EvidenceCard, NextWorkout, Readiness, SyncPanel, UnresolvedCard } from "./today.js";
+import { EvidenceCard, NextWorkout, Readiness, ReviewPull, SyncPanel, UnresolvedCard } from "./today.js";
 import {
   CATEGORY_ORDER,
   DisciplineNudges,
@@ -1154,6 +1154,7 @@ export function GardenScreen() {
       ))}
       {d ? <Readiness readiness={d.readiness} /> : null}
       <EvidenceCard />
+      <ReviewPull />
     </>
   );
 
