@@ -168,7 +168,10 @@ function BackfillRow() {
 
   const s = status.data;
   const running = s?.status === "running";
-  const detail = running
+  const detail =
+    s?.status === "error"
+      ? "Couldn't read your history — your desktop app is older than this feature. Update it, then try again."
+      : running
     ? `Reading your COROS history — ${s.chunksCompleted} ${s.chunksCompleted === 1 ? "chunk" : "chunks"}, ${s.activitiesIngested} sessions so far${s.earliestDateReached ? `, back to ${s.earliestDateReached}` : ""}.`
     : s?.status === "done"
       ? `History loaded: ${s.activitiesIngested} sessions${s.earliestDateReached ? ` back to ${s.earliestDateReached}` : ""}.`

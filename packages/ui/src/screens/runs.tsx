@@ -213,7 +213,7 @@ export function RunsScreen() {
       <div className="row-between screen-title">
         <h1>Activity</h1>
         <button className="btn btn-small" disabled={backfill.isPending} onClick={() => backfill.mutate()}>
-          {backfill.isPending ? "Syncing…" : "Sync past runs"}
+          {backfill.isPending ? "Starting…" : "Backfill history"}
         </button>
       </div>
       <div className="discipline-chips" role="tablist" aria-label="Filter by discipline">
