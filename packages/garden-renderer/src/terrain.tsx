@@ -7,6 +7,8 @@ const n = (x: number): number => Math.round(x * 100) / 100;
 const clamp01 = (v: number): number => (v < 0 ? 0 : v > 1 ? 1 : v);
 
 export interface TerrainProps {
+  /** Scene id prefix, for def/filter references. */
+  p: string;
   light: SceneLight;
   moisture: number;
   soilHealth: number;
@@ -173,7 +175,7 @@ const BAND_CURVES = [
   "M0,452 C300,438 680,440 1000,450 L1000,560 L0,560 Z",
 ];
 
-export function Terrain({ light, moisture, soilHealth, floweringDensity, biodiversity, droughtDays, canopy, trees, grounds = [] }: TerrainProps): ReactNode {
+export function Terrain({ p, light, moisture, soilHealth, floweringDensity, biodiversity, droughtDays, canopy, trees, grounds = [] }: TerrainProps): ReactNode {
   const groundEls = grounds.map((g) => groundFeature(g, light)).filter(Boolean);
   const bands = BAND_CURVES.map((d, i) => {
     const t = i / (BAND_CURVES.length - 1);
@@ -255,6 +257,17 @@ export function Terrain({ light, moisture, soilHealth, floweringDensity, biodive
   return (
     <>
       {bands}
+      <rect
+        data-terrain="mottle"
+        x={0}
+        y={290}
+        width={1000}
+        height={270}
+        filter={`url(#${p}-mottle)`}
+        opacity={0.25}
+        style={{ mixBlendMode: "soft-light" }}
+        pointerEvents="none"
+      />
       {groundEls.length > 0 ? <g data-terrain="grounds" pointerEvents="none">{groundEls}</g> : null}
       {pools.length > 0 ? <g data-terrain="pools" pointerEvents="none">{pools}</g> : null}
       <g data-terrain="meadow" pointerEvents="none">{strokes}</g>

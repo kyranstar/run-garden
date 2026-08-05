@@ -30,9 +30,28 @@ export function SceneDefs({ p, light }: { p: string; light: SceneLight }): React
       <filter id={`${p}-hillblur`}>
         <feGaussianBlur stdDeviation="1.6" />
       </filter>
+      {/* Film grain: seeded so markup and pixels are stable everywhere. The
+          contrast boost around mid-gray is what makes soft-light blending read
+          as tooth instead of fog; alpha is forced solid so the finish rect's
+          opacity alone controls strength. */}
       <filter id={`${p}-grain`}>
-        <feTurbulence type="fractalNoise" baseFrequency="0.8" numOctaves="2" />
+        <feTurbulence type="fractalNoise" baseFrequency="0.8" numOctaves="2" seed="7" stitchTiles="stitch" />
         <feColorMatrix type="saturate" values="0" />
+        <feComponentTransfer>
+          <feFuncR type="linear" slope="1.8" intercept="-0.4" />
+          <feFuncG type="linear" slope="1.8" intercept="-0.4" />
+          <feFuncB type="linear" slope="1.8" intercept="-0.4" />
+          <feFuncA type="linear" slope="0" intercept="1" />
+        </feComponentTransfer>
+      </filter>
+      {/* Ground mottle: low-frequency warm noise whose own red/green channels
+          drive alpha, so the meadow gradient reads as uneven light. */}
+      <filter id={`${p}-mottle`} x="-5%" y="-5%" width="110%" height="110%">
+        <feTurbulence type="fractalNoise" baseFrequency="0.006 0.012" numOctaves="2" seed="11" />
+        <feColorMatrix
+          type="matrix"
+          values="0 0 0 0 0.42  0 0 0 0 0.36  0 0 0 0 0.18  0.9 0.4 0 0 0"
+        />
       </filter>
       {/* True-silhouette selection outline: dilate the sprite's alpha, harden
           it (semi-opaque parts would otherwise ghost), flood, composite.

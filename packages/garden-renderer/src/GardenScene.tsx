@@ -549,6 +549,7 @@ export function GardenScene({
 
       {/* ground */}
       <Terrain
+        p={p}
         light={light}
         moisture={clamp01(snapshot.state.moisture)}
         soilHealth={clamp01(snapshot.state.soilHealth)}

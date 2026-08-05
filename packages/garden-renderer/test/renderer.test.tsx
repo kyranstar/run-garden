@@ -113,6 +113,16 @@ describe("GardenScene", () => {
     expect(a.length).toBeGreaterThan(2000);
   });
 
+  it("carries the grainlight texture layers exactly once", () => {
+    const markup = renderScene(healthySnapshot());
+    expect(markup.match(/data-finish-grain="true"/g)).toHaveLength(1);
+    expect(markup.match(/data-terrain="mottle"/g)).toHaveLength(1);
+    // every turbulence node is seeded → deterministic across UAs
+    const turbs = markup.match(/<feTurbulence[^>]*>/g) ?? [];
+    expect(turbs.length).toBeGreaterThanOrEqual(2);
+    for (const t of turbs) expect(t).toMatch(/seed="\d+"/);
+  });
+
   it("renders every living plant with a data-plant-id attribute", () => {
     const snapshot = healthySnapshot();
     const markup = renderScene(snapshot);
