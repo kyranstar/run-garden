@@ -10,7 +10,11 @@ import { lightingFor, moonPhase } from "./lighting";
 import { Finish, Rainbow, WeatherOverlay } from "./overlays";
 import { PlantSprite } from "./PlantSprite";
 import { SceneDefs, Sky } from "./sky";
-import { FramingGrass, Terrain } from "./terrain";
+import { displaceFromStreams, FramingGrass, streamGeometryFor, Terrain, type StreamGeometry } from "./terrain";
+
+/** Anchor lookup threaded to wildlife/visitors so perches track both the
+ *  hero-tree boost and stream displacement. */
+type PlantAnchor = (pl: GardenPlant) => { x: number; y: number; s: number };
 
 /**
  * The full scene: sky → hills → ground → plants (far to near) → weather →
@@ -106,12 +110,12 @@ function firstById(plants: GardenPlant[], pred: (pl: GardenPlant) => boolean): G
     .sort((a, b) => a.id.localeCompare(b.id))[0];
 }
 
-function birdShapes(p: string, animate: boolean, plants: GardenPlant[]): ReactNode {
+function birdShapes(p: string, animate: boolean, plants: GardenPlant[], anchor: PlantAnchor): ReactNode {
   const tree =
     firstById(plants, (pl) => pl.category === "tree" && pl.state !== "dead" && pl.maturity >= 0.6) ??
     firstById(plants, (pl) => pl.category === "tree" && pl.state !== "dead");
   const r = rng("wildlife:birds");
-  const a = tree ? anchorOf(tree) : { x: 320, y: 300, s: 0.8 };
+  const a = tree ? anchor(tree) : { x: 320, y: 300, s: 0.8 };
   const canopyY = Math.max(120, a.y - (95 + 40 * r()) * a.s);
   const perchX = n(a.x + (r() - 0.5) * 34 * a.s);
   const glideX = n(a.x - 70 - r() * 60);
@@ -137,12 +141,12 @@ function birdShapes(p: string, animate: boolean, plants: GardenPlant[]): ReactNo
   );
 }
 
-function beeShapes(p: string, animate: boolean, plants: GardenPlant[]): ReactNode {
+function beeShapes(p: string, animate: boolean, plants: GardenPlant[], anchor: PlantAnchor): ReactNode {
   const flower =
     firstById(plants, (pl) => pl.state === "flowering") ??
     firstById(plants, (pl) => pl.category === "flower" && pl.state !== "dead");
   const r = rng("wildlife:bees");
-  const a = flower ? anchorOf(flower) : { x: 520, y: 460, s: 0.9 };
+  const a = flower ? anchor(flower) : { x: 520, y: 460, s: 0.9 };
   const ax = Math.min(940, Math.max(60, a.x));
   const bees: ReactNode[] = [];
   const count = 3;
@@ -167,12 +171,12 @@ function beeShapes(p: string, animate: boolean, plants: GardenPlant[]): ReactNod
   );
 }
 
-function butterflyShapes(p: string, animate: boolean, plants: GardenPlant[]): ReactNode {
+function butterflyShapes(p: string, animate: boolean, plants: GardenPlant[], anchor: PlantAnchor): ReactNode {
   const flower =
     firstById(plants, (pl) => pl.state === "flowering") ??
     firstById(plants, (pl) => pl.category === "flower" && pl.state !== "dead");
   const r = rng("wildlife:butterflies");
-  const a = flower ? anchorOf(flower) : { x: 480, y: 440, s: 0.9 };
+  const a = flower ? anchor(flower) : { x: 480, y: 440, s: 0.9 };
   const ax = Math.min(920, Math.max(80, a.x));
   const items: ReactNode[] = [];
   const colors: Array<[string, string]> = [
@@ -230,11 +234,11 @@ function fireflyShapes(p: string, animate: boolean): ReactNode {
 
 /* ── earned creatures ─────────────────────────────────────────────────────── */
 
-function squirrelShapes(p: string, animate: boolean, plants: GardenPlant[]): ReactNode {
+function squirrelShapes(p: string, animate: boolean, plants: GardenPlant[], anchor: PlantAnchor): ReactNode {
   const tree =
     firstById(plants, (pl) => pl.category === "tree" && pl.state !== "dead" && pl.maturity >= 0.5) ??
     firstById(plants, (pl) => pl.category === "tree" && pl.state !== "dead");
-  const a = tree ? anchorOf(tree) : { x: 300, y: 470, s: 0.9 };
+  const a = tree ? anchor(tree) : { x: 300, y: 470, s: 0.9 };
   return (
     <g data-wildlife="squirrels" pointerEvents="none">
       <g
@@ -252,13 +256,13 @@ function squirrelShapes(p: string, animate: boolean, plants: GardenPlant[]): Rea
   );
 }
 
-function rabbitShapes(p: string, animate: boolean, plants: GardenPlant[]): ReactNode {
+function rabbitShapes(p: string, animate: boolean, plants: GardenPlant[], anchor: PlantAnchor): ReactNode {
   const gc = firstById(
     plants,
     (pl) => (pl.category === "groundcover" || pl.category === "grass") && pl.state !== "dead",
   );
   const r = rng("wildlife:rabbits");
-  const a = gc ? anchorOf(gc) : { x: 640, y: 490, s: 1 };
+  const a = gc ? anchor(gc) : { x: 640, y: 490, s: 1 };
   return (
     <g data-wildlife="rabbits" pointerEvents="none">
       <g
@@ -276,10 +280,10 @@ function rabbitShapes(p: string, animate: boolean, plants: GardenPlant[]): React
   );
 }
 
-function frogShapes(p: string, animate: boolean, plants: GardenPlant[]): ReactNode {
+function frogShapes(p: string, animate: boolean, plants: GardenPlant[], anchor: PlantAnchor): ReactNode {
   const fern = firstById(plants, (pl) => pl.category === "fern" && pl.state !== "dead");
   const r = rng("wildlife:frogs");
-  const a = fern ? anchorOf(fern) : { x: 520, y: 500, s: 1 };
+  const a = fern ? anchor(fern) : { x: 520, y: 500, s: 1 };
   return (
     <g data-wildlife="frogs" pointerEvents="none">
       <g
@@ -298,12 +302,12 @@ function frogShapes(p: string, animate: boolean, plants: GardenPlant[]): ReactNo
   );
 }
 
-function dragonflyShapes(p: string, animate: boolean, plants: GardenPlant[]): ReactNode {
+function dragonflyShapes(p: string, animate: boolean, plants: GardenPlant[], anchor: PlantAnchor): ReactNode {
   const flower =
     firstById(plants, (pl) => pl.state === "flowering") ??
     firstById(plants, (pl) => pl.category === "flower" && pl.state !== "dead");
   const r = rng("wildlife:dragonflies");
-  const a = flower ? anchorOf(flower) : { x: 460, y: 430, s: 0.9 };
+  const a = flower ? anchor(flower) : { x: 460, y: 430, s: 0.9 };
   const x = n(Math.min(920, Math.max(80, a.x + (r() - 0.5) * 80)));
   const y = n(a.y - 40 - r() * 30);
   return (
@@ -320,7 +324,7 @@ function dragonflyShapes(p: string, animate: boolean, plants: GardenPlant[]): Re
   );
 }
 
-function ladybugShapes(p: string, animate: boolean, plants: GardenPlant[]): ReactNode {
+function ladybugShapes(p: string, animate: boolean, plants: GardenPlant[], anchor: PlantAnchor): ReactNode {
   const leaf = firstById(
     plants,
     (pl) =>
@@ -328,7 +332,7 @@ function ladybugShapes(p: string, animate: boolean, plants: GardenPlant[]): Reac
       pl.state !== "dead",
   );
   const r = rng("wildlife:ladybugs");
-  const a = leaf ? anchorOf(leaf) : { x: 720, y: 470, s: 1 };
+  const a = leaf ? anchor(leaf) : { x: 720, y: 470, s: 1 };
   return (
     <g data-wildlife="ladybugs" pointerEvents="none">
       <g
@@ -361,7 +365,7 @@ const VISITOR_PERIODS: Record<SceneVisitor, ReadonlySet<string>> = {
   fox: new Set(["dusk", "golden"]),
 };
 
-function visitorShapes(kind: SceneVisitor, plants: GardenPlant[]): ReactNode {
+function visitorShapes(kind: SceneVisitor, plants: GardenPlant[], anchor: PlantAnchor): ReactNode {
   switch (kind) {
     case "deer":
       return (
@@ -426,7 +430,7 @@ function visitorShapes(kind: SceneVisitor, plants: GardenPlant[]): ReactNode {
       const tree =
         firstById(plants, (pl) => pl.category === "tree" && pl.state !== "dead" && pl.maturity >= 0.6) ??
         firstById(plants, (pl) => pl.category === "tree" && pl.state !== "dead");
-      const a = tree ? anchorOf(tree) : { x: 320, y: 320, s: 0.8 };
+      const a = tree ? anchor(tree) : { x: 320, y: 320, s: 0.8 };
       const y = Math.max(120, a.y - 108 * a.s);
       return (
         <g data-visitor="owl" pointerEvents="none" transform={`translate(${n(a.x + 8)} ${n(y)})`} opacity={0.95}>
@@ -537,6 +541,17 @@ export function GardenScene({
     amount: light.sunX !== null ? Math.min(1, 0.4 + 0.35 * light.beamStrength) : 0.15,
   };
 
+  // Plants never grow in the water: anchors displace out of stream channels.
+  const channels = (snapshot.state.grounds ?? [])
+    .map(streamGeometryFor)
+    .filter((c): c is StreamGeometry => c !== null);
+  const anchor: PlantAnchor = (pl) =>
+    displaceFromStreams(
+      anchorOf(pl),
+      channels,
+      Math.max(12, speciesOrThrow(pl.speciesId).spacing * 1000 * 0.45),
+    );
+
   const sorted = [...snapshot.plants].sort(
     (a, b) => a.position.y - b.position.y || a.id.localeCompare(b.id),
   );
@@ -614,14 +629,14 @@ export function GardenScene({
         canopy={clamp01(snapshot.state.canopy)}
         trees={sorted
           .filter((pl) => pl.category === "tree" && pl.state !== "dead" && pl.maturity >= 0.5)
-          .map((pl) => anchorOf(pl))}
+          .map((pl) => anchor(pl))}
         grounds={snapshot.state.grounds ?? []}
       />
 
       {/* plants, far to near */}
       {sorted.map((plant) => {
         const species = speciesOrThrow(plant.speciesId);
-        const a = anchorOf(plant);
+        const a = anchor(plant);
         const hw = Math.max(14, species.spacing * 1000 * 0.55);
         const shadowHw = hw * shadowGrowthScale(plant);
         // Cast lobe pinned just behind the base edge, elongating only away
@@ -720,18 +735,18 @@ export function GardenScene({
       <Rainbow p={p} light={light} />
 
       {/* wildlife */}
-      {snapshot.wildlife.birds ? birdShapes(p, animate, sorted) : null}
-      {snapshot.wildlife.bees ? beeShapes(p, animate, sorted) : null}
-      {snapshot.wildlife.butterflies ? butterflyShapes(p, animate, sorted) : null}
+      {snapshot.wildlife.birds ? birdShapes(p, animate, sorted, anchor) : null}
+      {snapshot.wildlife.bees ? beeShapes(p, animate, sorted, anchor) : null}
+      {snapshot.wildlife.butterflies ? butterflyShapes(p, animate, sorted, anchor) : null}
       {snapshot.wildlife.fireflies ? fireflyShapes(p, animate) : null}
-      {snapshot.wildlife.squirrels ? squirrelShapes(p, animate, sorted) : null}
-      {snapshot.wildlife.rabbits ? rabbitShapes(p, animate, sorted) : null}
-      {snapshot.wildlife.frogs ? frogShapes(p, animate, sorted) : null}
-      {snapshot.wildlife.dragonflies ? dragonflyShapes(p, animate, sorted) : null}
-      {snapshot.wildlife.ladybugs ? ladybugShapes(p, animate, sorted) : null}
+      {snapshot.wildlife.squirrels ? squirrelShapes(p, animate, sorted, anchor) : null}
+      {snapshot.wildlife.rabbits ? rabbitShapes(p, animate, sorted, anchor) : null}
+      {snapshot.wildlife.frogs ? frogShapes(p, animate, sorted, anchor) : null}
+      {snapshot.wildlife.dragonflies ? dragonflyShapes(p, animate, sorted, anchor) : null}
+      {snapshot.wildlife.ladybugs ? ladybugShapes(p, animate, sorted, anchor) : null}
 
       {/* today's rare visitor — only during its own hours */}
-      {visitor && VISITOR_PERIODS[visitor].has(light.period) ? visitorShapes(visitor, sorted) : null}
+      {visitor && VISITOR_PERIODS[visitor].has(light.period) ? visitorShapes(visitor, sorted, anchor) : null}
 
       {/* finish: beams, horizon haze, grain, vignette — over everything */}
       <Finish p={p} light={light} />

@@ -14,6 +14,7 @@ import {
 import { conditionWord, DEFAULT_GARDEN_CONFIG } from "@rg/garden-engine";
 import { describeGarden, describePlant, GardenScene, PlantSprite } from "../src/index";
 import { anchorOf } from "../src/GardenScene";
+import { displaceFromStreams, streamGeometryFor } from "../src/terrain";
 import { moonShadowOffset } from "../src/sky";
 
 const START = "2026-03-02"; // a Monday
@@ -556,6 +557,46 @@ describe("framing grass", () => {
     expect(framingAt).toBeGreaterThan(markup.lastIndexOf("data-plant-id"));
     const tag = markup.slice(framingAt - 200, framingAt + 60);
     expect(tag).toContain('pointer-events="none"');
+  });
+});
+
+describe("riparian streams", () => {
+  const streamGround = { region: 1, kind: "stream" as const, earnedDate: "2026-06-01" };
+
+  it("stream geometry pinches at the source and knows its channel", () => {
+    const geo = streamGeometryFor(streamGround)!;
+    expect(geo.hw(0)).toBeLessThan(geo.hw(0.2) * 0.6);
+    const y = geo.yTop + 0.5 * geo.ySpan;
+    expect(geo.inChannel(geo.xc(0.5), y)).toBe(true);
+    expect(geo.inChannel(geo.xc(0.5) + geo.hw(0.5) + 12, y)).toBe(false);
+  });
+
+  it("plant anchors displace out of the water", () => {
+    const geo = streamGeometryFor(streamGround)!;
+    const y = geo.yTop + 0.6 * geo.ySpan;
+    const displaced = displaceFromStreams({ x: geo.xc(0.6), y, s: 1 }, [geo]);
+    expect(geo.inChannel(displaced.x, y, 8)).toBe(false);
+  });
+
+  it("no rendered plant anchor lands in stream water (long-lived garden)", () => {
+    // 20 training weeks earns stream grounds; every plant transform must sit
+    // clear of every channel.
+    const s = replay(START, trainingWeeks(START, 20)).snapshot;
+    const channels = (s.state.grounds ?? [])
+      .map(streamGeometryFor)
+      .filter((c): c is NonNullable<ReturnType<typeof streamGeometryFor>> => c !== null);
+    expect(channels.length).toBeGreaterThan(0);
+    const markup = renderScene(s);
+    const anchors = [...markup.matchAll(/data-plant-id="([^"]*)"[^>]*transform="translate\((-?[\d.]+) (-?[\d.]+)\)/g)];
+    expect(anchors.length).toBeGreaterThan(10);
+    for (const m of anchors) {
+      const x = Number(m[2]);
+      const y = Number(m[3]);
+      expect(
+        channels.some((c) => c.inChannel(x, y, 2)),
+        `plant ${m[1]} at (${x},${y}) sits in a stream`,
+      ).toBe(false);
+    }
   });
 });
 
