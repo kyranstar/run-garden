@@ -104,55 +104,6 @@ export function inProgressColumnIndex<D extends HeatmapDayLike>(
 
 // ── Streak ──────────────────────────────────────────────────────────────────
 
-/**
- * The user's CURRENT streak, in days, of completed-or-moved plan days.
- *
- * Starts from the most recent day that has actually happened — trailing
- * `future` cells (the rest of an in-progress ISO week) and trailing `none`
- * cells (no entry synced yet for today) are skipped rather than treated as a
- * broken streak; there's simply nothing to read there yet. From that day,
- * walking backward:
- *
- *   - `completed` / `moved` extends the streak by one (a moved-but-completed
- *     workout is never a failure anywhere else in this codebase, and isn't
- *     one here either);
- *   - `rest` neither extends the streak nor breaks it — it's skipped over, so
- *     a run day on either side of a rest day stays connected. This mirrors
- *     `records.ts`'s fastest-comeback record, which tolerates a gap of a few
- *     days between qualifying runs instead of demanding literally consecutive
- *     dates — a planned day off isn't a lapse;
- *   - anything else (`skipped`, `missed`, `pending`, or a `none` earlier in
- *     history, before the plan existed) stops the walk right there. `pending`
- *     in particular means "unknown, not yet resolved" rather than "failed" —
- *     so hitting one ends the count without retroactively zeroing the days
- *     already tallied before it, the same way an unresolved sync doesn't
- *     undo the completed days that came before it.
- *
- * `days` must be date-ascending, one entry per calendar day, with no gaps —
- * exactly the shape `ConsistencyReport.days` produces — since this walks
- * array order as if it were consecutive days. Typed structurally (matching
- * `HeatmapDayLike`) rather than importing `ConsistencyDay` from
- * `@rg/analytics`, for the same reason `heatmapColumns` is generic: this file
- * stays dependency-free and testable without the wire types.
- */
-export function currentStreak(days: readonly HeatmapDayLike[]): number {
-  let i = days.length - 1;
-  while (i >= 0 && (days[i]!.status === "future" || days[i]!.status === "none")) i--;
-
-  let streak = 0;
-  for (; i >= 0; i--) {
-    const status = days[i]!.status;
-    if (status === "completed" || status === "moved") {
-      streak++;
-    } else if (status === "rest") {
-      continue;
-    } else {
-      break;
-    }
-  }
-  return streak;
-}
-
 // ── Outcome bar segments ────────────────────────────────────────────────────
 
 export interface OutcomeCounts {

@@ -1,6 +1,5 @@
 import { describe, expect, it } from "vitest";
 import {
-  currentStreak,
   isRecentRecord,
   reviewUnseen,
   divergingDomain,
@@ -108,84 +107,6 @@ describe("inProgressColumnIndex", () => {
   });
 });
 
-describe("currentStreak", () => {
-  // Ascending, one entry per calendar day — the shape ConsistencyReport.days
-  // actually produces. The date values themselves don't matter to the
-  // function (it walks array order, not parsed dates); they're here for
-  // readability only.
-  const days = (...statuses: string[]) =>
-    statuses.map((status, i) => ({ date: `2026-08-${String(i + 1).padStart(2, "0")}`, status }));
-
-  it("counts consecutive completed days ending at the most recent one", () => {
-    expect(currentStreak(days("completed", "completed", "completed"))).toBe(3);
-  });
-
-  it("counts moved the same as completed", () => {
-    expect(currentStreak(days("completed", "moved", "completed"))).toBe(3);
-  });
-
-  it("returns 0 for an empty list", () => {
-    expect(currentStreak([])).toBe(0);
-  });
-
-  it("returns 0 when nothing has ever resolved (all future/none)", () => {
-    expect(currentStreak(days("none", "future", "future"))).toBe(0);
-  });
-
-  it("skips trailing future days to start counting from the last real day", () => {
-    // This week isn't over: the grid pads out to the end of the ISO week with
-    // "future" cells. Those shouldn't zero out an otherwise-live streak.
-    expect(currentStreak(days("completed", "completed", "future", "future"))).toBe(2);
-  });
-
-  it("skips a trailing 'none' the same way (no entry yet today)", () => {
-    expect(currentStreak(days("completed", "completed", "none"))).toBe(2);
-  });
-
-  describe("rest days", () => {
-    it("do not break a streak that spans one", () => {
-      expect(currentStreak(days("completed", "rest", "completed"))).toBe(2);
-    });
-
-    it("do not extend the streak by themselves", () => {
-      expect(currentStreak(days("rest", "rest"))).toBe(0);
-    });
-
-    it("at the walk's start are skipped over to reach the last real day", () => {
-      expect(currentStreak(days("completed", "completed", "rest"))).toBe(2);
-    });
-  });
-
-  describe("a missed or skipped day breaks the streak", () => {
-    it("as the most recent day, the streak is 0 even though earlier days were completed", () => {
-      expect(currentStreak(days("completed", "completed", "missed"))).toBe(0);
-      expect(currentStreak(days("completed", "completed", "skipped"))).toBe(0);
-    });
-
-    it("further back, it stops the walk without erasing the days already counted", () => {
-      // completed, MISSED, completed, completed — only the trailing pair
-      // counts; the walk never reaches the completed day before the break.
-      expect(currentStreak(days("completed", "missed", "completed", "completed"))).toBe(2);
-    });
-  });
-
-  describe("a pending day", () => {
-    it("ends the walk without breaking — it stops counting, but doesn't zero what's already tallied", () => {
-      // pending, completed, completed — the trailing two are counted; the
-      // pending day (unresolved sync, not a known outcome) just stops the
-      // walk one day early rather than resetting to 0.
-      expect(currentStreak(days("pending", "completed", "completed"))).toBe(2);
-    });
-
-    it("as the most recent day on its own gives a streak of 0 (nothing counted yet)", () => {
-      expect(currentStreak(days("completed", "completed", "pending"))).toBe(0);
-    });
-  });
-
-  it("a historical 'none' before the plan existed also stops the walk", () => {
-    expect(currentStreak(days("none", "completed", "completed"))).toBe(2);
-  });
-});
 
 describe("outcomeSegments", () => {
   const base = { completed: 0, moved: 0, pending: 0, skipped: 0, missed: 0, planned: 0 };
