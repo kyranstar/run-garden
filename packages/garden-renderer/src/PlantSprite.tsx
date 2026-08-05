@@ -3,7 +3,7 @@ import type { GardenPlant } from "@rg/domain";
 import type { Species } from "@rg/garden-engine";
 import { rng, speciesOrThrow } from "@rg/garden-engine";
 import { desaturate, hexToRgb, hslToRgb, mix, rgbToHex, rgbToHsl, shade } from "./color";
-import { blobPath, DEFAULT_LIGHT_HINT, type LightHint } from "./organic";
+import { blobPath, DEFAULT_LIGHT_HINT, wobbleLine, type LightHint } from "./organic";
 
 /**
  * One plant, hand-drawn per archetype. Local coordinates: the stem base sits
@@ -481,7 +481,7 @@ function treeBlossom({ r, v, m, P, L }: Ctx): ReactNode {
 }
 
 /** poppy/tulip: single stem, cup-shaped bloom that hangs when thirsty */
-function flowerCup({ v, m, P }: Ctx): ReactNode {
+function flowerCup({ v, m, P, L }: Ctx): ReactNode {
   const s = v(lerp(6, 34, m));
   const cup = v(5.2, 0.12) * lerp(0.6, 1, m);
   const head = m >= 0.5;
@@ -496,6 +496,14 @@ function flowerCup({ v, m, P }: Ctx): ReactNode {
             <g>
               <path d={`M${n(-cup)},0 C${n(-cup * 1.15)},${n(-cup * 1.7)} ${n(cup * 1.15)},${n(-cup * 1.7)} ${n(cup)},0 Z`} fill={P.c2} />
               <path d={`M${n(-cup * 0.55)},${n(-cup * 0.2)} C${n(-cup * 0.5)},${n(-cup * 1.9)} ${n(cup * 0.5)},${n(-cup * 1.9)} ${n(cup * 0.55)},${n(-cup * 0.2)}`} fill={shade(P.c2, 1.12)} />
+              <path
+                data-tone="lit"
+                d={`M${n(cup * 0.1 * L.dx)},${n(-cup * 1.62)} C${n(cup * (0.1 * L.dx + 0.5))},${n(-cup * 1.78)} ${n(cup * (0.1 * L.dx + 0.72))},${n(-cup * 1.1)} ${n(cup * (0.1 * L.dx + 0.62))},${n(-cup * 0.3)}`}
+                fill="none"
+                stroke={mix(P.c2, L.litColor, 0.6)}
+                strokeWidth={1.1}
+                opacity={n(0.75 * L.amount)}
+              />
               <circle cx={0} cy={-1} r={1.5} fill={P.c3} />
             </g>
           ) : (
@@ -508,7 +516,7 @@ function flowerCup({ v, m, P }: Ctx): ReactNode {
 }
 
 /** aster/coneflower/cosmos: radial petals around a bright center */
-function flowerDaisy({ r, v, m, P }: Ctx): ReactNode {
+function flowerDaisy({ r, v, m, P, L }: Ctx): ReactNode {
   const s = v(lerp(6, 32, m));
   const petals = 7 + Math.floor(r() * 4);
   const plen = v(4.6, 0.15) * lerp(0.55, 1, m);
@@ -516,15 +524,20 @@ function flowerDaisy({ r, v, m, P }: Ctx): ReactNode {
   if (P.blooming) {
     for (let i = 0; i < petals; i++) {
       const a = (i * 360) / petals + r() * 6;
+      // petals facing the sun catch a lit wash; angle 0 = straight up
+      const facing = Math.sin((a * Math.PI) / 180) * L.dx;
+      const base = i % 2 === 0 ? P.c2 : shade(P.c2, 1.08);
+      const onSun = L.dx !== 0 && facing > 0.35;
       ring.push(
         <ellipse
           key={`p${i}`}
+          data-tone={onSun ? "lit" : undefined}
           cx={0}
           cy={n(-plen * 0.72)}
           rx={1.7}
           ry={n(plen * 0.72)}
           transform={`rotate(${n(a)})`}
-          fill={i % 2 === 0 ? P.c2 : shade(P.c2, 1.08)}
+          fill={onSun ? mix(base, L.litColor, 0.45 * L.amount) : base}
         />,
       );
     }
@@ -653,7 +666,7 @@ function fern({ r, v, m, P }: Ctx): ReactNode {
 }
 
 /** hosta: broad overlapping leaves fanned from the crown */
-function hosta({ r, v, m, P }: Ctx): ReactNode {
+function hosta({ r, v, m, P, L }: Ctx): ReactNode {
   const leaves = 7 + Math.floor(r() * 3);
   const items: ReactNode[] = [];
   for (let i = 0; i < leaves; i++) {
@@ -661,6 +674,8 @@ function hosta({ r, v, m, P }: Ctx): ReactNode {
     const a = lerp(-72, 72, t) + (r() - 0.5) * 10;
     const droopA = a * (1 + P.droop * 0.4) + P.droop * lerp(-8, 8, t);
     const len = v(lerp(4, 15, m), 0.18);
+    const base = i % 2 === 0 ? P.c1 : P.c2;
+    const onSun = L.dx !== 0 && a * L.dx > 25;
     items.push(
       <ellipse
         key={`l${i}`}
@@ -669,7 +684,7 @@ function hosta({ r, v, m, P }: Ctx): ReactNode {
         rx={n(len * 0.34)}
         ry={n(len * 0.62)}
         transform={`rotate(${n(droopA)})`}
-        fill={i % 2 === 0 ? P.c1 : P.c2}
+        fill={onSun ? mix(base, L.litColor, 0.3 * L.amount) : base}
         stroke={shade(P.c1, 0.72)}
         strokeWidth={0.7}
       />,
@@ -678,8 +693,8 @@ function hosta({ r, v, m, P }: Ctx): ReactNode {
   return <g>{items}</g>;
 }
 
-/** grass tuft: fanned arcing blades */
-function grassTuft({ r, v, m, P }: Ctx): ReactNode {
+/** grass tuft: fanned blades with a hand-drawn kink */
+function grassTuft({ r, v, m, P, L }: Ctx): ReactNode {
   const blades = 7 + Math.floor(r() * 4);
   const items: ReactNode[] = [];
   for (let i = 0; i < blades; i++) {
@@ -687,11 +702,13 @@ function grassTuft({ r, v, m, P }: Ctx): ReactNode {
     const bx = lerp(-3.5, 3.5, t);
     const h = v(lerp(4, 24, m), 0.22);
     const bend = lerp(-8, 8, t) + (r() - 0.5) * 5 + P.droop * lerp(-6, 6, t);
+    const base = i % 2 === 0 ? P.c1 : P.c2;
+    const onSun = L.dx !== 0 && bend * L.dx > 3;
     items.push(
       <path
         key={`b${i}`}
-        d={`M${n(bx)},0 Q${n(bx + bend * 0.35)},${n(-h * 0.75)} ${n(bx + bend)},${n(-h + P.droop * h * 0.3)}`}
-        stroke={i % 2 === 0 ? P.c1 : P.c2}
+        d={wobbleLine(r, bx, 0, bx + bend, -h + P.droop * h * 0.3, 3, 1.2)}
+        stroke={onSun ? mix(base, L.litColor, 0.4 * L.amount) : base}
         strokeWidth={1.6}
         strokeLinecap="round"
         fill="none"
@@ -702,7 +719,7 @@ function grassTuft({ r, v, m, P }: Ctx): ReactNode {
 }
 
 /** vine: winding stem climbing its host, leaf pairs, small blooms when flowering */
-function vine({ r, v, m, P }: Ctx): ReactNode {
+function vine({ r, v, m, P, L }: Ctx): ReactNode {
   const h = v(lerp(8, 100, m));
   const segs = 4;
   const pts: Array<{ x: number; y: number }> = [{ x: 0, y: 0 }];
@@ -718,9 +735,28 @@ function vine({ r, v, m, P }: Ctx): ReactNode {
   for (let i = 1; i <= segs; i++) {
     const p = pts[i]!;
     const size = v(3.2, 0.2);
+    const east = L.dx >= 0;
     leaves.push(
-      <ellipse key={`la${i}`} cx={n(p.x - size)} cy={n(p.y + 1)} rx={n(size)} ry={n(size * 0.5)} transform={`rotate(${n(-30 - P.droop * 24)} ${n(p.x - size)} ${n(p.y + 1)})`} fill={i % 2 === 0 ? P.c1 : shade(P.c1, 0.88)} />,
-      <ellipse key={`lb${i}`} cx={n(p.x + size)} cy={n(p.y + 2)} rx={n(size * 0.9)} ry={n(size * 0.45)} transform={`rotate(${n(28 + P.droop * 24)} ${n(p.x + size)} ${n(p.y + 2)})`} fill={shade(P.c1, 1.08)} />,
+      <ellipse
+        key={`la${i}`}
+        data-tone={!east && L.dx !== 0 ? "lit" : undefined}
+        cx={n(p.x - size)}
+        cy={n(p.y + 1)}
+        rx={n(size)}
+        ry={n(size * 0.5)}
+        transform={`rotate(${n(-30 - P.droop * 24)} ${n(p.x - size)} ${n(p.y + 1)})`}
+        fill={!east && L.dx !== 0 ? mix(i % 2 === 0 ? P.c1 : shade(P.c1, 0.88), L.litColor, 0.35 * L.amount) : i % 2 === 0 ? P.c1 : shade(P.c1, 0.88)}
+      />,
+      <ellipse
+        key={`lb${i}`}
+        data-tone={east && L.dx !== 0 ? "lit" : undefined}
+        cx={n(p.x + size)}
+        cy={n(p.y + 2)}
+        rx={n(size * 0.9)}
+        ry={n(size * 0.45)}
+        transform={`rotate(${n(28 + P.droop * 24)} ${n(p.x + size)} ${n(p.y + 2)})`}
+        fill={east && L.dx !== 0 ? mix(shade(P.c1, 1.08), L.litColor, 0.35 * L.amount) : shade(P.c1, 1.08)}
+      />,
     );
     if (P.blooming && i >= 2) {
       leaves.push(<circle key={`fl${i}`} cx={n(p.x + (r() - 0.5) * 5)} cy={n(p.y - 2)} r={1.7} fill={P.c2} />);
@@ -743,7 +779,12 @@ function groundcoverPatch({ r, v, m, P }: Ctx): ReactNode {
     const x = (r() * 2 - 1) * w;
     const y = -1 - r() * 3.6;
     items.push(
-      <ellipse key={`l${i}`} cx={n(x)} cy={n(y)} rx={n(2 + r() * 1.4)} ry={n(1.1 + r() * 0.7)} transform={`rotate(${n((r() - 0.5) * 50)} ${n(x)} ${n(y)})`} fill={i % 3 === 0 ? shade(P.c1, 1.12) : P.c1} />,
+      <path
+        key={`l${i}`}
+        d={blobPath(r, x, y, 2 + r() * 1.4, 1.1 + r() * 0.7, 0.34, 6)}
+        transform={`rotate(${n((r() - 0.5) * 50)} ${n(x)} ${n(y)})`}
+        fill={i % 3 === 0 ? shade(P.c1, 1.12) : P.c1}
+      />,
     );
   }
   const dots: ReactNode[] = [];
@@ -776,7 +817,7 @@ function moss({ r, v, m, P }: Ctx): ReactNode {
 }
 
 /** mushrooms: pale stems, domed caps, spots on the largest */
-function mushroom({ r, v, m, P }: Ctx): ReactNode {
+function mushroom({ r, v, m, P, L }: Ctx): ReactNode {
   const count = 2 + Math.floor(r() * 2);
   const items: ReactNode[] = [];
   for (let i = 0; i < count; i++) {
@@ -784,10 +825,20 @@ function mushroom({ r, v, m, P }: Ctx): ReactNode {
     const x = lerp(-1, 1, t) * v(lerp(2, 7, m));
     const h = v(lerp(3, 9, m), 0.25) * (i === 0 ? 1.15 : 0.85);
     const cw = h * 0.78;
+    const capBase = i % 2 === 0 ? P.c1 : shade(P.c1, 0.9);
     items.push(
       <g key={`u${i}`} transform={`translate(${n(x)} 0)`}>
         <rect x={n(-h * 0.14)} y={n(-h)} width={n(h * 0.28)} height={n(h)} rx={n(h * 0.1)} fill={P.c2} />
-        <path d={`M${n(-cw)},${n(-h)} A${n(cw)},${n(cw * 0.72)} 0 0 1 ${n(cw)},${n(-h)} Z`} fill={i % 2 === 0 ? P.c1 : shade(P.c1, 0.9)} />
+        <path d={`M${n(-cw)},${n(-h)} A${n(cw)},${n(cw * 0.72)} 0 0 1 ${n(cw)},${n(-h)} Z`} fill={capBase} />
+        <ellipse
+          data-tone="lit"
+          cx={n(cw * 0.3 * (L.dx === 0 ? 1 : L.dx))}
+          cy={n(-h - cw * 0.42)}
+          rx={n(cw * 0.4)}
+          ry={n(cw * 0.16)}
+          fill={mix(capBase, L.litColor, 0.4)}
+          opacity={n(0.7 * L.amount)}
+        />
         <path d={`M${n(-cw)},${n(-h)} L${n(cw)},${n(-h)}`} stroke={shade(P.c1, 0.7)} strokeWidth={0.7} />
         {i === 0 ? (
           <g>
@@ -827,7 +878,7 @@ function shelfFungus({ r, v, m, P }: Ctx): ReactNode {
 }
 
 /** round shrub: leafy mass on short stems, bloom dots while flowering */
-function shrubRound({ r, v, m, P }: Ctx): ReactNode {
+function shrubRound({ r, v, m, P, L }: Ctx): ReactNode {
   const R = v(lerp(4, 19, smooth(m)));
   const cy = -R * 0.9 + P.droop * 3;
   const flat = 1 - P.droop * 0.18;
@@ -846,10 +897,7 @@ function shrubRound({ r, v, m, P }: Ctx): ReactNode {
     <g>
       <path d={`M-2.5,0 L${n(-R * 0.3)},${n(cy * 0.6)}`} stroke={shade(P.c1, 0.6)} strokeWidth={1.3} />
       <path d={`M2.5,0 L${n(R * 0.3)},${n(cy * 0.6)}`} stroke={shade(P.c1, 0.6)} strokeWidth={1.3} />
-      <ellipse cx={n(-R * 0.5)} cy={n(cy + R * 0.18)} rx={n(R * 0.62)} ry={n(R * 0.5 * flat)} fill={shade(P.c1, 0.9)} />
-      <ellipse cx={n(R * 0.52)} cy={n(cy + R * 0.2)} rx={n(R * 0.6)} ry={n(R * 0.48 * flat)} fill={shade(P.c1, 0.95)} />
-      <ellipse cx={0} cy={n(cy)} rx={n(R * 0.85)} ry={n(R * 0.66 * flat)} fill={P.c1} />
-      <ellipse cx={n(-R * 0.28)} cy={n(cy - R * 0.24)} rx={n(R * 0.4)} ry={n(R * 0.24)} fill={shade(P.c1, 1.13)} opacity={0.6} />
+      {canopyBlobs(r, 0, cy, R * 0.98, R * 0.7 * flat, P, L)}
       {dots}
     </g>
   );
@@ -883,7 +931,7 @@ function shrubSpike({ r, v, m, P }: Ctx): ReactNode {
   }
   return (
     <g>
-      <ellipse cx={0} cy={-1.6} rx={6} ry={2.2} fill={shade(P.c1, 0.86)} />
+      <path d={blobPath(r, 0, -1.6, 6, 2.2, 0.3, 7)} fill={shade(P.c1, 0.86)} />
       {items}
     </g>
   );

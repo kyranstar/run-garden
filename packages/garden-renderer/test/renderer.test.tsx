@@ -568,3 +568,37 @@ describe("grainlight canopies", () => {
     expect(fills(wilted)).toHaveLength(fills(mature).length);
   });
 });
+
+describe("grainlight non-tree archetypes", () => {
+  const byArch = (a: Species["archetype"]) => SPECIES.find((s) => s.archetype === a)!;
+  const sun = { dx: 1 as const, litColor: "#ffd27f", amount: 0.8 };
+  const render = (arch: Species["archetype"], state: PlantState) => {
+    const sp = byArch(arch);
+    return renderToStaticMarkup(
+      <PlantSprite plant={syntheticPlant(sp, state)} species={sp} idPrefix="t" lightHint={sun} />,
+    );
+  };
+
+  it("shrubs carry the canopy tone stack", () => {
+    expect(render("shrub_round", "mature")).toContain('data-tone="shade"');
+    expect(render("shrub_round", "mature")).toContain('data-tone="lit"');
+  });
+
+  it("blooming flowers get a lit petal accent", () => {
+    expect(render("flower_cup", "flowering")).toContain('data-tone="lit"');
+    expect(render("flower_daisy", "flowering")).toContain('data-tone="lit"');
+  });
+
+  it("vines tint sun-side leaves", () => {
+    expect(render("vine", "mature")).toContain('data-tone="lit"');
+  });
+
+  it("fungi get a lit cap dab", () => {
+    expect(render("mushroom", "mature")).toContain('data-tone="lit"');
+  });
+
+  it("grass blades are kinked polylines, not clean arcs", () => {
+    const markup = render("grass_tuft", "mature");
+    expect(markup).toMatch(/d="M[^"]* L[^"]* L[^"]*"/);
+  });
+});
