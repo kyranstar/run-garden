@@ -14,7 +14,7 @@ import {
 import { conditionWord, DEFAULT_GARDEN_CONFIG } from "@rg/garden-engine";
 import { describeGarden, describePlant, GardenScene, PlantSprite } from "../src/index";
 import { anchorOf } from "../src/GardenScene";
-import { displaceFromStreams, streamGeometryFor } from "../src/terrain";
+import { displaceFromStreams, riverSystemFor, streamGeometryFor } from "../src/terrain";
 import { moonShadowOffset } from "../src/sky";
 
 const START = "2026-03-02"; // a Monday
@@ -582,9 +582,7 @@ describe("riparian streams", () => {
     // 20 training weeks earns stream grounds; every plant transform must sit
     // clear of every channel.
     const s = replay(START, trainingWeeks(START, 20)).snapshot;
-    const channels = (s.state.grounds ?? [])
-      .map(streamGeometryFor)
-      .filter((c): c is NonNullable<ReturnType<typeof streamGeometryFor>> => c !== null);
+    const channels = riverSystemFor(s.state.grounds ?? []);
     expect(channels.length).toBeGreaterThan(0);
     const markup = renderScene(s);
     const anchors = [...markup.matchAll(/data-plant-id="([^"]*)"[^>]*transform="translate\((-?[\d.]+) (-?[\d.]+)\)/g)];

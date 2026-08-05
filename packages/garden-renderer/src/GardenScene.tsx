@@ -10,11 +10,47 @@ import { lightingFor, moonPhase } from "./lighting";
 import { Finish, Rainbow, WeatherOverlay } from "./overlays";
 import { PlantSprite } from "./PlantSprite";
 import { SceneDefs, Sky } from "./sky";
-import { displaceFromStreams, FramingGrass, streamGeometryFor, Terrain, type StreamGeometry } from "./terrain";
+import { displaceFromStreams, FramingGrass, riverSystemFor, smoothOpen, Terrain, type StreamGeometry } from "./terrain";
 
 /** Anchor lookup threaded to wildlife/visitors so perches track both the
  *  hero-tree boost and stream displacement. */
 type PlantAnchor = (pl: GardenPlant) => { x: number; y: number; s: number };
+
+/**
+ * Ridge silhouettes as pure harmonic functions (tuned to the previous fixed
+ * cubics) so river sources can carve V-shaped valley notches into them. The
+ * notches align across all three layers with growing depth, so looking into a
+ * valley reveals the hazier ridge behind — the misty gap needs no extra art.
+ */
+const RIDGE_FNS = {
+  far: (x: number) => 262 + 18 * Math.sin((x / 1000) * Math.PI * 1.9 + 0.4) + 8 * Math.sin((x / 1000) * Math.PI * 4.3 + 1.1),
+  mid: (x: number) => 276 + 14 * Math.sin((x / 1000) * Math.PI * 1.6 + 2.2) + 6 * Math.sin((x / 1000) * Math.PI * 3.7 + 0.4),
+  near: (x: number) => 286 + 9 * Math.sin((x / 1000) * Math.PI * 1.3 + 4.4) + 4 * Math.sin((x / 1000) * Math.PI * 3.1 + 2.0),
+} as const;
+
+const RIDGE_NOTCH = {
+  far: { depth: 15, sigma: 30 },
+  mid: { depth: 19, sigma: 23 },
+  near: { depth: 24, sigma: 16 },
+} as const;
+
+function ridgeTop(kind: keyof typeof RIDGE_FNS, sources: number[]): Array<[number, number]> {
+  const { depth, sigma } = RIDGE_NOTCH[kind];
+  const pts: Array<[number, number]> = [];
+  for (let i = 0; i <= 50; i++) {
+    const x = (i / 50) * 1000;
+    let y = RIDGE_FNS[kind](x);
+    for (const xs of sources) {
+      y += depth * Math.exp(-Math.pow(Math.abs(x - xs) / sigma, 1.3));
+    }
+    pts.push([x, y]);
+  }
+  return pts;
+}
+
+function ridgePath(kind: keyof typeof RIDGE_FNS, sources: number[], closeY: number): string {
+  return `${smoothOpen(ridgeTop(kind, sources))} L1000,${closeY} L0,${closeY} Z`;
+}
 
 /**
  * The full scene: sky → hills → ground → plants (far to near) → weather →
@@ -542,9 +578,9 @@ export function GardenScene({
   };
 
   // Plants never grow in the water: anchors displace out of stream channels.
-  const channels = (snapshot.state.grounds ?? [])
-    .map(streamGeometryFor)
-    .filter((c): c is StreamGeometry => c !== null);
+  // The river system (confluences included) matches Terrain's byte-for-byte.
+  const channels: StreamGeometry[] = riverSystemFor(snapshot.state.grounds ?? []);
+  const sources = channels.map((c) => c.xc(0));
   const anchor: PlantAnchor = (pl) =>
     displaceFromStreams(
       anchorOf(pl),
@@ -586,29 +622,30 @@ export function GardenScene({
           the near crest catches a sunlit rim when beams are out */}
       <g data-scene="hills" pointerEvents="none">
         {/* distance = a fixed cool-slate pull, not more horizon wash — the
-            hill color already carries 45% skyHorizon and washes out fast */}
+            hill color already carries 45% skyHorizon and washes out fast.
+            River sources notch all three silhouettes (see ridgeTop). */}
         <path
           data-ridge="far"
-          d="M0,284 C180,234 390,244 560,278 S840,230 1000,274 L1000,302 L0,302 Z"
+          d={ridgePath("far", sources, 302)}
           fill={mix(light.hill, "#7d8aa0", 0.5)}
           opacity={0.75}
           filter={`url(#${p}-hillblur)`}
         />
         <path
           data-ridge="mid"
-          d="M0,294 C150,256 420,252 640,288 S860,252 1000,292 L1000,306 L0,306 Z"
+          d={ridgePath("mid", sources, 306)}
           fill={mix(light.hill, "#8b93a2", 0.28)}
           opacity={0.7}
         />
         <path
           data-ridge="near"
-          d="M0,300 C220,270 480,266 700,295 S900,270 1000,297 L1000,310 L0,310 Z"
+          d={ridgePath("near", sources, 310)}
           fill={shade(light.hill, 0.96)}
           opacity={0.85}
         />
         {light.beamStrength > 0.05 ? (
           <path
-            d="M0,300 C220,272 480,268 700,296 S900,272 1000,298"
+            d={smoothOpen(ridgeTop("near", sources))}
             fill="none"
             stroke={mix(light.hill, light.sunColor, 0.5)}
             strokeWidth={1.4}
