@@ -543,9 +543,40 @@ export function GardenScene({
       <SceneDefs p={p} light={light} />
       <Sky p={p} light={light} animate={animate} />
 
-      {/* distant hills, hazed and blurred */}
-      <path d="M0,296 C130,240 320,246 480,296 L480,302 L0,302 Z" fill={shade(light.hill, 1.06)} opacity={0.65} filter={`url(#${p}-hillblur)`} />
-      <path d="M410,296 C590,238 820,234 1000,292 L1000,302 L410,302 Z" fill={light.hill} opacity={0.5} filter={`url(#${p}-hillblur)`} />
+      {/* three receding ridges — farther rows haze toward the horizon color,
+          the near crest catches a sunlit rim when beams are out */}
+      <g data-scene="hills" pointerEvents="none">
+        {/* distance = a fixed cool-slate pull, not more horizon wash — the
+            hill color already carries 45% skyHorizon and washes out fast */}
+        <path
+          data-ridge="far"
+          d="M0,284 C180,234 390,244 560,278 S840,230 1000,274 L1000,302 L0,302 Z"
+          fill={mix(light.hill, "#7d8aa0", 0.5)}
+          opacity={0.75}
+          filter={`url(#${p}-hillblur)`}
+        />
+        <path
+          data-ridge="mid"
+          d="M0,294 C150,256 420,252 640,288 S860,252 1000,292 L1000,306 L0,306 Z"
+          fill={mix(light.hill, "#8b93a2", 0.28)}
+          opacity={0.7}
+        />
+        <path
+          data-ridge="near"
+          d="M0,300 C220,270 480,266 700,295 S900,270 1000,297 L1000,310 L0,310 Z"
+          fill={shade(light.hill, 0.96)}
+          opacity={0.85}
+        />
+        {light.beamStrength > 0.05 ? (
+          <path
+            d="M0,300 C220,272 480,268 700,296 S900,272 1000,298"
+            fill="none"
+            stroke={mix(light.hill, light.sunColor, 0.5)}
+            strokeWidth={1.4}
+            opacity={n(0.5 * light.beamStrength)}
+          />
+        ) : null}
+      </g>
 
       {/* ground */}
       <Terrain

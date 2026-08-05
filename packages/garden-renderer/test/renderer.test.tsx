@@ -140,6 +140,12 @@ describe("GardenScene", () => {
     expect(renderScene(snapshot, { timeOfDay: 23 })).not.toContain('data-sky="horizonwarm"');
   });
 
+  it("horizon carries three receding ridges", () => {
+    const markup = renderScene(healthySnapshot());
+    expect(markup.match(/data-scene="hills"/g)).toHaveLength(1);
+    expect(markup.match(/data-ridge="/g)).toHaveLength(3);
+  });
+
   it("renders every living plant with a data-plant-id attribute", () => {
     const snapshot = healthySnapshot();
     const markup = renderScene(snapshot);
