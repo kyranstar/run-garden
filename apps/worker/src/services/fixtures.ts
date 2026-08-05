@@ -26,10 +26,8 @@ import {
   fixtureCorosCompletedStrength,
   fixtureCorosCompletedThreshold,
   fixtureCorosCompletedYoga,
-  fixtureStravaCompletedThreshold,
   normalizeCorosActivity,
   normalizeCorosLaps,
-  normalizeStravaActivity,
 } from "@rg/providers";
 import type { Env } from "../env.js";
 import type { Db } from "./db.js";
@@ -414,7 +412,7 @@ async function seedStudioFixtures(db: Db, userId: string, today: LocalDate): Pro
  * and an explicit authenticated request; the UI shows a persistent banner.
  *
  * Builds a realistic history: a 12-week plan in progress (~9 weeks in),
- * completed runs with COROS+Strava duplicates, a missed week (drought),
+ * completed runs, a missed week (drought),
  * a comeback, sleep/health variation, and a registered virtual device.
  */
 
@@ -432,7 +430,7 @@ function syntheticActivity(
   date: string,
   kind: string,
   index: number,
-  provider: "coros" | "strava",
+  provider: "coros",
 ): SourceActivity {
   const localHour = kind === "recovery" ? 19 : 7;
   const minute = index % 6;
@@ -470,10 +468,7 @@ function syntheticActivity(
     trainingLoad: spec.load,
     deviceName: "COROS PACE 3",
     title:
-      provider === "strava"
-        ? `${kind === "quality" ? "Morning Threshold" : kind === "long" ? "Long Run Sunday" : "Morning Run"}`
-        : undefined,
-    summaryPolyline: provider === "strava" ? `poly-${date}` : undefined,
+      kind === "quality" ? "Morning Threshold" : kind === "long" ? "Long Run Sunday" : "Morning Run",
     contentFingerprint: fingerprint({ date, kind, provider }),
   };
 }
@@ -572,7 +567,7 @@ export async function seedFixtures(db: Db, env: Env, userId: string): Promise<Se
   }
 
   // History: weeks 0-5 consistent; week 6 fully missed (drought seed);
-  // week 7 comeback; week 8 consistent. COROS + Strava duplicates for most.
+  // week 7 comeback; week 8 consistent.
   const sources: SourceActivity[] = [];
   const lapsByProviderId: Record<string, never[]> = {};
   let index = 0;
@@ -585,10 +580,7 @@ export async function seedFixtures(db: Db, env: Env, userId: string): Promise<Se
       if (week === 7 && day.offset < 3) continue; // comeback starts mid-week
       if (week === 2 && day.offset === 3) continue; // one skipped strides day
 
-      const coros = syntheticActivity(date, day.kind, index, "coros");
-      sources.push(coros);
-      // Most runs also have the Strava copy (auto-synced by COROS).
-      if (index % 5 !== 4) sources.push(syntheticActivity(date, day.kind, index, "strava"));
+      sources.push(syntheticActivity(date, day.kind, index, "coros"));
       index++;
     }
   }
@@ -601,7 +593,6 @@ export async function seedFixtures(db: Db, env: Env, userId: string): Promise<Se
     );
     sources.push(normalizeCorosActivity(item, detail));
     sources.push(
-      normalizeStravaActivity(fixtureStravaCompletedThreshold(`${lastQualityDate}T14:02:05Z`, 99_000_001)),
     );
     lapsByProviderId[`coros-fx-rich-${lastQualityDate}`] = normalizeCorosLaps(detail) as never[];
   }

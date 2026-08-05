@@ -53,12 +53,12 @@ const EMPTY_COPY: Record<DisciplineFilter, { art: string; title: string; body: s
   all: {
     art: "🏃",
     title: "No activity yet",
-    body: "Completed runs, lifts, and yoga sessions appear here. Use “Sync past runs” to pull your Strava run history.",
+    body: "Completed runs, lifts, and yoga sessions appear here. Use “Backfill history” in Settings to pull your COROS history.",
   },
   run: {
     art: "🏃",
     title: "No runs yet",
-    body: "Completed runs from COROS and Strava appear here. Use “Sync past runs” to pull your Strava history.",
+    body: "Completed runs from COROS appear here. Use “Backfill history” in Settings to pull your past sessions.",
   },
   strength: {
     art: "🏋️",

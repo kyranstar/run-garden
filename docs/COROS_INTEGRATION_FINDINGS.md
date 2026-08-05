@@ -7,7 +7,6 @@ Detailed source-level evidence (with repo/file/line citations for every claim) l
 
 - [`docs/research/coros-official-api.md`](research/coros-official-api.md) — official API / MCP
 - [`docs/research/coros-community-clients.md`](research/coros-community-clients.md) — reverse-engineered Training Hub API (the implementation reference for the bridge)
-- [`docs/research/strava-api.md`](research/strava-api.md) — Strava current state
 
 Claims below are tagged [verified] (source code, captured payloads, or live-confirmed
 docs in maintained repos) or [inferred].

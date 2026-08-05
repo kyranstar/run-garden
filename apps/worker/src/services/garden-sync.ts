@@ -53,7 +53,7 @@ import { chunkedInsert, type Db } from "./db.js";
  * Garden synchronization: builds resolved day inputs from the database and
  * advances the deterministic simulation. Grace rules: a day is simulated once
  * it is at least 2 days old, or earlier if every workout on it is resolved —
- * so a slow COROS/Strava sync is never misread as a missed run.
+ * so a slow COROS sync is never misread as a missed run.
  */
 
 const CHECKPOINT_WEEKDAY = 1; // Mondays
@@ -156,7 +156,7 @@ export async function buildDayInput(
 
   const completedRuns: GardenDayInput["completedRuns"] = [];
   for (const w of dayWorkouts) {
-    if (w.completionState === "completed" || w.completionState === "provisionally_completed") {
+    if (w.completionState === "completed") {
       const match = (
         await db
           .select()
@@ -261,7 +261,7 @@ export async function buildDayInput(
     const planned = weekWorkouts.filter((w) => w.category !== "rest");
     if (planned.length > 0) {
       const done = planned.filter(
-        (w) => w.completionState === "completed" || w.completionState === "provisionally_completed",
+        (w) => w.completionState === "completed",
       ).length;
       input.weekAdherence = done / planned.length;
     }
@@ -285,7 +285,7 @@ async function dayFullyResolved(db: Db, userId: string, date: LocalDate): Promis
   return dayWorkouts.every(
     (w) =>
       w.category === "rest" ||
-      ["completed", "provisionally_completed", "skipped", "missed"].includes(w.state),
+      ["completed", "skipped", "missed"].includes(w.state),
   );
 }
 

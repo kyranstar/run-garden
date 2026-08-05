@@ -1,5 +1,4 @@
 import type { RawCorosActivityDetail, RawCorosActivityListItem } from "../coros/raw-types.js";
-import type { RawStravaActivity } from "../strava/normalize.js";
 
 /**
  * COROS reports times in centiseconds at the item level too (like the detail
@@ -11,7 +10,7 @@ function centiseconds(seconds: number): number {
 
 /**
  * A completed threshold session as it appears from BOTH providers — the same
- * physical run recorded by a COROS watch and auto-synced to Strava.
+ * physical run recorded by a COROS watch.
  * startIso must be a UTC instant like "2026-08-04T14:02:05Z" (07:02 PDT).
  */
 export function fixtureCorosCompletedThreshold(
@@ -82,32 +81,6 @@ export function fixtureCorosCompletedThreshold(
   return { item, detail };
 }
 
-/** The Strava copy of the same run (auto-synced by COROS). */
-export function fixtureStravaCompletedThreshold(
-  startIso: string,
-  id = 14_200_000_001,
-): RawStravaActivity {
-  return {
-    id,
-    name: "Morning Threshold",
-    sport_type: "Run",
-    start_date: startIso,
-    start_date_local: new Date(Date.parse(startIso) - 7 * 3600 * 1000)
-      .toISOString()
-      .replace(".000Z", ""),
-    timezone: "(GMT-08:00) America/Los_Angeles",
-    elapsed_time: 3315,
-    moving_time: 3250,
-    distance: 9855.4,
-    average_heartrate: 157.8,
-    max_heartrate: 176,
-    total_elevation_gain: 63.5,
-    device_name: "COROS PACE 3",
-    external_id: "coros_4711.fit",
-    upload_id: 987654321,
-    map: { summary_polyline: "abc123polyline" },
-  };
-}
 
 /**
  * A completed strength/lifting session (sportType 402, activity namespace):
@@ -166,21 +139,3 @@ export function fixtureCorosCompletedYoga(
   };
 }
 
-/** A genuinely different run on the same day (must never merge). */
-export function fixtureStravaEveningShakeout(dateIso: string, id = 14_200_000_002): RawStravaActivity {
-  return {
-    id,
-    name: "Evening Shakeout",
-    sport_type: "Run",
-    start_date: `${dateIso}T02:15:00Z`, // ~19:15 local the prior evening in PDT
-    start_date_local: `${dateIso}T19:15:00`,
-    timezone: "(GMT-08:00) America/Los_Angeles",
-    elapsed_time: 1500,
-    moving_time: 1460,
-    distance: 4200,
-    average_heartrate: 128,
-    device_name: "COROS PACE 3",
-    external_id: "coros_4720.fit",
-    map: { summary_polyline: "xyz789" },
-  };
-}

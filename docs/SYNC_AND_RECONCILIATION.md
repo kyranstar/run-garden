@@ -2,7 +2,7 @@
 
 How Run Garden keeps four systems honest with each other: the COROS schedule,
 its own intended schedule, Google Calendar, and completed activities from
-COROS + Strava. Implementation: `apps/worker/src/services/import-plan.ts`
+COROS. Implementation: `apps/worker/src/services/import-plan.ts`
 (rules 1–11) + `reconcile.ts` (the date-conflict decision table), `jobs.ts`
 (write queue) + `sync-intents.ts` + `sync-notes.ts` (intent ledger, undo
 notes), `sync-status.ts` (derived status), `reconcile-daily.ts` (grace
@@ -235,31 +235,49 @@ A slow provider sync must never be misread as a missed run
 The garden has its own grace: a day is simulated once it is ≥ 2 days old, or
 earlier if every workout on it is resolved (`garden-sync.ts`).
 
-## Strava webhook idempotency
+## Deep history backfill
 
-`POST /api/strava/webhook` (`apps/worker/src/routes/strava.ts`):
+`POST /api/activities/backfill` queues a one-shot walk of the account's whole
+COROS history — every run, lift, yoga session, and ski day it holds, not just
+the rolling 14-day snapshot window. Progress: `GET /api/sync/backfill-status`.
 
-- Dedupe key = `strava:{object_type}:{object_id}:{aspect_type}:{event_time}`,
-  the primary key of `webhook_events`; a duplicate delivery returns
-  `{ok, duplicate: true}` without reprocessing (Strava retries up to 3 times).
-- The 200 is returned immediately; processing happens in
-  `executionCtx.waitUntil` to respect Strava's 2-second budget.
-- Only activity create/update events are processed; deletes and athlete events
-  are recorded as `ignored`. Failures mark the row `error` with a sanitized
-  `sync_errors` entry — the row remains for reprocessing/diagnosis.
-- Subscription validation: the GET handler echoes `hub.challenge` as JSON when
-  `hub.verify_token` matches `STRAVA_WEBHOOK_VERIFY_TOKEN`.
+**The walk is activities-only, and that is load-bearing.** It must never go
+through `importPlanSnapshot`: a range covering 2024 legitimately contains none
+of today's workouts, and rules 8 and 9 above would read that absence as
+"removed upstream" and archive the live plan. The bridge therefore uses
+`buildActivityBackfill` (not `buildSnapshot`) and posts to
+`/api/devices/bridge/backfill-chunk`, which calls `ingestActivities` and
+nothing else. A test asserts a backfill job never pushes a snapshot.
 
-## Activity dedup (COROS ⇄ Strava)
+| Aspect | Behaviour |
+|---|---|
+| Job kind | `backfill` — workout-less, like `read_now` (its `workoutId` self-references the job row) |
+| Direction | Backwards from `today − 14d`, where the rolling snapshot already ends |
+| Chunk | 90 days, inclusive of the chunk end |
+| Termination | **Two consecutive** empty chunks (one empty 90-day window is an ordinary break from training), or a five-year floor |
+| Resumption | The checkpoint (`backfill_state`) advances only on a reported chunk, so a slept Mac resumes at the pending chunk rather than restarting |
+| Pacing | One `getActivityDetail` per admitted activity, with a configurable inter-request delay |
 
-One physical run = one `activities` row with links from both providers
-(`packages/providers/src/merge.ts`). Pair scoring (0–1): start-time proximity
-up to 0.35 (full ≤ 2 min, zero ≥ 15 min), sport match 0.15, duration
-similarity up to 0.2 (full ≤ 5% apart), distance similarity up to 0.2 (full
-≤ 3%; a missing side scores a weak-neutral 0.05), COROS device-name hint 0.1.
-Titles are never used for identity. Pairing floor: **0.6**. Confidence bands
-(`mergeConfidenceBand`): **high ≥ 0.85**, **medium ≥ 0.6**, low below. On
-merge, COROS wins all metrics; Strava contributes title, polyline, timezone.
+Sequencing lives in one pure function, `nextBackfillAction` (`backfill.ts`),
+unit-tested with no database.
+
+## Adopting legacy source-less rows
+
+`ingestActivities` will adopt an existing row rather than insert beside it when
+an incoming COROS activity lands within **±1h** of a row that carries no COROS
+source, scores at least **0.6**, and matches on sport — a sport mismatch is a
+hard reject, since adoption rewrites the row in place and a yoga session and a
+run that start together would otherwise score 0.85 on every other signal.
+
+This is what lets the backfill reunite history left behind by the Strava era
+without duplicating it, and it preserves the row id, so the completion match,
+garden contribution, and records attached to it all survive. It deliberately
+does not depend on the backfill running before or after migration `0007`.
+
+One case adoption cannot reach: a row flung to year ~7625 by the COROS
+centisecond bug is 5,600 years from its twin, far outside the ±1h window. Those
+are reunited by `repairTimestamps` after rescaling, at the start of every
+ingest.
 
 ## Completion matching confidence bands
 
@@ -274,7 +292,7 @@ Planned↔completed matching (`packages/providers/src/matching.ts`):
 - Bands (`matchBand`): **high ≥ 0.75** and **medium ≥ 0.5** auto-match
   (`scored_auto`); **low < 0.5** goes to the review queue in the UI — never
   auto-matched. Matching is greedy one-to-one.
-- A Strava-only match sets `provisionally_completed` (`provisional = true`);
-  when the richer COROS copy arrives and merges, the match is upgraded and the
-  workout becomes `completed`. Matches are reversible (`undoneAt`), and manual
-  match/unmatch endpoints exist.
+- Matches are reversible (`undoneAt`), and manual match/unmatch endpoints
+  exist. (`provisionally_completed` is retired: it meant "matched from Strava,
+  richer COROS record awaited", and with one provider there is nothing to
+  await. Migration `0007` settles any surviving rows to `completed`.)

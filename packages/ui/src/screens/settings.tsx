@@ -205,14 +205,9 @@ function ConnectionsSection() {
     },
   });
   const syncNow = useMutation({ mutationFn: api.calendarSync });
-  const stravaDisconnect = useMutation({
-    mutationFn: api.stravaDisconnect,
-    onSuccess: () => void qc.invalidateQueries({ queryKey: ["me"] }),
-  });
 
   const conn = (p: string) => me.data?.connections.find((c) => c.provider === p);
   const google = conn("google_calendar");
-  const strava = conn("strava");
   const calendarChosen = !!settings.data?.prefs.calendarId;
 
   return (
@@ -242,29 +237,6 @@ function ConnectionsSection() {
         ) : (
           <a className="btn btn-small" href="/api/auth/google/start?mode=calendar&redirect=/settings">
             Connect
-          </a>
-        )}
-      </div>
-
-      <div className="switch-row">
-        <div>
-          <strong>Strava</strong>{" "}
-          {strava?.status === "error" ? <span className="pill pill-warn">Reconnect needed</span> : null}
-          <p className="faint">
-            {strava?.status === "connected"
-              ? "Connected · reading completed runs"
-              : strava?.status === "error"
-                ? "Access stopped (subscription may have lapsed). COROS still provides completions; reconnect for faster updates and routes. Never uploads."
-                : "COROS already sends runs to Strava; connecting lets Run Garden see them sooner. Never uploads."}
-          </p>
-        </div>
-        {strava?.status === "connected" ? (
-          <button className="btn btn-small" disabled={stravaDisconnect.isPending} onClick={() => stravaDisconnect.mutate()}>
-            Disconnect
-          </button>
-        ) : (
-          <a className="btn btn-small" href="/api/strava/connect">
-            {strava?.status === "error" ? "Reconnect" : "Connect"}
           </a>
         )}
       </div>

@@ -868,12 +868,6 @@ export function GardenScreen() {
           <Banner kind="info">Your training plan is safe, but Calendar mirroring is paused.</Banner>
         )
       ) : null}
-      {d?.sync.stravaStatus === "error" ? (
-        <Banner kind="info">
-          Strava access has stopped (its subscription may have lapsed). Completed runs still sync from
-          COROS — just a little slower. <Link to="/settings">Reconnect Strava</Link> when you can.
-        </Banner>
-      ) : null}
       {d && d.needsAttention.length > 0 ? (
         <Banner kind="warn">
           {d.needsAttention.length === 1

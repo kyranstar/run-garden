@@ -5,9 +5,7 @@ import { addDays, newId, nowInstant, todayInZone, type UserPreferences } from "@
 import {
   FixtureTrainingProvider,
   fixtureCorosCompletedThreshold,
-  fixtureStravaCompletedThreshold,
   normalizeCorosActivity,
-  normalizeStravaActivity,
 } from "@rg/providers";
 import type { Db } from "../src/services/db.js";
 import { importPlanSnapshot } from "../src/services/import-plan.js";
@@ -20,7 +18,7 @@ import { makeTestDb, makeTestUser, registerTestDevice } from "./helpers.js";
 /**
  * The core vertical loop (product spec, Phase 3):
  * import → calendar-ready workout → move → COROS write job → verify →
- * activity arrives (Strava then COROS) → merge → completion → garden growth.
+ * activity arrives → adoption of any legacy row → completion → garden growth.
  */
 
 const { plannedWorkouts, corosWriteJobs, activities, workoutCompletionMatches, trainingPlans, calendarEventSuppressions, syncNotes } = schema;
@@ -550,60 +548,83 @@ describe("move → COROS write job → verification", () => {
   });
 });
 
-describe("completion: Strava webhook first, COROS merge second", () => {
-  it("provisionally completes from Strava, then upgrades on COROS arrival", async () => {
+describe("completion: adopting a legacy source-less row", () => {
+  /**
+   * Inserts a row for the same session with no COROS source — what a session
+   * ingested before COROS-only looks like after the Strava columns are dropped.
+   */
+  async function seedLegacyRow(startIso: string, workoutId: string): Promise<string> {
+    const id = newId();
+    await db.insert(activities).values({
+      id,
+      userId,
+      startTime: startIso,
+      startTimeLocal: startIso.replace("Z", ""),
+      sport: "run",
+      durationSeconds: 3260,
+      distanceMeters: 9805,
+      title: "Morning Threshold",
+      sourceMergeConfidence: 1,
+      createdAt: nowInstant(),
+      updatedAt: nowInstant(),
+    });
+    const matchId = newId();
+    await db.insert(workoutCompletionMatches).values({
+      id: matchId,
+      workoutId,
+      activityId: id,
+      confidence: 0.8,
+      method: "scored_auto",
+      matchedAt: nowInstant(),
+    });
+    await db.update(activities).set({ completionMatchId: matchId }).where(eq(activities.id, id));
+    return id;
+  }
+
+  it("adopts the legacy row instead of duplicating it, keeping its id and match", async () => {
     await importFromProvider();
     const w = (
       await db.select().from(plannedWorkouts).where(eq(plannedWorkouts.title, "Threshold 5x5"))
     )[0]!;
     const startIso = `${w.effectiveDate}T14:02:05Z`;
+    const legacyId = await seedLegacyRow(startIso, w.id);
 
-    // 1. Strava webhook delivers the fast copy.
-    const strava = normalizeStravaActivity(fixtureStravaCompletedThreshold(startIso));
-    const s1 = await ingestActivities(db, { userId, sources: [strava] });
-    expect(s1.provisionalCompletions).toBe(1);
-
-    let updated = (await db.select().from(plannedWorkouts).where(eq(plannedWorkouts.id, w.id)))[0]!;
-    expect(updated.completionState).toBe("provisionally_completed");
-
-    // 2. The richer COROS record arrives and merges (no duplicate).
     const { item, detail } = fixtureCorosCompletedThreshold(startIso);
-    const coros = normalizeCorosActivity(item, detail);
-    const s2 = await ingestActivities(db, { userId, sources: [coros] });
-    expect(s2.mergedPairs).toBe(1);
-    expect(s2.newActivities).toBe(0);
+    const stats = await ingestActivities(db, {
+      userId,
+      sources: [normalizeCorosActivity(item, detail)],
+    });
+
+    expect(stats.mergedPairs).toBe(1);
+    expect(stats.newActivities).toBe(0);
 
     const acts = await db.select().from(activities).where(eq(activities.userId, userId));
     expect(acts).toHaveLength(1); // one physical run, one record
+    expect(acts[0]!.id).toBe(legacyId); // identity preserved…
     expect(acts[0]!.corosActivityId).toBeTruthy();
-    expect(acts[0]!.stravaActivityId).toBeTruthy();
-    expect(acts[0]!.trainingLoad).toBe(82); // COROS authoritative
-    expect(acts[0]!.title).toBe("Morning Threshold"); // Strava enrichment
+    expect(acts[0]!.trainingLoad).toBe(82); // …with COROS metrics authoritative
 
-    updated = (await db.select().from(plannedWorkouts).where(eq(plannedWorkouts.id, w.id)))[0]!;
-    expect(updated.completionState).toBe("completed");
-
+    // …and so is the completion match that hung off it.
     const matches = await db
       .select()
       .from(workoutCompletionMatches)
-      .where(and(eq(workoutCompletionMatches.workoutId, w.id), isNull(workoutCompletionMatches.undoneAt)));
+      .where(
+        and(eq(workoutCompletionMatches.workoutId, w.id), isNull(workoutCompletionMatches.undoneAt)),
+      );
     expect(matches).toHaveLength(1);
-    expect(matches[0]!.provisional).toBe(false);
+    expect(matches[0]!.activityId).toBe(legacyId);
   });
 
-  it("self-heals legacy year-7625 COROS rows: rescale, merge, promote", async () => {
+  it("self-heals legacy year-7625 COROS rows: rescale, reunite, keep one row", async () => {
     await importFromProvider();
     const w = (
       await db.select().from(plannedWorkouts).where(eq(plannedWorkouts.title, "Threshold 5x5"))
     )[0]!;
     const startIso = `${w.effectiveDate}T14:02:05Z`;
+    await seedLegacyRow(startIso, w.id);
 
-    // 1. Strava fast copy → provisional completion.
-    const strava = normalizeStravaActivity(fixtureStravaCompletedThreshold(startIso));
-    await ingestActivities(db, { userId, sources: [strava] });
-
-    // 2. A COROS copy as the pre-fix normalizer stored it: epoch ×100 (year
-    //    ~7625), so the ±1h merge window can never find the Strava row.
+    // A COROS copy as the pre-fix normalizer stored it: epoch ×100 (year
+    // ~7625), so the ±1h adoption window can never reach the legacy row.
     const { item, detail } = fixtureCorosCompletedThreshold(startIso);
     const coros = normalizeCorosActivity(item, detail);
     const startUnix = Math.floor(Date.parse(startIso) / 1000);
@@ -617,40 +638,29 @@ describe("completion: Strava webhook first, COROS merge second", () => {
         .replace("Z", ""),
     };
     const s2 = await ingestActivities(db, { userId, sources: [bogus] });
-    expect(s2.newActivities).toBe(1); // duplicate row — merge impossible
+    expect(s2.newActivities).toBe(1); // duplicate row — adoption impossible
     expect((await db.select().from(activities).where(eq(activities.userId, userId))).length).toBe(2);
-    let updated = (await db.select().from(plannedWorkouts).where(eq(plannedWorkouts.id, w.id)))[0]!;
-    expect(updated.completionState).toBe("provisionally_completed"); // stuck
 
-    // 3. Any later sync self-heals: timestamps rescaled, rows merged, match
-    //    promoted — without any new sources arriving.
+    // Any later sync self-heals: timestamps rescaled, rows reunited — without
+    // any new sources arriving.
     await ingestActivities(db, { userId, sources: [] });
     const acts = await db.select().from(activities).where(eq(activities.userId, userId));
     expect(acts).toHaveLength(1);
     expect(acts[0]!.corosActivityId).toBeTruthy();
-    expect(acts[0]!.stravaActivityId).toBeTruthy();
     expect(acts[0]!.startTime).toBe(startIso);
     expect(acts[0]!.startTimeLocal?.slice(0, 10)).toBe(w.effectiveDate);
     expect(acts[0]!.trainingLoad).toBe(82); // COROS metrics carried over
-
-    updated = (await db.select().from(plannedWorkouts).where(eq(plannedWorkouts.id, w.id)))[0]!;
-    expect(updated.completionState).toBe("completed");
-    const matches = await db
-      .select()
-      .from(workoutCompletionMatches)
-      .where(and(eq(workoutCompletionMatches.workoutId, w.id), isNull(workoutCompletionMatches.undoneAt)));
-    expect(matches).toHaveLength(1);
-    expect(matches[0]!.provisional).toBe(false);
   });
 
-  it("re-delivered webhooks are idempotent", async () => {
+  it("re-ingesting the same COROS activity is idempotent", async () => {
     await importFromProvider();
     const w = (
       await db.select().from(plannedWorkouts).where(eq(plannedWorkouts.title, "Threshold 5x5"))
     )[0]!;
-    const strava = normalizeStravaActivity(fixtureStravaCompletedThreshold(`${w.effectiveDate}T14:02:05Z`));
-    await ingestActivities(db, { userId, sources: [strava] });
-    await ingestActivities(db, { userId, sources: [strava] });
+    const { item, detail } = fixtureCorosCompletedThreshold(`${w.effectiveDate}T14:02:05Z`);
+    const src = normalizeCorosActivity(item, detail);
+    await ingestActivities(db, { userId, sources: [src] });
+    await ingestActivities(db, { userId, sources: [src] });
     const acts = await db.select().from(activities).where(eq(activities.userId, userId));
     expect(acts).toHaveLength(1);
   });
@@ -695,11 +705,14 @@ describe("garden integration", () => {
       .update(plannedWorkouts)
       .set({ effectiveDate: today })
       .where(eq(plannedWorkouts.id, w.id));
-    const strava = normalizeStravaActivity(
-      fixtureStravaCompletedThreshold(`${today}T13:00:00Z`, 14_200_000_777),
+    const { item: todayItem, detail: todayDetail } = fixtureCorosCompletedThreshold(
+      `${today}T13:00:00Z`,
     );
-    const stats = await ingestActivities(db, { userId, sources: [strava] });
-    expect(stats.provisionalCompletions).toBe(1);
+    const stats = await ingestActivities(db, {
+      userId,
+      sources: [normalizeCorosActivity(todayItem, todayDetail)],
+    });
+    expect(stats.completions).toBe(1);
 
     const view = await buildGardenView(db, userId, prefs);
     // Feedback is same-day: the returned garden is already rained on…

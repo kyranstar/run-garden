@@ -24,7 +24,7 @@ export const sessions = sqliteTable(
 
 export const oauthStates = sqliteTable("oauth_states", {
   state: text("state").primaryKey(),
-  provider: text("provider").notNull(), // google | strava | coros_mcp
+  provider: text("provider").notNull(), // google | coros_mcp
   codeVerifier: text("code_verifier"),
   redirectTo: text("redirect_to"),
   /** For desktop sign-in: the device registration handshake id. */
@@ -38,7 +38,7 @@ export const providerConnections = sqliteTable(
   {
     id: text("id").primaryKey(),
     userId: text("user_id").notNull(),
-    provider: text("provider").notNull(), // google_calendar | strava | coros_mcp
+    provider: text("provider").notNull(), // google_calendar | coros_mcp
     status: text("status").notNull().default("connected"), // connected | error | disconnected
     /** AES-GCM encrypted, base64url; never stored in plaintext. */
     encryptedAccessToken: text("encrypted_access_token"),

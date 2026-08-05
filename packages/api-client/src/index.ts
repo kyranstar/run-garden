@@ -111,7 +111,6 @@ export interface TodayResponse {
     deviceRegistered: boolean;
     corosWritesEnabled: boolean;
     calendarConnected: boolean;
-    stravaStatus?: "connected" | "error" | "disconnected";
   };
   readiness: {
     latest: {
@@ -484,7 +483,6 @@ export const api = {
   chooseCalendar: (opts: { calendarId?: string; createNew?: boolean }) => post<{ ok: true; calendarId: string }>("/api/calendar/choose", opts),
   calendarSync: () => post<Record<string, unknown>>("/api/calendar/sync"),
   calendarPreview: () => get<{ days: Array<Record<string, unknown>>; eventCount: number }>("/api/calendar/preview"),
-  stravaDisconnect: () => post("/api/strava/disconnect"),
   fixtureLogin: () => post<{ ok: true }>("/api/dev/fixture-login"),
   fixtureSeed: () => post<Record<string, unknown>>("/api/dev/seed"),
   studio: () => get<StudioStateResponse>("/api/studio"),

@@ -99,7 +99,7 @@ function easyConsistencyCard(workouts: PlannedWorkout[], range: DateRange): Evid
       w.completionState !== "scheduled",
   );
   const completed = easy.filter(
-    (w) => w.completionState === "completed" || w.completionState === "provisionally_completed",
+    (w) => w.completionState === "completed",
   ).length;
   if (easy.length < MIN_EASY_PLANNED) return null;
   const rate = completed / easy.length;

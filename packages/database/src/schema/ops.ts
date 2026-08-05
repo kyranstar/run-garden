@@ -5,7 +5,7 @@ export const syncRuns = sqliteTable(
   {
     id: text("id").primaryKey(),
     userId: text("user_id"),
-    kind: text("kind").notNull(), // coros_read | strava_read | calendar_sync | garden_sim | reconcile | weekly_review
+    kind: text("kind").notNull(), // coros_read | coros_backfill | calendar_sync | garden_sim | reconcile | weekly_review
     deviceId: text("device_id"),
     startedAt: text("started_at").notNull(),
     finishedAt: text("finished_at"),
@@ -42,23 +42,6 @@ export const providerCursorState = sqliteTable(
     updatedAt: text("updated_at").notNull(),
   },
   (t) => [uniqueIndex("cursor_unique").on(t.userId, t.provider, t.cursorKey)],
-);
-
-export const webhookEvents = sqliteTable(
-  "webhook_events",
-  {
-    /** Provider-scoped dedupe key, e.g. `strava:{object_id}:{aspect}:{event_time}`. */
-    id: text("id").primaryKey(),
-    provider: text("provider").notNull(),
-    receivedAt: text("received_at").notNull(),
-    objectType: text("object_type"),
-    objectId: text("object_id"),
-    aspect: text("aspect"),
-    payload: text("payload", { mode: "json" }).$type<Record<string, unknown>>(),
-    status: text("status").notNull().default("pending"), // pending | processed | ignored | error
-    processedAt: text("processed_at"),
-  },
-  (t) => [index("webhook_status_idx").on(t.status, t.receivedAt)],
 );
 
 export const auditEvents = sqliteTable(

@@ -34,6 +34,32 @@ And even when you do, **consistency doesn't feel like anything.** A number like 
 - **A self-contained SVG renderer** draws the garden straight from that simulation state, live — the GIF above and the app itself use the exact same code path.
 - **A React PWA** installs on your phone; the desktop app is the same garden, ambient, on your Mac.
 
+### Why COROS is the only source
+
+Run Garden read from Strava as well until August 2026. It doesn't any more, and
+the reason is worth stating plainly: **Strava now charges for the API.** Since
+1 June 2026 its developer program requires a paid Strava subscription (~$12/mo)
+for Standard-tier access — a recurring bill to read *your own* training data.
+COROS charges nothing to read the same data.
+
+Dropping Strava cost this app almost nothing, because COROS was already the
+authoritative source for every metric that mattered:
+
+| | COROS | Strava |
+|---|---|---|
+| Runs, lifts, yoga, laps, HR, pace, training load | ✅ | duplicate of the same watch data |
+| Resting HR, HRV, recovery/fatigue | ✅ | — |
+| Planned workouts, and **writing** them back to your watch | ✅ | — |
+| Explicit plan↔activity link (confidence 1.0 completion matching) | ✅ | — |
+| Route polyline | — | ✅, but never rendered anywhere |
+| Cost to read your own data | free | **paid subscription** |
+
+The only things Strava uniquely supplied were a route polyline that no screen
+ever drew, an IANA timezone string nothing read, and a few seconds' lower
+latency on completions. Set against a subscription, that was not a trade worth
+making — so COROS is now the single source of truth, and the app pulls your
+full history from it directly.
+
 ## Getting started
 
 No real accounts needed — fixture mode seeds a deterministic world.
@@ -68,7 +94,7 @@ Other root scripts: `pnpm typecheck`, `pnpm test`, `pnpm build:web`, `pnpm dev:d
 | [docs/ANALYTICS.md](docs/ANALYTICS.md) | Each metric's rule and suppression threshold |
 | [docs/SECURITY.md](docs/SECURITY.md) | Credential handling, signing, encryption, deletion |
 | [docs/DESKTOP_APP.md](docs/DESKTOP_APP.md) | Tauri app, sidecar, pairing, build commands |
-| [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md) | End-to-end deploy: Cloudflare, Google, Strava, PWA install |
+| [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md) | End-to-end deploy: Cloudflare, Google, PWA install |
 | [docs/TESTING.md](docs/TESTING.md) | What's covered, how to run, what needs live credentials |
 | [docs/COSTS.md](docs/COSTS.md) | Monthly cost model and scenarios |
 | [docs/COROS_WRITE_PROTOCOL.md](docs/COROS_WRITE_PROTOCOL.md) | The exact safe-write protocol and state machine |

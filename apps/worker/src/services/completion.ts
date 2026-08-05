@@ -16,15 +16,15 @@ import {
 import {
   matchActivities,
   matchBand,
-  mergeActivityPair,
   NORMALIZER_VERSION,
-  scoreActivityPair,
+  scoreAgainstStoredRow,
+  ORPHAN_ADOPTION_FLOOR,
   singleSourceActivity,
 } from "@rg/providers";
 import { chunkedInsert, type Db } from "./db.js";
 
 /**
- * Completed-activity ingestion: source records from COROS and Strava are
+ * Completed-activity ingestion: source records from COROS are
  * deduplicated into one normalized activity, then matched against planned
  * workouts. Never uploads or mutates anything on the provider side.
  */
@@ -43,7 +43,6 @@ export interface IngestStats {
   newActivities: number;
   mergedPairs: number;
   matchesCreated: number;
-  provisionalCompletions: number;
   completions: number;
   affectedDates: string[];
 }
@@ -53,7 +52,6 @@ export function rowToNormalized(row: typeof activities.$inferSelect): Normalized
   return {
     id: row.id,
     corosActivityId: row.corosActivityId ?? undefined,
-    stravaActivityId: row.stravaActivityId ?? undefined,
     startTime: row.startTime,
     startTimeLocal: row.startTimeLocal ?? undefined,
     timezone: row.timezone ?? undefined,
@@ -68,7 +66,6 @@ export function rowToNormalized(row: typeof activities.$inferSelect): Normalized
     trainingLoad: row.trainingLoad ?? undefined,
     deviceName: row.deviceName ?? undefined,
     title: row.title ?? undefined,
-    summaryPolyline: row.summaryPolyline ?? undefined,
     completionMatchId: row.completionMatchId ?? undefined,
     sourceMergeConfidence: row.sourceMergeConfidence,
   };
@@ -108,8 +105,8 @@ export async function repairDurations(db: Db, userId: string): Promise<void> {
 /**
  * Repair activities flung into the far future by the COROS centisecond
  * startTimestamp bug (epoch ×100 → year ~7625): rescale their timestamps, then
- * re-unite each repaired COROS-only row with the Strava-only copy of the same
- * run it could never merge with (the ±1h counterpart window can't reach year
+ * re-unite each repaired COROS row with any source-less copy of the same
+ * run it could never adopt (the ±1h adoption window can't reach year
  * 7625). The surviving row is the one holding a completion match; laps and
  * source links are repointed, the duplicate is deleted. Idempotent, runs at the
  * start of every ingest. Returns the affected local dates (for resimulation).
@@ -144,11 +141,14 @@ export async function repairTimestamps(db: Db, userId: string): Promise<string[]
       .where(eq(activities.id, row.id));
     affected.add((startTimeLocal ?? startTime).slice(0, 10));
 
-    // Merge with the other-provider copy of the same run, if one exists.
-    if (!(row.corosActivityId && !row.stravaActivityId)) continue;
+    // Reunite the repaired row with a source-less copy of the same session, if
+    // one exists. This cannot be left to ingest-time adoption: the ±1h window
+    // can't span the ~5600 years the bug moved the row by, so the two rows only
+    // become adjacent once the timestamp is rescaled, here.
+    if (!row.corosActivityId) continue;
     const windowStart = new Date(fixedStartMs - 3600_000).toISOString();
     const windowEnd = new Date(fixedStartMs + 3600_000).toISOString();
-    const counterparts = await db
+    const nearby = await db
       .select()
       .from(activities)
       .where(
@@ -160,21 +160,20 @@ export async function repairTimestamps(db: Db, userId: string): Promise<string[]
           eq(activities.sport, row.sport),
         ),
       );
-    const counterpart = counterparts.find(
+    const twin = nearby.find(
       (c) =>
         c.id !== row.id &&
-        c.stravaActivityId &&
         (c.distanceMeters == null ||
           row.distanceMeters == null ||
           Math.abs(c.distanceMeters - row.distanceMeters) <
             0.2 * Math.max(c.distanceMeters, row.distanceMeters)),
     );
-    if (!counterpart) continue;
+    if (!twin) continue;
 
-    // Keep whichever row holds a completion match (the Strava copy usually
-    // matched a workout while the COROS copy sat in year 7625).
-    const survivor = row.completionMatchId ? row : counterpart;
-    const duplicate = survivor.id === row.id ? counterpart : row;
+    // Keep whichever row holds a completion match — historically the legacy
+    // copy matched a workout while the COROS row sat in year 7625.
+    const survivor = row.completionMatchId ? row : twin;
+    const duplicate = survivor.id === row.id ? twin : row;
     // Repoint children, then delete the duplicate BEFORE giving the survivor
     // its provider id — (user_id, coros_activity_id) is unique.
     await db
@@ -190,8 +189,7 @@ export async function repairTimestamps(db: Db, userId: string): Promise<string[]
       .update(activities)
       .set({
         corosActivityId: row.corosActivityId,
-        stravaActivityId: counterpart.stravaActivityId,
-        // COROS metrics are authoritative for the merged record.
+        // COROS metrics are authoritative for the surviving record.
         durationSeconds: row.durationSeconds,
         elapsedSeconds: row.elapsedSeconds ?? survivor.elapsedSeconds,
         distanceMeters: row.distanceMeters ?? survivor.distanceMeters,
@@ -201,16 +199,13 @@ export async function repairTimestamps(db: Db, userId: string): Promise<string[]
         elevationGainMeters: row.elevationGainMeters ?? survivor.elevationGainMeters,
         trainingLoad: row.trainingLoad ?? survivor.trainingLoad,
         deviceName: row.deviceName ?? survivor.deviceName,
+        startTime,
+        startTimeLocal,
         updatedAt: now,
       })
       .where(eq(activities.id, survivor.id));
-    // If the survivor is the repaired row, its in-memory timestamps are stale —
-    // use the freshly computed ones.
-    const survivorLocal =
-      survivor.id === row.id
-        ? (startTimeLocal ?? startTime)
-        : (survivor.startTimeLocal ?? survivor.startTime);
-    affected.add(survivorLocal.slice(0, 10));
+    affected.add((startTimeLocal ?? startTime).slice(0, 10));
+
   }
 
   return [...affected].sort();
@@ -245,7 +240,6 @@ async function upsertNormalized(
       .update(activities)
       .set({
         corosActivityId: normalized.corosActivityId ?? null,
-        stravaActivityId: normalized.stravaActivityId ?? null,
         startTime: normalized.startTime,
         startTimeLocal: normalized.startTimeLocal ?? null,
         timezone: normalized.timezone ?? null,
@@ -260,7 +254,6 @@ async function upsertNormalized(
         trainingLoad: normalized.trainingLoad ?? null,
         deviceName: normalized.deviceName ?? null,
         title: normalized.title ?? null,
-        summaryPolyline: normalized.summaryPolyline ?? null,
         sourceMergeConfidence: normalized.sourceMergeConfidence,
         updatedAt: now,
       })
@@ -271,7 +264,6 @@ async function upsertNormalized(
     id: normalized.id,
     userId,
     corosActivityId: normalized.corosActivityId ?? null,
-    stravaActivityId: normalized.stravaActivityId ?? null,
     startTime: normalized.startTime,
     startTimeLocal: normalized.startTimeLocal ?? null,
     timezone: normalized.timezone ?? null,
@@ -286,7 +278,6 @@ async function upsertNormalized(
     trainingLoad: normalized.trainingLoad ?? null,
     deviceName: normalized.deviceName ?? null,
     title: normalized.title ?? null,
-    summaryPolyline: normalized.summaryPolyline ?? null,
     sourceMergeConfidence: normalized.sourceMergeConfidence,
     createdAt: now,
     updatedAt: now,
@@ -345,7 +336,6 @@ export async function ingestActivities(db: Db, input: IngestInput): Promise<Inge
     newActivities: 0,
     mergedPairs: 0,
     matchesCreated: 0,
-    provisionalCompletions: 0,
     completions: 0,
     affectedDates: [],
   };
@@ -378,33 +368,28 @@ export async function ingestActivities(db: Db, input: IngestInput): Promise<Inge
       }
       const row = (await db.select().from(activities).where(eq(activities.id, activityId)).limit(1))[0];
       if (row) {
-        const other =
-          src.provider === "coros" && row.stravaActivityId
-            ? rowToNormalized(row)
-            : src.provider === "strava" && row.corosActivityId
-              ? rowToNormalized(row)
-              : null;
-        // Re-merge to refresh metrics (COROS remains authoritative).
-        if (other && src.provider === "coros") {
-          const stravaSide: SourceActivity = {
-            provider: "strava",
-            providerActivityId: row.stravaActivityId!,
-            startTime: row.startTime,
-            sport: row.sport,
-            durationSeconds: row.durationSeconds,
-            title: row.title ?? undefined,
-            summaryPolyline: row.summaryPolyline ?? undefined,
-            contentFingerprint: "existing",
-          };
-          const merged = mergeActivityPair(src, stravaSide, activityId);
-          await upsertNormalized(db, input.userId, merged.activity, activityId);
-        } else if (src.provider === "coros") {
-          await upsertNormalized(db, input.userId, { ...singleSourceActivity(src), id: activityId }, activityId);
-        }
+        // COROS is the only source, so a refresh is simply the new normalized
+        // record over the old one, keeping the row's identity.
+        await upsertNormalized(
+          db,
+          input.userId,
+          { ...singleSourceActivity(src), id: activityId },
+          activityId,
+        );
       }
       await upsertSourceLink(db, activityId, src);
     } else {
-      // New source record. Look for a counterpart from the other provider.
+      // New source record. Before creating a row, look for an existing one at
+      // the same time that carries no COROS source — a session ingested before
+      // COROS became the only provider (historically, a second provider's copy of a
+      // run the watch also recorded).
+      //
+      // Adopting it rather than inserting alongside it is what keeps the
+      // backfill from duplicating history, and it preserves the row id, so its
+      // completion match, garden contribution, and records all survive. This
+      // deliberately does NOT depend on the backfill running before the legacy
+      // columns are dropped: a row with no COROS source is recognisable either
+      // way, so the two operations can happen in any order.
       const windowStart = new Date(Date.parse(src.startTime) - 3600_000).toISOString();
       const windowEnd = new Date(Date.parse(src.startTime) + 3600_000).toISOString();
       const nearby = await db
@@ -417,66 +402,32 @@ export async function ingestActivities(db: Db, input: IngestInput): Promise<Inge
             lte(activities.startTime, windowEnd),
           ),
         );
-      let counterpart: typeof activities.$inferSelect | undefined;
+      let orphan: typeof activities.$inferSelect | undefined;
       let bestScore = 0;
       for (const row of nearby) {
-        const hasOther =
-          src.provider === "coros" ? row.stravaActivityId && !row.corosActivityId : row.corosActivityId && !row.stravaActivityId;
-        if (!hasOther) continue;
-        const other: SourceActivity = {
-          provider: src.provider === "coros" ? "strava" : "coros",
-          providerActivityId:
-            src.provider === "coros" ? row.stravaActivityId! : row.corosActivityId!,
+        if (row.corosActivityId) continue; // already has a COROS source
+        const { score } = scoreAgainstStoredRow(src, {
           startTime: row.startTime,
           sport: row.sport,
           durationSeconds: row.durationSeconds,
           distanceMeters: row.distanceMeters ?? undefined,
-          deviceName: row.deviceName ?? undefined,
-          contentFingerprint: "existing",
-        };
-        const { score } = scoreActivityPair(src, other);
+        });
         if (score > bestScore) {
           bestScore = score;
-          counterpart = row;
+          orphan = row;
         }
       }
 
-      if (counterpart && bestScore >= 0.6) {
-        // Merge into the existing normalized activity.
-        const existingNorm = rowToNormalized(counterpart);
-        const corosSide = src.provider === "coros" ? src : null;
-        if (corosSide) {
-          const stravaSide: SourceActivity = {
-            provider: "strava",
-            providerActivityId: counterpart.stravaActivityId!,
-            startTime: counterpart.startTime,
-            startTimeLocal: counterpart.startTimeLocal ?? undefined,
-            timezone: counterpart.timezone ?? undefined,
-            sport: counterpart.sport,
-            durationSeconds: counterpart.durationSeconds,
-            elapsedSeconds: counterpart.elapsedSeconds ?? undefined,
-            distanceMeters: counterpart.distanceMeters ?? undefined,
-            title: counterpart.title ?? undefined,
-            summaryPolyline: counterpart.summaryPolyline ?? undefined,
-            contentFingerprint: "existing",
-          };
-          const merged = mergeActivityPair(corosSide, stravaSide, counterpart.id);
-          await upsertNormalized(db, input.userId, merged.activity, counterpart.id);
-        } else {
-          // Strava arriving after COROS: enrich only.
-          await db
-            .update(activities)
-            .set({
-              stravaActivityId: src.providerActivityId,
-              title: src.title ?? counterpart.title,
-              summaryPolyline: src.summaryPolyline ?? counterpart.summaryPolyline,
-              timezone: src.timezone ?? counterpart.timezone,
-              sourceMergeConfidence: bestScore,
-              updatedAt: now,
-            })
-            .where(eq(activities.id, counterpart.id));
-        }
-        activityId = counterpart.id;
+      if (orphan && bestScore >= ORPHAN_ADOPTION_FLOOR) {
+        // COROS is authoritative for every metric; the adopted row keeps only
+        // its identity and anything COROS did not supply.
+        await upsertNormalized(
+          db,
+          input.userId,
+          { ...singleSourceActivity(src), id: orphan.id, title: src.title ?? orphan.title ?? undefined },
+          orphan.id,
+        );
+        activityId = orphan.id;
         stats.mergedPairs += 1;
         await upsertSourceLink(db, activityId, src);
       } else {
@@ -522,7 +473,7 @@ export async function ingestActivities(db: Db, input: IngestInput): Promise<Inge
           gte(plannedWorkouts.effectiveDate, minDate),
           lte(plannedWorkouts.effectiveDate, maxDate),
           isNull(plannedWorkouts.archivedAt),
-          inArray(plannedWorkouts.completionState, ["scheduled", "unresolved", "provisionally_completed"]),
+          inArray(plannedWorkouts.completionState, ["scheduled", "unresolved"]),
         ),
       );
 
@@ -570,19 +521,6 @@ export async function ingestActivities(db: Db, input: IngestInput): Promise<Inge
       const activityRow = unmatchedActivities.find((a) => a.id === m.activityId)!;
       const hasCoros = !!activityRow.corosActivityId;
 
-      if (workout.completionState === "provisionally_completed") {
-        const existingMatch = await db
-          .select()
-          .from(workoutCompletionMatches)
-          .where(
-            and(
-              eq(workoutCompletionMatches.workoutId, workout.id),
-              isNull(workoutCompletionMatches.undoneAt),
-            ),
-          )
-          .limit(1);
-        if (existingMatch[0] && existingMatch[0].activityId !== m.activityId) continue;
-      }
 
       const matchId = newId();
       await db.insert(workoutCompletionMatches).values({
@@ -591,7 +529,6 @@ export async function ingestActivities(db: Db, input: IngestInput): Promise<Inge
         activityId: m.activityId,
         confidence: m.confidence,
         method: m.method === "coros_plan_link" ? "coros_plan_link" : "scored_auto",
-        provisional: !hasCoros,
         matchedAt: now,
       });
       await db
@@ -599,7 +536,7 @@ export async function ingestActivities(db: Db, input: IngestInput): Promise<Inge
         .set({ completionMatchId: matchId, updatedAt: now })
         .where(eq(activities.id, m.activityId));
 
-      const newState = hasCoros ? "completed" : "provisionally_completed";
+      const newState = "completed";
       await db
         .update(plannedWorkouts)
         .set({
@@ -610,45 +547,13 @@ export async function ingestActivities(db: Db, input: IngestInput): Promise<Inge
         .where(eq(plannedWorkouts.id, m.workoutId));
       stats.matchesCreated += 1;
       if (newState === "completed") stats.completions += 1;
-      else stats.provisionalCompletions += 1;
+      else
       affectedDates.add(workout.effectiveDate);
     }
 
   }
 
-  // Upgrade provisional matches when the COROS copy has arrived — always, not
-  // only when this ingest carried new sources, so a repair pass (which can give
-  // an already-matched activity its COROS link) promotes on the same sync.
-  stats.completions += await promoteProvisionalMatches(db);
-
   stats.affectedDates = [...affectedDates].sort();
   return stats;
 }
 
-/**
- * Promote "provisionally_completed" workouts to "completed" once their matched
- * activity has a COROS record. Returns the number promoted.
- */
-export async function promoteProvisionalMatches(db: Db): Promise<number> {
-  const now = nowInstant();
-  let promoted = 0;
-  const provisional = await db
-    .select()
-    .from(workoutCompletionMatches)
-    .where(and(eq(workoutCompletionMatches.provisional, true), isNull(workoutCompletionMatches.undoneAt)));
-  for (const pm of provisional) {
-    const row = (await db.select().from(activities).where(eq(activities.id, pm.activityId)).limit(1))[0];
-    if (row?.corosActivityId) {
-      await db
-        .update(workoutCompletionMatches)
-        .set({ provisional: false })
-        .where(eq(workoutCompletionMatches.id, pm.id));
-      await db
-        .update(plannedWorkouts)
-        .set({ completionState: "completed", updatedAt: now })
-        .where(and(eq(plannedWorkouts.id, pm.workoutId), eq(plannedWorkouts.completionState, "provisionally_completed")));
-      promoted += 1;
-    }
-  }
-  return promoted;
-}

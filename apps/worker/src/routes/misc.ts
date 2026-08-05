@@ -72,7 +72,7 @@ import {
   type TimeOfDayPair,
 } from "@rg/analytics";
 import { SIMULATION_VERSION } from "@rg/garden-engine";
-import { NORMALIZER_VERSION, normalizeStravaActivity } from "@rg/providers";
+import { NORMALIZER_VERSION } from "@rg/providers";
 import { ESTIMATOR_VERSION } from "@rg/scheduling";
 import type { AppContext } from "../auth/middleware.js";
 import { chunkIds, type Db } from "../services/db.js";
@@ -81,10 +81,8 @@ import { googleCalendarClient } from "../services/google-calendar.js";
 import { loadPreferences, savePreferences, syncCalendar } from "../services/calendar-sync.js";
 import { emitPendingWork } from "../services/jobs.js";
 import { llmBudgetStatus, LLM_BUDGET } from "../services/llm.js";
-import { stravaClient } from "../services/strava.js";
 import {
   ingestActivities,
-  promoteProvisionalMatches,
   repairDurations,
   repairTimestamps,
   rowToNormalized,
@@ -239,7 +237,6 @@ activityRoutes.post("/backfill", async (c) => {
   // provisional matches) — independent of whether a device is available.
   await repairDurations(db, userId);
   const repairedDates = await repairTimestamps(db, userId);
-  const promoted = await promoteProvisionalMatches(db);
   const prefs = await loadPreferences(db, userId);
   if (repairedDates.length > 0) {
     await resimulateFrom(db, userId, repairedDates[0]!, prefs).catch(() => undefined);
@@ -250,7 +247,6 @@ activityRoutes.post("/backfill", async (c) => {
     ok: true,
     enqueued: result.enqueued,
     reason: result.reason,
-    matched: promoted,
   });
 });
 
@@ -1293,7 +1289,6 @@ export async function deleteAllUserData(db: Db, userId: string): Promise<void> {
     syncErrors,
     syncRuns,
     trainingPlanVersions,
-    webhookEvents,
     workoutCompletionMatches,
   } = await import("@rg/database");
 
@@ -1315,7 +1310,6 @@ export async function deleteAllUserData(db: Db, userId: string): Promise<void> {
     plannedWorkoutStages,
     scheduleOverrides,
     trainingPlanVersions,
-    webhookEvents,
     workoutCompletionMatches,
   ] as const;
   for (const t of childTables) await db.delete(t as any);

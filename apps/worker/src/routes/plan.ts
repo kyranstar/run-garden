@@ -194,15 +194,6 @@ planRoutes.get("/today", async (c) => {
     .orderBy(desc(dailyHealth.date))
     .limit(14);
 
-  const stravaConn = (
-    await db
-      .select()
-      .from(providerConnections)
-      .where(
-        and(eq(providerConnections.userId, userId), eq(providerConnections.provider, "strava")),
-      )
-      .limit(1)
-  )[0];
 
   const gardenRows = await db.select().from(gardenState).where(eq(gardenState.userId, userId)).limit(1);
   const snapshot = gardenRows[0]?.snapshot as unknown as GardenSnapshot | undefined;
@@ -215,7 +206,7 @@ planRoutes.get("/today", async (c) => {
       and(
         eq(plannedWorkouts.userId, userId),
         eq(plannedWorkouts.effectiveDate, addDays(today, -1)),
-        inArray(plannedWorkouts.completionState, ["completed", "provisionally_completed"]),
+        inArray(plannedWorkouts.completionState, ["completed"]),
       ),
     )
     .limit(1);
@@ -239,7 +230,6 @@ planRoutes.get("/today", async (c) => {
       corosWritesEnabled: prefs.corosWritesEnabled,
       calendarConnected: !!prefs.calendarId,
       // "connected" | "error" (subscription lapsed / revoked) | undefined (never connected)
-      stravaStatus: stravaConn?.status,
     },
     readiness: {
       latest: health[0] ?? null,
@@ -574,14 +564,13 @@ planRoutes.post("/workouts/:id/match", async (c) => {
     activityId: a.id,
     confidence: 1,
     method: "manual",
-    provisional: !a.corosActivityId,
     matchedAt: now,
   });
   await db.update(activities).set({ completionMatchId: matchId, updatedAt: now }).where(eq(activities.id, a.id));
   await db
     .update(plannedWorkouts)
     .set({
-      completionState: a.corosActivityId ? "completed" : "provisionally_completed",
+      completionState: "completed",
       resolutionDate: (a.startTimeLocal ?? a.startTime).slice(0, 10),
       updatedAt: now,
     })
