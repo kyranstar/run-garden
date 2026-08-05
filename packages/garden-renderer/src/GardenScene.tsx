@@ -4,6 +4,7 @@ import type { GardenSnapshot } from "@rg/garden-engine";
 import { rng, speciesOrThrow } from "@rg/garden-engine";
 import { AtmosphereLayer } from "./AtmosphereLayer";
 import { mix, shade } from "./color";
+import type { LightHint } from "./organic";
 import { describeGarden, plantStateLabel } from "./describe";
 import { lightingFor, moonPhase } from "./lighting";
 import { Finish, Rainbow, WeatherOverlay } from "./overlays";
@@ -513,6 +514,15 @@ export function GardenScene({
   };
   light.moonPhaseValue = moonPhase(snapshot.state.lastSimulatedDate);
 
+  // Sun-side hint for tone-stacked foliage: shadows stretch away from the
+  // sun, so the lit side is the opposite sign of shadowDx. Moonlight gets a
+  // faint cool rim instead of a warm one.
+  const lightHint: LightHint = {
+    dx: light.shadowDx > 0.05 ? -1 : light.shadowDx < -0.05 ? 1 : 0,
+    litColor: light.sunX !== null ? light.sunColor : "#c9d4e8",
+    amount: light.sunX !== null ? Math.min(1, 0.4 + 0.35 * light.beamStrength) : 0.15,
+  };
+
   const sorted = [...snapshot.plants].sort(
     (a, b) => a.position.y - b.position.y || a.id.localeCompare(b.id),
   );
@@ -674,6 +684,7 @@ export function GardenScene({
                 idPrefix={p}
                 tint={{ color: tintColor, amount: n(tintAmount) }}
                 reach={vineReach}
+                lightHint={lightHint}
               />
             </g>
           </g>

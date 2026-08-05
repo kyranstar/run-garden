@@ -3,6 +3,7 @@ import type { GardenPlant } from "@rg/domain";
 import type { Species } from "@rg/garden-engine";
 import { rng, speciesOrThrow } from "@rg/garden-engine";
 import { desaturate, hexToRgb, hslToRgb, mix, rgbToHex, rgbToHsl, shade } from "./color";
+import { blobPath, DEFAULT_LIGHT_HINT, type LightHint } from "./organic";
 
 /**
  * One plant, hand-drawn per archetype. Local coordinates: the stem base sits
@@ -37,6 +38,41 @@ interface Ctx {
   v: (base: number, pct?: number) => number;
   m: number;
   P: Paint;
+  /** Scene light direction for tone-stacked foliage. */
+  L: LightHint;
+}
+
+/**
+ * Grainlight canopy: shaded mass under a mid mass under a sun-side lit crown.
+ * Fixed draw count (10 + 10 + 8) every call, so state changes never reshuffle
+ * downstream geometry in the sprite's stream.
+ */
+function canopyBlobs(
+  r: Rand,
+  cx: number,
+  cy: number,
+  rx: number,
+  ry: number,
+  P: Paint,
+  L: LightHint,
+): ReactNode {
+  const lit = mix(P.c1, L.litColor, clamp01(0.5 * L.amount));
+  const d = L.dx;
+  return (
+    <g>
+      <path data-tone="shade" d={blobPath(r, cx - d * rx * 0.08, cy + ry * 0.24, rx * 0.98, ry * 0.75, 0.26, 8)} fill={shade(P.c1, 0.75)} />
+      {/* three overlapping mid lobes — the union makes a scalloped crown
+          instead of one smooth egg */}
+      <g data-tone="mid" fill={P.c1}>
+        <path d={blobPath(r, cx - rx * 0.52, cy + ry * 0.06, rx * 0.56, ry * 0.6, 0.3, 7)} />
+        <path d={blobPath(r, cx + d * rx * 0.06, cy - ry * 0.34, rx * 0.62, ry * 0.62, 0.3, 7)} />
+        <path d={blobPath(r, cx + rx * 0.52, cy + ry * 0.1, rx * 0.54, ry * 0.56, 0.3, 7)} />
+      </g>
+      <path d={blobPath(r, cx - d * rx * 0.44, cy - ry * 0.08, rx * 0.46, ry * 0.5, 0.3, 7)} fill={shade(P.c1, 0.88)} />
+      <path data-tone="lit" d={blobPath(r, cx + d * rx * 0.32, cy - ry * 0.36, rx * 0.46, ry * 0.4, 0.3, 7)} fill={lit} opacity={0.95} />
+      <path d={blobPath(r, cx + d * rx * 0.02, cy - ry * 0.56, rx * 0.28, ry * 0.24, 0.32, 6)} fill={lit} opacity={0.7} />
+    </g>
+  );
 }
 
 function paintFor(species: Species, plant: GardenPlant, tint?: { color: string; amount: number }): Paint {
@@ -223,7 +259,7 @@ function deadForm(species: Species, plant: GardenPlant, r: Rand, v: Ctx["v"]): R
 
 /* ── archetypes ──────────────────────────────────────────────────────────── */
 
-function treeRound({ r, v, m, P }: Ctx): ReactNode {
+function treeRound({ r, v, m, P, L }: Ctx): ReactNode {
   const h = v(lerp(14, 88, m));
   const w = v(lerp(1.4, 4.4, m));
   const R = v(lerp(4, 36, smooth(m)));
@@ -235,19 +271,14 @@ function treeRound({ r, v, m, P }: Ctx): ReactNode {
       {P.bare ? (
         bareBranches(r, h, 50, shade(P.c2, 0.85), 4, false)
       ) : (
-        <g>
-          <ellipse cx={n(-R * 0.72)} cy={n(cy + R * 0.28)} rx={n(R * 0.7)} ry={n(R * 0.62 * flat)} fill={shade(P.c1, 0.9)} />
-          <ellipse cx={n(R * 0.72)} cy={n(cy + R * 0.32)} rx={n(R * 0.66)} ry={n(R * 0.58 * flat)} fill={shade(P.c1, 0.95)} />
-          <ellipse cx={0} cy={n(cy)} rx={n(R)} ry={n(R * 0.86 * flat)} fill={P.c1} />
-          <ellipse cx={n(-R * 0.34)} cy={n(cy - R * 0.3)} rx={n(R * 0.5)} ry={n(R * 0.34)} fill={shade(P.c1, 1.14)} opacity={0.55} />
-        </g>
+        canopyBlobs(r, 0, cy, R * 1.12, R * 0.95 * flat, P, L)
       )}
     </g>
   );
 }
 
 /** birch: pale slim trunk with dark dashes and airy small-leaf clusters */
-function treeBirch({ r, v, m, P }: Ctx): ReactNode {
+function treeBirch({ r, v, m, P, L }: Ctx): ReactNode {
   const h = v(lerp(16, 96, m));
   const w = v(lerp(1, 2.6, m));
   const dashes: ReactNode[] = [];
@@ -270,8 +301,15 @@ function treeBirch({ r, v, m, P }: Ctx): ReactNode {
     const [ax, ay] = anchors[i % anchors.length]!;
     const cx = ax + (r() - 0.5) * 13;
     const cyC = ay - r() * 9 + P.droop * 4;
+    const base = i % 3 === 0 ? shade(P.c1, 1.12) : P.c1;
+    const onSun = L.dx !== 0 && cx * L.dx > 6;
     clusters.push(
-      <circle key={`c${i}`} cx={n(cx)} cy={n(cyC)} r={n(v(5.4, 0.3))} fill={i % 3 === 0 ? shade(P.c1, 1.12) : P.c1} opacity={0.85} />,
+      <path
+        key={`c${i}`}
+        d={blobPath(r, cx, cyC, v(8, 0.25), v(6, 0.25), 0.24, 7)}
+        fill={onSun ? mix(base, L.litColor, 0.25 * L.amount) : base}
+        opacity={0.88}
+      />,
     );
   }
   return (
@@ -286,7 +324,7 @@ function treeBirch({ r, v, m, P }: Ctx): ReactNode {
 }
 
 /** weeping willow: fronds arcing down from the crown */
-function treeWeeping({ r, v, m, P }: Ctx): ReactNode {
+function treeWeeping({ r, v, m, P, L }: Ctx): ReactNode {
   const h = v(lerp(12, 66, m));
   const w = v(lerp(1.6, 4.6, m));
   const fronds: ReactNode[] = [];
@@ -296,11 +334,13 @@ function treeWeeping({ r, v, m, P }: Ctx): ReactNode {
     const sx = lerp(-1, 1, t) * v(lerp(4, 26, smooth(m)));
     const drop = v(lerp(8, 46, smooth(m))) + P.droop * 8;
     const outX = sx * 1.9 + (r() - 0.5) * 6;
+    const leafy = i % 2 === 0 ? P.c1 : shade(P.c1, 0.86);
+    const onSun = L.dx !== 0 && outX * L.dx > 0;
     fronds.push(
       <path
         key={`f${i}`}
         d={`M0,${n(-h)} Q${n(sx * 1.5)},${n(-h - 8)} ${n(outX)},${n(-h + drop)}`}
-        stroke={P.bare ? shade(P.c2, 0.9) : i % 2 === 0 ? P.c1 : shade(P.c1, 0.86)}
+        stroke={P.bare ? shade(P.c2, 0.9) : onSun ? mix(leafy, L.litColor, 0.35 * L.amount) : leafy}
         strokeWidth={P.bare ? 1.1 : 2.3}
         strokeLinecap="round"
         fill="none"
@@ -310,17 +350,23 @@ function treeWeeping({ r, v, m, P }: Ctx): ReactNode {
   return (
     <g>
       <path d={trunkPath(h, w, (r() - 0.5) * 5)} fill={P.c2} />
-      {P.bare ? null : <ellipse cx={0} cy={n(-h - 4)} rx={n(lerp(4, 15, smooth(m)))} ry={n(lerp(2.5, 8, smooth(m)))} fill={shade(P.c1, 1.06)} />}
+      {P.bare ? null : (
+        <path
+          d={blobPath(r, 0, -h - 4, lerp(4, 15, smooth(m)), lerp(2.5, 8, smooth(m)), 0.24, 8)}
+          fill={shade(P.c1, 1.06)}
+        />
+      )}
       {fronds}
     </g>
   );
 }
 
 /** conifer: stacked triangles (kept even when dormant — just duller) */
-function treeConifer({ r, v, m, P }: Ctx): ReactNode {
+function treeConifer({ r, v, m, P, L }: Ctx): ReactNode {
   const h = v(lerp(16, 92, m));
   const w = v(lerp(1.2, 3, m));
   const tiers = m > 0.65 ? 4 : 3;
+  const lit = mix(P.c1, L.litColor, clamp01(0.5 * L.amount));
   const shapes: ReactNode[] = [];
   for (let i = 0; i < tiers; i++) {
     const f = i / tiers;
@@ -334,6 +380,17 @@ function treeConifer({ r, v, m, P }: Ctx): ReactNode {
         fill={i % 2 === 0 ? P.c1 : shade(P.c1, 0.86)}
       />,
     );
+    if (L.dx !== 0) {
+      // sun-edge sliver: a wedge along the lit side of the tier
+      shapes.push(
+        <path
+          key={`l${i}`}
+          d={`M0,${n(topY)} L${n(half * L.dx)},${n(baseY)} L${n(half * L.dx * 0.42)},${n(baseY)} Z`}
+          fill={lit}
+          opacity={n(0.55 * L.amount)}
+        />,
+      );
+    }
   }
   return (
     <g>
@@ -344,7 +401,7 @@ function treeConifer({ r, v, m, P }: Ctx): ReactNode {
 }
 
 /** ginkgo: upright branches topped with fan-shaped leaf clusters */
-function treeFan({ r, v, m, P }: Ctx): ReactNode {
+function treeFan({ r, v, m, P, L }: Ctx): ReactNode {
   const h = v(lerp(14, 84, m));
   const w = v(lerp(1.2, 3.2, m));
   const fanSize = v(lerp(3, 11, smooth(m)));
@@ -364,7 +421,13 @@ function treeFan({ r, v, m, P }: Ctx): ReactNode {
         {P.bare ? null : (
           <path
             d={`M${n(tx)},${n(ty)} L${n(tx - fanSize)},${n(ty - fanSize * 1.15)} Q${n(tx)},${n(ty - fanSize * 1.7)} ${n(tx + fanSize)},${n(ty - fanSize * 1.15)} Z`}
-            fill={i % 2 === 0 ? P.c1 : shade(P.c1, 1.1)}
+            fill={
+              L.dx !== 0 && tx * L.dx > 0
+                ? mix(i % 2 === 0 ? P.c1 : shade(P.c1, 1.1), L.litColor, 0.4 * L.amount)
+                : i % 2 === 0
+                  ? P.c1
+                  : shade(P.c1, 1.1)
+            }
           />
         )}
       </g>,
@@ -379,7 +442,7 @@ function treeFan({ r, v, m, P }: Ctx): ReactNode {
 }
 
 /** blossom tree: round clumps that show bloom dots while flowering */
-function treeBlossom({ r, v, m, P }: Ctx): ReactNode {
+function treeBlossom({ r, v, m, P, L }: Ctx): ReactNode {
   const h = v(lerp(14, 80, m));
   const w = v(lerp(1.4, 4, m));
   const R = v(lerp(4, 32, smooth(m)));
@@ -409,9 +472,7 @@ function treeBlossom({ r, v, m, P }: Ctx): ReactNode {
         bareBranches(r, h, 55, shade(P.c2, 0.88), 4, false)
       ) : (
         <g>
-          <ellipse cx={n(-R * 0.6)} cy={n(cy + R * 0.24)} rx={n(R * 0.62)} ry={n(R * 0.52)} fill={shade(P.c1, 0.92)} />
-          <ellipse cx={n(R * 0.62)} cy={n(cy + R * 0.28)} rx={n(R * 0.58)} ry={n(R * 0.5)} fill={shade(P.c1, 0.96)} />
-          <ellipse cx={0} cy={n(cy)} rx={n(R * 0.94)} ry={n(R * 0.78)} fill={P.c1} />
+          {canopyBlobs(r, 0, cy, R * 1.05, R * 0.8, P, L)}
           {dots}
         </g>
       )}
@@ -872,6 +933,9 @@ export interface PlantSpriteProps {
    * fixed regardless of m.
    */
   reach?: number;
+  /** Scene sun direction for tone-stacked foliage; codex cards omit it and
+   *  get a neutral top-light. Never affects rng draw order. */
+  lightHint?: LightHint;
 }
 
 export function PlantSprite({
@@ -881,6 +945,7 @@ export function PlantSprite({
   idPrefix = "rg-garden",
   tint,
   reach = 1,
+  lightHint = DEFAULT_LIGHT_HINT,
 }: PlantSpriteProps) {
   const sp = species ?? speciesOrThrow(plant.speciesId);
   const r = rng(`sprite:${plant.id}`);
@@ -901,7 +966,7 @@ export function PlantSprite({
       sp.archetype === "vine"
         ? clamp01(plant.maturity) * clamp01(reach)
         : clamp01(plant.maturity);
-    const ctx: Ctx = { r, v, m: mEff, P: paintFor(sp, plant, tint) };
+    const ctx: Ctx = { r, v, m: mEff, P: paintFor(sp, plant, tint), L: lightHint };
     art = ARCHETYPES[sp.archetype](ctx);
     sways = !NO_SWAY.has(sp.archetype);
   }

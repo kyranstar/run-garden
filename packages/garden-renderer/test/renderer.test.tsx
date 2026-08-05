@@ -536,3 +536,35 @@ describe("atmosphere layer", () => {
     expect(markup).not.toContain("<canvas");
   });
 });
+
+describe("grainlight canopies", () => {
+  const oak = SPECIES.find((s) => s.id === "milestone_oak")!;
+
+  it("tree canopies stack three tones and follow the sun side", () => {
+    const plant = syntheticPlant(oak, "mature");
+    const left = renderToStaticMarkup(
+      <PlantSprite plant={plant} species={oak} idPrefix="t" lightHint={{ dx: -1, litColor: "#ffd27f", amount: 0.8 }} />,
+    );
+    const right = renderToStaticMarkup(
+      <PlantSprite plant={plant} species={oak} idPrefix="t" lightHint={{ dx: 1, litColor: "#ffd27f", amount: 0.8 }} />,
+    );
+    expect(left).toContain('data-tone="lit"');
+    expect(left).not.toBe(right); // lit mass flips with the sun
+    const tones = [...left.matchAll(/data-tone="(shade|mid|lit)"/g)].map((m) => m[1]);
+    expect(new Set(tones)).toEqual(new Set(["shade", "mid", "lit"]));
+  });
+
+  it("state adjustments hit every canopy tone", () => {
+    const fills = (m: string) =>
+      [...m.matchAll(/data-tone="[a-z]+"[^>]*fill="(#[0-9a-fA-F]{6})"/g)].map((x) => x[1]);
+    const mature = renderToStaticMarkup(
+      <PlantSprite plant={syntheticPlant(oak, "mature")} species={oak} idPrefix="t" />,
+    );
+    const wilted = renderToStaticMarkup(
+      <PlantSprite plant={syntheticPlant(oak, "wilted")} species={oak} idPrefix="t" />,
+    );
+    expect(fills(mature).length).toBeGreaterThanOrEqual(3);
+    expect(fills(wilted)).not.toEqual(fills(mature));
+    expect(fills(wilted)).toHaveLength(fills(mature).length);
+  });
+});
