@@ -34,7 +34,8 @@ import {
   Spinner,
 } from "../components.js";
 import { Drawer } from "../drawer.js";
-import { cap, eventSentence } from "./arrival.js";
+import { cap, eventSentence, selectArrival, type ArrivalEvent } from "./arrival.js";
+import { CeremonyCard } from "./arrival-block.js";
 import { BotanicalCard } from "./botanical.js";
 import { EvidenceCard, NextWorkout, Readiness, SyncPanel, UnresolvedCard } from "./today.js";
 import {
@@ -601,98 +602,6 @@ function WeekRibbon({
   );
 }
 
-/**
- * The unlock ceremony: a new species leads the arrival beat as a small
- * celebration — sprite on a soft burst, serif name, what earned it, and a
- * pull straight to the living plant in the scene.
- */
-function UnlockCeremony({
-  entry,
-  extraCount,
-  snapshot,
-  onSeePlant,
-  onDismiss,
-  variant,
-}: {
-  entry: CodexEntry;
-  extraCount: number;
-  snapshot: GardenSnapshot;
-  onSeePlant: (plantId: string) => void;
-  onDismiss: () => void;
-  variant?: "hud";
-}) {
-  const livePlant = snapshot.plants.find(
-    (p) => p.speciesId === entry.speciesId && p.state !== "dead",
-  );
-  return (
-    <div className={`ceremony${variant === "hud" ? " ceremony-hud" : ""}`} role="status">
-      <div className="ceremony-portrait">
-        <svg className="ceremony-burst" viewBox="0 0 100 100" aria-hidden="true">
-          {/* laurel burst: long teardrop petals, short ones between, and fine
-              seed-dots at the tips — gold fading outward */}
-          {Array.from({ length: 8 }, (_, i) => (
-            <path
-              key={`p${i}`}
-              d="M50,44 C46.8,34 47.2,24 50,15 C52.8,24 53.2,34 50,44 Z"
-              fill="#e0bd5c"
-              opacity="0.5"
-              transform={`rotate(${i * 45} 50 50)`}
-            />
-          ))}
-          {Array.from({ length: 8 }, (_, i) => (
-            <path
-              key={`q${i}`}
-              d="M50,44 C48,37 48.2,31 50,26 C51.8,31 52,37 50,44 Z"
-              fill="#f0d78a"
-              opacity="0.6"
-              transform={`rotate(${i * 45 + 22.5} 50 50)`}
-            />
-          ))}
-          {Array.from({ length: 8 }, (_, i) => (
-            <circle
-              key={`d${i}`}
-              cx="50"
-              cy="11"
-              r="1.3"
-              fill="#e8c86a"
-              opacity="0.7"
-              transform={`rotate(${i * 45} 50 50)`}
-            />
-          ))}
-          <circle cx="50" cy="50" r="21" fill="#f7f2dd" opacity="0.88" />
-        </svg>
-        <span className="ceremony-mote ceremony-mote-1" aria-hidden="true" />
-        <span className="ceremony-mote ceremony-mote-2" aria-hidden="true" />
-        <span className="ceremony-mote ceremony-mote-3" aria-hidden="true" />
-        <SpeciesSpriteCard speciesId={entry.speciesId} />
-      </div>
-      <div className="ceremony-body">
-        <div className="ceremony-eyebrow">A new species has taken root</div>
-        <div className="ceremony-name">
-          {entry.name}
-          {entry.rarity !== "common" ? (
-            <span className={`rarity rarity-${entry.rarity}`}>{RARITY_LABEL[entry.rarity]}</span>
-          ) : null}
-          {extraCount > 0 ? <span className="ceremony-extra">+{extraCount} more</span> : null}
-        </div>
-        <div className="ceremony-earned">{entry.hint}</div>
-        {livePlant ? (
-          <button
-            type="button"
-            className="ceremony-see"
-            onClick={() => onSeePlant(livePlant.id)}
-          >
-            See it in the garden →
-          </button>
-        ) : null}
-      </div>
-      <button type="button" className="ceremony-close" onClick={onDismiss} aria-label="Dismiss">
-        <IconClose size={13} />
-      </button>
-    </div>
-  );
-}
-
 function conditionStory(
   condition: GardenConditionWord,
   snapshot: GardenSnapshot,
@@ -726,14 +635,13 @@ export function GardenScreen() {
   const [dockOpen, setDockOpenState] = useState(
     () => typeof window === "undefined" || window.localStorage.getItem("rg-dock") !== "collapsed",
   );
-  const [beatDismissed, setBeatDismissed] = useState(false);
-  const [ceremonyDismissed, setCeremonyDismissed] = useState(false);
+  // The arrival block: which ceremony is showing, and whether the text
+  // lines were dismissed this mount. What counts as "new" comes from the
+  // server-side watermark (selectArrival) — localStorage plays no part.
+  const [ceremonyIndex, setCeremonyIndex] = useState(0);
+  const [blockDismissed, setBlockDismissed] = useState(false);
+  const seenPostedKeyRef = useRef<string | null>(null);
   const [replaying, setReplaying] = useState(false);
-  // The date this garden was last looked at — powers the overnight beat.
-  const lastVisit = useMemo(
-    () => (typeof window === "undefined" ? null : window.localStorage.getItem("rg-last-visit")),
-    [],
-  );
   const reducedMotion = usePrefersReducedMotion();
   const isDesktop = useIsDesktop();
   const dayIndexRef = useRef(0);
@@ -815,18 +723,46 @@ export function GardenScreen() {
     void api.readNow().catch(() => undefined);
   }, []);
 
-  // Remember this visit once the garden has loaded (after `lastVisit` was
-  // captured for the beat above).
+  // A refetch that changes the garden payload restarts the arrival
+  // presentation (structural sharing keeps identity when nothing changed).
+  useEffect(() => {
+    setCeremonyIndex(0);
+    setBlockDismissed(false);
+  }, [garden.data]);
+
+  // Mark the arrival seen: brand-new gardens immediately and silently;
+  // otherwise on dismissing the last ceremony (or the block), or 6s after a
+  // ceremony-less block presents. Keyed on the watermark tip so each new
+  // arrival posts exactly once; a failed POST (after one retry) just means
+  // the same arrivals re-present next visit — never lossy.
   useEffect(() => {
     if (!garden.data) return;
-    try {
-      const seen = (garden.data.snapshot as GardenSnapshot).state.lastSimulatedDate;
-      const prev = window.localStorage.getItem("rg-last-visit");
-      if (!prev || seen > prev) window.localStorage.setItem("rg-last-visit", seen);
-    } catch {
-      // Storage may be unavailable; the beat simply won't fire.
+    const seenState = garden.data.seen ?? null;
+    const evts = (garden.data.events as ArrivalEvent[]) ?? [];
+    const snap = garden.data.snapshot as unknown as GardenSnapshot;
+    const live = today.data?.today ?? snap.state.lastSimulatedDate;
+    const plan = selectArrival(evts, seenState, live);
+    const key = `${plan.nextSeen.lastSeenDate}:${plan.nextSeen.lastSeenSeq}:${plan.nextSeen.celebratedSpeciesIds.join(",")}`;
+    if (seenPostedKeyRef.current === key) return;
+    const post = () => {
+      seenPostedKeyRef.current = key;
+      void api
+        .gardenSeen(plan.nextSeen)
+        .catch(() => api.gardenSeen(plan.nextSeen))
+        .catch(() => undefined);
+    };
+    if (plan.markSeenImmediately) {
+      post();
+      return;
     }
-  }, [garden.data]);
+    if (ceremonyIndex < plan.ceremonies.length) return; // ceremonies still showing
+    if (plan.ceremonies.length > 0 || blockDismissed) {
+      post();
+      return;
+    }
+    const id = window.setTimeout(post, 6000);
+    return () => window.clearTimeout(id);
+  }, [garden.data, today.data, ceremonyIndex, blockDismissed]);
 
   // Timeline week replay: step one day forward on a calm cadence. The refs
   // are written during render below, so the interval always sees the live
@@ -902,18 +838,7 @@ export function GardenScreen() {
     .filter((x): x is { e: GardenEvent; text: string } => !!x.text)
     .slice(0, 12);
 
-  // Today's previewed happenings (rain, plantings) — the same-day feedback
-  // line. Only meaningful while looking at the live garden, not a past day.
-  const todayLines = viewingLive
-    ? events
-        .filter((e) => (e as { preview?: boolean }).preview)
-        .map((e) => eventSentence(e))
-        .filter((t): t is string => !!t)
-        .slice(0, 2)
-    : [];
-
   const codex = (garden.data.codex as CodexEntry[]) ?? [];
-  const nudges = (garden.data.nextUnlocks as CodexEntry[]) ?? [];
   const wildlife = (garden.data.wildlife as WildlifeEntry[]) ?? [];
   const unlockedCount = codex.filter((c) => c.unlocked).length;
   const visitor =
@@ -921,37 +846,22 @@ export function GardenScreen() {
     null;
   const visitorLedger = (garden.data.visitors as VisitorEntry[]) ?? [];
 
-  // The overnight beat: what happened since the last visit. Unlocks lead —
-  // the reveal is the reward — so they graduate from a sentence into the
-  // ceremony card, and the remaining lines stay text.
-  const BEAT_PRIORITY: Record<string, number> = {
-    species_unlocked: 0,
-    wildlife_arrived: 1,
-    plant_added: 2,
-    region_unlocked: 3,
-  };
-  const sinceVisit =
-    lastVisit && lastVisit < liveDate
-      ? events.filter((e) => e.date > lastVisit && !(e as { preview?: boolean }).preview)
-      : [];
-  const ceremonyEntries = !ceremonyDismissed
-    ? sinceVisit
-        .filter((e) => e.kind === "species_unlocked" && e.speciesId)
-        .map((e) => codex.find((c) => c.speciesId === e.speciesId))
-        .filter((c): c is CodexEntry => !!c)
-    : [];
-  const beatLines = !beatDismissed
-    ? sinceVisit
-        .filter((e) => !(ceremonyEntries.length > 0 && e.kind === "species_unlocked"))
-        .sort((a, b) => (BEAT_PRIORITY[a.kind] ?? 9) - (BEAT_PRIORITY[b.kind] ?? 9))
-        .map((e) => eventSentence(e))
-        .filter((t): t is string => !!t)
-        .slice(0, 3)
-    : [];
+  // The arrival block: ceremonies, beat and today lines, all selected
+  // against the server-side watermark — refresh-proof, cross-device, and
+  // same-day unlocks celebrate immediately (arrival.ts).
+  const seen = garden.data.seen ?? null;
+  const arrival = selectArrival(events as ArrivalEvent[], seen, liveDate);
+  const currentCeremony =
+    viewingLive && !blockDismissed ? (arrival.ceremonies[ceremonyIndex] ?? null) : null;
+  const ceremoniesDone = ceremonyIndex >= arrival.ceremonies.length;
+  const sinceLabel = seen?.lastSeenDate ?? addDays(liveDate, -1);
+  const dismissCeremony = () => setCeremonyIndex((i) => i + 1);
   const seePlantFromCeremony = (plantId: string) => {
-    setCeremonyDismissed(true);
+    dismissCeremony();
     setSelectedPlantId(plantId);
   };
+  const beatLines = blockDismissed ? [] : arrival.beatLines;
+  const todayLines = blockDismissed || !viewingLive ? [] : arrival.todayLines;
 
   // Today's rare visitor leads whichever arrival line is showing.
   const beatLinesAll =
@@ -1229,37 +1139,57 @@ export function GardenScreen() {
             {restMode.active ? (
               <p className="hud-weather">Rest mode — nothing declines while you're away.</p>
             ) : null}
-            {viewingLive && beatLinesAll.length > 0 && lastVisit ? (
+            {viewingLive && beatLinesAll.length > 0 ? (
               <p className="hud-beat">
-                <span className="hud-beat-label">Since {formatDayShort(lastVisit)}</span>
+                <span className="hud-beat-label">Since {formatDayShort(sinceLabel)}</span>
                 <span>{beatLinesAll.join(" ")}</span>
+                {arrival.beatOverflow ? (
+                  <button
+                    type="button"
+                    className="linklike hud-beat-seeall"
+                    onClick={() => setOpenDrawer("log")}
+                  >
+                    See all →
+                  </button>
+                ) : null}
                 <button
                   type="button"
                   className="hud-beat-dismiss"
-                  onClick={() => setBeatDismissed(true)}
+                  onClick={() => setBlockDismissed(true)}
                   aria-label="Dismiss"
                 >
                   <IconClose size={12} />
                 </button>
               </p>
-            ) : viewingLive && todayLinesAll.length > 0 ? (
+            ) : null}
+            {viewingLive && todayLinesAll.length > 0 ? (
               <p className="hud-beat">
                 <span className="hud-beat-label">Today</span>
                 <span>{todayLinesAll.join(" ")}</span>
+                {arrival.todayOverflow ? (
+                  <button
+                    type="button"
+                    className="linklike hud-beat-seeall"
+                    onClick={() => setOpenDrawer("log")}
+                  >
+                    See all →
+                  </button>
+                ) : null}
               </p>
             ) : null}
           </div>
 
           {/* The celebration gets its own stage moment — centered in the empty
               sky, never crowding the condition header or the bars. */}
-          {viewingLive && ceremonyEntries.length > 0 ? (
+          {currentCeremony ? (
             <div className="hud-ceremony">
-              <UnlockCeremony
-                entry={ceremonyEntries[0]!}
-                extraCount={ceremonyEntries.length - 1}
+              <CeremonyCard
+                ceremony={currentCeremony}
+                codexEntry={codex.find((c) => c.speciesId === currentCeremony.speciesId)}
+                queueLeft={arrival.ceremonies.length - ceremonyIndex - 1}
                 snapshot={snapshot}
                 onSeePlant={seePlantFromCeremony}
-                onDismiss={() => setCeremonyDismissed(true)}
+                onDismiss={dismissCeremony}
                 variant="hud"
               />
             </div>
@@ -1473,21 +1403,24 @@ export function GardenScreen() {
             balance={liveBalance}
           />
         ) : null}
-        {viewingLive && ceremonyEntries.length > 0 ? (
-          <UnlockCeremony
-            entry={ceremonyEntries[0]!}
-            extraCount={ceremonyEntries.length - 1}
+        {currentCeremony ? (
+          <CeremonyCard
+            ceremony={currentCeremony}
+            codexEntry={codex.find((c) => c.speciesId === currentCeremony.speciesId)}
+            queueLeft={arrival.ceremonies.length - ceremonyIndex - 1}
             snapshot={snapshot}
             onSeePlant={seePlantFromCeremony}
-            onDismiss={() => setCeremonyDismissed(true)}
+            onDismiss={dismissCeremony}
           />
         ) : null}
-        {viewingLive && beatLinesAll.length > 0 && lastVisit ? (
+        {viewingLive && beatLinesAll.length > 0 ? (
           <p className="garden-nowline">
-            <span className="now-chip">since {formatDayShort(lastVisit)}</span>
+            <span className="now-chip">since {formatDayShort(sinceLabel)}</span>
             {beatLinesAll.join(" ")}
+            {arrival.beatOverflow ? <span className="faint"> See the log below.</span> : null}
           </p>
-        ) : todayLinesAll.length > 0 ? (
+        ) : null}
+        {viewingLive && todayLinesAll.length > 0 ? (
           <p className="garden-nowline">
             <span className="now-chip">today</span>
             {todayLinesAll.join(" ")}

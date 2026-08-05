@@ -1363,6 +1363,17 @@ button {
   text-transform: uppercase;
   color: #a8842c;
 }
+/* Ground ceremonies reuse the species card shell; the tiny shelf icon scales
+   up to portrait size. */
+.ceremony-ground-icon svg {
+  width: 74px;
+  height: auto;
+  display: block;
+}
+.hud-beat-seeall {
+  font-size: 0.72rem;
+  margin-left: 0.3rem;
+}
 .ceremony-name {
   font-family: var(--font-display);
   font-size: 1.25rem;
