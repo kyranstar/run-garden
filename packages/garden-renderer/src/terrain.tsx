@@ -215,7 +215,12 @@ function groundFeature(g: EarnedGround, light: SceneLight, p: string, chan?: Str
       };
       const waterE = edges(() => 0);
       const waterPath = closedChannel(waterE.left, waterE.right);
-      const bleedE = edges((t) => 2.5 + 6 * t);
+      // Moist bleed fades in with depth — the far course is just water.
+      const bleedFade = (t: number): number => {
+        const s = clamp01((t - 0.18) / 0.32);
+        return s * s * (3 - 2 * s);
+      };
+      const bleedE = edges((t) => (2.5 + 6 * t) * bleedFade(t));
       const bleedPath = closedChannel(bleedE.left, bleedE.right);
 
       // Curvature apexes: where the course bends hardest, banks tell the story.
@@ -223,7 +228,8 @@ function groundFeature(g: EarnedGround, light: SceneLight, p: string, chan?: Str
       const apexes: Array<{ i: number; outer: 1 | -1 }> = [];
       const scored: Array<{ i: number; k: number }> = [];
       for (let i = 2; i < N - 2; i++) {
-        if (ts[i]! < 0.22) continue;
+        // Bank drama lives in the foreground; distant water runs clean.
+        if (ts[i]! < 0.34) continue;
         scored.push({ i, k: midX[i]! * 2 - midX[i - 1]! - midX[i + 1]! });
       }
       scored.sort((a, b) => Math.abs(b.k) - Math.abs(a.k));
@@ -236,7 +242,7 @@ function groundFeature(g: EarnedGround, light: SceneLight, p: string, chan?: Str
       for (let a = 0; a < apexes.length; a++) {
         const { i, outer } = apexes[a]!;
         const t = ts[i]!;
-        const span = [i - 2, i - 1, i, i + 1, i + 2].filter((j) => j >= 0 && j < N);
+        const span = [i - 3, i - 2, i - 1, i, i + 1, i + 2, i + 3].filter((j) => j >= 1 && j < N);
         const outerPts: Array<[number, number]> = span.map((j) => {
           const e = outer === 1 ? waterE.right[j]! : waterE.left[j]!;
           return [e[0] - outer * 0.4, e[1]];
@@ -265,16 +271,28 @@ function groundFeature(g: EarnedGround, light: SceneLight, p: string, chan?: Str
             opacity={0.5}
           />,
         );
-        // Point bar: a sand crescent on the inside of the bend.
-        const sand = mix("#cbb98a", light.grassNear, 0.35);
-        const barPts: Array<[number, number]> = innerPts.map(([bx, by], k) => [
-          bx - outer * Math.sin((k / (innerPts.length - 1)) * Math.PI) * (1.5 + 3.5 * t),
+        // Point bar: a layered sand bank on the inside of the bend — a broad
+        // dry crescent feathering into the grass, and a darker wet strip at
+        // the waterline. Colors lean on scene light so night sand goes muted
+        // olive instead of glowing.
+        const drySand = mix("#c9b283", mix(light.grassNear, light.hazeColor, 0.25), 0.52);
+        const wetSand = mix(drySand, nearWater, 0.42);
+        const profile = (k: number, depth: number): number =>
+          Math.pow(Math.sin((k / (innerPts.length - 1)) * Math.PI), 0.8) * depth +
+          Math.sin(k * 2.6 + i) * 0.35; // slight seeded-by-index raggedness
+        const dryPts: Array<[number, number]> = innerPts.map(([bx, by], k) => [
+          bx - outer * profile(k, 2.6 + 6 * t),
           by,
         ]);
-        const barPath = `${smoothOpen(innerPts)} ${smoothOpen([...barPts].reverse()).replace(/^M/, "L")} Z`;
+        const wetPts: Array<[number, number]> = innerPts.map(([bx, by], k) => [
+          bx - outer * profile(k, 0.9 + 2 * t),
+          by,
+        ]);
+        const closedBand = (aPts: Array<[number, number]>, bPts: Array<[number, number]>) =>
+          `${smoothOpen(aPts)} ${smoothOpen([...bPts].reverse()).replace(/^M/, "L")} Z`;
         bankArt.push(
-          <path key={`pb${a}`} d={barPath} fill={sand} opacity={0.85} />,
-          <path key={`pbe${a}`} d={smoothOpen(innerPts)} stroke={shade(sand, 0.82)} strokeWidth={0.6} fill="none" opacity={0.6} />,
+          <path key={`pbd${a}`} d={closedBand(wetPts, dryPts)} fill={drySand} opacity={0.72} />,
+          <path key={`pbw${a}`} d={closedBand(innerPts, wetPts)} fill={wetSand} opacity={0.7} />,
         );
       }
       // Riffles: white ticks where the channel pinches.
@@ -283,6 +301,7 @@ function groundFeature(g: EarnedGround, light: SceneLight, p: string, chan?: Str
       let best1 = Infinity;
       let best2 = Infinity;
       for (let i = 3; i < N - 2; i++) {
+        if (ts[i]! < 0.34) continue;
         const ratio = geo.hw(ts[i]!) / (0.6 + ts[i]!);
         if (ts[i]! < 0.5 && ratio < best1) {
           best1 = ratio;
@@ -359,13 +378,14 @@ function groundFeature(g: EarnedGround, light: SceneLight, p: string, chan?: Str
         const jx = (gr() - 0.5) * 5;
         const gapRoll = gr();
         if (gapRoll < 0.2) continue; // gaps: meadow meets water directly
-        let t = 0.1 + tRoll * 0.86;
+        // Riparian growth is a foreground feature — distant banks run bare.
+        let t = 0.34 + tRoll * 0.62;
         if (c < 4 && apexes.length > 0) {
           const ap = ts[apexes[c % apexes.length]!.i]!;
           t = t * 0.4 + ap * 0.6;
         }
         if (t > geo.tEnd - 0.02) t = geo.tEnd - 0.02 - tRoll * 0.1;
-        if (t < 0.08) continue;
+        if (t < 0.32) continue;
         const side = sideRoll < 0.5 ? -1 : 1;
         const size = 0.7 + sizeRoll * 0.9;
         const bx = geo.xc(t) + side * (geo.hw(t) + 1) + jx * 0.3;
