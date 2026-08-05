@@ -43,6 +43,13 @@
       "when": 1785775673966,
       "tag": "0005_sturdy_stranger",
       "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "6",
+      "when": 1785873317449,
+      "tag": "0006_white_timeslip",
+      "breakpoints": true
     }
   ]
 }

@@ -332,6 +332,79 @@ function ladybugShapes(p: string, animate: boolean, plants: GardenPlant[]): Reac
   );
 }
 
+/* ── rare visitors ────────────────────────────────────────────────────────
+   One-day guests decided by the worker (see visitors.ts). Each shows only
+   during its own hours — an owl announced in the morning beat is found by
+   looking at night. Silhouette-styled, muted, never interactive. */
+
+export type SceneVisitor = "deer" | "heron" | "owl" | "fox";
+
+const VISITOR_PERIODS: Record<SceneVisitor, ReadonlySet<string>> = {
+  deer: new Set(["dawn", "morning"]),
+  heron: new Set(["morning", "midday", "golden"]),
+  owl: new Set(["night", "dusk"]),
+  fox: new Set(["dusk", "golden"]),
+};
+
+function visitorShapes(kind: SceneVisitor, plants: GardenPlant[]): ReactNode {
+  switch (kind) {
+    case "deer":
+      return (
+        <g data-visitor="deer" pointerEvents="none" transform="translate(802 312) scale(0.78)" fill="#4a4036" opacity={0.88}>
+          <ellipse cx={0} cy={0} rx={14} ry={7.5} />
+          <path d="M11,-3 L16,-15 L18.5,-14 L14.5,-2 Z" />
+          <circle cx={18} cy={-16} r={3.6} />
+          <path d="M20.5,-18.5 l2.6,-1.8" stroke="#4a4036" strokeWidth={1.4} strokeLinecap="round" fill="none" />
+          <path d="M16.5,-19 l-1.6,-5 m1.6,5 l0.8,-5.6 M19,-19 l1.2,-5 m-1.2,5 l3,-4" stroke="#4a4036" strokeWidth={1.1} strokeLinecap="round" fill="none" />
+          <path d="M-9,6 l-1.4,12 M-4,7 l-0.4,11 M4,7 l0.4,11 M9,6 l1.6,12" stroke="#4a4036" strokeWidth={2} strokeLinecap="round" />
+          <path d="M-13,-3 l-3.2,-3.4" stroke="#4a4036" strokeWidth={2.2} strokeLinecap="round" />
+        </g>
+      );
+    case "heron":
+      return (
+        <g data-visitor="heron" pointerEvents="none" transform="translate(178 414) scale(0.9)" opacity={0.92}>
+          <ellipse cx={0} cy={0} rx={9} ry={5.5} fill="#6e7f8a" />
+          <path d="M6,-3 C11,-8 11,-16 8,-21" stroke="#6e7f8a" strokeWidth={2.4} fill="none" strokeLinecap="round" />
+          <circle cx={7.4} cy={-22} r={2.6} fill="#6e7f8a" />
+          <path d="M9.8,-22.4 l6.5,1.4 -6.4,1.2 Z" fill="#4c443b" />
+          <path d="M2,-24.5 l3.4,-1.6" stroke="#3d4750" strokeWidth={1} strokeLinecap="round" />
+          <path d="M-2,5 l0,12 M3,5 l0,12" stroke="#5a6a74" strokeWidth={1.4} strokeLinecap="round" />
+          <path d="M-8,-1 C-11,1 -11,4 -8,4" stroke="#5f707b" strokeWidth={1.6} fill="none" />
+        </g>
+      );
+    case "owl": {
+      const tree =
+        firstById(plants, (pl) => pl.category === "tree" && pl.state !== "dead" && pl.maturity >= 0.6) ??
+        firstById(plants, (pl) => pl.category === "tree" && pl.state !== "dead");
+      const a = tree ? anchorOf(tree) : { x: 320, y: 320, s: 0.8 };
+      const y = Math.max(120, a.y - 108 * a.s);
+      return (
+        <g data-visitor="owl" pointerEvents="none" transform={`translate(${n(a.x + 8)} ${n(y)})`} opacity={0.95}>
+          <ellipse cx={0} cy={0} rx={5.2} ry={6.4} fill="#4e463c" />
+          <circle cx={0} cy={-5.2} r={3.6} fill="#554c41" />
+          <path d="M-3,-8 l-1.2,-2.6 2.4,1 Z M3,-8 l1.2,-2.6 -2.4,1 Z" fill="#554c41" />
+          <circle cx={-1.5} cy={-5.6} r={1.1} fill="#e8dca8" />
+          <circle cx={1.5} cy={-5.6} r={1.1} fill="#e8dca8" />
+          <circle cx={-1.5} cy={-5.6} r={0.45} fill="#2a2418" />
+          <circle cx={1.5} cy={-5.6} r={0.45} fill="#2a2418" />
+        </g>
+      );
+    }
+    case "fox":
+      return (
+        <g data-visitor="fox" pointerEvents="none" transform="translate(845 476)" opacity={0.92}>
+          <ellipse cx={0} cy={0} rx={11} ry={5} fill="#a4602f" />
+          <circle cx={10} cy={-4} r={3.4} fill="#ad6a36" />
+          <path d="M8.4,-6.6 l-0.6,-3 2,1.6 Z M11.6,-6.8 l1.4,-2.8 0.8,2.8 Z" fill="#ad6a36" />
+          <path d="M-10,-1 C-16,-4 -19,1 -14,4 C-12,5 -10,4 -9,2 Z" fill="#a4602f" />
+          <path d="M-16.6,-2.4 C-18.6,-1.8 -19,0.4 -17.6,1.6 C-16.4,0.6 -16.2,-1 -16.6,-2.4 Z" fill="#e8dcc8" />
+          <path d="M-5,4.6 l-0.6,5 M0,5 l0,4.6 M6,4.4 l0.8,5" stroke="#8a4f26" strokeWidth={1.6} strokeLinecap="round" />
+          <circle cx={11.2} cy={-4.4} r={0.5} fill="#2a1d12" />
+        </g>
+      );
+  }
+}
+
 /* ── scene ───────────────────────────────────────────────────────────────── */
 
 export interface GardenSceneProps {
@@ -351,6 +424,8 @@ export interface GardenSceneProps {
   preserveAspectRatio?: string;
   /** Mount the Tier-2 canvas atmosphere layer above the SVG. */
   atmosphere?: boolean;
+  /** Today's rare visitor (worker-decided); rendered only during its hours. */
+  visitor?: SceneVisitor | null;
 }
 
 export function GardenScene({
@@ -363,6 +438,7 @@ export function GardenScene({
   timeOfDay,
   preserveAspectRatio = "xMidYMax meet",
   atmosphere = false,
+  visitor = null,
 }: GardenSceneProps) {
   const p = idPrefix;
   const animate = !reducedMotion;
@@ -530,6 +606,9 @@ export function GardenScene({
       {snapshot.wildlife.frogs ? frogShapes(p, animate, sorted) : null}
       {snapshot.wildlife.dragonflies ? dragonflyShapes(p, animate, sorted) : null}
       {snapshot.wildlife.ladybugs ? ladybugShapes(p, animate, sorted) : null}
+
+      {/* today's rare visitor — only during its own hours */}
+      {visitor && VISITOR_PERIODS[visitor].has(light.period) ? visitorShapes(visitor, sorted) : null}
 
       {/* finish: beams, horizon haze, grain, vignette — over everything */}
       <Finish p={p} light={light} />

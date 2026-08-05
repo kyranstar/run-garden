@@ -7,6 +7,7 @@ import {
   gardenSnapshots,
   gardenState,
   gardenUnlocks,
+  gardenVisitors,
   gardenWildlife,
   plannedWorkouts,
   trainingPlans,
@@ -44,6 +45,13 @@ import {
   type SpeciesUnlockStatus,
 } from "@rg/garden-engine";
 import { chunkedInsert, type Db } from "./db.js";
+import {
+  VISITOR_HINTS,
+  VISITOR_LINES,
+  visitorForDate,
+  type VisitorDayRuns,
+  type VisitorKind,
+} from "./visitors.js";
 
 /**
  * Garden synchronization: builds resolved day inputs from the database and
@@ -473,6 +481,15 @@ export interface GardenView {
   nextUnlocks: SpeciesUnlockStatus[];
   /** Wildlife visitors: who's here now and what draws each kind. */
   wildlife: Array<{ kind: string; present: boolean; hint: string }>;
+  /** Today's rare visitor, if the pattern and the seeded roll line up. */
+  visitor: { kind: VisitorKind; line: string } | null;
+  /** The rare-visitor ledger: every kind with sightings and its earn hint. */
+  visitors: Array<{
+    kind: VisitorKind;
+    count: number;
+    lastSeen: string | null;
+    hint: string;
+  }>;
   /** How balanced run/strength/yoga are right now, from the current snapshot state. */
   balance: DisciplineBalance;
 }
@@ -537,6 +554,48 @@ export async function buildGardenView(
   const livingCount = (speciesId: string): number =>
     snapshot.plants.filter((p) => p.speciesId === speciesId && p.state !== "dead").length;
 
+  // Today's rare visitor: a pure function of the date and the resolved day
+  // inputs (see visitors.ts). The ledger only records what was decided.
+  let todayVisitor: VisitorKind | null = null;
+  let visitorRows: Array<{ kind: string; count: number; lastSeen: string }> = [];
+  try {
+    const recentInputs = await db
+      .select()
+      .from(gardenDayInputs)
+      .where(and(eq(gardenDayInputs.userId, userId), gte(gardenDayInputs.date, addDays(today, -29))));
+    const dayRuns = recentInputs.map((r) => ({
+      date: r.date,
+      runs: ((r.input as { completedRuns?: unknown }).completedRuns ?? []) as VisitorDayRuns["runs"],
+    }));
+    todayVisitor = visitorForDate(today, snapshot.state.season, dayRuns);
+    if (todayVisitor) {
+      const id = `${userId}:${todayVisitor}`;
+      const existing = await db.select().from(gardenVisitors).where(eq(gardenVisitors.id, id)).limit(1);
+      if (!existing[0]) {
+        await db.insert(gardenVisitors).values({
+          id,
+          userId,
+          kind: todayVisitor,
+          count: 1,
+          firstSeen: today,
+          lastSeen: today,
+        });
+      } else if (existing[0].lastSeen !== today) {
+        await db
+          .update(gardenVisitors)
+          .set({ count: existing[0].count + 1, lastSeen: today })
+          .where(eq(gardenVisitors.id, id));
+      }
+    }
+    visitorRows = await db
+      .select()
+      .from(gardenVisitors)
+      .where(eq(gardenVisitors.userId, userId));
+  } catch {
+    // Visitors are a flourish — never let them break the garden read.
+  }
+  const visitorByKind = new Map(visitorRows.map((r) => [r.kind, r]));
+
   return {
     snapshot,
     condition: conditionWord(snapshot.state, DEFAULT_GARDEN_CONFIG),
@@ -562,6 +621,13 @@ export async function buildGardenView(
       kind,
       present,
       hint: WILDLIFE_HINTS[kind as keyof typeof WILDLIFE_HINTS] ?? "",
+    })),
+    visitor: todayVisitor ? { kind: todayVisitor, line: VISITOR_LINES[todayVisitor] } : null,
+    visitors: (Object.keys(VISITOR_HINTS) as VisitorKind[]).map((kind) => ({
+      kind,
+      count: visitorByKind.get(kind)?.count ?? 0,
+      lastSeen: visitorByKind.get(kind)?.lastSeen ?? null,
+      hint: VISITOR_HINTS[kind],
     })),
     balance: disciplineBalance(snapshot.state),
   };

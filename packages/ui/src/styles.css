@@ -3113,6 +3113,46 @@ button {
 .wildlife-hint {
   margin-top: 0.45rem;
 }
+.visitor-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.45rem;
+}
+.visitor-card {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0.1rem;
+  width: 5.4rem;
+  padding: 0.45rem 0.3rem;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--green-soft);
+  color: var(--green-ink);
+  font: inherit;
+  cursor: pointer;
+}
+.visitor-card:hover {
+  border-color: var(--green);
+}
+.visitor-unseen {
+  background: transparent;
+  color: var(--ink-faint);
+  border-style: dashed;
+}
+.visitor-name {
+  font-size: 0.74rem;
+  font-weight: 650;
+  color: var(--ink);
+}
+.visitor-unseen .visitor-name {
+  color: var(--ink-faint);
+}
+.visitor-sub {
+  font-size: 0.62rem;
+  color: var(--ink-faint);
+  font-variant-numeric: tabular-nums;
+}
 @media (prefers-color-scheme: dark) {
   .rarity-uncommon {
     background: #2c3c50;

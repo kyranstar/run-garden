@@ -114,6 +114,25 @@ export const gardenSnapshots = sqliteTable(
   (t) => [uniqueIndex("garden_snapshots_unique").on(t.userId, t.date)],
 );
 
+/**
+ * Rare-visitor sightings ledger. Visitors (deer, heron, owl, fox) are a
+ * worker-side display layer — which day one appears is a pure function of
+ * the date and the resolved day inputs, so this table only remembers what
+ * was seen, never decides it.
+ */
+export const gardenVisitors = sqliteTable(
+  "garden_visitors",
+  {
+    id: text("id").primaryKey(), // `${userId}:${kind}`
+    userId: text("user_id").notNull(),
+    kind: text("kind").notNull(),
+    count: integer("count").notNull(),
+    firstSeen: text("first_seen").notNull(),
+    lastSeen: text("last_seen").notNull(),
+  },
+  (t) => [uniqueIndex("garden_visitors_unique").on(t.userId, t.kind)],
+);
+
 /** Resolved day inputs fed to the simulation (auditable, replayable). */
 export const gardenDayInputs = sqliteTable(
   "garden_day_inputs",

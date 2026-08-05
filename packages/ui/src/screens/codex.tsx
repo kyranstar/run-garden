@@ -7,10 +7,11 @@
  * reachable thing to grow.
  */
 
-import { useLayoutEffect, useMemo, useRef, useState } from "react";
+import { useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import type { GardenPlant } from "@rg/domain";
 import { SPECIES_BY_ID, type UnlockGate } from "@rg/garden-engine";
 import { PlantSprite } from "@rg/garden-renderer";
+import { formatDayShort } from "../components.js";
 
 export interface CodexEntry {
   speciesId: string;
@@ -508,4 +509,97 @@ export function WildlifeShelf({ wildlife }: { wildlife: WildlifeEntry[] }) {
 
 function cap(s: string): string {
   return s.charAt(0).toUpperCase() + s.slice(1);
+}
+
+/* ── Rare visitors ─────────────────────────────────────────────────────── */
+
+export interface VisitorEntry {
+  kind: string;
+  count: number;
+  lastSeen: string | null;
+  hint: string;
+}
+
+const VISITOR_ICONS: Record<string, ReactNode> = {
+  deer: (
+    <svg width="30" height="22" viewBox="0 0 30 22" aria-hidden>
+      <g fill="currentColor" transform="translate(13 13)">
+        <ellipse rx={8} ry={4.5} />
+        <path d="M6,-2 L9,-8 L10.5,-7.5 L8,-1.5 Z" />
+        <circle cx={10} cy={-9} r={2.2} />
+        <path d="M9,-11 l-1,-3 M10.5,-11 l1,-3" stroke="currentColor" strokeWidth={0.9} fill="none" strokeLinecap="round" />
+        <path d="M-5,4 l-0.6,5 M0,4.4 l0,4.6 M5,4 l0.6,5" stroke="currentColor" strokeWidth={1.3} strokeLinecap="round" />
+      </g>
+    </svg>
+  ),
+  heron: (
+    <svg width="30" height="22" viewBox="0 0 30 22" aria-hidden>
+      <g fill="currentColor" transform="translate(14 14)">
+        <ellipse rx={6} ry={3.5} />
+        <path d="M4,-2 C7,-6 7,-10 5,-12" stroke="currentColor" strokeWidth={1.6} fill="none" strokeLinecap="round" />
+        <circle cx={5} cy={-12.5} r={1.7} />
+        <path d="M6.6,-12.8 l4,0.9 -4,0.8 Z" />
+        <path d="M-1.4,3.4 l0,4.4 M1.8,3.4 l0,4.4" stroke="currentColor" strokeWidth={0.9} strokeLinecap="round" />
+      </g>
+    </svg>
+  ),
+  owl: (
+    <svg width="30" height="22" viewBox="0 0 30 22" aria-hidden>
+      <g fill="currentColor" transform="translate(15 12)">
+        <ellipse rx={5} ry={6.4} />
+        <circle cx={0} cy={-5.6} r={3.4} />
+        <path d="M-2.8,-8.2 l-1.2,-2.4 2.2,1 Z M2.8,-8.2 l1.2,-2.4 -2.2,1 Z" />
+        <circle cx={-1.4} cy={-6} r={0.9} fill="#fff" opacity={0.85} />
+        <circle cx={1.4} cy={-6} r={0.9} fill="#fff" opacity={0.85} />
+      </g>
+    </svg>
+  ),
+  fox: (
+    <svg width="30" height="22" viewBox="0 0 30 22" aria-hidden>
+      <g fill="currentColor" transform="translate(14 13)">
+        <ellipse rx={7.5} ry={3.8} />
+        <circle cx={7} cy={-3} r={2.4} />
+        <path d="M5.8,-4.8 l-0.4,-2.4 1.6,1.2 Z M8.2,-5 l1,-2.2 0.6,2.2 Z" />
+        <path d="M-7,-0.6 C-11,-2.6 -13,0.8 -9.6,2.8 C-8.4,3.4 -7.2,2.8 -6.6,1.4 Z" />
+      </g>
+    </svg>
+  ),
+};
+
+/**
+ * The rare-visitors shelf: a second, smaller collection. Seen visitors show
+ * their tally; unseen ones reveal their honest arrival hint on tap.
+ */
+export function VisitorsShelf({ visitors }: { visitors: VisitorEntry[] }) {
+  const [openKind, setOpenKind] = useState<string | null>(null);
+  if (visitors.length === 0) return null;
+  const seen = visitors.filter((v) => v.count > 0);
+  const open = visitors.find((v) => v.kind === openKind);
+  return (
+    <div className="wildlife-shelf">
+      <div className="codex-sub" style={{ marginBottom: "0.35rem" }}>
+        Rare visitors — {seen.length === 0 ? "none seen yet" : `${seen.length} of ${visitors.length} seen`}
+      </div>
+      <div className="visitor-row">
+        {visitors.map((v) => (
+          <button
+            type="button"
+            key={v.kind}
+            className={`visitor-card${v.count > 0 ? "" : " visitor-unseen"}`}
+            aria-expanded={openKind === v.kind}
+            onClick={() => setOpenKind(openKind === v.kind ? null : v.kind)}
+          >
+            {VISITOR_ICONS[v.kind] ?? null}
+            <span className="visitor-name">{cap(v.kind)}</span>
+            <span className="visitor-sub">
+              {v.count > 0
+                ? `seen ${v.count}×${v.lastSeen ? ` · ${formatDayShort(v.lastSeen)}` : ""}`
+                : "not yet"}
+            </span>
+          </button>
+        ))}
+      </div>
+      {open ? <p className="codex-sub wildlife-hint">{open.hint}</p> : null}
+    </div>
+  );
 }

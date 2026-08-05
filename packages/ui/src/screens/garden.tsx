@@ -40,6 +40,7 @@ import {
   CATEGORY_ORDER,
   DisciplineNudges,
   landingUnlock,
+  VisitorsShelf,
   nextUnlocksByDiscipline,
   NUDGE_DISCIPLINE_LABEL,
   progressText,
@@ -50,6 +51,7 @@ import {
   WildlifeShelf,
   type CodexEntry,
   type NudgeDiscipline,
+  type VisitorEntry,
   type WildlifeEntry,
 } from "./codex.js";
 
@@ -948,6 +950,10 @@ export function GardenScreen() {
   const nudges = (garden.data.nextUnlocks as CodexEntry[]) ?? [];
   const wildlife = (garden.data.wildlife as WildlifeEntry[]) ?? [];
   const unlockedCount = codex.filter((c) => c.unlocked).length;
+  const visitor =
+    (garden.data.visitor as { kind: "deer" | "heron" | "owl" | "fox"; line: string } | null) ??
+    null;
+  const visitorLedger = (garden.data.visitors as VisitorEntry[]) ?? [];
 
   // The overnight beat: what happened since the last visit. Unlocks lead —
   // the reveal is the reward — so they graduate from a sentence into the
@@ -980,6 +986,11 @@ export function GardenScreen() {
     setCeremonyDismissed(true);
     setSelectedPlantId(plantId);
   };
+
+  // Today's rare visitor leads whichever arrival line is showing.
+  const beatLinesAll =
+    visitor && viewingLive && beatLines.length > 0 ? [visitor.line, ...beatLines] : beatLines;
+  const todayLinesAll = visitor && viewingLive ? [visitor.line, ...todayLines] : todayLines;
 
   const d = today.data;
 
@@ -1227,6 +1238,7 @@ export function GardenScreen() {
               onSelectPlant={setSelectedPlantId}
               timeOfDay={hourOfDay}
               atmosphere={!timelineOpen}
+              visitor={viewingLive && visitor ? visitor.kind : null}
               preserveAspectRatio="xMidYMax slice"
               className="stage-scene-svg"
             />
@@ -1267,10 +1279,10 @@ export function GardenScreen() {
                 variant="hud"
               />
             ) : null}
-            {viewingLive && beatLines.length > 0 && lastVisit ? (
+            {viewingLive && beatLinesAll.length > 0 && lastVisit ? (
               <p className="hud-beat">
                 <span className="hud-beat-label">Since {formatDayShort(lastVisit)}</span>
-                <span>{beatLines.join(" ")}</span>
+                <span>{beatLinesAll.join(" ")}</span>
                 <button
                   type="button"
                   className="hud-beat-dismiss"
@@ -1280,10 +1292,10 @@ export function GardenScreen() {
                   <IconClose size={12} />
                 </button>
               </p>
-            ) : viewingLive && todayLines.length > 0 ? (
+            ) : viewingLive && todayLinesAll.length > 0 ? (
               <p className="hud-beat">
                 <span className="hud-beat-label">Today</span>
-                <span>{todayLines.join(" ")}</span>
+                <span>{todayLinesAll.join(" ")}</span>
               </p>
             ) : null}
           </div>
@@ -1420,6 +1432,7 @@ export function GardenScreen() {
           <DiversityStrip snapshot={snapshot} />
           <SpeciesCodex codex={codex} today={todayDate} onOpenSpecies={setOpenSpeciesId} />
           <WildlifeShelf wildlife={wildlife} />
+          <VisitorsShelf visitors={visitorLedger} />
         </Drawer>
         <Drawer open={openDrawer === "log"} onClose={() => setOpenDrawer(null)} title="Garden log">
           {renderLog(fullLog)}
@@ -1443,6 +1456,7 @@ export function GardenScreen() {
           onSelectPlant={setSelectedPlantId}
           timeOfDay={hourOfDay}
           atmosphere={!timelineOpen}
+          visitor={viewingLive && visitor ? visitor.kind : null}
         />
       </div>
 
@@ -1502,15 +1516,15 @@ export function GardenScreen() {
             onDismiss={() => setCeremonyDismissed(true)}
           />
         ) : null}
-        {viewingLive && beatLines.length > 0 && lastVisit ? (
+        {viewingLive && beatLinesAll.length > 0 && lastVisit ? (
           <p className="garden-nowline">
             <span className="now-chip">since {formatDayShort(lastVisit)}</span>
-            {beatLines.join(" ")}
+            {beatLinesAll.join(" ")}
           </p>
-        ) : todayLines.length > 0 ? (
+        ) : todayLinesAll.length > 0 ? (
           <p className="garden-nowline">
             <span className="now-chip">today</span>
-            {todayLines.join(" ")}
+            {todayLinesAll.join(" ")}
           </p>
         ) : null}
         <p className="muted">
@@ -1563,6 +1577,7 @@ export function GardenScreen() {
           <DiversityStrip snapshot={snapshot} />
           <SpeciesCodex codex={codex} today={todayDate} onOpenSpecies={setOpenSpeciesId} />
           <WildlifeShelf wildlife={wildlife} />
+          <VisitorsShelf visitors={visitorLedger} />
         </Card>
       </div>
 
