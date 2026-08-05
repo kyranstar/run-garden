@@ -977,12 +977,11 @@ describe("race + evening + best-chain counters", () => {
   });
 
   it("a v3-shaped snapshot (fields missing) simulates without crashing", () => {
-    const snap = initialSnapshot(START) as GardenSnapshot & {
-      state: { raceCount?: number; bestConsistentWeeks?: number };
-    };
-    delete snap.state.raceCount;
-    delete snap.state.bestConsistentWeeks;
-    delete (snap.wildlife as Record<string, unknown>).ducks;
+    const snap = initialSnapshot(START);
+    const looseState = snap.state as unknown as Record<string, unknown>;
+    delete looseState.raceCount;
+    delete looseState.bestConsistentWeeks;
+    delete (snap.wildlife as unknown as Record<string, unknown>).ducks;
     const out = simulateDay(snap as GardenSnapshot, runDay(START, "race"));
     expect(out.snapshot.state.raceCount).toBe(1);
   });

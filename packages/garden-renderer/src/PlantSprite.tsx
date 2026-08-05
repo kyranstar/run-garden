@@ -948,7 +948,7 @@ function waterLily({ r, v, m, P, L }: Ctx): ReactNode {
   const sheen = blobPath(r, litOffset, -rw * 0.05, rw * 0.8, rw * 0.3, 0.18, 7);
   const creaseA = (r() - 0.5) * 1.6;
   const items: ReactNode[] = [
-    <path key="pad" d={pad} fill={P.c1} />,
+    <path key="pad" d={pad} fill={P.c1} stroke={shade(P.c1, 0.7)} strokeWidth={0.5} />,
     <path key="sheen" d={sheen} fill={mix(P.c1, L.litColor, 0.22 * L.amount)} opacity={0.85} />,
     <path
       key="crease"
@@ -961,13 +961,15 @@ function waterLily({ r, v, m, P, L }: Ctx): ReactNode {
   if (m >= 0.5) {
     const bh = v(lerp(1.6, 4.2, m), 0.2);
     if (P.blooming) {
+      // A three-lobed lotus crown — side lobes low, center lobe tall — so the
+      // open bloom reads as a lily, never a valentine.
       items.push(
         <path
           key="petals"
-          d={`M0,${n(-bh * 0.2)} C${n(-bh)},${n(-bh * 1.1)} ${n(-bh * 0.5)},${n(-bh * 1.6)} 0,${n(-bh * 1.2)} C${n(bh * 0.5)},${n(-bh * 1.6)} ${n(bh)},${n(-bh * 1.1)} 0,${n(-bh * 0.2)} Z`}
+          d={`M${n(-bh)},0 C${n(-bh * 1.05)},${n(-bh * 0.75)} ${n(-bh * 0.55)},${n(-bh * 0.95)} ${n(-bh * 0.32)},${n(-bh * 0.7)} C${n(-bh * 0.28)},${n(-bh * 1.35)} ${n(bh * 0.28)},${n(-bh * 1.35)} ${n(bh * 0.32)},${n(-bh * 0.7)} C${n(bh * 0.55)},${n(-bh * 0.95)} ${n(bh * 1.05)},${n(-bh * 0.75)} ${n(bh)},0 Q0,${n(bh * 0.3)} ${n(-bh)},0 Z`}
           fill={P.c2}
         />,
-        <circle key="heart" cx={0} cy={n(-bh * 0.75)} r={n(bh * 0.28)} fill={P.c3} />,
+        <circle key="heart" cx={0} cy={n(-bh * 0.45)} r={n(bh * 0.26)} fill={P.c3} />,
       );
     } else {
       items.push(
