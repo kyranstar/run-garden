@@ -202,7 +202,9 @@ export function Terrain({ p, light, moisture, soilHealth, floweringDensity, biod
     const shadeRoll = r();
     if (i >= count) continue;
     const base = mix(light.grassFar, light.grassNear, d);
-    const c = shade(base, 0.85 + shadeRoll * 0.3);
+    // Warm grading toward the sun azimuth — light changes color, not density.
+    const sunT = light.sunX !== null ? Math.max(0, 1 - Math.abs(x - light.sunX) / 900) : 0;
+    const c = mix(shade(base, 0.85 + shadeRoll * 0.3), light.sunColor, 0.12 * sunT);
     const width = n(0.6 + 1.3 * d);
     const variety = kindRoll < clamp01(biodiversity) * 0.5;
     const dPath = variety && kindRoll < 0.2
@@ -227,6 +229,29 @@ export function Terrain({ p, light, moisture, soilHealth, floweringDensity, biod
     const ci = Math.floor(fr() * light.meadowAccents.length);
     if (i >= fCount) continue;
     flowers.push(<circle key={`f${i}`} cx={x} cy={y} r={rad} fill={light.meadowAccents[ci]!} opacity={0.85} />);
+  }
+
+  // Backlit seed heads: sparse tall stems whose heads catch the low sun.
+  // Fixed 96 draws (4 × 24); floweringDensity gates rendering, never draws.
+  const sr = rng("terrain:seedheads");
+  const sCount = Math.round(10 + 8 * clamp01(floweringDensity));
+  const seedheads: ReactNode[] = [];
+  for (let i = 0; i < 24; i++) {
+    const d = 0.3 + sr() * 0.7;
+    const x = n(sr() * 1000);
+    const h = n((14 + 10 * sr()) * (0.6 + 0.5 * d));
+    const leanSh = n((sr() - 0.5) * 6);
+    if (i >= sCount) continue;
+    const y = n(300 + 250 * d);
+    const sunT = light.sunX !== null ? Math.max(0, 1 - Math.abs(x - light.sunX) / 700) : 0;
+    const head = light.sunX !== null ? mix(light.grassNear, light.sunColor, 0.55) : shade(light.grassNear, 1.15);
+    const stem = mix(shade(mix(light.grassFar, light.grassNear, d), 0.9), head, 0.4 * sunT);
+    seedheads.push(
+      <g key={`sh${i}`} data-terrain="seedhead">
+        <path d={`M${x},${y} q${n(leanSh * 0.5)},${n(-h * 0.6)} ${leanSh},${n(-h)}`} stroke={stem} strokeWidth={0.9} fill="none" strokeLinecap="round" />
+        <ellipse cx={n(x + leanSh)} cy={n(y - h)} rx={1.3} ry={2.2} fill={head} opacity={n(0.45 + 0.45 * light.beamStrength)} />
+      </g>,
+    );
   }
 
   // Drought: straw patches + hairline cracks, scaling with droughtDays.
@@ -271,6 +296,7 @@ export function Terrain({ p, light, moisture, soilHealth, floweringDensity, biod
       {groundEls.length > 0 ? <g data-terrain="grounds" pointerEvents="none">{groundEls}</g> : null}
       {pools.length > 0 ? <g data-terrain="pools" pointerEvents="none">{pools}</g> : null}
       <g data-terrain="meadow" pointerEvents="none">{strokes}</g>
+      {seedheads.length > 0 ? <g data-terrain="seedheads" pointerEvents="none">{seedheads}</g> : null}
       {flowers.length > 0 ? <g data-terrain="flowers" pointerEvents="none">{flowers}</g> : null}
       {patches.length > 0 ? <g data-terrain="patches" pointerEvents="none">{patches}</g> : null}
     </>

@@ -613,7 +613,10 @@ export function GardenScene({
         // Cast lobe pinned just behind the base edge, elongating only away
         // from the sun; contact core stays under the stem. Both take the
         // scene-derived shadowColor so drought/night/dusk read correctly.
-        const castR = shadowHw * (0.5 + 0.9 * light.shadowLen);
+        // Low sun stretches shadows further and warms them toward umber.
+        const castR = shadowHw * (0.5 + (light.shadowLen > 0.7 ? 1.05 : 0.9) * light.shadowLen);
+        const castColor =
+          light.beamStrength > 0.3 ? mix(light.shadowColor, "#6b4a2f", 0.25) : light.shadowColor;
         // Aerial perspective: back rows haze toward the horizon color.
         const depth = 1 - plant.position.y;
         const tintColor = mix(light.foliageTint, light.hazeColor, 0.55 * depth);
@@ -662,7 +665,7 @@ export function GardenScene({
                   cy={3.5}
                   rx={n(castR)}
                   ry={n(shadowHw * 0.16)}
-                  fill={light.shadowColor}
+                  fill={castColor}
                   opacity={n(light.shadowOpacity * 0.75)}
                 />
                 <ellipse
@@ -671,7 +674,7 @@ export function GardenScene({
                   cy={3}
                   rx={n(shadowHw * 0.5)}
                   ry={n(shadowHw * 0.13)}
-                  fill={light.shadowColor}
+                  fill={castColor}
                   opacity={n(Math.min(0.35, light.shadowOpacity * 1.7))}
                 />
               </>

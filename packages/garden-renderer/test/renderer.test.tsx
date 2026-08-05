@@ -146,6 +146,16 @@ describe("GardenScene", () => {
     expect(markup.match(/data-ridge="/g)).toHaveLength(3);
   });
 
+  it("backlit seed heads render with a lighting-stable count", () => {
+    const snapshot = healthySnapshot();
+    const heads = (m: string) => (m.match(/data-terrain="seedhead"/g) ?? []).length;
+    const golden = renderScene(snapshot, { timeOfDay: 17.5 });
+    const night = renderScene(snapshot, { timeOfDay: 23 });
+    expect(heads(golden)).toBeGreaterThan(0);
+    // honesty rule: light changes color, never how much grows
+    expect(heads(golden)).toBe(heads(night));
+  });
+
   it("renders every living plant with a data-plant-id attribute", () => {
     const snapshot = healthySnapshot();
     const markup = renderScene(snapshot);
