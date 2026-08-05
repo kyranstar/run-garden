@@ -247,7 +247,7 @@ export function Terrain({ p, light, moisture, soilHealth, floweringDensity, biod
     const base = mix(light.grassFar, light.grassNear, d);
     // Warm grading toward the sun azimuth — light changes color, not density.
     const sunT = light.sunX !== null ? Math.max(0, 1 - Math.abs(x - light.sunX) / 900) : 0;
-    const c = mix(shade(base, 0.85 + shadeRoll * 0.3), light.sunColor, 0.12 * sunT);
+    const c = mix(shade(base, 0.85 + shadeRoll * 0.3), light.sunColor, 0.18 * sunT);
     const width = n(0.6 + 1.3 * d);
     const variety = kindRoll < clamp01(biodiversity) * 0.5;
     const dPath = variety && kindRoll < 0.2

@@ -58,11 +58,11 @@ function matureSnapshot(): GardenSnapshot {
 it.runIf(process.env.EXPORT_DIR)("exports grainlight review scenes", () => {
   const healthy = replay(START, trainingWeeks(START, 6)).snapshot;
   const scenes: Array<[string, GardenSnapshot, number]> = [
-    ["golden", healthy, 17.5],
+    ["golden", healthy, 18.6],
     ["noon", healthy, 13],
     ["night", healthy, 22.5],
-    ["drought", droughtSnapshot(), 17.5],
-    ["mature", matureSnapshot(), 17.5],
+    ["drought", droughtSnapshot(), 18.6],
+    ["mature", matureSnapshot(), 18.6],
   ];
   for (const [name, snap, hour] of scenes) {
     const svg = renderToStaticMarkup(<GardenScene snapshot={snap} timeOfDay={hour} reducedMotion={true} />);

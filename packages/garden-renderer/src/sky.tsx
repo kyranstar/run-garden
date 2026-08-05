@@ -149,7 +149,7 @@ function Clouds({ p, light, animate }: { p: string; light: SceneLight; animate: 
   for (let i = 0; i < light.cloudCount; i++) {
     const cx = 140 + r() * 700;
     const cy = 52 + r() * 78;
-    const sc = 0.8 + r() * 0.5;
+    const sc = 1.05 + r() * 0.75;
     const style: CSSProperties | undefined = animate
       ? { animationDuration: `${n(62 + r() * 26)}s`, animationDelay: `-${n(r() * 40)}s` }
       : undefined;
@@ -165,12 +165,13 @@ function Clouds({ p, light, animate }: { p: string; light: SceneLight; animate: 
     } else {
       // Tone-stacked puff: shaded underbelly, main mass, sun-side lit crown.
       const litdx = light.sunX !== null && light.sunX < cx ? -1 : 1;
-      const lit = mix(shade(light.cloudColor, 1.05), light.sunColor, 0.2 + 0.35 * light.beamStrength);
+      const lit = mix(shade(light.cloudColor, 1.05), light.sunColor, 0.2 + 0.45 * light.beamStrength);
       clouds.push(
         <g key={i} data-cloud="puff" className={animate ? `${p}-cloud` : undefined} style={style} opacity={0.85}>
-          <path d={blobPath(cr, cx - 8 * sc, cy + 7 * sc, 44 * sc, 10 * sc, 0.2, 8)} fill={shade(light.cloudColor, 0.9)} />
-          <path d={blobPath(cr, cx, cy, 52 * sc, 17 * sc, 0.24, 10)} fill={light.cloudColor} />
-          <path d={blobPath(cr, cx + 13 * sc * litdx, cy - 8 * sc, 30 * sc, 10 * sc, 0.26, 8)} fill={lit} />
+          <path d={blobPath(cr, cx - 8 * sc, cy + 7 * sc, 46 * sc, 10 * sc, 0.2, 8)} fill={shade(light.cloudColor, 0.9)} />
+          <path d={blobPath(cr, cx, cy, 54 * sc, 18 * sc, 0.26, 10)} fill={light.cloudColor} />
+          <path d={blobPath(cr, cx - 34 * sc * litdx, cy + 3 * sc, 26 * sc, 9 * sc, 0.28, 7)} fill={shade(light.cloudColor, 0.97)} />
+          <path d={blobPath(cr, cx + 14 * sc * litdx, cy - 9 * sc, 32 * sc, 11 * sc, 0.26, 8)} fill={lit} />
         </g>,
       );
     }
