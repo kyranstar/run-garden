@@ -34,6 +34,7 @@ import {
   Spinner,
 } from "../components.js";
 import { Drawer } from "../drawer.js";
+import { cap, eventSentence } from "./arrival.js";
 import { BotanicalCard } from "./botanical.js";
 import { EvidenceCard, NextWorkout, Readiness, SyncPanel, UnresolvedCard } from "./today.js";
 import {
@@ -119,70 +120,8 @@ function dormant(s: GardenSnapshot): number {
   return s.plants.filter((p) => p.state === "dormant").length;
 }
 
-function cap(s: string): string {
-  return s.charAt(0).toUpperCase() + s.slice(1);
-}
-
-function eventSentence(e: GardenEvent): string | null {
-  switch (e.kind) {
-    case "run_completed": {
-      const catg = e.workoutCategory ?? "";
-      // Strength/yoga sessions ride the same run_completed event as runs (see
-      // applyRun), so route them to discipline-true copy before falling
-      // through to the generic run sentences below.
-      if (catg === "strength") {
-        return e.detail === "unplanned"
-          ? "An extra strength session fed the soil."
-          : "A strength session fed the soil.";
-      }
-      if (catg === "yoga") {
-        return e.detail === "unplanned"
-          ? "An extra yoga session tended the meadow."
-          : "A yoga session tended the meadow.";
-      }
-      if (e.detail === "unplanned") return "An extra run gave the garden a light watering.";
-      const article = /^[aeiou]/i.test(catg) ? "An" : "A";
-      return catg ? `${article} ${catg} run watered the garden.` : "A run watered the garden.";
-    }
-    case "plant_added": {
-      const name = e.speciesId ? (SPECIES_BY_ID.get(e.speciesId)?.name ?? "plant") : "plant";
-      return e.detail === "tree_seed" ? `A ${name} seed was planted.` : `A ${name} took root.`;
-    }
-    case "species_unlocked": {
-      const name = e.speciesId ? (SPECIES_BY_ID.get(e.speciesId)?.name ?? e.speciesId) : "";
-      return `New species unlocked: ${name}.`;
-    }
-    case "wildlife_arrived":
-      return `${cap(e.wildlifeId ?? "wildlife")} arrived in the garden.`;
-    case "wildlife_departed":
-      return `${cap(e.wildlifeId ?? "wildlife")} moved on for now.`;
-    case "plant_died":
-      return "A plant died back — it stays as habitat.";
-    case "region_unlocked": {
-      const ceremonies: Record<string, string> = {
-        stream: "Long runs carved the stream — new ground, new water.",
-        terrace: "Strength work built the stone terrace.",
-        glade: "Steady yoga cleared the still glade.",
-        meadow: "The garden expanded into new meadow.",
-      };
-      return ceremonies[e.detail ?? ""] ?? "The garden expanded into new ground.";
-    }
-    case "rest_mode_started":
-      return "Garden rest mode began.";
-    case "rest_mode_ended":
-      return "Garden rest mode ended.";
-    case "missed_run":
-      return "A missed run left the soil a little drier.";
-    case "rest_observed":
-      return "A rest day — soil health improved.";
-    case "soil_tended":
-      return "Strength work fed the soil.";
-    case "life_tended":
-      return "Yoga brought the meadow back to life.";
-    default:
-      return null;
-  }
-}
+// eventSentence, cap and the arrival-selection logic live in arrival.ts —
+// pure, unit-tested, shared by the beat, the log, and the ceremony queue.
 
 const WEATHER_LABEL: Record<GardenWeatherState, string> = {
   fresh_rain: "fresh rain",
