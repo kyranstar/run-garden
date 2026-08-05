@@ -24,11 +24,25 @@ const clamp01 = (v: number): number => (v < 0 ? 0 : v > 1 ? 1 : v);
 /** Depth mapping: position.y 0 (far) → scene y 290, 1 (near) → 540. */
 const GROUND_TOP = 290;
 const GROUND_SPAN = 250;
-function anchorOf(plant: GardenPlant): { x: number; y: number; s: number } {
+const smooth01 = (t: number): number => {
+  const c = clamp01(t);
+  return c * c * (3 - 2 * c);
+};
+/**
+ * Hero scale: mature trees in the nearer rows outgrow the flat depth curve so
+ * a full-grown oak can anchor the composition the way the approved mock's did.
+ * Wildlife perches and canopy pools read through this same anchor, so they
+ * track the boost automatically. Exported for tests.
+ */
+export function anchorOf(plant: GardenPlant): { x: number; y: number; s: number } {
+  const heroBoost =
+    plant.category === "tree" && plant.state !== "dead"
+      ? 1 + smooth01(plant.maturity) * (0.35 + 0.6 * plant.position.y)
+      : 1;
   return {
     x: plant.position.x * 1000,
     y: GROUND_TOP + plant.position.y * GROUND_SPAN,
-    s: 0.65 + 0.45 * plant.position.y,
+    s: (0.65 + 0.45 * plant.position.y) * heroBoost,
   };
 }
 

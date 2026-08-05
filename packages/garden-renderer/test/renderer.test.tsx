@@ -13,6 +13,7 @@ import {
 } from "@rg/garden-engine";
 import { conditionWord, DEFAULT_GARDEN_CONFIG } from "@rg/garden-engine";
 import { describeGarden, describePlant, GardenScene, PlantSprite } from "../src/index";
+import { anchorOf } from "../src/GardenScene";
 import { moonShadowOffset } from "../src/sky";
 
 const START = "2026-03-02"; // a Monday
@@ -544,6 +545,22 @@ describe("atmosphere layer", () => {
   it("atmosphere + reducedMotion renders the wrapper without a canvas", () => {
     const markup = renderScene(healthySnapshot(), { atmosphere: true, reducedMotion: true });
     expect(markup).not.toContain("<canvas");
+  });
+});
+
+describe("hero tree scale", () => {
+  const oak = SPECIES.find((s) => s.id === "milestone_oak")!;
+  const rose = SPECIES.find((s) => s.id === "century_rose")!;
+
+  it("mature near trees render at hero scale; saplings, far trees and shrubs don't", () => {
+    const near = { ...syntheticPlant(oak, "mature"), position: { x: 0.5, y: 0.45, region: 0 } };
+    const sapling = { ...near, maturity: 0.2 };
+    const far = { ...near, position: { x: 0.5, y: 0.1, region: 0 } };
+    const shrub = { ...syntheticPlant(rose, "mature"), position: { x: 0.5, y: 0.45, region: 0 } };
+    expect(anchorOf(near).s).toBeGreaterThan(1.0);
+    expect(anchorOf(sapling).s).toBeLessThan(0.95);
+    expect(anchorOf(far).s).toBeLessThan(anchorOf(near).s);
+    expect(anchorOf(shrub).s).toBeCloseTo(0.65 + 0.45 * 0.45, 2);
   });
 });
 

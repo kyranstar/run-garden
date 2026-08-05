@@ -47,6 +47,14 @@ function droughtSnapshot(): GardenSnapshot {
   return s;
 }
 
+function matureSnapshot(): GardenSnapshot {
+  // 20 weeks of training, then two observed rest days to settle off fresh_rain.
+  let s = replay(START, trainingWeeks(START, 20)).snapshot;
+  s = simulateDay(s, { ...emptyDay(addDays(START, 140)), restObserved: true }).snapshot;
+  s = simulateDay(s, { ...emptyDay(addDays(START, 141)), restObserved: true }).snapshot;
+  return s;
+}
+
 it.runIf(process.env.EXPORT_DIR)("exports grainlight review scenes", () => {
   const healthy = replay(START, trainingWeeks(START, 6)).snapshot;
   const scenes: Array<[string, GardenSnapshot, number]> = [
@@ -54,6 +62,7 @@ it.runIf(process.env.EXPORT_DIR)("exports grainlight review scenes", () => {
     ["noon", healthy, 13],
     ["night", healthy, 22.5],
     ["drought", droughtSnapshot(), 17.5],
+    ["mature", matureSnapshot(), 17.5],
   ];
   for (const [name, snap, hour] of scenes) {
     const svg = renderToStaticMarkup(<GardenScene snapshot={snap} timeOfDay={hour} reducedMotion={true} />);
