@@ -473,6 +473,7 @@ const WILDLIFE_EMOJI: Record<string, string> = {
   frogs: "🐸",
   dragonflies: "💠",
   ladybugs: "🐞",
+  ducks: "🦆",
 };
 
 export function WildlifeShelf({ wildlife }: { wildlife: WildlifeEntry[] }) {

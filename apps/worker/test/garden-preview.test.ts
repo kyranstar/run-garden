@@ -118,3 +118,24 @@ describe("same-day preview fold-forward", () => {
     expect(out.events.every((e) => e.date === today)).toBe(true);
   });
 });
+
+describe("garden anniversary (Bundle 3 §6)", () => {
+  it("appears exactly on the yearly anniversary of genesis", async () => {
+    const db = makeTestDb();
+    const { userId, prefs } = await makeTestUser(db);
+    const today = todayInZone(prefs.timezone);
+    const twoYearsAgo = `${Number(today.slice(0, 4)) - 2}${today.slice(4)}`;
+    await ensureGarden(db, userId, prefs, twoYearsAgo);
+    const view = await buildGardenView(db, userId, prefs);
+    expect(view.anniversary).toBe("The garden turns 2 today — it remembers every run.");
+  });
+
+  it("is null on any other day (and in year one)", async () => {
+    const db = makeTestDb();
+    const { userId, prefs } = await makeTestUser(db);
+    const today = todayInZone(prefs.timezone);
+    await ensureGarden(db, userId, prefs, addDays(today, -10));
+    const view = await buildGardenView(db, userId, prefs);
+    expect(view.anniversary).toBeNull();
+  });
+});

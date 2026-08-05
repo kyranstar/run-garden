@@ -287,8 +287,9 @@ export function InsightsScreen() {
   // The sanctioned streak is WEEKLY (canon §1.3): the engine forgives days
   // by design, so a daily streak would be dishonest. The chain comes from
   // the garden snapshot — shared cache with the landing screen.
-  const chain =
-    (gardenQ.data?.snapshot as GardenSnapshot | undefined)?.state.consecutiveConsistentWeeks ?? 0;
+  const gardenState = (gardenQ.data?.snapshot as GardenSnapshot | undefined)?.state;
+  const chain = gardenState?.consecutiveConsistentWeeks ?? 0;
+  const bestChain = gardenState?.bestConsistentWeeks ?? 0;
 
   return (
     <div className="stack">
@@ -348,6 +349,7 @@ export function InsightsScreen() {
             {chain >= 1 ? (
               <p className="streak-note">
                 {chain} consistent week{chain === 1 ? "" : "s"} — the vines climb with it.
+                {bestChain > chain ? ` Longest: ${bestChain}.` : ""}
               </p>
             ) : null}
             <OutcomeBar

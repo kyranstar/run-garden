@@ -961,10 +961,14 @@ export function GardenScreen() {
   const beatLines = blockDismissed ? [] : arrival.beatLines;
   const todayLines = blockDismissed || !viewingLive ? [] : arrival.todayLines;
 
-  // Today's rare visitor leads whichever arrival line is showing.
-  const beatLinesAll =
-    visitor && viewingLive && beatLines.length > 0 ? [visitor.line, ...beatLines] : beatLines;
-  const todayLinesAll = visitor && viewingLive ? [visitor.line, ...todayLines] : todayLines;
+  // Today's rare visitor (and, once a year, the garden's birthday) leads
+  // whichever arrival line is showing.
+  const anniversary = (garden.data.anniversary as string | null) ?? null;
+  const leads = viewingLive
+    ? [...(anniversary ? [anniversary] : []), ...(visitor ? [visitor.line] : [])]
+    : [];
+  const beatLinesAll = beatLines.length > 0 ? [...leads, ...beatLines] : beatLines;
+  const todayLinesAll = leads.length > 0 || todayLines.length > 0 ? [...leads, ...todayLines] : todayLines;
 
   const d = today.data;
 

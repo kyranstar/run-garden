@@ -484,6 +484,8 @@ export interface GardenView {
   previewEvents: GardenEvent[];
   /** Arrival watermark (null = never marked; see POST /api/garden/seen). */
   seen: { lastSeenDate: string; lastSeenSeq: number; celebratedSpeciesIds: string[] } | null;
+  /** Garden-birthday line, on the anniversary of `createdDate` (age ≥ 1y). */
+  anniversary: string | null;
   /** Every species — unlocked and locked — with hints and real progress. */
   codex: Array<SpeciesUnlockStatus & { unlockedOn: string | null; livingCount: number }>;
   /** The nearest locked species: the "1 more week and it arrives" nudges. */
@@ -649,6 +651,14 @@ export async function buildGardenView(
     await db.select().from(gardenSeen).where(eq(gardenSeen.userId, userId)).limit(1)
   )[0];
 
+  // Garden birthday (Bundle 3 §6): a quiet once-a-year line, no art needed.
+  const created = snapshot.state.createdDate;
+  const ageYears = Number(today.slice(0, 4)) - Number(created.slice(0, 4));
+  const anniversary =
+    ageYears >= 1 && today.slice(5) === created.slice(5)
+      ? `The garden turns ${ageYears} today — it remembers every run.`
+      : null;
+
   return {
     snapshot,
     condition: conditionWord(snapshot.state, DEFAULT_GARDEN_CONFIG),
@@ -660,6 +670,7 @@ export async function buildGardenView(
           celebratedSpeciesIds: seenRow.celebratedSpeciesIds,
         }
       : null,
+    anniversary,
     species: unlocks.map((u) => {
       const s = SPECIES_BY_ID.get(u.speciesId);
       return {
