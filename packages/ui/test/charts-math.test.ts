@@ -1,6 +1,8 @@
 import { describe, expect, it } from "vitest";
 import {
   currentStreak,
+  isRecentRecord,
+  reviewUnseen,
   divergingDomain,
   formatHours,
   heatmapColumns,
@@ -362,5 +364,27 @@ describe("horizontalBarPath", () => {
     expect(horizontalBarPath(0, 0, 20, 4, 6, { left: true, right: false })).toBe(
       "M2,0 L20,0 L20,4 L2,4 Q0,4 0,2 L0,2 Q0,0 2,0 Z",
     );
+  });
+});
+
+describe("isRecentRecord (earned-moments spec §1)", () => {
+  it("true within the 7-day window, inclusive", () => {
+    expect(isRecentRecord("2026-08-05", "2026-08-05")).toBe(true);
+    expect(isRecentRecord("2026-07-29", "2026-08-05")).toBe(true);
+  });
+  it("false beyond 7 days, for future dates, and for junk", () => {
+    expect(isRecentRecord("2026-07-28", "2026-08-05")).toBe(false);
+    expect(isRecentRecord("2026-08-06", "2026-08-05")).toBe(false);
+    expect(isRecentRecord("not-a-date", "2026-08-05")).toBe(false);
+  });
+});
+
+describe("reviewUnseen (earned-moments spec §2)", () => {
+  it("true only when a latest review exists and the stored mark is null or older", () => {
+    expect(reviewUnseen(null, null)).toBe(false);
+    expect(reviewUnseen("2026-08-03", null)).toBe(true);
+    expect(reviewUnseen("2026-08-03", "2026-08-03")).toBe(false);
+    expect(reviewUnseen("2026-08-03", "2026-07-27")).toBe(true);
+    expect(reviewUnseen("2026-07-27", "2026-08-03")).toBe(false);
   });
 });

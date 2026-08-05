@@ -404,3 +404,23 @@ export function horizontalBarPath(
   parts.push("Z");
   return parts.join(" ");
 }
+
+/**
+ * A record achieved in the last 7 days (inclusive) earns a quiet "New" pill
+ * (earned-moments spec §1). Malformed or future dates never count.
+ */
+export function isRecentRecord(dateIso: string, todayIso: string): boolean {
+  const d = Date.parse(dateIso);
+  const t = Date.parse(todayIso);
+  if (Number.isNaN(d) || Number.isNaN(t)) return false;
+  const days = (t - d) / 86_400_000;
+  return days >= 0 && days <= 7;
+}
+
+/**
+ * Whether the latest weekly review is newer than what the user last opened
+ * (earned-moments spec §2). ISO week-start strings compare lexically.
+ */
+export function reviewUnseen(latestWeekStart: string | null, stored: string | null): boolean {
+  return !!latestWeekStart && (!stored || stored < latestWeekStart);
+}
