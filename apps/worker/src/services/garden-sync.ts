@@ -15,6 +15,7 @@ import {
 } from "@rg/database";
 import {
   addDays,
+  daysBetween,
   eachDay,
   isoWeekday,
   newId,
@@ -505,6 +506,56 @@ export interface GardenView {
  * Shared by the session-authed page route and the device-authed ambient read
  * so both always show the exact same garden.
  */
+/**
+ * Read-only fold of the simulation from the last durable day through today.
+ * Days the durable sim couldn't resolve are simulated from their best-known
+ * inputs (or neutral inputs if even that fails); only TODAY's events are
+ * returned, since intermediate days will emit identical durable rows when
+ * they resolve. Capped at 14 days — beyond that (a durable-sim outage, not
+ * normal lag, which the grace window bounds at 2) the durable snapshot
+ * stands and the preview stays silent.
+ */
+export async function previewToday(
+  db: Db,
+  userId: string,
+  snapshot: GardenSnapshot,
+  today: LocalDate,
+  prefs: UserPreferences,
+): Promise<{ snapshot: GardenSnapshot; events: GardenEvent[] }> {
+  const gapDays = daysBetween(snapshot.state.lastSimulatedDate, today);
+  if (gapDays < 1 || gapDays > 14) return { snapshot, events: [] };
+  try {
+    let cursor = snapshot;
+    let events: GardenEvent[] = [];
+    for (
+      let date = addDays(snapshot.state.lastSimulatedDate, 1);
+      date <= today;
+      date = addDays(date, 1)
+    ) {
+      let input: GardenDayInput;
+      try {
+        input = await buildDayInput(db, userId, date, prefs);
+      } catch {
+        input = {
+          date,
+          completedRuns: [],
+          missedRuns: [],
+          restObserved: false,
+          restModeActive: cursor.state.restMode,
+          planGap: false,
+        };
+      }
+      const step = simulateDay(cursor, input);
+      cursor = step.snapshot;
+      if (date === today) events = step.events;
+    }
+    return { snapshot: cursor, events };
+  } catch {
+    // Preview is cosmetic — never let it break the garden read.
+    return { snapshot, events: [] };
+  }
+}
+
 export async function buildGardenView(
   db: Db,
   userId: string,
@@ -513,24 +564,14 @@ export async function buildGardenView(
   await advanceGarden(db, userId, prefs).catch(() => undefined);
   let snapshot = await ensureGarden(db, userId, prefs);
 
-  // Same-day feedback: if a run was completed today, preview today's simulation
-  // for display (rain, growth, events) without persisting it. Only when the
-  // durable sim is exactly caught up to yesterday — previewing across a gap
-  // would skip days and misrepresent.
-  let previewEvents: GardenEvent[] = [];
+  // Same-day feedback: fold the sim forward read-only from the last durable
+  // day through today — resolved days as recorded, unresolved days neutral —
+  // so a lagging durable sim can never silence today's run (spec §2 of the
+  // 2026-08-05 reward-loop design). Nothing here is persisted.
   const today = todayInZone(prefs.timezone);
-  if (addDays(snapshot.state.lastSimulatedDate, 1) === today) {
-    try {
-      const todayInput = await buildDayInput(db, userId, today, prefs);
-      if (todayInput.completedRuns.length > 0) {
-        const preview = simulateDay(snapshot, todayInput);
-        snapshot = preview.snapshot;
-        previewEvents = preview.events;
-      }
-    } catch {
-      // Preview is cosmetic — never let it break the garden read.
-    }
-  }
+  const preview = await previewToday(db, userId, snapshot, today, prefs);
+  snapshot = preview.snapshot;
+  const previewEvents = preview.events;
   let unlocks = await db
     .select()
     .from(gardenUnlocks)
