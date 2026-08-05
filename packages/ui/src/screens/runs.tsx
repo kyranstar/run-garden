@@ -101,6 +101,7 @@ function LinkSheet({ activity, onClose }: { activity: ActivityDto; onClose: () =
       void qc.invalidateQueries({ queryKey: ["runs"] });
       void qc.invalidateQueries({ queryKey: ["plan"] });
       void qc.invalidateQueries({ queryKey: ["today"] });
+      void qc.invalidateQueries({ queryKey: ["garden"] });
     },
   });
 

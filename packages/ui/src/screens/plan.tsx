@@ -66,6 +66,8 @@ function WorkoutDetail({
     void qc.invalidateQueries({ queryKey: ["plan"] });
     void qc.invalidateQueries({ queryKey: ["today"] });
     void qc.invalidateQueries({ queryKey: ["workout", w.id] });
+    // Completion-state changes feed the garden simulation directly.
+    void qc.invalidateQueries({ queryKey: ["garden"] });
   };
   const dismissNote = useMutation({
     mutationFn: (id: string) => api.dismissSyncNote(id),

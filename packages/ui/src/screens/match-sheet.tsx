@@ -23,6 +23,7 @@ export function MatchSheet({
     onSuccess: () => {
       void qc.invalidateQueries({ queryKey: ["today"] });
       void qc.invalidateQueries({ queryKey: ["plan"] });
+      void qc.invalidateQueries({ queryKey: ["garden"] });
       void qc.invalidateQueries({ queryKey: ["unmatched-activities"] });
       onClose();
     },

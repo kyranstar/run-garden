@@ -1,7 +1,8 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Link } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { api, ApiError, type TodayResponse, type WorkoutDto } from "@rg/api-client";
+import { shouldInvalidateGarden } from "./arrival.js";
 import { GARDEN_CONDITION_LABELS } from "@rg/domain";
 import {
   Banner,
@@ -35,6 +36,21 @@ export function SyncPanel() {
   const status = useQuery({ queryKey: ["sync-status"], queryFn: api.syncStatus, refetchInterval: 30_000 });
   const notes = useQuery({ queryKey: ["sync-notes"], queryFn: api.syncNotes, refetchInterval: 30_000 });
   const [undoErrors, setUndoErrors] = useState<Record<string, string>>({});
+
+  // Freshness (reward-loop spec §1): a COROS read landing means new
+  // activities/completions may have grown the garden — refetch it while the
+  // user is looking instead of waiting for a remount. This panel already
+  // polls sync status every 30s on Garden/Today/Plan/Studio, so the watch
+  // costs nothing extra.
+  const lastRead = status.data?.lastCorosReadAt ?? null;
+  const prevReadRef = useRef<string | null>(null);
+  useEffect(() => {
+    if (shouldInvalidateGarden(prevReadRef.current, lastRead)) {
+      void qc.invalidateQueries({ queryKey: ["garden"] });
+      void qc.invalidateQueries({ queryKey: ["garden-timeline"] });
+    }
+    prevReadRef.current = lastRead;
+  }, [lastRead, qc]);
 
   const invalidateAfterUndo = () => {
     void qc.invalidateQueries({ queryKey: ["sync-status"] });
@@ -164,6 +180,7 @@ export function UnresolvedCard({ w }: { w: WorkoutDto }) {
   const invalidate = () => {
     void qc.invalidateQueries({ queryKey: ["today"] });
     void qc.invalidateQueries({ queryKey: ["plan"] });
+    void qc.invalidateQueries({ queryKey: ["garden"] });
   };
   const skip = useMutation({ mutationFn: () => api.skip(w.id), onSuccess: invalidate });
   const defer = useMutation({ mutationFn: () => api.defer(w.id), onSuccess: invalidate });
