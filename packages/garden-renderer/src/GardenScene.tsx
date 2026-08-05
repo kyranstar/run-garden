@@ -350,26 +350,61 @@ function visitorShapes(kind: SceneVisitor, plants: GardenPlant[]): ReactNode {
   switch (kind) {
     case "deer":
       return (
-        <g data-visitor="deer" pointerEvents="none" transform="translate(802 312) scale(0.78)" fill="#4a4036" opacity={0.88}>
-          <ellipse cx={0} cy={0} rx={14} ry={7.5} />
-          <path d="M11,-3 L16,-15 L18.5,-14 L14.5,-2 Z" />
-          <circle cx={18} cy={-16} r={3.6} />
-          <path d="M20.5,-18.5 l2.6,-1.8" stroke="#4a4036" strokeWidth={1.4} strokeLinecap="round" fill="none" />
-          <path d="M16.5,-19 l-1.6,-5 m1.6,5 l0.8,-5.6 M19,-19 l1.2,-5 m-1.2,5 l3,-4" stroke="#4a4036" strokeWidth={1.1} strokeLinecap="round" fill="none" />
-          <path d="M-9,6 l-1.4,12 M-4,7 l-0.4,11 M4,7 l0.4,11 M9,6 l1.6,12" stroke="#4a4036" strokeWidth={2} strokeLinecap="round" />
-          <path d="M-13,-3 l-3.2,-3.4" stroke="#4a4036" strokeWidth={2.2} strokeLinecap="round" />
+        <g data-visitor="deer" pointerEvents="none" transform="translate(800 310) scale(0.85)" fill="#4a4036" opacity={0.9}>
+          {/* body: arched back, deep chest, rounded rump */}
+          <path d="M-14,-2 C-12.5,-8 -4,-10.5 4,-9.5 C9,-9 12,-6.5 13,-3.5 C14,-0.5 12,2.5 8,3.6 L-8,3.8 C-12,3 -15,1 -14,-2 Z" />
+          {/* neck rising into the head */}
+          <path d="M9.5,-6 C12,-9 14,-13 15,-17 L19.5,-16 C18.6,-12 17.6,-8 15.6,-4.4 Z" />
+          <path d="M15.5,-17.5 C15.5,-19.6 17,-21 19,-21 C21,-21 22.5,-19.6 22.5,-17.6 C22.5,-15.6 21,-14.5 19,-14.5 C17,-14.5 15.5,-15.5 15.5,-17.5 Z" />
+          {/* muzzle + ear */}
+          <path d="M21.8,-19 L25.4,-17.4 L21.8,-15.6 Z" />
+          <path d="M16.2,-20.6 L14,-24 L17.6,-22.4 Z" />
+          {/* antlers: two beams, forward tines */}
+          <path
+            d="M18,-21 C17.4,-25 18.4,-28.4 21,-30.4 M19,-26 L16.4,-28.6 M20,-29 L18,-31.6 M20.6,-20.6 C21.8,-24.2 23.8,-26.8 26.4,-27.8 M22.2,-24.6 L24.8,-25.8"
+            stroke="#4a4036"
+            strokeWidth={1.1}
+            fill="none"
+            strokeLinecap="round"
+          />
+          {/* legs, a natural stance */}
+          <path
+            d="M-9,3 L-10.5,16 M-4,3.6 L-4.4,16 M6,3.6 L6.6,16 M11,2 L13.2,15.4"
+            stroke="#4a4036"
+            strokeWidth={2}
+            strokeLinecap="round"
+            fill="none"
+          />
+          {/* tail flick */}
+          <path d="M-14,-3 C-16.5,-4.2 -17,-6.2 -15.4,-7.6 C-14.4,-6 -14,-4.4 -14,-3 Z" />
         </g>
       );
     case "heron":
       return (
-        <g data-visitor="heron" pointerEvents="none" transform="translate(178 414) scale(0.9)" opacity={0.92}>
-          <ellipse cx={0} cy={0} rx={9} ry={5.5} fill="#6e7f8a" />
-          <path d="M6,-3 C11,-8 11,-16 8,-21" stroke="#6e7f8a" strokeWidth={2.4} fill="none" strokeLinecap="round" />
-          <circle cx={7.4} cy={-22} r={2.6} fill="#6e7f8a" />
-          <path d="M9.8,-22.4 l6.5,1.4 -6.4,1.2 Z" fill="#4c443b" />
-          <path d="M2,-24.5 l3.4,-1.6" stroke="#3d4750" strokeWidth={1} strokeLinecap="round" />
-          <path d="M-2,5 l0,12 M3,5 l0,12" stroke="#5a6a74" strokeWidth={1.4} strokeLinecap="round" />
-          <path d="M-8,-1 C-11,1 -11,4 -8,4" stroke="#5f707b" strokeWidth={1.6} fill="none" />
+        <g data-visitor="heron" pointerEvents="none" transform="translate(178 412) scale(0.95)" opacity={0.94}>
+          {/* body with folded wing */}
+          <path d="M-8,0 C-8,-4 -4,-7 1,-7 C6,-7 9,-4 9,-1 C9,3 5,5.5 0,5.5 C-4,5.5 -8,3.5 -8,0 Z" fill="#6e7f8a" />
+          <path d="M-6,-1 C-5,-4 -1,-5.5 3,-5 C1.4,-2.2 -2,-0.2 -6,-1 Z" fill="#5f707b" />
+          {/* the S neck herons are known for */}
+          <path
+            d="M7,-4 C11,-6 12,-10 10,-13 C8.4,-15.6 9,-18 11,-20"
+            stroke="#6e7f8a"
+            strokeWidth={2.6}
+            fill="none"
+            strokeLinecap="round"
+          />
+          {/* head, crest plume, dagger bill */}
+          <circle cx={11.6} cy={-21} r={2.3} fill="#6e7f8a" />
+          <path d="M9.6,-22.4 L7.4,-24.6" stroke="#3d4750" strokeWidth={1} strokeLinecap="round" />
+          <path d="M13.6,-21.7 L20.2,-20.2 L13.8,-19.5 Z" fill="#4c443b" />
+          {/* legs — one lifted mid-wade */}
+          <path
+            d="M-1,5.5 L-1,17 M3.5,5 L4.6,11.6 L4.3,17"
+            stroke="#5a6a74"
+            strokeWidth={1.3}
+            strokeLinecap="round"
+            fill="none"
+          />
         </g>
       );
     case "owl": {
@@ -380,26 +415,46 @@ function visitorShapes(kind: SceneVisitor, plants: GardenPlant[]): ReactNode {
       const y = Math.max(120, a.y - 108 * a.s);
       return (
         <g data-visitor="owl" pointerEvents="none" transform={`translate(${n(a.x + 8)} ${n(y)})`} opacity={0.95}>
-          <ellipse cx={0} cy={0} rx={5.2} ry={6.4} fill="#4e463c" />
-          <circle cx={0} cy={-5.2} r={3.6} fill="#554c41" />
-          <path d="M-3,-8 l-1.2,-2.6 2.4,1 Z M3,-8 l1.2,-2.6 -2.4,1 Z" fill="#554c41" />
-          <circle cx={-1.5} cy={-5.6} r={1.1} fill="#e8dca8" />
-          <circle cx={1.5} cy={-5.6} r={1.1} fill="#e8dca8" />
-          <circle cx={-1.5} cy={-5.6} r={0.45} fill="#2a2418" />
-          <circle cx={1.5} cy={-5.6} r={0.45} fill="#2a2418" />
+          {/* the branch it actually sits on */}
+          <path d="M-8.5,6.4 L8.5,7.2" stroke="#5a4c3c" strokeWidth={1.6} strokeLinecap="round" />
+          {/* body tapering to the perch */}
+          <path d="M0,6 C-4.5,6 -6.6,2 -6,-3 C-5.6,-7 -3,-9.5 0,-9.5 C3,-9.5 5.6,-7 6,-3 C6.6,2 4.5,6 0,6 Z" fill="#4e463c" />
+          {/* ear tufts */}
+          <path d="M-5.4,-6 C-6.4,-8.4 -6,-10.6 -4.2,-12 L-2.8,-8.6 Z M5.4,-6 C6.4,-8.4 6,-10.6 4.2,-12 L2.8,-8.6 Z" fill="#4e463c" />
+          {/* facial discs + eyes + beak */}
+          <circle cx={-2} cy={-5} r={2.1} fill="#e8dca8" opacity={0.92} />
+          <circle cx={2} cy={-5} r={2.1} fill="#e8dca8" opacity={0.92} />
+          <circle cx={-2} cy={-5} r={0.8} fill="#2a2418" />
+          <circle cx={2} cy={-5} r={0.8} fill="#2a2418" />
+          <path d="M0,-4 L0.9,-2.5 L-0.9,-2.5 Z" fill="#c9a13c" />
+          {/* folded-wing line */}
+          <path d="M-3.6,1 C-2,2.1 2,2.1 3.6,1" stroke="#3c362e" strokeWidth={0.8} fill="none" opacity={0.6} />
         </g>
       );
     }
     case "fox":
       return (
-        <g data-visitor="fox" pointerEvents="none" transform="translate(845 476)" opacity={0.92}>
-          <ellipse cx={0} cy={0} rx={11} ry={5} fill="#a4602f" />
-          <circle cx={10} cy={-4} r={3.4} fill="#ad6a36" />
-          <path d="M8.4,-6.6 l-0.6,-3 2,1.6 Z M11.6,-6.8 l1.4,-2.8 0.8,2.8 Z" fill="#ad6a36" />
-          <path d="M-10,-1 C-16,-4 -19,1 -14,4 C-12,5 -10,4 -9,2 Z" fill="#a4602f" />
-          <path d="M-16.6,-2.4 C-18.6,-1.8 -19,0.4 -17.6,1.6 C-16.4,0.6 -16.2,-1 -16.6,-2.4 Z" fill="#e8dcc8" />
-          <path d="M-5,4.6 l-0.6,5 M0,5 l0,4.6 M6,4.4 l0.8,5" stroke="#8a4f26" strokeWidth={1.6} strokeLinecap="round" />
-          <circle cx={11.2} cy={-4.4} r={0.5} fill="#2a1d12" />
+        <g data-visitor="fox" pointerEvents="none" transform="translate(845 474)" opacity={0.94}>
+          {/* the brush: a real tail with a pale tip */}
+          <path d="M-9,-1 C-15,-5 -21,-4.2 -23,0 C-24.4,3 -22,6 -18,5.6 C-14,5 -11,3 -9,1 Z" fill="#a4602f" />
+          <path d="M-23,0 C-24,2 -23.2,4 -21,4.8 C-19.4,3.6 -19,1.4 -19.8,-0.6 C-21,-0.8 -22.2,-0.6 -23,0 Z" fill="#e8dcc8" />
+          {/* low, sleek body */}
+          <path d="M-9,2 C-10,-2 -6,-5.5 0,-5.5 C5,-5.5 9,-3.6 10,-0.6 C11,2 9,4.4 5,4.9 L-5,4.9 C-7.4,4.7 -8.7,3.7 -9,2 Z" fill="#ad6a36" />
+          {/* head with pointed muzzle */}
+          <path d="M9,-2 C9,-4.8 11,-6.6 13.5,-6.6 C15,-6.6 16.3,-5.9 17,-4.8 L20.6,-3.2 L16.8,-1.8 C15.8,-0.6 14,-0.1 12.3,-0.6 C10.4,-1 9,-1.1 9,-2 Z" fill="#ad6a36" />
+          {/* upright ears */}
+          <path d="M11,-6.2 L10.4,-10 L13.4,-7.4 Z M14.6,-6.4 L16.4,-9.6 L16.9,-6 Z" fill="#8a4f26" />
+          {/* chest bib */}
+          <path d="M8.6,-3.6 C9.6,-1.6 9.6,0.4 8.6,2 C7.2,1 6.6,-1.4 7.4,-3.2 Z" fill="#e8dcc8" opacity={0.85} />
+          <circle cx={15.7} cy={-4} r={0.55} fill="#2a1d12" />
+          <circle cx={20.3} cy={-3.2} r={0.7} fill="#2a1d12" />
+          {/* legs */}
+          <path
+            d="M-5,4.9 L-5.5,11 M-1,5 L-1,11 M4,4.9 L4.5,11 M8,3.4 L9.6,10.6"
+            stroke="#8a4f26"
+            strokeWidth={1.7}
+            strokeLinecap="round"
+          />
         </g>
       );
   }

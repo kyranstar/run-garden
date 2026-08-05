@@ -34,17 +34,56 @@ function groundFeature(g: EarnedGround, light: SceneLight): ReactNode | null {
   const r = rng(`ground:${g.kind}:${g.region}`);
   switch (g.kind) {
     case "stream": {
-      const water = mix("#8fb7c9", light.skyHorizon, 0.35);
+      // Water leans blue even at low sun — a stream, never a road.
+      const water = mix("#7fa8c2", light.skyHorizon, 0.22);
+      const deep = shade(water, 0.88);
+      const bank = shade(light.grassNear, 0.8);
       const drift = (r() - 0.5) * 55;
       const topW = Math.min(28, w * 0.12);
       const botW = Math.min(120, w * 0.45);
-      const d = `M${n(cx - topW / 2)},302 C${n(cx + drift - topW)},390 ${n(cx + drift - botW * 0.4)},470 ${n(cx - botW / 2)},560 L${n(cx + botW / 2)},560 C${n(cx + drift + botW * 0.4)},470 ${n(cx + drift + topW)},390 ${n(cx + topW / 2)},302 Z`;
+      const leftEdge = `M${n(cx - topW / 2)},302 C${n(cx + drift - topW)},390 ${n(cx + drift - botW * 0.4)},470 ${n(cx - botW / 2)},560`;
+      const rightEdge = `M${n(cx + topW / 2)},302 C${n(cx + drift + topW)},390 ${n(cx + drift + botW * 0.4)},470 ${n(cx + botW / 2)},560`;
+      const d = `${leftEdge} L${n(cx + botW / 2)},560 C${n(cx + drift + botW * 0.4)},470 ${n(cx + drift + topW)},390 ${n(cx + topW / 2)},302 Z`;
       const mid = `M${n(cx)},306 C${n(cx + drift * 0.8)},395 ${n(cx + drift * 0.5)},470 ${n(cx)},556`;
+      const ripples: ReactNode[] = [];
+      for (let i = 0; i < 3; i++) {
+        const ry = 410 + i * 52 + r() * 18;
+        const t = (ry - 302) / 258;
+        const rw = topW / 2 + (botW / 2 - topW / 2) * t;
+        const rx = cx + drift * (1 - Math.abs(t - 0.5) * 2) * 0.7 + (r() - 0.5) * rw * 0.6;
+        ripples.push(
+          <path
+            key={`r${i}`}
+            d={`M${n(rx - rw * 0.22)},${n(ry)} q${n(rw * 0.22)},2.4 ${n(rw * 0.44)},0`}
+            stroke={mix(water, "#ffffff", 0.5)}
+            strokeWidth={1.1}
+            fill="none"
+            opacity={0.55}
+            strokeLinecap="round"
+          />,
+        );
+      }
+      const reedX = cx - botW / 2 + 4 + r() * 8;
       return (
         <g key={`ground-${g.region}`} data-ground-kind="stream">
-          <path d={d} fill={water} opacity={0.82} />
-          <path d={mid} stroke={mix(water, "#ffffff", 0.4)} strokeWidth={2.2} fill="none" opacity={0.5} />
-          <path d={`M${n(cx - botW / 2 - 6)},556 q${n(botW * 0.2)},-10 ${n(botW * 0.5)},-6`} stroke={shade(light.grassNear, 0.82)} strokeWidth={1.6} fill="none" opacity={0.5} />
+          <path d={d} fill={water} opacity={0.88} />
+          {/* deeper center channel */}
+          <path d={mid} stroke={deep} strokeWidth={n(botW * 0.22)} fill="none" opacity={0.4} strokeLinecap="round" />
+          <path d={mid} stroke={mix(water, "#ffffff", 0.42)} strokeWidth={2} fill="none" opacity={0.55} />
+          {/* soft banks where water meets grass */}
+          <path d={leftEdge} stroke={bank} strokeWidth={1.6} fill="none" opacity={0.5} />
+          <path d={rightEdge} stroke={bank} strokeWidth={1.6} fill="none" opacity={0.5} />
+          {ripples}
+          {/* reeds at the near bank */}
+          <path
+            d={`M${n(reedX)},546 q-1.4,-9 -3.4,-13 M${n(reedX + 3)},547 q0.4,-10 -0.4,-15 m0.4,15 l0,0 M${n(reedX + 6)},546 q1.8,-8 4,-12`}
+            stroke={shade(light.grassNear, 0.72)}
+            strokeWidth={1.4}
+            fill="none"
+            strokeLinecap="round"
+            opacity={0.85}
+          />
+          <ellipse cx={n(reedX - 3)} cy={533} rx={1.2} ry={3} fill={shade(light.grassNear, 0.6)} opacity={0.8} />
         </g>
       );
     }

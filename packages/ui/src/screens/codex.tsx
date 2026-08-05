@@ -634,45 +634,81 @@ export interface VisitorEntry {
 
 const VISITOR_ICONS: Record<string, ReactNode> = {
   deer: (
-    <svg width="30" height="22" viewBox="0 0 30 22" aria-hidden>
-      <g fill="currentColor" transform="translate(13 13)">
-        <ellipse rx={8} ry={4.5} />
-        <path d="M6,-2 L9,-8 L10.5,-7.5 L8,-1.5 Z" />
-        <circle cx={10} cy={-9} r={2.2} />
-        <path d="M9,-11 l-1,-3 M10.5,-11 l1,-3" stroke="currentColor" strokeWidth={0.9} fill="none" strokeLinecap="round" />
-        <path d="M-5,4 l-0.6,5 M0,4.4 l0,4.6 M5,4 l0.6,5" stroke="currentColor" strokeWidth={1.3} strokeLinecap="round" />
+    <svg width="32" height="24" viewBox="0 0 32 24" aria-hidden>
+      <g fill="currentColor" transform="translate(13 14)">
+        <path d="M-7,-1 C-6.2,-4 -2,-5.2 2,-4.8 C4.6,-4.5 6.2,-3.2 6.6,-1.6 C7,-0.2 6,1.4 4,1.9 L-4,2 C-6,1.6 -7.5,0.6 -7,-1 Z" />
+        <path d="M4.8,-3 C6,-4.6 7,-6.6 7.5,-8.6 L9.8,-8 C9.4,-6 8.9,-4 7.9,-2.2 Z" />
+        <circle cx={9.4} cy={-9.2} r={1.6} />
+        <path d="M10.8,-10.1 L12.8,-9.2 L10.8,-8.2 Z" />
+        <path
+          d="M8.6,-10.6 C8.4,-12.6 8.9,-14.2 10.2,-15.2 M9.1,-13 L7.8,-14.3 M9.9,-10.4 C10.5,-12.2 11.5,-13.4 12.8,-14 M10.7,-12.4 L12,-13"
+          stroke="currentColor"
+          strokeWidth={0.8}
+          fill="none"
+          strokeLinecap="round"
+        />
+        <path
+          d="M-4.6,1.8 L-5.4,8 M-1.8,2 L-2,8 M2.6,2 L2.9,8 M5.2,1.4 L6.3,7.8"
+          stroke="currentColor"
+          strokeWidth={1.1}
+          strokeLinecap="round"
+          fill="none"
+        />
+        <path d="M-7,-1.4 C-8.2,-2 -8.4,-3 -7.6,-3.8 C-7.2,-3 -7,-2.2 -7,-1.4 Z" />
       </g>
     </svg>
   ),
   heron: (
-    <svg width="30" height="22" viewBox="0 0 30 22" aria-hidden>
-      <g fill="currentColor" transform="translate(14 14)">
-        <ellipse rx={6} ry={3.5} />
-        <path d="M4,-2 C7,-6 7,-10 5,-12" stroke="currentColor" strokeWidth={1.6} fill="none" strokeLinecap="round" />
-        <circle cx={5} cy={-12.5} r={1.7} />
-        <path d="M6.6,-12.8 l4,0.9 -4,0.8 Z" />
-        <path d="M-1.4,3.4 l0,4.4 M1.8,3.4 l0,4.4" stroke="currentColor" strokeWidth={0.9} strokeLinecap="round" />
+    <svg width="32" height="24" viewBox="0 0 32 24" aria-hidden>
+      <g transform="translate(14 15)">
+        <path d="M-5,0 C-5,-2.6 -2.6,-4.4 0.6,-4.4 C3.6,-4.4 5.6,-2.6 5.6,-0.6 C5.6,1.8 3.2,3.4 0,3.4 C-2.6,3.4 -5,2.2 -5,0 Z" fill="currentColor" />
+        <path
+          d="M4.4,-2.6 C6.8,-3.8 7.4,-6.2 6.2,-8 C5.2,-9.6 5.6,-11.2 6.8,-12.4"
+          stroke="currentColor"
+          strokeWidth={1.6}
+          fill="none"
+          strokeLinecap="round"
+        />
+        <circle cx={7.2} cy={-13} r={1.5} fill="currentColor" />
+        <path d="M8.5,-13.4 L12.4,-12.5 L8.6,-11.7 Z" fill="currentColor" />
+        <path d="M6,-14 L4.7,-15.3" stroke="currentColor" strokeWidth={0.7} strokeLinecap="round" />
+        <path
+          d="M-0.6,3.4 L-0.6,9.6 M2.2,3.2 L2.9,6.8 L2.7,9.6"
+          stroke="currentColor"
+          strokeWidth={0.9}
+          strokeLinecap="round"
+          fill="none"
+        />
       </g>
     </svg>
   ),
   owl: (
-    <svg width="30" height="22" viewBox="0 0 30 22" aria-hidden>
-      <g fill="currentColor" transform="translate(15 12)">
-        <ellipse rx={5} ry={6.4} />
-        <circle cx={0} cy={-5.6} r={3.4} />
-        <path d="M-2.8,-8.2 l-1.2,-2.4 2.2,1 Z M2.8,-8.2 l1.2,-2.4 -2.2,1 Z" />
-        <circle cx={-1.4} cy={-6} r={0.9} fill="#fff" opacity={0.85} />
-        <circle cx={1.4} cy={-6} r={0.9} fill="#fff" opacity={0.85} />
+    <svg width="32" height="24" viewBox="0 0 32 24" aria-hidden>
+      <g transform="translate(16 13)">
+        <path d="M-6,7.4 L6,7.9" stroke="currentColor" strokeWidth={1.1} strokeLinecap="round" opacity={0.7} />
+        <path d="M0,7 C-3.6,7 -5.2,3.6 -4.8,-0.6 C-4.4,-4 -2.4,-6.2 0,-6.2 C2.4,-6.2 4.4,-4 4.8,-0.6 C5.2,3.6 3.6,7 0,7 Z" fill="currentColor" />
+        <path d="M-4.4,-3 C-5,-5 -4.6,-6.8 -3.2,-8 L-2.2,-5.4 Z M4.4,-3 C5,-5 4.6,-6.8 3.2,-8 L2.2,-5.4 Z" fill="currentColor" />
+        <circle cx={-1.6} cy={-3.4} r={1.5} fill="#fff" opacity={0.9} />
+        <circle cx={1.6} cy={-3.4} r={1.5} fill="#fff" opacity={0.9} />
+        <circle cx={-1.6} cy={-3.4} r={0.6} fill="currentColor" />
+        <circle cx={1.6} cy={-3.4} r={0.6} fill="currentColor" />
       </g>
     </svg>
   ),
   fox: (
-    <svg width="30" height="22" viewBox="0 0 30 22" aria-hidden>
-      <g fill="currentColor" transform="translate(14 13)">
-        <ellipse rx={7.5} ry={3.8} />
-        <circle cx={7} cy={-3} r={2.4} />
-        <path d="M5.8,-4.8 l-0.4,-2.4 1.6,1.2 Z M8.2,-5 l1,-2.2 0.6,2.2 Z" />
-        <path d="M-7,-0.6 C-11,-2.6 -13,0.8 -9.6,2.8 C-8.4,3.4 -7.2,2.8 -6.6,1.4 Z" />
+    <svg width="32" height="24" viewBox="0 0 32 24" aria-hidden>
+      <g fill="currentColor" transform="translate(15 14)">
+        <path d="M-6,-2.6 C-9.6,-5 -13.2,-4.4 -14.4,-1.8 C-15.2,0 -13.6,1.8 -11.2,1.5 C-8.8,1.2 -7,0 -6,-1 Z" />
+        <path d="M-6,1.2 C-6.6,-1.2 -4,-3.4 0,-3.4 C3.2,-3.4 5.8,-2.2 6.4,-0.4 C7,1.2 5.8,2.6 3.2,2.9 L-3.2,2.9 C-4.8,2.8 -5.8,2.2 -6,1.2 Z" />
+        <path d="M5.8,-1.2 C5.8,-3 7,-4.2 8.6,-4.2 C9.6,-4.2 10.4,-3.7 10.9,-3 L13.2,-2 L10.8,-1.1 C10.2,-0.3 9,0 8,-0.3 C6.6,-0.6 5.8,-0.6 5.8,-1.2 Z" />
+        <path d="M7,-4 L6.6,-6.4 L8.6,-4.7 Z M9.4,-4.1 L10.5,-6.1 L10.8,-3.9 Z" />
+        <path
+          d="M-3.2,2.9 L-3.5,6.6 M-0.4,3 L-0.4,6.6 M2.6,2.9 L2.9,6.6 M5,2 L6,6.4"
+          stroke="currentColor"
+          strokeWidth={1.1}
+          strokeLinecap="round"
+          fill="none"
+        />
       </g>
     </svg>
   ),

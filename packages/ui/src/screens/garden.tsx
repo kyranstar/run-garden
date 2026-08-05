@@ -689,19 +689,38 @@ function UnlockCeremony({
     <div className={`ceremony${variant === "hud" ? " ceremony-hud" : ""}`} role="status">
       <div className="ceremony-portrait">
         <svg className="ceremony-burst" viewBox="0 0 100 100" aria-hidden="true">
-          {Array.from({ length: 10 }, (_, i) => (
-            <ellipse
-              key={i}
-              cx="50"
-              cy="18"
-              rx="3.4"
-              ry="9"
-              fill="#e8c86a"
-              opacity="0.55"
-              transform={`rotate(${i * 36} 50 50)`}
+          {/* laurel burst: long teardrop petals, short ones between, and fine
+              seed-dots at the tips — gold fading outward */}
+          {Array.from({ length: 8 }, (_, i) => (
+            <path
+              key={`p${i}`}
+              d="M50,44 C46.8,34 47.2,24 50,15 C52.8,24 53.2,34 50,44 Z"
+              fill="#e0bd5c"
+              opacity="0.5"
+              transform={`rotate(${i * 45} 50 50)`}
             />
           ))}
-          <circle cx="50" cy="50" r="21" fill="#f7f2dd" opacity="0.85" />
+          {Array.from({ length: 8 }, (_, i) => (
+            <path
+              key={`q${i}`}
+              d="M50,44 C48,37 48.2,31 50,26 C51.8,31 52,37 50,44 Z"
+              fill="#f0d78a"
+              opacity="0.6"
+              transform={`rotate(${i * 45 + 22.5} 50 50)`}
+            />
+          ))}
+          {Array.from({ length: 8 }, (_, i) => (
+            <circle
+              key={`d${i}`}
+              cx="50"
+              cy="11"
+              r="1.3"
+              fill="#e8c86a"
+              opacity="0.7"
+              transform={`rotate(${i * 45} 50 50)`}
+            />
+          ))}
+          <circle cx="50" cy="50" r="21" fill="#f7f2dd" opacity="0.88" />
         </svg>
         <span className="ceremony-mote ceremony-mote-1" aria-hidden="true" />
         <span className="ceremony-mote ceremony-mote-2" aria-hidden="true" />
@@ -1277,16 +1296,6 @@ export function GardenScreen() {
             {restMode.active ? (
               <p className="hud-weather">Rest mode — nothing declines while you're away.</p>
             ) : null}
-            {viewingLive && ceremonyEntries.length > 0 ? (
-              <UnlockCeremony
-                entry={ceremonyEntries[0]!}
-                extraCount={ceremonyEntries.length - 1}
-                snapshot={snapshot}
-                onSeePlant={seePlantFromCeremony}
-                onDismiss={() => setCeremonyDismissed(true)}
-                variant="hud"
-              />
-            ) : null}
             {viewingLive && beatLinesAll.length > 0 && lastVisit ? (
               <p className="hud-beat">
                 <span className="hud-beat-label">Since {formatDayShort(lastVisit)}</span>
@@ -1307,6 +1316,21 @@ export function GardenScreen() {
               </p>
             ) : null}
           </div>
+
+          {/* The celebration gets its own stage moment — centered in the empty
+              sky, never crowding the condition header or the bars. */}
+          {viewingLive && ceremonyEntries.length > 0 ? (
+            <div className="hud-ceremony">
+              <UnlockCeremony
+                entry={ceremonyEntries[0]!}
+                extraCount={ceremonyEntries.length - 1}
+                snapshot={snapshot}
+                onSeePlant={seePlantFromCeremony}
+                onDismiss={() => setCeremonyDismissed(true)}
+                variant="hud"
+              />
+            </div>
+          ) : null}
 
           {liveBalance && viewingLive ? (
             <div className="hud-topright">
