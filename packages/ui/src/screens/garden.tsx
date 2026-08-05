@@ -646,7 +646,23 @@ export function GardenScreen() {
   const isDesktop = useIsDesktop();
   const dayIndexRef = useRef(0);
   const maxDayIndexRef = useRef(0);
-  const hourOfDay = new Date().getHours() + new Date().getMinutes() / 60;
+  // The sun moves while you watch: live wall-clock hour, ticked once a
+  // minute (the ambient screensaver's proven pattern). A discrete step, so
+  // no reduced-motion gate.
+  const [hourOfDay, setHourOfDay] = useState(
+    () => new Date().getHours() + new Date().getMinutes() / 60,
+  );
+  useEffect(() => {
+    const id = window.setInterval(
+      () => setHourOfDay(new Date().getHours() + new Date().getMinutes() / 60),
+      60_000,
+    );
+    return () => window.clearInterval(id);
+  }, []);
+  // System-driven arrival glow: new plants take the outline filter one at a
+  // time (rarest first). The renderer lets a user selection win, so the
+  // one-filtered-plant budget holds either way.
+  const [highlightPlantId, setHighlightPlantId] = useState<string | null>(null);
 
   const setDockOpen = (open: boolean) => {
     setDockOpenState(open);
@@ -729,6 +745,44 @@ export function GardenScreen() {
     setCeremonyIndex(0);
     setBlockDismissed(false);
   }, [garden.data]);
+
+  // Glow schedule for newly arrived plants: rarest first, 4s each, max 3.
+  useEffect(() => {
+    if (!garden.data) return;
+    const seenState = garden.data.seen ?? null;
+    const evts = (garden.data.events as ArrivalEvent[]) ?? [];
+    const snap = garden.data.snapshot as unknown as GardenSnapshot;
+    const live = today.data?.today ?? snap.state.lastSimulatedDate;
+    const plan = selectArrival(evts, seenState, live);
+    const rank = { rare: 0, uncommon: 1, common: 2 } as const;
+    const ranked = plan.enteringPlantIds
+      .map((id) => snap.plants.find((pl) => pl.id === id))
+      .filter((pl): pl is NonNullable<typeof pl> => !!pl && pl.state !== "dead")
+      .sort(
+        (a, b) =>
+          rank[SPECIES_BY_ID.get(a.speciesId)?.rarity ?? "common"] -
+          rank[SPECIES_BY_ID.get(b.speciesId)?.rarity ?? "common"],
+      )
+      .slice(0, 3)
+      .map((pl) => pl.id);
+    if (ranked.length === 0) return;
+    let i = 0;
+    let timer = 0;
+    const step = () => {
+      if (i >= ranked.length) {
+        setHighlightPlantId(null);
+        return;
+      }
+      setHighlightPlantId(ranked[i]!);
+      i += 1;
+      timer = window.setTimeout(step, 4000);
+    };
+    step();
+    return () => {
+      window.clearTimeout(timer);
+      setHighlightPlantId(null);
+    };
+  }, [garden.data, today.data]);
 
   // Mark the arrival seen: brand-new gardens immediately and silently;
   // otherwise on dismissing the last ceremony (or the block), or 6s after a
@@ -1109,6 +1163,8 @@ export function GardenScreen() {
               timeOfDay={hourOfDay}
               atmosphere={!timelineOpen}
               visitor={viewingLive && visitor ? visitor.kind : null}
+              enteringPlantIds={viewingLive ? arrival.enteringPlantIds : undefined}
+              highlightPlantId={viewingLive ? highlightPlantId : null}
               preserveAspectRatio="xMidYMax slice"
               className="stage-scene-svg"
             />
@@ -1353,6 +1409,8 @@ export function GardenScreen() {
           timeOfDay={hourOfDay}
           atmosphere={!timelineOpen}
           visitor={viewingLive && visitor ? visitor.kind : null}
+          enteringPlantIds={viewingLive ? arrival.enteringPlantIds : undefined}
+          highlightPlantId={viewingLive ? highlightPlantId : null}
         />
       </div>
 

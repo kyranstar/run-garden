@@ -135,6 +135,8 @@ function sceneCss(p: string, amp: number): string {
 @keyframes ${p}-twinkle{from{opacity:0.2}to{opacity:0.95}}
 .${p}-croak{animation:${p}-croak 3.2s ease-in-out infinite;}
 @keyframes ${p}-croak{0%,90%,100%{transform:scaleY(1)}95%{transform:scaleY(1.12)}}
+.${p}-enter>g:last-of-type{transform-box:fill-box;transform-origin:50% 100%;animation:${p}-sprout 600ms cubic-bezier(0.2,0.8,0.3,1) both;}
+@keyframes ${p}-sprout{from{transform:scale(0.05);opacity:0.4}}
 `;
 }
 
@@ -536,6 +538,12 @@ export interface GardenSceneProps {
   atmosphere?: boolean;
   /** Today's rare visitor (worker-decided); rendered only during its hours. */
   visitor?: SceneVisitor | null;
+  /** Plants that just arrived — they sprout in with a transform-only
+   * entrance (skipped under reducedMotion; never affects geometry). */
+  enteringPlantIds?: string[];
+  /** System-driven glow (the arrival moment). The user's own selection
+   * always wins — the outline filter is applied to at most ONE plant. */
+  highlightPlantId?: string | null;
 }
 
 export function GardenScene({
@@ -549,9 +557,13 @@ export function GardenScene({
   preserveAspectRatio = "xMidYMax meet",
   atmosphere = false,
   visitor = null,
+  enteringPlantIds,
+  highlightPlantId = null,
 }: GardenSceneProps) {
   const p = idPrefix;
   const animate = !reducedMotion;
+  const entering =
+    animate && enteringPlantIds && enteringPlantIds.length > 0 ? new Set(enteringPlantIds) : null;
   const weather = snapshot.state.weatherState;
   const moisture = clamp01(snapshot.state.moisture);
   const desc = describeGarden(snapshot);
@@ -697,7 +709,7 @@ export function GardenScene({
           <g
             key={plant.id}
             data-plant-id={plant.id}
-            className={`${p}-plant`}
+            className={`${p}-plant${entering?.has(plant.id) ? ` ${p}-enter` : ""}`}
             role="button"
             tabIndex={0}
             aria-label={`${species.name}, ${plantStateLabel(plant)}`}
@@ -745,7 +757,13 @@ export function GardenScene({
                 />
               </>
             ) : null}
-            <g filter={selectedPlantId === plant.id ? `url(#${p}-outline)` : undefined}>
+            <g
+              filter={
+                (selectedPlantId ? selectedPlantId === plant.id : highlightPlantId === plant.id)
+                  ? `url(#${p}-outline)`
+                  : undefined
+              }
+            >
               <PlantSprite
                 plant={plant}
                 species={species}

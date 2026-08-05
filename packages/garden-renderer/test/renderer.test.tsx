@@ -679,3 +679,34 @@ describe("grainlight non-tree archetypes", () => {
     expect(markup).toMatch(/d="M[^"]* L[^"]* L[^"]*"/);
   });
 });
+
+describe("arrival sensations (reward-loop spec §5)", () => {
+  const snap = replay(START, trainingWeeks(START, 2)).snapshot;
+  const living = snap.plants.filter((p) => p.state !== "dead");
+  const someId = living[0]!.id;
+  const otherId = living[1]!.id;
+
+  it("wraps exactly the entering plant in the sprout class, and not under reducedMotion", () => {
+    const html = renderScene(snap, { enteringPlantIds: [someId] });
+    expect(html.match(/rg-garden-enter/g)?.length ?? 0).toBeGreaterThan(0);
+    // once in the class attr, once in the keyframe css
+    expect((html.match(/class="[^"]*rg-garden-enter[^"]*"/g) ?? []).length).toBe(1);
+    const still = renderScene(snap, { enteringPlantIds: [someId], reducedMotion: true });
+    expect(still).not.toContain("rg-garden-enter");
+  });
+
+  it("highlightPlantId applies the outline filter; a user selection wins", () => {
+    const glow = renderScene(snap, { highlightPlantId: someId });
+    expect((glow.match(/filter="url\(#rg-garden-outline\)"/g) ?? []).length).toBe(1);
+    const both = renderScene(snap, { highlightPlantId: someId, selectedPlantId: otherId });
+    expect((both.match(/filter="url\(#rg-garden-outline\)"/g) ?? []).length).toBe(1);
+    expect(both).toContain(`data-plant-id="${otherId}"`);
+  });
+
+  it("entering/highlight props never change geometry", () => {
+    const paths = (s: string) => s.match(/ d="[^"]+"/g) ?? [];
+    const a = renderScene(snap);
+    const b = renderScene(snap, { enteringPlantIds: [someId], highlightPlantId: someId });
+    expect(paths(b)).toEqual(paths(a));
+  });
+});

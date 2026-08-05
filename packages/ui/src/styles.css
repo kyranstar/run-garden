@@ -1827,6 +1827,12 @@ button {
   border-radius: 999px;
   max-width: 100%;
 }
+/* A session landing refills its bar visibly instead of teleporting. */
+@media (prefers-reduced-motion: no-preference) {
+  .balance-bar-fill {
+    transition: width 0.45s ease;
+  }
+}
 /* The damage point: where the shrinking fill crosses from "fading" into
    "the garden is visibly paying for this". */
 .balance-notch {
