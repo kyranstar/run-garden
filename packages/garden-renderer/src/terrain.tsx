@@ -26,7 +26,20 @@ export interface TerrainProps {
  * built by strength, a still glade cleared by yoga, or denser meadow. Static,
  * seeded with fresh keys, drawn under the meadow strokes so plants sit on top.
  */
-function groundFeature(g: EarnedGround, light: SceneLight): ReactNode | null {
+/** Open polyline smoothed through vertex midpoints; endpoints exact. */
+function smoothOpen(pts: Array<[number, number]>): string {
+  let d = `M${n(pts[0]![0])},${n(pts[0]![1])}`;
+  for (let i = 1; i < pts.length - 1; i++) {
+    const mx = (pts[i]![0] + pts[i + 1]![0]) / 2;
+    const my = (pts[i]![1] + pts[i + 1]![1]) / 2;
+    d += ` Q${n(pts[i]![0])},${n(pts[i]![1])} ${n(mx)},${n(my)}`;
+  }
+  const last = pts[pts.length - 1]!;
+  d += ` L${n(last[0])},${n(last[1])}`;
+  return d;
+}
+
+function groundFeature(g: EarnedGround, light: SceneLight, p: string): ReactNode | null {
   const band = REGION_BANDS[g.region];
   if (!band) return null;
   const x0 = band[0] * 1000;
@@ -36,56 +49,111 @@ function groundFeature(g: EarnedGround, light: SceneLight): ReactNode | null {
   const r = rng(`ground:${g.kind}:${g.region}`);
   switch (g.kind) {
     case "stream": {
-      // Water leans blue even at low sun — a stream, never a road.
-      const water = mix("#7fa8c2", light.skyHorizon, 0.22);
-      const deep = shade(water, 0.88);
-      const bank = shade(light.grassNear, 0.8);
-      const drift = (r() - 0.5) * 55;
-      const topW = Math.min(28, w * 0.12);
-      const botW = Math.min(120, w * 0.45);
-      const leftEdge = `M${n(cx - topW / 2)},302 C${n(cx + drift - topW)},390 ${n(cx + drift - botW * 0.4)},470 ${n(cx - botW / 2)},560`;
-      const rightEdge = `M${n(cx + topW / 2)},302 C${n(cx + drift + topW)},390 ${n(cx + drift + botW * 0.4)},470 ${n(cx + botW / 2)},560`;
-      const d = `${leftEdge} L${n(cx + botW / 2)},560 C${n(cx + drift + botW * 0.4)},470 ${n(cx + drift + topW)},390 ${n(cx + topW / 2)},302 Z`;
-      const mid = `M${n(cx)},306 C${n(cx + drift * 0.8)},395 ${n(cx + drift * 0.5)},470 ${n(cx)},556`;
-      const ripples: ReactNode[] = [];
-      for (let i = 0; i < 3; i++) {
-        const ry = 410 + i * 52 + r() * 18;
-        const t = (ry - 302) / 258;
-        const rw = topW / 2 + (botW / 2 - topW / 2) * t;
-        const rx = cx + drift * (1 - Math.abs(t - 0.5) * 2) * 0.7 + (r() - 0.5) * rw * 0.6;
-        ripples.push(
+      // A brook nestled INTO the meadow, not a ribbon on top of it: a narrow
+      // meandering channel, water reflecting the sky, darker wet banks, and
+      // grass overhanging the edges. Sun side gets glints.
+      const water = mix(mix("#7ba7c2", light.skyMid, 0.35), light.grassFar, 0.08);
+      const topColor = mix(water, light.skyHorizon, 0.45);
+      const botColor = shade(water, 0.85);
+      const drift = (r() - 0.5) * 40;
+      const phase = r() * Math.PI;
+      const amp = 16 + r() * 14;
+      const topW = Math.min(14, w * 0.08);
+      const botW = Math.min(62, w * 0.3);
+      const N = 9;
+      const left: Array<[number, number]> = [];
+      const right: Array<[number, number]> = [];
+      const mid: Array<[number, number]> = [];
+      for (let i = 0; i < N; i++) {
+        const t = i / (N - 1);
+        const y = 314 + t * 246;
+        const xc = cx + drift * t + Math.sin(t * Math.PI * 1.6 + phase) * amp * (0.25 + 0.75 * t);
+        const hw = topW / 2 + (botW / 2 - topW / 2) * Math.pow(t, 1.15);
+        left.push([xc - hw, y]);
+        right.push([xc + hw, y]);
+        mid.push([xc, y]);
+      }
+      const channel = (() => {
+        let d = smoothOpen(left);
+        d += ` L${n(right[N - 1]![0])},${n(right[N - 1]![1])}`;
+        const rev = [...right].reverse();
+        // continue the outline back up the right edge
+        for (let i = 1; i < rev.length - 1; i++) {
+          const mx = (rev[i]![0] + rev[i + 1]![0]) / 2;
+          const my = (rev[i]![1] + rev[i + 1]![1]) / 2;
+          d += ` Q${n(rev[i]![0])},${n(rev[i]![1])} ${n(mx)},${n(my)}`;
+        }
+        return `${d} L${n(right[0]![0])},${n(right[0]![1])} Z`;
+      })();
+      // Sun glints: short bright dashes, stronger when beams are out.
+      const glints: ReactNode[] = [];
+      for (let k = 0; k < 5; k++) {
+        const t = Math.min(0.95, 0.22 + k * 0.16 + (r() - 0.5) * 0.06);
+        const i = Math.round(t * (N - 1));
+        const [gx, gy] = mid[i]!;
+        const gw = 2.2 + 3.4 * t;
+        if (light.sunX === null) continue;
+        glints.push(
           <path
-            key={`r${i}`}
-            d={`M${n(rx - rw * 0.22)},${n(ry)} q${n(rw * 0.22)},2.4 ${n(rw * 0.44)},0`}
-            stroke={mix(water, "#ffffff", 0.5)}
-            strokeWidth={1.1}
+            key={`g${k}`}
+            d={`M${n(gx - gw + (r() - 0.5) * 6)},${n(gy)} q${n(gw)},1.4 ${n(gw * 2)},0`}
+            stroke={mix(water, "#ffffff", 0.7)}
+            strokeWidth={1}
             fill="none"
-            opacity={0.55}
             strokeLinecap="round"
+            opacity={n(0.3 + 0.5 * light.beamStrength)}
           />,
         );
       }
-      const reedX = cx - botW / 2 + 4 + r() * 8;
+      // consume draws even when the sun is down — glint count must not
+      // change the stream's geometry
+      if (light.sunX === null) for (let k = 0; k < 5; k++) r();
+      // Overhanging bank grass: tufts leaning over the water's edge.
+      const tufts: ReactNode[] = [];
+      for (let j = 0; j < 10; j++) {
+        const side = j % 2 === 0 ? -1 : 1;
+        const t = Math.min(0.95, 0.15 + j * 0.085 + (r() - 0.5) * 0.05);
+        const i = Math.round(t * (N - 1));
+        const pts = side === -1 ? left : right;
+        const [bx, by] = pts[i]!;
+        const lean = -side * (3 + r() * 3);
+        tufts.push(
+          <path
+            key={`t${j}`}
+            d={`M${n(bx)},${n(by + 1)} q${n(lean * 0.5)},-3.4 ${n(lean)},-5.2 M${n(bx + side * 2)},${n(by + 1.5)} q${n(lean * 0.4)},-2.6 ${n(lean * 0.8)},-4`}
+            stroke={shade(light.grassNear, 0.66 + 0.12 * (j % 3 === 0 ? 1 : 0))}
+            strokeWidth={n(1.1 + 0.5 * t)}
+            fill="none"
+            strokeLinecap="round"
+            opacity={0.9}
+          />,
+        );
+      }
+      const reedX = mid[N - 2]![0] - botW / 2 + r() * 6;
       return (
         <g key={`ground-${g.region}`} data-ground-kind="stream">
-          <path d={d} fill={water} opacity={0.88} />
-          {/* deeper center channel */}
-          <path d={mid} stroke={deep} strokeWidth={n(botW * 0.22)} fill="none" opacity={0.4} strokeLinecap="round" />
-          <path d={mid} stroke={mix(water, "#ffffff", 0.42)} strokeWidth={2} fill="none" opacity={0.55} />
-          {/* soft banks where water meets grass */}
-          <path d={leftEdge} stroke={bank} strokeWidth={1.6} fill="none" opacity={0.5} />
-          <path d={rightEdge} stroke={bank} strokeWidth={1.6} fill="none" opacity={0.5} />
-          {ripples}
+          <defs>
+            <linearGradient id={`${p}-water-${g.region}`} x1="0" y1="0" x2="0" y2="1">
+              <stop offset="0%" stopColor={topColor} />
+              <stop offset="100%" stopColor={botColor} />
+            </linearGradient>
+          </defs>
+          {/* wet darker earth seat so the brook sits IN the meadow */}
+          <path d={channel} fill={shade(light.grassNear, 0.72)} opacity={0.35} transform="translate(0 1.6)" />
+          <path d={channel} fill={`url(#${p}-water-${g.region})`} opacity={0.95} />
+          {/* deeper center */}
+          <path d={smoothOpen(mid)} stroke={shade(water, 0.75)} strokeWidth={n(botW * 0.22)} fill="none" opacity={0.3} strokeLinecap="round" />
+          {glints}
+          {tufts}
           {/* reeds at the near bank */}
           <path
-            d={`M${n(reedX)},546 q-1.4,-9 -3.4,-13 M${n(reedX + 3)},547 q0.4,-10 -0.4,-15 m0.4,15 l0,0 M${n(reedX + 6)},546 q1.8,-8 4,-12`}
+            d={`M${n(reedX)},546 q-1.4,-9 -3.4,-13 M${n(reedX + 3)},547 q0.4,-10 -0.4,-15 M${n(reedX + 6)},546 q1.8,-8 4,-12`}
             stroke={shade(light.grassNear, 0.72)}
             strokeWidth={1.4}
             fill="none"
             strokeLinecap="round"
             opacity={0.85}
           />
-          <ellipse cx={n(reedX - 3)} cy={533} rx={1.2} ry={3} fill={shade(light.grassNear, 0.6)} opacity={0.8} />
         </g>
       );
     }
@@ -219,7 +287,7 @@ export function FramingGrass({ light, moisture, soilHealth }: { light: SceneLigh
 }
 
 export function Terrain({ p, light, moisture, soilHealth, floweringDensity, biodiversity, droughtDays, canopy, trees, grounds = [] }: TerrainProps): ReactNode {
-  const groundEls = grounds.map((g) => groundFeature(g, light)).filter(Boolean);
+  const groundEls = grounds.map((g) => groundFeature(g, light, p)).filter(Boolean);
   const bands = BAND_CURVES.map((d, i) => {
     const t = i / (BAND_CURVES.length - 1);
     const fill = mix(light.grassFar, light.grassNear, t);
