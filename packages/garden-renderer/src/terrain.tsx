@@ -175,6 +175,49 @@ const BAND_CURVES = [
   "M0,452 C300,438 680,440 1000,450 L1000,560 L0,560 Z",
 ];
 
+/**
+ * Foreground framing band: tall grass silhouettes hugging the bottom edge,
+ * drawn OVER the plants (GardenScene mounts it after them) the way the
+ * approved mock framed its composition. Height stays in the bottom ~35px so
+ * it only ever overlaps plant bases; pointer events pass straight through.
+ * Density follows the same honesty rule as the meadow.
+ */
+export function FramingGrass({ light, moisture, soilHealth }: { light: SceneLight; moisture: number; soilHealth: number }): ReactNode {
+  const density = clamp01(0.35 + 0.35 * clamp01(moisture) + 0.3 * clamp01(soilHealth));
+  const count = Math.round(46 + 44 * density);
+  const r = rng("terrain:framing");
+  const blades: ReactNode[] = [];
+  for (let i = 0; i < 90; i++) {
+    // Fixed 5 draws per blade for stability across density changes.
+    const x = n(r() * 1000);
+    const edge = Math.min(Math.abs(x - 0), Math.abs(x - 1000)); // taller near corners
+    const hBase = 15 + 20 * r() + (edge < 220 ? (220 - edge) * 0.16 : 0);
+    const lean = n((r() - 0.5) * 10);
+    const width = n(1.7 + r() * 1.1);
+    const shadeRoll = r();
+    if (i >= count) continue;
+    const y = 562;
+    const h = n(hBase);
+    const c = shade(light.grassNear, 0.62 + shadeRoll * 0.2);
+    blades.push(
+      <path
+        key={`fb${i}`}
+        d={`M${x},${y} q${n(lean * 0.4)},${n(-h * 0.6)} ${lean},${n(-h)}`}
+        stroke={c}
+        strokeWidth={width}
+        fill="none"
+        strokeLinecap="round"
+        opacity={0.9}
+      />,
+    );
+  }
+  return (
+    <g data-terrain="framing" pointerEvents="none">
+      {blades}
+    </g>
+  );
+}
+
 export function Terrain({ p, light, moisture, soilHealth, floweringDensity, biodiversity, droughtDays, canopy, trees, grounds = [] }: TerrainProps): ReactNode {
   const groundEls = grounds.map((g) => groundFeature(g, light)).filter(Boolean);
   const bands = BAND_CURVES.map((d, i) => {

@@ -10,7 +10,7 @@ import { lightingFor, moonPhase } from "./lighting";
 import { Finish, Rainbow, WeatherOverlay } from "./overlays";
 import { PlantSprite } from "./PlantSprite";
 import { SceneDefs, Sky } from "./sky";
-import { Terrain } from "./terrain";
+import { FramingGrass, Terrain } from "./terrain";
 
 /**
  * The full scene: sky → hills → ground → plants (far to near) → weather →
@@ -709,6 +709,13 @@ export function GardenScene({
       })}
 
       {/* weather overlay */}
+      {/* foreground framing — over the plants, under weather/wildlife */}
+      <FramingGrass
+        light={light}
+        moisture={clamp01(snapshot.state.moisture)}
+        soilHealth={clamp01(snapshot.state.soilHealth)}
+      />
+
       <WeatherOverlay p={p} weather={weather} animate={animate} />
       <Rainbow p={p} light={light} />
 

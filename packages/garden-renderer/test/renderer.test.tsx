@@ -548,6 +548,17 @@ describe("atmosphere layer", () => {
   });
 });
 
+describe("framing grass", () => {
+  it("renders once, above the plants, and never intercepts pointer events", () => {
+    const markup = renderScene(healthySnapshot());
+    expect(markup.match(/data-terrain="framing"/g)).toHaveLength(1);
+    const framingAt = markup.indexOf('data-terrain="framing"');
+    expect(framingAt).toBeGreaterThan(markup.lastIndexOf("data-plant-id"));
+    const tag = markup.slice(framingAt - 200, framingAt + 60);
+    expect(tag).toContain('pointer-events="none"');
+  });
+});
+
 describe("hero tree scale", () => {
   const oak = SPECIES.find((s) => s.id === "milestone_oak")!;
   const rose = SPECIES.find((s) => s.id === "century_rose")!;
