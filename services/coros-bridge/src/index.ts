@@ -33,6 +33,11 @@ export {
   type DeleteWorkoutTarget,
 } from "./create-executor.js";
 export {
+  buildActivityBackfill,
+  type ActivityBackfillChunk,
+  type BackfillOptions,
+} from "./backfill.js";
+export {
   buildSnapshot,
   COROS_LOCALE_URL,
   loadNameResolver,

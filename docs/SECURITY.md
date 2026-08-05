@@ -43,11 +43,10 @@ reused.
 
 ## Encrypted provider tokens (AES-GCM)
 
-Google and Strava OAuth tokens are stored in `provider_connections` encrypted
+Google OAuth tokens are stored in `provider_connections` encrypted
 with **AES-256-GCM** under `TOKEN_ENCRYPTION_KEY` (32-byte base64 secret;
 payload = base64url(iv ‖ ciphertext), fresh random 12-byte IV per encryption —
 `apps/worker/src/auth/crypto.ts`). Plaintext tokens never touch the database.
-Strava's rotating refresh tokens are re-encrypted on every refresh.
 
 ## Single-user Google gate, PKCE, state
 
@@ -91,16 +90,14 @@ Strava's rotating refresh tokens are re-encrypted on every refresh.
 - **Full delete**: `POST /api/settings/delete-all` (requires the literal
   confirmation phrase) removes all rows for the user.
 - **Provider disconnect**: per-provider disconnect endpoints null out the
-  encrypted tokens (e.g. `POST /api/strava/disconnect`).
+  encrypted tokens.
 - **Device revoke**: revoked devices fail signature auth permanently.
 - **Local erase**: the desktop "Erase credentials" action clears the Keychain.
 
-## Strava is read-only
+## One provider, no third-party egress
 
-The Strava client (`apps/worker/src/services/strava.ts`) intentionally has
-**no write methods** — the app never uploads, creates, edits, or deletes
-anything on Strava, and never forwards Strava data to third parties.
-Strava-sourced fields are additionally excluded from LLM input (see
-[ANALYTICS.md](ANALYTICS.md#the-llm-boundary)). Auth uses `Bearer` headers
-only, and the API base URL is configurable for Strava's announced 2027
-migration.
+COROS is the only external training-data source (README, "Why COROS is the
+only source"), and it is reached solely from the desktop bridge on your own
+machine — credentials never leave it. The Strava integration was removed in
+2026-08; its OAuth tokens, source links, and webhook inbox are deleted by
+migration `0007`, so no credential for it survives in the database.

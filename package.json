@@ -29,6 +29,7 @@
     "build:worker": "pnpm --filter @rg/worker build",
     "db:generate": "pnpm --filter @rg/database generate",
     "db:migrate:local": "pnpm --filter @rg/worker db:migrate:local",
+    "coros:census": "pnpm --filter @rg/coros-bridge census",
     "coros:spike": "pnpm --filter @rg/coros-bridge spike",
     "coros:spike:create": "pnpm --filter @rg/coros-bridge spike:create",
     "coros:spike:cleanup": "pnpm --filter @rg/coros-bridge spike:cleanup",

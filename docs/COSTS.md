@@ -15,7 +15,7 @@ A single-user deployment fits comfortably in Cloudflare's free tier
 |---|---|
 | Cron: `*/30` calendar sync + hourly reconcile/garden + weekly review | ~72 scheduled runs/day |
 | Bridge: snapshot every ~30 min + job poll every 45 s from one Mac | ~2k requests/day |
-| Your own PWA usage + occasional Strava webhooks | negligible |
+| Your own PWA usage | negligible |
 
 The **$5/mo Workers Paid** plan is a worthwhile upgrade for headroom (higher
 CPU limits, bigger D1 quotas) but is not required. Expected bill: **$0 on
@@ -40,13 +40,15 @@ Enforced budget per rolling 7 days (from `llm_usage` cost records):
 AI can also be disabled globally (`AI_DEFAULT_ENABLED=0`) or per-user
 (preferences). The app is fully functional with AI off.
 
-## Strava subscription (optional integration)
+## Why there is no Strava line here
 
-Since June 2026, Strava requires an active **Strava subscription
-(~$12/mo)** on the developer's account for API access. That is **Strava's
-requirement, not Run Garden infrastructure** — if you don't pay it, simply
-don't connect Strava: COROS remains the complete source for completions, and
-you only lose Strava titles/route polylines and the webhook fast-path.
+Strava's developer program has required a paid subscription (~$12/mo) for API
+access since 2026-06-01 — a recurring fee to read your own training data. Run
+Garden dropped the integration in 2026-08 rather than pay it. COROS supplies
+every metric the app uses, for free, and additionally supplies the daily-health
+and plan-link data Strava never had. See the README's "Why COROS is the only
+source".
+
 
 ## Scenarios
 
@@ -64,5 +66,5 @@ you only lose Strava titles/route polylines and the webhook fast-path.
 |---|---|
 | Cloudflare Workers + D1 | $0 (free tier) or $5 (paid plan) |
 | LLM (weekly review) | ≈ $0.05 typical; ≤ $10/**week** hard ceiling |
-| Strava subscription (optional, Strava's fee) | ~$12 if you want Strava connected |
+
 | Google Calendar API, COROS MCP, PWA hosting | $0 |

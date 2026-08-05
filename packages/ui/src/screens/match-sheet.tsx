@@ -35,7 +35,7 @@ export function MatchSheet({
       ) : (unmatched.data?.activities.length ?? 0) === 0 ? (
         <p className="muted">
           No unmatched activities yet. Completed runs can still be read from COROS — open the
-          desktop app to sync, or connect Strava for faster completion updates.
+          desktop app to sync.
         </p>
       ) : (
         <div className="stack">

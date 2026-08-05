@@ -35,7 +35,7 @@ export interface TimeOfDayValue {
 }
 
 function isCompleted(w: PlannedWorkout): boolean {
-  return w.completionState === "completed" || w.completionState === "provisionally_completed";
+  return w.completionState === "completed";
 }
 
 /** Naive local-time difference in minutes; null when the pair cannot be compared. */

@@ -1,7 +1,6 @@
 export * from "./types.js";
 export * from "./coros/raw-types.js";
 export * from "./coros/normalize.js";
-export * from "./strava/normalize.js";
 export * from "./merge.js";
 export * from "./matching.js";
 export * from "./fixture-provider.js";

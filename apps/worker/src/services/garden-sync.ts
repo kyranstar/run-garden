@@ -44,6 +44,10 @@ import {
   type GardenSnapshot,
   type SpeciesUnlockStatus,
 } from "@rg/garden-engine";
+// One derivation of "which discipline is this workout", shared with the
+// insights route — a second copy is how the garden and the dashboard come to
+// disagree about what counts as a yoga session.
+import { disciplineOf } from "@rg/analytics";
 import { chunkedInsert, type Db } from "./db.js";
 import {
   VISITOR_HINTS,
@@ -57,17 +61,10 @@ import {
  * Garden synchronization: builds resolved day inputs from the database and
  * advances the deterministic simulation. Grace rules: a day is simulated once
  * it is at least 2 days old, or earlier if every workout on it is resolved —
- * so a slow COROS/Strava sync is never misread as a missed run.
+ * so a slow COROS sync is never misread as a missed run.
  */
 
 const CHECKPOINT_WEEKDAY = 1; // Mondays
-
-/** Which discipline axis a workout belongs to, from its category or sport. */
-function disciplineFor(category: string, sport: string): Discipline {
-  if (category === "strength" || sport === "strength") return "strength";
-  if (category === "yoga" || sport === "yoga") return "yoga";
-  return "run";
-}
 
 export async function loadGarden(db: Db, userId: string): Promise<GardenSnapshot | null> {
   const rows = await db.select().from(gardenState).where(eq(gardenState.userId, userId)).limit(1);
@@ -167,7 +164,7 @@ export async function buildDayInput(
 
   const completedRuns: GardenDayInput["completedRuns"] = [];
   for (const w of dayWorkouts) {
-    if (w.completionState === "completed" || w.completionState === "provisionally_completed") {
+    if (w.completionState === "completed") {
       const match = (
         await db
           .select()
@@ -186,7 +183,7 @@ export async function buildDayInput(
         workoutId: w.id,
         activityId: match?.activityId,
         category: w.category as WorkoutCategory,
-        discipline: disciplineFor(w.category, w.sport),
+        discipline: disciplineOf(w.category, w.sport),
         window: w.effectiveTime < "12:00" ? "morning" : "evening",
         distanceMeters: activity?.distanceMeters ?? undefined,
         startHourLocal: activity
@@ -272,7 +269,7 @@ export async function buildDayInput(
     const planned = weekWorkouts.filter((w) => w.category !== "rest");
     if (planned.length > 0) {
       const done = planned.filter(
-        (w) => w.completionState === "completed" || w.completionState === "provisionally_completed",
+        (w) => w.completionState === "completed",
       ).length;
       input.weekAdherence = done / planned.length;
     }
@@ -296,7 +293,7 @@ async function dayFullyResolved(db: Db, userId: string, date: LocalDate): Promis
   return dayWorkouts.every(
     (w) =>
       w.category === "rest" ||
-      ["completed", "provisionally_completed", "skipped", "missed"].includes(w.state),
+      ["completed", "skipped", "missed"].includes(w.state),
   );
 }
 

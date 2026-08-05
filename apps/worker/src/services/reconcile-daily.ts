@@ -7,7 +7,7 @@ import type { Db } from "./db.js";
  * Daily reconciliation of completion states:
  *  - A workout becomes `unresolved` ("Did this run happen?") only after its
  *    effective window passed AND a sync grace period elapsed — a slow COROS or
- *    Strava sync must never be misread as a missed run.
+ *    COROS sync must never be misread as a missed run.
  *  - Long-unresolved workouts eventually become `missed` (affecting the
  *    garden), still reversible by a later match.
  */

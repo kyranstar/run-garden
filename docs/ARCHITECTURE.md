@@ -44,7 +44,7 @@ Responsibilities:
 |---|---|---|
 | `@rg/domain` | Types, the three state machines (`CorosSyncState`, `CalendarSyncState`, `CompletionState`), Luxon time math, Zod preference schemas | I/O |
 | `@rg/database` | D1 schema (Drizzle) + generated SQL migrations | Business logic |
-| `@rg/providers` | Raw→normalized COROS/Strava shapes, COROS⇄Strava dedup merge, planned↔completed matching, fixture provider | Network calls (callers own transport) |
+| `@rg/providers` | Raw→normalized COROS shapes, legacy-row adoption scoring, planned↔completed matching, fixture provider | Network calls (callers own transport) |
 | `@rg/scheduling` | Workout classification, duration-estimate chain, padded calendar blocks, reminder plans, ≤3 reschedule candidates | Changing plan contents |
 | `@rg/calendar` | Pure reconciliation: desired events vs actual Google state → operations (create/update/accept user move/mark deleted/preserve notes) | Executing operations |
 | `@rg/analytics` | Deterministic metrics with `MetricResult` (ok \| insufficient_data) | Guessing; LLM calls |
@@ -60,10 +60,10 @@ recency guessing.
 
 | Data | Authority | Everyone else |
 |---|---|---|
-| Plan existence, workout structure/targets, plan dates, **native duration estimates**, completed-run metrics (duration/distance/HR/load) and plan linkage | **COROS** | Run Garden mirrors and never edits structure; Strava metrics fill gaps only |
+| Plan existence, workout structure/targets, plan dates, **native duration estimates**, completed-session metrics (duration/distance/HR/load) and plan linkage | **COROS** | Run Garden mirrors and never edits structure |
 | Time of day, buffers, effective placement, reschedule proposals, garden state, analytics, completion resolution | **Run Garden** | COROS has no time-of-day concept; time changes on the same COROS date are local-only |
 | Calendar events | **Run Garden's projection** — Google Calendar is a *view* of the intended schedule | Manual calendar edits are detected and adopted back (see [SYNC_AND_RECONCILIATION.md](SYNC_AND_RECONCILIATION.md)) |
-| Activity title, route polyline, Strava metadata | **Strava** (when connected) | COROS title used only when Strava absent; merge in `packages/providers/src/merge.ts` keeps COROS authoritative for metrics |
+| Activity title | **COROS** | Sole source since 2026-08 — see the README's "Why COROS is the only source" |
 
 ## The three date concepts
 
@@ -153,7 +153,5 @@ Key properties (implemented in `apps/worker/src/services/jobs.ts` and
   servers, containers, or paid add-ons.
 - **Free-tier fit** for a single user (see [COSTS.md](COSTS.md)); D1 is SQLite,
   which matches the local test setup (better-sqlite3) and Drizzle.
-- **Always-on webhooks**: Strava's 2-second webhook budget is easy to meet from
-  the edge with `waitUntil` background processing.
 - The one thing Workers *cannot* do — talk to COROS from a residential IP with
   locally-held credentials — is exactly the desktop bridge's job.

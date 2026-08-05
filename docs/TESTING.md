@@ -18,9 +18,9 @@ pnpm -r typecheck              # type-level checks for every package
 
 | Area | Tests | What they pin down |
 |---|---|---|
-| Unit, per package | `packages/*/test/*.test.ts` | domain time math; classification; the duration-estimate chain (`estimate.test.ts`); reminders + reschedule candidates; calendar reconciliation decisions incl. manual moves/deletes/notes (`calendar.test.ts`); COROS/Strava normalizers; dedup merge + completion matching bands (`merge-matching.test.ts`); every analytics module's rule and suppression threshold (12 test files) |
+| Unit, per package | `packages/*/test/*.test.ts` | domain time math; classification; the duration-estimate chain (`estimate.test.ts`); reminders + reschedule candidates; calendar reconciliation decisions incl. manual moves/deletes/notes (`calendar.test.ts`); COROS normalizers; legacy-row adoption scoring + completion matching bands (`merge-matching.test.ts`); every analytics module's rule and suppression threshold (12 test files) |
 | Garden simulation | `packages/garden-engine/test/simulate.test.ts` | determinism (same inputs → identical garden), idempotency per day, the decay/death curve boundaries, comeback, unlock gates, replay convergence |
-| Worker integration | `apps/worker/test/vertical-loop.test.ts` | the whole vertical loop against a real SQLite database (better-sqlite3 standing in for D1): fixture import → move → COROS write job claim/result → verification → Strava-then-COROS activity arrival → merge → completion → garden growth; plus reconciliation rules and grace periods via `reconcile-daily` |
+| Worker integration | `apps/worker/test/vertical-loop.test.ts` | the whole vertical loop against a real SQLite database (better-sqlite3 standing in for D1): fixture import → move → COROS write job claim/result → verification → activity arrival → adoption of any legacy row → completion → garden growth; plus reconciliation rules and grace periods via `reconcile-daily` |
 | COROS bridge contract | `services/coros-bridge/test/*.test.ts` | `coros-client.test.ts` against a **mock COROS server** (login/MD5, result-code semantics incl. `1019` single re-login and `1030` bad credentials); `write-executor.test.ts` for every branch of the safe-write protocol (direct update, verification failure, ambiguous network, remove-and-add incl. rollback and duplicate-left); `protocol.test.ts` for the NDJSON protocol; `signing.test.ts` for Ed25519 request signing round-trips with the worker's verifier |
 
 The fixture provider (`packages/providers/src/fixture-provider.ts` +
@@ -35,7 +35,7 @@ suite.
   `docs/reports/`. It needs real COROS credentials and a residential IP, so
   it can never run in CI; until it passes, treat unofficial writes as
   unproven ([COROS_WRITE_PROTOCOL.md](COROS_WRITE_PROTOCOL.md#the-initial-reversible-write-test)).
-- Real Google/Strava OAuth flows (covered indirectly by unit tests of the
+- Real Google OAuth flows (covered indirectly by unit tests of the
   pure logic; live round-trips are manual).
 
 ## End-to-end (Playwright)

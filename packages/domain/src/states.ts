@@ -33,7 +33,6 @@ export type CalendarSyncState =
 export type CompletionState =
   | "scheduled" // in the future, or within the post-window sync grace period
   | "unresolved" // window passed, no match found, user not yet asked/answered
-  | "provisionally_completed" // matched via Strava; richer COROS record awaited
   | "completed" // matched and merged
   | "skipped" // user explicitly skipped
   | "missed"; // user confirmed it did not happen, or unresolved for too long

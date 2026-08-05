@@ -263,7 +263,6 @@ export function CompletionPill({ state }: { state: CompletionState }) {
           <IconCheck /> Completed
         </span>
       );
-    case "provisionally_completed":
       return (
         <span className="pill pill-ok">
           <IconCheck /> Completed · syncing details

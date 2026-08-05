@@ -218,7 +218,7 @@ function WorkoutDetail({
               Restore to Calendar
             </button>
           ) : null}
-          {(w.completionState === "completed" || w.completionState === "provisionally_completed") ? (
+          {(w.completionState === "completed") ? (
             <button className="btn" disabled={unmatch.isPending} onClick={() => unmatch.mutate()}>
               Undo match
             </button>
@@ -228,7 +228,7 @@ function WorkoutDetail({
               Un-skip
             </button>
           ) : null}
-          {w.completionState !== "completed" && w.completionState !== "provisionally_completed" ? (
+          {w.completionState !== "completed" ? (
             !confirmRemove ? (
               <button className="btn" onClick={() => setConfirmRemove(true)}>
                 Remove from plan
@@ -319,7 +319,7 @@ function WorkoutCell({
   onOpen: () => void;
 }) {
   const completion = displayCompletionState(w, today);
-  const done = completion === "completed" || completion === "provisionally_completed";
+  const done = completion === "completed";
   const faded = completion === "skipped" || completion === "missed";
   const asks = askable(w, today);
   const syncView = w.corosSyncView ?? w.corosSyncState;

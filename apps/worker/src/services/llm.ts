@@ -12,8 +12,6 @@ import type { Db } from "./db.js";
  *  - token ceiling, timeout, at most one retry
  *  - cached by input fingerprint, cost recorded, hard weekly budget
  *  - the app remains fully useful with AI disabled or over budget
- * Strava-derived fields are deliberately excluded from LLM inputs
- * (Strava API agreement caution — see docs/research/strava-api.md).
  */
 
 const DEFAULT_MODEL = "anthropic/claude-haiku-4.5";

@@ -253,7 +253,7 @@ export async function importPlanSnapshot(
     if (
       current &&
       current.sport !== src.sport &&
-      (current.completionState === "completed" || current.completionState === "provisionally_completed")
+      current.completionState === "completed"
     ) {
       stats.skippedForeignWorkouts += 1;
       continue;
@@ -348,7 +348,7 @@ export async function importPlanSnapshot(
     // week's scheduled one while keeping its completion. Leave the history
     // alone; the recycled entity stays out of the app until the row ages out.
     if (
-      (current.completionState === "completed" || current.completionState === "provisionally_completed") &&
+      current.completionState === "completed" &&
       src.date !== current.lastVerifiedCorosDate &&
       src.contentFingerprint !== current.sourceContentFingerprint
     ) {
@@ -578,7 +578,6 @@ export async function importPlanSnapshot(
   // would even re-ask "did this run happen?"). Among equals, oldest wins.
   const RESOLUTION_RANK: Record<string, number> = {
     completed: 0,
-    provisionally_completed: 1,
     skipped: 2,
     missed: 3,
     unresolved: 4,

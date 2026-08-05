@@ -13,7 +13,7 @@ Mac. Budget expectations: [COSTS.md](COSTS.md).
 - **Rust toolchain + Bun** — only for building the desktop app
   ([DESKTOP_APP.md](DESKTOP_APP.md))
 - A Google account (the one in `ALLOWED_GOOGLE_EMAIL`), and optionally a
-  Strava account with a Strava subscription and an Anthropic API key
+  and an Anthropic API key
 
 ## 1. Create the D1 database
 
@@ -38,9 +38,6 @@ npx wrangler secret put ALLOWED_GOOGLE_EMAIL    # your Gmail address
 npx wrangler secret put GOOGLE_CLIENT_ID
 npx wrangler secret put GOOGLE_CLIENT_SECRET
 # Optional integrations:
-npx wrangler secret put STRAVA_CLIENT_ID
-npx wrangler secret put STRAVA_CLIENT_SECRET
-npx wrangler secret put STRAVA_WEBHOOK_VERIFY_TOKEN   # openssl rand -hex 16
 npx wrangler secret put AI_GATEWAY_API_KEY            # Vercel AI Gateway
 npx wrangler secret put COROS_MCP_URL
 npx wrangler secret put COROS_MCP_TOKEN
@@ -90,35 +87,6 @@ a dedicated "Run Garden" calendar (recommended — the app fully manages its
 events, and you can toggle its visibility in any calendar client) or pick an
 existing one. The choice is stored in preferences (`calendarId`).
 
-## 5. Strava (optional, read-only)
-
-1. Create an app at [strava.com/settings/api](https://www.strava.com/settings/api).
-   Note: since June 2026 Strava requires an active **Strava subscription**
-   (~$12/mo) on your account for API access; new apps run in single-player
-   mode (only your own account) with no review.
-2. Set **Authorization Callback Domain** to your worker's host
-   (`run-garden-api.<subdomain>.workers.dev`). The app's redirect URI is
-   `{APP_URL}/api/strava/callback`, scope `activity:read_all`.
-3. Put client ID/secret + your invented `STRAVA_WEBHOOK_VERIFY_TOKEN` into
-   secrets, redeploy if you changed vars, then connect from Settings →
-   Strava in the app.
-4. **Webhook subscription — order matters**: the callback must be live
-   *before* you create the subscription (Strava validates it synchronously
-   with a `hub.challenge` GET, which the worker echoes). So: deploy first,
-   then:
-
-   ```bash
-   curl -X POST https://www.strava.com/api/v3/push_subscriptions \
-     -F client_id=YOUR_CLIENT_ID \
-     -F client_secret=YOUR_CLIENT_SECRET \
-     -F callback_url={APP_URL}/api/strava/webhook \
-     -F verify_token=YOUR_STRAVA_WEBHOOK_VERIFY_TOKEN
-   ```
-
-   One subscription per application. Inspect/delete with
-   `GET/DELETE https://www.strava.com/api/v3/push_subscriptions`. Without a
-   webhook the app still works — completions arrive on the polling cadence
-   instead of near-instantly.
 
 ## 6. LLM via Vercel AI Gateway (optional)
 

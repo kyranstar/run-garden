@@ -36,21 +36,29 @@ const FILTERS: { key: DisciplineFilter; label: string; chipClass: string }[] = [
   { key: "yoga", label: "Yoga", chipClass: "chip-yoga" },
 ];
 
-/** The three disciplines the Activity screen understands; "All" shows just these. */
-const DISCIPLINE_SPORTS = new Set(["run", "strength", "yoga"]);
-
-const SPORT_LABELS: Record<string, string> = { run: "Run", strength: "Strength", yoga: "Yoga" };
+/**
+ * "All" shows every session Run Garden stores, including sports outside the
+ * garden's three disciplines (ski, admitted for its training load). Those have
+ * no chip of their own — they are real training to see in your history, not a
+ * fourth thing the garden asks you to keep up.
+ */
+const SPORT_LABELS: Record<string, string> = {
+  run: "Run",
+  strength: "Strength",
+  yoga: "Yoga",
+  ski: "Ski",
+};
 
 const EMPTY_COPY: Record<DisciplineFilter, { art: string; title: string; body: string }> = {
   all: {
     art: "🏃",
     title: "No activity yet",
-    body: "Completed runs, lifts, and yoga sessions appear here. Use “Sync past runs” to pull your Strava run history.",
+    body: "Completed runs, lifts, and yoga sessions appear here. Use “Backfill history” in Settings to pull your COROS history.",
   },
   run: {
     art: "🏃",
     title: "No runs yet",
-    body: "Completed runs from COROS and Strava appear here. Use “Sync past runs” to pull your Strava history.",
+    body: "Completed runs from COROS appear here. Use “Backfill history” in Settings to pull your past sessions.",
   },
   strength: {
     art: "🏋️",
@@ -165,16 +173,16 @@ export function RunsScreen() {
   const [filter, setFilter] = useState<DisciplineFilter>("all");
 
   const backfill = useMutation({
-    mutationFn: () => api.backfillRuns(90),
+    mutationFn: () => api.backfillHistory(),
     onSuccess: (r) => {
+      // The walk runs on the desktop bridge, chunk by chunk, so this only
+      // reports that it was queued — Settings shows the progress.
       setNote(
-        !r.ok
-          ? "Couldn't reach Strava — connect it in Settings to backfill history."
-          : r.ingested === 0
-            ? "No new past runs found in the last 90 days."
-            : `Backfilled ${r.ingested} run${r.ingested === 1 ? "" : "s"}${
-                r.matched ? `, matched ${r.matched} to your plan` : ""
-              }.`,
+        !r.enqueued
+          ? r.reason === "already_running"
+            ? "Already reading your history — see Settings for progress."
+            : "Couldn't start the backfill. Open the desktop app and try again."
+          : "Reading your COROS history — runs, lifts, and yoga. Progress is in Settings.",
       );
       void qc.invalidateQueries({ queryKey: ["runs"] });
       void qc.invalidateQueries({ queryKey: ["plan"] });
@@ -196,7 +204,7 @@ export function RunsScreen() {
     );
   }
   const items = (runs.data?.activities ?? []).filter((a) =>
-    filter === "all" ? DISCIPLINE_SPORTS.has(a.sport) : a.sport === filter,
+    filter === "all" ? true : a.sport === filter,
   );
   const empty = EMPTY_COPY[filter];
 

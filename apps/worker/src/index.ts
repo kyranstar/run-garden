@@ -8,7 +8,7 @@ import {
   workoutCompletionMatches,
 } from "@rg/database";
 import { addDays, startOfIsoWeek, todayInZone } from "@rg/domain";
-import { computeWeeklyFacts } from "@rg/analytics";
+import { computeWeeklyFacts, DISCIPLINES } from "@rg/analytics";
 import type { Env } from "./env.js";
 import { fixtureModeEnabled } from "./env.js";
 import { withDb, requireUser, type AppContext } from "./auth/middleware.js";
@@ -16,7 +16,6 @@ import { authRoutes } from "./routes/auth.js";
 import { deviceRoutes } from "./routes/devices.js";
 import { planRoutes } from "./routes/plan.js";
 import { gardenRoutes } from "./routes/garden.js";
-import { stravaRoutes } from "./routes/strava.js";
 import { activityRoutes, calendarRoutes, insightRoutes, settingsRoutes } from "./routes/misc.js";
 import { studioRoutes } from "./routes/studio.js";
 import { syncRoutes } from "./routes/sync.js";
@@ -39,8 +38,7 @@ app.use("/api/*", async (c, next) => {
   if (!["GET", "HEAD", "OPTIONS"].includes(c.req.method)) {
     const origin = c.req.header("origin");
     const isDevice = c.req.header("x-device-id");
-    const isWebhook = c.req.path.startsWith("/api/strava/webhook");
-    if (!isDevice && !isWebhook && origin && !c.env.APP_URL.startsWith(origin)) {
+    if (!isDevice && origin && !c.env.APP_URL.startsWith(origin)) {
       return c.json({ error: "bad_origin" }, 403);
     }
   }
@@ -51,7 +49,6 @@ app.route("/api/auth", authRoutes);
 app.route("/api/devices", deviceRoutes);
 app.route("/api/plan", planRoutes);
 app.route("/api/garden", gardenRoutes);
-app.route("/api/strava", stravaRoutes);
 app.route("/api/calendar", calendarRoutes);
 app.route("/api/activities", activityRoutes);
 app.route("/api/insights", insightRoutes);
@@ -165,9 +162,17 @@ async function weekly(db: Db, env: Env): Promise<void> {
       // would notice and stop trusting.
       const localDate = (a: { startTimeLocal: string | null; startTime: string }): string =>
         (a.startTimeLocal ?? a.startTime).slice(0, 10);
+      // All three disciplines, not runs only: a week with two lifts and a
+      // yoga session and no runs is a real training week, and a review that
+      // called it empty would be wrong.
       const acts = (
         await db.select().from(activities).where(eq(activities.userId, userId))
-      ).filter((a) => a.sport === "run" && localDate(a) >= weekStart && localDate(a) <= weekEnd);
+      ).filter(
+        (a) =>
+          DISCIPLINES.includes(a.sport as (typeof DISCIPLINES)[number]) &&
+          localDate(a) >= weekStart &&
+          localDate(a) <= weekEnd,
+      );
       const events = await db
         .select()
         .from(gardenEvents)
@@ -179,16 +184,10 @@ async function weekly(db: Db, env: Env): Promise<void> {
           ),
         );
 
-      // COROS/derived aggregates only — no Strava-specific fields reach the LLM.
       const facts = computeWeeklyFacts({
         range: { start: weekStart, end: weekEnd },
         workouts: workouts.map((w) => ({ ...w, sourceProvider: "coros", stages: [] })) as never,
-        activities: acts.map((a) => ({
-          ...a,
-          title: undefined,
-          summaryPolyline: undefined,
-          stravaActivityId: undefined,
-        })) as never,
+        activities: acts as never,
         garden: {
           plantsAdded: events.filter((e) => e.kind === "plant_added").length,
           wildlife: events.filter((e) => e.kind === "wildlife_arrived").length,

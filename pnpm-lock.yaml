@@ -338,6 +338,9 @@ importers:
 
   packages/ui:
     dependencies:
+      '@rg/analytics':
+        specifier: workspace:*
+        version: link:../analytics
       '@rg/api-client':
         specifier: workspace:*
         version: link:../api-client

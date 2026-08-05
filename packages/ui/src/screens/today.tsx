@@ -322,13 +322,6 @@ export function TodayScreen() {
       ) : (
         <Banner kind="info">Your training plan is safe, but Calendar mirroring is paused.</Banner>
       )}
-      {d.sync.stravaStatus === "error" ? (
-        <Banner kind="info">
-          Strava access has stopped (its subscription may have lapsed). Completed runs still sync
-          from COROS — just a little slower. Route details and instant completions pause until you{" "}
-          <Link to="/settings">reconnect Strava</Link>.
-        </Banner>
-      ) : null}
       {d.needsAttention.length > 0 ? (
         <Banner kind="warn">
           {d.needsAttention.length === 1

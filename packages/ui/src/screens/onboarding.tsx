@@ -6,11 +6,11 @@ import { Banner, Card, formatDayShort, formatTime, Spinner } from "../components
 
 /**
  * Focused onboarding. Value first, then the desktop companion, COROS, Calendar,
- * Strava (optional), preferences, a real 7-day preview, and a one-view garden
+ * preferences, a real 7-day preview, and a one-view garden
  * intro. No long carousel; each step is a card.
  */
 
-const STEPS = ["Value", "Desktop", "COROS", "Calendar", "Strava", "Preferences", "Preview", "Garden"] as const;
+const STEPS = ["Value", "Desktop", "COROS", "Calendar", "Preferences", "Preview", "Garden"] as const;
 
 export function Onboarding({ onDone }: { onDone: () => void }) {
   const [step, setStep] = useState(0);
@@ -92,10 +92,9 @@ export function Onboarding({ onDone }: { onDone: () => void }) {
         {step === 1 ? <DesktopStep onNext={next} onBack={back} /> : null}
         {step === 2 ? <CorosStep onNext={next} onBack={back} /> : null}
         {step === 3 ? <CalendarStep onNext={next} onBack={back} /> : null}
-        {step === 4 ? <StravaStep onNext={next} onBack={back} /> : null}
-        {step === 5 ? <PreferencesStep onNext={next} onBack={back} /> : null}
-        {step === 6 ? <PreviewStep onNext={next} onBack={back} /> : null}
-        {step === 7 ? <GardenStep onDone={onDone} onBack={back} /> : null}
+        {step === 4 ? <PreferencesStep onNext={next} onBack={back} /> : null}
+        {step === 5 ? <PreviewStep onNext={next} onBack={back} /> : null}
+        {step === 6 ? <GardenStep onDone={onDone} onBack={back} /> : null}
       </main>
     </div>
   );
@@ -240,23 +239,6 @@ function CalendarStep({ onNext, onBack }: { onNext: () => void; onBack: () => vo
   );
 }
 
-function StravaStep({ onNext, onBack }: { onNext: () => void; onBack: () => void }) {
-  return (
-    <Card title="Strava (optional)">
-      <p>
-        COROS already sends completed runs to Strava. Run Garden reads the Strava copy for faster
-        completion updates and route details.
-      </p>
-      <Banner kind="info">Run Garden never uploads or creates activities on Strava.</Banner>
-      <div className="btn-row" style={{ marginTop: "0.8rem" }}>
-        <a className="btn" href="/api/strava/connect">
-          Connect Strava
-        </a>
-      </div>
-      <StepNav onNext={onNext} onBack={onBack} nextLabel="Skip / Continue" />
-    </Card>
-  );
-}
 
 function PreferencesStep({ onNext, onBack }: { onNext: () => void; onBack: () => void }) {
   const settings = useQuery({ queryKey: ["settings"], queryFn: api.settings });

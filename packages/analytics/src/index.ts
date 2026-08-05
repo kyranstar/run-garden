@@ -15,3 +15,4 @@ export * from "./recovery.js";
 export * from "./easyDiscipline.js";
 export * from "./performance.js";
 export * from "./lowIntensityShare.js";
+export * from "./discipline.js";

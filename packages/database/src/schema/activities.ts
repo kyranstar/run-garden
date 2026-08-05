@@ -6,7 +6,6 @@ export const activities = sqliteTable(
     id: text("id").primaryKey(),
     userId: text("user_id").notNull(),
     corosActivityId: text("coros_activity_id"),
-    stravaActivityId: text("strava_activity_id"),
     startTime: text("start_time").notNull(),
     startTimeLocal: text("start_time_local"),
     timezone: text("timezone"),
@@ -21,7 +20,6 @@ export const activities = sqliteTable(
     trainingLoad: real("training_load"),
     deviceName: text("device_name"),
     title: text("title"),
-    summaryPolyline: text("summary_polyline"),
     completionMatchId: text("completion_match_id"),
     sourceMergeConfidence: real("source_merge_confidence").notNull().default(1),
     createdAt: text("created_at").notNull(),
@@ -30,7 +28,6 @@ export const activities = sqliteTable(
   (t) => [
     index("activities_user_time_idx").on(t.userId, t.startTime),
     uniqueIndex("activities_coros_unique").on(t.userId, t.corosActivityId),
-    uniqueIndex("activities_strava_unique").on(t.userId, t.stravaActivityId),
   ],
 );
 
@@ -92,7 +89,6 @@ export const workoutCompletionMatches = sqliteTable(
     activityId: text("activity_id").notNull(),
     confidence: real("confidence").notNull(),
     method: text("method").notNull(), // coros_plan_link | scored_auto | scored_confirmed | manual
-    provisional: integer("provisional", { mode: "boolean" }).notNull().default(false),
     matchedAt: text("matched_at").notNull(),
     undoneAt: text("undone_at"),
   },

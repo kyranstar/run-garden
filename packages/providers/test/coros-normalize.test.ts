@@ -10,7 +10,7 @@ import {
 } from "../src/coros/normalize.js";
 import {
   corosSportName,
-  COROS_GARDEN_SPORT_TYPES,
+  COROS_ADMITTED_SPORT_TYPES,
   type RawCorosActivityListItem,
 } from "../src/coros/raw-types.js";
 import { fixtureRawSchedule, FIXTURE_PLAN_ID } from "../src/fixtures/coros-schedule.js";
@@ -213,17 +213,17 @@ describe("COROS activity normalization (contract)", () => {
   });
 });
 
-describe("corosSportName / COROS_GARDEN_SPORT_TYPES", () => {
+describe("corosSportName / COROS_ADMITTED_SPORT_TYPES", () => {
   it("admits run/strength/yoga sportTypes into the garden import set", () => {
-    expect(COROS_GARDEN_SPORT_TYPES.get(100)).toBe("run");
-    expect(COROS_GARDEN_SPORT_TYPES.get(101)).toBe("run");
-    expect(COROS_GARDEN_SPORT_TYPES.get(102)).toBe("run");
-    expect(COROS_GARDEN_SPORT_TYPES.get(103)).toBe("run");
-    expect(COROS_GARDEN_SPORT_TYPES.get(402)).toBe("strength");
-    expect(COROS_GARDEN_SPORT_TYPES.get(403)).toBe("yoga");
-    expect(COROS_GARDEN_SPORT_TYPES.get(904)).toBe("yoga");
+    expect(COROS_ADMITTED_SPORT_TYPES.get(100)).toBe("run");
+    expect(COROS_ADMITTED_SPORT_TYPES.get(101)).toBe("run");
+    expect(COROS_ADMITTED_SPORT_TYPES.get(102)).toBe("run");
+    expect(COROS_ADMITTED_SPORT_TYPES.get(103)).toBe("run");
+    expect(COROS_ADMITTED_SPORT_TYPES.get(402)).toBe("strength");
+    expect(COROS_ADMITTED_SPORT_TYPES.get(403)).toBe("yoga");
+    expect(COROS_ADMITTED_SPORT_TYPES.get(904)).toBe("yoga");
     // Bike stays excluded — no entry in the admitted map.
-    expect(COROS_GARDEN_SPORT_TYPES.has(200)).toBe(false);
+    expect(COROS_ADMITTED_SPORT_TYPES.has(200)).toBe(false);
   });
 
   it("names known sportTypes and falls back to coros_<n> for unknowns", () => {
@@ -232,5 +232,36 @@ describe("corosSportName / COROS_GARDEN_SPORT_TYPES", () => {
     expect(corosSportName(403)).toBe("yoga");
     expect(corosSportName(904)).toBe("yoga");
     expect(corosSportName(555)).toBe("coros_555");
+  });
+});
+
+describe("COROS_ADMITTED_SPORT_TYPES", () => {
+  // The backfill ingests exactly what this map admits and silently tallies the
+  // rest, so a missing code means years of history quietly never arrive.
+  it("admits every run code as run", () => {
+    for (const code of [100, 101, 102, 103]) {
+      expect(COROS_ADMITTED_SPORT_TYPES.get(code)).toBe("run");
+    }
+  });
+
+  it("admits strength 402", () => {
+    expect(COROS_ADMITTED_SPORT_TYPES.get(402)).toBe("strength");
+  });
+
+  it("admits both yoga codes", () => {
+    expect(COROS_ADMITTED_SPORT_TYPES.get(403)).toBe("yoga");
+    expect(COROS_ADMITTED_SPORT_TYPES.get(904)).toBe("yoga");
+  });
+
+  it("does not admit bike or swim", () => {
+    expect(COROS_ADMITTED_SPORT_TYPES.has(200)).toBe(false);
+    expect(COROS_ADMITTED_SPORT_TYPES.has(300)).toBe(false);
+  });
+
+  it("admits ski as 'other' — ingested for load, but not a garden discipline", () => {
+    // The load signals (loadRatio, ramp, monotony, hardStack) span every sport
+    // and say so. Dropping ski at ingest made them understate a winter block.
+    expect(COROS_ADMITTED_SPORT_TYPES.get(500)).toBe("other");
+    expect(corosSportName(500)).toBe("ski");
   });
 });

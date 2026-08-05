@@ -54,7 +54,7 @@ export function computeWeeklyFacts(input: WeeklyFactsInput): WeeklyFacts {
     (w) => w.category !== "rest" && inRange(w.effectiveDate, input.range),
   );
   const completedWorkouts = considered.filter(
-    (w) => w.completionState === "completed" || w.completionState === "provisionally_completed",
+    (w) => w.completionState === "completed",
   );
   const future = considered.filter((w) => w.completionState === "scheduled").length;
   const denominator = considered.length - future;

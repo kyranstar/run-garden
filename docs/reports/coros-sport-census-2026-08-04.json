@@ -1,0 +1,64 @@
+{
+  "kind": "coros-sport-census",
+  "date": "2026-08-04",
+  "userIdRedacted": "4738…",
+  "spanStart": "2025-12-08",
+  "spanEnd": "2026-08-01",
+  "totalActivities": 28,
+  "admittedActivities": 18,
+  "droppedActivities": 10,
+  "codes": [
+    {
+      "sportType": 500,
+      "name": "coros_500",
+      "admitted": false,
+      "discipline": null,
+      "count": 10,
+      "earliest": "2026-01-10",
+      "latest": "2026-04-04",
+      "sampleNames": [
+        "Whistler Ski",
+        "Alberta Ski",
+        "Improvement District No. 9 Ski"
+      ]
+    },
+    {
+      "sportType": 100,
+      "name": "run",
+      "admitted": true,
+      "discipline": "run",
+      "count": 9,
+      "earliest": "2025-12-09",
+      "latest": "2026-08-01",
+      "sampleNames": [
+        "Long Run",
+        "Brooklyn Run",
+        "New York County Run"
+      ]
+    },
+    {
+      "sportType": 904,
+      "name": "yoga",
+      "admitted": true,
+      "discipline": "yoga",
+      "count": 8,
+      "earliest": "2025-12-08",
+      "latest": "2026-07-29",
+      "sampleNames": [
+        "Yoga"
+      ]
+    },
+    {
+      "sportType": 402,
+      "name": "strength",
+      "admitted": true,
+      "discipline": "strength",
+      "count": 1,
+      "earliest": "2026-01-03",
+      "latest": "2026-01-03",
+      "sampleNames": [
+        "Strength"
+      ]
+    }
+  ]
+}

@@ -12,8 +12,8 @@ dates are `YYYY-MM-DD`; JSON columns are typed `text(…, { mode: "json" })`.
 |---|---|
 | `users` | The single allowed user (email unique, `google_sub` from OAuth) |
 | `sessions` | Cookie sessions; **row id is the SHA-256 of the token** — the raw token exists only in the cookie; 30-day TTL, purged by cron |
-| `oauth_states` | Short-lived OAuth `state` + PKCE verifier rows (Google/Strava), 10-min expiry, single-use |
-| `provider_connections` | One row per provider (`google_calendar` \| `strava` \| `coros_mcp`) with **AES-GCM-encrypted** access/refresh tokens, scope, status, last error category |
+| `oauth_states` | Short-lived OAuth `state` + PKCE verifier rows (Google), 10-min expiry, single-use |
+| `provider_connections` | One row per provider (`google_calendar` \| `coros_mcp`) with **AES-GCM-encrypted** access/refresh tokens, scope, status, last error category |
 | `desktop_devices` | Paired desktop bridges: Ed25519 public key (base64url raw), platform, reported bridge capabilities, `bridge_paused`, `last_seen_at`, `revoked_at` |
 | `device_handshakes` | Short-lived pairing codes (pending → approved via Google sign-in → claimed once by the device), 15-min expiry |
 | `user_preferences` | One JSON blob validated by `userPreferencesSchema` (timezone, times, buffers, calendar id, mirror window, AI/write toggles, rest mode, theme) |
@@ -37,11 +37,11 @@ dates are `YYYY-MM-DD`; JSON columns are typed `text(…, { mode: "json" })`.
 
 | Table | Purpose |
 |---|---|
-| `activities` | One normalized row per **physical run**, possibly merged from both providers (`coros_activity_id` and/or `strava_activity_id`, both unique per user); COROS-authoritative metrics; `source_merge_confidence` |
+| `activities` | One normalized row per **physical session** (`coros_activity_id`, unique per user). Rows predating COROS-only ingest may carry no source; an arriving COROS activity within ±1h adopts them rather than duplicating |
 | `activity_source_links` | **Provenance per source record**: provider, provider activity id (unique), `first_seen_at`/`last_seen_at`, `content_fingerprint`, `normalizer_version`, sanitized `raw_summary` |
 | `activity_laps` | Per-lap duration/distance/HR/pace (feeds `decoupling`, `aerobicEfficiency`, `lowIntensityShare`, and the route's pacing halves) |
 | `activity_stream_summaries` | Stream stats by type (sample count + aggregate stats; raw streams are not stored) |
-| `workout_completion_matches` | Planned↔completed links: confidence, method (`coros_plan_link` \| `scored_auto` \| `scored_confirmed` \| `manual`), `provisional` (Strava-only, awaiting COROS), `undone_at` for reversals |
+| `workout_completion_matches` | Planned↔completed links: confidence, method (`coros_plan_link` \| `scored_auto` \| `scored_confirmed` \| `manual`), `undone_at` for reversals |
 | `daily_health` | Per-day RHR/HRV/recovery/fatigue/7-day load from COROS (id = `userId:date`) |
 | `sleep_records` | Sleep duration/stages when available (not readable via the bridge — mobile-only upstream; optional via official MCP), sleep-dependent analytics self-suppress |
 
@@ -73,10 +73,10 @@ dates are `YYYY-MM-DD`; JSON columns are typed `text(…, { mode: "json" })`.
 
 | Table | Purpose |
 |---|---|
+| `backfill_state` | One row per user: the deep history walk's checkpoint — status, earliest date reached, chunks completed, activities ingested, consecutive empty chunks, accumulated `skipped_sport_types` |
 | `sync_runs` | Every sync execution (kind, device, status, stats JSON) |
 | `sync_errors` | Sanitized error records (category + truncated message — never tokens/payloads) |
 | `provider_cursor_state` | Incremental-sync cursors (e.g. the Google Calendar events sync token), id = `userId:provider:cursorKey` |
-| `webhook_events` | Webhook inbox with **dedupe-key primary id** (`strava:{type}:{id}:{aspect}:{event_time}`) and processing status |
 | `audit_events` | User-relevant actions (moves, write results, deletions) |
 | `schema_versions` | App-level component versions (`simulation` \| `normalizer` \| `estimator` \| `renderer`) — DB migrations themselves are tracked by wrangler/drizzle |
 

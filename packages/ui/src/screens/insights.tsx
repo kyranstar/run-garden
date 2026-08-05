@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { api, type InsightsResponse } from "@rg/api-client";
+import { disciplineLabel, sessionNoun, type Discipline } from "@rg/analytics";
 import {
   Card,
   EmptyState,
@@ -106,6 +107,8 @@ function MetricDrilldown({ m, onClose }: { m: InterpretedMetric; onClose: () => 
           />
         ) : null}
 
+        {/* `pacing` is run-only (RUN_ONLY_METRICS), so this drilldown only ever
+            opens on the run discipline — "run by run" is always true here. */}
         {m.id === "pacing" && paceRuns.length > 0 ? (
           <DivergingPaceBars
             runs={paceRuns}
@@ -175,10 +178,61 @@ function ReviewBody({ r }: { r: WeeklyReview }) {
 }
 
 export function InsightsScreen() {
-  const insights = useQuery({ queryKey: ["insights"], queryFn: api.insights, staleTime: 60_000 });
+  const [discipline, setDiscipline] = useState<Discipline>("run");
+  const insights = useQuery({
+    queryKey: ["insights", discipline],
+    queryFn: () => api.insights(discipline),
+    staleTime: 60_000,
+  });
   const [drill, setDrill] = useState<InterpretedMetric | null>(null);
+  // Switching discipline is a new query key with nothing cached, so the query
+  // goes back to `isLoading` and the whole screen — selector included — used to
+  // be replaced by a spinner. Remembering the last known list keeps the chips
+  // on screen and interactive while the new discipline loads, so a mis-tap is
+  // one tap to undo rather than a wait. Deliberately NOT keepPreviousData:
+  // showing running's numbers under a Yoga chip, even for a moment, is worse
+  // than showing nothing.
+  const [knownDisciplines, setKnownDisciplines] = useState<Discipline[]>([]);
+  const available = insights.data?.availableDisciplines ?? knownDisciplines;
+  if (
+    insights.data?.availableDisciplines &&
+    insights.data.availableDisciplines.join() !== knownDisciplines.join()
+  ) {
+    setKnownDisciplines(insights.data.availableDisciplines);
+  }
 
-  if (insights.isLoading) return <Spinner label="Computing insights" />;
+  // The selected discipline always appears, even if this window no longer has
+  // sessions for it — otherwise selecting it can hide the very control needed
+  // to leave it.
+  const chips = available.includes(discipline) ? available : [...available, discipline];
+
+  const selector =
+    chips.length > 1 ? (
+      <div className="discipline-chips" role="tablist" aria-label="Discipline">
+        {chips.map((key) => (
+          <button
+            key={key}
+            type="button"
+            role="tab"
+            aria-selected={discipline === key}
+            className={`chip chip-${key}${discipline === key ? " active" : ""}`}
+            onClick={() => setDiscipline(key)}
+          >
+            {disciplineLabel(key)}
+          </button>
+        ))}
+      </div>
+    ) : null;
+
+  if (insights.isLoading) {
+    return (
+      <div className="stack">
+        <h1 className="screen-title">Insights</h1>
+        {selector}
+        <Spinner label="Computing insights" />
+      </div>
+    );
+  }
   if (!insights.data) {
     // A failed fetch is usually transient (asleep laptop, dropped wifi, a
     // worker cold start), and this screen's only other escape was a full page
@@ -214,6 +268,10 @@ export function InsightsScreen() {
   return (
     <div className="stack">
       <h1 className="screen-title">Insights</h1>
+
+      {/* Only when there is a real choice: a single-discipline history should
+          not be asked to pick from a list of one. */}
+      {selector}
 
       {/* `resolved` (computed above, and reused by the Consistency card's own
           headline math) gates the percentage here too: when nothing has
@@ -293,7 +351,7 @@ export function InsightsScreen() {
         ) : (
           <ChartFrame
             title="Training time per week"
-            subtitle="Stacked: low vs high intensity time (from completed, matched runs)"
+            subtitle={`Stacked: low vs high intensity time (from completed, matched ${sessionNoun(discipline, true)})`}
             legend={[
               { label: "Low intensity", colorVar: "--chart-1" },
               { label: "High intensity", colorVar: "--chart-2" },
@@ -319,6 +377,10 @@ export function InsightsScreen() {
         )}
       </Card>
 
+      {/* Absent, not empty, for strength and yoga: both cards are built on pace,
+          so for a lift the question does not apply — and an empty card would
+          claim the data is missing instead. */}
+      {efficiency && decoupling ? (
       <Card title="Aerobic response">
         {/* Side by side from 720px, stacked below — the two answer the same
             question (is the engine getting better, and does it hold together)
@@ -400,6 +462,7 @@ export function InsightsScreen() {
             already carries `activityId` through, so wiring it is one prop the
             day that route exists. */}
       </Card>
+      ) : null}
 
       {records.length > 0 ? (
         <Card title="Records">

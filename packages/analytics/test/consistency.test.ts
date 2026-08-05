@@ -137,7 +137,7 @@ describe("computeConsistency", () => {
       [
         mkWorkout({ id: "w1", effectiveDate: "2026-03-02", completionState: "unresolved" }),
         mkWorkout({ id: "w2", effectiveDate: "2026-03-03", completionState: "missed" }),
-        mkWorkout({ id: "w3", effectiveDate: "2026-03-04", completionState: "provisionally_completed" }),
+        mkWorkout({ id: "w3", effectiveDate: "2026-03-04", completionState: "completed" }),
       ],
       range,
       today,

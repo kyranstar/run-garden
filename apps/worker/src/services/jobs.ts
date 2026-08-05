@@ -312,7 +312,7 @@ export async function claimNextJob(
   });
 
   const workout =
-    isStudioJobKind(job.kind) || job.kind === "read_now"
+    isStudioJobKind(job.kind) || job.kind === "read_now" || job.kind === "backfill"
       ? null
       : ((
           await db.select().from(plannedWorkouts).where(eq(plannedWorkouts.id, job.workoutId)).limit(1)
@@ -356,6 +356,24 @@ export async function applyJobResult(
       })
       .where(eq(corosWriteJobs.id, job.id));
     return { jobStatus: result.outcome === "verified" ? "verified" : "failed", corosSyncState: "unchanged" };
+  }
+  // `backfill` acts on no workout either. The chunk itself was already ingested
+  // via /bridge/backfill-chunk, which also queued the next chunk; this only
+  // settles the job row.
+  if (job.kind === "backfill") {
+    await db
+      .update(corosWriteJobs)
+      .set({
+        status: result.outcome === "verified" ? "verified" : "failed",
+        attemptCount: job.attemptCount + 1,
+        completedAt: now,
+        updatedAt: now,
+      })
+      .where(eq(corosWriteJobs.id, job.id));
+    return {
+      jobStatus: result.outcome === "verified" ? "verified" : "failed",
+      corosSyncState: "unchanged",
+    };
   }
   if (["verified", "failed", "superseded", "cancelled"].includes(job.status)) {
     return { jobStatus: job.status, corosSyncState: "unchanged" };

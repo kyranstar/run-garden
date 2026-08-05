@@ -13,6 +13,7 @@ import type {
   AerobicEfficiencyValue,
   ConsistencyReport,
   DecouplingValue,
+  Discipline,
   EvidenceCard,
   InterpretedMetric,
   MetricResult,
@@ -110,7 +111,6 @@ export interface TodayResponse {
     deviceRegistered: boolean;
     corosWritesEnabled: boolean;
     calendarConnected: boolean;
-    stravaStatus?: "connected" | "error" | "disconnected";
   };
   readiness: {
     latest: {
@@ -367,6 +367,16 @@ export interface ReadNowResponse {
   lastCorosReadAt: string | null;
 }
 
+/** Progress of the one-shot deep history backfill. */
+export interface BackfillStatusResponse {
+  status: "idle" | "running" | "done" | "error";
+  earliestDateReached: string | null;
+  chunksCompleted: number;
+  activitiesIngested: number;
+  /** COROS sportType codes seen but not admitted, by code. */
+  skippedSportTypes: Record<string, number>;
+}
+
 /** Response from `POST /api/studio/adoption/:pushId/undo` — mirrors the
  * worker's own `PushSummary` (apps/worker/src/services/studio-push.ts), which
  * is a distinct, lighter shape than `StudioPushSummaryDto` above (no
@@ -403,10 +413,17 @@ export interface WeeklyReviewDto {
 
 /** Exact shape of `GET /api/insights`'s `c.json({...})` payload. */
 export interface InsightsResponse {
+  discipline: Discipline;
+  /** Only disciplines with sessions in the window — never offer an empty view. */
+  availableDisciplines: Discipline[];
   consistency: ConsistencyReport;
   weekly: WeeklyTrainingReport;
-  efficiency: MetricResult<AerobicEfficiencyValue>;
-  decoupling: MetricResult<DecouplingValue>;
+  /**
+   * Pace-based, so ABSENT (not empty) for strength and yoga: an empty card
+   * reads as "your data is missing", when the question simply does not apply.
+   */
+  efficiency?: MetricResult<AerobicEfficiencyValue>;
+  decoupling?: MetricResult<DecouplingValue>;
   records: StoredRecord[];
   evidence: EvidenceCard | null;
   reviews: WeeklyReviewDto[];
@@ -442,14 +459,19 @@ export const api = {
   gardenRestMode: (active: boolean, until?: string | null) =>
     post("/api/garden/rest-mode", { active, until }),
   gardenTimeline: () => get<GardenTimelineResponse>("/api/garden/timeline"),
-  insights: () => get<InsightsResponse>("/api/insights"),
+  insights: (discipline?: Discipline) =>
+    get<InsightsResponse>(
+      `/api/insights${discipline ? `?discipline=${discipline}` : ""}`,
+    ),
   dismissInsight: (cardId: string) => post("/api/insights/dismiss", { cardId }),
   activities: (limit = 40) => get<{ activities: ActivityDto[] }>(`/api/activities?limit=${limit}`),
   unmatchedActivities: () => get<{ activities: Array<Record<string, unknown>> }>("/api/activities/unmatched"),
-  backfillRuns: (days = 90) =>
-    post<{ ok: boolean; reason?: string; ingested: number; matched: number }>(
-      `/api/activities/backfill?days=${days}`,
+  /** Queue the one-shot deep walk of COROS history (all three disciplines). */
+  backfillHistory: () =>
+    post<{ ok: boolean; enqueued: boolean; reason?: string; matched: number }>(
+      "/api/activities/backfill",
     ),
+  backfillStatus: () => get<BackfillStatusResponse>("/api/sync/backfill-status"),
   settings: () => get<SettingsResponse>("/api/settings"),
   updateSettings: (partial: Partial<UserPreferences>) => put<{ ok: true; prefs: UserPreferences }>("/api/settings", partial),
   diagnostics: () => get<Record<string, unknown>>("/api/settings/diagnostics"),
@@ -461,7 +483,6 @@ export const api = {
   chooseCalendar: (opts: { calendarId?: string; createNew?: boolean }) => post<{ ok: true; calendarId: string }>("/api/calendar/choose", opts),
   calendarSync: () => post<Record<string, unknown>>("/api/calendar/sync"),
   calendarPreview: () => get<{ days: Array<Record<string, unknown>>; eventCount: number }>("/api/calendar/preview"),
-  stravaDisconnect: () => post("/api/strava/disconnect"),
   fixtureLogin: () => post<{ ok: true }>("/api/dev/fixture-login"),
   fixtureSeed: () => post<Record<string, unknown>>("/api/dev/seed"),
   studio: () => get<StudioStateResponse>("/api/studio"),

@@ -31,3 +31,6 @@ apps/worker/.prod.secrets
 *.dylib
 apps/desktop/src-tauri/binaries/*
 !apps/desktop/src-tauri/binaries/.gitkeep
+
+# Claude Code worktrees
+.claude/worktrees/

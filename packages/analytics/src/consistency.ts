@@ -51,7 +51,7 @@ export interface ConsistencyReport {
 }
 
 function isCompleted(w: PlannedWorkout): boolean {
-  return w.completionState === "completed" || w.completionState === "provisionally_completed";
+  return w.completionState === "completed";
 }
 
 function isScheduled(w: PlannedWorkout): boolean {

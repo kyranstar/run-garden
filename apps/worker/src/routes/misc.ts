@@ -59,6 +59,11 @@ import {
   pickEvidenceCard,
   stableHash,
   usableHrMaxReadings,
+  DISCIPLINES,
+  disciplineOf,
+  sessionNoun,
+  supportsMetric,
+  type Discipline,
   type InterpretedMetric,
   type IntensityRunInput,
   type MetricDetail,
@@ -67,7 +72,7 @@ import {
   type TimeOfDayPair,
 } from "@rg/analytics";
 import { SIMULATION_VERSION } from "@rg/garden-engine";
-import { NORMALIZER_VERSION, normalizeStravaActivity } from "@rg/providers";
+import { NORMALIZER_VERSION } from "@rg/providers";
 import { ESTIMATOR_VERSION } from "@rg/scheduling";
 import type { AppContext } from "../auth/middleware.js";
 import { chunkIds, type Db } from "../services/db.js";
@@ -76,15 +81,14 @@ import { googleCalendarClient } from "../services/google-calendar.js";
 import { loadPreferences, savePreferences, syncCalendar } from "../services/calendar-sync.js";
 import { emitPendingWork } from "../services/jobs.js";
 import { llmBudgetStatus, LLM_BUDGET } from "../services/llm.js";
-import { stravaClient } from "../services/strava.js";
 import {
   ingestActivities,
-  promoteProvisionalMatches,
   repairDurations,
   repairTimestamps,
   rowToNormalized,
 } from "../services/completion.js";
 import { resimulateFrom } from "../services/garden-sync.js";
+import { enqueueBackfill } from "../services/backfill.js";
 
 // ── Calendar management ──────────────────────────────────────────────────────
 
@@ -221,42 +225,28 @@ activityRoutes.get("/", async (c) => {
   });
 });
 
-/** Backfill: pull recent Strava run history and ingest + match it. */
+/**
+ * Backfill: queue a deep walk of COROS history — every run, lift, and yoga
+ * session the account holds, not just the rolling 14-day window. The walk
+ * itself runs on the desktop bridge, one 90-day chunk per job.
+ */
 activityRoutes.post("/backfill", async (c) => {
   const db = c.get("db");
   const userId = c.get("userId");
-  // Self-heal stored data first (centisecond durations/timestamps, split
-  // COROS/Strava pairs, stuck provisional matches) — even if Strava is offline.
+  // Self-heal stored data first (centisecond durations/timestamps, stuck
+  // provisional matches) — independent of whether a device is available.
   await repairDurations(db, userId);
   const repairedDates = await repairTimestamps(db, userId);
-  const promoted = await promoteProvisionalMatches(db);
+  const prefs = await loadPreferences(db, userId);
   if (repairedDates.length > 0) {
-    const prefs = await loadPreferences(db, userId);
     await resimulateFrom(db, userId, repairedDates[0]!, prefs).catch(() => undefined);
   }
 
-  const client = await stravaClient(db, c.env, userId);
-  if (!client)
-    return c.json({ ok: false, reason: "strava_unavailable", ingested: 0, matched: promoted });
-  const days = Math.min(365, Math.max(1, Number(c.req.query("days") ?? 90)));
-  const afterEpoch = Math.floor(Date.parse(nowInstant()) / 1000) - days * 86400;
-  let sources;
-  try {
-    const raws = await client.listActivities(afterEpoch, 100);
-    sources = raws.map(normalizeStravaActivity).filter((s) => s.sport === "run");
-  } catch {
-    return c.json({ ok: false, reason: "strava_error", ingested: 0, matched: promoted });
-  }
-  if (sources.length === 0) return c.json({ ok: true, ingested: 0, matched: promoted });
-  const stats = await ingestActivities(db, { userId, sources });
-  if (stats.affectedDates.length > 0) {
-    const prefs = await loadPreferences(db, userId);
-    await resimulateFrom(db, userId, stats.affectedDates[0]!, prefs).catch(() => undefined);
-  }
+  const result = await enqueueBackfill(db, userId, todayInZone(prefs.timezone));
   return c.json({
     ok: true,
-    ingested: stats.newActivities + stats.mergedPairs,
-    matched: stats.matchesCreated + promoted,
+    enqueued: result.enqueued,
+    reason: result.reason,
   });
 });
 
@@ -279,8 +269,19 @@ activityRoutes.get("/unmatched", async (c) => {
 export const insightRoutes = new Hono<AppContext>();
 insightRoutes.use("*", requireUser);
 
-/** `computed_metrics.metric_key` under which the never-regressing record set lives. */
-const RECORDS_METRIC_KEY = "records:v1";
+/**
+ * `computed_metrics.metric_key` under which the never-regressing record set
+ * lives, one key per discipline. The pre-discipline `records:v1` row is left
+ * in place, inert — its bare-id records still resolve through evidence.ts's
+ * `findRecord`, but nothing writes it any more.
+ */
+const recordsMetricKey = (d: Discipline): string => `records:v2:${d}`;
+/**
+ * The pre-discipline key. Nothing writes it any more, but its records — earned
+ * when every record was implicitly a running one — still seed the run
+ * discipline, so the never-regress guarantee survives the key change.
+ */
+const LEGACY_RECORDS_KEY = "records:v1";
 /** Categories whose pace is steady enough to compare halves of. */
 const STEADY_CATEGORIES: ReadonlySet<WorkoutCategory> = new Set(["easy", "long", "recovery"]);
 /** A run this long is a hard day on its own, whatever it was matched to. */
@@ -379,6 +380,11 @@ function days(n: number): string {
 insightRoutes.get("/", async (c) => {
   const db = c.get("db");
   const userId = c.get("userId");
+  // An unrecognized discipline falls back to run rather than erroring — a
+  // stale bookmark should show something, not a 400.
+  const requested = c.req.query("discipline");
+  const discipline: Discipline =
+    requested === "strength" || requested === "yoga" || requested === "run" ? requested : "run";
   const prefs = await loadPreferences(db, userId);
   const today = todayInZone(prefs.timezone);
   const twelveWeeksAgo = addDays(startOfIsoWeek(today), -7 * 12);
@@ -427,11 +433,18 @@ insightRoutes.get("/", async (c) => {
       .where(eq(weeklyReviews.userId, userId))
       .orderBy(desc(weeklyReviews.weekStart))
       .limit(6),
+    // Both the per-discipline key and the pre-discipline one. Records are a
+    // never-regressing set, so an achievement earned before insights became
+    // per-discipline must not disappear the moment the key changed; for the
+    // run discipline the legacy row seeds the new one. Filtered below.
     db
       .select()
       .from(computedMetrics)
       .where(
-        and(eq(computedMetrics.userId, userId), eq(computedMetrics.metricKey, RECORDS_METRIC_KEY)),
+        and(
+          eq(computedMetrics.userId, userId),
+          inArray(computedMetrics.metricKey, [recordsMetricKey(discipline), LEGACY_RECORDS_KEY]),
+        ),
       ),
     // One column, over 26 weeks of runs: the easy ceiling every
     // execution metric is measured against deserves a longer, steadier history
@@ -507,11 +520,17 @@ insightRoutes.get("/", async (c) => {
     const date = localDate(a);
     return date >= twelveWeeksAgo && date <= today;
   });
-  // Run-only for every execution/aerobic/pacing metric and for records; the
-  // load signals below deliberately keep all sports (a hard lift is load your
-  // legs still have to absorb) and say so in their notes.
-  const runRows = allSport.filter((a) => a.sport === "run");
+  // Scoped to the requested discipline for every execution/aerobic/pacing
+  // metric and for records; the load signals below deliberately keep all sports
+  // (a hard lift is load your legs still have to absorb) and say so in their
+  // notes. `runRows` keeps its name because for the run discipline — the
+  // default, and the only one with pace-based metrics — that is exactly what it
+  // holds.
+  const runRows = allSport.filter((a) => a.sport === discipline);
   const runs = runRows.map(rowToNormalized);
+  // Only offer a discipline the user could actually look at.
+  const availableDisciplines = DISCIPLINES.filter((d) => allSport.some((a) => a.sport === d));
+  const isRun = discipline === "run";
 
   // ── Load basis: one basis for the whole window, never a mix ──
   const totalDuration = allSport.reduce((s, a) => s + a.durationSeconds, 0);
@@ -664,7 +683,14 @@ insightRoutes.get("/", async (c) => {
   const pacing = computePacing(splitRuns);
 
   // ── Plan-shaped reports ──
-  const consistency = computeConsistency(workouts, range, today);
+  // Scoped to the discipline like everything else on the page. Unscoped, this
+  // card and the strip's adherence headline showed identical plan-wide numbers
+  // under all three chips while the grid beside them was per-discipline — one
+  // dashboard quietly reporting at two different scopes.
+  const disciplineWorkouts = workouts.filter(
+    (w) => disciplineOf(w.category, w.sport) === discipline,
+  );
+  const consistency = computeConsistency(disciplineWorkouts, range, today);
 
   const categoryRecord: Record<string, WorkoutCategory> = {};
   for (const [matchId, category] of categoryByMatchId) categoryRecord[matchId] = category;
@@ -700,8 +726,20 @@ insightRoutes.get("/", async (c) => {
       adherence: wk.adherence,
     })),
     completedRunDates: runRows.map(localDate),
+    discipline,
   });
-  const storedRecords = parseStoredRecords(storedRows[0]?.value);
+  // Prefer this discipline's own row. Only when it does not exist yet does the
+  // legacy pre-discipline row seed it, and only for running — those records
+  // were all runs. Their ids are bare; namespacing them here keeps one id
+  // space, and evidence.ts's findRecord resolves either form.
+  const ownRow = storedRows.find((r) => r.metricKey === recordsMetricKey(discipline));
+  const legacyRow = isRun ? storedRows.find((r) => r.metricKey === LEGACY_RECORDS_KEY) : undefined;
+  const storedRecords = ownRow
+    ? parseStoredRecords(ownRow.value)
+    : parseStoredRecords(legacyRow?.value).map((r) => ({
+        ...r,
+        id: r.id.includes(":") ? r.id : `run:${r.id}`,
+      }));
   const records = mergeRecords(fresh, storedRecords);
   if (JSON.stringify(records) !== JSON.stringify(storedRecords)) {
     const persisted = {
@@ -714,9 +752,9 @@ insightRoutes.get("/", async (c) => {
     await db
       .insert(computedMetrics)
       .values({
-        id: `${RECORDS_METRIC_KEY}:${userId}`,
+        id: `${recordsMetricKey(discipline)}:${userId}`,
         userId,
-        metricKey: RECORDS_METRIC_KEY,
+        metricKey: recordsMetricKey(discipline),
         ...persisted,
       })
       .onConflictDoUpdate({
@@ -760,7 +798,7 @@ insightRoutes.get("/", async (c) => {
           v.ratio > 1.5
             ? "That's a large jump on your recent norm — the range where injuries tend to cluster. A few easier days brings it back."
             : v.ratio >= 1.3
-              ? "You're running meaningfully above your norm. Fine as a planned build; worth noticing if it wasn't deliberate."
+              ? "You're training meaningfully above your norm. Fine as a planned build; worth noticing if it wasn't deliberate."
               : v.ratio < 0.8
                 ? "You're below your recent norm — which is exactly right for a down week or a taper."
                 : undefined,
@@ -773,7 +811,8 @@ insightRoutes.get("/", async (c) => {
       range: "under ~15%",
       gauge: { min: -50, max: 60, healthyLo: -50, healthyHi: 15, value: v.pct },
       meaning:
-        "How much running time you did in the last 7 days versus your average week across the 3 weeks before it.",
+        `How much ${discipline === "run" ? "running" : sessionNoun(discipline)} time you did in the last 7 days ` +
+        "versus your average week across the 3 weeks before it.",
       suggestion:
         v.pct > 30
           ? "A jump this size is where tissue tends to complain — hold the next week flat and let it catch up."
@@ -891,8 +930,9 @@ insightRoutes.get("/", async (c) => {
         strip: v.strip.map((d) => ({ date: d.date, on: d.hard })),
         meaning:
           "Consecutive hard days ending today — or yesterday, if today hasn't happened yet. A day counts as hard " +
-          `when it was a matched quality or race session, a run of ${LONG_RUN_HARD_SECONDS / 60} minutes or more, ` +
-          "or a run with no planned session behind it whose heart rate sat above your easy ceiling.",
+          `when it was a matched quality or race session, a ${sessionNoun(discipline)} of ` +
+          `${LONG_RUN_HARD_SECONDS / 60} minutes or more, or a ${sessionNoun(discipline)} with no planned session ` +
+          "behind it whose heart rate sat above your easy ceiling.",
         suggestion:
           v.consecutive >= 2
             ? "Back-to-back hard days leave less room to absorb the work — the easy day between them is what makes the hard ones count."
@@ -951,7 +991,11 @@ insightRoutes.get("/", async (c) => {
           "Descriptive, not a target: a fade on a hilly or hot run says more about the day than about you.",
       };
     }),
-  ];
+  ]
+    // Pace-based cards are omitted outright for strength and yoga. Rendering
+    // "Easy-run discipline" over a lifting history would not just be empty —
+    // it would be wrong.
+    .filter((m) => supportsMetric(discipline, m.id));
 
   // ── Per-run evidence (drilldowns) ──
   // Easy-run discipline: every contributing run with its per-lap HR against the
@@ -1046,7 +1090,20 @@ insightRoutes.get("/", async (c) => {
     if (detail && m.status === "ok" && detail.runs.length > 0) m.detail = detail;
   }
 
-  return c.json({ consistency, weekly, efficiency, decoupling, records, evidence, reviews, interpreted });
+  // Pace-based cards are ABSENT for strength and yoga, never present-but-empty:
+  // an empty card says "your data is missing", when the truth is that the
+  // question does not apply to a lift.
+  return c.json({
+    discipline,
+    availableDisciplines,
+    consistency,
+    weekly,
+    ...(isRun ? { efficiency, decoupling } : {}),
+    records,
+    evidence,
+    reviews,
+    interpreted,
+  });
 });
 
 insightRoutes.post("/dismiss", async (c) => {
@@ -1232,7 +1289,6 @@ export async function deleteAllUserData(db: Db, userId: string): Promise<void> {
     syncErrors,
     syncRuns,
     trainingPlanVersions,
-    webhookEvents,
     workoutCompletionMatches,
   } = await import("@rg/database");
 
@@ -1254,7 +1310,6 @@ export async function deleteAllUserData(db: Db, userId: string): Promise<void> {
     plannedWorkoutStages,
     scheduleOverrides,
     trainingPlanVersions,
-    webhookEvents,
     workoutCompletionMatches,
   ] as const;
   for (const t of childTables) await db.delete(t as any);

@@ -1,10 +1,10 @@
 import { z } from "zod";
 
-export type ActivityProviderName = "coros" | "strava";
+export type ActivityProviderName = "coros";
 
 /** A raw-ish activity from one provider, minimally normalized for matching. */
 export const sourceActivitySchema = z.object({
-  provider: z.enum(["coros", "strava"]),
+  provider: z.literal("coros"),
   providerActivityId: z.string(),
   /** UTC instant */
   startTime: z.string(),
@@ -22,11 +22,8 @@ export const sourceActivitySchema = z.object({
   trainingLoad: z.number().optional(),
   deviceName: z.string().optional(),
   title: z.string().optional(),
-  description: z.string().optional(),
-  summaryPolyline: z.string().optional(),
   /** COROS: id of the plan workout this activity completed, when reported. */
   sourcePlannedWorkoutId: z.string().optional(),
-  externalId: z.string().optional(),
   sourceCreatedAt: z.string().optional(),
   sourceUpdatedAt: z.string().optional(),
   contentFingerprint: z.string(),
@@ -37,7 +34,6 @@ export type SourceActivity = z.infer<typeof sourceActivitySchema>;
 export const normalizedActivitySchema = z.object({
   id: z.string(),
   corosActivityId: z.string().optional(),
-  stravaActivityId: z.string().optional(),
   startTime: z.string(),
   startTimeLocal: z.string().optional(),
   timezone: z.string().optional(),
@@ -52,7 +48,6 @@ export const normalizedActivitySchema = z.object({
   trainingLoad: z.number().optional(),
   deviceName: z.string().optional(),
   title: z.string().optional(),
-  summaryPolyline: z.string().optional(),
   completionMatchId: z.string().optional(),
   /** 0..1; 1 = single-source or exact merge */
   sourceMergeConfidence: z.number(),
@@ -70,10 +65,3 @@ export interface ActivityLap {
   splitType?: string;
 }
 
-export type MergeConfidenceBand = "high" | "medium" | "low";
-
-export function mergeConfidenceBand(score: number): MergeConfidenceBand {
-  if (score >= 0.85) return "high";
-  if (score >= 0.6) return "medium";
-  return "low";
-}
