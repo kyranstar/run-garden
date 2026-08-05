@@ -123,6 +123,23 @@ describe("GardenScene", () => {
     for (const t of turbs) expect(t).toMatch(/seed="\d+"/);
   });
 
+  it("clouds are organic tone-stacked blobs, not ellipse clusters", () => {
+    const markup = renderScene(healthySnapshot());
+    const puffs = markup.match(/<g[^>]*data-cloud="puff"[\s\S]*?<\/g>/g) ?? [];
+    expect(puffs.length).toBeGreaterThanOrEqual(1);
+    for (const puff of puffs) {
+      expect(puff).not.toContain("<ellipse");
+      // three tone masses per puff: under-shade, main, lit crown
+      expect(puff.match(/<path/g)!.length).toBeGreaterThanOrEqual(3);
+    }
+  });
+
+  it("horizon warmth appears with the sun and leaves the night alone", () => {
+    const snapshot = healthySnapshot();
+    expect(renderScene(snapshot, { timeOfDay: 17.5 })).toContain('data-sky="horizonwarm"');
+    expect(renderScene(snapshot, { timeOfDay: 23 })).not.toContain('data-sky="horizonwarm"');
+  });
+
   it("renders every living plant with a data-plant-id attribute", () => {
     const snapshot = healthySnapshot();
     const markup = renderScene(snapshot);
