@@ -4,6 +4,7 @@ import {
   gardenDayInputs,
   gardenEvents,
   gardenPlants,
+  gardenSeen,
   gardenSnapshots,
   gardenState,
   gardenUnlocks,
@@ -481,6 +482,8 @@ export interface GardenView {
    * durable replay converges to exactly this.
    */
   previewEvents: GardenEvent[];
+  /** Arrival watermark (null = never marked; see POST /api/garden/seen). */
+  seen: { lastSeenDate: string; lastSeenSeq: number; celebratedSpeciesIds: string[] } | null;
   /** Every species — unlocked and locked — with hints and real progress. */
   codex: Array<SpeciesUnlockStatus & { unlockedOn: string | null; livingCount: number }>;
   /** The nearest locked species: the "1 more week and it arrives" nudges. */
@@ -642,10 +645,21 @@ export async function buildGardenView(
   }
   const visitorByKind = new Map(visitorRows.map((r) => [r.kind, r]));
 
+  const seenRow = (
+    await db.select().from(gardenSeen).where(eq(gardenSeen.userId, userId)).limit(1)
+  )[0];
+
   return {
     snapshot,
     condition: conditionWord(snapshot.state, DEFAULT_GARDEN_CONFIG),
     previewEvents,
+    seen: seenRow
+      ? {
+          lastSeenDate: seenRow.lastSeenDate,
+          lastSeenSeq: seenRow.lastSeenSeq,
+          celebratedSpeciesIds: seenRow.celebratedSpeciesIds,
+        }
+      : null,
     species: unlocks.map((u) => {
       const s = SPECIES_BY_ID.get(u.speciesId);
       return {

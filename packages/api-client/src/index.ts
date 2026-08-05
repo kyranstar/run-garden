@@ -232,6 +232,16 @@ export interface GardenTimelineResponse {
   days: GardenTimelineDayDto[];
 }
 
+/** Arrival watermark for the garden's celebration/beat surfaces — the newest
+ * durable event the user has seen plus same-day (preview) unlocks already
+ * celebrated. Mirrors `GardenView["seen"]` (garden-sync.ts) and the body of
+ * `POST /api/garden/seen`. */
+export interface GardenSeenState {
+  lastSeenDate: string;
+  lastSeenSeq: number;
+  celebratedSpeciesIds: string[];
+}
+
 // ── Plan Studio (worker routes: apps/worker/src/routes/studio.ts) ──────────────
 
 /** One `studio_plan_pushes` row, trimmed to what the UI needs (no internal
@@ -455,7 +465,11 @@ export const api = {
   restoreCalendar: (id: string) => post(`/api/plan/workouts/${id}/restore-calendar`),
   retryCoros: (id: string) => post(`/api/plan/workouts/${id}/retry-coros`),
   removeWorkout: (id: string) => post(`/api/plan/workouts/${id}/remove`),
-  garden: () => get<Record<string, unknown> & { balance: DisciplineBalance }>("/api/garden"),
+  garden: () =>
+    get<Record<string, unknown> & { balance: DisciplineBalance; seen: GardenSeenState | null }>(
+      "/api/garden",
+    ),
+  gardenSeen: (body: GardenSeenState) => post<{ ok: boolean }>("/api/garden/seen", body),
   gardenRestMode: (active: boolean, until?: string | null) =>
     post("/api/garden/rest-mode", { active, until }),
   gardenTimeline: () => get<GardenTimelineResponse>("/api/garden/timeline"),
