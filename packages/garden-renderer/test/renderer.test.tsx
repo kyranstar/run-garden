@@ -230,10 +230,10 @@ describe("GardenScene", () => {
 });
 
 describe("PlantSprite archetypes", () => {
-  it("covers all 20 archetypes across the species catalog", () => {
+  it("covers all 21 archetypes across the species catalog", () => {
     const archetypes = new Set(SPECIES.map((s) => s.archetype));
-    expect(archetypes.size).toBe(20);
-    expect(SPECIES.length).toBe(46); // 34 + 5 achievement species + 7 tri-discipline species
+    expect(archetypes.size).toBe(21);
+    expect(SPECIES.length).toBe(55); // 46 + 5 ground species + 4 achievement species (Bundle 3)
   });
 
   it("renders every species in mature, flowering, and dead states without throwing", () => {
@@ -578,16 +578,19 @@ describe("riparian streams", () => {
     expect(geo.inChannel(displaced.x, y, 8)).toBe(false);
   });
 
-  it("no rendered plant anchor lands in stream water (long-lived garden)", () => {
-    // 20 training weeks earns stream grounds; every plant transform must sit
-    // clear of every channel.
+  it("no rendered NON-AQUATIC plant anchor lands in stream water (long-lived garden)", () => {
+    // 20 training weeks earns stream grounds; every dry-land plant transform
+    // must sit clear of every channel. Aquatic species (Bundle 3) are the
+    // deliberate exemption — they anchor to the stream on purpose.
     const s = replay(START, trainingWeeks(START, 20)).snapshot;
     const channels = riverSystemFor(s.state.grounds ?? []);
     expect(channels.length).toBeGreaterThan(0);
     const markup = renderScene(s);
     const anchors = [...markup.matchAll(/data-plant-id="([^"]*)"[^>]*transform="translate\((-?[\d.]+) (-?[\d.]+)\)/g)];
     expect(anchors.length).toBeGreaterThan(10);
+    const aquaticIds = new Set(SPECIES.filter((sp) => sp.aquatic).map((sp) => sp.id));
     for (const m of anchors) {
+      if ([...aquaticIds].some((id) => m[1]!.startsWith(`pl-${id}-`))) continue;
       const x = Number(m[2]);
       const y = Number(m[3]);
       expect(
@@ -595,6 +598,37 @@ describe("riparian streams", () => {
         `plant ${m[1]} at (${x},${y}) sits in a stream`,
       ).toBe(false);
     }
+  });
+
+  it("channel aquatics anchor ON the water; bank aquatics at its edge", () => {
+    const s = replay(START, trainingWeeks(START, 20)).snapshot;
+    const channels = riverSystemFor(s.state.grounds ?? []);
+    expect(channels.length).toBeGreaterThan(0);
+    const lily = SPECIES.find((sp) => sp.id === "waterlily")!;
+    const cattail = SPECIES.find((sp) => sp.id === "cattail")!;
+    const synthetic: GardenSnapshot = structuredClone(s);
+    synthetic.plants.push(
+      { ...syntheticPlant(lily, "mature"), id: "pl-waterlily-x", position: { x: 0.5, y: 0.6, region: 0 } },
+      { ...syntheticPlant(cattail, "mature"), id: "pl-cattail-x", position: { x: 0.5, y: 0.6, region: 0 } },
+    );
+    const markup = renderScene(synthetic);
+    const find = (id: string) => {
+      const m = markup.match(new RegExp(`data-plant-id="${id}"[^>]*transform="translate\\((-?[\\d.]+) (-?[\\d.]+)\\)`));
+      expect(m, `${id} rendered`).toBeTruthy();
+      return { x: Number(m![1]), y: Number(m![2]) };
+    };
+    const lilyAt = find("pl-waterlily-x");
+    expect(
+      channels.some((c) => c.inChannel(lilyAt.x, lilyAt.y, 0)),
+      `waterlily at (${lilyAt.x},${lilyAt.y}) should sit on water`,
+    ).toBe(true);
+    const catAt = find("pl-cattail-x");
+    expect(channels.some((c) => c.inChannel(catAt.x, catAt.y, -2))).toBe(false);
+    const nearEdge = channels.some((c) => {
+      const t = Math.max(0, Math.min(c.tEnd, (catAt.y - c.yTop) / c.ySpan));
+      return Math.abs(Math.abs(catAt.x - c.xc(t)) - c.hw(t)) < 24;
+    });
+    expect(nearEdge, `cattail at (${catAt.x},${catAt.y}) should hug a bank`).toBe(true);
   });
 });
 
@@ -708,5 +742,24 @@ describe("arrival sensations (reward-loop spec §5)", () => {
     const a = renderScene(snap);
     const b = renderScene(snap, { enteringPlantIds: [someId], highlightPlantId: someId });
     expect(paths(b)).toEqual(paths(a));
+  });
+});
+
+describe("ducks (Bundle 3)", () => {
+  it("render only with the flag AND a stream, on the water", () => {
+    const s = replay(START, trainingWeeks(START, 20)).snapshot;
+    const channels = riverSystemFor(s.state.grounds ?? []);
+    expect(channels.length).toBeGreaterThan(0);
+    const withDucks: GardenSnapshot = structuredClone(s);
+    withDucks.wildlife.ducks = true;
+    const markup = renderScene(withDucks);
+    expect(markup).toContain('data-wildlife="ducks"');
+    const off: GardenSnapshot = structuredClone(s);
+    off.wildlife.ducks = false;
+    expect(renderScene(off)).not.toContain('data-wildlife="ducks"');
+    // No stream → nothing to float on, even with the flag.
+    const noStream: GardenSnapshot = structuredClone(withDucks);
+    noStream.state.grounds = [];
+    expect(renderScene(noStream)).not.toContain('data-wildlife="ducks"');
   });
 });

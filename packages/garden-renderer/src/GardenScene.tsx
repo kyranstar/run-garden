@@ -341,6 +341,38 @@ function frogShapes(p: string, animate: boolean, plants: GardenPlant[], anchor: 
   );
 }
 
+/** A pair of ducks drifting on the first stream (Bundle 3). Anchored to the
+ * channel itself, not a plant — mid-course, where the water is widest. */
+function duckShapes(p: string, animate: boolean, channels: StreamGeometry[]): ReactNode {
+  const c = channels[0];
+  if (!c) return null;
+  const r = rng("wildlife:ducks");
+  const duck = (key: string, t: number, flip: boolean, scale: number) => {
+    const x = c.xc(t) + (r() - 0.5) * c.hw(t);
+    const y = c.yTop + t * c.ySpan;
+    return (
+      <g
+        key={key}
+        className={animate ? `${p}-hover` : undefined}
+        transform={`translate(${n(x)} ${n(y)}) scale(${n(scale * (flip ? -1 : 1))} ${n(scale)})`}
+      >
+        <ellipse cx={0} cy={0} rx={4.6} ry={2.6} fill="#7a6a52" />
+        <path d="M-4.2,-0.6 q-1.6,-0.4 -2.4,0.6 q1.2,0.9 2.6,0.5 Z" fill="#6b5c46" />
+        <circle cx={3.4} cy={-3.2} r={1.7} fill="#5c6e58" />
+        <path d="M4.9,-3.3 l2.1,0.5 -2.1,0.7 Z" fill="#caa25a" />
+        <circle cx={3.8} cy={-3.5} r={0.4} fill="#2c2822" />
+        <path d="M-5.4,1.8 q5.4,1.6 10.8,0" stroke="#e8f0f2" strokeWidth={0.6} opacity={0.5} fill="none" />
+      </g>
+    );
+  };
+  return (
+    <g data-wildlife="ducks" pointerEvents="none">
+      {duck("d1", Math.min(c.tEnd, 0.62), false, 1)}
+      {duck("d2", Math.min(c.tEnd, 0.74), true, 0.82)}
+    </g>
+  );
+}
+
 function dragonflyShapes(p: string, animate: boolean, plants: GardenPlant[], anchor: PlantAnchor): ReactNode {
   const flower =
     firstById(plants, (pl) => pl.state === "flowering") ??
@@ -595,14 +627,26 @@ export function GardenScene({
 
   // Plants never grow in the water: anchors displace out of stream channels.
   // The river system (confluences included) matches Terrain's byte-for-byte.
+  // Aquatic species (Bundle 3) are the deliberate exemption: "channel" snaps
+  // onto the waterline, "bank" hugs the edge — both clamped past the
+  // riparian fade (t ≥ 0.4) so the distant course stays bare water.
   const channels: StreamGeometry[] = riverSystemFor(snapshot.state.grounds ?? []);
   const sources = channels.map((c) => c.xc(0));
-  const anchor: PlantAnchor = (pl) =>
-    displaceFromStreams(
-      anchorOf(pl),
-      channels,
-      Math.max(12, speciesOrThrow(pl.speciesId).spacing * 1000 * 0.45),
-    );
+  const anchor: PlantAnchor = (pl) => {
+    const sp = speciesOrThrow(pl.speciesId);
+    const base = anchorOf(pl);
+    if (sp.aquatic && channels.length > 0) {
+      const c = channels.reduce((best, ch) =>
+        Math.abs(ch.cx0 - base.x) < Math.abs(best.cx0 - base.x) ? ch : best,
+      );
+      const t = Math.min(c.tEnd, Math.max(0.4, 0.4 + 0.55 * pl.position.y));
+      const y = c.yTop + t * c.ySpan;
+      if (sp.aquatic === "channel") return { x: c.xc(t), y, s: base.s };
+      const side = pl.position.x >= 0.5 ? 1 : -1;
+      return { x: c.xc(t) + side * (c.hw(t) + 6), y, s: base.s };
+    }
+    return displaceFromStreams(base, channels, Math.max(12, sp.spacing * 1000 * 0.45));
+  };
 
   const sorted = [...snapshot.plants].sort(
     (a, b) => a.position.y - b.position.y || a.id.localeCompare(b.id),
@@ -803,6 +847,7 @@ export function GardenScene({
       {snapshot.wildlife.frogs ? frogShapes(p, animate, sorted, anchor) : null}
       {snapshot.wildlife.dragonflies ? dragonflyShapes(p, animate, sorted, anchor) : null}
       {snapshot.wildlife.ladybugs ? ladybugShapes(p, animate, sorted, anchor) : null}
+      {snapshot.wildlife.ducks ? duckShapes(p, animate, channels) : null}
 
       {/* today's rare visitor — only during its own hours */}
       {visitor && VISITOR_PERIODS[visitor].has(light.period) ? visitorShapes(visitor, sorted, anchor) : null}
