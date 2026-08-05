@@ -46,7 +46,9 @@ export function initialSnapshot(createdDate: LocalDate): GardenSnapshot {
     earlyRunCount: 0,
     longestRunMeters: 0,
     totalCompletedRuns: 0,
+    raceCount: 0,
     consecutiveConsistentWeeks: 0,
+    bestConsistentWeeks: 0,
     comebackStreak: 0,
     bestComebackStreak: 0,
     inComeback: false,
@@ -81,6 +83,7 @@ export function initialSnapshot(createdDate: LocalDate): GardenSnapshot {
       frogs: false,
       dragonflies: false,
       ladybugs: false,
+      ducks: false,
     },
   };
   // The garden begins with a small starter meadow so day one is not bare dirt.
@@ -180,6 +183,8 @@ export function simulateDay(
   state.earlyRunCount ??= 0;
   state.longestRunMeters ??= 0;
   state.bestComebackStreak ??= 0;
+  state.raceCount ??= 0;
+  state.bestConsistentWeeks ??= 0;
   state.daysSinceStrength ??= 0;
   state.daysSinceYoga ??= 0;
   state.strengthSessionCount ??= 0;
@@ -327,8 +332,13 @@ export function simulateDay(
 
   // 10. Weekly adherence feeds long-term consistency unlocks.
   if (input.weekAdherence !== undefined && !state.restMode) {
-    if (input.weekAdherence >= 0.75) state.consecutiveConsistentWeeks += 1;
-    else state.consecutiveConsistentWeeks = 0;
+    if (input.weekAdherence >= 0.75) {
+      state.consecutiveConsistentWeeks += 1;
+      state.bestConsistentWeeks = Math.max(
+        state.bestConsistentWeeks,
+        state.consecutiveConsistentWeeks,
+      );
+    } else state.consecutiveConsistentWeeks = 0;
   }
 
   // 11. Unlocks, wildlife, regions, derived metrics.
@@ -476,6 +486,9 @@ function applyRun(
   switch (run.category) {
     case "quality":
     case "race": {
+      // A race is the block's peak: it counts as the quality work it is AND
+      // keeps its own ledger for the race-gated species.
+      if (run.category === "race") state.raceCount += 1;
       state.qualityRunCount += 1;
       plantForQualityRun(snapshot, run, date, emit);
       // A hard effort can push mature flowering species into bloom.
@@ -799,6 +812,8 @@ function evaluateWildlife(
     frogs: !inDecline && s.moisture > 0.5 && living.some((p) => p.category === "fern"),
     dragonflies: !inDecline && s.floweringDensity >= 0.3,
     ladybugs: !inDecline && bloomingSpecies.size >= 1,
+    ducks:
+      !inDecline && (s.grounds ?? []).some((g) => g.kind === "stream") && s.moisture > 0.5,
   };
 
   for (const kind of Object.keys(desired) as WildlifeKind[]) {

@@ -8,7 +8,7 @@ import type {
   WorkoutCategory,
 } from "@rg/domain";
 
-export const SIMULATION_VERSION = 3;
+export const SIMULATION_VERSION = 4;
 
 /** The three disciplines the garden listens to; each drives its own axis. */
 export type Discipline = "run" | "strength" | "yoga";
@@ -97,7 +97,11 @@ export interface EngineGardenState {
   /** Longest single run ever, in meters (any run, planned or not). */
   longestRunMeters: number;
   totalCompletedRuns: number;
+  /** Planned races finished (a race also counts as a quality run). */
+  raceCount: number;
   consecutiveConsistentWeeks: number;
+  /** Longest consistency chain ever reached (canon §1.3's "longest"). */
+  bestConsistentWeeks: number;
   /** Consecutive completed-run days since the last drought ended. */
   comebackStreak: number;
   /** Best comeback streak ever reached (survives the streak's own reset). */
