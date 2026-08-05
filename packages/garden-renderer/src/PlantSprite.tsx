@@ -937,6 +937,51 @@ function shrubSpike({ r, v, m, P }: Ctx): ReactNode {
   );
 }
 
+/** water lily: a floating organic pad with a crease, and a cup bloom once
+ * grown. Sits flat on the waterline (aquatic "channel" placement) — no sway.
+ * Draw order: all state-independent pad draws first, bloom draws last, so
+ * growth/bloom state never reshuffles the pad's geometry. */
+function waterLily({ r, v, m, P, L }: Ctx): ReactNode {
+  const rw = v(lerp(3.5, 11, m));
+  const pad = blobPath(r, 0, 0, rw, rw * 0.4, 0.16, 8);
+  const litOffset = rw * 0.12 * (L.dx !== 0 ? -L.dx : 1);
+  const sheen = blobPath(r, litOffset, -rw * 0.05, rw * 0.8, rw * 0.3, 0.18, 7);
+  const creaseA = (r() - 0.5) * 1.6;
+  const items: ReactNode[] = [
+    <path key="pad" d={pad} fill={P.c1} />,
+    <path key="sheen" d={sheen} fill={mix(P.c1, L.litColor, 0.22 * L.amount)} opacity={0.85} />,
+    <path
+      key="crease"
+      d={`M0,0 L${n(Math.cos(creaseA) * rw * 0.95)},${n(Math.sin(creaseA) * rw * 0.36)}`}
+      stroke={shade(P.c1, 0.72)}
+      strokeWidth={0.7}
+      fill="none"
+    />,
+  ];
+  if (m >= 0.5) {
+    const bh = v(lerp(1.6, 4.2, m), 0.2);
+    if (P.blooming) {
+      items.push(
+        <path
+          key="petals"
+          d={`M0,${n(-bh * 0.2)} C${n(-bh)},${n(-bh * 1.1)} ${n(-bh * 0.5)},${n(-bh * 1.6)} 0,${n(-bh * 1.2)} C${n(bh * 0.5)},${n(-bh * 1.6)} ${n(bh)},${n(-bh * 1.1)} 0,${n(-bh * 0.2)} Z`}
+          fill={P.c2}
+        />,
+        <circle key="heart" cx={0} cy={n(-bh * 0.75)} r={n(bh * 0.28)} fill={P.c3} />,
+      );
+    } else {
+      items.push(
+        <path
+          key="bud"
+          d={`M0,0 C${n(-bh * 0.5)},${n(-bh * 0.7)} ${n(-bh * 0.2)},${n(-bh * 1.3)} 0,${n(-bh * 1.35)} C${n(bh * 0.2)},${n(-bh * 1.3)} ${n(bh * 0.5)},${n(-bh * 0.7)} 0,0 Z`}
+          fill={mix(P.c2, P.c1, 0.35)}
+        />,
+      );
+    }
+  }
+  return <g>{items}</g>;
+}
+
 const ARCHETYPES: Record<Species["archetype"], (ctx: Ctx) => ReactNode> = {
   tree_round: treeRound,
   tree_birch: treeBirch,
@@ -958,10 +1003,11 @@ const ARCHETYPES: Record<Species["archetype"], (ctx: Ctx) => ReactNode> = {
   shelf_fungus: shelfFungus,
   shrub_round: shrubRound,
   shrub_spike: shrubSpike,
+  water_lily: waterLily,
 };
 
-/** Ground-hugging archetypes do not sway. */
-const NO_SWAY = new Set<Species["archetype"]>(["moss", "mushroom", "shelf_fungus", "groundcover_patch"]);
+/** Ground-hugging (and floating) archetypes do not sway. */
+const NO_SWAY = new Set<Species["archetype"]>(["moss", "mushroom", "shelf_fungus", "groundcover_patch", "water_lily"]);
 
 export interface PlantSpriteProps {
   plant: GardenPlant;
