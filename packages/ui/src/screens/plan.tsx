@@ -24,6 +24,7 @@ import { MoveSheet } from "./move-sheet.js";
 import { MatchSheet } from "./match-sheet.js";
 import { StudioSection } from "./studio.js";
 import { SyncPanel } from "./today.js";
+import { CoachPanel, ManagePlans, pendingByDate } from "./coach-panel.js";
 
 /**
  * "Did this run happen?" only ever makes sense for a date that has passed.
@@ -366,6 +367,78 @@ function WorkoutCell({
   );
 }
 
+/**
+ * Coach data wiring (Plan B Task B2): one shared ["coach-state"] query feeds
+ * the panel AND the calendar's ghost diffs. On mount, a wake fires only when
+ * the server says it's worth it (wakeAdvised) — quiet opens stay free.
+ */
+function usePlanCoach() {
+  const qc = useQueryClient();
+  const state = useQuery({ queryKey: ["coach-state"], queryFn: () => api.coachState() });
+  const invalidate = () => void qc.invalidateQueries({ queryKey: ["coach-state"] });
+  const wakeMut = useMutation({ mutationFn: () => api.coachWake(), onSettled: invalidate });
+  const wakeFired = useRef(false);
+  useEffect(() => {
+    if (state.data?.wakeAdvised && !wakeFired.current) {
+      wakeFired.current = true;
+      wakeMut.mutate();
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [state.data?.wakeAdvised]);
+
+  const send = useMutation({
+    mutationFn: (body: string) => api.coachMessage(body),
+    onMutate: (body: string) => {
+      // Optimistic echo: the athlete's words appear instantly.
+      qc.setQueryData(["coach-state"], (cur: unknown) => {
+        const c = cur as { messages?: unknown[] } | undefined;
+        if (!c?.messages) return cur;
+        return {
+          ...c,
+          messages: [
+            ...c.messages,
+            { id: `local-${Date.now()}`, role: "user", body, refs: {}, at: new Date().toISOString() },
+          ],
+        };
+      });
+    },
+    onSettled: invalidate,
+  });
+  const approve = useMutation({
+    mutationFn: (id: string) => api.coachApprove(id),
+    onSettled: () => {
+      invalidate();
+      for (const k of ["plan", "today", "garden"]) void qc.invalidateQueries({ queryKey: [k] });
+    },
+  });
+  const decline = useMutation({ mutationFn: (id: string) => api.coachDecline(id), onSettled: invalidate });
+  const answer = useMutation({
+    mutationFn: (v: { id: string; answer: string }) => api.coachAnswerQuestion(v.id, v.answer),
+    onSettled: invalidate,
+  });
+  return {
+    state,
+    busy: wakeMut.isPending || send.isPending || answer.isPending,
+    acting: approve.isPending || decline.isPending,
+    send: (b: string) => send.mutate(b),
+    approve: (id: string) => approve.mutate(id),
+    decline: (id: string) => decline.mutate(id),
+    answer: (id: string, a: string) => answer.mutate({ id, answer: a }),
+  };
+}
+
+/** Scroll a proposal card into view and flash it (calendar ghost tap). */
+function focusProposal(id: string): void {
+  requestAnimationFrame(() => {
+    const el = document.getElementById(`proposal-${id}`);
+    if (!el) return;
+    el.scrollIntoView({ block: "center", behavior: "smooth" });
+    el.classList.remove("coach-flash");
+    void el.offsetWidth; // restart the animation
+    el.classList.add("coach-flash");
+  });
+}
+
 export function PlanScreen() {
   const [params, setParams] = useSearchParams();
   // Explicit horizon: the server's default window (8 weeks ahead) is shorter
@@ -389,6 +462,35 @@ export function PlanScreen() {
   const today = plan.data?.today;
   const todayWeek = today ? startOfIsoWeek(today) : null;
 
+  const coach = usePlanCoach();
+  const coachPlans = useQuery({ queryKey: ["coach-plans"], queryFn: api.coachPlans });
+  const [coachOpen, setCoachOpen] = useState(false);
+  const [manageOpen, setManageOpen] = useState(false);
+  const qc = useQueryClient();
+  const rename = useMutation({
+    mutationFn: (v: { id: string; name: string }) => api.coachPlanRename(v.id, v.name),
+    onSettled: () => void qc.invalidateQueries({ queryKey: ["coach-plans"] }),
+  });
+  const retire = useMutation({
+    mutationFn: (id: string) => api.coachPlanRetire(id),
+    onSettled: () => {
+      for (const k of ["coach-plans", "plan", "coach-state"]) void qc.invalidateQueries({ queryKey: [k] });
+    },
+  });
+  const cannedSend = (body: string) => {
+    setManageOpen(false);
+    setCoachOpen(true);
+    coach.send(body);
+  };
+  const ghostsByDate = useMemo(() => {
+    const dates = new Map((plan.data?.workouts ?? []).map((w) => [w.id, w.effectiveDate]));
+    return pendingByDate(coach.state.data?.pendingProposals ?? [], dates);
+  }, [plan.data?.workouts, coach.state.data?.pendingProposals]);
+  const onGhostTap = (proposalId: string) => {
+    setCoachOpen(true); // no-op visually on desktop (panel always mounted)
+    focusProposal(proposalId);
+  };
+
   // Land on the current week on first load, so today's work is front and
   // centre instead of buried under weeks of history.
   useEffect(() => {
@@ -409,12 +511,40 @@ export function PlanScreen() {
   const selected = plan.data.workouts.find((w) => w.id === selectedId);
   const openWorkout = (id: string) => setParams({ workout: id });
 
+  const coachPanelEl = coach.state.data ? (
+    <CoachPanel
+      messages={coach.state.data.messages}
+      proposals={coach.state.data.pendingProposals}
+      question={coach.state.data.openQuestion}
+      busy={coach.busy}
+      onSend={coach.send}
+      onApprove={coach.approve}
+      onDecline={coach.decline}
+      onAnswer={coach.answer}
+    />
+  ) : (
+    <section className="coach-panel" aria-label="Coach">
+      <div className="coach-panel-head">
+        <h2>Coach</h2>
+      </div>
+      <div className="coach-thread">
+        <p className="muted">{coach.state.isLoading ? "Reading your week…" : "The coach is unreachable — manual controls all work."}</p>
+      </div>
+    </section>
+  );
+
+  const pendingCount = coach.state.data?.pendingProposals.length ?? 0;
+  const activeCoachPlans = (coachPlans.data?.plans ?? []).filter((p) => p.status === "active");
+
   return (
     <div>
       <div className="row-between screen-title">
         <h1>Plan</h1>
         <div className="row">
           {plan.data.plan ? <span className="muted">{plan.data.plan.name}</span> : null}
+          <button className="btn btn-small" onClick={() => setManageOpen(true)}>
+            Manage plans ▾
+          </button>
           {plan.data.workouts.length > 0 ? (
             <button
               className="btn btn-small"
@@ -425,9 +555,11 @@ export function PlanScreen() {
           ) : null}
         </div>
       </div>
-      <SyncPanel />
-      <StudioSection />
-      {plan.data.workouts.length === 0 ? (
+      <div className="plan-split">
+        <div className="plan-split-coach">{coachPanelEl}</div>
+        <div>
+          <SyncPanel />
+          {plan.data.workouts.length === 0 ? (
         <EmptyState art="🗓" title="No active COROS training plan was found">
           Start a plan in COROS, then refresh from the desktop app.
         </EmptyState>
@@ -463,6 +595,18 @@ export function PlanScreen() {
                       {day.items.map((w) => (
                         <WorkoutCell key={w.id} w={w} today={today!} onOpen={() => openWorkout(w.id)} />
                       ))}
+                      {(ghostsByDate.get(day.date) ?? []).map((g, i) => (
+                        <button
+                          key={`${g.proposalId}-${i}`}
+                          type="button"
+                          className={`cal-ghost cal-ghost-${g.kind}`}
+                          onClick={() => onGhostTap(g.proposalId)}
+                          title={g.title}
+                        >
+                          {g.label}
+                          <span className="cal-ghost-reason">{g.title} · pending</span>
+                        </button>
+                      ))}
                     </div>
                   );
                 })}
@@ -471,6 +615,49 @@ export function PlanScreen() {
           </section>
         ))
       )}
+      {activeCoachPlans.length > 0 ? (
+        <button
+          type="button"
+          className="cal-extend-row"
+          onClick={() =>
+            cannedSend(`Extend "${activeCoachPlans[0]!.name}" — draft the next weeks in the same shape.`)
+          }
+        >
+          + extend {activeCoachPlans[0]!.name} — the coach drafts the next weeks
+        </button>
+      ) : null}
+      <StudioSection />
+        </div>
+      </div>
+
+      <button type="button" className="coach-pill" onClick={() => setCoachOpen(true)}>
+        Coach{pendingCount > 0 ? ` · ${pendingCount}` : ""}
+      </button>
+      <Sheet open={coachOpen} onClose={() => setCoachOpen(false)} title="Coach">
+        <div className="coach-sheet-panel">
+          {coach.state.data ? (
+            <CoachPanel
+              hideHead
+              messages={coach.state.data.messages}
+              proposals={coach.state.data.pendingProposals}
+              question={coach.state.data.openQuestion}
+              busy={coach.busy}
+              onSend={coach.send}
+              onApprove={coach.approve}
+              onDecline={coach.decline}
+              onAnswer={coach.answer}
+            />
+          ) : null}
+        </div>
+      </Sheet>
+      <Sheet open={manageOpen} onClose={() => setManageOpen(false)} title="Manage plans">
+        <ManagePlans
+          plans={coachPlans.data?.plans ?? []}
+          onCanned={cannedSend}
+          onRetire={(id) => retire.mutate(id)}
+          onRename={(id, name) => rename.mutate({ id, name })}
+        />
+      </Sheet>
       {selected && today ? (
         <WorkoutDetail
           w={selected}

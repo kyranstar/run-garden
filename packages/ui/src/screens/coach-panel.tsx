@@ -305,6 +305,7 @@ export function CoachPanel({
   onDecline,
   onAnswer,
   header,
+  hideHead,
 }: {
   messages: CoachMessageDto[];
   proposals: CoachProposalDto[];
@@ -316,18 +317,22 @@ export function CoachPanel({
   onAnswer: (id: string, answer: string) => void;
   /** Extra header content (e.g. a close button on mobile). */
   header?: ReactNode;
+  /** Skip the internal header (a wrapping Sheet already provides one). */
+  hideHead?: boolean;
 }) {
   return (
     <section className="coach-panel" aria-label="Coach">
-      <div className="coach-panel-head">
-        <h2>Coach</h2>
-        <span className="row" style={{ gap: "0.6rem" }}>
-          <Link className="linklike" to="/settings#coach-memory">
-            what I know →
-          </Link>
-          {header}
-        </span>
-      </div>
+      {hideHead ? null : (
+        <div className="coach-panel-head">
+          <h2>Coach</h2>
+          <span className="row" style={{ gap: "0.6rem" }}>
+            <Link className="linklike" to="/settings#coach-memory">
+              what I know →
+            </Link>
+            {header}
+          </span>
+        </div>
+      )}
       <PendingTray proposals={proposals} onApprove={onApprove} onDecline={onDecline} busy={busy} />
       <CoachThread messages={messages} />
       <CoachComposer onSend={onSend} question={question} onAnswer={onAnswer} busy={busy} />
