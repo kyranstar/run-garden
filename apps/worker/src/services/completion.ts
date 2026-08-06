@@ -35,7 +35,21 @@ export interface IngestInput {
   /** laps keyed by provider activity id (COROS structured laps). */
   lapsByProviderId?: Record<
     string,
-    Array<{ lapIndex: number; durationSeconds: number; distanceMeters?: number; avgHeartRate?: number; avgPaceSecPerKm?: number; splitType?: string }>
+    Array<{
+      lapIndex: number;
+      durationSeconds: number;
+      distanceMeters?: number;
+      avgHeartRate?: number;
+      avgPaceSecPerKm?: number;
+      splitType?: string;
+      avgCadenceSpm?: number;
+      minHeartRate?: number;
+      maxHeartRate?: number;
+      elevGainMeters?: number;
+      avgGradePercent?: number;
+      avgPowerWatts?: number;
+      exerciseNameKey?: string;
+    }>
   >;
 }
 
@@ -254,6 +268,7 @@ async function upsertNormalized(
         trainingLoad: normalized.trainingLoad ?? null,
         deviceName: normalized.deviceName ?? null,
         title: normalized.title ?? null,
+        telemetry: normalized.telemetry ?? null,
         sourceMergeConfidence: normalized.sourceMergeConfidence,
         updatedAt: now,
       })
@@ -278,6 +293,7 @@ async function upsertNormalized(
     trainingLoad: normalized.trainingLoad ?? null,
     deviceName: normalized.deviceName ?? null,
     title: normalized.title ?? null,
+    telemetry: normalized.telemetry ?? null,
     sourceMergeConfidence: normalized.sourceMergeConfidence,
     createdAt: now,
     updatedAt: now,
@@ -453,6 +469,13 @@ export async function ingestActivities(db: Db, input: IngestInput): Promise<Inge
         avgHeartRate: l.avgHeartRate ?? null,
         avgPaceSecPerKm: l.avgPaceSecPerKm ?? null,
         splitType: l.splitType ?? null,
+        avgCadenceSpm: l.avgCadenceSpm ?? null,
+        minHeartRate: l.minHeartRate ?? null,
+        maxHeartRate: l.maxHeartRate ?? null,
+        elevGainMeters: l.elevGainMeters ?? null,
+        avgGradePercent: l.avgGradePercent ?? null,
+        avgPowerWatts: l.avgPowerWatts ?? null,
+        exerciseNameKey: l.exerciseNameKey ?? null,
       }));
       await chunkedInsert(lapRows, 8, (batch) => db.insert(activityLaps).values(batch));
     }

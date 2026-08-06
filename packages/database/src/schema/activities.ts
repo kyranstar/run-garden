@@ -1,4 +1,5 @@
 import { index, integer, real, sqliteTable, text, uniqueIndex } from "drizzle-orm/sqlite-core";
+import type { ActivityTelemetry } from "@rg/domain";
 
 export const activities = sqliteTable(
   "activities",
@@ -20,6 +21,8 @@ export const activities = sqliteTable(
     trainingLoad: real("training_load"),
     deviceName: text("device_name"),
     title: text("title"),
+    /** Telemetry extras (cadence, power, weather, zones…) — effort-analysis spec §2. */
+    telemetry: text("telemetry", { mode: "json" }).$type<ActivityTelemetry>(),
     completionMatchId: text("completion_match_id"),
     sourceMergeConfidence: real("source_merge_confidence").notNull().default(1),
     createdAt: text("created_at").notNull(),
@@ -65,6 +68,13 @@ export const activityLaps = sqliteTable(
     avgHeartRate: real("avg_heart_rate"),
     avgPaceSecPerKm: real("avg_pace_sec_per_km"),
     splitType: text("split_type"),
+    avgCadenceSpm: real("avg_cadence_spm"),
+    minHeartRate: real("min_heart_rate"),
+    maxHeartRate: real("max_heart_rate"),
+    elevGainMeters: real("elev_gain_meters"),
+    avgGradePercent: real("avg_grade_percent"),
+    avgPowerWatts: real("avg_power_watts"),
+    exerciseNameKey: text("exercise_name_key"),
   },
   (t) => [uniqueIndex("laps_activity_idx").on(t.activityId, t.lapIndex)],
 );
