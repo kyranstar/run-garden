@@ -66,6 +66,8 @@ Strong model (existing `AI_STUDIO_MODEL_STRONG` env, default opus-class) via the
 }
 ```
 
+**Restraint is a first-class outcome.** A wake is a judgment, not a change-generator: the correct output is often a briefing with **zero proposals** — acknowledging a skipped workout as fine, noting the plan already absorbs a bad night, or saying nothing at all (`briefing: null`). The prompt encodes this explicitly (*"propose only when a change genuinely beats the current plan; reassurance is a complete answer"*), and the trigger table implies no obligation — a consumed `missed_workout` trigger with no proposal and a kind sentence is a fully successful wake.
+
 **Op vocabulary** (the only ways the coach can touch a plan):
 
 `ease(workoutId, session)` · `move(workoutId, toDate)` · `swap(dayA, dayB)` · `skip(workoutId, reason)` · `add(date, session)` · `reshapeWeek(planId, weekStart, sessions[])` · `firmUp(planId, weekStart, sessions[])` · `extendPlan(planId, shapeWeeks[])` · `windDown(planId)` · `createPlan(intake → full rolling-detail draft)` · `retirePlan(planId)`
