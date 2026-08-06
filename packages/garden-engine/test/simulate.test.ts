@@ -1002,3 +1002,21 @@ describe("ducks", () => {
     expect(dry.snapshot.wildlife.ducks).toBe(false);
   });
 });
+
+describe("coached blocks (fairness spec §4, v5)", () => {
+  it("counts the block and unlocks the Keystone pine the same day", () => {
+    const snap = initialSnapshot(START);
+    const out = simulateDay(snap, { ...emptyDay(START), coachedBlockCompleted: true });
+    expect(out.snapshot.state.coachedBlockCount).toBe(1);
+    expect(out.snapshot.unlockedSpeciesIds).toContain("keystone_pine");
+    expect(out.events.some((e) => e.kind === "species_unlocked" && e.speciesId === "keystone_pine")).toBe(true);
+    expect(gateSatisfied({ kind: "coached_blocks", count: 3 }, out.snapshot)).toBe(false);
+  });
+
+  it("a v4-shaped snapshot (missing counter) simulates and defaults to 0", () => {
+    const snap = initialSnapshot(START);
+    delete (snap.state as unknown as Record<string, unknown>).coachedBlockCount;
+    const out = simulateDay(snap, emptyDay(START));
+    expect(out.snapshot.state.coachedBlockCount).toBe(0);
+  });
+});

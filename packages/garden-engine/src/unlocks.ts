@@ -60,6 +60,8 @@ export function gateSatisfied(gate: UnlockGate, snapshot: GardenSnapshot): boole
       return (s.raceCount ?? 0) >= gate.count;
     case "evening_runs":
       return s.eveningRunCount >= gate.count;
+    case "coached_blocks":
+      return (s.coachedBlockCount ?? 0) >= gate.count;
   }
 }
 
@@ -110,6 +112,10 @@ export function describeGate(gate: UnlockGate): string {
       return gate.count === 1 ? "Finish a race" : `Finish ${gate.count} races`;
     case "evening_runs":
       return `Complete ${gate.count} evening run${gate.count === 1 ? "" : "s"}`;
+    case "coached_blocks":
+      return gate.count === 1
+        ? "See a coached block through, start to finish"
+        : `See ${gate.count} coached blocks through`;
   }
 }
 
@@ -150,6 +156,8 @@ export function gateProgress(
       return { current: s.raceCount ?? 0, target: gate.count };
     case "evening_runs":
       return { current: s.eveningRunCount, target: gate.count };
+    case "coached_blocks":
+      return { current: s.coachedBlockCount ?? 0, target: gate.count };
     default:
       // `ground` (like start/comeback/dead_wood) is binary — no bar.
       return null;

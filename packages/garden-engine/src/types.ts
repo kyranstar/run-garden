@@ -8,7 +8,7 @@ import type {
   WorkoutCategory,
 } from "@rg/domain";
 
-export const SIMULATION_VERSION = 4;
+export const SIMULATION_VERSION = 5;
 
 /** The three disciplines the garden listens to; each drives its own axis. */
 export type Discipline = "run" | "strength" | "yoga";
@@ -99,6 +99,8 @@ export interface EngineGardenState {
   totalCompletedRuns: number;
   /** Planned races finished (a race also counts as a quality run). */
   raceCount: number;
+  /** Coached plans seen through at ≥85% adherence (fairness spec §4). */
+  coachedBlockCount: number;
   consecutiveConsistentWeeks: number;
   /** Longest consistency chain ever reached (canon §1.3's "longest"). */
   bestConsistentWeeks: number;
@@ -173,6 +175,8 @@ export interface GardenDayInput {
   planGap: boolean;
   /** On week-boundary days: previous week's plan adherence 0..1. */
   weekAdherence?: number;
+  /** True on the day after a coached plan completed at ≥85% adherence. */
+  coachedBlockCompleted?: boolean;
 }
 
 export interface DayResult {

@@ -30,7 +30,8 @@ export type UnlockGate =
   // Ground gates — species exclusive to carved grounds (Bundle 3).
   | { kind: "ground"; ground: "stream" | "terrace" | "glade" }
   | { kind: "races"; count: number } // planned races finished
-  | { kind: "evening_runs"; count: number }; // planned evening runs
+  | { kind: "evening_runs"; count: number } // planned evening runs
+  | { kind: "coached_blocks"; count: number }; // coached plans seen through
 
 export interface Species {
   id: string;
@@ -159,6 +160,10 @@ export const SPECIES: Species[] = [
   { id: "summit_sequoia", name: "Summit sequoia", category: "tree", rarity: "rare", unlock: { kind: "distance_run", meters: 42_195 }, growthDays: 80, spacing: 0.11, depthBand: [0.05, 0.35], flowers: false, archetype: "tree_conifer", palette: { primary: "#3f6e57", secondary: "#5a3d28", accent: "#8fb7a0" } },
   { id: "old_beech", name: "Old-growth beech", category: "tree", rarity: "rare", unlock: { kind: "mature_trees", count: 3 }, growthDays: 70, spacing: 0.12, depthBand: [0.08, 0.42], flowers: false, archetype: "tree_round", palette: { primary: "#6f9a58", secondary: "#8a6248", accent: "#caa25a" } },
   { id: "moonflower", name: "Moonflower", category: "flower", rarity: "rare", unlock: { kind: "evening_runs", count: 10 }, growthDays: 12, spacing: 0.035, depthBand: [0.45, 0.85], flowers: true, archetype: "flower_cup", palette: { primary: "#5f8054", secondary: "#f2ede0", accent: "#c9d4e8" } },
+
+  // ── Coached-block species (fairness spec §4) ────────────────────────────
+  { id: "keystone_pine", name: "Keystone pine", category: "tree", rarity: "rare", unlock: { kind: "coached_blocks", count: 1 }, growthDays: 70, spacing: 0.1, depthBand: [0.08, 0.4], flowers: false, archetype: "tree_conifer", palette: { primary: "#4a6e52", secondary: "#6b4a32", accent: "#caa25a" } },
+  { id: "keystone_grove", name: "Keystone grove", category: "tree", rarity: "rare", unlock: { kind: "coached_blocks", count: 3 }, growthDays: 75, spacing: 0.12, depthBand: [0.08, 0.42], flowers: false, archetype: "tree_round", palette: { primary: "#5a7d56", secondary: "#7a5c40", accent: "#8fb7a0" } },
 ];
 
 export const SPECIES_BY_ID = new Map(SPECIES.map((s) => [s.id, s]));

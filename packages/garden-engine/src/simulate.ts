@@ -47,6 +47,7 @@ export function initialSnapshot(createdDate: LocalDate): GardenSnapshot {
     longestRunMeters: 0,
     totalCompletedRuns: 0,
     raceCount: 0,
+    coachedBlockCount: 0,
     consecutiveConsistentWeeks: 0,
     bestConsistentWeeks: 0,
     comebackStreak: 0,
@@ -185,6 +186,10 @@ export function simulateDay(
   state.bestComebackStreak ??= 0;
   state.raceCount ??= 0;
   state.bestConsistentWeeks ??= 0;
+  state.coachedBlockCount ??= 0;
+  // A coached block seen through (fairness spec §4) — counted before unlock
+  // evaluation so the Keystone pine can arrive the same day.
+  if (input.coachedBlockCompleted) state.coachedBlockCount += 1;
   state.daysSinceStrength ??= 0;
   state.daysSinceYoga ??= 0;
   state.strengthSessionCount ??= 0;
