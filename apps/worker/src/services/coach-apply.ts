@@ -156,6 +156,7 @@ export async function applyOps(
             toDate: op.toDate,
             toTime: w.effectiveTime,
             source: "app",
+            corosWritesEnabled: prefs.corosWritesEnabled ?? false,
           });
         }
         out.updated.push(op.workoutId);
@@ -180,6 +181,7 @@ export async function applyOps(
             toDate: target,
             toTime: w.effectiveTime,
             source: "app",
+            corosWritesEnabled: prefs.corosWritesEnabled ?? false,
           });
           out.updated.push(w.id);
         }
