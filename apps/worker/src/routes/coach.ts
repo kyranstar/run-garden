@@ -11,6 +11,7 @@ import { addDays, newId, nowInstant, todayInZone, type CoachOp } from "@rg/domai
 import type { AppContext } from "../auth/middleware.js";
 import { requireUser } from "../auth/middleware.js";
 import { loadPreferences } from "../services/calendar-sync.js";
+import { analyzeEffort } from "../services/coach-analyze.js";
 import { applyOps } from "../services/coach-apply.js";
 import { evaluateTriggers, pendingTriggers } from "../services/coach-triggers.js";
 import { coachBlockAdherence, plansEndedOn } from "../services/coach-plans.js";
@@ -128,6 +129,20 @@ coachRoutes.post("/wake", async (c) => {
   // fresh briefing doesn't matter — they asked), never the budget gate.
   const result = await wake(db, c.env, userId, prefs, { kind: force ? "manual" : "open" });
   return c.json(result);
+});
+
+coachRoutes.post("/analyze/:activityId", async (c) => {
+  const db = c.get("db");
+  const userId = c.get("userId");
+  const activityId = c.req.param("activityId");
+  const { force } = await c.req.json<{ force?: boolean }>().catch(() => ({ force: false }));
+  const result = await analyzeEffort(db, c.env, userId, activityId, force === true);
+  if (result.status === "not_found") return c.json({ error: "not_found" }, 404);
+  if (result.status === "resting") {
+    return c.json({ error: "resting", detail: "Weekly coach budget reached — try next week." }, 429);
+  }
+  if (result.status === "error") return c.json({ error: "llm_error" }, 502);
+  return c.json({ message: result.message, cached: result.status === "cached" });
 });
 
 coachRoutes.post("/message", async (c) => {
