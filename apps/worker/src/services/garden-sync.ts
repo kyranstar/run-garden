@@ -1,4 +1,4 @@
-import { and, asc, desc, eq, gte, isNull, lte } from "drizzle-orm";
+import { and, asc, desc, eq, gte, inArray, isNull, lt, lte } from "drizzle-orm";
 import {
   activities,
   gardenDayInputs,
@@ -218,17 +218,42 @@ export async function buildDayInput(
     });
   }
 
-  const missedRuns = dayWorkouts
-    .filter(
-      (w) =>
-        (w.completionState === "skipped" || w.completionState === "missed") &&
-        (w.resolutionDate ?? w.effectiveDate) === date,
-    )
+  const resolvedHere = dayWorkouts.filter(
+    (w) =>
+      (w.completionState === "skipped" || w.completionState === "missed") &&
+      (w.resolutionDate ?? w.effectiveDate) === date,
+  );
+  // Coach-sanctioned skips never cost the garden (fairness spec §1): they are
+  // excluded from missedRuns entirely, and the FIRST one in any rolling 7
+  // days upgrades the day to observed rest below. Deterministic from
+  // resolution rows, so replay is exact.
+  const sanctionedHere = resolvedHere.filter((w) => w.sanctionedBy === "coach");
+  const missedRuns = resolvedHere
+    .filter((w) => w.sanctionedBy !== "coach")
     .map((w) => ({ workoutId: w.id }));
+  let mercyToday = false;
+  if (sanctionedHere.length > 0) {
+    const prior = await db
+      .select({ id: plannedWorkouts.id })
+      .from(plannedWorkouts)
+      .where(
+        and(
+          eq(plannedWorkouts.userId, userId),
+          eq(plannedWorkouts.sanctionedBy, "coach"),
+          inArray(plannedWorkouts.completionState, ["skipped", "missed"]),
+          gte(plannedWorkouts.resolutionDate, addDays(date, -6)),
+          lt(plannedWorkouts.resolutionDate, date),
+        ),
+      );
+    mercyToday = prior.length === 0;
+  }
 
   const hasRest = dayWorkouts.some((w) => w.category === "rest");
   const hasNonRest = dayWorkouts.some((w) => w.category !== "rest");
-  const restObserved = hasRest && !hasNonRest && completedRuns.length === 0 && missedRuns.length === 0;
+  const restObserved =
+    (hasRest && !hasNonRest && completedRuns.length === 0 && missedRuns.length === 0) ||
+    // Mercy day: agreed rest is keeping the plan, not breaking it.
+    (mercyToday && completedRuns.length === 0);
 
   // Plan gap: no active plan covers this date.
   const plans = await db
