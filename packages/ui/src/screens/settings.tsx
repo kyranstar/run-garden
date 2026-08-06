@@ -586,6 +586,99 @@ function GardenSection() {
   );
 }
 
+const MEMORY_GROUPS: Array<{ kind: "fact" | "rule" | "note"; label: string }> = [
+  { kind: "fact", label: "About you" },
+  { kind: "rule", label: "Rules & preferences" },
+  { kind: "note", label: "Notes (time-boxed)" },
+];
+
+/**
+ * Coach memory — observable and editable (coach UX spec §6). Deleting is
+ * immediate and total: the next dossier simply lacks the item.
+ */
+function CoachMemorySection() {
+  const qc = useQueryClient();
+  const memory = useQuery({ queryKey: ["coach-memory"], queryFn: api.coachMemoryList });
+  const [editing, setEditing] = useState<string | null>(null);
+  const [draft, setDraft] = useState("");
+  const invalidate = () => {
+    void qc.invalidateQueries({ queryKey: ["coach-memory"] });
+    void qc.invalidateQueries({ queryKey: ["coach-state"] });
+  };
+  const update = useMutation({
+    mutationFn: (v: { id: string; body: string }) => api.coachMemoryUpdate(v.id, v.body),
+    onSettled: invalidate,
+  });
+  const remove = useMutation({
+    mutationFn: (id: string) => api.coachMemoryDelete(id),
+    onSettled: invalidate,
+  });
+  const rows = memory.data?.memory ?? [];
+  return (
+    <div id="coach-memory">
+      <Card title="Coach memory">
+        <p className="muted">
+          Everything the coach knows about you — learned from your messages, editable here,
+          deleted for good the moment you say so.
+        </p>
+        {rows.length === 0 ? (
+          <p className="faint">Nothing yet — the coach learns as you talk to it.</p>
+        ) : (
+          MEMORY_GROUPS.map(({ kind, label }) => {
+            const group = rows.filter((m) => m.kind === kind);
+            if (group.length === 0) return null;
+            return (
+              <div key={kind} style={{ marginTop: "0.6rem" }}>
+                <div className="card-title">{label}</div>
+                {group.map((m) => (
+                  <div key={m.id} className="memory-row">
+                    {editing === m.id ? (
+                      <input
+                        value={draft}
+                        onChange={(e) => setDraft(e.target.value)}
+                        aria-label="Edit memory"
+                        style={{ flex: 1 }}
+                        onKeyDown={(e) => {
+                          if (e.key === "Enter" && draft.trim()) {
+                            update.mutate({ id: m.id, body: draft.trim() });
+                            setEditing(null);
+                          }
+                          if (e.key === "Escape") setEditing(null);
+                        }}
+                      />
+                    ) : (
+                      <span>
+                        {m.body}
+                        {m.expiresAt ? <span className="faint"> · until {m.expiresAt}</span> : null}
+                        <span className="faint"> · {m.provenance.source}, {m.learnedAt.slice(0, 10)}</span>
+                      </span>
+                    )}
+                    <span className="row" style={{ gap: "0.4rem" }}>
+                      <button
+                        type="button"
+                        className="linklike"
+                        onClick={() => {
+                          setEditing(m.id);
+                          setDraft(m.body);
+                        }}
+                      >
+                        Edit
+                      </button>
+                      <button type="button" className="linklike" onClick={() => remove.mutate(m.id)}>
+                        Delete
+                      </button>
+                    </span>
+                  </div>
+                ))}
+              </div>
+            );
+          })
+        )}
+      </Card>
+    </div>
+  );
+}
+
 export function SettingsScreen() {
   const settings = useQuery({ queryKey: ["settings"], queryFn: api.settings });
   const me = useQuery({ queryKey: ["me"], queryFn: api.me });
@@ -610,6 +703,7 @@ export function SettingsScreen() {
       <SchedulingSection prefs={settings.data.prefs} />
       <CorosSyncSection prefs={settings.data.prefs} />
       <AiSection prefs={settings.data.prefs} />
+      <CoachMemorySection />
       <GardenSection />
       <DiagnosticsSection />
       <DangerSection />
