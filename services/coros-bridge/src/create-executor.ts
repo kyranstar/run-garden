@@ -34,8 +34,10 @@
 
 import {
   addDays,
+  coachSessionSchema,
   daysBetween,
   studioSessionSchema,
+  type CoachSession,
   type StudioSession,
   type StudioWeight,
 } from "@rg/domain";
@@ -304,6 +306,112 @@ export function applyWeightIntensity(exercise: RawCorosExercise, weight: StudioW
  * `idInPlan`/`planId` are placeholders — the caller splices in the derived
  * values (as `addScheduleEntity` does anyway) immediately before the write.
  */
+/** COROS catalog origin ids for generic run blocks — the exact values the
+ * live spike created and verified (COROS_WRITE_PROTOCOL.md TEST B). */
+export const RUN_WARMUP_ORIGIN_ID = "425895398452936705";
+export const RUN_WORK_ORIGIN_ID = "426109589008859136";
+
+/**
+ * Build a structured RUN program (sportType 1) from one coach session —
+ * Bundle A Task A10, the coach-era generalization of the safety core.
+ *
+ * The wire shape is EXACTLY the live-verified minimal topology (protocol
+ * §4.4 point 9 / TEST B): N sequential blocks, first block warmup
+ * (exerciseType 1) when there are ≥2 blocks, the rest training
+ * (exerciseType 2); NO repeat groups, NO cooldown block kind; targetType 2
+ * (TIME, whole seconds); intensityType 5 ("none") so nothing round-trips
+ * through HR-zone remapping.
+ *
+ * DISTANCE blocks are refused here: distance targets have not been spike-
+ * verified on the wire, and this is the last code before the user's real
+ * calendar. Callers keep distance-block sessions app-only until a spike
+ * extends the protocol doc.
+ *
+ * Same self-validating stance as the strength builder: the session is
+ * re-parsed with `coachSessionSchema`, and `idInPlan`/`planId` are
+ * placeholders the caller splices in immediately before the write.
+ */
+export function buildRunProgram(spec: {
+  happenDay: string;
+  name: string;
+  session: CoachSession;
+}): RawCorosProgram {
+  const parsed = coachSessionSchema.safeParse(spec.session);
+  if (!parsed.success) {
+    const detail = parsed.error.issues
+      .map((issue) => `${issue.path.join(".") || "session"}: ${issue.message}`)
+      .join("; ");
+    throw new Error(`cannot build "${spec.name}": invalid session — ${detail}`);
+  }
+  const run = parsed.data.run;
+  if (!run) throw new Error(`cannot build "${spec.name}": not a run session`);
+  if (run.blocks.some((b) => b.kind === "distance")) {
+    throw new Error(
+      `cannot build "${spec.name}": distance targets are not spike-verified on the wire — keep this session app-only`,
+    );
+  }
+
+  const exercises: RawCorosExercise[] = run.blocks.map((b, index) => {
+    const id = index + 1;
+    const isWarmup = index === 0 && run.blocks.length >= 2;
+    return {
+      ...EXERCISE_METADATA,
+      id,
+      name: isWarmup ? "Warm up" : "Run",
+      exerciseType: isWarmup ? 1 : 2,
+      sportType: 1,
+      targetType: 2, // TIME, whole seconds
+      targetValue: b.value * 60,
+      intensityType: 5, // none
+      intensityValue: 0,
+      sets: 1,
+      sortNo: TOP_SORT * id,
+      restType: 3,
+      restValue: 0,
+      groupId: "0",
+      isGroup: false,
+      originId: isWarmup ? RUN_WARMUP_ORIGIN_ID : RUN_WORK_ORIGIN_ID,
+    };
+  });
+
+  return {
+    idInPlan: 0,
+    planId: "",
+    name: spec.name,
+    overview: "",
+    sportType: 1,
+    subType: 65535, // structured
+    duration: 0, // server-computed via /training/program/calculate
+    estimatedTime: 0,
+    trainingLoad: 0,
+    estimatedValue: 0,
+    estimatedType: 0,
+    distance: 0,
+    estimatedDistance: 0,
+    exerciseNum: exercises.length,
+    totalSets: 0,
+    hybridTotalSets: 0,
+    gradeSystemVersion: 0,
+    poolLength: 0,
+    poolLengthId: 0,
+    poolLengthUnit: 0,
+    referExercise: { gradeSystem: 0, hrType: 0, intensityType: 1, valueType: 1 },
+    fastIntensityTypeName: "weight",
+    sourceUrl: "",
+    videoCoverUrl: "",
+    videoUrl: "",
+    targetType: 0,
+    targetValue: 0,
+    type: 0,
+    unit: 0,
+    access: 1,
+    authorId: "0",
+    pbVersion: 2,
+    version: 0,
+    exercises,
+  };
+}
+
 export function buildStrengthProgram(
   spec: CreateWorkoutSpec,
   catalog: Map<string, string>,
