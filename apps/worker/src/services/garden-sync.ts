@@ -51,6 +51,7 @@ import {
 // disagree about what counts as a yoga session.
 import { disciplineOf } from "@rg/analytics";
 import { chunkedInsert, type Db } from "./db.js";
+import { coachBlockAdherence, COACHED_BLOCK_ADHERENCE, plansEndedOn } from "./coach-plans.js";
 import {
   VISITOR_HINTS,
   VISITOR_LINES,
@@ -277,6 +278,17 @@ export async function buildDayInput(
     restModeActive,
     planGap,
   };
+
+  // Fairness spec §4: the day AFTER a coached plan's final day, at ≥85%
+  // block adherence, counts a coached block (→ the Keystone pine).
+  const endedYesterday = await plansEndedOn(db, userId, addDays(date, -1));
+  for (const plan of endedYesterday) {
+    const adh = await coachBlockAdherence(db, userId, plan.id, plan.startDate, plan.endDate);
+    if (adh !== null && adh >= COACHED_BLOCK_ADHERENCE) {
+      input.coachedBlockCompleted = true;
+      break;
+    }
+  }
 
   // Week adherence on Mondays (for consistency unlocks).
   if (isoWeekday(date) === 1) {

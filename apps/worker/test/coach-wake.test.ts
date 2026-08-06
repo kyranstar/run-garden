@@ -298,3 +298,12 @@ describe("wake", () => {
     expect(pending).toHaveLength(1);
   });
 });
+
+describe("prompt carries the garden-loop guidance (fairness spec §3)", () => {
+  it("includes garden voice and skip-treatment rules", async () => {
+    const { WAKE_SYSTEM_PROMPT } = await import("../src/services/coach-wake.js");
+    expect(WAKE_SYSTEM_PROMPT).toContain("GARDEN VOICE");
+    expect(WAKE_SYSTEM_PROMPT).toContain("one loss voice at a time");
+    expect(WAKE_SYSTEM_PROMPT).toContain("SKIP TREATMENT");
+  });
+});

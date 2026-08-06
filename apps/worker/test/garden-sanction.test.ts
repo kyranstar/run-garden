@@ -104,3 +104,82 @@ describe("sanctioned rest mercy", () => {
     expect(input.completedRuns.length).toBeGreaterThan(0);
   });
 });
+
+describe("coached block completion (fairness spec §4)", () => {
+  async function seedPlanWithWorkouts(
+    db: Db,
+    userId: string,
+    endDate: string,
+    outcomes: Array<{ state: string; sanctioned?: boolean }>,
+  ) {
+    const startDate = addDays(endDate, -13);
+    await db.insert(schema.coachPlans).values({
+      id: "cp1",
+      userId,
+      discipline: "run",
+      name: "Fall Half",
+      status: "active",
+      startDate,
+      endDate,
+      stampPrefix: "Fall Half",
+      createdAt: nowInstant(),
+      updatedAt: nowInstant(),
+    });
+    for (const [i, o] of outcomes.entries()) {
+      const date = addDays(startDate, i);
+      await db.insert(schema.plannedWorkouts).values({
+        id: `bw${i}`,
+        userId,
+        planId: "cp1",
+        sourceWorkoutId: `bw${i}`,
+        title: `Session ${i}`,
+        category: "easy",
+        sport: "run",
+        originalPlanDate: date,
+        lastVerifiedCorosDate: date,
+        effectiveDate: date,
+        effectiveTime: "07:00",
+        completionState: o.state,
+        resolutionDate: date,
+        sanctionedBy: o.sanctioned ? "coach" : null,
+        sourceContentFingerprint: "fp",
+        calendarBlockDurationSeconds: 3600,
+        createdAt: nowInstant(),
+        updatedAt: nowInstant(),
+      });
+    }
+  }
+
+  it("fires the day after a ≥85% block — sanctioned skips excluded from the denominator", async () => {
+    const db = makeTestDb();
+    const { userId, prefs } = await makeTestUser(db);
+    const today = todayInZone(prefs.timezone);
+    // 6 completed + 1 sanctioned skip = 100% of the mercy-adjusted denominator.
+    await seedPlanWithWorkouts(db, userId, addDays(today, -1), [
+      { state: "completed" },
+      { state: "completed" },
+      { state: "completed" },
+      { state: "completed" },
+      { state: "completed" },
+      { state: "completed" },
+      { state: "skipped", sanctioned: true },
+    ]);
+    const input = await buildDayInput(db, userId, today, prefs);
+    expect(input.coachedBlockCompleted).toBe(true);
+  });
+
+  it("stays quiet below 85% or on any other day", async () => {
+    const db = makeTestDb();
+    const { userId, prefs } = await makeTestUser(db);
+    const today = todayInZone(prefs.timezone);
+    await seedPlanWithWorkouts(db, userId, addDays(today, -1), [
+      { state: "completed" },
+      { state: "skipped" },
+      { state: "skipped" },
+    ]);
+    const input = await buildDayInput(db, userId, today, prefs);
+    expect(input.coachedBlockCompleted).toBeUndefined();
+    const wrongDay = await buildDayInput(db, userId, addDays(today, 1), prefs);
+    expect(wrongDay.coachedBlockCompleted).toBeUndefined();
+  });
+});

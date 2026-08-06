@@ -13,6 +13,7 @@ import { requireUser } from "../auth/middleware.js";
 import { loadPreferences } from "../services/calendar-sync.js";
 import { applyOps } from "../services/coach-apply.js";
 import { evaluateTriggers, pendingTriggers } from "../services/coach-triggers.js";
+import { coachBlockAdherence, plansEndedOn } from "../services/coach-plans.js";
 import { wake } from "../services/coach-wake.js";
 import type { Db } from "../services/db.js";
 
@@ -283,8 +284,26 @@ coachRoutes.post("/plans/:id/retire", async (c) => {
 /** Expiry sweep for the hourly cron (all users handled by the caller). */
 export async function sweepUserProposals(db: Db, userId: string, timezone: string): Promise<void> {
   await sweepExpiredProposals(db, userId, todayInZone(timezone)).catch(() => 0);
-  // Expire lapsed time-boxed memory notes with a receipt (spec §5).
+  // Coached plans past their final day flip to completed, with a receipt
+  // carrying the block's adherence (fairness spec §4).
   const today = todayInZone(timezone);
+  const ended = await db
+    .select()
+    .from(coachPlans)
+    .where(and(eq(coachPlans.userId, userId), eq(coachPlans.status, "active"), lt(coachPlans.endDate, today)));
+  for (const p of ended) {
+    await db
+      .update(coachPlans)
+      .set({ status: "completed", updatedAt: nowInstant() })
+      .where(eq(coachPlans.id, p.id));
+    const adh = await coachBlockAdherence(db, userId, p.id, p.startDate, p.endDate);
+    await receipt(
+      db,
+      userId,
+      `Block complete: ${p.name}${adh !== null ? ` — ${Math.round(adh * 100)}% adherence` : ""}`,
+    );
+  }
+  // Expire lapsed time-boxed memory notes with a receipt (spec §5).
   const lapsed = await db
     .select()
     .from(coachMemory)

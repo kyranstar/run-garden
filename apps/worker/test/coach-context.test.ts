@@ -85,6 +85,7 @@ describe("buildDossier", () => {
     expect(a.text).toContain("plan [cp1] Fall Half · run · active");
     expect(a.text).toContain("shape wk");
     expect(a.text).toContain("30d baselines: sleep 6.0h");
+    expect(a.text).toContain("sanctioned rest used 0 of 1 this rolling week");
     expect(a.text).toContain("HRV unknownms · RHR unknownbpm");
   });
 });

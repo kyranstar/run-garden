@@ -14,6 +14,13 @@ import {
   workoutCompletionMatches,
 } from "@rg/database";
 import { addDays, todayInZone, type LocalDate, type UserPreferences } from "@rg/domain";
+import {
+  conditionWord,
+  DEFAULT_GARDEN_CONFIG,
+  gardenForecast,
+  nextUnlocks,
+  type GardenSnapshot,
+} from "@rg/garden-engine";
 import type { Db } from "./db.js";
 import { pendingTriggers } from "./coach-triggers.js";
 
@@ -186,13 +193,31 @@ export async function buildDossier(
       : ["none pending"],
   );
 
-  // 6 · MILESTONES — light garden line (full garden voice is phase 3).
+  // 6 · MILESTONES — the garden's state, for the coach's (sparing) garden
+  // voice (fairness spec §3). Forecast stage included so the one-loss-voice
+  // rule can hold: when the garden is already speaking loss, the coach
+  // stays silent about it.
   const [gs] = await db.select().from(gardenState).where(eq(gardenState.userId, userId)).limit(1);
-  const chain = gs
-    ? ((gs.snapshot as { state?: { consecutiveConsistentWeeks?: number } }).state
-        ?.consecutiveConsistentWeeks ?? 0)
-    : 0;
-  push("MILESTONES", [`consistency chain: ${chain} week${chain === 1 ? "" : "s"}`]);
+  const gardenLines: string[] = [];
+  if (gs) {
+    const snap = gs.snapshot as unknown as GardenSnapshot;
+    const st = snap.state;
+    const chain = st.consecutiveConsistentWeeks ?? 0;
+    const forecast = gardenForecast(snap, 0);
+    const nearest = nextUnlocks(snap, 1)[0];
+    gardenLines.push(
+      `garden: ${conditionWord(st, DEFAULT_GARDEN_CONFIG)} · weather ${st.weatherState} · ${st.daysSinceCompletedRun}d since a run · chain ${chain}w`,
+      `garden forecast stage: ${forecast.next?.stage ?? (st.restMode ? "rest_mode" : "none")}${forecast.recovering ? " (recovering)" : ""}`,
+    );
+    if (nearest?.progress) {
+      gardenLines.push(
+        `nearest unlock: ${nearest.name} (${nearest.progress.current}/${nearest.progress.target} — ${nearest.hint})`,
+      );
+    }
+  } else {
+    gardenLines.push("garden: unknown");
+  }
+  push("MILESTONES", gardenLines);
 
   // 7 · OPEN ITEMS — never double-propose, never re-ask.
   const pendingProps = await db
@@ -205,7 +230,21 @@ export async function buildDossier(
     .where(and(eq(coachQuestions.userId, userId)))
     .orderBy(desc(coachQuestions.askedAt))
     .limit(5);
+  const sanctionedThisWeek = (
+    await db
+      .select({ id: plannedWorkouts.id })
+      .from(plannedWorkouts)
+      .where(
+        and(
+          eq(plannedWorkouts.userId, userId),
+          eq(plannedWorkouts.sanctionedBy, "coach"),
+          inArray(plannedWorkouts.completionState, ["skipped", "missed"]),
+          gte(plannedWorkouts.resolutionDate, addDays(today, -6)),
+        ),
+      )
+  ).length;
   push("OPEN ITEMS", [
+    `sanctioned rest used ${Math.min(sanctionedThisWeek, 1)} of 1 this rolling week (${sanctionedThisWeek} total sanctioned skips in window)`,
     ...(pendingProps.length
       ? pendingProps.map((p) => `pending proposal [${p.id}]: ${p.title} (${p.evidence})`)
       : ["no pending proposals"]),
