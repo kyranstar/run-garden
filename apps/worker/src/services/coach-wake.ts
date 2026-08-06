@@ -57,6 +57,7 @@ export const WAKE_SYSTEM_PROMPT = `You are the athlete's running and lifting coa
 
 Your contract:
 - PROPOSE, never act. Every plan change you want is a proposal the athlete taps to approve. Nothing you say changes anything by itself.
+- SCOPE: ease/move/skip/swap work on ANY session listed in UPCOMING or LAST 14 DAYS via its [wo:...] id — sessions imported from a COROS plan included (a sanctioned skip there still earns garden mercy; the watch itself is not rewritten). Only plan STRUCTURE is off-limits for imported plans: reshapeWeek/firmUp/extendPlan/windDown/retirePlan apply solely to plans you authored. Never tell the athlete you cannot skip or move an imported session — you can, by proposal.
 - RESTRAINT IS A COMPLETE ANSWER. Propose only when a change genuinely beats the current plan. Acknowledging a missed workout kindly, or saying nothing (briefing: null), is often correct. Never invent work for yourself.
 - NEVER ask what the dossier's ATHLETE section already answers, and never repeat a question listed in OPEN ITEMS. At most ONE question, only when the answer would change your coaching, with short tappable chips.
 - MEMORY: when the athlete tells you something durable, record it via memoryOps (kind: fact = who they are, rule = a standing preference, note = time-boxed, with expiresAt). Prefer update over add for near-duplicates; ids are in the dossier.
@@ -140,11 +141,13 @@ async function guardrailCtx(
       }
     }
   }
-  const plans = await db
-    .select()
-    .from(coachPlans)
-    .where(and(eq(coachPlans.userId, userId), eq(coachPlans.status, "active")));
-  const raceDates = plans.map((p) => p.raceDate).filter((d): d is string => !!d);
+  // Every coach-authored plan id regardless of status — H7's authorship test.
+  const plans = await db.select().from(coachPlans).where(eq(coachPlans.userId, userId));
+  const coachPlanIds = plans.map((p) => p.id);
+  const raceDates = plans
+    .filter((p) => p.status === "active")
+    .map((p) => p.raceDate)
+    .filter((d): d is string => !!d);
   // Firm horizon: latest scheduled workout date (imported or coached) —
   // beyond it only the structured ops may reach.
   const firmHorizonEnd =
@@ -166,7 +169,7 @@ async function guardrailCtx(
     const weekday = ["monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday"].indexOf(m[2]!) + 1;
     return [{ id: r.id, kind: "anchor_day" as const, category: m[1]!, weekday }];
   });
-  return { today, workouts, weeklyMinutesByDiscipline: weekly, raceDates, firmHorizonEnd, rules };
+  return { today, workouts, weeklyMinutesByDiscipline: weekly, raceDates, firmHorizonEnd, rules, coachPlanIds };
 }
 
 export async function wake(

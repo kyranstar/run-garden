@@ -11,6 +11,7 @@ import { makeTestDb, makeTestUser } from "./helpers.js";
 const SECTIONS = [
   "ATHLETE",
   "PLANS",
+  "UPCOMING 14 DAYS",
   "LAST 14 DAYS",
   "WELLNESS 14D",
   "SIGNALS",
@@ -26,9 +27,40 @@ describe("buildDossier", () => {
     const d = await buildDossier(db, userId, prefs);
     for (const s of SECTIONS) expect(d.sections).toContain(s);
     expect(d.text).toContain("no coached plans");
+    expect(d.text).toContain("can be skipped or moved by proposal");
+    expect(d.text).toContain("nothing scheduled in the next 14 days");
     expect(d.text).toContain("no sessions recorded");
     expect(d.text).toContain("none pending");
     expect(d.approxTokens).toBeLessThanOrEqual(12_000);
+  });
+
+  it("lists upcoming sessions with [wo:id] handles and marks imported ones", async () => {
+    const db = makeTestDb();
+    const { userId, prefs } = await makeTestUser(db);
+    const today = todayInZone(prefs.timezone);
+    const at = nowInstant();
+    // A session from the imported COROS plan (planId is no coachPlans id) —
+    // the live case: the coach must be able to name it to propose a skip.
+    await db.insert(schema.plannedWorkouts).values({
+      id: "up-imported",
+      userId,
+      planId: "473846232060707016",
+      sourceWorkoutId: "4738:9",
+      title: "Long Run",
+      category: "long",
+      sport: "run",
+      originalPlanDate: addDays(today, 3),
+      lastVerifiedCorosDate: addDays(today, 3),
+      effectiveDate: addDays(today, 3),
+      effectiveTime: "07:00",
+      completionState: "scheduled",
+      sourceContentFingerprint: "fp",
+      calendarBlockDurationSeconds: 5400,
+      createdAt: at,
+      updatedAt: at,
+    });
+    const d = await buildDossier(db, userId, prefs);
+    expect(d.text).toContain(`"Long Run" · run [wo:up-imported] · imported`);
   });
 
   it("is deterministic and carries memory ids, plan lines and wellness baselines", async () => {

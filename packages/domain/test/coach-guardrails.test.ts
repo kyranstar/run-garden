@@ -37,6 +37,7 @@ function ctx(overrides: Partial<GuardrailCtx> = {}): GuardrailCtx {
       { id: "r-sat-long", kind: "anchor_day", category: "long", weekday: 6 },
       { id: "r-tue-quality", kind: "fixed_slot", category: "quality", weekday: 2 },
     ],
+    coachPlanIds: ["cp1"],
   };
 }
 
@@ -96,6 +97,35 @@ describe("hard rules", () => {
       ctx(),
     );
     expect(out.hard).toHaveLength(0);
+  });
+
+  it("H7: structural ops on a plan the coach did not author are rejected", () => {
+    const out = validateOps([{ kind: "retirePlan", planId: "coros-import-4738" }], ctx());
+    expect(out.hard.some((v) => v.rule === "imported_plan_structure")).toBe(true);
+    const reshape = validateOps(
+      [
+        {
+          kind: "reshapeWeek",
+          planId: "coros-import-4738",
+          weekStart: "2026-08-10",
+          sessions: [{ date: "2026-08-11", session: easy() }],
+        },
+      ],
+      ctx(),
+    );
+    expect(reshape.hard.some((v) => v.rule === "imported_plan_structure")).toBe(true);
+  });
+
+  it("H7: skipping or moving an imported session stays allowed", () => {
+    // w-sat belongs to no coached plan (workout-level ops carry no planId) —
+    // session-level ops must never trip the structural rule.
+    const out = validateOps([{ kind: "skip", workoutId: "w-thu", reason: "backpacking weekend" }], ctx());
+    expect(out.hard.filter((v) => v.rule === "imported_plan_structure")).toHaveLength(0);
+  });
+
+  it("H7: structural ops on a coach-authored plan pass", () => {
+    const out = validateOps([{ kind: "retirePlan", planId: "cp1" }], ctx());
+    expect(out.hard.filter((v) => v.rule === "imported_plan_structure")).toHaveLength(0);
   });
 });
 

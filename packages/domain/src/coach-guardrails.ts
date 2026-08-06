@@ -36,6 +36,13 @@ export interface GuardrailCtx {
   /** Latest firm-detail date across active coached plans. */
   firmHorizonEnd: string;
   rules: SoftRule[];
+  /**
+   * Every plan id the coach authored (any status). Structural ops
+   * (reshape/firmUp/extend/windDown/retire) may only touch these — imported
+   * COROS plans are structurally read-only, though their individual sessions
+   * remain fair game for ease/move/skip.
+   */
+  coachPlanIds: string[];
 }
 
 export interface Violation {
@@ -225,6 +232,22 @@ export function validateOps(
       if (op.kind === "skip" && targeted.category === "race") {
         hard.push({ rule: "never_skip_race", opIndex: i, detail: "races are never skipped" });
       }
+    }
+    // H7 — structural ops on plans the coach did not author. Imported COROS
+    // plans can have sessions skipped/moved, never their structure rewritten.
+    if (
+      (op.kind === "reshapeWeek" ||
+        op.kind === "firmUp" ||
+        op.kind === "extendPlan" ||
+        op.kind === "windDown" ||
+        op.kind === "retirePlan") &&
+      !ctx.coachPlanIds.includes(op.planId)
+    ) {
+      hard.push({
+        rule: "imported_plan_structure",
+        opIndex: i,
+        detail: `${op.kind} targets plan ${op.planId}, which the coach did not author — imported plans are structurally read-only`,
+      });
     }
     if (!HORIZON_EXEMPT.has(op.kind)) {
       for (const d of opDates(op, ctx)) {

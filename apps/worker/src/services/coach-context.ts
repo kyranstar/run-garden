@@ -26,7 +26,7 @@ import { pendingTriggers } from "./coach-triggers.js";
 
 /**
  * The dossier (spec §2): everything the coach reads, packaged as ONE terse
- * document for the one-shot wake. Eight sections, explicit `unknown` for
+ * document for the one-shot wake. Nine sections, explicit `unknown` for
  * gaps, deterministic given fixed rows, budget ≈ 12k tokens. This is the
  * comprehensive-COROS-data-in-useful-format requirement made concrete.
  */
@@ -118,9 +118,48 @@ export async function buildDossier(
       );
     }
   }
-  push("PLANS", planLines.length ? planLines : ["no coached plans — imported COROS plan may exist (read-only)"]);
+  push(
+    "PLANS",
+    planLines.length
+      ? planLines
+      : [
+          "no coached plans — imported COROS plan sessions (if any) are listed in UPCOMING and can be skipped or moved by proposal; only their plan structure is read-only",
+        ],
+  );
 
-  // 3 · LAST 14 DAYS — planned vs actual, one line per session.
+  // 3 · UPCOMING 14 DAYS — every scheduled session with the [wo:id] handle
+  // ease/move/skip ops need. Without this section the coach could not name a
+  // future workout at all (live-observed: it refused to skip an imported
+  // Saturday run it had no way to reference).
+  const coachPlanIdSet = new Set(
+    (await db.select({ id: coachPlans.id }).from(coachPlans).where(eq(coachPlans.userId, userId))).map(
+      (p) => p.id,
+    ),
+  );
+  const upcoming = await db
+    .select()
+    .from(plannedWorkouts)
+    .where(
+      and(
+        eq(plannedWorkouts.userId, userId),
+        gte(plannedWorkouts.effectiveDate, today),
+        lte(plannedWorkouts.effectiveDate, addDays(today, 14)),
+      ),
+    )
+    .orderBy(plannedWorkouts.effectiveDate);
+  push(
+    "UPCOMING 14 DAYS",
+    upcoming.length
+      ? upcoming.map(
+          (w) =>
+            `${w.effectiveDate} · ${w.category} · "${w.title}" · ${w.sport} [wo:${w.id}]` +
+            `${w.completionState !== "scheduled" ? ` · ${w.completionState}` : ""}` +
+            `${coachPlanIdSet.has(w.planId ?? "") ? "" : " · imported"}`,
+        )
+      : ["nothing scheduled in the next 14 days"],
+  );
+
+  // 4 · LAST 14 DAYS — planned vs actual, one line per session.
   const recentWorkouts = await db
     .select()
     .from(plannedWorkouts)
@@ -145,7 +184,7 @@ export async function buildDossier(
         : w.completionState === "completed"
           ? "completed (details unknown)"
           : w.completionState;
-      return `${w.effectiveDate} · ${w.category} · "${w.title}" · ${actual}`;
+      return `${w.effectiveDate} · ${w.category} · "${w.title}" · ${actual} [wo:${w.id}]`;
     });
   const matchedActivityIds = new Set(matches.map((m) => m.activityId));
   const unplanned = recentActs
@@ -156,7 +195,7 @@ export async function buildDossier(
     });
   push("LAST 14 DAYS", [...trainingLines, ...unplanned].length ? [...trainingLines, ...unplanned] : ["no sessions recorded"]);
 
-  // 4 · WELLNESS 14D — with 30d baselines.
+  // 5 · WELLNESS 14D — with 30d baselines.
   const sleep = await db
     .select()
     .from(sleepRecords)
@@ -184,7 +223,7 @@ export async function buildDossier(
   }
   push("WELLNESS 14D", wellnessLines);
 
-  // 5 · SIGNALS — pending triggers verbatim.
+  // 6 · SIGNALS — pending triggers verbatim.
   const triggers = await pendingTriggers(db, userId);
   push(
     "SIGNALS",
@@ -193,7 +232,7 @@ export async function buildDossier(
       : ["none pending"],
   );
 
-  // 6 · MILESTONES — the garden's state, for the coach's (sparing) garden
+  // 7 · MILESTONES — the garden's state, for the coach's (sparing) garden
   // voice (fairness spec §3). Forecast stage included so the one-loss-voice
   // rule can hold: when the garden is already speaking loss, the coach
   // stays silent about it.
@@ -219,7 +258,7 @@ export async function buildDossier(
   }
   push("MILESTONES", gardenLines);
 
-  // 7 · OPEN ITEMS — never double-propose, never re-ask.
+  // 8 · OPEN ITEMS — never double-propose, never re-ask.
   const pendingProps = await db
     .select()
     .from(coachProposals)
@@ -254,7 +293,7 @@ export async function buildDossier(
     ),
   ]);
 
-  // 8 · CONVERSATION TAIL — last 10 messages, oldest first.
+  // 9 · CONVERSATION TAIL — last 10 messages, oldest first.
   const tail = await db
     .select()
     .from(coachMessages)
