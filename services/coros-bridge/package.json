@@ -13,7 +13,8 @@
     "spike": "tsx src/spike.ts",
     "spike:create": "tsx src/spike-create.ts",
     "spike:cleanup": "tsx src/spike-create.ts --cleanup-only",
-    "spike:dryrun": "tsx src/spike-create.ts --dry-run"
+    "spike:dryrun": "tsx src/spike-create.ts --dry-run",
+    "probe": "tsx src/probe-telemetry.ts"
   },
   "dependencies": {
     "@rg/domain": "workspace:*",
