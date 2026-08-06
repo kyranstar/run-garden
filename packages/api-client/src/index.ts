@@ -232,6 +232,69 @@ export interface GardenTimelineResponse {
   days: GardenTimelineDayDto[];
 }
 
+// ── The coach (spec: docs/superpowers/specs/2026-08-06-coach-*-design.md) ──
+
+export interface CoachMessageDto {
+  id: string;
+  role: "coach" | "user" | "receipt";
+  body: string;
+  refs: { proposalId?: string; memoryIds?: string[]; questionId?: string };
+  at: string;
+}
+
+export interface CoachProposalDto {
+  id: string;
+  title: string;
+  evidence: string;
+  rationale: string;
+  flags: string[];
+  ops: unknown[];
+  status: "pending" | "approved" | "declined" | "superseded" | "expired";
+  createdAt: string;
+  expiresAt: string;
+}
+
+export interface CoachQuestionDto {
+  id: string;
+  body: string;
+  chips: string[];
+  askedAt: string;
+}
+
+export interface CoachMemoryItem {
+  id: string;
+  kind: "fact" | "rule" | "note";
+  body: string;
+  provenance: { source: string; messageId?: string; at: string };
+  learnedAt: string;
+  expiresAt: string | null;
+}
+
+export interface CoachPlanDto {
+  id: string;
+  discipline: "run" | "lift";
+  name: string;
+  status: "draft" | "active" | "completed" | "retired";
+  startDate: string;
+  endDate: string;
+  raceDate: string | null;
+}
+
+export interface CoachStateResponse {
+  messages: CoachMessageDto[];
+  pendingProposals: CoachProposalDto[];
+  openQuestion: CoachQuestionDto | null;
+  memoryCount: number;
+  lastCoachAt: string | null;
+  wakeAdvised: boolean;
+}
+
+export interface CoachWakeResult {
+  status: "ok" | "skipped" | "resting" | "error";
+  coachMessageId?: string;
+  proposalIds?: string[];
+}
+
 /** Arrival watermark for the garden's celebration/beat surfaces — the newest
  * durable event the user has seen plus same-day (preview) unlocks already
  * celebrated. Mirrors `GardenView["seen"]` (garden-sync.ts) and the body of
@@ -470,6 +533,27 @@ export const api = {
       "/api/garden",
     ),
   gardenSeen: (body: GardenSeenState) => post<{ ok: boolean }>("/api/garden/seen", body),
+
+  // ── The coach (worker routes: apps/worker/src/routes/coach.ts) ───────────
+  coachState: (before?: string) =>
+    get<CoachStateResponse>(`/api/coach/state${before ? `?before=${encodeURIComponent(before)}` : ""}`),
+  coachWake: () => post<CoachWakeResult>("/api/coach/wake", undefined, 320_000),
+  coachMessage: (body: string) => post<CoachWakeResult>("/api/coach/message", { body }, 320_000),
+  coachApprove: (proposalId: string) =>
+    post<{ ok: boolean }>(`/api/coach/proposals/${proposalId}/approve`),
+  coachDecline: (proposalId: string) =>
+    post<{ ok: boolean }>(`/api/coach/proposals/${proposalId}/decline`),
+  coachAnswerQuestion: (questionId: string, answer: string) =>
+    post<{ ok: boolean }>(`/api/coach/questions/${questionId}/answer`, { answer }, 320_000),
+  coachMemoryList: () => get<{ memory: CoachMemoryItem[] }>("/api/coach/memory"),
+  coachMemoryUpdate: (id: string, body: string) =>
+    request<{ ok: boolean }>(`/api/coach/memory/${id}`, { method: "PATCH", body: JSON.stringify({ body }) }),
+  coachMemoryDelete: (id: string) =>
+    request<{ ok: boolean }>(`/api/coach/memory/${id}`, { method: "DELETE" }),
+  coachPlans: () => get<{ plans: CoachPlanDto[] }>("/api/coach/plans"),
+  coachPlanRename: (id: string, name: string) =>
+    post<{ ok: boolean }>(`/api/coach/plans/${id}/rename`, { name }),
+  coachPlanRetire: (id: string) => post<{ ok: boolean }>(`/api/coach/plans/${id}/retire`),
   gardenRestMode: (active: boolean, until?: string | null) =>
     post("/api/garden/rest-mode", { active, until }),
   gardenTimeline: () => get<GardenTimelineResponse>("/api/garden/timeline"),
