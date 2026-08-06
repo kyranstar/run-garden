@@ -50,7 +50,7 @@ export const coachMessages = sqliteTable(
     body: text("body").notNull(),
     refs: text("refs", { mode: "json" })
       .notNull()
-      .$type<{ proposalId?: string; memoryIds?: string[]; questionId?: string }>(),
+      .$type<{ proposalId?: string; memoryIds?: string[]; questionId?: string; kind?: "analysis"; activityId?: string }>(),
     at: text("at").notNull(),
   },
   (t) => [index("coach_messages_user_at_idx").on(t.userId, t.at)],
