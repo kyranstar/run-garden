@@ -46,7 +46,7 @@ import type { Db } from "./db.js";
  * all). The extra parameter is additive-only — every real caller omits it.
  */
 
-const DEFAULT_MODEL_STRONG = "anthropic/claude-opus-5";
+export const DEFAULT_MODEL_STRONG = "anthropic/claude-opus-5";
 const DEFAULT_MODEL_EDIT = "anthropic/claude-haiku-4.5";
 const DEFAULT_GATEWAY = "https://ai-gateway.vercel.sh/v1";
 // Opus-5-class models think adaptively before answering (uncontrollable on
@@ -544,7 +544,7 @@ function feedbackMessage(feedback: string): string {
 // stable-prefix-first message ordering above, per spec.
 // ─────────────────────────────────────────────────────────────────────────
 
-async function chatCompletion(
+export async function chatCompletion(
   env: Env,
   fetchImpl: typeof fetch,
   model: string,
@@ -738,7 +738,7 @@ async function chatCompletion(
 }
 
 /** Tolerates a fenced ```json block or leading/trailing prose, same as llm.ts. */
-function extractJson(raw: string): unknown | null {
+export function extractJson(raw: string): unknown | null {
   if (!raw) return null;
   try {
     const stripped = raw
@@ -777,10 +777,10 @@ function findUnknownOriginId(plan: LiftingPlan, catalogIds: Set<string>): string
  * (no new discriminator column was added to the table — `kind` already
  * existed and just gained two new string values, see product.ts).
  */
-async function recordUsage(
+export async function recordUsage(
   db: Db,
   userId: string,
-  kind: "studio_generate" | "studio_edit",
+  kind: "studio_generate" | "studio_edit" | "coach_wake",
   model: string,
   tier: "strong" | "edit",
   chat: { inputTokens: number; outputTokens: number },

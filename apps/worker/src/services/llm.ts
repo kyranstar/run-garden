@@ -26,9 +26,11 @@ const MAX_OUTPUT_TOKENS = 2000;
 const TIMEOUT_MS = 20_000;
 
 export const LLM_BUDGET = {
-  warnMicros: 2_000_000, // $2 / rolling 7 days
-  cutoffMicros: 8_000_000, // $8 — AI calls disabled automatically
-  absoluteMaxMicros: 10_000_000, // $10 — never exceeded
+  warnMicros: 5_000_000, // $5 / rolling 7 days
+  // $20 — the coach-era posture (2026-08-06 intelligence spec §0): a guard
+  // rail that exists to never be hit, not a target. AI disables itself here.
+  cutoffMicros: 20_000_000,
+  absoluteMaxMicros: 25_000_000, // never exceeded
 };
 
 export interface LlmBudgetStatus {
