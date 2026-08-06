@@ -39,7 +39,10 @@ import { disciplineOf } from "@rg/analytics";
  * only consumes triggers is a fully successful wake.
  */
 
-export type WakeCause = { kind: "message"; body: string } | { kind: "open" };
+export type WakeCause =
+  | { kind: "message"; body: string }
+  | { kind: "open" }
+  | { kind: "manual" }; // user-invoked check-in: never skipped, still budget-gated
 
 export interface WakeResult {
   status: "ok" | "skipped" | "resting" | "error";
@@ -200,7 +203,9 @@ export async function wake(
     const causeBlock =
       cause.kind === "message"
         ? `The athlete just said:\n"""${cause.body}"""`
-        : `The athlete opened the plan page. Address pending SIGNALS if any; otherwise a short check-in or nothing.`;
+        : cause.kind === "manual"
+          ? `The athlete pressed "Check in" — they want your read RIGHT NOW. Give a short, concrete briefing of where they stand today; propose only if genuinely warranted.`
+          : `The athlete opened the plan page. Address pending SIGNALS if any; otherwise a short check-in or nothing.`;
     type ChatMsg = { role: "system" | "user" | "assistant"; content: string };
     const messages: ChatMsg[] = [
       { role: "system", content: WAKE_SYSTEM_PROMPT },

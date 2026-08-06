@@ -121,8 +121,11 @@ coachRoutes.get("/state", async (c) => {
 coachRoutes.post("/wake", async (c) => {
   const db = c.get("db");
   const userId = c.get("userId");
+  const { force } = await c.req.json<{ force?: boolean }>().catch(() => ({ force: false }));
   const prefs = await loadPreferences(db, userId);
-  const result = await wake(db, c.env, userId, prefs, { kind: "open" });
+  // force = the user's own "Check in" button: bypasses the skip rule (a
+  // fresh briefing doesn't matter — they asked), never the budget gate.
+  const result = await wake(db, c.env, userId, prefs, { kind: force ? "manual" : "open" });
   return c.json(result);
 });
 

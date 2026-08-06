@@ -376,12 +376,12 @@ function usePlanCoach() {
   const qc = useQueryClient();
   const state = useQuery({ queryKey: ["coach-state"], queryFn: () => api.coachState() });
   const invalidate = () => void qc.invalidateQueries({ queryKey: ["coach-state"] });
-  const wakeMut = useMutation({ mutationFn: () => api.coachWake(), onSettled: invalidate });
+  const wakeMut = useMutation({ mutationFn: (force: boolean) => api.coachWake(force), onSettled: invalidate });
   const wakeFired = useRef(false);
   useEffect(() => {
     if (state.data?.wakeAdvised && !wakeFired.current) {
       wakeFired.current = true;
-      wakeMut.mutate();
+      wakeMut.mutate(false);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [state.data?.wakeAdvised]);
@@ -421,6 +421,7 @@ function usePlanCoach() {
     busy: wakeMut.isPending || send.isPending || answer.isPending,
     acting: approve.isPending || decline.isPending,
     send: (b: string) => send.mutate(b),
+    checkIn: () => wakeMut.mutate(true),
     approve: (id: string) => approve.mutate(id),
     decline: (id: string) => decline.mutate(id),
     answer: (id: string, a: string) => answer.mutate({ id, answer: a }),
@@ -521,6 +522,7 @@ export function PlanScreen() {
       onApprove={coach.approve}
       onDecline={coach.decline}
       onAnswer={coach.answer}
+      onCheckIn={coach.checkIn}
     />
   ) : (
     <section className="coach-panel" aria-label="Coach">
@@ -646,6 +648,7 @@ export function PlanScreen() {
               onApprove={coach.approve}
               onDecline={coach.decline}
               onAnswer={coach.answer}
+              onCheckIn={coach.checkIn}
             />
           ) : null}
         </div>

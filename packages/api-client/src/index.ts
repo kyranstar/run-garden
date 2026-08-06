@@ -537,7 +537,7 @@ export const api = {
   // ── The coach (worker routes: apps/worker/src/routes/coach.ts) ───────────
   coachState: (before?: string) =>
     get<CoachStateResponse>(`/api/coach/state${before ? `?before=${encodeURIComponent(before)}` : ""}`),
-  coachWake: () => post<CoachWakeResult>("/api/coach/wake", undefined, 320_000),
+  coachWake: (force = false) => post<CoachWakeResult>("/api/coach/wake", { force }, 320_000),
   coachMessage: (body: string) => post<CoachWakeResult>("/api/coach/message", { body }, 320_000),
   coachApprove: (proposalId: string) =>
     post<{ ok: boolean }>(`/api/coach/proposals/${proposalId}/approve`),

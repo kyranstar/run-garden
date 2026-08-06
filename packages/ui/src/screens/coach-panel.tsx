@@ -304,6 +304,7 @@ export function CoachPanel({
   onApprove,
   onDecline,
   onAnswer,
+  onCheckIn,
   header,
   hideHead,
 }: {
@@ -315,6 +316,8 @@ export function CoachPanel({
   onApprove: (id: string) => void;
   onDecline: (id: string) => void;
   onAnswer: (id: string, answer: string) => void;
+  /** The manual "Check in" trigger — forces a wake past the skip rule. */
+  onCheckIn?: () => void;
   /** Extra header content (e.g. a close button on mobile). */
   header?: ReactNode;
   /** Skip the internal header (a wrapping Sheet already provides one). */
@@ -322,10 +325,23 @@ export function CoachPanel({
 }) {
   return (
     <section className="coach-panel" aria-label="Coach">
-      {hideHead ? null : (
+      {hideHead ? (
+        onCheckIn ? (
+          <div className="coach-panel-head" style={{ justifyContent: "flex-end" }}>
+            <button type="button" className="btn btn-small" disabled={busy} onClick={onCheckIn}>
+              Check in
+            </button>
+          </div>
+        ) : null
+      ) : (
         <div className="coach-panel-head">
           <h2>Coach</h2>
           <span className="row" style={{ gap: "0.6rem" }}>
+            {onCheckIn ? (
+              <button type="button" className="btn btn-small" disabled={busy} onClick={onCheckIn}>
+                Check in
+              </button>
+            ) : null}
             <Link className="linklike" to="/settings#coach-memory">
               what I know →
             </Link>

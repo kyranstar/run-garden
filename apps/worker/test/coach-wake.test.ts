@@ -144,6 +144,23 @@ describe("wake", () => {
     expect(calls).toHaveLength(0);
   });
 
+  it("manual check-in bypasses the skip rule (fresh briefing + no triggers still wakes)", async () => {
+    const db = makeTestDb();
+    const { userId, prefs } = await makeTestUser(db);
+    await db.insert(schema.coachMessages).values({
+      id: newId(),
+      userId,
+      role: "coach",
+      body: "fresh briefing",
+      refs: {},
+      at: nowInstant(),
+    });
+    const { fetchImpl, calls } = scriptedFetch([chatBody(RESTRAINT)]);
+    const res = await wake(db, makeEnv(), userId, prefs, { kind: "manual" }, fetchImpl);
+    expect(res.status).toBe("ok");
+    expect(calls).toHaveLength(1);
+  });
+
   it("budget cutoff rests honestly and still keeps the user's message", async () => {
     const db = makeTestDb();
     const { userId, prefs } = await makeTestUser(db);
