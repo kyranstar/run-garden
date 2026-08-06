@@ -14,3 +14,4 @@ export * from "./garden.js";
 export * from "./devices.js";
 export * from "./studio.js";
 export * from "./coach.js";
+export * from "./coach-guardrails.js";
