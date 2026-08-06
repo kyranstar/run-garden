@@ -611,7 +611,7 @@ describe("POST /api/studio/generate — replace ordering (F5-regression)", () =>
       model: "test-model",
       inputTokens: 0,
       outputTokens: 0,
-      costMicros: 9_000_000, // over LLM_BUDGET.cutoffMicros ($8)
+      costMicros: 21_000_000, // over LLM_BUDGET.cutoffMicros ($20, coach era)
       cacheHit: false,
       requestFingerprint: "over-budget-replace",
       createdAt: nowInstant(),
@@ -685,7 +685,7 @@ describe("POST /api/studio/generate — LLM failure status mapping", () => {
       model: "test-model",
       inputTokens: 0,
       outputTokens: 0,
-      costMicros: 9_000_000, // over LLM_BUDGET.cutoffMicros ($8)
+      costMicros: 21_000_000, // over LLM_BUDGET.cutoffMicros ($20, coach era)
       cacheHit: false,
       requestFingerprint: "over-budget",
       createdAt: nowInstant(),
