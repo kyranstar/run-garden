@@ -54,12 +54,19 @@ fn reveal_ambient(app: &tauri::AppHandle) {
         if let Some(win) = handle.get_webview_window("ambient") {
             let _ = win.show();
             let _ = win.set_focus();
-            let _ = win.set_fullscreen(true);
+            let _ = win.set_simple_fullscreen(true);
             return;
         }
-        // Built hidden and NOT fullscreen: on macOS, entering native fullscreen
-        // while the webview is still initializing races the first paint and can
-        // leave a permanently grey window. Show first, then go fullscreen.
+        // Built hidden and NOT fullscreen: entering fullscreen while the
+        // webview is still initializing races the first paint and can leave a
+        // permanently grey window. Show first, then go fullscreen.
+        //
+        // SIMPLE fullscreen (borderless at screen size), never native: native
+        // fullscreen creates a macOS Space, and tearing a Space down from code
+        // is a timing minefield — closing mid-transition foregrounded the app
+        // (0.1.7) or stranded a ghost white fullscreen Space (0.1.8). Simple
+        // fullscreen has no Space and no transition, so closing it is
+        // synchronous and artifact-free — screensaver semantics exactly.
         match tauri::WebviewWindowBuilder::new(
             &handle,
             "ambient",
@@ -79,9 +86,9 @@ fn reveal_ambient(app: &tauri::AppHandle) {
                     tokio::time::sleep(std::time::Duration::from_millis(600)).await;
                     let _ = win.show();
                     let _ = win.set_focus();
-                    // …then transition to fullscreen with content on screen.
+                    // …then go fullscreen with content on screen.
                     tokio::time::sleep(std::time::Duration::from_millis(250)).await;
-                    let _ = win.set_fullscreen(true);
+                    let _ = win.set_simple_fullscreen(true);
                 });
             }
             Err(e) => eprintln!("ambient window build failed: {e}"),
@@ -102,30 +109,12 @@ fn conceal_ambient(app: &tauri::AppHandle) {
         .unwrap_or(false);
     let handle = app.clone();
     let _ = app.run_on_main_thread(move || {
+        // The ambient window uses SIMPLE fullscreen (no macOS Space — see
+        // reveal_ambient), so leaving fullscreen and closing are synchronous:
+        // no transition to race, no delay needed, no ghost Space possible.
         if let Some(win) = handle.get_webview_window("ambient") {
-            // Leave native fullscreen before closing: closing a window while
-            // it owns a macOS Space can leave the animation half-done and the
-            // app's other windows activated. set_fullscreen(false) is itself
-            // asynchronous on macOS (a ~0.2-0.5s Space-exit transition), so
-            // wait it out before closing and hiding rather than racing it.
-            let _ = win.set_fullscreen(false);
-            let handle = handle.clone();
-            tauri::async_runtime::spawn(async move {
-                tokio::time::sleep(std::time::Duration::from_millis(450)).await;
-                let inner_handle = handle.clone();
-                let _ = handle.run_on_main_thread(move || {
-                    if let Some(win) = inner_handle.get_webview_window("ambient") {
-                        let _ = win.close();
-                    }
-                    #[cfg(target_os = "macos")]
-                    if restore_hidden {
-                        let _ = inner_handle.hide();
-                    }
-                    #[cfg(not(target_os = "macos"))]
-                    let _ = restore_hidden;
-                });
-            });
-            return;
+            let _ = win.set_simple_fullscreen(false);
+            let _ = win.close();
         }
         #[cfg(target_os = "macos")]
         if restore_hidden {

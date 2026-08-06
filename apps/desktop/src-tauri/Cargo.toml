@@ -1,6 +1,6 @@
 [package]
 name = "run-garden-desktop"
-version = "0.1.8"
+version = "0.1.9"
 description = "Run Garden desktop companion"
 authors = ["Run Garden"]
 edition = "2021"
