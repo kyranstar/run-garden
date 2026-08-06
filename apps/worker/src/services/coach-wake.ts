@@ -218,20 +218,43 @@ export async function wake(
     ];
     const model = env.AI_STUDIO_MODEL_STRONG || DEFAULT_MODEL_STRONG;
 
-    const attemptParse = async (msgs: ChatMsg[]): Promise<{ out: WakeOutput | null; raw: string }> => {
+    const attemptParse = async (
+      msgs: ChatMsg[],
+    ): Promise<{ out: WakeOutput | null; raw: string; issues: string }> => {
       const chat = await chatCompletion(env, fetchImpl, model, MAX_OUTPUT_TOKENS_WAKE, msgs);
-      if (!chat.ok) return { out: null, raw: "" };
+      if (!chat.ok) {
+        console.error(`[coach-wake] gateway failure: ${chat.reason}`);
+        return { out: null, raw: "", issues: "" };
+      }
       await recordUsage(db, userId, "coach_wake", model, "strong", chat, `wake:${userId}:${nowInstant()}`);
-      const parsed = wakeOutputSchema.safeParse(extractJson(chat.content));
-      return { out: parsed.success ? parsed.data : null, raw: chat.content };
+      const json = extractJson(chat.content);
+      const parsed = wakeOutputSchema.safeParse(json);
+      if (parsed.success) return { out: parsed.data, raw: chat.content, issues: "" };
+      // The repair prompt needs the actual issues — "didn't match" alone
+      // reproduces the same mistake (live-observed: two wakes, four calls,
+      // zero corrections). Also logged so `wrangler tail` shows ground truth.
+      const issues =
+        json == null
+          ? "no JSON object found in the reply"
+          : parsed.error.issues
+              .slice(0, 8)
+              .map((i) => `${i.path.join(".") || "(root)"}: ${i.message}`)
+              .join("\n");
+      console.error(
+        `[coach-wake] schema reject: ${issues.replaceAll("\n", " | ")} · raw head: ${chat.content.slice(0, 1200)}`,
+      );
+      return { out: null, raw: chat.content, issues };
     };
 
-    let { out, raw } = await attemptParse(messages);
+    let { out, raw, issues } = await attemptParse(messages);
     if (!out && raw) {
       ({ out } = await attemptParse([
         ...messages,
         { role: "assistant" as const, content: raw },
-        { role: "user" as const, content: "That did not match the required JSON schema. Reply with ONLY the corrected JSON object." },
+        {
+          role: "user" as const,
+          content: `That did not match the required JSON schema. Problems:\n${issues}\nReply with ONLY the corrected JSON object — same content, valid shape.`,
+        },
       ]));
     }
     if (!out) {

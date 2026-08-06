@@ -8,7 +8,38 @@ import { studioExerciseSchema } from "./studio.js";
  * the guardrail validator runs on ops before anything persists.
  */
 
-const isoDate = z.string().regex(/^\d{4}-\d{2}-\d{2}$/);
+/**
+ * Calendar date, tolerantly parsed: the model is told "end of first affected
+ * day", which invites a full timestamp — accept it and truncate rather than
+ * fail the whole wake over a suffix that changes nothing.
+ */
+const isoDate = z
+  .string()
+  .regex(/^\d{4}-\d{2}-\d{2}(T[\d:.+Zz-]*)?$/)
+  .transform((s) => s.slice(0, 10));
+
+/**
+ * Entity ids as the model echoes them back. The dossier renders handles as
+ * `[wo:abc]` / `plan [cp1]` / `fact [mem1]`; a faithful copy including the
+ * decoration must resolve to the same row, not become a dud op.
+ */
+const echoedId = z
+  .string()
+  .min(1)
+  .transform((s) =>
+    s
+      .trim()
+      .replace(/^\[/, "")
+      .replace(/\]$/, "")
+      .replace(/^(wo|plan|mem):/, ""),
+  );
+
+/**
+ * Prose fields truncate at their cap instead of rejecting: a verbose model
+ * must never kill a whole wake over sentence length. Enums, counts, and
+ * structure stay strict — vocabulary is bounded, prose is trimmed.
+ */
+const prose = (max: number) => z.string().min(1).transform((s) => (s.length > max ? s.slice(0, max) : s));
 
 /** One structured run block — the COROS-write-confirmed topology. */
 export const coachRunBlockSchema = z
@@ -24,7 +55,7 @@ export const coachRunBlockSchema = z
 export const coachSessionSchema = z
   .object({
     category: z.enum(["easy", "long", "quality", "recovery", "race", "rest", "strength"]),
-    title: z.string().min(1).max(80),
+    title: prose(80),
     durationMinutes: z.number().int().min(5).max(360),
     run: z.object({ blocks: z.array(coachRunBlockSchema).min(1).max(12) }).strict().optional(),
     lift: z.object({ exercises: z.array(studioExerciseSchema).min(1).max(12) }).strict().optional(),
@@ -46,15 +77,15 @@ export type CoachShapeWeek = z.infer<typeof coachShapeWeekSchema>;
 
 /** The ONLY ways the coach can touch a plan. */
 export const coachOpSchema = z.discriminatedUnion("kind", [
-  z.object({ kind: z.literal("ease"), workoutId: z.string(), session: coachSessionSchema }).strict(),
-  z.object({ kind: z.literal("move"), workoutId: z.string(), toDate: isoDate }).strict(),
+  z.object({ kind: z.literal("ease"), workoutId: echoedId, session: coachSessionSchema }).strict(),
+  z.object({ kind: z.literal("move"), workoutId: echoedId, toDate: isoDate }).strict(),
   z.object({ kind: z.literal("swap"), dayA: isoDate, dayB: isoDate }).strict(),
-  z.object({ kind: z.literal("skip"), workoutId: z.string(), reason: z.string().min(1).max(200) }).strict(),
+  z.object({ kind: z.literal("skip"), workoutId: echoedId, reason: prose(200) }).strict(),
   z.object({ kind: z.literal("add"), date: isoDate, session: coachSessionSchema }).strict(),
   z
     .object({
       kind: z.literal("reshapeWeek"),
-      planId: z.string(),
+      planId: echoedId,
       weekStart: isoDate,
       sessions: z.array(datedSession).max(10),
     })
@@ -62,7 +93,7 @@ export const coachOpSchema = z.discriminatedUnion("kind", [
   z
     .object({
       kind: z.literal("firmUp"),
-      planId: z.string(),
+      planId: echoedId,
       weekStart: isoDate,
       sessions: z.array(datedSession).min(1).max(10),
     })
@@ -70,11 +101,11 @@ export const coachOpSchema = z.discriminatedUnion("kind", [
   z
     .object({
       kind: z.literal("extendPlan"),
-      planId: z.string(),
+      planId: echoedId,
       shapeWeeks: z.array(coachShapeWeekSchema).min(1).max(8),
     })
     .strict(),
-  z.object({ kind: z.literal("windDown"), planId: z.string(), sessions: z.array(datedSession).max(10) }).strict(),
+  z.object({ kind: z.literal("windDown"), planId: echoedId, sessions: z.array(datedSession).max(10) }).strict(),
   z
     .object({
       kind: z.literal("createPlan"),
@@ -87,15 +118,15 @@ export const coachOpSchema = z.discriminatedUnion("kind", [
       shapeWeeks: z.array(coachShapeWeekSchema).max(14),
     })
     .strict(),
-  z.object({ kind: z.literal("retirePlan"), planId: z.string() }).strict(),
+  z.object({ kind: z.literal("retirePlan"), planId: echoedId }).strict(),
 ]);
 export type CoachOp = z.infer<typeof coachOpSchema>;
 
 export const coachProposalDraftSchema = z
   .object({
-    title: z.string().min(1).max(80),
-    evidence: z.string().min(1).max(200),
-    rationale: z.string().min(1).max(2000),
+    title: prose(80),
+    evidence: prose(200),
+    rationale: prose(2000),
     /** min(end of first affected day, +72h) — enforced downstream too. */
     expiresAt: isoDate,
     flags: z.array(z.string().max(120)).max(6),
@@ -109,12 +140,12 @@ export const coachMemoryOpSchema = z.discriminatedUnion("op", [
     .object({
       op: z.literal("add"),
       kind: z.enum(["fact", "rule", "note"]),
-      text: z.string().min(1).max(300),
+      text: prose(300),
       expiresAt: isoDate.optional(),
     })
     .strict(),
-  z.object({ op: z.literal("update"), id: z.string(), text: z.string().min(1).max(300) }).strict(),
-  z.object({ op: z.literal("expire"), id: z.string() }).strict(),
+  z.object({ op: z.literal("update"), id: echoedId, text: prose(300) }).strict(),
+  z.object({ op: z.literal("expire"), id: echoedId }).strict(),
 ]);
 export type CoachMemoryOp = z.infer<typeof coachMemoryOpSchema>;
 
@@ -122,10 +153,10 @@ export type CoachMemoryOp = z.infer<typeof coachMemoryOpSchema>;
  * all-null/empty output is a fully successful wake. */
 export const wakeOutputSchema = z
   .object({
-    briefing: z.string().max(4000).nullable(),
+    briefing: z.string().transform((s) => (s.length > 4000 ? s.slice(0, 4000) : s)).nullable(),
     proposals: z.array(coachProposalDraftSchema).max(6),
     question: z
-      .object({ text: z.string().min(1).max(300), chips: z.array(z.string().min(1).max(60)).max(5) })
+      .object({ text: prose(300), chips: z.array(z.string().min(1).max(60)).max(5) })
       .strict()
       .nullable(),
     memoryOps: z.array(coachMemoryOpSchema).max(12),

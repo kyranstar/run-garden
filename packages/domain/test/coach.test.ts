@@ -75,6 +75,29 @@ describe("coachOpSchema", () => {
       coachOpSchema.parse({ kind: "move", workoutId: "w1", toDate: "next tuesday" }),
     ).toThrow();
   });
+
+  it("normalizes dossier-decorated ids ([wo:…], plan:, bare brackets)", () => {
+    const skip = coachOpSchema.parse({ kind: "skip", workoutId: "[wo:abc123]", reason: "backpacking" });
+    expect(skip.kind === "skip" && skip.workoutId).toBe("abc123");
+    const move = coachOpSchema.parse({ kind: "move", workoutId: "wo:abc123", toDate: "2026-08-10" });
+    expect(move.kind === "move" && move.workoutId).toBe("abc123");
+    const retire = coachOpSchema.parse({ kind: "retirePlan", planId: "[cp1]" });
+    expect(retire.kind === "retirePlan" && retire.planId).toBe("cp1");
+  });
+
+  it("accepts timestamps where dates belong, truncating to the day", () => {
+    const move = coachOpSchema.parse({
+      kind: "move",
+      workoutId: "w1",
+      toDate: "2026-08-10T23:59:59Z",
+    });
+    expect(move.kind === "move" && move.toDate).toBe("2026-08-10");
+  });
+
+  it("truncates overlong prose instead of rejecting the wake", () => {
+    const skip = coachOpSchema.parse({ kind: "skip", workoutId: "w1", reason: "x".repeat(500) });
+    expect(skip.kind === "skip" && skip.reason.length).toBe(200);
+  });
 });
 
 describe("wakeOutputSchema", () => {
@@ -95,6 +118,27 @@ describe("wakeOutputSchema", () => {
       memoryOps: [{ op: "add", kind: "note", text: "travel Aug 13–16", expiresAt: "2026-08-17" }],
     });
     expect(full.proposals).toHaveLength(1);
+
+    // The live failure shape: a proposal whose expiresAt is an "end of day"
+    // timestamp must parse, truncated to the date.
+    const timestamped = wakeOutputSchema.parse({
+      briefing: null,
+      proposals: [
+        {
+          title: "Skip Saturday's long run",
+          evidence: "backpacking Fri–Sun",
+          rationale: "Three days under a pack is the weekend's training.",
+          expiresAt: "2026-08-08T23:59:59Z",
+          flags: [],
+          ops: [{ kind: "skip", workoutId: "[wo:up1]", reason: "backpacking weekend" }],
+        },
+      ],
+      question: null,
+      memoryOps: [],
+    });
+    expect(timestamped.proposals[0]!.expiresAt).toBe("2026-08-08");
+    const op = timestamped.proposals[0]!.ops[0]!;
+    expect(op.kind === "skip" && op.workoutId).toBe("up1");
 
     const restraint = wakeOutputSchema.parse({
       briefing: null,
