@@ -84,6 +84,14 @@ async function main(): Promise<void> {
     }
     const extraTop = Object.keys(detail as object).filter((k) => !["summary", "lapList"].includes(k));
     if (extraTop.length) console.log(`— other detail top-level keys — ${extraTop.join(", ")}`);
+    // Round 2: the three sub-objects the effort analysis wants, verbatim.
+    for (const key of ["weather", "sportFeelInfo", "zoneList", "pauseList"]) {
+      const v = (detail as Record<string, unknown>)[key];
+      if (v !== undefined) {
+        const json = JSON.stringify(v);
+        console.log(`— ${key} — ${json.length > 1600 ? json.slice(0, 1600) + "…" : json}`);
+      }
+    }
   }
   console.log("\n[probe] done — zero writes were made.");
 }
