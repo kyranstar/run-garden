@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { fingerprint } from "@rg/domain";
 import { flattenStages, deriveWorkoutSeconds, estimateDuration } from "@rg/scheduling";
 import {
   corosDayToLocalDate,
@@ -210,6 +211,181 @@ describe("COROS activity normalization (contract)", () => {
     expect(a.distanceMeters).toBeUndefined();
     expect(a.avgPaceSecPerKm).toBeUndefined();
     expect(a.durationSeconds).toBe(1800);
+  });
+});
+
+describe("COROS telemetry extras (probe-verified 2026-08-06)", () => {
+  // Field values lifted from a live PACE 4 payload ("Aerobic Endurance with
+  // Hill Strides") — the unit conversions asserted here are the contract.
+  const item: RawCorosActivityListItem = {
+    labelId: "probe-strides",
+    date: 20260806,
+    name: "Aerobic Endurance with Hill Strides",
+    sportType: 102,
+    startTime: 1786040482,
+    startTimezone: -28,
+    device: "COROS PACE 4",
+    waterTemperature: 2800, // °C × 100 — the watch thermometer
+  };
+  const detail = {
+    summary: {
+      startTimestamp: 178604048295,
+      timezone: -28,
+      workoutTime: 403770,
+      totalTime: 417364,
+      distance: 948936,
+      avgHr: 153,
+      maxHr: 180,
+      avgPace: 0, // pace rides in avgSpeed on current payloads
+      avgCadence: 152,
+      maxCadence: 184,
+      avgPower: 160,
+      maxPower: 383,
+      avgStepLen: 93,
+      aerobicEffect: 2.9,
+      anaerobicEffect: 3,
+      currentVo2Max: 53,
+      staminaLevel7d: 0, // sentinel — absent
+      bestKm: 342,
+      pauseTime: 13594,
+      elevGain: 119,
+      trainingLoad: 146,
+    },
+    weather: {
+      temperature: 255,
+      bodyFeelTemp: 314,
+      humidity: 590,
+      windSpeed: 18,
+      windDirection: 1580,
+    },
+    sportFeelInfo: { feelType: 4, sportNote: "" },
+    zoneList: [
+      {
+        type: 126,
+        zoneType: 3,
+        zoneItemList: [
+          { leftScope: 138, rightScope: 155, second: 492, zoneIndex: 0 },
+          { leftScope: 156, rightScope: 163, second: 748, zoneIndex: 2 },
+        ],
+      },
+      {
+        type: 130,
+        zoneType: 0,
+        zoneItemList: [{ leftScope: 412000, rightScope: 347000, second: 3338, zoneIndex: 0 }],
+      },
+    ],
+    pauseList: [
+      { duration: 171 },
+      { duration: 6423 },
+      { duration: 4614 },
+      { duration: 2441 },
+    ],
+  };
+
+  const a = normalizeCorosActivity(item, detail);
+  const t = a.telemetry!;
+
+  it("derives moving pace when summary.avgPace is 0", () => {
+    expect(a.avgPaceSecPerKm).toBeCloseTo(425.5, 0);
+  });
+
+  it("converts cadence/power/stride/effects/VO2max/best-km verbatim", () => {
+    expect(t.avgCadenceSpm).toBe(152);
+    expect(t.maxCadenceSpm).toBe(184);
+    expect(t.avgPowerWatts).toBe(160);
+    expect(t.maxPowerWatts).toBe(383);
+    expect(t.avgStrideLengthCm).toBe(93);
+    expect(t.aerobicEffect).toBe(2.9);
+    expect(t.anaerobicEffect).toBe(3);
+    expect(t.vo2maxEstimate).toBe(53);
+    expect(t.bestKmSecPerKm).toBe(342);
+  });
+
+  it("drops zero sentinels (stamina, note) but keeps real zeros out of temps", () => {
+    expect(t.staminaLevel7d).toBeUndefined();
+    expect(t.sportNote).toBeUndefined();
+  });
+
+  it("decodes temperatures: device °C×100, weather °C×10, humidity %×10, wind ×10", () => {
+    expect(t.deviceTempC).toBe(28);
+    expect(t.weatherTempC).toBe(25.5);
+    expect(t.weatherFeelsLikeC).toBe(31.4);
+    expect(t.humidityPercent).toBe(59);
+    expect(t.windKph).toBe(1.8);
+  });
+
+  it("keeps the self-reported feel and derives pause stats from pauseList", () => {
+    expect(t.feelRating).toBe(4);
+    expect(t.pauseSeconds).toBe(136); // centiseconds → seconds
+    expect(t.pauseCount).toBe(4);
+    expect(t.longestPauseSeconds).toBe(64);
+  });
+
+  it("stores HR zones (bpm bounds) and pace zones (ms/km → sec/km)", () => {
+    expect(t.hrZones).toEqual([
+      { lo: 138, hi: 155, seconds: 492 },
+      { lo: 156, hi: 163, seconds: 748 },
+    ]);
+    expect(t.paceZones).toEqual([{ loSecPerKm: 412, hiSecPerKm: 347, seconds: 3338 }]);
+  });
+
+  it("normalizes lap telemetry (cadence, min/max HR, grade, power sentinels)", () => {
+    const laps = normalizeCorosLaps({
+      lapList: [
+        {
+          lapDistance: 160934,
+          lapItemList: [
+            {
+              lapIndex: 1,
+              time: 30000,
+              distance: 53000,
+              avgHr: 133,
+              avgPace: 566.04,
+              avgCadence: 143,
+              minHr: 112,
+              maxHr: 148,
+              elevGain: 26,
+              avgGrade: 3,
+              avgPower: 152,
+              maxPower: 0,
+            },
+          ],
+        },
+      ],
+    });
+    expect(laps[0]).toMatchObject({
+      avgCadenceSpm: 143,
+      minHeartRate: 112,
+      maxHeartRate: 148,
+      elevGainMeters: 26,
+      avgGradePercent: 3,
+      avgPowerWatts: 152,
+      splitType: "workout",
+    });
+    expect(laps[0]!.exerciseNameKey).toBeUndefined();
+  });
+
+  it("omits the telemetry object entirely when nothing survives", () => {
+    const bare = normalizeCorosActivity({
+      labelId: "bare",
+      date: 20260801,
+      sportType: 100,
+      startTime: 1785628229,
+    });
+    expect(bare.telemetry).toBeUndefined();
+  });
+
+  it("v2 fingerprint differs from v1 so stored rows refresh once", () => {
+    const again = normalizeCorosActivity(item, detail);
+    expect(again.contentFingerprint).toBe(a.contentFingerprint); // deterministic
+    const v1 = fingerprint({
+      id: item.labelId,
+      start: 178604048295 / 100,
+      durationSeconds: a.durationSeconds,
+      distanceMeters: a.distanceMeters,
+      hr: 153,
+    });
+    expect(a.contentFingerprint).not.toBe(v1);
   });
 });
 
