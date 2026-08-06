@@ -130,7 +130,8 @@ async function guardrailCtx(
     const end = addDays(start, 6);
     for (const w of workouts) {
       if (w.date >= start && w.date <= end && w.completionState === "completed" && w.category !== "rest") {
-        (weekly[w.discipline] ??= [0, 0, 0, 0])[4 - k] += w.durationMinutes;
+        const arr = (weekly[w.discipline] ??= [0, 0, 0, 0]);
+        arr[4 - k] = (arr[4 - k] ?? 0) + w.durationMinutes;
       }
     }
   }
@@ -200,13 +201,14 @@ export async function wake(
       cause.kind === "message"
         ? `The athlete just said:\n"""${cause.body}"""`
         : `The athlete opened the plan page. Address pending SIGNALS if any; otherwise a short check-in or nothing.`;
-    const messages = [
-      { role: "system" as const, content: WAKE_SYSTEM_PROMPT },
-      { role: "user" as const, content: `${dossier.text}\n\n---\n${causeBlock}\nToday is ${today}.` },
+    type ChatMsg = { role: "system" | "user" | "assistant"; content: string };
+    const messages: ChatMsg[] = [
+      { role: "system", content: WAKE_SYSTEM_PROMPT },
+      { role: "user", content: `${dossier.text}\n\n---\n${causeBlock}\nToday is ${today}.` },
     ];
     const model = env.AI_STUDIO_MODEL_STRONG || DEFAULT_MODEL_STRONG;
 
-    const attemptParse = async (msgs: typeof messages): Promise<{ out: WakeOutput | null; raw: string }> => {
+    const attemptParse = async (msgs: ChatMsg[]): Promise<{ out: WakeOutput | null; raw: string }> => {
       const chat = await chatCompletion(env, fetchImpl, model, MAX_OUTPUT_TOKENS_WAKE, msgs);
       if (!chat.ok) return { out: null, raw: "" };
       await recordUsage(db, userId, "coach_wake", model, "strong", chat, `wake:${userId}:${nowInstant()}`);
