@@ -25,6 +25,7 @@ import { MatchSheet } from "./match-sheet.js";
 import { StudioSection } from "./studio.js";
 import { SyncPanel } from "./today.js";
 import { CoachPanel, ManagePlans, pendingByDate } from "./coach-panel.js";
+import { CoachRead } from "./coach-read.js";
 
 /**
  * "Did this run happen?" only ever makes sense for a date that has passed.
@@ -54,6 +55,7 @@ function WorkoutDetail({
   const [moving, setMoving] = useState(false);
   const [matching, setMatching] = useState(false);
   const [confirmRemove, setConfirmRemove] = useState(false);
+  const [readOpen, setReadOpen] = useState(false);
   const detail = useQuery({
     queryKey: ["workout", w.id],
     queryFn: () => api.workout(w.id),
@@ -183,13 +185,23 @@ function WorkoutDetail({
           </details>
         ) : null}
         {match?.activity ? (
-          <p className="muted">
-            Completed with “{(match.activity.title as string) ?? "activity"}” ·{" "}
-            {formatMinutes(match.activity.durationSeconds as number)}
-            {match.activity.distanceMeters
-              ? ` · ${((match.activity.distanceMeters as number) / 1000).toFixed(1)} km`
-              : ""}
-          </p>
+          <>
+            <p className="muted">
+              Completed with “{(match.activity.title as string) ?? "activity"}” ·{" "}
+              {formatMinutes(match.activity.durationSeconds as number)}
+              {match.activity.distanceMeters
+                ? ` · ${((match.activity.distanceMeters as number) / 1000).toFixed(1)} km`
+                : ""}{" "}
+              <button
+                className="btn btn-small"
+                aria-expanded={readOpen}
+                onClick={() => setReadOpen((v) => !v)}
+              >
+                {readOpen ? "Hide read" : "✨ Coach's read"}
+              </button>
+            </p>
+            {readOpen ? <CoachRead activityId={match.activity.id as string} /> : null}
+          </>
         ) : null}
 
         <div className="btn-row">

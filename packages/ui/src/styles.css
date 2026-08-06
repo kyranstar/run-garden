@@ -3424,6 +3424,27 @@ button {
   text-decoration: none;
 }
 
+/* The coach's read of one effort (effort-analysis spec §6) — an inline card
+   under activity rows and inside the workout sheet. */
+.coach-read {
+  background: var(--bg-sunken);
+  border-left: 3px solid var(--accent);
+  border-radius: var(--radius-sm);
+  padding: 0.6rem 0.8rem;
+  margin: 0.3rem 0 0.7rem;
+}
+.coach-read-body {
+  font-size: 0.9rem;
+  white-space: pre-wrap;
+  margin: 0 0 0.4rem;
+}
+.coach-read-meta {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+}
+
 .coach-composer { border-top: 1px solid var(--border); padding: 0.55rem 0.7rem; }
 .coach-input {
   display: flex;

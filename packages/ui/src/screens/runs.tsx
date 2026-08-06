@@ -12,6 +12,7 @@ import {
   Sheet,
   Spinner,
 } from "../components.js";
+import { CoachRead } from "./coach-read.js";
 
 function dist(m: number | null): string {
   if (!m) return "";
@@ -172,6 +173,7 @@ export function RunsScreen() {
   const [linking, setLinking] = useState<ActivityDto | null>(null);
   const [note, setNote] = useState<string | null>(null);
   const [filter, setFilter] = useState<DisciplineFilter>("all");
+  const [readOpen, setReadOpen] = useState<string | null>(null);
 
   const backfill = useMutation({
     mutationFn: () => api.backfillHistory(),
@@ -238,25 +240,37 @@ export function RunsScreen() {
         </EmptyState>
       ) : (
         items.map((a) => (
-          <div key={a.id} className="workout-row" style={{ cursor: "default" }}>
-            <div className="body">
-              <div className="title">{a.title || SPORT_LABELS[a.sport] || "Activity"}</div>
-              <div className="meta">
-                <span>{formatDayLong(a.date)}</span>
-                <span>{formatMinutes(a.durationSeconds)}</span>
-                {a.distanceMeters ? <span>{dist(a.distanceMeters)}</span> : null}
-                {a.avgPaceSecPerKm ? <span>{pace(a.avgPaceSecPerKm)}</span> : null}
+          <div key={a.id}>
+            <div className="workout-row" style={{ cursor: "default" }}>
+              <div className="body">
+                <div className="title">{a.title || SPORT_LABELS[a.sport] || "Activity"}</div>
+                <div className="meta">
+                  <span>{formatDayLong(a.date)}</span>
+                  <span>{formatMinutes(a.durationSeconds)}</span>
+                  {a.distanceMeters ? <span>{dist(a.distanceMeters)}</span> : null}
+                  {a.avgPaceSecPerKm ? <span>{pace(a.avgPaceSecPerKm)}</span> : null}
+                </div>
               </div>
-            </div>
-            {a.matched ? (
-              <span className="pill pill-ok" title={`Counted as your ${a.matched.title}`}>
-                ✓ {CATEGORY_LABELS[a.matched.category] ?? a.matched.category}
-              </span>
-            ) : (
-              <button className="btn btn-small" style={{ marginLeft: "auto" }} onClick={() => setLinking(a)}>
-                Link to a workout
+              <button
+                className="btn btn-small"
+                style={{ marginLeft: "auto" }}
+                aria-expanded={readOpen === a.id}
+                title="Ask the coach for a read of this effort"
+                onClick={() => setReadOpen(readOpen === a.id ? null : a.id)}
+              >
+                {readOpen === a.id ? "Hide read" : "✨ Coach's read"}
               </button>
-            )}
+              {a.matched ? (
+                <span className="pill pill-ok" title={`Counted as your ${a.matched.title}`}>
+                  ✓ {CATEGORY_LABELS[a.matched.category] ?? a.matched.category}
+                </span>
+              ) : (
+                <button className="btn btn-small" onClick={() => setLinking(a)}>
+                  Link to a workout
+                </button>
+              )}
+            </div>
+            {readOpen === a.id ? <CoachRead activityId={a.id} /> : null}
           </div>
         ))
       )}

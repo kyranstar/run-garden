@@ -238,8 +238,19 @@ export interface CoachMessageDto {
   id: string;
   role: "coach" | "user" | "receipt";
   body: string;
-  refs: { proposalId?: string; memoryIds?: string[]; questionId?: string };
+  refs: {
+    proposalId?: string;
+    memoryIds?: string[];
+    questionId?: string;
+    kind?: "analysis";
+    activityId?: string;
+  };
   at: string;
+}
+
+export interface CoachAnalyzeResult {
+  message: { id: string; body: string; at: string };
+  cached: boolean;
 }
 
 export interface CoachProposalDto {
@@ -539,6 +550,8 @@ export const api = {
     get<CoachStateResponse>(`/api/coach/state${before ? `?before=${encodeURIComponent(before)}` : ""}`),
   coachWake: (force = false) => post<CoachWakeResult>("/api/coach/wake", { force }, 320_000),
   coachMessage: (body: string) => post<CoachWakeResult>("/api/coach/message", { body }, 320_000),
+  coachAnalyze: (activityId: string, force = false) =>
+    post<CoachAnalyzeResult>(`/api/coach/analyze/${activityId}`, { force }, 320_000),
   coachApprove: (proposalId: string) =>
     post<{ ok: boolean }>(`/api/coach/proposals/${proposalId}/approve`),
   coachDecline: (proposalId: string) =>

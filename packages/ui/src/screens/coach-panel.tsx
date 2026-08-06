@@ -222,6 +222,11 @@ export function CoachThread({ messages }: { messages: CoachMessageDto[] }) {
           </div>
         ) : (
           <div key={m.id} className={`coach-msg coach-msg-${m.role}`}>
+            {m.refs.kind === "analysis" ? (
+              <span className="tagchip" style={{ marginRight: "0.35rem" }}>
+                effort read
+              </span>
+            ) : null}
             <span style={{ whiteSpace: "pre-wrap" }}>{m.body}</span>
             {m.role === "coach" && m.refs.memoryIds?.length ? (
               <span className="coach-memchips">
