@@ -504,7 +504,7 @@ planRoutes.post("/workouts/:id/unskip", async (c) => {
   const resolvedOn = w.resolutionDate ?? w.effectiveDate;
   await db
     .update(plannedWorkouts)
-    .set({ completionState: "scheduled", resolutionDate: null, updatedAt: now })
+    .set({ completionState: "scheduled", resolutionDate: null, sanctionedBy: null, updatedAt: now })
     .where(and(eq(plannedWorkouts.id, w.id), eq(plannedWorkouts.userId, userId)));
   await db.insert(scheduleOverrides).values({
     id: newId(),

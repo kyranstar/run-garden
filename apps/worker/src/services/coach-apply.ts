@@ -188,9 +188,10 @@ export async function applyOps(
         break;
       }
       case "skip": {
+        // Coach-sanctioned: the garden treats it as agreed rest (spec §1).
         await db
           .update(plannedWorkouts)
-          .set({ completionState: "skipped", resolutionDate: today, updatedAt: now })
+          .set({ completionState: "skipped", resolutionDate: today, sanctionedBy: "coach", updatedAt: now })
           .where(and(eq(plannedWorkouts.id, op.workoutId), eq(plannedWorkouts.userId, userId)));
         out.updated.push(op.workoutId);
         break;

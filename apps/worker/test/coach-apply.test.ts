@@ -178,3 +178,18 @@ describe("applyOps", () => {
     expect(live.map((w) => w.id)).not.toContain("w-future");
   });
 });
+
+describe("sanctioned skip (garden-loop spec §1)", () => {
+  it("coach skip marks sanctionedBy", async () => {
+    const db = makeTestDb();
+    const { userId, prefs } = await makeTestUser(db);
+    const today = todayInZone(prefs.timezone);
+    await seedWorkout(db, userId, "w1", addDays(today, 1));
+    await applyOps(db, userId, prefs, "prop-s", [
+      { kind: "skip", workoutId: "w1", reason: "you need the rest" },
+    ]);
+    const [w] = await db.select().from(schema.plannedWorkouts).where(eq(schema.plannedWorkouts.id, "w1"));
+    expect(w!.completionState).toBe("skipped");
+    expect(w!.sanctionedBy).toBe("coach");
+  });
+});

@@ -78,6 +78,13 @@
       "when": 1786036475655,
       "tag": "0010_lowly_silver_samurai",
       "breakpoints": true
+    },
+    {
+      "idx": 11,
+      "version": "6",
+      "when": 1786047675294,
+      "tag": "0011_mighty_misty_knight",
+      "breakpoints": true
     }
   ]
 }
