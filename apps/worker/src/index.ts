@@ -25,6 +25,7 @@ import { advanceGarden } from "./services/garden-sync.js";
 import { reconcileCompletionStates, startSyncRun, finishSyncRun } from "./services/reconcile-daily.js";
 import { generateWeeklyReview } from "./services/llm.js";
 import { healLegacySyncState } from "./services/heal-legacy-sync.js";
+import { evaluateTriggers } from "./services/coach-triggers.js";
 import { purgeExpiredSessions, createSession, sessionCookie } from "./auth/sessions.js";
 import { purgeExpiredStates } from "./auth/google.js";
 import { ensureFixtureUser, seedFixtures } from "./services/fixtures.js";
@@ -108,6 +109,9 @@ async function hourly(db: Db, env: Env): Promise<void> {
       const rec = await reconcileCompletionStates(db, userId, prefs);
       const garden = await advanceGarden(db, userId, prefs);
       await healLegacySyncState(db, userId);
+      // Coach trigger marks are cheap SQL — a fired row waits for the next
+      // wake; nothing here thinks (spec §1).
+      await evaluateTriggers(db, userId, prefs, todayInZone(prefs.timezone)).catch(() => []);
       await finishSyncRun(db, runId, "ok", { ...rec, ...garden });
     } catch {
       await finishSyncRun(db, runId, "error");
