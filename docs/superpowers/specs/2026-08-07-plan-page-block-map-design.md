@@ -2,7 +2,7 @@
 
 **Date:** 2026-08-07
 **Status:** Draft for review
-**Mockups:** `.superpowers/brainstorm/89243-1786086302/content/block-map-refined.html` (variant C of `layout-variants.html`)
+**Mockups:** `.superpowers/brainstorm/*/content/block-map-v2.html` (current: floating coach window + mobile); earlier iterations in `block-map-refined.html`, `layout-variants.html`
 
 ## Problem
 
@@ -32,29 +32,36 @@ User's stated reading pattern: *mostly this week; step back to the whole plan oc
 
 ## Layout
 
-Desktop ≥1024px:
+Desktop ≥1024px — the plan **always owns the full width**; the coach never takes layout space:
 
 ```
-┌────────┬──────────────────────────────────────────────┬──────────┐
-│ side   │ Plan          Fall Half · Manage plans ▾      │          │
-│ nav    │ [sync banner — only when unhealthy]           │  coach   │
-│        │ THIS WEEK · hero (7 cells, full detail)       │  rail    │
-│        │ week summary line                             │ (elastic)│
-│        │ THE BLOCK · one row per week (chips + total)  │          │
-│        │   … click a row → expands in place …          │          │
-│        │ [+ extend plan]   [legend]                    │          │
-│        │ Studio card (existing collapsible section)    │          │
-└────────┴──────────────────────────────────────────────┴──────────┘
+┌────────┬────────────────────────────────────────────────────────┐
+│ side   │ Plan                     Fall Half · Manage plans ▾     │
+│ nav    │ [sync banner — only when unhealthy]      ┌─────────────┤
+│        │ THIS WEEK · hero (7 cells, full detail)  │ Coach       │
+│        │ week summary line                        │ (floating   │
+│        │ THE BLOCK · one row per week             │  window,    │
+│        │   … click a row → expands in place …     │  overlays,  │
+│        │ [+ extend plan]   [legend]               │  full       │
+│        │ Studio card (existing section)           │  height)  — │
+│        │                                          └─────────────┤
+│        │                                    [Coach · 1] ← pill  │
+└────────┴────────────────────────────────────────────────────────┘
 ```
 
 - The `/plan` route escapes the 880px reading column the way `/garden` already does: `AppShell` gives it a `shell-main--wide` modifier — `max-width: 1440px`, same padding. (Garden's `--immersive` stays as-is; this is a second, milder modifier.)
-- Main column and rail: `grid-template-columns: minmax(0, 1fr) auto`. The rail is 340px expanded, 48px collapsed, `position: sticky; top: 0.8rem`.
+- The main column is a single `minmax(0, 1fr)` — no reserved rail. The coach floats above it (next section).
 - `.plan-split` and its 0.85fr/1.15fr split are deleted.
 - The header keeps the plan name and **Manage plans** (unchanged behavior). The **Today** scroll button is removed — the current week is always at the top.
 
-Below 1024px nothing about the shell changes (bottom nav, coach pill + sheet). Below 640px the hero renders as a vertical day list (the same stacking the current mobile week rows use); the map rows stay horizontal — label + 7 chips + total fit a 360px viewport.
+### Mobile (<1024px)
 
-**Mobile calendar note (the one deliberate mobile change):** the month-grid body is replaced by hero + map at every width — one calendar implementation, not two. Coach/studio/sync placement on mobile is untouched.
+Interaction patterns are untouched: bottom nav, floating coach pill + bottom-sheet coach, studio card, sync placement. The calendar body is the one deliberate change — hero + map replace the month grid at every width, so there is **one calendar implementation, not two**:
+
+- **Hero** (<640px): a vertical day list for the current week — one row per day: `dow/dom · category bar · full title · duration · status`. Rest days muted; coach proposals as dashed amber rows. (This is the day-list style the current mobile week rows already use, so per-workout readability is unchanged or better.)
+- **Map rows** keep the horizontal form — `W# label + 7 chips + total` fits a 360px viewport with 11px chips.
+- **Expanding a week** on mobile opens the same vertical day list the hero uses.
+- The desktop coach *window* never renders below 1024px; the pill + `Sheet` continue exactly as today. (The desktop minimized pill is styled as the same object as the mobile pill — one visual language.)
 
 ## This-week hero
 
@@ -88,23 +95,24 @@ One row per ISO week, spanning the same fetched window the calendar shows today 
 
 **Deep links:** opening `/plan?workout=id` where the workout lives outside the hero auto-expands its containing week (and un-collapses the past group if needed) before the sheet opens, so closing the sheet leaves you looking at the right week.
 
-**Empty state:** when the fetched window has no workouts, hero + map are replaced by the existing `EmptyState` ("No active COROS training plan…"); the coach rail and studio card still render.
+**Empty state:** when the fetched window has no workouts, hero + map are replaced by the existing `EmptyState` ("No active COROS training plan…"); the coach window/pill and studio card still render.
 
-## Coach rail (elastic)
+## Coach window (floating, minimizable)
 
-A new `coach-rail.tsx` wraps the existing `CoachPanel` (rendered verbatim — tray, thread, composer, Check in, "what I know →" all unchanged).
+The coach is **not part of the page layout**. A new `coach-window.tsx` renders the existing `CoachPanel` (tray, thread, composer, Check in, "what I know →" all unchanged) inside a floating window so it never squishes the plan.
 
 Two states:
 
-- **Expanded (340px):** whenever the coach *needs you or is talking*: `pendingProposals.length > 0`, an `openQuestion` exists, a wake/send is in flight, there are coach messages newer than the last-seen watermark, or the user pinned it open.
-- **Collapsed (48px strip):** otherwise. The strip shows the coach glyph and a count badge (proposals + open question). Clicking expands and pins.
+- **Open:** a window pinned to the right side of the plan content area — full height of the viewport (small top/bottom insets), **width `min(440px, 38vw)`** so the thread finally has room. Elevated (border + shadow), no scrim, non-modal: the plan behind it stays fully interactive and keeps its full width — nothing reflows. The window header adds a **minimize (—) control** next to "Check in". It sits above page content and below the modal sheets (workout detail etc.). On ultrawide screens it pins to the content area's right edge, not the raw viewport, so it stays adjacent to the plan.
+- **Minimized:** a floating **`Coach · n` pill** at the bottom-right (the desktop twin of the existing mobile pill), `n` = pending proposals + open question. Nothing else on screen.
 
-Rules:
+Open/minimize rules:
 
-- Pinned state and the last-seen coach message id persist in `localStorage` (`rg.coachRail.pinned`, `rg.coachRail.seen`). The watermark advances **only when the user collapses the rail** — collapsing clears the pin and marks everything seen, so an unread-triggered expansion stays open until the user dismisses it (never auto-collapses out from under them), and a later coach message re-expands it.
-- Tapping a calendar ghost (hero or map chip) expands the rail (without pinning) and flashes the proposal — the existing `focusProposal` scroll/flash.
-- The rail never unmounts on desktop, so `CoachPanel`'s queries and optimistic sends behave exactly as today.
-- <1024px: the rail doesn't render; the existing floating coach pill + `Sheet` continue unchanged.
+- The window opens on: pill click; a ghost tap (hero card or map chip — also fires the existing `focusProposal` flash); or **new coach activity** since the last-seen watermark (new proposal, open question, or coach message).
+- The watermark advances **only when the user minimizes** — minimizing marks everything seen, so an activity-triggered open stays open until dismissed (never auto-closes under you), and later coach activity re-opens it.
+- State persists in `localStorage` (`rg.coachWindow.open`, `rg.coachWindow.seen`). `Esc` minimizes when focus is inside the window and no inner sheet is open.
+- The window (and its `CoachPanel`) stays mounted while on the plan route regardless of state, so queries and optimistic sends behave exactly as today.
+- <1024px: the window doesn't render; the existing floating coach pill + `Sheet` continue unchanged.
 
 ## Studio and sync
 
@@ -125,18 +133,18 @@ Rules:
 | --- | --- |
 | `packages/ui/src/screens/plan.tsx` | Replace month-grid render with hero + map + relocated studio; drop Today button; keep queries, sheets, `WorkoutDetail`, `usePlanCoach` as-is |
 | `packages/ui/src/screens/plan-map.tsx` | **New**: `buildWeeks`, `WeekGrid` (shared hero/expanded), `BlockMap`, chip components |
-| `packages/ui/src/screens/coach-rail.tsx` | **New**: elastic rail wrapper + collapsed strip around `CoachPanel` |
+| `packages/ui/src/screens/coach-window.tsx` | **New**: floating window + minimized pill around `CoachPanel`; open/seen persistence |
 | `packages/ui/src/shell.tsx` | `/plan` gets `shell-main--wide` |
-| `packages/ui/src/styles.css` | New hero/map/rail styles; delete `.plan-split`; `shell-main--wide`; keep `.coach-pill` mobile rules |
+| `packages/ui/src/styles.css` | New hero/map/window/pill styles; delete `.plan-split`; `shell-main--wide`; extend `.coach-pill` to desktop-minimized use |
 | `packages/ui/src/screens/today.tsx` | `SyncPanel` `quietWhenHealthy` prop |
 | `packages/ui/src/screens/studio.tsx` | No changes (mount point moves in plan.tsx) |
 
 ## Testing
 
 - Unit: `buildWeeks` (grouping, totals, current/past flags, month boundaries, multi-workout days, empty window) in `packages/ui/test` (vitest, Node 21).
-- Component: map row states (done/missed/ghost/collapsed past), rail expand/collapse triggers, deep-link auto-expand, hero summary line with and without an active plan — static render tests in the existing style.
-- Visual: refresh `scripts/screenshots.mjs` set; check 1440/1280 desktop, 768 tablet, 390/360 phone, dark mode.
-- Manual: ghost tap → rail flash; workout sheet round-trip from an expanded far week; studio expand under the map; sync banner appearing on induced failure.
+- Component: map row states (done/missed/ghost/collapsed past), coach-window open/minimize/watermark triggers, deep-link auto-expand, hero summary line with and without an active plan, mobile hero day-list — static render tests in the existing style.
+- Visual: refresh `scripts/screenshots.mjs` set; check 1440/1280 desktop (window open and minimized), 768 tablet, 390/360 phone, dark mode.
+- Manual: ghost tap → window opens + proposal flash; workout sheet round-trip from an expanded far week; studio expand under the map; sync banner appearing on induced failure; Esc-minimize.
 
 ## Out of scope (explicitly)
 
