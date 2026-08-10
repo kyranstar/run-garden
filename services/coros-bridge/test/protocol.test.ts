@@ -189,6 +189,30 @@ describe("NDJSON protocol", () => {
     expect(snap.health.find((h) => h.date === "2026-01-01")?.recoveryScore).toBeUndefined();
   });
 
+  it("survives a getDashboard() that throws, still building the snapshot with recoveryScore undefined", async () => {
+    // Same fake-client shape as the happy-path test above, but getDashboard
+    // throws — recovery is best-effort and must never break a sync.
+    const client = {
+      async getRawSchedule() {
+        return {};
+      },
+      async getActivities() {
+        return [];
+      },
+      async getDailyMetrics() {
+        return [{ happenDay: 20260101 }, { happenDay: 20260102 }];
+      },
+      async getDashboard() {
+        throw new Error("coros 500");
+      },
+    } as unknown as CorosClient;
+
+    const snap = await buildSnapshot(client, "2026-01-01", "2026-01-02", undefined, {});
+    expect(snap.health.length).toBe(2);
+    expect(snap.health.find((h) => h.date === "2026-01-02")?.recoveryScore).toBeUndefined();
+    expect(snap.health.find((h) => h.date === "2026-01-01")?.recoveryScore).toBeUndefined();
+  });
+
   it("caches the locale bundle across snapshots", async () => {
     const { server, state } = makeState();
     await authenticate(state, server);
