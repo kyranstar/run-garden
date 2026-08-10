@@ -1,6 +1,7 @@
 import { and, asc, desc, eq, gte, isNull, lte } from "drizzle-orm";
 import {
   activities,
+  dailyHealth,
   gardenDayInputs,
   gardenEvents,
   gardenPlants,
@@ -16,6 +17,7 @@ import {
 import {
   addDays,
   eachDay,
+  isAdventureSport,
   isoWeekday,
   newId,
   nowInstant,
@@ -28,11 +30,14 @@ import {
   type WorkoutCategory,
 } from "@rg/domain";
 import {
+  adventureGraceDay,
   conditionWord,
   DEFAULT_GARDEN_CONFIG,
   disciplineBalance,
   initialSnapshot,
   nextUnlocks,
+  qualifiesAsAdventure,
+  recoveryScoreFrom,
   simulateDay,
   SIMULATION_VERSION,
   SPECIES_BY_ID,
@@ -216,6 +221,20 @@ export async function buildDayInput(
     });
   }
 
+  // Adventures: every non-discipline sport on this date. Raw load/duration —
+  // the engine applies the effort threshold so the stored inputs stay honest.
+  const adventures = dayActivities
+    .filter((a) => {
+      const d = (a.startTimeLocal ?? a.startTime).slice(0, 10);
+      return d === date && isAdventureSport(a.sport);
+    })
+    .sort((a, b) => a.id.localeCompare(b.id))
+    .map((a) => ({
+      sport: a.sport,
+      trainingLoad: a.trainingLoad ?? undefined,
+      durationMin: Math.round(a.durationSeconds / 60),
+    }));
+
   const missedRuns = dayWorkouts
     .filter(
       (w) =>
@@ -250,6 +269,15 @@ export async function buildDayInput(
     restModeActive,
     planGap,
   };
+
+  if (adventures.length > 0) input.adventures = adventures;
+  const healthRow = await db
+    .select()
+    .from(dailyHealth)
+    .where(and(eq(dailyHealth.userId, userId), eq(dailyHealth.date, date)))
+    .limit(1);
+  const recovery = recoveryScoreFrom(healthRow[0]?.recoveryScore, healthRow[0]?.fatigueScore);
+  if (recovery !== undefined) input.recoveryScore = recovery;
 
   // Week adherence on Mondays (for consistency unlocks).
   if (isoWeekday(date) === 1) {
@@ -497,6 +525,8 @@ export interface GardenView {
   }>;
   /** How balanced run/strength/yoga are right now, from the current snapshot state. */
   balance: DisciplineBalance;
+  /** Today's adventure shield: sheltered day + what to name in the caption. */
+  adventure: { frozenToday: boolean; graceDay: boolean; lastSport: string | null; lastDate: string | null };
 }
 
 /**
@@ -517,12 +547,13 @@ export async function buildGardenView(
   // for display (rain, growth, events) without persisting it. Only when the
   // durable sim is exactly caught up to yesterday — previewing across a gap
   // would skip days and misrepresent.
+  let todayInput: GardenDayInput | null = null;
   let previewEvents: GardenEvent[] = [];
   const today = todayInZone(prefs.timezone);
   if (addDays(snapshot.state.lastSimulatedDate, 1) === today) {
     try {
-      const todayInput = await buildDayInput(db, userId, today, prefs);
-      if (todayInput.completedRuns.length > 0) {
+      todayInput = await buildDayInput(db, userId, today, prefs);
+      if (todayInput.completedRuns.length > 0 || (todayInput.adventures?.length ?? 0) > 0) {
         const preview = simulateDay(snapshot, todayInput);
         snapshot = preview.snapshot;
         previewEvents = preview.events;
@@ -601,6 +632,34 @@ export async function buildGardenView(
   }
   const visitorByKind = new Map(visitorRows.map((r) => [r.kind, r]));
 
+  // Adventure shield for the caption: is today sheltered, and by what?
+  const st = snapshot.state;
+  const qualifyingToday = (todayInput?.adventures ?? []).filter(qualifiesAsAdventure);
+  const frozenToday = qualifyingToday.length > 0;
+  const graceDay =
+    !frozenToday &&
+    adventureGraceDay(
+      { lastAdventureDate: st.lastAdventureDate ?? null, adventureGraceDays: st.adventureGraceDays ?? 0 },
+      {
+        date: today,
+        hasSession: (todayInput?.completedRuns.length ?? 0) > 0,
+        adventureToday: false,
+        restMode: st.restMode,
+        planGap: todayInput?.planGap ?? false,
+        recoveryScore: todayInput?.recoveryScore,
+      },
+    );
+  let lastSport: string | null = qualifyingToday[0]?.sport ?? null;
+  if (!lastSport && graceDay && st.lastAdventureDate) {
+    const row = (await db
+      .select()
+      .from(activities)
+      .where(and(eq(activities.userId, userId), gte(activities.startTime, `${st.lastAdventureDate}T00:00:00`)))
+      .orderBy(desc(activities.startTime))
+      .limit(10)).find((a) => isAdventureSport(a.sport));
+    lastSport = row?.sport ?? null;
+  }
+
   return {
     snapshot,
     condition: conditionWord(snapshot.state, DEFAULT_GARDEN_CONFIG),
@@ -635,6 +694,12 @@ export async function buildGardenView(
       hint: VISITOR_HINTS[kind],
     })),
     balance: disciplineBalance(snapshot.state),
+    adventure: {
+      frozenToday,
+      graceDay,
+      lastSport,
+      lastDate: frozenToday ? today : (st.lastAdventureDate ?? null),
+    },
   };
 }
 
