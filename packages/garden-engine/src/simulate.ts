@@ -413,7 +413,7 @@ export function simulateDay(
   }
 
   state.lastSimulatedDate = input.date;
-  return { snapshot, events };
+  return { snapshot, events, shield: { adventureFrozen, graceDay } };
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

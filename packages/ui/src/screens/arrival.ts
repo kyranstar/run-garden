@@ -137,6 +137,14 @@ interface Watermark {
 const after = (e: ArrivalEvent, wm: Watermark): boolean =>
   e.date > wm.d || (e.date === wm.d && e.seq > wm.s);
 
+/** Strictly less than the watermark — excludes both "after" (fresh) and
+ * "exactly at" (the watermark's own recorded tip, already covered by
+ * construction). Used only to find rebuilt-history unlocks (C13): real
+ * candidates are never at the exact tip coordinates, since they didn't exist
+ * when that tip was last computed. */
+const strictlyBefore = (e: ArrivalEvent, wm: Watermark): boolean =>
+  e.date < wm.d || (e.date === wm.d && e.seq < wm.s);
+
 const RARITY_RANK = { rare: 0, uncommon: 1, common: 2 } as const;
 
 export function selectArrival(
@@ -172,9 +180,28 @@ export function selectArrival(
   const celebrated = new Set(seen?.celebratedSpeciesIds ?? []);
   const fresh = durable.filter((e) => after(e, wm));
 
+  // C13: resimulateFrom rewrites events onto their ORIGINAL past date when
+  // late history changes what happened there (a late-synced activity, a
+  // match edit) — so an unlock this watermark never covered can land
+  // strictly before it, permanently excluded from `fresh`'s append-only
+  // admission (a real regression the watermark can't recover from on its
+  // own). Unlock MOMENTS still deserve exactly one celebration no matter
+  // when the rewrite lands; everything else from a rebuilt day stays
+  // ordinary log history — `backfilled` only ever feeds ceremonies. Only
+  // considered when a real watermark exists: the migration-day default
+  // (missing seen row, above) deliberately starts at "yesterday" precisely
+  // so a never-before-seen garden doesn't replay its whole history as one
+  // block — that cliff must stay untouched, not get reopened by this.
+  const backfilled = seen ? durable.filter((e) => strictlyBefore(e, wm)) : [];
+  // `celebrated` is the permanent ledger for both: species ids as before,
+  // and ground kinds under a `ground:` prefix (a real species id is always a
+  // bare snake_case name, so the two id spaces never collide).
+  const groundId = (ground: string): string => `ground:${ground}`;
+
   const speciesSeen = new Set<string>();
   const speciesCeremonies = [
     ...fresh.filter((e) => e.kind === "species_unlocked" && e.speciesId),
+    ...backfilled.filter((e) => e.kind === "species_unlocked" && e.speciesId),
     ...preview.filter((e) => e.kind === "species_unlocked" && e.speciesId),
   ]
     .filter((e) => !celebrated.has(e.speciesId!))
@@ -185,8 +212,14 @@ export function selectArrival(
         RARITY_RANK[SPECIES_BY_ID.get(a.speciesId)?.rarity ?? "common"] -
         RARITY_RANK[SPECIES_BY_ID.get(b.speciesId)?.rarity ?? "common"],
     );
-  const groundCeremonies = fresh
+  const groundSeen = new Set<string>();
+  const groundCeremonies = [...fresh, ...backfilled]
     .filter((e) => e.kind === "region_unlocked")
+    .filter((e) => !celebrated.has(groundId(e.detail ?? "meadow")))
+    .filter((e) => {
+      const g = e.detail ?? "meadow";
+      return !groundSeen.has(g) && groundSeen.add(g);
+    })
     .map((e) => ({ kind: "ground" as const, ground: e.detail ?? "meadow", fromPreview: false }));
   const ceremonies: ArrivalCeremony[] = [...groundCeremonies, ...speciesCeremonies];
 
@@ -214,12 +247,32 @@ export function selectArrival(
   const previewCelebrated = speciesCeremonies
     .filter((c) => c.fromPreview)
     .map((c) => c.speciesId);
-  // Prior celebrated ids stay only while their durable unlock row hasn't yet
-  // landed inside the watermark — once it has, the watermark covers them.
+  // Backfilled admissions must be remembered forever: their event's
+  // (date, seq) sits at-or-before the watermark by definition, so it can
+  // never re-enter `fresh` on a later visit to earn the ordinary
+  // prune-once-covered treatment below — nothing else would ever stop them
+  // from replaying as "new" again.
+  const backfilledIds = [
+    ...speciesCeremonies
+      .filter((c) => !c.fromPreview && backfilled.some((e) => e.kind === "species_unlocked" && e.speciesId === c.speciesId))
+      .map((c) => c.speciesId),
+    ...groundCeremonies
+      .filter((c) => backfilled.some((e) => e.kind === "region_unlocked" && (e.detail ?? "meadow") === c.ground))
+      .map((c) => groundId(c.ground)),
+  ];
+  // Prior celebrated ids stay only while a FRESH durable row hasn't put them
+  // back in front of the user this visit (even just to be silently deduped
+  // here) — once one has, every future watermark covers its position for
+  // good. Ids admitted via `backfilled` are deliberately NOT matched by this
+  // rule (their row is never fresh), which is what keeps them celebrated
+  // exactly once via `backfilledIds` above instead of being pruned right
+  // back out.
   const retained = [...celebrated].filter(
     (id) =>
-      !durable.some(
-        (e) => e.kind === "species_unlocked" && e.speciesId === id && !after(e, tip),
+      !fresh.some(
+        (e) =>
+          (e.kind === "species_unlocked" && e.speciesId === id) ||
+          (e.kind === "region_unlocked" && groundId(e.detail ?? "meadow") === id),
       ),
   );
 
@@ -249,7 +302,7 @@ export function selectArrival(
     nextSeen: {
       lastSeenDate: tip.d,
       lastSeenSeq: tip.s,
-      celebratedSpeciesIds: [...new Set([...previewCelebrated, ...retained])],
+      celebratedSpeciesIds: [...new Set([...previewCelebrated, ...retained, ...backfilledIds])],
     },
   };
 }

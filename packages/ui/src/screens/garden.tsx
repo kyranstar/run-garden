@@ -214,9 +214,10 @@ function weakestDiscipline(balance: DisciplineBalance): DisciplineKey {
  * panel (countdowns + what that discipline feeds). `variant="hud"` renders
  * the on-scene treatment for the desktop stage.
  */
-function BalanceStrip({
+export function BalanceStrip({
   balance,
   runPaused,
+  runSheltered,
   quiet,
   variant,
   activeKey,
@@ -225,6 +226,11 @@ function BalanceStrip({
   balance: DisciplineBalance;
   /** No active plan — the run clock is paused, say so instead of a count. */
   runPaused?: boolean;
+  /** The run clock is frozen by the adventure shield (today's adventure or
+   * its grace window) or by rest mode — its "N d ago" count is not the real
+   * recency of the last run, so the caption must say so rather than present
+   * a stale, decay-paused count as fresh fact (C2). */
+  runSheltered?: boolean;
   /** A forecast line is already speaking for the garden — stay visual only. */
   quiet?: boolean;
   variant?: "hud";
@@ -238,7 +244,12 @@ function BalanceStrip({
           const { days, health } = balance[key];
           const notch = DAMAGE_NOTCH[key];
           const low = days !== null && health < notch;
-          const caption = key === "run" && runPaused ? "plan paused" : daysCaption(days);
+          const caption =
+            key === "run" && runPaused
+              ? "plan paused"
+              : key === "run" && runSheltered
+                ? "sheltered"
+                : daysCaption(days);
           return (
             <button
               type="button"
@@ -246,7 +257,7 @@ function BalanceStrip({
               className={`balance-bar${activeKey === key ? " balance-bar-active" : ""}`}
               aria-expanded={activeKey === key}
               onClick={() => onToggle?.(key)}
-              aria-label={`${label}: ${healthDescriptor(health)}${low ? ", the garden is paying for it" : ""}, ${days === null ? `no ${label.toLowerCase()} yet` : `last ${label.toLowerCase()} ${daysCaption(days)}`}. Details`}
+              aria-label={`${label}: ${healthDescriptor(health)}${low ? ", the garden is paying for it" : ""}, ${days === null ? `no ${label.toLowerCase()} yet` : `last ${label.toLowerCase()} ${caption}`}. Details`}
             >
               <div className="balance-bar-label" aria-hidden="true">
                 {label}
@@ -642,6 +653,23 @@ function conditionStory(
   return `${base[condition] ?? ""} ${counts}`;
 }
 
+// Mirrors .dock-panel's cap in styles.css (`max-height: min(32rem, calc(100dvh
+// - 12rem))`) at a 16px root, so the two never drift apart silently.
+const DOCK_PANEL_MAX_PX = 512; // 32rem
+const DOCK_PANEL_RESERVE_PX = 192; // 12rem
+
+/**
+ * Would the expanded dock panel cover more than ~55% of a stage this tall?
+ * (C1/C23.) The panel is bottom-anchored and absolutely positioned over the
+ * same scene the condition word/forecast/beat lines read from — on a short
+ * laptop window it can eat the whole top-left HUD. Exported for a focused
+ * unit test; pure arithmetic, no DOM.
+ */
+export function dockCoversStage(stageHeightPx: number): boolean {
+  const panelHeight = Math.min(DOCK_PANEL_MAX_PX, stageHeightPx - DOCK_PANEL_RESERVE_PX);
+  return panelHeight > 0.55 * stageHeightPx;
+}
+
 export function GardenScreen() {
   const garden = useQuery({ queryKey: ["garden"], queryFn: api.garden });
   const today = useQuery({ queryKey: ["today"], queryFn: api.today });
@@ -652,9 +680,14 @@ export function GardenScreen() {
   const [dayIndexOverride, setDayIndexOverride] = useState<number | null>(null);
   const [openDrawer, setOpenDrawer] = useState<"collection" | "log" | null>(null);
   const [openBalanceKey, setOpenBalanceKey] = useState<DisciplineKey | null>(null);
-  const [dockOpen, setDockOpenState] = useState(
-    () => typeof window === "undefined" || window.localStorage.getItem("rg-dock") !== "collapsed",
-  );
+  const [dockOpen, setDockOpenState] = useState(() => {
+    if (typeof window === "undefined") return true;
+    const stored = window.localStorage.getItem("rg-dock");
+    if (stored === "open" || stored === "collapsed") return stored === "open";
+    // No saved preference yet: on a short stage the panel would cover most
+    // of the HUD above it (C1/C23) — default to the pill there instead.
+    return !dockCoversStage(window.innerHeight);
+  });
   // The arrival block: which ceremony is showing, and whether the text
   // lines were dismissed this mount. What counts as "new" comes from the
   // server-side watermark (selectArrival) — localStorage plays no part.
@@ -943,6 +976,17 @@ export function GardenScreen() {
     setDayIndexOverride(null);
   }
 
+  // C26: the timeline and the expanded dock panel both float over the same
+  // stage real estate and can overlap at common laptop widths — minimize the
+  // dock the moment the timeline opens so they never fight for the same
+  // pixels. Transient only (setDockOpenState, not setDockOpen): it doesn't
+  // touch the persisted `rg-dock` preference, and restoring on close isn't
+  // required.
+  function openTimeline() {
+    setDockOpenState(false);
+    setTimelineOpen(true);
+  }
+
   // What's actually drawn: the live garden, or the scrubbed day. Disabling
   // the canvas atmosphere layer while the scrubber is open keeps dragging
   // instant — its particle systems re-key on every weather/light change
@@ -982,6 +1026,15 @@ export function GardenScreen() {
     dismissCeremony();
     setSelectedPlantId(plantId);
   };
+  // C12: the X on the beat block dismisses the WHOLE arrival presentation,
+  // ceremonies included — it must not just hide the card, or a queued
+  // ceremony strands (never dismissable again) and the mark-seen effect's
+  // `ceremonyIndex < plan.ceremonies.length` guard blocks the watermark post
+  // forever, replaying every already-dismissed beat line on the next visit.
+  const dismissBlock = () => {
+    setBlockDismissed(true);
+    setCeremonyIndex(arrival.ceremonies.length);
+  };
   const beatLines = blockDismissed ? [] : arrival.beatLines;
   const todayLines = blockDismissed || !viewingLive ? [] : arrival.todayLines;
 
@@ -1018,6 +1071,10 @@ export function GardenScreen() {
   // loss — a sheltered day must never voice a loss line either.
   const fc = gardenForecast(snapshot, daysSinceSimulated);
   const sheltered = !!(adventure?.frozenToday || adventure?.graceDay);
+  // C2: the run bar's decay clock (daysSinceCompletedRun) freezes under the
+  // same two conditions — it must stop claiming "N d ago" recency while
+  // frozen, or the HUD contradicts the very log/cards it sits above.
+  const runClockSheltered = sheltered || restMode.active;
   const lossVoiced =
     viewingLive &&
     !restMode.active &&
@@ -1293,7 +1350,7 @@ export function GardenScreen() {
                 <button
                   type="button"
                   className="hud-beat-dismiss"
-                  onClick={() => setBlockDismissed(true)}
+                  onClick={dismissBlock}
                   aria-label="Dismiss"
                 >
                   <IconClose size={12} />
@@ -1338,6 +1395,7 @@ export function GardenScreen() {
               <BalanceStrip
                 balance={liveBalance}
                 runPaused={!planActive}
+                runSheltered={runClockSheltered}
                 quiet
                 variant="hud"
                 activeKey={openBalanceKey}
@@ -1427,7 +1485,7 @@ export function GardenScreen() {
               </button>
               <button
                 type="button"
-                onClick={() => (timelineOpen ? closeTimeline() : setTimelineOpen(true))}
+                onClick={() => (timelineOpen ? closeTimeline() : openTimeline())}
               >
                 Timeline
               </button>
@@ -1514,6 +1572,7 @@ export function GardenScreen() {
           <BalanceStrip
             balance={liveBalance}
             runPaused={!planActive}
+            runSheltered={runClockSheltered}
             quiet={lossVoiced || sheltered}
             activeKey={openBalanceKey}
             onToggle={toggleBalanceKey}

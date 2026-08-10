@@ -199,4 +199,16 @@ export interface GardenDayInput {
 export interface DayResult {
   snapshot: GardenSnapshot;
   events: GardenEvent[];
+  /**
+   * This day's adventure shield, as the engine itself computed it — undefined
+   * only on the idempotent no-op paths (date already simulated, or before
+   * genesis) where no day was actually processed. Lets a caller folding
+   * several days forward (e.g. the worker's same-day preview) read the
+   * shield of the exact day it rendered, instead of re-deriving it from
+   * state captured before the fold ran (C11: that re-derivation can
+   * disagree with what a multi-day fold actually did — a banked grace day
+   * the fold consumed on an intermediate day, or an adventure the fold
+   * logged that the pre-fold state didn't know about yet).
+   */
+  shield?: { adventureFrozen: boolean; graceDay: boolean };
 }

@@ -1080,6 +1080,50 @@ describe("adventures", () => {
     const run = () => days.reduce((s, d) => simulateDay(s, d).snapshot, initialSnapshot(START));
     expect(run()).toEqual(run());
   });
+
+  /* C11: DayResult.shield lets a caller folding several days forward (the
+   * worker's same-day preview) read the exact shield of the day it just
+   * rendered, instead of re-deriving it from state captured before the fold
+   * — which can disagree once the fold spans more than one day. */
+  describe("DayResult.shield", () => {
+    it("is unfrozen and grace-free on an ordinary day", () => {
+      const { shield } = simulateDay(initialSnapshot(START), emptyDay(addDays(START, 1)));
+      expect(shield).toEqual({ adventureFrozen: false, graceDay: false });
+    });
+
+    it("reports adventureFrozen (not graceDay) on the adventure's own day", () => {
+      const { shield } = simulateDay(initialSnapshot(START), adventureDay(addDays(START, 1)));
+      expect(shield).toEqual({ adventureFrozen: true, graceDay: false });
+    });
+
+    it("reports both adventureFrozen and graceDay on a shielded day after a big trip", () => {
+      let snap = initialSnapshot(START);
+      snap = simulateDay(snap, adventureDay(addDays(START, 1))).snapshot; // big → banks 1
+      const { shield } = simulateDay(snap, emptyDay(addDays(START, 2))); // spends it
+      expect(shield).toEqual({ adventureFrozen: true, graceDay: true });
+    });
+
+    it("is undefined on the idempotent no-op path (date already simulated)", () => {
+      const snap = initialSnapshot(START);
+      const result = simulateDay(snap, emptyDay(snap.state.lastSimulatedDate));
+      expect(result.shield).toBeUndefined();
+    });
+
+    it("reflects the FOLD's own evolving bank, not a snapshot from before the fold started", () => {
+      // Mirrors C11 direction (a): a big adventure banks one grace day: the
+      // very next day spends it (graceDay: true), so a THIRD day folded
+      // forward from that point finds the bank already empty — even though
+      // a caller who captured "lastAdventureDate + bank=1" before either of
+      // these two steps ran would (wrongly) still expect it shielded.
+      let snap = initialSnapshot(START);
+      snap = simulateDay(snap, adventureDay(addDays(START, 1))).snapshot; // banks 1
+      const preFoldGraceDays = snap.state.adventureGraceDays;
+      expect(preFoldGraceDays).toBe(1);
+      snap = simulateDay(snap, emptyDay(addDays(START, 2))).snapshot; // fold day 1: spends it
+      const { shield } = simulateDay(snap, emptyDay(addDays(START, 3))); // fold day 2 ("today")
+      expect(shield).toEqual({ adventureFrozen: false, graceDay: false });
+    });
+  });
 });
 
 /* ── Bundle 3: life in the water (2026-08-05 spec) ─────────────────────── */

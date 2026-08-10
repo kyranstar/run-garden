@@ -119,6 +119,68 @@ describe("same-day preview fold-forward", () => {
   });
 });
 
+describe("adventure shield across a multi-day preview fold (C11)", () => {
+  it("the caption uses the preview fold's own shield, not stale pre-fold bank state", async () => {
+    const db = makeTestDb();
+    const { userId, prefs } = await makeTestUser(db);
+    const today = todayInZone(prefs.timezone);
+    const hikeDate = addDays(today, -2);
+    const unresolvedDate = addDays(today, -1);
+
+    await ensureGarden(db, userId, prefs, addDays(today, -10));
+    // An open-ended active plan so `today` (with no workout of its own in
+    // this fixture) isn't treated as a plan gap — a gap short-circuits the
+    // grace-day check before the bank is ever consulted, which would mask
+    // exactly the bug this test is pinning.
+    await db.insert(schema.trainingPlans).values({
+      id: newId(),
+      userId,
+      provider: "coros",
+      sourcePlanId: "test-plan",
+      name: "Test Plan",
+      status: "active",
+      createdAt: nowInstant(),
+      updatedAt: nowInstant(),
+    });
+
+    // A big hike two days ago: durationMin (200) clears bigDurationMin (150),
+    // so the durable sim banks one grace day when it commits this day.
+    await db.insert(schema.activities).values({
+      id: newId(),
+      userId,
+      startTime: `${hikeDate}T14:00:00Z`,
+      startTimeLocal: `${hikeDate}T09:00:00`,
+      sport: "hike",
+      durationSeconds: 200 * 60,
+      trainingLoad: 90,
+      sourceMergeConfidence: 1,
+      createdAt: nowInstant(),
+      updatedAt: nowInstant(),
+    });
+    // Yesterday's planned workout is still unresolved (ordinary COROS sync
+    // lag) — advanceGarden's grace rule holds the durable sim back at the
+    // hike day, so `lastAdventureDate`/`adventureGraceDays` land in
+    // gardenState with the bank still full.
+    await insertWorkout(db, userId, unresolvedDate, "scheduled");
+
+    const view = await buildGardenView(db, userId, prefs);
+    const snapshot = view.snapshot as unknown as GardenSnapshot;
+
+    // The durable row really did stop at the hike day, bank intact there.
+    const [row] = await db.select().from(gardenState).where(eq(gardenState.userId, userId));
+    expect(row!.lastSimulatedDate).toBe(hikeDate);
+
+    // But previewToday folds yesterday (unresolved → neutral input) THEN
+    // today read-only: yesterday spends the banked grace day, so today's
+    // OWN fold step finds the bank empty and decays for real.
+    expect(snapshot.state.daysSinceCompletedRun).toBeGreaterThan(0);
+    // The caption must agree with what actually rendered — no false "still
+    // sheltered" claim sourced from the pre-fold bank of 1.
+    expect(view.adventure.graceDay).toBe(false);
+    expect(view.adventure.frozenToday).toBe(false);
+  });
+});
+
 describe("garden anniversary (Bundle 3 §6)", () => {
   it("appears exactly on the yearly anniversary of genesis", async () => {
     const db = makeTestDb();

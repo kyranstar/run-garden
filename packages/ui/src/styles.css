@@ -1162,9 +1162,17 @@ button {
   }
   .dock-panel {
     width: min(26rem, 38vw);
+    /* Capped and internally scrollable so a short laptop viewport can never
+       let the panel grow tall enough to bury the top-left HUD behind it
+       (C1/C23) — 12rem reserves room above for the condition word/forecast
+       and below for the stage edge. More translucent + more blurred than a
+       typical raised surface so the garden's plants still read through
+       (text legibility comes from the extra blur, not extra opacity). */
+    max-height: min(32rem, calc(100dvh - 12rem));
+    overflow-y: auto;
     border-radius: 14px;
-    background: color-mix(in srgb, var(--bg-raised) 90%, transparent);
-    backdrop-filter: blur(16px) saturate(1.05);
+    background: color-mix(in srgb, var(--bg-raised) 72%, transparent);
+    backdrop-filter: blur(24px) saturate(1.05);
     border: 1px solid var(--border);
     box-shadow: 0 18px 44px rgba(9, 14, 10, 0.28);
     padding: 0.4rem;

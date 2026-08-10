@@ -640,13 +640,23 @@ export async function previewToday(
   snapshot: GardenSnapshot,
   today: LocalDate,
   prefs: UserPreferences,
-): Promise<{ snapshot: GardenSnapshot; events: GardenEvent[]; todayInput: GardenDayInput | null }> {
+): Promise<{
+  snapshot: GardenSnapshot;
+  events: GardenEvent[];
+  todayInput: GardenDayInput | null;
+  /** Today's own adventure shield, as the fold that rendered `snapshot`
+   * actually computed it (C11) — undefined only when the fold didn't run
+   * (see the gapDays guard below), in which case a caller should fall back
+   * to deriving the shield from durable state directly. */
+  todayShield?: { adventureFrozen: boolean; graceDay: boolean };
+}> {
   const gapDays = daysBetween(snapshot.state.lastSimulatedDate, today);
   if (gapDays < 1 || gapDays > 14) return { snapshot, events: [], todayInput: null };
   try {
     let cursor = snapshot;
     let events: GardenEvent[] = [];
     let todayInput: GardenDayInput | null = null;
+    let todayShield: { adventureFrozen: boolean; graceDay: boolean } | undefined;
     for (
       let date = addDays(snapshot.state.lastSimulatedDate, 1);
       date <= today;
@@ -670,9 +680,10 @@ export async function previewToday(
       if (date === today) {
         events = step.events;
         todayInput = input;
+        todayShield = step.shield;
       }
     }
-    return { snapshot: cursor, events, todayInput };
+    return { snapshot: cursor, events, todayInput, todayShield };
   } catch {
     // Preview is cosmetic — never let it break the garden read.
     return { snapshot, events: [], todayInput: null };
@@ -687,11 +698,13 @@ export async function buildGardenView(
   await advanceGarden(db, userId, prefs).catch(() => undefined);
   let snapshot = await ensureGarden(db, userId, prefs);
 
-  // Adventure shield reads pre-preview state: the same-day preview below can
-  // mutate snapshot.state (e.g. decrementing a banked grace day when today
-  // doesn't itself qualify), so the shield must be computed from state as it
-  // stood before that mutation — otherwise a grace day the preview correctly
-  // rendered shielded could read back as unshielded.
+  // Fallback-only shield state, read pre-preview: used below solely when the
+  // preview didn't run (see todayShield). When it DOES run, C11's fix is to
+  // prefer its own per-day shield instead of re-deriving from this — a fold
+  // spanning more than just today (an unresolved yesterday held the durable
+  // sim back) can consume a banked grace day or log an adventure the durable
+  // sim hasn't committed yet, and a re-derivation from this pre-fold
+  // snapshot would then disagree with what was actually rendered.
   const shieldState = {
     lastAdventureDate: snapshot.state.lastAdventureDate ?? null,
     adventureGraceDays: snapshot.state.adventureGraceDays ?? 0,
@@ -702,12 +715,13 @@ export async function buildGardenView(
   // day through today — resolved days as recorded, unresolved days neutral —
   // so a lagging durable sim can never silence today's run (spec §2 of the
   // 2026-08-05 reward-loop design). Nothing here is persisted. The fold also
-  // hands back today's input so the adventure shield below can read it.
+  // hands back today's input and its own shield for the adventure shield below.
   const today = todayInZone(prefs.timezone);
   const preview = await previewToday(db, userId, snapshot, today, prefs);
   snapshot = preview.snapshot;
   const previewEvents = preview.events;
   const todayInput = preview.todayInput;
+  const todayShield = preview.todayShield;
   let unlocks = await db
     .select()
     .from(gardenUnlocks)
@@ -778,27 +792,42 @@ export async function buildGardenView(
   }
   const visitorByKind = new Map(visitorRows.map((r) => [r.kind, r]));
 
-  // Adventure shield for the caption: is today sheltered, and by what? Reads
-  // shieldState (captured above, pre-preview) rather than snapshot.state —
-  // see the comment there.
+  // Adventure shield for the caption: is today sheltered, and by what?
   const qualifyingToday = (todayInput?.adventures ?? []).filter(qualifiesAsAdventure);
-  const frozenToday = qualifyingToday.length > 0;
-  const graceDay =
-    !frozenToday &&
-    adventureGraceDay(
-      {
-        lastAdventureDate: shieldState.lastAdventureDate,
-        adventureGraceDays: shieldState.adventureGraceDays,
-      },
-      {
-        date: today,
-        hasSession: (todayInput?.completedRuns.length ?? 0) > 0,
-        adventureToday: false,
-        restMode: shieldState.restMode,
-        planGap: todayInput?.planGap ?? false,
-        recoveryScore: todayInput?.recoveryScore,
-      },
-    );
+  let frozenToday: boolean;
+  let graceDay: boolean;
+  if (todayShield) {
+    // C11: the preview fold ran — trust ITS shield for the day it actually
+    // rendered rather than re-deriving from shieldState (captured before the
+    // fold, and stale whenever the fold spans more than just today). The
+    // engine's `graceDay` and "adventure happened today" are mutually
+    // exclusive by construction (adventureGraceDay never returns true when
+    // adventureToday is true — see adventure.ts), so this reconstruction of
+    // frozenToday from the combined `adventureFrozen` flag is lossless.
+    graceDay = todayShield.graceDay;
+    frozenToday = todayShield.adventureFrozen && !todayShield.graceDay;
+  } else {
+    // The preview didn't run (durable sim is already caught up through
+    // today), so `snapshot.state` — and therefore shieldState above — IS
+    // today's real, committed state: the original derivation is accurate.
+    frozenToday = qualifyingToday.length > 0;
+    graceDay =
+      !frozenToday &&
+      adventureGraceDay(
+        {
+          lastAdventureDate: shieldState.lastAdventureDate,
+          adventureGraceDays: shieldState.adventureGraceDays,
+        },
+        {
+          date: today,
+          hasSession: (todayInput?.completedRuns.length ?? 0) > 0,
+          adventureToday: false,
+          restMode: shieldState.restMode,
+          planGap: todayInput?.planGap ?? false,
+          recoveryScore: todayInput?.recoveryScore,
+        },
+      );
+  }
   let lastSport: string | null = qualifyingToday[0]?.sport ?? null;
   if (!lastSport && graceDay && shieldState.lastAdventureDate) {
     // Find the sport of an adventure activity that actually falls on

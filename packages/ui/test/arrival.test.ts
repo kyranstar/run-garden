@@ -214,6 +214,86 @@ describe("selectArrival", () => {
     expect(out.ceremonies).toEqual([]);
     expect(out.nextSeen.celebratedSpeciesIds).toEqual([]);
   });
+
+  describe("rebuilt-history admission (C13)", () => {
+    // resimulateFrom rewrites events onto their ORIGINAL past date, which can
+    // land strictly before a real watermark (late-synced activity, a match
+    // edit) — the append-only `after(e, wm)` test alone would exclude these
+    // forever. species_unlocked/region_unlocked still deserve exactly one
+    // celebration whenever that happens.
+
+    it("admits a species_unlocked event rewritten strictly before a real watermark", () => {
+      const seen = { lastSeenDate: TODAY, lastSeenSeq: 5, celebratedSpeciesIds: [] };
+      const out = selectArrival(
+        [ev("species_unlocked", OLDER, { seq: 0, speciesId: "dahlia" })],
+        seen,
+        TODAY,
+      );
+      expect(out.ceremonies).toEqual([{ kind: "species", speciesId: "dahlia", fromPreview: false }]);
+      // The watermark itself doesn't need to move — the event was already
+      // behind it; only the celebration ledger needs to remember it.
+      expect(out.nextSeen.lastSeenDate).toBe(TODAY);
+      expect(out.nextSeen.lastSeenSeq).toBe(5);
+      expect(out.nextSeen.celebratedSpeciesIds).toEqual(["dahlia"]);
+    });
+
+    it("never replays a backfilled species ceremony once celebrated, and keeps it celebrated forever", () => {
+      const seen = { lastSeenDate: TODAY, lastSeenSeq: 5, celebratedSpeciesIds: ["dahlia"] };
+      const events = [ev("species_unlocked", OLDER, { seq: 0, speciesId: "dahlia" })];
+      const out = selectArrival(events, seen, TODAY);
+      expect(out.ceremonies).toEqual([]);
+      // Unlike a normal preview-transitional id, this one is never "fresh" —
+      // its event stays permanently behind the watermark — so it must be
+      // retained, not pruned, or it would silently become eligible for
+      // backfill-admission again on the very next visit.
+      expect(out.nextSeen.celebratedSpeciesIds).toEqual(["dahlia"]);
+    });
+
+    it("admits a region_unlocked event rewritten strictly before a real watermark, once", () => {
+      const seen = { lastSeenDate: TODAY, lastSeenSeq: 5, celebratedSpeciesIds: [] };
+      const first = selectArrival(
+        [ev("region_unlocked", OLDER, { seq: 0, detail: "terrace" })],
+        seen,
+        TODAY,
+      );
+      expect(first.ceremonies).toEqual([{ kind: "ground", ground: "terrace", fromPreview: false }]);
+      expect(first.nextSeen.celebratedSpeciesIds).toEqual(["ground:terrace"]);
+
+      // Same event, now-updated seen state: never replays.
+      const second = selectArrival(
+        [ev("region_unlocked", OLDER, { seq: 0, detail: "terrace" })],
+        { ...seen, celebratedSpeciesIds: first.nextSeen.celebratedSpeciesIds },
+        TODAY,
+      );
+      expect(second.ceremonies).toEqual([]);
+      expect(second.nextSeen.celebratedSpeciesIds).toEqual(["ground:terrace"]);
+    });
+
+    it("does not backfill when there is no real watermark (missing seen row stays exactly as before)", () => {
+      // Confirms the migration-day cliff (deliberately no replay of history
+      // predating the default "start of yesterday" watermark) is untouched:
+      // a never-before-celebrated species from well before that default
+      // still does not ceremony when `seen` itself is null.
+      const out = selectArrival(
+        [ev("species_unlocked", OLDER, { seq: 0, speciesId: "dahlia" })],
+        null,
+        TODAY,
+      );
+      expect(out.ceremonies).toEqual([]);
+      expect(out.nextSeen.celebratedSpeciesIds).toEqual([]);
+    });
+
+    it("an event exactly AT the watermark's own tip is already covered, not a backfill candidate", () => {
+      const seen = { lastSeenDate: YESTERDAY, lastSeenSeq: 2, celebratedSpeciesIds: [] };
+      const out = selectArrival(
+        [ev("species_unlocked", YESTERDAY, { seq: 2, speciesId: "poppy" })],
+        seen,
+        TODAY,
+      );
+      expect(out.ceremonies).toEqual([]);
+      expect(out.nextSeen.celebratedSpeciesIds).toEqual([]);
+    });
+  });
 });
 
 describe("eventSentence rarity", () => {
