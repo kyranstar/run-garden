@@ -27,7 +27,7 @@ import { postSyncNote } from "./sync-notes.js";
  * official cloud provider), and always verified by a read after the write.
  */
 
-const CLAIM_TIMEOUT_MS = 10 * 60_000;
+export const CLAIM_TIMEOUT_MS = 10 * 60_000;
 
 export interface MoveRequest {
   userId: string;
@@ -377,16 +377,34 @@ export async function applyJobResult(
     // "Reading your COROS history…" indefinitely. The commonest cause by far is
     // a desktop app older than the backfill job kind: it claims the job, does
     // not recognise it, and reports `unsupported`.
+    //
+    // Guard: if ANOTHER backfill job is already queued, the chunk actually
+    // landed before this result failed (e.g. the result POST timed out after
+    // recordChunk + advanceBackfill ran) — the walk is alive; erroring it
+    // would flash "your desktop app is too old" over a working backfill.
     if (!ok) {
-      await db
-        .update(backfillState)
-        .set({
-          status: "error",
-          lastErrorCategory: "bridge_cannot_run_backfill",
-          finishedAt: now,
-          updatedAt: now,
-        })
-        .where(eq(backfillState.userId, userId));
+      const successor = await db
+        .select({ id: corosWriteJobs.id })
+        .from(corosWriteJobs)
+        .where(
+          and(
+            eq(corosWriteJobs.userId, userId),
+            eq(corosWriteJobs.kind, "backfill"),
+            eq(corosWriteJobs.status, "queued"),
+          ),
+        )
+        .limit(1);
+      if (successor.length === 0) {
+        await db
+          .update(backfillState)
+          .set({
+            status: "error",
+            lastErrorCategory: "bridge_cannot_run_backfill",
+            finishedAt: now,
+            updatedAt: now,
+          })
+          .where(eq(backfillState.userId, userId));
+      }
     }
     return { jobStatus: ok ? "verified" : "failed", corosSyncState: "unchanged" };
   }

@@ -40,8 +40,6 @@ const DEFAULT_SNAPSHOT_MS = 30 * 60_000;
  * the device looking online — observed live for four days straight.
  */
 const REQUEST_TIMEOUT_MS = 30_000;
-/** Watchdog: if no poll has COMPLETED in this long, force a re-arm. */
-const POLL_WATCHDOG_STALE_MS = 5 * 60_000;
 const POLL_WATCHDOG_CHECK_MS = 60_000;
 const SNAPSHOT_PAST_DAYS = 14;
 const SNAPSHOT_FUTURE_DAYS = 8 * 7;
@@ -50,6 +48,16 @@ const SNAPSHOT_FUTURE_DAYS = 8 * 7;
 // much further back than the 14-day activity/plan window — so wellness gets
 // its own, deeper backfill on every snapshot push.
 const HEALTH_PAST_DAYS = 60;
+
+/**
+ * When may the watchdog re-arm the poll loop? Only when the loop is truly
+ * dead: no timer pending and no poll waiting on the chain. Re-arming while a
+ * poll is queued behind a busy chain multiplies load without recovering
+ * anything — the request timeout, not the watchdog, is what unwedges chains.
+ */
+export function shouldWatchdogRearm(s: { pollTimerArmed: boolean; pollEnqueued: boolean }): boolean {
+  return !s.pollTimerArmed && !s.pollEnqueued;
+}
 
 /** ASN.1 PKCS#8 wrapper for a raw Ed25519 32-byte seed. */
 const PKCS8_ED25519_PREFIX = Buffer.from("302e020100300506032b657004220420", "hex");
@@ -137,7 +145,10 @@ export class CloudSync {
   private pollTimer: ReturnType<typeof setTimeout> | null = null;
   private snapshotTimer: ReturnType<typeof setInterval> | null = null;
   private pollWatchdogTimer: ReturnType<typeof setInterval> | null = null;
-  /** When a poll last finished (ok or not) — the watchdog's staleness clock. */
+  /** True from the moment a poll is enqueued until it settles — the watchdog
+   * must never re-arm on top of a poll that is merely waiting on the chain. */
+  private pollEnqueued = false;
+  /** When a poll last settled (ok or not) — for the watchdog's log line only. */
   private lastPollSettledAt = Date.now();
   private stopped = true;
   /** Queued jobs remaining per the most recent claim response — drives adaptive polling. */
@@ -337,12 +348,18 @@ export class CloudSync {
    */
   private schedulePoll(): void {
     if (this.stopped) return;
+    // Idempotent: exactly one pending timer, ever. A watchdog re-arm racing a
+    // healthy loop must replace the pending timer, never duplicate it.
+    if (this.pollTimer) clearTimeout(this.pollTimer);
     const delay = this.pendingCount > 0 ? FAST_POLL_MS : this.pollMs;
     this.pollTimer = setTimeout(() => {
+      this.pollTimer = null;
+      this.pollEnqueued = true;
       this.enqueue("pollJobs", async () => {
         try {
           await this.pollJobs();
         } finally {
+          this.pollEnqueued = false;
           this.lastPollSettledAt = Date.now();
           this.schedulePoll();
         }
@@ -351,20 +368,21 @@ export class CloudSync {
   }
 
   /**
-   * The poll loop's re-arm rides the shared chain, so any bug that keeps one
-   * cycle from settling kills claiming silently while snapshots (their own
-   * interval) keep the device looking online. The watchdog is independent of
-   * the chain: if no poll has settled for POLL_WATCHDOG_STALE_MS, re-arm.
+   * The poll loop's re-arm rides the shared chain; if that re-arm is ever
+   * skipped (a bug between timers), claiming dies silently while snapshots
+   * (their own interval) keep the device looking online. The watchdog fixes
+   * exactly that: no pending timer AND no poll queued on the chain = the loop
+   * is dead — re-arm it. A poll stuck waiting on a busy chain is NOT re-armed
+   * (the request timeout is what unsticks chains; piling on more polls only
+   * amplified the load — review finding, 2026-08-10).
    */
   private watchdogCheck(): void {
     if (this.stopped) return;
-    const staleFor = Date.now() - this.lastPollSettledAt;
-    if (staleFor < Math.max(POLL_WATCHDOG_STALE_MS, this.pollMs * 3)) return;
-    this.logger(`[coros-bridge] poll loop stale for ${Math.round(staleFor / 1000)}s — re-arming`);
-    if (this.pollTimer) clearTimeout(this.pollTimer);
-    // Reset the clock so a still-wedged chain re-warns once per stale window
-    // instead of stacking a re-arm every check.
-    this.lastPollSettledAt = Date.now();
+    if (!shouldWatchdogRearm({ pollTimerArmed: this.pollTimer !== null, pollEnqueued: this.pollEnqueued })) {
+      return;
+    }
+    const quietFor = Math.round((Date.now() - this.lastPollSettledAt) / 1000);
+    this.logger(`[coros-bridge] poll loop dead (no timer, no queued poll; quiet ${quietFor}s) — re-arming`);
     this.schedulePoll();
   }
 
@@ -411,13 +429,17 @@ export class CloudSync {
       ...this.signRequest("POST", path, text),
       "content-type": "application/json",
     };
+    // Body-heavy uploads (a 90-day history chunk, a full snapshot) get a
+    // generous budget on slow uplinks; everything else stays tight. A request
+    // that never settles would wedge the whole work chain — abort it and let
+    // the chain's catch move on.
+    const heavy = path === "/api/devices/bridge/sync" || path === "/api/devices/bridge/backfill-chunk";
+    const timeoutMs = heavy ? this.requestTimeoutMs * 4 : this.requestTimeoutMs;
     const res = await this.fetchImpl(`${this.apiUrl}${path}`, {
       method: "POST",
       headers,
       body: text,
-      // A request that never settles would wedge the whole work chain (see
-      // REQUEST_TIMEOUT_MS) — abort it and let the chain's catch move on.
-      signal: AbortSignal.timeout(this.requestTimeoutMs),
+      signal: AbortSignal.timeout(timeoutMs),
     });
     if (!res.ok) throw new Error(`cloud request ${path} failed with status ${res.status}`);
     return res.json();

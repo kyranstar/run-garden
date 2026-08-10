@@ -155,10 +155,15 @@ function BackfillRow() {
   const status = useQuery({
     queryKey: ["backfill-status"],
     queryFn: api.backfillStatus,
-    // Poll only while there is something to watch — including the wait for
-    // the Mac to claim a queued walk.
-    refetchInterval: (q) =>
-      q.state.data?.status === "running" || q.state.data?.status === "queued" ? 5000 : false,
+    // Poll while there is something to watch: an active or queued walk, or an
+    // errored one whose job is still live (the Mac can wake and resume it —
+    // the copy must catch up when it does).
+    refetchInterval: (q) => {
+      const d = q.state.data;
+      return d?.status === "running" || d?.status === "queued" || (d?.status === "error" && d.jobQueued)
+        ? 5000
+        : false;
+    },
   });
   const start = useMutation({
     mutationFn: api.backfillHistory,
@@ -177,11 +182,15 @@ function BackfillRow() {
     s?.status === "error"
       ? s.lastErrorCategory === "bridge_never_claimed"
         ? "Your Mac never picked this up. Open Run Garden on the Mac, then press Run again."
-        : "Couldn't read your history — your desktop app is older than this feature. Update it, then try again."
+        : s.lastErrorCategory === "bridge_stalled_mid_walk"
+          ? `Your Mac stopped partway through (${s.activitiesIngested} sessions so far). Open Run Garden on the Mac, then press Run again.`
+          : "Couldn't read your history — your desktop app is older than this feature. Update it, then try again."
       : queued
-        ? s.bridgeOnline
-          ? "Queued — your Mac is connected and should start momentarily. If nothing happens, quit and reopen Run Garden on the Mac."
-          : `Queued — waiting for your Mac${s.bridgeLastSeenAt ? ` (last seen ${relativeTime(s.bridgeLastSeenAt)})` : ""}. Open Run Garden there to start.`
+        ? s.bridgePaused
+          ? "Queued — but syncing is paused on your Mac. Resume it in Run Garden to start."
+          : s.bridgeOnline
+            ? "Queued — your Mac is connected and should start momentarily. If nothing happens, quit and reopen Run Garden on the Mac."
+            : `Queued — waiting for your Mac${s.bridgeLastSeenAt ? ` (last seen ${relativeTime(s.bridgeLastSeenAt)})` : ""}. Open Run Garden there to start.`
         : running
           ? `Reading your COROS history — ${s.chunksCompleted} ${s.chunksCompleted === 1 ? "chunk" : "chunks"}, ${s.activitiesIngested} sessions so far${s.earliestDateReached ? `, back to ${s.earliestDateReached}` : ""}.`
           : s?.status === "done"
@@ -199,7 +208,13 @@ function BackfillRow() {
         disabled={start.isPending || running || queued}
         onClick={() => start.mutate()}
       >
-        {running ? "Reading…" : queued ? "Queued…" : s?.status === "done" ? "Run again" : "Backfill history"}
+        {running
+          ? "Reading…"
+          : queued
+            ? "Queued…"
+            : s?.status === "done" || s?.status === "error"
+              ? "Run again"
+              : "Backfill history"}
       </button>
     </div>
   );

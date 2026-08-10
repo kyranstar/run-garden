@@ -461,11 +461,17 @@ export interface BackfillStatusResponse {
   activitiesIngested: number;
   /** COROS sportType codes the registry couldn't name (admitted as "other"). */
   skippedSportTypes: Record<string, number>;
-  /** Why status is "error": bridge_cannot_run_backfill | bridge_never_claimed. */
+  /** Why status is "error": bridge_cannot_run_backfill | bridge_never_claimed
+   * | bridge_stalled_mid_walk. */
   lastErrorCategory: string | null;
+  /** A backfill job is still live (queued or claimed) — an errored walk with
+   * a live job resumes by itself when the Mac wakes, so keep polling. */
+  jobQueued: boolean;
   /** The desktop bridge's liveness, so queued states can name the wait. */
   bridgeLastSeenAt: string | null;
   bridgeOnline: boolean;
+  /** Syncing is paused on the Mac — queued work provably cannot start. */
+  bridgePaused: boolean;
 }
 
 /** Response from `POST /api/studio/adoption/:pushId/undo` — mirrors the

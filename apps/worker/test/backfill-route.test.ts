@@ -213,3 +213,44 @@ describe("a bridge that cannot run the job", () => {
     expect(state.status).toBe("running");
   });
 });
+
+describe("a failed result on a walk that already progressed", () => {
+  it("does not error the state while a successor chunk job is queued", async () => {
+    const db = makeTestDb();
+    const { userId, prefs } = await makeTestUser(db);
+    await enqueueBackfill(db, userId, "2026-08-04");
+    const job = (
+      await db.select().from(schema.corosWriteJobs).where(eq(schema.corosWriteJobs.userId, userId))
+    )[0]!;
+
+    // The chunk landed and queued the next one; only then did the result POST
+    // fail (e.g. it timed out on the way back). The walk is alive — no error.
+    await recordChunk(db, userId, {
+      chunkStart: "2026-04-22",
+      chunkEnd: "2026-07-20",
+      activities: [],
+      lapsByProviderId: {},
+      skippedSportTypes: {},
+    });
+    await advanceBackfill(db, userId, job.id, { activitiesFound: 5 }, "2026-08-04");
+
+    await applyJobResult(
+      db,
+      userId,
+      {
+        jobId: job.id,
+        deviceId: "dev-1",
+        outcome: "write_failed",
+        finishedAt: nowInstant(),
+        signature: "sig",
+      } as never,
+      prefs,
+    );
+
+    const state = (
+      await db.select().from(schema.backfillState).where(eq(schema.backfillState.userId, userId))
+    )[0]!;
+    expect(state.status).toBe("running");
+    expect(state.lastErrorCategory).toBeNull();
+  });
+});

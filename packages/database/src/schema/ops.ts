@@ -66,7 +66,7 @@ export const auditEvents = sqliteTable(
  */
 export const backfillState = sqliteTable("backfill_state", {
   userId: text("user_id").primaryKey(),
-  /** idle | running | done | error */
+  /** idle | queued | running | done | error */
   status: text("status").notNull().default("idle"),
   earliestDateReached: text("earliest_date_reached"),
   chunksCompleted: integer("chunks_completed").notNull().default(0),

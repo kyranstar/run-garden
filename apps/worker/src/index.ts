@@ -100,10 +100,14 @@ async function halfHourly(db: Db, env: Env): Promise<void> {
       await finishSyncRun(db, runId, "error");
     }
   }
+  // A backfill with no progress for 12h stops saying "queued"/"running" and
+  // says so. Before the purges so an earlier throw can't skip it; a broken
+  // sweep must be visible, not swallowed.
+  await sweepStaleBackfills(db, new Date()).catch((e: unknown) =>
+    console.error(`backfill sweep failed: ${e instanceof Error ? e.message : "unknown"}`),
+  );
   await purgeExpiredSessions(db);
   await purgeExpiredStates(db);
-  // A backfill nobody claimed for 12h stops saying "queued" and says so.
-  await sweepStaleBackfills(db, new Date()).catch(() => undefined);
 }
 
 async function hourly(db: Db, env: Env): Promise<void> {

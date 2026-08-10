@@ -30,6 +30,10 @@ export const COROS_HOSTS: Record<CorosRegion, string> = {
   cn: "https://teamcnapi.coros.com",
 };
 
+/** Every COROS request aborts after this long — a hung request must never
+ * wedge the bridge (one did, for four days, via the shared work chain). */
+const COROS_REQUEST_TIMEOUT_MS = 60_000;
+
 const USER_AGENT =
   "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36";
 
@@ -186,6 +190,7 @@ export class CorosClient {
 
   private async loginWithHash(email: string, pwdMd5: string): Promise<{ userId: string }> {
     const res = await this.fetchImpl(`${this.base}/account/login`, {
+      signal: AbortSignal.timeout(COROS_REQUEST_TIMEOUT_MS),
       method: "POST",
       headers: { "Content-Type": "application/json", "User-Agent": USER_AGENT },
       body: JSON.stringify({ account: email, accountType: 2, pwd: pwdMd5 }),
@@ -513,7 +518,9 @@ export class CorosClient {
     }
 
     // HTTP status is 200 even for logical errors — always branch on envelope.result.
-    const res = await this.fetchImpl(url, { method, headers, body });
+    // Bounded: a COROS request that never settles must not wedge the bridge's
+    // work chain (same rationale as CloudSync's request timeout).
+    const res = await this.fetchImpl(url, { method, headers, body, signal: AbortSignal.timeout(COROS_REQUEST_TIMEOUT_MS) });
     const envelope = (await res.json()) as CorosEnvelope<T>;
     this.log(op, envelope.result);
 

@@ -51,3 +51,16 @@ describe("CloudSync — request timeout", () => {
     expect(claims).toBe(2);
   });
 });
+
+describe("shouldWatchdogRearm", () => {
+  it("re-arms only when the loop is truly dead — no timer, no queued poll", async () => {
+    const { shouldWatchdogRearm } = await import("../src/cloud-sync.js");
+    expect(shouldWatchdogRearm({ pollTimerArmed: false, pollEnqueued: false })).toBe(true);
+    // A pending timer means the loop is healthy — re-arming would duplicate it.
+    expect(shouldWatchdogRearm({ pollTimerArmed: true, pollEnqueued: false })).toBe(false);
+    // A poll queued behind a busy chain must not be piled onto — the request
+    // timeout, not the watchdog, is what unwedges chains.
+    expect(shouldWatchdogRearm({ pollTimerArmed: false, pollEnqueued: true })).toBe(false);
+    expect(shouldWatchdogRearm({ pollTimerArmed: true, pollEnqueued: true })).toBe(false);
+  });
+});

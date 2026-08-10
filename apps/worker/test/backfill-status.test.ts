@@ -32,10 +32,13 @@ async function newestBackfillJob(db: Db, userId: string) {
   )[0]!;
 }
 
-/** Age the state's startedAt (and optionally claim the job) for sweep tests. */
+/** Age the state's progress clock (updatedAt, plus startedAt) for sweep tests. */
 async function ageBackfill(db: Db, userId: string, ms: number): Promise<void> {
-  const startedAt = new Date(Date.now() - ms).toISOString();
-  await db.update(backfillState).set({ startedAt }).where(eq(backfillState.userId, userId));
+  const aged = new Date(Date.now() - ms).toISOString();
+  await db
+    .update(backfillState)
+    .set({ startedAt: aged, updatedAt: aged })
+    .where(eq(backfillState.userId, userId));
 }
 
 describe("backfill status honesty", () => {
@@ -124,7 +127,7 @@ describe("sweepStaleBackfills (cron watchdog)", () => {
     expect((await newestBackfillJob(db, userId)).status).toBe("queued");
   });
 
-  it("never touches a walk whose job a bridge has claimed", async () => {
+  it("never touches a walk whose job a bridge freshly claimed", async () => {
     const db = makeTestDb();
     const { userId } = await makeTestUser(db);
     await enqueueBackfill(db, userId, "2026-08-10");
@@ -136,5 +139,68 @@ describe("sweepStaleBackfills (cron watchdog)", () => {
       .where(eq(corosWriteJobs.id, job.id));
     expect(await sweepStaleBackfills(db, new Date())).toBe(0);
     expect((await stateOf(db, userId)).status).toBe("queued");
+  });
+
+  it("a stall past the first chunk flips to bridge_stalled_mid_walk", async () => {
+    const db = makeTestDb();
+    const { userId } = await makeTestUser(db);
+    await enqueueBackfill(db, userId, "2026-08-10");
+    await db
+      .update(backfillState)
+      .set({ status: "running", chunksCompleted: 3, activitiesIngested: 412 })
+      .where(eq(backfillState.userId, userId));
+    await ageBackfill(db, userId, BACKFILL_UNCLAIMED_ERROR_MS + 60_000);
+    expect(await sweepStaleBackfills(db, new Date())).toBe(1);
+    const s = await stateOf(db, userId);
+    expect(s.status).toBe("error");
+    expect(s.lastErrorCategory).toBe("bridge_stalled_mid_walk");
+    expect(s.chunksCompleted).toBe(3); // progress is never wiped
+  });
+
+  it("a claim whose result never arrived is requeued, then the state flips", async () => {
+    const db = makeTestDb();
+    const { userId } = await makeTestUser(db);
+    await enqueueBackfill(db, userId, "2026-08-10");
+    await ageBackfill(db, userId, BACKFILL_UNCLAIMED_ERROR_MS + 60_000);
+    const job = await newestBackfillJob(db, userId);
+    await db
+      .update(corosWriteJobs)
+      .set({
+        status: "claimed",
+        claimedAt: new Date(Date.now() - BACKFILL_UNCLAIMED_ERROR_MS).toISOString(),
+      })
+      .where(eq(corosWriteJobs.id, job.id));
+    expect(await sweepStaleBackfills(db, new Date())).toBe(1);
+    expect((await stateOf(db, userId)).lastErrorCategory).toBe("bridge_never_claimed");
+    // The job is claimable again — a woken bridge resumes without a re-tap.
+    expect((await newestBackfillJob(db, userId)).status).toBe("queued");
+  });
+});
+
+describe("Run again after a watchdog error", () => {
+  it("re-arms the errored state onto the still-queued job, keeping progress", async () => {
+    const db = makeTestDb();
+    const { userId } = await makeTestUser(db);
+    await enqueueBackfill(db, userId, "2026-08-10");
+    await db
+      .update(backfillState)
+      .set({ status: "error", lastErrorCategory: "bridge_stalled_mid_walk", chunksCompleted: 3 })
+      .where(eq(backfillState.userId, userId));
+    const result = await enqueueBackfill(db, userId, "2026-08-10");
+    expect(result).toEqual({ enqueued: true, reason: "rearmed" });
+    const s = await stateOf(db, userId);
+    expect(s.status).toBe("queued");
+    expect(s.lastErrorCategory).toBeNull();
+    expect(s.chunksCompleted).toBe(3);
+  });
+
+  it("still refuses while a walk is genuinely in flight", async () => {
+    const db = makeTestDb();
+    const { userId } = await makeTestUser(db);
+    await enqueueBackfill(db, userId, "2026-08-10");
+    expect(await enqueueBackfill(db, userId, "2026-08-10")).toEqual({
+      enqueued: false,
+      reason: "already_running",
+    });
   });
 });

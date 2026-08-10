@@ -14,6 +14,7 @@ import { loadPreferences } from "./calendar-sync.js";
 import { ingestActivities, type IngestInput } from "./completion.js";
 import type { Db } from "./db.js";
 import { resimulateFrom } from "./garden-sync.js";
+import { CLAIM_TIMEOUT_MS } from "./jobs.js";
 
 /** Days of history per backfill chunk. */
 export const CHUNK_DAYS = 90;
@@ -135,7 +136,23 @@ export async function enqueueBackfill(
       ),
     )
     .limit(1);
-  if (inFlight.length > 0) return { enqueued: false, reason: "already_running" };
+  if (inFlight.length > 0) {
+    // A watchdog-errored walk whose job still sits queued: "Run again" must
+    // work, not dead-end. Re-arm the state (keeping progress counters) so the
+    // UI honestly says "queued" while the same job waits for the Mac.
+    const state = (
+      await db.select().from(backfillState).where(eq(backfillState.userId, userId)).limit(1)
+    )[0];
+    if (state?.status === "error") {
+      const now = nowInstant();
+      await db
+        .update(backfillState)
+        .set({ status: "queued", startedAt: now, finishedAt: null, lastErrorCategory: null, updatedAt: now })
+        .where(eq(backfillState.userId, userId));
+      return { enqueued: true, reason: "rearmed" };
+    }
+    return { enqueued: false, reason: "already_running" };
+  }
 
   const now = nowInstant();
   // "queued", not "running": nothing is reading history until a bridge claims
@@ -257,58 +274,76 @@ export async function advanceBackfill(
   await insertChunkJob(db, userId, action.chunkStart, action.chunkEnd);
 }
 
-/** How long a backfill may sit unclaimed before the status stops pretending. */
+/** How long a backfill may sit stalled before the status stops pretending. */
 export const BACKFILL_UNCLAIMED_ERROR_MS = 12 * 60 * 60 * 1000;
 
+export type BackfillUiStatus = "idle" | "queued" | "running" | "done" | "error";
+
 /**
- * The status the UI should show, derived honestly at read time. Stored rows
- * from before the queued/running split (or written mid-transition) can say
- * "running" while no bridge has ever claimed the job — those read as
- * "queued", because that is what they are.
+ * The status the UI should show, derived honestly at read time. Rows written
+ * before the queued/running split (or mid-transition) can say "running"
+ * while no bridge has ever claimed the job — those read as "queued", because
+ * that is what they are.
  */
 export function deriveBackfillStatus(
   stored: { status: string; chunksCompleted: number } | undefined,
   newestJobStatus: string | null,
-): string {
+): BackfillUiStatus {
   if (!stored) return "idle";
   if (stored.status === "running" && stored.chunksCompleted === 0 && newestJobStatus === "queued") {
     return "queued";
   }
-  return stored.status;
+  return stored.status as BackfillUiStatus;
 }
 
 /**
- * Cron sweep: a backfill whose job no bridge has claimed for
- * BACKFILL_UNCLAIMED_ERROR_MS stops saying "queued" and says what happened —
- * the Mac never picked it up. The job row itself stays queued on purpose: a
- * bridge that finally wakes still claims it, and recordChunk revives the
- * state to "running" when data lands.
+ * Cron sweep: a walk that has made no progress for BACKFILL_UNCLAIMED_ERROR_MS
+ * stops pretending and says what happened — whether the Mac never picked it
+ * up (zero chunks) or stopped partway through. Claims older than
+ * CLAIM_TIMEOUT_MS are reverted to queued first, so a claim whose response
+ * never arrived (the exact live incident) can't hide a stall. The job row
+ * stays queued on purpose: a bridge that finally wakes still claims it, and
+ * recordChunk revives the state to "running" when data lands.
  */
 export async function sweepStaleBackfills(db: Db, now: Date): Promise<number> {
   const stale = new Date(now.getTime() - BACKFILL_UNCLAIMED_ERROR_MS).toISOString();
+  const claimStale = new Date(now.getTime() - CLAIM_TIMEOUT_MS).toISOString();
   const candidates = await db
     .select()
     .from(backfillState)
     .where(inArray(backfillState.status, ["queued", "running"]));
   let flipped = 0;
   for (const row of candidates) {
-    if (row.chunksCompleted > 0 || !row.startedAt || row.startedAt > stale) continue;
+    // The staleness clock is last progress (updatedAt), falling back to start.
+    const lastProgress = row.updatedAt ?? row.startedAt;
+    if (!lastProgress || lastProgress > stale) continue;
     const newest = (
       await db
-        .select({ status: corosWriteJobs.status })
+        .select({ id: corosWriteJobs.id, status: corosWriteJobs.status, claimedAt: corosWriteJobs.claimedAt })
         .from(corosWriteJobs)
         .where(and(eq(corosWriteJobs.userId, row.userId), eq(corosWriteJobs.kind, "backfill")))
         .orderBy(desc(corosWriteJobs.requestedAt))
         .limit(1)
     )[0];
-    if (newest?.status !== "queued") continue;
+    if (!newest) continue;
+    if (newest.status === "claimed") {
+      // A claim whose result never arrived — same revert claimNextJob does,
+      // so the next polling bridge can pick the job up again.
+      if (!newest.claimedAt || newest.claimedAt > claimStale) continue;
+      await db
+        .update(corosWriteJobs)
+        .set({ status: "queued", claimedByDeviceId: null, claimedAt: null, updatedAt: nowInstant(now) })
+        .where(eq(corosWriteJobs.id, newest.id));
+    } else if (newest.status !== "queued") {
+      continue;
+    }
     await db
       .update(backfillState)
       .set({
         status: "error",
-        lastErrorCategory: "bridge_never_claimed",
-        finishedAt: nowInstant(),
-        updatedAt: nowInstant(),
+        lastErrorCategory: row.chunksCompleted > 0 ? "bridge_stalled_mid_walk" : "bridge_never_claimed",
+        finishedAt: nowInstant(now),
+        updatedAt: nowInstant(now),
       })
       .where(eq(backfillState.userId, row.userId));
     flipped += 1;

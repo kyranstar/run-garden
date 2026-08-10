@@ -186,7 +186,10 @@ syncRoutes.get("/backfill-status", async (c) => {
   )[0];
   const bridge = (
     await db
-      .select({ lastSeenAt: desktopDevices.lastSeenAt, revokedAt: desktopDevices.revokedAt })
+      .select({
+        lastSeenAt: desktopDevices.lastSeenAt,
+        bridgePaused: desktopDevices.bridgePaused,
+      })
       .from(desktopDevices)
       .where(and(eq(desktopDevices.userId, userId), isNull(desktopDevices.revokedAt)))
       .orderBy(desc(desktopDevices.lastSeenAt))
@@ -199,8 +202,12 @@ syncRoutes.get("/backfill-status", async (c) => {
     activitiesIngested: row?.activitiesIngested ?? 0,
     skippedSportTypes: row?.skippedSportTypes ?? {},
     lastErrorCategory: row?.lastErrorCategory ?? null,
+    /** A live job means an errored/queued walk is still claimable — the UI
+     * keeps polling on this even after a watchdog error. */
+    jobQueued: newestJob?.status === "queued" || newestJob?.status === "claimed",
     bridgeLastSeenAt: bridge?.lastSeenAt ?? null,
     bridgeOnline: !!bridge && Date.parse(bridge.lastSeenAt) > Date.now() - DEVICE_ONLINE_WINDOW_MS,
+    bridgePaused: !!bridge?.bridgePaused,
   });
 });
 
