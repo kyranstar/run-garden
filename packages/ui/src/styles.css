@@ -3744,6 +3744,30 @@ button {
   width: 16px;
   height: 16px;
 }
+/* Inert wrapper in normal layout; becomes the rotation box in fullscreen. */
+.scene-rotor {
+  display: contents;
+}
+.garden-scene-fullscreen .scene-rotor {
+  display: block;
+  position: absolute;
+  inset: 0;
+}
+/* Portrait phones: lay the panorama sideways — a box sized viewport-height ×
+   viewport-width, rotated 90° about its top-left, then pulled back on-screen.
+   The close toggle stays OUTSIDE the rotor, so it keeps screen orientation.
+   Landscape viewports need no rotation. */
+@media (orientation: portrait) {
+  .garden-scene-fullscreen .scene-rotor {
+    inset: auto;
+    top: 0;
+    left: 0;
+    width: 100dvh;
+    height: 100dvw;
+    transform: rotate(90deg) translateY(-100%);
+    transform-origin: top left;
+  }
+}
 @media (min-width: 1024px) {
   .scene-full-toggle { display: none; }
 }

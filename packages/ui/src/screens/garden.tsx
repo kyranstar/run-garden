@@ -1588,6 +1588,11 @@ export function GardenScreen() {
       <div
         className={`garden-scene-wrap garden-scene-big${sceneFull ? " garden-scene-fullscreen" : ""}`}
       >
+        {/* display:contents normally; in portrait fullscreen it becomes the
+            rotated box that lays the wide scene sideways across the tall
+            screen — the composition is a panorama, and portrait-cropping it
+            hid most of the garden. */}
+        <div className="scene-rotor">
         <GardenScene
           snapshot={displaySnapshot}
           reducedMotion={reducedMotion}
@@ -1604,6 +1609,7 @@ export function GardenScreen() {
           // the svg letterboxes into a strip at the bottom of the screen.
           preserveAspectRatio={sceneFull ? "xMidYMax slice" : undefined}
         />
+        </div>
         <button
           type="button"
           className="scene-full-toggle"
