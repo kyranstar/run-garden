@@ -145,3 +145,15 @@ export const gardenDayInputs = sqliteTable(
   },
   (t) => [uniqueIndex("garden_day_inputs_unique").on(t.userId, t.date)],
 );
+
+/** Arrival watermark: the newest durable garden event the user has seen,
+ * plus same-day (preview) unlocks already celebrated. One row per user. */
+export const gardenSeen = sqliteTable("garden_seen", {
+  userId: text("user_id").primaryKey(),
+  lastSeenDate: text("last_seen_date").notNull(),
+  lastSeenSeq: integer("last_seen_seq").notNull(),
+  celebratedSpeciesIds: text("celebrated_species_ids", { mode: "json" })
+    .notNull()
+    .$type<string[]>(),
+  updatedAt: text("updated_at").notNull(),
+});

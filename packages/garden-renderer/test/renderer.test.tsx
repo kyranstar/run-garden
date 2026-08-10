@@ -13,6 +13,8 @@ import {
 } from "@rg/garden-engine";
 import { conditionWord, DEFAULT_GARDEN_CONFIG } from "@rg/garden-engine";
 import { describeGarden, describePlant, GardenScene, PlantSprite } from "../src/index";
+import { anchorOf } from "../src/GardenScene";
+import { displaceFromStreams, riverSystemFor, streamGeometryFor } from "../src/terrain";
 import { moonShadowOffset } from "../src/sky";
 
 const START = "2026-03-02"; // a Monday
@@ -113,6 +115,49 @@ describe("GardenScene", () => {
     expect(a.length).toBeGreaterThan(2000);
   });
 
+  it("carries the grainlight texture layers exactly once", () => {
+    const markup = renderScene(healthySnapshot());
+    expect(markup.match(/data-finish-grain="true"/g)).toHaveLength(1);
+    expect(markup.match(/data-terrain="mottle"/g)).toHaveLength(1);
+    // every turbulence node is seeded → deterministic across UAs
+    const turbs = markup.match(/<feTurbulence[^>]*>/g) ?? [];
+    expect(turbs.length).toBeGreaterThanOrEqual(2);
+    for (const t of turbs) expect(t).toMatch(/seed="\d+"/);
+  });
+
+  it("clouds are organic tone-stacked blobs, not ellipse clusters", () => {
+    const markup = renderScene(healthySnapshot());
+    const puffs = markup.match(/<g[^>]*data-cloud="puff"[\s\S]*?<\/g>/g) ?? [];
+    expect(puffs.length).toBeGreaterThanOrEqual(1);
+    for (const puff of puffs) {
+      expect(puff).not.toContain("<ellipse");
+      // three tone masses per puff: under-shade, main, lit crown
+      expect(puff.match(/<path/g)!.length).toBeGreaterThanOrEqual(3);
+    }
+  });
+
+  it("horizon warmth appears with the sun and leaves the night alone", () => {
+    const snapshot = healthySnapshot();
+    expect(renderScene(snapshot, { timeOfDay: 17.5 })).toContain('data-sky="horizonwarm"');
+    expect(renderScene(snapshot, { timeOfDay: 23 })).not.toContain('data-sky="horizonwarm"');
+  });
+
+  it("horizon carries three receding ridges", () => {
+    const markup = renderScene(healthySnapshot());
+    expect(markup.match(/data-scene="hills"/g)).toHaveLength(1);
+    expect(markup.match(/data-ridge="/g)).toHaveLength(3);
+  });
+
+  it("backlit seed heads render with a lighting-stable count", () => {
+    const snapshot = healthySnapshot();
+    const heads = (m: string) => (m.match(/data-terrain="seedhead"/g) ?? []).length;
+    const golden = renderScene(snapshot, { timeOfDay: 17.5 });
+    const night = renderScene(snapshot, { timeOfDay: 23 });
+    expect(heads(golden)).toBeGreaterThan(0);
+    // honesty rule: light changes color, never how much grows
+    expect(heads(golden)).toBe(heads(night));
+  });
+
   it("renders every living plant with a data-plant-id attribute", () => {
     const snapshot = healthySnapshot();
     const markup = renderScene(snapshot);
@@ -185,10 +230,10 @@ describe("GardenScene", () => {
 });
 
 describe("PlantSprite archetypes", () => {
-  it("covers all 20 archetypes across the species catalog", () => {
+  it("covers all 21 archetypes across the species catalog", () => {
     const archetypes = new Set(SPECIES.map((s) => s.archetype));
-    expect(archetypes.size).toBe(20);
-    expect(SPECIES.length).toBe(46); // 34 + 5 achievement species + 7 tri-discipline species
+    expect(archetypes.size).toBe(21);
+    expect(SPECIES.length).toBe(57); // 55 + 2 coached-block species (fairness spec §4)
   });
 
   it("renders every species in mature, flowering, and dead states without throwing", () => {
@@ -501,5 +546,220 @@ describe("atmosphere layer", () => {
   it("atmosphere + reducedMotion renders the wrapper without a canvas", () => {
     const markup = renderScene(healthySnapshot(), { atmosphere: true, reducedMotion: true });
     expect(markup).not.toContain("<canvas");
+  });
+});
+
+describe("framing grass", () => {
+  it("renders once, above the plants, and never intercepts pointer events", () => {
+    const markup = renderScene(healthySnapshot());
+    expect(markup.match(/data-terrain="framing"/g)).toHaveLength(1);
+    const framingAt = markup.indexOf('data-terrain="framing"');
+    expect(framingAt).toBeGreaterThan(markup.lastIndexOf("data-plant-id"));
+    const tag = markup.slice(framingAt - 200, framingAt + 60);
+    expect(tag).toContain('pointer-events="none"');
+  });
+});
+
+describe("riparian streams", () => {
+  const streamGround = { region: 1, kind: "stream" as const, earnedDate: "2026-06-01" };
+
+  it("stream geometry pinches at the source and knows its channel", () => {
+    const geo = streamGeometryFor(streamGround)!;
+    expect(geo.hw(0)).toBeLessThan(geo.hw(0.2) * 0.6);
+    const y = geo.yTop + 0.5 * geo.ySpan;
+    expect(geo.inChannel(geo.xc(0.5), y)).toBe(true);
+    expect(geo.inChannel(geo.xc(0.5) + geo.hw(0.5) + 12, y)).toBe(false);
+  });
+
+  it("plant anchors displace out of the water", () => {
+    const geo = streamGeometryFor(streamGround)!;
+    const y = geo.yTop + 0.6 * geo.ySpan;
+    const displaced = displaceFromStreams({ x: geo.xc(0.6), y, s: 1 }, [geo]);
+    expect(geo.inChannel(displaced.x, y, 8)).toBe(false);
+  });
+
+  it("no rendered NON-AQUATIC plant anchor lands in stream water (long-lived garden)", () => {
+    // 20 training weeks earns stream grounds; every dry-land plant transform
+    // must sit clear of every channel. Aquatic species (Bundle 3) are the
+    // deliberate exemption — they anchor to the stream on purpose.
+    const s = replay(START, trainingWeeks(START, 20)).snapshot;
+    const channels = riverSystemFor(s.state.grounds ?? []);
+    expect(channels.length).toBeGreaterThan(0);
+    const markup = renderScene(s);
+    const anchors = [...markup.matchAll(/data-plant-id="([^"]*)"[^>]*transform="translate\((-?[\d.]+) (-?[\d.]+)\)/g)];
+    expect(anchors.length).toBeGreaterThan(10);
+    const aquaticIds = new Set(SPECIES.filter((sp) => sp.aquatic).map((sp) => sp.id));
+    for (const m of anchors) {
+      if ([...aquaticIds].some((id) => m[1]!.startsWith(`pl-${id}-`))) continue;
+      const x = Number(m[2]);
+      const y = Number(m[3]);
+      expect(
+        channels.some((c) => c.inChannel(x, y, 2)),
+        `plant ${m[1]} at (${x},${y}) sits in a stream`,
+      ).toBe(false);
+    }
+  });
+
+  it("channel aquatics anchor ON the water; bank aquatics at its edge", () => {
+    const s = replay(START, trainingWeeks(START, 20)).snapshot;
+    const channels = riverSystemFor(s.state.grounds ?? []);
+    expect(channels.length).toBeGreaterThan(0);
+    const lily = SPECIES.find((sp) => sp.id === "waterlily")!;
+    const cattail = SPECIES.find((sp) => sp.id === "cattail")!;
+    const synthetic: GardenSnapshot = structuredClone(s);
+    synthetic.plants.push(
+      { ...syntheticPlant(lily, "mature"), id: "pl-waterlily-x", position: { x: 0.5, y: 0.6, region: 0 } },
+      { ...syntheticPlant(cattail, "mature"), id: "pl-cattail-x", position: { x: 0.5, y: 0.6, region: 0 } },
+    );
+    const markup = renderScene(synthetic);
+    const find = (id: string) => {
+      const m = markup.match(new RegExp(`data-plant-id="${id}"[^>]*transform="translate\\((-?[\\d.]+) (-?[\\d.]+)\\)`));
+      expect(m, `${id} rendered`).toBeTruthy();
+      return { x: Number(m![1]), y: Number(m![2]) };
+    };
+    const lilyAt = find("pl-waterlily-x");
+    expect(
+      channels.some((c) => c.inChannel(lilyAt.x, lilyAt.y, 0)),
+      `waterlily at (${lilyAt.x},${lilyAt.y}) should sit on water`,
+    ).toBe(true);
+    const catAt = find("pl-cattail-x");
+    expect(channels.some((c) => c.inChannel(catAt.x, catAt.y, -2))).toBe(false);
+    const nearEdge = channels.some((c) => {
+      const t = Math.max(0, Math.min(c.tEnd, (catAt.y - c.yTop) / c.ySpan));
+      return Math.abs(Math.abs(catAt.x - c.xc(t)) - c.hw(t)) < 24;
+    });
+    expect(nearEdge, `cattail at (${catAt.x},${catAt.y}) should hug a bank`).toBe(true);
+  });
+});
+
+describe("hero tree scale", () => {
+  const oak = SPECIES.find((s) => s.id === "milestone_oak")!;
+  const rose = SPECIES.find((s) => s.id === "century_rose")!;
+
+  it("mature near trees render at hero scale; saplings, far trees and shrubs don't", () => {
+    const near = { ...syntheticPlant(oak, "mature"), position: { x: 0.5, y: 0.45, region: 0 } };
+    const sapling = { ...near, maturity: 0.2 };
+    const far = { ...near, position: { x: 0.5, y: 0.1, region: 0 } };
+    const shrub = { ...syntheticPlant(rose, "mature"), position: { x: 0.5, y: 0.45, region: 0 } };
+    expect(anchorOf(near).s).toBeGreaterThan(1.0);
+    expect(anchorOf(sapling).s).toBeLessThan(0.95);
+    expect(anchorOf(far).s).toBeLessThan(anchorOf(near).s);
+    expect(anchorOf(shrub).s).toBeCloseTo(0.65 + 0.45 * 0.45, 2);
+  });
+});
+
+describe("grainlight canopies", () => {
+  const oak = SPECIES.find((s) => s.id === "milestone_oak")!;
+
+  it("tree canopies stack three tones and follow the sun side", () => {
+    const plant = syntheticPlant(oak, "mature");
+    const left = renderToStaticMarkup(
+      <PlantSprite plant={plant} species={oak} idPrefix="t" lightHint={{ dx: -1, litColor: "#ffd27f", amount: 0.8 }} />,
+    );
+    const right = renderToStaticMarkup(
+      <PlantSprite plant={plant} species={oak} idPrefix="t" lightHint={{ dx: 1, litColor: "#ffd27f", amount: 0.8 }} />,
+    );
+    expect(left).toContain('data-tone="lit"');
+    expect(left).not.toBe(right); // lit mass flips with the sun
+    const tones = [...left.matchAll(/data-tone="(shade|mid|lit)"/g)].map((m) => m[1]);
+    expect(new Set(tones)).toEqual(new Set(["shade", "mid", "lit"]));
+  });
+
+  it("state adjustments hit every canopy tone", () => {
+    const fills = (m: string) =>
+      [...m.matchAll(/data-tone="[a-z]+"[^>]*fill="(#[0-9a-fA-F]{6})"/g)].map((x) => x[1]);
+    const mature = renderToStaticMarkup(
+      <PlantSprite plant={syntheticPlant(oak, "mature")} species={oak} idPrefix="t" />,
+    );
+    const wilted = renderToStaticMarkup(
+      <PlantSprite plant={syntheticPlant(oak, "wilted")} species={oak} idPrefix="t" />,
+    );
+    expect(fills(mature).length).toBeGreaterThanOrEqual(3);
+    expect(fills(wilted)).not.toEqual(fills(mature));
+    expect(fills(wilted)).toHaveLength(fills(mature).length);
+  });
+});
+
+describe("grainlight non-tree archetypes", () => {
+  const byArch = (a: Species["archetype"]) => SPECIES.find((s) => s.archetype === a)!;
+  const sun = { dx: 1 as const, litColor: "#ffd27f", amount: 0.8 };
+  const render = (arch: Species["archetype"], state: PlantState) => {
+    const sp = byArch(arch);
+    return renderToStaticMarkup(
+      <PlantSprite plant={syntheticPlant(sp, state)} species={sp} idPrefix="t" lightHint={sun} />,
+    );
+  };
+
+  it("shrubs carry the canopy tone stack", () => {
+    expect(render("shrub_round", "mature")).toContain('data-tone="shade"');
+    expect(render("shrub_round", "mature")).toContain('data-tone="lit"');
+  });
+
+  it("blooming flowers get a lit petal accent", () => {
+    expect(render("flower_cup", "flowering")).toContain('data-tone="lit"');
+    expect(render("flower_daisy", "flowering")).toContain('data-tone="lit"');
+  });
+
+  it("vines tint sun-side leaves", () => {
+    expect(render("vine", "mature")).toContain('data-tone="lit"');
+  });
+
+  it("fungi get a lit cap dab", () => {
+    expect(render("mushroom", "mature")).toContain('data-tone="lit"');
+  });
+
+  it("grass blades are kinked polylines, not clean arcs", () => {
+    const markup = render("grass_tuft", "mature");
+    expect(markup).toMatch(/d="M[^"]* L[^"]* L[^"]*"/);
+  });
+});
+
+describe("arrival sensations (reward-loop spec §5)", () => {
+  const snap = replay(START, trainingWeeks(START, 2)).snapshot;
+  const living = snap.plants.filter((p) => p.state !== "dead");
+  const someId = living[0]!.id;
+  const otherId = living[1]!.id;
+
+  it("wraps exactly the entering plant in the sprout class, and not under reducedMotion", () => {
+    const html = renderScene(snap, { enteringPlantIds: [someId] });
+    expect(html.match(/rg-garden-enter/g)?.length ?? 0).toBeGreaterThan(0);
+    // once in the class attr, once in the keyframe css
+    expect((html.match(/class="[^"]*rg-garden-enter[^"]*"/g) ?? []).length).toBe(1);
+    const still = renderScene(snap, { enteringPlantIds: [someId], reducedMotion: true });
+    expect(still).not.toContain("rg-garden-enter");
+  });
+
+  it("highlightPlantId applies the outline filter; a user selection wins", () => {
+    const glow = renderScene(snap, { highlightPlantId: someId });
+    expect((glow.match(/filter="url\(#rg-garden-outline\)"/g) ?? []).length).toBe(1);
+    const both = renderScene(snap, { highlightPlantId: someId, selectedPlantId: otherId });
+    expect((both.match(/filter="url\(#rg-garden-outline\)"/g) ?? []).length).toBe(1);
+    expect(both).toContain(`data-plant-id="${otherId}"`);
+  });
+
+  it("entering/highlight props never change geometry", () => {
+    const paths = (s: string) => s.match(/ d="[^"]+"/g) ?? [];
+    const a = renderScene(snap);
+    const b = renderScene(snap, { enteringPlantIds: [someId], highlightPlantId: someId });
+    expect(paths(b)).toEqual(paths(a));
+  });
+});
+
+describe("ducks (Bundle 3)", () => {
+  it("render only with the flag AND a stream, on the water", () => {
+    const s = replay(START, trainingWeeks(START, 20)).snapshot;
+    const channels = riverSystemFor(s.state.grounds ?? []);
+    expect(channels.length).toBeGreaterThan(0);
+    const withDucks: GardenSnapshot = structuredClone(s);
+    withDucks.wildlife.ducks = true;
+    const markup = renderScene(withDucks);
+    expect(markup).toContain('data-wildlife="ducks"');
+    const off: GardenSnapshot = structuredClone(s);
+    off.wildlife.ducks = false;
+    expect(renderScene(off)).not.toContain('data-wildlife="ducks"');
+    // No stream → nothing to float on, even with the flag.
+    const noStream: GardenSnapshot = structuredClone(withDucks);
+    noStream.state.grounds = [];
+    expect(renderScene(noStream)).not.toContain('data-wildlife="ducks"');
   });
 });

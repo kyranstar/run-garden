@@ -131,6 +131,7 @@ export const WILDLIFE_KINDS = [
   "frogs",
   "dragonflies",
   "ladybugs",
+  "ducks",
 ] as const;
 export type WildlifeKind = (typeof WILDLIFE_KINDS)[number];
 

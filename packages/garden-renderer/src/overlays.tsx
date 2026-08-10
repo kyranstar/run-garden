@@ -137,7 +137,16 @@ export function Finish({ p, light }: { p: string; light: SceneLight }): ReactNod
       ) : null}
       <ellipse cx={500} cy={300} rx={560} ry={60} fill={light.hazeColor} opacity={n(light.hazeStrength * 0.5)} />
       <rect x={0} y={0} width={1000} height={560} fill={`url(#${p}-vig)`} />
-      <rect x={0} y={0} width={1000} height={560} filter={`url(#${p}-grain)`} opacity={0.05} style={{ mixBlendMode: "overlay" }} />
+      <rect
+        data-finish-grain="true"
+        x={0}
+        y={0}
+        width={1000}
+        height={560}
+        filter={`url(#${p}-grain)`}
+        opacity={0.3}
+        style={{ mixBlendMode: "soft-light" }}
+      />
     </g>
   );
 }

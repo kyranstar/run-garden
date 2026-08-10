@@ -1,7 +1,19 @@
 import { useEffect, useRef } from "react";
 import type { GardenWeatherState } from "@rg/domain";
 import type { SceneLight } from "./lighting";
-import { activeSystems, atmosphereKey, GUST_SCALE, initSystem, type ParticleSystem, type Sprite, sampleSystem } from "./particles";
+import {
+  activeSystems,
+  atmosphereKey,
+  GUST_SCALE,
+  IMPULSE_DURATION_MS,
+  impulseFrame,
+  initSystem,
+  type ImpulseSprite,
+  type ParticleSystem,
+  type SceneImpulse,
+  type Sprite,
+  sampleSystem,
+} from "./particles";
 import { mix, shade } from "./color";
 
 export interface AtmosphereLayerProps {
@@ -11,6 +23,8 @@ export interface AtmosphereLayerProps {
   hasFlowering: boolean;
   restMode: boolean;
   idPrefix: string;
+  /** One-shot moment (rain front / sparkle); fires when `key` changes. */
+  impulse?: SceneImpulse | null;
 }
 
 interface AtmosphereInputs {
@@ -37,10 +51,20 @@ interface AtmosphereInputs {
  * `atmosphereKey` — restMode and light color changes apply instantly on the
  * next frame with no rebuild and no time-origin reset.
  */
-export function AtmosphereLayer({ weather, light, fireflies, hasFlowering, restMode, idPrefix }: AtmosphereLayerProps) {
+export function AtmosphereLayer({ weather, light, fireflies, hasFlowering, restMode, idPrefix, impulse = null }: AtmosphereLayerProps) {
   const ref = useRef<HTMLCanvasElement | null>(null);
   const inputsRef = useRef<AtmosphereInputs>({ weather, light, fireflies, hasFlowering, restMode });
   inputsRef.current = { weather, light, fireflies, hasFlowering, restMode };
+
+  // Impulses live in their own ref keyed on `impulse.key` — they must never
+  // touch atmosphereKey or the RAF effect, whose teardown would reset every
+  // weather particle's clock (see the header comment).
+  const impulseRef = useRef<{ imp: SceneImpulse; t0: number } | null>(null);
+  const impulseKey = impulse?.key ?? null;
+  useEffect(() => {
+    if (impulse && impulseKey) impulseRef.current = { imp: impulse, t0: performance.now() };
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- re-arm only on key change
+  }, [impulseKey]);
 
   useEffect(() => {
     const canvas = ref.current;
@@ -96,6 +120,13 @@ export function AtmosphereLayer({ weather, light, fireflies, hasFlowering, restM
       const g = ctx!;
       g.clearRect(0, 0, W, H);
       for (const sys of systems) drawSystem(g, sys, t, W, H, cur.light, gustScale);
+
+      const ir = impulseRef.current;
+      if (ir) {
+        const elapsed = now - ir.t0;
+        if (elapsed > IMPULSE_DURATION_MS[ir.imp.kind]) impulseRef.current = null;
+        else drawImpulse(g, impulseFrame(ir.imp, elapsed), W, H, cur.light);
+      }
     };
     raf = requestAnimationFrame(draw);
     return () => cancelAnimationFrame(raf);
@@ -214,6 +245,37 @@ function drawSystem(
       break;
     }
   }
+}
+
+function drawImpulse(
+  g: CanvasRenderingContext2D,
+  sprites: ImpulseSprite[],
+  W: number,
+  H: number,
+  light: SceneLight,
+): void {
+  for (const s of sprites) {
+    if (s.kind === "streak") {
+      g.globalAlpha = s.alpha;
+      g.strokeStyle = "rgba(207,228,240,0.9)";
+      g.lineWidth = Math.max(1, W / 900);
+      g.lineCap = "round";
+      g.beginPath();
+      g.moveTo(s.x * W, s.y * H);
+      g.lineTo(s.x * W - W * 0.005, s.y * H + H * s.size);
+      g.stroke();
+    } else {
+      g.save();
+      g.globalCompositeOperation = "lighter";
+      g.globalAlpha = s.alpha;
+      g.fillStyle = light.moteColor;
+      g.beginPath();
+      g.arc(s.x * W, s.y * H, s.size * (W / 900) * 1.6, 0, Math.PI * 2);
+      g.fill();
+      g.restore();
+    }
+  }
+  g.globalAlpha = 1;
 }
 
 function hexA(hex: string, alpha: number): string {

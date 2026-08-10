@@ -1368,6 +1368,17 @@ button {
   text-transform: uppercase;
   color: #a8842c;
 }
+/* Ground ceremonies reuse the species card shell; the tiny shelf icon scales
+   up to portrait size. */
+.ceremony-ground-icon svg {
+  width: 74px;
+  height: auto;
+  display: block;
+}
+.hud-beat-seeall {
+  font-size: 0.72rem;
+  margin-left: 0.3rem;
+}
 .ceremony-name {
   font-family: var(--font-display);
   font-size: 1.25rem;
@@ -1824,6 +1835,12 @@ button {
   height: 100%;
   border-radius: 999px;
   max-width: 100%;
+}
+/* A session landing refills its bar visibly instead of teleporting. */
+@media (prefers-reduced-motion: no-preference) {
+  .balance-bar-fill {
+    transition: width 0.45s ease;
+  }
 }
 /* The damage point: where the shrinking fill crosses from "fading" into
    "the garden is visibly paying for this". */
@@ -2882,6 +2899,27 @@ button {
   border-style: dashed;
   border-color: color-mix(in srgb, var(--green) 45%, var(--border));
 }
+/* Inline "New" pill for records and the weekly review — the codex ring's
+   quiet inline cousin. */
+.new-ring {
+  display: inline-block;
+  margin-left: 0.4rem;
+  background: var(--green);
+  color: #fff;
+  font-size: 0.6rem;
+  font-weight: 700;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  padding: 0.08rem 0.4rem;
+  border-radius: 999px;
+  vertical-align: 0.1em;
+}
+/* The landing screen's pull to an unread weekly review. */
+.review-pull {
+  margin: 0;
+  font-size: 0.85rem;
+  color: var(--ink-soft);
+}
 .codex-newring {
   position: absolute;
   top: 0.35rem;
@@ -3307,3 +3345,212 @@ button {
   font-size: 0.8rem;
   opacity: 0.55;
 }
+
+/* ── The coach panel (Plan B, 2026-08-06-coach-ux-design.md) ─────────────── */
+.pill-run { background: var(--green-soft); color: var(--green-ink); }
+.pill-lift { background: #f4e6da; color: #b5652f; }
+.pill-warnsoft { background: var(--warn-soft); color: var(--warn); font-weight: 600; }
+
+.plan-split { display: block; }
+@media (min-width: 1024px) {
+  .plan-split {
+    display: grid;
+    grid-template-columns: minmax(340px, 0.85fr) 1.15fr;
+    gap: 1rem;
+    align-items: start;
+  }
+  .plan-split > .coach-panel { position: sticky; top: 0.8rem; }
+}
+
+.coach-panel {
+  background: var(--bg-raised);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  display: flex;
+  flex-direction: column;
+  max-height: 84vh;
+}
+.coach-panel-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 0.65rem 0.9rem;
+  border-bottom: 1px solid var(--border);
+}
+.coach-panel-head h2 { font-family: var(--font-display); font-size: 1rem; margin: 0; }
+
+.coach-tray {
+  padding: 0.6rem 0.9rem;
+  border-bottom: 1px solid var(--border);
+  background: #fffdf6;
+}
+.coach-tray-head {
+  font-size: 0.68rem;
+  font-weight: 700;
+  letter-spacing: 0.07em;
+  text-transform: uppercase;
+  color: var(--warn);
+  margin: 0 0 0.45rem;
+}
+.coach-prop {
+  border: 1px solid var(--border-strong);
+  border-radius: 10px;
+  background: var(--bg-raised);
+  padding: 0.55rem 0.7rem;
+  margin-bottom: 0.5rem;
+}
+.coach-prop:last-child { margin-bottom: 0; }
+.coach-prop-title { font-size: 0.92rem; }
+.coach-prop-evidence { margin: 0.25rem 0 0; }
+.coach-prop-flags { display: flex; gap: 0.3rem; flex-wrap: wrap; margin-top: 0.3rem; }
+.coach-prop-why { margin: 0.4rem 0 0; font-size: 0.88rem; }
+
+.coach-thread {
+  flex: 1;
+  overflow: auto;
+  padding: 0.7rem 0.9rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  min-height: 120px;
+}
+.coach-msg {
+  max-width: 92%;
+  border-radius: 12px;
+  padding: 0.5rem 0.75rem;
+  font-size: 0.92rem;
+}
+.coach-msg-coach { background: var(--bg-sunken); align-self: flex-start; }
+.coach-msg-user { background: var(--green-soft); color: var(--green-ink); align-self: flex-end; }
+.coach-receipt { align-self: stretch; text-align: center; font-size: 0.75rem; padding: 0.1rem 0; }
+.coach-memchips { display: inline-flex; gap: 0.3rem; margin-left: 0.4rem; }
+.tagchip {
+  font-size: 0.68rem;
+  background: var(--accent-soft);
+  color: var(--accent);
+  border-radius: 6px;
+  padding: 0.05rem 0.35rem;
+  text-decoration: none;
+}
+
+/* The coach's read of one effort (effort-analysis spec §6) — an inline card
+   under activity rows and inside the workout sheet. */
+.coach-read {
+  background: var(--bg-sunken);
+  border-left: 3px solid var(--accent);
+  border-radius: var(--radius-sm);
+  padding: 0.6rem 0.8rem;
+  margin: 0.3rem 0 0.7rem;
+}
+.coach-read-body {
+  font-size: 0.9rem;
+  white-space: pre-wrap;
+  margin: 0 0 0.4rem;
+}
+.coach-read-meta {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+}
+
+.coach-composer { border-top: 1px solid var(--border); padding: 0.55rem 0.7rem; }
+.coach-input {
+  display: flex;
+  gap: 0.5rem;
+  align-items: center;
+  border: 1.5px solid var(--border-strong);
+  border-radius: 10px;
+  padding: 0.35rem 0.5rem;
+  background: var(--bg-raised);
+}
+.coach-input input { flex: 1; border: 0; outline: 0; background: transparent; font: inherit; color: var(--ink); }
+.coach-question {
+  display: flex;
+  gap: 0.5rem;
+  align-items: center;
+  flex-wrap: wrap;
+  margin-top: 0.45rem;
+}
+.chipbtn {
+  border: 1px solid var(--border-strong);
+  background: var(--bg-raised);
+  border-radius: 999px;
+  padding: 0.22rem 0.7rem;
+  font: 600 0.8rem var(--font);
+  cursor: pointer;
+}
+.chipbtn:hover { border-color: var(--green); color: var(--green-ink); }
+
+.coach-plan-card {
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 0.6rem 0.75rem;
+  background: var(--bg-raised);
+}
+
+/* Calendar ghosts (Task B3) */
+.cal-pending { background: #fbf9ef; }
+.cal-ghost {
+  display: block;
+  margin-top: 0.15rem;
+  border-radius: 6px;
+  padding: 0.1rem 0.35rem;
+  font-size: 0.7rem;
+  font-weight: 600;
+  cursor: pointer;
+  border: 0;
+  width: 100%;
+  text-align: left;
+}
+.cal-ghost-incoming { background: var(--green-soft); color: var(--green-ink); outline: 2px dashed var(--green); outline-offset: -2px; }
+.cal-ghost-outgoing, .cal-ghost-skip { background: transparent; color: var(--ink-faint); text-decoration: line-through; }
+.cal-ghost-rewrite { background: var(--green-soft); color: var(--green-ink); outline: 2px dashed var(--green); outline-offset: -2px; }
+.cal-ghost-reason { display: block; font-size: 0.62rem; color: var(--warn); margin-top: 0.1rem; }
+.coach-flash { animation: coach-flash 1.2s ease; }
+@media (prefers-reduced-motion: no-preference) {
+  @keyframes coach-flash { 0%, 60% { box-shadow: 0 0 0 3px var(--green-soft); } }
+}
+
+/* Mobile: the Coach pill + sheet */
+.coach-pill {
+  position: fixed;
+  right: 0.9rem;
+  bottom: 4.2rem;
+  z-index: 30;
+  background: var(--green);
+  color: #fff;
+  border: 0;
+  border-radius: 999px;
+  padding: 0.55rem 1rem;
+  font: 650 0.9rem var(--font);
+  box-shadow: 0 4px 14px rgba(40, 60, 45, 0.3);
+  cursor: pointer;
+}
+@media (min-width: 1024px) { .coach-pill { display: none; } }
+.coach-sheet-panel .coach-panel { max-height: 76vh; border: 0; }
+
+/* Settings memory section */
+.memory-row {
+  display: flex;
+  justify-content: space-between;
+  gap: 0.6rem;
+  align-items: baseline;
+  padding: 0.4rem 0;
+  border-bottom: 1px solid var(--border);
+}
+.memory-row:last-child { border-bottom: 0; }
+.cal-extend-row {
+  display: block;
+  width: 100%;
+  margin-top: 0.6rem;
+  padding: 0.6rem;
+  border: 0;
+  border-radius: 10px;
+  background: repeating-linear-gradient(45deg, transparent, transparent 6px, #f3f0e7 6px, #f3f0e7 12px);
+  color: var(--ink-faint);
+  font: 600 0.85rem var(--font);
+  cursor: pointer;
+  text-align: center;
+}
+.cal-extend-row:hover { color: var(--green-ink); }

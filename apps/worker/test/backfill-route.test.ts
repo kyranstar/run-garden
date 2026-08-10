@@ -1,6 +1,8 @@
 import { describe, expect, it } from "vitest";
 import { eq } from "drizzle-orm";
 import { schema } from "@rg/database";
+import { nowInstant } from "@rg/domain";
+import { applyJobResult } from "../src/services/jobs.js";
 import { makeTestDb, makeTestUser } from "./helpers.js";
 import { advanceBackfill, enqueueBackfill, recordChunk } from "../src/services/backfill.js";
 
@@ -136,5 +138,67 @@ describe("backfill orchestration", () => {
       await db.select().from(schema.backfillState).where(eq(schema.backfillState.userId, userId))
     )[0]!;
     expect(state.status).toBe("done");
+  });
+});
+
+describe("a bridge that cannot run the job", () => {
+  it("marks the backfill errored instead of leaving it running forever", async () => {
+    // A desktop app older than the backfill job kind claims the job, fails to
+    // recognise it, and reports `unsupported`. Before this, backfill_state sat
+    // at "running" with 0 chunks indefinitely and Settings said "Reading your
+    // COROS history…" forever — the failure was invisible.
+    const db = makeTestDb();
+    const { userId, prefs } = await makeTestUser(db);
+    await enqueueBackfill(db, userId, "2026-08-04");
+    const job = (
+      await db.select().from(schema.corosWriteJobs).where(eq(schema.corosWriteJobs.userId, userId))
+    )[0]!;
+
+    await applyJobResult(
+      db,
+      userId,
+      {
+        jobId: job.id,
+        deviceId: "dev-1",
+        outcome: "unsupported",
+        errorCategory: "missing_source_id_in_plan",
+        finishedAt: nowInstant(),
+        signature: "sig",
+      } as never,
+      prefs,
+    );
+
+    const state = (
+      await db.select().from(schema.backfillState).where(eq(schema.backfillState.userId, userId))
+    )[0]!;
+    expect(state.status).toBe("error");
+    expect(state.lastErrorCategory).toBe("bridge_cannot_run_backfill");
+  });
+
+  it("leaves a verified backfill's state alone", async () => {
+    const db = makeTestDb();
+    const { userId, prefs } = await makeTestUser(db);
+    await enqueueBackfill(db, userId, "2026-08-04");
+    const job = (
+      await db.select().from(schema.corosWriteJobs).where(eq(schema.corosWriteJobs.userId, userId))
+    )[0]!;
+
+    await applyJobResult(
+      db,
+      userId,
+      {
+        jobId: job.id,
+        deviceId: "dev-1",
+        outcome: "verified",
+        finishedAt: nowInstant(),
+        signature: "sig",
+      } as never,
+      prefs,
+    );
+
+    const state = (
+      await db.select().from(schema.backfillState).where(eq(schema.backfillState.userId, userId))
+    )[0]!;
+    expect(state.status).toBe("running");
   });
 });

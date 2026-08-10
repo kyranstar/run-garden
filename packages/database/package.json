@@ -12,6 +12,7 @@
     "generate": "drizzle-kit generate"
   },
   "dependencies": {
+    "@rg/domain": "workspace:*",
     "drizzle-orm": "^0.38.3"
   },
   "devDependencies": {

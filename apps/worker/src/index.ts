@@ -18,6 +18,7 @@ import { planRoutes } from "./routes/plan.js";
 import { gardenRoutes } from "./routes/garden.js";
 import { activityRoutes, calendarRoutes, insightRoutes, settingsRoutes } from "./routes/misc.js";
 import { studioRoutes } from "./routes/studio.js";
+import { coachRoutes, sweepUserProposals } from "./routes/coach.js";
 import { syncRoutes } from "./routes/sync.js";
 import { makeDb, chunkIds, type Db } from "./services/db.js";
 import { loadPreferences, syncCalendar } from "./services/calendar-sync.js";
@@ -25,6 +26,7 @@ import { advanceGarden } from "./services/garden-sync.js";
 import { reconcileCompletionStates, startSyncRun, finishSyncRun } from "./services/reconcile-daily.js";
 import { generateWeeklyReview } from "./services/llm.js";
 import { healLegacySyncState } from "./services/heal-legacy-sync.js";
+import { evaluateTriggers } from "./services/coach-triggers.js";
 import { purgeExpiredSessions, createSession, sessionCookie } from "./auth/sessions.js";
 import { purgeExpiredStates } from "./auth/google.js";
 import { ensureFixtureUser, seedFixtures } from "./services/fixtures.js";
@@ -49,6 +51,7 @@ app.route("/api/auth", authRoutes);
 app.route("/api/devices", deviceRoutes);
 app.route("/api/plan", planRoutes);
 app.route("/api/garden", gardenRoutes);
+app.route("/api/coach", coachRoutes);
 app.route("/api/calendar", calendarRoutes);
 app.route("/api/activities", activityRoutes);
 app.route("/api/insights", insightRoutes);
@@ -108,6 +111,10 @@ async function hourly(db: Db, env: Env): Promise<void> {
       const rec = await reconcileCompletionStates(db, userId, prefs);
       const garden = await advanceGarden(db, userId, prefs);
       await healLegacySyncState(db, userId);
+      // Coach trigger marks are cheap SQL — a fired row waits for the next
+      // wake; nothing here thinks (spec §1).
+      await evaluateTriggers(db, userId, prefs, todayInZone(prefs.timezone)).catch(() => []);
+      await sweepUserProposals(db, userId, prefs.timezone).catch(() => undefined);
       await finishSyncRun(db, runId, "ok", { ...rec, ...garden });
     } catch {
       await finishSyncRun(db, runId, "error");

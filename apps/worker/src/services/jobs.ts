@@ -1,6 +1,7 @@
 import { and, desc, eq, inArray, lt } from "drizzle-orm";
 import {
   auditEvents,
+  backfillState,
   corosWriteAttempts,
   corosWriteJobs,
   plannedWorkouts,
@@ -361,19 +362,33 @@ export async function applyJobResult(
   // via /bridge/backfill-chunk, which also queued the next chunk; this only
   // settles the job row.
   if (job.kind === "backfill") {
+    const ok = result.outcome === "verified";
     await db
       .update(corosWriteJobs)
       .set({
-        status: result.outcome === "verified" ? "verified" : "failed",
+        status: ok ? "verified" : "failed",
         attemptCount: job.attemptCount + 1,
         completedAt: now,
         updatedAt: now,
       })
       .where(eq(corosWriteJobs.id, job.id));
-    return {
-      jobStatus: result.outcome === "verified" ? "verified" : "failed",
-      corosSyncState: "unchanged",
-    };
+    // A failed chunk ends the walk — nothing else will enqueue the next one, so
+    // without this the checkpoint sits at `running` forever and Settings says
+    // "Reading your COROS history…" indefinitely. The commonest cause by far is
+    // a desktop app older than the backfill job kind: it claims the job, does
+    // not recognise it, and reports `unsupported`.
+    if (!ok) {
+      await db
+        .update(backfillState)
+        .set({
+          status: "error",
+          lastErrorCategory: "bridge_cannot_run_backfill",
+          finishedAt: now,
+          updatedAt: now,
+        })
+        .where(eq(backfillState.userId, userId));
+    }
+    return { jobStatus: ok ? "verified" : "failed", corosSyncState: "unchanged" };
   }
   if (["verified", "failed", "superseded", "cancelled"].includes(job.status)) {
     return { jobStatus: job.status, corosSyncState: "unchanged" };

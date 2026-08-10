@@ -8,7 +8,7 @@ import type {
   WorkoutCategory,
 } from "@rg/domain";
 
-export const SIMULATION_VERSION = 4;
+export const SIMULATION_VERSION = 6;
 
 /** The three disciplines the garden listens to; each drives its own axis. */
 export type Discipline = "run" | "strength" | "yoga";
@@ -97,7 +97,13 @@ export interface EngineGardenState {
   /** Longest single run ever, in meters (any run, planned or not). */
   longestRunMeters: number;
   totalCompletedRuns: number;
+  /** Planned races finished (a race also counts as a quality run). */
+  raceCount: number;
+  /** Coached plans seen through at ≥85% adherence (fairness spec §4). */
+  coachedBlockCount: number;
   consecutiveConsistentWeeks: number;
+  /** Longest consistency chain ever reached (canon §1.3's "longest"). */
+  bestConsistentWeeks: number;
   /** Consecutive completed-run days since the last drought ended. */
   comebackStreak: number;
   /** Best comeback streak ever reached (survives the streak's own reset). */
@@ -182,10 +188,12 @@ export interface GardenDayInput {
   weekAdherence?: number;
   /** Non-discipline sports completed this day (raw; the engine applies the
    * effort threshold). Absent on days without adventures — stored inputs
-   * from before v4 replay unchanged. */
+   * from before the adventures engine replay unchanged. */
   adventures?: Array<{ sport: string; trainingLoad?: number; durationMin?: number }>;
   /** Coros recovery 0-100 for this date (higher = more recovered), when known. */
   recoveryScore?: number;
+  /** True on the day after a coached plan completed at ≥85% adherence. */
+  coachedBlockCompleted?: boolean;
 }
 
 export interface DayResult {

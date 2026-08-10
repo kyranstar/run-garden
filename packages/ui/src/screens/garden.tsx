@@ -22,7 +22,7 @@ import {
   simulateDay,
   SPECIES_BY_ID,
 } from "@rg/garden-engine";
-import { GardenScene } from "@rg/garden-renderer";
+import { GardenScene, type SceneImpulse } from "@rg/garden-renderer";
 import { IconClock, IconClose } from "../icons.js";
 import {
   Banner,
@@ -36,8 +36,10 @@ import {
   Spinner,
 } from "../components.js";
 import { Drawer } from "../drawer.js";
+import { cap, eventSentence, selectArrival, type ArrivalEvent } from "./arrival.js";
+import { CeremonyCard } from "./arrival-block.js";
 import { BotanicalCard } from "./botanical.js";
-import { EvidenceCard, NextWorkout, Readiness, SyncPanel, UnresolvedCard } from "./today.js";
+import { EvidenceCard, NextWorkout, Readiness, ReviewPull, SyncPanel, UnresolvedCard } from "./today.js";
 import {
   CATEGORY_ORDER,
   DisciplineNudges,
@@ -121,74 +123,8 @@ function dormant(s: GardenSnapshot): number {
   return s.plants.filter((p) => p.state === "dormant").length;
 }
 
-function cap(s: string): string {
-  return s.charAt(0).toUpperCase() + s.slice(1);
-}
-
-function eventSentence(e: GardenEvent): string | null {
-  switch (e.kind) {
-    case "run_completed": {
-      const catg = e.workoutCategory ?? "";
-      // Strength/yoga sessions ride the same run_completed event as runs (see
-      // applyRun), so route them to discipline-true copy before falling
-      // through to the generic run sentences below.
-      if (catg === "strength") {
-        return e.detail === "unplanned"
-          ? "An extra strength session fed the soil."
-          : "A strength session fed the soil.";
-      }
-      if (catg === "yoga") {
-        return e.detail === "unplanned"
-          ? "An extra yoga session tended the meadow."
-          : "A yoga session tended the meadow.";
-      }
-      if (e.detail === "unplanned") return "An extra run gave the garden a light watering.";
-      const article = /^[aeiou]/i.test(catg) ? "An" : "A";
-      return catg ? `${article} ${catg} run watered the garden.` : "A run watered the garden.";
-    }
-    case "plant_added": {
-      const name = e.speciesId ? (SPECIES_BY_ID.get(e.speciesId)?.name ?? "plant") : "plant";
-      return e.detail === "tree_seed" ? `A ${name} seed was planted.` : `A ${name} took root.`;
-    }
-    case "species_unlocked": {
-      const name = e.speciesId ? (SPECIES_BY_ID.get(e.speciesId)?.name ?? e.speciesId) : "";
-      return `New species unlocked: ${name}.`;
-    }
-    case "wildlife_arrived":
-      return `${cap(e.wildlifeId ?? "wildlife")} arrived in the garden.`;
-    case "wildlife_departed":
-      return `${cap(e.wildlifeId ?? "wildlife")} moved on for now.`;
-    case "plant_died":
-      return "A plant died back — it stays as habitat.";
-    case "region_unlocked": {
-      const ceremonies: Record<string, string> = {
-        stream: "Long runs carved the stream — new ground, new water.",
-        terrace: "Strength work built the stone terrace.",
-        glade: "Steady yoga cleared the still glade.",
-        meadow: "The garden expanded into new meadow.",
-      };
-      return ceremonies[e.detail ?? ""] ?? "The garden expanded into new ground.";
-    }
-    case "rest_mode_started":
-      return "Garden rest mode began.";
-    case "rest_mode_ended":
-      return "Garden rest mode ended.";
-    case "missed_run":
-      return "A missed run left the soil a little drier.";
-    case "rest_observed":
-      return "A rest day — soil health improved.";
-    case "soil_tended":
-      return "Strength work fed the soil.";
-    case "life_tended":
-      return "Yoga brought the meadow back to life.";
-    case "adventure_logged":
-      return e.detail
-        ? `A ${sportLabel(e.detail).toLowerCase()} fed the garden — wild air does it good.`
-        : "An adventure fed the garden — wild air does it good.";
-    default:
-      return null;
-  }
-}
+// eventSentence, cap and the arrival-selection logic live in arrival.ts —
+// pure, unit-tested, shared by the beat, the log, and the ceremony queue.
 
 const WEATHER_LABEL: Record<GardenWeatherState, string> = {
   fresh_rain: "fresh rain",
@@ -699,98 +635,6 @@ function WeekRibbon({
   );
 }
 
-/**
- * The unlock ceremony: a new species leads the arrival beat as a small
- * celebration — sprite on a soft burst, serif name, what earned it, and a
- * pull straight to the living plant in the scene.
- */
-function UnlockCeremony({
-  entry,
-  extraCount,
-  snapshot,
-  onSeePlant,
-  onDismiss,
-  variant,
-}: {
-  entry: CodexEntry;
-  extraCount: number;
-  snapshot: GardenSnapshot;
-  onSeePlant: (plantId: string) => void;
-  onDismiss: () => void;
-  variant?: "hud";
-}) {
-  const livePlant = snapshot.plants.find(
-    (p) => p.speciesId === entry.speciesId && p.state !== "dead",
-  );
-  return (
-    <div className={`ceremony${variant === "hud" ? " ceremony-hud" : ""}`} role="status">
-      <div className="ceremony-portrait">
-        <svg className="ceremony-burst" viewBox="0 0 100 100" aria-hidden="true">
-          {/* laurel burst: long teardrop petals, short ones between, and fine
-              seed-dots at the tips — gold fading outward */}
-          {Array.from({ length: 8 }, (_, i) => (
-            <path
-              key={`p${i}`}
-              d="M50,44 C46.8,34 47.2,24 50,15 C52.8,24 53.2,34 50,44 Z"
-              fill="#e0bd5c"
-              opacity="0.5"
-              transform={`rotate(${i * 45} 50 50)`}
-            />
-          ))}
-          {Array.from({ length: 8 }, (_, i) => (
-            <path
-              key={`q${i}`}
-              d="M50,44 C48,37 48.2,31 50,26 C51.8,31 52,37 50,44 Z"
-              fill="#f0d78a"
-              opacity="0.6"
-              transform={`rotate(${i * 45 + 22.5} 50 50)`}
-            />
-          ))}
-          {Array.from({ length: 8 }, (_, i) => (
-            <circle
-              key={`d${i}`}
-              cx="50"
-              cy="11"
-              r="1.3"
-              fill="#e8c86a"
-              opacity="0.7"
-              transform={`rotate(${i * 45} 50 50)`}
-            />
-          ))}
-          <circle cx="50" cy="50" r="21" fill="#f7f2dd" opacity="0.88" />
-        </svg>
-        <span className="ceremony-mote ceremony-mote-1" aria-hidden="true" />
-        <span className="ceremony-mote ceremony-mote-2" aria-hidden="true" />
-        <span className="ceremony-mote ceremony-mote-3" aria-hidden="true" />
-        <SpeciesSpriteCard speciesId={entry.speciesId} />
-      </div>
-      <div className="ceremony-body">
-        <div className="ceremony-eyebrow">A new species has taken root</div>
-        <div className="ceremony-name">
-          {entry.name}
-          {entry.rarity !== "common" ? (
-            <span className={`rarity rarity-${entry.rarity}`}>{RARITY_LABEL[entry.rarity]}</span>
-          ) : null}
-          {extraCount > 0 ? <span className="ceremony-extra">+{extraCount} more</span> : null}
-        </div>
-        <div className="ceremony-earned">{entry.hint}</div>
-        {livePlant ? (
-          <button
-            type="button"
-            className="ceremony-see"
-            onClick={() => onSeePlant(livePlant.id)}
-          >
-            See it in the garden →
-          </button>
-        ) : null}
-      </div>
-      <button type="button" className="ceremony-close" onClick={onDismiss} aria-label="Dismiss">
-        <IconClose size={13} />
-      </button>
-    </div>
-  );
-}
-
 function conditionStory(
   condition: GardenConditionWord,
   snapshot: GardenSnapshot,
@@ -824,19 +668,34 @@ export function GardenScreen() {
   const [dockOpen, setDockOpenState] = useState(
     () => typeof window === "undefined" || window.localStorage.getItem("rg-dock") !== "collapsed",
   );
-  const [beatDismissed, setBeatDismissed] = useState(false);
-  const [ceremonyDismissed, setCeremonyDismissed] = useState(false);
+  // The arrival block: which ceremony is showing, and whether the text
+  // lines were dismissed this mount. What counts as "new" comes from the
+  // server-side watermark (selectArrival) — localStorage plays no part.
+  const [ceremonyIndex, setCeremonyIndex] = useState(0);
+  const [blockDismissed, setBlockDismissed] = useState(false);
+  const seenPostedKeyRef = useRef<string | null>(null);
   const [replaying, setReplaying] = useState(false);
-  // The date this garden was last looked at — powers the overnight beat.
-  const lastVisit = useMemo(
-    () => (typeof window === "undefined" ? null : window.localStorage.getItem("rg-last-visit")),
-    [],
-  );
   const reducedMotion = usePrefersReducedMotion();
   const isDesktop = useIsDesktop();
   const dayIndexRef = useRef(0);
   const maxDayIndexRef = useRef(0);
-  const hourOfDay = new Date().getHours() + new Date().getMinutes() / 60;
+  // The sun moves while you watch: live wall-clock hour, ticked once a
+  // minute (the ambient screensaver's proven pattern). A discrete step, so
+  // no reduced-motion gate.
+  const [hourOfDay, setHourOfDay] = useState(
+    () => new Date().getHours() + new Date().getMinutes() / 60,
+  );
+  useEffect(() => {
+    const id = window.setInterval(
+      () => setHourOfDay(new Date().getHours() + new Date().getMinutes() / 60),
+      60_000,
+    );
+    return () => window.clearInterval(id);
+  }, []);
+  // System-driven arrival glow: new plants take the outline filter one at a
+  // time (rarest first). The renderer lets a user selection win, so the
+  // one-filtered-plant budget holds either way.
+  const [highlightPlantId, setHighlightPlantId] = useState<string | null>(null);
 
   const setDockOpen = (open: boolean) => {
     setDockOpenState(open);
@@ -913,18 +772,127 @@ export function GardenScreen() {
     void api.readNow().catch(() => undefined);
   }, []);
 
-  // Remember this visit once the garden has loaded (after `lastVisit` was
-  // captured for the beat above).
+  // A refetch that changes the garden payload restarts the arrival
+  // presentation (structural sharing keeps identity when nothing changed).
+  useEffect(() => {
+    setCeremonyIndex(0);
+    setBlockDismissed(false);
+  }, [garden.data]);
+
+  // One arrival plan per payload — shared by the render, the glow schedule,
+  // the impulses and the mark-seen post below.
+  const arrivalPlan = useMemo(() => {
+    if (!garden.data) return null;
+    const seenState = garden.data.seen ?? null;
+    const evts = (garden.data.events as ArrivalEvent[]) ?? [];
+    const snap = garden.data.snapshot as unknown as GardenSnapshot;
+    const live = today.data?.today ?? snap.state.lastSimulatedDate;
+    return selectArrival(evts, seenState, live);
+  }, [garden.data, today.data]);
+
+  // Glow schedule for newly arrived plants: rarest first, 4s each, max 3.
+  useEffect(() => {
+    if (!garden.data || !arrivalPlan) return;
+    const plan = arrivalPlan;
+    const snap = garden.data.snapshot as unknown as GardenSnapshot;
+    const rank = { rare: 0, uncommon: 1, common: 2 } as const;
+    const ranked = plan.enteringPlantIds
+      .map((id) => snap.plants.find((pl) => pl.id === id))
+      .filter((pl): pl is NonNullable<typeof pl> => !!pl && pl.state !== "dead")
+      .sort(
+        (a, b) =>
+          rank[SPECIES_BY_ID.get(a.speciesId)?.rarity ?? "common"] -
+          rank[SPECIES_BY_ID.get(b.speciesId)?.rarity ?? "common"],
+      )
+      .slice(0, 3)
+      .map((pl) => pl.id);
+    if (ranked.length === 0) return;
+    let i = 0;
+    let timer = 0;
+    const step = () => {
+      if (i >= ranked.length) {
+        setHighlightPlantId(null);
+        return;
+      }
+      setHighlightPlantId(ranked[i]!);
+      i += 1;
+      timer = window.setTimeout(step, 4000);
+    };
+    step();
+    return () => {
+      window.clearTimeout(timer);
+      setHighlightPlantId(null);
+    };
+  }, [garden.data, arrivalPlan]);
+
+  // The impulse channel (spec §6): rain sweeping in when the weather turns
+  // to rain across refetches — exactly the moment a synced run lands — and
+  // a sparkle over the first rare arrival, staggered clear of the front.
+  const [impulse, setImpulse] = useState<SceneImpulse | null>(null);
+  const prevWeatherRef = useRef<GardenWeatherState | null>(null);
+  const impulseSeqRef = useRef(0);
   useEffect(() => {
     if (!garden.data) return;
-    try {
-      const seen = (garden.data.snapshot as GardenSnapshot).state.lastSimulatedDate;
-      const prev = window.localStorage.getItem("rg-last-visit");
-      if (!prev || seen > prev) window.localStorage.setItem("rg-last-visit", seen);
-    } catch {
-      // Storage may be unavailable; the beat simply won't fire.
+    const w = (garden.data.snapshot as unknown as GardenSnapshot).state.weatherState;
+    const prev = prevWeatherRef.current;
+    prevWeatherRef.current = w;
+    if (prev && prev !== w && (w === "fresh_rain" || w === "recovery_rain")) {
+      impulseSeqRef.current += 1;
+      setImpulse({ kind: "rain_front", key: `rain:${impulseSeqRef.current}` });
     }
   }, [garden.data]);
+  const sparkleFiredRef = useRef<string | null>(null);
+  useEffect(() => {
+    if (!garden.data || !arrivalPlan || arrivalPlan.sparkles.length === 0) return;
+    const s = arrivalPlan.sparkles[0]!;
+    const sparkKey = s.kind === "plant" ? `sp:${s.plantId}` : `sw:${s.wildlifeId}`;
+    if (sparkleFiredRef.current === sparkKey) return;
+    const snap = garden.data.snapshot as unknown as GardenSnapshot;
+    let x = 0.5;
+    let y = 0.45;
+    if (s.kind === "plant") {
+      const pl = snap.plants.find((p) => p.id === s.plantId);
+      if (pl) {
+        x = pl.position.x;
+        y = Math.min(0.9, 0.5 + 0.4 * pl.position.y);
+      }
+    }
+    const id = window.setTimeout(() => {
+      sparkleFiredRef.current = sparkKey;
+      setImpulse({ kind: "sparkle", key: sparkKey, x, y });
+    }, 3000);
+    return () => window.clearTimeout(id);
+  }, [garden.data, arrivalPlan]);
+
+  // Mark the arrival seen: brand-new gardens immediately and silently;
+  // otherwise on dismissing the last ceremony (or the block), or 6s after a
+  // ceremony-less block presents. Keyed on the watermark tip so each new
+  // arrival posts exactly once; a failed POST (after one retry) just means
+  // the same arrivals re-present next visit — never lossy.
+  useEffect(() => {
+    if (!arrivalPlan) return;
+    const plan = arrivalPlan;
+    const key = `${plan.nextSeen.lastSeenDate}:${plan.nextSeen.lastSeenSeq}:${plan.nextSeen.celebratedSpeciesIds.join(",")}`;
+    if (seenPostedKeyRef.current === key) return;
+    const post = () => {
+      seenPostedKeyRef.current = key;
+      void api
+        .gardenSeen(plan.nextSeen)
+        .catch(() => api.gardenSeen(plan.nextSeen))
+        .catch(() => undefined);
+    };
+    if (plan.markSeenImmediately) {
+      post();
+      return;
+    }
+    if (ceremonyIndex < plan.ceremonies.length) return; // ceremonies still showing
+    if (plan.ceremonies.length > 0 || blockDismissed) {
+      post();
+      return;
+    }
+    const id = window.setTimeout(post, 6000);
+    return () => window.clearTimeout(id);
+  }, [arrivalPlan, ceremonyIndex, blockDismissed]);
 
   // Timeline week replay: step one day forward on a calm cadence. The refs
   // are written during render below, so the interval always sees the live
@@ -1004,18 +972,7 @@ export function GardenScreen() {
     .filter((x): x is { e: GardenEvent; text: string } => !!x.text)
     .slice(0, 12);
 
-  // Today's previewed happenings (rain, plantings) — the same-day feedback
-  // line. Only meaningful while looking at the live garden, not a past day.
-  const todayLines = viewingLive
-    ? events
-        .filter((e) => (e as { preview?: boolean }).preview)
-        .map((e) => eventSentence(e))
-        .filter((t): t is string => !!t)
-        .slice(0, 2)
-    : [];
-
   const codex = (garden.data.codex as CodexEntry[]) ?? [];
-  const nudges = (garden.data.nextUnlocks as CodexEntry[]) ?? [];
   const wildlife = (garden.data.wildlife as WildlifeEntry[]) ?? [];
   const unlockedCount = codex.filter((c) => c.unlocked).length;
   const visitor =
@@ -1023,42 +980,32 @@ export function GardenScreen() {
     null;
   const visitorLedger = (garden.data.visitors as VisitorEntry[]) ?? [];
 
-  // The overnight beat: what happened since the last visit. Unlocks lead —
-  // the reveal is the reward — so they graduate from a sentence into the
-  // ceremony card, and the remaining lines stay text.
-  const BEAT_PRIORITY: Record<string, number> = {
-    species_unlocked: 0,
-    wildlife_arrived: 1,
-    plant_added: 2,
-    region_unlocked: 3,
-  };
-  const sinceVisit =
-    lastVisit && lastVisit < liveDate
-      ? events.filter((e) => e.date > lastVisit && !(e as { preview?: boolean }).preview)
-      : [];
-  const ceremonyEntries = !ceremonyDismissed
-    ? sinceVisit
-        .filter((e) => e.kind === "species_unlocked" && e.speciesId)
-        .map((e) => codex.find((c) => c.speciesId === e.speciesId))
-        .filter((c): c is CodexEntry => !!c)
-    : [];
-  const beatLines = !beatDismissed
-    ? sinceVisit
-        .filter((e) => !(ceremonyEntries.length > 0 && e.kind === "species_unlocked"))
-        .sort((a, b) => (BEAT_PRIORITY[a.kind] ?? 9) - (BEAT_PRIORITY[b.kind] ?? 9))
-        .map((e) => eventSentence(e))
-        .filter((t): t is string => !!t)
-        .slice(0, 3)
-    : [];
+  // The arrival block: ceremonies, beat and today lines, all selected
+  // against the server-side watermark — refresh-proof, cross-device, and
+  // same-day unlocks celebrate immediately (arrival.ts).
+  const seen = garden.data.seen ?? null;
+  // Non-null past the early returns: the memo runs whenever garden.data exists.
+  const arrival = arrivalPlan!;
+  const currentCeremony =
+    viewingLive && !blockDismissed ? (arrival.ceremonies[ceremonyIndex] ?? null) : null;
+  const ceremoniesDone = ceremonyIndex >= arrival.ceremonies.length;
+  const sinceLabel = seen?.lastSeenDate ?? addDays(liveDate, -1);
+  const dismissCeremony = () => setCeremonyIndex((i) => i + 1);
   const seePlantFromCeremony = (plantId: string) => {
-    setCeremonyDismissed(true);
+    dismissCeremony();
     setSelectedPlantId(plantId);
   };
+  const beatLines = blockDismissed ? [] : arrival.beatLines;
+  const todayLines = blockDismissed || !viewingLive ? [] : arrival.todayLines;
 
-  // Today's rare visitor leads whichever arrival line is showing.
-  const beatLinesAll =
-    visitor && viewingLive && beatLines.length > 0 ? [visitor.line, ...beatLines] : beatLines;
-  const todayLinesAll = visitor && viewingLive ? [visitor.line, ...todayLines] : todayLines;
+  // Today's rare visitor (and, once a year, the garden's birthday) leads
+  // whichever arrival line is showing.
+  const anniversary = (garden.data.anniversary as string | null) ?? null;
+  const leads = viewingLive
+    ? [...(anniversary ? [anniversary] : []), ...(visitor ? [visitor.line] : [])]
+    : [];
+  const beatLinesAll = beatLines.length > 0 ? [...leads, ...beatLines] : beatLines;
+  const todayLinesAll = leads.length > 0 || todayLines.length > 0 ? [...leads, ...todayLines] : todayLines;
 
   const d = today.data;
 
@@ -1255,6 +1202,7 @@ export function GardenScreen() {
       ))}
       {d ? <Readiness readiness={d.readiness} /> : null}
       <EvidenceCard />
+      <ReviewPull />
     </>
   );
 
@@ -1308,6 +1256,9 @@ export function GardenScreen() {
               timeOfDay={hourOfDay}
               atmosphere={!timelineOpen}
               visitor={viewingLive && visitor ? visitor.kind : null}
+              enteringPlantIds={viewingLive ? arrival.enteringPlantIds : undefined}
+              highlightPlantId={viewingLive ? highlightPlantId : null}
+              impulse={viewingLive ? impulse : null}
               preserveAspectRatio="xMidYMax slice"
               className="stage-scene-svg"
             />
@@ -1339,37 +1290,57 @@ export function GardenScreen() {
             {restMode.active ? (
               <p className="hud-weather">Rest mode — nothing declines while you're away.</p>
             ) : null}
-            {viewingLive && beatLinesAll.length > 0 && lastVisit ? (
+            {viewingLive && beatLinesAll.length > 0 ? (
               <p className="hud-beat">
-                <span className="hud-beat-label">Since {formatDayShort(lastVisit)}</span>
+                <span className="hud-beat-label">Since {formatDayShort(sinceLabel)}</span>
                 <span>{beatLinesAll.join(" ")}</span>
+                {arrival.beatOverflow ? (
+                  <button
+                    type="button"
+                    className="linklike hud-beat-seeall"
+                    onClick={() => setOpenDrawer("log")}
+                  >
+                    See all →
+                  </button>
+                ) : null}
                 <button
                   type="button"
                   className="hud-beat-dismiss"
-                  onClick={() => setBeatDismissed(true)}
+                  onClick={() => setBlockDismissed(true)}
                   aria-label="Dismiss"
                 >
                   <IconClose size={12} />
                 </button>
               </p>
-            ) : viewingLive && todayLinesAll.length > 0 ? (
+            ) : null}
+            {viewingLive && todayLinesAll.length > 0 ? (
               <p className="hud-beat">
                 <span className="hud-beat-label">Today</span>
                 <span>{todayLinesAll.join(" ")}</span>
+                {arrival.todayOverflow ? (
+                  <button
+                    type="button"
+                    className="linklike hud-beat-seeall"
+                    onClick={() => setOpenDrawer("log")}
+                  >
+                    See all →
+                  </button>
+                ) : null}
               </p>
             ) : null}
           </div>
 
           {/* The celebration gets its own stage moment — centered in the empty
               sky, never crowding the condition header or the bars. */}
-          {viewingLive && ceremonyEntries.length > 0 ? (
+          {currentCeremony ? (
             <div className="hud-ceremony">
-              <UnlockCeremony
-                entry={ceremonyEntries[0]!}
-                extraCount={ceremonyEntries.length - 1}
+              <CeremonyCard
+                ceremony={currentCeremony}
+                codexEntry={codex.find((c) => c.speciesId === currentCeremony.speciesId)}
+                queueLeft={arrival.ceremonies.length - ceremonyIndex - 1}
                 snapshot={snapshot}
                 onSeePlant={seePlantFromCeremony}
-                onDismiss={() => setCeremonyDismissed(true)}
+                onDismiss={dismissCeremony}
                 variant="hud"
               />
             </div>
@@ -1533,6 +1504,9 @@ export function GardenScreen() {
           timeOfDay={hourOfDay}
           atmosphere={!timelineOpen}
           visitor={viewingLive && visitor ? visitor.kind : null}
+          enteringPlantIds={viewingLive ? arrival.enteringPlantIds : undefined}
+          highlightPlantId={viewingLive ? highlightPlantId : null}
+          impulse={viewingLive ? impulse : null}
         />
       </div>
 
@@ -1584,21 +1558,24 @@ export function GardenScreen() {
             adventure={adventure}
           />
         ) : null}
-        {viewingLive && ceremonyEntries.length > 0 ? (
-          <UnlockCeremony
-            entry={ceremonyEntries[0]!}
-            extraCount={ceremonyEntries.length - 1}
+        {currentCeremony ? (
+          <CeremonyCard
+            ceremony={currentCeremony}
+            codexEntry={codex.find((c) => c.speciesId === currentCeremony.speciesId)}
+            queueLeft={arrival.ceremonies.length - ceremonyIndex - 1}
             snapshot={snapshot}
             onSeePlant={seePlantFromCeremony}
-            onDismiss={() => setCeremonyDismissed(true)}
+            onDismiss={dismissCeremony}
           />
         ) : null}
-        {viewingLive && beatLinesAll.length > 0 && lastVisit ? (
+        {viewingLive && beatLinesAll.length > 0 ? (
           <p className="garden-nowline">
-            <span className="now-chip">since {formatDayShort(lastVisit)}</span>
+            <span className="now-chip">since {formatDayShort(sinceLabel)}</span>
             {beatLinesAll.join(" ")}
+            {arrival.beatOverflow ? <span className="faint"> See the log below.</span> : null}
           </p>
-        ) : todayLinesAll.length > 0 ? (
+        ) : null}
+        {viewingLive && todayLinesAll.length > 0 ? (
           <p className="garden-nowline">
             <span className="now-chip">today</span>
             {todayLinesAll.join(" ")}

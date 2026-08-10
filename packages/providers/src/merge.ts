@@ -90,6 +90,7 @@ export function singleSourceActivity(src: SourceActivity, existingId?: string): 
     trainingLoad: src.trainingLoad,
     deviceName: src.deviceName,
     title: src.title,
+    telemetry: src.telemetry,
     sourceMergeConfidence: 1,
   };
 }

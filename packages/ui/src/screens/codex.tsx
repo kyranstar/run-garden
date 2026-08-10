@@ -473,6 +473,7 @@ const WILDLIFE_EMOJI: Record<string, string> = {
   frogs: "🐸",
   dragonflies: "💠",
   ladybugs: "🐞",
+  ducks: "🦆",
 };
 
 export function WildlifeShelf({ wildlife }: { wildlife: WildlifeEntry[] }) {
@@ -519,7 +520,7 @@ export interface GroundEntry {
   earnedDate: string;
 }
 
-const GROUND_META: Record<string, { name: string; cause: string; icon: ReactNode }> = {
+export const GROUND_META: Record<string, { name: string; cause: string; icon: ReactNode }> = {
   meadow: {
     name: "New meadow",
     cause: "steady running",

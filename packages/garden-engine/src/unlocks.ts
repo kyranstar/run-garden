@@ -54,6 +54,14 @@ export function gateSatisfied(gate: UnlockGate, snapshot: GardenSnapshot): boole
       return (s.yogaSessionCount ?? 0) >= gate.count;
     case "balanced_weeks":
       return (s.balancedWeekCount ?? 0) >= gate.count;
+    case "ground":
+      return (s.grounds ?? []).some((g) => g.kind === gate.ground);
+    case "races":
+      return (s.raceCount ?? 0) >= gate.count;
+    case "evening_runs":
+      return s.eveningRunCount >= gate.count;
+    case "coached_blocks":
+      return (s.coachedBlockCount ?? 0) >= gate.count;
   }
 }
 
@@ -94,6 +102,20 @@ export function describeGate(gate: UnlockGate): string {
       return `Complete ${gate.count} yoga session${gate.count === 1 ? "" : "s"}`;
     case "balanced_weeks":
       return `${gate.count} balanced week${gate.count === 1 ? "" : "s"} — run, lift, and yoga in the same week`;
+    case "ground":
+      return gate.ground === "stream"
+        ? "Grows once the stream is carved"
+        : gate.ground === "terrace"
+          ? "Grows once the stone terrace is built"
+          : "Grows once the still glade is cleared";
+    case "races":
+      return gate.count === 1 ? "Finish a race" : `Finish ${gate.count} races`;
+    case "evening_runs":
+      return `Complete ${gate.count} evening run${gate.count === 1 ? "" : "s"}`;
+    case "coached_blocks":
+      return gate.count === 1
+        ? "See a coached block through, start to finish"
+        : `See ${gate.count} coached blocks through`;
   }
 }
 
@@ -130,7 +152,14 @@ export function gateProgress(
       return { current: s.yogaSessionCount ?? 0, target: gate.count };
     case "balanced_weeks":
       return { current: s.balancedWeekCount ?? 0, target: gate.count };
+    case "races":
+      return { current: s.raceCount ?? 0, target: gate.count };
+    case "evening_runs":
+      return { current: s.eveningRunCount, target: gate.count };
+    case "coached_blocks":
+      return { current: s.coachedBlockCount ?? 0, target: gate.count };
     default:
+      // `ground` (like start/comeback/dead_wood) is binary — no bar.
       return null;
   }
 }
@@ -187,4 +216,5 @@ export const WILDLIFE_HINTS: Record<WildlifeKind, string> = {
   frogs: "Damp ferns near the ground",
   dragonflies: "A garden dense with open flowers",
   ladybugs: "At least one species in bloom",
+  ducks: "A calm stream draws them in",
 };

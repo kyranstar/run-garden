@@ -103,6 +103,8 @@ export interface RawCorosActivityListItem {
   ascent?: number;
   totalAscent?: number;
   elevationGain?: number;
+  /** °C × 100 — the watch thermometer, populated on land activities too. */
+  waterTemperature?: number;
   [key: string]: unknown;
 }
 
@@ -113,7 +115,8 @@ export interface RawCorosActivitySummary {
   workoutTime?: number;
   avgHr?: number;
   maxHr?: number;
-  avgPace?: number; // sec/km
+  avgPace?: number; // sec/km — 0 on current payloads; avgSpeed carries pace
+  avgSpeed?: number; // sec/km for the run family (probe-verified 2026-08-06)
   adjustedPace?: number;
   trainingLoad?: number;
   elevGain?: number;
@@ -125,6 +128,18 @@ export interface RawCorosActivitySummary {
   planId?: string | number;
   programId?: string | number;
   hasProgram?: number;
+  // Telemetry extras (effort-analysis spec §1); wire 0 usually means absent.
+  avgCadence?: number; // steps/min
+  maxCadence?: number;
+  avgPower?: number; // watts
+  maxPower?: number;
+  avgStepLen?: number; // centimetres
+  aerobicEffect?: number; // 0–5
+  anaerobicEffect?: number; // 0–5
+  currentVo2Max?: number;
+  staminaLevel7d?: number; // percent
+  bestKm?: number; // sec/km
+  pauseTime?: number; // centiseconds
   [key: string]: unknown;
 }
 
@@ -135,6 +150,40 @@ export interface RawCorosLapItem {
   avgPace?: number; // sec/km
   avgHr?: number;
   lapType?: number;
+  avgCadence?: number; // steps/min
+  minHr?: number;
+  maxHr?: number;
+  elevGain?: number; // metres
+  avgGrade?: number; // percent
+  avgPower?: number; // watts
+  exerciseNameKey?: string; // strength/yoga catalog key
+  [key: string]: unknown;
+}
+
+/** detail.weather — meteo record, outdoor activities only (provider 1 = AccuWeather). */
+export interface RawCorosWeather {
+  temperature?: number; // °C × 10
+  bodyFeelTemp?: number; // °C × 10 (RealFeel)
+  humidity?: number; // % × 10
+  windSpeed?: number; // × 10, km/h assumed
+  windDirection?: number; // degrees × 10
+  [key: string]: unknown;
+}
+
+export interface RawCorosZoneBucket {
+  leftScope?: number;
+  rightScope?: number;
+  second?: number;
+  percent?: number;
+  zoneIndex?: number;
+  [key: string]: unknown;
+}
+
+export interface RawCorosZoneList {
+  type?: number;
+  /** 3 = heart rate (bpm bounds); 0 = pace (ms/km bounds, left = slower). */
+  zoneType?: number;
+  zoneItemList?: RawCorosZoneBucket[];
   [key: string]: unknown;
 }
 
@@ -145,6 +194,14 @@ export interface RawCorosActivityDetail {
     lapDistance?: number;
     lapItemList?: RawCorosLapItem[];
   }>;
+  weather?: RawCorosWeather;
+  sportFeelInfo?: {
+    feelType?: number; // 0 = unset, 1–5 with 5 = strongest
+    sportNote?: string;
+    [key: string]: unknown;
+  };
+  zoneList?: RawCorosZoneList[];
+  pauseList?: Array<{ duration?: number /* centiseconds */; [key: string]: unknown }>;
   [key: string]: unknown;
 }
 

@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { api, type InsightsResponse } from "@rg/api-client";
 import { disciplineLabel, sessionNoun, type Discipline } from "@rg/analytics";
@@ -23,7 +23,8 @@ import {
 } from "../charts.js";
 import { TrendChip } from "../chart-kit.js";
 import { SignalTile, StatusStrip } from "../signal-tiles.js";
-import { currentStreak, formatHours } from "../charts-math.js";
+import type { GardenSnapshot } from "@rg/garden-engine";
+import { formatHours, isRecentRecord, reviewUnseen } from "../charts-math.js";
 
 /**
  * The Insights dashboard. Reading order, top to bottom: one line of status →
@@ -184,7 +185,27 @@ export function InsightsScreen() {
     queryFn: () => api.insights(discipline),
     staleTime: 60_000,
   });
+  // Shares the landing screen's cache; only read for the weekly chain.
+  const gardenQ = useQuery({ queryKey: ["garden"], queryFn: api.garden, staleTime: 5 * 60_000 });
   const [drill, setDrill] = useState<InterpretedMetric | null>(null);
+  // The review's "New" pill shows on the visit that reveals it, then goes
+  // quiet: the seen mark is written after this render's pill computed
+  // against the pre-visit value (earned-moments spec §2).
+  let storedReviewSeen: string | null = null;
+  try {
+    storedReviewSeen = window.localStorage.getItem("rg-review-seen");
+  } catch {
+    storedReviewSeen = null;
+  }
+  useEffect(() => {
+    const latest = insights.data?.reviews?.[0];
+    if (!latest) return;
+    try {
+      window.localStorage.setItem("rg-review-seen", latest.weekStart);
+    } catch {
+      // Storage unavailable — the pill will simply show again.
+    }
+  }, [insights.data]);
   // Switching discipline is a new query key with nothing cached, so the query
   // goes back to `isLoading` and the whole screen — selector included — used to
   // be replaced by a spinner. Remembering the last known list keeps the chips
@@ -263,7 +284,12 @@ export function InsightsScreen() {
   // "22 of 24 resolved" beside the percentage means the reader can check it.
   const resolved = consistency.completed + consistency.skipped + consistency.missed;
   const totalRuns = recentTraining.reduce((s, w) => s + w.runCount, 0);
-  const streak = currentStreak(consistency.days);
+  // The sanctioned streak is WEEKLY (canon §1.3): the engine forgives days
+  // by design, so a daily streak would be dishonest. The chain comes from
+  // the garden snapshot — shared cache with the landing screen.
+  const gardenState = (gardenQ.data?.snapshot as GardenSnapshot | undefined)?.state;
+  const chain = gardenState?.consecutiveConsistentWeeks ?? 0;
+  const bestChain = gardenState?.bestConsistentWeeks ?? 0;
 
   return (
     <div className="stack">
@@ -319,10 +345,13 @@ export function InsightsScreen() {
                 {consistency.pending === 1 ? "" : "s"} still waiting on an answer.
               </p>
             )}
-            {/* Quiet by design: a streak under 2 days is just normal
-                training, and normal earns silence (see charts-math.ts'
-                currentStreak for the rest/pending/missed walk-back rule). */}
-            {streak >= 2 ? <p className="streak-note">{streak}-day streak</p> : null}
+            {/* Quiet by design, and weekly by canon: never render a zero. */}
+            {chain >= 1 ? (
+              <p className="streak-note">
+                {chain} consistent week{chain === 1 ? "" : "s"} — the vines climb with it.
+                {bestChain > chain ? ` Longest: ${bestChain}.` : ""}
+              </p>
+            ) : null}
             <OutcomeBar
               completed={consistency.completed}
               moved={consistency.moved}
@@ -471,6 +500,9 @@ export function InsightsScreen() {
               <li key={r.id} style={{ marginBottom: "0.5rem" }}>
                 <strong>{r.title}:</strong> {r.value}{" "}
                 <span className="faint">({formatDayLong(r.achievedOn)})</span>
+                {isRecentRecord(r.achievedOn, new Date().toISOString().slice(0, 10)) ? (
+                  <span className="new-ring">New</span>
+                ) : null}
                 <div className="faint">{r.rule}</div>
               </li>
             ))}
@@ -481,6 +513,9 @@ export function InsightsScreen() {
       {reviews.length > 0 ? (
         <Card title="Weekly review">
           <div className="stack">
+            {reviewUnseen(reviews[0]!.weekStart, storedReviewSeen) ? (
+              <span className="new-ring">New this week</span>
+            ) : null}
             {/* Newest first — the worker orders by weekStart desc. */}
             <ReviewBody r={reviews[0]!} />
             {reviews.length > 1 ? (

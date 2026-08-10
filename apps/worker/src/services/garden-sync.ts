@@ -1,10 +1,11 @@
-import { and, asc, desc, eq, gte, isNull, lte } from "drizzle-orm";
+import { and, asc, desc, eq, gte, inArray, isNull, lt, lte } from "drizzle-orm";
 import {
   activities,
   dailyHealth,
   gardenDayInputs,
   gardenEvents,
   gardenPlants,
+  gardenSeen,
   gardenSnapshots,
   gardenState,
   gardenUnlocks,
@@ -16,6 +17,7 @@ import {
 } from "@rg/database";
 import {
   addDays,
+  daysBetween,
   eachDay,
   isAdventureSport,
   isoWeekday,
@@ -54,6 +56,7 @@ import {
 // disagree about what counts as a yoga session.
 import { disciplineOf } from "@rg/analytics";
 import { chunkedInsert, type Db } from "./db.js";
+import { coachBlockAdherence, COACHED_BLOCK_ADHERENCE, plansEndedOn } from "./coach-plans.js";
 import {
   VISITOR_HINTS,
   VISITOR_LINES,
@@ -235,17 +238,42 @@ export async function buildDayInput(
       durationMin: Math.round(a.durationSeconds / 60),
     }));
 
-  const missedRuns = dayWorkouts
-    .filter(
-      (w) =>
-        (w.completionState === "skipped" || w.completionState === "missed") &&
-        (w.resolutionDate ?? w.effectiveDate) === date,
-    )
+  const resolvedHere = dayWorkouts.filter(
+    (w) =>
+      (w.completionState === "skipped" || w.completionState === "missed") &&
+      (w.resolutionDate ?? w.effectiveDate) === date,
+  );
+  // Coach-sanctioned skips never cost the garden (fairness spec §1): they are
+  // excluded from missedRuns entirely, and the FIRST one in any rolling 7
+  // days upgrades the day to observed rest below. Deterministic from
+  // resolution rows, so replay is exact.
+  const sanctionedHere = resolvedHere.filter((w) => w.sanctionedBy === "coach");
+  const missedRuns = resolvedHere
+    .filter((w) => w.sanctionedBy !== "coach")
     .map((w) => ({ workoutId: w.id }));
+  let mercyToday = false;
+  if (sanctionedHere.length > 0) {
+    const prior = await db
+      .select({ id: plannedWorkouts.id })
+      .from(plannedWorkouts)
+      .where(
+        and(
+          eq(plannedWorkouts.userId, userId),
+          eq(plannedWorkouts.sanctionedBy, "coach"),
+          inArray(plannedWorkouts.completionState, ["skipped", "missed"]),
+          gte(plannedWorkouts.resolutionDate, addDays(date, -6)),
+          lt(plannedWorkouts.resolutionDate, date),
+        ),
+      );
+    mercyToday = prior.length === 0;
+  }
 
   const hasRest = dayWorkouts.some((w) => w.category === "rest");
   const hasNonRest = dayWorkouts.some((w) => w.category !== "rest");
-  const restObserved = hasRest && !hasNonRest && completedRuns.length === 0 && missedRuns.length === 0;
+  const restObserved =
+    (hasRest && !hasNonRest && completedRuns.length === 0 && missedRuns.length === 0) ||
+    // Mercy day: agreed rest is keeping the plan, not breaking it.
+    (mercyToday && completedRuns.length === 0);
 
   // Plan gap: no active plan covers this date.
   const plans = await db
@@ -278,6 +306,17 @@ export async function buildDayInput(
     .limit(1);
   const recovery = recoveryScoreFrom(healthRow[0]?.recoveryScore, healthRow[0]?.fatigueScore);
   if (recovery !== undefined) input.recoveryScore = recovery;
+
+  // Fairness spec §4: the day AFTER a coached plan's final day, at ≥85%
+  // block adherence, counts a coached block (→ the Keystone pine).
+  const endedYesterday = await plansEndedOn(db, userId, addDays(date, -1));
+  for (const plan of endedYesterday) {
+    const adh = await coachBlockAdherence(db, userId, plan.id, plan.startDate, plan.endDate);
+    if (adh !== null && adh >= COACHED_BLOCK_ADHERENCE) {
+      input.coachedBlockCompleted = true;
+      break;
+    }
+  }
 
   // Week adherence on Mondays (for consistency unlocks).
   if (isoWeekday(date) === 1) {
@@ -508,6 +547,10 @@ export interface GardenView {
    * durable replay converges to exactly this.
    */
   previewEvents: GardenEvent[];
+  /** Arrival watermark (null = never marked; see POST /api/garden/seen). */
+  seen: { lastSeenDate: string; lastSeenSeq: number; celebratedSpeciesIds: string[] } | null;
+  /** Garden-birthday line, on the anniversary of `createdDate` (age ≥ 1y). */
+  anniversary: string | null;
   /** Every species — unlocked and locked — with hints and real progress. */
   codex: Array<SpeciesUnlockStatus & { unlockedOn: string | null; livingCount: number }>;
   /** The nearest locked species: the "1 more week and it arrives" nudges. */
@@ -535,6 +578,60 @@ export interface GardenView {
  * Shared by the session-authed page route and the device-authed ambient read
  * so both always show the exact same garden.
  */
+/**
+ * Read-only fold of the simulation from the last durable day through today.
+ * Days the durable sim couldn't resolve are simulated from their best-known
+ * inputs (or neutral inputs if even that fails); only TODAY's events are
+ * returned, since intermediate days will emit identical durable rows when
+ * they resolve. Capped at 14 days — beyond that (a durable-sim outage, not
+ * normal lag, which the grace window bounds at 2) the durable snapshot
+ * stands and the preview stays silent.
+ */
+export async function previewToday(
+  db: Db,
+  userId: string,
+  snapshot: GardenSnapshot,
+  today: LocalDate,
+  prefs: UserPreferences,
+): Promise<{ snapshot: GardenSnapshot; events: GardenEvent[]; todayInput: GardenDayInput | null }> {
+  const gapDays = daysBetween(snapshot.state.lastSimulatedDate, today);
+  if (gapDays < 1 || gapDays > 14) return { snapshot, events: [], todayInput: null };
+  try {
+    let cursor = snapshot;
+    let events: GardenEvent[] = [];
+    let todayInput: GardenDayInput | null = null;
+    for (
+      let date = addDays(snapshot.state.lastSimulatedDate, 1);
+      date <= today;
+      date = addDays(date, 1)
+    ) {
+      let input: GardenDayInput;
+      try {
+        input = await buildDayInput(db, userId, date, prefs);
+      } catch {
+        input = {
+          date,
+          completedRuns: [],
+          missedRuns: [],
+          restObserved: false,
+          restModeActive: cursor.state.restMode,
+          planGap: false,
+        };
+      }
+      const step = simulateDay(cursor, input);
+      cursor = step.snapshot;
+      if (date === today) {
+        events = step.events;
+        todayInput = input;
+      }
+    }
+    return { snapshot: cursor, events, todayInput };
+  } catch {
+    // Preview is cosmetic — never let it break the garden read.
+    return { snapshot, events: [], todayInput: null };
+  }
+}
+
 export async function buildGardenView(
   db: Db,
   userId: string,
@@ -554,25 +651,16 @@ export async function buildGardenView(
     restMode: snapshot.state.restMode,
   };
 
-  // Same-day feedback: if a run was completed today, preview today's simulation
-  // for display (rain, growth, events) without persisting it. Only when the
-  // durable sim is exactly caught up to yesterday — previewing across a gap
-  // would skip days and misrepresent.
-  let todayInput: GardenDayInput | null = null;
-  let previewEvents: GardenEvent[] = [];
+  // Same-day feedback: fold the sim forward read-only from the last durable
+  // day through today — resolved days as recorded, unresolved days neutral —
+  // so a lagging durable sim can never silence today's run (spec §2 of the
+  // 2026-08-05 reward-loop design). Nothing here is persisted. The fold also
+  // hands back today's input so the adventure shield below can read it.
   const today = todayInZone(prefs.timezone);
-  if (addDays(snapshot.state.lastSimulatedDate, 1) === today) {
-    try {
-      todayInput = await buildDayInput(db, userId, today, prefs);
-      if (todayInput.completedRuns.length > 0 || (todayInput.adventures?.length ?? 0) > 0) {
-        const preview = simulateDay(snapshot, todayInput);
-        snapshot = preview.snapshot;
-        previewEvents = preview.events;
-      }
-    } catch {
-      // Preview is cosmetic — never let it break the garden read.
-    }
-  }
+  const preview = await previewToday(db, userId, snapshot, today, prefs);
+  snapshot = preview.snapshot;
+  const previewEvents = preview.events;
+  const todayInput = preview.todayInput;
   let unlocks = await db
     .select()
     .from(gardenUnlocks)
@@ -692,10 +780,30 @@ export async function buildGardenView(
     lastSport = match?.sport ?? null;
   }
 
+  const seenRow = (
+    await db.select().from(gardenSeen).where(eq(gardenSeen.userId, userId)).limit(1)
+  )[0];
+
+  // Garden birthday (Bundle 3 §6): a quiet once-a-year line, no art needed.
+  const created = snapshot.state.createdDate;
+  const ageYears = Number(today.slice(0, 4)) - Number(created.slice(0, 4));
+  const anniversary =
+    ageYears >= 1 && today.slice(5) === created.slice(5)
+      ? `The garden turns ${ageYears} today — it remembers every run.`
+      : null;
+
   return {
     snapshot,
     condition: conditionWord(snapshot.state, DEFAULT_GARDEN_CONFIG),
     previewEvents,
+    seen: seenRow
+      ? {
+          lastSeenDate: seenRow.lastSeenDate,
+          lastSeenSeq: seenRow.lastSeenSeq,
+          celebratedSpeciesIds: seenRow.celebratedSpeciesIds,
+        }
+      : null,
+    anniversary,
     species: unlocks.map((u) => {
       const s = SPECIES_BY_ID.get(u.speciesId);
       return {

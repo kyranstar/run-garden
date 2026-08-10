@@ -1,6 +1,6 @@
 import { Hono } from "hono";
 import { eq } from "drizzle-orm";
-import { gardenState } from "@rg/database";
+import { gardenSeen, gardenState } from "@rg/database";
 import { nowInstant } from "@rg/domain";
 import type { GardenSnapshot } from "@rg/garden-engine";
 import type { AppContext } from "../auth/middleware.js";
@@ -44,6 +44,44 @@ gardenRoutes.get("/timeline", async (c) => {
   const userId = c.get("userId");
   const days = await buildGardenTimeline(db, userId);
   return c.json({ days });
+});
+
+/**
+ * Arrival watermark (spec §3, 2026-08-05 reward-loop design): the client
+ * marks the newest durable event it has presented, plus any same-day
+ * (preview) unlocks it has already celebrated, so ceremonies fire exactly
+ * once — across refreshes, devices, and days.
+ */
+gardenRoutes.post("/seen", async (c) => {
+  const db = c.get("db");
+  const userId = c.get("userId");
+  const body = await c.req
+    .json<{ lastSeenDate?: unknown; lastSeenSeq?: unknown; celebratedSpeciesIds?: unknown }>()
+    .catch(() => null);
+  const ids = body?.celebratedSpeciesIds;
+  if (
+    !body ||
+    typeof body.lastSeenDate !== "string" ||
+    !/^\d{4}-\d{2}-\d{2}$/.test(body.lastSeenDate) ||
+    typeof body.lastSeenSeq !== "number" ||
+    !Number.isInteger(body.lastSeenSeq) ||
+    !Array.isArray(ids) ||
+    ids.length > 64 ||
+    ids.some((s) => typeof s !== "string")
+  ) {
+    return c.json({ error: "bad_request" }, 400);
+  }
+  const value = {
+    lastSeenDate: body.lastSeenDate,
+    lastSeenSeq: body.lastSeenSeq,
+    celebratedSpeciesIds: ids as string[],
+    updatedAt: nowInstant(),
+  };
+  await db
+    .insert(gardenSeen)
+    .values({ userId, ...value })
+    .onConflictDoUpdate({ target: gardenSeen.userId, set: value });
+  return c.json({ ok: true });
 });
 
 gardenRoutes.post("/rest-mode", async (c) => {

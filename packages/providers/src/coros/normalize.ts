@@ -1,4 +1,4 @@
-import type { PlannedStage, SourceActivity } from "@rg/domain";
+import type { ActivityTelemetry, PlannedStage, SourceActivity } from "@rg/domain";
 import { fingerprint, sportIdForCorosCode } from "@rg/domain";
 import { NORMALIZER_VERSION, type SourcePlannedWorkout } from "../types.js";
 import {
@@ -243,6 +243,80 @@ function localIsoFromUnix(seconds: number, offsetMinutes: number): string {
   return d.toISOString().replace(".000Z", "").replace("Z", "");
 }
 
+/** Wire 0 is a sentinel for "absent" on these fields; only positives count. */
+function positive(v: number | undefined): number | undefined {
+  return typeof v === "number" && v > 0 ? v : undefined;
+}
+
+/**
+ * Telemetry extras from the detail payload (effort-analysis spec §1). Every
+ * unit conversion here is probe-verified against live payloads (2026-08-06):
+ * temperatures ×10 (weather) / ×100 (device), pause centiseconds, pace-zone
+ * bounds ms/km. Returns undefined when nothing survives the sentinels so bare
+ * activities carry no empty object.
+ */
+function buildTelemetry(
+  item: RawCorosActivityListItem,
+  detail?: RawCorosActivityDetail,
+): ActivityTelemetry | undefined {
+  const summary = detail?.summary;
+  const weather = detail?.weather;
+  const feel = detail?.sportFeelInfo;
+  const t: ActivityTelemetry = {};
+
+  t.avgCadenceSpm = positive(summary?.avgCadence);
+  t.maxCadenceSpm = positive(summary?.maxCadence);
+  t.avgPowerWatts = positive(summary?.avgPower);
+  t.maxPowerWatts = positive(summary?.maxPower);
+  t.avgStrideLengthCm = positive(summary?.avgStepLen);
+  t.aerobicEffect = positive(summary?.aerobicEffect);
+  t.anaerobicEffect = positive(summary?.anaerobicEffect);
+  t.vo2maxEstimate = positive(summary?.currentVo2Max);
+  t.staminaLevel7d = positive(summary?.staminaLevel7d);
+  t.bestKmSecPerKm = positive(summary?.bestKm);
+  if (summary?.pauseTime != null) t.pauseSeconds = Math.round(summary.pauseTime / 100);
+
+  const deviceTemp = positive(item.waterTemperature);
+  if (deviceTemp != null) t.deviceTempC = deviceTemp / 100;
+
+  if (weather && positive(weather.temperature) != null) {
+    t.weatherTempC = weather.temperature! / 10;
+    if (positive(weather.bodyFeelTemp) != null) t.weatherFeelsLikeC = weather.bodyFeelTemp! / 10;
+    if (positive(weather.humidity) != null) t.humidityPercent = weather.humidity! / 10;
+    if (weather.windSpeed != null) t.windKph = weather.windSpeed / 10;
+  }
+
+  t.feelRating = positive(feel?.feelType);
+  if (feel?.sportNote) t.sportNote = feel.sportNote;
+
+  const pauses = (detail?.pauseList ?? []).map((p) => p.duration ?? 0).filter((d) => d > 0);
+  if (pauses.length > 0) {
+    t.pauseCount = pauses.length;
+    t.longestPauseSeconds = Math.round(Math.max(...pauses) / 100);
+  }
+
+  for (const zone of detail?.zoneList ?? []) {
+    const buckets = zone.zoneItemList ?? [];
+    if (buckets.length === 0) continue;
+    if (zone.zoneType === 3) {
+      t.hrZones = buckets.map((b) => ({
+        lo: b.leftScope ?? 0,
+        hi: b.rightScope ?? 0,
+        seconds: b.second ?? 0,
+      }));
+    } else if (zone.zoneType === 0) {
+      t.paceZones = buckets.map((b) => ({
+        loSecPerKm: (b.leftScope ?? 0) / 1000,
+        hiSecPerKm: (b.rightScope ?? 0) / 1000,
+        seconds: b.second ?? 0,
+      }));
+    }
+  }
+
+  const cleaned = Object.fromEntries(Object.entries(t).filter(([, v]) => v !== undefined));
+  return Object.keys(cleaned).length > 0 ? (cleaned as ActivityTelemetry) : undefined;
+}
+
 export function normalizeCorosActivity(
   item: RawCorosActivityListItem,
   detail?: RawCorosActivityDetail,
@@ -275,6 +349,15 @@ export function normalizeCorosActivity(
   const elevationGain =
     summary?.elevGain ?? item.elevationGain ?? item.totalAscent ?? item.ascent;
 
+  // summary.avgPace is 0 on current payloads (pace actually rides in
+  // avgSpeed); derive moving pace from duration/distance — unit-safe across
+  // sports and both wire generations.
+  const avgPaceSecPerKm =
+    positive(summary?.avgPace) ??
+    (durationSeconds > 0 && distanceMeters != null && distanceMeters >= 100
+      ? durationSeconds / (distanceMeters / 1000)
+      : undefined);
+
   return {
     provider: "coros",
     providerActivityId: item.labelId,
@@ -286,7 +369,7 @@ export function normalizeCorosActivity(
     distanceMeters,
     avgHeartRate: summary?.avgHr ?? item.avgHr,
     maxHeartRate: summary?.maxHr ?? item.maxHr,
-    avgPaceSecPerKm: summary?.avgPace,
+    avgPaceSecPerKm,
     elevationGainMeters: elevationGain,
     calories: item.calorie != null ? Math.round(item.calorie / 1000) : undefined,
     trainingLoad: summary?.trainingLoad ?? item.trainingLoad,
@@ -294,7 +377,12 @@ export function normalizeCorosActivity(
     title: summary?.name ?? item.name,
     sourcePlannedWorkoutId:
       summary?.hasProgram && summary.programId ? String(summary.programId) : undefined,
+    telemetry: buildTelemetry(item, detail),
     contentFingerprint: fingerprint({
+      // v2: telemetry generation (effort-analysis spec §2). The salt makes
+      // every fingerprint differ from v1 exactly once, so the next sync /
+      // backfill refreshes stored rows and laps with the new fields.
+      v: 2,
       id: item.labelId,
       start,
       durationSeconds,
@@ -304,9 +392,21 @@ export function normalizeCorosActivity(
   };
 }
 
-export function normalizeCorosLaps(
-  detail: RawCorosActivityDetail,
-): Array<{ lapIndex: number; durationSeconds: number; distanceMeters?: number; avgHeartRate?: number; avgPaceSecPerKm?: number; splitType?: string }> {
+export function normalizeCorosLaps(detail: RawCorosActivityDetail): Array<{
+  lapIndex: number;
+  durationSeconds: number;
+  distanceMeters?: number;
+  avgHeartRate?: number;
+  avgPaceSecPerKm?: number;
+  splitType?: string;
+  avgCadenceSpm?: number;
+  minHeartRate?: number;
+  maxHeartRate?: number;
+  elevGainMeters?: number;
+  avgGradePercent?: number;
+  avgPowerWatts?: number;
+  exerciseNameKey?: string;
+}> {
   // Prefer the structured-workout lap view when present; else the 1 km auto-laps.
   const lists = detail.lapList ?? [];
   const chosen =
@@ -320,5 +420,13 @@ export function normalizeCorosLaps(
     avgHeartRate: lap.avgHr,
     avgPaceSecPerKm: lap.avgPace,
     splitType: chosen.lapDistance === 100000 ? "auto_km" : "workout",
+    avgCadenceSpm: positive(lap.avgCadence),
+    minHeartRate: positive(lap.minHr),
+    maxHeartRate: positive(lap.maxHr),
+    // 0 is legitimate for grade/elevation (flat lap) — keep as reported.
+    elevGainMeters: lap.elevGain,
+    avgGradePercent: lap.avgGrade,
+    avgPowerWatts: positive(lap.avgPower),
+    exerciseNameKey: lap.exerciseNameKey || undefined,
   }));
 }

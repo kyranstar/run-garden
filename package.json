@@ -34,7 +34,8 @@
     "coros:spike:create": "pnpm --filter @rg/coros-bridge spike:create",
     "coros:spike:cleanup": "pnpm --filter @rg/coros-bridge spike:cleanup",
     "coros:spike:dryrun": "pnpm --filter @rg/coros-bridge spike:dryrun",
-    "e2e": "pnpm --filter @rg/web e2e"
+    "e2e": "pnpm --filter @rg/web e2e",
+    "coros:probe": "pnpm --filter @rg/coros-bridge probe"
   },
   "devDependencies": {
     "@types/node": "^22.10.0",

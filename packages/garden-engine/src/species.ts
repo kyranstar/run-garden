@@ -26,7 +26,12 @@ export type UnlockGate =
   // Discipline gates — strength, yoga, and cross-discipline balance.
   | { kind: "strength_sessions"; count: number }
   | { kind: "yoga_sessions"; count: number }
-  | { kind: "balanced_weeks"; count: number };
+  | { kind: "balanced_weeks"; count: number }
+  // Ground gates — species exclusive to carved grounds (Bundle 3).
+  | { kind: "ground"; ground: "stream" | "terrace" | "glade" }
+  | { kind: "races"; count: number } // planned races finished
+  | { kind: "evening_runs"; count: number } // planned evening runs
+  | { kind: "coached_blocks"; count: number }; // coached plans seen through
 
 export interface Species {
   id: string;
@@ -44,6 +49,9 @@ export interface Species {
   flowers: boolean;
   /** Vines need a host tree; fungi prefer dead wood or shade. */
   needsHost?: "tree" | "dead_wood";
+  /** Aquatic placement: "channel" anchors ON the stream, "bank" at its edge.
+   * The plants-never-in-water rule exempts exactly these. */
+  aquatic?: "channel" | "bank";
   /** Renderer archetype — the renderer has distinct art per archetype+species. */
   archetype:
     | "tree_round"
@@ -65,7 +73,8 @@ export interface Species {
     | "mushroom"
     | "shelf_fungus"
     | "shrub_round"
-    | "shrub_spike";
+    | "shrub_spike"
+    | "water_lily";
   palette: { primary: string; secondary: string; accent?: string };
 }
 
@@ -138,6 +147,23 @@ export const SPECIES: Species[] = [
 
   // ── Balance species ──────────────────────────────────────────────────────
   { id: "harmony_willow", name: "Harmony willow", category: "tree", rarity: "rare", unlock: { kind: "balanced_weeks", count: 3 }, growthDays: 65, spacing: 0.12, depthBand: [0.08, 0.4], flowers: false, archetype: "tree_weeping", palette: { primary: "#8fae9a", secondary: "#6f6353" } },
+
+  // ── Ground species — exclusive to carved grounds (Bundle 3) ─────────────
+  { id: "waterlily", name: "White waterlily", category: "flower", rarity: "rare", unlock: { kind: "ground", ground: "stream" }, growthDays: 14, spacing: 0.04, depthBand: [0.3, 0.8], flowers: true, aquatic: "channel", archetype: "water_lily", palette: { primary: "#6f8f7d", secondary: "#e8dbe8", accent: "#f2ede0" } },
+  { id: "cattail", name: "Cattail", category: "flower", rarity: "common", unlock: { kind: "ground", ground: "stream" }, growthDays: 10, spacing: 0.035, depthBand: [0.3, 0.8], flowers: false, aquatic: "bank", archetype: "flower_spike", palette: { primary: "#7a8f5f", secondary: "#6b4a32" } },
+  { id: "river_reed", name: "River reed", category: "grass", rarity: "common", unlock: { kind: "ground", ground: "stream" }, growthDays: 8, spacing: 0.035, depthBand: [0.3, 0.85], flowers: false, aquatic: "bank", archetype: "grass_tuft", palette: { primary: "#8fa06b", secondary: "#b5a878" } },
+  { id: "mountain_sage", name: "Mountain sage", category: "shrub", rarity: "uncommon", unlock: { kind: "ground", ground: "terrace" }, growthDays: 20, spacing: 0.05, depthBand: [0.35, 0.7], flowers: true, archetype: "shrub_spike", palette: { primary: "#7c8f72", secondary: "#b5652f", accent: "#d99a3d" } },
+  { id: "glade_harebell", name: "Glade harebell", category: "flower", rarity: "uncommon", unlock: { kind: "ground", ground: "glade" }, growthDays: 12, spacing: 0.033, depthBand: [0.4, 0.8], flowers: true, archetype: "flower_cup", palette: { primary: "#7c9483", secondary: "#8f6fae" } },
+
+  // ── Achievement species (Bundle 3) ──────────────────────────────────────
+  { id: "victory_laurel", name: "Victory laurel", category: "shrub", rarity: "rare", unlock: { kind: "races", count: 1 }, growthDays: 24, spacing: 0.055, depthBand: [0.35, 0.7], flowers: true, archetype: "shrub_round", palette: { primary: "#5f7f55", secondary: "#caa25a", accent: "#8a6248" } },
+  { id: "summit_sequoia", name: "Summit sequoia", category: "tree", rarity: "rare", unlock: { kind: "distance_run", meters: 42_195 }, growthDays: 80, spacing: 0.11, depthBand: [0.05, 0.35], flowers: false, archetype: "tree_conifer", palette: { primary: "#3f6e57", secondary: "#5a3d28", accent: "#8fb7a0" } },
+  { id: "old_beech", name: "Old-growth beech", category: "tree", rarity: "rare", unlock: { kind: "mature_trees", count: 3 }, growthDays: 70, spacing: 0.12, depthBand: [0.08, 0.42], flowers: false, archetype: "tree_round", palette: { primary: "#6f9a58", secondary: "#8a6248", accent: "#caa25a" } },
+  { id: "moonflower", name: "Moonflower", category: "flower", rarity: "rare", unlock: { kind: "evening_runs", count: 10 }, growthDays: 12, spacing: 0.035, depthBand: [0.45, 0.85], flowers: true, archetype: "flower_cup", palette: { primary: "#5f8054", secondary: "#f2ede0", accent: "#c9d4e8" } },
+
+  // ── Coached-block species (fairness spec §4) ────────────────────────────
+  { id: "keystone_pine", name: "Keystone pine", category: "tree", rarity: "rare", unlock: { kind: "coached_blocks", count: 1 }, growthDays: 70, spacing: 0.1, depthBand: [0.08, 0.4], flowers: false, archetype: "tree_conifer", palette: { primary: "#4a6e52", secondary: "#6b4a32", accent: "#caa25a" } },
+  { id: "keystone_grove", name: "Keystone grove", category: "tree", rarity: "rare", unlock: { kind: "coached_blocks", count: 3 }, growthDays: 75, spacing: 0.12, depthBand: [0.08, 0.42], flowers: false, archetype: "tree_round", palette: { primary: "#5a7d56", secondary: "#7a5c40", accent: "#8fb7a0" } },
 ];
 
 export const SPECIES_BY_ID = new Map(SPECIES.map((s) => [s.id, s]));

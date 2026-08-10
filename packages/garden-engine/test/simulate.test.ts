@@ -1081,3 +1081,93 @@ describe("adventures", () => {
     expect(run()).toEqual(run());
   });
 });
+
+/* ── Bundle 3: life in the water (2026-08-05 spec) ─────────────────────── */
+
+describe("ground gates + aquatic species", () => {
+  it("ground gates are satisfied only once that ground is carved", () => {
+    const fresh = initialSnapshot(START);
+    expect(gateSatisfied({ kind: "ground", ground: "stream" }, fresh)).toBe(false);
+    const carved: GardenSnapshot = structuredClone(fresh);
+    carved.state.grounds = [{ region: 1, kind: "stream", earnedDate: START }];
+    expect(gateSatisfied({ kind: "ground", ground: "stream" }, carved)).toBe(true);
+    expect(gateSatisfied({ kind: "ground", ground: "terrace" }, carved)).toBe(false);
+  });
+
+  it("aquatic species never plant before their stream exists", () => {
+    // 8 weeks of steady training but no stream ground: no waterlily/cattail.
+    const built = replay(START, trainingWeeks(START, 8));
+    const streamless = built.snapshot.state.grounds?.every((g) => g.kind !== "stream") ?? true;
+    if (streamless) {
+      expect(built.snapshot.plants.some((p) => p.speciesId === "waterlily")).toBe(false);
+      expect(built.snapshot.plants.some((p) => p.speciesId === "cattail")).toBe(false);
+    }
+  });
+});
+
+describe("race + evening + best-chain counters", () => {
+  it("a race day counts the race AND the quality effects", () => {
+    const one = simulateDay(initialSnapshot(START), runDay(START, "race"));
+    expect(one.snapshot.state.raceCount).toBe(1);
+    expect(one.snapshot.state.qualityRunCount).toBe(1);
+  });
+
+  it("evening_runs gate exposes progress", () => {
+    const p = gateProgress({ kind: "evening_runs", count: 10 }, initialSnapshot(START));
+    expect(p).toEqual({ current: 0, target: 10 });
+  });
+
+  it("bestConsistentWeeks survives a chain reset", () => {
+    let snap = initialSnapshot(START);
+    snap = simulateDay(snap, { ...emptyDay(START), weekAdherence: 1 }).snapshot;
+    snap = simulateDay(snap, { ...emptyDay(addDays(START, 1)), weekAdherence: 1 }).snapshot;
+    expect(snap.state.consecutiveConsistentWeeks).toBe(2);
+    snap = simulateDay(snap, { ...emptyDay(addDays(START, 2)), weekAdherence: 0.2 }).snapshot;
+    expect(snap.state.consecutiveConsistentWeeks).toBe(0);
+    expect(snap.state.bestConsistentWeeks).toBe(2);
+  });
+
+  it("a v3-shaped snapshot (fields missing) simulates without crashing", () => {
+    const snap = initialSnapshot(START);
+    const looseState = snap.state as unknown as Record<string, unknown>;
+    delete looseState.raceCount;
+    delete looseState.bestConsistentWeeks;
+    delete (snap.wildlife as unknown as Record<string, unknown>).ducks;
+    const out = simulateDay(snap as GardenSnapshot, runDay(START, "race"));
+    expect(out.snapshot.state.raceCount).toBe(1);
+  });
+});
+
+describe("ducks", () => {
+  it("arrive with a stream and moisture, and depart in decline", () => {
+    const base = initialSnapshot(START);
+    const withStream: GardenSnapshot = structuredClone(base);
+    withStream.state.grounds = [{ region: 1, kind: "stream", earnedDate: START }];
+    const wet = simulateDay(withStream, runDay(START, "easy"));
+    expect(wet.snapshot.wildlife.ducks).toBe(true);
+    expect(wet.events.some((e) => e.kind === "wildlife_arrived" && e.wildlifeId === "ducks")).toBe(
+      true,
+    );
+    // No stream → never.
+    const dry = simulateDay(base, runDay(START, "easy"));
+    expect(dry.snapshot.wildlife.ducks).toBe(false);
+  });
+});
+
+describe("coached blocks (fairness spec §4, v5)", () => {
+  it("counts the block and unlocks the Keystone pine the same day", () => {
+    const snap = initialSnapshot(START);
+    const out = simulateDay(snap, { ...emptyDay(START), coachedBlockCompleted: true });
+    expect(out.snapshot.state.coachedBlockCount).toBe(1);
+    expect(out.snapshot.unlockedSpeciesIds).toContain("keystone_pine");
+    expect(out.events.some((e) => e.kind === "species_unlocked" && e.speciesId === "keystone_pine")).toBe(true);
+    expect(gateSatisfied({ kind: "coached_blocks", count: 3 }, out.snapshot)).toBe(false);
+  });
+
+  it("a v4-shaped snapshot (missing counter) simulates and defaults to 0", () => {
+    const snap = initialSnapshot(START);
+    delete (snap.state as unknown as Record<string, unknown>).coachedBlockCount;
+    const out = simulateDay(snap, emptyDay(START));
+    expect(out.snapshot.state.coachedBlockCount).toBe(0);
+  });
+});

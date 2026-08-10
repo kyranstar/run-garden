@@ -1,7 +1,8 @@
 import type { CSSProperties, ReactNode } from "react";
 import { rng } from "@rg/garden-engine";
-import { shade } from "./color";
+import { mix, shade } from "./color";
 import type { SceneLight } from "./lighting";
+import { blobPath } from "./organic";
 
 const n = (x: number): number => Math.round(x * 100) / 100;
 
@@ -14,6 +15,10 @@ export function SceneDefs({ p, light }: { p: string; light: SceneLight }): React
         <stop offset="0%" stopColor={light.skyTop} />
         <stop offset="55%" stopColor={light.skyMid} />
         <stop offset="100%" stopColor={light.skyHorizon} />
+      </linearGradient>
+      <linearGradient id={`${p}-horizonwarm`} x1="0" y1="0" x2="0" y2="1">
+        <stop offset="0%" stopColor={mix(light.skyHorizon, light.sunColor, 0.5)} stopOpacity={0} />
+        <stop offset="100%" stopColor={mix(light.skyHorizon, light.sunColor, 0.5)} stopOpacity={1} />
       </linearGradient>
       <radialGradient id={`${p}-sunglow`}>
         <stop offset="0%" stopColor={light.sunColor} stopOpacity={0.6} />
@@ -30,9 +35,28 @@ export function SceneDefs({ p, light }: { p: string; light: SceneLight }): React
       <filter id={`${p}-hillblur`}>
         <feGaussianBlur stdDeviation="1.6" />
       </filter>
+      {/* Film grain: seeded so markup and pixels are stable everywhere. The
+          contrast boost around mid-gray is what makes soft-light blending read
+          as tooth instead of fog; alpha is forced solid so the finish rect's
+          opacity alone controls strength. */}
       <filter id={`${p}-grain`}>
-        <feTurbulence type="fractalNoise" baseFrequency="0.8" numOctaves="2" />
+        <feTurbulence type="fractalNoise" baseFrequency="0.8" numOctaves="2" seed="7" stitchTiles="stitch" />
         <feColorMatrix type="saturate" values="0" />
+        <feComponentTransfer>
+          <feFuncR type="linear" slope="1.8" intercept="-0.4" />
+          <feFuncG type="linear" slope="1.8" intercept="-0.4" />
+          <feFuncB type="linear" slope="1.8" intercept="-0.4" />
+          <feFuncA type="linear" slope="0" intercept="1" />
+        </feComponentTransfer>
+      </filter>
+      {/* Ground mottle: low-frequency warm noise whose own red/green channels
+          drive alpha, so the meadow gradient reads as uneven light. */}
+      <filter id={`${p}-mottle`} x="-5%" y="-5%" width="110%" height="110%">
+        <feTurbulence type="fractalNoise" baseFrequency="0.006 0.012" numOctaves="2" seed="11" />
+        <feColorMatrix
+          type="matrix"
+          values="0 0 0 0 0.42  0 0 0 0 0.36  0 0 0 0 0.18  0.9 0.4 0 0 0"
+        />
       </filter>
       {/* True-silhouette selection outline: dilate the sprite's alpha, harden
           it (semi-opaque parts would otherwise ghost), flood, composite.
@@ -125,23 +149,32 @@ function Clouds({ p, light, animate }: { p: string; light: SceneLight; animate: 
   for (let i = 0; i < light.cloudCount; i++) {
     const cx = 140 + r() * 700;
     const cy = 52 + r() * 78;
-    const sc = 0.8 + r() * 0.5;
+    const sc = 1.05 + r() * 0.75;
     const style: CSSProperties | undefined = animate
       ? { animationDuration: `${n(62 + r() * 26)}s`, animationDelay: `-${n(r() * 40)}s` }
       : undefined;
-    clouds.push(
-      <g key={i} className={animate ? `${p}-cloud` : undefined} style={style} opacity={0.8}>
-        {light.cloudShape === "wisp" ? (
-          <ellipse cx={n(cx)} cy={n(cy)} rx={n(60 * sc)} ry={n(4 * sc)} fill={light.cloudColor} opacity={0.5} />
-        ) : (
-          <>
-            <ellipse cx={n(cx)} cy={n(cy)} rx={n(46 * sc)} ry={n(13 * sc)} fill={light.cloudColor} />
-            <ellipse cx={n(cx - 24 * sc)} cy={n(cy + 4 * sc)} rx={n(27 * sc)} ry={n(9 * sc)} fill={light.cloudColor} />
-            <ellipse cx={n(cx + 26 * sc)} cy={n(cy + 5 * sc)} rx={n(30 * sc)} ry={n(10 * sc)} fill={shade(light.cloudColor, 0.96)} />
-          </>
-        )}
-      </g>,
-    );
+    // Fresh per-cloud stream for the blob geometry so the shared position
+    // stream above keeps its draw pattern (and existing cloud placements).
+    const cr = rng(`weather:clouds:${i}`);
+    if (light.cloudShape === "wisp") {
+      clouds.push(
+        <g key={i} data-cloud="wisp" className={animate ? `${p}-cloud` : undefined} style={style} opacity={0.8}>
+          <path d={blobPath(cr, cx, cy, 62 * sc, 4.5 * sc, 0.3, 8)} fill={light.cloudColor} opacity={0.5} />
+        </g>,
+      );
+    } else {
+      // Tone-stacked puff: shaded underbelly, main mass, sun-side lit crown.
+      const litdx = light.sunX !== null && light.sunX < cx ? -1 : 1;
+      const lit = mix(shade(light.cloudColor, 1.05), light.sunColor, 0.2 + 0.45 * light.beamStrength);
+      clouds.push(
+        <g key={i} data-cloud="puff" className={animate ? `${p}-cloud` : undefined} style={style} opacity={0.85}>
+          <path d={blobPath(cr, cx - 8 * sc, cy + 7 * sc, 46 * sc, 10 * sc, 0.2, 8)} fill={shade(light.cloudColor, 0.9)} />
+          <path d={blobPath(cr, cx, cy, 54 * sc, 18 * sc, 0.26, 10)} fill={light.cloudColor} />
+          <path d={blobPath(cr, cx - 34 * sc * litdx, cy + 3 * sc, 26 * sc, 9 * sc, 0.28, 7)} fill={shade(light.cloudColor, 0.97)} />
+          <path d={blobPath(cr, cx + 14 * sc * litdx, cy - 9 * sc, 32 * sc, 11 * sc, 0.26, 8)} fill={lit} />
+        </g>,
+      );
+    }
   }
   return <g data-sky="clouds" pointerEvents="none">{clouds}</g>;
 }
@@ -150,6 +183,9 @@ export function Sky({ p, light, animate }: { p: string; light: SceneLight; anima
   return (
     <>
       <rect x={0} y={0} width={1000} height={305} fill={`url(#${p}-sky)`} />
+      {light.sunX !== null ? (
+        <rect data-sky="horizonwarm" x={0} y={230} width={1000} height={75} fill={`url(#${p}-horizonwarm)`} opacity={0.5} />
+      ) : null}
       <Stars p={p} light={light} animate={animate} />
       <Celestial p={p} light={light} />
       <Clouds p={p} light={light} animate={animate} />

@@ -1,0 +1,1 @@
+ALTER TABLE `planned_workouts` ADD `sanctioned_by` text;

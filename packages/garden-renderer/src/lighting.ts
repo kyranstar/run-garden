@@ -108,8 +108,8 @@ const PERIODS: Record<LightPeriod, PeriodKey> = {
     hazeStrength: 0.06, beamStrength: 0.1, swayAmpDeg: 1.0, moteColor: "#fff6cf",
   },
   golden: {
-    skyTop: "#a9bcd6", skyMid: "#e3c8a0", skyHorizon: "#f2b478",
-    sunColor: "#ffe9b8", ambient: "#f0b060", ambientStrength: 0.2,
+    skyTop: "#93a9cc", skyMid: "#e2b581", skyHorizon: "#f2a75e",
+    sunColor: "#ffe2a0", ambient: "#ee9f4d", ambientStrength: 0.24,
     shadowLen: 1.5, shadowOpacity: 0.11, starDensity: 0,
     hazeStrength: 0.25, beamStrength: 0.85, swayAmpDeg: 1.2, moteColor: "#ffe2a6",
   },

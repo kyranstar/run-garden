@@ -64,6 +64,34 @@
       "when": 1785899042878,
       "tag": "0008_milky_sandman",
       "breakpoints": true
+    },
+    {
+      "idx": 9,
+      "version": "6",
+      "when": 1785963578758,
+      "tag": "0009_spicy_queen_noir",
+      "breakpoints": true
+    },
+    {
+      "idx": 10,
+      "version": "6",
+      "when": 1786036475655,
+      "tag": "0010_lowly_silver_samurai",
+      "breakpoints": true
+    },
+    {
+      "idx": 11,
+      "version": "6",
+      "when": 1786047675294,
+      "tag": "0011_mighty_misty_knight",
+      "breakpoints": true
+    },
+    {
+      "idx": 12,
+      "version": "6",
+      "when": 1786053413646,
+      "tag": "0012_icy_lord_hawal",
+      "breakpoints": true
     }
   ]
 }

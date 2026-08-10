@@ -34,3 +34,6 @@ apps/desktop/src-tauri/binaries/*
 
 # Claude Code worktrees
 .claude/worktrees/
+
+# superpowers brainstorm sessions
+.superpowers/

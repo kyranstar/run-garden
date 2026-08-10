@@ -70,6 +70,9 @@ export const plannedWorkouts = sqliteTable(
     snoozedUntil: text("snoozed_until"),
     /** The local date a completion/skip/missed resolution landed (garden input). */
     resolutionDate: text("resolution_date"),
+    /** Who blessed a skip: "coach" = an approved coach proposal (the garden
+     * treats it as sanctioned rest, 1/rolling-week — fairness spec §1). */
+    sanctionedBy: text("sanctioned_by"),
     archivedAt: text("archived_at"),
     /** Why archivedAt is set: absence_confirmed | user_removed | duplicate_mirror. */
     archiveReason: text("archive_reason"),

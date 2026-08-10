@@ -13,6 +13,7 @@ export default defineConfig({
     "./src/schema/product.ts",
     "./src/schema/ops.ts",
     "./src/schema/studio.ts",
+    "./src/schema/coach.ts",
   ],
   out: "./migrations",
 });

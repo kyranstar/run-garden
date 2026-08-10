@@ -116,7 +116,8 @@ during implementation (`pnpm coros:census` can dump it).
 New `EngineGardenState` fields (all defaulted via the existing `??=` pattern in
 `simulate.ts`): `adventureGraceDays: number` (banked, heuristic path),
 `lastAdventureDate?: string`, `weekDisciplines.adventure: number`.
-`SIMULATION_VERSION 3 → 4` → automatic full resim in `advanceGarden`, which is
+`SIMULATION_VERSION` bump (landed as 5 → 6 after merging with the coach-era
+engine, which had already taken 4 and 5) → automatic full resim in `advanceGarden`, which is
 how retroactivity lands. Garden state is a versioned JSON blob — **no D1
 migration needed**; `activities.sport` is already free-form text and
 `daily_health.recovery_score` already exists.
