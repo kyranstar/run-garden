@@ -296,6 +296,9 @@ export interface CoachPlanDto {
   startDate: string;
   endDate: string;
   raceDate: string | null;
+  /** Who authored it: the coach, or the Studio (lifting plans written to
+   * COROS). Absent in older payloads — treat as "coach". */
+  source?: "coach" | "studio";
 }
 
 export interface CoachStateResponse {

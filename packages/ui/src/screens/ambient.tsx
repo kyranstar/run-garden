@@ -169,7 +169,6 @@ export function AmbientGarden({ fetchGarden, onExit }: AmbientGardenProps) {
       role="button"
       tabIndex={0}
       aria-label="Ambient garden — click or press Escape to exit"
-      title="Click or press Esc to exit"
     >
       {shown ? (
         <>

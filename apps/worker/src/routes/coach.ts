@@ -6,6 +6,7 @@ import {
   coachPlans,
   coachProposals,
   coachQuestions,
+  studioPlans,
 } from "@rg/database";
 import { addDays, newId, nowInstant, todayInZone, type CoachOp } from "@rg/domain";
 import type { AppContext } from "../auth/middleware.js";
@@ -275,7 +276,24 @@ coachRoutes.get("/plans", async (c) => {
   const db = c.get("db");
   const userId = c.get("userId");
   const rows = await db.select().from(coachPlans).where(eq(coachPlans.userId, userId));
-  return c.json({ plans: rows });
+  // Studio-authored lifting plans are real plans this app created and wrote
+  // to COROS — "Manage plans" claiming "no plans" while one is live on the
+  // watch reads as a lie. They carry source:"studio" so the UI renders them
+  // with Studio affordances instead of coach ones.
+  const studio = await db.select().from(studioPlans).where(eq(studioPlans.userId, userId));
+  const studioEntries = studio.map((sp) => ({
+    id: sp.id,
+    discipline: "lift" as const,
+    name: ((sp.plan as { name?: string })?.name ?? "Lifting plan"),
+    status: "active" as const,
+    startDate: sp.createdAt.slice(0, 10),
+    endDate: sp.createdAt.slice(0, 10),
+    raceDate: null,
+    source: "studio" as const,
+  }));
+  return c.json({
+    plans: [...rows.map((r) => ({ ...r, source: "coach" as const })), ...studioEntries],
+  });
 });
 
 coachRoutes.post("/plans/:id/rename", async (c) => {

@@ -490,14 +490,14 @@ export function ManagePlans({
   return (
     <div className="stack">
       {plans.length === 0 ? (
-        <p className="muted">No coached plans yet — ask for one below.</p>
+        <p className="muted">No coached or Studio plans yet — ask for one below.</p>
       ) : (
         plans.map((p) => (
           <div key={p.id} className="coach-plan-card">
             <div className="row" style={{ justifyContent: "space-between" }}>
               <span className="row" style={{ gap: "0.45rem" }}>
                 <span className={`pill ${p.discipline === "lift" ? "pill-lift" : "pill-run"}`}>
-                  {p.discipline === "lift" ? "Lift" : "Run"}
+                  {p.source === "studio" ? "Studio Lift" : p.discipline === "lift" ? "Lift" : "Run"}
                 </span>
                 {renaming === p.id ? (
                   <input
@@ -515,11 +515,20 @@ export function ManagePlans({
                   <strong>{p.name}</strong>
                 )}
                 <span className="faint">
-                  {p.status === "active" ? weekOf(p) : p.status}
+                  {p.source === "studio"
+                    ? "written to COROS"
+                    : p.status === "active"
+                      ? weekOf(p)
+                      : p.status}
                 </span>
               </span>
             </div>
-            {p.status === "active" ? (
+            {p.source === "studio" ? (
+              <p className="faint" style={{ marginTop: "0.4rem" }}>
+                Built in the Studio — edit or regenerate it from the Studio strip under the
+                calendar.
+              </p>
+            ) : p.status === "active" ? (
               <div className="row" style={{ gap: "0.4rem", marginTop: "0.4rem" }}>
                 <button
                   type="button"

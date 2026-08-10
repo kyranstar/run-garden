@@ -702,6 +702,16 @@ export function GardenScreen() {
   const [openSpeciesId, setOpenSpeciesId] = useState<string | null>(null);
   const [showWeather, setShowWeather] = useState(false);
   const [timelineOpen, setTimelineOpen] = useState(false);
+  // Mobile-only fullscreen stage (desktop is already full-viewport immersive).
+  const [sceneFull, setSceneFull] = useState(false);
+  useEffect(() => {
+    if (!sceneFull) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") setSceneFull(false);
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [sceneFull]);
   const [dayIndexOverride, setDayIndexOverride] = useState<number | null>(null);
   const [openDrawer, setOpenDrawer] = useState<"collection" | "log" | null>(null);
   const [openBalanceKey, setOpenBalanceKey] = useState<DisciplineKey | null>(null);
@@ -1574,8 +1584,10 @@ export function GardenScreen() {
     <div className="garden-home">
       <h1 className="visually-hidden">Garden</h1>
 
-      {/* The garden itself — big and central. */}
-      <div className="garden-scene-wrap garden-scene-big">
+      {/* The garden itself — big and central; expandable to the full screen. */}
+      <div
+        className={`garden-scene-wrap garden-scene-big${sceneFull ? " garden-scene-fullscreen" : ""}`}
+      >
         <GardenScene
           snapshot={displaySnapshot}
           reducedMotion={reducedMotion}
@@ -1587,7 +1599,19 @@ export function GardenScreen() {
           enteringPlantIds={viewingLive ? arrival.enteringPlantIds : undefined}
           highlightPlantId={viewingLive ? highlightPlantId : null}
           impulse={viewingLive ? impulse : null}
+          // Fullscreen fills the phone's tall viewport by cropping the wide
+          // scene (same slice the desktop immersive stage uses) — without it
+          // the svg letterboxes into a strip at the bottom of the screen.
+          preserveAspectRatio={sceneFull ? "xMidYMax slice" : undefined}
         />
+        <button
+          type="button"
+          className="scene-full-toggle"
+          aria-label={sceneFull ? "Exit fullscreen garden" : "View garden fullscreen"}
+          onClick={() => setSceneFull((f) => !f)}
+        >
+          {sceneFull ? <IconClose size={16} /> : "⤢"}
+        </button>
       </div>
 
       {/* Drag through the garden's history: one fetch, then the scrubber is

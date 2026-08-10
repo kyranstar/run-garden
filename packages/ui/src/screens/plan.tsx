@@ -779,7 +779,15 @@ export function PlanScreen() {
         </div>
       </div>
 
-      <button type="button" className="coach-pill" onClick={() => setCoachOpen(true)}>
+      <button
+        type="button"
+        className="coach-pill"
+        aria-expanded={coachOpen}
+        onClick={() => setCoachOpen(true)}
+      >
+        <span aria-hidden="true" className="coach-pill-caret">
+          ▴
+        </span>
         Coach{pendingCount > 0 ? ` · ${pendingCount}` : ""}
       </button>
       <Sheet open={coachOpen} onClose={() => setCoachOpen(false)} title="Coach">

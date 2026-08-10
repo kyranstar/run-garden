@@ -3702,3 +3702,38 @@ button {
   text-align: center;
 }
 .cal-extend-row:hover { color: var(--green-ink); }
+
+/* ── Mobile fullscreen garden (audit follow-up): the stage can take the whole
+   viewport; the toggle floats in the scene's top-right. Desktop (≥1024px)
+   already renders the immersive full-viewport stage, so the toggle hides. */
+.garden-scene-wrap { position: relative; }
+.scene-full-toggle {
+  position: absolute;
+  top: 0.6rem;
+  right: 0.6rem;
+  min-width: 44px;
+  min-height: 44px;
+  border: none;
+  border-radius: 999px;
+  background: rgba(20, 28, 22, 0.42);
+  color: #f5f2ea;
+  font-size: 1.05rem;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 5;
+}
+.garden-scene-fullscreen {
+  position: fixed;
+  inset: 0;
+  z-index: 70; /* above the bottom nav (40) and sheets' scrims */
+  background: var(--bg, #101511);
+}
+.garden-scene-fullscreen svg {
+  width: 100%;
+  height: 100%;
+}
+@media (min-width: 1024px) {
+  .scene-full-toggle { display: none; }
+}
+.coach-pill-caret { margin-right: 0.35rem; font-size: 0.7em; opacity: 0.85; }
