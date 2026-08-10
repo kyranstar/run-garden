@@ -1,8 +1,7 @@
 import type { PlannedStage, SourceActivity } from "@rg/domain";
-import { fingerprint } from "@rg/domain";
+import { fingerprint, sportIdForCorosCode } from "@rg/domain";
 import { NORMALIZER_VERSION, type SourcePlannedWorkout } from "../types.js";
 import {
-  corosSportName,
   COROS_RUN_SPORT_TYPES,
   type RawCorosActivityDetail,
   type RawCorosActivityListItem,
@@ -281,7 +280,7 @@ export function normalizeCorosActivity(
     providerActivityId: item.labelId,
     startTime: isoFromUnix(start),
     startTimeLocal: start ? localIsoFromUnix(start, offsetMin) : undefined,
-    sport: corosSportName(item.sportType),
+    sport: sportIdForCorosCode(item.sportType),
     durationSeconds,
     elapsedSeconds,
     distanceMeters,

@@ -4,9 +4,13 @@
  * daily health for a date range, fully normalized via @rg/providers.
  */
 
-import { fingerprint, type DailyHealth, type SourceActivity } from "@rg/domain";
 import {
-  COROS_ADMITTED_SPORT_TYPES,
+  fingerprint,
+  sportIdForCorosCode,
+  type DailyHealth,
+  type SourceActivity,
+} from "@rg/domain";
+import {
   corosDayToLocalDate,
   normalizeCorosActivity,
   normalizeCorosLaps,
@@ -55,7 +59,11 @@ export interface BridgeSnapshot {
   activities: SourceActivity[];
   lapsByProviderId: Record<string, NormalizedLap[]>;
   health: DailyHealth[];
-  /** Counts of sportType codes not admitted into the garden import, by code. */
+  /**
+   * Counts of sportType codes the sport registry could not name (resolved to
+   * "other"), by code — admitted and ingested regardless, but surfaced here
+   * so new COROS codes worth naming show up.
+   */
   skippedSportTypes?: Record<string, number>;
   /** COROS strength-exercise catalog (id/name pairs); see BuildSnapshotOptions. */
   exerciseCatalog?: Array<{ id: string; name: string }>;
@@ -104,16 +112,17 @@ export async function buildSnapshot(
   // and the raw objects carry COROS-internal user ids.
   const workouts = normalized.workouts.map(({ raw: _raw, ...workout }) => workout);
 
-  // ── Completed activities (run/strength/yoga), with laps ────────────────────
+  // ── Completed activities (all sports), with laps ────────────────────────────
   const items = await client.getActivities(rangeStart, rangeEnd);
   const activities: SourceActivity[] = [];
   const lapsByProviderId: Record<string, NormalizedLap[]> = {};
   const skipped: Record<string, number> = {};
   for (const item of items) {
-    if (!COROS_ADMITTED_SPORT_TYPES.has(item.sportType)) {
+    // Everything is admitted; tally only codes the registry can't name, so
+    // the census still surfaces new COROS codes worth naming.
+    if (sportIdForCorosCode(item.sportType) === "other") {
       const key = String(item.sportType);
       skipped[key] = (skipped[key] ?? 0) + 1;
-      continue;
     }
     let detail: RawCorosActivityDetail | undefined;
     try {

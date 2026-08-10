@@ -1,11 +1,13 @@
 /**
  * Read-only sport census: which COROS sportType codes does this account
- * actually have, over its whole history, and which does Run Garden admit?
+ * actually have, over its whole history, and what does the sport registry
+ * call each one?
  *
- * The deep backfill only ingests codes listed in COROS_ADMITTED_SPORT_TYPES;
- * everything else is silently tallied and dropped. Before building history on
- * that map, this proves what the map has to cover — in particular whether
- * historical yoga sits under 403/904 as assumed, or somewhere else entirely.
+ * Every code is admitted into the import now — nothing is dropped. Codes the
+ * registry can't name resolve to "other" and are tallied here so they stay
+ * visible and worth naming. Before adding a code to the registry, this proves
+ * what actually shows up in the wild — in particular whether historical yoga
+ * sits under 403/904 as assumed, or somewhere else entirely.
  *
  * Writes docs/reports/coros-sport-census-<date>.json. No ingest, no writes,
  * no per-activity detail fetches.
@@ -16,7 +18,7 @@
 import { mkdirSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { COROS_ADMITTED_SPORT_TYPES, corosSportName } from "@rg/providers";
+import { sportIdForCorosCode } from "@rg/domain";
 import { CorosClient, type CorosRegion } from "./coros-client.js";
 import { createPrompter } from "./prompt.js";
 import { redactUserId } from "./sanitize.js";
@@ -29,9 +31,10 @@ const CENSUS_START = "2010-01-01";
 
 interface CodeRow {
   sportType: number;
-  name: string;
-  admitted: boolean;
-  discipline: string | null;
+  /** Registry id (e.g. "run", "hike", "other") — see @rg/domain sportIdForCorosCode. */
+  sport: string;
+  /** True when the registry could not name this code ("other") — worth adding. */
+  unnamed: boolean;
   count: number;
   earliest: string;
   latest: string;
@@ -106,11 +109,11 @@ async function main(): Promise<void> {
         existing.sampleNames.push(item.name);
       }
     } else {
+      const sport = sportIdForCorosCode(item.sportType);
       byCode.set(item.sportType, {
         sportType: item.sportType,
-        name: corosSportName(item.sportType),
-        admitted: COROS_ADMITTED_SPORT_TYPES.has(item.sportType),
-        discipline: COROS_ADMITTED_SPORT_TYPES.get(item.sportType) ?? null,
+        sport,
+        unnamed: sport === "other",
         count: 1,
         earliest: iso,
         latest: iso,
@@ -129,8 +132,7 @@ async function main(): Promise<void> {
     spanStart: days[0] ?? null,
     spanEnd: days[days.length - 1] ?? null,
     totalActivities: items.length,
-    admittedActivities: codes.filter((c) => c.admitted).reduce((s, c) => s + c.count, 0),
-    droppedActivities: codes.filter((c) => !c.admitted).reduce((s, c) => s + c.count, 0),
+    unnamedActivities: codes.filter((c) => c.unnamed).reduce((s, c) => s + c.count, 0),
     codes,
   };
 
@@ -142,19 +144,19 @@ async function main(): Promise<void> {
   console.log(
     `\n${items.length} activities, ${codes.length} distinct sport types, ${report.spanStart ?? "—"}..${report.spanEnd ?? "—"}\n`,
   );
-  console.log("  code  sport          count  span                     admitted");
+  console.log("  code  sport          count  span                     registry");
   for (const c of codes) {
-    const mark = c.admitted ? `✓ ${c.discipline}` : "✗ DROPPED";
+    const mark = c.unnamed ? "✗ unnamed — add to registry" : `✓ ${c.sport}`;
     console.log(
-      `  ${String(c.sportType).padEnd(5)} ${c.name.padEnd(14)} ${String(c.count).padStart(5)}  ${c.earliest}..${c.latest}  ${mark}`,
+      `  ${String(c.sportType).padEnd(5)} ${c.sport.padEnd(14)} ${String(c.count).padStart(5)}  ${c.earliest}..${c.latest}  ${mark}`,
     );
-    if (!c.admitted && c.sampleNames.length > 0) {
+    if (c.unnamed && c.sampleNames.length > 0) {
       console.log(`        e.g. ${c.sampleNames.join(" · ")}`);
     }
   }
-  if (report.droppedActivities > 0) {
+  if (report.unnamedActivities > 0) {
     console.log(
-      `\n${report.droppedActivities} activities are being dropped. Any code above that is really a run, a lift, or yoga must be added to COROS_ADMITTED_SPORT_TYPES.`,
+      `\n${report.unnamedActivities} activities are admitted but unnamed ("other"). Any code above worth naming should be added to the sport registry (packages/domain/src/sport.ts).`,
     );
   }
   console.log(`\nwrote ${outPath}`);

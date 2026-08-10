@@ -12,9 +12,8 @@
  * `ingestActivities` and nothing else.
  */
 
-import type { SourceActivity } from "@rg/domain";
+import { sportIdForCorosCode, type SourceActivity } from "@rg/domain";
 import {
-  COROS_ADMITTED_SPORT_TYPES,
   normalizeCorosActivity,
   normalizeCorosLaps,
   type NameResolver,
@@ -26,7 +25,10 @@ import type { NormalizedLap } from "./snapshot.js";
 export interface ActivityBackfillChunk {
   activities: SourceActivity[];
   lapsByProviderId: Record<string, NormalizedLap[]>;
-  /** Counts of sportType codes seen but not admitted, by code. */
+  /**
+   * Counts of sportType codes the sport registry could not name (resolved to
+   * "other"), by code — admitted and ingested regardless.
+   */
   skippedSportTypes: Record<string, number>;
 }
 
@@ -56,10 +58,10 @@ export async function buildActivityBackfill(
   const skippedSportTypes: Record<string, number> = {};
 
   for (const item of items) {
-    if (!COROS_ADMITTED_SPORT_TYPES.has(item.sportType)) {
+    // Everything is admitted; tally only codes the registry can't name.
+    if (sportIdForCorosCode(item.sportType) === "other") {
       const key = String(item.sportType);
       skippedSportTypes[key] = (skippedSportTypes[key] ?? 0) + 1;
-      continue;
     }
     let detail: RawCorosActivityDetail | undefined;
     try {
