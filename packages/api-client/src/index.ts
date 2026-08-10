@@ -246,6 +246,9 @@ export interface CoachMessageDto {
     activityId?: string;
   };
   at: string;
+  /** Client-only: set on an optimistic echo whose send failed (audit C16).
+   * Never sent by the server — undefined for every persisted message. */
+  failed?: boolean;
 }
 
 export interface CoachAnalyzeResult {

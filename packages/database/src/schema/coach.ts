@@ -50,7 +50,17 @@ export const coachMessages = sqliteTable(
     body: text("body").notNull(),
     refs: text("refs", { mode: "json" })
       .notNull()
-      .$type<{ proposalId?: string; memoryIds?: string[]; questionId?: string; kind?: "analysis"; activityId?: string }>(),
+      .$type<{
+        proposalId?: string;
+        memoryIds?: string[];
+        questionId?: string;
+        kind?: "analysis";
+        activityId?: string;
+        /** Marks an inert "couldn't think" / "resting" receipt so the wake
+         * pipeline can dedupe consecutive failures and back off wakeAdvised
+         * without a fragile body-text match. */
+        wakeFailure?: boolean;
+      }>(),
     at: text("at").notNull(),
   },
   (t) => [index("coach_messages_user_at_idx").on(t.userId, t.at)],

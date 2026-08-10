@@ -15,7 +15,7 @@ import { analyzeEffort } from "../services/coach-analyze.js";
 import { applyOps } from "../services/coach-apply.js";
 import { evaluateTriggers, pendingTriggers } from "../services/coach-triggers.js";
 import { coachBlockAdherence, plansEndedOn } from "../services/coach-plans.js";
-import { wake } from "../services/coach-wake.js";
+import { openWakeIsFresh, wake } from "../services/coach-wake.js";
 import type { Db } from "../services/db.js";
 
 /**
@@ -107,8 +107,11 @@ coachRoutes.get("/state", async (c) => {
     .where(and(eq(coachMessages.userId, userId), eq(coachMessages.role, "coach")))
     .orderBy(desc(coachMessages.at))
     .limit(1);
-  const staleBriefing =
-    !lastCoach || Date.parse(nowInstant()) - Date.parse(lastCoach.at) > 20 * 3600 * 1000;
+  // Shares the wake pipeline's own "would an open wake be redundant?" check
+  // (audit C4/C14) — a fresh briefing OR a recent failed/resting attempt
+  // both count as "already tried", so the client doesn't re-fire (and the
+  // coach doesn't re-fail) on every single Plan visit during an outage.
+  const wakeAdvised = triggers.length > 0 || !(await openWakeIsFresh(db, userId));
 
   return c.json({
     messages: [...msgs].reverse(),
@@ -116,7 +119,7 @@ coachRoutes.get("/state", async (c) => {
     openQuestion: openQuestion ?? null,
     memoryCount: memoryRows.length,
     lastCoachAt: lastCoach?.at ?? null,
-    wakeAdvised: triggers.length > 0 || staleBriefing,
+    wakeAdvised,
   });
 });
 

@@ -7,11 +7,14 @@ import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { MemoryRouter } from "react-router-dom";
 import { describe, expect, it } from "vitest";
-import type { CoachMessageDto, CoachProposalDto } from "@rg/api-client";
+import type { CoachMessageDto, CoachPlanDto, CoachProposalDto } from "@rg/api-client";
 import {
   CoachPanel,
+  CoachThread,
+  ManagePlans,
   pendingByDate,
   PendingTray,
+  ProposalCard,
   proposalDiscipline,
 } from "../src/screens/coach-panel.js";
 
@@ -65,6 +68,48 @@ describe("PendingTray", () => {
     expect(html).toContain("Make it so");
     expect(html).toContain("Keep it planned");
   });
+
+  // Audit C17: approve/decline used to have no in-flight state at all (the
+  // computed `acting` boolean existed but was never wired to the buttons)
+  // and a failed 409 was indistinguishable from success.
+  it("disables Make it so / Leave it while acting, but never Why?", () => {
+    const html = render(
+      createElement(ProposalCard, { proposal: prop("a"), onApprove: noop, onDecline: noop, acting: true }),
+    );
+    expect(html).toMatch(/Make it so<\/button>/);
+    const approveBtn = html.match(/<button[^>]*>Make it so/)![0];
+    expect(approveBtn).toContain("disabled");
+    // The default fixture's op is a skip, so decline reads "Keep it planned".
+    const declineBtn = html.match(/<button[^>]*>Keep it planned/)![0];
+    expect(declineBtn).toContain("disabled");
+    const whyBtn = html.match(/<button[^>]*>Why\?/)![0];
+    expect(whyBtn).not.toContain("disabled");
+  });
+
+  it("shows why the last approve/decline failed instead of silently vanishing", () => {
+    const html = render(
+      createElement(ProposalCard, {
+        proposal: prop("a"),
+        onApprove: noop,
+        onDecline: noop,
+        error: "This already resolved elsewhere — nothing changed here.",
+      }),
+    );
+    expect(html).toContain("coach-prop-error");
+    expect(html).toContain("This already resolved elsewhere");
+  });
+
+  // Audit C27: the inline panel and the mobile sheet both render the same
+  // proposal at the same time — without a scoped id, a calendar-ghost tap
+  // always resolved to whichever copy is first in the DOM.
+  it("scopes the proposal card's DOM id with idPrefix so two mounts never collide", () => {
+    const inline = render(createElement(ProposalCard, { proposal: prop("a"), onApprove: noop, onDecline: noop }));
+    const sheet = render(
+      createElement(ProposalCard, { proposal: prop("a"), onApprove: noop, onDecline: noop, idPrefix: "sheet-" }),
+    );
+    expect(inline).toContain('id="proposal-a"');
+    expect(sheet).toContain('id="proposal-sheet-a"');
+  });
 });
 
 describe("CoachPanel thread", () => {
@@ -91,6 +136,38 @@ describe("CoachPanel thread", () => {
     expect(html).toContain('href="/settings#coach-memory"');
     expect(html).toContain("Race goal?");
     expect(html).toContain("Finish strong");
+  });
+
+  // Audit C4/C14: every failed coach wake used to append an identical
+  // "couldn't think" receipt forever. The server now dedupes its own
+  // writes, but this also heals any duplicate rows a thread already
+  // accumulated before that fix shipped.
+  it("collapses runs of identical consecutive receipts into one line", () => {
+    const fail = "The coach couldn't think just now — try again in a moment.";
+    const messages: CoachMessageDto[] = [
+      { id: "1", role: "receipt", body: fail, refs: {}, at: "2026-08-06T10:00:00Z" },
+      { id: "2", role: "receipt", body: fail, refs: {}, at: "2026-08-06T10:05:00Z" },
+      { id: "3", role: "receipt", body: fail, refs: {}, at: "2026-08-06T10:10:00Z" },
+      { id: "4", role: "receipt", body: "Expired — the moment passed: Ease Thursday", refs: {}, at: "2026-08-06T10:15:00Z" },
+    ];
+    const html = render(
+      createElement(CoachThread, { messages }),
+    );
+    expect((html.match(/coach-receipt/g) ?? []).length).toBe(2); // one "couldn't think", one "Expired"
+    expect(html).toContain("Expired");
+  });
+
+  // Audit C16: a network-failed send used to clear the draft and vanish
+  // once the settle-time refetch landed — no error, no way to recover the
+  // text. A failed optimistic echo now stays, marked, with a retry.
+  it("marks a failed optimistic message and offers a retry instead of erasing it", () => {
+    const messages: CoachMessageDto[] = [
+      { id: "local-1", role: "user", body: "long run felt awful today", refs: {}, at: "2026-08-06T10:00:00Z", failed: true },
+    ];
+    const html = render(createElement(CoachThread, { messages }));
+    expect(html).toContain("coach-msg-failed");
+    expect(html).toContain("tap to retry");
+    expect(html).toContain("long run felt awful today");
   });
 });
 
@@ -130,5 +207,32 @@ describe("proposalDiscipline + pendingByDate", () => {
     expect(ghosts.get("2026-08-07")!.map((g) => g.kind)).toEqual(["rewrite", "outgoing"]);
     expect(ghosts.get("2026-08-09")![0]!.kind).toBe("incoming");
     expect(ghosts.get("2026-08-10")![0]!.label).toBe("Shakeout");
+  });
+});
+
+describe("ManagePlans — Retire", () => {
+  function plan(over: Partial<CoachPlanDto> = {}): CoachPlanDto {
+    return {
+      id: "cp1",
+      discipline: "run",
+      name: "Fall Half",
+      status: "active",
+      startDate: "2026-08-01",
+      endDate: "2026-10-11",
+      ...over,
+    };
+  }
+
+  // Audit C18: Retire used to be a plain one-tap button that immediately
+  // archived every remaining session with no undo — the initial render must
+  // never show the destructive action; it only appears after a first tap
+  // asks for it (mirroring the workout-level "Remove from plan" pattern).
+  it("never renders the destructive 'Really retire' action on first paint", () => {
+    const html = render(
+      createElement(ManagePlans, { plans: [plan()], onCanned: noop, onRetire: noop, onRename: noop }),
+    );
+    expect(html).toContain(">Retire<");
+    expect(html).not.toContain("Really retire");
+    expect(html).not.toContain("btn-danger");
   });
 });

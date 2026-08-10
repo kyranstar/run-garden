@@ -124,17 +124,30 @@ export function ProposalCard({
   onApprove,
   onDecline,
   busy,
+  acting,
+  error,
+  idPrefix = "",
 }: {
   proposal: CoachProposalDto;
   onApprove: (id: string) => void;
   onDecline: (id: string) => void;
   busy?: boolean;
+  /** approve/decline is in flight for SOME proposal (audit C17) — disables
+   * this card's own buttons too, so a double-tap can't fire twice. */
+  acting?: boolean;
+  /** Why the last approve/decline on this card failed, if it did (C17). */
+  error?: string;
+  /** Distinguishes this mount's DOM id from the same proposal rendered
+   * elsewhere (inline panel vs. the mobile sheet, audit C27) — without it,
+   * `getElementById` always resolves to whichever copy is first in the DOM,
+   * which may be the hidden one. */
+  idPrefix?: string;
 }) {
   const [why, setWhy] = useState(false);
   const discipline = proposalDiscipline(proposal);
   const isSkip = (proposal.ops as Array<{ kind?: string }>).some((o) => o.kind === "skip");
   return (
-    <div className="coach-prop" id={`proposal-${proposal.id}`}>
+    <div className="coach-prop" id={`proposal-${idPrefix}${proposal.id}`}>
       <div className="row" style={{ gap: "0.45rem" }}>
         {discipline ? (
           <span className={`pill ${discipline === "lift" ? "pill-lift" : "pill-run"}`}>
@@ -154,11 +167,12 @@ export function ProposalCard({
         </div>
       ) : null}
       {why ? <p className="coach-prop-why muted">{proposal.rationale}</p> : null}
+      {error ? <p className="coach-prop-error">{error}</p> : null}
       <div className="row" style={{ gap: "0.45rem", marginTop: "0.45rem" }}>
         <button
           type="button"
           className="btn btn-primary btn-small"
-          disabled={busy}
+          disabled={busy || acting}
           onClick={() => onApprove(proposal.id)}
         >
           Make it so
@@ -166,7 +180,7 @@ export function ProposalCard({
         <button
           type="button"
           className="btn btn-small"
-          disabled={busy}
+          disabled={busy || acting}
           onClick={() => onDecline(proposal.id)}
         >
           {isSkip ? "Keep it planned" : "Leave it"}
@@ -184,11 +198,18 @@ export function PendingTray({
   onApprove,
   onDecline,
   busy,
+  acting,
+  errors,
+  idPrefix,
 }: {
   proposals: CoachProposalDto[];
   onApprove: (id: string) => void;
   onDecline: (id: string) => void;
   busy?: boolean;
+  acting?: boolean;
+  /** proposal id → why its last approve/decline failed (audit C17). */
+  errors?: Record<string, string>;
+  idPrefix?: string;
 }) {
   const [showAll, setShowAll] = useState(false);
   if (proposals.length === 0) return null;
@@ -197,7 +218,16 @@ export function PendingTray({
     <div className="coach-tray">
       <h3 className="coach-tray-head">Needs you · {proposals.length}</h3>
       {visible.map((p) => (
-        <ProposalCard key={p.id} proposal={p} onApprove={onApprove} onDecline={onDecline} busy={busy} />
+        <ProposalCard
+          key={p.id}
+          proposal={p}
+          onApprove={onApprove}
+          onDecline={onDecline}
+          busy={busy}
+          acting={acting}
+          error={errors?.[p.id]}
+          idPrefix={idPrefix}
+        />
       ))}
       {proposals.length > TRAY_CAP && !showAll ? (
         <button type="button" className="linklike" onClick={() => setShowAll(true)}>
@@ -208,20 +238,47 @@ export function PendingTray({
   );
 }
 
-export function CoachThread({ messages }: { messages: CoachMessageDto[] }) {
-  const endRef = useRef<HTMLDivElement | null>(null);
+/**
+ * Runs of identical consecutive receipts collapse to one (audit C4/C14):
+ * the server now dedupes its own writes, but this also heals any duplicate
+ * rows a thread already accumulated before that fix shipped.
+ */
+function collapseRepeatedReceipts(messages: CoachMessageDto[]): CoachMessageDto[] {
+  return messages.filter((m, i) => {
+    const prev = messages[i - 1];
+    return !(m.role === "receipt" && prev?.role === "receipt" && prev.body === m.body);
+  });
+}
+
+export function CoachThread({
+  messages,
+  onRetrySend,
+}: {
+  messages: CoachMessageDto[];
+  /** Resend a failed optimistic message (audit C16). */
+  onRetrySend?: (localId: string, body: string) => void;
+}) {
+  const threadRef = useRef<HTMLDivElement | null>(null);
   useEffect(() => {
-    endRef.current?.scrollIntoView({ block: "end" });
+    // Audit C3: this used to be `endRef.scrollIntoView({block:"end"})`,
+    // which scrolls EVERY scrollable ancestor including the window — since
+    // the coach panel sits at the top of the document, every new message
+    // (including a failed auto-wake's receipt) yanked the whole page back
+    // to the top, defeating the plan's land-on-today scroll. Scrolling only
+    // this container's own scrollTop never touches an ancestor's scroll.
+    const el = threadRef.current;
+    if (el) el.scrollTop = el.scrollHeight;
   }, [messages.length]);
+  const collapsed = collapseRepeatedReceipts(messages);
   return (
-    <div className="coach-thread">
-      {messages.map((m) =>
+    <div className="coach-thread" ref={threadRef}>
+      {collapsed.map((m) =>
         m.role === "receipt" ? (
           <div key={m.id} className="coach-receipt faint">
             {m.body}
           </div>
         ) : (
-          <div key={m.id} className={`coach-msg coach-msg-${m.role}`}>
+          <div key={m.id} className={`coach-msg coach-msg-${m.role}${m.failed ? " coach-msg-failed" : ""}`}>
             {m.refs.kind === "analysis" ? (
               <span className="tagchip" style={{ marginRight: "0.35rem" }}>
                 effort read
@@ -237,10 +294,18 @@ export function CoachThread({ messages }: { messages: CoachMessageDto[] }) {
                 ))}
               </span>
             ) : null}
+            {m.failed ? (
+              <button
+                type="button"
+                className="linklike coach-msg-retry"
+                onClick={() => onRetrySend?.(m.id, m.body)}
+              >
+                Couldn't send — tap to retry
+              </button>
+            ) : null}
           </div>
         ),
       )}
-      <div ref={endRef} />
     </div>
   );
 }
@@ -305,28 +370,43 @@ export function CoachPanel({
   proposals,
   question,
   busy,
+  acting,
+  proposalErrors,
   onSend,
   onApprove,
   onDecline,
   onAnswer,
   onCheckIn,
+  onRetrySend,
   header,
   hideHead,
+  idPrefix,
 }: {
   messages: CoachMessageDto[];
   proposals: CoachProposalDto[];
   question: CoachQuestionDto | null;
   busy?: boolean;
+  /** An approve/decline is in flight (audit C17) — disables every card's
+   * buttons so a slow request can't be double-tapped. */
+  acting?: boolean;
+  /** proposal id → why its last approve/decline failed (audit C17). */
+  proposalErrors?: Record<string, string>;
   onSend: (body: string) => void;
   onApprove: (id: string) => void;
   onDecline: (id: string) => void;
   onAnswer: (id: string, answer: string) => void;
   /** The manual "Check in" trigger — forces a wake past the skip rule. */
   onCheckIn?: () => void;
+  /** Resend a failed optimistic message (audit C16). */
+  onRetrySend?: (localId: string, body: string) => void;
   /** Extra header content (e.g. a close button on mobile). */
   header?: ReactNode;
   /** Skip the internal header (a wrapping Sheet already provides one). */
   hideHead?: boolean;
+  /** Scopes this mount's proposal DOM ids (audit C27) — pass a distinct
+   * value when the panel is mounted more than once at a time (inline panel
+   * vs. the mobile sheet), so calendar-ghost taps can target the right copy. */
+  idPrefix?: string;
 }) {
   return (
     <section className="coach-panel" aria-label="Coach">
@@ -354,8 +434,16 @@ export function CoachPanel({
           </span>
         </div>
       )}
-      <PendingTray proposals={proposals} onApprove={onApprove} onDecline={onDecline} busy={busy} />
-      <CoachThread messages={messages} />
+      <PendingTray
+        proposals={proposals}
+        onApprove={onApprove}
+        onDecline={onDecline}
+        busy={busy}
+        acting={acting}
+        errors={proposalErrors}
+        idPrefix={idPrefix}
+      />
+      <CoachThread messages={messages} onRetrySend={onRetrySend} />
       <CoachComposer onSend={onSend} question={question} onAnswer={onAnswer} busy={busy} />
     </section>
   );
@@ -376,6 +464,10 @@ export function ManagePlans({
 }) {
   const [renaming, setRenaming] = useState<string | null>(null);
   const [name, setName] = useState("");
+  // Audit C18: Retire used to archive every remaining session on one tap,
+  // with no undo — the same two-step pattern the workout-level "Remove from
+  // plan" button already uses (plan.tsx's WorkoutDetail).
+  const [confirmingRetire, setConfirmingRetire] = useState<string | null>(null);
   const weekOf = (p: CoachPlanDto): string => {
     const total = Math.max(1, Math.round((Date.parse(p.endDate) - Date.parse(p.startDate)) / 604_800_000));
     const into = Math.min(
@@ -442,9 +534,22 @@ export function ManagePlans({
                 >
                   Rename
                 </button>
-                <button type="button" className="btn btn-small" onClick={() => onRetire(p.id)}>
-                  Retire
-                </button>
+                {confirmingRetire === p.id ? (
+                  <button
+                    type="button"
+                    className="btn btn-small btn-danger"
+                    onClick={() => {
+                      onRetire(p.id);
+                      setConfirmingRetire(null);
+                    }}
+                  >
+                    Really retire — archives every remaining session
+                  </button>
+                ) : (
+                  <button type="button" className="btn btn-small" onClick={() => setConfirmingRetire(p.id)}>
+                    Retire
+                  </button>
+                )}
               </div>
             ) : null}
           </div>

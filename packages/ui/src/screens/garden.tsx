@@ -34,6 +34,7 @@ import {
   relativeDay,
   Sheet,
   Spinner,
+  useIsDesktop,
 } from "../components.js";
 import { Drawer } from "../drawer.js";
 import { cap, eventSentence, selectArrival, type ArrivalEvent } from "./arrival.js";
@@ -74,20 +75,6 @@ function usePrefersReducedMotion(): boolean {
       typeof window !== "undefined" && window.matchMedia("(prefers-reduced-motion: reduce)").matches,
     [],
   );
-}
-
-/** ≥1024px — where the garden becomes a full-viewport stage. */
-function useIsDesktop(): boolean {
-  const [isDesktop, setIsDesktop] = useState(
-    () => typeof window !== "undefined" && window.matchMedia("(min-width: 1024px)").matches,
-  );
-  useEffect(() => {
-    const mq = window.matchMedia("(min-width: 1024px)");
-    const onChange = () => setIsDesktop(mq.matches);
-    mq.addEventListener("change", onChange);
-    return () => mq.removeEventListener("change", onChange);
-  }, []);
-  return isDesktop;
 }
 
 /** A timeline day worth a tick mark — derived from snapshot deltas. */

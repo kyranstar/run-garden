@@ -18,6 +18,7 @@ import {
   Sheet,
   Spinner,
   SyncNotesStack,
+  useIsDesktop,
 } from "../components.js";
 import { IconAlert, IconCheck, IconClock } from "../icons.js";
 import { MoveSheet } from "./move-sheet.js";
@@ -379,6 +380,25 @@ function WorkoutCell({
   );
 }
 
+/** Client-only id for an optimistic echo — collision-safe enough for a
+ * single browser tab composing messages one at a time. */
+let localIdSeq = 0;
+function newLocalId(): string {
+  localIdSeq += 1;
+  return `${Date.now()}-${localIdSeq}`;
+}
+
+/** Turns a failed approve/decline into copy that says what actually
+ * happened (audit C17) — a 409 not_pending means the proposal already
+ * resolved (expired, or acted on from another tab), NOT that this tap did
+ * anything. */
+function proposalActionErrorMessage(err: unknown): string {
+  const code = err instanceof ApiError ? (err.body as { error?: string } | null)?.error : undefined;
+  if (code === "not_pending") return "This already resolved elsewhere — nothing changed here.";
+  if (code === "not_found") return "This proposal is gone — nothing changed.";
+  return "Couldn't reach the coach — try again.";
+}
+
 /**
  * Coach data wiring (Plan B Task B2): one shared ["coach-state"] query feeds
  * the panel AND the calendar's ghost diffs. On mount, a wake fires only when
@@ -398,32 +418,69 @@ function usePlanCoach() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [state.data?.wakeAdvised]);
 
+  const echo = (localId: string, body: string) => {
+    // Optimistic echo: the athlete's words appear instantly.
+    qc.setQueryData(["coach-state"], (cur: unknown) => {
+      const c = cur as { messages?: Array<Record<string, unknown>> } | undefined;
+      if (!c?.messages) return cur;
+      return {
+        ...c,
+        messages: [
+          ...c.messages,
+          { id: localId, role: "user", body, refs: {}, at: new Date().toISOString() },
+        ],
+      };
+    });
+  };
   const send = useMutation({
-    mutationFn: (body: string) => api.coachMessage(body),
-    onMutate: (body: string) => {
-      // Optimistic echo: the athlete's words appear instantly.
+    mutationFn: (v: { localId: string; body: string }) => api.coachMessage(v.body),
+    onMutate: (v) => echo(v.localId, v.body),
+    // Audit C16: a network-failed send used to silently vanish — the draft
+    // was cleared on submit, and `onSettled: invalidate` (which ran even on
+    // error) replaced the cache with the server's truth, which never saw
+    // the message. Only invalidate on success now; on failure, mark the
+    // optimistic echo itself so CoachThread can offer a retry instead of
+    // erasing it.
+    onError: (_err, v) => {
       qc.setQueryData(["coach-state"], (cur: unknown) => {
-        const c = cur as { messages?: unknown[] } | undefined;
+        const c = cur as { messages?: Array<Record<string, unknown>> } | undefined;
         if (!c?.messages) return cur;
         return {
           ...c,
-          messages: [
-            ...c.messages,
-            { id: `local-${Date.now()}`, role: "user", body, refs: {}, at: new Date().toISOString() },
-          ],
+          messages: c.messages.map((m) => (m.id === v.localId ? { ...m, failed: true } : m)),
         };
       });
     },
-    onSettled: invalidate,
+    onSuccess: invalidate,
   });
+  const [proposalErrors, setProposalErrors] = useState<Record<string, string>>({});
+  const clearProposalError = (id: string) =>
+    setProposalErrors((e) => {
+      if (!(id in e)) return e;
+      const next = { ...e };
+      delete next[id];
+      return next;
+    });
   const approve = useMutation({
     mutationFn: (id: string) => api.coachApprove(id),
-    onSettled: () => {
+    onMutate: (id) => clearProposalError(id),
+    // Audit C17: a 409 (proposal expired/resolved while the page sat open)
+    // used to be swallowed by `onSettled: invalidate` alone — the refetch
+    // simply omits the now-non-pending proposal, so the card vanishes
+    // exactly like a success even though nothing was applied. Only
+    // invalidate on success; on error, keep the card and say why.
+    onError: (err, id) => setProposalErrors((e) => ({ ...e, [id]: proposalActionErrorMessage(err) })),
+    onSuccess: () => {
       invalidate();
       for (const k of ["plan", "today", "garden"]) void qc.invalidateQueries({ queryKey: [k] });
     },
   });
-  const decline = useMutation({ mutationFn: (id: string) => api.coachDecline(id), onSettled: invalidate });
+  const decline = useMutation({
+    mutationFn: (id: string) => api.coachDecline(id),
+    onMutate: (id) => clearProposalError(id),
+    onError: (err, id) => setProposalErrors((e) => ({ ...e, [id]: proposalActionErrorMessage(err) })),
+    onSuccess: invalidate,
+  });
   const answer = useMutation({
     mutationFn: (v: { id: string; answer: string }) => api.coachAnswerQuestion(v.id, v.answer),
     onSettled: invalidate,
@@ -432,7 +489,16 @@ function usePlanCoach() {
     state,
     busy: wakeMut.isPending || send.isPending || answer.isPending,
     acting: approve.isPending || decline.isPending,
-    send: (b: string) => send.mutate(b),
+    proposalErrors,
+    send: (b: string) => send.mutate({ localId: `local-${newLocalId()}`, body: b }),
+    resend: (localId: string, body: string) => {
+      qc.setQueryData(["coach-state"], (cur: unknown) => {
+        const c = cur as { messages?: Array<Record<string, unknown>> } | undefined;
+        if (!c?.messages) return cur;
+        return { ...c, messages: c.messages.filter((m) => m.id !== localId) };
+      });
+      send.mutate({ localId: `local-${newLocalId()}`, body });
+    },
     checkIn: () => wakeMut.mutate(true),
     approve: (id: string) => approve.mutate(id),
     decline: (id: string) => decline.mutate(id),
@@ -440,10 +506,18 @@ function usePlanCoach() {
   };
 }
 
-/** Scroll a proposal card into view and flash it (calendar ghost tap). */
-function focusProposal(id: string): void {
+/** DOM id prefix for the mobile sheet's copy of the coach panel — the
+ * inline panel (hidden below 1024px, audit C6) uses no prefix, so the two
+ * mounts never collide on the same id. */
+const SHEET_ID_PREFIX = "sheet-";
+
+/** Scroll a proposal card into view and flash it (calendar ghost tap).
+ * Audit C27: `idPrefix` picks the copy that's actually visible at this
+ * width — without it, `getElementById` always resolved to the inline
+ * panel's node (first in DOM order) even when only the sheet was showing. */
+function focusProposal(id: string, idPrefix: string): void {
   requestAnimationFrame(() => {
-    const el = document.getElementById(`proposal-${id}`);
+    const el = document.getElementById(`proposal-${idPrefix}${id}`);
     if (!el) return;
     el.scrollIntoView({ block: "center", behavior: "smooth" });
     el.classList.remove("coach-flash");
@@ -477,6 +551,7 @@ export function PlanScreen() {
 
   const coach = usePlanCoach();
   const coachPlans = useQuery({ queryKey: ["coach-plans"], queryFn: api.coachPlans });
+  const isDesktop = useIsDesktop();
   const [coachOpen, setCoachOpen] = useState(false);
   const [manageOpen, setManageOpen] = useState(false);
   const qc = useQueryClient();
@@ -499,9 +574,15 @@ export function PlanScreen() {
     const dates = new Map((plan.data?.workouts ?? []).map((w) => [w.id, w.effectiveDate]));
     return pendingByDate(coach.state.data?.pendingProposals ?? [], dates);
   }, [plan.data?.workouts, coach.state.data?.pendingProposals]);
+  // Audit C27: this used to open the coach Sheet on every width, on the
+  // (false) assumption it was a visual no-op on desktop — Sheet renders as
+  // a centered dialog at every breakpoint, so desktop got a redundant
+  // second "Coach" modal covering the calendar. Below 1024px the inline
+  // panel is hidden (C6), so the sheet is the only visible surface there;
+  // above it, the always-visible inline panel is enough — just scroll to it.
   const onGhostTap = (proposalId: string) => {
-    setCoachOpen(true); // no-op visually on desktop (panel always mounted)
-    focusProposal(proposalId);
+    if (!isDesktop) setCoachOpen(true);
+    focusProposal(proposalId, isDesktop ? "" : SHEET_ID_PREFIX);
   };
 
   // Land on the current week on first load, so today's work is front and
@@ -530,11 +611,14 @@ export function PlanScreen() {
       proposals={coach.state.data.pendingProposals}
       question={coach.state.data.openQuestion}
       busy={coach.busy}
+      acting={coach.acting}
+      proposalErrors={coach.proposalErrors}
       onSend={coach.send}
       onApprove={coach.approve}
       onDecline={coach.decline}
       onAnswer={coach.answer}
       onCheckIn={coach.checkIn}
+      onRetrySend={coach.resend}
     />
   ) : (
     <section className="coach-panel" aria-label="Coach">
@@ -597,10 +681,15 @@ export function PlanScreen() {
                 {week.days.map((day) => {
                   const isToday = day.date === today;
                   const isPast = !!today && day.date < today;
+                  // Audit C22: a coach proposal that adds a session to an
+                  // otherwise-empty day used to be invisible on mobile — the
+                  // agenda view hides any day lacking `has-items`, and that
+                  // class only ever looked at real workouts, never ghosts.
+                  const hasGhosts = (ghostsByDate.get(day.date)?.length ?? 0) > 0;
                   return (
                     <div
                       key={day.date}
-                      className={`cal-day ${isToday ? "is-today" : ""} ${isPast ? "is-past" : ""} ${day.items.length > 0 ? "has-items" : ""}`}
+                      className={`cal-day ${isToday ? "is-today" : ""} ${isPast ? "is-past" : ""} ${day.items.length > 0 || hasGhosts ? "has-items" : ""}`}
                     >
                       <div className="cal-date">
                         <span className="cal-dow">{WEEKDAY_HEADERS[(new Date(`${day.date}T00:00:00Z`).getUTCDay() + 6) % 7]}</span>
@@ -656,11 +745,15 @@ export function PlanScreen() {
               proposals={coach.state.data.pendingProposals}
               question={coach.state.data.openQuestion}
               busy={coach.busy}
+              acting={coach.acting}
+              proposalErrors={coach.proposalErrors}
               onSend={coach.send}
               onApprove={coach.approve}
               onDecline={coach.decline}
               onAnswer={coach.answer}
               onCheckIn={coach.checkIn}
+              onRetrySend={coach.resend}
+              idPrefix={SHEET_ID_PREFIX}
             />
           ) : null}
         </div>

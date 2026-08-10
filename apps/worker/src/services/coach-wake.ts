@@ -1,4 +1,4 @@
-import { and, desc, eq } from "drizzle-orm";
+import { and, desc, eq, sql } from "drizzle-orm";
 import {
   coachMemory,
   coachMessages,
@@ -52,6 +52,11 @@ export interface WakeResult {
 
 const MAX_OUTPUT_TOKENS_WAKE = 64_000; // a wake may draft a whole plan
 const STALE_BRIEFING_HOURS = 20;
+/** How long a failed/resting wake counts as "already tried" for the "open"
+ * skip rule (audit C4/C14): without this, an "open" cause never sees a
+ * role='coach' message while the LLM is down, so wakeAdvised stays true and
+ * every Plan visit re-fires (and re-fails) the wake. */
+export const WAKE_FAILURE_BACKOFF_MINUTES = 30;
 
 export const WAKE_SYSTEM_PROMPT = `You are the athlete's running and lifting coach inside Run Garden. You read one dossier and reply with ONE JSON object — nothing else.
 
@@ -78,11 +83,67 @@ async function persistMessage(
   userId: string,
   role: "coach" | "user" | "receipt",
   body: string,
-  refs: { proposalId?: string; memoryIds?: string[]; questionId?: string } = {},
+  refs: { proposalId?: string; memoryIds?: string[]; questionId?: string; wakeFailure?: boolean } = {},
 ): Promise<string> {
   const id = newId();
   await db.insert(coachMessages).values({ id, userId, role, body, refs, at: nowInstant() });
   return id;
+}
+
+/**
+ * Persist a wake-failure receipt ("couldn't think" / "resting"), but never
+ * as a duplicate of the thread's newest row (audit C4/C14): while the LLM
+ * gateway is down, every "open" wake used to append an identical row
+ * forever. Marked `wakeFailure` so `openWakeIsFresh` can back off retries
+ * without depending on exact copy.
+ */
+async function persistWakeFailure(db: Db, userId: string, body: string): Promise<void> {
+  const [latest] = await db
+    .select()
+    .from(coachMessages)
+    .where(eq(coachMessages.userId, userId))
+    .orderBy(desc(coachMessages.at))
+    .limit(1);
+  if (latest && latest.role === "receipt" && latest.body === body) return; // already showing this failure
+  await persistMessage(db, userId, "receipt", body, { wakeFailure: true });
+}
+
+/**
+ * Whether an "open" (auto) wake would be redundant right now: the last
+ * briefing is still fresh, or the coach just failed to think/rest and
+ * hasn't cleared its backoff window yet. Shared by the internal skip rule
+ * below and the `wakeAdvised` the client uses to decide whether to bother
+ * calling wake at all — without the failure half of this, wakeAdvised never
+ * clears on failure (no role='coach' message is ever written), so a page
+ * revisited every few minutes during an outage re-fires (and re-fails) on
+ * every single open.
+ */
+export async function openWakeIsFresh(db: Db, userId: string): Promise<boolean> {
+  const [lastCoach] = await db
+    .select()
+    .from(coachMessages)
+    .where(and(eq(coachMessages.userId, userId), eq(coachMessages.role, "coach")))
+    .orderBy(desc(coachMessages.at))
+    .limit(1);
+  if (lastCoach && Date.parse(nowInstant()) - Date.parse(lastCoach.at) < STALE_BRIEFING_HOURS * 3600 * 1000) {
+    return true;
+  }
+  const [lastFailure] = await db
+    .select()
+    .from(coachMessages)
+    .where(
+      and(
+        eq(coachMessages.userId, userId),
+        eq(coachMessages.role, "receipt"),
+        sql`json_extract(${coachMessages.refs}, '$.wakeFailure') = 1`,
+      ),
+    )
+    .orderBy(desc(coachMessages.at))
+    .limit(1);
+  return (
+    !!lastFailure &&
+    Date.parse(nowInstant()) - Date.parse(lastFailure.at) < WAKE_FAILURE_BACKOFF_MINUTES * 60 * 1000
+  );
 }
 
 /** Dates an op touches — for supersede matching. */
@@ -186,21 +247,13 @@ export async function wake(
 
   const budget = await llmBudgetStatus(db, userId);
   if (budget.cutoff) {
-    await persistMessage(db, userId, "receipt", "The coach is resting (weekly budget reached) — manual controls all work.");
+    await persistWakeFailure(db, userId, "The coach is resting (weekly budget reached) — manual controls all work.");
     return { status: "resting" };
   }
 
   const triggers = await pendingTriggers(db, userId);
   if (cause.kind === "open") {
-    const [lastCoach] = await db
-      .select()
-      .from(coachMessages)
-      .where(and(eq(coachMessages.userId, userId), eq(coachMessages.role, "coach")))
-      .orderBy(desc(coachMessages.at))
-      .limit(1);
-    const fresh =
-      lastCoach && Date.parse(nowInstant()) - Date.parse(lastCoach.at) < STALE_BRIEFING_HOURS * 3600 * 1000;
-    if (triggers.length === 0 && fresh) return { status: "skipped" };
+    if (triggers.length === 0 && (await openWakeIsFresh(db, userId))) return { status: "skipped" };
   }
 
   try {
@@ -258,7 +311,7 @@ export async function wake(
       ]));
     }
     if (!out) {
-      await persistMessage(db, userId, "receipt", "The coach couldn't think just now — try again in a moment.");
+      await persistWakeFailure(db, userId, "The coach couldn't think just now — try again in a moment.");
       return { status: "error" };
     }
 
@@ -393,7 +446,7 @@ export async function wake(
     await consumeTriggers(db, userId, triggers.map((t) => t.id), now);
     return { status: "ok", coachMessageId, proposalIds };
   } catch {
-    await persistMessage(db, userId, "receipt", "The coach couldn't think just now — try again in a moment.");
+    await persistWakeFailure(db, userId, "The coach couldn't think just now — try again in a moment.");
     return { status: "error" };
   }
 }

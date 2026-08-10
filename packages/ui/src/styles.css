@@ -26,6 +26,12 @@
      and pill text, which carry far more pixels. */
   --danger-ink: #8f3527;
   --focus: #3e7a52;
+  /* The "Needs you" proposal tray's warm slab — a dedicated token (not
+     --warn-soft, whose light value is a touch darker and drops the amber
+     heading below AA at this size) so light mode is pixel-identical to the
+     original cream and dark mode gets an actual dark surface instead of
+     inheriting the light cream verbatim (audit C24). */
+  --coach-tray-bg: #fffdf6;
 
   /* Chart series — re-stepped 2026-08-04: the previous values (#3e7a52 /
      #b06a4d / #5c6ab0) FAILED the dataviz skill's palette validator
@@ -83,6 +89,9 @@
     --chart-3: #7f8ce0;
     --chart-track: #2b2f2c;
     --chart-grid: #32362f;
+    /* Verified 5.5:1 (--warn text) and 6.9:1 (--green-ink linklike) against
+       this — both clear AA at the tray's small sizes (audit C24). */
+    --coach-tray-bg: #3a3020;
     color-scheme: dark;
   }
 }
@@ -112,6 +121,7 @@
   --chart-3: #7f8ce0;
   --chart-track: #2b2f2c;
   --chart-grid: #32362f;
+  --coach-tray-bg: #3a3020;
   color-scheme: dark;
 }
 
@@ -762,6 +772,11 @@ button {
   font-size: 0.78rem;
   font-weight: 600;
   line-height: 1.28;
+  /* Audit C7: line-clamp only ellipsizes the FINAL line — an unbreakable
+     word (e.g. "Threshold") that doesn't fit line 1 overflowed sideways and
+     was hard-clipped mid-glyph, with no ellipsis at all. Let long words
+     break instead. */
+  overflow-wrap: anywhere;
 }
 .cal-card-meta {
   display: flex;
@@ -3352,14 +3367,30 @@ button {
 .pill-warnsoft { background: var(--warn-soft); color: var(--warn); font-weight: 600; }
 
 .plan-split { display: block; }
+/* Audit C6: the coach panel used to render inline (unhidden) on mobile
+   AND behind the floating pill's sheet — two full coach UIs stacked, with
+   the inline one burying the calendar below the fold. Below 1024px the
+   pill + sheet is the only mobile coach surface. */
+.plan-split-coach { display: none; }
 @media (min-width: 1024px) {
   .plan-split {
     display: grid;
-    grid-template-columns: minmax(340px, 0.85fr) 1.15fr;
+    /* Audit C7: was minmax(340px, 0.85fr) 1.15fr — the calendar column
+       shrank to ~58px day cells, hard-clipping every workout title.
+       Rebalanced toward the calendar; the coach column still has room for
+       its composer and proposal cards at its floor width. */
+    grid-template-columns: minmax(300px, 0.7fr) 1.3fr;
     gap: 1rem;
     align-items: start;
   }
-  .plan-split > .coach-panel { position: sticky; top: 0.8rem; }
+  /* Audit C5: this used to target `.plan-split > .coach-panel`, but
+     `.coach-panel` is a grandchild (wrapped in `.plan-split-coach`) — the
+     selector matched nothing, so the panel scrolled away with the page. */
+  .plan-split-coach {
+    display: block;
+    position: sticky;
+    top: 0.8rem;
+  }
 }
 
 .coach-panel {
@@ -3382,7 +3413,7 @@ button {
 .coach-tray {
   padding: 0.6rem 0.9rem;
   border-bottom: 1px solid var(--border);
-  background: #fffdf6;
+  background: var(--coach-tray-bg);
 }
 .coach-tray-head {
   font-size: 0.68rem;
@@ -3404,6 +3435,9 @@ button {
 .coach-prop-evidence { margin: 0.25rem 0 0; }
 .coach-prop-flags { display: flex; gap: 0.3rem; flex-wrap: wrap; margin-top: 0.3rem; }
 .coach-prop-why { margin: 0.4rem 0 0; font-size: 0.88rem; }
+/* Audit C17: approve/decline used to fail silently (a 409 read exactly
+   like success — the card just vanished). */
+.coach-prop-error { margin: 0.4rem 0 0; font-size: 0.82rem; color: var(--danger); }
 
 .coach-thread {
   flex: 1;
@@ -3422,6 +3456,16 @@ button {
 }
 .coach-msg-coach { background: var(--bg-sunken); align-self: flex-start; }
 .coach-msg-user { background: var(--green-soft); color: var(--green-ink); align-self: flex-end; }
+/* Audit C16: a network-failed send used to just clear the draft and vanish
+   once the settle-time refetch landed — no error, no way to recover the
+   words. The optimistic echo now stays, marked failed, with a retry. */
+.coach-msg-failed { background: var(--danger-soft); color: var(--ink); outline: 1px solid color-mix(in srgb, var(--danger) 40%, transparent); }
+.coach-msg-retry {
+  display: block;
+  margin-top: 0.3rem;
+  font-size: 0.78rem;
+  color: var(--danger);
+}
 .coach-receipt { align-self: stretch; text-align: center; font-size: 0.75rem; padding: 0.1rem 0; }
 .coach-memchips { display: inline-flex; gap: 0.3rem; margin-left: 0.4rem; }
 .tagchip {
@@ -3516,7 +3560,10 @@ button {
 .coach-pill {
   position: fixed;
   right: 0.9rem;
-  bottom: 4.2rem;
+  /* Audit C25: no env() term meant the bottom-nav's safe-area padding (which
+     grows with the home-indicator inset) pushed its top edge over most of
+     this pill on Face-ID iPhones, leaving a ~10px sliver to tap. */
+  bottom: calc(4.2rem + env(safe-area-inset-bottom, 0px));
   z-index: 30;
   background: var(--green);
   color: #fff;

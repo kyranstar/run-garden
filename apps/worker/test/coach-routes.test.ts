@@ -104,6 +104,35 @@ describe("coach routes", () => {
     expect(stale!.status).toBe("expired");
   });
 
+  it("audit C4/C14: a recent wake failure backs wakeAdvised off (not true forever)", async () => {
+    // A recent failure receipt (as coach-wake.ts writes on a gateway error)
+    // means "already tried" — with no open trigger, wakeAdvised should be
+    // false, not true on every single visit while the LLM is down.
+    await db.insert(schema.coachMessages).values({
+      id: newId(),
+      userId,
+      role: "receipt",
+      body: "The coach couldn't think just now — try again in a moment.",
+      refs: { wakeFailure: true },
+      at: nowInstant(),
+    });
+    const body = (await (await client().get("/api/coach/state")).json()) as { wakeAdvised: boolean };
+    expect(body.wakeAdvised).toBe(false);
+  });
+
+  it("audit C4/C14: wakeAdvised clears back to true once a failure ages past the backoff window", async () => {
+    await db.insert(schema.coachMessages).values({
+      id: newId(),
+      userId,
+      role: "receipt",
+      body: "The coach couldn't think just now — try again in a moment.",
+      refs: { wakeFailure: true },
+      at: new Date(Date.now() - 40 * 60_000).toISOString(), // > 30-min backoff
+    });
+    const body = (await (await client().get("/api/coach/state")).json()) as { wakeAdvised: boolean };
+    expect(body.wakeAdvised).toBe(true);
+  });
+
   it("approve applies ops, writes the receipt, and 409s a second tap", async () => {
     const today = todayInZone(prefs.timezone);
     await db.insert(schema.plannedWorkouts).values({

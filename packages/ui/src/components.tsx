@@ -3,6 +3,7 @@ import {
   useEffect,
   useId,
   useRef,
+  useState,
   type ErrorInfo,
   type ReactNode,
   type RefObject,
@@ -18,6 +19,23 @@ import {
   IconLaptop,
   IconSync,
 } from "./icons.js";
+
+/** ≥1024px — where the garden becomes a full-viewport stage and the plan
+ * page's coach column becomes a persistent sidebar instead of a pill+sheet.
+ * Shared (was garden.tsx-private) so the plan page's ghost-tap routing
+ * (audit C27) can agree with the garden on what counts as "desktop". */
+export function useIsDesktop(): boolean {
+  const [isDesktop, setIsDesktop] = useState(
+    () => typeof window !== "undefined" && window.matchMedia("(min-width: 1024px)").matches,
+  );
+  useEffect(() => {
+    const mq = window.matchMedia("(min-width: 1024px)");
+    const onChange = () => setIsDesktop(mq.matches);
+    mq.addEventListener("change", onChange);
+    return () => mq.removeEventListener("change", onChange);
+  }, []);
+  return isDesktop;
+}
 
 // ── Formatting helpers ──────────────────────────────────────────────────────
 

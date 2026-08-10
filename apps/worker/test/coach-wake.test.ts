@@ -55,6 +55,17 @@ function scriptedFetch(bodies: unknown[]): { fetchImpl: typeof fetch; calls: num
   return { fetchImpl, calls };
 }
 
+/** A gateway that always 400s — non-retryable, so chatCompletion returns
+ * `{ok:false}` immediately with no in-place retry delay. */
+function failingFetch(): { fetchImpl: typeof fetch; calls: number[] } {
+  const calls: number[] = [];
+  const fetchImpl = (async () => {
+    calls.push(calls.length);
+    return new Response("bad request", { status: 400 });
+  }) as typeof fetch;
+  return { fetchImpl, calls };
+}
+
 const RESTRAINT = { briefing: null, proposals: [], question: null, memoryOps: [] };
 
 async function seedWorkout(db: Db, userId: string, date: string, id = "w1") {
@@ -183,6 +194,49 @@ describe("wake", () => {
     const msgs = await db.select().from(schema.coachMessages).where(eq(schema.coachMessages.userId, userId));
     expect(msgs.some((m) => m.role === "user" && m.body === "hello?")).toBe(true);
     expect(msgs.some((m) => m.role === "receipt" && m.body.includes("resting"))).toBe(true);
+  });
+
+  it("audit C4/C14: repeated failed 'Check in' taps dedupe into one receipt, not a stack", async () => {
+    const db = makeTestDb();
+    const { userId, prefs } = await makeTestUser(db);
+    const { fetchImpl } = failingFetch();
+
+    const first = await wake(db, makeEnv(), userId, prefs, { kind: "manual" }, fetchImpl);
+    expect(first.status).toBe("error");
+    const second = await wake(db, makeEnv(), userId, prefs, { kind: "manual" }, fetchImpl);
+    expect(second.status).toBe("error"); // manual bypasses the skip rule — still attempts
+    const third = await wake(db, makeEnv(), userId, prefs, { kind: "manual" }, fetchImpl);
+    expect(third.status).toBe("error");
+
+    const receipts = await db
+      .select()
+      .from(schema.coachMessages)
+      .where(and(eq(schema.coachMessages.userId, userId), eq(schema.coachMessages.role, "receipt")));
+    expect(receipts).toHaveLength(1); // three identical failures, one row
+    expect(receipts[0]!.body).toBe("The coach couldn't think just now — try again in a moment.");
+  });
+
+  it("audit C4/C14: an 'open' wake backs off after a recent failure instead of re-calling the LLM every visit", async () => {
+    const db = makeTestDb();
+    const { userId, prefs } = await makeTestUser(db);
+    const { fetchImpl, calls } = failingFetch();
+
+    const first = await wake(db, makeEnv(), userId, prefs, { kind: "open" }, fetchImpl);
+    expect(first.status).toBe("error");
+    expect(calls).toHaveLength(1);
+
+    // A second "open" (auto-wake on the next Plan visit) is redundant: the
+    // failure is still fresh, so it's skipped without touching the LLM or
+    // appending another receipt.
+    const second = await wake(db, makeEnv(), userId, prefs, { kind: "open" }, fetchImpl);
+    expect(second.status).toBe("skipped");
+    expect(calls).toHaveLength(1);
+
+    const receipts = await db
+      .select()
+      .from(schema.coachMessages)
+      .where(and(eq(schema.coachMessages.userId, userId), eq(schema.coachMessages.role, "receipt")));
+    expect(receipts).toHaveLength(1);
   });
 
   it("restraint: an all-empty output only consumes triggers", async () => {
