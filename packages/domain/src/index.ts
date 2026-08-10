@@ -7,6 +7,7 @@ export * from "./capabilities.js";
 export * from "./workout.js";
 export * from "./duration.js";
 export * from "./activity.js";
+export * from "./sport.js";
 export * from "./health.js";
 export * from "./preferences.js";
 export * from "./jobs.js";
