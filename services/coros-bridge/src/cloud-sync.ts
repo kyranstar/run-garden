@@ -378,11 +378,20 @@ export class CloudSync {
    */
   private watchdogCheck(): void {
     if (this.stopped) return;
+    // Staleness is logged UNCONDITIONALLY: a poll wedged behind a hung chain
+    // is exactly the state the watchdog cannot re-arm out of, and it must
+    // never be silent again (it was, for four days).
+    const quietMs = Date.now() - this.lastPollSettledAt;
+    if (quietMs > Math.max(5 * 60_000, this.pollMs * 3)) {
+      this.logger(
+        `[coros-bridge] no poll settled for ${Math.round(quietMs / 1000)}s` +
+          ` (timer=${this.pollTimer !== null} enqueued=${this.pollEnqueued})`,
+      );
+    }
     if (!shouldWatchdogRearm({ pollTimerArmed: this.pollTimer !== null, pollEnqueued: this.pollEnqueued })) {
       return;
     }
-    const quietFor = Math.round((Date.now() - this.lastPollSettledAt) / 1000);
-    this.logger(`[coros-bridge] poll loop dead (no timer, no queued poll; quiet ${quietFor}s) — re-arming`);
+    this.logger(`[coros-bridge] poll loop dead (no timer, no queued poll) — re-arming`);
     this.schedulePoll();
   }
 
@@ -407,6 +416,7 @@ export class CloudSync {
     this.pollTimer = null;
     this.snapshotTimer = null;
     this.pollWatchdogTimer = null;
+    this.pollEnqueued = false;
   }
 
   /** Wait for all queued work to settle (used by tests and shutdown). */

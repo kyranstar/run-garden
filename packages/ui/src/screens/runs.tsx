@@ -184,9 +184,11 @@ export function RunsScreen() {
       setNote(
         !r.enqueued
           ? r.reason === "already_running"
-            ? "Already reading your history — see Settings for progress."
+            ? "A history read is already queued or running — see Settings for progress."
             : "Couldn't start the backfill. Open the desktop app and try again."
-          : "Reading your COROS history — runs, lifts, and yoga. Progress is in Settings.",
+          : r.reason === "rearmed"
+            ? "Queued — waiting for your Mac to pick it up. Progress is in Settings."
+            : "Queued — your Mac reads runs, lifts, yoga, and adventures. Progress is in Settings.",
       );
       void qc.invalidateQueries({ queryKey: ["runs"] });
       void qc.invalidateQueries({ queryKey: ["plan"] });

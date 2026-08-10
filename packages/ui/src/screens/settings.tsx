@@ -181,7 +181,9 @@ function BackfillRow() {
   const detail =
     s?.status === "error"
       ? s.lastErrorCategory === "bridge_never_claimed"
-        ? "Your Mac never picked this up. Open Run Garden on the Mac, then press Run again."
+        ? s.bridgePaused
+          ? "Your Mac never picked this up — syncing is paused there. Resume it in Run Garden, then press Run again."
+          : "Your Mac never picked this up. Open Run Garden on the Mac, then press Run again."
         : s.lastErrorCategory === "bridge_stalled_mid_walk"
           ? `Your Mac stopped partway through (${s.activitiesIngested} sessions so far). Open Run Garden on the Mac, then press Run again.`
           : "Couldn't read your history — your desktop app is older than this feature. Update it, then try again."

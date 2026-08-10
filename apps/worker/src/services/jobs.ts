@@ -390,7 +390,7 @@ export async function applyJobResult(
           and(
             eq(corosWriteJobs.userId, userId),
             eq(corosWriteJobs.kind, "backfill"),
-            eq(corosWriteJobs.status, "queued"),
+            inArray(corosWriteJobs.status, ["queued", "claimed"]),
           ),
         )
         .limit(1);

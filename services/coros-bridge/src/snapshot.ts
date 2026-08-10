@@ -34,7 +34,7 @@ export async function loadNameResolver(
   fetchImpl: typeof fetch,
 ): Promise<NameResolver | undefined> {
   try {
-    const res = await fetchImpl(COROS_LOCALE_URL);
+    const res = await fetchImpl(COROS_LOCALE_URL, { signal: AbortSignal.timeout(60_000) });
     if (!res.ok) return undefined;
     const text = await res.text();
     const stripped = text
