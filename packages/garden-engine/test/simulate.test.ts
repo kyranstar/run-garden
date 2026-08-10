@@ -949,6 +949,25 @@ describe("adventures", () => {
     expect(snap.state.weekDisciplines.adventure).toBe(true);
   });
 
+  it("a planned rest day that's also a qualifying adventure keeps the rest credit and still freezes the clocks", () => {
+    let snap = initialSnapshot(START);
+    // 3 plain days: run clock 3, strength/yoga clocks 3.
+    for (let i = 1; i <= 3; i++) snap = simulateDay(snap, emptyDay(addDays(START, i))).snapshot;
+    const soilBefore = snap.state.soilHealth;
+    const { snapshot: after, events } = simulateDay(snap, {
+      ...adventureDay(addDays(START, 4)),
+      restObserved: true,
+    });
+    // The freeze's scope is punitive paths only: the rest credit (+0.01)
+    // still stacks on top of the adventure's own soil tending (+0.02).
+    expect(after.state.soilHealth).toBeCloseTo(Math.min(1, soilBefore + 0.02 + 0.01), 5);
+    expect(events.some((e) => e.kind === "rest_observed")).toBe(true);
+    expect(events.some((e) => e.kind === "adventure_logged")).toBe(true);
+    expect(after.state.daysSinceCompletedRun).toBe(snap.state.daysSinceCompletedRun); // held, not advanced
+    expect(after.state.daysSinceStrength).toBe(3);
+    expect(after.state.daysSinceYoga).toBe(3);
+  });
+
   it("a sub-threshold stroll is recorded but garden-neutral", () => {
     let snap = initialSnapshot(START);
     const d1 = simulateDay(snap, {

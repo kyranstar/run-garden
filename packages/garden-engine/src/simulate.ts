@@ -310,12 +310,14 @@ export function simulateDay(
       state.daysSinceCompletedRun = 0;
       state.droughtDays = 0;
     }
-  } else if (!state.restMode && !adventureFrozen) {
-    // 4. A day with no completed run.
+  } else if (!state.restMode) {
+    // 4. A day with no completed run. The freeze's scope is punitive paths
+    //    only — a planned rest day still earns its credit even when the
+    //    garden is also adventure-frozen; only the decay path is shielded.
     if (input.restObserved) {
       state.soilHealth = Math.min(1, state.soilHealth + 0.01);
       emit({ kind: "rest_observed" });
-    } else if (!input.planGap) {
+    } else if (!input.planGap && !adventureFrozen) {
       state.daysSinceCompletedRun += 1;
       applyDailyDecay(snapshot, input.date, cfg, emit);
     }
