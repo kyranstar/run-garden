@@ -253,3 +253,57 @@ describe("coach routes", () => {
     expect(plans.plans[0]).toMatchObject({ name: "Autumn Half", status: "retired" });
   });
 });
+
+describe("GET /plans — studio union (user-nits fix)", () => {
+  it("lists only the newest studio plan, with push-derived status", async () => {
+    // Two studio plans: the older one is superseded and must not appear; the
+    // newest has no verified push yet, so it reads as a draft.
+    await db.insert(schema.studioPlans).values([
+      {
+        id: "sp-old",
+        userId,
+        brief: {},
+        plan: { name: "Old Lift Block" },
+        version: 1,
+        createdAt: "2026-07-01T00:00:00.000Z",
+        updatedAt: "2026-07-01T00:00:00.000Z",
+      },
+      {
+        id: "sp-new",
+        userId,
+        brief: {},
+        plan: { name: "Full Body Strength" },
+        version: 2,
+        createdAt: "2026-08-01T00:00:00.000Z",
+        updatedAt: "2026-08-01T00:00:00.000Z",
+      },
+    ]);
+
+    let res = (await (await client().get("/api/coach/plans")).json()) as {
+      plans: Array<{ id: string; name: string; status: string; source?: string }>;
+    };
+    const studioRows = res.plans.filter((p) => p.source === "studio");
+    expect(studioRows).toHaveLength(1);
+    expect(studioRows[0]).toMatchObject({
+      id: "sp-new",
+      name: "Full Body Strength",
+      status: "draft",
+    });
+
+    // A verified push flips it to active ("written to COROS").
+    await db.insert(schema.studioPlanPushes).values({
+      id: newId(),
+      planId: "sp-new",
+      planVersion: 2,
+      happenDay: "2026-08-12",
+      sessionTitle: "W1 Mon — Lift",
+      status: "verified",
+      updatedAt: nowInstant(),
+    });
+    res = (await (await client().get("/api/coach/plans")).json()) as typeof res;
+    expect(res.plans.filter((p) => p.source === "studio")[0]).toMatchObject({
+      id: "sp-new",
+      status: "active",
+    });
+  });
+});
