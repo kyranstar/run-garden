@@ -451,6 +451,14 @@ export interface ReadNowResponse {
   lastCorosReadAt: string | null;
 }
 
+export interface RetrySyncResponse {
+  ok: true;
+  /** Failed workout moves that were superseded and re-applied. */
+  movesRetried: number;
+  /** Studio plans (holding one or more failed rows) that were re-pushed. */
+  studioRetried: number;
+}
+
 /** Progress of the one-shot deep history backfill. */
 export interface BackfillStatusResponse {
   /** "queued" until the Mac's bridge has actually landed a chunk — the UI
@@ -625,6 +633,7 @@ export const api = {
   dismissSyncNote: (id: string) => post<{ ok: true }>(`/api/sync/notes/${id}/dismiss`),
   undoSyncNote: (id: string) => post<{ ok: true }>(`/api/sync/notes/${id}/undo`),
   readNow: () => post<ReadNowResponse>("/api/sync/read-now"),
+  retrySync: () => post<RetrySyncResponse>("/api/sync/retry"),
 };
 
 /** One previously generated plan + the brief (prompt) that produced it. */

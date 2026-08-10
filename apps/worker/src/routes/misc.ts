@@ -1267,7 +1267,15 @@ export async function deleteAllUserData(db: Db, userId: string): Promise<void> {
     activityLaps,
     activitySourceLinks,
     activityStreamSummaries,
+    backfillState,
     calendarEventSuppressions,
+    coachMemory,
+    coachMessages,
+    coachPlans,
+    coachPlanWeeks,
+    coachProposals,
+    coachQuestions,
+    coachTriggers,
     corosScheduleSnapshots,
     corosWriteAttempts,
     computedMetrics,
@@ -1275,8 +1283,11 @@ export async function deleteAllUserData(db: Db, userId: string): Promise<void> {
     dismissedInsights,
     gardenDayInputs,
     gardenPlants,
+    gardenSceneLayouts,
+    gardenSeen,
     gardenSnapshots,
     gardenUnlocks,
+    gardenVisitors,
     gardenWildlife,
     motivationEvidence,
     oauthStates,
@@ -1287,6 +1298,8 @@ export async function deleteAllUserData(db: Db, userId: string): Promise<void> {
     studioPlanPushes,
     studioPlans,
     syncErrors,
+    syncIntents,
+    syncNotes,
     syncRuns,
     trainingPlanVersions,
     workoutCompletionMatches,
@@ -1327,6 +1340,16 @@ export async function deleteAllUserData(db: Db, userId: string): Promise<void> {
     await db.delete(studioPlanPushes).where(inArray(studioPlanPushes.planId, ids));
   }
 
+  // Same shape as studioPlanPushes above: coach_plan_weeks carries no userId,
+  // only planId, so it is reached through this account's coach plans and
+  // cleared BEFORE coachPlans itself (below, in userTables) removes the ids.
+  const myCoachPlanIds = (
+    await db.select({ id: coachPlans.id }).from(coachPlans).where(eq(coachPlans.userId, userId))
+  ).map((p) => p.id);
+  for (const ids of chunkIds(myCoachPlanIds)) {
+    await db.delete(coachPlanWeeks).where(inArray(coachPlanWeeks.planId, ids));
+  }
+
   // User-scoped tables.
   const userTables = [
     plannedWorkouts,
@@ -1340,6 +1363,9 @@ export async function deleteAllUserData(db: Db, userId: string): Promise<void> {
     gardenDayInputs,
     gardenUnlocks,
     gardenWildlife,
+    gardenVisitors,
+    gardenSeen,
+    gardenSceneLayouts,
     weeklyReviews,
     llmUsage,
     corosWriteJobs,
@@ -1355,8 +1381,17 @@ export async function deleteAllUserData(db: Db, userId: string): Promise<void> {
     studioPlans,
     syncErrors,
     syncRuns,
+    syncIntents,
+    syncNotes,
     auditEvents,
     sessions,
+    backfillState,
+    coachMemory,
+    coachQuestions,
+    coachMessages,
+    coachProposals,
+    coachTriggers,
+    coachPlans,
   ] as const;
   for (const t of userTables) {
     const table = t as unknown as { userId: never };

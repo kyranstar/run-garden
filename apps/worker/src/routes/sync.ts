@@ -1,15 +1,24 @@
 import { Hono } from "hono";
 import { and, desc, eq, inArray, isNull } from "drizzle-orm";
-import { backfillState, corosWriteJobs, desktopDevices, plannedWorkouts, syncRuns } from "@rg/database";
+import {
+  backfillState,
+  corosWriteJobs,
+  desktopDevices,
+  plannedWorkouts,
+  studioPlanPushes,
+  studioPlans,
+  syncRuns,
+} from "@rg/database";
 import { newId, nowInstant, todayInZone } from "@rg/domain";
 import type { AppContext } from "../auth/middleware.js";
 import { requireUser } from "../auth/middleware.js";
 import { deriveBackfillStatus } from "../services/backfill.js";
 import { loadPreferences } from "../services/calendar-sync.js";
 import { applyMove } from "../services/jobs.js";
+import { openMoveIntents } from "../services/sync-intents.js";
 import { activeSyncNotes, dismissSyncNote } from "../services/sync-notes.js";
 import { computeSyncStatus, DEVICE_ONLINE_WINDOW_MS } from "../services/sync-status.js";
-import { undoStudioAdoption } from "../services/studio-push.js";
+import { pushStudioPlan, undoStudioAdoption } from "../services/studio-push.js";
 
 /**
  * Sync-transparency API surface (Task 10): the read side of `SyncStatus`
@@ -27,6 +36,97 @@ syncRoutes.get("/status", async (c) => {
   const userId = c.get("userId");
   const prefs = await loadPreferences(db, userId);
   return c.json(await computeSyncStatus(db, userId, prefs));
+});
+
+// ── POST /api/sync/retry ─────────────────────────────────────────────────────
+//
+// The account-level counterpart to the per-workout `/plan/workouts/:id/retry-
+// coros` route and the per-day `/studio/push/retry` route: actually retries
+// every failed write that `computeSyncStatus`'s `issueCount` (the "N changes
+// couldn't sync" banner) is made of, instead of the old wiring — a plain
+// `readNow()` — which never touched a failed job (a fresh COROS read almost
+// always short-circuits as "no change needed" within its 5-minute freshness
+// window, and even a real read can't clear a failure: `emitPendingWork`
+// deliberately refuses to re-emit behind a terminally failed job for the same
+// destination, jobs.ts:240-253).
+//
+// Reuses each surface's own retry mechanics rather than inventing a third:
+//  - failed workout moves (mirrors `issueCount`'s `failedMoveCount`,
+//    sync-status.ts:81-95): supersede the failed job — the same guard-clearing
+//    step `retry-coros` does — then re-`applyMove` to the workout's own
+//    current date/time, which re-arms `emitPendingWork` for it.
+//  - failed studio pushes (mirrors `issueCount`'s `failedStudio`,
+//    sync-status.ts:96-101): re-push the owning plan; `pushStudioPlan` is
+//    idempotent and re-plans every failed row (studio-push.ts:674-676's own
+//    doc comment), exactly what `/studio/push/retry` already does per-day.
+// Best-effort per item: one workout or plan that still can't retry (archived
+// mid-flight, a genuinely unsupported COROS state, …) must not block the rest
+// from clearing.
+syncRoutes.post("/retry", async (c) => {
+  const db = c.get("db");
+  const userId = c.get("userId");
+  const prefs = await loadPreferences(db, userId);
+  const today = todayInZone(prefs.timezone);
+
+  const openIntentTargets = new Set((await openMoveIntents(db, userId)).map((i) => i.targetId));
+  const failedJobs = await db
+    .select({ workoutId: corosWriteJobs.workoutId })
+    .from(corosWriteJobs)
+    .innerJoin(plannedWorkouts, eq(corosWriteJobs.workoutId, plannedWorkouts.id))
+    .where(
+      and(
+        eq(corosWriteJobs.userId, userId),
+        eq(corosWriteJobs.status, "failed"),
+        isNull(plannedWorkouts.archivedAt),
+      ),
+    );
+  const workoutIds = [
+    ...new Set(failedJobs.map((j) => j.workoutId).filter((id) => openIntentTargets.has(id))),
+  ];
+
+  let movesRetried = 0;
+  for (const workoutId of workoutIds) {
+    const workout = (
+      await db
+        .select()
+        .from(plannedWorkouts)
+        .where(and(eq(plannedWorkouts.id, workoutId), eq(plannedWorkouts.userId, userId)))
+        .limit(1)
+    )[0];
+    if (!workout) continue;
+    await db
+      .update(corosWriteJobs)
+      .set({ status: "superseded", updatedAt: nowInstant() })
+      .where(and(eq(corosWriteJobs.workoutId, workout.id), eq(corosWriteJobs.status, "failed")));
+    try {
+      await applyMove(db, {
+        userId,
+        workoutId: workout.id,
+        toDate: workout.effectiveDate,
+        toTime: workout.effectiveTime,
+        source: "app",
+        corosWritesEnabled: prefs.corosWritesEnabled,
+      });
+      movesRetried += 1;
+    } catch {
+      // Best-effort — leave this one for the per-workout Sync to COROS retry.
+    }
+  }
+
+  const failedStudioPlanIds = await db
+    .select({ planId: studioPlanPushes.planId })
+    .from(studioPlanPushes)
+    .innerJoin(studioPlans, eq(studioPlanPushes.planId, studioPlans.id))
+    .where(and(eq(studioPlans.userId, userId), eq(studioPlanPushes.status, "failed")));
+  const planIds = [...new Set(failedStudioPlanIds.map((r) => r.planId))];
+
+  let studioRetried = 0;
+  for (const planId of planIds) {
+    const summary = await pushStudioPlan(db, { userId, studioPlanId: planId, today });
+    if (summary.ok) studioRetried += 1;
+  }
+
+  return c.json({ ok: true, movesRetried, studioRetried });
 });
 
 // ── GET /api/sync/notes ───────────────────────────────────────────────────────

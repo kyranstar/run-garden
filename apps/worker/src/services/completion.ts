@@ -548,8 +548,6 @@ export async function ingestActivities(db: Db, input: IngestInput): Promise<Inge
       // (COROS-linked) activity; otherwise skip re-matching.
       const workout = openWorkouts.find((w) => w.id === m.workoutId)!;
       const activityRow = unmatchedActivities.find((a) => a.id === m.activityId)!;
-      const hasCoros = !!activityRow.corosActivityId;
-
 
       const matchId = newId();
       await db.insert(workoutCompletionMatches).values({
@@ -565,18 +563,21 @@ export async function ingestActivities(db: Db, input: IngestInput): Promise<Inge
         .set({ completionMatchId: matchId, updatedAt: now })
         .where(eq(activities.id, m.activityId));
 
-      const newState = "completed";
       await db
         .update(plannedWorkouts)
         .set({
-          completionState: newState,
+          completionState: "completed",
           resolutionDate: (activityRow.startTimeLocal ?? activityRow.startTime).slice(0, 10),
           updatedAt: now,
         })
         .where(eq(plannedWorkouts.id, m.workoutId));
       stats.matchesCreated += 1;
-      if (newState === "completed") stats.completions += 1;
-      else
+      stats.completions += 1;
+      // The workout's own day needs resimulating too, not just the activity's
+      // day: a cross-day match (matcher's ±1-day window) can complete a
+      // workout dated yesterday from an activity synced today, and if
+      // yesterday's checkpoint was already durably simulated as "missed",
+      // only re-adding this date makes resimulateFrom replay it.
       affectedDates.add(workout.effectiveDate);
     }
 

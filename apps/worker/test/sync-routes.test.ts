@@ -10,16 +10,18 @@
 import { beforeEach, describe, expect, it } from "vitest";
 import { eq } from "drizzle-orm";
 import { schema } from "@rg/database";
-import { newId, nowInstant, type LiftingPlan, type PlanBrief } from "@rg/domain";
+import { newId, nowInstant, todayInZone, type LiftingPlan, type PlanBrief } from "@rg/domain";
 import type { Env } from "../src/env.js";
 import type { Db } from "../src/services/db.js";
 import { syncRoutes } from "../src/routes/sync.js";
 import { settingsRoutes } from "../src/routes/misc.js";
 import { createSession, SESSION_COOKIE } from "../src/auth/sessions.js";
 import { loadPreferences, savePreferences } from "../src/services/calendar-sync.js";
-import { applyMove } from "../src/services/jobs.js";
+import { applyJobResult, applyMove } from "../src/services/jobs.js";
 import { activeSyncNotes, postSyncNote } from "../src/services/sync-notes.js";
 import { openIntentFor, recordIntent } from "../src/services/sync-intents.js";
+import { computeSyncStatus } from "../src/services/sync-status.js";
+import { pushStudioPlan } from "../src/services/studio-push.js";
 import { makeTestDb, makeTestUser, mountRoutes, registerTestDevice } from "./helpers.js";
 
 const { corosWriteJobs, plannedWorkouts, studioPlanPushes, studioPlans, syncIntents, syncRuns, trainingPlans } =
@@ -244,6 +246,161 @@ describe("GET /api/sync/status", () => {
       writesEnabled: false,
       registered: false,
     });
+  });
+});
+
+describe("POST /api/sync/retry", () => {
+  it("retries a failed move job — supersedes it, re-applies the move, and clears issueCount (C15: the old readNow() wiring never touched failed jobs)", async () => {
+    const prefs0 = await loadPreferences(db, userId);
+    await savePreferences(db, userId, { ...prefs0, corosWritesEnabled: true });
+    const deviceId = await registerTestDevice(db, userId);
+    const workoutId = await insertWorkout({ effectiveDate: "2026-08-08" });
+    const outcome = await applyMove(db, {
+      userId,
+      workoutId,
+      toDate: "2026-08-10",
+      toTime: "07:00",
+      source: "app",
+      corosWritesEnabled: true,
+    });
+    const jobId = outcome.jobId!;
+
+    // Exhaust retries so the job lands `failed` while its move intent stays
+    // open — sync-status.test.ts's own recipe for the exact "issue" shape
+    // computeSyncStatus (and the banner's issueCount) counts.
+    for (let attempt = 0; attempt < 5; attempt++) {
+      await applyJobResult(
+        db,
+        userId,
+        {
+          jobId,
+          deviceId,
+          outcome: "write_failed",
+          errorCategory: "network",
+          finishedAt: nowInstant(),
+          signature: "s",
+        } as never,
+        await loadPreferences(db, userId),
+      );
+    }
+
+    const before = await computeSyncStatus(db, userId, await loadPreferences(db, userId));
+    expect(before.state).toBe("sync_issue");
+    expect(before.issueCount).toBe(1);
+
+    const res = await client().post("/api/sync/retry");
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { ok: boolean; movesRetried: number; studioRetried: number };
+    expect(body).toEqual({ ok: true, movesRetried: 1, studioRetried: 0 });
+
+    const jobs = await db.select().from(corosWriteJobs).where(eq(corosWriteJobs.workoutId, workoutId));
+    expect(jobs.find((j) => j.id === jobId)!.status).toBe("superseded");
+    // A fresh job re-arms the destination — emitPendingWork's guard (jobs.ts)
+    // only blocks re-emission behind a still-`failed` job for the same date;
+    // superseding it first (like retry-coros) is what lets this land.
+    const fresh = jobs.filter((j) => j.id !== jobId);
+    expect(fresh).toHaveLength(1);
+    expect(fresh[0]!.destinationDate).toBe("2026-08-10");
+    expect(["queued", "claimed", "in_progress", "verifying"]).toContain(fresh[0]!.status);
+
+    const after = await computeSyncStatus(db, userId, await loadPreferences(db, userId));
+    expect(after.state).not.toBe("sync_issue");
+    expect(after.issueCount).toBe(0);
+  });
+
+  it("retries a failed studio push by re-pushing its plan", async () => {
+    // computeSyncStatus's state gate is `not_synced` whenever writes are off
+    // or no write-capable device is registered, regardless of issueCount —
+    // enable both so this reaches the same `sync_issue` state the account
+    // banner (and its Retry button) actually shows.
+    const prefs0 = await loadPreferences(db, userId);
+    await savePreferences(db, userId, { ...prefs0, corosWritesEnabled: true });
+    await registerTestDevice(db, userId);
+    await db.insert(schema.corosExercises).values({
+      id: SQUAT,
+      name: "Back Squat",
+      raw: {},
+      updatedAt: nowInstant(),
+    });
+    const brief: PlanBrief = {
+      goal: "strength",
+      durationWeeks: 2,
+      sessionsPerWeek: 1,
+      preferredDays: [1],
+      sessionMinutes: 45,
+      equipment: "full gym",
+      constraints: "",
+      notes: "",
+      // Deep in the past relative to "today", so pushStudioPlan fails every
+      // session deterministically with "day_in_past" (studio-routes.test.ts's
+      // own recipe for a guaranteed-failed row, no bridge/device needed).
+      startDate: "2020-01-06",
+    };
+    const liftPlan: LiftingPlan = {
+      name: "Old Plan",
+      brief,
+      weeks: [
+        {
+          sessions: [
+            {
+              title: "Full Body",
+              weekday: 1,
+              exercises: [
+                {
+                  originId: SQUAT,
+                  name: "Back Squat",
+                  sets: 3,
+                  reps: 10,
+                  weight: { type: "bodyweight" },
+                  restSeconds: 60,
+                },
+              ],
+            },
+          ],
+        },
+        { sessions: [] },
+      ],
+    };
+    const planId = newId();
+    await db.insert(studioPlans).values({
+      id: planId,
+      userId,
+      brief: brief as unknown as Record<string, unknown>,
+      plan: liftPlan as unknown as Record<string, unknown>,
+      version: 1,
+      createdAt: nowInstant(),
+      updatedAt: nowInstant(),
+    });
+
+    const today = todayInZone((await loadPreferences(db, userId)).timezone);
+    const first = await pushStudioPlan(db, { userId, studioPlanId: planId, today });
+    expect(first.ok).toBe(true);
+    const failedBefore = await db.select().from(studioPlanPushes).where(eq(studioPlanPushes.planId, planId));
+    expect(failedBefore.length).toBeGreaterThan(0);
+    expect(failedBefore.every((r) => r.status === "failed" && r.error === "day_in_past")).toBe(true);
+
+    const before = await computeSyncStatus(db, userId, await loadPreferences(db, userId));
+    expect(before.state).toBe("sync_issue");
+    expect(before.issueCount).toBeGreaterThan(0);
+
+    const res = await client().post("/api/sync/retry");
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { ok: boolean; movesRetried: number; studioRetried: number };
+    expect(body.ok).toBe(true);
+    expect(body.movesRetried).toBe(0);
+    expect(body.studioRetried).toBe(1);
+
+    // Same deterministic refusal on the re-run (push/retry's own test makes
+    // the identical point) — proves the whole plan was actually re-pushed
+    // rather than the route silently doing nothing.
+    const after = await db.select().from(studioPlanPushes).where(eq(studioPlanPushes.planId, planId));
+    expect(after.every((r) => r.status === "failed" && r.error === "day_in_past")).toBe(true);
+  });
+
+  it("no-ops cleanly (movesRetried/studioRetried both 0) when nothing has failed", async () => {
+    const res = await client().post("/api/sync/retry");
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ ok: true, movesRetried: 0, studioRetried: 0 });
   });
 });
 

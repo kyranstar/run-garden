@@ -147,10 +147,20 @@ export function relativeTime(iso: string): string {
  * The single account-wide sync line (sync-transparency Task 12) — replaces
  * every screen's own bespoke read of the legacy `TodayResponse.sync` shape
  * with one quiet sentence backed by `GET /api/sync/status`. `onRetry` is only
- * ever invoked from the `sync_issue` state; wiring it to `readNow()` + a
- * status refetch is the caller's job (this component is presentational).
+ * ever invoked from the `sync_issue` state, wired to `POST /api/sync/retry` +
+ * a status refetch (the caller's job — this component is presentational);
+ * `retrying` disables the button and relabels it while that request is in
+ * flight, so a press has visible effect even before the refetch lands.
  */
-export function SyncStatusLine({ status, onRetry }: { status: SyncStatusDto; onRetry?: () => void }) {
+export function SyncStatusLine({
+  status,
+  onRetry,
+  retrying,
+}: {
+  status: SyncStatusDto;
+  onRetry?: () => void;
+  retrying?: boolean;
+}) {
   const line = (() => {
     switch (status.state) {
       case "in_sync":
@@ -173,8 +183,8 @@ export function SyncStatusLine({ status, onRetry }: { status: SyncStatusDto; onR
     <div className="row">
       <span className="muted">{line}</span>
       {status.state === "sync_issue" && onRetry ? (
-        <button className="btn btn-small" onClick={onRetry}>
-          Retry
+        <button className="btn btn-small" disabled={retrying} onClick={onRetry}>
+          {retrying ? "Retrying…" : "Retry"}
         </button>
       ) : null}
     </div>

@@ -62,8 +62,17 @@ export function SyncPanel() {
   };
 
   const retry = useMutation({
-    mutationFn: api.readNow,
-    onSuccess: () => void qc.invalidateQueries({ queryKey: ["sync-status"] }),
+    // Actually retries the failed writes `issueCount` is made of (superseded
+    // jobs re-applied, failed studio rows re-pushed) — `readNow()` used to be
+    // wired here, but a read can never clear a write failure (see retrySync's
+    // own doc comment, apps/worker/src/routes/sync.ts).
+    mutationFn: api.retrySync,
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: ["sync-status"] });
+      void qc.invalidateQueries({ queryKey: ["today"] });
+      void qc.invalidateQueries({ queryKey: ["plan"] });
+      void qc.invalidateQueries({ queryKey: ["studio"] });
+    },
   });
   const dismiss = useMutation({
     mutationFn: (id: string) => api.dismissSyncNote(id),
@@ -99,7 +108,7 @@ export function SyncPanel() {
 
   return (
     <div className="stack" style={{ gap: "0.5rem" }} aria-live="polite">
-      <SyncStatusLine status={status.data} onRetry={() => retry.mutate()} />
+      <SyncStatusLine status={status.data} onRetry={() => retry.mutate()} retrying={retry.isPending} />
       <SyncNotesStack
         notes={notes.data?.notes ?? []}
         onDismiss={(id) => dismiss.mutate(id)}

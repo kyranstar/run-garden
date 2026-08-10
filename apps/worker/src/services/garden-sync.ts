@@ -370,25 +370,31 @@ export interface GardenSimResult {
   lastSimulatedDate: LocalDate;
 }
 
-/** Advance the simulation through all eligible days. */
-export async function advanceGarden(
+/**
+ * Walk `snapshot` forward day-by-day to `today`, writing events/day-inputs/
+ * weekly checkpoints as it goes. Deliberately does NOT touch the durable
+ * `garden_state` pointer — the caller persists that once the walk is done.
+ *
+ * That split is what makes `resimulateFrom` crash-safe without a transaction
+ * (D1's driver here has none): if this throws partway (subrequest budget,
+ * request timeout, …), nothing durable has regressed — `garden_state` still
+ * holds whatever it held before the attempt — instead of a genesis/checkpoint
+ * stub that then looks like the garden's real, current state. The deleted
+ * events/day-inputs/checkpoints for the walked range are safe to leave gone
+ * on that failure path: they're rebuilt from scratch by this same function
+ * (idempotent — `onConflictDoNothing`/`onConflictDoUpdate` throughout), so
+ * the next resim attempt (or the version-upgrade check re-firing, since the
+ * durable version never advanced either) fills them back in.
+ */
+async function walkForward(
   db: Db,
   userId: string,
   prefs: UserPreferences,
-  now: Date = new Date(),
-): Promise<GardenSimResult> {
-  let snapshot = await ensureGarden(db, userId, prefs);
-
-  // Simulation upgraded since this garden was last written: rebuild the whole
-  // history from the stored inputs so version-3 state (earned grounds) exists
-  // for past expansions too. Deterministic — same inputs, same garden.
-  if ((snapshot.version ?? 1) < SIMULATION_VERSION) {
-    return resimulateFrom(db, userId, snapshot.state.createdDate, prefs, now);
-  }
-
-  const today = todayInZone(prefs.timezone, now);
-  const nowIso = nowInstant(now);
-
+  startSnapshot: GardenSnapshot,
+  today: LocalDate,
+  nowIso: string,
+): Promise<{ snapshot: GardenSnapshot; simulatedDays: number; eventsEmitted: number }> {
+  let snapshot = startSnapshot;
   let simulated = 0;
   let eventsEmitted = 0;
   let date = addDays(snapshot.state.lastSimulatedDate, 1);
@@ -463,8 +469,31 @@ export async function advanceGarden(
     date = addDays(date, 1);
   }
 
+  return { snapshot, simulatedDays: simulated, eventsEmitted };
+}
+
+/** Advance the simulation through all eligible days. */
+export async function advanceGarden(
+  db: Db,
+  userId: string,
+  prefs: UserPreferences,
+  now: Date = new Date(),
+): Promise<GardenSimResult> {
+  const startSnapshot = await ensureGarden(db, userId, prefs);
+
+  // Simulation upgraded since this garden was last written: rebuild the whole
+  // history from the stored inputs so version-3 state (earned grounds) exists
+  // for past expansions too. Deterministic — same inputs, same garden.
+  if ((startSnapshot.version ?? 1) < SIMULATION_VERSION) {
+    return resimulateFrom(db, userId, startSnapshot.state.createdDate, prefs, now);
+  }
+
+  const today = todayInZone(prefs.timezone, now);
+  const nowIso = nowInstant(now);
+  const { snapshot, simulatedDays, eventsEmitted } = await walkForward(db, userId, prefs, startSnapshot, today, nowIso);
+
   await persistSnapshot(db, userId, snapshot);
-  return { simulatedDays: simulated, eventsEmitted, lastSimulatedDate: snapshot.state.lastSimulatedDate };
+  return { simulatedDays, eventsEmitted, lastSimulatedDate: snapshot.state.lastSimulatedDate };
 }
 
 /**
@@ -491,17 +520,21 @@ export async function resimulateFrom(
     .orderBy(asc(gardenSnapshots.date));
   const checkpoint = checkpoints[checkpoints.length - 1];
 
-  let snapshot: GardenSnapshot;
+  let startSnapshot: GardenSnapshot;
   let restartAfter: LocalDate;
   if (checkpoint) {
-    snapshot = checkpoint.snapshot as unknown as GardenSnapshot;
+    startSnapshot = checkpoint.snapshot as unknown as GardenSnapshot;
     restartAfter = checkpoint.date;
   } else {
-    snapshot = initialSnapshot(current.state.createdDate);
-    restartAfter = snapshot.state.lastSimulatedDate;
+    startSnapshot = initialSnapshot(current.state.createdDate);
+    restartAfter = startSnapshot.state.lastSimulatedDate;
   }
 
-  // Drop events/inputs/checkpoints after the restart point; they'll be rebuilt.
+  // Drop events/inputs/checkpoints after the restart point; they'll be
+  // rebuilt by walkForward below. Safe to do even though nothing has been
+  // persisted to garden_state yet: on a mid-walk crash the rendered garden
+  // (garden_state, still un-touched below) keeps showing its last known-good
+  // value, and any successful resim afterwards rebuilds this range fully.
   await db
     .delete(gardenEvents)
     .where(and(eq(gardenEvents.userId, userId), gte(gardenEvents.date, addDays(restartAfter, 1))));
@@ -512,8 +545,18 @@ export async function resimulateFrom(
     .delete(gardenSnapshots)
     .where(and(eq(gardenSnapshots.userId, userId), gte(gardenSnapshots.date, addDays(restartAfter, 1))));
 
+  const today = todayInZone(prefs.timezone, now);
+  const nowIso = nowInstant(now);
+  const { snapshot, simulatedDays, eventsEmitted } = await walkForward(db, userId, prefs, startSnapshot, today, nowIso);
+
+  // Only now — once the FULL walk has succeeded — does the durable garden
+  // pointer move. If walkForward throws above, execution never reaches this
+  // line: garden_state (and its simulationVersion) stays exactly as it was
+  // before this resim attempt, so the next advanceGarden call sees the same
+  // "needs resim" signal and retries cleanly instead of finding a genesis
+  // stub already stamped at the current SIMULATION_VERSION.
   await persistSnapshot(db, userId, snapshot);
-  return advanceGarden(db, userId, prefs, now);
+  return { simulatedDays, eventsEmitted, lastSimulatedDate: snapshot.state.lastSimulatedDate };
 }
 
 /** Recent garden events for the UI (most recent first). */
