@@ -608,7 +608,11 @@ export async function seedFixtures(db: Db, env: Env, userId: string): Promise<Se
       `${lastQualityDate}T14:02:05Z`,
       `coros-fx-rich-${lastQualityDate}`,
     );
-    sources.push(normalizeCorosActivity(item, detail));
+    const rich = normalizeCorosActivity(item, detail);
+    // Exercise the feel branch: the act card's "felt n/5" suffix was once
+    // invisible to every screenshot because no fixture carried a feel.
+    rich.telemetry = { ...(rich.telemetry ?? {}), feelRating: 4 };
+    sources.push(rich);
     lapsByProviderId[`coros-fx-rich-${lastQualityDate}`] = normalizeCorosLaps(detail) as never[];
   }
   // Flat km-lap profile for the most recent long run, so the activity list's

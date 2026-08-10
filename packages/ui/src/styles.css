@@ -3813,10 +3813,10 @@ button {
 }
 .act-glance {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
-  gap: 0.7rem;
+  gap: 0.35rem 0.7rem;
   margin-top: 0.4rem;
-  min-height: 30px;
 }
 .act-shape {
   width: min(230px, 55%);
@@ -3833,6 +3833,7 @@ button {
   font-size: 0.78rem;
   color: var(--ink-soft, #6b6555);
   white-space: nowrap;
+  min-width: 0;
 }
 .act-ticks { display: inline-flex; gap: 2px; }
 .act-ticks i {
@@ -3881,8 +3882,17 @@ button {
 }
 :root[data-theme="dark"] .act-hue-race { --act-hue: #c47a9b; }
 :root[data-theme="dark"] .act-hue-long { --act-hue: #8199d6; }
+/* Keep the category dots on the same lifted dark hues as the act cards —
+   one category, one color, on every screen. */
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) .cat-race { background: #c47a9b; }
+  :root:not([data-theme="light"]) .cat-long { background: #8199d6; }
+}
+:root[data-theme="dark"] .cat-race { background: #c47a9b; }
+:root[data-theme="dark"] .cat-long { background: #8199d6; }
 @media (max-width: 640px) {
-  .act-card { grid-template-columns: 4px minmax(0, 1fr); }
+  .act-card { grid-template-columns: 4px minmax(0, 1fr); grid-template-rows: auto auto; }
+  .act-spine { grid-row: 1 / span 2; }
   .act-actions {
     grid-column: 2;
     flex-direction: row;
@@ -3893,7 +3903,6 @@ button {
     flex: 1 1 0;
     min-width: 0;
     overflow: hidden;
-    text-overflow: ellipsis;
   }
   .act-shape { width: min(230px, 60%); }
 }

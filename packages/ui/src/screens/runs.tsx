@@ -105,10 +105,11 @@ function EffortChip({ load, feel }: { load: number | null; feel: number | null }
 
 /**
  * The run's shape: one thin bar per lap, width ∝ lap time, height ∝ speed
- * (faster laps stand taller), normalized within the activity itself — an
- * interval session reads as a comb, a long run as a low plateau. Single hue
- * per figure (the card's category color via currentColor); per-lap tooltips;
- * no axes — it is a silhouette, not a graph.
+ * anchored to the activity's MEAN pace — a steady run reads as a mid-height
+ * plateau, an interval session swings the band, and amplitude means variance
+ * comparably across activities. Single hue per figure (the card's category
+ * color via currentColor); per-lap tooltips; no axes — a silhouette, not a
+ * graph.
  */
 function PaceShape({ laps }: { laps: Array<{ s: number; p: number | null }> }) {
   const paced = laps.filter((l) => l.p != null && l.p > 0);
