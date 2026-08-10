@@ -639,3 +639,20 @@
 5. **Garden presentation:** dock-over-plants composition, sheltered-clock recency copy, shield-caption preview seam, ceremony-queue strand, seen-watermark vs resim.
 
 6. Dark-mode/safe-area/touch-target sweep from the minors + confirmed visual set.
+
+
+---
+
+# Remediation (2026-08-10, same day)
+
+All 27 confirmed findings plus 9 minors were fixed across 10 commits (`b38dba5..`), each slice adversarially reviewed with fix rounds until SHIP:
+
+- **Slice A (worker integrity):** C15, C19, C20, C21 — plus review follow-ups (account Retry scoped to the current studio plan; the delete-all schema-introspection guard covers FK-scoped child tables; `issueCount` scoped to match what Retry can act on).
+- **Slice B (plan+coach):** C3–C7, C14, C16–C18, C22, C24, C25, C27 — plus follow-ups (failure backoff gates trigger-driven wakes; mobile coach sheet fallback; failure-receipt dedupe hardening; abort-safe message retry).
+- **Slice C (garden):** C1, C2, C11, C12, C13, C23, C26 — three review rounds; the arrival ledger now records every celebration, making the reward loop's exactly-once contract hold across ordinary visits, routine resims, and version-bump rewrites (stronger than the pre-audit baseline).
+- **Slice D (misc surfaces):** C8, C9, C10 + minors M4, M5, M17–M20.
+- **Critical lap-ingest fix** shipped first (`ab1809a`).
+
+Final whole-batch review (cross-slice seams, determinism invariant): PASS — `SIMULATION_VERSION` unchanged at 6, no persisted-state shape changes, stored day inputs replay identically. Accepted residuals are triaged inline in the review record; notable follow-ups for a future pass: surface `bridgeVersion` on the device row, invalidate coach-state on proposal 409s, `.cal-pending` dark-mode hardcode (pre-existing), desktop calendar cell width polish.
+
+Visual re-verification (fresh fixture stack, both viewports): plan lands centered on today with a single coach surface and readable titles; mobile agenda shows no double panel and the coach pill clears the bottom nav; activity rows no longer occlude metadata.

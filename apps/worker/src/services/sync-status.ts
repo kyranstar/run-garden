@@ -93,11 +93,29 @@ export async function computeSyncStatus(
   const failedMoveCount = new Set(
     failedJobs.map((j) => j.workoutId).filter((id) => openIntentTargets.has(id)),
   ).size;
-  const failedStudio = await db
-    .select({ id: studioPlanPushes.id })
-    .from(studioPlanPushes)
-    .innerJoin(studioPlans, eq(studioPlanPushes.planId, studioPlans.id))
-    .where(and(eq(studioPlans.userId, userId), eq(studioPlanPushes.status, "failed")));
+  // Scoped to the NEWEST studio plan — the same predicate POST /api/sync/retry
+  // acts on. Counting retired plans' failed rows (usually failed deletes)
+  // inflates a badge the Retry button can never clear, the exact misleading
+  // no-op C15 was fixed to remove.
+  const currentStudioPlan = (
+    await db
+      .select({ id: studioPlans.id })
+      .from(studioPlans)
+      .where(eq(studioPlans.userId, userId))
+      .orderBy(desc(studioPlans.createdAt))
+      .limit(1)
+  )[0];
+  const failedStudio = currentStudioPlan
+    ? await db
+        .select({ id: studioPlanPushes.id })
+        .from(studioPlanPushes)
+        .where(
+          and(
+            eq(studioPlanPushes.planId, currentStudioPlan.id),
+            eq(studioPlanPushes.status, "failed"),
+          ),
+        )
+    : [];
   const issueCount = failedMoveCount + failedStudio.length;
 
   const lastRead = (
