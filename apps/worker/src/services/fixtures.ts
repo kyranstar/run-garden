@@ -571,6 +571,20 @@ export async function seedFixtures(db: Db, env: Env, userId: string): Promise<Se
   const sources: SourceActivity[] = [];
   const lapsByProviderId: Record<string, never[]> = {};
   let index = 0;
+
+  // Adventure fixtures, dated up front so the WEEK loop below can reserve
+  // their days: a big Saturday hike anchored to week 8 (the most recent full
+  // week — the same "recent enough" spot lastQualityDate/strengthYogaDate use
+  // below), with its Sunday reserved as the shielded, low-recovery grace day
+  // so nothing else already "explains" the day and blocks adventureGraceDay's
+  // hasSession check. A sub-threshold Wednesday walk is the neutral
+  // counterpart — present in history as an adventure sport but never big
+  // enough (ADVENTURE_TUNING.minLoad/minDurationMin) to touch the garden's
+  // clocks.
+  const adventureWalkDate = addDays(monday, 8 * 7 + 2);
+  const adventureHikeDate = addDays(monday, 8 * 7 + 5);
+  const adventureGraceDate = addDays(monday, 8 * 7 + 6);
+
   for (let week = 0; week < 9; week++) {
     for (const day of WEEK) {
       const date = addDays(monday, week * 7 + day.offset);
@@ -579,6 +593,7 @@ export async function seedFixtures(db: Db, env: Env, userId: string): Promise<Se
       if (week === 6) continue; // the missed week
       if (week === 7 && day.offset < 3) continue; // comeback starts mid-week
       if (week === 2 && day.offset === 3) continue; // one skipped strides day
+      if (date === adventureGraceDate) continue; // reserved for the fixture adventure's grace day, below
 
       sources.push(syntheticActivity(date, day.kind, index, "coros"));
       index++;
@@ -592,9 +607,53 @@ export async function seedFixtures(db: Db, env: Env, userId: string): Promise<Se
       `coros-fx-rich-${lastQualityDate}`,
     );
     sources.push(normalizeCorosActivity(item, detail));
-    sources.push(
-    );
     lapsByProviderId[`coros-fx-rich-${lastQualityDate}`] = normalizeCorosLaps(detail) as never[];
+  }
+
+  // The sub-threshold walk (garden-neutral: below both minLoad and
+  // minDurationMin, so qualifiesAsAdventure is false — it shows up tagged
+  // "walk" in history but never freezes a clock or banks grace).
+  if (adventureWalkDate < today) {
+    sources.push({
+      provider: "coros",
+      providerActivityId: `coros-fx-adventure-walk-${adventureWalkDate}`,
+      startTime: `${addDays(adventureWalkDate, 1)}T01:30:00Z`,
+      startTimeLocal: `${adventureWalkDate}T18:30:00`,
+      timezone: "America/Los_Angeles",
+      sport: "walk",
+      durationSeconds: 20 * 60,
+      elapsedSeconds: 20 * 60 + 60,
+      distanceMeters: 1500,
+      avgHeartRate: 96,
+      maxHeartRate: 108,
+      deviceName: "COROS PACE 3",
+      title: "Evening Walk",
+      contentFingerprint: fingerprint({ date: adventureWalkDate, kind: "adventure-walk" }),
+    });
+  }
+
+  // The big Saturday hike — well past both thresholds (durationMin 240 ≥ 45,
+  // trainingLoad 120 ≥ 40) and past bigLoad (≥80), so it also banks a grace
+  // day for adventureGraceDate below.
+  if (adventureHikeDate < today) {
+    sources.push({
+      provider: "coros",
+      providerActivityId: `coros-fx-adventure-hike-${adventureHikeDate}`,
+      startTime: `${adventureHikeDate}T14:15:00Z`,
+      startTimeLocal: `${adventureHikeDate}T07:15:00`,
+      timezone: "America/Los_Angeles",
+      sport: "hike",
+      durationSeconds: 4 * 3600,
+      elapsedSeconds: 4 * 3600 + 1200,
+      distanceMeters: 15_800,
+      avgHeartRate: 122,
+      maxHeartRate: 148,
+      elevationGainMeters: 850,
+      trainingLoad: 120,
+      deviceName: "COROS PACE 3",
+      title: "Ridgeline Loop",
+      contentFingerprint: fingerprint({ date: adventureHikeDate, kind: "adventure-hike" }),
+    });
   }
 
   // A strength session and a yoga session — unplanned bonus activities that
@@ -623,6 +682,28 @@ export async function seedFixtures(db: Db, env: Env, userId: string): Promise<Se
 
   // Health + sleep history with variation.
   const now = nowInstant();
+
+  // Low recovery (<60) for the day right after the fixture hike, so the
+  // engine's Coros-recovery signal — not just the banked-day heuristic —
+  // drives adventureGraceDay's shield (adventure.ts). Inserted before the
+  // general 60-day loop below so its onConflictDoNothing() leaves this value
+  // in place rather than overwriting it with the generic 60-94 range.
+  await db
+    .insert(dailyHealth)
+    .values({
+      id: `${userId}:${adventureGraceDate}`,
+      userId,
+      date: adventureGraceDate,
+      restingHeartRate: 47,
+      hrv: 41,
+      recoveryScore: 42,
+      trainingLoad7d: 340,
+      provider: "coros",
+      contentFingerprint: fingerprint({ date: adventureGraceDate, kind: "adventure-grace" }),
+      updatedAt: now,
+    })
+    .onConflictDoNothing();
+
   for (let i = 0; i < 60; i++) {
     const date = addDays(today, -i);
     if (date < monday) break;

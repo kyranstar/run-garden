@@ -175,3 +175,53 @@ Deliberately small surface:
 - Gentle tone: garden asks, never accuses.
 - Optional means optional: no code path may let an adventure's absence reduce any
   axis, notch any bar, or appear in loss voices.
+
+## 6. Rollout
+
+**Deploy order:**
+
+1. Deploy worker + web together. `SIMULATION_VERSION` 3 → 4 means every
+   account's garden auto-resimulates in full on its next read (`advanceGarden`'s
+   version-mismatch path) — no D1 migration involved, and the change is
+   protective/additive only (freeze + grace + a small boost; nothing new can
+   subtract), so shipping ahead of any backfill is safe.
+2. Backfill previously-dropped activities: trigger "Backfill history" from
+   Settings. That walks deep history through
+   `services/coros-bridge/src/backfill.ts` and syncs it through the same
+   bridge `/sync` path `routes/devices.ts` already uses — `ingestActivities`
+   followed by `resimulateFrom(db, userId, ingest.affectedDates[0], prefs)` —
+   so late-arriving activities retroactively resimulate from their own dates
+   forward, the same mechanism the version bump uses. Note: unlike
+   `pnpm coros:census`, there is currently no root-level `pnpm coros:backfill`
+   CLI shortcut — the Settings button is the only trigger today; add one if a
+   scriptable/headless path turns out to be needed.
+3. Run `pnpm coros:census` to confirm zero unnamed `sportType` codes. Unknown
+   codes already resolve to `"other"` and are admitted regardless
+   (`sportIdForCorosCode`), so nothing is silently dropped — but a code that
+   turns out to be common should get a real registry entry (`packages/domain/src/sport.ts`)
+   and label instead of showing up as "Other" throughout the UI.
+
+**Threshold calibration:**
+
+After backfill, eyeball the real load/duration distribution the census turns
+up against `ADVENTURE_TUNING` (`packages/garden-engine/src/adventure.ts`:
+`minLoad: 40`, `minDurationMin: 45`, `bigLoad: 80`, `bigDurationMin: 150`). If
+a typical easy hike lands under load 40 — COROS `trainingLoad` tends to run
+low for long, low-heart-rate efforts like hiking — lower `minLoad`, or lean
+more on `minDurationMin` (a leisurely-but-long hike clears that even at low
+load). Recheck `bigLoad`/`bigDurationMin` the same way once real data is in:
+they gate whether a day banks a grace day, so an under-calibrated `bigLoad`
+means genuinely big days won't shelter the day after.
+
+**Fixture stack:** `apps/worker/src/services/fixtures.ts` now seeds three
+adventure-shaped fixtures on top of the existing history, so the shield and
+the neutral case are both visible without needing a real backfill: a
+sub-threshold Wednesday walk (garden-neutral — shows up tagged in history but
+never freezes a clock), a big Saturday hike (`trainingLoad: 120`,
+`durationSeconds` = 4h, well past `bigLoad`), and a low-recovery
+(`recoveryScore: 42`) health record for the Sunday right after it, so
+`adventureGraceDay`'s Coros-recovery path — not just the banked-day fallback —
+is what's driving the shield in the demo. (In passing: a leftover
+`sources.push()` no-op from the Strava removal, which would have pushed
+`undefined` into the fixture activity list and crashed ingestion on next
+fixture boot, was cleaned up in the same file.)
