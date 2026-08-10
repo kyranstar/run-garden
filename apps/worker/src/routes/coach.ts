@@ -7,6 +7,7 @@ import {
   coachProposals,
   coachQuestions,
   studioPlans,
+  studioPlanPushes,
 } from "@rg/database";
 import { addDays, newId, nowInstant, todayInZone, type CoachOp } from "@rg/domain";
 import type { AppContext } from "../auth/middleware.js";
@@ -280,17 +281,39 @@ coachRoutes.get("/plans", async (c) => {
   // to COROS — "Manage plans" claiming "no plans" while one is live on the
   // watch reads as a lie. They carry source:"studio" so the UI renders them
   // with Studio affordances instead of coach ones.
-  const studio = await db.select().from(studioPlans).where(eq(studioPlans.userId, userId));
-  const studioEntries = studio.map((sp) => ({
-    id: sp.id,
-    discipline: "lift" as const,
-    name: ((sp.plan as { name?: string })?.name ?? "Lifting plan"),
-    status: "active" as const,
-    startDate: sp.createdAt.slice(0, 10),
-    endDate: sp.createdAt.slice(0, 10),
-    raceDate: null,
-    source: "studio" as const,
-  }));
+  // Newest studio plan only: generate keeps full history and each replace
+  // retires the previous plan's COROS sessions — listing superseded rows as
+  // live would be the same lie pointed the other way.
+  const studio = (
+    await db
+      .select()
+      .from(studioPlans)
+      .where(eq(studioPlans.userId, userId))
+      .orderBy(desc(studioPlans.createdAt))
+      .limit(1)
+  )[0];
+  const studioEntries = [];
+  if (studio) {
+    // "Written to COROS" only when a push has actually materialized there —
+    // generate and push are separate actions.
+    const pushed = (
+      await db
+        .select({ id: studioPlanPushes.id })
+        .from(studioPlanPushes)
+        .where(and(eq(studioPlanPushes.planId, studio.id), eq(studioPlanPushes.status, "verified")))
+        .limit(1)
+    )[0];
+    studioEntries.push({
+      id: studio.id,
+      discipline: "lift" as const,
+      name: ((studio.plan as { name?: string })?.name ?? "Lifting plan"),
+      status: (pushed ? "active" : "draft") as "active" | "draft",
+      startDate: studio.createdAt.slice(0, 10),
+      endDate: studio.createdAt.slice(0, 10),
+      raceDate: null,
+      source: "studio" as const,
+    });
+  }
   return c.json({
     plans: [...rows.map((r) => ({ ...r, source: "coach" as const })), ...studioEntries],
   });

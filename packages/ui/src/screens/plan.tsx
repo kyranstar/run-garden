@@ -673,7 +673,9 @@ export function PlanScreen() {
   );
 
   const pendingCount = coach.state.data?.pendingProposals.length ?? 0;
-  const activeCoachPlans = (coachPlans.data?.plans ?? []).filter((p) => p.status === "active");
+  const activeCoachPlans = (coachPlans.data?.plans ?? []).filter(
+    (p) => p.status === "active" && p.source !== "studio",
+  );
 
   return (
     <div>

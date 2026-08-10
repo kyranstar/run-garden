@@ -3715,7 +3715,7 @@ button {
   min-height: 44px;
   border: none;
   border-radius: 999px;
-  background: rgba(20, 28, 22, 0.42);
+  background: rgba(20, 28, 22, 0.55);
   color: #f5f2ea;
   font-size: 1.05rem;
   display: flex;
@@ -3726,12 +3726,23 @@ button {
 .garden-scene-fullscreen {
   position: fixed;
   inset: 0;
-  z-index: 70; /* above the bottom nav (40) and sheets' scrims */
+  /* Above the bottom nav (40) but BELOW sheets (60): tapping a plant in
+     fullscreen opens the plant sheet, which must paint on top. */
+  z-index: 50;
   background: var(--bg, #101511);
+  border: none;
+  border-radius: 0;
+  max-width: none;
 }
 .garden-scene-fullscreen svg {
   width: 100%;
   height: 100%;
+}
+/* The toggle's own icon must keep its intrinsic size — the fill rule above
+   is a descendant selector and would otherwise balloon the exit X. */
+.scene-full-toggle svg {
+  width: 16px;
+  height: 16px;
 }
 @media (min-width: 1024px) {
   .scene-full-toggle { display: none; }

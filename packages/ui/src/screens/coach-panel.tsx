@@ -516,7 +516,9 @@ export function ManagePlans({
                 )}
                 <span className="faint">
                   {p.source === "studio"
-                    ? "written to COROS"
+                    ? p.status === "active"
+                      ? "written to COROS"
+                      : "draft — not on the watch yet"
                     : p.status === "active"
                       ? weekOf(p)
                       : p.status}

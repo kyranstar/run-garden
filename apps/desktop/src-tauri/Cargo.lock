@@ -2739,7 +2739,7 @@ dependencies = [
 
 [[package]]
 name = "run-garden-desktop"
-version = "0.1.10"
+version = "0.1.11"
 dependencies = [
  "aes-gcm",
  "serde",
