@@ -1553,7 +1553,7 @@ export function GardenScreen() {
           <BalanceStrip
             balance={liveBalance}
             runPaused={!planActive}
-            quiet={lossVoiced}
+            quiet={lossVoiced || sheltered}
             activeKey={openBalanceKey}
             onToggle={toggleBalanceKey}
           />
