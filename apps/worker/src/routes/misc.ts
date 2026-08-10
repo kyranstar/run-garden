@@ -203,10 +203,28 @@ activityRoutes.get("/", async (c) => {
   const woById = new Map(wos.map((w) => [w.id, w]));
   const matchById = new Map(matches.map((m) => [m.id, m]));
 
+  // Compact lap profiles for the list's pace-shape micro chart: seconds +
+  // pace per lap, in lap order. One chunked query for the whole page.
+  const lapChunks = await Promise.all(
+    chunkIds(rows.map((r) => r.id)).map((ids) =>
+      db.select().from(activityLaps).where(inArray(activityLaps.activityId, ids)),
+    ),
+  );
+  const lapsByActivity = new Map<string, Array<{ lapIndex: number; s: number; p: number | null }>>();
+  for (const l of lapChunks.flat()) {
+    const list = lapsByActivity.get(l.activityId) ?? [];
+    list.push({ lapIndex: l.lapIndex, s: l.durationSeconds, p: l.avgPaceSecPerKm });
+    lapsByActivity.set(l.activityId, list);
+  }
+
   return c.json({
     activities: rows.map((a) => {
       const match = a.completionMatchId ? matchById.get(a.completionMatchId) : undefined;
       const wo = match ? woById.get(match.workoutId) : undefined;
+      const laps = (lapsByActivity.get(a.id) ?? [])
+        .sort((x, y) => x.lapIndex - y.lapIndex)
+        .slice(0, 40)
+        .map((l) => ({ s: Math.round(l.s), p: l.p }));
       return {
         id: a.id,
         startTime: a.startTime,
@@ -217,6 +235,9 @@ activityRoutes.get("/", async (c) => {
         durationSeconds: a.durationSeconds,
         distanceMeters: a.distanceMeters,
         avgPaceSecPerKm: a.avgPaceSecPerKm,
+        trainingLoad: a.trainingLoad,
+        feel: a.telemetry?.feelRating ?? null,
+        laps: laps.length > 1 ? laps : null,
         matched: wo
           ? { workoutId: wo.id, title: wo.title, category: wo.category, date: wo.effectiveDate }
           : null,

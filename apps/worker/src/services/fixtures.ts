@@ -611,6 +611,18 @@ export async function seedFixtures(db: Db, env: Env, userId: string): Promise<Se
     sources.push(normalizeCorosActivity(item, detail));
     lapsByProviderId[`coros-fx-rich-${lastQualityDate}`] = normalizeCorosLaps(detail) as never[];
   }
+  // Flat km-lap profile for the most recent long run, so the activity list's
+  // pace-shape chart shows a plateau next to the threshold's comb.
+  const lastLongDate = addDays(monday, 8 * 7 + 5 - 7); // previous week's Saturday
+  if (lastLongDate < today) {
+    lapsByProviderId[`coros-fx-${lastLongDate}-long`] = Array.from({ length: 18 }, (_, i) => ({
+      lapIndex: i,
+      durationSeconds: 370 + ((i * 13) % 25),
+      distanceMeters: 1000,
+      avgPaceSecPerKm: 370 + ((i * 13) % 25),
+      splitType: "km",
+    })) as never[];
+  }
 
   // The sub-threshold walk (garden-neutral: below both minLoad and
   // minDurationMin, so qualifiesAsAdventure is false — it shows up tagged

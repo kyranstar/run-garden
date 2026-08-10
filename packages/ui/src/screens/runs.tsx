@@ -74,6 +74,82 @@ const EMPTY_COPY: Record<DisciplineFilter, { art: string; title: string; body: s
   },
 };
 
+/** Effort tier from COROS training load — garden-toned words, never a scold. */
+function effortTier(load: number): { word: string; ticks: 1 | 2 | 3 } {
+  if (load < 45) return { word: "gentle", ticks: 1 };
+  if (load < 90) return { word: "steady", ticks: 2 };
+  return { word: "strong", ticks: 3 };
+}
+
+function EffortChip({ load, feel }: { load: number | null; feel: number | null }) {
+  if (load == null && feel == null) return null;
+  const tier = load != null ? effortTier(load) : null;
+  return (
+    <span className="act-effort" title={load != null ? `Training load ${Math.round(load)}` : undefined}>
+      {tier ? (
+        <>
+          <span className="act-ticks" aria-hidden="true">
+            {[1, 2, 3].map((t) => (
+              <i key={t} className={t <= tier.ticks ? "on" : ""} />
+            ))}
+          </span>
+          {tier.word} · {Math.round(load!)}
+        </>
+      ) : null}
+      {feel != null ? <span className="act-feel">felt {feel}/5</span> : null}
+    </span>
+  );
+}
+
+/**
+ * The run's shape: one thin bar per lap, width ∝ lap time, height ∝ speed
+ * (faster laps stand taller), normalized within the activity itself — an
+ * interval session reads as a comb, a long run as a low plateau. Single hue
+ * per figure (the card's category color via currentColor); per-lap tooltips;
+ * no axes — it is a silhouette, not a graph.
+ */
+function PaceShape({ laps }: { laps: Array<{ s: number; p: number | null }> }) {
+  const paced = laps.filter((l) => l.p != null && l.p > 0);
+  if (paced.length < 2) return null;
+  const speeds = laps.map((l) => (l.p && l.p > 0 ? 1000 / l.p : null));
+  const known = speeds.filter((v): v is number => v != null);
+  const vMin = Math.min(...known);
+  const vMax = Math.max(...known);
+  const totalS = laps.reduce((acc, l) => acc + Math.max(1, l.s), 0);
+  const W = 100;
+  const H = 30;
+  const GAP = laps.length > 24 ? 0.35 : 0.7;
+  let x = 0;
+  const bars = laps.map((l, i) => {
+    const w = Math.max(1.2, (Math.max(1, l.s) / totalS) * (W - GAP * (laps.length - 1)));
+    const v = speeds[i];
+    // Rest/unknown laps sit at the floor; speed maps 25%..100% of height so
+    // even the easiest lap keeps a visible presence.
+    const frac = v == null || vMax === vMin ? 0.25 : 0.25 + 0.75 * ((v - vMin) / (vMax - vMin));
+    const h = H * frac;
+    const bar = (
+      <rect key={i} x={x} y={H - h} width={w} height={h} rx={0.8}>
+        <title>
+          {`Lap ${i + 1} · ${Math.round(l.s / 60)} min${l.p ? ` · ${Math.floor(l.p / 60)}:${String(Math.round(l.p % 60)).padStart(2, "0")}/km` : ""}`}
+        </title>
+      </rect>
+    );
+    x += w + GAP;
+    return bar;
+  });
+  return (
+    <svg
+      className="act-shape"
+      viewBox={`0 0 ${W} ${H}`}
+      preserveAspectRatio="none"
+      role="img"
+      aria-label={`Pace shape, ${laps.length} laps`}
+    >
+      {bars}
+    </svg>
+  );
+}
+
 /** Sheet to attribute an unplanned activity to a planned workout. */
 function LinkSheet({ activity, onClose }: { activity: ActivityDto; onClose: () => void }) {
   const qc = useQueryClient();
@@ -242,48 +318,57 @@ export function RunsScreen() {
           {empty.body}
         </EmptyState>
       ) : (
-        items.map((a) => (
-          <div key={a.id}>
-            <div className="workout-row" style={{ cursor: "default" }}>
-              <div className="body">
-                <div className="title">{a.title || sportLabel(a.sport)}</div>
-                <div className="meta">
-                  <span>{formatDayLong(a.date)}</span>
-                  <span>{formatMinutes(a.durationSeconds)}</span>
-                  {a.distanceMeters ? <span>{dist(a.distanceMeters)}</span> : null}
-                  {a.avgPaceSecPerKm ? <span>{pace(a.avgPaceSecPerKm)}</span> : null}
+        items.map((a) => {
+          const catKey = a.matched?.category ?? (isAdventureSport(a.sport) ? "adventure" : a.sport);
+          return (
+            <div key={a.id}>
+              <article className={`act-card act-hue-${catKey}`}>
+                <div className="act-spine" aria-hidden="true" />
+                <div className="act-main">
+                  <div className="act-titlerow">
+                    <span className="act-title">{a.title || sportLabel(a.sport)}</span>
+                    <span className="act-sport faint">{sportLabel(a.sport)}</span>
+                  </div>
+                  <div className="act-meta faint">
+                    <span>{formatDayLong(a.date)}</span>
+                    <span>{formatMinutes(a.durationSeconds)}</span>
+                    {a.distanceMeters ? <span>{dist(a.distanceMeters)}</span> : null}
+                    {a.avgPaceSecPerKm ? <span>{pace(a.avgPaceSecPerKm)}</span> : null}
+                  </div>
+                  <div className="act-glance">
+                    {a.laps ? <PaceShape laps={a.laps} /> : null}
+                    <EffortChip load={a.trainingLoad} feel={a.feel} />
+                  </div>
                 </div>
-
-              </div>
-              {/* Audit C8: these used to sit as bare siblings of .body with an
-                  inline marginLeft:auto on the first button — on narrow screens
-                  the meta line had nowhere to shrink to and overflowed behind
-                  them. Grouping the actions lets .body claim the full row width
-                  below 640px (styles.css), wrapping the actions beneath it
-                  instead of hiding anything. */}
-              <div className="btn-row workout-row-actions">
-                <button
-                  className="btn btn-small"
-                  aria-expanded={readOpen === a.id}
-                  title="Ask the coach for a read of this effort"
-                  onClick={() => setReadOpen(readOpen === a.id ? null : a.id)}
-                >
-                  {readOpen === a.id ? "Hide read" : "✨ Coach's read"}
-                </button>
-                {a.matched ? (
-                  <span className="pill pill-ok" title={`Counted as your ${a.matched.title}`}>
-                    ✓ {CATEGORY_LABELS[a.matched.category] ?? a.matched.category}
-                  </span>
-                ) : (
-                  <button className="btn btn-small" onClick={() => setLinking(a)}>
-                    Link to a workout
+                {/* Fixed-geometry action column: the status slot renders EITHER
+                    the linked pill OR the Link button in the same box, so a
+                    state change can never reflow the card. */}
+                <div className="act-actions">
+                  <div className="act-status-slot">
+                    {a.matched ? (
+                      <span className="pill pill-ok" title={`Counted as your ${a.matched.title}`}>
+                        ✓ {CATEGORY_LABELS[a.matched.category] ?? a.matched.category}
+                      </span>
+                    ) : (
+                      <button className="btn btn-small" onClick={() => setLinking(a)}>
+                        Link to a workout
+                      </button>
+                    )}
+                  </div>
+                  <button
+                    className="btn btn-small"
+                    aria-expanded={readOpen === a.id}
+                    title="Ask the coach for a read of this effort"
+                    onClick={() => setReadOpen(readOpen === a.id ? null : a.id)}
+                  >
+                    {readOpen === a.id ? "Hide read" : "✨ Coach's read"}
                   </button>
-                )}
-              </div>
+                </div>
+              </article>
+              {readOpen === a.id ? <CoachRead activityId={a.id} /> : null}
             </div>
-            {readOpen === a.id ? <CoachRead activityId={a.id} /> : null}
-          </div>
-        ))
+          );
+        })
       )}
       {linking ? <LinkSheet activity={linking} onClose={() => setLinking(null)} /> : null}
     </div>

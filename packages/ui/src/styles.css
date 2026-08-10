@@ -3772,3 +3772,113 @@ button {
   .scene-full-toggle { display: none; }
 }
 .coach-pill-caret { margin-right: 0.35rem; font-size: 0.7em; opacity: 0.85; }
+
+/* ── Activity specimen cards (activities-page redesign) ─────────────────── */
+.act-card {
+  display: grid;
+  grid-template-columns: 4px minmax(0, 1fr) 172px;
+  gap: 0.35rem 0.9rem;
+  align-items: center;
+  padding: 0.7rem 0.8rem;
+  background: var(--bg-raised);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  margin-bottom: 0.45rem;
+}
+.act-spine {
+  align-self: stretch;
+  border-radius: 2px;
+  background: var(--act-hue, var(--green));
+  opacity: 0.85;
+}
+.act-main { min-width: 0; }
+.act-titlerow {
+  display: flex;
+  align-items: baseline;
+  gap: 0.5rem;
+  min-width: 0;
+}
+.act-title {
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+.act-sport { font-size: 0.78rem; flex-shrink: 0; }
+.act-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.15rem 0.7rem;
+  font-size: 0.82rem;
+  margin-top: 0.1rem;
+}
+.act-glance {
+  display: flex;
+  align-items: center;
+  gap: 0.7rem;
+  margin-top: 0.4rem;
+  min-height: 30px;
+}
+.act-shape {
+  width: min(230px, 55%);
+  height: 30px;
+  flex-shrink: 0;
+  color: var(--act-hue, var(--green));
+  fill: currentColor;
+  opacity: 0.9;
+}
+.act-effort {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  font-size: 0.78rem;
+  color: var(--ink-muted, #6b6555);
+  white-space: nowrap;
+}
+.act-ticks { display: inline-flex; gap: 2px; }
+.act-ticks i {
+  width: 4px;
+  height: 10px;
+  border-radius: 2px;
+  background: var(--border);
+}
+.act-ticks i.on { background: var(--act-hue, var(--green)); }
+.act-feel { margin-left: 0.5rem; }
+/* Fixed-geometry action column: both slots identical boxes, so the
+   Link-button → linked-pill flip can never move a pixel of layout. */
+.act-actions {
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+  width: 172px;
+}
+.act-actions > * ,
+.act-status-slot > * {
+  width: 100%;
+  min-height: 32px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  box-sizing: border-box;
+  white-space: nowrap;
+}
+.act-status-slot { min-height: 32px; }
+/* Category / sport hues for spine + shape (existing app palette). */
+.act-hue-quality { --act-hue: #b06a4d; }
+.act-hue-long { --act-hue: #4d6ab0; }
+.act-hue-easy { --act-hue: #5f9367; }
+.act-hue-race { --act-hue: #9a4a68; }
+.act-hue-recovery { --act-hue: #7fae94; }
+.act-hue-cross_training,
+.act-hue-strength { --act-hue: #8a87b8; }
+.act-hue-yoga { --act-hue: #8f6fae; }
+.act-hue-run { --act-hue: #5f9367; }
+.act-hue-adventure { --act-hue: #8a7550; }
+@media (max-width: 640px) {
+  .act-card { grid-template-columns: 4px minmax(0, 1fr); }
+  .act-actions {
+    grid-column: 2;
+    flex-direction: row;
+    width: 100%;
+  }
+  .act-actions > * { flex: 1 1 0; }
+  .act-shape { width: min(230px, 60%); }
+}

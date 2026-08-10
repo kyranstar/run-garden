@@ -174,6 +174,13 @@ export interface ActivityDto {
   durationSeconds: number;
   distanceMeters: number | null;
   avgPaceSecPerKm: number | null;
+  /** COROS training load, when reported — drives the effort chip. */
+  trainingLoad: number | null;
+  /** Self-reported feel 1-5 from the watch, when present. */
+  feel: number | null;
+  /** Compact lap profile (seconds + pace per lap, in order) for the
+   * pace-shape micro chart; null when fewer than two laps exist. */
+  laps: Array<{ s: number; p: number | null }> | null;
   /** The planned workout this run completed, or null if it was unplanned. */
   matched: { workoutId: string; title: string; category: string; date: string } | null;
 }
