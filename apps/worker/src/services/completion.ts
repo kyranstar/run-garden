@@ -477,7 +477,13 @@ export async function ingestActivities(db: Db, input: IngestInput): Promise<Inge
         avgPowerWatts: l.avgPowerWatts ?? null,
         exerciseNameKey: l.exerciseNameKey ?? null,
       }));
-      await chunkedInsert(lapRows, 8, (batch) => db.insert(activityLaps).values(batch));
+      // Column count derived from the row itself: a hardcoded count silently
+      // rots when the table grows (migration 0012's lap telemetry columns
+      // pushed 8-column batches past the ~100-bound-variable cap, failing
+      // ingest for any run with 8+ laps).
+      await chunkedInsert(lapRows, Object.keys(lapRows[0]!).length, (batch) =>
+        db.insert(activityLaps).values(batch),
+      );
     }
     affectedDates.add((src.startTimeLocal ?? src.startTime).slice(0, 10));
   }
