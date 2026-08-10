@@ -1,10 +1,12 @@
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { Link } from "react-router-dom";
 import { useQuery } from "@tanstack/react-query";
-import { api, type DisciplineBalance, type WorkoutDto } from "@rg/api-client";
+import { api, type ActivityDto, type DisciplineBalance, type WorkoutDto } from "@rg/api-client";
 import {
   addDays,
   GARDEN_CONDITION_LABELS,
+  isAdventureSport,
+  sportLabel,
   type GardenConditionWord,
   type GardenEvent,
   type GardenWeatherState,
@@ -179,6 +181,10 @@ function eventSentence(e: GardenEvent): string | null {
       return "Strength work fed the soil.";
     case "life_tended":
       return "Yoga brought the meadow back to life.";
+    case "adventure_logged":
+      return e.detail
+        ? `A ${sportLabel(e.detail).toLowerCase()} fed the garden — wild air does it good.`
+        : "An adventure fed the garden — wild air does it good.";
     default:
       return null;
   }
@@ -456,6 +462,7 @@ function BalanceDetail({
       ) : null}
       <p className="balance-detail-week">
         This week: Run {wkMark(wk.run)} · Lift {wkMark(wk.strength)} · Yoga {wkMark(wk.yoga)}
+        {wk.adventure ? " · Adventure ✓" : ""}
         {wkDone === 2 ? " — one more discipline makes a balanced week (the Harmony willow is watching)." : ""}
       </p>
     </div>
@@ -495,6 +502,7 @@ function ForecastLine({
   daysAhead,
   nextWorkout,
   balance,
+  adventure,
   className,
 }: {
   snapshot: GardenSnapshot;
@@ -503,6 +511,8 @@ function ForecastLine({
   nextWorkout: WorkoutDto | null | undefined;
   /** Projected balance — lets soil/life decay speak when the rain is fine. */
   balance?: DisciplineBalance;
+  /** The adventure shield — frozen today or still in its grace window. Outranks every loss line. */
+  adventure?: { frozenToday: boolean; graceDay: boolean; lastSport: string | null; lastDate: string | null };
   className?: string;
 }) {
   const f = gardenForecast(snapshot, daysAhead);
@@ -518,7 +528,23 @@ function ForecastLine({
       ? balance.yoga.days - BALANCE_TUNING.yoga.damageStartDay
       : -1;
   let line: ReactNode = null;
-  if (f.recovering) {
+  if (adventure?.frozenToday) {
+    const noun = adventure.lastSport ? sportLabel(adventure.lastSport).toLowerCase() : "adventure";
+    line = (
+      <>
+        Today's <strong>{noun}</strong> tends the garden from afar — no rain owed.
+      </>
+    );
+  } else if (adventure?.graceDay) {
+    const noun = adventure.lastSport ? sportLabel(adventure.lastSport).toLowerCase() : "adventure";
+    line = adventure.lastDate ? (
+      <>
+        {weekdayFull(adventure.lastDate)}'s <strong>{noun}</strong> is still keeping the beds shaded.
+      </>
+    ) : (
+      <>Still restoring from your adventure — the garden holds its water.</>
+    );
+  } else if (f.recovering) {
     line = <>Recovery rain — the garden is drinking it in.</>;
   } else if (f.next?.stage === "dry" && (soilOver > 0 || lifeOver > 0)) {
     line =
@@ -607,6 +633,17 @@ function WeekRibbon({
     staleTime: 5 * 60_000,
   });
   const workouts = (week.data?.workouts ?? []) as WorkoutDto[];
+  // Reuses the history screen's exact queryKey/fn so the two screens share one cache entry.
+  const acts = useQuery({ queryKey: ["runs"], queryFn: () => api.activities(40), staleTime: 5 * 60_000 });
+  const adventureDates = useMemo(
+    () =>
+      new Set(
+        ((acts.data?.activities ?? []) as ActivityDto[])
+          .filter((a) => a.date >= monday && a.date <= addDays(monday, 6) && isAdventureSport(a.sport))
+          .map((a) => a.date),
+      ),
+    [acts.data, monday],
+  );
   const landing = useMemo(
     () =>
       landingUnlock(
@@ -637,7 +674,7 @@ function WeekRibbon({
                 </span>
               ) : null}
               <span
-                className={`week-day-dot${w ? ` cat-${w.category}` : " week-day-empty"}`}
+                className={`week-day-dot${w ? ` cat-${w.category}` : " week-day-empty"}${adventureDates.has(date) ? " week-day-adventure" : ""}`}
                 title={w?.title}
               />
               <span className="week-day-dow" aria-hidden="true">
@@ -914,6 +951,10 @@ export function GardenScreen() {
   const restMode = garden.data.restMode as { active: boolean; until: string | null };
   // Old cached payloads (pre-balance) may not carry this field — guard rather than crash.
   const balance = garden.data.balance as DisciplineBalance | undefined;
+  // Old cached payloads (pre-adventure) may not carry this field either.
+  const adventure = garden.data.adventure as
+    | { frozenToday: boolean; graceDay: boolean; lastSport: string | null; lastDate: string | null }
+    | undefined;
 
   // Timeline: every replayed past day, plus the live view already loaded
   // above standing in for "today" (its date is always later than the last
@@ -1038,10 +1079,17 @@ export function GardenScreen() {
       })
     : undefined;
   // One loss voice at a time: when the forecast line is speaking a decay
-  // stage, the balance strip stays purely visual.
+  // stage, the balance strip stays purely visual. The adventure shield
+  // (frozen today, or still in its grace window) is reassurance, never
+  // loss — a sheltered day must never voice a loss line either.
   const fc = gardenForecast(snapshot, daysSinceSimulated);
+  const sheltered = !!(adventure?.frozenToday || adventure?.graceDay);
   const lossVoiced =
-    viewingLive && !restMode.active && !fc.recovering && (fc.next !== null || fc.victim !== null);
+    viewingLive &&
+    !restMode.active &&
+    !sheltered &&
+    !fc.recovering &&
+    (fc.next !== null || fc.victim !== null);
 
   // Timeline chapters: worth-a-tick days, derived from snapshot deltas.
   const chapters = timelineOpen && !timelineLoading ? deriveChapters(timelinePoints) : [];
@@ -1284,6 +1332,7 @@ export function GardenScreen() {
                 daysAhead={daysSinceSimulated}
                 nextWorkout={d?.nextWorkout}
                 balance={liveBalance}
+                adventure={adventure}
                 className="hud-forecast"
               />
             ) : null}
@@ -1532,6 +1581,7 @@ export function GardenScreen() {
             daysAhead={daysSinceSimulated}
             nextWorkout={d?.nextWorkout}
             balance={liveBalance}
+            adventure={adventure}
           />
         ) : null}
         {viewingLive && ceremonyEntries.length > 0 ? (

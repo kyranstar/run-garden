@@ -1465,6 +1465,10 @@ button {
   outline: 2px solid var(--green);
   outline-offset: 1.5px;
 }
+.week-day-adventure {
+  box-shadow: 0 0 0 2px var(--adventure-ring, #b8a06a55);
+  border-radius: 50%;
+}
 .week-day-sprite {
   position: absolute;
   top: 0;
