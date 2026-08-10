@@ -2,6 +2,7 @@ import { useMemo, useState } from "react";
 import { Link } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { api, type ActivityDto, type WorkoutDto } from "@rg/api-client";
+import { isAdventureSport, sportLabel } from "@rg/domain";
 import {
   Banner,
   CategoryDot,
@@ -27,27 +28,22 @@ function dayDiff(a: string, b: string): number {
   return Math.round((Date.parse(a) - Date.parse(b)) / 86_400_000);
 }
 
-type DisciplineFilter = "all" | "run" | "strength" | "yoga";
+type DisciplineFilter = "all" | "run" | "strength" | "yoga" | "adventure";
 
 const FILTERS: { key: DisciplineFilter; label: string; chipClass: string }[] = [
   { key: "all", label: "All", chipClass: "chip-all" },
   { key: "run", label: "Runs", chipClass: "chip-run" },
   { key: "strength", label: "Lifting", chipClass: "chip-strength" },
   { key: "yoga", label: "Yoga", chipClass: "chip-yoga" },
+  { key: "adventure", label: "Adventures", chipClass: "chip-adventure" },
 ];
 
 /**
  * "All" shows every session Run Garden stores, including sports outside the
- * garden's three disciplines (ski, admitted for its training load). Those have
- * no chip of their own — they are real training to see in your history, not a
- * fourth thing the garden asks you to keep up.
+ * garden's three disciplines (hikes, rides, ski days, and everything else
+ * COROS reports). Those adventures have their own chip and filter — real
+ * training to see in your history, welcomed but never demanded.
  */
-const SPORT_LABELS: Record<string, string> = {
-  run: "Run",
-  strength: "Strength",
-  yoga: "Yoga",
-  ski: "Ski",
-};
 
 const EMPTY_COPY: Record<DisciplineFilter, { art: string; title: string; body: string }> = {
   all: {
@@ -69,6 +65,11 @@ const EMPTY_COPY: Record<DisciplineFilter, { art: string; title: string; body: s
     art: "🧘",
     title: "No yoga sessions yet",
     body: "Completed yoga sessions from COROS appear here.",
+  },
+  adventure: {
+    art: "🥾",
+    title: "No adventures yet",
+    body: "Hikes, rides, ski days and every other outing from COROS land here — the garden rests easy while you roam.",
   },
 };
 
@@ -204,7 +205,7 @@ export function RunsScreen() {
     );
   }
   const items = (runs.data?.activities ?? []).filter((a) =>
-    filter === "all" ? true : a.sport === filter,
+    filter === "all" ? true : filter === "adventure" ? isAdventureSport(a.sport) : a.sport === filter,
   );
   const empty = EMPTY_COPY[filter];
 
@@ -239,7 +240,7 @@ export function RunsScreen() {
         items.map((a) => (
           <div key={a.id} className="workout-row" style={{ cursor: "default" }}>
             <div className="body">
-              <div className="title">{a.title || SPORT_LABELS[a.sport] || "Activity"}</div>
+              <div className="title">{a.title || sportLabel(a.sport)}</div>
               <div className="meta">
                 <span>{formatDayLong(a.date)}</span>
                 <span>{formatMinutes(a.durationSeconds)}</span>

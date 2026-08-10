@@ -481,6 +481,11 @@ button {
   border-color: #8f6fae;
   color: #fff;
 }
+.chip.chip-adventure.active {
+  background: #8a7550;
+  border-color: #8a7550;
+  color: #fff;
+}
 
 /* ── Today hero ─────────────────────────────────────────────────────────── */
 
