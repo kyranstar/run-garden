@@ -254,37 +254,24 @@ export function selectArrival(
     .filter((t): t is string => !!t);
 
   const tip = durable.reduce<Watermark>((acc, e) => (after(e, acc) ? { d: e.date, s: e.seq } : acc), wm);
-  const previewCelebrated = speciesCeremonies
-    .filter((c) => c.fromPreview)
-    .map((c) => c.speciesId);
-  // Backfilled admissions must be remembered forever: their event's
-  // (date, seq) sits at-or-before the watermark by definition, so it can
-  // never re-enter `fresh` on a later visit to earn the ordinary
-  // prune-once-covered treatment below — nothing else would ever stop them
-  // from replaying as "new" again.
-  const backfilledIds = [
-    ...speciesCeremonies
-      .filter((c) => !c.fromPreview && backfilled.some((e) => e.kind === "species_unlocked" && e.speciesId === c.speciesId))
-      .map((c) => c.speciesId),
-    ...groundCeremonies
-      .filter((c) => backfilled.some((e) => e.kind === "region_unlocked" && (e.detail ?? "meadow") === c.ground))
-      .map((c) => groundId(c.ground)),
+  // Every ceremony that fired THIS call — fresh, backfilled, or preview —
+  // is written into the permanent ledger, and nothing is ever pruned back
+  // out (round 3 fix). Round 2's insertion-time gate (`backfilled`, above)
+  // stops a routine resim from re-admitting an unlock whose ROW was merely
+  // rebuilt with a fresh createdAt — but resimulateFrom stamps a fresh
+  // createdAt on EVERY event in its rewritten range, including ones for
+  // species/grounds unlocked and celebrated long ago, so without a
+  // permanent record those still satisfy the insertion-time gate and
+  // re-fire. The old rule (pruning a celebrated id once its durable row
+  // re-entered `fresh`) made the identical mistake for the ordinary case: a
+  // SIMULATION_VERSION bump resimulates a user's ENTIRE history at once, so
+  // every unlock they've ever earned would burst-replay simultaneously.
+  // The ledger is bounded by the codex regardless (57 species + 4 ground
+  // kinds = 61 today, well under the 256 cap on POST /api/garden/seen).
+  const firedIds = [
+    ...speciesCeremonies.map((c) => c.speciesId),
+    ...groundCeremonies.map((c) => groundId(c.ground)),
   ];
-  // Prior celebrated ids stay only while a FRESH durable row hasn't put them
-  // back in front of the user this visit (even just to be silently deduped
-  // here) — once one has, every future watermark covers its position for
-  // good. Ids admitted via `backfilled` are deliberately NOT matched by this
-  // rule (their row is never fresh), which is what keeps them celebrated
-  // exactly once via `backfilledIds` above instead of being pruned right
-  // back out.
-  const retained = [...celebrated].filter(
-    (id) =>
-      !fresh.some(
-        (e) =>
-          (e.kind === "species_unlocked" && e.speciesId === id) ||
-          (e.kind === "region_unlocked" && groundId(e.detail ?? "meadow") === id),
-      ),
-  );
 
   const window = [...fresh, ...preview];
   return {
@@ -312,7 +299,9 @@ export function selectArrival(
     nextSeen: {
       lastSeenDate: tip.d,
       lastSeenSeq: tip.s,
-      celebratedSpeciesIds: [...new Set([...previewCelebrated, ...retained, ...backfilledIds])],
+      // Every id ever admitted, plus every id firing this call — never
+      // pruned (see the comment above `firedIds`).
+      celebratedSpeciesIds: [...new Set([...celebrated, ...firedIds])],
     },
   };
 }

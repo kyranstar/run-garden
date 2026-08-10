@@ -187,7 +187,7 @@ describe("selectArrival", () => {
     ]);
   });
 
-  it("nextSeen: durable tip + preview-unlock species retained as celebrated", () => {
+  it("nextSeen: every fired ceremony — fresh AND preview-unlock species alike — is written to the permanent ledger (round 3)", () => {
     const seen = { lastSeenDate: OLDER, lastSeenSeq: 0, celebratedSpeciesIds: [] };
     const out = selectArrival(
       [
@@ -200,19 +200,30 @@ describe("selectArrival", () => {
     );
     expect(out.nextSeen.lastSeenDate).toBe(YESTERDAY);
     expect(out.nextSeen.lastSeenSeq).toBe(4);
-    expect(out.nextSeen.celebratedSpeciesIds).toEqual(["poppy"]);
+    // Round 1/2 only ever recorded the preview-sourced id (a fresh durable
+    // ceremony relied purely on watermark position for dedup) — round 3
+    // records BOTH, since a resim can rebuild iris's row with a fresh
+    // createdAt long after it's already been celebrated, and only the
+    // permanent ledger (not position) can stop that from re-firing.
+    expect(out.nextSeen.celebratedSpeciesIds).toEqual(["iris", "poppy"]);
   });
 
-  it("a prior celebrated species is dropped once its durable row is inside the watermark", () => {
+  it("a prior celebrated species is NEVER pruned back out, even once its durable row is behind the watermark (round 3: the ledger never shrinks)", () => {
+    // This is the shape of the round-3 regression: pruning a celebrated id
+    // whenever its row re-entered `fresh` (or, before that, whenever the
+    // watermark simply advanced past it) assumed the row's POSITION was a
+    // safe stand-in for "will never need to be excluded again" — but a
+    // resim can recreate that exact row on a later visit with a brand-new
+    // createdAt, which would then satisfy the insertion-time gate and
+    // re-fire the ceremony were it not still in the ledger.
     const seen = { lastSeenDate: OLDER, lastSeenSeq: 0, celebratedSpeciesIds: ["poppy"] };
     const out = selectArrival(
       [ev("species_unlocked", YESTERDAY, { seq: 1, speciesId: "poppy" })],
       seen,
       TODAY,
     );
-    // The durable row is now ≤ nextSeen tip, so the id needn't be carried.
     expect(out.ceremonies).toEqual([]);
-    expect(out.nextSeen.celebratedSpeciesIds).toEqual([]);
+    expect(out.nextSeen.celebratedSpeciesIds).toEqual(["poppy"]);
   });
 
   describe("rebuilt-history admission (C13, insertion-time gate — round 2)", () => {
@@ -361,6 +372,77 @@ describe("selectArrival", () => {
       );
       expect(out.ceremonies).toEqual([]);
       expect(out.nextSeen.celebratedSpeciesIds).toEqual([]);
+    });
+  });
+
+  describe("permanent celebrated ledger survives resim rewrites (round 3)", () => {
+    // Round 2's insertion-time gate (event.createdAt > seen.updatedAt) tells
+    // a genuinely rebuilt row apart from an ordinary one that's simply
+    // behind the watermark — but resimulateFrom stamps a FRESH createdAt on
+    // EVERY event in its rewritten date range, including ones for
+    // species/grounds that were unlocked and celebrated long ago. Without a
+    // permanent record of "already celebrated," those old, already-shown
+    // unlocks would satisfy the insertion-time gate too and re-fire. The
+    // fix: `celebrated` is written into on every fire (fresh, backfilled,
+    // preview alike) and never pruned back out — so the gate only ever
+    // admits unlocks that have genuinely never been celebrated before.
+    const T_SEEN_BEFORE = "2026-08-03T09:00:00.000Z";
+    const T_RESIM = "2026-08-04T10:00:00.000Z"; // after T_SEEN_BEFORE
+
+    it("(B) an already-celebrated unlock whose row is rewritten with a fresh createdAt does NOT re-fire", () => {
+      const seen = {
+        lastSeenDate: TODAY,
+        lastSeenSeq: 5,
+        celebratedSpeciesIds: ["dahlia"], // already celebrated on a prior visit
+        updatedAt: T_SEEN_BEFORE,
+      };
+      // A routine resim rewrote dahlia's day (e.g. an unrelated late-synced
+      // activity landing on the SAME date) — same content, but the row's
+      // createdAt is now well after the last mark-seen, exactly like a
+      // genuinely new backfilled unlock would look.
+      const out = selectArrival(
+        [ev("species_unlocked", OLDER, { seq: 0, speciesId: "dahlia", createdAt: T_RESIM })],
+        seen,
+        TODAY,
+      );
+      expect(out.ceremonies).toEqual([]);
+      expect(out.nextSeen.celebratedSpeciesIds).toEqual(["dahlia"]);
+    });
+
+    it("(C) a version-bump-style rewrite of several past unlocks fires none that are already in the ledger", () => {
+      // A SIMULATION_VERSION bump resimulates a user's ENTIRE history at
+      // once: every event in it gets a fresh createdAt simultaneously,
+      // whether or not its achievement was already celebrated.
+      const seen = {
+        lastSeenDate: TODAY,
+        lastSeenSeq: 20,
+        celebratedSpeciesIds: ["dahlia", "iris", "ground:terrace"],
+        updatedAt: T_SEEN_BEFORE,
+      };
+      const events = [
+        ev("species_unlocked", OLDER, { seq: 0, speciesId: "dahlia", createdAt: T_RESIM }),
+        ev("species_unlocked", OLDER, { seq: 1, speciesId: "iris", createdAt: T_RESIM }),
+        ev("region_unlocked", OLDER, { seq: 2, detail: "terrace", createdAt: T_RESIM }),
+      ];
+      const out = selectArrival(events, seen, TODAY);
+      expect(out.ceremonies).toEqual([]);
+      expect(out.nextSeen.celebratedSpeciesIds).toEqual(["dahlia", "iris", "ground:terrace"]);
+    });
+
+    it("a true (never-celebrated) unlock still fires inside the same kind of rewrite that suppresses the already-celebrated ones", () => {
+      const seen = {
+        lastSeenDate: TODAY,
+        lastSeenSeq: 20,
+        celebratedSpeciesIds: ["dahlia"],
+        updatedAt: T_SEEN_BEFORE,
+      };
+      const events = [
+        ev("species_unlocked", OLDER, { seq: 0, speciesId: "dahlia", createdAt: T_RESIM }), // already celebrated
+        ev("species_unlocked", OLDER, { seq: 1, speciesId: "iris", createdAt: T_RESIM }), // genuinely new
+      ];
+      const out = selectArrival(events, seen, TODAY);
+      expect(out.ceremonies).toEqual([{ kind: "species", speciesId: "iris", fromPreview: false }]);
+      expect(out.nextSeen.celebratedSpeciesIds).toEqual(["dahlia", "iris"]);
     });
   });
 });
