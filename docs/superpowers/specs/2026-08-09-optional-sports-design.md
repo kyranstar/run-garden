@@ -1,0 +1,177 @@
+# Optional sports (adventures) — design
+
+**Date:** 2026-08-09
+**Status:** Approved by user (brainstorming session)
+
+## Problem
+
+The Coros bridge drops every activity that isn't run/strength/yoga (plus downhill
+ski as load-only). A backpacking weekend is invisible to the garden, and the days
+around it are punished as neglect: moisture decays, missed-run hits accrue,
+strength/yoga neglect fires. The user wants all Coros-importable sports supported,
+with this contract: **optional sports boost the garden but their absence never
+hurts it, and a real adventure protects the surrounding days from decay.**
+
+## Decisions (user-approved)
+
+1. **Protection:** freeze + earned grace. Adventure days freeze all decay clocks
+   (like rest mode); big efforts extend protection into following days. Clocks
+   freeze, never reset — a hike is not a run.
+2. **Boost:** feed existing axes via the `lifeBonus` pattern (helps, fades only to
+   zero, never below baseline). No new visual flourishes this round.
+3. **Qualifying:** one uniform effort threshold, any sport. No curated list.
+4. **Backfill:** retroactive. Backfill dropped history, bump `SIMULATION_VERSION`,
+   full resim honors past trips.
+5. **Architecture:** adventure as a cross-cutting engine day-input + a small shared
+   sport registry. No generalized discipline refactor.
+6. **Grace source:** recovery-aware — Coros `recoveryScore` drives grace length,
+   adventure-gated, heuristic fallback where health data is missing.
+
+## 1. Sport registry + import
+
+New canonical table in `packages/domain/src/sport.ts` (domain is already a
+dependency of providers, worker, and UI):
+
+```ts
+export interface SportDef {
+  id: string;          // "hike", "ski", "snowboard", "xc-ski", "bike", ...
+  label: string;       // "Hike"
+  corosCodes: number[];// [104, 105, 106]
+  adventure: boolean;  // true for everything that isn't run/strength/yoga
+}
+export const SPORTS: SportDef[]
+export function sportForCorosCode(code: number): SportDef | undefined
+```
+
+Codes from `docs/research/coros-community-clients.md:1013-1028`: run family
+(100–103), hike/climb (104–106), bike, swim, strength (402), yoga (403, 904),
+ski family (500–503), walk (900), elliptical (903), etc.
+
+- Replaces `COROS_ADMITTED_SPORT_TYPES` (`packages/providers/src/coros/raw-types.ts:166`)
+  and `corosSportName`.
+- Both bridge filter sites (`services/coros-bridge/src/snapshot.ts:112`,
+  `services/coros-bridge/src/backfill.ts:58`) admit through the registry.
+  **Unknown codes are admitted as `other`** (generic label), still tallied so the
+  census surfaces new codes to name later. Nothing is dropped.
+- `SPORT_LABELS` in `packages/ui/src/screens/runs.tsx` becomes a registry lookup.
+- Run/strength/yoga codes keep their exact current discipline mapping.
+- `walk`/`elliptical` are `adventure: true` — the effort threshold is the gate,
+  not the sport.
+- Planned-workout namespace (`WORKOUT_SPORT`, matching) is untouched; plan
+  matching stays run-only.
+
+## 2. Engine mechanics
+
+### Day input
+
+`EngineDayInput` gains:
+
+```ts
+adventures?: { sport: string; trainingLoad?: number; durationMin?: number }[];
+recoveryScore?: number; // 0-100, from daily_health for that date, if present
+```
+
+Built in `apps/worker/src/services/garden-sync.ts` from admitted non-discipline
+activities (currently filtered out at garden-sync.ts:203) and the `daily_health`
+row for the date.
+
+### Tunables (next to `BALANCE_TUNING` in `packages/garden-engine/src/balance.ts`)
+
+| Constant | Value | Meaning |
+|---|---|---|
+| `ADVENTURE_MIN_LOAD` | 40 | qualifies if trainingLoad ≥ this… |
+| `ADVENTURE_MIN_DURATION_MIN` | 45 | …or duration ≥ this |
+| `ADVENTURE_BIG_LOAD` | 80 | fallback "big day" banks +1 grace day… |
+| `ADVENTURE_BIG_DURATION_MIN` | 150 | …or this duration |
+| `ADVENTURE_GRACE_CAP` | 2 | max consecutive/banked grace days |
+| `ADVENTURE_RECOVERY_THRESHOLD` | 60 | grace continues while recoveryScore < this |
+
+Thresholds are provisional — calibrate against the user's real load distribution
+during implementation (`pnpm coros:census` can dump it).
+
+### Behavior
+
+- **Qualifying adventure day → full freeze.** Same punishment suppression as rest
+  mode: no clock advancement (`daysSinceCompletedRun/Strength/Yoga`), no
+  missed-run moisture hit, no strength-soil or yoga-life neglect. Sub-threshold
+  activities are recorded but garden-neutral.
+- **Boost per qualifying adventure:** `tendLifeAxis(state, 0.03, 0.02)` sharing
+  yoga's existing reservoir caps (`LIFE_BONUS_CAP_*` — bonuses never stack past
+  them), plus `moisture +0.05`, `soilHealth +0.02`. Deliberately smaller than a
+  run's rain: running remains the garden's water source.
+- **Recovery-aware grace:** on a day that would otherwise decay (no discipline
+  session, no qualifying adventure, no rest mode, no plan gap — sub-threshold
+  activities do NOT block grace), if a qualifying adventure occurred within the
+  last `ADVENTURE_GRACE_CAP` days (`lastAdventureDate`) and that day's
+  `recoveryScore < ADVENTURE_RECOVERY_THRESHOLD`, the day is a grace day → same
+  full freeze, no boost. Fallback when the date has no
+  `recoveryScore`: big-day heuristic banks +1 grace day (cap 2), spent the same
+  way. Recovery data **only** extends adventure protection — normal
+  run/strength/yoga decay after hard training weeks is unchanged.
+- **Untouched:** `overall = min(run, strength?, yoga?)`; adventures never appear
+  as a balance axis, never notch, never damage.
+
+### State + versioning
+
+New `EngineGardenState` fields (all defaulted via the existing `??=` pattern in
+`simulate.ts`): `adventureGraceDays: number` (banked, heuristic path),
+`lastAdventureDate?: string`, `weekDisciplines.adventure: number`.
+`SIMULATION_VERSION 3 → 4` → automatic full resim in `advanceGarden`, which is
+how retroactivity lands. Garden state is a versioned JSON blob — **no D1
+migration needed**; `activities.sport` is already free-form text and
+`daily_health.recovery_score` already exists.
+
+Determinism: no new rng; all inputs (activities, recovery scores) are stored
+per-date, so resimulation reproduces identical state.
+
+## 3. Backfill / rollout
+
+1. Ship registry + bridge admission → new activities flow immediately.
+2. Run the existing deep-history backfill (`services/coros-bridge/src/backfill.ts`)
+   to fetch previously-skipped activities; `skippedSportTypes` tallies say what's
+   there; verify coverage with `pnpm coros:census`.
+3. Version bump triggers resim from day one with freeze/grace/boost applied.
+   Expected effect on current state: protective and additive only.
+4. Screenshot before/after on the fixture stack (ports 8899/5199) before
+   merge/deploy, per the standing review workflow.
+
+Gap accepted: old dates may predate daily-health sync → those trips use the
+heuristic fallback, by design.
+
+## 4. UI
+
+Deliberately small surface:
+
+- **`runs.tsx`:** labels from the registry; one new "Adventures" filter chip;
+  empty-state copy for the chip.
+- **`garden.tsx` caption/forecast voice:** when today is adventure-frozen or in
+  grace, suppress loss voices (same mechanism as taper/rest suppression) and
+  acknowledge: "Saturday's ridge walk is still keeping the beds shaded." Gentle
+  tone — the garden asks, never accuses.
+- **Week ribbon:** small mark on adventure days; week trio stays run/strength/yoga.
+- **`api-client`:** expose `adventureGraceDays` / today's adventure-frozen state
+  so the caption can speak.
+- **Not in scope:** fourth balance bar, codex entries, new visitors/flourishes
+  (deferred follow-up), insights discipline picker, weekly-review changes.
+
+## 5. Testing
+
+- **Engine (vitest):** threshold edges (load 39/40, 44/45 min); freeze on
+  adventure day (clocks hold, no punishment); recovery-driven grace continues at
+  59 and stops at 60; grace cap at 2; heuristic fallback when `recoveryScore`
+  absent; boost respects shared lifeBonus caps; freeze-not-reset (clocks resume
+  from prior values); version-bump defaulting of new fields; resim determinism
+  (same inputs twice → deep-equal state).
+- **Worker:** garden-sync maps non-discipline activities → `adventures[]` and
+  joins `recoveryScore`; sub-threshold activities pass through without inputs.
+- **Bridge/providers:** registry admission incl. unknown codes → `other`;
+  census tally still counts unknowns.
+- **Manual:** before/after screenshots on fixture stack; live resim sanity check
+  after backfill (garden should look same-or-healthier).
+
+## Constraints that must hold
+
+- Determinism (no `Date.now`-style inputs; fresh rng keys only — none needed here).
+- Gentle tone: garden asks, never accuses.
+- Optional means optional: no code path may let an adventure's absence reduce any
+  axis, notch any bar, or appear in loss voices.
