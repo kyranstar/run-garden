@@ -150,7 +150,15 @@ export async function buildSnapshot(
     dashboard = undefined;
   }
 
+  // Only stamp the dashboard's recoveryPct when Coros's latest daily-health
+  // day IS the sync's rangeEnd (compared as local dates, since happenDay is a
+  // COROS numeric day). If Coros metrics lag behind the sync window, the
+  // "latest" day here is really a prior date — stamping today's dashboard
+  // value onto it would misattribute today's recovery to that earlier day,
+  // and because the worker's COALESCE never overwrites a stored value with
+  // null, the wrong value would stick.
   const latestDay = days.reduce((m, d) => Math.max(m, Number(d.happenDay ?? 0)), 0);
+  const latestIsSyncEnd = latestDay > 0 && corosDayToLocalDate(latestDay) === rangeEnd;
   const health: DailyHealth[] = days
     .filter((d) => d.happenDay != null)
     .map((d) => {
@@ -161,7 +169,9 @@ export async function buildSnapshot(
         fatigueScore: numberOrUndefined(d.tiredRateNew),
         trainingLoad7d: numberOrUndefined(d.t7d),
         recoveryScore:
-          Number(d.happenDay) === latestDay ? numberOrUndefined(dashboard?.recoveryPct) : undefined,
+          latestIsSyncEnd && Number(d.happenDay) === latestDay
+            ? numberOrUndefined(dashboard?.recoveryPct)
+            : undefined,
         provider: "coros" as const,
       };
       return { ...base, contentFingerprint: fingerprint(base) };

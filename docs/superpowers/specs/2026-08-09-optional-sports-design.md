@@ -122,23 +122,22 @@ migration needed**; `activities.sport` is already free-form text and
 `daily_health.recovery_score` already exists.
 
 Determinism: no new rng; all inputs (activities, recovery scores) are stored
-per-date, so resimulation reproduces identical state.
+per-date, so resimulation is deterministic **given the DB's contents at resim
+time** — same stored inputs always produce the same state.
 
-## 3. Backfill / rollout
+**Resim drift (accepted):** that same-DB-at-resim-time qualifier has one
+observable consequence. Resimulation always rebuilds a day's inputs from
+whatever the DB holds *now*, not from what it held when that day was first
+simulated. If health data arrives late — a delayed `fatigueScore`/
+`recoveryScore` sync landing after a day was already simulated — a later
+resim can flip that day's grace decision (grace on ↔ grace off) once the
+now-more-complete data is in the DB. This is still fully deterministic (same
+DB contents in → same state out), bounded by the protective window
+(`ADVENTURE_GRACE_CAP`, max 2 days), and the same class of acceptance the
+design already makes for late-arriving activities, which retroactively
+resimulate their own dates forward.
 
-1. Ship registry + bridge admission → new activities flow immediately.
-2. Run the existing deep-history backfill (`services/coros-bridge/src/backfill.ts`)
-   to fetch previously-skipped activities; `skippedSportTypes` tallies say what's
-   there; verify coverage with `pnpm coros:census`.
-3. Version bump triggers resim from day one with freeze/grace/boost applied.
-   Expected effect on current state: protective and additive only.
-4. Screenshot before/after on the fixture stack (ports 8899/5199) before
-   merge/deploy, per the standing review workflow.
-
-Gap accepted: old dates may predate daily-health sync → those trips use the
-heuristic fallback, by design.
-
-## 4. UI
+## 3. UI
 
 Deliberately small surface:
 
@@ -154,7 +153,7 @@ Deliberately small surface:
 - **Not in scope:** fourth balance bar, codex entries, new visitors/flourishes
   (deferred follow-up), insights discipline picker, weekly-review changes.
 
-## 5. Testing
+## 4. Testing
 
 - **Engine (vitest):** threshold edges (load 39/40, 44/45 min); freeze on
   adventure day (clocks hold, no punishment); recovery-driven grace continues at
@@ -176,30 +175,40 @@ Deliberately small surface:
 - Optional means optional: no code path may let an adventure's absence reduce any
   axis, notch any bar, or appear in loss voices.
 
-## 6. Rollout
+## 5. Backfill / rollout
 
 **Deploy order:**
 
-1. Deploy worker + web together. `SIMULATION_VERSION` 3 → 4 means every
-   account's garden auto-resimulates in full on its next read (`advanceGarden`'s
-   version-mismatch path) — no D1 migration involved, and the change is
-   protective/additive only (freeze + grace + a small boost; nothing new can
-   subtract), so shipping ahead of any backfill is safe.
+1. Ship registry + bridge admission, then deploy worker + web together.
+   New activities flow through the registry immediately, and
+   `SIMULATION_VERSION` 3 → 4 means every account's garden auto-resimulates in
+   full on its next read (`advanceGarden`'s version-mismatch path) — no D1
+   migration involved, and the change is protective/additive only (freeze +
+   grace + a small boost; nothing new can subtract), so shipping ahead of any
+   backfill is safe.
 2. Backfill previously-dropped activities: trigger "Backfill history" from
    Settings. That walks deep history through
    `services/coros-bridge/src/backfill.ts` and syncs it through the same
    bridge `/sync` path `routes/devices.ts` already uses — `ingestActivities`
    followed by `resimulateFrom(db, userId, ingest.affectedDates[0], prefs)` —
    so late-arriving activities retroactively resimulate from their own dates
-   forward, the same mechanism the version bump uses. Note: unlike
-   `pnpm coros:census`, there is currently no root-level `pnpm coros:backfill`
-   CLI shortcut — the Settings button is the only trigger today; add one if a
-   scriptable/headless path turns out to be needed.
+   forward, the same mechanism the version bump uses. `skippedSportTypes`
+   tallies say what backfill turned up. Note: unlike `pnpm coros:census`,
+   there is currently no root-level `pnpm coros:backfill` CLI shortcut — the
+   Settings button is the only trigger today; add one if a scriptable/headless
+   path turns out to be needed.
 3. Run `pnpm coros:census` to confirm zero unnamed `sportType` codes. Unknown
    codes already resolve to `"other"` and are admitted regardless
    (`sportIdForCorosCode`), so nothing is silently dropped — but a code that
    turns out to be common should get a real registry entry (`packages/domain/src/sport.ts`)
    and label instead of showing up as "Other" throughout the UI.
+4. Screenshot before/after on the fixture stack (ports 8899/5199) before
+   merge/deploy, per the standing review workflow.
+
+Gap accepted: old dates may predate daily-health sync → those trips use the
+heuristic fallback, by design (see the resim-drift note in §2 for the related,
+narrower case of health data that arrives late but still within a day's grace
+window).
 
 **Threshold calibration:**
 

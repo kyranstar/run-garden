@@ -164,7 +164,7 @@ describe("NDJSON protocol", () => {
     expect(day1.provider).toBe("coros");
   });
 
-  it("attaches the dashboard recovery % to the latest daily-health record", async () => {
+  it("attaches the dashboard recovery % to the latest daily-health record when it matches the sync's rangeEnd", async () => {
     // Minimal fake client (pattern: services/coros-bridge/test/backfill.test.ts) —
     // buildSnapshot's health mapping only needs getDailyMetrics + getDashboard;
     // the other calls just need to resolve to empty/valid shapes.
@@ -183,10 +183,39 @@ describe("NDJSON protocol", () => {
       },
     } as unknown as CorosClient;
 
+    // Happy path: Coros's latest metrics day (2026-01-02) IS the sync's
+    // rangeEnd — the dashboard's recoveryPct is "today's" value, so stamping
+    // it there is correct.
     const snap = await buildSnapshot(client, "2026-01-01", "2026-01-02", undefined, {});
     const latest = snap.health.find((h) => h.date === "2026-01-02");
     expect(latest?.recoveryScore).toBe(72);
     expect(snap.health.find((h) => h.date === "2026-01-01")?.recoveryScore).toBeUndefined();
+  });
+
+  it("does NOT stamp recovery % anywhere when Coros's latest metrics day lags behind the sync's rangeEnd", async () => {
+    // Same fake client as above, but the sync window (rangeEnd 2026-01-03)
+    // runs a day past Coros's latest daily-health record (2026-01-02) — a
+    // metrics-lag scenario. Stamping the dashboard's "today" recoveryPct onto
+    // 2026-01-02 here would misattribute it to the wrong day, and the
+    // worker's COALESCE would never let a later, correct value replace it.
+    const client = {
+      async getRawSchedule() {
+        return {};
+      },
+      async getActivities() {
+        return [];
+      },
+      async getDailyMetrics() {
+        return [{ happenDay: 20260101 }, { happenDay: 20260102 }];
+      },
+      async getDashboard() {
+        return { recoveryPct: 72 };
+      },
+    } as unknown as CorosClient;
+
+    const snap = await buildSnapshot(client, "2026-01-01", "2026-01-03", undefined, {});
+    expect(snap.health.length).toBe(2);
+    expect(snap.health.every((h) => h.recoveryScore === undefined)).toBe(true);
   });
 
   it("survives a getDashboard() that throws, still building the snapshot with recoveryScore undefined", async () => {

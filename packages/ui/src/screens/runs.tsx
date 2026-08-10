@@ -49,7 +49,7 @@ const EMPTY_COPY: Record<DisciplineFilter, { art: string; title: string; body: s
   all: {
     art: "🏃",
     title: "No activity yet",
-    body: "Completed runs, lifts, and yoga sessions appear here. Use “Backfill history” in Settings to pull your COROS history.",
+    body: "Completed runs, lifts, yoga sessions, and adventures appear here. Use “Backfill history” in Settings to pull your COROS history.",
   },
   run: {
     art: "🏃",

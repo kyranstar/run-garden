@@ -1013,6 +1013,52 @@ describe("adventures", () => {
     expect(snap.state.daysSinceStrength).toBe(clocks + 1);
   });
 
+  it("a stale bank survives a healthy stretch untouched, then shields the day after a later, smaller adventure", () => {
+    // Pins the currently-implemented semantics: the bank
+    // (`adventureGraceDays`) is only ever spent inside the shield window
+    // (`graceCap` days) of the MOST RECENT adventure, and only when that
+    // day's grace decision falls to the heuristic (no recoveryScore for that
+    // date). A bank from an earlier big day can therefore sit unspent through
+    // a healthy stretch, survive past its own window, and still get spent
+    // later once a fresh (even non-big) adventure re-opens a window.
+    let snap = initialSnapshot(START);
+
+    // Day 1: a big adventure banks a grace day.
+    snap = simulateDay(snap, adventureDay(addDays(START, 1))).snapshot;
+    expect(snap.state.adventureGraceDays).toBe(1);
+
+    // Days 2-3 (inside day 1's grace window): recovery is healthy (>= 60),
+    // so grace never fires on either day — the bank is untouched, not spent.
+    snap = simulateDay(snap, { ...emptyDay(addDays(START, 2)), recoveryScore: 65 }).snapshot;
+    snap = simulateDay(snap, { ...emptyDay(addDays(START, 3)), recoveryScore: 60 }).snapshot;
+    expect(snap.state.adventureGraceDays).toBe(1); // still banked, unspent
+
+    // Days 4-5: outside day 1's grace window (cap 2) regardless of recovery —
+    // ordinary decay, bank still untouched.
+    snap = simulateDay(snap, emptyDay(addDays(START, 4))).snapshot;
+    snap = simulateDay(snap, emptyDay(addDays(START, 5))).snapshot;
+    expect(snap.state.adventureGraceDays).toBe(1);
+
+    // Day 6: a later, small (non-big) qualifying adventure. It re-opens a
+    // grace window (lastAdventureDate moves) but, being non-big, does NOT
+    // add to the bank.
+    const smallAdventure = { sport: "hike", trainingLoad: 50, durationMin: 60 };
+    snap = simulateDay(snap, {
+      ...emptyDay(addDays(START, 6)),
+      adventures: [smallAdventure],
+    }).snapshot;
+    expect(snap.state.adventureGraceDays).toBe(1); // unchanged: not a big day
+    expect(snap.state.lastAdventureDate).toBe(addDays(START, 6));
+    const clocksAtSmallAdventure = snap.state.daysSinceStrength;
+
+    // Day 7: no recoveryScore, inside day 6's fresh window (since = 1) — the
+    // heuristic path spends the stale bank carried over from day 1.
+    snap = simulateDay(snap, emptyDay(addDays(START, 7))).snapshot;
+    expect(snap.state.daysSinceStrength).toBe(clocksAtSmallAdventure); // shielded, held
+    expect(snap.state.daysSinceYoga).toBe(clocksAtSmallAdventure); // both clocks held
+    expect(snap.state.adventureGraceDays).toBe(0); // bank spent
+  });
+
   it("suppresses missed-run punishment on adventure days", () => {
     let snap = initialSnapshot(START);
     const withMiss = simulateDay(snap, {
