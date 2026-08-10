@@ -255,24 +255,31 @@ export function RunsScreen() {
                 </div>
 
               </div>
-              <button
-                className="btn btn-small"
-                style={{ marginLeft: "auto" }}
-                aria-expanded={readOpen === a.id}
-                title="Ask the coach for a read of this effort"
-                onClick={() => setReadOpen(readOpen === a.id ? null : a.id)}
-              >
-                {readOpen === a.id ? "Hide read" : "✨ Coach's read"}
-              </button>
-              {a.matched ? (
-                <span className="pill pill-ok" title={`Counted as your ${a.matched.title}`}>
-                  ✓ {CATEGORY_LABELS[a.matched.category] ?? a.matched.category}
-                </span>
-              ) : (
-                <button className="btn btn-small" onClick={() => setLinking(a)}>
-                  Link to a workout
+              {/* Audit C8: these used to sit as bare siblings of .body with an
+                  inline marginLeft:auto on the first button — on narrow screens
+                  the meta line had nowhere to shrink to and overflowed behind
+                  them. Grouping the actions lets .body claim the full row width
+                  below 640px (styles.css), wrapping the actions beneath it
+                  instead of hiding anything. */}
+              <div className="btn-row workout-row-actions">
+                <button
+                  className="btn btn-small"
+                  aria-expanded={readOpen === a.id}
+                  title="Ask the coach for a read of this effort"
+                  onClick={() => setReadOpen(readOpen === a.id ? null : a.id)}
+                >
+                  {readOpen === a.id ? "Hide read" : "✨ Coach's read"}
                 </button>
-              )}
+                {a.matched ? (
+                  <span className="pill pill-ok" title={`Counted as your ${a.matched.title}`}>
+                    ✓ {CATEGORY_LABELS[a.matched.category] ?? a.matched.category}
+                  </span>
+                ) : (
+                  <button className="btn btn-small" onClick={() => setLinking(a)}>
+                    Link to a workout
+                  </button>
+                )}
+              </div>
             </div>
             {readOpen === a.id ? <CoachRead activityId={a.id} /> : null}
           </div>

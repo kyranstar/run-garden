@@ -39,9 +39,20 @@ export function useIsDesktop(): boolean {
 
 // ── Formatting helpers ──────────────────────────────────────────────────────
 
+/**
+ * "50 min" for anything under 90 minutes — plan-length workouts and most
+ * runs. At 90+ minutes (audit M5: a 4h adventure hike used to render as a
+ * bare "240 min", a seam of the adventures feature feeding long durations
+ * into a runs-era formatter) switches to "Xh Ym" — hours are how a reader
+ * actually thinks about a multi-hour outing.
+ */
 export function formatMinutes(seconds: number | null | undefined): string {
   if (seconds == null) return "—";
-  return `${Math.round(seconds / 60)} min`;
+  const mins = Math.round(seconds / 60);
+  if (mins < 90) return `${mins} min`;
+  const h = Math.floor(mins / 60);
+  const m = mins % 60;
+  return m === 0 ? `${h}h` : `${h}h ${m}m`;
 }
 
 const WEEKDAYS = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
@@ -374,19 +385,43 @@ const FOCUSABLE =
   'a[href], button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])';
 
 /**
+ * Every currently-open dialog (Sheet or Drawer), most-recently-opened last.
+ * Module-level rather than per-hook state because Escape and the body-scroll
+ * lock need to reason about ALL open dialogs at once, not just the one whose
+ * effect happens to run — see `useDialogFocus` (audit M17).
+ */
+const openDialogTokens: symbol[] = [];
+
+/** True when `token` is the top (most recently opened, still-open) dialog. */
+export function isTopDialog(stack: readonly symbol[], token: symbol): boolean {
+  return stack.length > 0 && stack[stack.length - 1] === token;
+}
+
+/**
  * Dialog focus contract shared by Sheet and Drawer: move focus into the
  * dialog on open, keep Tab cycling inside it, close on Escape, and restore
- * focus to the opener on close. Body scroll locks while open.
+ * focus to the opener on close. Body scroll locks while any dialog is open.
+ *
+ * Two stacked dialogs (e.g. the garden's species sheet opened from inside
+ * the Collection drawer) used to both close on one Escape press — every
+ * mounted instance listened on `document` independently with no notion of
+ * which one was "on top". A module-level stack (`openDialogTokens`) fixes
+ * both halves of that: Escape only calls `onClose` for the top-of-stack
+ * dialog, and the body-scroll lock only lifts once the stack empties, so
+ * dismissing the inner sheet no longer unlocks scroll while the drawer
+ * underneath is still open (audit M17).
  */
 export function useDialogFocus(ref: RefObject<HTMLElement | null>, open: boolean, onClose: () => void) {
   useEffect(() => {
     if (!open) return;
+    const token = Symbol("dialog");
+    openDialogTokens.push(token);
     const dialog = ref.current;
     const opener = document.activeElement as HTMLElement | null;
     dialog?.focus();
     const onKey = (e: KeyboardEvent) => {
       if (e.key === "Escape") {
-        onClose();
+        if (isTopDialog(openDialogTokens, token)) onClose();
         return;
       }
       if (e.key !== "Tab" || !dialog) return;
@@ -409,7 +444,9 @@ export function useDialogFocus(ref: RefObject<HTMLElement | null>, open: boolean
     document.body.style.overflow = "hidden";
     return () => {
       document.removeEventListener("keydown", onKey);
-      document.body.style.overflow = "";
+      const idx = openDialogTokens.indexOf(token);
+      if (idx !== -1) openDialogTokens.splice(idx, 1);
+      if (openDialogTokens.length === 0) document.body.style.overflow = "";
       opener?.focus();
     };
   }, [ref, open, onClose]);

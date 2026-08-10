@@ -332,7 +332,10 @@ function DevicesSection() {
               {!d.online ? <span className="pill pill-warn">Offline</span> : null}
               {d.bridgePaused ? <span className="pill pill-neutral">Sync paused</span> : null}
               <p className="faint">
-                Last seen {new Date(d.lastSeenAt).toLocaleString()} · app {d.appVersion}
+                Last seen {new Date(d.lastSeenAt).toLocaleString()} · app {d.appVersion} at pairing
+                {/* Audit C9: appVersion is written once at handshake and never
+                    refreshed — the bridge's heartbeat only reports bridgeVersion,
+                    so a later app update would otherwise show as still-current. */}
                 {d.capabilities?.updateExistingScheduledWorkout
                   ? " · COROS schedule updates supported"
                   : " · calendar-only"}

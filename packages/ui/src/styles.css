@@ -32,6 +32,13 @@
      original cream and dark mode gets an actual dark surface instead of
      inheriting the light cream verbatim (audit C24). */
   --coach-tray-bg: #fffdf6;
+  /* The "Lift" pill and the week-ribbon adventure ring (audit M19/M20) —
+     dedicated tokens for the same reason --coach-tray-bg is one: light mode
+     stays pixel-identical to the original hardcoded values, dark mode gets
+     an actual tuned pair instead of inheriting them verbatim. */
+  --lift-soft: #f4e6da;
+  --lift-ink: #b5652f;
+  --adventure-ring: #8a7550;
 
   /* Chart series — re-stepped 2026-08-04: the previous values (#3e7a52 /
      #b06a4d / #5c6ab0) FAILED the dataviz skill's palette validator
@@ -92,6 +99,13 @@
     /* Verified 5.5:1 (--warn text) and 6.9:1 (--green-ink linklike) against
        this — both clear AA at the tray's small sizes (audit C24). */
     --coach-tray-bg: #3a3020;
+    /* Verified 5.7:1 (--lift-ink on --lift-soft, audit M20) and 6.9:1
+       (--adventure-ring on --bg-raised, audit M19) — the light values were
+       either invisible (a 33%-alpha ring blended to ~1.9:1) or unreadable
+       (a cream pill both ways) on dark surfaces. */
+    --lift-soft: #3a2a1c;
+    --lift-ink: #e0965a;
+    --adventure-ring: #c9a86a;
     color-scheme: dark;
   }
 }
@@ -122,6 +136,9 @@
   --chart-track: #2b2f2c;
   --chart-grid: #32362f;
   --coach-tray-bg: #3a3020;
+  --lift-soft: #3a2a1c;
+  --lift-ink: #e0965a;
+  --adventure-ring: #c9a86a;
   color-scheme: dark;
 }
 
@@ -461,6 +478,11 @@ button {
 .chip {
   display: inline-flex;
   align-items: center;
+  justify-content: center;
+  /* Audit M18: was ~27px tall (padding + line-height alone), under the 40px
+     touch-target floor — this is a primary mobile action (discipline
+     filters). Padding/font untouched; the flex box just grows to a floor. */
+  min-height: 40px;
   border: 1px solid var(--border);
   border-radius: 999px;
   padding: 0.28rem 0.75rem;
@@ -579,9 +601,12 @@ button {
   text-align: left;
   color: inherit;
 }
-/* Trailing status pills wrap to a second line when they don't fit beside the
-   body, instead of crushing the title/meta. */
-.workout-row > .pill {
+/* The actions group (Coach's read + matched pill/Link button) wraps to a
+   second line as a unit when it doesn't fit beside the body, instead of
+   crushing the title/meta. Replaces a bare `.workout-row > .pill` rule that
+   only covered the matched pill — the Coach's read button next to it used to
+   carry its own inline marginLeft:auto instead (audit C8). */
+.workout-row .workout-row-actions {
   margin-left: auto;
 }
 .workout-row:hover {
@@ -627,6 +652,23 @@ button {
 }
 .workout-row.done .title {
   text-decoration: none;
+}
+/* Audit C8: below 640px the meta line (duration/distance/pace) had no room
+   to shrink and painted underneath the Coach's read button. Letting .body
+   claim the full row width pushes the actions onto their own line — nothing
+   hidden — and the meta line wraps instead of overflowing. */
+@media (max-width: 640px) {
+  .workout-row .body {
+    flex-basis: 100%;
+  }
+  .workout-row .meta {
+    white-space: normal;
+  }
+  .workout-row .workout-row-actions {
+    margin-left: 0;
+    width: 100%;
+    justify-content: flex-end;
+  }
 }
 
 /* ── Plan calendar (almanac grid) ───────────────────────────────────────── */
@@ -1451,6 +1493,15 @@ button {
   color: var(--ink-faint);
   line-height: 0;
 }
+/* Audit M18: the visible glyph stays small (this sits in the card's 2rem
+   right gutter, no room to grow the box itself without crowding the name/
+   rarity row) — an invisible ::before pads the tap target out to ~40px
+   without moving or resizing anything on screen. */
+.ceremony-close::before {
+  content: "";
+  position: absolute;
+  inset: -0.6rem;
+}
 .ceremony-close:hover {
   color: var(--ink);
 }
@@ -1503,8 +1554,11 @@ button {
   outline: 2px solid var(--green);
   outline-offset: 1.5px;
 }
+/* Audit M19: --adventure-ring used to be undefined, so the 33%-alpha
+   fallback always applied — ~1.9:1 against a dark card, effectively
+   invisible. Now a full-alpha, per-theme token (defined above). */
 .week-day-adventure {
-  box-shadow: 0 0 0 2px var(--adventure-ring, #b8a06a55);
+  box-shadow: 0 0 0 2px var(--adventure-ring);
   border-radius: 50%;
 }
 .week-day-sprite {
@@ -2205,7 +2259,13 @@ button {
   line-height: 1;
   color: var(--ink-faint);
 }
-.signal-meaning {
+/* Audit C10: the clamp used to apply unconditionally, so non-drillable tiles
+   (7-day ramp, Load variety, Hard-day stacking — no detail/baseline to open
+   a drilldown sheet on) cut their explanation mid-word with no way to ever
+   read the rest. Scoped to drillable tiles only, whose full text is one tap
+   away in the drilldown sheet (insights.tsx MetricDrilldown); everything
+   else just wraps. */
+.metric-drillable .signal-meaning {
   display: -webkit-box;
   -webkit-box-orient: vertical;
   -webkit-line-clamp: 2;
@@ -3375,7 +3435,7 @@ button {
 
 /* ── The coach panel (Plan B, 2026-08-06-coach-ux-design.md) ─────────────── */
 .pill-run { background: var(--green-soft); color: var(--green-ink); }
-.pill-lift { background: #f4e6da; color: #b5652f; }
+.pill-lift { background: var(--lift-soft); color: var(--lift-ink); }
 .pill-warnsoft { background: var(--warn-soft); color: var(--warn); font-weight: 600; }
 
 .plan-split { display: block; }
@@ -3503,6 +3563,11 @@ button {
   white-space: pre-wrap;
   margin: 0 0 0.4rem;
 }
+.coach-read-waiting {
+  text-align: center;
+  font-size: 0.85rem;
+  margin: 0.2rem 0 0;
+}
 .coach-read-meta {
   display: flex;
   align-items: center;
@@ -3529,6 +3594,12 @@ button {
   margin-top: 0.45rem;
 }
 .chipbtn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  /* Audit M18: was ~24px tall — the coach's own answer chips, tapped on
+     every question it asks. */
+  min-height: 40px;
   border: 1px solid var(--border-strong);
   background: var(--bg-raised);
   border-radius: 999px;
@@ -3548,7 +3619,14 @@ button {
 /* Calendar ghosts (Task B3) */
 .cal-pending { background: #fbf9ef; }
 .cal-ghost {
-  display: block;
+  /* Audit M18: was ~20px tall. flex-direction:column keeps the label and
+     the optional .cal-ghost-reason line stacked exactly as the block layout
+     did; justify-content only recenters them when a single-line ghost is
+     shorter than the 40px floor — a two-line ghost is untouched. */
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  min-height: 40px;
   margin-top: 0.15rem;
   border-radius: 6px;
   padding: 0.1rem 0.35rem;
@@ -3577,6 +3655,11 @@ button {
      this pill on Face-ID iPhones, leaving a ~10px sliver to tap. */
   bottom: calc(4.2rem + env(safe-area-inset-bottom, 0px));
   z-index: 30;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  /* Audit M18: was ~35px tall. */
+  min-height: 40px;
   background: var(--green);
   color: #fff;
   border: 0;
@@ -3606,7 +3689,11 @@ button {
   padding: 0.6rem;
   border: 0;
   border-radius: 10px;
-  background: repeating-linear-gradient(45deg, transparent, transparent 6px, #f3f0e7 6px, #f3f0e7 12px);
+  /* Audit M20: the stripe used to hardcode a light-beige hex, so --ink-faint's
+     dark value (tuned for dark surfaces) sat at ~2.8:1 on it in dark mode.
+     --bg-sunken is theme-aware and pixel-close to the old value in light
+     mode, so this is a no-op there. */
+  background: repeating-linear-gradient(45deg, transparent, transparent 6px, var(--bg-sunken) 6px, var(--bg-sunken) 12px);
   color: var(--ink-faint);
   font: 600 0.85rem var(--font);
   cursor: pointer;

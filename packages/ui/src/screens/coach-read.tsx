@@ -25,6 +25,12 @@ export function CoachRead({ activityId }: { activityId: string }) {
     return (
       <div className="coach-read">
         <Spinner label="The coach is reading this effort…" />
+        {/* Audit M4: the spinner's label lives in a visually-hidden span for
+            screen readers — sighted users saw a bare spinner with no sense of
+            what was happening or that a first read can take a while. */}
+        <p className="muted coach-read-waiting">
+          The coach is reading this effort — first reads can take a minute or two.
+        </p>
       </div>
     );
   }
