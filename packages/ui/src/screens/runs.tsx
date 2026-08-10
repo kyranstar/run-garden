@@ -76,8 +76,10 @@ const EMPTY_COPY: Record<DisciplineFilter, { art: string; title: string; body: s
 
 /** Effort tier from COROS training load — garden-toned words, never a scold. */
 function effortTier(load: number): { word: string; ticks: 1 | 2 | 3 } {
-  if (load < 45) return { word: "gentle", ticks: 1 };
-  if (load < 90) return { word: "steady", ticks: 2 };
+  // Same thresholds the garden engine uses (ADVENTURE_TUNING minLoad/bigLoad)
+  // so a day never reads "gentle" here while qualifying as a real adventure.
+  if (load < 40) return { word: "gentle", ticks: 1 };
+  if (load < 80) return { word: "steady", ticks: 2 };
   return { word: "strong", ticks: 3 };
 }
 
@@ -113,37 +115,51 @@ function PaceShape({ laps }: { laps: Array<{ s: number; p: number | null }> }) {
   if (paced.length < 2) return null;
   const speeds = laps.map((l) => (l.p && l.p > 0 ? 1000 / l.p : null));
   const known = speeds.filter((v): v is number => v != null);
-  const vMin = Math.min(...known);
-  const vMax = Math.max(...known);
+  const vMean = known.reduce((a, b) => a + b, 0) / known.length;
   const totalS = laps.reduce((acc, l) => acc + Math.max(1, l.s), 0);
   const W = 100;
   const H = 30;
   const GAP = laps.length > 24 ? 0.35 : 0.7;
+  // Semi-absolute scale anchored to the activity's MEAN speed: a steady run
+  // sits as a mid-height plateau (every lap ≈ the mean), an interval session
+  // swings the full band — so amplitude means variance, comparably across
+  // activities. ±25% of mean spans the band; beyond that clamps.
+  const fracFor = (v: number | null): number => {
+    if (v == null || vMean <= 0) return 0.18;
+    const r = v / vMean;
+    return Math.min(1, Math.max(0.18, 0.625 + (r - 1) * 1.5));
+  };
+  // Widths: proportional to lap time with a legibility floor, then rescaled
+  // so the row always sums to exactly W — a floor without the rescale pushed
+  // trailing laps past the right edge and silently clipped them.
+  const rawW = laps.map((l) => Math.max(1.2, (Math.max(1, l.s) / totalS) * (W - GAP * (laps.length - 1))));
+  const sumW = rawW.reduce((a, b) => a + b, 0);
+  const scaleW = (W - GAP * (laps.length - 1)) / sumW;
   let x = 0;
   const bars = laps.map((l, i) => {
-    const w = Math.max(1.2, (Math.max(1, l.s) / totalS) * (W - GAP * (laps.length - 1)));
-    const v = speeds[i];
-    // Rest/unknown laps sit at the floor; speed maps 25%..100% of height so
-    // even the easiest lap keeps a visible presence.
-    const frac = v == null || vMax === vMin ? 0.25 : 0.25 + 0.75 * ((v - vMin) / (vMax - vMin));
-    const h = H * frac;
+    const w = rawW[i]! * scaleW;
+    const h = H * fracFor(speeds[i] ?? null);
+    const mins = l.s < 60 ? `${Math.round(l.s)}s` : `${Math.round(l.s / 60)} min`;
     const bar = (
       <rect key={i} x={x} y={H - h} width={w} height={h} rx={0.8}>
         <title>
-          {`Lap ${i + 1} · ${Math.round(l.s / 60)} min${l.p ? ` · ${Math.floor(l.p / 60)}:${String(Math.round(l.p % 60)).padStart(2, "0")}/km` : ""}`}
+          {`Lap ${i + 1} · ${mins}${l.p ? ` · ${Math.floor(l.p / 60)}:${String(Math.round(l.p % 60)).padStart(2, "0")}/km` : ""}`}
         </title>
       </rect>
     );
     x += w + GAP;
     return bar;
   });
+  const fmtPace = (p: number) => `${Math.floor(p / 60)}:${String(Math.round(p % 60)).padStart(2, "0")}/km`;
+  const pMin = Math.min(...paced.map((l) => l.p!));
+  const pMax = Math.max(...paced.map((l) => l.p!));
   return (
     <svg
       className="act-shape"
       viewBox={`0 0 ${W} ${H}`}
       preserveAspectRatio="none"
       role="img"
-      aria-label={`Pace shape, ${laps.length} laps`}
+      aria-label={`Pace shape, ${laps.length} laps, ${fmtPace(pMax)} to ${fmtPace(pMin)}`}
     >
       {bars}
     </svg>
@@ -335,10 +351,12 @@ export function RunsScreen() {
                     {a.distanceMeters ? <span>{dist(a.distanceMeters)}</span> : null}
                     {a.avgPaceSecPerKm ? <span>{pace(a.avgPaceSecPerKm)}</span> : null}
                   </div>
-                  <div className="act-glance">
-                    {a.laps ? <PaceShape laps={a.laps} /> : null}
-                    <EffortChip load={a.trainingLoad} feel={a.feel} />
-                  </div>
+                  {a.laps || a.trainingLoad != null || a.feel != null ? (
+                    <div className="act-glance">
+                      {a.laps ? <PaceShape laps={a.laps} /> : null}
+                      <EffortChip load={a.trainingLoad} feel={a.feel} />
+                    </div>
+                  ) : null}
                 </div>
                 {/* Fixed-geometry action column: the status slot renders EITHER
                     the linked pill OR the Link button in the same box, so a

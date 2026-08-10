@@ -617,9 +617,9 @@ export async function seedFixtures(db: Db, env: Env, userId: string): Promise<Se
   if (lastLongDate < today) {
     lapsByProviderId[`coros-fx-${lastLongDate}-long`] = Array.from({ length: 18 }, (_, i) => ({
       lapIndex: i,
-      durationSeconds: 370 + ((i * 13) % 25),
+      durationSeconds: 370 + Math.round(i * 0.6),
       distanceMeters: 1000,
-      avgPaceSecPerKm: 370 + ((i * 13) % 25),
+      avgPaceSecPerKm: 370 + Math.round(i * 0.6),
       splitType: "km",
     })) as never[];
   }

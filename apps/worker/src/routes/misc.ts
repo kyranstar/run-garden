@@ -207,7 +207,15 @@ activityRoutes.get("/", async (c) => {
   // pace per lap, in lap order. One chunked query for the whole page.
   const lapChunks = await Promise.all(
     chunkIds(rows.map((r) => r.id)).map((ids) =>
-      db.select().from(activityLaps).where(inArray(activityLaps.activityId, ids)),
+      db
+        .select({
+          activityId: activityLaps.activityId,
+          lapIndex: activityLaps.lapIndex,
+          durationSeconds: activityLaps.durationSeconds,
+          avgPaceSecPerKm: activityLaps.avgPaceSecPerKm,
+        })
+        .from(activityLaps)
+        .where(inArray(activityLaps.activityId, ids)),
     ),
   );
   const lapsByActivity = new Map<string, Array<{ lapIndex: number; s: number; p: number | null }>>();

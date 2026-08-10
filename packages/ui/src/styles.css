@@ -3786,6 +3786,7 @@ button {
   margin-bottom: 0.45rem;
 }
 .act-spine {
+  grid-row: 1 / -1;
   align-self: stretch;
   border-radius: 2px;
   background: var(--act-hue, var(--green));
@@ -3830,7 +3831,7 @@ button {
   align-items: center;
   gap: 0.4rem;
   font-size: 0.78rem;
-  color: var(--ink-muted, #6b6555);
+  color: var(--ink-soft, #6b6555);
   white-space: nowrap;
 }
 .act-ticks { display: inline-flex; gap: 2px; }
@@ -3841,7 +3842,7 @@ button {
   background: var(--border);
 }
 .act-ticks i.on { background: var(--act-hue, var(--green)); }
-.act-feel { margin-left: 0.5rem; }
+.act-effort > .act-feel:not(:first-child) { margin-left: 0.5rem; }
 /* Fixed-geometry action column: both slots identical boxes, so the
    Link-button → linked-pill flip can never move a pixel of layout. */
 .act-actions {
@@ -3872,6 +3873,14 @@ button {
 .act-hue-yoga { --act-hue: #8f6fae; }
 .act-hue-run { --act-hue: #5f9367; }
 .act-hue-adventure { --act-hue: #8a7550; }
+/* Dark surfaces: race/long sit under the 3:1 non-text floor at their light
+   values — lift lightness, keep the hue family. */
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) .act-hue-race { --act-hue: #c47a9b; }
+  :root:not([data-theme="light"]) .act-hue-long { --act-hue: #8199d6; }
+}
+:root[data-theme="dark"] .act-hue-race { --act-hue: #c47a9b; }
+:root[data-theme="dark"] .act-hue-long { --act-hue: #8199d6; }
 @media (max-width: 640px) {
   .act-card { grid-template-columns: 4px minmax(0, 1fr); }
   .act-actions {
@@ -3879,6 +3888,12 @@ button {
     flex-direction: row;
     width: 100%;
   }
-  .act-actions > * { flex: 1 1 0; }
+  .act-actions > *,
+  .act-status-slot > * {
+    flex: 1 1 0;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
   .act-shape { width: min(230px, 60%); }
 }
