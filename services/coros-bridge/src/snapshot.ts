@@ -20,7 +20,7 @@ import {
   type SourcePlannedWorkout,
   type TrainingPlanInfo,
 } from "@rg/providers";
-import type { CorosClient } from "./coros-client.js";
+import type { CorosClient, CorosDashboardSubset } from "./coros-client.js";
 
 export const COROS_LOCALE_URL =
   "https://static.coros.com/locale/coros-traininghub-v2/en-US.prod.js";
@@ -139,6 +139,18 @@ export async function buildSnapshot(
 
   // ── Daily health ──────────────────────────────────────────────────────────
   const days = await client.getDailyMetrics(opts.healthRangeStart ?? rangeStart, rangeEnd);
+
+  // Recovery % lives only on the dashboard (today's value) — one cheap query.
+  // Historical days keep undefined; the worker's COALESCE never overwrites a
+  // stored value with null.
+  let dashboard: CorosDashboardSubset | undefined;
+  try {
+    dashboard = await client.getDashboard();
+  } catch {
+    dashboard = undefined;
+  }
+
+  const latestDay = days.reduce((m, d) => Math.max(m, Number(d.happenDay ?? 0)), 0);
   const health: DailyHealth[] = days
     .filter((d) => d.happenDay != null)
     .map((d) => {
@@ -148,6 +160,8 @@ export async function buildSnapshot(
         hrv: numberOrUndefined(d.avgSleepHrv),
         fatigueScore: numberOrUndefined(d.tiredRateNew),
         trainingLoad7d: numberOrUndefined(d.t7d),
+        recoveryScore:
+          Number(d.happenDay) === latestDay ? numberOrUndefined(dashboard?.recoveryPct) : undefined,
         provider: "coros" as const,
       };
       return { ...base, contentFingerprint: fingerprint(base) };

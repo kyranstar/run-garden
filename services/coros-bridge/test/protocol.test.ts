@@ -3,7 +3,7 @@ import { FIXTURE_PLAN_ID } from "@rg/providers";
 import type { DailyHealth } from "@rg/domain";
 import { CorosClient } from "../src/coros-client.js";
 import { createBridgeState, handleLine, handleRequest, type BridgeState } from "../src/protocol.js";
-import type { BridgeSnapshot } from "../src/snapshot.js";
+import { buildSnapshot, type BridgeSnapshot } from "../src/snapshot.js";
 import { mockCorosServer, type MockCorosServer } from "./mock-coros-server.js";
 
 const BASE_MONDAY = "2026-08-03";
@@ -162,6 +162,31 @@ describe("NDJSON protocol", () => {
     expect(day1.fatigueScore).toBe(28);
     expect(day1.hrv).toBe(72);
     expect(day1.provider).toBe("coros");
+  });
+
+  it("attaches the dashboard recovery % to the latest daily-health record", async () => {
+    // Minimal fake client (pattern: services/coros-bridge/test/backfill.test.ts) —
+    // buildSnapshot's health mapping only needs getDailyMetrics + getDashboard;
+    // the other calls just need to resolve to empty/valid shapes.
+    const client = {
+      async getRawSchedule() {
+        return {};
+      },
+      async getActivities() {
+        return [];
+      },
+      async getDailyMetrics() {
+        return [{ happenDay: 20260101 }, { happenDay: 20260102 }];
+      },
+      async getDashboard() {
+        return { recoveryPct: 72 };
+      },
+    } as unknown as CorosClient;
+
+    const snap = await buildSnapshot(client, "2026-01-01", "2026-01-02", undefined, {});
+    const latest = snap.health.find((h) => h.date === "2026-01-02");
+    expect(latest?.recoveryScore).toBe(72);
+    expect(snap.health.find((h) => h.date === "2026-01-01")?.recoveryScore).toBeUndefined();
   });
 
   it("caches the locale bundle across snapshots", async () => {
