@@ -543,6 +543,17 @@ export async function buildGardenView(
   await advanceGarden(db, userId, prefs).catch(() => undefined);
   let snapshot = await ensureGarden(db, userId, prefs);
 
+  // Adventure shield reads pre-preview state: the same-day preview below can
+  // mutate snapshot.state (e.g. decrementing a banked grace day when today
+  // doesn't itself qualify), so the shield must be computed from state as it
+  // stood before that mutation — otherwise a grace day the preview correctly
+  // rendered shielded could read back as unshielded.
+  const shieldState = {
+    lastAdventureDate: snapshot.state.lastAdventureDate ?? null,
+    adventureGraceDays: snapshot.state.adventureGraceDays ?? 0,
+    restMode: snapshot.state.restMode,
+  };
+
   // Same-day feedback: if a run was completed today, preview today's simulation
   // for display (rain, growth, events) without persisting it. Only when the
   // durable sim is exactly caught up to yesterday — previewing across a gap
@@ -632,32 +643,53 @@ export async function buildGardenView(
   }
   const visitorByKind = new Map(visitorRows.map((r) => [r.kind, r]));
 
-  // Adventure shield for the caption: is today sheltered, and by what?
-  const st = snapshot.state;
+  // Adventure shield for the caption: is today sheltered, and by what? Reads
+  // shieldState (captured above, pre-preview) rather than snapshot.state —
+  // see the comment there.
   const qualifyingToday = (todayInput?.adventures ?? []).filter(qualifiesAsAdventure);
   const frozenToday = qualifyingToday.length > 0;
   const graceDay =
     !frozenToday &&
     adventureGraceDay(
-      { lastAdventureDate: st.lastAdventureDate ?? null, adventureGraceDays: st.adventureGraceDays ?? 0 },
+      {
+        lastAdventureDate: shieldState.lastAdventureDate,
+        adventureGraceDays: shieldState.adventureGraceDays,
+      },
       {
         date: today,
         hasSession: (todayInput?.completedRuns.length ?? 0) > 0,
         adventureToday: false,
-        restMode: st.restMode,
+        restMode: shieldState.restMode,
         planGap: todayInput?.planGap ?? false,
         recoveryScore: todayInput?.recoveryScore,
       },
     );
   let lastSport: string | null = qualifyingToday[0]?.sport ?? null;
-  if (!lastSport && graceDay && st.lastAdventureDate) {
-    const row = (await db
+  if (!lastSport && graceDay && shieldState.lastAdventureDate) {
+    // Find the sport of an adventure activity that actually falls on
+    // lastAdventureDate (by *local* date — the caption names this date).
+    // startTime is UTC, so the window is deliberately over-inclusive by a
+    // day on each side; the exact local-date match happens in memory. If
+    // several activities land on that date, pick deterministically by id.
+    const lastAdventureDate = shieldState.lastAdventureDate;
+    const rows = await db
       .select()
       .from(activities)
-      .where(and(eq(activities.userId, userId), gte(activities.startTime, `${st.lastAdventureDate}T00:00:00`)))
-      .orderBy(desc(activities.startTime))
-      .limit(10)).find((a) => isAdventureSport(a.sport));
-    lastSport = row?.sport ?? null;
+      .where(
+        and(
+          eq(activities.userId, userId),
+          gte(activities.startTime, `${addDays(lastAdventureDate, -1)}T00:00:00`),
+          lte(activities.startTime, `${addDays(lastAdventureDate, 2)}T00:00:00`),
+        ),
+      );
+    const match = rows
+      .filter(
+        (a) =>
+          isAdventureSport(a.sport) &&
+          (a.startTimeLocal ?? a.startTime).slice(0, 10) === lastAdventureDate,
+      )
+      .sort((a, b) => a.id.localeCompare(b.id))[0];
+    lastSport = match?.sport ?? null;
   }
 
   return {
@@ -698,7 +730,7 @@ export async function buildGardenView(
       frozenToday,
       graceDay,
       lastSport,
-      lastDate: frozenToday ? today : (st.lastAdventureDate ?? null),
+      lastDate: frozenToday ? today : shieldState.lastAdventureDate,
     },
   };
 }
