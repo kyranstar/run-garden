@@ -108,10 +108,12 @@ coachRoutes.get("/state", async (c) => {
     .orderBy(desc(coachMessages.at))
     .limit(1);
   // Shares the wake pipeline's own "would an open wake be redundant?" check
-  // (audit C4/C14) — a fresh briefing OR a recent failed/resting attempt
-  // both count as "already tried", so the client doesn't re-fire (and the
-  // coach doesn't re-fail) on every single Plan visit during an outage.
-  const wakeAdvised = triggers.length > 0 || !(await openWakeIsFresh(db, userId));
+  // (audit C4/C14): a recent failed/resting attempt wins over a pending
+  // trigger (triggers stay unconsumed until a wake succeeds, so without this
+  // a missed-workout trigger alone would force a retry on every single Plan
+  // visit during an outage); short of that, a trigger always outweighs a
+  // fresh existing briefing.
+  const wakeAdvised = !(await openWakeIsFresh(db, userId, triggers.length));
 
   return c.json({
     messages: [...msgs].reverse(),

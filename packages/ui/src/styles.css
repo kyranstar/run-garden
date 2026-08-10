@@ -842,7 +842,11 @@ button {
   .cal-day {
     min-height: 0;
   }
-  .cal-day:not(.has-items):not(.is-today) {
+  /* Audit C22 followup: a ghost-only day (a coach proposal on an otherwise
+     empty day) must still render — `.has-ghosts` is separate from
+     `.has-items` on purpose (below) so the cell keeps its dashed "empty"
+     look instead of borrowing the solid real-workout treatment. */
+  .cal-day:not(.has-items):not(.has-ghosts):not(.is-today) {
     display: none;
   }
   .cal-date {

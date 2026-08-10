@@ -244,6 +244,10 @@ export interface CoachMessageDto {
     questionId?: string;
     kind?: "analysis";
     activityId?: string;
+    /** Marks an inert "couldn't think" / "resting" receipt (audit C4/C14) —
+     * lets the thread collapse repeats of exactly these without also
+     * merging unrelated receipts that happen to share body text. */
+    wakeFailure?: boolean;
   };
   at: string;
   /** Client-only: set on an optimistic echo whose send failed (audit C16).

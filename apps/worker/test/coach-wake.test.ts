@@ -239,6 +239,64 @@ describe("wake", () => {
     expect(receipts).toHaveLength(1);
   });
 
+  it("audit C14 residual: a recent wake failure suppresses an 'open' wake even with a pending trigger", async () => {
+    const db = makeTestDb();
+    const { userId, prefs } = await makeTestUser(db);
+    // A pending trigger that never got consumed — consumeTriggers only runs
+    // on a SUCCESSFUL wake, so it stays pending through every failure.
+    // Before this fix its mere presence forced every "open" wake to attempt
+    // the LLM regardless of the failure backoff — the exact audited harm
+    // (a missed-workout trigger during an outage burning a call on every
+    // single Plan visit).
+    await db.insert(schema.coachTriggers).values({
+      id: "t1",
+      userId,
+      kind: "missed_workout",
+      evidence: {},
+      firedAt: nowInstant(),
+    });
+    await db.insert(schema.coachMessages).values({
+      id: newId(),
+      userId,
+      role: "receipt",
+      body: "The coach couldn't think just now — try again in a moment.",
+      refs: { wakeFailure: true },
+      at: nowInstant(),
+    });
+    const { fetchImpl, calls } = failingFetch();
+    const res = await wake(db, makeEnv(), userId, prefs, { kind: "open" }, fetchImpl);
+    expect(res.status).toBe("skipped");
+    expect(calls).toHaveLength(0); // no LLM call at all
+    // The trigger itself is untouched — still pending for the next real
+    // (successful, or backoff-expired) attempt.
+    const [t] = await db.select().from(schema.coachTriggers).where(eq(schema.coachTriggers.id, "t1"));
+    expect(t!.consumedAt).toBeNull();
+  });
+
+  it("audit C14 residual: manual 'Check in' still bypasses the backoff even with a pending trigger", async () => {
+    const db = makeTestDb();
+    const { userId, prefs } = await makeTestUser(db);
+    await db.insert(schema.coachTriggers).values({
+      id: "t1",
+      userId,
+      kind: "missed_workout",
+      evidence: {},
+      firedAt: nowInstant(),
+    });
+    await db.insert(schema.coachMessages).values({
+      id: newId(),
+      userId,
+      role: "receipt",
+      body: "The coach couldn't think just now — try again in a moment.",
+      refs: { wakeFailure: true },
+      at: nowInstant(),
+    });
+    const { fetchImpl, calls } = failingFetch();
+    const res = await wake(db, makeEnv(), userId, prefs, { kind: "manual" }, fetchImpl);
+    expect(res.status).toBe("error"); // attempted (and failed again) — not skipped
+    expect(calls).toHaveLength(1);
+  });
+
   it("restraint: an all-empty output only consumes triggers", async () => {
     const db = makeTestDb();
     const { userId, prefs } = await makeTestUser(db);

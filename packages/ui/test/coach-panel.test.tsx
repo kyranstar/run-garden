@@ -142,18 +142,46 @@ describe("CoachPanel thread", () => {
   // "couldn't think" receipt forever. The server now dedupes its own
   // writes, but this also heals any duplicate rows a thread already
   // accumulated before that fix shipped.
-  it("collapses runs of identical consecutive receipts into one line", () => {
+  it("collapses runs of identical consecutive wake-failure receipts into one line", () => {
     const fail = "The coach couldn't think just now — try again in a moment.";
     const messages: CoachMessageDto[] = [
-      { id: "1", role: "receipt", body: fail, refs: {}, at: "2026-08-06T10:00:00Z" },
-      { id: "2", role: "receipt", body: fail, refs: {}, at: "2026-08-06T10:05:00Z" },
-      { id: "3", role: "receipt", body: fail, refs: {}, at: "2026-08-06T10:10:00Z" },
+      { id: "1", role: "receipt", body: fail, refs: { wakeFailure: true }, at: "2026-08-06T10:00:00Z" },
+      { id: "2", role: "receipt", body: fail, refs: { wakeFailure: true }, at: "2026-08-06T10:05:00Z" },
+      { id: "3", role: "receipt", body: fail, refs: { wakeFailure: true }, at: "2026-08-06T10:10:00Z" },
       { id: "4", role: "receipt", body: "Expired — the moment passed: Ease Thursday", refs: {}, at: "2026-08-06T10:15:00Z" },
     ];
     const html = render(
       createElement(CoachThread, { messages }),
     );
     expect((html.match(/coach-receipt/g) ?? []).length).toBe(2); // one "couldn't think", one "Expired"
+    expect(html).toContain("Expired");
+  });
+
+  // Audit C4/C14 followup: the collapse is scoped to `refs.wakeFailure`
+  // specifically — an ordinary receipt that happens to share body text with
+  // another (e.g. two "✓ approved — Ease Thursday" lines for two different
+  // proposals) is a real, distinct event and must never be merged away.
+  it("does not collapse identical-looking receipts that aren't wake failures", () => {
+    const messages: CoachMessageDto[] = [
+      { id: "1", role: "receipt", body: "✓ approved — Ease Thursday", refs: { proposalId: "p1" }, at: "2026-08-06T10:00:00Z" },
+      { id: "2", role: "receipt", body: "✓ approved — Ease Thursday", refs: { proposalId: "p2" }, at: "2026-08-06T10:05:00Z" },
+    ];
+    const html = render(createElement(CoachThread, { messages }));
+    expect((html.match(/coach-receipt/g) ?? []).length).toBe(2);
+  });
+
+  // Audit C4/C14 followup: dedupe must survive an unrelated receipt landing
+  // BETWEEN two identical failures (e.g. an expiry sweep firing mid-outage)
+  // — comparing only immediate neighbors let that break the chain.
+  it("collapses identical wake-failure receipts even when a different receipt sits between them", () => {
+    const fail = "The coach couldn't think just now — try again in a moment.";
+    const messages: CoachMessageDto[] = [
+      { id: "1", role: "receipt", body: fail, refs: { wakeFailure: true }, at: "2026-08-06T10:00:00Z" },
+      { id: "2", role: "receipt", body: "Expired — the moment passed: Ease Thursday", refs: {}, at: "2026-08-06T10:05:00Z" },
+      { id: "3", role: "receipt", body: fail, refs: { wakeFailure: true }, at: "2026-08-06T10:10:00Z" },
+    ];
+    const html = render(createElement(CoachThread, { messages }));
+    expect((html.match(/coach-receipt/g) ?? []).length).toBe(2); // one failure (deduped), one Expired
     expect(html).toContain("Expired");
   });
 

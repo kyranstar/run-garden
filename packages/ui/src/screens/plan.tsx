@@ -432,6 +432,21 @@ function usePlanCoach() {
       };
     });
   };
+  const markSendFailed = (localId: string, body: string) => {
+    qc.setQueryData(["coach-state"], (cur: unknown) => {
+      const c = cur as { messages?: Array<Record<string, unknown>> } | undefined;
+      if (!c?.messages) return cur;
+      // The echo may already be gone (e.g. a refetch replaced it) — if so,
+      // re-add it rather than silently dropping the failure.
+      if (c.messages.some((m) => m.id === localId)) {
+        return { ...c, messages: c.messages.map((m) => (m.id === localId ? { ...m, failed: true } : m)) };
+      }
+      return {
+        ...c,
+        messages: [...c.messages, { id: localId, role: "user", body, refs: {}, at: new Date().toISOString(), failed: true }],
+      };
+    });
+  };
   const send = useMutation({
     mutationFn: (v: { localId: string; body: string }) => api.coachMessage(v.body),
     onMutate: (v) => echo(v.localId, v.body),
@@ -441,15 +456,25 @@ function usePlanCoach() {
     // the message. Only invalidate on success now; on failure, mark the
     // optimistic echo itself so CoachThread can offer a retry instead of
     // erasing it.
-    onError: (_err, v) => {
-      qc.setQueryData(["coach-state"], (cur: unknown) => {
-        const c = cur as { messages?: Array<Record<string, unknown>> } | undefined;
-        if (!c?.messages) return cur;
-        return {
-          ...c,
-          messages: c.messages.map((m) => (m.id === v.localId ? { ...m, failed: true } : m)),
-        };
-      });
+    onError: (err, v) => {
+      // Audit C16 residual: the 320s timeout can fire AFTER the request
+      // reached the server — coach-wake.ts persists the user's message
+      // before anything else can fail, so an abort doesn't prove the words
+      // were lost the way a network error (never left the browser) does.
+      // Refetch first and only mark it failed if it's genuinely absent.
+      const isAbort = err instanceof DOMException && (err.name === "AbortError" || err.name === "TimeoutError");
+      if (isAbort) {
+        void qc.invalidateQueries({ queryKey: ["coach-state"] }).then(() => {
+          const cur = qc.getQueryData(["coach-state"]) as
+            | { messages?: Array<{ role: string; body: string }> }
+            | undefined;
+          const persisted = cur?.messages?.some((m) => m.role === "user" && m.body === v.body);
+          if (persisted) return; // it sent — the refetch already carries it
+          markSendFailed(v.localId, v.body);
+        });
+        return;
+      }
+      markSendFailed(v.localId, v.body);
     },
     onSuccess: invalidate,
   });
@@ -514,12 +539,17 @@ const SHEET_ID_PREFIX = "sheet-";
 /** Scroll a proposal card into view and flash it (calendar ghost tap).
  * Audit C27: `idPrefix` picks the copy that's actually visible at this
  * width — without it, `getElementById` always resolved to the inline
- * panel's node (first in DOM order) even when only the sheet was showing. */
-function focusProposal(id: string, idPrefix: string): void {
+ * panel's node (first in DOM order) even when only the sheet was showing.
+ * Audit C27 followup: on desktop the coach column is `position: sticky`
+ * (C5), so it's already on screen — scrollIntoView-ing an element inside a
+ * sticky ancestor drags the whole PAGE to re-center it, an unwanted second
+ * scroll jump. `skipScroll` leaves the page alone there; the flash alone is
+ * enough since the panel never left the viewport. */
+function focusProposal(id: string, idPrefix: string, skipScroll: boolean): void {
   requestAnimationFrame(() => {
     const el = document.getElementById(`proposal-${idPrefix}${id}`);
     if (!el) return;
-    el.scrollIntoView({ block: "center", behavior: "smooth" });
+    if (!skipScroll) el.scrollIntoView({ block: "center", behavior: "smooth" });
     el.classList.remove("coach-flash");
     void el.offsetWidth; // restart the animation
     el.classList.add("coach-flash");
@@ -565,9 +595,13 @@ export function PlanScreen() {
       for (const k of ["coach-plans", "plan", "coach-state"]) void qc.invalidateQueries({ queryKey: [k] });
     },
   });
+  // Audit C27 followup: same duplicate-modal shape as onGhostTap — the
+  // inline panel is always visible and sticky on desktop, so opening the
+  // sheet there is a redundant second "Coach" surface, not the intentional
+  // hand-off it is on mobile (where the sheet is the only coach surface).
   const cannedSend = (body: string) => {
     setManageOpen(false);
-    setCoachOpen(true);
+    if (!isDesktop) setCoachOpen(true);
     coach.send(body);
   };
   const ghostsByDate = useMemo(() => {
@@ -582,7 +616,7 @@ export function PlanScreen() {
   // above it, the always-visible inline panel is enough — just scroll to it.
   const onGhostTap = (proposalId: string) => {
     if (!isDesktop) setCoachOpen(true);
-    focusProposal(proposalId, isDesktop ? "" : SHEET_ID_PREFIX);
+    focusProposal(proposalId, isDesktop ? "" : SHEET_ID_PREFIX, isDesktop);
   };
 
   // Land on the current week on first load, so today's work is front and
@@ -605,6 +639,13 @@ export function PlanScreen() {
   const selected = plan.data.workouts.find((w) => w.id === selectedId);
   const openWorkout = (id: string) => setParams({ workout: id });
 
+  // Shared between the inline panel and the mobile sheet fallback (audit
+  // C6 followup: the sheet used to render nothing at all here — loading or
+  // errored, it just went blank, and it's now the ONLY mobile coach surface).
+  const coachUnavailableCopy = coach.state.isLoading
+    ? "Reading your week…"
+    : "The coach is unreachable — manual controls all work.";
+
   const coachPanelEl = coach.state.data ? (
     <CoachPanel
       messages={coach.state.data.messages}
@@ -626,7 +667,7 @@ export function PlanScreen() {
         <h2>Coach</h2>
       </div>
       <div className="coach-thread">
-        <p className="muted">{coach.state.isLoading ? "Reading your week…" : "The coach is unreachable — manual controls all work."}</p>
+        <p className="muted">{coachUnavailableCopy}</p>
       </div>
     </section>
   );
@@ -685,11 +726,16 @@ export function PlanScreen() {
                   // otherwise-empty day used to be invisible on mobile — the
                   // agenda view hides any day lacking `has-items`, and that
                   // class only ever looked at real workouts, never ghosts.
+                  // Kept as its own `has-ghosts` class (not folded into
+                  // `has-items`, audit C22 followup) so a ghost-only day
+                  // still renders but keeps its dashed "nothing scheduled
+                  // yet" look instead of borrowing the solid real-workout
+                  // treatment.
                   const hasGhosts = (ghostsByDate.get(day.date)?.length ?? 0) > 0;
                   return (
                     <div
                       key={day.date}
-                      className={`cal-day ${isToday ? "is-today" : ""} ${isPast ? "is-past" : ""} ${day.items.length > 0 || hasGhosts ? "has-items" : ""}`}
+                      className={`cal-day ${isToday ? "is-today" : ""} ${isPast ? "is-past" : ""} ${day.items.length > 0 ? "has-items" : ""} ${hasGhosts ? "has-ghosts" : ""}`}
                     >
                       <div className="cal-date">
                         <span className="cal-dow">{WEEKDAY_HEADERS[(new Date(`${day.date}T00:00:00Z`).getUTCDay() + 6) % 7]}</span>
@@ -755,7 +801,17 @@ export function PlanScreen() {
               onRetrySend={coach.resend}
               idPrefix={SHEET_ID_PREFIX}
             />
-          ) : null}
+          ) : (
+            // The sheet already carries "Coach" as its own dialog title, so
+            // no second head here — but loading/errored must still say
+            // something instead of leaving the only mobile coach surface
+            // blank.
+            <section className="coach-panel" aria-label="Coach">
+              <div className="coach-thread">
+                <p className="muted">{coachUnavailableCopy}</p>
+              </div>
+            </section>
+          )}
         </div>
       </Sheet>
       <Sheet open={manageOpen} onClose={() => setManageOpen(false)} title="Manage plans">

@@ -239,14 +239,25 @@ export function PendingTray({
 }
 
 /**
- * Runs of identical consecutive receipts collapse to one (audit C4/C14):
- * the server now dedupes its own writes, but this also heals any duplicate
- * rows a thread already accumulated before that fix shipped.
+ * Repeats of the SAME wake-failure receipt ("couldn't think" / "resting")
+ * collapse to one (audit C4/C14): the server now dedupes its own writes,
+ * but this also heals any duplicate rows a thread already accumulated
+ * before that fix shipped. Scoped to `refs.wakeFailure` specifically
+ * (audit C4/C14 followup) — an ordinary receipt (an "Expired: …" or
+ * "✓ approved — …" line) that happens to share body text with another one
+ * is NOT the same event and must never be merged away. Also not limited to
+ * ADJACENT repeats: an unrelated receipt landing between two identical
+ * failures (e.g. an expiry sweep firing mid-outage) shouldn't break the
+ * dedupe, so this tracks the last-KEPT failure body across the whole
+ * thread rather than just comparing neighbors.
  */
 function collapseRepeatedReceipts(messages: CoachMessageDto[]): CoachMessageDto[] {
-  return messages.filter((m, i) => {
-    const prev = messages[i - 1];
-    return !(m.role === "receipt" && prev?.role === "receipt" && prev.body === m.body);
+  let lastFailureBody: string | null = null;
+  return messages.filter((m) => {
+    if (m.role !== "receipt" || !m.refs.wakeFailure) return true;
+    if (m.body === lastFailureBody) return false;
+    lastFailureBody = m.body;
+    return true;
   });
 }
 

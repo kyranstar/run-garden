@@ -92,42 +92,41 @@ async function persistMessage(
 
 /**
  * Persist a wake-failure receipt ("couldn't think" / "resting"), but never
- * as a duplicate of the thread's newest row (audit C4/C14): while the LLM
- * gateway is down, every "open" wake used to append an identical row
- * forever. Marked `wakeFailure` so `openWakeIsFresh` can back off retries
- * without depending on exact copy.
+ * as a duplicate of the thread's newest WAKE-FAILURE row (audit C4/C14
+ * residual): while the LLM gateway is down, every "open" wake used to
+ * append an identical row forever. Compares against the newest failure
+ * specifically — not the newest row of any kind — so an unrelated receipt
+ * landing in between (e.g. the expiry sweep's "Expired: …" line, or a
+ * "Superseded: …" receipt) doesn't defeat the dedupe. Marked `wakeFailure`
+ * so `openWakeIsFresh` can back off retries without depending on exact copy.
  */
 async function persistWakeFailure(db: Db, userId: string, body: string): Promise<void> {
   const [latest] = await db
     .select()
     .from(coachMessages)
-    .where(eq(coachMessages.userId, userId))
+    .where(
+      and(
+        eq(coachMessages.userId, userId),
+        eq(coachMessages.role, "receipt"),
+        sql`json_extract(${coachMessages.refs}, '$.wakeFailure') = 1`,
+      ),
+    )
     .orderBy(desc(coachMessages.at))
     .limit(1);
-  if (latest && latest.role === "receipt" && latest.body === body) return; // already showing this failure
+  if (latest && latest.body === body) return; // already showing this failure
   await persistMessage(db, userId, "receipt", body, { wakeFailure: true });
 }
 
 /**
- * Whether an "open" (auto) wake would be redundant right now: the last
- * briefing is still fresh, or the coach just failed to think/rest and
- * hasn't cleared its backoff window yet. Shared by the internal skip rule
- * below and the `wakeAdvised` the client uses to decide whether to bother
- * calling wake at all — without the failure half of this, wakeAdvised never
- * clears on failure (no role='coach' message is ever written), so a page
- * revisited every few minutes during an outage re-fires (and re-fails) on
- * every single open.
+ * Whether a wake failed/rested recently enough that another "open" attempt
+ * would just repeat it. This is checked BEFORE triggers (audit C14
+ * residual): `consumeTriggers` only runs on a successful wake, so a
+ * pending trigger stays pending through every failure — without gating on
+ * this first, a single missed-workout trigger during an LLM outage forced
+ * every single Plan visit to attempt (and burn) another LLM call, exactly
+ * the harm the backoff was meant to prevent.
  */
-export async function openWakeIsFresh(db: Db, userId: string): Promise<boolean> {
-  const [lastCoach] = await db
-    .select()
-    .from(coachMessages)
-    .where(and(eq(coachMessages.userId, userId), eq(coachMessages.role, "coach")))
-    .orderBy(desc(coachMessages.at))
-    .limit(1);
-  if (lastCoach && Date.parse(nowInstant()) - Date.parse(lastCoach.at) < STALE_BRIEFING_HOURS * 3600 * 1000) {
-    return true;
-  }
+async function recentWakeFailure(db: Db, userId: string): Promise<boolean> {
   const [lastFailure] = await db
     .select()
     .from(coachMessages)
@@ -144,6 +143,39 @@ export async function openWakeIsFresh(db: Db, userId: string): Promise<boolean> 
     !!lastFailure &&
     Date.parse(nowInstant()) - Date.parse(lastFailure.at) < WAKE_FAILURE_BACKOFF_MINUTES * 60 * 1000
   );
+}
+
+/** Whether the last coach briefing is still fresh enough that an "open"
+ * wake with no new trigger would be redundant. */
+async function freshBriefing(db: Db, userId: string): Promise<boolean> {
+  const [lastCoach] = await db
+    .select()
+    .from(coachMessages)
+    .where(and(eq(coachMessages.userId, userId), eq(coachMessages.role, "coach")))
+    .orderBy(desc(coachMessages.at))
+    .limit(1);
+  return (
+    !!lastCoach && Date.parse(nowInstant()) - Date.parse(lastCoach.at) < STALE_BRIEFING_HOURS * 3600 * 1000
+  );
+}
+
+/**
+ * Whether an "open" (auto) wake would be redundant right now (audit
+ * C4/C14). A recent failure/rest wins over everything, INCLUDING pending
+ * triggers — the whole point of the backoff is to stop retrying while the
+ * coach just failed, and a trigger alone doesn't get to override that (it
+ * stays unconsumed until a wake actually succeeds, so ungating it here
+ * would mean the backoff never actually applies whenever anything is
+ * pending — the common case during an outage). Short of a recent failure,
+ * a pending trigger always makes a wake worth attempting; with no trigger,
+ * a fresh existing briefing makes it redundant. Shared by the internal
+ * "open" skip rule below and the `wakeAdvised` the client uses to decide
+ * whether to bother calling wake at all.
+ */
+export async function openWakeIsFresh(db: Db, userId: string, triggerCount: number): Promise<boolean> {
+  if (await recentWakeFailure(db, userId)) return true;
+  if (triggerCount > 0) return false;
+  return freshBriefing(db, userId);
 }
 
 /** Dates an op touches — for supersede matching. */
@@ -253,7 +285,7 @@ export async function wake(
 
   const triggers = await pendingTriggers(db, userId);
   if (cause.kind === "open") {
-    if (triggers.length === 0 && (await openWakeIsFresh(db, userId))) return { status: "skipped" };
+    if (await openWakeIsFresh(db, userId, triggers.length)) return { status: "skipped" };
   }
 
   try {
