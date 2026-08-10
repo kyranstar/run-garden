@@ -113,17 +113,31 @@ syncRoutes.post("/retry", async (c) => {
     }
   }
 
-  const failedStudioPlanIds = await db
-    .select({ planId: studioPlanPushes.planId })
-    .from(studioPlanPushes)
-    .innerJoin(studioPlans, eq(studioPlanPushes.planId, studioPlans.id))
-    .where(and(eq(studioPlans.userId, userId), eq(studioPlanPushes.status, "failed")));
-  const planIds = [...new Set(failedStudioPlanIds.map((r) => r.planId))];
-
+  // Scope the studio arm to the CURRENT plan only (newest studio_plans row —
+  // same predicate as the studio routes' loadCurrentPlan). A retired plan's
+  // failed rows are usually failed DELETES; re-pushing that plan without its
+  // retire override would re-plan the very sessions the user just removed.
+  const currentPlan = (
+    await db
+      .select({ id: studioPlans.id })
+      .from(studioPlans)
+      .where(eq(studioPlans.userId, userId))
+      .orderBy(desc(studioPlans.createdAt))
+      .limit(1)
+  )[0];
   let studioRetried = 0;
-  for (const planId of planIds) {
-    const summary = await pushStudioPlan(db, { userId, studioPlanId: planId, today });
-    if (summary.ok) studioRetried += 1;
+  if (currentPlan) {
+    const failedCurrent = (
+      await db
+        .select({ planId: studioPlanPushes.planId })
+        .from(studioPlanPushes)
+        .where(and(eq(studioPlanPushes.planId, currentPlan.id), eq(studioPlanPushes.status, "failed")))
+        .limit(1)
+    )[0];
+    if (failedCurrent) {
+      const summary = await pushStudioPlan(db, { userId, studioPlanId: currentPlan.id, today });
+      if (summary.ok) studioRetried += 1;
+    }
   }
 
   return c.json({ ok: true, movesRetried, studioRetried });

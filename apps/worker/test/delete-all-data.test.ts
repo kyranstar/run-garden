@@ -130,8 +130,13 @@ describe("deleteAllUserData — schema coverage (C20)", () => {
 
     await deleteAllUserData(db, userId);
 
+    // EVERY exported table must be either deleted by deleteAllUserData or on
+    // the explicit global allowlist — including tables WITHOUT a userId
+    // column (FK/plan-scoped children like coach_plan_weeks were exactly the
+    // kind of table the original bug missed; a userId-only filter would have
+    // silently excused them).
     const missed = allTables()
-      .filter(({ name, table }) => !GLOBAL_TABLE_NAMES.has(name) && "userId" in getTableColumns(table as never))
+      .filter(({ name }) => !GLOBAL_TABLE_NAMES.has(name))
       .filter(({ name }) => !touched.has(name))
       .map(({ name }) => name);
 

@@ -382,9 +382,13 @@ export interface GardenSimResult {
  * stub that then looks like the garden's real, current state. The deleted
  * events/day-inputs/checkpoints for the walked range are safe to leave gone
  * on that failure path: they're rebuilt from scratch by this same function
- * (idempotent — `onConflictDoNothing`/`onConflictDoUpdate` throughout), so
- * the next resim attempt (or the version-upgrade check re-firing, since the
- * durable version never advanced either) fills them back in.
+ * (idempotent — `onConflictDoNothing`/`onConflictDoUpdate` throughout). On
+ * the version-upgrade path the rebuild is guaranteed (the stale durable
+ * version re-fires the full resim on the next read). On the plain
+ * resimulateFrom path the next advanceGarden starts PAST the purged range,
+ * so the timeline/event-log hole persists until some later resim covers it —
+ * the garden itself renders correctly throughout; only those secondary
+ * views read truncated in the interim.
  */
 async function walkForward(
   db: Db,
