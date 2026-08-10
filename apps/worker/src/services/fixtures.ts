@@ -575,12 +575,13 @@ export async function seedFixtures(db: Db, env: Env, userId: string): Promise<Se
   // Adventure fixtures, dated up front so the WEEK loop below can reserve
   // their days: a big Saturday hike anchored to week 8 (the most recent full
   // week — the same "recent enough" spot lastQualityDate/strengthYogaDate use
-  // below), with its Sunday reserved as the shielded, low-recovery grace day
-  // so nothing else already "explains" the day and blocks adventureGraceDay's
-  // hasSession check. A sub-threshold Wednesday walk is the neutral
-  // counterpart — present in history as an adventure sport but never big
-  // enough (ADVENTURE_TUNING.minLoad/minDurationMin) to touch the garden's
-  // clocks.
+  // below). Its own day is reserved so the loop's usual "long" run doesn't
+  // clutter the showcase, and the Sunday right after is reserved as the
+  // shielded, low-recovery grace day so nothing else already "explains" the
+  // day and blocks adventureGraceDay's hasSession check. A sub-threshold
+  // Wednesday walk is the neutral counterpart — present in history as an
+  // adventure sport but never big enough
+  // (ADVENTURE_TUNING.minLoad/minDurationMin) to touch the garden's clocks.
   const adventureWalkDate = addDays(monday, 8 * 7 + 2);
   const adventureHikeDate = addDays(monday, 8 * 7 + 5);
   const adventureGraceDate = addDays(monday, 8 * 7 + 6);
@@ -593,6 +594,7 @@ export async function seedFixtures(db: Db, env: Env, userId: string): Promise<Se
       if (week === 6) continue; // the missed week
       if (week === 7 && day.offset < 3) continue; // comeback starts mid-week
       if (week === 2 && day.offset === 3) continue; // one skipped strides day
+      if (date === adventureHikeDate) continue; // reserved for the fixture adventure's big hike, below
       if (date === adventureGraceDate) continue; // reserved for the fixture adventure's grace day, below
 
       sources.push(syntheticActivity(date, day.kind, index, "coros"));

@@ -221,7 +221,6 @@ never freezes a clock), a big Saturday hike (`trainingLoad: 120`,
 `durationSeconds` = 4h, well past `bigLoad`), and a low-recovery
 (`recoveryScore: 42`) health record for the Sunday right after it, so
 `adventureGraceDay`'s Coros-recovery path — not just the banked-day fallback —
-is what's driving the shield in the demo. (In passing: a leftover
-`sources.push()` no-op from the Strava removal, which would have pushed
-`undefined` into the fixture activity list and crashed ingestion on next
-fixture boot, was cleaned up in the same file.)
+is what's driving the shield in the demo. (In passing: removed a dead
+no-op `sources.push()` call — a leftover from the Strava-removal refactor,
+in the same file.)
