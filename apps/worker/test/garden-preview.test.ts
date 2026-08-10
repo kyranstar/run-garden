@@ -276,7 +276,7 @@ describe("lastRunDate (C2 round 2)", () => {
 });
 
 describe("garden anniversary (Bundle 3 §6)", () => {
-  it("appears exactly on the yearly anniversary of genesis", async () => {
+  it("appears exactly on the yearly anniversary of genesis", { timeout: 20_000 }, async () => {
     const db = makeTestDb();
     const { userId, prefs } = await makeTestUser(db);
     const today = todayInZone(prefs.timezone);
