@@ -66,7 +66,12 @@ gardenRoutes.post("/seen", async (c) => {
     typeof body.lastSeenSeq !== "number" ||
     !Number.isInteger(body.lastSeenSeq) ||
     !Array.isArray(ids) ||
-    ids.length > 64 ||
+    // celebratedSpeciesIds is a permanent ledger (C13 round 2: backfilled
+    // admissions are never pruned), bounded by the codex — 57 species + 4
+    // ground kinds (`ground:<kind>` prefix) as of this writing. 256 gives
+    // generous headroom as the codex grows without ever being a realistic
+    // cap on legitimate data.
+    ids.length > 256 ||
     ids.some((s) => typeof s !== "string")
   ) {
     return c.json({ error: "bad_request" }, 400);

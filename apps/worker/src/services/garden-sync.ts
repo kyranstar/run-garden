@@ -594,8 +594,17 @@ export interface GardenView {
    * durable replay converges to exactly this.
    */
   previewEvents: GardenEvent[];
-  /** Arrival watermark (null = never marked; see POST /api/garden/seen). */
-  seen: { lastSeenDate: string; lastSeenSeq: number; celebratedSpeciesIds: string[] } | null;
+  /** Arrival watermark (null = never marked; see POST /api/garden/seen).
+   * `updatedAt` is server-stamped on every write — the arrival admission
+   * logic (C13) uses it to tell a genuinely rebuilt event (resimulateFrom,
+   * createdAt AFTER this) apart from an ordinary one that's simply behind
+   * the watermark. */
+  seen: {
+    lastSeenDate: string;
+    lastSeenSeq: number;
+    celebratedSpeciesIds: string[];
+    updatedAt: string;
+  } | null;
   /** Garden-birthday line, on the anniversary of `createdDate` (age ≥ 1y). */
   anniversary: string | null;
   /** Every species — unlocked and locked — with hints and real progress. */
@@ -617,6 +626,15 @@ export interface GardenView {
   balance: DisciplineBalance;
   /** Today's adventure shield: sheltered day + what to name in the caption. */
   adventure: { frozenToday: boolean; graceDay: boolean; lastSport: string | null; lastDate: string | null };
+  /**
+   * True calendar date of the most recent completed run activity (any
+   * discipline-agnostic run, matched or unmatched to a planned workout) —
+   * null if none ever recorded. C2 (round 2): the decay clock
+   * (`balance.run.days`) freezes on shielded/rest days, so it can sit
+   * BEHIND real recency once a past shield has ended; the HUD caption needs
+   * the true date to stop presenting a paused count as fresh fact.
+   */
+  lastRunDate: LocalDate | null;
 }
 
 /**
@@ -828,14 +846,20 @@ export async function buildGardenView(
         },
       );
   }
+  // C11 residual: the sport/date NAMED in the caption must come from the
+  // POST-FOLD snapshot (what actually got rendered), not shieldState
+  // (captured before the fold). When the preview didn't run, snapshot is
+  // still exactly the pre-preview state, so this is a strict superset fix —
+  // never a regression for that path.
+  const postFoldLastAdventureDate = snapshot.state.lastAdventureDate ?? null;
   let lastSport: string | null = qualifyingToday[0]?.sport ?? null;
-  if (!lastSport && graceDay && shieldState.lastAdventureDate) {
+  if (!lastSport && graceDay && postFoldLastAdventureDate) {
     // Find the sport of an adventure activity that actually falls on
     // lastAdventureDate (by *local* date — the caption names this date).
     // startTime is UTC, so the window is deliberately over-inclusive by a
     // day on each side; the exact local-date match happens in memory. If
     // several activities land on that date, pick deterministically by id.
-    const lastAdventureDate = shieldState.lastAdventureDate;
+    const lastAdventureDate = postFoldLastAdventureDate;
     const rows = await db
       .select()
       .from(activities)
@@ -860,6 +884,25 @@ export async function buildGardenView(
     await db.select().from(gardenSeen).where(eq(gardenSeen.userId, userId)).limit(1)
   )[0];
 
+  // C2 (round 2): true calendar recency for the run-bar caption, independent
+  // of the decay clock's freeze/skip days. A single indexed query
+  // (activities_user_time_idx covers userId, sorted by startTime) rather
+  // than deriving from the durable run_completed events — those events also
+  // cover strength/yoga sessions (applyRun emits run_completed for every
+  // discipline) and would need extra category filtering to mean "a run"; a
+  // direct sport='run' lookup is both cheaper and unambiguous.
+  const lastRunRow = (
+    await db
+      .select({ startTime: activities.startTime, startTimeLocal: activities.startTimeLocal })
+      .from(activities)
+      .where(and(eq(activities.userId, userId), eq(activities.sport, "run")))
+      .orderBy(desc(activities.startTime))
+      .limit(1)
+  )[0];
+  const lastRunDate: LocalDate | null = lastRunRow
+    ? (lastRunRow.startTimeLocal ?? lastRunRow.startTime).slice(0, 10)
+    : null;
+
   // Garden birthday (Bundle 3 §6): a quiet once-a-year line, no art needed.
   const created = snapshot.state.createdDate;
   const ageYears = Number(today.slice(0, 4)) - Number(created.slice(0, 4));
@@ -877,6 +920,7 @@ export async function buildGardenView(
           lastSeenDate: seenRow.lastSeenDate,
           lastSeenSeq: seenRow.lastSeenSeq,
           celebratedSpeciesIds: seenRow.celebratedSpeciesIds,
+          updatedAt: seenRow.updatedAt,
         }
       : null,
     anniversary,
@@ -914,8 +958,9 @@ export async function buildGardenView(
       frozenToday,
       graceDay,
       lastSport,
-      lastDate: frozenToday ? today : shieldState.lastAdventureDate,
+      lastDate: frozenToday ? today : postFoldLastAdventureDate,
     },
+    lastRunDate,
   };
 }
 

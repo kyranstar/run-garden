@@ -102,13 +102,23 @@ describe("seen state over the wire", () => {
 
     const res = await client().get("/api/garden");
     const body = (await res.json()) as {
-      seen: { lastSeenDate: string; lastSeenSeq: number; celebratedSpeciesIds: string[] };
+      seen: {
+        lastSeenDate: string;
+        lastSeenSeq: number;
+        celebratedSpeciesIds: string[];
+        updatedAt: string;
+      };
     };
-    expect(body.seen).toEqual({
+    // updatedAt is server-stamped (C13 round 2: arrival admission gates
+    // rebuilt-history events on it) — assert it round-trips as a real
+    // timestamp rather than pinning its exact value.
+    expect(body.seen).toMatchObject({
       lastSeenDate: "2026-08-04",
       lastSeenSeq: 5,
       celebratedSpeciesIds: [],
     });
+    expect(typeof body.seen.updatedAt).toBe("string");
+    expect(Number.isNaN(Date.parse(body.seen.updatedAt))).toBe(false);
   });
 
   it("POST /api/garden/seen rejects malformed bodies", async () => {
@@ -126,5 +136,20 @@ describe("seen state over the wire", () => {
       celebratedSpeciesIds: [42],
     });
     expect(badIds.status).toBe(400);
+  });
+
+  it("accepts celebratedSpeciesIds up to 256 (codex-bounded permanent ledger) and rejects past it", async () => {
+    const ok = await client().post("/api/garden/seen", {
+      lastSeenDate: "2026-08-04",
+      lastSeenSeq: 1,
+      celebratedSpeciesIds: Array.from({ length: 256 }, (_, i) => `species-${i}`),
+    });
+    expect(ok.status).toBe(200);
+    const tooMany = await client().post("/api/garden/seen", {
+      lastSeenDate: "2026-08-04",
+      lastSeenSeq: 1,
+      celebratedSpeciesIds: Array.from({ length: 257 }, (_, i) => `species-${i}`),
+    });
+    expect(tooMany.status).toBe(400);
   });
 });

@@ -218,6 +218,7 @@ export function BalanceStrip({
   balance,
   runPaused,
   runSheltered,
+  runTrueRecencyDays,
   quiet,
   variant,
   activeKey,
@@ -231,6 +232,15 @@ export function BalanceStrip({
    * recency of the last run, so the caption must say so rather than present
    * a stale, decay-paused count as fresh fact (C2). */
   runSheltered?: boolean;
+  /** True calendar days since the last completed run (any discipline-
+   * agnostic run, matched or not), independent of the decay clock's
+   * freezes — takes over the run bar's caption whenever known. The clock
+   * (`balance.run.days`) never advances on a shielded/rest day and never
+   * catches back up once the shield ends, so on its own it can sit BEHIND
+   * real recency (C2 round 2). null when no run has ever been recorded —
+   * the clock's own count is the only fallback then. Ignored when
+   * runPaused/runSheltered apply (those outrank any day count). */
+  runTrueRecencyDays?: number | null;
   /** A forecast line is already speaking for the garden — stay visual only. */
   quiet?: boolean;
   variant?: "hud";
@@ -244,12 +254,27 @@ export function BalanceStrip({
           const { days, health } = balance[key];
           const notch = DAMAGE_NOTCH[key];
           const low = days !== null && health < notch;
-          const caption =
-            key === "run" && runPaused
-              ? "plan paused"
-              : key === "run" && runSheltered
-                ? "sheltered"
+          const isRun = key === "run";
+          const caption = isRun && runPaused
+            ? "plan paused"
+            : isRun && runSheltered
+              ? "sheltered"
+              : isRun && runTrueRecencyDays != null
+                ? daysCaption(runTrueRecencyDays)
                 : daysCaption(days);
+          // The paused/sheltered captions don't fit the generic "last run
+          // <caption>" recency clause grammatically ("last run plan paused"
+          // reads as nonsense) — give them their own sensible phrasing;
+          // every other case (including true-recency) keeps the original
+          // "last {label} {caption}" pattern, so the aria stays in sync with
+          // whatever the visible caption says.
+          const recencyPhrase = isRun && runPaused
+            ? "no active plan, so the run clock is paused"
+            : isRun && runSheltered
+              ? "sheltered today, so the run clock is paused"
+              : days === null
+                ? `no ${label.toLowerCase()} yet`
+                : `last ${label.toLowerCase()} ${caption}`;
           return (
             <button
               type="button"
@@ -257,7 +282,7 @@ export function BalanceStrip({
               className={`balance-bar${activeKey === key ? " balance-bar-active" : ""}`}
               aria-expanded={activeKey === key}
               onClick={() => onToggle?.(key)}
-              aria-label={`${label}: ${healthDescriptor(health)}${low ? ", the garden is paying for it" : ""}, ${days === null ? `no ${label.toLowerCase()} yet` : `last ${label.toLowerCase()} ${caption}`}. Details`}
+              aria-label={`${label}: ${healthDescriptor(health)}${low ? ", the garden is paying for it" : ""}, ${recencyPhrase}. Details`}
             >
               <div className="balance-bar-label" aria-hidden="true">
                 {label}
@@ -943,6 +968,8 @@ export function GardenScreen() {
   const adventure = garden.data.adventure as
     | { frozenToday: boolean; graceDay: boolean; lastSport: string | null; lastDate: string | null }
     | undefined;
+  // Old cached payloads (pre-lastRunDate) may not carry this field either.
+  const lastRunDate = (garden.data.lastRunDate as string | null | undefined) ?? null;
 
   // Timeline: every replayed past day, plus the live view already loaded
   // above standing in for "today" (its date is always later than the last
@@ -1057,6 +1084,13 @@ export function GardenScreen() {
     0,
     daysBetween(snapshot.state.lastSimulatedDate, todayDate) - 1 + hourOfDay / 24,
   );
+  // C2 (round 2): the decay clock (balance.run.days) freezes on shielded/
+  // rest days and never catches back up — once the shield ends, the clock
+  // can sit BEHIND true recency (a run that's really N days old reads as
+  // fewer). lastRunDate is the true calendar date of the most recent run,
+  // independent of the clock's freezes — used for the caption whenever
+  // known; the clock itself still drives health/fill (decay, correctly).
+  const runTrueRecencyDays = lastRunDate ? Math.max(0, daysBetween(lastRunDate, todayDate)) : null;
   const planActive = !!d?.nextWorkout;
   const liveBalance = balance
     ? projectedBalance(snapshot.state, {
@@ -1396,6 +1430,7 @@ export function GardenScreen() {
                 balance={liveBalance}
                 runPaused={!planActive}
                 runSheltered={runClockSheltered}
+                runTrueRecencyDays={runTrueRecencyDays}
                 quiet
                 variant="hud"
                 activeKey={openBalanceKey}
@@ -1573,6 +1608,7 @@ export function GardenScreen() {
             balance={liveBalance}
             runPaused={!planActive}
             runSheltered={runClockSheltered}
+            runTrueRecencyDays={runTrueRecencyDays}
             quiet={lossVoiced || sheltered}
             activeKey={openBalanceKey}
             onToggle={toggleBalanceKey}

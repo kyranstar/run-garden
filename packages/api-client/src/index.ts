@@ -321,6 +321,12 @@ export interface GardenSeenState {
   lastSeenDate: string;
   lastSeenSeq: number;
   celebratedSpeciesIds: string[];
+  /** When this watermark was last written (server-stamped) — present on the
+   * GET /api/garden read, absent on the POST /api/garden/seen body (the
+   * client never sets it; the server stamps its own on write). Lets arrival
+   * admission tell a genuinely rebuilt event (resimulateFrom) apart from an
+   * ordinary one that's simply behind the watermark (C13). */
+  updatedAt?: string;
 }
 
 // ── Plan Studio (worker routes: apps/worker/src/routes/studio.ts) ──────────────

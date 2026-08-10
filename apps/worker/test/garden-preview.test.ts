@@ -179,6 +179,100 @@ describe("adventure shield across a multi-day preview fold (C11)", () => {
     expect(view.adventure.graceDay).toBe(false);
     expect(view.adventure.frozenToday).toBe(false);
   });
+
+  it("names the sheltering adventure from the POST-fold snapshot, not stale pre-fold state (residual, direction b)", async () => {
+    // The hike day itself is the one still un-durable (its OWN planned run
+    // sits unresolved, e.g. the user hiked instead) — so shieldState
+    // (captured before the preview fold) never learned lastAdventureDate at
+    // all; only the fold's own step for that day does.
+    const db = makeTestDb();
+    const { userId, prefs } = await makeTestUser(db);
+    const today = todayInZone(prefs.timezone);
+    const hikeDate = addDays(today, -1);
+
+    await ensureGarden(db, userId, prefs, addDays(today, -10));
+    await db.insert(schema.trainingPlans).values({
+      id: newId(),
+      userId,
+      provider: "coros",
+      sourcePlanId: "test-plan",
+      name: "Test Plan",
+      status: "active",
+      createdAt: nowInstant(),
+      updatedAt: nowInstant(),
+    });
+    // Yesterday's OWN planned run is unresolved — holds the durable sim back
+    // at today-2, so the hike day (yesterday) never lands in gardenState.
+    await insertWorkout(db, userId, hikeDate, "scheduled");
+    // The hike itself: unrelated to that unresolved workout (no completion
+    // match), so buildDayInput sees it as an adventure regardless.
+    await db.insert(schema.activities).values({
+      id: newId(),
+      userId,
+      startTime: `${hikeDate}T14:00:00Z`,
+      startTimeLocal: `${hikeDate}T09:00:00`,
+      sport: "hike",
+      durationSeconds: 200 * 60,
+      trainingLoad: 90,
+      sourceMergeConfidence: 1,
+      createdAt: nowInstant(),
+      updatedAt: nowInstant(),
+    });
+
+    const view = await buildGardenView(db, userId, prefs);
+
+    // Durable state truly never learned about the hike.
+    const [row] = await db.select().from(gardenState).where(eq(gardenState.userId, userId));
+    expect(row!.lastSimulatedDate).toBe(addDays(today, -2));
+
+    // Today is within the hike's grace window (since = 1, cap = 2) with a
+    // fresh bank (a big hike), so today reads as shielded — and the caption
+    // must name the hike, sourced from the fold's own post-fold state.
+    expect(view.adventure.graceDay).toBe(true);
+    expect(view.adventure.lastDate).toBe(hikeDate);
+    expect(view.adventure.lastSport).toBe("hike");
+  });
+});
+
+describe("lastRunDate (C2 round 2)", () => {
+  it("is the true calendar date of the most recent run activity, ignoring other sports and unmatched status", async () => {
+    const db = makeTestDb();
+    const { userId, prefs } = await makeTestUser(db);
+    const today = todayInZone(prefs.timezone);
+    const olderRun = addDays(today, -8);
+    const newerRun = addDays(today, -4);
+    const laterAdventure = addDays(today, -1);
+
+    await ensureGarden(db, userId, prefs, addDays(today, -20));
+    await insertCompletedRun(db, userId, olderRun);
+    await insertCompletedRun(db, userId, newerRun);
+    // A later, non-run adventure must not be mistaken for a run.
+    await db.insert(schema.activities).values({
+      id: newId(),
+      userId,
+      startTime: `${laterAdventure}T14:00:00Z`,
+      startTimeLocal: `${laterAdventure}T09:00:00`,
+      sport: "hike",
+      durationSeconds: 200 * 60,
+      trainingLoad: 90,
+      sourceMergeConfidence: 1,
+      createdAt: nowInstant(),
+      updatedAt: nowInstant(),
+    });
+
+    const view = await buildGardenView(db, userId, prefs);
+    expect(view.lastRunDate).toBe(newerRun);
+  });
+
+  it("is null when no run has ever been recorded", async () => {
+    const db = makeTestDb();
+    const { userId, prefs } = await makeTestUser(db);
+    const today = todayInZone(prefs.timezone);
+    await ensureGarden(db, userId, prefs, addDays(today, -5));
+
+    const view = await buildGardenView(db, userId, prefs);
+    expect(view.lastRunDate).toBeNull();
+  });
 });
 
 describe("garden anniversary (Bundle 3 §6)", () => {

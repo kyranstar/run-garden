@@ -215,17 +215,53 @@ describe("selectArrival", () => {
     expect(out.nextSeen.celebratedSpeciesIds).toEqual([]);
   });
 
-  describe("rebuilt-history admission (C13)", () => {
+  describe("rebuilt-history admission (C13, insertion-time gate — round 2)", () => {
     // resimulateFrom rewrites events onto their ORIGINAL past date, which can
-    // land strictly before a real watermark (late-synced activity, a match
+    // land at or before a real watermark (late-synced activity, a match
     // edit) — the append-only `after(e, wm)` test alone would exclude these
     // forever. species_unlocked/region_unlocked still deserve exactly one
     // celebration whenever that happens.
+    //
+    // The gate is INSERTION TIME (event.createdAt vs seen.updatedAt), not
+    // position: a position-only test (date, seq strictly before the
+    // watermark) can't tell a genuinely rebuilt row apart from an ordinary
+    // event that was fresh on some earlier visit and already properly
+    // celebrated via `fresh` — both end up "behind the watermark, not in
+    // `celebrated`" on every later visit (round 1's regression).
+    const T_CREATED = "2026-08-01T08:00:00.000Z"; // when an event row was first written
+    const T_SEEN_BEFORE = "2026-08-03T09:00:00.000Z"; // a mark-seen AFTER T_CREATED
+    const T_RESIM = "2026-08-04T10:00:00.000Z"; // resim rewrites the row AFTER T_SEEN_BEFORE
+    const T_SEEN_AFTER = "2026-08-05T11:00:00.000Z"; // the next mark-seen, AFTER T_RESIM
 
-    it("admits a species_unlocked event rewritten strictly before a real watermark", () => {
-      const seen = { lastSeenDate: TODAY, lastSeenSeq: 5, celebratedSpeciesIds: [] };
+    it("does NOT re-fire an ordinary event that was already fresh+celebrated on an earlier visit (the reviewer's exact repro)", () => {
+      // Unlock at (D, seq 1); the visit that celebrated it ended with tip
+      // (D, seq 2) from a sibling event that day, and posted seen.updatedAt
+      // AFTER the unlock event was created — a completely ordinary flow.
+      const D = "2026-08-03";
+      const seen = {
+        lastSeenDate: D,
+        lastSeenSeq: 2,
+        celebratedSpeciesIds: [],
+        updatedAt: T_SEEN_BEFORE,
+      };
       const out = selectArrival(
-        [ev("species_unlocked", OLDER, { seq: 0, speciesId: "dahlia" })],
+        [ev("species_unlocked", D, { seq: 1, speciesId: "iris", createdAt: T_CREATED })],
+        seen,
+        TODAY,
+      );
+      expect(out.ceremonies).toEqual([]);
+      expect(out.nextSeen.celebratedSpeciesIds).toEqual([]);
+    });
+
+    it("admits a species_unlocked event whose row was rebuilt AFTER the last mark-seen", () => {
+      const seen = {
+        lastSeenDate: TODAY,
+        lastSeenSeq: 5,
+        celebratedSpeciesIds: [],
+        updatedAt: T_SEEN_BEFORE,
+      };
+      const out = selectArrival(
+        [ev("species_unlocked", OLDER, { seq: 0, speciesId: "dahlia", createdAt: T_RESIM })],
         seen,
         TODAY,
       );
@@ -237,32 +273,51 @@ describe("selectArrival", () => {
       expect(out.nextSeen.celebratedSpeciesIds).toEqual(["dahlia"]);
     });
 
-    it("never replays a backfilled species ceremony once celebrated, and keeps it celebrated forever", () => {
-      const seen = { lastSeenDate: TODAY, lastSeenSeq: 5, celebratedSpeciesIds: ["dahlia"] };
-      const events = [ev("species_unlocked", OLDER, { seq: 0, speciesId: "dahlia" })];
-      const out = selectArrival(events, seen, TODAY);
-      expect(out.ceremonies).toEqual([]);
-      // Unlike a normal preview-transitional id, this one is never "fresh" —
-      // its event stays permanently behind the watermark — so it must be
-      // retained, not pruned, or it would silently become eligible for
-      // backfill-admission again on the very next visit.
-      expect(out.nextSeen.celebratedSpeciesIds).toEqual(["dahlia"]);
+    it("fires exactly once, then never again after the next mark-seen (true C13 case, end to end)", () => {
+      const seenBefore = {
+        lastSeenDate: TODAY,
+        lastSeenSeq: 5,
+        celebratedSpeciesIds: [],
+        updatedAt: T_SEEN_BEFORE,
+      };
+      const events = [
+        ev("species_unlocked", OLDER, { seq: 0, speciesId: "dahlia", createdAt: T_RESIM }),
+      ];
+      const first = selectArrival(events, seenBefore, TODAY);
+      expect(first.ceremonies).toEqual([{ kind: "species", speciesId: "dahlia", fromPreview: false }]);
+      expect(first.nextSeen.celebratedSpeciesIds).toEqual(["dahlia"]);
+
+      // The next mark-seen POST stamps a fresh updatedAt, strictly after the
+      // resim that created the row.
+      const seenAfter = {
+        ...seenBefore,
+        celebratedSpeciesIds: first.nextSeen.celebratedSpeciesIds,
+        updatedAt: T_SEEN_AFTER,
+      };
+      const second = selectArrival(events, seenAfter, TODAY);
+      expect(second.ceremonies).toEqual([]);
+      // Retained (belt): even once the insertion-time gate alone would also
+      // exclude it, the ledger still remembers it (suspenders).
+      expect(second.nextSeen.celebratedSpeciesIds).toEqual(["dahlia"]);
     });
 
-    it("admits a region_unlocked event rewritten strictly before a real watermark, once", () => {
-      const seen = { lastSeenDate: TODAY, lastSeenSeq: 5, celebratedSpeciesIds: [] };
-      const first = selectArrival(
-        [ev("region_unlocked", OLDER, { seq: 0, detail: "terrace" })],
-        seen,
-        TODAY,
-      );
+    it("admits a region_unlocked event rewritten after the last mark-seen, once", () => {
+      const seenBefore = {
+        lastSeenDate: TODAY,
+        lastSeenSeq: 5,
+        celebratedSpeciesIds: [],
+        updatedAt: T_SEEN_BEFORE,
+      };
+      const events = [
+        ev("region_unlocked", OLDER, { seq: 0, detail: "terrace", createdAt: T_RESIM }),
+      ];
+      const first = selectArrival(events, seenBefore, TODAY);
       expect(first.ceremonies).toEqual([{ kind: "ground", ground: "terrace", fromPreview: false }]);
       expect(first.nextSeen.celebratedSpeciesIds).toEqual(["ground:terrace"]);
 
-      // Same event, now-updated seen state: never replays.
       const second = selectArrival(
-        [ev("region_unlocked", OLDER, { seq: 0, detail: "terrace" })],
-        { ...seen, celebratedSpeciesIds: first.nextSeen.celebratedSpeciesIds },
+        events,
+        { ...seenBefore, celebratedSpeciesIds: first.nextSeen.celebratedSpeciesIds, updatedAt: T_SEEN_AFTER },
         TODAY,
       );
       expect(second.ceremonies).toEqual([]);
@@ -271,11 +326,9 @@ describe("selectArrival", () => {
 
     it("does not backfill when there is no real watermark (missing seen row stays exactly as before)", () => {
       // Confirms the migration-day cliff (deliberately no replay of history
-      // predating the default "start of yesterday" watermark) is untouched:
-      // a never-before-celebrated species from well before that default
-      // still does not ceremony when `seen` itself is null.
+      // predating the default "start of yesterday" watermark) is untouched.
       const out = selectArrival(
-        [ev("species_unlocked", OLDER, { seq: 0, speciesId: "dahlia" })],
+        [ev("species_unlocked", OLDER, { seq: 0, speciesId: "dahlia", createdAt: T_RESIM })],
         null,
         TODAY,
       );
@@ -283,10 +336,26 @@ describe("selectArrival", () => {
       expect(out.nextSeen.celebratedSpeciesIds).toEqual([]);
     });
 
-    it("an event exactly AT the watermark's own tip is already covered, not a backfill candidate", () => {
-      const seen = { lastSeenDate: YESTERDAY, lastSeenSeq: 2, celebratedSpeciesIds: [] };
+    it("does not backfill when seen exists but has no updatedAt (safe default for an old/legacy payload shape)", () => {
+      const seen = { lastSeenDate: TODAY, lastSeenSeq: 5, celebratedSpeciesIds: [] };
       const out = selectArrival(
-        [ev("species_unlocked", YESTERDAY, { seq: 2, speciesId: "poppy" })],
+        [ev("species_unlocked", OLDER, { seq: 0, speciesId: "dahlia", createdAt: T_RESIM })],
+        seen,
+        TODAY,
+      );
+      expect(out.ceremonies).toEqual([]);
+      expect(out.nextSeen.celebratedSpeciesIds).toEqual([]);
+    });
+
+    it("does not backfill a durable event with no createdAt (defensive: never treated as newer than an unknown baseline)", () => {
+      const seen = {
+        lastSeenDate: TODAY,
+        lastSeenSeq: 5,
+        celebratedSpeciesIds: [],
+        updatedAt: T_SEEN_BEFORE,
+      };
+      const out = selectArrival(
+        [ev("species_unlocked", OLDER, { seq: 0, speciesId: "dahlia" })], // no createdAt
         seen,
         TODAY,
       );

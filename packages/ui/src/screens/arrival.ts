@@ -10,8 +10,10 @@ import type { GardenSeenState } from "@rg/api-client";
 import { addDays, sportLabel, type GardenEvent } from "@rg/domain";
 import { SPECIES_BY_ID } from "@rg/garden-engine";
 
-/** A garden event as the route serves it — durable, or today's preview. */
-export type ArrivalEvent = GardenEvent & { preview?: boolean };
+/** A garden event as the route serves it — durable, or today's preview.
+ * Durable rows also carry the DB `createdAt` (recentGardenEvents selects
+ * every column); preview events never have one — they aren't rows yet. */
+export type ArrivalEvent = GardenEvent & { preview?: boolean; createdAt?: string };
 
 export interface ArrivalCeremony {
   kind: "species" | "ground";
@@ -137,14 +139,6 @@ interface Watermark {
 const after = (e: ArrivalEvent, wm: Watermark): boolean =>
   e.date > wm.d || (e.date === wm.d && e.seq > wm.s);
 
-/** Strictly less than the watermark — excludes both "after" (fresh) and
- * "exactly at" (the watermark's own recorded tip, already covered by
- * construction). Used only to find rebuilt-history unlocks (C13): real
- * candidates are never at the exact tip coordinates, since they didn't exist
- * when that tip was last computed. */
-const strictlyBefore = (e: ArrivalEvent, wm: Watermark): boolean =>
-  e.date < wm.d || (e.date === wm.d && e.seq < wm.s);
-
 const RARITY_RANK = { rare: 0, uncommon: 1, common: 2 } as const;
 
 export function selectArrival(
@@ -182,17 +176,33 @@ export function selectArrival(
 
   // C13: resimulateFrom rewrites events onto their ORIGINAL past date when
   // late history changes what happened there (a late-synced activity, a
-  // match edit) — so an unlock this watermark never covered can land
-  // strictly before it, permanently excluded from `fresh`'s append-only
-  // admission (a real regression the watermark can't recover from on its
-  // own). Unlock MOMENTS still deserve exactly one celebration no matter
-  // when the rewrite lands; everything else from a rebuilt day stays
-  // ordinary log history — `backfilled` only ever feeds ceremonies. Only
-  // considered when a real watermark exists: the migration-day default
-  // (missing seen row, above) deliberately starts at "yesterday" precisely
-  // so a never-before-seen garden doesn't replay its whole history as one
-  // block — that cliff must stay untouched, not get reopened by this.
-  const backfilled = seen ? durable.filter((e) => strictlyBefore(e, wm)) : [];
+  // match edit) — so an unlock this watermark never covered can land at or
+  // before it, permanently excluded from `fresh`'s append-only admission (a
+  // real regression the watermark can't recover from on its own). Unlock
+  // MOMENTS still deserve exactly one celebration no matter when the
+  // rewrite lands; everything else from a rebuilt day stays ordinary log
+  // history — `backfilled` only ever feeds ceremonies.
+  //
+  // Gate on INSERTION TIME, not position (round 2 fix — a position-only
+  // test regressed): an ORDINARY event that was fresh on some earlier visit
+  // and properly celebrated via `fresh` is, on every later visit, ALSO
+  // "behind the watermark and not in `celebrated`" — `celebrated` only ever
+  // tracked preview-transitional and backfilled ids, never plain fresh ones
+  // — so a test keyed on (date, seq) alone can't tell that apart from a
+  // genuinely rebuilt row and replays it forever. `createdAt` can:
+  // resimulateFrom deletes and reinserts the row, so a REBUILT event's
+  // createdAt is strictly after the moment the user's watermark was last
+  // saved (seen.updatedAt) — an event that was already sitting there when
+  // the tip was computed never can be. Requires a real watermark WITH a
+  // real updatedAt: the migration-day default (missing seen row, above) has
+  // neither, and deliberately starts at "yesterday" precisely so a
+  // never-before-seen garden doesn't replay its whole history as one block
+  // — that cliff must stay untouched.
+  const backfilled = seen?.updatedAt
+    ? durable.filter(
+        (e) => !after(e, wm) && e.createdAt !== undefined && e.createdAt > seen.updatedAt!,
+      )
+    : [];
   // `celebrated` is the permanent ledger for both: species ids as before,
   // and ground kinds under a `ground:` prefix (a real species id is always a
   // bare snake_case name, so the two id spaces never collide).
