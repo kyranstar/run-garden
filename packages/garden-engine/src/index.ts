@@ -22,3 +22,11 @@ export {
   WILDLIFE_HINTS,
   type SpeciesUnlockStatus,
 } from "./unlocks.js";
+export {
+  ADVENTURE_TUNING,
+  adventureGraceDay,
+  isBigAdventure,
+  qualifiesAsAdventure,
+  recoveryScoreFrom,
+  type AdventureInput,
+} from "./adventure.js";
