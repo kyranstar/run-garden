@@ -1,18 +1,18 @@
 # Full-surface audit — garden, plan, coach, activity, settings
 
-**Date:** 2026-08-10 · **Method:** 7 parallel finder agents (3 screenshot auditors over 28 captures at 1440px + true 390px viewports, 4 code auditors) → cross-finder dedupe → adversarial verification agents (top 10). 17 agents, 55 raw findings. Fixture stack at current `main` (adventures × coach × telemetry merge).
+**Date:** 2026-08-10 · **Method:** 7 parallel finder agents (3 screenshot auditors over 28 captures at 1440px and true 390px viewports, 4 code auditors) → cross-finder dedupe → adversarial verification of every non-minor finding (two waves, 35 agents total, ~2.2M tokens). 55 raw findings.
 
-**Caveats:** fixture data (plan Jun–Oct with deliberate missed weeks; coach LLM unavailable locally — only its *handling* was judged). Findings below the verified tier are labeled.
+**Final tally: 1 critical (fixed in this branch) · 27 adversarially confirmed important · 6 corroborated duplicates folded in · 0 refuted · 22 minors.** Every non-minor finding survived independent adversarial verification — each verifier was instructed to refute and none could.
 
-
-## Found live during setup (already fixed on the branch, uncommitted at audit time)
-
-- **[critical] Lap ingest fails for any run with ≥8 laps since migration 0012** — `completion.ts` batched the `activity_laps` insert with a hardcoded 8-column count; the lap-telemetry migration widened the table to 13 columns, pushing batches past the ~100-bound-variable cap. Every affected ingest 500s (seen live: fixture seed). Production impact: runs with 8+ laps have failed lap ingestion since the telemetry deploy; the queued backfill would hit it too. Fix (in this branch): derive the column count from the row object.
-
-- The Plan **Today** button appearing to do nothing during manual capture is explained by confirmed finding 3 below (scroll hijack re-yanks after the click).
+**Caveats:** fixture data (plan Jun–Oct with deliberate missed weeks; coach LLM unavailable locally — only its *handling* was judged).
 
 
-## Confirmed (adversarially verified) (10)
+## Critical — found live during setup, fixed in this branch (commit ab1809a)
+
+- **Lap ingest fails for any run with ≥8 laps since migration 0012** — `completion.ts` batched the `activity_laps` insert with a hardcoded 8-column count; lap telemetry widened the table to 13 columns, pushing batches past the ~100-bound-variable cap: every affected ingest 500s. Production has been silently failing lap ingestion for lap-heavy runs since the telemetry deploy, and backfill chunks would hit it too. **Fix shipped on this branch (not yet deployed): derive the column count from the row.**
+
+
+## Confirmed (adversarially verified) (27)
 
 
 ### C1. [important · visual] The default-open Next Workout dock panel covers the garden's most-established plants, so a 62-day 'Well watered' garden with 8 plants renders as a nearly empty lawn.
@@ -145,14 +145,9 @@
 **Verifier note:** Verified in both screenshot and code. insights-desktop.png shows all three cited tiles clipped mid-word with ellipsis and no chevron (Load variety: "…every day carries th…"; Hard-day stacking: "…or yesterday, if today…"; 7-day ramp: "…versus your avera…"), while drillable neighbors (Load vs norm, Resting HR, HRV) do show chevrons. Code confirms the mechanism exactly as claimed: packages/ui/src/styles.css:2181-2186 clamps .signal-meaning to 2 lines with overflow:hidden (unconditional, all viewports), applied at packages/ui/src/signal-tiles.tsx:367 with no title attribute and no hover/expand rule anywhere (only 2 occurrences of the class in the package). hasDrilldown (signal-tiles.tsx:72-78) requires detail or baseline+series; apps/worker/src/routes/misc.ts shows ramp (808-822) and monotony (823-841) ship neither, hardStack (922-940) ships only strip, and detailByMetric (1072-1087) covers only easyDiscipline/pacing — so the drilldown sheet that renders full meaning (packages/ui/src/screens/insights.tsx:93) can never open for these three tiles. Severity "important" is justified, and arguably under-sold: monotony's clipped meaning (misc.ts:830-832) embeds computed data ("This week totalled ${weeklyLoad}, for a strain of ${strain}") that is generated but unreadable anywhere in the UI.
 
 
-## Unverified — found by one agent, not yet adversarially checked (23)
+### C11. [important · functional] Adventure shield caption is computed from pre-preview durable state, so whenever the preview fold spans more than just today it contradicts the garden actually rendered (falsely claims shelter, or omits it entirely).
 
-Verification was capped at 10; several entries here independently corroborate confirmed findings (the plan scroll hijack, dead sticky selector, mobile double coach UI, dock coverage) — treat those as effectively confirmed. The rest need a verification pass before fixing.
-
-
-### U1. [important · functional] Adventure shield caption is computed from pre-preview durable state, so whenever the preview fold spans more than just today it contradicts the garden actually rendered (falsely claims shelter, or omits it entirely).
-
-**Surface:** Garden page — adventure shield caption / forecast line · **Finder:** code-garden
+**Surface:** Garden page — adventure shield caption / forecast line · **Finder:** code-garden · **Verdict:** confirmed
 
 **Evidence:** apps/worker/src/services/garden-sync.ts:648-652 captures shieldState from the durable snapshot before previewToday, and :737-754 computes frozenToday/graceDay from that stale state; but previewToday (garden-sync.ts:590-633) can fold MULTIPLE days (any yesterday with an unresolved workout stays out of the durable sim per advanceGarden's grace rule at :396-397), and simulateDay decrements the banked grace day on each intermediate grace day (packages/garden-engine/src/simulate.ts:266-268). Direction (a): big hike Sat, Sunday unresolved, no recovery rows → Monday's engine fold is UNSHIELDED (bank consumed by preview-Sunday) and the rendered snapshot decays, while the caption path sees bank=1 → graceDay=true → ForecastLine says "Saturday's hike is still keeping the beds shaded" (packages/ui/src/screens/garden.tsx:474-482) and `sheltered` suppresses every loss voice (garden.tsx:1033-1039). Direction (b): the hike day itself still un-durable (user skipped Saturday's planned run to hike — it sits unresolved) → shieldState.lastAdventureDate is stale/null → graceDay=false → Sunday shows a dryness countdown with zero shield acknowledgment even though the engine froze the day, while BalanceDetail simultaneously shows "Adventure ✓" from the previewed snapshot (garden.tsx:400-401).
 
@@ -160,10 +155,12 @@ Verification was capped at 10; several entries here independently corroborate co
 
 **Suggested fix:** Have previewToday return the shield status of the today fold itself (simulateDay already computes adventureFrozen/graceDay for each day) and drive the caption from that, instead of re-deriving it in buildGardenView from pre-preview durable state.
 
+**Verifier note:** Confirmed by hand-trace of both directions; every cited line checks out. shieldState is captured from durable pre-preview state (garden-sync.ts:648-652, before previewToday at :660) and the caption re-derives graceDay from it (:737-754), while the rendered snapshot is the preview fold. advanceGarden's grace rule (:395-397) holds back exactly an unresolved *yesterday*, so the fold spans 2 days (yesterday+today) and the two paths diverge: (a) preview-Sunday consumes the banked grace day (simulate.ts:266-268, only when recoveryScore is undefined per adventure.ts:74-75), so today's fold decays while the caption says "Saturday's hike is still keeping the beds shaded" (garden.tsx:474-482) and sheltered suppresses lossVoiced (garden.tsx:1033-1039); (b) an unresolved hike-day leaves shieldState.lastAdventureDate stale/null → caption unshielded with dryness countdown, while the preview fold (adventures come from the activities table regardless of workout resolution, garden-sync.ts:229-239) freezes the day and sets weekDisciplines.adventure=true, which BalanceDetail renders as "Adventure ✓" (garden.tsx:360, 400-401). Nothing downstream corrects the view (:837-842). Severity "important" is fair with two qualifiers: the mismatch is transient/self-healing (resolves when the pending workout resolves; no durable-state corruption) and capped at the 2-day lag window; direction (a) additionally requires no recovery score that day (with dailyHealth present both paths agree), though direction (b) survives regardless of health data. Suggested fix direction is sound, but simulateDay does not currently expose adventureFrozen/graceDay in its return, so the fix needs a small garden-engine API addition, not just plumbing in previewToday.
 
-### U2. [important · functional] Dismissing the overnight-beat block (X) while species/ground ceremonies are still queued strands the queue and blocks the mark-seen post, so every already-dismissed celebration replays on the next visit.
 
-**Surface:** Garden page (desktop HUD) — arrival block / ceremony queue · **Finder:** code-garden
+### C12. [important · functional] Dismissing the overnight-beat block (X) while species/ground ceremonies are still queued strands the queue and blocks the mark-seen post, so every already-dismissed celebration replays on the next visit.
+
+**Surface:** Garden page (desktop HUD) — arrival block / ceremony queue · **Finder:** code-garden · **Verdict:** confirmed
 
 **Evidence:** packages/ui/src/screens/garden.tsx:989-990 gates the ceremony card on `!blockDismissed`, so the X at garden.tsx:1306-1313 hides pending ceremonies with no way to advance ceremonyIndex; the mark-seen effect then early-returns forever at garden.tsx:888 (`if (ceremonyIndex < plan.ceremonies.length) return;`) even though blockDismissed=true, so api.gardenSeen is never posted (garden.tsx:872-895). The unused `ceremoniesDone` at garden.tsx:991 suggests intended gating was dropped. A run that unlocks a species always yields both a ceremony AND plant_added beat lines (arrival.ts:191-207), so the X is on screen next to a queued ceremony routinely.
 
@@ -171,10 +168,12 @@ Verification was capped at 10; several entries here independently corroborate co
 
 **Suggested fix:** Either let the beat X only clear the text lines (drop `!blockDismissed` from currentCeremony), or treat block dismissal as dismissing the whole presentation: skip the ceremony-pending early return when blockDismissed and post nextSeen.
 
+**Verifier note:** Hand-traced and confirmed. garden.tsx:989-990 hides the ceremony card when blockDismissed; the X (1306-1313) sets only blockDismissed, and dismissCeremony (993) — the sole writer of ceremonyIndex besides init — is only reachable from the now-unmounted CeremonyCard, so the queue strands. The mark-seen effect early-returns at 888 before the blockDismissed branch at 889, and none of its deps can change, so api.gardenSeen never posts; its own comment (867-869, "or the block") documents the unimplemented intent, and ceremoniesDone (991) is genuinely unused. arrival.ts:195-207 confirms plant_added/run_completed lines survive ceremony consumption, so the X routinely sits beside a queued ceremony; CSS confirms the card is a centered non-modal (styles.css:1433) clear of the beat block, so the repro is routine. On reload the unchanged watermark replays the ceremony plus the dismissed beat lines. Severity "important" is accurate: desktop-only (mobile has no X), no data loss, self-heals if the user later dismisses the card properly — but habitual X-users never advance the watermark, so the replayed arrival block grows every visit, defeating the reward-loop dedup. Preferred fix is the second suggested one (block dismissal completes the presentation), matching the comment's stated intent.
 
-### U3. [important · functional] Garden events rebuilt by resimulateFrom for past dates land strictly behind the seen watermark, so a species unlocked by a late-synced activity (or a match/unmatch edit) is never announced — no ceremony, no beat line.
 
-**Surface:** Garden page — arrival/seen watermark vs resimulation · **Finder:** code-garden
+### C13. [important · functional] Garden events rebuilt by resimulateFrom for past dates land strictly behind the seen watermark, so a species unlocked by a late-synced activity (or a match/unmatch edit) is never announced — no ceremony, no beat line.
+
+**Surface:** Garden page — arrival/seen watermark vs resimulation · **Finder:** code-garden · **Verdict:** confirmed
 
 **Evidence:** packages/ui/src/screens/arrival.ts:137-138 admits events only when `date > lastSeenDate` (or same-date higher seq), assuming append-only history; but resimulateFrom deletes and rewrites events on their ORIGINAL past dates (apps/worker/src/services/garden-sync.ts:504-513) and is invoked exactly when history changes late — device sync of old activities (apps/worker/src/routes/devices.ts:238), activity match edits (routes/plan.ts:579, :672). A user who visits daily has lastSeenDate ≈ yesterday, so events for a 3-day-late weekend run (dated 3 days ago) are filtered out of ceremonies and beat lines entirely; the species silently appears "New" in the codex with no arrival celebration, and gardenSeen has no server-side writer that could compensate (only the client POST, routes/garden.ts:55-85).
 
@@ -182,43 +181,12 @@ Verification was capped at 10; several entries here independently corroborate co
 
 **Suggested fix:** Track seen-ness by event identity or a monotonic insertion cursor (e.g. createdAt) rather than (date,seq), or have resimulateFrom rewind gardenSeen to just before the earliest rewritten date.
 
-
-### U4. [important · visual] The desktop coach panel's sticky rule targets a selector that matches nothing, so the panel scrolls off-screen and the auto-scroll-to-today leaves desktop users with no visible or reachable coach UI.
-
-**Surface:** Plan screen (desktop, >=1024px) · **Finder:** code-plan-coach
-
-**Evidence:** packages/ui/src/styles.css:3362 declares `.plan-split > .coach-panel { position: sticky; top: 0.8rem; }` but plan.tsx:572-573 nests the panel as `.plan-split > .plan-split-coach > .coach-panel`, so the direct-child selector never matches and sticky is dead. plan.tsx:509-514 then scrolls the window to today's week (about 10 weeks into the fixture's Jun-Oct calendar), putting the panel far above the viewport, and the only re-entry affordance, `.coach-pill`, is `display: none` at >=1024px (styles.css:3530).
-
-**Repro:** Open /plan on a >=1024px window with the fixture plan; after the initial scroll to the current week, the coach panel (including the Needs-you tray) is entirely off-screen and there is no button to reach it.
-
-**Suggested fix:** Change the selector to `.plan-split-coach > .coach-panel` (or make `.plan-split-coach` the sticky element).
+**Verifier note:** Confirmed by hand-trace. arrival.ts:137-138 admits events only strictly after the (date,seq) watermark, and nextSeen (arrival.ts:213,249-251) advances that watermark to the durable tip on every visit, so a daily visitor sits at ~yesterday. resimulateFrom (garden-sync.ts:504-513) deletes and rebuilds events on their ORIGINAL past dates (advanceGarden inserts date=e.date, line 424), so unlocks emitted for a >2-day-old late-synced activity land permanently behind the watermark: excluded from ceremonies, beat lines, sparkles, and entering animations, with no retry path. selectArrival is the sole ceremony producer; celebratedSpeciesIds only suppresses, never rescues. Triggers verified: devices.ts:238 (late activity ingest), plan.ts:579 (manual match), plan.ts:671-672 (past-workout removal). Only gardenSeen writer is the client POST (routes/garden.ts:80-84); resim never rewinds it. Grace window at garden-sync.ts:396-397 matches the repro framing. One citation correction: plan.ts:672 is the workout-REMOVE endpoint, not unmatch — unmatch (plan.ts:616) resims from today and does not rewrite past dates (its stale-past-events behavior is a separate issue). Severity "important" is fairly stated: it violates the app's own exactly-once ceremony spec (routes/garden.ts:50-53) in the direction of zero announcements for a core reward moment, but is not critical (no data loss, edge-frequency trigger).
 
 
-### U5. [important · visual] No CSS ever hides `.plan-split-coach` on mobile, so the full coach panel (up to 84vh) renders above the calendar while the Coach pill opens a second duplicate copy in a sheet.
+### C14. [important · functional] Failure and budget receipts stack without bound: every Plan visit auto-wakes (wakeAdvised never clears on failure), appending another identical 'The coach couldn't think just now' or 'The coach is resting' receipt and burning an LLM call each time.
 
-**Surface:** Plan screen (mobile, <1024px) · **Finder:** code-plan-coach
-
-**Evidence:** styles.css:3354 gives `.plan-split { display: block }` below 1024px and there is no `.plan-split-coach` rule anywhere in styles.css (grep finds only the plan.tsx:573 usage); `.coach-panel` has `max-height: 84vh` (styles.css:3371), so the panel fills the first screen and buries the calendar. plan.tsx:647-667 simultaneously renders the mobile `.coach-pill` plus a Sheet containing a second `CoachPanel`, and the comment at plan.tsx:502 ('no-op visually on desktop (panel always mounted)') shows the inline panel was meant to be desktop-only. Both mounted copies also emit duplicate DOM ids `proposal-<id>` (coach-panel.tsx:137), so `focusProposal` (plan.tsx:444-453) via `getElementById` flashes the inline copy hidden behind the sheet backdrop, not the sheet's copy.
-
-**Repro:** Open /plan at <1024px: the page leads with a near-full-screen coach panel before any calendar, plus a floating Coach pill that opens the same panel again; tap a calendar ghost and the flash animation runs on the background copy.
-
-**Suggested fix:** Add `.plan-split-coach { display: none }` below 1024px (keeping the pill+sheet as the mobile surface), which also removes the duplicate-id problem.
-
-
-### U6. [important · functional] CoachThread's scrollIntoView scrolls the window, so the plan page's initial scroll-to-today is raced and then yanked back to the coach panel whenever a message lands (which in fixture mode is every visit, when the failed auto-wake's receipt arrives).
-
-**Surface:** Plan screen calendar + coach thread · **Finder:** code-plan-coach
-
-**Evidence:** coach-panel.tsx:212-215 calls `endRef.current?.scrollIntoView({ block: "end" })` on every `messages.length` change; scrollIntoView scrolls every scrollable ancestor including the document, not just the `.coach-thread` overflow container. plan.tsx:509-514 scrolls the window to today's week when the plan query resolves. The two queries (`plan`, `coach-state`) resolve in nondeterministic order, and plan.tsx:392-399 fires an auto-wake whose settlement appends a receipt (coach-wake.ts:396) that re-triggers the thread scroll seconds after load, pulling the viewport off the calendar back to the (non-sticky, see prior finding) panel.
-
-**Repro:** Open /plan with a stale briefing (fixture default, LLM failing): page lands on today's week, then a few seconds later jumps up to the coach panel when the 'couldn't think' receipt arrives.
-
-**Suggested fix:** Scroll the thread container directly (`el.scrollTop = el.scrollHeight`) or pass a container-scoped scroll instead of scrollIntoView; only auto-scroll when the thread itself is user-visible.
-
-
-### U7. [important · functional] Failure and budget receipts stack without bound: every Plan visit auto-wakes (wakeAdvised never clears on failure), appending another identical 'The coach couldn't think just now' or 'The coach is resting' receipt and burning an LLM call each time.
-
-**Surface:** Coach thread / check-in (worker wake path) · **Finder:** code-plan-coach
+**Surface:** Coach thread / check-in (worker wake path) · **Finder:** code-plan-coach · **Verdict:** confirmed
 
 **Evidence:** apps/worker/src/routes/coach.ts:110-119 sets `wakeAdvised = triggers.length > 0 || staleBriefing`, where staleBriefing needs a role='coach' message under 20h old; failed wakes only write role='receipt' rows (coach-wake.ts:260-262, 396-397) and `consumeTriggers` runs only on success (coach-wake.ts:393), so wakeAdvised stays true forever while the LLM errors or the budget is cut off (budget receipt written unconditionally per wake at coach-wake.ts:187-191, before the open-cause skip rule). plan.tsx:392-399 fires the wake once per PlanScreen mount. The thread window is the latest 30 messages (coach.ts:88), so the duplicates push real coaching content out of view; manual 'Check in' taps while resting each add another copy with no other feedback (the WakeResult status is discarded, plan.tsx:391).
 
@@ -226,10 +194,12 @@ Verification was capped at 10; several entries here independently corroborate co
 
 **Suggested fix:** Dedupe consecutive identical receipts (or return the failure in the wake response and render it as transient UI state instead of a persisted message), make wakeAdvised consider recent failed attempts, and surface the 'resting' status directly on the Check in button.
 
+**Verifier note:** Hand-traced and confirmed at every cited line. wakeAdvised (coach.ts:119) only clears via a role='coach' message <20h old; all three failure paths (budget 187-191, parse-fail 260-262, catch 396-397 in coach-wake.ts) write only role='receipt' rows and never reach consumeTriggers (393), so wakeAdvised stays true indefinitely. plan.tsx fires one wake per PlanScreen mount (useRef resets on remount) and discards the WakeResult (only isPending/mutate used); CoachThread renders all messages with no dedupe; /state window is limit(30). Net effect: one identical receipt appended per /plan visit, unbounded, evicting real coaching content — repro claim (5 visits -> 5 identical receipts) holds. Severity 'important' is correct. Two nuances to fold into the writeup: the budget-cutoff branch makes NO LLM call (gate precedes the call), and in the malformed-JSON mode usage IS recorded so the weekly cutoff eventually self-limits spend — dollar burn is bounded by the weekly cap; the unbounded harm is permanent thread pollution plus a wasted call attempt (two, with the repair round-trip) per visit while the LLM errors. Manual Check in while resting does yield the new receipt in-thread (not literally zero feedback), but no transient status and each tap adds a permanent duplicate. Suggested fix is sound.
 
-### U8. [important · functional] The 'N changes couldn't sync — Retry' button is a no-op: it enqueues a COROS read (which usually short-circuits as fresh) and never retries the failed write jobs that the count is made of, so the banner can never clear via its own Retry.
 
-**Surface:** Sync status line (Today/Plan/Garden/Studio SyncPanel) · **Finder:** code-plan-coach
+### C15. [important · functional] The 'N changes couldn't sync — Retry' button is a no-op: it enqueues a COROS read (which usually short-circuits as fresh) and never retries the failed write jobs that the count is made of, so the banner can never clear via its own Retry.
+
+**Surface:** Sync status line (Today/Plan/Garden/Studio SyncPanel) · **Finder:** code-plan-coach · **Verdict:** confirmed
 
 **Evidence:** components.tsx:169-179 renders Retry for state 'sync_issue'; today.tsx:64-67,102 wires it to `api.readNow`. apps/worker/src/routes/sync.ts:214-262 shows read-now only inserts a `kind: "read_now"` job and returns `{enqueued:false}` whenever a successful read is <5 minutes old (nearly always, since TodayScreen fires readNow on every mount at today.tsx:350-352). issueCount comes from `status='failed'` write jobs plus failed studio pushes (sync-status.ts:81-101), which a read job does not touch; the real retry path is the per-workout retry-coros route, which supersedes the failed job and re-runs applyMove (apps/worker/src/routes/plan.ts:683-712). The Retry button also has no pending/disabled state, so pressing it produces zero visible change.
 
@@ -237,10 +207,12 @@ Verification was capped at 10; several entries here independently corroborate co
 
 **Suggested fix:** Point the account-level Retry at a route that supersedes each failed job and re-emits its write (loop of the retry-coros logic over failed jobs/studio pushes), and disable the button while pending.
 
+**Verifier note:** Confirmed by hand-trace; severity "important" is correct. The account-level Retry calls api.readNow (today.tsx:64-67,102), which either short-circuits {enqueued:false} inside the 5-min freshness window (sync.ts:157,228-230 — commonly hit, since Today/Garden fire readNow on every mount at today.tsx:350-352, garden.tsx:772) or enqueues a read_now job whose entire lifecycle touches only its own row (jobs.ts:349-360). Decisively, even a full read + import cannot clear the count: with COROS unchanged, reconcileWorkout returns "none" (reconcile.ts:37-39, comment: includes "our move hasn't landed yet"), and emitPendingWork deliberately refuses to re-emit when the last job is failed for the same destination (jobs.ts:245-253), whose own comment states the per-workout retry-coros route (plan.ts:683-712) is the only way to clear that guard. issueCount (sync-status.ts:81-101 = failed move jobs with open intents + failed studio pushes) is untouched by any of it, and the button has no pending/disabled state (components.tsx:175-179). One caveat: "can never clear" is slightly overstated — in the edge case where the write actually landed on COROS but was misreported failed (or the user fixed the date on COROS), an enqueued read converges via reconcile.ts:45-48 and clears the banner. Not critical because a working per-workout recovery exists (api.retryCoros via NextWorkout, today.tsx:117-119); the account banner just offers a dead affordance.
 
-### U9. [important · functional] A network-failed send silently swallows the athlete's message: the draft is cleared on submit, the optimistic echo is removed by the settle-time refetch, and there is no onError, so the text vanishes with no feedback.
 
-**Surface:** Coach composer (Plan screen) · **Finder:** code-plan-coach
+### C16. [important · functional] A network-failed send silently swallows the athlete's message: the draft is cleared on submit, the optimistic echo is removed by the settle-time refetch, and there is no onError, so the text vanishes with no feedback.
+
+**Surface:** Coach composer (Plan screen) · **Finder:** code-plan-coach · **Verdict:** confirmed
 
 **Evidence:** coach-panel.tsx:259-266 clears the draft (`setDraft("")`) before invoking onSend; plan.tsx:401-418 adds an optimistic user message in onMutate and only invalidates in onSettled — no onError handler. If the POST /api/coach/message request never reaches the server (offline, DNS, or the 320s AbortSignal timeout in api-client index.ts:565), the server-side persistence at coach-wake.ts:185 never happens, so the refetch replaces the cache without the message and the thread shows nothing — no error, no retained draft.
 
@@ -248,10 +220,12 @@ Verification was capped at 10; several entries here independently corroborate co
 
 **Suggested fix:** On error, restore the optimistic message with a 'failed to send — tap to retry' state (or restore the draft into the input) instead of only invalidating.
 
+**Verifier note:** Confirmed by hand-trace: coach-panel.tsx:264 clears the draft before onSend; plan.tsx:401-418 has onMutate + onSettled only (no onError, and the hook never exposes send.isError); app.tsx QueryClient has no global mutation error handler and the UI has no toast system — so a client-side POST failure silently loses the message once a successful refetch replaces the cache. Severity 'important' is fair. Three corrections: (1) the 320s-timeout citation is a bad example — coach-wake.ts:185 persists the user message before anything else, so any request that reaches the server keeps the message; only never-reached failures (worker down, connection refused, DNS) lose it. (2) The 'go offline' repro is likely masked: react-query ^5.62 default networkMode='online' pauses (not fails) the mutation when navigator.onLine is false, and it sends on reconnect (though the composer stays frozen on busy while paused). Reliable repro: kill the worker with navigator.onLine still true. (3) Disappearance is often delayed, not immediate — while the worker is down the invalidation refetch also fails and react-query retains the optimistic echo, so the message looks sent until the first successful refetch, then vanishes silently.
 
-### U10. [important · functional] Approve/decline failures are indistinguishable from success: a 409 not_pending (proposal expired while the page sat open) makes the card vanish with no error even though nothing was applied, and the computed `acting` in-flight state is never wired to the buttons.
 
-**Surface:** Proposal tray (Make it so / Leave it) · **Finder:** code-plan-coach
+### C17. [important · functional] Approve/decline failures are indistinguishable from success: a 409 not_pending (proposal expired while the page sat open) makes the card vanish with no error even though nothing was applied, and the computed `acting` in-flight state is never wired to the buttons.
+
+**Surface:** Proposal tray (Make it so / Leave it) · **Finder:** code-plan-coach · **Verdict:** confirmed
 
 **Evidence:** plan.tsx:419-426 approve/decline mutations have no onError — onSettled just invalidates, so after a 409 from coach.ts:170/192 the now-expired proposal drops out of pendingProposals and the card disappears exactly as it would on success; the only trace is a low-key 'Expired — the moment passed' receipt written by the sweep (coach.ts:65). plan.tsx:434 computes `acting: approve.isPending || decline.isPending` but it is passed nowhere (grep shows a single occurrence), so 'Make it so' shows no pending state during multi-second applies (busy in ProposalCard covers only wake/send, plan.tsx:433, coach-panel.tsx:158-172).
 
@@ -259,10 +233,12 @@ Verification was capped at 10; several entries here independently corroborate co
 
 **Suggested fix:** Add onError handling that shows why the action failed (e.g. 'this proposal expired before you approved it — nothing was changed') and pass `acting` into ProposalCard as the busy/disabled state.
 
+**Verifier note:** Every cited line verified. plan.tsx:419-426 approve/decline have no onError and no global MutationCache handler exists (app.tsx:15-23), so the ApiError thrown by the api-client on the 409 (packages/api-client/src/index.ts:49-57; coach.ts:170/192 return not_pending) is silently swallowed; onSettled's invalidate then refetches coach-state, whose pendingProposals omits the expired proposal, making the card vanish identically to success. plan.tsx:434 `acting` is dead code (single source occurrence); ProposalCard's busy is coach.busy (wake/send/answer only), so approve/decline buttons never disable or show pending state. Repro is sound: hourly cron (apps/worker/src/index.ts:124) runs sweepExpiredProposals, flipping the DB row to expired while the stale client cache — widened by refetchOnWindowFocus:false and no refetch interval — still renders the card. Two additions: (1) absent a sweep, approving past expiresAt actually succeeds since the route checks only status, so the 409 specifically needs the cron/another-tab sweep (near-certain overnight); (2) the multi-device variant is worse — approve on phone then 'Leave it' on a stale tab silently vanishes while the change WAS applied. Severity 'important' is correctly calibrated: silent failure of the primary CTA plus missing in-flight feedback, but no data corruption and the server lifecycle is sound.
 
-### U11. [important · functional] Retire is a one-tap destructive action with no confirmation and no undo: it immediately archives every future scheduled session of the plan.
 
-**Surface:** Manage plans sheet · **Finder:** code-plan-coach
+### C18. [important · functional] Retire is a one-tap destructive action with no confirmation and no undo: it immediately archives every future scheduled session of the plan.
+
+**Surface:** Manage plans sheet · **Finder:** code-plan-coach · **Verdict:** confirmed
 
 **Evidence:** coach-panel.tsx:445-447 renders a plain 'Retire' button that calls onRetire directly; plan.tsx:487-492 fires the mutation with no confirm step; apps/worker/src/routes/coach.ts:288-297 applies `retirePlan`, and coach-apply.ts:306-331 archives all scheduled future workouts (`archiveReason: "user_removed"`) and flips the plan to retired — there is no un-retire route. Contrast with the workout-level 'Remove from plan', which requires a two-step confirm (plan.tsx:246-256).
 
@@ -270,10 +246,12 @@ Verification was capped at 10; several entries here independently corroborate co
 
 **Suggested fix:** Add the same two-step confirm used by Remove-from-plan (or an undo window) before applying retirePlan.
 
+**Verifier note:** All cited code verified by hand-trace. coach-panel.tsx:445-447 renders Retire as a plain btn-small (no danger class, no confirm state in the component) directly beside Rename; plan.tsx:672/487-492 fires api.coachPlanRetire immediately; api-client index.ts:582 -> POST /api/coach/plans/:id/retire; coach.ts:288-297 applies instantly with only a receipt; coach-apply.ts:306-331 archives all future scheduled sessions (archiveReason "user_removed") and flips the plan to retired. Disappearance is instant and real (plan.ts workout queries filter isNull(archivedAt)). No un-retire route exists (coach routes: list/rename/retire only; import-plan.ts's unarchive is COROS-import-only). Contrast with the two-step danger-styled Remove-from-plan (plan.tsx:246-256) is accurate, and notably Extend/Wind down in the same row route through the coach's draft-and-approve proposal flow — Retire is the only structural action that commits on one tap, strengthening the finding. Severity "important" is correctly stated (not critical): completed/skipped history is untouched and rows are soft-archived, so DB-level recovery exists, but there is no user-facing undo. Suggested fix (reuse the existing two-step confirm pattern) is apt.
 
-### U12. [important · functional] A dangling else left by the Strava-removal commit makes affectedDates.add(workout.effectiveDate) dead code, so a run matched to a workout on an adjacent day can be permanently missing from the garden.
 
-**Surface:** Garden ↔ activity-sync seam (completion pipeline) · **Finder:** code-worker
+### C19. [important · functional] A dangling else left by the Strava-removal commit makes affectedDates.add(workout.effectiveDate) dead code, so a run matched to a workout on an adjacent day can be permanently missing from the garden.
+
+**Surface:** Garden ↔ activity-sync seam (completion pipeline) · **Finder:** code-worker · **Verdict:** confirmed
 
 **Evidence:** apps/worker/src/services/completion.ts:577-580 — `if (newState === "completed") stats.completions += 1; else\n affectedDates.add(workout.effectiveDate);` where `newState` is the constant "completed" (line 568), so the add never executes. The orphaned unused `const hasCoros` at completion.ts:551 sits beside it. `git log -L545,590` shows commit f45f8fb ("remove Strava entirely") deleted `else stats.provisionalCompletions += 1;` and left the bare `else` to capture the previously unconditional `affectedDates.add(...)`. Downstream, resimulateFrom is driven only by stats.affectedDates[0] (apps/worker/src/routes/devices.ts:236-238, services/backfill.ts:230-233); garden checkpoints are written on Mondays (garden-sync.ts:449-461) and resimulateFrom restarts from the latest checkpoint ≤ affectedDate-1 (garden-sync.ts:487-498).
 
@@ -281,10 +259,12 @@ Verification was capped at 10; several entries here independently corroborate co
 
 **Suggested fix:** Delete the stray `else` (restore the unconditional `affectedDates.add(workout.effectiveDate);`) and remove the unused `hasCoros`; add a test asserting a cross-day match puts the workout's effectiveDate into stats.affectedDates.
 
+**Verifier note:** Confirmed by hand-trace. completion.ts:568 hardcodes newState="completed", so the else at 578-580 makes affectedDates.add(workout.effectiveDate) unreachable; git -L shows f45f8fb replaced `else stats.provisionalCompletions += 1;` with a bare `else`, capturing the previously unconditional add. Cross-day matches genuinely reach this code: the workout query spans effectiveDate±1 (completion.ts:494-503), matching.ts:41-44 scores ±1-day at up to 0.7 ("medium", passing the low-band skip at :545), and coros_plan_link matches at confidence 1 date-agnostically. Only the activity's own date enters affectedDates (:488), so resimulateFrom(activityDate) restarts from the workout-day checkpoint (CHECKPOINT_WEEKDAY=1, garden-sync.ts:75, 487-498) and the workout's day is never re-simulated; buildDayInput keys completed runs to effectiveDate (:168/175) and excludes the matched activity from the unplanned path (:208), so the run appears on no garden day, and buildGardenTimeline (:873-889) plus visitors (:697-705) fold the stale stored input row. Two precision fixes: (1) resimulateFrom rebuilds inputs fresh — the permanence mechanism there is the checkpoint short-circuit, not stale-row consumption (stale-row consumption is literally true only for timeline/visitors); (2) "permanently" = indefinite in normal operation but healed by any future resim with affectedDate ≤ the workout day or a SIMULATION_VERSION bump (garden-sync.ts:385-386). Severity "important" is correctly stated; suggested fix is right.
 
-### U13. [important · functional] deleteAllUserData misses 13 tables — every coach table, the garden visitor ledger, gardenSeen, gardenSceneLayouts, backfillState, syncIntents, and syncNotes survive "delete everything".
 
-**Surface:** Settings → Delete all data (POST /api/settings/delete-all) · **Finder:** code-worker
+### C20. [important · functional] deleteAllUserData misses 13 tables — every coach table, the garden visitor ledger, gardenSeen, gardenSceneLayouts, backfillState, syncIntents, and syncNotes survive "delete everything".
+
+**Surface:** Settings → Delete all data (POST /api/settings/delete-all) · **Finder:** code-worker · **Verdict:** confirmed
 
 **Evidence:** apps/worker/src/routes/misc.ts:1265-1370: the childTables/userTables lists omit coachPlans, coachPlanWeeks, coachMemory, coachMessages, coachProposals, coachQuestions, coachTriggers (packages/database/src/schema/coach.ts — all carry user_id), gardenVisitors, gardenSeen, gardenSceneLayouts (schema/garden.ts:123-159, 96-101), backfillState, syncIntents, syncNotes. The route's own doc comment (misc.ts:1259-1264) declares that a forgotten table 'leaves the user's data behind after they asked for it to be gone'; the only guard test (apps/worker/test/studio-push.test.ts:1890-1896) asserts just the three studio tables. Coach tables, gardenVisitors, and backfillState all arrived with the three freshly merged features — a cross-feature seam the delete list was never updated for.
 
@@ -292,10 +272,12 @@ Verification was capped at 10; several entries here independently corroborate co
 
 **Suggested fix:** Add the 13 missing tables to the appropriate lists in deleteAllUserData, and replace the spot-check test with one that enumerates every exported sqliteTable in @rg/database and asserts each is either deleted or on an explicit global-table allowlist (gardenSpecies, corosExercises, schemaVersions).
 
+**Verifier note:** Confirmed by full hand-trace of deleteAllUserData (misc.ts:1265-1370): all 13 cited tables (7 coach, gardenVisitors/gardenSeen/gardenSceneLayouts, backfillState, syncIntents, syncNotes) are absent from every deletion group. No FK cascade can rescue them — zero .references() in the schemas and zero ON DELETE/REFERENCES users/CREATE TRIGGER across all 13 migration files — and the only other delete path is a per-item coach memory route (coach.ts:258). The sole guard test (studio-push.test.ts:1882-1897) asserts only 3 studio tables, as claimed. coachPlanWeeks lacks user_id but is orphaned via user-scoped coachPlans, so the count of 13 holds. Severity "important" is accurate (not overstated): coach conversation history and learned personal memory survive an explicit "delete everything" — a broken privacy promise, though single-user so no cross-user exposure. Suggested enumerate-all-tables test is the right fix.
 
-### U14. [important · functional] resimulateFrom deletes the garden's entire durable history and persists a genesis snapshot before a full-history replay with no transaction, and every failure is swallowed — a mid-replay failure silently regresses the garden to a newborn state that repeated loads may never heal.
 
-**Surface:** Garden resimulation (SIMULATION_VERSION 6 upgrade + deep-backfill chunks) · **Finder:** code-worker
+### C21. [important · functional] resimulateFrom deletes the garden's entire durable history and persists a genesis snapshot before a full-history replay with no transaction, and every failure is swallowed — a mid-replay failure silently regresses the garden to a newborn state that repeated loads may never heal.
+
+**Surface:** Garden resimulation (SIMULATION_VERSION 6 upgrade + deep-backfill chunks) · **Finder:** code-worker · **Verdict:** confirmed
 
 **Evidence:** apps/worker/src/services/garden-sync.ts:385-386 (version<6 → resimulateFrom(createdDate)); :487-501 (no checkpoint before affectedDate → initialSnapshot, restartAfter=createdDate-1); :504-515 (deletes ALL gardenEvents/gardenDayInputs/gardenSnapshots then persistSnapshot(genesis) BEFORE replaying); :466 (advanceGarden persists the advanced snapshot only after a COMPLETE pass — no mid-loop durability); :640 (buildGardenView swallows any advanceGarden failure with .catch(() => undefined)); backfill.ts:230-233 (every backfill chunk calls resimulateFrom(stats.affectedDates[0]) — for the deep 5-year walk that date predates genesis, so every chunk with activities triggers the full genesis replay, ~8-12 sequential D1 queries per garden day via buildDayInput, even though simulate.ts:179 ignores pre-genesis days entirely, also .catch(() => undefined)). The v6 bump ships in this merge, so every existing garden takes this path on first load after deploy.
 
@@ -303,32 +285,12 @@ Verification was capped at 10; several entries here independently corroborate co
 
 **Suggested fix:** Short-circuit resimulateFrom when affectedDate < snapshot.state.createdDate (backfill chunks then cost nothing); for the version-upgrade path, replay in bounded slices that persist intermediate snapshots (advanceGarden already writes Monday checkpoints — also persist gardenState per slice so progress is durable), and only delete events/inputs for the range about to be rebuilt rather than everything up front.
 
-
-### U15. [important · functional] Opening the Plan page never lands on the current week — the coach thread's auto-scroll drags the page back to the top, leaving the user on June's wall of 'missed' workouts.
-
-**Surface:** Plan screen (desktop + mobile) · **Finder:** code-css
-
-**Evidence:** coach-panel.tsx:212-215 (`endRef.current?.scrollIntoView({ block: "end" })` on every messages change — scrollIntoView scrolls ALL ancestors including the document) races plan.tsx:509-514 (scroll today's week to center, once). Verified live on the fixture stack: after load, window.scrollY = 0 while `.cal-week.current` top = 1526px (desktop 1710px) and 4437px (536px width). Screenshot ss_7597hjyeh shows the landing view stuck at June 2026.
-
-**Repro:** Open /plan and wait for both queries to settle; the page rests at the top (coach panel + June), not today's week.
-
-**Suggested fix:** Scroll the thread container directly (`el.parentElement.scrollTop = el.parentElement.scrollHeight` or scrollIntoView on the container with overflow anchoring) instead of document-level scrollIntoView; or only autoscroll the thread when it's already in view.
+**Verifier note:** Confirmed by hand-trace of every cited line. resimulateFrom(createdDate) finds no checkpoint ≤ createdDate-1 (Mondays are all ≥ createdDate), takes the genesis path (restartAfter = createdDate-1 per simulate.ts:39), deletes ALL events/inputs/checkpoints (gte createdDate), wipes gardenPlants, and persists the genesis snapshot — no transaction (plain drizzle-d1 sequential awaits; Workers+D1 per wrangler.toml) — before the full replay, which persists gardenState only after a complete pass (garden-sync.ts:466). Key no-heal claim survives adversarial tracing: initialSnapshot stamps version 6 (simulate.ts:74), so post-crash loads skip the resim branch yet advanceGarden restarts at createdDate with identical cost (buildDayInput re-queries source tables; the mid-loop Monday checkpoints are only ever read by resimulateFrom, which is no longer invoked — and backfill's pre-genesis affectedDate finds no checkpoint either). All failures swallowed (:640 plus plan.ts:477/518/579/616/672, misc.ts:242, backfill.ts:232). backfill.ts:230-233 and simulate.ts:179 verified verbatim: every deep chunk's resim is a semantic no-op that still wipes+replays everything, sharing one request budget with the chunk ingest — the plausible pre-September trigger. Corrections: per-day cost is ~6 baseline / 8-12 with completed workouts (estimate at the high end); at 77 days today the plain-load replay (~550-700 subrequests) likely still fits under ~1000, so the September crossover framing is right for that path. Bonus defect found: a v<6 garden with lastSimulatedDate = createdDate-1 infinitely mutually recurses advanceGarden:386 ↔ resimulateFrom:483-484. Severity "important" is correctly calibrated: silent, self-perpetuating, destroys visible garden/feed/timeline, but source tables are untouched so a fixed deploy can deterministically rebuild — no unrecoverable data loss.
 
 
-### U16. [important · visual] The desktop coach panel renders inline at the top of the mobile Plan page, filling the first viewport before the calendar, while the floating Coach pill + sheet duplicate the exact same surface.
+### C22. [important · functional] A coach proposal that adds a session to an empty day is completely invisible on the mobile calendar — the agenda view hides the entire day cell, ghost included.
 
-**Surface:** Plan screen (mobile <1024px) · **Finder:** code-css
-
-**Evidence:** plan.tsx:572-573 renders `<div className="plan-split-coach">{coachPanelEl}</div>` unconditionally; styles.css has no rule hiding `.plan-split-coach` below 1024px (only `.coach-pill` is display:none ABOVE 1024, styles.css:3530). Verified at 536px: panel rect {top:120, h:384} above the calendar plus visible Coach pill — screenshot ss_9832987a3. Duplicate mounted CoachPanels also duplicate DOM ids `proposal-<id>` (coach-panel.tsx:137), so focusProposal (plan.tsx:444-453) flashes the hidden inline copy, not the open sheet.
-
-**Repro:** Open /plan at any width under 1024px.
-
-**Suggested fix:** Hide `.plan-split-coach` under 1024px (the pill+sheet is the designed mobile surface), or drop the pill/sheet and keep one instance; ensure only one CoachPanel with `proposal-*` ids is mounted at a time.
-
-
-### U17. [important · functional] A coach proposal that adds a session to an empty day is completely invisible on the mobile calendar — the agenda view hides the entire day cell, ghost included.
-
-**Surface:** Plan calendar (mobile <=640px) x coach ghosts · **Finder:** code-css
+**Surface:** Plan calendar (mobile <=640px) x coach ghosts · **Finder:** code-css · **Verdict:** confirmed
 
 **Evidence:** styles.css:830-832 (`@media (max-width:640px) .cal-day:not(.has-items):not(.is-today) { display:none }`) — `has-items` comes only from real workouts (plan.tsx:603 `day.items.length > 0`), while pending-proposal ghosts render inside that same `.cal-day` (plan.tsx:612-623). Verified live at 536px: an empty `.cal-day`'s computed display is `none`. Any `add` / `firmUp` / `createPlan` ghost dated on a workout-free day (styles.css:3506 `.cal-ghost-incoming`) is inside a hidden cell.
 
@@ -336,10 +298,12 @@ Verification was capped at 10; several entries here independently corroborate co
 
 **Suggested fix:** Include ghost-bearing dates when computing the day's `has-items` class (e.g. `day.items.length > 0 || ghostsByDate.has(day.date)`).
 
+**Verifier note:** Confirmed by full static hand-trace; no live check needed — the CSS is unambiguous. styles.css:813-832: inside @media (max-width:640px), `.cal-day:not(.has-items):not(.is-today){display:none}`. plan.tsx:603 sets has-items solely from day.items.length>0, and buildMonths (plan.tsx:290-323) fills day.items only from real workouts; ghostsByDate (plan.tsx:498-501) never influences it. Ghosts render as children of the same .cal-day (plan.tsx:612-623), so they vanish with the cell. No rescue rule exists — zero `:has()` selectors in the entire stylesheet and nothing re-displays the cell. Scope is slightly BROADER than claimed: besides add/firmUp/createPlan (plus reshapeWeek/windDown), a `move` op's incoming ghost (coach-panel.tsx:83, op.toDate) is also swallowed when the destination day is empty — so moving a workout to a rest day shows only the outgoing ghost on mobile. Severity "important" is correct, with one mitigation to record: the user is not blocked — the coach pill (plan.tsx:647-649) badges the pending count and the sheet retains approve/decline; what is lost is the only per-date preview of where sessions land, and since `add` ops target workout-free days almost by definition, the calendar-ghost feature is effectively non-functional for adds on mobile. Suggested fix (OR ghostsByDate.has(day.date) into has-items at plan.tsx:603) is correct and minimal.
 
-### U18. [important · visual] The Next Workout dock panel has no height cap and covers the entire top-left HUD — condition word, weather, forecast, and the arrival beat lines with their dismiss/'See all' buttons are hidden and unclickable at common laptop viewport heights.
 
-**Surface:** Garden desktop stage (>=1024px, short viewports) · **Finder:** code-css
+### C23. [important · visual] The Next Workout dock panel has no height cap and covers the entire top-left HUD — condition word, weather, forecast, and the arrival beat lines with their dismiss/'See all' buttons are hidden and unclickable at common laptop viewport heights.
+
+**Surface:** Garden desktop stage (>=1024px, short viewports) · **Finder:** code-css · **Verdict:** confirmed
 
 **Evidence:** styles.css:1123-1156 (.hud-dock bottom-anchored, .dock-panel with no max-height/overflow) vs styles.css:1017-1026 (.hud-topleft). Measured at 1024x591 viewport: dock-panel rect {x:243,y:63,w:389,h:531} fully covers hud-topleft {x:243,y:75,w:321,h:87} — overlap confirmed true. Screenshot ss_3155cur9k: no condition word or forecast visible anywhere; the card also butts past the viewport bottom.
 
@@ -347,21 +311,12 @@ Verification was capped at 10; several entries here independently corroborate co
 
 **Suggested fix:** Give .dock-panel a max-height (e.g. calc(100dvh - 12rem)) with internal overflow-y auto, or auto-collapse the dock when the stage is short.
 
-
-### U19. [important · visual] The coach panel's sticky positioning is dead code — the selector targets a child that doesn't exist, so scrolling the calendar leaves a giant empty left column.
-
-**Surface:** Plan screen (desktop >=1024px) · **Finder:** code-css
-
-**Evidence:** styles.css:3362 `.plan-split > .coach-panel { position: sticky; top: 0.8rem; }` never matches: the panel is wrapped in `<div className="plan-split-coach">` (plan.tsx:573), which has no CSS anywhere. Verified live: getComputedStyle(.coach-panel).position === 'static'. Screenshot after scrolling to August: the whole left grid column (~390px wide) is blank while browsing the calendar.
-
-**Repro:** Open /plan on desktop and scroll to today's week; the coach panel scrolls away and dead space remains.
-
-**Suggested fix:** Change the selector to `.plan-split > .plan-split-coach` (and put the sticky on the wrapper), or drop the wrapper div.
+**Verifier note:** Confirmed by hand-trace. .hud-dock (styles.css:1123) is bottom-anchored absolute with no top/max-height; .dock-panel (styles.css:1148) has no max-height/overflow, and no @media (max-height) exists anywhere in the stylesheet. Dock defaults to expanded (garden.tsx:668-670, localStorage-gated). Since .hud-dock (garden.tsx:1374) follows .hud-topleft (garden.tsx:1269) in DOM with no z-indexes, the panel wins both painting and hit-testing — covered buttons (beat dismiss, 'See all') are truly unclickable. Claimed measurements are internally consistent with the CSS (panel w:389 = 38vw at 1024; identical x:243 from the shared left clamp) and the panel's ~530px content height is corroborated by garden-desktop.png (~500px at 1440 wide). Geometry from CSS constants: overlap begins below ~686px viewport height; FULL coverage of the top-left block needs <=~600px. Severity 'important' is correct, with one nuance: at the most common short case (1366x768 laptop, maximized browser, ~650px viewport) coverage is partial — forecast and beat lines with their buttons are hidden but the condition word usually survives; total coverage requires half-height/short windows like the measured 1024x591. The 'butts past viewport bottom' detail is a ~3px measurement artifact and should be dropped. Suggested fix (max-height with internal overflow-y, or auto-collapse on short stages) is sound.
 
 
-### U20. [important · visual] In dark mode the 'Needs you' proposal tray keeps its hardcoded cream background, making its amber heading (~2.2:1) and the pale-green 'and N more…' link (~1.8:1) unreadable, with dark proposal cards floating on a cream slab.
+### C24. [important · visual] In dark mode the 'Needs you' proposal tray keeps its hardcoded cream background, making its amber heading (~2.2:1) and the pale-green 'and N more…' link (~1.8:1) unreadable, with dark proposal cards floating on a cream slab.
 
-**Surface:** Coach proposal tray (dark mode) · **Finder:** code-css
+**Surface:** Coach proposal tray (dark mode) · **Finder:** code-css · **Verdict:** confirmed
 
 **Evidence:** styles.css:3382-3386 `.coach-tray { background: #fffdf6 }` has no dark override. Verified computed styles under data-theme="dark": tray background stays rgb(255,253,246); `.coach-tray-head` color rgb(208,160,90) (--warn dark) and `.linklike` rgb(156,199,168) (--green-ink dark) — both far below 4.5:1 on cream; `.coach-prop` cards inside are dark --bg-raised rgb(33,36,34).
 
@@ -369,10 +324,12 @@ Verification was capped at 10; several entries here independently corroborate co
 
 **Suggested fix:** Replace #fffdf6 with a token (e.g. color-mix of --warn-soft and --bg-raised) that themes both ways.
 
+**Verifier note:** Confirmed by hand-trace. styles.css:3385 hardcodes `background: #fffdf6` on .coach-tray with no dark override anywhere (only occurrence of the hex; none of the four dark-theme blocks touch it; single stylesheet, no later rule). Dark tokens resolve exactly as claimed: .coach-tray-head uses --warn #d0a05a, .linklike uses --green-ink #9cc7a8, .coach-prop uses --bg-raised #212422. Independent contrast math: heading 2.33:1 (claim ~2.2:1) and 'and N more…' link 1.85:1 (claim ~1.8:1) on cream — both far below 4.5:1 for small text (0.68rem heading, body-size link). Markup verified at coach-panel.tsx:197-207: 'Needs you · N' heading and the tray-level linklike sit directly on the cream slab; dark proposal cards float on it. Severity 'important' is correctly stated: dark-mode-only and gated on pending proposals, but the 1.85:1 'and N more…' control is the sole path to proposals beyond TRAY_CAP; not critical because card content and approve/decline buttons stay readable (light-on-dark). Nuance: the 'Why?' linklike inside cards is unaffected (green on dark card) — only the tray-level link fails. Suggested tokenized-background fix is the right shape.
 
-### U21. [important · visual] The floating Coach pill ignores the safe-area inset, so on phones with a home indicator the bottom nav (z-index 40) covers ~25px of the 35px-tall pill (z-index 30), leaving a sliver to tap.
 
-**Surface:** Plan screen (mobile, iPhone-class devices) · **Finder:** code-css
+### C25. [important · visual] The floating Coach pill ignores the safe-area inset, so on phones with a home indicator the bottom nav (z-index 40) covers ~25px of the 35px-tall pill (z-index 30), leaving a sliver to tap.
+
+**Surface:** Plan screen (mobile, iPhone-class devices) · **Finder:** code-css · **Verdict:** confirmed
 
 **Evidence:** styles.css:3516-3529 `.coach-pill { bottom: 4.2rem; z-index: 30 }` (no env() term) vs styles.css:198-209 `.bottom-nav { height: calc(58px + env(safe-area-inset-bottom)); z-index: 40 }`. Measured live with zero inset: pill h=35px, gap to nav top = 9px — any safe-area inset over 9px (iPhone portrait is ~34px) pushes the nav's top edge over the pill; the nav paints above it.
 
@@ -380,10 +337,12 @@ Verification was capped at 10; several entries here independently corroborate co
 
 **Suggested fix:** bottom: calc(4.2rem + env(safe-area-inset-bottom, 0px)) on .coach-pill.
 
+**Verifier note:** Verified by hand-trace. styles.css:3516-3529 has .coach-pill{bottom:4.2rem; z-index:30} with no env() term; styles.css:198-209 has .bottom-nav{height:calc(var(--nav-height,58px)+env(safe-area-inset-bottom)); z-index:40}; apps/web/index.html:7 sets viewport-fit=cover so the inset is real (~34px on Face-ID iPhones). Geometry reproduces exactly: pill h≈35px (2×0.55rem padding + 0.9rem line box @16px root), 9.2px gap at zero inset, 24.8px (~25px) occlusion at 34px inset, ~10px tappable sliver; nav paints above (z 40>30, root stacking context, no transformed ancestor). Worse than stated in one way: nav padding-bottom=inset keeps link hit-targets spanning the whole overlap, so mis-taps navigate to another tab. Severity 'important' is correct but two tempering nuances: overlap appears only when Safari's toolbar minimizes (scroll) or in standalone PWA mode (inset=0 with toolbar expanded), and the pill is not the sole coach route on mobile — plan.tsx:572-573 renders the inline CoachPanel unconditionally and no CSS hides it below 1024px. Suggested fix (bottom: calc(4.2rem + env(safe-area-inset-bottom, 0px))) is correct.
 
-### U22. [important · visual] Opening the Timeline drops its panel directly on top of the open dock panel, covering the week ribbon and 'Minimize' at common laptop widths.
 
-**Surface:** Garden desktop stage — timeline vs dock · **Finder:** code-css
+### C26. [important · visual] Opening the Timeline drops its panel directly on top of the open dock panel, covering the week ribbon and 'Minimize' at common laptop widths.
+
+**Surface:** Garden desktop stage — timeline vs dock · **Finder:** code-css · **Verdict:** confirmed
 
 **Evidence:** styles.css:1250-1255 (.stage-timeline centered, bottom ~4.6-6.5rem, width min(640px,58vw)) vs styles.css:1123-1156 (bottom-left dock, panel min(26rem,38vw)). Measured at 1024px width: timeline rect {x:320,y:484,w:594,h:86} overlaps dock-panel {x:243,y:63,w:389,h:531} (overlap=true); screenshot ss_7521o1qo7 shows the timeline slab sitting across the dock's week-ribbon dots and quest line. Geometry overlaps at all stage widths below ~1900px.
 
@@ -391,10 +350,12 @@ Verification was capped at 10; several entries here independently corroborate co
 
 **Suggested fix:** Auto-collapse the dock while the timeline is open, or offset the timeline to clear `min(26rem,38vw)` from the left.
 
+**Verifier note:** Confirmed by hand-traced geometry: timelineOpen/dockOpen are independent (packages/ui/src/screens/garden.tsx:664,668-670,1443 — nothing collapses the dock), .stage-timeline renders after .hud-dock with no z-index on either, so it paints on top (garden.tsx:1374 vs 1450). With the 210px side-nav (styles.css:243), at 1024px the dock panel spans x 243-632 and the timeline x 320-914 — a ~312px overlap across the panel's right side, exactly matching the claimed rects; the timeline's vertical band (bottom clamp(4.6rem,9vh,6.5rem)) intersects the panel's week-ribbon region. Overlap persists at all laptop widths (still ~167px at 1440) and clears at ~1784px viewport, not ~1900px as claimed. Two overstatements: (1) the 'Minimize' link is NOT covered — it sits at x~250-310 and within ~75px of the stage bottom, left of and below the timeline slab at every width, so recovery is always available; (2) cited screenshot ss_7521o1qo7 does not exist in /tmp/rg-audit/shots (garden-desktop.png only confirms the closed-timeline dock extent). Severity: 'important' is defensible but upper-edge — it occludes the right half of the week ribbon, the grows line, and the workout card's right edge, yet is fully recoverable via the timeline's own close button or Minimize. Suggested fix (auto-collapse dock while timeline is open) is sound and small.
 
-### U23. [important · functional] Clicking a calendar ghost on desktop opens the mobile coach Sheet as a duplicate modal over the calendar — the code comments it as a visual no-op, but Sheet renders at every width — while the scroll-and-flash lands on the inline panel hidden behind the backdrop.
 
-**Surface:** Plan calendar ghost tap (desktop >=1024px) · **Finder:** code-css
+### C27. [important · functional] Clicking a calendar ghost on desktop opens the mobile coach Sheet as a duplicate modal over the calendar — the code comments it as a visual no-op, but Sheet renders at every width — while the scroll-and-flash lands on the inline panel hidden behind the backdrop.
+
+**Surface:** Plan calendar ghost tap (desktop >=1024px) · **Finder:** code-css · **Verdict:** confirmed
 
 **Evidence:** plan.tsx:502-505 (`setCoachOpen(true); // no-op visually on desktop`) + components.tsx:406 (Sheet returns markup whenever open, no width guard) + plan.tsx:650 mounts the coach Sheet unconditionally; focusProposal (plan.tsx:444-453) uses getElementById on `proposal-<id>`, which resolves to the first (inline-panel) copy in DOM order, behind the sheet-backdrop (z-index 60, styles.css:2442).
 
@@ -402,8 +363,25 @@ Verification was capped at 10; several entries here independently corroborate co
 
 **Suggested fix:** Only setCoachOpen on <1024px viewports (share the garden's useIsDesktop hook); scope focusProposal to the visible panel.
 
+**Verifier note:** Every link in the chain survives hand-tracing. (1) plan.tsx:502-505: onGhostTap calls setCoachOpen(true) with the literal comment "// no-op visually on desktop (panel always mounted)" — but that assumption is false. (2) components.tsx:406: Sheet renders whenever `open` with no width guard; its own docstring (line 390) says "Bottom sheet on mobile, centered dialog on desktop", i.e. it deliberately renders on desktop. (3) plan.tsx:650 mounts the coach Sheet unconditionally with open={coachOpen}. (4) styles.css:2442-2450: .sheet-backdrop is position:fixed inset:0, z-index 60, dimmed; the >=1024px block (2479-2491) only changes alignment/radius — nothing hides it. Meanwhile .coach-pill IS display:none at >=1024px (styles.css:3530), confirming the sheet was intended as a mobile-only affordance. (5) Duplicate-ID claim confirmed: the inline panel (plan.tsx:573) and the sheet both render ProposalCard, which stamps id=`proposal-<id>` (coach-panel.tsx:137); getElementById returns the first in document order — the inline copy — which sits behind the z-60 backdrop. Timing doesn't rescue it: whether the rAF in focusProposal fires before or after the sheet commit, the inline copy is first either way. Bonus corroboration: useDialogFocus (components.tsx:381) sets body overflow:hidden and moves focus into the dialog, so the scroll-and-flash is doubly invisible. proposalId provenance checks out (pendingByDate uses p.id, matching the DOM id). Refutation attempts that failed: no media-query reset of coachOpen, no width-conditional ghost rendering, no CSS hiding .plan-split-coach or .sheet at desktop. Severity: "important" is right but marginally overstated — the centered dialog contains the full CoachPanel including the pending-proposals tray, so the user can still see and act on the proposal; the cost is a redundant modal, a lost which-proposal highlight (matters when several are pending), duplicate DOM ids, and one extra Escape/close — confusing, not blocking. Suggested fix is sound: useIsDesktop exists at packages/ui/src/screens/garden.tsx:80 (currently module-private, would need exporting), and focusProposal should scope its query to the visible panel or use unique ids per mount.
 
-## Minors (polish) (22)
+
+## Corroborating duplicates (folded into confirmed findings above)
+
+- (code-plan-coach) The desktop coach panel's sticky rule targets a selector that matches nothing, so the panel scrolls off-screen and the auto-scroll-to-today leaves desktop users with no visible or reachable coach UI.
+
+- (code-plan-coach) No CSS ever hides `.plan-split-coach` on mobile, so the full coach panel (up to 84vh) renders above the calendar while the Coach pill opens a second duplicate copy in a sheet.
+
+- (code-plan-coach) CoachThread's scrollIntoView scrolls the window, so the plan page's initial scroll-to-today is raced and then yanked back to the coach panel whenever a message lands (which in fixture mode is every visit, when the failed auto-wake's receipt arrives).
+
+- (code-css) Opening the Plan page never lands on the current week — the coach thread's auto-scroll drags the page back to the top, leaving the user on June's wall of 'missed' workouts.
+
+- (code-css) The desktop coach panel renders inline at the top of the mobile Plan page, filling the first viewport before the calendar, while the floating Coach pill + sheet duplicate the exact same surface.
+
+- (code-css) The coach panel's sticky positioning is dead code — the selector targets a child that doesn't exist, so scrolling the calendar leaves a giant empty left column.
+
+
+## Minors (polish — not individually verified) (22)
 
 
 ### M1. [minor · copy] '8 plants, 9 species.' pairs the living-plant count with the lifetime-unlocked species count, an impossible-sounding stat since only 4 species are currently living.
@@ -646,3 +624,18 @@ Verification was capped at 10; several entries here independently corroborate co
 **Repro:** Arrive with a fresh species unlock (ceremony showing), then click a balance bar top-right at a ~1024-1200px window.
 
 **Suggested fix:** Give .balance-detail-hud a higher z-index than .hud-ceremony, or cap the ceremony's left position so it clears right-side panels.
+
+
+## Suggested fix order
+
+1. **Deploy the lap-ingest fix** (already on the branch) — active data loss in prod.
+
+2. **Plan-page bundle:** coach-thread window-scroll hijack (C3/C…), duplicate error-row stacking + unbounded receipts, mobile double coach panel, dead sticky rule, calendar title clipping, Today behavior — one focused PR restores the whole surface.
+
+3. **Data-integrity pair:** deleteAllUserData's 13 missing tables; resimulateFrom's non-transactional delete-then-replay (guard with a checkpoint or write-ahead).
+
+4. **Silent-failure trio:** composer swallowing failed sends, proposal 409s reading as success, Retry no-op.
+
+5. **Garden presentation:** dock-over-plants composition, sheltered-clock recency copy, shield-caption preview seam, ceremony-queue strand, seen-watermark vs resim.
+
+6. Dark-mode/safe-area/touch-target sweep from the minors + confirmed visual set.
