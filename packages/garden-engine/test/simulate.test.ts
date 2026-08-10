@@ -930,3 +930,89 @@ describe("v1 snapshot self-healing (missing tri-discipline fields)", () => {
     }
   });
 });
+
+function adventureDay(date: string, extra: Partial<GardenDayInput> = {}): GardenDayInput {
+  return { ...emptyDay(date), adventures: [{ sport: "hike", trainingLoad: 90, durationMin: 200 }], ...extra };
+}
+
+describe("adventures", () => {
+  it("freezes all clocks on a qualifying adventure day — freeze, never reset", () => {
+    let snap = initialSnapshot(START);
+    // 3 plain days: run clock 3, strength/yoga clocks 3
+    for (let i = 1; i <= 3; i++) snap = simulateDay(snap, emptyDay(addDays(START, i))).snapshot;
+    const before = snap.state.daysSinceCompletedRun;
+    snap = simulateDay(snap, adventureDay(addDays(START, 4))).snapshot;
+    expect(snap.state.daysSinceCompletedRun).toBe(before); // held, not reset
+    expect(snap.state.daysSinceStrength).toBe(3);
+    expect(snap.state.daysSinceYoga).toBe(3);
+    expect(snap.state.lastAdventureDate).toBe(addDays(START, 4));
+    expect(snap.state.weekDisciplines.adventure).toBe(true);
+  });
+
+  it("a sub-threshold stroll is recorded but garden-neutral", () => {
+    let snap = initialSnapshot(START);
+    const d1 = simulateDay(snap, {
+      ...emptyDay(addDays(START, 1)),
+      adventures: [{ sport: "walk", durationMin: 20 }],
+    }).snapshot;
+    const d1plain = simulateDay(snap, emptyDay(addDays(START, 1))).snapshot;
+    expect(d1.state).toEqual(d1plain.state); // identical outcome
+  });
+
+  it("boosts moisture, soil and the life bonus (capped by the shared reservoirs)", () => {
+    let snap = initialSnapshot(START);
+    const before = snap.state;
+    const after = simulateDay(snap, adventureDay(addDays(START, 1))).snapshot.state;
+    // Adventure days are frozen: applyDailyDecay does NOT run, so the only
+    // moisture change is the adventure's own +0.05 watering.
+    expect(after.moisture).toBeCloseTo(Math.min(1, before.moisture + 0.05), 5);
+    expect(after.soilHealth).toBeGreaterThan(before.soilHealth);
+    expect(after.lifeBonusBiodiversity).toBeCloseTo(0.03, 5);
+    expect(after.lifeBonusFlowering).toBeCloseTo(0.02, 5);
+  });
+
+  it("recovery-aware grace: tired days after a trip are shielded, capped at 2", () => {
+    let snap = initialSnapshot(START);
+    snap = simulateDay(snap, adventureDay(addDays(START, 1))).snapshot;
+    const clocks = snap.state.daysSinceStrength;
+    snap = simulateDay(snap, { ...emptyDay(addDays(START, 2)), recoveryScore: 40 }).snapshot;
+    snap = simulateDay(snap, { ...emptyDay(addDays(START, 3)), recoveryScore: 55 }).snapshot;
+    expect(snap.state.daysSinceStrength).toBe(clocks); // two shielded days
+    snap = simulateDay(snap, { ...emptyDay(addDays(START, 4)), recoveryScore: 30 }).snapshot;
+    expect(snap.state.daysSinceStrength).toBe(clocks + 1); // window over: cap is 2
+  });
+
+  it("heuristic grace: a big day banks a shield for dates without health data", () => {
+    let snap = initialSnapshot(START);
+    snap = simulateDay(snap, adventureDay(addDays(START, 1))).snapshot; // big → banks 1
+    expect(snap.state.adventureGraceDays).toBe(1);
+    const clocks = snap.state.daysSinceStrength;
+    snap = simulateDay(snap, emptyDay(addDays(START, 2))).snapshot; // spends it
+    expect(snap.state.daysSinceStrength).toBe(clocks);
+    expect(snap.state.adventureGraceDays).toBe(0);
+    snap = simulateDay(snap, emptyDay(addDays(START, 3))).snapshot; // bank empty → decays
+    expect(snap.state.daysSinceStrength).toBe(clocks + 1);
+  });
+
+  it("suppresses missed-run punishment on adventure days", () => {
+    let snap = initialSnapshot(START);
+    const withMiss = simulateDay(snap, {
+      ...adventureDay(addDays(START, 1)),
+      missedRuns: [{ workoutId: "w1" }],
+    }).snapshot;
+    const noMiss = simulateDay(snap, adventureDay(addDays(START, 1))).snapshot;
+    expect(withMiss.state.moisture).toBeCloseTo(noMiss.state.moisture, 5);
+  });
+
+  it("emits adventure_logged with the sport as detail", () => {
+    const { events } = simulateDay(initialSnapshot(START), adventureDay(addDays(START, 1)));
+    const e = events.find((x) => x.kind === "adventure_logged");
+    expect(e?.detail).toBe("hike");
+  });
+
+  it("is deterministic: same inputs twice, deep-equal state", () => {
+    const days = [adventureDay(addDays(START, 1)), { ...emptyDay(addDays(START, 2)), recoveryScore: 40 }];
+    const run = () => days.reduce((s, d) => simulateDay(s, d).snapshot, initialSnapshot(START));
+    expect(run()).toEqual(run());
+  });
+});

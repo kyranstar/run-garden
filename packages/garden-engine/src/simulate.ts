@@ -1,5 +1,6 @@
 import type { GardenEvent, GardenPlant, LocalDate, WildlifeKind } from "@rg/domain";
 import { addDays, daysBetween, startOfIsoWeek } from "@rg/domain";
+import { ADVENTURE_TUNING, adventureGraceDay, isBigAdventure, qualifiesAsAdventure } from "./adventure.js";
 import { conditionWord, deriveWeather, seasonOf } from "./condition.js";
 import { choosePosition, chooseDeadWoodHost, chooseHostTree } from "./layout.js";
 import { pick, roll } from "./prng.js";
@@ -187,11 +188,14 @@ export function simulateDay(
   state.balancedWeekCount ??= 0;
   state.lifeBonusBiodiversity ??= 0;
   state.lifeBonusFlowering ??= 0;
+  state.lastAdventureDate ??= null;
+  state.adventureGraceDays ??= 0;
   state.weekDisciplines ??= {
     weekStart: startOfIsoWeek(input.date),
     run: false,
     strength: false,
     yoga: false,
+    adventure: false,
   };
   const events: GardenEvent[] = [];
   let seq = 0;
@@ -212,7 +216,7 @@ export function simulateDay(
   if (weekStart !== state.weekDisciplines.weekStart) {
     const closing = state.weekDisciplines;
     if (closing.run && closing.strength && closing.yoga) state.balancedWeekCount += 1;
-    state.weekDisciplines = { weekStart, run: false, strength: false, yoga: false };
+    state.weekDisciplines = { weekStart, run: false, strength: false, yoga: false, adventure: false };
   }
 
   // Rest-mode transitions.
@@ -234,8 +238,27 @@ export function simulateDay(
   const comebackToday =
     plannedRuns.length > 0 && state.daysSinceCompletedRun >= cfg.droughtStartDays;
 
+  // Adventures: optional sports shelter the garden — never feed the clocks.
+  const adventures = (input.adventures ?? []).filter(qualifiesAsAdventure);
+  const adventureToday = adventures.length > 0;
+  const graceDay = adventureGraceDay(
+    { lastAdventureDate: state.lastAdventureDate ?? null, adventureGraceDays: state.adventureGraceDays ?? 0 },
+    {
+      date: input.date,
+      hasSession: runs.length > 0,
+      adventureToday,
+      restMode: state.restMode,
+      planGap: input.planGap,
+      recoveryScore: input.recoveryScore,
+    },
+  );
+  const adventureFrozen = adventureToday || graceDay;
+  if (graceDay && input.recoveryScore === undefined) {
+    state.adventureGraceDays = Math.max(0, (state.adventureGraceDays ?? 0) - 1);
+  }
+
   // 1. Missed runs resolved today (explicit skips / aged-out) — dryness debt only.
-  if (!state.restMode) {
+  if (!state.restMode && !adventureFrozen) {
     for (const missed of input.missedRuns) {
       state.moisture = Math.max(0.05, state.moisture - 0.06);
       for (const p of livingPlants(snapshot.plants)) {
@@ -263,12 +286,31 @@ export function simulateDay(
     state.moisture = Math.min(1, state.moisture + 0.08);
   }
 
+  // 3b. Adventures tend the garden: life bonus (shared reservoirs), a light
+  //     watering, a little soil. Smaller than a run's rain on purpose.
+  for (const a of adventures) {
+    tendLifeAxis(state, 0.03, 0.02);
+    state.moisture = Math.min(1, state.moisture + 0.05);
+    state.soilHealth = Math.min(1, state.soilHealth + 0.02);
+    emit({ kind: "adventure_logged", detail: a.sport });
+  }
+  if (adventureToday) {
+    state.lastAdventureDate = input.date;
+    state.weekDisciplines.adventure = true;
+    if (adventures.some(isBigAdventure)) {
+      state.adventureGraceDays = Math.min(
+        ADVENTURE_TUNING.graceCap,
+        (state.adventureGraceDays ?? 0) + 1,
+      );
+    }
+  }
+
   if (runSessions.length > 0) {
     if (plannedRuns.length > 0) {
       state.daysSinceCompletedRun = 0;
       state.droughtDays = 0;
     }
-  } else if (!state.restMode) {
+  } else if (!state.restMode && !adventureFrozen) {
     // 4. A day with no completed run.
     if (input.restObserved) {
       state.soilHealth = Math.min(1, state.soilHealth + 0.01);
@@ -287,15 +329,15 @@ export function simulateDay(
     if (state.daysSinceStrength >= 3) emit({ kind: "soil_tended" });
     state.daysSinceStrength = 0;
     state.hasStrength = true;
-  } else if (!state.restMode) state.daysSinceStrength += 1;
+  } else if (!state.restMode && !adventureFrozen) state.daysSinceStrength += 1;
   if (yogaSessions.length > 0) {
     if (state.daysSinceYoga >= 3) emit({ kind: "life_tended" });
     state.daysSinceYoga = 0;
     state.hasYoga = true;
-  } else if (!state.restMode) state.daysSinceYoga += 1;
+  } else if (!state.restMode && !adventureFrozen) state.daysSinceYoga += 1;
 
   // 6. Neglect: each axis wilts on its own clock, gently and with a floor.
-  if (!state.restMode && !input.planGap) {
+  if (!state.restMode && !input.planGap && !adventureFrozen) {
     if (state.daysSinceStrength > 7) {
       state.soilHealth = Math.max(0.2, state.soilHealth - 0.02);
     }

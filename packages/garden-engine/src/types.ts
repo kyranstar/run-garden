@@ -8,7 +8,7 @@ import type {
   WorkoutCategory,
 } from "@rg/domain";
 
-export const SIMULATION_VERSION = 3;
+export const SIMULATION_VERSION = 4;
 
 /** The three disciplines the garden listens to; each drives its own axis. */
 export type Discipline = "run" | "strength" | "yoga";
@@ -113,7 +113,13 @@ export interface EngineGardenState {
   /** Mon–Sun weeks that held at least one run, one lift and one yoga session. */
   balancedWeekCount: number;
   /** Discipline flags for the in-progress Mon–Sun week. */
-  weekDisciplines: { weekStart: LocalDate; run: boolean; strength: boolean; yoga: boolean };
+  weekDisciplines: {
+    weekStart: LocalDate;
+    run: boolean;
+    strength: boolean;
+    yoga: boolean;
+    adventure?: boolean;
+  };
   /**
    * Yoga's standing contribution to the life axis. `biodiversity` and
    * `floweringDensity` are recomputed from the living plants every day, so the
@@ -124,6 +130,11 @@ export interface EngineGardenState {
    */
   lifeBonusBiodiversity: number;
   lifeBonusFlowering: number;
+
+  /** Most recent qualifying adventure day — anchors the grace window. */
+  lastAdventureDate?: LocalDate | null;
+  /** Banked heuristic grace days (used only for dates without recovery data). */
+  adventureGraceDays?: number;
 
   /** Garden birth date (never resets). */
   createdDate: LocalDate;
@@ -169,6 +180,12 @@ export interface GardenDayInput {
   planGap: boolean;
   /** On week-boundary days: previous week's plan adherence 0..1. */
   weekAdherence?: number;
+  /** Non-discipline sports completed this day (raw; the engine applies the
+   * effort threshold). Absent on days without adventures — stored inputs
+   * from before v4 replay unchanged. */
+  adventures?: Array<{ sport: string; trainingLoad?: number; durationMin?: number }>;
+  /** Coros recovery 0-100 for this date (higher = more recovered), when known. */
+  recoveryScore?: number;
 }
 
 export interface DayResult {

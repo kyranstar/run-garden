@@ -100,6 +100,7 @@ export const GARDEN_EVENT_KINDS = [
   "weather_changed",
   "soil_tended",
   "life_tended",
+  "adventure_logged",
 ] as const;
 export type GardenEventKind = (typeof GARDEN_EVENT_KINDS)[number];
 
