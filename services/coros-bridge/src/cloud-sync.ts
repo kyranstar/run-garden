@@ -33,6 +33,16 @@ import {
 const DEFAULT_POLL_MS = 45_000;
 const FAST_POLL_MS = 10_000;
 const DEFAULT_SNAPSHOT_MS = 30 * 60_000;
+/**
+ * Every cloud request aborts after this long. Without it, one hung request
+ * wedges the shared work chain forever: the poll loop's re-arm lives in that
+ * chain, so job claiming silently dies while the shell app's own reads keep
+ * the device looking online — observed live for four days straight.
+ */
+const REQUEST_TIMEOUT_MS = 30_000;
+/** Watchdog: if no poll has COMPLETED in this long, force a re-arm. */
+const POLL_WATCHDOG_STALE_MS = 5 * 60_000;
+const POLL_WATCHDOG_CHECK_MS = 60_000;
 const SNAPSHOT_PAST_DAYS = 14;
 const SNAPSHOT_FUTURE_DAYS = 8 * 7;
 // Daily health (resting HR, HRV, recovery/fatigue) is one cheap query no
@@ -68,7 +78,7 @@ export interface CloudSyncOptions {
   client: CorosClient;
   bridgeVersion?: string;
   fetchImpl?: typeof fetch;
-  intervals?: { pollMs?: number; snapshotMs?: number };
+  intervals?: { pollMs?: number; snapshotMs?: number; requestTimeoutMs?: number };
   logger?: (line: string) => void;
 }
 
@@ -121,10 +131,14 @@ export class CloudSync {
   private readonly fetchImpl: typeof fetch;
   private readonly pollMs: number;
   private readonly snapshotMs: number;
+  private readonly requestTimeoutMs: number;
   private readonly logger: (line: string) => void;
 
   private pollTimer: ReturnType<typeof setTimeout> | null = null;
   private snapshotTimer: ReturnType<typeof setInterval> | null = null;
+  private pollWatchdogTimer: ReturnType<typeof setInterval> | null = null;
+  /** When a poll last finished (ok or not) — the watchdog's staleness clock. */
+  private lastPollSettledAt = Date.now();
   private stopped = true;
   /** Queued jobs remaining per the most recent claim response — drives adaptive polling. */
   private pendingCount = 0;
@@ -149,6 +163,7 @@ export class CloudSync {
     this.fetchImpl = opts.fetchImpl ?? fetch;
     this.pollMs = opts.intervals?.pollMs ?? DEFAULT_POLL_MS;
     this.snapshotMs = opts.intervals?.snapshotMs ?? DEFAULT_SNAPSHOT_MS;
+    this.requestTimeoutMs = opts.intervals?.requestTimeoutMs ?? REQUEST_TIMEOUT_MS;
     this.logger = opts.logger ?? ((line) => console.error(line));
   }
 
@@ -328,17 +343,38 @@ export class CloudSync {
         try {
           await this.pollJobs();
         } finally {
+          this.lastPollSettledAt = Date.now();
           this.schedulePoll();
         }
       });
     }, delay);
   }
 
+  /**
+   * The poll loop's re-arm rides the shared chain, so any bug that keeps one
+   * cycle from settling kills claiming silently while snapshots (their own
+   * interval) keep the device looking online. The watchdog is independent of
+   * the chain: if no poll has settled for POLL_WATCHDOG_STALE_MS, re-arm.
+   */
+  private watchdogCheck(): void {
+    if (this.stopped) return;
+    const staleFor = Date.now() - this.lastPollSettledAt;
+    if (staleFor < Math.max(POLL_WATCHDOG_STALE_MS, this.pollMs * 3)) return;
+    this.logger(`[coros-bridge] poll loop stale for ${Math.round(staleFor / 1000)}s — re-arming`);
+    if (this.pollTimer) clearTimeout(this.pollTimer);
+    // Reset the clock so a still-wedged chain re-warns once per stale window
+    // instead of stacking a re-arm every check.
+    this.lastPollSettledAt = Date.now();
+    this.schedulePoll();
+  }
+
   start(): void {
     this.stopped = false;
+    this.lastPollSettledAt = Date.now();
     this.enqueue("pushSnapshot", () => this.pushSnapshot());
     this.enqueue("pollJobs", () => this.pollJobs());
     this.schedulePoll();
+    this.pollWatchdogTimer = setInterval(() => this.watchdogCheck(), POLL_WATCHDOG_CHECK_MS);
     this.snapshotTimer = setInterval(
       () => this.enqueue("pushSnapshot", () => this.pushSnapshot()),
       this.snapshotMs,
@@ -349,8 +385,10 @@ export class CloudSync {
     this.stopped = true;
     if (this.pollTimer) clearTimeout(this.pollTimer);
     if (this.snapshotTimer) clearInterval(this.snapshotTimer);
+    if (this.pollWatchdogTimer) clearInterval(this.pollWatchdogTimer);
     this.pollTimer = null;
     this.snapshotTimer = null;
+    this.pollWatchdogTimer = null;
   }
 
   /** Wait for all queued work to settle (used by tests and shutdown). */
@@ -377,6 +415,9 @@ export class CloudSync {
       method: "POST",
       headers,
       body: text,
+      // A request that never settles would wedge the whole work chain (see
+      // REQUEST_TIMEOUT_MS) — abort it and let the chain's catch move on.
+      signal: AbortSignal.timeout(this.requestTimeoutMs),
     });
     if (!res.ok) throw new Error(`cloud request ${path} failed with status ${res.status}`);
     return res.json();

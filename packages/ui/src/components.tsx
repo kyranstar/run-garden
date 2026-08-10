@@ -133,7 +133,7 @@ export function CorosPill({ state, hideWhenHealthy }: { state: CorosSyncState; h
 
 /** "2m ago" / "3h ago" / "5d ago" — coarse enough that a 30s status poll
  * never needs to re-render it, precise enough to reassure "this is fresh". */
-function relativeTime(iso: string): string {
+export function relativeTime(iso: string): string {
   const ms = Date.now() - Date.parse(iso);
   const mins = Math.round(ms / 60_000);
   if (mins < 1) return "just now";

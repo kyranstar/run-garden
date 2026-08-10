@@ -1,13 +1,14 @@
 import { Hono } from "hono";
-import { and, desc, eq, inArray } from "drizzle-orm";
-import { backfillState, corosWriteJobs, plannedWorkouts, syncRuns } from "@rg/database";
+import { and, desc, eq, inArray, isNull } from "drizzle-orm";
+import { backfillState, corosWriteJobs, desktopDevices, plannedWorkouts, syncRuns } from "@rg/database";
 import { newId, nowInstant, todayInZone } from "@rg/domain";
 import type { AppContext } from "../auth/middleware.js";
 import { requireUser } from "../auth/middleware.js";
+import { deriveBackfillStatus } from "../services/backfill.js";
 import { loadPreferences } from "../services/calendar-sync.js";
 import { applyMove } from "../services/jobs.js";
 import { activeSyncNotes, dismissSyncNote } from "../services/sync-notes.js";
-import { computeSyncStatus } from "../services/sync-status.js";
+import { computeSyncStatus, DEVICE_ONLINE_WINDOW_MS } from "../services/sync-status.js";
 import { undoStudioAdoption } from "../services/studio-push.js";
 
 /**
@@ -158,24 +159,48 @@ const READ_NOW_IN_FLIGHT = ["queued", "claimed", "in_progress", "verifying"] as 
 
 /**
  * Progress of the one-shot deep history backfill. Polled by Settings while it
- * runs; `skippedSportTypes` is how a sport code the app does not admit becomes
- * visible instead of silently dropped.
+ * is queued or running; `skippedSportTypes` tallies codes the sport registry
+ * couldn't name (admitted as "other"), so new COROS codes stay visible.
+ *
+ * The status is derived honestly at read time: "queued" until a bridge has
+ * actually landed a chunk, plus the bridge's own liveness so the UI can say
+ * "waiting for your Mac" instead of pretending to read history.
  */
 syncRoutes.get("/backfill-status", async (c) => {
+  const db = c.get("db");
+  const userId = c.get("userId");
   const row = (
-    await c
-      .get("db")
+    await db
       .select()
       .from(backfillState)
-      .where(eq(backfillState.userId, c.get("userId")))
+      .where(eq(backfillState.userId, userId))
+      .limit(1)
+  )[0];
+  const newestJob = (
+    await db
+      .select({ status: corosWriteJobs.status })
+      .from(corosWriteJobs)
+      .where(and(eq(corosWriteJobs.userId, userId), eq(corosWriteJobs.kind, "backfill")))
+      .orderBy(desc(corosWriteJobs.requestedAt))
+      .limit(1)
+  )[0];
+  const bridge = (
+    await db
+      .select({ lastSeenAt: desktopDevices.lastSeenAt, revokedAt: desktopDevices.revokedAt })
+      .from(desktopDevices)
+      .where(and(eq(desktopDevices.userId, userId), isNull(desktopDevices.revokedAt)))
+      .orderBy(desc(desktopDevices.lastSeenAt))
       .limit(1)
   )[0];
   return c.json({
-    status: row?.status ?? "idle",
+    status: deriveBackfillStatus(row, newestJob?.status ?? null),
     earliestDateReached: row?.earliestDateReached ?? null,
     chunksCompleted: row?.chunksCompleted ?? 0,
     activitiesIngested: row?.activitiesIngested ?? 0,
     skippedSportTypes: row?.skippedSportTypes ?? {},
+    lastErrorCategory: row?.lastErrorCategory ?? null,
+    bridgeLastSeenAt: bridge?.lastSeenAt ?? null,
+    bridgeOnline: !!bridge && Date.parse(bridge.lastSeenAt) > Date.now() - DEVICE_ONLINE_WINDOW_MS,
   });
 });
 

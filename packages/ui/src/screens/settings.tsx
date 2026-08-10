@@ -2,7 +2,7 @@ import { useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { api } from "@rg/api-client";
 import type { UserPreferences } from "@rg/domain";
-import { Banner, Card, formatDayShort, Sheet, Spinner } from "../components.js";
+import { Banner, Card, formatDayShort, relativeTime, Sheet, Spinner } from "../components.js";
 
 const TZ_OPTIONS: string[] = (() => {
   const sv = (Intl as unknown as { supportedValuesOf?: (k: string) => string[] }).supportedValuesOf;
@@ -155,8 +155,10 @@ function BackfillRow() {
   const status = useQuery({
     queryKey: ["backfill-status"],
     queryFn: api.backfillStatus,
-    // Poll only while there is something to watch.
-    refetchInterval: (q) => (q.state.data?.status === "running" ? 5000 : false),
+    // Poll only while there is something to watch — including the wait for
+    // the Mac to claim a queued walk.
+    refetchInterval: (q) =>
+      q.state.data?.status === "running" || q.state.data?.status === "queued" ? 5000 : false,
   });
   const start = useMutation({
     mutationFn: api.backfillHistory,
@@ -168,14 +170,23 @@ function BackfillRow() {
 
   const s = status.data;
   const running = s?.status === "running";
+  const queued = s?.status === "queued";
+  // Honest states: queued means "your Mac hasn't picked this up yet", and an
+  // error names which way it went wrong — never a spinner over nothing.
   const detail =
     s?.status === "error"
-      ? "Couldn't read your history — your desktop app is older than this feature. Update it, then try again."
-      : running
-    ? `Reading your COROS history — ${s.chunksCompleted} ${s.chunksCompleted === 1 ? "chunk" : "chunks"}, ${s.activitiesIngested} sessions so far${s.earliestDateReached ? `, back to ${s.earliestDateReached}` : ""}.`
-    : s?.status === "done"
-      ? `History loaded: ${s.activitiesIngested} sessions${s.earliestDateReached ? ` back to ${s.earliestDateReached}` : ""}.`
-      : "Pull your full run, lift, and yoga history from COROS. Runs once; your Mac needs to be awake.";
+      ? s.lastErrorCategory === "bridge_never_claimed"
+        ? "Your Mac never picked this up. Open Run Garden on the Mac, then press Run again."
+        : "Couldn't read your history — your desktop app is older than this feature. Update it, then try again."
+      : queued
+        ? s.bridgeOnline
+          ? "Queued — your Mac is connected and should start momentarily. If nothing happens, quit and reopen Run Garden on the Mac."
+          : `Queued — waiting for your Mac${s.bridgeLastSeenAt ? ` (last seen ${relativeTime(s.bridgeLastSeenAt)})` : ""}. Open Run Garden there to start.`
+        : running
+          ? `Reading your COROS history — ${s.chunksCompleted} ${s.chunksCompleted === 1 ? "chunk" : "chunks"}, ${s.activitiesIngested} sessions so far${s.earliestDateReached ? `, back to ${s.earliestDateReached}` : ""}.`
+          : s?.status === "done"
+            ? `History loaded: ${s.activitiesIngested} sessions${s.earliestDateReached ? ` back to ${s.earliestDateReached}` : ""}.`
+            : "Pull your full run, lift, and yoga history from COROS. Runs once; your Mac needs to be awake.";
 
   return (
     <div className="switch-row">
@@ -185,10 +196,10 @@ function BackfillRow() {
       </div>
       <button
         className="btn btn-small"
-        disabled={start.isPending || running}
+        disabled={start.isPending || running || queued}
         onClick={() => start.mutate()}
       >
-        {running ? "Reading…" : s?.status === "done" ? "Run again" : "Backfill history"}
+        {running ? "Reading…" : queued ? "Queued…" : s?.status === "done" ? "Run again" : "Backfill history"}
       </button>
     </div>
   );

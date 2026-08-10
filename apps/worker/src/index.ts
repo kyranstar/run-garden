@@ -23,6 +23,7 @@ import { syncRoutes } from "./routes/sync.js";
 import { makeDb, chunkIds, type Db } from "./services/db.js";
 import { loadPreferences, syncCalendar } from "./services/calendar-sync.js";
 import { advanceGarden } from "./services/garden-sync.js";
+import { sweepStaleBackfills } from "./services/backfill.js";
 import { reconcileCompletionStates, startSyncRun, finishSyncRun } from "./services/reconcile-daily.js";
 import { generateWeeklyReview } from "./services/llm.js";
 import { healLegacySyncState } from "./services/heal-legacy-sync.js";
@@ -101,6 +102,8 @@ async function halfHourly(db: Db, env: Env): Promise<void> {
   }
   await purgeExpiredSessions(db);
   await purgeExpiredStates(db);
+  // A backfill nobody claimed for 12h stops saying "queued" and says so.
+  await sweepStaleBackfills(db, new Date()).catch(() => undefined);
 }
 
 async function hourly(db: Db, env: Env): Promise<void> {

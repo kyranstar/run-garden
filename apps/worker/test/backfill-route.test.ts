@@ -183,6 +183,17 @@ describe("a bridge that cannot run the job", () => {
       await db.select().from(schema.corosWriteJobs).where(eq(schema.corosWriteJobs.userId, userId))
     )[0]!;
 
+    // The real sequence: the bridge lands the chunk (flipping queued →
+    // running) before it reports the job verified. The verified result must
+    // not disturb that.
+    await recordChunk(db, userId, {
+      chunkStart: "2026-04-22",
+      chunkEnd: "2026-07-20",
+      activities: [],
+      lapsByProviderId: {},
+      skippedSportTypes: {},
+    });
+
     await applyJobResult(
       db,
       userId,

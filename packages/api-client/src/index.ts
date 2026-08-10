@@ -453,12 +453,19 @@ export interface ReadNowResponse {
 
 /** Progress of the one-shot deep history backfill. */
 export interface BackfillStatusResponse {
-  status: "idle" | "running" | "done" | "error";
+  /** "queued" until the Mac's bridge has actually landed a chunk — the UI
+   * must never say "reading" while nothing is. */
+  status: "idle" | "queued" | "running" | "done" | "error";
   earliestDateReached: string | null;
   chunksCompleted: number;
   activitiesIngested: number;
-  /** COROS sportType codes seen but not admitted, by code. */
+  /** COROS sportType codes the registry couldn't name (admitted as "other"). */
   skippedSportTypes: Record<string, number>;
+  /** Why status is "error": bridge_cannot_run_backfill | bridge_never_claimed. */
+  lastErrorCategory: string | null;
+  /** The desktop bridge's liveness, so queued states can name the wait. */
+  bridgeLastSeenAt: string | null;
+  bridgeOnline: boolean;
 }
 
 /** Response from `POST /api/studio/adoption/:pushId/undo` — mirrors the

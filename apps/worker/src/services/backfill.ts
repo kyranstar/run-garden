@@ -7,7 +7,7 @@
  * as "history has ended" — are testable without a database, a bridge, or COROS.
  */
 
-import { and, eq, inArray } from "drizzle-orm";
+import { and, desc, eq, inArray } from "drizzle-orm";
 import { backfillState, corosWriteJobs } from "@rg/database";
 import { addDays, newId, nowInstant, type SourceActivity } from "@rg/domain";
 import { loadPreferences } from "./calendar-sync.js";
@@ -138,8 +138,11 @@ export async function enqueueBackfill(
   if (inFlight.length > 0) return { enqueued: false, reason: "already_running" };
 
   const now = nowInstant();
+  // "queued", not "running": nothing is reading history until a bridge claims
+  // the job. recordChunk flips to "running" when the first chunk actually
+  // lands — the status must never claim work the Mac isn't doing.
   const fresh = {
-    status: "running",
+    status: "queued",
     earliestDateReached: null,
     chunksCompleted: 0,
     activitiesIngested: 0,
@@ -193,6 +196,12 @@ export async function recordChunk(db: Db, userId: string, chunk: ChunkReport): P
   await db
     .update(backfillState)
     .set({
+      // Data is flowing, so the walk is genuinely running — this also revives
+      // a state the watchdog marked bridge_never_claimed if the Mac woke up
+      // later and worked the still-queued job anyway.
+      status: "running",
+      lastErrorCategory: null,
+      finishedAt: null,
       earliestDateReached: chunk.chunkStart,
       chunksCompleted: (existing?.chunksCompleted ?? 0) + 1,
       activitiesIngested: (existing?.activitiesIngested ?? 0) + chunk.activities.length,
@@ -246,4 +255,63 @@ export async function advanceBackfill(
     })
     .where(eq(backfillState.userId, userId));
   await insertChunkJob(db, userId, action.chunkStart, action.chunkEnd);
+}
+
+/** How long a backfill may sit unclaimed before the status stops pretending. */
+export const BACKFILL_UNCLAIMED_ERROR_MS = 12 * 60 * 60 * 1000;
+
+/**
+ * The status the UI should show, derived honestly at read time. Stored rows
+ * from before the queued/running split (or written mid-transition) can say
+ * "running" while no bridge has ever claimed the job — those read as
+ * "queued", because that is what they are.
+ */
+export function deriveBackfillStatus(
+  stored: { status: string; chunksCompleted: number } | undefined,
+  newestJobStatus: string | null,
+): string {
+  if (!stored) return "idle";
+  if (stored.status === "running" && stored.chunksCompleted === 0 && newestJobStatus === "queued") {
+    return "queued";
+  }
+  return stored.status;
+}
+
+/**
+ * Cron sweep: a backfill whose job no bridge has claimed for
+ * BACKFILL_UNCLAIMED_ERROR_MS stops saying "queued" and says what happened —
+ * the Mac never picked it up. The job row itself stays queued on purpose: a
+ * bridge that finally wakes still claims it, and recordChunk revives the
+ * state to "running" when data lands.
+ */
+export async function sweepStaleBackfills(db: Db, now: Date): Promise<number> {
+  const stale = new Date(now.getTime() - BACKFILL_UNCLAIMED_ERROR_MS).toISOString();
+  const candidates = await db
+    .select()
+    .from(backfillState)
+    .where(inArray(backfillState.status, ["queued", "running"]));
+  let flipped = 0;
+  for (const row of candidates) {
+    if (row.chunksCompleted > 0 || !row.startedAt || row.startedAt > stale) continue;
+    const newest = (
+      await db
+        .select({ status: corosWriteJobs.status })
+        .from(corosWriteJobs)
+        .where(and(eq(corosWriteJobs.userId, row.userId), eq(corosWriteJobs.kind, "backfill")))
+        .orderBy(desc(corosWriteJobs.requestedAt))
+        .limit(1)
+    )[0];
+    if (newest?.status !== "queued") continue;
+    await db
+      .update(backfillState)
+      .set({
+        status: "error",
+        lastErrorCategory: "bridge_never_claimed",
+        finishedAt: nowInstant(),
+        updatedAt: nowInstant(),
+      })
+      .where(eq(backfillState.userId, row.userId));
+    flipped += 1;
+  }
+  return flipped;
 }
