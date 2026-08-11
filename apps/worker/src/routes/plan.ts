@@ -1,10 +1,13 @@
 import { Hono } from "hono";
 import { z } from "zod";
-import { and, asc, desc, eq, gte, inArray, isNull, lte } from "drizzle-orm";
+import { and, asc, desc, eq, gte, inArray, isNull, lte, sql } from "drizzle-orm";
 import {
   activities,
   calendarEventLinks,
   calendarEventSuppressions,
+  coachMessages,
+  coachPlans,
+  coachPlanWeeks,
   corosWriteJobs,
   dailyHealth,
   gardenState,
@@ -15,7 +18,16 @@ import {
   trainingPlans,
   workoutCompletionMatches,
 } from "@rg/database";
-import { addDays, newId, nowInstant, todayInZone, type UserPreferences } from "@rg/domain";
+import { computeConsistency } from "@rg/analytics";
+import {
+  addDays,
+  newId,
+  nowInstant,
+  startOfIsoWeek,
+  todayInZone,
+  type PlannedWorkout,
+  type UserPreferences,
+} from "@rg/domain";
 import { conditionWord, DEFAULT_GARDEN_CONFIG, type GardenSnapshot } from "@rg/garden-engine";
 import { proposeReschedules } from "@rg/scheduling";
 import type { AppContext } from "../auth/middleware.js";
@@ -305,6 +317,183 @@ planRoutes.get("/workouts", async (c) => {
     plan: primary ? { name: primary.name, startDate: primary.startDate, endDate: primary.endDate } : null,
     corosWritesEnabled: prefs.corosWritesEnabled,
     workouts: rows.map((w) => workoutDto(w, syncViews.get(w.id))),
+  });
+});
+
+/** Deterministic brief-headline state (rework spec §4) — exported pure for
+ * the table test. Copy mapping lives client-side (brief-copy). */
+export function deriveHeadline(input: {
+  adherencePct: number | null;
+  loadRatio: number | null;
+  raceInDays: number | null;
+  deloadWeek: boolean;
+}): "on_track" | "behind" | "ahead" | "rebuilding" | "race_week" | "resting" {
+  if (input.raceInDays !== null && input.raceInDays >= 0 && input.raceInDays <= 7) return "race_week";
+  if (input.deloadWeek) return "resting";
+  if (input.adherencePct === null) return "rebuilding";
+  if (input.adherencePct >= 95 && (input.loadRatio ?? 0) >= 1.0) return "ahead";
+  if (input.adherencePct >= 80) return "on_track";
+  if (input.adherencePct >= 60) return "behind";
+  return "rebuilding";
+}
+
+const FOCUS_STALE_MS = 72 * 3600 * 1000;
+
+/** The weekly brief + one pickable week in a single call (rework spec §4). */
+planRoutes.get("/week", async (c) => {
+  const db = c.get("db");
+  const userId = c.get("userId");
+  const prefs = await loadPreferences(db, userId);
+  const today = todayInZone(prefs.timezone);
+
+  const startParam = c.req.query("start");
+  if (startParam !== undefined) {
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(startParam) || startOfIsoWeek(startParam) !== startParam) {
+      return c.json({ error: "start_must_be_a_monday" }, 400);
+    }
+  }
+  const weekStart = startParam ?? startOfIsoWeek(today);
+  const weekEnd = addDays(weekStart, 6);
+
+  const rows = await db
+    .select()
+    .from(plannedWorkouts)
+    .where(
+      and(
+        eq(plannedWorkouts.userId, userId),
+        gte(plannedWorkouts.effectiveDate, weekStart),
+        lte(plannedWorkouts.effectiveDate, weekEnd),
+        isNull(plannedWorkouts.archivedAt),
+      ),
+    )
+    .orderBy(asc(plannedWorkouts.effectiveDate), asc(plannedWorkouts.effectiveTime));
+  const syncViews = await loadWorkoutSyncViews(db, userId, rows, prefs);
+  const days = Array.from({ length: 7 }, (_, i) => {
+    const date = addDays(weekStart, i);
+    return {
+      date,
+      workouts: rows.filter((w) => w.effectiveDate === date).map((w) => workoutDto(w, syncViews.get(w.id))),
+    };
+  });
+
+  const nonRest = rows.filter((w) => w.category !== "rest");
+  const plannedSeconds = nonRest.reduce(
+    (sum, w) => sum + (w.sourceEstimatedDurationSeconds ?? w.fallbackEstimatedDurationSeconds ?? 0),
+    0,
+  );
+  const doneCount = nonRest.filter((w) => w.completionState === "completed").length;
+
+  // Week n of m against the active coach plan covering this week's Monday.
+  const activePlans = await db
+    .select()
+    .from(coachPlans)
+    .where(and(eq(coachPlans.userId, userId), eq(coachPlans.status, "active")));
+  const covering = activePlans.find((p) => p.startDate <= weekEnd && p.endDate >= weekStart);
+  let weekIndex: number | null = null;
+  let weekTotal: number | null = null;
+  let deloadWeek = false;
+  let raceInDays: number | null = null;
+  if (covering) {
+    const planW1 = startOfIsoWeek(covering.startDate);
+    weekIndex = Math.floor((Date.parse(weekStart) - Date.parse(planW1)) / (7 * 86_400_000)) + 1;
+    weekTotal = Math.floor((Date.parse(startOfIsoWeek(covering.endDate)) - Date.parse(planW1)) / (7 * 86_400_000)) + 1;
+    if (covering.raceDate) {
+      raceInDays = Math.round((Date.parse(covering.raceDate) - Date.parse(today)) / 86_400_000);
+      if (raceInDays < 0) raceInDays = null;
+    }
+    const [thisWeekShape] = await db
+      .select()
+      .from(coachPlanWeeks)
+      .where(and(eq(coachPlanWeeks.planId, covering.id), eq(coachPlanWeeks.weekStart, weekStart)))
+      .limit(1);
+    const volumeTarget = thisWeekShape?.shape?.volumeTarget?.toLowerCase() ?? "";
+    deloadWeek = /deload|recovery|wind.?down|taper/.test(volumeTarget);
+  }
+
+  // 4-week adherence (all disciplines) with a trend against the 4 weeks prior.
+  const historyStart = addDays(today, -56);
+  const historyRows = await db
+    .select()
+    .from(plannedWorkouts)
+    .where(
+      and(
+        eq(plannedWorkouts.userId, userId),
+        gte(plannedWorkouts.effectiveDate, historyStart),
+        lte(plannedWorkouts.effectiveDate, today),
+        isNull(plannedWorkouts.archivedAt),
+      ),
+    );
+  const asPlanned = historyRows as unknown as PlannedWorkout[];
+  const windowPct = (start: string, end: string): number | null => {
+    const report = computeConsistency(
+      asPlanned.filter((w) => w.effectiveDate >= start && w.effectiveDate <= end),
+      { start, end },
+      today,
+    );
+    const denom = report.planned - report.unresolved;
+    if (denom <= 0) return null;
+    return Math.round(report.adherenceRate * 100);
+  };
+  const recentPct = windowPct(addDays(today, -28), today);
+  const priorPct = windowPct(addDays(today, -56), addDays(today, -29));
+  const trend: "up" | "flat" | "down" | null =
+    recentPct === null || priorPct === null
+      ? null
+      : recentPct - priorPct > 5
+        ? "up"
+        : priorPct - recentPct > 5
+          ? "down"
+          : "flat";
+
+  // Acute:chronic load, all sports, from activity trainingLoad.
+  const acts = await db
+    .select({
+      startTime: activities.startTime,
+      startTimeLocal: activities.startTimeLocal,
+      trainingLoad: activities.trainingLoad,
+    })
+    .from(activities)
+    .where(eq(activities.userId, userId));
+  const localDate = (a: { startTime: string; startTimeLocal: string | null }) =>
+    (a.startTimeLocal ?? a.startTime).slice(0, 10);
+  const loadIn = (start: string, end: string) =>
+    acts
+      .filter((a) => localDate(a) >= start && localDate(a) <= end)
+      .reduce((s, a) => s + (a.trainingLoad ?? 0), 0);
+  const acute = loadIn(addDays(today, -6), today);
+  const chronic = loadIn(addDays(today, -27), today) / 4;
+  const loadRatio = chronic > 0 ? Math.round((acute / chronic) * 100) / 100 : null;
+
+  // The coach's one action line — stale after 3 days (rework spec §6).
+  const [focusMsg] = await db
+    .select()
+    .from(coachMessages)
+    .where(
+      and(
+        eq(coachMessages.userId, userId),
+        eq(coachMessages.role, "coach"),
+        sql`json_extract(${coachMessages.refs}, '$.focus') IS NOT NULL`,
+      ),
+    )
+    .orderBy(desc(coachMessages.at))
+    .limit(1);
+  const focus =
+    focusMsg && Date.now() - Date.parse(focusMsg.at) < FOCUS_STALE_MS
+      ? { text: (focusMsg.refs as { focus?: string }).focus ?? "", at: focusMsg.at }
+      : null;
+
+  return c.json({
+    weekStart,
+    days,
+    plannedSeconds,
+    doneCount,
+    sessionCount: nonRest.length,
+    weekIndex,
+    weekTotal,
+    adherence4w: { pct: recentPct, trend },
+    loadRatio,
+    headline: deriveHeadline({ adherencePct: recentPct, loadRatio, raceInDays, deloadWeek }),
+    focus,
   });
 });
 

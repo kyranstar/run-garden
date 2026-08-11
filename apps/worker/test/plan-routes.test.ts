@@ -18,7 +18,7 @@
 import { beforeEach, describe, expect, it } from "vitest";
 import { eq } from "drizzle-orm";
 import { schema } from "@rg/database";
-import { newId, nowInstant, todayInZone } from "@rg/domain";
+import { addDays, newId, nowInstant, startOfIsoWeek, todayInZone } from "@rg/domain";
 import type { Env } from "../src/env.js";
 import type { Db } from "../src/services/db.js";
 import type { UserPreferences } from "@rg/domain";
@@ -234,5 +234,119 @@ describe("POST /api/plan/workouts/:id/unskip", () => {
   it("404s for a workout that doesn't exist", async () => {
     const res = await client().post(`/api/plan/workouts/${newId()}/unskip`);
     expect(res.status).toBe(404);
+  });
+});
+
+describe("GET /week — brief facts (2026-08-11 rework §4)", () => {
+  const get = (path: string) => {
+    const app = mountRoutes(db, "/api/plan", planRoutes);
+    return app.request(path, { headers: { Cookie: cookie } }, makeEnv());
+  };
+
+  function mondayOf(offsetWeeks: number): string {
+    const today = todayInZone(prefs.timezone);
+    return addDays(startOfIsoWeek(today), offsetWeeks * 7);
+  }
+
+  async function seedWeekWorkout(date: string, opts: { state?: string; seconds?: number; category?: string } = {}): Promise<string> {
+    const id = newId();
+    await db.insert(plannedWorkouts).values({
+      id,
+      userId,
+      planId: "p",
+      sourceWorkoutId: `4738:${id.slice(0, 6)}`,
+      title: "Session",
+      category: (opts.category ?? "easy") as never,
+      sport: "run",
+      originalPlanDate: date,
+      lastVerifiedCorosDate: date,
+      effectiveDate: date,
+      effectiveTime: "07:00",
+      sourceContentFingerprint: "fp",
+      sourceEstimatedDurationSeconds: opts.seconds ?? 3000,
+      calendarBlockDurationSeconds: opts.seconds ?? 3000,
+      completionState: opts.state ?? "scheduled",
+      createdAt: nowInstant(),
+      updatedAt: nowInstant(),
+    });
+    return id;
+  }
+
+  it("assembles the week: days, totals, plan week index, focus", async () => {
+    const monday = mondayOf(0);
+    // Active coach plan whose W1 started 4 weeks ago → this is week 5 of 12.
+    await db.insert(schema.coachPlans).values({
+      id: "cp1",
+      userId,
+      discipline: "run",
+      name: "Fall Half Block",
+      status: "active",
+      startDate: mondayOf(-4),
+      endDate: addDays(mondayOf(-4), 12 * 7 - 1),
+      raceDate: null,
+      stampPrefix: "FH",
+      createdAt: nowInstant(),
+      updatedAt: nowInstant(),
+    });
+    await seedWeekWorkout(monday, { state: "completed", seconds: 2400 });
+    await seedWeekWorkout(addDays(monday, 2), { seconds: 3600, category: "quality" });
+    await seedWeekWorkout(addDays(monday, 5), { seconds: 5400, category: "long" });
+    await seedWeekWorkout(addDays(monday, 6), { category: "rest" });
+    await db.insert(schema.coachMessages).values({
+      id: newId(),
+      userId,
+      role: "coach",
+      body: "briefing",
+      refs: { focus: "Saturday's long run anchors the week." },
+      at: nowInstant(),
+    });
+
+    const res = await get("/api/plan/week");
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as Record<string, unknown>;
+    expect(body.weekStart).toBe(monday);
+    expect((body.days as unknown[]).length).toBe(7);
+    expect(body.sessionCount).toBe(3); // rest excluded
+    expect(body.doneCount).toBe(1);
+    expect(body.plannedSeconds).toBe(2400 + 3600 + 5400);
+    expect(body.weekIndex).toBe(5);
+    expect(body.weekTotal).toBe(12);
+    expect((body.focus as { text: string }).text).toContain("Saturday");
+  });
+
+  it("omits a stale focus and handles no-plan weeks", async () => {
+    await db.insert(schema.coachMessages).values({
+      id: newId(),
+      userId,
+      role: "coach",
+      body: "old briefing",
+      refs: { focus: "Ancient advice." },
+      at: new Date(Date.now() - 4 * 86_400_000).toISOString(),
+    });
+    const res = await get("/api/plan/week");
+    const body = (await res.json()) as Record<string, unknown>;
+    expect(body.focus).toBeNull();
+    expect(body.weekIndex).toBeNull();
+    expect(body.weekTotal).toBeNull();
+  });
+
+  it("validates the start param (must be a Monday)", async () => {
+    expect((await get("/api/plan/week?start=2026-08-11")).status).toBe(400); // a Tuesday
+    expect((await get("/api/plan/week?start=garbage")).status).toBe(400);
+    const monday = mondayOf(-1);
+    const res = await get(`/api/plan/week?start=${monday}`);
+    expect(res.status).toBe(200);
+    expect(((await res.json()) as { weekStart: string }).weekStart).toBe(monday);
+  });
+
+  it("deriveHeadline covers the state table", async () => {
+    const { deriveHeadline } = await import("../src/routes/plan.js");
+    expect(deriveHeadline({ adherencePct: 90, loadRatio: 1.0, raceInDays: 3, deloadWeek: false })).toBe("race_week");
+    expect(deriveHeadline({ adherencePct: 90, loadRatio: 1.0, raceInDays: null, deloadWeek: true })).toBe("resting");
+    expect(deriveHeadline({ adherencePct: null, loadRatio: null, raceInDays: null, deloadWeek: false })).toBe("rebuilding");
+    expect(deriveHeadline({ adherencePct: 97, loadRatio: 1.1, raceInDays: null, deloadWeek: false })).toBe("ahead");
+    expect(deriveHeadline({ adherencePct: 85, loadRatio: 0.9, raceInDays: null, deloadWeek: false })).toBe("on_track");
+    expect(deriveHeadline({ adherencePct: 70, loadRatio: 0.9, raceInDays: null, deloadWeek: false })).toBe("behind");
+    expect(deriveHeadline({ adherencePct: 40, loadRatio: 0.9, raceInDays: null, deloadWeek: false })).toBe("rebuilding");
   });
 });

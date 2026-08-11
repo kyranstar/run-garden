@@ -193,3 +193,36 @@ describe("sanctioned skip (garden-loop spec §1)", () => {
     expect(w!.sanctionedBy).toBe("coach");
   });
 });
+
+describe("structured lift persist (2026-08-11 rework §5)", () => {
+  it("createPlan lift sessions keep their exercises JSON on the workout row", async () => {
+    const db = makeTestDb();
+    const { userId, prefs } = await makeTestUser(db);
+    const today = todayInZone(prefs.timezone);
+    const exercises = [
+      { originId: "S1", name: "Bench Press", sets: 3, reps: 8, weight: { type: "kg" as const, value: 52 }, restSeconds: 120 },
+    ];
+    await applyOps(db, userId, prefs, "prop-lift-1", [
+      {
+        kind: "createPlan",
+        discipline: "lift",
+        name: "Coached Strength",
+        startDate: today,
+        endDate: addDays(today, 27),
+        firmSessions: [
+          {
+            date: addDays(today, 1),
+            session: { category: "strength", title: "Upper A", durationMinutes: 60, lift: { exercises } },
+          },
+        ],
+        shapeWeeks: [],
+      },
+    ]);
+    const rows = await db
+      .select()
+      .from(schema.plannedWorkouts)
+      .where(eq(schema.plannedWorkouts.userId, userId));
+    expect(rows).toHaveLength(1);
+    expect(rows[0]!.structuredJson).toEqual({ exercises });
+  });
+});

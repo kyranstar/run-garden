@@ -6,7 +6,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { and, eq } from "drizzle-orm";
 import { schema } from "@rg/database";
-import { addDays, newId, nowInstant, todayInZone, type UserPreferences } from "@rg/domain";
+import { addDays, newId, nowInstant, startOfIsoWeek, todayInZone, type UserPreferences } from "@rg/domain";
 import type { Env } from "../src/env.js";
 import type { Db } from "../src/services/db.js";
 import { coachRoutes } from "../src/routes/coach.js";
@@ -396,5 +396,135 @@ describe("analyze — read-through on the ledger (2026-08-11 rework §2)", () =>
     stubLlm();
     const res = await client().post(`/api/coach/analyze/nope`, {});
     expect(res.status).toBe(404);
+  });
+});
+
+describe("GET /plans/:id/detail (2026-08-11 rework §4)", () => {
+  it("404s an unknown plan", async () => {
+    expect((await client().get("/api/coach/plans/nope/detail")).status).toBe(404);
+  });
+
+  it("studio lift plan: prescribed progressions, weeks list, sessions", async () => {
+    const monday = startOfIsoWeek(todayInZone(prefs.timezone));
+    const mkWeek = (bench: number, squat: number) => ({
+      sessions: [
+        {
+          title: "Full Body",
+          weekday: 1,
+          exercises: [
+            { originId: "S1", name: "Bench Press", sets: 3, reps: 8, weight: { type: "kg", value: bench }, restSeconds: 120 },
+            { originId: "S2", name: "Back Squat", sets: 4, reps: 6, weight: { type: "kg", value: squat }, restSeconds: 150 },
+          ],
+        },
+      ],
+    });
+    const liftPlan = {
+      name: "Strength Block B",
+      brief: {
+        goal: "strength",
+        durationWeeks: 3,
+        sessionsPerWeek: 1,
+        preferredDays: [1],
+        sessionMinutes: 60,
+        equipment: "full gym",
+        constraints: "",
+        notes: "",
+        startDate: monday,
+      },
+      weeks: [mkWeek(52, 75), mkWeek(56, 80), mkWeek(60, 85)],
+    };
+    await db.insert(schema.studioPlans).values({
+      id: "sp1",
+      userId,
+      brief: liftPlan.brief,
+      plan: liftPlan,
+      version: 1,
+      createdAt: nowInstant(),
+      updatedAt: nowInstant(),
+    });
+
+    const res = await client().get("/api/coach/plans/sp1/detail");
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as {
+      plan: { discipline: string; source: string };
+      weeks: Array<{ index: number; state: string; summary: string; current: boolean }>;
+      progressions: Array<{ key: string; label: string; from: number; to: number; series: Array<{ week: number; value: number }> }>;
+      sessions: { planned: number; done: number };
+    };
+    expect(body.plan.discipline).toBe("lift");
+    expect(body.weeks).toHaveLength(3);
+    expect(body.weeks[0]!.summary).toContain("sets");
+    expect(body.weeks[0]!.current).toBe(true);
+    const bench = body.progressions.find((p) => p.label === "Bench Press")!;
+    expect(bench.from).toBe(52);
+    expect(bench.to).toBe(60);
+    expect(bench.series.map((s) => s.value)).toEqual([52, 56, 60]);
+    expect(body.sessions.planned).toBe(3);
+  });
+
+  it("coach run plan: firm/shape weeks, long-run progression, shape weeks excluded from series", async () => {
+    const monday = startOfIsoWeek(todayInZone(prefs.timezone));
+    const w1 = addDays(monday, -7);
+    await db.insert(schema.coachPlans).values({
+      id: "cp9",
+      userId,
+      discipline: "run",
+      name: "Fall Half Block",
+      status: "active",
+      startDate: w1,
+      endDate: addDays(w1, 4 * 7 - 1),
+      raceDate: null,
+      stampPrefix: "FH",
+      createdAt: nowInstant(),
+      updatedAt: nowInstant(),
+    });
+    await db.insert(schema.coachPlanWeeks).values([
+      { id: newId(), planId: "cp9", weekStart: w1, state: "firm", shape: null },
+      { id: newId(), planId: "cp9", weekStart: monday, state: "firm", shape: null },
+      { id: newId(), planId: "cp9", weekStart: addDays(monday, 7), state: "shape", shape: { volumeTarget: "~4h easy focus", keySessions: ["long 11 mi"] } },
+      { id: newId(), planId: "cp9", weekStart: addDays(monday, 14), state: "shape", shape: { volumeTarget: "peak week", keySessions: [] } },
+    ]);
+    const mkRun = async (date: string, meters: number | null, seconds: number, state = "scheduled") => {
+      await db.insert(schema.plannedWorkouts).values({
+        id: newId(),
+        userId,
+        planId: "cp9",
+        sourceWorkoutId: `cw-${newId().slice(0, 8)}`,
+        title: meters ? "Long run" : "Easy run",
+        category: meters ? "long" : "easy",
+        sport: "run",
+        originalPlanDate: date,
+        lastVerifiedCorosDate: date,
+        effectiveDate: date,
+        effectiveTime: "07:00",
+        sourceContentFingerprint: "fp",
+        sourceEstimatedDurationSeconds: seconds,
+        calendarBlockDurationSeconds: seconds,
+        expectedDistanceMeters: meters,
+        completionState: state,
+        createdAt: nowInstant(),
+        updatedAt: nowInstant(),
+      });
+    };
+    await mkRun(addDays(w1, 5), 14484, 5400, "completed"); // 9 mi, done last week
+    await mkRun(addDays(w1, 2), null, 2700, "completed");
+    await mkRun(addDays(monday, 5), 16093, 6000); // 10 mi this week
+
+    const res = await client().get("/api/coach/plans/cp9/detail");
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as {
+      weeks: Array<{ index: number; state: string; volumeTarget: string | null; current: boolean; done: boolean }>;
+      progressions: Array<{ key: string; series: Array<{ week: number; value: number }> }>;
+      adherencePct: number | null;
+    };
+    expect(body.weeks).toHaveLength(4);
+    expect(body.weeks[0]!.done).toBe(true);
+    expect(body.weeks[1]!.current).toBe(true);
+    expect(body.weeks[2]!.state).toBe("shape");
+    expect(body.weeks[2]!.volumeTarget).toBe("~4h easy focus");
+    const long = body.progressions.find((p) => p.key === "run:long-run")!;
+    // Shape weeks have no planned workouts — series carries only W1 and W2.
+    expect(long.series.map((s) => s.week)).toEqual([1, 2]);
+    expect(long.series.map((s) => s.value)).toEqual([9, 10]);
   });
 });

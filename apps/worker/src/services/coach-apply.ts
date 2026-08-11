@@ -73,6 +73,10 @@ async function insertSession(
       sourceContentFingerprint: fingerprint(session),
       calendarBlockDurationSeconds: session.durationMinutes * 60,
       stageSummary: stageSummary(session),
+      // Lift structure survives apply (rework spec §5): the exercises array
+      // is what lets plan-detail graph a coached progression; the flattened
+      // stageSummary above stays as the display string.
+      structuredJson: session.lift ? { exercises: session.lift.exercises } : null,
       corosSyncState: "calendar_only",
       completionState: "scheduled",
       createdAt: now,

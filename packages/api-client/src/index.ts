@@ -315,6 +315,57 @@ export interface CoachPlanDto {
   source?: "coach" | "studio";
 }
 
+/** One pickable week + the brief's facts (rework spec §4). */
+export interface PlanWeekResponse {
+  weekStart: string;
+  days: Array<{ date: string; workouts: WorkoutDto[] }>;
+  plannedSeconds: number;
+  doneCount: number;
+  sessionCount: number;
+  weekIndex: number | null;
+  weekTotal: number | null;
+  adherence4w: { pct: number | null; trend: "up" | "flat" | "down" | null };
+  loadRatio: number | null;
+  headline: "on_track" | "behind" | "ahead" | "rebuilding" | "race_week" | "resting";
+  focus: { text: string; at: string } | null;
+}
+
+export interface PlanProgressionPoint {
+  week: number;
+  value: number;
+  done?: boolean;
+  actual?: number;
+}
+
+export interface PlanProgression {
+  key: string;
+  label: string;
+  unit: string;
+  from: number;
+  to: number;
+  now: number | null;
+  series: PlanProgressionPoint[];
+}
+
+export interface PlanDetailWeek {
+  weekStart: string;
+  index: number;
+  state: "firm" | "shape";
+  volumeTarget: string | null;
+  keySessions: string[];
+  summary: string;
+  done: boolean;
+  current: boolean;
+}
+
+export interface PlanDetailResponse {
+  plan: CoachPlanDto;
+  weeks: PlanDetailWeek[];
+  progressions: PlanProgression[];
+  sessions: { planned: number; done: number };
+  adherencePct: number | null;
+}
+
 export interface CoachStateResponse {
   messages: CoachMessageDto[];
   pendingProposals: CoachProposalDto[];
@@ -615,6 +666,10 @@ export const api = {
   coachMemoryDelete: (id: string) =>
     request<{ ok: boolean }>(`/api/coach/memory/${id}`, { method: "DELETE" }),
   coachPlans: () => get<{ plans: CoachPlanDto[] }>("/api/coach/plans"),
+  planWeek: (start?: string) =>
+    get<PlanWeekResponse>(`/api/plan/week${start ? `?start=${encodeURIComponent(start)}` : ""}`),
+  planDetail: (id: string) =>
+    get<PlanDetailResponse>(`/api/coach/plans/${encodeURIComponent(id)}/detail`),
   coachPlanRename: (id: string, name: string) =>
     post<{ ok: boolean }>(`/api/coach/plans/${id}/rename`, { name }),
   coachPlanRetire: (id: string) => post<{ ok: boolean }>(`/api/coach/plans/${id}/retire`),

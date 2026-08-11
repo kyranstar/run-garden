@@ -1,19 +1,32 @@
 import { Hono } from "hono";
 import { and, desc, eq, isNull, lt } from "drizzle-orm";
 import {
+  activities,
   coachMemory,
   coachMessages,
   coachPlans,
+  coachPlanWeeks,
   coachProposals,
   coachQuestions,
+  plannedWorkouts,
   studioPlans,
   studioPlanPushes,
+  workoutCompletionMatches,
 } from "@rg/database";
-import { addDays, newId, nowInstant, todayInZone, type CoachOp } from "@rg/domain";
+import {
+  addDays,
+  newId,
+  nowInstant,
+  startOfIsoWeek,
+  todayInZone,
+  type CoachOp,
+  type LiftingPlan,
+} from "@rg/domain";
 import type { AppContext } from "../auth/middleware.js";
 import { requireUser } from "../auth/middleware.js";
 import { loadPreferences } from "../services/calendar-sync.js";
 import { ensureRead } from "../services/coach-reads.js";
+import { liftProgressions, liftWeekSummary, runProgressions } from "../services/plan-progressions.js";
 import { applyOps } from "../services/coach-apply.js";
 import { evaluateTriggers, pendingTriggers } from "../services/coach-triggers.js";
 import { coachBlockAdherence, plansEndedOn } from "../services/coach-plans.js";
@@ -324,6 +337,220 @@ coachRoutes.get("/plans", async (c) => {
   return c.json({
     plans: [...rows.map((r) => ({ ...r, source: "coach" as const })), ...studioEntries],
   });
+});
+
+/** Plan detail: weeks (firm/shape), prescribed progressions with series,
+ * session counts (rework spec §4). Accepts coach- and studio-plan ids. */
+coachRoutes.get("/plans/:id/detail", async (c) => {
+  const db = c.get("db");
+  const userId = c.get("userId");
+  const id = c.req.param("id");
+  const prefs = await loadPreferences(db, userId);
+  const today = todayInZone(prefs.timezone);
+  const thisMonday = startOfIsoWeek(today);
+  const weekIndexOf = (planW1: string, date: string): number =>
+    Math.floor((Date.parse(startOfIsoWeek(date)) - Date.parse(planW1)) / (7 * 86_400_000)) + 1;
+
+  const [cp] = await db
+    .select()
+    .from(coachPlans)
+    .where(and(eq(coachPlans.id, id), eq(coachPlans.userId, userId)))
+    .limit(1);
+  if (cp) {
+    const planW1 = startOfIsoWeek(cp.startDate);
+    const weekTotal = weekIndexOf(planW1, cp.endDate);
+    const currentWeek =
+      thisMonday >= planW1 && weekIndexOf(planW1, today) <= weekTotal
+        ? weekIndexOf(planW1, today)
+        : null;
+
+    const shapeRows = await db.select().from(coachPlanWeeks).where(eq(coachPlanWeeks.planId, cp.id));
+    const shapeByWeek = new Map(shapeRows.map((w) => [w.weekStart, w]));
+    const workouts = await db
+      .select()
+      .from(plannedWorkouts)
+      .where(
+        and(
+          eq(plannedWorkouts.userId, userId),
+          eq(plannedWorkouts.planId, cp.id),
+          isNull(plannedWorkouts.archivedAt),
+        ),
+      );
+    const matches = workouts.length
+      ? await db
+          .select()
+          .from(workoutCompletionMatches)
+          .where(and(isNull(workoutCompletionMatches.undoneAt)))
+      : [];
+    const matchByWorkout = new Map(matches.map((m) => [m.workoutId, m]));
+    const actIds = [...new Set(matches.map((m) => m.activityId))];
+    const actRows = actIds.length ? await db.select().from(activities).where(eq(activities.userId, userId)) : [];
+    const actById = new Map(actRows.map((a) => [a.id, a]));
+
+    const weeks = [];
+    const facts = [];
+    for (let i = 1; i <= weekTotal; i++) {
+      const weekStart = addDays(planW1, (i - 1) * 7);
+      const weekEnd = addDays(weekStart, 6);
+      const inWeek = workouts.filter((w) => w.effectiveDate >= weekStart && w.effectiveDate <= weekEnd);
+      const nonRest = inWeek.filter((w) => w.category !== "rest");
+      const shape = shapeByWeek.get(weekStart);
+      const state: "firm" | "shape" = shape?.state === "shape" ? "shape" : "firm";
+      const done = weekEnd < today && nonRest.length > 0 && nonRest.every((w) => w.completionState === "completed");
+      const longRunMeters = nonRest.reduce<number | null>(
+        (m, w) => (w.expectedDistanceMeters ? Math.max(m ?? 0, w.expectedDistanceMeters) : m),
+        null,
+      );
+      const plannedSeconds = nonRest.reduce(
+        (s, w) => s + (w.sourceEstimatedDurationSeconds ?? w.fallbackEstimatedDurationSeconds ?? 0),
+        0,
+      );
+      let actualSeconds: number | null = null;
+      for (const w of nonRest) {
+        const m = matchByWorkout.get(w.id);
+        const a = m ? actById.get(m.activityId) : undefined;
+        if (a) actualSeconds = (actualSeconds ?? 0) + a.durationSeconds;
+      }
+      const keyTitles = nonRest
+        .filter((w) => w.category === "long" || w.category === "quality" || w.sport === "strength")
+        .map((w) => w.title)
+        .slice(0, 2);
+      const summary =
+        state === "shape"
+          ? (shape?.shape?.volumeTarget ?? "outline — the coach firms this up as it approaches")
+          : keyTitles.length
+            ? keyTitles.join(" · ")
+            : nonRest.length
+              ? `${nonRest.length} sessions`
+              : "quiet week";
+      weeks.push({
+        weekStart,
+        index: i,
+        state,
+        volumeTarget: shape?.shape?.volumeTarget ?? null,
+        keySessions: shape?.shape?.keySessions ?? [],
+        summary,
+        done,
+        current: currentWeek === i,
+      });
+      facts.push({ week: i, longRunMeters, plannedSeconds, actualSeconds, done });
+    }
+
+    // Coach-authored lift plans keep their structure (spec §5) — graph it.
+    let progressions;
+    if (cp.discipline === "lift") {
+      const liftWeeks = weeks.map((wk) => ({
+        sessions: workouts
+          .filter(
+            (w) =>
+              w.effectiveDate >= wk.weekStart &&
+              w.effectiveDate <= addDays(wk.weekStart, 6) &&
+              w.structuredJson?.exercises,
+          )
+          .map((w) => ({
+            title: w.title,
+            weekday: 1,
+            exercises: (w.structuredJson?.exercises ?? []) as LiftingPlan["weeks"][number]["sessions"][number]["exercises"],
+          })),
+      }));
+      const doneWeeks = new Set(facts.filter((f) => f.done).map((f) => f.week));
+      progressions = liftProgressions({ weeks: liftWeeks }, doneWeeks, currentWeek);
+    } else {
+      progressions = runProgressions(facts, currentWeek);
+    }
+
+    const nonRestAll = workouts.filter((w) => w.category !== "rest");
+    const adh = await coachBlockAdherence(db, userId, cp.id, cp.startDate, cp.endDate);
+    return c.json({
+      plan: { ...cp, source: "coach" as const },
+      weeks,
+      progressions,
+      sessions: {
+        planned: nonRestAll.length,
+        done: nonRestAll.filter((w) => w.completionState === "completed").length,
+      },
+      adherencePct: adh === null ? null : Math.round(adh * 100),
+    });
+  }
+
+  const [sp] = await db
+    .select()
+    .from(studioPlans)
+    .where(and(eq(studioPlans.id, id), eq(studioPlans.userId, userId)))
+    .limit(1);
+  if (sp) {
+    const plan = sp.plan as LiftingPlan;
+    const planW1 = startOfIsoWeek(plan.brief.startDate);
+    const weekTotal = plan.brief.durationWeeks;
+    const endDate = addDays(planW1, weekTotal * 7 - 1);
+    const currentWeek =
+      thisMonday >= planW1 && weekIndexOf(planW1, today) <= weekTotal
+        ? weekIndexOf(planW1, today)
+        : null;
+
+    const pushes = await db.select().from(studioPlanPushes).where(eq(studioPlanPushes.planId, sp.id));
+    // A push materializes on COROS and comes back as a planned workout keyed
+    // `${corosPlanId}:${idInPlan}` — that row's completionState is the truth.
+    const keys = pushes
+      .filter((p) => p.corosPlanId && p.corosIdInPlan)
+      .map((p) => ({ push: p, key: `${p.corosPlanId}:${p.corosIdInPlan}` }));
+    const linked = keys.length
+      ? await db
+          .select()
+          .from(plannedWorkouts)
+          .where(and(eq(plannedWorkouts.userId, userId), isNull(plannedWorkouts.archivedAt)))
+      : [];
+    const bySourceId = new Map(linked.map((w) => [w.sourceWorkoutId, w]));
+    const doneWeeks = new Set<number>();
+    const pushesByWeek = new Map<number, { total: number; completed: number }>();
+    for (const { push, key } of keys) {
+      const week = weekIndexOf(planW1, push.corosHappenDay ?? push.happenDay);
+      const entry = pushesByWeek.get(week) ?? { total: 0, completed: 0 };
+      entry.total += 1;
+      if (bySourceId.get(key)?.completionState === "completed") entry.completed += 1;
+      pushesByWeek.set(week, entry);
+    }
+    for (const [week, entry] of pushesByWeek) {
+      if (entry.total > 0 && entry.completed === entry.total) doneWeeks.add(week);
+    }
+
+    const progressions = liftProgressions(plan, doneWeeks, currentWeek);
+    const weeks = Array.from({ length: weekTotal }, (_, i) => ({
+      weekStart: addDays(planW1, i * 7),
+      index: i + 1,
+      state: "firm" as const,
+      volumeTarget: null,
+      keySessions: [],
+      summary: liftWeekSummary(plan, i + 1),
+      done: doneWeeks.has(i + 1),
+      current: currentWeek === i + 1,
+    }));
+
+    const [pushed] = pushes.filter((p) => p.status === "verified").slice(0, 1);
+    const duePushes = keys.filter(({ push }) => (push.corosHappenDay ?? push.happenDay) <= today);
+    const doneCount = duePushes.filter(({ key }) => bySourceId.get(key)?.completionState === "completed").length;
+    return c.json({
+      plan: {
+        id: sp.id,
+        discipline: "lift" as const,
+        name: plan.name ?? "Lifting plan",
+        status: (pushed ? "active" : "draft") as "active" | "draft",
+        startDate: plan.brief.startDate,
+        endDate,
+        raceDate: null,
+        source: "studio" as const,
+      },
+      weeks,
+      progressions,
+      sessions: {
+        planned: plan.weeks.reduce((s, w) => s + w.sessions.length, 0),
+        done: keys.filter(({ key }) => bySourceId.get(key)?.completionState === "completed").length,
+      },
+      adherencePct: duePushes.length > 0 ? Math.round((doneCount / duePushes.length) * 100) : null,
+    });
+  }
+
+  return c.json({ error: "not_found" }, 404);
 });
 
 coachRoutes.post("/plans/:id/rename", async (c) => {
