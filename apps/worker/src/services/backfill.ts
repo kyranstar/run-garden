@@ -8,10 +8,11 @@
  */
 
 import { and, desc, eq, inArray } from "drizzle-orm";
-import { backfillState, corosWriteJobs } from "@rg/database";
-import { addDays, newId, nowInstant, type SourceActivity } from "@rg/domain";
+import { activities, backfillState, corosWriteJobs } from "@rg/database";
+import { addDays, newId, nowInstant, todayInZone, type SourceActivity } from "@rg/domain";
 import { loadPreferences } from "./calendar-sync.js";
 import { ingestActivities, type IngestInput } from "./completion.js";
+import { READ_WINDOW_DAYS, enqueueBackfillDigest, enqueueCoachReads } from "./coach-reads.js";
 import type { Db } from "./db.js";
 import { resimulateFrom } from "./garden-sync.js";
 import { CLAIM_TIMEOUT_MS } from "./jobs.js";
@@ -261,6 +262,26 @@ export async function advanceBackfill(
       .update(backfillState)
       .set({ status: "done", finishedAt: now, updatedAt: now })
       .where(eq(backfillState.userId, userId));
+    // Perception layer (rework spec §1): the finished walk enqueues reads for
+    // anything inside the auto-read window, and ONE digest for the deeper
+    // history — never a per-activity call over months of backfill. Keyed by
+    // the walk's earliest date so a re-run of the same span stays idempotent.
+    try {
+      const prefs = await loadPreferences(db, userId);
+      const localToday = todayInZone(prefs.timezone);
+      await enqueueCoachReads(db, userId, localToday);
+      const cutoff = addDays(localToday, -READ_WINDOW_DAYS);
+      const acts = await db
+        .select({ startTime: activities.startTime, startTimeLocal: activities.startTimeLocal })
+        .from(activities)
+        .where(eq(activities.userId, userId));
+      const oldCount = acts.filter(
+        (a) => (a.startTimeLocal ?? a.startTime).slice(0, 10) < cutoff,
+      ).length;
+      await enqueueBackfillDigest(db, userId, `backfill:${state.earliestDateReached ?? "history"}`, oldCount);
+    } catch {
+      // A finished backfill never fails over the perception layer.
+    }
     return;
   }
 

@@ -16,6 +16,7 @@ import { applyJobResult, claimNextJob, emitPendingWork } from "../services/jobs.
 import { DEVICE_ONLINE_WINDOW_MS } from "../services/sync-status.js";
 import { importPlanSnapshot } from "../services/import-plan.js";
 import { ingestActivities } from "../services/completion.js";
+import { enqueueCoachReads, processCoachReads } from "../services/coach-reads.js";
 import { advanceBackfill, recordChunk } from "../services/backfill.js";
 import { advanceGarden, buildGardenView, resimulateFrom } from "../services/garden-sync.js";
 import { finishSyncRun, recordSyncError, startSyncRun } from "../services/reconcile-daily.js";
@@ -236,6 +237,17 @@ deviceRoutes.post("/bridge/sync", requireDevice, async (c) => {
       stats.ingest = ingest;
       const earliest = ingest.affectedDates[0];
       if (earliest) await resimulateFrom(db, userId, earliest, prefs);
+      // Ambient coach reads (rework spec §1): enqueue is a cheap idempotent
+      // DB write; the LLM work rides waitUntil so sync latency never pays for
+      // it, and the hourly sweep catches anything a dropped waitUntil misses.
+      try {
+        await enqueueCoachReads(db, userId, todayInZone(prefs.timezone));
+        c.executionCtx?.waitUntil?.(
+          processCoachReads(db, c.env, userId, prefs, {}).catch(() => undefined),
+        );
+      } catch {
+        // Never fail an ingest over the perception layer.
+      }
     }
 
     if (body.health && body.health.length > 0) {

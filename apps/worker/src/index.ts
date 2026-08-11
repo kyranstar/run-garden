@@ -28,6 +28,7 @@ import { reconcileCompletionStates, startSyncRun, finishSyncRun } from "./servic
 import { generateWeeklyReview } from "./services/llm.js";
 import { healLegacySyncState } from "./services/heal-legacy-sync.js";
 import { evaluateTriggers } from "./services/coach-triggers.js";
+import { processCoachReads } from "./services/coach-reads.js";
 import { purgeExpiredSessions, createSession, sessionCookie } from "./auth/sessions.js";
 import { purgeExpiredStates } from "./auth/google.js";
 import { ensureFixtureUser, seedFixtures } from "./services/fixtures.js";
@@ -122,6 +123,9 @@ async function hourly(db: Db, env: Env): Promise<void> {
       // wake; nothing here thinks (spec §1).
       await evaluateTriggers(db, userId, prefs, todayInZone(prefs.timezone)).catch(() => []);
       await sweepUserProposals(db, userId, prefs.timezone).catch(() => undefined);
+      // Perception catch-up: drains reads a dropped waitUntil missed. Cap 2
+      // per tick keeps the per-user loop bounded (rework spec §1).
+      await processCoachReads(db, env, userId, prefs, {}).catch(() => undefined);
       await finishSyncRun(db, runId, "ok", { ...rec, ...garden });
     } catch {
       await finishSyncRun(db, runId, "error");
