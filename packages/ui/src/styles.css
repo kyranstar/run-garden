@@ -4220,3 +4220,30 @@ button {
   display: flex;
   align-items: center;
 }
+
+/* Mobile compaction ("no unnecessary wrapping"): prose shrinks, numbers
+   stay, the brief chips and week header each hold one row. */
+.brief-narrow,
+.pw-narrow {
+  display: none;
+}
+@media (max-width: 639px) {
+  .brief-wide,
+  .pw-wide {
+    display: none;
+  }
+  .brief-narrow,
+  .pw-narrow {
+    display: inline;
+  }
+  .plan-brief-chip {
+    font-size: 0.74rem;
+    padding: 0.18rem 0.5rem;
+  }
+  .plan-brief-chips {
+    gap: 0.3rem;
+  }
+  .plan-week-head {
+    gap: 0.45rem;
+  }
+}

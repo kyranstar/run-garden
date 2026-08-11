@@ -125,9 +125,14 @@ export function WeekView({
           </button>
         </span>
         <h2 className="plan-week-title">
-          {offCurrent ? weekRangeLabel(week.weekStart) : `This week · ${weekRangeLabel(week.weekStart)}`}
+          {offCurrent ? null : <span className="pw-wide">This week · </span>}
+          {weekRangeLabel(week.weekStart)}
         </h2>
-        {week.weekIndex !== null ? <span className="pill pill-neutral num">plan wk {week.weekIndex}</span> : null}
+        {week.weekIndex !== null ? (
+          <span className="pill pill-neutral num">
+            <span className="pw-wide">plan </span>wk {week.weekIndex}
+          </span>
+        ) : null}
         {offCurrent ? (
           <button type="button" className="chipbtn plan-week-back" onClick={() => onPick(thisMonday)}>
             back to this week
@@ -136,7 +141,10 @@ export function WeekView({
         <span className="plan-week-grow" />
         {jumpWeeks.length > 0 ? (
           <details className="plan-week-jump">
-            <summary>jump to week ▾</summary>
+            <summary>
+              <span className="pw-wide">jump to week</span>
+              <span className="pw-narrow">weeks</span> ▾
+            </summary>
             <div className="plan-week-jumplist" role="menu">
               {jumpWeeks.map((j) => (
                 <button

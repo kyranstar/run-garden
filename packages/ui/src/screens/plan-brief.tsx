@@ -44,19 +44,24 @@ export function WeeklyBrief({
           </button>
         ) : null}
       </div>
+      {/* Labels compact themselves under 640px (spec R1 + "no unnecessary
+          wrapping"): the numbers stay, the prose shrinks, one row fits. */}
       <div className="plan-brief-chips">
         <span className="plan-brief-chip">
           <b className="num">
             {week.doneCount} of {week.sessionCount}
           </b>{" "}
-          sessions
+          <span className="brief-wide">sessions</span>
+          <span className="brief-narrow">done</span>
         </span>
         <span className="plan-brief-chip">
-          <b className="num">{formatMinutes(week.plannedSeconds)}</b> planned
+          <b className="num">{formatMinutes(week.plannedSeconds)}</b>
+          <span className="brief-wide"> planned</span>
         </span>
         {week.adherence4w.pct !== null ? (
           <span className="plan-brief-chip">
-            4-wk adherence <b className="num">{week.adherence4w.pct}%</b>
+            <span className="brief-wide">4-wk adherence </span>
+            <b className="num">{week.adherence4w.pct}%</b>
             {week.adherence4w.trend ? (
               <span className={`plan-brief-trend trend-${week.adherence4w.trend}`} aria-hidden>
                 {" "}
@@ -67,7 +72,8 @@ export function WeeklyBrief({
         ) : null}
         {week.loadRatio !== null ? (
           <span className="plan-brief-chip">
-            load 7d/28d <b className="num">{week.loadRatio.toFixed(2)}</b>
+            load <span className="brief-wide">7d/28d </span>
+            <b className="num">{week.loadRatio.toFixed(2)}</b>
           </span>
         ) : null}
       </div>

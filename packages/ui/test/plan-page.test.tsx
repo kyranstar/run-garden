@@ -124,7 +124,8 @@ describe("WeekView", () => {
     expect(html.match(/plan-week-day/g)!.length).toBeGreaterThanOrEqual(7);
     expect(html).toContain("is-today");
     expect(html).toContain("cal-ghost-rewrite");
-    expect(html).toContain("This week · Aug 10–16");
+    expect(html).toContain("This week · ");
+    expect(html).toContain("Aug 10–16");
     expect(html).not.toContain("back to this week");
   });
 
