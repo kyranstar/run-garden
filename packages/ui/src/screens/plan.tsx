@@ -127,9 +127,7 @@ function WorkoutDetail({
         </div>
         <p>
           {formatDayLong(w.effectiveDate)} at {formatTime(w.effectiveTime)}
-          {displayTitle !== w.title ? (
-            <span className="faint"> · COROS name: {w.title}</span>
-          ) : null}
+          {w.corosName ? <span className="faint"> · COROS name: {w.corosName}</span> : null}
         </p>
         <SyncNotesStack
           notes={workoutNotes}

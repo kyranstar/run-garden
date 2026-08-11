@@ -9,7 +9,13 @@ import {
   sleepRecords,
   workoutCompletionMatches,
 } from "@rg/database";
-import { addDays, type ActivityTelemetry } from "@rg/domain";
+import {
+  addDays,
+  humanizeWorkoutTitle,
+  looksLikeCodeTitle,
+  sportLabel,
+  type ActivityTelemetry,
+} from "@rg/domain";
 import type { Db } from "./db.js";
 
 /**
@@ -81,7 +87,7 @@ export async function buildEffortPackage(
 
   // 1 · THIS EFFORT
   const effortLines = [
-    `${act.sport} · "${act.title ?? "untitled"}" · ${date} ${(act.startTimeLocal ?? "").slice(11, 16)}`,
+    `${act.sport} · "${act.title && !looksLikeCodeTitle(act.title) ? act.title : sportLabel(act.sport)}" · ${date} ${(act.startTimeLocal ?? "").slice(11, 16)}`,
     `moving ${hms(act.durationSeconds)}${act.elapsedSeconds ? ` · elapsed ${hms(act.elapsedSeconds)}` : ""}` +
       `${act.distanceMeters ? ` · ${(act.distanceMeters / 1000).toFixed(2)}km` : ""}` +
       `${act.avgPaceSecPerKm ? ` · avg ${mmss(act.avgPaceSecPerKm)}` : ""}`,
@@ -156,7 +162,7 @@ export async function buildEffortPackage(
       .where(eq(plannedWorkouts.id, match.workoutId))
       .limit(1);
     if (w) {
-      planLines.push(`planned: "${w.title}" · ${w.category} · ${w.sport} · state ${w.completionState}`);
+      planLines.push(`planned: "${humanizeWorkoutTitle(w.title, w.category, w.qualitySubtype)}" · ${w.category} · ${w.sport} · state ${w.completionState}`);
       const stages = await db
         .select()
         .from(plannedWorkoutStages)
@@ -213,7 +219,7 @@ export async function buildEffortPackage(
   const histLines = prior.map((p) => {
     const pt: ActivityTelemetry = p.telemetry ?? {};
     return (
-      `${localDateOf(p)} · "${p.title ?? p.sport}" · ${hms(p.durationSeconds)}` +
+      `${localDateOf(p)} · "${p.title && !looksLikeCodeTitle(p.title) ? p.title : sportLabel(p.sport)}" · ${hms(p.durationSeconds)}` +
       `${p.distanceMeters ? ` · ${(p.distanceMeters / 1000).toFixed(1)}km · ${mmss(p.avgPaceSecPerKm)}` : ""}` +
       `${p.avgHeartRate ? ` · HR ${Math.round(p.avgHeartRate)}` : ""}` +
       `${p.trainingLoad ? ` · load ${Math.round(p.trainingLoad)}` : ""}` +

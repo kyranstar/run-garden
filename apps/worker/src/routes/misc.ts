@@ -27,8 +27,11 @@ import {
 import {
   addDays,
   DEFAULT_CALENDAR_NAME,
+  humanizeWorkoutTitle,
+  looksLikeCodeTitle,
   newId,
   nowInstant,
+  sportLabel,
   startOfIsoWeek,
   todayInZone,
   userPreferencesSchema,
@@ -158,7 +161,7 @@ calendarRoutes.get("/preview", async (c) => {
   return c.json({
     days: rows.map((w) => ({
       id: w.id,
-      title: w.title,
+      title: humanizeWorkoutTitle(w.title, w.category, w.qualitySubtype),
       category: w.category,
       date: w.effectiveDate,
       time: w.effectiveTime,
@@ -173,6 +176,13 @@ calendarRoutes.get("/preview", async (c) => {
     eventCount: rows.filter((w) => w.category !== "rest").length,
   });
 });
+
+// COROS structured names are frequently opaque codes ("T1004") — the DTO
+// boundary hands the UI human words instead; the sport is the honest
+// fallback for an activity, the category for a planned workout.
+function activityDisplayTitle(title: string | null, sport: string): string {
+  return title && !looksLikeCodeTitle(title) ? title : sportLabel(sport);
+}
 
 // ── Activities ───────────────────────────────────────────────────────────────
 
@@ -238,7 +248,7 @@ activityRoutes.get("/", async (c) => {
         startTime: a.startTime,
         startTimeLocal: a.startTimeLocal,
         date: (a.startTimeLocal ?? a.startTime).slice(0, 10),
-        title: a.title,
+        title: activityDisplayTitle(a.title, a.sport),
         sport: a.sport,
         durationSeconds: a.durationSeconds,
         distanceMeters: a.distanceMeters,
@@ -247,7 +257,12 @@ activityRoutes.get("/", async (c) => {
         feel: a.telemetry?.feelRating ?? null,
         laps: laps.length > 1 ? laps : null,
         matched: wo
-          ? { workoutId: wo.id, title: wo.title, category: wo.category, date: wo.effectiveDate }
+          ? {
+              workoutId: wo.id,
+              title: humanizeWorkoutTitle(wo.title, wo.category, wo.qualitySubtype),
+              category: wo.category,
+              date: wo.effectiveDate,
+            }
           : null,
       };
     }),
@@ -289,7 +304,9 @@ activityRoutes.get("/unmatched", async (c) => {
     .orderBy(desc(activities.startTime))
     .limit(20);
   return c.json({
-    activities: rows.filter((a) => a.sport === "run" || a.sport === "strength" || a.sport === "yoga"),
+    activities: rows
+      .filter((a) => a.sport === "run" || a.sport === "strength" || a.sport === "yoga")
+      .map((a) => ({ ...a, title: activityDisplayTitle(a.title, a.sport) })),
   });
 });
 
@@ -703,7 +720,7 @@ insightRoutes.get("/", async (c) => {
       splitRuns.push({
         activityId: a.id,
         date: localDate(a),
-        title: a.title ?? undefined,
+        title: activityDisplayTitle(a.title, a.sport),
         firstHalfPace,
         secondHalfPace,
       });
@@ -1053,7 +1070,7 @@ insightRoutes.get("/", async (c) => {
     return {
       activityId: a.id,
       date: localDate(a),
-      title: a.title ?? undefined,
+      title: activityDisplayTitle(a.title, a.sport),
       value: `avg ${avgHr} bpm`,
       over,
       note: over

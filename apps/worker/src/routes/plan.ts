@@ -21,9 +21,12 @@ import {
 import { computeConsistency } from "@rg/analytics";
 import {
   addDays,
+  humanizeWorkoutTitle,
   isAdventureSport,
+  looksLikeCodeTitle,
   newId,
   nowInstant,
+  sportLabel,
   startOfIsoWeek,
   todayInZone,
   type PlannedWorkout,
@@ -102,9 +105,15 @@ function workoutDto(
   w: typeof plannedWorkouts.$inferSelect,
   corosSyncView?: ReturnType<typeof deriveWorkoutSync>,
 ) {
+  // COROS structured names are frequently opaque codes ("T1004") — every UI
+  // surface gets the humanized name; the raw one rides along as corosName
+  // for cross-referencing the watch. Humanizing HERE (the one DTO boundary)
+  // is what keeps Today, the garden dock, and the plan page agreeing.
+  const displayTitle = humanizeWorkoutTitle(w.title, w.category, w.qualitySubtype);
   return {
     id: w.id,
-    title: w.title,
+    title: displayTitle,
+    ...(displayTitle !== w.title ? { corosName: w.title } : {}),
     category: w.category,
     qualitySubtype: w.qualitySubtype,
     sport: w.sport,
@@ -549,7 +558,20 @@ planRoutes.get("/workouts/:id", async (c) => {
     workout: workoutDto(w, syncViews.get(w.id)),
     durationEstimate: w.durationEstimate,
     stages,
-    match: match ? { ...match, activity } : null,
+    match: match
+      ? {
+          ...match,
+          activity: activity
+            ? {
+                ...activity,
+                title:
+                  activity.title && !looksLikeCodeTitle(activity.title)
+                    ? activity.title
+                    : sportLabel(activity.sport),
+              }
+            : activity,
+        }
+      : null,
     calendarEvent: link ? { eventId: link.eventId, state: link.state } : null,
     recentJobs: jobs.map((j) => ({
       id: j.id,

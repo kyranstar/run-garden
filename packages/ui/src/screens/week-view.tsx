@@ -48,14 +48,15 @@ export function WorkoutCell({
       </button>
     );
   }
-  // COROS structured names are frequently opaque codes ("T1004") — display
-  // speaks category words instead; the raw name stays in the hover title.
+  // The server already substitutes category words for opaque COROS codes
+  // ("T1004") at the DTO boundary; humanizing again here is a no-op there
+  // and a safety net for any payload that hasn't. Hover shows the raw code.
   const displayTitle = humanizeWorkoutTitle(w.title, w.category, w.qualitySubtype);
   return (
     <button
       className={`cal-card ${done ? "done" : ""} ${faded ? "faded" : ""} ${asks ? "asks" : ""}`}
       onClick={onOpen}
-      title={w.title}
+      title={w.corosName ?? w.title}
     >
       <i className={`cal-card-edge cat-${w.category}`} aria-hidden />
       <span className="cal-card-title">{displayTitle}</span>

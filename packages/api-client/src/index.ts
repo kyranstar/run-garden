@@ -75,7 +75,10 @@ export const put = <T>(path: string, body?: unknown) =>
 
 export interface WorkoutDto {
   id: string;
+  /** Human display name — the server substitutes category words when COROS
+   * sent an opaque code ("T1004"); the raw code rides in corosName. */
   title: string;
+  corosName?: string;
   category: string;
   qualitySubtype?: string | null;
   sport: string;

@@ -14,7 +14,13 @@ import {
   sleepRecords,
   workoutCompletionMatches,
 } from "@rg/database";
-import { addDays, todayInZone, type LocalDate, type UserPreferences } from "@rg/domain";
+import {
+  addDays,
+  humanizeWorkoutTitle,
+  todayInZone,
+  type LocalDate,
+  type UserPreferences,
+} from "@rg/domain";
 import {
   conditionWord,
   DEFAULT_GARDEN_CONFIG,
@@ -153,7 +159,7 @@ export async function buildDossier(
     upcoming.length
       ? upcoming.map(
           (w) =>
-            `${w.effectiveDate} · ${w.category} · "${w.title}" · ${w.sport} [wo:${w.id}]` +
+            `${w.effectiveDate} · ${w.category} · "${humanizeWorkoutTitle(w.title, w.category, w.qualitySubtype)}" · ${w.sport} [wo:${w.id}]` +
             `${w.completionState !== "scheduled" ? ` · ${w.completionState}` : ""}` +
             `${coachPlanIdSet.has(w.planId ?? "") ? "" : " · imported"}`,
         )
@@ -185,7 +191,7 @@ export async function buildDossier(
         : w.completionState === "completed"
           ? "completed (details unknown)"
           : w.completionState;
-      return `${w.effectiveDate} · ${w.category} · "${w.title}" · ${actual} [wo:${w.id}]`;
+      return `${w.effectiveDate} · ${w.category} · "${humanizeWorkoutTitle(w.title, w.category, w.qualitySubtype)}" · ${actual} [wo:${w.id}]`;
     });
   const matchedActivityIds = new Set(matches.map((m) => m.activityId));
   const unplanned = recentActs

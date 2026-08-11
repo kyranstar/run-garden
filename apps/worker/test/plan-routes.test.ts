@@ -248,14 +248,14 @@ describe("GET /week — brief facts (2026-08-11 rework §4)", () => {
     return addDays(startOfIsoWeek(today), offsetWeeks * 7);
   }
 
-  async function seedWeekWorkout(date: string, opts: { state?: string; seconds?: number; category?: string } = {}): Promise<string> {
+  async function seedWeekWorkout(date: string, opts: { state?: string; seconds?: number; category?: string; title?: string } = {}): Promise<string> {
     const id = newId();
     await db.insert(plannedWorkouts).values({
       id,
       userId,
       planId: "p",
       sourceWorkoutId: `4738:${id.slice(0, 6)}`,
-      title: "Session",
+      title: opts.title ?? "Session",
       category: (opts.category ?? "easy") as never,
       sport: "run",
       originalPlanDate: date,
@@ -329,6 +329,18 @@ describe("GET /week — brief facts (2026-08-11 rework §4)", () => {
     expect(body.focus).toBeNull();
     expect(body.weekIndex).toBeNull();
     expect(body.weekTotal).toBeNull();
+  });
+
+  it("humanizes COROS code-titles at the DTO boundary, raw name in corosName", async () => {
+    const monday = mondayOf(0);
+    await seedWeekWorkout(monday, { title: "T1004", category: "easy" });
+    const res = await get("/api/plan/week");
+    const body = (await res.json()) as {
+      days: Array<{ workouts: Array<{ title: string; corosName?: string }> }>;
+    };
+    const w = body.days.flatMap((d) => d.workouts)[0]!;
+    expect(w.title).toBe("Easy run");
+    expect(w.corosName).toBe("T1004");
   });
 
   it("validates the start param (must be a Monday)", async () => {
