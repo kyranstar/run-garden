@@ -1,0 +1,933 @@
+<title>Coach &amp; Plan — rework mocks</title>
+<style>
+  /* ---------- review-doc tokens (cool board; the mocks sit warm on top) ---------- */
+  :root {
+    --paper: #f2f3ef;
+    --card: #fbfbf9;
+    --ink: #24282a;
+    --ink-2: #5c625e;
+    --ink-3: #8b918c;
+    --moss: #3e7a52;
+    --moss-ink: #2c5c3c;
+    --amber: #a4661d;
+    --amber-soft: #f6ecd9;
+    --line: #dcdfd8;
+    --line-2: #c8ccc3;
+    --serif: "Iowan Old Style", "Palatino Linotype", Palatino, Georgia, serif;
+    --sans: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+    --mono: ui-monospace, "SF Mono", SFMono-Regular, Menlo, Consolas, monospace;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --paper: #141715;
+      --card: #1c201d;
+      --ink: #e6e6df;
+      --ink-2: #a9aea8;
+      --ink-3: #7c817b;
+      --moss: #6aa87d;
+      --moss-ink: #9cc7a8;
+      --amber: #d0a05a;
+      --amber-soft: #352c1a;
+      --line: #2e332e;
+      --line-2: #3f453f;
+    }
+  }
+  :root[data-theme="dark"] {
+    --paper: #141715; --card: #1c201d; --ink: #e6e6df; --ink-2: #a9aea8; --ink-3: #7c817b;
+    --moss: #6aa87d; --moss-ink: #9cc7a8; --amber: #d0a05a; --amber-soft: #352c1a;
+    --line: #2e332e; --line-2: #3f453f;
+  }
+  :root[data-theme="light"] {
+    --paper: #f2f3ef; --card: #fbfbf9; --ink: #24282a; --ink-2: #5c625e; --ink-3: #8b918c;
+    --moss: #3e7a52; --moss-ink: #2c5c3c; --amber: #a4661d; --amber-soft: #f6ecd9;
+    --line: #dcdfd8; --line-2: #c8ccc3;
+  }
+
+  html { -webkit-text-size-adjust: 100%; }
+  body {
+    background: var(--paper); color: var(--ink);
+    font-family: var(--sans); font-size: 16px; line-height: 1.55;
+    margin: 0; padding: 0 1.25rem 6rem;
+    -webkit-font-smoothing: antialiased;
+  }
+  .doc { max-width: 1060px; margin: 0 auto; }
+  .doc a { color: var(--moss-ink); }
+  .eyebrow { font-family: var(--mono); font-size: .72rem; letter-spacing: .14em; text-transform: uppercase; color: var(--ink-3); }
+  h1 { font-family: var(--serif); font-size: clamp(1.9rem, 4.5vw, 2.6rem); font-weight: 600; line-height: 1.12; margin: .35rem 0 .4rem; text-wrap: balance; }
+  h2 { font-family: var(--serif); font-size: 1.45rem; font-weight: 600; margin: 0 0 .25rem; text-wrap: balance; }
+  h3 { font-size: 1.02rem; font-weight: 650; margin: 0 0 .3rem; }
+  section.block { margin-top: 4.5rem; }
+  .kicker { display: flex; align-items: baseline; gap: .7rem; border-top: 1px solid var(--line-2); padding-top: 1rem; margin-bottom: 1.1rem; }
+  .kicker .num { font-family: var(--mono); font-size: .78rem; color: var(--amber); }
+  .lede { color: var(--ink-2); max-width: 62ch; margin: 0 0 1.2rem; }
+  p { max-width: 68ch; }
+  .doc-head { padding-top: 3.2rem; }
+  .doc-head .meta { color: var(--ink-3); font-size: .85rem; margin-top: .2rem; }
+
+  .tldr { background: var(--card); border: 1px solid var(--line); border-radius: 12px; padding: 1.1rem 1.25rem; margin-top: 1.6rem; }
+  .tldr h3 { font-family: var(--mono); font-size: .72rem; letter-spacing: .12em; text-transform: uppercase; color: var(--ink-3); font-weight: 600; }
+  .tldr ol { margin: .5rem 0 0; padding-left: 1.2rem; }
+  .tldr li { margin: .3rem 0; }
+  .tldr b { color: var(--moss-ink); }
+
+  .toc { display: flex; flex-wrap: wrap; gap: .45rem; margin-top: 1.2rem; }
+  .toc a { font-family: var(--mono); font-size: .74rem; text-decoration: none; color: var(--ink-2); border: 1px solid var(--line); background: var(--card); border-radius: 999px; padding: .3rem .7rem; }
+  .toc a:hover { border-color: var(--line-2); color: var(--ink); }
+
+  table.spec { border-collapse: collapse; width: 100%; font-size: .875rem; }
+  table.spec th { text-align: left; font-family: var(--mono); font-size: .68rem; letter-spacing: .1em; text-transform: uppercase; color: var(--ink-3); font-weight: 600; padding: .45rem .6rem .35rem 0; border-bottom: 1px solid var(--line-2); }
+  table.spec td { padding: .5rem .6rem .5rem 0; border-bottom: 1px solid var(--line); vertical-align: top; }
+  table.spec td:first-child { white-space: nowrap; font-weight: 600; }
+  .tablewrap { overflow-x: auto; }
+  code { font-family: var(--mono); font-size: .84em; background: var(--card); border: 1px solid var(--line); border-radius: 5px; padding: .05em .35em; }
+
+  /* flow diagram */
+  .flow { display: flex; flex-wrap: wrap; gap: .6rem; align-items: stretch; margin: 1.2rem 0 .4rem; }
+  .flow .node { flex: 1 1 150px; min-width: 150px; background: var(--card); border: 1px solid var(--line); border-radius: 10px; padding: .6rem .75rem; position: relative; }
+  .flow .node .t { font-family: var(--mono); font-size: .66rem; letter-spacing: .1em; text-transform: uppercase; color: var(--amber); }
+  .flow .node .n { font-weight: 650; font-size: .92rem; margin-top: .1rem; }
+  .flow .node .d { color: var(--ink-2); font-size: .8rem; margin-top: .2rem; line-height: 1.4; }
+  .flow .arrow { align-self: center; color: var(--ink-3); font-size: 1.1rem; padding: 0 .1rem; }
+  .surfaces { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: .6rem; margin-top: .8rem; }
+  .surfaces .s { border: 1px dashed var(--line-2); border-radius: 10px; padding: .55rem .7rem; font-size: .84rem; color: var(--ink-2); background: transparent; }
+  .surfaces .s b { color: var(--ink); display: block; font-size: .88rem; }
+
+  /* ranked cards */
+  .rank-list { display: flex; flex-direction: column; gap: .6rem; margin-top: 1rem; }
+  .rank { display: grid; grid-template-columns: 2.4rem 1fr auto; gap: .9rem; align-items: start; background: var(--card); border: 1px solid var(--line); border-radius: 12px; padding: .85rem 1rem; }
+  .rank .pos { font-family: var(--serif); font-size: 1.5rem; color: var(--amber); line-height: 1; padding-top: .1rem; }
+  .rank h3 { margin-bottom: .15rem; }
+  .rank p { margin: 0; color: var(--ink-2); font-size: .88rem; max-width: 60ch; }
+  .rank .tag { font-family: var(--mono); font-size: .66rem; letter-spacing: .1em; text-transform: uppercase; border-radius: 999px; padding: .28rem .6rem; white-space: nowrap; border: 1px solid var(--line-2); color: var(--ink-2); }
+  .rank .tag.build { background: var(--moss); color: #fff; border-color: var(--moss); }
+  .rank .tag.keep { background: transparent; color: var(--moss-ink); border-color: var(--moss); }
+  .rank .tag.later { color: var(--ink-3); }
+  @media (prefers-color-scheme: dark) { .rank .tag.build { color: #10140f; } }
+  :root[data-theme="dark"] .rank .tag.build { color: #10140f; }
+  :root[data-theme="light"] .rank .tag.build { color: #fff; }
+
+  /* mock stages */
+  .stage { margin: 1.4rem 0 .6rem; }
+  .stage-scroll { overflow-x: auto; padding: .25rem; margin: 0 -0.25rem; }
+  .devframe { background: var(--card); border: 1px solid var(--line-2); border-radius: 14px; box-shadow: 0 14px 40px rgba(0,0,0,.10); overflow: hidden; }
+  .devbar { display: flex; align-items: center; gap: .45rem; padding: .5rem .8rem; border-bottom: 1px solid var(--line); background: var(--card); }
+  .devbar .dot { width: 9px; height: 9px; border-radius: 50%; background: var(--line-2); }
+  .devbar .url { font-family: var(--mono); font-size: .68rem; color: var(--ink-3); margin-left: .4rem; }
+  .caption { display: flex; gap: .8rem; align-items: baseline; margin: .6rem .2rem 0; color: var(--ink-3); font-size: .8rem; }
+  .caption .tag { font-family: var(--mono); font-size: .64rem; letter-spacing: .12em; text-transform: uppercase; color: var(--amber); }
+  .notes { margin: 1.1rem 0 0; padding: 0; list-style: none; display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: .5rem .9rem; }
+  .notes li { display: flex; gap: .55rem; font-size: .87rem; color: var(--ink-2); align-items: baseline; }
+  .notes li b { color: var(--ink); }
+  .callout-dot, .notes .cd {
+    flex: none; display: inline-flex; align-items: center; justify-content: center;
+    width: 1.15rem; height: 1.15rem; border-radius: 50%; background: var(--amber); color: #fff;
+    font-family: var(--mono); font-size: .66rem; font-weight: 700;
+  }
+  .anno { position: relative; }
+  .anno > .callout-dot { position: absolute; top: -0.5rem; left: -0.4rem; z-index: 5; box-shadow: 0 0 0 2px var(--card); }
+
+  .phones { display: flex; flex-wrap: wrap; gap: 1.6rem; align-items: flex-start; }
+  .phone { width: 390px; max-width: 100%; border-radius: 34px; border: 1px solid var(--line-2); background: var(--card); padding: 10px; box-shadow: 0 14px 40px rgba(0,0,0,.10); flex: none; }
+  .phone .screen { border-radius: 26px; overflow: hidden; border: 1px solid var(--line); }
+  .phone .chin { display: flex; justify-content: center; padding-top: 8px; }
+  .phone .chin i { width: 110px; height: 4px; border-radius: 4px; background: var(--line-2); display: block; }
+
+  /* wireframe variants */
+  .variants { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 1rem; margin-top: 1rem; }
+  .variant { background: var(--card); border: 1px solid var(--line); border-radius: 12px; padding: .9rem; }
+  .variant.rec { border-color: var(--moss); box-shadow: 0 0 0 1px var(--moss); }
+  .variant h3 { display: flex; align-items: center; gap: .5rem; }
+  .variant .rectag { font-family: var(--mono); font-size: .62rem; letter-spacing: .1em; text-transform: uppercase; color: var(--moss-ink); border: 1px solid var(--moss); border-radius: 999px; padding: .15rem .5rem; }
+  .wf { border: 1px solid var(--line-2); border-radius: 8px; height: 150px; position: relative; overflow: hidden; margin: .5rem 0 .6rem; background: var(--paper); }
+  .wf i { position: absolute; display: block; border-radius: 4px; background: var(--line); }
+  .wf i.g { background: color-mix(in oklab, var(--moss) 30%, var(--paper)); }
+  .wf i.a { background: color-mix(in oklab, var(--amber) 35%, var(--paper)); }
+  .variant p { font-size: .85rem; color: var(--ink-2); margin: .2rem 0; }
+
+  .cols2 { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 1rem 2rem; }
+  ul.tight { margin: .4rem 0; padding-left: 1.15rem; }
+  ul.tight li { margin: .28rem 0; font-size: .9rem; color: var(--ink-2); }
+  ul.tight li b { color: var(--ink); }
+
+  .decision { background: var(--card); border: 1px solid var(--line); border-left: 3px solid var(--amber); border-radius: 10px; padding: .8rem 1rem; margin: .6rem 0; }
+  .decision b { display: block; margin-bottom: .15rem; }
+  .decision span { color: var(--ink-2); font-size: .9rem; }
+
+  /* =====================================================================
+     RUN GARDEN app tokens — the mocks render in the product's own system
+     ===================================================================== */
+  .rg {
+    --bg: #faf8f3; --bg-raised: #ffffff; --bg-sunken: #f2efe8;
+    --rg-ink: #26292a; --ink-soft: #5a5f5c; --ink-faint: #8a8f8a;
+    --border: #e5e1d6; --border-strong: #d2cdbf;
+    --green: #3e7a52; --green-soft: #e5efe6; --green-ink: #2c5c3c;
+    --accent: #5c6ab0; --accent-soft: #e9ebf7;
+    --warn: #a4661d; --warn-soft: #f7ecda;
+    --danger: #a44434; --danger-soft: #f7e4df;
+    --coach-tray-bg: #fffdf6;
+    --lift-soft: #f4e6da; --lift-ink: #b5652f;
+    --chart-1: #2b8a55; --chart-2: #c25a2e; --chart-3: #5560c9;
+    --chart-track: #eeeae1; --chart-grid: #e5e1d6;
+    --cat-quality: #b06a4d; --cat-easy: #5f9367; --cat-long: #4d6ab0; --cat-recovery: #7fae94; --cat-rest: #b8b3a5; --cat-strength: #8a87b8;
+    --radius: 12px; --radius-sm: 8px;
+    --shadow: 0 1px 2px rgba(38,41,42,.05);
+    background: var(--bg); color: var(--rg-ink);
+    font-family: var(--sans); font-size: 15px; line-height: 1.5;
+  }
+  @media (prefers-color-scheme: dark) {
+    .rg {
+      --bg: #191b19; --bg-raised: #212422; --bg-sunken: #141614;
+      --rg-ink: #e8e6df; --ink-soft: #b0b3ac; --ink-faint: #7d817b;
+      --border: #32362f; --border-strong: #454a42;
+      --green: #6aa87d; --green-soft: #24352a; --green-ink: #9cc7a8;
+      --accent: #98a3dd; --accent-soft: #272b3d;
+      --warn: #d0a05a; --warn-soft: #3a3020;
+      --danger: #d08070; --danger-soft: #3c2722;
+      --coach-tray-bg: #3a3020;
+      --lift-soft: #3a2a1c; --lift-ink: #e0965a;
+      --chart-1: #3da868; --chart-2: #cc7a3a; --chart-3: #7f8ce0;
+      --chart-track: #2b2f2c; --chart-grid: #32362f;
+      --cat-long: #8199d6;
+      --shadow: 0 1px 2px rgba(0,0,0,.3);
+    }
+  }
+  :root[data-theme="dark"] .rg {
+    --bg: #191b19; --bg-raised: #212422; --bg-sunken: #141614;
+    --rg-ink: #e8e6df; --ink-soft: #b0b3ac; --ink-faint: #7d817b;
+    --border: #32362f; --border-strong: #454a42;
+    --green: #6aa87d; --green-soft: #24352a; --green-ink: #9cc7a8;
+    --accent: #98a3dd; --accent-soft: #272b3d;
+    --warn: #d0a05a; --warn-soft: #3a3020;
+    --danger: #d08070; --danger-soft: #3c2722;
+    --coach-tray-bg: #3a3020;
+    --lift-soft: #3a2a1c; --lift-ink: #e0965a;
+    --chart-1: #3da868; --chart-2: #cc7a3a; --chart-3: #7f8ce0;
+    --chart-track: #2b2f2c; --chart-grid: #32362f;
+    --cat-long: #8199d6;
+    --shadow: 0 1px 2px rgba(0,0,0,.3);
+  }
+  :root[data-theme="light"] .rg {
+    --bg: #faf8f3; --bg-raised: #ffffff; --bg-sunken: #f2efe8;
+    --rg-ink: #26292a; --ink-soft: #5a5f5c; --ink-faint: #8a8f8a;
+    --border: #e5e1d6; --border-strong: #d2cdbf;
+    --green: #3e7a52; --green-soft: #e5efe6; --green-ink: #2c5c3c;
+    --accent: #5c6ab0; --accent-soft: #e9ebf7;
+    --warn: #a4661d; --warn-soft: #f7ecda;
+    --danger: #a44434; --danger-soft: #f7e4df;
+    --coach-tray-bg: #fffdf6;
+    --lift-soft: #f4e6da; --lift-ink: #b5652f;
+    --chart-1: #2b8a55; --chart-2: #c25a2e; --chart-3: #5560c9;
+    --chart-track: #eeeae1; --chart-grid: #e5e1d6;
+    --cat-long: #4d6ab0;
+    --shadow: 0 1px 2px rgba(38,41,42,.05);
+  }
+
+  .rg * { box-sizing: border-box; }
+  .rg .serif { font-family: var(--serif); }
+  .rg .muted { color: var(--ink-soft); font-size: .9rem; }
+  .rg .faint { color: var(--ink-faint); font-size: .82rem; }
+  .rg .num { font-variant-numeric: tabular-nums; }
+
+  .rg-card { background: var(--bg-raised); border: 1px solid var(--border); border-radius: var(--radius); padding: 1rem; box-shadow: var(--shadow); }
+  .rg-cardtitle { font-size: .72rem; font-weight: 650; text-transform: uppercase; letter-spacing: .05em; color: var(--ink-faint); }
+
+  .rg-pill { display: inline-flex; align-items: center; gap: .32rem; border-radius: 999px; font-size: .74rem; font-weight: 600; padding: .18rem .6rem; }
+  .rg-pill.run { background: var(--green-soft); color: var(--green-ink); }
+  .rg-pill.lift { background: var(--lift-soft); color: var(--lift-ink); }
+  .rg-pill.ok { background: var(--green-soft); color: var(--green-ink); }
+  .rg-pill.warnsoft { background: var(--warn-soft); color: var(--warn); }
+  .rg-pill.neutral { background: var(--bg-sunken); color: var(--ink-soft); }
+
+  .rg-btn { display: inline-flex; align-items: center; justify-content: center; gap: .35rem; border: 1px solid var(--border-strong); background: var(--bg-raised); color: var(--rg-ink); border-radius: 10px; font-size: .85rem; font-weight: 600; padding: .38rem .8rem; min-height: 36px; }
+  .rg-btn.primary { background: var(--green); border-color: var(--green); color: #fff; }
+  .rg-btn.small { min-height: 32px; font-size: .8rem; padding: .28rem .65rem; }
+  .rg-link { color: var(--green-ink); text-decoration: underline; font-size: .85rem; background: none; border: none; }
+
+  /* ---- page scaffold inside mocks ---- */
+  .rg-shell { display: flex; min-height: 100%; }
+  .rg-sidenav { width: 180px; flex: none; border-right: 1px solid var(--border); padding: 1rem .9rem; }
+  .rg-brand { font-family: var(--serif); font-size: 1.05rem; font-weight: 650; margin-bottom: 1rem; }
+  .rg-nav a { display: block; padding: .42rem .6rem; border-radius: 8px; color: var(--ink-soft); text-decoration: none; font-size: .9rem; margin-bottom: .1rem; }
+  .rg-nav a.active { background: var(--green-soft); color: var(--green-ink); font-weight: 650; }
+  .rg-main { flex: 1; min-width: 0; padding: 1.5rem 1.8rem 3rem; position: relative; }
+  .rg-h1 { font-family: var(--serif); font-size: 1.45rem; font-weight: 650; margin: 0; }
+
+  /* weekly brief */
+  .brief { border-left: 3px solid var(--green); display: flex; flex-direction: column; gap: .5rem; }
+  .brief-head { display: flex; align-items: baseline; gap: .7rem; flex-wrap: wrap; }
+  .brief-head .serif { font-size: 1.12rem; font-weight: 650; }
+  .brief-chips { display: flex; flex-wrap: wrap; gap: .4rem; }
+  .brief-chip { display: inline-flex; align-items: baseline; gap: .35rem; background: var(--bg-sunken); border: 1px solid var(--border); border-radius: 999px; padding: .22rem .65rem; font-size: .8rem; color: var(--ink-soft); }
+  .brief-chip b { color: var(--rg-ink); font-weight: 650; font-variant-numeric: tabular-nums; }
+  .brief-chip .up { color: var(--green-ink); }
+  .brief-action { display: flex; gap: .5rem; align-items: baseline; font-size: .92rem; }
+  .brief-action .who { flex: none; font-size: .72rem; font-weight: 650; letter-spacing: .05em; text-transform: uppercase; color: var(--ink-faint); padding-top: .1rem; }
+  .brief-needs { align-self: flex-start; }
+
+  /* plan cards */
+  .plan-cards { display: grid; grid-template-columns: 1fr 1fr; gap: .8rem; }
+  .plan-card { display: flex; flex-direction: column; gap: .45rem; cursor: pointer; transition: transform .12s ease; position: relative; }
+  .plan-card:hover { transform: translateY(-1px); border-color: var(--border-strong); }
+  .plan-card .top { display: flex; justify-content: space-between; align-items: center; gap: .5rem; }
+  .plan-card .name { font-family: var(--serif); font-size: 1.15rem; font-weight: 650; }
+  .plan-card .prog { display: flex; align-items: center; gap: .6rem; }
+  .plan-track { flex: 1; height: 5px; border-radius: 4px; background: var(--chart-track); position: relative; overflow: hidden; }
+  .plan-track i { position: absolute; inset: 0 auto 0 0; border-radius: 4px; background: var(--green); }
+  .plan-card.liftc .plan-track i { background: var(--lift-ink); }
+  .plan-card .headline { display: flex; justify-content: space-between; align-items: center; gap: .8rem; }
+  .plan-card .headline .kv { font-size: .86rem; color: var(--ink-soft); }
+  .plan-card .headline .kv b { color: var(--rg-ink); font-variant-numeric: tabular-nums; }
+  .plan-card svg { flex: none; }
+
+  /* week calendar */
+  .wk-head { display: flex; align-items: center; gap: .6rem; flex-wrap: wrap; margin-bottom: .6rem; }
+  .wk-title { font-family: var(--serif); font-size: 1.05rem; font-weight: 650; }
+  .wk-nav { display: inline-flex; border: 1px solid var(--border-strong); border-radius: 10px; overflow: hidden; }
+  .wk-nav button { border: none; background: var(--bg-raised); padding: .3rem .65rem; font-size: .9rem; color: var(--rg-ink); border-right: 1px solid var(--border); }
+  .wk-nav button:last-child { border-right: none; }
+  .wk-grid { display: grid; grid-template-columns: repeat(7, minmax(0, 1fr)); gap: 7px; }
+  .wk-day { border: 1px dashed transparent; border-radius: 10px; background: var(--bg-sunken); padding: .45rem .45rem .55rem; min-height: 128px; display: flex; flex-direction: column; gap: .4rem; }
+  .wk-day.today { outline: 2px solid var(--green); outline-offset: 1px; background: color-mix(in oklab, var(--green-soft) 55%, var(--bg-sunken)); }
+  .wk-day .d { display: flex; align-items: baseline; gap: .35rem; }
+  .wk-day .dow { font-size: .68rem; font-weight: 650; letter-spacing: .06em; text-transform: uppercase; color: var(--ink-faint); }
+  .wk-day .dom { font-size: .82rem; font-weight: 650; font-variant-numeric: tabular-nums; }
+  .wk-day.today .dom { background: var(--green); color: #fff; border-radius: 999px; padding: .02rem .38rem; }
+  .wk-card { background: var(--bg-raised); border: 1px solid var(--border); border-left: 3px solid var(--cat-easy); border-radius: 8px; padding: .4rem .5rem; font-size: .8rem; box-shadow: var(--shadow); }
+  .wk-card .t { font-weight: 650; line-height: 1.25; }
+  .wk-card .m { color: var(--ink-faint); font-size: .74rem; margin-top: .12rem; display: flex; gap: .35rem; align-items: center; }
+  .wk-card.q { border-left-color: var(--cat-quality); }
+  .wk-card.longr { border-left-color: var(--cat-long); }
+  .wk-card.lift { border-left-color: var(--cat-strength); }
+  .wk-card.rest { border-left: 3px dashed var(--border-strong); color: var(--ink-faint); font-style: italic; background: transparent; box-shadow: none; }
+  .wk-card.done .t::after { content: " ✓"; color: var(--green-ink); }
+  .wk-ghost { border: 1.5px dashed var(--warn); background: var(--warn-soft); border-radius: 8px; padding: .4rem .5rem; font-size: .78rem; color: var(--warn); }
+  .wk-ghost .r { font-size: .7rem; opacity: .85; margin-top: .1rem; }
+
+  /* coach window */
+  .coach-win { position: absolute; top: 1rem; right: 1rem; width: 330px; max-height: calc(100% - 2rem); background: var(--bg-raised); border: 1px solid var(--border-strong); border-radius: 14px; box-shadow: 0 18px 50px rgba(20,22,20,.18); display: flex; flex-direction: column; overflow: hidden; }
+  .coach-win .head { display: flex; align-items: center; gap: .5rem; padding: .7rem .9rem; border-bottom: 1px solid var(--border); }
+  .coach-win .head .serif { font-size: 1.05rem; font-weight: 650; }
+  .coach-win .head .grow { flex: 1; }
+  .coach-tray { background: var(--coach-tray-bg); border-bottom: 1px solid var(--border); padding: .7rem .9rem; }
+  .coach-tray .tt { font-size: .72rem; font-weight: 650; text-transform: uppercase; letter-spacing: .05em; color: var(--warn); margin-bottom: .5rem; }
+  .prop { background: var(--bg-raised); border: 1px solid var(--border); border-radius: 10px; padding: .6rem .7rem; }
+  .prop .pt { font-weight: 650; font-size: .9rem; margin: .25rem 0 .15rem; }
+  .prop .ev { color: var(--ink-soft); font-size: .78rem; }
+  .prop .diff { font-size: .82rem; margin-top: .3rem; font-variant-numeric: tabular-nums; }
+  .prop .diff s { color: var(--ink-faint); }
+  .prop .diff b { color: var(--green-ink); }
+  .prop .acts { display: flex; gap: .45rem; margin-top: .55rem; align-items: center; }
+  .coach-thread { padding: .8rem .9rem; display: flex; flex-direction: column; gap: .6rem; overflow: hidden; }
+  .cmsg { max-width: 88%; border-radius: 12px; padding: .5rem .7rem; font-size: .84rem; line-height: 1.45; }
+  .cmsg.coach { background: var(--bg-sunken); align-self: flex-start; }
+  .cmsg.user { background: var(--green-soft); color: var(--green-ink); align-self: flex-end; }
+  .receipt { text-align: center; color: var(--ink-faint); font-size: .74rem; }
+  .composer { border-top: 1px solid var(--border); padding: .6rem .9rem .8rem; }
+  .composer .input { border: 1px solid var(--border-strong); border-radius: 10px; padding: .5rem .7rem; color: var(--ink-faint); font-size: .85rem; background: var(--bg); }
+  .coach-pill { position: absolute; right: 1rem; bottom: 1rem; background: var(--rg-ink); color: var(--bg); border-radius: 999px; padding: .5rem .95rem; font-size: .85rem; font-weight: 650; box-shadow: 0 8px 24px rgba(20,22,20,.25); }
+
+  /* mobile mock */
+  .m-main { padding: .9rem .9rem 4.2rem; display: flex; flex-direction: column; gap: .8rem; position: relative; }
+  .m-h1 { font-family: var(--serif); font-size: 1.3rem; font-weight: 650; margin: 0; }
+  .m-planrow { display: flex; align-items: center; gap: .6rem; padding: .65rem .75rem; }
+  .m-planrow .name { font-family: var(--serif); font-weight: 650; font-size: 1rem; flex: 1; min-width: 0; }
+  .m-planrow .wk { font-size: .78rem; color: var(--ink-faint); font-variant-numeric: tabular-nums; white-space: nowrap; }
+  .m-day { display: flex; gap: .6rem; align-items: stretch; }
+  .m-day .datecol { flex: none; width: 2.4rem; text-align: center; padding-top: .4rem; }
+  .m-day .datecol .dw { font-size: .64rem; font-weight: 650; text-transform: uppercase; letter-spacing: .05em; color: var(--ink-faint); }
+  .m-day .datecol .dm { font-size: .95rem; font-weight: 650; font-variant-numeric: tabular-nums; }
+  .m-day.today .datecol .dm { background: var(--green); color: #fff; border-radius: 999px; }
+  .m-day .body { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: .4rem; }
+  .m-nav { position: absolute; left: 0; right: 0; bottom: 0; display: flex; border-top: 1px solid var(--border); background: var(--bg-raised); }
+  .m-nav span { flex: 1; text-align: center; font-size: .62rem; padding: .5rem 0 .7rem; color: var(--ink-faint); }
+  .m-nav span.on { color: var(--green-ink); font-weight: 650; }
+  .m-nav i { display: block; font-size: 1.05rem; font-style: normal; margin-bottom: .1rem; }
+  .m-coachpill { position: absolute; right: .8rem; bottom: 3.6rem; background: var(--rg-ink); color: var(--bg); border-radius: 999px; padding: .45rem .85rem; font-size: .8rem; font-weight: 650; box-shadow: 0 8px 24px rgba(20,22,20,.3); }
+
+  /* studio modal mock */
+  .modal-stage { background: color-mix(in oklab, #141614 45%, transparent); padding: 2.2rem; display: flex; justify-content: center; }
+  .studio { width: 100%; max-width: 720px; background: var(--bg-raised); border-radius: 16px; border: 1px solid var(--border); box-shadow: 0 24px 70px rgba(10,12,10,.35); overflow: hidden; }
+  .studio .shead { padding: 1.1rem 1.3rem .9rem; border-bottom: 1px solid var(--border); display: flex; flex-direction: column; gap: .5rem; }
+  .studio .srow { display: flex; align-items: center; gap: .6rem; flex-wrap: wrap; }
+  .studio .sname { font-family: var(--serif); font-size: 1.35rem; font-weight: 650; flex: 1; min-width: 0; }
+  .studio .sbody { padding: 1.1rem 1.3rem 1.3rem; display: flex; flex-direction: column; gap: 1.1rem; }
+  .prog-chips { display: flex; flex-wrap: wrap; gap: .5rem; }
+  .prog-chip { border: 1px solid var(--border); background: var(--bg-sunken); border-radius: 10px; padding: .45rem .7rem; }
+  .prog-chip .l { font-size: .7rem; color: var(--ink-faint); text-transform: uppercase; letter-spacing: .05em; font-weight: 650; }
+  .prog-chip .v { font-size: .95rem; font-weight: 650; font-variant-numeric: tabular-nums; }
+  .prog-chip .v .to { color: var(--green-ink); }
+  .charts2 { display: grid; grid-template-columns: 1fr 1fr; gap: 1rem; }
+  .chartbox { border: 1px solid var(--border); border-radius: 10px; padding: .7rem .8rem .5rem; }
+  .chartbox .ct { font-size: .78rem; font-weight: 650; margin-bottom: .1rem; }
+  .chartbox .cs { font-size: .72rem; color: var(--ink-faint); margin-bottom: .3rem; }
+  .wkrow { display: flex; align-items: center; gap: .7rem; padding: .45rem 0; border-bottom: 1px solid var(--border); font-size: .85rem; }
+  .wkrow:last-child { border-bottom: none; }
+  .wkrow .wn { flex: none; width: 2.2rem; font-family: var(--mono); font-size: .72rem; color: var(--ink-faint); }
+  .wkrow .desc { flex: 1; color: var(--ink-soft); }
+  .wkrow .desc b { color: var(--rg-ink); }
+  .wkrow.cur { background: var(--green-soft); margin: 0 -.5rem; padding: .45rem .5rem; border-radius: 8px; border-bottom-color: transparent; }
+  .wkrow .st { flex: none; font-size: .7rem; font-weight: 650; text-transform: uppercase; letter-spacing: .05em; color: var(--ink-faint); }
+  .wkrow .st.firm { color: var(--green-ink); }
+
+  /* brief anatomy zoom */
+  .anatomy { display: grid; grid-template-columns: minmax(0, 460px) 1fr; gap: 1.6rem; align-items: start; }
+  .ann-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: .7rem; }
+  .ann-list li { font-size: .88rem; color: var(--ink-2); }
+  .ann-list b { color: var(--ink); }
+
+  @media (max-width: 760px) {
+    .anatomy { grid-template-columns: 1fr; }
+    .rank { grid-template-columns: 2rem 1fr; }
+    .rank .tag { grid-column: 2; justify-self: start; }
+    .charts2 { grid-template-columns: 1fr; }
+  }
+</style>
+
+<div class="doc">
+
+<!-- ================= HEADER ================= -->
+<header class="doc-head">
+  <div class="eyebrow">Run Garden · design review · for approval</div>
+  <h1>The coach reads everything.<br>The plan page finally shows it.</h1>
+  <div class="meta">Aug 11, 2026 · mocks + architecture — nothing implemented yet · supersedes the 08-07 block-map draft, builds on the 08-06 coach spec</div>
+
+  <div class="tldr">
+    <h3>What you're approving</h3>
+    <ol>
+      <li><b>Ambient coach:</b> the LLM reads every activity automatically (idempotent per-activity ledger, guarded), and its findings flow to a weekly brief, the plan cards, and proposals — no user intervention.</li>
+      <li><b>New page:</b> weekly brief → two plan title cards (run + lift) → one pickable week. The month almanac and the embedded Studio section are gone.</li>
+      <li><b>Studio modal:</b> plan cards expand into one modal for details (with core-progression graphs like <em>bench 115 → 145</em>), updates, and creation — both disciplines.</li>
+      <li><b>Coach placement:</b> floating window on desktop, pill + sheet on mobile (variants shown in §7).</li>
+      <li><b>Six open decisions</b> at the bottom (§9) — defaults are marked, silence = defaults.</li>
+    </ol>
+  </div>
+
+  <nav class="toc">
+    <a href="#layer">1 · Coaching layer</a>
+    <a href="#rank">2 · Interaction models, ranked</a>
+    <a href="#desktop">3 · Desktop</a>
+    <a href="#mobile">4 · Mobile</a>
+    <a href="#studio">5 · Studio modal</a>
+    <a href="#brief">6 · Weekly brief</a>
+    <a href="#variants">7 · Coach placement</a>
+    <a href="#compat">8 · What stays / goes</a>
+    <a href="#decisions">9 · Decisions</a>
+  </nav>
+</header>
+
+<!-- ================= 1. COACHING LAYER ================= -->
+<section class="block" id="layer">
+  <div class="kicker"><span class="num">§1</span><h2>One brain, five surfaces</h2></div>
+  <p class="lede">Today the coach only thinks when clicked: effort reads are 100% button-driven, and the wake fires on page-open at most once per 20 hours. The rebuild makes <b>perception ambient</b> (every activity gets read) while keeping <b>deliberation cheap and consent-gated</b> (proposals still travel the existing tray → approve pipeline, untouched).</p>
+
+  <div class="flow" role="img" aria-label="Pipeline: activity sync flows to the read ledger, reads raise triggers, triggers wake the coach, the wake produces briefing, proposals and memory, which render on five surfaces.">
+    <div class="node"><span class="t">ingest</span><div class="n">Activity syncs</div><div class="d">COROS bridge push or backfill lands an activity.</div></div>
+    <div class="arrow">→</div>
+    <div class="node"><span class="t">new · perception</span><div class="n">Read ledger</div><div class="d">One LLM read per activity: prose + a one-line glance + flags. Idempotent, queued, budget-guarded.</div></div>
+    <div class="arrow">→</div>
+    <div class="node"><span class="t">existing + 1</span><div class="n">Triggers</div><div class="d">Six deterministic kinds today; a read with flags adds <code>notable_read</code>.</div></div>
+    <div class="arrow">→</div>
+    <div class="node"><span class="t">existing</span><div class="n">Wake</div><div class="d">On open / check-in / message, as today — now with a RECENT READS dossier section and a structured <code>focus</code> line.</div></div>
+  </div>
+  <div class="surfaces">
+    <div class="s"><b>Weekly brief</b>how the week is going vs plan + the coach's one action line (§6)</div>
+    <div class="s"><b>Plan cards</b>progress + headline progression per plan (§3)</div>
+    <div class="s"><b>Week calendar</b>proposals as ghost diffs on their days (§3)</div>
+    <div class="s"><b>Activity reads</b>the glance line on every activity row, full read in the sheet</div>
+    <div class="s"><b>Coach window</b>tray + thread + composer — the only approve surface (§7)</div>
+  </div>
+
+  <h3 style="margin-top:1.6rem">Why reads need their own ledger (not the message thread)</h3>
+  <p>Analyses are currently stored as <code>role:"coach"</code> messages. Automating them as-is would quietly break the coach three ways: every read resets the 20-hour briefing-staleness clock (so the coach would stop briefing), reads crowd the 30-message thread and the wake dossier's 10-message tail, and there's no idempotency constraint — concurrent ingests duplicate reads. So reads move to a <code>coach_reads</code> table, one row per activity.</p>
+
+  <div class="tablewrap">
+  <table class="spec">
+    <tr><th>Guard</th><th>Rule</th></tr>
+    <tr><td>Idempotency</td><td><code>unique(userId, activityId)</code>; re-ingest with a changed fingerprint marks the read stale rather than duplicating it.</td></tr>
+    <tr><td>Trigger point</td><td>Enqueued post-ingest (<code>waitUntil</code>), hourly sweep as catch-up — cap 2 reads/user/tick so cron never stalls on a 600s LLM call.</td></tr>
+    <tr><td>Backfill</td><td>Only activities that started within 14 days of ingest get auto-read. A history backfill gets one batch digest read, not hundreds of calls.</td></tr>
+    <tr><td>Budget</td><td>Auto-reads pause at $12 of the $20/wk rolling budget — interactive coach and studio always keep headroom. ~$0.05/read at the strong tier ≈ $0.40/wk at 8 activities.</td></tr>
+    <tr><td>Failure</td><td>Attempt counter + exponential backoff (today a failed analysis leaves no trace and would retry forever).</td></tr>
+    <tr><td>Kill switches</td><td>Reads honor <code>prefs.aiEnabled</code>, <code>AI_DEFAULT_ENABLED</code>, fixture mode, and key-presence — the gates the weekly review already has and analysis currently skips.</td></tr>
+    <tr><td>Output</td><td>Prose read (as today) <b>plus</b> a ≤90-char <code>glance</code> and structured <code>flags</code> (e.g. <code>hr_drift</code>, <code>breakthrough</code>, <code>strain_high</code>). Flags feed <code>notable_read</code> triggers; glances feed the brief, activity rows, and the dossier.</td></tr>
+  </table>
+  </div>
+
+  <h3 style="margin-top:1.6rem">When the LLM runs, after the rebuild</h3>
+  <div class="tablewrap">
+  <table class="spec">
+    <tr><th>Moment</th><th>Trigger</th><th>Model tier</th><th>Cost/wk (typical)</th></tr>
+    <tr><td>Activity read</td><td>Automatic, on ingest</td><td>strong (knob to drop to cheap)</td><td>~$0.40</td></tr>
+    <tr><td>Wake (briefing + proposals)</td><td>Page-open when advised · Check&nbsp;in · message</td><td>strong</td><td>~$1–2</td></tr>
+    <tr><td>Weekly review narrative</td><td>Monday 20:00 cron (existing)</td><td>cheap</td><td>~$0.01</td></tr>
+    <tr><td>Plan generation / edit</td><td>Studio modal actions</td><td>strong / cheap</td><td>on demand</td></tr>
+  </table>
+  </div>
+</section>
+
+<!-- ================= 2. RANKED INTERACTIONS ================= -->
+<section class="block" id="rank">
+  <div class="kicker"><span class="num">§2</span><h2>Every way the coach could meet you, ranked</h2></div>
+  <p class="lede">Ranked by value ÷ user effort. The top of the list is ambient — the coach is useful before you ask it anything. The bottom needs new infrastructure and earns less. Tags say what lands in this build.</p>
+
+  <div class="rank-list">
+    <div class="rank"><span class="pos">1</span><div><h3>Ambient reads on every effort</h3><p>The perception layer. Zero user effort, feeds every other surface. Without it the coach only knows what you clicked. This is the rebuild's spine.</p></div><span class="tag build">build</span></div>
+    <div class="rank"><span class="pos">2</span><div><h3>Weekly brief</h3><p>The "how am I doing" answer, always current, at the top of the page: done vs planned, trend, load, and one action line. Replaces reading tea leaves across Insights + calendar.</p></div><span class="tag build">build</span></div>
+    <div class="rank"><span class="pos">3</span><div><h3>Proposal tray, one-tap approve</h3><p>The trust anchor — nothing touches the plan or watch without a tap. Already built, already right. The state machine, guardrails, and receipts carry over unchanged.</p></div><span class="tag keep">keep</span></div>
+    <div class="rank"><span class="pos">4</span><div><h3>Studio modal — plans as conversations with structure</h3><p>Create, extend, and inspect plans in one place; the coach declares headline progressions at creation and the modal graphs them. Absorbs the lifting Studio.</p></div><span class="tag build">build</span></div>
+    <div class="rank"><span class="pos">5</span><div><h3>Contextual ask</h3><p>"Ask about this" chips on an activity read or workout sheet prefill the composer with the reference. Cheap to build once reads exist; makes the thread useful without hunting for words.</p></div><span class="tag build">build</span></div>
+    <div class="rank"><span class="pos">6</span><div><h3>Free-form thread</h3><p>Stays — but demoted from primary surface to the coach window. Most sessions shouldn't need to type anything.</p></div><span class="tag keep">keep</span></div>
+    <div class="rank"><span class="pos">7</span><div><h3>Notifications</h3><p>Briefing or proposal lands → desktop-shell push. Real reach, but needs the tauri notification work and quiet-hours rules; earns its keep after the ambient layer proves out.</p></div><span class="tag later">later</span></div>
+    <div class="rank"><span class="pos">8</span><div><h3>Garden-voiced coaching</h3><p>The coach speaking through the garden's forecast lines. Charming, but it's phase-3 of the original coach arc and risks muddling the garden's own gentle voice. Park it.</p></div><span class="tag later">later</span></div>
+  </div>
+</section>
+
+<!-- ================= 3. DESKTOP MOCK ================= -->
+<section class="block" id="desktop">
+  <div class="kicker"><span class="num">§3</span><h2>Desktop — the whole page is the plan</h2></div>
+  <p class="lede">Full-width (1440 cap, escaping the 880px reading column). Top to bottom: brief → plan cards → one week. The coach floats; the plan never squishes. Scroll sideways if your window is narrow — the mock is life-size.</p>
+
+  <div class="stage stage-scroll">
+  <div class="devframe" style="min-width: 1280px;">
+    <div class="devbar"><span class="dot"></span><span class="dot"></span><span class="dot"></span><span class="url">rungarden.app/plan</span></div>
+    <div class="rg">
+      <div class="rg-shell">
+        <nav class="rg-sidenav" aria-hidden="true">
+          <div class="rg-brand">Run Garden</div>
+          <div class="rg-nav">
+            <a>Garden</a><a class="active">Plan</a><a>Activity</a><a>Insights</a><a>Settings</a>
+          </div>
+        </nav>
+        <main class="rg-main">
+          <div style="display:flex; align-items:baseline; gap:.9rem; margin-bottom: 1rem;">
+            <h1 class="rg-h1">Plan</h1>
+            <span class="faint">synced 12 min ago</span>
+          </div>
+
+          <div style="display:flex; flex-direction:column; gap: .9rem; max-width: 800px;">
+
+            <!-- weekly brief -->
+            <div class="rg-card brief anno"><span class="callout-dot">1</span>
+              <div class="brief-head">
+                <span class="serif">Week 5 of 12 — on track.</span>
+                <span class="rg-pill warnsoft">Needs you · 1</span>
+              </div>
+              <div class="brief-chips">
+                <span class="brief-chip"><b>1 of 6</b> sessions</span>
+                <span class="brief-chip"><b>40 min</b> of 5 h 05</span>
+                <span class="brief-chip">4-wk adherence <b>86%</b> <span class="up">↗</span></span>
+                <span class="brief-chip">load 7d/28d <b>1.04</b></span>
+              </div>
+              <div class="brief-action"><span class="who">Coach</span><span>Saturday's 10-miler anchors the week. Sleep ran short last night — I've suggested easing today's tempo; the long run stays.</span></div>
+            </div>
+
+            <!-- plan cards -->
+            <div class="plan-cards anno"><span class="callout-dot">2</span>
+              <div class="rg-card plan-card">
+                <div class="top"><span class="rg-pill run">Run</span><span class="rg-pill ok">active</span></div>
+                <div class="name">Fall Half Block</div>
+                <div class="prog"><span class="faint num">wk 5/12</span><div class="plan-track"><i style="width:42%"></i></div><span class="faint num">Oct 4</span></div>
+                <div class="headline">
+                  <span class="kv">Long run <b>8 → 13.1 mi</b> · now 10</span>
+                  <svg width="96" height="26" viewBox="0 0 96 26" aria-hidden="true">
+                    <path d="M2 20 L18 17 L34 17 L50 13 L66 13 L82 8 L94 4" fill="none" stroke="var(--chart-1)" stroke-width="2" stroke-linecap="round"/>
+                    <circle cx="34" cy="17" r="3" fill="var(--chart-1)"/>
+                  </svg>
+                </div>
+              </div>
+              <div class="rg-card plan-card liftc">
+                <div class="top"><span class="rg-pill lift">Lift</span><span class="rg-pill ok">active</span></div>
+                <div class="name">Strength Block B</div>
+                <div class="prog"><span class="faint num">wk 3/8</span><div class="plan-track"><i style="width:37%"></i></div><span class="faint num">Sep 20</span></div>
+                <div class="headline">
+                  <span class="kv">Bench <b>115 → 145 lb</b> · now 125</span>
+                  <svg width="96" height="26" viewBox="0 0 96 26" aria-hidden="true">
+                    <path d="M2 21 L15 21 L15 18 L28 18 L28 15 L41 15 L41 12 L54 12 L54 17 L67 17 L67 9 L80 9 L80 6 L94 4" fill="none" stroke="var(--chart-2)" stroke-width="2" stroke-linecap="round"/>
+                    <circle cx="28" cy="15" r="3" fill="var(--chart-2)"/>
+                  </svg>
+                </div>
+              </div>
+            </div>
+
+            <!-- this week -->
+            <div class="anno"><span class="callout-dot">3</span>
+            <div class="wk-head">
+              <div class="wk-nav"><button aria-label="Previous week">‹</button><button aria-label="Next week">›</button></div>
+              <span class="wk-title">This week · Aug 10–16</span>
+              <span class="rg-pill neutral num">plan wk 5</span>
+              <span style="flex:1"></span>
+              <button class="rg-link">jump to week ▾</button>
+            </div>
+            <div class="wk-grid">
+              <div class="wk-day"><div class="d"><span class="dow">Mon</span><span class="dom num">10</span></div><div class="wk-card rest">Rest</div></div>
+              <div class="wk-day today"><div class="d"><span class="dow">Tue</span><span class="dom num">11</span></div>
+                <div class="wk-card q"><div class="t">Tempo 40 min</div><div class="m">40 min</div></div>
+                <div class="wk-ghost">ease → 30 min · 4×2′ pickups<div class="r">sleep 5 h 58 avg — tap to review</div></div>
+              </div>
+              <div class="wk-day"><div class="d"><span class="dow">Wed</span><span class="dom num">12</span></div><div class="wk-card lift"><div class="t">Upper A — bench 3×8 @ 125</div><div class="m">55 min</div></div></div>
+              <div class="wk-day"><div class="d"><span class="dow">Thu</span><span class="dom num">13</span></div><div class="wk-card"><div class="t">Easy run</div><div class="m">45 min</div></div></div>
+              <div class="wk-day"><div class="d"><span class="dow">Fri</span><span class="dom num">14</span></div><div class="wk-card lift"><div class="t">Lower A — squat 4×6 @ 175</div><div class="m">60 min</div></div></div>
+              <div class="wk-day"><div class="d"><span class="dow">Sat</span><span class="dom num">15</span></div><div class="wk-card longr"><div class="t">Long run 10 mi</div><div class="m">~1 h 35</div></div></div>
+              <div class="wk-day"><div class="d"><span class="dow">Sun</span><span class="dom num">16</span></div><div class="wk-card rest">Rest</div></div>
+            </div>
+            </div>
+
+          </div>
+
+          <!-- coach window -->
+          <div class="coach-win anno"><span class="callout-dot">4</span>
+            <div class="head"><span class="serif">Coach</span><span class="grow"></span><button class="rg-btn small">Check in</button><button class="rg-btn small" aria-label="Minimize">—</button></div>
+            <div class="coach-tray">
+              <div class="tt">Needs you · 1</div>
+              <div class="prop">
+                <span class="rg-pill run">Run</span>
+                <div class="pt">Ease today's tempo</div>
+                <div class="ev">sleep 5 h 58 3-night avg · HRV −9% · tempo today</div>
+                <div class="diff"><s>40 min · 6×2′</s> → <b>30 min · 4×2′ pickups</b></div>
+                <div class="acts"><button class="rg-btn small primary">Make it so</button><button class="rg-btn small">Leave it</button><button class="rg-link">Why?</button></div>
+              </div>
+            </div>
+            <div class="coach-thread">
+              <div class="receipt">Mon · ✓ approved — moved Sunday's recovery</div>
+              <div class="cmsg coach">Solid week behind you — 9.2 steady Sunday with some late HR drift that looks like fueling, not fitness. This week is about arriving at Saturday fresh.</div>
+            </div>
+            <div class="composer"><div class="input">Tell your coach anything…</div></div>
+          </div>
+        </main>
+      </div>
+    </div>
+  </div>
+  </div>
+  <div class="caption"><span class="tag">mock · desktop 1280px</span><span>Coach window shown open; minimized it's a “Coach · 1” pill bottom-right (§7).</span></div>
+
+  <ul class="notes">
+    <li><span class="cd">1</span><span><b>Weekly brief.</b> Headline + four fact chips + the coach's action line. Anatomy and content rules in §6.</span></li>
+    <li><span class="cd">2</span><span><b>Plan title cards.</b> Serif name, week progress track, one headline progression with sparkline. Click → studio modal (§5). A discipline with no active plan shows a dashed “+ Plan with your coach” card instead.</span></li>
+    <li><span class="cd">3</span><span><b>One week, pickable.</b> Arrows step ISO weeks; “jump to week” lists plan weeks (W1–W12) with months; a “back to this week” chip appears when you navigate away. Ghost proposals render on their day — tapping one opens the coach window and flashes the proposal. Deep links: <code>?week=2026-08-10</code>.</span></li>
+    <li><span class="cd">4</span><span><b>Coach window.</b> The existing panel (tray → thread → composer) floating over the full-width plan — never reserving layout space. Opens on pill tap, ghost tap, or new coach activity; minimizing marks-seen.</span></li>
+  </ul>
+</section>
+
+<!-- ================= 4. MOBILE MOCK ================= -->
+<section class="block" id="mobile">
+  <div class="kicker"><span class="num">§4</span><h2>Mobile — same order, one column</h2></div>
+  <p class="lede">Brief compresses to headline + horizontally scrollable chips + action line. Plan cards become tappable rows. The week is a day list — empty days collapse away, exactly like the current agenda fold. Coach pill + bottom sheet carry over unchanged.</p>
+
+  <div class="phones">
+    <div class="phone">
+      <div class="screen">
+        <div class="rg m-main">
+          <h1 class="m-h1">Plan</h1>
+          <div class="rg-card brief" style="padding:.8rem .85rem;">
+            <div class="brief-head"><span class="serif" style="font-size:1.02rem">Week 5 of 12 — on track.</span></div>
+            <div class="brief-chips" style="flex-wrap:nowrap; overflow:hidden;">
+              <span class="brief-chip"><b>1 of 6</b> done</span>
+              <span class="brief-chip"><b>40 min</b> / 5 h 05</span>
+              <span class="brief-chip"><b>86%</b> ↗</span>
+            </div>
+            <div class="brief-action" style="font-size:.86rem"><span class="who">Coach</span><span>Saturday's 10-miler anchors the week — I've suggested easing today's tempo.</span></div>
+          </div>
+          <div class="rg-card m-planrow"><span class="rg-pill run">Run</span><span class="name">Fall Half Block</span><span class="wk">wk 5/12 ›</span></div>
+          <div class="rg-card m-planrow"><span class="rg-pill lift">Lift</span><span class="name">Strength Block B</span><span class="wk">wk 3/8 ›</span></div>
+
+          <div class="wk-head" style="margin-top:.2rem;">
+            <div class="wk-nav"><button aria-label="Previous week">‹</button><button aria-label="Next week">›</button></div>
+            <span class="wk-title" style="font-size:.95rem">Aug 10–16</span>
+            <span class="rg-pill neutral num" style="margin-left:auto">wk 5</span>
+          </div>
+
+          <div class="m-day today"><div class="datecol"><div class="dw">Tue</div><div class="dm num">11</div></div>
+            <div class="body">
+              <div class="wk-card q"><div class="t">Tempo 40 min</div><div class="m">40 min · today</div></div>
+              <div class="wk-ghost">ease → 30 min · 4×2′ pickups</div>
+            </div>
+          </div>
+          <div class="m-day"><div class="datecol"><div class="dw">Wed</div><div class="dm num">12</div></div><div class="body"><div class="wk-card lift"><div class="t">Upper A — bench 3×8 @ 125</div><div class="m">55 min</div></div></div></div>
+          <div class="m-day"><div class="datecol"><div class="dw">Thu</div><div class="dm num">13</div></div><div class="body"><div class="wk-card"><div class="t">Easy run</div><div class="m">45 min</div></div></div></div>
+          <div class="m-day"><div class="datecol"><div class="dw">Fri</div><div class="dm num">14</div></div><div class="body"><div class="wk-card lift"><div class="t">Lower A — squat 4×6 @ 175</div><div class="m">60 min</div></div></div></div>
+          <div class="m-day"><div class="datecol"><div class="dw">Sat</div><div class="dm num">15</div></div><div class="body"><div class="wk-card longr"><div class="t">Long run 10 mi</div><div class="m">~1 h 35</div></div></div></div>
+
+          <div class="m-coachpill">▴ Coach · 1</div>
+          <div class="m-nav" aria-hidden="true">
+            <span><i>❀</i>Garden</span><span class="on"><i>▦</i>Plan</span><span><i>↯</i>Activity</span><span><i>◔</i>Insights</span><span><i>⚙</i>Settings</span>
+          </div>
+        </div>
+      </div>
+      <div class="chin"><i></i></div>
+    </div>
+
+    <div class="phone">
+      <div class="screen">
+        <div class="rg" style="position:relative;">
+          <div style="background: color-mix(in oklab, #141614 45%, transparent); padding: 2.2rem 0 0; min-height: 640px; display:flex; align-items:flex-end;">
+            <div class="studio" style="border-radius: 16px 16px 0 0; max-width:none;">
+              <div class="shead">
+                <div class="srow"><span class="rg-pill lift">Lift</span><span class="rg-pill ok">active</span><span class="faint num" style="margin-left:auto">Jul 27 → Sep 20</span></div>
+                <div class="srow"><span class="sname">Strength Block B</span></div>
+                <div class="srow faint">wk 3 of 8 · Wed / Fri · adherence 91%</div>
+              </div>
+              <div class="sbody" style="padding-bottom: 2rem;">
+                <div class="prog-chips">
+                  <div class="prog-chip"><div class="l">Bench</div><div class="v">115 → <span class="to">145 lb</span></div></div>
+                  <div class="prog-chip"><div class="l">Squat</div><div class="v">165 → <span class="to">205 lb</span></div></div>
+                </div>
+                <div class="chartbox">
+                  <div class="ct">Bench — top set by week</div>
+                  <div class="cs">prescribed · <b style="color:var(--chart-2)">●</b> completed</div>
+                  <svg width="100%" viewBox="0 0 320 120" aria-label="Bench top set: prescribed steps from 115 to 145 pounds over 8 weeks; weeks 1 and 2 completed at prescription; current week 3 at 125.">
+                    <line x1="34" y1="12" x2="34" y2="96" stroke="var(--chart-grid)"/>
+                    <line x1="34" y1="96" x2="312" y2="96" stroke="var(--chart-grid)"/>
+                    <line x1="34" y1="54" x2="312" y2="54" stroke="var(--chart-grid)" stroke-dasharray="2 4"/>
+                    <text x="28" y="99" text-anchor="end" font-size="9" fill="var(--ink-faint)">115</text>
+                    <text x="28" y="57" text-anchor="end" font-size="9" fill="var(--ink-faint)">130</text>
+                    <text x="28" y="16" text-anchor="end" font-size="9" fill="var(--ink-faint)">145</text>
+                    <path d="M40 96 L74 96 L74 82 L108 82 L108 68 L142 68 L142 54 L176 54 L176 82 L210 82 L210 40 L244 40 L244 26 L278 26 L278 12 L308 12"
+                          fill="none" stroke="var(--ink-faint)" stroke-width="1.5" stroke-dasharray="4 3"/>
+                    <circle cx="57" cy="96" r="4" fill="var(--chart-2)"/>
+                    <circle cx="91" cy="82" r="4" fill="var(--chart-2)"/>
+                    <circle cx="125" cy="68" r="4" fill="var(--chart-2)" stroke="var(--bg-raised)" stroke-width="2"/>
+                    <text x="125" y="60" text-anchor="middle" font-size="9" fill="var(--ink-soft)" font-weight="600">125 · now</text>
+                    <text x="300" y="24" text-anchor="end" font-size="9" fill="var(--ink-soft)" font-weight="600">145</text>
+                    <text x="57" y="110" text-anchor="middle" font-size="9" fill="var(--ink-faint)">W1</text>
+                    <text x="176" y="110" text-anchor="middle" font-size="9" fill="var(--ink-faint)">W4</text>
+                    <text x="295" y="110" text-anchor="middle" font-size="9" fill="var(--ink-faint)">W8</text>
+                  </svg>
+                </div>
+                <button class="rg-btn" style="width:100%">Extend with your coach</button>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+      <div class="chin"><i></i></div>
+    </div>
+  </div>
+
+  <ul class="notes">
+    <li><span class="cd">·</span><span><b>Left:</b> the page. Day list shows only days with content plus today; picker row is sticky under the title on scroll.</span></li>
+    <li><span class="cd">·</span><span><b>Right:</b> the studio modal as a full-height bottom sheet — same content as desktop (§5), stacked. The existing Sheet contract (focus trap, Esc, backdrop) is reused as-is.</span></li>
+  </ul>
+</section>
+
+<!-- ================= 5. STUDIO MODAL ================= -->
+<section class="block" id="studio">
+  <div class="kicker"><span class="num">§5</span><h2>The studio modal — one room per plan</h2></div>
+  <p class="lede">Click a plan card and its whole story opens: where you are, where it's taking you (graphed), what each week holds, and every plan action. Creation is the same modal in intake mode. The separate Studio section on the plan page disappears — this <em>is</em> the studio.</p>
+
+  <div class="stage">
+  <div class="devframe">
+    <div class="devbar"><span class="dot"></span><span class="dot"></span><span class="dot"></span><span class="url">rungarden.app/plan · Strength Block B</span></div>
+    <div class="rg modal-stage">
+      <div class="studio">
+        <div class="shead">
+          <div class="srow"><span class="rg-pill lift">Lift</span><span class="rg-pill ok">active · on watch</span><span class="faint num" style="margin-left:auto">Jul 27 → Sep 20</span></div>
+          <div class="srow"><span class="sname">Strength Block B</span><button class="rg-btn small" aria-label="Close">✕</button></div>
+          <div class="srow faint">wk 3 of 8 · Wed / Fri · adherence 91% · 5 of 6 sessions done</div>
+        </div>
+        <div class="sbody">
+          <div class="anno"><span class="callout-dot">1</span>
+          <div class="prog-chips">
+            <div class="prog-chip"><div class="l">Bench press</div><div class="v">115 → <span class="to">145 lb</span></div></div>
+            <div class="prog-chip"><div class="l">Back squat</div><div class="v">165 → <span class="to">205 lb</span></div></div>
+            <div class="prog-chip"><div class="l">Weekly sets</div><div class="v">38 → <span class="to">52</span></div></div>
+          </div>
+          </div>
+
+          <div class="charts2 anno"><span class="callout-dot">2</span>
+            <div class="chartbox">
+              <div class="ct">Bench — top set by week</div>
+              <div class="cs">prescribed · <b style="color:var(--chart-2)">●</b> completed session</div>
+              <svg width="100%" viewBox="0 0 320 130" aria-label="Bench top set: prescribed steps 115 to 145 pounds across 8 weeks with a deload in week 5; weeks 1 and 2 completed; current week 3 at 125.">
+                <line x1="34" y1="12" x2="34" y2="100" stroke="var(--chart-grid)"/>
+                <line x1="34" y1="100" x2="312" y2="100" stroke="var(--chart-grid)"/>
+                <line x1="34" y1="56" x2="312" y2="56" stroke="var(--chart-grid)" stroke-dasharray="2 4"/>
+                <text x="28" y="103" text-anchor="end" font-size="9" fill="var(--ink-faint)">115</text>
+                <text x="28" y="59" text-anchor="end" font-size="9" fill="var(--ink-faint)">130</text>
+                <text x="28" y="16" text-anchor="end" font-size="9" fill="var(--ink-faint)">145</text>
+                <path d="M40 100 L74 100 L74 85 L108 85 L108 71 L142 71 L142 56 L176 56 L176 85 L210 85 L210 41 L244 41 L244 27 L278 27 L278 12 L308 12"
+                      fill="none" stroke="var(--ink-faint)" stroke-width="1.5" stroke-dasharray="4 3"/>
+                <circle cx="57" cy="100" r="4" fill="var(--chart-2)"/>
+                <circle cx="91" cy="85" r="4" fill="var(--chart-2)"/>
+                <circle cx="125" cy="71" r="4" fill="var(--chart-2)" stroke="var(--bg-raised)" stroke-width="2"/>
+                <text x="125" y="63" text-anchor="middle" font-size="9" fill="var(--ink-soft)" font-weight="600">125 · now</text>
+                <text x="176" y="97" text-anchor="middle" font-size="8" fill="var(--ink-faint)">deload</text>
+                <text x="300" y="24" text-anchor="end" font-size="9" fill="var(--ink-soft)" font-weight="600">145</text>
+                <text x="57" y="114" text-anchor="middle" font-size="9" fill="var(--ink-faint)">W1</text>
+                <text x="176" y="114" text-anchor="middle" font-size="9" fill="var(--ink-faint)">W4</text>
+                <text x="295" y="114" text-anchor="middle" font-size="9" fill="var(--ink-faint)">W8</text>
+              </svg>
+            </div>
+            <div class="chartbox">
+              <div class="ct">Sessions — planned vs done</div>
+              <div class="cs">outline planned · <b style="color:var(--chart-2)">■</b> completed</div>
+              <svg width="100%" viewBox="0 0 320 130" aria-label="Two sessions planned each week; weeks 1 and 2 fully done; week 3 has one of two done so far.">
+                <line x1="34" y1="100" x2="312" y2="100" stroke="var(--chart-grid)"/>
+                <text x="28" y="103" text-anchor="end" font-size="9" fill="var(--ink-faint)">0</text>
+                <text x="28" y="59" text-anchor="end" font-size="9" fill="var(--ink-faint)">1</text>
+                <text x="28" y="16" text-anchor="end" font-size="9" fill="var(--ink-faint)">2</text>
+                <g>
+                  <rect x="44" y="12" width="26" height="88" rx="4" fill="var(--chart-2)"/>
+                  <rect x="78" y="12" width="26" height="88" rx="4" fill="var(--chart-2)"/>
+                  <rect x="112" y="56" width="26" height="44" rx="4" fill="var(--chart-2)"/>
+                  <rect x="112" y="12" width="26" height="88" rx="4" fill="none" stroke="var(--ink-faint)" stroke-dasharray="3 3"/>
+                  <rect x="146" y="12" width="26" height="88" rx="4" fill="none" stroke="var(--ink-faint)" stroke-dasharray="3 3"/>
+                  <rect x="180" y="12" width="26" height="88" rx="4" fill="none" stroke="var(--ink-faint)" stroke-dasharray="3 3"/>
+                  <rect x="214" y="12" width="26" height="88" rx="4" fill="none" stroke="var(--ink-faint)" stroke-dasharray="3 3"/>
+                  <rect x="248" y="12" width="26" height="88" rx="4" fill="none" stroke="var(--ink-faint)" stroke-dasharray="3 3"/>
+                  <rect x="282" y="12" width="26" height="88" rx="4" fill="none" stroke="var(--ink-faint)" stroke-dasharray="3 3"/>
+                </g>
+                <text x="57" y="114" text-anchor="middle" font-size="9" fill="var(--ink-faint)">W1</text>
+                <text x="125" y="114" text-anchor="middle" font-size="9" fill="var(--ink-faint)">W3</text>
+                <text x="295" y="114" text-anchor="middle" font-size="9" fill="var(--ink-faint)">W8</text>
+              </svg>
+            </div>
+          </div>
+
+          <div class="anno"><span class="callout-dot">3</span>
+            <div class="rg-cardtitle" style="margin-bottom:.3rem">Weeks</div>
+            <div class="wkrow"><span class="wn">W1</span><span class="desc">Base — bench <b>115</b>, squat <b>165</b> · 38 sets</span><span class="st firm">✓ done</span></div>
+            <div class="wkrow"><span class="wn">W2</span><span class="desc">Build — bench <b>120</b>, squat <b>172.5</b> · 42 sets</span><span class="st firm">✓ done</span></div>
+            <div class="wkrow cur"><span class="wn">W3</span><span class="desc">Build — bench <b>125</b>, squat <b>175</b> · 44 sets</span><span class="st firm">now</span></div>
+            <div class="wkrow"><span class="wn">W4</span><span class="desc">Build — bench <b>130</b>, squat <b>182.5</b> · 46 sets</span><span class="st firm">firm</span></div>
+            <div class="wkrow"><span class="wn">W5</span><span class="desc">Deload — bench <b>120</b>, squat <b>165</b> · 30 sets</span><span class="st">shape</span></div>
+            <div class="wkrow"><span class="wn">W6–8</span><span class="desc">Peak — build to <b>145 / 205</b> · the coach firms these up as they approach</span><span class="st">shape</span></div>
+          </div>
+
+          <div class="anno" style="display:flex; gap:.5rem; flex-wrap:wrap;"><span class="callout-dot">4</span>
+            <button class="rg-btn">Extend</button>
+            <button class="rg-btn">Wind down</button>
+            <button class="rg-btn">Rename</button>
+            <button class="rg-btn">Retire…</button>
+            <span style="flex:1"></span>
+            <button class="rg-btn primary">Talk to your coach about this plan</button>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+  </div>
+  <div class="caption"><span class="tag">mock · studio modal, details mode</span><span>Running plans get the same room: long-run and weekly-volume charts instead of lifts.</span></div>
+
+  <ul class="notes">
+    <li><span class="cd">1</span><span><b>Headline progressions.</b> Declared by the coach at plan creation (new structured field), extracted deterministically from the plan JSON as fallback. These same numbers appear on the plan card outside.</span></li>
+    <li><span class="cd">2</span><span><b>Graphs, honest ones.</b> Lifting completion data has no actual bar weights (COROS sends none) — so the lift chart plots the <em>prescription</em> as steps and marks <em>completed sessions</em> on it. Running charts get true actuals (pace, distance) from activities.</span></li>
+    <li><span class="cd">3</span><span><b>Weeks list.</b> Firm weeks are real workouts; shape weeks show the outline (<code>volumeTarget</code> + key sessions, finally exposed via a plan-detail route). Current week highlighted.</span></li>
+    <li><span class="cd">4</span><span><b>All plan actions in one place.</b> Extend / wind down / rename / retire move here from the Manage-plans sheet, which retires. Creation: the “+ Plan with your coach” card opens this modal in intake mode — the coach asks only what memory can't answer, chip-by-chip, then drafts; one “Make it so” approves the whole draft.</span></li>
+  </ul>
+</section>
+
+<!-- ================= 6. WEEKLY BRIEF ANATOMY ================= -->
+<section class="block" id="brief">
+  <div class="kicker"><span class="num">§6</span><h2>The weekly brief — concise, or it fails</h2></div>
+  <div class="anatomy">
+    <div class="rg" style="border-radius: 14px; padding: 1.2rem; border: 1px solid var(--line-2);">
+      <div class="rg-card brief">
+        <div class="brief-head">
+          <span class="serif">Week 5 of 12 — on track.</span>
+          <span class="rg-pill warnsoft">Needs you · 1</span>
+        </div>
+        <div class="brief-chips">
+          <span class="brief-chip"><b>1 of 6</b> sessions</span>
+          <span class="brief-chip"><b>40 min</b> of 5 h 05</span>
+          <span class="brief-chip">4-wk adherence <b>86%</b> <span class="up">↗</span></span>
+          <span class="brief-chip">load 7d/28d <b>1.04</b></span>
+        </div>
+        <div class="brief-action"><span class="who">Coach</span><span>Saturday's 10-miler anchors the week. Sleep ran short last night — I've suggested easing today's tempo; the long run stays.</span></div>
+      </div>
+    </div>
+    <ol class="ann-list">
+      <li><b>Headline — a state, not a stat.</b>&nbsp;One of: on track · slightly behind · ahead · rebuilding · race week · resting. Derived deterministically from adherence + load ratio; the garden's voice rules apply — it names the situation, never scolds.</li>
+      <li><b>Four chips, no more.</b>&nbsp;Sessions done/planned · time done/planned · 4-week adherence with trend arrow · acute:chronic load ratio. All deterministic, from a new <code>GET /api/plan/week</code> that finally joins planned totals with actuals server-side.</li>
+      <li><b>One action line from the coach.</b>&nbsp;The wake's briefing gains a structured <code>focus</code> field — a single sentence that must name the week's anchor and at most one adjustment. It refreshes when the coach wakes; between wakes it stands (stale after 3 days → falls back to the deterministic headline only).</li>
+      <li><b>“Needs you” chip</b>&nbsp;only when proposals are pending — tap opens the coach. No pending work, no chrome.</li>
+    </ol>
+  </div>
+</section>
+
+<!-- ================= 7. COACH PLACEMENT VARIANTS ================= -->
+<section class="block" id="variants">
+  <div class="kicker"><span class="num">§7</span><h2>Where the coach lives — three options</h2></div>
+  <div class="variants">
+    <div class="variant rec">
+      <h3>A · Floating window <span class="rectag">recommended</span></h3>
+      <div class="wf" aria-hidden="true">
+        <i style="left:6%; top:8%; width:55%; height:10%"></i>
+        <i style="left:6%; top:24%; width:26%; height:14%"></i><i style="left:35%; top:24%; width:26%; height:14%"></i>
+        <i style="left:6%; top:44%; width:55%; height:46%"></i>
+        <i class="g" style="left:66%; top:8%; width:28%; height:82%"></i>
+      </div>
+      <p>Plan owns the full width; the coach overlays when open, minimizes to a pill. Non-modal — the plan stays interactive behind it.</p>
+      <p><b>Why:</b> its most common state is quiet; reserving 40% of the page for an empty panel is today's biggest wart. Ghost-tap → window-open keeps the one-approve-surface rule.</p>
+    </div>
+    <div class="variant">
+      <h3>B · Docked rail</h3>
+      <div class="wf" aria-hidden="true">
+        <i style="left:6%; top:8%; width:55%; height:10%"></i>
+        <i style="left:6%; top:24%; width:55%; height:66%"></i>
+        <i class="g" style="left:66%; top:8%; width:28%; height:82%"></i>
+      </div>
+      <p>Today's layout, tidied: coach always visible in a right column.</p>
+      <p><b>Cost:</b> the week grid loses ~340px forever; on 13″ laptops day cells go back to truncating titles. Familiar, but it's the layout the audit flagged.</p>
+    </div>
+    <div class="variant">
+      <h3>C · Inline feed</h3>
+      <div class="wf" aria-hidden="true">
+        <i style="left:6%; top:8%; width:88%; height:10%"></i>
+        <i class="a" style="left:6%; top:24%; width:88%; height:16%"></i>
+        <i style="left:6%; top:46%; width:88%; height:44%"></i>
+      </div>
+      <p>Coach content flows in the page (brief + tray inline under the header); conversation only in a sheet.</p>
+      <p><b>Cost:</b> proposals push the calendar down exactly when the coach is busiest; thread loses persistent presence on desktop. Best on mobile — which is why mobile keeps pill + sheet regardless.</p>
+    </div>
+  </div>
+</section>
+
+<!-- ================= 8. WHAT STAYS / GOES ================= -->
+<section class="block" id="compat">
+  <div class="kicker"><span class="num">§8</span><h2>What stays, what goes, what's new</h2></div>
+  <div class="cols2">
+    <div>
+      <h3>Stays untouched</h3>
+      <ul class="tight">
+        <li><b>Proposal state machine</b> (draft→pending→approved/declined/superseded/expired), guardrails, receipts, undo</li>
+        <li><b>Workout detail sheet</b> and every mutation (move, match, skip, COROS sync)</li>
+        <li><b>Memory</b> — store, chips, Settings editor</li>
+        <li><b>Garden contract</b> — no new writes; <code>sanctionedBy</code> + block-adherence levers unchanged; determinism and resim untouched</li>
+        <li><b>Design tokens, Sheet/dialog contract, category palette</b></li>
+      </ul>
+    </div>
+    <div>
+      <h3>Goes</h3>
+      <ul class="tight">
+        <li><b>Month almanac grid</b> (−8/+18 week render) → one pickable week</li>
+        <li><b>Embedded StudioSection</b> → absorbed by the studio modal</li>
+        <li><b>Manage-plans sheet</b> → plan cards + modal actions</li>
+        <li><b>Duplicate CoachPanel mount</b> + <code>idPrefix</code> hack → one mount in the window/sheet</li>
+        <li><b>“Today” scroll button, extend CTA row</b> → obsolete by construction</li>
+      </ul>
+      <h3 style="margin-top:1rem">New on the server</h3>
+      <ul class="tight">
+        <li><b><code>coach_reads</code></b> table + ingest hook + sweep (§1 guards)</li>
+        <li><b><code>GET /api/plan/week</code></b> — planned vs actual, brief facts</li>
+        <li><b>Plan detail route</b> — weeks (firm/shape), headline progressions with series</li>
+        <li><b><code>focus</code></b> field on wake output; <code>notable_read</code> trigger; RECENT READS dossier section</li>
+        <li><b>Coach lift sessions keep structure</b> (exercises JSON survives apply, so coach-authored plans graph too)</li>
+      </ul>
+    </div>
+  </div>
+</section>
+
+<!-- ================= 9. DECISIONS ================= -->
+<section class="block" id="decisions">
+  <div class="kicker"><span class="num">§9</span><h2>Six decisions, then I write the spec</h2></div>
+  <div class="decision"><b>1 · Coach placement</b><span>Floating window (A) vs docked rail (B) vs inline feed (C). <em>Default: A.</em></span></div>
+  <div class="decision"><b>2 · Read model tier</b><span>Strong (Opus, ~$0.05/read — richest reads) vs cheap (Haiku, ~$0.005). <em>Default: strong while volume is ~8/wk; config knob either way.</em></span></div>
+  <div class="decision"><b>3 · Backfilled history</b><span>Skip old activities entirely vs one batch-digest read per backfill. <em>Default: batch digest — the coach should know your history, cheaply.</em></span></div>
+  <div class="decision"><b>4 · Page name</b><span>Keep “Plan” vs rename to “Coach”. <em>Default: keep Plan — the page is the plan; the coach lives in it.</em></span></div>
+  <div class="decision"><b>5 · Brief chips</b><span>My four: sessions · time · adherence trend · load ratio. Swap any for distance, streak, or a garden tie-in? <em>Default: as mocked.</em></span></div>
+  <div class="decision"><b>6 · Studio absorb</b><span>Confirm retiring the embedded Studio section and Manage-plans sheet into the modal. <em>Default: yes.</em></span></div>
+
+  <p style="margin-top:1.6rem">On approval: spec → implementation plan → build in slices (server ledger first, page second, modal third), screenshot review before merge as usual. Ping me with edits to any section — mocks regenerate fast.</p>
+</section>
+
+</div>
