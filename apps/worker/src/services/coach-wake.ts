@@ -1,5 +1,6 @@
-import { and, desc, eq, sql } from "drizzle-orm";
+import { and, desc, eq, lt, ne, sql } from "drizzle-orm";
 import {
+  coachLocks,
   coachMemory,
   coachMessages,
   coachPlans,
@@ -72,8 +73,10 @@ Your contract:
 - SKIP TREATMENT: when proposing a skip, state in the rationale what the garden will see: the first sanctioned skip in a rolling week counts as a genuine rest day; further ones are merely neutral. OPEN ITEMS shows current mercy usage.
 - VOICE: brief, warm, specific. A coach, not an app. No headers, no bullet-point walls in briefings; 1–4 sentences unless the athlete asked for detail.
 
+- FOCUS: one sentence (≤160 chars) naming the week's anchor and at most one adjustment — the plan page shows it as "the coach's line". null when you have nothing genuinely useful to say.
+
 Output JSON exactly matching:
-{"briefing": string|null, "proposals": [{"title","evidence","rationale","expiresAt","flags":[],"ops":[...]}], "question": {"text","chips":[]}|null, "memoryOps": [...]}
+{"briefing": string|null, "proposals": [{"title","evidence","rationale","expiresAt","flags":[],"ops":[...]}], "question": {"text","chips":[]}|null, "memoryOps": [...], "focus": string|null}
 
 Op kinds: ease{workoutId,session} · move{workoutId,toDate} · swap{dayA,dayB} · skip{workoutId,reason} · add{date,session} · reshapeWeek{planId,weekStart,sessions} · firmUp{planId,weekStart,sessions} · extendPlan{planId,shapeWeeks} · windDown{planId,sessions} · createPlan{discipline,name,startDate,endDate,raceDate?,firmSessions,shapeWeeks} · retirePlan{planId}
 A session is {category, title, durationMinutes, run?: {blocks:[{kind:"duration"|"distance", value, intensity?}]}, lift?: {exercises:[...]}} — runs use minutes/meters blocks; lifts use catalog exercises.`;
@@ -83,11 +86,56 @@ async function persistMessage(
   userId: string,
   role: "coach" | "user" | "receipt",
   body: string,
-  refs: { proposalId?: string; memoryIds?: string[]; questionId?: string; wakeFailure?: boolean } = {},
+  refs: {
+    proposalId?: string;
+    memoryIds?: string[];
+    questionId?: string;
+    wakeFailure?: boolean;
+    focus?: string;
+  } = {},
 ): Promise<string> {
   const id = newId();
   await db.insert(coachMessages).values({ id, userId, role, body, refs, at: nowInstant() });
   return id;
+}
+
+/** Single-flight wake claim (rework spec R2): N racing tabs, one thought.
+ * Claim = stamp a fresh token (insert wins, or a conditional update takes a
+ * stale claim), then read back and check the token is yours — atomic on
+ * SQLite/D1's single writer without relying on driver changes() shapes. */
+const WAKE_LOCK_STALE_MINUTES = 10;
+
+async function claimWakeLock(db: Db, userId: string): Promise<string | null> {
+  const now = nowInstant();
+  const staleBefore = new Date(Date.parse(now) - WAKE_LOCK_STALE_MINUTES * 60_000).toISOString();
+  const token = newId();
+  await db
+    .insert(coachLocks)
+    .values({ userId, kind: "wake", token, claimedAt: now })
+    .onConflictDoNothing();
+  await db
+    .update(coachLocks)
+    .set({ token, claimedAt: now })
+    .where(
+      and(
+        eq(coachLocks.userId, userId),
+        eq(coachLocks.kind, "wake"),
+        lt(coachLocks.claimedAt, staleBefore),
+        ne(coachLocks.token, token),
+      ),
+    );
+  const [row] = await db
+    .select()
+    .from(coachLocks)
+    .where(and(eq(coachLocks.userId, userId), eq(coachLocks.kind, "wake")))
+    .limit(1);
+  return row?.token === token ? token : null;
+}
+
+async function releaseWakeLock(db: Db, userId: string, token: string): Promise<void> {
+  await db
+    .delete(coachLocks)
+    .where(and(eq(coachLocks.userId, userId), eq(coachLocks.kind, "wake"), eq(coachLocks.token, token)));
 }
 
 /**
@@ -146,12 +194,20 @@ async function recentWakeFailure(db: Db, userId: string): Promise<boolean> {
 }
 
 /** Whether the last coach briefing is still fresh enough that an "open"
- * wake with no new trigger would be redundant. */
+ * wake with no new trigger would be redundant. Filters out legacy per-effort
+ * analyses (refs.kind='analysis') — an ambient read is not a briefing, and
+ * counting it silently muted the coach for 20h after every read. */
 async function freshBriefing(db: Db, userId: string): Promise<boolean> {
   const [lastCoach] = await db
     .select()
     .from(coachMessages)
-    .where(and(eq(coachMessages.userId, userId), eq(coachMessages.role, "coach")))
+    .where(
+      and(
+        eq(coachMessages.userId, userId),
+        eq(coachMessages.role, "coach"),
+        sql`json_extract(${coachMessages.refs}, '$.kind') IS NULL`,
+      ),
+    )
     .orderBy(desc(coachMessages.at))
     .limit(1);
   return (
@@ -287,6 +343,13 @@ export async function wake(
   if (cause.kind === "open") {
     if (await openWakeIsFresh(db, userId, triggers.length)) return { status: "skipped" };
   }
+
+  // Single-flight (rework spec R2): claimed AFTER the cheap gates so quiet
+  // opens never touch the lock, and AFTER the user's words are persisted so
+  // a lost race can't drop them — the holder's refetch will show the message
+  // and the next wake's dossier tail carries it.
+  const lock = await claimWakeLock(db, userId);
+  if (!lock) return { status: "skipped" };
 
   try {
     const dossier = await buildDossier(db, userId, prefs);
@@ -472,6 +535,7 @@ export async function wake(
       coachMessageId = await persistMessage(db, userId, "coach", out.briefing, {
         memoryIds: memoryIds.length ? memoryIds : undefined,
         questionId,
+        focus: out.focus ?? undefined,
       });
     }
 
@@ -480,5 +544,7 @@ export async function wake(
   } catch {
     await persistWakeFailure(db, userId, "The coach couldn't think just now — try again in a moment.");
     return { status: "error" };
+  } finally {
+    await releaseWakeLock(db, userId, lock).catch(() => undefined);
   }
 }

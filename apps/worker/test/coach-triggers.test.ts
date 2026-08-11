@@ -159,3 +159,58 @@ describe("coach triggers", () => {
     expect(await evaluateTriggers(db, userId, prefs, today)).not.toContain("sleep_deficit");
   });
 });
+
+describe("notable_read (2026-08-11 rework §3)", () => {
+  async function seedRead(db: Db, userId: string, flags: string[], completedAt: string): Promise<void> {
+    await db.insert(schema.coachReads).values({
+      id: newId(),
+      userId,
+      activityId: newId(),
+      status: "done",
+      attempt: 1,
+      nextAttemptAt: completedAt,
+      claimToken: null,
+      claimedAt: null,
+      glance: "HR drifted 6% late — fueling, not fitness.",
+      body: "…",
+      flags,
+      model: "m",
+      createdAt: completedAt,
+      completedAt,
+    });
+  }
+
+  it("fires for a flagged read newer than the last briefing, not for an unflagged one", async () => {
+    const db = makeTestDb();
+    const { userId, prefs } = await makeTestUser(db);
+    const today = todayInZone(prefs.timezone);
+    await seedRead(db, userId, [], nowInstant());
+    let kinds = await evaluateTriggers(db, userId, prefs, today);
+    expect(kinds).not.toContain("notable_read");
+
+    await seedRead(db, userId, ["hr_drift"], nowInstant());
+    kinds = await evaluateTriggers(db, userId, prefs, today);
+    expect(kinds).toContain("notable_read");
+
+    // Dedupe: unconsumed row blocks a refire.
+    kinds = await evaluateTriggers(db, userId, prefs, today);
+    expect(kinds).not.toContain("notable_read");
+  });
+
+  it("stays quiet when the athlete was already briefed after the read", async () => {
+    const db = makeTestDb();
+    const { userId, prefs } = await makeTestUser(db);
+    const today = todayInZone(prefs.timezone);
+    await seedRead(db, userId, ["breakthrough"], "2026-08-01T00:00:00.000Z");
+    await db.insert(schema.coachMessages).values({
+      id: newId(),
+      userId,
+      role: "coach",
+      body: "briefing that already covered it",
+      refs: {},
+      at: nowInstant(),
+    });
+    const kinds = await evaluateTriggers(db, userId, prefs, today);
+    expect(kinds).not.toContain("notable_read");
+  });
+});

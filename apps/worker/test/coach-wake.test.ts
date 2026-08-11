@@ -8,7 +8,7 @@ import { and, eq } from "drizzle-orm";
 import { schema } from "@rg/database";
 import { addDays, newId, nowInstant, todayInZone } from "@rg/domain";
 import type { Db } from "../src/services/db.js";
-import { wake } from "../src/services/coach-wake.js";
+import { openWakeIsFresh, wake } from "../src/services/coach-wake.js";
 import { makeTestDb, makeTestUser } from "./helpers.js";
 import type { Env } from "../src/env.js";
 
@@ -417,5 +417,77 @@ describe("prompt carries the garden-loop guidance (fairness spec §3)", () => {
     expect(WAKE_SYSTEM_PROMPT).toContain("GARDEN VOICE");
     expect(WAKE_SYSTEM_PROMPT).toContain("one loss voice at a time");
     expect(WAKE_SYSTEM_PROMPT).toContain("SKIP TREATMENT");
+  });
+});
+
+describe("single-flight + focus (2026-08-11 rework §R2/§3)", () => {
+  const EMPTY_WAKE = { briefing: "Quiet week — steady as she goes.", proposals: [], question: null, memoryOps: [] };
+
+  function delayedFetch(body: unknown, delayMs: number): { fetchImpl: typeof fetch; calls: () => number } {
+    let calls = 0;
+    const fetchImpl = (async () => {
+      calls += 1;
+      await new Promise((r) => setTimeout(r, delayMs));
+      return new Response(JSON.stringify(body), { status: 200, headers: { "content-type": "application/json" } });
+    }) as typeof fetch;
+    return { fetchImpl, calls: () => calls };
+  }
+
+  it("two concurrent manual wakes make exactly one LLM call", async () => {
+    const db = makeTestDb();
+    const { userId, prefs } = await makeTestUser(db);
+    const { fetchImpl, calls } = delayedFetch(chatBody(EMPTY_WAKE), 40);
+    const [a, b] = await Promise.all([
+      wake(db, makeEnv(), userId, prefs, { kind: "manual" }, fetchImpl),
+      wake(db, makeEnv(), userId, prefs, { kind: "manual" }, fetchImpl),
+    ]);
+    expect(calls()).toBe(1);
+    expect([a.status, b.status].sort()).toEqual(["ok", "skipped"]);
+    // The lock is released after the wake completes.
+    const locks = await db.select().from(schema.coachLocks).where(eq(schema.coachLocks.userId, userId));
+    expect(locks).toHaveLength(0);
+  });
+
+  it("a stale lock (crashed wake) is taken over", async () => {
+    const db = makeTestDb();
+    const { userId, prefs } = await makeTestUser(db);
+    const staleAt = new Date(Date.now() - 20 * 60_000).toISOString();
+    await db.insert(schema.coachLocks).values({ userId, kind: "wake", token: "dead", claimedAt: staleAt });
+    const { fetchImpl, calls } = delayedFetch(chatBody(EMPTY_WAKE), 5);
+    const res = await wake(db, makeEnv(), userId, prefs, { kind: "manual" }, fetchImpl);
+    expect(res.status).toBe("ok");
+    expect(calls()).toBe(1);
+  });
+
+  it("persists the focus line on the briefing message refs", async () => {
+    const db = makeTestDb();
+    const { userId, prefs } = await makeTestUser(db);
+    const { fetchImpl } = delayedFetch(
+      chatBody({ ...EMPTY_WAKE, focus: "Saturday's long run anchors the week." }),
+      5,
+    );
+    const res = await wake(db, makeEnv(), userId, prefs, { kind: "manual" }, fetchImpl);
+    expect(res.status).toBe("ok");
+    const [msg] = await db
+      .select()
+      .from(schema.coachMessages)
+      .where(and(eq(schema.coachMessages.userId, userId), eq(schema.coachMessages.role, "coach")));
+    expect((msg!.refs as { focus?: string }).focus).toBe("Saturday's long run anchors the week.");
+  });
+
+  it("an analysis-kind coach message does not count as a fresh briefing", async () => {
+    const db = makeTestDb();
+    const { userId } = await makeTestUser(db);
+    await db.insert(schema.coachMessages).values({
+      id: newId(),
+      userId,
+      role: "coach",
+      body: "legacy per-effort analysis",
+      refs: { kind: "analysis", activityId: "a1" },
+      at: nowInstant(),
+    });
+    // No triggers pending, only the analysis row exists → an open wake is NOT
+    // redundant (the athlete has never been briefed).
+    expect(await openWakeIsFresh(db, userId, 0)).toBe(false);
   });
 });

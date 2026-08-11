@@ -255,6 +255,9 @@ export interface CoachMessageDto {
      * lets the thread collapse repeats of exactly these without also
      * merging unrelated receipts that happen to share body text. */
     wakeFailure?: boolean;
+    /** The briefing's one action line (rework spec §3) — surfaced on the
+     * plan page's weekly brief. */
+    focus?: string;
   };
   at: string;
   /** Client-only: set on an optimistic echo whose send failed (audit C16).

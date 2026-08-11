@@ -1,8 +1,10 @@
-import { and, desc, eq, gte, inArray, isNull, lte } from "drizzle-orm";
+import { and, desc, eq, gte, inArray, isNull, lte, sql } from "drizzle-orm";
 import {
   activities,
+  coachMessages,
   coachPlans,
   coachPlanWeeks,
+  coachReads,
   coachTriggers,
   dailyHealth,
   plannedWorkouts,
@@ -24,7 +26,8 @@ export type CoachTriggerKind =
   | "plan_horizon"
   | "plan_ending"
   | "race_proximity"
-  | "comeback";
+  | "comeback"
+  | "notable_read";
 
 const REFIRE_WINDOW_MS = 72 * 3600 * 1000;
 const SLEEP_DEFICIT_HOURS = 6;
@@ -217,6 +220,36 @@ export async function evaluateTriggers(
       if (d1 >= addDays(today, -2) && gapDays >= COMEBACK_GAP_DAYS) {
         fired.push({ kind: "comeback", evidence: { lastActive: d2, backOn: d1, gapDays } });
       }
+    }
+  }
+
+  // notable_read — a flagged ambient read the athlete hasn't been briefed on
+  // (rework spec §3). This is what closes the perception→briefing loop with
+  // zero user intervention: the read marks, the mark wakes, the wake speaks.
+  if (!blocked.has("notable_read")) {
+    const reads = await db
+      .select()
+      .from(coachReads)
+      .where(and(eq(coachReads.userId, userId), eq(coachReads.status, "done")));
+    const [lastBriefing] = await db
+      .select()
+      .from(coachMessages)
+      .where(
+        and(
+          eq(coachMessages.userId, userId),
+          eq(coachMessages.role, "coach"),
+          sql`json_extract(${coachMessages.refs}, '$.kind') IS NULL`,
+        ),
+      )
+      .orderBy(desc(coachMessages.at))
+      .limit(1);
+    const since = lastBriefing?.at ?? "";
+    const notable = reads.find((r) => (r.completedAt ?? "") > since && r.flags.length > 0);
+    if (notable) {
+      fired.push({
+        kind: "notable_read",
+        evidence: { activityId: notable.activityId, glance: notable.glance, flags: notable.flags },
+      });
     }
   }
 

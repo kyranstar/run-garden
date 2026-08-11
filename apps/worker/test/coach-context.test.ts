@@ -121,3 +121,50 @@ describe("buildDossier", () => {
     expect(a.text).toContain("HRV unknownms · RHR unknownbpm");
   });
 });
+
+describe("RECENT READS (2026-08-11 rework §3)", () => {
+  it("carries glances completed since the last real briefing, capped at 7", async () => {
+    const db = makeTestDb();
+    const { userId, prefs } = await makeTestUser(db);
+    await db.insert(schema.coachMessages).values({
+      id: newId(),
+      userId,
+      role: "coach",
+      body: "old briefing",
+      refs: {},
+      at: "2026-08-01T00:00:00.000Z",
+    });
+    for (let i = 0; i < 9; i++) {
+      await db.insert(schema.coachReads).values({
+        id: newId(),
+        userId,
+        activityId: `act-${i}`,
+        status: "done",
+        attempt: 1,
+        nextAttemptAt: nowInstant(),
+        claimToken: null,
+        claimedAt: null,
+        glance: `glance number ${i}`,
+        body: "…",
+        flags: i === 8 ? ["hr_drift"] : [],
+        model: "m",
+        createdAt: nowInstant(),
+        completedAt: `2026-08-0${Math.min(i + 1, 9)}T12:00:00.000Z`,
+      });
+    }
+    const dossier = await buildDossier(db, userId, prefs);
+    expect(dossier.sections).toContain("RECENT READS");
+    expect(dossier.text).toContain("glance number 8");
+    expect(dossier.text).toContain("(hr_drift)");
+    // Cap 7: the two oldest glances are not present.
+    expect(dossier.text).not.toContain("glance number 0");
+    expect(dossier.text).not.toContain("glance number 1");
+  });
+
+  it("omits the section when nothing new was read", async () => {
+    const db = makeTestDb();
+    const { userId, prefs } = await makeTestUser(db);
+    const dossier = await buildDossier(db, userId, prefs);
+    expect(dossier.sections).not.toContain("RECENT READS");
+  });
+});

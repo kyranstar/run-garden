@@ -60,6 +60,9 @@ export const coachMessages = sqliteTable(
          * pipeline can dedupe consecutive failures and back off wakeAdvised
          * without a fragile body-text match. */
         wakeFailure?: boolean;
+        /** The briefing's one action line (rework spec §3) — surfaced on the
+         * plan page's weekly brief. */
+        focus?: string;
       }>(),
     at: text("at").notNull(),
   },

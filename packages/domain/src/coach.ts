@@ -160,6 +160,13 @@ export const wakeOutputSchema = z
       .strict()
       .nullable(),
     memoryOps: z.array(coachMemoryOpSchema).max(12),
+    /** The week's one action line (rework spec §3) — shown on the plan
+     * page's brief. Optional so older cached outputs stay valid. */
+    focus: z
+      .string()
+      .transform((s) => (s.length > 200 ? `${s.slice(0, 199)}…` : s))
+      .nullable()
+      .default(null),
   })
   .strict();
 export type WakeOutput = z.infer<typeof wakeOutputSchema>;

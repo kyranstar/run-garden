@@ -1,4 +1,4 @@
-import { and, desc, eq, gte, inArray, lte } from "drizzle-orm";
+import { and, desc, eq, gte, inArray, lte, sql } from "drizzle-orm";
 import {
   activities,
   coachMemory,
@@ -7,6 +7,7 @@ import {
   coachPlanWeeks,
   coachProposals,
   coachQuestions,
+  coachReads,
   gardenState,
   dailyHealth,
   plannedWorkouts,
@@ -257,6 +258,40 @@ export async function buildDossier(
     gardenLines.push("garden: unknown");
   }
   push("MILESTONES", gardenLines);
+
+  // 7.5 · RECENT READS — ambient per-effort glances since the last real
+  // briefing (rework spec §3). Replaces the old pattern of analyses crowding
+  // the conversation tail: seven one-liners instead of seven 140-word essays.
+  const [lastBriefing] = await db
+    .select()
+    .from(coachMessages)
+    .where(
+      and(
+        eq(coachMessages.userId, userId),
+        eq(coachMessages.role, "coach"),
+        sql`json_extract(${coachMessages.refs}, '$.kind') IS NULL`,
+      ),
+    )
+    .orderBy(desc(coachMessages.at))
+    .limit(1);
+  const lastBriefingAt = lastBriefing?.at ?? "";
+  const doneReads = await db
+    .select()
+    .from(coachReads)
+    .where(and(eq(coachReads.userId, userId), eq(coachReads.status, "done")));
+  const freshReads = doneReads
+    .filter((r) => (r.completedAt ?? "") > lastBriefingAt && r.glance)
+    .sort((a, b) => (a.completedAt ?? "").localeCompare(b.completedAt ?? ""))
+    .slice(-7);
+  if (freshReads.length > 0) {
+    push(
+      "RECENT READS",
+      freshReads.map(
+        (r) =>
+          `- [${r.activityId}] ${r.glance}${r.flags.length ? ` (${r.flags.join(",")})` : ""}`,
+      ),
+    );
+  }
 
   // 8 · OPEN ITEMS — never double-propose, never re-ask.
   const pendingProps = await db
