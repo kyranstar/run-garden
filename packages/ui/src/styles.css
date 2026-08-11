@@ -671,105 +671,6 @@ button {
   }
 }
 
-/* ── Plan calendar (almanac grid) ───────────────────────────────────────── */
-
-.cal-month {
-  margin-top: 1.5rem;
-}
-@media (prefers-reduced-motion: no-preference) {
-  .cal-month {
-    animation: cal-in 240ms ease both;
-  }
-}
-@keyframes cal-in {
-  from {
-    opacity: 0;
-    transform: translateY(5px);
-  }
-}
-.cal-month-title {
-  font-family: var(--font-display);
-  font-size: 1.35rem;
-  font-weight: 600;
-  letter-spacing: 0.01em;
-  margin: 0 0 0.55rem;
-}
-.cal-year {
-  color: var(--ink-faint);
-  font-size: 0.95rem;
-  font-weight: 500;
-  margin-left: 0.1rem;
-}
-.cal-weekdays {
-  display: grid;
-  grid-template-columns: repeat(7, minmax(0, 1fr));
-  gap: 6px;
-  margin-bottom: 4px;
-}
-.cal-weekdays span {
-  font-size: 0.64rem;
-  font-weight: 650;
-  letter-spacing: 0.07em;
-  text-transform: uppercase;
-  color: var(--ink-faint);
-  text-align: center;
-}
-.cal-week {
-  display: grid;
-  grid-template-columns: repeat(7, minmax(0, 1fr));
-  gap: 6px;
-  margin-bottom: 6px;
-}
-.cal-week.current .cal-day.has-items {
-  border-color: color-mix(in srgb, var(--green) 28%, var(--border));
-}
-.cal-day {
-  position: relative;
-  min-height: 96px;
-  padding: 0.28rem 0.28rem 0.34rem;
-  background: var(--bg-raised);
-  border: 1px solid var(--border);
-  border-radius: var(--radius-sm);
-  display: flex;
-  flex-direction: column;
-  gap: 0.28rem;
-}
-.cal-day:not(.has-items) {
-  background: transparent;
-  border-style: dashed;
-}
-.cal-day.is-past:not(.has-items) {
-  opacity: 0.55;
-}
-.cal-day.is-today {
-  border-style: solid;
-  border-color: var(--green);
-  background: color-mix(in srgb, var(--green-soft) 45%, var(--bg-raised));
-  box-shadow: var(--shadow);
-}
-.cal-date {
-  display: flex;
-  justify-content: flex-end;
-  align-items: baseline;
-  gap: 0.35rem;
-}
-.cal-dow {
-  display: none;
-}
-.cal-dom {
-  font-size: 0.76rem;
-  font-weight: 650;
-  font-variant-numeric: tabular-nums;
-  color: var(--ink-faint);
-  min-width: 1.55em;
-  line-height: 1.55em;
-  text-align: center;
-}
-.cal-day.is-today .cal-dom {
-  background: var(--green);
-  color: #fff;
-  border-radius: 999px;
-}
 .cal-card {
   position: relative;
   display: block;
@@ -864,47 +765,6 @@ button {
   font-weight: 500;
   font-style: italic;
   font-size: 0.74rem;
-}
-
-/* Narrow screens: the grid folds into an agenda — empty days disappear,
-   each remaining day carries its weekday label inline. */
-@media (max-width: 640px) {
-  .cal-weekdays {
-    display: none;
-  }
-  .cal-week {
-    display: flex;
-    flex-direction: column;
-    gap: 6px;
-    margin-bottom: 0;
-  }
-  .cal-week + .cal-week {
-    margin-top: 6px;
-  }
-  .cal-day {
-    min-height: 0;
-  }
-  /* Audit C22 followup: a ghost-only day (a coach proposal on an otherwise
-     empty day) must still render — `.has-ghosts` is separate from
-     `.has-items` on purpose (below) so the cell keeps its dashed "empty"
-     look instead of borrowing the solid real-workout treatment. */
-  .cal-day:not(.has-items):not(.has-ghosts):not(.is-today) {
-    display: none;
-  }
-  .cal-date {
-    justify-content: flex-start;
-  }
-  .cal-dow {
-    display: inline;
-    font-size: 0.66rem;
-    font-weight: 650;
-    letter-spacing: 0.07em;
-    text-transform: uppercase;
-    color: var(--ink-faint);
-  }
-  .cal-day.is-today .cal-dom {
-    padding: 0 0.45em;
-  }
 }
 
 /* ── Garden ─────────────────────────────────────────────────────────────── */
@@ -3440,33 +3300,6 @@ button {
 .pill-lift { background: var(--lift-soft); color: var(--lift-ink); }
 .pill-warnsoft { background: var(--warn-soft); color: var(--warn); font-weight: 600; }
 
-.plan-split { display: block; }
-/* Audit C6: the coach panel used to render inline (unhidden) on mobile
-   AND behind the floating pill's sheet — two full coach UIs stacked, with
-   the inline one burying the calendar below the fold. Below 1024px the
-   pill + sheet is the only mobile coach surface. */
-.plan-split-coach { display: none; }
-@media (min-width: 1024px) {
-  .plan-split {
-    display: grid;
-    /* Audit C7: was minmax(340px, 0.85fr) 1.15fr — the calendar column
-       shrank to ~58px day cells, hard-clipping every workout title.
-       Rebalanced toward the calendar; the coach column still has room for
-       its composer and proposal cards at its floor width. */
-    grid-template-columns: minmax(300px, 0.7fr) 1.3fr;
-    gap: 1rem;
-    align-items: start;
-  }
-  /* Audit C5: this used to target `.plan-split > .coach-panel`, but
-     `.coach-panel` is a grandchild (wrapped in `.plan-split-coach`) — the
-     selector matched nothing, so the panel scrolled away with the page. */
-  .plan-split-coach {
-    display: block;
-    position: sticky;
-    top: 0.8rem;
-  }
-}
-
 .coach-panel {
   background: var(--bg-raised);
   border: 1px solid var(--border);
@@ -3624,7 +3457,6 @@ button {
 }
 
 /* Calendar ghosts (Task B3) */
-.cal-pending { background: #fbf9ef; }
 .cal-ghost {
   /* Audit M18: was ~20px tall. flex-direction:column keeps the label and
      the optional .cal-ghost-reason line stacked exactly as the block layout
@@ -3676,7 +3508,6 @@ button {
   box-shadow: 0 4px 14px rgba(40, 60, 45, 0.3);
   cursor: pointer;
 }
-@media (min-width: 1024px) { .coach-pill { display: none; } }
 .coach-sheet-panel .coach-panel { max-height: 76vh; border: 0; }
 
 /* Settings memory section */
@@ -3689,24 +3520,6 @@ button {
   border-bottom: 1px solid var(--border);
 }
 .memory-row:last-child { border-bottom: 0; }
-.cal-extend-row {
-  display: block;
-  width: 100%;
-  margin-top: 0.6rem;
-  padding: 0.6rem;
-  border: 0;
-  border-radius: 10px;
-  /* Audit M20: the stripe used to hardcode a light-beige hex, so --ink-faint's
-     dark value (tuned for dark surfaces) sat at ~2.8:1 on it in dark mode.
-     --bg-sunken is theme-aware and pixel-close to the old value in light
-     mode, so this is a no-op there. */
-  background: repeating-linear-gradient(45deg, transparent, transparent 6px, var(--bg-sunken) 6px, var(--bg-sunken) 12px);
-  color: var(--ink-faint);
-  font: 600 0.85rem var(--font);
-  cursor: pointer;
-  text-align: center;
-}
-.cal-extend-row:hover { color: var(--green-ink); }
 
 /* ── Mobile fullscreen garden (audit follow-up): the stage can take the whole
    viewport; the toggle floats in the scene's top-right. Desktop (≥1024px)
@@ -3910,4 +3723,495 @@ button {
     overflow: hidden;
   }
   .act-shape { width: min(230px, 60%); }
+}
+
+/* ── Plan page (2026-08-11 rework): brief · plan cards · one week ───────── */
+
+.shell-main--wide {
+  max-width: 1440px;
+}
+
+.plan-page {
+  position: relative;
+}
+.plan-page-col {
+  display: flex;
+  flex-direction: column;
+  gap: 0.9rem;
+  max-width: 880px;
+}
+
+/* Weekly brief */
+.plan-brief {
+  border-left: 3px solid var(--green);
+  display: flex;
+  flex-direction: column;
+  gap: 0.55rem;
+}
+.plan-brief-head {
+  display: flex;
+  align-items: baseline;
+  gap: 0.7rem;
+  flex-wrap: wrap;
+}
+.plan-brief-headline {
+  font-family: var(--font-display);
+  font-size: 1.12rem;
+  font-weight: 650;
+  margin: 0;
+}
+.plan-brief-needs {
+  border: 0;
+  cursor: pointer;
+}
+.plan-brief-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+}
+.plan-brief-chip {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 0.3rem;
+  background: var(--bg-sunken);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  padding: 0.22rem 0.65rem;
+  font-size: 0.8rem;
+  color: var(--ink-soft);
+  white-space: nowrap;
+}
+.plan-brief-chip b {
+  color: var(--ink);
+  font-weight: 650;
+}
+.plan-brief-trend.trend-up { color: var(--green-ink); }
+.plan-brief-trend.trend-down { color: var(--warn); }
+.plan-brief-action {
+  display: flex;
+  gap: 0.5rem;
+  align-items: baseline;
+  font-size: 0.92rem;
+  margin: 0;
+}
+.plan-brief-who {
+  flex: none;
+  font-size: 0.72rem;
+  font-weight: 650;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  color: var(--ink-faint);
+}
+
+/* Plan title cards */
+.plan-cards {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 0.8rem;
+}
+@media (min-width: 760px) {
+  .plan-cards {
+    grid-template-columns: 1fr 1fr;
+  }
+}
+.plan-card {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 0.45rem;
+  text-align: left;
+  cursor: pointer;
+  font: inherit;
+  color: inherit;
+  transition: transform 120ms ease, border-color 120ms ease, box-shadow 120ms ease;
+}
+.plan-card:hover {
+  transform: translateY(-1px);
+  border-color: var(--border-strong);
+  box-shadow: 0 3px 10px rgba(38, 41, 42, 0.08);
+}
+@media (prefers-reduced-motion: reduce) {
+  .plan-card,
+  .plan-card:hover {
+    transform: none;
+    transition: none;
+  }
+}
+.plan-card-top {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 0.5rem;
+}
+.plan-card-name {
+  font-family: var(--font-display);
+  font-size: 1.15rem;
+  font-weight: 650;
+  min-width: 0;
+}
+.plan-card-prog {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+}
+.plan-card-track {
+  flex: 1;
+  min-width: 0;
+  height: 5px;
+  border-radius: 4px;
+  background: var(--chart-track);
+  position: relative;
+  overflow: hidden;
+}
+.plan-card-track i {
+  position: absolute;
+  inset: 0 auto 0 0;
+  border-radius: 4px;
+  background: var(--green);
+}
+.plan-card-track.is-lift i {
+  background: var(--lift-ink);
+}
+.plan-card-headline {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 0.8rem;
+}
+.plan-card-kv {
+  font-size: 0.86rem;
+  color: var(--ink-soft);
+  min-width: 0;
+}
+.plan-card-spark {
+  flex: none;
+  width: 96px;
+  height: 26px;
+}
+.plan-card-new {
+  border: 1.5px dashed var(--border-strong);
+  border-radius: var(--radius);
+  background: transparent;
+  color: var(--ink-soft);
+  font: inherit;
+  font-size: 0.92rem;
+  font-weight: 600;
+  min-height: 72px;
+  cursor: pointer;
+}
+.plan-card-new:hover {
+  border-color: var(--green);
+  color: var(--green-ink);
+}
+
+/* The week */
+.plan-week-head {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  flex-wrap: wrap;
+  margin-bottom: 0.6rem;
+}
+.plan-week-title {
+  font-family: var(--font-display);
+  font-size: 1.05rem;
+  font-weight: 650;
+  margin: 0;
+}
+.plan-week-nav {
+  display: inline-flex;
+  border: 1px solid var(--border-strong);
+  border-radius: 10px;
+  overflow: hidden;
+}
+.plan-week-nav button {
+  border: 0;
+  background: var(--bg-raised);
+  padding: 0.3rem 0.7rem;
+  font-size: 0.95rem;
+  color: var(--ink);
+  min-height: 36px;
+  cursor: pointer;
+}
+.plan-week-nav button + button {
+  border-left: 1px solid var(--border);
+}
+.plan-week-grow {
+  flex: 1;
+}
+.plan-week-back {
+  min-height: 32px;
+}
+.plan-week-jump {
+  position: relative;
+}
+.plan-week-jump summary {
+  list-style: none;
+  cursor: pointer;
+  color: var(--green-ink);
+  text-decoration: underline;
+  font-size: 0.85rem;
+  min-height: 32px;
+  display: inline-flex;
+  align-items: center;
+}
+.plan-week-jump summary::-webkit-details-marker {
+  display: none;
+}
+.plan-week-jumplist {
+  position: absolute;
+  right: 0;
+  top: calc(100% + 4px);
+  z-index: 30;
+  background: var(--bg-raised);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-sm);
+  box-shadow: 0 10px 30px rgba(20, 22, 20, 0.16);
+  max-height: 300px;
+  overflow-y: auto;
+  min-width: 190px;
+  padding: 0.3rem;
+  display: flex;
+  flex-direction: column;
+}
+.plan-week-jumplist button {
+  border: 0;
+  background: transparent;
+  text-align: left;
+  font: inherit;
+  font-size: 0.85rem;
+  color: var(--ink);
+  padding: 0.42rem 0.6rem;
+  border-radius: 6px;
+  min-height: 36px;
+  cursor: pointer;
+}
+.plan-week-jumplist button:hover {
+  background: var(--bg-sunken);
+}
+.plan-week-jumplist button.is-current {
+  background: var(--green-soft);
+  color: var(--green-ink);
+  font-weight: 650;
+}
+.plan-week-grid {
+  display: grid;
+  grid-template-columns: repeat(7, minmax(0, 1fr));
+  gap: 7px;
+}
+.plan-week-day {
+  position: relative;
+  min-height: 128px;
+  padding: 0.35rem 0.35rem 0.45rem;
+  background: var(--bg-sunken);
+  border: 1px dashed transparent;
+  border-radius: 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+}
+.plan-week-day:not(.has-items):not(.has-ghosts) {
+  border-color: var(--border);
+  background: transparent;
+}
+.plan-week-day.is-today {
+  outline: 2px solid var(--green);
+  outline-offset: 1px;
+  background: color-mix(in srgb, var(--green-soft) 55%, var(--bg-sunken));
+}
+.plan-week-date {
+  display: flex;
+  align-items: baseline;
+  gap: 0.35rem;
+}
+.plan-week-dow {
+  font-size: 0.66rem;
+  font-weight: 650;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--ink-faint);
+}
+.plan-week-dom {
+  font-size: 0.82rem;
+  font-weight: 650;
+  color: var(--ink-faint);
+}
+.plan-week-day.is-today .plan-week-dom {
+  background: var(--green);
+  color: #fff;
+  border-radius: 999px;
+  padding: 0.02rem 0.38rem;
+}
+.plan-week-items {
+  display: flex;
+  flex-direction: column;
+  gap: 0.3rem;
+  min-width: 0;
+}
+/* Below the desktop breakpoint the grid folds into a day list — empty days
+   collapse away, today always renders (the old agenda fold, one component). */
+@media (max-width: 1023px) {
+  .plan-week-grid {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+  }
+  .plan-week-day {
+    min-height: 0;
+    flex-direction: row;
+    align-items: flex-start;
+    gap: 0.6rem;
+  }
+  .plan-week-day:not(.has-items):not(.has-ghosts):not(.is-today) {
+    display: none;
+  }
+  .plan-week-date {
+    flex: none;
+    width: 2.6rem;
+    flex-direction: column;
+    align-items: center;
+    gap: 0;
+    padding-top: 0.15rem;
+  }
+  .plan-week-items {
+    flex: 1;
+  }
+}
+
+/* The floating coach window (desktop) + its minimized pill twin */
+.coach-window {
+  position: fixed;
+  top: 4.5rem;
+  right: 1rem;
+  bottom: 1rem;
+  width: min(400px, 34vw);
+  z-index: 45; /* above page content, below sheets (z 60) */
+  background: var(--bg-raised);
+  border: 1px solid var(--border-strong);
+  border-radius: 14px;
+  box-shadow: 0 18px 50px rgba(20, 22, 20, 0.18);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+.coach-window .coach-panel {
+  border: 0;
+  border-radius: 0;
+  flex: 1;
+  min-height: 0;
+}
+.coach-window-min {
+  position: absolute;
+  top: 0.55rem;
+  right: 0.65rem;
+  z-index: 2;
+}
+.coach-pill--desktop {
+  position: fixed;
+}
+
+/* Studio modal */
+.studio-modal-meta {
+  flex-wrap: wrap;
+}
+.studio-modal-sub {
+  margin: -0.3rem 0 0;
+}
+.prog-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+}
+.prog-chip {
+  display: inline-flex;
+  flex-direction: column;
+  border: 1px solid var(--border);
+  background: var(--bg-sunken);
+  border-radius: 10px;
+  padding: 0.45rem 0.7rem;
+}
+.prog-chip-label {
+  font-size: 0.7rem;
+  color: var(--ink-faint);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  font-weight: 650;
+}
+.prog-chip-value {
+  font-size: 0.95rem;
+}
+.prog-chip-value b {
+  color: var(--green-ink);
+}
+.studio-modal-charts {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 1rem;
+}
+@media (min-width: 760px) {
+  .studio-modal-charts {
+    grid-template-columns: 1fr 1fr;
+  }
+}
+.chartbox-svg svg {
+  width: 100%;
+  height: auto;
+  display: block;
+}
+.studio-modal-weeks {
+  display: flex;
+  flex-direction: column;
+}
+.wkrow {
+  display: flex;
+  align-items: baseline;
+  gap: 0.7rem;
+  padding: 0.45rem 0;
+  border-bottom: 1px solid var(--border);
+  font-size: 0.85rem;
+  flex-wrap: wrap;
+}
+.wkrow:last-child {
+  border-bottom: 0;
+}
+.wkrow.is-current {
+  background: var(--green-soft);
+  margin: 0 -0.5rem;
+  padding: 0.45rem 0.5rem;
+  border-radius: 8px;
+  border-bottom-color: transparent;
+}
+.wkrow-num {
+  flex: none;
+  width: 2.4rem;
+}
+.wkrow-desc {
+  flex: 1;
+  min-width: 12ch;
+  color: var(--ink-soft);
+}
+.wkrow-state {
+  flex: none;
+  font-size: 0.7rem;
+  font-weight: 650;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--ink-faint);
+}
+.wkrow-state.is-firm {
+  color: var(--green-ink);
+}
+.studio-modal-actions {
+  align-items: center;
+}
+.studio-modal-grow {
+  flex: 1;
+}
+.studio-revise summary {
+  cursor: pointer;
+  color: var(--green-ink);
+  font-size: 0.9rem;
+  min-height: 40px;
+  display: flex;
+  align-items: center;
 }

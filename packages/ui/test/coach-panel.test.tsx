@@ -11,7 +11,6 @@ import type { CoachMessageDto, CoachPlanDto, CoachProposalDto } from "@rg/api-cl
 import {
   CoachPanel,
   CoachThread,
-  ManagePlans,
   pendingByDate,
   PendingTray,
   ProposalCard,
@@ -99,16 +98,13 @@ describe("PendingTray", () => {
     expect(html).toContain("This already resolved elsewhere");
   });
 
-  // Audit C27: the inline panel and the mobile sheet both render the same
-  // proposal at the same time — without a scoped id, a calendar-ghost tap
-  // always resolved to whichever copy is first in the DOM.
-  it("scopes the proposal card's DOM id with idPrefix so two mounts never collide", () => {
-    const inline = render(createElement(ProposalCard, { proposal: prop("a"), onApprove: noop, onDecline: noop }));
-    const sheet = render(
-      createElement(ProposalCard, { proposal: prop("a"), onApprove: noop, onDecline: noop, idPrefix: "sheet-" }),
-    );
-    expect(inline).toContain('id="proposal-a"');
-    expect(sheet).toContain('id="proposal-sheet-a"');
+  // Rework 2026-08-11: ONE CoachPanel mount (window on desktop, sheet on
+  // mobile — never both), so proposal ids are plain and ghost taps always
+  // resolve to the visible card. The old idPrefix threading (audit C27)
+  // retired with the dual mount.
+  it("renders a plain, unprefixed DOM id for ghost-tap targeting", () => {
+    const html = render(createElement(ProposalCard, { proposal: prop("a"), onApprove: noop, onDecline: noop }));
+    expect(html).toContain('id="proposal-a"');
   });
 });
 
@@ -235,32 +231,5 @@ describe("proposalDiscipline + pendingByDate", () => {
     expect(ghosts.get("2026-08-07")!.map((g) => g.kind)).toEqual(["rewrite", "outgoing"]);
     expect(ghosts.get("2026-08-09")![0]!.kind).toBe("incoming");
     expect(ghosts.get("2026-08-10")![0]!.label).toBe("Shakeout");
-  });
-});
-
-describe("ManagePlans — Retire", () => {
-  function plan(over: Partial<CoachPlanDto> = {}): CoachPlanDto {
-    return {
-      id: "cp1",
-      discipline: "run",
-      name: "Fall Half",
-      status: "active",
-      startDate: "2026-08-01",
-      endDate: "2026-10-11",
-      ...over,
-    };
-  }
-
-  // Audit C18: Retire used to be a plain one-tap button that immediately
-  // archived every remaining session with no undo — the initial render must
-  // never show the destructive action; it only appears after a first tap
-  // asks for it (mirroring the workout-level "Remove from plan" pattern).
-  it("never renders the destructive 'Really retire' action on first paint", () => {
-    const html = render(
-      createElement(ManagePlans, { plans: [plan()], onCanned: noop, onRetire: noop, onRename: noop }),
-    );
-    expect(html).toContain(">Retire<");
-    expect(html).not.toContain("Really retire");
-    expect(html).not.toContain("btn-danger");
   });
 });

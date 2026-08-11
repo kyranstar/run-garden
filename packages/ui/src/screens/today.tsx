@@ -32,7 +32,7 @@ import { MatchSheet } from "./match-sheet.js";
  * `GET /api/sync/status` and `GET /api/sync/notes` rather than each screen's
  * own read of the legacy `TodayResponse.sync` shape.
  */
-export function SyncPanel() {
+export function SyncPanel({ quietWhenHealthy = false }: { quietWhenHealthy?: boolean } = {}) {
   const qc = useQueryClient();
   const status = useQuery({ queryKey: ["sync-status"], queryFn: api.syncStatus, refetchInterval: 30_000 });
   const notes = useQuery({ queryKey: ["sync-notes"], queryFn: api.syncNotes, refetchInterval: 30_000 });
@@ -105,6 +105,11 @@ export function SyncPanel() {
   });
 
   if (!status.data) return null;
+  // Rework spec §6: on the plan page the sync line only exists when something
+  // needs attention or an undoable note is pending — healthy is silence.
+  if (quietWhenHealthy && status.data.state === "in_sync" && (notes.data?.notes ?? []).length === 0) {
+    return null;
+  }
 
   return (
     <div className="stack" style={{ gap: "0.5rem" }} aria-live="polite">

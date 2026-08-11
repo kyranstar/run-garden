@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Link, useSearchParams } from "react-router-dom";
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { api, ApiError, type WorkoutDto } from "@rg/api-client";
+import { useMutation, useQueries, useQuery, useQueryClient } from "@tanstack/react-query";
+import { api, ApiError, type PlanDetailResponse, type WorkoutDto } from "@rg/api-client";
 import { addDays, startOfIsoWeek } from "@rg/domain";
 import {
   Banner,
@@ -9,37 +9,25 @@ import {
   CATEGORY_LABELS,
   CompletionPill,
   CorosPill,
-  dayOfMonth,
   EmptyState,
   formatDayLong,
   formatMinutes,
   formatTime,
-  monthTitle,
   Sheet,
   Spinner,
   SyncNotesStack,
   useIsDesktop,
 } from "../components.js";
-import { IconAlert, IconCheck, IconClock } from "../icons.js";
 import { MoveSheet } from "./move-sheet.js";
 import { MatchSheet } from "./match-sheet.js";
-import { StudioSection } from "./studio.js";
 import { SyncPanel } from "./today.js";
-import { CoachPanel, ManagePlans, pendingByDate } from "./coach-panel.js";
+import { CoachPanel, pendingByDate } from "./coach-panel.js";
 import { CoachRead } from "./coach-read.js";
-
-/**
- * "Did this run happen?" only ever makes sense for a date that has passed.
- * A workout can sit in `unresolved` with a future date briefly (it was
- * rescheduled after the question was raised); render it as scheduled.
- */
-function askable(w: WorkoutDto, today: string): boolean {
-  return w.completionState === "unresolved" && w.effectiveDate <= today;
-}
-
-function displayCompletionState(w: WorkoutDto, today: string): WorkoutDto["completionState"] {
-  return w.completionState === "unresolved" && !askable(w, today) ? "scheduled" : w.completionState;
-}
+import { CoachWindow } from "./coach-window.js";
+import { WeeklyBrief } from "./plan-brief.js";
+import { PlanCards } from "./plan-cards.js";
+import { StudioModal } from "./studio-modal.js";
+import { askable, displayCompletionState, WeekView, weekRangeLabel } from "./week-view.js";
 
 function WorkoutDetail({
   w,
@@ -68,6 +56,7 @@ function WorkoutDetail({
   const workoutNotes = (notes.data?.notes ?? []).filter((n) => n.workoutId === w.id);
   const invalidate = () => {
     void qc.invalidateQueries({ queryKey: ["plan"] });
+    void qc.invalidateQueries({ queryKey: ["plan-week"] });
     void qc.invalidateQueries({ queryKey: ["today"] });
     void qc.invalidateQueries({ queryKey: ["workout", w.id] });
     // Completion-state changes feed the garden simulation directly.
@@ -269,117 +258,6 @@ function WorkoutDetail({
   );
 }
 
-// ── Calendar assembly ────────────────────────────────────────────────────────
-
-interface CalDay {
-  date: string;
-  items: WorkoutDto[];
-}
-interface CalWeek {
-  weekStart: string;
-  days: CalDay[];
-}
-interface CalMonth {
-  key: string;
-  month: string;
-  year: number;
-  weeks: CalWeek[];
-}
-
-/** Continuous ISO weeks spanning the plan (and today), grouped by the month
- * their Monday falls in — gaps render as quiet empty cells, like an almanac. */
-function buildMonths(workouts: WorkoutDto[], today: string | undefined): CalMonth[] {
-  const byDate = new Map<string, WorkoutDto[]>();
-  for (const w of workouts) {
-    const list = byDate.get(w.effectiveDate) ?? [];
-    list.push(w);
-    byDate.set(w.effectiveDate, list);
-  }
-  if (byDate.size === 0) return [];
-  const dates = [...byDate.keys()].sort();
-  let start = startOfIsoWeek(dates[0]!);
-  let end = startOfIsoWeek(dates[dates.length - 1]!);
-  if (today) {
-    const tw = startOfIsoWeek(today);
-    if (tw < start) start = tw;
-    if (tw > end) end = tw;
-  }
-
-  const months: CalMonth[] = [];
-  for (let ws = start, guard = 0; ws <= end && guard < 80; ws = addDays(ws, 7), guard++) {
-    const { month, year } = monthTitle(ws);
-    const key = `${year}-${month}`;
-    if (months.length === 0 || months[months.length - 1]!.key !== key) {
-      months.push({ key, month, year, weeks: [] });
-    }
-    months[months.length - 1]!.weeks.push({
-      weekStart: ws,
-      days: Array.from({ length: 7 }, (_, i) => {
-        const date = addDays(ws, i);
-        return { date, items: byDate.get(date) ?? [] };
-      }),
-    });
-  }
-  return months;
-}
-
-const WEEKDAY_HEADERS = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
-
-function WorkoutCell({
-  w,
-  today,
-  onOpen,
-}: {
-  w: WorkoutDto;
-  today: string;
-  onOpen: () => void;
-}) {
-  const completion = displayCompletionState(w, today);
-  const done = completion === "completed";
-  const faded = completion === "skipped" || completion === "missed";
-  const asks = askable(w, today);
-  const syncView = w.corosSyncView ?? w.corosSyncState;
-  const attention = syncView === "needs_attention" || syncView === "sync_issue";
-
-  if (w.category === "rest") {
-    return (
-      <button className="cal-card cal-rest" onClick={onOpen}>
-        <span className="cal-card-title">Rest</span>
-      </button>
-    );
-  }
-  return (
-    <button
-      className={`cal-card ${done ? "done" : ""} ${faded ? "faded" : ""} ${asks ? "asks" : ""}`}
-      onClick={onOpen}
-      title={w.title}
-    >
-      <i className={`cal-card-edge cat-${w.category}`} aria-hidden />
-      <span className="cal-card-title">{w.title}</span>
-      <span className="cal-card-meta">
-        <span>{formatMinutes(w.workoutSeconds)}</span>
-        {done ? (
-          <span className="cal-glyph ok" title="Completed">
-            <IconCheck size={11} />
-          </span>
-        ) : null}
-        {asks ? (
-          <span className="cal-glyph ask" title="Did this happen?">
-            <IconClock size={11} />
-          </span>
-        ) : null}
-        {attention ? (
-          <span className="cal-glyph warn" title="Needs attention">
-            <IconAlert size={11} />
-          </span>
-        ) : null}
-        {completion === "skipped" ? <span className="cal-note">skipped</span> : null}
-        {completion === "missed" ? <span className="cal-note">missed</span> : null}
-      </span>
-    </button>
-  );
-}
-
 /** Client-only id for an optimistic echo — collision-safe enough for a
  * single browser tab composing messages one at a time. */
 let localIdSeq = 0;
@@ -401,8 +279,9 @@ function proposalActionErrorMessage(err: unknown): string {
 
 /**
  * Coach data wiring (Plan B Task B2): one shared ["coach-state"] query feeds
- * the panel AND the calendar's ghost diffs. On mount, a wake fires only when
- * the server says it's worth it (wakeAdvised) — quiet opens stay free.
+ * the panel AND the week's ghost diffs. On mount, a wake fires only when
+ * the server says it's worth it (wakeAdvised) — quiet opens stay free, and
+ * the server's single-flight lock makes racing tabs harmless.
  */
 function usePlanCoach() {
   const qc = useQueryClient();
@@ -497,7 +376,7 @@ function usePlanCoach() {
     onError: (err, id) => setProposalErrors((e) => ({ ...e, [id]: proposalActionErrorMessage(err) })),
     onSuccess: () => {
       invalidate();
-      for (const k of ["plan", "today", "garden"]) void qc.invalidateQueries({ queryKey: [k] });
+      for (const k of ["plan", "plan-week", "today", "garden"]) void qc.invalidateQueries({ queryKey: [k] });
     },
   });
   const decline = useMutation({
@@ -531,23 +410,13 @@ function usePlanCoach() {
   };
 }
 
-/** DOM id prefix for the mobile sheet's copy of the coach panel — the
- * inline panel (hidden below 1024px, audit C6) uses no prefix, so the two
- * mounts never collide on the same id. */
-const SHEET_ID_PREFIX = "sheet-";
-
-/** Scroll a proposal card into view and flash it (calendar ghost tap).
- * Audit C27: `idPrefix` picks the copy that's actually visible at this
- * width — without it, `getElementById` always resolved to the inline
- * panel's node (first in DOM order) even when only the sheet was showing.
- * Audit C27 followup: on desktop the coach column is `position: sticky`
- * (C5), so it's already on screen — scrollIntoView-ing an element inside a
- * sticky ancestor drags the whole PAGE to re-center it, an unwanted second
- * scroll jump. `skipScroll` leaves the page alone there; the flash alone is
- * enough since the panel never left the viewport. */
-function focusProposal(id: string, idPrefix: string, skipScroll: boolean): void {
+/** Flash a proposal card (ghost tap). One CoachPanel mount now, so plain
+ * ids — the old idPrefix threading (audit C27) retired with the dual mount.
+ * `skipScroll` still applies on desktop: the window is an overlay whose tray
+ * sits at the top, already visible the moment it opens. */
+function focusProposal(id: string, skipScroll: boolean): void {
   requestAnimationFrame(() => {
-    const el = document.getElementById(`proposal-${idPrefix}${id}`);
+    const el = document.getElementById(`proposal-${id}`);
     if (!el) return;
     if (!skipScroll) el.scrollIntoView({ block: "center", behavior: "smooth" });
     el.classList.remove("coach-flash");
@@ -556,96 +425,201 @@ function focusProposal(id: string, idPrefix: string, skipScroll: boolean): void 
   });
 }
 
+const WINDOW_OPEN_KEY = "rg.coachWindow.open";
+const WINDOW_SEEN_KEY = "rg.coachWindow.seen";
+
+function readStorage(key: string): string | null {
+  try {
+    return localStorage.getItem(key);
+  } catch {
+    return null;
+  }
+}
+function writeStorage(key: string, value: string): void {
+  try {
+    localStorage.setItem(key, value);
+  } catch {
+    /* storage unavailable — the window simply doesn't persist */
+  }
+}
+
+const ISO_DATE = /^\d{4}-\d{2}-\d{2}$/;
+
 export function PlanScreen() {
   const [params, setParams] = useSearchParams();
-  // Explicit horizon: the server's default window (8 weeks ahead) is shorter
-  // than the longest lifting plan (16 weeks) — without this, a synced plan's
-  // back half was visible nowhere in the app.
+  const isDesktop = useIsDesktop();
+  const qc = useQueryClient();
+
+  // ── The picked week ────────────────────────────────────────────────────
+  const weekParam = params.get("week");
+  const pickedWeek =
+    weekParam && ISO_DATE.test(weekParam) && startOfIsoWeek(weekParam) === weekParam ? weekParam : null;
+  const week = useQuery({
+    queryKey: ["plan-week", pickedWeek ?? "current"],
+    queryFn: () => api.planWeek(pickedWeek ?? undefined),
+  });
+
+  // Wider workout window (picked week ±4 weeks): ghost date resolution and
+  // the workout-detail deep link both need more than seven days in hand.
+  const windowAnchor = pickedWeek ?? week.data?.weekStart ?? null;
   const plan = useQuery({
-    queryKey: ["plan"],
+    queryKey: ["plan", windowAnchor ?? "boot"],
     queryFn: () => {
-      const d = new Date();
-      const iso = (x: Date) => x.toISOString().slice(0, 10);
-      const start = new Date(d);
-      start.setDate(start.getDate() - 8 * 7);
-      const end = new Date(d);
-      end.setDate(end.getDate() + 18 * 7);
-      return api.workouts(iso(start), iso(end));
+      const anchor = windowAnchor ?? new Date().toISOString().slice(0, 10);
+      return api.workouts(addDays(startOfIsoWeek(anchor), -28), addDays(startOfIsoWeek(anchor), 34));
     },
   });
-  const selectedId = params.get("workout");
-  const todayRef = useRef<HTMLDivElement | null>(null);
-  const scrolled = useRef(false);
-  const today = plan.data?.today;
-  const todayWeek = today ? startOfIsoWeek(today) : null;
 
+  const today = week.data ? (plan.data?.today ?? week.data.weekStart) : plan.data?.today;
+
+  // ── Coach ──────────────────────────────────────────────────────────────
   const coach = usePlanCoach();
   const coachPlans = useQuery({ queryKey: ["coach-plans"], queryFn: api.coachPlans });
-  const isDesktop = useIsDesktop();
-  const [coachOpen, setCoachOpen] = useState(false);
-  const [manageOpen, setManageOpen] = useState(false);
-  const qc = useQueryClient();
-  const rename = useMutation({
-    mutationFn: (v: { id: string; name: string }) => api.coachPlanRename(v.id, v.name),
-    onSettled: () => void qc.invalidateQueries({ queryKey: ["coach-plans"] }),
+  const activePlans = useMemo(
+    () => (coachPlans.data?.plans ?? []).filter((p) => p.status === "active" || p.status === "draft"),
+    [coachPlans.data?.plans],
+  );
+  const details = useQueries({
+    queries: activePlans.map((p) => ({
+      queryKey: ["plan-detail", p.id],
+      queryFn: () => api.planDetail(p.id),
+      staleTime: 60_000,
+    })),
   });
-  const retire = useMutation({
-    mutationFn: (id: string) => api.coachPlanRetire(id),
-    onSettled: () => {
-      for (const k of ["coach-plans", "plan", "coach-state"]) void qc.invalidateQueries({ queryKey: [k] });
-    },
-  });
-  // Audit C27 followup: same duplicate-modal shape as onGhostTap — the
-  // inline panel is always visible and sticky on desktop, so opening the
-  // sheet there is a redundant second "Coach" surface, not the intentional
-  // hand-off it is on mobile (where the sheet is the only coach surface).
-  const cannedSend = (body: string) => {
-    setManageOpen(false);
-    if (!isDesktop) setCoachOpen(true);
-    coach.send(body);
+  const detailById = useMemo(() => {
+    const m = new Map<string, PlanDetailResponse | undefined>();
+    activePlans.forEach((p, i) => m.set(p.id, details[i]?.data));
+    return m;
+  }, [activePlans, details]);
+
+  const pendingCount = coach.state.data?.pendingProposals.length ?? 0;
+
+  // ── Coach window state (desktop): open on pill/ghost tap or new coach
+  // activity since last-seen; minimizing marks-seen (rework spec §6). ──────
+  const watermark = coach.state.data
+    ? `${coach.state.data.lastCoachAt ?? ""}:${pendingCount}:${coach.state.data.openQuestion?.id ?? ""}`
+    : null;
+  const [winOpen, setWinOpen] = useState(() => readStorage(WINDOW_OPEN_KEY) === "1");
+  const autoOpened = useRef(false);
+  useEffect(() => {
+    if (!isDesktop || !watermark || autoOpened.current) return;
+    const seen = readStorage(WINDOW_SEEN_KEY);
+    const hasActivity = pendingCount > 0 || !!coach.state.data?.openQuestion;
+    if (watermark !== seen && hasActivity && !winOpen) {
+      autoOpened.current = true;
+      setWinOpen(true);
+      writeStorage(WINDOW_OPEN_KEY, "1");
+    }
+  }, [isDesktop, watermark, pendingCount, coach.state.data?.openQuestion, winOpen]);
+  const openWindow = () => {
+    setWinOpen(true);
+    writeStorage(WINDOW_OPEN_KEY, "1");
   };
+  const minimizeWindow = () => {
+    setWinOpen(false);
+    writeStorage(WINDOW_OPEN_KEY, "0");
+    if (watermark) writeStorage(WINDOW_SEEN_KEY, watermark);
+  };
+
+  const [coachOpen, setCoachOpen] = useState(false); // mobile sheet
+
+  // ── Ghosts ─────────────────────────────────────────────────────────────
   const ghostsByDate = useMemo(() => {
     const dates = new Map((plan.data?.workouts ?? []).map((w) => [w.id, w.effectiveDate]));
     return pendingByDate(coach.state.data?.pendingProposals ?? [], dates);
   }, [plan.data?.workouts, coach.state.data?.pendingProposals]);
-  // Audit C27: this used to open the coach Sheet on every width, on the
-  // (false) assumption it was a visual no-op on desktop — Sheet renders as
-  // a centered dialog at every breakpoint, so desktop got a redundant
-  // second "Coach" modal covering the calendar. Below 1024px the inline
-  // panel is hidden (C6), so the sheet is the only visible surface there;
-  // above it, the always-visible inline panel is enough — just scroll to it.
   const onGhostTap = (proposalId: string) => {
-    if (!isDesktop) setCoachOpen(true);
-    focusProposal(proposalId, isDesktop ? "" : SHEET_ID_PREFIX, isDesktop);
+    if (isDesktop) {
+      openWindow();
+      focusProposal(proposalId, true);
+    } else {
+      setCoachOpen(true);
+      focusProposal(proposalId, false);
+    }
+  };
+  const openCoachSurface = () => (isDesktop ? openWindow() : setCoachOpen(true));
+
+  // ── Jump menu: the active plans' weeks, longest plan numbering the list ─
+  const jumpWeeks = useMemo(() => {
+    if (activePlans.length === 0) return [];
+    const spans = activePlans.map((p) => ({
+      start: startOfIsoWeek(p.startDate),
+      end: startOfIsoWeek(p.endDate),
+    }));
+    const anchor = spans.reduce((a, b) =>
+      Date.parse(b.end) - Date.parse(b.start) > Date.parse(a.end) - Date.parse(a.start) ? b : a,
+    );
+    const mondays = new Set<string>();
+    for (const s of spans) {
+      for (let m = s.start; m <= s.end; m = addDays(m, 7)) mondays.add(m);
+    }
+    return [...mondays].sort().map((monday) => {
+      const idx = Math.floor((Date.parse(monday) - Date.parse(anchor.start)) / 604_800_000) + 1;
+      const inAnchor = monday >= anchor.start && monday <= anchor.end;
+      return { monday, label: `${inAnchor ? `wk ${idx} · ` : ""}${weekRangeLabel(monday)}` };
+    });
+  }, [activePlans]);
+
+  const pickWeek = (monday: string) => {
+    const next = new URLSearchParams(params);
+    if (today && monday === startOfIsoWeek(today)) next.delete("week");
+    else next.set("week", monday);
+    setParams(next);
   };
 
-  // Land on the current week on first load, so today's work is front and
-  // centre instead of buried under weeks of history.
-  useEffect(() => {
-    if (plan.data && !scrolled.current && todayRef.current) {
-      scrolled.current = true;
-      todayRef.current.scrollIntoView({ block: "center" });
-    }
-  }, [plan.data]);
+  // ── Selection params ───────────────────────────────────────────────────
+  const selectedId = params.get("workout");
+  const selected = plan.data?.workouts.find((w) => w.id === selectedId);
+  const openWorkout = (id: string) => {
+    const next = new URLSearchParams(params);
+    next.set("workout", id);
+    setParams(next);
+  };
+  const closeWorkout = () => {
+    const next = new URLSearchParams(params);
+    next.delete("workout");
+    setParams(next);
+  };
+  const planParam = params.get("plan");
+  const openPlan = (id: string) => {
+    const next = new URLSearchParams(params);
+    next.set("plan", id);
+    setParams(next);
+  };
+  const closePlan = () => {
+    const next = new URLSearchParams(params);
+    next.delete("plan");
+    setParams(next);
+  };
 
-  const months = useMemo(
-    () => buildMonths(plan.data?.workouts ?? [], plan.data?.today),
-    [plan.data],
-  );
+  const cannedSend = (body: string) => {
+    openCoachSurface();
+    coach.send(body);
+  };
 
-  if (plan.isLoading) return <Spinner label="Loading plan" />;
-  if (!plan.data) return <EmptyState title="Couldn't load the plan" />;
+  const rename = useMutation({
+    mutationFn: (v: { id: string; name: string }) => api.coachPlanRename(v.id, v.name),
+    onSettled: () => {
+      for (const k of ["coach-plans", "plan-detail"]) void qc.invalidateQueries({ queryKey: [k] });
+    },
+  });
+  const retire = useMutation({
+    mutationFn: (id: string) => api.coachPlanRetire(id),
+    onSettled: () => {
+      for (const k of ["coach-plans", "plan-detail", "plan", "plan-week", "coach-state"]) {
+        void qc.invalidateQueries({ queryKey: [k] });
+      }
+    },
+  });
 
-  const selected = plan.data.workouts.find((w) => w.id === selectedId);
-  const openWorkout = (id: string) => setParams({ workout: id });
+  if (week.isLoading || (!week.data && week.isPending)) return <Spinner label="Loading plan" />;
+  if (!week.data) return <EmptyState title="Couldn't load the plan" />;
 
-  // Shared between the inline panel and the mobile sheet fallback (audit
-  // C6 followup: the sheet used to render nothing at all here — loading or
-  // errored, it just went blank, and it's now the ONLY mobile coach surface).
+  // Shared between the window and the mobile sheet (audit C6 followup: the
+  // only visible coach surface must say SOMETHING when loading/errored).
   const coachUnavailableCopy = coach.state.isLoading
     ? "Reading your week…"
     : "The coach is unreachable — manual controls all work.";
-
   const coachPanelEl = coach.state.data ? (
     <CoachPanel
       messages={coach.state.data.messages}
@@ -672,172 +646,116 @@ export function PlanScreen() {
     </section>
   );
 
-  const pendingCount = coach.state.data?.pendingProposals.length ?? 0;
-  const activeCoachPlans = (coachPlans.data?.plans ?? []).filter(
-    (p) => p.status === "active" && p.source !== "studio",
-  );
+  const anyDialogOpen = !!selected || !!planParam || coachOpen;
+  const emptyPlan = (plan.data?.workouts.length ?? 0) === 0 && activePlans.length === 0;
 
   return (
-    <div>
+    <div className="plan-page">
       <div className="row-between screen-title">
         <h1>Plan</h1>
-        <div className="row">
-          {plan.data.plan ? <span className="muted">{plan.data.plan.name}</span> : null}
-          <button className="btn btn-small" onClick={() => setManageOpen(true)}>
-            Manage plans ▾
-          </button>
-          {plan.data.workouts.length > 0 ? (
-            <button
-              className="btn btn-small"
-              onClick={() => todayRef.current?.scrollIntoView({ block: "center", behavior: "smooth" })}
-            >
-              Today
-            </button>
-          ) : null}
-        </div>
       </div>
-      <div className="plan-split">
-        <div className="plan-split-coach">{coachPanelEl}</div>
-        <div>
-          <SyncPanel />
-          {plan.data.workouts.length === 0 ? (
-        <EmptyState art="🗓" title="No active COROS training plan was found">
-          Start a plan in COROS, then refresh from the desktop app.
-        </EmptyState>
-      ) : (
-        months.map((m) => (
-          <section key={m.key} className="cal-month">
-            <h2 className="cal-month-title">
-              {m.month} <span className="cal-year">{m.year}</span>
-            </h2>
-            <div className="cal-weekdays" aria-hidden>
-              {WEEKDAY_HEADERS.map((d) => (
-                <span key={d}>{d}</span>
-              ))}
-            </div>
-            {m.weeks.map((week) => (
-              <div
-                key={week.weekStart}
-                className={`cal-week ${week.weekStart === todayWeek ? "current" : ""}`}
-                ref={week.weekStart === todayWeek ? todayRef : undefined}
-              >
-                {week.days.map((day) => {
-                  const isToday = day.date === today;
-                  const isPast = !!today && day.date < today;
-                  // Audit C22: a coach proposal that adds a session to an
-                  // otherwise-empty day used to be invisible on mobile — the
-                  // agenda view hides any day lacking `has-items`, and that
-                  // class only ever looked at real workouts, never ghosts.
-                  // Kept as its own `has-ghosts` class (not folded into
-                  // `has-items`, audit C22 followup) so a ghost-only day
-                  // still renders but keeps its dashed "nothing scheduled
-                  // yet" look instead of borrowing the solid real-workout
-                  // treatment.
-                  const hasGhosts = (ghostsByDate.get(day.date)?.length ?? 0) > 0;
-                  return (
-                    <div
-                      key={day.date}
-                      className={`cal-day ${isToday ? "is-today" : ""} ${isPast ? "is-past" : ""} ${day.items.length > 0 ? "has-items" : ""} ${hasGhosts ? "has-ghosts" : ""}`}
-                    >
-                      <div className="cal-date">
-                        <span className="cal-dow">{WEEKDAY_HEADERS[(new Date(`${day.date}T00:00:00Z`).getUTCDay() + 6) % 7]}</span>
-                        <span className="cal-dom">{dayOfMonth(day.date)}</span>
-                      </div>
-                      {day.items.map((w) => (
-                        <WorkoutCell key={w.id} w={w} today={today!} onOpen={() => openWorkout(w.id)} />
-                      ))}
-                      {(ghostsByDate.get(day.date) ?? []).map((g, i) => (
-                        <button
-                          key={`${g.proposalId}-${i}`}
-                          type="button"
-                          className={`cal-ghost cal-ghost-${g.kind}`}
-                          onClick={() => onGhostTap(g.proposalId)}
-                          title={g.title}
-                        >
-                          {g.label}
-                          <span className="cal-ghost-reason">{g.title} · pending</span>
-                        </button>
-                      ))}
-                    </div>
-                  );
-                })}
-              </div>
-            ))}
-          </section>
-        ))
-      )}
-      {activeCoachPlans.length > 0 ? (
-        <button
-          type="button"
-          className="cal-extend-row"
-          onClick={() =>
-            cannedSend(`Extend "${activeCoachPlans[0]!.name}" — draft the next weeks in the same shape.`)
-          }
-        >
-          + extend {activeCoachPlans[0]!.name} — the coach drafts the next weeks
-        </button>
-      ) : null}
-      <StudioSection />
-        </div>
+      <div className="plan-page-col">
+        <SyncPanel quietWhenHealthy />
+        <WeeklyBrief week={week.data} pendingCount={pendingCount} onNeedsYou={openCoachSurface} />
+        <PlanCards
+          plans={coachPlans.data?.plans ?? []}
+          details={detailById}
+          onOpen={openPlan}
+          onNew={(d) => openPlan(d === "run" ? "new-run" : "new-lift")}
+        />
+        {emptyPlan ? (
+          <EmptyState art="🗓" title="Nothing planned yet">
+            Ask your coach for a plan above, or start one in COROS and refresh from the desktop app.
+          </EmptyState>
+        ) : (
+          <WeekView
+            week={week.data}
+            today={today ?? week.data.weekStart}
+            ghostsByDate={ghostsByDate}
+            jumpWeeks={jumpWeeks}
+            onPick={pickWeek}
+            onOpenWorkout={openWorkout}
+            onGhostTap={onGhostTap}
+          />
+        )}
       </div>
 
-      <button
-        type="button"
-        className="coach-pill"
-        aria-expanded={coachOpen}
-        onClick={() => setCoachOpen(true)}
-      >
-        <span aria-hidden="true" className="coach-pill-caret">
-          ▴
-        </span>
-        Coach{pendingCount > 0 ? ` · ${pendingCount}` : ""}
-      </button>
-      <Sheet open={coachOpen} onClose={() => setCoachOpen(false)} title="Coach">
-        <div className="coach-sheet-panel">
-          {coach.state.data ? (
-            <CoachPanel
-              hideHead
-              messages={coach.state.data.messages}
-              proposals={coach.state.data.pendingProposals}
-              question={coach.state.data.openQuestion}
-              busy={coach.busy}
-              acting={coach.acting}
-              proposalErrors={coach.proposalErrors}
-              onSend={coach.send}
-              onApprove={coach.approve}
-              onDecline={coach.decline}
-              onAnswer={coach.answer}
-              onCheckIn={coach.checkIn}
-              onRetrySend={coach.resend}
-              idPrefix={SHEET_ID_PREFIX}
-            />
-          ) : (
-            // The sheet already carries "Coach" as its own dialog title, so
-            // no second head here — but loading/errored must still say
-            // something instead of leaving the only mobile coach surface
-            // blank.
-            <section className="coach-panel" aria-label="Coach">
-              <div className="coach-thread">
-                <p className="muted">{coachUnavailableCopy}</p>
-              </div>
-            </section>
-          )}
-        </div>
-      </Sheet>
-      <Sheet open={manageOpen} onClose={() => setManageOpen(false)} title="Manage plans">
-        <ManagePlans
+      {isDesktop ? (
+        <CoachWindow
+          open={winOpen}
+          pendingCount={pendingCount}
+          onOpen={openWindow}
+          onMinimize={minimizeWindow}
+          dialogOpen={anyDialogOpen}
+        >
+          {coachPanelEl}
+        </CoachWindow>
+      ) : (
+        <>
+          <button
+            type="button"
+            className="coach-pill"
+            aria-expanded={coachOpen}
+            onClick={() => setCoachOpen(true)}
+          >
+            <span aria-hidden="true" className="coach-pill-caret">
+              ▴
+            </span>
+            Coach{pendingCount > 0 ? ` · ${pendingCount}` : ""}
+          </button>
+          <Sheet open={coachOpen} onClose={() => setCoachOpen(false)} title="Coach">
+            <div className="coach-sheet-panel">
+              {coach.state.data ? (
+                <CoachPanel
+                  hideHead
+                  messages={coach.state.data.messages}
+                  proposals={coach.state.data.pendingProposals}
+                  question={coach.state.data.openQuestion}
+                  busy={coach.busy}
+                  acting={coach.acting}
+                  proposalErrors={coach.proposalErrors}
+                  onSend={coach.send}
+                  onApprove={coach.approve}
+                  onDecline={coach.decline}
+                  onAnswer={coach.answer}
+                  onCheckIn={coach.checkIn}
+                  onRetrySend={coach.resend}
+                />
+              ) : (
+                <section className="coach-panel" aria-label="Coach">
+                  <div className="coach-thread">
+                    <p className="muted">{coachUnavailableCopy}</p>
+                  </div>
+                </section>
+              )}
+            </div>
+          </Sheet>
+        </>
+      )}
+
+      {planParam ? (
+        <StudioModal
+          planId={planParam}
           plans={coachPlans.data?.plans ?? []}
-          onCanned={cannedSend}
-          onRetire={(id) => retire.mutate(id)}
+          onClose={closePlan}
+          onCanned={(body) => {
+            closePlan();
+            cannedSend(body);
+          }}
+          onRetire={(id) => {
+            retire.mutate(id);
+            closePlan();
+          }}
           onRename={(id, name) => rename.mutate({ id, name })}
         />
-      </Sheet>
+      ) : null}
+
       {selected && today ? (
         <WorkoutDetail
           w={selected}
           today={today}
-          corosWritesEnabled={plan.data.corosWritesEnabled ?? false}
-          onClose={() => setParams({})}
+          corosWritesEnabled={plan.data?.corosWritesEnabled ?? false}
+          onClose={closeWorkout}
         />
       ) : null}
     </div>

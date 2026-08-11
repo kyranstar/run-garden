@@ -2,7 +2,6 @@ import { useEffect, useRef, useState, type FormEvent, type ReactNode } from "rea
 import { Link } from "react-router-dom";
 import type {
   CoachMessageDto,
-  CoachPlanDto,
   CoachProposalDto,
   CoachQuestionDto,
 } from "@rg/api-client";
@@ -126,7 +125,6 @@ export function ProposalCard({
   busy,
   acting,
   error,
-  idPrefix = "",
 }: {
   proposal: CoachProposalDto;
   onApprove: (id: string) => void;
@@ -137,17 +135,12 @@ export function ProposalCard({
   acting?: boolean;
   /** Why the last approve/decline on this card failed, if it did (C17). */
   error?: string;
-  /** Distinguishes this mount's DOM id from the same proposal rendered
-   * elsewhere (inline panel vs. the mobile sheet, audit C27) — without it,
-   * `getElementById` always resolves to whichever copy is first in the DOM,
-   * which may be the hidden one. */
-  idPrefix?: string;
 }) {
   const [why, setWhy] = useState(false);
   const discipline = proposalDiscipline(proposal);
   const isSkip = (proposal.ops as Array<{ kind?: string }>).some((o) => o.kind === "skip");
   return (
-    <div className="coach-prop" id={`proposal-${idPrefix}${proposal.id}`}>
+    <div className="coach-prop" id={`proposal-${proposal.id}`}>
       <div className="row" style={{ gap: "0.45rem" }}>
         {discipline ? (
           <span className={`pill ${discipline === "lift" ? "pill-lift" : "pill-run"}`}>
@@ -200,7 +193,6 @@ export function PendingTray({
   busy,
   acting,
   errors,
-  idPrefix,
 }: {
   proposals: CoachProposalDto[];
   onApprove: (id: string) => void;
@@ -209,7 +201,6 @@ export function PendingTray({
   acting?: boolean;
   /** proposal id → why its last approve/decline failed (audit C17). */
   errors?: Record<string, string>;
-  idPrefix?: string;
 }) {
   const [showAll, setShowAll] = useState(false);
   if (proposals.length === 0) return null;
@@ -226,7 +217,6 @@ export function PendingTray({
           busy={busy}
           acting={acting}
           error={errors?.[p.id]}
-          idPrefix={idPrefix}
         />
       ))}
       {proposals.length > TRAY_CAP && !showAll ? (
@@ -391,7 +381,6 @@ export function CoachPanel({
   onRetrySend,
   header,
   hideHead,
-  idPrefix,
 }: {
   messages: CoachMessageDto[];
   proposals: CoachProposalDto[];
@@ -414,10 +403,6 @@ export function CoachPanel({
   header?: ReactNode;
   /** Skip the internal header (a wrapping Sheet already provides one). */
   hideHead?: boolean;
-  /** Scopes this mount's proposal DOM ids (audit C27) — pass a distinct
-   * value when the panel is mounted more than once at a time (inline panel
-   * vs. the mobile sheet), so calendar-ghost taps can target the right copy. */
-  idPrefix?: string;
 }) {
   return (
     <section className="coach-panel" aria-label="Coach">
@@ -452,147 +437,9 @@ export function CoachPanel({
         busy={busy}
         acting={acting}
         errors={proposalErrors}
-        idPrefix={idPrefix}
       />
       <CoachThread messages={messages} onRetrySend={onRetrySend} />
       <CoachComposer onSend={onSend} question={question} onAnswer={onAnswer} busy={busy} />
     </section>
-  );
-}
-
-/** Manage-plans sheet body (Task B4). */
-export function ManagePlans({
-  plans,
-  onCanned,
-  onRetire,
-  onRename,
-}: {
-  plans: CoachPlanDto[];
-  /** Sends a canned coach message (extend / wind down / new plan). */
-  onCanned: (body: string) => void;
-  onRetire: (id: string) => void;
-  onRename: (id: string, name: string) => void;
-}) {
-  const [renaming, setRenaming] = useState<string | null>(null);
-  const [name, setName] = useState("");
-  // Audit C18: Retire used to archive every remaining session on one tap,
-  // with no undo — the same two-step pattern the workout-level "Remove from
-  // plan" button already uses (plan.tsx's WorkoutDetail).
-  const [confirmingRetire, setConfirmingRetire] = useState<string | null>(null);
-  const weekOf = (p: CoachPlanDto): string => {
-    const total = Math.max(1, Math.round((Date.parse(p.endDate) - Date.parse(p.startDate)) / 604_800_000));
-    const into = Math.min(
-      total,
-      Math.max(1, Math.ceil((Date.now() - Date.parse(p.startDate)) / 604_800_000)),
-    );
-    return `wk ${into}/${total}`;
-  };
-  return (
-    <div className="stack">
-      {plans.length === 0 ? (
-        <p className="muted">No coached or Studio plans yet — ask for one below.</p>
-      ) : (
-        plans.map((p) => (
-          <div key={p.id} className="coach-plan-card">
-            <div className="row" style={{ justifyContent: "space-between" }}>
-              <span className="row" style={{ gap: "0.45rem" }}>
-                <span className={`pill ${p.discipline === "lift" ? "pill-lift" : "pill-run"}`}>
-                  {p.source === "studio" ? "Studio Lift" : p.discipline === "lift" ? "Lift" : "Run"}
-                </span>
-                {renaming === p.id ? (
-                  <input
-                    value={name}
-                    onChange={(e) => setName(e.target.value)}
-                    aria-label="Plan name"
-                    onKeyDown={(e) => {
-                      if (e.key === "Enter" && name.trim()) {
-                        onRename(p.id, name.trim());
-                        setRenaming(null);
-                      }
-                    }}
-                  />
-                ) : (
-                  <strong>{p.name}</strong>
-                )}
-                <span className="faint">
-                  {p.source === "studio"
-                    ? p.status === "active"
-                      ? "written to COROS"
-                      : "draft — not on the watch yet"
-                    : p.status === "active"
-                      ? weekOf(p)
-                      : p.status}
-                </span>
-              </span>
-            </div>
-            {p.source === "studio" ? (
-              <p className="faint" style={{ marginTop: "0.4rem" }}>
-                Built in the Studio — edit or regenerate it from the Studio strip under the
-                calendar.
-              </p>
-            ) : p.status === "active" ? (
-              <div className="row" style={{ gap: "0.4rem", marginTop: "0.4rem" }}>
-                <button
-                  type="button"
-                  className="btn btn-small"
-                  onClick={() => onCanned(`Extend "${p.name}" — draft the next weeks in the same shape.`)}
-                >
-                  Extend
-                </button>
-                <button
-                  type="button"
-                  className="btn btn-small"
-                  onClick={() => onCanned(`Wind down "${p.name}" — draft the final taper week.`)}
-                >
-                  Wind down
-                </button>
-                <button
-                  type="button"
-                  className="btn btn-small"
-                  onClick={() => {
-                    setRenaming(p.id);
-                    setName(p.name);
-                  }}
-                >
-                  Rename
-                </button>
-                {confirmingRetire === p.id ? (
-                  <button
-                    type="button"
-                    className="btn btn-small btn-danger"
-                    onClick={() => {
-                      onRetire(p.id);
-                      setConfirmingRetire(null);
-                    }}
-                  >
-                    Really retire — archives every remaining session
-                  </button>
-                ) : (
-                  <button type="button" className="btn btn-small" onClick={() => setConfirmingRetire(p.id)}>
-                    Retire
-                  </button>
-                )}
-              </div>
-            ) : null}
-          </div>
-        ))
-      )}
-      <div className="row" style={{ gap: "0.4rem" }}>
-        <button
-          type="button"
-          className="btn"
-          onClick={() => onCanned("I want a new running plan — interview me for what you need.")}
-        >
-          New running plan
-        </button>
-        <button
-          type="button"
-          className="btn"
-          onClick={() => onCanned("I want a new lifting plan — interview me for what you need.")}
-        >
-          New lifting plan
-        </button>
-      </div>
-    </div>
   );
 }

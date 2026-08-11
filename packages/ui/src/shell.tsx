@@ -21,9 +21,12 @@ export function AppShell({
   footer?: ReactNode;
 }) {
   // The garden route escapes the reading column on desktop — the scene is a
-  // stage, not a card (see .garden-stage). Every other route keeps the column.
+  // stage, not a card (see .garden-stage). The plan route gets the milder
+  // wide treatment (rework spec §6): the week grid and the floating coach
+  // both need more than the 880px reading column. Every other route keeps it.
   const { pathname } = useLocation();
   const immersive = pathname === "/" || pathname === "/garden";
+  const wide = pathname.startsWith("/plan");
   return (
     <div className="shell">
       <nav className="side-nav" aria-label="Main">
@@ -37,7 +40,9 @@ export function AppShell({
         <div className="nav-footer">{footer}</div>
       </nav>
 
-      <main className={`shell-main${immersive ? " shell-main--immersive" : ""}`}>
+      <main
+        className={`shell-main${immersive ? " shell-main--immersive" : ""}${wide ? " shell-main--wide" : ""}`}
+      >
         {fixtureMode ? (
           <div className="banner banner-info" style={{ marginBottom: "0.9rem" }} role="status">
             Fixture mode — showing sample data, no real providers connected.
