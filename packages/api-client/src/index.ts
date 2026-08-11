@@ -265,9 +265,13 @@ export interface CoachMessageDto {
   failed?: boolean;
 }
 
+/** One ambient read from the perception ledger (rework spec §2). A 202
+ * `{status:"working"}` (someone else is generating) surfaces as
+ * `read: undefined` — poll again shortly. */
 export interface CoachAnalyzeResult {
-  message: { id: string; body: string; at: string };
-  cached: boolean;
+  read?: { id: string; glance: string; body: string; flags: string[]; at: string };
+  cached?: boolean;
+  status?: "working";
 }
 
 export interface CoachProposalDto {

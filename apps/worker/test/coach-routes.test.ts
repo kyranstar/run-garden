@@ -307,3 +307,94 @@ describe("GET /plans — studio union (user-nits fix)", () => {
     });
   });
 });
+
+describe("analyze — read-through on the ledger (2026-08-11 rework §2)", () => {
+  const GOOD_READ = JSON.stringify({
+    glance: "Steady 9:40s; HR drifted late — fueling.",
+    body: "Nice steady effort with honest pacing.",
+    flags: ["hr_drift"],
+  });
+
+  function stubLlm(delayMs = 0): { calls: () => number } {
+    let calls = 0;
+    vi.stubGlobal(
+      "fetch",
+      (async () => {
+        calls += 1;
+        if (delayMs) await new Promise((r) => setTimeout(r, delayMs));
+        return new Response(
+          JSON.stringify({
+            choices: [{ message: { content: GOOD_READ }, finish_reason: "stop" }],
+            usage: { prompt_tokens: 100, completion_tokens: 50 },
+          }),
+          { status: 200, headers: { "content-type": "application/json" } },
+        );
+      }) as typeof fetch,
+    );
+    return { calls: () => calls };
+  }
+
+  async function seedAct(): Promise<string> {
+    const id = newId();
+    await db.insert(schema.activities).values({
+      id,
+      userId,
+      startTime: `${todayInZone(prefs.timezone)}T12:00:00Z`,
+      startTimeLocal: `${todayInZone(prefs.timezone)}T05:00:00`,
+      sport: "run",
+      durationSeconds: 3600,
+      trainingLoad: 90,
+      title: "Morning Run",
+      sourceMergeConfidence: 1,
+      createdAt: nowInstant(),
+      updatedAt: nowInstant(),
+    });
+    return id;
+  }
+
+  it("first call generates; second serves the ledger (cached, no new call)", async () => {
+    const llm = stubLlm();
+    const actId = await seedAct();
+    const first = await client().post(`/api/coach/analyze/${actId}`, {});
+    expect(first.status).toBe(200);
+    const firstBody = (await first.json()) as { read: { glance: string; body: string; flags: string[] }; cached: boolean };
+    expect(firstBody.cached).toBe(false);
+    expect(firstBody.read.glance).toContain("HR drifted");
+    expect(llm.calls()).toBe(1);
+
+    const second = await client().post(`/api/coach/analyze/${actId}`, {});
+    expect(second.status).toBe(200);
+    expect(((await second.json()) as { cached: boolean }).cached).toBe(true);
+    expect(llm.calls()).toBe(1);
+  });
+
+  it("EXACTLY-ONCE: concurrent analyze calls share one LLM call", async () => {
+    const llm = stubLlm(40);
+    const actId = await seedAct();
+    const [a, b] = await Promise.all([
+      client().post(`/api/coach/analyze/${actId}`, {}),
+      client().post(`/api/coach/analyze/${actId}`, {}),
+    ]);
+    expect(llm.calls()).toBe(1);
+    const statuses = [a.status, b.status].sort();
+    expect(statuses[0]).toBe(200);
+    expect([200, 202]).toContain(statuses[1]);
+  });
+
+  it("honors the aiEnabled kill switch the old path skipped", async () => {
+    stubLlm();
+    const actId = await seedAct();
+    await db
+      .update(schema.userPreferences)
+      .set({ prefs: { ...prefs, aiEnabled: false } })
+      .where(eq(schema.userPreferences.userId, userId));
+    const res = await client().post(`/api/coach/analyze/${actId}`, {});
+    expect(res.status).toBe(503);
+  });
+
+  it("404s an unknown activity", async () => {
+    stubLlm();
+    const res = await client().post(`/api/coach/analyze/nope`, {});
+    expect(res.status).toBe(404);
+  });
+});

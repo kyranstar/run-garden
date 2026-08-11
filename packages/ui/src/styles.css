@@ -3560,6 +3560,11 @@ button {
   padding: 0.6rem 0.8rem;
   margin: 0.3rem 0 0.7rem;
 }
+.coach-read-glance {
+  font-size: 0.9rem;
+  font-weight: 650;
+  margin: 0 0 0.25rem;
+}
 .coach-read-body {
   font-size: 0.9rem;
   white-space: pre-wrap;

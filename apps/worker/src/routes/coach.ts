@@ -13,7 +13,7 @@ import { addDays, newId, nowInstant, todayInZone, type CoachOp } from "@rg/domai
 import type { AppContext } from "../auth/middleware.js";
 import { requireUser } from "../auth/middleware.js";
 import { loadPreferences } from "../services/calendar-sync.js";
-import { analyzeEffort } from "../services/coach-analyze.js";
+import { ensureRead } from "../services/coach-reads.js";
 import { applyOps } from "../services/coach-apply.js";
 import { evaluateTriggers, pendingTriggers } from "../services/coach-triggers.js";
 import { coachBlockAdherence, plansEndedOn } from "../services/coach-plans.js";
@@ -141,15 +141,22 @@ coachRoutes.post("/wake", async (c) => {
 coachRoutes.post("/analyze/:activityId", async (c) => {
   const db = c.get("db");
   const userId = c.get("userId");
-  const activityId = c.req.param("activityId");
   const { force } = await c.req.json<{ force?: boolean }>().catch(() => ({ force: false }));
-  const result = await analyzeEffort(db, c.env, userId, activityId, force === true);
-  if (result.status === "not_found") return c.json({ error: "not_found" }, 404);
-  if (result.status === "resting") {
+  const prefs = await loadPreferences(db, userId);
+  // Read-through on the perception ledger (rework spec §2): the ledger is
+  // the single source of truth, so a user tap and the ambient pipeline can
+  // never double-read the same effort.
+  const r = await ensureRead(db, c.env, userId, prefs, c.req.param("activityId"), {
+    force: force === true,
+  });
+  if (r.status === "not_found") return c.json({ error: "not_found" }, 404);
+  if (r.status === "working") return c.json({ status: "working" }, 202);
+  if (r.status === "resting") {
     return c.json({ error: "resting", detail: "Weekly coach budget reached — try next week." }, 429);
   }
-  if (result.status === "error") return c.json({ error: "llm_error" }, 502);
-  return c.json({ message: result.message, cached: result.status === "cached" });
+  if (r.status === "ai_disabled") return c.json({ error: "ai_disabled" }, 503);
+  if (r.status === "error" || !r.read) return c.json({ error: "llm_error" }, 502);
+  return c.json({ read: r.read, cached: r.cached === true });
 });
 
 coachRoutes.post("/message", async (c) => {
