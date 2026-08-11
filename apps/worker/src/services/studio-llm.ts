@@ -780,7 +780,7 @@ function findUnknownOriginId(plan: LiftingPlan, catalogIds: Set<string>): string
 export async function recordUsage(
   db: Db,
   userId: string,
-  kind: "studio_generate" | "studio_edit" | "coach_wake" | "coach_analysis",
+  kind: "studio_generate" | "studio_edit" | "coach_wake" | "coach_analysis" | "coach_read",
   model: string,
   tier: "strong" | "edit",
   chat: { inputTokens: number; outputTokens: number },
