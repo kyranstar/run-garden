@@ -116,6 +116,47 @@ export const coachPlans = sqliteTable("coach_plans", {
   updatedAt: text("updated_at").notNull(),
 });
 
+/** The perception ledger: exactly one LLM read per activity (rework spec §1).
+ * Reads live HERE, not in coach_messages — an analysis stored as a coach
+ * message resets the briefing-staleness clock and crowds the thread/dossier. */
+export const coachReads = sqliteTable(
+  "coach_reads",
+  {
+    id: text("id").primaryKey(),
+    userId: text("user_id").notNull(),
+    /** Activity id, or `digest:<backfillRunId>` for a backfill batch digest. */
+    activityId: text("activity_id").notNull(),
+    status: text("status").notNull(), // queued | running | done | failed | skipped
+    attempt: integer("attempt").notNull().default(0),
+    nextAttemptAt: text("next_attempt_at").notNull(),
+    claimToken: text("claim_token"),
+    claimedAt: text("claimed_at"),
+    glance: text("glance"),
+    body: text("body"),
+    flags: text("flags", { mode: "json" }).notNull().$type<string[]>(),
+    model: text("model"),
+    createdAt: text("created_at").notNull(),
+    completedAt: text("completed_at"),
+  },
+  (t) => [
+    uniqueIndex("coach_reads_user_activity_unique").on(t.userId, t.activityId),
+    index("coach_reads_user_status_idx").on(t.userId, t.status, t.nextAttemptAt),
+  ],
+);
+
+/** Single-flight claims for per-user LLM work (rework spec R2): claim by
+ * stamping a fresh token, then read back and check the token is yours. */
+export const coachLocks = sqliteTable(
+  "coach_locks",
+  {
+    userId: text("user_id").notNull(),
+    kind: text("kind").notNull(), // 'wake'
+    token: text("token").notNull(),
+    claimedAt: text("claimed_at").notNull(),
+  },
+  (t) => [uniqueIndex("coach_locks_user_kind_unique").on(t.userId, t.kind)],
+);
+
 /** Rolling detail: firm weeks are materialized; shape weeks are outlines. */
 export const coachPlanWeeks = sqliteTable(
   "coach_plan_weeks",

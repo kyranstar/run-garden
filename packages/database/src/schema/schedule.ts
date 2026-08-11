@@ -59,6 +59,10 @@ export const plannedWorkouts = sqliteTable(
     durationEstimate: text("duration_estimate", { mode: "json" }).$type<Record<string, unknown>>(),
     expectedDistanceMeters: real("expected_distance_meters"),
     stageSummary: text("stage_summary"),
+    /** Coach-authored lift structure (rework spec §5): the exercises array
+     * survives apply so plan-detail progressions can graph coached plans —
+     * stageSummary alone flattens sets×reps×kg into prose. */
+    structuredJson: text("structured_json", { mode: "json" }).$type<{ exercises: unknown[] } | null>(),
     calendarSyncState: text("calendar_sync_state").notNull().default("not_created"),
     corosSyncState: text("coros_sync_state").notNull().default("synced"),
     completionState: text("completion_state").notNull().default("scheduled"),

@@ -1298,12 +1298,14 @@ export async function deleteAllUserData(db: Db, userId: string): Promise<void> {
     activityStreamSummaries,
     backfillState,
     calendarEventSuppressions,
+    coachLocks,
     coachMemory,
     coachMessages,
     coachPlans,
     coachPlanWeeks,
     coachProposals,
     coachQuestions,
+    coachReads,
     coachTriggers,
     corosScheduleSnapshots,
     corosWriteAttempts,
@@ -1420,6 +1422,8 @@ export async function deleteAllUserData(db: Db, userId: string): Promise<void> {
     coachMessages,
     coachProposals,
     coachTriggers,
+    coachReads,
+    coachLocks,
     coachPlans,
   ] as const;
   for (const t of userTables) {
