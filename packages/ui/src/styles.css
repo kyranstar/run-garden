@@ -4100,6 +4100,11 @@ button {
   flex: 1;
   min-height: 0;
 }
+/* The absolutely-positioned minimize control sits in the head's top-right —
+   without this inset the "what I know →" link runs underneath it. */
+.coach-window .coach-panel-head {
+  padding-right: 2.9rem;
+}
 .coach-window-min {
   position: absolute;
   top: 0.55rem;
