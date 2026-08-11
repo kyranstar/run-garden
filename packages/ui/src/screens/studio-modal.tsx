@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { api, type CoachPlanDto, type PlanDetailResponse } from "@rg/api-client";
-import { Sheet, Spinner } from "../components.js";
+import { formatShortDate, Sheet, Spinner } from "../components.js";
 import { progressionHeadline } from "./plan-cards.js";
 import { PlannedVsActualBars, ProgressionStepChart } from "./plan-charts.js";
 import { StudioSection } from "./studio.js";
@@ -91,9 +91,11 @@ export function StudioModal({
                 {d.plan.source === "studio" && d.plan.status === "active" ? "active · on watch" : d.plan.status}
               </span>
               <span className="faint num">
-                {d.plan.startDate} → {d.plan.endDate}
+                {formatShortDate(d.plan.startDate)} → {formatShortDate(d.plan.endDate)}
               </span>
-              {d.plan.raceDate ? <span className="pill pill-neutral num">race {d.plan.raceDate}</span> : null}
+              {d.plan.raceDate ? (
+                <span className="pill pill-neutral num">race {formatShortDate(d.plan.raceDate)}</span>
+              ) : null}
             </div>
             <p className="faint studio-modal-sub num">
               {d.sessions.done} of {d.sessions.planned} sessions done
@@ -137,8 +139,11 @@ export function StudioModal({
                 <div key={w.weekStart} className={`wkrow ${w.current ? "is-current" : ""}`}>
                   <span className="wkrow-num faint num">W{w.index}</span>
                   <span className="wkrow-desc">{w.summary}</span>
+                  {/* Internal states wear plain words: a "firm" week is on
+                      the calendar; a "shape" week is an outline the coach
+                      fills in as it approaches. */}
                   <span className={`wkrow-state ${w.state === "firm" || w.done ? "is-firm" : ""}`}>
-                    {w.done ? "✓ done" : w.current ? "now" : w.state}
+                    {w.done ? "✓ done" : w.current ? "now" : w.state === "firm" ? "scheduled" : "outline"}
                   </span>
                 </div>
               ))}

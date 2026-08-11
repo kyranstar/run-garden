@@ -1,11 +1,12 @@
+import { useState } from "react";
 import type { PlanWeekResponse } from "@rg/api-client";
-import { formatMinutes } from "../components.js";
+import { formatMinutes, Sheet } from "../components.js";
 
 /**
- * The weekly brief (rework spec §6): headline state, four fact chips, the
- * coach's one action line. Concise or it fails — chips with no data simply
- * don't render, and the whole coach line disappears when it's stale.
- * Presentational; the page injects everything.
+ * The weekly brief (rework spec §6): headline state, a context line that says
+ * WHY in the garden's voice, four fact chips, the coach's one action line.
+ * Every chip is tappable — the explainer sheet says what each number means
+ * and where its healthy range sits, so nothing here requires prior context.
  */
 
 /** Headline copy in the garden's voice — names the situation, never scolds. */
@@ -18,7 +19,93 @@ export const HEADLINE_COPY: Record<PlanWeekResponse["headline"], string> = {
   resting: "resting up",
 };
 
+/** One sentence of why — adventure days pause the plan, they never count
+ * against it (the difference between "rebuilding" and an accusation). */
+export function headlineContext(week: PlanWeekResponse): string | null {
+  const pct = week.adherence4w.pct;
+  switch (week.headline) {
+    case "race_week":
+      return "Race day is inside a week — the only job now is arriving fresh.";
+    case "resting":
+      return "A deliberately lighter week — absorbing training is training too.";
+    case "ahead":
+      return "Sessions are landing and load is nudging up — a strong stretch.";
+    case "on_track":
+      return pct !== null
+        ? `Planned sessions have been landing (${pct}% over the last four weeks) — keep the rhythm.`
+        : "Planned sessions have been landing — keep the rhythm.";
+    case "behind":
+      return pct !== null
+        ? `A few planned sessions slipped over the last four weeks (${pct}%) — one normal week brings it back.`
+        : "A few planned sessions slipped lately — one normal week brings it back.";
+    case "rebuilding":
+      if (week.adventureDays >= 3) {
+        return `The plan mostly paused for adventures lately (${week.adventureDays} day${week.adventureDays === 1 ? "" : "s"} in the last four weeks) — those never count against you. This week is about finding the rhythm again.`;
+      }
+      if (pct === null) {
+        return "Not enough recent plan history to judge — this week starts the record.";
+      }
+      return `Planned sessions were light over the last four weeks (${pct}%) — this week is about rhythm, not volume.`;
+  }
+}
+
 const TREND_ARROW: Record<"up" | "flat" | "down", string> = { up: "↗", flat: "→", down: "↘" };
+
+/** What each brief number means — the tap-through for every chip. */
+export function BriefExplainerSheet({
+  week,
+  open,
+  onClose,
+}: {
+  week: PlanWeekResponse;
+  open: boolean;
+  onClose: () => void;
+}) {
+  if (!open) return null;
+  return (
+    <Sheet open onClose={onClose} title="What these numbers mean">
+      <div className="stack brief-explainer">
+        <div>
+          <h3 className="card-title">
+            Sessions · {week.doneCount} of {week.sessionCount}
+          </h3>
+          <p className="muted">
+            Planned sessions this week, rest days excluded. “Done” counts the ones matched to a
+            real recorded activity.
+          </p>
+        </div>
+        <div>
+          <h3 className="card-title">Planned time · {formatMinutes(week.plannedSeconds)}</h3>
+          <p className="muted">
+            The week's total prescribed training time — what the plan asks for, not what you've
+            done so far.
+          </p>
+        </div>
+        <div>
+          <h3 className="card-title">
+            4-week adherence{week.adherence4w.pct !== null ? ` · ${week.adherence4w.pct}%` : ""}
+          </h3>
+          <p className="muted">
+            Of the planned sessions that came due in the last four weeks, the share you completed.
+            Around 80% is a healthy training rhythm. Adventure days (hikes, ski tours, trips)
+            pause the plan rather than count against it, and the arrow shows the direction against
+            the four weeks before.
+          </p>
+        </div>
+        <div>
+          <h3 className="card-title">
+            Training load{week.loadRatio !== null ? ` · ${week.loadRatio.toFixed(2)}` : ""}
+          </h3>
+          <p className="muted">
+            The last 7 days' training load compared with your 28-day average. Near 1.0 is steady;
+            under 0.8 means you're easing; much above 1.3 is a spike worth respecting with extra
+            recovery.
+          </p>
+        </div>
+      </div>
+    </Sheet>
+  );
+}
 
 export function WeeklyBrief({
   week,
@@ -30,10 +117,13 @@ export function WeeklyBrief({
   pendingCount: number;
   onNeedsYou: () => void;
 }) {
+  const [explaining, setExplaining] = useState(false);
   const headline =
     week.weekIndex !== null && week.weekTotal !== null
       ? `Week ${week.weekIndex} of ${week.weekTotal} — ${HEADLINE_COPY[week.headline]}.`
       : `This week — ${HEADLINE_COPY[week.headline]}.`;
+  const context = headlineContext(week);
+  const explain = () => setExplaining(true);
   return (
     <section className="card plan-brief" aria-label="Weekly brief">
       <div className="plan-brief-head">
@@ -44,22 +134,24 @@ export function WeeklyBrief({
           </button>
         ) : null}
       </div>
+      {context ? <p className="plan-brief-context">{context}</p> : null}
       {/* Labels compact themselves under 640px (spec R1 + "no unnecessary
-          wrapping"): the numbers stay, the prose shrinks, one row fits. */}
+          wrapping"): the numbers stay, the prose shrinks, one row fits.
+          Every chip opens the explainer — numbers must not need context. */}
       <div className="plan-brief-chips">
-        <span className="plan-brief-chip">
+        <button type="button" className="plan-brief-chip" onClick={explain}>
           <b className="num">
             {week.doneCount} of {week.sessionCount}
           </b>{" "}
           <span className="brief-wide">sessions</span>
           <span className="brief-narrow">done</span>
-        </span>
-        <span className="plan-brief-chip">
+        </button>
+        <button type="button" className="plan-brief-chip" onClick={explain}>
           <b className="num">{formatMinutes(week.plannedSeconds)}</b>
           <span className="brief-wide"> planned</span>
-        </span>
+        </button>
         {week.adherence4w.pct !== null ? (
-          <span className="plan-brief-chip">
+          <button type="button" className="plan-brief-chip" onClick={explain}>
             <span className="brief-wide">4-wk adherence </span>
             <b className="num">{week.adherence4w.pct}%</b>
             {week.adherence4w.trend ? (
@@ -68,13 +160,13 @@ export function WeeklyBrief({
                 {TREND_ARROW[week.adherence4w.trend]}
               </span>
             ) : null}
-          </span>
+          </button>
         ) : null}
         {week.loadRatio !== null ? (
-          <span className="plan-brief-chip">
+          <button type="button" className="plan-brief-chip" onClick={explain}>
             load <span className="brief-wide">7d/28d </span>
             <b className="num">{week.loadRatio.toFixed(2)}</b>
-          </span>
+          </button>
         ) : null}
       </div>
       {week.focus ? (
@@ -83,6 +175,7 @@ export function WeeklyBrief({
           <span>{week.focus.text}</span>
         </p>
       ) : null}
+      <BriefExplainerSheet week={week} open={explaining} onClose={() => setExplaining(false)} />
     </section>
   );
 }

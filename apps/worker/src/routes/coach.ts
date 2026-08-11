@@ -15,6 +15,7 @@ import {
 } from "@rg/database";
 import {
   addDays,
+  humanizeWorkoutTitle,
   newId,
   nowInstant,
   startOfIsoWeek,
@@ -411,9 +412,11 @@ coachRoutes.get("/plans/:id/detail", async (c) => {
         const a = m ? actById.get(m.activityId) : undefined;
         if (a) actualSeconds = (actualSeconds ?? 0) + a.durationSeconds;
       }
+      // COROS structured names are frequently opaque codes ("T1004") — the
+      // weeks list speaks category words instead when the title is one.
       const keyTitles = nonRest
         .filter((w) => w.category === "long" || w.category === "quality" || w.sport === "strength")
-        .map((w) => w.title)
+        .map((w) => humanizeWorkoutTitle(w.title, w.category, w.qualitySubtype))
         .slice(0, 2);
       const summary =
         state === "shape"

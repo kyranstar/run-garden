@@ -490,7 +490,8 @@ describe("GET /plans/:id/detail (2026-08-11 rework §4)", () => {
         userId,
         planId: "cp9",
         sourceWorkoutId: `cw-${newId().slice(0, 8)}`,
-        title: meters ? "Long run" : "Easy run",
+        // A COROS code-name on purpose: the weeks list must humanize it.
+        title: meters ? "T1004" : "Easy run",
         category: meters ? "long" : "easy",
         sport: "run",
         originalPlanDate: date,
@@ -522,6 +523,10 @@ describe("GET /plans/:id/detail (2026-08-11 rework §4)", () => {
     expect(body.weeks[1]!.current).toBe(true);
     expect(body.weeks[2]!.state).toBe("shape");
     expect(body.weeks[2]!.volumeTarget).toBe("~4h easy focus");
+    // "T1004" never reaches the reader — category words do.
+    const summaries = (body.weeks as unknown as Array<{ summary: string }>).map((w) => w.summary).join(" | ");
+    expect(summaries).not.toContain("T1004");
+    expect(summaries).toContain("Long run");
     const long = body.progressions.find((p) => p.key === "run:long-run")!;
     // Shape weeks have no planned workouts — series carries only W1 and W2.
     expect(long.series.map((s) => s.week)).toEqual([1, 2]);

@@ -312,6 +312,7 @@ describe("GET /week — brief facts (2026-08-11 rework §4)", () => {
     expect(body.weekIndex).toBe(5);
     expect(body.weekTotal).toBe(12);
     expect((body.focus as { text: string }).text).toContain("Saturday");
+    expect(body.adventureDays).toBe(0);
   });
 
   it("omits a stale focus and handles no-plan weeks", async () => {

@@ -120,3 +120,58 @@ export function isQuality(w: Pick<PlannedWorkout, "category">): boolean {
 export function isRunning(w: Pick<PlannedWorkout, "category">): boolean {
   return w.category !== "rest" && w.category !== "cross_training" && w.category !== "strength";
 }
+
+/** User-facing category labels — shared by worker summaries and the UI so a
+ * COROS code-title falls back to the same words everywhere. */
+export const WORKOUT_CATEGORY_LABELS: Record<WorkoutCategory, string> = {
+  recovery: "Recovery",
+  easy: "Easy run",
+  long: "Long run",
+  quality: "Quality",
+  race: "Race",
+  cross_training: "Cross-training",
+  strength: "Strength",
+  yoga: "Yoga",
+  rest: "Rest",
+  unknown: "Run",
+};
+
+export const QUALITY_SUBTYPE_LABELS: Record<QualitySubtype, string> = {
+  threshold: "Threshold",
+  tempo: "Tempo",
+  intervals: "Intervals",
+  vo2: "VO₂ intervals",
+  hills: "Hills",
+  other: "Quality",
+};
+
+/**
+ * COROS structured-workout names are frequently opaque codes ("T1004",
+ * "R2-1", "W03_A"): short, code-shaped, meaningless to a human. A title is
+ * code-like when, stripped of separators, it's ≤8 chars of letters+digits
+ * with at least one digit and no more than 3 letters ("Tempo 5k" survives,
+ * "T1004" doesn't).
+ */
+export function looksLikeCodeTitle(title: string): boolean {
+  const t = title.trim();
+  if (t.length === 0) return true;
+  const stripped = t.replace(/[\s\-_./#]/g, "");
+  if (stripped.length > 8 || !/^[A-Za-z0-9]*$/.test(stripped)) return false;
+  const letters = (stripped.match(/[A-Za-z]/g) ?? []).length;
+  const digits = (stripped.match(/[0-9]/g) ?? []).length;
+  return digits >= 1 && letters <= 3;
+}
+
+/** The display title for a planned workout: the real name when it has one,
+ * else the category (with quality subtype when known) in plain words. */
+export function humanizeWorkoutTitle(
+  title: string,
+  category: WorkoutCategory | string,
+  qualitySubtype?: QualitySubtype | string | null,
+): string {
+  if (!looksLikeCodeTitle(title)) return title;
+  if (category === "quality" && qualitySubtype && qualitySubtype in QUALITY_SUBTYPE_LABELS) {
+    return QUALITY_SUBTYPE_LABELS[qualitySubtype as QualitySubtype];
+  }
+  return WORKOUT_CATEGORY_LABELS[category as WorkoutCategory] ?? title;
+}

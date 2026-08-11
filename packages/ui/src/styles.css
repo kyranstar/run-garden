@@ -4247,3 +4247,32 @@ button {
     gap: 0.45rem;
   }
 }
+
+/* Round-2 context fixes: the brief explains itself. */
+.plan-brief-context {
+  margin: -0.15rem 0 0;
+  font-size: 0.86rem;
+  color: var(--ink-soft);
+  max-width: 62ch;
+}
+.plan-brief-chip {
+  font: inherit;
+  font-size: 0.8rem;
+  cursor: pointer;
+  text-align: left;
+}
+.plan-brief-chip:hover {
+  border-color: var(--border-strong);
+}
+.brief-explainer h3 {
+  margin-bottom: 0.15rem;
+}
+.brief-explainer p {
+  margin: 0;
+  font-size: 0.88rem;
+}
+@media (max-width: 639px) {
+  .plan-brief-chip {
+    font-size: 0.74rem;
+  }
+}

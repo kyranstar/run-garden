@@ -76,7 +76,7 @@ describe("StudioModal — detail mode", () => {
     const html = renderWithCache(createElement(StudioModal, props), prime);
     expect(html).toContain("Strength Block B");
     expect(html).toContain("pill-lift");
-    expect(html).toContain("2026-07-27 → 2026-09-20");
+    expect(html).toContain("Jul 27 → Sep 20");
     expect(html).toContain("5 of 16 sessions done");
     expect(html).toContain("adherence 91%");
     expect(html).toContain("52 → <b>66 kg</b>");

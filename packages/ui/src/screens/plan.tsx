@@ -2,7 +2,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { Link, useSearchParams } from "react-router-dom";
 import { useMutation, useQueries, useQuery, useQueryClient } from "@tanstack/react-query";
 import { api, ApiError, type PlanDetailResponse, type WorkoutDto } from "@rg/api-client";
-import { addDays, startOfIsoWeek } from "@rg/domain";
+import { addDays, humanizeWorkoutTitle, startOfIsoWeek } from "@rg/domain";
 import {
   Banner,
   CategoryDot,
@@ -115,8 +115,9 @@ function WorkoutDetail({
   const syncView = w.corosSyncView ?? w.corosSyncState;
   const outOfSync = syncView === "needs_attention" || syncView === "calendar_only" || syncView === "sync_issue";
 
+  const displayTitle = humanizeWorkoutTitle(w.title, w.category, w.qualitySubtype);
   return (
-    <Sheet open onClose={onClose} title={w.title}>
+    <Sheet open onClose={onClose} title={displayTitle}>
       <div className="stack">
         <div className="row">
           <CategoryDot category={w.category} />
@@ -126,6 +127,9 @@ function WorkoutDetail({
         </div>
         <p>
           {formatDayLong(w.effectiveDate)} at {formatTime(w.effectiveTime)}
+          {displayTitle !== w.title ? (
+            <span className="faint"> · COROS name: {w.title}</span>
+          ) : null}
         </p>
         <SyncNotesStack
           notes={workoutNotes}

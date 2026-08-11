@@ -21,6 +21,7 @@ import {
 import { computeConsistency } from "@rg/analytics";
 import {
   addDays,
+  isAdventureSport,
   newId,
   nowInstant,
   startOfIsoWeek,
@@ -451,6 +452,7 @@ planRoutes.get("/week", async (c) => {
       startTime: activities.startTime,
       startTimeLocal: activities.startTimeLocal,
       trainingLoad: activities.trainingLoad,
+      sport: activities.sport,
     })
     .from(activities)
     .where(eq(activities.userId, userId));
@@ -463,6 +465,14 @@ planRoutes.get("/week", async (c) => {
   const acute = loadIn(addDays(today, -6), today);
   const chronic = loadIn(addDays(today, -27), today) / 4;
   const loadRatio = chronic > 0 ? Math.round((acute / chronic) * 100) / 100 : null;
+
+  // Adventure days in the adherence window — a backpacking week is a paused
+  // plan, not a failed one, and the brief's context line says so.
+  const adventureDays = new Set(
+    acts
+      .filter((a) => isAdventureSport(a.sport) && localDate(a) >= addDays(today, -28) && localDate(a) <= today)
+      .map(localDate),
+  ).size;
 
   // The coach's one action line — stale after 3 days (rework spec §6).
   const [focusMsg] = await db
@@ -492,6 +502,7 @@ planRoutes.get("/week", async (c) => {
     weekTotal,
     adherence4w: { pct: recentPct, trend },
     loadRatio,
+    adventureDays,
     headline: deriveHeadline({ adherencePct: recentPct, loadRatio, raceInDays, deloadWeek }),
     focus,
   });

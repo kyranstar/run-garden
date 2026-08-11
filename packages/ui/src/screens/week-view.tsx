@@ -1,5 +1,5 @@
 import type { PlanWeekResponse, WorkoutDto } from "@rg/api-client";
-import { addDays, startOfIsoWeek } from "@rg/domain";
+import { addDays, humanizeWorkoutTitle, startOfIsoWeek } from "@rg/domain";
 import { dayOfMonth, formatMinutes, monthTitle } from "../components.js";
 import { IconAlert, IconCheck, IconClock } from "../icons.js";
 import type { PendingGhost } from "./coach-panel.js";
@@ -48,6 +48,9 @@ export function WorkoutCell({
       </button>
     );
   }
+  // COROS structured names are frequently opaque codes ("T1004") — display
+  // speaks category words instead; the raw name stays in the hover title.
+  const displayTitle = humanizeWorkoutTitle(w.title, w.category, w.qualitySubtype);
   return (
     <button
       className={`cal-card ${done ? "done" : ""} ${faded ? "faded" : ""} ${asks ? "asks" : ""}`}
@@ -55,7 +58,7 @@ export function WorkoutCell({
       title={w.title}
     >
       <i className={`cal-card-edge cat-${w.category}`} aria-hidden />
-      <span className="cal-card-title">{w.title}</span>
+      <span className="cal-card-title">{displayTitle}</span>
       <span className="cal-card-meta">
         <span>{formatMinutes(w.workoutSeconds)}</span>
         {done ? (

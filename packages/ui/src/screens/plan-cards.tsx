@@ -1,4 +1,5 @@
 import type { CoachPlanDto, PlanDetailResponse, PlanProgression } from "@rg/api-client";
+import { formatShortDate } from "../components.js";
 
 /**
  * Plan title cards (rework spec §6): one card per plan — serif name, week
@@ -95,7 +96,7 @@ export function PlanCards({
               <span className={`plan-card-track ${p.discipline === "lift" ? "is-lift" : ""}`}>
                 <i style={{ width: `${Math.round((into / total) * 100)}%` }} />
               </span>
-              <span className="faint num">{p.endDate.slice(5).replace("-", "/")}</span>
+              <span className="faint num">ends {formatShortDate(p.endDate)}</span>
             </span>
             {prog ? (
               <span className="plan-card-headline">

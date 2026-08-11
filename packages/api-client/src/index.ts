@@ -326,6 +326,9 @@ export interface PlanWeekResponse {
   weekTotal: number | null;
   adherence4w: { pct: number | null; trend: "up" | "flat" | "down" | null };
   loadRatio: number | null;
+  /** Distinct adventure-sport days in the trailing 28 — the brief's context
+   * line uses this to say "the plan paused", not "you failed". */
+  adventureDays: number;
   headline: "on_track" | "behind" | "ahead" | "rebuilding" | "race_week" | "resting";
   focus: { text: string; at: string } | null;
 }

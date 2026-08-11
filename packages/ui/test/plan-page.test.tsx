@@ -9,10 +9,10 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { MemoryRouter } from "react-router-dom";
 import { describe, expect, it } from "vitest";
 import type { CoachPlanDto, PlanDetailResponse, PlanWeekResponse, WorkoutDto } from "@rg/api-client";
-import { HEADLINE_COPY, WeeklyBrief } from "../src/screens/plan-brief.js";
+import { BriefExplainerSheet, HEADLINE_COPY, headlineContext, WeeklyBrief } from "../src/screens/plan-brief.js";
 import { PlanCards, progressionHeadline } from "../src/screens/plan-cards.js";
 import { CoachWindow } from "../src/screens/coach-window.js";
-import { WeekView, weekRangeLabel } from "../src/screens/week-view.js";
+import { WeekView, weekRangeLabel, WorkoutCell } from "../src/screens/week-view.js";
 
 const noop = () => undefined;
 
@@ -56,6 +56,7 @@ function weekFixture(over: Partial<PlanWeekResponse> = {}): PlanWeekResponse {
     weekTotal: 12,
     adherence4w: { pct: 86, trend: "up" },
     loadRatio: 1.04,
+    adventureDays: 0,
     headline: "on_track",
     focus: { text: "Saturday's 10-miler anchors the week.", at: "2026-08-11T08:00:00Z" },
     ...over,
@@ -236,5 +237,62 @@ describe("CoachWindow", () => {
     expect(win).toContain("coach-window");
     expect(win).toContain("inner-panel");
     expect(win).toContain("Minimize the coach");
+  });
+});
+
+describe("round 2 — nothing needs prior context", () => {
+  it("headlineContext explains each state; adventures never count against you", () => {
+    const base = weekFixture();
+    expect(headlineContext({ ...base, headline: "race_week" })).toContain("arriving fresh");
+    expect(headlineContext({ ...base, headline: "resting" })).toContain("lighter week");
+    expect(headlineContext({ ...base, headline: "on_track" })).toContain("86%");
+    expect(headlineContext({ ...base, headline: "behind", adherence4w: { pct: 63, trend: "down" } })).toContain("63%");
+    const trip = headlineContext({
+      ...base,
+      headline: "rebuilding",
+      adherence4w: { pct: 40, trend: "down" },
+      adventureDays: 6,
+    })!;
+    expect(trip).toContain("adventures");
+    expect(trip).toContain("never count against you");
+    expect(
+      headlineContext({ ...base, headline: "rebuilding", adherence4w: { pct: null, trend: null }, adventureDays: 0 }),
+    ).toContain("starts the record");
+  });
+
+  it("the brief renders the context line and tappable chips", () => {
+    const html = render(createElement(WeeklyBrief, { week: weekFixture(), pendingCount: 0, onNeedsYou: noop }));
+    expect(html).toContain("plan-brief-context");
+    expect(html).toContain("keep the rhythm");
+    const chipButtons = html.match(/<button type="button" class="plan-brief-chip"/g) ?? [];
+    expect(chipButtons.length).toBe(4);
+  });
+
+  it("BriefExplainerSheet spells out all four numbers with their values", () => {
+    const html = render(
+      createElement(BriefExplainerSheet, { week: weekFixture(), open: true, onClose: noop }),
+    );
+    expect(html).toContain("Sessions · 1 of 6");
+    expect(html).toContain("5h 5m");
+    expect(html).toContain("Around 80% is a healthy training rhythm");
+    expect(html).toContain("pause the plan");
+    expect(html).toContain("Near 1.0 is steady");
+  });
+
+  it("WorkoutCell speaks category words for COROS code titles, keeps real names", () => {
+    const code = render(
+      createElement(WorkoutCell, {
+        w: workout({ title: "T1004", qualitySubtype: "threshold" }),
+        today: "2026-08-11",
+        onOpen: noop,
+      }),
+    );
+    expect(code).toContain("Threshold");
+    expect(code).not.toContain(">T1004<");
+    expect(code).toContain('title="T1004"'); // the raw name survives on hover
+    const real = render(
+      createElement(WorkoutCell, { w: workout({ title: "Tempo 5k" }), today: "2026-08-11", onOpen: noop }),
+    );
+    expect(real).toContain("Tempo 5k");
   });
 });

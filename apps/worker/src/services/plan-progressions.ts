@@ -58,6 +58,9 @@ export function liftProgressions(
   const out: PlanProgression[] = [];
   const ranked = [...byOrigin.entries()]
     .filter(([, e]) => e.weekMax.size >= 2) // a progression needs at least two loaded weeks
+    // A flat line is not a progression — "34 → 34 sets" earned a user
+    // complaint. Only series that actually go somewhere get graphed.
+    .filter(([, e]) => new Set(e.weekMax.values()).size > 1)
     .sort((a, b) => b[1].count - a[1].count)
     .slice(0, topN);
   for (const [originId, e] of ranked) {
@@ -79,7 +82,7 @@ export function liftProgressions(
     });
   }
 
-  if (setsByWeek.size >= 2) {
+  if (setsByWeek.size >= 2 && new Set(setsByWeek.values()).size > 1) {
     const series: PlanProgressionPoint[] = [...setsByWeek.entries()]
       .sort((a, b) => a[0] - b[0])
       .map(([week, value]) => ({ week, value, ...(doneWeeks.has(week) ? { done: true } : {}) }));
@@ -114,7 +117,7 @@ export interface RunWeekFacts {
 export function runProgressions(weeks: RunWeekFacts[], currentWeek: number | null): PlanProgression[] {
   const out: PlanProgression[] = [];
   const withLong = weeks.filter((w) => w.longRunMeters !== null && w.longRunMeters > 0);
-  if (withLong.length >= 2) {
+  if (withLong.length >= 2 && new Set(withLong.map((w) => w.longRunMeters)).size > 1) {
     const series: PlanProgressionPoint[] = withLong.map((w) => ({
       week: w.week,
       value: Math.round((w.longRunMeters! / METERS_PER_MILE) * 10) / 10,
@@ -134,7 +137,7 @@ export function runProgressions(weeks: RunWeekFacts[], currentWeek: number | nul
     });
   }
   const withTime = weeks.filter((w) => w.plannedSeconds > 0);
-  if (withTime.length >= 2) {
+  if (withTime.length >= 2 && new Set(withTime.map((w) => w.plannedSeconds)).size > 1) {
     const series: PlanProgressionPoint[] = withTime.map((w) => ({
       week: w.week,
       value: Math.round(w.plannedSeconds / 60),
@@ -172,6 +175,6 @@ export function liftWeekSummary(plan: LiftingPlan, weekIndex1: number): string {
     }
   }
   const top = [...heaviest.entries()].sort((a, b) => b[1] - a[1]).slice(0, 2);
-  const lifts = top.map(([name, kg]) => `${name.toLowerCase()} ${kg}`).join(", ");
+  const lifts = top.map(([name, kg]) => `${name.toLowerCase()} ${kg}kg`).join(", ");
   return [lifts, `${sets} sets`].filter(Boolean).join(" · ");
 }
