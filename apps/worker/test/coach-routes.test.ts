@@ -363,6 +363,61 @@ describe("GET /plans — studio union (user-nits fix)", () => {
     const coros = res.plans.find((p) => p.source === "coros")!;
     expect(coros).toMatchObject({ id: "tp-10k", discipline: "run", name: "10K Training Plan" });
 
+    // A strength-majority container (the studio's home) must NOT masquerade
+    // as a run plan, even when it owns a stray future run.
+    await db.insert(schema.trainingPlans).values({
+      id: "tp-s4557",
+      userId,
+      provider: "coros",
+      sourcePlanId: "9001",
+      name: "S4557",
+      startDate: null,
+      endDate: null,
+      status: "active",
+      createdAt: nowInstant(),
+      updatedAt: nowInstant(),
+    });
+    for (let i = 0; i < 3; i++) {
+      await db.insert(schema.plannedWorkouts).values({
+        id: `wo-s${i}`,
+        userId,
+        planId: "tp-s4557",
+        sourceWorkoutId: `9001:${i}`,
+        title: `W1 Lift ${i}`,
+        category: "strength",
+        sport: "strength",
+        originalPlanDate: addDays(today, 4 + i),
+        lastVerifiedCorosDate: addDays(today, 4 + i),
+        effectiveDate: addDays(today, 4 + i),
+        effectiveTime: "07:00",
+        sourceContentFingerprint: "fp",
+        calendarBlockDurationSeconds: 3600,
+        completionState: "scheduled",
+        createdAt: nowInstant(),
+        updatedAt: nowInstant(),
+      });
+    }
+    await db.insert(schema.plannedWorkouts).values({
+      id: "wo-s-run",
+      userId,
+      planId: "tp-s4557",
+      sourceWorkoutId: "9001:99",
+      title: "Stray Run",
+      category: "easy",
+      sport: "run",
+      originalPlanDate: addDays(today, 5),
+      lastVerifiedCorosDate: addDays(today, 5),
+      effectiveDate: addDays(today, 5),
+      effectiveTime: "07:00",
+      sourceContentFingerprint: "fp",
+      calendarBlockDurationSeconds: 3600,
+      completionState: "scheduled",
+      createdAt: nowInstant(),
+      updatedAt: nowInstant(),
+    });
+    const withStrength = (await (await client().get("/api/coach/plans")).json()) as typeof res;
+    expect(withStrength.plans.filter((p) => p.source === "coros").map((p) => p.id)).toEqual(["tp-10k"]);
+
     // Archived-only plans stay off the shelf.
     await db
       .update(schema.plannedWorkouts)

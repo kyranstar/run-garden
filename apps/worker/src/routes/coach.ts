@@ -1,5 +1,5 @@
 import { Hono } from "hono";
-import { and, desc, eq, gte, isNull, lt } from "drizzle-orm";
+import { and, desc, eq, inArray, isNull, lt } from "drizzle-orm";
 import {
   activities,
   coachMemory,
@@ -17,6 +17,7 @@ import {
 import {
   addDays,
   humanizeWorkoutTitle,
+  looksLikeCodeTitle,
   newId,
   nowInstant,
   startOfIsoWeek,
@@ -364,31 +365,50 @@ coachRoutes.get("/plans", async (c) => {
       ),
     );
   const corosEntries = [];
-  for (const p of corosPlans) {
-    // Only plans that still own live, unarchived scheduled work.
-    const [owns] = await db
-      .select({ id: plannedWorkouts.id })
+  if (corosPlans.length > 0) {
+    const owned = await db
+      .select({
+        planId: plannedWorkouts.planId,
+        sport: plannedWorkouts.sport,
+        date: plannedWorkouts.effectiveDate,
+      })
       .from(plannedWorkouts)
       .where(
         and(
           eq(plannedWorkouts.userId, userId),
-          eq(plannedWorkouts.planId, p.id),
           isNull(plannedWorkouts.archivedAt),
-          gte(plannedWorkouts.effectiveDate, addDays(today, -7)),
+          inArray(
+            plannedWorkouts.planId,
+            corosPlans.map((p) => p.id),
+          ),
         ),
-      )
-      .limit(1);
-    if (!owns) continue;
-    corosEntries.push({
-      id: p.id,
-      discipline: "run" as const,
-      name: humanizeWorkoutTitle(p.name, "easy", null),
-      status: "active" as const,
-      startDate: p.startDate ?? today,
-      endDate: p.endDate ?? today,
-      raceDate: null,
-      source: "coros" as const,
-    });
+      );
+    for (const p of corosPlans) {
+      const mine = owned.filter((w) => w.planId === p.id);
+      const runs = mine.filter((w) => w.sport === "run");
+      // A RUN card only for the plan that is actually the running plan:
+      // majority-run and still holding future run work. (The strength
+      // container the studio pushes into also lives in training_plans and
+      // owns a couple of stray runs — it must not masquerade as one.)
+      const futureRun = runs.some((w) => w.date >= today);
+      if (!futureRun || runs.length * 2 < mine.length) continue;
+      const dates = mine.map((w) => w.date).sort();
+      // COROS containers often carry NULL spans and code names — derive the
+      // span from the workouts themselves and never render a bare code.
+      const name = !p.name || p.name === "COROS plan" || looksLikeCodeTitle(p.name)
+        ? "COROS running plan"
+        : p.name;
+      corosEntries.push({
+        id: p.id,
+        discipline: "run" as const,
+        name,
+        status: "active" as const,
+        startDate: p.startDate ?? dates[0]!,
+        endDate: p.endDate ?? dates[dates.length - 1]!,
+        raceDate: null,
+        source: "coros" as const,
+      });
+    }
   }
 
   return c.json({
