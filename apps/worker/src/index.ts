@@ -24,7 +24,7 @@ import { syncRoutes } from "./routes/sync.js";
 import { makeDb, chunkIds, type Db } from "./services/db.js";
 import { loadPreferences, syncCalendar } from "./services/calendar-sync.js";
 import { advanceGarden } from "./services/garden-sync.js";
-import { sweepStaleBackfills } from "./services/backfill.js";
+import { runBackfillChunkCloud, sweepStaleBackfills } from "./services/backfill.js";
 import { reconcileCompletionStates, startSyncRun, finishSyncRun } from "./services/reconcile-daily.js";
 import { generateWeeklyReview } from "./services/llm.js";
 import { healLegacySyncState } from "./services/heal-legacy-sync.js";
@@ -110,6 +110,11 @@ async function halfHourly(db: Db, env: Env): Promise<void> {
   await corosReadSweep(db, env).catch((e: unknown) =>
     console.error(`coros read sweep failed: ${e instanceof Error ? e.message : "unknown"}`),
   );
+  // Cloud backfill: one 90-day chunk per tick per user with an active walk.
+  for (const userId of await allUserIds(db)) {
+    const prefs = await loadPreferences(db, userId);
+    await runBackfillChunkCloud(db, env, userId, prefs).catch(() => undefined);
+  }
   // A backfill with no progress for 12h stops saying "queued"/"running" and
   // says so. Before the purges so an earlier throw can't skip it; a broken
   // sweep must be visible, not swallowed.

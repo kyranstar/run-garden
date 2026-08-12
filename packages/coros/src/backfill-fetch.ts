@@ -19,8 +19,8 @@ import {
   type NameResolver,
   type RawCorosActivityDetail,
 } from "@rg/providers";
-import type { CorosClient } from "@rg/coros";
-import type { NormalizedLap } from "@rg/coros";
+import type { CorosClient } from "./client.js";
+import type { NormalizedLap } from "./snapshot.js";
 
 export interface ActivityBackfillChunk {
   activities: SourceActivity[];

@@ -91,7 +91,7 @@ import {
   rowToNormalized,
 } from "../services/completion.js";
 import { resimulateFrom } from "../services/garden-sync.js";
-import { enqueueBackfill } from "../services/backfill.js";
+import { enqueueBackfill, runBackfillChunkCloud } from "../services/backfill.js";
 
 // ── Calendar management ──────────────────────────────────────────────────────
 
@@ -287,6 +287,13 @@ activityRoutes.post("/backfill", async (c) => {
   }
 
   const result = await enqueueBackfill(db, userId, todayInZone(prefs.timezone));
+  // Cloud-connected: the first chunk starts immediately — progress in
+  // seconds, no Mac required (cloud-direct spec §3).
+  if (result.enqueued) {
+    c.executionCtx?.waitUntil?.(
+      runBackfillChunkCloud(db, c.env, userId, prefs).catch(() => undefined),
+    );
+  }
   return c.json({
     ok: true,
     enqueued: result.enqueued,

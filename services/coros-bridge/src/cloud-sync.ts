@@ -22,7 +22,7 @@ import {
 import type { NameResolver } from "@rg/providers";
 import type { CorosClient } from "@rg/coros";
 import { buildSnapshot, loadNameResolver } from "@rg/coros";
-import { buildActivityBackfill } from "./backfill.js";
+import { buildActivityBackfill } from "@rg/coros";
 import {
   executeMoveJob,
   executeStudioJob,

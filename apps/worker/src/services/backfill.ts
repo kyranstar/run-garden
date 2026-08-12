@@ -7,12 +7,17 @@
  * as "history has ended" — are testable without a database, a bridge, or COROS.
  */
 
-import { and, desc, eq, inArray } from "drizzle-orm";
+import { and, asc, desc, eq, inArray } from "drizzle-orm";
 import { activities, backfillState, corosWriteJobs } from "@rg/database";
 import { addDays, newId, nowInstant, todayInZone, type SourceActivity } from "@rg/domain";
 import { loadPreferences } from "./calendar-sync.js";
 import { ingestActivities, type IngestInput } from "./completion.js";
 import { READ_WINDOW_DAYS, enqueueBackfillDigest, enqueueCoachReads } from "./coach-reads.js";
+import { buildActivityBackfill } from "@rg/coros";
+import { corosClient } from "./coros-connection.js";
+import { claimUserLock, releaseUserLock } from "./locks.js";
+import type { Env } from "../env.js";
+import type { UserPreferences } from "@rg/domain";
 import type { Db } from "./db.js";
 import { resimulateFrom } from "./garden-sync.js";
 import { CLAIM_TIMEOUT_MS } from "./jobs.js";
@@ -293,6 +298,72 @@ export async function advanceBackfill(
     })
     .where(eq(backfillState.userId, userId));
   await insertChunkJob(db, userId, action.chunkStart, action.chunkEnd);
+}
+
+/**
+ * Cloud-direct chunk walker (cloud-direct spec §3): with a connected COROS
+ * account the worker serves the oldest queued chunk itself — pull, record,
+ * advance — and completes the job row so no device ever needs to claim it.
+ * One chunk per invocation keeps a cron tick bounded; the Backfill button
+ * fires the first chunk via waitUntil so progress is visible in seconds.
+ */
+export async function runBackfillChunkCloud(
+  db: Db,
+  env: Env,
+  userId: string,
+  prefs: UserPreferences,
+  fetchImpl: typeof fetch = fetch,
+): Promise<{ ran: boolean }> {
+  const state = (
+    await db.select().from(backfillState).where(eq(backfillState.userId, userId)).limit(1)
+  )[0];
+  if (!state || (state.status !== "running" && state.status !== "queued")) return { ran: false };
+
+  const [job] = await db
+    .select()
+    .from(corosWriteJobs)
+    .where(
+      and(
+        eq(corosWriteJobs.userId, userId),
+        eq(corosWriteJobs.kind, "backfill"),
+        eq(corosWriteJobs.status, "queued"),
+      ),
+    )
+    .orderBy(asc(corosWriteJobs.requestedAt))
+    .limit(1);
+  if (!job) return { ran: false };
+
+  const client = await corosClient(db, env, userId, fetchImpl);
+  if (!client) return { ran: false }; // not cloud-connected — a device may still claim it
+
+  const lock = await claimUserLock(db, userId, "coros_backfill", 15);
+  if (!lock) return { ran: false };
+  try {
+    const payload = job.payload as { chunkStart: string; chunkEnd: string };
+    // Workers pace on IO anyway — a light delay is still kind to COROS.
+    const chunk = await buildActivityBackfill(client, payload.chunkStart, payload.chunkEnd, undefined, {
+      delayMs: 25,
+    });
+    await recordChunk(db, userId, {
+      chunkStart: payload.chunkStart,
+      chunkEnd: payload.chunkEnd,
+      activities: chunk.activities,
+      lapsByProviderId: chunk.lapsByProviderId as never,
+      skippedSportTypes: chunk.skippedSportTypes,
+    });
+    const now = nowInstant();
+    await db
+      .update(corosWriteJobs)
+      .set({ status: "completed", completedAt: now, updatedAt: now })
+      .where(eq(corosWriteJobs.id, job.id));
+    await advanceBackfill(db, userId, job.id, { activitiesFound: chunk.activities.length }, todayInZone(prefs.timezone));
+    return { ran: true };
+  } catch {
+    // Leave the job queued: the next tick (or a device) retries the chunk.
+    return { ran: false };
+  } finally {
+    await releaseUserLock(db, userId, "coros_backfill", lock).catch(() => undefined);
+  }
 }
 
 /** How long a backfill may sit stalled before the status stops pretending. */

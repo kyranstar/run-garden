@@ -36,7 +36,7 @@ export {
   buildActivityBackfill,
   type ActivityBackfillChunk,
   type BackfillOptions,
-} from "./backfill.js";
+} from "@rg/coros";
 export {
   buildSnapshot,
   COROS_LOCALE_URL,
