@@ -8,7 +8,6 @@ import {
   computedMetrics,
   corosWriteJobs,
   dailyHealth,
-  desktopDevices,
   dismissedInsights,
   gardenEvents,
   gardenState,
@@ -1212,7 +1211,6 @@ settingsRoutes.put("/", async (c) => {
 settingsRoutes.get("/diagnostics", async (c) => {
   const db = c.get("db");
   const userId = c.get("userId");
-  const devices = await db.select().from(desktopDevices).where(eq(desktopDevices.userId, userId));
   const connections = await db
     .select()
     .from(providerConnections)
@@ -1232,16 +1230,6 @@ settingsRoutes.get("/diagnostics", async (c) => {
   return c.json({
     appVersion: "0.1.0",
     fixtureMode: c.env.FIXTURE_MODE === "1",
-    devices: devices.map((d) => ({
-      id: d.id,
-      name: d.name,
-      appVersion: d.appVersion,
-      bridgeVersion: d.bridgeVersion,
-      capabilities: d.capabilities,
-      lastSeenAt: d.lastSeenAt,
-      bridgePaused: d.bridgePaused,
-      revokedAt: d.revokedAt,
-    })),
     providers: connections.map((p) => ({
       provider: p.provider,
       status: p.status,
@@ -1333,8 +1321,7 @@ export async function deleteAllUserData(db: Db, userId: string): Promise<void> {
     corosScheduleSnapshots,
     corosWriteAttempts,
     computedMetrics,
-    deviceHandshakes,
-    dismissedInsights,
+      dismissedInsights,
     gardenDayInputs,
     gardenPlants,
     gardenSceneLayouts,
@@ -1427,7 +1414,6 @@ export async function deleteAllUserData(db: Db, userId: string): Promise<void> {
     computedMetrics,
     motivationEvidence,
     dismissedInsights,
-    desktopDevices,
     providerConnections,
     providerCursorState,
     userPreferences,
@@ -1456,7 +1442,7 @@ export async function deleteAllUserData(db: Db, userId: string): Promise<void> {
   }
   // Tables without a userId column — single-user, clear entirely.
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  for (const t of [deviceHandshakes, oauthStates] as const) await db.delete(t as any);
+  for (const t of [oauthStates] as const) await db.delete(t as any);
   await db.delete(users).where(eq(users.id, userId));
 }
 

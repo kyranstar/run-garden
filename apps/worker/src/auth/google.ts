@@ -38,7 +38,6 @@ async function pkcePair(): Promise<{ verifier: string; challenge: string }> {
 export interface StartAuthOptions {
   scopes: string;
   redirectTo?: string;
-  deviceHandshakeId?: string;
   /** offline access (refresh token) — needed for Calendar, not for sign-in. */
   offline?: boolean;
 }
@@ -55,7 +54,6 @@ export async function startGoogleAuth(
     provider: "google",
     codeVerifier: verifier,
     redirectTo: opts.redirectTo ?? null,
-    deviceHandshakeId: opts.deviceHandshakeId ?? null,
     createdAt: nowInstant(),
     expiresAt: new Date(Date.now() + 10 * 60_000).toISOString(),
   });
@@ -86,7 +84,7 @@ export interface GoogleTokens {
 export async function consumeOauthState(
   db: Db,
   state: string,
-): Promise<{ codeVerifier: string; redirectTo?: string; deviceHandshakeId?: string } | null> {
+): Promise<{ codeVerifier: string; redirectTo?: string } | null> {
   const rows = await db.select().from(oauthStates).where(eq(oauthStates.state, state)).limit(1);
   const row = rows[0];
   if (!row) return null;
@@ -95,7 +93,6 @@ export async function consumeOauthState(
   return {
     codeVerifier: row.codeVerifier ?? "",
     redirectTo: row.redirectTo ?? undefined,
-    deviceHandshakeId: row.deviceHandshakeId ?? undefined,
   };
 }
 

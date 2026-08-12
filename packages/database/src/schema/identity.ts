@@ -55,36 +55,6 @@ export const providerConnections = sqliteTable(
   (t) => [uniqueIndex("provider_conn_unique").on(t.userId, t.provider)],
 );
 
-export const desktopDevices = sqliteTable("desktop_devices", {
-  id: text("id").primaryKey(),
-  userId: text("user_id").notNull(),
-  name: text("name").notNull(),
-  /** Ed25519 public key, base64url raw. */
-  publicKey: text("public_key").notNull(),
-  platform: text("platform").notNull(),
-  appVersion: text("app_version").notNull(),
-  bridgeVersion: text("bridge_version"),
-  capabilities: text("capabilities", { mode: "json" }).$type<Record<string, boolean>>(),
-  bridgePaused: integer("bridge_paused", { mode: "boolean" }).notNull().default(false),
-  createdAt: text("created_at").notNull(),
-  lastSeenAt: text("last_seen_at").notNull(),
-  revokedAt: text("revoked_at"),
-});
-
-export const deviceHandshakes = sqliteTable("device_handshakes", {
-  /** Short-lived pairing code flow for desktop registration. */
-  id: text("id").primaryKey(),
-  publicKey: text("public_key").notNull(),
-  deviceName: text("device_name").notNull(),
-  platform: text("platform").notNull(),
-  appVersion: text("app_version").notNull(),
-  status: text("status").notNull().default("pending"), // pending | approved | claimed | expired
-  approvedUserId: text("approved_user_id"),
-  deviceId: text("device_id"),
-  createdAt: text("created_at").notNull(),
-  expiresAt: text("expires_at").notNull(),
-});
-
 export const userPreferences = sqliteTable("user_preferences", {
   userId: text("user_id").primaryKey(),
   prefs: text("prefs", { mode: "json" }).notNull().$type<Record<string, unknown>>(),

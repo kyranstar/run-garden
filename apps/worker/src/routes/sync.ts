@@ -3,7 +3,6 @@ import { and, desc, eq, inArray, isNull } from "drizzle-orm";
 import {
   backfillState,
   corosWriteJobs,
-  desktopDevices,
   plannedWorkouts,
   studioPlanPushes,
   studioPlans,

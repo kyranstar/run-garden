@@ -1,7 +1,7 @@
 import { Hono } from "hono";
 import { getCookie } from "hono/cookie";
 import { and, eq } from "drizzle-orm";
-import { deviceHandshakes, providerConnections } from "@rg/database";
+import { providerConnections } from "@rg/database";
 import { newId, nowInstant } from "@rg/domain";
 import type { AppContext } from "../auth/middleware.js";
 import { requireUser } from "../auth/middleware.js";
@@ -29,12 +29,10 @@ export const authRoutes = new Hono<AppContext>();
 /** Start sign-in. mode=calendar requests Calendar scopes + offline access. */
 authRoutes.get("/google/start", async (c) => {
   const mode = c.req.query("mode") ?? "signin";
-  const handshakeId = c.req.query("handshake");
   const url = await startGoogleAuth(c.get("db"), c.env, {
     scopes: mode === "calendar" ? GOOGLE_SCOPES_CALENDAR : GOOGLE_SCOPES_SIGNIN,
     offline: mode === "calendar",
     redirectTo: c.req.query("redirect") ?? "/",
-    deviceHandshakeId: handshakeId,
   });
   return c.redirect(url);
 });
@@ -97,26 +95,10 @@ authRoutes.get("/google/callback", async (c) => {
     }
   }
 
-  // Desktop pairing: approve the pending handshake for this user.
-  if (stored.deviceHandshakeId) {
-    await db
-      .update(deviceHandshakes)
-      .set({ status: "approved", approvedUserId: userId })
-      .where(and(eq(deviceHandshakes.id, stored.deviceHandshakeId), eq(deviceHandshakes.status, "pending")));
-  }
-
   const token = await createSession(db, userId, c.req.header("user-agent"));
   const secure = c.env.APP_URL.startsWith("https");
   c.header("Set-Cookie", sessionCookie(token, secure));
 
-  if (stored.deviceHandshakeId) {
-    return c.html(
-      `<html><body style="font-family:system-ui;padding:3rem;max-width:28rem;margin:auto">
-        <h2>Desktop connected</h2>
-        <p>You can close this window and return to the desktop app.</p>
-      </body></html>`,
-    );
-  }
   return c.redirect(stored.redirectTo ?? "/");
 });
 

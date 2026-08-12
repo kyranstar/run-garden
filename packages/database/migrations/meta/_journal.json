@@ -99,6 +99,13 @@
       "when": 1786481392233,
       "tag": "0013_coach_reads",
       "breakpoints": true
+    },
+    {
+      "idx": 14,
+      "version": "6",
+      "when": 1786481392233,
+      "tag": "0014_drop_desktop_tables",
+      "breakpoints": true
     }
   ]
 }

@@ -559,7 +559,6 @@ function DiagRows({ data }: { data: Record<string, unknown> }) {
   const coros = data.coros as { lastRead: string | null; pendingWriteJobs: number } | undefined;
   const versions = data.versions as Record<string, unknown> | undefined;
   const providers = (data.providers as Array<{ provider: string; status: string; lastSyncAt: string | null }>) ?? [];
-  const devices = (data.devices as Array<{ name: string; lastSeenAt: string; bridgeVersion: string | null }>) ?? [];
   const errors = (data.recentErrors as Array<{ category: string; createdAt: string; provider: string | null }>) ?? [];
   return (
     <div className="muted" style={{ fontSize: "0.85rem" }}>
@@ -568,11 +567,6 @@ function DiagRows({ data }: { data: Record<string, unknown> }) {
         COROS: last read {coros?.lastRead ? new Date(coros.lastRead).toLocaleString() : "never"} ·{" "}
         {coros?.pendingWriteJobs ?? 0} pending write jobs
       </p>
-      {devices.map((d) => (
-        <p key={d.name}>
-          Device {d.name}: bridge {d.bridgeVersion ?? "?"} · heartbeat {new Date(d.lastSeenAt).toLocaleString()}
-        </p>
-      ))}
       {providers.map((p) => (
         <p key={p.provider}>
           {p.provider}: {p.status}
