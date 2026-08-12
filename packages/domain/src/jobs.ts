@@ -1,6 +1,7 @@
 import { z } from "zod";
 import { isLocalDate } from "./time.js";
 import { studioSessionSchema } from "./studio.js";
+import { coachSessionSchema } from "./coach.js";
 
 export const COROS_WRITE_JOB_STATUSES = [
   "queued", // waiting for a capable executor
@@ -57,6 +58,20 @@ const localDate = z.string().refine(isLocalDate, {
  * so an exercise the account's catalog does not know fails at enqueue time
  * rather than on the wire.
  */
+/** A coach-authored session headed for the watch (2026-08-12): the cloud
+ * executor builds a structured RUN program from it and runs the same
+ * create+verify core as studio pushes. `workoutId` is the planned_workouts
+ * row the result reports onto. */
+export const coachCreateWorkoutJobSchema = z
+  .object({
+    workoutId: z.string().min(1),
+    happenDay: localDate,
+    name: z.string().min(1),
+    session: coachSessionSchema,
+  })
+  .strict();
+export type CoachCreateWorkoutJob = z.infer<typeof coachCreateWorkoutJobSchema>;
+
 export const createScheduledWorkoutJobSchema = z
   .object({
     /** The `studio_plan_pushes` row this job reports back onto. */

@@ -568,3 +568,15 @@ describe("wake resilience (user requirement 2026-08-12: never error, survive nav
     expect(pending.filter((t) => t.consumedAt === null)).toHaveLength(0);
   });
 });
+
+describe("capability plumbing (user requirement 2026-08-12: the coach can fulfil plan requests)", () => {
+  it("the prompt's example output parses against the real wake schema — prompt and schema cannot drift", async () => {
+    const { WAKE_EXAMPLE_OUTPUT, WAKE_SYSTEM_PROMPT } = await import("../src/services/coach-wake.js");
+    const { wakeOutputSchema } = await import("@rg/domain");
+    expect(WAKE_SYSTEM_PROMPT).toContain(WAKE_EXAMPLE_OUTPUT);
+    const parsed = wakeOutputSchema.safeParse(JSON.parse(WAKE_EXAMPLE_OUTPUT));
+    expect(parsed.success).toBe(true);
+    // The contract never claims read-only plans.
+    expect(WAKE_SYSTEM_PROMPT).not.toContain("off-limits");
+  });
+});

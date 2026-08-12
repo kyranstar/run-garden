@@ -62,7 +62,9 @@ export interface CreateWorkoutSpec {
    * ever authorizes a later delete, so it must be unique per (plan, day).
    */
   name: string;
-  session: StudioSession;
+  /** A studio LIFT session, or a coach session (run sessions push as
+   * structured run programs; coach lift sessions share the studio shape). */
+  session: StudioSession | CoachSession;
 }
 
 /** Why a create did not end in a verified workout. */
@@ -1065,10 +1067,15 @@ export async function createWorkout(
   }
 
   // Catalog validation and program construction happen BEFORE any wire call,
-  // so a bad originId can never reach the account.
+  // so a bad originId can never reach the account. Run sessions (coach adds,
+  // Bundle A Task A10 — first wired 2026-08-12) build the spike-verified
+  // minimal run topology; everything downstream (id derivation, write,
+  // verify) is program-agnostic.
   let program: RawCorosProgram;
   try {
-    program = buildStrengthProgram(spec, opts.catalog);
+    program = (spec.session as { run?: unknown }).run
+      ? buildRunProgram({ happenDay: date, name: spec.name, session: spec.session as CoachSession })
+      : buildStrengthProgram(spec as CreateWorkoutSpec & { session: StudioSession }, opts.catalog);
   } catch (e) {
     return { ok: false, reason: "error", error: errText(e) };
   }

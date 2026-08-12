@@ -384,6 +384,9 @@ export interface CoachStateResponse {
   memoryCount: number;
   lastCoachAt: string | null;
   wakeAdvised: boolean;
+  /** A wake is running (or a reply is still owed) server-side — survives
+   * page navigation where the client's own mutation state cannot. */
+  coachThinking?: boolean;
 }
 
 export interface CoachWakeResult {

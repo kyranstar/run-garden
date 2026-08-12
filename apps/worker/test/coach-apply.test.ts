@@ -226,3 +226,65 @@ describe("structured lift persist (2026-08-11 rework §5)", () => {
     expect(rows[0]!.structuredJson).toEqual({ exercises });
   });
 });
+
+describe("coach adds reach the watch (2026-08-12)", () => {
+  it("an approved duration-block run add enqueues a coach_create_workout job", async () => {
+    const db = makeTestDb();
+    const { userId, prefs } = await makeTestUser(db, { corosWritesEnabled: true });
+    const applied = await applyOps(db, userId, prefs, "prop-1", [
+      {
+        kind: "add",
+        date: "2026-10-22",
+        session: {
+          category: "easy",
+          title: "Race-week shakeout",
+          durationMinutes: 25,
+          run: { blocks: [{ kind: "duration", value: 25, intensity: "easy" }] },
+        },
+      } as never,
+    ]);
+    expect(applied.created).toHaveLength(1);
+    const jobs = await db
+      .select()
+      .from(schema.corosWriteJobs)
+      .where(eq(schema.corosWriteJobs.kind, "coach_create_workout"));
+    expect(jobs).toHaveLength(1);
+    expect(jobs[0]!.workoutId).toBe(applied.created[0]);
+    expect((jobs[0]!.payload as { name: string }).name).toBe("Race-week shakeout");
+  });
+
+  it("distance blocks and disabled writes stay app-only — no job", async () => {
+    const db = makeTestDb();
+    const { userId, prefs } = await makeTestUser(db, { corosWritesEnabled: true });
+    await applyOps(db, userId, prefs, "prop-2", [
+      {
+        kind: "add",
+        date: "2026-10-22",
+        session: {
+          category: "long",
+          title: "Long run",
+          durationMinutes: 90,
+          run: { blocks: [{ kind: "distance", value: 16_000 }] },
+        },
+      } as never,
+    ]);
+    const { userId: u2, prefs: p2 } = await makeTestUser(db, { corosWritesEnabled: false });
+    await applyOps(db, u2, p2, "prop-3", [
+      {
+        kind: "add",
+        date: "2026-10-22",
+        session: {
+          category: "easy",
+          title: "Easy",
+          durationMinutes: 30,
+          run: { blocks: [{ kind: "duration", value: 30 }] },
+        },
+      } as never,
+    ]);
+    const jobs = await db
+      .select()
+      .from(schema.corosWriteJobs)
+      .where(eq(schema.corosWriteJobs.kind, "coach_create_workout"));
+    expect(jobs).toHaveLength(0);
+  });
+});

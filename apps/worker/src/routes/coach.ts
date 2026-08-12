@@ -2,15 +2,16 @@ import { Hono } from "hono";
 import { and, desc, eq, inArray, isNull, lt } from "drizzle-orm";
 import {
   activities,
+  coachLocks,
   coachMemory,
   coachMessages,
-  coachPlans,
   coachPlanWeeks,
+  coachPlans,
   coachProposals,
   coachQuestions,
   plannedWorkouts,
-  studioPlans,
   studioPlanPushes,
+  studioPlans,
   trainingPlans,
   workoutCompletionMatches,
 } from "@rg/database";
@@ -156,6 +157,21 @@ coachRoutes.get("/state", async (c) => {
   // fresh existing briefing.
   const wakeAdvised = !(await openWakeIsFresh(db, userId, triggers.length));
 
+  // "Coach is thinking" must survive navigation (user report 2026-08-12):
+  // the client's mutation state dies with the page, so the truth comes from
+  // the server — a live wake lock, or a still-unanswered message younger
+  // than the lock's own staleness window.
+  const [wakeLock] = await db
+    .select()
+    .from(coachLocks)
+    .where(and(eq(coachLocks.userId, userId), eq(coachLocks.kind, "wake")))
+    .limit(1);
+  const lockFresh = !!wakeLock && Date.now() - Date.parse(wakeLock.claimedAt) < 10 * 60_000;
+  const pendingReply = triggers.some(
+    (t) => t.kind === "unanswered_message" && Date.now() - Date.parse(t.firedAt) < 5 * 60_000,
+  );
+  const coachThinking = lockFresh || pendingReply;
+
   return c.json({
     messages: [...msgs].reverse(),
     pendingProposals: pending,
@@ -163,6 +179,7 @@ coachRoutes.get("/state", async (c) => {
     memoryCount: memoryRows.length,
     lastCoachAt: lastCoach?.at ?? null,
     wakeAdvised,
+    coachThinking,
   });
 });
 

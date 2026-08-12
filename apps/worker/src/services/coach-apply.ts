@@ -1,5 +1,10 @@
 import { and, eq, gte, inArray, lte } from "drizzle-orm";
-import { coachPlans, coachPlanWeeks, plannedWorkouts } from "@rg/database";
+import {
+  coachPlanWeeks,
+  coachPlans,
+  corosWriteJobs,
+  plannedWorkouts,
+} from "@rg/database";
 import {
   addDays,
   nowInstant,
@@ -47,6 +52,17 @@ function stageSummary(s: CoachSession): string {
   return s.title;
 }
 
+/** A session the create executor can put on the watch today: a run whose
+ * blocks are all DURATION-based (distance targets are not spike-verified on
+ * the wire — create-executor.ts refuses them). */
+export function watchPushable(session: CoachSession): boolean {
+  return (
+    !!session.run &&
+    session.run.blocks.length > 0 &&
+    session.run.blocks.every((b) => b.kind === "duration")
+  );
+}
+
 async function insertSession(
   db: Db,
   userId: string,
@@ -55,6 +71,7 @@ async function insertSession(
   date: string,
   session: CoachSession,
   now: string,
+  opts: { corosWritesEnabled?: boolean } = {},
 ): Promise<void> {
   await db
     .insert(plannedWorkouts)
@@ -83,6 +100,26 @@ async function insertSession(
       updatedAt: now,
     })
     .onConflictDoNothing();
+
+  // Coach adds reach the WATCH (user requirement 2026-08-12): duration-block
+  // run sessions ride the same verified create pipeline as studio pushes.
+  // The stored state stays calendar_only until the executor verifies; the
+  // pending job already renders as "syncing" through deriveWorkoutSync.
+  if (opts.corosWritesEnabled && watchPushable(session)) {
+    await db.insert(corosWriteJobs).values({
+      id: `${id}-push`,
+      userId,
+      workoutId: id,
+      kind: "coach_create_workout",
+      expectedContentFingerprint: fingerprint(session),
+      originalDate: date,
+      destinationDate: date,
+      payload: { workoutId: id, happenDay: date, name: session.title, session },
+      requestedAt: now,
+      status: "queued",
+      updatedAt: now,
+    });
+  }
 }
 
 /** Archive this plan-week's unstarted sessions (calendar suppression only —
@@ -203,7 +240,9 @@ export async function applyOps(
       case "add": {
         const planId = (await activeCoachPlanId(db, userId, op.session)) ?? "coach-adhoc";
         const id = opId(0);
-        await insertSession(db, userId, planId, id, op.date, op.session, now);
+        await insertSession(db, userId, planId, id, op.date, op.session, now, {
+          corosWritesEnabled: prefs.corosWritesEnabled,
+        });
         out.created.push(id);
         break;
       }
@@ -211,7 +250,9 @@ export async function applyOps(
         out.archived.push(...(await archiveWeek(db, userId, op.planId, op.weekStart, now)));
         for (const [n, s] of op.sessions.entries()) {
           const id = opId(n);
-          await insertSession(db, userId, op.planId, id, s.date, s.session, now);
+          await insertSession(db, userId, op.planId, id, s.date, s.session, now, {
+            corosWritesEnabled: prefs.corosWritesEnabled,
+          });
           out.created.push(id);
         }
         break;
@@ -219,7 +260,9 @@ export async function applyOps(
       case "firmUp": {
         for (const [n, s] of op.sessions.entries()) {
           const id = opId(n);
-          await insertSession(db, userId, op.planId, id, s.date, s.session, now);
+          await insertSession(db, userId, op.planId, id, s.date, s.session, now, {
+            corosWritesEnabled: prefs.corosWritesEnabled,
+          });
           out.created.push(id);
         }
         await db

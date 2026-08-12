@@ -164,8 +164,9 @@ export function StudioModal({
           <div className="btn-row studio-modal-actions">
             {(d?.plan ?? plan)?.source === "coros" ? (
               <p className="faint" style={{ margin: 0, alignSelf: "center" }}>
-                Imported from COROS — your coach can move, ease, or skip its sessions; the plan's
-                structure is edited in COROS.
+                Imported from COROS — ask your coach to move, ease, or skip its sessions, add new
+                ones around it, or extend it with a coached block. Approved changes are written to
+                your watch.
               </p>
             ) : null}
             {((d?.plan ?? plan)?.source ?? "coach") === "coach" ? (

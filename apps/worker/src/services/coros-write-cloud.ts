@@ -1,8 +1,10 @@
 import { and, eq } from "drizzle-orm";
-import { corosWriteJobs } from "@rg/database";
+import { corosWriteJobs, plannedWorkouts } from "@rg/database";
 import { nowInstant, type CorosWriteResult, type UserPreferences } from "@rg/domain";
-import { executeMoveJob, executeStudioJob, type StudioJob } from "@rg/coros";
+import { createWorkout, executeMoveJob, executeStudioJob, type StudioJob } from "@rg/coros";
+import { localDateToCorosDay } from "@rg/providers";
 import {
+  coachCreateWorkoutJobSchema,
   createScheduledWorkoutJobSchema,
   deleteScheduledWorkoutJobSchema,
 } from "@rg/domain";
@@ -77,6 +79,65 @@ export async function executeCloudJobs(
             ? {}
             : { errorCategory: "network" }),
         };
+      } else if (job.kind === "coach_create_workout") {
+        // A coach-authored session headed for the watch (2026-08-12): the
+        // SAME create+verify core as studio pushes, reporting straight onto
+        // the planned_workouts row instead of the studio push ledger.
+        const parsed = coachCreateWorkoutJobSchema.safeParse(job.payload);
+        const now = nowInstant();
+        if (!parsed.success) {
+          await db
+            .update(corosWriteJobs)
+            .set({ status: "failed", lastErrorCategory: "malformed_payload", updatedAt: now })
+            .where(eq(corosWriteJobs.id, job.id));
+          executed += 1;
+          continue;
+        }
+        const spec = parsed.data;
+        const result = await createWorkout(
+          client,
+          {
+            happenDay: String(localDateToCorosDay(spec.happenDay)),
+            name: spec.name,
+            session: spec.session,
+          },
+          { catalog: new Map(), log: () => undefined },
+        );
+        const done = nowInstant();
+        if (result.ok) {
+          await db
+            .update(plannedWorkouts)
+            .set({
+              corosSyncState: "synced",
+              lastVerifiedCorosDate: spec.happenDay,
+              // The COROS address the create landed at — this is what makes
+              // the session MOVABLE on the watch later (the move executor
+              // needs sourcePlanId:idInPlan).
+              ...(result.serverPlanId != null && result.serverIdInPlan != null
+                ? {
+                    sourceWorkoutId: `${result.serverPlanId}:${result.serverIdInPlan}`,
+                    sourceIdInPlan: String(result.serverIdInPlan),
+                    ...(result.serverProgramId != null
+                      ? { sourceProgramId: String(result.serverProgramId) }
+                      : {}),
+                  }
+                : {}),
+              updatedAt: done,
+            })
+            .where(eq(plannedWorkouts.id, spec.workoutId));
+          await db
+            .update(corosWriteJobs)
+            .set({ status: "verified", completedAt: done, updatedAt: done })
+            .where(eq(corosWriteJobs.id, job.id));
+        } else {
+          console.error(`coach create failed (${spec.name}): ${result.reason ?? ""} ${result.error ?? ""}`);
+          await db
+            .update(corosWriteJobs)
+            .set({ status: "failed", lastErrorCategory: result.reason ?? "error", updatedAt: done })
+            .where(eq(corosWriteJobs.id, job.id));
+        }
+        executed += 1;
+        continue;
       } else {
         const studioJob = toStudioJob(job);
         if (studioJob) {

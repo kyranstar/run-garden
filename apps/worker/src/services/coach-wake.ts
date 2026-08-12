@@ -59,11 +59,53 @@ const STALE_BRIEFING_HOURS = 20;
  * every Plan visit re-fires (and re-fails) the wake. */
 export const WAKE_FAILURE_BACKOFF_MINUTES = 30;
 
+/** A complete, schema-valid example output — embedded in the prompt AND
+ * parsed in a test (coach-wake.test.ts) so prompt and schema can never
+ * drift apart. Complex ops (add/createPlan sessions) are where live wakes
+ * kept failing validation (2026-08-12). */
+export const WAKE_EXAMPLE_OUTPUT = JSON.stringify({
+  briefing: "Adding a taper shakeout Friday and a recovery block after the race.",
+  proposals: [
+    {
+      title: "Shakeout before race day",
+      evidence: "race in 2 days · 7d load 1.1× base",
+      rationale: "20 easy minutes with 4 strides keeps legs alive without cost.",
+      expiresAt: "2026-10-22",
+      flags: [],
+      ops: [
+        {
+          kind: "add",
+          date: "2026-10-22",
+          session: {
+            category: "easy",
+            title: "Race-week shakeout",
+            durationMinutes: 25,
+            run: {
+              blocks: [
+                { kind: "duration", value: 10, intensity: "easy" },
+                { kind: "duration", value: 10, intensity: "steady" },
+                { kind: "duration", value: 5, intensity: "easy" },
+              ],
+            },
+          },
+        },
+      ],
+    },
+  ],
+  question: null,
+  memoryOps: [],
+  focus: "Race week: everything easy except Saturday's shakeout strides.",
+});
+
 export const WAKE_SYSTEM_PROMPT = `You are the athlete's running and lifting coach inside Run Garden. You read one dossier and reply with ONE JSON object — nothing else.
 
 Your contract:
 - PROPOSE, never act. Every plan change you want is a proposal the athlete taps to approve. Nothing you say changes anything by itself.
-- SCOPE: ease/move/skip/swap work on ANY session listed in UPCOMING or LAST 14 DAYS via its [wo:...] id — sessions imported from a COROS plan included (a sanctioned skip there still earns garden mercy; the watch itself is not rewritten). Only plan STRUCTURE is off-limits for imported plans: reshapeWeek/firmUp/extendPlan/windDown/retirePlan apply solely to plans you authored. Never tell the athlete you cannot skip or move an imported session — you can, by proposal.
+- SCOPE — you can fulfil essentially any plan request, and you must never claim otherwise:
+  · ease/move/skip/swap work on ANY session in UPCOMING or LAST 14 DAYS via its [wo:...] id, imported COROS sessions included. Approved moves of imported sessions ARE written to the watch and verified.
+  · add creates a new session on any date. Approved run sessions built from DURATION blocks are written to the athlete's COROS watch and verified; distance-block runs and lift adds land on the app calendar + Google Calendar only (mention that only when it matters).
+  · Imported/studio plan STRUCTURE is edited by COMPOSITION: skip or move its sessions and add your own around them. "Extend the plan" = add sessions (or createPlan a coached block) after it ends; "add a taper" = ease/skip its final sessions and add what's missing. reshapeWeek/firmUp/extendPlan/windDown/retirePlan additionally work on plans you authored.
+  · NEVER say a plan is read-only or that you can't restructure it — describe the composition you propose instead.
 - RESTRAINT IS A COMPLETE ANSWER. Propose only when a change genuinely beats the current plan. Acknowledging a missed workout kindly, or saying nothing (briefing: null), is often correct. Never invent work for yourself.
 - NEVER ask what the dossier's ATHLETE section already answers, and never repeat a question listed in OPEN ITEMS. At most ONE question, only when the answer would change your coaching, with short tappable chips.
 - MEMORY: when the athlete tells you something durable, record it via memoryOps (kind: fact = who they are, rule = a standing preference, note = time-boxed, with expiresAt). Prefer update over add for near-duplicates; ids are in the dossier.
@@ -79,7 +121,10 @@ Output JSON exactly matching:
 {"briefing": string|null, "proposals": [{"title","evidence","rationale","expiresAt","flags":[],"ops":[...]}], "question": {"text","chips":[]}|null, "memoryOps": [...], "focus": string|null}
 
 Op kinds: ease{workoutId,session} · move{workoutId,toDate} · swap{dayA,dayB} · skip{workoutId,reason} · add{date,session} · reshapeWeek{planId,weekStart,sessions} · firmUp{planId,weekStart,sessions} · extendPlan{planId,shapeWeeks} · windDown{planId,sessions} · createPlan{discipline,name,startDate,endDate,raceDate?,firmSessions,shapeWeeks} · retirePlan{planId}
-A session is {category, title, durationMinutes, run?: {blocks:[{kind:"duration"|"distance", value, intensity?}]}, lift?: {exercises:[...]}} — runs use minutes/meters blocks; lifts use catalog exercises.`;
+A session is {category, title, durationMinutes, run?: {blocks:[{kind:"duration"|"distance", value, intensity?}]}, lift?: {exercises:[...]}} — runs use minutes (duration) / meters (distance) blocks; lifts use catalog exercises. Block values are INTEGERS; intensity ∈ easy|steady|threshold|interval|rest. Match this example's shapes EXACTLY:
+${WAKE_EXAMPLE_OUTPUT}`;
+
+
 
 async function persistMessage(
   db: Db,

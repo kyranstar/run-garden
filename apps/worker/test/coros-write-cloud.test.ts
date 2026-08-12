@@ -217,4 +217,74 @@ describe("executeCloudJobs", () => {
       .where(and(eq(schema.corosWriteJobs.userId, userId), eq(schema.corosWriteJobs.kind, "backfill")));
     expect(backfillJobs[0]!.status).toBe("queued"); // untouched, still the walker's
   });
+
+  it("executes a coach_create_workout on COROS and stamps the row with its watch address", async () => {
+    const db = makeTestDb();
+    const { userId, prefs } = await makeTestUser(db, { corosWritesEnabled: true });
+    const server = mockCorosServer();
+    await connect(db, userId, server);
+    const today = todayInZone(prefs.timezone);
+    const date = addDays(today, 3);
+    // The planned workout the coach's add op created…
+    await db.insert(schema.plannedWorkouts).values({
+      id: "wo-coach-add",
+      userId,
+      planId: "coach-adhoc",
+      sourceWorkoutId: "wo-coach-add",
+      title: "Race-week shakeout",
+      category: "easy",
+      sport: "run",
+      originalPlanDate: date,
+      lastVerifiedCorosDate: date,
+      effectiveDate: date,
+      effectiveTime: "07:00",
+      sourceContentFingerprint: "fp",
+      calendarBlockDurationSeconds: 1500,
+      corosSyncState: "calendar_only",
+      completionState: "scheduled",
+      createdAt: nowInstant(),
+      updatedAt: nowInstant(),
+    });
+    // …and its watch-push job.
+    await db.insert(schema.corosWriteJobs).values({
+      id: "wo-coach-add-push",
+      userId,
+      workoutId: "wo-coach-add",
+      kind: "coach_create_workout",
+      expectedContentFingerprint: "fp",
+      originalDate: date,
+      destinationDate: date,
+      payload: {
+        workoutId: "wo-coach-add",
+        happenDay: date,
+        name: "Race-week shakeout",
+        session: {
+          category: "easy",
+          title: "Race-week shakeout",
+          durationMinutes: 25,
+          run: { blocks: [{ kind: "duration", value: 25, intensity: "easy" }] },
+        },
+      },
+      requestedAt: nowInstant(),
+      status: "queued",
+      updatedAt: nowInstant(),
+    });
+
+    const res = await executeCloudJobs(db, makeEnv(), userId, prefs, { fetchImpl: server.fetchImpl });
+    expect(res.executed).toBe(1);
+    const [job] = await db
+      .select()
+      .from(schema.corosWriteJobs)
+      .where(eq(schema.corosWriteJobs.id, "wo-coach-add-push"));
+    expect(job!.status).toBe("verified");
+    const [wo] = await db
+      .select()
+      .from(schema.plannedWorkouts)
+      .where(eq(schema.plannedWorkouts.id, "wo-coach-add"));
+    expect(wo!.corosSyncState).toBe("synced");
+    expect(wo!.lastVerifiedCorosDate).toBe(date);
+    // The COROS address makes the session movable on the watch later.
+    expect(wo!.sourceWorkoutId).toContain(":");
+    expect(wo!.sourceIdInPlan).toBeTruthy();
+  });
 });

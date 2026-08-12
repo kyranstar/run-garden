@@ -289,7 +289,13 @@ function proposalActionErrorMessage(err: unknown): string {
  */
 function usePlanCoach() {
   const qc = useQueryClient();
-  const state = useQuery({ queryKey: ["coach-state"], queryFn: () => api.coachState() });
+  const state = useQuery({
+    queryKey: ["coach-state"],
+    queryFn: () => api.coachState(),
+    // While a wake runs server-side, poll until the reply lands — this is
+    // what keeps "Coach is thinking…" true across page navigations.
+    refetchInterval: (q) => (q.state.data?.coachThinking ? 3_000 : false),
+  });
   const invalidate = () => void qc.invalidateQueries({ queryKey: ["coach-state"] });
   const wakeMut = useMutation({ mutationFn: (force: boolean) => api.coachWake(force), onSettled: invalidate });
   const wakeFired = useRef(false);
@@ -408,7 +414,7 @@ function usePlanCoach() {
   });
   return {
     state,
-    busy: wakeMut.isPending || send.isPending || answer.isPending,
+    busy: wakeMut.isPending || send.isPending || answer.isPending || (state.data?.coachThinking ?? false),
     acting: approve.isPending || decline.isPending,
     proposalErrors,
     send: (b: string) => send.mutate({ localId: `local-${newLocalId()}`, body: b }),
