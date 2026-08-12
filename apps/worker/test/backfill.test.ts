@@ -187,4 +187,23 @@ describe("runBackfillChunkCloud (cloud-direct spec §3)", () => {
       .where(and(eq(schema.corosWriteJobs.userId, userId), eq(schema.corosWriteJobs.kind, "backfill")));
     expect(jobs.filter((j) => j.status === "queued")).toHaveLength(1);
   });
+
+  it("resumes a watchdog-errored walk whose job still sits queued (2026-08-12 incident)", async () => {
+    const db = makeTestDb();
+    const { userId, prefs } = await makeTestUser(db);
+    const today = todayInZone(prefs.timezone);
+    const coros = chunkCoros([addDays(today, -30)]);
+    await connectCoros(db, cloudEnv, userId, { email: "a@b.c", pwdMd5: "5f4dcc3b5aa765d61d8327deb882cf99", region: "us" }, coros.fetchImpl);
+    await enqueueBackfill(db, userId, today);
+    // The bridge-era wound: watchdog flipped state to error, job left queued.
+    await db
+      .update(schema.backfillState)
+      .set({ status: "error", lastErrorCategory: "bridge_never_claimed" })
+      .where(eq(schema.backfillState.userId, userId));
+
+    const res = await runBackfillChunkCloud(db, cloudEnv, userId, prefs, coros.fetchImpl);
+    expect(res.ran).toBe(true);
+    const state = (await db.select().from(schema.backfillState).where(eq(schema.backfillState.userId, userId)))[0]!;
+    expect(state.status).toBe("running"); // recordChunk revived the walk
+  });
 });

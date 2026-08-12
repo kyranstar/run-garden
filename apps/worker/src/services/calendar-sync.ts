@@ -3,6 +3,7 @@ import {
   calendarEventLinks,
   calendarEventSuppressions,
   plannedWorkouts,
+  providerConnections,
   providerCursorState,
   userPreferences,
 } from "@rg/database";
@@ -289,6 +290,16 @@ export async function syncCalendar(
       });
     }
   }
+
+  // A successful sync stamps the connection — before this, google
+  // last_sync_at was NEVER written (293 ok runs, still NULL) and Settings
+  // had no honest freshness to show.
+  await db
+    .update(providerConnections)
+    .set({ lastSyncAt: nowInstant(), lastErrorCategory: null, updatedAt: nowInstant() })
+    .where(
+      and(eq(providerConnections.userId, userId), eq(providerConnections.provider, "google_calendar")),
+    );
 
   return stats;
 }

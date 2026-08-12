@@ -60,19 +60,11 @@ export async function executeCloudJobs(
   let executed = 0;
   try {
     for (let i = 0; i < cap; i++) {
-      const job = await claimNextJob(db, userId, CLOUD_DEVICE_ID);
-      if (!job) break;
-
       // Backfill chunks have their own worker-side walker with pacing —
-      // release the claim untouched and stop; the walker owns the queue head
-      // until the chunk completes.
-      if (job.kind === "backfill") {
-        await db
-          .update(corosWriteJobs)
-          .set({ status: "queued", claimedByDeviceId: null, claimedAt: null, updatedAt: nowInstant() })
-          .where(eq(corosWriteJobs.id, job.id));
-        break;
-      }
+      // excluded at claim time so a queued backfill can never head-of-line-
+      // block moves and studio pushes (2026-08-12 incident).
+      const job = await claimNextJob(db, userId, CLOUD_DEVICE_ID, { excludeKinds: ["backfill"] });
+      if (!job) break;
 
       let outcome: Omit<CorosWriteResult, "deviceId" | "finishedAt" | "signature">;
       if (job.kind === "read_now") {

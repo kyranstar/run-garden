@@ -99,8 +99,10 @@ async function halfHourly(db: Db, env: Env): Promise<void> {
     try {
       const stats = await syncCalendar(db, env, userId);
       await finishSyncRun(db, runId, "ok", stats as unknown as Record<string, unknown>);
-    } catch {
-      await finishSyncRun(db, runId, "error");
+    } catch (e) {
+      // Record WHY — 187 consecutive bare errors made the dead Google token
+      // undiagnosable from the runs table alone.
+      await finishSyncRun(db, runId, "error", { message: String(e).slice(0, 200) });
     }
   }
   // Cloud-direct COROS pull (spec §3): replaces bridge snapshots for

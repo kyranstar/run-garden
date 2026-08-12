@@ -312,7 +312,15 @@ syncRoutes.get("/backfill-status", async (c) => {
     chunksCompleted: row?.chunksCompleted ?? 0,
     activitiesIngested: row?.activitiesIngested ?? 0,
     skippedSportTypes: row?.skippedSportTypes ?? {},
-    lastErrorCategory: row?.lastErrorCategory ?? null,
+    // Bridge-era categories still sit in stored rows; alias them so the UI's
+    // current branches (never_started | stalled) match instead of falling
+    // through to a generic line that misdescribes the walk.
+    lastErrorCategory:
+      row?.lastErrorCategory === "bridge_never_claimed"
+        ? "never_started"
+        : row?.lastErrorCategory === "bridge_stalled_mid_walk"
+          ? "stalled"
+          : (row?.lastErrorCategory ?? null),
     /** A live job means an errored/queued walk is still claimable — the UI
      * keeps polling on this even after a watchdog error. */
     jobQueued: newestJob?.status === "queued" || newestJob?.status === "claimed",

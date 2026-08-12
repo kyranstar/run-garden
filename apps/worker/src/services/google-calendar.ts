@@ -52,7 +52,20 @@ export async function googleCalendarClient(
   const ensureToken = async (): Promise<string> => {
     if (accessToken) return accessToken;
     const refresh = await decryptSecret(conn.encryptedRefreshToken!, env.TOKEN_ENCRYPTION_KEY);
-    const tokens = await refreshGoogleToken(env, refresh);
+    let tokens: Awaited<ReturnType<typeof refreshGoogleToken>>;
+    try {
+      tokens = await refreshGoogleToken(env, refresh);
+    } catch (e) {
+      // A dead refresh token (Google "Testing"-mode tokens expire after 7
+      // days) previously failed here invisibly, forever — 187 consecutive
+      // silent cron errors while Settings said "Connected". Park the row so
+      // the UI can say "reconnect".
+      await db
+        .update(providerConnections)
+        .set({ status: "error", lastErrorCategory: "token_expired", updatedAt: nowInstant() })
+        .where(eq(providerConnections.id, conn.id));
+      throw e;
+    }
     accessToken = tokens.access_token;
     await db
       .update(providerConnections)

@@ -250,11 +250,13 @@ function ConnectionsSection() {
         <div>
           <strong>Google Calendar</strong>
           <p className="faint">
-            {google?.status === "connected"
-              ? calendarChosen
-                ? "Connected · mirroring workouts"
-                : "Connected · choose a calendar to start mirroring"
-              : "Mirrors workouts with reminders"}
+            {google?.status === "error"
+              ? "Mirroring stopped — Google expired the connection. Reconnect to resume."
+              : google?.status === "connected"
+                ? calendarChosen
+                  ? `Connected · mirroring workouts${google.lastSyncAt ? ` · synced ${relativeTime(google.lastSyncAt)}` : ""}`
+                  : "Connected · choose a calendar to start mirroring"
+                : "Mirrors workouts with reminders"}
           </p>
         </div>
         {google?.status === "connected" ? (
@@ -270,7 +272,7 @@ function ConnectionsSection() {
           </div>
         ) : (
           <a className="btn btn-small" href="/api/auth/google/start?mode=calendar&redirect=/settings">
-            Connect
+            {google?.status === "error" ? "Reconnect" : "Connect"}
           </a>
         )}
       </div>

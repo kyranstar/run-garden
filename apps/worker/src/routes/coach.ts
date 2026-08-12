@@ -1,5 +1,5 @@
 import { Hono } from "hono";
-import { and, desc, eq, isNull, lt } from "drizzle-orm";
+import { and, desc, eq, gte, isNull, lt } from "drizzle-orm";
 import {
   activities,
   coachMemory,
@@ -11,6 +11,7 @@ import {
   plannedWorkouts,
   studioPlans,
   studioPlanPushes,
+  trainingPlans,
   workoutCompletionMatches,
 } from "@rg/database";
 import {
@@ -329,19 +330,73 @@ coachRoutes.get("/plans", async (c) => {
         .where(and(eq(studioPlanPushes.planId, studio.id), eq(studioPlanPushes.status, "verified")))
         .limit(1)
     )[0];
+    // Real span from the brief the plan was generated with — createdAt-based
+    // dates rendered "wk 1/1 · ends <creation day>" for a 16-week plan that
+    // hadn't even started (2026-08-12 audit finding 6).
+    const brief = studio.brief as { startDate?: string; durationWeeks?: number } | null;
+    const start = brief?.startDate ?? studio.createdAt.slice(0, 10);
+    const weeks = Math.max(1, brief?.durationWeeks ?? 1);
+    const end = addDays(startOfIsoWeek(start), weeks * 7 - 1);
     studioEntries.push({
       id: studio.id,
       discipline: "lift" as const,
       name: ((studio.plan as { name?: string })?.name ?? "Lifting plan"),
       status: (pushed ? "active" : "draft") as "active" | "draft",
-      startDate: studio.createdAt.slice(0, 10),
-      endDate: studio.createdAt.slice(0, 10),
+      startDate: start,
+      endDate: end,
       raceDate: null,
       source: "studio" as const,
     });
   }
+
+  // The imported COROS plan IS the user's running plan — a page that shows
+  // its 35 workouts while the run slot claims "no plan" denies reality
+  // (audit finding 6). Read-only card: the app doesn't author these.
+  const today = todayInZone((await loadPreferences(db, userId)).timezone);
+  const corosPlans = await db
+    .select()
+    .from(trainingPlans)
+    .where(
+      and(
+        eq(trainingPlans.userId, userId),
+        eq(trainingPlans.status, "active"),
+        eq(trainingPlans.provider, "coros"),
+      ),
+    );
+  const corosEntries = [];
+  for (const p of corosPlans) {
+    // Only plans that still own live, unarchived scheduled work.
+    const [owns] = await db
+      .select({ id: plannedWorkouts.id })
+      .from(plannedWorkouts)
+      .where(
+        and(
+          eq(plannedWorkouts.userId, userId),
+          eq(plannedWorkouts.planId, p.id),
+          isNull(plannedWorkouts.archivedAt),
+          gte(plannedWorkouts.effectiveDate, addDays(today, -7)),
+        ),
+      )
+      .limit(1);
+    if (!owns) continue;
+    corosEntries.push({
+      id: p.id,
+      discipline: "run" as const,
+      name: humanizeWorkoutTitle(p.name, "easy", null),
+      status: "active" as const,
+      startDate: p.startDate ?? today,
+      endDate: p.endDate ?? today,
+      raceDate: null,
+      source: "coros" as const,
+    });
+  }
+
   return c.json({
-    plans: [...rows.map((r) => ({ ...r, source: "coach" as const })), ...studioEntries],
+    plans: [
+      ...rows.map((r) => ({ ...r, source: "coach" as const })),
+      ...studioEntries,
+      ...corosEntries,
+    ],
   });
 });
 

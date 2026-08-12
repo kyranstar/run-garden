@@ -13,11 +13,13 @@ export function progressionHeadline(p: PlanProgression): string {
   return `${p.label} ${p.from} → ${p.to} ${p.unit}${now}`;
 }
 
-/** wk n/m from detail weeks when loaded, date arithmetic as the fallback. */
+/** wk n/m from detail weeks when loaded, date arithmetic as the fallback.
+ * `into: 0` = the plan hasn't started yet — render "starts <date>". */
 function weekLabel(plan: CoachPlanDto, detail?: PlanDetailResponse): { into: number; total: number } {
   const current = detail?.weeks.find((w) => w.current);
   if (current && detail) return { into: current.index, total: detail.weeks.length };
   const total = Math.max(1, Math.round((Date.parse(plan.endDate) - Date.parse(plan.startDate)) / 604_800_000));
+  if (Date.now() < Date.parse(plan.startDate)) return { into: 0, total };
   const into = Math.min(total, Math.max(1, Math.ceil((Date.now() - Date.parse(plan.startDate)) / 604_800_000)));
   return { into, total };
 }
@@ -80,23 +82,36 @@ export function PlanCards({
         const detail = details.get(p.id);
         const { into, total } = weekLabel(p, detail);
         const prog = detail?.progressions[0];
+        // COROS-authored plans are read-only facts — there is no studio modal
+        // behind them, so the card informs without pretending to open.
+        const Tag = p.source === "coros" ? "div" : "button";
         return (
-          <button key={p.id} type="button" className="card plan-card" onClick={() => onOpen(p.id)}>
+          <Tag
+            key={p.id}
+            {...(p.source === "coros" ? {} : { type: "button" as const, onClick: () => onOpen(p.id) })}
+            className="card plan-card"
+          >
             <span className="plan-card-top">
               <span className={`pill ${p.discipline === "lift" ? "pill-lift" : "pill-run"}`}>
                 {p.discipline === "lift" ? "Lift" : "Run"}
               </span>
               <span className={`pill ${p.status === "active" ? "pill-ok" : "pill-neutral"}`}>
-                {p.source === "studio" && p.status === "draft" ? "draft — not on watch" : STATUS_LABEL[p.status]}
+                {p.source === "coros"
+                  ? "from COROS"
+                  : p.source === "studio" && p.status === "draft"
+                    ? "draft — not on watch"
+                    : STATUS_LABEL[p.status]}
               </span>
             </span>
             <span className="plan-card-name">{p.name}</span>
             <span className="plan-card-prog">
-              <span className="faint num">wk {into}/{total}</span>
+              <span className="faint num">{into === 0 ? `${total} wk plan` : `wk ${into}/${total}`}</span>
               <span className={`plan-card-track ${p.discipline === "lift" ? "is-lift" : ""}`}>
                 <i style={{ width: `${Math.round((into / total) * 100)}%` }} />
               </span>
-              <span className="faint num">ends {formatShortDate(p.endDate)}</span>
+              <span className="faint num">
+                {into === 0 ? `starts ${formatShortDate(p.startDate)}` : `ends ${formatShortDate(p.endDate)}`}
+              </span>
             </span>
             {prog ? (
               <span className="plan-card-headline">
@@ -104,7 +119,7 @@ export function PlanCards({
                 <Sparkline progression={prog} discipline={p.discipline} />
               </span>
             ) : null}
-          </button>
+          </Tag>
         );
       })}
       {missing.map((d) => (

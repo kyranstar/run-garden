@@ -489,6 +489,9 @@ export function PlanScreen() {
       queryKey: ["plan-detail", p.id],
       queryFn: () => api.planDetail(p.id),
       staleTime: 60_000,
+      // COROS-imported plans have no studio/coach detail behind them —
+      // fetching would just 404 on every Plan visit.
+      enabled: p.source !== "coros",
     })),
   });
   const detailById = useMemo(() => {

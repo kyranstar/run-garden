@@ -300,9 +300,10 @@ export interface CoachPlanDto {
   startDate: string;
   endDate: string;
   raceDate: string | null;
-  /** Who authored it: the coach, or the Studio (lifting plans written to
-   * COROS). Absent in older payloads — treat as "coach". */
-  source?: "coach" | "studio";
+  /** Who authored it: the coach, the Studio (lifting plans written to
+   * COROS), or COROS itself (imported plans — read-only cards). Absent in
+   * older payloads — treat as "coach". */
+  source?: "coach" | "studio" | "coros";
 }
 
 /** One pickable week + the brief's facts (rework spec §4). */

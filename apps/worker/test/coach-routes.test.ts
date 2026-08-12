@@ -306,6 +306,71 @@ describe("GET /plans — studio union (user-nits fix)", () => {
       status: "active",
     });
   });
+
+  it("studio dates come from the BRIEF, not createdAt (audit finding 6: 'wk 1/1 ends Aug 3')", async () => {
+    await db.insert(schema.studioPlans).values({
+      id: "sp-brief",
+      userId,
+      brief: { startDate: "2026-08-17", durationWeeks: 16 },
+      plan: { name: "16-Week Posterior Chain" },
+      version: 1,
+      createdAt: "2026-08-03T00:00:00.000Z",
+      updatedAt: "2026-08-03T00:00:00.000Z",
+    });
+    const res = (await (await client().get("/api/coach/plans")).json()) as {
+      plans: Array<{ id: string; startDate: string; endDate: string; source?: string }>;
+    };
+    const row = res.plans.find((p) => p.id === "sp-brief")!;
+    expect(row.startDate).toBe("2026-08-17");
+    expect(row.endDate).toBe("2026-12-06"); // Mon 08-17 + 16*7 - 1
+  });
+
+  it("an active COROS training plan with live workouts surfaces as a read-only run card (audit finding 6)", async () => {
+    const today = todayInZone("America/Los_Angeles");
+    await db.insert(schema.trainingPlans).values({
+      id: "tp-10k",
+      userId,
+      provider: "coros",
+      sourcePlanId: "4738",
+      name: "10K Training Plan",
+      startDate: addDays(today, -21),
+      endDate: addDays(today, 42),
+      status: "active",
+      createdAt: nowInstant(),
+      updatedAt: nowInstant(),
+    });
+    await db.insert(schema.plannedWorkouts).values({
+      id: "wo-live",
+      userId,
+      planId: "tp-10k",
+      sourceWorkoutId: "4738:1",
+      title: "Long Run",
+      category: "long",
+      sport: "run",
+      originalPlanDate: addDays(today, 3),
+      lastVerifiedCorosDate: addDays(today, 3),
+      effectiveDate: addDays(today, 3),
+      effectiveTime: "07:00",
+      sourceContentFingerprint: "fp",
+      calendarBlockDurationSeconds: 3600,
+      completionState: "scheduled",
+      createdAt: nowInstant(),
+      updatedAt: nowInstant(),
+    });
+    const res = (await (await client().get("/api/coach/plans")).json()) as {
+      plans: Array<{ id: string; discipline: string; source?: string; name: string }>;
+    };
+    const coros = res.plans.find((p) => p.source === "coros")!;
+    expect(coros).toMatchObject({ id: "tp-10k", discipline: "run", name: "10K Training Plan" });
+
+    // Archived-only plans stay off the shelf.
+    await db
+      .update(schema.plannedWorkouts)
+      .set({ archivedAt: nowInstant() })
+      .where(eq(schema.plannedWorkouts.id, "wo-live"));
+    const after = (await (await client().get("/api/coach/plans")).json()) as typeof res;
+    expect(after.plans.find((p) => p.source === "coros")).toBeUndefined();
+  });
 });
 
 describe("analyze — read-through on the ledger (2026-08-11 rework §2)", () => {

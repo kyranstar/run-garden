@@ -181,4 +181,40 @@ describe("executeCloudJobs", () => {
     ]);
     expect(a.executed + b.executed).toBe(1);
   });
+
+  it("a permanently-queued backfill job never blocks other writes (2026-08-12 incident)", async () => {
+    const db = makeTestDb();
+    const { userId, prefs } = await makeTestUser(db, { corosWritesEnabled: true });
+    const server = mockCorosServer();
+    await connect(db, userId, server);
+    // The stuck head: a backfill job queued BEFORE the move (older requestedAt).
+    const today = todayInZone(prefs.timezone);
+    await enqueueBackfill(db, userId, today);
+    await db
+      .update(schema.corosWriteJobs)
+      .set({ requestedAt: "2026-08-12T03:24:00.000Z" })
+      .where(eq(schema.corosWriteJobs.kind, "backfill"));
+    const { id, iso } = await seedServerWorkout(db, userId, server);
+    const moved = await applyMove(db, {
+      userId,
+      workoutId: id,
+      toDate: addDays(iso, 2),
+      toTime: "07:00",
+      source: "app",
+      corosWritesEnabled: true,
+    });
+
+    const res = await executeCloudJobs(db, makeEnv(), userId, prefs, { fetchImpl: server.fetchImpl });
+    expect(res.executed).toBe(1); // the MOVE ran despite the older queued backfill
+    const [moveJob] = await db
+      .select()
+      .from(schema.corosWriteJobs)
+      .where(eq(schema.corosWriteJobs.id, moved.jobId!));
+    expect(["verified", "completed"]).toContain(moveJob!.status);
+    const backfillJobs = await db
+      .select()
+      .from(schema.corosWriteJobs)
+      .where(and(eq(schema.corosWriteJobs.userId, userId), eq(schema.corosWriteJobs.kind, "backfill")));
+    expect(backfillJobs[0]!.status).toBe("queued"); // untouched, still the walker's
+  });
 });

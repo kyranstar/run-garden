@@ -1,4 +1,4 @@
-import { and, desc, eq, gte, inArray, lte, sql } from "drizzle-orm";
+import { and, desc, eq, gte, inArray, isNull, lte, sql } from "drizzle-orm";
 import {
   activities,
   coachMemory,
@@ -105,6 +105,7 @@ export async function buildDossier(
       .where(
         and(
           eq(plannedWorkouts.userId, userId),
+          isNull(plannedWorkouts.archivedAt),
           gte(plannedWorkouts.effectiveDate, p.startDate),
           lte(plannedWorkouts.effectiveDate, today),
         ),
@@ -149,6 +150,10 @@ export async function buildDossier(
     .where(
       and(
         eq(plannedWorkouts.userId, userId),
+        // Archived rows are invisible on the Plan page — a dossier that
+        // includes them has the coach anchoring on phantom sessions
+        // (2026-08-12 audit finding 7).
+        isNull(plannedWorkouts.archivedAt),
         gte(plannedWorkouts.effectiveDate, today),
         lte(plannedWorkouts.effectiveDate, addDays(today, 14)),
       ),
@@ -170,7 +175,7 @@ export async function buildDossier(
   const recentWorkouts = await db
     .select()
     .from(plannedWorkouts)
-    .where(and(eq(plannedWorkouts.userId, userId), gte(plannedWorkouts.effectiveDate, since14), lte(plannedWorkouts.effectiveDate, today)))
+    .where(and(eq(plannedWorkouts.userId, userId), isNull(plannedWorkouts.archivedAt), gte(plannedWorkouts.effectiveDate, since14), lte(plannedWorkouts.effectiveDate, today)))
     .orderBy(plannedWorkouts.effectiveDate);
   const recentActs = await db
     .select()

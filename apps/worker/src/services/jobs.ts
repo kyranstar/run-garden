@@ -1,4 +1,4 @@
-import { and, desc, eq, inArray, lt } from "drizzle-orm";
+import { and, desc, eq, inArray, lt, notInArray } from "drizzle-orm";
 import {
   auditEvents,
   backfillState,
@@ -273,6 +273,7 @@ export async function claimNextJob(
   db: Db,
   userId: string,
   deviceId: string,
+  opts: { excludeKinds?: readonly string[] } = {},
 ): Promise<
   | (typeof corosWriteJobs.$inferSelect & {
       workout: typeof plannedWorkouts.$inferSelect | null;
@@ -292,10 +293,20 @@ export async function claimNextJob(
       ),
     );
 
+  // excludeKinds exists because a permanently-queued job of a foreign kind
+  // (the 2026-08-12 stuck backfill) must never head-of-line-block executors
+  // that don't handle it — the filter has to be claim-side, a caller-side
+  // skip would just re-claim the same head forever.
   const queued = await db
     .select()
     .from(corosWriteJobs)
-    .where(and(eq(corosWriteJobs.userId, userId), eq(corosWriteJobs.status, "queued")))
+    .where(
+      and(
+        eq(corosWriteJobs.userId, userId),
+        eq(corosWriteJobs.status, "queued"),
+        ...(opts.excludeKinds?.length ? [notInArray(corosWriteJobs.kind, [...opts.excludeKinds])] : []),
+      ),
+    )
     .orderBy(corosWriteJobs.requestedAt)
     .limit(1);
   const job = queued[0];

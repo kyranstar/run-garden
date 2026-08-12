@@ -317,7 +317,12 @@ export async function runBackfillChunkCloud(
   const state = (
     await db.select().from(backfillState).where(eq(backfillState.userId, userId)).limit(1)
   )[0];
-  if (!state || (state.status !== "running" && state.status !== "queued")) return { ran: false };
+  // "error" is served too: a watchdog-errored walk whose job still sits
+  // queued (the bridge-era stuck state, 2026-08-12) resumes by itself once a
+  // cloud connection exists — recordChunk revives the state to "running".
+  // With no live job the next SELECT returns nothing and we exit anyway.
+  if (!state || (state.status !== "running" && state.status !== "queued" && state.status !== "error"))
+    return { ran: false };
 
   const [job] = await db
     .select()
