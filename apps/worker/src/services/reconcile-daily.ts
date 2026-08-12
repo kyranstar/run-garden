@@ -103,6 +103,24 @@ export async function startSyncRun(
   return id;
 }
 
+/** Close out sync_runs stranded in 'running' by a deploy or isolate death
+ * (audit finding 16): 16 such rows sat forever with no sweeper. Two hours is
+ * far beyond any legitimate run. */
+export async function closeStrandedSyncRuns(db: Db): Promise<number> {
+  const cutoff = new Date(Date.now() - 2 * 3600 * 1000).toISOString();
+  const stranded = await db
+    .select({ id: syncRuns.id })
+    .from(syncRuns)
+    .where(and(eq(syncRuns.status, "running"), lt(syncRuns.startedAt, cutoff)));
+  for (const r of stranded) {
+    await db
+      .update(syncRuns)
+      .set({ status: "error", finishedAt: nowInstant(), stats: { interrupted: true } })
+      .where(eq(syncRuns.id, r.id));
+  }
+  return stranded.length;
+}
+
 export async function finishSyncRun(
   db: Db,
   id: string,

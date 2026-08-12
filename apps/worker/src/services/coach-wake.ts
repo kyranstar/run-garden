@@ -1,4 +1,4 @@
-import { and, desc, eq, sql } from "drizzle-orm";
+import { and, desc, eq, isNull, sql } from "drizzle-orm";
 import {
   coachMemory,
   coachMessages,
@@ -46,7 +46,7 @@ export type WakeCause =
   | { kind: "manual" }; // user-invoked check-in: never skipped, still budget-gated
 
 export interface WakeResult {
-  status: "ok" | "skipped" | "resting" | "error";
+  status: "ok" | "skipped" | "busy" | "resting" | "error";
   coachMessageId?: string;
   proposalIds?: string[];
 }
@@ -308,10 +308,17 @@ export async function wake(
 
   // Single-flight (rework spec R2): claimed AFTER the cheap gates so quiet
   // opens never touch the lock, and AFTER the user's words are persisted so
-  // a lost race can't drop them — the holder's refetch will show the message
-  // and the next wake's dossier tail carries it.
-  const lock = await claimUserLock(db, userId, "wake");
-  if (!lock) return { status: "skipped" };
+  // a lost race can't drop them. A MESSAGE deserves a reply, though — the
+  // user is watching (audit finding 16): wait out the holder for up to a
+  // minute before giving up with an honest "busy" the client can surface.
+  let lock = await claimUserLock(db, userId, "wake");
+  if (!lock && cause.kind === "message") {
+    for (let i = 0; i < 12 && !lock; i++) {
+      await new Promise((r) => setTimeout(r, 5_000));
+      lock = await claimUserLock(db, userId, "wake");
+    }
+  }
+  if (!lock) return { status: cause.kind === "message" ? "busy" : "skipped" };
 
   try {
     const dossier = await buildDossier(db, userId, prefs);
@@ -469,6 +476,18 @@ export async function wake(
       } else {
         await db.update(coachMemory).set({ active: false }).where(and(eq(coachMemory.id, m.id), eq(coachMemory.userId, userId)));
       }
+    }
+
+    // A message-cause wake CLOSES any open question (audit finding 9): the
+    // user replied in prose — the coach saw the question in its dossier and
+    // captured whatever answer arrived via memoryOps. Before this, only the
+    // chip endpoint could close a question, so one free-text reply pinned
+    // the chips forever and hasOpen blocked every future question.
+    if (cause.kind === "message") {
+      await db
+        .update(coachQuestions)
+        .set({ answeredAt: now })
+        .where(and(eq(coachQuestions.userId, userId), isNull(coachQuestions.answeredAt)));
     }
 
     // Question: at most one open; exact-duplicate defense.

@@ -7,7 +7,7 @@
  * tests exist to prove the HTTP wiring, not re-derive service behavior.
  */
 
-import { beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { eq } from "drizzle-orm";
 import { schema } from "@rg/database";
 import { newId, nowInstant, todayInZone, type LiftingPlan, type PlanBrief } from "@rg/domain";
@@ -23,6 +23,9 @@ import { openIntentFor, recordIntent } from "../src/services/sync-intents.js";
 import { computeSyncStatus } from "../src/services/sync-status.js";
 import { pushStudioPlan } from "../src/services/studio-push.js";
 import { makeTestDb, makeTestUser, mountRoutes, connectTestCoros } from "./helpers.js";
+import { createHash } from "node:crypto";
+import { mockCorosServer } from "../../../packages/coros/test/mock-coros-server.js";
+import { connectCoros } from "../src/services/coros-connection.js";
 
 const { corosWriteJobs, plannedWorkouts, studioPlanPushes, studioPlans, syncIntents, syncRuns, trainingPlans } =
   schema;
@@ -35,12 +38,16 @@ function makeEnv(): Env {
     FIXTURE_MODE: "0",
     AI_DEFAULT_ENABLED: "1",
     SESSION_SECRET: "test-session-secret",
-    TOKEN_ENCRYPTION_KEY: "test-token-encryption-key",
+    TOKEN_ENCRYPTION_KEY: Buffer.alloc(32, 7).toString("base64"),
     ALLOWED_GOOGLE_EMAIL: "runner@example.com",
     GOOGLE_CLIENT_ID: "test-client-id",
     GOOGLE_CLIENT_SECRET: "test-client-secret",
   };
 }
+
+afterEach(() => {
+  vi.unstubAllGlobals();
+});
 
 let db: Db;
 let userId: string;
@@ -405,75 +412,38 @@ describe("POST /api/sync/retry", () => {
 });
 
 describe("POST /api/sync/read-now", () => {
-  it("enqueues a read_now job when nothing recent or in-flight exists", async () => {
+  // Audit finding 11: this route is a thin wrap over the IMMEDIATE cloud
+  // pull now — the old body queued a job only the hourly cron drained
+  // (observed 33.7h latency).
+  it("without a COROS connection: honest not_connected, no job minted", async () => {
     const res = await client().post("/api/sync/read-now");
     expect(res.status).toBe(200);
-    const body = (await res.json()) as { enqueued: boolean; lastCorosReadAt: string | null };
-    expect(body.enqueued).toBe(true);
-    expect(body.lastCorosReadAt).toBeNull();
-
-    const jobs = await db.select().from(corosWriteJobs).where(eq(corosWriteJobs.userId, userId));
-    const readJobs = jobs.filter((j) => j.kind === "read_now");
-    expect(readJobs).toHaveLength(1);
-    expect(readJobs[0]!.status).toBe("queued");
-  });
-
-  it("dedupes: a second call while one is already queued does not insert another", async () => {
-    await client().post("/api/sync/read-now");
-    const res = await client().post("/api/sync/read-now");
-    expect(((await res.json()) as { enqueued: boolean }).enqueued).toBe(false);
-
-    const jobs = await db.select().from(corosWriteJobs).where(eq(corosWriteJobs.userId, userId));
-    expect(jobs.filter((j) => j.kind === "read_now")).toHaveLength(1);
-  });
-
-  it("dedupes against a claimed read_now job too", async () => {
-    await client().post("/api/sync/read-now");
-    const jobs = await db.select().from(corosWriteJobs).where(eq(corosWriteJobs.userId, userId));
-    await db
-      .update(corosWriteJobs)
-      .set({ status: "claimed" })
-      .where(eq(corosWriteJobs.id, jobs[0]!.id));
-
-    const res = await client().post("/api/sync/read-now");
-    expect(((await res.json()) as { enqueued: boolean }).enqueued).toBe(false);
-    const after = await db.select().from(corosWriteJobs).where(eq(corosWriteJobs.userId, userId));
-    expect(after.filter((j) => j.kind === "read_now")).toHaveLength(1);
-  });
-
-  it("skips enqueue when the latest ok coros_read run finished under 5 minutes ago", async () => {
-    const finishedAt = new Date(Date.now() - 60_000).toISOString();
-    await db.insert(syncRuns).values({
-      id: newId(),
-      userId,
-      kind: "coros_read",
-      startedAt: finishedAt,
-      finishedAt,
-      status: "ok",
-    });
-
-    const res = await client().post("/api/sync/read-now");
-    const body = (await res.json()) as { enqueued: boolean; lastCorosReadAt: string | null };
+    const body = (await res.json()) as { enqueued: boolean; status: string };
     expect(body.enqueued).toBe(false);
-    expect(body.lastCorosReadAt).toBe(finishedAt);
-
+    expect(body.status).toBe("not_connected");
     const jobs = await db.select().from(corosWriteJobs).where(eq(corosWriteJobs.userId, userId));
-    expect(jobs.filter((j) => j.kind === "read_now")).toHaveLength(0);
+    expect(jobs).toHaveLength(0);
   });
 
-  it("enqueues when the latest ok coros_read run is 5+ minutes old", async () => {
-    const finishedAt = new Date(Date.now() - 6 * 60_000).toISOString();
-    await db.insert(syncRuns).values({
-      id: newId(),
+  it("performs the pull inline against COROS and reports the fresh stamp", async () => {
+    const server = mockCorosServer();
+    const pwdMd5 = createHash("md5").update(server.password, "utf8").digest("hex");
+    await connectCoros(
+      db,
+      makeEnv(),
       userId,
-      kind: "coros_read",
-      startedAt: finishedAt,
-      finishedAt,
-      status: "ok",
-    });
-
+      { email: server.email, pwdMd5, region: "us" },
+      server.fetchImpl,
+    );
+    vi.stubGlobal("fetch", server.fetchImpl);
     const res = await client().post("/api/sync/read-now");
-    expect(((await res.json()) as { enqueued: boolean }).enqueued).toBe(true);
+    const body = (await res.json()) as { status: string; lastCorosReadAt: string | null };
+    expect(body.status).toBe("ok");
+    expect(body.lastCorosReadAt).not.toBeNull();
+
+    // Inside the 90s freshness window a second call is free.
+    const again = (await (await client().post("/api/sync/read-now")).json()) as { status: string };
+    expect(again.status).toBe("fresh");
   });
 });
 

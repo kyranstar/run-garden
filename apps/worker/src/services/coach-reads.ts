@@ -73,10 +73,17 @@ function localDateOf(a: { startTime: string; startTimeLocal: string | null }): s
 export async function enqueueCoachReads(db: Db, userId: string, today: LocalDate): Promise<number> {
   const cutoff = addDays(today, -READ_WINDOW_DAYS);
   const acts = await db
-    .select({ id: activities.id, startTime: activities.startTime, startTimeLocal: activities.startTimeLocal })
+    .select({
+      id: activities.id,
+      startTime: activities.startTime,
+      startTimeLocal: activities.startTimeLocal,
+      durationSeconds: activities.durationSeconds,
+    })
     .from(activities)
     .where(eq(activities.userId, userId));
-  const recent = acts.filter((a) => localDateOf(a) >= cutoff);
+  // Sub-5-minute fragments (a 200m walk to the trailhead) don't earn a paid
+  // Opus read (audit finding 14).
+  const recent = acts.filter((a) => localDateOf(a) >= cutoff && (a.durationSeconds ?? 0) >= 300);
   if (recent.length === 0) return 0;
   const existing = new Set(
     (
@@ -155,6 +162,15 @@ async function claimRead(
 ): Promise<string | null> {
   const staleBefore = new Date(Date.parse(now) - READ_RECLAIM_MINUTES * 60_000).toISOString();
   if (row.status !== "queued" && !(row.status === "running" && (row.claimedAt ?? "") < staleBefore)) {
+    return null;
+  }
+  // A row whose claims alone exhausted the attempt budget is failed, not
+  // reclaimed forever (audit finding 14) — only failRead enforced the cap.
+  if (row.attempt >= READ_MAX_ATTEMPTS) {
+    await db
+      .update(coachReads)
+      .set({ status: "failed", claimToken: null, claimedAt: null })
+      .where(and(eq(coachReads.id, row.id), eq(coachReads.status, row.status)));
     return null;
   }
   const token = newId();
@@ -323,12 +339,20 @@ export async function processCoachReads(
   prefs: UserPreferences,
   opts: { cap?: number; fetchImpl?: typeof fetch } = {},
 ): Promise<{ processed: number; skipped: ReadGateReason | "budget_reserve" | null }> {
-  const cap = opts.cap ?? 2;
   const fetchImpl = opts.fetchImpl ?? fetch;
   const gate = gateReason(env, prefs);
   if (gate) return { processed: 0, skipped: gate };
   const budget = await llmBudgetStatus(db, userId);
   if (budget.spentMicros >= AUTO_READ_RESERVE_MICROS) return { processed: 0, skipped: "budget_reserve" };
+
+  // The cap scales with the backlog (audit finding 14): a hard 2/hour made a
+  // 12-read connect backlog take six hours. min(6, queued) keeps a single
+  // drain bounded while clearing a deep queue in a tick or two.
+  const backlog = await db
+    .select({ id: coachReads.id })
+    .from(coachReads)
+    .where(and(eq(coachReads.userId, userId), eq(coachReads.status, "queued")));
+  const cap = opts.cap ?? Math.max(2, Math.min(6, backlog.length));
 
   let processed = 0;
   for (let i = 0; i < cap; i++) {
@@ -339,9 +363,11 @@ export async function processCoachReads(
       .where(and(eq(coachReads.userId, userId), lte(coachReads.nextAttemptAt, now)))
       .orderBy(coachReads.createdAt);
     const staleBefore = new Date(Date.parse(now) - READ_RECLAIM_MINUTES * 60_000).toISOString();
-    const candidate = due.find(
-      (r) => r.status === "queued" || (r.status === "running" && (r.claimedAt ?? "") < staleBefore),
-    );
+    // Stale-running rows FIRST, explicitly — a read that died mid-LLM-call
+    // used to recover last by accident of index order (audit finding 14).
+    const candidate =
+      due.find((r) => r.status === "running" && (r.claimedAt ?? "") < staleBefore) ??
+      due.find((r) => r.status === "queued");
     if (!candidate) break;
     const token = await claimRead(db, userId, candidate, now);
     if (!token) continue; // lost the race for this row — try the next

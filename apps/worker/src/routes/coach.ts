@@ -65,6 +65,25 @@ async function receipt(
   });
 }
 
+/** Auto-expire questions nobody answered for 72h (audit finding 9): a
+ * stale question pins its chips above the composer forever AND blocks the
+ * coach from asking anything new (`hasOpen`). Expiry writes a receipt so
+ * the disappearance is explained. */
+export async function sweepStaleQuestions(db: Db, userId: string, now: string): Promise<number> {
+  const cutoff = new Date(Date.parse(now) - 72 * 3600 * 1000).toISOString();
+  const stale = await db
+    .select()
+    .from(coachQuestions)
+    .where(
+      and(eq(coachQuestions.userId, userId), isNull(coachQuestions.answeredAt), lt(coachQuestions.askedAt, cutoff)),
+    );
+  for (const q of stale) {
+    await db.update(coachQuestions).set({ answeredAt: now }).where(eq(coachQuestions.id, q.id));
+    await receipt(db, userId, `Question expired — ask me anytime: ${q.body}`);
+  }
+  return stale.length;
+}
+
 /** Expire pending proposals whose day passed or TTL lapsed (spec §3). */
 export async function sweepExpiredProposals(db: Db, userId: string, today: string): Promise<number> {
   const stale = await db
@@ -94,6 +113,7 @@ coachRoutes.get("/state", async (c) => {
   const prefs = await loadPreferences(db, userId);
   const today = todayInZone(prefs.timezone);
   await sweepExpiredProposals(db, userId, today);
+  await sweepStaleQuestions(db, userId, nowInstant());
   await evaluateTriggers(db, userId, prefs, today).catch(() => []);
 
   const before = c.req.query("before");
@@ -265,6 +285,21 @@ coachRoutes.post("/questions/:id/answer", async (c) => {
   const prefs = await loadPreferences(db, userId);
   const result = await wake(db, c.env, userId, prefs, { kind: "message", body: answer });
   return c.json({ ok: true, memoryId, wake: result });
+});
+
+coachRoutes.post("/questions/:id/dismiss", async (c) => {
+  const db = c.get("db");
+  const userId = c.get("userId");
+  const [q] = await db
+    .select()
+    .from(coachQuestions)
+    .where(and(eq(coachQuestions.id, c.req.param("id")), eq(coachQuestions.userId, userId)))
+    .limit(1);
+  if (!q) return c.json({ error: "not_found" }, 404);
+  if (!q.answeredAt) {
+    await db.update(coachQuestions).set({ answeredAt: nowInstant() }).where(eq(coachQuestions.id, q.id));
+  }
+  return c.json({ ok: true });
 });
 
 coachRoutes.get("/memory", async (c) => {

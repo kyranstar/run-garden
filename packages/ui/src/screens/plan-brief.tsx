@@ -39,7 +39,9 @@ export function headlineContext(week: PlanWeekResponse): string | null {
         ? `A few planned sessions slipped over the last four weeks (${pct}%) — one normal week brings it back.`
         : "A few planned sessions slipped lately — one normal week brings it back.";
     case "rebuilding":
-      if (week.adventureDays >= 3) {
+      // ≥2: a weekend trip is exactly the case this line exists for (the
+      // audit's real example produced 2 adventure days and missed the copy).
+      if (week.adventureDays >= 2) {
         return `The plan mostly paused for adventures lately (${week.adventureDays} day${week.adventureDays === 1 ? "" : "s"} in the last four weeks) — those never count against you. This week is about finding the rhythm again.`;
       }
       if (pct === null) {

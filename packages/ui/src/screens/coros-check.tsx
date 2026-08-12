@@ -19,6 +19,8 @@ export function CorosCheck({ state }: { state: CorosCheckState }) {
           COROS rejected the password — fix in Settings
         </Link>
       );
+    case "still_syncing":
+      return <span className="pill pill-neutral">Still syncing with COROS…</span>;
     case "coros_unreachable":
       return <span className="pill pill-neutral">COROS unreachable — will retry</span>;
     default:

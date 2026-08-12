@@ -4,9 +4,9 @@ import {
   backfillState,
   corosWriteJobs,
   plannedWorkouts,
+  providerConnections,
   studioPlanPushes,
   studioPlans,
-  syncRuns,
 } from "@rg/database";
 import { newId, nowInstant, todayInZone } from "@rg/domain";
 import type { AppContext } from "../auth/middleware.js";
@@ -17,8 +17,11 @@ import { corosConnectionStatus } from "../services/coros-connection.js";
 import { applyMove } from "../services/jobs.js";
 import { openMoveIntents } from "../services/sync-intents.js";
 import { activeSyncNotes, dismissSyncNote } from "../services/sync-notes.js";
-import { computeSyncStatus, DEVICE_ONLINE_WINDOW_MS } from "../services/sync-status.js";
+import { computeSyncStatus } from "../services/sync-status.js";
 import { pushStudioPlan, undoStudioAdoption } from "../services/studio-push.js";
+import { corosReadNow } from "../services/coros-read.js";
+import { processCoachReads } from "../services/coach-reads.js";
+import { waitUntilSafe } from "../services/wait-until.js";
 
 /**
  * Sync-transparency API surface (Task 10): the read side of `SyncStatus`
@@ -277,8 +280,6 @@ syncRoutes.post("/notes/:id/undo", async (c) => {
 
 // ── POST /api/sync/read-now ──────────────────────────────────────────────────
 
-const READ_NOW_FRESH_MS = 5 * 60_000;
-const READ_NOW_IN_FLIGHT = ["queued", "claimed", "in_progress", "verifying"] as const;
 
 /**
  * Progress of the one-shot deep history backfill. Polled by Settings while it
@@ -328,51 +329,24 @@ syncRoutes.get("/backfill-status", async (c) => {
 });
 
 syncRoutes.post("/read-now", async (c) => {
+  // Thin wrap over the IMMEDIATE cloud pull (audit finding 11): the old body
+  // queued a read_now job that only the hourly cron drained — observed 33.7h
+  // latency. corosReadNow single-flights with its own 90s freshness window,
+  // so every legacy caller (Today mount, Garden, Settings "Sync now") now
+  // gets the same behavior as /api/coros/read-now.
   const db = c.get("db");
   const userId = c.get("userId");
-
-  const lastRead = (
-    await db
-      .select({ finishedAt: syncRuns.finishedAt })
-      .from(syncRuns)
-      .where(and(eq(syncRuns.kind, "coros_read"), eq(syncRuns.status, "ok"), eq(syncRuns.userId, userId)))
-      .orderBy(desc(syncRuns.finishedAt))
-      .limit(1)
-  )[0];
-  const lastCorosReadAt = lastRead?.finishedAt ?? null;
-
-  if (lastCorosReadAt && Date.now() - Date.parse(lastCorosReadAt) < READ_NOW_FRESH_MS) {
-    return c.json({ enqueued: false, lastCorosReadAt });
-  }
-
-  const inFlight = await db
-    .select({ id: corosWriteJobs.id })
-    .from(corosWriteJobs)
-    .where(
-      and(
-        eq(corosWriteJobs.userId, userId),
-        eq(corosWriteJobs.kind, "read_now"),
-        inArray(corosWriteJobs.status, [...READ_NOW_IN_FLIGHT]),
-      ),
-    )
+  const prefs = await loadPreferences(db, userId);
+  const result = await corosReadNow(db, c.env, userId, prefs);
+  waitUntilSafe(c, processCoachReads(db, c.env, userId, prefs, {}).catch(() => undefined));
+  const [conn] = await db
+    .select({ lastSyncAt: providerConnections.lastSyncAt })
+    .from(providerConnections)
+    .where(and(eq(providerConnections.userId, userId), eq(providerConnections.provider, "coros")))
     .limit(1);
-  if (inFlight.length > 0) {
-    return c.json({ enqueued: false, lastCorosReadAt });
-  }
-
-  const id = newId();
-  const today = todayInZone((await loadPreferences(db, userId)).timezone);
-  await db.insert(corosWriteJobs).values({
-    id,
-    userId,
-    workoutId: id,
-    kind: "read_now",
-    expectedContentFingerprint: "",
-    originalDate: today,
-    destinationDate: today,
-    requestedAt: nowInstant(),
-    status: "queued",
-    updatedAt: nowInstant(),
+  return c.json({
+    enqueued: result.status === "ok",
+    status: result.status,
+    lastCorosReadAt: conn?.lastSyncAt ?? null,
   });
-  return c.json({ enqueued: true, lastCorosReadAt });
 });

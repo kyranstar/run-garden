@@ -363,8 +363,19 @@ export async function runBackfillChunkCloud(
       .where(eq(corosWriteJobs.id, job.id));
     await advanceBackfill(db, userId, job.id, { activitiesFound: chunk.activities.length }, todayInZone(prefs.timezone));
     return { ran: true };
-  } catch {
-    // Leave the job queued: the next tick (or a device) retries the chunk.
+  } catch (e) {
+    // Leave the job queued (the next tick retries) — but SAY SO: a silently
+    // failing walk looked healthy for 12 hours until the watchdog spoke
+    // (audit finding 16).
+    console.error("backfill chunk failed", String(e).slice(0, 200));
+    try {
+      await db
+        .update(backfillState)
+        .set({ lastErrorCategory: "api_error", updatedAt: nowInstant() })
+        .where(eq(backfillState.userId, userId));
+    } catch {
+      /* stamping the reason is best-effort */
+    }
     return { ran: false };
   } finally {
     await releaseUserLock(db, userId, "coros_backfill", lock).catch(() => undefined);

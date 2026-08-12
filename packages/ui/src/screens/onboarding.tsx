@@ -238,7 +238,13 @@ function PreviewStep({ onNext, onBack }: { onNext: () => void; onBack: () => voi
           ))}
         </div>
       )}
-      <StepNav onNext={onNext} onBack={onBack} nextLabel={count > 0 ? `Add ${count} workouts to Calendar` : "Continue"} />
+      {count > 0 ? (
+        <p className="faint" style={{ marginTop: "0.6rem" }}>
+          These {count} workouts land on your calendar automatically once Google Calendar is
+          connected — nothing else to press.
+        </p>
+      ) : null}
+      <StepNav onNext={onNext} onBack={onBack} />
     </Card>
   );
 }

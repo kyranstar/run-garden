@@ -41,8 +41,8 @@ corosRoutes.post("/connect", async (c) => {
       c,
       (async () => {
         const prefs = await loadPreferences(db, userId);
-        const read = await corosReadNow(db, c.env, userId, prefs, { force: true });
-        if (read.ingested) await processCoachReads(db, c.env, userId, prefs, {});
+        await corosReadNow(db, c.env, userId, prefs, { force: true });
+        await processCoachReads(db, c.env, userId, prefs, {});
       })().catch(() => undefined),
     );
   }
@@ -66,9 +66,9 @@ corosRoutes.post("/read-now", async (c) => {
   const userId = c.get("userId");
   const prefs = await loadPreferences(db, userId);
   const result = await corosReadNow(db, c.env, userId, prefs);
-  if (result.ingested) {
-    // Fresh activities deserve their ambient reads promptly.
-    waitUntilSafe(c, processCoachReads(db, c.env, userId, prefs, {}).catch(() => undefined),);
-  }
+  // Drain ambient reads on every pull, not only ingesting ones — a backlog
+  // enqueued earlier otherwise waits for the hourly cron (audit finding 14);
+  // an empty queue costs one SELECT.
+  waitUntilSafe(c, processCoachReads(db, c.env, userId, prefs, {}).catch(() => undefined));
   return c.json(result);
 });

@@ -1225,7 +1225,9 @@ settingsRoutes.get("/diagnostics", async (c) => {
   const runs = await db.select().from(syncRuns).orderBy(desc(syncRuns.startedAt)).limit(10);
   const garden = (await db.select().from(gardenState).where(eq(gardenState.userId, userId)).limit(1))[0];
   const budget = await llmBudgetStatus(db, userId);
-  const lastCorosRead = runs.find((r) => r.kind === "coros_read");
+  // The connection's own stamp — sync_runs 'coros_read' has no writer since
+  // Phase C, and the limit-10 runs window made this read "never" anyway.
+  const lastCorosRead = connections.find((p) => p.provider === "coros")?.lastSyncAt ?? null;
 
   return c.json({
     appVersion: "0.1.0",
@@ -1237,7 +1239,7 @@ settingsRoutes.get("/diagnostics", async (c) => {
       lastErrorCategory: p.lastErrorCategory,
     })),
     coros: {
-      lastRead: lastCorosRead?.finishedAt ?? null,
+      lastRead: lastCorosRead,
       pendingWriteJobs: jobs.filter((j) => ["queued", "claimed", "in_progress", "verifying"].includes(j.status)).length,
       recentJobs: jobs.map((j) => ({
         id: j.id,

@@ -4,6 +4,7 @@ import { api, ApiError, type CoachAnalyzeResult } from "@rg/api-client";
 import { Spinner } from "../components.js";
 
 /** How long to wait before re-asking when another surface is mid-generation. */
+const WORKING_POLL_MAX = 20; // ×4s ≈ 80s of patience
 const WORKING_POLL_MS = 4000;
 
 /**
@@ -28,15 +29,30 @@ export function CoachRead({ activityId }: { activityId: string }) {
     };
   }, [mutate]);
 
-  // 202 working → someone else is generating; check back shortly.
+  // 202 working → someone else is generating; check back shortly. Bounded
+  // (audit finding 14): a read stuck in a stale claim window otherwise kept
+  // an "a minute or two" spinner alive for ten minutes.
+  const polls = useRef(0);
   useEffect(() => {
     if (data?.status !== "working") return;
+    if (polls.current >= WORKING_POLL_MAX) return;
     const t = setTimeout(() => {
+      polls.current += 1;
       if (alive.current) mutate(false);
     }, WORKING_POLL_MS);
     return () => clearTimeout(t);
   }, [data, mutate]);
 
+  if (data?.status === "working" && polls.current >= WORKING_POLL_MAX) {
+    return (
+      <div className="coach-read">
+        <p className="muted">
+          This read is taking longer than it should — it retries on its own; check back in a few
+          minutes.
+        </p>
+      </div>
+    );
+  }
   if (analyze.isPending || data?.status === "working") {
     return (
       <div className="coach-read">

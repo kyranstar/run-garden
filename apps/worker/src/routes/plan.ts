@@ -442,7 +442,13 @@ planRoutes.get("/week", async (c) => {
         isNull(plannedWorkouts.archivedAt),
       ),
     );
-  const asPlanned = historyRows as unknown as PlannedWorkout[];
+  // Coach-sanctioned skips leave the adherence denominator entirely (audit
+  // finding 13): the brief promised adventure days "never count against you"
+  // while docking the very Long Run the coach cleared for the trip — the
+  // same mercy coachBlockAdherence already implements.
+  const asPlanned = historyRows.filter(
+    (w) => !(w.completionState === "skipped" && w.sanctionedBy === "coach"),
+  ) as unknown as PlannedWorkout[];
   const windowPct = (start: string, end: string): number | null => {
     const report = computeConsistency(
       asPlanned.filter((w) => w.effectiveDate >= start && w.effectiveDate <= end),

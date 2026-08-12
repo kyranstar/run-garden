@@ -491,3 +491,22 @@ describe("single-flight + focus (2026-08-11 rework §R2/§3)", () => {
     expect(await openWakeIsFresh(db, userId, 0)).toBe(false);
   });
 });
+
+describe("question lifecycle (audit finding 9)", () => {
+  it("a message-cause wake closes the open question — free-text answers count", async () => {
+    const db = makeTestDb();
+    const { userId, prefs } = await makeTestUser(db);
+    await db.insert(schema.coachQuestions).values({
+      id: "q1",
+      userId,
+      body: "Roughly how far out is race day?",
+      chips: ["Within 4 weeks", "6-8 weeks"],
+      askedAt: nowInstant(),
+    });
+    const { fetchImpl } = scriptedFetch([chatBody(RESTRAINT)]);
+    const res = await wake(db, makeEnv(), userId, prefs, { kind: "message", body: "around oct 23" }, fetchImpl);
+    expect(res.status).toBe("ok");
+    const [q] = await db.select().from(schema.coachQuestions).where(eq(schema.coachQuestions.id, "q1"));
+    expect(q!.answeredAt).not.toBeNull();
+  });
+});

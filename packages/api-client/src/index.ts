@@ -387,7 +387,7 @@ export interface CoachStateResponse {
 }
 
 export interface CoachWakeResult {
-  status: "ok" | "skipped" | "resting" | "error";
+  status: "ok" | "skipped" | "busy" | "resting" | "error";
   coachMessageId?: string;
   proposalIds?: string[];
 }
@@ -667,6 +667,8 @@ export const api = {
     post<{ ok: boolean }>(`/api/coach/proposals/${proposalId}/decline`),
   coachAnswerQuestion: (questionId: string, answer: string) =>
     post<{ ok: boolean }>(`/api/coach/questions/${questionId}/answer`, { answer }, 320_000),
+  coachDismissQuestion: (questionId: string) =>
+    post<{ ok: boolean }>(`/api/coach/questions/${questionId}/dismiss`),
   coachMemoryList: () => get<{ memory: CoachMemoryItem[] }>("/api/coach/memory"),
   coachMemoryUpdate: (id: string, body: string) =>
     request<{ ok: boolean }>(`/api/coach/memory/${id}`, { method: "PATCH", body: JSON.stringify({ body }) }),

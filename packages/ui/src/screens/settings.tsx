@@ -193,14 +193,14 @@ function BackfillRow() {
       : queued
         ? cloud
           ? "Queued — running in the cloud; the first chunk lands within a minute."
-          : "Queued — connect COROS above and it runs in the cloud (no Mac needed)."
+          : "Queued — connect COROS above and it runs in the cloud."
         : running
           ? `Reading your COROS history — ${s.chunksCompleted} ${s.chunksCompleted === 1 ? "chunk" : "chunks"}, ${s.activitiesIngested} sessions so far${s.earliestDateReached ? `, back to ${s.earliestDateReached}` : ""}.`
           : s?.status === "done"
             ? `History loaded: ${s.activitiesIngested} sessions${s.earliestDateReached ? ` back to ${s.earliestDateReached}` : ""}.`
             : cloud
           ? "Pull your full run, lift, and yoga history from COROS. Runs once, in the cloud."
-          : "Pull your full run, lift, and yoga history from COROS. Connect COROS above first — it runs in the cloud, no Mac needed.";
+          : "Pull your full run, lift, and yoga history from COROS. Connect COROS above first — it runs in the cloud.";
 
   return (
     <div className="switch-row">
@@ -474,10 +474,11 @@ function AiSection({ prefs }: { prefs: UserPreferences }) {
     <Card title="AI">
       <div className="switch-row">
         <div>
-          <strong>Weekly review narration</strong>
+          <strong>Activity reads &amp; weekly narration</strong>
           <p className="faint">
-            The only AI feature. Everything else is deterministic; the app is fully useful with AI
-            off.
+            This switch gates the coach&apos;s automatic activity reads and the weekly review
+            narration. Coach chat, check-ins, and Studio plan generation are also AI-powered but
+            run only when you ask. Scheduling, sync, and the garden are fully deterministic.
           </p>
         </div>
         <button className="btn btn-small" disabled={toggle.isPending} onClick={() => toggle.mutate(!prefs.aiEnabled)}>

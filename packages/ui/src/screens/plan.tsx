@@ -359,7 +359,16 @@ function usePlanCoach() {
       }
       markSendFailed(v.localId, v.body);
     },
-    onSuccess: invalidate,
+    onSuccess: (res, v) => {
+      // "busy": another wake held the lock past our patience — the message
+      // IS saved server-side, but no reply came. Mark the echo so the
+      // existing retry affordance offers to ask again (audit finding 16).
+      if (res.status === "busy") {
+        markSendFailed(v.localId, v.body);
+        return;
+      }
+      invalidate();
+    },
   });
   const [proposalErrors, setProposalErrors] = useState<Record<string, string>>({});
   const clearProposalError = (id: string) =>
@@ -393,6 +402,10 @@ function usePlanCoach() {
     mutationFn: (v: { id: string; answer: string }) => api.coachAnswerQuestion(v.id, v.answer),
     onSettled: invalidate,
   });
+  const dismissQuestion = useMutation({
+    mutationFn: (id: string) => api.coachDismissQuestion(id),
+    onSuccess: () => void qc.invalidateQueries({ queryKey: ["coach-state"] }),
+  });
   return {
     state,
     busy: wakeMut.isPending || send.isPending || answer.isPending,
@@ -411,6 +424,7 @@ function usePlanCoach() {
     approve: (id: string) => approve.mutate(id),
     decline: (id: string) => decline.mutate(id),
     answer: (id: string, a: string) => answer.mutate({ id, answer: a }),
+    dismissQuestion: (id: string) => dismissQuestion.mutate(id),
   };
 }
 
@@ -640,6 +654,7 @@ export function PlanScreen() {
       onApprove={coach.approve}
       onDecline={coach.decline}
       onAnswer={coach.answer}
+      onDismiss={coach.dismissQuestion}
       onCheckIn={coach.checkIn}
       onRetrySend={coach.resend}
     />
@@ -728,6 +743,7 @@ export function PlanScreen() {
                   onApprove={coach.approve}
                   onDecline={coach.decline}
                   onAnswer={coach.answer}
+                  onDismiss={coach.dismissQuestion}
                   onCheckIn={coach.checkIn}
                   onRetrySend={coach.resend}
                 />

@@ -664,3 +664,38 @@ describe("GET /plans/:id/detail (2026-08-11 rework §4)", () => {
     expect(long.series.map((s) => s.value)).toEqual([9, 10]);
   });
 });
+
+describe("question expiry + dismiss (audit finding 9)", () => {
+  it("a 73h-old open question expires on state read, with a receipt", async () => {
+    await db.insert(schema.coachQuestions).values({
+      id: "q-old",
+      userId,
+      body: "Race day?",
+      chips: ["soon"],
+      askedAt: new Date(Date.now() - 73 * 3600 * 1000).toISOString(),
+    });
+    const body = (await (await client().get("/api/coach/state")).json()) as {
+      openQuestion: unknown;
+      messages: Array<{ role: string; body: string }>;
+    };
+    expect(body.openQuestion).toBeNull();
+    expect(body.messages.some((m) => m.role === "receipt" && m.body.includes("Question expired"))).toBe(true);
+  });
+
+  it("dismiss closes an open question without minting a memory", async () => {
+    await db.insert(schema.coachQuestions).values({
+      id: "q-live",
+      userId,
+      body: "Race day?",
+      chips: ["soon"],
+      askedAt: nowInstant(),
+    });
+    const res = await client().post("/api/coach/questions/q-live/dismiss");
+    expect(res.status).toBe(200);
+    const [q] = await db.select().from(schema.coachQuestions).where(eq(schema.coachQuestions.id, "q-live"));
+    expect(q!.answeredAt).not.toBeNull();
+    expect(q!.memoryId).toBeNull();
+    const mem = await db.select().from(schema.coachMemory).where(eq(schema.coachMemory.userId, userId));
+    expect(mem).toHaveLength(0);
+  });
+});

@@ -2,6 +2,7 @@ import type { ReactNode } from "react";
 import { NavLink, useLocation } from "react-router-dom";
 import { PRODUCT_NAME } from "@rg/domain";
 import { IconGarden, IconInsights, IconPlan, IconRuns, IconSettings } from "./icons.js";
+import { useCorosReadNow } from "./screens/use-coros-read.js";
 
 const NAV = [
   { to: "/", label: "Garden", icon: <IconGarden /> },
@@ -25,6 +26,11 @@ export function AppShell({
   // wide treatment (rework spec §6): the week grid and the floating coach
   // both need more than the 880px reading column. Every other route keeps it.
   const { pathname } = useLocation();
+  // The app-open COROS pull fires from the shell so EVERY entry route pulls —
+  // opening the PWA to the garden used to trigger nothing (audit finding 11).
+  // Headless here: the visible outcome chip lives on Plan/Activity (same
+  // query cache, so those chips reflect this pull).
+  useCorosReadNow();
   const immersive = pathname === "/" || pathname === "/garden";
   const wide = pathname.startsWith("/plan");
   return (

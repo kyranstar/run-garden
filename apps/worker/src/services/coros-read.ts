@@ -206,8 +206,9 @@ export async function corosReadSweep(db: Db, env: Env): Promise<void> {
   for (const { userId } of rows) {
     const prefs = await loadPreferences(db, userId);
     const result = await corosReadNow(db, env, userId, prefs, { force: true }).catch(() => null);
-    if (result?.ingested) {
-      // Ambient reads ride the pull; the sweep drains a couple immediately.
+    if (result) {
+      // Drain on every sweep, ingesting or not — the backlog must not wait
+      // for the hourly cron (audit finding 14).
       await processCoachReads(db, env, userId, prefs, {}).catch(() => undefined);
     }
   }

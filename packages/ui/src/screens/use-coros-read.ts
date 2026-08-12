@@ -6,6 +6,7 @@ export type CorosCheckState =
   | "idle"
   | "checking"
   | "ok"
+  | "still_syncing"
   | "not_connected"
   | "bad_credentials"
   | "coros_unreachable";
@@ -67,6 +68,9 @@ export function useCorosReadNow(): { state: CorosCheckState } {
   if (s === "bad_credentials") return { state: "bad_credentials" };
   if (s === "coros_unreachable") return { state: "coros_unreachable" };
   if (s === "busy" && busySeen.current < BUSY_RETRY_MAX) return { state: "checking" };
-  if (s === "ok" || s === "fresh" || s === "busy") return { state: "ok" };
+  // Retries exhausted while another pull still holds the lock: say so —
+  // "silence is only allowed for success" (audit finding 11).
+  if (s === "busy") return { state: "still_syncing" };
+  if (s === "ok" || s === "fresh") return { state: "ok" };
   return { state: "idle" };
 }

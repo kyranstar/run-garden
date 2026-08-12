@@ -315,11 +315,13 @@ export function CoachComposer({
   onSend,
   question,
   onAnswer,
+  onDismiss,
   busy,
 }: {
   onSend: (body: string) => void;
   question: CoachQuestionDto | null;
   onAnswer: (id: string, answer: string) => void;
+  onDismiss: (id: string) => void;
   busy?: boolean;
 }) {
   const [draft, setDraft] = useState("");
@@ -359,6 +361,16 @@ export function CoachComposer({
                 {chip}
               </button>
             ))}
+            <button
+              type="button"
+              className="chipbtn"
+              aria-label="Dismiss question"
+              title="Dismiss — the coach can ask again later"
+              disabled={busy}
+              onClick={() => onDismiss(question.id)}
+            >
+              ✕
+            </button>
           </span>
         </div>
       ) : null}
@@ -377,6 +389,7 @@ export function CoachPanel({
   onApprove,
   onDecline,
   onAnswer,
+  onDismiss,
   onCheckIn,
   onRetrySend,
   header,
@@ -395,6 +408,7 @@ export function CoachPanel({
   onApprove: (id: string) => void;
   onDecline: (id: string) => void;
   onAnswer: (id: string, answer: string) => void;
+  onDismiss: (id: string) => void;
   /** The manual "Check in" trigger — forces a wake past the skip rule. */
   onCheckIn?: () => void;
   /** Resend a failed optimistic message (audit C16). */
@@ -439,7 +453,7 @@ export function CoachPanel({
         errors={proposalErrors}
       />
       <CoachThread messages={messages} onRetrySend={onRetrySend} />
-      <CoachComposer onSend={onSend} question={question} onAnswer={onAnswer} busy={busy} />
+      <CoachComposer onSend={onSend} question={question} onAnswer={onAnswer} onDismiss={onDismiss} busy={busy} />
     </section>
   );
 }

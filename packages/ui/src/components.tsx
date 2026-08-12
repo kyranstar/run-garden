@@ -132,7 +132,7 @@ export function relativeDay(date: string, today: string): string {
 const COROS_PILL: Record<CorosSyncState, { label: string; cls: string; icon: ReactNode; title: string }> = {
   synced: { label: "Synced", cls: "pill-ok", icon: <IconCheck />, title: "This workout's date matches your COROS watch." },
   syncing: { label: "Syncing", cls: "pill-progress", icon: <IconSync />, title: "Sending this change to your COROS watch." },
-  waiting_for_device: { label: "Waiting for COROS", cls: "pill-progress", icon: <IconLaptop />, title: "Queued — this reaches your watch once COROS is connected in Settings." },
+  waiting_for_device: { label: "Waiting for COROS", cls: "pill-progress", icon: <IconSync />, title: "Queued — this reaches your watch once COROS is connected in Settings." },
   calendar_only: {
     label: "Not synced to COROS",
     cls: "pill-neutral",

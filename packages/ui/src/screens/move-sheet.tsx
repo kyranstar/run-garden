@@ -48,7 +48,7 @@ export function MoveSheet({
           : res.corosSyncState === "syncing"
             ? "Syncing to COROS"
             : res.corosSyncState === "waiting_for_device"
-              ? "Waiting for Mac"
+              ? "Waiting for COROS — connect in Settings"
               : res.corosSyncState === "calendar_only"
                 ? "In Calendar (watch not auto-updated)"
                 : "COROS needs attention";

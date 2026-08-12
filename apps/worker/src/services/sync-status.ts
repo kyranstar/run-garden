@@ -5,7 +5,6 @@ import {
   providerConnections,
   studioPlanPushes,
   studioPlans,
-  syncRuns,
 } from "@rg/database";
 import type { UserPreferences } from "@rg/domain";
 import { openMoveIntents } from "./sync-intents.js";
@@ -110,14 +109,14 @@ export async function computeSyncStatus(
     : [];
   const issueCount = failedMoveCount + failedStudio.length;
 
-  const lastRead = (
-    await db
-      .select({ finishedAt: syncRuns.finishedAt })
-      .from(syncRuns)
-      .where(and(eq(syncRuns.kind, "coros_read"), eq(syncRuns.status, "ok"), eq(syncRuns.userId, userId)))
-      .orderBy(desc(syncRuns.finishedAt))
-      .limit(1)
-  )[0];
+  // Phase C deleted the only writer of sync_runs kind='coros_read' — the
+  // honest freshness is the connection's own lastSyncAt, stamped by every
+  // successful pull (audit finding 11).
+  const [corosConn] = await db
+    .select({ lastSyncAt: providerConnections.lastSyncAt })
+    .from(providerConnections)
+    .where(and(eq(providerConnections.userId, userId), eq(providerConnections.provider, "coros")))
+    .limit(1);
 
   const state: SyncStatusState =
     !prefs.corosWritesEnabled || !presence.writeCapable
@@ -132,7 +131,7 @@ export async function computeSyncStatus(
     state,
     pendingCount: pending.length,
     issueCount,
-    lastCorosReadAt: lastRead?.finishedAt ?? null,
+    lastCorosReadAt: corosConn?.lastSyncAt ?? null,
     writesEnabled: prefs.corosWritesEnabled,
     registered: presence.registered,
   };
