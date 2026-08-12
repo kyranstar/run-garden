@@ -29,7 +29,7 @@ import {
   recordUsage,
 } from "./studio-llm.js";
 import { buildDossier } from "./coach-context.js";
-import { consumeTriggers, pendingTriggers } from "./coach-triggers.js";
+import { consumeTriggers, pendingTriggers, recordUnansweredMessage } from "./coach-triggers.js";
 import { claimUserLock, releaseUserLock } from "./locks.js";
 import { disciplineOf } from "@rg/analytics";
 
@@ -292,8 +292,15 @@ export async function wake(
   fetchImpl: typeof fetch = fetch,
 ): Promise<WakeResult> {
   const today = todayInZone(prefs.timezone);
-  // The athlete's words are never lost — persist before anything can fail.
-  if (cause.kind === "message") await persistMessage(db, userId, "user", cause.body);
+  // The athlete's words are never lost — persist before anything can fail,
+  // and mark the message as awaiting a reply. The marker is a pending
+  // trigger consumed only by a successful wake: if THIS request dies
+  // mid-call, the next open picks the reply up (user requirement:
+  // navigating away must not lose the coach's answer).
+  if (cause.kind === "message") {
+    await persistMessage(db, userId, "user", cause.body);
+    await recordUnansweredMessage(db, userId, cause.body);
+  }
 
   const budget = await llmBudgetStatus(db, userId);
   if (budget.cutoff) {
@@ -364,6 +371,13 @@ export async function wake(
     };
 
     let { out, raw, issues } = await attemptParse(messages);
+    if (!out && !raw) {
+      // Gateway/transport failure (nothing came back) — transient more often
+      // than not; one retry before giving up ("the coach never errors" work,
+      // 2026-08-12).
+      await new Promise((r) => setTimeout(r, 2_000));
+      ({ out, raw, issues } = await attemptParse(messages));
+    }
     if (!out && raw) {
       ({ out } = await attemptParse([
         ...messages,
@@ -373,6 +387,26 @@ export async function wake(
           content: `That did not match the required JSON schema. Problems:\n${issues}\nReply with ONLY the corrected JSON object — same content, valid shape.`,
         },
       ]));
+    }
+    if (!out && raw) {
+      // Salvage: the model twice produced JSON that misses the full schema —
+      // usually complex plan ops. The BRIEFING prose is almost always intact;
+      // losing it to a "couldn't think" receipt threw away a good answer
+      // (live case: the plan-extension ask, 2026-08-12). Keep the words, drop
+      // the malformed structure, and say so.
+      const loose = extractJson(raw) as { briefing?: unknown } | null;
+      const briefing = typeof loose?.briefing === "string" ? loose.briefing.trim() : "";
+      if (briefing.length > 0) {
+        const coachMessageId = await persistMessage(db, userId, "coach", briefing);
+        await persistMessage(
+          db,
+          userId,
+          "receipt",
+          "The plan changes the coach drafted alongside this couldn't be formatted — ask again (smaller steps help) and it will draft them as proposals.",
+        );
+        await consumeTriggers(db, userId, triggers.map((t) => t.id), nowInstant());
+        return { status: "ok", coachMessageId };
+      }
     }
     if (!out) {
       await persistWakeFailure(db, userId, "The coach couldn't think just now — try again in a moment.");

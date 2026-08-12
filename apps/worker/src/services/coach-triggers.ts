@@ -27,7 +27,8 @@ export type CoachTriggerKind =
   | "plan_ending"
   | "race_proximity"
   | "comeback"
-  | "notable_read";
+  | "notable_read"
+  | "unanswered_message";
 
 const REFIRE_WINDOW_MS = 72 * 3600 * 1000;
 const SLEEP_DEFICIT_HOURS = 6;
@@ -42,6 +43,21 @@ export interface PendingTrigger {
   kind: CoachTriggerKind;
   evidence: Record<string, unknown>;
   firedAt: string;
+}
+
+/** Durable marker for an in-flight message wake (2026-08-12): inserted the
+ * moment the athlete's words are persisted, consumed only by a SUCCESSFUL
+ * wake. If the request dies mid-LLM-call (tab closed, phone locked), the
+ * marker survives — the next open advises a wake whose dossier carries this
+ * signal plus the message itself, and the coach answers late but surely. */
+export async function recordUnansweredMessage(db: Db, userId: string, body: string): Promise<void> {
+  await db.insert(coachTriggers).values({
+    id: newId(),
+    userId,
+    kind: "unanswered_message",
+    evidence: { body: body.slice(0, 300) },
+    firedAt: nowInstant(),
+  });
 }
 
 export async function pendingTriggers(db: Db, userId: string): Promise<PendingTrigger[]> {

@@ -196,7 +196,7 @@ describe("wake", () => {
     expect(msgs.some((m) => m.role === "receipt" && m.body.includes("resting"))).toBe(true);
   });
 
-  it("audit C4/C14: repeated failed 'Check in' taps dedupe into one receipt, not a stack", async () => {
+  it("audit C4/C14: repeated failed 'Check in' taps dedupe into one receipt, not a stack", { timeout: 20_000 }, async () => {
     const db = makeTestDb();
     const { userId, prefs } = await makeTestUser(db);
     const { fetchImpl } = failingFetch();
@@ -223,14 +223,15 @@ describe("wake", () => {
 
     const first = await wake(db, makeEnv(), userId, prefs, { kind: "open" }, fetchImpl);
     expect(first.status).toBe("error");
-    expect(calls).toHaveLength(1);
+    // The transport retry (2026-08-12) makes one failed wake two calls.
+    expect(calls).toHaveLength(2);
 
     // A second "open" (auto-wake on the next Plan visit) is redundant: the
     // failure is still fresh, so it's skipped without touching the LLM or
     // appending another receipt.
     const second = await wake(db, makeEnv(), userId, prefs, { kind: "open" }, fetchImpl);
     expect(second.status).toBe("skipped");
-    expect(calls).toHaveLength(1);
+    expect(calls).toHaveLength(2);
 
     const receipts = await db
       .select()
@@ -294,7 +295,7 @@ describe("wake", () => {
     const { fetchImpl, calls } = failingFetch();
     const res = await wake(db, makeEnv(), userId, prefs, { kind: "manual" }, fetchImpl);
     expect(res.status).toBe("error"); // attempted (and failed again) — not skipped
-    expect(calls).toHaveLength(1);
+    expect(calls).toHaveLength(2); // incl. the transport retry
   });
 
   it("restraint: an all-empty output only consumes triggers", async () => {
@@ -508,5 +509,62 @@ describe("question lifecycle (audit finding 9)", () => {
     expect(res.status).toBe("ok");
     const [q] = await db.select().from(schema.coachQuestions).where(eq(schema.coachQuestions.id, "q1"));
     expect(q!.answeredAt).not.toBeNull();
+  });
+});
+
+describe("wake resilience (user requirement 2026-08-12: never error, survive navigation)", () => {
+  it("double schema failure SALVAGES the briefing prose instead of erroring", async () => {
+    const db = makeTestDb();
+    const { userId, prefs } = await makeTestUser(db);
+    // Both attempts return JSON whose briefing is fine but whose proposals
+    // are malformed — the live plan-extension failure shape.
+    const bad = { briefing: "Here's how I'd extend the block toward Oct 23…", proposals: [{ nope: true }] };
+    const { fetchImpl } = scriptedFetch([chatBody(bad), chatBody(bad)]);
+    const res = await wake(db, makeEnv(), userId, prefs, { kind: "message", body: "extend my plan" }, fetchImpl);
+    expect(res.status).toBe("ok");
+    const msgs = await db.select().from(schema.coachMessages).where(eq(schema.coachMessages.userId, userId));
+    expect(msgs.some((m) => m.role === "coach" && m.body.startsWith("Here's how I'd extend"))).toBe(true);
+    expect(msgs.some((m) => m.role === "receipt" && m.body.includes("couldn't be formatted"))).toBe(true);
+  });
+
+  it("a message wake that dies leaves an unanswered_message marker; the next open wake answers and consumes it", async () => {
+    const db = makeTestDb();
+    const { userId, prefs } = await makeTestUser(db);
+    // The gateway hard-fails (and the transport retry too) — simulating a
+    // request killed mid-flight as far as durability is concerned.
+    const dead = failingFetch();
+    const res = await wake(db, makeEnv(), userId, prefs, { kind: "message", body: "extend my plan" }, dead.fetchImpl);
+    expect(res.status).toBe("error");
+    let pending = await db
+      .select()
+      .from(schema.coachTriggers)
+      .where(eq(schema.coachTriggers.kind, "unanswered_message"));
+    expect(pending.filter((t) => t.consumedAt === null)).toHaveLength(1);
+
+    // Clear the failure-backoff receipt so the recovery open isn't skipped
+    // (a request that died silently writes no receipt at all).
+    await db.delete(schema.coachMessages).where(eq(schema.coachMessages.role, "receipt"));
+
+    const good = scriptedFetch([chatBody({ ...RESTRAINT, briefing: "About extending your plan — here's my take." })]);
+    const recovery = await wake(db, makeEnv(), userId, prefs, { kind: "open" }, good.fetchImpl);
+    expect(recovery.status).toBe("ok");
+    pending = await db
+      .select()
+      .from(schema.coachTriggers)
+      .where(eq(schema.coachTriggers.kind, "unanswered_message"));
+    expect(pending.filter((t) => t.consumedAt === null)).toHaveLength(0);
+  });
+
+  it("a successful message wake consumes its own marker — no ghost signals", async () => {
+    const db = makeTestDb();
+    const { userId, prefs } = await makeTestUser(db);
+    const { fetchImpl } = scriptedFetch([chatBody({ ...RESTRAINT, briefing: "Sure." })]);
+    const res = await wake(db, makeEnv(), userId, prefs, { kind: "message", body: "hi" }, fetchImpl);
+    expect(res.status).toBe("ok");
+    const pending = await db
+      .select()
+      .from(schema.coachTriggers)
+      .where(eq(schema.coachTriggers.kind, "unanswered_message"));
+    expect(pending.filter((t) => t.consumedAt === null)).toHaveLength(0);
   });
 });
