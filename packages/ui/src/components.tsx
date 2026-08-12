@@ -213,11 +213,11 @@ export function SyncStatusLine({
       case "waiting_for_mac":
         return status.paused
           ? "Sync is paused — resume in Settings"
-          : `${status.pendingCount} change${status.pendingCount === 1 ? "" : "s"} waiting — wake your Mac to update your watch`;
+          : `${status.pendingCount} change${status.pendingCount === 1 ? "" : "s"} waiting — connect COROS in Settings (or wake your Mac)`;
       case "not_synced":
         return status.registered
           ? "COROS updates are off — enable in Settings"
-          : "No Mac paired — pair in Settings to update COROS";
+          : "COROS not connected — connect in Settings";
       case "sync_issue":
         return `${status.issueCount} change${status.issueCount === 1 ? "" : "s"} couldn't sync`;
     }

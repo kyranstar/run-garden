@@ -388,7 +388,7 @@ export function TodayScreen() {
         <NextWorkout w={d.nextWorkout} today={d.today} />
       ) : (
         <EmptyState art="🌿" title="No active COROS training plan was found">
-          Start a plan in COROS, then refresh from the desktop app.
+          Start a plan in COROS, then connect COROS in Settings — it syncs in automatically.
         </EmptyState>
       )}
       {d.sync.calendarConnected ? (

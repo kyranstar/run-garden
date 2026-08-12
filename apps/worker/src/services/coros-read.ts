@@ -13,6 +13,7 @@ import { loadPreferences } from "./calendar-sync.js";
 import { resimulateFrom } from "./garden-sync.js";
 import { enqueueCoachReads, processCoachReads } from "./coach-reads.js";
 import { claimUserLock, releaseUserLock } from "./locks.js";
+import { isExerciseCatalogStale, upsertExerciseCatalog } from "./exercise-catalog.js";
 
 /**
  * The cloud pull (cloud-direct spec §3): what the bridge's snapshot sync did,
@@ -103,11 +104,17 @@ export async function corosReadNow(
     );
 
     const resolver = await nameResolver(fetchImpl);
+    // The exercise catalog also rides the cloud now — the last snapshot duty
+    // the desktop bridge held.
+    const catalogStale = await isExerciseCatalogStale(db);
     const snapshot = await buildSnapshot(client, rangeStart, rangeEnd, resolver, {
-      includeExerciseCatalog: false,
+      includeExerciseCatalog: catalogStale,
       healthRangeStart: addDays(today, -7),
       detailFilter: (item) => !seen.has(item.labelId),
     });
+    if (snapshot.exerciseCatalog && snapshot.exerciseCatalog.length > 0) {
+      await upsertExerciseCatalog(db, snapshot.exerciseCatalog);
+    }
 
     // Same ingest order as the bridge-sync route: plan first, then
     // activities (matching sees fresh workouts), then health.

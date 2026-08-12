@@ -31,7 +31,21 @@ const connectSchema = z.object({
 corosRoutes.post("/connect", async (c) => {
   const parsed = connectSchema.safeParse(await c.req.json().catch(() => null));
   if (!parsed.success) return c.json({ error: "invalid_request" }, 400);
-  const result = await connectCoros(c.get("db"), c.env, c.get("userId"), parsed.data);
+  const db = c.get("db");
+  const userId = c.get("userId");
+  const result = await connectCoros(db, c.env, userId, parsed.data);
+  if (result.status === "connected") {
+    // First pull rides the connect: activities, schedule, health, and the
+    // exercise catalog appear right away instead of waiting for a sweep.
+    waitUntilSafe(
+      c,
+      (async () => {
+        const prefs = await loadPreferences(db, userId);
+        const read = await corosReadNow(db, c.env, userId, prefs, { force: true });
+        if (read.ingested) await processCoachReads(db, c.env, userId, prefs, {});
+      })().catch(() => undefined),
+    );
+  }
   return c.json(result);
 });
 

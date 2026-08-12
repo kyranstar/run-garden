@@ -134,12 +134,12 @@ function studioErrorCopy(err: unknown, llm: StudioLlmStatusDto): string {
     case "catalog_not_synced": {
       const reason = (err.body as { reason?: string } | null)?.reason;
       if (reason === "bridge_outdated") {
-        return "Your desktop app is running an older build that can't sync the exercise catalog — update the desktop app, then leave it open for a minute.";
+        return "Your desktop app is too old to sync the exercise catalog — connect COROS in Settings instead (the catalog then syncs from the cloud), or update the desktop app.";
       }
       if (reason === "syncing") {
-        return "Your Mac is connected and the exercise catalog is on its way — try again in a minute.";
+        return "The exercise catalog is syncing from COROS — try again in a minute.";
       }
-      return "Open the desktop app on your Mac so it can sync your exercise catalog, then try again.";
+      return "Connect COROS in Settings so the exercise catalog can sync, then try again.";
     }
     case "invalid_output":
       return "The AI produced an invalid plan — try again, or adjust your request.";
@@ -164,14 +164,15 @@ function studioErrorCopy(err: unknown, llm: StudioLlmStatusDto): string {
 // ── Bridge status (two distinct signals — launch requirement c) ─────────────
 
 function BridgeStatusLine({ bridge }: { bridge: StudioBridgeStatusDto }) {
-  // Attention is earned: when the Mac is online and working, the syncing
+  // Attention is earned: while something is actively pushing, the syncing
   // phase card already says so — this line only speaks when the user must
-  // actually DO something (the bridge is offline with work waiting).
+  // actually DO something (no executor at all, with work waiting). `online`
+  // covers both executors: the COROS cloud connection and a live Mac.
   if (bridge.pendingJobs.queued > 0 && !bridge.online) {
     return (
       <Banner kind="warn">
-        {bridge.pendingJobs.queued} change{bridge.pendingJobs.queued === 1 ? "" : "s"} waiting for
-        your Mac — open the Run Garden desktop app to sync them to COROS.
+        {bridge.pendingJobs.queued} change{bridge.pendingJobs.queued === 1 ? "" : "s"} waiting to
+        sync — connect COROS in Settings so they push from the cloud.
       </Banner>
     );
   }
@@ -181,8 +182,8 @@ function BridgeStatusLine({ bridge }: { bridge: StudioBridgeStatusDto }) {
     return (
       <Banner kind={stuck ? "warn" : "info"}>
         {stuck
-          ? "This is taking longer than usual — your Mac may be stuck on this change."
-          : "Your Mac is working on it…"}
+          ? "This is taking longer than usual — the push may be stuck; it retries on its own."
+          : "Pushing to COROS…"}
       </Banner>
     );
   }
@@ -623,9 +624,9 @@ function studioPhase(studio: StudioStateResponse, today: string): StudioPhase {
   );
   const verified = rows.filter((p) => p.status === "verified");
   const inFlight = studio.bridge.pendingJobs.queued + studio.bridge.inFlight.count;
-  // "Syncing" is only true while a live Mac is moving work. With the bridge
-  // offline, jobs just wait — the offline banner says what to do, and the
-  // normal draft/synced view (with its buttons) stays usable.
+  // "Syncing" is only true while a live executor (COROS cloud connection or
+  // a Mac) is moving work. With nothing online, jobs just wait — the banner
+  // says what to do, and the normal draft/synced view stays usable.
   if (inFlight > 0 && studio.bridge.online) return "syncing";
   if (failed.length > 0) return "attention";
   if (verified.length === 0) return "draft";
@@ -873,8 +874,8 @@ function StudioDraft({
               Syncing to COROS — {verifiedCount} of {liveRows.length || totalSessions} sessions on the calendar
             </div>
             <p className="muted">
-              Your Mac is writing each session to COROS and verifying it landed. You can close this
-              page — it finishes on its own.
+              Each session is being written to COROS and verified. You can close this page — it
+              finishes on its own.
             </p>
           </div>
         </div>

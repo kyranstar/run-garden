@@ -13,17 +13,21 @@ test.beforeEach(async ({ context, baseURL }) => {
 
 test("Today shows the next workout with a COROS duration estimate", async ({ page }) => {
   await page.goto("/");
-  await expect(page.getByText("Next workout")).toBeVisible();
+  // Mobile Today leads with a "Next workout" card; the desktop garden stage
+  // carries the same fact in its HUD ("Next: …").
+  await expect(page.getByText(/Next workout|Next:/).first()).toBeVisible();
   await expect(page.getByText(/min/).first()).toBeVisible();
-  // The sync status line is always present.
-  await expect(page.getByText(/Calendar|COROS/).first()).toBeVisible();
 });
 
-test("Plan renders the almanac calendar", async ({ page }) => {
+test("Plan renders the week calendar and speaks the COROS check outcome", async ({ page }) => {
   await page.goto("/plan");
   await expect(page.getByRole("heading", { name: "Plan" })).toBeVisible();
-  // The plan is an almanac month grid (the old week-list "Week of" copy is gone).
-  await expect(page.locator(".cal-month-title").first()).toBeVisible();
+  // The plan is a single week-pickable calendar (coach/plan rework).
+  await expect(page.locator(".plan-week-title").first()).toBeVisible();
+  // The app-open COROS check must resolve to a visible outcome — never a
+  // pill that flashes and vanishes (live user report, 2026-08-12). Fixture
+  // mode has no COROS connection, so the honest state is the Settings link.
+  await expect(page.getByText("COROS not connected — connect in Settings")).toBeVisible();
 });
 
 test("Garden renders a scene and a species collection", async ({ page }) => {

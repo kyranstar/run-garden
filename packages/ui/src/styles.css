@@ -2554,6 +2554,14 @@ button {
 }
 .screen-title {
   margin-bottom: 1rem;
+  /* The COROS-check pill is transient and can be long — when it appears on a
+     phone, the row wraps rather than pushing the page sideways (R1). */
+  flex-wrap: wrap;
+}
+.screen-title .coros-check-link,
+.screen-title .coros-checking {
+  white-space: normal;
+  min-width: 0;
 }
 .divider {
   border: none;

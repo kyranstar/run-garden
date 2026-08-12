@@ -149,7 +149,7 @@ function SchedulingSection({ prefs }: { prefs: UserPreferences }) {
 /**
  * The one-shot deep history walk. Distinct from the rolling 14-day snapshot:
  * this reaches back as far as the account goes, across all three disciplines,
- * and runs on the desktop bridge one 90-day chunk at a time.
+ * and runs in the cloud one 90-day chunk at a time (legacy: desktop bridge).
  */
 function BackfillRow() {
   const qc = useQueryClient();
@@ -157,8 +157,8 @@ function BackfillRow() {
     queryKey: ["backfill-status"],
     queryFn: api.backfillStatus,
     // Poll while there is something to watch: an active or queued walk, or an
-    // errored one whose job is still live (the Mac can wake and resume it —
-    // the copy must catch up when it does).
+    // errored one whose job is still live (the walker can resume it — the
+    // copy must catch up when it does).
     refetchInterval: (q) => {
       const d = q.state.data;
       return d?.status === "running" || d?.status === "queued" || (d?.status === "error" && d.jobQueued)
@@ -166,6 +166,8 @@ function BackfillRow() {
         : false;
     },
   });
+  const coros = useQuery({ queryKey: ["coros-status"], queryFn: api.corosStatus });
+  const cloud = coros.data?.connected === true;
   const start = useMutation({
     mutationFn: api.backfillHistory,
     onSuccess: () => {
@@ -177,28 +179,28 @@ function BackfillRow() {
   const s = status.data;
   const running = s?.status === "running";
   const queued = s?.status === "queued";
-  // Honest states: queued means "your Mac hasn't picked this up yet", and an
-  // error names which way it went wrong — never a spinner over nothing.
+  // Honest states: queued names the executor it's waiting on, and an error
+  // names which way it went wrong — never a spinner over nothing.
   const detail =
     s?.status === "error"
-      ? s.lastErrorCategory === "bridge_never_claimed"
-        ? s.bridgePaused
-          ? "Your Mac never picked this up — syncing is paused there. Resume it in Run Garden, then press Run again."
-          : "Your Mac never picked this up. Open Run Garden on the Mac, then press Run again."
+      ? cloud
+        ? "It stalled — press Run again; the cloud walker resumes where it left off."
+        : s.lastErrorCategory === "bridge_never_claimed"
+        ? "It never started — connect COROS above and press Run again; it runs in the cloud, no Mac needed."
         : s.lastErrorCategory === "bridge_stalled_mid_walk"
-          ? `Your Mac stopped partway through (${s.activitiesIngested} sessions so far). Open Run Garden on the Mac, then press Run again.`
-          : "Couldn't read your history — your desktop app is older than this feature. Update it, then try again."
+          ? `It stopped partway through (${s.activitiesIngested} sessions so far). Connect COROS above and press Run again — the walk resumes where it left off.`
+          : "Couldn't read your history — connect COROS above and press Run again."
       : queued
-        ? s.bridgePaused
-          ? "Queued — but syncing is paused on your Mac. Resume it in Run Garden to start."
-          : s.bridgeOnline
-            ? "Queued — your Mac is connected and should start momentarily. If nothing happens, quit and reopen Run Garden on the Mac."
-            : `Queued — waiting for your Mac${s.bridgeLastSeenAt ? ` (last seen ${relativeTime(s.bridgeLastSeenAt)})` : ""}. Open Run Garden there to start.`
+        ? cloud
+          ? "Queued — running in the cloud; the first chunk lands within a minute."
+          : "Queued — connect COROS above and it runs in the cloud (no Mac needed)."
         : running
           ? `Reading your COROS history — ${s.chunksCompleted} ${s.chunksCompleted === 1 ? "chunk" : "chunks"}, ${s.activitiesIngested} sessions so far${s.earliestDateReached ? `, back to ${s.earliestDateReached}` : ""}.`
           : s?.status === "done"
             ? `History loaded: ${s.activitiesIngested} sessions${s.earliestDateReached ? ` back to ${s.earliestDateReached}` : ""}.`
-            : "Pull your full run, lift, and yoga history from COROS. Runs once; your Mac needs to be awake.";
+            : cloud
+          ? "Pull your full run, lift, and yoga history from COROS. Runs once, in the cloud."
+          : "Pull your full run, lift, and yoga history from COROS. Connect COROS above first — it runs in the cloud, no Mac needed.";
 
   return (
     <div className="switch-row">
@@ -273,8 +275,6 @@ function ConnectionsSection() {
         )}
       </div>
 
-      <BackfillRow />
-
       <Sheet open={chooseOpen} onClose={() => setChooseOpen(false)} title="Choose a calendar">
         <div className="stack">
           <button
@@ -324,8 +324,11 @@ export function CorosConnectSection() {
       setResult(r.status);
       if (r.status === "connected") {
         setPassword("");
-        void qc.invalidateQueries({ queryKey: ["coros-status"] });
-        void qc.invalidateQueries({ queryKey: ["sync-status"] });
+        // The connect kicked the first pull server-side — drop every cache
+        // that pull can change, so screens refetch as it lands.
+        for (const k of ["coros-status", "sync-status", "coros-read-now", "backfill-status"]) {
+          void qc.invalidateQueries({ queryKey: [k] });
+        }
       }
     },
     onError: () => setResult("login_failed"),
@@ -408,6 +411,7 @@ export function CorosConnectSection() {
           </div>
         </form>
       )}
+      <BackfillRow />
     </Card>
   );
 }
@@ -430,8 +434,8 @@ function DevicesSection() {
     <Card title="Desktop companion">
       {active.length === 0 ? (
         <p className="muted">
-          No Mac connected yet. The desktop companion securely connects to COROS and updates your
-          training calendar — your COROS password stays on your Mac.
+          Optional legacy path — with COROS connected above, no Mac is needed. The desktop
+          companion is only for keeping your password off the cloud.
         </p>
       ) : (
         active.map((d) => (
@@ -460,9 +464,9 @@ function DevicesSection() {
               <button
                 className="btn btn-small btn-danger"
                 onClick={() => {
-                  // Revoking unpairs the Mac — the thing that makes COROS
-                  // sync work at all. Destructive enough to double-check.
-                  if (window.confirm(`Unpair "${d.name}"? COROS syncing stops until you pair the desktop app again.`)) {
+                  // Destructive enough to double-check — though with the
+                  // cloud COROS connection, unpairing a Mac no longer stops sync.
+                  if (window.confirm(`Unpair "${d.name}"? The legacy desktop path stops; the cloud COROS connection is unaffected.`)) {
                     revoke.mutate(d.id);
                   }
                 }}
@@ -493,9 +497,9 @@ function CorosSyncSection({ prefs }: { prefs: UserPreferences }) {
         <div>
           <strong>Write date changes back to COROS</strong>
           <p className="faint">
-            When you move a workout here, the desktop app updates your COROS calendar to match
-            (verified after every write). When off, moves only change Run Garden and Google
-            Calendar — workouts you move show “Not synced to COROS”.
+            When you move a workout here, your COROS calendar is updated to match (verified
+            after every write). When off, moves only change Run Garden and Google Calendar —
+            workouts you move show “Not synced to COROS”.
           </p>
         </div>
         <button

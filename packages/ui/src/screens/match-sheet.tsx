@@ -35,8 +35,8 @@ export function MatchSheet({
         <Spinner />
       ) : (unmatched.data?.activities.length ?? 0) === 0 ? (
         <p className="muted">
-          No unmatched activities yet. Completed runs can still be read from COROS — open the
-          desktop app to sync.
+          No unmatched activities yet. Completed runs come in from COROS automatically — connect
+          COROS in Settings if you haven’t.
         </p>
       ) : (
         <div className="stack">

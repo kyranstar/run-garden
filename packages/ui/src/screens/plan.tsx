@@ -29,6 +29,7 @@ import { PlanCards } from "./plan-cards.js";
 import { StudioModal } from "./studio-modal.js";
 import { askable, displayCompletionState, WeekView, weekRangeLabel } from "./week-view.js";
 import { useCorosReadNow } from "./use-coros-read.js";
+import { CorosCheck } from "./coros-check.js";
 
 function WorkoutDetail({
   w,
@@ -657,9 +658,7 @@ export function PlanScreen() {
     <div className="plan-page">
       <div className="row-between screen-title">
         <h1>Plan</h1>
-        {corosCheck.checking ? (
-          <span className="pill pill-neutral coros-checking">Checking COROS…</span>
-        ) : null}
+        <CorosCheck state={corosCheck.state} />
       </div>
       <div className="plan-page-col">
         <SyncPanel quietWhenHealthy />
@@ -672,7 +671,8 @@ export function PlanScreen() {
         />
         {emptyPlan ? (
           <EmptyState art="🗓" title="Nothing planned yet">
-            Ask your coach for a plan above, or start one in COROS and refresh from the desktop app.
+            Ask your coach for a plan above, or start one in COROS — it syncs in automatically once
+            COROS is connected in Settings.
           </EmptyState>
         ) : (
           <WeekView

@@ -15,6 +15,7 @@ import {
 } from "../components.js";
 import { CoachRead } from "./coach-read.js";
 import { useCorosReadNow } from "./use-coros-read.js";
+import { CorosCheck } from "./coros-check.js";
 
 function dist(m: number | null): string {
   if (!m) return "";
@@ -313,7 +314,7 @@ export function RunsScreen() {
     <div>
       <div className="row-between screen-title">
         <h1>Activity</h1>
-        {corosCheck.checking ? <span className="pill pill-neutral coros-checking">Checking COROS…</span> : null}
+        <CorosCheck state={corosCheck.state} />
         <button className="btn btn-small" disabled={backfill.isPending} onClick={() => backfill.mutate()}>
           {backfill.isPending ? "Starting…" : "Backfill history"}
         </button>

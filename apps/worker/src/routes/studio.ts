@@ -35,6 +35,8 @@ import { COROS_EXERCISE_NAMES } from "@rg/providers";
 import { exerciseNameMap, resolveExerciseName } from "../services/exercise-catalog.js";
 import { pushStudioPlan, undoStudioAdoption } from "../services/studio-push.js";
 import { executeCloudJobs } from "../services/coros-write-cloud.js";
+import { corosConnectionStatus } from "../services/coros-connection.js";
+import { corosReadNow } from "../services/coros-read.js";
 
 /**
  * Plan Studio API routes (plan-studio-design §7, task-5-brief.md).
@@ -125,7 +127,14 @@ async function llmStatusDto(db: Db, userId: string) {
  * has to measure from.
  */
 async function bridgeStatusDto(db: Db, userId: string) {
-  const { online } = await devicePresence(db, userId);
+  // Cloud-direct: a connected COROS cloud link IS an online executor — the
+  // worker claims and pushes jobs itself, so "waiting for your Mac" would be
+  // a lie. Mac presence still counts for the legacy path.
+  const [presence, cloud] = await Promise.all([
+    devicePresence(db, userId),
+    corosConnectionStatus(db, userId),
+  ]);
+  const online = presence.online || cloud.connected;
 
   const queued = await db
     .select({ requestedAt: corosWriteJobs.requestedAt })
@@ -295,6 +304,15 @@ async function nextPlanCreatedAt(db: Db, userId: string, now: string): Promise<s
 async function catalogNotSynced(c: Context<AppContext>) {
   const db = c.get("db");
   const userId = c.get("userId");
+  // Cloud-direct: the catalog rides corosReadNow when stale. Connected →
+  // "syncing" is genuinely true — kick a forced pull right now so "try again
+  // in a minute" delivers (the coros_read lock absorbs stampedes).
+  const cloud = await corosConnectionStatus(db, userId);
+  if (cloud.connected) {
+    const prefs = await loadPreferences(db, userId);
+    waitUntilSafe(c, corosReadNow(db, c.env, userId, prefs, { force: true }).catch(() => undefined));
+    return c.json({ error: "catalog_not_synced", reason: "syncing" }, 412);
+  }
   // `bridge_offline` vs `syncing`/`bridge_outdated` is gated on aggregate
   // presence (sync-status.ts) — a paused bridge now reads offline here too
   // (the intended fix: Today/status must never call a paused bridge "syncing").

@@ -79,7 +79,7 @@ export function MoveSheet({
         <Banner kind="info">
           {syncStatus.data.registered
             ? "This will only change the app calendar — COROS updates are off."
-            : "This will only change the app calendar — pair your Mac to update COROS."}
+            : "This will only change the app calendar — connect COROS in Settings to update your watch."}
         </Banner>
       ) : null}
       {result ? (
