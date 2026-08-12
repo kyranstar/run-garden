@@ -3,6 +3,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { api } from "@rg/api-client";
 import type { UserPreferences } from "@rg/domain";
 import { Banner, Card, formatDayShort, relativeTime, Sheet, Spinner } from "../components.js";
+import { md5Hex } from "../md5.js";
 
 const TZ_OPTIONS: string[] = (() => {
   const sv = (Intl as unknown as { supportedValuesOf?: (k: string) => string[] }).supportedValuesOf;
@@ -299,6 +300,114 @@ function ConnectionsSection() {
           ) : null}
         </div>
       </Sheet>
+    </Card>
+  );
+}
+
+/** Cloud COROS connection (cloud-direct spec §1): email + password, hashed
+ * in the browser before the request — the plaintext never leaves this
+ * device. Exposed states: disconnected form / connected line / rejected
+ * credentials with the form re-opened. */
+export function CorosConnectSection() {
+  const qc = useQueryClient();
+  const status = useQuery({ queryKey: ["coros-status"], queryFn: api.corosStatus });
+  const [email, setEmail] = useState("");
+  const [password, setPassword] = useState("");
+  const [region, setRegion] = useState<"us" | "eu" | "cn">("us");
+  const [result, setResult] = useState<string | null>(null);
+  const connect = useMutation({
+    mutationFn: () => {
+      const pwdMd5 = md5Hex(password);
+      return api.corosConnect({ email: email.trim(), pwdMd5, region });
+    },
+    onSuccess: (r) => {
+      setResult(r.status);
+      if (r.status === "connected") {
+        setPassword("");
+        void qc.invalidateQueries({ queryKey: ["coros-status"] });
+        void qc.invalidateQueries({ queryKey: ["sync-status"] });
+      }
+    },
+    onError: () => setResult("login_failed"),
+  });
+  const disconnect = useMutation({
+    mutationFn: api.corosDisconnect,
+    onSuccess: () => {
+      setResult(null);
+      void qc.invalidateQueries({ queryKey: ["coros-status"] });
+    },
+  });
+
+  const s = status.data;
+  const connected = s?.connected === true;
+  const badCreds = s?.lastErrorCategory === "bad_credentials" || result === "bad_credentials";
+
+  return (
+    <Card title="COROS connection">
+      {connected && !badCreds ? (
+        <div className="stack" style={{ gap: "0.5rem" }}>
+          <p className="muted">
+            Connected as <strong>{s?.email}</strong>
+            {s?.lastSyncAt ? ` · last sync ${relativeTime(s.lastSyncAt)}` : " · first sync pending"}.
+            Activities and watch updates flow directly — no Mac needed.
+          </p>
+          <div>
+            <button className="btn btn-small" disabled={disconnect.isPending} onClick={() => disconnect.mutate()}>
+              Disconnect
+            </button>
+          </div>
+        </div>
+      ) : (
+        <form
+          className="stack"
+          style={{ gap: "0.5rem", maxWidth: "26rem" }}
+          onSubmit={(e) => {
+            e.preventDefault();
+            if (email.trim() && password) connect.mutate();
+          }}
+        >
+          {badCreds ? (
+            <Banner kind="warn">COROS rejected the password — check it and try again.</Banner>
+          ) : result === "login_failed" ? (
+            <Banner kind="warn">Couldn't reach COROS just now — try again in a moment.</Banner>
+          ) : (
+            <p className="muted">
+              Connect your COROS account so activities appear the moment you open the app. Your
+              password is hashed on this device before it's sent, and only the hash is stored —
+              encrypted.
+            </p>
+          )}
+          <input
+            type="email"
+            value={email}
+            onChange={(e) => setEmail(e.target.value)}
+            placeholder="COROS account email"
+            aria-label="COROS account email"
+            autoComplete="username"
+          />
+          <input
+            type="password"
+            value={password}
+            onChange={(e) => setPassword(e.target.value)}
+            placeholder="COROS password"
+            aria-label="COROS password"
+            autoComplete="current-password"
+          />
+          <label className="row" style={{ gap: "0.5rem" }}>
+            <span className="muted">Region</span>
+            <select value={region} onChange={(e) => setRegion(e.target.value as "us" | "eu" | "cn")} aria-label="COROS region">
+              <option value="us">Americas / global</option>
+              <option value="eu">Europe</option>
+              <option value="cn">China</option>
+            </select>
+          </label>
+          <div>
+            <button className="btn btn-primary" type="submit" disabled={connect.isPending || !email.trim() || !password}>
+              {connect.isPending ? "Checking with COROS…" : "Connect"}
+            </button>
+          </div>
+        </form>
+      )}
     </Card>
   );
 }
@@ -730,6 +839,7 @@ export function SettingsScreen() {
         <span className="faint">{me.data?.email}</span>
       </div>
       <ConnectionsSection />
+      <CorosConnectSection />
       <DevicesSection />
       <SchedulingSection prefs={settings.data.prefs} />
       <CorosSyncSection prefs={settings.data.prefs} />
