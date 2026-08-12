@@ -33,6 +33,13 @@ export const userPreferencesSchema = schedulingPreferencesSchema.extend({
   corosWritesEnabled: z.boolean().default(false),
   gardenRestMode: z.boolean().default(false),
   gardenRestModeUntil: z.string().nullable().default(null),
+  /** The next race (ISO date). Drawn as a labeled line on plan charts and
+   * feeds the weekly brief's race-week awareness. */
+  raceDate: z
+    .string()
+    .regex(/^\d{4}-\d{2}-\d{2}$/)
+    .nullable()
+    .default(null),
   reducedMotion: z.boolean().default(false),
   theme: z.enum(["system", "light", "dark"]).default("system"),
 });

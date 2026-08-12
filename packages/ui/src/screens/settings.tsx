@@ -113,6 +113,19 @@ function SchedulingSection({ prefs }: { prefs: UserPreferences }) {
         hint="“Morning run tomorrow at 7:00 AM. Protect tonight's sleep.”"
       />
       <TimeField id="s-fin" label="Latest evening finish" value={draft.latestEveningFinish} onChange={(v) => set("latestEveningFinish", v)} />
+      <div className="field">
+        <label htmlFor="s-race">Race day</label>
+        <input
+          id="s-race"
+          type="date"
+          value={draft.raceDate ?? ""}
+          onChange={(e) => set("raceDate", e.target.value || null)}
+        />
+        <span className="hint">
+          Marked on your plan charts and cards; the coach plans the final weeks around it. Clear it
+          when there's no race on the horizon.
+        </span>
+      </div>
       <div className="row" style={{ gap: "0.8rem" }}>
         <NumberField id="s-before" label="Buffer before" value={draft.bufferBeforeMinutes} onChange={(v) => set("bufferBeforeMinutes", v)} suffix="min" />
         <NumberField id="s-after" label="Buffer after" value={draft.bufferAfterMinutes} onChange={(v) => set("bufferAfterMinutes", v)} suffix="min" />

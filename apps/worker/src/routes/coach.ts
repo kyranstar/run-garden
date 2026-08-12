@@ -339,6 +339,7 @@ coachRoutes.delete("/memory/:id", async (c) => {
 coachRoutes.get("/plans", async (c) => {
   const db = c.get("db");
   const userId = c.get("userId");
+  const prefs = await loadPreferences(db, userId);
   const rows = await db.select().from(coachPlans).where(eq(coachPlans.userId, userId));
   // Studio-authored lifting plans are real plans this app created and wrote
   // to COROS — "Manage plans" claiming "no plans" while one is live on the
@@ -380,7 +381,7 @@ coachRoutes.get("/plans", async (c) => {
       status: (pushed ? "active" : "draft") as "active" | "draft",
       startDate: start,
       endDate: end,
-      raceDate: null,
+      raceDate: prefs.raceDate,
       source: "studio" as const,
     });
   }
@@ -388,7 +389,7 @@ coachRoutes.get("/plans", async (c) => {
   // The imported COROS plan IS the user's running plan — a page that shows
   // its 35 workouts while the run slot claims "no plan" denies reality
   // (audit finding 6). Read-only card: the app doesn't author these.
-  const today = todayInZone((await loadPreferences(db, userId)).timezone);
+  const today = todayInZone(prefs.timezone);
   const corosPlans = await db
     .select()
     .from(trainingPlans)
@@ -440,7 +441,7 @@ coachRoutes.get("/plans", async (c) => {
         status: "active" as const,
         startDate: p.startDate ?? dates[0]!,
         endDate: p.endDate ?? dates[dates.length - 1]!,
-        raceDate: null,
+        raceDate: prefs.raceDate,
         source: "coros" as const,
       });
     }
@@ -448,7 +449,7 @@ coachRoutes.get("/plans", async (c) => {
 
   return c.json({
     plans: [
-      ...rows.map((r) => ({ ...r, source: "coach" as const })),
+      ...rows.map((r) => ({ ...r, raceDate: r.raceDate ?? prefs.raceDate, source: "coach" as const })),
       ...studioEntries,
       ...corosEntries,
     ],
@@ -586,7 +587,7 @@ coachRoutes.get("/plans/:id/detail", async (c) => {
     const nonRestAll = workouts.filter((w) => w.category !== "rest");
     const adh = await coachBlockAdherence(db, userId, cp.id, cp.startDate, cp.endDate);
     return c.json({
-      plan: { ...cp, source: "coach" as const },
+      plan: { ...cp, raceDate: cp.raceDate ?? prefs.raceDate, source: "coach" as const },
       weeks,
       progressions,
       sessions: {
@@ -688,7 +689,7 @@ coachRoutes.get("/plans/:id/detail", async (c) => {
         status: "active" as const,
         startDate,
         endDate,
-        raceDate: null,
+        raceDate: prefs.raceDate,
         source: "coros" as const,
       },
       weeks,
@@ -780,7 +781,7 @@ coachRoutes.get("/plans/:id/detail", async (c) => {
         status: (pushed ? "active" : "draft") as "active" | "draft",
         startDate: plan.brief.startDate,
         endDate,
-        raceDate: null,
+        raceDate: prefs.raceDate,
         source: "studio" as const,
       },
       weeks,

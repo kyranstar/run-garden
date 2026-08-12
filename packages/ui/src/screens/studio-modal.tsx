@@ -2,6 +2,7 @@ import { useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { api, type CoachPlanDto, type PlanDetailResponse } from "@rg/api-client";
 import { formatShortDate, Sheet, Spinner } from "../components.js";
+import { startOfIsoWeek } from "@rg/domain";
 import { progressionHeadline } from "./plan-cards.js";
 import { PlannedVsActualBars, ProgressionStepChart } from "./plan-charts.js";
 import { StudioSection } from "./studio.js";
@@ -76,6 +77,14 @@ export function StudioModal({
 
   const d = detail.data;
   const title = d?.plan.name ?? plan?.name ?? "Plan";
+  // Race day as a labeled vertical line on every by-week chart (user
+  // request): week index relative to the plan's own W1.
+  const raceWeek = d?.plan.raceDate
+    ? Math.floor(
+        (Date.parse(d.plan.raceDate) - Date.parse(startOfIsoWeek(d.plan.startDate))) / (7 * 86_400_000),
+      ) + 1
+    : null;
+  const raceLabel = d?.plan.raceDate ? `race · ${formatShortDate(d.plan.raceDate)}` : undefined;
   return (
     <Sheet open onClose={onClose} title={title}>
       <div className="stack studio-modal">
@@ -121,14 +130,14 @@ export function StudioModal({
                   ? d.progressions
                       .filter((p) => p.key.startsWith("lift:") && p.key !== "lift:weekly-sets")
                       .slice(0, 2)
-                      .map((p) => <ProgressionStepChart key={p.key} progression={p} discipline="lift" />)
+                      .map((p) => <ProgressionStepChart key={p.key} progression={p} discipline="lift" raceWeek={raceWeek} raceLabel={raceLabel} />)
                   : [
                       ...d.progressions
                         .filter((p) => p.key === "run:long-run")
-                        .map((p) => <ProgressionStepChart key={p.key} progression={p} discipline="run" />),
+                        .map((p) => <ProgressionStepChart key={p.key} progression={p} discipline="run" raceWeek={raceWeek} raceLabel={raceLabel} />),
                       ...d.progressions
                         .filter((p) => p.key === "run:weekly-minutes")
-                        .map((p) => <PlannedVsActualBars key={p.key} progression={p} />),
+                        .map((p) => <PlannedVsActualBars key={p.key} progression={p} raceWeek={raceWeek} raceLabel={raceLabel} />),
                     ]}
               </div>
             ) : null}

@@ -420,6 +420,14 @@ planRoutes.get("/week", async (c) => {
       raceInDays = Math.round((Date.parse(covering.raceDate) - Date.parse(today)) / 86_400_000);
       if (raceInDays < 0) raceInDays = null;
     }
+  }
+  // The race-day preference covers users whose plan rows carry no race
+  // (imported COROS plans, studio blocks).
+  if (raceInDays === null && prefs.raceDate) {
+    const d = Math.round((Date.parse(prefs.raceDate) - Date.parse(today)) / 86_400_000);
+    if (d >= 0) raceInDays = d;
+  }
+  if (covering) {
     const [thisWeekShape] = await db
       .select()
       .from(coachPlanWeeks)
@@ -499,21 +507,20 @@ planRoutes.get("/week", async (c) => {
   ).size;
 
   // The coach's one action line — stale after 3 days (rework spec §6).
-  const [focusMsg] = await db
+  // The focus is THE LATEST briefing's line — never an older message's. A
+  // fresh briefing with focus:null must retire the previous line, not let it
+  // linger (live case: a phantom "Sunday's 5K" focus outlived the corrected
+  // briefing that followed it).
+  const [latestCoachMsg] = await db
     .select()
     .from(coachMessages)
-    .where(
-      and(
-        eq(coachMessages.userId, userId),
-        eq(coachMessages.role, "coach"),
-        sql`json_extract(${coachMessages.refs}, '$.focus') IS NOT NULL`,
-      ),
-    )
+    .where(and(eq(coachMessages.userId, userId), eq(coachMessages.role, "coach")))
     .orderBy(desc(coachMessages.at))
     .limit(1);
+  const latestFocus = (latestCoachMsg?.refs as { focus?: string } | undefined)?.focus;
   const focus =
-    focusMsg && Date.now() - Date.parse(focusMsg.at) < FOCUS_STALE_MS
-      ? { text: (focusMsg.refs as { focus?: string }).focus ?? "", at: focusMsg.at }
+    latestCoachMsg && latestFocus && Date.now() - Date.parse(latestCoachMsg.at) < FOCUS_STALE_MS
+      ? { text: latestFocus, at: latestCoachMsg.at }
       : null;
 
   return c.json({

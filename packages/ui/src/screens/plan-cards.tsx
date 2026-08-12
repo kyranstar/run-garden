@@ -82,6 +82,14 @@ export function PlanCards({
         const detail = details.get(p.id);
         const { into, total } = weekLabel(p, detail);
         const prog = detail?.progressions[0];
+        // Race day as a tick on the (time-linear) progress track, when it
+        // falls inside the plan's span.
+        const racePct =
+          p.raceDate && p.raceDate >= p.startDate && p.raceDate <= p.endDate
+            ? ((Date.parse(p.raceDate) - Date.parse(p.startDate)) /
+                (Date.parse(p.endDate) - Date.parse(p.startDate))) *
+              100
+            : null;
         return (
           <button key={p.id} type="button" className="card plan-card" onClick={() => onOpen(p.id)}>
             <span className="plan-card-top">
@@ -101,6 +109,13 @@ export function PlanCards({
               <span className="faint num">{into === 0 ? `${total} wk plan` : `wk ${into}/${total}`}</span>
               <span className={`plan-card-track ${p.discipline === "lift" ? "is-lift" : ""}`}>
                 <i style={{ width: `${Math.round((into / total) * 100)}%` }} />
+                {racePct !== null ? (
+                  <b
+                    className="plan-card-race"
+                    style={{ left: `${racePct}%` }}
+                    title={`Race · ${formatShortDate(p.raceDate!)}`}
+                  />
+                ) : null}
               </span>
               <span className="faint num">
                 {into === 0 ? `starts ${formatShortDate(p.startDate)}` : `ends ${formatShortDate(p.endDate)}`}

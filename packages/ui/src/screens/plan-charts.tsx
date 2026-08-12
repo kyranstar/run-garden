@@ -14,6 +14,41 @@ const VB_W = 320;
 const VB_H = 150;
 const M = { top: 10, right: 10, bottom: 26, left: 40 };
 
+/** Labeled vertical race-day line, drawn when the race week falls inside
+ * the charted span (user request, 2026-08-12). */
+function RaceLine({
+  raceWeek,
+  raceLabel,
+  x,
+  wMin,
+  wMax,
+}: {
+  raceWeek: number | null | undefined;
+  raceLabel: string | undefined;
+  x: (week: number) => number;
+  wMin: number;
+  wMax: number;
+}) {
+  if (raceWeek == null || raceWeek < wMin || raceWeek > wMax) return null;
+  const rx = x(raceWeek);
+  return (
+    <g>
+      <line
+        x1={rx}
+        y1={M.top}
+        x2={rx}
+        y2={VB_H - M.bottom}
+        stroke="var(--chart-2)"
+        strokeWidth="1.5"
+        strokeDasharray="5 3"
+      />
+      <text x={rx} y={M.top - 1} textAnchor="middle" fontSize="9" fontWeight="600" fill="var(--chart-2)">
+        {raceLabel ?? "race"}
+      </text>
+    </g>
+  );
+}
+
 function scales(progression: PlanProgression) {
   const weeks = progression.series.map((p) => p.week);
   const values = progression.series.flatMap((p) => [p.value, ...(p.actual !== undefined ? [p.actual] : [])]);
@@ -32,9 +67,13 @@ function scales(progression: PlanProgression) {
 export function ProgressionStepChart({
   progression,
   discipline,
+  raceWeek,
+  raceLabel,
 }: {
   progression: PlanProgression;
   discipline: "run" | "lift";
+  raceWeek?: number | null;
+  raceLabel?: string;
 }) {
   const s = progression.series;
   if (s.length < 2) return null;
@@ -81,6 +120,7 @@ export function ProgressionStepChart({
             </g>
           ))}
           <line x1={M.left} y1={VB_H - M.bottom} x2={VB_W - M.right} y2={VB_H - M.bottom} stroke="var(--chart-grid)" />
+          <RaceLine raceWeek={raceWeek} raceLabel={raceLabel} x={x} wMin={wMin} wMax={wMax} />
           <path d={path} fill="none" stroke="var(--ink-faint)" strokeWidth="1.5" strokeDasharray="4 3" />
           {s.filter((p) => p.done).map((p) => (
             <circle
@@ -121,7 +161,15 @@ export function ProgressionStepChart({
 }
 
 /** Planned-vs-actual weekly minutes: outline planned, filled actual (run). */
-export function PlannedVsActualBars({ progression }: { progression: PlanProgression }) {
+export function PlannedVsActualBars({
+  progression,
+  raceWeek,
+  raceLabel,
+}: {
+  progression: PlanProgression;
+  raceWeek?: number | null;
+  raceLabel?: string;
+}) {
   const s = progression.series;
   if (s.length < 2) return null;
   const { x, y, ticks, wMin, wMax } = scales(progression);
@@ -145,6 +193,7 @@ export function PlannedVsActualBars({ progression }: { progression: PlanProgress
             </text>
           ))}
           <line x1={M.left} y1={base} x2={VB_W - M.right} y2={base} stroke="var(--chart-grid)" />
+          <RaceLine raceWeek={raceWeek} raceLabel={raceLabel} x={x} wMin={wMin} wMax={wMax} />
           {s.map((p) => {
             const cx = x(p.week);
             return (
