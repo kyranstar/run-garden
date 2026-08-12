@@ -27,6 +27,7 @@ import type { AppContext } from "../auth/middleware.js";
 import { requireUser } from "../auth/middleware.js";
 import { loadPreferences } from "../services/calendar-sync.js";
 import { ensureRead } from "../services/coach-reads.js";
+import { exerciseNameMap, resolveExerciseName } from "../services/exercise-catalog.js";
 import { liftProgressions, liftWeekSummary, runProgressions } from "../services/plan-progressions.js";
 import { applyOps } from "../services/coach-apply.js";
 import { evaluateTriggers, pendingTriggers } from "../services/coach-triggers.js";
@@ -442,6 +443,10 @@ coachRoutes.get("/plans/:id/detail", async (c) => {
     // Coach-authored lift plans keep their structure (spec §5) — graph it.
     let progressions;
     if (cp.discipline === "lift") {
+      // The actual exercise name, every place (round 3): code-named
+      // exercises resolve through the COROS catalog before anything graphs
+      // or summarizes them.
+      const catalog = await exerciseNameMap(db);
       const liftWeeks = weeks.map((wk) => ({
         sessions: workouts
           .filter(
@@ -453,7 +458,9 @@ coachRoutes.get("/plans/:id/detail", async (c) => {
           .map((w) => ({
             title: w.title,
             weekday: 1,
-            exercises: (w.structuredJson?.exercises ?? []) as LiftingPlan["weeks"][number]["sessions"][number]["exercises"],
+            exercises: (
+              (w.structuredJson?.exercises ?? []) as LiftingPlan["weeks"][number]["sessions"][number]["exercises"]
+            ).map((ex) => ({ ...ex, name: resolveExerciseName(ex.name, ex.originId, catalog) })),
           })),
       }));
       const doneWeeks = new Set(facts.filter((f) => f.done).map((f) => f.week));
@@ -482,7 +489,22 @@ coachRoutes.get("/plans/:id/detail", async (c) => {
     .where(and(eq(studioPlans.id, id), eq(studioPlans.userId, userId)))
     .limit(1);
   if (sp) {
-    const plan = sp.plan as LiftingPlan;
+    // Same rule as the coach branch: real exercise names before graphing.
+    const catalog = await exerciseNameMap(db);
+    const raw = sp.plan as LiftingPlan;
+    const plan: LiftingPlan = {
+      ...raw,
+      weeks: raw.weeks.map((wk) => ({
+        ...wk,
+        sessions: wk.sessions.map((s) => ({
+          ...s,
+          exercises: s.exercises.map((ex) => ({
+            ...ex,
+            name: resolveExerciseName(ex.name, ex.originId, catalog),
+          })),
+        })),
+      })),
+    };
     const planW1 = startOfIsoWeek(plan.brief.startDate);
     const weekTotal = plan.brief.durationWeeks;
     const endDate = addDays(planW1, weekTotal * 7 - 1);

@@ -406,13 +406,19 @@ describe("GET /plans/:id/detail (2026-08-11 rework §4)", () => {
 
   it("studio lift plan: prescribed progressions, weeks list, sessions", async () => {
     const monday = startOfIsoWeek(todayInZone(prefs.timezone));
+    await db.insert(schema.corosExercises).values({
+      id: "T1004",
+      name: "Bench Press",
+      raw: { id: "T1004", name: "Bench Press" },
+      updatedAt: nowInstant(),
+    });
     const mkWeek = (bench: number, squat: number) => ({
       sessions: [
         {
           title: "Full Body",
           weekday: 1,
           exercises: [
-            { originId: "S1", name: "Bench Press", sets: 3, reps: 8, weight: { type: "kg", value: bench }, restSeconds: 120 },
+            { originId: "T1004", name: "T1004", sets: 3, reps: 8, weight: { type: "kg", value: bench }, restSeconds: 120 },
             { originId: "S2", name: "Back Squat", sets: 4, reps: 6, weight: { type: "kg", value: squat }, restSeconds: 150 },
           ],
         },
@@ -455,7 +461,10 @@ describe("GET /plans/:id/detail (2026-08-11 rework §4)", () => {
     expect(body.weeks).toHaveLength(3);
     expect(body.weeks[0]!.summary).toContain("sets");
     expect(body.weeks[0]!.current).toBe(true);
+    // "T1004" resolved through the catalog — the actual name, everywhere.
     const bench = body.progressions.find((p) => p.label === "Bench Press")!;
+    expect(body.progressions.map((pr) => pr.label).join()).not.toContain("T1004");
+    expect(body.weeks[0]!.summary).toContain("bench press");
     expect(bench.from).toBe(52);
     expect(bench.to).toBe(60);
     expect(bench.series.map((s) => s.value)).toEqual([52, 56, 60]);

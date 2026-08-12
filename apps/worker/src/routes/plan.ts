@@ -43,6 +43,7 @@ import { applyMove } from "../services/jobs.js";
 import { recentGardenEvents, resimulateFrom } from "../services/garden-sync.js";
 import { openIntentFor, openMoveIntents, recordIntent, resolveIntent } from "../services/sync-intents.js";
 import { deriveWorkoutSync, devicePresence } from "../services/sync-status.js";
+import { exerciseNameMap, resolveCodesInText } from "../services/exercise-catalog.js";
 
 export const planRoutes = new Hono<AppContext>();
 planRoutes.use("*", requireUser);
@@ -104,6 +105,7 @@ async function loadWorkoutSyncViews(
 function workoutDto(
   w: typeof plannedWorkouts.$inferSelect,
   corosSyncView?: ReturnType<typeof deriveWorkoutSync>,
+  catalog?: Map<string, string>,
 ) {
   // COROS structured names are frequently opaque codes ("T1004") — every UI
   // surface gets the humanized name; the raw one rides along as corosName
@@ -124,7 +126,8 @@ function workoutDto(
     workoutSeconds: w.sourceEstimatedDurationSeconds ?? w.fallbackEstimatedDurationSeconds,
     estimateSource: (w.durationEstimate as { source?: string } | null)?.source,
     calendarSeconds: w.calendarBlockDurationSeconds,
-    stageSummary: w.stageSummary,
+    stageSummary:
+      w.stageSummary && catalog ? resolveCodesInText(w.stageSummary, catalog) : w.stageSummary,
     calendarSyncState: w.calendarSyncState,
     corosSyncState: w.corosSyncState,
     // Derived per-workout view (sync-transparency Task 10), alongside the
@@ -144,6 +147,7 @@ planRoutes.get("/today", async (c) => {
   const userId = c.get("userId");
   const prefs = await loadPreferences(db, userId);
   const today = todayInZone(prefs.timezone);
+  const catalog = await exerciseNameMap(db);
 
   const upcoming = await db
     .select()
@@ -241,10 +245,10 @@ planRoutes.get("/today", async (c) => {
 
   return c.json({
     today,
-    nextWorkout: next ? workoutDto(next, syncViews.get(next.id)) : null,
-    upcoming: upcoming.map((w) => workoutDto(w, syncViews.get(w.id))),
-    unresolved: unresolved.map((w) => workoutDto(w, syncViews.get(w.id))),
-    needsAttention: attention.map((w) => workoutDto(w, syncViews.get(w.id))),
+    nextWorkout: next ? workoutDto(next, syncViews.get(next.id), catalog) : null,
+    upcoming: upcoming.map((w) => workoutDto(w, syncViews.get(w.id), catalog)),
+    unresolved: unresolved.map((w) => workoutDto(w, syncViews.get(w.id), catalog)),
+    needsAttention: attention.map((w) => workoutDto(w, syncViews.get(w.id), catalog)),
     sync: {
       pendingCorosJobs: pendingJobs.length,
       deviceOnline: presence.online,
@@ -290,6 +294,7 @@ planRoutes.get("/workouts", async (c) => {
   const db = c.get("db");
   const prefs = await loadPreferences(db, c.get("userId"));
   const today = todayInZone(prefs.timezone);
+  const catalog = await exerciseNameMap(db);
   // Look back 8 weeks by default so completed/past runs are browsable; callers
   // can widen with ?start=.
   const start = c.req.query("start") ?? addDays(today, -56);
@@ -326,7 +331,7 @@ planRoutes.get("/workouts", async (c) => {
     today,
     plan: primary ? { name: primary.name, startDate: primary.startDate, endDate: primary.endDate } : null,
     corosWritesEnabled: prefs.corosWritesEnabled,
-    workouts: rows.map((w) => workoutDto(w, syncViews.get(w.id))),
+    workouts: rows.map((w) => workoutDto(w, syncViews.get(w.id), catalog)),
   });
 });
 
@@ -378,11 +383,14 @@ planRoutes.get("/week", async (c) => {
     )
     .orderBy(asc(plannedWorkouts.effectiveDate), asc(plannedWorkouts.effectiveTime));
   const syncViews = await loadWorkoutSyncViews(db, userId, rows, prefs);
+  const catalog = await exerciseNameMap(db);
   const days = Array.from({ length: 7 }, (_, i) => {
     const date = addDays(weekStart, i);
     return {
       date,
-      workouts: rows.filter((w) => w.effectiveDate === date).map((w) => workoutDto(w, syncViews.get(w.id))),
+      workouts: rows
+        .filter((w) => w.effectiveDate === date)
+        .map((w) => workoutDto(w, syncViews.get(w.id), catalog)),
     };
   });
 
@@ -530,11 +538,18 @@ planRoutes.get("/workouts/:id", async (c) => {
   if (!w) return c.json({ error: "not_found" }, 404);
   const prefs = await loadPreferences(db, userId);
   const syncViews = await loadWorkoutSyncViews(db, userId, [w], prefs);
-  const stages = await db
-    .select()
-    .from(plannedWorkoutStages)
-    .where(eq(plannedWorkoutStages.workoutId, w.id))
-    .orderBy(asc(plannedWorkoutStages.ord));
+  const catalog = await exerciseNameMap(db);
+  const stages = (
+    await db
+      .select()
+      .from(plannedWorkoutStages)
+      .where(eq(plannedWorkoutStages.workoutId, w.id))
+      .orderBy(asc(plannedWorkoutStages.ord))
+  ).map((s) => ({
+    ...s,
+    // Stage labels for imported strength work are catalog codes — resolve.
+    label: s.label ? resolveCodesInText(s.label, catalog) : s.label,
+  }));
   const match = (
     await db
       .select()
@@ -555,7 +570,7 @@ planRoutes.get("/workouts/:id", async (c) => {
     .orderBy(desc(corosWriteJobs.requestedAt))
     .limit(3);
   return c.json({
-    workout: workoutDto(w, syncViews.get(w.id)),
+    workout: workoutDto(w, syncViews.get(w.id), catalog),
     durationEstimate: w.durationEstimate,
     stages,
     match: match

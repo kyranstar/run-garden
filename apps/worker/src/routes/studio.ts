@@ -30,6 +30,7 @@ import { loadPreferences } from "../services/calendar-sync.js";
 import { llmBudgetStatus, LLM_BUDGET } from "../services/llm.js";
 import { DEVICE_ONLINE_WINDOW_MS, devicePresence } from "../services/sync-status.js";
 import { editPlan, generatePlan, type CatalogEntry } from "../services/studio-llm.js";
+import { exerciseNameMap, resolveExerciseName } from "../services/exercise-catalog.js";
 import { pushStudioPlan, undoStudioAdoption } from "../services/studio-push.js";
 
 /**
@@ -215,6 +216,28 @@ async function loadCurrentPlan(db: Db, userId: string) {
   )[0];
 }
 
+/** Display copy of a lifting plan with every code-named exercise resolved
+ * through the catalog (round 3: the actual workout name, every place). */
+function resolvePlanExerciseNames(
+  plan: { weeks?: Array<{ sessions: Array<{ exercises: Array<{ name: string; originId?: string }> }> }> },
+  catalog: Map<string, string>,
+) {
+  if (!plan?.weeks) return plan;
+  return {
+    ...plan,
+    weeks: plan.weeks.map((wk) => ({
+      ...wk,
+      sessions: wk.sessions.map((s) => ({
+        ...s,
+        exercises: s.exercises.map((ex) => ({
+          ...ex,
+          name: resolveExerciseName(ex.name, ex.originId, catalog),
+        })),
+      })),
+    })),
+  };
+}
+
 async function loadCatalog(db: Db): Promise<CatalogEntry[]> {
   return db.select({ id: corosExercises.id, name: corosExercises.name }).from(corosExercises);
 }
@@ -343,7 +366,7 @@ studioRoutes.get("/", async (c) => {
   ]);
 
   return c.json({
-    plan: planRow.plan,
+    plan: resolvePlanExerciseNames(planRow.plan as never, await exerciseNameMap(db)),
     brief: planRow.brief,
     version: planRow.version,
     pushes: pushes.map(pushRowDto),
