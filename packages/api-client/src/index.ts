@@ -385,6 +385,8 @@ export interface CorosStatusResponse {
 
 export interface CorosConnectResponse {
   status: "connected" | "bad_credentials" | "login_failed";
+  /** COROS envelope result code when COROS itself rejected the login. */
+  code?: string;
 }
 
 export interface CoachStateResponse {

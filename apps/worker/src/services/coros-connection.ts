@@ -21,6 +21,9 @@ const TOKEN_TTL_MS = 20 * 3600 * 1000;
 
 export interface CorosConnectResult {
   status: "connected" | "bad_credentials" | "login_failed";
+  /** COROS envelope result code on login_failed (e.g. "1031") — safe to
+   * surface; distinguishes "COROS answered with an error" from "unreachable". */
+  code?: string;
 }
 
 type ConnRow = typeof providerConnections.$inferSelect;
@@ -47,8 +50,14 @@ export async function connectCoros(
   try {
     ({ userId: corosUserId } = await client.loginWithHash(input.email, input.pwdMd5));
   } catch (e) {
-    const category = e instanceof CorosApiError ? e.category : "login_failed";
-    return { status: category === "bad_credentials" ? "bad_credentials" : "login_failed" };
+    if (e instanceof CorosApiError) {
+      // Result code + category only — never the email or hash.
+      console.error("coros connect: login rejected", { category: e.category, code: e.resultCode });
+      if (e.category === "bad_credentials") return { status: "bad_credentials" };
+      return { status: "login_failed", code: e.resultCode };
+    }
+    console.error("coros connect: login unreachable", String(e).slice(0, 200));
+    return { status: "login_failed" };
   }
 
   const now = nowInstant();

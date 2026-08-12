@@ -93,6 +93,25 @@ describe("connectCoros", () => {
     expect(res.status).toBe("bad_credentials");
     expect(await row(db, userId)).toBeUndefined();
   });
+
+  it("any other COROS rejection surfaces its result code (login_failed, not a lie about reachability)", async () => {
+    const db = makeTestDb();
+    const { userId } = await makeTestUser(db);
+    const coros = corosFetch({ loginResult: "1031" });
+    const res = await connectCoros(db, makeEnv(), userId, { email: "a@b.c", pwdMd5: PWD_MD5, region: "us" }, coros.fetchImpl);
+    expect(res.status).toBe("login_failed");
+    expect(res.code).toBe("1031");
+    expect(await row(db, userId)).toBeUndefined();
+  });
+
+  it("a network failure is login_failed with NO code", async () => {
+    const db = makeTestDb();
+    const { userId } = await makeTestUser(db);
+    const boom: typeof fetch = () => Promise.reject(new TypeError("fetch failed"));
+    const res = await connectCoros(db, makeEnv(), userId, { email: "a@b.c", pwdMd5: PWD_MD5, region: "us" }, boom);
+    expect(res.status).toBe("login_failed");
+    expect(res.code).toBeUndefined();
+  });
 });
 
 describe("corosClient", () => {

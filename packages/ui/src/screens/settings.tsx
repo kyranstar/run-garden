@@ -315,6 +315,7 @@ export function CorosConnectSection() {
   const [password, setPassword] = useState("");
   const [region, setRegion] = useState<"us" | "eu" | "cn">("us");
   const [result, setResult] = useState<string | null>(null);
+  const [failCode, setFailCode] = useState<string | null>(null);
   const connect = useMutation({
     mutationFn: () => {
       const pwdMd5 = md5Hex(password);
@@ -322,6 +323,7 @@ export function CorosConnectSection() {
     },
     onSuccess: (r) => {
       setResult(r.status);
+      setFailCode(r.code ?? null);
       if (r.status === "connected") {
         setPassword("");
         // The connect kicked the first pull server-side — drop every cache
@@ -331,7 +333,10 @@ export function CorosConnectSection() {
         }
       }
     },
-    onError: () => setResult("login_failed"),
+    onError: () => {
+      setResult("login_failed");
+      setFailCode(null);
+    },
   });
   const disconnect = useMutation({
     mutationFn: api.corosDisconnect,
@@ -371,6 +376,11 @@ export function CorosConnectSection() {
         >
           {badCreds ? (
             <Banner kind="warn">COROS rejected the password — check it and try again.</Banner>
+          ) : result === "login_failed" && failCode ? (
+            <Banner kind="warn">
+              COROS didn't accept this login (code {failCode}). Double-check the email, and if your
+              account lives on another COROS server, switch the region below and try again.
+            </Banner>
           ) : result === "login_failed" ? (
             <Banner kind="warn">Couldn't reach COROS just now — try again in a moment.</Banner>
           ) : (
