@@ -24,10 +24,10 @@ test("Plan renders the week calendar and speaks the COROS check outcome", async 
   await expect(page.getByRole("heading", { name: "Plan" })).toBeVisible();
   // The plan is a single week-pickable calendar (coach/plan rework).
   await expect(page.locator(".plan-week-title").first()).toBeVisible();
-  // The app-open COROS check must resolve to a visible outcome — never a
-  // pill that flashes and vanishes (live user report, 2026-08-12). Fixture
-  // mode has no COROS connection, so the honest state is the Settings link.
-  await expect(page.getByText("COROS not connected — connect in Settings")).toBeVisible();
+  // The app-open COROS check resolves silently when connected (the fixture
+  // user is): the checking pill goes away and no warn pill replaces it.
+  await expect(page.locator(".coros-checking")).toHaveCount(0);
+  await expect(page.locator(".coros-check-link")).toHaveCount(0);
 });
 
 test("Garden renders a scene and a species collection", async ({ page }) => {

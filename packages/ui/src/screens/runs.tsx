@@ -275,16 +275,14 @@ export function RunsScreen() {
   const backfill = useMutation({
     mutationFn: () => api.backfillHistory(),
     onSuccess: (r) => {
-      // The walk runs on the desktop bridge, chunk by chunk, so this only
-      // reports that it was queued — Settings shows the progress.
+      // The walk runs in the cloud, chunk by chunk, so this only reports
+      // that it was queued — Settings shows the progress.
       setNote(
         !r.enqueued
           ? r.reason === "already_running"
             ? "A history read is already queued or running — see Settings for progress."
-            : "Couldn't start the backfill. Open the desktop app and try again."
-          : r.reason === "rearmed"
-            ? "Queued — waiting for your Mac to pick it up. Progress is in Settings."
-            : "Queued — your Mac reads runs, lifts, yoga, and adventures. Progress is in Settings.",
+            : "Couldn't start the backfill — connect COROS in Settings and try again."
+          : "Queued — runs, lifts, yoga, and adventures land chunk by chunk. Progress is in Settings.",
       );
       void qc.invalidateQueries({ queryKey: ["runs"] });
       void qc.invalidateQueries({ queryKey: ["plan"] });

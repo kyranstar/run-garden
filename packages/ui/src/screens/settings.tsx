@@ -357,7 +357,7 @@ export function CorosConnectSection() {
           <p className="muted">
             Connected as <strong>{s?.email}</strong>
             {s?.lastSyncAt ? ` · last sync ${relativeTime(s.lastSyncAt)}` : " · first sync pending"}.
-            Activities and watch updates flow directly — no Mac needed.
+            Activities and watch updates flow directly.
           </p>
           <div>
             <button className="btn btn-small" disabled={disconnect.isPending} onClick={() => disconnect.mutate()}>

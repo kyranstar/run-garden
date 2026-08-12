@@ -3,7 +3,7 @@ import { activitySourceLinks, providerConnections } from "@rg/database";
 import { addDays, todayInZone, type UserPreferences } from "@rg/domain";
 import { buildSnapshot, loadNameResolver } from "@rg/coros";
 import type { NameResolver } from "@rg/providers";
-import type { Env } from "../env.js";
+import { fixtureModeEnabled, type Env } from "../env.js";
 import type { Db } from "./db.js";
 import { corosClient, touchCorosSync } from "./coros-connection.js";
 import { ingestActivities } from "./completion.js";
@@ -50,6 +50,9 @@ export async function corosReadNow(
   prefs: UserPreferences,
   opts: { force?: boolean; fetchImpl?: typeof fetch } = {},
 ): Promise<ReadNowResult> {
+  // Fixture mode never talks to real providers (repo-wide convention) — the
+  // seeded connection reports "fresh" so the UI reads as healthy and silent.
+  if (fixtureModeEnabled(env)) return { status: "fresh" };
   const fetchImpl = opts.fetchImpl ?? fetch;
 
   const [conn] = await db

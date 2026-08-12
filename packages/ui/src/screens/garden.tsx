@@ -1726,7 +1726,7 @@ export function GardenScreen() {
         <NextWorkout w={d.nextWorkout} today={d.today} />
       ) : d ? (
         <EmptyState art="🌿" title="No active COROS training plan was found">
-          Start a plan in COROS, then refresh from the desktop app.
+          Start a plan in COROS — it syncs in automatically once COROS is connected in Settings.
         </EmptyState>
       ) : null}
       {d?.nextWorkout ? (
