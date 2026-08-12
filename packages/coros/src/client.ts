@@ -164,7 +164,12 @@ export class CorosClient {
   constructor(opts: CorosClientOptions) {
     this.region = opts.region;
     this.base = COROS_HOSTS[opts.region];
-    this.fetchImpl = opts.fetchImpl ?? fetch;
+    // Wrapped, never stored bare: calling a stored global `fetch` as
+    // `this.fetchImpl(...)` gives it the client as `this`, which the
+    // Cloudflare Workers runtime rejects ("Illegal invocation"). Node's
+    // fetch tolerates it, so only production ever saw the crash.
+    const f = opts.fetchImpl ?? fetch;
+    this.fetchImpl = (input, init) => f(input, init);
     this.logger = opts.logger ?? ((line) => console.error(line));
   }
 

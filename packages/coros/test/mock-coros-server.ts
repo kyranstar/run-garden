@@ -451,10 +451,23 @@ export function mockCorosServer(opts: { baseMonday?: string } = {}): MockCorosSe
     }
   }
 
-  const fetchImpl = (async (
+  // A regular function (not an arrow) so it can police its receiver the way
+  // the Cloudflare Workers runtime polices the real `fetch`: calling it as a
+  // method of anything but globalThis is an Illegal invocation there, and
+  // Node's permissiveness let exactly that bug ship (prod incident,
+  // 2026-08-12: CorosClient called a stored fetch as `this.fetchImpl`).
+  const fetchImpl = async function (
+    this: unknown,
     input: string | URL | Request,
     init?: RequestInit,
-  ): Promise<Response> => {
+  ): Promise<Response> {
+    if (this !== undefined && this !== globalThis && this !== server) {
+      // (`server` itself is allowed: test wrappers call `server.fetchImpl(…)`
+      // method-style; production code can never have it as a receiver.)
+      throw new TypeError(
+        "Illegal invocation: mock fetch called with an incorrect `this` (workerd semantics)",
+      );
+    }
     const url = new URL(
       typeof input === "string" ? input : input instanceof URL ? input.href : input.url,
     );
@@ -592,7 +605,7 @@ export function mockCorosServer(opts: { baseMonday?: string } = {}): MockCorosSe
       default:
         return envelope("1001");
     }
-  }) as typeof fetch;
+  } as typeof fetch;
 
   server.fetchImpl = fetchImpl;
   return server;
