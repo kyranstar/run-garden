@@ -3,7 +3,7 @@ import { FIXTURE_PLAN_ID } from "@rg/providers";
 import type { DailyHealth } from "@rg/domain";
 import { CorosClient } from "@rg/coros";
 import { createBridgeState, handleLine, handleRequest, type BridgeState } from "../src/protocol.js";
-import { buildSnapshot, type BridgeSnapshot } from "../src/snapshot.js";
+import { buildSnapshot, type BridgeSnapshot } from "@rg/coros";
 import { mockCorosServer, type MockCorosServer } from "./mock-coros-server.js";
 
 const BASE_MONDAY = "2026-08-03";

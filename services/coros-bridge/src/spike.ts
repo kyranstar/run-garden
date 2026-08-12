@@ -19,7 +19,7 @@ import { normalizeCorosSchedule, type SourcePlannedWorkout } from "@rg/providers
 import { CorosClient, type CorosRegion } from "@rg/coros";
 import { createPrompter } from "./prompt.js";
 import { redactUserId, stripUserIds } from "./sanitize.js";
-import { loadNameResolver } from "./snapshot.js";
+import { loadNameResolver } from "@rg/coros";
 import { executeMoveJob, type MoveJobResult } from "@rg/coros";
 
 interface SpikeReport {

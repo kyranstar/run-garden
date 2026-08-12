@@ -43,7 +43,7 @@ export {
   loadNameResolver,
   type BridgeSnapshot,
   type NormalizedLap,
-} from "./snapshot.js";
+} from "@rg/coros";
 export {
   createBridgeState,
   handleLine,

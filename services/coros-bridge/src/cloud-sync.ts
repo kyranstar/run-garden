@@ -21,7 +21,7 @@ import {
 } from "@rg/domain";
 import type { NameResolver } from "@rg/providers";
 import type { CorosClient } from "@rg/coros";
-import { buildSnapshot, loadNameResolver } from "./snapshot.js";
+import { buildSnapshot, loadNameResolver } from "@rg/coros";
 import { buildActivityBackfill } from "./backfill.js";
 import {
   executeMoveJob,

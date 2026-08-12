@@ -7,6 +7,9 @@ import {
   corosConnectionStatus,
   disconnectCoros,
 } from "../services/coros-connection.js";
+import { corosReadNow } from "../services/coros-read.js";
+import { processCoachReads } from "../services/coach-reads.js";
+import { loadPreferences } from "../services/calendar-sync.js";
 
 /**
  * Cloud COROS connection surface (cloud-direct spec §1). The password's MD5
@@ -38,4 +41,21 @@ corosRoutes.delete("/connect", async (c) => {
 
 corosRoutes.get("/status", async (c) => {
   return c.json(await corosConnectionStatus(c.get("db"), c.get("userId")));
+});
+
+/** App-open pull (cloud-direct spec §3): single-flighted server-side; a 90s
+ * freshness window makes racing tabs free. The UI shows "Checking COROS…"
+ * until this resolves. */
+corosRoutes.post("/read-now", async (c) => {
+  const db = c.get("db");
+  const userId = c.get("userId");
+  const prefs = await loadPreferences(db, userId);
+  const result = await corosReadNow(db, c.env, userId, prefs);
+  if (result.ingested) {
+    // Fresh activities deserve their ambient reads promptly.
+    c.executionCtx?.waitUntil?.(
+      processCoachReads(db, c.env, userId, prefs, {}).catch(() => undefined),
+    );
+  }
+  return c.json(result);
 });

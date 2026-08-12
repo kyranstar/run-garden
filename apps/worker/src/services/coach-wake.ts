@@ -1,6 +1,5 @@
-import { and, desc, eq, lt, ne, sql } from "drizzle-orm";
+import { and, desc, eq, sql } from "drizzle-orm";
 import {
-  coachLocks,
   coachMemory,
   coachMessages,
   coachPlans,
@@ -31,6 +30,7 @@ import {
 } from "./studio-llm.js";
 import { buildDossier } from "./coach-context.js";
 import { consumeTriggers, pendingTriggers } from "./coach-triggers.js";
+import { claimUserLock, releaseUserLock } from "./locks.js";
 import { disciplineOf } from "@rg/analytics";
 
 /**
@@ -99,44 +99,6 @@ async function persistMessage(
   return id;
 }
 
-/** Single-flight wake claim (rework spec R2): N racing tabs, one thought.
- * Claim = stamp a fresh token (insert wins, or a conditional update takes a
- * stale claim), then read back and check the token is yours — atomic on
- * SQLite/D1's single writer without relying on driver changes() shapes. */
-const WAKE_LOCK_STALE_MINUTES = 10;
-
-async function claimWakeLock(db: Db, userId: string): Promise<string | null> {
-  const now = nowInstant();
-  const staleBefore = new Date(Date.parse(now) - WAKE_LOCK_STALE_MINUTES * 60_000).toISOString();
-  const token = newId();
-  await db
-    .insert(coachLocks)
-    .values({ userId, kind: "wake", token, claimedAt: now })
-    .onConflictDoNothing();
-  await db
-    .update(coachLocks)
-    .set({ token, claimedAt: now })
-    .where(
-      and(
-        eq(coachLocks.userId, userId),
-        eq(coachLocks.kind, "wake"),
-        lt(coachLocks.claimedAt, staleBefore),
-        ne(coachLocks.token, token),
-      ),
-    );
-  const [row] = await db
-    .select()
-    .from(coachLocks)
-    .where(and(eq(coachLocks.userId, userId), eq(coachLocks.kind, "wake")))
-    .limit(1);
-  return row?.token === token ? token : null;
-}
-
-async function releaseWakeLock(db: Db, userId: string, token: string): Promise<void> {
-  await db
-    .delete(coachLocks)
-    .where(and(eq(coachLocks.userId, userId), eq(coachLocks.kind, "wake"), eq(coachLocks.token, token)));
-}
 
 /**
  * Persist a wake-failure receipt ("couldn't think" / "resting"), but never
@@ -348,7 +310,7 @@ export async function wake(
   // opens never touch the lock, and AFTER the user's words are persisted so
   // a lost race can't drop them — the holder's refetch will show the message
   // and the next wake's dossier tail carries it.
-  const lock = await claimWakeLock(db, userId);
+  const lock = await claimUserLock(db, userId, "wake");
   if (!lock) return { status: "skipped" };
 
   try {
@@ -545,6 +507,6 @@ export async function wake(
     await persistWakeFailure(db, userId, "The coach couldn't think just now — try again in a moment.");
     return { status: "error" };
   } finally {
-    await releaseWakeLock(db, userId, lock).catch(() => undefined);
+    await releaseUserLock(db, userId, "wake", lock).catch(() => undefined);
   }
 }

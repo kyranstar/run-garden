@@ -17,6 +17,7 @@ import { DEVICE_ONLINE_WINDOW_MS } from "../services/sync-status.js";
 import { importPlanSnapshot } from "../services/import-plan.js";
 import { ingestActivities } from "../services/completion.js";
 import { enqueueCoachReads, processCoachReads } from "../services/coach-reads.js";
+import { ingestDailyHealth } from "../services/health-ingest.js";
 import { advanceBackfill, recordChunk } from "../services/backfill.js";
 import { advanceGarden, buildGardenView, resimulateFrom } from "../services/garden-sync.js";
 import { finishSyncRun, recordSyncError, startSyncRun } from "../services/reconcile-daily.js";
@@ -251,73 +252,11 @@ deviceRoutes.post("/bridge/sync", requireDevice, async (c) => {
     }
 
     if (body.health && body.health.length > 0) {
-      const now = nowInstant();
-      // The bridge re-sends the same daily-health window on every sync, so the
-      // overwhelmingly common case is a push where nothing changed. Writing it
-      // anyway cost one UPDATE per day per sync — pure D1 write budget spent to
-      // set a row to the value it already held, and every one of those bumped
-      // `updatedAt`, so the column stopped meaning "when this reading last
-      // changed" and started meaning "when the bridge last ran".
-      //
-      // One read answers it: fetch the stored fingerprints for exactly the
-      // pushed dates (chunked, because `inArray` binds one variable per id and
-      // D1 caps them) and skip any row whose stored fingerprint already equals
-      // the incoming one. Everything else takes the COALESCE upsert unchanged.
-      const incoming = (body.health as Array<Record<string, unknown>>).map((h) => {
-        const date = String(h.date);
-        return { h, date, id: `${userId}:${date}`, fp: fingerprint(h) };
-      });
-      const storedFingerprints = new Map<string, string | null>();
-      for (const ids of chunkIds(incoming.map((r) => r.id))) {
-        const existing = await db
-          .select({ id: dailyHealth.id, contentFingerprint: dailyHealth.contentFingerprint })
-          .from(dailyHealth)
-          .where(inArray(dailyHealth.id, ids));
-        for (const row of existing) storedFingerprints.set(row.id, row.contentFingerprint);
-      }
-
-      let written = 0;
-      let skipped = 0;
-      for (const { h, date, id, fp } of incoming) {
-        if (storedFingerprints.get(id) === fp) {
-          skipped++;
-          continue;
-        }
-        await db
-          .insert(dailyHealth)
-          .values({
-            id,
-            userId,
-            date,
-            restingHeartRate: (h.restingHeartRate as number) ?? null,
-            hrv: (h.hrv as number) ?? null,
-            recoveryScore: (h.recoveryScore as number) ?? null,
-            fatigueScore: (h.fatigueScore as number) ?? null,
-            trainingLoad7d: (h.trainingLoad7d as number) ?? null,
-            provider: "coros",
-            contentFingerprint: fp,
-            updatedAt: now,
-          })
-          .onConflictDoUpdate({
-            target: dailyHealth.id,
-            // A push with a null field (e.g. the watch missed last night's HRV
-            // read) must never clobber a previously stored good value — COALESCE
-            // keeps the existing row's value whenever the incoming one is null.
-            set: {
-              restingHeartRate: sql`COALESCE(excluded.resting_heart_rate, ${dailyHealth.restingHeartRate})`,
-              hrv: sql`COALESCE(excluded.hrv, ${dailyHealth.hrv})`,
-              recoveryScore: sql`COALESCE(excluded.recovery_score, ${dailyHealth.recoveryScore})`,
-              fatigueScore: sql`COALESCE(excluded.fatigue_score, ${dailyHealth.fatigueScore})`,
-              trainingLoad7d: sql`COALESCE(excluded.training_load_7d, ${dailyHealth.trainingLoad7d})`,
-              contentFingerprint: fp,
-              updatedAt: now,
-            },
-          });
-        written++;
-        // Keeps a push that repeats the same date twice from writing twice.
-        storedFingerprints.set(id, fp);
-      }
-      stats.health = { received: incoming.length, written, skipped };
+      stats.health = await ingestDailyHealth(
+        db,
+        userId,
+        body.health as Array<Record<string, unknown>>,
+      );
     }
 
     if (body.exerciseCatalog && body.exerciseCatalog.length > 0) {

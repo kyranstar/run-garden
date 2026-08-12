@@ -20,7 +20,7 @@ import {
   type RawCorosActivityDetail,
 } from "@rg/providers";
 import type { CorosClient } from "@rg/coros";
-import type { NormalizedLap } from "./snapshot.js";
+import type { NormalizedLap } from "@rg/coros";
 
 export interface ActivityBackfillChunk {
   activities: SourceActivity[];

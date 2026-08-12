@@ -30,6 +30,7 @@ import { generateWeeklyReview } from "./services/llm.js";
 import { healLegacySyncState } from "./services/heal-legacy-sync.js";
 import { evaluateTriggers } from "./services/coach-triggers.js";
 import { processCoachReads } from "./services/coach-reads.js";
+import { corosReadSweep } from "./services/coros-read.js";
 import { purgeExpiredSessions, createSession, sessionCookie } from "./auth/sessions.js";
 import { purgeExpiredStates } from "./auth/google.js";
 import { ensureFixtureUser, seedFixtures } from "./services/fixtures.js";
@@ -103,6 +104,12 @@ async function halfHourly(db: Db, env: Env): Promise<void> {
       await finishSyncRun(db, runId, "error");
     }
   }
+  // Cloud-direct COROS pull (spec §3): replaces bridge snapshots for
+  // connected users; the bridge's own payloads stay accepted (idempotent
+  // ingest) during the transition.
+  await corosReadSweep(db, env).catch((e: unknown) =>
+    console.error(`coros read sweep failed: ${e instanceof Error ? e.message : "unknown"}`),
+  );
   // A backfill with no progress for 12h stops saying "queued"/"running" and
   // says so. Before the purges so an earlier throw can't skip it; a broken
   // sweep must be visible, not swallowed.

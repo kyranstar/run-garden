@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import { loginWithPassword } from "../src/coros-login.js";
 import { CloudSync, generateDeviceKeypair } from "../src/cloud-sync.js";
 import { CorosClient } from "@rg/coros";
-import { buildSnapshot } from "../src/snapshot.js";
+import { buildSnapshot } from "@rg/coros";
 import { mockCorosServer } from "./mock-coros-server.js";
 
 const noop = (): void => undefined;

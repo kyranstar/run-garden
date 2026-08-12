@@ -20,7 +20,7 @@ import {
   type SourcePlannedWorkout,
   type TrainingPlanInfo,
 } from "@rg/providers";
-import type { CorosClient, CorosDashboardSubset } from "@rg/coros";
+import type { CorosClient, CorosDashboardSubset } from "./client.js";
 
 export const COROS_LOCALE_URL =
   "https://static.coros.com/locale/coros-traininghub-v2/en-US.prod.js";
@@ -86,6 +86,14 @@ export interface BuildSnapshotOptions {
    * `rangeStart` when omitted.
    */
   healthRangeStart?: string;
+  /**
+   * When present, per-activity DETAIL (and therefore laps) is fetched only
+   * for items this returns true for. The worker's read-now passes "is this
+   * labelId unseen?" so a fresh pull costs one list call plus details for
+   * genuinely new activities — not a detail round-trip per historical item.
+   * List-level fields still produce a usable activity either way.
+   */
+  detailFilter?: (item: { labelId: string; sportType: number }) => boolean;
 }
 
 export async function buildSnapshot(
@@ -125,10 +133,12 @@ export async function buildSnapshot(
       skipped[key] = (skipped[key] ?? 0) + 1;
     }
     let detail: RawCorosActivityDetail | undefined;
-    try {
-      detail = await client.getActivityDetail(item.labelId, item.sportType);
-    } catch {
-      detail = undefined; // list-level fields still make a usable activity
+    if (!opts.detailFilter || opts.detailFilter(item)) {
+      try {
+        detail = await client.getActivityDetail(item.labelId, item.sportType);
+      } catch {
+        detail = undefined; // list-level fields still make a usable activity
+      }
     }
     activities.push(normalizeCorosActivity(item, detail));
     if (detail) {

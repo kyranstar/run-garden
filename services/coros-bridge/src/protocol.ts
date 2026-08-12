@@ -21,7 +21,7 @@ import {
   type CorosRegion,
 } from "@rg/coros";
 import { CloudSync, generateDeviceKeypair } from "./cloud-sync.js";
-import { buildSnapshot, loadNameResolver } from "./snapshot.js";
+import { buildSnapshot, loadNameResolver } from "@rg/coros";
 import { executeMoveJob, executeStudioJob } from "@rg/coros";
 
 export interface BridgeState {
