@@ -172,6 +172,21 @@ export class CorosClient {
     return this.accessToken !== null;
   }
 
+  /** Resume a previous session without a fresh login (worker token cache).
+   * Credentials are optional; when present the 1019-expired retry can
+   * re-login transparently, exactly as after loginWithHash. */
+  resumeSession(session: { accessToken: string; userId: string; email?: string; pwdMd5?: string }): void {
+    this.accessToken = session.accessToken;
+    this.userId = session.userId;
+    this.credentials =
+      session.email && session.pwdMd5 ? { email: session.email, pwdMd5: session.pwdMd5 } : null;
+  }
+
+  /** The live session token (for persisting a cache) — never log this. */
+  get sessionToken(): string | null {
+    return this.accessToken;
+  }
+
   get currentUserId(): string | null {
     return this.userId;
   }

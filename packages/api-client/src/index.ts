@@ -372,6 +372,21 @@ export interface PlanDetailResponse {
   adherencePct: number | null;
 }
 
+
+/** Cloud COROS connection (cloud-direct spec §1). */
+export interface CorosStatusResponse {
+  connected: boolean;
+  status: string | null;
+  lastSyncAt: string | null;
+  lastErrorCategory: string | null;
+  email: string | null;
+  region: string | null;
+}
+
+export interface CorosConnectResponse {
+  status: "connected" | "bad_credentials" | "login_failed";
+}
+
 export interface CoachStateResponse {
   messages: CoachMessageDto[];
   pendingProposals: CoachProposalDto[];
@@ -671,6 +686,11 @@ export const api = {
     request<{ ok: boolean }>(`/api/coach/memory/${id}`, { method: "PATCH", body: JSON.stringify({ body }) }),
   coachMemoryDelete: (id: string) =>
     request<{ ok: boolean }>(`/api/coach/memory/${id}`, { method: "DELETE" }),
+  corosStatus: () => get<CorosStatusResponse>("/api/coros/status"),
+  corosConnect: (body: { email: string; pwdMd5: string; region: "us" | "eu" | "cn" }) =>
+    post<CorosConnectResponse>("/api/coros/connect", body, 60_000),
+  corosDisconnect: () =>
+    request<{ ok: boolean }>("/api/coros/connect", { method: "DELETE" }),
   coachPlans: () => get<{ plans: CoachPlanDto[] }>("/api/coach/plans"),
   planWeek: (start?: string) =>
     get<PlanWeekResponse>(`/api/plan/week${start ? `?start=${encodeURIComponent(start)}` : ""}`),
