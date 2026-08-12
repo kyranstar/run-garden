@@ -43,7 +43,7 @@ import { chunkIds, type Db } from "../services/db.js";
 import { applyMove } from "../services/jobs.js";
 import { recentGardenEvents, resimulateFrom } from "../services/garden-sync.js";
 import { openIntentFor, openMoveIntents, recordIntent, resolveIntent } from "../services/sync-intents.js";
-import { deriveWorkoutSync, devicePresence } from "../services/sync-status.js";
+import { cloudPresence, deriveWorkoutSync } from "../services/sync-status.js";
 import { exerciseNameMap, resolveCodesInText } from "../services/exercise-catalog.js";
 import { executeCloudJobs } from "../services/coros-write-cloud.js";
 
@@ -86,7 +86,7 @@ async function loadWorkoutSyncViews(
     }
   }
 
-  const presence = await devicePresence(db, userId);
+  const presence = await cloudPresence(db, userId);
   for (const w of workouts) {
     map.set(
       w.id,
@@ -213,7 +213,7 @@ planRoutes.get("/today", async (c) => {
       ),
     );
 
-  const presence = await devicePresence(db, userId);
+  const presence = await cloudPresence(db, userId);
 
   const health = await db
     .select()

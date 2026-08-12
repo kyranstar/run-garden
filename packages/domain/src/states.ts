@@ -7,7 +7,7 @@
 export type CorosSyncState =
   | "synced" // COROS agrees with Run Garden; verified by read or write
   | "syncing" // a provider operation is actively being attempted
-  | "waiting_for_device" // queued; desktop bridge offline ("Waiting for Mac")
+  | "waiting_for_device" // queued; no COROS connection to run it
   | "calendar_only" // a local date change exists that COROS doesn't have (writing unavailable or disabled)
   | "needs_attention" // legacy — no longer produced; healed by migration
   | "sync_issue"; // terminal write failure; user can retry
@@ -15,7 +15,7 @@ export type CorosSyncState =
 export const COROS_SYNC_LABELS: Record<CorosSyncState, string> = {
   synced: "Synced",
   syncing: "Syncing",
-  waiting_for_device: "Waiting for Mac",
+  waiting_for_device: "Waiting for COROS",
   calendar_only: "Not synced to COROS",
   needs_attention: "Needs attention",
   sync_issue: "Sync issue",

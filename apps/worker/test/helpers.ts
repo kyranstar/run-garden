@@ -47,6 +47,21 @@ export async function makeTestUser(
   return { userId, prefs: merged };
 }
 
+/** A connected cloud COROS row, directly — for tests where only presence
+ * matters (no mock-server round-trip). */
+export async function connectTestCoros(db: Db, userId: string): Promise<void> {
+  await db.insert(schema.providerConnections).values({
+    id: newId(),
+    userId,
+    provider: "coros",
+    status: "connected",
+    createdAt: nowInstant(),
+    updatedAt: nowInstant(),
+    meta: { email: "runner@example.com", region: "us" },
+    externalAccountId: "98765",
+  });
+}
+
 export async function registerTestDevice(
   db: Db,
   userId: string,

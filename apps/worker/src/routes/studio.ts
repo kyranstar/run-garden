@@ -6,7 +6,6 @@ import {
   auditEvents,
   corosExercises,
   corosWriteJobs,
-  desktopDevices,
   studioPlanPushes,
   studioPlans,
 } from "@rg/database";
@@ -29,7 +28,6 @@ import type { Db } from "../services/db.js";
 import { waitUntilSafe } from "../services/wait-until.js";
 import { loadPreferences } from "../services/calendar-sync.js";
 import { llmBudgetStatus, LLM_BUDGET } from "../services/llm.js";
-import { DEVICE_ONLINE_WINDOW_MS, devicePresence } from "../services/sync-status.js";
 import { editPlan, generatePlan, type CatalogEntry } from "../services/studio-llm.js";
 import { COROS_EXERCISE_NAMES } from "@rg/providers";
 import { exerciseNameMap, resolveExerciseName } from "../services/exercise-catalog.js";
@@ -103,38 +101,24 @@ async function llmStatusDto(db: Db, userId: string) {
 }
 
 /**
- * "Waiting for bridge" (binding carry-forward g, extended by F2/fix round 1):
- * `online` is `sync-status.ts`'s `devicePresence` — the same liveness
- * computation every other route uses (last-seen within 3 minutes, and now
- * false while the bridge is paused) — plus two DISTINCT job-count facts the
- * UI decides what "stale"/"stuck" means from.
+ * Executor status (binding carry-forward g, extended by F2 and Phase C):
+ * `online` is the cloud COROS connection — the worker claims and pushes jobs
+ * itself, so a connected link IS a live executor — plus two DISTINCT
+ * job-count facts the UI decides what "stale"/"stuck" means from.
  *
  * `pendingJobs` stays `status === "queued"` only, NOT `studio-push.ts`'s
  * broader `IN_FLIGHT` set (queued/claimed/in_progress/verifying) that
- * `plan.ts`'s unrelated `pendingCorosJobs` count uses. Carry-forward (g)'s own
- * wording is specific: "whether any enqueued studio jobs are UNCLAIMED older
- * than N minutes" — i.e. exactly the "no device has even picked this up yet"
- * signal, which is what actually indicates an absent bridge.
+ * `plan.ts`'s unrelated `pendingCorosJobs` count uses — "queued" is exactly
+ * the "nothing has even picked this up yet" signal.
  *
- * `inFlight` (F2) is the complementary signal this originally lacked: a job a
- * device DID claim but never finishes (crashed mid-write, killed process, …)
- * is a DIFFERENT failure mode — a stuck device, not a missing one — and
- * folding it into `pendingJobs` would make "waiting for bridge" read as
- * still-true the moment a bridge actually shows up and claims the work.
- * Kept as its own field instead, over `claimed`/`in_progress`/`verifying`,
- * ordered by `claimedAt` (when the device took it, not when it was
- * originally requested) since that's what "how long has this been stuck"
+ * `inFlight` (F2) is the complementary signal: a claimed job that never
+ * finishes is a DIFFERENT failure mode — a stuck executor, not a missing one
+ * — ordered by `claimedAt` since that's what "how long has this been stuck"
  * has to measure from.
  */
 async function bridgeStatusDto(db: Db, userId: string) {
-  // Cloud-direct: a connected COROS cloud link IS an online executor — the
-  // worker claims and pushes jobs itself, so "waiting for your Mac" would be
-  // a lie. Mac presence still counts for the legacy path.
-  const [presence, cloud] = await Promise.all([
-    devicePresence(db, userId),
-    corosConnectionStatus(db, userId),
-  ]);
-  const online = presence.online || cloud.connected;
+  const cloud = await corosConnectionStatus(db, userId);
+  const online = cloud.connected;
 
   const queued = await db
     .select({ requestedAt: corosWriteJobs.requestedAt })
@@ -297,49 +281,22 @@ async function nextPlanCreatedAt(db: Db, userId: string, now: string): Promise<s
  * budget on a request that cannot possibly succeed.
  *
  * The `reason` tells the UI what the user can actually do about it:
- * `bridge_offline` (open the desktop app), `bridge_outdated` (the connected
- * bridge predates catalog sync — opening it again will never help; it needs
- * an update), or `syncing` (a catalog-capable bridge is online; wait a beat).
+ * `syncing` (the cloud connection is live and a pull is already on its way —
+ * wait a beat) or `not_connected` (connect COROS in Settings).
  */
 async function catalogNotSynced(c: Context<AppContext>) {
   const db = c.get("db");
   const userId = c.get("userId");
-  // Cloud-direct: the catalog rides corosReadNow when stale. Connected →
-  // "syncing" is genuinely true — kick a forced pull right now so "try again
-  // in a minute" delivers (the coros_read lock absorbs stampedes).
+  // The catalog rides corosReadNow when stale. Connected → "syncing" is
+  // genuinely true — kick a forced pull right now so "try again in a minute"
+  // delivers (the coros_read lock absorbs stampedes).
   const cloud = await corosConnectionStatus(db, userId);
   if (cloud.connected) {
     const prefs = await loadPreferences(db, userId);
     waitUntilSafe(c, corosReadNow(db, c.env, userId, prefs, { force: true }).catch(() => undefined));
     return c.json({ error: "catalog_not_synced", reason: "syncing" }, 412);
   }
-  // `bridge_offline` vs `syncing`/`bridge_outdated` is gated on aggregate
-  // presence (sync-status.ts) — a paused bridge now reads offline here too
-  // (the intended fix: Today/status must never call a paused bridge "syncing").
-  const presence = await devicePresence(db, userId);
-  const devices = await db
-    .select({
-      lastSeenAt: desktopDevices.lastSeenAt,
-      capabilities: desktopDevices.capabilities,
-      bridgePaused: desktopDevices.bridgePaused,
-    })
-    .from(desktopDevices)
-    .where(and(eq(desktopDevices.userId, userId), isNull(desktopDevices.revokedAt)));
-  const cutoff = Date.now() - DEVICE_ONLINE_WINDOW_MS;
-  // Restricted to the same devices `presence.online` counts (not paused,
-  // fresh lastSeenAt): distinguishes "an online bridge just hasn't sent the
-  // catalog yet" (syncing) from "the connected bridge predates catalog sync"
-  // (bridge_outdated).
-  const online = devices.filter((d) => !d.bridgePaused && Date.parse(d.lastSeenAt) > cutoff);
-  const reason =
-    !presence.online
-      ? "bridge_offline"
-      : online.some(
-            (d) => (d.capabilities as Record<string, boolean> | null)?.["exerciseCatalog"] === true,
-          )
-        ? "syncing"
-        : "bridge_outdated";
-  return c.json({ error: "catalog_not_synced", reason }, 412);
+  return c.json({ error: "catalog_not_synced", reason: "not_connected" }, 412);
 }
 
 /**

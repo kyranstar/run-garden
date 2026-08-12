@@ -524,14 +524,13 @@ export interface StudioPushResponse {
 
 /** Mirrors `sync-status.ts`'s `SyncStatusState` — the account-wide summary,
  * distinct from `WorkoutDto.corosSyncView`'s per-workout vocabulary. */
-export type SyncStatusState = "in_sync" | "syncing" | "waiting_for_mac" | "not_synced" | "sync_issue";
+export type SyncStatusState = "in_sync" | "syncing" | "not_synced" | "sync_issue";
 
 export interface SyncStatusDto {
   state: SyncStatusState;
   pendingCount: number;
   issueCount: number;
   lastCorosReadAt: string | null;
-  paused: boolean;
   writesEnabled: boolean;
   registered: boolean;
   /** Cloud-direct COROS: present when a cloud connection exists (or errors).

@@ -8,7 +8,7 @@ import type { Db } from "../src/services/db.js";
 import { applyJobResult, applyMove, claimNextJob, emitPendingWork } from "../src/services/jobs.js";
 import { openIntentFor } from "../src/services/sync-intents.js";
 import { deviceRoutes } from "../src/routes/devices.js";
-import { makeTestDb, makeTestUser, mountRoutes, registerTestDevice } from "./helpers.js";
+import { makeTestDb, makeTestUser, mountRoutes, registerTestDevice, connectTestCoros } from "./helpers.js";
 
 /**
  * Moves through the intent ledger: applyMove records a `move` intent and
@@ -50,6 +50,7 @@ describe("jobs + intent ledger", () => {
     const db = makeTestDb();
     const { userId } = await makeTestUser(db);
     await registerTestDevice(db, userId);
+    await connectTestCoros(db, userId);
     const workoutId = await insertWorkout(db, userId, { lastVerifiedCorosDate: "2026-08-08" });
 
     const outcome = await applyMove(db, {
@@ -102,6 +103,7 @@ describe("jobs + intent ledger", () => {
 
     // Writes get enabled and a device gets registered afterward.
     await registerTestDevice(db, userId);
+    await connectTestCoros(db, userId);
     const emitted = await emitPendingWork(db, userId, { corosWritesEnabled: true });
     expect(emitted).toBe(1);
     const jobsAfter = await db
@@ -120,6 +122,7 @@ describe("jobs + intent ledger", () => {
     const db = makeTestDb();
     const { userId, prefs } = await makeTestUser(db);
     const deviceId = await registerTestDevice(db, userId);
+    await connectTestCoros(db, userId);
     const workoutId = await insertWorkout(db, userId, { lastVerifiedCorosDate: "2026-08-08" });
     const outcome = await applyMove(db, {
       userId,
@@ -157,6 +160,7 @@ describe("jobs + intent ledger", () => {
     const db = makeTestDb();
     const { userId, prefs } = await makeTestUser(db);
     const deviceId = await registerTestDevice(db, userId);
+    await connectTestCoros(db, userId);
     const workoutId = await insertWorkout(db, userId, { lastVerifiedCorosDate: "2026-08-08" });
     const outcome = await applyMove(db, {
       userId,
@@ -215,6 +219,7 @@ describe("jobs + intent ledger", () => {
     const db = makeTestDb();
     const { userId, prefs } = await makeTestUser(db);
     const deviceId = await registerTestDevice(db, userId);
+    await connectTestCoros(db, userId);
     const workoutId = await insertWorkout(db, userId, { lastVerifiedCorosDate: "2026-08-08" });
     const outcome = await applyMove(db, {
       userId,
@@ -260,6 +265,7 @@ describe("jobs + intent ledger", () => {
     const db = makeTestDb();
     const { userId } = await makeTestUser(db);
     await registerTestDevice(db, userId);
+    await connectTestCoros(db, userId);
     const workoutId = await insertWorkout(db, userId, { lastVerifiedCorosDate: "2026-08-08" });
 
     // Writes off at move time: the intent is recorded but no job exists yet.
@@ -294,6 +300,7 @@ describe("jobs + intent ledger", () => {
     const db = makeTestDb();
     const { userId, prefs } = await makeTestUser(db);
     const deviceId = await registerTestDevice(db, userId);
+    await connectTestCoros(db, userId);
     const workoutId = await insertWorkout(db, userId, { lastVerifiedCorosDate: "2026-08-08" });
     const outcome = await applyMove(db, {
       userId,
@@ -341,6 +348,7 @@ describe("jobs + intent ledger", () => {
     const db = makeTestDb();
     const { userId, prefs } = await makeTestUser(db);
     const deviceId = await registerTestDevice(db, userId);
+    await connectTestCoros(db, userId);
     const workoutId = await insertWorkout(db, userId, { lastVerifiedCorosDate: "2026-08-08" });
     const outcome = await applyMove(db, {
       userId,
@@ -429,6 +437,7 @@ describe("read_now job kind", () => {
     const db = makeTestDb();
     const { userId } = await makeTestUser(db);
     const deviceId = await registerTestDevice(db, userId);
+    await connectTestCoros(db, userId);
     const jobId = await insertReadNowJob(db, userId);
 
     const claimed = await claimNextJob(db, userId, deviceId);
@@ -443,6 +452,7 @@ describe("read_now job kind", () => {
     const db = makeTestDb();
     const { userId, prefs } = await makeTestUser(db);
     const deviceId = await registerTestDevice(db, userId);
+    await connectTestCoros(db, userId);
     const jobId = await insertReadNowJob(db, userId);
     await claimNextJob(db, userId, deviceId);
 
@@ -477,6 +487,7 @@ describe("read_now job kind", () => {
     const db = makeTestDb();
     const { userId, prefs } = await makeTestUser(db);
     const deviceId = await registerTestDevice(db, userId);
+    await connectTestCoros(db, userId);
     const jobId = await insertReadNowJob(db, userId);
     await claimNextJob(db, userId, deviceId);
 

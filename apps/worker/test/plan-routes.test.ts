@@ -26,7 +26,7 @@ import { planRoutes } from "../src/routes/plan.js";
 import { applyJobResult, applyMove, emitPendingWork } from "../src/services/jobs.js";
 import { openIntentFor } from "../src/services/sync-intents.js";
 import { createSession, SESSION_COOKIE } from "../src/auth/sessions.js";
-import { makeTestDb, makeTestUser, mountRoutes, registerTestDevice } from "./helpers.js";
+import { makeTestDb, makeTestUser, mountRoutes, registerTestDevice, connectTestCoros } from "./helpers.js";
 
 const { corosWriteJobs, plannedWorkouts, scheduleOverrides } = schema;
 
@@ -96,6 +96,7 @@ beforeEach(async () => {
 describe("POST /api/plan/workouts/:id/remove", () => {
   it("resolves an open move intent for the workout being removed, instead of stranding it open behind an archived row", async () => {
     await registerTestDevice(db, userId);
+    await connectTestCoros(db, userId);
     const workoutId = await insertWorkout({ lastVerifiedCorosDate: "2026-08-08" });
     await applyMove(db, {
       userId,
@@ -122,6 +123,7 @@ describe("POST /api/plan/workouts/:id/remove", () => {
 describe("POST /api/plan/workouts/:id/retry-coros", () => {
   it("supersedes the terminally failed job before re-arming: emitPendingWork enqueues nothing beforehand, a fresh queued job exists after", async () => {
     const deviceId = await registerTestDevice(db, userId);
+    await connectTestCoros(db, userId);
     const workoutId = await insertWorkout({ lastVerifiedCorosDate: "2026-08-08" });
     const outcome = await applyMove(db, {
       userId,

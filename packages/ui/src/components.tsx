@@ -132,7 +132,7 @@ export function relativeDay(date: string, today: string): string {
 const COROS_PILL: Record<CorosSyncState, { label: string; cls: string; icon: ReactNode; title: string }> = {
   synced: { label: "Synced", cls: "pill-ok", icon: <IconCheck />, title: "This workout's date matches your COROS watch." },
   syncing: { label: "Syncing", cls: "pill-progress", icon: <IconSync />, title: "Sending this change to your COROS watch." },
-  waiting_for_device: { label: "Waiting for Mac", cls: "pill-progress", icon: <IconLaptop />, title: "Queued — this will reach your COROS watch when the Mac companion app is running." },
+  waiting_for_device: { label: "Waiting for COROS", cls: "pill-progress", icon: <IconLaptop />, title: "Queued — this reaches your watch once COROS is connected in Settings." },
   calendar_only: {
     label: "Not synced to COROS",
     cls: "pill-neutral",
@@ -210,10 +210,6 @@ export function SyncStatusLine({
         return `Calendar, COROS and watch in sync${status.lastCorosReadAt ? ` · ${relativeTime(status.lastCorosReadAt)}` : ""}`;
       case "syncing":
         return `Syncing ${status.pendingCount} change${status.pendingCount === 1 ? "" : "s"}…`;
-      case "waiting_for_mac":
-        return status.paused
-          ? "Sync is paused — resume in Settings"
-          : `${status.pendingCount} change${status.pendingCount === 1 ? "" : "s"} waiting — connect COROS in Settings (or wake your Mac)`;
       case "not_synced":
         return status.registered
           ? "COROS updates are off — enable in Settings"

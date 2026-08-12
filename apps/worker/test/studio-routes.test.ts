@@ -28,7 +28,7 @@ import type { Env } from "../src/env.js";
 import type { Db } from "../src/services/db.js";
 import { studioRoutes } from "../src/routes/studio.js";
 import { createSession, SESSION_COOKIE } from "../src/auth/sessions.js";
-import { makeTestDb, makeTestUser, mountRoutes } from "./helpers.js";
+import { connectTestCoros, makeTestDb, makeTestUser, mountRoutes } from "./helpers.js";
 
 const { corosExercises, corosWriteJobs, llmUsage, plannedWorkouts, studioPlanPushes, studioPlans, trainingPlans } =
   schema;
@@ -467,8 +467,27 @@ describe("POST /api/studio/generate", () => {
   it("returns catalog_not_synced when coros_exercises is empty, and persists nothing", async () => {
     const res = await client().post("/api/studio/generate", { brief: validBriefInput("2026-09-07") });
     expect(res.status).toBe(412);
-    expect((await res.json()) as { error: string }).toMatchObject({ error: "catalog_not_synced" });
+    // Phase C: without a cloud connection the reason names the action.
+    expect((await res.json()) as { error: string; reason: string }).toMatchObject({
+      error: "catalog_not_synced",
+      reason: "not_connected",
+    });
     expect(await db.select().from(studioPlans)).toHaveLength(0);
+  });
+
+  it("catalog empty + cloud connected → reason 'syncing' (a pull is already riding)", async () => {
+    await connectTestCoros(db, userId);
+    const res = await client().post("/api/studio/generate", { brief: validBriefInput("2026-09-07") });
+    expect(res.status).toBe(412);
+    expect((await res.json()) as { reason: string }).toMatchObject({ reason: "syncing" });
+  });
+
+  it("status bridge.online is exactly the cloud connection", async () => {
+    const before = (await (await client().get("/api/studio")).json()) as { bridge: { online: boolean } };
+    expect(before.bridge.online).toBe(false);
+    await connectTestCoros(db, userId);
+    const after = (await (await client().get("/api/studio")).json()) as { bridge: { online: boolean } };
+    expect(after.bridge.online).toBe(true);
   });
 
   it("normalizes startDate to the ISO-week Monday, generates, and persists version 1", async () => {

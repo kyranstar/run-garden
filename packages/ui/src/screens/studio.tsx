@@ -133,9 +133,6 @@ function studioErrorCopy(err: unknown, llm: StudioLlmStatusDto): string {
       return "The plan was too large to generate — try fewer weeks or sessions per week.";
     case "catalog_not_synced": {
       const reason = (err.body as { reason?: string } | null)?.reason;
-      if (reason === "bridge_outdated") {
-        return "Your desktop app is too old to sync the exercise catalog — connect COROS in Settings instead (the catalog then syncs from the cloud), or update the desktop app.";
-      }
       if (reason === "syncing") {
         return "The exercise catalog is syncing from COROS — try again in a minute.";
       }

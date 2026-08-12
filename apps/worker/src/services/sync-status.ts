@@ -1,8 +1,8 @@
 import { and, desc, eq, inArray, isNull, ne } from "drizzle-orm";
 import {
   corosWriteJobs,
-  desktopDevices,
   plannedWorkouts,
+  providerConnections,
   studioPlanPushes,
   studioPlans,
   syncRuns,
@@ -11,44 +11,36 @@ import type { UserPreferences } from "@rg/domain";
 import { openMoveIntents } from "./sync-intents.js";
 import type { Db } from "./db.js";
 
+/** Legacy constant — last consumers (device routes) die in Phase C Task 4. */
 export const DEVICE_ONLINE_WINDOW_MS = 3 * 60_000;
 const IN_FLIGHT = ["queued", "claimed", "in_progress", "verifying"] as const;
 
-export interface DevicePresence {
+export interface CloudPresence {
   registered: boolean;
   online: boolean;
-  paused: boolean;
   writeCapable: boolean;
 }
 
-/** THE liveness computation — the only copy in the codebase. */
-export async function devicePresence(db: Db, userId: string): Promise<DevicePresence> {
-  const devices = await db
-    .select()
-    .from(desktopDevices)
-    .where(and(eq(desktopDevices.userId, userId), isNull(desktopDevices.revokedAt)));
-  const cutoff = Date.now() - DEVICE_ONLINE_WINDOW_MS;
-  return {
-    registered: devices.length > 0,
-    online: devices.some((d) => !d.bridgePaused && Date.parse(d.lastSeenAt) > cutoff),
-    paused: devices.some((d) => d.bridgePaused),
-    writeCapable: devices.some(
-      (d) =>
-        d.capabilities?.["updateExistingScheduledWorkout"] === true ||
-        (d.capabilities?.["addScheduledWorkout"] === true &&
-          d.capabilities?.["removeScheduledWorkout"] === true),
-    ),
-  };
+/** THE liveness computation — the only copy in the codebase. The COROS
+ * cloud connection IS the executor: connected means the worker itself can
+ * read and write, so online and write-capable are the same fact. */
+export async function cloudPresence(db: Db, userId: string): Promise<CloudPresence> {
+  const [row] = await db
+    .select({ status: providerConnections.status })
+    .from(providerConnections)
+    .where(and(eq(providerConnections.userId, userId), eq(providerConnections.provider, "coros")))
+    .limit(1);
+  const online = row?.status === "connected";
+  return { registered: online, online, writeCapable: online };
 }
 
-export type SyncStatusState = "in_sync" | "syncing" | "waiting_for_mac" | "not_synced" | "sync_issue";
+export type SyncStatusState = "in_sync" | "syncing" | "not_synced" | "sync_issue";
 
 export interface SyncStatus {
   state: SyncStatusState;
   pendingCount: number;
   issueCount: number;
   lastCorosReadAt: string | null;
-  paused: boolean;
   writesEnabled: boolean;
   registered: boolean;
 }
@@ -58,7 +50,7 @@ export async function computeSyncStatus(
   userId: string,
   prefs: UserPreferences,
 ): Promise<SyncStatus> {
-  const presence = await devicePresence(db, userId);
+  const presence = await cloudPresence(db, userId);
 
   const pending = await db
     .select({ id: corosWriteJobs.id })
@@ -133,9 +125,7 @@ export async function computeSyncStatus(
       : issueCount > 0
         ? "sync_issue"
         : pending.length > 0
-          ? presence.online
-            ? "syncing"
-            : "waiting_for_mac"
+          ? "syncing"
           : "in_sync";
 
   return {
@@ -143,7 +133,6 @@ export async function computeSyncStatus(
     pendingCount: pending.length,
     issueCount,
     lastCorosReadAt: lastRead?.finishedAt ?? null,
-    paused: presence.paused,
     writesEnabled: prefs.corosWritesEnabled,
     registered: presence.registered,
   };
@@ -160,10 +149,12 @@ export function deriveWorkoutSync(v: {
   hasOpenIntent: boolean;
   hasPendingJob: boolean;
   hasFailedJob: boolean;
-  presence: DevicePresence;
+  presence: CloudPresence;
   writesEnabled: boolean;
 }): "synced" | "syncing" | "waiting_for_device" | "calendar_only" | "sync_issue" {
   if (v.effectiveDate === v.lastVerifiedCorosDate && !v.hasPendingJob) return "synced";
+  // "waiting_for_device" survives in the legacy per-workout vocabulary (the
+  // CorosPill labels key on it) but now means "no cloud connection to run it".
   if (v.hasPendingJob) return v.presence.online ? "syncing" : "waiting_for_device";
   if (v.hasFailedJob) return "sync_issue";
   return "calendar_only";

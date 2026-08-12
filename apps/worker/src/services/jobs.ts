@@ -16,7 +16,7 @@ import {
   type UserPreferences,
 } from "@rg/domain";
 import type { Db } from "./db.js";
-import { devicePresence } from "./sync-status.js";
+import { cloudPresence } from "./sync-status.js";
 import { applyStudioJobResult } from "./studio-push.js";
 import { openIntentFor, openMoveIntents, recordIntent, resolveIntent } from "./sync-intents.js";
 import { postSyncNote } from "./sync-notes.js";
@@ -45,11 +45,11 @@ export interface MoveOutcome {
 }
 
 async function anyDeviceOnline(db: Db, userId: string): Promise<boolean> {
-  return (await devicePresence(db, userId)).online;
+  return (await cloudPresence(db, userId)).online;
 }
 
 async function writeCapableDeviceExists(db: Db, userId: string): Promise<boolean> {
-  return (await devicePresence(db, userId)).writeCapable;
+  return (await cloudPresence(db, userId)).writeCapable;
 }
 
 /**
