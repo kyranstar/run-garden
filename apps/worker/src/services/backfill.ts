@@ -220,7 +220,7 @@ export async function recordChunk(db: Db, userId: string, chunk: ChunkReport): P
     .update(backfillState)
     .set({
       // Data is flowing, so the walk is genuinely running — this also revives
-      // a state the watchdog marked bridge_never_claimed if the Mac woke up
+      // a state the watchdog marked never_started if a walker resumed
       // later and worked the still-queued job anyway.
       status: "running",
       lastErrorCategory: null,
@@ -433,7 +433,7 @@ export async function sweepStaleBackfills(db: Db, now: Date): Promise<number> {
       .update(backfillState)
       .set({
         status: "error",
-        lastErrorCategory: row.chunksCompleted > 0 ? "bridge_stalled_mid_walk" : "bridge_never_claimed",
+        lastErrorCategory: row.chunksCompleted > 0 ? "stalled" : "never_started",
         finishedAt: nowInstant(now),
         updatedAt: nowInstant(now),
       })

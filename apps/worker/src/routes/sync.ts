@@ -286,9 +286,8 @@ const READ_NOW_IN_FLIGHT = ["queued", "claimed", "in_progress", "verifying"] as 
  * is queued or running; `skippedSportTypes` tallies codes the sport registry
  * couldn't name (admitted as "other"), so new COROS codes stay visible.
  *
- * The status is derived honestly at read time: "queued" until a bridge has
- * actually landed a chunk, plus the bridge's own liveness so the UI can say
- * "waiting for your Mac" instead of pretending to read history.
+ * The status is derived honestly at read time: "queued" until the cloud
+ * walker has actually landed a chunk — never a spinner over nothing.
  */
 syncRoutes.get("/backfill-status", async (c) => {
   const db = c.get("db");
@@ -308,17 +307,6 @@ syncRoutes.get("/backfill-status", async (c) => {
       .orderBy(desc(corosWriteJobs.requestedAt))
       .limit(1)
   )[0];
-  const bridge = (
-    await db
-      .select({
-        lastSeenAt: desktopDevices.lastSeenAt,
-        bridgePaused: desktopDevices.bridgePaused,
-      })
-      .from(desktopDevices)
-      .where(and(eq(desktopDevices.userId, userId), isNull(desktopDevices.revokedAt)))
-      .orderBy(desc(desktopDevices.lastSeenAt))
-      .limit(1)
-  )[0];
   return c.json({
     status: deriveBackfillStatus(row, newestJob?.status ?? null),
     earliestDateReached: row?.earliestDateReached ?? null,
@@ -329,9 +317,6 @@ syncRoutes.get("/backfill-status", async (c) => {
     /** A live job means an errored/queued walk is still claimable — the UI
      * keeps polling on this even after a watchdog error. */
     jobQueued: newestJob?.status === "queued" || newestJob?.status === "claimed",
-    bridgeLastSeenAt: bridge?.lastSeenAt ?? null,
-    bridgeOnline: !!bridge && Date.parse(bridge.lastSeenAt) > Date.now() - DEVICE_ONLINE_WINDOW_MS,
-    bridgePaused: !!bridge?.bridgePaused,
   });
 });
 

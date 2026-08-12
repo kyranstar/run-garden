@@ -185,11 +185,11 @@ function BackfillRow() {
     s?.status === "error"
       ? cloud
         ? "It stalled — press Run again; the cloud walker resumes where it left off."
-        : s.lastErrorCategory === "bridge_never_claimed"
-        ? "It never started — connect COROS above and press Run again; it runs in the cloud, no Mac needed."
-        : s.lastErrorCategory === "bridge_stalled_mid_walk"
-          ? `It stopped partway through (${s.activitiesIngested} sessions so far). Connect COROS above and press Run again — the walk resumes where it left off.`
-          : "Couldn't read your history — connect COROS above and press Run again."
+        : s.lastErrorCategory === "never_started"
+        ? "It never started — connect COROS above and press Run again."
+        : s.lastErrorCategory === "stalled"
+          ? `It stopped partway through (${s.activitiesIngested} sessions so far). Press Run again — the walk resumes where it left off.`
+          : "Couldn't read your history — press Run again."
       : queued
         ? cloud
           ? "Queued — running in the cloud; the first chunk lands within a minute."

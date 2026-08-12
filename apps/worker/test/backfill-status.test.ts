@@ -73,7 +73,7 @@ describe("backfill status honesty", () => {
     await enqueueBackfill(db, userId, "2026-08-10");
     await db
       .update(backfillState)
-      .set({ status: "error", lastErrorCategory: "bridge_never_claimed" })
+      .set({ status: "error", lastErrorCategory: "never_started" })
       .where(eq(backfillState.userId, userId));
     await recordChunk(db, userId, {
       chunkStart: "2026-04-28",
@@ -113,7 +113,7 @@ describe("sweepStaleBackfills (cron watchdog)", () => {
     expect((await stateOf(db, userId)).status).toBe("queued");
   });
 
-  it("flips a long-unclaimed walk to error: bridge_never_claimed", async () => {
+  it("flips a long-unclaimed walk to error: never_started", async () => {
     const db = makeTestDb();
     const { userId } = await makeTestUser(db);
     await enqueueBackfill(db, userId, "2026-08-10");
@@ -121,7 +121,7 @@ describe("sweepStaleBackfills (cron watchdog)", () => {
     expect(await sweepStaleBackfills(db, new Date())).toBe(1);
     const s = await stateOf(db, userId);
     expect(s.status).toBe("error");
-    expect(s.lastErrorCategory).toBe("bridge_never_claimed");
+    expect(s.lastErrorCategory).toBe("never_started");
     // The job stays queued on purpose: a bridge that finally wakes still
     // claims it, and recordChunk revives the state.
     expect((await newestBackfillJob(db, userId)).status).toBe("queued");
@@ -141,7 +141,7 @@ describe("sweepStaleBackfills (cron watchdog)", () => {
     expect((await stateOf(db, userId)).status).toBe("queued");
   });
 
-  it("a stall past the first chunk flips to bridge_stalled_mid_walk", async () => {
+  it("a stall past the first chunk flips to stalled", async () => {
     const db = makeTestDb();
     const { userId } = await makeTestUser(db);
     await enqueueBackfill(db, userId, "2026-08-10");
@@ -153,7 +153,7 @@ describe("sweepStaleBackfills (cron watchdog)", () => {
     expect(await sweepStaleBackfills(db, new Date())).toBe(1);
     const s = await stateOf(db, userId);
     expect(s.status).toBe("error");
-    expect(s.lastErrorCategory).toBe("bridge_stalled_mid_walk");
+    expect(s.lastErrorCategory).toBe("stalled");
     expect(s.chunksCompleted).toBe(3); // progress is never wiped
   });
 
@@ -171,7 +171,7 @@ describe("sweepStaleBackfills (cron watchdog)", () => {
       })
       .where(eq(corosWriteJobs.id, job.id));
     expect(await sweepStaleBackfills(db, new Date())).toBe(1);
-    expect((await stateOf(db, userId)).lastErrorCategory).toBe("bridge_never_claimed");
+    expect((await stateOf(db, userId)).lastErrorCategory).toBe("never_started");
     // The job is claimable again — a woken bridge resumes without a re-tap.
     expect((await newestBackfillJob(db, userId)).status).toBe("queued");
   });
@@ -184,7 +184,7 @@ describe("Run again after a watchdog error", () => {
     await enqueueBackfill(db, userId, "2026-08-10");
     await db
       .update(backfillState)
-      .set({ status: "error", lastErrorCategory: "bridge_stalled_mid_walk", chunksCompleted: 3 })
+      .set({ status: "error", lastErrorCategory: "stalled", chunksCompleted: 3 })
       .where(eq(backfillState.userId, userId));
     const result = await enqueueBackfill(db, userId, "2026-08-10");
     expect(result).toEqual({ enqueued: true, reason: "rearmed" });
