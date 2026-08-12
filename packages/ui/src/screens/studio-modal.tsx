@@ -153,7 +153,13 @@ export function StudioModal({
 
         {plan || d ? (
           <div className="btn-row studio-modal-actions">
-            {(d?.plan ?? plan)?.source !== "studio" ? (
+            {(d?.plan ?? plan)?.source === "coros" ? (
+              <p className="faint" style={{ margin: 0, alignSelf: "center" }}>
+                Imported from COROS — your coach can move, ease, or skip its sessions; the plan's
+                structure is edited in COROS.
+              </p>
+            ) : null}
+            {((d?.plan ?? plan)?.source ?? "coach") === "coach" ? (
               <>
                 <button
                   type="button"

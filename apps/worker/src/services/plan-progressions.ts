@@ -31,6 +31,13 @@ const METERS_PER_MILE = 1609.34;
 /** Top-N lifts by appearance, each as top-set weight by week; plus weekly
  * total sets. Bodyweight entries carry no load and are excluded from weight
  * series (they still count toward sets). */
+/** The headline's second number is the plan's PEAK, not its final week — a
+ * block that deloads into its finish otherwise understates itself
+ * ("12 → 16 kg" for a wave that tops at 20; user nit, 2026-08-12). */
+function peak(series: PlanProgressionPoint[]): number {
+  return Math.max(...series.map((p) => p.value));
+}
+
 export function liftProgressions(
   plan: Pick<LiftingPlan, "weeks">,
   doneWeeks: Set<number>,
@@ -68,7 +75,7 @@ export function liftProgressions(
       .sort((a, b) => a[0] - b[0])
       .map(([week, value]) => ({ week, value, ...(doneWeeks.has(week) ? { done: true } : {}) }));
     const from = series[0]!.value;
-    const to = series[series.length - 1]!.value;
+    const to = peak(series);
     const nowPoint =
       currentWeek === null ? null : [...series].reverse().find((p) => p.week <= currentWeek) ?? null;
     out.push({
@@ -91,7 +98,7 @@ export function liftProgressions(
       label: "Weekly sets",
       unit: "sets",
       from: series[0]!.value,
-      to: series[series.length - 1]!.value,
+      to: peak(series),
       now:
         currentWeek === null
           ? null
@@ -128,7 +135,7 @@ export function runProgressions(weeks: RunWeekFacts[], currentWeek: number | nul
       label: "Long run",
       unit: "mi",
       from: series[0]!.value,
-      to: series[series.length - 1]!.value,
+      to: peak(series),
       now:
         currentWeek === null
           ? null
@@ -149,7 +156,7 @@ export function runProgressions(weeks: RunWeekFacts[], currentWeek: number | nul
       label: "Weekly time",
       unit: "min",
       from: series[0]!.value,
-      to: series[series.length - 1]!.value,
+      to: peak(series),
       now:
         currentWeek === null
           ? null

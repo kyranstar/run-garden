@@ -699,3 +699,56 @@ describe("question expiry + dismiss (audit finding 9)", () => {
     expect(mem).toHaveLength(0);
   });
 });
+
+describe("COROS plan detail (user nit 2026-08-12: the card must open)", () => {
+  it("returns weeks + run progressions for an imported training plan", async () => {
+    const today = todayInZone("America/Los_Angeles");
+    const w1 = startOfIsoWeek(addDays(today, -7));
+    await db.insert(schema.trainingPlans).values({
+      id: "tp-open",
+      userId,
+      provider: "coros",
+      sourcePlanId: "4738",
+      name: "COROS plan",
+      startDate: null,
+      endDate: null,
+      status: "active",
+      createdAt: nowInstant(),
+      updatedAt: nowInstant(),
+    });
+    // Three weeks of runs with a building long run (progression needs >1 value).
+    for (let wk = 0; wk < 3; wk++) {
+      await db.insert(schema.plannedWorkouts).values({
+        id: `wo-d${wk}`,
+        userId,
+        planId: "tp-open",
+        sourceWorkoutId: `4738:d${wk}`,
+        title: "Long Run",
+        category: "long",
+        sport: "run",
+        originalPlanDate: addDays(w1, wk * 7 + 5),
+        lastVerifiedCorosDate: addDays(w1, wk * 7 + 5),
+        effectiveDate: addDays(w1, wk * 7 + 5),
+        effectiveTime: "07:00",
+        sourceContentFingerprint: "fp",
+        calendarBlockDurationSeconds: 3600,
+        expectedDistanceMeters: 10_000 + wk * 2_000,
+        completionState: "scheduled",
+        createdAt: nowInstant(),
+        updatedAt: nowInstant(),
+      });
+    }
+    const res = await client().get("/api/coach/plans/tp-open/detail");
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as {
+      plan: { source: string; name: string };
+      weeks: Array<{ state: string; summary: string }>;
+      progressions: Array<{ key: string }>;
+    };
+    expect(body.plan.source).toBe("coros");
+    expect(body.plan.name).toBe("COROS running plan");
+    expect(body.weeks.length).toBeGreaterThanOrEqual(3);
+    expect(body.weeks.every((w) => w.state === "firm")).toBe(true);
+    expect(body.progressions.some((p) => p.key === "run:long-run")).toBe(true);
+  });
+});

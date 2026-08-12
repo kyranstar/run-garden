@@ -82,15 +82,8 @@ export function PlanCards({
         const detail = details.get(p.id);
         const { into, total } = weekLabel(p, detail);
         const prog = detail?.progressions[0];
-        // COROS-authored plans are read-only facts — there is no studio modal
-        // behind them, so the card informs without pretending to open.
-        const Tag = p.source === "coros" ? "div" : "button";
         return (
-          <Tag
-            key={p.id}
-            {...(p.source === "coros" ? {} : { type: "button" as const, onClick: () => onOpen(p.id) })}
-            className="card plan-card"
-          >
+          <button key={p.id} type="button" className="card plan-card" onClick={() => onOpen(p.id)}>
             <span className="plan-card-top">
               <span className={`pill ${p.discipline === "lift" ? "pill-lift" : "pill-run"}`}>
                 {p.discipline === "lift" ? "Lift" : "Run"}
@@ -119,7 +112,7 @@ export function PlanCards({
                 <Sparkline progression={prog} discipline={p.discipline} />
               </span>
             ) : null}
-          </Tag>
+          </button>
         );
       })}
       {missing.map((d) => (

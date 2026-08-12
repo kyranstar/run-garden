@@ -597,6 +597,110 @@ coachRoutes.get("/plans/:id/detail", async (c) => {
     });
   }
 
+  const [tp] = await db
+    .select()
+    .from(trainingPlans)
+    .where(and(eq(trainingPlans.id, id), eq(trainingPlans.userId, userId)))
+    .limit(1);
+  if (tp) {
+    // Imported COROS plan (user nit, 2026-08-12): the card must OPEN — weeks
+    // and run progressions derive from its planned workouts exactly like a
+    // coach plan's, minus shape rows (an imported week is always concrete).
+    const workouts = await db
+      .select()
+      .from(plannedWorkouts)
+      .where(
+        and(
+          eq(plannedWorkouts.userId, userId),
+          eq(plannedWorkouts.planId, tp.id),
+          isNull(plannedWorkouts.archivedAt),
+        ),
+      );
+    if (workouts.length === 0) return c.json({ error: "not_found" }, 404);
+    const dates = workouts.map((w) => w.effectiveDate).sort();
+    const startDate = tp.startDate ?? dates[0]!;
+    const endDate = tp.endDate ?? dates[dates.length - 1]!;
+    const planW1 = startOfIsoWeek(startDate);
+    const weekTotal = Math.max(1, weekIndexOf(planW1, endDate));
+    const currentWeek =
+      thisMonday >= planW1 && weekIndexOf(planW1, today) <= weekTotal
+        ? weekIndexOf(planW1, today)
+        : null;
+
+    const matches = await db
+      .select()
+      .from(workoutCompletionMatches)
+      .where(and(isNull(workoutCompletionMatches.undoneAt)));
+    const matchByWorkout = new Map(matches.map((m) => [m.workoutId, m]));
+    const actRows = await db.select().from(activities).where(eq(activities.userId, userId));
+    const actById = new Map(actRows.map((a) => [a.id, a]));
+
+    const weeks = [];
+    const facts = [];
+    for (let i = 1; i <= weekTotal; i++) {
+      const weekStart = addDays(planW1, (i - 1) * 7);
+      const weekEnd = addDays(weekStart, 6);
+      const inWeek = workouts.filter((w) => w.effectiveDate >= weekStart && w.effectiveDate <= weekEnd);
+      const nonRest = inWeek.filter((w) => w.category !== "rest");
+      const done = weekEnd < today && nonRest.length > 0 && nonRest.every((w) => w.completionState === "completed");
+      const longRunMeters = nonRest.reduce<number | null>(
+        (m, w) => (w.expectedDistanceMeters ? Math.max(m ?? 0, w.expectedDistanceMeters) : m),
+        null,
+      );
+      const plannedSeconds = nonRest.reduce(
+        (acc, w) => acc + (w.sourceEstimatedDurationSeconds ?? w.fallbackEstimatedDurationSeconds ?? 0),
+        0,
+      );
+      let actualSeconds: number | null = null;
+      for (const w of nonRest) {
+        const m = matchByWorkout.get(w.id);
+        const a = m ? actById.get(m.activityId) : undefined;
+        if (a) actualSeconds = (actualSeconds ?? 0) + a.durationSeconds;
+      }
+      const keyTitles = nonRest
+        .filter((w) => w.category === "long" || w.category === "quality" || w.sport === "strength")
+        .map((w) => humanizeWorkoutTitle(w.title, w.category, w.qualitySubtype))
+        .slice(0, 2);
+      const summary = keyTitles.length
+        ? keyTitles.join(" · ")
+        : nonRest.length
+          ? `${nonRest.length} sessions`
+          : "quiet week";
+      weeks.push({
+        weekStart,
+        index: i,
+        state: "firm" as const,
+        volumeTarget: null,
+        keySessions: [],
+        summary,
+        done,
+        current: currentWeek === i,
+      });
+      facts.push({ week: i, longRunMeters, plannedSeconds, actualSeconds, done });
+    }
+
+    const nonRestAll = workouts.filter((w) => w.category !== "rest");
+    return c.json({
+      plan: {
+        id: tp.id,
+        discipline: "run" as const,
+        name: !tp.name || tp.name === "COROS plan" || looksLikeCodeTitle(tp.name) ? "COROS running plan" : tp.name,
+        status: "active" as const,
+        startDate,
+        endDate,
+        raceDate: null,
+        source: "coros" as const,
+      },
+      weeks,
+      progressions: runProgressions(facts, currentWeek),
+      sessions: {
+        planned: nonRestAll.length,
+        done: nonRestAll.filter((w) => w.completionState === "completed").length,
+      },
+      adherencePct: null,
+    });
+  }
+
   const [sp] = await db
     .select()
     .from(studioPlans)
