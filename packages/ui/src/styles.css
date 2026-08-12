@@ -2563,6 +2563,15 @@ button {
   white-space: normal;
   min-width: 0;
 }
+/* On phones the pill drops to its own full-width line UNDER the title row,
+   so it never shoves the row's buttons (e.g. "Backfill history") around. */
+@media (max-width: 640px) {
+  .screen-title .coros-check-link,
+  .screen-title .coros-checking {
+    order: 99;
+    flex-basis: 100%;
+  }
+}
 .divider {
   border: none;
   border-top: 1px solid var(--border);
