@@ -30,6 +30,7 @@ import { loadPreferences } from "../services/calendar-sync.js";
 import { llmBudgetStatus, LLM_BUDGET } from "../services/llm.js";
 import { DEVICE_ONLINE_WINDOW_MS, devicePresence } from "../services/sync-status.js";
 import { editPlan, generatePlan, type CatalogEntry } from "../services/studio-llm.js";
+import { COROS_EXERCISE_NAMES } from "@rg/providers";
 import { exerciseNameMap, resolveExerciseName } from "../services/exercise-catalog.js";
 import { pushStudioPlan, undoStudioAdoption } from "../services/studio-push.js";
 
@@ -239,7 +240,11 @@ function resolvePlanExerciseNames(
 }
 
 async function loadCatalog(db: Db): Promise<CatalogEntry[]> {
-  return db.select({ id: corosExercises.id, name: corosExercises.name }).from(corosExercises);
+  // The stored names are COROS i18n keys — the generator should read (and
+  // emit) human words. Push payloads resolve independently via the raw
+  // catalog map, so translating here never shifts a session fingerprint.
+  const rows = await db.select({ id: corosExercises.id, name: corosExercises.name }).from(corosExercises);
+  return rows.map((r) => ({ id: r.id, name: COROS_EXERCISE_NAMES[r.name] ?? r.name }));
 }
 
 /**

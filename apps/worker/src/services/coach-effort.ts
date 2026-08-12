@@ -16,6 +16,7 @@ import {
   sportLabel,
   type ActivityTelemetry,
 } from "@rg/domain";
+import { COROS_EXERCISE_NAMES } from "@rg/providers";
 import type { Db } from "./db.js";
 
 /**
@@ -57,6 +58,15 @@ function hms(totalSeconds: number): string {
 
 function localDateOf(a: ActivityRow): string {
   return (a.startTimeLocal ?? a.startTime).slice(0, 10);
+}
+
+/** Lap label: a named key shows itself; an opaque COROS key (S4208…) now
+ * resolves through COROS's own locale table before being dropped. */
+function labelForLap(key: string | null): string {
+  if (!key) return "";
+  if (!isOpaqueKey(key)) return ` (${key})`;
+  const translated = COROS_EXERCISE_NAMES[key];
+  return translated ? ` (${translated})` : "";
 }
 
 /** Opaque COROS catalog keys (S4208…) that nobody downstream can resolve. */
@@ -133,7 +143,7 @@ export async function buildEffortPackage(
     const label =
       l.splitType === "auto_km"
         ? `km ${i + 1}`
-        : `lap ${l.lapIndex}${l.exerciseNameKey && !isOpaqueKey(l.exerciseNameKey) ? ` (${l.exerciseNameKey})` : ""}`;
+        : `lap ${l.lapIndex}${labelForLap(l.exerciseNameKey)}`;
     return (
       `${label}: ${hms(l.durationSeconds)}` +
       `${l.distanceMeters ? ` · ${(l.distanceMeters / 1000).toFixed(2)}km` : ""}` +

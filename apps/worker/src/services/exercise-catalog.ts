@@ -9,6 +9,7 @@
 
 import { asc, sql } from "drizzle-orm";
 import { corosExercises } from "@rg/database";
+import { COROS_EXERCISE_NAMES } from "@rg/providers";
 import { nowInstant } from "@rg/domain";
 import { chunkedInsert, type Db } from "./db.js";
 
@@ -74,20 +75,29 @@ export async function exerciseNameMap(db: Db): Promise<Map<string, string>> {
   return new Map(rows.map((r) => [r.id, r.name]));
 }
 
+const isCodeName = (s: string): boolean =>
+  /^[A-Za-z]{0,3}[\d\-_.]{2,}$/.test(s.replace(/\s/g, "")) || s.trim().length === 0;
+
 /**
- * The actual exercise name, always (user requirement, round 3): a stored
- * name that is itself an opaque COROS code ("T1004") resolves through the
- * catalog — by the exercise's originId first, then by the code itself (the
- * code usually IS a catalog id). Only a code with no catalog entry survives.
+ * The actual exercise name, always (user requirement, rounds 3–5): COROS's
+ * API returns i18n KEYS as names — live-verified, the entire synced catalog
+ * is T-codes — so resolution walks name → catalog(originId) → catalog(name)
+ * and translates whichever candidate first appears in COROS's own English
+ * locale table (COROS_EXERCISE_NAMES). Only a key COROS itself doesn't
+ * translate survives as-is.
  */
 export function resolveExerciseName(
   name: string,
   originId: string | undefined,
   catalog: Map<string, string>,
 ): string {
-  const isCode = /^[A-Za-z]{0,3}[\d\-_.]{2,}$/.test(name.replace(/\s/g, "")) || name.trim().length === 0;
-  if (!isCode) return name;
-  return (originId && catalog.get(originId)) || catalog.get(name.trim()) || name;
+  const candidates = [name, originId ? catalog.get(originId) : undefined, catalog.get(name.trim())];
+  for (const c of candidates) if (c && !isCodeName(c)) return c;
+  for (const c of candidates) {
+    const translated = c && COROS_EXERCISE_NAMES[c.trim()];
+    if (translated) return translated;
+  }
+  return name;
 }
 
 /**
@@ -96,5 +106,10 @@ export function resolveExerciseName(
  * so the read boundary swaps each token that exactly matches a catalog id.
  */
 export function resolveCodesInText(text: string, catalog: Map<string, string>): string {
-  return text.replace(/[A-Za-z]{0,3}\d[\w.-]*/g, (token) => catalog.get(token) ?? token);
+  return text.replace(/[A-Za-z]{0,3}\d[\w.-]*/g, (token) => {
+    const viaCatalog = catalog.get(token);
+    const candidate = viaCatalog ?? token;
+    if (viaCatalog && !isCodeName(viaCatalog)) return viaCatalog;
+    return COROS_EXERCISE_NAMES[candidate] ?? COROS_EXERCISE_NAMES[token] ?? token;
+  });
 }
