@@ -79,6 +79,7 @@ import { NORMALIZER_VERSION } from "@rg/providers";
 import { ESTIMATOR_VERSION } from "@rg/scheduling";
 import type { AppContext } from "../auth/middleware.js";
 import { chunkIds, type Db } from "../services/db.js";
+import { waitUntilSafe } from "../services/wait-until.js";
 import { requireUser } from "../auth/middleware.js";
 import { googleCalendarClient } from "../services/google-calendar.js";
 import { loadPreferences, savePreferences, syncCalendar } from "../services/calendar-sync.js";
@@ -290,9 +291,7 @@ activityRoutes.post("/backfill", async (c) => {
   // Cloud-connected: the first chunk starts immediately — progress in
   // seconds, no Mac required (cloud-direct spec §3).
   if (result.enqueued) {
-    c.executionCtx?.waitUntil?.(
-      runBackfillChunkCloud(db, c.env, userId, prefs).catch(() => undefined),
-    );
+    waitUntilSafe(c, runBackfillChunkCloud(db, c.env, userId, prefs).catch(() => undefined),);
   }
   return c.json({
     ok: true,

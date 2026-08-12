@@ -37,6 +37,7 @@ import { proposeReschedules } from "@rg/scheduling";
 import type { AppContext } from "../auth/middleware.js";
 import { requireUser } from "../auth/middleware.js";
 import { googleCalendarClient } from "../services/google-calendar.js";
+import { waitUntilSafe } from "../services/wait-until.js";
 import { loadPreferences, restoreCalendarEvent, syncCalendar } from "../services/calendar-sync.js";
 import { chunkIds, type Db } from "../services/db.js";
 import { applyMove } from "../services/jobs.js";
@@ -695,9 +696,7 @@ planRoutes.post("/workouts/:id/move", async (c) => {
       corosWritesEnabled: prefs.corosWritesEnabled,
     });
     // Cloud-direct: the queued write executes now, not when a Mac wakes.
-    c.executionCtx?.waitUntil?.(
-      executeCloudJobs(db, c.env, userId, prefs).catch(() => undefined),
-    );
+    waitUntilSafe(c, executeCloudJobs(db, c.env, userId, prefs).catch(() => undefined),);
     await syncCalendar(db, c.env, userId).catch(() => undefined);
     return c.json(outcome);
   } catch (e) {

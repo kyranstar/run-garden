@@ -8,6 +8,7 @@ import {
   disconnectCoros,
 } from "../services/coros-connection.js";
 import { corosReadNow } from "../services/coros-read.js";
+import { waitUntilSafe } from "../services/wait-until.js";
 import { processCoachReads } from "../services/coach-reads.js";
 import { loadPreferences } from "../services/calendar-sync.js";
 
@@ -53,9 +54,7 @@ corosRoutes.post("/read-now", async (c) => {
   const result = await corosReadNow(db, c.env, userId, prefs);
   if (result.ingested) {
     // Fresh activities deserve their ambient reads promptly.
-    c.executionCtx?.waitUntil?.(
-      processCoachReads(db, c.env, userId, prefs, {}).catch(() => undefined),
-    );
+    waitUntilSafe(c, processCoachReads(db, c.env, userId, prefs, {}).catch(() => undefined),);
   }
   return c.json(result);
 });

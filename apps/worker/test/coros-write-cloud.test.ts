@@ -42,10 +42,10 @@ function makeEnv(): Env {
 async function seedServerWorkout(db: Db, userId: string, server: ReturnType<typeof mockCorosServer>) {
   // Pick a PROGRAM-BACKED entity — rest-day entities carry no program and a
   // date move refuses without one (write-executor step 4½).
-  const entity = server.state.schedule.entities.find((e) =>
-    server.state.schedule.programs.some((pr) => String(pr.idInPlan) === String(e.idInPlan)),
+  const entity = server.state.schedule.entities!.find((e) =>
+    server.state.schedule.programs!.some((pr) => String(pr.idInPlan) === String(e.idInPlan)),
   )!;
-  const program = server.state.schedule.programs.find(
+  const program = server.state.schedule.programs!.find(
     (pr) => String(pr.idInPlan) === String(entity.idInPlan),
   );
   const planId = server.state.schedule.id;

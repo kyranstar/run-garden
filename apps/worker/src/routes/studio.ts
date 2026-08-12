@@ -26,6 +26,7 @@ import {
 import type { AppContext } from "../auth/middleware.js";
 import { requireUser } from "../auth/middleware.js";
 import type { Db } from "../services/db.js";
+import { waitUntilSafe } from "../services/wait-until.js";
 import { loadPreferences } from "../services/calendar-sync.js";
 import { llmBudgetStatus, LLM_BUDGET } from "../services/llm.js";
 import { DEVICE_ONLINE_WINDOW_MS, devicePresence } from "../services/sync-status.js";
@@ -502,9 +503,7 @@ studioRoutes.post("/generate", async (c) => {
       today,
       desiredOverride: [],
     });
-  c.executionCtx?.waitUntil?.(
-    executeCloudJobs(db, c.env, userId, await loadPreferences(db, userId)).catch(() => undefined),
-  );
+  waitUntilSafe(c, executeCloudJobs(db, c.env, userId, await loadPreferences(db, userId)).catch(() => undefined),);
     if (!retireSummary.ok) {
       // The retire call's own push machinery reports the true state
       // (`plan_not_found` / `invalid_plan`) rather than this route guessing
@@ -653,9 +652,7 @@ studioRoutes.post("/push", async (c) => {
   // reason (its own doc comment: "the compiler enforces it").
   const today = todayInZone(prefs.timezone);
   const summary = await pushStudioPlan(db, { userId, studioPlanId: planRow.id, today });
-  c.executionCtx?.waitUntil?.(
-    executeCloudJobs(db, c.env, userId, await loadPreferences(db, userId)).catch(() => undefined),
-  );
+  waitUntilSafe(c, executeCloudJobs(db, c.env, userId, await loadPreferences(db, userId)).catch(() => undefined),);
   if (!summary.ok) return pushOutcomeResponse(c, summary);
 
   const pushes = await db
@@ -707,9 +704,7 @@ studioRoutes.post("/push/retry", async (c) => {
   const prefs = await loadPreferences(db, userId);
   const today = todayInZone(prefs.timezone);
   const summary = await pushStudioPlan(db, { userId, studioPlanId: planRow.id, today });
-  c.executionCtx?.waitUntil?.(
-    executeCloudJobs(db, c.env, userId, await loadPreferences(db, userId)).catch(() => undefined),
-  );
+  waitUntilSafe(c, executeCloudJobs(db, c.env, userId, await loadPreferences(db, userId)).catch(() => undefined),);
   if (!summary.ok) return pushOutcomeResponse(c, summary);
 
   const pushes = await db

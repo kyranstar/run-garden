@@ -12,6 +12,7 @@ import {
 import type { AppContext } from "../auth/middleware.js";
 import { requireDevice, requireUser } from "../auth/middleware.js";
 import { loadPreferences, syncCalendar } from "../services/calendar-sync.js";
+import { waitUntilSafe } from "../services/wait-until.js";
 import { applyJobResult, claimNextJob, emitPendingWork } from "../services/jobs.js";
 import { DEVICE_ONLINE_WINDOW_MS } from "../services/sync-status.js";
 import { importPlanSnapshot } from "../services/import-plan.js";
@@ -243,9 +244,7 @@ deviceRoutes.post("/bridge/sync", requireDevice, async (c) => {
       // it, and the hourly sweep catches anything a dropped waitUntil misses.
       try {
         await enqueueCoachReads(db, userId, todayInZone(prefs.timezone));
-        c.executionCtx?.waitUntil?.(
-          processCoachReads(db, c.env, userId, prefs, {}).catch(() => undefined),
-        );
+        waitUntilSafe(c, processCoachReads(db, c.env, userId, prefs, {}).catch(() => undefined),);
       } catch {
         // Never fail an ingest over the perception layer.
       }
