@@ -1,5 +1,5 @@
-import { and, eq } from "drizzle-orm";
-import { activitySourceLinks, providerConnections } from "@rg/database";
+import { and, eq, inArray } from "drizzle-orm";
+import { activities, activitySourceLinks, providerConnections } from "@rg/database";
 import { addDays, todayInZone, type UserPreferences } from "@rg/domain";
 import { buildSnapshot, loadNameResolver } from "@rg/coros";
 import type { NameResolver } from "@rg/providers";
@@ -96,15 +96,42 @@ export async function corosReadNow(
       ? addDays(rangeStart, FULL_SCHEDULE_SPAN_DAYS - 1)
       : addDays(today, SCHEDULE_AHEAD_DAYS);
 
-    // Details only for unseen activities — read-now stays light.
-    const seen = new Set(
-      (
-        await db
-          .select({ providerActivityId: activitySourceLinks.providerActivityId })
-          .from(activitySourceLinks)
-          .where(eq(activitySourceLinks.provider, "coros"))
-      ).map((r) => r.providerActivityId),
+    // Details only for unseen activities — read-now stays light. Rows whose
+    // stored telemetry is LIST-grade (nothing beyond deviceTempC, or null)
+    // get their detail re-fetched too: that's the permanent self-heal for the
+    // 2026-08-12 incident where list-only refreshes clobbered detail data,
+    // and it repairs any future row that loses its detail for any reason.
+    const linkRows = await db
+      .select({
+        providerActivityId: activitySourceLinks.providerActivityId,
+        telemetry: activities.telemetry,
+      })
+      .from(activitySourceLinks)
+      .innerJoin(activities, eq(activitySourceLinks.activityId, activities.id))
+      .where(and(eq(activitySourceLinks.provider, "coros"), eq(activities.userId, userId)));
+    const seen = new Set(linkRows.map((r) => r.providerActivityId));
+    const needsDetail = new Set(
+      linkRows
+        .filter((r) => {
+          const t = (r.telemetry ?? {}) as Record<string, unknown>;
+          return Object.keys(t).filter((k) => k !== "deviceTempC").length === 0;
+        })
+        .map((r) => r.providerActivityId),
     );
+    if (needsDetail.size > 0) {
+      // The wound isn't part of the fingerprint, so ingest would skip the
+      // healed record as "unchanged" — void the stored fingerprint to force
+      // the refresh through.
+      await db
+        .update(activitySourceLinks)
+        .set({ contentFingerprint: "" })
+        .where(
+          and(
+            eq(activitySourceLinks.provider, "coros"),
+            inArray(activitySourceLinks.providerActivityId, [...needsDetail]),
+          ),
+        );
+    }
 
     const resolver = await nameResolver(fetchImpl);
     // The exercise catalog also rides the cloud now — the last snapshot duty
@@ -113,7 +140,7 @@ export async function corosReadNow(
     const snapshot = await buildSnapshot(client, rangeStart, rangeEnd, resolver, {
       includeExerciseCatalog: catalogStale,
       healthRangeStart: addDays(today, -7),
-      detailFilter: (item) => !seen.has(item.labelId),
+      detailFilter: (item) => !seen.has(item.labelId) || needsDetail.has(item.labelId),
     });
     if (snapshot.exerciseCatalog && snapshot.exerciseCatalog.length > 0) {
       await upsertExerciseCatalog(db, snapshot.exerciseCatalog);

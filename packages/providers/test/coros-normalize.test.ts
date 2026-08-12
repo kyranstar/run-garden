@@ -197,8 +197,8 @@ describe("COROS activity normalization (contract)", () => {
       name: "Morning Flow",
       sportType: 904,
       startTime: Math.floor(Date.parse("2026-08-05T13:00:00Z") / 1000),
-      totalTime: 180_000, // centiseconds → 1800s
-      workoutTime: 180_000,
+      totalTime: 1800, // LIST times are plain seconds (detail summaries are centiseconds)
+      workoutTime: 1800,
       avgHr: 98,
       calorie: 220_000,
     };
@@ -387,5 +387,52 @@ describe("COROS telemetry extras (probe-verified 2026-08-06)", () => {
       hr: 153,
     });
     expect(a.contentFingerprint).not.toBe(v1);
+  });
+});
+
+describe("COROS time-unit contract: list seconds, detail centiseconds", () => {
+  // The 2026-08-12 production corruption: normalize divided ALL time fields
+  // by 100, but only the DETAIL summary is centiseconds — the list endpoint
+  // reports plain seconds. Every seen-activity refresh (list-only) shrank
+  // stored durations 100×. This test pins the invariant that both wire
+  // shapes of the SAME activity normalize to the SAME duration.
+  const listItem: RawCorosActivityListItem = {
+    labelId: "contract-1",
+    date: 20260812,
+    name: "Aerobic Endurance Run",
+    sportType: 100,
+    startTime: Math.floor(Date.parse("2026-08-12T01:12:26Z") / 1000),
+    startTimezone: -28,
+    totalTime: 3050, // seconds on the wire
+    workoutTime: 2935,
+    distance: 786_705, // centimetres (>150k run heuristic)
+    avgHr: 150,
+  };
+  const detail = {
+    summary: {
+      distance: 786_705, // centimetres
+      totalTime: 305_000, // CENTIseconds on the wire
+      workoutTime: 293_500,
+      avgHr: 150,
+      startTimestamp: listItem.startTime! * 100,
+      timezone: -28,
+      sportType: 100,
+    },
+  } as never;
+
+  it("list-only and detail-backed normalization agree on duration", () => {
+    const fromList = normalizeCorosActivity(listItem);
+    const fromDetail = normalizeCorosActivity(listItem, detail);
+    expect(fromList.durationSeconds).toBe(2935);
+    expect(fromDetail.durationSeconds).toBe(2935);
+    expect(fromList.elapsedSeconds).toBe(3050);
+    expect(fromDetail.elapsedSeconds).toBe(3050);
+    expect(fromList.startTime).toBe(fromDetail.startTime);
+  });
+
+  it("durations are plausible, never centi-scaled: a 49-minute run is ~2935s", () => {
+    const a = normalizeCorosActivity(listItem);
+    expect(a.durationSeconds).toBeGreaterThan(600);
+    expect(a.avgPaceSecPerKm).toBeGreaterThan(180); // ~6:13/km, not 0:04/km
   });
 });

@@ -81,7 +81,19 @@ function fakeCoros(today: string) {
     }
     if (url.includes("/activity/detail/query") || url.includes("/activity/query/detail")) {
       bump("detail");
-      return json({ result: "0000", data: { summary: {}, lapList: [] } });
+      // Detail-grade payload (centisecond units + a zone) so the stored row
+      // doesn't look list-grade — otherwise the self-heal re-fetches detail
+      // on every pull, which is exactly what the skip test must NOT see.
+      return json({
+        result: "0000",
+        data: {
+          summary: { workoutTime: 293_500, totalTime: 305_000, avgCadence: 172 },
+          zoneList: [
+            { zoneType: 3, zoneItemList: [{ leftScope: 120, rightScope: 150, second: 1800 }] },
+          ],
+          lapList: [],
+        },
+      });
     }
     if (url.includes("dayDetail") || url.includes("analyse")) {
       bump("dayDetail");
@@ -158,6 +170,25 @@ describe("corosReadNow", () => {
     await markSynced(db, userId, READ_FRESHNESS_MS + 1_000);
     await corosReadNow(db, makeEnv(), userId, prefs, { fetchImpl: coros.fetchImpl });
     expect(coros.counts.detail ?? 0).toBe(detailsAfterFirst); // no re-detail for the same labelId
+  });
+
+  it("SELF-HEAL: a seen row with list-grade telemetry gets its detail re-fetched once", async () => {
+    const { db, userId, prefs, coros } = await setup();
+    await corosReadNow(db, makeEnv(), userId, prefs, { fetchImpl: coros.fetchImpl });
+    const detailsAfterFirst = coros.counts.detail ?? 0;
+    // Wound the row the way the 2026-08-12 incident did: telemetry reduced
+    // to the one list-derived key.
+    await db.update(schema.activities).set({ telemetry: { deviceTempC: 21 } as never });
+    await markSynced(db, userId, READ_FRESHNESS_MS + 1_000);
+    await corosReadNow(db, makeEnv(), userId, prefs, { fetchImpl: coros.fetchImpl });
+    expect(coros.counts.detail ?? 0).toBeGreaterThan(detailsAfterFirst);
+    const healed = (await db.select().from(schema.activities))[0]!;
+    expect((healed.telemetry as Record<string, unknown>).hrZones).toBeTruthy();
+    // Third pull: healed row is detail-grade again — no more re-fetching.
+    const detailsAfterHeal = coros.counts.detail ?? 0;
+    await markSynced(db, userId, READ_FRESHNESS_MS + 1_000);
+    await corosReadNow(db, makeEnv(), userId, prefs, { fetchImpl: coros.fetchImpl });
+    expect(coros.counts.detail ?? 0).toBe(detailsAfterHeal);
   });
 
   it("not connected → not_connected; network failure → coros_unreachable", async () => {

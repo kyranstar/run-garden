@@ -329,11 +329,19 @@ export function normalizeCorosActivity(
   const rawStart = summary?.startTimestamp ?? item.startTime ?? 0;
   const start = rawStart > 50_000_000_000 ? rawStart / 100 : rawStart;
   const offsetMin = tzOffsetMinutes(summary?.timezone ?? item.startTimezone);
-  // COROS reports times in centiseconds (matching its distance/lap fields), so
-  // divide by 100 to get seconds.
-  const durationSeconds = (summary?.workoutTime ?? item.workoutTime ?? item.totalTime ?? 0) / 100;
-  const rawElapsed = summary?.totalTime ?? item.totalTime;
-  const elapsedSeconds = rawElapsed != null ? rawElapsed / 100 : undefined;
+  // Time units are PER SOURCE: the detail summary reports centiseconds
+  // (matching its distance/lap fields, probe-verified 2026-08-06), but the
+  // LIST endpoint reports plain seconds (prod-verified 2026-08-12: a 67-min
+  // activity rides the list as 4038). Dividing both was the production
+  // duration corruption — every seen-row list refresh shrank durations 100×.
+  const durationSeconds =
+    summary?.workoutTime != null
+      ? summary.workoutTime / 100
+      : (item.workoutTime ?? item.totalTime ?? 0);
+  const elapsedSeconds =
+    summary?.totalTime != null
+      ? summary.totalTime / 100
+      : (item.totalTime ?? undefined);
 
   // Detail distances are centimetres [verified]; list distances are ambiguous —
   // treat implausibly large run distances as centimetres.

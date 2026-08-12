@@ -250,6 +250,19 @@ async function upsertNormalized(
   normalized = sanitizeRunDuration(normalized);
   const now = nowInstant();
   if (existingId) {
+    // A refresh must be NON-DESTRUCTIVE: a list-only re-normalization carries
+    // far less than the detail-derived record already stored (telemetry
+    // shrinks to {deviceTempC}, maxHr can vanish). The 2026-08-12 incident
+    // clobbered zones/cadence/power on 12 rows this way. Detail-grade fields
+    // therefore merge over / coalesce with what's stored, never replace it
+    // with less.
+    const existing = (
+      await db.select().from(activities).where(eq(activities.id, existingId)).limit(1)
+    )[0];
+    const mergedTelemetry =
+      existing?.telemetry || normalized.telemetry
+        ? { ...(existing?.telemetry ?? {}), ...(normalized.telemetry ?? {}) }
+        : null;
     await db
       .update(activities)
       .set({
@@ -259,16 +272,16 @@ async function upsertNormalized(
         timezone: normalized.timezone ?? null,
         sport: normalized.sport,
         durationSeconds: normalized.durationSeconds,
-        elapsedSeconds: normalized.elapsedSeconds ?? null,
-        distanceMeters: normalized.distanceMeters ?? null,
-        avgHeartRate: normalized.avgHeartRate ?? null,
-        maxHeartRate: normalized.maxHeartRate ?? null,
+        elapsedSeconds: normalized.elapsedSeconds ?? existing?.elapsedSeconds ?? null,
+        distanceMeters: normalized.distanceMeters ?? existing?.distanceMeters ?? null,
+        avgHeartRate: normalized.avgHeartRate ?? existing?.avgHeartRate ?? null,
+        maxHeartRate: normalized.maxHeartRate ?? existing?.maxHeartRate ?? null,
         avgPaceSecPerKm: normalized.avgPaceSecPerKm ?? null,
-        elevationGainMeters: normalized.elevationGainMeters ?? null,
-        trainingLoad: normalized.trainingLoad ?? null,
-        deviceName: normalized.deviceName ?? null,
-        title: normalized.title ?? null,
-        telemetry: normalized.telemetry ?? null,
+        elevationGainMeters: normalized.elevationGainMeters ?? existing?.elevationGainMeters ?? null,
+        trainingLoad: normalized.trainingLoad ?? existing?.trainingLoad ?? null,
+        deviceName: normalized.deviceName ?? existing?.deviceName ?? null,
+        title: normalized.title ?? existing?.title ?? null,
+        telemetry: mergedTelemetry,
         sourceMergeConfidence: normalized.sourceMergeConfidence,
         updatedAt: now,
       })

@@ -237,9 +237,12 @@ export function mockCorosServer(opts: { baseMonday?: string } = {}): MockCorosSe
       details: {
         "act-run-1": {
           summary: {
+            // Detail-summary units are CENTISECONDS/centimetres — 100× the
+            // list's plain seconds (the real wire contract; encoding it
+            // wrong here is what let the 2026-08-12 corruption ship green).
             distance: 1_000_000,
-            totalTime: 3050,
-            workoutTime: 3000,
+            totalTime: 305_000,
+            workoutTime: 300_000,
             avgHr: 150,
             maxHr: 172,
             avgPace: 300,
