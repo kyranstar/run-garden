@@ -24,7 +24,7 @@ import {
   type RawCorosProgram,
   type RawCorosSchedule,
 } from "@rg/providers";
-import type { CorosClient } from "./coros-client.js";
+import type { CorosClient } from "./client.js";
 import { createWorkout, deleteWorkout } from "./create-executor.js";
 
 export interface MoveJob {

@@ -20,7 +20,7 @@ import {
   type CorosWriteResult,
 } from "@rg/domain";
 import type { NameResolver } from "@rg/providers";
-import type { CorosClient } from "./coros-client.js";
+import type { CorosClient } from "@rg/coros";
 import { buildSnapshot, loadNameResolver } from "./snapshot.js";
 import { buildActivityBackfill } from "./backfill.js";
 import {
@@ -28,7 +28,7 @@ import {
   executeStudioJob,
   type MoveJobResult,
   type StudioJob,
-} from "./write-executor.js";
+} from "@rg/coros";
 
 const DEFAULT_POLL_MS = 45_000;
 const FAST_POLL_MS = 10_000;

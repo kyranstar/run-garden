@@ -7,7 +7,7 @@
  */
 
 import { describe, expect, it } from "vitest";
-import type { CorosClient } from "../src/coros-client.js";
+import type { CorosClient } from "@rg/coros";
 import { CloudSync, generateDeviceKeypair } from "../src/cloud-sync.js";
 
 const noop = (): void => undefined;

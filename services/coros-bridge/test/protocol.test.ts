@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { FIXTURE_PLAN_ID } from "@rg/providers";
 import type { DailyHealth } from "@rg/domain";
-import { CorosClient } from "../src/coros-client.js";
+import { CorosClient } from "@rg/coros";
 import { createBridgeState, handleLine, handleRequest, type BridgeState } from "../src/protocol.js";
 import { buildSnapshot, type BridgeSnapshot } from "../src/snapshot.js";
 import { mockCorosServer, type MockCorosServer } from "./mock-coros-server.js";

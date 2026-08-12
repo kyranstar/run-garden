@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
+import { loginWithPassword } from "../src/coros-login.js";
 import { CloudSync, generateDeviceKeypair } from "../src/cloud-sync.js";
-import { CorosClient } from "../src/coros-client.js";
+import { CorosClient } from "@rg/coros";
 import { buildSnapshot } from "../src/snapshot.js";
 import { mockCorosServer } from "./mock-coros-server.js";
 
@@ -17,7 +18,7 @@ describe("buildSnapshot exercise catalog", () => {
   it("omits exerciseCatalog by default", async () => {
     const server = mockCorosServer();
     const client = new CorosClient({ region: "us", fetchImpl: server.fetchImpl, logger: noop });
-    await client.login(server.email, server.password);
+    await loginWithPassword(client, server.email, server.password);
     const snapshot = await buildSnapshot(client, "2026-07-27", "2026-08-31", undefined);
     expect(snapshot.exerciseCatalog).toBeUndefined();
   });
@@ -25,7 +26,7 @@ describe("buildSnapshot exercise catalog", () => {
   it("fetches and maps the sportType=4 catalog when asked", async () => {
     const server = mockCorosServer();
     const client = new CorosClient({ region: "us", fetchImpl: server.fetchImpl, logger: noop });
-    await client.login(server.email, server.password);
+    await loginWithPassword(client, server.email, server.password);
     const snapshot = await buildSnapshot(client, "2026-07-27", "2026-08-31", undefined, {
       includeExerciseCatalog: true,
     });
@@ -41,7 +42,7 @@ describe("CloudSync catalog-staleness tracking", () => {
     const server = mockCorosServer();
     const client = new CorosClient({ region: "us", fetchImpl: server.fetchImpl, logger: noop });
     const { privateKeyPem } = generateDeviceKeypair();
-    const login = client.login(server.email, server.password);
+    const login = loginWithPassword(client, server.email, server.password);
     const sync = new CloudSync({
       apiUrl: "https://api.example.com",
       deviceId: "dev-catalog",

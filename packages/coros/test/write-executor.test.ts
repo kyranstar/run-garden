@@ -1,8 +1,16 @@
 import { describe, expect, it } from "vitest";
 import { corosProgramFingerprint, FIXTURE_PLAN_ID } from "@rg/providers";
-import { CorosClient } from "../src/coros-client.js";
+import { CorosClient } from "../src/client.js";
 import { executeMoveJob, type MoveJob } from "../src/write-executor.js";
 import { mockCorosServer, type MockCorosServer } from "./mock-coros-server.js";
+
+import { createHash } from "node:crypto";
+import type { CorosClient as CorosClientType } from "../src/client.js";
+
+/** Test-side password login: node md5 + the public loginWithHash seam. */
+const loginMd5 = (client: CorosClientType, email: string, password: string) =>
+  client.loginWithHash(email, createHash("md5").update(password, "utf8").digest("hex"));
+
 
 const BASE_MONDAY = "2026-08-03";
 // Fixture: idInPlan 11 = "Threshold 5x5" on D+1 (Tue 2026-08-04); Friday D+4 is free.
@@ -13,7 +21,7 @@ const noop = (): void => undefined;
 async function setup(): Promise<{ server: MockCorosServer; client: CorosClient }> {
   const server = mockCorosServer({ baseMonday: BASE_MONDAY });
   const client = new CorosClient({ region: "us", fetchImpl: server.fetchImpl, logger: noop });
-  await client.login(server.email, server.password);
+  await loginMd5(client, server.email, server.password);
   return { server, client };
 }
 

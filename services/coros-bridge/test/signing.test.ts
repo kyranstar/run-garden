@@ -1,7 +1,8 @@
 import { createHash, createPublicKey, verify as nodeVerify, webcrypto } from "node:crypto";
+import { loginWithPassword } from "../src/coros-login.js";
 import { describe, expect, it } from "vitest";
 import { corosProgramFingerprint, FIXTURE_PLAN_ID } from "@rg/providers";
-import { CorosClient } from "../src/coros-client.js";
+import { CorosClient } from "@rg/coros";
 import { CloudSync, generateDeviceKeypair, publicKeyRawFromPrivate } from "../src/cloud-sync.js";
 import { mockCorosServer } from "./mock-coros-server.js";
 
@@ -123,7 +124,7 @@ describe("CloudSync loop", () => {
   it("pushes a signed snapshot with plan, capabilities and range", async () => {
     const server = mockCorosServer(); // dynamic baseMonday: next Monday
     const client = new CorosClient({ region: "us", fetchImpl: server.fetchImpl, logger: noop });
-    await client.login(server.email, server.password);
+    await loginWithPassword(client, server.email, server.password);
 
     const calls: Array<{ path: string; body: Record<string, unknown>; headers: Headers }> = [];
     const cloudFetch = (async (input: string | URL | Request, init?: RequestInit) => {
@@ -170,7 +171,7 @@ describe("CloudSync loop", () => {
     const baseMonday = "2026-08-03";
     const server = mockCorosServer({ baseMonday });
     const client = new CorosClient({ region: "us", fetchImpl: server.fetchImpl, logger: noop });
-    await client.login(server.email, server.password);
+    await loginWithPassword(client, server.email, server.password);
     const program = server.state.schedule.programs?.find((p) => String(p.idInPlan) === "11");
 
     let claims = 0;

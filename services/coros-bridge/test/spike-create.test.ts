@@ -5,6 +5,7 @@
  */
 
 import { describe, expect, it } from "vitest";
+import { loginWithPassword } from "../src/coros-login.js";
 import {
   FIXTURE_PLAN_ID,
   type RawCorosEntity,
@@ -12,7 +13,7 @@ import {
   type RawCorosProgram,
   type RawCorosSchedule,
 } from "@rg/providers";
-import { CorosClient } from "../src/coros-client.js";
+import { CorosClient } from "@rg/coros";
 import {
   observationWindows,
   parseInspectDates,
@@ -49,7 +50,7 @@ function corosDayToIso(day: number | string): string {
 async function setup(): Promise<{ server: MockCorosServer; client: CorosClient }> {
   const server = mockCorosServer({ baseMonday: nextMonday() });
   const client = new CorosClient({ region: "us", fetchImpl: server.fetchImpl, logger: noop });
-  await client.login(server.email, server.password);
+  await loginWithPassword(client, server.email, server.password);
   return { server, client };
 }
 
@@ -256,7 +257,7 @@ describe("runCreateSpike — happy path", () => {
   it("sends the CN wire region value on a cn client", async () => {
     const server = mockCorosServer({ baseMonday: nextMonday() });
     const client = new CorosClient({ region: "cn", fetchImpl: server.fetchImpl, logger: noop });
-    await client.login(server.email, server.password);
+    await loginWithPassword(client, server.email, server.password);
 
     await runCreateSpike(client, { today: TODAY, log: noop, includePlanAddProbe: true });
 
@@ -273,7 +274,7 @@ describe("runCreateSpike — happy path", () => {
       return server.fetchImpl(input, init);
     };
     const observed = new CorosClient({ region: "us", fetchImpl: observing, logger: noop });
-    await observed.login(server.email, server.password);
+    await loginWithPassword(observed, server.email, server.password);
 
     await runCreateSpike(observed, { today: TODAY, log: noop, includePlanAddProbe: true });
 
@@ -511,7 +512,7 @@ describe("runCreateSpike — idInPlan derivation (live plan shape)", () => {
       return server.fetchImpl(input, init);
     };
     const strict = new CorosClient({ region: "us", fetchImpl: rejecting, logger: noop });
-    await strict.login(server.email, server.password);
+    await loginWithPassword(strict, server.email, server.password);
     const before = scheduleIds(server);
 
     const report = await runCreateSpike(strict, { today: TODAY, log: noop });
@@ -599,7 +600,7 @@ describe("runCreateSpike — ownership guard (C1)", () => {
       return server.fetchImpl(input, init);
     };
     const raced = new CorosClient({ region: "us", fetchImpl: racing, logger: noop });
-    await raced.login(server.email, server.password);
+    await loginWithPassword(raced, server.email, server.password);
     const lines: string[] = [];
 
     const report = await runCreateSpike(raced, {
@@ -650,7 +651,7 @@ describe("runCreateSpike — ownership guard (C1)", () => {
       return res;
     };
     const raced = new CorosClient({ region: "us", fetchImpl: injecting, logger: noop });
-    await raced.login(server.email, server.password);
+    await loginWithPassword(raced, server.email, server.password);
     const lines: string[] = [];
 
     const report = await runCreateSpike(raced, {
@@ -715,7 +716,7 @@ describe("runCreateSpike — abort / SIGINT drain (I1)", () => {
       return res;
     };
     const interrupted = new CorosClient({ region: "us", fetchImpl: interrupting, logger: noop });
-    await interrupted.login(server.email, server.password);
+    await loginWithPassword(interrupted, server.email, server.password);
 
     const report = await runCreateSpike(interrupted, {
       today: TODAY,
@@ -756,7 +757,7 @@ describe("runCreateSpike — abort / SIGINT drain (I1)", () => {
       return res;
     };
     const interrupted = new CorosClient({ region: "us", fetchImpl: interrupting, logger: noop });
-    await interrupted.login(server.email, server.password);
+    await loginWithPassword(interrupted, server.email, server.password);
 
     const report = await runCreateSpike(interrupted, {
       today: TODAY,
@@ -825,7 +826,7 @@ describe("runCreateSpike — failure discipline", () => {
       return server.fetchImpl(input, init);
     };
     const client = new CorosClient({ region: "us", fetchImpl: flaky, logger: noop });
-    await client.login(server.email, server.password);
+    await loginWithPassword(client, server.email, server.password);
 
     const report = await runCreateSpike(client, { today: TODAY, log: noop });
 
@@ -867,7 +868,7 @@ describe("runCreateSpike — plan/add unexpected success (C2/I3)", () => {
       return res;
     };
     const swept = new CorosClient({ region: "us", fetchImpl: sweeping, logger: noop });
-    await swept.login(server.email, server.password);
+    await loginWithPassword(swept, server.email, server.password);
     const lines: string[] = [];
 
     const report = await runCreateSpike(swept, {
@@ -1453,7 +1454,7 @@ describe("runCreateSpike — multi-plan accounts (the live shape)", () => {
 
   async function connect(server: MockCorosServer): Promise<CorosClient> {
     const client = new CorosClient({ region: "us", fetchImpl: server.fetchImpl, logger: noop });
-    await client.login(server.email, server.password);
+    await loginWithPassword(client, server.email, server.password);
     return client;
   }
 

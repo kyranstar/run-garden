@@ -49,7 +49,7 @@ import {
   type RawCorosProgram,
   type RawCorosSchedule,
 } from "@rg/providers";
-import type { CorosClient, CorosProgramMetrics } from "./coros-client.js";
+import type { CorosClient, CorosProgramMetrics } from "./client.js";
 
 // ── Product-facing interfaces ───────────────────────────────────────────────
 

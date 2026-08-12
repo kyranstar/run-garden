@@ -19,9 +19,10 @@ import { mkdirSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { sportIdForCorosCode } from "@rg/domain";
-import { CorosClient, type CorosRegion } from "./coros-client.js";
+import { CorosClient, type CorosRegion } from "@rg/coros";
 import { createPrompter } from "./prompt.js";
 import { redactUserId } from "./sanitize.js";
+import { loginWithPassword } from "./coros-login.js";
 
 /**
  * How far back to sweep. COROS did not exist before this, so it is a ceiling
@@ -91,7 +92,7 @@ async function credentials(): Promise<{
 async function main(): Promise<void> {
   const { email, password, region } = await credentials();
   const client = new CorosClient({ region });
-  const { userId } = await client.login(email, password);
+  const { userId } = await loginWithPassword(client, email, password);
 
   const today = new Date().toISOString().slice(0, 10);
   console.error(`[census] sweeping ${CENSUS_START}..${today}`);

@@ -8,7 +8,8 @@
  */
 
 import { describe, expect, it } from "vitest";
-import { CorosClient } from "../src/coros-client.js";
+import { loginWithPassword } from "../src/coros-login.js";
+import { CorosClient } from "@rg/coros";
 import { CloudSync, generateDeviceKeypair } from "../src/cloud-sync.js";
 import { mockCorosServer } from "./mock-coros-server.js";
 
@@ -17,7 +18,7 @@ const noop = (): void => undefined;
 async function runBackfillJob(): Promise<Array<{ path: string; body: Record<string, unknown> }>> {
   const server = mockCorosServer();
   const client = new CorosClient({ region: "us", fetchImpl: server.fetchImpl, logger: noop });
-  await client.login(server.email, server.password);
+  await loginWithPassword(client, server.email, server.password);
 
   const calls: Array<{ path: string; body: Record<string, unknown> }> = [];
   let claims = 0;

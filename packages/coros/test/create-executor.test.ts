@@ -12,7 +12,7 @@
 import { describe, expect, it } from "vitest";
 import type { StudioExercise, StudioSession } from "@rg/domain";
 import { FIXTURE_PLAN_ID, type RawCorosEntity, type RawCorosExercise } from "@rg/providers";
-import { CorosClient } from "../src/coros-client.js";
+import { CorosClient } from "../src/client.js";
 import {
   buildStrengthProgram,
   createWorkout,
@@ -20,6 +20,14 @@ import {
   type CreateWorkoutSpec,
 } from "../src/create-executor.js";
 import { mockCorosServer, nextMonday, REASSIGN_OFFSET, type MockCorosServer } from "./mock-coros-server.js";
+
+import { createHash } from "node:crypto";
+import type { CorosClient as CorosClientType } from "../src/client.js";
+
+/** Test-side password login: node md5 + the public loginWithHash seam. */
+const loginMd5 = (client: CorosClientType, email: string, password: string) =>
+  client.loginWithHash(email, createHash("md5").update(password, "utf8").digest("hex"));
+
 
 const noop = (): void => undefined;
 const TODAY = new Date().toISOString().slice(0, 10);
@@ -79,7 +87,7 @@ function containerOf(program: { exercises?: RawCorosExercise[] }, n = 0): Record
 async function setup(): Promise<{ server: MockCorosServer; client: CorosClient }> {
   const server = mockCorosServer({ baseMonday: nextMonday() });
   const client = new CorosClient({ region: "us", fetchImpl: server.fetchImpl, logger: noop });
-  await client.login(server.email, server.password);
+  await loginMd5(client, server.email, server.password);
   return { server, client };
 }
 
@@ -387,7 +395,7 @@ describe("createWorkout — plan-scoped create + verify by stamp", () => {
       return server.fetchImpl(input, init);
     };
     const raced = new CorosClient({ region: "us", fetchImpl: racing, logger: noop });
-    await raced.login(server.email, server.password);
+    await loginMd5(raced, server.email, server.password);
     const writesBefore = server.counts.scheduleWrites;
 
     const result = await createWorkout(raced, spec({ happenDay: corosDay(date) }), {
@@ -457,7 +465,7 @@ describe("createWorkout — plan-scoped create + verify by stamp", () => {
       return server.fetchImpl(input, init);
     };
     const strict = new CorosClient({ region: "us", fetchImpl: rejecting, logger: noop });
-    await strict.login(server.email, server.password);
+    await loginMd5(strict, server.email, server.password);
 
     const result = await createWorkout(strict, spec(), { today: TODAY, catalog: CATALOG });
 
@@ -496,7 +504,7 @@ describe("createWorkout — plan-scoped create + verify by stamp", () => {
       return res;
     };
     const moved = new CorosClient({ region: "us", fetchImpl: moving, logger: noop });
-    await moved.login(server.email, server.password);
+    await loginMd5(moved, server.email, server.password);
 
     const result = await createWorkout(moved, spec({ happenDay: corosDay(date) }), {
       today: TODAY,
@@ -531,7 +539,7 @@ describe("createWorkout — plan-scoped create + verify by stamp", () => {
       return res;
     };
     const raced = new CorosClient({ region: "us", fetchImpl: injecting, logger: noop });
-    await raced.login(server.email, server.password);
+    await loginMd5(raced, server.email, server.password);
 
     const result = await createWorkout(raced, spec({ happenDay: corosDay(date) }), {
       today: TODAY,
@@ -640,7 +648,7 @@ describe("createWorkout — the write plan IS the guarded plan", () => {
       "999999999999999999",
     );
     const moving = new CorosClient({ region: "us", fetchImpl: swapping, logger: noop });
-    await moving.login(server.email, server.password);
+    await loginMd5(moving, server.email, server.password);
 
     const result = await createWorkout(moving, spec({ happenDay: corosDay(date) }), {
       today: TODAY,
@@ -666,7 +674,7 @@ describe("createWorkout — the write plan IS the guarded plan", () => {
       "111111111111111111",
     );
     const client = new CorosClient({ region: "us", fetchImpl: stale, logger: noop });
-    await client.login(server.email, server.password);
+    await loginMd5(client, server.email, server.password);
 
     const result = await createWorkout(client, spec(), { today: TODAY, catalog: CATALOG });
 
@@ -917,7 +925,7 @@ describe("log sensitivity — foreign titles need an explicit opt-in", () => {
       return server.fetchImpl(input, init);
     };
     const client = new CorosClient({ region: "us", fetchImpl: racing, logger: noop });
-    return client.login(server.email, server.password).then(() => client);
+    return loginMd5(client, server.email, server.password).then(() => client);
   }
 
   it("keeps foreign titles out of the log by default", async () => {

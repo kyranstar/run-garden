@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import type { CorosClient } from "../src/coros-client.js";
+import type { CorosClient } from "@rg/coros";
 import { buildActivityBackfill } from "../src/backfill.js";
 
 /** Minimal stand-in for the two CorosClient methods the backfill touches. */

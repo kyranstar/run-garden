@@ -9,7 +9,6 @@
  *  - All logging goes to stderr (stdout is reserved for the NDJSON protocol).
  */
 
-import { createHash } from "node:crypto";
 import { daysBetween, type TrainingProviderCapabilities } from "@rg/domain";
 import {
   corosDayToLocalDate,
@@ -183,12 +182,10 @@ export class CorosClient {
 
   // ── Auth ──────────────────────────────────────────────────────────────────
 
-  async login(email: string, password: string): Promise<{ userId: string }> {
-    const pwdMd5 = createHash("md5").update(password, "utf8").digest("hex");
-    return this.loginWithHash(email, pwdMd5);
-  }
-
-  private async loginWithHash(email: string, pwdMd5: string): Promise<{ userId: string }> {
+  /** Login with a pre-hashed password (md5 hex). Hashing happens at the
+   * edges — browser (settings) or the bridge's node wrapper — because this
+   * module also runs on Workers, where WebCrypto has no MD5. */
+  async loginWithHash(email: string, pwdMd5: string): Promise<{ userId: string }> {
     const res = await this.fetchImpl(`${this.base}/account/login`, {
       signal: AbortSignal.timeout(COROS_REQUEST_TIMEOUT_MS),
       method: "POST",

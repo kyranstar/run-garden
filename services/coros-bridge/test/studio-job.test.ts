@@ -12,13 +12,14 @@
  */
 
 import { describe, expect, it } from "vitest";
+import { loginWithPassword } from "../src/coros-login.js";
 import { FIXTURE_PLAN_ID } from "@rg/providers";
 import { studioJobResultSchema } from "@rg/domain";
 import type { CreateScheduledWorkoutJob, DeleteScheduledWorkoutJob } from "@rg/domain";
-import { CorosClient } from "../src/coros-client.js";
-import type { CreateWorkoutOptions, DeleteWorkoutOptions } from "../src/create-executor.js";
-import { createWorkout, deleteWorkout } from "../src/create-executor.js";
-import { executeStudioJob, type StudioExecutors, type StudioJob } from "../src/write-executor.js";
+import { CorosClient } from "@rg/coros";
+import type { CreateWorkoutOptions, DeleteWorkoutOptions } from "@rg/coros";
+import { createWorkout, deleteWorkout } from "@rg/coros";
+import { executeStudioJob, type StudioExecutors, type StudioJob } from "@rg/coros";
 import { createBridgeState, handleRequest } from "../src/protocol.js";
 import { CloudSync, generateDeviceKeypair } from "../src/cloud-sync.js";
 import { mockCorosServer, nextMonday, type MockCorosServer } from "./mock-coros-server.js";
@@ -86,7 +87,7 @@ function deleteJob(over: Partial<DeleteScheduledWorkoutJob> = {}): StudioJob {
 async function setup(): Promise<{ server: MockCorosServer; client: CorosClient }> {
   const server = mockCorosServer({ baseMonday: nextMonday() });
   const client = new CorosClient({ region: "us", fetchImpl: server.fetchImpl, logger: noop });
-  await client.login(server.email, server.password);
+  await loginWithPassword(client, server.email, server.password);
   return { server, client };
 }
 
@@ -369,7 +370,7 @@ describe("CloudSync poll — studio kinds", () => {
   async function drainOne(job: unknown): Promise<Record<string, unknown>> {
     const server = mockCorosServer({ baseMonday: nextMonday() });
     const client = new CorosClient({ region: "us", fetchImpl: server.fetchImpl, logger: noop });
-    await client.login(server.email, server.password);
+    await loginWithPassword(client, server.email, server.password);
     seedPushed(server, { idInPlan: "60", date: TARGET_DAY, name: "Upper A — wk 1" });
 
     let claims = 0;

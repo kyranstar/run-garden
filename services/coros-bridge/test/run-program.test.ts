@@ -10,7 +10,7 @@ import {
   RUN_WARMUP_ORIGIN_ID,
   RUN_WORK_ORIGIN_ID,
   TOP_SORT,
-} from "../src/create-executor.js";
+} from "@rg/coros";
 
 const session = (blocks: Array<{ kind: "duration" | "distance"; value: number }>) => ({
   category: "easy" as const,

@@ -17,6 +17,7 @@
     "probe": "tsx src/probe-telemetry.ts"
   },
   "dependencies": {
+    "@rg/coros": "workspace:*",
     "@rg/domain": "workspace:*",
     "@rg/providers": "workspace:*",
     "zod": "^3.24.1"

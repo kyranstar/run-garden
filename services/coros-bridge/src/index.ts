@@ -9,7 +9,7 @@ export {
   type CorosErrorCategory,
   type CorosRegion,
   type CorosWriteResponse,
-} from "./coros-client.js";
+} from "@rg/coros";
 export {
   executeMoveJob,
   executeStudioJob,
@@ -18,7 +18,7 @@ export {
   type StudioExecutors,
   type StudioJob,
   type StudioJobOptions,
-} from "./write-executor.js";
+} from "@rg/coros";
 export {
   buildStrengthProgram,
   createWorkout,
@@ -31,7 +31,7 @@ export {
   type DeleteResult,
   type DeleteWorkoutOptions,
   type DeleteWorkoutTarget,
-} from "./create-executor.js";
+} from "@rg/coros";
 export {
   buildActivityBackfill,
   type ActivityBackfillChunk,

@@ -28,6 +28,7 @@
  */
 
 import { mkdirSync, writeFileSync } from "node:fs";
+import { loginWithPassword } from "./coros-login.js";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { addDays, type StudioSession } from "@rg/domain";
@@ -39,7 +40,7 @@ import {
   type RawCorosProgram,
   type RawCorosSchedule,
 } from "@rg/providers";
-import { CorosClient, type CorosRegion } from "./coros-client.js";
+import { CorosClient, type CorosRegion } from "@rg/coros";
 import {
   applyCalculated,
   buildEntity,
@@ -66,7 +67,7 @@ import {
   unstampedPlacements,
   type Located,
   type PlanView,
-} from "./create-executor.js";
+} from "@rg/coros";
 import { createPrompter } from "./prompt.js";
 import { redactUserId, stripUserIds } from "./sanitize.js";
 
@@ -1962,7 +1963,7 @@ async function main(): Promise<void> {
     // Log in BEFORE asking for confirmation: a read-only auth check costs
     // nothing and there is no point confirming a run with a bad password.
     client = new CorosClient({ region });
-    await client.login(email, password);
+    await loginWithPassword(client, email, password);
     console.log("Logged in.");
 
     let includePlanAddProbe = false;

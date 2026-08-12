@@ -8,7 +8,8 @@
  */
 
 import { describe, expect, it } from "vitest";
-import { CorosClient } from "../src/coros-client.js";
+import { loginWithPassword } from "../src/coros-login.js";
+import { CorosClient } from "@rg/coros";
 import { CloudSync, generateDeviceKeypair } from "../src/cloud-sync.js";
 import { mockCorosServer } from "./mock-coros-server.js";
 
@@ -18,7 +19,7 @@ describe("CloudSync — read_now job kind", () => {
   it("executes a claimed read_now job by pushing a snapshot, then reports outcome verified", async () => {
     const server = mockCorosServer(); // dynamic baseMonday: next Monday
     const client = new CorosClient({ region: "us", fetchImpl: server.fetchImpl, logger: noop });
-    await client.login(server.email, server.password);
+    await loginWithPassword(client, server.email, server.password);
 
     const calls: Array<{ path: string; body: Record<string, unknown> }> = [];
     let claims = 0;

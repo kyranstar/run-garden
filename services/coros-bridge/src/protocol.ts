@@ -7,6 +7,7 @@
  */
 
 import os from "node:os";
+import { loginWithPassword } from "./coros-login.js";
 import { z } from "zod";
 import {
   createScheduledWorkoutJobSchema,
@@ -18,10 +19,10 @@ import {
   CorosApiError,
   CorosClient,
   type CorosRegion,
-} from "./coros-client.js";
+} from "@rg/coros";
 import { CloudSync, generateDeviceKeypair } from "./cloud-sync.js";
 import { buildSnapshot, loadNameResolver } from "./snapshot.js";
-import { executeMoveJob, executeStudioJob } from "./write-executor.js";
+import { executeMoveJob, executeStudioJob } from "@rg/coros";
 
 export interface BridgeState {
   client: CorosClient | null;
@@ -165,7 +166,7 @@ export async function handleRequest(state: BridgeState, input: unknown): Promise
         // Replace any previous session; credentials live in client memory only.
         if (state.client) await state.client.logout().catch(() => undefined);
         const client = state.makeClient(p.data.region);
-        const { userId } = await client.login(p.data.email, p.data.password);
+        const { userId } = await loginWithPassword(client, p.data.email, p.data.password);
         state.client = client;
         return ok(id, { userId, capabilities: client.getCapabilities() });
       }

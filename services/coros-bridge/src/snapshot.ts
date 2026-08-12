@@ -20,7 +20,7 @@ import {
   type SourcePlannedWorkout,
   type TrainingPlanInfo,
 } from "@rg/providers";
-import type { CorosClient, CorosDashboardSubset } from "./coros-client.js";
+import type { CorosClient, CorosDashboardSubset } from "@rg/coros";
 
 export const COROS_LOCALE_URL =
   "https://static.coros.com/locale/coros-traininghub-v2/en-US.prod.js";

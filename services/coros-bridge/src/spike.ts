@@ -11,15 +11,16 @@
  */
 
 import { mkdirSync, writeFileSync } from "node:fs";
+import { loginWithPassword } from "./coros-login.js";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { addDays } from "@rg/domain";
 import { normalizeCorosSchedule, type SourcePlannedWorkout } from "@rg/providers";
-import { CorosClient, type CorosRegion } from "./coros-client.js";
+import { CorosClient, type CorosRegion } from "@rg/coros";
 import { createPrompter } from "./prompt.js";
 import { redactUserId, stripUserIds } from "./sanitize.js";
 import { loadNameResolver } from "./snapshot.js";
-import { executeMoveJob, type MoveJobResult } from "./write-executor.js";
+import { executeMoveJob, type MoveJobResult } from "@rg/coros";
 
 interface SpikeReport {
   kind: "coros-write-spike";
@@ -84,7 +85,7 @@ async function main(): Promise<void> {
     report.region = region;
 
     client = new CorosClient({ region });
-    const { userId } = await client.login(email, password);
+    const { userId } = await loginWithPassword(client, email, password);
     report.userIdRedacted = redactUserId(userId);
     console.log("Logged in.");
 

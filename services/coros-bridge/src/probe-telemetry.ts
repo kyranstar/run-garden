@@ -8,7 +8,8 @@
  * census; or COROS_EMAIL/COROS_PASSWORD/COROS_REGION in the environment).
  */
 
-import { CorosClient, type CorosRegion } from "./coros-client.js";
+import { CorosClient, type CorosRegion } from "@rg/coros";
+import { loginWithPassword } from "./coros-login.js";
 import { createPrompter } from "./prompt.js";
 
 async function credentials(): Promise<{ email: string; password: string; region: CorosRegion }> {
@@ -50,7 +51,7 @@ function describe(v: unknown): string {
 async function main(): Promise<void> {
   const { email, password, region } = await credentials();
   const client = new CorosClient({ region });
-  await client.login(email, password);
+  await loginWithPassword(client, email, password);
 
   const end = new Date().toISOString().slice(0, 10);
   const start = new Date(Date.now() - 30 * 86_400_000).toISOString().slice(0, 10);
