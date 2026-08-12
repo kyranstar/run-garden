@@ -44,6 +44,7 @@ import { recentGardenEvents, resimulateFrom } from "../services/garden-sync.js";
 import { openIntentFor, openMoveIntents, recordIntent, resolveIntent } from "../services/sync-intents.js";
 import { deriveWorkoutSync, devicePresence } from "../services/sync-status.js";
 import { exerciseNameMap, resolveCodesInText } from "../services/exercise-catalog.js";
+import { executeCloudJobs } from "../services/coros-write-cloud.js";
 
 export const planRoutes = new Hono<AppContext>();
 planRoutes.use("*", requireUser);
@@ -693,6 +694,10 @@ planRoutes.post("/workouts/:id/move", async (c) => {
       source: "app",
       corosWritesEnabled: prefs.corosWritesEnabled,
     });
+    // Cloud-direct: the queued write executes now, not when a Mac wakes.
+    c.executionCtx?.waitUntil?.(
+      executeCloudJobs(db, c.env, userId, prefs).catch(() => undefined),
+    );
     await syncCalendar(db, c.env, userId).catch(() => undefined);
     return c.json(outcome);
   } catch (e) {

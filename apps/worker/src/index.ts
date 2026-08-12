@@ -31,6 +31,7 @@ import { healLegacySyncState } from "./services/heal-legacy-sync.js";
 import { evaluateTriggers } from "./services/coach-triggers.js";
 import { processCoachReads } from "./services/coach-reads.js";
 import { corosReadSweep } from "./services/coros-read.js";
+import { executeCloudJobs } from "./services/coros-write-cloud.js";
 import { purgeExpiredSessions, createSession, sessionCookie } from "./auth/sessions.js";
 import { purgeExpiredStates } from "./auth/google.js";
 import { ensureFixtureUser, seedFixtures } from "./services/fixtures.js";
@@ -140,6 +141,9 @@ async function hourly(db: Db, env: Env): Promise<void> {
       // Perception catch-up: drains reads a dropped waitUntil missed. Cap 2
       // per tick keeps the per-user loop bounded (rework spec §1).
       await processCoachReads(db, env, userId, prefs, {}).catch(() => undefined);
+      // Cloud-direct writes (spec §4): queued watch updates execute here
+      // when a cloud connection exists — the Mac is no longer in the loop.
+      await executeCloudJobs(db, env, userId, prefs).catch(() => undefined);
       await finishSyncRun(db, runId, "ok", { ...rec, ...garden });
     } catch {
       await finishSyncRun(db, runId, "error");

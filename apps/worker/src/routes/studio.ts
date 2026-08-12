@@ -33,6 +33,7 @@ import { editPlan, generatePlan, type CatalogEntry } from "../services/studio-ll
 import { COROS_EXERCISE_NAMES } from "@rg/providers";
 import { exerciseNameMap, resolveExerciseName } from "../services/exercise-catalog.js";
 import { pushStudioPlan, undoStudioAdoption } from "../services/studio-push.js";
+import { executeCloudJobs } from "../services/coros-write-cloud.js";
 
 /**
  * Plan Studio API routes (plan-studio-design §7, task-5-brief.md).
@@ -501,6 +502,9 @@ studioRoutes.post("/generate", async (c) => {
       today,
       desiredOverride: [],
     });
+  c.executionCtx?.waitUntil?.(
+    executeCloudJobs(db, c.env, userId, await loadPreferences(db, userId)).catch(() => undefined),
+  );
     if (!retireSummary.ok) {
       // The retire call's own push machinery reports the true state
       // (`plan_not_found` / `invalid_plan`) rather than this route guessing
@@ -649,6 +653,9 @@ studioRoutes.post("/push", async (c) => {
   // reason (its own doc comment: "the compiler enforces it").
   const today = todayInZone(prefs.timezone);
   const summary = await pushStudioPlan(db, { userId, studioPlanId: planRow.id, today });
+  c.executionCtx?.waitUntil?.(
+    executeCloudJobs(db, c.env, userId, await loadPreferences(db, userId)).catch(() => undefined),
+  );
   if (!summary.ok) return pushOutcomeResponse(c, summary);
 
   const pushes = await db
@@ -700,6 +707,9 @@ studioRoutes.post("/push/retry", async (c) => {
   const prefs = await loadPreferences(db, userId);
   const today = todayInZone(prefs.timezone);
   const summary = await pushStudioPlan(db, { userId, studioPlanId: planRow.id, today });
+  c.executionCtx?.waitUntil?.(
+    executeCloudJobs(db, c.env, userId, await loadPreferences(db, userId)).catch(() => undefined),
+  );
   if (!summary.ok) return pushOutcomeResponse(c, summary);
 
   const pushes = await db

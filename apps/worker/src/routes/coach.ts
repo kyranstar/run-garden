@@ -27,6 +27,7 @@ import type { AppContext } from "../auth/middleware.js";
 import { requireUser } from "../auth/middleware.js";
 import { loadPreferences } from "../services/calendar-sync.js";
 import { ensureRead } from "../services/coach-reads.js";
+import { executeCloudJobs } from "../services/coros-write-cloud.js";
 import { exerciseNameMap, resolveExerciseName } from "../services/exercise-catalog.js";
 import { liftProgressions, liftWeekSummary, runProgressions } from "../services/plan-progressions.js";
 import { applyOps } from "../services/coach-apply.js";
@@ -205,6 +206,10 @@ coachRoutes.post("/proposals/:id/approve", async (c) => {
     .set({ status: "approved", resolvedAt: nowInstant() })
     .where(eq(coachProposals.id, id));
   await receipt(db, userId, `✓ approved — ${p.title}`, p.id);
+  // Cloud-direct: any watch writes the approval enqueued execute now.
+  c.executionCtx?.waitUntil?.(
+    executeCloudJobs(db, c.env, userId, prefs).catch(() => undefined),
+  );
   return c.json({ ok: true, applied });
 });
 
