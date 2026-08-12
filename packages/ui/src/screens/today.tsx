@@ -107,7 +107,13 @@ export function SyncPanel({ quietWhenHealthy = false }: { quietWhenHealthy?: boo
   if (!status.data) return null;
   // Rework spec §6: on the plan page the sync line only exists when something
   // needs attention or an undoable note is pending — healthy is silence.
-  if (quietWhenHealthy && status.data.state === "in_sync" && (notes.data?.notes ?? []).length === 0) {
+  const cloudHealthy =
+    status.data.cloud != null && status.data.cloud.connected && !status.data.cloud.error && status.data.issueCount === 0;
+  if (
+    quietWhenHealthy &&
+    (status.data.state === "in_sync" || cloudHealthy) &&
+    (notes.data?.notes ?? []).length === 0
+  ) {
     return null;
   }
 

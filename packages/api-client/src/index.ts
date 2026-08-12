@@ -532,6 +532,9 @@ export interface SyncStatusDto {
   paused: boolean;
   writesEnabled: boolean;
   registered: boolean;
+  /** Cloud-direct COROS: present when a cloud connection exists (or errors).
+   * The sync line prefers this over Mac presence. */
+  cloud?: { connected: boolean; lastSyncAt: string | null; error: string | null } | null;
 }
 
 export type SyncNoteKind =
@@ -687,6 +690,8 @@ export const api = {
   coachMemoryDelete: (id: string) =>
     request<{ ok: boolean }>(`/api/coach/memory/${id}`, { method: "DELETE" }),
   corosStatus: () => get<CorosStatusResponse>("/api/coros/status"),
+  corosReadNow: () =>
+    post<{ status: string; ingested?: number }>("/api/coros/read-now", undefined, 60_000),
   corosConnect: (body: { email: string; pwdMd5: string; region: "us" | "eu" | "cn" }) =>
     post<CorosConnectResponse>("/api/coros/connect", body, 60_000),
   corosDisconnect: () =>

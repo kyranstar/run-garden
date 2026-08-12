@@ -14,6 +14,7 @@ import {
   Spinner,
 } from "../components.js";
 import { CoachRead } from "./coach-read.js";
+import { useCorosReadNow } from "./use-coros-read.js";
 
 function dist(m: number | null): string {
   if (!m) return "";
@@ -262,6 +263,7 @@ function LinkSheet({ activity, onClose }: { activity: ActivityDto; onClose: () =
 }
 
 export function RunsScreen() {
+  const corosCheck = useCorosReadNow();
   const qc = useQueryClient();
   const runs = useQuery({ queryKey: ["runs"], queryFn: () => api.activities(40) });
   const [linking, setLinking] = useState<ActivityDto | null>(null);
@@ -311,6 +313,7 @@ export function RunsScreen() {
     <div>
       <div className="row-between screen-title">
         <h1>Activity</h1>
+        {corosCheck.checking ? <span className="pill pill-neutral coros-checking">Checking COROS…</span> : null}
         <button className="btn btn-small" disabled={backfill.isPending} onClick={() => backfill.mutate()}>
           {backfill.isPending ? "Starting…" : "Backfill history"}
         </button>

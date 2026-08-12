@@ -191,6 +191,20 @@ export function SyncStatusLine({
   retrying?: boolean;
 }) {
   const line = (() => {
+    // Cloud-direct COROS (spec §5): the connection's health outranks Mac
+    // presence — "synced X ago" or an honest error, never a Mac mystery.
+    if (status.cloud) {
+      if (status.cloud.error === "bad_credentials") {
+        return "COROS rejected the password — fix in Settings";
+      }
+      if (status.cloud.error) {
+        return "COROS unreachable — retrying";
+      }
+      if (status.state === "sync_issue") {
+        return `${status.issueCount} change${status.issueCount === 1 ? "" : "s"} couldn't sync`;
+      }
+      return `Synced with COROS${status.cloud.lastSyncAt ? ` · ${relativeTime(status.cloud.lastSyncAt)}` : " · first sync pending"}`;
+    }
     switch (status.state) {
       case "in_sync":
         return `Calendar, COROS and watch in sync${status.lastCorosReadAt ? ` · ${relativeTime(status.lastCorosReadAt)}` : ""}`;

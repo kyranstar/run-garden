@@ -28,6 +28,7 @@ import { WeeklyBrief } from "./plan-brief.js";
 import { PlanCards } from "./plan-cards.js";
 import { StudioModal } from "./studio-modal.js";
 import { askable, displayCompletionState, WeekView, weekRangeLabel } from "./week-view.js";
+import { useCorosReadNow } from "./use-coros-read.js";
 
 function WorkoutDetail({
   w,
@@ -451,6 +452,7 @@ export function PlanScreen() {
   const [params, setParams] = useSearchParams();
   const isDesktop = useIsDesktop();
   const qc = useQueryClient();
+  const corosCheck = useCorosReadNow();
 
   // ── The picked week ────────────────────────────────────────────────────
   const weekParam = params.get("week");
@@ -655,6 +657,9 @@ export function PlanScreen() {
     <div className="plan-page">
       <div className="row-between screen-title">
         <h1>Plan</h1>
+        {corosCheck.checking ? (
+          <span className="pill pill-neutral coros-checking">Checking COROS…</span>
+        ) : null}
       </div>
       <div className="plan-page-col">
         <SyncPanel quietWhenHealthy />

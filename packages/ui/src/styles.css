@@ -4276,3 +4276,18 @@ button {
     font-size: 0.74rem;
   }
 }
+
+/* Cloud-direct COROS: the app-open pull's visible state. */
+.coros-checking {
+  animation: coros-pulse 1.4s ease-in-out infinite;
+}
+@keyframes coros-pulse {
+  50% {
+    opacity: 0.55;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .coros-checking {
+    animation: none;
+  }
+}
