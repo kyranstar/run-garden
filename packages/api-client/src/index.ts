@@ -110,8 +110,7 @@ export interface TodayResponse {
   needsAttention: WorkoutDto[];
   sync: {
     pendingCorosJobs: number;
-    deviceOnline: boolean;
-    deviceRegistered: boolean;
+    corosConnected: boolean;
     corosWritesEnabled: boolean;
     calendarConnected: boolean;
   };
@@ -210,18 +209,6 @@ export interface DisciplineBalance {
   overall: number;
 }
 
-export interface DeviceDto {
-  id: string;
-  name: string;
-  platform: string;
-  appVersion: string;
-  bridgeVersion: string | null;
-  capabilities: Record<string, boolean> | null;
-  bridgePaused: boolean;
-  lastSeenAt: string;
-  revokedAt: string | null;
-  online: boolean;
-}
 
 /**
  * One day of `GET /api/garden/timeline` (worker route:
@@ -719,9 +706,6 @@ export const api = {
   updateSettings: (partial: Partial<UserPreferences>) => put<{ ok: true; prefs: UserPreferences }>("/api/settings", partial),
   diagnostics: () => get<Record<string, unknown>>("/api/settings/diagnostics"),
   deleteAll: () => post("/api/settings/delete-all", { confirm: "delete everything" }),
-  devices: () => get<{ devices: DeviceDto[] }>("/api/devices"),
-  revokeDevice: (id: string) => post(`/api/devices/${id}/revoke`),
-  pauseDevice: (id: string, paused: boolean) => post(`/api/devices/${id}/pause`, { paused }),
   calendars: () => get<{ calendars: Array<{ id: string; summary: string; primary?: boolean }> }>("/api/calendar/calendars"),
   chooseCalendar: (opts: { calendarId?: string; createNew?: boolean }) => post<{ ok: true; calendarId: string }>("/api/calendar/choose", opts),
   calendarSync: () => post<Record<string, unknown>>("/api/calendar/sync"),

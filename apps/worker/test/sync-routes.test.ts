@@ -22,7 +22,7 @@ import { activeSyncNotes, postSyncNote } from "../src/services/sync-notes.js";
 import { openIntentFor, recordIntent } from "../src/services/sync-intents.js";
 import { computeSyncStatus } from "../src/services/sync-status.js";
 import { pushStudioPlan } from "../src/services/studio-push.js";
-import { makeTestDb, makeTestUser, mountRoutes, registerTestDevice, connectTestCoros } from "./helpers.js";
+import { makeTestDb, makeTestUser, mountRoutes, connectTestCoros } from "./helpers.js";
 
 const { corosWriteJobs, plannedWorkouts, studioPlanPushes, studioPlans, syncIntents, syncRuns, trainingPlans } =
   schema;
@@ -197,7 +197,6 @@ beforeEach(async () => {
 
 describe("PUT /api/settings — corosWritesEnabled toggle", () => {
   it("flipping writes false→true emits pending work: an open move intent with no job (writes were off) gets a queued job", async () => {
-    await registerTestDevice(db, userId);
     await connectTestCoros(db, userId);
     const workoutId = await insertWorkout({ effectiveDate: "2026-08-08" });
     // Writes are off by default (makeTestUser's default prefs): applyMove
@@ -253,7 +252,7 @@ describe("POST /api/sync/retry", () => {
   it("retries a failed move job — supersedes it, re-applies the move, and clears issueCount (C15: the old readNow() wiring never touched failed jobs)", async () => {
     const prefs0 = await loadPreferences(db, userId);
     await savePreferences(db, userId, { ...prefs0, corosWritesEnabled: true });
-    const deviceId = await registerTestDevice(db, userId);
+    const deviceId = "test-executor";
     await connectTestCoros(db, userId);
     const workoutId = await insertWorkout({ effectiveDate: "2026-08-08" });
     const outcome = await applyMove(db, {
@@ -316,7 +315,6 @@ describe("POST /api/sync/retry", () => {
     // banner (and its Retry button) actually shows.
     const prefs0 = await loadPreferences(db, userId);
     await savePreferences(db, userId, { ...prefs0, corosWritesEnabled: true });
-    await registerTestDevice(db, userId);
     await connectTestCoros(db, userId);
     await db.insert(schema.corosExercises).values({
       id: SQUAT,
@@ -592,7 +590,6 @@ describe("POST /api/sync/notes/:id/undo", () => {
       .where(eq(plannedWorkouts.id, workoutId));
     const prefs = await loadPreferences(db, userId);
     await savePreferences(db, userId, { ...prefs, corosWritesEnabled: true });
-    await registerTestDevice(db, userId);
     await connectTestCoros(db, userId);
     await recordIntent(db, {
       userId,

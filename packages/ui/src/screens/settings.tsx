@@ -426,70 +426,6 @@ export function CorosConnectSection() {
   );
 }
 
-function DevicesSection() {
-  const qc = useQueryClient();
-  const devices = useQuery({ queryKey: ["devices"], queryFn: api.devices });
-  const revoke = useMutation({
-    mutationFn: (id: string) => api.revokeDevice(id),
-    onSuccess: () => void qc.invalidateQueries({ queryKey: ["devices"] }),
-  });
-  const pause = useMutation({
-    mutationFn: ({ id, paused }: { id: string; paused: boolean }) => api.pauseDevice(id, paused),
-    onSuccess: () => void qc.invalidateQueries({ queryKey: ["devices"] }),
-  });
-
-  const active = devices.data?.devices.filter((d) => !d.revokedAt) ?? [];
-
-  return (
-    <Card title="Desktop companion">
-      {active.length === 0 ? (
-        <p className="muted">
-          Optional legacy path — with COROS connected above, no Mac is needed. The desktop
-          companion is only for keeping your password off the cloud.
-        </p>
-      ) : (
-        active.map((d) => (
-          <div className="switch-row" key={d.id}>
-            <div>
-              <strong>{d.name}</strong>{" "}
-              {!d.online ? <span className="pill pill-warn">Offline</span> : null}
-              {d.bridgePaused ? <span className="pill pill-neutral">Sync paused</span> : null}
-              <p className="faint">
-                Last seen {new Date(d.lastSeenAt).toLocaleString()} · app {d.appVersion} at pairing
-                {/* Audit C9: appVersion is written once at handshake and never
-                    refreshed — the bridge's heartbeat only reports bridgeVersion,
-                    so a later app update would otherwise show as still-current. */}
-                {d.capabilities?.updateExistingScheduledWorkout
-                  ? " · COROS schedule updates supported"
-                  : " · calendar-only"}
-              </p>
-            </div>
-            <div className="btn-row">
-              <button
-                className="btn btn-small"
-                onClick={() => pause.mutate({ id: d.id, paused: !d.bridgePaused })}
-              >
-                {d.bridgePaused ? "Resume syncing" : "Pause syncing"}
-              </button>
-              <button
-                className="btn btn-small btn-danger"
-                onClick={() => {
-                  // Destructive enough to double-check — though with the
-                  // cloud COROS connection, unpairing a Mac no longer stops sync.
-                  if (window.confirm(`Unpair "${d.name}"? The legacy desktop path stops; the cloud COROS connection is unaffected.`)) {
-                    revoke.mutate(d.id);
-                  }
-                }}
-              >
-                Unpair
-              </button>
-            </div>
-          </div>
-        ))
-      )}
-    </Card>
-  );
-}
 
 function CorosSyncSection({ prefs }: { prefs: UserPreferences }) {
   const qc = useQueryClient();
@@ -854,7 +790,6 @@ export function SettingsScreen() {
       </div>
       <ConnectionsSection />
       <CorosConnectSection />
-      <DevicesSection />
       <SchedulingSection prefs={settings.data.prefs} />
       <CorosSyncSection prefs={settings.data.prefs} />
       <AiSection prefs={settings.data.prefs} />

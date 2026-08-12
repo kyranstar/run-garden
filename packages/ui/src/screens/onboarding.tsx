@@ -2,15 +2,16 @@ import { useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { api } from "@rg/api-client";
 import { PRODUCT_NAME } from "@rg/domain";
-import { Banner, Card, formatDayShort, formatTime, Spinner } from "../components.js";
+import { Card, formatDayShort, formatTime, Spinner } from "../components.js";
+import { CorosConnectSection } from "./settings.js";
 
 /**
- * Focused onboarding. Value first, then the desktop companion, COROS, Calendar,
- * preferences, a real 7-day preview, and a one-view garden
- * intro. No long carousel; each step is a card.
+ * Focused onboarding. Value first, then COROS (connected right here — the
+ * worker talks to COROS directly), Calendar, preferences, a real 7-day
+ * preview, and a one-view garden intro. No long carousel; each step is a card.
  */
 
-const STEPS = ["Value", "Desktop", "COROS", "Calendar", "Preferences", "Preview", "Garden"] as const;
+const STEPS = ["Value", "COROS", "Calendar", "Preferences", "Preview", "Garden"] as const;
 
 export function Onboarding({ onDone }: { onDone: () => void }) {
   const [step, setStep] = useState(0);
@@ -20,8 +21,7 @@ export function Onboarding({ onDone }: { onDone: () => void }) {
 
   // An account configured elsewhere must never be walked through setup
   // again: signing in on a new device (the phone PWA, another browser) is a
-  // sign-IN, not a first run. `deviceRegistered` is the tell — the desktop
-  // companion has already been paired.
+  // sign-IN, not a first run. `corosConnected` is the tell.
   const today = useQuery({ queryKey: ["today"], queryFn: api.today });
   if (today.isLoading) {
     return (
@@ -32,7 +32,7 @@ export function Onboarding({ onDone }: { onDone: () => void }) {
       </div>
     );
   }
-  if (today.data?.sync.deviceRegistered && !forceWizard) {
+  if (today.data?.sync.corosConnected && !forceWizard) {
     return (
       <div className="shell">
         <main className="shell-main" style={{ maxWidth: 560 }}>
@@ -41,8 +41,8 @@ export function Onboarding({ onDone }: { onDone: () => void }) {
               You're already set up 🌿
             </h1>
             <p className="muted" style={{ marginTop: "0.7rem" }}>
-              The Run Garden desktop app on your Mac keeps COROS and your calendar synced in the
-              background — nothing to configure here.
+              COROS is already connected — activities, your plan, and watch updates sync in the
+              cloud on their own. Nothing to configure here.
             </p>
             <p className="muted">
               On this device you get everything else: your garden, the full plan calendar, the
@@ -89,12 +89,11 @@ export function Onboarding({ onDone }: { onDone: () => void }) {
           ))}
         </div>
         {step === 0 ? <ValueStep onNext={next} /> : null}
-        {step === 1 ? <DesktopStep onNext={next} onBack={back} /> : null}
-        {step === 2 ? <CorosStep onNext={next} onBack={back} /> : null}
-        {step === 3 ? <CalendarStep onNext={next} onBack={back} /> : null}
-        {step === 4 ? <PreferencesStep onNext={next} onBack={back} /> : null}
-        {step === 5 ? <PreviewStep onNext={next} onBack={back} /> : null}
-        {step === 6 ? <GardenStep onDone={onDone} onBack={back} /> : null}
+        {step === 1 ? <CorosStep onNext={next} onBack={back} /> : null}
+        {step === 2 ? <CalendarStep onNext={next} onBack={back} /> : null}
+        {step === 3 ? <PreferencesStep onNext={next} onBack={back} /> : null}
+        {step === 4 ? <PreviewStep onNext={next} onBack={back} /> : null}
+        {step === 5 ? <GardenStep onDone={onDone} onBack={back} /> : null}
       </main>
     </div>
   );
@@ -139,80 +138,21 @@ function ValueStep({ onNext }: { onNext: () => void }) {
   );
 }
 
-const DESKTOP_BUILD_CMD =
-  "pnpm --filter @rg/desktop sidecar:build && pnpm --filter @rg/desktop tauri build";
-
-function DesktopStep({ onNext, onBack }: { onNext: () => void; onBack: () => void }) {
-  const devices = useQuery({ queryKey: ["devices"], queryFn: api.devices, refetchInterval: 5000 });
-  const connected = (devices.data?.devices ?? []).some((d) => !d.revokedAt);
-  const [copied, setCopied] = useState(false);
-
-  const copy = async () => {
-    try {
-      await navigator.clipboard.writeText(DESKTOP_BUILD_CMD);
-      setCopied(true);
-      setTimeout(() => setCopied(false), 2500);
-    } catch {
-      /* clipboard blocked — the command is shown below regardless */
-    }
-  };
-
-  return (
-    <Card title="Desktop companion — and why it's needed">
-      <p>
-        COROS has no cloud API that lets an app change your training plan, and it blocks logins from
-        cloud servers. So a small companion app on your Mac does the talking to COROS — reading your
-        plan and pushing schedule changes back to your watch.
-      </p>
-      <p className="muted" style={{ marginTop: "0.6rem" }}>
-        It also means your COROS password never leaves your Mac (it's kept in the macOS Keychain,
-        never sent to Run Garden's cloud). Run Garden's website works without it — you just won't see
-        your COROS plan until the Mac companion is connected.
-      </p>
-
-      <div style={{ marginTop: "0.9rem" }}>
-        <p className="faint" style={{ marginBottom: "0.3rem" }}>
-          Build &amp; install it from the project (produces a .dmg):
-        </p>
-        <div className="stage-summary" style={{ fontFamily: "ui-monospace, monospace", fontSize: "0.8rem" }}>
-          {DESKTOP_BUILD_CMD}
-        </div>
-        <div className="btn-row" style={{ marginTop: "0.5rem" }}>
-          <button className="btn btn-small" onClick={copy}>
-            {copied ? "Copied ✓" : "Copy command"}
-          </button>
-        </div>
-      </div>
-
-      {connected ? (
-        <Banner kind="info">Your Mac is connected — you're all set.</Banner>
-      ) : (
-        <p className="faint" style={{ marginTop: "0.7rem" }}>
-          Once the companion is running and paired, it shows up here automatically. You can also do
-          the COROS connection entirely inside the desktop app.
-        </p>
-      )}
-      <StepNav onNext={onNext} onBack={onBack} nextLabel={connected ? "Continue" : "Skip for now"} />
-    </Card>
-  );
-}
-
 function CorosStep({ onNext, onBack }: { onNext: () => void; onBack: () => void }) {
+  const status = useQuery({ queryKey: ["coros-status"], queryFn: api.corosStatus });
+  const connected = status.data?.connected === true;
   return (
-    <Card title="COROS">
-      <p>Connect COROS from the desktop app:</p>
-      <ul className="muted" style={{ paddingLeft: "1.2rem", marginTop: "0.5rem" }}>
-        <li>Enter your COROS email, password, and region</li>
-        <li>Test the connection</li>
-        <li>Credentials are stored in the macOS Keychain — never in the cloud</li>
-        <li>Run Garden reads your active plan and reports what it can do</li>
-      </ul>
-      <p className="faint" style={{ marginTop: "0.7rem" }}>
-        Even if Run Garden can't update your COROS watch automatically, it still mirrors your whole
-        plan to Google Calendar — you'd just move workouts on the watch yourself.
-      </p>
-      <StepNav onNext={onNext} onBack={onBack} />
-    </Card>
+    <div className="stack">
+      <CorosConnectSection />
+      <Card>
+        <p className="muted">
+          The moment you connect, your activities, plan, and history start syncing — and moves you
+          make here are written back to your watch. Your password is hashed on this device before
+          it's sent; only the hash is stored, encrypted.
+        </p>
+      </Card>
+      <StepNav onNext={onNext} onBack={onBack} nextLabel={connected ? "Continue" : "Skip for now"} />
+    </div>
   );
 }
 

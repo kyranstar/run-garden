@@ -23,7 +23,7 @@ import { advanceGarden } from "../src/services/garden-sync.js";
 import { importPlanSnapshot } from "../src/services/import-plan.js";
 import { ingestActivities } from "../src/services/completion.js";
 import { createSession, SESSION_COOKIE } from "../src/auth/sessions.js";
-import { makeTestDb, makeTestUser, mountRoutes, registerTestDevice } from "./helpers.js";
+import { makeTestDb, makeTestUser, mountRoutes } from "./helpers.js";
 
 const { gardenState, gardenDayInputs, plannedWorkouts } = schema;
 
@@ -92,7 +92,6 @@ async function seedHistory(daysPast = 6) {
 beforeEach(async () => {
   db = makeTestDb();
   ({ userId, prefs } = await makeTestUser(db));
-  await registerTestDevice(db, userId);
   const token = await createSession(db, userId);
   cookie = `${SESSION_COOKIE}=${token}`;
   const today = todayInZone(prefs.timezone);

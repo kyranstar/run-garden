@@ -17,7 +17,7 @@ import { applyMove } from "../src/services/jobs.js";
 import { enqueueBackfill } from "../src/services/backfill.js";
 import type { Env } from "../src/env.js";
 import type { Db } from "../src/services/db.js";
-import { makeTestDb, makeTestUser, registerTestDevice } from "./helpers.js";
+import { makeTestDb, makeTestUser } from "./helpers.js";
 import { createHash } from "node:crypto";
 
 const TEST_KEY = Buffer.alloc(32, 7).toString("base64");
@@ -91,7 +91,6 @@ describe("executeCloudJobs", () => {
   it("executes a queued move against COROS and applies the result under the cloud device id", async () => {
     const db = makeTestDb();
     const { userId, prefs } = await makeTestUser(db, { corosWritesEnabled: true });
-    await registerTestDevice(db, userId);
     const server = mockCorosServer();
     await connect(db, userId, server);
     const { id, iso } = await seedServerWorkout(db, userId, server);
@@ -125,7 +124,6 @@ describe("executeCloudJobs", () => {
   it("no cloud connection → executes nothing, jobs stay for devices", async () => {
     const db = makeTestDb();
     const { userId, prefs } = await makeTestUser(db, { corosWritesEnabled: true });
-    await registerTestDevice(db, userId);
     const server = mockCorosServer();
     const { id, iso } = await seedServerWorkout(db, userId, server);
     await applyMove(db, {
@@ -166,7 +164,6 @@ describe("executeCloudJobs", () => {
   it("EXACTLY-ONCE: concurrent executors share the lock — one runs", async () => {
     const db = makeTestDb();
     const { userId, prefs } = await makeTestUser(db, { corosWritesEnabled: true });
-    await registerTestDevice(db, userId);
     const server = mockCorosServer();
     await connect(db, userId, server);
     const { id, iso } = await seedServerWorkout(db, userId, server);

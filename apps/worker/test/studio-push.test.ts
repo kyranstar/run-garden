@@ -38,7 +38,7 @@ import {
   type PushRow,
 } from "../src/services/studio-push.js";
 import { deleteAllUserData } from "../src/routes/misc.js";
-import { makeTestDb, makeTestUser, registerTestDevice } from "./helpers.js";
+import { makeTestDb, makeTestUser } from "./helpers.js";
 
 const {
   corosExercises,
@@ -1502,7 +1502,7 @@ describe("job flow wiring", () => {
   it("claims a studio job with no planned workout attached", async () => {
     const planId = await seedPlan();
     await pushStudioPlan(db, { userId, studioPlanId: planId, today: TODAY });
-    const deviceId = await registerTestDevice(db, userId);
+    const deviceId = "test-executor";
 
     const job = await claimNextJob(db, userId, deviceId);
 
@@ -1516,7 +1516,7 @@ describe("job flow wiring", () => {
   it("routes a studio result through applyJobResult without touching planned workouts", async () => {
     const planId = await seedPlan();
     await pushStudioPlan(db, { userId, studioPlanId: planId, today: TODAY });
-    const deviceId = await registerTestDevice(db, userId);
+    const deviceId = "test-executor";
     const job = (await claimNextJob(db, userId, deviceId))!;
 
     const applied = await applyJobResult(

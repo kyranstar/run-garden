@@ -13,7 +13,6 @@ import type { Env } from "./env.js";
 import { fixtureModeEnabled } from "./env.js";
 import { withDb, requireUser, type AppContext } from "./auth/middleware.js";
 import { authRoutes } from "./routes/auth.js";
-import { deviceRoutes } from "./routes/devices.js";
 import { planRoutes } from "./routes/plan.js";
 import { gardenRoutes } from "./routes/garden.js";
 import { activityRoutes, calendarRoutes, insightRoutes, settingsRoutes } from "./routes/misc.js";
@@ -53,7 +52,6 @@ app.use("/api/*", async (c, next) => {
 });
 
 app.route("/api/auth", authRoutes);
-app.route("/api/devices", deviceRoutes);
 app.route("/api/plan", planRoutes);
 app.route("/api/garden", gardenRoutes);
 app.route("/api/coach", coachRoutes);

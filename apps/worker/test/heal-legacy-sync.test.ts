@@ -5,7 +5,7 @@ import { addDays, newId, nowInstant, todayInZone, type UserPreferences } from "@
 import type { Db } from "../src/services/db.js";
 import { healLegacySyncState } from "../src/services/heal-legacy-sync.js";
 import { openIntentFor } from "../src/services/sync-intents.js";
-import { makeTestDb, makeTestUser, registerTestDevice } from "./helpers.js";
+import { makeTestDb, makeTestUser } from "./helpers.js";
 
 const { plannedWorkouts, studioPlanPushes, studioPlans, trainingPlans, calendarEventSuppressions, auditEvents } = schema;
 

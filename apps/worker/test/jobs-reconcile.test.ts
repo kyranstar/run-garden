@@ -7,8 +7,7 @@ import type { Env } from "../src/env.js";
 import type { Db } from "../src/services/db.js";
 import { applyJobResult, applyMove, claimNextJob, emitPendingWork } from "../src/services/jobs.js";
 import { openIntentFor } from "../src/services/sync-intents.js";
-import { deviceRoutes } from "../src/routes/devices.js";
-import { makeTestDb, makeTestUser, mountRoutes, registerTestDevice, connectTestCoros } from "./helpers.js";
+import { makeTestDb, makeTestUser, mountRoutes, connectTestCoros } from "./helpers.js";
 
 /**
  * Moves through the intent ledger: applyMove records a `move` intent and
@@ -49,7 +48,6 @@ describe("jobs + intent ledger", () => {
   it("applyMove with writes enabled + capable device records an open move intent and enqueues one queued job", async () => {
     const db = makeTestDb();
     const { userId } = await makeTestUser(db);
-    await registerTestDevice(db, userId);
     await connectTestCoros(db, userId);
     const workoutId = await insertWorkout(db, userId, { lastVerifiedCorosDate: "2026-08-08" });
 
@@ -102,7 +100,6 @@ describe("jobs + intent ledger", () => {
     expect(jobsBefore).toHaveLength(0);
 
     // Writes get enabled and a device gets registered afterward.
-    await registerTestDevice(db, userId);
     await connectTestCoros(db, userId);
     const emitted = await emitPendingWork(db, userId, { corosWritesEnabled: true });
     expect(emitted).toBe(1);
@@ -121,7 +118,7 @@ describe("jobs + intent ledger", () => {
   it("applyJobResult verified resolves the intent and advances lastVerifiedCorosDate", async () => {
     const db = makeTestDb();
     const { userId, prefs } = await makeTestUser(db);
-    const deviceId = await registerTestDevice(db, userId);
+    const deviceId = "test-executor";
     await connectTestCoros(db, userId);
     const workoutId = await insertWorkout(db, userId, { lastVerifiedCorosDate: "2026-08-08" });
     const outcome = await applyMove(db, {
@@ -159,7 +156,7 @@ describe("jobs + intent ledger", () => {
   it("applyJobResult upstream_changed re-derives a new job against the open intent and posts a kept_local_change note", async () => {
     const db = makeTestDb();
     const { userId, prefs } = await makeTestUser(db);
-    const deviceId = await registerTestDevice(db, userId);
+    const deviceId = "test-executor";
     await connectTestCoros(db, userId);
     const workoutId = await insertWorkout(db, userId, { lastVerifiedCorosDate: "2026-08-08" });
     const outcome = await applyMove(db, {
@@ -218,7 +215,7 @@ describe("jobs + intent ledger", () => {
   it("applyJobResult verification_failed with no observedDate re-derives the job but skips posting a kept_local_change note (undefined displacedDate would be broken copy and 400-forever on undo)", async () => {
     const db = makeTestDb();
     const { userId, prefs } = await makeTestUser(db);
-    const deviceId = await registerTestDevice(db, userId);
+    const deviceId = "test-executor";
     await connectTestCoros(db, userId);
     const workoutId = await insertWorkout(db, userId, { lastVerifiedCorosDate: "2026-08-08" });
     const outcome = await applyMove(db, {
@@ -264,7 +261,6 @@ describe("jobs + intent ledger", () => {
   it("emitPendingWork resolves the open intent for an archived workout instead of leaving it stranded open forever", async () => {
     const db = makeTestDb();
     const { userId } = await makeTestUser(db);
-    await registerTestDevice(db, userId);
     await connectTestCoros(db, userId);
     const workoutId = await insertWorkout(db, userId, { lastVerifiedCorosDate: "2026-08-08" });
 
@@ -299,7 +295,7 @@ describe("jobs + intent ledger", () => {
   it("emitPendingWork does not re-emit a terminally failed job for the same destination (would otherwise retry an unsupported workout forever)", async () => {
     const db = makeTestDb();
     const { userId, prefs } = await makeTestUser(db);
-    const deviceId = await registerTestDevice(db, userId);
+    const deviceId = "test-executor";
     await connectTestCoros(db, userId);
     const workoutId = await insertWorkout(db, userId, { lastVerifiedCorosDate: "2026-08-08" });
     const outcome = await applyMove(db, {
@@ -347,7 +343,7 @@ describe("jobs + intent ledger", () => {
   it("applyJobResult write_failed exhausts retries into sync_issue, leaving the intent open", async () => {
     const db = makeTestDb();
     const { userId, prefs } = await makeTestUser(db);
-    const deviceId = await registerTestDevice(db, userId);
+    const deviceId = "test-executor";
     await connectTestCoros(db, userId);
     const workoutId = await insertWorkout(db, userId, { lastVerifiedCorosDate: "2026-08-08" });
     const outcome = await applyMove(db, {
@@ -436,7 +432,7 @@ describe("read_now job kind", () => {
   it("claimNextJob skips the workout-load for a read_now job (workout: null, no throw)", async () => {
     const db = makeTestDb();
     const { userId } = await makeTestUser(db);
-    const deviceId = await registerTestDevice(db, userId);
+    const deviceId = "test-executor";
     await connectTestCoros(db, userId);
     const jobId = await insertReadNowJob(db, userId);
 
@@ -451,7 +447,7 @@ describe("read_now job kind", () => {
   it("applyJobResult verified short-circuits a read_now job: marks it verified without running the move state machine", async () => {
     const db = makeTestDb();
     const { userId, prefs } = await makeTestUser(db);
-    const deviceId = await registerTestDevice(db, userId);
+    const deviceId = "test-executor";
     await connectTestCoros(db, userId);
     const jobId = await insertReadNowJob(db, userId);
     await claimNextJob(db, userId, deviceId);
@@ -486,7 +482,7 @@ describe("read_now job kind", () => {
   it("applyJobResult with a non-verified outcome marks a read_now job failed", async () => {
     const db = makeTestDb();
     const { userId, prefs } = await makeTestUser(db);
-    const deviceId = await registerTestDevice(db, userId);
+    const deviceId = "test-executor";
     await connectTestCoros(db, userId);
     const jobId = await insertReadNowJob(db, userId);
     await claimNextJob(db, userId, deviceId);
@@ -510,115 +506,5 @@ describe("read_now job kind", () => {
       await db.select().from(schema.corosWriteJobs).where(eq(schema.corosWriteJobs.id, jobId))
     )[0]!;
     expect(job.status).toBe("failed");
-  });
-});
-
-describe("POST /api/devices/bridge/jobs/claim — pendingCount", () => {
-  function makeEnv(): Env {
-    return {
-      DB: {} as unknown as Env["DB"],
-      ASSETS: {} as unknown as Env["ASSETS"],
-      APP_URL: "https://app.test",
-      FIXTURE_MODE: "0",
-      AI_DEFAULT_ENABLED: "1",
-      SESSION_SECRET: "test-session-secret",
-      TOKEN_ENCRYPTION_KEY: "test-token-encryption-key",
-      ALLOWED_GOOGLE_EMAIL: "runner@example.com",
-      GOOGLE_CLIENT_ID: "test-client-id",
-      GOOGLE_CLIENT_SECRET: "test-client-secret",
-    };
-  }
-
-  /** Minimal Ed25519 device identity + request signer, mirroring the desktop
-   * bridge's own signRequest (services/coros-bridge/src/cloud-sync.ts) —
-   * duplicated rather than imported since apps/worker has no dependency on
-   * that service package. */
-  function makeDeviceIdentity(): { publicKeyRaw: string; privateKeyPem: string } {
-    const { publicKey, privateKey } = generateKeyPairSync("ed25519");
-    const jwk = publicKey.export({ format: "jwk" }) as { x: string };
-    return {
-      publicKeyRaw: jwk.x,
-      privateKeyPem: privateKey.export({ type: "pkcs8", format: "pem" }).toString(),
-    };
-  }
-
-  function signedHeaders(
-    privateKeyPem: string,
-    deviceId: string,
-    method: string,
-    path: string,
-    body: string,
-  ): Record<string, string> {
-    const timestamp = new Date().toISOString();
-    const bodySha256 = createHash("sha256").update(body, "utf8").digest("hex");
-    const message = `${method.toUpperCase()}\n${path}\n${timestamp}\n${bodySha256}`;
-    const signature = ed25519Sign(null, Buffer.from(message, "utf8"), createPrivateKey(privateKeyPem));
-    return {
-      "x-device-id": deviceId,
-      "x-device-timestamp": timestamp,
-      "x-device-signature": signature.toString("base64url"),
-    };
-  }
-
-  async function registerSignedDevice(db: Db, userId: string): Promise<{ deviceId: string; privateKeyPem: string }> {
-    const { publicKeyRaw, privateKeyPem } = makeDeviceIdentity();
-    const deviceId = newId();
-    await db.insert(schema.desktopDevices).values({
-      id: deviceId,
-      userId,
-      name: "Test Mac",
-      publicKey: publicKeyRaw,
-      platform: "macos",
-      appVersion: "0.0.0-test",
-      createdAt: nowInstant(),
-      lastSeenAt: nowInstant(),
-    });
-    return { deviceId, privateKeyPem };
-  }
-
-  async function claim(db: Db, deviceId: string, privateKeyPem: string): Promise<Response> {
-    const app = mountRoutes(db, "/api/devices", deviceRoutes);
-    const path = "/api/devices/bridge/jobs/claim";
-    const body = "{}";
-    return app.request(
-      path,
-      {
-        method: "POST",
-        headers: {
-          ...signedHeaders(privateKeyPem, deviceId, "POST", path, body),
-          "content-type": "application/json",
-        },
-        body,
-      },
-      makeEnv(),
-    );
-  }
-
-  it("includes pendingCount (jobs still queued after this claim) alongside a claimed job", async () => {
-    const db = makeTestDb();
-    const { userId } = await makeTestUser(db);
-    const { deviceId, privateKeyPem } = await registerSignedDevice(db, userId);
-    await insertQueuedMoveJob(db, userId);
-    await insertQueuedMoveJob(db, userId);
-    await insertQueuedMoveJob(db, userId);
-
-    const res = await claim(db, deviceId, privateKeyPem);
-    expect(res.status).toBe(200);
-    const body = (await res.json()) as { job: { id: string } | null; pendingCount: number };
-    expect(body.job).not.toBeNull();
-    // 3 were queued; this claim took one → 2 remain queued.
-    expect(body.pendingCount).toBe(2);
-  });
-
-  it("includes pendingCount: 0 alongside a null job when the queue is empty", async () => {
-    const db = makeTestDb();
-    const { userId } = await makeTestUser(db);
-    const { deviceId, privateKeyPem } = await registerSignedDevice(db, userId);
-
-    const res = await claim(db, deviceId, privateKeyPem);
-    expect(res.status).toBe(200);
-    const body = (await res.json()) as { job: unknown; pendingCount: number };
-    expect(body.job).toBeNull();
-    expect(body.pendingCount).toBe(0);
   });
 });

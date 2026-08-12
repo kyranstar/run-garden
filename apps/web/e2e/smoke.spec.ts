@@ -59,7 +59,7 @@ test("Insights renders the dashboard and suppresses thin metrics honestly", asyn
 test("Settings exposes connections, devices, and data controls", async ({ page }) => {
   await page.goto("/settings");
   await expect(page.getByText("Connections")).toBeVisible();
-  await expect(page.getByText("Desktop companion", { exact: true })).toBeVisible();
+  await expect(page.getByText("COROS connection", { exact: true })).toBeVisible();
   await expect(page.getByText("Export everything (JSON)")).toBeVisible();
 });
 

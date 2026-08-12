@@ -62,32 +62,6 @@ export async function connectTestCoros(db: Db, userId: string): Promise<void> {
   });
 }
 
-export async function registerTestDevice(
-  db: Db,
-  userId: string,
-  capabilities: Record<string, boolean> = {
-    readPlan: true,
-    readSchedule: true,
-    updateExistingScheduledWorkout: true,
-    addScheduledWorkout: true,
-    removeScheduledWorkout: true,
-  },
-): Promise<string> {
-  const deviceId = newId();
-  await db.insert(schema.desktopDevices).values({
-    id: deviceId,
-    userId,
-    name: "Test Mac",
-    publicKey: "test-key",
-    platform: "macos",
-    appVersion: "0.0.0-test",
-    capabilities,
-    createdAt: nowInstant(),
-    lastSeenAt: nowInstant(),
-  });
-  return deviceId;
-}
-
 /**
  * Minimal Hono host for route-level tests. Real usage (`src/index.ts`) wires
  * `withDb` (which builds a D1-backed db from `c.env.DB`) ahead of every route

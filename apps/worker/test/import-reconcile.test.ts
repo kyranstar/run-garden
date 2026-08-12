@@ -7,7 +7,7 @@ import type { Db } from "../src/services/db.js";
 import { importPlanSnapshot } from "../src/services/import-plan.js";
 import { applyMove, emitPendingWork } from "../src/services/jobs.js";
 import { openIntentFor } from "../src/services/sync-intents.js";
-import { makeTestDb, makeTestUser, registerTestDevice, connectTestCoros } from "./helpers.js";
+import { makeTestDb, makeTestUser, connectTestCoros } from "./helpers.js";
 
 /**
  * Task 6: importPlanSnapshot's date-decision block now delegates to the pure
@@ -46,7 +46,6 @@ async function importFromProvider() {
 beforeEach(async () => {
   db = makeTestDb();
   ({ userId, prefs } = await makeTestUser(db));
-  await registerTestDevice(db, userId);
   await connectTestCoros(db, userId);
   const today = todayInZone(prefs.timezone);
   baseMonday = addDays(today, 2);

@@ -13,7 +13,7 @@ import { applyMove, claimNextJob, applyJobResult } from "../src/services/jobs.js
 import { ingestActivities } from "../src/services/completion.js";
 import { advanceGarden, buildDayInput, buildGardenView, loadGarden } from "../src/services/garden-sync.js";
 import { reconcileCompletionStates } from "../src/services/reconcile-daily.js";
-import { makeTestDb, makeTestUser, registerTestDevice, connectTestCoros } from "./helpers.js";
+import { makeTestDb, makeTestUser, connectTestCoros } from "./helpers.js";
 
 /**
  * The core vertical loop (product spec, Phase 3):
@@ -51,7 +51,7 @@ async function importFromProvider() {
 beforeEach(async () => {
   db = makeTestDb();
   ({ userId, prefs } = await makeTestUser(db));
-  deviceId = await registerTestDevice(db, userId);
+  deviceId = "test-executor";
   await connectTestCoros(db, userId);
   // A plan whose first week starts next Monday-ish relative to "today".
   const today = todayInZone(prefs.timezone);

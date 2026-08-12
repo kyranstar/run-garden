@@ -2,7 +2,7 @@ import { and, eq, inArray } from "drizzle-orm";
 import {
   auditEvents,
   corosWriteJobs,
-  desktopDevices,
+  providerConnections,
   llmUsage,
   studioPlanPushes,
   studioPlans,
@@ -535,34 +535,23 @@ export async function seedFixtures(db: Db, env: Env, userId: string): Promise<Se
     prefs,
   );
 
-  // Register a virtual desktop device so sync states render realistically.
-  const existingDevice = await db
+  // Phase C: presence is the cloud COROS connection — the fixture user gets
+  // a connected row so sync states render realistically.
+  const existingConn = await db
     .select()
-    .from(desktopDevices)
-    .where(eq(desktopDevices.userId, userId));
-  if (existingDevice.length === 0) {
-    await db.insert(desktopDevices).values({
+    .from(providerConnections)
+    .where(and(eq(providerConnections.userId, userId), eq(providerConnections.provider, "coros")));
+  if (existingConn.length === 0) {
+    await db.insert(providerConnections).values({
       id: newId(),
       userId,
-      name: "Fixture MacBook",
-      publicKey: "fixture-not-a-real-key",
-      platform: "macos",
-      appVersion: "0.1.0",
-      bridgeVersion: "0.1.0",
-      capabilities: {
-        readPlan: true,
-        readSchedule: true,
-        readActivities: true,
-        readHealth: true,
-        readNativeDurationEstimate: true,
-        calculateWorkout: true,
-        updateExistingScheduledWorkout: true,
-        addScheduledWorkout: true,
-        removeScheduledWorkout: true,
-        verifyWatchSync: false,
-      },
+      provider: "coros",
+      status: "connected",
       createdAt: nowInstant(),
-      lastSeenAt: nowInstant(),
+      updatedAt: nowInstant(),
+      lastSyncAt: nowInstant(),
+      meta: { email: "fixture@example.com", region: "us" },
+      externalAccountId: "fixture-coros",
     });
   }
 

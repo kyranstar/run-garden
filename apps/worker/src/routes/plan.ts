@@ -253,8 +253,7 @@ planRoutes.get("/today", async (c) => {
     needsAttention: attention.map((w) => workoutDto(w, syncViews.get(w.id), catalog)),
     sync: {
       pendingCorosJobs: pendingJobs.length,
-      deviceOnline: presence.online,
-      deviceRegistered: presence.registered,
+      corosConnected: presence.online,
       corosWritesEnabled: prefs.corosWritesEnabled,
       calendarConnected: !!prefs.calendarId,
       // "connected" | "error" (subscription lapsed / revoked) | undefined (never connected)
