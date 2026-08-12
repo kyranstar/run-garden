@@ -1,5 +1,9 @@
 # Desktop app (Tauri 2, macOS-first)
 
+> **RETIRED (2026-08-12, Phase C):** the desktop app and bridge were deleted —
+> COROS is cloud-direct now. This document is historical.
+
+
 `apps/desktop` is a small Tauri 2 menu-bar/window app whose real job is to
 host the **COROS bridge** on your Mac — the only machine that may hold COROS
 credentials and the only place COROS writes execute (residential IP + product

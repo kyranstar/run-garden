@@ -2,7 +2,7 @@
  * the shared client's loginWithHash — the shared module runs on Workers,
  * where MD5 isn't available, so hashing lives at this edge. */
 import { createHash } from "node:crypto";
-import type { CorosClient } from "@rg/coros";
+import type { CorosClient } from "../src/index.js";
 
 export async function loginWithPassword(
   client: CorosClient,

@@ -19,7 +19,7 @@ import { mkdirSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { sportIdForCorosCode } from "@rg/domain";
-import { CorosClient, type CorosRegion } from "@rg/coros";
+import { CorosClient, type CorosRegion } from "../src/index.js";
 import { createPrompter } from "./prompt.js";
 import { redactUserId } from "./sanitize.js";
 import { loginWithPassword } from "./coros-login.js";

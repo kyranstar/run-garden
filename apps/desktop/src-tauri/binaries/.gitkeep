@@ -1,3 +1,0 @@
-# Keep the binaries/ dir. The platform sidecar (coros-bridge-<target-triple>) is
-# a build artifact produced by `pnpm --filter @rg/desktop sidecar:build` and is
-# gitignored — do not commit it.

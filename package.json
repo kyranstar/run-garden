@@ -23,19 +23,13 @@
     "lint": "eslint .",
     "dev:web": "pnpm --filter @rg/web dev",
     "dev:worker": "pnpm --filter @rg/worker dev",
-    "dev:desktop": "pnpm --filter @rg/desktop tauri dev",
     "dev": "pnpm --filter @rg/worker dev & pnpm --filter @rg/web dev",
     "build:web": "pnpm --filter @rg/web build",
     "build:worker": "pnpm --filter @rg/worker build",
     "db:generate": "pnpm --filter @rg/database generate",
     "db:migrate:local": "pnpm --filter @rg/worker db:migrate:local",
-    "coros:census": "pnpm --filter @rg/coros-bridge census",
-    "coros:spike": "pnpm --filter @rg/coros-bridge spike",
-    "coros:spike:create": "pnpm --filter @rg/coros-bridge spike:create",
-    "coros:spike:cleanup": "pnpm --filter @rg/coros-bridge spike:cleanup",
-    "coros:spike:dryrun": "pnpm --filter @rg/coros-bridge spike:dryrun",
-    "e2e": "pnpm --filter @rg/web e2e",
-    "coros:probe": "pnpm --filter @rg/coros-bridge probe"
+    "coros:census": "pnpm --filter @rg/coros census",
+    "e2e": "pnpm --filter @rg/web e2e"
   },
   "devDependencies": {
     "@types/node": "^22.10.0",

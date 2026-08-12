@@ -1,5 +1,11 @@
 # Architecture
 
+> **2026-08-12 — Phase C:** the desktop app and COROS bridge are GONE. The worker
+> talks to COROS directly (`packages/coros`, `apps/worker/src/services/coros-*`);
+> see `docs/superpowers/specs/2026-08-12-coros-cloud-direct-design.md`. Bridge and
+> desktop references below are historical.
+
+
 Run Garden is a pnpm monorepo of source-consumed TypeScript packages (internal
 packages export `src/` directly; Vite/wrangler/vitest compile TS — no build
 step per package). Three deployables share the packages: a Cloudflare Worker,

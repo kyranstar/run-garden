@@ -24,15 +24,15 @@ And even when you do, **consistency doesn't feel like anything.** A number like 
 - **Your plan, Google Calendar, and your watch stay in sync — automatically.** One line tells you the truth: *"Calendar, COROS and watch in sync · 2m ago."* When something can't reconcile itself, you get an undo, never a wall of error states.
 - **An AI plan studio writes lifting plans straight to your watch** — describe what you want, review the sessions, push. No hand-entry into COROS.
 - **A garden timeline lets you scrub back through your whole history** — every day you've ever trained, replayed from the same deterministic simulation that grew the garden the first time.
-- **A desktop companion bridges to COROS** — the only thing that ever talks to it — **and doubles as an ambient screensaver**, so the garden is still there when you're not looking for it.
+- **The worker talks to COROS directly** (cloud-direct) — connect once in Settings and activities, plans, and watch updates flow on their own.
 
 ## How it works
 
 - **A Cloudflare Worker + D1** run the API, the cron sync, and all reconciliation — one deploy, free tier, gated to a single allow-listed Google account.
-- **A desktop bridge on your Mac** is the only thing that ever talks to COROS; your credentials never leave the machine.
+- **Your COROS password never exists server-side** — it's hashed in the browser; only the hash is stored, encrypted.
 - **A deterministic, event-sourced garden engine** replays your training history through a seeded simulation — the same history always grows the same garden.
 - **A self-contained SVG renderer** draws the garden straight from that simulation state, live — the GIF above and the app itself use the exact same code path.
-- **A React PWA** installs on your phone; the desktop app is the same garden, ambient, on your Mac.
+- **A React PWA** installs on your phone — the whole product lives in the browser.
 
 ### Why COROS is the only source
 
@@ -80,13 +80,13 @@ curl -X POST http://localhost:8787/api/dev/seed -b cookies.txt
 
 > **Node versions:** tests need Node 21 (better-sqlite3 native ABI); wrangler and the builds need Node 22. `nvm use 21` for `pnpm test`, `nvm use 22` for everything else.
 
-Other root scripts: `pnpm typecheck`, `pnpm test`, `pnpm build:web`, `pnpm dev:desktop`, `pnpm coros:spike`, `pnpm db:generate`.
+Other root scripts: `pnpm typecheck`, `pnpm test`, `pnpm build:web`, `pnpm coros:census`, `pnpm db:generate`.
 
 ## More
 
 | Doc | Contents |
 |---|---|
-| [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | Package graph, data-authority rules, the three date concepts, bridge↔cloud flow |
+| [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | Package graph, data-authority rules, the three date concepts, cloud-direct COROS flow |
 | [docs/DATA_MODEL.md](docs/DATA_MODEL.md) | Every table, grouped, with provenance fields |
 | [docs/SYNC_AND_RECONCILIATION.md](docs/SYNC_AND_RECONCILIATION.md) | COROS reconciliation rules 1–11, sync states, calendar reconciliation, matching |
 | [docs/DURATION_ESTIMATION.md](docs/DURATION_ESTIMATION.md) | Estimate priority chain + calendar block formula |
