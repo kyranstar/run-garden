@@ -443,6 +443,12 @@ export class CorosClient {
 
   // ── Daily health ─────────────────────────────────────────────────────────
 
+  /** Raw authenticated GET — field-discovery probes only (the typed methods
+   * are the product surface). Returns the envelope's data verbatim. */
+  async rawGet(path: string, query?: Record<string, string>): Promise<unknown> {
+    return this.requireData<unknown>("raw.probe", "GET", path, query ? { query } : undefined);
+  }
+
   async getDashboard(): Promise<CorosDashboardSubset> {
     const data = await this.requireData<Record<string, unknown> | null>(
       "dashboard.query",
