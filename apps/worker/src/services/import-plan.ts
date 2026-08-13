@@ -7,6 +7,7 @@ import {
   syncIntents,
   trainingPlanVersions,
   trainingPlans,
+  workoutCompletionMatches,
 } from "@rg/database";
 import {
   isWeekend,
@@ -635,18 +636,46 @@ export async function importPlanSnapshot(
   };
   for (const copies of byMirrorKey.values()) {
     if (copies.length < 2) continue;
-    // Only ever archive scheduled/unresolved copies — resolved rows carry
-    // history and are never dedupe casualties.
-    if (!copies.some((c) => c.completionState === "scheduled" || c.completionState === "unresolved")) {
-      continue;
-    }
     const sorted = [...copies].sort((a, b) => {
       const rank = (RESOLUTION_RANK[a.completionState] ?? 9) - (RESOLUTION_RANK[b.completionState] ?? 9);
       if (rank !== 0) return rank;
       return a.createdAt === b.createdAt ? a.id.localeCompare(b.id) : a.createdAt.localeCompare(b.createdAt);
     });
+    const keeper = sorted[0]!;
+    // The keeper-holds-the-match probe is lazy: at most one query per group,
+    // and only for the both-resolved exception below.
+    let keeperHoldsMatch: boolean | null = null;
     for (const dup of sorted.slice(1)) {
-      if (dup.completionState !== "scheduled" && dup.completionState !== "unresolved") continue;
+      // Resolved rows carry history and are never dedupe casualties — with
+      // one exception (audit#3 D3, live prod case 2026-07-29): a skipped or
+      // missed twin beside a COMPLETED keeper that provably holds the day's
+      // completion match is the same session double-materialized. The mirror
+      // arrived after the first copy resolved, so the scheduled-only dedupe
+      // could never clean it, and the day double-counts adherence forever.
+      const scheduledCasualty =
+        dup.completionState === "scheduled" || dup.completionState === "unresolved";
+      const resolvedTwinOfCompletion =
+        (dup.completionState === "skipped" || dup.completionState === "missed") &&
+        keeper.completionState === "completed";
+      if (!scheduledCasualty && !resolvedTwinOfCompletion) continue;
+      if (resolvedTwinOfCompletion) {
+        if (keeperHoldsMatch === null) {
+          keeperHoldsMatch =
+            (
+              await db
+                .select({ id: workoutCompletionMatches.id })
+                .from(workoutCompletionMatches)
+                .where(
+                  and(
+                    eq(workoutCompletionMatches.workoutId, keeper.id),
+                    isNull(workoutCompletionMatches.undoneAt),
+                  ),
+                )
+                .limit(1)
+            ).length > 0;
+        }
+        if (!keeperHoldsMatch) continue;
+      }
       await db
         .update(plannedWorkouts)
         .set({ archivedAt: now, updatedAt: now, archiveReason: "duplicate_mirror" })

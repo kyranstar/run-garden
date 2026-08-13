@@ -99,6 +99,15 @@ export function formatShortDate(date: string): string {
   return `${MONTHS[p.m - 1]!.slice(0, 3)} ${p.d}`;
 }
 
+/** The device's local calendar date. NEVER use `toISOString().slice(0,10)`
+ * for a "today" — that's the UTC date, which is tomorrow every evening west
+ * of Greenwich (audit#3 T3). A guess only: the server's `today` (account
+ * timezone) is authoritative wherever a response already carries it. */
+export function localTodayGuess(): string {
+  const d = new Date();
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+}
+
 /** "May" — the month-boundary tick label on a date-scaled axis. */
 export function formatShortMonth(date: string): string {
   return MONTHS[parts(date).m - 1]!.slice(0, 3);

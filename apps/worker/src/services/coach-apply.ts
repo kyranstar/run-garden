@@ -349,7 +349,9 @@ export async function applyOps(
         break;
       }
       case "add": {
-        const planId = (await activeCoachPlanId(db, userId, op.session)) ?? "coach-adhoc";
+        const planId =
+          (await activeCoachPlanId(db, userId, op.session)) ??
+          (await ensureAdhocPlan(db, userId, op.session, op.date, now));
         const id = opId(0);
         await insertSession(db, userId, planId, id, op.date, op.session, now, {
           corosWritesEnabled: prefs.corosWritesEnabled,
@@ -516,6 +518,53 @@ export async function applyOps(
     }
   }
   return out;
+}
+
+/**
+ * A REAL plan row for coach adds that land outside any active plan — the old
+ * phantom "coach-adhoc" id existed in no table and orphaned every join that
+ * resolves plan name/status (audit#3 D8). One bucket per discipline per user;
+ * its endDate stretches to cover whatever gets added.
+ */
+async function ensureAdhocPlan(
+  db: Db,
+  userId: string,
+  session: CoachSession,
+  date: string,
+  now: string,
+): Promise<string> {
+  const discipline = session.lift ? "lift" : "run";
+  const id = `adhoc-${discipline}-${userId.slice(0, 8)}`;
+  const [existing] = await db
+    .select()
+    .from(coachPlans)
+    .where(and(eq(coachPlans.id, id), eq(coachPlans.userId, userId)))
+    .limit(1);
+  if (existing) {
+    if (existing.endDate < date || existing.status !== "active") {
+      await db
+        .update(coachPlans)
+        .set({ endDate: existing.endDate < date ? date : existing.endDate, status: "active", updatedAt: now })
+        .where(eq(coachPlans.id, id));
+    }
+    return id;
+  }
+  await db
+    .insert(coachPlans)
+    .values({
+      id,
+      userId,
+      discipline,
+      name: "Coach one-offs",
+      status: "active",
+      startDate: date,
+      endDate: date,
+      stampPrefix: "Coach one-offs",
+      createdAt: now,
+      updatedAt: now,
+    })
+    .onConflictDoNothing();
+  return id;
 }
 
 /** The active coach plan matching the session's discipline, if any. */

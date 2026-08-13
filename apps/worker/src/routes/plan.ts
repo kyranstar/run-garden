@@ -44,7 +44,7 @@ import { applyMove } from "../services/jobs.js";
 import { recentGardenEvents, resimulateFrom } from "../services/garden-sync.js";
 import { openIntentFor, openMoveIntents, recordIntent, resolveIntent } from "../services/sync-intents.js";
 import { findRaceConflict, resolveRaceConflict } from "../services/race-conflict.js";
-import { cloudPresence, deriveWorkoutSync } from "../services/sync-status.js";
+import { cloudPresence, deriveWorkoutSync, type CloudPresence } from "../services/sync-status.js";
 import { exerciseNameMap, resolveCodesInText } from "../services/exercise-catalog.js";
 import { executeCloudJobs } from "../services/coros-write-cloud.js";
 
@@ -67,27 +67,40 @@ async function loadWorkoutSyncViews(
   userId: string,
   workouts: Array<typeof plannedWorkouts.$inferSelect>,
   prefs: UserPreferences,
+  /** Callers that already computed presence for their own payload pass it in
+   * so the providerConnections read isn't repeated (it never varies within a
+   * request). Omitted → computed here, same as before. */
+  precomputedPresence?: CloudPresence,
 ): Promise<Map<string, ReturnType<typeof deriveWorkoutSync>>> {
   const map = new Map<string, ReturnType<typeof deriveWorkoutSync>>();
   if (workouts.length === 0) return map;
 
   const ids = workouts.map((w) => w.id);
-  const openIntentTargets = new Set((await openMoveIntents(db, userId)).map((i) => i.targetId));
+  // All three lookups are independent — one D1 round-trip wave, not three
+  // (cross-region D1 makes every sequential await a full round trip).
+  const [presence, intents, jobChunks] = await Promise.all([
+    precomputedPresence ?? cloudPresence(db, userId),
+    openMoveIntents(db, userId),
+    Promise.all(
+      chunkIds(ids).map((chunk) =>
+        db
+          .select({ workoutId: corosWriteJobs.workoutId, status: corosWriteJobs.status })
+          .from(corosWriteJobs)
+          .where(and(eq(corosWriteJobs.userId, userId), inArray(corosWriteJobs.workoutId, chunk))),
+      ),
+    ),
+  ]);
+  const openIntentTargets = new Set(intents.map((i) => i.targetId));
 
   const pendingIds = new Set<string>();
   const failedIds = new Set<string>();
-  for (const chunk of chunkIds(ids)) {
-    const jobs = await db
-      .select({ workoutId: corosWriteJobs.workoutId, status: corosWriteJobs.status })
-      .from(corosWriteJobs)
-      .where(and(eq(corosWriteJobs.userId, userId), inArray(corosWriteJobs.workoutId, chunk)));
+  for (const jobs of jobChunks) {
     for (const j of jobs) {
       if ((IN_FLIGHT_JOB_STATUSES as readonly string[]).includes(j.status)) pendingIds.add(j.workoutId);
       else if (j.status === "failed") failedIds.add(j.workoutId);
     }
   }
 
-  const presence = await cloudPresence(db, userId);
   for (const w of workouts) {
     map.set(
       w.id,
@@ -150,101 +163,111 @@ planRoutes.get("/today", async (c) => {
   const userId = c.get("userId");
   const prefs = await loadPreferences(db, userId);
   const today = todayInZone(prefs.timezone);
-  const catalog = await exerciseNameMap(db);
 
-  const upcoming = await db
-    .select()
-    .from(plannedWorkouts)
-    .where(
-      and(
-        eq(plannedWorkouts.userId, userId),
-        gte(plannedWorkouts.effectiveDate, today),
-        isNull(plannedWorkouts.archivedAt),
-        // Only genuinely upcoming work: a provisionally-completed run is DONE
-        // (it's just awaiting its richer COROS record) — showing it as "next
-        // workout" right after you ran it reads as the app not noticing.
-        eq(plannedWorkouts.completionState, "scheduled"),
+  // Everything below depends only on userId/today (which needs prefs), never
+  // on each other — one Promise.all wave instead of ten sequential D1 round
+  // trips (house pattern: the insights route). No writes happen in this
+  // handler, so read ordering is free.
+  const [
+    catalog,
+    upcoming,
+    unresolved,
+    attention,
+    pendingJobs,
+    presence,
+    health,
+    gardenRows,
+    gardenEventsRecent,
+    yesterdayDone,
+  ] = await Promise.all([
+    exerciseNameMap(db),
+    db
+      .select()
+      .from(plannedWorkouts)
+      .where(
+        and(
+          eq(plannedWorkouts.userId, userId),
+          gte(plannedWorkouts.effectiveDate, today),
+          isNull(plannedWorkouts.archivedAt),
+          // Only genuinely upcoming work: a provisionally-completed run is DONE
+          // (it's just awaiting its richer COROS record) — showing it as "next
+          // workout" right after you ran it reads as the app not noticing.
+          eq(plannedWorkouts.completionState, "scheduled"),
+        ),
+      )
+      .orderBy(asc(plannedWorkouts.effectiveDate), asc(plannedWorkouts.effectiveTime))
+      .limit(8),
+    db
+      .select()
+      .from(plannedWorkouts)
+      .where(
+        and(
+          eq(plannedWorkouts.userId, userId),
+          eq(plannedWorkouts.completionState, "unresolved"),
+          // Never ask "did this run happen?" about a date that hasn't happened:
+          // a workout can sit unresolved with a future date briefly when it was
+          // rescheduled after the question was raised.
+          lte(plannedWorkouts.effectiveDate, today),
+          isNull(plannedWorkouts.archivedAt),
+        ),
+      )
+      .orderBy(desc(plannedWorkouts.effectiveDate))
+      .limit(3),
+    db
+      .select()
+      .from(plannedWorkouts)
+      .where(
+        and(
+          eq(plannedWorkouts.userId, userId),
+          eq(plannedWorkouts.corosSyncState, "needs_attention"),
+          isNull(plannedWorkouts.archivedAt),
+          // Attention is for things the user can still act on: a conflict on a
+          // long-past (or already-resolved) workout must not pin a warning to
+          // the Today screen forever.
+          gte(plannedWorkouts.effectiveDate, addDays(today, -14)),
+          inArray(plannedWorkouts.completionState, ["scheduled", "unresolved"]),
+        ),
+      )
+      .limit(5),
+    db
+      .select()
+      .from(corosWriteJobs)
+      .where(
+        and(
+          eq(corosWriteJobs.userId, userId),
+          inArray(corosWriteJobs.status, ["queued", "claimed", "in_progress", "verifying"]),
+        ),
       ),
-    )
-    .orderBy(asc(plannedWorkouts.effectiveDate), asc(plannedWorkouts.effectiveTime))
-    .limit(8);
+    cloudPresence(db, userId),
+    db
+      .select()
+      .from(dailyHealth)
+      .where(and(eq(dailyHealth.userId, userId), lte(dailyHealth.date, today)))
+      .orderBy(desc(dailyHealth.date))
+      .limit(14),
+    db.select().from(gardenState).where(eq(gardenState.userId, userId)).limit(1),
+    recentGardenEvents(db, userId, 6),
+    db
+      .select()
+      .from(plannedWorkouts)
+      .where(
+        and(
+          eq(plannedWorkouts.userId, userId),
+          eq(plannedWorkouts.effectiveDate, addDays(today, -1)),
+          inArray(plannedWorkouts.completionState, ["completed"]),
+        ),
+      )
+      .limit(1),
+  ]);
   const next = upcoming.find((w) => w.category !== "rest") ?? upcoming[0];
-
-  const unresolved = await db
-    .select()
-    .from(plannedWorkouts)
-    .where(
-      and(
-        eq(plannedWorkouts.userId, userId),
-        eq(plannedWorkouts.completionState, "unresolved"),
-        // Never ask "did this run happen?" about a date that hasn't happened:
-        // a workout can sit unresolved with a future date briefly when it was
-        // rescheduled after the question was raised.
-        lte(plannedWorkouts.effectiveDate, today),
-        isNull(plannedWorkouts.archivedAt),
-      ),
-    )
-    .orderBy(desc(plannedWorkouts.effectiveDate))
-    .limit(3);
-
-  const attention = await db
-    .select()
-    .from(plannedWorkouts)
-    .where(
-      and(
-        eq(plannedWorkouts.userId, userId),
-        eq(plannedWorkouts.corosSyncState, "needs_attention"),
-        isNull(plannedWorkouts.archivedAt),
-        // Attention is for things the user can still act on: a conflict on a
-        // long-past (or already-resolved) workout must not pin a warning to
-        // the Today screen forever.
-        gte(plannedWorkouts.effectiveDate, addDays(today, -14)),
-        inArray(plannedWorkouts.completionState, ["scheduled", "unresolved"]),
-      ),
-    )
-    .limit(5);
-
-  const pendingJobs = await db
-    .select()
-    .from(corosWriteJobs)
-    .where(
-      and(
-        eq(corosWriteJobs.userId, userId),
-        inArray(corosWriteJobs.status, ["queued", "claimed", "in_progress", "verifying"]),
-      ),
-    );
-
-  const presence = await cloudPresence(db, userId);
-
-  const health = await db
-    .select()
-    .from(dailyHealth)
-    .where(and(eq(dailyHealth.userId, userId), lte(dailyHealth.date, today)))
-    .orderBy(desc(dailyHealth.date))
-    .limit(14);
-
-
-  const gardenRows = await db.select().from(gardenState).where(eq(gardenState.userId, userId)).limit(1);
   const snapshot = gardenRows[0]?.snapshot as unknown as GardenSnapshot | undefined;
-  const gardenEventsRecent = await recentGardenEvents(db, userId, 6);
-
-  const yesterdayDone = await db
-    .select()
-    .from(plannedWorkouts)
-    .where(
-      and(
-        eq(plannedWorkouts.userId, userId),
-        eq(plannedWorkouts.effectiveDate, addDays(today, -1)),
-        inArray(plannedWorkouts.completionState, ["completed"]),
-      ),
-    )
-    .limit(1);
 
   // One bulk load covers every workout shown on Today (next is always a
   // member of upcoming, included here via the same dedup-by-id map).
+  // Presence was already fetched above — threaded through, not re-queried.
   const syncViewSource = new Map<string, typeof plannedWorkouts.$inferSelect>();
   for (const w of [...upcoming, ...unresolved, ...attention]) syncViewSource.set(w.id, w);
-  const syncViews = await loadWorkoutSyncViews(db, userId, [...syncViewSource.values()], prefs);
+  const syncViews = await loadWorkoutSyncViews(db, userId, [...syncViewSource.values()], prefs, presence);
 
   return c.json({
     today,
@@ -372,20 +395,82 @@ planRoutes.get("/week", async (c) => {
   const weekStart = startParam ?? startOfIsoWeek(today);
   const weekEnd = addDays(weekStart, 6);
 
-  const rows = await db
-    .select()
-    .from(plannedWorkouts)
-    .where(
-      and(
-        eq(plannedWorkouts.userId, userId),
-        gte(plannedWorkouts.effectiveDate, weekStart),
-        lte(plannedWorkouts.effectiveDate, weekEnd),
-        isNull(plannedWorkouts.archivedAt),
-      ),
-    )
-    .orderBy(asc(plannedWorkouts.effectiveDate), asc(plannedWorkouts.effectiveTime));
-  const syncViews = await loadWorkoutSyncViews(db, userId, rows, prefs);
-  const catalog = await exerciseNameMap(db);
+  // Independent reads (only prefs/today gate them) — one D1 round-trip wave,
+  // same batching as /today. `findRaceConflict` needs only prefs;
+  // `latestCoachMsg`/`acts`/`historyRows` need only userId/today. No writes
+  // happen in this handler, so read ordering is free.
+  const [rows, catalog, presence, activePlans, historyRows, acts, latestCoachMsg, raceMismatch] =
+    await Promise.all([
+      db
+        .select()
+        .from(plannedWorkouts)
+        .where(
+          and(
+            eq(plannedWorkouts.userId, userId),
+            gte(plannedWorkouts.effectiveDate, weekStart),
+            lte(plannedWorkouts.effectiveDate, weekEnd),
+            isNull(plannedWorkouts.archivedAt),
+          ),
+        )
+        .orderBy(asc(plannedWorkouts.effectiveDate), asc(plannedWorkouts.effectiveTime)),
+      exerciseNameMap(db),
+      cloudPresence(db, userId),
+      // Week n of m against the active coach plan covering this week's Monday.
+      db
+        .select()
+        .from(coachPlans)
+        .where(and(eq(coachPlans.userId, userId), eq(coachPlans.status, "active"))),
+      // 4-week adherence source (all disciplines), trend against the 4 prior.
+      db
+        .select()
+        .from(plannedWorkouts)
+        .where(
+          and(
+            eq(plannedWorkouts.userId, userId),
+            gte(plannedWorkouts.effectiveDate, addDays(today, -56)),
+            lte(plannedWorkouts.effectiveDate, today),
+            isNull(plannedWorkouts.archivedAt),
+          ),
+        ),
+      // Acute:chronic load, all sports, from activity trainingLoad.
+      db
+        .select({
+          startTime: activities.startTime,
+          startTimeLocal: activities.startTimeLocal,
+          trainingLoad: activities.trainingLoad,
+          sport: activities.sport,
+        })
+        .from(activities)
+        .where(eq(activities.userId, userId)),
+      // The coach's one action line — stale after 3 days (rework spec §6).
+      db
+        .select()
+        .from(coachMessages)
+        .where(and(eq(coachMessages.userId, userId), eq(coachMessages.role, "coach")))
+        .orderBy(desc(coachMessages.at))
+        .limit(1)
+        .then((r) => r[0]),
+      // Two race truths must never coexist silently (audit#2 #3): the imported
+      // plan's race row vs the athlete's stated race day.
+      findRaceConflict(db, userId, prefs),
+    ]);
+
+  const covering = activePlans.find((p) => p.startDate <= weekEnd && p.endDate >= weekStart);
+
+  // Second (final) wave: the two reads gated on wave-one results — per-workout
+  // sync views (need `rows`; presence threaded, not re-queried) and this
+  // week's coach shape (needs `covering`).
+  const [syncViews, coveringWeekShapeRows] = await Promise.all([
+    loadWorkoutSyncViews(db, userId, rows, prefs, presence),
+    covering
+      ? db
+          .select()
+          .from(coachPlanWeeks)
+          .where(and(eq(coachPlanWeeks.planId, covering.id), eq(coachPlanWeeks.weekStart, weekStart)))
+          .limit(1)
+      : Promise.resolve([]),
+  ]);
+
   const days = Array.from({ length: 7 }, (_, i) => {
     const date = addDays(weekStart, i);
     return {
@@ -402,13 +487,6 @@ planRoutes.get("/week", async (c) => {
     0,
   );
   const doneCount = nonRest.filter((w) => w.completionState === "completed").length;
-
-  // Week n of m against the active coach plan covering this week's Monday.
-  const activePlans = await db
-    .select()
-    .from(coachPlans)
-    .where(and(eq(coachPlans.userId, userId), eq(coachPlans.status, "active")));
-  const covering = activePlans.find((p) => p.startDate <= weekEnd && p.endDate >= weekStart);
   let weekIndex: number | null = null;
   let weekTotal: number | null = null;
   let deloadWeek = false;
@@ -428,32 +506,14 @@ planRoutes.get("/week", async (c) => {
     const d = Math.round((Date.parse(prefs.raceDate) - Date.parse(today)) / 86_400_000);
     if (d >= 0) raceInDays = d;
   }
-  // Two race truths must never coexist silently (audit#2 #3): the imported
-  // plan's race row vs the athlete's stated race day.
-  const raceMismatch = await findRaceConflict(db, userId, prefs);
   if (covering) {
-    const [thisWeekShape] = await db
-      .select()
-      .from(coachPlanWeeks)
-      .where(and(eq(coachPlanWeeks.planId, covering.id), eq(coachPlanWeeks.weekStart, weekStart)))
-      .limit(1);
+    const [thisWeekShape] = coveringWeekShapeRows;
     const volumeTarget = thisWeekShape?.shape?.volumeTarget?.toLowerCase() ?? "";
     deloadWeek = /deload|recovery|wind.?down|taper/.test(volumeTarget);
   }
 
-  // 4-week adherence (all disciplines) with a trend against the 4 weeks prior.
-  const historyStart = addDays(today, -56);
-  const historyRows = await db
-    .select()
-    .from(plannedWorkouts)
-    .where(
-      and(
-        eq(plannedWorkouts.userId, userId),
-        gte(plannedWorkouts.effectiveDate, historyStart),
-        lte(plannedWorkouts.effectiveDate, today),
-        isNull(plannedWorkouts.archivedAt),
-      ),
-    );
+  // 4-week adherence (all disciplines) with a trend against the 4 weeks prior
+  // (`historyRows` loaded in the batch above).
   // Coach-sanctioned skips leave the adherence denominator entirely (audit
   // finding 13): the brief promised adventure days "never count against you"
   // while docking the very Long Run the coach cleared for the trip — the
@@ -482,16 +542,7 @@ planRoutes.get("/week", async (c) => {
           ? "down"
           : "flat";
 
-  // Acute:chronic load, all sports, from activity trainingLoad.
-  const acts = await db
-    .select({
-      startTime: activities.startTime,
-      startTimeLocal: activities.startTimeLocal,
-      trainingLoad: activities.trainingLoad,
-      sport: activities.sport,
-    })
-    .from(activities)
-    .where(eq(activities.userId, userId));
+  // Acute:chronic load from `acts` (loaded in the batch above).
   const localDate = (a: { startTime: string; startTimeLocal: string | null }) =>
     (a.startTimeLocal ?? a.startTime).slice(0, 10);
   const loadIn = (start: string, end: string) =>
@@ -510,17 +561,10 @@ planRoutes.get("/week", async (c) => {
       .map(localDate),
   ).size;
 
-  // The coach's one action line — stale after 3 days (rework spec §6).
   // The focus is THE LATEST briefing's line — never an older message's. A
   // fresh briefing with focus:null must retire the previous line, not let it
   // linger (live case: a phantom "Sunday's 5K" focus outlived the corrected
-  // briefing that followed it).
-  const [latestCoachMsg] = await db
-    .select()
-    .from(coachMessages)
-    .where(and(eq(coachMessages.userId, userId), eq(coachMessages.role, "coach")))
-    .orderBy(desc(coachMessages.at))
-    .limit(1);
+  // briefing that followed it). `latestCoachMsg` loaded in the batch above.
   const latestFocus = (latestCoachMsg?.refs as { focus?: string } | undefined)?.focus;
   const focus =
     latestCoachMsg && latestFocus && Date.now() - Date.parse(latestCoachMsg.at) < FOCUS_STALE_MS
@@ -885,12 +929,27 @@ planRoutes.post("/workouts/:id/unmatch", async (c) => {
     .update(activities)
     .set({ completionMatchId: null, updatedAt: now })
     .where(eq(activities.id, match.activityId));
+  // D5: the match being undone may have credited a PAST day (buildDayInput
+  // keys the completion on the workout's effectiveDate), so resimulating from
+  // today only would strand that day's garden events as if the run still
+  // counted. Mirror the matching path (completion.ts adds
+  // workout.effectiveDate to affectedDates): replay from the earlier of the
+  // workout's day and today.
+  const w = (
+    await db
+      .select({ effectiveDate: plannedWorkouts.effectiveDate })
+      .from(plannedWorkouts)
+      .where(and(eq(plannedWorkouts.id, c.req.param("id")), eq(plannedWorkouts.userId, userId)))
+      .limit(1)
+  )[0];
   await db
     .update(plannedWorkouts)
     .set({ completionState: "unresolved", resolutionDate: null, updatedAt: now })
     .where(and(eq(plannedWorkouts.id, c.req.param("id")), eq(plannedWorkouts.userId, userId)));
   const prefs = await loadPreferences(db, userId);
-  await resimulateFrom(db, userId, todayInZone(prefs.timezone), prefs).catch(() => undefined);
+  const today = todayInZone(prefs.timezone);
+  const resimFrom = w && w.effectiveDate < today ? w.effectiveDate : today;
+  await resimulateFrom(db, userId, resimFrom, prefs).catch(() => undefined);
   return c.json({ ok: true });
 });
 

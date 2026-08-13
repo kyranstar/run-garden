@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it } from "vitest";
-import { eq } from "drizzle-orm";
+import { eq, inArray } from "drizzle-orm";
 import { schema } from "@rg/database";
 import { addDays, nowInstant, todayInZone, type UserPreferences } from "@rg/domain";
 import { FixtureTrainingProvider } from "@rg/providers";
@@ -331,5 +331,86 @@ describe("content claims against the snapshot (audit#3 D1/D2)", () => {
 
     const [still] = await db.select().from(plannedWorkouts).where(eq(plannedWorkouts.id, row!.id));
     expect(still!.archivedAt).not.toBeNull();
+  });
+});
+
+describe("mirror twins resolved both ways (audit#3 D3)", () => {
+  const seedTwin = async (id: string, date: string, completionState: string) => {
+    await db.insert(plannedWorkouts).values({
+      id,
+      userId,
+      planId: `mirror-plan-${id}`,
+      // sourceWorkoutId === id exempts the row from absence-archiving so the
+      // dedupe path is the only thing under test.
+      sourceWorkoutId: id,
+      title: "Easy Run with Strides",
+      category: "easy",
+      sport: "run",
+      originalPlanDate: date,
+      lastVerifiedCorosDate: date,
+      effectiveDate: date,
+      effectiveTime: "07:00",
+      completionState,
+      resolutionDate: completionState === "scheduled" ? null : date,
+      sourceContentFingerprint: `fp-${id}`,
+      calendarBlockDurationSeconds: 1800,
+      createdAt: nowInstant(),
+      updatedAt: nowInstant(),
+    });
+  };
+
+  it("archives a skipped twin when the completed keeper holds the match", async () => {
+    const date = addDays(baseMonday, -3);
+    await seedTwin("twin-completed", date, "completed");
+    await seedTwin("twin-skipped", date, "skipped");
+    await db.insert(schema.workoutCompletionMatches).values({
+      id: "m1",
+      workoutId: "twin-completed",
+      activityId: "act-1",
+      confidence: 0.95,
+      method: "scored_auto",
+      matchedAt: nowInstant(),
+    });
+
+    await importFromProvider();
+
+    const [skipped] = await db.select().from(plannedWorkouts).where(eq(plannedWorkouts.id, "twin-skipped"));
+    expect(skipped!.archivedAt).not.toBeNull();
+    expect(skipped!.archiveReason).toBe("duplicate_mirror");
+    const [kept] = await db.select().from(plannedWorkouts).where(eq(plannedWorkouts.id, "twin-completed"));
+    expect(kept!.archivedAt).toBeNull();
+  });
+
+  it("leaves both-resolved twins alone when the keeper holds no match", async () => {
+    const date = addDays(baseMonday, -3);
+    await seedTwin("nt-completed", date, "completed");
+    await seedTwin("nt-skipped", date, "skipped");
+
+    await importFromProvider();
+
+    const [skipped] = await db.select().from(plannedWorkouts).where(eq(plannedWorkouts.id, "nt-skipped"));
+    expect(skipped!.archivedAt).toBeNull();
+  });
+
+  it("never archives a second completed twin", async () => {
+    const date = addDays(baseMonday, -3);
+    await seedTwin("cc-a", date, "completed");
+    await seedTwin("cc-b", date, "completed");
+    await db.insert(schema.workoutCompletionMatches).values({
+      id: "m2",
+      workoutId: "cc-a",
+      activityId: "act-2",
+      confidence: 0.95,
+      method: "scored_auto",
+      matchedAt: nowInstant(),
+    });
+
+    await importFromProvider();
+
+    const rows = await db
+      .select()
+      .from(plannedWorkouts)
+      .where(inArray(plannedWorkouts.id, ["cc-a", "cc-b"]));
+    expect(rows.every((r) => r.archivedAt === null)).toBe(true);
   });
 });

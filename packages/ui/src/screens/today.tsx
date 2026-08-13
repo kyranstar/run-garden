@@ -360,6 +360,76 @@ function GardenPreview({ garden }: { garden: NonNullable<TodayResponse["garden"]
   );
 }
 
+/** The current UTC offset a zone observes right now ("GMT-7") — travel
+ * detection compares OFFSETS, not zone names, so America/Vancouver vs
+ * America/Los_Angeles (same clock) never nags (audit#3 T2). */
+function offsetNow(timeZone: string): string | null {
+  try {
+    return (
+      new Intl.DateTimeFormat("en-US", { timeZone, timeZoneName: "shortOffset" })
+        .formatToParts(new Date())
+        .find((p) => p.type === "timeZoneName")?.value ?? null
+    );
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Travel nudge: prefs.timezone anchors every "today" in the product (garden
+ * day rollover, coach dossier, plan week), but it only ever changes by hand —
+ * prod data shows months of watch offsets disagreeing with it. One tap fixes
+ * the anchor; dismissal is remembered per device zone for the session.
+ */
+function TimezoneNudge() {
+  const qc = useQueryClient();
+  const settings = useQuery({ queryKey: ["settings"], queryFn: api.settings });
+  const [dismissed, setDismissed] = useState(false);
+  const adopt = useMutation({
+    mutationFn: (timezone: string) => api.updateSettings({ timezone }),
+    onSuccess: () => {
+      for (const k of ["settings", "today", "plan-week", "plan", "garden"])
+        void qc.invalidateQueries({ queryKey: [k] });
+    },
+  });
+  const deviceTz = Intl.DateTimeFormat().resolvedOptions().timeZone;
+  const prefsTz = settings.data?.prefs.timezone;
+  if (!deviceTz || !prefsTz || dismissed) return null;
+  const storageKey = `tz-nudge-dismissed:${deviceTz}`;
+  if (typeof sessionStorage !== "undefined" && sessionStorage.getItem(storageKey)) return null;
+  const deviceOffset = offsetNow(deviceTz);
+  const prefsOffset = offsetNow(prefsTz);
+  if (!deviceOffset || !prefsOffset || deviceOffset === prefsOffset) return null;
+  return (
+    <Banner kind="info">
+      Your device clock says {deviceTz} ({deviceOffset}), but your days here run on {prefsTz} (
+      {prefsOffset}) — traveling?{" "}
+      <button
+        type="button"
+        className="pill pill-neutral"
+        disabled={adopt.isPending}
+        onClick={() => adopt.mutate(deviceTz)}
+      >
+        Switch to {deviceTz}
+      </button>{" "}
+      <button
+        type="button"
+        className="pill pill-neutral"
+        onClick={() => {
+          try {
+            sessionStorage.setItem(storageKey, "1");
+          } catch {
+            /* private mode — in-memory dismissal still applies */
+          }
+          setDismissed(true);
+        }}
+      >
+        Keep {prefsTz}
+      </button>
+    </Banner>
+  );
+}
+
 export function TodayScreen() {
   const today = useQuery({ queryKey: ["today"], queryFn: api.today, refetchInterval: 60_000 });
 
@@ -384,6 +454,7 @@ export function TodayScreen() {
   return (
     <div className="stack">
       <h1 className="visually-hidden">Today</h1>
+      <TimezoneNudge />
       {d.nextWorkout ? (
         <NextWorkout w={d.nextWorkout} today={d.today} />
       ) : (

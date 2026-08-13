@@ -49,69 +49,85 @@ export async function computeSyncStatus(
   userId: string,
   prefs: UserPreferences,
 ): Promise<SyncStatus> {
-  const presence = await cloudPresence(db, userId);
+  // Polled every 30s from a worker that can sit cross-region from D1: every
+  // sequential await here is a full round trip. All six reads below are
+  // independent of one another (only failedStudio, in the second wave,
+  // depends on a result), so they go out as one Promise.all wave.
+  const [presence, pending, failedJobs, openIntents, failedCoachCreateRows, studioPlanRows, corosConnRows] =
+    await Promise.all([
+      cloudPresence(db, userId),
+      db
+        .select({ id: corosWriteJobs.id })
+        .from(corosWriteJobs)
+        .where(
+          and(
+            eq(corosWriteJobs.userId, userId),
+            inArray(corosWriteJobs.status, [...IN_FLIGHT]),
+            // A queued read_now job is the bridge's own catch-up read, not a
+            // user-visible "change" — the bridge-side claim pendingCount
+            // (devices.ts) keeps counting it since it drives adaptive polling.
+            ne(corosWriteJobs.kind, "read_now"),
+          ),
+        ),
+      // Issues = terminal move failures the user can still retry (their intent
+      // is open) + terminally failed studio rows. Archived workouts are
+      // excluded: a failed job behind a workout that's been removed from the
+      // plan has nothing left to retry, so it must never count toward
+      // issueCount.
+      db
+        .select({ workoutId: corosWriteJobs.workoutId })
+        .from(corosWriteJobs)
+        .innerJoin(plannedWorkouts, eq(corosWriteJobs.workoutId, plannedWorkouts.id))
+        .where(
+          and(
+            eq(corosWriteJobs.userId, userId),
+            eq(corosWriteJobs.status, "failed"),
+            isNull(plannedWorkouts.archivedAt),
+          ),
+        ),
+      openMoveIntents(db, userId),
+      // A terminally-failed coach watch-push is an issue the user can see and
+      // act on (audit#2 #6) — it has no move intent, so count it directly.
+      db
+        .select({ id: corosWriteJobs.id })
+        .from(corosWriteJobs)
+        .innerJoin(plannedWorkouts, eq(corosWriteJobs.workoutId, plannedWorkouts.id))
+        .where(
+          and(
+            eq(corosWriteJobs.userId, userId),
+            eq(corosWriteJobs.kind, "coach_create_workout"),
+            eq(corosWriteJobs.status, "failed"),
+            isNull(plannedWorkouts.archivedAt),
+          ),
+        ),
+      // Scoped to the NEWEST studio plan — the same predicate POST
+      // /api/sync/retry acts on. Counting retired plans' failed rows (usually
+      // failed deletes) inflates a badge the Retry button can never clear,
+      // the exact misleading no-op C15 was fixed to remove.
+      db
+        .select({ id: studioPlans.id })
+        .from(studioPlans)
+        .where(eq(studioPlans.userId, userId))
+        .orderBy(desc(studioPlans.createdAt))
+        .limit(1),
+      // Phase C deleted the only writer of sync_runs kind='coros_read' — the
+      // honest freshness is the connection's own lastSyncAt, stamped by every
+      // successful pull (audit finding 11).
+      db
+        .select({ lastSyncAt: providerConnections.lastSyncAt })
+        .from(providerConnections)
+        .where(and(eq(providerConnections.userId, userId), eq(providerConnections.provider, "coros")))
+        .limit(1),
+    ]);
 
-  const pending = await db
-    .select({ id: corosWriteJobs.id })
-    .from(corosWriteJobs)
-    .where(
-      and(
-        eq(corosWriteJobs.userId, userId),
-        inArray(corosWriteJobs.status, [...IN_FLIGHT]),
-        // A queued read_now job is the bridge's own catch-up read, not a
-        // user-visible "change" — the bridge-side claim pendingCount
-        // (devices.ts) keeps counting it since it drives adaptive polling.
-        ne(corosWriteJobs.kind, "read_now"),
-      ),
-    );
-
-  // Issues = terminal move failures the user can still retry (their intent is
-  // open) + terminally failed studio rows. Archived workouts are excluded: a
-  // failed job behind a workout that's been removed from the plan has
-  // nothing left to retry, so it must never count toward issueCount.
-  const failedJobs = await db
-    .select({ workoutId: corosWriteJobs.workoutId })
-    .from(corosWriteJobs)
-    .innerJoin(plannedWorkouts, eq(corosWriteJobs.workoutId, plannedWorkouts.id))
-    .where(
-      and(
-        eq(corosWriteJobs.userId, userId),
-        eq(corosWriteJobs.status, "failed"),
-        isNull(plannedWorkouts.archivedAt),
-      ),
-    );
-  const openIntentTargets = new Set((await openMoveIntents(db, userId)).map((i) => i.targetId));
+  const openIntentTargets = new Set(openIntents.map((i) => i.targetId));
   const failedMoveCount = new Set(
     failedJobs.map((j) => j.workoutId).filter((id) => openIntentTargets.has(id)),
   ).size;
-  // A terminally-failed coach watch-push is an issue the user can see and
-  // act on (audit#2 #6) — it has no move intent, so count it directly.
-  const failedCoachCreates = (
-    await db
-      .select({ id: corosWriteJobs.id })
-      .from(corosWriteJobs)
-      .innerJoin(plannedWorkouts, eq(corosWriteJobs.workoutId, plannedWorkouts.id))
-      .where(
-        and(
-          eq(corosWriteJobs.userId, userId),
-          eq(corosWriteJobs.kind, "coach_create_workout"),
-          eq(corosWriteJobs.status, "failed"),
-          isNull(plannedWorkouts.archivedAt),
-        ),
-      )
-  ).length;
-  // Scoped to the NEWEST studio plan — the same predicate POST /api/sync/retry
-  // acts on. Counting retired plans' failed rows (usually failed deletes)
-  // inflates a badge the Retry button can never clear, the exact misleading
-  // no-op C15 was fixed to remove.
-  const currentStudioPlan = (
-    await db
-      .select({ id: studioPlans.id })
-      .from(studioPlans)
-      .where(eq(studioPlans.userId, userId))
-      .orderBy(desc(studioPlans.createdAt))
-      .limit(1)
-  )[0];
+  const failedCoachCreates = failedCoachCreateRows.length;
+  const currentStudioPlan = studioPlanRows[0];
+  const [corosConn] = corosConnRows;
+
   const failedStudio = currentStudioPlan
     ? await db
         .select({ id: studioPlanPushes.id })
@@ -124,15 +140,6 @@ export async function computeSyncStatus(
         )
     : [];
   const issueCount = failedMoveCount + failedStudio.length + failedCoachCreates;
-
-  // Phase C deleted the only writer of sync_runs kind='coros_read' — the
-  // honest freshness is the connection's own lastSyncAt, stamped by every
-  // successful pull (audit finding 11).
-  const [corosConn] = await db
-    .select({ lastSyncAt: providerConnections.lastSyncAt })
-    .from(providerConnections)
-    .where(and(eq(providerConnections.userId, userId), eq(providerConnections.provider, "coros")))
-    .limit(1);
 
   const state: SyncStatusState =
     !prefs.corosWritesEnabled || !presence.writeCapable

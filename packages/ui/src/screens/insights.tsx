@@ -2,15 +2,7 @@ import { useEffect, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { api, type InsightsResponse } from "@rg/api-client";
 import { disciplineLabel, sessionNoun, type Discipline } from "@rg/analytics";
-import {
-  Card,
-  EmptyState,
-  formatDayLong,
-  formatDayShort,
-  formatShortDate,
-  Sheet,
-  Spinner,
-} from "../components.js";
+import { Card, EmptyState, formatDayLong, formatDayShort, formatShortDate, localTodayGuess, Sheet, Spinner } from "../components.js";
 import {
   BaselineBandChart,
   ChartFrame,
@@ -505,7 +497,7 @@ export function InsightsScreen() {
               <li key={r.id} style={{ marginBottom: "0.5rem" }}>
                 <strong>{r.title}:</strong> {r.value}{" "}
                 <span className="faint">({formatDayLong(r.achievedOn)})</span>
-                {isRecentRecord(r.achievedOn, new Date().toISOString().slice(0, 10)) ? (
+                {isRecentRecord(r.achievedOn, localTodayGuess()) ? (
                   <span className="new-ring">New</span>
                 ) : null}
                 <div className="faint">{r.rule}</div>

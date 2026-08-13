@@ -146,23 +146,32 @@ async function persistSnapshot(db: Db, userId: string, snapshot: GardenSnapshot)
     const prev = arrivedOn.get(r.wildlifeId);
     if (!prev || r.date > prev) arrivedOn.set(r.wildlifeId, r.date);
   }
+  // P3c: one user-scoped select for the whole roster instead of a per-kind
+  // select (2 subrequests × ~a dozen kinds on EVERY persist). Presence rarely
+  // flips, so writes stay per-kind but only for rows that actually changed;
+  // missing rows land in a single batched insert.
+  const wildlifeRows = await db
+    .select()
+    .from(gardenWildlife)
+    .where(eq(gardenWildlife.userId, userId));
+  const wildlifeByKind = new Map(wildlifeRows.map((r) => [r.kind, r]));
+  const wildlifeInserts: Array<typeof gardenWildlife.$inferInsert> = [];
   for (const kind of Object.keys(snapshot.wildlife) as WildlifeKind[]) {
-    const id = `${userId}:${kind}`;
     const present = snapshot.wildlife[kind];
-    const row = await db.select().from(gardenWildlife).where(eq(gardenWildlife.id, id)).limit(1);
-    if (row[0]) {
+    const row = wildlifeByKind.get(kind);
+    if (row) {
       // Heal `since` even when presence didn't flip: rows stamped with the
       // old walk-end date stay wrong forever otherwise (presence rarely
       // flips back and forth).
       const since = present
-        ? (arrivedOn.get(kind) ?? row[0].since ?? snapshot.state.lastSimulatedDate)
-        : row[0].since;
-      if (row[0].present !== present || row[0].since !== since) {
-        await db.update(gardenWildlife).set({ present, since }).where(eq(gardenWildlife.id, id));
+        ? (arrivedOn.get(kind) ?? row.since ?? snapshot.state.lastSimulatedDate)
+        : row.since;
+      if (row.present !== present || row.since !== since) {
+        await db.update(gardenWildlife).set({ present, since }).where(eq(gardenWildlife.id, row.id));
       }
     } else {
-      await db.insert(gardenWildlife).values({
-        id,
+      wildlifeInserts.push({
+        id: `${userId}:${kind}`,
         userId,
         kind,
         present,
@@ -170,6 +179,7 @@ async function persistSnapshot(db: Db, userId: string, snapshot: GardenSnapshot)
       });
     }
   }
+  await chunkedInsert(wildlifeInserts, 5, (batch) => db.insert(gardenWildlife).values(batch));
 }
 
 /** Build the resolved inputs for one calendar day from the database. */
@@ -246,10 +256,31 @@ export async function buildDayInput(
   // of scope for input derivation. The pre-race taper is sheltered by the
   // raceDate window below regardless, and an unplanned run already freezes
   // the clock for its own day (the sim neither resets nor advances it).
+  // P3a: bound the unmatched-activity scan to the simulated day instead of
+  // scanning the whole table once per simulated day. Date attribution below
+  // reads the watch-local start (startTimeLocal ?? startTime) while startTime
+  // is stored UTC, so the SQL window is deliberately over-inclusive — ±1 day
+  // around the local date (the same pattern buildGardenView's
+  // lastAdventureDate lookup uses) — and the exact in-memory local-date
+  // filter below is unchanged, keeping the derived values identical to the
+  // old unbounded scan. The ORDER BY pins what was previously query-plan
+  // luck: the unbounded scan had no ORDER BY, so row order (and with it the
+  // order of same-day unplanned entries in completedRuns) depended on
+  // whether SQLite walked activities_user_time_idx or the table. Explicit
+  // chronological order (id tiebreak) is what the index path always
+  // returned, and makes the derivation deterministic across engines.
   const dayActivities = await db
     .select()
     .from(activities)
-    .where(and(eq(activities.userId, userId), isNull(activities.completionMatchId)));
+    .where(
+      and(
+        eq(activities.userId, userId),
+        isNull(activities.completionMatchId),
+        gte(activities.startTime, `${addDays(date, -1)}T00:00:00`),
+        lte(activities.startTime, `${addDays(date, 2)}T00:00:00`),
+      ),
+    )
+    .orderBy(asc(activities.startTime), asc(activities.id));
   for (const a of dayActivities) {
     const d = (a.startTimeLocal ?? a.startTime).slice(0, 10);
     if (d !== date || (a.sport !== "run" && a.sport !== "strength" && a.sport !== "yoga")) continue;
@@ -486,7 +517,31 @@ export interface GardenSimResult {
   simulatedDays: number;
   eventsEmitted: number;
   lastSimulatedDate: LocalDate;
+  /** True when a capped version-upgrade rebuild stopped early (P3d).
+   * `garden_state` still holds the pre-upgrade snapshot — reads keep showing
+   * it — and the next advanceGarden call (hourly cron, or any garden read)
+   * resumes from the durable checkpoint cursor. */
+  resimPending?: boolean;
 }
+
+export interface GardenAdvanceOptions {
+  /** Per-invocation day cap for version-upgrade rebuilds. Defaults to
+   * UPGRADE_RESIM_MAX_DAYS; tests set it low to exercise resumption without
+   * touching SIMULATION_VERSION. */
+  maxResimDays?: number;
+}
+
+/**
+ * P3d: how many days one version-upgrade rebuild invocation may simulate.
+ * Each simulated day costs ~10-16 D1 subrequests (buildDayInput's queries
+ * plus the day-input/event writes), so an uncapped full-history replay hits
+ * Cloudflare's 1,000-subrequest budget once a garden is ~90-100 days old.
+ * 45 days ≈ 450-720 subrequests, leaving persistSnapshot and the caller's
+ * own work comfortable headroom; an older garden simply takes a few hourly
+ * cron ticks (or garden reads) to finish rebuilding instead of failing
+ * forever.
+ */
+const UPGRADE_RESIM_MAX_DAYS = 45;
 
 /**
  * Walk `snapshot` forward day-by-day to `today`, writing events/day-inputs/
@@ -515,12 +570,20 @@ async function walkForward(
   startSnapshot: GardenSnapshot,
   today: LocalDate,
   nowIso: string,
-): Promise<{ snapshot: GardenSnapshot; simulatedDays: number; eventsEmitted: number }> {
+  maxDays?: number,
+): Promise<{ snapshot: GardenSnapshot; simulatedDays: number; eventsEmitted: number; capped: boolean }> {
   let snapshot = startSnapshot;
   let simulated = 0;
   let eventsEmitted = 0;
+  let capped = false;
   let date = addDays(snapshot.state.lastSimulatedDate, 1);
   while (date < today) {
+    // P3d: a capped walk stops mid-history instead of burning through the
+    // subrequest budget; the cursor checkpoint below makes it resumable.
+    if (maxDays !== undefined && simulated >= maxDays) {
+      capped = true;
+      break;
+    }
     const graceDate = addDays(today, -2);
     if (date > graceDate && !(await dayFullyResolved(db, userId, date))) break;
 
@@ -598,7 +661,26 @@ async function walkForward(
     date = addDays(date, 1);
   }
 
-  return { snapshot, simulatedDays: simulated, eventsEmitted };
+  // P3d: a cap-stop writes a checkpoint at the exact stop date (Mondays only
+  // wouldn't do — a cap smaller than a week could then never advance the
+  // cursor). Checkpoint content is a pure function of the fold, so an extra
+  // non-Monday row changes nothing downstream: any resim restarting from it
+  // replays byte-identically.
+  if (capped && simulated > 0) {
+    await db
+      .insert(gardenSnapshots)
+      .values({
+        id: `${userId}:${snapshot.state.lastSimulatedDate}`,
+        userId,
+        date: snapshot.state.lastSimulatedDate,
+        snapshot: snapshot as unknown as Record<string, unknown>,
+        simulationVersion: SIMULATION_VERSION,
+        createdAt: nowIso,
+      })
+      .onConflictDoNothing();
+  }
+
+  return { snapshot, simulatedDays: simulated, eventsEmitted, capped };
 }
 
 /** Advance the simulation through all eligible days. */
@@ -607,19 +689,124 @@ export async function advanceGarden(
   userId: string,
   prefs: UserPreferences,
   now: Date = new Date(),
+  opts?: GardenAdvanceOptions,
 ): Promise<GardenSimResult> {
   const startSnapshot = await ensureGarden(db, userId, prefs);
 
   // Simulation upgraded since this garden was last written: rebuild the whole
   // history from the stored inputs so version-3 state (earned grounds) exists
-  // for past expansions too. Deterministic — same inputs, same garden.
+  // for past expansions too. Deterministic — same inputs, same garden. The
+  // rebuild is capped per invocation and resumable (P3d): each call here —
+  // hourly cron or any garden read — advances the durable checkpoint cursor
+  // until the walk reaches today, and only then does garden_state move.
   if ((startSnapshot.version ?? 1) < SIMULATION_VERSION) {
-    return resimulateFrom(db, userId, startSnapshot.state.createdDate, prefs, now);
+    return upgradeResimulate(db, userId, startSnapshot, prefs, now, opts);
   }
 
   const today = todayInZone(prefs.timezone, now);
   const nowIso = nowInstant(now);
   const { snapshot, simulatedDays, eventsEmitted } = await walkForward(db, userId, prefs, startSnapshot, today, nowIso);
+
+  await persistSnapshot(db, userId, snapshot);
+  return { simulatedDays, eventsEmitted, lastSimulatedDate: snapshot.state.lastSimulatedDate };
+}
+
+/**
+ * P3d: the full-history rebuild a SIMULATION_VERSION bump demands, made
+ * resumable so it can never hit Cloudflare's subrequest budget and fail
+ * forever on an old garden.
+ *
+ * Cursor: the newest `garden_snapshots` checkpoint already stamped at the
+ * CURRENT SIMULATION_VERSION. The first invocation finds none (the purge
+ * below removed every old-version checkpoint), starts from genesis, walks at
+ * most `maxResimDays` days, and — when capped — writes a checkpoint at the
+ * exact stop date. Each later invocation resumes from that cursor.
+ *
+ * Trust rules: `garden_state` (what every read renders) is persisted ONLY
+ * when the walk reaches today uncapped, so a partial rebuild can never be
+ * served as the fresh garden — reads keep showing the pre-upgrade snapshot,
+ * exactly what they showed between deploy and resim before this change. The
+ * stale embedded snapshot version doubles as the resume signal: until the
+ * full walk lands, every advanceGarden call re-enters here.
+ *
+ * `changedFrom` (set when a plain resimulateFrom call arrives while an
+ * upgrade is still pending): inputs from that date on have changed, so the
+ * cursor is only trusted up to the day before it — later checkpoints are
+ * purged and rebuilt.
+ */
+async function upgradeResimulate(
+  db: Db,
+  userId: string,
+  current: GardenSnapshot,
+  prefs: UserPreferences,
+  now: Date,
+  opts?: GardenAdvanceOptions,
+  changedFrom?: LocalDate,
+): Promise<GardenSimResult> {
+  const cursorConditions = [
+    eq(gardenSnapshots.userId, userId),
+    eq(gardenSnapshots.simulationVersion, SIMULATION_VERSION),
+  ];
+  if (changedFrom !== undefined) {
+    cursorConditions.push(lte(gardenSnapshots.date, addDays(changedFrom, -1)));
+  }
+  const cursor = (
+    await db
+      .select()
+      .from(gardenSnapshots)
+      .where(and(...cursorConditions))
+      .orderBy(desc(gardenSnapshots.date))
+      .limit(1)
+  )[0];
+
+  let startSnapshot: GardenSnapshot;
+  let restartAfter: LocalDate;
+  if (cursor) {
+    startSnapshot = cursor.snapshot as unknown as GardenSnapshot;
+    restartAfter = cursor.date;
+  } else {
+    startSnapshot = initialSnapshot(current.state.createdDate);
+    restartAfter = startSnapshot.state.lastSimulatedDate;
+  }
+
+  // Same crash-safe purge contract as resimulateFrom: these rows are
+  // rebuilt idempotently by walkForward, and garden_state stays untouched
+  // until the whole walk succeeds. On a resume the range past the cursor is
+  // already empty (or holds a crashed continuation's partial rows) — the
+  // delete is a cheap no-op/heal either way.
+  await db
+    .delete(gardenEvents)
+    .where(and(eq(gardenEvents.userId, userId), gte(gardenEvents.date, addDays(restartAfter, 1))));
+  await db
+    .delete(gardenDayInputs)
+    .where(and(eq(gardenDayInputs.userId, userId), gte(gardenDayInputs.date, addDays(restartAfter, 1))));
+  await db
+    .delete(gardenSnapshots)
+    .where(and(eq(gardenSnapshots.userId, userId), gte(gardenSnapshots.date, addDays(restartAfter, 1))));
+
+  const today = todayInZone(prefs.timezone, now);
+  const nowIso = nowInstant(now);
+  const { snapshot, simulatedDays, eventsEmitted, capped } = await walkForward(
+    db,
+    userId,
+    prefs,
+    startSnapshot,
+    today,
+    nowIso,
+    opts?.maxResimDays ?? UPGRADE_RESIM_MAX_DAYS,
+  );
+
+  if (capped) {
+    // Partial rebuild: the cursor checkpoint is durable, garden_state is NOT
+    // moved — reads keep serving the old snapshot as before the deploy, and
+    // the still-stale stored version re-fires this path on the next call.
+    return {
+      simulatedDays,
+      eventsEmitted,
+      lastSimulatedDate: snapshot.state.lastSimulatedDate,
+      resimPending: true,
+    };
+  }
 
   await persistSnapshot(db, userId, snapshot);
   return { simulatedDays, eventsEmitted, lastSimulatedDate: snapshot.state.lastSimulatedDate };
@@ -636,10 +823,19 @@ export async function resimulateFrom(
   affectedDate: LocalDate,
   prefs: UserPreferences,
   now: Date = new Date(),
+  opts?: GardenAdvanceOptions,
 ): Promise<GardenSimResult> {
   const current = await loadGarden(db, userId);
   if (!current || affectedDate > current.state.lastSimulatedDate) {
-    return advanceGarden(db, userId, prefs, now);
+    return advanceGarden(db, userId, prefs, now, opts);
+  }
+
+  // P3d: a pending version upgrade owns the whole timeline — fold this input
+  // change into the (capped, resumable) full rebuild instead of walking from
+  // an old-version checkpoint, which would persist a mixed-version fold only
+  // for the stale stored version to re-fire the full resim anyway.
+  if ((current.version ?? 1) < SIMULATION_VERSION) {
+    return upgradeResimulate(db, userId, current, prefs, now, opts, affectedDate);
   }
 
   const checkpoints = await db
@@ -688,14 +884,18 @@ export async function resimulateFrom(
   return { simulatedDays, eventsEmitted, lastSimulatedDate: snapshot.state.lastSimulatedDate };
 }
 
-/** Recent garden events for the UI (most recent first). */
+/** Recent garden events for the UI (most recent first). P3b: ORDER BY +
+ * LIMIT belong in SQL — the old ascending-scan-then-slice loaded the user's
+ * entire event log on every /today and /garden read. (date, seq) is unique
+ * per user (garden_events_unique), so descending order + LIMIT returns
+ * exactly the rows the slice-and-reverse did, in the same order. */
 export async function recentGardenEvents(db: Db, userId: string, limit = 40) {
   return db
     .select()
     .from(gardenEvents)
     .where(eq(gardenEvents.userId, userId))
-    .orderBy(gardenEvents.date, gardenEvents.seq)
-    .then((rows) => rows.slice(-limit).reverse());
+    .orderBy(desc(gardenEvents.date), desc(gardenEvents.seq))
+    .limit(limit);
 }
 
 export interface GardenSpeciesView {

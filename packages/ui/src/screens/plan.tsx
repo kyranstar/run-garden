@@ -13,6 +13,7 @@ import {
   formatDayLong,
   formatMinutes,
   formatTime,
+  localTodayGuess,
   Sheet,
   Spinner,
   SyncNotesStack,
@@ -499,7 +500,7 @@ export function PlanScreen() {
   const plan = useQuery({
     queryKey: ["plan", windowAnchor ?? "boot"],
     queryFn: () => {
-      const anchor = windowAnchor ?? new Date().toISOString().slice(0, 10);
+      const anchor = windowAnchor ?? localTodayGuess();
       return api.workouts(addDays(startOfIsoWeek(anchor), -28), addDays(startOfIsoWeek(anchor), 34));
     },
   });

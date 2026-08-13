@@ -230,8 +230,12 @@ export function normalizeCorosSchedule(
 // ─────────────────────────────────────────────────────────────────────────────
 // Activities
 
-function tzOffsetMinutes(units: number | undefined): number {
-  return (units ?? 0) * 15;
+/** COROS reports timezone as 15-minute units. When BOTH sources omit it,
+ * return undefined rather than fabricating offset 0 — a UTC wall time
+ * dressed up as "local" mis-dates every evening activity downstream, and
+ * nothing can tell it apart from a real local time (audit#3 T4). */
+function tzOffsetMinutes(units: number | undefined): number | undefined {
+  return units == null ? undefined : units * 15;
 }
 
 function isoFromUnix(seconds: number): string {
@@ -370,7 +374,7 @@ export function normalizeCorosActivity(
     provider: "coros",
     providerActivityId: item.labelId,
     startTime: isoFromUnix(start),
-    startTimeLocal: start ? localIsoFromUnix(start, offsetMin) : undefined,
+    startTimeLocal: start && offsetMin != null ? localIsoFromUnix(start, offsetMin) : undefined,
     sport: sportIdForCorosCode(item.sportType),
     durationSeconds,
     elapsedSeconds,

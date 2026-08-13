@@ -23,6 +23,12 @@ main = "src/index.ts"
 compatibility_date = "2026-07-01"
 compatibility_flags = ["nodejs_compat"]
 
+# Run the worker near its D1 primary (ORD) instead of the user's edge: every
+# hot read is a batch of D1 round trips, so execution locality dominates
+# first-byte latency (P2 latency audit).
+[placement]
+mode = "smart"
+
 # Static assets: the built web app is uploaded alongside the worker.
 [assets]
 directory = "../web/dist"

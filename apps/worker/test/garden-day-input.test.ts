@@ -7,9 +7,9 @@
  * hour. All input-side — the simulation's transition function is untouched.
  */
 import { describe, expect, it } from "vitest";
-import { eq } from "drizzle-orm";
+import { and, eq, isNull } from "drizzle-orm";
 import { schema } from "@rg/database";
-import { addDays, newId, nowInstant, todayInZone } from "@rg/domain";
+import { addDays, isAdventureSport, newId, nowInstant, todayInZone } from "@rg/domain";
 import type { Db } from "../src/services/db.js";
 import {
   advanceGarden,
@@ -317,6 +317,132 @@ describe("wildlife `since` records the arrival date (audit#2 #22)", () => {
       .from(schema.gardenWildlife)
       .where(eq(schema.gardenWildlife.id, `${userId}:rabbits`));
     expect(rabbits!.since).toBe(genesis);
+  });
+});
+
+describe("bounded unmatched-activity query (P3a) — values identical to the old unbounded scan", () => {
+  /** An unmatched activity with explicit UTC/local start strings. */
+  async function insertActivity(
+    db: Db,
+    userId: string,
+    opts: {
+      startTime: string;
+      startTimeLocal?: string | null;
+      sport?: string;
+      trainingLoad?: number;
+      durationSeconds?: number;
+    },
+  ): Promise<string> {
+    const id = newId();
+    await db.insert(schema.activities).values({
+      id,
+      userId,
+      startTime: opts.startTime,
+      startTimeLocal: opts.startTimeLocal ?? null,
+      sport: opts.sport ?? "run",
+      durationSeconds: opts.durationSeconds ?? 2400,
+      distanceMeters: 8000,
+      trainingLoad: opts.trainingLoad ?? null,
+      sourceMergeConfidence: 1,
+      createdAt: nowInstant(),
+      updatedAt: nowInstant(),
+    });
+    return id;
+  }
+
+  it("multi-day scenario incl. cross-UTC evening/early activities: per-day inputs equal the unbounded derivation", async () => {
+    const db = makeTestDb();
+    const { userId, prefs } = await makeTestUser(db);
+    const today = todayInZone(prefs.timezone);
+    const d = addDays(today, -5); // the day under test, with neighbors seeded around it
+
+    // Evening run whose UTC date is the NEXT day (LA local 23:10 → UTC +7h).
+    await insertActivity(db, userId, {
+      startTime: `${addDays(d, 1)}T06:10:00Z`,
+      startTimeLocal: `${d}T23:10:00`,
+    });
+    // Early activity whose UTC date is the PREVIOUS day (a UTC+13-style zone).
+    await insertActivity(db, userId, {
+      startTime: `${addDays(d, -1)}T11:20:00Z`,
+      startTimeLocal: `${d}T00:20:00`,
+      sport: "yoga",
+      durationSeconds: 1800,
+    });
+    // No local timestamp at all: attribution falls back to startTime.
+    await insertActivity(db, userId, { startTime: `${d}T15:00:00Z`, startTimeLocal: null });
+    // Adventure that also crosses the UTC boundary.
+    await insertActivity(db, userId, {
+      startTime: `${addDays(d, 1)}T05:30:00Z`,
+      startTimeLocal: `${d}T22:30:00`,
+      sport: "hike",
+      trainingLoad: 80,
+      durationSeconds: 5400,
+    });
+    // Neighboring-day strength session: inside the SQL window for `d` but
+    // filtered out by the (unchanged) exact local-date check.
+    await insertActivity(db, userId, {
+      startTime: `${addDays(d, -1)}T01:00:00Z`,
+      startTimeLocal: `${addDays(d, -1)}T18:00:00`,
+      sport: "strength",
+    });
+    // Far outside every window — irrelevant under both derivations.
+    await insertActivity(db, userId, {
+      startTime: `${addDays(d, -40)}T14:00:00Z`,
+      startTimeLocal: `${addDays(d, -40)}T07:00:00`,
+    });
+    // A MATCHED activity on `d` must stay excluded (isNull(completionMatchId)).
+    const workoutId = await insertWorkout(db, userId, { date: d, state: "completed" });
+    await matchActivity(db, userId, workoutId, d, "07:30");
+
+    // The old unbounded behavior, replicated: every unmatched row, attributed
+    // and filtered in memory. The old query had NO order — same-day row order
+    // was whatever plan SQLite picked (index walk vs table scan) — so the
+    // remediation pins the index path's chronological order explicitly; the
+    // replica applies that same pinned order, making this an equality proof
+    // over both membership and the now-contractual ordering.
+    const allUnmatched = (
+      await db
+        .select()
+        .from(schema.activities)
+        .where(and(eq(schema.activities.userId, userId), isNull(schema.activities.completionMatchId)))
+    ).sort((a, b) => a.startTime.localeCompare(b.startTime) || a.id.localeCompare(b.id));
+    const localDate = (a: { startTimeLocal: string | null; startTime: string }) =>
+      (a.startTimeLocal ?? a.startTime).slice(0, 10);
+
+    for (let offset = -2; offset <= 2; offset++) {
+      const date = addDays(d, offset);
+      const input = await buildDayInput(db, userId, date, prefs);
+
+      const expectedUnplannedIds = allUnmatched
+        .filter(
+          (a) =>
+            localDate(a) === date &&
+            (a.sport === "run" || a.sport === "strength" || a.sport === "yoga"),
+        )
+        .map((a) => `unplanned-${a.id}`);
+      expect(
+        input.completedRuns.filter((r) => r.unplanned).map((r) => r.workoutId),
+      ).toEqual(expectedUnplannedIds);
+
+      const expectedAdventures = allUnmatched
+        .filter((a) => localDate(a) === date && isAdventureSport(a.sport))
+        .sort((a, b) => a.id.localeCompare(b.id))
+        .map((a) => ({
+          sport: a.sport,
+          trainingLoad: a.trainingLoad ?? undefined,
+          durationMin: Math.round(a.durationSeconds / 60),
+        }));
+      expect(input.adventures ?? []).toEqual(expectedAdventures);
+    }
+
+    // Spot-check the headline case: the 23:10 local run lands on ITS local
+    // day, not its UTC day.
+    const onD = await buildDayInput(db, userId, d, prefs);
+    expect(onD.completedRuns.filter((r) => r.unplanned)).toHaveLength(3);
+    expect(onD.completedRuns.some((r) => r.unplanned && r.window === "evening")).toBe(true);
+    const dayAfter = await buildDayInput(db, userId, addDays(d, 1), prefs);
+    expect(dayAfter.completedRuns.filter((r) => r.unplanned)).toHaveLength(0);
+    expect(dayAfter.adventures).toBeUndefined();
   });
 });
 

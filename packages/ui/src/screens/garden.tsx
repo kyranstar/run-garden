@@ -24,18 +24,7 @@ import {
 } from "@rg/garden-engine";
 import { GardenScene, type SceneImpulse } from "@rg/garden-renderer";
 import { IconClock, IconClose } from "../icons.js";
-import {
-  Banner,
-  Card,
-  CATEGORY_LABELS,
-  EmptyState,
-  formatDayShort,
-  formatTime,
-  relativeDay,
-  Sheet,
-  Spinner,
-  useIsDesktop,
-} from "../components.js";
+import { Banner, Card, CATEGORY_LABELS, EmptyState, formatDayShort, formatTime, localTodayGuess, relativeDay, Sheet, Spinner, useIsDesktop } from "../components.js";
 import { Drawer } from "../drawer.js";
 import { cap, eventSentence, selectArrival, type ArrivalEvent } from "./arrival.js";
 import { CeremonyCard } from "./arrival-block.js";
@@ -772,7 +761,7 @@ export function GardenScreen() {
 
   // The next two weeks of the plan — keeps the forward scrub honest about
   // planned rest days (the run clock pauses on them) and plan gaps.
-  const clientToday = new Date().toISOString().slice(0, 10);
+  const clientToday = localTodayGuess();
   const scrubPlan = useQuery({
     queryKey: ["scrub-plan", clientToday],
     queryFn: () => api.workouts(clientToday, addDays(clientToday, 14)),

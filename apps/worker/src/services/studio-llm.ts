@@ -1,6 +1,6 @@
 import type { ZodError } from "zod";
 import { and, desc, eq, gte } from "drizzle-orm";
-import { activities, dailyHealth, llmUsage } from "@rg/database";
+import { activities, dailyHealth, llmUsage, userPreferences } from "@rg/database";
 import {
   fingerprint,
   liftingPlanSchema,
@@ -11,6 +11,7 @@ import {
   type StudioExercise,
   type StudioSession,
   type StudioWeek,
+  todayInZone,
 } from "@rg/domain";
 import { fixtureModeEnabled, type Env } from "../env.js";
 import { llmBudgetStatus } from "./llm.js";
@@ -415,7 +416,15 @@ export function buildGenerateUserPrompt(brief: PlanBrief, athleteContext?: strin
  */
 export async function buildAthleteContext(db: Db, userId: string): Promise<string> {
   try {
-    const today = new Date().toISOString().slice(0, 10);
+    // The athlete's calendar day, not UTC's (audit#3 T6) — after 4pm Pacific
+    // the UTC date is tomorrow and every window below skews by a day.
+    const [prefRow] = await db
+      .select({ prefs: userPreferences.prefs })
+      .from(userPreferences)
+      .where(eq(userPreferences.userId, userId))
+      .limit(1);
+    const timezone = (prefRow?.prefs as { timezone?: string } | undefined)?.timezone ?? "UTC";
+    const today = todayInZone(timezone);
     const since14 = addDaysLocal(today, -14);
     const since28 = addDaysLocal(today, -28);
 
@@ -425,15 +434,20 @@ export async function buildAthleteContext(db: Db, userId: string): Promise<strin
       .where(and(eq(dailyHealth.userId, userId), gte(dailyHealth.date, since14)))
       .orderBy(desc(dailyHealth.date))
       .limit(14);
-    const acts = await db
-      .select({
-        sport: activities.sport,
-        durationSeconds: activities.durationSeconds,
-        distanceMeters: activities.distanceMeters,
-        startTime: activities.startTime,
-      })
-      .from(activities)
-      .where(and(eq(activities.userId, userId), gte(activities.startTime, `${since28}T00:00:00Z`)));
+    // Padded UTC bound, exact watch-local filter — the row's own local date
+    // decides membership, matching the analytics convention.
+    const acts = (
+      await db
+        .select({
+          sport: activities.sport,
+          durationSeconds: activities.durationSeconds,
+          distanceMeters: activities.distanceMeters,
+          startTime: activities.startTime,
+          startTimeLocal: activities.startTimeLocal,
+        })
+        .from(activities)
+        .where(and(eq(activities.userId, userId), gte(activities.startTime, `${addDaysLocal(since28, -1)}T00:00:00Z`)))
+    ).filter((a) => (a.startTimeLocal ?? a.startTime).slice(0, 10) >= since28);
 
     const lines: string[] = [];
     const avg = (xs: number[]) =>

@@ -431,7 +431,13 @@ async function executeOneOp(
         const startMinutes =
           Number(get("hour")) * 60 + Number(get("minute")) + prefs.bufferBeforeMinutes;
         const toTime = `${String(Math.floor(startMinutes / 60) % 24).padStart(2, "0")}:${String(startMinutes % 60).padStart(2, "0")}`;
-        const toDate = `${get("year")}-${get("month")}-${get("day")}`;
+        // A drag to 23:50 plus the buffer crosses midnight — the overflow
+        // belongs to the NEXT day, or the workout lands a day early
+        // (audit#3 T5).
+        const toDate = addDays(
+          `${get("year")}-${get("month")}-${get("day")}`,
+          Math.floor(startMinutes / 1440),
+        );
         await applyMove(db, {
           userId,
           workoutId: op.workoutId,

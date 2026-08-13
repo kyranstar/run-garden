@@ -97,8 +97,16 @@ export function rowToNormalized(row: typeof activities.$inferSelect): Normalized
  * bug (same 30-min/km signature as sanitizeRunDuration). Idempotent — once a row
  * is corrected its implied pace is normal and it's excluded. Runs at the start of
  * every ingest so it self-heals on the next sync.
+ *
+ * The pace signature alone is NOT sufficient (audit#3 D6): a real run whose GPS
+ * failed (300m recorded over 40min) also paces >1800 s/km, and ÷100 would
+ * destroy its true duration. The bug's actual fingerprint is that dividing by
+ * 100 lands the pace back in a humanly-runnable band — require that, and only
+ * touch rows written before the normalize fix shipped (2026-08-12); anything
+ * ingested since stores plain seconds by construction.
  */
 export async function repairDurations(db: Db, userId: string): Promise<void> {
+  const paceExpr = sql`(${activities.durationSeconds} * 1.0) / (${activities.distanceMeters} / 1000.0)`;
   await db
     .update(activities)
     .set({
@@ -111,7 +119,11 @@ export async function repairDurations(db: Db, userId: string): Promise<void> {
         eq(activities.userId, userId),
         eq(activities.sport, "run"),
         gt(activities.distanceMeters, 0),
-        sql`(${activities.durationSeconds} * 1.0) / (${activities.distanceMeters} / 1000.0) > 1800`,
+        sql`${paceExpr} > 1800`,
+        // ÷100 must yield a plausible running pace (2–20 min/km) …
+        sql`${paceExpr} / 100.0 BETWEEN 120 AND 1200`,
+        // … and the row must predate the wire-unit fix.
+        sql`${activities.createdAt} < '2026-08-13'`,
       ),
     );
 }
@@ -314,6 +326,10 @@ async function upsertNormalized(
   return normalized.id;
 }
 
+/** The fingerprint is deliberately NOT written here (audit#3 D4): it is the
+ * iteration's COMMIT MARKER, stamped by `stampSourceFingerprint` only after
+ * the laps land. Stamping it earlier made a death between link and laps
+ * permanent — the unchanged-fingerprint skip would never refetch them. */
 async function upsertSourceLink(
   db: Db,
   activityId: string,
@@ -333,7 +349,7 @@ async function upsertSourceLink(
   if (existing[0]) {
     await db
       .update(activitySourceLinks)
-      .set({ activityId, lastSeenAt: now, contentFingerprint: src.contentFingerprint })
+      .set({ activityId, lastSeenAt: now })
       .where(eq(activitySourceLinks.id, existing[0].id));
     return;
   }
@@ -346,7 +362,9 @@ async function upsertSourceLink(
     sourceUpdatedAt: src.sourceUpdatedAt ?? null,
     firstSeenAt: now,
     lastSeenAt: now,
-    contentFingerprint: src.contentFingerprint,
+    // "pending" never equals a real fingerprint, so an interrupted iteration
+    // re-runs in full on the next ingest.
+    contentFingerprint: "pending",
     normalizerVersion: NORMALIZER_VERSION,
     sourceVersion: null,
     rawSummary: {
@@ -355,6 +373,18 @@ async function upsertSourceLink(
       plannedWorkoutId: src.sourcePlannedWorkoutId,
     },
   });
+}
+
+async function stampSourceFingerprint(db: Db, src: SourceActivity): Promise<void> {
+  await db
+    .update(activitySourceLinks)
+    .set({ contentFingerprint: src.contentFingerprint })
+    .where(
+      and(
+        eq(activitySourceLinks.provider, src.provider),
+        eq(activitySourceLinks.providerActivityId, src.providerActivityId),
+      ),
+    );
 }
 
 export async function ingestActivities(db: Db, input: IngestInput): Promise<IngestStats> {
@@ -419,6 +449,26 @@ export async function ingestActivities(db: Db, input: IngestInput): Promise<Inge
       // deliberately does NOT depend on the backfill running before the legacy
       // columns are dropped: a row with no COROS source is recognisable either
       // way, so the two operations can happen in any order.
+      // Crash recovery first (audit#3 D4): an ingest that died between the
+      // activity insert and its source-link insert left a linkless row
+      // already carrying this COROS id. Re-inserting would trip
+      // activities_coros_unique and wedge EVERY subsequent ingest until the
+      // activity ages out of the read window — adopt the row instead.
+      const halfIngested =
+        src.provider === "coros"
+          ? (
+              await db
+                .select()
+                .from(activities)
+                .where(
+                  and(
+                    eq(activities.userId, input.userId),
+                    eq(activities.corosActivityId, src.providerActivityId),
+                  ),
+                )
+                .limit(1)
+            )[0]
+          : undefined;
       const windowStart = new Date(Date.parse(src.startTime) - 3600_000).toISOString();
       const windowEnd = new Date(Date.parse(src.startTime) + 3600_000).toISOString();
       const nearby = await db
@@ -447,7 +497,16 @@ export async function ingestActivities(db: Db, input: IngestInput): Promise<Inge
         }
       }
 
-      if (orphan && bestScore >= ORPHAN_ADOPTION_FLOOR) {
+      if (halfIngested) {
+        await upsertNormalized(
+          db,
+          input.userId,
+          { ...singleSourceActivity(src), id: halfIngested.id },
+          halfIngested.id,
+        );
+        activityId = halfIngested.id;
+        await upsertSourceLink(db, activityId, src);
+      } else if (orphan && bestScore >= ORPHAN_ADOPTION_FLOOR) {
         // COROS is authoritative for every metric; the adopted row keeps only
         // its identity and anything COROS did not supply.
         await upsertNormalized(
@@ -498,6 +557,9 @@ export async function ingestActivities(db: Db, input: IngestInput): Promise<Inge
         db.insert(activityLaps).values(batch),
       );
     }
+    // Commit marker: everything for this source landed, so the skip check may
+    // now trust the fingerprint (audit#3 D4).
+    await stampSourceFingerprint(db, src);
     affectedDates.add((src.startTimeLocal ?? src.startTime).slice(0, 10));
   }
 
