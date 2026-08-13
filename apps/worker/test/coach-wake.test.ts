@@ -580,3 +580,66 @@ describe("capability plumbing (user requirement 2026-08-12: the coach can fulfil
     expect(WAKE_SYSTEM_PROMPT).not.toContain("off-limits");
   });
 });
+
+describe("model-natural JSON parses (live createPlan failures 2026-08-12/13)", () => {
+  it("null optionals, prose-length volumeTarget, and null intensity all parse", async () => {
+    const { wakeOutputSchema } = await import("@rg/domain");
+    const modelOutput = {
+      briefing: "Here it is as a real proposal this time.",
+      proposals: [
+        {
+          title: "4-week post-race block",
+          evidence: "race 2026-10-23",
+          rationale: "Recovery first, then rebuild.",
+          expiresAt: "2026-10-25",
+          flags: [],
+          ops: [
+            {
+              kind: "createPlan",
+              discipline: "run",
+              name: "Post-race recovery",
+              startDate: "2026-10-24",
+              endDate: "2026-11-20",
+              raceDate: null, // models emit null for optionals — must parse
+              firmSessions: [
+                {
+                  date: "2026-10-26",
+                  session: {
+                    category: "recovery",
+                    title: "Legs-back jog",
+                    durationMinutes: 25,
+                    run: { blocks: [{ kind: "duration", value: 25, intensity: null }] },
+                    lift: null,
+                  },
+                },
+              ],
+              shapeWeeks: [
+                {
+                  weekStart: "2026-11-02",
+                  // 53 chars — the reject that killed three drafts
+                  volumeTarget: "one quality session returns, keep it conversational",
+                  keySessions: ["one relaxed long run building back toward ninety minutes total"],
+                },
+              ],
+            },
+          ],
+        },
+      ],
+      question: null,
+      memoryOps: [],
+      focus: null,
+    };
+    const parsed = wakeOutputSchema.safeParse(modelOutput);
+    if (!parsed.success) console.error(parsed.error.issues);
+    expect(parsed.success).toBe(true);
+    const op = parsed.data!.proposals[0]!.ops[0]! as { shapeWeeks: Array<{ volumeTarget: string }> };
+    expect(op.shapeWeeks[0]!.volumeTarget.length).toBeLessThanOrEqual(40); // truncated, not rejected
+  });
+
+  it("the createPlan prompt example parses too (drift guard)", async () => {
+    const { WAKE_EXAMPLE_CREATE_PLAN, WAKE_SYSTEM_PROMPT } = await import("../src/services/coach-wake.js");
+    const { wakeOutputSchema } = await import("@rg/domain");
+    expect(WAKE_SYSTEM_PROMPT).toContain(WAKE_EXAMPLE_CREATE_PLAN);
+    expect(wakeOutputSchema.safeParse(JSON.parse(WAKE_EXAMPLE_CREATE_PLAN)).success).toBe(true);
+  });
+});

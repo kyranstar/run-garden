@@ -97,6 +97,52 @@ export const WAKE_EXAMPLE_OUTPUT = JSON.stringify({
   focus: "Race week: everything easy except Saturday's shakeout strides.",
 });
 
+/** A second drift-tested example: createPlan is the op live wakes failed on
+ * three times (2026-08-12/13) — models must see its exact working shape. */
+export const WAKE_EXAMPLE_CREATE_PLAN = JSON.stringify({
+  briefing: "Drafting the post-race recovery block as a proposal.",
+  proposals: [
+    {
+      title: "4-week post-race block",
+      evidence: "race 2026-10-23 · plan ends 2026-10-03",
+      rationale: "One true recovery week written out; three sketched to shape after the race.",
+      expiresAt: "2026-10-25",
+      flags: [],
+      ops: [
+        {
+          kind: "createPlan",
+          discipline: "run",
+          name: "Post-race recovery block",
+          startDate: "2026-10-24",
+          endDate: "2026-11-20",
+          raceDate: null,
+          firmSessions: [
+            {
+              date: "2026-10-26",
+              session: {
+                category: "recovery",
+                title: "Legs-back jog",
+                durationMinutes: 25,
+                run: { blocks: [{ kind: "duration", value: 25, intensity: "easy" }] },
+              },
+            },
+          ],
+          shapeWeeks: [
+            {
+              weekStart: "2026-11-02",
+              volumeTarget: "rebuild easy volume",
+              keySessions: ["one long run", "strides midweek"],
+            },
+          ],
+        },
+      ],
+    },
+  ],
+  question: null,
+  memoryOps: [],
+  focus: null,
+});
+
 export const WAKE_SYSTEM_PROMPT = `You are the athlete's running and lifting coach inside Run Garden. You read one dossier and reply with ONE JSON object — nothing else.
 
 Your contract:
@@ -121,8 +167,9 @@ Output JSON exactly matching:
 {"briefing": string|null, "proposals": [{"title","evidence","rationale","expiresAt","flags":[],"ops":[...]}], "question": {"text","chips":[]}|null, "memoryOps": [...], "focus": string|null}
 
 Op kinds: ease{workoutId,session} · move{workoutId,toDate} · swap{dayA,dayB} · skip{workoutId,reason} · add{date,session} · reshapeWeek{planId,weekStart,sessions} · firmUp{planId,weekStart,sessions} · extendPlan{planId,shapeWeeks} · windDown{planId,sessions} · createPlan{discipline,name,startDate,endDate,raceDate?,firmSessions,shapeWeeks} · retirePlan{planId}
-A session is {category, title, durationMinutes, run?: {blocks:[{kind:"duration"|"distance", value, intensity?}]}, lift?: {exercises:[...]}} — runs use minutes (duration) / meters (distance) blocks; lifts use catalog exercises. Block values are INTEGERS; intensity ∈ easy|steady|threshold|interval|rest. Match this example's shapes EXACTLY:
-${WAKE_EXAMPLE_OUTPUT}`;
+A session is {category, title, durationMinutes, run?: {blocks:[{kind:"duration"|"distance", value, intensity?}]}, lift?: {exercises:[...]}} — runs use minutes (duration) / meters (distance) blocks; lifts use catalog exercises. Block values are INTEGERS; intensity ∈ easy|steady|threshold|interval|rest. shapeWeeks volumeTarget stays under ~6 words. Match these examples' shapes EXACTLY:
+${WAKE_EXAMPLE_OUTPUT}
+${WAKE_EXAMPLE_CREATE_PLAN}`;
 
 
 
@@ -448,6 +495,9 @@ export async function wake(
           userId,
           "receipt",
           "The plan changes the coach drafted alongside this couldn't be formatted — ask again (smaller steps help) and it will draft them as proposals.",
+          // Diagnosability: the zod issues ride the receipt's refs — three
+          // live failures were unexplainable post-hoc without a running tail.
+          { schemaIssues: issues.slice(0, 500) } as never,
         );
         await consumeTriggers(db, userId, triggers.map((t) => t.id), nowInstant());
         return { status: "ok", coachMessageId };

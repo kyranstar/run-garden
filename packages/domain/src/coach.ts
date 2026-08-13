@@ -23,6 +23,16 @@ const isoDate = z
  * `[wo:abc]` / `plan [cp1]` / `fact [mem1]`; a faithful copy including the
  * decoration must resolve to the same row, not become a dud op.
  */
+/** Optional-field discipline for MODEL-authored JSON (live failures
+ * 2026-08-12/13): models habitually emit `"raceDate": null` where a field
+ * is optional — a bare `.optional()` rejects that, and the coach's
+ * plan-drafting failed three times in a row on exactly this. null and
+ * undefined mean the same thing here. */
+const orNull = <T extends z.ZodTypeAny>(schema: T) =>
+  schema
+    .nullish()
+    .transform((v: z.infer<T> | null | undefined) => (v === null ? undefined : v));
+
 const echoedId = z
   .string()
   .min(1)
@@ -47,7 +57,7 @@ export const coachRunBlockSchema = z
     kind: z.enum(["duration", "distance"]),
     /** Minutes for duration blocks; meters for distance blocks. */
     value: z.number().int().min(1).max(100_000),
-    intensity: z.enum(["easy", "steady", "threshold", "interval", "rest"]).optional(),
+    intensity: orNull(z.enum(["easy", "steady", "threshold", "interval", "rest"]).optional()),
   })
   .strict();
 
@@ -57,8 +67,8 @@ export const coachSessionSchema = z
     category: z.enum(["easy", "long", "quality", "recovery", "race", "rest", "strength"]),
     title: prose(80),
     durationMinutes: z.number().int().min(5).max(360),
-    run: z.object({ blocks: z.array(coachRunBlockSchema).min(1).max(12) }).strict().optional(),
-    lift: z.object({ exercises: z.array(studioExerciseSchema).min(1).max(12) }).strict().optional(),
+    run: orNull(z.object({ blocks: z.array(coachRunBlockSchema).min(1).max(12) }).strict().optional()),
+    lift: orNull(z.object({ exercises: z.array(studioExerciseSchema).min(1).max(12) }).strict().optional()),
   })
   .strict()
   .refine((s) => !(s.run && s.lift), { message: "session cannot be both run and lift" });
@@ -69,8 +79,10 @@ const datedSession = z.object({ date: isoDate, session: coachSessionSchema }).st
 export const coachShapeWeekSchema = z
   .object({
     weekStart: isoDate,
-    volumeTarget: z.string().min(1).max(40),
-    keySessions: z.array(z.string().min(1).max(60)).max(4),
+    // Truncate, never reject: these are display strings, and a 53-char
+    // volume target killed three plan drafts in a row (audit follow-up).
+    volumeTarget: prose(40),
+    keySessions: z.array(prose(60)).max(4),
   })
   .strict();
 export type CoachShapeWeek = z.infer<typeof coachShapeWeekSchema>;
@@ -113,7 +125,7 @@ export const coachOpSchema = z.discriminatedUnion("kind", [
       name: z.string().min(1).max(60),
       startDate: isoDate,
       endDate: isoDate,
-      raceDate: isoDate.optional(),
+      raceDate: orNull(isoDate.optional()),
       firmSessions: z.array(datedSession).min(1).max(30),
       shapeWeeks: z.array(coachShapeWeekSchema).max(14),
     })
@@ -129,7 +141,7 @@ export const coachProposalDraftSchema = z
     rationale: prose(2000),
     /** min(end of first affected day, +72h) — enforced downstream too. */
     expiresAt: isoDate,
-    flags: z.array(z.string().max(120)).max(6),
+    flags: z.array(prose(120)).max(6),
     ops: z.array(coachOpSchema).min(1).max(20),
   })
   .strict();
@@ -141,7 +153,7 @@ export const coachMemoryOpSchema = z.discriminatedUnion("op", [
       op: z.literal("add"),
       kind: z.enum(["fact", "rule", "note"]),
       text: prose(300),
-      expiresAt: isoDate.optional(),
+      expiresAt: orNull(isoDate.optional()),
     })
     .strict(),
   z.object({ op: z.literal("update"), id: echoedId, text: prose(300) }).strict(),
