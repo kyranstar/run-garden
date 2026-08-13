@@ -3831,6 +3831,61 @@ button {
     grid-template-columns: 1fr 1fr;
   }
 }
+/* Sport organizers: full-width Run then Lift sections, plans stacked
+   vertically in time order inside each. */
+.plan-sections {
+  display: flex;
+  flex-direction: column;
+  gap: 1.15rem;
+}
+.plan-section-head {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+}
+.plan-section-rule {
+  flex: 1;
+  height: 1px;
+  background: var(--border);
+}
+.plan-section-list {
+  display: flex;
+  flex-direction: column;
+  gap: 0.7rem;
+  margin-top: 0.55rem;
+}
+.plan-card-when {
+  margin-left: auto;
+}
+/* Row shape on wide screens: identity/progress left, the headline
+   progression + sparkline docked right. Phones keep the stacked card. */
+@media (min-width: 640px) {
+  .plan-card-row {
+    display: grid;
+    grid-template-areas:
+      "top headline"
+      "name headline"
+      "prog headline";
+    grid-template-columns: minmax(0, 1fr) auto;
+    column-gap: 1.4rem;
+    align-items: center;
+  }
+  .plan-card-row .plan-card-top {
+    grid-area: top;
+  }
+  .plan-card-row .plan-card-name {
+    grid-area: name;
+  }
+  .plan-card-row .plan-card-prog {
+    grid-area: prog;
+  }
+  .plan-card-row .plan-card-headline {
+    grid-area: headline;
+    flex-direction: column;
+    align-items: flex-end;
+    gap: 0.3rem;
+  }
+}
 .plan-card {
   display: flex;
   flex-direction: column;

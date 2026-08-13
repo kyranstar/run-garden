@@ -63,6 +63,68 @@ const STATUS_LABEL: Record<CoachPlanDto["status"], string> = {
   retired: "retired",
 };
 
+function PlanRow({
+  p,
+  detail,
+  onOpen,
+}: {
+  p: CoachPlanDto;
+  detail: PlanDetailResponse | undefined;
+  onOpen: (id: string) => void;
+}) {
+  const { into, total } = weekLabel(p, detail);
+  const prog = detail?.progressions[0];
+  // Race day as a tick on the (time-linear) progress track, when it
+  // falls inside the plan's span.
+  const racePct =
+    p.raceDate && p.raceDate >= p.startDate && p.raceDate <= p.endDate
+      ? ((Date.parse(p.raceDate) - Date.parse(p.startDate)) /
+          (Date.parse(p.endDate) - Date.parse(p.startDate))) *
+        100
+      : null;
+  return (
+    <button type="button" className="card plan-card plan-card-row" onClick={() => onOpen(p.id)}>
+      <span className="plan-card-top">
+        <span className={`pill ${p.status === "active" ? "pill-ok" : "pill-neutral"}`}>
+          {p.source === "coros"
+            ? "from COROS"
+            : p.source === "studio" && p.status === "draft"
+              ? "draft — not on watch"
+              : STATUS_LABEL[p.status]}
+        </span>
+        <span className="faint num plan-card-when">
+          {into === 0
+            ? `upcoming · ${formatShortDate(p.startDate)} → ${formatShortDate(p.endDate)}`
+            : `now · ends ${formatShortDate(p.endDate)}`}
+        </span>
+      </span>
+      <span className="plan-card-name">{p.name}</span>
+      <span className="plan-card-prog">
+        <span className="faint num">{into === 0 ? `${total} wk plan` : `wk ${into}/${total}`}</span>
+        <span className={`plan-card-track ${p.discipline === "lift" ? "is-lift" : ""}`}>
+          <i style={{ width: `${Math.round((into / total) * 100)}%` }} />
+          {racePct !== null ? (
+            <b
+              className="plan-card-race"
+              style={{ left: `${racePct}%` }}
+              title={`Race · ${formatShortDate(p.raceDate!)}`}
+            />
+          ) : null}
+        </span>
+        <span className="faint num">
+          {into === 0 ? `starts ${formatShortDate(p.startDate)}` : `ends ${formatShortDate(p.endDate)}`}
+        </span>
+      </span>
+      {prog ? (
+        <span className="plan-card-headline">
+          <span className="plan-card-kv">{progressionHeadline(prog)}</span>
+          <Sparkline progression={prog} discipline={p.discipline} />
+        </span>
+      ) : null}
+    </button>
+  );
+}
+
 export function PlanCards({
   plans,
   details,
@@ -75,66 +137,45 @@ export function PlanCards({
   onNew: (discipline: "run" | "lift") => void;
 }) {
   const visible = plans.filter((p) => p.status === "active" || p.status === "draft");
-  const missing = (["run", "lift"] as const).filter((d) => !visible.some((p) => p.discipline === d));
   return (
-    <div className="plan-cards">
-      {visible.map((p) => {
-        const detail = details.get(p.id);
-        const { into, total } = weekLabel(p, detail);
-        const prog = detail?.progressions[0];
-        // Race day as a tick on the (time-linear) progress track, when it
-        // falls inside the plan's span.
-        const racePct =
-          p.raceDate && p.raceDate >= p.startDate && p.raceDate <= p.endDate
-            ? ((Date.parse(p.raceDate) - Date.parse(p.startDate)) /
-                (Date.parse(p.endDate) - Date.parse(p.startDate))) *
-              100
-            : null;
+    <div className="plan-sections">
+      {(["run", "lift"] as const).map((discipline) => {
+        // Vertical time order inside a sport: what's running now sits on
+        // top, upcoming blocks follow in the order they'll happen.
+        const group = visible
+          .filter((p) => p.discipline === discipline)
+          .sort(
+            (a, b) => a.startDate.localeCompare(b.startDate) || a.name.localeCompare(b.name),
+          );
         return (
-          <button key={p.id} type="button" className="card plan-card" onClick={() => onOpen(p.id)}>
-            <span className="plan-card-top">
-              <span className={`pill ${p.discipline === "lift" ? "pill-lift" : "pill-run"}`}>
-                {p.discipline === "lift" ? "Lift" : "Run"}
+          <section
+            key={discipline}
+            className="plan-section"
+            aria-label={discipline === "lift" ? "Lifting plans" : "Running plans"}
+          >
+            <div className="plan-section-head">
+              <span className={`pill ${discipline === "lift" ? "pill-lift" : "pill-run"}`}>
+                {discipline === "lift" ? "Lift" : "Run"}
               </span>
-              <span className={`pill ${p.status === "active" ? "pill-ok" : "pill-neutral"}`}>
-                {p.source === "coros"
-                  ? "from COROS"
-                  : p.source === "studio" && p.status === "draft"
-                    ? "draft — not on watch"
-                    : STATUS_LABEL[p.status]}
-              </span>
-            </span>
-            <span className="plan-card-name">{p.name}</span>
-            <span className="plan-card-prog">
-              <span className="faint num">{into === 0 ? `${total} wk plan` : `wk ${into}/${total}`}</span>
-              <span className={`plan-card-track ${p.discipline === "lift" ? "is-lift" : ""}`}>
-                <i style={{ width: `${Math.round((into / total) * 100)}%` }} />
-                {racePct !== null ? (
-                  <b
-                    className="plan-card-race"
-                    style={{ left: `${racePct}%` }}
-                    title={`Race · ${formatShortDate(p.raceDate!)}`}
-                  />
-                ) : null}
-              </span>
-              <span className="faint num">
-                {into === 0 ? `starts ${formatShortDate(p.startDate)}` : `ends ${formatShortDate(p.endDate)}`}
-              </span>
-            </span>
-            {prog ? (
-              <span className="plan-card-headline">
-                <span className="plan-card-kv">{progressionHeadline(prog)}</span>
-                <Sparkline progression={prog} discipline={p.discipline} />
-              </span>
-            ) : null}
-          </button>
+              <span className="plan-section-rule" aria-hidden />
+            </div>
+            <div className="plan-section-list">
+              {group.map((p) => (
+                <PlanRow key={p.id} p={p} detail={details.get(p.id)} onOpen={onOpen} />
+              ))}
+              {group.length === 0 ? (
+                <button
+                  type="button"
+                  className="plan-card plan-card-new"
+                  onClick={() => onNew(discipline)}
+                >
+                  + Plan {discipline === "lift" ? "lifting" : "running"} with your coach
+                </button>
+              ) : null}
+            </div>
+          </section>
         );
       })}
-      {missing.map((d) => (
-        <button key={d} type="button" className="plan-card plan-card-new" onClick={() => onNew(d)}>
-          + Plan {d === "lift" ? "lifting" : "running"} with your coach
-        </button>
-      ))}
     </div>
   );
 }

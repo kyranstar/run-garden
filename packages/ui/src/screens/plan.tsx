@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Link, useSearchParams } from "react-router-dom";
-import { useMutation, useQueries, useQuery, useQueryClient } from "@tanstack/react-query";
+import { keepPreviousData, useMutation, useQueries, useQuery, useQueryClient } from "@tanstack/react-query";
 import { api, ApiError, type PlanDetailResponse, type WorkoutDto } from "@rg/api-client";
 import { addDays, humanizeWorkoutTitle, startOfIsoWeek } from "@rg/domain";
 import {
@@ -483,6 +483,9 @@ export function PlanScreen() {
   const week = useQuery({
     queryKey: ["plan-week", pickedWeek ?? "current"],
     queryFn: () => api.planWeek(pickedWeek ?? undefined),
+    // Week paging must not blank the page: keep showing the previous week
+    // while the next one loads (the full-page spinner guards first load only).
+    placeholderData: keepPreviousData,
   });
   // Two-race-dates resolution — the warning must be actionable where it
   // appears. Settings holds the race day, so it refetches too.
@@ -503,6 +506,9 @@ export function PlanScreen() {
       const anchor = windowAnchor ?? localTodayGuess();
       return api.workouts(addDays(startOfIsoWeek(anchor), -28), addDays(startOfIsoWeek(anchor), 34));
     },
+    // The window re-anchors as the user pages weeks — sliding it must reuse
+    // the previous window's rows instead of emptying the grid.
+    placeholderData: keepPreviousData,
   });
 
   const today = week.data ? (plan.data?.today ?? week.data.weekStart) : plan.data?.today;

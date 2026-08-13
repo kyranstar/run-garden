@@ -213,6 +213,40 @@ describe("PlanCards", () => {
       progressionHeadline({ key: "k", label: "Bench", unit: "kg", from: 52, to: 66, now: 66, series: [] }),
     ).toBe("Bench 52 → 66 kg");
   });
+
+  it("groups plans under sport sections, vertically in time order", () => {
+    const upcoming: CoachPlanDto = {
+      ...runPlan,
+      id: "cp2",
+      name: "Post-10K block",
+      startDate: "2026-10-24",
+      endDate: "2026-11-20",
+      raceDate: null,
+    };
+    const html = render(
+      createElement(PlanCards, {
+        // Deliberately out of order — the section must sort by start date.
+        plans: [upcoming, runPlan],
+        details: new Map(),
+        onOpen: noop,
+        onNew: noop,
+      }),
+    );
+    // Run section first, then Lift; inside Run the current plan precedes
+    // the upcoming block.
+    const runSection = html.indexOf("Running plans");
+    const liftSection = html.indexOf("Lifting plans");
+    expect(runSection).toBeGreaterThanOrEqual(0);
+    expect(liftSection).toBeGreaterThan(runSection);
+    const current = html.indexOf("Fall Half Block");
+    const next = html.indexOf("Post-10K block");
+    expect(current).toBeGreaterThan(runSection);
+    expect(next).toBeGreaterThan(current);
+    expect(next).toBeLessThan(liftSection);
+    // Upcoming rows say when they run; the empty lift section still invites.
+    expect(html).toContain("upcoming ·");
+    expect(html).toContain("Plan lifting with your coach");
+  });
 });
 
 describe("CoachWindow", () => {
