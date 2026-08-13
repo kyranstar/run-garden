@@ -26,13 +26,27 @@ import {
 
 export const authRoutes = new Hono<AppContext>();
 
+/**
+ * Only same-app paths survive as a post-login redirect: exactly one leading
+ * "/" — protocol-relative "//host" and anything with a scheme are
+ * attacker-suppliable off-site targets — and no backslashes (browsers
+ * normalize "/\host" to "//host") or CR/LF. Anything else falls back to "/".
+ * Applied at store time (start) AND at redirect time (callback), so a stale
+ * pre-validation row in oauth_states can't redirect off-site either.
+ */
+function safeRedirectPath(value: string | null | undefined): string {
+  if (!value || !value.startsWith("/") || value.startsWith("//")) return "/";
+  if (value.includes("\\") || value.includes("\r") || value.includes("\n")) return "/";
+  return value;
+}
+
 /** Start sign-in. mode=calendar requests Calendar scopes + offline access. */
 authRoutes.get("/google/start", async (c) => {
   const mode = c.req.query("mode") ?? "signin";
   const url = await startGoogleAuth(c.get("db"), c.env, {
     scopes: mode === "calendar" ? GOOGLE_SCOPES_CALENDAR : GOOGLE_SCOPES_SIGNIN,
     offline: mode === "calendar",
-    redirectTo: c.req.query("redirect") ?? "/",
+    redirectTo: safeRedirectPath(c.req.query("redirect")),
   });
   return c.redirect(url);
 });
@@ -49,8 +63,9 @@ authRoutes.get("/google/callback", async (c) => {
   const tokens = await exchangeGoogleCode(c.env, code, stored.codeVerifier);
   const identity = decodeIdToken(tokens.id_token ?? "");
 
-  // Single-user gate: only the configured Google account may enter.
-  if (!emailAllowed(c.env, identity.email)) {
+  // Single-user gate: only the configured Google account may enter — and only
+  // when Google itself asserts the address is verified.
+  if (!emailAllowed(c.env, identity)) {
     return c.html(
       `<html><body style="font-family:system-ui;padding:3rem;max-width:28rem;margin:auto">
         <h2>This account can't be used</h2>
@@ -99,7 +114,7 @@ authRoutes.get("/google/callback", async (c) => {
   const secure = c.env.APP_URL.startsWith("https");
   c.header("Set-Cookie", sessionCookie(token, secure));
 
-  return c.redirect(stored.redirectTo ?? "/");
+  return c.redirect(safeRedirectPath(stored.redirectTo));
 });
 
 authRoutes.post("/logout", async (c) => {

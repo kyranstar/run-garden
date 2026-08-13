@@ -1275,8 +1275,18 @@ settingsRoutes.get("/diagnostics", async (c) => {
     .where(eq(corosWriteJobs.userId, userId))
     .orderBy(desc(corosWriteJobs.requestedAt))
     .limit(10);
-  const errors = await db.select().from(syncErrors).orderBy(desc(syncErrors.createdAt)).limit(15);
-  const runs = await db.select().from(syncRuns).orderBy(desc(syncRuns.startedAt)).limit(10);
+  const errors = await db
+    .select()
+    .from(syncErrors)
+    .where(eq(syncErrors.userId, userId))
+    .orderBy(desc(syncErrors.createdAt))
+    .limit(15);
+  const runs = await db
+    .select()
+    .from(syncRuns)
+    .where(eq(syncRuns.userId, userId))
+    .orderBy(desc(syncRuns.startedAt))
+    .limit(10);
   const garden = (await db.select().from(gardenState).where(eq(gardenState.userId, userId)).limit(1))[0];
   const budget = await llmBudgetStatus(db, userId);
   // The connection's own stamp — sync_runs 'coros_read' has no writer since
@@ -1321,13 +1331,11 @@ settingsRoutes.get("/diagnostics", async (c) => {
 settingsRoutes.get("/export", async (c) => {
   const db = c.get("db");
   const userId = c.get("userId");
-  const [prefs, workouts, acts, laps, matches, health, sleep, gardenRows, events, reviews, usage] =
+  const [prefs, workouts, acts, health, sleep, gardenRows, events, reviews, usage] =
     await Promise.all([
       loadPreferences(db, userId),
       db.select().from(plannedWorkouts).where(eq(plannedWorkouts.userId, userId)),
       db.select().from(activities).where(eq(activities.userId, userId)),
-      db.select().from(activityLaps),
-      db.select().from(workoutCompletionMatches),
       db.select().from(dailyHealth).where(eq(dailyHealth.userId, userId)),
       db.select().from(sleepRecords).where(eq(sleepRecords.userId, userId)),
       db.select().from(gardenState).where(eq(gardenState.userId, userId)),
@@ -1335,6 +1343,27 @@ settingsRoutes.get("/export", async (c) => {
       db.select().from(weeklyReviews).where(eq(weeklyReviews.userId, userId)),
       db.select().from(llmUsage).where(eq(llmUsage.userId, userId)),
     ]);
+  // Laps and matches have no user_id column; scope them by this user's own
+  // activity/workout ids (chunked: an `inArray` binds one variable per id and
+  // D1 caps a statement at ~100) — the unscoped selects exported every
+  // account's rows.
+  const [lapChunks, matchChunks] = await Promise.all([
+    Promise.all(
+      chunkIds(acts.map((a) => a.id)).map((ids) =>
+        db.select().from(activityLaps).where(inArray(activityLaps.activityId, ids)),
+      ),
+    ),
+    Promise.all(
+      chunkIds(workouts.map((w) => w.id)).map((ids) =>
+        db
+          .select()
+          .from(workoutCompletionMatches)
+          .where(inArray(workoutCompletionMatches.workoutId, ids)),
+      ),
+    ),
+  ]);
+  const laps = lapChunks.flat();
+  const matches = matchChunks.flat();
   c.header("Content-Disposition", 'attachment; filename="run-garden-export.json"');
   return c.json({
     exportedAt: nowInstant(),

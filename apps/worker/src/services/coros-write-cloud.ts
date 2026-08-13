@@ -1,10 +1,11 @@
 import { and, eq } from "drizzle-orm";
 import { corosWriteJobs, plannedWorkouts } from "@rg/database";
-import { nowInstant, type CorosWriteResult, type UserPreferences } from "@rg/domain";
-import { buildRunProgram, createWorkout, executeMoveJob, executeStudioJob, type StudioJob } from "@rg/coros";
+import { nowInstant, todayInZone, type CorosWriteResult, type UserPreferences } from "@rg/domain";
+import { buildRunProgram, createWorkout, deleteWorkout, executeMoveJob, executeStudioJob, type StudioJob } from "@rg/coros";
 import { corosProgramFingerprint, localDateToCorosDay } from "@rg/providers";
 import {
   coachCreateWorkoutJobSchema,
+  coachDeleteWorkoutJobSchema,
   createScheduledWorkoutJobSchema,
   deleteScheduledWorkoutJobSchema,
 } from "@rg/domain";
@@ -170,6 +171,73 @@ export async function executeCloudJobs(
                     updatedAt: done,
                   }
                 : { status: "failed", lastErrorCategory: result.reason ?? "error", updatedAt: done },
+            )
+            .where(eq(corosWriteJobs.id, job.id));
+        }
+        executed += 1;
+        continue;
+      } else if (job.kind === "coach_delete_workout") {
+        // Reshaped/retired coach sessions come back OFF the watch (audit#3
+        // D2) via the same stamp-verified triple-addressed delete the studio
+        // undo uses — nothing is ever deleted on a maybe.
+        const parsed = coachDeleteWorkoutJobSchema.safeParse(job.payload);
+        if (!parsed.success) {
+          await db
+            .update(corosWriteJobs)
+            .set({ status: "failed", lastErrorCategory: "malformed_payload", updatedAt: nowInstant() })
+            .where(eq(corosWriteJobs.id, job.id));
+          executed += 1;
+          continue;
+        }
+        const spec = parsed.data;
+        const result = await deleteWorkout(
+          client,
+          {
+            happenDay: String(localDateToCorosDay(spec.happenDay)),
+            name: spec.name,
+            idInPlan: spec.idInPlan,
+            programId: spec.programId,
+            planId: spec.corosPlanId,
+          },
+          { today: todayInZone(prefs.timezone) },
+        );
+        const done = nowInstant();
+        if (result.ok || result.refused === "not_found") {
+          // Deleted — or provably already gone, which is the same outcome
+          // for an unpush. The archived row no longer lives on the watch.
+          await db
+            .update(plannedWorkouts)
+            .set({ corosSyncState: "calendar_only", updatedAt: done })
+            .where(eq(plannedWorkouts.id, spec.workoutId));
+          await db
+            .update(corosWriteJobs)
+            .set({ status: "verified", completedAt: done, updatedAt: done })
+            .where(eq(corosWriteJobs.id, job.id));
+        } else {
+          // Refusals (ambiguous stamp, drifted address) are terminal — the
+          // executor's contract says remove those by hand. Bare errors are
+          // transient and retry like coach creates, cap 3.
+          const attempts = ((job.payload as { attempts?: number } | null)?.attempts ?? 0) + 1;
+          const retryable = result.refused === undefined;
+          console.error(
+            `coach unpush ${retryable && attempts < 3 ? "retrying" : "FAILED"} (${spec.name}, attempt ${attempts}): ${result.refused ?? ""} ${result.error ?? ""}`,
+          );
+          await db
+            .update(corosWriteJobs)
+            .set(
+              retryable && attempts < 3
+                ? {
+                    status: "queued",
+                    claimedByDeviceId: null,
+                    claimedAt: null,
+                    payload: { ...spec, attempts },
+                    updatedAt: done,
+                  }
+                : {
+                    status: "failed",
+                    lastErrorCategory: result.refused ?? "error",
+                    updatedAt: done,
+                  },
             )
             .where(eq(corosWriteJobs.id, job.id));
         }

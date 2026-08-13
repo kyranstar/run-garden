@@ -5,13 +5,17 @@ import type { Db } from "./db.js";
 
 export type IntentSource =
   | "user_move" | "calendar_drag" | "studio_push" | "studio_retire"
-  | "remove_from_plan" | "auto_resolve" | "undo";
+  | "remove_from_plan" | "auto_resolve" | "undo" | "coach_ease";
 
 export interface RecordIntentInput {
   userId: string;
   targetKind: "workout" | "studio_session";
   targetId: string;
-  kind: "move" | "create" | "delete" | "remove_local" | "restore";
+  /** "content" is the app's permanent claim on a session's CONTENT: an
+   * approved coach ease must survive every future COROS snapshot, so import
+   * rule 7 skips restoring rows with an open content intent (audit#3 D1).
+   * It deliberately never resolves — nothing on COROS can confirm it. */
+  kind: "move" | "create" | "delete" | "remove_local" | "restore" | "content";
   payload?: Record<string, unknown>;
   source: IntentSource;
 }

@@ -8,6 +8,7 @@ import { schema } from "@rg/database";
 import { addDays, newId, nowInstant, todayInZone, type CoachOp } from "@rg/domain";
 import type { Db } from "../src/services/db.js";
 import { applyOps } from "../src/services/coach-apply.js";
+import { openIntentFor } from "../src/services/sync-intents.js";
 import { makeTestDb, makeTestUser } from "./helpers.js";
 
 const run40 = {
@@ -176,6 +177,123 @@ describe("applyOps", () => {
       .from(schema.plannedWorkouts)
       .where(and(eq(schema.plannedWorkouts.userId, userId), isNull(schema.plannedWorkouts.archivedAt)));
     expect(live.map((w) => w.id)).not.toContain("w-future");
+  });
+});
+
+describe("archive aftermath (audit#3 D1/D2)", () => {
+  const seedCoachPlan = async (db: Db, userId: string, today: string) => {
+    await db.insert(schema.coachPlans).values({
+      id: "cp1",
+      userId,
+      discipline: "run",
+      name: "Fall Half",
+      status: "active",
+      startDate: addDays(today, -7),
+      endDate: addDays(today, 30),
+      stampPrefix: "Fall Half",
+      createdAt: nowInstant(),
+      updatedAt: nowInstant(),
+    });
+  };
+
+  it("retirePlan suppresses archived rows and unpushes verified watch sessions", async () => {
+    const db = makeTestDb();
+    const { userId, prefs } = await makeTestUser(db, { corosWritesEnabled: true });
+    const today = todayInZone(prefs.timezone);
+    await seedCoachPlan(db, userId, today);
+    const date = addDays(today, 5);
+    await seedWorkout(db, userId, "w-watch", date);
+    await db
+      .update(schema.plannedWorkouts)
+      .set({
+        planId: "cp1",
+        sourceWorkoutId: "473846232060707016:42",
+        sourceIdInPlan: "42",
+        sourceProgramId: "9001",
+        corosSyncState: "synced",
+        lastVerifiedCorosDate: date,
+      })
+      .where(eq(schema.plannedWorkouts.id, "w-watch"));
+    await db.insert(schema.corosWriteJobs).values({
+      id: "w-watch-push",
+      userId,
+      workoutId: "w-watch",
+      kind: "coach_create_workout",
+      expectedContentFingerprint: "fp",
+      originalDate: date,
+      destinationDate: date,
+      payload: { workoutId: "w-watch", happenDay: date, name: `Tempo 3×10 — ${date}` },
+      requestedAt: nowInstant(),
+      status: "verified",
+      updatedAt: nowInstant(),
+    });
+
+    const ops: CoachOp[] = [{ kind: "retirePlan", planId: "cp1" }];
+    await applyOps(db, userId, prefs, "prop-retire", ops);
+
+    const suppressions = await db
+      .select()
+      .from(schema.calendarEventSuppressions)
+      .where(eq(schema.calendarEventSuppressions.workoutId, "w-watch"));
+    expect(suppressions).toHaveLength(1);
+    expect(suppressions[0]!.reason).toBe("user_removed");
+
+    const [unpush] = await db
+      .select()
+      .from(schema.corosWriteJobs)
+      .where(eq(schema.corosWriteJobs.id, "w-watch-unpush"));
+    expect(unpush?.kind).toBe("coach_delete_workout");
+    expect(unpush?.status).toBe("queued");
+    expect(unpush?.payload).toMatchObject({
+      workoutId: "w-watch",
+      happenDay: date,
+      name: `Tempo 3×10 — ${date}`,
+      idInPlan: "42",
+      programId: "9001",
+      corosPlanId: "473846232060707016",
+    });
+
+    // Re-applying the approved proposal stays a no-op: one suppression, ever.
+    await applyOps(db, userId, prefs, "prop-retire", ops);
+    const again = await db
+      .select()
+      .from(schema.calendarEventSuppressions)
+      .where(eq(schema.calendarEventSuppressions.workoutId, "w-watch"));
+    expect(again).toHaveLength(1);
+  });
+
+  it("retirePlan aimed at a plan the coach did not author is a no-op", async () => {
+    const db = makeTestDb();
+    const { userId, prefs } = await makeTestUser(db);
+    const today = todayInZone(prefs.timezone);
+    await seedWorkout(db, userId, "w-imported", addDays(today, 3));
+    await db
+      .update(schema.plannedWorkouts)
+      .set({ planId: "imported-coros-plan" })
+      .where(eq(schema.plannedWorkouts.id, "w-imported"));
+
+    const out = await applyOps(db, userId, prefs, "prop-x", [
+      { kind: "retirePlan", planId: "imported-coros-plan" },
+    ]);
+    expect(out.archived).toEqual([]);
+    const [w] = await db
+      .select()
+      .from(schema.plannedWorkouts)
+      .where(eq(schema.plannedWorkouts.id, "w-imported"));
+    expect(w!.archivedAt).toBeNull();
+  });
+
+  it("ease records the app's permanent content claim", async () => {
+    const db = makeTestDb();
+    const { userId, prefs } = await makeTestUser(db);
+    const today = todayInZone(prefs.timezone);
+    await seedWorkout(db, userId, "w1", addDays(today, 1));
+    await applyOps(db, userId, prefs, "prop-ease", [
+      { kind: "ease", workoutId: "w1", session: run40 },
+    ]);
+    const intent = await openIntentFor(db, userId, "w1", "content");
+    expect(intent).not.toBeNull();
+    expect(intent!.source).toBe("coach_ease");
   });
 });
 

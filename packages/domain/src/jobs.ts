@@ -74,6 +74,24 @@ export const coachCreateWorkoutJobSchema = z
   .strict();
 export type CoachCreateWorkoutJob = z.infer<typeof coachCreateWorkoutJobSchema>;
 
+/** Pulls a coach-pushed session back off the watch when its plan week is
+ * reshaped or the plan retired — without this the 90-day COROS read
+ * resurrects archived sessions next to their replacements (audit#3 D2). */
+export const coachDeleteWorkoutJobSchema = z
+  .object({
+    workoutId: z.string().min(1),
+    happenDay: localDate,
+    /** The exact program-name stamp recorded when the workout was created. */
+    name: z.string().min(1),
+    idInPlan: z.string().min(1),
+    programId: z.string().min(1),
+    corosPlanId: z.string().min(1),
+    /** Executor-side retry counter (transient failures requeue, cap 3). */
+    attempts: z.number().int().min(0).optional(),
+  })
+  .strict();
+export type CoachDeleteWorkoutJob = z.infer<typeof coachDeleteWorkoutJobSchema>;
+
 export const createScheduledWorkoutJobSchema = z
   .object({
     /** The `studio_plan_pushes` row this job reports back onto. */

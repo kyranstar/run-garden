@@ -132,13 +132,21 @@ export async function refreshGoogleToken(env: Env, refreshToken: string): Promis
   return (await res.json()) as GoogleTokens;
 }
 
+export interface GoogleIdentity {
+  email?: string;
+  sub?: string;
+  name?: string;
+  /** Google emits a boolean, but some flows have historically sent "true". */
+  email_verified?: boolean | string;
+}
+
 /** Decode the id_token payload (signature verified implicitly by TLS to Google's token endpoint). */
-export function decodeIdToken(idToken: string): { email?: string; sub?: string; name?: string } {
+export function decodeIdToken(idToken: string): GoogleIdentity {
   const payload = idToken.split(".")[1];
   if (!payload) return {};
   try {
     const json = atob(payload.replaceAll("-", "+").replaceAll("_", "/"));
-    return JSON.parse(json) as { email?: string; sub?: string; name?: string };
+    return JSON.parse(json) as GoogleIdentity;
   } catch {
     return {};
   }
@@ -148,8 +156,15 @@ export async function purgeExpiredStates(db: Db): Promise<void> {
   await db.delete(oauthStates).where(lt(oauthStates.expiresAt, nowInstant()));
 }
 
-export function emailAllowed(env: Env, email: string | undefined): boolean {
-  return !!email && email.toLowerCase() === env.ALLOWED_GOOGLE_EMAIL.toLowerCase();
+export function emailAllowed(env: Env, identity: GoogleIdentity): boolean {
+  // An unverified address can be claimed by anyone at the identity provider;
+  // only Google's own assertion of ownership counts.
+  const verified = identity.email_verified === true || identity.email_verified === "true";
+  return (
+    verified &&
+    !!identity.email &&
+    identity.email.toLowerCase() === env.ALLOWED_GOOGLE_EMAIL.toLowerCase()
+  );
 }
 
 // re-export used by routes

@@ -486,6 +486,15 @@ function rebuildWithNotes(
 
 /** Restore a user-deleted event (explicit user action). */
 export async function restoreCalendarEvent(db: Db, userId: string, workoutId: string): Promise<void> {
+  // Ownership BEFORE any write: the suppression/link deletes below key on
+  // workoutId alone (neither table has a user_id column), so an unverified
+  // id would let one user clear another's calendar rows.
+  const owned = await db
+    .select({ id: plannedWorkouts.id })
+    .from(plannedWorkouts)
+    .where(and(eq(plannedWorkouts.id, workoutId), eq(plannedWorkouts.userId, userId)))
+    .limit(1);
+  if (!owned[0]) return;
   const now = nowInstant();
   await db.delete(calendarEventSuppressions).where(eq(calendarEventSuppressions.workoutId, workoutId));
   await db.delete(calendarEventLinks).where(eq(calendarEventLinks.workoutId, workoutId));

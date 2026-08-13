@@ -137,7 +137,7 @@ export async function corosReadNow(
     // The exercise catalog also rides the cloud now — the last snapshot duty
     // the desktop bridge held.
     const catalogStale = await isExerciseCatalogStale(db);
-    const snapshot = await buildSnapshot(client, rangeStart, rangeEnd, resolver, {
+    const snapshot = await buildSnapshot(client, rangeStart, rangeEnd, today, resolver, {
       includeExerciseCatalog: catalogStale,
       healthRangeStart: addDays(today, -7),
       detailFilter: (item) => !seen.has(item.labelId) || needsDetail.has(item.labelId),

@@ -99,6 +99,10 @@ function fakeCoros(today: string) {
       bump("dayDetail");
       return json({ result: "0000", data: { dayList: [{ happenDay: Number(activityDay), rhr: 48 }] } });
     }
+    if (url.includes("/dashboard/query")) {
+      bump("dashboard");
+      return json({ result: "0000", data: { summaryInfo: { rhr: 48, recoveryPct: 77 } } });
+    }
     bump(`other:${new URL(url).pathname}`);
     return json({ result: "0000", data: {} });
   }) as typeof fetch;
@@ -138,6 +142,20 @@ describe("corosReadNow", () => {
       .from(schema.providerConnections)
       .where(eq(schema.providerConnections.userId, userId));
     expect(conn!.lastSyncAt).not.toBeNull();
+  });
+
+  it("stamps dashboard recovery onto the latest health day despite future rangeEnds (audit T1)", async () => {
+    // read-now ranges always end in the future (schedule-ahead / full-schedule
+    // reads); the latest COROS health day here lags to yesterday. Both were
+    // true in prod, where the old rangeEnd-equality guard left recovery_score
+    // NULL on all 73 daily_health rows.
+    const { db, userId, prefs, today, coros } = await setup();
+    const res = await corosReadNow(db, makeEnv(), userId, prefs, { fetchImpl: coros.fetchImpl });
+    expect(res.status).toBe("ok");
+    const rows = await db.select().from(schema.dailyHealth).where(eq(schema.dailyHealth.userId, userId));
+    expect(rows).toHaveLength(1);
+    expect(rows[0]!.date).toBe(addDays(today, -1));
+    expect(rows[0]!.recoveryScore).toBe(77); // the fakeCoros dashboard value
   });
 
   it("is fresh within the 90s window and pulls again after it", async () => {

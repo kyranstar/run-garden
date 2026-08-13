@@ -4,6 +4,7 @@ import {
   corosWriteJobs,
   plannedWorkoutStages,
   plannedWorkouts,
+  syncIntents,
   trainingPlanVersions,
   trainingPlans,
 } from "@rg/database";
@@ -197,6 +198,13 @@ export async function importPlanSnapshot(
         )
     ).map((s) => s.workoutId),
   );
+  // Belt for the suppression key (audit#3 D2): a row archived as a decision
+  // stays removed even if its suppression row is ever swept or missing.
+  for (const w of existing) {
+    if (w.archivedAt && (w.archiveReason === "user_removed" || w.archiveReason === "duplicate_mirror")) {
+      userRemovedIds.add(w.id);
+    }
+  }
 
   const pendingJobs = await db
     .select()
@@ -215,6 +223,26 @@ export async function importPlanSnapshot(
       const toDate = i.payload?.["toDate"];
       return typeof toDate === "string" ? [[i.targetId, { id: i.id, toDate }] as const] : [];
     }),
+  );
+
+  // Approved coach edits are the app's permanent claim on a session's
+  // CONTENT (audit#3 D1): rule 7 and the recycled-slot rewrite must never
+  // hand these rows back to the COROS snapshot. Content intents deliberately
+  // never resolve — nothing on COROS can confirm them.
+  const contentIntentIds = new Set(
+    (
+      await db
+        .select({ targetId: syncIntents.targetId })
+        .from(syncIntents)
+        .where(
+          and(
+            eq(syncIntents.userId, input.userId),
+            eq(syncIntents.kind, "content"),
+            isNull(syncIntents.resolvedAt),
+            isNull(syncIntents.supersededBy),
+          ),
+        )
+    ).map((r) => r.targetId),
   );
 
   const seenSourceIds = new Set<string>();
@@ -256,6 +284,12 @@ export async function importPlanSnapshot(
       current.completionState === "completed"
     ) {
       stats.skippedForeignWorkouts += 1;
+      continue;
+    }
+    if (current && current.sport !== src.sport && contentIntentIds.has(current.id)) {
+      // Not a recycled slot: the coach's approved ease flipped this row's
+      // sport locally. Same content claim as rule 7 — the app wins.
+      stats.unchanged += 1;
       continue;
     }
     if (current && current.sport !== src.sport) {
@@ -481,7 +515,12 @@ export async function importPlanSnapshot(
       }
     }
 
-    if (src.contentFingerprint !== current.sourceContentFingerprint) {
+    if (src.contentFingerprint !== current.sourceContentFingerprint && contentIntentIds.has(current.id)) {
+      // Rule 7 exception (audit#3 D1): the coach eased this session and the
+      // athlete approved — the app's content wins over the snapshot, every
+      // snapshot, or the approval silently un-happens within one pull.
+      stats.unchanged += 1;
+    } else if (src.contentFingerprint !== current.sourceContentFingerprint) {
       // Rule 7: content changed upstream — update, preserve time of day.
       updates.title = src.title;
       updates.category = category;

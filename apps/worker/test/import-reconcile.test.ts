@@ -6,7 +6,7 @@ import { FixtureTrainingProvider } from "@rg/providers";
 import type { Db } from "../src/services/db.js";
 import { importPlanSnapshot } from "../src/services/import-plan.js";
 import { applyMove, emitPendingWork } from "../src/services/jobs.js";
-import { openIntentFor } from "../src/services/sync-intents.js";
+import { openIntentFor, recordIntent } from "../src/services/sync-intents.js";
 import { makeTestDb, makeTestUser, connectTestCoros } from "./helpers.js";
 
 /**
@@ -244,5 +244,92 @@ describe("rule 8 provenance guard (audit#2 finding 1)", () => {
       .where(eq(plannedWorkouts.id, "cw-audit-1"));
     expect(coachRow!.archivedAt).toBeNull();
     expect(coachRow!.missingReads).toBe(0);
+  });
+});
+
+describe("content claims against the snapshot (audit#3 D1/D2)", () => {
+  it("an approved coach ease survives every subsequent snapshot", async () => {
+    await importFromProvider();
+    const imported = await db
+      .select()
+      .from(plannedWorkouts)
+      .where(eq(plannedWorkouts.userId, userId));
+    const eased = imported[0]!;
+    const control = imported[1]!;
+    const originalControlTitle = control.title;
+
+    // Simulate the approved ease: local content + the permanent claim.
+    await db
+      .update(plannedWorkouts)
+      .set({
+        title: "Recovery 30 (eased)",
+        category: "recovery",
+        sourceContentFingerprint: "app-fnv-claim",
+        corosSyncState: "calendar_only",
+        updatedAt: nowInstant(),
+      })
+      .where(eq(plannedWorkouts.id, eased.id));
+    await recordIntent(db, {
+      userId,
+      targetKind: "workout",
+      targetId: eased.id,
+      kind: "content",
+      source: "coach_ease",
+    });
+    // The control diverges identically but holds no claim — rule 7 restores it.
+    await db
+      .update(plannedWorkouts)
+      .set({ title: "Drifted title", sourceContentFingerprint: "drift", updatedAt: nowInstant() })
+      .where(eq(plannedWorkouts.id, control.id));
+
+    await importFromProvider();
+
+    const [keptRow] = await db.select().from(plannedWorkouts).where(eq(plannedWorkouts.id, eased.id));
+    expect(keptRow!.title).toBe("Recovery 30 (eased)");
+    expect(keptRow!.category).toBe("recovery");
+    const [restored] = await db.select().from(plannedWorkouts).where(eq(plannedWorkouts.id, control.id));
+    expect(restored!.title).toBe(originalControlTitle);
+  });
+
+  it("a content claim also blocks the recycled-slot rewrite on a sport flip", async () => {
+    await importFromProvider();
+    const [row] = await db.select().from(plannedWorkouts).where(eq(plannedWorkouts.userId, userId));
+    await db
+      .update(plannedWorkouts)
+      .set({
+        title: "Mobility (eased from run)",
+        sport: "strength",
+        category: "strength",
+        sourceContentFingerprint: "app-fnv-claim",
+        updatedAt: nowInstant(),
+      })
+      .where(eq(plannedWorkouts.id, row!.id));
+    await recordIntent(db, {
+      userId,
+      targetKind: "workout",
+      targetId: row!.id,
+      kind: "content",
+      source: "coach_ease",
+    });
+
+    await importFromProvider();
+
+    const [kept] = await db.select().from(plannedWorkouts).where(eq(plannedWorkouts.id, row!.id));
+    expect(kept!.sport).toBe("strength");
+    expect(kept!.title).toBe("Mobility (eased from run)");
+  });
+
+  it("archiveReason user_removed blocks presence-healing even without a suppression row", async () => {
+    await importFromProvider();
+    const [row] = await db.select().from(plannedWorkouts).where(eq(plannedWorkouts.userId, userId));
+    await db
+      .update(plannedWorkouts)
+      .set({ archivedAt: nowInstant(), archiveReason: "user_removed", updatedAt: nowInstant() })
+      .where(eq(plannedWorkouts.id, row!.id));
+
+    await importFromProvider();
+
+    const [still] = await db.select().from(plannedWorkouts).where(eq(plannedWorkouts.id, row!.id));
+    expect(still!.archivedAt).not.toBeNull();
   });
 });

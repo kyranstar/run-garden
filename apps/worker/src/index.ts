@@ -1,4 +1,4 @@
-import { Hono } from "hono";
+import { Hono, type MiddlewareHandler } from "hono";
 import { and, eq, gte, inArray, isNull, lte } from "drizzle-orm";
 import {
   activities,
@@ -39,17 +39,25 @@ const app = new Hono<AppContext>();
 
 app.use("*", withDb);
 
-// Same-origin app; a light CSRF guard for mutating API calls from browsers.
-app.use("/api/*", async (c, next) => {
+/**
+ * Same-origin app; a light CSRF guard for mutating API calls from browsers.
+ * A PRESENT Origin must equal APP_URL's origin exactly — the old
+ * `APP_URL.startsWith(origin)` was direction-inverted (any prefix such as
+ * "https://run" passed), and the x-device-id bypass was dead code from the
+ * deleted desktop bridge. A missing Origin still passes: same-origin GETs
+ * and non-browser clients omit the header.
+ */
+export const originGuard: MiddlewareHandler<AppContext> = async (c, next) => {
   if (!["GET", "HEAD", "OPTIONS"].includes(c.req.method)) {
     const origin = c.req.header("origin");
-    const isDevice = c.req.header("x-device-id");
-    if (!isDevice && origin && !c.env.APP_URL.startsWith(origin)) {
+    if (origin && origin !== new URL(c.env.APP_URL).origin) {
       return c.json({ error: "bad_origin" }, 403);
     }
   }
   await next();
-});
+};
+
+app.use("/api/*", originGuard);
 
 app.route("/api/auth", authRoutes);
 app.route("/api/plan", planRoutes);

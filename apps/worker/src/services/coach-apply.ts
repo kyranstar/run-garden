@@ -1,5 +1,6 @@
-import { and, eq, gte, inArray, lte } from "drizzle-orm";
+import { and, eq, gte, inArray, isNull, lte } from "drizzle-orm";
 import {
+  calendarEventSuppressions,
   coachPlanWeeks,
   coachPlans,
   corosWriteJobs,
@@ -7,6 +8,7 @@ import {
 } from "@rg/database";
 import {
   addDays,
+  newId,
   nowInstant,
   todayInZone,
   type CoachOp,
@@ -15,6 +17,7 @@ import {
 } from "@rg/domain";
 import type { Db } from "./db.js";
 import { applyMove } from "./jobs.js";
+import { recordIntent } from "./sync-intents.js";
 import { resolveRaceConflict } from "./race-conflict.js";
 
 /**
@@ -147,17 +150,85 @@ async function insertSession(
   }
 }
 
-/** Archive this plan-week's unstarted sessions (calendar suppression only —
- * COROS untouched, the documented remove contract). */
+/**
+ * Archive aftermath (audit#3 D2): every coach-archived row needs the same
+ * "user_removed" suppression a hand removal gets — import's presence-healing
+ * keys on suppressions, and without one the next 90-day COROS read
+ * un-archives the row right next to its replacement. Verified watch-pushed
+ * sessions additionally get an unpush job so the watch stops scheduling the
+ * retired plan (imported COROS-plan rows are never touched here — archiveWeek
+ * and retirePlan operate on coach-authored plans only).
+ */
+async function suppressAndUnpush(
+  db: Db,
+  userId: string,
+  rows: Array<typeof plannedWorkouts.$inferSelect>,
+  now: string,
+  prefs: UserPreferences,
+): Promise<void> {
+  for (const w of rows) {
+    await db
+      .insert(calendarEventSuppressions)
+      .values({ id: newId(), workoutId: w.id, eventId: null, reason: "user_removed", createdAt: now });
+    if (!prefs.corosWritesEnabled) continue;
+    const wire = /^\d+:\d+$/.test(w.sourceWorkoutId ?? "");
+    if (!wire || w.corosSyncState !== "synced" || !w.sourceIdInPlan || !w.sourceProgramId) continue;
+    // The delete triple's stamp is the create payload's exact name — it was
+    // never persisted on the row, so read it back off the verified push job.
+    const [createJob] = await db
+      .select()
+      .from(corosWriteJobs)
+      .where(eq(corosWriteJobs.id, `${w.id}-push`))
+      .limit(1);
+    const stamp = (createJob?.payload as { name?: string } | null)?.name;
+    if (!stamp) continue;
+    await db
+      .insert(corosWriteJobs)
+      .values({
+        id: `${w.id}-unpush`,
+        userId,
+        workoutId: w.id,
+        kind: "coach_delete_workout",
+        expectedContentFingerprint: createJob?.expectedContentFingerprint ?? "",
+        originalDate: w.effectiveDate,
+        destinationDate: w.effectiveDate,
+        payload: {
+          workoutId: w.id,
+          happenDay: w.lastVerifiedCorosDate || w.effectiveDate,
+          name: stamp,
+          idInPlan: w.sourceIdInPlan,
+          programId: w.sourceProgramId,
+          corosPlanId: w.sourceWorkoutId!.split(":")[0]!,
+        },
+        requestedAt: now,
+        status: "queued",
+        updatedAt: now,
+      })
+      .onConflictDoNothing();
+  }
+}
+
+/** Archive this plan-week's unstarted sessions (calendar suppression; watch
+ * unpush for verified coach-pushed rows — the documented remove contract for
+ * imported plans never applies here because planId is coach-authored). */
 async function archiveWeek(
   db: Db,
   userId: string,
   planId: string,
   weekStart: string,
   now: string,
+  prefs: UserPreferences,
 ): Promise<string[]> {
+  // An LLM-supplied planId must be a plan the coach authored: pointed at the
+  // imported COROS plan's id this would bulk-archive imported rows.
+  const [plan] = await db
+    .select({ id: coachPlans.id })
+    .from(coachPlans)
+    .where(and(eq(coachPlans.id, planId), eq(coachPlans.userId, userId)))
+    .limit(1);
+  if (!plan) return [];
   const rows = await db
-    .select({ id: plannedWorkouts.id })
+    .select()
     .from(plannedWorkouts)
     .where(
       and(
@@ -166,6 +237,9 @@ async function archiveWeek(
         gte(plannedWorkouts.effectiveDate, weekStart),
         lte(plannedWorkouts.effectiveDate, addDays(weekStart, 6)),
         eq(plannedWorkouts.completionState, "scheduled"),
+        // Re-applying an approved proposal must be a no-op — already-archived
+        // rows would otherwise collect a second suppression row.
+        isNull(plannedWorkouts.archivedAt),
       ),
     );
   if (rows.length > 0) {
@@ -173,6 +247,7 @@ async function archiveWeek(
       .update(plannedWorkouts)
       .set({ archivedAt: now, archiveReason: "user_removed", updatedAt: now })
       .where(inArray(plannedWorkouts.id, rows.map((r) => r.id)));
+    await suppressAndUnpush(db, userId, rows, now, prefs);
   }
   return rows.map((r) => r.id);
 }
@@ -206,6 +281,17 @@ export async function applyOps(
             updatedAt: now,
           })
           .where(and(eq(plannedWorkouts.id, op.workoutId), eq(plannedWorkouts.userId, userId)));
+        // The approved edit is the app's permanent claim on this session's
+        // content — without it, import rule 7 hands the row back to the
+        // COROS snapshot within one pull (audit#3 D1).
+        await recordIntent(db, {
+          userId,
+          targetKind: "workout",
+          targetId: op.workoutId,
+          kind: "content",
+          payload: { fingerprint: fingerprint(op.session) },
+          source: "coach_ease",
+        });
         out.updated.push(op.workoutId);
         break;
       }
@@ -273,7 +359,7 @@ export async function applyOps(
         break;
       }
       case "reshapeWeek": {
-        out.archived.push(...(await archiveWeek(db, userId, op.planId, op.weekStart, now)));
+        out.archived.push(...(await archiveWeek(db, userId, op.planId, op.weekStart, now, prefs)));
         for (const [n, s] of op.sessions.entries()) {
           const id = opId(n);
           await insertSession(db, userId, op.planId, id, s.date, s.session, now, {
@@ -331,7 +417,7 @@ export async function applyOps(
           return addDays(s.date, -dow);
         }))];
         for (const monday of mondays) {
-          out.archived.push(...(await archiveWeek(db, userId, op.planId, monday, now)));
+          out.archived.push(...(await archiveWeek(db, userId, op.planId, monday, now, prefs)));
         }
         for (const [n, s] of op.sessions.entries()) {
           const id = opId(n);
@@ -385,8 +471,16 @@ export async function applyOps(
         break;
       }
       case "retirePlan": {
+        // Same authorship guard as archiveWeek: retiring may only ever
+        // target a coach-authored plan.
+        const [plan] = await db
+          .select({ id: coachPlans.id })
+          .from(coachPlans)
+          .where(and(eq(coachPlans.id, op.planId), eq(coachPlans.userId, userId)))
+          .limit(1);
+        if (!plan) break;
         const rows = await db
-          .select({ id: plannedWorkouts.id })
+          .select()
           .from(plannedWorkouts)
           .where(
             and(
@@ -394,6 +488,7 @@ export async function applyOps(
               eq(plannedWorkouts.planId, op.planId),
               gte(plannedWorkouts.effectiveDate, today),
               eq(plannedWorkouts.completionState, "scheduled"),
+              isNull(plannedWorkouts.archivedAt),
             ),
           );
         if (rows.length > 0) {
@@ -401,6 +496,7 @@ export async function applyOps(
             .update(plannedWorkouts)
             .set({ archivedAt: now, archiveReason: "user_removed", updatedAt: now })
             .where(inArray(plannedWorkouts.id, rows.map((r) => r.id)));
+          await suppressAndUnpush(db, userId, rows, now, prefs);
           out.archived.push(...rows.map((r) => r.id));
         }
         await db
