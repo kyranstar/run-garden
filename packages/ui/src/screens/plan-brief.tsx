@@ -1,6 +1,6 @@
 import { useState } from "react";
 import type { PlanWeekResponse } from "@rg/api-client";
-import { formatMinutes, Sheet } from "../components.js";
+import { formatMinutes, formatShortDate, Sheet } from "../components.js";
 
 /**
  * The weekly brief (rework spec §6): headline state, a context line that says
@@ -137,6 +137,14 @@ export function WeeklyBrief({
         ) : null}
       </div>
       {context ? <p className="plan-brief-context">{context}</p> : null}
+      {week.raceMismatch ? (
+        <p className="plan-brief-context" role="alert">
+          ⚠ Two race dates: the plan has “{week.raceMismatch.title}” on{" "}
+          {formatShortDate(week.raceMismatch.plannedDate)}, but your race day is set to{" "}
+          {formatShortDate(week.raceMismatch.raceDate)}. Fix whichever is wrong — Race day lives in
+          Settings; the plan's race is edited in COROS.
+        </p>
+      ) : null}
       {/* Labels compact themselves under 640px (spec R1 + "no unnecessary
           wrapping"): the numbers stay, the prose shrinks, one row fits.
           Every chip opens the explainer — numbers must not need context. */}

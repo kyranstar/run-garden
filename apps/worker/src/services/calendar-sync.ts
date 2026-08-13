@@ -31,6 +31,7 @@ import {
 import type { Env } from "../env.js";
 import { chunkIds, type Db } from "./db.js";
 import { googleCalendarClient, type GoogleCalendarClient } from "./google-calendar.js";
+import { activeSyncNotes, postSyncNote } from "./sync-notes.js";
 import { applyMove } from "./jobs.js";
 
 /**
@@ -319,6 +320,25 @@ async function executeOps(
     try {
       await executeOneOp(db, userId, client, calendarId, op, prefs, stats, now);
     } catch (e) {
+      // A rejected RACE move deserves a visible note, not a swallowed warn
+      // (audit#2 #3): the user dragged the race event believing it worked,
+      // and the mirror kept claiming "synced" while diverging permanently.
+      if (
+        op.op === "accept_user_move" &&
+        e instanceof Error &&
+        e.message === "races_cannot_move"
+      ) {
+        const existing = await activeSyncNotes(db, userId);
+        if (!existing.some((n) => n.kind === "race_move_rejected" && n.workoutId === op.workoutId)) {
+          await postSyncNote(db, {
+            userId,
+            kind: "race_move_rejected",
+            workoutId: op.workoutId,
+            payload: { attemptedStart: op.newStart },
+          });
+        }
+        continue;
+      }
       // One poisoned event (quota 403, an id the token lost access to, a
       // race-duplicated link) must never wedge the whole mirror: before this
       // guard, the loop aborted at the same position on every run and

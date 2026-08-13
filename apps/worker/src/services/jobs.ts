@@ -1,4 +1,4 @@
-import { and, desc, eq, inArray, lt, notInArray } from "drizzle-orm";
+import { and, desc, eq, inArray, lt, ne, notInArray } from "drizzle-orm";
 import {
   auditEvents,
   backfillState,
@@ -75,6 +75,11 @@ async function enqueueMoveJob(
       and(
         eq(corosWriteJobs.workoutId, v.workout.id),
         inArray(corosWriteJobs.status, ["queued", "claimed", "in_progress", "verifying"]),
+        // A pending watch CREATE must survive a move: superseding it left the
+        // session app-only forever (audit#2 finding 12). The move job queues
+        // BEHIND it; by execution time the create has stamped real source
+        // ids, which the executor reads fresh at claim.
+        ne(corosWriteJobs.kind, "coach_create_workout"),
       ),
     );
   const jobId = newId();

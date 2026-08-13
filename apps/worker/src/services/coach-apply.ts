@@ -71,8 +71,18 @@ async function insertSession(
   date: string,
   session: CoachSession,
   now: string,
-  opts: { corosWritesEnabled?: boolean } = {},
+  opts: { corosWritesEnabled?: boolean; prefs?: UserPreferences } = {},
 ): Promise<void> {
+  // Land in the athlete's own slot, not a hardcoded dawn (audit#2 #15).
+  const window = session.category === "long" || session.category === "race" ? "morning" : (opts.prefs?.defaultWindow ?? "morning");
+  const isWeekend = [0, 6].includes(new Date(`${date}T12:00:00Z`).getUTCDay());
+  const effectiveTime = opts.prefs
+    ? window === "evening"
+      ? opts.prefs.weekdayEveningTime
+      : isWeekend
+        ? opts.prefs.weekendMorningTime
+        : opts.prefs.weekdayMorningTime
+    : "07:00";
   await db
     .insert(plannedWorkouts)
     .values({
@@ -84,11 +94,17 @@ async function insertSession(
       category: session.category,
       sport: session.lift ? "strength" : "run",
       originalPlanDate: date,
-      lastVerifiedCorosDate: date,
+      // "" = COROS has never verified this row (audit#2 #1): the absence
+      // sweep must skip it and the sync pill must not read "synced". The
+      // create's verify stamps the real date.
+      lastVerifiedCorosDate: "",
       effectiveDate: date,
-      effectiveTime: "07:00",
+      effectiveTime,
       sourceContentFingerprint: fingerprint(session),
       calendarBlockDurationSeconds: session.durationMinutes * 60,
+      // The coach's own stated duration IS the estimate — without this every
+      // consumer fell back to a fictitious 45 minutes (audit#2 #15).
+      fallbackEstimatedDurationSeconds: session.durationMinutes * 60,
       stageSummary: stageSummary(session),
       // Lift structure survives apply (rework spec §5): the exercises array
       // is what lets plan-detail graph a coached progression; the flattened
@@ -106,19 +122,27 @@ async function insertSession(
   // The stored state stays calendar_only until the executor verifies; the
   // pending job already renders as "syncing" through deriveWorkoutSync.
   if (opts.corosWritesEnabled && watchPushable(session)) {
-    await db.insert(corosWriteJobs).values({
-      id: `${id}-push`,
-      userId,
-      workoutId: id,
-      kind: "coach_create_workout",
-      expectedContentFingerprint: fingerprint(session),
-      originalDate: date,
-      destinationDate: date,
-      payload: { workoutId: id, happenDay: date, name: session.title, session },
-      requestedAt: now,
-      status: "queued",
-      updatedAt: now,
-    });
+    await db
+      .insert(corosWriteJobs)
+      .values({
+        id: `${id}-push`,
+        userId,
+        workoutId: id,
+        kind: "coach_create_workout",
+        expectedContentFingerprint: fingerprint(session),
+        originalDate: date,
+        destinationDate: date,
+        // The name is the OWNERSHIP STAMP on COROS and must be unique per
+        // plan — raw titles ("Long Run" ×6) refuse every create after the
+        // first (audit#2 #7).
+        payload: { workoutId: id, happenDay: date, name: `${session.title} — ${date}`, session },
+        requestedAt: now,
+        status: "queued",
+        updatedAt: now,
+      })
+      // Re-applying an approve must be idempotent (audit#2 #13) — the
+      // deterministic id makes skip-on-conflict exactly right.
+      .onConflictDoNothing();
   }
 }
 
@@ -242,6 +266,7 @@ export async function applyOps(
         const id = opId(0);
         await insertSession(db, userId, planId, id, op.date, op.session, now, {
           corosWritesEnabled: prefs.corosWritesEnabled,
+          prefs,
         });
         out.created.push(id);
         break;
@@ -252,6 +277,7 @@ export async function applyOps(
           const id = opId(n);
           await insertSession(db, userId, op.planId, id, s.date, s.session, now, {
             corosWritesEnabled: prefs.corosWritesEnabled,
+            prefs,
           });
           out.created.push(id);
         }
@@ -262,6 +288,7 @@ export async function applyOps(
           const id = opId(n);
           await insertSession(db, userId, op.planId, id, s.date, s.session, now, {
             corosWritesEnabled: prefs.corosWritesEnabled,
+            prefs,
           });
           out.created.push(id);
         }
@@ -307,7 +334,10 @@ export async function applyOps(
         }
         for (const [n, s] of op.sessions.entries()) {
           const id = opId(n);
-          await insertSession(db, userId, op.planId, id, s.date, s.session, now);
+          await insertSession(db, userId, op.planId, id, s.date, s.session, now, {
+            corosWritesEnabled: prefs.corosWritesEnabled,
+            prefs,
+          });
           out.created.push(id);
         }
         break;
@@ -332,7 +362,10 @@ export async function applyOps(
           .onConflictDoNothing();
         for (const [n, s] of op.firmSessions.entries()) {
           const id = opId(n);
-          await insertSession(db, userId, planId, id, s.date, s.session, now);
+          await insertSession(db, userId, planId, id, s.date, s.session, now, {
+            corosWritesEnabled: prefs.corosWritesEnabled,
+            prefs,
+          });
           out.created.push(id);
         }
         for (const wk of op.shapeWeeks) {

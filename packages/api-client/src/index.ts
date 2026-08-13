@@ -320,6 +320,8 @@ export interface PlanWeekResponse {
   /** Distinct adventure-sport days in the trailing 28 — the brief's context
    * line uses this to say "the plan paused", not "you failed". */
   adventureDays: number;
+  /** An active race workout sits on a different day than prefs.raceDate. */
+  raceMismatch?: { plannedDate: string; raceDate: string; title: string } | null;
   headline: "on_track" | "behind" | "ahead" | "rebuilding" | "race_week" | "resting";
   focus: { text: string; at: string } | null;
 }
@@ -533,7 +535,8 @@ export type SyncNoteKind =
   | "kept_local_change"
   | "adopted_coros_change"
   | "adopted_coros_edit"
-  | "adopted_coros_removal";
+  | "adopted_coros_removal"
+  | "race_move_rejected";
 
 export interface SyncNoteDto {
   id: string;

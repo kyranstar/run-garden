@@ -1,5 +1,5 @@
 import { and, eq, inArray, isNull, lt, lte } from "drizzle-orm";
-import { plannedWorkouts, syncErrors, syncRuns } from "@rg/database";
+import { calendarEventSuppressions, plannedWorkouts, syncErrors, syncRuns } from "@rg/database";
 import { addDays, newId, nowInstant, todayInZone, type UserPreferences } from "@rg/domain";
 import type { Db } from "./db.js";
 
@@ -101,6 +101,27 @@ export async function startSyncRun(
     status: "running",
   });
   return id;
+}
+
+/** Delete workout_removed calendar suppressions whose workout is alive and
+ * scheduled (audit#2 #4): the workout's presence proves the removal wrong,
+ * and an immortal suppression silently bars it from Google Calendar forever. */
+export async function sweepStaleSuppressions(db: Db): Promise<number> {
+  const stale = await db
+    .select({ id: calendarEventSuppressions.id })
+    .from(calendarEventSuppressions)
+    .innerJoin(plannedWorkouts, eq(calendarEventSuppressions.workoutId, plannedWorkouts.id))
+    .where(
+      and(
+        eq(calendarEventSuppressions.reason, "workout_removed"),
+        isNull(plannedWorkouts.archivedAt),
+        eq(plannedWorkouts.completionState, "scheduled"),
+      ),
+    );
+  for (const r of stale) {
+    await db.delete(calendarEventSuppressions).where(eq(calendarEventSuppressions.id, r.id));
+  }
+  return stale.length;
 }
 
 /** Close out sync_runs stranded in 'running' by a deploy or isolate death

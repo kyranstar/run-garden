@@ -427,6 +427,24 @@ planRoutes.get("/week", async (c) => {
     const d = Math.round((Date.parse(prefs.raceDate) - Date.parse(today)) / 86_400_000);
     if (d >= 0) raceInDays = d;
   }
+  // Two race truths must never coexist silently (audit#2 #3): the imported
+  // plan's race row vs the athlete's stated race day.
+  const [raceRow] = await db
+    .select({ date: plannedWorkouts.effectiveDate, title: plannedWorkouts.title })
+    .from(plannedWorkouts)
+    .where(
+      and(
+        eq(plannedWorkouts.userId, userId),
+        eq(plannedWorkouts.category, "race"),
+        isNull(plannedWorkouts.archivedAt),
+        eq(plannedWorkouts.completionState, "scheduled"),
+      ),
+    )
+    .limit(1);
+  const raceMismatch =
+    raceRow && prefs.raceDate && raceRow.date !== prefs.raceDate
+      ? { plannedDate: raceRow.date, raceDate: prefs.raceDate, title: raceRow.title }
+      : null;
   if (covering) {
     const [thisWeekShape] = await db
       .select()
@@ -534,6 +552,7 @@ planRoutes.get("/week", async (c) => {
     adherence4w: { pct: recentPct, trend },
     loadRatio,
     adventureDays,
+    raceMismatch,
     headline: deriveHeadline({ adherencePct: recentPct, loadRatio, raceInDays, deloadWeek }),
     focus,
   });

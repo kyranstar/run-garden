@@ -84,6 +84,22 @@ export async function computeSyncStatus(
   const failedMoveCount = new Set(
     failedJobs.map((j) => j.workoutId).filter((id) => openIntentTargets.has(id)),
   ).size;
+  // A terminally-failed coach watch-push is an issue the user can see and
+  // act on (audit#2 #6) — it has no move intent, so count it directly.
+  const failedCoachCreates = (
+    await db
+      .select({ id: corosWriteJobs.id })
+      .from(corosWriteJobs)
+      .innerJoin(plannedWorkouts, eq(corosWriteJobs.workoutId, plannedWorkouts.id))
+      .where(
+        and(
+          eq(corosWriteJobs.userId, userId),
+          eq(corosWriteJobs.kind, "coach_create_workout"),
+          eq(corosWriteJobs.status, "failed"),
+          isNull(plannedWorkouts.archivedAt),
+        ),
+      )
+  ).length;
   // Scoped to the NEWEST studio plan — the same predicate POST /api/sync/retry
   // acts on. Counting retired plans' failed rows (usually failed deletes)
   // inflates a badge the Retry button can never clear, the exact misleading
@@ -107,7 +123,7 @@ export async function computeSyncStatus(
           ),
         )
     : [];
-  const issueCount = failedMoveCount + failedStudio.length;
+  const issueCount = failedMoveCount + failedStudio.length + failedCoachCreates;
 
   // Phase C deleted the only writer of sync_runs kind='coros_read' — the
   // honest freshness is the connection's own lastSyncAt, stamped by every

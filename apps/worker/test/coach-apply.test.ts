@@ -250,7 +250,9 @@ describe("coach adds reach the watch (2026-08-12)", () => {
       .where(eq(schema.corosWriteJobs.kind, "coach_create_workout"));
     expect(jobs).toHaveLength(1);
     expect(jobs[0]!.workoutId).toBe(applied.created[0]);
-    expect((jobs[0]!.payload as { name: string }).name).toBe("Race-week shakeout");
+    // The stamp is uniquified with the date (audit#2 #7) — raw recurring
+    // titles would refuse every create after the first.
+    expect((jobs[0]!.payload as { name: string }).name).toBe("Race-week shakeout — 2026-10-22");
   });
 
   it("distance blocks and disabled writes stay app-only — no job", async () => {

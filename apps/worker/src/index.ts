@@ -24,7 +24,7 @@ import { makeDb, chunkIds, type Db } from "./services/db.js";
 import { loadPreferences, syncCalendar } from "./services/calendar-sync.js";
 import { advanceGarden } from "./services/garden-sync.js";
 import { runBackfillChunkCloud, sweepStaleBackfills } from "./services/backfill.js";
-import { closeStrandedSyncRuns, reconcileCompletionStates, startSyncRun, finishSyncRun } from "./services/reconcile-daily.js";
+import { closeStrandedSyncRuns, sweepStaleSuppressions, reconcileCompletionStates, startSyncRun, finishSyncRun } from "./services/reconcile-daily.js";
 import { generateWeeklyReview } from "./services/llm.js";
 import { healLegacySyncState } from "./services/heal-legacy-sync.js";
 import { evaluateTriggers } from "./services/coach-triggers.js";
@@ -128,6 +128,7 @@ async function halfHourly(db: Db, env: Env): Promise<void> {
 
 async function hourly(db: Db, env: Env): Promise<void> {
   await closeStrandedSyncRuns(db).catch(() => undefined);
+  await sweepStaleSuppressions(db).catch(() => undefined);
   for (const userId of await allUserIds(db)) {
     const runId = await startSyncRun(db, "reconcile", userId);
     try {
@@ -261,7 +262,7 @@ export default {
       case "15 * * * *":
         ctx.waitUntil(hourly(db, env));
         break;
-      case "0 20 * * 1":
+      case "0 20 * * MON":
         ctx.waitUntil(weekly(db, env));
         break;
       default:

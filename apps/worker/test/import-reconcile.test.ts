@@ -1,7 +1,7 @@
 import { beforeEach, describe, expect, it } from "vitest";
 import { eq } from "drizzle-orm";
 import { schema } from "@rg/database";
-import { addDays, todayInZone, type UserPreferences } from "@rg/domain";
+import { addDays, nowInstant, todayInZone, type UserPreferences } from "@rg/domain";
 import { FixtureTrainingProvider } from "@rg/providers";
 import type { Db } from "../src/services/db.js";
 import { importPlanSnapshot } from "../src/services/import-plan.js";
@@ -205,5 +205,44 @@ describe("importPlanSnapshot through the reconciler", () => {
       await db.select().from(plannedWorkouts).where(eq(plannedWorkouts.id, rows[0]!.id))
     )[0]!;
     expect(after.corosSyncState).toBe("synced");
+  });
+});
+
+describe("rule 8 provenance guard (audit#2 finding 1)", () => {
+  it("coach-authored rows are NEVER archived by the absence sweep; COROS-verified absentees still are", async () => {
+    await importFromProvider();
+    // A coach-approved session: self-referential source id, never verified.
+    const coachDate = addDays(baseMonday, 3);
+    await db.insert(plannedWorkouts).values({
+      id: "cw-audit-1",
+      userId,
+      planId: "coach-adhoc",
+      sourceWorkoutId: "cw-audit-1",
+      title: "Race-week shakeout",
+      category: "easy",
+      sport: "run",
+      originalPlanDate: coachDate,
+      lastVerifiedCorosDate: "",
+      effectiveDate: coachDate,
+      effectiveTime: "09:00",
+      sourceContentFingerprint: "fp",
+      calendarBlockDurationSeconds: 1500,
+      corosSyncState: "calendar_only",
+      completionState: "scheduled",
+      createdAt: nowInstant(),
+      updatedAt: nowInstant(),
+    });
+
+    // Two consecutive imports whose snapshots (naturally) never contain the
+    // coach row — before the guard, the second one archived it.
+    await importFromProvider();
+    await importFromProvider();
+
+    const [coachRow] = await db
+      .select()
+      .from(plannedWorkouts)
+      .where(eq(plannedWorkouts.id, "cw-audit-1"));
+    expect(coachRow!.archivedAt).toBeNull();
+    expect(coachRow!.missingReads).toBe(0);
   });
 });

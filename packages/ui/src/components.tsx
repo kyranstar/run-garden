@@ -246,6 +246,8 @@ function syncNoteText(note: SyncNoteDto): string | null {
       return `“${p.sessionTitle as string}” was edited on COROS — the studio stopped managing it`;
     case "adopted_coros_removal":
       return `“${p.sessionTitle as string}” was removed on COROS`;
+    case "race_move_rejected":
+      return "Races can't be moved from the calendar — the event was left where the plan has it. If the race date is wrong, update Race day in Settings.";
     default:
       return null;
   }

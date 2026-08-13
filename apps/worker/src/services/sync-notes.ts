@@ -6,7 +6,8 @@ import type { Db } from "./db.js";
 const NOTE_TTL_MS = 7 * 24 * 60 * 60_000;
 
 export type SyncNoteKind =
-  | "kept_local_change" | "adopted_coros_change" | "adopted_coros_edit" | "adopted_coros_removal";
+  | "kept_local_change" | "adopted_coros_change" | "adopted_coros_edit" | "adopted_coros_removal"
+  | "race_move_rejected";
 
 export async function postSyncNote(
   db: Db,

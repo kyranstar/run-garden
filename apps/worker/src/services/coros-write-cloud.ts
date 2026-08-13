@@ -1,8 +1,8 @@
 import { and, eq } from "drizzle-orm";
 import { corosWriteJobs, plannedWorkouts } from "@rg/database";
 import { nowInstant, type CorosWriteResult, type UserPreferences } from "@rg/domain";
-import { createWorkout, executeMoveJob, executeStudioJob, type StudioJob } from "@rg/coros";
-import { localDateToCorosDay } from "@rg/providers";
+import { buildRunProgram, createWorkout, executeMoveJob, executeStudioJob, type StudioJob } from "@rg/coros";
+import { corosProgramFingerprint, localDateToCorosDay } from "@rg/providers";
 import {
   coachCreateWorkoutJobSchema,
   createScheduledWorkoutJobSchema,
@@ -105,11 +105,27 @@ export async function executeCloudJobs(
         );
         const done = nowInstant();
         if (result.ok) {
+          // Stamp the WIRE fingerprint so a follow-up move compares like with
+          // like (audit#2 #12) — the app-side FNV stamp guaranteed a
+          // content_changed mismatch until the next snapshot healed it.
+          let wireFp: string | undefined;
+          try {
+            wireFp = corosProgramFingerprint(
+              buildRunProgram({
+                happenDay: String(localDateToCorosDay(spec.happenDay)),
+                name: spec.name,
+                session: spec.session,
+              }),
+            );
+          } catch {
+            /* fingerprint healing is best-effort; the next pull repairs it */
+          }
           await db
             .update(plannedWorkouts)
             .set({
               corosSyncState: "synced",
               lastVerifiedCorosDate: spec.happenDay,
+              ...(wireFp ? { sourceContentFingerprint: wireFp } : {}),
               // The COROS address the create landed at — this is what makes
               // the session MOVABLE on the watch later (the move executor
               // needs sourcePlanId:idInPlan).
@@ -130,10 +146,31 @@ export async function executeCloudJobs(
             .set({ status: "verified", completedAt: done, updatedAt: done })
             .where(eq(corosWriteJobs.id, job.id));
         } else {
-          console.error(`coach create failed (${spec.name}): ${result.reason ?? ""} ${result.error ?? ""}`);
+          // Transient outcomes retry (same taxonomy the studio retries via
+          // mapCreateResult); one blip must not strand a session app-only
+          // forever (audit#2 #6). Cap at 3 attempts, tracked in the payload.
+          const attempts = ((job.payload as { attempts?: number } | null)?.attempts ?? 0) + 1;
+          const retryable =
+            result.reason === "slot_occupied" ||
+            result.reason === "not_visible" ||
+            result.reason === "error" ||
+            result.reason === undefined;
+          console.error(
+            `coach create ${retryable && attempts < 3 ? "retrying" : "FAILED"} (${spec.name}, attempt ${attempts}): ${result.reason ?? ""} ${result.error ?? ""}`,
+          );
           await db
             .update(corosWriteJobs)
-            .set({ status: "failed", lastErrorCategory: result.reason ?? "error", updatedAt: done })
+            .set(
+              retryable && attempts < 3
+                ? {
+                    status: "queued",
+                    claimedByDeviceId: null,
+                    claimedAt: null,
+                    payload: { ...spec, attempts },
+                    updatedAt: done,
+                  }
+                : { status: "failed", lastErrorCategory: result.reason ?? "error", updatedAt: done },
+            )
             .where(eq(corosWriteJobs.id, job.id));
         }
         executed += 1;

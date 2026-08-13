@@ -373,6 +373,14 @@ export async function importPlanSnapshot(
       updates.archivedAt = null;
       updates.archiveReason = null;
       updates.calendarSyncState = current.calendarSyncState === "user_deleted" ? "user_deleted" : "pending";
+      stats.unarchived += 1;
+      touched = true;
+    }
+    // Presence in the plan proves any removal-suppression wrong, whether or
+    // not this snapshot is the one un-archiving the row (audit#2 #4: six
+    // active future workouts — race week included — were barred from the
+    // calendar by suppressions stranded when rows were unarchived earlier).
+    if (!userRemovedIds.has(current.id)) {
       await db
         .delete(calendarEventSuppressions)
         .where(
@@ -381,8 +389,6 @@ export async function importPlanSnapshot(
             eq(calendarEventSuppressions.reason, "workout_removed"),
           ),
         );
-      stats.unarchived += 1;
-      touched = true;
     }
 
     const pendingJob = pendingJobByWorkout.get(current.id);
@@ -508,6 +514,11 @@ export async function importPlanSnapshot(
     if (seenSourceIds.has(w.sourceWorkoutId)) continue;
     if (w.archivedAt) continue;
     if (w.completionState !== "scheduled") continue;
+    // Provenance guard (audit#2 finding 1): a row COROS never verified —
+    // coach/app-authored (sourceWorkoutId is its own row id) or one whose
+    // create hasn't verified yet — can NEVER be "absent from COROS"; the
+    // sweep was silently archiving coach-approved sessions within hours.
+    if (w.sourceWorkoutId === w.id || w.lastVerifiedCorosDate === "") continue;
     if (w.lastVerifiedCorosDate < input.rangeStart || w.lastVerifiedCorosDate > input.rangeEnd) {
       continue; // outside this snapshot's window; absence proves nothing
     }

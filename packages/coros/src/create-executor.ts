@@ -1191,7 +1191,10 @@ export async function createWorkout(
       planId,
       date,
       planStartDay,
-      sportType: 4,
+      // The entity's sport must match its program — a run program wrapped in
+      // a strength-typed entity lands mistyped on the real calendar (audit#2
+      // finding 5; the deleted spike's TEST B passed sportType 1 here).
+      sportType: program.sportType ?? 4,
       name: spec.name,
     });
 
