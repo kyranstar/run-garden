@@ -324,7 +324,7 @@ export interface PlanWeekResponse {
    * line uses this to say "the plan paused", not "you failed". */
   adventureDays: number;
   /** An active race workout sits on a different day than prefs.raceDate. */
-  raceMismatch?: { plannedDate: string; raceDate: string; title: string } | null;
+  raceMismatch?: { workoutId: string; plannedDate: string; raceDate: string; title: string } | null;
   headline: "on_track" | "behind" | "ahead" | "rebuilding" | "race_week" | "resting";
   focus: { text: string; at: string } | null;
 }
@@ -737,6 +737,8 @@ export const api = {
   studioHistory: () => get<{ plans: StudioHistoryEntryDto[] }>("/api/studio/history"),
   syncStatus: () => get<SyncStatusDto>("/api/sync/status"),
   syncNotes: () => get<{ notes: SyncNoteDto[] }>("/api/sync/notes"),
+  resolveRaceConflict: (keep: "settings" | "plan") =>
+    post<{ ok: true; resolved: boolean }>("/api/plan/race-conflict/resolve", { keep }),
   dismissSyncNote: (id: string) => post<{ ok: true }>(`/api/sync/notes/${id}/dismiss`),
   undoSyncNote: (id: string) => post<{ ok: true }>(`/api/sync/notes/${id}/undo`),
   readNow: () => post<ReadNowResponse>("/api/sync/read-now"),

@@ -483,6 +483,15 @@ export function PlanScreen() {
     queryKey: ["plan-week", pickedWeek ?? "current"],
     queryFn: () => api.planWeek(pickedWeek ?? undefined),
   });
+  // Two-race-dates resolution — the warning must be actionable where it
+  // appears. Settings holds the race day, so it refetches too.
+  const resolveRace = useMutation({
+    mutationFn: (keep: "settings" | "plan") => api.resolveRaceConflict(keep),
+    onSuccess: () => {
+      for (const k of ["plan", "plan-week", "today", "preferences", "coach-state"])
+        void qc.invalidateQueries({ queryKey: [k] });
+    },
+  });
 
   // Wider workout window (picked week ±4 weeks): ghost date resolution and
   // the workout-detail deep link both need more than seven days in hand.
@@ -683,7 +692,13 @@ export function PlanScreen() {
       </div>
       <div className="plan-page-col">
         <SyncPanel quietWhenHealthy />
-        <WeeklyBrief week={week.data} pendingCount={pendingCount} onNeedsYou={openCoachSurface} />
+        <WeeklyBrief
+          week={week.data}
+          pendingCount={pendingCount}
+          onNeedsYou={openCoachSurface}
+          onResolveRace={(keep) => resolveRace.mutate(keep)}
+          resolvingRace={resolveRace.isPending}
+        />
         <PlanCards
           plans={coachPlans.data?.plans ?? []}
           details={detailById}

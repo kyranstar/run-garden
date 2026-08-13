@@ -66,8 +66,13 @@ describe("coachOpSchema", () => {
         shapeWeeks: [{ weekStart: "2026-10-12", volumeTarget: "35k", keySessions: ["long 16k"] }],
       },
       { kind: "retirePlan", planId: "cp1" },
+      { kind: "resolveRaceConflict", keep: "settings" },
+      { kind: "resolveRaceConflict", keep: "plan" },
     ];
     for (const op of ops) expect(coachOpSchema.parse(op).kind).toBe(op.kind);
+  });
+  it("rejects resolveRaceConflict with an invalid keep target", () => {
+    expect(() => coachOpSchema.parse({ kind: "resolveRaceConflict", keep: "both" })).toThrow();
   });
   it("rejects unknown kinds and malformed dates", () => {
     expect(() => coachOpSchema.parse({ kind: "delete_everything" })).toThrow();

@@ -64,6 +64,11 @@ describe("hard rules", () => {
     expect(out.hard.some((v) => v.rule === "touch_resolved")).toBe(true);
   });
 
+  it("resolveRaceConflict edits no training day and passes clean", () => {
+    const out = validateOps([{ kind: "resolveRaceConflict", keep: "settings" }], ctx());
+    expect(out.hard).toEqual([]);
+  });
+
   it("H4: edits beyond the firm horizon are rejected (except firmUp/extend/reshape)", () => {
     const out = validateOps([{ kind: "add", date: "2026-09-01", session: easy() }], ctx());
     expect(out.hard.some((v) => v.rule === "beyond_horizon")).toBe(true);

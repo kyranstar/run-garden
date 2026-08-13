@@ -15,6 +15,7 @@ import {
 } from "@rg/domain";
 import type { Db } from "./db.js";
 import { applyMove } from "./jobs.js";
+import { resolveRaceConflict } from "./race-conflict.js";
 
 /**
  * Approval → deterministic mutations (spec §7). No LLM here, ever. All row
@@ -407,6 +408,13 @@ export async function applyOps(
           .set({ status: "retired", updatedAt: now })
           .where(and(eq(coachPlans.id, op.planId), eq(coachPlans.userId, userId)));
         out.updated.push(op.planId);
+        break;
+      }
+      case "resolveRaceConflict": {
+        const resolved = await resolveRaceConflict(db, userId, prefs, op.keep);
+        // Approving a proposal after the banner button already converged the
+        // dates is a clean no-op — resolveRaceConflict re-checks the data.
+        if (resolved) out.updated.push(resolved.workoutId);
         break;
       }
     }

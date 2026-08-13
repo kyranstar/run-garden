@@ -30,6 +30,7 @@ import {
 } from "@rg/garden-engine";
 import type { Db } from "./db.js";
 import { pendingTriggers } from "./coach-triggers.js";
+import { findRaceConflict } from "./race-conflict.js";
 
 /**
  * The dossier (spec §2): everything the coach reads, packaged as ONE terse
@@ -83,7 +84,19 @@ export async function buildDossier(
       ? [`${label}: none recorded`]
       : rows.map((m) => `${label} [${m.id}]: ${m.body}${m.expiresAt ? ` (until ${m.expiresAt})` : ""}`);
   };
+  // The athlete's stated race day is settings data the coach must see
+  // directly — memory facts about it go stale, and the race-conflict rule
+  // below needs the authoritative value (live-observed 2026-08-13: the coach
+  // was told the real date in chat yet had no way to see or fix the
+  // conflicting plan label).
+  const raceConflict = await findRaceConflict(db, userId, prefs);
   push("ATHLETE", [
+    prefs.raceDate ? `race day (settings): ${prefs.raceDate}` : "race day (settings): none set",
+    ...(raceConflict
+      ? [
+          `RACE CONFLICT: plan session "${raceConflict.title}" is labeled as the race on ${raceConflict.plannedDate}, but race day in Settings is ${raceConflict.raceDate}. Once the athlete confirms which is right, propose resolveRaceConflict.`,
+        ]
+      : []),
     ...memLines("fact", "fact"),
     ...memLines("rule", "rule"),
     ...memLines("note", "note"),

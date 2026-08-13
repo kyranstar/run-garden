@@ -131,6 +131,11 @@ export const coachOpSchema = z.discriminatedUnion("kind", [
     })
     .strict(),
   z.object({ kind: z.literal("retirePlan"), planId: echoedId }).strict(),
+  // Converges the two race truths (imported plan's race-labeled row vs the
+  // athlete's stated race day) once the athlete confirms which is right:
+  // "settings" demotes the plan's row to a regular quality session,
+  // "plan" moves the athlete's race-day setting to the plan's date.
+  z.object({ kind: z.literal("resolveRaceConflict"), keep: z.enum(["settings", "plan"]) }).strict(),
 ]);
 export type CoachOp = z.infer<typeof coachOpSchema>;
 

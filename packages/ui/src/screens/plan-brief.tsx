@@ -113,11 +113,17 @@ export function WeeklyBrief({
   week,
   pendingCount,
   onNeedsYou,
+  onResolveRace,
+  resolvingRace = false,
 }: {
   week: PlanWeekResponse;
   /** Pending proposals — the "Needs you" chip renders only when > 0. */
   pendingCount: number;
   onNeedsYou: () => void;
+  /** One-tap resolution for the two-race-dates warning — a warning the
+   * athlete can't act on from where it appears just sits there (2026-08-13). */
+  onResolveRace?: (keep: "settings" | "plan") => void;
+  resolvingRace?: boolean;
 }) {
   const [explaining, setExplaining] = useState(false);
   const headline =
@@ -138,12 +144,35 @@ export function WeeklyBrief({
       </div>
       {context ? <p className="plan-brief-context">{context}</p> : null}
       {week.raceMismatch ? (
-        <p className="plan-brief-context" role="alert">
-          ⚠ Two race dates: the plan has “{week.raceMismatch.title}” on{" "}
-          {formatShortDate(week.raceMismatch.plannedDate)}, but your race day is set to{" "}
-          {formatShortDate(week.raceMismatch.raceDate)}. Fix whichever is wrong — Race day lives in
-          Settings; the plan's race is edited in COROS.
-        </p>
+        <div className="plan-brief-context" role="alert">
+          <p>
+            ⚠ Two race dates: the plan has “{week.raceMismatch.title}” on{" "}
+            {formatShortDate(week.raceMismatch.plannedDate)}, but your race day is set to{" "}
+            {formatShortDate(week.raceMismatch.raceDate)}. Which is right?
+          </p>
+          {onResolveRace ? (
+            <div className="plan-brief-race-actions">
+              <button
+                type="button"
+                className="pill pill-neutral"
+                disabled={resolvingRace}
+                onClick={() => onResolveRace("settings")}
+              >
+                My race is {formatShortDate(week.raceMismatch.raceDate)} — make “
+                {week.raceMismatch.title}” a normal hard session
+              </button>
+              <button
+                type="button"
+                className="pill pill-neutral"
+                disabled={resolvingRace}
+                onClick={() => onResolveRace("plan")}
+              >
+                The plan is right — set race day to{" "}
+                {formatShortDate(week.raceMismatch.plannedDate)}
+              </button>
+            </div>
+          ) : null}
+        </div>
       ) : null}
       {/* Labels compact themselves under 640px (spec R1 + "no unnecessary
           wrapping"): the numbers stay, the prose shrinks, one row fits.

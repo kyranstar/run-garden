@@ -178,6 +178,9 @@ function resultingCalendar(ops: CoachOp[], ctx: GuardrailCtx): CalEntry[] {
         break;
       case "extendPlan":
       case "retirePlan":
+      // Demoting a mislabeled race row (or moving the race-day setting)
+      // reshapes no training day, so the load calendar is untouched.
+      case "resolveRaceConflict":
         break;
     }
   });
@@ -205,11 +208,20 @@ function opDates(op: CoachOp, ctx: GuardrailCtx): string[] {
       return op.firmSessions.map((s) => s.date);
     case "extendPlan":
     case "retirePlan":
+    case "resolveRaceConflict":
       return [];
   }
 }
 
-const HORIZON_EXEMPT = new Set(["firmUp", "extendPlan", "reshapeWeek", "createPlan", "windDown", "retirePlan"]);
+const HORIZON_EXEMPT = new Set([
+  "firmUp",
+  "extendPlan",
+  "reshapeWeek",
+  "createPlan",
+  "windDown",
+  "retirePlan",
+  "resolveRaceConflict",
+]);
 
 export function validateOps(
   ops: CoachOp[],

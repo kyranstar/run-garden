@@ -43,6 +43,7 @@ import { chunkIds, type Db } from "../services/db.js";
 import { applyMove } from "../services/jobs.js";
 import { recentGardenEvents, resimulateFrom } from "../services/garden-sync.js";
 import { openIntentFor, openMoveIntents, recordIntent, resolveIntent } from "../services/sync-intents.js";
+import { findRaceConflict, resolveRaceConflict } from "../services/race-conflict.js";
 import { cloudPresence, deriveWorkoutSync } from "../services/sync-status.js";
 import { exerciseNameMap, resolveCodesInText } from "../services/exercise-catalog.js";
 import { executeCloudJobs } from "../services/coros-write-cloud.js";
@@ -429,22 +430,7 @@ planRoutes.get("/week", async (c) => {
   }
   // Two race truths must never coexist silently (audit#2 #3): the imported
   // plan's race row vs the athlete's stated race day.
-  const [raceRow] = await db
-    .select({ date: plannedWorkouts.effectiveDate, title: plannedWorkouts.title })
-    .from(plannedWorkouts)
-    .where(
-      and(
-        eq(plannedWorkouts.userId, userId),
-        eq(plannedWorkouts.category, "race"),
-        isNull(plannedWorkouts.archivedAt),
-        eq(plannedWorkouts.completionState, "scheduled"),
-      ),
-    )
-    .limit(1);
-  const raceMismatch =
-    raceRow && prefs.raceDate && raceRow.date !== prefs.raceDate
-      ? { plannedDate: raceRow.date, raceDate: prefs.raceDate, title: raceRow.title }
-      : null;
+  const raceMismatch = await findRaceConflict(db, userId, prefs);
   if (covering) {
     const [thisWeekShape] = await db
       .select()
@@ -714,6 +700,18 @@ planRoutes.get("/workouts/:id/candidates", async (c) => {
     now: nowInstant(),
   });
   return c.json({ ...result, busyChecked });
+});
+
+const raceConflictSchema = z.object({ keep: z.enum(["settings", "plan"]) });
+
+planRoutes.post("/race-conflict/resolve", async (c) => {
+  const db = c.get("db");
+  const userId = c.get("userId");
+  const parsed = raceConflictSchema.safeParse(await c.req.json());
+  if (!parsed.success) return c.json({ error: "invalid_request" }, 400);
+  const prefs = await loadPreferences(db, userId);
+  const resolved = await resolveRaceConflict(db, userId, prefs, parsed.data.keep);
+  return c.json({ ok: true, resolved: resolved !== null });
 });
 
 const moveSchema = z.object({ toDate: z.string(), toTime: z.string() });
