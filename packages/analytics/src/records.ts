@@ -23,13 +23,23 @@ export interface PersonalRecord {
   achievedOn: LocalDate;
   /** One-sentence deterministic definition of the comparison. */
   rule: string;
+  /**
+   * The single activity that earned this record, where one exists (longest
+   * session, best efficiency). Persisted so a later data heal can find and
+   * invalidate the record its corrupted source minted — without it, the
+   * never-regress merge would preserve a 100× record forever (audit#2 #17).
+   */
+  activityId?: string;
 }
 
 export interface RecordsInput {
   /** Full session history for this discipline, in the module 3/4 input shape. */
   runs: RunSample[];
-  /** Weekly adherence series, e.g. from computeConsistency().weeklyBreakdown. */
-  weeklyAdherence: Array<{ weekStart: LocalDate; adherence: number }>;
+  /** Weekly adherence series, e.g. from computeConsistency().weeklyBreakdown.
+   * `planned` (the week's non-rest workout count) rides along so the
+   * consistency record can tell "a week the plan asked nothing" apart from
+   * "a week the runner did nothing" (audit#2 #17). */
+  weeklyAdherence: Array<{ weekStart: LocalDate; adherence: number; planned: number }>;
   /** LocalDates of every completed session in this discipline's history. */
   completedRunDates: LocalDate[];
   /**
@@ -50,6 +60,8 @@ export interface StoredRecord {
   achievedOn: LocalDate;
   rule: string;
   numeric: number;
+  /** Source activity for single-activity records — see PersonalRecord.activityId. */
+  activityId?: string;
 }
 
 const MIN_EFFICIENCY_RUNS = 5;
@@ -62,6 +74,15 @@ const MIN_ADHERENCE_WEEKS = 8;
 const MIN_SESSIONS_FOR_RECORD = 5;
 /** A week or a streak below this is ordinary, not an achievement. */
 const MIN_NOTABLE_COUNT = 3;
+/**
+ * Notability floor for the consistency record (audit#2 #17): a four-week
+ * stretch whose weakest week completed under a quarter of its plan is not a
+ * record of consistency, and a weakest week of exactly 0 — which every
+ * plan-less week scores by construction — minted "0% adherence in the
+ * weakest week" as a personal achievement. Exported so `mergeRecords` can
+ * refuse to re-adopt a degenerate entry from any caller.
+ */
+export const MIN_RECORD_ADHERENCE = 0.25;
 const BREAK_DAYS = 7;
 const STREAK_LENGTH = 3;
 const STREAK_MAX_GAP_DAYS = 3;
@@ -80,11 +101,12 @@ function bestAerobicEfficiency(runs: RunSample[]): ScoredRecord | null {
     achievedOn: best.date,
     rule: "Highest meters travelled per heart beat on any eligible easy or recovery run of 25+ minutes with heart rate.",
     numeric: best.efficiency,
+    activityId: best.activityId,
   };
 }
 
 function mostConsistentFourWeeks(
-  weeks: Array<{ weekStart: LocalDate; adherence: number }>,
+  weeks: Array<{ weekStart: LocalDate; adherence: number; planned: number }>,
 ): ScoredRecord | null {
   const sorted = [...weeks].sort((a, b) => (a.weekStart < b.weekStart ? -1 : 1));
   if (sorted.length < MIN_ADHERENCE_WEEKS) return null;
@@ -95,7 +117,15 @@ function mostConsistentFourWeeks(
       (w, j) => j === 0 || daysBetween(window[j - 1]!.weekStart, w.weekStart) === 7,
     );
     if (!consecutive) continue;
+    // audit#2 #17: a window only counts when every week in it actually asked
+    // something of the runner — a plan-less week scores adherence 0 by
+    // construction, and "most consistent" measured over weeks with nothing
+    // planned produced "0% adherence in the weakest week" as a record dated
+    // before any plan existed.
+    if (!window.every((w) => w.planned > 0)) continue;
     const minAdherence = Math.min(...window.map((w) => w.adherence));
+    // Notability floor: a weakest week under 25% is not an achievement.
+    if (minAdherence < MIN_RECORD_ADHERENCE) continue;
     if (best == null || minAdherence > best.minAdherence) {
       best = { start: window[0]!.weekStart, minAdherence };
     }
@@ -158,6 +188,7 @@ function longestSession(runs: RunSample[], discipline: Discipline): ScoredRecord
     achievedOn: (best.activity.startTimeLocal ?? best.activity.startTime).slice(0, 10),
     rule: `Longest single ${sessionNoun(discipline)} by moving time.`,
     numeric: secs,
+    activityId: best.activity.id,
   };
 }
 
@@ -224,6 +255,20 @@ export function computeRecords(input: RecordsInput): ScoredRecord[] {
 }
 
 /**
+ * A record the current rules could never mint: a consistency record whose
+ * weakest week sits under the notability floor. `computeRecords` no longer
+ * produces these, but the merge refuses them independently (audit#2 #17) so
+ * a caller replaying an old fresh set — or a regression upstream — cannot
+ * re-mint "0% adherence in the weakest week" after the stored rows are
+ * cleaned up. Stored records are deliberately NOT filtered here: this
+ * function never deletes what the user has been shown; the one-time strip of
+ * the already-persisted degenerate rows is a data cleanup, not merge logic.
+ */
+function isDegenerate(r: ScoredRecord): boolean {
+  return r.id.endsWith("most_consistent_four_weeks") && r.numeric < MIN_RECORD_ADHERENCE;
+}
+
+/**
  * Merge freshly computed records into the persisted set without ever
  * regressing: per id, keep whichever record has the better (higher)
  * `numeric` value; ties favor the stored record. A stored record with no
@@ -234,6 +279,7 @@ export function mergeRecords(fresh: ScoredRecord[], stored: StoredRecord[]): Sto
   const byId = new Map<string, StoredRecord>();
   for (const s of stored) byId.set(s.id, s);
   for (const f of fresh) {
+    if (isDegenerate(f)) continue;
     const existing = byId.get(f.id);
     if (existing == null || f.numeric > existing.numeric) {
       byId.set(f.id, {
@@ -243,6 +289,7 @@ export function mergeRecords(fresh: ScoredRecord[], stored: StoredRecord[]): Sto
         achievedOn: f.achievedOn,
         rule: f.rule,
         numeric: f.numeric,
+        ...(f.activityId != null ? { activityId: f.activityId } : {}),
       });
     }
   }

@@ -102,12 +102,22 @@ function isRenderedId(id: string, renderedIds?: ReadonlySet<string> | string[]):
  * worker started sending but the grid doesn't yet have a group for could
  * still win here, and the strip's click target (`scrollToSignal`) would
  * scroll to a `signal-${id}` element that was never rendered.
+ *
+ * A band alone is not enough to win (audit#2 (a4)): a metric carrying an
+ * uncertainty marker — `bandNote` (the verdict doesn't survive its input's
+ * error bar) or `staleNote` (the reading describes the past) — must never
+ * headline the strip, whatever band arrived beside it. Both notes contract
+ * to `band: undefined` on the worker side; this gate enforces the contract
+ * where the alarm is actually raised, so no payload regression can put an
+ * unconfident red banner at the top of the page.
  */
 export function pickStatusStripMetric(
   interpreted: readonly InterpretedMetric[],
   renderedIds?: ReadonlySet<string> | string[],
 ): StatusStripPick {
-  const eligible = interpreted.filter((m) => isRenderedId(m.id, renderedIds));
+  const eligible = interpreted.filter(
+    (m) => isRenderedId(m.id, renderedIds) && m.status === "ok" && !m.bandNote && !m.staleNote,
+  );
   const high = eligible.find((m) => m.band === "high");
   if (high) return { severity: "high", metric: high };
   const watch = eligible.find((m) => m.band === "watch");
@@ -367,6 +377,10 @@ export function SignalTile({ m, onDrill }: { m: InterpretedMetric; onDrill?: (m:
           <p className="muted signal-meaning">{m.meaning}</p>
           {m.suggestion ? <p className="metric-suggestion">{m.suggestion}</p> : null}
           {m.staleNote ? <p className="faint signal-stale">{m.staleNote}</p> : null}
+          {/* Why this tile shows a number but no status pill (audit#2 (a4)):
+              the verdict was withheld, and silence without the reason would
+              read as "healthy" — the exact claim being declined. */}
+          {m.bandNote ? <p className="faint signal-stale">{m.bandNote}</p> : null}
         </>
       )}
 

@@ -1,4 +1,4 @@
-import { and, asc, desc, eq, gte, inArray, isNull, lt, lte } from "drizzle-orm";
+import { and, asc, desc, eq, gte, inArray, isNull, lt, lte, max, min, sql } from "drizzle-orm";
 import {
   activities,
   dailyHealth,
@@ -129,16 +129,36 @@ async function persistSnapshot(db: Db, userId: string, snapshot: GardenSnapshot)
     habitatRole: p.habitatRole ?? null,
   }));
   await chunkedInsert(plantRows, 17, (batch) => db.insert(gardenPlants).values(batch));
+  // audit#2 #22: `since` is the ARRIVAL date, not the walk-end date. A single
+  // persist can land a walk spanning many days (or a whole resim), so
+  // lastSimulatedDate is usually well past the day the wildlife actually
+  // showed up. The durable wildlife_arrived events (written by walkForward
+  // before this runs) carry the true dates; the latest arrival per kind is
+  // the start of the current presence stretch. Walk-end remains the fallback
+  // only when a present kind somehow has no arrival event on record.
+  const arrivalRows = await db
+    .select({ wildlifeId: gardenEvents.wildlifeId, date: gardenEvents.date })
+    .from(gardenEvents)
+    .where(and(eq(gardenEvents.userId, userId), eq(gardenEvents.kind, "wildlife_arrived")));
+  const arrivedOn = new Map<string, LocalDate>();
+  for (const r of arrivalRows) {
+    if (!r.wildlifeId) continue;
+    const prev = arrivedOn.get(r.wildlifeId);
+    if (!prev || r.date > prev) arrivedOn.set(r.wildlifeId, r.date);
+  }
   for (const kind of Object.keys(snapshot.wildlife) as WildlifeKind[]) {
     const id = `${userId}:${kind}`;
     const present = snapshot.wildlife[kind];
     const row = await db.select().from(gardenWildlife).where(eq(gardenWildlife.id, id)).limit(1);
     if (row[0]) {
-      if (row[0].present !== present) {
-        await db
-          .update(gardenWildlife)
-          .set({ present, since: present ? snapshot.state.lastSimulatedDate : row[0].since })
-          .where(eq(gardenWildlife.id, id));
+      // Heal `since` even when presence didn't flip: rows stamped with the
+      // old walk-end date stay wrong forever otherwise (presence rarely
+      // flips back and forth).
+      const since = present
+        ? (arrivedOn.get(kind) ?? row[0].since ?? snapshot.state.lastSimulatedDate)
+        : row[0].since;
+      if (row[0].present !== present || row[0].since !== since) {
+        await db.update(gardenWildlife).set({ present, since }).where(eq(gardenWildlife.id, id));
       }
     } else {
       await db.insert(gardenWildlife).values({
@@ -146,7 +166,7 @@ async function persistSnapshot(db: Db, userId: string, snapshot: GardenSnapshot)
         userId,
         kind,
         present,
-        since: present ? snapshot.state.lastSimulatedDate : null,
+        since: present ? (arrivedOn.get(kind) ?? snapshot.state.lastSimulatedDate) : null,
       });
     }
   }
@@ -187,21 +207,45 @@ export async function buildDayInput(
             await db.select().from(activities).where(eq(activities.id, match.activityId)).limit(1)
           )[0]
         : undefined;
+      const startHourLocal = activity
+        ? Number((activity.startTimeLocal ?? activity.startTime).slice(11, 13))
+        : undefined;
       completedRuns.push({
         workoutId: w.id,
         activityId: match?.activityId,
         category: w.category as WorkoutCategory,
         discipline: disciplineOf(w.category, w.sport),
-        window: w.effectiveTime < "12:00" ? "morning" : "evening",
+        // audit#2 #11: the credited window is when the run actually happened
+        // — the matched activity's local start hour (evening = 17:00 or
+        // later), not the planned slot. Every plan slot is a morning slot,
+        // so reading effectiveTime made eveningRunCount (Moonflower, the
+        // fireflies) unreachable no matter how many real evening runs
+        // landed. The planned slot answers only when no activity matched.
+        window:
+          startHourLocal !== undefined
+            ? startHourLocal >= 17
+              ? "evening"
+              : "morning"
+            : w.effectiveTime < "12:00"
+              ? "morning"
+              : "evening",
         distanceMeters: activity?.distanceMeters ?? undefined,
-        startHourLocal: activity
-          ? Number((activity.startTimeLocal ?? activity.startTime).slice(11, 13))
-          : undefined,
+        startHourLocal,
       });
     }
   }
 
   // Unplanned extra sessions: run/strength/yoga activities on this date with no match.
+  // audit#2 (c) — documented, deliberately skipped: an unplanned run still
+  // cannot RESET the run-decay clock, even in a week with no planned runs.
+  // The reset is a transition-function decision (simulateDay reads only the
+  // `unplanned` flag, simulate.ts step 4), and the sole input-side lever —
+  // clearing `unplanned` here — would also grant the full planned-run
+  // rewards (plantings, species, counters) the reward contract reserves for
+  // the plan. Changing the transition needs a SIMULATION_VERSION bump, out
+  // of scope for input derivation. The pre-race taper is sheltered by the
+  // raceDate window below regardless, and an unplanned run already freezes
+  // the clock for its own day (the sim neither resets nor advances it).
   const dayActivities = await db
     .select()
     .from(activities)
@@ -238,11 +282,26 @@ export async function buildDayInput(
       durationMin: Math.round(a.durationSeconds / 60),
     }));
 
-  const resolvedHere = dayWorkouts.filter(
-    (w) =>
-      (w.completionState === "skipped" || w.completionState === "missed") &&
-      (w.resolutionDate ?? w.effectiveDate) === date,
-  );
+  // audit#2 #9: a skip/miss LANDS in the garden on max(effectiveDate,
+  // resolutionDate) — the later of "when it was due" and "when the decision
+  // landed". The old same-day intersection (dayWorkouts ∩ same
+  // resolutionDate) was empty whenever the two differed, so late
+  // resolutions never debited anywhere and advance sanctions (resolved
+  // BEFORE their day) never earned their mercy. Landing late resolutions on
+  // the resolution day also keeps them inside walkForward's grace window —
+  // their own effective day may already be simulated by then.
+  const resolutionLandedOn = sql<string>`max(${plannedWorkouts.effectiveDate}, coalesce(${plannedWorkouts.resolutionDate}, ${plannedWorkouts.effectiveDate}))`;
+  const resolvedHere = await db
+    .select()
+    .from(plannedWorkouts)
+    .where(
+      and(
+        eq(plannedWorkouts.userId, userId),
+        inArray(plannedWorkouts.completionState, ["skipped", "missed"]),
+        isNull(plannedWorkouts.archivedAt),
+        eq(resolutionLandedOn, date),
+      ),
+    );
   // Coach-sanctioned skips never cost the garden (fairness spec §1): they are
   // excluded from missedRuns entirely, and the FIRST one in any rolling 7
   // days upgrades the day to observed rest below. Deterministic from
@@ -253,6 +312,9 @@ export async function buildDayInput(
     .map((w) => ({ workoutId: w.id }));
   let mercyToday = false;
   if (sanctionedHere.length > 0) {
+    // The rolling-week lookback counts prior sanctions by the same landing
+    // date (audit#2 #9) — a sanction that never landed anywhere must not
+    // poison the window for the next one.
     const prior = await db
       .select({ id: plannedWorkouts.id })
       .from(plannedWorkouts)
@@ -261,8 +323,8 @@ export async function buildDayInput(
           eq(plannedWorkouts.userId, userId),
           eq(plannedWorkouts.sanctionedBy, "coach"),
           inArray(plannedWorkouts.completionState, ["skipped", "missed"]),
-          gte(plannedWorkouts.resolutionDate, addDays(date, -6)),
-          lt(plannedWorkouts.resolutionDate, date),
+          gte(resolutionLandedOn, addDays(date, -6)),
+          lt(resolutionLandedOn, date),
         ),
       );
     mercyToday = prior.length === 0;
@@ -270,19 +332,63 @@ export async function buildDayInput(
 
   const hasRest = dayWorkouts.some((w) => w.category === "rest");
   const hasNonRest = dayWorkouts.some((w) => w.category !== "rest");
+  // audit#2 (b): taper shelter. With a race ahead, a final-weeks day that
+  // schedules no run is the taper doing its job, not neglect — mark it the
+  // way a planned rest day is marked (restObserved), so the run-decay clock
+  // holds instead of marching the garden into drought on race morning. The
+  // window is the 21 days before prefs.raceDate through the race day itself
+  // (the race is often not a plan row — see the Oct 23 race vs the plan's
+  // Oct 3 "Race Day!"). A day inside the window that DOES schedule a run
+  // gets no shelter: skipping real taper work still costs.
+  const taperShelter =
+    prefs.raceDate !== null &&
+    date >= addDays(prefs.raceDate, -21) &&
+    date <= prefs.raceDate &&
+    !dayWorkouts.some((w) => w.category !== "rest" && disciplineOf(w.category, w.sport) === "run");
   const restObserved =
     (hasRest && !hasNonRest && completedRuns.length === 0 && missedRuns.length === 0) ||
     // Mercy day: agreed rest is keeping the plan, not breaking it.
-    (mercyToday && completedRuns.length === 0);
+    (mercyToday && completedRuns.length === 0) ||
+    taperShelter;
 
-  // Plan gap: no active plan covers this date.
+  // Plan gap: no active plan covers this date. audit#2 (a): a NULL date is
+  // not "forever" — COROS plans are stored with NULL start/end, and reading
+  // NULL as an open bound made every date covered, so planGap could never
+  // fire after the last scheduled day. A NULL bound is derived from the
+  // min/max effective_date of the plan's own unarchived workouts; a plan
+  // with no workouts (the stale empty containers) covers nothing.
   const plans = await db
     .select()
     .from(trainingPlans)
     .where(and(eq(trainingPlans.userId, userId), eq(trainingPlans.status, "active")));
-  const covered = plans.some(
-    (p) => (!p.startDate || p.startDate <= date) && (!p.endDate || p.endDate >= date),
-  );
+  const nullDated = plans.filter((p) => !p.startDate || !p.endDate);
+  const workoutBounds = new Map<string, { min: string | null; max: string | null }>();
+  if (nullDated.length > 0) {
+    const bounds = await db
+      .select({
+        planId: plannedWorkouts.planId,
+        min: min(plannedWorkouts.effectiveDate),
+        max: max(plannedWorkouts.effectiveDate),
+      })
+      .from(plannedWorkouts)
+      .where(
+        and(
+          eq(plannedWorkouts.userId, userId),
+          inArray(
+            plannedWorkouts.planId,
+            nullDated.map((p) => p.id),
+          ),
+          isNull(plannedWorkouts.archivedAt),
+        ),
+      )
+      .groupBy(plannedWorkouts.planId);
+    for (const b of bounds) workoutBounds.set(b.planId, { min: b.min, max: b.max });
+  }
+  const covered = plans.some((p) => {
+    const start = p.startDate ?? workoutBounds.get(p.id)?.min ?? null;
+    const end = p.endDate ?? workoutBounds.get(p.id)?.max ?? null;
+    return start !== null && end !== null && start <= date && end >= date;
+  });
   const planGap = !covered && dayWorkouts.length === 0;
 
   const restModeActive =
@@ -333,7 +439,19 @@ export async function buildDayInput(
           isNull(plannedWorkouts.archivedAt),
         ),
       );
-    const planned = weekWorkouts.filter((w) => w.category !== "rest");
+    // audit#2 #10: coach-sanctioned skips leave the denominator entirely —
+    // the fairness contract above (§1) promises sanctioned rest never costs
+    // the garden, and a consistency chain zeroed by an agreed taper skip
+    // would cost it weeks of ivy/clematis/wisteria progress. Same exclusion
+    // coachBlockAdherence applies.
+    const planned = weekWorkouts.filter(
+      (w) =>
+        w.category !== "rest" &&
+        !(
+          w.sanctionedBy === "coach" &&
+          (w.completionState === "skipped" || w.completionState === "missed")
+        ),
+    );
     if (planned.length > 0) {
       const done = planned.filter(
         (w) => w.completionState === "completed",
@@ -448,10 +566,17 @@ async function walkForward(
       );
       for (const e of result.events) {
         if (e.kind === "species_unlocked" && e.speciesId) {
+          // audit#2 #18: the replayed event's date is the truth — a resim
+          // must overwrite whatever an existing row says (a genesis-seeded
+          // stub, or a date minted before a history heal), not preserve it.
+          // onConflictDoNothing let a wrong unlockedOn survive every resim.
           await db
             .insert(gardenUnlocks)
             .values({ id: newId(), userId, speciesId: e.speciesId, unlockedOn: e.date })
-            .onConflictDoNothing();
+            .onConflictDoUpdate({
+              target: [gardenUnlocks.userId, gardenUnlocks.speciesId],
+              set: { unlockedOn: e.date },
+            });
         }
       }
     }
@@ -635,6 +760,16 @@ export interface GardenView {
    * the true date to stop presenting a paused count as fresh fact.
    */
   lastRunDate: LocalDate | null;
+  /**
+   * audit#2: does the sim's run-decay clock hold still through TODAY? True
+   * on sheltered days — plan gap, observed rest (planned, mercy, or race
+   * taper), adventure freeze/grace, rest mode — the exact conditions
+   * simulateDay's decay path consults, read from the same fold that
+   * rendered `snapshot`. The UI's projected decay must freeze on the sim's
+   * own shelter set, not re-derive an approximation ("no next workout")
+   * that can contradict the durable clock in either direction.
+   */
+  runDecayPausedToday: boolean;
 }
 
 /**
@@ -749,8 +884,15 @@ export async function buildGardenView(
   // Self-heal the collection: the snapshot's unlockedSpeciesIds is the truth,
   // but genesis ("start") species predate the unlocks table, so seed any
   // missing rows — otherwise the collection reads "0 species" on day one.
+  // audit#2 #18: ONLY start-gated species may be stamped at createdDate —
+  // this heal used to seed ANY ledger-missing species at genesis, minting a
+  // wrong unlock date an earned species then carried forever (the Field
+  // poppy: Aug 1 shown, Aug 6 earned). Earned species get their row, with
+  // the event's true date, from walkForward's species_unlocked insert.
   const have = new Set(unlocks.map((u) => u.speciesId));
-  const missing = snapshot.unlockedSpeciesIds.filter((id) => !have.has(id));
+  const missing = snapshot.unlockedSpeciesIds.filter(
+    (id) => !have.has(id) && SPECIES_BY_ID.get(id)?.unlock.kind === "start",
+  );
   if (missing.length > 0) {
     for (const speciesId of missing) {
       await db
@@ -880,6 +1022,16 @@ export async function buildGardenView(
     lastSport = match?.sport ?? null;
   }
 
+  // audit#2: today's run-decay shelter, from the fold that actually rendered
+  // the snapshot (todayInput + the shield above — same sourcing rule as
+  // C11). When the preview didn't run at all (a >14-day durable outage),
+  // claim nothing: false keeps the projection honest about an unknown day.
+  const runDecayPausedToday =
+    snapshot.state.restMode ||
+    frozenToday ||
+    graceDay ||
+    (todayInput !== null && (todayInput.planGap || todayInput.restObserved));
+
   const seenRow = (
     await db.select().from(gardenSeen).where(eq(gardenSeen.userId, userId)).limit(1)
   )[0];
@@ -961,6 +1113,7 @@ export async function buildGardenView(
       lastDate: frozenToday ? today : postFoldLastAdventureDate,
     },
     lastRunDate,
+    runDecayPausedToday,
   };
 }
 

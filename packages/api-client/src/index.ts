@@ -157,6 +157,9 @@ export interface CandidateResponse {
   }>;
   blockedReason?: string;
   skipOption: { explanation: string };
+  /** False when Google free/busy couldn't be checked — "open" claims are
+   * then unverified (audit#2 #16). */
+  busyChecked?: boolean;
 }
 
 export interface PlanResponse {

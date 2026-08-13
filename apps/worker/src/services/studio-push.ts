@@ -41,6 +41,7 @@ import {
   plannedWorkouts,
   studioPlanPushes,
   studioPlans,
+  userPreferences,
 } from "@rg/database";
 import {
   addDays,
@@ -616,7 +617,7 @@ export function bridgeJobPayload(job: {
 
 export interface PushSummary {
   ok: boolean;
-  error?: "plan_not_found" | "invalid_plan";
+  error?: "plan_not_found" | "invalid_plan" | "writes_disabled";
   creates: number;
   deletes: number;
   failures: number;
@@ -711,6 +712,19 @@ export async function pushStudioPlan(
     drifted: 0,
     blocked: 0,
   };
+
+  // "Write date changes back to COROS" is the only switch claiming to stop
+  // writes — studio pushes must obey it too (audit#2 #14). Direct table read:
+  // loadPreferences lives in calendar-sync, which is an import cycle from
+  // here (see UndoStudioAdoptionResult's doc note).
+  const [prefRow] = await db
+    .select({ prefs: userPreferences.prefs })
+    .from(userPreferences)
+    .where(eq(userPreferences.userId, opts.userId))
+    .limit(1);
+  if ((prefRow?.prefs as { corosWritesEnabled?: boolean } | undefined)?.corosWritesEnabled !== true) {
+    return { ...empty, error: "writes_disabled" };
+  }
 
   const planRow = (
     await db
@@ -1259,7 +1273,8 @@ export async function applyStudioJobResult(
 export type UndoStudioAdoptionResult =
   | { ok: true; summary: PushSummary }
   | { ok: false; error: "not_found" }
-  | { ok: false; error: "undo_unsupported_rename" };
+  | { ok: false; error: "undo_unsupported_rename" }
+  | { ok: false; error: "writes_disabled" };
 
 export async function undoStudioAdoption(
   db: Db,
@@ -1267,6 +1282,16 @@ export async function undoStudioAdoption(
   pushId: string,
   today: LocalDate,
 ): Promise<UndoStudioAdoptionResult> {
+  // Same write gate as pushStudioPlan (audit#2 #14) — an undo plans
+  // delete+create corrections against the real COROS calendar.
+  const [undoPrefRow] = await db
+    .select({ prefs: userPreferences.prefs })
+    .from(userPreferences)
+    .where(eq(userPreferences.userId, userId))
+    .limit(1);
+  if ((undoPrefRow?.prefs as { corosWritesEnabled?: boolean } | undefined)?.corosWritesEnabled !== true) {
+    return { ok: false, error: "writes_disabled" };
+  }
   // A single query, joined through studioPlans and scoped by userId: an
   // unknown pushId, one belonging to another user's plan, and one that exists
   // but isn't "adopted" all fall through to the SAME `not_found` result —

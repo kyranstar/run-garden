@@ -36,14 +36,14 @@ const fullInput: RecordsInput = {
     easyRun("r5", "2026-01-13", 149),
   ],
   weeklyAdherence: [
-    { weekStart: "2026-01-05", adherence: 1 },
-    { weekStart: "2026-01-12", adherence: 0.8 },
-    { weekStart: "2026-01-19", adherence: 1 },
-    { weekStart: "2026-01-26", adherence: 1 },
-    { weekStart: "2026-02-02", adherence: 0.75 },
-    { weekStart: "2026-02-09", adherence: 1 },
-    { weekStart: "2026-02-16", adherence: 1 },
-    { weekStart: "2026-02-23", adherence: 1 },
+    { weekStart: "2026-01-05", adherence: 1, planned: 3 },
+    { weekStart: "2026-01-12", adherence: 0.8, planned: 5 },
+    { weekStart: "2026-01-19", adherence: 1, planned: 3 },
+    { weekStart: "2026-01-26", adherence: 1, planned: 3 },
+    { weekStart: "2026-02-02", adherence: 0.75, planned: 4 },
+    { weekStart: "2026-02-09", adherence: 1, planned: 3 },
+    { weekStart: "2026-02-16", adherence: 1, planned: 3 },
+    { weekStart: "2026-02-23", adherence: 1, planned: 3 },
   ],
   completedRunDates: ["2026-01-01", "2026-01-03", "2026-01-15", "2026-01-17", "2026-01-19"],
   discipline: "run",
@@ -95,6 +95,111 @@ describe("computeRecords", () => {
       discipline: "run",
     };
     expect(computeRecords(thin)).toEqual([]);
+  });
+
+  it("stamps single-activity records with their source activityId, so a heal can invalidate them", () => {
+    const byId = new Map(computeRecords(fullInput).map((r) => [r.id, r]));
+    // The hr-145 run "r4" is both the most efficient and (tied) longest;
+    // longest-session ties resolve to the first run in input order, "r1".
+    expect(byId.get("run:best_aerobic_efficiency")!.activityId).toBe("r4");
+    expect(byId.get("run:longest_session")!.activityId).toBe("r1");
+    // Aggregate records describe many days — no single activity to blame.
+    expect(byId.get("run:most_consistent_four_weeks")!.activityId).toBeUndefined();
+    expect(byId.get("run:longest_streak")!.activityId).toBeUndefined();
+  });
+
+  // ── audit#2 #17: the consistency-record notability floor ────────────────────
+  describe("most consistent four weeks floor", () => {
+    const weeks = (
+      entries: Array<[string, number, number]>,
+    ): RecordsInput["weeklyAdherence"] =>
+      entries.map(([weekStart, adherence, planned]) => ({ weekStart, adherence, planned }));
+
+    it("never mints a record over a window containing a week with nothing planned", () => {
+      // Eight consecutive weeks, perfect adherence wherever anything was
+      // planned — but every 4-week window crosses at least one plan-less
+      // week. The old code scored those weeks adherence 0 and then named the
+      // best-of-the-worst a personal record: "0% adherence in the weakest
+      // week", dated before any plan existed.
+      const input: RecordsInput = {
+        ...fullInput,
+        weeklyAdherence: weeks([
+          ["2026-01-05", 1, 3],
+          ["2026-01-12", 1, 3],
+          ["2026-01-19", 0, 0], // no plan this week
+          ["2026-01-26", 1, 3],
+          ["2026-02-02", 1, 3],
+          ["2026-02-09", 0, 0], // no plan this week
+          ["2026-02-16", 1, 3],
+          ["2026-02-23", 1, 3],
+        ]),
+      };
+      const ids = computeRecords(input).map((r) => r.id);
+      expect(ids).not.toContain("run:most_consistent_four_weeks");
+    });
+
+    it("returns no record when every eligible window's weakest week sits under the 0.25 floor", () => {
+      const input: RecordsInput = {
+        ...fullInput,
+        weeklyAdherence: weeks([
+          ["2026-01-05", 1, 4],
+          ["2026-01-12", 0.2, 5], // weakest week of every window it touches
+          ["2026-01-19", 1, 4],
+          ["2026-01-26", 0.2, 5],
+          ["2026-02-02", 1, 4],
+          ["2026-02-09", 0, 4], // planned but nothing done: 0 is not notable
+          ["2026-02-16", 1, 4],
+          ["2026-02-23", 0.2, 5],
+        ]),
+      };
+      const ids = computeRecords(input).map((r) => r.id);
+      expect(ids).not.toContain("run:most_consistent_four_weeks");
+    });
+
+    it("skips sub-floor windows but still names a clean window elsewhere in the series", () => {
+      const input: RecordsInput = {
+        ...fullInput,
+        weeklyAdherence: weeks([
+          ["2026-01-05", 0, 0], // plan-less: disqualifies windows touching it
+          ["2026-01-12", 1, 3],
+          ["2026-01-19", 1, 3],
+          ["2026-01-26", 0.75, 4],
+          ["2026-02-02", 1, 3],
+          ["2026-02-09", 1, 3],
+          ["2026-02-16", 1, 3],
+          ["2026-02-23", 0.2, 5], // sub-floor: disqualifies its windows too
+        ]),
+      };
+      const record = computeRecords(input).find(
+        (r) => r.id === "run:most_consistent_four_weeks",
+      );
+      expect(record).toBeDefined();
+      // The only clean window is 01-12..02-02 (min 0.75) and 01-19..02-09
+      // (min 0.75) — either way the weakest week is 75%.
+      expect(record!.numeric).toBe(0.75);
+      expect(record!.value).toBe("75% adherence in the weakest week");
+    });
+
+    it("accepts a weakest week exactly at the 0.25 floor", () => {
+      const input: RecordsInput = {
+        ...fullInput,
+        weeklyAdherence: weeks([
+          ["2026-01-05", 1, 4],
+          ["2026-01-12", 0.25, 4],
+          ["2026-01-19", 1, 4],
+          ["2026-01-26", 1, 4],
+          ["2026-02-02", 0, 0],
+          ["2026-02-09", 0, 0],
+          ["2026-02-16", 0, 0],
+          ["2026-02-23", 0, 0],
+        ]),
+      };
+      const record = computeRecords(input).find(
+        (r) => r.id === "run:most_consistent_four_weeks",
+      );
+      expect(record).toBeDefined();
+      expect(record!.numeric).toBe(0.25);
+    });
   });
 
   it("is deterministic across two calls", () => {
@@ -170,5 +275,34 @@ describe("mergeRecords", () => {
     const a = mergeRecords([fresh("a", 5), fresh("z", 1)], [stored("m", 2)]);
     const b = mergeRecords([fresh("a", 5), fresh("z", 1)], [stored("m", 2)]);
     expect(a).toEqual(b);
+  });
+
+  it("carries a fresh record's activityId into the persisted shape", () => {
+    const result = mergeRecords([fresh("run:longest_session", 5, { activityId: "act-9" })], []);
+    expect(result[0]!.activityId).toBe("act-9");
+    // …and omits the key entirely when the record has none, keeping the
+    // stored JSON free of explicit undefineds.
+    const bare = mergeRecords([fresh("run:longest_streak", 4)], []);
+    expect("activityId" in bare[0]!).toBe(false);
+  });
+
+  // ── audit#2 #17: the merge itself refuses degenerate consistency records ────
+  it("cannot re-mint a sub-floor most_consistent_four_weeks entry after the stored rows are cleaned", () => {
+    // The prod cleanup deletes the numeric-0 rows; if a caller then replays a
+    // fresh set still carrying one (an old cache, an upstream regression),
+    // the merge must drop it on the floor rather than persist it again.
+    const degenerate = fresh("run:most_consistent_four_weeks", 0);
+    expect(mergeRecords([degenerate], [])).toEqual([]);
+    const subFloor = fresh("yoga:most_consistent_four_weeks", 0.2);
+    expect(mergeRecords([subFloor], [])).toEqual([]);
+  });
+
+  it("still admits an at-floor-or-better consistency record, and never touches stored entries", () => {
+    const legit = fresh("run:most_consistent_four_weeks", 0.8);
+    expect(mergeRecords([legit], []).map((r) => r.numeric)).toEqual([0.8]);
+    // Stored rows pass through untouched — stripping persisted entries is the
+    // orchestrated data cleanup's job, not merge logic.
+    const storedDegenerate = stored("run:most_consistent_four_weeks", 0);
+    expect(mergeRecords([], [storedDegenerate])).toEqual([storedDegenerate]);
   });
 });

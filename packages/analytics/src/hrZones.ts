@@ -1,15 +1,26 @@
 /**
- * Heart-rate zones estimated from observed data (no age/lab input). Max HR is
- * the second-highest recorded max-heart-rate reading across activities: a
- * single spike (a device glitch, a sprint for the bus) shouldn't set the
- * ceiling, so we require two activities to agree near the top. Readings
- * ≤120bpm are ignored as implausible "max" values (e.g. a walk's peak).
- * With exactly ONE qualifying reading there is no second to fall back to, so
- * that reading is used as-is — a thin estimate, which is why `misc.ts`
- * counts the qualifying readings and captions every card built on the ceiling
- * when fewer than 10 backed it. With none, the estimate is `null` and the
- * caller decides; there is no scaled-average fallback. Zones are
- * %HRmax: Z1 <68, Z2 68–79, Z3 80–87, Z4 88–94, Z5 95%+.
+ * Heart-rate zones — the watch's own record first, estimation last (audit#2
+ * resolved question (a)).
+ *
+ * The PRIMARY source for "where is this runner's easy boundary" is the
+ * device's own per-activity time-in-zone record (`telemetry.hrZones`): the
+ * watch already knows its configured zones, and `watchEasyCeiling` below
+ * simply reads the Z2 upper bound off the most recent activity that carries
+ * one. Estimation from observed max-HR readings is the LAST-RESORT fallback,
+ * for histories with no zone records at all.
+ *
+ * The fallback estimate: the TOP recorded max-heart-rate reading, accepted
+ * only when the second-highest corroborates it (within
+ * `HRMAX_CORROBORATION_BPM`) — real device glitches sit 30+ bpm off, so a
+ * lone spike far above the pack falls back to the runner-up instead of
+ * setting the ceiling. Readings ≤120bpm are ignored as implausible "max"
+ * values (e.g. a walk's peak). Fewer than `MIN_HRMAX_READINGS` qualifying
+ * readings yields no estimate at all (audit#2: the old second-highest-of-7
+ * rule built a 144bpm ceiling under a runner whose watch draws it at 155,
+ * turning a truthful ~66% low-intensity share into a red 3%). Even a
+ * qualifying estimate stays thin evidence, which is why `misc.ts` counts the
+ * readings and captions every card built on the ceiling when fewer than 10
+ * backed it. Zones are %HRmax: Z1 <68, Z2 68–79, Z3 80–87, Z4 88–94, Z5 95%+.
  */
 
 /**
@@ -42,10 +53,67 @@ export function usableHrMaxReadings(activities: readonly HrMaxSample[]): number[
     .sort((a, b) => b - a);
 }
 
+/** Below this many qualifying readings the estimator emits no ceiling at all. */
+export const MIN_HRMAX_READINGS = 5;
+/**
+ * The top reading is trusted when the second-highest sits within this many
+ * bpm of it. Real glitches (strap dropouts, cadence lock) read 30+ bpm off;
+ * two readings 12 bpm apart are two hard days, not a spike and its shadow.
+ */
+export const HRMAX_CORROBORATION_BPM = 12;
+
 export function estimateHrMax(activities: readonly HrMaxSample[]): number | null {
   const maxes = usableHrMaxReadings(activities);
-  if (maxes.length === 0) return null;
-  return maxes.length === 1 ? maxes[0]! : maxes[1]!;
+  // audit#2 (a3): no ceiling from thin air — under 5 readings the honest
+  // answer is "unknown", not a number that happens to have units.
+  if (maxes.length < MIN_HRMAX_READINGS) return null;
+  const [top, second] = [maxes[0]!, maxes[1]!];
+  // The TOP reading when the second corroborates it; the old
+  // second-highest-always rule systematically underestimated the ceiling
+  // (a real max is by definition the highest thing observed).
+  return top - second <= HRMAX_CORROBORATION_BPM ? top : second;
+}
+
+// ── The watch's own ceiling (audit#2 (a2)) ───────────────────────────────────
+
+/** One bucket of a per-activity time-in-zone record (`telemetry.hrZones`). */
+export interface HrZoneBucket {
+  /** Zone lower bound, bpm. */
+  lo: number;
+  /** Zone upper bound, bpm. */
+  hi: number;
+  seconds: number;
+}
+
+/** The narrow projection `watchEasyCeiling` reads — an activity's start
+ * instant (to pick the most recent) and its zone record, both shaped exactly
+ * like an `activities` row so a caller can pass rows straight through. */
+export interface WatchCeilingSample {
+  startTime: string;
+  telemetry?: { hrZones?: readonly HrZoneBucket[] | null } | null;
+}
+
+/**
+ * The easy ceiling as the WATCH draws it: the Z2 upper bound from the most
+ * recent activity carrying a time-in-zone record. This is the device's own
+ * configured boundary — no estimation involved — so when it exists it
+ * outranks `estimateHrMax`/`easyCeiling` entirely; the estimator is a last
+ * resort for zone-less histories. Most-recent wins so a re-configured watch
+ * takes effect on the next run. `null` when no activity carries a usable
+ * record (at least Z1+Z2 buckets, with a positive Z2 bound).
+ */
+export function watchEasyCeiling(activities: readonly WatchCeilingSample[]): number | null {
+  let latestStart = "";
+  let ceiling: number | null = null;
+  for (const a of activities) {
+    const z2hi = a.telemetry?.hrZones?.[1]?.hi;
+    if (z2hi == null || z2hi <= 0) continue;
+    if (a.startTime > latestStart) {
+      latestStart = a.startTime;
+      ceiling = Math.round(z2hi);
+    }
+  }
+  return ceiling;
 }
 
 const UPPER = [0.68, 0.8, 0.88, 0.95]; // upper bounds of Z1..Z4 as fraction of HRmax

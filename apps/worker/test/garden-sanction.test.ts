@@ -16,6 +16,9 @@ async function seedSkip(
   id: string,
   date: string,
   sanctioned: boolean,
+  // audit#2 #9: resolutions can land days away from their workout — in
+  // either direction — so tests can split the two dates.
+  resolutionDate: string = date,
 ): Promise<void> {
   await db.insert(schema.plannedWorkouts).values({
     id,
@@ -30,7 +33,7 @@ async function seedSkip(
     effectiveDate: date,
     effectiveTime: "07:00",
     completionState: "skipped",
-    resolutionDate: date,
+    resolutionDate,
     sanctionedBy: sanctioned ? "coach" : null,
     sourceContentFingerprint: "fp",
     calendarBlockDurationSeconds: 3600,
@@ -102,6 +105,54 @@ describe("sanctioned rest mercy", () => {
     expect(input.missedRuns).toHaveLength(0);
     expect(input.restObserved).toBe(false);
     expect(input.completedRuns.length).toBeGreaterThan(0);
+  });
+});
+
+describe("resolution landing dates (audit#2 #9)", () => {
+  it("a skip resolved days after its workout debits on the resolution day, not the workout day", async () => {
+    const db = makeTestDb();
+    const { userId, prefs } = await makeTestUser(db);
+    const today = todayInZone(prefs.timezone);
+    const workoutDay = addDays(today, -2);
+    await seedSkip(db, userId, "w-late", workoutDay, false, today);
+
+    // The workout's own day sees no debit — the decision hadn't landed yet.
+    const onWorkoutDay = await buildDayInput(db, userId, workoutDay, prefs);
+    expect(onWorkoutDay.missedRuns).toHaveLength(0);
+    // The resolution day carries it (the old same-day intersection satisfied
+    // neither day, so the skip vanished from the garden entirely).
+    const onResolutionDay = await buildDayInput(db, userId, today, prefs);
+    expect(onResolutionDay.missedRuns).toEqual([{ workoutId: "w-late" }]);
+  });
+
+  it("an advance sanction (resolved BEFORE its day) earns its mercy on the workout day", async () => {
+    const db = makeTestDb();
+    const { userId, prefs } = await makeTestUser(db);
+    const today = todayInZone(prefs.timezone);
+    await seedSkip(db, userId, "w-advance", today, true, addDays(today, -2));
+
+    // Nothing lands on the resolution day — the workout wasn't due yet.
+    const onResolutionDay = await buildDayInput(db, userId, addDays(today, -2), prefs);
+    expect(onResolutionDay.missedRuns).toHaveLength(0);
+    expect(onResolutionDay.restObserved).toBe(false);
+    // The workout day gets the promised rest credit.
+    const onWorkoutDay = await buildDayInput(db, userId, today, prefs);
+    expect(onWorkoutDay.missedRuns).toHaveLength(0);
+    expect(onWorkoutDay.restObserved).toBe(true);
+  });
+
+  it("the rolling-week mercy lookback counts landings, not raw resolution dates", async () => {
+    const db = makeTestDb();
+    const { userId, prefs } = await makeTestUser(db);
+    const today = todayInZone(prefs.timezone);
+    // Resolved 8 days ago (outside a raw-resolutionDate window) but due — and
+    // therefore landed — 3 days ago, squarely inside the rolling week.
+    await seedSkip(db, userId, "w-prior", addDays(today, -3), true, addDays(today, -8));
+    await seedSkip(db, userId, "w-today", today, true);
+
+    const input = await buildDayInput(db, userId, today, prefs);
+    expect(input.missedRuns).toHaveLength(0);
+    expect(input.restObserved).toBe(false); // second sanction in the week: neutral
   });
 });
 

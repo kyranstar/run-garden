@@ -301,7 +301,7 @@ function chatResponse(content: unknown): Response {
 
 beforeEach(async () => {
   db = makeTestDb();
-  const user = await makeTestUser(db);
+  const user = await makeTestUser(db, { corosWritesEnabled: true });
   userId = user.userId;
   timezone = user.prefs.timezone;
   const token = await createSession(db, userId);

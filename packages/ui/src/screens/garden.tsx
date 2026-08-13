@@ -1102,10 +1102,19 @@ export function GardenScreen() {
   // known; the clock itself still drives health/fill (decay, correctly).
   const runTrueRecencyDays = lastRunDate ? Math.max(0, daysBetween(lastRunDate, todayDate)) : null;
   const planActive = !!d?.nextWorkout;
+  // audit#2: freeze the projected run decay exactly when the sim's own clock
+  // holds still today — plan gap, observed/taper rest, adventure shelter,
+  // rest mode — as computed by the server's own fold (runDecayPausedToday).
+  // The old proxy (`!planActive`) froze the DISPLAY after the plan's last
+  // day while the durable sim kept decaying toward race-morning drought —
+  // display and simulation openly contradicted. Old cached payloads
+  // (pre-field) fall back to that proxy rather than crash.
+  const runDecayPaused =
+    (garden.data.runDecayPausedToday as boolean | undefined) ?? !planActive;
   const liveBalance = balance
     ? projectedBalance(snapshot.state, {
         daysSinceSimulated,
-        freezeRun: !planActive,
+        freezeRun: runDecayPaused,
         freezeAll: restMode.active,
       })
     : undefined;
@@ -1438,7 +1447,10 @@ export function GardenScreen() {
             <div className="hud-topright">
               <BalanceStrip
                 balance={liveBalance}
-                runPaused={!planActive}
+                // audit#2: only claim "plan paused" when the sim's clock IS
+                // paused — a no-plan day the sim still decays through must
+                // not be captioned as a pause it isn't getting.
+                runPaused={!planActive && runDecayPaused}
                 runSheltered={runClockSheltered}
                 runTrueRecencyDays={runTrueRecencyDays}
                 quiet
@@ -1636,7 +1648,9 @@ export function GardenScreen() {
         <>
           <BalanceStrip
             balance={liveBalance}
-            runPaused={!planActive}
+            // audit#2: same honesty rule as the HUD strip above — "plan
+            // paused" only when the sim's clock is actually pausing.
+            runPaused={!planActive && runDecayPaused}
             runSheltered={runClockSheltered}
             runTrueRecencyDays={runTrueRecencyDays}
             quiet={lossVoiced || sheltered}

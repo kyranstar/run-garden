@@ -212,16 +212,14 @@ export async function syncCalendar(
     .limit(1);
   const syncToken = opts.fullResync ? undefined : cursorRows[0]?.value;
 
-  let listResult = await client.listEvents(calendarId, {
-    syncToken,
-    timeMin: `${windowStart}T00:00:00Z`,
-    timeMax: `${windowEnd}T23:59:59Z`,
-  });
+  // Bounds pad one day each side: stapling `Z` onto LOCAL dates cut up to
+  // ~8h off the window's edges for a Pacific user, and an evening workout on
+  // the last local day read as user-deleted on a full read (audit#2 #20).
+  const timeMin = `${addDays(windowStart, -1)}T00:00:00Z`;
+  const timeMax = `${addDays(windowEnd, 1)}T23:59:59Z`;
+  let listResult = await client.listEvents(calendarId, { syncToken, timeMin, timeMax });
   if (listResult.fullSyncRequired) {
-    listResult = await client.listEvents(calendarId, {
-      timeMin: `${windowStart}T00:00:00Z`,
-      timeMax: `${windowEnd}T23:59:59Z`,
-    });
+    listResult = await client.listEvents(calendarId, { timeMin, timeMax });
   }
 
   const rawEvents = (listResult.items as RawGoogleEvent[]).filter(

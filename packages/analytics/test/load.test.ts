@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { computeLoadRatio, computeMonotony, computeRamp } from "../src/load.js";
+import { computeLoadRatio, computeMonotony, computeRamp, loadCoverage } from "../src/load.js";
 
 const DAY = 86_400_000;
 const TODAY = "2026-08-01";
@@ -84,6 +84,66 @@ describe("computeRamp", () => {
     if (r.status !== "insufficient_data") return;
     expect(r.needed).toBe(28);
     expect(r.have).toBe(0);
+  });
+});
+
+// audit#2 (b): coverage over the trailing 28 days the load metrics weight.
+describe("loadCoverage", () => {
+  const act = (date: string, durationSeconds: number, trainingLoad: number | null) => ({
+    date,
+    durationSeconds,
+    trainingLoad,
+  });
+
+  it("ignores pre-window legacy runs — the audit's exact failure shape", () => {
+    // Three old load-less runs once dragged 12-week coverage to 0.83 < 0.9,
+    // flipping the whole basis to minutes. They are outside the 28 days the
+    // metrics weight, so they must not count against coverage at all.
+    const rows = [
+      act(daysAgo(60), 3600, null),
+      act(daysAgo(45), 3600, null),
+      act(daysAgo(30), 3600, null),
+      // The recent month is fully covered.
+      act(daysAgo(20), 3600, 55),
+      act(daysAgo(10), 3600, 60),
+      act(daysAgo(2), 3600, 40),
+    ];
+    const c = loadCoverage(rows, TODAY);
+    expect(c.fraction).toBe(1);
+    expect(c.totalSeconds).toBe(3 * 3600);
+    expect(c.coveredSeconds).toBe(3 * 3600);
+  });
+
+  it("weights coverage by duration inside the window", () => {
+    const rows = [
+      act(daysAgo(5), 3 * 3600, 80), // 3h covered
+      act(daysAgo(3), 3600, null), // 1h uncovered
+    ];
+    const c = loadCoverage(rows, TODAY);
+    expect(c.fraction).toBe(0.75);
+  });
+
+  it("includes both window edges: today and exactly 27 days back", () => {
+    const rows = [
+      act(daysAgo(27), 3600, 50), // last day inside
+      act(daysAgo(28), 3600, null), // first day outside — must not dilute
+      act(TODAY, 3600, 50),
+    ];
+    const c = loadCoverage(rows, TODAY);
+    expect(c.totalSeconds).toBe(2 * 3600);
+    expect(c.fraction).toBe(1);
+  });
+
+  it("ignores future-dated rows and reports 0 for an empty window", () => {
+    expect(loadCoverage([], TODAY)).toEqual({ coveredSeconds: 0, totalSeconds: 0, fraction: 0 });
+    const c = loadCoverage([act(daysAgo(-1), 3600, 50)], TODAY);
+    expect(c.totalSeconds).toBe(0);
+    expect(c.fraction).toBe(0);
+  });
+
+  it("a zero training load still counts as covered — 0 is a reading, not an absence", () => {
+    const c = loadCoverage([act(daysAgo(1), 3600, 0)], TODAY);
+    expect(c.fraction).toBe(1);
   });
 });
 

@@ -321,9 +321,10 @@ function llmFailureResponse(c: Context<AppContext>, reason: string | undefined) 
 
 function pushOutcomeResponse(
   c: Context<AppContext>,
-  summary: { ok: boolean; error?: "plan_not_found" | "invalid_plan" },
+  summary: { ok: boolean; error?: "plan_not_found" | "invalid_plan" | "writes_disabled" },
 ) {
-  const status = summary.error === "plan_not_found" ? 404 : 500;
+  const status =
+    summary.error === "plan_not_found" ? 404 : summary.error === "writes_disabled" ? 412 : 500;
   return c.json({ error: summary.error ?? "push_failed" }, status);
 }
 
@@ -723,7 +724,7 @@ studioRoutes.post("/adoption/:pushId/undo", async (c) => {
     // `undoStudioAdoption`'s own doc comment) — distinguishing them would let
     // a caller enumerate other users' (or their own non-adopted) push ids by
     // shape alone.
-    return c.json({ error: result.error }, result.error === "undo_unsupported_rename" ? 409 : 404);
+    return c.json({ error: result.error }, result.error === "undo_unsupported_rename" ? 409 : result.error === "writes_disabled" ? 412 : 404);
   }
   return c.json({ ok: result.summary.ok, summary: result.summary });
 });

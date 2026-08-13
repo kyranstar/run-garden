@@ -79,6 +79,7 @@ interface InterpretedMetricBody {
   baseline?: { value: number; lo: number; hi: number; unit: string };
   strip?: Array<{ date: string; on: boolean }>;
   staleNote?: string;
+  bandNote?: string;
   detail?: {
     explain: string;
     runs: Array<{
@@ -170,6 +171,8 @@ interface SeedActivityOpts {
    * are split.
    */
   lapDistanceFactors?: number[];
+  /** Watch time-in-zone record, stored on telemetry (audit#2 (a)). */
+  hrZones?: Array<{ lo: number; hi: number; seconds: number }>;
 }
 
 /**
@@ -200,6 +203,7 @@ async function seedActivity(userId: string, o: SeedActivityOpts): Promise<string
     avgPaceSecPerKm: (durationSeconds / distanceMeters) * 1000,
     trainingLoad: o.trainingLoad ?? null,
     title: o.title ?? "Morning run",
+    telemetry: o.hrZones ? { hrZones: o.hrZones } : null,
     sourceMergeConfidence: 1,
     createdAt: nowInstant(),
     updatedAt: nowInstant(),
@@ -481,6 +485,120 @@ describe("easy ceiling", () => {
     expect(metric(body, "lowIntensityShare").sampleNote).not.toContain(
       "Ceiling estimated from only",
     );
+  });
+});
+
+// ── audit#2 (a): the watch's own zones outrank the estimator ─────────────────
+
+describe("watch time-in-zone", () => {
+  it("classifies zone-carrying runs by the watch's record and measures the rest against its Z2 boundary", async () => {
+    // The audit's live failure shape: aerobic runs at 150 bpm under a watch
+    // whose easy boundary is 155. The estimator builds ceiling 144 from the
+    // 180 max readings and would call every one of them hard (a red "3%
+    // low"). The most recent run carries the watch's own zone record, so 155
+    // is the ceiling and the month reads truthfully easy.
+    for (let i = 1; i < 5; i++) {
+      await seedMatchedRun(userId, "easy", {
+        date: addDays(today, -(2 + i * 3)),
+        durationSeconds: 3600,
+        distanceMeters: 12_000,
+        avgHeartRate: 150,
+        lapHeartRate: 150,
+      });
+    }
+    await seedMatchedRun(userId, "easy", {
+      date: addDays(today, -2),
+      durationSeconds: 3600,
+      distanceMeters: 12_000,
+      avgHeartRate: 150,
+      lapHeartRate: 150,
+      hrZones: [
+        { lo: 0, hi: 135, seconds: 0 },
+        { lo: 136, hi: 155, seconds: 3600 }, // the watch filed all of it as Z2
+        { lo: 156, hi: 168, seconds: 0 },
+        { lo: 169, hi: 180, seconds: 0 },
+        { lo: 181, hi: 220, seconds: 0 },
+      ],
+    });
+
+    const body = await client(cookie).get();
+
+    const lowIntensity = metric(body, "lowIntensityShare");
+    expect(lowIntensity.status).toBe("ok");
+    expect(lowIntensity.value).toBe("100%");
+    expect(lowIntensity.band).toBe("healthy");
+    // The ceiling quoted everywhere is the watch's own boundary…
+    expect(lowIntensity.meaning).toContain("155 bpm");
+    // …which needs no estimator caveat.
+    expect(lowIntensity.sampleNote).not.toContain("Ceiling estimated");
+    expect(lowIntensity.sampleNote).not.toContain("default max heart rate");
+
+    const easyDiscipline = metric(body, "easyDiscipline");
+    expect(easyDiscipline.status).toBe("ok");
+    expect(easyDiscipline.value).toBe("100%");
+    expect(easyDiscipline.detail?.explain).toContain("155 bpm");
+    expect(easyDiscipline.detail?.explain).toContain("exactly as your watch draws it");
+  });
+});
+
+// ── audit#2 (a4): honest band suppression ────────────────────────────────────
+
+describe("honest band suppression", () => {
+  it("withholds the band, gauge and advice when the verdict flips within ±5 bpm of the ceiling", async () => {
+    // Five runs averaging 148 bpm against the default-190 ceiling of 152 (no
+    // usable max readings, no zone records): probed at 147 every second reads
+    // hard, at 152 every second reads easy — that verdict is a fact about the
+    // ceiling, not the runner, so no verdict is published.
+    for (let i = 0; i < 5; i++) {
+      await seedMatchedRun(userId, "easy", {
+        date: addDays(today, -(2 + i * 3)),
+        durationSeconds: 3600,
+        distanceMeters: 12_000,
+        avgHeartRate: 148,
+        lapHeartRate: 148,
+        maxHeartRate: null,
+      });
+    }
+
+    const lowIntensity = metric(await client(cookie).get(), "lowIntensityShare");
+    expect(lowIntensity.status).toBe("ok");
+    expect(lowIntensity.value).toBe("100%"); // the number still shows
+    expect(lowIntensity.band).toBeUndefined(); // the verdict does not
+    expect(lowIntensity.gauge).toBeUndefined();
+    expect(lowIntensity.suggestion).toBeUndefined();
+    expect(lowIntensity.bandNote).toContain("±5 bpm");
+  });
+});
+
+// ── audit#2 (b): load-basis coverage over the window the metrics weight ──────
+
+describe("load-basis coverage window", () => {
+  it("judges coverage over the trailing 28 days, so pre-telemetry legacy runs cannot force the minutes basis", async () => {
+    // Three legacy load-less runs outside the window the load metrics weight —
+    // under the old 12-week test these alone dragged coverage below 0.9 and
+    // flipped every load card onto minutes, where an hour of yoga counts like
+    // an hour of tempo.
+    for (let i = 0; i < 3; i++) {
+      await seedActivity(userId, {
+        date: addDays(today, -(35 + i * 10)),
+        durationSeconds: 3600,
+        lapCount: 0,
+      });
+    }
+    // …and a fully covered recent month.
+    for (let i = 0; i < 8; i++) {
+      await seedActivity(userId, {
+        date: addDays(today, -(1 + i * 3)),
+        durationSeconds: 3600,
+        trainingLoad: 50,
+        lapCount: 0,
+      });
+    }
+
+    const body = await client(cookie).get();
+    const note = "Basis: COROS training load, all sports (coverage judged over the last 28 days).";
+    expect(metric(body, "loadRatio").sampleNote).toContain(note);
+    expect(metric(body, "monotony").sampleNote).toContain(note);
   });
 });
 

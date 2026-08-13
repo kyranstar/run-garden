@@ -58,6 +58,15 @@ describe("gardenForecast", () => {
     expect(f.victim?.plantId).toBe("a-dry"); // never the tree, never the dead plant
   });
 
+  it("never names an already-dormant plant — the sim's pick skips them (audit#2 #21)", () => {
+    const plants = [
+      plant("a-dormant", { state: "dormant", hydration: 0 }), // driest, but already dormant
+      plant("b-live", { hydration: 0.3 }),
+    ];
+    const f = gardenForecast(snap({ daysSinceCompletedRun: 20, plants }));
+    expect(f.victim?.plantId).toBe("b-live");
+  });
+
   it("past dormancy there is no next stage but the victim is still known", () => {
     const f = gardenForecast(snap({ daysSinceCompletedRun: 35, plants: [plant("p1", {})] }));
     expect(f.next).toBeNull();

@@ -128,10 +128,12 @@ describe("adventure shield across a multi-day preview fold (C11)", () => {
     const unresolvedDate = addDays(today, -1);
 
     await ensureGarden(db, userId, prefs, addDays(today, -10));
-    // An open-ended active plan so `today` (with no workout of its own in
-    // this fixture) isn't treated as a plan gap — a gap short-circuits the
-    // grace-day check before the bank is ever consulted, which would mask
-    // exactly the bug this test is pinning.
+    // An active plan spanning today so `today` (with no workout of its own
+    // in this fixture) isn't treated as a plan gap — a gap short-circuits
+    // the grace-day check before the bank is ever consulted, which would
+    // mask exactly the bug this test is pinning. Explicit dates: a
+    // NULL-dated plan covers only the span of its own workouts now
+    // (audit#2 (a)), which for this workoutless fixture would be nothing.
     await db.insert(schema.trainingPlans).values({
       id: newId(),
       userId,
@@ -139,6 +141,8 @@ describe("adventure shield across a multi-day preview fold (C11)", () => {
       sourcePlanId: "test-plan",
       name: "Test Plan",
       status: "active",
+      startDate: addDays(today, -10),
+      endDate: addDays(today, 1),
       createdAt: nowInstant(),
       updatedAt: nowInstant(),
     });
@@ -191,6 +195,7 @@ describe("adventure shield across a multi-day preview fold (C11)", () => {
     const hikeDate = addDays(today, -1);
 
     await ensureGarden(db, userId, prefs, addDays(today, -10));
+    // Explicit span for the same reason as above (audit#2 (a)).
     await db.insert(schema.trainingPlans).values({
       id: newId(),
       userId,
@@ -198,6 +203,8 @@ describe("adventure shield across a multi-day preview fold (C11)", () => {
       sourcePlanId: "test-plan",
       name: "Test Plan",
       status: "active",
+      startDate: addDays(today, -10),
+      endDate: addDays(today, 1),
       createdAt: nowInstant(),
       updatedAt: nowInstant(),
     });

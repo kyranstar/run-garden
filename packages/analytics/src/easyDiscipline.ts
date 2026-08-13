@@ -1,6 +1,5 @@
 import type { MetricResult } from "./metric.js";
 import { insufficient, ok } from "./metric.js";
-import { isEasyHr } from "./hrZones.js";
 
 const MIN_RUNS = 5;
 
@@ -11,11 +10,14 @@ export interface EasyDisciplineValue {
 }
 
 /** How often your easy runs actually stay easy: the share whose average heart
- * rate sat in zones 1–2 (the same isEasyHr predicate used everywhere else).
+ * rate sat at or under the easy ceiling. The ceiling arrives in bpm — the
+ * watch's own Z2 upper bound where the history carries zone records, the
+ * max-HR estimate as a last resort (audit#2 (a2)) — so this metric measures
+ * the runner against the same line the drill-down UI displays.
  * A polarized (~80/20) approach keeps most easy runs genuinely easy. */
 export function computeEasyDiscipline(
   easyRuns: ReadonlyArray<{ activityId: string; date: string; avgHr: number }>,
-  hrMax: number,
+  easyCeilingBpm: number,
 ): MetricResult<EasyDisciplineValue> {
   const withHr = easyRuns.filter((r) => r.avgHr > 0);
   if (withHr.length < MIN_RUNS) {
@@ -31,7 +33,7 @@ export function computeEasyDiscipline(
   const ticks = sorted.map((r) => ({
     activityId: r.activityId,
     date: r.date,
-    easy: isEasyHr(r.avgHr, hrMax),
+    easy: r.avgHr <= easyCeilingBpm,
   }));
   const easyCount = ticks.filter((t) => t.easy).length;
   return ok(

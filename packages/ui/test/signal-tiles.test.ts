@@ -214,6 +214,36 @@ describe("pickStatusStripMetric", () => {
     const high = metric({ id: "anything", band: "high" });
     expect(pickStatusStripMetric([high])).toEqual({ severity: "high", metric: high });
   });
+
+  // audit#2 (a4): an unconfident band must never headline the strip. The
+  // worker contracts bandNote/staleNote to band: undefined; this gate holds
+  // even if a payload regression ships both.
+  it("never lets a metric carrying a bandNote win, whatever band arrived beside it", () => {
+    const unconfidentHigh = metric({
+      id: "lowIntensityShare",
+      band: "high",
+      bandNote: "This number crosses a status boundary within ±5 bpm of your easy ceiling.",
+    });
+    const confidentWatch = metric({ id: "hardStack", band: "watch" });
+    const result = pickStatusStripMetric([unconfidentHigh, confidentWatch]);
+    expect(result.severity).toBe("watch");
+    expect(result.metric?.id).toBe("hardStack");
+  });
+
+  it("never lets a metric carrying a staleNote win — the reading describes the past", () => {
+    const staleHigh = metric({ id: "restingHr", band: "high", staleNote: "last reading 4 days ago" });
+    expect(pickStatusStripMetric([staleHigh])).toEqual({ severity: "clear" });
+  });
+
+  it("never lets an insufficient_data metric win even if a band leaks onto it", () => {
+    const impossible = metric({ id: "ramp", status: "insufficient_data", band: "high" });
+    expect(pickStatusStripMetric([impossible])).toEqual({ severity: "clear" });
+  });
+
+  it("falls all the way to clear when the only banded metric is unconfident", () => {
+    const unconfidentHigh = metric({ id: "lowIntensityShare", band: "high", bandNote: "±5 bpm flip" });
+    expect(pickStatusStripMetric([unconfidentHigh])).toEqual({ severity: "clear" });
+  });
 });
 
 describe("statusStripBaseText", () => {

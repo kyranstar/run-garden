@@ -125,7 +125,7 @@ describe("discipline + performance", () => {
       { activityId: "a4", date: "2026-07-04", avgHr: 140 },
       { activityId: "a5", date: "2026-07-05", avgHr: 175 },
     ];
-    const r = computeEasyDiscipline(runs, 190); // 0.80*190 = 152 cutoff; 4 of 5 under
+    const r = computeEasyDiscipline(runs, 152); // ceiling in bpm (easyCeiling(190)); 4 of 5 under
     expect(r.status === "ok" && r.value.inEasyPct).toBe(80);
   });
 });

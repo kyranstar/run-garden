@@ -196,7 +196,7 @@ async function seedAdoptedPush(): Promise<{ planId: string; pushId: string }> {
 
 beforeEach(async () => {
   db = makeTestDb();
-  const user = await makeTestUser(db);
+  const user = await makeTestUser(db, { corosWritesEnabled: true });
   userId = user.userId;
   const token = await createSession(db, userId);
   cookie = `${SESSION_COOKIE}=${token}`;
@@ -205,8 +205,12 @@ beforeEach(async () => {
 describe("PUT /api/settings — corosWritesEnabled toggle", () => {
   it("flipping writes false→true emits pending work: an open move intent with no job (writes were off) gets a queued job", async () => {
     await connectTestCoros(db, userId);
+    // The suite's user now starts writes-ON (the audit#2 #14 gate needs
+    // that everywhere else) — this test is ABOUT the off→on transition, so
+    // flip off first.
+    await settingsClient().put("/api/settings", { corosWritesEnabled: false });
     const workoutId = await insertWorkout({ effectiveDate: "2026-08-08" });
-    // Writes are off by default (makeTestUser's default prefs): applyMove
+    // Writes are off at this point: applyMove
     // records the intent but emitPendingWork's sole other call site (the
     // bridge-sync route) never runs here, so no job exists yet.
     await applyMove(db, {
@@ -249,7 +253,7 @@ describe("GET /api/sync/status", () => {
       pendingCount: 0,
       issueCount: 0,
       lastCorosReadAt: null,
-      writesEnabled: false,
+      writesEnabled: true,
       registered: false,
     });
   });

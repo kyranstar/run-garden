@@ -55,12 +55,17 @@ import {
   computeWeeklyTraining,
   easyCeiling,
   estimateHrMax,
+  intensityBand,
+  intensityBandStable,
   interpret,
-  isEasyHr,
+  loadCoverage,
   mergeRecords,
   pickEvidenceCard,
   stableHash,
   usableHrMaxReadings,
+  watchEasyCeiling,
+  CEILING_PROBE_BPM,
+  MIN_HRMAX_READINGS,
   DISCIPLINES,
   disciplineOf,
   sessionNoun,
@@ -337,7 +342,9 @@ const LEGACY_RECORDS_KEY = "records:v1";
 const STEADY_CATEGORIES: ReadonlySet<WorkoutCategory> = new Set(["easy", "long", "recovery"]);
 /** A run this long is a hard day on its own, whatever it was matched to. */
 const LONG_RUN_HARD_SECONDS = 6000;
-/** Fraction of window duration that must carry COROS training load before load (not minutes) is the basis. */
+/** Fraction of trailing-28-day duration (the window the load metrics weight —
+ * see `loadCoverage`, audit#2 (b)) that must carry COROS training load before
+ * load (not minutes) is the basis. */
 const LOAD_COVERAGE_THRESHOLD = 0.9;
 /** A recovery reading older than this date-stamps the card and drops its band. */
 const RECOVERY_STALE_DAYS = 2;
@@ -584,15 +591,25 @@ insightRoutes.get("/", async (c) => {
   const isRun = discipline === "run";
 
   // ── Load basis: one basis for the whole window, never a mix ──
-  const totalDuration = allSport.reduce((s, a) => s + a.durationSeconds, 0);
-  const coveredDuration = allSport
-    .filter((a) => a.trainingLoad != null)
-    .reduce((s, a) => s + a.durationSeconds, 0);
+  // Coverage is judged over the trailing 28 days the load metrics actually
+  // weight, not the full 12-week display window (audit#2 (b)): three legacy
+  // pre-telemetry runs from two months back once forced the minutes basis —
+  // where 143 minutes of yoga counts like tempo — onto a window whose recent
+  // month was 95% load-covered. The chosen basis still applies to EVERY day
+  // fed into the load metrics; only the eligibility test narrows.
+  const coverage = loadCoverage(
+    allSport.map((a) => ({
+      date: localDate(a),
+      durationSeconds: a.durationSeconds,
+      trainingLoad: a.trainingLoad,
+    })),
+    today,
+  );
   const useTrainingLoad =
-    totalDuration > 0 && coveredDuration / totalDuration >= LOAD_COVERAGE_THRESHOLD;
+    coverage.totalSeconds > 0 && coverage.fraction >= LOAD_COVERAGE_THRESHOLD;
   const loadBasisNote = useTrainingLoad
-    ? "Basis: COROS training load, all sports."
-    : "Basis: minutes of activity (too little of this window carries COROS training load), all sports.";
+    ? "Basis: COROS training load, all sports (coverage judged over the last 28 days)."
+    : "Basis: minutes of activity (too little of the last 28 days carries COROS training load), all sports.";
 
   const loadByDay = new Map<string, number>();
   for (const a of allSport) {
@@ -610,24 +627,34 @@ insightRoutes.get("/", async (c) => {
   const secondsByDay = [...runSecondsByDay.entries()].map(([date, seconds]) => ({ date, seconds }));
 
   // ── Zones ──
-  // The ceiling is estimated from 26 weeks of runs, not the 12-week display
-  // window: it is the line every execution metric is measured against, so it
-  // should move slowly. When too few runs carry heart rate to stand behind it,
-  // the estimate is still used — but it says so, on every card that uses it.
-  // Counted with the estimator's own filter, not "runs with any heart rate":
-  // average-only runs tell you nothing about a maximum, so letting them count
-  // would suppress the caveat while the ceiling still rested on two readings.
+  // The easy ceiling, in order of trust (audit#2 resolved question (a2)):
+  // the watch's OWN Z2 upper bound, read off the most recent run carrying a
+  // time-in-zone record — the device's configured boundary, no estimation —
+  // and only for zone-less histories the max-HR estimate over 26 weeks of
+  // runs (a longer, steadier basis than the 12-week display window: this is
+  // the line every execution metric is measured against, so it should move
+  // slowly). When the estimate rests on too few readings to stand behind, it
+  // is still used — but it says so, on every card that uses it. Counted with
+  // the estimator's own filter, not "runs with any heart rate": average-only
+  // runs tell you nothing about a maximum, so letting them count would
+  // suppress the caveat while the ceiling still rested on two readings.
   const hrMaxSampleCount = usableHrMaxReadings(hrMaxRows).length;
   const hrMaxEstimate = estimateHrMax(hrMaxRows);
   const hrMax = hrMaxEstimate ?? 190;
-  const ceiling = easyCeiling(hrMax);
+  const watchCeiling = watchEasyCeiling(actRows.filter((a) => a.sport === "run"));
+  const ceiling = watchCeiling ?? easyCeiling(hrMax);
   const ceilingNote =
-    hrMaxEstimate == null
-      ? "Easy ceiling from a default max heart rate of 190 — no usable max-heart-rate readings in the last 26 weeks."
-      : hrMaxSampleCount < MIN_HRMAX_RUNS
-        ? `Ceiling estimated from only ${hrMaxSampleCount} run${hrMaxSampleCount === 1 ? "" : "s"} with a usable max heart rate in the last 26 weeks.`
-        : "";
+    watchCeiling != null
+      ? ""
+      : hrMaxEstimate == null
+        ? `Easy ceiling from a default max heart rate of 190 — only ${hrMaxSampleCount} usable max-heart-rate reading${hrMaxSampleCount === 1 ? "" : "s"} in the last 26 weeks (the estimate needs ${MIN_HRMAX_READINGS}).`
+        : hrMaxSampleCount < MIN_HRMAX_RUNS
+          ? `Ceiling estimated from only ${hrMaxSampleCount} run${hrMaxSampleCount === 1 ? "" : "s"} with a usable max heart rate in the last 26 weeks.`
+          : "";
 
+  // The watch's per-run time-in-zone record rides along (audit#2 (a1)):
+  // where it exists it IS the low/high classification, and the lap/avg-HR
+  // bucketing against the ceiling is the fallback for zone-less runs.
   const toIntensityInput = (a: (typeof actRows)[number]): IntensityRunInput => ({
     activityId: a.id,
     durationSeconds: a.durationSeconds,
@@ -636,17 +663,24 @@ insightRoutes.get("/", async (c) => {
       avgHeartRate: l.avgHeartRate ?? null,
       durationSeconds: l.durationSeconds,
     })),
+    hrZones: a.telemetry?.hrZones,
   });
   // Two calls, two jobs. The headline the user reads is the last 4 weeks —
   // a 12-week average would let a disciplined block from two months ago hide
   // a month of running everything too hard. The full-window call exists only
   // to give the weekly stacked bars a zone split for every week they draw.
   const intensityHeadlineStart = addDays(today, -INTENSITY_HEADLINE_DAYS);
-  const recentIntensity = computeLowIntensityShare(
-    runRows.filter((a) => localDate(a) >= intensityHeadlineStart).map(toIntensityInput),
-    hrMax,
-  );
-  const windowIntensity = computeLowIntensityShare(runRows.map(toIntensityInput), hrMax);
+  const recentIntensityInputs = runRows
+    .filter((a) => localDate(a) >= intensityHeadlineStart)
+    .map(toIntensityInput);
+  const recentIntensity = computeLowIntensityShare(recentIntensityInputs, ceiling);
+  // Honest suppression (audit#2 (a4)): a band that flips when the ceiling is
+  // probed ±5 bpm is a fact about the ceiling, not the runner — the headline
+  // number still shows, the verdict is withheld. Zone-backed time is immune
+  // (the watch's own seconds don't move with the ceiling), so this only ever
+  // bites when fallback-bucketed time sits near the line.
+  const recentIntensityConfident = intensityBandStable(recentIntensityInputs, ceiling);
+  const windowIntensity = computeLowIntensityShare(runRows.map(toIntensityInput), ceiling);
 
   // A day is hard when it carried a matched quality/race session, a run whose
   // category we can't vouch for but whose heart rate was above the easy
@@ -658,7 +692,7 @@ insightRoutes.get("/", async (c) => {
       category === "quality" ||
       category === "race" ||
       a.durationSeconds >= LONG_RUN_HARD_SECONDS ||
-      (category === "unknown" && a.avgHeartRate != null && !isEasyHr(a.avgHeartRate, hrMax));
+      (category === "unknown" && a.avgHeartRate != null && a.avgHeartRate > ceiling);
     if (hard) hardDates.push(localDate(a));
   }
 
@@ -680,7 +714,7 @@ insightRoutes.get("/", async (c) => {
       date: localDate(a),
       avgHr: a.avgHeartRate ?? 0,
     })),
-    hrMax,
+    ceiling,
   );
 
   // ── Pacing: steady runs only. Comparing halves of an interval session
@@ -772,9 +806,13 @@ insightRoutes.get("/", async (c) => {
   // so the freshly computed set is merged into the persisted one. ──
   const fresh = computeRecords({
     runs: runSamples,
+    // `planned` rides along (audit#2 #17): the consistency record must be
+    // able to tell a week the plan asked nothing from a week the runner did
+    // nothing — both score adherence 0, only one of them is the runner's.
     weeklyAdherence: consistency.weeklyBreakdown.map((wk) => ({
       weekStart: wk.weekStart,
       adherence: wk.adherence,
+      planned: wk.planned,
     })),
     completedRunDates: runRows.map(localDate),
     discipline,
@@ -996,22 +1034,35 @@ insightRoutes.get("/", async (c) => {
       ceilingNote,
     ),
     withNote(
-      interpret("lowIntensityShare", "Low-intensity share", recentIntensity, (v) => ({
-        value: `${v.lowPct}%`,
-        band: v.lowPct < 65 ? "high" : v.lowPct < 75 ? "watch" : "healthy",
-        range: "aim ≥75%, classic target ~80%",
-        gauge: { min: 40, max: 100, healthyLo: 75, healthyHi: 100, value: v.lowPct },
-        meaning:
-          `Share of your running time over the last 4 weeks spent at or under your easy ceiling of ${ceiling} bpm, ` +
-          "measured lap by lap so a hard surge inside an otherwise-easy run still counts as hard. Easy running " +
-          "isn't the lesser kind — it's the engine the hard sessions run on.",
-        suggestion:
-          v.lowPct < 65
-            ? "Most of the well-tested approaches keep three quarters or more of running time easy. More easy time, not less, is usually the fix."
-            : v.lowPct < 75
-              ? "A little intensity-heavy. Slowing the easy runs down costs nothing and pays into everything else."
-              : undefined,
-      })),
+      interpret("lowIntensityShare", "Low-intensity share", recentIntensity, (v) => {
+        // Honest suppression (audit#2 (a4)): when the band flips inside the
+        // ceiling's ±5 bpm error bar, the number is shown but the verdict —
+        // band, its gauge, and the band-derived advice — is withheld. An
+        // unconfident estimate must never headline the status strip.
+        const band = recentIntensityConfident ? intensityBand(v.lowPct) : undefined;
+        return {
+          value: `${v.lowPct}%`,
+          band,
+          range: "aim ≥75%, classic target ~80%",
+          gauge: recentIntensityConfident
+            ? { min: 40, max: 100, healthyLo: 75, healthyHi: 100, value: v.lowPct }
+            : undefined,
+          bandNote: recentIntensityConfident
+            ? undefined
+            : `This number crosses a status boundary within ±${CEILING_PROBE_BPM} bpm of your easy ceiling, so no status is claimed.`,
+          meaning:
+            "Share of your running time over the last 4 weeks spent in zones 1–2 — from your watch's own " +
+            `time-in-zone record where a run carries one, otherwise lap by lap against your easy ceiling of ${ceiling} bpm ` +
+            "(so a hard surge inside an otherwise-easy run still counts as hard). Easy running " +
+            "isn't the lesser kind — it's the engine the hard sessions run on.",
+          suggestion:
+            band === "high"
+              ? "Most of the well-tested approaches keep three quarters or more of running time easy. More easy time, not less, is usually the fix."
+              : band === "watch"
+                ? "A little intensity-heavy. Slowing the easy runs down costs nothing and pays into everything else."
+                : undefined,
+        };
+      }),
       joinNotes(noHrNote, ceilingNote),
     ),
     withNote(
@@ -1051,8 +1102,8 @@ insightRoutes.get("/", async (c) => {
   // ── Per-run evidence (drilldowns) ──
   // Easy-run discipline: every contributing run with its per-lap HR against the
   // easy ceiling, so "78%" is inspectable down to the exact lap that broke it.
-  // `over` uses the same isEasyHr predicate the metric itself used — a
-  // drill-down that disagrees with its own headline is worse than none.
+  // `over` uses the same at-or-under-the-ceiling predicate the metric itself
+  // used — a drill-down that disagrees with its own headline is worse than none.
   const easyDetailRuns: MetricRunDetail[] = easyRunRows.map((a) => {
     // `over` is decided on the RAW average, exactly as computeEasyDiscipline
     // decided the tick; rounding is for display only. Deciding it on the
@@ -1061,7 +1112,7 @@ insightRoutes.get("/", async (c) => {
     // own evidence is the failure this whole drill-down exists to prevent.
     const rawAvgHr = a.avgHeartRate ?? 0;
     const avgHr = Math.round(rawAvgHr);
-    const over = !isEasyHr(rawAvgHr, hrMax);
+    const over = rawAvgHr > ceiling;
     const laps = lapsOf(a.id)
       .filter((l) => l.durationSeconds > 0)
       .sort((x, y) => x.lapIndex - y.lapIndex)
@@ -1070,7 +1121,7 @@ insightRoutes.get("/", async (c) => {
         avgHr: l.avgHeartRate,
         durationSeconds: l.durationSeconds,
         distanceMeters: l.distanceMeters,
-        over: l.avgHeartRate != null ? !isEasyHr(l.avgHeartRate, hrMax) : false,
+        over: l.avgHeartRate != null ? l.avgHeartRate > ceiling : false,
       }));
     return {
       activityId: a.id,
@@ -1123,9 +1174,12 @@ insightRoutes.get("/", async (c) => {
   const detailByMetric: Record<string, MetricDetail> = {
     easyDiscipline: {
       explain:
-        `Measured against your easy ceiling of ${ceiling} bpm — the top of zone 2, estimated from a max ` +
-        `heart rate of ${hrMax}. A run counts as disciplined when its average heart rate stays at or under ` +
-        `that line. Red laps are where it slipped over.`,
+        `Measured against your easy ceiling of ${ceiling} bpm — ` +
+        (watchCeiling != null
+          ? "the top of zone 2 exactly as your watch draws it, read from your most recent run's time-in-zone record. "
+          : `the top of zone 2, estimated from a max heart rate of ${hrMax}. `) +
+        "A run counts as disciplined when its average heart rate stays at or under " +
+        "that line. Red laps are where it slipped over.",
       threshold: { label: "easy ceiling", value: ceiling, unit: "bpm" },
       runs: easyDetailRuns,
     },

@@ -380,7 +380,12 @@ export function InsightsScreen() {
         ) : (
           <ChartFrame
             title="Training time per week"
-            subtitle={`Stacked: low vs high intensity time (from completed, matched ${sessionNoun(discipline, true)})`}
+            // Honest about what the bars hold (audit#2 #23): every recorded
+            // session in the window, matched to the plan or not — the split
+            // comes from heart-rate zone time where a session has it, and
+            // falls back to the session's planned category otherwise (no
+            // heart rate + no quality match ⇒ counted as low).
+            subtitle={`Stacked: low vs high intensity time across every recorded ${sessionNoun(discipline)} — zone data where available, session type otherwise`}
             legend={[
               { label: "Low intensity", colorVar: "--chart-1" },
               { label: "High intensity", colorVar: "--chart-2" },

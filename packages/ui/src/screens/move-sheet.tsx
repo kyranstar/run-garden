@@ -95,6 +95,13 @@ export function MoveSheet({
         <Banner kind="warn">{candidates.data.blockedReason}</Banner>
       ) : (
         <div className="stack">
+          {candidates.data?.busyChecked === false ? (
+            <Banner kind="info">
+              Couldn't check your Google Calendar just now — these times avoid your other workouts,
+              but meetings weren't visible. Reconnect Google in Settings for conflict-aware
+              suggestions.
+            </Banner>
+          ) : null}
           {(candidates.data?.candidates ?? []).map((cand) => (
             <button
               key={`${cand.date}-${cand.time}`}

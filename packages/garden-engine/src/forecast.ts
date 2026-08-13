@@ -14,7 +14,8 @@ export interface GardenForecast {
   /** Next stage ahead, or null in rest mode / past dormancy. */
   next: { stage: ForecastStage; inDays: number } | null;
   /** Deterministic first dormancy pick while drought holds (lowest hydration,
-   * id tiebreak, non-tree, living — same ordering as applyDailyDecay). */
+   * id tiebreak, non-tree, living, not already dormant — same ordering as
+   * applyDailyDecay). */
   victim: { plantId: string; speciesId: string } | null;
   /** The garden is currently drinking recovery rain. */
   recovering: boolean;
@@ -32,7 +33,10 @@ export function gardenForecast(
   const d = state.daysSinceCompletedRun + Math.max(0, Math.floor(daysAhead));
 
   const candidates = snapshot.plants
-    .filter((p) => p.state !== "dead" && p.category !== "tree")
+    // audit#2 #21: mirror the sim's pick exactly — applyDailyDecay skips
+    // plants that are ALREADY dormant, so a dormant plant must never be
+    // named as the one "going dormant soon" (the mirror contract above).
+    .filter((p) => p.state !== "dead" && p.state !== "dormant" && p.category !== "tree")
     .sort((a, b) => a.hydration - b.hydration || a.id.localeCompare(b.id));
   const first = candidates[0];
   const victim = first ? { plantId: first.id, speciesId: first.speciesId } : null;

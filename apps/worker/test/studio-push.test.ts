@@ -854,7 +854,7 @@ async function seedCatalog(): Promise<void> {
 
 beforeEach(async () => {
   db = makeTestDb();
-  ({ userId } = await makeTestUser(db));
+  ({ userId } = await makeTestUser(db, { corosWritesEnabled: true }));
   await seedCatalog();
 });
 
@@ -1170,7 +1170,7 @@ describe("pushStudioPlan", () => {
 
   it("refuses another user's plan", async () => {
     const planId = await seedPlan();
-    const other = await makeTestUser(db);
+    const other = await makeTestUser(db, { corosWritesEnabled: true });
     const summary = await pushStudioPlan(db, {
       userId: other.userId,
       studioPlanId: planId,
@@ -1950,5 +1950,13 @@ describe("F8 — account deletion removes studio data", () => {
     await deleteAllUserData(db, userId);
 
     expect(await db.select().from(studioPlanPushes)).toHaveLength(0);
+  });
+});
+
+describe("corosWritesEnabled gates studio writes (audit#2 #14)", () => {
+  it("push refuses visibly when the toggle is off", async () => {
+    const off = await makeTestUser(db);
+    const summary = await pushStudioPlan(db, { userId: off.userId, studioPlanId: "any", today: TODAY });
+    expect(summary).toMatchObject({ ok: false, error: "writes_disabled" });
   });
 });

@@ -661,22 +661,29 @@ planRoutes.get("/workouts/:id/candidates", async (c) => {
       ),
     );
 
-  // Busy intervals from Google Calendar free/busy (best effort).
+  // Busy intervals from Google Calendar free/busy — and an HONEST flag when
+  // the lookup couldn't run (audit#2 #16): candidates claimed "open morning"
+  // with zero busy data through the whole dead-token outage, exactly when
+  // the user was re-planning.
   let busy: Array<{ start: string; end: string }> = [];
+  let busyChecked = false;
   const client = await googleCalendarClient(db, c.env, userId);
   if (client && prefs.calendarId) {
     try {
       const calendars = await client.listCalendars();
       const ids = calendars.filter((cal) => cal.id !== prefs.calendarId).map((cal) => cal.id);
-      if (ids.length > 0) {
-        busy = await client.freeBusy(
-          ids.slice(0, 8),
-          `${addDays(w.effectiveDate, -3)}T00:00:00Z`,
-          `${addDays(w.effectiveDate, 4)}T00:00:00Z`,
-        );
-      }
+      busy =
+        ids.length > 0
+          ? await client.freeBusy(
+              ids.slice(0, 8),
+              `${addDays(w.effectiveDate, -3)}T00:00:00Z`,
+              `${addDays(w.effectiveDate, 4)}T00:00:00Z`,
+            )
+          : [];
+      busyChecked = true;
     } catch {
       busy = [];
+      busyChecked = false;
     }
   }
 
@@ -706,7 +713,7 @@ planRoutes.get("/workouts/:id/candidates", async (c) => {
     today,
     now: nowInstant(),
   });
-  return c.json(result);
+  return c.json({ ...result, busyChecked });
 });
 
 const moveSchema = z.object({ toDate: z.string(), toTime: z.string() });

@@ -268,7 +268,7 @@ syncRoutes.post("/notes/:id/undo", async (c) => {
       const prefs = await loadPreferences(db, userId);
       const result = await undoStudioAdoption(db, userId, pushId, todayInZone(prefs.timezone));
       if (!result.ok) {
-        return c.json({ error: result.error }, result.error === "undo_unsupported_rename" ? 409 : 404);
+        return c.json({ error: result.error }, result.error === "undo_unsupported_rename" ? 409 : result.error === "writes_disabled" ? 412 : 404);
       }
       await dismissSyncNote(db, userId, noteId);
       return c.json({ ok: true });

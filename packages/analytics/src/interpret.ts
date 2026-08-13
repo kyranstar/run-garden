@@ -121,6 +121,15 @@ export interface InterpretedMetric {
    * carries no `band`: it is still shown, but it makes no claim about today.
    */
   staleNote?: string;
+  /**
+   * Set when the metric declines to claim a band because the claim would not
+   * survive its own input's error bar — e.g. the low-intensity band flips
+   * within ±5 bpm of an estimated easy ceiling (audit#2 (a4)). Like
+   * `staleNote`, a card carrying this has `band: undefined`: the number is
+   * still shown, the verdict is withheld — and the status strip must never
+   * headline it.
+   */
+  bandNote?: string;
   /** Per-run evidence for the drilldown sheet, when the metric has it. */
   detail?: MetricDetail;
 }
@@ -138,6 +147,7 @@ export interface Presentation {
   baseline?: MetricBaseline;
   strip?: MetricStripCell[];
   staleNote?: string;
+  bandNote?: string;
 }
 
 export function interpret<T>(
@@ -172,5 +182,6 @@ export function interpret<T>(
     baseline: p.baseline,
     strip: p.strip,
     staleNote: p.staleNote,
+    bandNote: p.bandNote,
   };
 }

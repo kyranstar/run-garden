@@ -115,6 +115,54 @@ export function computeLoadRatio(
   );
 }
 
+// ── Load-basis coverage (audit#2 resolved question (b)) ──────────────────────
+
+/** Trailing days (besides today) over which load coverage is judged: the 28
+ * days the load metrics actually weight — monotony reads only the last 7,
+ * and the EWMA(28) gives a 27-day-old day ~14% weight. */
+export const LOAD_COVERAGE_DAYS = 27;
+
+export interface LoadCoverage {
+  /** Seconds of activity carrying provider training load, in the window. */
+  coveredSeconds: number;
+  /** All activity seconds in the window. */
+  totalSeconds: number;
+  /** coveredSeconds / totalSeconds; 0 when the window is empty. */
+  fraction: number;
+}
+
+/**
+ * How much of the trailing 28 days' activity time carries provider training
+ * load. Judged over the window the load metrics actually weight, NOT the full
+ * display window (audit#2 (b)): three pre-telemetry legacy runs from two
+ * months back once dragged 12-week coverage to 0.83 and forced the whole
+ * basis onto minutes — where 143 minutes of yoga counts like tempo — while
+ * the trailing 28 days were 95% covered. The caller still applies ONE basis
+ * to the whole window; only the eligibility test narrows.
+ */
+export function loadCoverage(
+  activities: ReadonlyArray<{
+    date: string;
+    durationSeconds: number;
+    trainingLoad: number | null | undefined;
+  }>,
+  today: string,
+): LoadCoverage {
+  const start = cutoff(today, LOAD_COVERAGE_DAYS);
+  let coveredSeconds = 0;
+  let totalSeconds = 0;
+  for (const a of activities) {
+    if (a.date < start || a.date > today) continue;
+    totalSeconds += a.durationSeconds;
+    if (a.trainingLoad != null) coveredSeconds += a.durationSeconds;
+  }
+  return {
+    coveredSeconds,
+    totalSeconds,
+    fraction: totalSeconds > 0 ? coveredSeconds / totalSeconds : 0,
+  };
+}
+
 export interface RampValue {
   deltaSeconds: number;
   pct: number;
