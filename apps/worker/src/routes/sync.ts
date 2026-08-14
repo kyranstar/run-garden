@@ -15,6 +15,7 @@ import { deriveBackfillStatus } from "../services/backfill.js";
 import { loadPreferences } from "../services/calendar-sync.js";
 import { corosConnectionStatus } from "../services/coros-connection.js";
 import { applyMove } from "../services/jobs.js";
+import { executeCloudJobs } from "../services/coros-write-cloud.js";
 import { openMoveIntents } from "../services/sync-intents.js";
 import { activeSyncNotes, dismissSyncNote } from "../services/sync-notes.js";
 import { computeSyncStatus } from "../services/sync-status.js";
@@ -74,6 +75,23 @@ syncRoutes.get("/status", async (c) => {
 // Best-effort per item: one workout or plan that still can't retry (archived
 // mid-flight, a genuinely unsupported COROS state, …) must not block the rest
 // from clearing.
+/**
+ * Drain queued COROS write jobs now. Every other executor call is bolted
+ * onto a mutating route, so a queue with nothing else happening waits for
+ * the hourly cron (audit#3 P-series: a read_now job once sat 33.7h). This
+ * only executes what is already queued — it plans nothing and enqueues
+ * nothing, so it is safe to call repeatedly while a batch drains.
+ */
+syncRoutes.post("/drain-writes", async (c) => {
+  const db = c.get("db");
+  const userId = c.get("userId");
+  const prefs = await loadPreferences(db, userId);
+  const body = (await c.req.json().catch(() => ({}))) as { cap?: number };
+  const cap = Math.min(Math.max(Math.trunc(body.cap ?? 6), 1), 24);
+  const { executed } = await executeCloudJobs(db, c.env, userId, prefs, { cap });
+  return c.json({ ok: true, executed });
+});
+
 syncRoutes.post("/retry", async (c) => {
   const db = c.get("db");
   const userId = c.get("userId");
