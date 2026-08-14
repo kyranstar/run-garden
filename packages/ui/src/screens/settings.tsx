@@ -132,6 +132,28 @@ export function SchedulingSection({ prefs }: { prefs: UserPreferences }) {
         <NumberField id="s-after" label="Buffer after" value={draft.bufferAfterMinutes} onChange={(v) => set("bufferAfterMinutes", v)} suffix="min" />
       </div>
       <div className="field">
+        <label htmlFor="s-race-dist">Race distance</label>
+        <select
+          id="s-race-dist"
+          value={draft.raceDistanceKm === null ? "" : String(draft.raceDistanceKm)}
+          onChange={(e) => set("raceDistanceKm", e.target.value === "" ? null : Number(e.target.value))}
+        >
+          <option value="">Not set</option>
+          <option value="5">5K</option>
+          <option value="10">10K</option>
+          <option value="21.0975">Half marathon</option>
+          <option value="42.195">Marathon</option>
+          {draft.raceDistanceKm !== null &&
+          ![5, 10, 21.0975, 42.195].includes(draft.raceDistanceKm) ? (
+            <option value={String(draft.raceDistanceKm)}>{draft.raceDistanceKm} km</option>
+          ) : null}
+        </select>
+        <span className="hint">
+          Turns your measured threshold into a goal time on the Plan page. Without it the race
+          strip shows your threshold pace and makes no time prediction.
+        </span>
+      </div>
+      <div className="field">
         <label htmlFor="s-tz">Timezone</label>
         <input
           id="s-tz"

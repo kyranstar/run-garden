@@ -115,7 +115,7 @@ export function StudioModal({
 
             {d.progressions.length > 0 ? (
               <div className="prog-chips">
-                {d.progressions.map((p) => (
+                {d.progressions.map((p) => progressionInUnits(p, units)).map((p) => (
                   <span key={p.key} className="prog-chip">
                     <span className="prog-chip-label">{p.label}</span>
                     <span className="prog-chip-value num">

@@ -100,9 +100,12 @@ export async function buildDossier(
       ? [
           `RACE: ${raceHub.daysToRace} days out · phase ${raceHub.phase} · taper starts ${raceHub.taperStartDate}` +
             (raceHub.goal
-              ? ` · goal band ${raceHub.goal.bandLowSecPerKm}-${raceHub.goal.bandHighSecPerKm} sec/km (COROS threshold ${raceHub.goal.thresholdPaceSecPerKm} sec/km)`
+              ? ` · COROS threshold ${raceHub.goal.thresholdPaceSecPerKm} sec/km` +
+                (raceHub.goal.prediction
+                  ? ` · ${raceHub.goal.prediction.distanceKm}km goal band ${raceHub.goal.prediction.fastSecPerKm}-${raceHub.goal.prediction.slowSecPerKm} sec/km`
+                  : " · race distance not set, so no goal time — ask if it matters")
               : " · no threshold reading yet") +
-            ` · checklist: restructure ${raceHub.checklist.find((i) => i.id === "coach-restructure")?.done ? "done" : "OPEN"}, race-week lifts ${raceHub.checklist.find((i) => i.id === "coach-lifts")?.done ? "eased" : "OPEN"}` +
+            ` · checklist: restructure ${raceHub.checklist.find((i) => i.id === "coach-restructure")?.done ? "done" : "OPEN"}, race-week lifts ${(() => { const it = raceHub.checklist.find((i) => i.id === "coach-lifts"); return it?.note ?? (it?.done ? "eased" : "OPEN"); })()}` +
             (raceHub.raceLine ? ` · current raceLine: "${raceHub.raceLine.text}"` : " · no raceLine yet — write one"),
         ]
       : []),

@@ -1,21 +1,24 @@
-import { and, eq, gte, inArray, isNull, lte } from "drizzle-orm";
+import { and, desc, eq, gte, inArray, isNotNull, isNull, lte } from "drizzle-orm";
 import {
   calendarEventSuppressions,
   coachPlanWeeks,
   coachPlans,
   corosWriteJobs,
+  dailyHealth,
+  plannedWorkoutStages,
   plannedWorkouts,
 } from "@rg/database";
 import {
   addDays,
   newId,
   nowInstant,
+  paceBandFor,
   todayInZone,
   type CoachOp,
   type CoachSession,
   type UserPreferences,
 } from "@rg/domain";
-import type { Db } from "./db.js";
+import { chunkedInsert, type Db } from "./db.js";
 import { applyMove } from "./jobs.js";
 import { recordIntent } from "./sync-intents.js";
 import { resolveRaceConflict } from "./race-conflict.js";
@@ -75,7 +78,7 @@ async function insertSession(
   date: string,
   session: CoachSession,
   now: string,
-  opts: { corosWritesEnabled?: boolean; prefs?: UserPreferences } = {},
+  opts: { corosWritesEnabled?: boolean; prefs?: UserPreferences; thresholdPaceSecPerKm?: number } = {},
 ): Promise<void> {
   // Land in the athlete's own slot, not a hardcoded dawn (audit#2 #15).
   const window = session.category === "long" || session.category === "race" ? "morning" : (opts.prefs?.defaultWindow ?? "morning");
@@ -121,6 +124,37 @@ async function insertSession(
     })
     .onConflictDoNothing();
 
+  // Structured stages so the app's session detail shows the prescription
+  // (incl. pace bands) immediately — a later COROS re-import replaces these
+  // with the wire's own truth, which matches because pace round-trips
+  // exactly (2026-08-14).
+  if (session.run) {
+    const stageRows = session.run.blocks.map((b, i) => {
+      const band = paceBandFor(b.intensity, opts.thresholdPaceSecPerKm);
+      return {
+        id: `${id}:${i}`,
+        workoutId: id,
+        parentStageId: null,
+        ord: i,
+        kind: i === 0 && session.run!.blocks.length >= 2 ? "warmup" : "work",
+        repeatCount: null,
+        durationType: b.kind === "duration" ? "time" : "distance",
+        durationSeconds: b.kind === "duration" ? b.value * 60 : null,
+        distanceMeters: b.kind === "distance" ? b.value : null,
+        targetType: band ? "pace" : "none",
+        targetLow: band?.fastSecPerKm ?? null,
+        targetHigh: band?.slowSecPerKm ?? null,
+        paceZone: null,
+        hrZone: null,
+        label: b.intensity ?? null,
+      };
+    });
+    await db
+      .delete(plannedWorkoutStages)
+      .where(eq(plannedWorkoutStages.workoutId, id));
+    await chunkedInsert(stageRows, 15, (batch) => db.insert(plannedWorkoutStages).values(batch));
+  }
+
   // Coach adds reach the WATCH (user requirement 2026-08-12): duration-block
   // run sessions ride the same verified create pipeline as studio pushes.
   // The stored state stays calendar_only until the executor verifies; the
@@ -139,7 +173,13 @@ async function insertSession(
         // The name is the OWNERSHIP STAMP on COROS and must be unique per
         // plan — raw titles ("Long Run" ×6) refuse every create after the
         // first (audit#2 #7).
-        payload: { workoutId: id, happenDay: date, name: `${session.title} — ${date}`, session },
+        payload: {
+          workoutId: id,
+          happenDay: date,
+          name: `${session.title} — ${date}`,
+          session,
+          ...(opts.thresholdPaceSecPerKm ? { thresholdPaceSecPerKm: opts.thresholdPaceSecPerKm } : {}),
+        },
         requestedAt: now,
         status: "queued",
         updatedAt: now,
@@ -261,6 +301,15 @@ export async function applyOps(
 ): Promise<ApplyResult> {
   const now = nowInstant();
   const today = todayInZone(prefs.timezone);
+  // One read for the whole proposal: the athlete's latest COROS threshold
+  // anchors every pace band this apply writes (2026-08-14).
+  const [thresholdRow] = await db
+    .select({ v: dailyHealth.thresholdPaceSecPerKm })
+    .from(dailyHealth)
+    .where(and(eq(dailyHealth.userId, userId), isNotNull(dailyHealth.thresholdPaceSecPerKm)))
+    .orderBy(desc(dailyHealth.date))
+    .limit(1);
+  const thresholdPaceSecPerKm = thresholdRow?.v ?? undefined;
   const out: ApplyResult = { created: [], updated: [], archived: [] };
 
   for (let i = 0; i < ops.length; i++) {
@@ -356,6 +405,7 @@ export async function applyOps(
         await insertSession(db, userId, planId, id, op.date, op.session, now, {
           corosWritesEnabled: prefs.corosWritesEnabled,
           prefs,
+          thresholdPaceSecPerKm,
         });
         out.created.push(id);
         break;
@@ -367,6 +417,7 @@ export async function applyOps(
           await insertSession(db, userId, op.planId, id, s.date, s.session, now, {
             corosWritesEnabled: prefs.corosWritesEnabled,
             prefs,
+            thresholdPaceSecPerKm,
           });
           out.created.push(id);
         }
@@ -378,6 +429,7 @@ export async function applyOps(
           await insertSession(db, userId, op.planId, id, s.date, s.session, now, {
             corosWritesEnabled: prefs.corosWritesEnabled,
             prefs,
+            thresholdPaceSecPerKm,
           });
           out.created.push(id);
         }
@@ -426,6 +478,7 @@ export async function applyOps(
           await insertSession(db, userId, op.planId, id, s.date, s.session, now, {
             corosWritesEnabled: prefs.corosWritesEnabled,
             prefs,
+            thresholdPaceSecPerKm,
           });
           out.created.push(id);
         }
@@ -454,6 +507,7 @@ export async function applyOps(
           await insertSession(db, userId, planId, id, s.date, s.session, now, {
             corosWritesEnabled: prefs.corosWritesEnabled,
             prefs,
+            thresholdPaceSecPerKm,
           });
           out.created.push(id);
         }

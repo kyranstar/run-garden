@@ -40,6 +40,10 @@ export const userPreferencesSchema = schedulingPreferencesSchema.extend({
     .regex(/^\d{4}-\d{2}-\d{2}$/)
     .nullable()
     .default(null),
+  /** The race's distance in km (5, 10, 21.0975, 42.195, or anything else).
+   * Null = unknown, and the race strip then makes NO time prediction rather
+   * than assuming a 10K (audit#3-b #1). */
+  raceDistanceKm: z.number().positive().max(200).nullable().default(null),
   reducedMotion: z.boolean().default(false),
   theme: z.enum(["system", "light", "dark"]).default("system"),
   /** Display units for distance and pace, applied everywhere a number

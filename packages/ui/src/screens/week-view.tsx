@@ -105,6 +105,13 @@ export function WeekView({
   onPick,
   onOpenWorkout,
   onGhostTap,
+  /** Steps the week by ±7 days from the last REQUESTED week. Clicks fired
+   * inside one render tick must accumulate, so the caller owns the cursor
+   * (a rendered-week or URL-derived base collapses them — live-verified:
+   * 5 fast clicks advanced 1 week). */
+  onStep,
+  /** True while the shown week is the previous one, kept during the fetch. */
+  loading = false,
 }: {
   week: PlanWeekResponse;
   today: string;
@@ -114,17 +121,23 @@ export function WeekView({
   onPick: (monday: string) => void;
   onOpenWorkout: (id: string) => void;
   onGhostTap: (proposalId: string) => void;
+  onStep: (deltaDays: number) => void;
+  loading?: boolean;
 }) {
   const thisMonday = startOfIsoWeek(today);
   const offCurrent = week.weekStart !== thisMonday;
   return (
-    <section className="plan-week" aria-label="Week">
+    <section
+      className={`plan-week${loading ? " is-loading" : ""}`}
+      aria-label="Week"
+      aria-busy={loading || undefined}
+    >
       <div className="plan-week-head">
         <span className="plan-week-nav" role="group" aria-label="Change week">
-          <button type="button" aria-label="Previous week" onClick={() => onPick(addDays(week.weekStart, -7))}>
+          <button type="button" aria-label="Previous week" onClick={() => onStep(-7)}>
             ‹
           </button>
-          <button type="button" aria-label="Next week" onClick={() => onPick(addDays(week.weekStart, 7))}>
+          <button type="button" aria-label="Next week" onClick={() => onStep(7)}>
             ›
           </button>
         </span>

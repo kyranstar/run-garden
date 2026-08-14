@@ -12,6 +12,8 @@ import {
   EmptyState,
   formatDayLong,
   formatMinutes,
+  formatDistance,
+  formatPace,
   formatTime,
   localTodayGuess,
   Sheet,
@@ -27,6 +29,7 @@ import { CoachRead } from "./coach-read.js";
 import { CoachWindow } from "./coach-window.js";
 import { WeeklyBrief } from "./plan-brief.js";
 import { RaceStrip } from "./race-strip.js";
+import { useUnits } from "../use-units.js";
 import { PlanCards } from "./plan-cards.js";
 import { StudioModal } from "./studio-modal.js";
 import { askable, displayCompletionState, WeekView, weekRangeLabel } from "./week-view.js";
@@ -45,6 +48,7 @@ function WorkoutDetail({
   onClose: () => void;
 }) {
   const qc = useQueryClient();
+  const units = useUnits();
   const [moving, setMoving] = useState(false);
   const [matching, setMatching] = useState(false);
   const [confirmRemove, setConfirmRemove] = useState(false);
@@ -168,15 +172,31 @@ function WorkoutDetail({
               Full structure ({stages.filter((s) => s.kind !== "repeat").length} stages)
             </summary>
             <ul className="muted" style={{ paddingLeft: "1.2rem", marginTop: "0.4rem" }}>
-              {stages.map((s) => (
-                <li key={s.id as string}>
-                  {s.kind as string}
-                  {s.repeatCount ? ` × ${s.repeatCount}` : ""}
-                  {s.durationSeconds ? ` — ${Math.round((s.durationSeconds as number) / 60)} min` : ""}
-                  {s.distanceMeters ? ` — ${((s.distanceMeters as number) / 1000).toFixed(2)} km` : ""}
-                  {s.label ? ` (${s.label})` : ""}
-                </li>
-              ))}
+              {stages.map((s) => {
+                // Pace targets were stored but never shown (2026-08-14).
+                // Bounds arrive either way round — COROS writes recovery
+                // blocks slow-first — so order by value, not by column.
+                const lo = s.targetLow as number | null;
+                const hi = s.targetHigh as number | null;
+                const band =
+                  s.targetType === "pace" && lo != null && hi != null
+                    ? { fast: Math.min(lo, hi), slow: Math.max(lo, hi) }
+                    : null;
+                return (
+                  <li key={s.id as string}>
+                    {s.kind as string}
+                    {s.repeatCount ? ` × ${s.repeatCount}` : ""}
+                    {s.durationSeconds ? ` — ${Math.round((s.durationSeconds as number) / 60)} min` : ""}
+                    {s.distanceMeters
+                      ? ` — ${formatDistance(s.distanceMeters as number, units, 2)}`
+                      : ""}
+                    {band
+                      ? ` @ ${formatPace(band.fast, units).replace(` /${units}`, "")}–${formatPace(band.slow, units)}`
+                      : ""}
+                    {s.label ? ` (${s.label})` : ""}
+                  </li>
+                );
+              })}
             </ul>
           </details>
         ) : null}
@@ -186,7 +206,7 @@ function WorkoutDetail({
               Completed with “{(match.activity.title as string) ?? "activity"}” ·{" "}
               {formatMinutes(match.activity.durationSeconds as number)}
               {match.activity.distanceMeters
-                ? ` · ${((match.activity.distanceMeters as number) / 1000).toFixed(1)} km`
+                ? ` · ${formatDistance(match.activity.distanceMeters as number, units)}`
                 : ""}{" "}
               <button
                 className="btn btn-small"
@@ -488,10 +508,12 @@ export function PlanScreen() {
     // while the next one loads (the full-page spinner guards first load only).
     placeholderData: keepPreviousData,
   });
+  // Week-paging cursor: updated synchronously on every click so a burst of
+  // clicks accumulates instead of collapsing into one (live-verified).
+  const weekCursor = useRef<string | null>(null);
   // Display units for the race strip (and anything else on this page that
   // shows a pace) — shares the Settings screen's query cache.
-  const settings = useQuery({ queryKey: ["settings"], queryFn: api.settings, staleTime: 60_000 });
-  const units = settings.data?.prefs.units ?? "km";
+  const units = useUnits();
   // Two-race-dates resolution — the warning must be actionable where it
   // appears. Settings holds the race day, so it refetches too.
   const resolveRace = useMutation({
@@ -607,11 +629,23 @@ export function PlanScreen() {
   }, [activePlans]);
 
   const pickWeek = (monday: string) => {
+    weekCursor.current = monday;
     const next = new URLSearchParams(params);
     if (today && monday === startOfIsoWeek(today)) next.delete("week");
     else next.set("week", monday);
     setParams(next);
   };
+  /** ± a week from the last REQUESTED week. The cursor is written before
+   * React re-renders, so five clicks in one tick move five weeks. */
+  const stepWeek = (deltaDays: number) => {
+    const base = weekCursor.current ?? pickedWeek ?? week.data?.weekStart;
+    if (!base) return;
+    pickWeek(addDays(base, deltaDays));
+  };
+
+  useEffect(() => {
+    weekCursor.current = pickedWeek ?? week.data?.weekStart ?? null;
+  }, [pickedWeek, week.data?.weekStart]);
 
   // ── Selection params ───────────────────────────────────────────────────
   const selectedId = params.get("workout");
@@ -707,6 +741,7 @@ export function PlanScreen() {
         <RaceStrip units={units} />
         <WeeklyBrief
           week={week.data}
+          today={today}
           pendingCount={pendingCount}
           onNeedsYou={openCoachSurface}
           onResolveRace={(keep) => resolveRace.mutate(keep)}
@@ -725,6 +760,8 @@ export function PlanScreen() {
           </EmptyState>
         ) : (
           <WeekView
+          onStep={stepWeek}
+          loading={week.isPlaceholderData}
             week={week.data}
             today={today ?? week.data.weekStart}
             ghostsByDate={ghostsByDate}

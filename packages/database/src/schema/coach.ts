@@ -56,6 +56,9 @@ export const coachMessages = sqliteTable(
         questionId?: string;
         kind?: "analysis";
         activityId?: string;
+        /** The race narrative line (race hub 2026-08-14) — the race-scale
+         * sibling of `focus` below. */
+        raceLine?: string;
         /** Marks an inert "couldn't think" / "resting" receipt so the wake
          * pipeline can dedupe consecutive failures and back off wakeAdvised
          * without a fragile body-text match. */

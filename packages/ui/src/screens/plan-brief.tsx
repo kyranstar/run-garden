@@ -1,6 +1,8 @@
 import { useState } from "react";
 import type { PlanWeekResponse } from "@rg/api-client";
+import { startOfIsoWeek } from "@rg/domain";
 import { formatMinutes, formatShortDate, Sheet } from "../components.js";
+import { weekRangeLabel } from "./week-view.js";
 
 /**
  * The weekly brief (rework spec §6): headline state, a context line that says
@@ -111,12 +113,15 @@ export function BriefExplainerSheet({
 
 export function WeeklyBrief({
   week,
+  today,
   pendingCount,
   onNeedsYou,
   onResolveRace,
   resolvingRace = false,
 }: {
   week: PlanWeekResponse;
+  /** The account's today — the brief's prose is only true of THIS week. */
+  today?: string;
   /** Pending proposals — the "Needs you" chip renders only when > 0. */
   pendingCount: number;
   onNeedsYou: () => void;
@@ -126,11 +131,17 @@ export function WeeklyBrief({
   resolvingRace?: boolean;
 }) {
   const [explaining, setExplaining] = useState(false);
+  // Paging away from the current week keeps the chips honest but froze the
+  // prose, so "This week is about finding the rhythm again" narrated a week
+  // in October (live UX audit). Off-current weeks show facts only.
+  const isCurrentWeek = today === undefined || startOfIsoWeek(today) === week.weekStart;
   const headline =
     week.weekIndex !== null && week.weekTotal !== null
-      ? `Week ${week.weekIndex} of ${week.weekTotal} — ${HEADLINE_COPY[week.headline]}.`
-      : `This week — ${HEADLINE_COPY[week.headline]}.`;
-  const context = headlineContext(week);
+      ? `Week ${week.weekIndex} of ${week.weekTotal}${isCurrentWeek ? ` — ${HEADLINE_COPY[week.headline]}` : ""}.`
+      : isCurrentWeek
+        ? `This week — ${HEADLINE_COPY[week.headline]}.`
+        : `${weekRangeLabel(week.weekStart)}.`;
+  const context = isCurrentWeek ? headlineContext(week) : null;
   const explain = () => setExplaining(true);
   return (
     <section className="card plan-brief" aria-label="Weekly brief">

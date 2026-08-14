@@ -646,8 +646,12 @@ export async function wake(
     }
 
     let coachMessageId: string | undefined;
-    if (out.briefing) {
-      coachMessageId = await persistMessage(db, userId, "coach", out.briefing, {
+    // A wake may legitimately return no briefing but still move the race
+    // narrative or the week's focus — those must not ride on prose existing
+    // (audit#3-b #3: raceLine was silently dropped whenever briefing was
+    // null, which the prompt explicitly encourages).
+    if (out.briefing || out.raceLine || out.focus) {
+      coachMessageId = await persistMessage(db, userId, "coach", out.briefing ?? "", {
         memoryIds: memoryIds.length ? memoryIds : undefined,
         questionId,
         focus: out.focus ?? undefined,

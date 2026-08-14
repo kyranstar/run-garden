@@ -1,4 +1,4 @@
-import { and, desc, eq, gte, isNotNull, isNull, lte, sql } from "drizzle-orm";
+import { and, desc, eq, gt, gte, isNull, lte, sql } from "drizzle-orm";
 import {
   activities,
   coachMessages,
@@ -6,7 +6,13 @@ import {
   dailyHealth,
   plannedWorkouts,
 } from "@rg/database";
-import { addDays, todayInZone, type UserPreferences } from "@rg/domain";
+import {
+  addDays,
+  racePrediction,
+  todayInZone,
+  type RacePrediction,
+  type UserPreferences,
+} from "@rg/domain";
 import type { Db } from "./db.js";
 
 /**
@@ -20,10 +26,13 @@ import type { Db } from "./db.js";
 const TAPER_DAYS = 21;
 /** The debrief lingers this long after race day, then the strip hides. */
 const DEBRIEF_DAYS = 14;
-/** A ~50-minute race sits at threshold; the band's slow edge allows the
- * usual field conditions (turns, fueling, pacing error). */
-const BAND_WIDTH_SEC_PER_KM = 7;
-const RACE_DISTANCE_KM = 10;
+/** How far back the fitness trend looks — the same span the strip's arc
+ * draws, so "this block" means the block (audit#3-b #4). */
+const TREND_DAYS = 63;
+/** A race-week strength session longer than this is real lifting, not
+ * mobility. Measured on the WORKOUT, never the buffered calendar block
+ * (audit#3-b #2). */
+const MOBILITY_CEILING_SECONDS = 1800;
 /** raceLine staleness — race narrative moves slower than the weekly focus. */
 const RACE_LINE_STALE_MS = 7 * 24 * 3600 * 1000;
 
@@ -32,6 +41,8 @@ export interface RaceChecklistItem {
   label: string;
   done: boolean;
   kind: "coach" | "user";
+  /** Why a derived item can't be judged yet — shown faintly beside it. */
+  note?: string;
 }
 
 export interface RaceHub {
@@ -41,11 +52,9 @@ export interface RaceHub {
   phase: "build" | "taper" | "race_week" | "post";
   goal: {
     thresholdPaceSecPerKm: number;
-    bandLowSecPerKm: number;
-    bandHighSecPerKm: number;
-    predictedLowSeconds: number;
-    predictedHighSeconds: number;
     asOf: string;
+    /** Present only when the athlete has told us the race distance. */
+    prediction: RacePrediction | null;
   } | null;
   stamina: Array<{ date: string; value: number }>;
   checklist: RaceChecklistItem[];
@@ -90,16 +99,30 @@ export async function buildRaceHub(
       db
         .select({ date: dailyHealth.date, ltsp: dailyHealth.thresholdPaceSecPerKm })
         .from(dailyHealth)
-        .where(and(eq(dailyHealth.userId, userId), isNotNull(dailyHealth.thresholdPaceSecPerKm)))
+        .where(and(eq(dailyHealth.userId, userId), gt(dailyHealth.thresholdPaceSecPerKm, 0)))
         .orderBy(desc(dailyHealth.date))
         .limit(1),
       db
         .select({ date: dailyHealth.date, value: dailyHealth.staminaLevel })
         .from(dailyHealth)
-        .where(and(eq(dailyHealth.userId, userId), isNotNull(dailyHealth.staminaLevel)))
+        .where(
+          and(
+            eq(dailyHealth.userId, userId),
+            gt(dailyHealth.staminaLevel, 0),
+            gte(dailyHealth.date, addDays(today, -TREND_DAYS)),
+          ),
+        )
         .orderBy(dailyHealth.date),
       db
-        .select({ id: plannedWorkouts.id, seconds: plannedWorkouts.calendarBlockDurationSeconds })
+        .select({
+          id: plannedWorkouts.id,
+          // The WORKOUT's own length. calendarBlockDurationSeconds bakes in
+          // the athlete's 25 minutes of buffers, which made two ~11-minute
+          // mobility sessions read as real lifting (audit#3-b #2).
+          sourceSeconds: plannedWorkouts.sourceEstimatedDurationSeconds,
+          fallbackSeconds: plannedWorkouts.fallbackEstimatedDurationSeconds,
+          calendarSeconds: plannedWorkouts.calendarBlockDurationSeconds,
+        })
         .from(plannedWorkouts)
         .where(
           and(
@@ -146,11 +169,8 @@ export async function buildRaceHub(
     ltsp !== null
       ? {
           thresholdPaceSecPerKm: ltsp,
-          bandLowSecPerKm: Math.round(ltsp),
-          bandHighSecPerKm: Math.round(ltsp + BAND_WIDTH_SEC_PER_KM),
-          predictedLowSeconds: Math.round(ltsp * RACE_DISTANCE_KM),
-          predictedHighSeconds: Math.round((ltsp + BAND_WIDTH_SEC_PER_KM) * RACE_DISTANCE_KM),
           asOf: thresholdRow[0]!.date,
+          prediction: racePrediction(ltsp, prefs.raceDistanceKm),
         }
       : null;
 
@@ -173,16 +193,35 @@ export async function buildRaceHub(
   );
   // Coach item 2: race week holds no real strength session (≥30min counts
   // as real; a mobility short-block passes).
-  const liftsEased = !raceWeekStrength.some((w) => (w.seconds ?? 0) >= 1800);
+  const raceWeekPlanned = raceWeekStrength.length > 0;
+  const bufferSeconds = (prefs.bufferBeforeMinutes + prefs.bufferAfterMinutes) * 60;
+  /** The session's own length: an estimate when stored, otherwise the
+   * calendar block with the athlete's buffers taken back off. Never the raw
+   * block — 25 minutes of padding made 11-minute mobility read as lifting. */
+  const workoutSeconds = (w: { sourceSeconds: number | null; fallbackSeconds: number | null; calendarSeconds: number | null }) =>
+    w.sourceSeconds ?? w.fallbackSeconds ?? Math.max(0, (w.calendarSeconds ?? 0) - bufferSeconds);
+  const liftsEased =
+    raceWeekPlanned &&
+    !raceWeekStrength.some((w) => workoutSeconds(w) >= MOBILITY_CEILING_SECONDS);
 
-  const userItems = (prefs.raceChecklist.length > 0
-    ? prefs.raceChecklist
-    : DEFAULT_RACE_CHECKLIST.map((d) => ({ ...d, done: false }))
+  // Ticks belong to ONE race: a stored list whose id doesn't match this race
+  // date reseeds, so next spring's race never opens pre-ticked (audit#3-b #7).
+  const storedForThisRace = prefs.raceChecklist.filter((i) => i.id.startsWith(`${raceDate}:`));
+  const userItems = (storedForThisRace.length > 0
+    ? storedForThisRace
+    : DEFAULT_RACE_CHECKLIST.map((d) => ({ ...d, id: `${raceDate}:${d.id}`, done: false }))
   ).map((i) => ({ ...i, kind: "user" as const }));
 
   const checklist: RaceChecklistItem[] = [
     { id: "coach-restructure", label: "Final week restructured by the coach", done: restructured, kind: "coach" },
-    { id: "coach-lifts", label: "Race-week lifts down to mobility", done: liftsEased, kind: "coach" },
+    {
+      id: "coach-lifts",
+      label: "Race-week lifts down to mobility",
+      done: liftsEased,
+      kind: "coach",
+      // An empty race week is "not written yet", never "already eased".
+      ...(raceWeekPlanned ? {} : { note: "race week not written yet" }),
+    },
     ...userItems,
   ];
 

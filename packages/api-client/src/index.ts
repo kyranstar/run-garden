@@ -339,14 +339,23 @@ export interface RaceHubResponse {
     phase: "build" | "taper" | "race_week" | "post";
     goal: {
       thresholdPaceSecPerKm: number;
-      bandLowSecPerKm: number;
-      bandHighSecPerKm: number;
-      predictedLowSeconds: number;
-      predictedHighSeconds: number;
       asOf: string;
+      prediction: {
+        distanceKm: number;
+        fastSecPerKm: number;
+        slowSecPerKm: number;
+        fastSeconds: number;
+        slowSeconds: number;
+      } | null;
     } | null;
     stamina: Array<{ date: string; value: number }>;
-    checklist: Array<{ id: string; label: string; done: boolean; kind: "coach" | "user" }>;
+    checklist: Array<{
+      id: string;
+      label: string;
+      done: boolean;
+      kind: "coach" | "user";
+      note?: string;
+    }>;
     raceLine: { text: string; at: string } | null;
     debrief: {
       activityId: string;

@@ -9,6 +9,7 @@ export * from "./duration.js";
 export * from "./activity.js";
 export * from "./sport.js";
 export * from "./health.js";
+export * from "./pace.js";
 export * from "./preferences.js";
 export * from "./jobs.js";
 export * from "./garden.js";

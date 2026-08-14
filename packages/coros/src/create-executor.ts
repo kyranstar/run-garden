@@ -32,6 +32,7 @@
  *     refusal the caller must handle; nothing is deleted on a maybe.
  */
 
+import { paceBandFor } from "@rg/domain";
 import {
   addDays,
   coachSessionSchema,
@@ -65,6 +66,10 @@ export interface CreateWorkoutSpec {
   /** A studio LIFT session, or a coach session (run sessions push as
    * structured run programs; coach lift sessions share the studio shape). */
   session: StudioSession | CoachSession;
+  /** The athlete's COROS-measured lactate-threshold pace (sec/km). When
+   * present, run blocks carry pace targets derived from it; when absent the
+   * workout pushes with no intensity target, exactly as before. */
+  thresholdPaceSecPerKm?: number;
 }
 
 /** Why a create did not end in a verified workout. */
@@ -337,6 +342,8 @@ export function buildRunProgram(spec: {
   happenDay: string;
   name: string;
   session: CoachSession;
+  /** Threshold pace (sec/km) anchoring per-block pace targets. */
+  thresholdPaceSecPerKm?: number;
 }): RawCorosProgram {
   const parsed = coachSessionSchema.safeParse(spec.session);
   if (!parsed.success) {
@@ -353,9 +360,15 @@ export function buildRunProgram(spec: {
     );
   }
 
+  // Pace targets round-trip EXACTLY on this wire (spike-verified: HR does
+  // not — the server remaps it onto the account's own zones). Bounds are
+  // milliseconds per km: intensityValue is the fast edge, extend the slow.
+  let anyPaceTarget = false;
   const exercises: RawCorosExercise[] = run.blocks.map((b, index) => {
     const id = index + 1;
     const isWarmup = index === 0 && run.blocks.length >= 2;
+    const band = paceBandFor(b.intensity, spec.thresholdPaceSecPerKm);
+    if (band) anyPaceTarget = true;
     return {
       ...EXERCISE_METADATA,
       id,
@@ -364,8 +377,13 @@ export function buildRunProgram(spec: {
       sportType: 1,
       targetType: 2, // TIME, whole seconds
       targetValue: b.value * 60,
-      intensityType: 5, // none
-      intensityValue: 0,
+      ...(band
+        ? {
+            intensityType: 3, // PACE
+            intensityValue: band.fastSecPerKm * 1000,
+            intensityValueExtend: band.slowSecPerKm * 1000,
+          }
+        : { intensityType: 5, intensityValue: 0 }), // none
       sets: 1,
       sortNo: TOP_SORT * id,
       restType: 3,
@@ -397,8 +415,8 @@ export function buildRunProgram(spec: {
     poolLength: 0,
     poolLengthId: 0,
     poolLengthUnit: 0,
-    referExercise: { gradeSystem: 0, hrType: 0, intensityType: 1, valueType: 1 },
-    fastIntensityTypeName: "weight",
+    referExercise: { gradeSystem: 0, hrType: 0, intensityType: anyPaceTarget ? 3 : 1, valueType: 1 },
+    fastIntensityTypeName: anyPaceTarget ? "pace" : "weight",
     sourceUrl: "",
     videoCoverUrl: "",
     videoUrl: "",
@@ -1074,7 +1092,12 @@ export async function createWorkout(
   let program: RawCorosProgram;
   try {
     program = (spec.session as { run?: unknown }).run
-      ? buildRunProgram({ happenDay: date, name: spec.name, session: spec.session as CoachSession })
+      ? buildRunProgram({
+          happenDay: date,
+          name: spec.name,
+          session: spec.session as CoachSession,
+          thresholdPaceSecPerKm: spec.thresholdPaceSecPerKm,
+        })
       : buildStrengthProgram(spec as CreateWorkoutSpec & { session: StudioSession }, opts.catalog);
   } catch (e) {
     return { ok: false, reason: "error", error: errText(e) };

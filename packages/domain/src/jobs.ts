@@ -68,6 +68,8 @@ export const coachCreateWorkoutJobSchema = z
     happenDay: localDate,
     name: z.string().min(1),
     session: coachSessionSchema,
+    /** Threshold pace (sec/km) the approved pace bands were derived from. */
+    thresholdPaceSecPerKm: z.number().positive().optional(),
     /** Executor-side retry counter (transient failures requeue, cap 3). */
     attempts: z.number().int().min(0).optional(),
   })

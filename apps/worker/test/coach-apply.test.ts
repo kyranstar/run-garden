@@ -408,3 +408,78 @@ describe("coach adds reach the watch (2026-08-12)", () => {
     expect(jobs).toHaveLength(0);
   });
 });
+
+describe("pace targets on coach sessions (2026-08-14)", () => {
+  it("writes pace-banded stages and hands the threshold to the watch push", async () => {
+    const db = makeTestDb();
+    const { userId, prefs } = await makeTestUser(db, { corosWritesEnabled: true });
+    const today = todayInZone(prefs.timezone);
+    // The athlete's measured threshold — the only anchor the bands use.
+    await db.insert(schema.dailyHealth).values({
+      id: `${userId}:${today}`,
+      userId,
+      date: today,
+      thresholdPaceSecPerKm: 289,
+      provider: "coros",
+      contentFingerprint: "fp",
+      updatedAt: nowInstant(),
+    });
+
+    const out = await applyOps(db, userId, prefs, "prop-pace", [
+      {
+        kind: "add",
+        date: addDays(today, 2),
+        session: {
+          category: "quality",
+          title: "Threshold block",
+          durationMinutes: 45,
+          run: {
+            blocks: [
+              { kind: "duration", value: 15, intensity: "easy" },
+              { kind: "duration", value: 30, intensity: "threshold" },
+            ],
+          },
+        },
+      },
+    ]);
+    const id = out.created[0]!;
+
+    const stages = await db
+      .select()
+      .from(schema.plannedWorkoutStages)
+      .where(eq(schema.plannedWorkoutStages.workoutId, id));
+    expect(stages).toHaveLength(2);
+    const sorted = [...stages].sort((a, b) => a.ord - b.ord);
+    expect(sorted[0]).toMatchObject({ kind: "warmup", targetType: "pace", targetLow: 349, targetHigh: 409 });
+    expect(sorted[1]).toMatchObject({ kind: "work", targetType: "pace", targetLow: 289, targetHigh: 313 });
+
+    const [job] = await db
+      .select()
+      .from(schema.corosWriteJobs)
+      .where(eq(schema.corosWriteJobs.id, `${id}-push`));
+    expect((job!.payload as { thresholdPaceSecPerKm?: number }).thresholdPaceSecPerKm).toBe(289);
+  });
+
+  it("without a threshold reading the session still lands, just without targets", async () => {
+    const db = makeTestDb();
+    const { userId, prefs } = await makeTestUser(db);
+    const today = todayInZone(prefs.timezone);
+    const out = await applyOps(db, userId, prefs, "prop-nopace", [
+      {
+        kind: "add",
+        date: addDays(today, 2),
+        session: {
+          category: "easy",
+          title: "Easy 30",
+          durationMinutes: 30,
+          run: { blocks: [{ kind: "duration", value: 30, intensity: "easy" }] },
+        },
+      },
+    ]);
+    const stages = await db
+      .select()
+      .from(schema.plannedWorkoutStages)
+      .where(eq(schema.plannedWorkoutStages.workoutId, out.created[0]!));
+    expect(stages[0]).toMatchObject({ targetType: "none", targetLow: null, targetHigh: null });
+  });
+});

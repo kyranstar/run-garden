@@ -3894,10 +3894,20 @@ button {
   transform: translateX(-50%);
 }
 .race-arc-labels {
-  display: flex;
-  justify-content: space-between;
+  position: relative;
+  height: 1.1em;
   margin-top: 0.3rem;
   font-size: 0.75rem;
+}
+.race-arc-labels > span {
+  position: absolute;
+  white-space: nowrap;
+}
+/* Week paging keeps the grid on screen; a soft dim is the only signal that
+   the next week is still arriving. */
+.plan-week.is-loading .plan-week-grid {
+  opacity: 0.55;
+  transition: opacity 120ms ease;
 }
 .race-cols {
   display: grid;

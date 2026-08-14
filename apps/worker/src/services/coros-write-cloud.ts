@@ -101,6 +101,7 @@ export async function executeCloudJobs(
             happenDay: String(localDateToCorosDay(spec.happenDay)),
             name: spec.name,
             session: spec.session,
+            thresholdPaceSecPerKm: spec.thresholdPaceSecPerKm,
           },
           { catalog: new Map(), log: () => undefined },
         );
@@ -116,6 +117,7 @@ export async function executeCloudJobs(
                 happenDay: String(localDateToCorosDay(spec.happenDay)),
                 name: spec.name,
                 session: spec.session,
+                thresholdPaceSecPerKm: spec.thresholdPaceSecPerKm,
               }),
             );
           } catch {

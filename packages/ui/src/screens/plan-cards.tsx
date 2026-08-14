@@ -110,12 +110,16 @@ function PlanRow({
   return (
     <button type="button" className="card plan-card plan-card-row" onClick={() => onOpen(p.id)}>
       <span className="plan-card-top">
-        <span className={`pill ${p.status === "active" ? "pill-ok" : "pill-neutral"}`}>
+        <span className={`pill ${p.status === "active" && into > 0 ? "pill-ok" : "pill-neutral"}`}>
           {p.source === "coros"
             ? "from COROS"
             : p.source === "studio" && p.status === "draft"
               ? "draft — not on watch"
-              : STATUS_LABEL[p.status]}
+              : // "active" beside "upcoming · Oct 24" read as running-now
+                // (live UX audit) — an unstarted plan is scheduled.
+                p.status === "active" && into === 0
+                ? "scheduled"
+                : STATUS_LABEL[p.status]}
         </span>
         <span className="faint num plan-card-when">
           {into === 0
