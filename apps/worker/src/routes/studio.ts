@@ -32,6 +32,7 @@ import { editPlan, generatePlan, type CatalogEntry } from "../services/studio-ll
 import { COROS_EXERCISE_NAMES } from "@rg/providers";
 import { exerciseNameMap, resolveExerciseName } from "../services/exercise-catalog.js";
 import { pushStudioPlan, undoStudioAdoption } from "../services/studio-push.js";
+import { applyExerciseRemap, type RemapRule } from "../services/studio-repair.js";
 import { executeCloudJobs } from "../services/coros-write-cloud.js";
 import { corosConnectionStatus } from "../services/coros-connection.js";
 import { corosReadNow } from "../services/coros-read.js";
@@ -45,7 +46,11 @@ import { corosReadNow } from "../services/coros-read.js";
  * id). `generate` always inserts a FRESH `studio_plans` row rather than
  * updating one in place — a full re-generate is a new draft, not an edit —
  * so "current" is defined as the most recently CREATED row
- * (`loadCurrentPlan`). An older plan's push rows are not deleted when this
+ * (`loadCurrentPlan`). ONE documented exception:
+ * `POST /plans/:id/repair-exercise-ids` (below) is planId-parameterized —
+ * a one-shot human-driven correction must land on the plan the operator
+ * inspected, not on whichever draft happens to be newest when it runs.
+ * An older plan's push rows are not deleted when this
  * happens (nothing here is destructive), they simply stop being the one GET
  * surfaces; `studio-push.ts`'s own "otherLiveTitles" scoping already accounts
  * for older, still-live plans continuing to occupy COROS workout-name stamps
@@ -612,6 +617,174 @@ studioRoutes.post("/edit", async (c) => {
     .where(eq(studioPlans.id, planRow.id));
 
   return c.json({ ok: true, plan: revalidated.data, brief: revalidated.data.brief, version });
+});
+
+// ── POST /api/studio/plans/:id/repair-exercise-ids ───────────────────────────
+//
+// The one planId-PARAMETERIZED route on this surface (every other one operates
+// on "the current plan", see the module header). A repair targets a specific
+// stored plan by id on purpose: it is a deliberate, human-driven correction of
+// a plan that may or may not still be the current one, and getting it applied
+// to the wrong draft because "current" had moved on is exactly the failure the
+// id in the path removes.
+//
+// It repairs EXERCISE IDENTITY ONLY. Loads, sets, reps, rest, notes, titles,
+// weekdays and the brief are carried through untouched (`applyExerciseRemap`
+// spreads each exercise and overwrites two fields), so a repaired plan
+// prescribes exactly what the user approved — it just finally says which
+// movement each line actually is.
+//
+// IT NEVER TOUCHES COROS. No `pushStudioPlan`, no `executeCloudJobs`, no job
+// enqueue: repairing the stored plan and re-pushing 32 live sessions are two
+// decisions, and the second one is the human's to make (and to watch) after
+// reading this route's summary. That separation is load-bearing, not
+// stylistic — a re-push is delete-and-recreate against a real calendar.
+
+/** `audit_events.kind` for the pre-change backup written by a live repair. */
+const REPAIR_BACKUP_KIND = "studio_plan_exercise_ids_repaired";
+
+const repairRuleSchema = z
+  .object({
+    from: z.string().min(1),
+    to: z.string().min(1),
+    toName: z.string().min(1).max(120),
+  })
+  .strict();
+
+const repairBodySchema = z
+  .object({
+    /** Required, never defaulted: a caller that forgot the field must not be
+     *  guessed at in the direction that rewrites a plan. */
+    dryRun: z.boolean(),
+    mapping: z.array(repairRuleSchema).min(1).max(200),
+  })
+  .strict();
+
+studioRoutes.post("/plans/:id/repair-exercise-ids", async (c) => {
+  const db = c.get("db");
+  const userId = c.get("userId");
+  const planId = c.req.param("id");
+
+  const bodyResult = await parseJsonBody(c);
+  if (!bodyResult.ok) return bodyResult.response;
+  const parsed = repairBodySchema.safeParse(bodyResult.body);
+  if (!parsed.success) return c.json({ error: "invalid_request", details: parsed.error.issues }, 400);
+  const { dryRun, mapping } = parsed.data;
+
+  // Scoped by userId in the WHERE, not checked after the fact: another user's
+  // plan is simply not found, which is also the only answer that doesn't let a
+  // caller probe which plan ids exist.
+  const planRow = (
+    await db
+      .select()
+      .from(studioPlans)
+      .where(and(eq(studioPlans.id, planId), eq(studioPlans.userId, userId)))
+      .limit(1)
+  )[0];
+  if (!planRow) return c.json({ error: "plan_not_found" }, 404);
+
+  // Same reasoning as `/edit` and `pushStudioPlan`: the stored plan is
+  // LLM-authored and is about to be rewritten, so it is re-validated, never
+  // trusted. A plan that doesn't parse cannot be safely repaired in place.
+  const existing = liftingPlanSchema.safeParse(planRow.plan);
+  if (!existing.success) return c.json({ error: "invalid_plan" }, 500);
+
+  const duplicateFrom = [...new Set(mapping.map((m) => m.from).filter((f, i, a) => a.indexOf(f) !== i))];
+  if (duplicateFrom.length > 0) {
+    return c.json({ error: "duplicate_from", details: duplicateFrom }, 400);
+  }
+
+  // Every `from` must actually be in the plan. A rule that matches nothing is
+  // almost always a typo or a mapping built against a different plan, and
+  // silently ignoring it would let a partially-applied repair look complete.
+  const planOriginIds = new Set<string>();
+  for (const week of existing.data.weeks) {
+    for (const session of week.sessions) for (const ex of session.exercises) planOriginIds.add(ex.originId);
+  }
+  const unknownFrom = mapping.map((m) => m.from).filter((f) => !planOriginIds.has(f));
+  if (unknownFrom.length > 0) return c.json({ error: "unknown_from", details: unknownFrom }, 400);
+
+  // Every `to` must be a real catalog id. `planPush` refuses a session
+  // containing an `originId` the catalog doesn't know (`unknown_exercise`), so
+  // writing one here would produce a plan that validates and then can never be
+  // pushed — caught at the point where the caller can still fix the mapping.
+  const catalogRows = await db.select({ id: corosExercises.id, name: corosExercises.name }).from(corosExercises);
+  if (catalogRows.length === 0) return catalogNotSynced(c);
+  const catalogNames = new Map(catalogRows.map((r) => [r.id, r.name]));
+  const unknownTo = [...new Set(mapping.map((m) => m.to).filter((t) => !catalogNames.has(t)))];
+  if (unknownTo.length > 0) return c.json({ error: "unknown_exercise", details: unknownTo }, 400);
+
+  const { plan: repaired, summary } = applyExerciseRemap(
+    existing.data as LiftingPlan,
+    mapping as RemapRule[],
+    catalogNames,
+  );
+
+  // The permutation output is re-validated against the same schema the push
+  // path re-validates against, BEFORE anything is persisted — a repair that
+  // produced an unpushable plan must fail as a repair, not later as a push.
+  const revalidated = liftingPlanSchema.safeParse(repaired);
+  if (!revalidated.success) return c.json({ error: "invalid_result", details: revalidated.error.issues }, 422);
+
+  const body = {
+    ok: true as const,
+    dryRun,
+    planId,
+    planVersion: planRow.version,
+    ...summary,
+  };
+
+  if (dryRun) {
+    return c.json({ ...body, newVersion: null, backup: null });
+  }
+
+  const now = nowInstant();
+  const newVersion = planRow.version + 1;
+  const backupId = newId();
+
+  // BACKUP FIRST, then the update. `studio_plans` has no history table (its
+  // `version` is a counter, not a revision store) and `/generate`'s "a new
+  // draft is a new row" pattern is wrong here — inserting the pre-change plan
+  // as a second row would make the BACKUP the user's "current plan"
+  // (`loadCurrentPlan` orders by `createdAt DESC`) and orphan the live push
+  // rows from the UI. So the previous JSON goes into `audit_events`, the same
+  // durable store this module already reads push summaries back out of
+  // (`loadLastPushSummary`), recoverable with a single statement:
+  //
+  //   UPDATE studio_plans SET plan = json_extract(
+  //     (SELECT detail FROM audit_events WHERE id = '<backupId>'), '$.previousPlan')
+  //   WHERE id = '<planId>';
+  //
+  // Ordered this way so the only possible half-state is a backup with no
+  // change applied (harmless), never a rewritten plan with no way back.
+  await db.insert(auditEvents).values({
+    id: backupId,
+    userId,
+    kind: REPAIR_BACKUP_KIND,
+    detail: {
+      studioPlanId: planId,
+      fromVersion: planRow.version,
+      toVersion: newVersion,
+      mapping,
+      totals: summary.totals,
+      changes: summary.changes,
+      warnings: summary.warnings,
+      previousPlan: planRow.plan,
+    },
+    createdAt: now,
+  });
+
+  await db
+    .update(studioPlans)
+    .set({ plan: revalidated.data as unknown as Record<string, unknown>, version: newVersion, updatedAt: now })
+    .where(and(eq(studioPlans.id, planId), eq(studioPlans.userId, userId)));
+
+  // No push, no job enqueue, no `executeCloudJobs` — see the note above.
+  return c.json({
+    ...body,
+    newVersion,
+    backup: { auditEventId: backupId, kind: REPAIR_BACKUP_KIND, table: "audit_events" },
+  });
 });
 
 // ── POST /api/studio/push ────────────────────────────────────────────────────
