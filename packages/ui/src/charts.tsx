@@ -25,7 +25,7 @@ import {
   symmetricHalfExtent,
   verticalBarPath,
 } from "./charts-math.js";
-import { formatShortDate, formatShortMonth } from "./components.js";
+import { countNoun, formatShortDate, formatShortMonth } from "./components.js";
 
 /**
  * The Insights chart layer. Dependency-free SVG, built on `chart-kit.tsx`
@@ -304,7 +304,7 @@ export function RunSeriesChart({
     <div {...wrapperProps}>
       <svg
         role={onPointClick ? "group" : "img"}
-        aria-label={`${seriesLabel} across ${sorted.length} runs`}
+        aria-label={`${seriesLabel} across ${countNoun(sorted.length, "run")}`}
         viewBox={`0 0 ${width} ${height}`}
         style={svgStyle(width)}
       >
@@ -1060,7 +1060,7 @@ export function DivergingPaceBars({
   const faded = runs.filter((r) => r.deltaSecPerKm > 0);
   const even = runs.filter((r) => r.deltaSecPerKm === 0);
   const summary =
-    `${runs.length} steady runs, second-half pace against first half. ` +
+    `${countNoun(runs.length, "steady run")}, second-half pace against first half. ` +
     `${runs.length - faded.length - even.length} finished faster, ${faded.length} faded` +
     `${even.length > 0 ? `, ${even.length} even` : ""}. ` +
     runs.map((r) => `${formatShortDate(r.date)} ${signed(units === "mi" ? Math.round(r.deltaSecPerKm * 1.609344) : r.deltaSecPerKm)} seconds per ${units === "mi" ? "mile" : "kilometre"}`).join("; ") +
@@ -1071,7 +1071,7 @@ export function DivergingPaceBars({
       <div {...wrapperProps}>
         <svg
           role="img"
-          aria-label={`Second-half pace change for ${runs.length} runs`}
+          aria-label={`Second-half pace change for ${countNoun(runs.length, "run")}`}
           viewBox={`0 0 ${width} ${height}`}
           style={svgStyle(width)}
         >

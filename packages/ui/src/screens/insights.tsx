@@ -3,7 +3,7 @@ import { useEffect, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { api, type InsightsResponse } from "@rg/api-client";
 import { disciplineLabel, sessionNoun, type Discipline } from "@rg/analytics";
-import { Card, EmptyState, formatDayLong, formatDayShort, formatShortDate, localTodayGuess, Sheet, Spinner } from "../components.js";
+import { Card, countNoun, EmptyState, formatDayLong, formatDayShort, formatShortDate, localTodayGuess, Sheet, Spinner } from "../components.js";
 import {
   BaselineBandChart,
   ChartFrame,
@@ -279,6 +279,10 @@ export function InsightsScreen() {
   // "22 of 24 resolved" beside the percentage means the reader can check it.
   const resolved = consistency.completed + consistency.skipped + consistency.missed;
   const totalRuns = recentTraining.reduce((s, w) => s + w.runCount, 0);
+  /** "1 run" · "4 lifts" · "1 yoga session" — the count agrees with itself AND
+   * with the discipline being shown (deployed copy read "0.9h over 1 runs",
+   * and said "runs" under the Strength chip). */
+  const sessions = (n: number) => countNoun(n, sessionNoun(discipline), sessionNoun(discipline, true));
   // The sanctioned streak is WEEKLY (canon §1.3): the engine forgives days
   // by design, so a daily streak would be dishonest. The chain comes from
   // the garden snapshot — shared cache with the landing screen.
@@ -388,13 +392,13 @@ export function InsightsScreen() {
             summary={recentTraining
               .map(
                 (w) =>
-                  `Week of ${formatShortDate(w.weekStart)}: ${formatHours(w.durationSeconds)} over ${w.runCount} runs.`,
+                  `Week of ${formatShortDate(w.weekStart)}: ${formatHours(w.durationSeconds)} over ${sessions(w.runCount)}.`,
               )
               .join(" ")}
             note={
               weekly.fourWeekAvgDuration
-                ? `4-week average: ${formatHours(weekly.fourWeekAvgDuration)}/week · n=${totalRuns} runs`
-                : `n=${totalRuns} runs`
+                ? `4-week average: ${formatHours(weekly.fourWeekAvgDuration)}/week · n=${sessions(totalRuns)}`
+                : `n=${sessions(totalRuns)}`
             }
           >
             <WeeklyDurationChart
@@ -425,17 +429,17 @@ export function InsightsScreen() {
                     <TrendChip pct={efficiency.value.trend.pct} betterWhen="up" />
                   ) : null
                 }
-                summary={`Aerobic efficiency across ${efficiency.sampleSize} comparable easy runs.${efficiency.value.trend ? ` Trend ${efficiency.value.trend.pct >= 0 ? "up" : "down"} ${Math.abs(efficiency.value.trend.pct).toFixed(1)} percent over ${efficiency.value.trend.n} runs.` : ""}`}
+                summary={`Aerobic efficiency across ${countNoun(efficiency.sampleSize, "comparable easy run")}.${efficiency.value.trend ? ` Trend ${efficiency.value.trend.pct >= 0 ? "up" : "down"} ${Math.abs(efficiency.value.trend.pct).toFixed(1)} percent over ${countNoun(efficiency.value.trend.n, "run")}.` : ""}`}
                 // The excluded count is disclosed, not swallowed: "n=12 runs"
                 // reads as "all 12 of your runs" unless the chart says how
                 // many it couldn't score.
-                note={`n=${efficiency.sampleSize} runs · metres per heartbeat; higher is easier speed at the same heart rate · noisy week to week${
+                note={`n=${countNoun(efficiency.sampleSize, "run")} · metres per heartbeat; higher is easier speed at the same heart rate · noisy week to week${
                   efficiency.value.trend
-                    ? ` · trend ${signed(efficiency.value.trend.pct)}% over ${efficiency.value.trend.n} runs`
+                    ? ` · trend ${signed(efficiency.value.trend.pct)}% over ${countNoun(efficiency.value.trend.n, "run")}`
                     : ""
                 }${
                   efficiency.value.excludedCount > 0
-                    ? ` · ${efficiency.value.excludedCount} runs lacked usable laps`
+                    ? ` · ${countNoun(efficiency.value.excludedCount, "run")} lacked usable laps`
                     : ""
                 }`}
               >
@@ -459,10 +463,10 @@ export function InsightsScreen() {
               <ChartFrame
                 title="Aerobic decoupling (Pa:HR)"
                 subtitle={decoupling.comparisonNote}
-                summary={`Median Pa:HR decoupling ${decoupling.value.medianPct.toFixed(1)} percent across ${decoupling.sampleSize} steady runs.`}
-                note={`n=${decoupling.sampleSize} steady runs · median ${decoupling.value.medianPct.toFixed(1)}% · shaded 0–5% is the range that means "held together"${
+                summary={`Median Pa:HR decoupling ${decoupling.value.medianPct.toFixed(1)} percent across ${countNoun(decoupling.sampleSize, "steady run")}.`}
+                note={`n=${countNoun(decoupling.sampleSize, "steady run")} · median ${decoupling.value.medianPct.toFixed(1)}% · shaded 0–5% is the range that means "held together"${
                   decoupling.value.excluded.count > 0
-                    ? ` · ${decoupling.value.excluded.count} runs excluded`
+                    ? ` · ${countNoun(decoupling.value.excluded.count, "run")} excluded`
                     : ""
                 }`}
               >

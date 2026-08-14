@@ -1,3 +1,4 @@
+import { useRef, useState } from "react";
 import type { PlanWeekResponse, WorkoutDto } from "@rg/api-client";
 import { addDays, humanizeWorkoutTitle, startOfIsoWeek } from "@rg/domain";
 import { dayOfMonth, formatMinutes, monthTitle } from "../components.js";
@@ -97,6 +98,40 @@ export function weekRangeLabel(weekStart: string): string {
     : `${short(a.month)} ${dayOfMonth(weekStart)} – ${short(b.month)} ${dayOfMonth(end)}`;
 }
 
+/**
+ * Where the jump menu opens (audit 2026-08-14). It hangs `top: 100%` off a
+ * summary that can sit anywhere down the page — measured live in prod at
+ * bottom 977px inside an 862px viewport, so the last weeks of a long plan
+ * were simply unreachable. Flip above the trigger when the rendered list
+ * would run past the fold AND there is more room up there; otherwise stay
+ * below, where a menu is expected. Pure, so the rule is testable without a
+ * DOM (same shape as garden.tsx's `dockCoversStage`).
+ */
+export function jumplistDropsUp(
+  spaceAbove: number,
+  spaceBelow: number,
+  listHeight: number,
+  margin = 8,
+): boolean {
+  return listHeight + margin > spaceBelow && spaceAbove > spaceBelow;
+}
+
+/**
+ * Scroll offset that centres the current week inside the open menu. The menu
+ * always opened at scrollTop 0, so ten weeks into a block the highlighted
+ * `.is-current` row was below the list's own fold — the one row the reader
+ * came to find. Clamped to the scrollable range so a current week near either
+ * end doesn't ask for a scroll position that doesn't exist.
+ */
+export function centerScrollTop(
+  itemTop: number,
+  itemHeight: number,
+  viewHeight: number,
+  scrollHeight: number,
+): number {
+  return Math.max(0, Math.min(scrollHeight - viewHeight, itemTop + itemHeight / 2 - viewHeight / 2));
+}
+
 export function WeekView({
   week,
   today,
@@ -126,6 +161,34 @@ export function WeekView({
 }) {
   const thisMonday = startOfIsoWeek(today);
   const offCurrent = week.weekStart !== thisMonday;
+  const jumpRef = useRef<HTMLDetailsElement>(null);
+  const listRef = useRef<HTMLDivElement>(null);
+  const [dropUp, setDropUp] = useState(false);
+  // Measured on open, when the list is laid out and its real height is known
+  // (a closed <details> has none). Closing resets, so the next open decides
+  // afresh — the trigger moves as the page scrolls.
+  const onJumpToggle = () => {
+    const details = jumpRef.current;
+    const list = listRef.current;
+    if (!details || !list) return;
+    if (!details.open) {
+      setDropUp(false);
+      return;
+    }
+    const box = details.getBoundingClientRect();
+    setDropUp(
+      jumplistDropsUp(box.top, window.innerHeight - box.bottom, list.getBoundingClientRect().height),
+    );
+    const current = list.querySelector<HTMLElement>(".is-current");
+    if (current) {
+      list.scrollTop = centerScrollTop(
+        current.offsetTop,
+        current.offsetHeight,
+        list.clientHeight,
+        list.scrollHeight,
+      );
+    }
+  };
   return (
     <section
       className={`plan-week${loading ? " is-loading" : ""}`}
@@ -157,12 +220,16 @@ export function WeekView({
         ) : null}
         <span className="plan-week-grow" />
         {jumpWeeks.length > 0 ? (
-          <details className="plan-week-jump">
+          <details className="plan-week-jump" ref={jumpRef} onToggle={onJumpToggle}>
             <summary>
               <span className="pw-wide">jump to week</span>
               <span className="pw-narrow">weeks</span> ▾
             </summary>
-            <div className="plan-week-jumplist" role="menu">
+            <div
+              className={`plan-week-jumplist${dropUp ? " drops-up" : ""}`}
+              role="menu"
+              ref={listRef}
+            >
               {jumpWeeks.map((j) => (
                 <button
                   key={j.monday}

@@ -1141,11 +1141,38 @@ button {
     gap: 0.55rem;
     text-align: right;
   }
+  /* Contrast for the type that sits straight on the scene (audit 2026-08-14:
+     the unlock lines and the rail measured ~3.7:1 over a sunlit afternoon —
+     below AA). The page-wide bottom scrim is too broad and too weak to carry
+     this corner, and a heavier text-shadow only smears the letterforms. A
+     short gradient pooled under the corner does it instead: strongest behind
+     the smallest type, gone by ~75% of the way out, so the plants keep their
+     light. Absolutely positioned, so it is not a flex item; the z-indexes
+     keep it behind the text rather than painted over it (a positioned
+     pseudo-element otherwise paints ABOVE static siblings). */
+  .hud-corner::before {
+    content: "";
+    position: absolute;
+    inset: -1.2rem -1.5rem -1.3rem -2.6rem;
+    z-index: 0;
+    border-radius: 20px;
+    background: radial-gradient(
+      135% 125% at 100% 100%,
+      rgba(9, 14, 10, 0.55),
+      rgba(9, 14, 10, 0.38) 45%,
+      rgba(9, 14, 10, 0) 78%
+    );
+    pointer-events: none;
+  }
+  .hud-corner > * {
+    position: relative;
+    z-index: 1;
+  }
   .hud-nudge {
     background: none;
     border: none;
     cursor: pointer;
-    color: rgba(255, 255, 255, 0.88);
+    color: rgba(255, 255, 255, 0.94);
     font-size: 0.88rem;
     text-shadow: 0 1px 8px rgba(9, 14, 10, 0.55);
     padding: 0.2rem 0;
@@ -1164,7 +1191,9 @@ button {
     border: none;
     cursor: pointer;
     padding: 0.3rem 0;
-    color: rgba(255, 255, 255, 0.7);
+    /* 12px uppercase gets no large-text exemption — with the corner scrim
+       behind it this clears AA where 0.7 did not. */
+    color: rgba(255, 255, 255, 0.86);
     font-size: 0.76rem;
     font-weight: 650;
     letter-spacing: 0.1em;
@@ -3660,6 +3689,40 @@ button {
   color: var(--act-hue, var(--green));
   fill: currentColor;
   opacity: 0.9;
+  cursor: pointer;
+}
+.act-shape:focus-visible {
+  outline: 2px solid var(--green);
+  outline-offset: 3px;
+  border-radius: 3px;
+}
+/* Laps drawn at the legibility floor rather than to scale — dimmer, so the
+   eye doesn't read borrowed width as time the lap actually took. */
+.act-shape-bar.is-stub {
+  opacity: 0.5;
+}
+/* Picking a lap (tap, click, or ←/→) leaves the rest as context. */
+.act-shape.has-selection .act-shape-bar {
+  opacity: 0.35;
+}
+.act-shape.has-selection .act-shape-bar.is-sel {
+  opacity: 1;
+}
+/* Its own row under the shape, one line tall whichever caption is showing —
+   swapping the overview for a lap must not move the card. `order` keeps the
+   effort chip up beside the shape where it has always sat, while the caption
+   drops to a full-width line of its own. */
+.act-shape-note {
+  order: 1;
+  flex-basis: 100%;
+  margin: 0;
+  font-size: 0.72rem;
+  line-height: 1.05rem;
+  min-height: 1.05rem;
+  color: var(--ink-faint);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 .act-effort {
   display: inline-flex;
@@ -4193,6 +4256,12 @@ button {
   padding: 0.3rem;
   display: flex;
   flex-direction: column;
+}
+/* Flipped by WeekView when the list would open past the fold (jumplistDropsUp) —
+   a menu that renders below the viewport is a menu you can't use. */
+.plan-week-jumplist.drops-up {
+  top: auto;
+  bottom: calc(100% + 4px);
 }
 .plan-week-jumplist button {
   border: 0;

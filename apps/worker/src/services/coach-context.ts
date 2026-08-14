@@ -106,6 +106,11 @@ export async function buildDossier(
                   : " · race distance not set, so no goal time — ask if it matters")
               : " · no threshold reading yet") +
             ` · checklist: restructure ${raceHub.checklist.find((i) => i.id === "coach-restructure")?.done ? "done" : "OPEN"}, race-week lifts ${(() => { const it = raceHub.checklist.find((i) => i.id === "coach-lifts"); return it?.note ?? (it?.done ? "eased" : "OPEN"); })()}` +
+            (raceHub.terrain.comparison
+              ? ` · TERRAIN: recent ${raceHub.terrain.recent!.metresPerKm} m/km vs course ${raceHub.terrain.raceMetresPerKm} m/km (${raceHub.terrain.comparison.verdict})`
+              : raceHub.terrain.recent
+                ? ` · terrain: recent ${raceHub.terrain.recent.metresPerKm} m/km, course profile not set`
+                : "") +
             (raceHub.raceLine ? ` · current raceLine: "${raceHub.raceLine.text}"` : " · no raceLine yet — write one"),
         ]
       : []),

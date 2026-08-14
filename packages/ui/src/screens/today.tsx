@@ -239,23 +239,46 @@ export function UnresolvedCard({ w }: { w: WorkoutDto }) {
   );
 }
 
+/**
+ * Both numbers, and what they're measured against, on the face of the card.
+ *
+ * "Resting heart rate is 7 bpm above your recent median" said neither what
+ * the reading was nor what "recent" meant — and Insights, which compares its
+ * own (longer, differently-shaped) windows, could truthfully headline the
+ * same signal with the opposite sign on the same day. The comparison here is
+ * exactly what `/api/today` sends: ONE morning's reading (`latest`, dated)
+ * against the median of the `sampleDays` days of COROS data behind it
+ * (`baseline`). Naming both is the difference between two surfaces that
+ * disagree and two surfaces that measure different things.
+ */
 export function Readiness({ readiness }: { readiness: TodayResponse["readiness"] }) {
   if (!readiness.latest || readiness.sampleDays < 3) return null;
   const l = readiness.latest;
   const b = readiness.baseline;
   const lines: string[] = [];
+  // Set by any line that compares the reading with the baseline median, so
+  // the footnote only explains a comparison the card actually made.
+  let compared = false;
   if (l.restingHeartRate != null && b?.restingHeartRate != null) {
     const diff = Math.round(l.restingHeartRate - b.restingHeartRate);
     if (Math.abs(diff) >= 2) {
+      compared = true;
       lines.push(
-        `Resting heart rate is ${Math.abs(diff)} bpm ${diff > 0 ? "above" : "below"} your recent median.`,
+        `Resting heart rate ${Math.round(l.restingHeartRate)} bpm — ${Math.abs(diff)} ${
+          diff > 0 ? "above" : "below"
+        } your ${Math.round(b.restingHeartRate)} bpm median.`,
       );
     }
   }
   if (l.hrv != null && b?.hrv != null) {
     const diff = Math.round(l.hrv - b.hrv);
     if (Math.abs(diff) >= 5) {
-      lines.push(`HRV is ${Math.abs(diff)} ms ${diff > 0 ? "above" : "below"} your recent median.`);
+      compared = true;
+      lines.push(
+        `HRV ${Math.round(l.hrv)} ms — ${Math.abs(diff)} ${diff > 0 ? "above" : "below"} your ${Math.round(
+          b.hrv,
+        )} ms median.`,
+      );
     }
   }
   if (l.recoveryScore != null) lines.push(`COROS recovery: ${Math.round(l.recoveryScore)}%.`);
@@ -269,8 +292,12 @@ export function Readiness({ readiness }: { readiness: TodayResponse["readiness"]
         </p>
       ))}
       <p className="faint" style={{ marginTop: "0.4rem" }}>
-        {asOf ? `From COROS, as of ${formatDayShort(asOf)}. ` : ""}Context, not instructions — you know
-        your body best.
+        {asOf ? `From COROS, as of ${formatDayShort(asOf)}. ` : ""}
+        {compared
+          ? `That single reading against the median of your last ${readiness.sampleDays} days of COROS data — ` +
+            `Insights compares a longer window, so its numbers read differently. `
+          : ""}
+        Context, not instructions — you know your body best.
       </p>
     </Card>
   );

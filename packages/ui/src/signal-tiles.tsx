@@ -434,8 +434,13 @@ export function statusStripBaseText(
       awaitingCount: awaitingCount > 0 ? awaitingCount : undefined,
     };
   }
-  const glyph = pick.severity === "high" ? "⚠" : "•";
-  return { base: `${glyph} ${pick.metric.title}: ${pick.metric.value ?? ""} — ${actionablePhrase(pick.metric)}` };
+  // High keeps its ⚠ — it says something the sentence doesn't. "Watch" used
+  // to get a "•", which said nothing at all: the strip is one line, not a
+  // list, so it read on the deployed page as a stray bullet in front of the
+  // metric's name. The severity is already carried by the strip's left border
+  // (.status-strip-watch) and by the phrase itself.
+  const glyph = pick.severity === "high" ? "⚠ " : "";
+  return { base: `${glyph}${pick.metric.title}: ${pick.metric.value ?? ""} — ${actionablePhrase(pick.metric)}` };
 }
 
 function scrollToSignal(id: string): void {

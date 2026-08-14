@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useId, useMemo, useState } from "react";
 import { Link } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { api, type ActivityDto, type WorkoutDto } from "@rg/api-client";
@@ -98,15 +98,51 @@ function EffortChip({ load, feel }: { load: number | null; feel: number | null }
   );
 }
 
+/** Viewbox units. A bar narrower than this is a hairline nobody can see or
+ * tap, so every lap gets at least this much — width that has to come out of
+ * the laps that earned it, which is why the caption names them. */
+const MIN_BAR_W = 1.2;
+
+/** Below this the laps stop being "the activity's shape" and start being a
+ * sample of it — the caption says so rather than letting the silhouette imply
+ * whole-run coverage. */
+const COVERAGE_FLOOR = 0.95;
+
 /**
  * The run's shape: one thin bar per lap, width ∝ lap time, height ∝ speed
  * anchored to the activity's MEAN pace — a steady run reads as a mid-height
  * plateau, an interval session swings the band, and amplitude means variance
  * comparably across activities. Single hue per figure (the card's category
- * color via currentColor); per-lap tooltips; no axes — a silhouette, not a
- * graph.
+ * color via currentColor); no axes — a silhouette, not a graph.
+ *
+ * Lap detail without a mouse (audit 2026-08-14): native `<title>` tooltips
+ * only ever appeared on hover, so on a phone — where most of this app is
+ * read — the per-lap numbers did not exist. The figure is now one tab stop
+ * (not one per lap: a 40-lap run would bury the rest of the page), ←/→ step
+ * the laps, a tap picks one, and the caption line below carries the selected
+ * lap. It doubles as the figure's `aria-describedby` target and a polite live
+ * region, so the same words reach a screen reader. `<title>` stays for the
+ * mouse.
+ *
+ * The caption is also where the figure admits its limits (same audit): laps
+ * too brief to draw to scale are counted out loud, and when the laps don't
+ * add up to the activity the caption says how much of it the shape covers.
+ * A silhouette quietly standing in for half an hour it never drew is not the
+ * activity's shape. Nothing is dropped — a 3-second lap is still a lap, and
+ * on this data set an implausibly short one may be a duration that never got
+ * repaired, which is exactly the kind of thing hiding it would bury.
  */
-function PaceShape({ laps, units }: { laps: Array<{ s: number; p: number | null }>; units: Units }) {
+function PaceShape({
+  laps,
+  units,
+  durationSeconds,
+}: {
+  laps: Array<{ s: number; p: number | null }>;
+  units: Units;
+  durationSeconds: number | null;
+}) {
+  const [sel, setSel] = useState<number | null>(null);
+  const captionId = useId();
   const paced = laps.filter((l) => l.p != null && l.p > 0);
   if (paced.length < 2) return null;
   const speeds = laps.map((l) => (l.p && l.p > 0 ? 1000 / l.p : null));
@@ -128,37 +164,86 @@ function PaceShape({ laps, units }: { laps: Array<{ s: number; p: number | null 
   // Widths: proportional to lap time with a legibility floor, then rescaled
   // so the row always sums to exactly W — a floor without the rescale pushed
   // trailing laps past the right edge and silently clipped them.
-  const rawW = laps.map((l) => Math.max(1.2, (Math.max(1, l.s) / totalS) * (W - GAP * (laps.length - 1))));
+  const span = W - GAP * (laps.length - 1);
+  const trueW = laps.map((l) => (Math.max(1, l.s) / totalS) * span);
+  const rawW = trueW.map((w) => Math.max(MIN_BAR_W, w));
   const sumW = rawW.reduce((a, b) => a + b, 0);
-  const scaleW = (W - GAP * (laps.length - 1)) / sumW;
+  const scaleW = span / sumW;
+  const stubs = trueW.filter((w) => w < MIN_BAR_W).length;
+  const fmtPace = (p: number) => formatPace(p, units);
+  const lapText = (i: number): string => {
+    const l = laps[i]!;
+    const mins = l.s < 60 ? `${Math.round(l.s)}s` : `${Math.round(l.s / 60)} min`;
+    return `Lap ${i + 1} · ${mins}${l.p ? ` · ${fmtPace(l.p)}` : ""}`;
+  };
   let x = 0;
   const bars = laps.map((l, i) => {
     const w = rawW[i]! * scaleW;
     const h = H * fracFor(speeds[i] ?? null);
-    const mins = l.s < 60 ? `${Math.round(l.s)}s` : `${Math.round(l.s / 60)} min`;
     const bar = (
-      <rect key={i} x={x} y={H - h} width={w} height={h} rx={0.8}>
-        <title>
-          {`Lap ${i + 1} · ${mins}${l.p ? ` · ${formatPace(l.p, units)}` : ""}`}
-        </title>
+      <rect
+        key={i}
+        className={`act-shape-bar${trueW[i]! < MIN_BAR_W ? " is-stub" : ""}${sel === i ? " is-sel" : ""}`}
+        x={x}
+        y={H - h}
+        width={w}
+        height={h}
+        rx={0.8}
+        onClick={() => setSel(sel === i ? null : i)}
+      >
+        <title>{lapText(i)}</title>
       </rect>
     );
     x += w + GAP;
     return bar;
   });
-  const fmtPace = (p: number) => formatPace(p, units);
   const pMin = Math.min(...paced.map((l) => l.p!));
   const pMax = Math.max(...paced.map((l) => l.p!));
+  const lapSeconds = laps.reduce((acc, l) => acc + Math.max(0, l.s), 0);
+  const shortfall =
+    durationSeconds != null && durationSeconds > 0 && lapSeconds < durationSeconds * COVERAGE_FLOOR;
+  // Caveats before the flourish: the caption is one line and ellipsises, so
+  // what the figure DIDN'T draw must not be the part that gets clipped.
+  const overview = [
+    `${laps.length} laps`,
+    shortfall ? `${formatMinutes(lapSeconds)} of ${formatMinutes(durationSeconds)} drawn` : null,
+    stubs > 0 ? `${stubs} too brief to draw to scale` : null,
+    `${fmtPace(pMax)}–${fmtPace(pMin)}`,
+  ]
+    .filter(Boolean)
+    .join(" · ");
+  const caption = sel !== null ? lapText(sel) : overview;
+  const step = (d: number) =>
+    setSel((cur) => {
+      const next = cur == null ? (d > 0 ? 0 : laps.length - 1) : cur + d;
+      return Math.min(laps.length - 1, Math.max(0, next));
+    });
   return (
-    <svg
-      className="act-shape"
-      viewBox={`0 0 ${W} ${H}`}
-      preserveAspectRatio="none"
-      role="img"
-      aria-label={`Pace shape, ${laps.length} laps, ${fmtPace(pMax)} to ${fmtPace(pMin)}`}
-    >
-      {bars}
-    </svg>
+    <>
+      <svg
+        className={`act-shape${sel !== null ? " has-selection" : ""}`}
+        viewBox={`0 0 ${W} ${H}`}
+        preserveAspectRatio="none"
+        role="img"
+        tabIndex={0}
+        aria-label={`Pace shape, ${laps.length} laps, ${fmtPace(pMax)} to ${fmtPace(pMin)}. Left and right arrows step through the laps.`}
+        aria-describedby={captionId}
+        onKeyDown={(e) => {
+          if (e.key === "ArrowRight" || e.key === "ArrowLeft") {
+            e.preventDefault();
+            step(e.key === "ArrowRight" ? 1 : -1);
+          } else if (e.key === "Escape") {
+            setSel(null);
+          }
+        }}
+        onBlur={() => setSel(null)}
+      >
+        {bars}
+      </svg>
+      <p className="act-shape-note" id={captionId} aria-live="polite" title={caption}>
+        {caption}
+      </p>
+    </>
   );
 }
 
@@ -351,7 +436,9 @@ export function RunsScreen() {
                   </div>
                   {a.laps || a.trainingLoad != null || a.feel != null ? (
                     <div className="act-glance">
-                      {a.laps ? <PaceShape laps={a.laps} units={units} /> : null}
+                      {a.laps ? (
+                        <PaceShape laps={a.laps} units={units} durationSeconds={a.durationSeconds} />
+                      ) : null}
                       <EffortChip load={a.trainingLoad} feel={a.feel} />
                     </div>
                   ) : null}

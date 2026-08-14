@@ -14,6 +14,7 @@ import {
   type UserPreferences,
 } from "@rg/domain";
 import type { Db } from "./db.js";
+import { buildTerrainReport, type TerrainReport } from "./terrain.js";
 
 /**
  * Race hub (2026-08-14): everything the plan page's race strip renders.
@@ -59,6 +60,7 @@ export interface RaceHub {
   stamina: Array<{ date: string; value: number }>;
   checklist: RaceChecklistItem[];
   raceLine: { text: string; at: string } | null;
+  terrain: TerrainReport;
   debrief: {
     activityId: string;
     durationSeconds: number;
@@ -164,6 +166,7 @@ export async function buildRaceHub(
         : Promise.resolve([]),
     ]);
 
+  const terrain = await buildTerrainReport(db, userId, prefs);
   const ltsp = thresholdRow[0]?.ltsp ?? null;
   const goal =
     ltsp !== null
@@ -250,6 +253,7 @@ export async function buildRaceHub(
     taperStartDate,
     phase,
     goal,
+    terrain,
     stamina: staminaRows.filter((r): r is { date: string; value: number } => r.value !== null),
     checklist,
     raceLine,

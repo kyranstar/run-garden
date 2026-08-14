@@ -7,7 +7,8 @@
  * and tested directly here.
  */
 import { describe, expect, it } from "vitest";
-import { formatMinutes, isTopDialog } from "../src/components.js";
+import { sessionNoun } from "@rg/analytics";
+import { countNoun, formatMinutes, isTopDialog } from "../src/components.js";
 
 describe("formatMinutes (M5)", () => {
   it("renders null/undefined as an em dash", () => {
@@ -24,6 +25,27 @@ describe("formatMinutes (M5)", () => {
     expect(formatMinutes(90 * 60)).toBe("1h 30m");
     expect(formatMinutes(4 * 3600)).toBe("4h");
     expect(formatMinutes(4 * 3600 + 5 * 60)).toBe("4h 5m");
+  });
+});
+
+describe("countNoun (audit 2026-08-14: 'over 1 runs')", () => {
+  it("agrees with the count in both directions", () => {
+    expect(countNoun(1, "run")).toBe("1 run");
+    expect(countNoun(0, "run")).toBe("0 runs");
+    expect(countNoun(12, "run")).toBe("12 runs");
+  });
+
+  it("takes an explicit plural for nouns that don't just take an s", () => {
+    expect(countNoun(1, "yoga session", "yoga sessions")).toBe("1 yoga session");
+    expect(countNoun(3, "yoga session", "yoga sessions")).toBe("3 yoga sessions");
+  });
+
+  it("composes with sessionNoun so Insights never calls a lift a run", () => {
+    const sessions = (n: number, d: "run" | "strength" | "yoga") =>
+      countNoun(n, sessionNoun(d), sessionNoun(d, true));
+    expect(sessions(1, "run")).toBe("1 run");
+    expect(sessions(4, "strength")).toBe("4 lifts");
+    expect(sessions(1, "yoga")).toBe("1 yoga session");
   });
 });
 

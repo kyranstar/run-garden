@@ -28,9 +28,38 @@ export interface PlanProgression {
 
 const METERS_PER_MILE = 1609.34;
 
+/**
+ * Movements whose COROS catalog identity carries no external load. A kg
+ * number on one of these is never a load the athlete can be TOLD about:
+ *
+ *  - Plans generated before 2026-08-11 chose `originId`s blind — the catalog
+ *    handed the model raw i18n keys ("T1004"), not English names, so its
+ *    intent survives only in the free-text note. The live prod plan
+ *    e081d202 graphs a dumbbell-bench progression under "Push-ups" and a
+ *    hip-thrust progression under "Burpees"; the kilograms are real (the
+ *    notes say "+2 kg from W4"), the NAME is the lie, and no unit label can
+ *    repair a row whose identity is unknown.
+ *  - Post-fix, a kg value on a bodyweight movement is ADDED load, which
+ *    "Push-ups 12 → 20 kg" does not say either.
+ *
+ * Either way the honest move is the one `weight.type === "bodyweight"`
+ * already gets: no weight series, sets still counted. The qualifier list
+ * re-admits the genuinely loaded variants ("Decline Weighted Crunch",
+ * "Machine Crunches", "Plank Row", "Dumbbell Side Plank Rotations").
+ */
+const LOADED_QUALIFIER =
+  /weighted|dumbbell|barbell|kettlebell|machine|cable|pulley|sled|sandbag|medicine ball|wall ball|smith|plate|\bband\b|\brows?\b/i;
+const UNLOADED_MOVEMENT =
+  /push.?ups?|pull.?ups?|chin.?ups?|burpees?|planks?|sit.?ups?|crunch|jumping jacks?|mountain climbers?|box jumps?|wall sit|bear crawl|jump rope|skipping|cardio|kickbox|aerobics?|stretch|yoga|bird dog|superman|v-sit|glute bridge hold|running in place|high knees|butt kicks|stair ?master|stair climb|elliptical|treadmill|dead ?hang|\bhang\b/i;
+
+export function carriesNoExternalLoad(name: string): boolean {
+  return UNLOADED_MOVEMENT.test(name) && !LOADED_QUALIFIER.test(name);
+}
+
 /** Top-N lifts by appearance, each as top-set weight by week; plus weekly
  * total sets. Bodyweight entries carry no load and are excluded from weight
- * series (they still count toward sets). */
+ * series (they still count toward sets) — whether they declare it via
+ * `weight.type` or the catalog name says so (`carriesNoExternalLoad`). */
 /** The headline's second number is the plan's PEAK, not its final week — a
  * block that deloads into its finish otherwise understates itself
  * ("12 → 16 kg" for a wave that tops at 20; user nit, 2026-08-12). */
@@ -54,7 +83,7 @@ export function liftProgressions(
         setsByWeek.set(weekNo, (setsByWeek.get(weekNo) ?? 0) + ex.sets);
         const entry = byOrigin.get(ex.originId) ?? { name: ex.name, count: 0, weekMax: new Map() };
         entry.count += 1;
-        if (ex.weight.type === "kg") {
+        if (ex.weight.type === "kg" && !carriesNoExternalLoad(ex.name)) {
           entry.weekMax.set(weekNo, Math.max(entry.weekMax.get(weekNo) ?? 0, ex.weight.value));
         }
         byOrigin.set(ex.originId, entry);
@@ -176,7 +205,7 @@ export function liftWeekSummary(plan: LiftingPlan, weekIndex1: number): string {
   for (const s of week.sessions) {
     for (const ex of s.exercises) {
       sets += ex.sets;
-      if (ex.weight.type === "kg") {
+      if (ex.weight.type === "kg" && !carriesNoExternalLoad(ex.name)) {
         heaviest.set(ex.name, Math.max(heaviest.get(ex.name) ?? 0, ex.weight.value));
       }
     }

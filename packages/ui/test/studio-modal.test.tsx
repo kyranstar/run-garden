@@ -113,6 +113,64 @@ describe("progression charts", () => {
     expect(html).toContain("visually-hidden"); // text alternative
   });
 
+  /**
+   * A tapered block is where the old end label lied: it printed
+   * `progression.to` (the PEAK) hard against the right edge, i.e. over race
+   * week, whose prescription is a fraction of it. Label the peak where the
+   * peak is, and say the word.
+   */
+  const tapered: PlanProgression = {
+    key: "run:long-run",
+    label: "Long run",
+    unit: "km",
+    from: 8,
+    to: 16.1,
+    now: 12.9,
+    series: [
+      { week: 1, value: 8, done: true },
+      { week: 5, value: 12.9, done: true },
+      { week: 8, value: 16.1 },
+      { week: 9, value: 10 },
+    ],
+  };
+
+  it("ProgressionStepChart: the peak label is drawn at the peak week, not at the endpoint", () => {
+    const html = renderToStaticMarkup(
+      createElement(ProgressionStepChart, { progression: tapered, discipline: "run" }),
+    );
+    expect(html).toContain("peak 16.1 km");
+    const label = html.match(/<text x="([\d.]+)"[^>]*>peak 16\.1 km<\/text>/);
+    expect(label).not.toBeNull();
+    // Weeks 1–9 across the plot band (left margin 40, right edge 310): week 8
+    // sits at 276.25 — the label must NOT be pinned to the right edge, which
+    // is week 9's 10 km taper.
+    expect(Number(label![1])).toBeCloseTo(276.25, 1);
+    // Nothing captions the last week with the peak's number any more.
+    expect(html).not.toMatch(/<text x="310"[^>]*>16\.1/);
+  });
+
+  it("ProgressionStepChart: the text alternative describes the drawn line, taper included", () => {
+    const html = renderToStaticMarkup(
+      createElement(ProgressionStepChart, { progression: tapered, discipline: "run" }),
+    );
+    expect(html).toContain("from 8 km in week 1 to a peak of 16.1 km in week 8");
+    expect(html).toContain("easing to 10 km by week 9");
+    // The old wording claimed the block ended at its peak.
+    expect(html).not.toContain("from 8 to 16.1 km across weeks 1–9");
+  });
+
+  it("ProgressionStepChart: when the current week IS the peak, one label carries both", () => {
+    const html = renderToStaticMarkup(
+      createElement(ProgressionStepChart, {
+        progression: { ...tapered, now: 16.1 },
+        discipline: "run",
+      }),
+    );
+    expect(html).toContain("peak 16.1 km · now");
+    // …and not a second, overlapping "16.1 · now" text at the same point.
+    expect(html).not.toMatch(/>16\.1 · now</);
+  });
+
   it("PlannedVsActualBars: outline planned for every week, filled only where actuals exist", () => {
     const weekly: PlanProgression = {
       key: "run:weekly-minutes",

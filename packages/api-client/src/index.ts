@@ -357,6 +357,22 @@ export interface RaceHubResponse {
       note?: string;
     }>;
     raceLine: { text: string; at: string } | null;
+    /** Measured climb per km recently, against the described course. */
+    terrain: {
+      recent: {
+        metresPerKm: number;
+        runs: number;
+        totalClimbMetres: number;
+        sinceDate: string;
+      } | null;
+      raceMetresPerKm: number | null;
+      comparison: {
+        recentMetresPerKm: number;
+        raceMetresPerKm: number;
+        ratio: number | null;
+        verdict: "under_prepared" | "matched" | "over_prepared";
+      } | null;
+    };
     debrief: {
       activityId: string;
       durationSeconds: number;

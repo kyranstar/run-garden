@@ -109,9 +109,34 @@ export function ProgressionStepChart({
     .map((p, i) => `${i === 0 ? "M" : "L"}${x(p.week).toFixed(1)} ${y(p.value).toFixed(1)}`)
     .join(" ");
   const path = discipline === "lift" ? stepPath : linePath;
+  const first = s[0]!;
   const last = s[s.length - 1]!;
   const doneCount = s.filter((p) => p.done).length;
-  const summary = `${progression.label}: prescribed from ${progression.from} to ${progression.to} ${progression.unit} across weeks ${wMin}–${wMax}; ${doneCount} of ${s.length} weeks completed${progression.now !== null ? `; currently ${progression.now} ${progression.unit}` : ""}.`;
+  /**
+   * The one number the chart annotates is the PEAK, drawn where the peak
+   * actually is. The end label used to print `progression.to` (which IS the
+   * peak — see plan-progressions.ts `peak()`) hard against the right edge, on
+   * the last week's height: on any block that tapers, race week ended up
+   * captioned with a number two weeks older than it ("16.1 km" over a 10 km
+   * taper week). The card headline still reads start→peak, deliberately; this
+   * says which point that peak belongs to.
+   */
+  const peak = s.reduce((a, b) => (b.value > a.value ? b : a), first);
+  const nowWeek =
+    progression.now !== null && progression.now !== last.value
+      ? Math.min(wMax, Math.max(wMin, s.find((p) => p.value === progression.now)?.week ?? wMin))
+      : null;
+  const nowOnPeak = nowWeek !== null && nowWeek === peak.week;
+  const peakAnchor = peak.week === wMax ? "end" : peak.week === wMin ? "start" : "middle";
+  // Describes what is DRAWN — first, peak, and where the line actually ends —
+  // so the alternative text can't caption a taper with the peak either.
+  const summary =
+    `${progression.label}: prescribed from ${first.value} ${progression.unit} in week ${wMin} to a peak of ` +
+    `${peak.value} ${progression.unit} in week ${peak.week}` +
+    (peak.value > last.value ? `, easing to ${last.value} ${progression.unit} by week ${wMax}` : "") +
+    `; ${doneCount} of ${s.length} weeks completed` +
+    (progression.now !== null ? `; currently ${progression.now} ${progression.unit}` : "") +
+    ".";
 
   return (
     <ChartFrame
@@ -151,10 +176,10 @@ export function ProgressionStepChart({
               strokeWidth="2"
             />
           ))}
-          {progression.now !== null && progression.now !== last.value ? (
+          {nowWeek !== null && !nowOnPeak ? (
             <text
-              x={x(Math.min(wMax, Math.max(wMin, s.find((p) => p.value === progression.now)?.week ?? wMin)))}
-              y={y(progression.now) - 8}
+              x={x(nowWeek)}
+              y={y(progression.now!) - 8}
               textAnchor="middle"
               fontSize="9"
               fontWeight="600"
@@ -163,8 +188,16 @@ export function ProgressionStepChart({
               {progression.now} · now
             </text>
           ) : null}
-          <text x={VB_W - M.right} y={y(last.value) - 6} textAnchor="end" fontSize="9" fontWeight="600" fill="var(--ink-soft)">
-            {progression.to} {progression.unit}
+          <text
+            x={x(peak.week)}
+            y={y(peak.value) - 6}
+            textAnchor={peakAnchor}
+            fontSize="9"
+            fontWeight="600"
+            fill="var(--ink-soft)"
+          >
+            peak {peak.value} {progression.unit}
+            {nowOnPeak ? " · now" : ""}
           </text>
           <text x={x(wMin)} y={VB_H - M.bottom + 12} textAnchor="middle" fontSize="9" fill="var(--ink-faint)">
             W{wMin}

@@ -388,6 +388,10 @@ const PLAN_HARD_RULES = [
   "- Every exercise's originId MUST be one of the ids listed in the catalog below, copied exactly; its name must be that catalog entry's name.",
   "- Respect brief.constraints (injuries/exclusions) and brief.equipment. Apply sensible progressive overload across weeks. Never schedule two sessions on the same weekday.",
   "- Ranges: sets 1-10, reps 1-50, restSeconds 0-900, weight.value (kg) 0-500.",
+  // weight.value is rendered to the athlete verbatim as kilograms ("Push-ups
+  // 12 → 20 kg" is what a kg on a bodyweight movement reads as). Anything
+  // that carries no bar, dumbbell, or machine load must say so structurally.
+  '- weight is a LOAD IN KILOGRAMS, never a rep count or an intensity. Any movement carrying no external load — push-ups, pull-ups, burpees, planks, holds, stretches, mobility, cardio/conditioning — MUST use {"type":"bodyweight"}. Use {"type":"kg"} only when the athlete actually holds or loads that many kilograms.',
   "- Session titles and the plan name must each be 80 characters or fewer.",
 ].join("\n");
 
@@ -524,6 +528,7 @@ export function buildEditSystemPrompt(catalog: CatalogEntry[]): string {
     "- Any exercise originId you add or change MUST be one of the ids listed in the catalog below, copied exactly, with name kept in sync.",
     "- Keep the number of operations minimal — only the fields the request actually changes.",
     "- Ranges: sets 1-10, reps 1-50, restSeconds 0-900, weight.value (kg) 0-500.",
+    '- weight is a LOAD IN KILOGRAMS, never a rep count. A movement carrying no external load (push-ups, pull-ups, burpees, planks, holds, stretches, cardio) MUST use {"type":"bodyweight"}.',
     "- A week must never end up with more than 6 sessions. Session titles and the plan name must each be 80 characters or fewer.",
     "",
     "Available exercises (originId|name), one per line:",

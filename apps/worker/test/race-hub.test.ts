@@ -297,3 +297,85 @@ describe("race hub — audit#3-b regressions", () => {
     expect(hub!.stamina).toEqual([]);
   });
 });
+
+describe("terrain awareness (2026-08-14)", () => {
+  const seedRun = async (
+    db: Db,
+    userId: string,
+    id: string,
+    date: string,
+    km: number,
+    climb: number,
+  ) => {
+    await db.insert(schema.activities).values({
+      id,
+      userId,
+      corosActivityId: id,
+      startTime: `${date}T15:00:00Z`,
+      startTimeLocal: `${date}T08:00:00`,
+      sport: "run",
+      durationSeconds: Math.round(km * 300),
+      distanceMeters: km * 1000,
+      elevationGainMeters: climb,
+      sourceMergeConfidence: 1,
+      createdAt: nowInstant(),
+      updatedAt: nowInstant(),
+    });
+  };
+
+  it("measures recent climb per km and flags training flatter than the course", async () => {
+    const db = makeTestDb();
+    const { userId, prefs } = await makeTestUser(db);
+    const today = todayInZone(prefs.timezone);
+    // The athlete's real shape: mostly flat city running.
+    await seedRun(db, userId, "r1", addDays(today, -3), 7.9, 8);
+    await seedRun(db, userId, "r2", addDays(today, -8), 10, 45);
+    // Out of the window — must not count.
+    await seedRun(db, userId, "old", addDays(today, -60), 9, 400);
+
+    const hub = await buildRaceHub(db, userId, {
+      ...prefs,
+      raceDate: addDays(today, 40),
+      raceDistanceKm: 10,
+      raceCourseClimbMetres: 120,
+    });
+    expect(hub!.terrain.recent).toMatchObject({ runs: 2, totalClimbMetres: 53 });
+    expect(hub!.terrain.recent!.metresPerKm).toBeCloseTo(3, 0);
+    expect(hub!.terrain.raceMetresPerKm).toBe(12);
+    expect(hub!.terrain.comparison!.verdict).toBe("under_prepared");
+  });
+
+  it("falls back to the course profile, and stays silent with neither", async () => {
+    const db = makeTestDb();
+    const { userId, prefs } = await makeTestUser(db);
+    const today = todayInZone(prefs.timezone);
+    await seedRun(db, userId, "r1", addDays(today, -2), 10, 120);
+
+    const byProfile = await buildRaceHub(db, userId, {
+      ...prefs,
+      raceDate: addDays(today, 40),
+      raceCourseProfile: "rolling",
+    });
+    expect(byProfile!.terrain.raceMetresPerKm).toBe(12);
+    expect(byProfile!.terrain.comparison!.verdict).toBe("matched");
+
+    const unset = await buildRaceHub(db, userId, { ...prefs, raceDate: addDays(today, 40) });
+    expect(unset!.terrain.recent!.metresPerKm).toBe(12);
+    expect(unset!.terrain.raceMetresPerKm).toBeNull();
+    expect(unset!.terrain.comparison).toBeNull();
+  });
+
+  it("no runs with elevation is null, never zero", async () => {
+    const db = makeTestDb();
+    const { userId, prefs } = await makeTestUser(db);
+    const today = todayInZone(prefs.timezone);
+    const hub = await buildRaceHub(db, userId, {
+      ...prefs,
+      raceDate: addDays(today, 40),
+      raceCourseClimbMetres: 120,
+      raceDistanceKm: 10,
+    });
+    expect(hub!.terrain.recent).toBeNull();
+    expect(hub!.terrain.comparison).toBeNull();
+  });
+});

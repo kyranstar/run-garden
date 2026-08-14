@@ -55,6 +55,16 @@ export function formatMinutes(seconds: number | null | undefined): string {
   return m === 0 ? `${h}h` : `${h}h ${m}m`;
 }
 
+/**
+ * "1 run" · "3 runs" — a count with its noun agreeing with it. Deployed
+ * Insights read "0.9h over 1 runs" in a chart description; every count this
+ * app interpolates into a sentence goes through here instead. Irregular
+ * plurals pass their own (`countNoun(1, "yoga session", "yoga sessions")`).
+ */
+export function countNoun(n: number, singular: string, plural = `${singular}s`): string {
+  return `${n} ${n === 1 ? singular : plural}`;
+}
+
 const WEEKDAYS = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
 const MONTHS = [
   "January", "February", "March", "April", "May", "June",

@@ -244,7 +244,7 @@ async function weekly(db: Db, env: Env): Promise<void> {
         db,
         env,
         userId,
-        { weekStart, facts: facts as unknown as Record<string, unknown> },
+        { weekStart, facts: facts as unknown as Record<string, unknown>, units: prefs.units },
         prefs.aiEnabled && env.AI_DEFAULT_ENABLED !== "0",
       );
       await finishSyncRun(db, runId, "ok", {

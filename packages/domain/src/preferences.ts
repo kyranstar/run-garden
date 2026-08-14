@@ -44,6 +44,11 @@ export const userPreferencesSchema = schedulingPreferencesSchema.extend({
    * Null = unknown, and the race strip then makes NO time prediction rather
    * than assuming a 10K (audit#3-b #1). */
   raceDistanceKm: z.number().positive().max(200).nullable().default(null),
+  /** The race course's total climb in metres, from the race's own page, and
+   * a coarse profile as the fallback. Terrain awareness compares these
+   * against the athlete's measured climb per km (2026-08-14). */
+  raceCourseClimbMetres: z.number().min(0).max(20000).nullable().default(null),
+  raceCourseProfile: z.enum(["flat", "rolling", "hilly"]).nullable().default(null),
   reducedMotion: z.boolean().default(false),
   theme: z.enum(["system", "light", "dark"]).default("system"),
   /** Display units for distance and pace, applied everywhere a number

@@ -13,7 +13,13 @@ import type { CoachPlanDto, PlanDetailResponse, PlanWeekResponse, WorkoutDto } f
 import { BriefExplainerSheet, HEADLINE_COPY, headlineContext, WeeklyBrief } from "../src/screens/plan-brief.js";
 import { PlanCards, progressionHeadline } from "../src/screens/plan-cards.js";
 import { CoachWindow } from "../src/screens/coach-window.js";
-import { WeekView, weekRangeLabel, WorkoutCell } from "../src/screens/week-view.js";
+import {
+  centerScrollTop,
+  jumplistDropsUp,
+  WeekView,
+  weekRangeLabel,
+  WorkoutCell,
+} from "../src/screens/week-view.js";
 
 const noop = () => undefined;
 
@@ -164,6 +170,47 @@ describe("WeekView", () => {
   it("weekRangeLabel crosses months honestly", () => {
     expect(weekRangeLabel("2026-08-10")).toBe("Aug 10–16");
     expect(weekRangeLabel("2026-08-31")).toBe("Aug 31 – Sep 6");
+  });
+});
+
+/**
+ * The jump menu's placement and scroll (audit 2026-08-14). The measuring
+ * itself needs a DOM this package's vitest doesn't have (environment "node"),
+ * so — same split as `dockCoversStage` — the two decisions are pure functions
+ * and it is those that are tested.
+ */
+describe("jump-to-week menu placement", () => {
+  it("flips up when the list would run past the fold and there is more room above", () => {
+    // The measured case: trigger low on an 862px viewport, 300px list.
+    expect(jumplistDropsUp(640, 190, 300)).toBe(true);
+  });
+
+  it("stays below when it fits — a menu belongs under its trigger", () => {
+    expect(jumplistDropsUp(200, 420, 300)).toBe(false);
+    // Exactly-fits (plus the 8px margin) still counts as fitting.
+    expect(jumplistDropsUp(700, 308, 300)).toBe(false);
+  });
+
+  it("stays below when neither side fits but below is the roomier one", () => {
+    // Flipping into an even tighter space helps nobody; max-height clips.
+    expect(jumplistDropsUp(120, 260, 300)).toBe(false);
+  });
+
+  it("a short list never flips, however low the trigger sits", () => {
+    expect(jumplistDropsUp(700, 90, 60)).toBe(false);
+  });
+
+  it("centres the current week in the open list, clamped to the scroll range", () => {
+    // 10 rows of 36px in a 300px window: week 10 (offsetTop 324) centres at 192.
+    expect(centerScrollTop(324, 36, 300, 360 * 2)).toBe(192);
+    // The first week can't scroll above the top…
+    expect(centerScrollTop(0, 36, 300, 720)).toBe(0);
+    // …and the last can't scroll past the bottom.
+    expect(centerScrollTop(684, 36, 300, 720)).toBe(420);
+  });
+
+  it("asks for no scroll at all when the whole list is visible", () => {
+    expect(centerScrollTop(180, 36, 300, 300)).toBe(0);
   });
 });
 

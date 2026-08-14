@@ -326,7 +326,10 @@ describe("statusStripBaseText", () => {
     expect(result.base).toBe("⚠ Load vs your norm: 1.8x — Way over your norm.");
   });
 
-  it("builds the watch-severity line with a softer glyph than high", () => {
+  it("builds the watch-severity line with no glyph at all — the ⚠ is high's alone", () => {
+    // The old "•" read on the deployed page as a stray bullet in front of the
+    // metric name ("• Low-intensity share: 66% …") — the strip is one line,
+    // not a list, and the warn-colored left border already says "watch".
     const watching = metric({
       id: "watching",
       title: "Hard-day stacking",
@@ -335,7 +338,9 @@ describe("statusStripBaseText", () => {
       suggestion: "Back-to-back hard days leave less room to absorb the work.",
     });
     const result = statusStripBaseText(pickStatusStripMetric([watching]), [watching]);
-    expect(result.base).toBe("• Hard-day stacking: 2 days — Back-to-back hard days leave less room to absorb the work.");
+    expect(result.base).toBe("Hard-day stacking: 2 days — Back-to-back hard days leave less room to absorb the work.");
+    expect(result.base).not.toContain("•");
+    expect(result.base).not.toContain("⚠");
   });
 });
 

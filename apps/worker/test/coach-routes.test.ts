@@ -527,21 +527,33 @@ describe("GET /plans/:id/detail (2026-08-11 rework §4)", () => {
   it("studio lift plan: prescribed progressions, weeks list, sessions", async () => {
     const monday = startOfIsoWeek(todayInZone(prefs.timezone));
     // The live data shape (round 5): the synced catalog's own name is the
-    // i18n KEY — only COROS's locale table (embedded) knows "Push-ups".
-    await db.insert(schema.corosExercises).values({
-      id: "469646463400591360",
-      name: "T1004",
-      raw: { id: "469646463400591360", name: "T1004" },
-      updatedAt: nowInstant(),
-    });
+    // i18n KEY — only COROS's locale table (embedded) knows "Seated Front
+    // Press". T1004 ("Push-ups") rides along to pin the units-sweep rule: a
+    // kg number on a movement that carries no external load is never graphed
+    // as kilograms, however the plan happens to have stored it.
+    await db.insert(schema.corosExercises).values([
+      {
+        id: "469646463400591360",
+        name: "T1015",
+        raw: { id: "469646463400591360", name: "T1015" },
+        updatedAt: nowInstant(),
+      },
+      {
+        id: "469646463400591361",
+        name: "T1004",
+        raw: { id: "469646463400591361", name: "T1004" },
+        updatedAt: nowInstant(),
+      },
+    ]);
     const mkWeek = (bench: number, squat: number) => ({
       sessions: [
         {
           title: "Full Body",
           weekday: 1,
           exercises: [
-            { originId: "469646463400591360", name: "T1004", sets: 3, reps: 8, weight: { type: "kg", value: bench }, restSeconds: 120 },
+            { originId: "469646463400591360", name: "T1015", sets: 3, reps: 8, weight: { type: "kg", value: bench }, restSeconds: 120 },
             { originId: "S2", name: "Back Squat", sets: 4, reps: 6, weight: { type: "kg", value: squat }, restSeconds: 150 },
+            { originId: "469646463400591361", name: "T1004", sets: 2, reps: 12, weight: { type: "kg", value: bench }, restSeconds: 60 },
           ],
         },
       ],
@@ -583,14 +595,18 @@ describe("GET /plans/:id/detail (2026-08-11 rework §4)", () => {
     expect(body.weeks).toHaveLength(3);
     expect(body.weeks[0]!.summary).toContain("sets");
     expect(body.weeks[0]!.current).toBe(true);
-    // "T1004" resolved through the catalog — the actual name, everywhere.
-    const bench = body.progressions.find((p) => p.label === "Push-ups")!;
-    expect(body.progressions.map((pr) => pr.label).join()).not.toContain("T1004");
-    expect(body.weeks[0]!.summary).toContain("push-ups");
+    // "T1015" resolved through the catalog — the actual name, everywhere.
+    const bench = body.progressions.find((p) => p.label === "Seated Front Press")!;
+    expect(body.progressions.map((pr) => pr.label).join()).not.toContain("T10");
+    expect(body.weeks[0]!.summary).toContain("seated front press");
     expect(bench.from).toBe(52);
     expect(bench.to).toBe(60);
     expect(bench.series.map((s) => s.value)).toEqual([52, 56, 60]);
     expect(body.sessions.planned).toBe(3);
+    // Never "Push-ups 52 → 60 kg" (audit 2026-08-14) — not as a progression,
+    // not in the week line — even though the plan stored it as a kg weight.
+    expect(body.progressions.map((pr) => pr.label)).not.toContain("Push-ups");
+    expect(body.weeks[0]!.summary).not.toContain("push-ups");
   });
 
   it("coach run plan: firm/shape weeks, long-run progression, shape weeks excluded from series", async () => {
