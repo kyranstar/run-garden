@@ -10,6 +10,7 @@ export * from "./activity.js";
 export * from "./sport.js";
 export * from "./health.js";
 export * from "./pace.js";
+export * from "./readiness.js";
 export * from "./terrain.js";
 export * from "./preferences.js";
 export * from "./jobs.js";

@@ -47,6 +47,7 @@ import { findRaceConflict, resolveRaceConflict } from "../services/race-conflict
 import { buildRaceHub } from "../services/race-hub.js";
 import { cloudPresence, deriveWorkoutSync, type CloudPresence } from "../services/sync-status.js";
 import { exerciseNameMap, resolveCodesInText } from "../services/exercise-catalog.js";
+import { buildReadiness } from "../services/readiness.js";
 import { executeCloudJobs } from "../services/coros-write-cloud.js";
 
 export const planRoutes = new Hono<AppContext>();
@@ -180,6 +181,7 @@ planRoutes.get("/today", async (c) => {
     gardenRows,
     gardenEventsRecent,
     yesterdayDone,
+    latestCoachMsg,
   ] = await Promise.all([
     exerciseNameMap(db),
     db
@@ -259,6 +261,15 @@ planRoutes.get("/today", async (c) => {
         ),
       )
       .limit(1),
+    // The coach's latest message — its `refs.focus` is the one action line
+    // the dock quotes (same row and same staleness rule as /week).
+    db
+      .select()
+      .from(coachMessages)
+      .where(and(eq(coachMessages.userId, userId), eq(coachMessages.role, "coach")))
+      .orderBy(desc(coachMessages.at))
+      .limit(1)
+      .then((r) => r[0]),
   ]);
   const next = upcoming.find((w) => w.category !== "rest") ?? upcoming[0];
   const snapshot = gardenRows[0]?.snapshot as unknown as GardenSnapshot | undefined;
@@ -283,17 +294,15 @@ planRoutes.get("/today", async (c) => {
       calendarConnected: !!prefs.calendarId,
       // "connected" | "error" (subscription lapsed / revoked) | undefined (never connected)
     },
-    readiness: {
-      latest: health[0] ?? null,
-      baseline:
-        health.length >= 7
-          ? {
-              restingHeartRate: median(health.map((h) => h.restingHeartRate).filter(nonNull)),
-              hrv: median(health.map((h) => h.hrv).filter(nonNull)),
-            }
-          : null,
-      sampleDays: health.length,
-    },
+    // Same three fields as ever (other surfaces read them), plus the computed
+    // `verdict` the garden dock leads with — built by the one shared helper so
+    // the dock and the Today card can't disagree about "your baseline".
+    readiness: buildReadiness(health),
+    // The coach's own weekly action line, gated by the SAME 72h staleness
+    // rule /week uses (`deriveFocus`). The dock labels it as the coach's line
+    // and dates it — it was written about the week, not about today's
+    // readiness, and must never be read as a comment on it.
+    focus: deriveFocus(latestCoachMsg),
     garden: snapshot
       ? {
           condition: conditionWord(snapshot.state, DEFAULT_GARDEN_CONFIG),
@@ -305,15 +314,6 @@ planRoutes.get("/today", async (c) => {
       : null,
   });
 });
-
-function nonNull<T>(v: T | null | undefined): v is T {
-  return v != null;
-}
-function median(nums: number[]): number | null {
-  if (nums.length === 0) return null;
-  const s = [...nums].sort((a, b) => a - b);
-  return s.length % 2 ? s[(s.length - 1) / 2]! : (s[s.length / 2 - 1]! + s[s.length / 2]!) / 2;
-}
 
 /** Week view of the plan. */
 planRoutes.get("/workouts", async (c) => {
@@ -379,6 +379,27 @@ export function deriveHeadline(input: {
 }
 
 const FOCUS_STALE_MS = 72 * 3600 * 1000;
+
+/**
+ * The coach's one action line, or null.
+ *
+ * It is THE LATEST briefing's line — never an older message's. A fresh
+ * briefing with focus:null must retire the previous line, not let it linger
+ * (live case: a phantom "Sunday's 5K" focus outlived the corrected briefing
+ * that followed it). And it expires at {@link FOCUS_STALE_MS}: a line written
+ * about last week is not advice about this one.
+ *
+ * Shared by /week (the plan brief) and /today (the garden dock) so there is
+ * exactly one staleness rule — the dock must not invent a second one.
+ */
+function deriveFocus(
+  latestCoachMsg: { at: string; refs: unknown } | undefined,
+): { text: string; at: string } | null {
+  const text = (latestCoachMsg?.refs as { focus?: string } | undefined)?.focus;
+  if (!latestCoachMsg || !text) return null;
+  if (Date.now() - Date.parse(latestCoachMsg.at) >= FOCUS_STALE_MS) return null;
+  return { text, at: latestCoachMsg.at };
+}
 
 /** The weekly brief + one pickable week in a single call (rework spec §4). */
 planRoutes.get("/week", async (c) => {
@@ -562,15 +583,9 @@ planRoutes.get("/week", async (c) => {
       .map(localDate),
   ).size;
 
-  // The focus is THE LATEST briefing's line — never an older message's. A
-  // fresh briefing with focus:null must retire the previous line, not let it
-  // linger (live case: a phantom "Sunday's 5K" focus outlived the corrected
-  // briefing that followed it). `latestCoachMsg` loaded in the batch above.
-  const latestFocus = (latestCoachMsg?.refs as { focus?: string } | undefined)?.focus;
-  const focus =
-    latestCoachMsg && latestFocus && Date.now() - Date.parse(latestCoachMsg.at) < FOCUS_STALE_MS
-      ? { text: latestFocus, at: latestCoachMsg.at }
-      : null;
+  // `latestCoachMsg` loaded in the batch above; the latest-only + staleness
+  // rule lives in `deriveFocus` (shared with /today's dock line).
+  const focus = deriveFocus(latestCoachMsg);
 
   return c.json({
     weekStart,

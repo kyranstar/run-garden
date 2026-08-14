@@ -31,7 +31,34 @@ describe("buildDossier", () => {
     expect(d.text).toContain("nothing scheduled in the next 14 days");
     expect(d.text).toContain("no sessions recorded");
     expect(d.text).toContain("none pending");
+    // Readiness is the dossier's opening fact about the athlete — and on an
+    // empty account it is an explicit unknown, never an assumed-fine.
+    expect(d.text).toContain("readiness today: unknown — too little recent COROS wellness data");
     expect(d.approxTokens).toBeLessThanOrEqual(12_000);
+  });
+
+  it("opens ATHLETE with the same readiness verdict the garden dock shows", async () => {
+    const db = makeTestDb();
+    const { userId, prefs } = await makeTestUser(db);
+    const today = todayInZone(prefs.timezone);
+    // A flat 14-day history (HRV 62 / RHR 46) with a rough morning on top:
+    // RHR +8 is the poor signal, HRV is inside its noise band.
+    for (let i = 0; i < 14; i++) {
+      const date = addDays(today, -i);
+      await db.insert(schema.dailyHealth).values({
+        id: `${userId}:${date}`,
+        userId,
+        date,
+        hrv: i === 0 ? 60 : 62,
+        restingHeartRate: i === 0 ? 54 : 46,
+        contentFingerprint: `h${i}`,
+        updatedAt: nowInstant(),
+      });
+    }
+    const d = await buildDossier(db, userId, prefs);
+    expect(d.text).toContain(
+      "readiness today: poor — RHR 8 bpm above your baseline · HRV 60 (base 62)",
+    );
   });
 
   it("lists upcoming sessions with [wo:id] handles and marks imported ones", async () => {

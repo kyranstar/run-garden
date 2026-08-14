@@ -7,6 +7,7 @@ import type {
   GardenWeatherState,
   LiftingPlan,
   PlanBrief,
+  ReadinessVerdict,
   UserPreferences,
 } from "@rg/domain";
 import type {
@@ -124,7 +125,14 @@ export interface TodayResponse {
     } | null;
     baseline: { restingHeartRate: number | null; hrv: number | null } | null;
     sampleDays: number;
+    /** The server's one judgement on those numbers — null when the evidence
+     * is too thin to have one, in which case surfaces show nothing at all. */
+    verdict: ReadinessVerdict | null;
   };
+  /** The coach's own weekly action line, already gated by the 72h staleness
+   * rule server-side (absent/stale → null). It was written about the WEEK,
+   * never about today's readiness — surfaces must label and date it. */
+  focus: { text: string; at: string } | null;
   garden: {
     condition: GardenConditionWord;
     weather: GardenWeatherState;

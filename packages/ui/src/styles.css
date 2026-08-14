@@ -1052,6 +1052,7 @@ button {
     max-width: min(30rem, 40vw);
   }
   .dock-pill {
+    position: relative;
     background: none;
     border: none;
     cursor: pointer;
@@ -1062,9 +1063,45 @@ button {
     font-weight: 600;
     text-shadow: 0 1px 8px rgba(9, 14, 10, 0.55);
   }
+  /* Same scrim treatment the bottom-right corner got (see .hud-corner::before)
+     and for the same reason: this is white type — now with a small colour dot
+     in it — sitting straight on the artwork, which can be a sunlit afternoon.
+     Pooled tightly under the pill only, so the plants keep their light; the
+     z-indexes keep it behind the text rather than painted over it. */
+  .dock-pill::before {
+    content: "";
+    position: absolute;
+    inset: -0.55rem -1.4rem -0.6rem -1.5rem;
+    z-index: 0;
+    border-radius: 18px;
+    background: radial-gradient(
+      130% 130% at 0% 100%,
+      rgba(9, 14, 10, 0.52),
+      rgba(9, 14, 10, 0.36) 45%,
+      rgba(9, 14, 10, 0) 80%
+    );
+    pointer-events: none;
+  }
+  .dock-pill > * {
+    position: relative;
+    z-index: 1;
+  }
   .dock-pill:hover {
     text-decoration: underline;
     text-underline-offset: 3px;
+  }
+  .dock-pill-verdict {
+    font-weight: 700;
+  }
+  /* The separator is decoration between two spans that each read fine alone —
+     CSS, so it never lands in the accessible name as a stray character. */
+  .dock-pill-verdict + .dock-pill-workout::before {
+    content: "·";
+    margin: 0 0.4rem;
+    color: rgba(255, 255, 255, 0.6);
+  }
+  .dock-pill-workout {
+    color: rgba(255, 255, 255, 0.92);
   }
   .dock-panel {
     width: min(26rem, 38vw);
@@ -1105,6 +1142,78 @@ button {
     font-size: 0.85rem;
     font-weight: 600;
     color: var(--green-ink);
+  }
+
+  /* The dock leads with a readiness verdict (2026-08-14). Colour is the
+     existing semantic vocabulary — --green-ink / --warn / --danger, the same
+     three the pills, banners and charts already speak — routed through one
+     local custom property so a level is named in exactly one place. Colour is
+     never the only signal: the PHRASE beside the dot says the same thing, and
+     the dot itself is aria-hidden. */
+  .dock-verdict-good {
+    --verdict-ink: var(--green-ink);
+  }
+  .dock-verdict-caution {
+    --verdict-ink: var(--warn);
+  }
+  .dock-verdict-poor {
+    --verdict-ink: var(--danger);
+  }
+  .dock-verdict {
+    padding: 0.55rem 0.6rem 0.55rem;
+    border-bottom: 1px solid var(--border);
+  }
+  .dock-verdict-head {
+    display: flex;
+    align-items: center;
+    gap: 0.45rem;
+    margin: 0;
+    font-size: 1.02rem;
+    font-weight: 700;
+    color: var(--verdict-ink);
+  }
+  .dock-verdict-dot {
+    flex: none;
+    width: 0.6rem;
+    height: 0.6rem;
+    border-radius: 50%;
+    background: var(--verdict-ink);
+  }
+  .dock-verdict-why {
+    margin: 0.2rem 0 0;
+    font-size: 0.82rem;
+    color: var(--ink-soft);
+    font-variant-numeric: tabular-nums;
+  }
+  /* The coach's weekly line, mirroring the plan brief's Coach/text pairing so
+     the two surfaces quote the same person the same way. Dated, because it was
+     written about the week — never about today's readiness. */
+  .dock-verdict-coach {
+    display: flex;
+    gap: 0.4rem;
+    align-items: baseline;
+    margin: 0.45rem 0 0;
+    font-size: 0.84rem;
+    color: var(--ink);
+  }
+  .dock-verdict-who {
+    flex: none;
+    font-size: 0.68rem;
+    font-weight: 650;
+    letter-spacing: 0.05em;
+    text-transform: uppercase;
+    color: var(--ink-soft);
+    white-space: nowrap;
+  }
+  /* On the pill the type sits on artwork, not on the panel's surface, so the
+     phrase stays white (its own contrast treatment) and only the dot carries
+     hue — lifted toward white so a light-theme --danger can't sink into a
+     dark scene. Mixing an existing token, not a new colour. */
+  .dock-pill .dock-verdict-dot {
+    display: inline-block;
+    margin-right: 0.4rem;
+    background: color-mix(in srgb, var(--verdict-ink) 55%, #fff);
+    box-shadow: 0 1px 6px rgba(9, 14, 10, 0.6);
   }
 
   /* The bar detail panel floats below the HUD instrument cluster. */

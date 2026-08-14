@@ -10,6 +10,8 @@ import {
   type GardenConditionWord,
   type GardenEvent,
   type GardenWeatherState,
+  type ReadinessLevel,
+  type ReadinessVerdict,
 } from "@rg/domain";
 import type { GardenSnapshot } from "@rg/garden-engine";
 import {
@@ -684,6 +686,102 @@ const DOCK_PANEL_RESERVE_PX = 192; // 12rem
 export function dockCoversStage(stageHeightPx: number): boolean {
   const panelHeight = Math.min(DOCK_PANEL_MAX_PX, stageHeightPx - DOCK_PANEL_RESERVE_PX);
   return panelHeight > 0.55 * stageHeightPx;
+}
+
+/**
+ * The dock's verdict phrases. Copy lives client-side (the house split — the
+ * server sends `level` + evidence, never prose, the same way `deriveHeadline`
+ * sends a state and brief-copy names it). Each phrase says the thing on its
+ * own: the coloured dot beside it is decoration, never the only signal.
+ */
+export const VERDICT_PHRASE: Record<ReadinessLevel, string> = {
+  good: "Good to go",
+  caution: "Take it easy",
+  poor: "Recovery is low",
+};
+
+/**
+ * The readiness-first head of the dock: a verdict, the evidence behind it,
+ * and — only when it is fresh — the coach's own line.
+ *
+ * Renders NOTHING when there is no verdict (thin data, no reading, nothing
+ * comparable). The dock then falls back to being workout-first exactly as it
+ * was before readiness led it — an empty "readiness" slot would be worse
+ * than the old card, not better.
+ *
+ * The coach line is the weekly action line the coach already wrote
+ * (`refs.focus`), gated server-side by the same 72h staleness rule the plan
+ * brief uses — no new LLM call, and no new rule. It is labelled AND dated
+ * because it was written about the week: it must never read as a remark
+ * about today's HRV.
+ */
+export function DockVerdict({
+  verdict,
+  focus,
+}: {
+  verdict: ReadinessVerdict | null | undefined;
+  focus?: { text: string; at: string } | null;
+}) {
+  if (!verdict) return null;
+  return (
+    <div className={`dock-verdict dock-verdict-${verdict.level}`}>
+      <p className="dock-verdict-head">
+        <span className="dock-verdict-dot" aria-hidden="true" />
+        {VERDICT_PHRASE[verdict.level]}
+      </p>
+      <p className="dock-verdict-why">{verdict.reasons.join(" · ")}</p>
+      {focus ? (
+        <p
+          className="dock-verdict-coach"
+          title={`Your coach's focus for the week, written ${formatDayShort(focus.at.slice(0, 10))} — not a comment on today's readiness.`}
+        >
+          <span className="dock-verdict-who">Coach · {formatDayShort(focus.at.slice(0, 10))}</span>
+          <span>{focus.text}</span>
+        </p>
+      ) : null}
+    </div>
+  );
+}
+
+/**
+ * The minimized dock. It leads with the verdict too ("● Good to go · Hill
+ * Strides Today 9:00 AM") so collapsing the panel never costs the athlete the
+ * headline — and with no verdict it is character-for-character the pill that
+ * shipped before ("Next: …"), which is the whole fallback contract.
+ */
+export function DockPill({
+  verdict,
+  workout,
+  today,
+  onOpen,
+}: {
+  verdict: ReadinessVerdict | null | undefined;
+  workout: WorkoutDto | null | undefined;
+  today: string;
+  onOpen: () => void;
+}) {
+  const workoutLabel = !workout
+    ? "No active training plan"
+    : workout.category === "rest"
+      ? `Rest day · ${relativeDay(workout.effectiveDate, today)}`
+      : `${workout.title} · ${relativeDay(workout.effectiveDate, today)} ${formatTime(workout.effectiveTime)}`;
+  return (
+    <button
+      type="button"
+      className={`dock-pill${verdict ? ` dock-verdict-${verdict.level}` : ""}`}
+      onClick={onOpen}
+    >
+      {verdict ? (
+        <span className="dock-pill-verdict">
+          <span className="dock-verdict-dot" aria-hidden="true" />
+          {VERDICT_PHRASE[verdict.level]}
+        </span>
+      ) : null}
+      <span className="dock-pill-workout">
+        {verdict || !workout || workout.category === "rest" ? workoutLabel : `Next: ${workoutLabel}`}
+      </span>
+    </button>
+  );
 }
 
 export function GardenScreen() {
@@ -1469,6 +1567,10 @@ export function GardenScreen() {
           <div className="hud-dock">
             {dockOpen && d?.nextWorkout ? (
               <div className="dock-panel">
+                {/* Readiness leads; the workout is named second. With no
+                    verdict this renders nothing and the panel opens on the
+                    workout, exactly as it always did. */}
+                <DockVerdict verdict={d.readiness.verdict} focus={d.focus} />
                 <NextWorkout w={d.nextWorkout} today={d.today} />
                 {grows?.progress ? (
                   <button
@@ -1492,13 +1594,12 @@ export function GardenScreen() {
                 </button>
               </div>
             ) : (
-              <button type="button" className="dock-pill" onClick={() => setDockOpen(true)}>
-                {d?.nextWorkout
-                  ? d.nextWorkout.category === "rest"
-                    ? `Rest day · ${relativeDay(d.nextWorkout.effectiveDate, d.today)}`
-                    : `Next: ${d.nextWorkout.title} · ${relativeDay(d.nextWorkout.effectiveDate, d.today)} ${formatTime(d.nextWorkout.effectiveTime)}`
-                  : "No active training plan"}
-              </button>
+              <DockPill
+                verdict={d?.readiness.verdict}
+                workout={d?.nextWorkout}
+                today={d?.today ?? todayDate}
+                onOpen={() => setDockOpen(true)}
+              />
             )}
             {attentionCount > 0 ? (
               <a className="dock-attention" href="#garden-attention">

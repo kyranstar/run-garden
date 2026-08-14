@@ -55,6 +55,7 @@ function client() {
   return {
     post: (path: string) =>
       app.request(path, { method: "POST", headers: { Cookie: cookie } }, makeEnv()),
+    get: (path: string) => app.request(path, { headers: { Cookie: cookie } }, makeEnv()),
   };
 }
 
@@ -235,6 +236,130 @@ describe("POST /api/plan/workouts/:id/unskip", () => {
   it("404s for a workout that doesn't exist", async () => {
     const res = await client().post(`/api/plan/workouts/${newId()}/unskip`);
     expect(res.status).toBe(404);
+  });
+});
+
+/**
+ * The garden dock reads its headline from here (readiness-first dock,
+ * 2026-08-14): a computed verdict alongside the readiness fields that were
+ * already sent, plus the coach's own weekly line under the SAME staleness
+ * rule /week uses — never a second one.
+ */
+describe("GET /today — readiness verdict + coach line", () => {
+  async function seedHealth(
+    days: number,
+    latest: { hrv?: number; restingHeartRate?: number; recoveryScore?: number } = {},
+  ): Promise<void> {
+    const today = todayInZone(prefs.timezone);
+    for (let i = 0; i < days; i++) {
+      const date = addDays(today, -i);
+      await db.insert(schema.dailyHealth).values({
+        id: `${userId}:${date}`,
+        userId,
+        date,
+        // A flat history makes the median obvious: HRV 62, RHR 46.
+        hrv: i === 0 ? (latest.hrv ?? 62) : 62,
+        restingHeartRate: i === 0 ? (latest.restingHeartRate ?? 46) : 46,
+        recoveryScore: i === 0 ? (latest.recoveryScore ?? null) : null,
+        contentFingerprint: "fp",
+        updatedAt: nowInstant(),
+      });
+    }
+  }
+
+  it("adds the verdict beside the fields it already sent — and names the evidence", async () => {
+    await seedHealth(14, { hrv: 64, restingHeartRate: 47, recoveryScore: 100 });
+    const body = (await (await client().get("/api/plan/today")).json()) as {
+      readiness: {
+        latest: unknown;
+        baseline: { hrv: number; restingHeartRate: number } | null;
+        sampleDays: number;
+        verdict: { level: string; reasons: string[] } | null;
+      };
+    };
+    // Existing fields are untouched — other surfaces read them.
+    expect(body.readiness.latest).not.toBeNull();
+    expect(body.readiness.baseline).toEqual({ hrv: 62, restingHeartRate: 46 });
+    expect(body.readiness.sampleDays).toBe(14);
+    expect(body.readiness.verdict).toEqual({
+      level: "good",
+      reasons: ["HRV 64 (base 62)", "RHR 47 (base 46)", "recovery 100%"],
+    });
+  });
+
+  it("an elevated RHR reaches the dock as 'poor', and leads the evidence over a normal HRV", async () => {
+    // RHR 54 against a 46 median (+8) is the poor signal; HRV 60 against 62
+    // is inside the noise band and follows it as context.
+    await seedHealth(14, { hrv: 60, restingHeartRate: 54 });
+    const body = (await (await client().get("/api/plan/today")).json()) as {
+      readiness: { verdict: { level: string; reasons: string[] } };
+    };
+    expect(body.readiness.verdict.level).toBe("poor");
+    expect(body.readiness.verdict.reasons).toEqual([
+      "RHR 8 bpm above your baseline",
+      "HRV 60 (base 62)",
+    ]);
+  });
+
+  it("withholds the verdict on thin data rather than guessing", async () => {
+    await seedHealth(2);
+    const body = (await (await client().get("/api/plan/today")).json()) as {
+      readiness: { sampleDays: number; baseline: unknown; verdict: unknown };
+    };
+    expect(body.readiness.sampleDays).toBe(2);
+    expect(body.readiness.baseline).toBeNull();
+    expect(body.readiness.verdict).toBeNull();
+  });
+
+  it("no wellness data at all is a null verdict, not an error", async () => {
+    const body = (await (await client().get("/api/plan/today")).json()) as {
+      readiness: { latest: unknown; verdict: unknown };
+    };
+    expect(body.readiness.latest).toBeNull();
+    expect(body.readiness.verdict).toBeNull();
+  });
+
+  it("surfaces the coach's own line while fresh, and drops it at the same 72h line /week uses", async () => {
+    await db.insert(schema.coachMessages).values({
+      id: newId(),
+      userId,
+      role: "coach",
+      body: "briefing",
+      refs: { focus: "Saturday's long run is the anchor." },
+      at: nowInstant(),
+    });
+    const fresh = (await (await client().get("/api/plan/today")).json()) as {
+      focus: { text: string; at: string } | null;
+    };
+    expect(fresh.focus?.text).toContain("Saturday");
+
+    // A newer briefing that carries no focus retires the old line (the same
+    // latest-only rule /week has), and an old one expires outright.
+    await db.insert(schema.coachMessages).values({
+      id: newId(),
+      userId,
+      role: "coach",
+      body: "later briefing",
+      refs: {},
+      at: nowInstant(),
+    });
+    expect(
+      ((await (await client().get("/api/plan/today")).json()) as { focus: unknown }).focus,
+    ).toBeNull();
+  });
+
+  it("drops a focus older than the staleness window", async () => {
+    await db.insert(schema.coachMessages).values({
+      id: newId(),
+      userId,
+      role: "coach",
+      body: "old briefing",
+      refs: { focus: "Ancient advice." },
+      at: new Date(Date.now() - 4 * 86_400_000).toISOString(),
+    });
+    expect(
+      ((await (await client().get("/api/plan/today")).json()) as { focus: unknown }).focus,
+    ).toBeNull();
   });
 });
 

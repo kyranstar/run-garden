@@ -13,12 +13,17 @@
  *    decides whether the Next Workout dock should default to its minimized
  *    pill on a short stage, so the panel never opens already covering the
  *    HUD above it.
+ *  - DockVerdict / DockPill (readiness-first dock, 2026-08-14): the dock
+ *    leads with a readiness verdict and names the workout second — and when
+ *    there is no verdict it must fall back to the exact card that shipped
+ *    before, not an empty slot.
  */
 import { createElement } from "react";
 import { renderToStaticMarkup as render } from "react-dom/server";
 import { describe, expect, it } from "vitest";
-import type { DisciplineBalance } from "@rg/api-client";
-import { BalanceStrip, dockCoversStage } from "../src/screens/garden.js";
+import type { DisciplineBalance, WorkoutDto } from "@rg/api-client";
+import type { ReadinessVerdict } from "@rg/domain";
+import { BalanceStrip, DockPill, DockVerdict, dockCoversStage } from "../src/screens/garden.js";
 
 const balance = (over: Partial<DisciplineBalance> = {}): DisciplineBalance => ({
   run: { days: 4, health: 0.6 },
@@ -114,6 +119,122 @@ describe("BalanceStrip run caption (C2)", () => {
     );
     expect(html).toContain("2 d ago"); // strength, unaffected
     expect(html).toContain("1 d ago"); // yoga, unaffected
+  });
+});
+
+// Live prod shape (2026-08-14): HRV 64 against a 62 median, RHR 47 against
+// 46, COROS recovery 100.
+const goodVerdict: ReadinessVerdict = {
+  level: "good",
+  reasons: ["HRV 64 (base 62)", "RHR 47 (base 46)", "recovery 100%"],
+};
+const poorVerdict: ReadinessVerdict = {
+  level: "poor",
+  reasons: ["RHR 9 bpm above your baseline", "HRV 6% below your baseline"],
+};
+const workout = (over: Partial<WorkoutDto> = {}): WorkoutDto =>
+  ({
+    id: "w1",
+    title: "Hill Strides",
+    category: "quality",
+    sport: "run",
+    effectiveDate: "2026-08-14",
+    effectiveTime: "09:00",
+    ...over,
+  }) as WorkoutDto;
+
+describe("DockVerdict (readiness-first dock)", () => {
+  it("leads with the verdict phrase and prints the evidence behind it", () => {
+    const html = render(createElement(DockVerdict, { verdict: goodVerdict }));
+    expect(html).toContain("Good to go");
+    expect(html).toContain("HRV 64 (base 62) · RHR 47 (base 46) · recovery 100%");
+    // The level is on the wrapper (colour), the dot is decoration only.
+    expect(html).toContain("dock-verdict-good");
+    expect(html).toContain('aria-hidden="true"');
+  });
+
+  it("a poor morning says so in words, not only in colour", () => {
+    const html = render(createElement(DockVerdict, { verdict: poorVerdict }));
+    expect(html).toContain("Recovery is low");
+    expect(html).toContain("RHR 9 bpm above your baseline");
+    expect(html).toContain("dock-verdict-poor");
+  });
+
+  it("renders NOTHING when there is no verdict — no empty readiness slot", () => {
+    expect(render(createElement(DockVerdict, { verdict: null }))).toBe("");
+    expect(render(createElement(DockVerdict, { verdict: undefined }))).toBe("");
+    // Not even the coach line: with no verdict the dock is the card it was
+    // before readiness led it.
+    expect(
+      render(
+        createElement(DockVerdict, {
+          verdict: null,
+          focus: { text: "Saturday's long run is the anchor.", at: "2026-08-14T07:12:54.826Z" },
+        }),
+      ),
+    ).toBe("");
+  });
+
+  it("quotes the coach's own line, labelled and dated so it never reads as a remark about today", () => {
+    const html = render(
+      createElement(DockVerdict, {
+        verdict: goodVerdict,
+        focus: { text: "Saturday&#x27;s long run is the anchor.", at: "2026-08-14T07:12:54.826Z" },
+      }),
+    );
+    expect(html).toContain("Coach · Fri Aug 14");
+    expect(html).toContain("long run is the anchor");
+    expect(html).toContain("not a comment on today&#x27;s readiness");
+  });
+
+  it("shows no coach line at all when the server withheld a stale one", () => {
+    const html = render(createElement(DockVerdict, { verdict: goodVerdict, focus: null }));
+    expect(html).not.toContain("Coach");
+    expect(html).toContain("Good to go");
+  });
+});
+
+describe("DockPill (collapsed dock)", () => {
+  it("leads with the verdict, then names the workout", () => {
+    const html = render(
+      createElement(DockPill, {
+        verdict: goodVerdict,
+        workout: workout(),
+        today: "2026-08-14",
+        onOpen: () => {},
+      }),
+    );
+    expect(html).toContain("Good to go");
+    expect(html).toContain("Hill Strides · Today 9 AM");
+    expect(html).toContain("dock-verdict-good");
+    // The verdict is the headline, so the old "Next:" prefix steps aside.
+    expect(html).not.toContain("Next:");
+  });
+
+  it("with no verdict it is exactly the pill that shipped before", () => {
+    const html = render(
+      createElement(DockPill, {
+        verdict: null,
+        workout: workout(),
+        today: "2026-08-14",
+        onOpen: () => {},
+      }),
+    );
+    expect(html).toContain("Next: Hill Strides · Today 9 AM");
+    expect(html).not.toContain("dock-verdict");
+  });
+
+  it("keeps the rest-day and no-plan wordings, verdict or not", () => {
+    const rest = { workout: workout({ category: "rest" }), today: "2026-08-14", onOpen: () => {} };
+    expect(render(createElement(DockPill, { ...rest, verdict: null }))).toContain("Rest day · Today");
+    const withVerdict = render(createElement(DockPill, { ...rest, verdict: poorVerdict }));
+    expect(withVerdict).toContain("Recovery is low");
+    expect(withVerdict).toContain("Rest day · Today");
+    expect(
+      render(
+        createElement(DockPill, { verdict: null, workout: null, today: "2026-08-14", onOpen: () => {} }),
+      ),
+    ).toContain("No active training plan");
   });
 });
 

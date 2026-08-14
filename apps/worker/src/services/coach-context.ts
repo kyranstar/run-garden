@@ -32,6 +32,7 @@ import type { Db } from "./db.js";
 import { pendingTriggers } from "./coach-triggers.js";
 import { findRaceConflict } from "./race-conflict.js";
 import { buildRaceHub } from "./race-hub.js";
+import { buildReadiness } from "./readiness.js";
 
 /**
  * The dossier (spec §2): everything the coach reads, packaged as ONE terse
@@ -41,6 +42,10 @@ import { buildRaceHub } from "./race-hub.js";
  */
 
 const TOKEN_BUDGET = 12_000;
+
+/** The readiness baseline window — the same 14 days `/api/plan/today` sends
+ * the app, so the dossier's verdict is the app's verdict. */
+const READINESS_WINDOW_DAYS = 14;
 
 export interface Dossier {
   text: string;
@@ -94,7 +99,27 @@ export async function buildDossier(
   // The race strip's data, in coach-readable form — this is what makes the
   // raceLine output field writable with real numbers (race hub 2026-08-14).
   const raceHub = await buildRaceHub(db, userId, prefs);
+  // Wellness rows are loaded here (rather than down in §5, where they are
+  // also used) so the ATHLETE header can open with how the athlete is
+  // actually doing today — the same verdict the garden dock shows, from the
+  // same helper, so the coach's writing and the app's card never contradict
+  // each other. `unknown` when the evidence is too thin, per §5's convention.
+  const health = await db
+    .select()
+    .from(dailyHealth)
+    .where(and(eq(dailyHealth.userId, userId), gte(dailyHealth.date, since30)));
+  const readiness = buildReadiness(
+    health
+      .filter((h) => h.date <= today)
+      .sort((a, b) => b.date.localeCompare(a.date))
+      .slice(0, READINESS_WINDOW_DAYS),
+  );
   push("ATHLETE", [
+    `readiness today: ${
+      readiness.verdict
+        ? `${readiness.verdict.level} — ${readiness.verdict.reasons.join(" · ")}`
+        : "unknown — too little recent COROS wellness data to judge"
+    }`,
     prefs.raceDate ? `race day (settings): ${prefs.raceDate}` : "race day (settings): none set",
     ...(raceHub && raceHub.daysToRace >= 0
       ? [
@@ -247,10 +272,7 @@ export async function buildDossier(
     .select()
     .from(sleepRecords)
     .where(and(eq(sleepRecords.userId, userId), gte(sleepRecords.date, since30)));
-  const health = await db
-    .select()
-    .from(dailyHealth)
-    .where(and(eq(dailyHealth.userId, userId), gte(dailyHealth.date, since30)));
+  // `health` is loaded up in §1 (the readiness line needs it there).
   const baseline = (xs: number[]) =>
     xs.length ? xs.reduce((a, b) => a + b, 0) / xs.length : null;
   const sleepBase = baseline(sleep.map((s) => s.durationSeconds / 3600));
