@@ -179,6 +179,8 @@ export interface ActivityDto {
   durationSeconds: number;
   distanceMeters: number | null;
   avgPaceSecPerKm: number | null;
+  /** Total climb, when the watch recorded it — the terrain signal. */
+  elevationGainMeters?: number | null;
   /** COROS training load, when reported — drives the effort chip. */
   trainingLoad: number | null;
   /** Self-reported feel 1-5 from the watch, when present. */
@@ -683,6 +685,17 @@ export interface InsightsResponse {
   evidence: EvidenceCard | null;
   reviews: WeeklyReviewDto[];
   interpreted: InterpretedMetric[];
+  /** Climb per km recently vs the race course — running only. */
+  terrain?: {
+    recent: { metresPerKm: number; runs: number; totalClimbMetres: number; sinceDate: string } | null;
+    raceMetresPerKm: number | null;
+    comparison: {
+      recentMetresPerKm: number;
+      raceMetresPerKm: number;
+      ratio: number | null;
+      verdict: "under_prepared" | "matched" | "over_prepared";
+    } | null;
+  };
 }
 
 // ── Endpoints ────────────────────────────────────────────────────────────────

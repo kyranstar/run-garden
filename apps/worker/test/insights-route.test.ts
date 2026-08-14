@@ -942,11 +942,15 @@ describe("payload shape", () => {
         "interpreted",
         "records",
         "reviews",
+        "terrain",
         "weekly",
       ].sort(),
     );
     expect(body).not.toHaveProperty("timeOfDay");
     expect(body).not.toHaveProperty("drift");
+    // Terrain is a RUNNING signal: measured from the athlete's own climb,
+    // and absent entirely on the strength/yoga views (2026-08-14).
+    expect(body.terrain).toMatchObject({ raceMetresPerKm: null, comparison: null });
 
     const typed = body as unknown as InsightsBody;
     expect(typed.decoupling!.status).toBeDefined();

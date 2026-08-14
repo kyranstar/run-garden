@@ -327,6 +327,32 @@ export function InsightsScreen() {
         })}
       </Card>
 
+      {insights.data?.terrain?.recent ? (
+        <Card title="Hill exposure">
+          <p className="num" style={{ fontSize: "1.25rem", margin: 0 }}>
+            {insights.data.terrain.recent.metresPerKm} m/km
+          </p>
+          <p className="muted" style={{ marginTop: "0.2rem" }}>
+            {countNoun(insights.data.terrain.recent.runs, "run")} since{" "}
+            {formatShortDate(insights.data.terrain.recent.sinceDate)} carried{" "}
+            {insights.data.terrain.recent.totalClimbMetres} m of climb between them.
+          </p>
+          {insights.data.terrain.comparison ? (
+            <p className="muted">
+              {insights.data.terrain.comparison.verdict === "under_prepared"
+                ? `Your race course asks for ${insights.data.terrain.raceMetresPerKm} m/km — hillier than you've been running. Hills are trainable; there's time.`
+                : insights.data.terrain.comparison.verdict === "over_prepared"
+                  ? `Your race course asks for ${insights.data.terrain.raceMetresPerKm} m/km — gentler than your recent running. Race day should feel flat.`
+                  : `Your race course asks for ${insights.data.terrain.raceMetresPerKm} m/km — about what you've been running.`}
+            </p>
+          ) : (
+            <p className="faint">
+              Set your race course in Settings to see how this compares with race day.
+            </p>
+          )}
+        </Card>
+      ) : null}
+
       <Card title="Consistency · last 12 weeks">
         {consistency.planned > 0 ? (
           <div className="stack">

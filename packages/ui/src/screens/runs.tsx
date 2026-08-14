@@ -433,6 +433,11 @@ export function RunsScreen() {
                     <span>{formatMinutes(a.durationSeconds)}</span>
                     {a.distanceMeters ? <span>{formatDistance(a.distanceMeters, units)}</span> : null}
                     {a.avgPaceSecPerKm ? <span>{formatPace(a.avgPaceSecPerKm, units)}</span> : null}
+                    {/* Climb is only worth a chip when the run actually
+                        climbed — a flat city loop shouldn't carry "2 m". */}
+                    {a.elevationGainMeters != null && a.elevationGainMeters >= 20 ? (
+                      <span title="Total climb">↑ {Math.round(a.elevationGainMeters)} m</span>
+                    ) : null}
                   </div>
                   {a.laps || a.trainingLoad != null || a.feel != null ? (
                     <div className="act-glance">

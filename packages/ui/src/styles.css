@@ -3992,6 +3992,11 @@ button {
 .race-goal {
   font-size: 1.15rem;
 }
+.race-terrain {
+  margin-top: 0.5rem;
+  font-size: 0.82rem;
+  line-height: 1.35;
+}
 .race-stamina {
   display: flex;
   align-items: center;

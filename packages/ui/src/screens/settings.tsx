@@ -154,6 +154,42 @@ export function SchedulingSection({ prefs }: { prefs: UserPreferences }) {
         </span>
       </div>
       <div className="field">
+        <label htmlFor="s-course">Race course</label>
+        <div className="row" style={{ gap: "0.6rem" }}>
+          <select
+            id="s-course"
+            value={draft.raceCourseProfile ?? ""}
+            onChange={(e) =>
+              set(
+                "raceCourseProfile",
+                e.target.value === "" ? null : (e.target.value as "flat" | "rolling" | "hilly"),
+              )
+            }
+          >
+            <option value="">Not set</option>
+            <option value="flat">Flat</option>
+            <option value="rolling">Rolling</option>
+            <option value="hilly">Hilly</option>
+          </select>
+          <input
+            id="s-course-climb"
+            type="number"
+            min={0}
+            max={20000}
+            placeholder="climb (m)"
+            aria-label="Race course total climb in metres"
+            value={draft.raceCourseClimbMetres ?? ""}
+            onChange={(e) =>
+              set("raceCourseClimbMetres", e.target.value === "" ? null : Number(e.target.value))
+            }
+          />
+        </div>
+        <span className="hint">
+          The course's total climb from the race's own page is best; the category is the fallback.
+          Compared against the climb your own runs actually carry.
+        </span>
+      </div>
+      <div className="field">
         <label htmlFor="s-tz">Timezone</label>
         <input
           id="s-tz"

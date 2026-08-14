@@ -83,6 +83,7 @@ import { NORMALIZER_VERSION } from "@rg/providers";
 import { ESTIMATOR_VERSION } from "@rg/scheduling";
 import type { AppContext } from "../auth/middleware.js";
 import { chunkIds, type Db } from "../services/db.js";
+import { buildTerrainReport } from "../services/terrain.js";
 import { waitUntilSafe } from "../services/wait-until.js";
 import { requireUser } from "../auth/middleware.js";
 import { googleCalendarClient } from "../services/google-calendar.js";
@@ -258,6 +259,7 @@ activityRoutes.get("/", async (c) => {
         durationSeconds: a.durationSeconds,
         distanceMeters: a.distanceMeters,
         avgPaceSecPerKm: a.avgPaceSecPerKm,
+        elevationGainMeters: a.elevationGainMeters,
         trainingLoad: a.trainingLoad,
         feel: a.telemetry?.feelRating ?? null,
         laps: laps.length > 1 ? laps : null,
@@ -1208,6 +1210,7 @@ insightRoutes.get("/", async (c) => {
     evidence,
     reviews,
     interpreted,
+    terrain: discipline === "run" ? await buildTerrainReport(db, userId, prefs) : undefined,
   });
 });
 

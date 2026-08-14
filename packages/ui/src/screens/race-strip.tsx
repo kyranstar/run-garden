@@ -173,6 +173,20 @@ export function RaceStrip({ units }: { units: Units }) {
               ) : (
                 <div className="faint">Arrives with your next COROS sync.</div>
               )}
+              {race.terrain.comparison ? (
+                <div className="race-terrain faint">
+                  {race.terrain.comparison.verdict === "under_prepared"
+                    ? `Your running is flatter than the course — ${race.terrain.recent!.metresPerKm} m/km recently vs ${race.terrain.raceMetresPerKm} m/km on race day.`
+                    : race.terrain.comparison.verdict === "over_prepared"
+                      ? `You're training hillier than the course — ${race.terrain.recent!.metresPerKm} m/km recently vs ${race.terrain.raceMetresPerKm} m/km on race day.`
+                      : `Your terrain matches the course — ${race.terrain.recent!.metresPerKm} m/km recently vs ${race.terrain.raceMetresPerKm} m/km on race day.`}
+                </div>
+              ) : race.terrain.recent ? (
+                <div className="race-terrain faint">
+                  {race.terrain.recent.metresPerKm} m/km of climb in your recent running. Set the
+                  course in Settings to compare.
+                </div>
+              ) : null}
               {race.stamina.length >= 2 ? (
                 <div className="race-stamina">
                   <StaminaSpark points={race.stamina} />
