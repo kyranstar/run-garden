@@ -1,6 +1,6 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { api, type WorkoutDto } from "@rg/api-client";
-import { Banner, formatDayShort, formatMinutes, Sheet, Spinner } from "../components.js";
+import { Banner, formatDayShort, formatDistance, formatMinutes, Sheet, Spinner } from "../components.js";
 
 /** Pick an unmatched activity to complete a workout (manual match). */
 export function MatchSheet({
@@ -18,6 +18,8 @@ export function MatchSheet({
     queryFn: api.unmatchedActivities,
     enabled: open,
   });
+  const settings = useQuery({ queryKey: ["settings"], queryFn: api.settings, staleTime: 60_000 });
+  const units = settings.data?.prefs.units ?? "km";
   const match = useMutation({
     mutationFn: (activityId: string) => api.match(workout.id, activityId),
     onSuccess: () => {
@@ -54,7 +56,7 @@ export function MatchSheet({
                   <div className="title">{(a.title as string) ?? "Run"}</div>
                   <div className="meta">
                     {formatDayShort(start.slice(0, 10))} · {formatMinutes(a.durationSeconds as number)}
-                    {a.distanceMeters ? ` · ${((a.distanceMeters as number) / 1000).toFixed(1)} km` : ""}
+                    {a.distanceMeters ? ` · ${formatDistance(a.distanceMeters as number, units)}` : ""}
                   </div>
                 </div>
               </button>

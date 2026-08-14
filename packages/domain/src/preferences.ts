@@ -42,6 +42,15 @@ export const userPreferencesSchema = schedulingPreferencesSchema.extend({
     .default(null),
   reducedMotion: z.boolean().default(false),
   theme: z.enum(["system", "light", "dark"]).default("system"),
+  /** Display units for distance and pace, applied everywhere a number
+   * renders (2026-08-14). Stored values stay metric; conversion happens at
+   * the display edge only. */
+  units: z.enum(["km", "mi"]).default("km"),
+  /** Hand-ticked race-hub checklist items (coach items are derived from
+   * data, never stored). Seeded with defaults on first read. */
+  raceChecklist: z
+    .array(z.object({ id: z.string(), label: z.string(), done: z.boolean() }))
+    .default([]),
 });
 export type UserPreferences = z.infer<typeof userPreferencesSchema>;
 

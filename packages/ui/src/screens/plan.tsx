@@ -26,6 +26,7 @@ import { CoachPanel, pendingByDate } from "./coach-panel.js";
 import { CoachRead } from "./coach-read.js";
 import { CoachWindow } from "./coach-window.js";
 import { WeeklyBrief } from "./plan-brief.js";
+import { RaceStrip } from "./race-strip.js";
 import { PlanCards } from "./plan-cards.js";
 import { StudioModal } from "./studio-modal.js";
 import { askable, displayCompletionState, WeekView, weekRangeLabel } from "./week-view.js";
@@ -487,6 +488,10 @@ export function PlanScreen() {
     // while the next one loads (the full-page spinner guards first load only).
     placeholderData: keepPreviousData,
   });
+  // Display units for the race strip (and anything else on this page that
+  // shows a pace) — shares the Settings screen's query cache.
+  const settings = useQuery({ queryKey: ["settings"], queryFn: api.settings, staleTime: 60_000 });
+  const units = settings.data?.prefs.units ?? "km";
   // Two-race-dates resolution — the warning must be actionable where it
   // appears. Settings holds the race day, so it refetches too.
   const resolveRace = useMutation({
@@ -699,6 +704,7 @@ export function PlanScreen() {
       </div>
       <div className="plan-page-col">
         <SyncPanel quietWhenHealthy />
+        <RaceStrip units={units} />
         <WeeklyBrief
           week={week.data}
           pendingCount={pendingCount}

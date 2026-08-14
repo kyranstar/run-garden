@@ -1022,10 +1022,12 @@ export function DivergingPaceBars({
   title = "How each run finished",
   subtitle,
   note,
+  units = "km",
 }: {
   runs: PaceSplitRun[];
   title?: string;
   subtitle?: string;
+  units?: "km" | "mi";
   note?: string;
 }) {
   const { wrapperProps, tooltip, registerMarks } = useChartTooltip();
@@ -1049,7 +1051,7 @@ export function DivergingPaceBars({
       label:
         r.deltaSecPerKm === 0
           ? `${formatShortDate(r.date)}: even split`
-          : `${formatShortDate(r.date)}: ${signed(r.deltaSecPerKm)} s/km`,
+          : `${formatShortDate(r.date)}: ${signed(units === "mi" ? Math.round(r.deltaSecPerKm * 1.609344) : r.deltaSecPerKm)} s/${units}`,
     })),
   );
 

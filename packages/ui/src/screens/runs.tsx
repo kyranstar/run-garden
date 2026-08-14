@@ -9,24 +9,17 @@ import {
   CATEGORY_LABELS,
   EmptyState,
   formatDayLong,
+  formatDistance,
   formatMinutes,
+  formatPace,
   Sheet,
   Spinner,
+  type Units,
 } from "../components.js";
 import { CoachRead } from "./coach-read.js";
 import { useCorosReadNow } from "./use-coros-read.js";
 import { CorosCheck } from "./coros-check.js";
 
-function dist(m: number | null): string {
-  if (!m) return "";
-  return `${(m / 1000).toFixed(1)} km · ${(m / 1609.344).toFixed(1)} mi`;
-}
-function pace(secPerKm: number | null): string {
-  if (!secPerKm) return "";
-  const mm = Math.floor(secPerKm / 60);
-  const ss = Math.round(secPerKm % 60);
-  return `${mm}:${String(ss).padStart(2, "0")}/km`;
-}
 function dayDiff(a: string, b: string): number {
   return Math.round((Date.parse(a) - Date.parse(b)) / 86_400_000);
 }
@@ -113,7 +106,7 @@ function EffortChip({ load, feel }: { load: number | null; feel: number | null }
  * color via currentColor); per-lap tooltips; no axes — a silhouette, not a
  * graph.
  */
-function PaceShape({ laps }: { laps: Array<{ s: number; p: number | null }> }) {
+function PaceShape({ laps, units }: { laps: Array<{ s: number; p: number | null }>; units: Units }) {
   const paced = laps.filter((l) => l.p != null && l.p > 0);
   if (paced.length < 2) return null;
   const speeds = laps.map((l) => (l.p && l.p > 0 ? 1000 / l.p : null));
@@ -146,14 +139,14 @@ function PaceShape({ laps }: { laps: Array<{ s: number; p: number | null }> }) {
     const bar = (
       <rect key={i} x={x} y={H - h} width={w} height={h} rx={0.8}>
         <title>
-          {`Lap ${i + 1} · ${mins}${l.p ? ` · ${Math.floor(l.p / 60)}:${String(Math.round(l.p % 60)).padStart(2, "0")}/km` : ""}`}
+          {`Lap ${i + 1} · ${mins}${l.p ? ` · ${formatPace(l.p, units)}` : ""}`}
         </title>
       </rect>
     );
     x += w + GAP;
     return bar;
   });
-  const fmtPace = (p: number) => `${Math.floor(p / 60)}:${String(Math.round(p % 60)).padStart(2, "0")}/km`;
+  const fmtPace = (p: number) => formatPace(p, units);
   const pMin = Math.min(...paced.map((l) => l.p!));
   const pMax = Math.max(...paced.map((l) => l.p!));
   return (
@@ -267,6 +260,8 @@ export function RunsScreen() {
   const corosCheck = useCorosReadNow();
   const qc = useQueryClient();
   const runs = useQuery({ queryKey: ["runs"], queryFn: () => api.activities(40) });
+  const settings = useQuery({ queryKey: ["settings"], queryFn: api.settings, staleTime: 60_000 });
+  const units: Units = settings.data?.prefs.units ?? "km";
   const [linking, setLinking] = useState<ActivityDto | null>(null);
   const [note, setNote] = useState<string | null>(null);
   const [filter, setFilter] = useState<DisciplineFilter>("all");
@@ -351,12 +346,12 @@ export function RunsScreen() {
                   <div className="act-meta faint">
                     <span>{formatDayLong(a.date)}</span>
                     <span>{formatMinutes(a.durationSeconds)}</span>
-                    {a.distanceMeters ? <span>{dist(a.distanceMeters)}</span> : null}
-                    {a.avgPaceSecPerKm ? <span>{pace(a.avgPaceSecPerKm)}</span> : null}
+                    {a.distanceMeters ? <span>{formatDistance(a.distanceMeters, units)}</span> : null}
+                    {a.avgPaceSecPerKm ? <span>{formatPace(a.avgPaceSecPerKm, units)}</span> : null}
                   </div>
                   {a.laps || a.trainingLoad != null || a.feel != null ? (
                     <div className="act-glance">
-                      {a.laps ? <PaceShape laps={a.laps} /> : null}
+                      {a.laps ? <PaceShape laps={a.laps} units={units} /> : null}
                       <EffortChip load={a.trainingLoad} feel={a.feel} />
                     </div>
                   ) : null}

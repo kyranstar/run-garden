@@ -95,6 +95,7 @@ export const WAKE_EXAMPLE_OUTPUT = JSON.stringify({
   question: null,
   memoryOps: [],
   focus: "Race week: everything easy except Saturday's shakeout strides.",
+  raceLine: "Two quality sessions left — arrive at Saturday fresh, not fit.",
 });
 
 /** A second drift-tested example: createPlan is the op live wakes failed on
@@ -164,8 +165,10 @@ Your contract:
 
 - FOCUS: one sentence (≤160 chars) naming the week's anchor and at most one adjustment — the plan page shows it as "the coach's line". null when you have nothing genuinely useful to say.
 
+- RACELINE: only when the dossier has a RACE section — ONE sentence (≤160 chars) on the race build as a whole (the through-line toward race day; focus already covers this week). Cite the dossier's real numbers when they matter. null KEEPS the previous line — write a new one only when the story genuinely moves.
+
 Output JSON exactly matching:
-{"briefing": string|null, "proposals": [{"title","evidence","rationale","expiresAt","flags":[],"ops":[...]}], "question": {"text","chips":[]}|null, "memoryOps": [...], "focus": string|null}
+{"briefing": string|null, "proposals": [{"title","evidence","rationale","expiresAt","flags":[],"ops":[...]}], "question": {"text","chips":[]}|null, "memoryOps": [...], "focus": string|null, "raceLine": string|null}
 
 Op kinds: ease{workoutId,session} · move{workoutId,toDate} · swap{dayA,dayB} · skip{workoutId,reason} · add{date,session} · reshapeWeek{planId,weekStart,sessions} · firmUp{planId,weekStart,sessions} · extendPlan{planId,shapeWeeks} · windDown{planId,sessions} · createPlan{discipline,name,startDate,endDate,raceDate?,firmSessions,shapeWeeks} · retirePlan{planId} · resolveRaceConflict{keep:"settings"|"plan"}
 A session is {category, title, durationMinutes, run?: {blocks:[{kind:"duration"|"distance", value, intensity?}]}, lift?: {exercises:[...]}} — runs use minutes (duration) / meters (distance) blocks; lifts use catalog exercises. Block values are INTEGERS; intensity ∈ easy|steady|threshold|interval|rest. shapeWeeks volumeTarget stays under ~6 words. Match these examples' shapes EXACTLY:
@@ -185,6 +188,7 @@ async function persistMessage(
     questionId?: string;
     wakeFailure?: boolean;
     focus?: string;
+    raceLine?: string;
   } = {},
 ): Promise<string> {
   const id = newId();
@@ -647,6 +651,7 @@ export async function wake(
         memoryIds: memoryIds.length ? memoryIds : undefined,
         questionId,
         focus: out.focus ?? undefined,
+        raceLine: out.raceLine ?? undefined,
       });
     }
 

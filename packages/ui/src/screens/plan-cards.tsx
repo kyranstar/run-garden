@@ -1,5 +1,6 @@
-import type { CoachPlanDto, PlanDetailResponse, PlanProgression } from "@rg/api-client";
-import { formatShortDate } from "../components.js";
+import { useQuery } from "@tanstack/react-query";
+import { api, type CoachPlanDto, type PlanDetailResponse, type PlanProgression } from "@rg/api-client";
+import { formatShortDate, type Units } from "../components.js";
 
 /**
  * Plan title cards (rework spec §6): one card per plan — serif name, week
@@ -8,7 +9,29 @@ import { formatShortDate } from "../components.js";
  * Clicking a card opens the studio modal.
  */
 
-export function progressionHeadline(p: PlanProgression): string {
+const KM_PER_MI = 1.609344;
+
+/** "10.9" from 6.8 mi shown in km — one decimal, trailing .0 dropped. */
+function convertedValue(v: number, from: "km" | "mi", to: Units): string {
+  const converted = from === to ? v : from === "mi" ? v * KM_PER_MI : v / KM_PER_MI;
+  const rounded = converted.toFixed(1);
+  return rounded.endsWith(".0") ? rounded.slice(0, -2) : rounded;
+}
+
+/**
+ * The progression's one-line summary, in the user's display units. A
+ * progression carries its OWN unit from the worker ("mi" for a plan written
+ * in miles) — when that unit is a distance and disagrees with the display
+ * preference, the values convert; non-distance units (kg, min, reps) pass
+ * through untouched.
+ */
+export function progressionHeadline(p: PlanProgression, units: Units): string {
+  if ((p.unit === "km" || p.unit === "mi") && p.unit !== units) {
+    const from = convertedValue(p.from, p.unit, units);
+    const to = convertedValue(p.to, p.unit, units);
+    const now = p.now !== null && p.now !== p.to ? ` · now ${convertedValue(p.now, p.unit, units)}` : "";
+    return `${p.label} ${from} → ${to} ${units}${now}`;
+  }
   const now = p.now !== null && p.now !== p.to ? ` · now ${p.now}` : "";
   return `${p.label} ${p.from} → ${p.to} ${p.unit}${now}`;
 }
@@ -66,10 +89,12 @@ const STATUS_LABEL: Record<CoachPlanDto["status"], string> = {
 function PlanRow({
   p,
   detail,
+  units,
   onOpen,
 }: {
   p: CoachPlanDto;
   detail: PlanDetailResponse | undefined;
+  units: Units;
   onOpen: (id: string) => void;
 }) {
   const { into, total } = weekLabel(p, detail);
@@ -117,7 +142,7 @@ function PlanRow({
       </span>
       {prog ? (
         <span className="plan-card-headline">
-          <span className="plan-card-kv">{progressionHeadline(prog)}</span>
+          <span className="plan-card-kv">{progressionHeadline(prog, units)}</span>
           <Sparkline progression={prog} discipline={p.discipline} />
         </span>
       ) : null}
@@ -136,6 +161,8 @@ export function PlanCards({
   onOpen: (id: string) => void;
   onNew: (discipline: "run" | "lift") => void;
 }) {
+  const settings = useQuery({ queryKey: ["settings"], queryFn: api.settings, staleTime: 60_000 });
+  const units: Units = settings.data?.prefs.units ?? "km";
   const visible = plans.filter((p) => p.status === "active" || p.status === "draft");
   return (
     <div className="plan-sections">
@@ -161,7 +188,7 @@ export function PlanCards({
             </div>
             <div className="plan-section-list">
               {group.map((p) => (
-                <PlanRow key={p.id} p={p} detail={details.get(p.id)} onOpen={onOpen} />
+                <PlanRow key={p.id} p={p} detail={details.get(p.id)} units={units} onOpen={onOpen} />
               ))}
               {group.length === 0 ? (
                 <button

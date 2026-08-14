@@ -183,16 +183,19 @@ export async function buildSnapshot(
   const health: DailyHealth[] = days
     .filter((d) => d.happenDay != null)
     .map((d) => {
+      // All four dashboard metrics are "now" values sharing the same
+      // current-day-only stamping rule as recoveryScore.
+      const stampDashboard = latestIsCurrent && Number(d.happenDay) === latestDay;
       const base = {
         date: corosDayToLocalDate(d.happenDay),
         restingHeartRate: numberOrUndefined(d.rhr),
         hrv: numberOrUndefined(d.avgSleepHrv),
         fatigueScore: numberOrUndefined(d.tiredRateNew),
         trainingLoad7d: numberOrUndefined(d.t7d),
-        recoveryScore:
-          latestIsCurrent && Number(d.happenDay) === latestDay
-            ? numberOrUndefined(dashboard?.recoveryPct)
-            : undefined,
+        recoveryScore: stampDashboard ? numberOrUndefined(dashboard?.recoveryPct) : undefined,
+        staminaLevel: stampDashboard ? numberOrUndefined(dashboard?.staminaLevel) : undefined,
+        thresholdPaceSecPerKm: stampDashboard ? numberOrUndefined(dashboard?.ltsp) : undefined,
+        thresholdHr: stampDashboard ? numberOrUndefined(dashboard?.lthr) : undefined,
         provider: "coros" as const,
       };
       return { ...base, contentFingerprint: fingerprint(base) };

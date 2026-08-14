@@ -184,6 +184,15 @@ export const wakeOutputSchema = z
       .transform((s) => (s.length > 200 ? `${s.slice(0, 199)}…` : s))
       .nullable()
       .default(null),
+    /** The race-scale sibling of `focus` (race hub 2026-08-14): one
+     * sentence on the build toward race day, pinned in the plan page's race
+     * strip. Null-tolerant and defaulted so every historical output parses. */
+    raceLine: orNull(
+      z
+        .string()
+        .transform((s) => (s.length > 200 ? `${s.slice(0, 199)}…` : s))
+        .optional(),
+    ),
   })
   .strict();
 export type WakeOutput = z.infer<typeof wakeOutputSchema>;

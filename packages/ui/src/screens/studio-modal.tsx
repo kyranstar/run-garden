@@ -1,10 +1,11 @@
+import { useUnits } from "../use-units.js";
 import { useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { api, type CoachPlanDto, type PlanDetailResponse } from "@rg/api-client";
 import { formatShortDate, Sheet, Spinner } from "../components.js";
 import { startOfIsoWeek } from "@rg/domain";
 import { progressionHeadline } from "./plan-cards.js";
-import { PlannedVsActualBars, ProgressionStepChart } from "./plan-charts.js";
+import { PlannedVsActualBars, progressionInUnits, ProgressionStepChart } from "./plan-charts.js";
 import { StudioSection } from "./studio.js";
 
 /**
@@ -30,6 +31,7 @@ export function StudioModal({
   onRetire: (id: string) => void;
   onRename: (id: string, name: string) => void;
 }) {
+  const units = useUnits();
   const isNew = planId === "new-run" || planId === "new-lift";
   const plan = plans.find((p) => p.id === planId);
   const detail = useQuery<PlanDetailResponse>({
@@ -130,11 +132,11 @@ export function StudioModal({
                   ? d.progressions
                       .filter((p) => p.key.startsWith("lift:") && p.key !== "lift:weekly-sets")
                       .slice(0, 2)
-                      .map((p) => <ProgressionStepChart key={p.key} progression={p} discipline="lift" raceWeek={raceWeek} raceLabel={raceLabel} />)
+                      .map((p) => <ProgressionStepChart key={p.key} progression={progressionInUnits(p, units)} discipline="lift" raceWeek={raceWeek} raceLabel={raceLabel} />)
                   : [
                       ...d.progressions
                         .filter((p) => p.key === "run:long-run")
-                        .map((p) => <ProgressionStepChart key={p.key} progression={p} discipline="run" raceWeek={raceWeek} raceLabel={raceLabel} />),
+                        .map((p) => <ProgressionStepChart key={p.key} progression={progressionInUnits(p, units)} discipline="run" raceWeek={raceWeek} raceLabel={raceLabel} />),
                       ...d.progressions
                         .filter((p) => p.key === "run:weekly-minutes")
                         .map((p) => <PlannedVsActualBars key={p.key} progression={p} raceWeek={raceWeek} raceLabel={raceLabel} />),

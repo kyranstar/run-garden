@@ -3831,6 +3831,143 @@ button {
     grid-template-columns: 1fr 1fr;
   }
 }
+/* Race strip (race hub 2026-08-14): one quiet line while collapsed, the
+   full hub when opened. Accent stays the product green; the flag is the
+   only race-flavored mark. */
+.race-strip {
+  padding: 0.55rem 0.9rem;
+}
+.race-strip-open {
+  padding-bottom: 0.9rem;
+}
+.race-strip-head {
+  display: flex;
+  align-items: center;
+  gap: 0.45rem;
+  flex-wrap: wrap;
+}
+.race-strip-toggle {
+  width: 100%;
+  font: inherit;
+  color: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.race-flag {
+  font-size: 0.95rem;
+}
+.race-goal-mini {
+  color: var(--ink-soft);
+}
+.race-check-mini {
+  margin-left: auto;
+}
+.race-caret {
+  color: var(--ink-faint);
+}
+.race-strip-body {
+  display: flex;
+  flex-direction: column;
+  gap: 0.8rem;
+  margin-top: 0.7rem;
+}
+.race-arc-track {
+  position: relative;
+  height: 6px;
+  border-radius: 3px;
+  background: var(--track-bg, var(--border));
+}
+.race-arc-taper {
+  position: absolute;
+  top: -2px;
+  bottom: -2px;
+  width: 2px;
+  background: var(--ink-faint);
+}
+.race-arc-today {
+  position: absolute;
+  top: -3px;
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  background: var(--chart-1);
+  transform: translateX(-50%);
+}
+.race-arc-labels {
+  display: flex;
+  justify-content: space-between;
+  margin-top: 0.3rem;
+  font-size: 0.75rem;
+}
+.race-cols {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 0.9rem;
+}
+@media (min-width: 640px) {
+  .race-cols {
+    grid-template-columns: 1fr 1fr;
+  }
+}
+.race-h {
+  margin: 0 0 0.35rem;
+  font-size: 0.78rem;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--ink-faint);
+}
+.race-goal {
+  font-size: 1.15rem;
+}
+.race-stamina {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  margin-top: 0.45rem;
+}
+.race-stamina-spark {
+  width: 120px;
+  height: 28px;
+}
+.race-checklist {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+}
+.race-check {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 0.4rem;
+  font-size: 0.88rem;
+}
+.race-check i {
+  font-style: normal;
+  color: var(--ink-faint);
+}
+.race-check.is-done i {
+  color: var(--ok-ink, var(--chart-1));
+}
+.race-check.is-done {
+  color: var(--ink-soft);
+}
+.race-check-btn {
+  font: inherit;
+  color: inherit;
+  cursor: pointer;
+  background: none;
+  border: 0;
+  padding: 0;
+  text-align: left;
+}
+.race-line {
+  margin: 0;
+  font-size: 0.88rem;
+  color: var(--ink-soft);
+}
+
 /* Sport organizers: full-width Run then Lift sections, plans stacked
    vertically in time order inside each. */
 .plan-sections {

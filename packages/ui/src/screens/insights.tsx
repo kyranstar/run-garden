@@ -1,3 +1,4 @@
+import { useUnits } from "../use-units.js";
 import { useEffect, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { api, type InsightsResponse } from "@rg/api-client";
@@ -63,6 +64,7 @@ function signed(n: number): string {
  * A metric with two of those gets both, in that order.
  */
 function MetricDrilldown({ m, onClose }: { m: InterpretedMetric; onClose: () => void }) {
+  const units = useUnits();
   const detail = m.detail;
   const series = m.series ?? [];
   const baseline = m.baseline;
@@ -104,6 +106,7 @@ function MetricDrilldown({ m, onClose }: { m: InterpretedMetric; onClose: () => 
             opens on the run discipline — "run by run" is always true here. */}
         {m.id === "pacing" && paceRuns.length > 0 ? (
           <DivergingPaceBars
+            units={units}
             runs={paceRuns}
             subtitle="Second half against first half, run by run — above the line is a fade."
           />

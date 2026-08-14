@@ -201,12 +201,10 @@ export function WeeklyBrief({
             ) : null}
           </button>
         ) : null}
-        {week.loadRatio !== null ? (
-          <button type="button" className="plan-brief-chip" onClick={explain}>
-            load <span className="brief-wide">7d/28d </span>
-            <b className="num">{week.loadRatio.toFixed(2)}</b>
-          </button>
-        ) : null}
+        {/* No load-ratio chip: "load 7d/28d" was expert jargon on a glance
+            surface, and Insights already carries the same signal with a
+            proper explainer. The explainer sheet still describes training
+            load for anyone who taps through. */}
       </div>
       {week.focus ? (
         <p className="plan-brief-action">

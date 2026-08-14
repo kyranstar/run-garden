@@ -108,6 +108,43 @@ export function localTodayGuess(): string {
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
 }
 
+// ── Display units (2026-08-14) ────────────────────────────────────────────
+// Stored values are ALWAYS metric (meters, sec/km); prefs.units converts at
+// the display edge only. Every distance/pace the user sees goes through
+// these two helpers — that is the whole consistency guarantee.
+
+export type Units = "km" | "mi";
+const KM_PER_MI = 1.609344;
+
+/** "4:49 /km" or "7:45 /mi" from a metric pace. */
+export function formatPace(secPerKm: number, units: Units): string {
+  const sec = units === "mi" ? secPerKm * KM_PER_MI : secPerKm;
+  const m = Math.floor(sec / 60);
+  const s = Math.round(sec % 60);
+  const mm = s === 60 ? m + 1 : m;
+  const ss = s === 60 ? 0 : s;
+  return `${mm}:${String(ss).padStart(2, "0")} /${units}`;
+}
+
+/** "10.0 km" or "6.2 mi" from meters. Whole numbers drop the decimal. */
+export function formatDistance(meters: number, units: Units, digits = 1): string {
+  const v = units === "mi" ? meters / 1000 / KM_PER_MI : meters / 1000;
+  const rounded = v.toFixed(digits);
+  const clean = rounded.endsWith(".0") ? rounded.slice(0, -2) : rounded;
+  return `${clean} ${units}`;
+}
+
+/** "48:10" or "1:12:05" from seconds — race times and durations. */
+export function formatClock(totalSeconds: number): string {
+  const s = Math.round(totalSeconds);
+  const h = Math.floor(s / 3600);
+  const m = Math.floor((s % 3600) / 60);
+  const sec = s % 60;
+  return h > 0
+    ? `${h}:${String(m).padStart(2, "0")}:${String(sec).padStart(2, "0")}`
+    : `${m}:${String(sec).padStart(2, "0")}`;
+}
+
 /** "May" — the month-boundary tick label on a date-scaled axis. */
 export function formatShortMonth(date: string): string {
   return MONTHS[parts(date).m - 1]!.slice(0, 3);

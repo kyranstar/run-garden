@@ -8,6 +8,12 @@ export interface DailyHealth {
   recoveryScore?: number;
   fatigueScore?: number;
   trainingLoad7d?: number;
+  /** COROS running-fitness score 0-100 — a "now" value stamped onto the
+   * current day only (race hub 2026-08-14). */
+  staminaLevel?: number;
+  /** Lactate-threshold pace (sec/km) and HR — same current-day stamping. */
+  thresholdPaceSecPerKm?: number;
+  thresholdHr?: number;
   steps?: number;
   provider: "coros";
   contentFingerprint: string;

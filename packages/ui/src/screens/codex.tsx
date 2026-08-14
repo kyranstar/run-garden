@@ -1,3 +1,4 @@
+import { useUnits } from "../use-units.js";
 /**
  * Species codex: the collection shelf. Every species in the game appears as a
  * little living sprite card — unlocked ones sway in full color with their
@@ -11,7 +12,7 @@ import { useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "reac
 import type { GardenPlant } from "@rg/domain";
 import { SPECIES_BY_ID, type UnlockGate } from "@rg/garden-engine";
 import { PlantSprite } from "@rg/garden-renderer";
-import { formatDayShort } from "../components.js";
+import { formatDayShort, formatDistance, type Units } from "../components.js";
 
 export interface CodexEntry {
   speciesId: string;
@@ -117,10 +118,11 @@ export function ProgressBar({ current, target }: { current: number; target: numb
   );
 }
 
-/** "2 of 6" for counters; "8.4 of 21.1 km" for distance gates. */
-export function progressText(p: { current: number; target: number }): string {
+/** "2 of 6" for counters; "8.4 of 21.1 km" (or mi) for distance gates. */
+export function progressText(p: { current: number; target: number }, units: Units = "km"): string {
   if (p.target >= 1000) {
-    return `${(p.current / 1000).toFixed(1)} of ${(p.target / 1000).toFixed(1)} km`;
+    const f = (m: number) => formatDistance(m, units).replace(` ${units}`, "");
+    return `${f(p.current)} of ${formatDistance(p.target, units)}`;
   }
   return `${Math.min(p.current, p.target)} of ${p.target}`;
 }
@@ -348,6 +350,7 @@ export function SpeciesCodex({
   today?: string;
   onOpenSpecies?: (speciesId: string) => void;
 }) {
+  const units = useUnits();
   const nearestFirst = (a: CodexEntry, b: CodexEntry) => {
     const ra = a.progress ? 1 - Math.min(1, a.progress.current / a.progress.target) : 2;
     const rb = b.progress ? 1 - Math.min(1, b.progress.current / b.progress.target) : 2;
@@ -401,7 +404,7 @@ export function SpeciesCodex({
                   {c.progress ? (
                     <>
                       <ProgressBar current={c.progress.current} target={c.progress.target} />
-                      <div className="codex-sub faint">{progressText(c.progress)}</div>
+                      <div className="codex-sub faint">{progressText(c.progress, units)}</div>
                     </>
                   ) : null}
                 </button>

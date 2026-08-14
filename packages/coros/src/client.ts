@@ -126,6 +126,12 @@ export interface CorosDashboardSubset {
   recoveryPct?: number;
   fullRecoveryHours?: number;
   sleepHrvData?: unknown;
+  /** COROS running-fitness score 0–100 (probe-verified 2026-08-14). */
+  staminaLevel?: number;
+  /** Lactate-threshold pace, seconds per km. */
+  ltsp?: number;
+  /** Lactate-threshold heart rate, bpm. */
+  lthr?: number;
 }
 
 /** dayList[] item of GET /analyse/dayDetail/query. */
@@ -443,12 +449,6 @@ export class CorosClient {
 
   // ── Daily health ─────────────────────────────────────────────────────────
 
-  /** Raw authenticated GET — field-discovery probes only (the typed methods
-   * are the product surface). Returns the envelope's data verbatim. */
-  async rawGet(path: string, query?: Record<string, string>): Promise<unknown> {
-    return this.requireData<unknown>("raw.probe", "GET", path, query ? { query } : undefined);
-  }
-
   async getDashboard(): Promise<CorosDashboardSubset> {
     const data = await this.requireData<Record<string, unknown> | null>(
       "dashboard.query",
@@ -456,11 +456,15 @@ export class CorosClient {
       "/dashboard/query",
     );
     const s = (data?.summaryInfo ?? data ?? {}) as Record<string, unknown>;
+    const num = (v: unknown) => (typeof v === "number" ? v : undefined);
     return {
-      rhr: typeof s.rhr === "number" ? s.rhr : undefined,
-      recoveryPct: typeof s.recoveryPct === "number" ? s.recoveryPct : undefined,
-      fullRecoveryHours: typeof s.fullRecoveryHours === "number" ? s.fullRecoveryHours : undefined,
+      rhr: num(s.rhr),
+      recoveryPct: num(s.recoveryPct),
+      fullRecoveryHours: num(s.fullRecoveryHours),
       sleepHrvData: s.sleepHrvData,
+      staminaLevel: num(s.staminaLevel),
+      ltsp: num(s.ltsp),
+      lthr: num(s.lthr),
     };
   }
 

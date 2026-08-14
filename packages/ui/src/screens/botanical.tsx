@@ -18,6 +18,7 @@ import {
   SpeciesSpriteCard,
   type CodexEntry,
 } from "./codex.js";
+import { useUnits } from "../use-units.js";
 
 const FAMILY_LABEL: Record<string, string> = {
   tree: "Tree",
@@ -55,6 +56,7 @@ export function BotanicalCard({
   /** Current consecutive-consistent-weeks chain — vines climb with it. */
   chainWeeks?: number;
 }) {
+  const units = useUnits();
   const sp = SPECIES_BY_ID.get(speciesId);
   const workoutId =
     plant?.sourceWorkoutId && !plant.sourceWorkoutId.startsWith("genesis")
@@ -119,7 +121,7 @@ export function BotanicalCard({
               {entry.progress ? (
                 <>
                   <ProgressBar current={entry.progress.current} target={entry.progress.target} />
-                  <span className="codex-sub faint">{progressText(entry.progress)}</span>
+                  <span className="codex-sub faint">{progressText(entry.progress, units)}</span>
                 </>
               ) : null}
             </li>

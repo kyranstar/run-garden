@@ -4,21 +4,17 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { api, ApiError, type TodayResponse, type WorkoutDto } from "@rg/api-client";
 import { reviewUnseen } from "../charts-math.js";
 import { shouldInvalidateGarden } from "./arrival.js";
-import { GARDEN_CONDITION_LABELS } from "@rg/domain";
 import {
   Banner,
   Card,
   CategoryDot,
   CATEGORY_LABELS,
-  CompletionPill,
   CorosPill,
-  EmptyState,
   formatDayLong,
   formatDayShort,
   formatMinutes,
   formatTime,
   relativeDay,
-  Spinner,
   SyncNotesStack,
   SyncStatusLine,
 } from "../components.js";
@@ -26,8 +22,15 @@ import { MoveSheet } from "./move-sheet.js";
 import { MatchSheet } from "./match-sheet.js";
 
 /**
+ * Shared cards for the screens that route (this module's old TodayScreen is
+ * gone — the router mounts Garden/Plan/Runs/Insights/Settings, and Garden
+ * absorbed the landing-screen role). Everything exported here is rendered
+ * by garden.tsx and/or plan.tsx.
+ */
+
+/**
  * Shared sync status + notes (sync-transparency Task 12) — mounted once per
- * screen (Today, Garden, Plan, Studio) so the account's sync state boils
+ * screen (Garden, Plan, Studio) so the account's sync state boils
  * down to one line + one dismissible notes feed everywhere, backed by
  * `GET /api/sync/status` and `GET /api/sync/notes` rather than each screen's
  * own read of the legacy `TodayResponse.sync` shape.
@@ -333,33 +336,6 @@ export function ReviewPull() {
   );
 }
 
-function GardenPreview({ garden }: { garden: NonNullable<TodayResponse["garden"]> }) {
-  const recent = garden.recentEvents.find((e) => e.kind === "run_completed" || e.kind === "plant_added");
-  const sentence =
-    recent?.kind === "plant_added"
-      ? "A recent workout planted something new."
-      : garden.wateredYesterday
-        ? "Yesterday's run restored moisture across the garden."
-        : garden.condition === "in_drought"
-          ? "The garden is dry — your next run brings the rain."
-          : garden.condition === "a_little_dry"
-            ? "The garden could use a run soon."
-            : "The garden is quietly growing.";
-  return (
-    <Card title="Garden">
-      <div className="row-between">
-        <div>
-          <p style={{ fontWeight: 650 }}>{GARDEN_CONDITION_LABELS[garden.condition]}</p>
-          <p className="muted">{sentence}</p>
-        </div>
-        <Link to="/garden" className="btn btn-small">
-          Visit
-        </Link>
-      </div>
-    </Card>
-  );
-}
-
 /** The current UTC offset a zone observes right now ("GMT-7") — travel
  * detection compares OFFSETS, not zone names, so America/Vancouver vs
  * America/Los_Angeles (same clock) never nags (audit#3 T2). */
@@ -380,8 +356,9 @@ function offsetNow(timeZone: string): string | null {
  * day rollover, coach dossier, plan week), but it only ever changes by hand —
  * prod data shows months of watch offsets disagreeing with it. One tap fixes
  * the anchor; dismissal is remembered per device zone for the session.
+ * Rendered by garden.tsx at the top of the landing screen's plumbing stack.
  */
-function TimezoneNudge() {
+export function TimezoneNudge() {
   const qc = useQueryClient();
   const settings = useQuery({ queryKey: ["settings"], queryFn: api.settings });
   const [dismissed, setDismissed] = useState(false);
@@ -427,60 +404,5 @@ function TimezoneNudge() {
         Keep {prefsTz}
       </button>
     </Banner>
-  );
-}
-
-export function TodayScreen() {
-  const today = useQuery({ queryKey: ["today"], queryFn: api.today, refetchInterval: 60_000 });
-
-  // App-open freshness: nudge a COROS read the moment this screen mounts, so
-  // today's plan is maximally current. Server-side deduped (a recent-enough
-  // successful read, or one already in flight, both short-circuit to a
-  // no-op) — safe to fire on every mount, errors ignored.
-  useEffect(() => {
-    void api.readNow().catch(() => undefined);
-  }, []);
-
-  if (today.isLoading) return <Spinner label="Loading today" />;
-  if (today.isError || !today.data) {
-    return (
-      <EmptyState title="Couldn't load your plan">
-        Check your connection and try again.
-      </EmptyState>
-    );
-  }
-  const d = today.data;
-
-  return (
-    <div className="stack">
-      <h1 className="visually-hidden">Today</h1>
-      <TimezoneNudge />
-      {d.nextWorkout ? (
-        <NextWorkout w={d.nextWorkout} today={d.today} />
-      ) : (
-        <EmptyState art="🌿" title="No active COROS training plan was found">
-          Start a plan in COROS, then connect COROS in Settings — it syncs in automatically.
-        </EmptyState>
-      )}
-      {d.sync.calendarConnected ? (
-        <SyncPanel />
-      ) : (
-        <Banner kind="info">Your training plan is safe, but Calendar mirroring is paused.</Banner>
-      )}
-      {d.needsAttention.length > 0 ? (
-        <Banner kind="warn">
-          {d.needsAttention.length === 1
-            ? `“${d.needsAttention[0]!.title}” needs attention — COROS and Run Garden disagree.`
-            : `${d.needsAttention.length} workouts need attention.`}{" "}
-          <Link to="/plan">Review</Link>
-        </Banner>
-      ) : null}
-      {d.unresolved.map((w) => (
-        <UnresolvedCard key={w.id} w={w} />
-      ))}
-      <Readiness readiness={d.readiness} />
-      <EvidenceCard />
-      {d.garden ? <GardenPreview garden={d.garden} /> : null}
-    </div>
   );
 }

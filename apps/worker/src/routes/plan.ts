@@ -38,12 +38,13 @@ import type { AppContext } from "../auth/middleware.js";
 import { requireUser } from "../auth/middleware.js";
 import { googleCalendarClient } from "../services/google-calendar.js";
 import { waitUntilSafe } from "../services/wait-until.js";
-import { loadPreferences, restoreCalendarEvent, syncCalendar } from "../services/calendar-sync.js";
+import { loadPreferences, restoreCalendarEvent, savePreferences, syncCalendar } from "../services/calendar-sync.js";
 import { chunkIds, type Db } from "../services/db.js";
 import { applyMove } from "../services/jobs.js";
 import { recentGardenEvents, resimulateFrom } from "../services/garden-sync.js";
 import { openIntentFor, openMoveIntents, recordIntent, resolveIntent } from "../services/sync-intents.js";
 import { findRaceConflict, resolveRaceConflict } from "../services/race-conflict.js";
+import { buildRaceHub } from "../services/race-hub.js";
 import { cloudPresence, deriveWorkoutSync, type CloudPresence } from "../services/sync-status.js";
 import { exerciseNameMap, resolveCodesInText } from "../services/exercise-catalog.js";
 import { executeCloudJobs } from "../services/coros-write-cloud.js";
@@ -744,6 +745,31 @@ planRoutes.get("/workouts/:id/candidates", async (c) => {
     now: nowInstant(),
   });
   return c.json({ ...result, busyChecked });
+});
+
+planRoutes.get("/race", async (c) => {
+  const db = c.get("db");
+  const userId = c.get("userId");
+  const prefs = await loadPreferences(db, userId);
+  return c.json({ race: await buildRaceHub(db, userId, prefs) });
+});
+
+const raceChecklistSchema = z.object({
+  items: z
+    .array(z.object({ id: z.string().min(1).max(60), label: z.string().min(1).max(120), done: z.boolean() }))
+    .max(12),
+});
+
+planRoutes.post("/race/checklist", async (c) => {
+  const db = c.get("db");
+  const userId = c.get("userId");
+  const parsed = raceChecklistSchema.safeParse(await c.req.json());
+  if (!parsed.success) return c.json({ error: "invalid_request" }, 400);
+  const prefs = await loadPreferences(db, userId);
+  // Coach items are derived, never stored — silently drop any that arrive.
+  const items = parsed.data.items.filter((i) => !i.id.startsWith("coach-"));
+  await savePreferences(db, userId, { ...prefs, raceChecklist: items });
+  return c.json({ ok: true });
 });
 
 const raceConflictSchema = z.object({ keep: z.enum(["settings", "plan"]) });

@@ -29,7 +29,8 @@ import { Drawer } from "../drawer.js";
 import { cap, eventSentence, selectArrival, type ArrivalEvent } from "./arrival.js";
 import { CeremonyCard } from "./arrival-block.js";
 import { BotanicalCard } from "./botanical.js";
-import { EvidenceCard, NextWorkout, Readiness, ReviewPull, SyncPanel, UnresolvedCard } from "./today.js";
+import { EvidenceCard, NextWorkout, Readiness, ReviewPull, SyncPanel, TimezoneNudge, UnresolvedCard } from "./today.js";
+import { useUnits } from "../use-units.js";
 import {
   CATEGORY_ORDER,
   DisciplineNudges,
@@ -337,6 +338,7 @@ function BalanceDetail({
   onClose: () => void;
   variant?: "hud";
 }) {
+  const units = useUnits();
   const label = BALANCE_BARS.find((b) => b.key === k)!.label;
   const { days, health } = balance[k];
   const t = BALANCE_TUNING[k];
@@ -403,7 +405,7 @@ function BalanceDetail({
         >
           Next unlock: {next.name} ·{" "}
           {next.progress.target >= 1000
-            ? progressText(next.progress)
+            ? progressText(next.progress, units)
             : `${Math.max(0, next.progress.target - next.progress.current)} to go`}{" "}
           →
         </button>
@@ -685,6 +687,7 @@ export function dockCoversStage(stageHeightPx: number): boolean {
 }
 
 export function GardenScreen() {
+  const units = useUnits();
   const garden = useQuery({ queryKey: ["garden"], queryFn: api.garden });
   const today = useQuery({ queryKey: ["today"], queryFn: api.today });
   const [selectedPlantId, setSelectedPlantId] = useState<string | null>(null);
@@ -1268,6 +1271,7 @@ export function GardenScreen() {
 
   const plumbing = (
     <>
+      <TimezoneNudge />
       {d ? (
         d.sync.calendarConnected ? (
           <SyncPanel />
@@ -1476,7 +1480,7 @@ export function GardenScreen() {
                     {Math.max(0, grows.progress.target - grows.progress.current) === 1
                       ? " — the last one needed"
                       : grows.progress.target >= 1000
-                        ? ` · ${progressText(grows.progress)}`
+                        ? ` · ${progressText(grows.progress, units)}`
                         : ` · ${Math.max(0, grows.progress.target - grows.progress.current)} more to go`}
                   </button>
                 ) : null}
@@ -1509,7 +1513,7 @@ export function GardenScreen() {
               if (!c?.progress) return null;
               const remaining =
                 c.progress.target >= 1000
-                  ? progressText(c.progress)
+                  ? progressText(c.progress, units)
                   : `${Math.max(0, c.progress.target - c.progress.current)} to go`;
               return (
                 <button

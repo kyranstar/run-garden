@@ -73,7 +73,8 @@ function NumberField({
   );
 }
 
-function SchedulingSection({ prefs }: { prefs: UserPreferences }) {
+/** Exported for the units-selector unit test (settings.test.tsx). */
+export function SchedulingSection({ prefs }: { prefs: UserPreferences }) {
   const qc = useQueryClient();
   const [draft, setDraft] = useState(prefs);
   const [saved, setSaved] = useState(false);
@@ -147,6 +148,18 @@ function SchedulingSection({ prefs }: { prefs: UserPreferences }) {
           ))}
         </datalist>
         <span className="hint">Type to search. Auto-synced from your Google Calendar when you connect it.</span>
+      </div>
+      <div className="field">
+        <label htmlFor="s-units">Distance &amp; pace units</label>
+        <select
+          id="s-units"
+          value={draft.units}
+          onChange={(e) => set("units", e.target.value as "km" | "mi")}
+        >
+          <option value="km">Kilometers</option>
+          <option value="mi">Miles</option>
+        </select>
+        <span className="hint">Paces and distances everywhere follow this.</span>
       </div>
       <div className="row" style={{ gap: "0.6rem" }}>
         <button className="btn btn-primary" disabled={save.isPending} onClick={() => save.mutate()}>

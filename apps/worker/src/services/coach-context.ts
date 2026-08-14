@@ -31,6 +31,7 @@ import {
 import type { Db } from "./db.js";
 import { pendingTriggers } from "./coach-triggers.js";
 import { findRaceConflict } from "./race-conflict.js";
+import { buildRaceHub } from "./race-hub.js";
 
 /**
  * The dossier (spec §2): everything the coach reads, packaged as ONE terse
@@ -90,8 +91,21 @@ export async function buildDossier(
   // was told the real date in chat yet had no way to see or fix the
   // conflicting plan label).
   const raceConflict = await findRaceConflict(db, userId, prefs);
+  // The race strip's data, in coach-readable form — this is what makes the
+  // raceLine output field writable with real numbers (race hub 2026-08-14).
+  const raceHub = await buildRaceHub(db, userId, prefs);
   push("ATHLETE", [
     prefs.raceDate ? `race day (settings): ${prefs.raceDate}` : "race day (settings): none set",
+    ...(raceHub && raceHub.daysToRace >= 0
+      ? [
+          `RACE: ${raceHub.daysToRace} days out · phase ${raceHub.phase} · taper starts ${raceHub.taperStartDate}` +
+            (raceHub.goal
+              ? ` · goal band ${raceHub.goal.bandLowSecPerKm}-${raceHub.goal.bandHighSecPerKm} sec/km (COROS threshold ${raceHub.goal.thresholdPaceSecPerKm} sec/km)`
+              : " · no threshold reading yet") +
+            ` · checklist: restructure ${raceHub.checklist.find((i) => i.id === "coach-restructure")?.done ? "done" : "OPEN"}, race-week lifts ${raceHub.checklist.find((i) => i.id === "coach-lifts")?.done ? "eased" : "OPEN"}` +
+            (raceHub.raceLine ? ` · current raceLine: "${raceHub.raceLine.text}"` : " · no raceLine yet — write one"),
+        ]
+      : []),
     ...(raceConflict
       ? [
           `RACE CONFLICT: plan session "${raceConflict.title}" is labeled as the race on ${raceConflict.plannedDate}, but race day in Settings is ${raceConflict.raceDate}. Once the athlete confirms which is right, propose resolveRaceConflict.`,

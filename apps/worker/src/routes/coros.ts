@@ -8,9 +8,6 @@ import {
   disconnectCoros,
 } from "../services/coros-connection.js";
 import { corosReadNow } from "../services/coros-read.js";
-import { corosClient } from "../services/coros-connection.js";
-import { addDays, todayInZone } from "@rg/domain";
-import { localDateToCorosDay } from "@rg/providers";
 import { waitUntilSafe } from "../services/wait-until.js";
 import { processCoachReads } from "../services/coach-reads.js";
 import { loadPreferences } from "../services/calendar-sync.js";
@@ -61,44 +58,6 @@ corosRoutes.get("/status", async (c) => {
   return c.json(await corosConnectionStatus(c.get("db"), c.get("userId")));
 });
 
-/** TEMPORARY field-discovery probe (race-hub design, 2026-08-14): dumps the
- * RAW dashboard + dayDetail payloads so we can see every field COROS
- * actually returns for this account — vo2max, threshold pace, and whatever
- * else the typed subset drops. Session-gated like everything else; remove
- * once the race hub's data contract is settled. */
-corosRoutes.get("/probe-fields", async (c) => {
-  const db = c.get("db");
-  const userId = c.get("userId");
-  const prefs = await loadPreferences(db, userId);
-  const client = await corosClient(db, c.env, userId, fetch);
-  if (!client) return c.json({ error: "not_connected" }, 412);
-  const today = todayInZone(prefs.timezone);
-  const truncate = (v: unknown): unknown => {
-    if (Array.isArray(v)) return v.slice(0, 2).map(truncate);
-    if (v && typeof v === "object") {
-      return Object.fromEntries(Object.entries(v as Record<string, unknown>).map(([k, x]) => [k, truncate(x)]));
-    }
-    return v;
-  };
-  const grab = async (path: string, query?: Record<string, string>) => {
-    try {
-      return truncate(await client.rawGet(path, query));
-    } catch (e) {
-      return { probe_error: e instanceof Error ? e.message : String(e) };
-    }
-  };
-  return c.json({
-    dashboard: await grab("/dashboard/query"),
-    dayDetail: await grab("/analyse/dayDetail/query", {
-      startDay: String(localDateToCorosDay(addDays(today, -7))),
-      endDay: String(localDateToCorosDay(today)),
-    }),
-  });
-});
-
-/** App-open pull (cloud-direct spec §3): single-flighted server-side; a 90s
- * freshness window makes racing tabs free. The UI shows "Checking COROS…"
- * until this resolves. */
 corosRoutes.post("/read-now", async (c) => {
   const db = c.get("db");
   const userId = c.get("userId");

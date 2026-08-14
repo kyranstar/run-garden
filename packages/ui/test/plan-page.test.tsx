@@ -7,6 +7,7 @@
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { MemoryRouter } from "react-router-dom";
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { describe, expect, it } from "vitest";
 import type { CoachPlanDto, PlanDetailResponse, PlanWeekResponse, WorkoutDto } from "@rg/api-client";
 import { BriefExplainerSheet, HEADLINE_COPY, headlineContext, WeeklyBrief } from "../src/screens/plan-brief.js";
@@ -16,8 +17,15 @@ import { WeekView, weekRangeLabel, WorkoutCell } from "../src/screens/week-view.
 
 const noop = () => undefined;
 
-function render(el: React.ReactElement): string {
-  return renderToStaticMarkup(createElement(MemoryRouter, null, el));
+/** Static-markup render inside router + query provider (PlanCards reads the
+ * settings cache for display units); `prime` seeds a query key, same pattern
+ * as studio-modal.test.tsx. */
+function render(el: React.ReactElement, prime?: { key: unknown[]; data: unknown }): string {
+  const qc = new QueryClient({ defaultOptions: { queries: { retry: false, staleTime: Infinity } } });
+  if (prime) qc.setQueryData(prime.key, prime.data);
+  return renderToStaticMarkup(
+    createElement(QueryClientProvider, { client: qc }, createElement(MemoryRouter, null, el)),
+  );
 }
 
 function workout(over: Partial<WorkoutDto> = {}): WorkoutDto {
@@ -64,7 +72,7 @@ function weekFixture(over: Partial<PlanWeekResponse> = {}): PlanWeekResponse {
 }
 
 describe("WeeklyBrief", () => {
-  it("renders the headline, all four chips, the focus line, and the needs-you pill", () => {
+  it("renders the headline, the chips, the focus line, and the needs-you pill — but never the load-ratio chip", () => {
     const html = render(
       createElement(WeeklyBrief, { week: weekFixture(), pendingCount: 1, onNeedsYou: noop }),
     );
@@ -72,9 +80,12 @@ describe("WeeklyBrief", () => {
     expect(html).toContain("1 of 6");
     expect(html).toContain("5h 5m");
     expect(html).toContain("86%");
-    expect(html).toContain("1.04");
     expect(html).toContain("Saturday&#x27;s 10-miler");
     expect(html).toContain("Needs you · 1");
+    // The "load 7d/28d" chip is gone (expert jargon, duplicated on Insights) —
+    // even with a non-null loadRatio in the fixture, "load" appears nowhere.
+    expect(html).not.toContain("load");
+    expect(html).not.toContain("1.04");
   });
 
   it("drops the week fragment without a plan, null chips, stale focus, zero pending", () => {
@@ -199,6 +210,9 @@ describe("PlanCards", () => {
         onOpen: noop,
         onNew: noop,
       }),
+      // Settings cache primed to miles — matching the progression's own unit,
+      // so the headline passes through unconverted.
+      { key: ["settings"], data: { prefs: { units: "mi" } } },
     );
     expect(html).toContain("Fall Half Block");
     expect(html).toContain("wk 5/");
@@ -208,10 +222,44 @@ describe("PlanCards", () => {
     expect(html).not.toContain("Plan running with your coach");
   });
 
-  it("progressionHeadline omits a redundant now", () => {
+  it("converts a mile-denominated progression to km when the display preference is km", () => {
+    const html = render(
+      createElement(PlanCards, {
+        plans: [runPlan],
+        details: new Map([["cp1", detail]]),
+        onOpen: noop,
+        onNew: noop,
+      }),
+      { key: ["settings"], data: { prefs: { units: "km" } } },
+    );
+    // 8 mi → 12.9 km, 13.1 mi → 21.1 km, now 10 mi → 16.1 km.
+    expect(html).toContain("Long run 12.9 → 21.1 km · now 16.1");
+    expect(html).not.toContain("13.1 mi");
+  });
+
+  it("progressionHeadline omits a redundant now and never converts non-distance units", () => {
     expect(
-      progressionHeadline({ key: "k", label: "Bench", unit: "kg", from: 52, to: 66, now: 66, series: [] }),
+      progressionHeadline({ key: "k", label: "Bench", unit: "kg", from: 52, to: 66, now: 66, series: [] }, "km"),
     ).toBe("Bench 52 → 66 kg");
+    expect(
+      progressionHeadline({ key: "k", label: "Bench", unit: "kg", from: 52, to: 66, now: 66, series: [] }, "mi"),
+    ).toBe("Bench 52 → 66 kg");
+  });
+
+  it("progressionHeadline converts between distance units in both directions", () => {
+    // The worker example from the units decision: "Long run 6.8 → 10 mi"
+    // becomes 10.9 → 16.1 km for a km reader.
+    expect(
+      progressionHeadline({ key: "k", label: "Long run", unit: "mi", from: 6.8, to: 10, now: null, series: [] }, "km"),
+    ).toBe("Long run 10.9 → 16.1 km");
+    // And a km-denominated plan reads in miles for a mi reader (10 km → 6.2 mi).
+    expect(
+      progressionHeadline({ key: "k", label: "Long run", unit: "km", from: 10, to: 16, now: null, series: [] }, "mi"),
+    ).toBe("Long run 6.2 → 9.9 mi");
+    // Whole converted values drop the trailing .0 (16.09 km → "16.1", 32.19 → "32.2", 8.05 → "8").
+    expect(
+      progressionHeadline({ key: "k", label: "Long run", unit: "mi", from: 5, to: 10, now: null, series: [] }, "km"),
+    ).toBe("Long run 8 → 16.1 km");
   });
 
   it("groups plans under sport sections, vertically in time order", () => {
@@ -298,8 +346,11 @@ describe("round 2 — nothing needs prior context", () => {
     const html = render(createElement(WeeklyBrief, { week: weekFixture(), pendingCount: 0, onNeedsYou: noop }));
     expect(html).toContain("plan-brief-context");
     expect(html).toContain("keep the rhythm");
+    // Three chips since the load-ratio chip's removal: sessions, planned
+    // time, 4-week adherence. Training load lives on Insights (and in the
+    // explainer sheet) instead.
     const chipButtons = html.match(/<button type="button" class="plan-brief-chip"/g) ?? [];
-    expect(chipButtons.length).toBe(4);
+    expect(chipButtons.length).toBe(3);
   });
 
   it("BriefExplainerSheet spells out all four numbers with their values", () => {

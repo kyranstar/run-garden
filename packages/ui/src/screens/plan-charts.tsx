@@ -2,6 +2,24 @@ import type { PlanProgression } from "@rg/api-client";
 import { ChartFrame } from "../charts.js";
 import { niceTicks } from "../chart-kit.js";
 
+const KM_PER_MI = 1.609344;
+/** Distance progressions render in the athlete's display units; non-distance
+ * units (kg, min, reps) pass through untouched (units sweep 2026-08-14). */
+export function progressionInUnits(p: PlanProgression, units: "km" | "mi"): PlanProgression {
+  if ((p.unit !== "km" && p.unit !== "mi") || p.unit === units) return p;
+  const f = p.unit === "mi" ? KM_PER_MI : 1 / KM_PER_MI;
+  const c = (v: number) => Math.round(v * f * 10) / 10;
+  return {
+    ...p,
+    unit: units,
+    from: c(p.from),
+    to: c(p.to),
+    now: p.now === null ? null : c(p.now),
+    series: p.series.map((pt) => ({ ...pt, value: c(pt.value), ...(pt.actual !== undefined ? { actual: c(pt.actual) } : {}) })),
+  };
+}
+
+
 /**
  * Progression charts for the studio modal (rework spec §7). Honest by
  * construction: lift series are the PRESCRIPTION drawn as steps with

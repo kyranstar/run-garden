@@ -120,6 +120,10 @@ export const dailyHealth = sqliteTable(
     recoveryScore: real("recovery_score"),
     fatigueScore: real("fatigue_score"),
     trainingLoad7d: real("training_load_7d"),
+    // COROS "now" physiology, stamped daily (race hub 2026-08-14).
+    staminaLevel: real("stamina_level"),
+    thresholdPaceSecPerKm: real("threshold_pace_sec_per_km"),
+    thresholdHr: real("threshold_hr"),
     provider: text("provider").notNull().default("coros"),
     contentFingerprint: text("content_fingerprint").notNull(),
     updatedAt: text("updated_at").notNull(),

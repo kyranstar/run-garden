@@ -329,6 +329,34 @@ export interface PlanWeekResponse {
   focus: { text: string; at: string } | null;
 }
 
+/** GET /api/plan/race — everything the plan page's race strip renders.
+ * Metric on the wire; the client converts via prefs.units. */
+export interface RaceHubResponse {
+  race: {
+    raceDate: string;
+    daysToRace: number;
+    taperStartDate: string;
+    phase: "build" | "taper" | "race_week" | "post";
+    goal: {
+      thresholdPaceSecPerKm: number;
+      bandLowSecPerKm: number;
+      bandHighSecPerKm: number;
+      predictedLowSeconds: number;
+      predictedHighSeconds: number;
+      asOf: string;
+    } | null;
+    stamina: Array<{ date: string; value: number }>;
+    checklist: Array<{ id: string; label: string; done: boolean; kind: "coach" | "user" }>;
+    raceLine: { text: string; at: string } | null;
+    debrief: {
+      activityId: string;
+      durationSeconds: number;
+      distanceMeters: number | null;
+      avgPaceSecPerKm: number | null;
+    } | null;
+  } | null;
+}
+
 export interface PlanProgressionPoint {
   week: number;
   value: number;
@@ -737,6 +765,9 @@ export const api = {
   studioHistory: () => get<{ plans: StudioHistoryEntryDto[] }>("/api/studio/history"),
   syncStatus: () => get<SyncStatusDto>("/api/sync/status"),
   syncNotes: () => get<{ notes: SyncNoteDto[] }>("/api/sync/notes"),
+  raceHub: () => get<RaceHubResponse>("/api/plan/race"),
+  saveRaceChecklist: (items: Array<{ id: string; label: string; done: boolean }>) =>
+    post<{ ok: true }>("/api/plan/race/checklist", { items }),
   resolveRaceConflict: (keep: "settings" | "plan") =>
     post<{ ok: true; resolved: boolean }>("/api/plan/race-conflict/resolve", { keep }),
   dismissSyncNote: (id: string) => post<{ ok: true }>(`/api/sync/notes/${id}/dismiss`),
