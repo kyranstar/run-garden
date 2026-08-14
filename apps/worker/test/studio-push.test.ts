@@ -29,12 +29,16 @@ import {
   deleteTargetDay,
   desiredSessions,
   detectDrift,
+  healPushAddresses,
   mapCreateResult,
   mapDeleteResult,
   planPush,
   pushStudioPlan,
+  resolveObservation,
   sessionHappenDay,
   sessionStamp,
+  undoStudioAdoption,
+  type ObservedWorkout,
   type PushRow,
 } from "../src/services/studio-push.js";
 import { deleteAllUserData } from "../src/routes/misc.js";
@@ -307,6 +311,186 @@ describe("detectDrift", () => {
     expect(
       detectDrift([verifiedRow({ corosPlanId: "other-plan" })], observed(), noAppMoves),
     ).toEqual([]);
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * RECYCLED COROS SLOTS (studio-push module rule 6). COROS reuses a plan's
+ * `idInPlan` after a delete, and has been observed re-filing a fresh create
+ * under an id other than the one the read-after-write reported. So a recorded
+ * `${corosPlanId}:${corosIdInPlan}` goes stale on a workout that never moved,
+ * and the slot it vacated fills with somebody else's.
+ *
+ * The live failure this suite pins down: a row whose stale slot had been
+ * refilled by an unrelated (archived) run read as "COROS deleted our session",
+ * adopted the row on that false finding, and made it permanently untouchable.
+ */
+describe("resolveObservation / healPushAddresses — recycled COROS slots", () => {
+  const noAppMoves = new Map<string, Set<string>>();
+
+  const seen = (over: Partial<ObservedWorkout> & { sourceWorkoutId: string }): ObservedWorkout => ({
+    title: "Upper A — wk 1",
+    corosDate: "2026-09-07",
+    archiveReason: null,
+    ...over,
+  });
+  const snapshot = (...list: ObservedWorkout[]): Map<string, ObservedWorkout> =>
+    new Map(list.map((o) => [o.sourceWorkoutId, o]));
+
+  /** The prod shape: slot 21 recycled into a stranger, ours now at slot 10. */
+  const recycled = snapshot(
+    seen({
+      sourceWorkoutId: "coros-plan:21",
+      title: "Aerobic Endurance Run",
+      archiveReason: "absence_confirmed",
+    }),
+    seen({ sourceWorkoutId: "coros-plan:10" }),
+  );
+
+  it("finds our workout by stamp+day when the recorded slot was recycled", () => {
+    expect(resolveObservation(verifiedRow(), recycled)?.sourceWorkoutId).toBe("coros-plan:10");
+  });
+
+  it("prefers the recorded address while it still holds our live stamp", () => {
+    const both = snapshot(seen({ sourceWorkoutId: "coros-plan:21" }));
+    expect(resolveObservation(verifiedRow(), both)?.sourceWorkoutId).toBe("coros-plan:21");
+    expect(healPushAddresses([verifiedRow()], both)).toEqual([]);
+  });
+
+  it("does NOT report the stranger in the recycled slot as our session going missing", () => {
+    // The whole bug: the stale key hit an unrelated archived run and
+    // `absence_confirmed` read as "COROS deleted our workout".
+    expect(detectDrift([verifiedRow()], recycled, noAppMoves)).toEqual([]);
+  });
+
+  it("heals the row's address to where the stamp actually is", () => {
+    expect(healPushAddresses([verifiedRow()], recycled)).toEqual([
+      { pushId: "row-1", corosPlanId: "coros-plan", corosIdInPlan: "10", corosProgramId: "10" },
+    ]);
+  });
+
+  it("still reports missing when our own stamp is nowhere live", () => {
+    const gone = snapshot(
+      seen({ sourceWorkoutId: "coros-plan:21", archiveReason: "absence_confirmed" }),
+    );
+    expect(detectDrift([verifiedRow()], gone, noAppMoves)).toEqual([
+      { pushId: "row-1", kind: "missing" },
+    ]);
+    expect(healPushAddresses([verifiedRow()], gone)).toEqual([]);
+  });
+
+  it("never heals onto an archived observation — it addresses a workout that is gone", () => {
+    const archivedElsewhere = snapshot(
+      seen({ sourceWorkoutId: "coros-plan:10", archiveReason: "absence_confirmed" }),
+    );
+    expect(healPushAddresses([verifiedRow({ corosIdInPlan: "21" })], archivedElsewhere)).toEqual([]);
+  });
+
+  it("never matches on idInPlan alone: a stamp in ANOTHER container plan is not ours", () => {
+    const otherPlan = snapshot(
+      seen({
+        sourceWorkoutId: "coros-plan:21",
+        title: "Aerobic Endurance Run",
+        archiveReason: "absence_confirmed",
+      }),
+      seen({ sourceWorkoutId: "other-plan:10" }),
+    );
+    expect(healPushAddresses([verifiedRow()], otherPlan)).toEqual([]);
+    // …and with nothing of ours identifiable, the recycled slot's archived
+    // occupant is NOT evidence our session was deleted.
+    expect(detectDrift([verifiedRow()], otherPlan, noAppMoves)).toEqual([]);
+  });
+
+  it("never reads a STRANGER's confirmed absence as our session being deleted", () => {
+    // Adoption is permanent-until-undone. Granting it because the workout that
+    // moved into our old slot was deleted is how 19 healthy rows got stuck.
+    const strangerGone = snapshot(
+      seen({
+        sourceWorkoutId: "coros-plan:21",
+        title: "Aerobic Endurance Run",
+        archiveReason: "absence_confirmed",
+      }),
+    );
+    expect(detectDrift([verifiedRow()], strangerGone, noAppMoves)).toEqual([]);
+  });
+
+  it("refuses to guess when the stamp is live on TWO workouts", () => {
+    // Two live workouts under one stamp is exactly the ambiguity the whole
+    // module refuses; picking either would authorize a delete we cannot prove.
+    const ambiguous = snapshot(
+      seen({ sourceWorkoutId: "coros-plan:10" }),
+      seen({ sourceWorkoutId: "coros-plan:11" }),
+    );
+    expect(healPushAddresses([verifiedRow()], ambiguous)).toEqual([]);
+  });
+
+  it("does NOT silently re-address a stamp sitting on a DIFFERENT day — that is `moved`", () => {
+    // A stamp elsewhere in the calendar is the user having moved it. Healing
+    // to it would point the next delete at the user's edit without ever
+    // surfacing that it happened.
+    const movedAway = snapshot(
+      seen({
+        sourceWorkoutId: "coros-plan:21",
+        title: "Aerobic Endurance Run",
+        archiveReason: "absence_confirmed",
+      }),
+      seen({ sourceWorkoutId: "coros-plan:10", corosDate: "2026-09-09" }),
+    );
+    expect(healPushAddresses([verifiedRow()], movedAway)).toEqual([]);
+    expect(detectDrift([verifiedRow()], movedAway, noAppMoves)).toEqual([
+      { pushId: "row-1", kind: "moved", observedDay: "2026-09-09" },
+    ]);
+  });
+
+  it("keys the app-move ledger by the HEALED address, not the stale one", () => {
+    const movedAway = snapshot(
+      seen({
+        sourceWorkoutId: "coros-plan:21",
+        title: "Aerobic Endurance Run",
+        archiveReason: "absence_confirmed",
+      }),
+      seen({ sourceWorkoutId: "coros-plan:10", corosDate: "2026-09-09" }),
+    );
+    const appMoves = new Map([["coros-plan:10", new Set(["2026-09-09"])]]);
+    expect(detectDrift([verifiedRow()], movedAway, appMoves)).toEqual([
+      { pushId: "row-1", kind: "app_moved", observedDay: "2026-09-09" },
+    ]);
+  });
+
+  it("heals on the NEXT pass, once the moved day has been recorded", () => {
+    // The two-pass shape: pass 1 reports `moved` and records the observed day;
+    // pass 2 sees the workout exactly where the row now believes it is, so the
+    // slot number is the only thing left disagreeing — safe to correct.
+    const movedAway = snapshot(seen({ sourceWorkoutId: "coros-plan:10", corosDate: "2026-09-09" }));
+    expect(
+      healPushAddresses([verifiedRow({ corosHappenDay: "2026-09-09" })], movedAway),
+    ).toEqual([
+      { pushId: "row-1", corosPlanId: "coros-plan", corosIdInPlan: "10", corosProgramId: "10" },
+    ]);
+  });
+
+  it("heals a row whose ids were cleared entirely (an undo just wiped them)", () => {
+    expect(
+      healPushAddresses(
+        [row({ status: "failed", corosIdInPlan: null, corosProgramId: null, corosPlanId: null })],
+        snapshot(seen({ sourceWorkoutId: "coros-plan:10" })),
+      ),
+    ).toEqual([
+      { pushId: "row-1", corosPlanId: "coros-plan", corosIdInPlan: "10", corosProgramId: "10" },
+    ]);
+  });
+
+  it("leaves a `deleted` row alone — its stamp is free for a later session", () => {
+    expect(
+      healPushAddresses([verifiedRow({ status: "deleted" })], recycled),
+    ).toEqual([]);
+  });
+
+  it("says nothing about a row the snapshot has never seen", () => {
+    expect(resolveObservation(verifiedRow(), new Map())).toBeUndefined();
+    expect(healPushAddresses([verifiedRow()], new Map())).toEqual([]);
   });
 });
 
@@ -725,6 +909,38 @@ describe("mapCreateResult — every create outcome", () => {
       clearIds: false,
       job: "failed",
     });
+  });
+
+  it("a SAME-day already_present is not adoption — it converges instead of latching", () => {
+    // Nobody moved anything: our own stamp is on the very day this create
+    // asked for, and the row simply had the wrong address (a recycled slot).
+    // Calling that adoption made the row untouchable forever — `planPush`
+    // never deletes, corrects or recreates an `adopted` row. A structured
+    // failure keeps it re-plannable, so the next push heals the address and
+    // plans the delete+create that replaces the stale content.
+    expect(
+      mapCreateResult(
+        result({ ok: false, reason: "already_present", serverHappenDay: "2026-09-07" }),
+        false,
+        "2026-09-07",
+      ),
+    ).toEqual({
+      status: "failed",
+      error: "address_stale",
+      persistIds: true,
+      clearIds: false,
+      job: "failed",
+    });
+  });
+
+  it("keeps a genuine CROSS-day already_present as adoption, even with the requested day known", () => {
+    expect(
+      mapCreateResult(
+        result({ ok: false, reason: "already_present", serverHappenDay: "2026-09-10" }),
+        false,
+        "2026-09-07",
+      ),
+    ).toMatchObject({ status: "adopted", error: null, persistIds: false });
   });
 
   it("rejected and wrong_date are terminal but DO store whatever materialized", () => {
@@ -1958,5 +2174,242 @@ describe("corosWritesEnabled gates studio writes (audit#2 #14)", () => {
     const off = await makeTestUser(db);
     const summary = await pushStudioPlan(db, { userId: off.userId, studioPlanId: "any", today: TODAY });
     expect(summary).toMatchObject({ ok: false, error: "writes_disabled" });
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * RECYCLED COROS SLOTS, end to end (module rule 6). The live incident: 19 of a
+ * 32-session plan were adopted on a false "COROS deleted it" finding produced
+ * by a stale `${corosPlanId}:${idInPlan}`, and every undo of them looped —
+ * undo read the same stale key as MISSING, cleared the ids and planned a
+ * create, the create found our own stamp already on the day, and the row
+ * re-adopted.
+ */
+describe("stale COROS addresses heal before anything is planned", () => {
+  /** One `planned_workouts` observation, as the importer would have left it. */
+  async function seedObservation(v: {
+    sourceWorkoutId: string;
+    title: string;
+    corosDate: string;
+    archiveReason?: string;
+  }): Promise<void> {
+    const sourcePlanId = v.sourceWorkoutId.slice(0, v.sourceWorkoutId.lastIndexOf(":"));
+    const trainingPlanId = newId();
+    await db.insert(trainingPlans).values({
+      id: trainingPlanId,
+      userId,
+      provider: "coros",
+      sourcePlanId,
+      name: "My Plan",
+      status: "active",
+      createdAt: nowInstant(),
+      updatedAt: nowInstant(),
+    });
+    await db.insert(plannedWorkouts).values({
+      id: newId(),
+      userId,
+      planId: trainingPlanId,
+      sourceWorkoutId: v.sourceWorkoutId,
+      sourceIdInPlan: v.sourceWorkoutId.slice(sourcePlanId.length + 1),
+      title: v.title,
+      category: "strength",
+      sport: "strength",
+      originalPlanDate: v.corosDate,
+      lastVerifiedCorosDate: v.corosDate,
+      effectiveDate: v.corosDate,
+      effectiveTime: "07:00",
+      sourceContentFingerprint: "fp",
+      calendarBlockDurationSeconds: 3600,
+      ...(v.archiveReason ? { archivedAt: nowInstant(), archiveReason: v.archiveReason } : {}),
+      createdAt: nowInstant(),
+      updatedAt: nowInstant(),
+    });
+  }
+
+  /**
+   * A pushed plan whose wk-1 row records slot 54 — a slot COROS has since
+   * recycled into an unrelated (archived) run, with our workout now at slot 10.
+   * wk 2 is parked as verified-and-current so it contributes nothing.
+   */
+  async function seedRecycledSlot(over: { status?: string; ourDay?: string } = {}): Promise<{
+    planId: string;
+    pushId: string;
+  }> {
+    const planId = await seedPlan();
+    await pushStudioPlan(db, { userId, studioPlanId: planId, today: TODAY });
+    await db
+      .update(studioPlanPushes)
+      .set({
+        status: over.status ?? "verified",
+        corosIdInPlan: "54",
+        corosProgramId: "54",
+        corosPlanId: "coros-plan",
+        corosHappenDay: "2026-09-07",
+        sessionFingerprint: "stale",
+      })
+      .where(eq(studioPlanPushes.happenDay, "2026-09-07"));
+    await db
+      .update(studioPlanPushes)
+      .set({ status: "verified" })
+      .where(eq(studioPlanPushes.happenDay, "2026-09-14"));
+    await db.update(corosWriteJobs).set({ status: "verified" });
+
+    await seedObservation({
+      sourceWorkoutId: "coros-plan:54",
+      title: "Aerobic Endurance Run",
+      corosDate: "2026-08-23",
+      archiveReason: "absence_confirmed",
+    });
+    await seedObservation({
+      sourceWorkoutId: "coros-plan:10",
+      title: "Upper A — wk 1",
+      corosDate: over.ourDay ?? "2026-09-07",
+    });
+
+    const pushId = (
+      await db.select().from(studioPlanPushes).where(eq(studioPlanPushes.happenDay, "2026-09-07"))
+    )[0]!.id;
+    return { planId, pushId };
+  }
+
+  it("heals the address, reports no drift, and deletes at the CORRECTED id", async () => {
+    const { planId, pushId } = await seedRecycledSlot();
+
+    const summary = await pushStudioPlan(db, { userId, studioPlanId: planId, today: TODAY });
+
+    expect(summary.healed).toBe(1);
+    // The stranger in the recycled slot is NOT our session going missing.
+    expect(summary.drifted).toBe(0);
+    expect(summary.blocked).toBe(0);
+    expect(await db.select().from(syncNotes).where(eq(syncNotes.userId, userId))).toHaveLength(0);
+
+    const row = (await db.select().from(studioPlanPushes).where(eq(studioPlanPushes.id, pushId)))[0]!;
+    expect(row.status).not.toBe("adopted");
+    // Persisted, not just used for this pass.
+    expect(row.corosIdInPlan).toBe("10");
+    expect(row.corosProgramId).toBe("10");
+    expect(row.corosPlanId).toBe("coros-plan");
+    expect(row.corosEntityId).toBeNull();
+
+    // The changed session is delete-then-create, addressed at slot 10 — the
+    // whole point: slot 54 belongs to somebody else now.
+    const del = (
+      await db
+        .select()
+        .from(corosWriteJobs)
+        .where(
+          and(eq(corosWriteJobs.status, "queued"), eq(corosWriteJobs.kind, "delete_scheduled_workout")),
+        )
+    )[0]!;
+    expect(del.studioPushId).toBe(pushId);
+    const payload = del.payload as {
+      idInPlan: string;
+      programId: string;
+      happenDay: string;
+      followUpCreate?: { happenDay: string; name: string };
+    };
+    expect(payload.idInPlan).toBe("10");
+    expect(payload.programId).toBe("10");
+    expect(payload.happenDay).toBe("2026-09-07");
+    expect(payload.followUpCreate).toMatchObject({
+      happenDay: "2026-09-07",
+      name: "Upper A — wk 1",
+    });
+  });
+
+  it("still ADOPTS a stamp found on a different day — a heal never hides a move", async () => {
+    const { planId, pushId } = await seedRecycledSlot({ ourDay: "2026-09-09" });
+
+    const summary = await pushStudioPlan(db, { userId, studioPlanId: planId, today: TODAY });
+
+    expect(summary.drifted).toBe(1);
+    expect(summary.healed).toBe(0); // NOT re-addressed behind the user's back
+    const row = (await db.select().from(studioPlanPushes).where(eq(studioPlanPushes.id, pushId)))[0]!;
+    expect(row.status).toBe("adopted");
+    expect(row.corosHappenDay).toBe("2026-09-09");
+    expect(row.corosIdInPlan).toBe("54"); // untouched: the move is the finding
+    const notes = await db.select().from(syncNotes).where(eq(syncNotes.userId, userId));
+    expect(notes.some((n) => n.kind === "adopted_coros_edit")).toBe(true);
+  });
+
+  it("undo of a stale-addressed row plans a DELETE at the real slot, never a bare create", async () => {
+    // The looping undo: MISSING is what a stale key looks like, and MISSING
+    // clears the ids and plans a create — which the executor then refuses
+    // because our own stamp is already there, re-adopting the row.
+    const { pushId } = await seedRecycledSlot({ status: "adopted" });
+
+    const result = await undoStudioAdoption(db, userId, pushId, TODAY);
+    expect(result.ok).toBe(true);
+
+    const jobs = await db
+      .select()
+      .from(corosWriteJobs)
+      .where(and(eq(corosWriteJobs.status, "queued"), eq(corosWriteJobs.studioPushId, pushId)));
+    expect(jobs.map((j) => j.kind)).toEqual(["delete_scheduled_workout"]);
+    const payload = jobs[0]!.payload as { idInPlan: string; happenDay: string; followUpCreate?: unknown };
+    expect(payload.idInPlan).toBe("10");
+    expect(payload.happenDay).toBe("2026-09-07");
+    expect(payload.followUpCreate).toBeTruthy();
+
+    const row = (await db.select().from(studioPlanPushes).where(eq(studioPlanPushes.id, pushId)))[0]!;
+    expect(row.status).toBe("pending");
+    expect(row.corosIdInPlan).toBe("10");
+  });
+
+  it("a same-day already_present converges instead of latching to adopted", async () => {
+    const planId = await seedPlan();
+    await pushStudioPlan(db, { userId, studioPlanId: planId, today: TODAY });
+    const job = (await db.select().from(corosWriteJobs).orderBy(corosWriteJobs.requestedAt))[0]!;
+    const pushId = job.studioPushId!;
+
+    await applyStudioJobResult(db, userId, {
+      jobId: job.id,
+      deviceId: "dev",
+      outcome: "verification_failed",
+      finishedAt: nowInstant(),
+      signature: "sig",
+      studio: {
+        pushId,
+        kind: "create_scheduled_workout",
+        ok: false,
+        reason: "already_present",
+        // The stamp is on the very day this create asked for.
+        serverHappenDay: "2026-09-07",
+      },
+    });
+
+    const failed = (
+      await db.select().from(studioPlanPushes).where(eq(studioPlanPushes.id, pushId))
+    )[0]!;
+    expect(failed.status).toBe("failed"); // NOT "adopted" — still re-plannable
+    expect(failed.error).toBe("address_stale");
+
+    // Once the snapshot shows where the workout is, the next push heals the
+    // address and plans the corrective delete+create. The row converges.
+    await seedObservation({
+      sourceWorkoutId: "coros-plan:10",
+      title: "Upper A — wk 1",
+      corosDate: "2026-09-07",
+    });
+    const summary = await pushStudioPlan(db, { userId, studioPlanId: planId, today: TODAY });
+    expect(summary.healed).toBe(1);
+    expect(summary.blocked).toBe(0);
+
+    const del = (
+      await db
+        .select()
+        .from(corosWriteJobs)
+        .where(
+          and(
+            eq(corosWriteJobs.status, "queued"),
+            eq(corosWriteJobs.kind, "delete_scheduled_workout"),
+            eq(corosWriteJobs.studioPushId, pushId),
+          ),
+        )
+    )[0]!;
+    expect((del.payload as { idInPlan: string }).idInPlan).toBe("10");
+    expect((del.payload as { followUpCreate?: unknown }).followUpCreate).toBeTruthy();
   });
 });

@@ -30,6 +30,21 @@
  *  5. STRUCTURED CODES ONLY. Nothing an executor produced as prose is ever
  *     written to a row or shown to a user — executor messages can name
  *     workouts the user authored.
+ *  6. A RECORDED ADDRESS IS A CLAIM, NOT AN IDENTITY. COROS RECYCLES a plan's
+ *     `idInPlan` slots after deletes, and has been observed re-filing a fresh
+ *     create under an id of its own choosing after the read-after-write
+ *     reported another. So `${corosPlanId}:${corosIdInPlan}` goes stale on a
+ *     workout that never moved, and the slot it vacated fills with somebody
+ *     else's workout. The import path has known this for a while (see
+ *     "Recycled wire id" in import-plan.ts); this module learned it the
+ *     expensive way — a stale key made `detectDrift` read a stranger's
+ *     archived run as our session being deleted on COROS, adopted 19 live
+ *     rows on that false finding, and left every undo of them looping.
+ *     Therefore: NEVER identify a workout by its id alone. Identity is the
+ *     ownership stamp plus the day (`resolveObservation`), the same pair the
+ *     create/delete executors themselves re-prove before writing, and a row
+ *     whose ids disagree with what the snapshot says is HEALED
+ *     (`healPushAddresses`) before anything is planned against it.
  */
 
 import { and, eq, inArray } from "drizzle-orm";
@@ -194,6 +209,116 @@ export interface ObservedWorkout {
   archiveReason: string | null;
 }
 
+/** The plan half of a `${corosPlanId}:${idInPlan}` source workout id. */
+function corosPlanIdOf(sourceWorkoutId: string): string {
+  const cut = sourceWorkoutId.lastIndexOf(":");
+  return cut < 0 ? sourceWorkoutId : sourceWorkoutId.slice(0, cut);
+}
+
+/** The address a row currently claims, or `null` if it claims none. */
+export function recordedAddress(row: PushRow): string | null {
+  return row.corosPlanId && row.corosIdInPlan ? `${row.corosPlanId}:${row.corosIdInPlan}` : null;
+}
+
+/**
+ * WHICH observed workout is this push row's, given that COROS recycles slots
+ * (module rule 6)? Three questions, in this order, because each later one is
+ * only reached when the earlier one has nothing to say:
+ *
+ *  1. Does the recorded address still hold a LIVE workout under our stamp?
+ *     Then it is ours and the address is fine — the overwhelmingly common case,
+ *     and the only one that costs nothing.
+ *  2. Otherwise, is our stamp live on exactly ONE other observed workout of the
+ *     same container plan? Then the slot was recycled underneath us: that
+ *     workout is ours, at a new address. Exactly one, never "the first of
+ *     several" — a stamp on two live workouts makes ownership undecidable, and
+ *     this module's whole safety story is that it refuses ambiguity.
+ *  3. Otherwise fall back to whatever sits at the recorded address, which is
+ *     what tells apart the two remaining truths: our own copy archived there
+ *     (`absence_confirmed` ⇒ COROS deleted it) from a differently-named workout
+ *     there (⇒ renamed). `undefined` when there is nothing at all — absence
+ *     proves nothing.
+ *
+ * Never matches on `idInPlan` alone, which is the bug this exists to prevent.
+ */
+export function resolveObservation(
+  row: PushRow,
+  observed: Map<string, ObservedWorkout>,
+): ObservedWorkout | undefined {
+  const key = recordedAddress(row);
+  const atAddress = key ? observed.get(key) : undefined;
+  if (atAddress && atAddress.archiveReason === null && atAddress.title === row.sessionTitle) {
+    return atAddress;
+  }
+  let live: ObservedWorkout | undefined;
+  let liveCount = 0;
+  for (const candidate of observed.values()) {
+    if (candidate.archiveReason !== null) continue;
+    if (candidate.title !== row.sessionTitle) continue;
+    // Scoped to the container plan the row was written against, when it
+    // records one: stamps are unique per plan, not per account.
+    if (row.corosPlanId && corosPlanIdOf(candidate.sourceWorkoutId) !== row.corosPlanId) continue;
+    live = candidate;
+    liveCount += 1;
+  }
+  if (liveCount === 1) return live;
+  return atAddress;
+}
+
+/** A row's recorded ids, corrected to where the snapshot says the workout is. */
+export interface HealedAddress {
+  pushId: string;
+  corosPlanId: string;
+  corosIdInPlan: string;
+  corosProgramId: string;
+}
+
+/**
+ * Re-resolve every row's COROS address from the last snapshot, and report the
+ * ones whose recorded ids have gone stale (module rule 6).
+ *
+ * DELIBERATELY NARROW. A heal fires only when the workout carrying our stamp is
+ * exactly WHERE WE ALREADY BELIEVE IT TO BE (`deleteTargetDay`) — same day, new
+ * slot. A stamp that turns up on a DIFFERENT day is not an address to quietly
+ * adopt: it is the "the user moved it in COROS" fact, and re-addressing the row
+ * to it here would let the next push delete the user's edit without ever
+ * surfacing it. That case is left to `detectDrift`, which reports `moved` (or
+ * `app_moved`) and records the day; once the day is recorded, the SAME row
+ * heals on the next pass, because by then `deleteTargetDay` is the observed
+ * day. Two passes, and the moved finding is still told.
+ */
+export function healPushAddresses(
+  rows: PushRow[],
+  observed: Map<string, ObservedWorkout>,
+): HealedAddress[] {
+  const healed: HealedAddress[] = [];
+  for (const row of rows) {
+    if (row.status === "deleted") continue;
+    const seen = resolveObservation(row, observed);
+    // Only a live observation is an address. An archived one is the record of
+    // a workout that is gone; pointing a delete at it would be a lie.
+    if (!seen || seen.archiveReason !== null) continue;
+    if (seen.title !== row.sessionTitle) continue;
+    if (seen.corosDate !== deleteTargetDay(row)) continue;
+    if (seen.sourceWorkoutId === recordedAddress(row)) continue;
+    const corosPlanId = corosPlanIdOf(seen.sourceWorkoutId);
+    const corosIdInPlan = seen.sourceWorkoutId.slice(corosPlanId.length + 1);
+    if (!corosPlanId || !corosIdInPlan) continue;
+    healed.push({
+      pushId: row.id,
+      corosPlanId,
+      corosIdInPlan,
+      // The delete triple's third element. The snapshot records the COROS
+      // *program* id, which is a different number from the entity's
+      // `planProgramId`; the executors read that as `planProgramId ?? idInPlan`
+      // and our own creates set it TO the idInPlan, so the idInPlan is the
+      // value that actually addresses a workout this module wrote.
+      corosProgramId: corosIdInPlan,
+    });
+  }
+  return healed;
+}
+
 export type DriftKind = "missing" | "renamed" | "moved" | "app_moved";
 export interface DriftFinding {
   pushId: string;
@@ -218,6 +343,11 @@ export interface DriftFinding {
  * archive reason that is the app's OWN bookkeeping (`user_removed`,
  * `duplicate_mirror`) is not a COROS-side deletion either — only
  * `absence_confirmed` is.
+ *
+ * WHICH observation belongs to a row is `resolveObservation`'s job, not a map
+ * lookup on the recorded ids: COROS recycles slots (module rule 6), so a stale
+ * key both misses our workout AND lands on a stranger's — which is how a
+ * healthy session came to be reported as deleted-on-COROS and adopted.
  */
 export function detectDrift(
   rows: PushRow[],
@@ -228,10 +358,19 @@ export function detectDrift(
   for (const row of rows) {
     if (row.status !== "verified") continue;
     if (!row.corosIdInPlan || !row.corosPlanId) continue;
-    const key = `${row.corosPlanId}:${row.corosIdInPlan}`;
-    const seen = observed.get(key);
+    const seen = resolveObservation(row, observed);
     if (!seen) continue;
+    // Keyed by where the workout ACTUALLY is, not by what the row recorded —
+    // the intent ledger indexes moves by the source workout id the importer
+    // saw, which is the healed address, not the stale one.
+    const key = seen.sourceWorkoutId;
     if (seen.archiveReason === "absence_confirmed") {
+      // An ARCHIVED observation only proves OUR workout is gone if it carries
+      // our stamp. When it does not, the recorded slot was recycled (module
+      // rule 6) and what COROS confirmed gone is its new occupant — somebody
+      // else's workout, about which absence proves nothing. Adoption is
+      // permanent-until-undone, so it is never granted on that evidence.
+      if (seen.title !== row.sessionTitle) continue;
       findings.push({ pushId: row.id, kind: "missing" });
     } else if (seen.archiveReason) {
       // user_removed / duplicate_mirror: the app's own bookkeeping, not a
@@ -493,10 +632,14 @@ export interface PushTransition {
  *    user must be able to remove it. They are NOT persisted for a cross-day
  *    `already_present`: the executor deliberately strips them there, and
  *    reconstructing an address would aim a later delete at the wrong day.
+ *
+ * `requestedDay` — the day this create asked for — is what separates the two
+ * things `already_present` can mean. Read the doc on that case below.
  */
 export function mapCreateResult(
   result: StudioJobResult,
   attemptsExhausted: boolean,
+  requestedDay?: string,
 ): PushTransition {
   const terminal = (error: string, persistIds = false): PushTransition => ({
     status: "failed",
@@ -519,9 +662,28 @@ export function mapCreateResult(
     case "slot_occupied":
       return retryable("slot_occupied", false);
     case "already_present":
-      // ok:false + already_present = the same stamp on ANOTHER day: the user
-      // moved it in COROS. Same "the user took this over" fact drift
-      // detection surfaces elsewhere — ADOPTED, not a permanent failure.
+      // ok:false + already_present normally means the same stamp on ANOTHER
+      // day: the user moved it in COROS. Same "the user took this over" fact
+      // drift detection surfaces elsewhere — ADOPTED, not a permanent failure.
+      //
+      // But when the executor reports the stamp on the very day this create
+      // asked for, nobody moved anything: our own workout is already sitting
+      // there and this row simply did not know its address (module rule 6 —
+      // the recycled slot). Calling that adoption is what latched 19 live rows
+      // permanently: `planPush` treats `adopted` as untouchable, so the row
+      // could never be deleted, corrected, or undone. It fails instead, with a
+      // structured code, which leaves it re-plannable: the next push heals the
+      // address off the snapshot and plans the delete+create that actually
+      // replaces the stale content.
+      if (requestedDay !== undefined && result.serverHappenDay === requestedDay) {
+        return {
+          status: "failed",
+          error: "address_stale",
+          persistIds: true,
+          clearIds: false,
+          job: "failed",
+        };
+      }
       return { status: "adopted", error: null, persistIds: false, clearIds: false, job: "failed" };
     case "no_target_plan":
       // The account's active plan is not the one this row was written against.
@@ -626,6 +788,8 @@ export interface PushSummary {
   drifted: number;
   /** Rows skipped because they are already `adopted` (incl. `drifted`). */
   blocked: number;
+  /** Rows whose recorded COROS address was stale and was re-resolved. */
+  healed: number;
 }
 
 const IN_FLIGHT = ["queued", "claimed", "in_progress", "verifying"] as const;
@@ -711,6 +875,7 @@ export async function pushStudioPlan(
     unchanged: 0,
     drifted: 0,
     blocked: 0,
+    healed: 0,
   };
 
   // "Write date changes back to COROS" is the only switch claiming to stop
@@ -762,12 +927,35 @@ export async function pushStudioPlan(
       );
   }
 
+  // ── Addresses, before drift is even looked at ─────────────────────────────
+  // COROS recycles idInPlan slots (module rule 6), so a row's recorded address
+  // can name a workout that was never ours while ours sits one slot over. Every
+  // later step here — drift detection, addressability, the delete payload's
+  // triple — reads that address, so it is re-resolved from the snapshot FIRST
+  // and the correction is persisted, not just used for this pass.
+  const observed = await loadObserved(db, opts.userId);
+  const heals = healPushAddresses(rows, observed);
+  for (const heal of heals) {
+    const row = rows.find((r) => r.id === heal.pushId)!;
+    row.corosPlanId = heal.corosPlanId;
+    row.corosIdInPlan = heal.corosIdInPlan;
+    row.corosProgramId = heal.corosProgramId;
+    await db
+      .update(studioPlanPushes)
+      .set({
+        corosPlanId: heal.corosPlanId,
+        corosIdInPlan: heal.corosIdInPlan,
+        corosProgramId: heal.corosProgramId,
+        // The entity id addressed the slot we just learned was not ours. No
+        // caller reads it, and a stale one is worse than none.
+        corosEntityId: null,
+        updatedAt: now,
+      })
+      .where(eq(studioPlanPushes.id, heal.pushId));
+  }
+
   // ── Drift, before anything is planned ─────────────────────────────────────
-  const drift = detectDrift(
-    rows,
-    await loadObserved(db, opts.userId),
-    await appRequestedDates(db, opts.userId),
-  );
+  const drift = detectDrift(rows, observed, await appRequestedDates(db, opts.userId));
   const driftedPushIds = new Set<string>();
   for (const finding of drift) {
     // An undo in flight: the caller has planned a corrective delete+create for
@@ -962,6 +1150,13 @@ export async function pushStudioPlan(
       unchanged: batch.unchanged.length,
       drifted,
       blocked: batch.blocked.length,
+      healed: heals.length,
+      // The corrections themselves, so a stale-address incident is diagnosable
+      // after the fact without re-deriving it from two snapshots.
+      healedAddresses: heals.map((h) => ({
+        pushId: h.pushId,
+        to: `${h.corosPlanId}:${h.corosIdInPlan}`,
+      })),
     },
     createdAt: now,
   });
@@ -974,6 +1169,7 @@ export async function pushStudioPlan(
     unchanged: batch.unchanged.length,
     drifted,
     blocked: batch.blocked.length,
+    healed: heals.length,
   };
 }
 
@@ -1139,7 +1335,12 @@ export async function applyStudioJobResult(
   const exhausted = attemptCount >= job.maxAttempts;
   const transition =
     studio.kind === "create_scheduled_workout"
-      ? mapCreateResult(studio, exhausted)
+      ? // `destinationDate` is the day this create asked for (both date columns
+        // are set to the session's happenDay when a studio job is enqueued) —
+        // the only thing that tells a genuine cross-day `already_present` from
+        // our own workout already sitting on the requested day under an address
+        // this row had wrong.
+        mapCreateResult(studio, exhausted, job.destinationDate)
       : mapDeleteResult(studio, exhausted);
 
   // A delete that terminally removed a CHANGED session hands over to the
@@ -1254,6 +1455,13 @@ export async function applyStudioJobResult(
  *  - RENAMED: the workout no longer carries our stamp at all, so nothing here
  *    can prove a delete of it is ours to make. Refused outright.
  *
+ * WHICH case holds is decided from a stamp+day resolution, never from the
+ * recorded ids (module rule 6): COROS recycles slots, and an id-keyed lookup
+ * that misses reads as MISSING — the wrong case, and a self-perpetuating one,
+ * since MISSING clears the ids and plans a create, the create finds our own
+ * stamp already there, and the row re-adopts. The address is HEALED first, so
+ * MISSING means the workout is genuinely gone.
+ *
  * Once the row is repositioned, the whole plan is re-pushed so every other
  * row's diff is re-derived exactly as `pushStudioPlan` already knows how to
  * do it — no separate row-scoped code path to keep in sync with the real one.
@@ -1297,16 +1505,23 @@ export async function undoStudioAdoption(
   // but isn't "adopted" all fall through to the SAME `not_found` result —
   // distinguishing them would let a caller enumerate other users' (or their
   // own non-adopted) push ids by shape alone.
-  const row = (
+  // The whole `PushRow` shape, not just the ids: address healing and
+  // `resolveObservation` below reason over the stamp, the identity day and the
+  // recorded actual day as well.
+  const row: PushRow | undefined = (
     await db
       .select({
         id: studioPlanPushes.id,
         planId: studioPlanPushes.planId,
         happenDay: studioPlanPushes.happenDay,
         sessionTitle: studioPlanPushes.sessionTitle,
+        sessionFingerprint: studioPlanPushes.sessionFingerprint,
         corosIdInPlan: studioPlanPushes.corosIdInPlan,
+        corosProgramId: studioPlanPushes.corosProgramId,
         corosPlanId: studioPlanPushes.corosPlanId,
+        corosHappenDay: studioPlanPushes.corosHappenDay,
         status: studioPlanPushes.status,
+        error: studioPlanPushes.error,
       })
       .from(studioPlanPushes)
       .innerJoin(studioPlans, eq(studioPlanPushes.planId, studioPlans.id))
@@ -1315,31 +1530,36 @@ export async function undoStudioAdoption(
   )[0];
   if (!row || row.status !== "adopted") return { ok: false, error: "not_found" };
 
-  // The last snapshot's opinion of the source workout, keyed the same way
-  // `detectDrift` keys `observed`. Ids missing entirely (a legacy/edge row)
-  // are treated the same as an observation that says the workout is gone.
-  const sourceWorkoutId =
-    row.corosIdInPlan && row.corosPlanId ? `${row.corosPlanId}:${row.corosIdInPlan}` : null;
-  const observation = sourceWorkoutId
-    ? (
-        await db
-          .select({
-            title: plannedWorkouts.title,
-            lastVerifiedCorosDate: plannedWorkouts.lastVerifiedCorosDate,
-            archivedAt: plannedWorkouts.archivedAt,
-            archiveReason: plannedWorkouts.archiveReason,
-          })
-          .from(plannedWorkouts)
-          .where(
-            and(eq(plannedWorkouts.userId, userId), eq(plannedWorkouts.sourceWorkoutId, sourceWorkoutId)),
-          )
-          .limit(1)
-      )[0]
-    : undefined;
+  const now = nowInstant();
 
-  const missing =
-    !observation ||
-    (Boolean(observation.archivedAt) && observation.archiveReason === "absence_confirmed");
+  // The last snapshot's opinion of the source workout — resolved by STAMP AND
+  // DAY, not by the recorded ids. COROS recycles idInPlan slots (module rule
+  // 6), so a lookup keyed on the recorded address can miss a workout that is
+  // sitting right there, and "no observation" is exactly what this function
+  // reads as MISSING. That misread is what made undo unfixable: it cleared the
+  // ids and planned a CREATE, the create found our own stamp already on the
+  // day, and the row latched to `adopted` and could never be undone again.
+  // Healing first means `missing` can only be reached by a workout that really
+  // is gone.
+  const observed = await loadObserved(db, userId);
+  for (const heal of healPushAddresses([row], observed)) {
+    row.corosPlanId = heal.corosPlanId;
+    row.corosIdInPlan = heal.corosIdInPlan;
+    row.corosProgramId = heal.corosProgramId;
+    await db
+      .update(studioPlanPushes)
+      .set({
+        corosPlanId: heal.corosPlanId,
+        corosIdInPlan: heal.corosIdInPlan,
+        corosProgramId: heal.corosProgramId,
+        corosEntityId: null,
+        updatedAt: now,
+      })
+      .where(eq(studioPlanPushes.id, pushId));
+  }
+  const observation = resolveObservation(row, observed);
+
+  const missing = !observation || observation.archiveReason === "absence_confirmed";
   const renamed = !missing && observation!.title !== row.sessionTitle;
 
   if (renamed) {
@@ -1350,7 +1570,6 @@ export async function undoStudioAdoption(
     return { ok: false, error: "undo_unsupported_rename" };
   }
 
-  const now = nowInstant();
   if (missing) {
     // COROS already removed it: nothing addressable to delete, so a plain
     // recreate suffices. Clears the stale ids so the diff sees an
@@ -1370,9 +1589,12 @@ export async function undoStudioAdoption(
       })
       .where(eq(studioPlanPushes.id, pushId));
   } else {
-    // MOVED: still there, still ours. Re-pushing will delete the workout at
-    // wherever it actually is and recreate the original: force the
-    // fingerprint stale so the diff plans exactly that.
+    // MOVED: still there, still ours — at the day recorded on the row, which
+    // after the heal above is an address that actually resolves (it may be the
+    // identity day itself, when the only thing that ever drifted was the slot
+    // number). Re-pushing will delete the workout wherever it actually is and
+    // recreate the original: force the fingerprint stale so the diff plans
+    // exactly that.
     await db
       .update(studioPlanPushes)
       .set({ status: "verified", error: null, sessionFingerprint: "undo-forced", updatedAt: now })
