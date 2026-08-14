@@ -74,6 +74,8 @@ function NumberField({
 }
 
 /** Exported for the units-selector unit test (settings.test.tsx). */
+const FEET_PER_METRE = 3.28084;
+
 export function SchedulingSection({ prefs }: { prefs: UserPreferences }) {
   const qc = useQueryClient();
   const [draft, setDraft] = useState(prefs);
@@ -89,6 +91,9 @@ export function SchedulingSection({ prefs }: { prefs: UserPreferences }) {
   });
   const set = <K extends keyof UserPreferences>(k: K, v: UserPreferences[K]) =>
     setDraft((d) => ({ ...d, [k]: v }));
+  // Climb follows the same preference as every other distance: feet for a
+  // miles athlete. Storage stays metric.
+  const climbUnit = draft.units === "mi" ? "ft" : "m";
 
   return (
     <Card title="Scheduling">
@@ -171,18 +176,37 @@ export function SchedulingSection({ prefs }: { prefs: UserPreferences }) {
             <option value="rolling">Rolling</option>
             <option value="hilly">Hilly</option>
           </select>
-          <input
-            id="s-course-climb"
-            type="number"
-            min={0}
-            max={20000}
-            placeholder="climb (m)"
-            aria-label="Race course total climb in metres"
-            value={draft.raceCourseClimbMetres ?? ""}
-            onChange={(e) =>
-              set("raceCourseClimbMetres", e.target.value === "" ? null : Number(e.target.value))
-            }
-          />
+          <span className="field-suffixed">
+            <input
+              id="s-course-climb"
+              type="number"
+              min={0}
+              max={climbUnit === "ft" ? 65000 : 20000}
+              placeholder="climb"
+              aria-label={`Race course total climb in ${climbUnit === "ft" ? "feet" : "metres"}`}
+              value={
+                draft.raceCourseClimbMetres === null
+                  ? ""
+                  : climbUnit === "ft"
+                    ? Math.round(draft.raceCourseClimbMetres * FEET_PER_METRE)
+                    : draft.raceCourseClimbMetres
+              }
+              onChange={(e) =>
+                set(
+                  "raceCourseClimbMetres",
+                  e.target.value === ""
+                    ? null
+                    : climbUnit === "ft"
+                      ? Math.round((Number(e.target.value) / FEET_PER_METRE) * 10) / 10
+                      : Number(e.target.value),
+                )
+              }
+            />
+            {/* The unit must never be a placeholder — it vanishes the moment
+                a value is typed, and a climb read as metres instead of feet
+                is off by 3.3× (live-reported 2026-08-14). */}
+            <b aria-hidden>{climbUnit}</b>
+          </span>
         </div>
         <span className="hint">
           The course's total climb from the race's own page is best; the category is the fallback.

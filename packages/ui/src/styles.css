@@ -3894,6 +3894,18 @@ button {
     grid-template-columns: 1fr 1fr;
   }
 }
+/* A unit that sits beside the input rather than inside it as placeholder
+   text, which disappears exactly when the number needs it most. */
+.field-suffixed {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+}
+.field-suffixed > b {
+  font-weight: 500;
+  color: var(--ink-soft);
+}
+
 /* Race strip (race hub 2026-08-14): one quiet line while collapsed, the
    full hub when opened. Accent stays the product green; the flag is the
    only race-flavored mark. */

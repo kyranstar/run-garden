@@ -209,7 +209,13 @@ export async function buildRaceHub(
 
   // Ticks belong to ONE race: a stored list whose id doesn't match this race
   // date reseeds, so next spring's race never opens pre-ticked (audit#3-b #7).
-  const storedForThisRace = prefs.raceChecklist.filter((i) => i.id.startsWith(`${raceDate}:`));
+  // Ticks saved before ids were race-scoped carry no prefix; they belong to
+  // the race that was current when they were made — this one.
+  const legacy = prefs.raceChecklist.filter((i) => !i.id.includes(":"));
+  const storedForThisRace = [
+    ...prefs.raceChecklist.filter((i) => i.id.startsWith(`${raceDate}:`)),
+    ...legacy.map((i) => ({ ...i, id: `${raceDate}:${i.id}` })),
+  ];
   const userItems = (storedForThisRace.length > 0
     ? storedForThisRace
     : DEFAULT_RACE_CHECKLIST.map((d) => ({ ...d, id: `${raceDate}:${d.id}`, done: false }))

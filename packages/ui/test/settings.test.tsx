@@ -36,3 +36,18 @@ describe("SchedulingSection units selector", () => {
     expect(mi).toMatch(/<option value="mi" selected="">/);
   });
 });
+
+describe("race course climb field", () => {
+  it("labels the unit beside the input and converts for a miles athlete", () => {
+    // 140 ft typed into a field that silently meant metres is off by 3.3×
+    // (live-reported 2026-08-14) — the unit must stay visible once the box
+    // has a value in it.
+    const mi = render({ ...DEFAULT_USER_PREFERENCES, units: "mi", raceCourseClimbMetres: 42.7 });
+    expect(mi).toContain(">ft</b>");
+    expect(mi).toContain('value="140"');
+
+    const km = render({ ...DEFAULT_USER_PREFERENCES, units: "km", raceCourseClimbMetres: 140 });
+    expect(km).toContain(">m</b>");
+    expect(km).toContain('value="140"');
+  });
+});
