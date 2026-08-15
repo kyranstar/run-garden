@@ -1,7 +1,9 @@
 import {
   Component,
+  useCallback,
   useEffect,
   useId,
+  useLayoutEffect,
   useRef,
   useState,
   type ErrorInfo,
@@ -20,6 +22,12 @@ import {
   IconSync,
 } from "./icons.js";
 
+/** `useLayoutEffect` on the client, `useEffect` on the server. The dialogs
+ * here measure their own layout, which only exists in a browser; React warns
+ * (loudly, and our smoke tests read warnings as failures) about the layout
+ * variant during `renderToStaticMarkup`. */
+const useIsomorphicLayoutEffect = typeof window === "undefined" ? useEffect : useLayoutEffect;
+
 /** ≥1024px — where the garden becomes a full-viewport stage and the plan
  * page's coach column becomes a persistent sidebar instead of a pill+sheet.
  * Shared (was garden.tsx-private) so the plan page's ghost-tap routing
@@ -35,6 +43,88 @@ export function useIsDesktop(): boolean {
     return () => mq.removeEventListener("change", onChange);
   }, []);
   return isDesktop;
+}
+
+/**
+ * Publishes how much page sits ABOVE this element as `--space-above` on it,
+ * so a box can be sized against the space it actually has instead of against
+ * the window (System 1 §4). `height: 100dvh` is a lie for any box that does
+ * not start at y=0: one fixture-mode banner above the garden stage pushed the
+ * whole bottom HUD row below the fold. CSS cannot ask "where do I start?", so
+ * this measures it and re-measures whenever the layout above changes.
+ *
+ * Returns a CALLBACK REF, and that is the whole point of the shape. The first
+ * cut took a `useRef` object and measured in an effect with `[ref]` deps: the
+ * screen renders a `<Spinner>` while its query loads, so the effect ran once
+ * against `ref.current === null`, registered nothing, and — its one dep being
+ * a stable object — never ran again once the real box mounted. Measured
+ * result: `--space-above` empty, the fix entirely inert. A callback ref fires
+ * when the NODE attaches, which is the only moment there is anything to
+ * measure.
+ *
+ * What can change the answer, and what watches for it:
+ *  - the box's own arrival → the callback ref itself;
+ *  - a banner/notice above it GROWING or WRAPPING → a `ResizeObserver` on
+ *    every ancestor up to `<body>` and on every earlier sibling at each of
+ *    those levels (a banner that wraps to two lines is a resize);
+ *  - a banner APPEARING or VANISHING → a `MutationObserver` (childList) on
+ *    those same ancestors, which re-attaches the observers and re-measures.
+ *    A `/api/me` that resolves after the screen's own query does exactly
+ *    this, and a ResizeObserver alone cannot see a node that did not exist;
+ *  - the window resizing → a `resize` listener.
+ *
+ * Cheap by construction: one property write, only when the value changes, and
+ * nothing at all on a static render (no `window`).
+ */
+export function useSpaceAbove(): (el: HTMLElement | null) => void {
+  const teardown = useRef<(() => void) | null>(null);
+  return useCallback((el: HTMLElement | null) => {
+    // React calls the callback with `null` on detach (and before a re-attach).
+    teardown.current?.();
+    teardown.current = null;
+    if (!el || typeof window === "undefined") return;
+
+    let last = -1;
+    const measure = () => {
+      const top = Math.max(0, Math.round(el.getBoundingClientRect().top + window.scrollY));
+      if (top === last) return;
+      last = top;
+      el.style.setProperty("--space-above", `${top}px`);
+    };
+    const ro = typeof ResizeObserver !== "undefined" ? new ResizeObserver(() => measure()) : null;
+    const mo =
+      typeof MutationObserver !== "undefined"
+        ? new MutationObserver(() => {
+            watch();
+            measure();
+          })
+        : null;
+    const watch = () => {
+      ro?.disconnect();
+      mo?.disconnect();
+      for (let node: HTMLElement = el; ; ) {
+        const parent = node.parentElement;
+        if (!parent) break;
+        mo?.observe(parent, { childList: true });
+        ro?.observe(parent);
+        for (let sib = parent.firstElementChild; sib && sib !== node; sib = sib.nextElementSibling) {
+          ro?.observe(sib);
+        }
+        if (parent === document.body) break;
+        node = parent;
+      }
+    };
+
+    watch();
+    measure();
+    window.addEventListener("resize", measure);
+    teardown.current = () => {
+      window.removeEventListener("resize", measure);
+      ro?.disconnect();
+      mo?.disconnect();
+      el.style.removeProperty("--space-above");
+    };
+  }, []);
 }
 
 // ── Formatting helpers ──────────────────────────────────────────────────────
@@ -520,25 +610,109 @@ export function useDialogFocus(ref: RefObject<HTMLElement | null>, open: boolean
   }, [ref, open, onClose]);
 }
 
-/** Bottom sheet on mobile, centered dialog on desktop. */
+/**
+ * Freezes a centred desktop dialog's geometry across a DISCLOSURE (System 1
+ * §5). A `.sheet-backdrop` centres its dialog, so anything that expands
+ * inside one pushes the dialog up by half the growth while pushing its own
+ * action row down by the other half — 128px of relative motion under a
+ * reader who pressed one summary.
+ *
+ * Pinned on the disclosure transition, NOT on open. The first cut measured
+ * once on the layout pass right after open and then held that number, which
+ * is a measurement of whatever the dialog happened to be at that instant —
+ * and for any dialog whose content arrives with a query, that instant is the
+ * loading state. Measured result on the desktop studio modal: a spinner-sized
+ * dialog centred at y=400 froze the pin at 400, which capped the loaded
+ * dialog at 476px of a 900px viewport, hid the W1–W8 weeks table it had shown
+ * before, and left ~400px of dead backdrop above it. An open dialog must
+ * never be smaller than its content needs merely because it was measured
+ * early, so nothing is measured until the reader acts.
+ *
+ * The listener is capture-phase on the dialog: it runs before React's own
+ * delegated handler at the root, so it reads the layout the reader is looking
+ * at rather than the one the click is about to produce. Two numbers are taken
+ * together — the top edge (`--sheet-pin`) and the height (`--sheet-hold`, a
+ * max, so a re-collapsed disclosure still shrinks back cleanly). Holding both
+ * means the growth lands entirely in the body's scroll region: top edge,
+ * title row and pinned action row all stay exactly where they were.
+ *
+ * A window resize releases the pin — the frozen numbers describe a viewport
+ * that no longer exists, and the layout is being reflowed anyway. Mobile
+ * sheets are bottom-anchored and are not pinned. No-ops without a DOM (static
+ * render) or `matchMedia`.
+ */
+function usePinnedTop(
+  backdrop: RefObject<HTMLElement | null>,
+  dialog: RefObject<HTMLElement | null>,
+  open: boolean,
+) {
+  useIsomorphicLayoutEffect(() => {
+    if (!open) return;
+    const back = backdrop.current;
+    const el = dialog.current;
+    if (!back || !el || typeof window === "undefined" || !window.matchMedia) return;
+    if (!window.matchMedia("(min-width: 1024px)").matches) return;
+    const release = () => {
+      delete back.dataset.pinned;
+      el.style.removeProperty("--sheet-pin");
+      el.style.removeProperty("--sheet-hold");
+    };
+    const pin = () => {
+      if (back.dataset.pinned) return;
+      const r = el.getBoundingClientRect();
+      const top = r.top - back.getBoundingClientRect().top;
+      el.style.setProperty("--sheet-pin", `${Math.max(0, Math.round(top))}px`);
+      el.style.setProperty("--sheet-hold", `${Math.round(r.height)}px`);
+      back.dataset.pinned = "true";
+    };
+    el.addEventListener("click", pin, true);
+    window.addEventListener("resize", release);
+    return () => {
+      el.removeEventListener("click", pin, true);
+      window.removeEventListener("resize", release);
+      release();
+    };
+  }, [backdrop, dialog, open]);
+}
+
+/**
+ * Bottom sheet on mobile, centered dialog on desktop — and the app's one
+ * dialog container contract (System 1 §2): a flex column of head · body ·
+ * foot where ONLY the body scrolls. The title row and ✕ can never scroll
+ * away, an action row passed as `footer` can never fall below an invisible
+ * fold, and the body announces its own clipping because it is a `.scroller`.
+ *
+ * `fill` is for content that owns its own scroll region (the coach panel):
+ * the sheet takes a definite height so that child has something real to size
+ * against, and the body stops being a scroller — one scroll owner, still.
+ */
 export function Sheet({
   open,
   onClose,
   title,
   children,
+  footer,
+  fill,
 }: {
   open: boolean;
   onClose: () => void;
   title: string;
   children: ReactNode;
+  /** Pinned action row, kept visible below the scrolling body. */
+  footer?: ReactNode;
+  /** The child is a column that scrolls itself; give it a definite height. */
+  fill?: boolean;
 }) {
+  const backdropRef = useRef<HTMLDivElement>(null);
   const ref = useRef<HTMLDivElement>(null);
   const titleId = useId();
   useDialogFocus(ref, open, onClose);
+  usePinnedTop(backdropRef, ref, open);
 
   if (!open) return null;
   return (
     <div
+      ref={backdropRef}
       className="sheet-backdrop"
       onClick={(e) => {
         if (e.target === e.currentTarget) onClose();
@@ -549,17 +723,18 @@ export function Sheet({
         role="dialog"
         aria-modal="true"
         aria-labelledby={titleId}
-        className="sheet"
+        className={`sheet${fill ? " sheet--fill" : ""}`}
         tabIndex={-1}
       >
         <div className="sheet-handle" aria-hidden />
-        <div className="row-between" style={{ marginBottom: "0.7rem" }}>
+        <div className="row-between sheet-head">
           <h2 id={titleId}>{title}</h2>
           <button className="btn btn-small" onClick={onClose} aria-label="Close">
             <IconClose size={16} />
           </button>
         </div>
-        {children}
+        <div className={`sheet-body${fill ? "" : " scroller"}`}>{children}</div>
+        {footer ? <div className="sheet-foot">{footer}</div> : null}
       </div>
     </div>
   );

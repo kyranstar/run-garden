@@ -44,7 +44,10 @@ export function Drawer({
             <IconClose size={16} />
           </button>
         </div>
-        <div className="drawer-body">{children}</div>
+        {/* The drawer's one scroll owner. `.scroller` is what makes the
+            clipping visible: the Collection drawer hides 3,509px of its own
+            content and used to give no sign of it at all. */}
+        <div className="drawer-body scroller">{children}</div>
       </div>
     </div>
   );

@@ -26,7 +26,7 @@ import {
 } from "@rg/garden-engine";
 import { GardenScene, type SceneImpulse } from "@rg/garden-renderer";
 import { IconClock, IconClose } from "../icons.js";
-import { Banner, Card, CATEGORY_LABELS, EmptyState, formatDayShort, formatTime, localTodayGuess, relativeDay, Sheet, Spinner, useIsDesktop } from "../components.js";
+import { Banner, Card, CATEGORY_LABELS, EmptyState, formatDayShort, formatTime, localTodayGuess, relativeDay, Sheet, Spinner, useIsDesktop, useSpaceAbove } from "../components.js";
 import { Drawer } from "../drawer.js";
 import { cap, eventSentence, selectArrival, type ArrivalEvent } from "./arrival.js";
 import { CeremonyCard } from "./arrival-block.js";
@@ -672,9 +672,12 @@ function conditionStory(
 }
 
 // Mirrors .dock-panel's cap in styles.css (`max-height: min(32rem, calc(100dvh
-// - 12rem))`) at a 16px root, so the two never drift apart silently.
+// - 14rem))`) at a 16px root, so the two never drift apart silently. The
+// reserve went 12rem → 14rem when the dock pill stopped being replaced by the
+// panel and started staying put underneath it (System 1 §5): the pill's row is
+// part of what the dock now costs the stage.
 const DOCK_PANEL_MAX_PX = 512; // 32rem
-const DOCK_PANEL_RESERVE_PX = 192; // 12rem
+const DOCK_PANEL_RESERVE_PX = 224; // 14rem
 
 /**
  * Would the expanded dock panel cover more than ~55% of a stage this tall?
@@ -701,8 +704,18 @@ export const VERDICT_PHRASE: Record<ReadinessLevel, string> = {
 };
 
 /**
- * The readiness-first head of the dock: a verdict, the evidence behind it,
- * and — only when it is fresh — the coach's own line.
+ * The EVIDENCE head of the dock panel: why today reads the way it does, and —
+ * only when it is fresh — the coach's own line. The verdict PHRASE is not
+ * here; it is on the pill directly below, where it also sits when the panel
+ * is shut.
+ *
+ * That split is the fix for a measured regression. The first cut moved the
+ * phrase into this head while the expanded pill dropped it, so the pill (the
+ * click target) held still but the words the reader was actually looking at
+ * jumped 509px up the screen — the container stopped moving and the content
+ * did not. The pill now renders the verdict identically in both states and
+ * this head carries the evidence only, so the phrase is on screen exactly
+ * once, at exactly one y, whatever the dock is doing.
  *
  * Renders NOTHING when there is no verdict (thin data, no reading, nothing
  * comparable). The dock then falls back to being workout-first exactly as it
@@ -725,11 +738,13 @@ export function DockVerdict({
   if (!verdict) return null;
   return (
     <div className={`dock-verdict dock-verdict-${verdict.level}`}>
-      <p className="dock-verdict-head">
-        <span className="dock-verdict-dot" aria-hidden="true" />
-        {VERDICT_PHRASE[verdict.level]}
+      {/* A screen reader reaching this list of numbers cold needs to know
+          what they are FOR. Not by repeating the phrase — that is the pill's
+          job, and one verdict rendered twice is the defect this replaced. */}
+      <p className="dock-verdict-why">
+        <span className="visually-hidden">Why: </span>
+        {verdict.reasons.join(" · ")}
       </p>
-      <p className="dock-verdict-why">{verdict.reasons.join(" · ")}</p>
       {focus ? (
         <p
           className="dock-verdict-coach"
@@ -744,21 +759,37 @@ export function DockVerdict({
 }
 
 /**
- * The minimized dock. It leads with the verdict too ("● Good to go · Hill
+ * The dock's control row. It leads with the verdict too ("● Good to go · Hill
  * Strides Today 9:00 AM") so collapsing the panel never costs the athlete the
  * headline — and with no verdict it is character-for-character the pill that
  * shipped before ("Next: …"), which is the whole fallback contract.
+ *
+ * It STAYS PUT while the panel is open (System 1 §5), and so does every word
+ * in it. The dock is bottom-anchored, so expanding it can only grow upward;
+ * expanding used to replace this row with the panel, which moved the verdict
+ * line the athlete was reading by dy −467px. Now the panel overlays the scene
+ * above a row that never moves.
+ *
+ * The row keeps the verdict phrase while expanded — it does not hand it to
+ * the panel. Handing it over was tried and measured: the pill held its y but
+ * the phrase itself jumped −509px into the panel head, which is the same
+ * defect wearing a different element. The panel head carries the evidence
+ * only (see DockVerdict), so the phrase renders in exactly one place at a
+ * time and that place never moves.
  */
 export function DockPill({
   verdict,
   workout,
   today,
   onOpen,
+  expanded = false,
 }: {
   verdict: ReadinessVerdict | null | undefined;
   workout: WorkoutDto | null | undefined;
   today: string;
   onOpen: () => void;
+  /** True while the panel above is open — this row then collapses it. */
+  expanded?: boolean;
 }) {
   const workoutLabel = !workout
     ? "No active training plan"
@@ -769,6 +800,11 @@ export function DockPill({
     <button
       type="button"
       className={`dock-pill${verdict ? ` dock-verdict-${verdict.level}` : ""}`}
+      aria-expanded={expanded}
+      // The panel it discloses sits ABOVE it in the DOM (the dock is
+      // bottom-anchored), so name it explicitly rather than leaving assistive
+      // tech to infer a following-sibling relationship that isn't there.
+      aria-controls="dock-panel"
       onClick={onOpen}
     >
       {verdict ? (
@@ -841,6 +877,14 @@ export function GardenScreen() {
   // time (rarest first). The renderer lets a user selection win, so the
   // one-filtered-plant budget holds either way.
   const [highlightPlantId, setHighlightPlantId] = useState<string | null>(null);
+
+  // The desktop stage is sized against the space it actually has, not the
+  // window — one banner above it used to push the whole bottom HUD row off
+  // the bottom of the screen (System 1 §4). A callback ref, not a ref object:
+  // this component returns a <Spinner> until its query lands, so the stage
+  // does not exist on the first commit and an effect keyed on a ref never
+  // learns that it arrived.
+  const stageRef = useSpaceAbove();
 
   const setDockOpen = (open: boolean) => {
     setDockOpenState(open);
@@ -1434,7 +1478,7 @@ export function GardenScreen() {
     return (
       <div className="garden-home garden-home--stage">
         <h1 className="visually-hidden">Garden</h1>
-        <div className="garden-stage">
+        <div className="garden-stage" ref={stageRef}>
           <div className="stage-scene">
             <GardenScene
               snapshot={displaySnapshot}
@@ -1564,9 +1608,12 @@ export function GardenScreen() {
             </div>
           ) : null}
 
+          {/* The dock grows AWAY from the row you pressed: the panel stacks
+              above a pill that never moves, overlaying the scene rather than
+              reflowing anything (System 1 §5). */}
           <div className="hud-dock">
             {dockOpen && d?.nextWorkout ? (
-              <div className="dock-panel">
+              <div className="dock-panel scroller" id="dock-panel">
                 {/* Readiness leads; the workout is named second. With no
                     verdict this renders nothing and the panel opens on the
                     workout, exactly as it always did. */}
@@ -1593,14 +1640,14 @@ export function GardenScreen() {
                   Minimize
                 </button>
               </div>
-            ) : (
-              <DockPill
-                verdict={d?.readiness.verdict}
-                workout={d?.nextWorkout}
-                today={d?.today ?? todayDate}
-                onOpen={() => setDockOpen(true)}
-              />
-            )}
+            ) : null}
+            <DockPill
+              verdict={d?.readiness.verdict}
+              workout={d?.nextWorkout}
+              today={d?.today ?? todayDate}
+              expanded={dockOpen && !!d?.nextWorkout}
+              onOpen={() => setDockOpen(!(dockOpen && !!d?.nextWorkout))}
+            />
             {attentionCount > 0 ? (
               <a className="dock-attention" href="#garden-attention">
                 {attentionCount === 1 ? "1 workout needs attention" : `${attentionCount} workouts need attention`} ↓

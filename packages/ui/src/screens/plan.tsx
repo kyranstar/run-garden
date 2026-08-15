@@ -730,8 +730,14 @@ export function PlanScreen() {
   const anyDialogOpen = !!selected || !!planParam || coachOpen;
   const emptyPlan = (plan.data?.workouts.length ?? 0) === 0 && activePlans.length === 0;
 
+  // One width contract (System 1 §6): while the coach window is up the page
+  // yields exactly the gutter the window occupies (`--coach-w`, declared once
+  // in styles.css and read by both), so the overlay stops covering 106px of
+  // every card — and minimizing gives the column its width straight back
+  // rather than leaving an empty 310px gutter.
+  const coachReservesWidth = isDesktop && winOpen;
   return (
-    <div className="plan-page">
+    <div className={`plan-page${coachReservesWidth ? " plan-page--coach-open" : ""}`}>
       <div className="row-between screen-title">
         <h1>Plan</h1>
         <CorosCheck state={corosCheck.state} />
@@ -796,7 +802,10 @@ export function PlanScreen() {
             </span>
             Coach{pendingCount > 0 ? ` · ${pendingCount}` : ""}
           </button>
-          <Sheet open={coachOpen} onClose={() => setCoachOpen(false)} title="Coach">
+          {/* `fill`: the coach panel owns its own scroll region, so the sheet
+              hands it a definite height instead of letting it size to the
+              viewport and paint outside the sheet (System 1 §2). */}
+          <Sheet open={coachOpen} onClose={() => setCoachOpen(false)} title="Coach" fill>
             <div className="coach-sheet-panel">
               {coach.state.data ? (
                 <CoachPanel

@@ -225,8 +225,12 @@ export function WeekView({
               <span className="pw-wide">jump to week</span>
               <span className="pw-narrow">weeks</span> ▾
             </summary>
+            {/* `.scroller`: the menu caps at 300px and a long block runs well
+                past it — it has to say so, and it opens mid-list (see
+                centerScrollTop) where an unmarked scroll box reads as the
+                whole list. */}
             <div
-              className={`plan-week-jumplist${dropUp ? " drops-up" : ""}`}
+              className={`plan-week-jumplist scroller${dropUp ? " drops-up" : ""}`}
               role="menu"
               ref={listRef}
             >

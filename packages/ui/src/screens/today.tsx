@@ -408,9 +408,12 @@ export function TimezoneNudge() {
     <Banner kind="info">
       Your device clock says {deviceTz} ({deviceOffset}), but your days here run on {prefsTz} (
       {prefsOffset}) — traveling?{" "}
+      {/* Actions, and an IANA zone id can be long ("America/Argentina/
+          Buenos_Aires") — `.btn-wrap` so a long zone wraps inside the banner
+          instead of a nowrap pill widening the page. */}
       <button
         type="button"
-        className="pill pill-neutral"
+        className="btn btn-small btn-wrap"
         disabled={adopt.isPending}
         onClick={() => adopt.mutate(deviceTz)}
       >
@@ -418,7 +421,7 @@ export function TimezoneNudge() {
       </button>{" "}
       <button
         type="button"
-        className="pill pill-neutral"
+        className="btn btn-small btn-wrap"
         onClick={() => {
           try {
             sessionStorage.setItem(storageKey, "1");

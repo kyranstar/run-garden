@@ -152,8 +152,13 @@ export function ProposalCard({
       <p className="coach-prop-evidence faint">{proposal.evidence}</p>
       {proposal.flags.length > 0 ? (
         <div className="coach-prop-flags">
+          {/* `.note`, not `.pill`: a flag is a whole rule in a sentence
+              ("breaks a rule: Long runs stay on Saturdays"), and a pill is
+              nowrap by contract — these clipped at scrollWidth 461 in a
+              327px card, so the one line that says the coach is breaking
+              your rule was the one line you couldn't finish reading. */}
           {proposal.flags.map((f) => (
-            <span key={f} className="pill pill-warnsoft">
+            <span key={f} className="note note-warn">
               breaks a rule: {f}
             </span>
           ))}
@@ -254,22 +259,50 @@ function collapseRepeatedReceipts(messages: CoachMessageDto[]): CoachMessageDto[
 export function CoachThread({
   messages,
   onRetrySend,
+  trayAbove,
 }: {
   messages: CoachMessageDto[];
   /** Resend a failed optimistic message (audit C16). */
   onRetrySend?: (localId: string, body: string) => void;
+  /** Pending proposals share the scroller above this thread — so an opening
+   * sheet must show the TOP, not the newest message (System 1). */
+  trayAbove?: boolean;
 }) {
   const threadRef = useRef<HTMLDivElement | null>(null);
+  // How many messages there were when this thread mounted. Anything past it
+  // ARRIVED while the reader was here, which is the only case that earns a
+  // scroll.
+  const atOpen = useRef(messages.length);
   useEffect(() => {
     // Audit C3: this used to be `endRef.scrollIntoView({block:"end"})`,
     // which scrolls EVERY scrollable ancestor including the window — since
     // the coach panel sits at the top of the document, every new message
     // (including a failed auto-wake's receipt) yanked the whole page back
-    // to the top, defeating the plan's land-on-today scroll. Scrolling only
-    // this container's own scrollTop never touches an ancestor's scroll.
+    // to the top, defeating the plan's land-on-today scroll. Setting one
+    // container's own scrollTop never touches an ancestor's scroll.
+    //
+    // That container is the panel's scroll owner (`.coach-scroll`, which
+    // holds the tray AND the thread) rather than the thread itself — the
+    // thread stopped being a scroller when the panel went to one scroll
+    // owner. Falling back to the thread keeps this correct if a CoachThread
+    // is ever rendered outside a panel.
     const el = threadRef.current;
-    if (el) el.scrollTop = el.scrollHeight;
-  }, [messages.length]);
+    if (!el) return;
+    const owner = el.closest<HTMLElement>(".scroller") ?? el;
+    // Sharing the scroller with the pending tray made "scroll to the newest
+    // message" mean "start below the tray": the mobile coach sheet opened
+    // with "Needs you · 2" already off screen, when it had been the first
+    // thing the sheet showed. Something waiting on the reader must never
+    // begin hidden, so on arrival the top wins — but only while nothing has
+    // come in since, so a message landing in front of an open sheet still
+    // scrolls to itself. `trayAbove` is in the deps because the proposals
+    // query can resolve a beat after the sheet opens.
+    if (messages.length <= atOpen.current && trayAbove) {
+      owner.scrollTop = 0;
+      return;
+    }
+    owner.scrollTop = owner.scrollHeight;
+  }, [messages.length, trayAbove]);
   const collapsed = collapseRepeatedReceipts(messages);
   return (
     <div className="coach-thread" ref={threadRef}>
@@ -444,15 +477,26 @@ export function CoachPanel({
           </span>
         </div>
       )}
-      <PendingTray
-        proposals={proposals}
-        onApprove={onApprove}
-        onDecline={onDecline}
-        busy={busy}
-        acting={acting}
-        errors={proposalErrors}
-      />
-      <CoachThread messages={messages} onRetrySend={onRetrySend} />
+      {/* One scroll owner for the panel (System 1 §2): the tray and the
+          thread share it, so a four-card tray can no longer take 339px off
+          the top of a 564px sheet and squeeze the conversation — the thing
+          you came for — down to 120px. The head above and the composer below
+          stay pinned and visible either way. */}
+      <div className="coach-scroll scroller">
+        <PendingTray
+          proposals={proposals}
+          onApprove={onApprove}
+          onDecline={onDecline}
+          busy={busy}
+          acting={acting}
+          errors={proposalErrors}
+        />
+        <CoachThread
+          messages={messages}
+          onRetrySend={onRetrySend}
+          trayAbove={proposals.length > 0}
+        />
+      </div>
       <CoachComposer onSend={onSend} question={question} onAnswer={onAnswer} onDismiss={onDismiss} busy={busy} />
     </section>
   );

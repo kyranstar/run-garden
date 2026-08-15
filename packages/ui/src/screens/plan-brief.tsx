@@ -161,11 +161,16 @@ export function WeeklyBrief({
             {formatShortDate(week.raceMismatch.plannedDate)}, but your race day is set to{" "}
             {formatShortDate(week.raceMismatch.raceDate)}. Which is right?
           </p>
+          {/* Each choice is a whole sentence, so each is a `.btn .btn-wrap`
+              and not a `.pill`: as pills these measured 456px inside a 358px
+              card and put 102px of horizontal scroll on the entire app, which
+              walked every fixed right-edge control (the Settings tab, the
+              coach pill, a sheet's ✕) off-screen. */}
           {onResolveRace ? (
             <div className="plan-brief-race-actions">
               <button
                 type="button"
-                className="pill pill-neutral"
+                className="btn btn-small btn-wrap"
                 disabled={resolvingRace}
                 onClick={() => onResolveRace("settings")}
               >
@@ -174,7 +179,7 @@ export function WeeklyBrief({
               </button>
               <button
                 type="button"
-                className="pill pill-neutral"
+                className="btn btn-small btn-wrap"
                 disabled={resolvingRace}
                 onClick={() => onResolveRace("plan")}
               >

@@ -144,18 +144,21 @@ const workout = (over: Partial<WorkoutDto> = {}): WorkoutDto =>
   }) as WorkoutDto;
 
 describe("DockVerdict (readiness-first dock)", () => {
-  it("leads with the verdict phrase and prints the evidence behind it", () => {
+  it("prints the evidence, and leaves the verdict phrase to the pill below it", () => {
     const html = render(createElement(DockVerdict, { verdict: goodVerdict }));
-    expect(html).toContain("Good to go");
     expect(html).toContain("HRV 64 (base 62) · RHR 47 (base 46) · recovery 100%");
-    // The level is on the wrapper (colour), the dot is decoration only.
+    // NOT the phrase: the pill renders that in both dock states, so the words
+    // the reader is looking at hold one y instead of jumping 509px on expand.
+    expect(html).not.toContain("Good to go");
+    // The numbers still announce what they are evidence for.
+    expect(html).toContain("Why: ");
+    // The level is on the wrapper (colour).
     expect(html).toContain("dock-verdict-good");
-    expect(html).toContain('aria-hidden="true"');
   });
 
-  it("a poor morning says so in words, not only in colour", () => {
+  it("a poor morning still shows its numbers, and still names its level in the markup", () => {
     const html = render(createElement(DockVerdict, { verdict: poorVerdict }));
-    expect(html).toContain("Recovery is low");
+    expect(html).not.toContain("Recovery is low");
     expect(html).toContain("RHR 9 bpm above your baseline");
     expect(html).toContain("dock-verdict-poor");
   });
@@ -190,7 +193,7 @@ describe("DockVerdict (readiness-first dock)", () => {
   it("shows no coach line at all when the server withheld a stale one", () => {
     const html = render(createElement(DockVerdict, { verdict: goodVerdict, focus: null }));
     expect(html).not.toContain("Coach");
-    expect(html).toContain("Good to go");
+    expect(html).toContain("HRV 64 (base 62)");
   });
 });
 

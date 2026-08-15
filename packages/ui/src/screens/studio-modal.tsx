@@ -87,8 +87,92 @@ export function StudioModal({
       ) + 1
     : null;
   const raceLabel = d?.plan.raceDate ? `race · ${formatShortDate(d.plan.raceDate)}` : undefined;
+
+  /**
+   * Every plan action, handed to the Sheet as its pinned footer (System 1
+   * §2). This modal is the tallest surface in the app — 1,304px of content
+   * in a dialog that shows 564 — and with the whole thing inside one
+   * scrolling box every one of these buttons sat below a fold that nothing
+   * announced. The body scrolls; the actions do not move.
+   */
+  const actions =
+    plan || d ? (
+      <div className="btn-row studio-modal-actions">
+        {(d?.plan ?? plan)?.source === "coros" ? (
+          <p className="faint" style={{ margin: 0, alignSelf: "center" }}>
+            Imported from COROS — ask your coach to move, ease, or skip its sessions, add new ones
+            around it, or extend it with a coached block. Approved changes are written to your
+            watch.
+          </p>
+        ) : null}
+        {((d?.plan ?? plan)?.source ?? "coach") === "coach" ? (
+          <>
+            <button
+              type="button"
+              className="btn"
+              onClick={() => onCanned(`Extend "${title}" — draft the next weeks in the same shape.`)}
+            >
+              Extend
+            </button>
+            <button
+              type="button"
+              className="btn"
+              onClick={() => onCanned(`Wind down "${title}" — draft the final taper week.`)}
+            >
+              Wind down
+            </button>
+            {renaming ? (
+              <input
+                value={name}
+                autoFocus
+                onChange={(e) => setName(e.target.value)}
+                aria-label="Plan name"
+                onKeyDown={(e) => {
+                  if (e.key === "Enter" && name.trim()) {
+                    onRename(planId, name.trim());
+                    setRenaming(false);
+                  }
+                  if (e.key === "Escape") setRenaming(false);
+                }}
+              />
+            ) : (
+              <button
+                type="button"
+                className="btn"
+                onClick={() => {
+                  setName(title);
+                  setRenaming(true);
+                }}
+              >
+                Rename
+              </button>
+            )}
+            {confirmingRetire ? (
+              <button type="button" className="btn btn-danger" onClick={() => onRetire(planId)}>
+                Really retire — archives every remaining session
+              </button>
+            ) : (
+              <button type="button" className="btn" onClick={() => setConfirmingRetire(true)}>
+                Retire…
+              </button>
+            )}
+          </>
+        ) : null}
+        <span className="studio-modal-grow" />
+        <button
+          type="button"
+          className="btn btn-primary"
+          onClick={() =>
+            onCanned(`Let's talk about "${title}" — how is it tracking, and would you change anything?`)
+          }
+        >
+          Talk to your coach about this plan
+        </button>
+      </div>
+    ) : null;
+
   return (
-    <Sheet open onClose={onClose} title={title}>
+    <Sheet open onClose={onClose} title={title} footer={actions}>
       <div className="stack studio-modal">
         {detail.isLoading ? <Spinner label="Loading plan detail" /> : null}
         {detail.isError ? <p className="muted">Couldn't load this plan's detail — the actions below still work.</p> : null}
@@ -160,79 +244,6 @@ export function StudioModal({
               ))}
             </div>
           </>
-        ) : null}
-
-        {plan || d ? (
-          <div className="btn-row studio-modal-actions">
-            {(d?.plan ?? plan)?.source === "coros" ? (
-              <p className="faint" style={{ margin: 0, alignSelf: "center" }}>
-                Imported from COROS — ask your coach to move, ease, or skip its sessions, add new
-                ones around it, or extend it with a coached block. Approved changes are written to
-                your watch.
-              </p>
-            ) : null}
-            {((d?.plan ?? plan)?.source ?? "coach") === "coach" ? (
-              <>
-                <button
-                  type="button"
-                  className="btn"
-                  onClick={() => onCanned(`Extend "${title}" — draft the next weeks in the same shape.`)}
-                >
-                  Extend
-                </button>
-                <button
-                  type="button"
-                  className="btn"
-                  onClick={() => onCanned(`Wind down "${title}" — draft the final taper week.`)}
-                >
-                  Wind down
-                </button>
-                {renaming ? (
-                  <input
-                    value={name}
-                    autoFocus
-                    onChange={(e) => setName(e.target.value)}
-                    aria-label="Plan name"
-                    onKeyDown={(e) => {
-                      if (e.key === "Enter" && name.trim()) {
-                        onRename(planId, name.trim());
-                        setRenaming(false);
-                      }
-                      if (e.key === "Escape") setRenaming(false);
-                    }}
-                  />
-                ) : (
-                  <button
-                    type="button"
-                    className="btn"
-                    onClick={() => {
-                      setName(title);
-                      setRenaming(true);
-                    }}
-                  >
-                    Rename
-                  </button>
-                )}
-                {confirmingRetire ? (
-                  <button type="button" className="btn btn-danger" onClick={() => onRetire(planId)}>
-                    Really retire — archives every remaining session
-                  </button>
-                ) : (
-                  <button type="button" className="btn" onClick={() => setConfirmingRetire(true)}>
-                    Retire…
-                  </button>
-                )}
-              </>
-            ) : null}
-            <span className="studio-modal-grow" />
-            <button
-              type="button"
-              className="btn btn-primary"
-              onClick={() => onCanned(`Let's talk about "${title}" — how is it tracking, and would you change anything?`)}
-            >
-              Talk to your coach about this plan
-            </button>
-          </div>
         ) : null}
 
         {(d?.plan ?? plan)?.source === "studio" ? (

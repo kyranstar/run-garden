@@ -219,6 +219,16 @@ button {
   max-width: 700px;
   margin: 0 auto;
   width: 100%;
+  /* Backstop, not the fix: no descendant may make the DOCUMENT wider than
+     the viewport. Body-level horizontal scroll is uniquely destructive here
+     because every `position: fixed` right-anchored element (bottom-nav,
+     coach pill, a sheet's ✕) re-anchors to the widened page and walks
+     off-screen — 102px of scroll hid the Settings tab completely. `clip`
+     rather than `hidden` on purpose: it does not create a scroll container,
+     so `overflow-y` stays `visible` and the side-nav's `position: sticky`
+     keeps working. Every known offender is fixed at the source (see `.pill`);
+     this only guarantees the failure mode can't come back silently. */
+  overflow-x: clip;
 }
 
 /* Mobile bottom navigation */
@@ -407,7 +417,14 @@ button {
   gap: 0.5rem;
 }
 
-/* Status pills: icon + label, never color alone */
+/* Status pills: icon + label, never color alone.
+   `.pill` is a LABEL primitive and `nowrap` is its contract — a pill is a
+   token you read at a glance, and a wrapped one stops looking like a token.
+   The corollary is the hard rule: a pill may never carry a sentence. One
+   that did (the race-conflict buttons) measured 456px inside a 358px card
+   and scrolled the entire app sideways, which re-anchored every fixed
+   right-edge element off-screen. Prose that DOES something wears
+   `.btn .btn-wrap`; prose that just says something wears `.note`. */
 .pill {
   display: inline-flex;
   align-items: center;
@@ -448,6 +465,112 @@ button {
   background: var(--bg-sunken);
   color: var(--ink-soft);
   border-color: var(--border);
+}
+
+/* ── Containment primitives (System 1) ────────────────────────────────────
+   A container is honest about its bounds: it fits the space it actually has,
+   it never forces the page wider, it shows you when it has clipped content,
+   and it grows away from what you are reading. Three primitives carry that:
+   `.btn-wrap` and `.note` (prose that fits its column), and `.scroller` (the
+   one scroll owner of a box, which announces its own clipping). */
+
+/* A sentence-length ACTION. `.btn` already owns the hit target, the border
+   and the disabled state; this only says "this one carries prose", so it
+   wraps, reads left, and can never be wider than its column. */
+.btn-wrap {
+  white-space: normal;
+  text-align: left;
+  justify-content: flex-start;
+  max-width: 100%;
+  padding-top: 0.45rem;
+  padding-bottom: 0.45rem;
+  overflow-wrap: anywhere;
+}
+
+/* A sentence-length NOTE — the inert twin of `.btn-wrap`, for the tinted
+   asides that used to be pills ("breaks a rule: Long runs stay on
+   Saturdays", the COROS-check line). Block, so it takes the column's width
+   and wraps inside it rather than pushing the column sideways. */
+.note {
+  display: block;
+  max-width: 100%;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  background: var(--bg-sunken);
+  color: var(--ink-soft);
+  padding: 0.22rem 0.55rem;
+  font-size: 0.8rem;
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+a.note {
+  text-decoration: none;
+}
+.note-warn {
+  background: var(--warn-soft);
+  color: var(--warn);
+  border-color: color-mix(in srgb, var(--warn) 35%, transparent);
+}
+
+/* THE scroll owner. Every box that can clip its content wears this — and
+   only one box per dialog does, so a dialog has exactly one thing to scroll.
+   It carries the affordance with it: a real scrollbar where the platform
+   draws one, plus edge shadows that appear the moment there is something
+   past the edge and are covered again at rest. Pure CSS, no JS and no
+   animation (so nothing to gate on prefers-reduced-motion): the two `local`
+   gradients scroll WITH the content and hide the two `scroll` shadows that
+   are pinned to the box.
+
+   `--scroll-surface` is the colour the covers paint in; set it wherever the
+   scroller sits on something other than a raised surface. `min-height: 0` is
+   the other half of the contract: inside a flex column a scroller must be
+   allowed to shrink, or it silently pushes its parent taller instead of
+   scrolling (this is what let the coach panel paint outside its sheet). */
+.scroller {
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  background:
+    linear-gradient(var(--scroll-surface, var(--bg-raised)), transparent) top / 100% 1.5rem no-repeat
+      local,
+    linear-gradient(transparent, var(--scroll-surface, var(--bg-raised))) bottom / 100% 1.5rem
+      no-repeat local,
+    radial-gradient(farthest-side at 50% 0%, rgba(9, 14, 10, 0.34), transparent) top / 100% 0.85rem
+      no-repeat scroll,
+    radial-gradient(farthest-side at 50% 100%, rgba(9, 14, 10, 0.34), transparent) bottom / 100%
+      0.85rem no-repeat scroll;
+}
+/* A pointer platform gets a real, always-drawn scrollbar (macOS overlay
+   scrollbars fade out, which is exactly the "nothing indicates it" problem);
+   touch keeps the edge shadows and its own transient bar. */
+@media (hover: hover) and (pointer: fine) {
+  .scroller::-webkit-scrollbar {
+    width: 10px;
+    height: 10px;
+  }
+  .scroller::-webkit-scrollbar-track {
+    background: transparent;
+  }
+  .scroller::-webkit-scrollbar-thumb {
+    background: var(--border-strong);
+    background-clip: content-box;
+    border: 3px solid transparent;
+    border-radius: 999px;
+  }
+  .scroller:hover::-webkit-scrollbar-thumb {
+    background: var(--ink-faint);
+    background-clip: content-box;
+  }
+}
+/* Firefox has no `::-webkit-scrollbar`, so it takes the standard properties
+   instead. They are mutually exclusive on purpose: Chromium ≥121 IGNORES the
+   `::-webkit-scrollbar` rules above the moment `scrollbar-width` is set, and
+   the overlay bar it substitutes is the one that fades away. */
+@supports not selector(::-webkit-scrollbar) {
+  .scroller {
+    scrollbar-width: thin;
+    scrollbar-color: var(--border-strong) transparent;
+  }
 }
 
 /* Workout category chip */
@@ -896,9 +1019,16 @@ button {
   .garden-home--stage {
     gap: 0;
   }
+  /* Remaining space, not the window (System 1 §4). `height: 100dvh` measured
+     the WINDOW while the stage's box started at y=52 under the fixture-mode
+     banner, so the stage overflowed by exactly the banner and the whole
+     bottom HUD row — rail and attention link — fell below the fold (2px of a
+     28px control visible). `--space-above` is the measured distance from the
+     document top to this box (useSpaceAbove, components.tsx); with no banner
+     it is 0 and this is the old expression. */
   .garden-stage {
     position: relative;
-    height: 100dvh;
+    height: calc(100dvh - var(--space-above, 0px));
     overflow: hidden;
     background: #0f1512;
   }
@@ -1040,7 +1170,11 @@ button {
     background: #e6c26a;
   }
 
-  /* Hierarchy 5: the action dock, bottom-left. */
+  /* Hierarchy 5: the action dock, bottom-left. Bottom-anchored, so expanding
+     it can only grow upward — which it does as an OVERLAY over the scene,
+     reflowing nothing, with the pill itself staying exactly where it was
+     pressed (System 1 §5). The panel is the first child so it stacks above
+     that fixed pill row. */
   .hud-dock {
     position: absolute;
     left: clamp(1.6rem, 3.2vw, 3.2rem);
@@ -1107,14 +1241,16 @@ button {
     width: min(26rem, 38vw);
     /* Capped and internally scrollable so a short laptop viewport can never
        let the panel grow tall enough to bury the top-left HUD behind it
-       (C1/C23) — 12rem reserves room above for the condition word/forecast
-       and below for the stage edge. More translucent than a typical raised
-       surface so the garden's plants still read through — blur stays at the
-       stage's standard 16px (a heavier blur was tried and reviewed back
-       out: it worked against silhouettes reading through, the opposite of
-       the goal). */
-    max-height: min(32rem, calc(100dvh - 12rem));
-    overflow-y: auto;
+       (C1/C23) — 14rem reserves room above for the condition word/forecast,
+       below for the stage edge, and for the dock pill, which now stays put
+       underneath the open panel instead of being replaced by it. More
+       translucent than a typical raised surface so the garden's plants still
+       read through — blur stays at the stage's standard 16px (a heavier blur
+       was tried and reviewed back out: it worked against silhouettes reading
+       through, the opposite of the goal). */
+    max-height: min(32rem, calc(100dvh - 14rem));
+    /* Its own covers must paint in the panel's glass, not a flat surface. */
+    --scroll-surface: color-mix(in srgb, var(--bg-raised) 72%, transparent);
     border-radius: 14px;
     background: color-mix(in srgb, var(--bg-raised) 72%, transparent);
     backdrop-filter: blur(16px) saturate(1.05);
@@ -1163,15 +1299,6 @@ button {
     padding: 0.55rem 0.6rem 0.55rem;
     border-bottom: 1px solid var(--border);
   }
-  .dock-verdict-head {
-    display: flex;
-    align-items: center;
-    gap: 0.45rem;
-    margin: 0;
-    font-size: 1.02rem;
-    font-weight: 700;
-    color: var(--verdict-ink);
-  }
   .dock-verdict-dot {
     flex: none;
     width: 0.6rem;
@@ -1179,8 +1306,11 @@ button {
     border-radius: 50%;
     background: var(--verdict-ink);
   }
+  /* The panel head's leading line, now that the verdict phrase stays on the
+     pill below (see DockVerdict): the numbers behind the reading, nothing
+     else. */
   .dock-verdict-why {
-    margin: 0.2rem 0 0;
+    margin: 0;
     font-size: 0.82rem;
     color: var(--ink-soft);
     font-variant-numeric: tabular-nums;
@@ -1708,9 +1838,13 @@ button {
   border-bottom: 1px solid var(--border);
   flex: none;
 }
+/* The drawer's single scroll owner (it wears `.scroller` too — the Collection
+   drawer clips 3,509px and said nothing about it). The covers must paint in
+   the drawer's own translucent glass, not a flat raised surface. */
 .drawer-body {
   padding: 0.9rem 1rem 1.2rem;
-  overflow-y: auto;
+  flex: 1 1 auto;
+  --scroll-surface: color-mix(in srgb, var(--bg-raised) 93%, transparent);
 }
 .drawer-section {
   margin-bottom: 1rem;
@@ -2535,14 +2669,52 @@ button {
   align-items: flex-end;
   justify-content: center;
 }
+/* ONE scroll owner per dialog (System 1 §2). The sheet itself never scrolls:
+   it is a flex column of [head · body · foot] where only `.sheet-body` is a
+   `.scroller`, so the title row and the ✕ can never be scrolled off (the
+   match sheet used to OPEN already scrolled past both) and an action row
+   handed to `footer` can never sit below an invisible fold (the studio modal
+   hid 740px of 1304, every button inside it). Children size to this box —
+   nothing inside a dialog may set its own vh/dvh height. */
 .sheet {
   background: var(--bg-raised);
   border-radius: 16px 16px 0 0;
   width: 100%;
   max-width: 640px;
   max-height: 85dvh;
-  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
   padding: 1rem 1rem calc(1rem + env(safe-area-inset-bottom, 0px));
+}
+.sheet-head {
+  flex: none;
+  margin-bottom: 0.7rem;
+}
+.sheet-body {
+  flex: 1 1 auto;
+  min-height: 0;
+  /* Room for the scrollbar and the edge shadow without inventing a second
+     gutter — the sheet's own padding is pulled back by the same amount. */
+  padding-right: 0.35rem;
+  margin-right: -0.35rem;
+}
+.sheet-foot {
+  flex: none;
+  margin-top: 0.7rem;
+  padding-top: 0.7rem;
+  border-top: 1px solid var(--border);
+}
+/* `fill`: the dialog's content is itself a column that owns its own scroll
+   region (the coach panel). The sheet takes a definite height so that child
+   has something real to size against, and the body stops scrolling. */
+.sheet--fill {
+  height: 85dvh;
+}
+.sheet--fill > .sheet-body {
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
 }
 @media (prefers-reduced-motion: no-preference) {
   .sheet-backdrop {
@@ -2569,14 +2741,38 @@ button {
   }
   .sheet {
     border-radius: 16px;
-    max-height: 80vh;
+    max-height: 80dvh;
+  }
+  .sheet--fill {
+    height: min(80dvh, 46rem);
   }
   /* The drag-handle is a touch idiom — it has no meaning on a centered dialog. */
   .sheet-handle {
     display: none;
   }
+  /* Frozen across a disclosure (System 1 §5). A centred dialog re-centres as
+     it grows, so opening "Full structure" inside one moved the dialog up 64px
+     AND its action row down 64px — 128px of relative motion under a still
+     reader. The dialog stays centred (and free to size itself to content that
+     is still arriving) until the reader presses something inside it; at that
+     instant components.tsx measures BOTH its top edge (`--sheet-pin`) and its
+     height (`--sheet-hold`) and this rule holds them, so the growth lands in
+     the body's scroll region and nothing above it moves. `--sheet-hold` is a
+     max, not a height: re-collapsing the disclosure shrinks the dialog back
+     rather than leaving a hole. */
+  .sheet-backdrop[data-pinned] {
+    align-items: flex-start;
+  }
+  .sheet-backdrop[data-pinned] > .sheet {
+    margin-top: var(--sheet-pin, 0px);
+    max-height: min(
+      var(--sheet-hold, 100dvh),
+      calc(100dvh - var(--sheet-pin, 0px) - 1.5rem)
+    );
+  }
 }
 .sheet-handle {
+  flex: none;
   width: 36px;
   height: 4px;
   border-radius: 2px;
@@ -2692,17 +2888,16 @@ button {
 }
 .screen-title {
   margin-bottom: 1rem;
-  /* The COROS-check pill is transient and can be long — when it appears on a
+  /* The COROS-check line is transient and can be long — when it appears on a
      phone, the row wraps rather than pushing the page sideways (R1). */
   flex-wrap: wrap;
 }
 .screen-title .coros-check-link,
 .screen-title .coros-checking {
-  white-space: normal;
   min-width: 0;
 }
-/* On phones the pill drops to its own full-width line UNDER the title row,
-   so it never shoves the row's buttons (e.g. "Backfill history") around. */
+/* On phones it drops to its own full-width line UNDER the title row, so it
+   never shoves the row's buttons (e.g. "Backfill history") around. */
 @media (max-width: 640px) {
   .screen-title .coros-check-link,
   .screen-title .coros-checking {
@@ -3455,13 +3650,20 @@ button {
 .pill-lift { background: var(--lift-soft); color: var(--lift-ink); }
 .pill-warnsoft { background: var(--warn-soft); color: var(--warn); font-weight: 600; }
 
+/* The panel sizes to the box it is GIVEN — the coach window's fixed height or
+   the sheet's fill body — never to the window. It used to carry
+   `max-height: 84vh` inside an 85dvh sheet, and the 1vh difference plus two
+   stacked headers is how its tray came to paint 39px above the sheet's own
+   top edge, out over the backdrop, unreachable. */
 .coach-panel {
   background: var(--bg-raised);
   border: 1px solid var(--border);
   border-radius: var(--radius);
   display: flex;
   flex-direction: column;
-  max-height: 84vh;
+  flex: 1 1 auto;
+  min-height: 0;
+  max-height: 100%;
 }
 .coach-panel-head {
   display: flex;
@@ -3469,6 +3671,17 @@ button {
   align-items: center;
   padding: 0.65rem 0.9rem;
   border-bottom: 1px solid var(--border);
+  flex: none;
+}
+/* The panel's ONE scroll owner: the tray and the thread share it, so a tall
+   tray can no longer squeeze the conversation to 120px of a 564px sheet —
+   it just makes the shared region longer, and the region says so. The head
+   above it and the composer below it stay pinned and visible. */
+.coach-scroll {
+  flex: 1 1 auto;
+  min-height: 6rem;
+  display: flex;
+  flex-direction: column;
 }
 .coach-panel-head h2 { font-family: var(--font-display); font-size: 1rem; margin: 0; }
 
@@ -3476,6 +3689,7 @@ button {
   padding: 0.6rem 0.9rem;
   border-bottom: 1px solid var(--border);
   background: var(--coach-tray-bg);
+  flex: none;
 }
 .coach-tray-head {
   font-size: 0.68rem;
@@ -3495,15 +3709,19 @@ button {
 .coach-prop:last-child { margin-bottom: 0; }
 .coach-prop-title { font-size: 0.92rem; }
 .coach-prop-evidence { margin: 0.25rem 0 0; }
-.coach-prop-flags { display: flex; gap: 0.3rem; flex-wrap: wrap; margin-top: 0.3rem; }
+/* A column, not a row of pills: "breaks a rule: …" is a whole rule sentence,
+   and as a nowrap pill it clipped at scrollWidth 461 in a 327px card with no
+   way to scroll to the end of the very sentence that matters. */
+.coach-prop-flags { display: flex; flex-direction: column; gap: 0.3rem; margin-top: 0.3rem; }
 .coach-prop-why { margin: 0.4rem 0 0; font-size: 0.88rem; }
 /* Audit C17: approve/decline used to fail silently (a 409 read exactly
    like success — the card just vanished). */
 .coach-prop-error { margin: 0.4rem 0 0; font-size: 0.82rem; color: var(--danger); }
 
+/* Not a scroller any more — `.coach-scroll` above owns that. It still grows
+   to fill the region so a short thread keeps the composer at the bottom. */
 .coach-thread {
-  flex: 1;
-  overflow: auto;
+  flex: 1 0 auto;
   padding: 0.7rem 0.9rem;
   display: flex;
   flex-direction: column;
@@ -3570,7 +3788,8 @@ button {
   gap: 0.5rem;
 }
 
-.coach-composer { border-top: 1px solid var(--border); padding: 0.55rem 0.7rem; }
+/* Pinned footer of the panel — never part of the scroll region. */
+.coach-composer { border-top: 1px solid var(--border); padding: 0.55rem 0.7rem; flex: none; }
 .coach-input {
   display: flex;
   gap: 0.5rem;
@@ -3587,6 +3806,11 @@ button {
   align-items: center;
   flex-wrap: wrap;
   margin-top: 0.45rem;
+}
+/* The chip group holds answers of unknown length — it wraps too, so a wordy
+   set of options can't widen the composer and, through it, the whole panel. */
+.coach-question > .row {
+  flex-wrap: wrap;
 }
 .chipbtn {
   display: inline-flex;
@@ -3663,7 +3887,16 @@ button {
   box-shadow: 0 4px 14px rgba(40, 60, 45, 0.3);
   cursor: pointer;
 }
-.coach-sheet-panel .coach-panel { max-height: 76vh; border: 0; }
+/* The mobile coach sheet: the sheet is `fill`, so this wrapper is just the
+   column that hands the panel the body's height. No vh of its own (was
+   76vh inside an 85dvh sheet) — that arithmetic is the sheet's now. */
+.coach-sheet-panel {
+  display: flex;
+  flex-direction: column;
+  flex: 1 1 auto;
+  min-height: 0;
+}
+.coach-sheet-panel .coach-panel { border: 0; border-radius: 0; }
 
 /* Settings memory section */
 .memory-row {
@@ -3920,14 +4153,28 @@ button {
   max-width: 1440px;
 }
 
+/* One width contract for the page and the coach overlay (System 1 §6).
+   `--coach-w` is the single declaration of how wide the coach window is; the
+   window reads it for its width and the page reads it for the gutter it must
+   yield while the window is open. They cannot drift, so the window can no
+   longer sit on top of 106px of every card (Sunday 89% hidden, the jump
+   control entirely) — and when it is minimized the class comes off and the
+   column reclaims the space instead of leaving a 310px empty gutter. */
 .plan-page {
   position: relative;
+  --coach-w: min(400px, 34vw);
 }
 .plan-page-col {
   display: flex;
   flex-direction: column;
   gap: 0.9rem;
   max-width: 880px;
+  min-width: 0;
+}
+@media (min-width: 1024px) {
+  .plan-page--coach-open {
+    padding-right: calc(var(--coach-w) + 1.5rem);
+  }
 }
 
 /* Weekly brief */
@@ -4499,7 +4746,8 @@ button {
   top: 4.5rem;
   right: 1rem;
   bottom: 1rem;
-  width: min(400px, 34vw);
+  /* The page reserves exactly this much (see `.plan-page--coach-open`). */
+  width: var(--coach-w, min(400px, 34vw));
   z-index: 45; /* above page content, below sheets (z 60) */
   background: var(--bg-raised);
   border: 1px solid var(--border-strong);
@@ -4670,22 +4918,29 @@ button {
   color: var(--ink-soft);
   max-width: 62ch;
 }
-/* The two-race-dates warning resolves in place — buttons wrap on phones. */
+/* The two-race-dates warning resolves in place. Each choice is a whole
+   sentence naming a date and a race, so these are `.btn .btn-wrap` — they
+   were pills, and a 456px nowrap pill in a 358px card is what put 102px of
+   horizontal scroll on the entire app. A column, so each choice gets the
+   card's full width and reads as one line of prose per option. */
 .plan-brief-race-actions {
   display: flex;
-  flex-wrap: wrap;
+  flex-direction: column;
+  align-items: flex-start;
   gap: 0.4rem;
   margin-top: 0.4rem;
 }
-.plan-brief-race-actions .pill {
-  cursor: pointer;
-  font: inherit;
-  font-size: 0.78rem;
-  text-align: left;
+.plan-brief-race-actions .btn {
+  font-size: 0.82rem;
 }
-.plan-brief-race-actions .pill:disabled {
-  opacity: 0.6;
-  cursor: default;
+@media (min-width: 640px) {
+  .plan-brief-race-actions {
+    flex-direction: row;
+    flex-wrap: wrap;
+  }
+  .plan-brief-race-actions .btn {
+    flex: 1 1 18rem;
+  }
 }
 .plan-brief-chip {
   font: inherit;
