@@ -123,6 +123,10 @@ export function RaceStrip({ units }: { units: Units }) {
 
   return (
     <section className={`card race-strip${open ? " race-strip-open" : ""}`} aria-label="Race build">
+      {/* The collapsed line IS this section's heading, so it is one — the
+          `<h2>` carries the outline and `.race-strip-h` carries no type of its
+          own, leaving the button's own row untouched. */}
+      <h2 className="race-strip-h">
       <button
         type="button"
         className="race-strip-head race-strip-toggle"
@@ -140,12 +144,13 @@ export function RaceStrip({ units }: { units: Units }) {
         </span>
         <span className="race-caret" aria-hidden>{open ? "▾" : "▸"}</span>
       </button>
+      </h2>
       {open ? (
         <div className="race-strip-body">
           <TaperArc race={race} />
           <div className="race-cols">
             <div className="race-col">
-              <h4 className="race-h">Goal pace</h4>
+              <h3 className="race-h">Goal pace</h3>
               {race.goal && pred ? (
                 <>
                   <div className="race-goal num">
@@ -202,7 +207,7 @@ export function RaceStrip({ units }: { units: Units }) {
               ) : null}
             </div>
             <div className="race-col">
-              <h4 className="race-h">Race prep</h4>
+              <h3 className="race-h">Race prep</h3>
               <ul className="race-checklist">
                 {race.checklist.map((item) => (
                   <li key={item.id}>

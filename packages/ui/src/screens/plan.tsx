@@ -171,7 +171,7 @@ function WorkoutDetail({
             <summary className="muted" style={{ cursor: "pointer" }}>
               Full structure ({stages.filter((s) => s.kind !== "repeat").length} stages)
             </summary>
-            <ul className="muted" style={{ paddingLeft: "1.2rem", marginTop: "0.4rem" }}>
+            <ul className="muted" style={{ paddingLeft: "var(--space-6)", marginTop: "var(--space-3)" }}>
               {stages.map((s) => {
                 // Pace targets were stored but never shown (2026-08-14).
                 // Bounds arrive either way round — COROS writes recovery

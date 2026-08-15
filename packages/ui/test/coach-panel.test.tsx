@@ -85,6 +85,20 @@ describe("PendingTray", () => {
     expect(whyBtn).not.toContain("disabled");
   });
 
+  it("the actions row grants the clearance its 24px 'Why?' pad needs", () => {
+    // "Why?" is a 24px link between two 44px buttons, so its hit pad reaches
+    // 10px past its box; the row's 8px gap put that pad on a neighbour. The
+    // container is what licenses a pad, so the row wears `.tap-clear`.
+    const html = render(
+      createElement(ProposalCard, { proposal: prop("a"), onApprove: noop, onDecline: noop }),
+    );
+    expect(html).toMatch(/class="row proposal-actions tap-clear"/);
+    // …and it may not re-declare a narrower gap inline, which would win over
+    // the class and silently take the clearance back.
+    const row = html.match(/<div class="row proposal-actions tap-clear"[^>]*>/)![0];
+    expect(row).not.toContain("gap:");
+  });
+
   it("shows why the last approve/decline failed instead of silently vanishing", () => {
     const html = render(
       createElement(ProposalCard, {

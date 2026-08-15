@@ -1299,7 +1299,7 @@ export function GardenScreen() {
               ? `+${dayIndex - todayIndex} days — ${formatDayShort(dayView.date)} · projected`
               : `${formatDayShort(dayView.date)} — day ${dayIndex}${viewingLive ? " (today)" : ""}`}
         </span>
-        <div className="row" style={{ gap: "0.35rem" }}>
+        <div className="row" style={{ gap: "var(--space-3)" }}>
           {!timelineLoading && viewingFuture ? (
             <button
               type="button"
@@ -1715,7 +1715,7 @@ export function GardenScreen() {
           title={`Collection · ${unlockedCount} of ${codex.length}`}
         >
           <div className="drawer-section">
-            <div className="card-title">Growing next — per workout type</div>
+            <h3 className="card-title">Growing next — per workout type</h3>
             <DisciplineNudges codex={codex} onOpenSpecies={setOpenSpeciesId} />
           </div>
           <DiversityStrip snapshot={snapshot} />

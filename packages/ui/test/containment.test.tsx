@@ -357,7 +357,7 @@ describe("the coach overlay reserves its own room", () => {
     expect(ruleBody(".plan-page")).toContain("--coach-w:");
     expect(ruleBody(".coach-window")).toContain("width: var(--coach-w");
     expect(ruleBody("  .plan-page--coach-open")).toContain(
-      "padding-right: calc(var(--coach-w) + 1.5rem)",
+      "padding-right: calc(var(--coach-w) + var(--space-7))",
     );
   });
 });

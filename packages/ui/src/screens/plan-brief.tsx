@@ -148,7 +148,7 @@ export function WeeklyBrief({
       <div className="plan-brief-head">
         <h2 className="plan-brief-headline">{headline}</h2>
         {pendingCount > 0 ? (
-          <button type="button" className="pill pill-warnsoft plan-brief-needs" onClick={onNeedsYou}>
+          <button type="button" className="pill plan-brief-needs" onClick={onNeedsYou}>
             Needs you · {pendingCount}
           </button>
         ) : null}

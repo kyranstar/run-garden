@@ -182,12 +182,19 @@ export function PlanCards({
           <section
             key={discipline}
             className="plan-section"
-            aria-label={discipline === "lift" ? "Lifting plans" : "Running plans"}
+            aria-labelledby={`plan-section-${discipline}`}
           >
             <div className="plan-section-head">
-              <span className={`pill ${discipline === "lift" ? "pill-lift" : "pill-run"}`}>
-                {discipline === "lift" ? "Lift" : "Run"}
-              </span>
+              {/* The pill is the visible label; the heading it lives in is what
+                  puts the section in the document outline. */}
+              <h2 id={`plan-section-${discipline}`} className="plan-section-h">
+                <span className={`pill ${discipline === "lift" ? "pill-lift" : "pill-run"}`} aria-hidden>
+                  {discipline === "lift" ? "Lift" : "Run"}
+                </span>
+                <span className="visually-hidden">
+                  {discipline === "lift" ? "Lifting plans" : "Running plans"}
+                </span>
+              </h2>
               <span className="plan-section-rule" aria-hidden />
             </div>
             <div className="plan-section-list">

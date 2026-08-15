@@ -204,11 +204,11 @@ function UsageMeter({ llm }: { llm: StudioLlmStatusDto }) {
         <div className={`usage-meter-fill ${cls}`} style={{ width: `${pct}%` }} />
       </div>
       {llm.cutoff ? (
-        <p className="faint" style={{ marginTop: "0.25rem" }}>
+        <p className="faint" style={{ marginTop: "var(--space-2)" }}>
           Paused until the rolling week clears — generation and edits are blocked.
         </p>
       ) : llm.warn ? (
-        <p className="faint" style={{ marginTop: "0.25rem" }}>
+        <p className="faint" style={{ marginTop: "var(--space-2)" }}>
           Approaching the weekly AI budget.
         </p>
       ) : null}
@@ -489,7 +489,7 @@ function PushRowStatus({
     // COROS too, so there's nothing here that can prove a delete is ours —
     // the fix is deleting it on COROS, not retrying here.
     return (
-      <div className="stack" style={{ gap: "0.3rem" }}>
+      <div className="stack" style={{ gap: "var(--space-2)" }}>
         <span className="pill pill-neutral">Edited on COROS</span>
         <button className="btn btn-small" disabled={undoing} onClick={() => onUndo(row.id)}>
           {undoing ? "Undoing…" : "Undo"}
@@ -505,7 +505,7 @@ function PushRowStatus({
   // the calendar somewhere" from "never made it" for a failed row.
   const stillOnCalendar = Boolean(row.corosHappenDay);
   return (
-    <div className="stack" style={{ gap: "0.3rem" }}>
+    <div className="stack" style={{ gap: "var(--space-2)" }}>
       <span className="pill pill-danger" title={row.error ?? undefined}>
         <IconAlert /> {stillOnCalendar ? "Failed — still on calendar" : "Failed — not on calendar"}
       </span>

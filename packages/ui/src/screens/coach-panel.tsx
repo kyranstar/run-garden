@@ -141,7 +141,7 @@ export function ProposalCard({
   const isSkip = (proposal.ops as Array<{ kind?: string }>).some((o) => o.kind === "skip");
   return (
     <div className="coach-prop" id={`proposal-${proposal.id}`}>
-      <div className="row" style={{ gap: "0.45rem" }}>
+      <div className="row" style={{ gap: "var(--space-4)" }}>
         {discipline ? (
           <span className={`pill ${discipline === "lift" ? "pill-lift" : "pill-run"}`}>
             {discipline === "both" ? "Run + Lift" : discipline === "lift" ? "Lift" : "Run"}
@@ -166,7 +166,11 @@ export function ProposalCard({
       ) : null}
       {why ? <p className="coach-prop-why muted">{proposal.rationale}</p> : null}
       {error ? <p className="coach-prop-error">{error}</p> : null}
-      <div className="row" style={{ gap: "0.45rem", marginTop: "0.45rem" }}>
+      {/* `.tap-clear`: "Why?" is a 24px link between two 44px buttons, so its
+          hit pad reaches 10px past its box on every side. The row grants the
+          clearance (and the gap) that makes that pad legal — see "Touch
+          floor" in styles.css. */}
+      <div className="row proposal-actions tap-clear" style={{ marginTop: "var(--space-4)" }}>
         <button
           type="button"
           className="btn btn-primary btn-small"
@@ -314,7 +318,7 @@ export function CoachThread({
         ) : (
           <div key={m.id} className={`coach-msg coach-msg-${m.role}${m.failed ? " coach-msg-failed" : ""}`}>
             {m.refs.kind === "analysis" ? (
-              <span className="tagchip" style={{ marginRight: "0.35rem" }}>
+              <span className="tagchip" style={{ marginRight: "var(--space-3)" }}>
                 effort read
               </span>
             ) : null}
@@ -382,7 +386,7 @@ export function CoachComposer({
       {question ? (
         <div className="coach-question" role="group" aria-label="Coach question">
           <span className="faint">{question.body}</span>
-          <span className="row" style={{ gap: "0.35rem" }}>
+          <span className="row" style={{ gap: "var(--space-3)" }}>
             {question.chips.map((chip) => (
               <button
                 key={chip}
@@ -464,7 +468,7 @@ export function CoachPanel({
       ) : (
         <div className="coach-panel-head">
           <h2>Coach</h2>
-          <span className="row" style={{ gap: "0.6rem" }}>
+          <span className="row" style={{ gap: "var(--space-4)" }}>
             {onCheckIn ? (
               <button type="button" className="btn btn-small" disabled={busy} onClick={onCheckIn}>
                 Check in

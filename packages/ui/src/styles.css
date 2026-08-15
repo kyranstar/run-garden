@@ -40,6 +40,76 @@
   --lift-ink: #b5652f;
   --adventure-ring: #8a7550;
 
+  /* Text that sits ON a filled accent (--green, --lift-ink, --ink-soft, a
+     category hue). It FLIPS with the theme, because an accent fill flips too:
+     light mode fills dark and takes white type; dark mode fills light and must
+     take dark type. The 24 hardcoded `#fff`s this replaces did not flip, so
+     every filled control in dark mode was white-on-light — the primary button
+     measured 2.8:1 and the "All" filter chip 1.7:1. */
+  --on-accent: #fff;
+  /* Type that sits on the garden ARTWORK (the stage, the ambient window).
+     Deliberately does NOT flip: the scene is the same picture in both themes
+     and its contrast comes from the scrims below, not from the page theme. */
+  --on-scene: #fff;
+  --on-scene-rgb: 255, 255, 255;
+  /* The one scrim/shadow colour the stage paints in. Was sixteen hand-typed
+     `rgba(9, 14, 10, α)` literals across nine alphas. */
+  --scrim-rgb: 9, 14, 10;
+  --stage-bg: #0f1512;
+  /* One text-shadow for every word printed straight onto the scene (nine
+     hand-tuned blur/alpha pairs before). TWO layers, and both are load-bearing:
+     the wide one separates a whole phrase from the sky, the TIGHT one is the
+     only thing an 11px glyph has — its strokes are 1px wide, so a 10px blur
+     spreads under them and never darkens the pixels immediately around them.
+     Collapsing to the wide layer alone took the 11.2px beat label from 1.96:1
+     to 1.43:1 (measured off rendered pixels). Sizes below ~14px depend on the
+     tight layer; do not remove it. */
+  --scene-text-shadow:
+    0 1px 2px rgba(var(--scrim-rgb), 0.62), 0 1px 10px rgba(var(--scrim-rgb), 0.55);
+
+  /* ── Workout category hues ──────────────────────────────────────────────
+     ONE declaration per category. There used to be two independent sets —
+     `.cat-*` dots and the `--act-hue-*` spine/shape colours — which meant a
+     dark-mode correction had to be written twice and, in practice, only ever
+     landed on `race` and `long`. Both surfaces now read these.
+     Measured against --bg-raised in dark (#212422): every value below clears
+     the 3:1 non-text floor except race (2.65:1) and long (2.99:1), which are
+     the two that carry a dark override. */
+  --hue-quality: #b06a4d;
+  --hue-race: #9a4a68;
+  --hue-long: #4d6ab0;
+  --hue-easy: #5f9367;
+  --hue-recovery: #7fae94;
+  --hue-rest: #b8b3a5;
+  --hue-strength: #8a87b8;
+  /* Yoga is the one category hue that carries TEXT on the fill — `.nudge-disc`
+     (11.2px) and the active `.chip-yoga` (12.8px) — so it answers to the 4.5:1
+     text floor, not the 3:1 fill floor. Its first value measured 4.16:1 against
+     white and had no dark override at all (4.38:1 on --on-accent's near-black).
+     Darkened in light and lifted in dark, hue family kept, so BOTH themes clear
+     4.5. Every other hue in this list is a dot, a spine or a bar; they answer
+     to 3:1 and are unchanged. */
+  --hue-yoga: #83649d;
+  --hue-unknown: #a3a49e;
+
+  /* Codex rarity tiers — the one theme block in the sheet that had no
+     `:root:not([data-theme="light"])` / `:root[data-theme="dark"]` guard, so
+     it was wrong in BOTH toggle directions. Tokens fix that by construction. */
+  --rarity-uncommon-bg: #e4ecf7;
+  --rarity-uncommon-ink: #3c5f8a;
+  --rarity-rare-bg: #f3e8f2;
+  --rarity-rare-ink: #7a4a74;
+
+  /* The unlock ceremony's gold. `--ceremony-ink` measured 3.59:1 against the
+     dark card — under AA for the 11px eyebrow it paints — so it takes a lifted
+     dark value like every other ink token. */
+  --ceremony-ink: #a8842c;
+  --ceremony-line: #c9a13c;
+  --ceremony-spark: #e8c86a;
+  /* An accent for type printed on the ARTWORK (the forecast's emphasis, the
+     attention link) — sits on the scene, so like --on-scene it does not flip. */
+  --on-scene-accent: #f4dcae;
+
   /* Chart series — re-stepped 2026-08-04: the previous values (#3e7a52 /
      #b06a4d / #5c6ab0) FAILED the dataviz skill's palette validator
      (`validate_palette.js "<hexes>" --mode light --pairs all`): chroma
@@ -57,9 +127,97 @@
   --chart-track: #eeeae1;
   --chart-grid: #e5e1d6;
 
-  --radius: 12px;
+  /* ── The scales (System 2) ─────────────────────────────────────────────
+     Every length, size and weight in this sheet comes from one of these. A
+     raw `rem`/`px` in a padding, margin, gap, font-size, font-weight or
+     border-radius is a bug — the handful of deliberate exceptions are each
+     marked `scale-exempt` with the reason, and nothing else should be.
+
+     SPACING — eight rhythm steps (1–8) plus two page-layout steps (9–10).
+     Replaced 62 distinct values, seventeen of which lived inside the
+     0.3–0.9rem band that sets every card's internal rhythm. */
+  --space-1: 0.125rem; /*  2px */
+  --space-2: 0.25rem; /*  4px */
+  --space-3: 0.375rem; /*  6px */
+  --space-4: 0.5rem; /*  8px */
+  --space-5: 0.75rem; /* 12px */
+  --space-6: 1rem; /* 16px */
+  --space-7: 1.5rem; /* 24px */
+  --space-8: 2rem; /* 32px */
+  --space-9: 2.5rem; /* 40px — desktop page gutter */
+  --space-10: 3rem; /* 48px — desktop page foot */
+
+  /* TYPE — seven steps. Replaced 43 values, 24 of which sat between 0.6 and
+     1.0rem at an average step of 0.27px. The bottom four are an arithmetic
+     1.6px ramp (11.2 → 16px, ~1.12 ratio) because that is where the app does
+     its reading; the top three open up so a rank change is unmistakable. */
+  --text-2xs: 0.7rem; /* 11.2px — the eyebrow, captions, tick labels */
+  --text-xs: 0.8rem; /* 12.8px — meta lines, chips, secondary numbers */
+  --text-sm: 0.9rem; /* 14.4px — the default reading size */
+  --text-md: 1rem; /* 16px   — item rank, lead numbers */
+  --text-lg: 1.15rem; /* 18.4px — the display-serif heading */
+  --text-xl: 1.5rem; /* 24px   — a card's lead / the biggest stat */
+  --text-2xl: 1.9rem; /* 30.4px — page rank; nothing on a page is larger */
+
+  /* WEIGHT — three. Was eight (400 500 550 600 640 650 660 700), four of them
+     inside a single weight. Roboto (Android) has no 600 and no 650: CSS weight
+     matching sends every target above 500 to Bold, so those four rendered
+     IDENTICALLY off Apple hardware. Hierarchy therefore never leans on weight
+     alone — each rank below pins a size and a colour too. 600 is kept over 500
+     for `medium` so the app's headings keep their existing colour on the
+     hardware they are read on; the honest cost is that on Roboto `medium` and
+     `bold` share the Bold face. */
+  --weight-regular: 400;
+  --weight-medium: 600;
+  --weight-bold: 700;
+
+  /* RADIUS — six numeric steps and two shapes. Was 20 values against 2 tokens,
+     with raw `8px`/`12px` duplicating those tokens verbatim. A track whose
+     radius equals half its height takes `--radius-pill`, not a numeric step. */
+  --radius-hair: 2px;
+  --radius-xs: 4px;
   --radius-sm: 8px;
-  --shadow: 0 1px 2px rgba(38, 41, 42, 0.05);
+  --radius-md: 10px; /* the de-facto small-panel radius (was 10 raw uses) */
+  --radius: 12px; /* the card */
+  --radius-lg: 16px; /* sheets, drawers, glass panels */
+  --radius-pill: 999px;
+  --radius-round: 50%;
+
+  /* ELEVATION — five steps. Was 15 distinct box-shadows in 20 places, mixing
+     two different shadow colours for the same job. */
+  --shadow: 0 1px 2px rgba(38, 41, 42, 0.05); /* a hairline lift */
+  --shadow-sm: 0 3px 10px rgba(38, 41, 42, 0.1); /* hover, floating pill */
+  --shadow-md: 0 10px 30px rgba(var(--scrim-rgb), 0.16); /* menus */
+  --shadow-lg: 0 18px 44px rgba(var(--scrim-rgb), 0.28); /* glass panels */
+  --shadow-xl: 0 24px 60px rgba(var(--scrim-rgb), 0.3); /* drawers */
+
+  /* TOUCH — one floor, 44px (Apple HIG / WCAG 2.5.5 AAA). Controls that must
+     LOOK small keep their box and wear `.tap-pad`, which grows only the hit
+     area. See "Touch floor" near the end of this sheet.
+
+     `--tap` is a FINGERTIP, so the heights it grew are gated on
+     `(pointer: coarse)`. Under a mouse the same controls keep the sizes they
+     had before the floor landed — two of them, because a chip in a filter row
+     and a button inside a dense list row were never the same size. */
+  --tap: 44px;
+  --tap-fine: 40px; /* the app's pre-touch floor, under a pointer */
+  --tap-fine-row: 32px; /* …for a control inside a dense list row */
+
+  /* THE LINT CONTRACT. A future rule can reject a raw length in any of
+     `margin* padding* gap row-gap column-gap inset top right bottom left
+     font-size font-weight border-radius box-shadow` — all of them come from
+     the scales above — with three carve-outs, each marked in the source by
+     the literal string `scale-exempt` and a reason:
+       1. a GRAPHIC dimension: a mark centred on a track, a glyph sized to the
+          box it sits in, a hairline rule (these are half of some other pixel
+          measurement, not a step on a rhythm);
+       2. VIEWPORT-FLUID stage geometry: the immersive garden's `clamp()`ed
+          insets, which place furniture in a scene sized by the window;
+       3. a fixed LINE BOX whose job is that a text swap cannot move layout.
+     Content MEASURES (`width`, `max-width`, `height` of a named box, `flex`
+     bases, `ch`/`ex` limits) are deliberately outside the contract — they
+     answer "how much text fits", not "what is the rhythm". */
+
   --nav-height: 58px;
   --font:
     -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue",
@@ -90,6 +248,30 @@
     --danger-soft: #3c2722;
     --danger-ink: #e5a294;
     --shadow: 0 1px 2px rgba(0, 0, 0, 0.3);
+    /* Elevation reads off ambient light: a 16%-alpha near-black is invisible on
+       a dark surface, so the dark ramp is the same geometry at higher alpha. */
+    --shadow-sm: 0 3px 10px rgba(0, 0, 0, 0.4);
+    --shadow-md: 0 10px 30px rgba(0, 0, 0, 0.5);
+    --shadow-lg: 0 18px 44px rgba(0, 0, 0, 0.55);
+    --shadow-xl: 0 24px 60px rgba(0, 0, 0, 0.62);
+    /* An accent FILL is light in dark mode, so the type on it must be dark.
+       White on --green measured 2.80:1; near-black on it is 7.9:1. */
+    --on-accent: #141614;
+    /* Race and long are the only two category hues under the 3:1 non-text floor
+       on --bg-raised at their light values (2.65:1 and 2.99:1) — lift lightness,
+       keep the hue family. The other seven measure 3.8–7.0:1 and are unchanged. */
+    --hue-race: #c47a9b;
+    --hue-long: #8199d6;
+    /* Yoga carries text on the fill, and in dark mode that text is
+       --on-accent's near-black — so the fill must go LIGHTER here, not darker.
+       See the light block. */
+    --hue-yoga: #a184c0;
+    --rarity-uncommon-bg: #2c3c50;
+    --rarity-uncommon-ink: #a8c4e4;
+    --rarity-rare-bg: #402f3e;
+    --rarity-rare-ink: #d9a8d2;
+    /* 9.6:1 on --bg-raised. */
+    --ceremony-ink: #e8c86a;
     /* Re-stepped alongside the light block above — see that comment. */
     --chart-1: #3da868;
     --chart-2: #cc7a3a;
@@ -129,6 +311,29 @@
   --danger-soft: #3c2722;
   --danger-ink: #e5a294;
   --shadow: 0 1px 2px rgba(0, 0, 0, 0.3);
+  /* Elevation reads off ambient light: a 16%-alpha near-black is invisible on
+     a dark surface, so the dark ramp is the same geometry at higher alpha. */
+  --shadow-sm: 0 3px 10px rgba(0, 0, 0, 0.4);
+  --shadow-md: 0 10px 30px rgba(0, 0, 0, 0.5);
+  --shadow-lg: 0 18px 44px rgba(0, 0, 0, 0.55);
+  --shadow-xl: 0 24px 60px rgba(0, 0, 0, 0.62);
+  /* An accent FILL is light in dark mode, so the type on it must be dark.
+     White on --green measured 2.80:1; near-black on it is 7.9:1. */
+  --on-accent: #141614;
+  /* Race and long are the only two category hues under the 3:1 non-text floor
+     on --bg-raised at their light values (2.65:1 and 2.99:1) — lift lightness,
+     keep the hue family. The other seven measure 3.8–7.0:1 and are unchanged. */
+  --hue-race: #c47a9b;
+  --hue-long: #8199d6;
+  /* Yoga carries text on the fill, and in dark mode that text is --on-accent's
+     near-black — so the fill must go LIGHTER here, not darker. See the light
+     block. */
+  --hue-yoga: #a184c0;
+  --rarity-uncommon-bg: #2c3c50;
+  --rarity-uncommon-ink: #a8c4e4;
+  --rarity-rare-bg: #402f3e;
+  --rarity-rare-ink: #d9a8d2;
+  --ceremony-ink: #e8c86a;
   /* Re-stepped alongside the light block above — see that comment. */
   --chart-1: #3da868;
   --chart-2: #cc7a3a;
@@ -167,17 +372,17 @@ h2,
 h3,
 h4 {
   margin: 0;
-  font-weight: 650;
+  font-weight: var(--weight-medium);
   line-height: 1.25;
 }
 h1 {
-  font-size: 1.5rem;
+  font-size: var(--text-xl);
 }
 h2 {
-  font-size: 1.15rem;
+  font-size: var(--text-lg);
 }
 h3 {
-  font-size: 1rem;
+  font-size: var(--text-md);
 }
 p {
   margin: 0;
@@ -192,7 +397,7 @@ button {
 :focus-visible {
   outline: 2px solid var(--focus);
   outline-offset: 2px;
-  border-radius: 4px;
+  border-radius: var(--radius-xs);
 }
 
 @media (prefers-reduced-motion: reduce) {
@@ -214,8 +419,8 @@ button {
 .shell-main {
   flex: 1;
   min-width: 0;
-  padding: 1rem;
-  padding-bottom: calc(var(--nav-height) + env(safe-area-inset-bottom, 0px) + 1rem);
+  padding: var(--space-6);
+  padding-bottom: calc(var(--nav-height) + env(safe-area-inset-bottom, 0px) + var(--space-6));
   max-width: 700px;
   margin: 0 auto;
   width: 100%;
@@ -250,12 +455,12 @@ button {
   flex-direction: column;
   align-items: center;
   justify-content: center;
-  gap: 2px;
+  gap: var(--space-1);
   text-decoration: none;
   color: var(--ink-faint);
-  font-size: 0.66rem;
-  font-weight: 550;
-  min-height: 44px;
+  font-size: var(--text-2xs);
+  font-weight: var(--weight-medium);
+  min-height: var(--tap);
 }
 .bottom-nav a.active {
   color: var(--green);
@@ -276,9 +481,9 @@ button {
   .side-nav {
     display: flex;
     flex-direction: column;
-    gap: 0.25rem;
+    gap: var(--space-2);
     width: 210px;
-    padding: 1.25rem 0.9rem;
+    padding: var(--space-7) var(--space-6);
     border-right: 1px solid var(--border);
     background: var(--bg-raised);
     position: sticky;
@@ -286,22 +491,19 @@ button {
     height: 100dvh;
   }
   .side-nav .brand {
-    font-family: var(--font-display);
-    font-size: 1.2rem;
-    font-weight: 600;
     color: var(--green-ink);
-    padding: 0 0.6rem 1rem;
+    padding: 0 var(--space-4) var(--space-6);
   }
   .side-nav a {
     display: flex;
     align-items: center;
-    gap: 0.6rem;
-    padding: 0.5rem 0.6rem;
+    gap: var(--space-4);
+    padding: var(--space-4);
     border-radius: var(--radius-sm);
     text-decoration: none;
     color: var(--ink-soft);
-    font-weight: 550;
-    font-size: 0.92rem;
+    font-weight: var(--weight-medium);
+    font-size: var(--text-sm);
   }
   .side-nav a.active {
     background: var(--green-soft);
@@ -313,12 +515,12 @@ button {
   }
   .side-nav .nav-footer {
     margin-top: auto;
-    font-size: 0.75rem;
+    font-size: var(--text-xs);
     color: var(--ink-faint);
-    padding: 0 0.6rem;
+    padding: 0 var(--space-4);
   }
   .shell-main {
-    padding: 2rem 2.5rem 3rem;
+    padding: var(--space-8) var(--space-9) var(--space-10);
     max-width: 880px;
   }
 }
@@ -329,60 +531,176 @@ button {
   background: var(--bg-raised);
   border: 1px solid var(--border);
   border-radius: var(--radius);
-  padding: 1rem;
+  padding: var(--space-6);
   box-shadow: var(--shadow);
 }
 .card + .card {
-  margin-top: 0.9rem;
+  margin-top: var(--space-6);
 }
-.card-title {
-  font-size: 0.78rem;
-  font-weight: 650;
-  letter-spacing: 0.05em;
+/* ── Hierarchy: three ranks (System 2) ────────────────────────────────────
+   Emphasis is granted by exactly one of three ranks. Each pins a size, a
+   weight and a colour token, and no rank leans on weight alone — on Roboto
+   `--weight-medium` and `--weight-bold` resolve to the same face, so a
+   weight-only distinction is invisible off Apple hardware.
+
+     RANK        size        weight            colour        wears it
+     ─────────── ─────────── ───────────────── ───────────── ───────────────
+     1 · PAGE    --text-2xl  --weight-bold     --ink         the one <h1>
+     2 · SECTION --text-2xs  --weight-medium   --ink-soft    .eyebrow (caps)
+     3 · ITEM    --text-lg   --weight-medium   --ink         .rank-item
+
+   Rank 2 is the smallest type in the app, so it takes the darkest of the two
+   secondary inks. It was on --ink-faint, which measures 3.29:1 light and
+   3.95:1 dark against the card — under the 4.5:1 floor for text this size —
+   and rank 2 made nineteen collapsed sites SMALLER and lighter on it
+   (12.5px/650 → 11.2px/600). --ink-soft measures 6.51:1 light and 7.38:1 dark
+   on the same surface. --ink-faint is unchanged and keeps its job: text that
+   is genuinely incidental and never the only copy of a fact.
+
+   Rank 2 is SMALLER than rank 3 on purpose. This app has always labelled a
+   section with a small uppercase eyebrow sitting above larger content, and
+   that eyebrow is what all 33 `<Card title>`s render; rank 2's authority comes
+   from its treatment (caps, tracking, faint ink, and the fact that it sits
+   above), not from being the biggest thing. Rank 3 names the thing a section
+   is about — today's workout, a plan, the week, the garden's condition — and
+   is where six display-serif sizes inside 0.4rem collapse to one.
+
+   The page title is now the largest type on any page: it took --text-2xl
+   (1.9rem) from `.headline-stat-value`, which sat INSIDE a card, and that stat
+   dropped to --text-xl. Nothing below rank 1 may use --text-2xl. */
+
+h1,
+.rank-page {
+  font-size: var(--text-2xl);
+  font-weight: var(--weight-bold);
+  color: var(--ink);
+  line-height: 1.2;
+}
+
+/* Rank 2 — ONE implementation of the small uppercase label. Nineteen
+   independent ones (9 sizes, 6 letter-spacings, 2 weights) collapse into this
+   rule; a site below keeps only its own box (margins, padding, position) and,
+   where the label is semantic rather than structural, its own colour. */
+.eyebrow,
+.card-title,
+.week-header,
+.studio-week-label,
+.signal-group-label,
+.dock-verdict-who,
+.hud-beat-label,
+.hud-rail button,
+.ceremony-eyebrow,
+.bot-earn-label,
+.coach-tray-head,
+.plan-brief-who,
+.race-h,
+.plan-week-dow,
+.prog-chip-label,
+.wkrow-state,
+.workout-row .date .dow,
+.now-chip,
+.new-ring,
+.codex-newring,
+.nudge-disc,
+.rarity,
+.today-tag {
+  font-size: var(--text-2xs);
+  font-weight: var(--weight-medium);
+  letter-spacing: 0.06em;
   text-transform: uppercase;
-  color: var(--ink-faint);
-  margin-bottom: 0.6rem;
+  color: var(--ink-soft);
+}
+
+/* Rank 3 — the named thing inside a section. `<h2>`/`<h3>` both land here;
+   the display serif is a family choice, not a rank of its own. */
+.rank-item,
+.hero-title,
+.garden-condition,
+.ceremony-name,
+.plan-card-name,
+.plan-brief-headline,
+.plan-week-title,
+.side-nav .brand,
+.coach-panel-head h2 {
+  font-family: var(--font-display);
+  font-size: var(--text-lg);
+  font-weight: var(--weight-medium);
+  color: var(--ink);
+}
+
+/* The display serif carrying no rank of its own — for an `<h1>` that wants
+   the face without inheriting rank 3's size from `.hero-title`. */
+.display {
+  font-family: var(--font-display);
+}
+
+/* Headings that exist for the OUTLINE and must not impose type of their own:
+   the element is the semantics, the child is the design. */
+.race-strip-h,
+.plan-section-h {
+  font: inherit;
+  margin: 0;
+}
+
+/* Severity, generalized from `.status-strip` — the one rule in this sheet that
+   had it right: the TEXT stays on the ink token and only a left accent border
+   carries the level. Two surfaces used a tinted background AND a coloured
+   border for OPPOSITE intent (`.card-next` "this is special" and
+   `.card-prompt`, whose own source comment says it "should not" feel special);
+   the tint is now reserved for the one that means special. */
+.edge-clear {
+  border-left: 3px solid var(--green);
+}
+.edge-watch {
+  border-left: 3px solid var(--warn);
+}
+.edge-high {
+  border-left: 3px solid var(--danger);
+}
+
+.card-title {
+  margin-bottom: var(--space-4);
 }
 
 .stack {
   display: flex;
   flex-direction: column;
-  gap: 0.9rem;
+  gap: var(--space-6);
 }
 .row {
   display: flex;
   align-items: center;
-  gap: 0.6rem;
+  gap: var(--space-4);
 }
 .row-between {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 0.6rem;
+  gap: var(--space-4);
 }
 .muted {
   color: var(--ink-soft);
-  font-size: 0.9rem;
+  font-size: var(--text-sm);
 }
 .faint {
   color: var(--ink-faint);
-  font-size: 0.82rem;
+  font-size: var(--text-xs);
 }
 
 .btn {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  gap: 0.4rem;
-  border-radius: 10px;
+  gap: var(--space-3);
+  border-radius: var(--radius-md);
   border: 1px solid var(--border-strong);
   background: var(--bg-raised);
   color: var(--ink);
-  padding: 0.55rem 1rem;
-  font-weight: 600;
-  font-size: 0.92rem;
+  padding: var(--space-4) var(--space-6);
+  font-weight: var(--weight-medium);
+  font-size: var(--text-sm);
   cursor: pointer;
-  min-height: 44px;
+  min-height: var(--tap);
   text-decoration: none;
 }
 .btn:hover {
@@ -395,7 +713,7 @@ button {
 .btn-primary {
   background: var(--green);
   border-color: var(--green);
-  color: #fff;
+  color: var(--on-accent);
 }
 .btn-primary:hover {
   filter: brightness(1.05);
@@ -406,15 +724,17 @@ button {
   border-color: var(--danger);
   background: transparent;
 }
+/* The small button keeps its 36px box — inflating it to 44 is what
+   `.btn-small` exists to avoid — and takes the floor as a hit pad instead. */
 .btn-small {
   min-height: 36px;
-  padding: 0.3rem 0.7rem;
-  font-size: 0.85rem;
+  padding: var(--space-2) var(--space-5);
+  font-size: var(--text-sm);
 }
 .btn-row {
   display: flex;
   flex-wrap: wrap;
-  gap: 0.5rem;
+  gap: var(--space-4);
 }
 
 /* Status pills: icon + label, never color alone.
@@ -428,11 +748,11 @@ button {
 .pill {
   display: inline-flex;
   align-items: center;
-  gap: 0.3rem;
-  border-radius: 999px;
-  padding: 0.15rem 0.6rem;
-  font-size: 0.78rem;
-  font-weight: 600;
+  gap: var(--space-2);
+  border-radius: var(--radius-pill);
+  padding: var(--space-1) var(--space-4);
+  font-size: var(--text-xs);
+  font-weight: var(--weight-medium);
   border: 1px solid transparent;
   white-space: nowrap;
 }
@@ -482,8 +802,8 @@ button {
   text-align: left;
   justify-content: flex-start;
   max-width: 100%;
-  padding-top: 0.45rem;
-  padding-bottom: 0.45rem;
+  padding-top: var(--space-4);
+  padding-bottom: var(--space-4);
   overflow-wrap: anywhere;
 }
 
@@ -494,13 +814,13 @@ button {
 .note {
   display: block;
   max-width: 100%;
-  border-radius: 8px;
+  border-radius: var(--radius-sm);
   border: 1px solid var(--border);
   background: var(--bg-sunken);
   color: var(--ink-soft);
-  padding: 0.22rem 0.55rem;
-  font-size: 0.8rem;
-  font-weight: 600;
+  padding: var(--space-2) var(--space-4);
+  font-size: var(--text-xs);
+  font-weight: var(--weight-medium);
   overflow-wrap: anywhere;
 }
 a.note {
@@ -535,9 +855,9 @@ a.note {
       local,
     linear-gradient(transparent, var(--scroll-surface, var(--bg-raised))) bottom / 100% 1.5rem
       no-repeat local,
-    radial-gradient(farthest-side at 50% 0%, rgba(9, 14, 10, 0.34), transparent) top / 100% 0.85rem
+    radial-gradient(farthest-side at 50% 0%, rgba(var(--scrim-rgb), 0.34), transparent) top / 100% 0.85rem
       no-repeat scroll,
-    radial-gradient(farthest-side at 50% 100%, rgba(9, 14, 10, 0.34), transparent) bottom / 100%
+    radial-gradient(farthest-side at 50% 100%, rgba(var(--scrim-rgb), 0.34), transparent) bottom / 100%
       0.85rem no-repeat scroll;
 }
 /* A pointer platform gets a real, always-drawn scrollbar (macOS overlay
@@ -555,7 +875,7 @@ a.note {
     background: var(--border-strong);
     background-clip: content-box;
     border: 3px solid transparent;
-    border-radius: 999px;
+    border-radius: var(--radius-pill);
   }
   .scroller:hover::-webkit-scrollbar-thumb {
     background: var(--ink-faint);
@@ -577,26 +897,26 @@ a.note {
 .category-dot {
   width: 9px;
   height: 9px;
-  border-radius: 3px;
+  border-radius: var(--radius-xs);
   flex: none;
 }
-.cat-quality { background: #b06a4d; }
-.cat-race { background: #9a4a68; }
-.cat-long { background: #4d6ab0; }
-.cat-easy { background: #5f9367; }
-.cat-recovery { background: #7fae94; }
-.cat-rest { background: #b8b3a5; }
+.cat-quality { background: var(--hue-quality); }
+.cat-race { background: var(--hue-race); }
+.cat-long { background: var(--hue-long); }
+.cat-easy { background: var(--hue-easy); }
+.cat-recovery { background: var(--hue-recovery); }
+.cat-rest { background: var(--hue-rest); }
 .cat-cross_training,
-.cat-strength { background: #8a87b8; }
-.cat-yoga { background: #8f6fae; }
-.cat-unknown { background: #a3a49e; }
+.cat-strength { background: var(--hue-strength); }
+.cat-yoga { background: var(--hue-yoga); }
+.cat-unknown { background: var(--hue-unknown); }
 
 /* Activity screen: discipline filter chips */
 .discipline-chips {
   display: flex;
   flex-wrap: wrap;
-  gap: 0.4rem;
-  margin-bottom: 0.9rem;
+  gap: var(--space-3);
+  margin-bottom: var(--space-6);
 }
 .chip {
   display: inline-flex;
@@ -604,13 +924,13 @@ a.note {
   justify-content: center;
   /* Audit M18: was ~27px tall (padding + line-height alone), under the 40px
      touch-target floor — this is a primary mobile action (discipline
-     filters). Padding/font untouched; the flex box just grows to a floor. */
-  min-height: 40px;
+     filters). Padding/font untouched; the flex box just grows to a floor —
+     which one it grows to is in "Touch floor" at the end of this sheet. */
   border: 1px solid var(--border);
-  border-radius: 999px;
-  padding: 0.28rem 0.75rem;
-  font-size: 0.82rem;
-  font-weight: 600;
+  border-radius: var(--radius-pill);
+  padding: var(--space-2) var(--space-5);
+  font-size: var(--text-xs);
+  font-weight: var(--weight-medium);
   color: var(--ink-soft);
   background: var(--bg-sunken);
   cursor: pointer;
@@ -619,86 +939,78 @@ a.note {
 .chip.chip-all.active {
   background: var(--ink-soft);
   border-color: var(--ink-soft);
-  color: #fff;
+  color: var(--on-accent);
 }
 .chip.chip-run.active {
   background: var(--green);
   border-color: var(--green);
-  color: #fff;
+  color: var(--on-accent);
 }
 .chip.chip-strength.active {
-  background: #b5652f;
-  border-color: #b5652f;
-  color: #fff;
+  background: var(--lift-ink);
+  border-color: var(--lift-ink);
+  color: var(--on-accent);
 }
 .chip.chip-yoga.active {
-  background: #8f6fae;
-  border-color: #8f6fae;
-  color: #fff;
+  background: var(--hue-yoga);
+  border-color: var(--hue-yoga);
+  color: var(--on-accent);
 }
 .chip.chip-adventure.active {
-  background: #8a7550;
-  border-color: #8a7550;
-  color: #fff;
+  background: var(--adventure-ring);
+  border-color: var(--adventure-ring);
+  color: var(--on-accent);
 }
 
 /* ── Today hero ─────────────────────────────────────────────────────────── */
 
-.hero-title {
-  font-family: var(--font-display);
-  font-size: 1.45rem;
-  font-weight: 600;
-}
 .hero-when {
-  font-size: 1rem;
+  font-size: var(--text-md);
   color: var(--ink-soft);
-  margin-top: 0.1rem;
+  margin-top: var(--space-1);
 }
 .hero-durations {
   display: flex;
-  gap: 1.4rem;
-  margin: 0.8rem 0;
+  gap: var(--space-7);
+  margin: var(--space-5) 0;
 }
+/* One step BELOW rank 3: these are data about the workout, and at the same
+   size as its name the sans-serif numbers out-shout the serif title they
+   describe. (They were 1.25rem against a 1.45rem title; both snapped, and at
+   equal steps the inversion showed.) */
 .hero-durations .num {
-  font-size: 1.25rem;
-  font-weight: 650;
+  font-size: var(--text-md);
+  font-weight: var(--weight-medium);
   font-variant-numeric: tabular-nums;
 }
 .hero-durations .lbl {
-  font-size: 0.75rem;
+  font-size: var(--text-xs);
   color: var(--ink-faint);
 }
 .stage-summary {
-  font-size: 0.88rem;
+  font-size: var(--text-sm);
   color: var(--ink-soft);
   background: var(--bg-sunken);
   border-radius: var(--radius-sm);
-  padding: 0.5rem 0.7rem;
-  margin-bottom: 0.8rem;
+  padding: var(--space-4) var(--space-5);
+  margin-bottom: var(--space-5);
 }
 
 /* ── Plan list ──────────────────────────────────────────────────────────── */
 
 .week-header {
-  font-size: 0.8rem;
-  font-weight: 650;
-  color: var(--ink-faint);
-  letter-spacing: 0.04em;
-  text-transform: uppercase;
-  margin: 1.2rem 0 0.5rem;
+  margin: var(--space-6) 0 var(--space-4);
 }
 .week-header.current {
   color: var(--green-ink);
 }
 .today-tag {
   display: inline-block;
-  margin-left: 0.5rem;
-  padding: 0.06rem 0.42rem;
-  border-radius: 999px;
+  margin-left: var(--space-4);
+  padding: var(--space-1) var(--space-3);
+  border-radius: var(--radius-pill);
   background: var(--green);
-  color: #fff;
-  font-size: 0.62rem;
-  letter-spacing: 0.03em;
+  color: var(--on-accent);
   vertical-align: middle;
 }
 .workout-row.is-today {
@@ -712,13 +1024,13 @@ a.note {
 .workout-row {
   display: flex;
   align-items: center;
-  gap: 0.5rem 0.7rem;
+  gap: var(--space-4) var(--space-5);
   flex-wrap: wrap;
-  padding: 0.65rem 0.75rem;
+  padding: var(--space-5);
   background: var(--bg-raised);
   border: 1px solid var(--border);
   border-radius: var(--radius-sm);
-  margin-bottom: 0.45rem;
+  margin-bottom: var(--space-4);
   cursor: pointer;
   width: 100%;
   text-align: left;
@@ -740,15 +1052,9 @@ a.note {
   flex: none;
   text-align: center;
 }
-.workout-row .date .dow {
-  font-size: 0.68rem;
-  color: var(--ink-faint);
-  text-transform: uppercase;
-  font-weight: 650;
-}
 .workout-row .date .dom {
-  font-size: 1.05rem;
-  font-weight: 650;
+  font-size: var(--text-md);
+  font-weight: var(--weight-medium);
   font-variant-numeric: tabular-nums;
 }
 .workout-row .body {
@@ -756,17 +1062,17 @@ a.note {
   min-width: 130px;
 }
 .workout-row .title {
-  font-weight: 600;
-  font-size: 0.95rem;
+  font-weight: var(--weight-medium);
+  font-size: var(--text-md);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 .workout-row .meta {
-  font-size: 0.8rem;
+  font-size: var(--text-xs);
   color: var(--ink-soft);
   display: flex;
-  gap: 0.5rem;
+  gap: var(--space-4);
   align-items: center;
   white-space: nowrap;
 }
@@ -799,10 +1105,10 @@ a.note {
   display: block;
   width: 100%;
   text-align: left;
-  padding: 0.3rem 0.4rem 0.34rem 0.55rem;
+  padding: var(--space-2) var(--space-3) var(--space-3) var(--space-4);
   background: var(--bg);
   border: 1px solid var(--border);
-  border-radius: 7px;
+  border-radius: var(--radius-sm);
   color: inherit;
   cursor: pointer;
   overflow: hidden;
@@ -835,8 +1141,8 @@ a.note {
   -webkit-box-orient: vertical;
   -webkit-line-clamp: 2;
   overflow: hidden;
-  font-size: 0.78rem;
-  font-weight: 600;
+  font-size: var(--text-xs);
+  font-weight: var(--weight-medium);
   line-height: 1.28;
   /* Audit C7: line-clamp only ellipsizes the FINAL line — an unbreakable
      word (e.g. "Threshold") that doesn't fit line 1 overflowed sideways and
@@ -848,10 +1154,10 @@ a.note {
   display: flex;
   align-items: center;
   flex-wrap: wrap;
-  gap: 0.3rem;
-  font-size: 0.68rem;
+  gap: var(--space-2);
+  font-size: var(--text-2xs);
   color: var(--ink-soft);
-  margin-top: 0.16rem;
+  margin-top: var(--space-1);
   font-variant-numeric: tabular-nums;
 }
 .cal-glyph {
@@ -885,9 +1191,9 @@ a.note {
   color: var(--ink-faint);
 }
 .cal-rest .cal-card-title {
-  font-weight: 500;
+  font-weight: var(--weight-regular);
   font-style: italic;
-  font-size: 0.74rem;
+  font-size: var(--text-2xs);
 }
 
 /* ── Garden ─────────────────────────────────────────────────────────────── */
@@ -900,9 +1206,6 @@ a.note {
   line-height: 0;
 }
 .garden-condition {
-  font-family: var(--font-display);
-  font-size: 1.3rem;
-  font-weight: 600;
   color: var(--green-ink);
 }
 .garden-history {
@@ -912,29 +1215,31 @@ a.note {
 }
 .garden-history li {
   display: flex;
-  gap: 0.6rem;
-  padding: 0.45rem 0;
+  gap: var(--space-4);
+  padding: var(--space-4) 0;
   border-bottom: 1px solid var(--border);
-  font-size: 0.88rem;
+  font-size: var(--text-sm);
 }
 .garden-history li:last-child {
   border-bottom: none;
 }
 .garden-history .date {
   color: var(--ink-faint);
-  font-size: 0.78rem;
+  font-size: var(--text-xs);
   width: 4.2rem;
   flex: none;
-  padding-top: 0.1rem;
+  padding-top: var(--space-1);
 }
 .diversity {
-  margin-bottom: 0.7rem;
+  margin-bottom: var(--space-5);
 }
 .diversity-bar {
   display: flex;
   height: 8px;
-  border-radius: 4px;
+  border-radius: var(--radius-pill);
   overflow: hidden;
+  /* scale-exempt: a hairline rule between segments, same family as
+     `border: 1px` — not rhythm. */
   gap: 1px;
   background: var(--bg-sunken);
 }
@@ -945,50 +1250,50 @@ a.note {
 .diversity-legend {
   display: flex;
   flex-wrap: wrap;
-  gap: 0.4rem 0.75rem;
-  margin-top: 0.5rem;
+  gap: var(--space-3) var(--space-5);
+  margin-top: var(--space-4);
   align-items: center;
 }
 .diversity-tag {
-  font-size: 0.72rem;
+  font-size: var(--text-2xs);
   color: var(--ink-soft);
   display: inline-flex;
   align-items: center;
-  gap: 0.25rem;
+  gap: var(--space-2);
 }
 .diversity-tag .dot {
   width: 8px;
   height: 8px;
-  border-radius: 2px;
+  border-radius: var(--radius-hair);
   display: inline-block;
 }
 .species-grid {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(140px, 1fr));
-  gap: 0.5rem;
+  gap: var(--space-4);
 }
 .species-tile {
   border: 1px solid var(--border);
   border-radius: var(--radius-sm);
-  padding: 0.5rem 0.6rem;
-  font-size: 0.82rem;
+  padding: var(--space-4);
+  font-size: var(--text-xs);
   background: var(--bg-raised);
 }
 .species-tile .name {
-  font-weight: 600;
+  font-weight: var(--weight-medium);
 }
 
 @media (min-width: 1024px) {
   .garden-layout {
     display: grid;
     grid-template-columns: 1fr 320px;
-    gap: 1.2rem;
+    gap: var(--space-6);
     align-items: start;
   }
   /* Keep the scene visible while the detail panel scrolls. */
   .garden-layout > .stack:first-child {
     position: sticky;
-    top: 1.5rem;
+    top: var(--space-7);
   }
   /* Cap the tall history + species cards so the columns stay balanced. */
   .garden-layout .garden-history,
@@ -1002,10 +1307,17 @@ a.note {
 .garden-home {
   display: flex;
   flex-direction: column;
-  gap: 0.9rem;
+  gap: var(--space-6);
 }
 
 /* ── The desktop stage ────────────────────────────────────────────────────
+   Positional values in this block are `clamp()`ed against the VIEWPORT rather
+   than stepped against the rhythm scale — they place furniture in a scene
+   whose size is the window, and a lint rule recognises them by their own
+   shape (a viewport unit inside a clamp on top/right/bottom/left) rather than
+   by a comment. Their bounds are scale steps wherever a step exists;
+   `4.6rem`/`6.5rem`/`7rem`/`10rem` are above the scale's top step. Everything
+   INSIDE those boxes — padding, gaps, type — is on scale.
    The garden is the page. Everything written on the scene follows the
    ambient-caption treatment — type with a soft shadow, no boxes — with
    hierarchy carried by scale, weight, and opacity: condition word (serif,
@@ -1030,7 +1342,7 @@ a.note {
     position: relative;
     height: calc(100dvh - var(--space-above, 0px));
     overflow: hidden;
-    background: #0f1512;
+    background: var(--stage-bg);
   }
   .stage-scene {
     position: absolute;
@@ -1056,12 +1368,12 @@ a.note {
   .stage-scrim-top {
     top: 0;
     height: 24%;
-    background: linear-gradient(rgba(13, 19, 14, 0.36), rgba(13, 19, 14, 0.12) 55%, transparent);
+    background: linear-gradient(rgba(var(--scrim-rgb), 0.36), rgba(var(--scrim-rgb), 0.12) 55%, transparent);
   }
   .stage-scrim-bottom {
     bottom: 0;
     height: 22%;
-    background: linear-gradient(transparent, rgba(13, 19, 14, 0.14) 45%, rgba(13, 19, 14, 0.4));
+    background: linear-gradient(transparent, rgba(var(--scrim-rgb), 0.14) 45%, rgba(var(--scrim-rgb), 0.4));
   }
 
   /* Hierarchy 2–3: the garden's voice, top-left where reading starts. */
@@ -1070,40 +1382,42 @@ a.note {
     top: clamp(1.4rem, 3.2vh, 2.4rem);
     left: clamp(1.6rem, 3.2vw, 3.2rem);
     max-width: min(36rem, 44vw);
-    color: #fff;
-    text-shadow:
-      0 1px 10px rgba(9, 14, 10, 0.5),
-      0 1px 2px rgba(9, 14, 10, 0.45);
+    color: var(--on-scene);
+    text-shadow: var(--scene-text-shadow);
   }
+  /* Rank 3 in the stage medium: type printed on artwork is sized to the
+     viewport, bounded top and bottom by scale steps. The immersive garden is
+     the one screen whose largest visible type is not its <h1> — that <h1> is
+     deliberately `.visually-hidden` there, because the scene IS the page. */
   .hud-condition {
     font-family: var(--font-display);
-    font-size: clamp(1.6rem, 2.5vw, 2.2rem);
-    font-weight: 650;
+    font-size: clamp(var(--text-xl), 2.5vw, var(--text-2xl));
+    font-weight: var(--weight-medium);
     letter-spacing: -0.01em;
     line-height: 1.15;
   }
   .hud-weather {
-    margin-top: 0.3rem;
-    font-size: 0.95rem;
+    margin-top: var(--space-2);
+    font-size: var(--text-md);
     line-height: 1.45;
     opacity: 0.84;
   }
   .hud-forecast.forecast-line {
-    margin: 0.45rem 0 0;
-    font-size: 0.98rem;
-    color: #fff;
+    margin: var(--space-4) 0 0;
+    font-size: var(--text-md);
+    color: var(--on-scene);
     opacity: 0.96;
   }
   .hud-forecast.forecast-line strong {
-    color: #f4dcae;
-    font-weight: 650;
+    color: var(--on-scene-accent);
+    font-weight: var(--weight-medium);
   }
   .hud-beat {
     display: flex;
     align-items: baseline;
-    gap: 0.5rem;
-    margin-top: 0.7rem;
-    font-size: 0.92rem;
+    gap: var(--space-4);
+    margin-top: var(--space-5);
+    font-size: var(--text-sm);
     opacity: 0.92;
     /* Stays clear of the centered ceremony card at every stage width. */
     max-width: 23rem;
@@ -1115,10 +1429,6 @@ a.note {
   }
   .hud-beat-label {
     flex: none;
-    font-size: 0.68rem;
-    font-weight: 700;
-    letter-spacing: 0.09em;
-    text-transform: uppercase;
     opacity: 0.75;
   }
   .hud-beat-dismiss {
@@ -1126,10 +1436,10 @@ a.note {
     align-self: center;
     background: none;
     border: none;
-    color: #fff;
+    color: var(--on-scene);
     opacity: 0.6;
     cursor: pointer;
-    padding: 0.15rem;
+    padding: var(--space-1);
     line-height: 0;
   }
   .hud-beat-dismiss:hover {
@@ -1144,18 +1454,18 @@ a.note {
     width: 232px;
   }
   .balance-strip-hud .balance-bar-label {
-    color: rgba(255, 255, 255, 0.86);
-    text-shadow: 0 1px 6px rgba(9, 14, 10, 0.55);
+    color: rgba(var(--on-scene-rgb), 0.86);
+    text-shadow: var(--scene-text-shadow);
   }
   .balance-strip-hud .balance-bar-caption {
-    color: rgba(255, 255, 255, 0.62);
-    text-shadow: 0 1px 6px rgba(9, 14, 10, 0.55);
+    color: rgba(var(--on-scene-rgb), 0.62);
+    text-shadow: var(--scene-text-shadow);
   }
   .balance-strip-hud .balance-bar-track {
-    background: rgba(255, 255, 255, 0.22);
+    background: rgba(var(--on-scene-rgb), 0.22);
   }
   .balance-strip-hud .balance-notch {
-    background: rgba(255, 255, 255, 0.65);
+    background: rgba(var(--on-scene-rgb), 0.65);
   }
   .balance-strip-hud .balance-bar-fill.balance-run {
     background: #9ecfab;
@@ -1182,7 +1492,9 @@ a.note {
     display: flex;
     flex-direction: column;
     align-items: flex-start;
-    gap: 0.5rem;
+    /* --space-4 before: `.dock-attention` is 21.6px tall, so its hit pad
+       reached 11.2px down — 3.2px into the verdict pill below it. */
+    gap: var(--tap-clear);
     max-width: min(30rem, 40vw);
   }
   .dock-pill {
@@ -1191,11 +1503,11 @@ a.note {
     border: none;
     cursor: pointer;
     text-align: left;
-    padding: 0.3rem 0;
-    color: #fff;
-    font-size: 0.98rem;
-    font-weight: 600;
-    text-shadow: 0 1px 8px rgba(9, 14, 10, 0.55);
+    padding: var(--space-2) 0;
+    color: var(--on-scene);
+    font-size: var(--text-md);
+    font-weight: var(--weight-medium);
+    text-shadow: var(--scene-text-shadow);
   }
   /* Same scrim treatment the bottom-right corner got (see .hud-corner::before)
      and for the same reason: this is white type — now with a small colour dot
@@ -1205,14 +1517,14 @@ a.note {
   .dock-pill::before {
     content: "";
     position: absolute;
-    inset: -0.55rem -1.4rem -0.6rem -1.5rem;
+    inset: calc(var(--space-4) * -1) calc(var(--space-7) * -1) calc(var(--space-4) * -1) calc(var(--space-7) * -1);
     z-index: 0;
-    border-radius: 18px;
+    border-radius: var(--radius-lg);
     background: radial-gradient(
       130% 130% at 0% 100%,
-      rgba(9, 14, 10, 0.52),
-      rgba(9, 14, 10, 0.36) 45%,
-      rgba(9, 14, 10, 0) 80%
+      rgba(var(--scrim-rgb), 0.52),
+      rgba(var(--scrim-rgb), 0.36) 45%,
+      rgba(var(--scrim-rgb), 0) 80%
     );
     pointer-events: none;
   }
@@ -1225,17 +1537,17 @@ a.note {
     text-underline-offset: 3px;
   }
   .dock-pill-verdict {
-    font-weight: 700;
+    font-weight: var(--weight-bold);
   }
   /* The separator is decoration between two spans that each read fine alone —
      CSS, so it never lands in the accessible name as a stray character. */
   .dock-pill-verdict + .dock-pill-workout::before {
     content: "·";
-    margin: 0 0.4rem;
-    color: rgba(255, 255, 255, 0.6);
+    margin: 0 var(--space-3);
+    color: rgba(var(--on-scene-rgb), 0.6);
   }
   .dock-pill-workout {
-    color: rgba(255, 255, 255, 0.92);
+    color: rgba(var(--on-scene-rgb), 0.92);
   }
   .dock-panel {
     width: min(26rem, 38vw);
@@ -1251,12 +1563,12 @@ a.note {
     max-height: min(32rem, calc(100dvh - 14rem));
     /* Its own covers must paint in the panel's glass, not a flat surface. */
     --scroll-surface: color-mix(in srgb, var(--bg-raised) 72%, transparent);
-    border-radius: 14px;
+    border-radius: var(--radius-lg);
     background: color-mix(in srgb, var(--bg-raised) 72%, transparent);
     backdrop-filter: blur(16px) saturate(1.05);
     border: 1px solid var(--border);
-    box-shadow: 0 18px 44px rgba(9, 14, 10, 0.28);
-    padding: 0.4rem;
+    box-shadow: var(--shadow-lg);
+    padding: var(--space-3);
   }
   .dock-panel .card {
     border: none;
@@ -1268,15 +1580,15 @@ a.note {
   }
   .dock-collapse {
     display: block;
-    margin: 0 0.6rem 0.45rem;
-    font-size: 0.8rem;
+    margin: 0 var(--space-4) var(--space-4);
+    font-size: var(--text-xs);
     color: var(--ink-faint);
   }
   .dock-grows {
     display: block;
-    margin: 0.1rem 0.6rem 0.5rem;
-    font-size: 0.85rem;
-    font-weight: 600;
+    margin: var(--space-1) var(--space-4) var(--space-4);
+    font-size: var(--text-sm);
+    font-weight: var(--weight-medium);
     color: var(--green-ink);
   }
 
@@ -1296,14 +1608,14 @@ a.note {
     --verdict-ink: var(--danger);
   }
   .dock-verdict {
-    padding: 0.55rem 0.6rem 0.55rem;
+    padding: var(--space-4) var(--space-4) var(--space-4);
     border-bottom: 1px solid var(--border);
   }
   .dock-verdict-dot {
     flex: none;
     width: 0.6rem;
     height: 0.6rem;
-    border-radius: 50%;
+    border-radius: var(--radius-round);
     background: var(--verdict-ink);
   }
   /* The panel head's leading line, now that the verdict phrase stays on the
@@ -1311,7 +1623,7 @@ a.note {
      else. */
   .dock-verdict-why {
     margin: 0;
-    font-size: 0.82rem;
+    font-size: var(--text-xs);
     color: var(--ink-soft);
     font-variant-numeric: tabular-nums;
   }
@@ -1320,18 +1632,14 @@ a.note {
      written about the week — never about today's readiness. */
   .dock-verdict-coach {
     display: flex;
-    gap: 0.4rem;
+    gap: var(--space-3);
     align-items: baseline;
-    margin: 0.45rem 0 0;
-    font-size: 0.84rem;
+    margin: var(--space-4) 0 0;
+    font-size: var(--text-xs);
     color: var(--ink);
   }
   .dock-verdict-who {
     flex: none;
-    font-size: 0.68rem;
-    font-weight: 650;
-    letter-spacing: 0.05em;
-    text-transform: uppercase;
     color: var(--ink-soft);
     white-space: nowrap;
   }
@@ -1341,29 +1649,29 @@ a.note {
      dark scene. Mixing an existing token, not a new colour. */
   .dock-pill .dock-verdict-dot {
     display: inline-block;
-    margin-right: 0.4rem;
-    background: color-mix(in srgb, var(--verdict-ink) 55%, #fff);
-    box-shadow: 0 1px 6px rgba(9, 14, 10, 0.6);
+    margin-right: var(--space-3);
+    background: color-mix(in srgb, var(--verdict-ink) 55%, var(--on-scene));
+    box-shadow: var(--scene-text-shadow);
   }
 
   /* The bar detail panel floats below the HUD instrument cluster. */
   .balance-detail-hud {
     position: absolute;
-    top: calc(100% + 0.55rem);
+    top: calc(100% + var(--space-4));
     right: 0;
     width: 320px;
     margin: 0;
     background: color-mix(in srgb, var(--bg-raised) 92%, transparent);
     backdrop-filter: blur(16px) saturate(1.05);
-    box-shadow: 0 18px 44px rgba(9, 14, 10, 0.28);
+    box-shadow: var(--shadow-lg);
     text-shadow: none;
   }
   .dock-attention {
-    color: #f4dcae;
-    font-size: 0.85rem;
-    font-weight: 600;
+    color: var(--on-scene-accent);
+    font-size: var(--text-sm);
+    font-weight: var(--weight-medium);
     text-decoration: none;
-    text-shadow: 0 1px 8px rgba(9, 14, 10, 0.55);
+    text-shadow: var(--scene-text-shadow);
   }
   .dock-attention:hover {
     text-decoration: underline;
@@ -1377,7 +1685,7 @@ a.note {
     display: flex;
     flex-direction: column;
     align-items: flex-end;
-    gap: 0.55rem;
+    gap: var(--space-4);
     text-align: right;
   }
   /* Contrast for the type that sits straight on the scene (audit 2026-08-14:
@@ -1392,14 +1700,14 @@ a.note {
   .hud-corner::before {
     content: "";
     position: absolute;
-    inset: -1.2rem -1.5rem -1.3rem -2.6rem;
+    inset: calc(var(--space-6) * -1) calc(var(--space-7) * -1) calc(var(--space-7) * -1) calc(var(--space-9) * -1);
     z-index: 0;
-    border-radius: 20px;
+    border-radius: var(--radius-lg);
     background: radial-gradient(
       135% 125% at 100% 100%,
-      rgba(9, 14, 10, 0.55),
-      rgba(9, 14, 10, 0.38) 45%,
-      rgba(9, 14, 10, 0) 78%
+      rgba(var(--scrim-rgb), 0.55),
+      rgba(var(--scrim-rgb), 0.38) 45%,
+      rgba(var(--scrim-rgb), 0) 78%
     );
     pointer-events: none;
   }
@@ -1411,38 +1719,34 @@ a.note {
     background: none;
     border: none;
     cursor: pointer;
-    color: rgba(255, 255, 255, 0.94);
-    font-size: 0.88rem;
-    text-shadow: 0 1px 8px rgba(9, 14, 10, 0.55);
-    padding: 0.2rem 0;
+    color: rgba(var(--on-scene-rgb), 0.94);
+    font-size: var(--text-sm);
+    text-shadow: var(--scene-text-shadow);
+    padding: var(--space-2) 0;
   }
   .hud-nudge:hover {
-    color: #fff;
+    color: var(--on-scene);
     text-decoration: underline;
     text-underline-offset: 3px;
   }
   .hud-rail {
     display: flex;
-    gap: 1.5rem;
+    gap: var(--space-7);
   }
   .hud-rail button {
     background: none;
     border: none;
     cursor: pointer;
-    padding: 0.3rem 0;
+    padding: var(--space-2) 0;
     /* 12px uppercase gets no large-text exemption — with the corner scrim
        behind it this clears AA where 0.7 did not. */
-    color: rgba(255, 255, 255, 0.86);
-    font-size: 0.76rem;
-    font-weight: 650;
-    letter-spacing: 0.1em;
-    text-transform: uppercase;
-    text-shadow: 0 1px 7px rgba(9, 14, 10, 0.6);
+    color: rgba(var(--on-scene-rgb), 0.86);
+    text-shadow: var(--scene-text-shadow);
     font-variant-numeric: tabular-nums;
   }
   .hud-rail button:hover,
   .hud-rail button:focus-visible {
-    color: #fff;
+    color: var(--on-scene);
   }
 
   /* The timeline floats over the scene as the one central panel. */
@@ -1456,17 +1760,17 @@ a.note {
   .stage-timeline .timeline-panel {
     background: color-mix(in srgb, var(--bg-raised) 88%, transparent);
     backdrop-filter: blur(16px) saturate(1.05);
-    box-shadow: 0 18px 44px rgba(9, 14, 10, 0.28);
+    box-shadow: var(--shadow-lg);
   }
 
   /* Below the stage: the maintenance content, back in the reading column. */
   .garden-below {
     max-width: 880px;
     margin: 0 auto;
-    padding: 2rem 2.5rem 3rem;
+    padding: var(--space-8) var(--space-9) var(--space-10);
     display: flex;
     flex-direction: column;
-    gap: 0.9rem;
+    gap: var(--space-6);
     scroll-margin-top: 1rem;
   }
   .garden-below-intro {
@@ -1485,15 +1789,15 @@ a.note {
   position: relative;
   display: grid;
   grid-template-columns: 96px 1fr;
-  gap: 0.8rem;
+  gap: var(--space-5);
   align-items: center;
   max-width: 24rem;
-  margin: 0.7rem 0 0.3rem;
+  margin: var(--space-5) 0 var(--space-2);
   background: var(--bg-raised);
-  border: 1px solid color-mix(in srgb, #c9a13c 40%, var(--border));
-  border-radius: 14px;
-  padding: 0.8rem 2rem 0.8rem 0.8rem;
-  box-shadow: 0 14px 34px rgba(9, 14, 10, 0.18);
+  border: 1px solid color-mix(in srgb, var(--ceremony-line) 40%, var(--border));
+  border-radius: var(--radius-lg);
+  padding: var(--space-5) var(--space-8) var(--space-5) var(--space-5);
+  box-shadow: var(--shadow-lg);
   color: var(--ink);
   text-shadow: none;
   text-align: left;
@@ -1538,6 +1842,8 @@ a.note {
   position: relative;
   height: 96px;
 }
+/* scale-exempt (graphic): the burst overspills its portrait by a fixed 10px,
+   and `width`/`height` below must stay coupled to it. */
 .ceremony-burst {
   position: absolute;
   inset: -10px;
@@ -1553,19 +1859,15 @@ a.note {
   position: absolute;
   width: 4px;
   height: 4px;
-  border-radius: 50%;
-  background: #e8c86a;
+  border-radius: var(--radius-round);
+  background: var(--ceremony-spark);
   opacity: 0;
 }
 .ceremony-mote-1 { left: 12%; bottom: 24%; }
 .ceremony-mote-2 { left: 80%; bottom: 40%; animation-delay: 1.1s !important; }
 .ceremony-mote-3 { left: 48%; bottom: 12%; animation-delay: 2s !important; }
 .ceremony-eyebrow {
-  font-size: 0.66rem;
-  font-weight: 700;
-  letter-spacing: 0.09em;
-  text-transform: uppercase;
-  color: #a8842c;
+  color: var(--ceremony-ink);
 }
 /* Ground ceremonies reuse the species card shell; the tiny shelf icon scales
    up to portrait size. */
@@ -1575,37 +1877,34 @@ a.note {
   display: block;
 }
 .hud-beat-seeall {
-  font-size: 0.72rem;
-  margin-left: 0.3rem;
+  font-size: var(--text-2xs);
+  margin-left: var(--space-2);
 }
 .ceremony-name {
-  font-family: var(--font-display);
-  font-size: 1.25rem;
-  font-weight: 650;
   display: flex;
   align-items: center;
-  gap: 0.45rem;
+  gap: var(--space-4);
   flex-wrap: wrap;
 }
 .ceremony-extra {
-  font-size: 0.72rem;
+  font-size: var(--text-2xs);
   color: var(--ink-faint);
   font-family: var(--font);
-  font-weight: 600;
+  font-weight: var(--weight-medium);
 }
 .ceremony-earned {
-  font-size: 0.8rem;
+  font-size: var(--text-xs);
   color: var(--ink-soft);
-  margin-top: 0.1rem;
+  margin-top: var(--space-1);
 }
 .ceremony-see {
-  margin-top: 0.35rem;
+  margin-top: var(--space-3);
   background: none;
   border: none;
   padding: 0;
   font: inherit;
-  font-size: 0.85rem;
-  font-weight: 650;
+  font-size: var(--text-sm);
+  font-weight: var(--weight-medium);
   color: var(--green-ink);
   cursor: pointer;
 }
@@ -1614,24 +1913,19 @@ a.note {
 }
 .ceremony-close {
   position: absolute;
-  top: 0.5rem;
-  right: 0.5rem;
+  top: var(--space-4);
+  right: var(--space-4);
   background: none;
   border: none;
-  padding: 0.25rem;
+  padding: var(--space-2);
   cursor: pointer;
   color: var(--ink-faint);
   line-height: 0;
 }
-/* Audit M18: the visible glyph stays small (this sits in the card's 2rem
-   right gutter, no room to grow the box itself without crowding the name/
-   rarity row) — an invisible ::before pads the tap target out to ~40px
-   without moving or resizing anything on screen. */
-.ceremony-close::before {
-  content: "";
-  position: absolute;
-  inset: -0.6rem;
-}
+/* The visible glyph stays small (this sits in the card's 2rem right gutter,
+   with no room to grow the box without crowding the name/rarity row). It used
+   to hand-roll its own hit area with a fixed `inset: -0.6rem`, which reached
+   ~35px; it wears the shared `.tap-pad` treatment now (see "Touch floor"). */
 .ceremony-close:hover {
   color: var(--ink);
 }
@@ -1649,31 +1943,31 @@ a.note {
     margin: 0;
     background: color-mix(in srgb, var(--bg-raised) 93%, transparent);
     backdrop-filter: blur(16px) saturate(1.05);
-    box-shadow: 0 18px 44px rgba(9, 14, 10, 0.3);
+    box-shadow: var(--shadow-lg);
   }
 }
 
 /* ── Week ribbon (the week as a quest) ───────────────────────────────────── */
 .week-ribbon-strip {
   display: flex;
-  gap: 0.55rem;
+  gap: var(--space-4);
   align-items: flex-end;
-  margin-top: 0.2rem;
+  margin-top: var(--space-2);
 }
 .week-day {
   position: relative;
   display: flex;
   flex-direction: column;
   align-items: center;
-  gap: 3px;
-  font-size: 0.62rem;
+  gap: var(--space-2);
+  font-size: var(--text-2xs);
   color: var(--ink-faint);
-  padding-top: 22px;
+  padding-top: var(--space-7);
 }
 .week-day-dot {
   width: 13px;
   height: 13px;
-  border-radius: 4px;
+  border-radius: var(--radius-xs);
   display: block;
 }
 .week-day-empty {
@@ -1689,7 +1983,7 @@ a.note {
    invisible. Now a full-alpha, per-theme token (defined above). */
 .week-day-adventure {
   box-shadow: 0 0 0 2px var(--adventure-ring);
-  border-radius: 50%;
+  border-radius: var(--radius-round);
 }
 .week-day-sprite {
   position: absolute;
@@ -1704,27 +1998,27 @@ a.note {
 }
 .week-pull {
   display: block;
-  margin-top: 0.45rem;
+  margin-top: var(--space-4);
   background: none;
   border: none;
   padding: 0;
   font: inherit;
-  font-size: 0.82rem;
+  font-size: var(--text-xs);
   color: var(--ink-soft);
   text-align: left;
   cursor: pointer;
 }
 .week-pull strong {
   color: var(--green-ink);
-  font-weight: 650;
+  font-weight: var(--weight-medium);
 }
 .week-pull:hover strong {
   text-decoration: underline;
   text-underline-offset: 2px;
 }
 .dock-week {
-  margin: 0 0.6rem 0.4rem;
-  padding-top: 0.5rem;
+  margin: 0 var(--space-4) var(--space-3);
+  padding-top: var(--space-4);
   border-top: 1px solid var(--border);
 }
 
@@ -1738,7 +2032,7 @@ a.note {
   top: 0;
   bottom: 0;
   right: 0;
-  border-radius: 999px;
+  border-radius: var(--radius-pill);
   background: repeating-linear-gradient(
     90deg,
     color-mix(in srgb, var(--warn) 45%, transparent) 0 5px,
@@ -1751,7 +2045,7 @@ a.note {
   top: -4px;
   bottom: -4px;
   width: 2px;
-  border-radius: 1px;
+  border-radius: var(--radius-pill);
   background: color-mix(in srgb, var(--ink) 55%, transparent);
   pointer-events: none;
   z-index: 1;
@@ -1769,10 +2063,12 @@ a.note {
   color: var(--warn);
 }
 .timeline-foot {
-  font-size: 0.75rem;
+  font-size: var(--text-xs);
   color: var(--ink-faint);
-  margin-top: 0.3rem;
+  margin-top: var(--space-2);
 }
+/* scale-exempt (graphic): inset by half the 18px slider thumb, so tick 0 and
+   tick N line up with the thumb's travel. */
 .timeline-ticks {
   position: absolute;
   left: 9px;
@@ -1786,35 +2082,35 @@ a.note {
   top: 1px;
   width: 3px;
   height: 3px;
-  border-radius: 50%;
+  border-radius: var(--radius-round);
   background: var(--green);
   transform: translateX(-50%);
 }
 .timeline-chapter {
-  font-size: 0.78rem;
+  font-size: var(--text-xs);
   color: var(--green-ink);
-  font-weight: 600;
-  margin-top: 0.35rem;
+  font-weight: var(--weight-medium);
+  margin-top: var(--space-3);
 }
 
 /* ── Drawers (desktop stage) ──────────────────────────────────────────────── */
 .drawer-backdrop {
   position: fixed;
   inset: 0;
-  background: rgba(20, 22, 20, 0.28);
+  background: rgba(var(--scrim-rgb), 0.28);
   z-index: 60;
 }
 .drawer {
   position: fixed;
-  top: 1rem;
-  bottom: 1rem;
-  right: 1rem;
+  top: var(--space-6);
+  bottom: var(--space-6);
+  right: var(--space-6);
   width: min(430px, 92vw);
-  border-radius: 14px;
+  border-radius: var(--radius-lg);
   background: color-mix(in srgb, var(--bg-raised) 93%, transparent);
   backdrop-filter: blur(18px) saturate(1.05);
   border: 1px solid var(--border);
-  box-shadow: 0 24px 60px rgba(9, 14, 10, 0.3);
+  box-shadow: var(--shadow-xl);
   display: flex;
   flex-direction: column;
   overflow: hidden;
@@ -1834,7 +2130,7 @@ a.note {
   }
 }
 .drawer-head {
-  padding: 0.9rem 1rem 0.6rem;
+  padding: var(--space-6) var(--space-6) var(--space-4);
   border-bottom: 1px solid var(--border);
   flex: none;
 }
@@ -1842,13 +2138,13 @@ a.note {
    drawer clips 3,509px and said nothing about it). The covers must paint in
    the drawer's own translucent glass, not a flat raised surface. */
 .drawer-body {
-  padding: 0.9rem 1rem 1.2rem;
+  padding: var(--space-6) var(--space-6) var(--space-6);
   flex: 1 1 auto;
   --scroll-surface: color-mix(in srgb, var(--bg-raised) 93%, transparent);
 }
 .drawer-section {
-  margin-bottom: 1rem;
-  padding-bottom: 0.9rem;
+  margin-bottom: var(--space-6);
+  padding-bottom: var(--space-6);
   border-bottom: 1px solid var(--border);
 }
 .garden-scene-big {
@@ -1859,7 +2155,7 @@ a.note {
 .garden-readout {
   text-align: center;
   max-width: 660px;
-  margin: 0 auto 0.3rem;
+  margin: 0 auto var(--space-2);
 }
 .timeline-bar {
   display: flex;
@@ -1868,40 +2164,47 @@ a.note {
 .timeline-panel {
   display: flex;
   flex-direction: column;
-  gap: 0.4rem;
+  gap: var(--space-3);
   width: 100%;
   max-width: 660px;
   background: var(--bg-raised);
   border: 1px solid var(--border);
   border-radius: var(--radius-sm);
-  padding: 0.55rem 0.75rem;
+  padding: var(--space-4) var(--space-5);
 }
 .timeline-panel-head {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 0.5rem;
+  gap: var(--space-4);
 }
 .timeline-label {
-  font-size: 0.82rem;
-  font-weight: 600;
+  font-size: var(--text-xs);
+  font-weight: var(--weight-medium);
   color: var(--ink-soft);
 }
+/* The scrubber measured a 6px hit height. The INPUT is now --tap tall and
+   transparent; the 6px bar you see is drawn by the track pseudo-elements, so
+   the visual is unchanged and the whole strip is grabbable. */
 .timeline-slider {
   -webkit-appearance: none;
   appearance: none;
   width: 100%;
-  height: 6px;
-  border-radius: 999px;
-  background: var(--bg-sunken);
+  height: var(--tap);
+  background: transparent;
   outline: none;
+}
+.timeline-slider::-webkit-slider-runnable-track {
+  height: 6px;
+  border-radius: var(--radius-pill);
+  background: var(--bg-sunken);
 }
 .timeline-slider::-webkit-slider-thumb {
   -webkit-appearance: none;
   appearance: none;
   width: 18px;
   height: 18px;
-  border-radius: 50%;
+  border-radius: var(--radius-round);
   background: var(--green);
   border: 2px solid var(--bg-raised);
   box-shadow: var(--shadow);
@@ -1910,15 +2213,19 @@ a.note {
 .timeline-slider::-moz-range-thumb {
   width: 18px;
   height: 18px;
-  border-radius: 50%;
+  border-radius: var(--radius-round);
   background: var(--green);
   border: 2px solid var(--bg-raised);
   cursor: pointer;
 }
 .timeline-slider::-moz-range-track {
   height: 6px;
-  border-radius: 999px;
+  border-radius: var(--radius-pill);
   background: var(--bg-sunken);
+}
+/* Centre an 18px thumb on the 6px runnable track (Firefox does this itself). */
+.timeline-slider::-webkit-slider-thumb {
+  margin-top: -6px;
 }
 .timeline-slider:disabled {
   opacity: 0.5;
@@ -1931,7 +2238,7 @@ a.note {
 .balance-bars {
   display: flex;
   flex-wrap: nowrap;
-  gap: 8px;
+  gap: var(--space-4);
 }
 .balance-bar {
   flex: 1;
@@ -1960,31 +2267,31 @@ a.note {
 /* Per-discipline detail panel (opens from a bar). */
 .balance-detail {
   max-width: 660px;
-  margin: 0.6rem auto 0;
+  margin: var(--space-4) auto 0;
   background: var(--bg-raised);
   border: 1px solid var(--border);
   border-radius: var(--radius-sm);
-  padding: 0.75rem 0.9rem;
-  font-size: 0.88rem;
+  padding: var(--space-5) var(--space-6);
+  font-size: var(--text-sm);
   color: var(--ink-soft);
   text-align: left;
 }
 .balance-detail-head {
   display: flex;
   align-items: center;
-  gap: 0.5rem;
-  margin-bottom: 0.35rem;
+  gap: var(--space-4);
+  margin-bottom: var(--space-3);
   color: var(--ink);
 }
 .balance-detail-status {
-  font-size: 0.78rem;
+  font-size: var(--text-xs);
   color: var(--ink-faint);
 }
 .balance-detail-close {
   margin-left: auto;
   background: none;
   border: none;
-  padding: 0.2rem;
+  padding: var(--space-2);
   cursor: pointer;
   color: var(--ink-faint);
   line-height: 0;
@@ -1993,32 +2300,32 @@ a.note {
   color: var(--ink);
 }
 .balance-detail-line {
-  margin: 0.2rem 0;
+  margin: var(--space-2) 0;
 }
 .balance-detail-line strong {
   color: var(--warn);
-  font-weight: 650;
+  font-weight: var(--weight-medium);
 }
 .balance-detail-stat {
   display: inline-block;
-  margin-left: 0.3rem;
-  font-size: 0.76rem;
-  font-weight: 650;
+  margin-left: var(--space-2);
+  font-size: var(--text-xs);
+  font-weight: var(--weight-medium);
   color: var(--green-ink);
   background: var(--green-soft);
-  border-radius: 999px;
-  padding: 0.05rem 0.5rem;
+  border-radius: var(--radius-pill);
+  padding: var(--space-1) var(--space-4);
   white-space: nowrap;
   font-variant-numeric: tabular-nums;
 }
 .balance-detail-next {
   display: block;
-  margin: 0.35rem 0 0.1rem;
+  margin: var(--space-3) 0 var(--space-1);
   background: none;
   border: none;
   padding: 0;
   font: inherit;
-  font-weight: 600;
+  font-weight: var(--weight-medium);
   color: var(--green-ink);
   cursor: pointer;
   text-align: left;
@@ -2027,15 +2334,15 @@ a.note {
   text-decoration: underline;
 }
 .balance-detail-week {
-  margin: 0.4rem 0 0;
-  font-size: 0.78rem;
+  margin: var(--space-3) 0 0;
+  font-size: var(--text-xs);
   color: var(--ink-faint);
 }
 .balance-bar-label {
-  font-size: 0.72rem;
-  font-weight: 600;
+  font-size: var(--text-2xs);
+  font-weight: var(--weight-medium);
   color: var(--ink-soft);
-  margin-bottom: 0.2rem;
+  margin-bottom: var(--space-2);
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -2043,12 +2350,12 @@ a.note {
 .balance-bar-track {
   position: relative;
   height: 6px;
-  border-radius: 999px;
+  border-radius: var(--radius-pill);
   background: var(--bg-sunken);
 }
 .balance-bar-fill {
   height: 100%;
-  border-radius: 999px;
+  border-radius: var(--radius-pill);
   max-width: 100%;
 }
 /* A session landing refills its bar visibly instead of teleporting. */
@@ -2058,58 +2365,62 @@ a.note {
   }
 }
 /* The damage point: where the shrinking fill crosses from "fading" into
-   "the garden is visibly paying for this". */
+   "the garden is visibly paying for this".
+   scale-exempt (graphic), and the same for every other mark-on-a-track in
+   this sheet (`.timeline-todaymark`, `.gauge-marker`, `.gauge-overflow*`,
+   `.race-arc-taper`, `.race-arc-today`, `.plan-card-race`): the ±2/3/4px
+   offsets are half the track's own height, not a rhythm step. */
 .balance-notch {
   position: absolute;
   top: -3px;
   bottom: -3px;
   width: 2px;
-  border-radius: 1px;
+  border-radius: var(--radius-pill);
   background: color-mix(in srgb, var(--ink) 38%, transparent);
 }
 .balance-bar-fill.balance-low {
   background: var(--warn);
 }
 .forecast-line {
-  font-size: 0.92rem;
+  font-size: var(--text-sm);
   color: var(--ink-soft);
-  margin: 0.1rem 0 0.35rem;
+  margin: var(--space-1) 0 var(--space-3);
 }
 .forecast-line strong {
   color: var(--warn);
-  font-weight: 650;
+  font-weight: var(--weight-medium);
 }
 .balance-bar-fill.balance-run {
   background: var(--green);
 }
 .balance-bar-fill.balance-strength {
-  background: #b5652f;
+  background: var(--lift-ink);
 }
 .balance-bar-fill.balance-yoga {
-  background: #8f6fae;
+  background: var(--hue-yoga);
 }
 .balance-bar-caption {
-  margin-top: 0.15rem;
-  font-size: 0.68rem;
+  margin-top: var(--space-1);
+  font-size: var(--text-2xs);
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
 }
 .balance-copy {
   text-align: center;
-  margin-top: 0.45rem;
-  font-size: 0.85rem;
+  margin-top: var(--space-4);
+  font-size: var(--text-sm);
 }
 .garden-readout .garden-condition {
-  margin-bottom: 0.15rem;
+  margin-bottom: var(--space-1);
 }
 .garden-readout .banner {
   text-align: left;
-  margin-top: 0.6rem;
+  margin-top: var(--space-4);
 }
 .garden-lower {
   display: grid;
-  gap: 0.9rem;
+  gap: var(--space-6);
 }
 @media (min-width: 900px) {
   .garden-lower {
@@ -2117,7 +2428,14 @@ a.note {
     align-items: start;
   }
 }
-/* The next workout should feel special; the "did this run happen?" prompt should not. */
+/* The next workout should feel special; the "did this run happen?" prompt
+   should not — and until now they used the SAME two devices (a tinted
+   background and a coloured all-round border) to say opposite things, so the
+   quiet housekeeping prompt shouted exactly as loudly as the hero.
+   Resolution: the tint + ring stay with the one that means "special", and the
+   prompt takes the `.status-strip` treatment the sheet already had right —
+   ink-coloured text on the normal card surface, with only a left accent edge
+   carrying the ask. */
 .card-next {
   border-color: var(--green);
   box-shadow: inset 0 0 0 1px var(--green);
@@ -2130,8 +2448,7 @@ a.note {
   color: var(--green-ink);
 }
 .card-prompt {
-  border-color: var(--warn);
-  background: var(--warn-soft);
+  border-left: 3px solid var(--warn);
 }
 .linklike {
   background: none;
@@ -2151,36 +2468,36 @@ a.note {
 .metric-card {
   border: 1px solid var(--border);
   border-radius: var(--radius-sm);
-  padding: 0.7rem 0.8rem;
+  padding: var(--space-5);
   background: var(--bg-raised);
 }
 .metric-head {
   display: flex;
   justify-content: space-between;
   align-items: center;
-  gap: 0.5rem;
+  gap: var(--space-4);
 }
 .metric-title {
-  font-weight: 640;
-  font-size: 0.9rem;
+  font-weight: var(--weight-medium);
+  font-size: var(--text-sm);
 }
 .metric-value {
-  font-size: 1.15rem;
-  font-weight: 650;
-  margin: 0.2rem 0;
+  font-size: var(--text-lg);
+  font-weight: var(--weight-medium);
+  margin: var(--space-2) 0;
   font-variant-numeric: tabular-nums;
 }
 .metric-card .muted {
-  font-size: 0.84rem;
-  margin: 0.2rem 0;
+  font-size: var(--text-xs);
+  margin: var(--space-2) 0;
 }
 .metric-suggestion {
   color: var(--green-ink);
-  font-size: 0.82rem;
-  margin: 0.25rem 0;
+  font-size: var(--text-xs);
+  margin: var(--space-2) 0;
 }
 .metric-card .faint {
-  font-size: 0.76rem;
+  font-size: var(--text-xs);
 }
 
 /* ── Charts ─────────────────────────────────────────────────────────────── */
@@ -2195,7 +2512,7 @@ a.note {
   display: flex;
   align-items: baseline;
   justify-content: space-between;
-  gap: 0.6rem;
+  gap: var(--space-4);
 }
 .chart-caption-text {
   min-width: 0;
@@ -2204,18 +2521,18 @@ a.note {
   flex: none;
 }
 .chart-title {
-  font-weight: 650;
-  font-size: 0.95rem;
+  font-weight: var(--weight-medium);
+  font-size: var(--text-md);
 }
 .chart-subtitle {
-  font-size: 0.8rem;
+  font-size: var(--text-xs);
   color: var(--ink-soft);
-  margin-bottom: 0.5rem;
+  margin-bottom: var(--space-4);
 }
 .chart-note {
-  font-size: 0.78rem;
+  font-size: var(--text-xs);
   color: var(--ink-faint);
-  margin-top: 0.4rem;
+  margin-top: var(--space-3);
 }
 
 /* Shared pointer-overlay tooltip (useChartTooltip in chart-kit.tsx) — an
@@ -2235,9 +2552,9 @@ a.note {
   border: 1px solid var(--border);
   border-radius: var(--radius-sm);
   box-shadow: var(--shadow);
-  padding: 0.3rem 0.55rem;
+  padding: var(--space-2) var(--space-4);
   max-width: 220px;
-  font-size: 0.78rem;
+  font-size: var(--text-xs);
   color: var(--ink);
   white-space: normal;
 }
@@ -2249,12 +2566,12 @@ a.note {
 }
 .chart-tip-action {
   display: block;
-  margin-top: 0.25rem;
+  margin-top: var(--space-2);
   padding: 0;
   border: 0;
   background: none;
   font: inherit;
-  font-weight: 650;
+  font-weight: var(--weight-medium);
   color: var(--green-ink);
   cursor: pointer;
 }
@@ -2278,14 +2595,14 @@ a.note {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
-  gap: 0.3rem 0.9rem;
-  margin-bottom: 0.35rem;
+  gap: var(--space-2) var(--space-6);
+  margin-bottom: var(--space-3);
 }
 .chart-legend-item {
   display: inline-flex;
   align-items: center;
-  gap: 0.32rem;
-  font-size: 0.76rem;
+  gap: var(--space-3);
+  font-size: var(--text-xs);
   color: var(--ink-faint);
 }
 .chart-legend-swatch {
@@ -2295,7 +2612,7 @@ a.note {
 .chart-legend-chip {
   width: 10px;
   height: 10px;
-  border-radius: 3px;
+  border-radius: var(--radius-xs);
   display: inline-block;
 }
 
@@ -2305,26 +2622,26 @@ a.note {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
-  gap: 0 0.1rem;
-  margin: 0.45rem 0 0;
-  font-size: 0.78rem;
+  gap: 0 var(--space-1);
+  margin: var(--space-4) 0 0;
+  font-size: var(--text-xs);
   color: var(--ink-soft);
   font-variant-numeric: tabular-nums;
 }
 .outcome-count {
   display: inline-flex;
   align-items: center;
-  gap: 0.3rem;
+  gap: var(--space-2);
 }
 .outcome-sep {
   color: var(--ink-faint);
-  margin-right: 0.2rem;
+  margin-right: var(--space-2);
 }
 .outcome-chip {
   width: 9px;
   height: 9px;
   flex: none;
-  border-radius: 2px;
+  border-radius: var(--radius-hair);
   display: inline-block;
 }
 .outcome-chip-completed {
@@ -2383,13 +2700,13 @@ a.note {
 .signal-tile.metric-drillable {
   /* Room for the bottom-right chevron so it never overlaps the last line
      of suggestion/staleNote text. */
-  padding-bottom: 1.5rem;
+  padding-bottom: var(--space-7);
 }
 .signal-drill-chevron {
   position: absolute;
-  right: 0.65rem;
-  bottom: 0.5rem;
-  font-size: 1.05rem;
+  right: var(--space-5);
+  bottom: var(--space-4);
+  font-size: var(--text-md);
   line-height: 1;
   color: var(--ink-faint);
 }
@@ -2411,13 +2728,13 @@ a.note {
 
 /* Gauge: 6px track, shaded healthy band, 2px value marker. */
 .gauge {
-  margin: 0.4rem 0 0.25rem;
+  margin: var(--space-3) 0 var(--space-2);
 }
 .gauge-track {
   position: relative;
   height: 6px;
-  margin: 0 3px;
-  border-radius: 3px;
+  margin: 0 var(--space-2);
+  border-radius: var(--radius-pill);
   background: var(--chart-track);
 }
 .gauge-band {
@@ -2425,7 +2742,7 @@ a.note {
   top: 0;
   bottom: 0;
   background: var(--green-soft);
-  border-radius: 3px;
+  border-radius: var(--radius-pill);
 }
 .gauge-marker {
   position: absolute;
@@ -2434,13 +2751,13 @@ a.note {
   width: 2px;
   margin-left: -1px;
   background: var(--ink);
-  border-radius: 1px;
+  border-radius: var(--radius-pill);
 }
 .gauge-overflow {
   position: absolute;
   top: -8px;
-  font-size: 0.62rem;
-  font-weight: 700;
+  font-size: var(--text-2xs);
+  font-weight: var(--weight-bold);
   color: var(--ink-faint);
 }
 .gauge-overflow-lo {
@@ -2452,8 +2769,8 @@ a.note {
 .gauge-scale {
   position: relative;
   height: 1.05rem;
-  margin-top: 0.15rem;
-  font-size: 0.64rem;
+  margin-top: var(--space-1);
+  font-size: var(--text-2xs);
   color: var(--ink-faint);
   font-variant-numeric: tabular-nums;
 }
@@ -2479,7 +2796,7 @@ a.note {
   display: block;
   width: 100%;
   height: 28px;
-  margin: 0.4rem 0 0.25rem;
+  margin: var(--space-3) 0 var(--space-2);
 }
 
 /* Strip boxes: hardStack (7, on=hard, --chart-2 family) or easyDiscipline
@@ -2489,15 +2806,15 @@ a.note {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
-  gap: 3px;
-  margin: 0.4rem 0 0.25rem;
+  gap: var(--space-2);
+  margin: var(--space-3) 0 var(--space-2);
 }
 .strip-box {
   position: relative;
   width: 10px;
   height: 10px;
   flex: none;
-  border-radius: 2px;
+  border-radius: var(--radius-hair);
   background: var(--chart-track);
   display: inline-flex;
   align-items: center;
@@ -2512,15 +2829,17 @@ a.note {
 .strip-box-over {
   background: var(--danger);
 }
+/* scale-exempt: a glyph sized to the 10px box it sits inside — a graphic
+   dimension, not type. */
 .strip-box-glyph {
   font-size: 7px;
   line-height: 1;
   color: var(--bg-raised);
 }
 .strip-more {
-  font-size: 0.68rem;
+  font-size: var(--text-2xs);
   color: var(--ink-faint);
-  margin-left: 2px;
+  margin-left: var(--space-1);
 }
 
 /* Status strip: one-line summary, sticky-friendly (screen owns placement).
@@ -2533,8 +2852,8 @@ a.note {
   border: 1px solid var(--border);
   border-left: 3px solid var(--border-strong);
   border-radius: var(--radius-sm);
-  padding: 0.6rem 0.85rem;
-  font-size: 0.86rem;
+  padding: var(--space-4) var(--space-5);
+  font-size: var(--text-sm);
   color: var(--ink);
   font-variant-numeric: tabular-nums;
 }
@@ -2558,7 +2877,7 @@ a.note {
    via .faint, not a severity color) so the honest caveat doesn't compete
    with the headline count. */
 .status-strip-awaiting {
-  font-weight: 400;
+  font-weight: var(--weight-regular);
 }
 
 /* ── Insights dashboard layout (screens/insights.tsx) ──────────────────────
@@ -2571,15 +2890,10 @@ a.note {
    inside a card is three boxes of chrome around nine tiles; a label is
    enough to group them. */
 .signal-group + .signal-group {
-  margin-top: 1rem;
+  margin-top: var(--space-6);
 }
 .signal-group-label {
-  font-size: 0.72rem;
-  font-weight: 650;
-  letter-spacing: 0.06em;
-  text-transform: uppercase;
-  color: var(--ink-faint);
-  margin: 0 0 0.45rem;
+  margin: 0 0 var(--space-4);
 }
 /* auto-FIT, not auto-fill: every subgroup holds exactly three metrics, and
    auto-fill on a wide card lays out a fourth, empty track — squeezing three
@@ -2587,7 +2901,7 @@ a.note {
    auto-fit collapses the empty track and the three tiles take the full width. */
 .signal-grid {
   display: grid;
-  gap: 0.6rem;
+  gap: var(--space-4);
   grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
 }
 
@@ -2596,7 +2910,7 @@ a.note {
    other without scrolling between them. */
 .aerobic-pair {
   display: grid;
-  gap: 1rem;
+  gap: var(--space-6);
   grid-template-columns: 1fr;
 }
 .aerobic-cell {
@@ -2617,22 +2931,24 @@ a.note {
   flex-wrap: wrap;
   font-variant-numeric: tabular-nums;
 }
+/* The biggest DATA on a card — one step below the page title, which it used
+   to outrank at --text-2xl from inside a card. */
 .headline-stat-value {
-  font-size: 1.9rem;
-  font-weight: 660;
+  font-size: var(--text-xl);
+  font-weight: var(--weight-medium);
   line-height: 1.1;
   color: var(--ink);
 }
 .headline-stat-suffix {
-  font-size: 0.85rem;
+  font-size: var(--text-sm);
   color: var(--ink-soft);
 }
 /* Streak note: quiet by design, only shown at 2+ days (see currentStreak in
    charts-math.ts) — a single day is just normal training, and normal earns
    silence, same rule the rest of this dashboard follows. */
 .streak-note {
-  margin: 0.2rem 0 0;
-  font-size: 0.85rem;
+  margin: var(--space-2) 0 0;
+  font-size: var(--text-sm);
   color: var(--ink-soft);
   font-variant-numeric: tabular-nums;
 }
@@ -2640,14 +2956,14 @@ a.note {
 /* Weekly review disclosure. The latest week is always open prose; older ones
    fold away behind one line. */
 .review-week {
-  font-weight: 650;
-  margin: 0 0 0.2rem;
+  font-weight: var(--weight-medium);
+  margin: 0 0 var(--space-2);
 }
 .reviews-earlier > summary {
   cursor: pointer;
-  font-size: 0.82rem;
+  font-size: var(--text-xs);
   color: var(--ink-faint);
-  padding: 0.25rem 0;
+  padding: var(--space-2) 0;
   list-style-position: inside;
 }
 .reviews-earlier > summary:hover,
@@ -2655,7 +2971,7 @@ a.note {
   color: var(--ink-soft);
 }
 .reviews-earlier[open] > summary {
-  margin-bottom: 0.6rem;
+  margin-bottom: var(--space-4);
 }
 
 /* ── Sheets & dialogs ───────────────────────────────────────────────────── */
@@ -2663,7 +2979,7 @@ a.note {
 .sheet-backdrop {
   position: fixed;
   inset: 0;
-  background: rgba(20, 22, 20, 0.45);
+  background: rgba(var(--scrim-rgb), 0.45);
   z-index: 60;
   display: flex;
   align-items: flex-end;
@@ -2678,31 +2994,31 @@ a.note {
    nothing inside a dialog may set its own vh/dvh height. */
 .sheet {
   background: var(--bg-raised);
-  border-radius: 16px 16px 0 0;
+  border-radius: var(--radius-lg) var(--radius-lg) 0 0;
   width: 100%;
   max-width: 640px;
   max-height: 85dvh;
   display: flex;
   flex-direction: column;
   overflow: hidden;
-  padding: 1rem 1rem calc(1rem + env(safe-area-inset-bottom, 0px));
+  padding: var(--space-6) var(--space-6) calc(var(--space-6) + env(safe-area-inset-bottom, 0px));
 }
 .sheet-head {
   flex: none;
-  margin-bottom: 0.7rem;
+  margin-bottom: var(--space-5);
 }
 .sheet-body {
   flex: 1 1 auto;
   min-height: 0;
   /* Room for the scrollbar and the edge shadow without inventing a second
      gutter — the sheet's own padding is pulled back by the same amount. */
-  padding-right: 0.35rem;
-  margin-right: -0.35rem;
+  padding-right: var(--space-3);
+  margin-right: calc(var(--space-3) * -1);
 }
 .sheet-foot {
   flex: none;
-  margin-top: 0.7rem;
-  padding-top: 0.7rem;
+  margin-top: var(--space-5);
+  padding-top: var(--space-5);
   border-top: 1px solid var(--border);
 }
 /* `fill`: the dialog's content is itself a column that owns its own scroll
@@ -2726,7 +3042,7 @@ a.note {
 }
 @keyframes sheet-dim {
   from {
-    background: rgba(20, 22, 20, 0);
+    background: rgba(var(--scrim-rgb), 0);
   }
 }
 @keyframes sheet-in {
@@ -2740,7 +3056,7 @@ a.note {
     align-items: center;
   }
   .sheet {
-    border-radius: 16px;
+    border-radius: var(--radius-lg);
     max-height: 80dvh;
   }
   .sheet--fill {
@@ -2775,9 +3091,9 @@ a.note {
   flex: none;
   width: 36px;
   height: 4px;
-  border-radius: 2px;
+  border-radius: var(--radius-hair);
   background: var(--border-strong);
-  margin: 0 auto 0.8rem;
+  margin: 0 auto var(--space-5);
 }
 
 /* ── Forms ──────────────────────────────────────────────────────────────── */
@@ -2785,31 +3101,31 @@ a.note {
 .field {
   display: flex;
   flex-direction: column;
-  gap: 0.25rem;
-  margin-bottom: 0.8rem;
+  gap: var(--space-2);
+  margin-bottom: var(--space-5);
 }
 .field label {
-  font-size: 0.85rem;
-  font-weight: 600;
+  font-size: var(--text-sm);
+  font-weight: var(--weight-medium);
   color: var(--ink-soft);
 }
 .field input,
 .field select {
   font: inherit;
-  padding: 0.5rem 0.65rem;
+  padding: var(--space-4) var(--space-5);
   border-radius: var(--radius-sm);
   border: 1px solid var(--border-strong);
   background: var(--bg-raised);
   color: var(--ink);
-  min-height: 44px;
+  min-height: var(--tap);
 }
 .field .hint {
-  font-size: 0.75rem;
+  font-size: var(--text-xs);
   color: var(--ink-faint);
 }
 .field textarea {
   font: inherit;
-  padding: 0.5rem 0.65rem;
+  padding: var(--space-4) var(--space-5);
   border-radius: var(--radius-sm);
   border: 1px solid var(--border-strong);
   background: var(--bg-raised);
@@ -2821,8 +3137,8 @@ a.note {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 1rem;
-  padding: 0.6rem 0;
+  gap: var(--space-6);
+  padding: var(--space-4) 0;
   border-bottom: 1px solid var(--border);
 }
 .switch-row:last-child {
@@ -2833,12 +3149,24 @@ a.note {
 
 .banner {
   border-radius: var(--radius-sm);
-  padding: 0.55rem 0.8rem;
-  font-size: 0.85rem;
-  font-weight: 550;
+  padding: var(--space-4) var(--space-5);
+  font-size: var(--text-sm);
+  font-weight: var(--weight-medium);
   display: flex;
-  gap: 0.5rem;
+  gap: var(--space-4);
   align-items: center;
+}
+/* A banner's actions are a CONTAINER, never loose buttons in the prose: loose,
+   the line box between them is whatever the font gives (0px of visual gap),
+   and two 44px hit pads then overlap inside each other's visible boxes. Wraps,
+   because the labels carry IANA zone ids. Clearance comes from `.tap-clear`. */
+.banner-actions {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: center;
+  vertical-align: middle;
+  max-width: 100%;
+  margin-top: var(--space-4);
 }
 .banner-warn {
   background: var(--warn-soft);
@@ -2849,29 +3177,29 @@ a.note {
   color: var(--accent);
 }
 .sync-note {
-  padding: 0.5rem 0.7rem;
+  padding: var(--space-4) var(--space-5);
   border-radius: var(--radius-sm);
   background: var(--bg-sunken);
   border: 1px solid var(--border);
-  font-size: 0.85rem;
+  font-size: var(--text-sm);
 }
 .empty {
   text-align: center;
-  padding: 2.2rem 1rem;
+  padding: var(--space-8) var(--space-6);
   color: var(--ink-soft);
 }
 .empty .art {
-  font-size: 1.6rem;
-  margin-bottom: 0.4rem;
+  font-size: var(--text-xl);
+  margin-bottom: var(--space-3);
 }
 .spinner {
   width: 20px;
   height: 20px;
   border: 2px solid var(--border-strong);
   border-top-color: var(--green);
-  border-radius: 50%;
+  border-radius: var(--radius-round);
   animation: rg-spin 0.8s linear infinite;
-  margin: 1.4rem auto;
+  margin: var(--space-7) auto;
 }
 @keyframes rg-spin {
   to {
@@ -2887,7 +3215,7 @@ a.note {
   white-space: nowrap;
 }
 .screen-title {
-  margin-bottom: 1rem;
+  margin-bottom: var(--space-6);
   /* The COROS-check line is transient and can be long — when it appears on a
      phone, the row wraps rather than pushing the page sideways (R1). */
   flex-wrap: wrap;
@@ -2908,22 +3236,22 @@ a.note {
 .divider {
   border: none;
   border-top: 1px solid var(--border);
-  margin: 0.8rem 0;
+  margin: var(--space-5) 0;
 }
 
 /* ── Plan Studio ────────────────────────────────────────────────────────── */
 /* Lifting discipline accent (matches .chip-strength / .balance-strength). */
 
 .studio-card {
-  border-color: color-mix(in srgb, #b5652f 35%, var(--border));
-  margin-bottom: 1.2rem;
+  border-color: color-mix(in srgb, var(--lift-ink) 35%, var(--border));
+  margin-bottom: var(--space-6);
 }
 .studio-toggle {
   display: flex;
   align-items: center;
   justify-content: space-between;
   width: 100%;
-  gap: 0.6rem;
+  gap: var(--space-4);
   background: none;
   border: none;
   padding: 0;
@@ -2936,8 +3264,8 @@ a.note {
   display: flex;
   align-items: baseline;
   flex-wrap: wrap;
-  gap: 0.1rem 0.5rem;
-  color: #b5652f;
+  gap: var(--space-1) var(--space-4);
+  color: var(--lift-ink);
 }
 .studio-heading .faint {
   color: var(--ink-faint);
@@ -2952,145 +3280,140 @@ a.note {
   transform: rotate(90deg);
 }
 .studio-content {
-  margin-top: 0.9rem;
+  margin-top: var(--space-6);
 }
 .btn-studio {
-  background: #b5652f;
-  border-color: #b5652f;
-  color: #fff;
+  background: var(--lift-ink);
+  border-color: var(--lift-ink);
+  color: var(--on-accent);
 }
 .btn-studio:hover {
   filter: brightness(1.05);
-  border-color: #b5652f;
+  border-color: var(--lift-ink);
 }
 .studio-week-label {
-  font-size: 0.78rem;
-  font-weight: 650;
-  color: var(--ink-faint);
-  letter-spacing: 0.04em;
-  text-transform: uppercase;
-  margin: 0.9rem 0 0.45rem;
+  margin: var(--space-6) 0 var(--space-4);
 }
 .studio-week-label:first-child {
-  margin-top: 0.1rem;
+  margin-top: var(--space-1);
 }
 .studio-session {
   border: 1px solid var(--border);
   border-radius: var(--radius-sm);
-  padding: 0.6rem 0.75rem;
-  margin-bottom: 0.5rem;
+  padding: var(--space-4) var(--space-5);
+  margin-bottom: var(--space-4);
   background: var(--bg-raised);
 }
 .studio-session-head {
   display: flex;
   justify-content: space-between;
   align-items: baseline;
-  gap: 0.4rem 0.6rem;
+  gap: var(--space-3) var(--space-4);
   flex-wrap: wrap;
 }
 .studio-session-title {
-  font-weight: 650;
-  font-size: 0.94rem;
+  font-weight: var(--weight-medium);
+  font-size: var(--text-sm);
 }
 .studio-session-date {
-  font-size: 0.78rem;
+  font-size: var(--text-xs);
   color: var(--ink-faint);
   white-space: nowrap;
 }
 .studio-exercise-list {
-  margin: 0.4rem 0 0;
+  margin: var(--space-3) 0 0;
   padding: 0;
   list-style: none;
-  font-size: 0.84rem;
+  font-size: var(--text-xs);
   color: var(--ink-soft);
 }
 .studio-exercise-list li {
-  padding: 0.1rem 0;
+  padding: var(--space-1) 0;
 }
 .studio-session-status {
-  margin-top: 0.5rem;
+  margin-top: var(--space-4);
 }
 .studio-diff-strip {
   display: flex;
-  gap: 0.7rem;
-  font-size: 0.82rem;
-  padding: 0.5rem 0.7rem;
+  gap: var(--space-5);
+  font-size: var(--text-xs);
+  padding: var(--space-4) var(--space-5);
   background: var(--bg-sunken);
   border-radius: var(--radius-sm);
   flex-wrap: wrap;
 }
 .studio-diff-added {
   color: var(--green-ink);
-  font-weight: 650;
+  font-weight: var(--weight-medium);
 }
 .studio-diff-changed {
-  color: #b5652f;
-  font-weight: 650;
+  color: var(--lift-ink);
+  font-weight: var(--weight-medium);
 }
 .studio-diff-removed {
   color: var(--danger);
-  font-weight: 650;
+  font-weight: var(--weight-medium);
 }
 
 /* Generation / sync progress and the quiet synced state */
 .studio-progress {
   display: flex;
   align-items: flex-start;
-  gap: 0.8rem;
-  padding: 0.85rem 0.9rem;
+  gap: var(--space-5);
+  padding: var(--space-5) var(--space-6);
   background: var(--bg-sunken);
   border: 1px solid var(--border);
   border-radius: var(--radius-sm);
 }
 .studio-progress p {
-  margin: 0.15rem 0 0;
+  margin: var(--space-1) 0 0;
 }
 .studio-synced-card {
   display: flex;
   align-items: flex-start;
-  gap: 0.7rem;
-  padding: 0.85rem 0.9rem;
+  gap: var(--space-5);
+  padding: var(--space-5) var(--space-6);
   background: var(--green-soft);
   border: 1px solid color-mix(in srgb, var(--green) 30%, transparent);
   border-radius: var(--radius-sm);
 }
 .studio-synced-card p {
-  margin: 0.15rem 0 0;
+  margin: var(--space-1) 0 0;
 }
 .studio-synced-check {
   color: var(--green-ink);
-  font-weight: 700;
-  font-size: 1.05rem;
+  font-weight: var(--weight-bold);
+  font-size: var(--text-md);
   line-height: 1.3;
 }
 .studio-header-pill {
   margin-left: auto;
-  margin-right: 0.5rem;
+  margin-right: var(--space-4);
   flex: none;
 }
 .studio-history {
   list-style: none;
-  padding: 0.4rem 0 0;
+  padding: var(--space-3) 0 0;
   margin: 0;
   display: grid;
-  gap: 0.45rem;
+  gap: var(--space-4);
 }
 
 .usage-meter {
   border-top: 1px solid var(--border);
-  padding-top: 0.7rem;
+  padding-top: var(--space-5);
 }
 .usage-meter-track {
   height: 6px;
-  border-radius: 999px;
+  border-radius: var(--radius-pill);
   background: var(--bg-sunken);
   overflow: hidden;
-  margin-top: 0.3rem;
+  margin-top: var(--space-2);
 }
 .usage-meter-fill {
   height: 100%;
-  border-radius: 999px;
-  background: #b5652f;
+  border-radius: var(--radius-pill);
+  background: var(--lift-ink);
 }
 .usage-meter-fill.warn {
   background: var(--warn);
@@ -3102,81 +3425,76 @@ a.note {
 .day-picker {
   display: flex;
   flex-wrap: wrap;
-  gap: 0.4rem;
+  gap: var(--space-3);
 }
 .day-chip {
   border: 1px solid var(--border-strong);
   background: var(--bg-raised);
-  border-radius: 999px;
-  padding: 0.35rem 0;
-  min-height: 40px;
+  border-radius: var(--radius-pill);
+  padding: var(--space-3) 0;
   width: 2.6rem;
   text-align: center;
-  font-size: 0.78rem;
-  font-weight: 650;
+  font-size: var(--text-xs);
+  font-weight: var(--weight-medium);
   cursor: pointer;
   color: var(--ink-soft);
 }
 .day-chip.active {
-  background: #b5652f;
-  border-color: #b5652f;
-  color: #fff;
+  background: var(--lift-ink);
+  border-color: var(--lift-ink);
+  color: var(--on-accent);
 }
 
 /* ── Species codex & unlock nudges ────────────────────────────────────────── */
 .garden-nowline {
-  margin: 0.15rem 0 0.35rem;
-  font-size: 0.95rem;
+  margin: var(--space-1) 0 var(--space-3);
+  font-size: var(--text-md);
 }
 .now-chip {
   display: inline-block;
   background: var(--green);
-  color: #fff;
-  border-radius: 999px;
-  font-size: 0.68rem;
-  font-weight: 700;
-  letter-spacing: 0.04em;
-  text-transform: uppercase;
-  padding: 0.1rem 0.5rem;
-  margin-right: 0.45rem;
+  color: var(--on-accent);
+  border-radius: var(--radius-pill);
+  padding: var(--space-1) var(--space-4);
+  margin-right: var(--space-4);
   vertical-align: 0.08em;
 }
 .codex-grid {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(108px, 1fr));
-  gap: 0.55rem;
-  margin-top: 0.6rem;
+  gap: var(--space-4);
+  margin-top: var(--space-4);
 }
 .codex-fam + .codex-fam {
-  margin-top: 1.1rem;
+  margin-top: var(--space-6);
 }
 .codex-fam-head {
   display: flex;
   align-items: center;
-  gap: 0.45rem;
-  padding-bottom: 0.3rem;
+  gap: var(--space-4);
+  padding-bottom: var(--space-2);
   border-bottom: 1px solid var(--border);
 }
 .codex-fam-head .dot {
   width: 9px;
   height: 9px;
-  border-radius: 3px;
+  border-radius: var(--radius-xs);
   flex: none;
 }
 .codex-fam-name {
-  font-weight: 650;
-  font-size: 0.9rem;
+  font-weight: var(--weight-medium);
+  font-size: var(--text-sm);
 }
 .codex-fam-count {
-  font-size: 0.75rem;
+  font-size: var(--text-xs);
   color: var(--ink-faint);
   font-variant-numeric: tabular-nums;
 }
 .codex-card {
   position: relative;
   border: 1px solid var(--border);
-  border-radius: 10px;
-  padding: 0.5rem 0.45rem 0.55rem;
+  border-radius: var(--radius-md);
+  padding: var(--space-4) var(--space-4) var(--space-4);
   text-align: center;
   /* A living green shelf, not a white grid. */
   background: var(--green-soft);
@@ -3189,10 +3507,10 @@ a.note {
 }
 /* Rarity reads as one consistent tier everywhere: pill + border tint. */
 .codex-uncommon {
-  border-color: color-mix(in srgb, #3c5f8a 45%, var(--border));
+  border-color: color-mix(in srgb, var(--rarity-uncommon-ink) 45%, var(--border));
 }
 .codex-rare {
-  border-color: color-mix(in srgb, #7a4a74 50%, var(--border));
+  border-color: color-mix(in srgb, var(--rarity-rare-ink) 50%, var(--border));
 }
 .codex-next {
   border-style: dashed;
@@ -3202,52 +3520,44 @@ a.note {
    quiet inline cousin. */
 .new-ring {
   display: inline-block;
-  margin-left: 0.4rem;
+  margin-left: var(--space-3);
   background: var(--green);
-  color: #fff;
-  font-size: 0.6rem;
-  font-weight: 700;
-  letter-spacing: 0.05em;
-  text-transform: uppercase;
-  padding: 0.08rem 0.4rem;
-  border-radius: 999px;
+  color: var(--on-accent);
+  padding: var(--space-1) var(--space-3);
+  border-radius: var(--radius-pill);
   vertical-align: 0.1em;
 }
 /* The landing screen's pull to an unread weekly review. */
 .review-pull {
   margin: 0;
-  font-size: 0.85rem;
+  font-size: var(--text-sm);
   color: var(--ink-soft);
 }
 .codex-newring {
   position: absolute;
-  top: 0.35rem;
-  right: 0.35rem;
+  top: var(--space-3);
+  right: var(--space-3);
   z-index: 1;
   background: var(--green);
-  color: #fff;
-  font-size: 0.6rem;
-  font-weight: 700;
-  letter-spacing: 0.05em;
-  text-transform: uppercase;
-  border-radius: 999px;
-  padding: 0.08rem 0.4rem;
+  color: var(--on-accent);
+  border-radius: var(--radius-pill);
+  padding: var(--space-1) var(--space-3);
 }
 .codex-minirow {
   display: flex;
   flex-wrap: wrap;
-  gap: 0.4rem;
-  margin-top: 0.5rem;
+  gap: var(--space-3);
+  margin-top: var(--space-4);
 }
 .codex-mini {
   display: flex;
   flex-direction: column;
   align-items: center;
-  gap: 0.15rem;
+  gap: var(--space-1);
   width: 4.6rem;
-  padding: 0.35rem 0.2rem;
+  padding: var(--space-3) var(--space-2);
   border: 1px solid var(--border);
-  border-radius: 8px;
+  border-radius: var(--radius-sm);
   background: var(--bg-sunken);
   font: inherit;
   color: var(--ink-faint);
@@ -3261,7 +3571,7 @@ a.note {
   height: 30px;
 }
 .codex-mini-name {
-  font-size: 0.62rem;
+  font-size: var(--text-2xs);
   line-height: 1.15;
   text-align: center;
 }
@@ -3285,26 +3595,26 @@ a.note {
   }
 }
 .codex-name {
-  font-weight: 650;
-  font-size: 0.83rem;
-  margin-top: 0.2rem;
+  font-weight: var(--weight-medium);
+  font-size: var(--text-xs);
+  margin-top: var(--space-2);
   color: var(--ink);
 }
 .codex-sub {
-  font-size: 0.74rem;
+  font-size: var(--text-2xs);
   color: var(--ink-soft);
   line-height: 1.25;
 }
 .codex-toggle {
-  margin-top: 0.7rem;
+  margin-top: var(--space-5);
   display: inline-block;
 }
 .codex-progress {
   height: 5px;
-  border-radius: 999px;
+  border-radius: var(--radius-pill);
   background: var(--border);
   overflow: hidden;
-  margin-top: 0.35rem;
+  margin-top: var(--space-3);
 }
 .codex-progress span {
   display: block;
@@ -3317,7 +3627,7 @@ a.note {
 .bot-card {
   display: grid;
   grid-template-columns: 132px 1fr;
-  gap: 1rem;
+  gap: var(--space-6);
   align-items: start;
 }
 @media (max-width: 480px) {
@@ -3332,7 +3642,7 @@ a.note {
   background: var(--green-soft);
   border: 1px solid color-mix(in srgb, var(--green) 18%, var(--border));
   border-radius: var(--radius);
-  padding: 0.7rem 0.5rem 0.4rem;
+  padding: var(--space-5) var(--space-4) var(--space-3);
 }
 .bot-portrait .codex-sprite {
   height: 108px;
@@ -3344,18 +3654,18 @@ a.note {
 .bot-chips {
   display: flex;
   align-items: center;
-  gap: 0.4rem;
-  margin-bottom: 0.55rem;
+  gap: var(--space-3);
+  margin-bottom: var(--space-4);
 }
 .bot-facts {
   list-style: none;
-  margin: 0.55rem 0 0;
+  margin: var(--space-4) 0 0;
   padding: 0;
-  font-size: 0.88rem;
+  font-size: var(--text-sm);
   color: var(--ink-soft);
 }
 .bot-facts li {
-  padding: 0.42rem 0;
+  padding: var(--space-3) 0;
   border-top: 1px dashed var(--border);
 }
 .bot-facts li:first-child {
@@ -3364,23 +3674,18 @@ a.note {
 }
 .bot-earn-label {
   display: block;
-  font-size: 0.7rem;
-  font-weight: 650;
-  letter-spacing: 0.05em;
-  text-transform: uppercase;
-  color: var(--ink-faint);
-  margin-bottom: 0.15rem;
+  margin-bottom: var(--space-1);
 }
 
 .nudges {
   display: flex;
   flex-direction: column;
-  gap: 0.6rem;
+  gap: var(--space-4);
 }
 .nudge-row {
   display: grid;
   grid-template-columns: 56px 1fr;
-  gap: 0.7rem;
+  gap: var(--space-5);
   align-items: center;
 }
 .nudge-btn {
@@ -3400,64 +3705,56 @@ a.note {
 }
 /* Which workout type this unlock answers to. */
 .nudge-disc {
-  font-size: 0.64rem;
-  font-weight: 700;
-  letter-spacing: 0.05em;
-  text-transform: uppercase;
-  border-radius: 4px;
-  padding: 0.08rem 0.4rem;
-  color: #fff;
+  border-radius: var(--radius-xs);
+  padding: var(--space-1) var(--space-3);
+  color: var(--on-accent);
 }
 .nudge-disc-run {
   background: var(--green);
 }
 .nudge-disc-strength {
-  background: #b5652f;
+  background: var(--lift-ink);
 }
 .nudge-disc-yoga {
-  background: #8f6fae;
+  background: var(--hue-yoga);
 }
 .nudge-row .codex-sprite {
   height: 52px;
 }
 .nudge-title {
-  font-weight: 650;
-  font-size: 0.92rem;
+  font-weight: var(--weight-medium);
+  font-size: var(--text-sm);
   display: flex;
   align-items: center;
-  gap: 0.45rem;
+  gap: var(--space-4);
 }
 .rarity {
-  font-size: 0.66rem;
-  font-weight: 700;
-  border-radius: 999px;
-  padding: 0.06rem 0.45rem;
-  text-transform: uppercase;
-  letter-spacing: 0.04em;
+  border-radius: var(--radius-pill);
+  padding: var(--space-1) var(--space-4);
 }
 .rarity-uncommon {
-  background: #e4ecf7;
-  color: #3c5f8a;
+  background: var(--rarity-uncommon-bg);
+  color: var(--rarity-uncommon-ink);
 }
 .rarity-rare {
-  background: #f3e8f2;
-  color: #7a4a74;
+  background: var(--rarity-rare-bg);
+  color: var(--rarity-rare-ink);
 }
 .wildlife-shelf {
-  margin-top: 0.9rem;
+  margin-top: var(--space-6);
   border-top: 1px solid var(--border);
-  padding-top: 0.7rem;
+  padding-top: var(--space-5);
 }
 .wildlife-row {
   display: flex;
   flex-wrap: wrap;
-  gap: 0.4rem;
+  gap: var(--space-3);
 }
 .wildlife-chip {
   border: 1px solid var(--border);
-  border-radius: 999px;
-  padding: 0.18rem 0.6rem;
-  font-size: 0.78rem;
+  border-radius: var(--radius-pill);
+  padding: var(--space-2) var(--space-4);
+  font-size: var(--text-xs);
   color: var(--ink);
   background: var(--green-soft);
   font: inherit;
@@ -3469,22 +3766,22 @@ a.note {
   background: transparent;
 }
 .wildlife-hint {
-  margin-top: 0.45rem;
+  margin-top: var(--space-4);
 }
 .visitor-row {
   display: flex;
   flex-wrap: wrap;
-  gap: 0.45rem;
+  gap: var(--space-4);
 }
 .visitor-card {
   display: flex;
   flex-direction: column;
   align-items: center;
-  gap: 0.1rem;
+  gap: var(--space-1);
   width: 5.4rem;
-  padding: 0.45rem 0.3rem;
+  padding: var(--space-4) var(--space-2);
   border: 1px solid var(--border);
-  border-radius: 10px;
+  border-radius: var(--radius-md);
   background: var(--green-soft);
   color: var(--green-ink);
   font: inherit;
@@ -3499,28 +3796,24 @@ a.note {
   border-style: dashed;
 }
 .visitor-name {
-  font-size: 0.74rem;
-  font-weight: 650;
+  font-size: var(--text-2xs);
+  font-weight: var(--weight-medium);
   color: var(--ink);
 }
 .visitor-unseen .visitor-name {
   color: var(--ink-faint);
 }
 .visitor-sub {
-  font-size: 0.62rem;
+  font-size: var(--text-2xs);
   color: var(--ink-faint);
   font-variant-numeric: tabular-nums;
 }
-@media (prefers-color-scheme: dark) {
-  .rarity-uncommon {
-    background: #2c3c50;
-    color: #a8c4e4;
-  }
-  .rarity-rare {
-    background: #402f3e;
-    color: #d9a8d2;
-  }
-}
+/* (The dark rarity block that used to sit here was the ONE theme rule in this
+   sheet with no `:root:not([data-theme="light"])` guard and no
+   `:root[data-theme="dark"]` twin, so it was wrong in both toggle directions:
+   forcing light on a dark OS kept the dark chips, and forcing dark on a light
+   OS kept the light ones. The four values are `--rarity-*` tokens now, which
+   makes the guard structural rather than something to remember.) */
 
 /* ── Insights drilldown (per-run evidence) ───────────────────────────────── */
 .metric-drillable {
@@ -3540,12 +3833,12 @@ a.note {
   padding: 0;
   display: flex;
   flex-direction: column;
-  gap: 0.8rem;
+  gap: var(--space-5);
 }
 .drill-run {
   border: 1px solid var(--border);
-  border-radius: 10px;
-  padding: 0.6rem 0.7rem;
+  border-radius: var(--radius-md);
+  padding: var(--space-4) var(--space-5);
 }
 .drill-run-over {
   border-left: 3px solid var(--danger);
@@ -3553,22 +3846,22 @@ a.note {
 .drill-run-head {
   display: flex;
   align-items: baseline;
-  gap: 0.6rem;
+  gap: var(--space-4);
   flex-wrap: wrap;
 }
 .drill-run-head .date {
-  font-size: 0.78rem;
+  font-size: var(--text-xs);
   color: var(--ink-faint);
   min-width: 4.2em;
 }
 .drill-run-title {
-  font-weight: 650;
-  font-size: 0.9rem;
+  font-weight: var(--weight-medium);
+  font-size: var(--text-sm);
 }
 .drill-run-value {
   margin-left: auto;
   font-variant-numeric: tabular-nums;
-  font-size: 0.85rem;
+  font-size: var(--text-sm);
 }
 /* The .lap-* rules that used to live here (hardcoded #7aa458 / #c96a52 /
    #a8552f — the only hexes left in the chart layer, and invisible to the
@@ -3582,7 +3875,7 @@ a.note {
   width: 100vw;
   height: 100vh;
   overflow: hidden;
-  background: #0f1512;
+  background: var(--stage-bg);
   cursor: default;
   user-select: none;
   -webkit-user-select: none;
@@ -3601,30 +3894,30 @@ a.note {
   position: absolute;
   left: clamp(1.2rem, 3vw, 3rem);
   bottom: clamp(1.2rem, 3vh, 2.4rem);
-  color: #fff;
-  text-shadow: 0 1px 6px rgba(0, 0, 0, 0.55);
+  color: var(--on-scene);
+  text-shadow: var(--scene-text-shadow);
   pointer-events: none;
   line-height: 1.25;
 }
 .ambient-condition {
-  font-size: clamp(1.5rem, 3.4vw, 2.6rem);
-  font-weight: 650;
+  font-size: clamp(var(--text-xl), 3.4vw, var(--text-2xl));
+  font-weight: var(--weight-medium);
   letter-spacing: -0.01em;
 }
 .ambient-sub {
-  margin-top: 0.25rem;
-  font-size: clamp(0.85rem, 1.4vw, 1.05rem);
+  margin-top: var(--space-2);
+  font-size: clamp(var(--text-sm), 1.4vw, var(--text-md));
   opacity: 0.82;
 }
 .ambient-clock {
   position: absolute;
   right: clamp(1.2rem, 3vw, 3rem);
   top: clamp(1.2rem, 3vh, 2.4rem);
-  color: #fff;
+  color: var(--on-scene);
   opacity: 0.7;
-  font-size: clamp(1rem, 1.8vw, 1.4rem);
+  font-size: clamp(var(--text-md), 1.8vw, var(--text-xl));
   font-variant-numeric: tabular-nums;
-  text-shadow: 0 1px 6px rgba(0, 0, 0, 0.55);
+  text-shadow: var(--scene-text-shadow);
   pointer-events: none;
 }
 .ambient-waiting {
@@ -3634,21 +3927,28 @@ a.note {
   flex-direction: column;
   align-items: center;
   justify-content: center;
-  gap: 0.6rem;
+  gap: var(--space-4);
   color: #cfe0d4;
 }
+/* scale-exempt: decorative emoji sized as artwork, not as type. */
 .ambient-waiting .ambient-mark {
   font-size: 3rem;
 }
+/* scale-exempt: the sign-in screen's mark — artwork, same as above. */
+.welcome-mark {
+  font-size: 2.4rem;
+}
 .ambient-waiting-hint {
-  font-size: 0.8rem;
+  font-size: var(--text-xs);
   opacity: 0.55;
 }
 
 /* ── The coach panel (Plan B, 2026-08-06-coach-ux-design.md) ─────────────── */
 .pill-run { background: var(--green-soft); color: var(--green-ink); }
 .pill-lift { background: var(--lift-soft); color: var(--lift-ink); }
-.pill-warnsoft { background: var(--warn-soft); color: var(--warn); font-weight: 600; }
+/* (`.pill-warnsoft` is gone: its only user was the brief's "Needs you"
+   chip, which now takes the accent-edge treatment instead of a second tinted
+   field. `.pill-warn` remains for a genuine warn LABEL.) */
 
 /* The panel sizes to the box it is GIVEN — the coach window's fixed height or
    the sheet's fill body — never to the window. It used to carry
@@ -3669,7 +3969,7 @@ a.note {
   display: flex;
   justify-content: space-between;
   align-items: center;
-  padding: 0.65rem 0.9rem;
+  padding: var(--space-5) var(--space-6);
   border-bottom: 1px solid var(--border);
   flex: none;
 }
@@ -3683,56 +3983,55 @@ a.note {
   display: flex;
   flex-direction: column;
 }
-.coach-panel-head h2 { font-family: var(--font-display); font-size: 1rem; margin: 0; }
+.coach-panel-head h2 { margin: 0; }
 
 .coach-tray {
-  padding: 0.6rem 0.9rem;
+  padding: var(--space-4) var(--space-6);
   border-bottom: 1px solid var(--border);
   background: var(--coach-tray-bg);
   flex: none;
 }
 .coach-tray-head {
-  font-size: 0.68rem;
-  font-weight: 700;
-  letter-spacing: 0.07em;
-  text-transform: uppercase;
   color: var(--warn);
-  margin: 0 0 0.45rem;
+  margin: 0 0 var(--space-4);
 }
 .coach-prop {
   border: 1px solid var(--border-strong);
-  border-radius: 10px;
+  border-radius: var(--radius-md);
   background: var(--bg-raised);
-  padding: 0.55rem 0.7rem;
-  margin-bottom: 0.5rem;
+  padding: var(--space-4) var(--space-5);
+  margin-bottom: var(--space-4);
 }
 .coach-prop:last-child { margin-bottom: 0; }
-.coach-prop-title { font-size: 0.92rem; }
-.coach-prop-evidence { margin: 0.25rem 0 0; }
+.coach-prop-title { font-size: var(--text-sm); }
+.coach-prop-evidence { margin: var(--space-2) 0 0; }
 /* A column, not a row of pills: "breaks a rule: …" is a whole rule sentence,
    and as a nowrap pill it clipped at scrollWidth 461 in a 327px card with no
    way to scroll to the end of the very sentence that matters. */
-.coach-prop-flags { display: flex; flex-direction: column; gap: 0.3rem; margin-top: 0.3rem; }
-.coach-prop-why { margin: 0.4rem 0 0; font-size: 0.88rem; }
+.coach-prop-flags { display: flex; flex-direction: column; gap: var(--space-2); margin-top: var(--space-2); }
+/* Three controls of two different heights in one row: the 24px "Why?" link
+   needs 10px of clearance for its pad, so the row wraps rather than squeeze. */
+.proposal-actions { flex-wrap: wrap; }
+.coach-prop-why { margin: var(--space-3) 0 0; font-size: var(--text-sm); }
 /* Audit C17: approve/decline used to fail silently (a 409 read exactly
    like success — the card just vanished). */
-.coach-prop-error { margin: 0.4rem 0 0; font-size: 0.82rem; color: var(--danger); }
+.coach-prop-error { margin: var(--space-3) 0 0; font-size: var(--text-xs); color: var(--danger); }
 
 /* Not a scroller any more — `.coach-scroll` above owns that. It still grows
    to fill the region so a short thread keeps the composer at the bottom. */
 .coach-thread {
   flex: 1 0 auto;
-  padding: 0.7rem 0.9rem;
+  padding: var(--space-5) var(--space-6);
   display: flex;
   flex-direction: column;
-  gap: 0.5rem;
+  gap: var(--space-4);
   min-height: 120px;
 }
 .coach-msg {
   max-width: 92%;
-  border-radius: 12px;
-  padding: 0.5rem 0.75rem;
-  font-size: 0.92rem;
+  border-radius: var(--radius);
+  padding: var(--space-4) var(--space-5);
+  font-size: var(--text-sm);
 }
 .coach-msg-coach { background: var(--bg-sunken); align-self: flex-start; }
 .coach-msg-user { background: var(--green-soft); color: var(--green-ink); align-self: flex-end; }
@@ -3742,18 +4041,18 @@ a.note {
 .coach-msg-failed { background: var(--danger-soft); color: var(--ink); outline: 1px solid color-mix(in srgb, var(--danger) 40%, transparent); }
 .coach-msg-retry {
   display: block;
-  margin-top: 0.3rem;
-  font-size: 0.78rem;
+  margin-top: var(--space-2);
+  font-size: var(--text-xs);
   color: var(--danger);
 }
-.coach-receipt { align-self: stretch; text-align: center; font-size: 0.75rem; padding: 0.1rem 0; }
-.coach-memchips { display: inline-flex; gap: 0.3rem; margin-left: 0.4rem; }
+.coach-receipt { align-self: stretch; text-align: center; font-size: var(--text-xs); padding: var(--space-1) 0; }
+.coach-memchips { display: inline-flex; gap: var(--space-2); margin-left: var(--space-3); }
 .tagchip {
-  font-size: 0.68rem;
+  font-size: var(--text-2xs);
   background: var(--accent-soft);
   color: var(--accent);
-  border-radius: 6px;
-  padding: 0.05rem 0.35rem;
+  border-radius: var(--radius-sm);
+  padding: var(--space-1) var(--space-3);
   text-decoration: none;
 }
 
@@ -3763,49 +4062,66 @@ a.note {
   background: var(--bg-sunken);
   border-left: 3px solid var(--accent);
   border-radius: var(--radius-sm);
-  padding: 0.6rem 0.8rem;
-  margin: 0.3rem 0 0.7rem;
+  padding: var(--space-4) var(--space-5);
+  margin: var(--space-2) 0 var(--space-5);
 }
 .coach-read-glance {
-  font-size: 0.9rem;
-  font-weight: 650;
-  margin: 0 0 0.25rem;
+  font-size: var(--text-sm);
+  font-weight: var(--weight-medium);
+  margin: 0 0 var(--space-2);
 }
 .coach-read-body {
-  font-size: 0.9rem;
+  font-size: var(--text-sm);
   white-space: pre-wrap;
-  margin: 0 0 0.4rem;
+  margin: 0 0 var(--space-3);
 }
 .coach-read-waiting {
   text-align: center;
-  font-size: 0.85rem;
-  margin: 0.2rem 0 0;
+  font-size: var(--text-sm);
+  margin: var(--space-2) 0 0;
 }
 .coach-read-meta {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 0.5rem;
+  gap: var(--space-4);
 }
 
 /* Pinned footer of the panel — never part of the scroll region. */
-.coach-composer { border-top: 1px solid var(--border); padding: 0.55rem 0.7rem; flex: none; }
+.coach-composer { border-top: 1px solid var(--border); padding: var(--space-4) var(--space-5); flex: none; }
 .coach-input {
   display: flex;
-  gap: 0.5rem;
-  align-items: center;
+  gap: var(--space-4);
+  /* The FIELD owns the box, not the form. `.coach-input` is a <form>: putting
+     the floor on IT produced a control that LOOKED 44px while the focusable
+     <input> inside was still 26px, vertically centred, with 12px dead bands —
+     a click 3px inside the top edge focused `div.sheet`, not the field. The
+     vertical padding is gone and the children stretch, so every pixel of the
+     visible box belongs to the field or to Send. */
+  align-items: stretch;
   border: 1.5px solid var(--border-strong);
-  border-radius: 10px;
-  padding: 0.35rem 0.5rem;
+  border-radius: var(--radius-md);
+  padding: 0 var(--space-4);
   background: var(--bg-raised);
 }
-.coach-input input { flex: 1; border: 0; outline: 0; background: transparent; font: inherit; color: var(--ink); }
+.coach-input input {
+  flex: 1;
+  border: 0;
+  outline: 0;
+  background: transparent;
+  font: inherit;
+  color: var(--ink);
+  padding: 0;
+  /* An <input> cannot carry a pseudo-element, so this is one of the controls
+     whose real height is the hit area. Floor in "Touch floor". */
+  min-height: var(--tap-fine);
+}
 .coach-question {
   display: flex;
-  gap: 0.5rem;
+  gap: var(--space-4);
   align-items: center;
   flex-wrap: wrap;
-  margin-top: 0.45rem;
+  margin-top: var(--space-4);
 }
 /* The chip group holds answers of unknown length — it wraps too, so a wordy
    set of options can't widen the composer and, through it, the whole panel. */
@@ -3817,21 +4133,20 @@ a.note {
   align-items: center;
   justify-content: center;
   /* Audit M18: was ~24px tall — the coach's own answer chips, tapped on
-     every question it asks. */
-  min-height: 40px;
+     every question it asks. Floor in "Touch floor". */
   border: 1px solid var(--border-strong);
   background: var(--bg-raised);
-  border-radius: 999px;
-  padding: 0.22rem 0.7rem;
-  font: 600 0.8rem var(--font);
+  border-radius: var(--radius-pill);
+  padding: var(--space-2) var(--space-5);
+  font: var(--weight-medium) var(--text-xs) var(--font);
   cursor: pointer;
 }
 .chipbtn:hover { border-color: var(--green); color: var(--green-ink); }
 
 .coach-plan-card {
   border: 1px solid var(--border);
-  border-radius: 10px;
-  padding: 0.6rem 0.75rem;
+  border-radius: var(--radius-md);
+  padding: var(--space-4) var(--space-5);
   background: var(--bg-raised);
 }
 
@@ -3844,12 +4159,11 @@ a.note {
   display: flex;
   flex-direction: column;
   justify-content: center;
-  min-height: 40px;
-  margin-top: 0.15rem;
-  border-radius: 6px;
-  padding: 0.1rem 0.35rem;
-  font-size: 0.7rem;
-  font-weight: 600;
+  margin-top: var(--space-1);
+  border-radius: var(--radius-sm);
+  padding: var(--space-1) var(--space-3);
+  font-size: var(--text-2xs);
+  font-weight: var(--weight-medium);
   cursor: pointer;
   border: 0;
   width: 100%;
@@ -3858,7 +4172,7 @@ a.note {
 .cal-ghost-incoming { background: var(--green-soft); color: var(--green-ink); outline: 2px dashed var(--green); outline-offset: -2px; }
 .cal-ghost-outgoing, .cal-ghost-skip { background: transparent; color: var(--ink-faint); text-decoration: line-through; }
 .cal-ghost-rewrite { background: var(--green-soft); color: var(--green-ink); outline: 2px dashed var(--green); outline-offset: -2px; }
-.cal-ghost-reason { display: block; font-size: 0.62rem; color: var(--warn); margin-top: 0.1rem; }
+.cal-ghost-reason { display: block; font-size: var(--text-2xs); color: var(--warn); margin-top: var(--space-1); }
 .coach-flash { animation: coach-flash 1.2s ease; }
 @media (prefers-reduced-motion: no-preference) {
   @keyframes coach-flash { 0%, 60% { box-shadow: 0 0 0 3px var(--green-soft); } }
@@ -3867,24 +4181,24 @@ a.note {
 /* Mobile: the Coach pill + sheet */
 .coach-pill {
   position: fixed;
-  right: 0.9rem;
+  right: var(--space-6);
   /* Audit C25: no env() term meant the bottom-nav's safe-area padding (which
      grows with the home-indicator inset) pushed its top edge over most of
      this pill on Face-ID iPhones, leaving a ~10px sliver to tap. */
-  bottom: calc(4.2rem + env(safe-area-inset-bottom, 0px));
+  bottom: calc(var(--nav-height) + var(--space-5) + env(safe-area-inset-bottom, 0px));
   z-index: 30;
   display: inline-flex;
   align-items: center;
   justify-content: center;
   /* Audit M18: was ~35px tall. */
-  min-height: 40px;
+  min-height: var(--tap);
   background: var(--green);
-  color: #fff;
+  color: var(--on-accent);
   border: 0;
-  border-radius: 999px;
-  padding: 0.55rem 1rem;
-  font: 650 0.9rem var(--font);
-  box-shadow: 0 4px 14px rgba(40, 60, 45, 0.3);
+  border-radius: var(--radius-pill);
+  padding: var(--space-4) var(--space-6);
+  font: var(--weight-medium) var(--text-sm) var(--font);
+  box-shadow: var(--shadow-sm);
   cursor: pointer;
 }
 /* The mobile coach sheet: the sheet is `fill`, so this wrapper is just the
@@ -3902,9 +4216,9 @@ a.note {
 .memory-row {
   display: flex;
   justify-content: space-between;
-  gap: 0.6rem;
+  gap: var(--space-4);
   align-items: baseline;
-  padding: 0.4rem 0;
+  padding: var(--space-3) 0;
   border-bottom: 1px solid var(--border);
 }
 .memory-row:last-child { border-bottom: 0; }
@@ -3915,15 +4229,15 @@ a.note {
 .garden-scene-wrap { position: relative; }
 .scene-full-toggle {
   position: absolute;
-  top: 0.6rem;
-  right: 0.6rem;
-  min-width: 44px;
-  min-height: 44px;
+  top: var(--space-4);
+  right: var(--space-4);
+  min-width: var(--tap);
+  min-height: var(--tap);
   border: none;
-  border-radius: 999px;
-  background: rgba(20, 28, 22, 0.55);
-  color: #f5f2ea;
-  font-size: 1.05rem;
+  border-radius: var(--radius-pill);
+  background: rgba(var(--scrim-rgb), 0.55);
+  color: var(--on-scene);
+  font-size: var(--text-md);
   display: flex;
   align-items: center;
   justify-content: center;
@@ -3935,7 +4249,7 @@ a.note {
   /* Above the bottom nav (40) but BELOW sheets (60): tapping a plant in
      fullscreen opens the plant sheet, which must paint on top. */
   z-index: 50;
-  background: var(--bg, #101511);
+  background: var(--bg);
   border: none;
   border-radius: 0;
   max-width: none;
@@ -3977,24 +4291,24 @@ a.note {
 @media (min-width: 1024px) {
   .scene-full-toggle { display: none; }
 }
-.coach-pill-caret { margin-right: 0.35rem; font-size: 0.7em; opacity: 0.85; }
+.coach-pill-caret { margin-right: var(--space-3); font-size: 0.7em; opacity: 0.85; }
 
 /* ── Activity specimen cards (activities-page redesign) ─────────────────── */
 .act-card {
   display: grid;
   grid-template-columns: 4px minmax(0, 1fr) 172px;
-  gap: 0.35rem 0.9rem;
+  gap: var(--space-3) var(--space-6);
   align-items: center;
-  padding: 0.7rem 0.8rem;
+  padding: var(--space-5);
   background: var(--bg-raised);
   border: 1px solid var(--border);
   border-radius: var(--radius-sm);
-  margin-bottom: 0.45rem;
+  margin-bottom: var(--space-4);
 }
 .act-spine {
   grid-row: 1 / -1;
   align-self: stretch;
-  border-radius: 2px;
+  border-radius: var(--radius-hair);
   background: var(--act-hue, var(--green));
   opacity: 0.85;
 }
@@ -4002,27 +4316,29 @@ a.note {
 .act-titlerow {
   display: flex;
   align-items: baseline;
-  gap: 0.5rem;
+  gap: var(--space-4);
   min-width: 0;
 }
 .act-title {
-  font-weight: 600;
+  font-size: var(--text-md);
+  font-weight: var(--weight-medium);
+  line-height: 1.35;
   overflow-wrap: anywhere;
 }
-.act-sport { font-size: 0.78rem; flex-shrink: 0; }
+.act-sport { font-size: var(--text-xs); flex-shrink: 0; }
 .act-meta {
   display: flex;
   flex-wrap: wrap;
-  gap: 0.15rem 0.7rem;
-  font-size: 0.82rem;
-  margin-top: 0.1rem;
+  gap: var(--space-1) var(--space-5);
+  font-size: var(--text-xs);
+  margin-top: var(--space-1);
 }
 .act-glance {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
-  gap: 0.35rem 0.7rem;
-  margin-top: 0.4rem;
+  gap: var(--space-3) var(--space-5);
+  margin-top: var(--space-3);
 }
 .act-shape {
   width: min(230px, 55%);
@@ -4036,7 +4352,7 @@ a.note {
 .act-shape:focus-visible {
   outline: 2px solid var(--green);
   outline-offset: 3px;
-  border-radius: 3px;
+  border-radius: var(--radius-xs);
 }
 /* Laps drawn at the legibility floor rather than to scale — dimmer, so the
    eye doesn't read borrowed width as time the lap actually took. */
@@ -4058,7 +4374,9 @@ a.note {
   order: 1;
   flex-basis: 100%;
   margin: 0;
-  font-size: 0.72rem;
+  font-size: var(--text-2xs);
+  /* scale-exempt: a FIXED line box, so swapping the overview caption for a lap
+     caption cannot move the card. Both numbers must stay equal. */
   line-height: 1.05rem;
   min-height: 1.05rem;
   color: var(--ink-faint);
@@ -4069,67 +4387,53 @@ a.note {
 .act-effort {
   display: inline-flex;
   align-items: center;
-  gap: 0.4rem;
-  font-size: 0.78rem;
-  color: var(--ink-soft, #6b6555);
+  gap: var(--space-3);
+  font-size: var(--text-xs);
+  color: var(--ink-soft);
   white-space: nowrap;
   min-width: 0;
 }
-.act-ticks { display: inline-flex; gap: 2px; }
+.act-ticks { display: inline-flex; gap: var(--space-1); }
 .act-ticks i {
   width: 4px;
   height: 10px;
-  border-radius: 2px;
+  border-radius: var(--radius-hair);
   background: var(--border);
 }
 .act-ticks i.on { background: var(--act-hue, var(--green)); }
-.act-effort > .act-feel:not(:first-child) { margin-left: 0.5rem; }
+.act-effort > .act-feel:not(:first-child) { margin-left: var(--space-4); }
 /* Fixed-geometry action column: both slots identical boxes, so the
    Link-button → linked-pill flip can never move a pixel of layout. */
 .act-actions {
   display: flex;
   flex-direction: column;
-  gap: 0.4rem;
+  gap: var(--space-3);
   width: 172px;
 }
 .act-actions > * ,
 .act-status-slot > * {
   width: 100%;
-  min-height: 32px;
   display: inline-flex;
   align-items: center;
   justify-content: center;
   box-sizing: border-box;
   white-space: nowrap;
 }
-.act-status-slot { min-height: 32px; }
-/* Category / sport hues for spine + shape (existing app palette). */
-.act-hue-quality { --act-hue: #b06a4d; }
-.act-hue-long { --act-hue: #4d6ab0; }
-.act-hue-easy { --act-hue: #5f9367; }
-.act-hue-race { --act-hue: #9a4a68; }
-.act-hue-recovery { --act-hue: #7fae94; }
+/* Category / sport hues for spine + shape. These read the SAME `--hue-*`
+   tokens the `.cat-*` dots do, so a category is one colour on every screen and
+   a dark correction is written once, in `:root`. (Two independent hue sets is
+   why only race and long ever got theirs: the correction had to be authored
+   four times — two systems × two theme selectors — and in practice was.) */
+.act-hue-quality { --act-hue: var(--hue-quality); }
+.act-hue-long { --act-hue: var(--hue-long); }
+.act-hue-easy { --act-hue: var(--hue-easy); }
+.act-hue-race { --act-hue: var(--hue-race); }
+.act-hue-recovery { --act-hue: var(--hue-recovery); }
 .act-hue-cross_training,
-.act-hue-strength { --act-hue: #8a87b8; }
-.act-hue-yoga { --act-hue: #8f6fae; }
-.act-hue-run { --act-hue: #5f9367; }
-.act-hue-adventure { --act-hue: #8a7550; }
-/* Dark surfaces: race/long sit under the 3:1 non-text floor at their light
-   values — lift lightness, keep the hue family. */
-@media (prefers-color-scheme: dark) {
-  :root:not([data-theme="light"]) .act-hue-race { --act-hue: #c47a9b; }
-  :root:not([data-theme="light"]) .act-hue-long { --act-hue: #8199d6; }
-}
-:root[data-theme="dark"] .act-hue-race { --act-hue: #c47a9b; }
-:root[data-theme="dark"] .act-hue-long { --act-hue: #8199d6; }
-/* Keep the category dots on the same lifted dark hues as the act cards —
-   one category, one color, on every screen. */
-@media (prefers-color-scheme: dark) {
-  :root:not([data-theme="light"]) .cat-race { background: #c47a9b; }
-  :root:not([data-theme="light"]) .cat-long { background: #8199d6; }
-}
-:root[data-theme="dark"] .cat-race { background: #c47a9b; }
-:root[data-theme="dark"] .cat-long { background: #8199d6; }
+.act-hue-strength { --act-hue: var(--hue-strength); }
+.act-hue-yoga { --act-hue: var(--hue-yoga); }
+.act-hue-run { --act-hue: var(--hue-easy); }
+.act-hue-adventure { --act-hue: var(--adventure-ring); }
 @media (max-width: 640px) {
   .act-card { grid-template-columns: 4px minmax(0, 1fr); grid-template-rows: auto auto; }
   .act-spine { grid-row: 1 / span 2; }
@@ -4167,13 +4471,13 @@ a.note {
 .plan-page-col {
   display: flex;
   flex-direction: column;
-  gap: 0.9rem;
+  gap: var(--space-6);
   max-width: 880px;
   min-width: 0;
 }
 @media (min-width: 1024px) {
   .plan-page--coach-open {
-    padding-right: calc(var(--coach-w) + 1.5rem);
+    padding-right: calc(var(--coach-w) + var(--space-7));
   }
 }
 
@@ -4182,68 +4486,78 @@ a.note {
   border-left: 3px solid var(--green);
   display: flex;
   flex-direction: column;
-  gap: 0.55rem;
+  gap: var(--space-4);
 }
 .plan-brief-head {
   display: flex;
   align-items: baseline;
-  gap: 0.7rem;
+  gap: var(--space-5);
   flex-wrap: wrap;
 }
 .plan-brief-headline {
-  font-family: var(--font-display);
-  font-size: 1.12rem;
-  font-weight: 650;
   margin: 0;
 }
+/* The brief's headline is rank 3 and must own its row. As a `pill-warnsoft`
+   this chip had a tinted amber field AND amber ink, which is more emphasis
+   than the sentence beside it — the eye went to the chip. Same resolution as
+   `.card-prompt`: ink stays on the ink token, a left edge carries the ask.
+   It keeps `.pill`'s geometry (and its `nowrap` contract) — only the paint
+   changes. */
 .plan-brief-needs {
-  border: 0;
   cursor: pointer;
+  background: var(--bg-sunken);
+  color: var(--ink);
+  /* The same principle as `.status-strip`, in the shape a chip can carry: the
+     field and the text stay neutral and one line of colour marks the level.
+     A `border-left: 3px` was tried first and rendered as a lopsided crescent —
+     an accent EDGE needs a straight corner to run down, and a pill has none. */
+  border: 1px solid var(--warn);
+}
+.plan-brief-needs:hover {
+  background: var(--warn-soft);
 }
 .plan-brief-chips {
   display: flex;
   flex-wrap: wrap;
-  gap: 0.4rem;
+  /* --space-5, not --space-3: `.plan-brief-chip` is 26px tall and wears a hit
+     pad, which reaches 9px past its box. A 6px row gap would put that pad over
+     the chip on the line above — 12px keeps every pad clear of every visual. */
+  gap: var(--space-5);
 }
 .plan-brief-chip {
   display: inline-flex;
   align-items: baseline;
-  gap: 0.3rem;
+  gap: var(--space-2);
   background: var(--bg-sunken);
   border: 1px solid var(--border);
-  border-radius: 999px;
-  padding: 0.22rem 0.65rem;
-  font-size: 0.8rem;
+  border-radius: var(--radius-pill);
+  padding: var(--space-2) var(--space-5);
+  font-size: var(--text-xs);
   color: var(--ink-soft);
   white-space: nowrap;
 }
 .plan-brief-chip b {
   color: var(--ink);
-  font-weight: 650;
+  font-weight: var(--weight-medium);
 }
 .plan-brief-trend.trend-up { color: var(--green-ink); }
 .plan-brief-trend.trend-down { color: var(--warn); }
 .plan-brief-action {
   display: flex;
-  gap: 0.5rem;
+  gap: var(--space-4);
   align-items: baseline;
-  font-size: 0.92rem;
+  font-size: var(--text-sm);
   margin: 0;
 }
 .plan-brief-who {
   flex: none;
-  font-size: 0.72rem;
-  font-weight: 650;
-  letter-spacing: 0.05em;
-  text-transform: uppercase;
-  color: var(--ink-faint);
 }
 
 /* Plan title cards */
 .plan-cards {
   display: grid;
   grid-template-columns: 1fr;
-  gap: 0.8rem;
+  gap: var(--space-5);
 }
 @media (min-width: 760px) {
   .plan-cards {
@@ -4255,10 +4569,10 @@ a.note {
 .field-suffixed {
   display: inline-flex;
   align-items: center;
-  gap: 0.35rem;
+  gap: var(--space-3);
 }
 .field-suffixed > b {
-  font-weight: 500;
+  font-weight: var(--weight-regular);
   color: var(--ink-soft);
 }
 
@@ -4266,15 +4580,15 @@ a.note {
    full hub when opened. Accent stays the product green; the flag is the
    only race-flavored mark. */
 .race-strip {
-  padding: 0.55rem 0.9rem;
+  padding: var(--space-4) var(--space-6);
 }
 .race-strip-open {
-  padding-bottom: 0.9rem;
+  padding-bottom: var(--space-6);
 }
 .race-strip-head {
   display: flex;
   align-items: center;
-  gap: 0.45rem;
+  gap: var(--space-4);
   flex-wrap: wrap;
 }
 .race-strip-toggle {
@@ -4285,7 +4599,7 @@ a.note {
   cursor: pointer;
 }
 .race-flag {
-  font-size: 0.95rem;
+  font-size: var(--text-md);
 }
 .race-goal-mini {
   color: var(--ink-soft);
@@ -4299,13 +4613,13 @@ a.note {
 .race-strip-body {
   display: flex;
   flex-direction: column;
-  gap: 0.8rem;
-  margin-top: 0.7rem;
+  gap: var(--space-5);
+  margin-top: var(--space-5);
 }
 .race-arc-track {
   position: relative;
   height: 6px;
-  border-radius: 3px;
+  border-radius: var(--radius-pill);
   background: var(--track-bg, var(--border));
 }
 .race-arc-taper {
@@ -4320,15 +4634,15 @@ a.note {
   top: -3px;
   width: 12px;
   height: 12px;
-  border-radius: 50%;
+  border-radius: var(--radius-round);
   background: var(--chart-1);
   transform: translateX(-50%);
 }
 .race-arc-labels {
   position: relative;
   height: 1.1em;
-  margin-top: 0.3rem;
-  font-size: 0.75rem;
+  margin-top: var(--space-2);
+  font-size: var(--text-xs);
 }
 .race-arc-labels > span {
   position: absolute;
@@ -4343,7 +4657,7 @@ a.note {
 .race-cols {
   display: grid;
   grid-template-columns: 1fr;
-  gap: 0.9rem;
+  gap: var(--space-6);
 }
 @media (min-width: 640px) {
   .race-cols {
@@ -4351,25 +4665,21 @@ a.note {
   }
 }
 .race-h {
-  margin: 0 0 0.35rem;
-  font-size: 0.78rem;
-  text-transform: uppercase;
-  letter-spacing: 0.06em;
-  color: var(--ink-faint);
+  margin: 0 0 var(--space-3);
 }
 .race-goal {
-  font-size: 1.15rem;
+  font-size: var(--text-lg);
 }
 .race-terrain {
-  margin-top: 0.5rem;
-  font-size: 0.82rem;
+  margin-top: var(--space-4);
+  font-size: var(--text-xs);
   line-height: 1.35;
 }
 .race-stamina {
   display: flex;
   align-items: center;
-  gap: 0.5rem;
-  margin-top: 0.45rem;
+  gap: var(--space-4);
+  margin-top: var(--space-4);
 }
 .race-stamina-spark {
   width: 120px;
@@ -4381,13 +4691,15 @@ a.note {
   padding: 0;
   display: flex;
   flex-direction: column;
-  gap: 0.35rem;
+  /* Same arithmetic as `.plan-brief-chips`: a 24px row + a hit pad needs 10px
+     of clearance, so the gap is --space-5. */
+  gap: var(--space-5);
 }
 .race-check {
   display: inline-flex;
   align-items: baseline;
-  gap: 0.4rem;
-  font-size: 0.88rem;
+  gap: var(--space-3);
+  font-size: var(--text-sm);
 }
 .race-check i {
   font-style: normal;
@@ -4410,7 +4722,7 @@ a.note {
 }
 .race-line {
   margin: 0;
-  font-size: 0.88rem;
+  font-size: var(--text-sm);
   color: var(--ink-soft);
 }
 
@@ -4419,12 +4731,12 @@ a.note {
 .plan-sections {
   display: flex;
   flex-direction: column;
-  gap: 1.15rem;
+  gap: var(--space-6);
 }
 .plan-section-head {
   display: flex;
   align-items: center;
-  gap: 0.6rem;
+  gap: var(--space-4);
 }
 .plan-section-rule {
   flex: 1;
@@ -4434,8 +4746,8 @@ a.note {
 .plan-section-list {
   display: flex;
   flex-direction: column;
-  gap: 0.7rem;
-  margin-top: 0.55rem;
+  gap: var(--space-5);
+  margin-top: var(--space-4);
 }
 .plan-card-when {
   margin-left: auto;
@@ -4450,7 +4762,7 @@ a.note {
       "name headline"
       "prog headline";
     grid-template-columns: minmax(0, 1fr) auto;
-    column-gap: 1.4rem;
+    column-gap: var(--space-7);
     align-items: center;
   }
   .plan-card-row .plan-card-top {
@@ -4466,14 +4778,14 @@ a.note {
     grid-area: headline;
     flex-direction: column;
     align-items: flex-end;
-    gap: 0.3rem;
+    gap: var(--space-2);
   }
 }
 .plan-card {
   display: flex;
   flex-direction: column;
   align-items: stretch;
-  gap: 0.45rem;
+  gap: var(--space-4);
   text-align: left;
   cursor: pointer;
   font: inherit;
@@ -4483,7 +4795,7 @@ a.note {
 .plan-card:hover {
   transform: translateY(-1px);
   border-color: var(--border-strong);
-  box-shadow: 0 3px 10px rgba(38, 41, 42, 0.08);
+  box-shadow: var(--shadow-sm);
 }
 @media (prefers-reduced-motion: reduce) {
   .plan-card,
@@ -4496,25 +4808,22 @@ a.note {
   display: flex;
   justify-content: space-between;
   align-items: center;
-  gap: 0.5rem;
+  gap: var(--space-4);
 }
 .plan-card-name {
-  font-family: var(--font-display);
-  font-size: 1.15rem;
-  font-weight: 650;
   min-width: 0;
 }
 .plan-card-prog {
   display: flex;
   align-items: center;
-  gap: 0.6rem;
+  gap: var(--space-4);
 }
 .plan-card-track {
   position: relative;
   flex: 1;
   min-width: 0;
   height: 5px;
-  border-radius: 4px;
+  border-radius: var(--radius-pill);
   background: var(--chart-track);
   position: relative;
   overflow: hidden;
@@ -4522,7 +4831,7 @@ a.note {
 .plan-card-track i {
   position: absolute;
   inset: 0 auto 0 0;
-  border-radius: 4px;
+  border-radius: var(--radius-pill);
   background: var(--green);
 }
 .plan-card-track.is-lift i {
@@ -4532,10 +4841,10 @@ a.note {
   display: flex;
   justify-content: space-between;
   align-items: center;
-  gap: 0.8rem;
+  gap: var(--space-5);
 }
 .plan-card-kv {
-  font-size: 0.86rem;
+  font-size: var(--text-sm);
   color: var(--ink-soft);
   min-width: 0;
 }
@@ -4550,8 +4859,8 @@ a.note {
   background: transparent;
   color: var(--ink-soft);
   font: inherit;
-  font-size: 0.92rem;
-  font-weight: 600;
+  font-size: var(--text-sm);
+  font-weight: var(--weight-medium);
   min-height: 72px;
   cursor: pointer;
 }
@@ -4564,29 +4873,30 @@ a.note {
 .plan-week-head {
   display: flex;
   align-items: center;
-  gap: 0.6rem;
+  gap: var(--space-4);
   flex-wrap: wrap;
-  margin-bottom: 0.6rem;
+  margin-bottom: var(--space-4);
 }
 .plan-week-title {
-  font-family: var(--font-display);
-  font-size: 1.05rem;
-  font-weight: 650;
   margin: 0;
 }
 .plan-week-nav {
   display: inline-flex;
   border: 1px solid var(--border-strong);
-  border-radius: 10px;
+  border-radius: var(--radius-md);
   overflow: hidden;
 }
 .plan-week-nav button {
   border: 0;
   background: var(--bg-raised);
-  padding: 0.3rem 0.7rem;
-  font-size: 0.95rem;
+  padding: var(--space-2) var(--space-5);
+  font-size: var(--text-md);
   color: var(--ink);
-  min-height: 36px;
+  /* Two segments share an edge AND `.plan-week-nav` clips (`overflow:
+     hidden`), so a hit pad is both unsafe and invisible here — the box grows.
+     Was 29–30 × 36. */
+  min-height: var(--tap);
+  min-width: var(--tap);
   cursor: pointer;
 }
 .plan-week-nav button + button {
@@ -4595,6 +4905,8 @@ a.note {
 .plan-week-grow {
   flex: 1;
 }
+/* Visually small on purpose (a back-link, not a button) — `.tap-pad` carries
+   the 44px hit area. */
 .plan-week-back {
   min-height: 32px;
 }
@@ -4606,7 +4918,8 @@ a.note {
   cursor: pointer;
   color: var(--green-ink);
   text-decoration: underline;
-  font-size: 0.85rem;
+  font-size: var(--text-sm);
+  /* Same as `.plan-week-back`: an underlined link, padded not inflated. */
   min-height: 32px;
   display: inline-flex;
   align-items: center;
@@ -4617,16 +4930,16 @@ a.note {
 .plan-week-jumplist {
   position: absolute;
   right: 0;
-  top: calc(100% + 4px);
+  top: calc(100% + var(--space-2));
   z-index: 30;
   background: var(--bg-raised);
   border: 1px solid var(--border-strong);
   border-radius: var(--radius-sm);
-  box-shadow: 0 10px 30px rgba(20, 22, 20, 0.16);
+  box-shadow: var(--shadow-md);
   max-height: 300px;
   overflow-y: auto;
   min-width: 190px;
-  padding: 0.3rem;
+  padding: var(--space-2);
   display: flex;
   flex-direction: column;
 }
@@ -4634,18 +4947,18 @@ a.note {
    a menu that renders below the viewport is a menu you can't use. */
 .plan-week-jumplist.drops-up {
   top: auto;
-  bottom: calc(100% + 4px);
+  bottom: calc(100% + var(--space-2));
 }
 .plan-week-jumplist button {
   border: 0;
   background: transparent;
   text-align: left;
   font: inherit;
-  font-size: 0.85rem;
+  font-size: var(--text-sm);
   color: var(--ink);
-  padding: 0.42rem 0.6rem;
-  border-radius: 6px;
-  min-height: 36px;
+  padding: var(--space-3) var(--space-4);
+  border-radius: var(--radius-sm);
+  min-height: var(--tap);
   cursor: pointer;
 }
 .plan-week-jumplist button:hover {
@@ -4654,23 +4967,23 @@ a.note {
 .plan-week-jumplist button.is-current {
   background: var(--green-soft);
   color: var(--green-ink);
-  font-weight: 650;
+  font-weight: var(--weight-medium);
 }
 .plan-week-grid {
   display: grid;
   grid-template-columns: repeat(7, minmax(0, 1fr));
-  gap: 7px;
+  gap: var(--space-4);
 }
 .plan-week-day {
   position: relative;
   min-height: 128px;
-  padding: 0.35rem 0.35rem 0.45rem;
+  padding: var(--space-3) var(--space-3) var(--space-4);
   background: var(--bg-sunken);
   border: 1px dashed transparent;
-  border-radius: 10px;
+  border-radius: var(--radius-md);
   display: flex;
   flex-direction: column;
-  gap: 0.35rem;
+  gap: var(--space-3);
 }
 .plan-week-day:not(.has-items):not(.has-ghosts) {
   border-color: var(--border);
@@ -4684,30 +4997,23 @@ a.note {
 .plan-week-date {
   display: flex;
   align-items: baseline;
-  gap: 0.35rem;
-}
-.plan-week-dow {
-  font-size: 0.66rem;
-  font-weight: 650;
-  letter-spacing: 0.06em;
-  text-transform: uppercase;
-  color: var(--ink-faint);
+  gap: var(--space-3);
 }
 .plan-week-dom {
-  font-size: 0.82rem;
-  font-weight: 650;
+  font-size: var(--text-xs);
+  font-weight: var(--weight-medium);
   color: var(--ink-faint);
 }
 .plan-week-day.is-today .plan-week-dom {
   background: var(--green);
-  color: #fff;
-  border-radius: 999px;
-  padding: 0.02rem 0.38rem;
+  color: var(--on-accent);
+  border-radius: var(--radius-pill);
+  padding: var(--space-1) var(--space-3);
 }
 .plan-week-items {
   display: flex;
   flex-direction: column;
-  gap: 0.3rem;
+  gap: var(--space-2);
   min-width: 0;
 }
 /* Below the desktop breakpoint the grid folds into a day list — empty days
@@ -4716,13 +5022,13 @@ a.note {
   .plan-week-grid {
     display: flex;
     flex-direction: column;
-    gap: 6px;
+    gap: var(--space-3);
   }
   .plan-week-day {
     min-height: 0;
     flex-direction: row;
     align-items: flex-start;
-    gap: 0.6rem;
+    gap: var(--space-4);
   }
   .plan-week-day:not(.has-items):not(.has-ghosts):not(.is-today) {
     display: none;
@@ -4733,7 +5039,7 @@ a.note {
     flex-direction: column;
     align-items: center;
     gap: 0;
-    padding-top: 0.15rem;
+    padding-top: var(--space-1);
   }
   .plan-week-items {
     flex: 1;
@@ -4741,18 +5047,20 @@ a.note {
 }
 
 /* The floating coach window (desktop) + its minimized pill twin */
+/* scale-exempt (stage geometry): `top` clears the plan page's title row and
+   sits above the scale's top step. */
 .coach-window {
   position: fixed;
   top: 4.5rem;
-  right: 1rem;
-  bottom: 1rem;
+  right: var(--space-6);
+  bottom: var(--space-6);
   /* The page reserves exactly this much (see `.plan-page--coach-open`). */
   width: var(--coach-w, min(400px, 34vw));
   z-index: 45; /* above page content, below sheets (z 60) */
   background: var(--bg-raised);
   border: 1px solid var(--border-strong);
-  border-radius: 14px;
-  box-shadow: 0 18px 50px rgba(20, 22, 20, 0.18);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-lg);
   display: flex;
   flex-direction: column;
   overflow: hidden;
@@ -4766,12 +5074,12 @@ a.note {
 /* The absolutely-positioned minimize control sits in the head's top-right —
    without this inset the "what I know →" link runs underneath it. */
 .coach-window .coach-panel-head {
-  padding-right: 2.9rem;
+  padding-right: var(--space-10);
 }
 .coach-window-min {
   position: absolute;
-  top: 0.55rem;
-  right: 0.65rem;
+  top: var(--space-4);
+  right: var(--space-5);
   z-index: 2;
 }
 .coach-pill--desktop {
@@ -4783,30 +5091,23 @@ a.note {
   flex-wrap: wrap;
 }
 .studio-modal-sub {
-  margin: -0.3rem 0 0;
+  margin: calc(var(--space-2) * -1) 0 0;
 }
 .prog-chips {
   display: flex;
   flex-wrap: wrap;
-  gap: 0.5rem;
+  gap: var(--space-4);
 }
 .prog-chip {
   display: inline-flex;
   flex-direction: column;
   border: 1px solid var(--border);
   background: var(--bg-sunken);
-  border-radius: 10px;
-  padding: 0.45rem 0.7rem;
-}
-.prog-chip-label {
-  font-size: 0.7rem;
-  color: var(--ink-faint);
-  text-transform: uppercase;
-  letter-spacing: 0.05em;
-  font-weight: 650;
+  border-radius: var(--radius-md);
+  padding: var(--space-4) var(--space-5);
 }
 .prog-chip-value {
-  font-size: 0.95rem;
+  font-size: var(--text-md);
 }
 .prog-chip-value b {
   color: var(--green-ink);
@@ -4814,7 +5115,7 @@ a.note {
 .studio-modal-charts {
   display: grid;
   grid-template-columns: 1fr;
-  gap: 1rem;
+  gap: var(--space-6);
 }
 @media (min-width: 760px) {
   .studio-modal-charts {
@@ -4833,10 +5134,10 @@ a.note {
 .wkrow {
   display: flex;
   align-items: baseline;
-  gap: 0.7rem;
-  padding: 0.45rem 0;
+  gap: var(--space-5);
+  padding: var(--space-4) 0;
   border-bottom: 1px solid var(--border);
-  font-size: 0.85rem;
+  font-size: var(--text-sm);
   flex-wrap: wrap;
 }
 .wkrow:last-child {
@@ -4844,9 +5145,9 @@ a.note {
 }
 .wkrow.is-current {
   background: var(--green-soft);
-  margin: 0 -0.5rem;
-  padding: 0.45rem 0.5rem;
-  border-radius: 8px;
+  margin: 0 calc(var(--space-4) * -1);
+  padding: var(--space-4);
+  border-radius: var(--radius-sm);
   border-bottom-color: transparent;
 }
 .wkrow-num {
@@ -4860,11 +5161,6 @@ a.note {
 }
 .wkrow-state {
   flex: none;
-  font-size: 0.7rem;
-  font-weight: 650;
-  text-transform: uppercase;
-  letter-spacing: 0.05em;
-  color: var(--ink-faint);
 }
 .wkrow-state.is-firm {
   color: var(--green-ink);
@@ -4878,8 +5174,7 @@ a.note {
 .studio-revise summary {
   cursor: pointer;
   color: var(--green-ink);
-  font-size: 0.9rem;
-  min-height: 40px;
+  font-size: var(--text-sm);
   display: flex;
   align-items: center;
 }
@@ -4900,21 +5195,21 @@ a.note {
     display: inline;
   }
   .plan-brief-chip {
-    font-size: 0.74rem;
-    padding: 0.18rem 0.5rem;
+    font-size: var(--text-2xs);
+    padding: var(--space-2) var(--space-4);
   }
   .plan-brief-chips {
-    gap: 0.3rem;
+    gap: var(--space-2);
   }
   .plan-week-head {
-    gap: 0.45rem;
+    gap: var(--space-4);
   }
 }
 
 /* Round-2 context fixes: the brief explains itself. */
 .plan-brief-context {
-  margin: -0.15rem 0 0;
-  font-size: 0.86rem;
+  margin: calc(var(--space-1) * -1) 0 0;
+  font-size: var(--text-sm);
   color: var(--ink-soft);
   max-width: 62ch;
 }
@@ -4927,11 +5222,11 @@ a.note {
   display: flex;
   flex-direction: column;
   align-items: flex-start;
-  gap: 0.4rem;
-  margin-top: 0.4rem;
+  gap: var(--space-3);
+  margin-top: var(--space-3);
 }
 .plan-brief-race-actions .btn {
-  font-size: 0.82rem;
+  font-size: var(--text-xs);
 }
 @media (min-width: 640px) {
   .plan-brief-race-actions {
@@ -4944,7 +5239,7 @@ a.note {
 }
 .plan-brief-chip {
   font: inherit;
-  font-size: 0.8rem;
+  font-size: var(--text-xs);
   cursor: pointer;
   text-align: left;
 }
@@ -4952,15 +5247,15 @@ a.note {
   border-color: var(--border-strong);
 }
 .brief-explainer h3 {
-  margin-bottom: 0.15rem;
+  margin-bottom: var(--space-1);
 }
 .brief-explainer p {
   margin: 0;
-  font-size: 0.88rem;
+  font-size: var(--text-sm);
 }
 @media (max-width: 639px) {
   .plan-brief-chip {
-    font-size: 0.74rem;
+    font-size: var(--text-2xs);
   }
 }
 
@@ -4985,7 +5280,219 @@ a.note {
   top: -3px;
   bottom: -3px;
   width: 2px;
-  border-radius: 1px;
+  border-radius: var(--radius-pill);
   background: var(--chart-2);
   transform: translateX(-1px);
+}
+
+/* ── Touch floor (System 2) ───────────────────────────────────────────────
+   ONE floor: `--tap`, 44px, and it is a TOUCH floor — see "what a mouse pays"
+   at the end of this section. It already existed in six places and was then
+   opted out of by the most-tapped controls in the app — the activity cards'
+   action buttons measured 32px across eighty buttons, the brief chips 26, the
+   race checklist 24, the coach composer 26, and the timeline scrubber had a
+   6px hit height inside a 24px track.
+
+   Two mechanisms, and the choice between them is mechanical:
+
+     • A control that CAN grow takes `min-height: var(--tap)` (real height).
+       Used for list rows and for anything already at 40px.
+     • A control that must LOOK small keeps its box and wears a PAD: a centred
+       pseudo-element up to `--tap` square and never smaller than the control.
+       The visual does not move a pixel.
+
+   THE CLEARANCE CONTRACT. A pad reaches `(--tap − size) / 2` past its box on
+   every side, and that reach is only safe if the layout left room for it —
+   the first cut of this system put a 44px pad on two 39.6px buttons sitting in
+   a bare `<span>` with no row gap, and 2.2px of the visible "Switch timezone"
+   button became a tap on "Keep timezone" instead. Room is not something a pad
+   can know; it is a property of the CONTAINER. So the container declares it:
+
+     `--tap-clear` is how much space a container guarantees around each child.
+     It inherits, `.tap-clear` writes it and the container's `gap` from the
+     same value so the two can never disagree, and the pad is CLAMPED to it.
+
+   Two consequences, both deliberate. A container that declares nothing gets
+   pads exactly the size of their controls — a smaller target, never a tap that
+   fires the wrong control. And a gap can never be narrowed below the clearance
+   it grants without narrowing every pad inside it in the same edit.
+
+   `--space-5` (12px) is `.tap-clear`'s value because the deepest reach in the
+   app is 11.2px (`.dock-attention`, 21.6px tall). A container whose own gap is
+   already wide enough just names it (`--tap-clear: var(--space-4)`) and keeps
+   its layout to the pixel.
+
+   Where two controls SHARE an edge (the ‹/› week segments, the jump-list rows)
+   no clearance exists at all, so the pad is refused and the box grows instead.
+
+   Not padded, deliberately: a link inside a sentence. WCAG 2.5.5/2.5.8 exempt
+   inline targets, and a 44px pad on one would sit over the lines of prose
+   above and below it and eat their text selection. */
+
+/* ONE pad rule. `.tap-pad` is the opt-in class; the rest are the controls that
+   opted in by name. (Previously two rules that had already drifted apart —
+   `.ceremony-close` was in the pad list but never got `position: relative`,
+   so its pad was laid out against the page instead of the button.) */
+.tap-pad,
+.btn-small,
+.plan-brief-chip,
+.plan-brief-needs,
+.race-check-btn,
+.plan-week-back,
+.plan-week-jump summary,
+.reviews-earlier > summary,
+.chart-tip-action,
+.ceremony-close,
+.ceremony-see,
+.balance-detail-close,
+.balance-detail-next,
+.week-pull,
+.wildlife-chip,
+.race-strip-toggle,
+.studio-toggle,
+.coach-msg-retry,
+.btn-row > .linklike,
+.memory-row .linklike,
+.coach-tray > .linklike,
+.coach-panel-head .linklike,
+.proposal-actions > .linklike,
+.hud-beat-dismiss,
+.hud-nudge,
+.hud-rail button,
+.dock-attention,
+.dock-collapse,
+.dock-grows {
+  position: relative;
+}
+.tap-pad::after,
+.btn-small::after,
+.plan-brief-chip::after,
+.plan-brief-needs::after,
+.race-check-btn::after,
+.plan-week-back::after,
+.plan-week-jump summary::after,
+.reviews-earlier > summary::after,
+.chart-tip-action::after,
+.ceremony-close::after,
+.ceremony-see::after,
+.balance-detail-close::after,
+.balance-detail-next::after,
+.week-pull::after,
+.wildlife-chip::after,
+.race-strip-toggle::after,
+.studio-toggle::after,
+.coach-msg-retry::after,
+.btn-row > .linklike::after,
+.memory-row .linklike::after,
+.coach-tray > .linklike::after,
+.coach-panel-head .linklike::after,
+.proposal-actions > .linklike::after,
+.hud-beat-dismiss::after,
+.hud-nudge::after,
+.hud-rail button::after,
+.dock-attention::after,
+.dock-collapse::after,
+.dock-grows::after {
+  content: "";
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  /* Never smaller than the control (the 100% floor), never larger than the
+     floor (`--tap`), and never reaching further than the container granted.
+     With `--tap-clear` unset the three collapse to "exactly the control".
+     `--tap-clear-x` / `-y` override one axis for the two containers whose room
+     is not the same in both directions; they inherit, so a container nested
+     inside one of those must restate them. */
+  width: clamp(100%, calc(100% + 2 * var(--tap-clear-x, var(--tap-clear, 0px))), var(--tap));
+  height: clamp(100%, calc(100% + 2 * var(--tap-clear-y, var(--tap-clear, 0px))), var(--tap));
+}
+
+/* Containers of padded controls, each naming the clearance it actually has.
+   Every one of these keeps its layout to the pixel except `.hud-dock`, which
+   widens 8 → 12px because `.dock-attention` is 21.6px tall and its pad reached
+   3.2px into the verdict pill below it.
+
+   A block-flow container has no `gap` to set; what it names is the room its own
+   padding and its children's margins already leave (`.card`, `.race-strip-h`,
+   `.week-ribbon`, `.timeline-bar`). The value inherits, so a tight flex row
+   nested inside one must name its own — which is why the 6px rows below are
+   listed even though nothing in them currently reaches that far. */
+.card,
+.hud-corner,
+.coach-input,
+.coach-window,
+.row,
+.row-between,
+.timeline-bar,
+.week-ribbon { --tap-clear: var(--space-4); }
+.act-actions,
+.act-status-slot,
+.wildlife-row,
+.plan-brief-race-actions,
+.plan-week-jump { --tap-clear: var(--space-3); }
+.plan-brief-chips,
+.plan-brief-head,
+.race-checklist,
+.race-strip-h,
+.hud-dock { --tap-clear: var(--space-5); }
+.switch-row { --tap-clear: var(--space-6); }
+/* The rail's own gap is 24px WIDE, but the nudge column sits 8px above it, so
+   the two axes are not the same number. Left as one value, the 24.8px-tall
+   rail buttons' pads reached 1.6px into the "Yoga grows…" nudge's visible box.
+   Same shape one level down: the drawer's close button is 42px wide with the
+   garden HUD showing beside it, so it may not grow sideways at all. */
+.hud-rail {
+  --tap-clear: var(--space-7);
+  --tap-clear-y: var(--space-4);
+}
+.drawer-head {
+  --tap-clear: var(--space-4);
+  --tap-clear-x: 0px;
+}
+
+/* The class a container wears when it must GRANT clearance rather than report
+   it: it writes the gap and the licence from one value, so they cannot drift.
+   Last, so a container that opts in beats whatever it also named above. */
+.tap-clear {
+  --tap-clear: var(--space-5);
+  gap: var(--tap-clear);
+}
+
+/* ── What a mouse pays ────────────────────────────────────────────────────
+   44px is a FINGERTIP. A pointer is a few pixels wide, and on a 1440px desktop
+   the unconditional floor bought 1016px — 23.3% — of extra page length on the
+   activity list alone, for eighty buttons a mouse could already hit at 32px.
+
+   So the GROWN heights are gated on `(pointer: coarse)` and the fine-pointer
+   branch keeps each control's pre-System-2 size exactly. Pads are not gated:
+   a pad costs no layout, so there is nothing to save by withholding it.
+
+   `(pointer: coarse)` is the PRIMARY pointer. A touchscreen laptop driven by
+   its trackpad reports `fine` and gets the desktop sizes — correct for the
+   pointer in use, and the pads still apply. */
+.chip,
+.chipbtn,
+.cal-ghost,
+.day-chip,
+.coach-input input,
+.studio-revise summary { min-height: var(--tap-fine); }
+.chip { min-width: var(--tap-fine); }
+.act-actions > *,
+.act-status-slot > *,
+.act-status-slot { min-height: var(--tap-fine-row); }
+
+@media (pointer: coarse) {
+  .chip,
+  .chipbtn,
+  .cal-ghost,
+  .day-chip,
+  .coach-input input,
+  .studio-revise summary,
+  .act-actions > *,
+  .act-status-slot > *,
+  .act-status-slot { min-height: var(--tap); }
+  /* "All" measured 42.1px wide — the one chip whose label is short enough to
+     miss the floor sideways. */
+  .chip { min-width: var(--tap); }
 }

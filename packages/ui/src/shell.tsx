@@ -50,7 +50,7 @@ export function AppShell({
         className={`shell-main${immersive ? " shell-main--immersive" : ""}${wide ? " shell-main--wide" : ""}`}
       >
         {fixtureMode ? (
-          <div className="banner banner-info" style={{ marginBottom: "0.9rem" }} role="status">
+          <div className="banner banner-info" style={{ marginBottom: "var(--space-6)" }} role="status">
             Fixture mode — showing sample data, no real providers connected.
           </div>
         ) : null}

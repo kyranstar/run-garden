@@ -243,7 +243,9 @@ export function InsightsScreen() {
   if (insights.isLoading) {
     return (
       <div className="stack">
-        <h1 className="screen-title">Insights</h1>
+        <div className="row-between screen-title">
+          <h1>Insights</h1>
+        </div>
         {selector}
         <Spinner label="Computing insights" />
       </div>
@@ -292,7 +294,9 @@ export function InsightsScreen() {
 
   return (
     <div className="stack">
-      <h1 className="screen-title">Insights</h1>
+      <div className="row-between screen-title">
+          <h1>Insights</h1>
+        </div>
 
       {/* Only when there is a real choice: a single-discipline history should
           not be asked to pick from a list of one. */}
@@ -316,7 +320,7 @@ export function InsightsScreen() {
           if (metrics.length === 0) return null;
           return (
             <div key={g.title} className="signal-group">
-              <h2 className="signal-group-label">{g.title}</h2>
+              <h3 className="signal-group-label">{g.title}</h3>
               <div className="signal-grid">
                 {metrics.map((m) => (
                   <SignalTile key={m.id} m={m} onDrill={setDrill} />
@@ -329,10 +333,10 @@ export function InsightsScreen() {
 
       {insights.data?.terrain?.recent ? (
         <Card title="Hill exposure">
-          <p className="num" style={{ fontSize: "1.25rem", margin: 0 }}>
+          <p className="num" style={{ fontSize: "var(--text-lg)", margin: 0 }}>
             {insights.data.terrain.recent.metresPerKm} m/km
           </p>
-          <p className="muted" style={{ marginTop: "0.2rem" }}>
+          <p className="muted" style={{ marginTop: "var(--space-2)" }}>
             {countNoun(insights.data.terrain.recent.runs, "run")} since{" "}
             {formatShortDate(insights.data.terrain.recent.sinceDate)} carried{" "}
             {insights.data.terrain.recent.totalClimbMetres} m of climb between them.
@@ -525,9 +529,9 @@ export function InsightsScreen() {
 
       {records.length > 0 ? (
         <Card title="Records">
-          <ul style={{ margin: 0, paddingLeft: "1.1rem" }}>
+          <ul style={{ margin: 0, paddingLeft: "var(--space-6)" }}>
             {records.map((r) => (
-              <li key={r.id} style={{ marginBottom: "0.5rem" }}>
+              <li key={r.id} style={{ marginBottom: "var(--space-4)" }}>
                 <strong>{r.title}:</strong> {r.value}{" "}
                 <span className="faint">({formatDayLong(r.achievedOn)})</span>
                 {isRecentRecord(r.achievedOn, localTodayGuess()) ? (

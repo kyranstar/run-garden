@@ -121,7 +121,7 @@ export function SyncPanel({ quietWhenHealthy = false }: { quietWhenHealthy?: boo
   }
 
   return (
-    <div className="stack" style={{ gap: "0.5rem" }} aria-live="polite">
+    <div className="stack" style={{ gap: "var(--space-4)" }} aria-live="polite">
       <SyncStatusLine status={status.data} onRetry={() => retry.mutate()} retrying={retry.isPending} />
       <SyncNotesStack
         notes={notes.data?.notes ?? []}
@@ -148,9 +148,9 @@ export function NextWorkout({ w, today }: { w: WorkoutDto; today: string }) {
   if (w.category === "rest") {
     return (
       <Card title="Next up" className="card-next">
-        <h2 className="hero-title">Rest day</h2>
+        <h3 className="hero-title">Rest day</h3>
         <p className="hero-when">{relativeDay(w.effectiveDate, today)}</p>
-        <p className="muted" style={{ marginTop: "0.5rem" }}>
+        <p className="muted" style={{ marginTop: "var(--space-4)" }}>
           A planned rest day. The garden rests with you — soil health improves today.
         </p>
       </Card>
@@ -159,12 +159,12 @@ export function NextWorkout({ w, today }: { w: WorkoutDto; today: string }) {
 
   return (
     <Card title="Next workout" className="card-next">
-      <div className="row" style={{ marginBottom: "0.2rem" }}>
+      <div className="row" style={{ marginBottom: "var(--space-2)" }}>
         <CategoryDot category={w.category} />
         <span className="faint">{CATEGORY_LABELS[w.category] ?? w.category}</span>
         <CorosPill state={syncView} hideWhenHealthy />
       </div>
-      <h2 className="hero-title">{w.title}</h2>
+      <h3 className="hero-title">{w.title}</h3>
       <p className="hero-when">
         {relativeDay(w.effectiveDate, today)} at {formatTime(w.effectiveTime)}
       </p>
@@ -211,12 +211,12 @@ export function UnresolvedCard({ w }: { w: WorkoutDto }) {
 
   return (
     <Card title="Did this run happen?" className="card-prompt">
-      <div className="row" style={{ marginBottom: "0.4rem" }}>
+      <div className="row" style={{ marginBottom: "var(--space-3)" }}>
         <CategoryDot category={w.category} />
         <strong>{w.title}</strong>
         <span className="muted">{formatDayLong(w.effectiveDate)}</span>
       </div>
-      <p className="muted" style={{ marginBottom: "0.7rem" }}>
+      <p className="muted" style={{ marginBottom: "var(--space-5)" }}>
         No matching activity has arrived yet. A slow sync is never counted against you.
       </p>
       <div className="btn-row">
@@ -291,7 +291,7 @@ export function Readiness({ readiness }: { readiness: TodayResponse["readiness"]
           {line}
         </p>
       ))}
-      <p className="faint" style={{ marginTop: "0.4rem" }}>
+      <p className="faint" style={{ marginTop: "var(--space-3)" }}>
         {asOf ? `From COROS, as of ${formatDayShort(asOf)}. ` : ""}
         {compared
           ? `That single reading against the median of your last ${readiness.sampleDays} days of COROS data — ` +
@@ -319,7 +319,7 @@ export function EvidenceCard() {
   return (
     <Card title="Worth knowing">
       <p>{card.text}</p>
-      <p className="faint" style={{ margin: "0.35rem 0 0.6rem" }}>{card.sampleNote}</p>
+      <p className="faint" style={{ margin: "var(--space-3) 0 var(--space-4)" }}>{card.sampleNote}</p>
       <button className="btn btn-small" onClick={() => dismiss.mutate(card.id)}>
         Dismiss
       </button>
@@ -407,32 +407,42 @@ export function TimezoneNudge() {
   return (
     <Banner kind="info">
       Your device clock says {deviceTz} ({deviceOffset}), but your days here run on {prefsTz} (
-      {prefsOffset}) — traveling?{" "}
+      {prefsOffset}) — traveling?
       {/* Actions, and an IANA zone id can be long ("America/Argentina/
           Buenos_Aires") — `.btn-wrap` so a long zone wraps inside the banner
-          instead of a nowrap pill widening the page. */}
-      <button
-        type="button"
-        className="btn btn-small btn-wrap"
-        disabled={adopt.isPending}
-        onClick={() => adopt.mutate(deviceTz)}
-      >
-        Switch to {deviceTz}
-      </button>{" "}
-      <button
-        type="button"
-        className="btn btn-small btn-wrap"
-        onClick={() => {
-          try {
-            sessionStorage.setItem(storageKey, "1");
-          } catch {
-            /* private mode — in-memory dismissal still applies */
-          }
-          setDismissed(true);
-        }}
-      >
-        Keep {prefsTz}
-      </button>
+          instead of a nowrap pill widening the page.
+
+          They live in their OWN container, not loose in the banner's prose.
+          Loose, they were two inline buttons in a text flow with `row-gap:
+          normal` — a 0px visual gap — and each one's 44px hit pad reached
+          2.2px into the other's visible box: a tap on the bottom edge of
+          "Switch to …" adopted nothing and dismissed the prompt instead. The
+          two choices are mutually exclusive, so `.tap-clear` grants the gap
+          and licenses the pads. */}
+      <span className="banner-actions tap-clear">
+        <button
+          type="button"
+          className="btn btn-small btn-wrap"
+          disabled={adopt.isPending}
+          onClick={() => adopt.mutate(deviceTz)}
+        >
+          Switch to {deviceTz}
+        </button>
+        <button
+          type="button"
+          className="btn btn-small btn-wrap"
+          onClick={() => {
+            try {
+              sessionStorage.setItem(storageKey, "1");
+            } catch {
+              /* private mode — in-memory dismissal still applies */
+            }
+            setDismissed(true);
+          }}
+        >
+          Keep {prefsTz}
+        </button>
+      </span>
     </Banner>
   );
 }

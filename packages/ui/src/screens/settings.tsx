@@ -132,7 +132,7 @@ export function SchedulingSection({ prefs }: { prefs: UserPreferences }) {
           when there's no race on the horizon.
         </span>
       </div>
-      <div className="row" style={{ gap: "0.8rem" }}>
+      <div className="row" style={{ gap: "var(--space-5)" }}>
         <NumberField id="s-before" label="Buffer before" value={draft.bufferBeforeMinutes} onChange={(v) => set("bufferBeforeMinutes", v)} suffix="min" />
         <NumberField id="s-after" label="Buffer after" value={draft.bufferAfterMinutes} onChange={(v) => set("bufferAfterMinutes", v)} suffix="min" />
       </div>
@@ -160,7 +160,7 @@ export function SchedulingSection({ prefs }: { prefs: UserPreferences }) {
       </div>
       <div className="field">
         <label htmlFor="s-course">Race course</label>
-        <div className="row" style={{ gap: "0.6rem" }}>
+        <div className="row" style={{ gap: "var(--space-4)" }}>
           <select
             id="s-course"
             value={draft.raceCourseProfile ?? ""}
@@ -243,7 +243,7 @@ export function SchedulingSection({ prefs }: { prefs: UserPreferences }) {
         </select>
         <span className="hint">Paces and distances everywhere follow this.</span>
       </div>
-      <div className="row" style={{ gap: "0.6rem" }}>
+      <div className="row" style={{ gap: "var(--space-4)" }}>
         <button className="btn btn-primary" disabled={save.isPending} onClick={() => save.mutate()}>
           Save scheduling
         </button>
@@ -463,7 +463,7 @@ export function CorosConnectSection() {
   return (
     <Card title="COROS connection">
       {connected && !badCreds ? (
-        <div className="stack" style={{ gap: "0.5rem" }}>
+        <div className="stack" style={{ gap: "var(--space-4)" }}>
           <p className="muted">
             Connected as <strong>{s?.email}</strong>
             {s?.lastSyncAt ? ` · last sync ${relativeTime(s.lastSyncAt)}` : " · first sync pending"}.
@@ -478,7 +478,7 @@ export function CorosConnectSection() {
       ) : (
         <form
           className="stack"
-          style={{ gap: "0.5rem", maxWidth: "26rem" }}
+          style={{ gap: "var(--space-4)", maxWidth: "26rem" }}
           onSubmit={(e) => {
             e.preventDefault();
             if (email.trim() && password) connect.mutate();
@@ -516,7 +516,7 @@ export function CorosConnectSection() {
             aria-label="COROS password"
             autoComplete="current-password"
           />
-          <label className="row" style={{ gap: "0.5rem" }}>
+          <label className="row" style={{ gap: "var(--space-4)" }}>
             <span className="muted">Region</span>
             <select value={region} onChange={(e) => setRegion(e.target.value as "us" | "eu" | "cn")} aria-label="COROS region">
               <option value="us">Americas / global</option>
@@ -594,7 +594,7 @@ function AiSection({ prefs }: { prefs: UserPreferences }) {
         </button>
       </div>
       {llm ? (
-        <p className="muted" style={{ marginTop: "0.5rem" }}>
+        <p className="muted" style={{ marginTop: "var(--space-4)" }}>
           Spend this week: ${llm.spentDollars.toFixed(2)} of ${llm.cutoffDollars.toFixed(0)} cutoff
           {llm.cutoff ? " — AI calls paused until the rolling week clears." : llm.warn ? " — approaching the warning level." : "."}
         </p>
@@ -646,7 +646,7 @@ function DiagnosticsSection() {
         <div className="stack">
           <DiagRows data={diagnostics.data} />
           {syncStatus.data?.lastCorosReadAt ? (
-            <p className="muted" style={{ fontSize: "0.85rem" }}>
+            <p className="muted" style={{ fontSize: "var(--text-sm)" }}>
               Last successful COROS read: {new Date(syncStatus.data.lastCorosReadAt).toLocaleString()}
             </p>
           ) : null}
@@ -672,7 +672,7 @@ function DiagRows({ data }: { data: Record<string, unknown> }) {
   const providers = (data.providers as Array<{ provider: string; status: string; lastSyncAt: string | null }>) ?? [];
   const errors = (data.recentErrors as Array<{ category: string; createdAt: string; provider: string | null }>) ?? [];
   return (
-    <div className="muted" style={{ fontSize: "0.85rem" }}>
+    <div className="muted" style={{ fontSize: "var(--text-sm)" }}>
       <p>App {String(data.appVersion)} · fixture mode {data.fixtureMode ? "ON" : "off"}</p>
       <p>
         COROS: last read {coros?.lastRead ? new Date(coros.lastRead).toLocaleString() : "never"} ·{" "}
@@ -823,8 +823,8 @@ function CoachMemorySection() {
             const group = rows.filter((m) => m.kind === kind);
             if (group.length === 0) return null;
             return (
-              <div key={kind} style={{ marginTop: "0.6rem" }}>
-                <div className="card-title">{label}</div>
+              <div key={kind} style={{ marginTop: "var(--space-4)" }}>
+                <h3 className="card-title">{label}</h3>
                 {group.map((m) => (
                   <div key={m.id} className="memory-row">
                     {editing === m.id ? (
@@ -848,7 +848,7 @@ function CoachMemorySection() {
                         <span className="faint"> · {m.provenance.source}, {m.learnedAt.slice(0, 10)}</span>
                       </span>
                     )}
-                    <span className="row" style={{ gap: "0.4rem" }}>
+                    <span className="row" style={{ gap: "var(--space-3)" }}>
                       <button
                         type="button"
                         className="linklike"

@@ -421,7 +421,7 @@ export function SyncNotesStack({
 }) {
   if (notes.length === 0) return null;
   return (
-    <div className="stack" style={{ gap: "0.4rem" }}>
+    <div className="stack" style={{ gap: "var(--space-3)" }}>
       {notes.map((note) => {
         const text = syncNoteText(note);
         if (!text) return null;
@@ -499,18 +499,43 @@ export function CategoryDot({ category }: { category: string }) {
 
 // ── Layout primitives ───────────────────────────────────────────────────────
 
+/**
+ * A card, and — when it has a title — a real SECTION heading (System 2).
+ *
+ * `<Card title>` renders 33 times across the app and used to emit a bare
+ * `<div className="card-title">`, so 33 sections had no heading semantics at
+ * all: a screen reader's rotor listed one `<h1>` and nothing under it, and the
+ * document outline of every screen was a single flat level. The element is an
+ * `<h2>` by default and `level` moves it, for the cards that nest inside
+ * another heading's region (a `<Sheet>` already owns an `<h2>`, so cards
+ * inside one pass `level={3}`).
+ *
+ * The visual is unchanged: `.card-title` is the app's SECTION rank — the small
+ * uppercase eyebrow — and it out-specifies the bare `h2`/`h3` element rules.
+ * The section is `aria-labelledby` its own heading, so the region announces
+ * with the name you can see.
+ */
 export function Card({
   title,
   children,
   className,
+  level = 2,
 }: {
   title?: string;
   children: ReactNode;
   className?: string;
+  /** Heading level for `title`. 2 by default; 3 inside a dialog. */
+  level?: 2 | 3 | 4;
 }) {
+  const id = useId();
+  const Heading = `h${level}` as "h2" | "h3" | "h4";
   return (
-    <section className={`card ${className ?? ""}`}>
-      {title ? <div className="card-title">{title}</div> : null}
+    <section className={`card ${className ?? ""}`} aria-labelledby={title ? id : undefined}>
+      {title ? (
+        <Heading id={id} className="card-title">
+          {title}
+        </Heading>
+      ) : null}
       {children}
     </section>
   );
@@ -525,7 +550,7 @@ export function EmptyState({ art, title, children }: { art?: string; title: stri
         </div>
       ) : null}
       <p style={{ fontWeight: 600 }}>{title}</p>
-      {children ? <p className="muted" style={{ marginTop: "0.3rem" }}>{children}</p> : null}
+      {children ? <p className="muted" style={{ marginTop: "var(--space-2)" }}>{children}</p> : null}
     </div>
   );
 }

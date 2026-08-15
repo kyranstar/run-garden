@@ -412,6 +412,10 @@ export function RunsScreen() {
         ))}
       </div>
       {note ? <Banner kind="info">{note}</Banner> : null}
+      {/* The feed's own heading: the page had an <h1> and no h2/h3 at all, so
+          every activity card sat at the top level of the outline. The label is
+          visually hidden because the filter chips above already say it. */}
+      <h2 className="visually-hidden">Recent activity</h2>
       {items.length === 0 ? (
         <EmptyState art={empty.art} title={empty.title}>
           {empty.body}
@@ -425,7 +429,7 @@ export function RunsScreen() {
                 <div className="act-spine" aria-hidden="true" />
                 <div className="act-main">
                   <div className="act-titlerow">
-                    <span className="act-title">{a.title || sportLabel(a.sport)}</span>
+                    <h3 className="act-title">{a.title || sportLabel(a.sport)}</h3>
                     <span className="act-sport faint">{sportLabel(a.sport)}</span>
                   </div>
                   <div className="act-meta faint">

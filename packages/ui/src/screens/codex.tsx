@@ -486,7 +486,7 @@ export function WildlifeShelf({ wildlife }: { wildlife: WildlifeEntry[] }) {
   const open = wildlife.find((w) => w.kind === openKind);
   return (
     <div className="wildlife-shelf">
-      <div className="codex-sub" style={{ marginBottom: "0.35rem" }}>
+      <div className="codex-sub" style={{ marginBottom: "var(--space-3)" }}>
         Wildlife — {here.length === 0 ? "none visiting yet" : `${here.length} visiting`}
       </div>
       <div className="wildlife-row">
@@ -587,7 +587,7 @@ export function GroundsShelf({ grounds }: { grounds: GroundEntry[] }) {
   const open = locked.find((l) => l.kind === openKind);
   return (
     <div className="wildlife-shelf">
-      <div className="codex-sub" style={{ marginBottom: "0.35rem" }}>
+      <div className="codex-sub" style={{ marginBottom: "var(--space-3)" }}>
         Grounds — how the garden grew
       </div>
       <div className="visitor-row">
@@ -729,7 +729,7 @@ export function VisitorsShelf({ visitors }: { visitors: VisitorEntry[] }) {
   const open = visitors.find((v) => v.kind === openKind);
   return (
     <div className="wildlife-shelf">
-      <div className="codex-sub" style={{ marginBottom: "0.35rem" }}>
+      <div className="codex-sub" style={{ marginBottom: "var(--space-3)" }}>
         Rare visitors — {seen.length === 0 ? "none seen yet" : `${seen.length} of ${visitors.length} seen`}
       </div>
       <div className="visitor-row">

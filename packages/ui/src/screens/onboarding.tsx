@@ -37,10 +37,10 @@ export function Onboarding({ onDone }: { onDone: () => void }) {
       <div className="shell">
         <main className="shell-main" style={{ maxWidth: 560 }}>
           <Card>
-            <h1 className="hero-title" style={{ fontSize: "1.6rem" }}>
+            <h1 className="display">
               You're already set up 🌿
             </h1>
-            <p className="muted" style={{ marginTop: "0.7rem" }}>
+            <p className="muted" style={{ marginTop: "var(--space-5)" }}>
               COROS is already connected — activities, your plan, and watch updates sync in the
               cloud on their own. Nothing to configure here.
             </p>
@@ -48,13 +48,13 @@ export function Onboarding({ onDone }: { onDone: () => void }) {
               On this device you get everything else: your garden, the full plan calendar, the
               lifting studio, and activity insights — wherever you are.
             </p>
-            <div style={{ marginTop: "1rem" }}>
+            <div style={{ marginTop: "var(--space-6)" }}>
               <button className="btn btn-primary" style={{ width: "100%" }} onClick={onDone}>
                 Open your garden
               </button>
               <button
                 className="btn"
-                style={{ width: "100%", marginTop: "0.5rem" }}
+                style={{ width: "100%", marginTop: "var(--space-4)" }}
                 onClick={() => setForceWizard(true)}
               >
                 Run setup again anyway
@@ -69,13 +69,13 @@ export function Onboarding({ onDone }: { onDone: () => void }) {
   return (
     <div className="shell">
       <main className="shell-main" style={{ maxWidth: 560 }}>
-        <div className="row-between" style={{ marginBottom: "0.6rem" }}>
+        <div className="row-between" style={{ marginBottom: "var(--space-4)" }}>
           <span />
           <button className="btn btn-small" onClick={onDone}>
             Skip setup
           </button>
         </div>
-        <div className="row" style={{ gap: 4, marginBottom: "1.2rem" }} aria-hidden>
+        <div className="row" style={{ gap: 4, marginBottom: "var(--space-6)" }} aria-hidden>
           {STEPS.map((_, i) => (
             <span
               key={i}
@@ -101,7 +101,7 @@ export function Onboarding({ onDone }: { onDone: () => void }) {
 
 function StepNav({ onNext, onBack, nextLabel = "Continue" }: { onNext: () => void; onBack?: () => void; nextLabel?: string }) {
   return (
-    <div className="row-between" style={{ marginTop: "1rem" }}>
+    <div className="row-between" style={{ marginTop: "var(--space-6)" }}>
       {onBack ? (
         <button className="btn" onClick={onBack}>
           Back
@@ -119,18 +119,18 @@ function StepNav({ onNext, onBack, nextLabel = "Continue" }: { onNext: () => voi
 function ValueStep({ onNext }: { onNext: () => void }) {
   return (
     <Card>
-      <h1 className="hero-title" style={{ fontSize: "1.7rem" }}>
+      <h1 className="display">
         Your COROS plan, fitted to your real week.
       </h1>
-      <p className="muted" style={{ marginTop: "0.7rem" }}>
+      <p className="muted" style={{ marginTop: "var(--space-5)" }}>
         Mirror workouts to Calendar, move them on COROS, and grow a living garden by staying
         consistent.
       </p>
-      <div style={{ marginTop: "1rem" }}>
+      <div style={{ marginTop: "var(--space-6)" }}>
         <button className="btn btn-primary" onClick={onNext} style={{ width: "100%" }}>
           Get started
         </button>
-        <p className="faint" style={{ marginTop: "0.6rem", textAlign: "center" }}>
+        <p className="faint" style={{ marginTop: "var(--space-4)", textAlign: "center" }}>
           {PRODUCT_NAME} is private and single-user.
         </p>
       </div>
@@ -160,18 +160,18 @@ function CalendarStep({ onNext, onBack }: { onNext: () => void; onBack: () => vo
   return (
     <Card title="Google Calendar">
       <p>Run Garden uses Google Calendar to:</p>
-      <ul className="muted" style={{ paddingLeft: "1.2rem", marginTop: "0.5rem" }}>
+      <ul className="muted" style={{ paddingLeft: "var(--space-6)", marginTop: "var(--space-4)" }}>
         <li>Read your busy periods (to schedule around them)</li>
         <li>Create and update workout events with realistic time blocks</li>
         <li>Notice when you move or delete an event by hand</li>
         <li>Add sleep-protection and pre-run reminders</li>
       </ul>
-      <div className="btn-row" style={{ marginTop: "0.8rem" }}>
+      <div className="btn-row" style={{ marginTop: "var(--space-5)" }}>
         <a className="btn" href="/api/auth/google/start?mode=calendar&redirect=/onboarding">
           Connect Google Calendar
         </a>
       </div>
-      <p className="faint" style={{ marginTop: "0.6rem" }}>
+      <p className="faint" style={{ marginTop: "var(--space-4)" }}>
         You can create a dedicated “Run Garden” calendar or pick an existing one in Settings.
       </p>
       <StepNav onNext={onNext} onBack={onBack} />
@@ -189,7 +189,7 @@ function PreferencesStep({ onNext, onBack }: { onNext: () => void; onBack: () =>
       <p className="muted">
         We start with sensible defaults — you can change any of these now or later in Settings.
       </p>
-      <ul className="muted" style={{ paddingLeft: "1.2rem", marginTop: "0.6rem" }}>
+      <ul className="muted" style={{ paddingLeft: "var(--space-6)", marginTop: "var(--space-4)" }}>
         <li>Weekday morning run: {formatTime(p.weekdayMorningTime)}</li>
         <li>Weekday evening run: {formatTime(p.weekdayEveningTime)}</li>
         <li>Weekend morning run: {formatTime(p.weekendMorningTime)}</li>
@@ -239,7 +239,7 @@ function PreviewStep({ onNext, onBack }: { onNext: () => void; onBack: () => voi
         </div>
       )}
       {count > 0 ? (
-        <p className="faint" style={{ marginTop: "0.6rem" }}>
+        <p className="faint" style={{ marginTop: "var(--space-4)" }}>
           These {count} workouts land on your calendar automatically once Google Calendar is
           connected — nothing else to press.
         </p>
@@ -259,7 +259,7 @@ function GardenStep({ onDone, onBack }: { onDone: () => void; onBack: () => void
         <p>💧 A few missed runs are easy to recover from.</p>
         <p>🍂 Long breaks cause a slow drought — never an instant reset.</p>
       </div>
-      <div className="row-between" style={{ marginTop: "1rem" }}>
+      <div className="row-between" style={{ marginTop: "var(--space-6)" }}>
         <button className="btn" onClick={onBack}>
           Back
         </button>
