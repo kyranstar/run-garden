@@ -218,6 +218,39 @@
      bases, `ch`/`ex` limits) are deliberately outside the contract — they
      answer "how much text fits", not "what is the rhythm". */
 
+  /* ── BREAKPOINTS — three, and only three (System 3 §A) ──────────────────
+     There were NINE: max-480, max-639, max-640, min-640, min-720, min-760,
+     min-900, max-1023, min-1024, across 19 layout blocks. Four of them
+     (640/720/760/900) all meant "wide enough for two columns" and disagreed
+     by 260px, and `max-width: 640` and `min-width: 640` BOTH match at exactly
+     640px (while `max-width: 639` does not) — so a 640px viewport rendered a
+     hybrid: `.workout-row`/`.act-card` in their phone form while `.race-cols`
+     and `.plan-card-row` were already in their desktop form, with the plan
+     brief's long-form prose (`.brief-wide`) inside a phone-width column.
+
+       sm 640  — a phone turns into a small tablet: paired text columns, a
+                 row can hold its actions on the same line.
+       md 900  — a real tablet: the reading column widens and CHARTS may pair.
+                 Nothing paired charts below this before; 720px did, which is
+                 where the charts got less readable than they were at 719.
+       lg 1024 — the desktop chrome: side nav instead of bottom nav, the
+                 garden becomes a full-viewport stage, the plan week becomes
+                 a 7-column grid, dialogs centre.
+
+     Every layout query is a `min-width` on one of these three, mobile-first.
+     A `max-width` query is banned outright: it is what made 640px a hybrid,
+     and "everything except the widest case" is the shape that grows a fourth
+     breakpoint the moment someone needs an exception.
+
+     Declared here as the single source of the numbers even though CSS cannot
+     substitute a custom property into a media query — `responsive.test.tsx`
+     reads these three declarations and asserts the sheet's media queries use
+     exactly this set of values and no others. Changing a number here without
+     changing the queries fails that test rather than drifting quietly. */
+  --bp-sm: 640px;
+  --bp-md: 900px;
+  --bp-lg: 1024px;
+
   --nav-height: 58px;
   --font:
     -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue",
@@ -436,6 +469,26 @@ button {
   overflow-x: clip;
 }
 
+/* The md tier — the tablet the app used to have no answer for (System 3 §C).
+   Between 700 and 1024px every page was a 700px column with a phone's 16px
+   gutters and a bottom nav: an iPad, a half-screen laptop window and a
+   900×700 window all got the phone layout with grey either side. `md` is
+   where the reading column widens to 860 and the page gutters step up, which
+   is also what makes the paired layouts at this tier (`.aerobic-pair`,
+   `.plan-cards`, `.studio-modal-charts`) worth having: at a 900px viewport
+   each half MEASURES 373px inside a card, where a chart and a card are still
+   readable (an earlier comment here said ~418 — that was the arithmetic
+   before the card's own padding, not the rendered box). The bottom nav is
+   still present here — it leaves at lg — so the nav clearance is re-stated
+   rather than dropped. */
+@media (min-width: 900px) {
+  .shell-main {
+    padding: var(--space-7) var(--space-8);
+    padding-bottom: calc(var(--nav-height) + env(safe-area-inset-bottom, 0px) + var(--space-8));
+    max-width: 860px;
+  }
+}
+
 /* Mobile bottom navigation */
 .bottom-nav {
   position: fixed;
@@ -482,7 +535,13 @@ button {
     display: flex;
     flex-direction: column;
     gap: var(--space-2);
-    width: 210px;
+    /* The rail takes what the window has SPARE above the reading column's own
+       880px cap, never more than 210px and never less than 9rem. A flat 210px
+       made the reading column NARROWER as the viewport got wider: at 1023 it
+       was 860px, at 1024 the rail arrived and left it 814 — so `.aerobic-pair`
+       went from 373px cells to 342px by growing the window. With this the
+       column is 880 from 1024 up and its cells only ever increase. */
+    width: clamp(9rem, calc(100vw - 880px), 210px);
     padding: var(--space-7) var(--space-6);
     border-right: 1px solid var(--border);
     background: var(--bg-raised);
@@ -518,6 +577,9 @@ button {
     font-size: var(--text-xs);
     color: var(--ink-faint);
     padding: 0 var(--space-4);
+    /* An email address has no break opportunities, so it ran straight out of
+       the rail. It has to break somewhere; anywhere beats over the edge. */
+    overflow-wrap: anywhere;
   }
   .shell-main {
     padding: var(--space-8) var(--space-9) var(--space-10);
@@ -598,7 +660,6 @@ h1,
 .prog-chip-label,
 .wkrow-state,
 .workout-row .date .dow,
-.now-chip,
 .new-ring,
 .codex-newring,
 .nudge-disc,
@@ -615,7 +676,7 @@ h1,
    the display serif is a family choice, not a rank of its own. */
 .rank-item,
 .hero-title,
-.garden-condition,
+.hud-condition,
 .ceremony-name,
 .plan-card-name,
 .plan-brief-headline,
@@ -1040,10 +1101,9 @@ a.note {
    second line as a unit when it doesn't fit beside the body, instead of
    crushing the title/meta. Replaces a bare `.workout-row > .pill` rule that
    only covered the matched pill — the Coach's read button next to it used to
-   carry its own inline marginLeft:auto instead (audit C8). */
-.workout-row .workout-row-actions {
-  margin-left: auto;
-}
+   carry its own inline marginLeft:auto instead (audit C8). Its two forms are
+   declared with `.workout-row .body` below, so the row's phone shape reads in
+   one place. */
 .workout-row:hover {
   border-color: var(--border-strong);
 }
@@ -1057,9 +1117,19 @@ a.note {
   font-weight: var(--weight-medium);
   font-variant-numeric: tabular-nums;
 }
+/* Phone form (System 3 §A, inverted from a `max-width: 640` block): the meta
+   line (duration/distance/pace) has no room to shrink beside the actions and
+   used to paint underneath the Coach's-read button (audit C8). Claiming the
+   full row width pushes the actions onto their own line — nothing hidden —
+   and lets the meta line wrap instead of overflow. */
 .workout-row .body {
-  flex: 1 1 130px;
+  flex: 1 1 100%;
   min-width: 130px;
+}
+.workout-row .workout-row-actions {
+  margin-left: 0;
+  width: 100%;
+  justify-content: flex-end;
 }
 .workout-row .title {
   font-weight: var(--weight-medium);
@@ -1074,7 +1144,7 @@ a.note {
   display: flex;
   gap: var(--space-4);
   align-items: center;
-  white-space: nowrap;
+  white-space: normal;
 }
 .workout-row.done {
   opacity: 0.75;
@@ -1082,21 +1152,17 @@ a.note {
 .workout-row.done .title {
   text-decoration: none;
 }
-/* Audit C8: below 640px the meta line (duration/distance/pace) had no room
-   to shrink and painted underneath the Coach's read button. Letting .body
-   claim the full row width pushes the actions onto their own line — nothing
-   hidden — and the meta line wraps instead of overflowing. */
-@media (max-width: 640px) {
+/* sm: wide enough for the body, the meta and the actions on one line. */
+@media (min-width: 640px) {
   .workout-row .body {
-    flex-basis: 100%;
+    flex-basis: 130px;
   }
   .workout-row .meta {
-    white-space: normal;
+    white-space: nowrap;
   }
   .workout-row .workout-row-actions {
-    margin-left: 0;
-    width: 100%;
-    justify-content: flex-end;
+    margin-left: auto;
+    width: auto;
   }
 }
 
@@ -1198,16 +1264,6 @@ a.note {
 
 /* ── Garden ─────────────────────────────────────────────────────────────── */
 
-.garden-scene-wrap {
-  border-radius: var(--radius);
-  overflow: hidden;
-  border: 1px solid var(--border);
-  background: var(--bg-raised);
-  line-height: 0;
-}
-.garden-condition {
-  color: var(--green-ink);
-}
 .garden-history {
   list-style: none;
   margin: 0;
@@ -1283,31 +1339,371 @@ a.note {
   font-weight: var(--weight-medium);
 }
 
-@media (min-width: 1024px) {
-  .garden-layout {
-    display: grid;
-    grid-template-columns: 1fr 320px;
-    gap: var(--space-6);
-    align-items: start;
-  }
-  /* Keep the scene visible while the detail panel scrolls. */
-  .garden-layout > .stack:first-child {
-    position: sticky;
-    top: var(--space-7);
-  }
-  /* Cap the tall history + species cards so the columns stay balanced. */
-  .garden-layout .garden-history,
-  .garden-layout .species-grid {
-    max-height: 340px;
-    overflow-y: auto;
-  }
-}
+/* ── The garden: ONE tree, two presentations (System 3 §D) ────────────────
+   The stage below used to be the ONLY place the garden's hierarchy existed.
+   84 rule blocks lived inside `@media (min-width: 1024px)` and ~66 of them
+   were the stage; below 1024 the screen returned a different React tree — a
+   flat card stack — and so the readiness verdict, the coach's weekly line and
+   the attention link were not desktop TREATMENTS of shared features, they
+   were desktop-only FEATURES. A phone user had never seen the readiness card
+   at all.
 
-/* Garden home: big central scene, then Today's content, then log + species. */
+   The screen now renders one `GardenBody` at every width (garden.tsx). These
+   base rules are the phone/tablet presentation of the same parts, in the same
+   priority order the stage reads them in:
+
+     1 scene       the picture
+     2 condition   the condition word (serif), the weather, the forecast
+     3 beat        what changed since you last looked / today
+     4 balance     the three discipline bars
+     5 dock        the readiness verdict, and the workout behind it
+     6 nudges+rail what each discipline is growing; collection / log / timeline
+
+   Below lg they stack in that order in the normal reading column. From lg the
+   same nodes are positioned onto the artwork (top-left, top-right, bottom-
+   left, bottom-right) and take the scene's type treatment. Nothing in the
+   stage block below introduces a NODE — it only moves and re-paints these. */
+/* ONE SPINE (audit#4 D7). Every part of the garden shares this column, so the
+   stack has one left edge and one right edge at every width below lg. It had
+   four: at 900 the condition block sat at x=231 (shrink-wrapped to 439px by
+   its own auto margins), the bars at x=120 (660, centred), the dock at x=52
+   (796, full width) and the story at x=52 (562). Three max-widths and two
+   alignments in one column, which is what "disorganised" looks like measured.
+
+   Capping the COLUMN — rather than each part — is also what caps the scene's
+   height, because the scene is a 16:9 box that grows with its container: 447px
+   tall at a 900px viewport, which is exactly where the viewport gets shorter,
+   and it pushed the readiness verdict this whole system exists to surface
+   below the fold at 900×700. One declaration fixes both. Below ~692px of
+   reading column it binds on nothing, so a phone is untouched. */
 .garden-home {
   display: flex;
   flex-direction: column;
   gap: var(--space-6);
+  width: 100%;
+  max-width: 660px;
+  margin-inline: auto;
+}
+.garden-stage {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-6);
+}
+/* The scrims exist to lift type off ARTWORK. Below lg the type sits on the
+   page, so there is nothing to scrim. */
+.stage-scrim {
+  display: none;
+}
+
+/* 1 — the scene. One box: the bordered card below lg, the full-bleed stage
+   from lg (see `.garden-scene` in the stage block). Its width — and so, at
+   16:9, its height — is the column's; the 900px cap it used to carry was a
+   fourth measure in a column that now has one. */
+.garden-scene {
+  position: relative;
+  width: 100%;
+  border-radius: var(--radius);
+  overflow: hidden;
+  border: 1px solid var(--border);
+  background: var(--bg-raised);
+  line-height: 0;
+}
+
+/* 2 — the voice. Centred TEXT in a full-width box, not a centred box: an auto
+   cross-axis margin on a flex item cancels `stretch` and shrink-wraps it, so
+   `margin: 0 auto` here gave the condition block a left edge of its own
+   (x=231 at 900, against the column's 52). The column owns the measure now. */
+.hud-topleft {
+  text-align: center;
+}
+.hud-condition {
+  color: var(--green-ink);
+  margin: 0 0 var(--space-1);
+}
+.hud-weather {
+  margin: 0;
+  font-size: var(--text-sm);
+  color: var(--ink-soft);
+}
+
+/* 3 — the beat: what changed. The dismiss ✕ is the stage's; on a card it is
+   the same control in the same place. */
+.hud-beat {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  justify-content: center;
+  gap: var(--space-3);
+  margin: var(--space-3) 0 0;
+  font-size: var(--text-sm);
+}
+.hud-beat-label {
+  flex: none;
+  color: var(--ink-soft);
+}
+.hud-beat-dismiss {
+  flex: none;
+  background: none;
+  border: none;
+  color: var(--ink-faint);
+  cursor: pointer;
+  padding: var(--space-1);
+  line-height: 0;
+}
+
+/* 4 — the dock: readiness first, then the workout it is about. In the stack
+   the pill is mid-page and the panel is simply its next sibling, so the panel
+   grows DOWNWARD, away from the row you pressed (System 1 §5). On the stage
+   the dock is bottom-anchored and the panel is lifted out of flow above the
+   pill, so it grows UPWARD over the scene and reflows nothing — same rule,
+   opposite direction.
+
+   NO `order` HERE. This is the mobile-first layer, so DOM order is the stack
+   order and nothing may reshuffle it: the previous cut wrote the children in
+   the stage's order (panel → pill → attention) and flipped them back with
+   `order: 1/2/3` below lg, which left tab order reaching the panel's contents
+   at y=1082 and then jumping 576px BACK UP to the pill at y=506. The one
+   place the two presentations genuinely disagree is now one `position`
+   declaration in the stage block, on a box that is an overlay there anyway. */
+.hud-dock {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: var(--tap-clear);
+}
+.dock-pill {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: var(--space-3);
+  width: 100%;
+  min-height: var(--tap);
+  padding: var(--space-4) var(--space-5);
+  text-align: left;
+  cursor: pointer;
+  background: var(--bg-raised);
+  border: 1px solid var(--border);
+  /* Severity is a left edge, not a second tinted field — the same device
+     `.card-prompt` uses. The phrase inside says the level too; the edge and
+     the dot are never the only signal. */
+  border-left: 3px solid var(--verdict-ink, var(--green));
+  border-radius: var(--radius-sm);
+  color: var(--ink);
+  font: var(--weight-medium) var(--text-md) var(--font);
+}
+/* With no plan there is no panel behind this row, so it is rendered as a <p>
+   rather than a <button> — a control that looks pressable and isn't is worse
+   than a label. It keeps every other pixel of the pill's treatment. */
+.dock-pill-static {
+  margin: 0;
+  cursor: default;
+}
+.dock-pill-verdict {
+  font-weight: var(--weight-bold);
+}
+/* The verdict leads; the workout is the quieter second half of the same line
+   (or, on a phone, the second row — the pill wraps rather than truncating). */
+.dock-pill-workout {
+  color: var(--ink-soft);
+}
+.dock-panel {
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  /* `background-COLOR`, not the `background` shorthand: this rule comes after
+     `.scroller` at equal specificity, so the shorthand was resetting
+     `background-image` to `none` and taking `.scroller`'s two edge-fade covers
+     with it — measured `backgroundImage: "none"` on a panel clipping 4px.
+     `--scroll-surface` is the colour those covers paint in, and it must name
+     this surface rather than fall back to a generic raised one. The stage's
+     panel is translucent glass and deliberately keeps the shorthand (see the
+     lg block): re-painting covers over glass makes them visible at rest. */
+  background-color: var(--bg-raised);
+  --scroll-surface: var(--bg-raised);
+  padding: var(--space-3);
+  /* A NESTED container has to name its own clearance and GRANT it — see "the
+     value inherits" in the touch floor. `.hud-dock`'s 12px reached in here
+     and licensed every pad inside the panel to reach 12px, but the panel was
+     block flow and the only room it actually left between two of its rows was
+     `.dock-week`'s 6px bottom margin. `.dock-collapse` is a 24px box, so its
+     44px pad reached 10px UP — 4px inside `.week-pull` — and
+     `elementFromPoint` at the pull's bottom-left inset 4px returned
+     "Minimize" at 390, 900, 1024 and 1440. Third time this class of defect
+     has shipped, so the fix is the invariant, not the pair: the panel is now
+     a column that writes its row `gap` from `--tap-clear`, exactly the device
+     `.tap-clear` and `.hud-dock` use. Because a pad is CLAMPED to
+     `--tap-clear`, a gap equal to `--tap-clear` is never narrower than the
+     deepest reach inside it, whatever the children's heights turn out to be.
+
+     A `gap` and not per-child margins: `margin-block-start: var(--tap-clear)`
+     on `> * + *` fails twice over here — `*` carries no specificity, so
+     `.linklike`'s `margin: 0` (1200 lines later) beats it, and `var()` in a
+     child rule resolves against the CHILD's own value, so `.card` — which
+     names `--tap-clear: var(--space-4)` for its own contents — would have
+     taken 8px. A container's `gap` can do neither. */
+  display: flex;
+  flex-direction: column;
+  --tap-clear: var(--space-5);
+  gap: var(--tap-clear);
+}
+/* The no-plan guidance wears the panel's surface — it is what the panel would
+   have contained, so it should not look like a different kind of thing. */
+.dock-noplan .empty {
+  padding: var(--space-5) var(--space-4);
+}
+.dock-panel .card {
+  border: none;
+  box-shadow: none;
+  background: transparent;
+}
+.dock-panel .card-next {
+  background: transparent;
+}
+/* No `margin` on either of these two. They wear `.linklike`, which declares
+   `margin: 0` at the same specificity 1200 lines further down the sheet, so
+   the margins they used to write here had never applied to a single pixel
+   (measured: both boxes flush with the panel's content edge, 0px bottom).
+   Row spacing is `.dock-panel`'s `gap` now, which no child can overrule.
+
+   `align-self: start` keeps each box shrink-to-fit, which is what a
+   block-level <button> already was: the panel's flex default is `stretch`,
+   and under it "Minimize" grew from a 64px box to the panel's full 402px —
+   a whole row of the panel that silently closed it. */
+.dock-collapse {
+  display: block;
+  align-self: start;
+  font-size: var(--text-xs);
+  color: var(--ink-faint);
+}
+.dock-grows {
+  display: block;
+  align-self: start;
+  font-size: var(--text-sm);
+  font-weight: var(--weight-medium);
+  color: var(--green-ink);
+}
+
+/* The readiness verdict (2026-08-14) — until now a stage-only feature.
+   Colour is the existing semantic vocabulary — --green-ink / --warn /
+   --danger, the same three the pills, banners and charts already speak —
+   routed through one local custom property so a level is named in exactly one
+   place. Colour is never the only signal: the PHRASE beside the dot says the
+   same thing, and the dot itself is aria-hidden. */
+.dock-verdict-good {
+  --verdict-ink: var(--green-ink);
+}
+.dock-verdict-caution {
+  --verdict-ink: var(--warn);
+}
+.dock-verdict-poor {
+  --verdict-ink: var(--danger);
+}
+.dock-verdict {
+  padding: var(--space-4);
+  border-bottom: 1px solid var(--border);
+}
+.dock-verdict-dot {
+  flex: none;
+  display: inline-block;
+  width: 0.6rem;
+  height: 0.6rem;
+  margin-right: var(--space-3);
+  border-radius: var(--radius-round);
+  background: var(--verdict-ink);
+}
+/* The panel head's leading line, now that the verdict phrase stays on the
+   pill below (see DockVerdict): the numbers behind the reading, nothing
+   else. */
+.dock-verdict-why {
+  margin: 0;
+  font-size: var(--text-xs);
+  color: var(--ink-soft);
+  font-variant-numeric: tabular-nums;
+}
+/* The coach's weekly line, mirroring the plan brief's Coach/text pairing so
+   the two surfaces quote the same person the same way. Dated, because it was
+   written about the week — never about today's readiness. */
+.dock-verdict-coach {
+  display: flex;
+  gap: var(--space-3);
+  align-items: baseline;
+  margin: var(--space-4) 0 0;
+  font-size: var(--text-xs);
+  color: var(--ink);
+}
+.dock-verdict-who {
+  flex: none;
+  color: var(--ink-soft);
+  white-space: nowrap;
+}
+.dock-attention {
+  color: var(--green-ink);
+  font-size: var(--text-sm);
+  font-weight: var(--weight-medium);
+  text-decoration: none;
+}
+.dock-attention:hover {
+  text-decoration: underline;
+}
+
+/* 6 — quiet utilities: what each discipline is growing, then the panels.
+   The gap is the clearance this container grants its 24.8px-tall controls —
+   see `--tap-clear` at the foot of the sheet; the two step together. */
+.hud-corner {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: var(--space-5);
+}
+.hud-nudge {
+  background: none;
+  border: none;
+  cursor: pointer;
+  text-align: left;
+  color: var(--ink-soft);
+  font: var(--weight-regular) var(--text-sm) var(--font);
+  padding: var(--space-2) 0;
+}
+.hud-nudge:hover {
+  color: var(--ink);
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+.hud-rail {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-7);
+}
+.hud-rail button {
+  background: none;
+  border: none;
+  cursor: pointer;
+  padding: var(--space-2) 0;
+  color: var(--ink-soft);
+  font-variant-numeric: tabular-nums;
+}
+.hud-rail button:hover,
+.hud-rail button:focus-visible {
+  color: var(--ink);
+}
+
+/* The scrubber, when it is open: centred under the scene in the stack, a
+   floating central panel on the stage. */
+.stage-timeline {
+  display: flex;
+  justify-content: center;
+}
+
+/* Below the garden: the story, how it works, and the plumbing. In the stack
+   it is simply the next thing in the column; from lg it is the reading column
+   that returns underneath the full-bleed stage. */
+.garden-below {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-6);
+  scroll-margin-top: var(--space-6);
+}
+.garden-below-intro {
+  max-width: 62ch;
 }
 
 /* ── The desktop stage ────────────────────────────────────────────────────
@@ -1328,8 +1724,12 @@ a.note {
     max-width: none;
     padding: 0;
   }
-  .garden-home--stage {
+  .garden-home {
     gap: 0;
+    /* The stage is the page here — the one-spine column below lg is what the
+       stack needs and what full-bleed artwork must not have. */
+    max-width: none;
+    margin-inline: 0;
   }
   /* Remaining space, not the window (System 1 §4). `height: 100dvh` measured
      the WINDOW while the stage's box started at y=52 under the fixture-mode
@@ -1339,16 +1739,23 @@ a.note {
      document top to this box (useSpaceAbove, components.tsx); with no banner
      it is 0 and this is the old expression. */
   .garden-stage {
+    display: block;
     position: relative;
     height: calc(100dvh - var(--space-above, 0px));
     overflow: hidden;
     background: var(--stage-bg);
   }
-  .stage-scene {
+  /* The same box that is a bordered card below lg, now full-bleed artwork. */
+  .garden-scene {
     position: absolute;
     inset: 0;
+    border: none;
+    border-radius: 0;
+    background: none;
   }
-  .stage-scene > [data-garden-wrapper] {
+  /* Descendant, not child: `.scene-rotor` (the portrait-fullscreen rotation
+     box, `display: contents` at rest) sits between them. */
+  .garden-scene [data-garden-wrapper] {
     position: absolute !important;
     inset: 0;
   }
@@ -1360,6 +1767,7 @@ a.note {
     display: block;
   }
   .stage-scrim {
+    display: block;
     position: absolute;
     left: 0;
     right: 0;
@@ -1382,6 +1790,8 @@ a.note {
     top: clamp(1.4rem, 3.2vh, 2.4rem);
     left: clamp(1.6rem, 3.2vw, 3.2rem);
     max-width: min(36rem, 44vw);
+    margin: 0;
+    text-align: left;
     color: var(--on-scene);
     text-shadow: var(--scene-text-shadow);
   }
@@ -1395,12 +1805,14 @@ a.note {
     font-weight: var(--weight-medium);
     letter-spacing: -0.01em;
     line-height: 1.15;
+    color: inherit;
   }
   .hud-weather {
     margin-top: var(--space-2);
     font-size: var(--text-md);
     line-height: 1.45;
     opacity: 0.84;
+    color: inherit;
   }
   .hud-forecast.forecast-line {
     margin: var(--space-4) 0 0;
@@ -1415,8 +1827,9 @@ a.note {
   .hud-beat {
     display: flex;
     align-items: baseline;
+    justify-content: flex-start;
     gap: var(--space-4);
-    margin-top: var(--space-5);
+    margin: var(--space-5) 0 0;
     font-size: var(--text-sm);
     opacity: 0.92;
     /* Stays clear of the centered ceremony card at every stage width. */
@@ -1430,12 +1843,10 @@ a.note {
   .hud-beat-label {
     flex: none;
     opacity: 0.75;
+    color: inherit;
   }
   .hud-beat-dismiss {
-    flex: none;
     align-self: center;
-    background: none;
-    border: none;
     color: var(--on-scene);
     opacity: 0.6;
     cursor: pointer;
@@ -1446,37 +1857,45 @@ a.note {
     opacity: 1;
   }
 
-  /* Hierarchy 4: the instrument cluster, top-right, quieter than the voice. */
+  /* Hierarchy 4: the instrument cluster, top-right, quieter than the voice.
+     This box is also the SELECTOR for the on-scene treatment below. It used
+     to be a `variant="hud"` prop the component emitted at every width, while
+     every rule it enabled lived in here — so below lg the class was inert and
+     read like a mobile/desktop switch that wasn't one. Printed-on-artwork is
+     a property of where a thing sits, and this is the box it sits in. */
   .hud-topright {
     position: absolute;
     top: clamp(1.5rem, 3.4vh, 2.5rem);
     right: clamp(1.6rem, 3.2vw, 3.2rem);
     width: 232px;
   }
-  .balance-strip-hud .balance-bar-label {
+  .hud-topright .balance-bar-label {
     color: rgba(var(--on-scene-rgb), 0.86);
     text-shadow: var(--scene-text-shadow);
   }
-  .balance-strip-hud .balance-bar-caption {
+  .hud-topright .balance-bar-caption {
     color: rgba(var(--on-scene-rgb), 0.62);
     text-shadow: var(--scene-text-shadow);
   }
-  .balance-strip-hud .balance-bar-track {
+  .hud-topright .balance-bar-track {
     background: rgba(var(--on-scene-rgb), 0.22);
   }
-  .balance-strip-hud .balance-notch {
+  .hud-topright .balance-notch {
     background: rgba(var(--on-scene-rgb), 0.65);
   }
-  .balance-strip-hud .balance-bar-fill.balance-run {
+  /* Same precedence as the base layer, for the same reason: `:where()` on the
+     discipline, a real class on the status, so the damage-zone amber wins on
+     the scene exactly as it wins on the page. */
+  .hud-topright .balance-bar-fill:where(.balance-run) {
     background: #9ecfab;
   }
-  .balance-strip-hud .balance-bar-fill.balance-strength {
+  .hud-topright .balance-bar-fill:where(.balance-strength) {
     background: #d9a678;
   }
-  .balance-strip-hud .balance-bar-fill.balance-yoga {
+  .hud-topright .balance-bar-fill:where(.balance-yoga) {
     background: #c2a3d8;
   }
-  .balance-strip-hud .balance-bar-fill.balance-low {
+  .hud-topright .balance-bar-fill.balance-low {
     background: #e6c26a;
   }
 
@@ -1498,11 +1917,15 @@ a.note {
     max-width: min(30rem, 40vw);
   }
   .dock-pill {
+    /* Back to a line of type printed on the artwork: no surface, no edge, no
+       floor — the scrim below is what lifts it off the scene. */
+    display: block;
     position: relative;
+    width: auto;
+    min-height: 0;
     background: none;
     border: none;
-    cursor: pointer;
-    text-align: left;
+    border-radius: 0;
     padding: var(--space-2) 0;
     color: var(--on-scene);
     font-size: var(--text-md);
@@ -1536,11 +1959,10 @@ a.note {
     text-decoration: underline;
     text-underline-offset: 3px;
   }
-  .dock-pill-verdict {
-    font-weight: var(--weight-bold);
-  }
-  /* The separator is decoration between two spans that each read fine alone —
-     CSS, so it never lands in the accessible name as a stray character. */
+  /* One line on the stage, so the two spans need a separator between them —
+     decoration in CSS, so it never lands in the accessible name as a stray
+     character. In the stack the pill is a wrapping flex row and the gap does
+     this job; a "·" there becomes a leading orphan on the second row. */
   .dock-pill-verdict + .dock-pill-workout::before {
     content: "·";
     margin: 0 var(--space-3);
@@ -1550,6 +1972,17 @@ a.note {
     color: rgba(var(--on-scene-rgb), 0.92);
   }
   .dock-panel {
+    /* The stage's dock is bottom-anchored, so the panel is ABOVE the pill —
+       the one place the two presentations genuinely disagree, and it is one
+       declaration. POSITION, not `order`: this is the box the stage block
+       already describes as "an OVERLAY over the scene, reflowing nothing", so
+       lifting it out of flow is what it was always claiming to be. `order`
+       would have re-created below lg's tab-order defect up here instead —
+       and it would still have been a flex item, so the dock's own height
+       (and therefore the pill's y) would still have depended on it. */
+    position: absolute;
+    left: 0;
+    bottom: calc(100% + var(--tap-clear));
     width: min(26rem, 38vw);
     /* Capped and internally scrollable so a short laptop viewport can never
        let the panel grow tall enough to bury the top-left HUD behind it
@@ -1570,92 +2003,17 @@ a.note {
     box-shadow: var(--shadow-lg);
     padding: var(--space-3);
   }
-  .dock-panel .card {
-    border: none;
-    box-shadow: none;
-    background: transparent;
-  }
-  .dock-panel .card-next {
-    background: transparent;
-  }
-  .dock-collapse {
-    display: block;
-    margin: 0 var(--space-4) var(--space-4);
-    font-size: var(--text-xs);
-    color: var(--ink-faint);
-  }
-  .dock-grows {
-    display: block;
-    margin: var(--space-1) var(--space-4) var(--space-4);
-    font-size: var(--text-sm);
-    font-weight: var(--weight-medium);
-    color: var(--green-ink);
-  }
-
-  /* The dock leads with a readiness verdict (2026-08-14). Colour is the
-     existing semantic vocabulary — --green-ink / --warn / --danger, the same
-     three the pills, banners and charts already speak — routed through one
-     local custom property so a level is named in exactly one place. Colour is
-     never the only signal: the PHRASE beside the dot says the same thing, and
-     the dot itself is aria-hidden. */
-  .dock-verdict-good {
-    --verdict-ink: var(--green-ink);
-  }
-  .dock-verdict-caution {
-    --verdict-ink: var(--warn);
-  }
-  .dock-verdict-poor {
-    --verdict-ink: var(--danger);
-  }
-  .dock-verdict {
-    padding: var(--space-4) var(--space-4) var(--space-4);
-    border-bottom: 1px solid var(--border);
-  }
-  .dock-verdict-dot {
-    flex: none;
-    width: 0.6rem;
-    height: 0.6rem;
-    border-radius: var(--radius-round);
-    background: var(--verdict-ink);
-  }
-  /* The panel head's leading line, now that the verdict phrase stays on the
-     pill below (see DockVerdict): the numbers behind the reading, nothing
-     else. */
-  .dock-verdict-why {
-    margin: 0;
-    font-size: var(--text-xs);
-    color: var(--ink-soft);
-    font-variant-numeric: tabular-nums;
-  }
-  /* The coach's weekly line, mirroring the plan brief's Coach/text pairing so
-     the two surfaces quote the same person the same way. Dated, because it was
-     written about the week — never about today's readiness. */
-  .dock-verdict-coach {
-    display: flex;
-    gap: var(--space-3);
-    align-items: baseline;
-    margin: var(--space-4) 0 0;
-    font-size: var(--text-xs);
-    color: var(--ink);
-  }
-  .dock-verdict-who {
-    flex: none;
-    color: var(--ink-soft);
-    white-space: nowrap;
-  }
   /* On the pill the type sits on artwork, not on the panel's surface, so the
      phrase stays white (its own contrast treatment) and only the dot carries
      hue — lifted toward white so a light-theme --danger can't sink into a
      dark scene. Mixing an existing token, not a new colour. */
   .dock-pill .dock-verdict-dot {
-    display: inline-block;
-    margin-right: var(--space-3);
     background: color-mix(in srgb, var(--verdict-ink) 55%, var(--on-scene));
     box-shadow: var(--scene-text-shadow);
   }
 
   /* The bar detail panel floats below the HUD instrument cluster. */
-  .balance-detail-hud {
+  .hud-topright .balance-detail {
     position: absolute;
     top: calc(100% + var(--space-4));
     right: 0;
@@ -1668,13 +2026,7 @@ a.note {
   }
   .dock-attention {
     color: var(--on-scene-accent);
-    font-size: var(--text-sm);
-    font-weight: var(--weight-medium);
-    text-decoration: none;
     text-shadow: var(--scene-text-shadow);
-  }
-  .dock-attention:hover {
-    text-decoration: underline;
   }
 
   /* Hierarchy 6: quiet utilities, bottom-right. */
@@ -1685,7 +2037,7 @@ a.note {
     display: flex;
     flex-direction: column;
     align-items: flex-end;
-    gap: var(--space-4);
+    gap: var(--space-5);
     text-align: right;
   }
   /* Contrast for the type that sits straight on the scene (audit 2026-08-14:
@@ -1716,33 +2068,20 @@ a.note {
     z-index: 1;
   }
   .hud-nudge {
-    background: none;
-    border: none;
-    cursor: pointer;
+    text-align: inherit;
     color: rgba(var(--on-scene-rgb), 0.94);
-    font-size: var(--text-sm);
     text-shadow: var(--scene-text-shadow);
-    padding: var(--space-2) 0;
   }
   .hud-nudge:hover {
     color: var(--on-scene);
     text-decoration: underline;
     text-underline-offset: 3px;
   }
-  .hud-rail {
-    display: flex;
-    gap: var(--space-7);
-  }
   .hud-rail button {
-    background: none;
-    border: none;
-    cursor: pointer;
-    padding: var(--space-2) 0;
     /* 12px uppercase gets no large-text exemption — with the corner scrim
        behind it this clears AA where 0.7 did not. */
     color: rgba(var(--on-scene-rgb), 0.86);
     text-shadow: var(--scene-text-shadow);
-    font-variant-numeric: tabular-nums;
   }
   .hud-rail button:hover,
   .hud-rail button:focus-visible {
@@ -1763,18 +2102,12 @@ a.note {
     box-shadow: var(--shadow-lg);
   }
 
-  /* Below the stage: the maintenance content, back in the reading column. */
+  /* Below the stage: the maintenance content, back in the reading column —
+     which the immersive shell has stopped providing, so it provides its own. */
   .garden-below {
     max-width: 880px;
     margin: 0 auto;
     padding: var(--space-8) var(--space-9) var(--space-10);
-    display: flex;
-    flex-direction: column;
-    gap: var(--space-6);
-    scroll-margin-top: 1rem;
-  }
-  .garden-below-intro {
-    max-width: 62ch;
   }
 }
 @keyframes beat-in {
@@ -2016,8 +2349,12 @@ a.note {
   text-decoration: underline;
   text-underline-offset: 2px;
 }
+/* Horizontal inset only: the 6px bottom margin this used to carry was the
+   whole of the room between the week pull and "Minimize", and 6px is less
+   than the 12px `.dock-panel` grants every pad inside it. Vertical spacing is
+   the panel's job now (`.dock-panel > * + *`), so there is one number. */
 .dock-week {
-  margin: 0 var(--space-4) var(--space-3);
+  margin: 0 var(--space-4);
   padding-top: var(--space-4);
   border-top: 1px solid var(--border);
 }
@@ -2093,7 +2430,9 @@ a.note {
   margin-top: var(--space-3);
 }
 
-/* ── Drawers (desktop stage) ──────────────────────────────────────────────── */
+/* ── Drawers ──────────────────────────────────────────────────────────────
+   Stage-only until System 3; opened by the garden's rail at every width now,
+   which is what put its foot over the bottom nav. */
 .drawer-backdrop {
   position: fixed;
   inset: 0;
@@ -2103,7 +2442,14 @@ a.note {
 .drawer {
   position: fixed;
   top: var(--space-6);
-  bottom: var(--space-6);
+  /* Clear the NAV, not the inset. The first cut of this reached for
+     `env(safe-area-inset-bottom)` and it was a mathematical no-op: the nav
+     lifts its own content by exactly that inset too (`.bottom-nav` pads by
+     it), so the overlap was invariant in the term — measured 42px at 390, 640
+     and 900 alike, with four species cells sitting under the nav's glass. The
+     quantity actually needed is the nav's height, and it is the same
+     expression `.shell-main` already uses for its own foot clearance. */
+  bottom: calc(var(--nav-height) + env(safe-area-inset-bottom, 0px) + var(--space-6));
   right: var(--space-6);
   width: min(430px, 92vw);
   border-radius: var(--radius-lg);
@@ -2142,24 +2488,17 @@ a.note {
   flex: 1 1 auto;
   --scroll-surface: color-mix(in srgb, var(--bg-raised) 93%, transparent);
 }
+/* There is no bottom nav from lg (`display: none`), so reserving 58px for one
+   would just be a gap. */
+@media (min-width: 1024px) {
+  .drawer {
+    bottom: var(--space-6);
+  }
+}
 .drawer-section {
   margin-bottom: var(--space-6);
   padding-bottom: var(--space-6);
   border-bottom: 1px solid var(--border);
-}
-.garden-scene-big {
-  width: 100%;
-  max-width: 900px;
-  margin: 0 auto;
-}
-.garden-readout {
-  text-align: center;
-  max-width: 660px;
-  margin: 0 auto var(--space-2);
-}
-.timeline-bar {
-  display: flex;
-  justify-content: center;
 }
 .timeline-panel {
   display: flex;
@@ -2378,6 +2717,32 @@ a.note {
   border-radius: var(--radius-pill);
   background: color-mix(in srgb, var(--ink) 38%, transparent);
 }
+/* ── What a bar's colour MEANS, and it means the same thing at every width ──
+   The three discipline hues and the damage-zone amber both want this one
+   slot. Until now which of them got it depended on source order, and the two
+   layers of the sheet happened to disagree: the base layer put `.balance-low`
+   BEFORE the discipline rules, so a phone painted colour = which discipline;
+   the stage block put it AFTER, so a 1440px window painted colour = this bar
+   is in the damage zone. Same three classes, same specificity, two different
+   encodings — measured `rgb(62,122,82)/rgb(181,101,47)/rgb(131,100,157)` at
+   390 and 900 against `rgb(230,194,106)` ×3 at 1440.
+
+   STATUS WINS, everywhere, and the cascade says so rather than the line
+   number: the discipline hue is claimed through `:where()`, which contributes
+   no specificity, so `.balance-bar-fill.balance-low` outranks it wherever
+   both apply and both meanings coexist without either being width-dependent.
+   Status takes the slot because the discipline is already named in the label
+   directly above the bar, whereas "this one is costing the garden" is not
+   written anywhere else. */
+.balance-bar-fill:where(.balance-run) {
+  background: var(--green);
+}
+.balance-bar-fill:where(.balance-strength) {
+  background: var(--lift-ink);
+}
+.balance-bar-fill:where(.balance-yoga) {
+  background: var(--hue-yoga);
+}
 .balance-bar-fill.balance-low {
   background: var(--warn);
 }
@@ -2390,18 +2755,13 @@ a.note {
   color: var(--warn);
   font-weight: var(--weight-medium);
 }
-.balance-bar-fill.balance-run {
-  background: var(--green);
-}
-.balance-bar-fill.balance-strength {
-  background: var(--lift-ink);
-}
-.balance-bar-fill.balance-yoga {
-  background: var(--hue-yoga);
-}
+/* --ink-soft, not --ink-faint: this caption is 11.2px/400 on the PAGE, not on
+   scene artwork, and --ink-faint measured 3.07:1 against --bg there — a plain
+   token bug, not the pending scrim work. --ink-soft measures 5.85:1. */
 .balance-bar-caption {
   margin-top: var(--space-1);
   font-size: var(--text-2xs);
+  color: var(--ink-soft);
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -2410,23 +2770,6 @@ a.note {
   text-align: center;
   margin-top: var(--space-4);
   font-size: var(--text-sm);
-}
-.garden-readout .garden-condition {
-  margin-bottom: var(--space-1);
-}
-.garden-readout .banner {
-  text-align: left;
-  margin-top: var(--space-4);
-}
-.garden-lower {
-  display: grid;
-  gap: var(--space-6);
-}
-@media (min-width: 900px) {
-  .garden-lower {
-    grid-template-columns: 1fr 1fr;
-    align-items: start;
-  }
 }
 /* The next workout should feel special; the "did this run happen?" prompt
    should not — and until now they used the SAME two devices (a tinted
@@ -2905,9 +3248,16 @@ a.note {
   grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
 }
 
-/* Efficiency | decoupling. One column on a phone; two from 720px, where a
-   half-width chart is still ~330px and the pair can be read against each
-   other without scrolling between them. */
+/* Efficiency | decoupling. One column until md, two from md — where the
+   reading column is 796px and each half measures 373px.
+
+   This pair is the case that named the tablet chart cliff (System 3 §B): it
+   used to split at 720px, inside a 700px reading column, so each chart got
+   ~326px of a 560-unit viewBox and its axis labels rendered at 5.0 CSS px —
+   against 9.0 CSS px in the ONE-column layout 1px earlier. The sizing layer
+   in chart-kit is what actually fixed the legibility (labels are 10 CSS px at
+   every width now); moving the split to md is the layout half of it, so a
+   pair only appears where each chart has room to be a chart. */
 .aerobic-pair {
   display: grid;
   gap: var(--space-6);
@@ -2916,7 +3266,7 @@ a.note {
 .aerobic-cell {
   min-width: 0; /* let a wide chart scroll inside its own .chart-block */
 }
-@media (min-width: 720px) {
+@media (min-width: 900px) {
   .aerobic-pair {
     grid-template-columns: 1fr 1fr;
   }
@@ -3220,17 +3570,20 @@ a.note {
      phone, the row wraps rather than pushing the page sideways (R1). */
   flex-wrap: wrap;
 }
+/* On a phone it takes its own full-width line UNDER the title row, so it can
+   never shove the row's buttons (e.g. "Backfill history") around; from sm it
+   rejoins the row. Was a `max-width: 640` block (System 3 §A). */
 .screen-title .coros-check-link,
 .screen-title .coros-checking {
   min-width: 0;
+  order: 99;
+  flex-basis: 100%;
 }
-/* On phones it drops to its own full-width line UNDER the title row, so it
-   never shoves the row's buttons (e.g. "Backfill history") around. */
-@media (max-width: 640px) {
+@media (min-width: 640px) {
   .screen-title .coros-check-link,
   .screen-title .coros-checking {
-    order: 99;
-    flex-basis: 100%;
+    order: 0;
+    flex-basis: auto;
   }
 }
 .divider {
@@ -3446,19 +3799,6 @@ a.note {
 }
 
 /* ── Species codex & unlock nudges ────────────────────────────────────────── */
-.garden-nowline {
-  margin: var(--space-1) 0 var(--space-3);
-  font-size: var(--text-md);
-}
-.now-chip {
-  display: inline-block;
-  background: var(--green);
-  color: var(--on-accent);
-  border-radius: var(--radius-pill);
-  padding: var(--space-1) var(--space-4);
-  margin-right: var(--space-4);
-  vertical-align: 0.08em;
-}
 .codex-grid {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(108px, 1fr));
@@ -3624,18 +3964,46 @@ a.note {
   transition: width 0.4s ease;
 }
 /* ── Botanical card (plant & species detail) ─────────────────────────────── */
+/* Portrait over prose in a narrow box, portrait beside prose once there is
+   room for both. This card lives inside a Sheet whose width is NOT the
+   viewport's, which is why it answers to a container query rather than to a
+   breakpoint: it was a `max-width: 480` media block (a fourth threshold that
+   existed for this one card), then System 3 folded it into sm — and that cost
+   the two-column form everywhere from 480 to 639, where a 180px portrait sat
+   alone above a full-width fact list with ~268px of empty page beside it
+   (239px tall against 128px at 640+). A container query is the right
+   mechanism here for the same reason it was right for the charts: the number
+   that decides is the box's, not the window's.
+
+   `.bot-card` is its own container and its two CHILDREN carry the query — a
+   container cannot query itself, and its markup is a fixed two-child pair, so
+   a flex row that wraps says the same thing a grid did. */
 .bot-card {
-  display: grid;
-  grid-template-columns: 132px 1fr;
+  container-type: inline-size;
+  display: flex;
+  flex-wrap: wrap;
   gap: var(--space-6);
-  align-items: start;
+  align-items: flex-start;
 }
-@media (max-width: 480px) {
-  .bot-card {
-    grid-template-columns: 1fr;
+.bot-card > .bot-portrait {
+  width: 100%;
+  max-width: 180px;
+}
+.bot-card > .bot-body {
+  width: 100%;
+}
+/* 420px: the card measures 448px inside a Sheet at a 480px viewport — the
+   width the two-column form used to arrive at — and 358px at 390. */
+@container (min-width: 420px) {
+  .bot-card > .bot-portrait {
+    flex: none;
+    width: 132px;
+    max-width: none;
   }
-  .bot-portrait {
-    max-width: 180px;
+  .bot-card > .bot-body {
+    flex: 1 1 0;
+    width: auto;
+    min-width: 0;
   }
 }
 .bot-portrait {
@@ -4223,10 +4591,9 @@ a.note {
 }
 .memory-row:last-child { border-bottom: 0; }
 
-/* ── Mobile fullscreen garden (audit follow-up): the stage can take the whole
-   viewport; the toggle floats in the scene's top-right. Desktop (≥1024px)
-   already renders the immersive full-viewport stage, so the toggle hides. */
-.garden-scene-wrap { position: relative; }
+/* ── Mobile fullscreen garden: the scene can take the whole viewport; the
+   toggle floats in its top-right. From lg the scene IS the viewport, so the
+   toggle hides. */
 .scene-full-toggle {
   position: absolute;
   top: var(--space-4);
@@ -4294,9 +4661,13 @@ a.note {
 .coach-pill-caret { margin-right: var(--space-3); font-size: 0.7em; opacity: 0.85; }
 
 /* ── Activity specimen cards (activities-page redesign) ─────────────────── */
+/* Phone form first (System 3 §A, inverted from a `max-width: 640` block):
+   spine + one content column, with the action row wrapping underneath. From
+   sm the actions dock into a third, fixed-width column. */
 .act-card {
   display: grid;
-  grid-template-columns: 4px minmax(0, 1fr) 172px;
+  grid-template-columns: 4px minmax(0, 1fr);
+  grid-template-rows: auto auto;
   gap: var(--space-3) var(--space-6);
   align-items: center;
   padding: var(--space-5);
@@ -4306,7 +4677,7 @@ a.note {
   margin-bottom: var(--space-4);
 }
 .act-spine {
-  grid-row: 1 / -1;
+  grid-row: 1 / span 2;
   align-self: stretch;
   border-radius: var(--radius-hair);
   background: var(--act-hue, var(--green));
@@ -4341,7 +4712,7 @@ a.note {
   margin-top: var(--space-3);
 }
 .act-shape {
-  width: min(230px, 55%);
+  width: min(230px, 60%);
   height: 30px;
   flex-shrink: 0;
   color: var(--act-hue, var(--green));
@@ -4406,13 +4777,17 @@ a.note {
    Link-button → linked-pill flip can never move a pixel of layout. */
 .act-actions {
   display: flex;
-  flex-direction: column;
+  grid-column: 2;
+  flex-direction: row;
   gap: var(--space-3);
-  width: 172px;
+  width: 100%;
 }
 .act-actions > * ,
 .act-status-slot > * {
   width: 100%;
+  flex: 1 1 0;
+  min-width: 0;
+  overflow: hidden;
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -4434,27 +4809,38 @@ a.note {
 .act-hue-yoga { --act-hue: var(--hue-yoga); }
 .act-hue-run { --act-hue: var(--hue-easy); }
 .act-hue-adventure { --act-hue: var(--adventure-ring); }
-@media (max-width: 640px) {
-  .act-card { grid-template-columns: 4px minmax(0, 1fr); grid-template-rows: auto auto; }
-  .act-spine { grid-row: 1 / span 2; }
+@media (min-width: 640px) {
+  .act-card {
+    grid-template-columns: 4px minmax(0, 1fr) 172px;
+    grid-template-rows: auto;
+  }
+  .act-spine { grid-row: 1 / -1; }
   .act-actions {
-    grid-column: 2;
-    flex-direction: row;
-    width: 100%;
+    grid-column: auto;
+    flex-direction: column;
+    width: 172px;
   }
   .act-actions > *,
   .act-status-slot > * {
-    flex: 1 1 0;
-    min-width: 0;
-    overflow: hidden;
+    flex: none;
+    overflow: visible;
   }
-  .act-shape { width: min(230px, 60%); }
+  .act-shape { width: min(230px, 55%); }
 }
 
 /* ── Plan page (2026-08-11 rework): brief · plan cards · one week ───────── */
 
-.shell-main--wide {
-  max-width: 1440px;
+/* The plan page's wide treatment — and ONLY at lg, where the things that need
+   it exist (System 3 §C). This rule used to sit outside any media query, so
+   at equal specificity and later source order it beat `.shell-main`'s own
+   `max-width` at every width: on a 768px tablet every other page was a 700px
+   reading column and Plan alone ran full-bleed edge to edge. Below lg the
+   week grid is a day list and the coach is a sheet, so there is nothing on
+   this page that a wider column would help. */
+@media (min-width: 1024px) {
+  .shell-main--wide {
+    max-width: 1440px;
+  }
 }
 
 /* One width contract for the page and the coach overlay (System 1 §6).
@@ -4553,13 +4939,16 @@ a.note {
   flex: none;
 }
 
-/* Plan title cards */
+/* Plan title cards. (No markup wears `.plan-cards` today — `PlanCards`
+   renders `.plan-sections` > `.plan-section-list`. Kept and moved onto the
+   scale rather than deleted, because deleting is System 4's job; it is listed
+   here so the next reader does not go looking for the screen it styles.) */
 .plan-cards {
   display: grid;
   grid-template-columns: 1fr;
   gap: var(--space-5);
 }
-@media (min-width: 760px) {
+@media (min-width: 900px) {
   .plan-cards {
     grid-template-columns: 1fr 1fr;
   }
@@ -4969,21 +5358,28 @@ a.note {
   color: var(--green-ink);
   font-weight: var(--weight-medium);
 }
+/* The week is a DAY LIST until lg and a 7-column grid from lg — one
+   component, two shapes (System 3 §A, inverted from a `max-width: 1023`
+   block). Empty days collapse away in the list form; today always renders. */
 .plan-week-grid {
-  display: grid;
-  grid-template-columns: repeat(7, minmax(0, 1fr));
-  gap: var(--space-4);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
 }
 .plan-week-day {
   position: relative;
-  min-height: 128px;
+  min-height: 0;
   padding: var(--space-3) var(--space-3) var(--space-4);
   background: var(--bg-sunken);
   border: 1px dashed transparent;
   border-radius: var(--radius-md);
   display: flex;
-  flex-direction: column;
-  gap: var(--space-3);
+  flex-direction: row;
+  align-items: flex-start;
+  gap: var(--space-4);
+}
+.plan-week-day:not(.has-items):not(.has-ghosts):not(.is-today) {
+  display: none;
 }
 .plan-week-day:not(.has-items):not(.has-ghosts) {
   border-color: var(--border);
@@ -4996,8 +5392,12 @@ a.note {
 }
 .plan-week-date {
   display: flex;
-  align-items: baseline;
-  gap: var(--space-3);
+  flex: none;
+  width: 2.6rem;
+  flex-direction: column;
+  align-items: center;
+  gap: 0;
+  padding-top: var(--space-1);
 }
 .plan-week-dom {
   font-size: var(--text-xs);
@@ -5012,37 +5412,36 @@ a.note {
 }
 .plan-week-items {
   display: flex;
+  flex: 1;
   flex-direction: column;
   gap: var(--space-2);
   min-width: 0;
 }
-/* Below the desktop breakpoint the grid folds into a day list — empty days
-   collapse away, today always renders (the old agenda fold, one component). */
-@media (max-width: 1023px) {
+/* lg: the seven days become seven columns. */
+@media (min-width: 1024px) {
   .plan-week-grid {
-    display: flex;
-    flex-direction: column;
-    gap: var(--space-3);
-  }
-  .plan-week-day {
-    min-height: 0;
-    flex-direction: row;
-    align-items: flex-start;
+    display: grid;
+    grid-template-columns: repeat(7, minmax(0, 1fr));
     gap: var(--space-4);
   }
+  .plan-week-day {
+    min-height: 128px;
+    flex-direction: column;
+    align-items: stretch;
+    gap: var(--space-3);
+  }
   .plan-week-day:not(.has-items):not(.has-ghosts):not(.is-today) {
-    display: none;
+    display: flex;
   }
   .plan-week-date {
-    flex: none;
-    width: 2.6rem;
-    flex-direction: column;
-    align-items: center;
-    gap: 0;
-    padding-top: var(--space-1);
+    width: auto;
+    flex-direction: row;
+    align-items: baseline;
+    gap: var(--space-3);
+    padding-top: 0;
   }
   .plan-week-items {
-    flex: 1;
+    flex: 0 1 auto;
   }
 }
 
@@ -5082,8 +5481,15 @@ a.note {
   right: var(--space-5);
   z-index: 2;
 }
+/* The minimized coach window's pill. It shares `.coach-pill` with the mobile
+   pill, which sits above the BOTTOM NAV — `bottom: calc(var(--nav-height) +
+   … + env(safe-area-inset-bottom))`. There is no bottom nav at lg (it is
+   `display: none` from 1024), so that inherited 58px+ reservation floated
+   this pill in empty space over the page's own foot. It gets the same gutter
+   the coach window it replaces sits in. */
 .coach-pill--desktop {
   position: fixed;
+  bottom: var(--space-7);
 }
 
 /* Studio modal */
@@ -5117,7 +5523,8 @@ a.note {
   grid-template-columns: 1fr;
   gap: var(--space-6);
 }
-@media (min-width: 760px) {
+/* Two charts side by side only from md — same reason as `.aerobic-pair`. */
+@media (min-width: 900px) {
   .studio-modal-charts {
     grid-template-columns: 1fr 1fr;
   }
@@ -5179,30 +5586,28 @@ a.note {
   align-items: center;
 }
 
-/* Mobile compaction ("no unnecessary wrapping"): prose shrinks, numbers
-   stay, the brief chips and week header each hold one row. */
-.brief-narrow,
-.pw-narrow {
+/* Mobile compaction ("no unnecessary wrapping"): prose shrinks, numbers stay,
+   the brief chips and week header each hold one row. Phone-first, so the
+   long-form copy switches ON at sm rather than off below 639 (System 3 §A).
+   The old pair was `max-width: 639` against a `min-width: 640` sibling, which
+   is what left EXACTLY 640px showing long-form prose inside a column that was
+   still in its phone layout. */
+.brief-wide,
+.pw-wide {
   display: none;
 }
-@media (max-width: 639px) {
+.brief-narrow,
+.pw-narrow {
+  display: inline;
+}
+@media (min-width: 640px) {
   .brief-wide,
   .pw-wide {
-    display: none;
+    display: inline;
   }
   .brief-narrow,
   .pw-narrow {
-    display: inline;
-  }
-  .plan-brief-chip {
-    font-size: var(--text-2xs);
-    padding: var(--space-2) var(--space-4);
-  }
-  .plan-brief-chips {
-    gap: var(--space-2);
-  }
-  .plan-week-head {
-    gap: var(--space-4);
+    display: none;
   }
 }
 
@@ -5237,11 +5642,23 @@ a.note {
     flex: 1 1 18rem;
   }
 }
+/* Phone-first: the compact chip, growing a step at sm. (Was a `max-width: 639`
+   block. Its companion `.plan-brief-chips { gap: var(--space-2) }` is NOT
+   carried over — that 4px row gap contradicted the container's own
+   `--tap-clear: var(--space-5)` two screens away in this sheet, so each chip's
+   hit pad reached 8px into the chip on the line above. The clearance wins.) */
 .plan-brief-chip {
   font: inherit;
-  font-size: var(--text-xs);
+  font-size: var(--text-2xs);
+  padding: var(--space-2) var(--space-4);
   cursor: pointer;
   text-align: left;
+}
+@media (min-width: 640px) {
+  .plan-brief-chip {
+    font-size: var(--text-xs);
+    padding: var(--space-2) var(--space-5);
+  }
 }
 .plan-brief-chip:hover {
   border-color: var(--border-strong);
@@ -5253,12 +5670,6 @@ a.note {
   margin: 0;
   font-size: var(--text-sm);
 }
-@media (max-width: 639px) {
-  .plan-brief-chip {
-    font-size: var(--text-2xs);
-  }
-}
-
 /* Cloud-direct COROS: the app-open pull's visible state. */
 .coros-checking {
   animation: coros-pulse 1.4s ease-in-out infinite;
@@ -5415,17 +5826,22 @@ a.note {
 
    A block-flow container has no `gap` to set; what it names is the room its own
    padding and its children's margins already leave (`.card`, `.race-strip-h`,
-   `.week-ribbon`, `.timeline-bar`). The value inherits, so a tight flex row
+   `.week-ribbon`). The value inherits, so a tight flex row
    nested inside one must name its own — which is why the 6px rows below are
    listed even though nothing in them currently reaches that far. */
 .card,
-.hud-corner,
 .coach-input,
 .coach-window,
 .row,
 .row-between,
-.timeline-bar,
 .week-ribbon { --tap-clear: var(--space-4); }
+/* 12px, not 8 (and `.hud-corner`'s own `gap` steps with it, in both the base
+   and the stage block): with 8 the rail's 24.8px-tall buttons reached only
+   40.8px — under the 44px floor, and `LOG` measured 41px on a phone. A pad is
+   clamped to what its container grants, so the container has to grant enough.
+   12px buys each button the 9.6px it needs and still leaves 2.4px between a
+   pad and the neighbouring nudge's visible box. */
+.hud-corner { --tap-clear: var(--space-5); }
 .act-actions,
 .act-status-slot,
 .wildlife-row,
@@ -5437,14 +5853,14 @@ a.note {
 .race-strip-h,
 .hud-dock { --tap-clear: var(--space-5); }
 .switch-row { --tap-clear: var(--space-6); }
-/* The rail's own gap is 24px WIDE, but the nudge column sits 8px above it, so
+/* The rail's own gap is 24px WIDE, but the nudge column sits 12px above it, so
    the two axes are not the same number. Left as one value, the 24.8px-tall
-   rail buttons' pads reached 1.6px into the "Yoga grows…" nudge's visible box.
+   rail buttons' pads reached into the "Yoga grows…" nudge's visible box.
    Same shape one level down: the drawer's close button is 42px wide with the
    garden HUD showing beside it, so it may not grow sideways at all. */
 .hud-rail {
   --tap-clear: var(--space-7);
-  --tap-clear-y: var(--space-4);
+  --tap-clear-y: var(--space-5);
 }
 .drawer-head {
   --tap-clear: var(--space-4);

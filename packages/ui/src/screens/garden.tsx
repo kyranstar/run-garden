@@ -25,8 +25,8 @@ import {
   SPECIES_BY_ID,
 } from "@rg/garden-engine";
 import { GardenScene, type SceneImpulse } from "@rg/garden-renderer";
-import { IconClock, IconClose } from "../icons.js";
-import { Banner, Card, CATEGORY_LABELS, EmptyState, formatDayShort, formatTime, localTodayGuess, relativeDay, Sheet, Spinner, useIsDesktop, useSpaceAbove } from "../components.js";
+import { IconClose } from "../icons.js";
+import { Banner, CATEGORY_LABELS, EmptyState, formatDayShort, formatTime, localTodayGuess, relativeDay, Sheet, Spinner, useIsDesktop, useSpaceAbove } from "../components.js";
 import { Drawer } from "../drawer.js";
 import { cap, eventSentence, selectArrival, type ArrivalEvent } from "./arrival.js";
 import { CeremonyCard } from "./arrival-block.js";
@@ -67,6 +67,24 @@ function usePrefersReducedMotion(): boolean {
       typeof window !== "undefined" && window.matchMedia("(prefers-reduced-motion: reduce)").matches,
     [],
   );
+}
+
+/**
+ * The viewport's height, LIVE. Only the lg stage reads it (that stage is
+ * `100dvh` minus whatever sits above it, so the window's height is what its
+ * one heuristic is really about) — and it reads it on every render rather than
+ * from a value frozen at mount, which is the bug class this file keeps
+ * meeting: a measurement taken during first paint that then never updates.
+ */
+function useViewportHeight(): number {
+  const [h, setH] = useState(() => (typeof window === "undefined" ? 0 : window.innerHeight));
+  useEffect(() => {
+    const onResize = () => setH(window.innerHeight);
+    onResize();
+    window.addEventListener("resize", onResize);
+    return () => window.removeEventListener("resize", onResize);
+  }, []);
+  return h;
 }
 
 /** A timeline day worth a tick mark — derived from snapshot deltas. */
@@ -202,9 +220,18 @@ function weakestDiscipline(balance: DisciplineBalance): DisciplineKey {
 /**
  * Three mini-bars for run/lift/yoga health. Each track carries a notch at the
  * point where neglect starts visibly damaging the garden; a fill that has
- * shrunk past its notch turns amber. Every bar is a button opening its detail
- * panel (countdowns + what that discipline feeds). `variant="hud"` renders
- * the on-scene treatment for the desktop stage.
+ * shrunk past its notch turns amber — at EVERY width (audit#4 D5: the base
+ * layer and the stage block used to disagree about whether a fill's colour
+ * meant "which discipline" or "this one is in the damage zone", purely by
+ * source order, so the same three classes encoded two different things
+ * depending on the viewport).
+ *
+ * There is no `variant` prop. The on-scene treatment is a property of WHERE
+ * this renders, not of what it is: the stage's positioning box
+ * (`.hud-topright`) is what selects it, and that box only exists as a
+ * positioned thing from lg. The prop it replaces was passed unconditionally
+ * and every rule it enabled lived inside `@media (min-width: 1024px)`, so
+ * below lg it was inert — a dead prop that read like a mobile/desktop switch.
  */
 export function BalanceStrip({
   balance,
@@ -212,7 +239,6 @@ export function BalanceStrip({
   runSheltered,
   runTrueRecencyDays,
   quiet,
-  variant,
   activeKey,
   onToggle,
 }: {
@@ -235,12 +261,11 @@ export function BalanceStrip({
   runTrueRecencyDays?: number | null;
   /** A forecast line is already speaking for the garden — stay visual only. */
   quiet?: boolean;
-  variant?: "hud";
   activeKey?: DisciplineKey | null;
   onToggle?: (key: DisciplineKey) => void;
 }) {
   return (
-    <div className={`balance-strip${variant === "hud" ? " balance-strip-hud" : ""}`}>
+    <div className="balance-strip">
       <div className="balance-bars">
         {BALANCE_BARS.map(({ key, label }) => {
           const { days, health } = balance[key];
@@ -286,7 +311,10 @@ export function BalanceStrip({
                 />
                 <span className="balance-notch" style={{ left: `${notch * 100}%` }} />
               </div>
-              <div className="balance-bar-caption faint" aria-hidden="true">
+              {/* Not `.faint`: --ink-faint measured 3.07:1 on the page
+                  background at 11.2px/400, under AA. The caption owns its own
+                  colour token now (audit#4 D9). */}
+              <div className="balance-bar-caption" aria-hidden="true">
                 {caption}
               </div>
             </button>
@@ -329,7 +357,6 @@ function BalanceDetail({
   todayDate,
   onOpenSpecies,
   onClose,
-  variant,
 }: {
   k: DisciplineKey;
   balance: DisciplineBalance;
@@ -338,7 +365,6 @@ function BalanceDetail({
   todayDate: string;
   onOpenSpecies: (speciesId: string) => void;
   onClose: () => void;
-  variant?: "hud";
 }) {
   const units = useUnits();
   const label = BALANCE_BARS.find((b) => b.key === k)!.label;
@@ -378,11 +404,7 @@ function BalanceDetail({
   const wkDone = [wk.run, wk.strength, wk.yoga].filter(Boolean).length;
 
   return (
-    <div
-      className={`balance-detail${variant === "hud" ? " balance-detail-hud" : ""}`}
-      role="region"
-      aria-label={`${label} details`}
-    >
+    <div className="balance-detail" role="region" aria-label={`${label} details`}>
       <div className="balance-detail-head">
         <strong>{label}</strong>
         <span className="balance-detail-status">{healthDescriptor(health)}</span>
@@ -443,20 +465,7 @@ function weekdayFull(date: string): string {
 
 const RUN_CATEGORIES = new Set(["easy", "long", "quality", "recovery", "race", "unknown"]);
 
-/**
- * The garden's one-sentence forecast — the countdown, spoken as weather.
- * Exactly one loss-flavored line at a time; rest mode and plan gaps silence
- * it; a taper (no run due before the threshold) flips it to reassurance.
- */
-function ForecastLine({
-  snapshot,
-  todayDate,
-  daysAhead,
-  nextWorkout,
-  balance,
-  adventure,
-  className,
-}: {
+interface ForecastInput {
   snapshot: GardenSnapshot;
   todayDate: string;
   daysAhead: number;
@@ -465,8 +474,33 @@ function ForecastLine({
   balance?: DisciplineBalance;
   /** The adventure shield — frozen today or still in its grace window. Outranks every loss line. */
   adventure?: { frozenToday: boolean; graceDay: boolean; lastSport: string | null; lastDate: string | null };
-  className?: string;
-}) {
+}
+
+/**
+ * The garden's one-sentence forecast — the countdown, spoken as weather —
+ * and, the part a second reader needs, what KIND of thing it is saying.
+ * `loss` is a line about the garden paying for something; `calm` is
+ * reassurance (an adventure shield, recovery rain, a taper); `null` is
+ * silence (a plan gap has nothing to count down to). Exactly one
+ * loss-flavored line at a time.
+ *
+ * This exists because two call sites need the same answer and one of them
+ * used to restate the branch conditions rather than ask (audit#4 D9): a
+ * `lossVoiced` boolean in `GardenScreen` re-derived "is the forecast speaking
+ * a loss?" from `gardenForecast` directly, drifted out of agreement with the
+ * component (it claimed a voice in the `!nextWorkout` branch, where this
+ * renders NOTHING), and then went dead entirely when `quiet` was hardcoded —
+ * dead in a way `tsc` cannot see, because a `const` that is never read is not
+ * an error. One function, two readers, no restatement.
+ */
+export function forecastVoice({
+  snapshot,
+  todayDate,
+  daysAhead,
+  nextWorkout,
+  balance,
+  adventure,
+}: ForecastInput): { kind: "loss" | "calm"; line: ReactNode } | null {
   const f = gardenForecast(snapshot, daysAhead);
   // Active soil/life decay outranks a merely-pending dry spell: when the rain
   // is basically fine but the soil is already thinning, the header should say
@@ -480,6 +514,10 @@ function ForecastLine({
       ? balance.yoga.days - BALANCE_TUNING.yoga.damageStartDay
       : -1;
   let line: ReactNode = null;
+  // Reassurance until a branch says otherwise: the three shield/recovery
+  // branches and the taper are the garden saying it is FINE, and a strip of
+  // bars underneath is then the only thing that can voice a loss.
+  let kind: "loss" | "calm" = "calm";
   if (adventure?.frozenToday) {
     const noun = adventure.lastSport ? sportLabel(adventure.lastSport).toLowerCase() : "adventure";
     line = (
@@ -499,6 +537,7 @@ function ForecastLine({
   } else if (f.recovering) {
     line = <>Recovery rain — the garden is drinking it in.</>;
   } else if (f.next?.stage === "dry" && (soilOver > 0 || lifeOver > 0)) {
+    kind = "loss";
     line =
       soilOver >= lifeOver ? (
         <>
@@ -518,6 +557,7 @@ function ForecastLine({
     if (!runComing && nextWorkout.category === "rest") {
       line = <>Taper week — the garden holds its water.</>;
     } else if (f.next.stage === "dry") {
+      kind = "loss";
       line = (
         <>
           Rain needed by <strong>{weekdayFull(threshold)}</strong> — after that the soil starts
@@ -525,6 +565,7 @@ function ForecastLine({
         </>
       );
     } else if (f.next.stage === "drought") {
+      kind = "loss";
       line = (
         <>
           <strong>{f.next.inDays === 1 ? "Drought tomorrow" : `Drought in ${f.next.inDays} days`}</strong>{" "}
@@ -532,6 +573,7 @@ function ForecastLine({
         </>
       );
     } else {
+      kind = "loss";
       const name = f.victim ? SPECIES_BY_ID.get(f.victim.speciesId)?.name : null;
       line = name ? (
         <>
@@ -543,10 +585,11 @@ function ForecastLine({
       );
     }
   } else if (f.victim) {
+    kind = "loss";
     line = <>Deep drought — your next run begins the recovery.</>;
   }
   if (!line) return null;
-  return <p className={`forecast-line${className ? ` ${className}` : ""}`}>{line}</p>;
+  return { kind, line };
 }
 
 /** Monday of the ISO week containing `date`. */
@@ -692,6 +735,32 @@ export function dockCoversStage(stageHeightPx: number): boolean {
 }
 
 /**
+ * Whether the dock starts open, with no stored preference. (audit#4 D2.)
+ *
+ * The heuristic above asks "would this OVERLAY cover the stage?", and that is
+ * only a question at lg, where the panel is absolutely positioned over the
+ * artwork the top-left HUD is printed on. Below lg the dock is an in-flow
+ * accordion in the reading column: it covers nothing, it pushes, and there is
+ * nothing to protect. Asking the overlay question there produced two
+ * structurally different home screens on two adjacent phones — an iPhone 15
+ * (844px tall) opened collapsed and an iPhone 15 Pro Max (932px) opened with a
+ * 622px panel expanded, because `dockCoversStage` flips at 931px.
+ *
+ * So below lg the answer is a constant: OPEN. The next workout is why the app
+ * gets opened, the pill alone is a teaser, and it is what the phone showed
+ * before the two trees became one.
+ *
+ * Pure, and takes the tier as an argument rather than reading the viewport, so
+ * the caller supplies a LIVE tier (a matchMedia on the same 1024px the
+ * stylesheet uses) instead of a first-paint `innerHeight` guess that then
+ * freezes.
+ */
+export function defaultDockOpen(isDesktop: boolean, stageHeightPx: number): boolean {
+  if (!isDesktop) return true;
+  return !dockCoversStage(stageHeightPx);
+}
+
+/**
  * The dock's verdict phrases. Copy lives client-side (the house split — the
  * server sends `level` + evidence, never prose, the same way `deriveHeadline`
  * sends a state and brief-copy names it). Each phrase says the thing on its
@@ -776,6 +845,24 @@ export function DockVerdict({
  * defect wearing a different element. The panel head carries the evidence
  * only (see DockVerdict), so the phrase renders in exactly one place at a
  * time and that place never moves.
+ *
+ * What it DOES hand over while expanded is the workout IDENTITY (audit#4).
+ * The panel directly beside this row already names the workout in full ("NEXT
+ * WORKOUT / Quality / Hill Strides · 6 × 20s / Today at 9 AM"), so carrying
+ * it here too printed the same sentence twice, adjacent — obvious once the
+ * two stopped being an overlay and a card on different screens and became two
+ * rows of one column. Only the second half is dropped, and only when there is
+ * a verdict to be the row's remaining content, so the phrase this row exists
+ * to hold still is untouched in either state.
+ *
+ * The accessible name is written explicitly rather than left to the concatenated
+ * text, for two reasons. It was WRONG: the "·" between the two spans is a CSS
+ * `::before` that only exists at lg, and at lg the pill is `display: block`, so
+ * the name computed to "Take it easyLong Run · Today 8 AM" — no separator, no
+ * space, two words run together — while the same pill on a phone (a flex row,
+ * whose items each get a space) read correctly. And it is now the one place the
+ * whole sentence survives collapsing, so a screen-reader user hears the same
+ * name whether the panel is open or shut.
  */
 export function DockPill({
   verdict,
@@ -783,6 +870,7 @@ export function DockPill({
   today,
   onOpen,
   expanded = false,
+  disclosable = true,
 }: {
   verdict: ReadinessVerdict | null | undefined;
   workout: WorkoutDto | null | undefined;
@@ -790,33 +878,180 @@ export function DockPill({
   onOpen: () => void;
   /** True while the panel above is open — this row then collapses it. */
   expanded?: boolean;
+  /** False when there is no panel behind this row (no plan — audit#4 D1).
+   *  It then renders as the status line it actually is, not as a button that
+   *  looks pressable and does nothing. */
+  disclosable?: boolean;
 }) {
   const workoutLabel = !workout
     ? "No active training plan"
     : workout.category === "rest"
       ? `Rest day · ${relativeDay(workout.effectiveDate, today)}`
       : `${workout.title} · ${relativeDay(workout.effectiveDate, today)} ${formatTime(workout.effectiveTime)}`;
+  const workoutText =
+    verdict || !workout || workout.category === "rest" ? workoutLabel : `Next: ${workoutLabel}`;
+  const phrase = verdict ? VERDICT_PHRASE[verdict.level] : null;
+  const body = (
+    <>
+      {phrase ? (
+        <span className="dock-pill-verdict">
+          <span className="dock-verdict-dot" aria-hidden="true" />
+          {phrase}
+        </span>
+      ) : null}
+      {/* The panel beside it is already saying this — see above. */}
+      {expanded && phrase ? null : <span className="dock-pill-workout">{workoutText}</span>}
+    </>
+  );
+  const className = `dock-pill${verdict ? ` dock-verdict-${verdict.level}` : ""}`;
+  const label = phrase ? `${phrase} · ${workoutText}` : workoutText;
+  if (!disclosable) {
+    return (
+      <p className={`${className} dock-pill-static`} aria-label={label}>
+        {body}
+      </p>
+    );
+  }
   return (
     <button
       type="button"
-      className={`dock-pill${verdict ? ` dock-verdict-${verdict.level}` : ""}`}
+      className={className}
       aria-expanded={expanded}
-      // The panel it discloses sits ABOVE it in the DOM (the dock is
-      // bottom-anchored), so name it explicitly rather than leaving assistive
-      // tech to infer a following-sibling relationship that isn't there.
+      // The panel it discloses is its next sibling in the DOM, but on the
+      // stage it is positioned ABOVE this row, so name it explicitly rather
+      // than leaving assistive tech to infer a relationship from position.
       aria-controls="dock-panel"
+      aria-label={label}
       onClick={onOpen}
     >
-      {verdict ? (
-        <span className="dock-pill-verdict">
-          <span className="dock-verdict-dot" aria-hidden="true" />
-          {VERDICT_PHRASE[verdict.level]}
-        </span>
-      ) : null}
-      <span className="dock-pill-workout">
-        {verdict || !workout || workout.category === "rest" ? workoutLabel : `Next: ${workoutLabel}`}
-      </span>
+      {body}
     </button>
+  );
+}
+
+/**
+ * Every piece of information the garden shows, named once, in the order the
+ * garden's hierarchy reads them: scene → the condition word and forecast →
+ * what changed → the readiness verdict and the workout behind it → the
+ * discipline bars → what each discipline is growing, and the panels.
+ *
+ * The point of naming them is that there is exactly ONE place each is placed
+ * (`GardenBody`). Before this, the screen returned two independent trees —
+ * a desktop stage and a mobile stack — and three things had been built into
+ * only the first: the readiness verdict, the coach's weekly line, and the
+ * attention link. They were not desktop treatments of shared features, they
+ * were features a phone could not reach. A `Record` of named slots makes that
+ * mistake unrepresentable: adding a part means adding a key, and a key with
+ * nowhere to go does not render at all (`responsive.test.tsx` renders
+ * `GardenBody` with a marker in every slot and asserts all of them land).
+ */
+export interface GardenParts {
+  /** The picture. A bordered card below lg, the full-viewport stage from lg. */
+  scene: ReactNode;
+  /** The condition word (serif, dominant), the weather, and the forecast. */
+  condition: ReactNode;
+  /** What changed since you last looked, and what happened today. */
+  beat: ReactNode;
+  /** An unlock celebrating itself. */
+  ceremony: ReactNode;
+  /** Readiness verdict → the workout it is about → what needs attention. */
+  dock: ReactNode;
+  /** The three discipline bars, and the detail behind whichever is open. */
+  balance: ReactNode;
+  /** What each discipline is growing next. */
+  nudges: ReactNode;
+  /** Collection · Log · Timeline. */
+  rail: ReactNode;
+  /** The history scrubber, when it is open. */
+  timeline: ReactNode;
+  /** Below the garden: the story, how it works, and the plumbing. */
+  below: ReactNode;
+  /** Drawers and sheets — dialogs, so their position is their own. */
+  overlays: ReactNode;
+}
+
+/** The keys of `GardenParts`, in STACK order — which is DOM order, which is
+ *  reading and tab order below lg. Exported so a test can enumerate the
+ *  contract rather than restate it. */
+export const GARDEN_PART_KEYS = [
+  "scene",
+  "condition",
+  "beat",
+  "ceremony",
+  "dock",
+  "balance",
+  "nudges",
+  "rail",
+  "timeline",
+  "below",
+  "overlays",
+] as const satisfies ReadonlyArray<keyof GardenParts>;
+
+/**
+ * The garden, at every width. Below lg `.garden-stage` is simply the column
+ * these parts stack in; from lg the same nodes are positioned onto the
+ * artwork (top-left voice, top-right instruments, bottom-left dock,
+ * bottom-right utilities) and take the scene's type treatment.
+ *
+ * DOM ORDER IS THE STACK ORDER, and that is the whole rule (audit#4 D3/D4).
+ * This sheet is mobile-first, so the order these appear in below is the order
+ * they are read and tabbed in below lg, with no `order` declaration anywhere
+ * in the base layer to make the two disagree. The previous cut claimed
+ * "reading order and tab order agree with the visual one" and it was true on
+ * the stage and false in the stack: `.hud-dock`'s children were written
+ * panel → pill → attention for the stage's bottom-anchored geometry and then
+ * flipped back visually with `order` below lg, so tab reached the panel's
+ * contents at y=1082 and then jumped 576px BACK UP to the pill.
+ *
+ * At lg the parts are absolutely positioned onto the artwork, so their boxes
+ * no longer have a single "before/after" to agree with — they are corners of
+ * a picture. Reading order there is the hierarchy: voice, then dock, then the
+ * instruments and utilities that qualify them.
+ *
+ * `stageRef` is `useSpaceAbove`'s callback ref: from lg the stage is sized
+ * against the space it actually has rather than against the window (System 1
+ * §4). Below lg it publishes a custom property nothing reads, which costs one
+ * property write.
+ */
+export function GardenBody({
+  parts,
+  stageRef,
+}: {
+  parts: GardenParts;
+  stageRef?: (el: HTMLElement | null) => void;
+}) {
+  return (
+    <div className="garden-home">
+      {/* The stage's largest type is the condition word, not this — on the
+          artwork the scene IS the page, so the <h1> is hidden at both widths
+          and the labelling stays consistent. */}
+      <h1 className="visually-hidden">Garden</h1>
+      <div className="garden-stage" ref={stageRef}>
+        {parts.scene}
+        <div className="stage-scrim stage-scrim-top" aria-hidden="true" />
+        <div className="stage-scrim stage-scrim-bottom" aria-hidden="true" />
+        <div className="hud-topleft">
+          {parts.condition}
+          {parts.beat}
+        </div>
+        {/* The celebration gets its own moment — centred in the empty sky on
+            the stage, in the reading column below it. */}
+        {parts.ceremony ? <div className="hud-ceremony">{parts.ceremony}</div> : null}
+        {/* Before the bars, in the stack and in the DOM: the workout you are
+            about to do outranks the balance ledger, and opening a bar's detail
+            must not shove the readiness verdict down the page (it moved it
+            +184px when the bars came first). */}
+        <div className="hud-dock">{parts.dock}</div>
+        {parts.balance ? <div className="hud-topright">{parts.balance}</div> : null}
+        <div className="hud-corner">
+          {parts.nudges}
+          {parts.rail}
+        </div>
+        {parts.timeline ? <div className="stage-timeline">{parts.timeline}</div> : null}
+      </div>
+      {parts.below}
+      {parts.overlays}
+    </div>
   );
 }
 
@@ -841,14 +1076,19 @@ export function GardenScreen() {
   const [dayIndexOverride, setDayIndexOverride] = useState<number | null>(null);
   const [openDrawer, setOpenDrawer] = useState<"collection" | "log" | null>(null);
   const [openBalanceKey, setOpenBalanceKey] = useState<DisciplineKey | null>(null);
-  const [dockOpen, setDockOpenState] = useState(() => {
-    if (typeof window === "undefined") return true;
+  // The dock's state is a CHOICE, held as null until one is made, rather than
+  // a boolean seeded from a first-paint measurement (audit#4 D2). The seeded
+  // form froze `window.innerHeight` at mount and applied the lg overlay
+  // heuristic at every width; this one asks `defaultDockOpen` on every render
+  // with a LIVE tier, so a rotation or a resize across 1024 gets the right
+  // answer and a phone gets a constant one.
+  const [dockChoice, setDockChoice] = useState<boolean | null>(() => {
+    if (typeof window === "undefined") return null;
     const stored = window.localStorage.getItem("rg-dock");
-    if (stored === "open" || stored === "collapsed") return stored === "open";
-    // No saved preference yet: on a short stage the panel would cover most
-    // of the HUD above it (C1/C23) — default to the pill there instead.
-    return !dockCoversStage(window.innerHeight);
+    return stored === "open" ? true : stored === "collapsed" ? false : null;
   });
+  const isDesktop = useIsDesktop();
+  const stageHeight = useViewportHeight();
   // The arrival block: which ceremony is showing, and whether the text
   // lines were dismissed this mount. What counts as "new" comes from the
   // server-side watermark (selectArrival) — localStorage plays no part.
@@ -857,7 +1097,6 @@ export function GardenScreen() {
   const seenPostedKeyRef = useRef<string | null>(null);
   const [replaying, setReplaying] = useState(false);
   const reducedMotion = usePrefersReducedMotion();
-  const isDesktop = useIsDesktop();
   const dayIndexRef = useRef(0);
   const maxDayIndexRef = useRef(0);
   // The sun moves while you watch: live wall-clock hour, ticked once a
@@ -886,8 +1125,9 @@ export function GardenScreen() {
   // learns that it arrived.
   const stageRef = useSpaceAbove();
 
+  const dockOpen = dockChoice ?? defaultDockOpen(isDesktop, stageHeight);
   const setDockOpen = (open: boolean) => {
-    setDockOpenState(open);
+    setDockChoice(open);
     try {
       window.localStorage.setItem("rg-dock", open ? "open" : "collapsed");
     } catch {
@@ -1098,7 +1338,18 @@ export function GardenScreen() {
     return () => window.clearInterval(id);
   }, [replaying]);
 
-  if (garden.isLoading) return <Spinner label="Loading the garden" />;
+  // BOTH queries, not just the garden's (audit#4 D8). `/api/plan/today` feeds
+  // five separate things on this screen — the forecast line, the dock panel,
+  // the pill's second half, the attention link and the week ribbon — so
+  // rendering before it lands means rendering five holes and then filling
+  // them: measured on a 390px phone with a 2.5s delay, the sentence in the
+  // pill slid 141px sideways while the rail and the whole lower page dropped
+  // 621px. This is the recurring bug class in this codebase (a value derived
+  // while its query is in flight), and its established answer here is the one
+  // the garden query already uses: hold the screen, then paint once. A
+  // background REFETCH is not `isLoading`, so a stale-while-revalidate pass
+  // still paints immediately from cache.
+  if (garden.isLoading || today.isLoading) return <Spinner label="Loading the garden" />;
   if (!garden.data) return <EmptyState title="Couldn't load the garden" />;
 
   const snapshot = garden.data.snapshot as unknown as GardenSnapshot;
@@ -1150,11 +1401,10 @@ export function GardenScreen() {
   // C26: the timeline and the expanded dock panel both float over the same
   // stage real estate and can overlap at common laptop widths — minimize the
   // dock the moment the timeline opens so they never fight for the same
-  // pixels. Transient only (setDockOpenState, not setDockOpen): it doesn't
-  // touch the persisted `rg-dock` preference, and restoring on close isn't
-  // required.
+  // pixels. Transient only (setDockChoice, not setDockOpen): it doesn't touch
+  // the persisted `rg-dock` preference, and restoring on close isn't required.
   function openTimeline() {
-    setDockOpenState(false);
+    setDockChoice(false);
     setTimelineOpen(true);
   }
 
@@ -1168,11 +1418,6 @@ export function GardenScreen() {
   const selectedPlant = displaySnapshot.plants.find((p) => p.id === selectedPlantId);
   const livingPlantsCount = displaySnapshot.plants.filter((p) => p.state !== "dead").length;
   const weather = displaySnapshot.state.weatherState;
-
-  const historyItems = events
-    .map((e) => ({ e, text: eventSentence(e) }))
-    .filter((x): x is { e: GardenEvent; text: string } => !!x.text)
-    .slice(0, 12);
 
   const codex = (garden.data.codex as CodexEntry[]) ?? [];
   const wildlife = (garden.data.wildlife as WildlifeEntry[]) ?? [];
@@ -1252,22 +1497,32 @@ export function GardenScreen() {
         freezeAll: restMode.active,
       })
     : undefined;
-  // One loss voice at a time: when the forecast line is speaking a decay
-  // stage, the balance strip stays purely visual. The adventure shield
-  // (frozen today, or still in its grace window) is reassurance, never
-  // loss — a sheltered day must never voice a loss line either.
-  const fc = gardenForecast(snapshot, daysSinceSimulated);
   const sheltered = !!(adventure?.frozenToday || adventure?.graceDay);
   // C2: the run bar's decay clock (daysSinceCompletedRun) freezes under the
   // same two conditions — it must stop claiming "N d ago" recency while
   // frozen, or the HUD contradicts the very log/cards it sits above.
   const runClockSheltered = sheltered || restMode.active;
-  const lossVoiced =
-    viewingLive &&
-    !restMode.active &&
-    !sheltered &&
-    !fc.recovering &&
-    (fc.next !== null || fc.victim !== null);
+  // One loss voice at a time — and the forecast is ASKED which voice it is
+  // using rather than having its branch conditions restated here (audit#4 D9;
+  // the restatement had drifted, then died).
+  const forecast =
+    viewingLive && !restMode.active
+      ? forecastVoice({
+          snapshot,
+          todayDate,
+          daysAhead: daysSinceSimulated,
+          nextWorkout: d?.nextWorkout,
+          balance: liveBalance,
+          adventure,
+        })
+      : null;
+  // Rest mode is not silence: `.hud-weather` prints "Rest mode — nothing
+  // declines while you're away" in the same block the forecast would occupy,
+  // and "The garden misses your runs" underneath would contradict it outright.
+  // Everywhere else the forecast is quiet or reassuring (a shield, recovery
+  // rain, a taper, or a plan gap with nothing to count down to), the bars are
+  // the only thing that can speak for a starved discipline — so they do.
+  const balanceQuiet = forecast?.kind === "loss" || restMode.active;
 
   // Timeline chapters: worth-a-tick days, derived from snapshot deltas.
   const chapters = timelineOpen && !timelineLoading ? deriveChapters(timelinePoints) : [];
@@ -1281,7 +1536,13 @@ export function GardenScreen() {
     setReplaying(true);
   };
 
+  // Safe to derive: `today.isLoading` is one of the two gates above, so `d`
+  // is resolved (or errored) before anything here renders — this is not a
+  // count read out of a query still in flight (audit#4 D8).
   const attentionCount = (d?.needsAttention.length ?? 0) + (d?.unresolved.length ?? 0);
+  // The panel only exists when there is a workout to put in it; with no plan
+  // the pill has nothing to disclose and stops being a button entirely.
+  const dockPanelOpen = dockOpen && planActive;
   // The best next thing, per axis — and what today's planned workout grows.
   const trio = nextUnlocksByDiscipline(codex);
   const grows = d?.nextWorkout ? unlockGrownBy(codex, d.nextWorkout.category) : null;
@@ -1396,6 +1657,9 @@ export function GardenScreen() {
       </ul>
     );
 
+  // The whole log. There used to be a twelve-item `historyItems` beside this
+  // for a phone-only "Garden log" card; the rail opens the same drawer at
+  // every width now, so there is one list.
   const fullLog = events
     .map((e) => ({ e, text: eventSentence(e) }))
     .filter((x): x is { e: GardenEvent; text: string } => !!x.text);
@@ -1470,245 +1734,287 @@ export function GardenScreen() {
     </>
   );
 
-  /* ── Desktop: the garden is the page — a full-viewport stage with a
-     typographic HUD. Hierarchy: scene → condition word → forecast → bars →
-     dock (the action) → rail (utilities). Text sits directly on the scene
-     with soft shadows, ambient-caption style; boxes only where lists live. */
-  if (isDesktop) {
-    return (
-      <div className="garden-home garden-home--stage">
-        <h1 className="visually-hidden">Garden</h1>
-        <div className="garden-stage" ref={stageRef}>
-          <div className="stage-scene">
-            <GardenScene
-              snapshot={displaySnapshot}
-              reducedMotion={reducedMotion}
-              selectedPlantId={selectedPlantId}
-              onSelectPlant={setSelectedPlantId}
-              timeOfDay={hourOfDay}
-              atmosphere={!timelineOpen}
-              visitor={viewingLive && visitor ? visitor.kind : null}
-              enteringPlantIds={viewingLive ? arrival.enteringPlantIds : undefined}
-              highlightPlantId={viewingLive ? highlightPlantId : null}
-              impulse={viewingLive ? impulse : null}
-              preserveAspectRatio="xMidYMax slice"
-              className="stage-scene-svg"
-            />
-          </div>
-          <div className="stage-scrim stage-scrim-top" aria-hidden="true" />
-          <div className="stage-scrim stage-scrim-bottom" aria-hidden="true" />
+  /* ── ONE tree, at every width (System 3 §D) ─────────────────────────────
+     The garden used to return two DIFFERENT React trees — a full-viewport
+     stage above 1024px and a flat card stack below it — and the difference
+     had stopped being a difference of presentation. The readiness verdict
+     (`DockVerdict`, shipped 2026-08-14), the coach's weekly line and the
+     "N workouts need attention" link existed in the stage tree ONLY, so on a
+     phone they were not styled differently, they were absent: a phone user
+     had never seen the readiness card at all.
 
-          <div className="hud-topleft">
-            <h2 className="hud-condition">{GARDEN_CONDITION_LABELS[displayCondition]}</h2>
-            <p className="hud-weather">
-              {viewingLive
-                ? cap(WEATHER_LABEL[weather])
-                : viewingFuture
-                  ? `Projected: ${WEATHER_LABEL[weather]}`
-                  : `That day: ${WEATHER_LABEL[weather]}`}{" "}
-              — {WEATHER_WHY[weather]}
-            </p>
-            {viewingLive && !restMode.active ? (
-              <ForecastLine
-                snapshot={snapshot}
-                todayDate={todayDate}
-                daysAhead={daysSinceSimulated}
-                nextWorkout={d?.nextWorkout}
-                balance={liveBalance}
-                adventure={adventure}
-                className="hud-forecast"
-              />
-            ) : null}
-            {restMode.active ? (
-              <p className="hud-weather">Rest mode — nothing declines while you're away.</p>
-            ) : null}
-            {viewingLive && beatLinesAll.length > 0 ? (
-              <p className="hud-beat">
-                <span className="hud-beat-label">Since {formatDayShort(sinceLabel)}</span>
-                <span>{beatLinesAll.join(" ")}</span>
-                {arrival.beatOverflow ? (
-                  <button
-                    type="button"
-                    className="linklike hud-beat-seeall"
-                    onClick={() => setOpenDrawer("log")}
-                  >
-                    See all →
-                  </button>
-                ) : null}
-                <button
-                  type="button"
-                  className="hud-beat-dismiss"
-                  onClick={dismissBlock}
-                  aria-label="Dismiss"
-                >
-                  <IconClose size={12} />
-                </button>
-              </p>
-            ) : null}
-            {viewingLive && todayLinesAll.length > 0 ? (
-              <p className="hud-beat">
-                <span className="hud-beat-label">Today</span>
-                <span>{todayLinesAll.join(" ")}</span>
-                {arrival.todayOverflow ? (
-                  <button
-                    type="button"
-                    className="linklike hud-beat-seeall"
-                    onClick={() => setOpenDrawer("log")}
-                  >
-                    See all →
-                  </button>
-                ) : null}
-              </p>
-            ) : null}
-          </div>
+     So there is now one tree. `parts` names every piece of information the
+     garden shows, `GardenBody` places all of them, and CSS decides whether
+     that placement is a stack in the reading column or furniture positioned
+     on the artwork. A new part cannot land on one viewport only, because
+     there is only one place to put it. */
+  const parts: GardenParts = {
+    scene: (
+      <div className={`garden-scene${sceneFull ? " garden-scene-fullscreen" : ""}`}>
+        {/* display:contents normally; in portrait fullscreen it becomes the
+            rotated box that lays the wide scene sideways across the tall
+            screen — the composition is a panorama, and portrait-cropping it
+            hid most of the garden. */}
+        <div className="scene-rotor">
+          <GardenScene
+            snapshot={displaySnapshot}
+            reducedMotion={reducedMotion}
+            selectedPlantId={selectedPlantId}
+            onSelectPlant={setSelectedPlantId}
+            timeOfDay={hourOfDay}
+            atmosphere={!timelineOpen}
+            visitor={viewingLive && visitor ? visitor.kind : null}
+            enteringPlantIds={viewingLive ? arrival.enteringPlantIds : undefined}
+            highlightPlantId={viewingLive ? highlightPlantId : null}
+            impulse={viewingLive ? impulse : null}
+            // `slice` is a no-op in the card form (the box takes the svg's own
+            // aspect ratio, so there is nothing to crop) and is what fills the
+            // stage — and the phone's fullscreen — without letterboxing.
+            preserveAspectRatio="xMidYMax slice"
+            className="stage-scene-svg"
+          />
+        </div>
+        <button
+          type="button"
+          className="scene-full-toggle"
+          aria-label={sceneFull ? "Exit fullscreen garden" : "View garden fullscreen"}
+          onClick={() => setSceneFull((f) => !f)}
+        >
+          {sceneFull ? <IconClose size={16} /> : "⤢"}
+        </button>
+      </div>
+    ),
 
-          {/* The celebration gets its own stage moment — centered in the empty
-              sky, never crowding the condition header or the bars. */}
-          {currentCeremony ? (
-            <div className="hud-ceremony">
-              <CeremonyCard
-                ceremony={currentCeremony}
-                codexEntry={codex.find((c) => c.speciesId === currentCeremony.speciesId)}
-                queueLeft={arrival.ceremonies.length - ceremonyIndex - 1}
-                snapshot={snapshot}
-                onSeePlant={seePlantFromCeremony}
-                onDismiss={dismissCeremony}
-                variant="hud"
-              />
-            </div>
-          ) : null}
+    condition: (
+      <>
+        <h2 className="hud-condition">{GARDEN_CONDITION_LABELS[displayCondition]}</h2>
+        <p className="hud-weather">
+          {viewingLive
+            ? cap(WEATHER_LABEL[weather])
+            : viewingFuture
+              ? `Projected: ${WEATHER_LABEL[weather]}`
+              : `That day: ${WEATHER_LABEL[weather]}`}{" "}
+          — {WEATHER_WHY[weather]}
+        </p>
+        {forecast ? <p className="forecast-line hud-forecast">{forecast.line}</p> : null}
+        {restMode.active ? (
+          <p className="hud-weather">Rest mode — nothing declines while you're away.</p>
+        ) : null}
+      </>
+    ),
 
-          {liveBalance && viewingLive ? (
-            <div className="hud-topright">
-              <BalanceStrip
-                balance={liveBalance}
-                // audit#2: only claim "plan paused" when the sim's clock IS
-                // paused — a no-plan day the sim still decays through must
-                // not be captioned as a pause it isn't getting.
-                runPaused={!planActive && runDecayPaused}
-                runSheltered={runClockSheltered}
-                runTrueRecencyDays={runTrueRecencyDays}
-                quiet
-                variant="hud"
-                activeKey={openBalanceKey}
-                onToggle={toggleBalanceKey}
-              />
-              {openBalanceKey ? (
-                <BalanceDetail
-                  k={openBalanceKey}
-                  balance={liveBalance}
-                  snapshot={snapshot}
-                  trio={trio}
-                  todayDate={todayDate}
-                  onOpenSpecies={setOpenSpeciesId}
-                  onClose={() => setOpenBalanceKey(null)}
-                  variant="hud"
-                />
-              ) : null}
-            </div>
-          ) : null}
-
-          {/* The dock grows AWAY from the row you pressed: the panel stacks
-              above a pill that never moves, overlaying the scene rather than
-              reflowing anything (System 1 §5). */}
-          <div className="hud-dock">
-            {dockOpen && d?.nextWorkout ? (
-              <div className="dock-panel scroller" id="dock-panel">
-                {/* Readiness leads; the workout is named second. With no
-                    verdict this renders nothing and the panel opens on the
-                    workout, exactly as it always did. */}
-                <DockVerdict verdict={d.readiness.verdict} focus={d.focus} />
-                <NextWorkout w={d.nextWorkout} today={d.today} />
-                {grows?.progress ? (
-                  <button
-                    type="button"
-                    className="linklike dock-grows"
-                    onClick={() => setOpenSpeciesId(grows.speciesId)}
-                  >
-                    This workout grows the {grows.name}
-                    {Math.max(0, grows.progress.target - grows.progress.current) === 1
-                      ? " — the last one needed"
-                      : grows.progress.target >= 1000
-                        ? ` · ${progressText(grows.progress, units)}`
-                        : ` · ${Math.max(0, grows.progress.target - grows.progress.current)} more to go`}
-                  </button>
-                ) : null}
-                <div className="dock-week">
-                  <WeekRibbon todayDate={todayDate} codex={codex} onOpenSpecies={setOpenSpeciesId} />
-                </div>
-                <button type="button" className="linklike dock-collapse" onClick={() => setDockOpen(false)}>
-                  Minimize
-                </button>
-              </div>
-            ) : null}
-            <DockPill
-              verdict={d?.readiness.verdict}
-              workout={d?.nextWorkout}
-              today={d?.today ?? todayDate}
-              expanded={dockOpen && !!d?.nextWorkout}
-              onOpen={() => setDockOpen(!(dockOpen && !!d?.nextWorkout))}
-            />
-            {attentionCount > 0 ? (
-              <a className="dock-attention" href="#garden-attention">
-                {attentionCount === 1 ? "1 workout needs attention" : `${attentionCount} workouts need attention`} ↓
-              </a>
-            ) : null}
-          </div>
-
-          <div className="hud-corner">
-            {(["run", "strength", "yoga"] as const).map((dk) => {
-              const c = trio[dk];
-              if (!c?.progress) return null;
-              const remaining =
-                c.progress.target >= 1000
-                  ? progressText(c.progress, units)
-                  : `${Math.max(0, c.progress.target - c.progress.current)} to go`;
-              return (
-                <button
-                  type="button"
-                  key={dk}
-                  className="hud-nudge"
-                  onClick={() => setOpenSpeciesId(c.speciesId)}
-                >
-                  {NUDGE_DISCIPLINE_LABEL[dk]} grows {c.name} · {remaining}
-                </button>
-              );
-            })}
-            <nav className="hud-rail" aria-label="Garden panels">
-              <button type="button" onClick={() => setOpenDrawer("collection")}>
-                Collection · {unlockedCount}/{codex.length}
-              </button>
-              <button type="button" onClick={() => setOpenDrawer("log")}>
-                Log
-              </button>
+    beat: (
+      <>
+        {viewingLive && beatLinesAll.length > 0 ? (
+          <p className="hud-beat">
+            <span className="hud-beat-label">Since {formatDayShort(sinceLabel)}</span>
+            <span>{beatLinesAll.join(" ")}</span>
+            {arrival.beatOverflow ? (
               <button
                 type="button"
-                onClick={() => (timelineOpen ? closeTimeline() : openTimeline())}
+                className="linklike hud-beat-seeall"
+                onClick={() => setOpenDrawer("log")}
               >
-                Timeline
+                See all →
               </button>
-            </nav>
-          </div>
-
-          {timelineOpen ? <div className="stage-timeline">{timelinePanel}</div> : null}
-        </div>
-
-        <div className="garden-below" id="garden-attention">
-          <p className="muted garden-below-intro">
-            {conditionStory(
-              displayCondition,
-              displaySnapshot,
-              livingPlantsCount,
-              viewingLive ? species.length : displaySnapshot.unlockedSpeciesIds.length,
-            )}{" "}
-            <button type="button" className="linklike" onClick={() => setShowWeather((v) => !v)}>
-              {showWeather ? "Hide" : "How the garden works"}
+            ) : null}
+            <button
+              type="button"
+              className="hud-beat-dismiss"
+              onClick={dismissBlock}
+              aria-label="Dismiss"
+            >
+              <IconClose size={12} />
             </button>
           </p>
-          {howItWorks}
-          {plumbing}
-        </div>
+        ) : null}
+        {viewingLive && todayLinesAll.length > 0 ? (
+          <p className="hud-beat">
+            <span className="hud-beat-label">Today</span>
+            <span>{todayLinesAll.join(" ")}</span>
+            {arrival.todayOverflow ? (
+              <button
+                type="button"
+                className="linklike hud-beat-seeall"
+                onClick={() => setOpenDrawer("log")}
+              >
+                See all →
+              </button>
+            ) : null}
+          </p>
+        ) : null}
+      </>
+    ),
 
+    ceremony: currentCeremony ? (
+      <CeremonyCard
+        ceremony={currentCeremony}
+        codexEntry={codex.find((c) => c.speciesId === currentCeremony.speciesId)}
+        queueLeft={arrival.ceremonies.length - ceremonyIndex - 1}
+        snapshot={snapshot}
+        onSeePlant={seePlantFromCeremony}
+        onDismiss={dismissCeremony}
+        variant="hud"
+      />
+    ) : null,
+
+    /* Readiness leads; the workout is named second. The panel grows AWAY from
+       the row you pressed at both widths (System 1 §5) — downward in the
+       stack, where it is simply the pill's next sibling, and upward over the
+       scene on the stage, where it is absolutely positioned above the row and
+       reflows nothing. Positioning, not `order`: an `order` flip is what made
+       tab order jump 576px back up the page below lg. */
+    dock: (
+      <>
+        <DockPill
+          verdict={d?.readiness.verdict}
+          workout={d?.nextWorkout}
+          today={d?.today ?? todayDate}
+          expanded={dockPanelOpen}
+          disclosable={planActive}
+          onOpen={() => setDockOpen(!dockPanelOpen)}
+        />
+        {dockPanelOpen && d?.nextWorkout ? (
+          <div className="dock-panel scroller" id="dock-panel">
+            {/* With no verdict this renders nothing and the panel opens on
+                the workout, exactly as it always did. */}
+            <DockVerdict verdict={d.readiness.verdict} focus={d.focus} />
+            <NextWorkout w={d.nextWorkout} today={d.today} />
+            {grows?.progress ? (
+              <button
+                type="button"
+                className="linklike dock-grows"
+                onClick={() => setOpenSpeciesId(grows.speciesId)}
+              >
+                This workout grows the {grows.name}
+                {Math.max(0, grows.progress.target - grows.progress.current) === 1
+                  ? " — the last one needed"
+                  : grows.progress.target >= 1000
+                    ? ` · ${progressText(grows.progress, units)}`
+                    : ` · ${Math.max(0, grows.progress.target - grows.progress.current)} more to go`}
+              </button>
+            ) : null}
+            <div className="dock-week">
+              <WeekRibbon todayDate={todayDate} codex={codex} onOpenSpecies={setOpenSpeciesId} />
+            </div>
+            <button type="button" className="linklike dock-collapse" onClick={() => setDockOpen(false)}>
+              Minimize
+            </button>
+          </div>
+        ) : null}
+        {/* No plan: the pill above is a status line, not a control, and this
+            is the guidance it would otherwise be hiding. Not behind a
+            disclosure — this is a new athlete's first screen, and the one
+            thing on it that tells them what to do next cannot be a tap away
+            (audit#4 D1: it had been deleted outright, leaving a pill that
+            reported "No active training plan" and did nothing when pressed at
+            either width). */}
+        {!planActive ? (
+          <div className="dock-panel dock-noplan">
+            <EmptyState art="🌿" title="No active COROS training plan was found">
+              Start a plan in COROS — it syncs in automatically once COROS is connected in
+              Settings.
+            </EmptyState>
+          </div>
+        ) : null}
+        {attentionCount > 0 ? (
+          <a className="dock-attention" href="#garden-attention">
+            {attentionCount === 1 ? "1 workout needs attention" : `${attentionCount} workouts need attention`} ↓
+          </a>
+        ) : null}
+      </>
+    ),
+
+    balance:
+      liveBalance && viewingLive ? (
+        <>
+          <BalanceStrip
+            balance={liveBalance}
+            // audit#2: only claim "plan paused" when the sim's clock IS
+            // paused — a no-plan day the sim still decays through must not be
+            // captioned as a pause it isn't getting.
+            runPaused={!planActive && runDecayPaused}
+            runSheltered={runClockSheltered}
+            runTrueRecencyDays={runTrueRecencyDays}
+            // One loss voice at a time, at every width — but only when there
+            // IS another voice. See `balanceQuiet`.
+            quiet={balanceQuiet}
+            activeKey={openBalanceKey}
+            onToggle={toggleBalanceKey}
+          />
+          {openBalanceKey ? (
+            <BalanceDetail
+              k={openBalanceKey}
+              balance={liveBalance}
+              snapshot={snapshot}
+              trio={trio}
+              todayDate={todayDate}
+              onOpenSpecies={setOpenSpeciesId}
+              onClose={() => setOpenBalanceKey(null)}
+            />
+          ) : null}
+        </>
+      ) : null,
+
+    nudges: (
+      <>
+        {(["run", "strength", "yoga"] as const).map((dk) => {
+          const c = trio[dk];
+          if (!c?.progress) return null;
+          const remaining =
+            c.progress.target >= 1000
+              ? progressText(c.progress, units)
+              : `${Math.max(0, c.progress.target - c.progress.current)} to go`;
+          return (
+            <button
+              type="button"
+              key={dk}
+              className="hud-nudge"
+              onClick={() => setOpenSpeciesId(c.speciesId)}
+            >
+              {NUDGE_DISCIPLINE_LABEL[dk]} grows {c.name} · {remaining}
+            </button>
+          );
+        })}
+      </>
+    ),
+
+    rail: (
+      <nav className="hud-rail" aria-label="Garden panels">
+        <button type="button" onClick={() => setOpenDrawer("collection")}>
+          Collection · {unlockedCount}/{codex.length}
+        </button>
+        <button type="button" onClick={() => setOpenDrawer("log")}>
+          Log
+        </button>
+        <button type="button" onClick={() => (timelineOpen ? closeTimeline() : openTimeline())}>
+          Timeline
+        </button>
+      </nav>
+    ),
+
+    timeline: timelineOpen ? timelinePanel : null,
+
+    below: (
+      <div className="garden-below" id="garden-attention">
+        <p className="muted garden-below-intro">
+          {conditionStory(
+            displayCondition,
+            displaySnapshot,
+            livingPlantsCount,
+            viewingLive ? species.length : displaySnapshot.unlockedSpeciesIds.length,
+          )}{" "}
+          <button type="button" className="linklike" onClick={() => setShowWeather((v) => !v)}>
+            {showWeather ? "Hide" : "How the garden works"}
+          </button>
+        </p>
+        {howItWorks}
+        {plumbing}
+      </div>
+    ),
+
+    overlays: (
+      <>
         <Drawer
           open={openDrawer === "collection"}
           onClose={() => setOpenDrawer(null)}
@@ -1728,182 +2034,9 @@ export function GardenScreen() {
           {renderLog(fullLog)}
         </Drawer>
         {sheets}
-      </div>
-    );
-  }
+      </>
+    ),
+  };
 
-  /* ── Mobile: the familiar stack, with the upgraded pieces. */
-  return (
-    <div className="garden-home">
-      <h1 className="visually-hidden">Garden</h1>
-
-      {/* The garden itself — big and central; expandable to the full screen. */}
-      <div
-        className={`garden-scene-wrap garden-scene-big${sceneFull ? " garden-scene-fullscreen" : ""}`}
-      >
-        {/* display:contents normally; in portrait fullscreen it becomes the
-            rotated box that lays the wide scene sideways across the tall
-            screen — the composition is a panorama, and portrait-cropping it
-            hid most of the garden. */}
-        <div className="scene-rotor">
-        <GardenScene
-          snapshot={displaySnapshot}
-          reducedMotion={reducedMotion}
-          selectedPlantId={selectedPlantId}
-          onSelectPlant={setSelectedPlantId}
-          timeOfDay={hourOfDay}
-          atmosphere={!timelineOpen}
-          visitor={viewingLive && visitor ? visitor.kind : null}
-          enteringPlantIds={viewingLive ? arrival.enteringPlantIds : undefined}
-          highlightPlantId={viewingLive ? highlightPlantId : null}
-          impulse={viewingLive ? impulse : null}
-          // Fullscreen fills the phone's tall viewport by cropping the wide
-          // scene (same slice the desktop immersive stage uses) — without it
-          // the svg letterboxes into a strip at the bottom of the screen.
-          preserveAspectRatio={sceneFull ? "xMidYMax slice" : undefined}
-        />
-        </div>
-        <button
-          type="button"
-          className="scene-full-toggle"
-          aria-label={sceneFull ? "Exit fullscreen garden" : "View garden fullscreen"}
-          onClick={() => setSceneFull((f) => !f)}
-        >
-          {sceneFull ? <IconClose size={16} /> : "⤢"}
-        </button>
-      </div>
-
-      {/* Drag through the garden's history: one fetch, then the scrubber is
-          all client-side re-renders of already-loaded days. */}
-      <div className="timeline-bar">
-        {timelineOpen ? (
-          timelinePanel
-        ) : (
-          <button type="button" className="btn btn-small" onClick={() => setTimelineOpen(true)}>
-            <IconClock size={14} /> Timeline
-          </button>
-        )}
-      </div>
-
-      {liveBalance ? (
-        <>
-          <BalanceStrip
-            balance={liveBalance}
-            // audit#2: same honesty rule as the HUD strip above — "plan
-            // paused" only when the sim's clock is actually pausing.
-            runPaused={!planActive && runDecayPaused}
-            runSheltered={runClockSheltered}
-            runTrueRecencyDays={runTrueRecencyDays}
-            quiet={lossVoiced || sheltered}
-            activeKey={openBalanceKey}
-            onToggle={toggleBalanceKey}
-          />
-          {openBalanceKey ? (
-            <BalanceDetail
-              k={openBalanceKey}
-              balance={liveBalance}
-              snapshot={snapshot}
-              trio={trio}
-              todayDate={todayDate}
-              onOpenSpecies={setOpenSpeciesId}
-              onClose={() => setOpenBalanceKey(null)}
-            />
-          ) : null}
-        </>
-      ) : null}
-
-      {/* What the garden is telling you, and why it looks this way. */}
-      <div className="garden-readout">
-        <h2 className="garden-condition">{GARDEN_CONDITION_LABELS[displayCondition]}</h2>
-        {viewingLive && !restMode.active ? (
-          <ForecastLine
-            snapshot={snapshot}
-            todayDate={todayDate}
-            daysAhead={daysSinceSimulated}
-            nextWorkout={d?.nextWorkout}
-            balance={liveBalance}
-            adventure={adventure}
-          />
-        ) : null}
-        {currentCeremony ? (
-          <CeremonyCard
-            ceremony={currentCeremony}
-            codexEntry={codex.find((c) => c.speciesId === currentCeremony.speciesId)}
-            queueLeft={arrival.ceremonies.length - ceremonyIndex - 1}
-            snapshot={snapshot}
-            onSeePlant={seePlantFromCeremony}
-            onDismiss={dismissCeremony}
-          />
-        ) : null}
-        {viewingLive && beatLinesAll.length > 0 ? (
-          <p className="garden-nowline">
-            <span className="now-chip">since {formatDayShort(sinceLabel)}</span>
-            {beatLinesAll.join(" ")}
-            {arrival.beatOverflow ? <span className="faint"> See the log below.</span> : null}
-          </p>
-        ) : null}
-        {viewingLive && todayLinesAll.length > 0 ? (
-          <p className="garden-nowline">
-            <span className="now-chip">today</span>
-            {todayLinesAll.join(" ")}
-          </p>
-        ) : null}
-        <p className="muted">
-          {conditionStory(
-            displayCondition,
-            displaySnapshot,
-            livingPlantsCount,
-            viewingLive ? species.length : displaySnapshot.unlockedSpeciesIds.length,
-          )}
-        </p>
-        <p className="faint">
-          {viewingLive ? "Weather right now is" : "Weather that day was"}{" "}
-          <strong>{WEATHER_LABEL[weather]}</strong> — {WEATHER_WHY[weather]}{" "}
-          {viewingLive ? (
-            <button type="button" className="linklike" onClick={() => setShowWeather((v) => !v)}>
-              {showWeather ? "Hide" : "How the garden works"}
-            </button>
-          ) : null}
-        </p>
-        {howItWorks}
-        {restMode.active ? (
-          <Banner kind="info">Rest mode is on — nothing declines while you're away.</Banner>
-        ) : null}
-      </div>
-
-      {/* The pull forward: the best next thing, per workout type. */}
-      <Card title="Growing next — per workout type">
-        <DisciplineNudges codex={codex} onOpenSpecies={setOpenSpeciesId} />
-      </Card>
-
-      {/* Today's actionable elements (formerly the Today page). */}
-      {d?.nextWorkout ? (
-        <NextWorkout w={d.nextWorkout} today={d.today} />
-      ) : d ? (
-        <EmptyState art="🌿" title="No active COROS training plan was found">
-          Start a plan in COROS — it syncs in automatically once COROS is connected in Settings.
-        </EmptyState>
-      ) : null}
-      {d?.nextWorkout ? (
-        <Card title="This week">
-          <WeekRibbon todayDate={todayDate} codex={codex} onOpenSpecies={setOpenSpeciesId} />
-        </Card>
-      ) : null}
-      {plumbing}
-
-      {/* The event log — trace what happened, and your species. */}
-      <div className="garden-lower">
-        <Card title="Garden log">{renderLog(historyItems)}</Card>
-        <Card title={`Species collection · ${unlockedCount} of ${codex.length}`}>
-          <DiversityStrip snapshot={snapshot} />
-          <SpeciesCodex codex={codex} today={todayDate} onOpenSpecies={setOpenSpeciesId} />
-          <GroundsShelf grounds={snapshot.state.grounds ?? []} />
-          <WildlifeShelf wildlife={wildlife} />
-          <VisitorsShelf visitors={visitorLedger} />
-        </Card>
-      </div>
-
-      {sheets}
-    </div>
-  );
+  return <GardenBody parts={parts} stageRef={stageRef} />;
 }

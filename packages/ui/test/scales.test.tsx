@@ -237,9 +237,13 @@ describe("emphasis comes from one of three ranks", () => {
     expect(body).not.toContain("--ink-faint");
     // The selectors that used to each carry their own copy.
     const selector = eyebrow.slice(0, eyebrow.indexOf("{"));
+    // (`.now-chip` was in this list until System 3 folded the garden's two
+    // trees into one: the mobile-only "since Aug 12" chip became `.hud-beat-
+    // label`, the same label the stage has always used, and the class no
+    // longer exists to be checked.)
     for (const s of [".card-title", ".week-header", ".signal-group-label", ".studio-week-label",
       ".coach-tray-head", ".race-h", ".plan-week-dow", ".prog-chip-label", ".wkrow-state",
-      ".now-chip", ".new-ring", ".codex-newring", ".nudge-disc", ".rarity", ".today-tag"]) {
+      ".new-ring", ".codex-newring", ".nudge-disc", ".rarity", ".today-tag"]) {
       expect(selector, s).toContain(`${s},`.replace(",", ""));
     }
   });
@@ -462,12 +466,112 @@ describe("one touch floor, enforced", () => {
       ".row", ".act-actions", ".wildlife-row", ".switch-row", ".hud-rail", ".drawer-head",
       ".plan-brief-head", ".plan-brief-race-actions", ".card"])
       expect(rules, sel).toMatch(new RegExp(`${sel.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}[,\\s][^{]*\\{[^}]*--tap-clear`));
-    // The two containers whose room differs by axis say so.
-    expect(rules).toMatch(/\.hud-rail \{\s*--tap-clear: var\(--space-7\);\s*--tap-clear-y: var\(--space-4\);/);
+    // The two containers whose room differs by axis say so. The rail's y
+    // clearance is --space-5 (12px), not --space-4: a pad is CLAMPED to what
+    // its container grants, so 8px capped the 24.8px rail buttons at 40.8px —
+    // measured 41px for `LOG`, under the 44px floor. `.hud-corner`'s own gap
+    // steps with it so the extra reach lands in the gap, not in the nudge.
+    expect(rules).toMatch(/\.hud-rail \{\s*--tap-clear: var\(--space-7\);\s*--tap-clear-y: var\(--space-5\);/);
+    // The arithmetic the floor actually depends on: control height + 2 ×
+    // clearance must REACH --tap, or the clamp's middle term never wins.
+    const RAIL_CONTROL_PX = 24.8; // measured; --text-md line box + --space-2 × 2
+    expect(RAIL_CONTROL_PX + 2 * 12).toBeGreaterThanOrEqual(44);
+    expect(RAIL_CONTROL_PX + 2 * 8).toBeLessThan(44); // …and 8px did not
     expect(rules).toMatch(/\.drawer-head \{\s*--tap-clear: var\(--space-4\);\s*--tap-clear-x: 0px;/);
     // …and the one container that had to widen writes its gap from the same
     // property, so the two can never disagree again.
     expect(rules).toMatch(/\.hud-dock \{[\s\S]*?gap: var\(--tap-clear\);/);
+  });
+
+  it("a container never spaces its rows more tightly than the clearance in force", () => {
+    /**
+     * THE RULE, and the reason it can be checked without a layout engine.
+     *
+     * A pad reaches `(--tap − height) / 2` past its control, so the rule a
+     * reviewer states is "the container's row gap must be at least the largest
+     * `(44 − child height) / 2` among its children". No stylesheet knows those
+     * heights — but it does not have to, because the pad is CLAMPED to
+     * `--tap-clear`: the reach is `min(--tap-clear, (44 − h) / 2)`, which is
+     * never more than `--tap-clear`. So
+     *
+     *     row gap ≥ --tap-clear  ⟹  row gap ≥ every pad reach inside it
+     *
+     * whatever the children turn out to measure. That is the invariant below,
+     * and it is why every container here writes its `gap` FROM the property
+     * rather than from a `--space-N` that merely happens to match today.
+     */
+    // `var(--space-N)` / `var(--tap-clear)` / `0px` → pixels at a 16px root.
+    const px = (v: string, clear: number | null): number | null => {
+      if (v === "var(--tap-clear)") return clear;
+      const step = /^var\((--space-\d+)\)$/.exec(v)?.[1];
+      if (step) return 16 * parseFloat(new RegExp(`${step}: ([\\d.]+)rem`).exec(rootBlock)![1]!);
+      return /^[\d.]+px$/.test(v) ? parseFloat(v) : null;
+    };
+    interface Container { clear?: string; clearX?: string; clearY?: string; gaps: string[] }
+    const box = new Map<string, Container>();
+    const get = (sel: string) => box.get(sel) ?? (box.set(sel, { gaps: [] }), box.get(sel)!);
+    // Comments first: this sheet's prose quotes declarations and braces, and a
+    // rule split that keeps them reads `var(--space-4)` out of a paragraph.
+    for (const [, selRaw, body] of css.replace(/\/\*[\s\S]*?\*\//g, "").matchAll(/([^{}]+)\{([^{}]*)\}/g)) {
+      const read = (p: string) => new RegExp(`${p}\\s*:\\s*([^;]+);`).exec(body!)?.[1]!.trim();
+      const clear = read("--tap-clear");
+      const clearX = read("--tap-clear-x");
+      const clearY = read("--tap-clear-y");
+      const gap = /(?:^|[\s;])(?:gap|row-gap)\s*:\s*([^;]+);/.exec(body!)?.[1]!.trim();
+      for (const sel of selRaw!.trim().split(",").map((s) => s.trim())) {
+        if (!sel) continue;
+        const c = get(sel);
+        if (clear) c.clear = clear;
+        if (clearX) c.clearX = clearX;
+        if (clearY) c.clearY = clearY;
+        if (gap) c.gaps.push(gap);
+      }
+    }
+    const granting = [...box].filter(([, c]) => c.clear && c.gaps.length);
+    expect(granting.length, "no clearance-granting container declares a gap at all").toBeGreaterThan(4);
+    for (const [sel, c] of granting) {
+      const clear = px(c.clear!, null)!;
+      // Per axis, because two containers' room genuinely differs by axis.
+      const need = { row: px(c.clearY ?? c.clear!, clear)!, col: px(c.clearX ?? c.clear!, clear)! };
+      for (const decl of c.gaps) {
+        const parts = decl.split(/\s+(?![^(]*\))/);
+        const have = { row: px(parts[0]!, clear), col: px(parts[1] ?? parts[0]!, clear) };
+        for (const axis of ["row", "col"] as const)
+          expect(have[axis], `${sel}: ${axis} gap \`${decl}\` under the ${need[axis]}px it grants`)
+            .toBeGreaterThanOrEqual(need[axis]);
+      }
+    }
+
+    /**
+     * The specific defect. `--tap-clear` INHERITS, so `.hud-dock`'s 12px
+     * reached into `.dock-panel` and licensed every pad in there to 12px —
+     * but the panel was block flow, and the only room it left between the week
+     * pull and "Minimize" was `.dock-week`'s 6px bottom margin. "Minimize" is
+     * a 24px box, so its 44px pad reached 10px up, 4px inside the pull:
+     * `elementFromPoint` at the pull's bottom-left inset 4px returned
+     * `dock-collapse` at 390, 900, 1024 and 1440.
+     */
+    const COLLAPSE_PX = 24; // measured; --text-xs line box, no padding
+    expect((44 - COLLAPSE_PX) / 2).toBe(10);
+    expect((44 - COLLAPSE_PX) / 2).toBeGreaterThan(6); // …which --space-3 did not grant
+    expect((44 - COLLAPSE_PX) / 2).toBeLessThanOrEqual(12); // …and --space-5 does
+    const panel = ruleBody(".dock-panel");
+    expect(panel).toContain("--tap-clear: var(--space-5)");
+    expect(panel).toContain("gap: var(--tap-clear)");
+    // A `gap` needs a container to be a gap: the panel used to be block flow,
+    // where the only vertical spacing available is the children's margins —
+    // and a child's margin loses to `.linklike`'s `margin: 0` on specificity
+    // AND resolves `var(--tap-clear)` against the CHILD's own value.
+    expect(panel).toContain("display: flex");
+    expect(panel).toContain("flex-direction: column");
+    // …so no child of the panel may write a vertical margin again.
+    for (const sel of [".dock-collapse", ".dock-grows", ".dock-week"])
+      expect(ruleBody(sel), sel).not.toMatch(/margin(?:-block-start|-top|-bottom)?: (?!0 )/);
+    // Stretch is the flex default and it is wrong for these two: "Minimize" is
+    // a 64px box that grew to the panel's full width, i.e. a whole row of the
+    // panel that silently closed it.
+    for (const sel of [".dock-collapse", ".dock-grows"])
+      expect(ruleBody(sel), sel).toContain("align-self: start");
   });
 
   it("the timeline scrubber is grabbable without changing its 6px bar", () => {

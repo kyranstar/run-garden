@@ -141,12 +141,13 @@ describe("progression charts", () => {
     expect(html).toContain("peak 16.1 km");
     const label = html.match(/<text x="([\d.]+)"[^>]*>peak 16\.1 km<\/text>/);
     expect(label).not.toBeNull();
-    // Weeks 1–9 across the plot band (left margin 40, right edge 310): week 8
-    // sits at 276.25 — the label must NOT be pinned to the right edge, which
-    // is week 9's 10 km taper.
-    expect(Number(label![1])).toBeCloseTo(276.25, 1);
+    // Weeks 1–9 across the plot band. The chart is built at its design width
+    // now (`chartWidth(null, 420)` on the server), so the band runs from 40 to
+    // 410 and week 8 sits at 363.75 — the label must NOT be pinned to the right
+    // edge, which is week 9's 10 km taper.
+    expect(Number(label![1])).toBeCloseTo(363.75, 1);
     // Nothing captions the last week with the peak's number any more.
-    expect(html).not.toMatch(/<text x="310"[^>]*>16\.1/);
+    expect(html).not.toMatch(/<text x="410"[^>]*>16\.1/);
   });
 
   it("ProgressionStepChart: the text alternative describes the drawn line, taper included", () => {

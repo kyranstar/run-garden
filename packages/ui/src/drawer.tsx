@@ -3,9 +3,14 @@ import { IconClose } from "./icons.js";
 import { useDialogFocus } from "./components.js";
 
 /**
- * A right-docked glass panel that slides in over the garden stage — the
- * Sheet's dialog contract (focus trap, Escape, backdrop click, focus
- * restore) in drawer clothing. Desktop-stage only; mobile keeps its cards.
+ * A right-docked glass panel that slides in over the garden — the Sheet's
+ * dialog contract (focus trap, Escape, backdrop click, focus restore) in
+ * drawer clothing.
+ *
+ * Used at EVERY width since System 3: the garden's rail (Collection · Log ·
+ * Timeline) is one component on one tree, so the panels it opens are the same
+ * panels on a phone as they are on the stage. The phone used to reach the
+ * same two lists through duplicated cards at the foot of the garden page.
  */
 export function Drawer({
   open,

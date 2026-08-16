@@ -266,11 +266,43 @@ describe("disclosure anchoring", () => {
     // letting the panel head print it instead kept the box still and moved
     // the words 509px, which is the same defect with a different subject.
     expect(expanded).toContain("Good to go");
-    expect(expanded).toContain("Hill Strides · Today 9 AM");
-    // Character-for-character the same row, so nothing inside it can reflow.
-    expect(expanded.replace(/ aria-expanded="true"/, "")).toBe(
-      collapsed.replace(/ aria-expanded="false"/, ""),
+    // The verdict SPAN is character-for-character identical in both states —
+    // same markup, same first child, so it cannot reflow when the panel opens.
+    const verdictSpan = (h: string) => h.slice(h.indexOf('<span class="dock-pill-verdict"'), h.indexOf("</span></span>") + 14);
+    expect(verdictSpan(expanded)).toBe(verdictSpan(collapsed));
+    // What the expanded row DOES drop is the workout identity, because the
+    // panel it just opened is naming it in full immediately beside it — the
+    // same sentence twice, adjacent, once the two stopped being an overlay
+    // and a card on different screens. The verdict is what must not move; the
+    // workout is what must not be said twice.
+    const visible = (h: string) => h.replace(/ aria-label="[^"]*"/, "");
+    expect(visible(collapsed)).toContain("Hill Strides · Today 9 AM");
+    expect(visible(expanded)).not.toContain("Hill Strides");
+    // …and never at the cost of the accessible name, which carries the whole
+    // sentence in both states and does not change under the reader.
+    const name = /aria-label="([^"]*)"/;
+    expect(collapsed.match(name)?.[1]).toBe("Good to go · Hill Strides · Today 9 AM");
+    expect(expanded.match(name)?.[1]).toBe(collapsed.match(name)?.[1]);
+  });
+
+  it("a pill with no panel behind it is not a button", () => {
+    // The measured defect: with `nextWorkout: null` the dock rendered a pill
+    // reading "No active training plan" that did nothing when pressed at
+    // either width — `aria-expanded` stayed false, no panel mounted, because
+    // the panel was gated on a workout the pill did not require.
+    const dead = render(
+      createElement(DockPill, {
+        verdict,
+        workout: null,
+        today: "2026-08-14",
+        onOpen: noop,
+        disclosable: false,
+      }),
     );
+    expect(dead).not.toContain("<button");
+    expect(dead).not.toContain("aria-expanded");
+    expect(dead).not.toContain("aria-controls");
+    expect(dead).toContain("No active training plan");
   });
 
   it("the panel head does not repeat the verdict — it renders exactly once", () => {

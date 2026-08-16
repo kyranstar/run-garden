@@ -2,9 +2,18 @@ import type { CSSProperties, PointerEvent as ReactPointerEvent, ReactElement, Re
 import { useEffect, useId, useLayoutEffect, useRef, useState } from "react";
 
 /**
- * Chart kit — the shared, dependency-free building blocks every Insights
- * chart is built from. B2/B3/B4 import these exports by name; changing a
+ * Chart kit — the shared, dependency-free building blocks every chart in the
+ * app is built from. B2/B3/B4 import these exports by name; changing a
  * signature here is a breaking change for those screens.
+ *
+ * TWO layers consume this file, not one: `charts.tsx` (Insights) and
+ * `screens/plan-charts.tsx` (the studio modal's progressions). Anything both
+ * need lives HERE — the sizing layer (`useMeasuredWidth`, `chartWidth`,
+ * `svgStyle`, `labelStride`, `labelWidth`), the y axis (`GridLines`), the
+ * reference marks (`ReferenceLine`, `VerticalReferenceLine`) — because the two
+ * layers drifting apart is exactly how plan-charts.tsx kept a fixed 320-unit
+ * viewBox and nine `fontSize="9"` through a migration that was supposed to
+ * remove both from the app.
  *
  * Design-system rules this file exists to enforce (the project's dataviz
  * method, distilled):
@@ -146,11 +155,16 @@ import { useEffect, useId, useLayoutEffect, useRef, useState } from "react";
  * consistent with "tooltips enhance, they never gate."
  *
  * ────────────────────────────────────────────────────────────────────────
- * ReferenceLine / ShadedBand / HatchDefs / useHatchId / TrendChip
+ * GridLines / ReferenceLine / VerticalReferenceLine / ShadedBand / HatchDefs /
+ * useHatchId / TrendChip
  * ────────────────────────────────────────────────────────────────────────
- * Small SVG fragments: `ReferenceLine`/`ShadedBand` render against the
+ * Small SVG fragments: `GridLines` is the y axis (a receding gridline per tick
+ * and its value in the left gutter at `CHART_LABEL_PX`);
+ * `ReferenceLine`/`ShadedBand` render against the
  * recessive `--chart-grid` token (a shaded band is that same token at low
- * opacity — no new hardcoded color); `HatchDefs` renders one `<pattern>` for
+ * opacity — no new hardcoded color); `VerticalReferenceLine` is the same
+ * contract turned ninety degrees, for a landmark on the x axis (race day);
+ * `HatchDefs` renders one `<pattern>` for
  * hatched fills (a partial week, a moved workout) — reference it with
  * `fill={`url(#${id})`}`.
  *
@@ -270,6 +284,168 @@ export function rollingMedian(values: number[], window = 5): number[] {
   return out;
 }
 
+// ── The sizing layer (System 3 §B) ──────────────────────────────────────────
+
+/**
+ * ONE type size for every label a chart prints, in CSS pixels — and it really
+ * is CSS pixels, because `chartWidth` below makes each chart's viewBox 1:1
+ * with the box it renders into.
+ *
+ * What this replaces: fifteen `fontSize` declarations of 8, 9, 9.5 and 10
+ * *viewBox units* inside fixed 560/420-unit viewBoxes that were then scaled
+ * by `width: 100%`. The scale factor was the container's width over the
+ * viewBox's, so the same label measured 9 CSS px in a one-column layout at
+ * 719px, 5.0 CSS px the moment a second column appeared at 720px, and 5.2 CSS
+ * px on a phone. A chart got LESS readable as the layout got roomier, which
+ * is the exact opposite of what a breakpoint is for.
+ */
+export const CHART_LABEL_PX = 10;
+
+/**
+ * The narrowest viewBox a chart will build. Below this the geometry stops
+ * being a chart (a 40px left gutter out of 200 is most of the plot), so the
+ * SVG is allowed to scale down instead — the same behaviour as before, but
+ * only in a box no real layout produces. The narrowest real container in the
+ * app is a 390px phone: 390 − 2×16 shell padding − 2×16 card padding = 326.
+ */
+export const CHART_MIN_WIDTH = 240;
+
+/**
+ * The strip every chart reserves ABOVE its plot, and the text baseline inside
+ * it. Annotations that are NOT data — the unit, a reference line's label —
+ * live here; nothing else does.
+ *
+ * Why a reserved strip rather than "put the label somewhere quiet in the
+ * plot": now that a chart's geometry shrinks to its container while its type
+ * stays at `CHART_LABEL_PX`, a label is a FIXED number of pixels laid over a
+ * VARIABLE number of pixels of plot. "4-wk avg 2.8h" is 66px: 12% of a 560px
+ * desktop chart and 20% of a 324px phone one. Any in-plot anchor is therefore
+ * only as safe as the data behind it happens to be — and the two anchors that
+ * look safest (the end of a line, the top of a plot) are exactly where a
+ * rising-load bar chart puts its tallest bars.
+ *
+ * The other two gutters can't take it. The left one is 40 units wide and 34 of
+ * those are spoken for by the y tick labels ("2.0h" right-aligned at
+ * `M.left − 6`), which leaves 6; the bottom one belongs to the x labels. The
+ * top strip is the only place with 250+ units of clear width at EVERY size the
+ * layer produces, which is what makes this correct by construction instead of
+ * correct for today's fixture.
+ *
+ * A chart that draws a labelled `ReferenceLine` must therefore start its plot
+ * at `CHART_HEADER_H`. `reference labels live outside the plot` in
+ * responsive.test.tsx measures that for every chart, at every width.
+ */
+export const CHART_HEADER_H = 24;
+
+/** 8 units of air between the annotation's baseline and the plot's top edge. */
+export const CHART_HEADER_BASELINE = CHART_HEADER_H - 8;
+
+/**
+ * The width a chart should build its geometry AND its viewBox at, given the
+ * width its wrapper actually measured.
+ *
+ * The contract, and the whole point of the layer: the returned value is used
+ * as BOTH the viewBox width and the SVG's `max-width`, so a chart renders at
+ * exactly `width` CSS pixels and one viewBox unit is one CSS pixel. Labels
+ * then land at `CHART_LABEL_PX` px regardless of viewport, column count, or
+ * which of the three breakpoints is in force.
+ *
+ * `cap` is the chart's own design width (560 for a wide time series, 420 for
+ * a compact one). Measuring can only make a chart NARROWER than that — a
+ * 1440px window still gets the 560px line chart it has always got.
+ *
+ * `measured == null` is the pre-measurement frame (and the server render):
+ * fall back to the cap, which is what shipped before this layer existed.
+ */
+export function chartWidth(measured: number | null, cap: number): number {
+  if (measured == null || !Number.isFinite(measured) || measured <= 0) return cap;
+  return Math.round(Math.min(cap, Math.max(CHART_MIN_WIDTH, measured)));
+}
+
+/**
+ * The one style every chart SVG wears. `maxWidth` is ALWAYS the same number as
+ * the viewBox width: that identity is what makes one viewBox unit one CSS
+ * pixel, and therefore what makes every `fontSize={CHART_LABEL_PX}` land at 10
+ * CSS px in a 285px modal column, a 326px phone card and a 560px desktop chart
+ * alike.
+ *
+ * Passing a `maxWidth` that is not the viewBox width re-introduces the scale
+ * factor this layer exists to remove; `charts sizing` in responsive.test.tsx
+ * pins the two together for both chart layers.
+ */
+export const svgStyle = (viewBoxWidth: number) =>
+  ({ width: "100%", maxWidth: viewBoxWidth, height: "auto", display: "block" }) as const;
+
+/**
+ * A GENEROUS advance-width estimate for `text` at `CHART_LABEL_PX`, in viewBox
+ * units (= CSS px). The app's UI font measures ~0.50em per glyph at this size;
+ * 0.62em is the same over-estimate `chart-annotations.test.ts` uses to draw its
+ * text boxes, and for the same reason: everything that consumes this number is
+ * deciding whether a label FITS, so erring wide can only add air.
+ */
+export const CHART_GLYPH_W = 0.62 * CHART_LABEL_PX;
+
+export function labelWidth(text: string): number {
+  return text.length * CHART_GLYPH_W;
+}
+
+/**
+ * What a reference line's header label occupies, swatch and gap included — so
+ * a chart with a SECOND thing in the strip (the plan charts print their unit
+ * at the right end) can check that the two don't meet before drawing both.
+ */
+export function referenceLabelWidth(label: string): number {
+  return REFERENCE_SWATCH_W + REFERENCE_SWATCH_GAP + labelWidth(label);
+}
+
+/**
+ * How many labels fit along `innerW` at `CHART_LABEL_PX`, given the widest
+ * label a chart prints (`labelW`). Charts used to stride their x labels by a
+ * constant ("every ceil(n/8)"), which was tuned for a 560px viewBox and
+ * collided the moment the same chart built itself at 326.
+ */
+export function labelStride(count: number, innerW: number, labelW: number): number {
+  const fits = Math.max(2, Math.floor(innerW / labelW));
+  return Math.max(1, Math.ceil(count / fits));
+}
+
+/**
+ * The sizing layer's one measurement: the content width of `ref`'s element in
+ * CSS pixels, or `null` before the first measurement (and on the server). Feed
+ * it to `chartWidth`.
+ *
+ * `useLayoutEffect` (not `useEffect`) so the real width lands in the SAME
+ * commit the box first paints in — measured in an ordinary effect the chart
+ * paints once at its fallback width and then jumps, which on a phone is a
+ * visible 560→326 resize of every chart on the page. `ResizeObserver` rather
+ * than a window resize listener because most of what changes a chart's box is
+ * not a window resize: a column count flipping at a breakpoint, a drilldown
+ * sheet opening, the coach window claiming its gutter, a modal animating in.
+ *
+ * `useChartTooltip` calls this for its own wrapper; a chart with no tooltip
+ * (the plan progressions) calls it directly on the box that wraps its `<svg>`.
+ * Both get the same number the same way — there is one measurement mechanism
+ * in the app, not one per chart layer.
+ */
+export function useMeasuredWidth(ref: RefObject<HTMLElement | null>): number | null {
+  const [measured, setMeasured] = useState<number | null>(null);
+  useLayoutEffect(() => {
+    const el = ref.current;
+    if (!el || typeof ResizeObserver === "undefined") return;
+    const read = () => {
+      // `clientWidth` is the CONTENT box — padding excluded — which is the box
+      // the SVG's `width: 100%` resolves against.
+      const w = el.clientWidth;
+      setMeasured((cur) => (w > 0 && w !== cur ? w : cur));
+    };
+    const ro = new ResizeObserver(read);
+    ro.observe(el);
+    read();
+    return () => ro.disconnect();
+  }, [ref]);
+  return measured;
+}
+
 // ── useChartTooltip ──────────────────────────────────────────────────────────
 
 const HIT_RADIUS_PX = 24;
@@ -297,6 +473,15 @@ export interface ChartTooltipHandle {
   };
   tooltip: ReactElement | null;
   registerMarks: (marks: ChartMark[]) => void;
+  /**
+   * The wrapper's own content width in CSS pixels, or `null` before the first
+   * measurement (and on the server). Feed it to `chartWidth` — see the sizing
+   * layer above. It lives on THIS handle rather than in a second hook because
+   * the wrapper div is already this hook's: it owns the ref, and a chart that
+   * composed two refs onto the same node would be the third place in the file
+   * that has to agree about which element is "the chart's box".
+   */
+  measured: number | null;
 }
 
 interface ActiveTip {
@@ -430,6 +615,8 @@ export function useChartTooltip(): ChartTooltipHandle {
   const marksRef = useRef<ChartMark[]>([]);
   const [active, setActive] = useState<ActiveTip | null>(null);
   const [tipPos, setTipPos] = useState<{ left: number; top: number } | null>(null);
+  // The sizing layer's measurement, on the wrapper this hook already owns.
+  const measured = useMeasuredWidth(wrapperRef);
 
   const registerMarks = (marks: ChartMark[]): void => {
     marksRef.current = marks;
@@ -557,19 +744,178 @@ export function useChartTooltip(): ChartTooltipHandle {
     },
     tooltip,
     registerMarks,
+    measured,
   };
 }
 
 // ── SVG fragments ────────────────────────────────────────────────────────────
 
 const CHART_GRID = "var(--chart-grid)";
+const INK_FAINT = "var(--ink-faint)";
+
+/** The line swatch that ties a header label to the line it names, plus its gap. */
+const REFERENCE_SWATCH_W = 12;
+const REFERENCE_SWATCH_GAP = 5;
 
 /**
- * `emphasis` lifts the line off the grid: an anchor the reader is meant to
- * measure against (zero, a 4-week average) drawn at grid weight in the grid
- * token is indistinguishable from a gridline, so it stops being a reference
- * at all. Recessive by default — most reference lines are context, not
- * subject.
+ * Where the header strip starts: the viewBox's own left edge, which — because
+ * `svgStyle` pins `maxWidth` to the viewBox width and the SVG is a
+ * left-aligned block — is the CARD's left edge, the same origin the HTML
+ * series legend (`.chart-legend`) starts at.
+ *
+ * It used to be the PLOT's left edge (`M.left`, 40), which put a chart's two
+ * keys on two different left margins: the series legend flush with the card
+ * and the reference strip 40px in. Two keys, two origins, and the strip read
+ * as a caption for something else. One left edge instead.
+ */
+export const CHART_STRIP_X = 0;
+
+/**
+ * One y axis, drawn the one way: a receding gridline per tick and its value
+ * right-aligned in the left gutter at the ONE type size. It lives here rather
+ * than in charts.tsx because both chart layers draw it — the Insights charts
+ * and the plan progressions — and a second copy is how the two layers drifted
+ * apart in the first place.
+ */
+export function GridLines({
+  ticks,
+  y,
+  x1,
+  x2,
+  format,
+}: {
+  ticks: number[];
+  y: (v: number) => number;
+  x1: number;
+  x2: number;
+  format: (v: number) => string;
+}) {
+  return (
+    <g>
+      {ticks.map((t) => (
+        <g key={t}>
+          <line x1={x1} x2={x2} y1={y(t)} y2={y(t)} stroke={CHART_GRID} strokeWidth={1} />
+          <text x={x1 - 6} y={y(t) + 3.5} textAnchor="end" fontSize={CHART_LABEL_PX} fill={INK_FAINT}>
+            {format(t)}
+          </text>
+        </g>
+      ))}
+    </g>
+  );
+}
+
+interface ReferenceStyle {
+  stroke: string;
+  strokeWidth: number;
+  strokeDasharray: string | undefined;
+}
+
+/**
+ * A reference line is ALWAYS heavier than the grid: `--ink-faint` at 1.5
+ * against the grid's `--chart-grid` at 1. `stroke` overrides the token
+ * outright, for the one kind of reference line that is a LANDMARK rather than
+ * context (race day, in `--chart-2`); the weight is the same either way.
+ *
+ * There used to be an `emphasis` flag here, defaulting to FALSE — a reference
+ * line drawn in the grid token at grid weight, i.e. indistinguishable from a
+ * gridline. Every caller but one passed `emphasis`; the one that didn't was
+ * `BaselineBandChart`, whose baseline then sat inside a shaded band looking
+ * exactly like the three gridlines around it while the header strip printed
+ * "baseline 46" and a swatch in that same invisible stroke. The strip only
+ * works if the reader can find the line it names, so the recessive branch is
+ * gone rather than defaulted: a line nobody is meant to pick out should not be
+ * a `ReferenceLine` at all.
+ */
+function referenceStyle(dashed: boolean, stroke?: string): ReferenceStyle {
+  return {
+    stroke: stroke ?? INK_FAINT,
+    strokeWidth: 1.5,
+    strokeDasharray: dashed ? "4 3" : undefined,
+  };
+}
+
+/**
+ * A reference line's name, printed in the chart's header strip: left-aligned
+ * at `x` (`CHART_STRIP_X` — the card's edge, so the strip and the HTML series
+ * legend share one left margin), behind a short swatch drawn in the line's
+ * exact stroke, with a surface-coloured halo (`paint-order: stroke`) in case a
+ * chart ever puts something behind it.
+ *
+ * The swatch mirrors the line's ORIENTATION — a horizontal dash for a
+ * horizontal line, a pair of vertical ticks for a vertical one — so the key
+ * says which mark it names without having to sit on it.
+ */
+function ReferenceLabel({
+  x,
+  label,
+  style,
+  vertical = false,
+}: {
+  x: number;
+  label: string;
+  style: ReferenceStyle;
+  vertical?: boolean;
+}) {
+  const mid = CHART_HEADER_BASELINE - 3.5;
+  return (
+    <g>
+      {vertical ? (
+        <line
+          x1={x + REFERENCE_SWATCH_W / 2}
+          x2={x + REFERENCE_SWATCH_W / 2}
+          y1={mid - 5}
+          y2={mid + 5}
+          stroke={style.stroke}
+          strokeWidth={style.strokeWidth}
+          strokeDasharray={style.strokeDasharray}
+        />
+      ) : (
+        <line
+          x1={x}
+          x2={x + REFERENCE_SWATCH_W}
+          y1={mid}
+          y2={mid}
+          stroke={style.stroke}
+          strokeWidth={style.strokeWidth}
+          strokeDasharray={style.strokeDasharray}
+        />
+      )}
+      <text
+        x={x + REFERENCE_SWATCH_W + REFERENCE_SWATCH_GAP}
+        y={CHART_HEADER_BASELINE}
+        fontSize={CHART_LABEL_PX}
+        fill={INK_FAINT}
+        paintOrder="stroke"
+        stroke="var(--bg-raised)"
+        strokeWidth={3}
+        strokeLinejoin="round"
+      >
+        {label}
+      </text>
+    </g>
+  );
+}
+
+/**
+ * An anchor the reader is meant to measure against — zero, a 4-week average, a
+ * baseline. It is always drawn heavier than the grid (see `referenceStyle`):
+ * at grid weight in the grid token it stops being a reference at all, which is
+ * exactly what happened to the one caller that left the old `emphasis` flag at
+ * its default.
+ *
+ * The `label` does NOT ride on the line. It prints in the chart's header strip
+ * (`CHART_HEADER_H`) at `CHART_STRIP_X` — the card's left edge, shared with the
+ * HTML series legend — behind a swatch drawn in the line's exact stroke, so it
+ * reads as a key to that line rather than as a stray caption. See
+ * `CHART_HEADER_H` for why an in-plot label cannot be made safe now that the
+ * plot resizes and the type does not: it used to sit at `x2, y − 4`,
+ * right-aligned at the end of the line, and on a 324px phone that 66px caption
+ * covered the last two bars of a rising-load chart.
+ *
+ * The surface-coloured halo (`paint-order: stroke`) is the house treatment for
+ * a mark that may land on top of another — a belt, not the braces: the strip
+ * is empty by construction, and the halo only pays off if a chart ever puts
+ * something behind it.
  */
 export function ReferenceLine({
   x1,
@@ -577,31 +923,53 @@ export function ReferenceLine({
   y,
   label,
   dashed = false,
-  emphasis = false,
 }: {
   x1: number;
   x2: number;
   y: number;
   label?: string;
   dashed?: boolean;
-  emphasis?: boolean;
 }) {
+  const style = referenceStyle(dashed);
   return (
     <g>
-      <line
-        x1={x1}
-        x2={x2}
-        y1={y}
-        y2={y}
-        stroke={emphasis ? "var(--ink-faint)" : CHART_GRID}
-        strokeWidth={emphasis ? 1.5 : 1}
-        strokeDasharray={dashed ? "4 3" : undefined}
-      />
-      {label ? (
-        <text x={x2} y={y - 4} textAnchor="end" fontSize={9.5} fill="var(--ink-faint)">
-          {label}
-        </text>
-      ) : null}
+      <line x1={x1} x2={x2} y1={y} y2={y} {...style} />
+      {label ? <ReferenceLabel x={CHART_STRIP_X} label={label} style={style} /> : null}
+    </g>
+  );
+}
+
+/**
+ * The same contract turned ninety degrees: a vertical landmark at `x` spanning
+ * `y1…y2`, whose label prints in the header strip rather than on the plot.
+ *
+ * The label goes at `CHART_STRIP_X`, not at the line's own `x`: race day is
+ * usually the LAST week, and a label left-aligned at that x runs straight off
+ * the right edge of the viewBox — which is what the plan charts did, clipping
+ * "race · Aug 24" at every width the layer produces. It is the same origin
+ * `ReferenceLine` uses, so a chart carrying both keeps one left edge.
+ */
+export function VerticalReferenceLine({
+  x,
+  y1,
+  y2,
+  label,
+  dashed = false,
+  stroke,
+}: {
+  x: number;
+  y1: number;
+  y2: number;
+  label?: string;
+  dashed?: boolean;
+  /** A CSS custom property, for a landmark that is not grid context. */
+  stroke?: string;
+}) {
+  const style = referenceStyle(dashed, stroke);
+  return (
+    <g>
+      <line x1={x} x2={x} y1={y1} y2={y2} {...style} />
+      {label ? <ReferenceLabel x={CHART_STRIP_X} label={label} style={style} vertical /> : null}
     </g>
   );
 }

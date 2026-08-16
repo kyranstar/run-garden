@@ -1,12 +1,19 @@
 import type { KeyboardEvent, ReactNode } from "react";
 import type { InsightsResponse } from "@rg/api-client";
 import {
+  CHART_HEADER_BASELINE,
+  CHART_HEADER_H,
+  CHART_LABEL_PX,
+  GridLines,
   HatchDefs,
   ReferenceLine,
   ShadedBand,
+  chartWidth,
   dateX,
+  labelStride,
   niceTicks,
   rollingMedian,
+  svgStyle,
   useChartTooltip,
   useHatchId,
   type ChartMark,
@@ -57,14 +64,17 @@ import { countNoun, formatShortDate, formatShortMonth } from "./components.js";
  *     summaries included.
  */
 
-const M = { top: 10, right: 10, bottom: 26, left: 40 };
+/**
+ * The plot's margins. There is no `top` here: the plot's top edge is
+ * `CHART_HEADER_H` in every chart, because that is the strip the unit and a
+ * reference line's label print in. Two of these charts used to start their
+ * plot at 10 and label their reference line INSIDE it.
+ */
+const M = { right: 10, bottom: 26, left: 40 };
 
 const GRID = "var(--chart-grid)";
 const INK_FAINT = "var(--ink-faint)";
 const TRACK = "var(--chart-track)";
-
-const svgStyle = (maxWidth: number) =>
-  ({ width: "100%", maxWidth, height: "auto", display: "block" }) as const;
 
 // ── ChartFrame ──────────────────────────────────────────────────────────────
 
@@ -181,33 +191,6 @@ function yAxis(
   return { ticks, y: scale(ticks[0]!, ticks[ticks.length - 1]!) };
 }
 
-function GridLines({
-  ticks,
-  y,
-  x1,
-  x2,
-  format,
-}: {
-  ticks: number[];
-  y: (v: number) => number;
-  x1: number;
-  x2: number;
-  format: (v: number) => string;
-}) {
-  return (
-    <g>
-      {ticks.map((t) => (
-        <g key={t}>
-          <line x1={x1} x2={x2} y1={y(t)} y2={y(t)} stroke={GRID} strokeWidth={1} />
-          <text x={x1 - 6} y={y(t) + 3.5} textAnchor="end" fontSize={10} fill={INK_FAINT}>
-            {format(t)}
-          </text>
-        </g>
-      ))}
-    </g>
-  );
-}
-
 function signed(v: number, decimals = 0): string {
   return `${v > 0 ? "+" : v < 0 ? "−" : ""}${Math.abs(v).toFixed(decimals)}`;
 }
@@ -260,13 +243,16 @@ export function RunSeriesChart({
   zeroLine,
   onPointClick,
 }: RunSeriesChartProps) {
-  const { wrapperProps, tooltip, registerMarks } = useChartTooltip();
+  const { wrapperProps, tooltip, registerMarks, measured } = useChartTooltip();
   const sorted = [...points].sort((a, b) => (a.date < b.date ? -1 : a.date > b.date ? 1 : 0));
-  const width = 560;
+  // Sized to the box it is IN, not to a fixed 560 that a phone column then
+  // shrank to 58% (System 3 §B). Every scale below is derived from `width`,
+  // so the whole geometry reflows and only the type stays put.
+  const width = chartWidth(measured, 560);
   const height = 176;
-  // Extra headroom over M.top: the unit sits ABOVE the plot, not floating in
-  // the tick column where it used to collide with the topmost tick label.
-  const top = 24;
+  // The annotation strip: the unit and the zero line's label sit ABOVE the
+  // plot, not floating in the tick column or over the dots.
+  const top = CHART_HEADER_H;
   const innerW = width - M.left - M.right;
   const innerH = height - top - M.bottom;
   const color = `var(${colorVar})`;
@@ -316,7 +302,7 @@ export function RunSeriesChart({
           x2={width - M.right}
           format={(t) => t.toFixed(decimals)}
         />
-        {zeroLine ? <ReferenceLine x1={M.left} x2={width - M.right} y={y(0)} label="0" emphasis /> : null}
+        {zeroLine ? <ReferenceLine x1={M.left} x2={width - M.right} y={y(0)} label="0" /> : null}
         {sorted.length > 1 ? (
           <path d={medianPath} fill="none" stroke={color} strokeWidth={2} strokeLinejoin="round" />
         ) : null}
@@ -344,7 +330,7 @@ export function RunSeriesChart({
               ) : null,
             )
           : null}
-        <text x={x(sorted[0]!.date)} y={height - 8} fontSize={9.5} fill={INK_FAINT}>
+        <text x={x(sorted[0]!.date)} y={height - 8} fontSize={CHART_LABEL_PX} fill={INK_FAINT}>
           {formatShortDate(sorted[0]!.date)}
         </text>
         {sorted.length > 1 ? (
@@ -352,13 +338,19 @@ export function RunSeriesChart({
             x={x(sorted[sorted.length - 1]!.date)}
             y={height - 8}
             textAnchor="end"
-            fontSize={9.5}
+            fontSize={CHART_LABEL_PX}
             fill={INK_FAINT}
           >
             {formatShortDate(sorted[sorted.length - 1]!.date)}
           </text>
         ) : null}
-        <text x={width - M.right} y={top - 8} textAnchor="end" fontSize={9.5} fill={INK_FAINT}>
+        <text
+          x={width - M.right}
+          y={CHART_HEADER_BASELINE}
+          textAnchor="end"
+          fontSize={CHART_LABEL_PX}
+          fill={INK_FAINT}
+        >
           {unit}
         </text>
       </svg>
@@ -393,21 +385,28 @@ export function WeeklyDurationChart({
   /** Names the window the average covers — the chart can't know it. */
   avgLabel?: string;
 }) {
-  const { wrapperProps, tooltip, registerMarks } = useChartTooltip();
+  const { wrapperProps, tooltip, registerMarks, measured } = useChartTooltip();
   const hatchId = useHatchId();
-  const width = 560;
+  const width = chartWidth(measured, 560);
   const height = 184;
+  // The average line's label prints in the annotation strip, so the plot
+  // starts below it — see CHART_HEADER_H. The bars lose 14 units of height
+  // and no longer lose their tops to a caption on a phone.
+  const top = CHART_HEADER_H;
   const innerW = width - M.left - M.right;
-  const innerH = height - M.top - M.bottom;
-  const baselineY = M.top + innerH;
+  const innerH = height - top - M.bottom;
+  const baselineY = top + innerH;
 
   const totals = weeks.map((w) => (w.lowSeconds + w.highSeconds) / 3600);
   const avgHours = avgSeconds != null ? avgSeconds / 3600 : undefined;
-  const { ticks, y } = yAxis([0, Math.max(0.5, ...totals, avgHours ?? 0)], M.top, innerH);
+  const { ticks, y } = yAxis([0, Math.max(0.5, ...totals, avgHours ?? 0)], top, innerH);
   const step = innerW / Math.max(1, weeks.length);
   const barW = Math.min(34, step * 0.62);
   const px = (seconds: number) => baselineY - y(seconds / 3600);
-  const labelEvery = Math.ceil(weeks.length / 8);
+  // Stride by the room the labels HAVE, not by a constant tuned for one
+  // width: "May 12" is ~38px at 10px type, and this chart now builds itself
+  // anywhere from 240 to 560 wide.
+  const labelEvery = labelStride(weeks.length, innerW, 46);
 
   const marks: ChartMark[] = [];
   const bars = weeks.map((w, i) => {
@@ -460,7 +459,7 @@ export function WeeklyDurationChart({
               <rect x={x} y={baselineY - 2} width={barW} height={2} fill={TRACK} />
             ) : null}
             {i % labelEvery === 0 ? (
-              <text x={x + barW / 2} y={height - 9} textAnchor="middle" fontSize={9.5} fill={INK_FAINT}>
+              <text x={x + barW / 2} y={height - 9} textAnchor="middle" fontSize={CHART_LABEL_PX} fill={INK_FAINT}>
                 {formatShortDate(week.weekStart)}
               </text>
             ) : null}
@@ -472,7 +471,6 @@ export function WeeklyDurationChart({
             x2={width - M.right}
             y={y(avgHours)}
             label={`${avgLabel} ${avgHours.toFixed(1)}h`}
-            emphasis
           />
         ) : null}
       </svg>
@@ -508,17 +506,57 @@ const WORKOUT_STATUSES: ReadonlySet<string> = new Set([
 
 const CELL = 16;
 const CELL_STEP = 18;
+const CELL_GAP = CELL_STEP - CELL;
 const ROW_GUTTER = 26;
 const MONTH_BAND = 14;
 const ROW_LABELS = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
+
+/**
+ * The heatmap is the one chart whose width is INTRINSIC — a week is a column,
+ * so its natural size is `columns × step`, not a design width. It therefore
+ * takes the sizing layer from the other end: instead of clamping a fixed
+ * viewBox to the measured box, it picks the cell step that makes the grid FILL
+ * the measured box, and the viewBox follows from that. Same outcome as every
+ * other chart (viewBox width = rendered width, so labels are CSS pixels), and
+ * a second benefit that only touch cares about: the cells grow on a phone
+ * instead of shrinking, so a tappable day is a bigger target where the taps
+ * actually happen.
+ *
+ * The clamp bounds are the two failure modes. Below 14 the day cell stops
+ * being a target (12px with the gap taken out); above 26 twelve weeks of
+ * squares turn into a wall of tiles and stop reading as a calendar.
+ */
+const CELL_STEP_MIN = 14;
+const CELL_STEP_MAX = 26;
+export function heatCellStep(measured: number | null, columns: number): number {
+  if (measured == null || !Number.isFinite(measured) || columns <= 0) return CELL_STEP;
+  const perColumn = (measured - ROW_GUTTER - 2) / columns;
+  return Math.max(CELL_STEP_MIN, Math.min(CELL_STEP_MAX, Math.floor(perColumn)));
+}
 
 /**
  * One day cell. Every status differs in SHAPE as well as color — a filled
  * square, a dot, a ring, a slash, a cross, a hairline outline — so the grid
  * still reads for a color-blind reader and in a black-and-white printout.
  */
-function HeatCellMark({ status, x, y }: { status: ConsistencyStatus; x: number; y: number }) {
-  const box = { x, y, width: CELL, height: CELL, rx: 3 };
+function HeatCellMark({
+  status,
+  x,
+  y,
+  cell = CELL,
+}: {
+  status: ConsistencyStatus;
+  x: number;
+  y: number;
+  /** Cell edge in viewBox units — which, post-sizing-layer, is CSS pixels. */
+  cell?: number;
+}) {
+  const box = { x, y, width: cell, height: cell, rx: 3 };
+  // The inset marks (the slash, the ✕, the pending ring) are drawn at a
+  // FRACTION of the cell rather than at fixed 4/4.5px insets: the cell is a
+  // measured size now, and a constant inset that reads right at 16px eats a
+  // 14px cell alive and looks lost in a 26px one.
+  const inset = cell * 0.28;
   switch (status) {
     case "completed":
       return <rect {...box} fill="var(--chart-1)" />;
@@ -526,7 +564,7 @@ function HeatCellMark({ status, x, y }: { status: ConsistencyStatus; x: number; 
       return (
         <g>
           <rect {...box} fill="var(--chart-1)" opacity={0.55} />
-          <circle cx={x + CELL / 2} cy={y + CELL / 2} r={2.5} fill="var(--bg-raised)" />
+          <circle cx={x + cell / 2} cy={y + cell / 2} r={2.5} fill="var(--bg-raised)" />
         </g>
       );
     case "pending":
@@ -536,8 +574,8 @@ function HeatCellMark({ status, x, y }: { status: ConsistencyStatus; x: number; 
           <rect
             x={x + 0.75}
             y={y + 0.75}
-            width={CELL - 1.5}
-            height={CELL - 1.5}
+            width={cell - 1.5}
+            height={cell - 1.5}
             rx={2.5}
             fill="none"
             stroke={INK_FAINT}
@@ -550,10 +588,10 @@ function HeatCellMark({ status, x, y }: { status: ConsistencyStatus; x: number; 
         <g>
           <rect {...box} fill={TRACK} />
           <line
-            x1={x + 4}
-            y1={y + CELL - 4}
-            x2={x + CELL - 4}
-            y2={y + 4}
+            x1={x + inset}
+            y1={y + cell - inset}
+            x2={x + cell - inset}
+            y2={y + inset}
             stroke={INK_FAINT}
             strokeWidth={1.5}
             strokeLinecap="round"
@@ -563,19 +601,19 @@ function HeatCellMark({ status, x, y }: { status: ConsistencyStatus; x: number; 
     case "missed":
       return (
         <g stroke="var(--danger-ink)" strokeWidth={1.5} strokeLinecap="round">
-          <line x1={x + 4.5} y1={y + 4.5} x2={x + CELL - 4.5} y2={y + CELL - 4.5} />
-          <line x1={x + CELL - 4.5} y1={y + 4.5} x2={x + 4.5} y2={y + CELL - 4.5} />
+          <line x1={x + inset} y1={y + inset} x2={x + cell - inset} y2={y + cell - inset} />
+          <line x1={x + cell - inset} y1={y + inset} x2={x + inset} y2={y + cell - inset} />
         </g>
       );
     case "rest":
-      return <circle cx={x + CELL / 2} cy={y + CELL / 2} r={1.5} fill={INK_FAINT} opacity={0.45} />;
+      return <circle cx={x + cell / 2} cy={y + cell / 2} r={1.5} fill={INK_FAINT} opacity={0.45} />;
     case "future":
       return (
         <rect
           x={x + 0.5}
           y={y + 0.5}
-          width={CELL - 1}
-          height={CELL - 1}
+          width={cell - 1}
+          height={cell - 1}
           rx={2.5}
           fill="none"
           stroke={GRID}
@@ -627,14 +665,19 @@ export function ConsistencyHeatmap({
   subtitle?: string;
   note?: string;
 }) {
-  const { wrapperProps, tooltip, registerMarks } = useChartTooltip();
+  const { wrapperProps, tooltip, registerMarks, measured } = useChartTooltip();
   const columns = heatmapColumns(days, 14);
   const monthCols = new Map(
     newMonthColumns(columns).map((i) => [i, formatShortMonth(columns[i]!.weekStart)]),
   );
   const inProgress = inProgressColumnIndex(columns);
-  const width = ROW_GUTTER + columns.length * CELL_STEP + 2;
-  const height = MONTH_BAND + 7 * CELL_STEP;
+  // Fill the measured box (see heatCellStep) rather than draw at a fixed 18px
+  // step and let `width: 100%` scale the whole picture — that scaling is what
+  // made these month/weekday labels a different physical size on every screen.
+  const step = heatCellStep(measured, columns.length);
+  const cell = step - CELL_GAP;
+  const width = ROW_GUTTER + columns.length * step + 2;
+  const height = MONTH_BAND + 7 * step;
 
   // Counted from the columns actually drawn, not from `days` — the summary is
   // the screen-reader's version of this chart, so it has to describe the cells
@@ -655,8 +698,8 @@ export function ConsistencyHeatmap({
       const day = columns[col]!.days[row];
       if (!day || day.status === "none") continue;
       marks.push({
-        x: ROW_GUTTER + col * CELL_STEP + CELL / 2,
-        y: MONTH_BAND + row * CELL_STEP + CELL / 2,
+        x: ROW_GUTTER + col * step + cell / 2,
+        y: MONTH_BAND + row * step + cell / 2,
         label: `${formatShortDate(day.date)}: ${STATUS_LABEL[day.status]}${
           col === inProgress ? " · this week" : ""
         }`,
@@ -685,14 +728,14 @@ export function ConsistencyHeatmap({
           role={onDayClick ? "group" : "img"}
           aria-label={`Plan consistency, ${columns.length} weeks by weekday`}
           viewBox={`0 0 ${width} ${height}`}
-          style={svgStyle(Math.max(width, 380))}
+          style={svgStyle(width)}
         >
           {[...monthCols].map(([i, label]) => (
             <text
               key={`m${i}`}
-              x={ROW_GUTTER + i * CELL_STEP}
+              x={ROW_GUTTER + i * step}
               y={MONTH_BAND - 5}
-              fontSize={9}
+              fontSize={CHART_LABEL_PX}
               fill={INK_FAINT}
             >
               {label}
@@ -702,9 +745,9 @@ export function ConsistencyHeatmap({
             <text
               key={label}
               x={ROW_GUTTER - 5}
-              y={MONTH_BAND + row * CELL_STEP + CELL / 2 + 3}
+              y={MONTH_BAND + row * step + cell / 2 + 3}
               textAnchor="end"
-              fontSize={8}
+              fontSize={CHART_LABEL_PX}
               fill={INK_FAINT}
             >
               {label}
@@ -713,19 +756,19 @@ export function ConsistencyHeatmap({
           {columns.map((column, col) =>
             column.days.map((day, row) => {
               if (!day) return null;
-              const x = ROW_GUTTER + col * CELL_STEP;
-              const y = MONTH_BAND + row * CELL_STEP;
+              const x = ROW_GUTTER + col * step;
+              const y = MONTH_BAND + row * step;
               const clickable = !!onDayClick && WORKOUT_STATUSES.has(day.status);
               return (
                 <g key={day.date}>
-                  <HeatCellMark status={day.status} x={x} y={y} />
+                  <HeatCellMark status={day.status} x={x} y={y} cell={cell} />
                   {clickable ? (
                     <rect
                       className="chart-hit"
                       x={x}
                       y={y}
-                      width={CELL}
-                      height={CELL}
+                      width={cell}
+                      height={cell}
                       rx={3}
                       fill="transparent"
                       role="button"
@@ -783,10 +826,10 @@ export function OutcomeBar({
   title?: string;
   subtitle?: string;
 }) {
-  const { wrapperProps, tooltip, registerMarks } = useChartTooltip();
+  const { wrapperProps, tooltip, registerMarks, measured } = useChartTooltip();
   const movedHatch = useHatchId();
   const skippedHatch = useHatchId();
-  const width = 560;
+  const width = chartWidth(measured, 560);
   const barH = 12;
   const segments = outcomeSegments({ completed, moved, pending, skipped, missed, planned }, width);
 
@@ -905,22 +948,25 @@ export function LapHrBars({
   threshold?: { value: number; unit?: string };
   title?: string;
 }) {
-  const { wrapperProps, tooltip, registerMarks } = useChartTooltip();
+  const { wrapperProps, tooltip, registerMarks, measured } = useChartTooltip();
   const withHr = laps.filter((l) => (l.avgHr ?? 0) > 0);
   const hrs = withHr.map((l) => l.avgHr!);
-  const width = 420;
+  const width = chartWidth(measured, 420);
   const height = 132;
   const left = 34;
+  // Bars diverge from the ceiling line, so the line's own label had nowhere
+  // safe to sit inside the plot: it belongs in the annotation strip.
+  const top = CHART_HEADER_H;
   const innerW = width - left - 10;
-  const innerH = height - M.top - 22;
+  const innerH = height - top - 22;
   const unit = threshold?.unit ?? "bpm";
   const center = threshold?.value ?? (hrs.length ? median(hrs) : 0);
   const domain = divergingDomain(hrs.length ? hrs : [center], center);
-  const { ticks, y } = yAxis([domain.lo, domain.hi], M.top, innerH, { mode: "data", pad: 0 });
+  const { ticks, y } = yAxis([domain.lo, domain.hi], top, innerH, { mode: "data", pad: 0 });
   const step = innerW / Math.max(1, withHr.length);
   const barW = Math.min(24, step * 0.66);
   const yCenter = y(center);
-  const labelEvery = Math.ceil(withHr.length / 12);
+  const labelEvery = labelStride(withHr.length, innerW, 18);
   // With no threshold the bars diverge from the run's OWN median lap, which is
   // a description of the run, not a target it was measured against. Calling
   // that line a "ceiling" in the tooltip and the accessible name — as both did
@@ -962,11 +1008,11 @@ export function LapHrBars({
             const yv = y(l.avgHr!);
             const over = l.avgHr! > center;
             const h = Math.max(2, Math.abs(yv - yCenter));
-            const top = over ? yCenter - h : yCenter;
+            const barY = over ? yCenter - h : yCenter;
             return (
               <g key={l.lapIndex}>
                 <path
-                  d={verticalBarPath(x, top, barW, h, 3, over ? { top: true } : { bottom: true })}
+                  d={verticalBarPath(x, barY, barW, h, 3, over ? { top: true } : { bottom: true })}
                   fill={over ? "var(--danger)" : "var(--chart-1)"}
                   opacity={over ? 0.85 : 1}
                 />
@@ -975,7 +1021,7 @@ export function LapHrBars({
                     x={x + barW / 2}
                     y={height - 8}
                     textAnchor="middle"
-                    fontSize={8}
+                    fontSize={CHART_LABEL_PX}
                     fill={INK_FAINT}
                   >
                     {l.lapIndex}
@@ -984,17 +1030,12 @@ export function LapHrBars({
               </g>
             );
           })}
-          <line
+          <ReferenceLine
             x1={left}
             x2={width - 10}
-            y1={yCenter}
-            y2={yCenter}
-            stroke={INK_FAINT}
-            strokeWidth={1.5}
+            y={yCenter}
+            label={`${center} ${unit} ${centerLabel}`}
           />
-          <text x={width - 10} y={yCenter - 4} textAnchor="end" fontSize={9} fill={INK_FAINT}>
-            {center} {unit} {threshold ? "ceiling" : "median"}
-          </text>
         </svg>
         {tooltip}
       </div>
@@ -1030,8 +1071,8 @@ export function DivergingPaceBars({
   units?: "km" | "mi";
   note?: string;
 }) {
-  const { wrapperProps, tooltip, registerMarks } = useChartTooltip();
-  const width = 420;
+  const { wrapperProps, tooltip, registerMarks, measured } = useChartTooltip();
+  const width = chartWidth(measured, 420);
   const gutter = 56;
   const rowH = 16;
   const barH = 9;
@@ -1094,7 +1135,7 @@ export function DivergingPaceBars({
             const barX = even ? center - 1 : faster ? center - w : center;
             return (
               <g key={r.activityId}>
-                <text x={gutter - 8} y={i * rowH + barH + 1} textAnchor="end" fontSize={9} fill={INK_FAINT}>
+                <text x={gutter - 8} y={i * rowH + barH + 1} textAnchor="end" fontSize={CHART_LABEL_PX} fill={INK_FAINT}>
                   {formatShortDate(r.date)}
                 </text>
                 <path
@@ -1108,13 +1149,13 @@ export function DivergingPaceBars({
               </g>
             );
           })}
-          <text x={center} y={height - 6} textAnchor="middle" fontSize={9} fill={INK_FAINT}>
+          <text x={center} y={height - 6} textAnchor="middle" fontSize={CHART_LABEL_PX} fill={INK_FAINT}>
             0
           </text>
-          <text x={plotLeft} y={height - 6} fontSize={9} fill={INK_FAINT}>
+          <text x={plotLeft} y={height - 6} fontSize={CHART_LABEL_PX} fill={INK_FAINT}>
             ← faster
           </text>
-          <text x={plotRight} y={height - 6} textAnchor="end" fontSize={9} fill={INK_FAINT}>
+          <text x={plotRight} y={height - 6} textAnchor="end" fontSize={CHART_LABEL_PX} fill={INK_FAINT}>
             faded →
           </text>
         </svg>
@@ -1167,11 +1208,11 @@ export function BaselineBandChart({
   subtitle?: string;
   note?: string;
 }) {
-  const { wrapperProps, tooltip, registerMarks } = useChartTooltip();
+  const { wrapperProps, tooltip, registerMarks, measured } = useChartTooltip();
   const sorted = [...series].sort((a, b) => (a.date < b.date ? -1 : a.date > b.date ? 1 : 0));
-  const width = 560;
+  const width = chartWidth(measured, 560);
   const height = 176;
-  const top = 24;
+  const top = CHART_HEADER_H;
   const innerW = width - M.left - M.right;
   const innerH = height - top - M.bottom;
   const color = `var(${colorVar})`;
@@ -1253,11 +1294,17 @@ export function BaselineBandChart({
             <circle key={`${p.date}-${i}`} cx={x(p.date)} cy={y(p.value)} r={2.5} fill={color} opacity={0.45} />
           ))}
           {monthStartDates(dates).map((d) => (
-            <text key={d} x={x(d)} y={height - 8} textAnchor="middle" fontSize={9.5} fill={INK_FAINT}>
+            <text key={d} x={x(d)} y={height - 8} textAnchor="middle" fontSize={CHART_LABEL_PX} fill={INK_FAINT}>
               {formatShortMonth(d)}
             </text>
           ))}
-          <text x={width - M.right} y={top - 8} textAnchor="end" fontSize={9.5} fill={INK_FAINT}>
+          <text
+            x={width - M.right}
+            y={CHART_HEADER_BASELINE}
+            textAnchor="end"
+            fontSize={CHART_LABEL_PX}
+            fill={INK_FAINT}
+          >
             {unit}
           </text>
         </svg>

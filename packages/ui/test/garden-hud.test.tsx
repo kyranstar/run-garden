@@ -23,7 +23,14 @@ import { renderToStaticMarkup as render } from "react-dom/server";
 import { describe, expect, it } from "vitest";
 import type { DisciplineBalance, WorkoutDto } from "@rg/api-client";
 import type { ReadinessVerdict } from "@rg/domain";
-import { BalanceStrip, DockPill, DockVerdict, dockCoversStage } from "../src/screens/garden.js";
+import { initialSnapshot, type GardenSnapshot, type GardenState } from "@rg/garden-engine";
+import {
+  BalanceStrip,
+  DockPill,
+  DockVerdict,
+  dockCoversStage,
+  forecastVoice,
+} from "../src/screens/garden.js";
 
 const balance = (over: Partial<DisciplineBalance> = {}): DisciplineBalance => ({
   run: { days: 4, health: 0.6 },
@@ -253,5 +260,67 @@ describe("dockCoversStage (C1/C23)", () => {
   it("crosses back to false above the derived break-even (~931px)", () => {
     expect(dockCoversStage(930)).toBe(true);
     expect(dockCoversStage(932)).toBe(false);
+  });
+});
+
+/**
+ * The forecast's VOICE (audit#4 D9). The balance strip goes quiet when the
+ * forecast is already speaking a loss for the garden, and until now it decided
+ * that by restating the forecast's branch conditions in `GardenScreen` — a
+ * copy that drifted (it claimed a voice in the no-plan branch, where the line
+ * renders nothing at all) and then went dead when `quiet` was hardcoded true.
+ * One function answers now, so these are the branches that answer differently.
+ */
+describe("forecastVoice: which branches speak a loss", () => {
+  const base = (over: Partial<GardenState> = {}): GardenSnapshot => {
+    const s = initialSnapshot("2026-08-01");
+    return { ...s, state: { ...s.state, ...over } };
+  };
+  const run = (o: Partial<Parameters<typeof forecastVoice>[0]> = {}) =>
+    forecastVoice({
+      snapshot: base(),
+      todayDate: "2026-08-14",
+      daysAhead: 0,
+      nextWorkout: workout({ category: "easy", effectiveDate: "2026-08-20" }),
+      ...o,
+    });
+
+  it("an adventure shield is reassurance, never a loss", () => {
+    for (const adv of [
+      { frozenToday: true, graceDay: false, lastSport: "ski", lastDate: "2026-08-14" },
+      { frozenToday: false, graceDay: true, lastSport: "ski", lastDate: "2026-08-13" },
+    ]) {
+      expect(run({ adventure: adv })?.kind).toBe("calm");
+    }
+  });
+
+  it("recovery rain is reassurance — so the bars keep their voice", () => {
+    // The measured hole: `quiet` was unconditional, so a garden drinking in
+    // recovery rain while strength and yoga starved said nothing about them.
+    const v = run({ snapshot: base({ inComeback: true, restMode: false }) });
+    expect(v?.kind).toBe("calm");
+  });
+
+  it("a taper is reassurance", () => {
+    expect(run({ nextWorkout: workout({ category: "rest", effectiveDate: "2026-08-14" }) })?.kind)
+      .toBe("calm");
+  });
+
+  it("a dry spell, a drought and a deep drought are losses", () => {
+    for (const days of [5, 10, 20]) {
+      const v = run({ snapshot: base({ daysSinceCompletedRun: days }) });
+      expect(v?.kind, `${days} days`).toBe("loss");
+    }
+  });
+
+  it("with no plan it renders NOTHING — so it cannot be counted as a voice", () => {
+    // This is the branch the restated copy got wrong: `fc.next !== null` was
+    // true, so the strip went quiet for a line that was never on the page.
+    expect(run({ nextWorkout: null })).toBeNull();
+    expect(run({ nextWorkout: undefined })).toBeNull();
+  });
+
+  it("rest mode silences the forecast entirely", () => {
+    expect(run({ snapshot: base({ restMode: true }) })).toBeNull();
   });
 });
