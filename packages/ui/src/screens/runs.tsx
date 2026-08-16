@@ -1,8 +1,9 @@
-import { useId, useMemo, useState } from "react";
+import { useId, useMemo, useRef, useState } from "react";
 import { Link } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { api, type ActivityDto, type WorkoutDto } from "@rg/api-client";
 import { isAdventureSport, sportLabel } from "@rg/domain";
+import { useMeasuredWidth } from "../chart-kit.js";
 import {
   Banner,
   CategoryDot,
@@ -98,10 +99,13 @@ function EffortChip({ load, feel }: { load: number | null; feel: number | null }
   );
 }
 
-/** Viewbox units. A bar narrower than this is a hairline nobody can see or
- * tap, so every lap gets at least this much — width that has to come out of
- * the laps that earned it, which is why the caption names them. */
-const MIN_BAR_W = 1.2;
+/** CSS pixels — this figure's viewBox is built at its measured width, so its
+ * units ARE pixels (System 4 F6; they used to be 1/100ths of a box rendered at
+ * 187–230px, i.e. 1.2 units meant 2.2px on a phone and 2.8 on a desktop). A
+ * bar narrower than this is a hairline nobody can see or tap, so every lap
+ * gets at least this much — width that has to come out of the laps that
+ * earned it, which is why the caption names them. */
+const MIN_BAR_W = 2.2;
 
 /** Below this the laps stop being "the activity's shape" and start being a
  * sample of it — the caption says so rather than letting the silhouette imply
@@ -143,15 +147,34 @@ function PaceShape({
 }) {
   const [sel, setSel] = useState<number | null>(null);
   const captionId = useId();
+  const boxRef = useRef<HTMLSpanElement>(null);
+  const measured = useMeasuredWidth(boxRef);
   const paced = laps.filter((l) => l.p != null && l.p > 0);
-  if (paced.length < 2) return null;
   const speeds = laps.map((l) => (l.p && l.p > 0 ? 1000 / l.p : null));
   const known = speeds.filter((v): v is number => v != null);
-  const vMean = known.reduce((a, b) => a + b, 0) / known.length;
+  const vMean = known.length > 0 ? known.reduce((a, b) => a + b, 0) / known.length : 0;
   const totalS = laps.reduce((acc, l) => acc + Math.max(1, l.s), 0);
-  const W = 100;
+  // The figure builds its geometry at the width it actually occupies, so one
+  // viewBox unit is one CSS pixel (System 3 §B, System 4 F6). It shipped with
+  // a fixed `W = 100` inside a box CSS sizes at `min(230px, 55–60%)`, which
+  // rendered it at scale 1.872 on a phone and 2.300 on a desktop — every
+  // stroke width and every `rx` in here silently meaning something different
+  // per width, and the responsive suite blind to it because its chart
+  // assertions read source patterns in the two chart FILES and this figure
+  // lives in a screen.
+  //
+  // `useMeasuredWidth` — the app's one measurement — but NOT `chartWidth`:
+  // that helper floors at `CHART_MIN_WIDTH` (240px) to protect a 40-unit left
+  // gutter and 10px axis labels, and this figure has neither, so the floor
+  // sits ABOVE its 230px design cap and would pin every instance back to 230
+  // and re-introduce the exact scale it is here to remove. A text-free
+  // sparkline's honest cap is the box.
+  const W = measured && measured > 0 ? Math.round(measured) : 230;
   const H = 30;
-  const GAP = laps.length > 24 ? 0.35 : 0.7;
+  if (paced.length < 2) return null;
+  // Pixels now, like everything else in here: the old 0.35/0.7 viewBox units
+  // rendered at 0.65/1.31px on a phone.
+  const GAP = laps.length > 24 ? 0.7 : 1.3;
   // Semi-absolute scale anchored to the activity's MEAN speed: a steady run
   // sits as a mid-height plateau (every lap ≈ the mean), an interval session
   // swings the full band — so amplitude means variance, comparably across
@@ -188,7 +211,7 @@ function PaceShape({
         y={H - h}
         width={w}
         height={h}
-        rx={0.8}
+        rx={1.5}
         onClick={() => setSel(sel === i ? null : i)}
       >
         <title>{lapText(i)}</title>
@@ -220,6 +243,10 @@ function PaceShape({
     });
   return (
     <>
+      {/* The box the figure measures itself against. `useMeasuredWidth` reads
+          `clientWidth`, which an inline box reports as 0, so this carries the
+          `display: block` and the width rule and the SVG fills it. */}
+      <span className="act-shape-box" ref={boxRef}>
       <svg
         className={`act-shape${sel !== null ? " has-selection" : ""}`}
         viewBox={`0 0 ${W} ${H}`}
@@ -240,6 +267,7 @@ function PaceShape({
       >
         {bars}
       </svg>
+      </span>
       <p className="act-shape-note" id={captionId} aria-live="polite" title={caption}>
         {caption}
       </p>

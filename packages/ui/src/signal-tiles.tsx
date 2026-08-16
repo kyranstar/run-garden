@@ -1,6 +1,7 @@
 import type { KeyboardEvent } from "react";
+import { useRef } from "react";
 import type { InsightsResponse } from "@rg/api-client";
-import { dateX } from "./chart-kit.js";
+import { dateX, useMeasuredWidth } from "./chart-kit.js";
 
 /**
  * Signal tiles — the compact per-metric cards on the rebuilt Insights
@@ -247,7 +248,9 @@ function Gauge({ g }: { g: MetricGauge }) {
 
 // ── Sparkline ────────────────────────────────────────────────────────────
 
-const SPARK_W = 100;
+/** The width a tile's sparkline builds at before it has measured its box (and
+ *  on the server) — the widest tile column the app lays out. */
+const SPARK_W_FALLBACK = 240;
 const SPARK_H = 28;
 const SPARK_PAD = 4;
 
@@ -255,10 +258,20 @@ const SPARK_PAD = 4;
  * Last 14 points, no axes, ~28px tall, width fills the tile. Uses
  * `dateX` (chart-kit) for x so points land proportional to elapsed time,
  * not just index — consistent with every other chart in the app.
+ *
+ * Built at its MEASURED width, so one viewBox unit is one CSS pixel (System 3
+ * §B, System 4 F6). It shipped with a fixed `SPARK_W = 100` in a box CSS sizes
+ * at `width: 100%`, which rendered it at scale 1.320 in a phone tile and 2.240
+ * in a desktop one — the 1.5-unit stroke drawing at 2.0px and 3.4px
+ * respectively for the same line. Same measurement hook as every other chart;
+ * not `chartWidth`, whose `CHART_MIN_WIDTH` floor exists to protect a 40-unit
+ * axis gutter and 10px tick labels that a text-free sparkline does not have.
  */
 function Sparkline({ series }: { series: MetricSeriesPoint[] }) {
+  const boxRef = useRef<HTMLDivElement>(null);
+  const measured = useMeasuredWidth(boxRef);
+  const SPARK_W = measured && measured > 0 ? Math.round(measured) : SPARK_W_FALLBACK;
   const pts = series.slice(-14);
-  if (pts.length === 0) return null;
   const values = pts.map((p) => p.value);
   const lo = Math.min(...values);
   const hi = Math.max(...values);
@@ -271,13 +284,17 @@ function Sparkline({ series }: { series: MetricSeriesPoint[] }) {
   const y = (v: number): number =>
     span > 0 ? SPARK_H - SPARK_PAD - ((v - lo) / span) * (SPARK_H - 2 * SPARK_PAD) : SPARK_H / 2;
   const path = pts.map((p, i) => `${i === 0 ? "M" : "L"}${x(p.date).toFixed(1)},${y(p.value).toFixed(1)}`).join(" ");
-  const last = pts[pts.length - 1]!;
+  const last = pts[pts.length - 1];
 
+  // After the hooks, never before: an empty series still has to measure.
+  if (!last) return null;
   return (
-    <svg className="spark" viewBox={`0 0 ${SPARK_W} ${SPARK_H}`} preserveAspectRatio="none" aria-hidden="true">
-      {pts.length > 1 ? <path d={path} fill="none" stroke="var(--chart-3)" strokeWidth={1.5} /> : null}
-      <circle cx={x(last.date)} cy={y(last.value)} r={2.5} fill="var(--chart-3)" />
-    </svg>
+    <div className="spark-box" ref={boxRef}>
+      <svg className="spark" viewBox={`0 0 ${SPARK_W} ${SPARK_H}`} preserveAspectRatio="none" aria-hidden="true">
+        {pts.length > 1 ? <path d={path} fill="none" stroke="var(--chart-3)" strokeWidth={1.5} /> : null}
+        <circle cx={x(last.date)} cy={y(last.value)} r={2.5} fill="var(--chart-3)" />
+      </svg>
+    </div>
   );
 }
 

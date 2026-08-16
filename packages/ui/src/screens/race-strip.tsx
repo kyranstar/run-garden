@@ -74,9 +74,21 @@ function TaperArc({ race }: { race: NonNullable<RaceHubResponse["race"]> }) {
   );
 }
 
+/**
+ * One subscription, two readers (System 4 D7): the strip renders from it, and
+ * the plan page gates its first paint on it. Same key, so react-query serves
+ * both from one fetch — and the strip is therefore either present in the
+ * page's very first paint or the page has not painted yet. It can no longer
+ * arrive 1.5s late and shove the brief, the plan cards and the week grid 80px
+ * down the screen.
+ */
+export function useRaceHub() {
+  return useQuery({ queryKey: ["race-hub"], queryFn: api.raceHub, staleTime: 60_000 });
+}
+
 export function RaceStrip({ units }: { units: Units }) {
   const qc = useQueryClient();
-  const hub = useQuery({ queryKey: ["race-hub"], queryFn: api.raceHub, staleTime: 60_000 });
+  const hub = useRaceHub();
   const [open, setOpen] = useState(false);
   const save = useMutation({
     mutationFn: (items: Array<{ id: string; label: string; done: boolean }>) =>

@@ -314,15 +314,18 @@ describe("disclosure anchoring", () => {
   it("a centred desktop dialog freezes its geometry on the disclosure, not on open", () => {
     expect(css).toContain(".sheet-backdrop[data-pinned]");
     expect(css).toContain("margin-top: var(--sheet-pin, 0px)");
-    // Both numbers, together: the top edge AND the height it had when the
-    // reader pressed something. Capping height is what keeps the pinned
-    // action row still while the disclosure grows into the body's scroller.
-    expect(ruleBody("  .sheet-backdrop[data-pinned] > .sheet")).toContain(
-      "var(--sheet-hold, 100dvh)",
-    );
+    // The TOP edge is the number that matters, and it is the only one held
+    // here: a centred dialog's bottom edge is free, so it grows downward into
+    // the backdrop below it (System 4 R1) and a disclosure is simply visible.
+    // Holding the height too kept the frame perfectly still and put the thing
+    // it revealed 59.6px below the fold. What stops the growth is the viewport.
     expect(ruleBody("  .sheet-backdrop[data-pinned] > .sheet")).toContain(
       "calc(100dvh - var(--sheet-pin, 0px) - 1.5rem)",
     );
+    expect(ruleBody("  .sheet-backdrop[data-pinned] > .sheet")).not.toContain("--sheet-hold");
+    // The dialog whose body was ALREADY scrolling keeps its body's size, so a
+    // higher ceiling is not itself a reason to grow (see disclosure.test.tsx).
+    expect(css).toContain(".sheet-backdrop[data-body-held] > .sheet > .sheet-body");
   });
 });
 

@@ -1,7 +1,14 @@
-import { useState } from "react";
+import { useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { api, type WorkoutDto } from "@rg/api-client";
-import { Banner, formatDayShort, formatTime, Sheet, Spinner } from "../components.js";
+import {
+  Banner,
+  formatDayShort,
+  formatTime,
+  Sheet,
+  Spinner,
+  useRevealInView,
+} from "../components.js";
 
 /**
  * The rescheduling transaction: at most three recommendations with one short
@@ -23,6 +30,13 @@ export function MoveSheet({
   const [customDate, setCustomDate] = useState(workout.effectiveDate);
   const [customTime, setCustomTime] = useState(workout.effectiveTime);
   const [result, setResult] = useState<string | null>(null);
+  /* 207px of date and time fields inside a frozen frame: the sheet correctly
+     refused to move, and the fields opened with their bottom 87.3px past the
+     body's fold at 390 (86.7 at 1440) — the reader pressed a button and, as
+     far as the screen was concerned, nothing happened. Growth a reader asked
+     for has to be brought to the reader (System 4 R2). */
+  const customRef = useRef<HTMLDivElement>(null);
+  useRevealInView(custom, customRef);
 
   const candidates = useQuery({
     queryKey: ["candidates", workout.id],
@@ -124,39 +138,50 @@ export function MoveSheet({
             <p className="muted">No nearby open slots — pick a time yourself below.</p>
           ) : null}
 
-          {custom ? (
-            <div>
-              <div className="field">
-                <label htmlFor="mv-date">Date</label>
-                <input
-                  id="mv-date"
-                  type="date"
-                  value={customDate}
-                  onChange={(e) => setCustomDate(e.target.value)}
-                />
+          {/* A real toggle, and the fields come after it (System 4 D6). The
+              button used to be REPLACED by the date/time fields: +164px inside
+              the sheet, with the control that opened them gone from the DOM
+              and nothing anywhere to shut them again. Same shape as Settings'
+              "Show diagnostics", one screen over. */}
+          <button
+            className="btn"
+            aria-expanded={custom}
+            aria-controls="mv-custom"
+            onClick={() => setCustom((v) => !v)}
+          >
+            Choose another time
+          </button>
+          <div id="mv-custom" className="disclosure-body">
+            {custom ? (
+              <div ref={customRef}>
+                <div className="field">
+                  <label htmlFor="mv-date">Date</label>
+                  <input
+                    id="mv-date"
+                    type="date"
+                    value={customDate}
+                    onChange={(e) => setCustomDate(e.target.value)}
+                  />
+                </div>
+                <div className="field">
+                  <label htmlFor="mv-time">Start time</label>
+                  <input
+                    id="mv-time"
+                    type="time"
+                    value={customTime}
+                    onChange={(e) => setCustomTime(e.target.value)}
+                  />
+                </div>
+                <button
+                  className="btn btn-primary"
+                  disabled={move.isPending}
+                  onClick={() => move.mutate({ date: customDate, time: customTime })}
+                >
+                  Move here
+                </button>
               </div>
-              <div className="field">
-                <label htmlFor="mv-time">Start time</label>
-                <input
-                  id="mv-time"
-                  type="time"
-                  value={customTime}
-                  onChange={(e) => setCustomTime(e.target.value)}
-                />
-              </div>
-              <button
-                className="btn btn-primary"
-                disabled={move.isPending}
-                onClick={() => move.mutate({ date: customDate, time: customTime })}
-              >
-                Move here
-              </button>
-            </div>
-          ) : (
-            <button className="btn" onClick={() => setCustom(true)}>
-              Choose another time
-            </button>
-          )}
+            ) : null}
+          </div>
 
           <hr className="divider" />
           <button className="btn" disabled={skip.isPending} onClick={() => skip.mutate()}>

@@ -202,6 +202,13 @@
   --tap: 44px;
   --tap-fine: 40px; /* the app's pre-touch floor, under a pointer */
   --tap-fine-row: 32px; /* …for a control inside a dense list row */
+  /* How far a tap pad can OVERHANG the control it belongs to: `(44 − h) / 2`
+     for the shortest padded box in the app (`.hud-beat-dismiss`, 20px → 12px;
+     `.ceremony-close`, 21px → 11.5). That overhang is invisible by
+     construction, so anything it can reach has to be inert — see
+     `.bottom-nav::before`. Same number as `.tap-clear` grants, and for the
+     same reason. */
+  --tap-reach: var(--space-5);
 
   /* THE LINT CONTRACT. A future rule can reject a raw length in any of
      `margin* padding* gap row-gap column-gap inset top right bottom left
@@ -522,6 +529,42 @@ button {
   width: 22px;
   height: 22px;
 }
+/* THE NAV OWNS ITS EDGE (System 4 P1). This bar is `position: fixed` and
+   OPAQUE at every width below lg, so it does not push scrolling content out of
+   the way — it covers it. Everything it covers is therefore invisible, and a
+   tap there fires a nav link instead of the thing that used to be under the
+   finger. Measured at 390, scroll 0, on the garden: `.ceremony-close`'s hit
+   rect ran to y=802.7 against a nav top of 786, and `elementFromPoint` at both
+   bottom corners came back "Garden" / "Plan".
+
+   The pad is not the class, and it is worth being exact about that, because
+   the obvious fix — clamp the pad — fixes almost none of it. On that same
+   screen `.dock-pill` is a 44px-tall button with NO pad at all whose box runs
+   74.2px into the same band, and `/settings` has a text input 67.9px in. Every
+   control in a scrolling page passes under this bar at some scroll offset;
+   that is what a fixed bar does, and the answer to it is to scroll.
+
+   What IS the pad's own is the OVERHANG: the `(44 − h) / 2` of hit area that
+   reaches past the visible box, which a reader can never see and so can never
+   be aiming at. So the bar reserves its top `--tap-reach` — the deepest
+   overhang any pad in the app has — as inert chrome. A pad bleeding under the
+   bar now hits the bar; only a control's own VISIBLE box can still reach a
+   link, and where it does, the reader is looking at a nav icon and getting the
+   nav.
+
+   Costs nothing: the strip is an absolutely-positioned pseudo-element, so no
+   nav content moves, and the links keep 58 − 12 = 46px of live height, above
+   the 44px floor. It must stay ABOVE the links in paint order, which a
+   positioned pseudo-element already is; the `z-index` says so out loud. */
+.bottom-nav::before {
+  content: "";
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: var(--tap-reach);
+  z-index: 1;
+}
 
 /* Desktop side navigation */
 .side-nav {
@@ -728,6 +771,14 @@ h1,
   flex-direction: column;
   gap: var(--space-6);
 }
+/* System 4 D6 — the body a disclosure toggle controls. It stays in the DOM so
+   `aria-controls` always resolves, and it takes NO room when closed: inside a
+   `gap` container an empty box is not free, it is a whole gap, so this is
+   `display: none` rather than a zero height. Spacing above it comes from the
+   container it sits in, the same as any other sibling. */
+.disclosure-body:empty {
+  display: none;
+}
 .row {
   display: flex;
   align-items: center;
@@ -788,7 +839,10 @@ h1,
 /* The small button keeps its 36px box — inflating it to 44 is what
    `.btn-small` exists to avoid — and takes the floor as a hit pad instead. */
 .btn-small {
-  min-height: 36px;
+  /* `--tap-own` restates this for the touch floor's makeup rule, which is one
+     `min-height` and would otherwise replace it — see "Touch floor". */
+  --tap-own: 36px;
+  min-height: var(--tap-own);
   padding: var(--space-2) var(--space-5);
   font-size: var(--text-sm);
 }
@@ -1428,12 +1482,22 @@ a.note {
 
 /* 3 — the beat: what changed. The dismiss ✕ is the stage's; on a card it is
    the same control in the same place. */
+/* Two of this row's four children are controls ("See all →" and the ✕), so it
+   has to say how much room it has around each — 12px, written into the gap
+   and the licence together the way `.tap-clear` does it, because a container
+   that grants more than its gap is the pad-into-neighbour bug (shipped three
+   times). At 12px the 21.6px "See all →" reaches the floor on the pad alone
+   and keeps its box; the ✕ is smaller and takes a 20px min-height from the
+   touch-floor rule, which is inside its own padding and moves nothing.
+   Measured before: "See all →" was in NO pad list at all and was 60.4 × 21.6
+   of hit area on a phone. */
 .hud-beat {
   display: flex;
   flex-wrap: wrap;
   align-items: baseline;
   justify-content: center;
-  gap: var(--space-3);
+  --tap-clear: var(--space-5);
+  gap: var(--tap-clear);
   margin: var(--space-3) 0 0;
   font-size: var(--text-sm);
 }
@@ -1449,6 +1513,10 @@ a.note {
   cursor: pointer;
   padding: var(--space-1);
   line-height: 0;
+  /* Centred rather than top-aligned, so the touch floor's min-height grows
+     the box around the glyph instead of hanging it from the top edge. */
+  display: inline-flex;
+  align-items: center;
 }
 
 /* 4 — the dock: readiness first, then the workout it is about. In the stack
@@ -1700,10 +1768,33 @@ a.note {
   display: flex;
   flex-direction: column;
   gap: var(--space-6);
+}
+/* System 4 D8: the jump target. `scroll-margin-top` moved here off
+   `.garden-below` with the id — a scroll margin on a region 352px taller than
+   the thing being pointed at is a margin on the wrong box. */
+.garden-attention {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
   scroll-margin-top: var(--space-6);
 }
 .garden-below-intro {
   max-width: 62ch;
+  /* Grants its inline disclosure the 11.2px per side its 21.6px box needs to
+     reach the 44px floor. The button sits at the END of the paragraph, so the
+     pad only ever reaches into `.garden-below`'s own 16px gap, and there is no
+     second control in this prose for it to steal a tap from. */
+  --tap-clear: var(--space-5);
+}
+/* System 4 D4/D3: a disclosure trigger's LABEL is constant — the caret is the
+   only thing that changes. A fixed-width glyph box means ▸ and ▾ occupy the
+   same space, so neither the button nor the sentence it sits in can re-wrap
+   when it fires, and the second tap lands where the first one did. */
+.disclosure-caret {
+  display: inline-block;
+  width: 1em;
+  margin-left: 0.15em;
+  text-align: center;
 }
 
 /* ── The desktop stage ────────────────────────────────────────────────────
@@ -1828,7 +1919,11 @@ a.note {
     display: flex;
     align-items: baseline;
     justify-content: flex-start;
-    gap: var(--space-4);
+    /* Both again, from one value: the stage's row is tighter than the stack's,
+       and a `gap` that narrows while the inherited `--tap-clear` stays put is
+       exactly how a pad comes to reach past its neighbour's edge. */
+    --tap-clear: var(--space-4);
+    gap: var(--tap-clear);
     margin: var(--space-5) 0 0;
     font-size: var(--text-sm);
     opacity: 0.92;
@@ -2307,6 +2402,13 @@ a.note {
   background: transparent;
   border: 1px dashed var(--border-strong);
 }
+/* The dot's box before its week has answered: it holds the column's height so
+   the strip can be drawn at full size, and it draws NOTHING — a dashed
+   `week-day-empty` here would state "no workout planned" and then take it
+   back (System 4 F1). */
+.week-day-settling {
+  background: transparent;
+}
 .week-day-today .week-day-dot {
   outline: 2px solid var(--green);
   outline-offset: 1.5px;
@@ -2462,8 +2564,29 @@ a.note {
   overflow: hidden;
 }
 @media (prefers-reduced-motion: no-preference) {
+  /* `backwards`, not `both` — the same one word as `.sheet` (System 4 P5, and
+     see the long note there). A finished `forwards`/`both` animation keeps
+     applying its `transform`, and an element with an applied transform is the
+     containing block for every `position: fixed` descendant. Measured here at
+     390: the landed drawer reported `matrix(1, 0, 0, 1, 0, 0)`, and it now
+     reports `none`.
+
+     NECESSARY BUT NOT SUFFICIENT, and the difference is measured. `transform`
+     is one of several properties that capture fixed descendants, and this
+     element carries another: `backdrop-filter`. With the fill mode fixed, a
+     probe `position: fixed; inset: 0` child of the landed drawer still laid
+     out at 356.8 × 752 — the drawer's own padding box — against a 390 × 844
+     viewport; adding `backdrop-filter: none` on top of that put it at
+     390 × 844. `.sheet` escapes because it has no glass, which is why the
+     same one word was a complete fix there and is only half of one here.
+
+     So: nothing `position: fixed` may be nested inside a Drawer until the
+     glass moves off this element (a backdrop layer of its own, which is a
+     visual change and wants its own look). Nothing is today — the garden's
+     species sheet is a SIBLING of the drawer, which is the only reason either
+     of these was ever inert. */
   .drawer {
-    animation: drawer-in 240ms cubic-bezier(0.32, 0.72, 0.28, 1) both;
+    animation: drawer-in 240ms cubic-bezier(0.32, 0.72, 0.28, 1) backwards;
   }
   .drawer-backdrop {
     animation: sheet-dim 180ms ease both;
@@ -3134,12 +3257,19 @@ a.note {
   white-space: nowrap;
 }
 
-/* Sparkline: last 14 points, no axes, ~28px tall, fills tile width. */
+/* Sparkline: last 14 points, no axes, ~28px tall, fills tile width. The BOX
+   carries the width and the margins — it is what the figure measures itself
+   against (`clientWidth`, which only a block box reports), and the figure then
+   builds its viewBox at that number so one unit is one pixel. */
+.spark-box {
+  display: block;
+  width: 100%;
+  margin: var(--space-3) 0 var(--space-2);
+}
 .spark {
   display: block;
   width: 100%;
   height: 28px;
-  margin: var(--space-3) 0 var(--space-2);
 }
 
 /* Strip boxes: hardStack (7, on=hard, --chart-2 family) or easyDiscipline
@@ -3365,11 +3495,48 @@ a.note {
   padding-right: var(--space-3);
   margin-right: calc(var(--space-3) * -1);
 }
+/* The pinned action row, and the one disclosure that still opens into it
+   (System 4 R2).
+
+   Its direction is the interesting part. This box is bottom-anchored on a
+   phone: the sheet's frame is frozen, so a block added here grows the foot
+   UPWARD out of the body, and with that block last in the DOM the action row
+   it belongs to slid up with it — measured at 390, "Retire…" moved −61.2px
+   under the finger that pressed it, which is the very defect the foot was
+   supposed to cure. `column-reverse` spends that growth on the far side: the
+   action row keeps its place against the sheet's bottom edge and the block
+   opens into the room above it.
+
+   DOM order stays [actions · disclosure] at both widths, so the block is still
+   the next tab stop after the control that armed it — the reverse is visual
+   only, and over two adjacent rows of one pinned box, not the kind of `order`
+   flip that once sent tab focus 576px back up the garden.
+
+   What lives here now is the studio modal's RENAME, and only that. Destructive
+   confirms used to as well, and this rule is exactly why they could not stay:
+   `column-reverse` keeps the trigger still, but it also puts the confirm on
+   the far side of a row the confirm does not belong to — 169.2px above
+   "Retire…" at 390, with three unrelated actions in between. They are nested
+   dialogs now (System 4 P2, `ConfirmDialog`). A rename is not destructive and
+   is an editing surface rather than a question about the press that opened it,
+   so "the input appears just above its own row" is a true description of it. */
 .sheet-foot {
   flex: none;
+  display: flex;
+  flex-direction: column-reverse;
+  justify-content: flex-end;
+  gap: var(--space-5);
   margin-top: var(--space-5);
   padding-top: var(--space-5);
   border-top: 1px solid var(--border);
+}
+/* …and a foot whose only content is a CLOSED disclosure is not a foot. The
+   container stays mounted so `aria-controls` always resolves to something
+   (System 4 D6), which would otherwise leave every workout sheet wearing a
+   permanent 41px rule and gutter across its bottom for a button that is not
+   there. */
+.sheet-foot:has(> .disclosure-body:only-child:empty) {
+  display: none;
 }
 /* `fill`: the dialog's content is itself a column that owns its own scroll
    region (the coach panel). The sheet takes a definite height so that child
@@ -3382,12 +3549,74 @@ a.note {
   flex-direction: column;
   overflow: hidden;
 }
+/* A CONFIRM IS CENTRED AT EVERY WIDTH (System 4 P2). Below lg every other
+   dialog is bottom-anchored, and a bottom-anchored confirm re-creates the
+   exact defect the pinned foot was built to cure: its buttons land in the same
+   band the action row occupies, so the destructive one arrives under the
+   finger that just asked for it. Measured at 390 with the plain bottom-sheet
+   form — trigger "Remove from plan" at y 784–828, the dialog's own "Remove
+   from plan" at y 784–828, centre-to-centre 0.0px, and `elementFromPoint` at
+   the pre-press point came back "Remove from plan".
+
+   Centred, the dialog is also just the right shape for what it is: a short
+   question about one thing, not a surface you work in. `justify-content:
+   center` is inherited from the base rule; this only changes the axis that was
+   pinned to the fold, and the lg block below already centres everything. */
+.sheet-backdrop--centered {
+  align-items: center;
+  padding: var(--space-6);
+}
+.sheet-backdrop--centered > .sheet {
+  border-radius: var(--radius-lg);
+  max-width: 30rem;
+  /* The safe-area term belongs to a sheet whose bottom edge IS the screen's. */
+  padding-bottom: var(--space-6);
+}
+/* The drag handle is the bottom sheet's affordance and this is not one. */
+.sheet-backdrop--centered .sheet-handle {
+  display: none;
+}
+/* An open sheet's FRAME is stable; growth inside it scrolls (System 4 F3).
+   Below lg the sheet is bottom-anchored, so every pixel a disclosure adds
+   comes off the TOP edge — measured at 390: "Choose another time" lifted the
+   move sheet's head 223px, "Full structure" the workout sheet's 129px, and
+   "Remove from plan" 17px. Every in-flow disclosure in every mobile sheet in
+   the app, because the pin below was scoped to `min-width: 1024px`.
+
+   The bottom edge here is the viewport's and cannot move, so unlike the
+   centred case there is no free edge to spend the change on: the frame is
+   frozen outright with `height`. Collapsing a disclosure therefore leaves its
+   room inside the scroller rather than dropping the sheet's top edge back
+   down onto a reader who is looking at it — the same rule in both directions,
+   which "shrink back to content" is not.
+
+   `--sheet-hold` is measured by `usePinnedTop` at the reader's FIRST press
+   inside the dialog, never at open — see the hook, and the 476px cap that
+   froze a loading state and hid the studio modal's weeks table. Un-pinned
+   (the common case: a sheet nobody has pressed anything in) this rule does
+   not exist and the sheet sizes to its content as it always did. */
+.sheet-backdrop[data-pinned] > .sheet {
+  height: min(var(--sheet-hold, 85dvh), 85dvh);
+}
 @media (prefers-reduced-motion: no-preference) {
   .sheet-backdrop {
     animation: sheet-dim 180ms ease both;
   }
+  /* `backwards`, not `both`. A finished `forwards` animation keeps applying
+     `transform`, and an element with an applied transform is the containing
+     block for every `position: fixed` descendant — which the workout sheet
+     has, because the move sheet and the match sheet are nested Sheets. Their
+     backdrops were therefore `inset: 0` of the PARENT SHEET rather than of the
+     viewport: measured at 1440, the move sheet's backdrop was 250/400.6 (the
+     parent's exact box), the move sheet was centred inside a 400px box in a
+     900px window, its disclosure pushed it 220px out through the bottom of
+     that box, and the pin — whose numbers are relative to the backdrop it
+     believes is the viewport — was 3px out, so opening "Choose another time"
+     slid the dialog's own title row up 3px. `backwards` keeps the entrance
+     (which only ever animates FROM something) and hands the element back to
+     the normal box model the moment it lands. */
   .sheet {
-    animation: sheet-in 220ms cubic-bezier(0.32, 0.72, 0.28, 1) both;
+    animation: sheet-in 220ms cubic-bezier(0.32, 0.72, 0.28, 1) backwards;
   }
 }
 @keyframes sheet-dim {
@@ -3423,18 +3652,55 @@ a.note {
      is still arriving) until the reader presses something inside it; at that
      instant components.tsx measures BOTH its top edge (`--sheet-pin`) and its
      height (`--sheet-hold`) and this rule holds them, so the growth lands in
-     the body's scroll region and nothing above it moves. `--sheet-hold` is a
-     max, not a height: re-collapsing the disclosure shrinks the dialog back
-     rather than leaving a hole. */
+     the body's scroll region and nothing above it moves.
+
+     Same pin, different spend from the bottom-sheet rule above, and this is
+     where the two widths genuinely diverge: here the BOTTOM edge is free, so
+     the dialog GROWS DOWNWARD into the backdrop below it (System 4 R1) and
+     the disclosure is simply visible. Holding `--sheet-hold` as a max as well
+     was the first cut, and it bought a still frame at the price of the
+     content: at 1440 the workout sheet is 392px tall in a 900px window with
+     ~250px of dead backdrop under it, and capping there put the red "Really
+     remove" confirm 59.6px below the body's fold and 128 stages-worth of
+     "Full structure" 53.6px below it. Growth below the trigger is allowed by
+     the invariant; growth nobody can see is not a disclosure.
+
+     So `--sheet-hold` is spent on the mobile rule only, and the cap here is
+     the viewport: the dialog grows until it reaches the bottom gutter, at
+     which point the body scrolls exactly as it does on a phone. `height:
+     auto` also lets a re-collapsed disclosure shrink back rather than leaving
+     a hole. The top edge — the one the invariant is about — is held by
+     `margin-top` throughout. */
   .sheet-backdrop[data-pinned] {
     align-items: flex-start;
   }
   .sheet-backdrop[data-pinned] > .sheet {
+    height: auto;
     margin-top: var(--sheet-pin, 0px);
-    max-height: min(
-      var(--sheet-hold, 100dvh),
-      calc(100dvh - var(--sheet-pin, 0px) - 1.5rem)
-    );
+    max-height: calc(100dvh - var(--sheet-pin, 0px) - 1.5rem);
+  }
+  /* …but a body that was ALREADY scrolling keeps the size it had, so raising
+     the ceiling does not itself grow the dialog. Without this the studio modal
+     — which is taller than any viewport it has ever been in — took the extra
+     66px the moment the reader pressed anything, and handed 10px of it to the
+     body, which pushed its pinned action row down 10px on a press that
+     disclosed nothing. It can still shrink if a disclosure needs more room
+     than the viewport has left; it just cannot grow into it. */
+  .sheet-backdrop[data-body-held] > .sheet > .sheet-body {
+    flex: 0 1 auto;
+    height: var(--sheet-body-hold);
+  }
+  /* Centred, so the free edge is the BOTTOM one: the action row keeps the top
+     of the foot and a confirm opens below it, into the growth. The reverse of
+     the phone, for the same reason — put the new thing where the movement
+     goes. */
+  .sheet-foot {
+    flex-direction: column;
+  }
+  /* …except `--fill`, whose content column sizes against a DEFINITE height.
+     `height: auto` above would collapse the coach panel's own scroll region. */
+  .sheet-backdrop[data-pinned] > .sheet--fill {
+    height: min(80dvh, 46rem);
   }
 }
 .sheet-handle {
@@ -4711,10 +4977,19 @@ a.note {
   gap: var(--space-3) var(--space-5);
   margin-top: var(--space-3);
 }
-.act-shape {
+/* The figure's BOX is what CSS sizes; the figure builds its viewBox at that
+   box's measured width so one unit is one pixel (System 4 F6). The width rule
+   lives out here rather than on the `<svg>` because `useMeasuredWidth` reads
+   `clientWidth`, and only a block box reports one. */
+.act-shape-box {
+  display: block;
   width: min(230px, 60%);
-  height: 30px;
   flex-shrink: 0;
+}
+.act-shape {
+  display: block;
+  width: 100%;
+  height: 30px;
   color: var(--act-hue, var(--green));
   fill: currentColor;
   opacity: 0.9;
@@ -4825,7 +5100,7 @@ a.note {
     flex: none;
     overflow: visible;
   }
-  .act-shape { width: min(230px, 55%); }
+  .act-shape-box { width: min(230px, 55%); }
 }
 
 /* ── Plan page (2026-08-11 rework): brief · plan cards · one week ───────── */
@@ -4980,8 +5255,20 @@ a.note {
   gap: var(--space-4);
   flex-wrap: wrap;
 }
+/* System 4 D9. This reset was three declarations short of one, so the UA
+   defaults it never overrode were still in force: `appearance: auto`,
+   `border: 2px outset buttonborder`, `background: buttonface`. It was the only
+   control in the app wearing native browser chrome, and buttonface behind
+   `--ink-faint` measured 1.34:1 in dark mode — the countdown, the date and the
+   phase were, in the dark, essentially invisible. The four missing lines are
+   the same four every other bare control here already declares (`.linklike`,
+   `.chipbtn`). */
 .race-strip-toggle {
   width: 100%;
+  appearance: none;
+  background: none;
+  border: 0;
+  padding: 0;
   font: inherit;
   color: inherit;
   text-align: left;
@@ -5295,9 +5582,11 @@ a.note {
   flex: 1;
 }
 /* Visually small on purpose (a back-link, not a button) — `.tap-pad` carries
-   the 44px hit area. */
+   the 44px hit area. `--tap-own` restates the 32 for the touch floor's makeup
+   rule, which is one `min-height` and would otherwise replace it. */
 .plan-week-back {
-  min-height: 32px;
+  --tap-own: 32px;
+  min-height: var(--tap-own);
 }
 .plan-week-jump {
   position: relative;
@@ -5308,8 +5597,10 @@ a.note {
   color: var(--green-ink);
   text-decoration: underline;
   font-size: var(--text-sm);
-  /* Same as `.plan-week-back`: an underlined link, padded not inflated. */
-  min-height: 32px;
+  /* Same as `.plan-week-back`: an underlined link, padded not inflated — and
+     the same `--tap-own` restatement, for the same reason. */
+  --tap-own: 32px;
+  min-height: var(--tap-own);
   display: inline-flex;
   align-items: center;
 }
@@ -5578,6 +5869,17 @@ a.note {
 .studio-modal-grow {
   flex: 1;
 }
+/* The rename editor, in the foot rather than in the action row (System 4 R4).
+   The field takes the slack and the two answers stay whole, so a 390px phone
+   wraps them onto a second line instead of squeezing "Cancel" to four
+   characters. */
+.studio-modal-rename {
+  flex-wrap: wrap;
+}
+.studio-modal-rename > input {
+  flex: 1 1 10rem;
+  min-width: 0;
+}
 .studio-revise summary {
   cursor: pointer;
   color: var(--green-ink);
@@ -5723,10 +6025,31 @@ a.note {
      It inherits, `.tap-clear` writes it and the container's `gap` from the
      same value so the two can never disagree, and the pad is CLAMPED to it.
 
-   Two consequences, both deliberate. A container that declares nothing gets
-   pads exactly the size of their controls — a smaller target, never a tap that
-   fires the wrong control. And a gap can never be narrowed below the clearance
-   it grants without narrowing every pad inside it in the same edit.
+   THE FLOOR IS THE DEFAULT (System 4 F5). This used to read
+   `var(--tap-clear, 0px)`, and a `0px` default turns a rule named as a floor
+   into a pure ceiling: `clamp(100%, 100% + 0, 44px)` is exactly the control,
+   at any size. `--tap` is the clamp's MAX argument — it caps a pad, it can
+   never raise one — so every control whose container happened to declare
+   nothing silently got no pad at all and nobody found out. Measured:
+   `.ceremony-close` shipped a 96 × 21px hit target while sitting in the pad
+   list.
+
+   So the default is now `var(--tap)` — "enough" — and the floor holds unless
+   a container says it cannot afford it. Declaring a SMALLER clearance is
+   therefore a real statement with a real cost, which is the second half:
+
+     Under a coarse pointer every padded control also carries
+     `min-height: max(0px, calc(var(--tap) − 2 × --tap-clear))`
+     and, on the other axis, `min-width` of the same shortfall.
+
+   That is the shortfall the pad was refused, paid by the box instead. It is
+   0 wherever the clearance is ample (every container currently listed below),
+   32px in a 6px-gap row, and the full 44px where a container grants nothing —
+   which turns the paragraph that used to end this section ("where two
+   controls share an edge the pad is refused and the box grows instead") from
+   an instruction a person has to remember into the mechanism itself. A
+   container can now choose between giving the pad room and giving the box
+   room; what it can no longer do is choose neither by saying nothing.
 
    `--space-5` (12px) is `.tap-clear`'s value because the deepest reach in the
    app is 11.2px (`.dock-attention`, 21.6px tall). A container whose own gap is
@@ -5767,7 +6090,9 @@ a.note {
 .coach-tray > .linklike,
 .coach-panel-head .linklike,
 .proposal-actions > .linklike,
+.garden-below-intro .linklike,
 .hud-beat-dismiss,
+.hud-beat-seeall,
 .hud-nudge,
 .hud-rail button,
 .dock-attention,
@@ -5798,7 +6123,9 @@ a.note {
 .coach-tray > .linklike::after,
 .coach-panel-head .linklike::after,
 .proposal-actions > .linklike::after,
+.garden-below-intro .linklike::after,
 .hud-beat-dismiss::after,
+.hud-beat-seeall::after,
 .hud-nudge::after,
 .hud-rail button::after,
 .dock-attention::after,
@@ -5811,12 +6138,15 @@ a.note {
   transform: translate(-50%, -50%);
   /* Never smaller than the control (the 100% floor), never larger than the
      floor (`--tap`), and never reaching further than the container granted.
-     With `--tap-clear` unset the three collapse to "exactly the control".
-     `--tap-clear-x` / `-y` override one axis for the two containers whose room
-     is not the same in both directions; they inherit, so a container nested
-     inside one of those must restate them. */
-  width: clamp(100%, calc(100% + 2 * var(--tap-clear-x, var(--tap-clear, 0px))), var(--tap));
-  height: clamp(100%, calc(100% + 2 * var(--tap-clear-y, var(--tap-clear, 0px))), var(--tap));
+     The unset default is `--tap` — "as far as it takes" — so the floor holds
+     by default and a tight container has to SAY it is tight; it used to be
+     `0px`, which quietly collapsed the three terms to "exactly the control"
+     and is why `.ceremony-close` shipped a 21px-tall pad from inside this
+     very list. `--tap-clear-x` / `-y` override one axis for the containers
+     whose room is not the same in both directions; they inherit, so a
+     container nested inside one of those must restate them. */
+  width: clamp(100%, calc(100% + 2 * var(--tap-clear-x, var(--tap-clear, var(--tap)))), var(--tap));
+  height: clamp(100%, calc(100% + 2 * var(--tap-clear-y, var(--tap-clear, var(--tap)))), var(--tap));
 }
 
 /* Containers of padded controls, each naming the clearance it actually has.
@@ -5862,9 +6192,25 @@ a.note {
   --tap-clear: var(--space-7);
   --tap-clear-y: var(--space-5);
 }
+/* 12px, not 8: the close button's own box is 28px tall with a 1px border, and
+   `100%` on an absolutely-positioned pad resolves against the PADDING box —
+   so 8px of grant bought 26 + 16 = 42px, two short of the floor, measured. A
+   step up costs no layout (the pad is capped at 44 either way) and the drawer
+   head has the room vertically. Sideways it has none: the button is 42px wide
+   with the garden HUD showing beside it, which `--tap-clear-x: 0` says out
+   loud — a deliberate 42px-wide target, and the one place in the app where
+   the floor is knowingly not met.
+
+   `--tap-makeup-x: 0` is the second half of saying that (System 4 P3). The
+   width makeup rule pays a refused pad back with the BOX, so on its own it
+   would answer `--tap-clear-x: 0` with a 44px `min-width` and grow the exact
+   box this exception exists to keep small. Refusing the room and refusing the
+   makeup are two different statements and this container makes both. The
+   vertical half still applies — 36 → 44 is what the head's 12px buys. */
 .drawer-head {
-  --tap-clear: var(--space-4);
+  --tap-clear: var(--space-5);
   --tap-clear-x: 0px;
+  --tap-makeup-x: 0;
 }
 
 /* The class a container wears when it must GRANT clearance rather than report
@@ -5873,6 +6219,98 @@ a.note {
 .tap-clear {
   --tap-clear: var(--space-5);
   gap: var(--tap-clear);
+}
+
+/* THE OTHER HALF OF THE FLOOR (System 4 F5). A pad can only reach as far as
+   its container granted, so on its own it is a ceiling: `--tap` is the
+   clamp's MAX argument and can never raise a pad, only cap one. What closes
+   the gap is the box — `min-height` is exactly the shortfall the pad was
+   refused, so between the two the target is always `--tap`:
+
+     clearance ample (every container listed above) →  0px, and nothing moves
+     6px gap                                       → 32px, box grows 12 short
+     container grants nothing                      → 44px, the box IS the pad
+
+   which is the rule the prose at the top of this section used to state as an
+   instruction for a person to remember. Coarse pointers only, on the same
+   reasoning as the grown heights below: 44px is a fingertip, and a pad costs
+   no layout while a min-height does.
+
+   BOTH AXES (System 4 P3). The first cut of this rule was `min-height` alone,
+   and a rule that only pays back the vertical shortfall leaves a control short
+   with nothing owed wherever the container is tight SIDEWAYS. Measured:
+   `.hud-beat-dismiss` is a 16 × 20px glyph in a container granting 12px, so
+   the pad clamped to 16 + 24 = 40px wide — under the floor, and the only
+   control in the app that was — while the vertical half of the same rule paid
+   its height back in full. `min-width` is the same arithmetic on the same
+   term, and it binds on nothing else: the widest shortfall any other container
+   asks for is 32px (a 6px row) against boxes that are all words.
+
+   `--tap-makeup-x` is how a container REFUSES the payment as well as the room.
+   `--tap-clear-x: 0` says "there is no space beside this control"; for the
+   drawer's ✕ that is true of the box as well as the pad (42px wide with the
+   garden HUD showing beside it), and without a way to say so the makeup rule
+   would grow it to 44 and undo the one deliberate exception in the section. It
+   is a multiplier, not a length, so it composes inside the same `calc`.
+
+   `--tap-own` is how this COMPOSES with a control that already declares a
+   minimum of its own instead of replacing it. `min-height` is one property:
+   the first cut of this rule set `.btn-small` to 28px and measured the button
+   SHRINKING 36 → 31.6px on a phone, because a later declaration at equal
+   specificity simply wins. So a control with its own floor states it as
+   `--tap-own` beside it, and the makeup takes whichever is larger. Three
+   controls do (`.btn-small`, `.plan-week-back`, `.plan-week-jump summary`),
+   and scales.test.tsx fails if a fourth appears without one.
+
+   The list is the pad list, a third time. That repetition is the price of not
+   giving thirty controls a shared class in the JSX, and it is checked: the
+   three lists have to name the same controls or a control gets one half of
+   the contract and not the other — which is precisely how `.ceremony-close`
+   ended up in the pad list with `position: static` once before. */
+@media (pointer: coarse) {
+  .tap-pad,
+  .btn-small,
+  .plan-brief-chip,
+  .plan-brief-needs,
+  .race-check-btn,
+  .plan-week-back,
+  .plan-week-jump summary,
+  .reviews-earlier > summary,
+  .chart-tip-action,
+  .ceremony-close,
+  .ceremony-see,
+  .balance-detail-close,
+  .balance-detail-next,
+  .week-pull,
+  .wildlife-chip,
+  .race-strip-toggle,
+  .studio-toggle,
+  .coach-msg-retry,
+  .btn-row > .linklike,
+  .memory-row .linklike,
+  .coach-tray > .linklike,
+  .coach-panel-head .linklike,
+  .proposal-actions > .linklike,
+  .garden-below-intro .linklike,
+  .hud-beat-dismiss,
+  .hud-beat-seeall,
+  .hud-nudge,
+  .hud-rail button,
+  .dock-attention,
+  .dock-collapse,
+  .dock-grows {
+    min-height: max(
+      var(--tap-own, 0px),
+      calc(var(--tap) - 2 * var(--tap-clear-y, var(--tap-clear, var(--tap))))
+    );
+    min-width: max(
+      0px,
+      calc(
+        var(--tap-makeup-x, 1) *
+          (var(--tap) - 2 * var(--tap-clear-x, var(--tap-clear, var(--tap))))
+      )
+    );
+  }
 }
 
 /* ── What a mouse pays ────────────────────────────────────────────────────

@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { Link } from "react-router-dom";
-import { useQuery } from "@tanstack/react-query";
+import { keepPreviousData, useQuery } from "@tanstack/react-query";
 import { api, type ActivityDto, type DisciplineBalance, type WorkoutDto } from "@rg/api-client";
 import {
   addDays,
@@ -26,7 +26,7 @@ import {
 } from "@rg/garden-engine";
 import { GardenScene, type SceneImpulse } from "@rg/garden-renderer";
 import { IconClose } from "../icons.js";
-import { Banner, CATEGORY_LABELS, EmptyState, formatDayShort, formatTime, localTodayGuess, relativeDay, Sheet, Spinner, useIsDesktop, useSpaceAbove } from "../components.js";
+import { Banner, CATEGORY_LABELS, EmptyState, formatDayShort, formatTime, localTodayGuess, relativeDay, settling, Sheet, Spinner, useHeldInPlace, useIsDesktop, useSpaceAbove } from "../components.js";
 import { Drawer } from "../drawer.js";
 import { cap, eventSentence, selectArrival, type ArrivalEvent } from "./arrival.js";
 import { CeremonyCard } from "./arrival-block.js";
@@ -608,6 +608,70 @@ function ordinalOf(n: number): string {
 }
 
 /**
+ * System 4 D8 — ONE derivation of "what needs you", and one phrase for it.
+ *
+ * There were two. The dock's jump link counted `needsAttention + unresolved`
+ * and said "3 workouts need attention ↓"; the banner it jumped to counted
+ * `needsAttention` alone and spoke for 1. So the app told you three, you
+ * tapped, and you landed on one — and not even on that, because the anchor
+ * was pinned to the whole lower region and resolved 352px above the banner.
+ * A count the user can check is a correctness bug when it is wrong, not a
+ * layout nit.
+ *
+ * Both readers now come through here, and `attentionPhrase` is the only place
+ * the sentence exists, so the number and the wording cannot drift apart
+ * again. `d` is settled before either reader runs (the screen's gate covers
+ * `today`); the `?? []` is for the errored case, where "no items" and "no
+ * block" are the same honest answer.
+ */
+export function gardenAttention(d: { needsAttention: WorkoutDto[]; unresolved: WorkoutDto[] } | undefined): {
+  mismatched: WorkoutDto[];
+  unresolved: WorkoutDto[];
+  count: number;
+} {
+  const mismatched = d?.needsAttention ?? [];
+  const unresolved = d?.unresolved ?? [];
+  return { mismatched, unresolved, count: mismatched.length + unresolved.length };
+}
+
+/** The one sentence. The link appends "↓"; nothing else restates the count. */
+export function attentionPhrase(count: number): string {
+  return count === 1 ? "1 workout needs attention" : `${count} workouts need attention`;
+}
+
+/**
+ * One subscription, two readers (System 4 D7c): the ribbon renders from it and
+ * `GardenScreen` gates its first paint on it. Same key, so it is one fetch —
+ * and the ribbon can no longer land 1.5s after the stage and shove the dock,
+ * the balance bars and everything under them 62px down the phone.
+ *
+ * `enabled` is what keeps that trade honest at the OTHER width. The ribbon
+ * lives inside the dock panel, and from lg the dock opens COLLAPSED by
+ * default — so the screen's copy of this subscription was buying a request
+ * for a box that never rendered, and then holding first paint on it: measured
+ * at 1440×900 with a 3s delay on `/api/plan/workouts`, "Loading the garden"
+ * held for 3078ms and `.week-ribbon` was still absent when it let go. That is
+ * the trade `settling`'s own docstring refuses ("holding a whole screen
+ * hostage for a footnote"). So the screen passes the DOCK'S state here: no
+ * dock, no fetch, and nothing for the gate to wait on. The ribbon's own call
+ * (inside the panel) leaves it at the default `true` — by the time that
+ * component exists, the panel is open by definition.
+ */
+function useWeekWorkouts(monday: string, enabled = true) {
+  return useQuery({
+    queryKey: ["week-workouts", monday],
+    queryFn: () => api.workouts(monday, addDays(monday, 6)),
+    enabled,
+    staleTime: 5 * 60_000,
+    // The screen's gate reads this. `keepPreviousData` keeps the gate a
+    // FIRST-paint gate: if the server's idea of today lands in a different
+    // ISO week from the client's opening guess, the key changes but the
+    // screen keeps painting from the week already in hand.
+    placeholderData: keepPreviousData,
+  });
+}
+
+/**
  * The week as a quest: seven dots from the plan, and — when completing the
  * plan genuinely crosses an unlock gate — that day carries the species'
  * sprite. At most one sprite per week; a quest, not a slot row.
@@ -622,11 +686,7 @@ function WeekRibbon({
   onOpenSpecies: (speciesId: string) => void;
 }) {
   const monday = mondayOf(todayDate);
-  const week = useQuery({
-    queryKey: ["week-workouts", monday],
-    queryFn: () => api.workouts(monday, addDays(monday, 6)),
-    staleTime: 5 * 60_000,
-  });
+  const week = useWeekWorkouts(monday);
   const workouts = (week.data?.workouts ?? []) as WorkoutDto[];
   // Reuses the history screen's exact queryKey/fn so the two screens share one cache entry.
   const acts = useQuery({ queryKey: ["runs"], queryFn: () => api.activities(40), staleTime: 5 * 60_000 });
@@ -652,25 +712,44 @@ function WeekRibbon({
       ),
     [codex, workouts, todayDate],
   );
-  if (workouts.length === 0) return null;
+  // The FRAME can be drawn before the week has answered, and it has to be
+  // (System 4 F1). This strip's height is entirely structural — a 24px sprite
+  // band, a 13px dot and a day letter per column, 57.8px whatever the data
+  // says — and the panel it lives in is bottom-anchored on the stage, so a
+  // ribbon that arrives after the panel opens lifts the panel's top edge and
+  // every word already in it: measured −50px at 1440 with the endpoint
+  // delayed. So the seven columns and their day letters (which are Mon–Sun no
+  // matter what the server says) arrive with the panel, and only the dots
+  // wait. Nothing is CLAIMED while it waits: a settling dot is drawn as
+  // nothing at all, not as the dashed "no workout" state it might turn out
+  // not to be.
+  const answering = week.isLoading;
+  if (!answering && workouts.length === 0) return null;
   return (
     <div className="week-ribbon">
-      <div className="week-ribbon-strip" aria-label="This week's plan">
+      <div className="week-ribbon-strip" aria-label="This week's plan" aria-busy={answering}>
         {Array.from({ length: 7 }, (_, i) => addDays(monday, i)).map((date, i) => {
           const w = workouts
             .filter((x) => x.effectiveDate === date)
             .sort((a, b) => (a.category === "rest" ? 1 : 0) - (b.category === "rest" ? 1 : 0))[0];
           const lands = landing?.date === date;
           return (
-            <div key={date} className={`week-day${date === todayDate ? " week-day-today" : ""}`}>
+            <div
+              key={date}
+              className={`week-day${!answering && date === todayDate ? " week-day-today" : ""}`}
+            >
               {lands && landing ? (
                 <span className="week-day-sprite" aria-hidden="true">
                   <SpeciesSpriteCard speciesId={landing.entry.speciesId} locked />
                 </span>
               ) : null}
               <span
-                className={`week-day-dot${w ? ` cat-${w.category}` : " week-day-empty"}${adventureDates.has(date) ? " week-day-adventure" : ""}`}
-                title={w?.title}
+                className={
+                  answering
+                    ? "week-day-dot week-day-settling"
+                    : `week-day-dot${w ? ` cat-${w.category}` : " week-day-empty"}${adventureDates.has(date) ? " week-day-adventure" : ""}`
+                }
+                title={answering ? undefined : w?.title}
               />
               <span className="week-day-dow" aria-hidden="true">
                 {DOW_LETTERS[i]}
@@ -1126,7 +1205,22 @@ export function GardenScreen() {
   const stageRef = useSpaceAbove();
 
   const dockOpen = dockChoice ?? defaultDockOpen(isDesktop, stageHeight);
+  /* Below lg the dock panel is in the flow, so collapsing it deletes ~547px of
+     page and the browser's scroll anchoring answers by scrolling — measured at
+     390 with "Minimize" at mid-viewport, `scrollY` 657 → 113 and the dock pill
+     thrown 544px down the screen, nowhere near a clamp. The pill is the thing
+     the panel folds into and it sits ABOVE the control, so it is the thing
+     that must not move; the content below rises into the gap, which is what
+     the invariant asks for and what an accordion has always done. Applied to
+     the pill's own toggle as well, in both directions: opening grows the same
+     box and the same anchoring can fire. At lg the panel is positioned over
+     the stage, nothing reflows, and this measures a delta of 0 and does
+     nothing. */
+  const holdDockPill = useHeldInPlace(dockOpen, () =>
+    document.querySelector<HTMLElement>(".dock-pill"),
+  );
   const setDockOpen = (open: boolean) => {
+    holdDockPill();
     setDockChoice(open);
     try {
       window.localStorage.setItem("rg-dock", open ? "open" : "collapsed");
@@ -1135,8 +1229,29 @@ export function GardenScreen() {
     }
   };
 
+  // Subscribed here, rendered by `<WeekRibbon>` inside the dock panel — one
+  // fetch, shared key, and the gate below waits for it (System 4 D7c). The
+  // dock's state, not the tier, decides whether either happens: the panel is
+  // where the ribbon lives, so a shut dock has nothing to fetch and nothing to
+  // wait for, at ANY width. (The dock can be opened at any width, so this is
+  // not "desktop skips it" — it is "the box that reads it decides".)
+  const weekWorkouts = useWeekWorkouts(
+    mondayOf(today.data?.today ?? localTodayGuess()),
+    dockOpen,
+  );
+  // …and the GATE reads that question as it stood at MOUNT. `dockOpen` is
+  // live, so a gate reading it directly would throw the whole screen back to
+  // "Loading the garden" the moment a desktop reader opened the dock an hour
+  // in — a first-paint gate re-firing on a deliberate tap, which is the very
+  // shape of defect this system exists to remove. First paint happens once;
+  // so does this question.
+  const [gateOnRibbon] = useState(dockOpen);
+
   // Fetched only once the scrubber is opened, then cached — scrubbing itself
   // is then all client-side (no per-frame requests).
+  // not-structural: `enabled: timelineOpen`, so it cannot be in flight during
+  // the first paint at all — it fills a panel the user deliberately opened,
+  // and the panel says "Loading timeline…" in its own head while it does.
   const timeline = useQuery({
     queryKey: ["garden-timeline"],
     queryFn: api.gardenTimeline,
@@ -1146,6 +1261,8 @@ export function GardenScreen() {
 
   // The next two weeks of the plan — keeps the forward scrub honest about
   // planned rest days (the run clock pauses on them) and plan gaps.
+  // not-structural: same as `timeline` — `enabled: timelineOpen`, and it only
+  // refines the projected days INSIDE the scrubber, never what exists.
   const clientToday = localTodayGuess();
   const scrubPlan = useQuery({
     queryKey: ["scrub-plan", clientToday],
@@ -1338,18 +1455,25 @@ export function GardenScreen() {
     return () => window.clearInterval(id);
   }, [replaying]);
 
-  // BOTH queries, not just the garden's (audit#4 D8). `/api/plan/today` feeds
-  // five separate things on this screen — the forecast line, the dock panel,
-  // the pill's second half, the attention link and the week ribbon — so
-  // rendering before it lands means rendering five holes and then filling
-  // them: measured on a 390px phone with a 2.5s delay, the sentence in the
-  // pill slid 141px sideways while the rail and the whole lower page dropped
-  // 621px. This is the recurring bug class in this codebase (a value derived
-  // while its query is in flight), and its established answer here is the one
-  // the garden query already uses: hold the screen, then paint once. A
-  // background REFETCH is not `isLoading`, so a stale-while-revalidate pass
-  // still paints immediately from cache.
-  if (garden.isLoading || today.isLoading) return <Spinner label="Loading the garden" />;
+  // ALL THREE queries, not just the garden's. `/api/plan/today` feeds five
+  // separate things on this screen — the forecast line, the dock panel, the
+  // pill's second half, the attention link and the week ribbon — so rendering
+  // before it lands means rendering five holes and then filling them:
+  // measured on a 390px phone with a 2.5s delay, the sentence in the pill slid
+  // 141px sideways while the rail and the whole lower page dropped 621px.
+  // `week-workouts` joined them in System 4 (D7c) for the milder version of
+  // the same thing: the ribbon returned `null` on `?? []` and then appeared
+  // above the dock, moving 54 landmarks 62px. It is in the gate only when the
+  // dock was open at mount — see `gateOnRibbon` above; with the dock shut the
+  // query never runs, so there is nothing to wait for and nothing to move.
+  //
+  // This is the recurring bug class in this codebase (a value derived while
+  // its query is in flight), and its established answer here is: hold the
+  // screen, then paint once. A background REFETCH is not `isLoading`, so a
+  // stale-while-revalidate pass still paints immediately from cache — see
+  // `settling` in components.tsx, which is this rule with a name.
+  if (settling(garden, today, gateOnRibbon ? weekWorkouts : null))
+    return <Spinner label="Loading the garden" />;
   if (!garden.data) return <EmptyState title="Couldn't load the garden" />;
 
   const snapshot = garden.data.snapshot as unknown as GardenSnapshot;
@@ -1403,8 +1527,18 @@ export function GardenScreen() {
   // dock the moment the timeline opens so they never fight for the same
   // pixels. Transient only (setDockChoice, not setDockOpen): it doesn't touch
   // the persisted `rg-dock` preference, and restoring on close isn't required.
+  //
+  // `isDesktop` because that is what the paragraph above is describing and
+  // was never true below lg (System 4 D5). Below lg NEITHER of them floats —
+  // the timeline and the dock are consecutive blocks in one column, so there
+  // is no overlap to avoid, and collapsing the dock was pure collateral: one
+  // tap on "Timeline" fired two opposite layout changes at once and moved 62
+  // landmarks, 21 of them ABOVE the button, which itself dropped 559px in the
+  // document. At 1440 the same line measures 0px, which is how the scoping
+  // error stayed invisible: the behaviour was correct exactly where it was
+  // tested and wrong everywhere else.
   function openTimeline() {
-    setDockChoice(false);
+    if (isDesktop) setDockChoice(false);
     setTimelineOpen(true);
   }
 
@@ -1536,10 +1670,8 @@ export function GardenScreen() {
     setReplaying(true);
   };
 
-  // Safe to derive: `today.isLoading` is one of the two gates above, so `d`
-  // is resolved (or errored) before anything here renders — this is not a
-  // count read out of a query still in flight (audit#4 D8).
-  const attentionCount = (d?.needsAttention.length ?? 0) + (d?.unresolved.length ?? 0);
+  // ONE derivation, read by the link and by the block it jumps to (D8).
+  const attention = gardenAttention(d);
   // The panel only exists when there is a workout to put in it; with no plan
   // the pill has nothing to disclose and stops being a button entirely.
   const dockPanelOpen = dockOpen && planActive;
@@ -1665,7 +1797,7 @@ export function GardenScreen() {
     .filter((x): x is { e: GardenEvent; text: string } => !!x.text);
 
   const howItWorks = showWeather ? (
-    <Banner kind="info">
+    <Banner kind="info" id="garden-how-it-works">
       Completing a planned run brings <strong>rain</strong>, which waters the garden and grows
       new plants; a rest day brings gentle <strong>sun</strong>. Go a few days without running
       and clouds gather, then a dry spell, then <strong>drought</strong> after about two weeks —
@@ -1685,17 +1817,31 @@ export function GardenScreen() {
           <Banner kind="info">Your training plan is safe, but Calendar mirroring is paused.</Banner>
         )
       ) : null}
-      {d && d.needsAttention.length > 0 ? (
-        <Banner kind="warn">
-          {d.needsAttention.length === 1
-            ? `“${d.needsAttention[0]!.title}” needs attention — COROS and Run Garden disagree.`
-            : `${d.needsAttention.length} workouts need attention.`}{" "}
-          <Link to="/plan">Review</Link>
-        </Banner>
+      {/* The jump target, and everything it promised, in one box (D8). The id
+          used to sit on `.garden-below` — the whole lower region, prose and
+          plumbing included — so "3 workouts need attention ↓" landed you 352px
+          above the first of them. The heading is the SAME sentence the link
+          shows, from the same derivation, so the number you tapped is the
+          number you arrive at; the mismatch banner beneath it names its own
+          subset without restating a competing total. */}
+      {attention.count > 0 ? (
+        <section className="garden-attention" id="garden-attention" aria-labelledby="garden-attention-h">
+          <h2 id="garden-attention-h" className="card-title">
+            {attentionPhrase(attention.count)}
+          </h2>
+          {attention.mismatched.length > 0 ? (
+            <Banner kind="warn">
+              {attention.mismatched.length === 1
+                ? `“${attention.mismatched[0]!.title}” — COROS and Run Garden disagree.`
+                : `${attention.mismatched.length} of them — COROS and Run Garden disagree.`}{" "}
+              <Link to="/plan">Review</Link>
+            </Banner>
+          ) : null}
+          {attention.unresolved.map((w) => (
+            <UnresolvedCard key={w.id} w={w} />
+          ))}
+        </section>
       ) : null}
-      {d?.unresolved.map((w) => (
-        <UnresolvedCard key={w.id} w={w} />
-      ))}
       {d ? <Readiness readiness={d.readiness} /> : null}
       <EvidenceCard />
       <ReviewPull />
@@ -1917,9 +2063,9 @@ export function GardenScreen() {
             </EmptyState>
           </div>
         ) : null}
-        {attentionCount > 0 ? (
+        {attention.count > 0 ? (
           <a className="dock-attention" href="#garden-attention">
-            {attentionCount === 1 ? "1 workout needs attention" : `${attentionCount} workouts need attention`} ↓
+            {attentionPhrase(attention.count)} ↓
           </a>
         ) : null}
       </>
@@ -1996,7 +2142,7 @@ export function GardenScreen() {
     timeline: timelineOpen ? timelinePanel : null,
 
     below: (
-      <div className="garden-below" id="garden-attention">
+      <div className="garden-below">
         <p className="muted garden-below-intro">
           {conditionStory(
             displayCondition,
@@ -2004,8 +2150,39 @@ export function GardenScreen() {
             livingPlantsCount,
             viewingLive ? species.length : displaySnapshot.unlockedSpeciesIds.length,
           )}{" "}
-          <button type="button" className="linklike" onClick={() => setShowWeather((v) => !v)}>
-            {showWeather ? "Hide" : "How the garden works"}
+          {/* The label does NOT change (System 4 D4). It used to collapse from
+              "How the garden works" (148px) to "Hide" (31px), and because the
+              control is inline in a wrapping paragraph the box did not shrink
+              in place — it re-flowed onto the previous line: measured at 390px
+              the before and after rectangles did not overlap AT ALL
+              (dx +253, dy −21). A disclosure that teleports out from under the
+              finger that opened it cannot be closed by the same finger.
+
+              `aria-expanded` carries the state that the words used to, and
+              the caret shows it. A CONSTANT label needs no width rule: the
+              box is the same box before and after, so neither the button nor
+              the sentence it sits in can re-wrap when it fires. (An earlier
+              pass claimed a `.garden-below-toggle` class was holding the
+              width. There was no such rule in styles.css — the class was a
+              JSX string and two test anchors and nothing else, so the
+              sentence was describing a mechanism the fix does not need and
+              the app did not have. It is gone; the caret's own fixed 1em box
+              is the only width rule here, and it is real.)
+
+              Its 44px tap pad is declared beside the other in-prose links in
+              styles.css — a bare `.linklike` was in none of the pad selector
+              lists, so this one control was 147.9 × 21.6px of hit area. */}
+          <button
+            type="button"
+            className="linklike"
+            aria-expanded={showWeather}
+            aria-controls="garden-how-it-works"
+            onClick={() => setShowWeather((v) => !v)}
+          >
+            How the garden works
+            <span className="disclosure-caret" aria-hidden>
+              {showWeather ? "▾" : "▸"}
+            </span>
           </button>
         </p>
         {howItWorks}

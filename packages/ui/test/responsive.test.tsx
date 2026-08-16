@@ -38,6 +38,10 @@ const rawCss = read("../src/styles.css");
 /** Comments name breakpoints in prose all over this sheet; only rules count. */
 const css = rawCss.replace(/\/\*[\s\S]*?\*\//g, "");
 const gardenSrc = read("../src/screens/garden.tsx");
+/** Code only. This file's prose quotes its own identifiers — the CSS above is
+ *  already decommented for the same reason, and a COUNT of a name must not
+ *  move because someone explained it. */
+const gardenCode = gardenSrc.replace(/\/\*[\s\S]*?\*\//g, "").replace(/^\s*\/\/.*$/gm, "");
 const chartsSrc = read("../src/charts.tsx");
 const kitSrc = read("../src/chart-kit.tsx");
 /** The plan progressions — the app's SECOND chart layer, and the one this
@@ -322,6 +326,30 @@ describe("nothing in either chart layer can re-introduce a fixed size", () => {
   });
 });
 
+/**
+ * The statement an `if (…)` governs, given the index just past its closing
+ * paren: the balanced `{…}` block when it has one, otherwise the single
+ * statement up to the `;` that ends it.
+ *
+ * Deliberately naive about braces inside strings and JSX — over-capturing can
+ * only make the rule below stricter, and the rule it replaced under-captured
+ * so badly that a four-line `return (<Tree/>)` passed it.
+ */
+function governedStatement(code: string, from: number): string {
+  let i = from;
+  while (i < code.length && /\s/.test(code[i]!)) i++;
+  if (code[i] !== "{") {
+    const end = code.indexOf(";", i);
+    return code.slice(i, end === -1 ? code.length : end + 1);
+  }
+  let depth = 0;
+  for (let j = i; j < code.length; j++) {
+    if (code[j] === "{") depth++;
+    else if (code[j] === "}" && --depth === 0) return code.slice(i, j + 1);
+  }
+  return code.slice(i);
+}
+
 // ── 4. The garden is one tree ──────────────────────────────────────────────
 
 describe("the garden's information exists at every width", () => {
@@ -385,21 +413,55 @@ describe("the garden's information exists at every width", () => {
   it("the screen returns that one body and nothing else", () => {
     // Two returns is how the two trees drifted in the first place.
     expect([...gardenSrc.matchAll(/return <GardenBody /g)]).toHaveLength(1);
-    expect(gardenSrc).not.toContain("if (isDesktop)");
     // The tier is allowed to be KNOWN — the dock's default state genuinely
     // differs between an in-flow accordion and an overlay on a stage, and
     // asking `matchMedia` the same 1024 the stylesheet uses is how that
     // answer stays in agreement with the CSS. What it may never do is choose
     // between trees or between parts, so it may not appear in a conditional
     // that produces markup.
-    for (const line of gardenSrc.split("\n").filter((l) => /\bisDesktop\b/.test(l))) {
+    for (const line of gardenCode.split("\n").filter((l) => /\bisDesktop\b/.test(l))) {
       expect(line, line.trim()).not.toContain("<");
       expect(line, line.trim()).not.toMatch(/\bisDesktop\b\s*\?/); // never a ternary subject
     }
-    // Four mentions, and every one of them is the same decision: the pure
-    // helper's parameter and its single use, then the live subscription and
-    // the one call that reads it. Nothing else in the file knows the tier.
-    expect([...gardenSrc.matchAll(/\bisDesktop\b/g)].length).toBe(4);
+    // `if (isDesktop)` may scope BEHAVIOUR; it may never scope a render. This
+    // used to be a flat ban on the string, which read as the same rule but
+    // was not: System 4 (D5) found the opposite failure hiding under it —
+    // `openTimeline` minimized the dock at EVERY width, though the reason it
+    // gives is that the timeline and the dock panel "float over the same
+    // stage real estate", which is only true from lg. Below lg they are
+    // consecutive blocks in one column and there was nothing to avoid, so one
+    // tap fired two opposite layout changes and moved 21 landmarks above the
+    // button. Scoping it needed a tier the file was forbidden to consult in
+    // an `if`, so the ban was pushing the code toward the bug.
+    //
+    // The relaxation is right; its FIRST implementation was not. It inspected
+    // the rest of the same LINE (`/if \(isDesktop\)(.*)\n/`), and this walks
+    // straight through a line-scoped rule while failing the flat ban it
+    // replaced — a whole component tree chosen by tier, shipping green:
+    //
+    //     if (isDesktop) {
+    //       return (
+    //         <DesktopOnlyGarden stage={stage} />
+    //       );
+    //     }
+    //
+    // So the guard reads the STATEMENT the condition governs — its balanced
+    // block, or its single statement — and in BOTH polarities, since
+    // `if (!isDesktop) { return <PhoneGarden/> }` is the same defect wearing
+    // a `!`. What it refuses is markup: JSX, a `parts` record, the body
+    // component, or a parenthesised return (how a multi-line tree comes
+    // back). A plain `return <boolean>` is fine — `defaultDockOpen` is a pure
+    // helper and answers the tier question honestly.
+    const tierIfs = [...gardenCode.matchAll(/if \(\s*!?\s*isDesktop\s*\)/g)];
+    expect(tierIfs.length, "no `if (isDesktop)` left to check").toBeGreaterThan(0);
+    for (const m of tierIfs) {
+      const body = governedStatement(gardenCode, m.index! + m[0].length);
+      expect(body, `${m[0]}${body.slice(0, 90)}`).not.toMatch(/<|\bparts\b|GardenBody|return\s*\(/);
+    }
+    // Five mentions, and every one is the same decision: the pure helper's
+    // parameter and its single use, the live subscription, the one call that
+    // reads it, and the one behaviour it scopes. Nothing else knows the tier.
+    expect([...gardenCode.matchAll(/\bisDesktop\b/g)].length).toBe(5);
   });
 
   it("the parts that were stage-only carry real content on the shared tree", () => {

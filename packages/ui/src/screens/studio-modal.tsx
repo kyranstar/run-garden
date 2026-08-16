@@ -1,8 +1,8 @@
 import { useUnits } from "../use-units.js";
-import { useState } from "react";
+import { useRef, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { api, type CoachPlanDto, type PlanDetailResponse } from "@rg/api-client";
-import { formatShortDate, Sheet, Spinner } from "../components.js";
+import { ConfirmDialog, formatShortDate, Sheet, Spinner } from "../components.js";
 import { startOfIsoWeek } from "@rg/domain";
 import { progressionHeadline } from "./plan-cards.js";
 import { PlannedVsActualBars, progressionInUnits, ProgressionStepChart } from "./plan-charts.js";
@@ -43,6 +43,8 @@ export function StudioModal({
   const [confirmingRetire, setConfirmingRetire] = useState(false);
   const [renaming, setRenaming] = useState(false);
   const [name, setName] = useState(plan?.name ?? "");
+  /** So closing the rename editor hands focus back to what opened it. */
+  const renameBtn = useRef<HTMLButtonElement>(null);
 
   if (isNew) {
     const discipline = planId === "new-lift" ? "lift" : "run";
@@ -121,41 +123,35 @@ export function StudioModal({
             >
               Wind down
             </button>
-            {renaming ? (
-              <input
-                value={name}
-                autoFocus
-                onChange={(e) => setName(e.target.value)}
-                aria-label="Plan name"
-                onKeyDown={(e) => {
-                  if (e.key === "Enter" && name.trim()) {
-                    onRename(planId, name.trim());
-                    setRenaming(false);
-                  }
-                  if (e.key === "Escape") setRenaming(false);
-                }}
-              />
-            ) : (
-              <button
-                type="button"
-                className="btn"
-                onClick={() => {
-                  setName(title);
-                  setRenaming(true);
-                }}
-              >
-                Rename
-              </button>
-            )}
-            {confirmingRetire ? (
-              <button type="button" className="btn btn-danger" onClick={() => onRetire(planId)}>
-                Really retire — archives every remaining session
-              </button>
-            ) : (
-              <button type="button" className="btn" onClick={() => setConfirmingRetire(true)}>
-                Retire…
-              </button>
-            )}
+            <button
+              type="button"
+              className="btn"
+              ref={renameBtn}
+              aria-expanded={renaming}
+              aria-controls="studio-rename"
+              onClick={() => {
+                if (renaming) {
+                  setRenaming(false);
+                  return;
+                }
+                setName(title);
+                setConfirmingRetire(false);
+                setRenaming(true);
+              }}
+            >
+              Rename
+            </button>
+            <button
+              type="button"
+              className="btn"
+              aria-haspopup="dialog"
+              onClick={() => {
+                setRenaming(false);
+                setConfirmingRetire(true);
+              }}
+            >
+              Retire…
+            </button>
           </>
         ) : null}
         <span className="studio-modal-grow" />
@@ -171,8 +167,75 @@ export function StudioModal({
       </div>
     ) : null;
 
+  /* "Rename" opens into the foot, never into the row (System 4 D6/R2/R4): it
+     used to be replaced by a bare `<input>` with no way back but the Escape
+     key, which also re-wrapped every action beside it because an input is not
+     the width of the word "Rename". The foot's own `column-reverse`
+     (styles.css) decides which side of the action row it lands on — above it
+     on a phone, below it on a desktop — so the row itself never moves.
+     Measured at 390 before this: −61.2px.
+
+     "Retire…" is no longer one of these. A destructive confirm is a nested
+     dialog now (System 4 P2): in this foot at 390 it opened 169.2px above its
+     own trigger with a whole row of unrelated actions in between, and at 1440
+     — where this row wraps to two lines and "Retire…" sits on the first — 64px
+     below it, under "Talk to your coach about this plan". Still mutually
+     exclusive with the rename, so pressing one closes the other. */
+  const footer =
+    actions !== null ? (
+      <>
+        {actions}
+        <div id="studio-rename" className="disclosure-body">
+          {renaming ? (
+            <div className="row studio-modal-rename">
+              <input
+                value={name}
+                autoFocus
+                onChange={(e) => setName(e.target.value)}
+                aria-label="Plan name"
+                onKeyDown={(e) => {
+                  if (e.key === "Enter" && name.trim()) {
+                    onRename(planId, name.trim());
+                    setRenaming(false);
+                  }
+                  if (e.key === "Escape") {
+                    setRenaming(false);
+                    renameBtn.current?.focus();
+                  }
+                }}
+              />
+              <button
+                type="button"
+                className="btn btn-primary"
+                disabled={!name.trim()}
+                onClick={() => {
+                  onRename(planId, name.trim());
+                  setRenaming(false);
+                  renameBtn.current?.focus();
+                }}
+              >
+                Save
+              </button>
+              {/* Escape worked and nothing said so. A rename is not a thing a
+                  reader should have to guess their way out of. */}
+              <button
+                type="button"
+                className="btn"
+                onClick={() => {
+                  setRenaming(false);
+                  renameBtn.current?.focus();
+                }}
+              >
+                Cancel
+              </button>
+            </div>
+          ) : null}
+        </div>
+      </>
+    ) : null;
+
   return (
-    <Sheet open onClose={onClose} title={title} footer={actions}>
+    <Sheet open onClose={onClose} title={title} footer={footer}>
       <div className="stack studio-modal">
         {detail.isLoading ? <Spinner label="Loading plan detail" /> : null}
         {detail.isError ? <p className="muted">Couldn't load this plan's detail — the actions below still work.</p> : null}
@@ -253,6 +316,16 @@ export function StudioModal({
           </details>
         ) : null}
       </div>
+      <ConfirmDialog
+        open={confirmingRetire}
+        onClose={() => setConfirmingRetire(false)}
+        title="Retire this plan?"
+        confirmLabel="Retire the plan"
+        onConfirm={() => onRetire(planId)}
+      >
+        “{title}” stops here and every session still ahead of it is archived. Sessions you have
+        already done are kept.
+      </ConfirmDialog>
     </Sheet>
   );
 }

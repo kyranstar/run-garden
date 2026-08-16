@@ -462,7 +462,26 @@ export function CorosConnectSection() {
 
   return (
     <Card title="COROS connection">
-      {connected && !badCreds ? (
+      {/* System 4 D2. `connected = s?.connected === true` reads "not connected"
+          out of a query that has not answered, so a connected athlete was
+          shown the whole ~300px connect form — email, password, region, the
+          hashing reassurance — and then, 3s later, watched it collapse to one
+          line: measured −136px with 37 landmarks jumping UPWARD, which is the
+          worse direction, because by then their thumb is already moving.
+
+          There is no honest slot to reserve here: the two branches differ by
+          250px and reserving the taller one would leave a permanent hole for
+          the connected majority. So the card WAITS, and while it waits it
+          says so in a line the same shape as the answer it expects — one
+          `.muted` paragraph. For the common (connected) case that is a 0px
+          swap; for the disconnected case the form opens downward, and nothing
+          above this card ever moves. */}
+      {status.isLoading ? (
+        <p className="muted">
+          Checking your COROS connection… Once it's linked, activities and watch updates flow
+          directly.
+        </p>
+      ) : connected && !badCreds ? (
         <div className="stack" style={{ gap: "var(--space-4)" }}>
           <p className="muted">
             Connected as <strong>{s?.email}</strong>
@@ -636,32 +655,56 @@ function DiagnosticsSection() {
 
   return (
     <Card title="Diagnostics">
-      {!open ? (
-        <button className="btn" onClick={() => setOpen(true)}>
-          Show diagnostics
-        </button>
-      ) : diagnostics.isLoading ? (
-        <Spinner />
-      ) : diagnostics.data ? (
-        <div className="stack">
-          <DiagRows data={diagnostics.data} />
-          {syncStatus.data?.lastCorosReadAt ? (
-            <p className="muted" style={{ fontSize: "var(--text-sm)" }}>
-              Last successful COROS read: {new Date(syncStatus.data.lastCorosReadAt).toLocaleString()}
-            </p>
-          ) : null}
-          <div className="btn-row">
-            <button className="btn btn-small" disabled={syncNow.isPending} onClick={() => syncNow.mutate()}>
-              {syncNow.isPending ? "Syncing…" : "Sync now"}
-            </button>
-            <button className="btn btn-small" onClick={download}>
-              Download sanitized JSON
-            </button>
-          </div>
+      {/* A real toggle (System 4 D6). This used to REPLACE itself with its own
+          content: after the tap there was no "Show diagnostics" and no "Hide"
+          anywhere on the page, so the 262px it had just opened could only be
+          closed by reloading — and because the state is not persisted, the
+          reload also threw it away. The button now survives its own click, in
+          the same slot, with the detail below it. */}
+      <div className="stack">
+        {/* The button is wrapped so it keeps its own width rather than
+            stretching to the stack, and so the gap above the body is the
+            stack's, not a second margin. */}
+        <div>
+          <button
+            className="btn"
+            aria-expanded={open}
+            aria-controls="diag-body"
+            onClick={() => setOpen((v) => !v)}
+          >
+            {open ? "Hide diagnostics" : "Show diagnostics"}
+          </button>
         </div>
-      ) : (
-        <p className="muted">Couldn't load diagnostics.</p>
-      )}
+        <div id="diag-body" className="disclosure-body">
+          {!open ? null : diagnostics.isLoading ? (
+            <Spinner />
+          ) : diagnostics.data ? (
+            <div className="stack">
+              <DiagRows data={diagnostics.data} />
+              {syncStatus.data?.lastCorosReadAt ? (
+                <p className="muted" style={{ fontSize: "var(--text-sm)" }}>
+                  Last successful COROS read:{" "}
+                  {new Date(syncStatus.data.lastCorosReadAt).toLocaleString()}
+                </p>
+              ) : null}
+              <div className="btn-row">
+                <button
+                  className="btn btn-small"
+                  disabled={syncNow.isPending}
+                  onClick={() => syncNow.mutate()}
+                >
+                  {syncNow.isPending ? "Syncing…" : "Sync now"}
+                </button>
+                <button className="btn btn-small" onClick={download}>
+                  Download sanitized JSON
+                </button>
+              </div>
+            </div>
+          ) : (
+            <p className="muted">Couldn't load diagnostics.</p>
+          )}
+        </div>
+      </div>
     </Card>
   );
 }

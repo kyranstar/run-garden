@@ -164,9 +164,16 @@ export function ProposalCard({
           ))}
         </div>
       ) : null}
-      {why ? <p className="coach-prop-why muted">{proposal.rationale}</p> : null}
-      {error ? <p className="coach-prop-error">{error}</p> : null}
-      {/* `.tap-clear`: "Why?" is a 24px link between two 44px buttons, so its
+      {/* The actions row comes BEFORE everything it reveals (System 4 D3).
+          The rationale used to render here, above its own trigger, so asking
+          "Why?" pushed the button you had just pressed 114px down the phone
+          (92px at 1440) and took "Make it so" and "Leave it" — two committing
+          actions — with it: the answer arrived exactly where your thumb was
+          about to land on something else. The proposal's own error line had
+          the same shape, one tap earlier. Every other disclosure in this app
+          renders after its trigger; these two now do too.
+
+          `.tap-clear`: "Why?" is a 24px link between two 44px buttons, so its
           hit pad reaches 10px past its box on every side. The row grants the
           clearance (and the gap) that makes that pad legal — see "Touch
           floor" in styles.css. */}
@@ -187,10 +194,26 @@ export function ProposalCard({
         >
           {isSkip ? "Keep it planned" : "Leave it"}
         </button>
-        <button type="button" className="linklike" onClick={() => setWhy((v) => !v)}>
-          {why ? "Hide" : "Why?"}
+        <button
+          type="button"
+          className="linklike"
+          aria-expanded={why}
+          aria-controls={`proposal-why-${proposal.id}`}
+          onClick={() => setWhy((v) => !v)}
+        >
+          {/* The word does not change, only the caret — the label used to go
+              "Why?" (24px) → "Hide" (31px), the same species of moving
+              geometry as the garden's in-prose toggle, just small enough to
+              have been ignored. `aria-expanded` carries the state. */}
+          Why?<span className="disclosure-caret" aria-hidden>{why ? "▾" : "▸"}</span>
         </button>
       </div>
+      {why ? (
+        <p id={`proposal-why-${proposal.id}`} className="coach-prop-why muted">
+          {proposal.rationale}
+        </p>
+      ) : null}
+      {error ? <p className="coach-prop-error">{error}</p> : null}
     </div>
   );
 }

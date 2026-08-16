@@ -564,6 +564,153 @@ export function Spinner({ label = "Loading" }: { label?: string }) {
   );
 }
 
+/**
+ * UX System 4 — "a state change moves nothing at or above the thing you
+ * touched". This is the half of that invariant a query can break with nobody
+ * touching anything: render a conditional derived from an answer that has not
+ * arrived, and the screen states something it is about to contradict, then
+ * re-lays itself out under the reader's eyes.
+ *
+ * This codebase has hit that four times and every time it wore the same
+ * clothes — `?? []`, `?? 0`, `?? false` standing in for an answer, feeding a
+ * conditional render. The fix is not a better default. It is not deciding
+ * yet. So the "not yet" has a name, one that greps and one that a test can
+ * insist on: `settling(...)` is true while any of these queries is on its
+ * FIRST load, which is the only moment the screen genuinely does not know.
+ *
+ * A background refetch is not settling. TanStack's `isLoading` is
+ * `isPending && isFetching`, so a stale-while-revalidate pass paints from
+ * cache immediately and nothing moves — which is exactly why this reads
+ * `isLoading` and not `isFetching`, and why a query carrying
+ * `placeholderData: keepPreviousData` stops settling after its first answer
+ * and never blanks the screen again when its key changes.
+ *
+ * Pass the queries that decide whether a BLOCK EXISTS — is there a plan, is
+ * there a race, is COROS connected. Not the ones that only fill in a number:
+ * holding a whole screen hostage for a footnote is its own bad trade, and for
+ * those the answer is a slot that already has the right height (see
+ * `.act-status-slot` in styles.css).
+ */
+export function settling(
+  ...queries: ReadonlyArray<{ isLoading: boolean } | null | undefined>
+): boolean {
+  return queries.some((q) => q?.isLoading === true);
+}
+
+/**
+ * The scroll owner a node actually lives in — the nearest ancestor that both
+ * clips and has something to clip. Falls back to the document scroller.
+ *
+ * The walk STOPS at a dialog. A nested sheet (the move sheet inside the
+ * workout sheet) is a fixed box whose containing block is its parent sheet, so
+ * an unbounded walk finds the PARENT's body, and scrolling that drags the
+ * whole nested dialog with it — measured at 1440 as a −3px shift of the move
+ * sheet's own title row, from 3px of overflow in a dialog behind it. Nothing
+ * outside the dialog a block lives in is that block's scroller.
+ */
+function scrollOwnerOf(el: HTMLElement): HTMLElement | null {
+  for (let p = el.parentElement; p; p = p.parentElement) {
+    const s = getComputedStyle(p);
+    const oy = `${s.overflowY} ${s.overflow}`;
+    if (/(auto|scroll|overlay)/.test(oy) && p.scrollHeight > p.clientHeight + 1) return p;
+    if (p.getAttribute("role") === "dialog") return null;
+  }
+  return document.scrollingElement instanceof HTMLElement
+    ? document.scrollingElement
+    : document.documentElement;
+}
+
+/**
+ * Bring a block the reader just revealed into the reader's view (System 4 R2).
+ *
+ * The half of the disclosure invariant that pinning the frame CREATED. Once a
+ * bottom sheet's frame is frozen, growth lands in the body's scroll region and
+ * stops being visible: measured at 390, "Choose another time" put 207px of
+ * date and time fields with their bottom 87px past the body's fold, and "Full
+ * structure" 2px past it. Nothing moved, and nothing appeared to happen.
+ *
+ * A bottom sheet's bottom edge is the viewport's, so the frame genuinely can
+ * only freeze or move and freezing is right — which leaves bringing the
+ * content to the reader as the only honest answer. This is NOT the involuntary
+ * shift the invariant bans: it is a scroll, in a scroller the reader owns,
+ * caused by the reader's own press, and it changes no layout at all — every
+ * block keeps its position in the content, which is the frame the invariant is
+ * measured in.
+ *
+ * Minimal movement, and never past the top: if the block is taller than the
+ * window it gets its TOP aligned instead, because a reader who cannot see
+ * where the new thing starts has been shown nothing.
+ */
+export function revealInView(el: HTMLElement | null | undefined, margin = 8): void {
+  if (!el || typeof window === "undefined" || !el.isConnected) return;
+  const owner = scrollOwnerOf(el);
+  // Nothing inside the dialog scrolls — the frame grew to fit and the block is
+  // already whole on screen. Nothing to bring anywhere.
+  if (!owner) return;
+  const er = el.getBoundingClientRect();
+  if (er.height === 0) return;
+  const or = owner === document.documentElement || owner === document.body
+    ? { top: 0, bottom: window.innerHeight }
+    : owner.getBoundingClientRect();
+  let delta = Math.max(0, er.bottom + margin - or.bottom);
+  if (er.top - delta < or.top + margin) delta = er.top - or.top - margin;
+  if (Math.abs(delta) < 1) return;
+  // The reader asked for this; a reader who has asked not to be moved gets it
+  // instantly instead. Never a smooth scroll under `prefers-reduced-motion`.
+  const still = window.matchMedia?.("(prefers-reduced-motion: reduce)").matches ?? false;
+  owner.scrollBy({ top: delta, behavior: still ? "auto" : "smooth" });
+}
+
+/** `revealInView` on the transition into `open`, once the block exists. */
+export function useRevealInView(open: boolean, ref: RefObject<HTMLElement | null>): void {
+  useEffect(() => {
+    if (!open) return;
+    revealInView(ref.current);
+  }, [open, ref]);
+}
+
+/**
+ * Hold one element still across a state change that removes layout around it
+ * (System 4 R3).
+ *
+ * Collapsing a panel deletes content, and something has to move: the invariant
+ * says the things ABOVE the control stay and the things below rise into the
+ * gap. Chrome's scroll anchoring decides the opposite — it picks an anchor
+ * below the deleted box and keeps THAT still, which pays for it by scrolling
+ * the page. Measured on the garden dock at 390: pressing "Minimize" with the
+ * button at mid-viewport moved `window.scrollY` 657 → 113 with nothing near a
+ * clamp, throwing the dock pill 544px down the screen and losing the reader's
+ * place completely. `overflow-anchor` cannot fix this — excluding one element
+ * only makes the browser choose another — so the adjustment is undone here.
+ *
+ * Read and corrected in a LAYOUT effect: the browser applies its anchoring
+ * during layout, and `getBoundingClientRect` forces that layout, so the number
+ * read here already includes it and the correction lands before paint.
+ *
+ * Best effort by construction: if the document is now too short to hold the
+ * position (the reader was at the very bottom), the scroll clamps and the
+ * element moves as far as the page allows. No viewport can preserve a position
+ * that no longer exists.
+ */
+export function useHeldInPlace(dep: unknown, find: () => HTMLElement | null): () => void {
+  const finder = useRef(find);
+  finder.current = find;
+  const want = useRef<number | null>(null);
+  const hold = useCallback(() => {
+    want.current = finder.current()?.getBoundingClientRect().top ?? null;
+  }, []);
+  useIsomorphicLayoutEffect(() => {
+    const target = want.current;
+    want.current = null;
+    if (target == null || typeof window === "undefined") return;
+    const el = finder.current();
+    if (!el) return;
+    const delta = el.getBoundingClientRect().top - target;
+    if (Math.abs(delta) >= 1) window.scrollBy(0, delta);
+  }, [dep]);
+  return hold;
+}
+
 const FOCUSABLE =
   'a[href], button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])';
 
@@ -636,11 +783,19 @@ export function useDialogFocus(ref: RefObject<HTMLElement | null>, open: boolean
 }
 
 /**
- * Freezes a centred desktop dialog's geometry across a DISCLOSURE (System 1
- * §5). A `.sheet-backdrop` centres its dialog, so anything that expands
- * inside one pushes the dialog up by half the growth while pushing its own
- * action row down by the other half — 128px of relative motion under a
- * reader who pressed one summary.
+ * ONE RULE, BOTH WIDTHS: an open dialog's FRAME is stable, and growth inside
+ * it goes to the body's scroll region (System 1 §5, System 4 F3).
+ *
+ * Why a dialog moves at all is different at each width, but it is the same
+ * defect. A centred desktop dialog re-centres as it grows, so opening "Full
+ * structure" inside one pushed the dialog up by half the growth and its
+ * action row down by the other half — 128px of relative motion under a reader
+ * who pressed one summary. A mobile sheet is bottom-anchored
+ * (`align-items: flex-end`), so ALL of the growth comes off the top edge: at
+ * 390 the move sheet's "Choose another time" lifted the sheet's head 223px,
+ * the workout sheet's "Full structure" 129px, and "Remove from plan" 17px —
+ * every in-flow disclosure in every sheet in the app, because the pin was
+ * scoped `min-width: 1024px` and the phone had no equivalent at all.
  *
  * Pinned on the disclosure transition, NOT on open. The first cut measured
  * once on the layout pass right after open and then held that number, which
@@ -651,20 +806,43 @@ export function useDialogFocus(ref: RefObject<HTMLElement | null>, open: boolean
  * dialog at 476px of a 900px viewport, hid the W1–W8 weeks table it had shown
  * before, and left ~400px of dead backdrop above it. An open dialog must
  * never be smaller than its content needs merely because it was measured
- * early, so nothing is measured until the reader acts.
+ * early, so nothing is measured until the reader acts. (That is also why this
+ * is not, and cannot be, pure CSS: CSS has no way to say "the size you were
+ * before this click". What it CAN be is measured at a moment with nothing
+ * transient about it — the reader has the finished dialog on screen and is
+ * pressing something in it.)
  *
  * The listener is capture-phase on the dialog: it runs before React's own
  * delegated handler at the root, so it reads the layout the reader is looking
  * at rather than the one the click is about to produce. Two numbers are taken
- * together — the top edge (`--sheet-pin`) and the height (`--sheet-hold`, a
- * max, so a re-collapsed disclosure still shrinks back cleanly). Holding both
- * means the growth lands entirely in the body's scroll region: top edge,
- * title row and pinned action row all stay exactly where they were.
+ * together — the top edge (`--sheet-pin`) and the height (`--sheet-hold`) —
+ * and styles.css spends them differently per width, because a different edge
+ * is free:
+ *
+ *   • Centred (lg+): `margin-top: --sheet-pin` fixes the TOP and the dialog
+ *     GROWS DOWNWARD into the free backdrop below it, capped by the viewport
+ *     (System 4 R1). The bottom edge is free, so a re-collapsed disclosure
+ *     shrinks back rather than leaving a hole.
+ *   • Bottom sheet (below lg): the bottom edge is the viewport's and cannot
+ *     move, so `height: --sheet-hold` freezes the frame outright. Collapsing
+ *     a disclosure leaves its room inside the scroller instead of dropping
+ *     the top edge back down onto the reader.
+ *
+ * A third number, and only sometimes: `--sheet-body-hold`. Letting a centred
+ * dialog grow downward raises its ceiling from 80dvh to the viewport, and a
+ * dialog whose body was ALREADY clipped answers that by growing on the press
+ * itself — the studio modal went 720 → 786px at 1440 on a click that disclosed
+ * nothing, which moved its pinned action row (and "Retire…" and "Rename" with
+ * it) down 10px. So a body that was already scrolling keeps the size it had,
+ * and the dialog then grows only by what a disclosure actually adds. A body
+ * that was NOT scrolling is left free, which is the whole point of R1: there
+ * is room below, and the reader should get the content in it rather than a
+ * scrollbar. One flag, `data-body-held`, so the rule is legible in the DOM.
  *
  * A window resize releases the pin — the frozen numbers describe a viewport
- * that no longer exists, and the layout is being reflowed anyway. Mobile
- * sheets are bottom-anchored and are not pinned. No-ops without a DOM (static
- * render) or `matchMedia`.
+ * that no longer exists, the layout is being reflowed anyway, and a rotation
+ * across 1024 would otherwise apply one width's numbers under the other
+ * width's rules. No-ops without a DOM (static render).
  */
 function usePinnedTop(
   backdrop: RefObject<HTMLElement | null>,
@@ -675,12 +853,13 @@ function usePinnedTop(
     if (!open) return;
     const back = backdrop.current;
     const el = dialog.current;
-    if (!back || !el || typeof window === "undefined" || !window.matchMedia) return;
-    if (!window.matchMedia("(min-width: 1024px)").matches) return;
+    if (!back || !el || typeof window === "undefined") return;
     const release = () => {
       delete back.dataset.pinned;
+      delete back.dataset.bodyHeld;
       el.style.removeProperty("--sheet-pin");
       el.style.removeProperty("--sheet-hold");
+      el.style.removeProperty("--sheet-body-hold");
     };
     const pin = () => {
       if (back.dataset.pinned) return;
@@ -688,6 +867,11 @@ function usePinnedTop(
       const top = r.top - back.getBoundingClientRect().top;
       el.style.setProperty("--sheet-pin", `${Math.max(0, Math.round(top))}px`);
       el.style.setProperty("--sheet-hold", `${Math.round(r.height)}px`);
+      const body = el.querySelector<HTMLElement>(".sheet-body");
+      if (body && body.scrollHeight > body.clientHeight + 1) {
+        el.style.setProperty("--sheet-body-hold", `${Math.round(body.clientHeight)}px`);
+        back.dataset.bodyHeld = "true";
+      }
       back.dataset.pinned = "true";
     };
     el.addEventListener("click", pin, true);
@@ -718,6 +902,7 @@ export function Sheet({
   children,
   footer,
   fill,
+  centered,
 }: {
   open: boolean;
   onClose: () => void;
@@ -727,6 +912,12 @@ export function Sheet({
   footer?: ReactNode;
   /** The child is a column that scrolls itself; give it a definite height. */
   fill?: boolean;
+  /**
+   * Centre it below lg too, instead of anchoring it to the fold. For a short
+   * modal QUESTION (see `ConfirmDialog`) — a bottom-anchored one puts its
+   * buttons in the same band as the action row that opened it.
+   */
+  centered?: boolean;
 }) {
   const backdropRef = useRef<HTMLDivElement>(null);
   const ref = useRef<HTMLDivElement>(null);
@@ -738,7 +929,7 @@ export function Sheet({
   return (
     <div
       ref={backdropRef}
-      className="sheet-backdrop"
+      className={`sheet-backdrop${centered ? " sheet-backdrop--centered" : ""}`}
       onClick={(e) => {
         if (e.target === e.currentTarget) onClose();
       }}
@@ -762,6 +953,94 @@ export function Sheet({
         {footer ? <div className="sheet-foot">{footer}</div> : null}
       </div>
     </div>
+  );
+}
+
+/**
+ * The app's destructive confirm: a nested dialog, at every width (System 4
+ * P2).
+ *
+ * It used to be an inline disclosure in the sheet's pinned foot, and the foot
+ * is `column-reverse` below lg so the growth would land on the far side of the
+ * action row rather than under the finger that pressed it. That solved the
+ * finger and created a worse problem: the confirm no longer read as belonging
+ * to its trigger. Measured, four combinations of width × wrapped-row:
+ *
+ *   390, row wraps to 2 lines  "Remove from plan" y=784, confirm y=658.8
+ *                              — 169.2px ABOVE, Match activity / Move it /
+ *                                Skip it in between
+ *   390, row on 1 line         117.2px above, "Move" in between
+ *   1440, row on 1 line        12px below the row — reads perfectly
+ *   1440, row wraps (studio)   "Retire…" on line 1 of 2, confirm 64px below
+ *                              with "Talk to your coach about this plan"
+ *                                in between
+ *
+ * One of four. The inline form only reads correctly when the direction is
+ * `column` AND the action row happens to fit on one line, and neither is a
+ * property the foot can promise — the row wraps on content, at any width.
+ *
+ * A dialog has no such condition. It is over the trigger, it names the thing
+ * it will do in its own title, it cannot render off-screen, and it re-uses the
+ * most-measured primitive in this codebase: the Sheet's focus trap, focus
+ * restore and 0px-shift positioning, which the regression check confirmed
+ * resolve against the VIEWPORT for a nested sheet rather than against the
+ * parent.
+ *
+ * `centered`, and that part is not cosmetic. The first cut of this used a
+ * plain Sheet, which is bottom-anchored below lg — and a bottom-anchored
+ * confirm puts its buttons in the same band the pinned action row occupies.
+ * Measured at 390: the dialog's "Remove from plan" landed at y 784–828, the
+ * trigger's own box, centre-to-centre 0.0px, and `elementFromPoint` at the
+ * pre-press point came back "Remove from plan". That is the under-the-finger
+ * defect the foot exists to prevent, arriving by a different door.
+ *
+ * The dialog is NOT auto-focused onto its destructive button — `useDialogFocus`
+ * focuses the dialog element itself, so the confirm still takes a deliberate
+ * press (or a Tab) and Escape/backdrop is always the cheap way out.
+ */
+export function ConfirmDialog({
+  open,
+  onClose,
+  title,
+  children,
+  confirmLabel,
+  onConfirm,
+  busy,
+}: {
+  open: boolean;
+  onClose: () => void;
+  /** Names the action, as a question: "Remove this workout?" */
+  title: string;
+  /** What it will and will not touch, in the reader's words. */
+  children: ReactNode;
+  confirmLabel: string;
+  onConfirm: () => void;
+  busy?: boolean;
+}) {
+  return (
+    <Sheet
+      open={open}
+      onClose={onClose}
+      title={title}
+      centered
+      footer={
+        <div className="btn-row">
+          <button type="button" className="btn" onClick={onClose}>
+            Cancel
+          </button>
+          <button
+            type="button"
+            className="btn btn-danger"
+            disabled={busy}
+            onClick={onConfirm}
+          >
+            {confirmLabel}
+          </button>
+        </div>
+      }
+    >
+      <p>{children}</p>
+    </Sheet>
   );
 }
 
@@ -845,11 +1124,20 @@ export class ErrorBoundary extends Component<ErrorBoundaryProps, ErrorBoundarySt
   }
 }
 
-export function Banner({ kind, children }: { kind: "warn" | "info"; children: ReactNode }) {
+export function Banner({
+  kind,
+  children,
+  id,
+}: {
+  kind: "warn" | "info";
+  children: ReactNode;
+  /** So a disclosure trigger can `aria-controls` the banner it reveals. */
+  id?: string;
+}) {
   // Wrap in a single element so multi-part prose (bold words, links) flows as
   // text instead of each run becoming its own flex item.
   return (
-    <div className={`banner banner-${kind}`}>
+    <div className={`banner banner-${kind}`} id={id}>
       <span>{children}</span>
     </div>
   );

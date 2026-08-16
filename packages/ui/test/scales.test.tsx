@@ -370,11 +370,21 @@ describe("one touch floor, enforced", () => {
     // textarea, a thread, a calendar cell, the new-plan slab) or a control
     // that keeps a small box and wears `.tap-pad`. Nothing else.
     const heights = [...rules.matchAll(/min-height:\s*(\d+)px;/g)].map((m) => Number(m[1]));
-    expect(heights.sort((a, b) => a - b)).toEqual([32, 32, 36, 64, 72, 120, 128]);
+    expect(heights.sort((a, b) => a - b)).toEqual([64, 72, 120, 128]);
+    // The three controls that keep a small box now state that box as
+    // `--tap-own` — a raw `min-height` there is silently replaced by the touch
+    // floor's makeup rule, which is how the first cut of that rule shrank
+    // every `.btn-small` on a phone from 36px to 31.6px.
     const padded = css.slice(css.indexOf("\n.btn-small::after,"));
     const padList = padded.slice(0, padded.indexOf("{"));
-    for (const sel of [".btn-small", ".plan-week-back", ".plan-week-jump summary"]) {
+    for (const [sel, own] of [
+      [".btn-small", 36],
+      [".plan-week-back", 32],
+      [".plan-week-jump summary", 32],
+    ] as const) {
       expect(padList, sel).toContain(`${sel}::after`);
+      expect(ruleBody(sel), sel).toContain(`--tap-own: ${own}px`);
+      expect(ruleBody(sel), sel).toContain("min-height: var(--tap-own)");
     }
   });
 
@@ -420,8 +430,8 @@ describe("one touch floor, enforced", () => {
     const pad = css.slice(css.indexOf("{", padAt), css.indexOf("}", padAt));
     // Never smaller than the control, never larger than the floor, and never
     // reaching past the clearance the CONTAINER granted.
-    expect(pad).toContain("clamp(100%, calc(100% + 2 * var(--tap-clear-x, var(--tap-clear, 0px))), var(--tap))");
-    expect(pad).toContain("clamp(100%, calc(100% + 2 * var(--tap-clear-y, var(--tap-clear, 0px))), var(--tap))");
+    expect(pad).toContain("clamp(100%, calc(100% + 2 * var(--tap-clear-x, var(--tap-clear, var(--tap)))), var(--tap))");
+    expect(pad).toContain("clamp(100%, calc(100% + 2 * var(--tap-clear-y, var(--tap-clear, var(--tap)))), var(--tap))");
     // Every named offender is in the pad list, and — the bug this rule was
     // split into two rules to hide — every one of them is also `relative`.
     const padList = css.slice(css.indexOf("\n.tap-pad,\n.btn-small,"));
@@ -430,11 +440,141 @@ describe("one touch floor, enforced", () => {
     const afterList = after.slice(0, after.indexOf("{"));
     for (const sel of [".tap-pad", ".btn-small", ".plan-brief-chip", ".plan-brief-needs",
       ".race-check-btn", ".plan-week-back", ".plan-week-jump summary", ".ceremony-close",
-      ".hud-rail button", ".proposal-actions > .linklike"]) {
+      ".hud-rail button", ".proposal-actions > .linklike", ".hud-beat-seeall"]) {
       expect(afterList, sel).toContain(`${sel}::after`);
       expect(relative, sel).toContain(sel);
     }
     expect(relative.split(",").length).toBe(afterList.split(",").length);
+  });
+
+  it("the floor is the DEFAULT reach, not the maximum one", () => {
+    // `--tap` is the clamp's MAX argument: it caps a pad and can never raise
+    // one. With the old `var(--tap-clear, 0px)` default the three terms
+    // collapsed to "exactly the control" for any container that had said
+    // nothing — so a rule named as a 44px floor shipped `.ceremony-close` at
+    // 96 × 21 from inside its own selector list, and `.hud-beat-seeall` (60.4
+    // × 21.6) was in no list at all. The default is the floor now; being
+    // tight is the thing a container has to declare.
+    const padAt = css.indexOf("\n.tap-pad::after,");
+    const pad = css.slice(css.indexOf("{", padAt), css.indexOf("}", padAt));
+    expect(pad).not.toContain("--tap-clear, 0px");
+    expect((pad.match(/var\(--tap-clear, var\(--tap\)\)/g) ?? []).length).toBe(2);
+  });
+
+  it("…and where the pad is refused the BOX pays the difference", () => {
+    // The other half of the same contract, and the reason declaring a small
+    // clearance is now a real statement with a real cost rather than a silent
+    // shortfall: the control's min-height is exactly what the pad could not
+    // reach. 0px wherever the container is generous (which is everywhere
+    // today, so this moves nothing), 44px where it grants nothing.
+    const at = css.indexOf("@media (pointer: coarse) {", css.indexOf(".tap-clear {"));
+    expect(at, "no touch-floor makeup rule").toBeGreaterThan(-1);
+    const block = css.slice(at, css.indexOf("\n}", css.indexOf("min-height", at)));
+    expect(block).toContain(
+      "min-height: max(\n      var(--tap-own, 0px),\n      calc(var(--tap) - 2 * var(--tap-clear-y, var(--tap-clear, var(--tap))))\n    );",
+    );
+    // THREE lists now name the same controls. A control in two of them gets
+    // half the contract — which is exactly how `.ceremony-close` once sat in
+    // the pad list with `position: static` and a pad laid out against the
+    // page. Compare them as sets, not as text.
+    const listOf = (marker: string) => {
+      const from = css.indexOf(marker);
+      expect(from, marker).toBeGreaterThan(-1);
+      return new Set(
+        css
+          .slice(from, css.indexOf("{", from))
+          .split(",")
+          .map((s) => s.replace("::after", "").trim())
+          .filter(Boolean),
+      );
+    };
+    const relative = listOf("\n.tap-pad,\n.btn-small,");
+    const afterList = listOf("\n.tap-pad::after,");
+    const floor = listOf("\n  .tap-pad,\n  .btn-small,");
+    expect([...afterList].sort()).toEqual([...relative].sort());
+    expect([...floor].sort()).toEqual([...relative].sort());
+    expect(relative.size).toBeGreaterThan(25);
+
+    // …and it COMPOSES with a control that already has a minimum of its own.
+    // `min-height` is one property, so the makeup rule (later in the sheet, at
+    // equal specificity) simply replaces an earlier one: measured, the first
+    // cut shrank every `.btn-small` on a phone from 36px to 31.6px. A control
+    // with its own floor restates it as `--tap-own` beside it and the makeup
+    // takes the larger. If a fourth ever appears without one, this fails.
+    for (const sel of relative) {
+      const esc = sel.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+      const rules = [...css.matchAll(new RegExp(`(?:^|[,\\n])\\s*${esc}\\s*(?:,[^{]*)?\\{([^}]*)\\}`, "g"))];
+      for (const r of rules) {
+        const body = r[1]!;
+        const mh = body.match(/min-height:\s*([^;]*)/);
+        if (!mh || /var\(--tap-own/.test(mh[1]!) || /calc\(var\(--tap\) - 2/.test(mh[1]!)) continue;
+        expect(
+          body,
+          `${sel} declares its own \`min-height: ${mh[1]!.trim()}\` but no \`--tap-own\`; ` +
+            `the touch floor's makeup rule will replace it, not compose with it.`,
+        ).toMatch(/--tap-own:/);
+      }
+    }
+  });
+
+  it("…on BOTH axes: a container that is tight sideways pays the box back too", () => {
+    // System 4 P3. The makeup rule shipped as `min-height` alone, so a
+    // container that refused HORIZONTAL clearance left its control short with
+    // nothing owed: `.hud-beat-dismiss` is a 16 × 20px glyph in a container
+    // granting 12px, so its pad clamped to 16 + 24 = 40px wide — the only
+    // control in the app under the floor on either axis — while the vertical
+    // half of the same rule paid its 24px back in full. Same arithmetic, same
+    // term, other axis: the box goes 16 → 20 and the pad reaches 44.
+    const at = css.indexOf("@media (pointer: coarse) {", css.indexOf(".tap-clear {"));
+    const block = css.slice(at, css.indexOf("\n}", css.indexOf("min-width", at)));
+    expect(block).toContain("min-width: max(");
+    expect(block).toContain("var(--tap-clear-x, var(--tap-clear, var(--tap)))");
+    // `max(0px, …)` because the product is NEGATIVE wherever the container is
+    // generous (`.hud-rail` grants 24px: 44 − 48 = −4).
+    expect(block).toMatch(/min-width: max\(\s*0px,/);
+    // …and a container can refuse the payment as well as the room. The drawer's
+    // ✕ is a deliberate 42px-wide target (the garden HUD sits beside it), so
+    // `--tap-clear-x: 0` alone would be answered with a 44px `min-width` and
+    // undo the one exception in the section.
+    expect(block).toContain("var(--tap-makeup-x, 1)");
+    expect(css.slice(css.lastIndexOf(".drawer-head {"))).toMatch(
+      /\.drawer-head \{\s*--tap-clear: var\(--space-5\);\s*--tap-clear-x: 0px;\s*--tap-makeup-x: 0;/,
+    );
+    // The exception is exactly one container. Anywhere else, refusing the room
+    // means paying with the box.
+    expect((css.match(/--tap-makeup-x: 0;/g) ?? []).length).toBe(1);
+  });
+
+  it("fixed furniture owns its own edge, so a pad's overhang can never fire a nav link", () => {
+    // System 4 P1. `.bottom-nav` is fixed and opaque below lg: it covers
+    // scrolling content rather than displacing it, so everything under it is
+    // invisible and a tap there fires a nav link. Measured at 390, scroll 0 on
+    // the garden: `.ceremony-close`'s hit rect ran to y=802.7 against a nav top
+    // of 786, and `elementFromPoint` at both bottom corners came back
+    // "Garden" / "Plan".
+    //
+    // Clamping the pad is not the fix and the same screen proves it: `.dock-pill`
+    // is a 44px button with NO pad whose box runs 74.2px into the same band.
+    // What belongs to the pad is its OVERHANG — the `(44 − h) / 2` past the
+    // visible box that a reader can never see and so can never aim at. The bar
+    // reserves that depth as inert chrome.
+    expect(css).toContain("--tap-reach: var(--space-5)");
+    expect(ruleBody(".bottom-nav::before")).toContain("height: var(--tap-reach)");
+    expect(ruleBody(".bottom-nav::before")).toContain("position: absolute");
+    // Resolve the three tokens this depends on, in px at a 16px root.
+    const token = (name: string): number => {
+      const raw = new RegExp(`${name}:\\s*([^;]+);`).exec(css)![1]!.trim();
+      const step = /^var\((--space-\d+)\)$/.exec(raw)?.[1];
+      if (step) return 16 * parseFloat(new RegExp(`${step}: ([\\d.]+)rem`).exec(css)![1]!);
+      return parseFloat(raw);
+    };
+    // It must be big enough for the deepest overhang in the app — half the
+    // difference between the floor and the SHORTEST padded box, 20px
+    // (`.hud-beat-dismiss`) → 12px…
+    expect(token("--tap-reach")).toBeGreaterThanOrEqual((token("--tap") - 20) / 2);
+    // …and small enough that the links keep the floor. 58 − 12 = 46, measured
+    // live at 45 (the bar's own 1px top border is inert too).
+    expect(token("--nav-height") - token("--tap-reach")).toBeGreaterThanOrEqual(token("--tap"));
   });
 
   it("a pad is only as large as its container's clearance", () => {
@@ -477,7 +617,7 @@ describe("one touch floor, enforced", () => {
     const RAIL_CONTROL_PX = 24.8; // measured; --text-md line box + --space-2 × 2
     expect(RAIL_CONTROL_PX + 2 * 12).toBeGreaterThanOrEqual(44);
     expect(RAIL_CONTROL_PX + 2 * 8).toBeLessThan(44); // …and 8px did not
-    expect(rules).toMatch(/\.drawer-head \{\s*--tap-clear: var\(--space-4\);\s*--tap-clear-x: 0px;/);
+    expect(rules).toMatch(/\.drawer-head \{\s*--tap-clear: var\(--space-5\);\s*--tap-clear-x: 0px;/);
     // …and the one container that had to widen writes its gap from the same
     // property, so the two can never disagree again.
     expect(rules).toMatch(/\.hud-dock \{[\s\S]*?gap: var\(--tap-clear\);/);

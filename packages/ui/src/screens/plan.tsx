@@ -8,6 +8,7 @@ import {
   CategoryDot,
   CATEGORY_LABELS,
   CompletionPill,
+  ConfirmDialog,
   CorosPill,
   EmptyState,
   formatDayLong,
@@ -16,6 +17,8 @@ import {
   formatPace,
   formatTime,
   localTodayGuess,
+  revealInView,
+  settling,
   Sheet,
   Spinner,
   SyncNotesStack,
@@ -28,7 +31,7 @@ import { CoachPanel, pendingByDate } from "./coach-panel.js";
 import { CoachRead } from "./coach-read.js";
 import { CoachWindow } from "./coach-window.js";
 import { WeeklyBrief } from "./plan-brief.js";
-import { RaceStrip } from "./race-strip.js";
+import { RaceStrip, useRaceHub } from "./race-strip.js";
 import { useUnits } from "../use-units.js";
 import { PlanCards } from "./plan-cards.js";
 import { StudioModal } from "./studio-modal.js";
@@ -53,6 +56,8 @@ function WorkoutDetail({
   const [matching, setMatching] = useState(false);
   const [confirmRemove, setConfirmRemove] = useState(false);
   const [readOpen, setReadOpen] = useState(false);
+  /** The stages list "Full structure" reveals — scrolled to, not jumped to. */
+  const structureRef = useRef<HTMLUListElement>(null);
   const detail = useQuery({
     queryKey: ["workout", w.id],
     queryFn: () => api.workout(w.id),
@@ -124,8 +129,84 @@ function WorkoutDetail({
   const outOfSync = syncView === "needs_attention" || syncView === "calendar_only" || syncView === "sync_issue";
 
   const displayTitle = humanizeWorkoutTitle(w.title, w.category, w.qualitySubtype);
+  const canMove = completion === "scheduled" && w.category !== "rest";
+  const canRemove = w.completionState !== "completed";
+  const hasActions =
+    canMove ||
+    asks ||
+    (outOfSync && corosWritesEnabled) ||
+    w.calendarSyncState === "user_deleted" ||
+    w.completionState === "completed" ||
+    w.completionState === "skipped" ||
+    canRemove;
+
+  /* Every action in the sheet's pinned foot (System 4 R2, System 1 §2). Two
+     measured reasons, both at 390:
+
+     1. An action row has to live somewhere always visible. In the scrolling
+        body it obeyed the invariant and said nothing — the frame is frozen, so
+        a confirm rendered 77.4px past the fold of a body that had no scrollbar
+        a moment earlier (59.6px at 1440).
+     2. The row was also one banner away from being invisible on its own: it
+        ended at y=828 in a body whose fold was 828.
+
+     The destructive confirm is NOT here any more; it is a nested dialog (see
+     ConfirmDialog, and the four measurements in its doc comment). In the foot
+     it was 117–169px from the trigger at 390 with unrelated actions in
+     between, which is what "belongs to its trigger" fails to mean. */
+  const footer = hasActions ? (
+    <div className="btn-row">
+      {canMove ? (
+        <button className="btn btn-primary" onClick={() => setMoving(true)}>
+          Move
+        </button>
+      ) : null}
+      {asks ? (
+        <>
+          <button className="btn btn-primary" onClick={() => setMatching(true)}>
+            Match activity
+          </button>
+          <button className="btn" onClick={() => setMoving(true)}>
+            Move it
+          </button>
+          <button className="btn" disabled={skip.isPending} onClick={() => skip.mutate()}>
+            Skip it
+          </button>
+        </>
+      ) : null}
+      {outOfSync && corosWritesEnabled ? (
+        <button className="btn" disabled={retry.isPending} onClick={() => retry.mutate()}>
+          Sync to COROS
+        </button>
+      ) : null}
+      {w.calendarSyncState === "user_deleted" ? (
+        <button className="btn" disabled={restore.isPending} onClick={() => restore.mutate()}>
+          Restore to Calendar
+        </button>
+      ) : null}
+      {w.completionState === "completed" ? (
+        <button className="btn" disabled={unmatch.isPending} onClick={() => unmatch.mutate()}>
+          Undo match
+        </button>
+      ) : null}
+      {w.completionState === "skipped" ? (
+        <button className="btn" disabled={unskip.isPending} onClick={() => unskip.mutate()}>
+          Un-skip
+        </button>
+      ) : null}
+      {canRemove ? (
+        <button
+          className="btn"
+          aria-haspopup="dialog"
+          onClick={() => setConfirmRemove(true)}
+        >
+          Remove from plan
+        </button>
+      ) : null}
+    </div>
+  ) : null;
   return (
-    <Sheet open onClose={onClose} title={displayTitle}>
+    <Sheet open onClose={onClose} title={displayTitle} footer={footer}>
       <div className="stack">
         <div className="row">
           <CategoryDot category={w.category} />
@@ -167,11 +248,23 @@ function WorkoutDetail({
         </div>
         {w.stageSummary ? <div className="stage-summary">{w.stageSummary}</div> : null}
         {stages.length > 0 ? (
-          <details>
-            <summary className="muted" style={{ cursor: "pointer" }}>
+          /* Non-destructive growth inside a frozen frame has to be brought to
+             the reader, or it is not a disclosure (System 4 R2). Opening this
+             adds 108px of stages to a body that was already exactly full, so
+             at 390 the list landed with its bottom 2.3px past the fold and at
+             1440 53.6px past it. The frame still does not move; the body
+             scrolls, by the reader's own press, and no further than it must. */
+          <details onToggle={(e) => { if (e.currentTarget.open) revealInView(structureRef.current); }}>
+            {/* `.tap-pad`, like the app's two other summary disclosures
+                (System 4 P4). It shipped as a 358 × 21.6px target with
+                `min-height: 0` because it was the one `<summary>` not in the
+                pad list. The visible line does not move: its container is a
+                `.stack` whose 16px gap is wider than the 11.2px the pad
+                reaches, so the pad is not clamped and the box is not grown. */}
+            <summary className="muted tap-pad" style={{ cursor: "pointer" }}>
               Full structure ({stages.filter((s) => s.kind !== "repeat").length} stages)
             </summary>
-            <ul className="muted" style={{ paddingLeft: "var(--space-6)", marginTop: "var(--space-3)" }}>
+            <ul ref={structureRef} className="muted" style={{ paddingLeft: "var(--space-6)", marginTop: "var(--space-3)" }}>
               {stages.map((s) => {
                 // Pace targets were stored but never shown (2026-08-14).
                 // Bounds arrive either way round — COROS writes recovery
@@ -220,57 +313,6 @@ function WorkoutDetail({
           </>
         ) : null}
 
-        <div className="btn-row">
-          {completion === "scheduled" && w.category !== "rest" ? (
-            <button className="btn btn-primary" onClick={() => setMoving(true)}>
-              Move
-            </button>
-          ) : null}
-          {asks ? (
-            <>
-              <button className="btn btn-primary" onClick={() => setMatching(true)}>
-                Match activity
-              </button>
-              <button className="btn" onClick={() => setMoving(true)}>
-                Move it
-              </button>
-              <button className="btn" disabled={skip.isPending} onClick={() => skip.mutate()}>
-                Skip it
-              </button>
-            </>
-          ) : null}
-          {outOfSync && corosWritesEnabled ? (
-            <button className="btn" disabled={retry.isPending} onClick={() => retry.mutate()}>
-              Sync to COROS
-            </button>
-          ) : null}
-          {w.calendarSyncState === "user_deleted" ? (
-            <button className="btn" disabled={restore.isPending} onClick={() => restore.mutate()}>
-              Restore to Calendar
-            </button>
-          ) : null}
-          {(w.completionState === "completed") ? (
-            <button className="btn" disabled={unmatch.isPending} onClick={() => unmatch.mutate()}>
-              Undo match
-            </button>
-          ) : null}
-          {w.completionState === "skipped" ? (
-            <button className="btn" disabled={unskip.isPending} onClick={() => unskip.mutate()}>
-              Un-skip
-            </button>
-          ) : null}
-          {w.completionState !== "completed" ? (
-            !confirmRemove ? (
-              <button className="btn" onClick={() => setConfirmRemove(true)}>
-                Remove from plan
-              </button>
-            ) : (
-              <button className="btn btn-danger" disabled={remove.isPending} onClick={() => remove.mutate()}>
-                Really remove — clears it from Run Garden and Calendar (COROS untouched)
-              </button>
-            )
-          ) : null}
-        </div>
         {outOfSync && !corosWritesEnabled ? (
           <p className="faint">
             COROS sync is off, so this can't be pushed to your watch.{" "}
@@ -280,6 +322,17 @@ function WorkoutDetail({
       </div>
       <MoveSheet workout={w} open={moving} onClose={() => setMoving(false)} />
       <MatchSheet workout={w} open={matching} onClose={() => setMatching(false)} />
+      <ConfirmDialog
+        open={confirmRemove && canRemove}
+        onClose={() => setConfirmRemove(false)}
+        title="Remove this from the plan?"
+        confirmLabel="Remove from plan"
+        busy={remove.isPending}
+        onConfirm={() => remove.mutate()}
+      >
+        “{displayTitle}” is cleared from Run Garden and from your Calendar. Your COROS watch is
+        untouched.
+      </ConfirmDialog>
     </Sheet>
   );
 }
@@ -543,6 +596,9 @@ export function PlanScreen() {
   // ── Coach ──────────────────────────────────────────────────────────────
   const coach = usePlanCoach();
   const coachPlans = useQuery({ queryKey: ["coach-plans"], queryFn: api.coachPlans });
+  // Subscribed here, rendered by `<RaceStrip>` — one fetch, shared key. The
+  // page's first paint waits for it, so the strip never arrives late.
+  const raceHub = useRaceHub();
   const activePlans = useMemo(
     () => (coachPlans.data?.plans ?? []).filter((p) => p.status === "active" || p.status === "draft"),
     [coachPlans.data?.plans],
@@ -692,7 +748,20 @@ export function PlanScreen() {
     },
   });
 
-  if (week.isLoading || (!week.data && week.isPending)) return <Spinner label="Loading plan" />;
+  // EVERY query that decides whether a block exists, not just the week's
+  // (System 4 D1/D7a). `emptyPlan` below is an AND of two of them, so gating
+  // on `week` alone let the page state "Nothing planned yet — ask your coach
+  // for a plan" to somebody who has one: measured with /api/plan/workouts and
+  // /api/coach/plans delayed, that sentence rendered for 3.5s and was then
+  // replaced by the week grid. A false statement, not merely a shift. The
+  // race strip is in here for the same reason one step milder — arriving late
+  // it pushed the brief, the plan cards and the whole grid 80px down.
+  //
+  // All four carry `placeholderData: keepPreviousData` or a stable key, so
+  // this holds the FIRST paint only: paging weeks and background refetches
+  // still render straight from cache.
+  if (settling(week, plan, coachPlans, raceHub) || (!week.data && week.isPending))
+    return <Spinner label="Loading plan" />;
   if (!week.data) return <EmptyState title="Couldn't load the plan" />;
 
   // Shared between the window and the mobile sheet (audit C6 followup: the
@@ -728,7 +797,10 @@ export function PlanScreen() {
   );
 
   const anyDialogOpen = !!selected || !!planParam || coachOpen;
-  const emptyPlan = (plan.data?.workouts.length ?? 0) === 0 && activePlans.length === 0;
+  // Claimed from two answers we actually hold. `?? 0` used to turn a query
+  // that had not answered — or one that had FAILED — into "you have no plan".
+  const emptyPlan =
+    !!plan.data && !!coachPlans.data && plan.data.workouts.length === 0 && activePlans.length === 0;
 
   // One width contract (System 1 §6): while the coach window is up the page
   // yields exactly the gutter the window occupies (`--coach-w`, declared once
