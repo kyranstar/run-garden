@@ -94,10 +94,11 @@ function build(opts: {
   for (const w of opts.weeks) for (const s of opts.pattern) push(s, w * 7);
   for (const s of opts.extra ?? []) push(s, 0);
 
-  // Two sessions the athlete has already done. The dossier's LAST 14 DAYS
-  // section carries these with real `[wo:...]` ids, so a coach naming one is a
-  // mistake the dossier invites — and they sit in the week before the anchor
-  // Monday, so no week-bucketed rule can see them.
+  // Two sessions the athlete has already done. They are what the dossier's
+  // LAST 14 DAYS section renders, and `dossierHandles` checks whether that
+  // section still offers them as `[wo:...]` targets — the invitation register B
+  // used to take up. They sit in the week before the anchor Monday, so no
+  // week-bucketed rule can see them.
   for (const [back, cat, mins] of [[2, "easy", 40], [5, "quality", 55]] as const) {
     const date = addDays(today(), -back);
     rows.push({

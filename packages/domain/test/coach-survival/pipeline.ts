@@ -12,6 +12,7 @@ import { validateOps } from "../../src/coach-guardrails.js";
 import { schema } from "../../../database/src/index.js";
 import { D1_BIND_LIMIT, makeTestDb, makeTestUser } from "../../../../apps/worker/test/helpers.js";
 import { applyOps } from "../../../../apps/worker/src/services/coach-apply.js";
+import { buildDossier } from "../../../../apps/worker/src/services/coach-context.js";
 import { resolveOpsExercises, type ExerciseIndex } from "../../../../apps/worker/src/services/exercise-catalog.js";
 import type { Db } from "../../../../apps/worker/src/services/db.js";
 import type { AthleteState } from "./athletes.js";
@@ -118,6 +119,48 @@ export async function seedAthlete(s: AthleteState, corosWritesEnabled = false): 
     });
   }
   return { db, userId, prefs };
+}
+
+/**
+ * WHAT THE DOSSIER ACTUALLY OFFERS THE COACH TO NAME.
+ *
+ * Register B's reference variations used to draw their targets from the fixture
+ * — `s.rows.filter(completed)` — which gave the generator knowledge no model
+ * has and made "would a coach write this?" a question the harness answered by
+ * assertion. It reads the REAL dossier instead: `buildDossier` against the
+ * seeded database, every `[wo:...]` handle scraped out of the rendered text,
+ * and each one checked against the predicate `validateOps` will apply.
+ *
+ * A handle in `leaked` is a session the dossier invited the coach to change and
+ * the guardrails will refuse. That set is what "the context is ambiguous" means
+ * concretely, and it is why the survival rate can move when the dossier gets
+ * clearer: the mistake stops being available, rather than stopping being
+ * counted.
+ */
+export interface DossierHandles {
+  /** Every `[wo:...]` id the rendered dossier prints, anywhere. */
+  offered: string[];
+  /** Offered ids that are already resolved or whose day has gone — every one a
+   * `fatal:touch_resolved` waiting for a coach to copy it. */
+  leaked: string[];
+}
+
+export async function dossierHandles(s: AthleteState): Promise<DossierHandles> {
+  const h = await seedAthlete(s);
+  const d = await buildDossier(h.db, h.userId, h.prefs, s.ctx);
+  // `[wo:...]` with a literal ellipsis is the prose that explains the
+  // convention to the model, not a handle it can copy.
+  const offered = [
+    ...new Set([...d.text.matchAll(/\[wo:([^\]\s]+)\]/g)].map((m) => m[1]!).filter((id) => id !== "...")),
+  ];
+  const byId = new Map(s.ctx.workouts.map((w) => [w.id, w]));
+  const leaked = offered.filter((id) => {
+    const w = byId.get(id);
+    if (!w) return true;
+    const unresolved = w.completionState === "scheduled" || w.completionState === "planned";
+    return !unresolved || w.date < s.ctx.today;
+  });
+  return { offered, leaked };
 }
 
 type Snapshot = { workouts: Map<string, string>; plans: Map<string, string>; weeks: Set<string> };

@@ -167,6 +167,28 @@ function lastReading(
 /** ISO weekday (1 = Monday) → the short name the athlete wrote their brief in. */
 const WEEKDAY_NAMES = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
 
+/**
+ * CAN THIS SESSION STILL BE CHANGED? The one distinction the dossier used to
+ * withhold, and after 2026-08-17's guardrail and schema work the top remaining
+ * cause of a refused proposal (`fatal:touch_resolved`, 2.5% of plans).
+ *
+ * It is deliberately the SAME predicate `validateOps` tests — a row is
+ * addressable by ease/move/skip only while it is unresolved and its day has
+ * not gone — so the dossier cannot offer a handle the validator will refuse.
+ * Everything printed with a `[wo:...]` id passes this; nothing that fails it
+ * gets one. That makes the handle itself the permission, which is a rule the
+ * model reads off the data rather than one it has to remember: LAST 14 DAYS
+ * used to print finished sessions with handles indistinguishable from
+ * upcoming ones, and the coach was being punished for a distinction the
+ * context never gave it.
+ */
+const canTarget = (
+  w: { completionState: string; effectiveDate: string },
+  today: LocalDate,
+): boolean =>
+  (w.completionState === "scheduled" || w.completionState === "planned") &&
+  w.effectiveDate >= today;
+
 export async function buildDossier(
   db: Db,
   userId: string,
@@ -362,7 +384,7 @@ export async function buildDossier(
     .where(eq(studioPlans.userId, userId))
     .orderBy(desc(studioPlans.updatedAt))
     .limit(1);
-  push("STRENGTH PLAN", strengthPlanLines(studio, upcoming, catalogRawNames));
+  push("STRENGTH PLAN", strengthPlanLines(studio, upcoming, catalogRawNames, today));
 
   // 3 · UPCOMING 14 DAYS — every scheduled session with the [wo:id] handle
   // ease/move/skip ops need. Without this section the coach could not name a
@@ -373,13 +395,23 @@ export async function buildDossier(
   // coach judging an 8-minute desk-mobility placeholder (cat-cow, chin tucks,
   // breathing, zero lower body) as adequate ski preparation FROM ITS TITLE,
   // and prescribing a wall sit Wednesday already had.
-  push(
-    "UPCOMING 14 DAYS",
-    upcoming.length
+  //
+  // The contract line comes first and lives HERE rather than in LAST 14 DAYS
+  // because this section is protected from truncation and is where the coach
+  // meets its first handle. It is stated once, for the whole document.
+  push("UPCOMING 14 DAYS", [
+    `the [wo:...] handle IS the permission: a line that carries one can still be eased, moved or skipped — a line without one is already resolved, or its day has gone. Read those as evidence and never name one in an op.`,
+    ...(upcoming.length
       ? upcoming.map(
           (w) =>
-            `${w.effectiveDate} · ${w.category} · "${humanizeWorkoutTitle(w.title, w.category, w.qualitySubtype)}" · ${w.sport} [wo:${w.id}]` +
-            `${w.completionState !== "scheduled" ? ` · ${w.completionState}` : ""}` +
+            `${w.effectiveDate} · ${w.category} · "${humanizeWorkoutTitle(w.title, w.category, w.qualitySubtype)}" · ${w.sport}` +
+            // A session already done, skipped or missed sits in this window
+            // whenever it happened earlier TODAY. It is real, it is evidence,
+            // and it is not addressable — so it keeps its line and loses its
+            // handle, which is the same trade LAST 14 DAYS makes.
+            (canTarget(w, today)
+              ? ` [wo:${w.id}]`
+              : ` · already ${w.completionState}, so no handle — it cannot be changed`) +
             `${coachPlanIdSet.has(w.planId ?? "") ? "" : " · imported"}` +
             ` · contains: ${
               w.stageSummary
@@ -387,8 +419,8 @@ export async function buildDossier(
                 : "no stage detail stored — do NOT assume what is in it"
             }`,
         )
-      : ["nothing scheduled in the next 14 days"],
-  );
+      : ["nothing scheduled in the next 14 days"]),
+  ]);
 
   // 3.2 · LIMITS — what is LEFT of each hard limit, on this calendar.
   //
@@ -430,14 +462,26 @@ export async function buildDossier(
   const matchByWorkout = new Map(matches.map((m) => [m.workoutId, m]));
   const trainingLines = recentWorkouts
     .filter((w) => w.category !== "rest")
+    // Today's still-unresolved sessions belong to UPCOMING, which carries them
+    // WITH a handle. Printed here as well, one session got two lines that
+    // disagreed about whether it could be changed — and the duplicate cost
+    // tokens to say it.
+    .filter((w) => !canTarget(w, today))
     .map((w) => {
       const act = matchByWorkout.get(w.id) ? actById.get(matchByWorkout.get(w.id)!.activityId) : undefined;
       const actual = act
         ? `did ${Math.round(act.durationSeconds / 60)}min${act.distanceMeters ? ` ${dist(act.distanceMeters, units)} ${pace(act.distanceMeters, act.durationSeconds, units)}` : ""}`
         : w.completionState === "completed"
           ? "completed (details unknown)"
-          : w.completionState;
-      return `${w.effectiveDate} · ${w.category} · "${humanizeWorkoutTitle(w.title, w.category, w.qualitySubtype)}" · ${actual} [wo:${w.id}]`;
+          : w.completionState === "scheduled" || w.completionState === "planned"
+            ? "never resolved — the day went by without it being marked either way"
+            : w.completionState;
+      // NO HANDLE, deliberately. This is the fix for `fatal:touch_resolved`:
+      // every id printed here was one the coach could copy into an ease or a
+      // skip, and every such op is refused — approving one would rewrite
+      // history. The session is still fully visible, because it is the
+      // evidence for everything the coach says; it is simply not a target.
+      return `${w.effectiveDate} · ${w.category} · "${humanizeWorkoutTitle(w.title, w.category, w.qualitySubtype)}" · ${actual}`;
     });
   const matchedActivityIds = new Set(matches.map((m) => m.activityId));
   const unplanned = recentActs
@@ -523,7 +567,10 @@ export async function buildDossier(
   ];
   push("HISTORY 90D", historyLines);
 
-  push("LAST 14 DAYS", [...trainingLines, ...unplanned].length ? [...trainingLines, ...unplanned] : ["no sessions recorded"]);
+  push("LAST 14 DAYS", [
+    `what has already happened — no [wo:...] handles in this section, on purpose: none of it can be eased, moved or skipped. Cite these days by date as evidence.`,
+    ...([...trainingLines, ...unplanned].length ? [...trainingLines, ...unplanned] : ["no sessions recorded"]),
+  ]);
 
   // 5 · WELLNESS 14D — with 30d baselines, COROS training load, and explicit
   // markers on evidence too weak to quote.
@@ -837,6 +884,8 @@ interface UpcomingLiftRow {
   category: string;
   qualitySubtype: string | null;
   sport: string;
+  /** Read only to decide whether this row may carry a handle — see {@link canTarget}. */
+  completionState: string;
   structuredJson: { exercises?: unknown[]; rounds?: number } | null;
 }
 
@@ -854,6 +903,7 @@ function strengthPlanLines(
   studio: StudioPlanRow | undefined,
   upcoming: UpcomingLiftRow[],
   catalogRawNames: Map<string, string>,
+  today: LocalDate,
 ): string[] {
   const lines: string[] = [];
   if (!studio) {
@@ -895,7 +945,14 @@ function strengthPlanLines(
   const byTitle = studioSessionIndex(studio);
   for (const w of lifts) {
     lines.push(
-      `already prescribed ${w.effectiveDate} "${humanizeWorkoutTitle(w.title, w.category, w.qualitySubtype)}" [wo:${w.id}] — do not duplicate what is in it:`,
+      `already prescribed ${w.effectiveDate} "${humanizeWorkoutTitle(w.title, w.category, w.qualitySubtype)}"` +
+        // Same rule as UPCOMING: this section re-prints those rows, so a lift
+        // the athlete already did today must not gain a handle here that
+        // UPCOMING correctly withheld.
+        (canTarget(w, today)
+          ? ` [wo:${w.id}]`
+          : ` (already ${w.completionState}, no handle — evidence, not a target)`) +
+        ` — do not duplicate what is in it:`,
     );
     const rendered = liftExerciseLines(w, byTitle, catalogRawNames);
     if (rendered.length === 0) {

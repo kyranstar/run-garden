@@ -45,7 +45,7 @@ import { guardrailCtx } from "../../../apps/worker/src/services/coach-wake.js";
 import { athletes, nextMonday, TZ, type AthleteState } from "./coach-survival/athletes.js";
 import { englishName, liveExerciseCatalog } from "./coach-survival/catalog.js";
 import { INTENTS, REGISTER_B, rngFor, wakeEnvelope, mobilitySession, runSession } from "./coach-survival/plans.js";
-import { runSample, seedAthlete, type SampleResult } from "./coach-survival/pipeline.js";
+import { dossierHandles, runSample, seedAthlete, type SampleResult } from "./coach-survival/pipeline.js";
 
 const SEED = Number(process.env.SURVIVAL_SEED ?? 20260817);
 const N = Number(process.env.SURVIVAL_N ?? 800);
@@ -150,6 +150,14 @@ describe("coach plan survival rate", () => {
     const results: Sample[] = [];
     const started = Date.now();
 
+    // The real dossier, once per athlete state, scraped for the `[wo:...]`
+    // handles it offers. Register B's "ease a completed session" takes its
+    // target from the LEAKED ones — handles the dossier prints beside sessions
+    // `validateOps` refuses — so the generator can only make the mistake the
+    // context still invites. See `dossierHandles`.
+    const leaks = new Map<string, string[]>();
+    for (const s of states) leaks.set(s.key, (await dossierHandles(s)).leaked);
+
     for (let i = 0; i < N; i++) {
       const s = states[i % states.length]!;
       const usable = INTENTS.filter((x) => x.applies(s));
@@ -163,7 +171,7 @@ describe("coach plan survival rate", () => {
       if (rng() < REGISTER_B_RATE) {
         const v = REGISTER_B[Math.floor(rng() * REGISTER_B.length)]!;
         const vctx = {
-          doneIds: s.rows.filter((x) => x.completionState === "completed").map((x) => x.id),
+          leakedIds: leaks.get(s.key) ?? [],
           ...(s.importedPlanIds[0] ? { importedPlanId: s.importedPlanIds[0] } : {}),
           weekStart: s.A,
           today: todayInZone(TZ),
@@ -288,6 +296,20 @@ describe("coach plan survival rate", () => {
     for (const [rule, { n }] of rankedAdvisories) {
       say(`  ${pad(rule, 62)} ${pad(String(n), 7)} ${pct(n, results.length)}`);
     }
+    say("");
+    // WHAT THE DOSSIER STILL INVITES. A `[wo:...]` handle printed beside a
+    // session `validateOps` refuses is a fatal proposal the context asked for,
+    // and it is the reason `fatal:touch_resolved` was the top cause on
+    // 2026-08-17. Printed as a count per athlete so a regression here shows up
+    // as a number rather than as a variation that quietly starts firing again.
+    const totalLeaks = [...leaks.values()].reduce((a, ids) => a + ids.length, 0);
+    say(`  DOSSIER HANDLE LEAKS — [wo:...] ids the dossier offers that the guardrails would refuse: ${totalLeaks} across ${states.length} athletes`);
+    if (totalLeaks === 0) {
+      say(`  Every handle in the dossier names a session that can still be eased, moved or skipped, so the`);
+      say(`  "ref: ease a completed session" variation below has nothing to copy and cannot fire. Finished work is`);
+      say(`  still fully printed — it is the evidence for everything the coach says — it simply carries no handle.`);
+    }
+    for (const [key, ids] of leaks) if (ids.length) say(`  ${pad(key, 16)} ${ids.join(", ")}`);
     say("");
     say("  REGISTER B — each variation, and whether the plan survived writing it that way");
     say(`  ${pad("variation", 32)} ${pad("n", 5)} ${pad("survived", 10)} killed by`);

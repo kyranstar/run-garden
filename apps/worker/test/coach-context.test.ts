@@ -526,3 +526,129 @@ describe("what the coach can see (2026-08-16 input audit)", () => {
     expect((await buildDossier(db, userId, prefs)).sections).not.toContain("LIMITS");
   });
 });
+
+/**
+ * WHICH SESSIONS CAN STILL BE CHANGED (2026-08-17).
+ *
+ * With the guardrail split and the schema's vocabulary fixed, the top remaining
+ * cause of a refused proposal was `fatal:touch_resolved` — the coach easing or
+ * skipping a session that was already done. It was a dossier defect, not a
+ * model one: LAST 14 DAYS printed finished sessions with the same `[wo:...]`
+ * handles as upcoming ones, and the wake prompt told the coach outright that
+ * ease/move/skip "reach ANY session in UPCOMING or LAST 14 DAYS by its
+ * [wo:...] id". The context invited the mistake and the validator punished it.
+ *
+ * The rule is now carried by the data: the handle IS the permission, printed
+ * only beside a row that passes the same predicate `validateOps` tests. This
+ * test asserts that as an INVARIANT over the whole rendered document rather
+ * than as a string match, so it fails if any section — this one, STRENGTH
+ * PLAN, or one written next year — prints a past session with a bare handle.
+ */
+describe("the dossier says which sessions can still be changed", () => {
+  /** Every id the document offers as a handle. `[wo:...]` with a literal
+   * ellipsis is the prose that EXPLAINS the convention, not an offer. */
+  const handlesIn = (text: string): string[] =>
+    [...text.matchAll(/\[wo:([^\]\s]+)\]/g)].map((m) => m[1]!).filter((id) => id !== "...");
+
+  it("prints a [wo:...] handle for exactly the sessions an op may name", async () => {
+    const db = makeTestDb();
+    const { userId, prefs } = await makeTestUser(db);
+    const today = todayInZone(prefs.timezone);
+    const at = nowInstant();
+    // Every combination of (which side of today) × (resolved or not), including
+    // the two that a naive filter gets wrong: a session finished earlier TODAY
+    // sits inside UPCOMING's window, and a session left "scheduled" after its
+    // day went by looks addressable and is not.
+    const rows: Array<{ id: string; date: string; state: string; sport: string; category: string }> = [
+      { id: "ahead-scheduled", date: addDays(today, 3), state: "scheduled", sport: "run", category: "easy" },
+      { id: "ahead-planned", date: addDays(today, 5), state: "planned", sport: "run", category: "long" },
+      { id: "today-scheduled", date: today, state: "scheduled", sport: "run", category: "quality" },
+      { id: "today-completed", date: today, state: "completed", sport: "run", category: "easy" },
+      { id: "today-skipped", date: today, state: "skipped", sport: "run", category: "easy" },
+      { id: "lift-ahead", date: addDays(today, 2), state: "scheduled", sport: "strength", category: "strength" },
+      { id: "lift-done-today", date: today, state: "completed", sport: "strength", category: "strength" },
+      { id: "past-completed", date: addDays(today, -2), state: "completed", sport: "run", category: "long" },
+      { id: "past-missed", date: addDays(today, -5), state: "missed", sport: "run", category: "quality" },
+      { id: "past-never-resolved", date: addDays(today, -3), state: "scheduled", sport: "run", category: "easy" },
+    ];
+    for (const r of rows) {
+      await db.insert(schema.plannedWorkouts).values({
+        id: r.id,
+        userId,
+        planId: "p1",
+        sourceWorkoutId: `4738:${r.id}`,
+        title: `Session ${r.id}`,
+        category: r.category,
+        sport: r.sport,
+        originalPlanDate: r.date,
+        lastVerifiedCorosDate: r.date,
+        effectiveDate: r.date,
+        effectiveTime: "07:00",
+        completionState: r.state,
+        sourceContentFingerprint: `fp-${r.id}`,
+        calendarBlockDurationSeconds: 2400,
+        createdAt: at,
+        updatedAt: at,
+      });
+    }
+
+    const d = await buildDossier(db, userId, prefs);
+    const handles = new Set(handlesIn(d.text));
+    // The same predicate `validateOps` applies: unresolved, and its day has not
+    // gone. Written out here rather than imported so the two agreeing is a
+    // fact this test checks instead of one it inherits.
+    const mayName = rows
+      .filter((r) => (r.state === "scheduled" || r.state === "planned") && r.date >= today)
+      .map((r) => r.id);
+    expect([...handles].sort()).toEqual([...mayName].sort());
+
+    // …and the history is all still THERE. Withholding the handle must not
+    // withhold the evidence: the coach's every claim rests on finished work, so
+    // each of these rows keeps its date, its category and its outcome.
+    for (const r of rows.filter((x) => !mayName.includes(x.id))) {
+      expect(d.text, `${r.id} must still be visible as evidence`).toContain(r.date);
+      expect(d.text).not.toContain(`[wo:${r.id}]`);
+    }
+    // The day that went by unmarked is named for what it is, not silently
+    // rendered as if it were still on the calendar.
+    expect(d.text).toContain("never resolved — the day went by without it being marked either way");
+    // And the document states the convention once, in a section truncation
+    // cannot drop, so the rule is readable from the text alone.
+    expect(d.text).toContain("the [wo:...] handle IS the permission");
+    expect(d.text).toContain("no [wo:...] handles in this section, on purpose");
+    // A session finished earlier today is inside UPCOMING's window and says so
+    // in place of its handle.
+    expect(d.text).toContain("already completed, so no handle — it cannot be changed");
+  });
+
+  it("does not print one session twice with two different verdicts", async () => {
+    // Today's still-scheduled session used to appear in UPCOMING with a handle
+    // AND in LAST 14 DAYS without one (both windows include today), which is
+    // one session and two contradictory lines.
+    const db = makeTestDb();
+    const { userId, prefs } = await makeTestUser(db);
+    const today = todayInZone(prefs.timezone);
+    const at = nowInstant();
+    await db.insert(schema.plannedWorkouts).values({
+      id: "only-today",
+      userId,
+      planId: "p1",
+      sourceWorkoutId: "4738:only-today",
+      title: "Threshold repeats",
+      category: "quality",
+      sport: "run",
+      originalPlanDate: today,
+      lastVerifiedCorosDate: today,
+      effectiveDate: today,
+      effectiveTime: "07:00",
+      completionState: "scheduled",
+      sourceContentFingerprint: "fp",
+      calendarBlockDurationSeconds: 3000,
+      createdAt: at,
+      updatedAt: at,
+    });
+    const d = await buildDossier(db, userId, prefs);
+    expect(handlesIn(d.text)).toEqual(["only-today"]);
+    expect(d.text.split("Threshold repeats").length - 1).toBe(1);
+  });
+});

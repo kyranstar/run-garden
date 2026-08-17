@@ -574,8 +574,15 @@ export const INTENTS: Intent[] = [
  * never only the blend.
  */
 export interface VariationCtx {
-  /** Ids of sessions the athlete has already completed (the dossier prints them). */
-  doneIds: string[];
+  /**
+   * Ids the RENDERED DOSSIER offers as `[wo:...]` handles and `validateOps`
+   * will refuse — already resolved, or dated before today (see
+   * `dossierHandles`). Scraped from the dossier rather than taken from the
+   * fixture on purpose: a coach only names what it was shown, so a mistake the
+   * context no longer invites is one the generator must no longer be able to
+   * make. Empty list ⇒ the variation below cannot fire at all.
+   */
+  leakedIds: string[];
   /** The athlete's imported COROS plan id, if they have one. */
   importedPlanId?: string;
   weekStart: string;
@@ -800,16 +807,22 @@ export const REGISTER_B: Variation[] = [
     },
   },
   // ── references the coach gets wrong ──────────────────────────────────
-  // Not shapes: mistakes about WHICH row or WHICH plan. The dossier invites
-  // every one of them (it prints completed sessions with live-looking ids, and
-  // it prints the imported plan's id right next to the coach's own), and each
-  // is a case the split calls fatal. They are here so the ranked list carries
-  // real counts for the fatal rules rather than only the probe matrix's ones.
+  // Not shapes: mistakes about WHICH row or WHICH plan. Each is fatal, and each
+  // is here so the ranked list carries real counts for the fatal rules rather
+  // than only the probe matrix's ones. They divide into two kinds, and the
+  // division is the whole point of keeping them side by side:
+  //
+  //  · one the CONTEXT invited — the coach copied a handle the dossier printed
+  //    beside a session it may not touch. Its target comes from the rendered
+  //    dossier, so fixing the dossier removes the mistake at the source.
+  //  · three the context did not — a mangled id, a plan id the dossier never
+  //    printed at all, a date before the dossier's own header date. Nothing the
+  //    dossier can say prevents these, so they stay, and they stay fatal.
   {
     key: "ref: ease a completed session",
-    why: "LAST 14 DAYS prints finished sessions with the same [wo:...] handles as upcoming ones",
+    why: "the dossier printed a [wo:...] handle beside a session that is already resolved, so the coach cannot tell it from an upcoming one",
     apply: (rng, ops, _env, c) => {
-      const done = c.doneIds[0];
+      const done = c.leakedIds[0];
       if (!done) return false;
       ops.splice(0, ops.length, { kind: "ease", workoutId: done, session: runSession(rng, "recovery", 25) });
       return true;

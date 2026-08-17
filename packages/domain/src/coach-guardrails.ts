@@ -291,7 +291,7 @@ export const HARD_LIMITS_PROMPT = [
   ``,
   `REJECTED OUTRIGHT — a proposal doing one of these is not a bold plan, it is a broken one, and the athlete never sees it:`,
   `- THE PAST IS FIXED: no op dated before today, and no op on a session already completed, skipped or missed.`,
-  `- REAL SESSIONS ONLY: ease/move/skip must name a [wo:...] id that appears in this dossier. An id that isn't there changes nothing at all when approved.`,
+  `- REAL SESSIONS ONLY: ease/move/skip must name a [wo:...] id the dossier printed — it prints one ONLY beside a session you may still change, so the handle IS the rule. An id that isn't there changes nothing when approved.`,
   `- IMPORTED PLANS KEEP THEIR STRUCTURE: reshapeWeek/firmUp/extendPlan/windDown/retirePlan may only name a plan YOU authored (PLANS says which). An imported plan's individual sessions are still yours to ease, move, skip or add around — that is how you restructure one.`,
   `- ONE PROPOSAL WRITES AT MOST ${MAX_PROPOSAL_SESSIONS} SESSIONS, counting every date on an add and every session in a structural op. Long enough for two months of daily work or a whole firmed-up block; past it the approval cannot finish, so split the work across proposals.`,
   ``,
