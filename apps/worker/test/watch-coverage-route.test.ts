@@ -95,7 +95,7 @@ describe("GET /api/plan/workouts/:id — watchCoverage", () => {
     expect(w.watchCoverage).toBeUndefined();
   });
 
-  it("names the discipline for a lift, and the movements the library lacks", async () => {
+  it("names the movements the library lacks — the whole reason a lift stays here", async () => {
     const today = todayInZone(prefs.timezone);
     const out = await apply([
       {
@@ -115,10 +115,19 @@ describe("GET /api/plan/workouts/:id — watchCoverage", () => {
       } as CoachOp,
     ]);
     const w = await coverageOf(out.created[0]!);
+    // `discipline_off_wire` used to lead this list, on the false claim that the
+    // executor writes runs and nothing else. With strength pushes open, the
+    // catalog IS the reason — and it is one the athlete can clear, so the DTO
+    // now carries an action that says so instead of a boundary that says no.
     expect(w.watchCoverage).toEqual({
       coverage: "none",
       discipline: "lift",
-      gaps: [{ code: "discipline_off_wire" }, { code: "off_catalog", names: ["Skier hops", "Wall sit"] }],
+      gaps: [{ code: "off_catalog", names: ["Skier hops", "Wall sit"] }],
+    });
+    expect(w.syncAction).toEqual({
+      agent: "athlete",
+      code: "name_it_on_the_watch",
+      names: ["Skier hops", "Wall sit"],
     });
   });
 

@@ -4,8 +4,16 @@ The exact protocol for mutating the COROS schedule safely over an unofficial,
 non-idempotent API. Sources: [COROS_INTEGRATION_FINDINGS.md](COROS_INTEGRATION_FINDINGS.md)
 (decisions D4–D6, verified endpoint semantics) and the implementation in
 `services/coros-bridge/src/write-executor.ts` +
-`apps/worker/src/services/jobs.ts`. The only mutation kind today is
-`move_scheduled_workout` (a date move — structure is never rewritten).
+`apps/worker/src/services/jobs.ts`.
+
+There are three mutations of a scheduled workout, and each has exactly one
+executor:
+
+| what changes | wire | executor |
+|---|---|---|
+| the DAY | `status: 2`, program resent byte-for-byte | `write-executor.ts` `executeMoveJob` |
+| existence | `status: 1` / `status: 3` | `create-executor.ts` `createWorkout` / `deleteWorkout` |
+| the CONTENT | `status: 2`, program rebuilt | `content-executor.ts` `updateWorkoutContent` |
 
 ## Ground rules
 
@@ -46,6 +54,61 @@ non-idempotent API. Sources: [COROS_INTEGRATION_FINDINGS.md](COROS_INTEGRATION_F
 Network failure mid-write (state unknown): re-read once — destination seen →
 `verified`; original seen → `write_failed` (clean, retryable); can't tell →
 `ambiguous`.
+
+## Content rewrite (`status: 2` at a recorded address)
+
+`updateWorkoutContent` (`packages/coros/src/content-executor.ts`) — the verb
+that lets the watch stop holding a workout the app has changed. Same endpoint
+and same status code as the date move; the day is resent as read and the
+PROGRAM is the new one, rebuilt from the session through `buildProgramFor` (the
+dispatch `createWorkout` uses, so the content written is byte-for-byte what a
+fresh create of the same session would write — run bodies to `buildRunProgram`,
+lift AND mobility bodies to `buildStrengthProgram`).
+
+An update WRITES OVER whatever sits at the address, and COROS **recycles a
+plan's `idInPlan` slots**, so a recorded `planId:idInPlan` is a claim and never
+an identity. Steps:
+
+1. **Build first.** Session schema + exercise catalog are validated before any
+   wire call; a session the builders refuse costs zero requests.
+2. **Re-prove ownership** from a plan-wide sweep, by program-name stamp on the
+   recorded day — exactly as `deleteWorkout` proves it — and refuse every
+   ambiguity: two placements under the stamp, a link key resolving to both our
+   program and one we did not write, or a write address (planId / idInPlan /
+   planProgramId) shared with another entity of the plan.
+3. **Write to the PROVEN address**, not the recorded one (a live account was
+   observed renumbering on create); the result reports the address it used so
+   the caller can heal its record.
+4. **Calculate-then-write**, and if the post-calculate program already equals
+   what the address holds, send nothing (`already_current`) — the call is safe
+   on every apply.
+5. **Read-after-write**: the new stamp on the same day AND a program fingerprint
+   equal to what was put on the wire. A stamp match alone is not verification;
+   the failure this verb exists for was a workout whose name was right and whose
+   content was months stale.
+
+Refusals, none of which send a byte: `stamp_mismatch` (the address holds
+something not provably ours), `not_found` (gone from COROS), `moved` (our stamp
+is on another day — `serverHappenDay` says where), `ambiguous`,
+`no_target_plan`, `out_of_span`. Server/network outcomes: `rejected` (clean
+refusal, workout untouched), `error` (nothing landed, retryable),
+`verification_failed` / `not_visible` (wrote or may have, cannot prove the
+desired state).
+
+`fallback: "recreate"` converges anyway via **delete-then-create** through the
+two already-guarded executors, and only from the two states where that is
+honest: a cleanly rejected in-place write, or a provably absent workout. Never
+on drift, never on ambiguity, never after a write whose outcome is unknown. The
+order is delete-then-create (not insert-before-delete) because an unchanged
+title means the new workout carries the same stamp, and `createWorkout`
+correctly refuses a second placement under one stamp — so a create that fails
+after the delete leaves the workout OFF the watch, which is why the knob is
+opt-in and the result reports `pathUsed: "delete_and_create"`.
+
+`wireFingerprint` is the fingerprint of the program actually written (after
+`/program/calculate`). Callers must stamp it: an app-side fingerprint of an
+eased session describes a program that was never written, and the move path's
+content guard reads that as `content_changed`.
 
 ## Fallback: remove-and-add (insert-before-delete)
 

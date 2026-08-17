@@ -112,6 +112,46 @@ export const plannedWorkoutStages = sqliteTable(
     paceZone: integer("pace_zone"),
     hrZone: integer("hr_zone"),
     label: text("label"),
+    /**
+     * ── THE STRENGTH PRESCRIPTION (2026-08-17) ──────────────────────────────
+     *
+     * A run stage is fully described by the columns above; a STRENGTH step is
+     * not, and these five are why the athlete's Goblet Squat rendered as a bare
+     * movement name with no sets, no reps and no weight.
+     *
+     * The whole chain was already broken in three places at once. The push path
+     * wrote all of it (`buildStrengthProgram`: reps as `targetType: 3`, load as
+     * `intensityType: 1` in grams, rest as `restType: 1`, and tempo/per-side
+     * disclosure in the step's `overview`); `normalize.ts` read none of it back;
+     * and there was nowhere to put it if it had. So a session made a round trip
+     * through the watch and came home as a list of names — the app erasing the
+     * prescription the app itself had written.
+     *
+     * `repeatCount` above already carried SETS, because a repeat container's
+     * `sets` was the one number that always survived. These are the rest of it.
+     */
+    /** Reps per set (`targetType: 3`). NOT a duration — the wire states no time
+     *  for a rep step, so `durationType` stays `"none"` and this is the target. */
+    reps: integer("reps"),
+    /** External load in kilograms (grams on the wire, `intensityType: 1`). */
+    loadKg: real("load_kg"),
+    /**
+     * The step is explicitly BODYWEIGHT — a distinct fact from `load_kg = 0`,
+     * which COROS renders as "0.00 kg" in its own app. On the wire this is
+     * `intensityCustom: 1` with `intensityValue` empty OR ABSENT (the server
+     * drops the empty string the write path sends), so it cannot be inferred
+     * from the load column being null and needs its own flag.
+     */
+    loadBodyweight: integer("load_bodyweight", { mode: "boolean" }),
+    /** Rest after this step in seconds (`restType: 1`); null = skip rests. */
+    restSeconds: integer("rest_seconds"),
+    /**
+     * The step's own free text (`overview`) — the one slot a step has, and where
+     * the push path discloses what the wire has no field for at all: "4s down"
+     * for an eccentric tempo, "each side" for per-side work, and the coach's own
+     * cue. A COROS-authored program can carry one too.
+     */
+    note: text("note"),
   },
   (t) => [index("stages_workout_idx").on(t.workoutId)],
 );

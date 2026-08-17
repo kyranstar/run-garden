@@ -41,8 +41,9 @@
  * to address a delete.
  */
 
-import { and, eq, gte, inArray, lte, or } from "drizzle-orm";
+import { and, desc, eq, gte, inArray, lte, or } from "drizzle-orm";
 import { corosWriteJobs } from "@rg/database";
+import { COACH_STAMPING_JOB_KINDS } from "@rg/domain";
 import type { Db } from "./db.js";
 
 /**
@@ -65,8 +66,16 @@ export function stampName(title: string, date: string): string {
  * Job kinds whose payload holds a program name we wrote to COROS. Deletes are
  * excluded on purpose: they carry the same stamp but they remove a program,
  * they never name one, so they can teach us nothing a create hasn't already.
+ *
+ * A CONTENT REWRITE NAMES ONE TOO (2026-08-17). `coach_update_workout` puts a
+ * fresh program on the wire under a stamp derived from the session's CURRENT
+ * title, and an ease can change that title — so without this kind here, the
+ * first import after a rewrite would read the new stamp as a title and the
+ * athlete's session would be renamed "Easy first run back — 2026-08-17" on the
+ * watch, in the app and in Google Calendar. Exactly the bug this module exists
+ * for, one job kind later.
  */
-const CREATE_KINDS = ["coach_create_workout", "create_scheduled_workout"];
+const CREATE_KINDS = [...COACH_STAMPING_JOB_KINDS, "create_scheduled_workout"];
 
 /**
  * `stamp → the title we meant`, for every workout this account created on COROS
@@ -116,6 +125,49 @@ export async function loadOwnProgramNames(
     out.set(name, title);
   }
   return out;
+}
+
+/**
+ * THE STAMP COROS IS HOLDING FOR ONE WORKOUT — the newest one this account
+ * actually put on the wire for it, or `null` if it never wrote one.
+ *
+ * Every write that removes or replaces a program is authorized by exact string
+ * equality against this name and by nothing else (`isOurs`), so getting it wrong
+ * is not a cosmetic error: the executor refuses with `stamp_mismatch` and
+ * mislabels its own stale copy as the athlete editing in COROS.
+ *
+ * It is derived rather than stored, and deliberately. A `planned_workouts` column
+ * would be NULL for every session already on the athlete's watch — the rows this
+ * exists to converge — so the backfill would need this derivation anyway, and two
+ * sources for one fact is how they drift.
+ *
+ * NEWEST WRITE WINS, and "newest" means newest SETTLED write. A rewrite that has
+ * not verified has not changed what the wire holds, so an unverified job's stamp
+ * must never authorize anything — that is the ordering the `verifiedAt` sort
+ * buys. `requestedAt` breaks ties for two jobs verified in the same instant.
+ */
+export async function recordedStampFor(
+  db: Db,
+  userId: string,
+  workoutId: string,
+): Promise<string | null> {
+  const rows = await db
+    .select({ payload: corosWriteJobs.payload, verifiedAt: corosWriteJobs.verifiedAt })
+    .from(corosWriteJobs)
+    .where(
+      and(
+        eq(corosWriteJobs.userId, userId),
+        eq(corosWriteJobs.workoutId, workoutId),
+        inArray(corosWriteJobs.kind, [...COACH_STAMPING_JOB_KINDS]),
+        eq(corosWriteJobs.status, "verified"),
+      ),
+    )
+    .orderBy(desc(corosWriteJobs.verifiedAt), desc(corosWriteJobs.requestedAt));
+  for (const row of rows) {
+    const name = (row.payload as { name?: unknown } | null)?.name;
+    if (typeof name === "string" && name.length > 0) return name;
+  }
+  return null;
 }
 
 /**

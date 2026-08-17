@@ -994,6 +994,31 @@ async function replaceStages(db: Db, workoutId: string, src: SourcePlannedWorkou
     paceZone: s.paceZone ?? null,
     hrZone: s.hrZone ?? null,
     label: s.label ?? null,
+    // ── THE STRENGTH PRESCRIPTION, PERSISTED (2026-08-17) ────────────────────
+    //
+    // The last link of a chain that was broken in three places at once: the push
+    // path wrote a strength step's reps, load, rest and disclosure prose, the
+    // normalizer discarded them, and there was nowhere to put them if it hadn't.
+    // The athlete's Goblet Squat came home from the watch as a bare movement
+    // name because of all three, and fixing two of them left the numbers
+    // arriving here and going no further.
+    //
+    // `?? null` on each, and `null` means "the wire said nothing", never zero: a
+    // step with no rest is COROS's own "skip rests", and a step with no load is
+    // not a step loaded with nothing. `loadBodyweight` is its own column for
+    // exactly that reason — bodyweight is `intensityCustom: 1` with the value
+    // ABSENT, so it is unreachable from a nullable number.
+    reps: s.reps ?? null,
+    loadKg: s.loadKg ?? null,
+    // One name, everywhere: `loadBodyweight` in `plannedStageSchema`, in
+    // `NormalizedPlannedStage`, and in this column. It briefly had two — the
+    // normalizer said `bodyweight` while the schema said `loadBodyweight` — and
+    // reading only the schema's spelling compiled cleanly while dropping every
+    // bodyweight step on the floor. That is the silent-loss shape this whole
+    // pass exists to close, so it was renamed rather than bridged.
+    loadBodyweight: s.loadBodyweight ?? null,
+    restSeconds: s.restSeconds ?? null,
+    note: s.note ?? null,
   }));
   await chunkedInsert(stageRows, 15, (batch) => db.insert(plannedWorkoutStages).values(batch));
 }

@@ -22,6 +22,7 @@ import { computeConsistency } from "@rg/analytics";
 import {
   addDays,
   coachExerciseSchema,
+  exerciseCuesAsText,
   formatExercise,
   humanizeWorkoutTitle,
   isAdventureSport,
@@ -30,13 +31,16 @@ import {
   nowInstant,
   sportLabel,
   startOfIsoWeek,
+  syncAction,
   todayInZone,
   watchCoverage,
   type PlannedWorkout,
+  type SyncAction,
   type UserPreferences,
   type WatchCoverageView,
   type WatchSessionShape,
   type WorkoutSyncView,
+  type WriteLane,
 } from "@rg/domain";
 import { conditionWord, DEFAULT_GARDEN_CONFIG, type GardenSnapshot } from "@rg/garden-engine";
 import { proposeReschedules, summarizeStageRows } from "@rg/scheduling";
@@ -72,13 +76,40 @@ planRoutes.use("*", requireUser);
  * those files each already do (no shared export exists for it). */
 const IN_FLIGHT_JOB_STATUSES = ["queued", "claimed", "in_progress", "verifying"] as const;
 
+/**
+ * A write job that TAKES A SESSION OFF the watch, as opposed to putting one on
+ * it — the one distinction the athlete-facing action layer needs from the job
+ * lane, and the reason it reads kinds rather than counting rows.
+ *
+ * Deliberately a RULE about the kind's meaning and not a registry lookup: the
+ * lane grows kinds (a content rewrite landed on 2026-08-17), and every new one
+ * either adds a session to the watch or removes one. Getting this wrong in the
+ * "sending" direction would tell an athlete their watch is being updated while
+ * their session is being deleted from it, which is a lie in the reassuring
+ * direction — so the test is on the removal side.
+ */
+function isUnpushKind(kind: string): boolean {
+  return kind.includes("delete") || kind.includes("remove");
+}
+
 /** Everything a workout's DTO needs that its own row cannot answer: where
- * COROS stands on it, and how much of it the wire can carry. */
+ * COROS stands on it, how much of it the wire can carry, and what anyone is
+ * supposed to do about the difference. */
 interface WorkoutView {
   corosSyncView: WorkoutSyncView;
   /** Omitted when coverage is `full` — see `watchCoverageOfRow`. Silence is
    * the correct render for a session with nothing to disclose. */
   watchCoverage?: WatchCoverageView;
+  /**
+   * WHAT TO DO ABOUT IT (`@rg/domain` sync-action.ts) — absent when the answer
+   * is "nothing, it's fine", which is every fully-synced session.
+   *
+   * The two fields above say THAT something is off. This one says whether the
+   * app is fixing it, whether the athlete has to, or whether nothing can be —
+   * which is the difference between a state that reads as a warning and a state
+   * that reads as a receipt.
+   */
+  syncAction?: SyncAction;
 }
 
 /**
@@ -144,7 +175,17 @@ function watchShapeOfRow(
           // unparseable movement has no `originId`, so it is off-catalog.
           return typeof name === "string" ? [{ name, onWatch: false }] : [];
         }
-        return [{ name: parsed.data.name, onWatch: !!parsed.data.originId }];
+        return [
+          {
+            name: parsed.data.name,
+            onWatch: !!parsed.data.originId,
+            // The per-side/tempo half of the disclosure, from the same test the
+            // manifest's adapter uses — otherwise the sheet and the approval
+            // card would answer "how much of this crosses" differently for the
+            // same session.
+            ...(exerciseCuesAsText(parsed.data) ? { cuesAsText: true } : {}),
+          },
+        ];
       }),
     };
   }
@@ -192,6 +233,11 @@ async function loadWorkoutViews(
    * so the providerConnections read isn't repeated (it never varies within a
    * request). Omitted → computed here, same as before. */
   precomputedPresence?: CloudPresence,
+  /** The athlete's today, for the one question the row cannot answer on its
+   * own: is there still anything to send? A session whose day has gone asks
+   * nothing of anyone (`SyncSituation.settled`). Omitted → derived from prefs,
+   * which is the same answer one string comparison later. */
+  todayLocal?: string,
 ): Promise<Map<string, WorkoutView>> {
   const map = new Map<string, WorkoutView>();
   if (workouts.length === 0) return map;
@@ -211,7 +257,14 @@ async function loadWorkoutViews(
     Promise.all(
       chunkIds(ids).map((chunk) =>
         db
-          .select({ workoutId: corosWriteJobs.workoutId, status: corosWriteJobs.status })
+          .select({
+            workoutId: corosWriteJobs.workoutId,
+            status: corosWriteJobs.status,
+            // The kind is read for ONE question: does this job put the session
+            // on the watch or take it off (`isUnpushKind`). The sync view itself
+            // is kind-blind and stays that way.
+            kind: corosWriteJobs.kind,
+          })
           .from(corosWriteJobs)
           .where(and(eq(corosWriteJobs.userId, userId), inArray(corosWriteJobs.workoutId, chunk))),
       ),
@@ -249,27 +302,57 @@ async function loadWorkoutViews(
 
   const pendingIds = new Set<string>();
   const failedIds = new Set<string>();
+  // What the lane is DOING about each row, in the action layer's own three
+  // words. In flight outranks failed (a superseded failure has been replaced by
+  // a live attempt), and an unpush is distinguished from a send because the two
+  // promise opposite things to the athlete.
+  const lanes = new Map<string, WriteLane>();
   for (const jobs of jobChunks) {
     for (const j of jobs) {
-      if ((IN_FLIGHT_JOB_STATUSES as readonly string[]).includes(j.status)) pendingIds.add(j.workoutId);
-      else if (j.status === "failed") failedIds.add(j.workoutId);
+      if ((IN_FLIGHT_JOB_STATUSES as readonly string[]).includes(j.status)) {
+        pendingIds.add(j.workoutId);
+        if (lanes.get(j.workoutId) !== "sending") {
+          lanes.set(j.workoutId, isUnpushKind(j.kind) ? "unpushing" : "sending");
+        }
+      } else if (j.status === "failed") {
+        failedIds.add(j.workoutId);
+        if (!lanes.has(j.workoutId)) lanes.set(j.workoutId, "failed");
+      }
     }
   }
 
+  const today = todayLocal ?? todayInZone(prefs.timezone);
   for (const w of workouts) {
     const contentRewritten = contentStale.has(w.id);
     const coverage = watchCoverageOfRow(w, contentRewritten, stagesByWorkout.get(w.id) ?? []);
+    const corosSyncView = deriveWorkoutSync({
+      effectiveDate: w.effectiveDate,
+      lastVerifiedCorosDate: w.lastVerifiedCorosDate,
+      hasOpenContentIntent: contentRewritten,
+      hasPendingJob: pendingIds.has(w.id),
+      hasFailedJob: failedIds.has(w.id),
+      presence,
+      writesEnabled: prefs.corosWritesEnabled,
+    });
+    // A row whose in-flight job was superseded still shows `failed` here while
+    // the lane holds nothing — `deriveWorkoutSync` and the action must read the
+    // same lane, so the fallback is the same derivation, not a second one.
+    const write: WriteLane = lanes.get(w.id) ?? "none";
+    const action = syncAction({
+      view: corosSyncView,
+      ...(coverage ? { coverage } : {}),
+      connected: presence.online,
+      writesEnabled: prefs.corosWritesEnabled,
+      write,
+      // Completed, skipped, missed, or simply past: its watch copy is history
+      // and nothing is going to be sent for it. Same rule the content
+      // convergence backfill applies when it picks rows.
+      settled: w.completionState !== "scheduled" || w.effectiveDate < today,
+    });
     map.set(w.id, {
-      corosSyncView: deriveWorkoutSync({
-        effectiveDate: w.effectiveDate,
-        lastVerifiedCorosDate: w.lastVerifiedCorosDate,
-        hasOpenContentIntent: contentRewritten,
-        hasPendingJob: pendingIds.has(w.id),
-        hasFailedJob: failedIds.has(w.id),
-        presence,
-        writesEnabled: prefs.corosWritesEnabled,
-      }),
+      corosSyncView,
       ...(coverage ? { watchCoverage: coverage } : {}),
+      ...(action ? { syncAction: action } : {}),
     });
   }
   return map;
@@ -332,6 +415,10 @@ function workoutDto(
     // ABSENT when there is nothing to disclose — a fully-carried run stays
     // exactly as quiet as it was before this field existed.
     ...(view?.watchCoverage ? { watchCoverage: view.watchCoverage } : {}),
+    // …and WHAT TO DO about it: who has to act, and the one thing they do
+    // (`@rg/domain` sync-action.ts). Absent whenever the answer is "nothing" —
+    // which keeps a synced session's payload byte-identical to before.
+    ...(view?.syncAction ? { syncAction: view.syncAction } : {}),
     completionState: w.completionState,
     archived: !!w.archivedAt,
     // Lift/mobility prescription, formatted once here so the sheet can't
@@ -484,7 +571,7 @@ planRoutes.get("/today", async (c) => {
   // Presence was already fetched above — threaded through, not re-queried.
   const syncViewSource = new Map<string, typeof plannedWorkouts.$inferSelect>();
   for (const w of [...upcoming, ...unresolved, ...attention]) syncViewSource.set(w.id, w);
-  const syncViews = await loadWorkoutViews(db, userId, [...syncViewSource.values()], prefs, presence);
+  const syncViews = await loadWorkoutViews(db, userId, [...syncViewSource.values()], prefs, presence, today);
 
   return c.json({
     today,
@@ -557,7 +644,7 @@ planRoutes.get("/workouts", async (c) => {
   const primary = [...plans].sort(
     (a, b) => (countByPlanId.get(b.id) ?? 0) - (countByPlanId.get(a.id) ?? 0),
   )[0];
-  const syncViews = await loadWorkoutViews(db, c.get("userId"), rows, prefs);
+  const syncViews = await loadWorkoutViews(db, c.get("userId"), rows, prefs, undefined, today);
   return c.json({
     today,
     plan: primary ? { name: primary.name, startDate: primary.startDate, endDate: primary.endDate } : null,
@@ -704,7 +791,7 @@ planRoutes.get("/week", async (c) => {
   // sync views (need `rows`; presence threaded, not re-queried) and this
   // week's coach shape (needs `covering`).
   const [syncViews, coveringWeekShapeRows] = await Promise.all([
-    loadWorkoutViews(db, userId, rows, prefs, presence),
+    loadWorkoutViews(db, userId, rows, prefs, presence, today),
     covering
       ? db
           .select()
@@ -837,7 +924,14 @@ planRoutes.get("/workouts/:id", async (c) => {
   )[0];
   if (!w) return c.json({ error: "not_found" }, 404);
   const prefs = await loadPreferences(db, userId);
-  const syncViews = await loadWorkoutViews(db, userId, [w], prefs);
+  const syncViews = await loadWorkoutViews(
+    db,
+    userId,
+    [w],
+    prefs,
+    undefined,
+    todayInZone(prefs.timezone),
+  );
   const catalog = await exerciseNameMap(db);
   const stages = (
     await db

@@ -11,10 +11,11 @@ export interface RecordIntentInput {
   userId: string;
   targetKind: "workout" | "studio_session";
   targetId: string;
-  /** "content" is the app's permanent claim on a session's CONTENT: an
-   * approved coach ease must survive every future COROS snapshot, so import
-   * rule 7 skips restoring rows with an open content intent (audit#3 D1).
-   * It deliberately never resolves — nothing on COROS can confirm it. */
+  /** "content" is the app's claim on a session's CONTENT: an approved coach ease
+   * must survive every future COROS snapshot, so import rule 7 skips restoring
+   * rows with an open content intent (audit#3 D1). It used to be documented as
+   * never resolving, because nothing on COROS could confirm content — a verified
+   * `coach_update_workout` is that confirmation, and closes it. */
   kind: "move" | "create" | "delete" | "remove_local" | "restore" | "content";
   payload?: Record<string, unknown>;
   source: IntentSource;
@@ -99,11 +100,14 @@ export async function openMoveIntents(
  * that are still in the plan.
  *
  * This is the whole signal behind `deriveWorkoutSync`'s `content_stale` and
- * the account line's `contentStaleCount`. A content intent never resolves (see
- * `RecordIntentInput.kind`), so a session stays divergent until something
- * rewrites COROS — which today nothing does, because there is no content-write
- * job kind. That is a real, permanent fact about the athlete's watch and the
- * reason it must be said out loud rather than counted as an "issue" with a
+ * the account line's `contentStaleCount`. A content intent stays open until
+ * something rewrites COROS — which since 2026-08-17 something DOES: the
+ * `coach_update_workout` kind, enqueued by `coach-apply.ts`'s
+ * `enqueueContentConvergence` and resolved by the write consumer when the wire
+ * confirms the new content. So this is no longer a permanent fact by
+ * construction; what is left in it are the divergences a rewrite cannot reach —
+ * a session COROS never held, or one whose new content cannot cross the wire —
+ * which is still a fact to say out loud rather than badge as an "issue" with a
  * Retry button that cannot help.
  *
  * Archived workouts are excluded on the same principle `issueCount` already

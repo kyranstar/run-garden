@@ -547,6 +547,197 @@ describe("a session pushed without a threshold says so", () => {
   });
 });
 
+// ── THE WHOLE COACH VOCABULARY, pushed and read back ────────────────────────
+
+/**
+ * THE CLAIM THIS BLOCK EXISTS TO SETTLE, because a false version of it is
+ * quoted in `coach-apply.ts` and has already been copied into new code:
+ *
+ *   "the coach create executor builds a structured RUN program and nothing
+ *    else (coros-write-cloud.ts → buildRunProgram)"
+ *
+ * That is not true and has not been since lift/mobility joined the vocabulary.
+ * `createWorkout` dispatches through `buildProgramFor`: a session with a `run`
+ * body builds a run program, a session with a `lift` OR `mobility` body builds a
+ * structured strength program. Every case below goes through the REAL
+ * `createWorkout` against the stateful mock and comes back out of the REAL
+ * `normalizeCorosSchedule` — push, wire, read. Nothing here is app-only for any
+ * reason on the executor's side of the boundary.
+ */
+describe("every shape the coach can write reaches the watch and comes back", () => {
+  const lift = (
+    exercises: unknown[],
+    over: { rounds?: number; mobility?: boolean; category?: string } = {},
+  ): CoachSession =>
+    ({
+      category: over.category ?? (over.mobility ? "yoga" : "strength"),
+      title: "Vocabulary",
+      durationMinutes: 30,
+      ...(over.mobility
+        ? { mobility: { exercises, ...(over.rounds ? { rounds: over.rounds } : {}) } }
+        : { lift: { exercises, ...(over.rounds ? { rounds: over.rounds } : {}) } }),
+    }) as CoachSession;
+
+  const cases: Array<{
+    what: string;
+    session: CoachSession;
+    /** Asserted on the stages the real normalizer produced. */
+    expect: (stages: ReturnType<typeof normalizeCorosSchedule>["workouts"][number]["stages"]) => void;
+  }> = [
+    {
+      what: "sets, reps, load and rest",
+      session: lift([
+        { name: "Back Squat", originId: SQUAT_ID, sets: 3, reps: 10, weight: { type: "kg", value: 60 }, restSeconds: 120 },
+      ]),
+      expect: (stages) => {
+        expect(stages.find((s) => s.kind === "repeat")!.repeatCount).toBe(3);
+        expect(stages.find((s) => s.kind === "work")).toMatchObject({
+          reps: 10,
+          loadKg: 60,
+          restSeconds: 120,
+          durationType: "none",
+        });
+      },
+    },
+    {
+      what: "a timed hold, bodyweight",
+      session: lift([
+        { name: "Wall sit", originId: SQUAT_ID, sets: 3, holdSeconds: 45, weight: { type: "bodyweight" }, restSeconds: 30 },
+      ]),
+      expect: (stages) => {
+        expect(stages.find((s) => s.kind === "work")).toMatchObject({
+          durationType: "time",
+          durationSeconds: 45,
+          loadBodyweight: true,
+          restSeconds: 30,
+        });
+      },
+    },
+    {
+      what: "per-side work, as both sides",
+      session: lift([
+        { name: "Copenhagen plank", originId: BENCH_ID, sets: 2, holdSeconds: 30, perSide: true, weight: { type: "bodyweight" }, restSeconds: 20 },
+      ]),
+      expect: (stages) => {
+        const work = stages.filter((s) => s.kind === "work");
+        expect(work).toHaveLength(2); // one child per side, not half the work
+        expect(work.map((s) => s.durationSeconds)).toEqual([30, 30]);
+        expect(work[0]!.note).toBe("each side");
+      },
+    },
+    {
+      what: "an eccentric tempo, as disclosure",
+      session: lift([
+        { name: "Tempo squat", originId: SQUAT_ID, sets: 3, reps: 8, eccentricSeconds: 4, weight: { type: "kg", value: 40 }, restSeconds: 90 },
+      ]),
+      expect: (stages) => {
+        // The wire has no tempo field at all, so it rides in the step's prose.
+        expect(stages.find((s) => s.kind === "work")).toMatchObject({ reps: 8, loadKg: 40, note: "4s down" });
+      },
+    },
+    {
+      what: "sets alone — three ramping sets, stop when it gets heavy",
+      session: lift([{ name: "Trap bar deadlift", originId: SQUAT_ID, sets: 3, restSeconds: 120 }]),
+      expect: (stages) => {
+        expect(stages.find((s) => s.kind === "repeat")!.repeatCount).toBe(3);
+        const work = stages.find((s) => s.kind === "work")!;
+        expect(work.durationType).toBe("open"); // no invented rep count
+        expect(work.reps).toBeUndefined();
+        expect(work.restSeconds).toBe(120);
+      },
+    },
+    {
+      what: "a circuit of rounds",
+      session: lift(
+        [
+          { name: "Wall sit", originId: SQUAT_ID, sets: 1, holdSeconds: 45, weight: { type: "bodyweight" }, restSeconds: 15 },
+          { name: "Plank", originId: BENCH_ID, sets: 1, holdSeconds: 45, weight: { type: "bodyweight" }, restSeconds: 15 },
+        ],
+        { rounds: 3 },
+      ),
+      expect: (stages) => {
+        const repeats = stages.filter((s) => s.kind === "repeat");
+        expect(repeats).toHaveLength(1);
+        expect(repeats[0]!.repeatCount).toBe(3);
+        expect(stages.filter((s) => s.parentStageId === repeats[0]!.id)).toHaveLength(2);
+      },
+    },
+    {
+      what: "a mobility session",
+      session: lift(
+        [
+          { name: "Couch stretch", originId: BENCH_ID, sets: 2, holdSeconds: 60, perSide: true, weight: { type: "bodyweight" }, restSeconds: 0 },
+        ],
+        { mobility: true },
+      ),
+      expect: (stages) => {
+        const work = stages.filter((s) => s.kind === "work");
+        expect(work).toHaveLength(2);
+        expect(work.map((s) => s.durationSeconds)).toEqual([60, 60]);
+        // restSeconds 0 is "skip rests" on the wire — an absence, not a zero.
+        expect(work[0]!.restSeconds).toBeUndefined();
+      },
+    },
+    {
+      what: "a mobility circuit with per-side holds",
+      session: lift(
+        [
+          { name: "Side plank", originId: BENCH_ID, sets: 1, holdSeconds: 30, perSide: true, weight: { type: "bodyweight" }, restSeconds: 15 },
+        ],
+        { mobility: true, rounds: 2 },
+      ),
+      expect: (stages) => {
+        const repeat = stages.find((s) => s.kind === "repeat")!;
+        expect(repeat.repeatCount).toBe(2);
+        const children = stages.filter((s) => s.parentStageId === repeat.id);
+        expect(children).toHaveLength(2);
+        expect(children.every((s) => s.durationSeconds === 30)).toBe(true);
+      },
+    },
+    {
+      what: "the coach's own cue",
+      session: lift([
+        { name: "Back Squat", originId: SQUAT_ID, sets: 3, reps: 5, weight: { type: "kg", value: 70 }, restSeconds: 150, note: "pause at the bottom" },
+      ]),
+      expect: (stages) => {
+        expect(stages.find((s) => s.kind === "work")!.note).toBe("pause at the bottom");
+      },
+    },
+  ];
+
+  cases.forEach(({ what, session, expect: assert }, i) => {
+    it(`pushes and reads back ${what}`, async () => {
+      const { workout, result } = await roundTrip({
+        happenDay: corosDay(addDaysIso(TODAY, 30 + i)),
+        name: `Vocabulary ${i} — round trip`,
+        session,
+      });
+      // Verified on the wire by the executor itself, not just accepted.
+      expect(result.ok).toBe(true);
+      // Every one of these files as strength on the watch (the program
+      // namespace has no mobility sport); the app keeps the honest discipline.
+      expect(workout.sport).toBe("strength");
+      assert(workout.stages);
+    });
+  });
+
+  it("a run session still builds a run program — the dispatch, both ways", async () => {
+    const { workout } = await roundTrip({
+      happenDay: corosDay(addDaysIso(TODAY, 45)),
+      name: "Dispatch — run",
+      session: {
+        category: "easy",
+        title: "Easy 30",
+        durationMinutes: 30,
+        run: { blocks: [{ kind: "duration", value: 30, intensity: "easy" }] },
+      } as CoachSession,
+      thresholdPaceSecPerKm: THRESHOLD,
+    });
+    expect(workout.sport).toBe("run");
+    expect(workout.stages[0]).toMatchObject({ durationType: "time", targetType: "pace" });
+  });
+});
+
 // ── A sub-minute block is whole seconds on the wire ─────────────────────────
 
 describe("fractional minutes land as whole seconds", () => {

@@ -20,6 +20,7 @@ import {
   settling,
   Sheet,
   Spinner,
+  SyncActionNote,
   SyncNotesStack,
   useIsDesktop,
   WatchCoverageNote,
@@ -132,12 +133,18 @@ function WorkoutDetail({
   // hasn't reached the watch yet", and it gets different words below.
   const neverOnWatch = w.lastVerifiedCorosDate === "";
   const outOfSync = syncView === "needs_attention" || syncView === "calendar_only" || syncView === "sync_issue";
-  // Nothing a retry could send. `watchCoverage.coverage === "none"` IS the
-  // push predicate (domain/watch-coverage.ts), so this now also suppresses the
-  // button on a distance-measured run — which the old `exercises.length` test
-  // let through, offering a retry that could only ever fail (see today.tsx).
-  const canSyncToCoros =
-    outOfSync && corosWritesEnabled && (w.exercises?.length ?? 0) === 0 && w.watchCoverage?.coverage !== "none";
+  /* THE BUTTON EXISTS IFF THE ACTION SAYS A CONTROL DOES (2026-08-17).
+     This was four hand-rolled conditions — out of sync, writes on, no
+     exercises, coverage not "none" — and it had already been wrong twice: once
+     offering a retry on a distance-measured run whose push could only fail, and
+     once (`content_stale`) offering one whose press enqueues a move to the day
+     the session is already on. `syncAction` answers the same question in one
+     place, for the sheet, the Today card and the copy beside them, so the button
+     and the sentence explaining it cannot disagree again.
+     Falls back to the old predicate only for a DTO with no action field. */
+  const canSyncToCoros = w.syncAction
+    ? w.syncAction.control === "retry"
+    : outOfSync && corosWritesEnabled && (w.exercises?.length ?? 0) === 0 && w.watchCoverage?.coverage !== "none";
   // The banner is for COROS's DISAGREEMENT with the app — a wrong date or a
   // stale copy. It is no longer the carrier of the app-only story: that is a
   // standing property of the session, not a state, and it has its own note.
@@ -145,8 +152,15 @@ function WorkoutDetail({
   // And when the note has already said "your watch won't show this, it lives
   // here and in your Calendar", the banner's never-on-watch sentence is the
   // same sentence with the reason removed. One telling, not two.
+  /* …and it is about a DATE. The content-stale branch moved out on 2026-08-17:
+     the action note above now says what is true about a stale copy AND what to
+     do about it, and this banner's version said neither correctly — it claimed
+     "COROS has no way to be told a session's new content", which stopped being
+     true the day the content-rewrite lane landed. Two tellings of one fact, one
+     of them stale, is exactly what the action layer exists to end. */
   const corosDisagrees =
-    (w.effectiveDate !== w.lastVerifiedCorosDate || syncView === "content_stale") &&
+    w.effectiveDate !== w.lastVerifiedCorosDate &&
+    syncView !== "content_stale" &&
     !(neverOnWatch && w.watchCoverage?.coverage === "none");
 
   const displayTitle = humanizeWorkoutTitle(w.title, w.category, w.qualitySubtype);
@@ -270,17 +284,24 @@ function WorkoutDetail({
                 part the note doesn't: that Calendar has it and COROS doesn't. */}
             {neverOnWatch
               ? "This lives in Run Garden and your Google Calendar. COROS has never been given it."
-              : syncView === "content_stale"
-                ? `Your COROS watch has this on ${formatDayLong(w.lastVerifiedCorosDate)}, but with the version Run Garden replaced — COROS has no way to be told a session's new content, so the watch keeps the old one until you open it here.`
-                : syncView === "needs_attention"
-                  ? `COROS has this on ${formatDayLong(w.lastVerifiedCorosDate)}; Run Garden has ${formatDayLong(w.effectiveDate)}. Pick where it should live.`
-                  : syncView === "calendar_only"
-                    ? `Your COROS watch still has this on ${formatDayLong(w.lastVerifiedCorosDate)} — this move hasn't been written to COROS.`
-                    : syncView === "sync_issue"
-                      ? `The last update to COROS failed — your watch still shows ${formatDayLong(w.lastVerifiedCorosDate)}. Retry below.`
-                      : `COROS still shows ${formatDayLong(w.lastVerifiedCorosDate)} — the update is on its way.`}
+              : syncView === "needs_attention"
+                ? `COROS has this on ${formatDayLong(w.lastVerifiedCorosDate)}; Run Garden has ${formatDayLong(w.effectiveDate)}.`
+                : syncView === "calendar_only"
+                  ? `Your COROS watch still has this on ${formatDayLong(w.lastVerifiedCorosDate)} — this move hasn't been written to COROS.`
+                  : syncView === "sync_issue"
+                    ? `The last update to COROS failed — your watch still shows ${formatDayLong(w.lastVerifiedCorosDate)}.`
+                    : `COROS still shows ${formatDayLong(w.lastVerifiedCorosDate)} — the update is on its way.`}
           </Banner>
         ) : null}
+        {/* …AND WHAT TO DO ABOUT IT — last of the three, because it is the
+            conclusion: the note above says what the watch can carry, the banner
+            says what COROS currently holds, and this says who has to act and
+            what the one thing is. Absent whenever the answer is "nothing", so a
+            synced session renders exactly what it rendered before this existed. */}
+        <SyncActionNote
+          action={w.syncAction}
+          settingsLink={<Link to="/settings">Open Settings</Link>}
+        />
         <div className="hero-durations">
           <div>
             <div className="num">{formatMinutes(w.workoutSeconds)}</div>
@@ -369,19 +390,11 @@ function WorkoutDetail({
           </>
         ) : null}
 
-        {/* The settings nudge only applies to a session COROS could carry —
-            telling someone to enable writes for a wall-sit circuit that the
-            watch can never hold is a false promise. Same predicate as the
-            button, for the same reason. */}
-        {outOfSync &&
-        !corosWritesEnabled &&
-        (w.exercises?.length ?? 0) === 0 &&
-        w.watchCoverage?.coverage !== "none" ? (
-          <p className="faint">
-            COROS sync is off, so this can't be pushed to your watch.{" "}
-            <Link to="/settings">Enable it in Settings</Link>.
-          </p>
-        ) : null}
+        {/* The settings nudge used to live here, with its own copy of the
+            "session COROS could carry" predicate. It is the `syncAction` layer's
+            `enable_coros_writes` now — one sentence, at the top of the sheet
+            with the rest of the sync story, instead of a second telling at the
+            bottom that only some of the eligible sessions got. */}
       </div>
       <MoveSheet workout={w} open={moving} onClose={() => setMoving(false)} />
       <MatchSheet workout={w} open={matching} onClose={() => setMatching(false)} />

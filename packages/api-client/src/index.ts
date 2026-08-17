@@ -8,6 +8,7 @@ import type {
   LiftingPlan,
   PlanBrief,
   ReadinessVerdict,
+  SyncAction,
   UserPreferences,
   WatchCoverageView,
   WorkoutSyncView,
@@ -129,6 +130,17 @@ export interface WorkoutDto {
    * quiet as it was before the field existed.
    */
   watchCoverage?: WatchCoverageView;
+  /**
+   * WHAT TO DO ABOUT IT — the agent (`app` / `athlete` / `nobody`), the code the
+   * copy keys off, and the control that genuinely performs it, if any
+   * (`@rg/domain` sync-action.ts).
+   *
+   * The two fields above say THAT something is off; this one is the half the
+   * athlete asked for. ABSENT means there is nothing to do, which is every
+   * fully-synced session and every session whose day has passed — so this field
+   * never makes a healthy card noisier.
+   */
+  syncAction?: SyncAction;
   completionState: CompletionState;
   archived: boolean;
   /**

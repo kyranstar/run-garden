@@ -216,32 +216,57 @@ describe("what the app is willing to send", () => {
     }
   });
 
-  it("never sends a lift or mobility session, though the executor writes them fine", async () => {
+  /**
+   * THE GATE IS OPEN (2026-08-17), and this is the assertion that changed shape.
+   *
+   * It used to read "never sends a lift or mobility session, though the executor
+   * writes them fine" — the finding as an assertion: every lift and mobility
+   * fixture was app-only because of `watchPushable`, not because the wire could
+   * not carry it, while the comment on that predicate claimed the executor
+   * "builds a structured RUN program and nothing else". It dispatches to
+   * `buildStrengthProgram`, and the loop below is the proof that always existed:
+   * these sessions go to the mock account and come back.
+   *
+   * So the claim is now the useful one — THE GATE AND THE EXECUTOR AGREE. A
+   * bodied lift or mobility session whose movements all resolved crosses; one
+   * with an unresolved movement does not, at BOTH layers, because
+   * `buildStrengthProgram` refuses to write a program the server would reject and
+   * a three-of-five push would silently under-prescribe.
+   */
+  it("sends every lift and mobility session the executor can actually write", async () => {
     const bodied: Fixture[] = FIXTURES.filter(
       (f) =>
         (f.session.lift?.exercises.length ?? 0) > 0 ||
         (f.session.mobility?.exercises.length ?? 0) > 0,
     );
     expect(bodied.length, "the corpus carries no lift or mobility content").toBeGreaterThan(5);
+    // The corpus must keep exercising BOTH sides of the catalog rule, or this
+    // test stops being about the rule.
+    expect(bodied.some((f) => watchPushable(f.session)), "no pushable lift fixture").toBe(true);
+    expect(
+      bodied.some((f) => !watchPushable(f.session)),
+      "no lift fixture with an unresolved movement — the all-or-nothing rule is untested",
+    ).toBe(true);
 
-    const appOnly: string[] = [];
-    const executorWrites: string[] = [];
     for (const f of bodied) {
-      expect(watchPushable(f.session), `${f.name}`).toBe(false);
-      appOnly.push(f.name);
-      if (!Array.isArray(f.ledger.wire)) continue;
-      const { result } = await pushAndReadBack(specOf(f.session, undefined));
-      if (result.ok) executorWrites.push(f.name);
+      const allResolved = [
+        ...(f.session.lift?.exercises ?? []),
+        ...(f.session.mobility?.exercises ?? []),
+      ].every((e) => !!e.originId);
+      // The gate's rule, stated: every movement resolved, or the session stays
+      // in the app.
+      expect(watchPushable(f.session), `${f.name}: the gate disagrees with the catalog`).toBe(
+        allResolved,
+      );
+      // And the executor's own verdict on the same session, from the real wire.
+      const { job } = await applyAndQueue(f.session);
+      expect(job !== undefined, `${f.name}: the queue disagrees with the gate`).toBe(allResolved);
+      const { result } = await pushAndReadBack(specOf(f.session, job?.payload));
+      expect(
+        result.ok,
+        `${f.name}: gate says ${allResolved}, executor says ${result.ok} (${result.error ?? ""})`,
+      ).toBe(allResolved);
     }
-    // The finding, as an assertion: every one of these is app-only because of
-    // `watchPushable`, NOT because the wire cannot carry it. coach-apply.ts's
-    // comment on that predicate says the executor "builds a structured RUN
-    // program and nothing else"; it dispatches to buildStrengthProgram, and
-    // coros-write-cloud already resolves the COROS catalog for exactly this case.
-    expect(executorWrites.length, "no lift/mobility session reached the wire at all").toBe(
-      bodied.filter((f) => Array.isArray(f.ledger.wire)).length,
-    );
-    expect(appOnly.length).toBe(bodied.length);
   });
 });
 

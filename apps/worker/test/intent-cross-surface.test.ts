@@ -17,9 +17,16 @@
  * describe a DIFFERENT SESSION. Every divergence is either declared by name in
  * `SURFACE_DIVERGENCES` or it fails here.
  *
- * The five declared divergences have two root causes — a third and fourth way
- * of rounding a distance, and a role label nobody wrote — and both are visible
- * to the athlete today, on screens that sit one tap apart.
+ * AND THEN THE POSITIVE FORM: a fixture that declares nothing must render ONE
+ * STRING across all five readers, byte for byte (`FIVE READERS, ONE STRING`
+ * below). The pairs say where the app is allowed to disagree with itself; that
+ * assertion says what "agreeing" actually means, which is the claim a reader of
+ * this file came for.
+ *
+ * Two declared divergences remain, and they are ONE call site: `coach-apply.ts`
+ * still writes `stage_summary` with a private `(m/1000).toFixed(1) + "km"`
+ * instead of the domain's `sessionSummaryLine`. Everything else went to one
+ * renderer on 2026-08-17.
  */
 
 import { beforeEach, describe, expect, it } from "vitest";
@@ -45,10 +52,9 @@ import type { Db } from "../src/services/db.js";
 import type { Env } from "../src/env.js";
 import { makeTestDb, makeTestUser, mountRoutes } from "./helpers.js";
 import {
+  divergencePair,
   FIXTURES,
-  SURFACE_DIVERGENCES,
   THRESHOLD_SEC_PER_KM,
-  type SurfaceDivergence,
   type SurfacePair,
 } from "./intent-corpus.js";
 
@@ -226,7 +232,20 @@ describe("five readers describe the same session", () => {
         );
       }
 
-      const declared = new Set(f.ledger.surfaces.map((d) => SURFACE_DIVERGENCES[d].pair));
+      // ── the DTO's own summary line ────────────────────────────────────────
+      // Reader 2 is the string the athlete literally reads in the sheet, and it
+      // is neither of the two above by accident: the detail route prefers the
+      // stage-row derivation (so a row stored before a formatter fix still
+      // renders correctly) and falls back to the column for a session with no
+      // stage rows at all. Pinned, because a flip of that precedence changes
+      // what a person sees without changing anything else in this file.
+      expect(seen.dto.stageSummary, "the DTO's summary follows neither reader").toBe(
+        seen.stageRowSummary !== null && seen.stageRowSummary !== ""
+          ? seen.stageRowSummary
+          : seen.row.stageSummary,
+      );
+
+      const declared = new Set(f.ledger.surfaces.map(divergencePair));
       expect(
         [...diverged].sort(),
         `undeclared disagreement between readers of ${f.name}\n` +
@@ -235,6 +254,28 @@ describe("five readers describe the same session", () => {
           `  stage rows: ${seen.stageRowSummary}\n` +
           `  dossier:    ${seen.contains}`,
       ).toEqual([...declared].sort());
+
+      // ── FIVE READERS, ONE STRING ──────────────────────────────────────────
+      // The same claim the pairs make, stated as the thing it is for: with
+      // nothing declared, every surface that describes this session describes it
+      // in the SAME WORDS. A session with no body has nothing to render (its
+      // summary is its title, asserted above) and is not part of this.
+      if (hasBody && f.ledger.surfaces.length === 0) {
+        const readings = [
+          manifestDetail,
+          seen.row.stageSummary,
+          seen.dto.stageSummary,
+          seen.contains,
+          ...(seen.stageRowSummary !== null && seen.stageRowSummary !== ""
+            ? [seen.stageRowSummary]
+            : []),
+        ];
+        expect(
+          [...new Set(readings)],
+          `${f.name} declares no divergence, so all five readers must say one thing:\n` +
+            readings.map((r) => `  ${r}`).join("\n"),
+        ).toHaveLength(1);
+      }
     });
   }
 });
@@ -320,7 +361,7 @@ describe("the readers still agree after the session is mutated", () => {
 describe("the surface ledger", () => {
   it("declares a pair for every named divergence, and no divergence twice per fixture", () => {
     for (const f of FIXTURES) {
-      const pairs = f.ledger.surfaces.map((d: SurfaceDivergence) => SURFACE_DIVERGENCES[d].pair);
+      const pairs = f.ledger.surfaces.map(divergencePair);
       expect(
         new Set(pairs).size,
         `${f.name} declares two causes for one pair — the test can only observe one`,

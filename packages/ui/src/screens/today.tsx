@@ -15,6 +15,7 @@ import {
   formatMinutes,
   formatTime,
   relativeDay,
+  syncActionShort,
   SyncNotesStack,
   SyncStatusLine,
   watchCoverageShort,
@@ -204,6 +205,13 @@ export function NextWorkout({ w, today }: { w: WorkoutDto; today: string }) {
       {watchCoverageShort(w.watchCoverage) ? (
         <p className="faint watch-note-short">{watchCoverageShort(w.watchCoverage)}</p>
       ) : null}
+      {/* …and the one thing to do about it, when it is the athlete's to do. A
+          card is not a sheet, so only the athlete's half appears here: an
+          `app` or `nobody` action has nothing to press and its full sentence
+          is one tap away in the session sheet. */}
+      {syncActionShort(w.syncAction) ? (
+        <p className="faint watch-note-short">{syncActionShort(w.syncAction)}</p>
+      ) : null}
       <div className="btn-row">
         <Link className="btn btn-primary" to={`/plan?workout=${w.id}`}>
           View workout
@@ -211,15 +219,22 @@ export function NextWorkout({ w, today }: { w: WorkoutDto; today: string }) {
         <button className="btn" onClick={() => setMoving(true)}>
           Move
         </button>
-        {/* Not offered on a session the wire cannot hold. This used to test
-            only for exercises, which let a distance-measured run — app-only by
-            the same predicate that refuses a lift — offer a button whose retry
-            enqueues a move for a workout with no wire id, fails, and lands in
-            `issueCount` as an unclearable badge. `watchCoverage` is the
-            predicate itself, so the button and the push now agree. */}
-        {(syncView === "needs_attention" || syncView === "calendar_only" || syncView === "sync_issue") &&
-        (w.exercises?.length ?? 0) === 0 &&
-        w.watchCoverage?.coverage !== "none" ? (
+        {/* The action layer owns this predicate now (see plan.tsx's
+            `canSyncToCoros`): the button exists iff `syncAction` says a control
+            does. It used to test only for exercises, which let a
+            distance-measured run — app-only by the same predicate that refuses
+            a lift — offer a button whose retry enqueues a move for a workout
+            with no wire id, fails, and lands in `issueCount` as an unclearable
+            badge. Legacy DTOs with no action field keep the old test. */}
+        {(
+          w.syncAction
+            ? w.syncAction.control === "retry"
+            : (syncView === "needs_attention" ||
+                syncView === "calendar_only" ||
+                syncView === "sync_issue") &&
+              (w.exercises?.length ?? 0) === 0 &&
+              w.watchCoverage?.coverage !== "none"
+        ) ? (
           <button className="btn" disabled={retry.isPending} onClick={() => retry.mutate()}>
             Sync to COROS
           </button>

@@ -8,7 +8,7 @@
  * bug ("0 min") rather than the contract.
  */
 import { describe, expect, it } from "vitest";
-import { formatDurationShort, formatStageDuration } from "../src/duration.js";
+import { formatDurationShort, formatStageDistance, formatStageDuration } from "../src/duration.js";
 
 describe("formatStageDuration", () => {
   it("says seconds under a minute — a 15s stride is not '0 min'", () => {
@@ -56,6 +56,49 @@ describe("formatStageDuration", () => {
     expect(formatStageDuration(0)).toBe("0s");
     expect(formatStageDuration(-30)).toBe("0s");
     expect(formatStageDuration(14.6)).toBe("15s");
+  });
+});
+
+/**
+ * The one vocabulary for a prescribed DISTANCE. Every string below was rendered
+ * three different ways on 2026-08-17 — the approval card, the stored
+ * `stage_summary`, and the session sheet — for the same session.
+ */
+describe("formatStageDistance", () => {
+  it("says a track rep in metres — a 400 is not '0.4km'", () => {
+    // The stored column's `(m/1000).toFixed(1)` reached Today, the week list
+    // AND the coach's dossier, so this was quoted to the model too.
+    expect(formatStageDistance(400)).toBe("400 m");
+    expect(formatStageDistance(800)).toBe("800 m");
+    expect(formatStageDistance(200)).toBe("200 m");
+    expect(formatStageDistance(40)).toBe("40 m");
+  });
+
+  it("gives a mile and a 1600 different strings", () => {
+    // Nine metres apart, and a track athlete means one of them. `toFixed(1)`
+    // made them one prescription; the card's `toFixed(2)` did not, which is
+    // why the card said 1.61 km and the sheet one tap later said 1.6 km.
+    expect(formatStageDistance(1609)).toBe("1.61 km");
+    expect(formatStageDistance(1600)).toBe("1.6 km");
+    expect(formatStageDistance(1609)).not.toBe(formatStageDistance(1600));
+  });
+
+  it("states a whole number of kilometres bare", () => {
+    expect(formatStageDistance(1000)).toBe("1 km");
+    expect(formatStageDistance(5000)).toBe("5 km");
+    expect(formatStageDistance(16000)).toBe("16 km");
+  });
+
+  it("rounds to whole metres, because nothing prescribes a fraction of one", () => {
+    // 500 yards is 457.2 m. The card printed the raw value ("457.2 m").
+    expect(formatStageDistance(457.2)).toBe("457 m");
+    expect(formatStageDistance(804.67)).toBe("805 m"); // prod's 800m repeats
+    expect(formatStageDistance(3218.7)).toBe("3.22 km"); // two miles
+  });
+
+  it("never invents a distance for zero or nonsense", () => {
+    expect(formatStageDistance(0)).toBe("0 m");
+    expect(formatStageDistance(-400)).toBe("0 m");
   });
 });
 

@@ -117,13 +117,18 @@ describe("describeOps — the live ski-prep proposal", () => {
     const strength = describeOps(liveOps).find((l) => l.summary.startsWith("Ski legs"))!;
     expect(strength.date).toBe("2026-08-17");
     expect(strength.summary).toBe("Ski legs — holds and eccentrics · 40 min");
+    // The rests are the coach's own numbers (2026-08-17): this proposal wrote
+    // 90/75/45 seconds and a foam-roll with none, and the athlete could not see
+    // one of them — the same fields the dossier was quoting back to the model.
+    // Wall Sit and the Copenhagen say nothing because they carry the schema's
+    // default, which nobody chose.
     expect(strength.detail).toEqual([
       "Wall Sit 3×45s",
-      "Reverse Step-Down 3×8/side (4s down)",
-      "Lateral Squats or Side Squats 3×8/side",
-      "Single-Leg Calf Raise 3×12/side",
+      "Reverse Step-Down 3×8/side (4s down), 90s rest",
+      "Lateral Squats or Side Squats 3×8/side, 75s rest",
+      "Single-Leg Calf Raise 3×12/side, 45s rest",
       "Copenhagen Plank 2×20s/side",
-      "Foam Rolling - IT Bands 1×60s/side",
+      "Foam Rolling - IT Bands 1×60s/side, no rest",
     ]);
     expect(strength.change).toBeNull();
   });
@@ -302,7 +307,7 @@ describe("describeOps — every op kind is described", () => {
       },
     });
     expect(describeOps([op])[0]!.detail).toEqual([
-      "2 rounds: Couch stretch 1×45s/side · Ankle rocks 1×12/side",
+      "2 rounds: Couch stretch 1×45s/side · Ankle rocks 1×12/side, no rest",
     ]);
   });
 

@@ -341,10 +341,17 @@ export function canonicalOfReadback(w: SourcePlannedWorkout): Canonical {
  * `defect` is a bug that is live TODAY — the entry exists so the suite reports
  * it instead of hiding it, and so that the day someone fixes it the ledger rots
  * loudly and the entry is deleted.
+ *
+ * THE LEDGER HAS ROTTED ONCE, ON PURPOSE (2026-08-17). `store_stage_role_is_
+ * positional` said the app's stage rows label blocks by POSITION while the wire
+ * labels them by what the block IS — `coach-apply.ts`'s `writeStages` now calls
+ * `runBlockRoles`, the same and only derivation `buildRunProgram` uses, so the
+ * two cannot disagree and applying the transformation changed nothing. Deleting
+ * the entry is what "a no-op declaration is ledger rot" is for; this note is the
+ * receipt, so the count going down reads as a fix rather than as a deletion.
  */
 export type LossReason =
   // ── store leg: intent → applyOps → planned_workouts + stages ──────────────
-  | "store_stage_role_is_positional"
   | "store_pace_band_needs_a_threshold_at_apply_time"
   // ── wire leg: intent → create executor → COROS → normalizeCorosSchedule ───
   | "wire_title_is_the_ownership_stamp"
@@ -371,17 +378,6 @@ const mapSteps = (c: Canonical, f: (s: CanonicalStep, i: number) => CanonicalSte
 });
 
 export const LOSSES: Record<LossReason, Loss> = {
-  store_stage_role_is_positional: {
-    severity: "defect",
-    why:
-      "`coach-apply.ts`'s writeStages still labels stage rows by POSITION" +
-      " (`i === 0 && blocks.length >= 2 ? 'warmup' : 'work'`) — the rule" +
-      " `runBlockRoles` replaced on the wire. The app's own stage list therefore" +
-      " calls an opening interval a warm-up, a walk-back 'work' and a closing" +
-      " easy block 'work': the same four mislabels the wire was fixed for," +
-      " still live one layer up.",
-    apply: (e, a) => mapSteps(e, (s, i) => ({ ...s, role: a.steps[i]?.role ?? s.role })),
-  },
   store_pace_band_needs_a_threshold_at_apply_time: {
     severity: "structural",
     why:
@@ -606,63 +602,65 @@ export type SurfacePair =
  * fails too. Nothing here is structural — every entry is two formatters that
  * should be one.
  */
-export type SurfaceDivergence =
-  | "manifest_vs_stored__distance_formatter"
-  | "stored_vs_stage_rows__distance_formatter"
-  | "manifest_vs_stage_rows__distance_precision"
-  | "stored_vs_stage_rows__role_label"
-  | "manifest_vs_stage_rows__role_label";
+/**
+ * EMPTY, as of 2026-08-17 — and that is the finding, not a gap in the ledger.
+ *
+ * Five readers describe a stored session and all five now render it in the same
+ * words, so there is nothing left to declare. The last two entries were one call
+ * site: `coach-apply.ts`'s private `stageSummary`, whose own
+ * `(m/1000).toFixed(1) + "km"` stored a 400 m rep as "0.4km" while the sheet one
+ * tap below said "400 m". It is `sessionSummaryLine(session)` now — literally the
+ * function the approval card renders from — so the stored column cannot drift
+ * from the manifest without the manifest changing too.
+ *
+ * The machinery stays. This type existing and being empty is a stronger statement
+ * than deleting it: `intent-cross-surface.test.ts` still compares every pair on
+ * every fixture, and the next divergence anyone introduces has to be written down
+ * here before that suite will go green.
+ */
+export type SurfaceDivergence = never;
 
-export const SURFACE_DIVERGENCES: Record<
-  SurfaceDivergence,
-  { pair: SurfacePair; severity: "defect"; why: string }
-> = {
-  manifest_vs_stored__distance_formatter: {
-    pair: "manifest_vs_stored",
-    severity: "defect",
-    why:
-      "Three formatters for one distance. `describeOps` and `summarizeStages`" +
-      " agree ('644 m', '16 km'); `coach-apply.ts`'s stageSummary has its own" +
-      " `(m/1000).toFixed(1) + 'km'`, so 644 m is stored — and shown on the card," +
-      " and quoted to the coach — as '0.6km'.",
-  },
-  stored_vs_stage_rows__distance_formatter: {
-    pair: "stored_vs_stage_rows",
-    severity: "defect",
-    why:
-      "The same third formatter, seen from the other side: the session sheet" +
-      " re-derives the summary from the stage rows and reads '800 m' where the" +
-      " card above it reads '0.8km'.",
-  },
-  manifest_vs_stage_rows__distance_precision: {
-    pair: "manifest_vs_stage_rows",
-    severity: "defect",
-    why:
-      "A FOURTH rounding, between the two renderers that were supposed to be the" +
-      " agreeing pair: `describeOps` writes `toFixed(2)` and `summarizeStages`" +
-      " `toFixed(1)`, so a mile block reads '1.61 km' on the card the athlete" +
-      " approves and '1.6 km' on the sheet they open next. Small, and exactly" +
-      " the kind of small that makes an athlete check which one to run.",
-  },
-  stored_vs_stage_rows__role_label: {
-    pair: "stored_vs_stage_rows",
-    severity: "defect",
-    why:
-      "`summarizeStages` falls back to the stage row's KIND when a block stated" +
-      " no intensity, so a block the positional rule called a warm-up renders as" +
-      " '15 min warmup' on the sheet and '15 min' on the card. Downstream of" +
-      " store_stage_role_is_positional: with the role derivation the wire uses," +
-      " the block is `work` and the label is empty.",
-  },
-  manifest_vs_stage_rows__role_label: {
-    pair: "manifest_vs_stage_rows",
-    severity: "defect",
-    why:
-      "The same invented label, reaching the athlete one step earlier: the card" +
-      " they APPROVE says '15 min', and the sheet they open afterwards says" +
-      " '15 min warmup' — a role nobody wrote, on a session they already agreed to.",
-  },
-};
+/**
+ * THREE OF THE FIVE ARE GONE (2026-08-17). One renderer answers for all of it
+ * now — `sessionPrescription`/`sessionSummaryLine` in @rg/domain, over
+ * `formatStageDuration` and the new `formatStageDistance`, with
+ * `summarizeStages` on the same two formatters and no invented words:
+ *
+ *  · `manifest_vs_stage_rows__distance_precision` — the card's `toFixed(2)`
+ *    against the sheet's `toFixed(1)` ('1.61 km' vs '1.6 km' for a mile). Both
+ *    now call `formatStageDistance`, which keeps them different from a 1600.
+ *  · `stored_vs_stage_rows__role_label` and `manifest_vs_stage_rows__role_label`
+ *    — `summarizeStages` no longer falls back to the stage row's KIND, so the
+ *    positional "warmup" that nobody wrote is printed nowhere.
+ *
+ * The two below are ONE line in a file this change did not own; see each entry.
+ */
+export interface SurfaceDivergenceEntry {
+  pair: SurfacePair;
+  severity: "defect";
+  why: string;
+}
+
+export const SURFACE_DIVERGENCES: Record<SurfaceDivergence, SurfaceDivergenceEntry> = {};
+
+/**
+ * The pair a named divergence is about.
+ *
+ * A function rather than an index expression because the ledger is EMPTY, so
+ * `SurfaceDivergence` is `never` and `SURFACE_DIVERGENCES[d]` narrows to `never`
+ * at every call site — TypeScript is right that the lookup is unreachable, and
+ * the readers still need to compile. Widening the lookup here keeps the empty
+ * ledger a fact about the product rather than a reason to delete the machinery
+ * that would catch the next divergence.
+ */
+export function divergencePair(d: SurfaceDivergence): SurfacePair {
+  return (SURFACE_DIVERGENCES as Record<string, SurfaceDivergenceEntry>)[d as string]!.pair;
+}
+
+/** Every declared divergence, for the ledger receipt the suites print. */
+export function surfaceDivergenceEntries(): Array<[string, SurfaceDivergenceEntry]> {
+  return Object.entries(SURFACE_DIVERGENCES as Record<string, SurfaceDivergenceEntry>);
+}
 
 // ── Field coverage: adding a field to the vocabulary breaks this ────────────
 
@@ -846,7 +844,7 @@ const RAW_FIXTURES: Array<Omit<Fixture, "session">> = [
       },
     },
     ledger: {
-      store: ["store_stage_role_is_positional"],
+      store: [],
       wire: ["wire_title_is_the_ownership_stamp", "wire_minutes_are_the_servers_estimate"],
       surfaces: [],
     },
@@ -873,13 +871,9 @@ const RAW_FIXTURES: Array<Omit<Fixture, "session">> = [
       },
     },
     ledger: {
-      store: ["store_stage_role_is_positional"],
+      store: [],
       wire: { refused: "executor_refuses_a_distance_block" },
-      surfaces: [
-        "manifest_vs_stored__distance_formatter",
-        "stored_vs_stage_rows__distance_formatter",
-        "manifest_vs_stage_rows__distance_precision",
-      ],
+      surfaces: [],
     },
   },
   {
@@ -901,7 +895,7 @@ const RAW_FIXTURES: Array<Omit<Fixture, "session">> = [
       },
     },
     ledger: {
-      store: ["store_stage_role_is_positional"],
+      store: [],
       wire: ["wire_title_is_the_ownership_stamp", "wire_minutes_are_the_servers_estimate"],
       surfaces: [],
     },
@@ -922,12 +916,9 @@ const RAW_FIXTURES: Array<Omit<Fixture, "session">> = [
       },
     },
     ledger: {
-      store: ["store_stage_role_is_positional"],
+      store: [],
       wire: { refused: "executor_refuses_a_distance_block" },
-      surfaces: [
-        "manifest_vs_stored__distance_formatter",
-        "stored_vs_stage_rows__distance_formatter",
-      ],
+      surfaces: [],
     },
   },
   {
@@ -962,12 +953,9 @@ const RAW_FIXTURES: Array<Omit<Fixture, "session">> = [
       },
     },
     ledger: {
-      store: ["store_stage_role_is_positional"],
+      store: [],
       wire: ["wire_title_is_the_ownership_stamp", "wire_minutes_are_the_servers_estimate"],
-      surfaces: [
-      "stored_vs_stage_rows__role_label",
-      "manifest_vs_stage_rows__role_label",
-    ],
+      surfaces: [],
     },
   },
   {

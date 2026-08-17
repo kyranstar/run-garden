@@ -44,6 +44,45 @@ export const plannedStageSchema = z.object({
   paceZone: z.number().int().optional(),
   hrZone: z.number().int().optional(),
   label: z.string().optional(),
+
+  /**
+   * THE STRENGTH HALF OF A STAGE (2026-08-17). Five fields, all optional,
+   * because a run stage has none of them and every row written before today has
+   * none either.
+   *
+   * They exist because the COROS wire carries all five and the reader threw
+   * three of them away: `normalize.ts` mapped `targetType: 3` (reps) to
+   * `durationType: "none"` and kept no value, and ignored `intensityValue` for
+   * weight and both rest columns outright. The athlete's own Goblet Squat
+   * therefore rendered as a bare movement name — no sets, no reps, no load —
+   * while the coach's dossier, reading `structured_json` for coach-authored
+   * sessions, could see the whole prescription. A prescription the coach can
+   * read and the athlete cannot is the defect this pass exists to close, and
+   * for imported strength work these columns are where the missing half lives.
+   *
+   * `durationType` stays the measure of TIME and DISTANCE only. Reps are a third
+   * dimension, not a duration, and folding them in would have made every
+   * consumer of `durationSeconds` guess which unit it held.
+   */
+  /** Reps per set (COROS `targetType: 3`). PER SIDE when `note` says so. */
+  reps: z.number().int().positive().optional(),
+  /** Prescribed load in kg (COROS `intensityType: 1`, kg × 1000 on the wire). */
+  loadKg: z.number().positive().optional(),
+  /** Bodyweight is a real prescription and NOT the absence of a load: without
+   * this, "3×8 bodyweight" and "3×8, load unknown" are one row. */
+  loadBodyweight: z.boolean().optional(),
+  /** Seconds between sets (COROS `restType: 1` / `restValue`). Zero is a real
+   * prescription — a circuit that does not pause — so it is distinct from
+   * absent. */
+  restSeconds: z.number().nonnegative().optional(),
+  /**
+   * The step's free text (COROS `overview`), which is where the prescriptions
+   * the wire has no field for actually ride: "each side", "4s down", and any cue
+   * the coach wrote. It is the ONLY carrier for per-side work and eccentric
+   * tempo, so dropping it lost them entirely — see the wire ledger's
+   * `wire_drops_per_side_flag` and `wire_drops_eccentric_tempo`.
+   */
+  note: z.string().optional(),
 });
 export type PlannedStage = z.infer<typeof plannedStageSchema>;
 

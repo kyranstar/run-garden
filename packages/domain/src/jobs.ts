@@ -76,6 +76,88 @@ export const coachCreateWorkoutJobSchema = z
   .strict();
 export type CoachCreateWorkoutJob = z.infer<typeof coachCreateWorkoutJobSchema>;
 
+/**
+ * REWRITES WHAT COROS HOLDS FOR A SESSION THE APP HAS CHANGED (2026-08-17).
+ *
+ * The gap this closes was the athlete's own complaint: *"my plan for today on
+ * the app and in coros completely don't match."* Every job kind before this one
+ * could create a workout, remove one, or move one to another day — and none
+ * could change what a workout SAYS. So an approved `ease` rewrote the app's copy
+ * and COROS kept the original forever: the app read "Easy first run back, 35min
+ * easy" while the watch held 6 × 643 m at 10K pace, and nothing in the pipeline
+ * was ever going to close that. `sync-intents.ts` even documented the hole
+ * ("nothing on COROS can confirm it… there is no content-write job kind").
+ *
+ * WHAT THE PAYLOAD CARRIES, and why each half is here:
+ *
+ *  · THE OWNERSHIP CLAIM — `recordedName` plus the delete triple (`corosPlanId`,
+ *    `idInPlan`, `programId`) and `happenDay`. Every one of these is a CLAIM
+ *    recorded when the workout was written, never an identity: COROS recycles a
+ *    plan's `idInPlan` slots after deletes, so `planId:idInPlan` can silently
+ *    come to mean a different workout (live-observed — see import-plan.ts's
+ *    recycled-slot branch). The executor therefore re-reads and re-proves all of
+ *    it, by STAMP, before it touches anything, exactly as `deleteWorkout` does.
+ *
+ *  · THE NEW CONTENT — `session`, and `name` as the stamp the rewrite leaves
+ *    behind. `name`/`session` mean here precisely what they mean in the create
+ *    payload ("the program I wrote, and the title I meant"), which is what lets
+ *    `coros-stamp.ts` un-stamp a rewritten title on the way back in without a
+ *    second rule.
+ *
+ * A rewrite CAN change the stamp, because an ease can change the title, and the
+ * name is what the athlete reads on the watch. Uniqueness is unaffected — the
+ * date is the uniquifier and a rewrite never moves the session.
+ */
+export const coachUpdateWorkoutJobSchema = z
+  .object({
+    workoutId: z.string().min(1),
+    /** The day COROS holds it on — the other half of the address. */
+    happenDay: localDate,
+    /** The program-name stamp the rewrite LEAVES on the wire. */
+    name: z.string().min(1),
+    /** The stamp recorded when this workout was last written: the ownership
+     * claim that authorizes the rewrite. Equal to `name` when the title did not
+     * change, which is the ordinary case. */
+    recordedName: z.string().min(1),
+    idInPlan: z.string().min(1),
+    /** The recorded `planProgramId` — third element of the delete triple. */
+    programId: z.string().min(1),
+    corosPlanId: z.string().min(1),
+    /** What the app now holds, and what the watch must end up saying. */
+    session: coachSessionSchema,
+    /** Threshold pace (sec/km) known at enqueue time. The executor prefers a
+     * fresher reading — see `latestThresholdPace` — so this is a floor, not an
+     * instruction. */
+    thresholdPaceSecPerKm: z.number().positive().optional(),
+    /** Executor-side retry counter (transient failures requeue, cap 3). */
+    attempts: z.number().int().min(0).optional(),
+  })
+  .strict();
+export type CoachUpdateWorkoutJob = z.infer<typeof coachUpdateWorkoutJobSchema>;
+
+/**
+ * The three kinds that act on ONE coach-authored `planned_workouts` row and
+ * report straight onto it (rather than onto the studio push ledger).
+ *
+ * Enumerated because three separate places need "is this a coach push": the
+ * stamp reader, the sync-status issue count, and the write consumer's dispatch.
+ * They were three hand-written string comparisons and the update kind would have
+ * had to be remembered in each.
+ */
+export const COACH_JOB_KINDS = [
+  "coach_create_workout",
+  "coach_update_workout",
+  "coach_delete_workout",
+] as const;
+export type CoachJobKind = (typeof COACH_JOB_KINDS)[number];
+
+/** Kinds whose payload names a program THIS account wrote to COROS — a create
+ * and a rewrite both leave a stamp; a delete only removes one. */
+export const COACH_STAMPING_JOB_KINDS = [
+  "coach_create_workout",
+  "coach_update_workout",
+] as const;
+
 /** Pulls a coach-pushed session back off the watch when its plan week is
  * reshaped or the plan retired — without this the 90-day COROS read
  * resurrects archived sessions next to their replacements (audit#3 D2). */

@@ -1074,7 +1074,14 @@ describe("model-natural JSON parses (live createPlan failures 2026-08-12/13)", (
     // is the athlete's judgement on the day (2026-08-17). It now parses and
     // renders honestly rather than as "3×undefined".
     const ramping = coachExerciseSchema.parse({ name: "Back squat", sets: 3, note: "ramp to a hard triple" });
-    expect(formatExercise(ramping)).toBe("Back squat 3 sets");
+    // …and the cue rides on the line, because "ramp to a hard triple" IS the
+    // rest of this prescription. It used to reach the coach's own dossier and
+    // no athlete-facing surface at all (2026-08-17).
+    expect(formatExercise(ramping)).toBe("Back squat 3 sets — ramp to a hard triple");
+    // The default rest stays silent: nobody wrote 60 seconds, the schema did.
+    expect(formatExercise({ ...ramping, restSeconds: 90 })).toBe(
+      "Back squat 3 sets, 90s rest — ramp to a hard triple",
+    );
     expect(coachExerciseSchema.safeParse({ name: "Wall sit", sets: 3, holdSeconds: 45 }).success).toBe(true);
     // What is still absent-intolerant: an exercise with no name is not a
     // movement, and one with no sets is not a prescription.

@@ -325,7 +325,12 @@ describe("the schema accepts vocabulary and normalises it", () => {
       durationMinutes: 40,
       lift: { exercises: [{ name: "Back squat", sets: 3, note: "ramp to a hard triple" }] },
     });
-    expect(formatExercise(sessionExercises(s)[0]!)).toBe("Back squat 3 sets");
+    // The cue rides on the line now — it is the whole prescription here (the
+    // load is the athlete's judgement on the day), and until 2026-08-17 only
+    // the coach's own dossier could see it.
+    expect(formatExercise(sessionExercises(s)[0]!)).toBe(
+      "Back squat 3 sets — ramp to a hard triple",
+    );
     // …and the numbers a real programme uses: twelve sets, a long carry, a
     // twenty-second lowering.
     const big = coachSessionSchema.parse({

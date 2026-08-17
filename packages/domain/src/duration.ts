@@ -55,17 +55,43 @@ export function formatDurationShort(seconds: number): string {
   return m === 0 ? `${h} h` : `${h} h ${m} min`;
 }
 
-/** "7:05 /km" from seconds-per-km. */
-export function formatPace(secPerKm: number): string {
-  const s = Math.round(secPerKm);
-  const min = Math.floor(s / 60);
-  const rem = (s % 60).toString().padStart(2, "0");
-  return `${min}:${rem} /km`;
-}
-
-/** "8.2 km" or "800 m" */
-export function formatDistance(meters: number): string {
-  if (meters < 1000) return `${Math.round(meters)} m`;
-  const km = meters / 1000;
-  return `${km >= 10 ? km.toFixed(1) : km.toFixed(1)} km`;
+/**
+ * A PRESCRIBED distance, in the words a coach writes it — the companion to
+ * `formatStageDuration`, and for the same reason.
+ *
+ * FOUR formatters used to answer this, and a 262-test cross-surface harness
+ * caught all four describing one session (measured 2026-08-17):
+ *
+ *   approval card (`describeOps`)   800 m · 400 m · 1 km · 1.61 km · 457 m
+ *   stored `stage_summary`          0.8km · 0.4km · 1.0km · 1.6km · 0.5km
+ *   session sheet (stage rows)      800 m · 400 m · 1 km · 1.6 km · 457 m
+ *
+ * The stored column is the loudest defect — `(value/1000).toFixed(1) + "km"`
+ * is the "0.0km for a 40 m rep" class already fixed for durations, and it is
+ * the string Today, the week list AND the coach's own dossier all read, so a
+ * 400 m rep was prescribed to the athlete and quoted to the model as "0.4km".
+ * The other two differ by one decimal, on the pair that was supposed to agree:
+ * a mile reads 1.61 km on the card you approve and 1.6 km on the sheet you
+ * open next. Small, and exactly the kind of small that makes an athlete stop
+ * and work out which one to run.
+ *
+ * THE APPROVAL CARD WINS, deliberately: it is the string the athlete agreed
+ * to, so every other reader moves to it rather than the other way round.
+ *
+ * The rule:
+ *   under a kilometre → whole metres      "400 m", "800 m", "457 m"
+ *   a whole number    → bare kilometres   "1 km", "16 km"
+ *   otherwise         → 2 dp, trimmed     "1.6 km", "1.61 km", "3.22 km"
+ *
+ * Two decimals rather than one because 1600 m and a mile are DIFFERENT
+ * prescriptions (nine metres apart, and a track athlete means one of them),
+ * and trimmed rather than padded because "1.00 km" states a precision the
+ * coach did not. Metres are rounded on the way in: nothing prescribes a
+ * fraction of a metre, and `coachRunBlockSchema` already stores whole ones,
+ * so 500 yards is 457 m on every surface instead of 457.2 on one of them.
+ */
+export function formatStageDistance(meters: number): string {
+  const m = Math.max(0, Math.round(meters));
+  if (m < 1000) return `${m} m`;
+  return `${Number((m / 1000).toFixed(2))} km`;
 }

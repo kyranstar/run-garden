@@ -965,6 +965,24 @@ a.note {
   font-size: var(--text-xs);
 }
 
+/* WHAT TO DO ABOUT IT (`SyncActionNote`). The state sentence sets the tone and
+   the TO-DO is the line the athlete acts on, so it is the emphasised one — and
+   it inherits its colour from whichever container it is in, because the same
+   two paragraphs render inside a `.note` (the app is handling it, or nobody
+   can) and inside a `Banner` (the athlete has to). Adding a colour here would
+   fight the banner and re-tint the calm case, which is the whole distinction. */
+.sync-action-says,
+.sync-action-todo {
+  display: block;
+}
+.sync-action-todo {
+  margin-top: var(--space-2);
+  font-weight: var(--weight-bold);
+}
+.sync-action-todo a {
+  font-weight: var(--weight-medium);
+}
+
 /* THE scroll owner. Every box that can clip its content wears this — and
    only one box per dialog does, so a dialog has exactly one thing to scroll.
    It carries the affordance with it: a real scrollbar where the platform

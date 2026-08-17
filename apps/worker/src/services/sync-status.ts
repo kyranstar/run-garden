@@ -40,11 +40,13 @@ export interface SyncStatus {
   pendingCount: number;
   issueCount: number;
   /**
-   * Sessions whose content Run Garden has rewritten since COROS was last given
-   * them (open `content` intents). NOT folded into `issueCount`: an issue is
-   * something the Retry button acts on, and there is no content-write job for
-   * it to enqueue. It is a standing fact, so the line states it instead of
-   * badging it.
+   * Sessions whose content Run Garden has rewritten and COROS has not been given
+   * yet (open `content` intents). NOT folded into `issueCount`, still: an issue
+   * is something the Retry button acts on, and the rows left in this state are
+   * the ones no rewrite can reach — a session that was never on the watch, or one
+   * whose new content cannot cross the wire. A rewrite that CAN happen closes its
+   * intent on verify (`coach_update_workout`), so this count no longer includes
+   * divergences that are merely in flight; those are `pendingCount`.
    */
   contentStaleCount: number;
   lastCorosReadAt: string | null;
@@ -108,6 +110,11 @@ export async function computeSyncStatus(
       openContentIntentTargets(db, userId),
       // A terminally-failed coach watch-push is an issue the user can see and
       // act on (audit#2 #6) — it has no move intent, so count it directly.
+      // A failed CONTENT REWRITE counts the same way and for the same reason:
+      // the athlete's watch is holding a session the app has replaced, the
+      // failure is terminal, and it is exactly the divergence they complained
+      // about. Leaving it out would have made the one kind that closes that gap
+      // the one kind whose failure was silent.
       db
         .select({ id: corosWriteJobs.id })
         .from(corosWriteJobs)
@@ -115,7 +122,7 @@ export async function computeSyncStatus(
         .where(
           and(
             eq(corosWriteJobs.userId, userId),
-            eq(corosWriteJobs.kind, "coach_create_workout"),
+            inArray(corosWriteJobs.kind, ["coach_create_workout", "coach_update_workout"]),
             eq(corosWriteJobs.status, "failed"),
             isNull(plannedWorkouts.archivedAt),
           ),

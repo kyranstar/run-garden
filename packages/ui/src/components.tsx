@@ -10,7 +10,7 @@ import {
   type ReactNode,
   type RefObject,
 } from "react";
-import type { CompletionState, WatchCoverageView, WorkoutSyncView } from "@rg/domain";
+import type { CompletionState, SyncAction, WatchCoverageView, WorkoutSyncView } from "@rg/domain";
 import type { SyncNoteDto, SyncStatusDto } from "@rg/api-client";
 import {
   IconAlert,
@@ -340,34 +340,44 @@ export function CorosPill({ state, hideWhenHealthy }: { state: WorkoutSyncView; 
  */
 export function watchCoverageSentences(view: WatchCoverageView | undefined): string[] {
   if (!view || view.coverage === "full") return [];
-  const noun = view.discipline === "lift" ? "a lift" : view.discipline === "mobility" ? "a mobility session" : "this";
   const out: string[] = [];
   for (const gap of view.gaps) {
     switch (gap.code) {
-      case "discipline_off_wire":
-        out.push(
-          `Your COROS watch won't show this — Run Garden writes timed running sessions to the watch and nothing else, so ${noun} lives here and in your Calendar.`,
-        );
-        break;
       case "distance_target":
         out.push(
           "Your COROS watch won't show this — it's measured in distance, and Run Garden only writes timed steps to the watch.",
         );
         break;
       case "empty_body":
-        out.push("Your COROS watch won't show this — there's no timed structure for it to hold.");
+        out.push("Your COROS watch won't show this — there's no structure for it to hold.");
         break;
       case "off_catalog": {
         const names = gap.names ?? [];
         if (names.length === 0) break;
+        // THE REASON CHANGED (2026-08-17) and so did this sentence. Strength
+        // sessions do reach the watch now, so the catalog is no longer a
+        // footnote on a discipline that could never travel — it is the whole
+        // reason this session stays here, and the athlete can clear it.
         out.push(
-          `Your watch's exercise library has no ${listPhrase(names)}, so ${names.length === 1 ? "it" : "they"} could never be written there by name either.`,
+          `Your COROS watch won't show this — your COROS exercise library has no ${listPhrase(names)},` +
+            ` and Run Garden won't write a partial session that leaves ${names.length === 1 ? "it" : "them"} out.`,
         );
         break;
       }
       case "pace_targets_owed":
         out.push(
           `Your watch will show the steps but no pace targets${gap.count ? ` on ${gap.count} of them` : ""} — Run Garden doesn't know your threshold pace yet.`,
+        );
+        break;
+      case "filed_as_strength":
+        out.push(
+          "On your watch this files under Strength — COROS has no mobility category. Every step is there; only the label is coarse.",
+        );
+        break;
+      case "cues_ride_as_text":
+        out.push(
+          `Your watch shows "each side" and the tempo as notes on the step${gap.count && gap.count > 1 ? "s" : ""} rather than counting them` +
+            " — the work adds up the same, but the watch won't tell you mid-set which side you're on.",
         );
         break;
     }
@@ -379,19 +389,174 @@ export function watchCoverageSentences(view: WatchCoverageView | undefined): str
  * would outweigh everything around it (the Today card, a manifest line). */
 export function watchCoverageShort(view: WatchCoverageView | undefined): string | null {
   if (!view || view.coverage === "full") return null;
-  const lead = view.gaps[0]?.code;
-  if (lead === "distance_target") return "Not on your watch — measured in distance";
-  if (lead === "empty_body") return "Not on your watch — nothing timed to send";
-  if (lead === "pace_targets_owed") return "On your watch, without pace targets";
-  return view.discipline === "run"
-    ? "Not on your watch — lives here and in Calendar"
-    : `Not on your watch — ${view.discipline === "lift" ? "a lift" : "a mobility session"} lives here and in Calendar`;
+  const lead = view.gaps[0];
+  switch (lead?.code) {
+    case "distance_target":
+      return "Not on your watch — measured in distance";
+    case "empty_body":
+      return "Not on your watch — no structure to send";
+    case "off_catalog":
+      return `Not on your watch — your COROS library has no ${listPhrase(lead.names ?? [])}`;
+    case "pace_targets_owed":
+      return "On your watch, without pace targets";
+    case "filed_as_strength":
+      return "On your watch, filed under Strength";
+    case "cues_ride_as_text":
+      return "On your watch — per-side and tempo as notes";
+    default:
+      return "Not on your watch — lives here and in Calendar";
+  }
 }
 
 /** "Skier hops", "Skier hops and Copenhagen planks", "A, B and C". */
 function listPhrase(names: string[]): string {
   if (names.length <= 1) return names[0] ?? "";
   return `${names.slice(0, -1).join(", ")} and ${names[names.length - 1]}`;
+}
+
+// ── What to do about it ─────────────────────────────────────────────────────
+
+/**
+ * THE WORDS FOR EVERY SYNC ACTION — one function, every surface, exactly as
+ * `watchCoverageSentences` is for the coverage half.
+ *
+ * The athlete asked for this in one sentence: *"we need it always in sync, or
+ * clearly tells me when its not and what to do to fix it."* The app had the
+ * first clause covered three times over (the pill, the banner, the coverage
+ * note) and the second not at all — so a state Run Garden was already fixing by
+ * itself read exactly like one that needed the athlete, and a state nobody could
+ * fix read like both.
+ *
+ * `says` is what is true. `todo` is the ONE thing to do, and it is null unless
+ * the athlete is the one who has to do it: an `app` action gets a receipt, a
+ * `nobody` action gets a plain statement, and neither gets an instruction it
+ * cannot honour. `@rg/domain`'s `syncAction` decides which; this only speaks.
+ */
+export function syncActionCopy(action: SyncAction): { says: string; todo: string | null } {
+  const names = action.names ?? [];
+  switch (action.code) {
+    case "sending":
+      return { says: "Sending this to your COROS watch — nothing for you to do.", todo: null };
+    case "removing_from_watch":
+      return {
+        says:
+          "Run Garden is taking the old version off your COROS watch — the new one can't be" +
+          " written there, so the watch stops offering a session you're no longer doing.",
+        todo: null,
+      };
+    case "pace_targets_pending":
+      return {
+        says:
+          `Your watch has the steps but no pace targets${action.count ? ` on ${action.count} of them` : ""}.` +
+          " Run Garden adds them as soon as COROS reports your threshold pace — nothing for you to do.",
+        todo: null,
+      };
+    case "connect_coros":
+      return {
+        says: "This is waiting on your COROS connection.",
+        todo: "Reconnect COROS in Settings and it goes across on its own.",
+      };
+    case "enable_coros_writes":
+      return {
+        says: "COROS updates are off, so Run Garden can't change what your watch holds.",
+        todo: "Turn on COROS updates in Settings — changes from then on reach your watch.",
+      };
+    case "retry_write":
+      return {
+        says: "The last update to your COROS watch didn't land.",
+        todo: "Send it again.",
+      };
+    case "choose_a_date":
+      return {
+        says: "COROS and Run Garden have this session on different days.",
+        todo: "Pick the day it should be on.",
+      };
+    case "make_it_measurable":
+      return {
+        says: "Your watch can't hold this one — it's measured in distance, and Run Garden only writes timed steps.",
+        todo: "Ask your coach for it in minutes if you want it on your watch.",
+      };
+    case "name_it_on_the_watch":
+      return {
+        says: `Your COROS exercise library has no ${listPhrase(names)}, so this session stays here.`,
+        todo:
+          names.length === 1
+            ? "Add it to your COROS exercise library under that name — the whole session reaches your watch once it's there."
+            : "Add them to your COROS exercise library under those names — the whole session reaches your watch once they're there.",
+      };
+    case "lives_here":
+      return {
+        says:
+          "Nothing to fix — there's no structure here for a watch to hold, so this one lives in" +
+          " Run Garden and your Calendar.",
+        todo: null,
+      };
+    case "watch_keeps_old_copy":
+      return {
+        says:
+          "Your COROS watch is keeping the version Run Garden replaced, and there's no way to" +
+          " rewrite it. Run this one — what's here is the session.",
+        todo: null,
+      };
+  }
+}
+
+/**
+ * The action, on the session it concerns.
+ *
+ * Weight follows the AGENT, not the severity of the words: an `app` action is a
+ * `.note` (a sentence that just says something, the same primitive the coverage
+ * disclosure uses) because there is nothing to act on, and an `athlete` action
+ * is a `Banner` because it is the one thing on the screen a person has to do.
+ * `nobody` is a note too — it is the calmest state in the set, and rendering it
+ * as a warning is what made "not on your watch" read as a bug report for months.
+ *
+ * NO BUTTON IS BORN HERE. `action.control === "retry"` is what decides that the
+ * surface's OWN action row shows its "Sync to COROS" button — one control per
+ * action, in the place this app puts controls (System 1: the sheet's pinned
+ * foot, the card's button row), never a second one inside the prose. The
+ * Settings link is the exception because the surfaces have no Settings control
+ * of their own, and it is passed in rather than built here (this module is
+ * router-free).
+ */
+export function SyncActionNote({
+  action,
+  settingsLink,
+}: {
+  action: SyncAction | undefined;
+  /** The screen's own `<Link to="/settings">`. */
+  settingsLink?: ReactNode;
+}) {
+  if (!action) return null;
+  const { says, todo } = syncActionCopy(action);
+  // Spans, not paragraphs: `Banner` wraps its children in a `<span>`, and a
+  // `<p>` inside inline content is invalid markup the browser silently
+  // restructures. `.sync-action-*` make them blocks in both containers.
+  const body = (
+    <>
+      <span className="sync-action-says">{says}</span>
+      {todo ? (
+        <span className="sync-action-todo">
+          {todo}
+          {action.control === "settings" && settingsLink ? <> {settingsLink}</> : null}
+        </span>
+      ) : null}
+    </>
+  );
+  return action.agent === "athlete" ? (
+    <Banner kind="info">{body}</Banner>
+  ) : (
+    <div className="note sync-action">{body}</div>
+  );
+}
+
+/** The action as ONE clause, for a card that cannot spare a paragraph (the
+ * Today hero, a manifest line). The athlete's half only: an `app` or `nobody`
+ * action is already covered by the quieter line beside it, and repeating it in
+ * two places is how a card comes to say the same thing twice. */
+export function syncActionShort(action: SyncAction | undefined): string | null {
+  if (!action || action.agent !== "athlete") return null;
+  return syncActionCopy(action).todo;
 }
 
 /**
@@ -468,7 +633,16 @@ export function SyncStatusLine({
    * is a claim about the two things this app reconciles.
    */
   const contentStale = status.contentStaleCount ?? 0;
-  const staleLine = `Your watch has an older version of ${contentStale} session${contentStale === 1 ? "" : "s"}`;
+  // …AND WHAT THAT MEANS FOR TODAY. "Your watch has an older version of 2
+  // sessions" is the account-level twin of the per-session defect this line's
+  // own doc comment describes: it states a divergence and stops, so it reads as
+  // a job the athlete has been handed. What is LEFT in this count (since the
+  // content-rewrite lane landed) is the divergences no rewrite can reach — the
+  // ones in flight are `pendingCount` now — so the second clause is the whole
+  // instruction, and it is "nothing".
+  const staleLine =
+    `Your watch keeps an older version of ${contentStale} session${contentStale === 1 ? "" : "s"}` +
+    ` — Run Garden has the ${contentStale === 1 ? "one" : "ones"} to run`;
   const line = (() => {
     // Cloud-direct COROS (spec §5): the connection's health outranks Mac
     // presence — "synced X ago" or an honest error, never a Mac mystery.

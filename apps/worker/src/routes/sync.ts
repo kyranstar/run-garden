@@ -23,6 +23,7 @@ import { computeSyncStatus } from "../services/sync-status.js";
 import { pushStudioPlan, undoStudioAdoption } from "../services/studio-push.js";
 import { corosReadNow } from "../services/coros-read.js";
 import { countOrphanedMirrors, repairOrphanedMirrors } from "../services/mirror-repair.js";
+import { convergeDivergedContent, countDivergedContent } from "../services/content-converge.js";
 import { processCoachReads } from "../services/coach-reads.js";
 import { waitUntilSafe } from "../services/wait-until.js";
 
@@ -412,5 +413,50 @@ syncRoutes.post("/repair-orphaned-mirrors", async (c) => {
   const parsed = mirrorRepairSchema.safeParse(body);
   if (!parsed.success) return c.json({ error: "invalid_request", details: parsed.error.issues }, 400);
   const report = await repairOrphanedMirrors(c.get("db"), c.get("userId"), parsed.data);
+  return c.json({ ok: true, ...report });
+});
+
+// ── POST /api/sync/converge-content ──────────────────────────────────────────
+//
+// A one-shot, human-driven convergence of live sessions whose COROS copy is the
+// one Run Garden replaced — the athlete's own complaint ("my plan for today on
+// the app and in coros completely don't match"), for the rows that diverged
+// before the content-write job kind existed. The evidence test, the projection of
+// the app's own copy and everything it refuses to guess at live in
+// `services/content-converge.ts`; this route is validation and nothing else.
+//
+// Same contract as the two repairs above: `dryRun` is REQUIRED and never
+// defaulted, a live run writes the pre-change rows to `audit_events` before
+// queueing a single job, and the response is a per-row account of what would
+// happen — including `unfixable`, which is the honest verdict on a row whose own
+// copy is a bare summary.
+//
+// GET FIRST. `/converge-content/census` is read-only and IS this backfill's own
+// dry run, summarised.
+const convergeContentSchema = z
+  .object({
+    /** Required, never defaulted: a caller that forgot the field must not be
+     *  guessed at in the direction that writes to the athlete's watch. */
+    dryRun: z.boolean(),
+    /** Optional narrowing. Omitted, every row either proof identifies is
+     *  examined. Named rows still have to pass the same evidence test. */
+    workoutIds: z.array(z.string().min(1)).min(1).max(200).optional(),
+  })
+  .strict();
+
+syncRoutes.get("/converge-content/census", async (c) =>
+  c.json({ ok: true, ...(await countDivergedContent(c.get("db"), c.get("userId"))) }),
+);
+
+syncRoutes.post("/converge-content", async (c) => {
+  let body: unknown;
+  try {
+    body = await c.req.json();
+  } catch {
+    return c.json({ error: "invalid_json" }, 400);
+  }
+  const parsed = convergeContentSchema.safeParse(body);
+  if (!parsed.success) return c.json({ error: "invalid_request", details: parsed.error.issues }, 400);
+  const report = await convergeDivergedContent(c.get("db"), c.get("userId"), parsed.data);
   return c.json({ ok: true, ...report });
 });

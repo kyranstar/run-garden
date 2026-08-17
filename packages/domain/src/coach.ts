@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { formatStageDuration } from "./duration.js";
 
 /**
  * The coach's typed vocabulary (spec: docs/superpowers/specs/2026-08-06-
@@ -632,6 +633,28 @@ export type CoachExercise = z.infer<typeof coachExerciseSchema>;
  * One exercise as a line of text — the single formatter, so the stage
  * summary the worker stores, the coach's own dossier, and the session sheet
  * cannot disagree about what "3×8/side @ 4s down" means.
+ *
+ * THE WHOLE PRESCRIPTION, INCLUDING THE REST AND THE CUE (2026-08-17).
+ *
+ * Those two were the last fields stored for an audience that never saw them.
+ * `restSeconds` reached the watch (`restType: 1`) and was rendered by nothing;
+ * the coach's cue reached the model — `coach-context.ts` appended `note` to
+ * this line when it built the dossier — and reached the athlete nowhere. So the
+ * coach could read "heavy enough that set 3 is hard" and the person doing the
+ * set could not, and 90 seconds between sets and 15 seconds between sets were
+ * one string. A prescription the coach can read and the athlete cannot is the
+ * defect, so the line now carries everything the field set holds and the
+ * dossier appends nothing.
+ *
+ * The rest is stated when the coach CHOSE it, which is this function's existing
+ * rule for every other field — bodyweight, not-per-side and no-tempo are all
+ * silent, because a default the schema filled in is not something a person
+ * wrote. `DEFAULT_REST_SECONDS` is exactly that: `restSeconds` is defaulted at
+ * parse time, so printing 60 on every line would be inventing a prescription,
+ * the same way `summarizeStages` used to print a "warmup" nobody wrote. Zero is
+ * a choice (a flow, a circuit that does not pause) and reads as "no rest"; so
+ * are 15s, 20s and 2 min, and those are the numbers a session is designed
+ * around.
  */
 export function formatExercise(e: CoachExercise): string {
   // Sets alone is a legitimate prescription ("three ramping sets"), so the
@@ -645,7 +668,16 @@ export function formatExercise(e: CoachExercise): string {
   const side = e.perSide ? "/side" : "";
   const load = e.weight.type === "kg" ? ` @ ${e.weight.value} kg` : "";
   const tempo = e.eccentricSeconds !== undefined ? ` (${e.eccentricSeconds}s down)` : "";
-  return `${e.name} ${work}${side}${load}${tempo}`;
+  // The same duration vocabulary as every other prescribed span in the app —
+  // "90s", "2 min", "1:45" — never a second spelling of 45 seconds.
+  const rest =
+    e.restSeconds === DEFAULT_REST_SECONDS
+      ? ""
+      : e.restSeconds === 0
+        ? ", no rest"
+        : `, ${formatStageDuration(e.restSeconds)} rest`;
+  const note = e.note ? ` — ${e.note}` : "";
+  return `${e.name} ${work}${side}${load}${tempo}${rest}${note}`;
 }
 
 /**

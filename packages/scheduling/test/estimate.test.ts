@@ -132,9 +132,38 @@ describe("estimateDuration priority", () => {
 });
 
 describe("summarizeStages", () => {
-  it("produces a compact readable summary", () => {
-    const s = summarizeStages(thresholdStages);
-    expect(s).toBe("15 min warmup · 5 × 5 min / 2 min recovery · 10 min cooldown");
+  /**
+   * `thresholdStages` carries no labels, so this is the fixture that exercises
+   * the KIND fallback — an imported COROS row whose step names were i18n keys
+   * `resolveLabel` dropped. The kind there is COROS's own `exerciseType`, which
+   * is a classification a human can be shown.
+   *
+   * It is safe for coach-authored rows too, but only since `writeStages` started
+   * deriving roles with `runBlockRoles` (2026-08-17): every non-`work` role that
+   * derivation can produce requires a STATED intensity, and the intensity is the
+   * label — so a coach row that reaches this branch has kind `work` and prints
+   * nothing. Under the positional rule it printed "15 min warmup" here against
+   * the approval card's "15 min", a role nobody wrote on a session the athlete
+   * had already agreed to.
+   */
+  it("names a step by its own label, or by the kind the provider gave it", () => {
+    expect(summarizeStages(thresholdStages)).toBe(
+      "15 min warmup · 5 × 5 min / 2 min recovery · 10 min cooldown",
+    );
+    // A label always wins — this is what every real COROS row looks like.
+    const named = thresholdStages.map((st) =>
+      st.kind === "repeat" ? st : { ...st, label: st.kind === "work" ? "Training" : "Rest" },
+    );
+    expect(summarizeStages(named)).toBe(
+      "15 min Rest · 5 × 5 min Training / 2 min Rest · 10 min Rest",
+    );
+    // …and a `work` step with no label is anonymous, which is what the approval
+    // card says for the same block.
+    expect(
+      summarizeStages([
+        { id: "a", order: 1, kind: "work", durationType: "time", durationSeconds: 900 },
+      ]),
+    ).toBe("15 min");
   });
 
   /**

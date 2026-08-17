@@ -918,6 +918,46 @@ export function buildStrengthProgram(
 }
 
 /**
+ * Is this session a RUN? The discipline bodies are mutually exclusive
+ * (`coachSessionSchema`'s one-body refinement), and a `StudioSession` carries
+ * none of them, so the presence of `run` is the whole test.
+ */
+export function isRunSession(session: StudioSession | CoachSession): boolean {
+  return Boolean((session as { run?: unknown }).run);
+}
+
+/**
+ * THE dispatch from a session to the program that goes on the wire — run
+ * sessions to `buildRunProgram`, lift AND mobility sessions to
+ * `buildStrengthProgram`.
+ *
+ * It is a named function rather than an `if` inside `createWorkout` because
+ * the content-update path has to write EXACTLY what the create path would
+ * write: a second dispatch (or a second builder) would let the two drift, and
+ * the whole point of an update is that the wire ends up carrying the same
+ * program a fresh create of the same session would have carried.
+ *
+ * NOTE FOR ANYONE READING A COMMENT THAT SAYS OTHERWISE: this executor does
+ * not build "a structured RUN program and nothing else". Both builders are
+ * live, and lift/mobility sessions are pushed and read back by
+ * `test/wire-simulation.test.ts` and `test/content-update.test.ts`.
+ */
+export function buildProgramFor(
+  spec: CreateWorkoutSpec,
+  catalog: Map<string, string>,
+): RawCorosProgram {
+  if (isRunSession(spec.session)) {
+    return buildRunProgram({
+      happenDay: spec.happenDay,
+      name: spec.name,
+      session: spec.session as CoachSession,
+      thresholdPaceSecPerKm: spec.thresholdPaceSecPerKm,
+    });
+  }
+  return buildStrengthProgram(spec, catalog);
+}
+
+/**
  * The schedule entity that places a program on a calendar day. `dayNo` is only
  * meaningful when the plan declares a start day.
  */
@@ -1460,23 +1500,20 @@ export async function createWorkout(
   }
 
   // Catalog validation and program construction happen BEFORE any wire call,
-  // so a bad originId can never reach the account. Run sessions (coach adds,
-  // Bundle A Task A10 — first wired 2026-08-12) build the spike-verified
-  // minimal run topology; everything downstream (id derivation, write,
-  // verify) is program-agnostic.
+  // so a bad originId can never reach the account. `buildProgramFor` is the
+  // shared dispatch: a run session builds the spike-verified minimal run
+  // topology, a lift OR MOBILITY session builds the structured strength
+  // topology; everything downstream (id derivation, write, verify) is
+  // program-agnostic, and the content-update path builds through the very
+  // same function so the two can never write different programs.
   let program: RawCorosProgram;
   // Run creates only: how much of the prescription is going to the watch as a
   // bare timer. Computed BEFORE the write so it is reported whatever happens.
   let paceTargetsOwed = 0;
   try {
-    if ((spec.session as { run?: unknown }).run) {
+    program = buildProgramFor(spec, opts.catalog);
+    if (isRunSession(spec.session)) {
       const session = spec.session as CoachSession;
-      program = buildRunProgram({
-        happenDay: date,
-        name: spec.name,
-        session,
-        thresholdPaceSecPerKm: spec.thresholdPaceSecPerKm,
-      });
       paceTargetsOwed = missingPaceTargets(session, spec.thresholdPaceSecPerKm);
       if (paceTargetsOwed > 0) {
         // NOT silent any more (audit 2026-08-17 #6). All three sessions the
@@ -1489,8 +1526,6 @@ export async function createWorkout(
             ` — they push as bare timers (threshold=${spec.thresholdPaceSecPerKm ?? "none"})`,
         );
       }
-    } else {
-      program = buildStrengthProgram(spec as CreateWorkoutSpec & { session: StudioSession }, opts.catalog);
     }
   } catch (e) {
     return { ok: false, reason: "error", error: errText(e) };

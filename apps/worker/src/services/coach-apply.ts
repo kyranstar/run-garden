@@ -11,8 +11,7 @@ import {
 import {
   addDays,
   addOpDates,
-  formatExerciseBlock,
-  formatStageDuration,
+  sessionSummaryLine,
   newId,
   nowInstant,
   paceBandFor,
@@ -23,9 +22,10 @@ import {
   type CoachSession,
   type UserPreferences,
 } from "@rg/domain";
+import { runBlockRoles } from "@rg/coros";
 import { chunkIds, chunkedInsert, type Db } from "./db.js";
 import { separateDayCollisions, windowTimeFor } from "./day-placement.js";
-import { stampName } from "./coros-stamp.js";
+import { recordedStampFor, stampName } from "./coros-stamp.js";
 import { applyMove } from "./jobs.js";
 import { recordIntent } from "./sync-intents.js";
 import { resolveRaceConflict } from "./race-conflict.js";
@@ -72,29 +72,25 @@ function fingerprint(v: unknown): string {
   return `coach-${(h >>> 0).toString(16)}`;
 }
 
+/**
+ * THE STORED SUMMARY IS THE MANIFEST'S OWN STRING (2026-08-17).
+ *
+ * This used to be its own renderer, and it was the third of three: the approval
+ * card's `describeOps`, this, and `summarizeStages` for the session sheet — three
+ * functions a person could see within one tap of each other. Its private distance
+ * formatter, `(m/1000).toFixed(1) + "km"`, is why a 400 m rep was STORED as
+ * "0.4km" and therefore read that way on Today, in the week list, and in the
+ * `contains:` line the coach's dossier quotes back to the model, while the sheet
+ * one tap below said "400 m".
+ *
+ * `sessionSummaryLine` is now that one renderer (@rg/domain), and the manifest is
+ * literally the same call — byte-identical by construction rather than by two
+ * formatters being kept in step. The empty-body fallback to the title lives there
+ * too, for the same reason it lived here: an empty exercise list and an absent one
+ * parse alike, so they must read alike.
+ */
 function stageSummary(s: CoachSession): string {
-  if (s.run && s.run.blocks.length > 0) {
-    // `formatStageDuration`, like the imported summaries this column also
-    // holds: coach rows and COROS rows sit in the same Today card and the same
-    // week list, and "40min easy" beside "40 min Training" is two products on
-    // one screen. A duration block's `value` is MINUTES on the wire.
-    return s.run.blocks
-      .map(
-        (b) =>
-          `${b.kind === "duration" ? formatStageDuration(b.value * 60) : `${(b.value / 1000).toFixed(1)}km`}${b.intensity ? ` ${b.intensity}` : ""}`,
-      )
-      .join(" · ");
-  }
-  // One formatter, shared with the session sheet (domain/coach.ts) — a hold
-  // must never render as "Wall sit 3×undefined", which is what the old
-  // `${e.sets}×${e.reps}` produced the moment reps became optional.
-  //
-  // An EMPTY body ("strength Friday, movements on the day") falls through to
-  // the title, exactly as a bodyless session does: since 2026-08-17 an empty
-  // exercise list and an absent one parse alike, so they must also read alike.
-  const block = s.lift ?? s.mobility;
-  if (block && block.exercises.length > 0) return formatExerciseBlock(block);
-  return s.title;
+  return sessionSummaryLine(s);
 }
 
 /**
@@ -209,6 +205,20 @@ async function writeStages(
   // (incl. pace bands) immediately — a later COROS re-import replaces these
   // with the wire's own truth, which matches because pace round-trips
   // exactly (2026-08-14).
+  // ONE DERIVATION FOR WHAT A BLOCK IS, shared with the wire (`runBlockRoles`,
+  // create-executor.ts). This used to be its own rule — `i === 0 &&
+  // blocks.length >= 2 ? "warmup" : "work"` — which is the positional rule the
+  // wire replaced in d52833e, and keeping a second copy of it here meant one
+  // session read warm-up/work/recovery/cool-down on the watch and
+  // warm-up/work/work/work in its own stage rows. Live effect, all four
+  // mislabels: the opening rep of a VO2 session called "Warm up", a walk-back
+  // called work, a closing easy block called work, and a single-block session
+  // whose one block was work while the same block in a two-block session was a
+  // warm-up. The wire's rule reads each block's own intensity, so the app's
+  // stage list and the watch's step list cannot disagree — the intent
+  // harness's `store_stage_role_is_positional` ledger entry was this bug, and
+  // deleting it was the point.
+  const roles = runBlockRoles(blocks);
   const stageRows = blocks.map((b, i) => {
     const band = paceBandFor(b.intensity, thresholdPaceSecPerKm);
     return {
@@ -216,7 +226,7 @@ async function writeStages(
       workoutId,
       parentStageId: null,
       ord: i,
-      kind: i === 0 && blocks.length >= 2 ? "warmup" : "work",
+      kind: roles[i]!,
       repeatCount: null,
       durationType: b.kind === "duration" ? "time" : "distance",
       // A duration block's `value` is MINUTES and no longer has to be whole —
@@ -240,22 +250,56 @@ async function writeStages(
   await chunkedInsert(stageRows, 15, (batch) => db.insert(plannedWorkoutStages).values(batch));
 }
 
-/** A session the create executor can put on the watch today: a run whose
- * blocks are all DURATION-based (distance targets are not spike-verified on
- * the wire — create-executor.ts refuses them).
+/**
+ * A session the create executor can put on the watch today.
  *
- * Lift and mobility sessions are app-only regardless of catalog resolution:
- * the coach create executor builds a structured RUN program and nothing
- * else (coros-write-cloud.ts → buildRunProgram). Resolving an exercise to a
- * catalog originId is what would MAKE a strength push possible later; it is
- * not what makes one happen today, and this predicate must not claim
- * otherwise. `offCatalogExercises` carries the per-exercise truth. */
+ *  · A RUN whose blocks are all DURATION-based. Distance targets have not been
+ *    spike-verified on this wire and `buildRunProgram` refuses them outright, so
+ *    one distance block makes the whole session app-only. Both layers agree.
+ *  · A LIFT OR MOBILITY session with a body, every movement of which resolved to
+ *    a COROS catalog `originId`.
+ *
+ * LIFT AND MOBILITY USED TO BE REFUSED HERE, and the stated reason was false.
+ * This comment claimed the executor "builds a structured RUN program and nothing
+ * else"; `createWorkout` has always dispatched a non-run session to
+ * `buildStrengthProgram`, `coros-write-cloud.ts` resolves the ~382-row COROS
+ * catalog specifically for that case, and the intent harness pushed all nine
+ * lift/mobility fixtures through the real executor and read every one back. The
+ * gate was a product decision wearing a protocol limit's clothes — which is
+ * worse than either, because the app then told the athlete their strength work
+ * *could not* reach the watch.
+ *
+ * EVERY MOVEMENT, OR NONE. A session where only some movements resolve is a real
+ * case and it is refused whole, for two reasons that agree:
+ *
+ *  1. `buildStrengthProgram` THROWS on the first unresolved `originId` — it will
+ *     not write a program the server would reject — so a partial push is not
+ *     something the wire offers.
+ *  2. It should not. A three-of-five push puts a DIFFERENT session on the watch,
+ *     with no way for the watch to say what is missing, and the athlete does 60%
+ *     of the prescription believing it whole. That is a silent
+ *     under-prescription, the same failure mode as emitting one step for per-side
+ *     work — and the app already has an honest, actionable thing to say instead:
+ *     `offCatalogExercises` names the movements, and the athlete can rename them
+ *     into their COROS library.
+ *
+ * MOBILITY CROSSES, filed as Strength. COROS's program namespace is 1 Run /
+ * 2 Bike / 3 Swim / 4 Strength — there is no mobility or yoga program sport — so
+ * `buildStrengthProgram` files a mobility session under Strength on the watch and
+ * `wire_mobility_files_as_strength` has declared that as a structural loss since
+ * the harness was written. Filing it coarsely and SAYING SO beats suppressing it:
+ * the alternative leaves the athlete's mobility work existing nowhere but the app,
+ * which is the complaint, not the fix. The app keeps the honest discipline
+ * (`sessionSport` → "yoga"); only the watch's own filing is coarse, and
+ * `watch-coverage.ts` is where that gets disclosed.
+ */
 export function watchPushable(session: CoachSession): boolean {
-  return (
-    !!session.run &&
-    session.run.blocks.length > 0 &&
-    session.run.blocks.every((b) => b.kind === "duration")
-  );
+  if (session.run) {
+    return session.run.blocks.length > 0 && session.run.blocks.every((b) => b.kind === "duration");
+  }
+  const body = session.lift ?? session.mobility;
+  if (!body || body.exercises.length === 0) return false;
+  return body.exercises.every((e) => !!e.originId);
 }
 
 /** `coach_plans.discipline` for the bucket a session belongs in. Mobility
@@ -349,6 +393,189 @@ async function insertSession(
   }
 }
 
+// ── Convergence: keeping the watch's copy equal to the app's ────────────────
+
+/**
+ * The address COROS is holding a session at, when the row can prove one.
+ *
+ * Every field is a CLAIM the executor re-proves; this function's whole job is to
+ * refuse to produce a half-address. `sourceWorkoutId` is `${corosPlanId}:${idInPlan}`
+ * for a wire row and the row's own uuid for an app-authored one, so the shape
+ * test is what separates "COROS has this" from "the app made this up".
+ *
+ * `lastVerifiedCorosDate` is required and is the interesting half: `""` means
+ * COROS has never confirmed this row (audit#2 #1), and a rewrite addressed at a
+ * day COROS never put the session on is a rewrite aimed at nothing.
+ */
+export interface WatchAddress {
+  corosPlanId: string;
+  idInPlan: string;
+  programId: string;
+  happenDay: string;
+}
+
+export function watchAddressOf(w: {
+  sourceWorkoutId: string | null;
+  sourceIdInPlan: string | null;
+  sourceProgramId: string | null;
+  lastVerifiedCorosDate: string;
+}): WatchAddress | null {
+  if (!w.sourceWorkoutId || !/^\d+:\d+$/.test(w.sourceWorkoutId)) return null;
+  if (!w.sourceIdInPlan || !w.sourceProgramId) return null;
+  if (!w.lastVerifiedCorosDate) return null;
+  return {
+    corosPlanId: w.sourceWorkoutId.split(":")[0]!,
+    idInPlan: w.sourceIdInPlan,
+    programId: w.sourceProgramId,
+    happenDay: w.lastVerifiedCorosDate,
+  };
+}
+
+/** Why no convergence job was queued, in the vocabulary the caller reports in. */
+export type ConvergeRefusal =
+  /** Watch writes are off in Settings. Nothing is wrong; nothing is queued. */
+  | "writes_disabled"
+  /** The row has no proven COROS address, so the watch is not holding this
+   *  session at all and there is nothing to converge. */
+  | "not_on_the_watch"
+  /** COROS holds it, but this account recorded no program-name stamp for it —
+   *  ownership cannot be re-proven, and nothing is written on a maybe. */
+  | "no_recorded_stamp";
+
+/** What a convergence attempt did. `kind` names the job actually queued: a
+ * rewrite when the new content can cross the wire, an UNPUSH when it cannot. */
+export interface ConvergeOutcome {
+  jobId?: string;
+  kind?: "coach_update_workout" | "coach_delete_workout";
+  refused?: ConvergeRefusal;
+}
+
+/**
+ * MAKE COROS SAY WHAT THE APP NOW SAYS about one already-pushed session.
+ *
+ * This is the enqueue half of the content-write kind (`jobs.ts`
+ * `coachUpdateWorkoutJobSchema`). It is called from every path that rewrites a
+ * pushed session's content in place — today that is `ease` and the one-shot
+ * backfill; see the audit note on `applyOps` for why the other session-carrying
+ * ops cannot reach this state.
+ *
+ * TWO DIRECTIONS, because "converge" is not always "rewrite":
+ *
+ *  · the new content CAN cross the wire → `coach_update_workout`, which re-proves
+ *    ownership by stamp and replaces the program.
+ *  · it CANNOT (an ease into a distance-block run, a bodyless "forty by feel", a
+ *    lift with a movement COROS has never heard of) → `coach_delete_workout`.
+ *    The watch stops holding a prescription the app has withdrawn. Leaving it is
+ *    the one option that is not defensible: the athlete has been told their
+ *    session is now 35 easy minutes, and their watch would still be offering
+ *    6 × 643 m at 10K pace for them to go and run.
+ *
+ * IDEMPOTENT ON RE-APPLY, and the id is how. `${from}-${to}` fingerprints mean a
+ * re-applied approve collapses onto the same row (audit#2 #13) while an
+ * A → B → A round trip does not — its second leg is a genuinely different
+ * rewrite, and a fingerprint-of-destination alone would have skipped it and left
+ * the watch holding B forever.
+ */
+export async function enqueueContentConvergence(
+  db: Db,
+  v: {
+    userId: string;
+    /** The row as it stood BEFORE the rewrite: its fingerprint and address are
+     *  what COROS is still holding. */
+    workout: typeof plannedWorkouts.$inferSelect;
+    /** What the app now prescribes. */
+    session: CoachSession;
+    now: string;
+    corosWritesEnabled: boolean;
+    thresholdPaceSecPerKm?: number;
+  },
+): Promise<ConvergeOutcome> {
+  if (!v.corosWritesEnabled) return { refused: "writes_disabled" };
+  const address = watchAddressOf(v.workout);
+  if (!address) return { refused: "not_on_the_watch" };
+  const recordedName = await recordedStampFor(db, v.userId, v.workout.id);
+  if (!recordedName) return { refused: "no_recorded_stamp" };
+
+  // A stale rewrite must never outlive the change that replaced it: an ease to B
+  // queued behind an ease to C would put B on the watch last. Same supersede
+  // `enqueueMoveJob` does, scoped to this kind — a pending CREATE is untouched
+  // (superseding one strands the session app-only forever, audit#2 #12) and so
+  // is a pending unpush, which is a removal, not a competing content claim.
+  await db
+    .update(corosWriteJobs)
+    .set({ status: "superseded", updatedAt: v.now })
+    .where(
+      and(
+        eq(corosWriteJobs.workoutId, v.workout.id),
+        eq(corosWriteJobs.kind, "coach_update_workout"),
+        inArray(corosWriteJobs.status, ["queued", "claimed", "in_progress", "verifying"]),
+      ),
+    );
+
+  const from = v.workout.sourceContentFingerprint;
+  const to = fingerprint(v.session);
+  const common = {
+    userId: v.userId,
+    workoutId: v.workout.id,
+    // What COROS is expected to STILL hold — the optimistic-concurrency claim
+    // this column exists for on every other kind.
+    expectedContentFingerprint: from,
+    originalDate: address.happenDay,
+    destinationDate: address.happenDay,
+    requestedAt: v.now,
+    status: "queued" as const,
+    updatedAt: v.now,
+  };
+
+  if (!watchPushable(v.session)) {
+    const jobId = `${v.workout.id}-unpush-${to}`;
+    await db
+      .insert(corosWriteJobs)
+      .values({
+        ...common,
+        id: jobId,
+        kind: "coach_delete_workout",
+        payload: {
+          workoutId: v.workout.id,
+          happenDay: address.happenDay,
+          name: recordedName,
+          idInPlan: address.idInPlan,
+          programId: address.programId,
+          corosPlanId: address.corosPlanId,
+        },
+      })
+      .onConflictDoNothing();
+    return { jobId, kind: "coach_delete_workout" };
+  }
+
+  const jobId = `${v.workout.id}-content-${from}-${to}`;
+  await db
+    .insert(corosWriteJobs)
+    .values({
+      ...common,
+      id: jobId,
+      kind: "coach_update_workout",
+      payload: {
+        workoutId: v.workout.id,
+        happenDay: address.happenDay,
+        // The stamp the rewrite LEAVES: derived from the session's current
+        // title, because an ease can rename the session and the name is what the
+        // athlete reads on the watch. `coros-stamp.ts` knows this kind names a
+        // program, so the new stamp is stripped back off on the way in.
+        name: stampName(v.session.title, address.happenDay),
+        recordedName,
+        idInPlan: address.idInPlan,
+        programId: address.programId,
+        corosPlanId: address.corosPlanId,
+        session: v.session,
+        ...(v.thresholdPaceSecPerKm ? { thresholdPaceSecPerKm: v.thresholdPaceSecPerKm } : {}),
+      },
+      requestedAt: v.now,
+    })
+    .onConflictDoNothing();
+  return { jobId, kind: "coach_update_workout" };
+}
+
 /**
  * Archive aftermath (audit#3 D2): every coach-archived row needs the same
  * "user_removed" suppression a hand removal gets — import's presence-healing
@@ -370,17 +597,26 @@ async function suppressAndUnpush(
       .insert(calendarEventSuppressions)
       .values({ id: newId(), workoutId: w.id, eventId: null, reason: "user_removed", createdAt: now });
     if (!prefs.corosWritesEnabled) continue;
-    const wire = /^\d+:\d+$/.test(w.sourceWorkoutId ?? "");
-    if (!wire || w.corosSyncState !== "synced" || !w.sourceIdInPlan || !w.sourceProgramId) continue;
-    // The delete triple's stamp is the create payload's exact name — it was
-    // never persisted on the row, so read it back off the verified push job.
+    // ADDRESS, NOT SYNC STATE. This gate used to read `corosSyncState !==
+    // "synced"`, and that column is not a statement about whether COROS holds
+    // the row — it is a statement about whether the two agree. An eased session
+    // is `calendar_only` (correctly: COROS has the OLD body) while still sitting
+    // on the athlete's watch, so archiving one skipped the unpush and left the
+    // pre-ease intervals scheduled on the watch permanently, inside the very
+    // code path that exists to stop exactly that (audit#3 D2). `content_stale`
+    // and `sync_issue` had the same hole. The address is the durable fact.
+    const address = watchAddressOf(w);
+    if (!address) continue;
+    // The delete triple's stamp is the exact program name we last wrote, which
+    // is never persisted on the row — read it back off this account's own
+    // settled write jobs (a rewrite renames, so the newest one wins).
+    const stamp = await recordedStampFor(db, userId, w.id);
+    if (!stamp) continue;
     const [createJob] = await db
-      .select()
+      .select({ expectedContentFingerprint: corosWriteJobs.expectedContentFingerprint })
       .from(corosWriteJobs)
       .where(eq(corosWriteJobs.id, `${w.id}-push`))
       .limit(1);
-    const stamp = (createJob?.payload as { name?: string } | null)?.name;
-    if (!stamp) continue;
     await db
       .insert(corosWriteJobs)
       .values({
@@ -393,11 +629,11 @@ async function suppressAndUnpush(
         destinationDate: w.effectiveDate,
         payload: {
           workoutId: w.id,
-          happenDay: w.lastVerifiedCorosDate || w.effectiveDate,
+          happenDay: address.happenDay,
           name: stamp,
-          idInPlan: w.sourceIdInPlan,
-          programId: w.sourceProgramId,
-          corosPlanId: w.sourceWorkoutId!.split(":")[0]!,
+          idInPlan: address.idInPlan,
+          programId: address.programId,
+          corosPlanId: address.corosPlanId,
         },
         requestedAt: now,
         status: "queued",
@@ -456,6 +692,37 @@ async function archiveWeek(
   return rows.map((r) => r.id);
 }
 
+/**
+ * WHICH OPS CAN LEAVE COROS HOLDING SOMETHING THE APP NO LONGER PRESCRIBES —
+ * audited op by op (2026-08-17), because "ease is the one that bit" is a
+ * finding about one bug, not a statement about the vocabulary.
+ *
+ *  · `ease` — YES, and it is the only in-place content rewrite in the file. It
+ *    updates an existing row's every session-decided column. Converged above.
+ *  · `add`, `firmUp`, `reshapeWeek`, `windDown`, `createPlan` — NO. All five go
+ *    through `insertSession`, which INSERTS a row under a fresh proposal-derived
+ *    id and `onConflictDoNothing`; a re-apply of the same proposal carries the
+ *    same session, so a row's content never changes underneath a push. Where
+ *    they displace existing sessions (`reshapeWeek`, `windDown`) the displaced
+ *    rows are ARCHIVED and unpushed — a removal, not a divergence — and the
+ *    replacements are new rows with their own creates.
+ *  · `move`, `swap` — NO. They change the date, which `applyMove`'s
+ *    `move_scheduled_workout` already writes, and content is untouched.
+ *  · `skip`, `extendPlan`, `retirePlan`, `resolveRaceConflict` — NO session
+ *    content is written. (`retirePlan` archives and unpushes, like the above.)
+ *
+ * THE ARCHIVE PATHS HAD THE SAME BUG IN THE OTHER DIRECTION, and it is fixed in
+ * `suppressAndUnpush`: their unpush was gated on `corosSyncState === "synced"`,
+ * which an eased row is not, so a session that was eased and then reshaped away
+ * stayed on the watch forever. See the comment there.
+ *
+ * THE STUDIO PUSH PATH already converges and is deliberately left alone:
+ * `studio-push.ts` detects a changed session by fingerprint against
+ * `studio_plan_pushes.sessionFingerprint` and chains a delete-then-create, with
+ * the create enqueued only once the delete reaches a terminal "gone" state. That
+ * is the same convergence, expressed in the ledger that owns those rows; giving
+ * it a second mechanism would give one push row two state machines.
+ */
 export async function applyOps(
   db: Db,
   userId: string,
@@ -488,8 +755,12 @@ export async function applyOps(
         // Ownership first, because the stage write below is keyed on the
         // workout id alone — `planned_workout_stages` carries no user column,
         // so an id that isn't this athlete's must never reach it.
+        // The WHOLE row, because the convergence enqueue below reads the address
+        // and the fingerprint COROS is still holding — and `sessionColumns`
+        // overwrites the fingerprint two statements from now, so this read is
+        // the last moment the pre-ease truth exists.
         const [target] = await db
-          .select({ id: plannedWorkouts.id, effectiveDate: plannedWorkouts.effectiveDate })
+          .select()
           .from(plannedWorkouts)
           .where(and(eq(plannedWorkouts.id, op.workoutId), eq(plannedWorkouts.userId, userId)))
           .limit(1);
@@ -520,6 +791,26 @@ export async function applyOps(
           kind: "content",
           payload: { fingerprint: fingerprint(op.session) },
           source: "coach_ease",
+        });
+        // …AND THE WATCH IS TOLD (2026-08-17). This is the athlete's own
+        // complaint — "my plan for today on the app and in coros completely
+        // don't match" — and it was structural, not a slip: `ease` rewrote the
+        // app's copy, wrote the content intent that says the two disagree, and
+        // then there was no job kind that could write content, so COROS kept the
+        // original forever. The intent is closed by the executor on verify, so
+        // `content_stale` becomes a transient state instead of a permanent one.
+        //
+        // A refusal is not an error and is not swallowed: `not_on_the_watch` is
+        // the ordinary case (the session was never pushed) and leaves the row
+        // exactly as `sessionColumns` wrote it — `calendar_only`, with the intent
+        // open, which is the honest report that COROS does not have this.
+        await enqueueContentConvergence(db, {
+          userId,
+          workout: target,
+          session: op.session,
+          now,
+          corosWritesEnabled: prefs.corosWritesEnabled ?? false,
+          thresholdPaceSecPerKm,
         });
         // An ease REPLACES the session, so it also replaces how long the day's
         // block is — a 35-minute jog where a 100-minute session was leaves a

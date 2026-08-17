@@ -51,6 +51,7 @@ import {
   REFUSALS,
   ROUNDS_SPELLINGS,
   SURFACE_DIVERGENCES,
+  surfaceDivergenceEntries,
   THRESHOLD_SEC_PER_KM,
   type LossReason,
   type RefusalReason,
@@ -523,7 +524,7 @@ describe("the corpus cannot fall behind the vocabulary", () => {
     for (const [reason, refusal] of Object.entries(REFUSALS)) {
       lines.push(`${refusal.layer === "app_gate" ? "APP-GATE" : "wire-limit"}  ${reason}`);
     }
-    for (const [reason, d] of Object.entries(SURFACE_DIVERGENCES)) {
+    for (const [reason, d] of surfaceDivergenceEntries()) {
       lines.push(`DEFECT    ${d.pair} / ${reason}`);
     }
     // Not an assertion about the world — a receipt. The count changing is the

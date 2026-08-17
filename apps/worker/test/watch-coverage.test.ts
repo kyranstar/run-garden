@@ -65,26 +65,55 @@ describe("watchCoverage agrees with the predicate that decides the push", () => 
 });
 
 describe("watchCoverage names the reason", () => {
-  it("a lift is app-only because it is a lift, not because of its movements", () => {
+  it("a resolved lift crosses whole — the discipline was never the obstacle", () => {
+    // THE CLAIM THIS FILE USED TO MAKE: `gaps: [{code: "discipline_off_wire"}]`,
+    // on the stated grounds that the executor "builds a structured RUN program
+    // and nothing else". It dispatches a non-run session to
+    // `buildStrengthProgram` and always has; the harness has since pushed nine
+    // lift and mobility shapes through the real executor and read them back.
     const view = sessionWatchCoverage(lift([{ name: "Squat", sets: 3, reps: 8, originId: "e1" }]));
-    expect(view).toEqual({
-      coverage: "none",
-      discipline: "lift",
-      gaps: [{ code: "discipline_off_wire" }],
-    });
+    expect(view).toEqual({ coverage: "full", discipline: "lift", gaps: [] });
   });
 
-  it("names the movements the watch library has never heard of, as a second fact", () => {
+  it("names the movements the watch library has never heard of — the whole reason", () => {
     const view = sessionWatchCoverage(
       lift([
         { name: "Squat", sets: 3, reps: 8, originId: "e1" },
         { name: "Skier hops", sets: 3, reps: 12 },
       ]),
     );
-    // Discipline FIRST: renaming "Skier hops" would not put this on the watch,
-    // and a reason list that led with the catalog would imply it might.
-    expect(view.gaps.map((g) => g.code)).toEqual(["discipline_off_wire", "off_catalog"]);
-    expect(view.gaps[1]!.names).toEqual(["Skier hops"]);
+    // One movement short is the WHOLE session's answer: the builder throws on
+    // the first unresolved id, and a partial push would put a different session
+    // on the watch. Naming it is what makes the state actionable — renaming
+    // "Skier hops" into the athlete's COROS library really does send this.
+    expect(view.coverage).toBe("none");
+    expect(view.gaps.map((g) => g.code)).toEqual(["off_catalog"]);
+    expect(view.gaps[0]!.names).toEqual(["Skier hops"]);
+  });
+
+  it("says a mobility session files under Strength, and still crosses", () => {
+    const view = sessionWatchCoverage(
+      mobility([{ name: "Wall sit", sets: 3, holdSeconds: 45, originId: "e2" }]),
+    );
+    // Coarse filing, not a loss: COROS's program namespace has no mobility
+    // sport. Suppressing the session instead would leave the athlete's mobility
+    // work existing nowhere but the app, which is the complaint, not the fix.
+    expect(view.coverage).toBe("partial");
+    expect(view.gaps.map((g) => g.code)).toEqual(["filed_as_strength"]);
+  });
+
+  it("counts the movements whose per-side and tempo can only travel as text", () => {
+    const view = sessionWatchCoverage(
+      lift([
+        { name: "Nordic curl", sets: 3, reps: 8, perSide: true, eccentricSeconds: 4, originId: "e3" },
+        { name: "Squat", sets: 3, reps: 8, originId: "e1" },
+      ]),
+    );
+    // The work itself is preserved (per-side is written as two identical steps),
+    // so this is `partial` and not `none` — what the watch cannot do is tell the
+    // athlete mid-set which side they are on.
+    expect(view.coverage).toBe("partial");
+    expect(view.gaps).toEqual([{ code: "cues_ride_as_text", count: 1 }]);
   });
 
   it("files mobility as mobility, so the copy can say 'a mobility session'", () => {

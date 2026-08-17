@@ -1011,10 +1011,11 @@ function liftExerciseLines(
         const line = studioExerciseLine(e, catalogRawNames);
         return line ? [line] : [];
       }
-      const note = (e as { note?: unknown })?.note;
-      return [
-        formatExercise(parsed.data) + (typeof note === "string" && note.trim() ? ` — ${note.trim()}` : ""),
-      ];
+      // `formatExercise` carries the cue AND the rest itself since 2026-08-17
+      // — this line used to append `note` here and nowhere else, which is
+      // precisely how the coach came to read a prescription the athlete's own
+      // session sheet did not show. One renderer, one line, both audiences.
+      return [formatExercise(parsed.data)];
     });
   }
   const match =

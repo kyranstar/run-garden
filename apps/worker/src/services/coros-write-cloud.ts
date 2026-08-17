@@ -1,17 +1,26 @@
 import { and, desc, eq, isNotNull } from "drizzle-orm";
 import { corosWriteJobs, dailyHealth, plannedWorkouts } from "@rg/database";
-import { nowInstant, todayInZone, type CorosWriteResult, type UserPreferences } from "@rg/domain";
+import {
+  nowInstant,
+  todayInZone,
+  type CoachSession,
+  type CorosWriteResult,
+  type UserPreferences,
+} from "@rg/domain";
 import {
   createWorkout,
   deleteWorkout,
   executeMoveJob,
   executeStudioJob,
+  updateWorkoutContent,
   type StudioJob,
+  type UpdateContentReason,
 } from "@rg/coros";
 import { localDateToCorosDay } from "@rg/providers";
 import {
   coachCreateWorkoutJobSchema,
   coachDeleteWorkoutJobSchema,
+  coachUpdateWorkoutJobSchema,
   createScheduledWorkoutJobSchema,
   deleteScheduledWorkoutJobSchema,
 } from "@rg/domain";
@@ -23,6 +32,7 @@ import { applyJobResult, claimNextJob } from "./jobs.js";
 import { bridgeJobPayload } from "./studio-push.js";
 import { claimUserLock, releaseUserLock } from "./locks.js";
 import { exerciseNameMap } from "./exercise-catalog.js";
+import { openIntentFor, resolveIntent } from "./sync-intents.js";
 
 /**
  * Cloud write consumer (cloud-direct spec §4): the same job queue with all
@@ -59,6 +69,36 @@ async function latestThresholdPace(db: Db, userId: string): Promise<number | und
     .orderBy(desc(dailyHealth.date))
     .limit(1);
   return row?.v ?? undefined;
+}
+
+/**
+ * WHICH CONTENT-REWRITE OUTCOMES ARE WORTH A SECOND ATTEMPT.
+ *
+ * TRANSIENT — the same taxonomy the create path already retries on, because they
+ * are the same conditions:
+ *  · `error` / no category — a local or network failure.
+ *  · `not_visible` — the write was accepted (or died) and the read-back found
+ *    nothing carrying the stamp. Often a read that raced the server's own
+ *    indexing; the retry re-proves ownership from a fresh sweep before it writes
+ *    anything, so a rewrite that DID land is recognised rather than doubled.
+ *  · `slot_occupied` — only reachable through the recreate fallback, and it means
+ *    a genuine race for a derived id. The next attempt derives a new one.
+ *
+ * TERMINAL — a decision the wire already made, which it would make identically
+ * three more times. `stamp_mismatch`, `moved` and `ambiguous` mean the athlete
+ * edited this in COROS and the executor's contract says a human resolves that;
+ * `rejected`, `verification_failed`, `wrong_date`, `not_found`, `no_target_plan`
+ * and `out_of_span` are each a specific fact worth reporting NOW. Retrying a
+ * refusal burns the budget and then reports the same reason three attempts later
+ * than the athlete could have been told it.
+ */
+function contentRewriteRetryable(reason: UpdateContentReason | undefined): boolean {
+  return (
+    reason === undefined ||
+    reason === "error" ||
+    reason === "not_visible" ||
+    reason === "slot_occupied"
+  );
 }
 
 /** Mirror of the bridge's toStudioJob: re-validate before touching the
@@ -234,6 +274,176 @@ export async function executeCloudJobs(
         }
         executed += 1;
         continue;
+      } else if (job.kind === "coach_update_workout") {
+        // MAKE THE WATCH SAY WHAT THE APP SAYS. The athlete's complaint — "my
+        // plan for today on the app and in coros completely don't match" — was
+        // structural: no job kind could write CONTENT, so an approved ease left
+        // COROS holding the original forever. `coach-apply.ts`'s
+        // `enqueueContentConvergence` queues this; here it lands.
+        const parsed = coachUpdateWorkoutJobSchema.safeParse(job.payload);
+        if (!parsed.success) {
+          await db
+            .update(corosWriteJobs)
+            .set({ status: "failed", lastErrorCategory: "malformed_payload", updatedAt: nowInstant() })
+            .where(eq(corosWriteJobs.id, job.id));
+          executed += 1;
+          continue;
+        }
+        const spec = parsed.data;
+        // Freshest threshold wins over the one frozen in at enqueue time, for the
+        // same reason a create prefers it — see `latestThresholdPace`. A rewrite
+        // is often the SECOND chance to get pace bands onto a session that went
+        // out before the athlete's threshold reading landed.
+        const threshold = (await latestThresholdPace(db, userId)) ?? spec.thresholdPaceSecPerKm;
+        // Lift/mobility needs the catalog to resolve its steps; a run never
+        // touches it, so the ~382-row read is paid only when there is something
+        // to resolve. Same rule the create branch uses.
+        const catalog = spec.session.run ? new Map<string, string>() : await exerciseNameMap(db);
+        const result = await updateWorkoutContent(
+          client,
+          {
+            target: {
+              happenDay: String(localDateToCorosDay(spec.happenDay)),
+              // The stamp recorded at push time is the ONLY thing that
+              // authorizes this write. The address rides along and is re-proven.
+              name: spec.recordedName,
+              idInPlan: spec.idInPlan,
+              programId: spec.programId,
+              planId: spec.corosPlanId,
+            },
+            session: spec.session,
+            // The stamp the rewrite leaves. Equal to `recordedName` unless the
+            // ease renamed the session, which the executor treats as a rename and
+            // refuses if the new stamp is already taken.
+            name: spec.name,
+            ...(threshold ? { thresholdPaceSecPerKm: threshold } : {}),
+          },
+          {
+            catalog,
+            today: todayInZone(prefs.timezone),
+            // RECREATE, and the trade is deliberate. The knob covers two cases:
+            // a cleanly-rejected in-place write (where delete-then-create is the
+            // proven path and healing is unambiguously right) and a workout
+            // provably absent from COROS (where re-creating overrules an athlete
+            // who may have deleted it there).
+            //
+            // Taking it accepts the second to get the first, because the first is
+            // the bug this whole kind exists for: the in-place `status: 2`
+            // content write is new, and if a real account rejects it, `refuse`
+            // would leave every rewrite reporting `rejected` and every watch
+            // holding the session the athlete was told had been replaced. The
+            // residual is bounded and visible — a converge job that races a COROS
+            // deletion puts the session back with its CURRENT content, which is
+            // what the app says the day holds — and the row it was enqueued for
+            // is `scheduled` and unarchived, i.e. a session the app is actively
+            // prescribing.
+            fallback: "recreate",
+            log: () => undefined,
+          },
+        );
+        const done = nowInstant();
+        if (result.ok) {
+          if (result.paceTargetsOwed) {
+            console.error(
+              `coach rewrite pushed ${result.paceTargetsOwed} block(s) with no pace target` +
+                ` (${spec.name}); no usable threshold pace`,
+            );
+          }
+          // The wire's OWN fingerprint, straight from the executor — the program
+          // it wrote after `/program/calculate` spliced duration and load in,
+          // which is the version the next read returns. Rebuilding it here would
+          // describe a program that was never written (audit 2026-08-17).
+          await db
+            .update(plannedWorkouts)
+            .set({
+              corosSyncState: "synced",
+              lastVerifiedCorosDate: result.serverHappenDay ?? spec.happenDay,
+              ...(result.wireFingerprint ? { sourceContentFingerprint: result.wireFingerprint } : {}),
+              // A remove-and-create lands at a NEW idInPlan, so the address has to
+              // be re-stamped or every later move and delete is aimed at a slot
+              // this session no longer occupies. An in-place executor returns the
+              // same ids and this rewrites them to themselves.
+              ...(result.serverPlanId != null && result.serverIdInPlan != null
+                ? {
+                    sourceWorkoutId: `${result.serverPlanId}:${result.serverIdInPlan}`,
+                    sourceIdInPlan: String(result.serverIdInPlan),
+                    ...(result.serverProgramId != null
+                      ? { sourceProgramId: String(result.serverProgramId) }
+                      : {}),
+                  }
+                : {}),
+              updatedAt: done,
+            })
+            .where(eq(plannedWorkouts.id, spec.workoutId));
+          // THE CONTENT INTENT CAN FINALLY CLOSE. It was designed never to
+          // resolve because nothing on COROS could confirm content; a verified
+          // rewrite is that confirmation, so `content_stale` becomes a state a
+          // session passes through instead of one it lives in.
+          const intent = await openIntentFor(db, userId, spec.workoutId, "content");
+          if (intent) await resolveIntent(db, intent.id, done);
+          await db
+            .update(corosWriteJobs)
+            .set({
+              status: "verified",
+              verifiedAt: done,
+              completedAt: done,
+              updatedAt: done,
+              ...(result.paceTargetsOwed
+                ? { lastErrorCategory: "pace_targets_owed" }
+                : { lastErrorCategory: null }),
+            })
+            .where(eq(corosWriteJobs.id, job.id));
+        } else {
+          const attempts = ((job.payload as { attempts?: number } | null)?.attempts ?? 0) + 1;
+          const retryable = contentRewriteRetryable(result.reason);
+          console.error(
+            `coach rewrite ${retryable && attempts < 3 ? "retrying" : "FAILED"} (${spec.name},` +
+              ` attempt ${attempts}): ${result.reason ?? ""} ${result.error ?? ""}`,
+          );
+          if (retryable && attempts < 3) {
+            await db
+              .update(corosWriteJobs)
+              .set({
+                status: "queued",
+                claimedByDeviceId: null,
+                claimedAt: null,
+                payload: { ...spec, attempts },
+                updatedAt: done,
+              })
+              .where(eq(corosWriteJobs.id, job.id));
+          } else {
+            // THE ROW MUST NOT CLAIM SUCCESS. `sync_issue` is the retryable,
+            // visible state, and the content intent stays OPEN so the sheet keeps
+            // saying the two copies differ.
+            //
+            // `lastVerifiedCorosDate` is cleared only when the old copy is
+            // provably GONE: that column means "COROS confirmed this session on
+            // this date", and after a delete-then-create whose create failed, it
+            // no longer does. An in-place rewrite that failed changed nothing, so
+            // COROS still holds the old copy on that date and the column is still
+            // true — clearing it would trade one false statement for another.
+            const oldCopyGone = result.pathUsed === "delete_and_create";
+            await db
+              .update(plannedWorkouts)
+              .set({
+                corosSyncState: "sync_issue",
+                ...(oldCopyGone ? { lastVerifiedCorosDate: "" } : {}),
+                updatedAt: done,
+              })
+              .where(eq(plannedWorkouts.id, spec.workoutId));
+            await db
+              .update(corosWriteJobs)
+              .set({
+                status: "failed",
+                lastErrorCategory: result.reason ?? "error",
+                completedAt: done,
+                updatedAt: done,
+              })
+              .where(eq(corosWriteJobs.id, job.id));
+          }
+        }
+        executed += 1;
+        continue;
       } else if (job.kind === "coach_delete_workout") {
         // Reshaped/retired coach sessions come back OFF the watch (audit#3
         // D2) via the same stamp-verified triple-addressed delete the studio
@@ -263,9 +473,17 @@ export async function executeCloudJobs(
         if (result.ok || result.refused === "not_found") {
           // Deleted — or provably already gone, which is the same outcome
           // for an unpush. The archived row no longer lives on the watch.
+          //
+          // `lastVerifiedCorosDate` is cleared with it (2026-08-17). The column
+          // means "COROS confirmed this session on this date" and after an unpush
+          // it does not, so leaving it set made `deriveWorkoutSync` — which reads
+          // `effectiveDate === lastVerifiedCorosDate` first — call an unpushed row
+          // "synced". Harmless while the only unpushes were archive-time ones
+          // (archived rows do not render), and not harmless now that a live row
+          // can be unpushed because its new content cannot cross the wire.
           await db
             .update(plannedWorkouts)
-            .set({ corosSyncState: "calendar_only", updatedAt: done })
+            .set({ corosSyncState: "calendar_only", lastVerifiedCorosDate: "", updatedAt: done })
             .where(eq(plannedWorkouts.id, spec.workoutId));
           await db
             .update(corosWriteJobs)

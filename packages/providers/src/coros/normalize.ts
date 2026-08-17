@@ -54,6 +54,59 @@ function resolveLabel(raw: string | undefined, resolve?: NameResolver): string |
   return raw;
 }
 
+/**
+ * A stage as COROS actually reports it — `PlannedStage` plus the strength
+ * numbers it has no field for.
+ *
+ * THE BUG THIS TYPE CLOSES (audit 2026-08-17): `buildStrengthProgram` writes a
+ * strength step's four numbers — sets (the repeat container), reps
+ * (`targetType: 3` + `targetValue`), load (`intensityType: 1`, kg × 1000) and
+ * rest (`restType: 1` + `restValue`) — and this normalizer threw three of them
+ * away. `targetType: 3` mapped to `durationType: "none"` and kept no value; the
+ * intensity switch handled pace, HR and power and FELL THROUGH on load; and
+ * nothing anywhere read `restType`. So every COROS strength session the app
+ * imported arrived as a bare list of exercise names, which is why the athlete's
+ * Goblet Squat showed no sets, no reps and no weight — a round trip through the
+ * watch silently erased the prescription the app itself had written.
+ *
+ * The fields are additive and optional, so a `NormalizedPlannedStage` is a
+ * `PlannedStage` everywhere one is expected. Persisting them needs four columns
+ * on `planned_workout_stages` (`reps`, `load_kg`, `load_bodyweight`,
+ * `rest_seconds`) and the matching optional fields on
+ * `domain/workout.ts`'s `plannedStageSchema` — both outside this package.
+ * Until those land the numbers reach every reader of `normalizeCorosSchedule`
+ * and stop at the DB, which is strictly more than the nothing they reached
+ * before.
+ */
+export interface NormalizedPlannedStage extends PlannedStage {
+  /**
+   * Reps per set (`targetType: 3`). NOT a duration: a rep step's
+   * `durationType` stays `"none"` because the wire states no time for it.
+   */
+  reps?: number;
+  /** External load in kilograms (`intensityType: 1`, grams on the wire). */
+  loadKg?: number;
+  /**
+   * The step is explicitly BODYWEIGHT. A distinct fact from `loadKg: 0`:
+   * COROS encodes bodyweight as `intensityCustom: 1` (with `intensityValue`
+   * empty or absent), while a real `0` renders "0.00 kg" in its own app.
+   *
+   * Named to match `plannedStageSchema.loadBodyweight` and the `load_bodyweight`
+   * column, NOT the wire's vocabulary. This field spent an hour as `bodyweight`
+   * while the schema said `loadBodyweight`: reading only the schema's spelling
+   * compiled cleanly and dropped every bodyweight step on the floor — the exact
+   * silent loss this whole normalizer exists to stop, one rename away.
+   */
+  loadBodyweight?: boolean;
+  /** Rest after this step in seconds (`restType: 1`); absent = skip rests. */
+  restSeconds?: number;
+  /**
+   * The step's free text (`overview`) — the slot the push path uses to disclose
+   * what the wire has no field for ("4s down", "each side", the coach's cue).
+   */
+  note?: string;
+}
+
 function stageKind(exerciseType: number): PlannedStage["kind"] {
   switch (exerciseType) {
     case 0:
@@ -69,9 +122,43 @@ function stageKind(exerciseType: number): PlannedStage["kind"] {
   }
 }
 
-function normalizeExercise(ex: RawCorosExercise, resolve?: NameResolver): PlannedStage {
+/** §5.4 `restType`: 1 = an explicit rest in seconds; 3 = "skip rests". */
+const REST_TYPE_EXPLICIT = 1;
+
+/**
+ * The load a strength step prescribes, read back off the wire. The write
+ * table (§(d)) in reverse, and every row of it is live-verified:
+ *
+ *   | on the wire                                  | means            |
+ *   |----------------------------------------------|------------------|
+ *   | `intensityCustom: 1` (value empty OR ABSENT) | bodyweight       |
+ *   | a finite `intensityValue`, custom 0          | kg = value/1000  |
+ *   | neither                                      | nothing is known |
+ *
+ * The absent-value case is not hypothetical: the account's own captured
+ * strength program (docs/reports/coros-inspect-2026-08-02.json) carries
+ * `intensityType: 1, intensityCustom: 1, intensityDisplayUnit: 6` and NO
+ * `intensityValue` key at all — the server dropped the empty string the write
+ * path sent. A reader that only understood `""` would have called that "no
+ * load" instead of "bodyweight".
+ *
+ * `0` is deliberately NOT folded into bodyweight: the push path emits numeric
+ * zero for an explicit 0 kg and the empty string for bodyweight precisely
+ * because COROS renders them differently.
+ */
+function readLoad(ex: RawCorosExercise): { loadKg?: number; loadBodyweight?: boolean } {
+  const wire = ex as unknown as Record<string, unknown>;
+  if (Number(wire["intensityCustom"] ?? 0) === 1) return { loadBodyweight: true };
+  const raw = wire["intensityValue"];
+  if (raw === "" || raw == null) return {};
+  const grams = typeof raw === "number" ? raw : Number(raw);
+  if (!Number.isFinite(grams) || grams < 0) return {};
+  return { loadKg: grams / 1000 };
+}
+
+function normalizeExercise(ex: RawCorosExercise, resolve?: NameResolver): NormalizedPlannedStage {
   const kind = stageKind(ex.exerciseType);
-  const stage: PlannedStage = {
+  const stage: NormalizedPlannedStage = {
     id: String(ex.id),
     parentStageId: ex.groupId && String(ex.groupId) !== "0" ? String(ex.groupId) : null,
     order: ex.sortNo ?? Number(ex.id) ?? 0,
@@ -79,7 +166,14 @@ function normalizeExercise(ex: RawCorosExercise, resolve?: NameResolver): Planne
     durationType: "none",
     label: resolveLabel(ex.name, resolve),
   };
+  // The step's own prose, wherever it came from: the push path writes tempo and
+  // per-side disclosure here, and a COROS-authored program can carry a cue.
+  if (typeof ex.overview === "string" && ex.overview !== "" && !isI18nKey(ex.overview)) {
+    stage.note = ex.overview;
+  }
   if (kind === "repeat") {
+    // A repeat container carries the SET COUNT — the one strength number that
+    // always survived — and nothing else worth reading.
     stage.repeatCount = ex.sets ?? 1;
     return stage;
   }
@@ -93,10 +187,20 @@ function normalizeExercise(ex: RawCorosExercise, resolve?: NameResolver): Planne
       stage.distanceMeters = (ex.targetValue ?? 0) / 100; // metres × 100 on the wire
       break;
     case 3:
+      // REPS. Still not a duration — the wire states no time for a rep step —
+      // but the COUNT is the prescription, and it used to be dropped on the
+      // floor here, one line after being read.
       stage.durationType = "none";
+      if (ex.targetValue != null && ex.targetValue > 0) stage.reps = ex.targetValue;
       break;
     default:
       stage.durationType = "open";
+  }
+  // Rest between sets: an explicit `restType: 1` carries seconds; `3` is COROS's
+  // own "skip rests" and means the athlete moves straight on.
+  if (Number(ex["restType"] ?? 0) === REST_TYPE_EXPLICIT) {
+    const rest = Number(ex["restValue"] ?? 0);
+    if (Number.isFinite(rest) && rest > 0) stage.restSeconds = rest;
   }
   switch (ex.intensityType) {
     case 3:
@@ -117,6 +221,20 @@ function normalizeExercise(ex: RawCorosExercise, resolve?: NameResolver): Planne
       stage.targetType = "power";
       if (ex.intensityValue) stage.targetLow = ex.intensityValue;
       if (ex.intensityValueExtend) stage.targetHigh = ex.intensityValueExtend;
+      break;
+    }
+    case 1: {
+      // LOAD — the one intensity that is not a rate, and the one this switch
+      // used to fall through on, turning every weight COROS held into
+      // `targetType: "none"` and nothing else.
+      //
+      // It does not go in `targetLow`/`targetHigh`: those are a range in the
+      // units of `targetType`, whose enum (pace | heart_rate | effort | power |
+      // none) has no member for kilograms. A number in the wrong unit under
+      // the wrong name is how "40 kg" becomes "40 s/km", so the load gets its
+      // own fields and `targetType` stays honest at "none".
+      Object.assign(stage, readLoad(ex));
+      stage.targetType = "none";
       break;
     }
     default:
@@ -150,6 +268,16 @@ export function corosProgramFingerprint(program: RawCorosProgram): string {
   });
 }
 
+/**
+ * One workout as COROS reports it — a `SourcePlannedWorkout` whose stages carry
+ * the strength numbers as well (`NormalizedPlannedStage`). Assignable to
+ * `SourcePlannedWorkout` anywhere one is expected; the extra fields are simply
+ * visible to callers that want them.
+ */
+export interface NormalizedCorosWorkout extends Omit<SourcePlannedWorkout, "stages"> {
+  stages: NormalizedPlannedStage[];
+}
+
 export interface NormalizedCorosSchedule {
   planId: string;
   planName: string;
@@ -157,7 +285,7 @@ export interface NormalizedCorosSchedule {
   planEnd?: string;
   maxIdInPlan: number;
   pbVersion?: string;
-  workouts: SourcePlannedWorkout[];
+  workouts: NormalizedCorosWorkout[];
 }
 
 export function normalizeCorosSchedule(
@@ -178,7 +306,7 @@ export function normalizeCorosSchedule(
     programsByKey.set(`${String(p.planId ?? planId)}:${String(p.idInPlan)}`, p);
   }
 
-  const workouts: SourcePlannedWorkout[] = [];
+  const workouts: NormalizedCorosWorkout[] = [];
   for (const entity of raw.entities ?? []) {
     const entityPlanId = String(entity.planId ?? planId);
     const idInPlan = String(entity.idInPlan);

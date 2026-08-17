@@ -1,4 +1,4 @@
-import { formatStageDuration, type PlannedStage } from "@rg/domain";
+import { formatStageDistance, formatStageDuration, type PlannedStage } from "@rg/domain";
 
 /**
  * Stage flattening and duration derivation — the fallback estimator used when
@@ -127,14 +127,41 @@ export function deriveWorkoutSeconds(
 }
 
 /**
- * Compact human summary like "15 min warmup · 5 × 5 min / 2 min recovery ·
- * 10 min cooldown" — the string stored in `planned_workouts.stage_summary`.
+ * Compact human summary like "15 min Warm Up · 5 × 5 min / 2 min Rest ·
+ * 10 min Cool Down" — the string stored in `planned_workouts.stage_summary`
+ * for an IMPORTED workout, and the one the session sheet re-derives from a
+ * row's own stage rows.
  *
- * Durations go through `formatStageDuration` (@rg/domain), the SAME formatter
- * the client's stage tree uses, because the stored summary and the sheet's
- * "Full structure" list sit one tap apart on the same screen: when this said
+ * BOTH amounts go through the @rg/domain formatters (`formatStageDuration`,
+ * `formatStageDistance`), which is also what the coach's own prescription
+ * renderer uses (`sessionPrescription`) — the stored summary and the sheet's
+ * "Full structure" list sit one tap apart on the same screen, so when this said
  * "0 min Training" and that said "15s", a reader had two prescriptions for one
- * interval and no way to tell which to run.
+ * interval and no way to tell which to run. Same for "0.8km" against "800 m".
+ *
+ * A STAGE IS NAMED BY ITS LABEL, AND OTHERWISE BY ITS KIND — and the second half
+ * came back on 2026-08-17 after being removed the same day.
+ *
+ * It was removed for a real reason: a coach-authored run's stage kinds came from
+ * a POSITIONAL rule (`coach-apply.ts`: first of two or more is a "warmup"), so a
+ * block whose only stated property was 15 minutes rendered "15 min warmup" here
+ * and "15 min" on the card the athlete had just approved — a role nobody wrote,
+ * on a session they had already agreed to.
+ *
+ * But that was the positional rule's bug, and the positional rule is gone:
+ * `writeStages` now derives roles with `runBlockRoles`, the same and only
+ * derivation the wire uses. Every non-`work` role it can produce requires a
+ * stated intensity (`recovery` ⇐ "rest", `warmup`/`cooldown` ⇐ "easy"), and the
+ * intensity IS the label — so for a coach row the fallback is now unreachable by
+ * construction, and removing it bought nothing.
+ *
+ * What it DID cost was imported rows. An imported stage's `kind` comes from
+ * COROS's own `exerciseType` (1 warm-up, 3 cool-down, 4 recovery) — the
+ * provider's classification, not our inference — and its label is an i18n key
+ * that `resolveLabel` drops when nothing resolves it. So dropping the fallback
+ * turned the athlete's own strides session from "40 min · 1 min cooldown ·
+ * 4 × 15s / 45s recovery" into "40 min · 1 min · 4 × 15s / 45s": two anonymous
+ * stretches of time where the watch says what they are for.
  */
 export function summarizeStages(stages: PlannedStage[]): string {
   const byParent = new Map<string | null, PlannedStage[]>();
@@ -149,11 +176,9 @@ export function summarizeStages(stages: PlannedStage[]): string {
       s.durationType === "time" && s.durationSeconds
         ? formatStageDuration(s.durationSeconds)
         : s.durationType === "distance" && s.distanceMeters
-          ? s.distanceMeters >= 1000
-            ? `${(s.distanceMeters / 1000).toFixed(s.distanceMeters % 1000 === 0 ? 0 : 1)} km`
-            : `${Math.round(s.distanceMeters)} m`
+          ? formatStageDistance(s.distanceMeters)
           : "open";
-    const label = s.label ?? (s.kind === "work" ? "" : s.kind);
+    const label = s.label ?? (s.kind === "work" || s.kind === "open" ? "" : s.kind);
     return [amount, label].filter(Boolean).join(" ");
   };
 

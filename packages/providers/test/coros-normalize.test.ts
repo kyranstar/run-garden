@@ -160,6 +160,91 @@ describe("merged multi-plan schedules (research §3: schedule/query merges every
   });
 });
 
+describe("a strength session keeps all four of its numbers (audit 2026-08-17)", () => {
+  /**
+   * The wire shape of a real strength step, taken verbatim from this account's
+   * own captured program (docs/reports/coros-inspect-2026-08-02.json): a
+   * bodyweight step is `intensityCustom: 1` with NO `intensityValue` key —
+   * the server dropped the empty string the push path sent — and the display
+   * unit comes back as the NUMBER 6, not the string the write path uses.
+   */
+  const liftProgram = {
+    idInPlan: 1,
+    planId: "111",
+    name: "Ski legs — 2026-08-17",
+    sportType: 4,
+    subType: 65535,
+    duration: 1500,
+    exercises: [
+      // Goblet Squat: 3 sets of 10 at 24 kg, 90s rest — the session the app
+      // used to import as a bare exercise name and nothing else.
+      { id: 1, name: "Group", exerciseType: 0, isGroup: true, groupId: "0", sets: 3, targetType: 2, targetValue: 40, intensityType: 0, intensityValue: 0, restType: 3, restValue: 0, sortNo: 16777216 },
+      { id: 2, name: "Goblet Squat", exerciseType: 2, isGroup: false, groupId: "1", sets: 1, targetType: 3, targetValue: 10, intensityType: 1, intensityValue: 24000, intensityCustom: 0, intensityDisplayUnit: 6, restType: 1, restValue: 90, sortNo: 16842752 },
+      // Wall sit: a 45-second bodyweight HOLD, per side, no rest.
+      { id: 3, name: "Group", exerciseType: 0, isGroup: true, groupId: "0", sets: 2, targetType: 2, targetValue: 60, intensityType: 0, intensityValue: 0, restType: 3, restValue: 0, sortNo: 33554432 },
+      { id: 4, name: "Wall sit", exerciseType: 2, isGroup: false, groupId: "3", sets: 1, targetType: 2, targetValue: 45, intensityType: 1, intensityCustom: 1, intensityDisplayUnit: 6, restType: 3, restValue: 0, overview: "each side · 4s down", sortNo: 33619968 },
+      // An OPEN step: three ramping sets, load is the athlete's judgement.
+      { id: 5, name: "Group", exerciseType: 0, isGroup: true, groupId: "0", sets: 3, targetType: 2, targetValue: 60, intensityType: 0, intensityValue: 0, restType: 3, restValue: 0, sortNo: 50331648 },
+      { id: 6, name: "Trap bar deadlift", exerciseType: 2, isGroup: false, groupId: "5", sets: 1, targetType: 0, targetValue: 0, intensityType: 1, intensityValue: 0, intensityCustom: 0, restType: 1, restValue: 120, sortNo: 50397184 },
+    ],
+  };
+  const raw = {
+    id: "111",
+    name: "Strength",
+    entities: [{ idInPlan: 1, planId: "111", planProgramId: 1, happenDay: 20260817 }],
+    programs: [liftProgram],
+  };
+  const workout = normalizeCorosSchedule(raw as never).workouts[0]!;
+  const stage = (id: string) => workout.stages.find((s) => s.id === id)!;
+
+  it("reads the REP COUNT, which targetType 3 used to drop on the floor", () => {
+    // BEFORE: `case 3: durationType = "none"` and the value was never read, so
+    // "3 × 10" arrived as an exercise name with no numbers at all.
+    expect(stage("2").reps).toBe(10);
+    expect(stage("2").durationType).toBe("none"); // a rep step states no time
+    expect(stage("1").repeatCount).toBe(3); // sets: the one number that survived
+  });
+
+  it("reads the LOAD, which the intensity switch used to fall through on", () => {
+    // kg × 1000 on the wire, kilograms in the app.
+    expect(stage("2").loadKg).toBe(24);
+    expect(stage("2").loadBodyweight).toBeUndefined();
+    // Load is NOT smuggled into targetLow/targetHigh: their unit is the
+    // targetType's, and that enum has no kilograms.
+    expect(stage("2").targetType).toBe("none");
+    expect(stage("2").targetLow).toBeUndefined();
+  });
+
+  it("tells bodyweight from an absent load — the live encoding", () => {
+    // `intensityCustom: 1`, no `intensityValue` key: bodyweight, explicitly.
+    expect(stage("4").loadBodyweight).toBe(true);
+    expect(stage("4").loadKg).toBeUndefined();
+    // …while a step that states nothing about load claims neither.
+    expect(stage("6").loadKg).toBe(0); // an explicit numeric 0 IS "0.00 kg"
+    expect(stage("6").loadBodyweight).toBeUndefined();
+  });
+
+  it("reads the REST between sets", () => {
+    expect(stage("2").restSeconds).toBe(90);
+    expect(stage("6").restSeconds).toBe(120);
+    // restType 3 is COROS's own "skip rests" — an absence, not a zero.
+    expect(stage("4").restSeconds).toBeUndefined();
+  });
+
+  it("keeps a hold a hold, and carries the step's prose", () => {
+    expect(stage("4")).toMatchObject({ durationType: "time", durationSeconds: 45 });
+    // The wire has no tempo or per-side field; `overview` is where the push
+    // path discloses them, so the read path has to bring them back.
+    expect(stage("4").note).toBe("each side · 4s down");
+    expect(stage("2").note).toBeUndefined();
+  });
+
+  it("leaves an open step open rather than inventing a target", () => {
+    expect(stage("6")).toMatchObject({ durationType: "open" });
+    expect(stage("6").reps).toBeUndefined();
+  });
+});
+
 describe("COROS activity normalization (contract)", () => {
   const { item, detail } = fixtureCorosCompletedThreshold("2026-08-04T14:02:05Z");
 

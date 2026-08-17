@@ -7,7 +7,7 @@ import {
   type CoachRunBlock,
   type CoachSession,
 } from "./coach.js";
-import { formatStageDuration } from "./duration.js";
+import { formatStageDistance, formatStageDuration } from "./duration.js";
 import { isoWeekday } from "./time.js";
 import { sessionWatchCoverage, type WatchCoverageView } from "./watch-coverage.js";
 
@@ -112,23 +112,55 @@ function blockDetail(b: CoachExerciseBlock): string[] {
 }
 
 function runBlockDetail(b: CoachRunBlock): string {
-  // Durations through the shared formatter (`value` is MINUTES here) so the
-  // manifest, the stored stage summary and the sheet's stage list have one
-  // vocabulary. Whole minutes read exactly as they always did.
+  // Both amounts through the shared formatters (`value` is MINUTES for a
+  // duration block, whole METRES for a distance one) so the manifest, the
+  // stored stage summary and the sheet's stage list have one vocabulary. The
+  // distance formatter used to be spelled out here, differently from the two
+  // spellings downstream — see `formatStageDistance`.
   const work =
-    b.kind === "duration"
-      ? formatStageDuration(b.value * 60)
-      : b.value >= 1000
-        ? `${Number((b.value / 1000).toFixed(2))} km`
-        : `${b.value} m`;
+    b.kind === "duration" ? formatStageDuration(b.value * 60) : formatStageDistance(b.value);
   return b.intensity ? `${work} ${b.intensity}` : work;
 }
 
-function sessionDetail(s: CoachSession): string[] {
+/**
+ * WHAT THE SESSION PRESCRIBES, line by line — the one renderer, for every
+ * reader (2026-08-17).
+ *
+ * There were three of these, and a person could see all three within one tap:
+ * this function (the approval card's manifest), `coach-apply.ts`'s private
+ * `stageSummary` (which writes the stored `planned_workouts.stage_summary`
+ * that Today, the week list and the coach's own dossier all read), and
+ * `summarizeStages` in @rg/scheduling (which the session sheet re-derives from
+ * the row's stage rows). They disagreed about distances, about a role label
+ * nobody wrote, and — before `formatStageDuration` — about every stage under a
+ * minute.
+ *
+ * So the manifest's rendering became the function, and the other two call it
+ * or reduce to it: `sessionSummaryLine` IS the stored column, and
+ * `summarizeStages` renders stage rows with the same two amount formatters and
+ * no invented words. `intent-cross-surface.test.ts` holds all five readers to
+ * one string, fixture by fixture.
+ */
+export function sessionPrescription(s: CoachSession): string[] {
   const block = s.lift ?? s.mobility;
   if (block) return blockDetail(block);
   if (s.run) return s.run.blocks.map(runBlockDetail);
   return [];
+}
+
+/**
+ * The same prescription as ONE line — `planned_workouts.stage_summary`, and
+ * therefore Today's card, the week list, and the `contains:` text the coach's
+ * dossier quotes back to the model.
+ *
+ * A session with no body at all (a rest day, "gym, movements on the day") has
+ * no prescription to state, and the title is the whole story: an empty
+ * exercise list and an absent one parse alike (coach.ts), so they must read
+ * alike too.
+ */
+export function sessionSummaryLine(s: CoachSession): string {
+  const lines = sessionPrescription(s);
+  return lines.length > 0 ? lines.join(" · ") : s.title;
 }
 
 function shapeWeekLine(
@@ -152,7 +184,7 @@ function datedSessionLines(
     date: s.date,
     summary: sessionSummary(s.session),
     change: null,
-    detail: sessionDetail(s.session),
+    detail: sessionPrescription(s.session),
     watch: sessionWatchCoverage(s.session),
     kind,
   }));
@@ -181,7 +213,7 @@ export function describeOps(ops: CoachOp[], planned?: ReadonlyMap<string, Planne
           change: was?.summary
             ? `${was.summary} → ${op.session.title}`
             : "rewrites the session already on this day",
-          detail: sessionDetail(op.session),
+          detail: sessionPrescription(op.session),
           watch: sessionWatchCoverage(op.session),
           kind: op.kind,
         });
@@ -246,7 +278,7 @@ export function describeOps(ops: CoachOp[], planned?: ReadonlyMap<string, Planne
             date,
             summary: sessionSummary(op.session),
             change: null,
-            detail: sessionDetail(op.session),
+            detail: sessionPrescription(op.session),
             watch: sessionWatchCoverage(op.session),
             kind: op.kind,
           });

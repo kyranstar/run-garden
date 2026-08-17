@@ -289,8 +289,42 @@ export class CorosClient {
       edited.dayNo =
         daysBetween(corosDayToLocalDate(planStartDay), corosDayToLocalDate(newHappenDay)) + 1;
     }
-    return this.writeSchedule("schedule.update", {
-      entities: [edited],
+    return this.sendStatus2("schedule.update", edited, program, planId);
+  }
+
+  /**
+   * CONTENT rewrite via status:2 — the same wire verb, the same address, the
+   * calendar day untouched and the PROGRAM replaced.
+   *
+   * A date move and a content rewrite are one endpoint with one status code:
+   * `status: 2` at (planId, idInPlan, planProgramId) means "this workout is now
+   * what I am sending". The move path exploited that to change `happenDay`
+   * while resending the program byte-for-byte; this method is the other half —
+   * the day is resent as read and the program is the new one. Nothing else in
+   * the payload differs, which is why there is one private sender for both.
+   *
+   * The caller owns the safety: the program must be built for the address it is
+   * about to overwrite, and ownership must have been re-proven immediately
+   * before the call (`content-executor.ts` is the only production caller and
+   * does both). This method itself proves nothing.
+   */
+  async updateScheduleProgram(
+    entity: RawCorosEntity,
+    program: RawCorosProgram,
+    planId: string,
+  ): Promise<CorosWriteResponse> {
+    return this.sendStatus2("schedule.content", { ...entity }, program, planId);
+  }
+
+  /** The one `status: 2` payload shape (§D4): entity + program + version triple. */
+  private async sendStatus2(
+    op: string,
+    entity: RawCorosEntity,
+    program: RawCorosProgram,
+    planId: string,
+  ): Promise<CorosWriteResponse> {
+    return this.writeSchedule(op, {
+      entities: [entity],
       programs: [program],
       versionObjects: [
         {
