@@ -338,7 +338,10 @@ export interface CoachMemoryItem {
 
 export interface CoachPlanDto {
   id: string;
-  discipline: "run" | "lift";
+  /** `mobility` exists: the coach files a mobility one-off in its own bucket
+   * rather than stretching the running plan's dates, and that row reaches this
+   * DTO. It was typed `"run" | "lift"` while the wire carried a third value. */
+  discipline: "run" | "lift" | "mobility";
   name: string;
   status: "draft" | "active" | "completed" | "retired";
   startDate: string;
@@ -348,6 +351,21 @@ export interface CoachPlanDto {
    * COROS), or COROS itself (imported plans — read-only cards). Absent in
    * older payloads — treat as "coach". */
   source?: "coach" | "studio" | "coros";
+  /**
+   * `block` — a training block: a planned duration, weeks, a week counter, a
+   * progress bar. `loose` — a container for one-off sessions that landed
+   * outside every block ("Coach one-offs"): it has CONTENTS, not a duration,
+   * and none of that vocabulary applies to it. Absent in older payloads —
+   * treat as "block". */
+  kind?: "block" | "loose";
+  /** What a `loose` container holds. The row's own dates only record where its
+   * one-offs happen to fall, so this is what the UI renders instead. */
+  holds?: {
+    sessions: number;
+    done: number;
+    firstDate: string | null;
+    lastDate: string | null;
+  };
 }
 
 /** One pickable week + the brief's facts (rework spec §4). */

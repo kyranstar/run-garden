@@ -38,7 +38,7 @@ import { exerciseNameMap, resolveExerciseName } from "../services/exercise-catal
 import { liftProgressions, liftWeekSummary, runProgressions } from "../services/plan-progressions.js";
 import { applyOps } from "../services/coach-apply.js";
 import { evaluateTriggers, pendingTriggers } from "../services/coach-triggers.js";
-import { coachBlockAdherence, plansEndedOn } from "../services/coach-plans.js";
+import { coachBlockAdherence, isLoosePlan, plansEndedOn } from "../services/coach-plans.js";
 import {
   openWakeIsFresh,
   recordAthleteMessage,
@@ -610,11 +610,63 @@ coachRoutes.get("/plans", async (c) => {
     }
   }
 
+  // `kind` is what stops a container of loose sessions from being drawn as a
+  // training block. It is derived, not stored, so the two "Coach one-offs"
+  // rows already in production classify correctly with no data repair.
+  const looseCounts = new Map<string, { sessions: number; done: number; first: string; last: string }>();
+  const looseIds = rows.filter((r) => isLoosePlan(r)).map((r) => r.id);
+  if (looseIds.length > 0) {
+    const held = await db
+      .select({
+        planId: plannedWorkouts.planId,
+        date: plannedWorkouts.effectiveDate,
+        state: plannedWorkouts.completionState,
+        category: plannedWorkouts.category,
+      })
+      .from(plannedWorkouts)
+      .where(
+        and(
+          eq(plannedWorkouts.userId, userId),
+          inArray(plannedWorkouts.planId, looseIds),
+          isNull(plannedWorkouts.archivedAt),
+        ),
+      );
+    for (const w of held) {
+      if (w.category === "rest") continue;
+      const agg = looseCounts.get(w.planId) ?? { sessions: 0, done: 0, first: w.date, last: w.date };
+      agg.sessions += 1;
+      if (w.state === "completed") agg.done += 1;
+      if (w.date < agg.first) agg.first = w.date;
+      if (w.date > agg.last) agg.last = w.date;
+      looseCounts.set(w.planId, agg);
+    }
+  }
+
   return c.json({
     plans: [
-      ...rows.map((r) => ({ ...r, raceDate: r.raceDate ?? prefs.raceDate, source: "coach" as const })),
-      ...studioEntries,
-      ...corosEntries,
+      ...rows.map((r) => {
+        const loose = isLoosePlan(r);
+        const held = looseCounts.get(r.id);
+        return {
+          ...r,
+          raceDate: r.raceDate ?? prefs.raceDate,
+          source: "coach" as const,
+          kind: (loose ? "loose" : "block") as "loose" | "block",
+          // A bucket reports what it HOLDS. Its row dates only say where its
+          // one-offs happened to fall, so the contents are the truth and the
+          // card renders from these instead of from a week counter.
+          holds: loose
+            ? {
+                sessions: held?.sessions ?? 0,
+                done: held?.done ?? 0,
+                firstDate: held?.first ?? null,
+                lastDate: held?.last ?? null,
+              }
+            : undefined,
+        };
+      }),
+      ...studioEntries.map((e) => ({ ...e, kind: "block" as const })),
+      ...corosEntries.map((e) => ({ ...e, kind: "block" as const })),
     ],
   });
 });
@@ -637,10 +689,14 @@ coachRoutes.get("/plans/:id/detail", async (c) => {
     .where(and(eq(coachPlans.id, id), eq(coachPlans.userId, userId)))
     .limit(1);
   if (cp) {
+    // A loose-session bucket has no planned duration, so it has no weeks: the
+    // loop below is skipped entirely rather than manufacturing a "week 1 of 1"
+    // out of the day its one one-off happens to land on.
+    const loose = isLoosePlan(cp);
     const planW1 = startOfIsoWeek(cp.startDate);
-    const weekTotal = weekIndexOf(planW1, cp.endDate);
+    const weekTotal = loose ? 0 : weekIndexOf(planW1, cp.endDate);
     const currentWeek =
-      thisMonday >= planW1 && weekIndexOf(planW1, today) <= weekTotal
+      !loose && thisMonday >= planW1 && weekIndexOf(planW1, today) <= weekTotal
         ? weekIndexOf(planW1, today)
         : null;
 
@@ -758,9 +814,24 @@ coachRoutes.get("/plans/:id/detail", async (c) => {
     }
 
     const nonRestAll = workouts.filter((w) => w.category !== "rest");
-    const adh = await coachBlockAdherence(db, userId, cp.id, cp.startDate, cp.endDate);
+    // A bucket's adherence is over what it HOLDS. Measured over its row dates
+    // it would score a single day, because a bucket's dates say where its
+    // first one-off fell, not what it contains.
+    const dates = nonRestAll.map((w) => w.effectiveDate).sort();
+    const adh = await coachBlockAdherence(
+      db,
+      userId,
+      cp.id,
+      loose ? (dates[0] ?? cp.startDate) : cp.startDate,
+      loose ? (dates.at(-1) ?? cp.endDate) : cp.endDate,
+    );
     return c.json({
-      plan: { ...cp, raceDate: cp.raceDate ?? prefs.raceDate, source: "coach" as const },
+      plan: {
+        ...cp,
+        raceDate: cp.raceDate ?? prefs.raceDate,
+        source: "coach" as const,
+        kind: (loose ? "loose" : "block") as "loose" | "block",
+      },
       weeks,
       progressions,
       sessions: {
@@ -1002,10 +1073,18 @@ export async function sweepUserProposals(db: Db, userId: string, timezone: strin
   // Coached plans past their final day flip to completed, with a receipt
   // carrying the block's adherence (fairness spec §4).
   const today = todayInZone(timezone);
-  const ended = await db
-    .select()
-    .from(coachPlans)
-    .where(and(eq(coachPlans.userId, userId), eq(coachPlans.status, "active"), lt(coachPlans.endDate, today)));
+  const ended = (
+    await db
+      .select()
+      .from(coachPlans)
+      .where(and(eq(coachPlans.userId, userId), eq(coachPlans.status, "active"), lt(coachPlans.endDate, today)))
+  )
+    // A bucket of one-offs never "completes": its last date is the last
+    // session someone put in it, not a finish line. Left in, this cron said
+    // "Block complete: Coach one-offs — 100% adherence" the morning after a
+    // single one-off, then said it again after the next one (the next apply
+    // flips the row back to active).
+    .filter((p) => !isLoosePlan(p));
   for (const p of ended) {
     await db
       .update(coachPlans)

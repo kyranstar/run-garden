@@ -1135,6 +1135,68 @@ a.note {
   margin-top: var(--space-2);
 }
 
+/* The interval tree behind "Full structure". A repeat used to print as a
+   sibling line between the stages before it and the stages after it, so its
+   scope was a guess; here the multiplier and the stages it multiplies are one
+   bounded object — "3 ×" on the left, a rule down the side of exactly what
+   repeats. Type is inherited from the sheet: this is grouping, not a new rank. */
+.stage-tree,
+.stage-group-list {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.stage-tree {
+  margin-top: var(--space-3);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+.stage-step,
+.stage-group {
+  display: flex;
+  align-items: center;
+  gap: var(--space-4);
+}
+/* One column for every multiplier, so a "3 ×" on a single step and a "3 ×" on
+   a group of two land on the same left edge — and an unrepeated step's blank
+   slot keeps it in the same alignment. */
+.stage-mult-slot {
+  flex: none;
+  min-width: var(--space-6);
+  text-align: right;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+}
+.stage-step-text {
+  min-width: 0;
+}
+.stage-mult {
+  color: var(--ink);
+  font-weight: var(--weight-medium);
+  white-space: nowrap;
+}
+.stage-group-name {
+  font-size: var(--text-xs);
+  color: var(--ink-faint);
+}
+/* The rule IS the bracket: it runs the height of exactly what repeats. */
+.stage-group-list {
+  flex: 1 1 auto;
+  min-width: 0;
+  border-left: 2px solid var(--border);
+  padding: var(--space-2) 0 var(--space-2) var(--space-4);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+/* Inside a group the rule already carries the indent, so an unrepeated step
+   spends no width on an empty slot. */
+.stage-group-list .stage-mult-slot:empty {
+  display: none;
+}
+
 /* ── Plan list ──────────────────────────────────────────────────────────── */
 
 .week-header {
@@ -5417,6 +5479,50 @@ a.note {
   color: inherit;
   text-align: left;
   cursor: pointer;
+  /* A DELIBERATE two-row shape on a phone: headline row (countdown, prep
+     count, caret) over a meta row (date, phase, goal band). The old
+     `flex-wrap: wrap` let the row break wherever it ran out of space — at 320
+     and 360 the goal band, the fraction and the caret fell to line two; at
+     390 the fraction and the caret did, alone. There is no width at which
+     ~350px of content fits 240px of phone card, so the wrap is designed
+     instead of avoided. From `sm` it is one row again. */
+  display: grid;
+  grid-template-columns: 1fr auto;
+  grid-template-areas:
+    "lead caret"
+    "meta meta";
+  align-items: center;
+  column-gap: var(--space-4);
+  row-gap: var(--space-1);
+}
+.race-strip-lead {
+  grid-area: lead;
+  display: flex;
+  align-items: center;
+  gap: var(--space-4);
+  min-width: 0;
+}
+.race-strip-meta {
+  grid-area: meta;
+  min-width: 0;
+  /* Meta type, so the countdown is the headline and the second row reads as
+     its caption — and so the row still holds ONE line at 320 when the phase
+     is "race week" and the goal band is a 10-minute pace: that widest possible
+     content measures 218.6px of the 254px this row gets at 320. */
+  font-size: var(--text-xs);
+}
+@media (min-width: 640px) {
+  .race-strip-toggle {
+    grid-template-columns: auto 1fr auto;
+    grid-template-areas: "lead meta caret";
+  }
+}
+/* The section label: the app's one eyebrow, given its own box. 12px, not the
+   `.card-title` default 8 — `.race-strip-h` grants the toggle's pad 12px of
+   clearance, so that is the room the label has to actually leave above it. */
+.race-strip-eyebrow {
+  display: block;
+  margin-bottom: var(--space-5);
 }
 .race-flag {
   font-size: var(--text-md);
@@ -5428,6 +5534,7 @@ a.note {
   margin-left: auto;
 }
 .race-caret {
+  grid-area: caret;
   color: var(--ink-faint);
 }
 .race-strip-body {
@@ -5616,6 +5723,15 @@ a.note {
   transform: translateY(-1px);
   border-color: var(--border-strong);
   box-shadow: var(--shadow-sm);
+}
+/* A container of loose sessions is inert — it holds things, it does not open a
+   weeks-and-progress view — so it drops the card's pointer affordances. */
+.plan-card-loose,
+.plan-card-loose:hover {
+  cursor: default;
+  transform: none;
+  border-color: var(--border);
+  box-shadow: none;
 }
 @media (prefers-reduced-motion: reduce) {
   .plan-card,

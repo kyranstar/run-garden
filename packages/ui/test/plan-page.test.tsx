@@ -342,6 +342,87 @@ describe("PlanCards", () => {
     expect(html).toContain("upcoming ·");
     expect(html).toContain("Plan lifting with your coach");
   });
+
+  // ── A container of loose sessions is not a training block ───────────────
+  // Production has two of these rows, one per discipline, both named "Coach
+  // one-offs" and both spanning a single day (`ensureAdhocPlan` writes
+  // startDate === endDate). Rendered as plans they read "wk 1/1" with a
+  // 100%-full progress bar: a bucket of one-offs wearing a block's vocabulary.
+  const looseLift: CoachPlanDto = {
+    id: "adhoc-lift-bd363a58",
+    discipline: "lift",
+    name: "Coach one-offs",
+    status: "active",
+    startDate: "2026-08-17",
+    endDate: "2026-08-17",
+    raceDate: "2026-10-11",
+    source: "coach",
+    kind: "loose",
+    holds: { sessions: 4, done: 1, firstDate: "2026-08-18", lastDate: "2026-08-24" },
+  };
+  const looseMobility: CoachPlanDto = {
+    ...looseLift,
+    id: "adhoc-mobility-bd363a58",
+    discipline: "mobility",
+    startDate: "2026-08-18",
+    endDate: "2026-08-18",
+    holds: { sessions: 1, done: 0, firstDate: "2026-08-18", lastDate: "2026-08-18" },
+  };
+
+  it("renders a loose container by its CONTENTS, with no week counter and no progress track", () => {
+    const html = render(
+      createElement(PlanCards, {
+        plans: [looseLift, runPlan],
+        details: new Map([["cp1", detail]]),
+        onOpen: noop,
+        onNew: noop,
+      }),
+    );
+    expect(html).toContain("Lifting one-offs");
+    expect(html).toContain("4 sessions · 1 done · Aug 18 → Aug 24");
+    // The block beside it keeps every bit of block vocabulary.
+    expect(html).toContain("wk 5/");
+    // The bucket has none of it: no week count, no bar, no end date, and it is
+    // not a button into a weeks-and-progress view.
+    expect(html).not.toContain("wk 1/1");
+    const loose = /<div class="card plan-card plan-card-loose">.*?<\/div>/s.exec(html)![0]!;
+    expect(loose).not.toContain("plan-card-track");
+    expect(loose).not.toContain("ends");
+    expect(loose).not.toContain("<button");
+  });
+
+  it("gives the two production rows two distinguishable names, and the mobility one a home", () => {
+    const html = render(
+      createElement(PlanCards, {
+        // A mobility bucket used to render NOWHERE: the sections are run and
+        // lift, so one of the two rows production has was invisible while
+        // still winning the weekly brief's week counter.
+        plans: [looseLift, looseMobility],
+        details: new Map(),
+        onOpen: noop,
+        onNew: noop,
+      }),
+    );
+    expect(html).toContain("Lifting one-offs");
+    expect(html).toContain("Mobility one-offs");
+    expect(html).toContain("One-off sessions");
+    expect(html).toContain("1 session · Aug 18");
+    // The buckets left the sport sections, so both invitations still stand.
+    expect(html).toContain("Plan running with your coach");
+    expect(html).toContain("Plan lifting with your coach");
+  });
+
+  it("says a bucket is empty rather than inventing a session count", () => {
+    const html = render(
+      createElement(PlanCards, {
+        plans: [{ ...looseLift, holds: { sessions: 0, done: 0, firstDate: null, lastDate: null } }],
+        details: new Map(),
+        onOpen: noop,
+        onNew: noop,
+      }),
+    );
+    expect(html).toContain("nothing filed here yet");
+  });
 });
 
 describe("CoachWindow", () => {

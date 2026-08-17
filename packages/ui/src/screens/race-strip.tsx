@@ -110,7 +110,13 @@ export function RaceStrip({ units }: { units: Units }) {
 
   if (race.phase === "post") {
     return (
-      <section className="card race-strip race-strip-open" aria-label="Race debrief">
+      <section className="card race-strip race-strip-open" aria-label="Race day">
+        {/* The post-race state is the same section, so it wears the same
+            label — and it had no heading at all before, which left a hole in
+            the page outline where a whole card used to be. */}
+        <h2 className="race-strip-h">
+          <span className="card-title race-strip-eyebrow">Race day</span>
+        </h2>
         <div className="race-strip-head">
           <span className="race-flag" aria-hidden>🏁</span>
           <b>Race day was {formatShortDate(race.raceDate)}.</b>
@@ -134,25 +140,37 @@ export function RaceStrip({ units }: { units: Units }) {
   }
 
   return (
-    <section className={`card race-strip${open ? " race-strip-open" : ""}`} aria-label="Race build">
-      {/* The collapsed line IS this section's heading, so it is one — the
-          `<h2>` carries the outline and `.race-strip-h` carries no type of its
-          own, leaving the button's own row untouched. */}
+    <section className={`card race-strip${open ? " race-strip-open" : ""}`} aria-label="Race day">
+      {/* The `<h2>` carries the outline and `.race-strip-h` carries no type of
+          its own, leaving the button's own row untouched. The section had no
+          name of any kind — a bare countdown asks the reader to work out what
+          it counts down to — so the heading now shows one, in the app's own
+          eyebrow (`.card-title`, the single uppercase rule). */}
       <h2 className="race-strip-h">
+      <span className="card-title race-strip-eyebrow">Race day</span>
       <button
         type="button"
-        className="race-strip-head race-strip-toggle"
+        className="race-strip-toggle"
         aria-expanded={open}
         onClick={() => setOpen(!open)}
       >
-        <span className="race-flag" aria-hidden>🏁</span>
-        <b className="num">
-          {race.daysToRace === 0 ? "Race day!" : race.daysToRace === 1 ? "Tomorrow" : `${race.daysToRace} days`}
-        </b>
-        <span className="faint">· {formatShortDate(race.raceDate)} · {PHASE_LABEL[race.phase]}</span>
-        {goalMini && !open ? <span className="race-goal-mini num">{goalMini}</span> : null}
-        <span className="faint num race-check-mini">
-          {checklistDone}/{race.checklist.length}
+        {/* Two rows on a phone, one from `sm` up. The countdown and the
+            checklist are the headline; the date, the phase and the goal band
+            are its meta line. It used to be one wrapping flex row, which at
+            390 broke as "🏁 55 days · Oct 11 · building 4:24–4:32 /km" over
+            "0/5 ▸" — an orphaned fraction and a caret on their own line. */}
+        <span className="race-strip-lead">
+          <span className="race-flag" aria-hidden>🏁</span>
+          <b className="num">
+            {race.daysToRace === 0 ? "Race day!" : race.daysToRace === 1 ? "Tomorrow" : `${race.daysToRace} days`}
+          </b>
+          <span className="faint num race-check-mini">
+            prep {checklistDone}/{race.checklist.length}
+          </span>
+        </span>
+        <span className="faint race-strip-meta">
+          <span className="num">{formatShortDate(race.raceDate)}</span> · {PHASE_LABEL[race.phase]}
+          {goalMini && !open ? <> · <span className="race-goal-mini num">{goalMini}</span></> : null}
         </span>
         <span className="race-caret" aria-hidden>{open ? "▾" : "▸"}</span>
       </button>

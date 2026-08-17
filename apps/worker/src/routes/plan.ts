@@ -50,6 +50,7 @@ import { buildRaceHub } from "../services/race-hub.js";
 import { cloudPresence, deriveWorkoutSync, type CloudPresence } from "../services/sync-status.js";
 import { exerciseNameMap, resolveCodesInText } from "../services/exercise-catalog.js";
 import { buildReadiness } from "../services/readiness.js";
+import { isLoosePlan } from "../services/coach-plans.js";
 import { executeCloudJobs } from "../services/coros-write-cloud.js";
 
 export const planRoutes = new Hono<AppContext>();
@@ -506,7 +507,23 @@ planRoutes.get("/week", async (c) => {
       findRaceConflict(db, userId, prefs),
     ]);
 
-  const covering = activePlans.find((p) => p.startDate <= weekEnd && p.endDate >= weekStart);
+  // "Week n of m" is a statement about a BLOCK's planned duration, so only a
+  // block may answer it — and when two blocks overlap this week, the longest
+  // span wins deterministically rather than whichever row D1 returned first.
+  //
+  // Approving one coach one-off used to mint a single-day "Coach one-offs"
+  // bucket, and an unordered `.find()` let that bucket answer for the week: the
+  // brief read "Week 1 of 1" on top of a real four-week block, and `deloadWeek`
+  // and the plan's race date went with it (a bucket has no `coach_plan_weeks`
+  // rows and no race).
+  const covering = activePlans
+    .filter((p) => !isLoosePlan(p) && p.startDate <= weekEnd && p.endDate >= weekStart)
+    .sort(
+      (a, b) =>
+        Date.parse(b.endDate) - Date.parse(b.startDate) - (Date.parse(a.endDate) - Date.parse(a.startDate)) ||
+        a.startDate.localeCompare(b.startDate) ||
+        a.id.localeCompare(b.id),
+    )[0];
 
   // Second (final) wave: the two reads gated on wave-one results — per-workout
   // sync views (need `rows`; presence threaded, not re-queried) and this

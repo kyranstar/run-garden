@@ -219,6 +219,49 @@ describe("coached block completion (fairness spec §4)", () => {
     expect(input.coachedBlockCompleted).toBe(true);
   });
 
+  it("a bucket of one-offs never earns the block credit — a bucket has no finish line", async () => {
+    // The garden's coached-block unlock fired the morning after ANY single
+    // one-off: `ensureAdhocPlan` writes startDate === endDate, so the bucket
+    // "ended yesterday" at 100% adherence over its one session.
+    const db = makeTestDb();
+    const { userId, prefs } = await makeTestUser(db);
+    const today = todayInZone(prefs.timezone);
+    const yesterday = addDays(today, -1);
+    await db.insert(schema.coachPlans).values({
+      id: `adhoc-lift-${userId.slice(0, 8)}`,
+      userId,
+      discipline: "lift",
+      name: "Coach one-offs",
+      status: "active",
+      startDate: yesterday,
+      endDate: yesterday,
+      stampPrefix: "Coach one-offs",
+      createdAt: nowInstant(),
+      updatedAt: nowInstant(),
+    });
+    await db.insert(schema.plannedWorkouts).values({
+      id: "oneoff",
+      userId,
+      planId: `adhoc-lift-${userId.slice(0, 8)}`,
+      sourceWorkoutId: "oneoff",
+      title: "Ski legs",
+      category: "strength",
+      sport: "strength",
+      originalPlanDate: yesterday,
+      lastVerifiedCorosDate: "",
+      effectiveDate: yesterday,
+      effectiveTime: "18:00",
+      completionState: "completed",
+      resolutionDate: yesterday,
+      sourceContentFingerprint: "fp",
+      calendarBlockDurationSeconds: 2700,
+      createdAt: nowInstant(),
+      updatedAt: nowInstant(),
+    });
+    const input = await buildDayInput(db, userId, today, prefs);
+    expect(input.coachedBlockCompleted).toBeUndefined();
+  });
+
   it("stays quiet below 85% or on any other day", async () => {
     const db = makeTestDb();
     const { userId, prefs } = await makeTestUser(db);

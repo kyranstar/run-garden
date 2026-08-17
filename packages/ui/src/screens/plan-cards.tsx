@@ -147,10 +147,54 @@ function PlanRow({
       {prog ? (
         <span className="plan-card-headline">
           <span className="plan-card-kv">{progressionHeadline(prog, units)}</span>
-          <Sparkline progression={prog} discipline={p.discipline} />
+          {/* Lifts prescribe in steps, everything else builds in lines. */}
+          <Sparkline progression={prog} discipline={p.discipline === "lift" ? "lift" : "run"} />
         </span>
       ) : null}
     </button>
+  );
+}
+
+const DISCIPLINE_WORD: Record<CoachPlanDto["discipline"], string> = {
+  run: "Running",
+  lift: "Lifting",
+  mobility: "Mobility",
+};
+
+/**
+ * A container for one-off sessions, rendered as what it is.
+ *
+ * It is not a block, so it says nothing a block says: no week counter, no
+ * progress track (a bar needs an end to fill toward), no "ends <date>". It
+ * reports its CONTENTS, and it is named for its discipline so a lifting bucket
+ * and a mobility bucket are two distinguishable things rather than two cards
+ * both called "Coach one-offs".
+ *
+ * Deliberately not a button: the plan detail behind it is a weeks-and-progress
+ * view, which is the same category error one level down.
+ */
+function LooseRow({ p }: { p: CoachPlanDto }) {
+  const held = p.holds ?? { sessions: 0, done: 0, firstDate: null, lastDate: null };
+  const range =
+    held.firstDate && held.lastDate
+      ? held.firstDate === held.lastDate
+        ? formatShortDate(held.firstDate)
+        : `${formatShortDate(held.firstDate)} → ${formatShortDate(held.lastDate)}`
+      : null;
+  const count =
+    held.sessions === 0
+      ? "nothing filed here yet"
+      : `${held.sessions} ${held.sessions === 1 ? "session" : "sessions"}${held.done > 0 ? ` · ${held.done} done` : ""}`;
+  return (
+    <div className="card plan-card plan-card-loose">
+      <span className="plan-card-name">{DISCIPLINE_WORD[p.discipline]} one-offs</span>
+      {/* Contents, on one line: how many, and when they actually fall. No
+          "ends", because nothing here ends. */}
+      <span className="faint num">
+        {count}
+        {range ? ` · ${range}` : ""}
+      </span>
+    </div>
   );
 }
 
@@ -168,12 +212,21 @@ export function PlanCards({
   const settings = useQuery({ queryKey: ["settings"], queryFn: api.settings, staleTime: 60_000 });
   const units: Units = settings.data?.prefs.units ?? "km";
   const visible = plans.filter((p) => p.status === "active" || p.status === "draft");
+  // Buckets of loose sessions leave the block sections entirely. Grouping them
+  // by sport put a one-day "Coach one-offs" card, week 1 of 1, 100% complete,
+  // beside a real four-week block — and a MOBILITY bucket rendered nowhere at
+  // all, because the sections are run and lift, so one of the two rows
+  // production already has was invisible while still being counted elsewhere.
+  const loose = visible
+    .filter((p) => p.kind === "loose")
+    .sort((a, b) => a.discipline.localeCompare(b.discipline));
+  const blocks = visible.filter((p) => p.kind !== "loose");
   return (
     <div className="plan-sections">
       {(["run", "lift"] as const).map((discipline) => {
         // Vertical time order inside a sport: what's running now sits on
         // top, upcoming blocks follow in the order they'll happen.
-        const group = visible
+        const group = blocks
           .filter((p) => p.discipline === discipline)
           .sort(
             (a, b) => a.startDate.localeCompare(b.startDate) || a.name.localeCompare(b.name),
@@ -214,6 +267,27 @@ export function PlanCards({
           </section>
         );
       })}
+      {loose.length > 0 ? (
+        <section className="plan-section" aria-labelledby="plan-section-oneoffs">
+          <div className="plan-section-head">
+            <h2 id="plan-section-oneoffs" className="plan-section-h">
+              <span className="pill pill-neutral" aria-hidden>
+                One-offs
+              </span>
+              <span className="visually-hidden">One-off sessions</span>
+            </h2>
+            <span className="plan-section-rule" aria-hidden />
+          </div>
+          <div className="plan-section-list">
+            <p className="note">
+              Sessions your coach added outside a training block — filed here, with no week count.
+            </p>
+            {loose.map((p) => (
+              <LooseRow key={p.id} p={p} />
+            ))}
+          </div>
+        </section>
+      ) : null}
     </div>
   );
 }

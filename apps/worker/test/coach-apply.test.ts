@@ -553,3 +553,86 @@ describe("an add carrying multiple dates expands into one session per date", () 
     expect(out.created).toHaveLength(1);
   });
 });
+
+/**
+ * Where a one-off is FILED (2026-08-17). `ensureAdhocPlan` mints one bucket per
+ * discipline for sessions that land outside every block, and the bucket's span
+ * is supposed to cover what it holds. It never did: the stretch branch lives
+ * behind an `existing` lookup that a second one-off never reaches, because by
+ * then the bucket is itself an active plan of that discipline and the plan
+ * resolver returns it first. Production's two buckets are consequently
+ * single-day rows holding sessions dated days later — which is how the plan
+ * card came to read "wk 1/1, 100%".
+ */
+describe("a one-off's plan row", () => {
+  const lift = {
+    category: "strength" as const,
+    title: "Ski legs",
+    durationMinutes: 40,
+    lift: {
+      exercises: [
+        { name: "Wall sit", sets: 3, holdSeconds: 45, weight: { type: "bodyweight" }, restSeconds: 60 },
+      ],
+    },
+  };
+
+  it("widens the bucket's span in BOTH directions as one-offs are filed in it", async () => {
+    const db = makeTestDb();
+    const { userId, prefs } = await makeTestUser(db);
+    const today = todayInZone(prefs.timezone);
+    await applyOps(db, userId, prefs, "p1", [
+      { kind: "add", date: addDays(today, 5), session: lift } as unknown as CoachOp,
+    ]);
+    const bucketId = `adhoc-lift-${userId.slice(0, 8)}`;
+    const first = (await db.select().from(schema.coachPlans).where(eq(schema.coachPlans.id, bucketId)))[0]!;
+    expect(first.startDate).toBe(addDays(today, 5));
+    expect(first.endDate).toBe(addDays(today, 5));
+
+    // Later, and then EARLIER than the bucket's first one-off.
+    await applyOps(db, userId, prefs, "p2", [
+      { kind: "add", date: addDays(today, 12), session: lift } as unknown as CoachOp,
+    ]);
+    await applyOps(db, userId, prefs, "p3", [
+      { kind: "add", date: addDays(today, 1), session: lift } as unknown as CoachOp,
+    ]);
+    const after = (await db.select().from(schema.coachPlans).where(eq(schema.coachPlans.id, bucketId)))[0]!;
+    expect(after.startDate).toBe(addDays(today, 1));
+    expect(after.endDate).toBe(addDays(today, 12));
+    // Still ONE bucket for the discipline.
+    const all = await db.select().from(schema.coachPlans).where(eq(schema.coachPlans.userId, userId));
+    expect(all).toHaveLength(1);
+  });
+
+  it("files a session inside a block's span in the BLOCK, and one outside it in the bucket", async () => {
+    const db = makeTestDb();
+    const { userId, prefs } = await makeTestUser(db);
+    const today = todayInZone(prefs.timezone);
+    await db.insert(schema.coachPlans).values({
+      id: "blk",
+      userId,
+      discipline: "lift",
+      name: "Strength block",
+      status: "active",
+      startDate: today,
+      endDate: addDays(today, 27),
+      stampPrefix: "SB",
+      createdAt: nowInstant(),
+      updatedAt: nowInstant(),
+    });
+    const inside = await applyOps(db, userId, prefs, "p-in", [
+      { kind: "add", date: addDays(today, 3), session: lift } as unknown as CoachOp,
+    ]);
+    const outside = await applyOps(db, userId, prefs, "p-out", [
+      { kind: "add", date: addDays(today, 40), session: lift } as unknown as CoachOp,
+    ]);
+    const rows = await db.select().from(schema.plannedWorkouts).where(eq(schema.plannedWorkouts.userId, userId));
+    const planOf = (id: string) => rows.find((r) => r.id === id)!.planId;
+    expect(planOf(inside.created[0]!)).toBe("blk");
+    // A session 40 days past a block that ends in 27 is not part of that
+    // block — it used to be filed in it purely because the row came first.
+    expect(planOf(outside.created[0]!)).toBe(`adhoc-lift-${userId.slice(0, 8)}`);
+    // And the block's own dates are untouched by the one-off.
+    const blk = (await db.select().from(schema.coachPlans).where(eq(schema.coachPlans.id, "blk")))[0]!;
+    expect(blk.endDate).toBe(addDays(today, 27));
+  });
+});

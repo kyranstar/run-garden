@@ -441,6 +441,101 @@ describe("GET /week — brief facts (2026-08-11 rework §4)", () => {
     expect(body.adventureDays).toBe(0);
   });
 
+  it("counts the weeks of the BLOCK, not of a bucket of one-offs that overlaps it", async () => {
+    // Production, 2026-08-17: approving one coach proposal minted a
+    // single-day "Coach one-offs" plan row, and an unordered `.find()` let it
+    // answer for the week — the brief read "Week 1 of 1" while a real
+    // four-week block was running underneath it.
+    const monday = mondayOf(0);
+    await db.insert(schema.coachPlans).values([
+      {
+        id: "blk",
+        userId,
+        discipline: "run",
+        name: "Post-10K block",
+        status: "active",
+        startDate: mondayOf(-2),
+        endDate: addDays(mondayOf(-2), 4 * 7 - 1),
+        raceDate: null,
+        stampPrefix: "P10K",
+        createdAt: nowInstant(),
+        updatedAt: nowInstant(),
+      },
+      {
+        id: "adhoc-lift-deadbeef",
+        userId,
+        discipline: "lift",
+        name: "Coach one-offs",
+        status: "active",
+        startDate: addDays(monday, 1),
+        endDate: addDays(monday, 1),
+        raceDate: null,
+        stampPrefix: "Coach one-offs",
+        createdAt: nowInstant(),
+        updatedAt: nowInstant(),
+      },
+    ]);
+    const body = (await (await get("/api/plan/week")).json()) as Record<string, unknown>;
+    expect(body.weekIndex).toBe(3);
+    expect(body.weekTotal).toBe(4);
+  });
+
+  it("picks the longest covering block when two overlap, rather than whatever row came first", async () => {
+    const monday = mondayOf(0);
+    await db.insert(schema.coachPlans).values([
+      {
+        id: "short",
+        userId,
+        discipline: "lift",
+        name: "Two-week top-up",
+        status: "active",
+        startDate: mondayOf(0),
+        endDate: addDays(mondayOf(0), 2 * 7 - 1),
+        raceDate: null,
+        stampPrefix: "TU",
+        createdAt: nowInstant(),
+        updatedAt: nowInstant(),
+      },
+      {
+        id: "long",
+        userId,
+        discipline: "run",
+        name: "Twelve-week build",
+        status: "active",
+        startDate: mondayOf(-4),
+        endDate: addDays(mondayOf(-4), 12 * 7 - 1),
+        raceDate: null,
+        stampPrefix: "TW",
+        createdAt: nowInstant(),
+        updatedAt: nowInstant(),
+      },
+    ]);
+    const body = (await (await get("/api/plan/week")).json()) as Record<string, unknown>;
+    expect(body.weekIndex).toBe(5);
+    expect(body.weekTotal).toBe(12);
+  });
+
+  it("has no week counter at all when only a bucket of one-offs covers the week", async () => {
+    const monday = mondayOf(0);
+    await db.insert(schema.coachPlans).values({
+      id: "adhoc-mobility-deadbeef",
+      userId,
+      discipline: "mobility",
+      name: "Coach one-offs",
+      status: "active",
+      startDate: monday,
+      endDate: monday,
+      raceDate: null,
+      stampPrefix: "Coach one-offs",
+      createdAt: nowInstant(),
+      updatedAt: nowInstant(),
+    });
+    const body = (await (await get("/api/plan/week")).json()) as Record<string, unknown>;
+    // "This week — …", not "Week 1 of 1 — …".
+    expect(body.weekIndex).toBeNull();
+    expect(body.weekTotal).toBeNull();
+  });
+
   it("omits a stale focus and handles no-plan weeks", async () => {
     await db.insert(schema.coachMessages).values({
       id: newId(),

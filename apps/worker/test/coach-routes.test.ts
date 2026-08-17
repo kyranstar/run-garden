@@ -9,7 +9,7 @@ import { schema } from "@rg/database";
 import { addDays, newId, nowInstant, startOfIsoWeek, todayInZone, type UserPreferences } from "@rg/domain";
 import type { Env } from "../src/env.js";
 import type { Db } from "../src/services/db.js";
-import { coachRoutes } from "../src/routes/coach.js";
+import { coachRoutes, sweepUserProposals } from "../src/routes/coach.js";
 import { buildDossier } from "../src/services/coach-context.js";
 import { createSession, SESSION_COOKIE } from "../src/auth/sessions.js";
 import { makeTestDb, makeTestUser, mountRoutes } from "./helpers.js";
@@ -555,6 +555,159 @@ describe("analyze — read-through on the ledger (2026-08-11 rework §2)", () =>
     stubLlm();
     const res = await client().post(`/api/coach/analyze/nope`, {});
     expect(res.status).toBe(404);
+  });
+});
+
+describe("a container of loose sessions is not a training block", () => {
+  /** The exact two rows production has (2026-08-17), both minted by
+   * `ensureAdhocPlan` with startDate === endDate. */
+  async function seedProdBuckets(): Promise<void> {
+    await db.insert(schema.coachPlans).values([
+      {
+        id: "adhoc-lift-deadbeef",
+        userId,
+        discipline: "lift",
+        name: "Coach one-offs",
+        status: "active",
+        startDate: "2026-08-17",
+        endDate: "2026-08-17",
+        stampPrefix: "Coach one-offs",
+        createdAt: nowInstant(),
+        updatedAt: nowInstant(),
+      },
+      {
+        id: "adhoc-mobility-deadbeef",
+        userId,
+        discipline: "mobility",
+        name: "Coach one-offs",
+        status: "active",
+        startDate: "2026-08-18",
+        endDate: "2026-08-18",
+        stampPrefix: "Coach one-offs",
+        createdAt: nowInstant(),
+        updatedAt: nowInstant(),
+      },
+    ]);
+  }
+
+  async function seedHeld(planId: string, date: string, state = "scheduled"): Promise<void> {
+    await db.insert(schema.plannedWorkouts).values({
+      id: newId(),
+      userId,
+      planId,
+      sourceWorkoutId: `${planId}:${date}`,
+      title: "Ski legs",
+      category: "strength",
+      sport: "strength",
+      originalPlanDate: date,
+      lastVerifiedCorosDate: "",
+      effectiveDate: date,
+      effectiveTime: "18:00",
+      sourceContentFingerprint: "fp",
+      calendarBlockDurationSeconds: 2700,
+      completionState: state as never,
+      resolutionDate: state === "completed" ? date : null,
+      createdAt: nowInstant(),
+      updatedAt: nowInstant(),
+    });
+  }
+
+  it("marks the bucket `loose` and reports what it HOLDS, not a span", async () => {
+    await seedProdBuckets();
+    // Contents outside the row's one-day span — which is exactly the state
+    // production is in, because the span was only ever pushed forward by the
+    // branch that a second one-off never reaches.
+    await seedHeld("adhoc-lift-deadbeef", "2026-08-18");
+    await seedHeld("adhoc-lift-deadbeef", "2026-08-21", "completed");
+    await seedHeld("adhoc-lift-deadbeef", "2026-08-24");
+    await seedHeld("adhoc-mobility-deadbeef", "2026-08-20");
+
+    const body = (await (await client().get("/api/coach/plans")).json()) as {
+      plans: Array<{
+        id: string;
+        kind?: string;
+        discipline: string;
+        holds?: { sessions: number; done: number; firstDate: string | null; lastDate: string | null };
+      }>;
+    };
+    const lift = body.plans.find((p) => p.id === "adhoc-lift-deadbeef")!;
+    const mob = body.plans.find((p) => p.id === "adhoc-mobility-deadbeef")!;
+    expect(lift.kind).toBe("loose");
+    expect(lift.holds).toEqual({ sessions: 3, done: 1, firstDate: "2026-08-18", lastDate: "2026-08-24" });
+    expect(mob.kind).toBe("loose");
+    // The mobility bucket reaches the DTO with its real discipline — it used to
+    // be typed away as run|lift and rendered nowhere.
+    expect(mob.discipline).toBe("mobility");
+    expect(mob.holds).toMatchObject({ sessions: 1, firstDate: "2026-08-20" });
+  });
+
+  it("a real block is still a block", async () => {
+    await db.insert(schema.coachPlans).values({
+      id: "blk",
+      userId,
+      discipline: "run",
+      name: "Post-10K block",
+      status: "active",
+      startDate: "2026-08-03",
+      endDate: "2026-08-30",
+      stampPrefix: "P10K",
+      createdAt: nowInstant(),
+      updatedAt: nowInstant(),
+    });
+    const body = (await (await client().get("/api/coach/plans")).json()) as {
+      plans: Array<{ id: string; kind?: string; holds?: unknown }>;
+    };
+    const blk = body.plans.find((p) => p.id === "blk")!;
+    expect(blk.kind).toBe("block");
+    expect(blk.holds).toBeUndefined();
+  });
+
+  it("never 'completes': the hourly sweep leaves it active and writes no block receipt", async () => {
+    await seedProdBuckets();
+    await seedHeld("adhoc-lift-deadbeef", "2026-08-17", "completed");
+    await db.insert(schema.coachPlans).values({
+      id: "blk",
+      userId,
+      discipline: "run",
+      name: "Post-10K block",
+      status: "active",
+      startDate: "2026-06-01",
+      endDate: "2026-06-28",
+      stampPrefix: "P10K",
+      createdAt: nowInstant(),
+      updatedAt: nowInstant(),
+    });
+    await sweepUserProposals(db, userId, prefs.timezone);
+    const rows = await db.select().from(schema.coachPlans).where(eq(schema.coachPlans.userId, userId));
+    const byId = new Map(rows.map((r) => [r.id, r]));
+    // The real block, long past its end, completes and gets its receipt.
+    expect(byId.get("blk")!.status).toBe("completed");
+    // The buckets stay open, whatever dates they carry.
+    expect(byId.get("adhoc-lift-deadbeef")!.status).toBe("active");
+    expect(byId.get("adhoc-mobility-deadbeef")!.status).toBe("active");
+    const msgs = await db.select().from(schema.coachMessages).where(eq(schema.coachMessages.userId, userId));
+    expect(msgs.some((m) => m.body.includes("Block complete: Post-10K block"))).toBe(true);
+    expect(msgs.some((m) => m.body.includes("Coach one-offs"))).toBe(false);
+  });
+
+  it("its detail has no weeks to count, and its adherence is over its contents", async () => {
+    await seedProdBuckets();
+    await seedHeld("adhoc-lift-deadbeef", "2026-08-18", "completed");
+    await seedHeld("adhoc-lift-deadbeef", "2026-08-21", "skipped");
+    const body = (await (
+      await client().get("/api/coach/plans/adhoc-lift-deadbeef/detail")
+    ).json()) as {
+      plan: { kind?: string };
+      weeks: unknown[];
+      sessions: { planned: number; done: number };
+      adherencePct: number | null;
+    };
+    expect(body.plan.kind).toBe("loose");
+    // Not one week called "week 1 of 1".
+    expect(body.weeks).toEqual([]);
+    expect(body.sessions).toEqual({ planned: 2, done: 1 });
+    // Both sessions counted, though neither falls inside the row's own dates.
+    expect(body.adherencePct).toBe(50);
   });
 });
 

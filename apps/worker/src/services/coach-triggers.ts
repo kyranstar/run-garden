@@ -12,6 +12,7 @@ import {
 } from "@rg/database";
 import { addDays, newId, nowInstant, type LocalDate, type UserPreferences } from "@rg/domain";
 import { chunkIds, type Db } from "./db.js";
+import { isLoosePlan } from "./coach-plans.js";
 
 /**
  * The coach's free layer (spec §1): six deterministic rules that MARK — a
@@ -202,9 +203,11 @@ export async function evaluateTriggers(
     }
   }
 
-  // plan_ending — an active plan ends within 21 days.
+  // plan_ending — an active BLOCK ends within 21 days. A loose-session bucket
+  // is permanently "ending" (its end date is its last one-off), and waking the
+  // coach to plan what comes after a bucket is nonsense.
   if (!blocked.has("plan_ending")) {
-    const ending = plans.find((p) => p.endDate <= addDays(today, PLAN_ENDING_DAYS));
+    const ending = plans.find((p) => !isLoosePlan(p) && p.endDate <= addDays(today, PLAN_ENDING_DAYS));
     if (ending) {
       fired.push({
         kind: "plan_ending",

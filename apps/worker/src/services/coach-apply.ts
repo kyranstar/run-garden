@@ -26,6 +26,7 @@ import { chunkIds, chunkedInsert, type Db } from "./db.js";
 import { applyMove } from "./jobs.js";
 import { recordIntent } from "./sync-intents.js";
 import { resolveRaceConflict } from "./race-conflict.js";
+import { isLoosePlan } from "./coach-plans.js";
 
 /**
  * Approval → deterministic mutations (spec §7). No LLM here, ever. All row
@@ -462,8 +463,16 @@ export async function applyOps(
         // are exactly the sessions they would have got from N separate adds.
         for (const [n, date] of addOpDates(op).entries()) {
           const planId =
-            (await activeCoachPlanId(db, userId, op.session)) ??
+            (await activeCoachPlanId(db, userId, op.session, date)) ??
             (await ensureAdhocPlan(db, userId, op.session, date, now));
+          // The bucket's span is its contents, so it grows to hold this date
+          // whichever way it was resolved. `ensureAdhocPlan`'s own stretch
+          // branch could never run for the second one-off: by then the bucket
+          // is itself an active plan of that discipline, so `activeCoachPlanId`
+          // returns it and the "existing" path is never reached. A bucket
+          // minted in August therefore still claimed to end in August after
+          // October's one-offs landed in it.
+          if (isLoosePlan({ id: planId })) await widenLoosePlan(db, planId, date, now);
           const id = opId(n);
           await insertSession(db, userId, planId, id, date, op.session, now, {
             corosWritesEnabled: prefs.corosWritesEnabled,
@@ -649,11 +658,27 @@ export async function applyOps(
   return out;
 }
 
+/** A bucket's span is a report on its contents, not a plan: it widens in both
+ * directions to cover every one-off filed in it. (Its dates were also only ever
+ * pushed forward, so a one-off dated before the bucket's first left the row
+ * claiming a start after the session it holds.) */
+async function widenLoosePlan(db: Db, planId: string, date: string, now: string): Promise<void> {
+  const [p] = await db.select().from(coachPlans).where(eq(coachPlans.id, planId)).limit(1);
+  if (!p) return;
+  const startDate = date < p.startDate ? date : p.startDate;
+  const endDate = date > p.endDate ? date : p.endDate;
+  if (startDate === p.startDate && endDate === p.endDate && p.status === "active") return;
+  await db
+    .update(coachPlans)
+    .set({ startDate, endDate, status: "active", updatedAt: now })
+    .where(eq(coachPlans.id, planId));
+}
+
 /**
  * A REAL plan row for coach adds that land outside any active plan — the old
  * phantom "coach-adhoc" id existed in no table and orphaned every join that
  * resolves plan name/status (audit#3 D8). One bucket per discipline per user;
- * its endDate stretches to cover whatever gets added.
+ * `widenLoosePlan` keeps its span over whatever gets filed in it.
  */
 async function ensureAdhocPlan(
   db: Db,
@@ -698,21 +723,36 @@ async function ensureAdhocPlan(
   return id;
 }
 
-/** The active coach plan matching the session's discipline, if any. */
+/** The active coach BLOCK matching the session's discipline that covers this
+ * date, if any — otherwise the caller files the session in the discipline's
+ * loose-session bucket.
+ *
+ * This used to be an unordered `limit 1` over every active plan of the
+ * discipline, so once a bucket existed the two rows raced: a session inside a
+ * real block's span could be filed in the bucket, and a session months outside
+ * every block's span could be filed in a block, purely on row order. A block
+ * owns the dates it planned; everything else is loose. */
 async function activeCoachPlanId(
   db: Db,
   userId: string,
   session: CoachSession,
+  date: string,
 ): Promise<string | null> {
   // Plan buckets follow the session's discipline, so a mobility one-off
   // never lands in (and stretches) the running plan.
   const discipline = planDisciplineOf(session);
-  const [plan] = await db
-    .select({ id: coachPlans.id })
+  const plans = await db
+    .select({ id: coachPlans.id, startDate: coachPlans.startDate, endDate: coachPlans.endDate })
     .from(coachPlans)
     .where(
       and(eq(coachPlans.userId, userId), eq(coachPlans.status, "active"), eq(coachPlans.discipline, discipline)),
-    )
-    .limit(1);
-  return plan?.id ?? null;
+    );
+  const covering = plans
+    .filter((p) => !isLoosePlan(p) && p.startDate <= date && date <= p.endDate)
+    .sort(
+      (a, b) =>
+        Date.parse(b.endDate) - Date.parse(b.startDate) - (Date.parse(a.endDate) - Date.parse(a.startDate)) ||
+        a.id.localeCompare(b.id),
+    )[0];
+  return covering?.id ?? null;
 }

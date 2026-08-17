@@ -109,20 +109,27 @@ export function StudioModal({
         ) : null}
         {((d?.plan ?? plan)?.source ?? "coach") === "coach" ? (
           <>
-            <button
-              type="button"
-              className="btn"
-              onClick={() => onCanned(`Extend "${title}" — draft the next weeks in the same shape.`)}
-            >
-              Extend
-            </button>
-            <button
-              type="button"
-              className="btn"
-              onClick={() => onCanned(`Wind down "${title}" — draft the final taper week.`)}
-            >
-              Wind down
-            </button>
+            {/* "Extend" and "Wind down" are things you do to a block with a
+                planned duration. A container of loose sessions has neither, so
+                it is not offered a taper. */}
+            {(d?.plan ?? plan)?.kind === "loose" ? null : (
+              <>
+                <button
+                  type="button"
+                  className="btn"
+                  onClick={() => onCanned(`Extend "${title}" — draft the next weeks in the same shape.`)}
+                >
+                  Extend
+                </button>
+                <button
+                  type="button"
+                  className="btn"
+                  onClick={() => onCanned(`Wind down "${title}" — draft the final taper week.`)}
+                >
+                  Wind down
+                </button>
+              </>
+            )}
             <button
               type="button"
               className="btn"
@@ -243,14 +250,21 @@ export function StudioModal({
           <>
             <div className="row studio-modal-meta">
               <span className={`pill ${d.plan.discipline === "lift" ? "pill-lift" : "pill-run"}`}>
-                {d.plan.discipline === "lift" ? "Lift" : "Run"}
+                {d.plan.discipline === "lift" ? "Lift" : d.plan.discipline === "mobility" ? "Mobility" : "Run"}
               </span>
               <span className={`pill ${d.plan.status === "active" ? "pill-ok" : "pill-neutral"}`}>
                 {d.plan.source === "studio" && d.plan.status === "active" ? "active · on watch" : d.plan.status}
               </span>
-              <span className="faint num">
-                {formatShortDate(d.plan.startDate)} → {formatShortDate(d.plan.endDate)}
-              </span>
+              {/* A container of loose sessions has no span to state: its dates
+                  are wherever its one-offs fell. It reports its contents on
+                  the line below instead. */}
+              {d.plan.kind === "loose" ? (
+                <span className="faint">one-offs · no planned duration</span>
+              ) : (
+                <span className="faint num">
+                  {formatShortDate(d.plan.startDate)} → {formatShortDate(d.plan.endDate)}
+                </span>
+              )}
               {d.plan.raceDate ? (
                 <span className="pill pill-neutral num">race {formatShortDate(d.plan.raceDate)}</span>
               ) : null}
@@ -291,21 +305,27 @@ export function StudioModal({
               </div>
             ) : null}
 
-            <div className="studio-modal-weeks">
-              <h3 className="card-title">Weeks</h3>
-              {d.weeks.map((w) => (
-                <div key={w.weekStart} className={`wkrow ${w.current ? "is-current" : ""}`}>
-                  <span className="wkrow-num faint num">W{w.index}</span>
-                  <span className="wkrow-desc">{w.summary}</span>
-                  {/* Internal states wear plain words: a "firm" week is on
-                      the calendar; a "shape" week is an outline the coach
-                      fills in as it approaches. */}
-                  <span className={`wkrow-state ${w.state === "firm" || w.done ? "is-firm" : ""}`}>
-                    {w.done ? "✓ done" : w.current ? "now" : w.state === "firm" ? "scheduled" : "outline"}
-                  </span>
-                </div>
-              ))}
-            </div>
+            {/* No weeks, no Weeks heading — a container of one-offs has none,
+                and an empty list under a heading reads as a failed load.
+                (`hidden` would not do it: `.studio-modal-weeks` declares
+                `display: flex`, which out-specifies the UA's `[hidden]`.) */}
+            {d.weeks.length === 0 ? null : (
+              <div className="studio-modal-weeks">
+                <h3 className="card-title">Weeks</h3>
+                {d.weeks.map((w) => (
+                  <div key={w.weekStart} className={`wkrow ${w.current ? "is-current" : ""}`}>
+                    <span className="wkrow-num faint num">W{w.index}</span>
+                    <span className="wkrow-desc">{w.summary}</span>
+                    {/* Internal states wear plain words: a "firm" week is on
+                        the calendar; a "shape" week is an outline the coach
+                        fills in as it approaches. */}
+                    <span className={`wkrow-state ${w.state === "firm" || w.done ? "is-firm" : ""}`}>
+                      {w.done ? "✓ done" : w.current ? "now" : w.state === "firm" ? "scheduled" : "outline"}
+                    </span>
+                  </div>
+                ))}
+              </div>
+            )}
           </>
         ) : null}
 

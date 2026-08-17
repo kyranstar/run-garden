@@ -92,6 +92,28 @@ describe("coach triggers", () => {
     expect(fired).toContain("race_proximity");
   });
 
+  it("plan_ending ignores a bucket of one-offs — a bucket is permanently 'ending'", async () => {
+    // Its end date is its last one-off, so it always looks like a plan that
+    // finishes this week, and the coach was woken to plan what comes after a
+    // filing drawer.
+    const db = makeTestDb();
+    const { userId, prefs } = await makeTestUser(db);
+    const today = todayInZone(prefs.timezone);
+    await db.insert(schema.coachPlans).values({
+      id: `adhoc-lift-${userId.slice(0, 8)}`,
+      userId,
+      discipline: "lift",
+      name: "Coach one-offs",
+      status: "active",
+      startDate: today,
+      endDate: today,
+      stampPrefix: "Coach one-offs",
+      createdAt: nowInstant(),
+      updatedAt: nowInstant(),
+    });
+    expect(await evaluateTriggers(db, userId, prefs, today)).not.toContain("plan_ending");
+  });
+
   it("plan_horizon fires when firm detail runs short with shape weeks waiting", async () => {
     const db = makeTestDb();
     const { userId, prefs } = await makeTestUser(db);

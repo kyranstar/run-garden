@@ -14,7 +14,6 @@ import {
   formatDayLong,
   formatMinutes,
   formatDistance,
-  formatPace,
   formatTime,
   localTodayGuess,
   revealInView,
@@ -32,6 +31,7 @@ import { CoachRead } from "./coach-read.js";
 import { CoachWindow } from "./coach-window.js";
 import { WeeklyBrief } from "./plan-brief.js";
 import { RaceStrip, useRaceHub } from "./race-strip.js";
+import { leafStageCount, StageStructure } from "./stage-structure.js";
 import { useUnits } from "../use-units.js";
 import { PlanCards } from "./plan-cards.js";
 import { StudioModal } from "./studio-modal.js";
@@ -312,35 +312,12 @@ function WorkoutDetail({
                 `.stack` whose 16px gap is wider than the 11.2px the pad
                 reaches, so the pad is not clamped and the box is not grown. */}
             <summary className="muted tap-pad" style={{ cursor: "pointer" }}>
-              Full structure ({stages.filter((s) => s.kind !== "repeat").length} stages)
+              Full structure ({leafStageCount(stages)} stages)
             </summary>
-            <ul ref={structureRef} className="muted" style={{ paddingLeft: "var(--space-6)", marginTop: "var(--space-3)" }}>
-              {stages.map((s) => {
-                // Pace targets were stored but never shown (2026-08-14).
-                // Bounds arrive either way round — COROS writes recovery
-                // blocks slow-first — so order by value, not by column.
-                const lo = s.targetLow as number | null;
-                const hi = s.targetHigh as number | null;
-                const band =
-                  s.targetType === "pace" && lo != null && hi != null
-                    ? { fast: Math.min(lo, hi), slow: Math.max(lo, hi) }
-                    : null;
-                return (
-                  <li key={s.id as string}>
-                    {s.kind as string}
-                    {s.repeatCount ? ` × ${s.repeatCount}` : ""}
-                    {s.durationSeconds ? ` — ${Math.round((s.durationSeconds as number) / 60)} min` : ""}
-                    {s.distanceMeters
-                      ? ` — ${formatDistance(s.distanceMeters as number, units, 2)}`
-                      : ""}
-                    {band
-                      ? ` @ ${formatPace(band.fast, units).replace(` /${units}`, "")}–${formatPace(band.slow, units)}`
-                      : ""}
-                    {s.label ? ` (${s.label})` : ""}
-                  </li>
-                );
-              })}
-            </ul>
+            {/* The tree, not the flat list: a repeat's multiplier is attached
+                to the stages it multiplies (nested `<ul>`), so its scope is in
+                the DOM and not only in the styling. See stage-structure.tsx. */}
+            <StageStructure stages={stages} units={units} listRef={structureRef} />
           </details>
         ) : null}
         {match?.activity ? (
@@ -701,7 +678,12 @@ export function PlanScreen() {
   // page's first paint waits for it, so the strip never arrives late.
   const raceHub = useRaceHub();
   const activePlans = useMemo(
-    () => (coachPlans.data?.plans ?? []).filter((p) => p.status === "active" || p.status === "draft"),
+    () =>
+      (coachPlans.data?.plans ?? []).filter(
+        // A loose-session container has no weeks and no progressions to fetch —
+        // its card renders from what the list already says it holds.
+        (p) => (p.status === "active" || p.status === "draft") && p.kind !== "loose",
+      ),
     [coachPlans.data?.plans],
   );
   const details = useQueries({
