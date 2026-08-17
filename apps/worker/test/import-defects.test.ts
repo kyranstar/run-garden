@@ -102,6 +102,29 @@ async function seedRow(over: {
 const rowById = async (id: string) =>
   (await db.select().from(plannedWorkouts).where(eq(plannedWorkouts.id, id)))[0]!;
 
+/**
+ * The proof that `${title} — ${discriminator}` is a program name THIS account
+ * wrote — a create job with the stamp in `payload.name` and the athlete-facing
+ * title in `payload.session.title`. `coros-stamp.ts` strips a title only when it
+ * is character-for-character a name we emitted, so without this row the stamp is
+ * just somebody else's session name and nothing may rewrite it.
+ */
+async function seedStamp(title: string, discriminator: string, date: string): Promise<void> {
+  await db.insert(schema.corosWriteJobs).values({
+    id: `stamp-${title}-${discriminator}`,
+    userId,
+    workoutId: `stamp-${discriminator}`,
+    kind: "create_scheduled_workout",
+    expectedContentFingerprint: "fp",
+    originalDate: date,
+    destinationDate: date,
+    payload: { name: `${title} — ${discriminator}`, session: { title } },
+    requestedAt: nowInstant(),
+    status: "verified",
+    updatedAt: nowInstant(),
+  });
+}
+
 beforeEach(async () => {
   db = makeTestDb();
   ({ userId, prefs } = await makeTestUser(db));
@@ -236,6 +259,112 @@ describe("#1 archive_reason is evidence, not a standing instruction", () => {
     ]);
     expect(stats.unarchived).toBe(0);
     expect((await rowById("removed-1")).archivedAt).not.toBeNull();
+  });
+
+  it("a mirror whose live twin has been STAMP-STRIPPED is still shadowed", async () => {
+    // The shape that would have damaged real data (2026-08-17). `POST
+    // /api/plan/repair-fidelity` strips the COROS ownership stamp from LIVE
+    // titles and deliberately skips archived ones, so a repaired keeper and its
+    // unrepaired mirror stop sharing a raw title — and a gate keyed on the raw
+    // title stops seeing them as one session, frees the mirror, and puts a
+    // duplicate on the athlete's calendar. Titles are mutable; identity is not
+    // allowed to be keyed on one.
+    const day = addDays(today, 1);
+    await seedStamp("Vacation Placeholder - hips & glutes", "wk 2", day);
+    await seedRow({
+      id: "keeper-stripped",
+      sourceWorkoutId: `${LIFT_PLAN}:41`,
+      date: day,
+      title: "Vacation Placeholder - hips & glutes",
+    });
+    await seedRow({
+      id: "mirror-stamped",
+      sourceWorkoutId: `${LIFT_PLAN}:42`,
+      date: day,
+      title: "Vacation Placeholder - hips & glutes — wk 2",
+      archivedAt: nowInstant(),
+      archiveReason: "duplicate_mirror",
+    });
+
+    const stats = await importWire([
+      wire({
+        sourceWorkoutId: `${LIFT_PLAN}:42`,
+        sourcePlanId: LIFT_PLAN,
+        date: day,
+        title: "Vacation Placeholder - hips & glutes — wk 2",
+        sport: "strength",
+        // Unchanged upstream, so rule 7 never re-derives (and re-strips) the
+        // title — the mirror keeps its stamp indefinitely.
+        contentFingerprint: "fp-mirror-stamped",
+      }),
+    ]);
+
+    expect(stats.unarchived).toBe(0);
+    expect((await rowById("mirror-stamped")).archivedAt).not.toBeNull();
+    // And the day still shows the session exactly once.
+    const live = (await db.select().from(plannedWorkouts).where(eq(plannedWorkouts.effectiveDate, day))).filter(
+      (r) => !r.archivedAt,
+    );
+    expect(live.map((r) => r.id)).toEqual(["keeper-stripped"]);
+  });
+
+  it("a mirror whose address a live row already claims is not free to heal", async () => {
+    // The stable half of the same test: never mind titles, another live row
+    // holds this row's COROS address, so un-archiving it would put two rows at
+    // one address.
+    const day = addDays(today, 1);
+    const address = `${LIFT_PLAN}:51`;
+    await seedRow({ id: "live-at-address", sourceWorkoutId: address, date: day, title: "Upper A" });
+    await seedRow({
+      id: "mirror-at-address",
+      sourceWorkoutId: address,
+      planId: "other-plan",
+      date: day,
+      title: "Upper A (renamed on COROS)",
+      archivedAt: nowInstant(),
+      archiveReason: "duplicate_mirror",
+    });
+
+    const stats = await importWire([
+      wire({ sourceWorkoutId: address, sourcePlanId: LIFT_PLAN, date: day, title: "Upper A", sport: "strength" }),
+    ]);
+
+    expect(stats.unarchived).toBe(0);
+    expect((await rowById("mirror-at-address")).archivedAt).not.toBeNull();
+  });
+
+  it("gate and dedupe share one key, so a wrongly-freed mirror is re-archived in the same import", async () => {
+    // The safety net the gate's design leans on, asserted rather than argued:
+    // whatever the gate lets through, the dedupe at the end of the SAME import
+    // regroups. It only holds while both use `mirrorGroupKey` — when the gate
+    // keyed on raw titles and the dedupe did too, a stamp-stripped keeper broke
+    // BOTH at once and the net had a hole exactly where it was needed.
+    const day = addDays(today, 1);
+    await seedStamp("Upper A", "wk 3", day);
+    // Hand-force the hole: an archived mirror with NO decision evidence at all,
+    // so nothing blocks it, beside a live keeper whose title is stripped.
+    await seedRow({ id: "keeper-live", sourceWorkoutId: `${LIFT_PLAN}:81`, date: day, title: "Upper A" });
+    await seedRow({
+      id: "free-mirror",
+      sourceWorkoutId: `${LIFT_PLAN}:82`,
+      date: day,
+      title: "Upper A — wk 3",
+      archivedAt: nowInstant(),
+      archiveReason: "absence_confirmed",
+    });
+
+    await importWire([
+      wire({ sourceWorkoutId: `${LIFT_PLAN}:81`, sourcePlanId: LIFT_PLAN, date: day, title: "Upper A", sport: "strength" }),
+      wire({ sourceWorkoutId: `${LIFT_PLAN}:82`, sourcePlanId: LIFT_PLAN, date: day, title: "Upper A — wk 3", sport: "strength" }),
+    ]);
+
+    // The mirror healed (absence_confirmed is not a decision, and COROS serves
+    // it) — and the dedupe recognised the two as one session despite the two
+    // titles, leaving the athlete exactly one live copy.
+    const live = (await db.select().from(plannedWorkouts).where(eq(plannedWorkouts.effectiveDate, day))).filter(
+      (r) => !r.archivedAt,
+    );
+    expect(live).toHaveLength(1);
   });
 
   it("an orphaned mirror still wearing a stranded suppression heals AND loses it", async () => {
@@ -385,6 +514,114 @@ describe("#1 repair — orphaned mirrors already archived", () => {
     const named = await repairOrphanedMirrors(db, userId, { dryRun: true, workoutIds: ["absent"] });
     expect(named.totals.unarchived).toBe(0);
     expect(named.mirrors[0]!.reason).toContain("only reverses the dedupe");
+  });
+
+  it("REFUSES a mirror whose live twin was stamp-stripped by repair-fidelity", async () => {
+    // The live prod shape the coordinator caught before running this repair:
+    //
+    //   LIVE  "W2 Wed - Vacation Placeholder - hips & glutes"
+    //   arch  "W2 Wed - Vacation Placeholder - hips & glutes — wk 2"
+    //
+    // `POST /api/plan/repair-fidelity` had stripped the stamp off the live row
+    // and skipped the archived one, so a raw-title orphan test saw no twin and
+    // would have un-archived seven sessions that are already on the calendar.
+    const title = "W2 Wed - Vacation Placeholder - hips & glutes";
+    const day = addDays(today, 9);
+    await seedStamp(title, "wk 2", day);
+    await seedRow({ id: "live-stripped", sourceWorkoutId: `${LIFT_PLAN}:61`, date: day, title });
+    await seedRow({
+      id: "arch-stamped",
+      sourceWorkoutId: `${LIFT_PLAN}:62`,
+      date: day,
+      title: `${title} — wk 2`,
+      archivedAt: nowInstant(),
+      archiveReason: "duplicate_mirror",
+    });
+    // A genuine orphan on another day, so the test proves discrimination rather
+    // than a blanket refusal.
+    await seedRow({
+      id: "true-orphan",
+      sourceWorkoutId: `${LIFT_PLAN}:63`,
+      date: addDays(today, 10),
+      title: "Upper A",
+      archivedAt: nowInstant(),
+      archiveReason: "duplicate_mirror",
+    });
+
+    const report = await repairOrphanedMirrors(db, userId, { dryRun: true });
+
+    expect(report.totals.unarchived).toBe(1);
+    const byId = new Map(report.mirrors.map((m) => [m.workoutId, m]));
+    expect(byId.get("arch-stamped")!.action).toBe("skipped");
+    expect(byId.get("arch-stamped")!.reason).toContain("a live row still holds this session");
+    expect(byId.get("true-orphan")!.action).toBe("repair");
+
+    // And the census, which is what the operator reads to decide, must agree
+    // exactly — it is the same candidacy test or it is decoration.
+    const census = await countOrphanedMirrors(db, userId);
+    expect(census.orphaned).toBe(1);
+    expect(census.dates).toEqual([addDays(today, 10)]);
+  });
+
+  it("REFUSES a mirror whose address a live row already claims", async () => {
+    const day = addDays(today, 9);
+    const address = `${LIFT_PLAN}:71`;
+    await seedRow({ id: "live-holder", sourceWorkoutId: address, date: day, title: "Upper A" });
+    await seedRow({
+      id: "arch-same-address",
+      sourceWorkoutId: address,
+      planId: "other-plan",
+      date: day,
+      title: "Upper A (renamed on COROS)",
+      archivedAt: nowInstant(),
+      archiveReason: "duplicate_mirror",
+    });
+
+    const report = await repairOrphanedMirrors(db, userId, { dryRun: true });
+    expect(report.totals.unarchived).toBe(0);
+    expect(report.mirrors[0]!.reason).toContain("a live row already claims this COROS address");
+  });
+
+  it("the census is the repair's own dry run — the three numbers cannot disagree", async () => {
+    // Prod's shape in miniature: some genuine orphans, some archived mirrors
+    // whose live twin was stamp-stripped. The census is what the operator reads
+    // before writing to live rows, so it must report the SAME candidacy the
+    // repair would act on — orphans, and the divergent pairs as skipped.
+    for (const n of [1, 2, 3]) {
+      await seedRow({
+        id: `orphan-${n}`,
+        sourceWorkoutId: `${LIFT_PLAN}:o${n}`,
+        date: addDays(today, n),
+        title: `Orphan ${n}`,
+        archivedAt: nowInstant(),
+        archiveReason: "duplicate_mirror",
+      });
+    }
+    for (const n of [1, 2]) {
+      const title = `Shadowed ${n}`;
+      const date = addDays(today, 20 + n);
+      await seedStamp(title, `wk ${n}`, date);
+      await seedRow({ id: `live-${n}`, sourceWorkoutId: `${LIFT_PLAN}:l${n}`, date, title });
+      await seedRow({
+        id: `stamped-${n}`,
+        sourceWorkoutId: `${LIFT_PLAN}:s${n}`,
+        date,
+        title: `${title} — wk ${n}`,
+        archivedAt: nowInstant(),
+        archiveReason: "duplicate_mirror",
+      });
+    }
+
+    const census = await countOrphanedMirrors(db, userId);
+    expect(census.archivedMirrors).toBe(5);
+    expect(census.orphaned).toBe(3);
+    expect(census.skipped).toBe(2);
+    expect(census.dates).toEqual([addDays(today, 1), addDays(today, 2), addDays(today, 3)]);
+
+    // And the repair itself agrees, because the census IS the repair.
+    const report = await repairOrphanedMirrors(db, userId, { dryRun: true });
+    expect(report.totals.unarchived).toBe(census.orphaned);
+    expect(report.totals.skipped).toBe(census.skipped);
   });
 
   it("the census counts the damage without loading the report", async () => {

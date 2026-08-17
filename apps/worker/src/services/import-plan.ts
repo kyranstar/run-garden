@@ -65,6 +65,38 @@ export interface ImportStats {
 type StoredWorkout = typeof plannedWorkouts.$inferSelect;
 
 /**
+ * WHEN ARE TWO ROWS THE SAME SESSION? The one answer — used by the mirror
+ * dedupe, by the healing gate that decides whether a deduped mirror may come
+ * back, by rule 8's release, and by `mirror-repair.ts`, which imports it from
+ * here precisely so the repair cannot drift from the rule it reverses.
+ *
+ * THE TITLE IS NORMALISED, and that is the whole point of this function
+ * existing rather than an inline template string. A raw title is MUTABLE: `POST
+ * /api/plan/repair-fidelity` strips the COROS ownership stamp off LIVE rows and
+ * deliberately skips archived ones, so on 2026-08-17 seven days held
+ *
+ *     LIVE  "W2 Wed - Vacation Placeholder - hips & glutes"
+ *     arch  "W2 Wed - Vacation Placeholder - hips & glutes — wk 2"
+ *
+ * — the same session, wearing two names, because one copy had been repaired and
+ * the other had not. Keyed on the raw title they stop being twins: the gate
+ * frees a mirror that is still perfectly well represented, the dedupe no longer
+ * groups them so nothing catches it afterwards, and the athlete gets a duplicate
+ * session. Both sides therefore go through `unstampTitle`, the same proven strip
+ * the fidelity repair itself uses — a stamped copy and a stripped copy compare
+ * equal, and an already-stripped title passes through unchanged.
+ *
+ * Not a regex over anything that looks stamped: `coros-stamp.ts` strips a title
+ * only when it is character-for-character a program name this account emitted.
+ */
+export function mirrorGroupKey(
+  w: { effectiveDate: string; title: string; sport: string },
+  ownProgramNames: Map<string, string>,
+): string {
+  return `${w.effectiveDate}|${unstampTitle(w.title, ownProgramNames)}|${w.sport}`;
+}
+
+/**
  * WHICH stored row is this wire workout, given that its address may be claimed
  * by several (`existingByAddress` above)?
  *
@@ -247,6 +279,22 @@ export async function importPlanSnapshot(
   }
   const existingById = new Map(existing.map((w) => [w.id, w]));
 
+  // Our own ownership stamp is plumbing, not a session name (`coros-stamp.ts`).
+  // COROS serves a program's name back verbatim and `normalize.ts` reads it as
+  // the workout's title, so without this the discriminator we append to make a
+  // create provable — "Legs-back jog — 2026-10-26" — lands in the row's title
+  // and becomes what the athlete sees on the watch, in the app and in Google
+  // Calendar. Loaded once for the window, never queried per row.
+  //
+  // Loaded HERE, before anything reads a title, rather than just before the
+  // wire loop: `mirrorGroupKey` needs it too, and a session-identity test that
+  // ran on raw titles was one repair away from putting duplicates on the
+  // athlete's calendar.
+  const ownProgramNames = await loadOwnProgramNames(db, input.userId, {
+    start: input.rangeStart,
+    end: input.rangeEnd,
+  });
+
   // ── Why a row left vs. whether it may come back ─────────────────────────────
   //
   // Two different facts, and this file used to keep them in one place:
@@ -278,17 +326,19 @@ export async function importPlanSnapshot(
   //                      heal — whether the release ran, ran early, or never ran
   //                      at all (a keeper removed by hand, or archived while
   //                      outside the snapshot window, releases nothing today).
-  const mirrorKeyOf = (w: { effectiveDate: string; title: string; sport: string }): string =>
-    `${w.effectiveDate}|${w.title}|${w.sport}`;
+  //
+  // "The other copy" is `mirrorGroupKey` — the dedupe's own definition of one
+  // session, titles normalised through the ownership stamp so a repaired live
+  // row and an unrepaired archived mirror are still recognised as twins.
   const liveCountByMirrorKey = new Map<string, number>();
   for (const w of existing) {
     if (w.archivedAt) continue;
-    const key = mirrorKeyOf(w);
+    const key = mirrorGroupKey(w, ownProgramNames);
     liveCountByMirrorKey.set(key, (liveCountByMirrorKey.get(key) ?? 0) + 1);
   }
   /** Does another LIVE row still hold this row's session? */
   const liveTwinExists = (w: typeof existing[number]): boolean => {
-    const total = liveCountByMirrorKey.get(mirrorKeyOf(w)) ?? 0;
+    const total = liveCountByMirrorKey.get(mirrorGroupKey(w, ownProgramNames)) ?? 0;
     return total - (w.archivedAt ? 0 : 1) > 0;
   };
 
@@ -364,17 +414,6 @@ export async function importPlanSnapshot(
         )
     ).map((r) => r.targetId),
   );
-
-  // Our own ownership stamp is plumbing, not a session name (`coros-stamp.ts`).
-  // COROS serves a program's name back verbatim and `normalize.ts` reads it as
-  // the workout's title, so without this the discriminator we append to make a
-  // create provable — "Legs-back jog — 2026-10-26" — lands in the row's title
-  // and becomes what the athlete sees on the watch, in the app and in Google
-  // Calendar. Loaded once for the window, never queried per row.
-  const ownProgramNames = await loadOwnProgramNames(db, input.userId, {
-    start: input.rangeStart,
-    end: input.rangeEnd,
-  });
 
   const seenSourceIds = new Set<string>();
 
@@ -783,11 +822,7 @@ export async function importPlanSnapshot(
       // instruction, so this release can finally do what it always said it did.
       const partnerIds = existing
         .filter(
-          (p) =>
-            p.id !== w.id &&
-            p.effectiveDate === w.effectiveDate &&
-            p.title === w.title &&
-            p.sport === w.sport,
+          (p) => p.id !== w.id && mirrorGroupKey(p, ownProgramNames) === mirrorGroupKey(w, ownProgramNames),
         )
         .map((p) => p.id);
       if (partnerIds.length > 0) {
@@ -822,7 +857,10 @@ export async function importPlanSnapshot(
     .where(and(eq(plannedWorkouts.userId, input.userId), isNull(plannedWorkouts.archivedAt)));
   const byMirrorKey = new Map<string, typeof activeNow>();
   for (const w of activeNow) {
-    const key = `${w.effectiveDate}|${w.title}|${w.sport}`;
+    // Same normalised key the healing gate uses, so the two can never disagree
+    // about what one session is — the property the gate's safety rests on: a
+    // mirror the gate wrongly frees is re-archived here, in the same import.
+    const key = mirrorGroupKey(w, ownProgramNames);
     const list = byMirrorKey.get(key) ?? [];
     list.push(w);
     byMirrorKey.set(key, list);

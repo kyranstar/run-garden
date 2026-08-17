@@ -385,7 +385,8 @@ syncRoutes.post("/read-now", async (c) => {
 // cannot prove from local data.
 //
 // GET first. `/repair-orphaned-mirrors/census` is read-only and answers "is
-// there anything to repair" without loading the whole report.
+// there anything to repair" — it IS this repair's own dry run, summarised, so
+// the number an operator decides on cannot drift from the test that decides.
 const mirrorRepairSchema = z
   .object({
     /** Required, never defaulted: a caller that forgot the field must not be

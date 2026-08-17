@@ -25,13 +25,24 @@
  * something local data can promise.
  *
  * CANDIDACY, AND WHAT IT ASSUMES. A candidate is an ORPHANED MIRROR: archived
- * `duplicate_mirror`, still `scheduled`, and with no live row anywhere holding
- * its (date, title, sport). That test is decidable from local rows alone and
- * says exactly one thing — *the app archived this row in favour of another copy,
- * and that other copy is gone, so this row is the only record the athlete has of
- * a session that was never cancelled*. It does NOT claim COROS still serves the
- * slot; nothing local can, and reading COROS to find out is not this repair's
- * job.
+ * `duplicate_mirror`, still `scheduled`, with no live row claiming its COROS
+ * address, and no live row holding its session — `mirrorGroupKey`, imported from
+ * the importer so the repair and the dedupe cannot drift. That test is decidable
+ * from local rows alone and says exactly one thing — *the app archived this row
+ * in favour of another copy, and that other copy is gone, so this row is the
+ * only record the athlete has of a session that was never cancelled*. It does
+ * NOT claim COROS still serves the slot; nothing local can, and reading COROS to
+ * find out is not this repair's job.
+ *
+ * IDENTITY IS NOT THE TITLE, and the first version of this file learned that the
+ * near-expensive way. It compared raw `(date, title, sport)` — but `POST
+ * /api/plan/repair-fidelity` strips the ownership stamp off LIVE rows and skips
+ * archived ones, so a repaired keeper and its unrepaired mirror stopped matching
+ * and seven sessions that are ALREADY on the athlete's calendar were reported as
+ * orphans: 22 candidates where the truth was 15. Caught in review, before the
+ * repair ran. Hence two checks, stable one first: the COROS address, which no
+ * title rewrite can touch, and then the session key with both titles normalised
+ * through the same `coros-stamp.ts` strip the fidelity repair itself uses.
  *
  * So the assumption is stated rather than hidden: un-archiving returns each row
  * to the state the import path would have left it in had the release worked, and
@@ -47,8 +58,9 @@
  *
  *  - It does not touch rows that are not `scheduled`. A completed or skipped
  *    mirror is history, and history is not rewritten to tidy a duplicate.
- *  - It does not touch a mirror whose twin is still live. That row is doing its
- *    job: the athlete sees the session exactly once, through the other copy.
+ *  - It does not touch a mirror whose twin is still live, whatever the two rows
+ *    are currently CALLED. That row is doing its job: the athlete sees the
+ *    session exactly once, through the other copy.
  *  - It does not write to COROS or Google Calendar. Both re-derive from these
  *    rows — the calendar mirror creates the event on its next sync, which is why
  *    a stranded suppression has to go with the un-archive (audit#2 #4) and why
@@ -62,6 +74,11 @@ import { and, eq, inArray } from "drizzle-orm";
 import { auditEvents, calendarEventSuppressions, plannedWorkouts } from "@rg/database";
 import { newId, nowInstant } from "@rg/domain";
 import { chunkIds, type Db } from "./db.js";
+import { loadOwnProgramNames } from "./coros-stamp.js";
+// The importer's OWN definition of one session, imported rather than restated:
+// this repair reverses the mirror dedupe, so it has to agree with the dedupe
+// about what a mirror is, permanently and by construction.
+import { mirrorGroupKey } from "./import-plan.js";
 
 /** `audit_events.kind` for the pre-change backup written by a live repair. */
 export const MIRROR_REPAIR_BACKUP_KIND = "orphaned_mirror_unarchived";
@@ -111,14 +128,12 @@ export interface MirrorRepairOptions {
 }
 
 const ASSUMES =
-  "Candidacy is decided from local rows only: archived duplicate_mirror, still scheduled, " +
-  "and no live row holds the same (date, title, sport). It does NOT verify that COROS still " +
-  "serves the slot — that needs a COROS read. A row COROS has genuinely dropped re-archives " +
-  "through rule 8 after two consecutive absent reads; missing_reads is left as found so that " +
-  "happens at the earliest honest opportunity.";
-
-const mirrorKey = (w: { effectiveDate: string; title: string; sport: string }): string =>
-  `${w.effectiveDate}|${w.title}|${w.sport}`;
+  "Candidacy is decided from local rows only: archived duplicate_mirror, still scheduled, no " +
+  "live row claiming the same COROS address, and no live row holding the same session " +
+  "(date + stamp-normalised title + sport, the importer's own mirrorGroupKey). It does NOT " +
+  "verify that COROS still serves the slot — that needs a COROS read. A row COROS has " +
+  "genuinely dropped re-archives through rule 8 after two consecutive absent reads; " +
+  "missing_reads is left as found so that happens at the earliest honest opportunity.";
 
 /**
  * Plan the repair, and — unless `dryRun` — commit it behind a backup.
@@ -135,9 +150,24 @@ export async function repairOrphanedMirrors(
 ): Promise<MirrorRepairReport> {
   const all = await db.select().from(plannedWorkouts).where(eq(plannedWorkouts.userId, userId));
 
-  // The orphan test's other half: what is LIVE right now, keyed the same way the
-  // dedupe keys a mirror group.
-  const liveKeys = new Set(all.filter((w) => !w.archivedAt).map(mirrorKey));
+  // EXHAUSTIVE over history, like `plan-repair.ts`'s own load and for the same
+  // reason: the damaged rows are months out, well past any import window, and a
+  // stamp this read misses is a twin this repair fails to see.
+  const ownProgramNames = await loadOwnProgramNames(db, userId);
+
+  // The orphan test's other half — what is LIVE right now, asked two ways:
+  //
+  //  · BY ADDRESS. `sourceWorkoutId` is the stable one. If a live row already
+  //    claims this row's COROS address, un-archiving would put two rows at one
+  //    address; the address survives every title rewrite, so this check cannot
+  //    be knocked out by a repair that renames things.
+  //  · BY SESSION. `mirrorGroupKey` — the importer's own grouping, titles
+  //    normalised through the ownership stamp so a live row `repair-fidelity`
+  //    has stripped and an archived mirror it skipped still compare equal.
+  const liveAddresses = new Set(all.filter((w) => !w.archivedAt).map((w) => w.sourceWorkoutId));
+  const liveKeys = new Set(
+    all.filter((w) => !w.archivedAt).map((w) => mirrorGroupKey(w, ownProgramNames)),
+  );
 
   const named = opts.workoutIds ? new Set(opts.workoutIds) : null;
   const candidates = all
@@ -198,7 +228,11 @@ export async function repairOrphanedMirrors(
       skip(`row is ${row.completionState} — history is not rewritten`);
       continue;
     }
-    if (liveKeys.has(mirrorKey(row))) {
+    if (liveAddresses.has(row.sourceWorkoutId)) {
+      skip("a live row already claims this COROS address — un-archiving would double-claim it");
+      continue;
+    }
+    if (liveKeys.has(mirrorGroupKey(row, ownProgramNames))) {
       skip("a live row still holds this session — the mirror is doing its job");
       continue;
     }
@@ -272,34 +306,31 @@ export async function repairOrphanedMirrors(
 }
 
 /**
- * Read-only census of the damage, for deciding whether to run the repair at all
- * — how many archived mirrors the athlete has and how many are orphans. Uses
- * named columns and no `SELECT *` beyond the rows it must compare.
+ * Read-only census of the damage — how many archived mirrors the athlete has and
+ * how many are orphans — for deciding whether to run the repair at all.
+ *
+ * IT IS THE REPAIR'S OWN DRY RUN, not a second implementation of the candidacy
+ * test. This is the number an operator reads to decide whether to write to the
+ * athlete's live rows, and a census that can disagree with the thing it is a
+ * census OF is worse than no census: it is a number that looks like evidence.
+ * The first version of this function did re-state the test, and it was wrong in
+ * exactly the way the repair was — 22 where the truth was 15.
+ *
+ * It therefore costs what the dry run costs: the athlete's `planned_workouts`
+ * rows and the stamp registry, one user-scoped read each. Deliberately not
+ * optimised into a second, cheaper, drifting copy. `skipped` is reported
+ * alongside, because on these rows the skipped count IS the damage avoided.
  */
 export async function countOrphanedMirrors(
   db: Db,
   userId: string,
-): Promise<{ archivedMirrors: number; orphaned: number; dates: string[] }> {
-  const rows = await db
-    .select({
-      id: plannedWorkouts.id,
-      effectiveDate: plannedWorkouts.effectiveDate,
-      title: plannedWorkouts.title,
-      sport: plannedWorkouts.sport,
-      archivedAt: plannedWorkouts.archivedAt,
-      archiveReason: plannedWorkouts.archiveReason,
-      completionState: plannedWorkouts.completionState,
-    })
-    .from(plannedWorkouts)
-    .where(eq(plannedWorkouts.userId, userId));
-  const liveKeys = new Set(rows.filter((r) => !r.archivedAt).map(mirrorKey));
-  const mirrors = rows.filter((r) => r.archivedAt !== null && r.archiveReason === "duplicate_mirror");
-  const orphaned = mirrors.filter(
-    (r) => r.completionState === "scheduled" && !liveKeys.has(mirrorKey(r)),
-  );
+): Promise<{ archivedMirrors: number; orphaned: number; dates: string[]; skipped: number }> {
+  const report = await repairOrphanedMirrors(db, userId, { dryRun: true });
+  const repairing = report.mirrors.filter((m) => m.action === "repair");
   return {
-    archivedMirrors: mirrors.length,
-    orphaned: orphaned.length,
-    dates: [...new Set(orphaned.map((r) => r.effectiveDate))].sort(),
+    archivedMirrors: report.mirrors.length,
+    orphaned: repairing.length,
+    dates: [...new Set(repairing.map((m) => m.effectiveDate))].sort(),
+    skipped: report.totals.skipped,
   };
 }
