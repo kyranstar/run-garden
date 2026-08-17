@@ -9,6 +9,7 @@ import {
 } from "./coach.js";
 import { formatStageDuration } from "./duration.js";
 import { isoWeekday } from "./time.js";
+import { sessionWatchCoverage, type WatchCoverageView } from "./watch-coverage.js";
 
 /**
  * THE MANIFEST: what a proposal actually does, computed from its ops.
@@ -44,6 +45,23 @@ export interface OpLine {
   change: string | null;
   /** Session contents, already formatted, e.g. "Wall Sit 3×45s". Empty for non-session ops. */
   detail: string[];
+  /**
+   * What the athlete's COROS watch will show for this session — present on
+   * every line built from a `CoachSession`, absent on the lines that describe
+   * a move, a skip, a plan boundary or a week sketch (there is no session
+   * there to carry).
+   *
+   * This is the manifest's job, not the sheet's. The manifest is what the
+   * athlete reads BEFORE approving, and until now it did not mention the
+   * watch at all — so a proposal that added three mobility sessions read
+   * exactly like one that added three runs, and the difference (none of the
+   * three will ever appear on the watch) surfaced only later, one tap deep in
+   * a session sheet, as a sentence with no reason in it.
+   *
+   * `coverage: "full"` lines carry the field too; the UI renders only what is
+   * not full, so a plain running week says nothing new.
+   */
+  watch?: WatchCoverageView;
   /** Which op produced this line, for grouping/keys. */
   kind: CoachOp["kind"];
 }
@@ -135,6 +153,7 @@ function datedSessionLines(
     summary: sessionSummary(s.session),
     change: null,
     detail: sessionDetail(s.session),
+    watch: sessionWatchCoverage(s.session),
     kind,
   }));
 }
@@ -163,6 +182,7 @@ export function describeOps(ops: CoachOp[], planned?: ReadonlyMap<string, Planne
             ? `${was.summary} → ${op.session.title}`
             : "rewrites the session already on this day",
           detail: sessionDetail(op.session),
+          watch: sessionWatchCoverage(op.session),
           kind: op.kind,
         });
         break;
@@ -227,6 +247,7 @@ export function describeOps(ops: CoachOp[], planned?: ReadonlyMap<string, Planne
             summary: sessionSummary(op.session),
             change: null,
             detail: sessionDetail(op.session),
+            watch: sessionWatchCoverage(op.session),
             kind: op.kind,
           });
         }

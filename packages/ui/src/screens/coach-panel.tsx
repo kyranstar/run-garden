@@ -21,6 +21,8 @@ import {
   revealInView,
   Sheet,
   useIsomorphicLayoutEffect,
+  WatchCoverageNote,
+  watchCoverageShort,
   weekdayShort,
 } from "../components.js";
 
@@ -214,8 +216,48 @@ function OpRow({ line }: { line: OpLine }) {
       <span className="coach-op-what">
         <span className="coach-op-summary">{line.summary}</span>
         {line.change ? <span className="coach-op-change">{line.change}</span> : null}
+        {/* One clause, on the line it belongs to. The glance is three lines
+            in a message bubble, so the full sentence lives in the Sheet. */}
+        {watchCoverageShort(line.watch) ? (
+          <span className="coach-op-watch">{watchCoverageShort(line.watch)}</span>
+        ) : null}
       </span>
     </li>
+  );
+}
+
+/**
+ * THE ONE LINE THE MANIFEST OWED THE ATHLETE BEFORE THEY PRESS "Make it so".
+ *
+ * The manifest's rule is that the model never states a fact the system can
+ * compute — and "will this reach my watch" is exactly such a fact, computed by
+ * `watchCoverage` from the same predicate that decides the push. It was
+ * missing entirely: a proposal adding four mobility sessions rendered
+ * identically to one adding four runs, and the difference surfaced days later,
+ * one tap deep in a session sheet, as a sentence with no reason in it.
+ *
+ * Counted, not listed: the per-session reasons are on the lines themselves and
+ * in full in the Sheet. Nothing renders when everything crosses, so an
+ * ordinary running week gains no chrome at all.
+ */
+function WatchSummary({ lines }: { lines: OpLine[] }) {
+  const offWatch = lines.filter((l) => l.watch?.coverage === "none").length;
+  const partial = lines.filter((l) => l.watch?.coverage === "partial").length;
+  if (offWatch === 0 && partial === 0) return null;
+  const parts: string[] = [];
+  if (offWatch > 0) {
+    parts.push(
+      `${offWatch === 1 ? "One of these sessions won't" : `${offWatch} of these sessions won't`} appear on your COROS watch`,
+    );
+  }
+  if (partial > 0) {
+    parts.push(`${partial === 1 ? "one arrives" : `${partial} arrive`} on the watch without pace targets`);
+  }
+  return (
+    <p className="note watch-note coach-ops-watch">
+      {parts.join(", and ")} — {offWatch > 0 ? "those live in Run Garden and your Google Calendar. " : ""}
+      Open the manifest for the reason on each.
+    </p>
   );
 }
 
@@ -255,6 +297,11 @@ function ProposalGlance({ lines, onOpenAll }: { lines: OpLine[]; onOpenAll: () =
           <OpRow key={lineKey(l, i)} line={l} />
         ))}
       </ul>
+      {/* Below the lines and above the control that opens the rest: the
+          athlete reads down to the buttons, and this is the last thing that
+          should reach them before "Make it so". It is a whole-proposal fact,
+          so it is not attached to any one line. */}
+      <WatchSummary lines={lines} />
       {hidden > 0 || hasDetail ? (
         <OpenManifest
           label={hidden > 0 ? `All ${countNoun(lines.length, "change")}` : "Session by session"}
@@ -292,11 +339,20 @@ export function ProposalDetailSheet({
             {l.change ? <p className="coach-op-change">{l.change}</p> : null}
             {l.detail.length > 0 ? (
               <ul className="coach-op-detail muted">
-                {l.detail.map((d) => (
-                  <li key={d}>{d}</li>
+                {/* Index, not the string: a session can legitimately repeat a
+                    line ("400 m interval" twice), and a duplicate React key
+                    silently drops one of them from the very list whose whole
+                    job is to be complete. */}
+                {l.detail.map((d, di) => (
+                  <li key={`${di}-${d}`}>{d}</li>
                 ))}
               </ul>
             ) : null}
+            {/* The full reason, per session, in the one place with room for
+                it. Same words the session sheet will use after approval, from
+                the same function — so nothing the athlete agreed to changes
+                its story once it is on the calendar. */}
+            <WatchCoverageNote view={l.watch} />
           </li>
         ))}
       </ol>

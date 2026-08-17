@@ -9,6 +9,8 @@ import type {
   PlanBrief,
   ReadinessVerdict,
   UserPreferences,
+  WatchCoverageView,
+  WorkoutSyncView,
 } from "@rg/domain";
 import type {
   AerobicEfficiencyValue,
@@ -110,12 +112,23 @@ export interface WorkoutDto {
   stageSummary?: string | null;
   calendarSyncState: CalendarSyncState;
   corosSyncState: CorosSyncState;
-  /** Derived per-workout view (sync-transparency Task 10) — same legacy
-   * five-value vocabulary as `corosSyncState` (so `CorosPill`/
-   * `COROS_SYNC_LABELS` keep working unchanged), computed fresh from open
-   * intents + in-flight/failed jobs rather than echoed from the stored
-   * column. Optional: absent on any DTO a route hasn't opted into deriving. */
-  corosSyncView?: CorosSyncState;
+  /** Derived per-workout view (sync-transparency Task 10) — `corosSyncState`'s
+   * vocabulary plus `content_stale`, the one value only a derivation can
+   * produce (see `WorkoutSyncView`). Computed fresh from the open content
+   * intent + in-flight/failed jobs rather than echoed from the stored column.
+   * Optional: absent on any DTO a route hasn't opted into deriving. */
+  corosSyncView?: WorkoutSyncView;
+  /**
+   * WHAT THE WATCH WILL SHOW — coverage plus enumerated reasons, computed by
+   * the same rules that decide the push (`@rg/domain` watch-coverage.ts), so
+   * the disclosure cannot drift from the wire.
+   *
+   * ABSENT is the common case and means "nothing to disclose": either the
+   * whole session crosses, or its content came from COROS in the first place.
+   * A normal synced run therefore carries this field never, and is exactly as
+   * quiet as it was before the field existed.
+   */
+  watchCoverage?: WatchCoverageView;
   completionState: CompletionState;
   archived: boolean;
   /**
@@ -644,6 +657,11 @@ export interface SyncStatusDto {
   state: SyncStatusState;
   pendingCount: number;
   issueCount: number;
+  /** Sessions Run Garden has rewritten since COROS was last given them.
+   * Deliberately NOT part of `issueCount` or of `state`: there is no
+   * content-write job, so the Retry button cannot act on it. The line says it;
+   * nothing badges it. Optional so an older worker's payload still parses. */
+  contentStaleCount?: number;
   lastCorosReadAt: string | null;
   writesEnabled: boolean;
   registered: boolean;

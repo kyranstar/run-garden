@@ -94,6 +94,41 @@ export async function openMoveIntents(
 }
 
 /**
+ * Workout ids whose CONTENT Run Garden has rewritten since COROS was last
+ * given them — the ids of open, un-superseded `content` intents on workouts
+ * that are still in the plan.
+ *
+ * This is the whole signal behind `deriveWorkoutSync`'s `content_stale` and
+ * the account line's `contentStaleCount`. A content intent never resolves (see
+ * `RecordIntentInput.kind`), so a session stays divergent until something
+ * rewrites COROS — which today nothing does, because there is no content-write
+ * job kind. That is a real, permanent fact about the athlete's watch and the
+ * reason it must be said out loud rather than counted as an "issue" with a
+ * Retry button that cannot help.
+ *
+ * Archived workouts are excluded on the same principle `issueCount` already
+ * uses: a divergence behind a session that has been removed from the plan is
+ * not divergence the athlete can see or care about.
+ */
+export async function openContentIntentTargets(db: Db, userId: string): Promise<Set<string>> {
+  const rows = await db
+    .select({ targetId: syncIntents.targetId })
+    .from(syncIntents)
+    .innerJoin(plannedWorkouts, eq(syncIntents.targetId, plannedWorkouts.id))
+    .where(
+      and(
+        eq(syncIntents.userId, userId),
+        eq(syncIntents.targetKind, "workout"),
+        eq(syncIntents.kind, "content"),
+        isNull(syncIntents.resolvedAt),
+        isNull(syncIntents.supersededBy),
+        isNull(plannedWorkouts.archivedAt),
+      ),
+    );
+  return new Set(rows.map((r) => r.targetId));
+}
+
+/**
  * Every date the APP itself asked a workout to move to (open or resolved),
  * keyed by the workout's COROS wire id. The studio drift check uses this to
  * recognize its own account's moves instead of calling them user edits.

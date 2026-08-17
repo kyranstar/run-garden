@@ -1,4 +1,5 @@
 import { Hono } from "hono";
+import { z } from "zod";
 import { and, desc, eq, inArray, isNull } from "drizzle-orm";
 import {
   backfillState,
@@ -21,6 +22,7 @@ import { activeSyncNotes, dismissSyncNote } from "../services/sync-notes.js";
 import { computeSyncStatus } from "../services/sync-status.js";
 import { pushStudioPlan, undoStudioAdoption } from "../services/studio-push.js";
 import { corosReadNow } from "../services/coros-read.js";
+import { countOrphanedMirrors, repairOrphanedMirrors } from "../services/mirror-repair.js";
 import { processCoachReads } from "../services/coach-reads.js";
 import { waitUntilSafe } from "../services/wait-until.js";
 
@@ -367,4 +369,47 @@ syncRoutes.post("/read-now", async (c) => {
     status: result.status,
     lastCorosReadAt: conn?.lastSyncAt ?? null,
   });
+});
+
+// ── POST /api/sync/repair-orphaned-mirrors ───────────────────────────────────
+//
+// A one-shot, human-driven repair of the fifteen strength sessions the mirror
+// dedupe archived and the healing gate could never un-archive (2026-08-17). The
+// reasoning, the candidacy test and everything it refuses to guess at live in
+// `services/mirror-repair.ts`; this route is validation and nothing else.
+//
+// Same contract as `POST /api/plan/repair-fidelity`: `dryRun` is REQUIRED and
+// never defaulted, a live run writes the pre-change rows to `audit_events`
+// before touching anything, and the response is a per-row account of what
+// changed (or would) — including `assumes`, the one thing the candidacy test
+// cannot prove from local data.
+//
+// GET first. `/repair-orphaned-mirrors/census` is read-only and answers "is
+// there anything to repair" without loading the whole report.
+const mirrorRepairSchema = z
+  .object({
+    /** Required, never defaulted: a caller that forgot the field must not be
+     *  guessed at in the direction that writes live rows. */
+    dryRun: z.boolean(),
+    /** Optional narrowing. Omitted, every archived `duplicate_mirror` row is
+     *  examined. Named rows still have to pass the orphan test. */
+    workoutIds: z.array(z.string().min(1)).min(1).max(200).optional(),
+  })
+  .strict();
+
+syncRoutes.get("/repair-orphaned-mirrors/census", async (c) =>
+  c.json({ ok: true, ...(await countOrphanedMirrors(c.get("db"), c.get("userId"))) }),
+);
+
+syncRoutes.post("/repair-orphaned-mirrors", async (c) => {
+  let body: unknown;
+  try {
+    body = await c.req.json();
+  } catch {
+    return c.json({ error: "invalid_json" }, 400);
+  }
+  const parsed = mirrorRepairSchema.safeParse(body);
+  if (!parsed.success) return c.json({ error: "invalid_request", details: parsed.error.issues }, 400);
+  const report = await repairOrphanedMirrors(c.get("db"), c.get("userId"), parsed.data);
+  return c.json({ ok: true, ...report });
 });

@@ -9,16 +9,11 @@ import {
   trainingPlans,
   workoutCompletionMatches,
 } from "@rg/database";
-import {
-  isWeekend,
-  newId,
-  nowInstant,
-  type SchedulingPreferences,
-  type UserPreferences,
-} from "@rg/domain";
+import { addDays, newId, nowInstant, todayInZone, type UserPreferences } from "@rg/domain";
 import { classifyWorkout, estimateDuration, summarizeStages } from "@rg/scheduling";
 import type { SourcePlannedWorkout, TrainingPlanInfo } from "@rg/providers";
 import { chunkedInsert, type Db } from "./db.js";
+import { separateDayCollisions, windowTimeFor } from "./day-placement.js";
 import { loadOwnProgramNames, unstampTitle } from "./coros-stamp.js";
 import { openMoveIntents, resolveIntent } from "./sync-intents.js";
 import { postSyncNote } from "./sync-notes.js";
@@ -60,20 +55,59 @@ export interface ImportStats {
    * not the workout. Never counts as a content change (no plan version, no
    * sync note, no calendar state flip) — see the heal below. */
   rewordedSummaries: number;
+  /** Sessions given a non-colliding time because their day was double-booked. */
+  separatedTimes: number;
+  /** Wire workouts whose stored address was claimed by more than one row. */
+  contestedAddresses: number;
   unchanged: number;
 }
 
-function defaultTimeFor(
-  workout: { category: string; date: string },
-  prefs: SchedulingPreferences,
-): string {
-  // Long runs and races default to the morning; everything else follows the
-  // user's default window. All of it is user-adjustable afterwards.
-  if (workout.category === "long" || workout.category === "race") {
-    return isWeekend(workout.date) ? prefs.weekendMorningTime : prefs.weekdayMorningTime;
-  }
-  if (prefs.defaultWindow === "evening") return prefs.weekdayEveningTime;
-  return isWeekend(workout.date) ? prefs.weekendMorningTime : prefs.weekdayMorningTime;
+type StoredWorkout = typeof plannedWorkouts.$inferSelect;
+
+/**
+ * WHICH stored row is this wire workout, given that its address may be claimed
+ * by several (`existingByAddress` above)?
+ *
+ * The order below is the order the evidence is worth, strongest first, and it is
+ * the same discipline `studio-push.ts` arrived at the expensive way: the
+ * OWNERSHIP STAMP plus the day is the identity, an address is only a claim.
+ *
+ *  1. A LIVE row beats an ARCHIVED one. An archived row is the record of a
+ *     workout that left; a live row is a workout that is here. When both claim
+ *     one address, COROS is talking about the live one — resolving to the
+ *     archived one resurrects a stranger's record and strands the real session.
+ *     Archived rows stay candidates, though, and deliberately: presence-healing
+ *     an archived row back into the plan is the whole point of rule 8's
+ *     counterpart, and refusing them would also mean inserting a second row at
+ *     an address the unique index already holds.
+ *  2. The TITLE matching is the stamp: same session name, same session.
+ *  3. The DAY agreeing (either side of it — what COROS last said, or where the
+ *     row sits now).
+ *  4. Filed under the plan row this wire workout belongs to. Last, not first,
+ *     because a coach-created session that COROS verified keeps its coach plan
+ *     while gaining a wire address in the COROS plan — plan agreement is
+ *     ordinary evidence, not the key.
+ *  5. Oldest `createdAt`, then id. Never D1's row order.
+ */
+function resolveClaimant(
+  candidates: StoredWorkout[],
+  wire: { title: string; date: string; planId: string },
+): StoredWorkout | undefined {
+  if (candidates.length <= 1) return candidates[0];
+  const score = (w: StoredWorkout): number[] => [
+    w.archivedAt ? 1 : 0,
+    w.title === wire.title ? 0 : 1,
+    w.lastVerifiedCorosDate === wire.date || w.effectiveDate === wire.date ? 0 : 1,
+    w.planId === wire.planId ? 0 : 1,
+  ];
+  return [...candidates].sort((a, b) => {
+    const sa = score(a);
+    const sb = score(b);
+    for (let i = 0; i < sa.length; i++) {
+      if (sa[i] !== sb[i]) return sa[i]! - sb[i]!;
+    }
+    return a.createdAt === b.createdAt ? a.id.localeCompare(b.id) : a.createdAt.localeCompare(b.createdAt);
+  })[0];
 }
 
 export async function importPlanSnapshot(
@@ -95,6 +129,8 @@ export async function importPlanSnapshot(
     verifiedJobs: 0,
     conflicts: 0,
     rewordedSummaries: 0,
+    separatedTimes: 0,
+    contestedAddresses: 0,
     unchanged: 0,
   };
 
@@ -183,34 +219,111 @@ export async function importPlanSnapshot(
   }
   stats.planId = planRowsBySourceId.get(input.plan.sourcePlanId)!.id;
 
-  // sourceWorkoutIds are globally unique (`${corosPlanId}:${idInPlan}`), so
-  // one user-wide map covers every plan in the snapshot.
   const existing = await db
     .select()
     .from(plannedWorkouts)
     .where(eq(plannedWorkouts.userId, input.userId));
-  const existingBySourceId = new Map(existing.map((w) => [w.sourceWorkoutId, w]));
 
-  // Two archived states presence must not heal: a workout the user removed
-  // by hand (a decision, not an absence), and a mirror copy deduped while its
-  // keeper row is still alive (rule 8 releases the suppression when the
-  // keeper dies, letting the mirror take over on the following snapshot).
-  const userRemovedIds = new Set(
-    (
-      await db
-        .select({ workoutId: calendarEventSuppressions.workoutId })
-        .from(calendarEventSuppressions)
-        .where(
-          inArray(calendarEventSuppressions.reason, ["user_removed", "duplicate_mirror"]),
-        )
-    ).map((s) => s.workoutId),
-  );
-  // Belt for the suppression key (audit#3 D2): a row archived as a decision
-  // stays removed even if its suppression row is ever swept or missing.
+  // A STORED `${corosPlanId}:${idInPlan}` IS A CLAIM ON AN ADDRESS, NOT AN
+  // IDENTITY. This map used to be keyed on `sourceWorkoutId` alone, under the
+  // comment "sourceWorkoutIds are globally unique". They are not, twice over:
+  // the unique index is `(userId, planId, sourceWorkoutId)`, and COROS RECYCLES
+  // a plan's `idInPlan` slots after deletes, so one address is claimed over time
+  // by every row that ever occupied it (`studio-push.ts` module rule 6 — a
+  // stale address there read a stranger's archived run as our session going
+  // missing and adopted 19 healthy rows on that finding). Prod holds ten
+  // addresses claimed by both a pushed lift day and an archived run row, and two
+  // claimed by an archived run row AND a live coach row; which one a
+  // last-row-wins map returned was decided by D1's row order, and would resolve
+  // the wrong row the moment the 90-day window rolls onto November.
+  //
+  // So every claimant is kept and the wire workout picks its own — by the same
+  // evidence the rest of this codebase identifies a workout with.
+  const existingByAddress = new Map<string, Array<typeof existing[number]>>();
   for (const w of existing) {
-    if (w.archivedAt && (w.archiveReason === "user_removed" || w.archiveReason === "duplicate_mirror")) {
-      userRemovedIds.add(w.id);
+    const list = existingByAddress.get(w.sourceWorkoutId) ?? [];
+    list.push(w);
+    existingByAddress.set(w.sourceWorkoutId, list);
+  }
+  const existingById = new Map(existing.map((w) => [w.id, w]));
+
+  // ── Why a row left vs. whether it may come back ─────────────────────────────
+  //
+  // Two different facts, and this file used to keep them in one place:
+  //
+  //   EVIDENCE — `archive_reason`, and the suppression row beside it. WHY the
+  //     row left. History. It never stops being true.
+  //   A STANDING INSTRUCTION — may this row come back if COROS still serves it?
+  //     An instruction can be withdrawn; a piece of history cannot.
+  //
+  // Reading the evidence as the instruction cost the athlete fifteen strength
+  // sessions (2026-08-17). After the 08-14 re-push each lift day held two rows:
+  // the dedupe archived the newer twin `duplicate_mirror`, then rule 8's absence
+  // sweep archived the older keeper and RELEASED the mirror by deleting its
+  // suppression — exactly as designed. But the belt then re-derived the block
+  // from the mirror's own `archive_reason`, which the release does not clear, so
+  // the release could never win and the only surviving copy of each session
+  // stayed archived forever while COROS went on serving it.
+  //
+  // The instruction is therefore re-derived here, every import, from what is
+  // true NOW. Neither reason is special-cased away; each is asked what it
+  // actually says:
+  //
+  //   user_removed     — a person decided. Nothing an import observes can
+  //                      withdraw that; only a restore, which clears the reason.
+  //   duplicate_mirror — "show the OTHER copy, not this one". Conditional by
+  //                      construction: it says nothing at all once the other
+  //                      copy is gone. When no live row still holds the session,
+  //                      this mirror is the only copy left and must be free to
+  //                      heal — whether the release ran, ran early, or never ran
+  //                      at all (a keeper removed by hand, or archived while
+  //                      outside the snapshot window, releases nothing today).
+  const mirrorKeyOf = (w: { effectiveDate: string; title: string; sport: string }): string =>
+    `${w.effectiveDate}|${w.title}|${w.sport}`;
+  const liveCountByMirrorKey = new Map<string, number>();
+  for (const w of existing) {
+    if (w.archivedAt) continue;
+    const key = mirrorKeyOf(w);
+    liveCountByMirrorKey.set(key, (liveCountByMirrorKey.get(key) ?? 0) + 1);
+  }
+  /** Does another LIVE row still hold this row's session? */
+  const liveTwinExists = (w: typeof existing[number]): boolean => {
+    const total = liveCountByMirrorKey.get(mirrorKeyOf(w)) ?? 0;
+    return total - (w.archivedAt ? 0 : 1) > 0;
+  };
+
+  // The evidence, from both places it is written. Only the two DECISION reasons
+  // are collected: `absence_confirmed` is the opposite kind of fact — it says
+  // COROS stopped serving the row, which presence in this very snapshot has just
+  // disproved, and it is precisely what healing exists to reverse. The row's own
+  // reason and the suppression row say the same thing when both exist; either
+  // alone is enough (audit#3 D2: a row archived as a decision must stay out even
+  // if its suppression row is ever swept).
+  const DECISION_REASONS = ["user_removed", "duplicate_mirror"] as const;
+  const archiveEvidence = new Map<string, string>();
+  for (const w of existing) {
+    if (w.archivedAt && (DECISION_REASONS as readonly string[]).includes(w.archiveReason ?? "")) {
+      archiveEvidence.set(w.id, w.archiveReason!);
     }
+  }
+  for (const s of await db
+    .select({ workoutId: calendarEventSuppressions.workoutId, reason: calendarEventSuppressions.reason })
+    .from(calendarEventSuppressions)
+    .where(inArray(calendarEventSuppressions.reason, [...DECISION_REASONS]))) {
+    if (!archiveEvidence.has(s.workoutId)) archiveEvidence.set(s.workoutId, s.reason);
+  }
+
+  const healingBlocked = new Set<string>();
+  for (const [workoutId, reason] of archiveEvidence) {
+    const row = existingById.get(workoutId);
+    // Not this user's row (the suppression table is not user-scoped) or gone
+    // entirely: nothing to reason about, so nothing is unblocked.
+    if (!row) {
+      healingBlocked.add(workoutId);
+      continue;
+    }
+    if (reason === "duplicate_mirror" && !liveTwinExists(row)) continue;
+    healingBlocked.add(workoutId);
   }
 
   const pendingJobs = await db
@@ -289,7 +402,22 @@ export async function importPlanSnapshot(
     });
     const stageSummary = src.stages.length > 0 ? summarizeStages(src.stages) : undefined;
 
-    const current = existingBySourceId.get(src.sourceWorkoutId);
+    const claimants = existingByAddress.get(src.sourceWorkoutId) ?? [];
+    if (claimants.length > 1) stats.contestedAddresses += 1;
+    const current = resolveClaimant(claimants, {
+      title,
+      date: src.date,
+      planId: planRowsBySourceId.get(src.sourcePlanId)!.id,
+    });
+
+    // A row whose CONTENT the app claims and COROS has not got is
+    // `calendar_only`, whatever the DATES say (2026-08-17). `ease` writes
+    // exactly that state, correctly, and every branch below that flipped it
+    // back to `synced` on date agreement alone was writing a false statement
+    // into the database eleven minutes later — the two sides agreeing about
+    // WHEN is not the two sides agreeing about WHAT.
+    const syncedUnlessClaimed = (): string =>
+      current && contentIntentIds.has(current.id) ? "calendar_only" : "synced";
 
     // Recycled wire id: COROS reuses a plan's idInPlan slots after deletes,
     // so the same `${planId}:${idInPlan}` can suddenly mean a different
@@ -315,7 +443,11 @@ export async function importPlanSnapshot(
       continue;
     }
     if (current && current.sport !== src.sport) {
-      const effectiveTime = defaultTimeFor({ category, date: src.date }, prefs);
+      // The athlete's window. Whether this session can actually HAVE it — or
+      // has to queue up behind what already occupies the day — is settled once
+      // for the whole snapshot by `separateDayCollisions` below, which can see
+      // the coach's rows as well as the wire's.
+      const effectiveTime = windowTimeFor({ category, date: src.date }, prefs);
       await db
         .update(plannedWorkouts)
         .set({
@@ -359,7 +491,11 @@ export async function importPlanSnapshot(
     if (!current) {
       // New workout from COROS.
       const id = newId();
-      const effectiveTime = defaultTimeFor({ category, date: src.date }, prefs);
+      // The athlete's window. Whether this session can actually HAVE it — or
+      // has to queue up behind what already occupies the day — is settled once
+      // for the whole snapshot by `separateDayCollisions` below, which can see
+      // the coach's rows as well as the wire's.
+      const effectiveTime = windowTimeFor({ category, date: src.date }, prefs);
       await db.insert(plannedWorkouts).values({
         id,
         userId: input.userId,
@@ -423,10 +559,13 @@ export async function importPlanSnapshot(
 
     // Presence heals absence: a row archived by absence detection (or by the
     // old plan-switch rule) that COROS demonstrably still schedules comes
-    // back, along with its calendar event. Rows the user removed by hand stay
-    // removed — that's a decision, not an absence.
-    if (current.archivedAt && current.completionState === "scheduled" && !userRemovedIds.has(current.id)) {
+    // back, along with its calendar event. What may NOT come back is decided
+    // above, by asking each archive reason what it still instructs — not by
+    // reading the reason itself as a standing instruction.
+    if (current.archivedAt && current.completionState === "scheduled" && !healingBlocked.has(current.id)) {
       updates.archivedAt = null;
+      // Cleared together: an un-archived row carrying "why it left" is the
+      // half-state that re-armed the belt and cost fifteen sessions.
       updates.archiveReason = null;
       updates.calendarSyncState = current.calendarSyncState === "user_deleted" ? "user_deleted" : "pending";
       stats.unarchived += 1;
@@ -436,13 +575,16 @@ export async function importPlanSnapshot(
     // not this snapshot is the one un-archiving the row (audit#2 #4: six
     // active future workouts — race week included — were barred from the
     // calendar by suppressions stranded when rows were unarchived earlier).
-    if (!userRemovedIds.has(current.id)) {
+    // `duplicate_mirror` is in the list for the same reason: a mirror whose
+    // keeper died can be the only copy left AND still carry the suppression
+    // that hides its calendar event, when nothing released it.
+    if (!healingBlocked.has(current.id)) {
       await db
         .delete(calendarEventSuppressions)
         .where(
           and(
             eq(calendarEventSuppressions.workoutId, current.id),
-            eq(calendarEventSuppressions.reason, "workout_removed"),
+            inArray(calendarEventSuppressions.reason, ["workout_removed", "duplicate_mirror"]),
           ),
         );
     }
@@ -471,7 +613,9 @@ export async function importPlanSnapshot(
         }
         if (action.intentId) await resolveIntent(db, action.intentId, now);
         updates.lastVerifiedCorosDate = corosDate;
-        updates.corosSyncState = "synced";
+        // The DATE landed. If the app also holds this session's content, the
+        // row is still only on the calendar — see `syncedUnlessClaimed`.
+        updates.corosSyncState = syncedUnlessClaimed();
         stats.verifiedJobs += 1;
         touched = true;
         break;
@@ -505,7 +649,7 @@ export async function importPlanSnapshot(
         updates.originalPlanDate = current.originalPlanDate;
         updates.calendarSyncState =
           current.calendarSyncState === "user_deleted" ? "user_deleted" : "pending";
-        updates.corosSyncState = "synced";
+        updates.corosSyncState = syncedUnlessClaimed();
         if (current.completionState === "unresolved") updates.completionState = "scheduled";
         if (action.note) {
           await postSyncNote(db, {
@@ -527,11 +671,19 @@ export async function importPlanSnapshot(
             current.corosSyncState === "needs_attention" ||
             current.corosSyncState === "sync_issue")
         ) {
-          // Healing: both sides provably agree; whatever flagged the row is over.
-          updates.corosSyncState = "synced";
           const open = intentByWorkout.get(current.id);
           if (open && open.toDate === corosDate) await resolveIntent(db, open.id, now);
-          touched = true;
+          // Healing: both sides provably agree about the DATE, so whatever
+          // flagged this row's placement is over. It does NOT heal a row the
+          // app holds the content of: the coach eased this session, `ease`
+          // wrote `calendar_only` because COROS has the OLD body, and the very
+          // next import used to overwrite that with "synced" — eleven minutes
+          // later, on the athlete's real rows. Date agreement is not content
+          // agreement, and the stored column has to stop saying otherwise.
+          if (!contentIntentIds.has(current.id)) {
+            updates.corosSyncState = "synced";
+            touched = true;
+          }
         }
         break;
       }
@@ -624,7 +776,11 @@ export async function importPlanSnapshot(
       });
       stats.archivedMissing += 1;
       // If this row had shadowed a mirror copy, release the mirror so the
-      // next snapshot's presence-healing can take over seamlessly.
+      // next snapshot's presence-healing can take over seamlessly. It clears
+      // the suppression only — the mirror's own `archive_reason` STAYS, because
+      // it is the record of why that row left and remains true. What changed
+      // (2026-08-17) is that the healing gate no longer reads that record as an
+      // instruction, so this release can finally do what it always said it did.
       const partnerIds = existing
         .filter(
           (p) =>
@@ -737,6 +893,22 @@ export async function importPlanSnapshot(
       stats.dedupedMirrors += 1;
     }
   }
+
+  // ── Placement: no two of a day's sessions at the same time ─────────────────
+  // LAST, deliberately. By here every create, rewrite, adoption, un-archive and
+  // dedupe has landed, so this is the only point in the import where the day is
+  // whole — and the day includes the coach's own rows, which the wire loop above
+  // never sees. `day-placement.ts` owns the rule; it touches a day only when
+  // that day's calendar blocks actually collide, and re-derives the same times
+  // from the same set, so it cannot churn the athlete's calendar hourly.
+  const today = todayInZone(prefs.timezone);
+  const windowDates: string[] = [];
+  for (let d = input.rangeStart < today ? today : input.rangeStart; d <= input.rangeEnd; d = addDays(d, 1)) {
+    windowDates.push(d);
+  }
+  stats.separatedTimes = (
+    await separateDayCollisions(db, input.userId, windowDates, prefs, { from: today, now })
+  ).length;
 
   // Plan version capture when the content fingerprint of the set changed.
   // Versions track the PRIMARY (top-level) plan — the one whose metadata the

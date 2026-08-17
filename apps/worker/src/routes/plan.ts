@@ -31,8 +31,12 @@ import {
   sportLabel,
   startOfIsoWeek,
   todayInZone,
+  watchCoverage,
   type PlannedWorkout,
   type UserPreferences,
+  type WatchCoverageView,
+  type WatchSessionShape,
+  type WorkoutSyncView,
 } from "@rg/domain";
 import { conditionWord, DEFAULT_GARDEN_CONFIG, type GardenSnapshot } from "@rg/garden-engine";
 import { proposeReschedules, summarizeStageRows } from "@rg/scheduling";
@@ -44,7 +48,13 @@ import { loadPreferences, restoreCalendarEvent, savePreferences, syncCalendar } 
 import { chunkIds, type Db } from "../services/db.js";
 import { applyMove } from "../services/jobs.js";
 import { recentGardenEvents, resimulateFrom } from "../services/garden-sync.js";
-import { openIntentFor, openMoveIntents, recordIntent, resolveIntent } from "../services/sync-intents.js";
+import {
+  openContentIntentTargets,
+  openIntentFor,
+  openMoveIntents,
+  recordIntent,
+  resolveIntent,
+} from "../services/sync-intents.js";
 import { findRaceConflict, resolveRaceConflict } from "../services/race-conflict.js";
 import { buildRaceHub } from "../services/race-hub.js";
 import { cloudPresence, deriveWorkoutSync, type CloudPresence } from "../services/sync-status.js";
@@ -62,13 +72,118 @@ planRoutes.use("*", requireUser);
  * those files each already do (no shared export exists for it). */
 const IN_FLIGHT_JOB_STATUSES = ["queued", "claimed", "in_progress", "verifying"] as const;
 
+/** Everything a workout's DTO needs that its own row cannot answer: where
+ * COROS stands on it, and how much of it the wire can carry. */
+interface WorkoutView {
+  corosSyncView: WorkoutSyncView;
+  /** Omitted when coverage is `full` — see `watchCoverageOfRow`. Silence is
+   * the correct render for a session with nothing to disclose. */
+  watchCoverage?: WatchCoverageView;
+}
+
 /**
- * Bulk-loads what `deriveWorkoutSync` needs for every workout in `workouts`
- * in a small, fixed number of queries (chunked with `chunkIds` for D1's bound-
- * variable cap) rather than one round-trip per workout. `presence` is a
- * single shared computation — device liveness doesn't vary per workout.
+ * Is this row's content Run Garden's own claim, or COROS's?
+ *
+ * The coverage disclosure is about the gap between what the app holds and what
+ * the wire can carry, so it is meaningless — and would be a lie — for a
+ * session that CAME FROM the wire: an imported COROS strength workout is on
+ * the watch by definition, and telling its owner "your watch won't show this"
+ * because it is a lift would be spectacularly wrong.
+ *
+ * Three signals, any of which means Run Garden wrote the content:
+ *
+ *  1. `structuredJson` — only `coach-apply.ts`'s `sessionColumns` writes it,
+ *     for a lift or mobility body (`add` and `ease` both).
+ *  2. `sourceIdInPlan === null` — never existed in a COROS plan. Import sets
+ *     it from the wire; a verified create stamps it (coros-write-cloud.ts).
+ *     So a coach run that has been pushed drops out here, which is right:
+ *     the watch has it, and its coverage is `full` anyway.
+ *  3. an open `content` intent — an approved ease rewrote a row COROS still
+ *     holds in its old form. The row keeps its wire id; the content is ours.
  */
-async function loadWorkoutSyncViews(
+function authoredHere(w: typeof plannedWorkouts.$inferSelect, contentRewritten: boolean): boolean {
+  return w.structuredJson !== null || w.sourceIdInPlan === null || contentRewritten;
+}
+
+/** Rows whose coverage question needs the stage rows to answer: an authored
+ * RUN, where "is every block timed" and "which steps have no pace band" are
+ * facts only `planned_workout_stages` holds. Lift/mobility answer from
+ * `structuredJson`, and rest days are not sessions anyone expects on a watch. */
+function needsRunStages(w: typeof plannedWorkouts.$inferSelect, contentRewritten: boolean): boolean {
+  return authoredHere(w, contentRewritten) && w.category !== "rest" && w.sport === "run";
+}
+
+/**
+ * A stored row in the wire's own terms — the row-side twin of
+ * `watchSessionShape`, which does the same job for a `CoachSession` the
+ * proposal manifest holds before anything is stored. `watch-coverage.test.ts`
+ * drives one session through `sessionColumns` + `writeStages` and asserts both
+ * adapters land on the same verdict.
+ *
+ * `null` = nothing to say: the content is COROS's own, or it is a rest day.
+ */
+function watchShapeOfRow(
+  w: typeof plannedWorkouts.$inferSelect,
+  contentRewritten: boolean,
+  /** This row's stage rows, when loaded (see `needsRunStages`). */
+  stages: ReadonlyArray<{ durationType: string; targetType: string | null; label: string | null }>,
+): WatchSessionShape | null {
+  if (!authoredHere(w, contentRewritten) || w.category === "rest") return null;
+  const discipline = w.sport === "strength" ? "lift" : w.sport === "yoga" ? "mobility" : "run";
+  if (discipline !== "run") {
+    const raw = Array.isArray(w.structuredJson?.exercises) ? w.structuredJson.exercises : [];
+    return {
+      discipline,
+      runBlocks: [],
+      paceTargetsOwed: 0,
+      exercises: raw.flatMap((e) => {
+        const parsed = coachExerciseSchema.safeParse(e);
+        if (!parsed.success) {
+          const name = (e as { name?: unknown })?.name;
+          // Same tolerance `exercisesDto` shows an odd legacy row: an
+          // unparseable movement has no `originId`, so it is off-catalog.
+          return typeof name === "string" ? [{ name, onWatch: false }] : [];
+        }
+        return [{ name: parsed.data.name, onWatch: !!parsed.data.originId }];
+      }),
+    };
+  }
+  return {
+    discipline,
+    runBlocks: stages.map((s) => (s.durationType === "distance" ? "distance" : "duration")),
+    // The create executor's own `missingPaceTargets` rule, read off the rows
+    // `writeStages` wrote from the same threshold pace the push would use:
+    // a block that named an intensity but got no band. `rest` never gets one
+    // and never will, so it is not owed.
+    paceTargetsOwed: stages.filter(
+      (s) => s.label != null && s.label !== "rest" && s.targetType !== "pace",
+    ).length,
+    exercises: [],
+  };
+}
+
+/** The DTO's coverage field, or `undefined` when there is nothing to say.
+ * Full coverage is rendered as silence — a normal synced run must not become
+ * noisier than it was. */
+function watchCoverageOfRow(
+  w: typeof plannedWorkouts.$inferSelect,
+  contentRewritten: boolean,
+  stages: ReadonlyArray<{ durationType: string; targetType: string | null; label: string | null }>,
+): WatchCoverageView | undefined {
+  const shape = watchShapeOfRow(w, contentRewritten, stages);
+  if (!shape) return undefined;
+  const view = watchCoverage(shape);
+  return view.coverage === "full" ? undefined : view;
+}
+
+/**
+ * Bulk-loads what `deriveWorkoutSync` and `watchCoverageOfRow` need for every
+ * workout in `workouts` in a small, fixed number of queries (chunked with
+ * `chunkIds` for D1's bound-variable cap) rather than one round-trip per
+ * workout. `presence` is a single shared computation — device liveness
+ * doesn't vary per workout.
+ */
+async function loadWorkoutViews(
   db: Db,
   userId: string,
   workouts: Array<typeof plannedWorkouts.$inferSelect>,
@@ -77,16 +192,22 @@ async function loadWorkoutSyncViews(
    * so the providerConnections read isn't repeated (it never varies within a
    * request). Omitted → computed here, same as before. */
   precomputedPresence?: CloudPresence,
-): Promise<Map<string, ReturnType<typeof deriveWorkoutSync>>> {
-  const map = new Map<string, ReturnType<typeof deriveWorkoutSync>>();
+): Promise<Map<string, WorkoutView>> {
+  const map = new Map<string, WorkoutView>();
   if (workouts.length === 0) return map;
 
   const ids = workouts.map((w) => w.id);
   // All three lookups are independent — one D1 round-trip wave, not three
   // (cross-region D1 makes every sequential await a full round trip).
-  const [presence, intents, jobChunks] = await Promise.all([
+  //
+  // The MOVE-intent read that used to be in this wave is gone. It fed
+  // `deriveWorkoutSync`'s `hasOpenIntent` parameter, which the derivation
+  // accepted and never read — a full D1 round trip, on every Today, week and
+  // plan render, whose result was discarded. The content intents below are
+  // the ones the derivation actually consults.
+  const [presence, contentStale, jobChunks] = await Promise.all([
     precomputedPresence ?? cloudPresence(db, userId),
-    openMoveIntents(db, userId),
+    openContentIntentTargets(db, userId),
     Promise.all(
       chunkIds(ids).map((chunk) =>
         db
@@ -96,7 +217,35 @@ async function loadWorkoutSyncViews(
       ),
     ),
   ]);
-  const openIntentTargets = new Set(intents.map((i) => i.targetId));
+
+  // Second wave, and only for the rows whose coverage answer lives in stage
+  // rows — a coach-authored run. Typically a handful per week; an imported
+  // COROS plan contributes none, so the common page pays nothing at all.
+  const stageIds = workouts.filter((w) => needsRunStages(w, contentStale.has(w.id))).map((w) => w.id);
+  const stageChunks =
+    stageIds.length > 0
+      ? await Promise.all(
+          chunkIds(stageIds).map((chunk) =>
+            db
+              .select({
+                workoutId: plannedWorkoutStages.workoutId,
+                durationType: plannedWorkoutStages.durationType,
+                targetType: plannedWorkoutStages.targetType,
+                label: plannedWorkoutStages.label,
+              })
+              .from(plannedWorkoutStages)
+              .where(inArray(plannedWorkoutStages.workoutId, chunk)),
+          ),
+        )
+      : [];
+  const stagesByWorkout = new Map<string, Array<{ durationType: string; targetType: string | null; label: string | null }>>();
+  for (const rows of stageChunks) {
+    for (const s of rows) {
+      const list = stagesByWorkout.get(s.workoutId) ?? [];
+      list.push({ durationType: s.durationType, targetType: s.targetType, label: s.label });
+      stagesByWorkout.set(s.workoutId, list);
+    }
+  }
 
   const pendingIds = new Set<string>();
   const failedIds = new Set<string>();
@@ -108,25 +257,27 @@ async function loadWorkoutSyncViews(
   }
 
   for (const w of workouts) {
-    map.set(
-      w.id,
-      deriveWorkoutSync({
+    const contentRewritten = contentStale.has(w.id);
+    const coverage = watchCoverageOfRow(w, contentRewritten, stagesByWorkout.get(w.id) ?? []);
+    map.set(w.id, {
+      corosSyncView: deriveWorkoutSync({
         effectiveDate: w.effectiveDate,
         lastVerifiedCorosDate: w.lastVerifiedCorosDate,
-        hasOpenIntent: openIntentTargets.has(w.id),
+        hasOpenContentIntent: contentRewritten,
         hasPendingJob: pendingIds.has(w.id),
         hasFailedJob: failedIds.has(w.id),
         presence,
         writesEnabled: prefs.corosWritesEnabled,
       }),
-    );
+      ...(coverage ? { watchCoverage: coverage } : {}),
+    });
   }
   return map;
 }
 
 function workoutDto(
   w: typeof plannedWorkouts.$inferSelect,
-  corosSyncView?: ReturnType<typeof deriveWorkoutSync>,
+  view?: WorkoutView,
   catalog?: Map<string, string>,
   /**
    * The summary recomputed from this workout's stage rows — passed by the
@@ -175,7 +326,12 @@ function workoutDto(
     // Optional: routes that don't bulk-load it (or callers that predate this
     // change) simply omit the field, `workoutDto`'s signature stays
     // backward-compatible either way.
-    ...(corosSyncView !== undefined ? { corosSyncView } : {}),
+    ...(view?.corosSyncView !== undefined ? { corosSyncView: view.corosSyncView } : {}),
+    // What the watch will and won't show for this session, computed by the
+    // same rules that decide the push (`@rg/domain` watch-coverage.ts).
+    // ABSENT when there is nothing to disclose — a fully-carried run stays
+    // exactly as quiet as it was before this field existed.
+    ...(view?.watchCoverage ? { watchCoverage: view.watchCoverage } : {}),
     completionState: w.completionState,
     archived: !!w.archivedAt,
     // Lift/mobility prescription, formatted once here so the sheet can't
@@ -328,7 +484,7 @@ planRoutes.get("/today", async (c) => {
   // Presence was already fetched above — threaded through, not re-queried.
   const syncViewSource = new Map<string, typeof plannedWorkouts.$inferSelect>();
   for (const w of [...upcoming, ...unresolved, ...attention]) syncViewSource.set(w.id, w);
-  const syncViews = await loadWorkoutSyncViews(db, userId, [...syncViewSource.values()], prefs, presence);
+  const syncViews = await loadWorkoutViews(db, userId, [...syncViewSource.values()], prefs, presence);
 
   return c.json({
     today,
@@ -401,7 +557,7 @@ planRoutes.get("/workouts", async (c) => {
   const primary = [...plans].sort(
     (a, b) => (countByPlanId.get(b.id) ?? 0) - (countByPlanId.get(a.id) ?? 0),
   )[0];
-  const syncViews = await loadWorkoutSyncViews(db, c.get("userId"), rows, prefs);
+  const syncViews = await loadWorkoutViews(db, c.get("userId"), rows, prefs);
   return c.json({
     today,
     plan: primary ? { name: primary.name, startDate: primary.startDate, endDate: primary.endDate } : null,
@@ -548,7 +704,7 @@ planRoutes.get("/week", async (c) => {
   // sync views (need `rows`; presence threaded, not re-queried) and this
   // week's coach shape (needs `covering`).
   const [syncViews, coveringWeekShapeRows] = await Promise.all([
-    loadWorkoutSyncViews(db, userId, rows, prefs, presence),
+    loadWorkoutViews(db, userId, rows, prefs, presence),
     covering
       ? db
           .select()
@@ -681,7 +837,7 @@ planRoutes.get("/workouts/:id", async (c) => {
   )[0];
   if (!w) return c.json({ error: "not_found" }, 404);
   const prefs = await loadPreferences(db, userId);
-  const syncViews = await loadWorkoutSyncViews(db, userId, [w], prefs);
+  const syncViews = await loadWorkoutViews(db, userId, [w], prefs);
   const catalog = await exerciseNameMap(db);
   const stages = (
     await db

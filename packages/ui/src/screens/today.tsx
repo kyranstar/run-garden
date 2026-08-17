@@ -17,6 +17,7 @@ import {
   relativeDay,
   SyncNotesStack,
   SyncStatusLine,
+  watchCoverageShort,
 } from "../components.js";
 import { MoveSheet } from "./move-sheet.js";
 import { MatchSheet } from "./match-sheet.js";
@@ -112,9 +113,14 @@ export function SyncPanel({ quietWhenHealthy = false }: { quietWhenHealthy?: boo
   // needs attention or an undoable note is pending — healthy is silence.
   const cloudHealthy =
     status.data.cloud != null && status.data.cloud.connected && !status.data.cloud.error && status.data.issueCount === 0;
+  // Content divergence is not "healthy": `state` deliberately stays `in_sync`
+  // for it (there is no job and no retry), so the quiet gate has to read the
+  // count itself or the plan page would silently swallow the one line that
+  // says the watch is holding old sessions.
   if (
     quietWhenHealthy &&
     (status.data.state === "in_sync" || cloudHealthy) &&
+    (status.data.contentStaleCount ?? 0) === 0 &&
     (notes.data?.notes ?? []).length === 0
   ) {
     return null;
@@ -182,13 +188,21 @@ export function NextWorkout({ w, today }: { w: WorkoutDto; today: string }) {
         <div className="exercise-prescription">
           {w.exerciseRounds ? <span className="rounds">{w.exerciseRounds} rounds of:</span> : null}
           <ul className="exercise-list">
-            {w.exercises!.map((e) => (
-              <li key={e.line}>{e.line}</li>
+            {w.exercises!.map((e, ei) => (
+              <li key={`${ei}-${e.line}`}>{e.line}</li>
             ))}
           </ul>
         </div>
       ) : w.stageSummary ? (
         <div className="stage-summary">{w.stageSummary}</div>
+      ) : null}
+      {/* The short form of what the watch will show. The card already carries
+          the sync pill, so this is the second half of the same fact and it
+          belongs beside it — but a card is not a sheet, so it gets one clause
+          rather than the sentence. Nothing renders when coverage is full,
+          which is every ordinary run. */}
+      {watchCoverageShort(w.watchCoverage) ? (
+        <p className="faint watch-note-short">{watchCoverageShort(w.watchCoverage)}</p>
       ) : null}
       <div className="btn-row">
         <Link className="btn btn-primary" to={`/plan?workout=${w.id}`}>
@@ -197,11 +211,15 @@ export function NextWorkout({ w, today }: { w: WorkoutDto; today: string }) {
         <button className="btn" onClick={() => setMoving(true)}>
           Move
         </button>
-        {/* Not offered on an exercise session: the create executor builds a
-            structured RUN program and nothing else, so there is nothing a
-            retry could send (2026-08-16 — same reasoning as plan.tsx). */}
+        {/* Not offered on a session the wire cannot hold. This used to test
+            only for exercises, which let a distance-measured run — app-only by
+            the same predicate that refuses a lift — offer a button whose retry
+            enqueues a move for a workout with no wire id, fails, and lands in
+            `issueCount` as an unclearable badge. `watchCoverage` is the
+            predicate itself, so the button and the push now agree. */}
         {(syncView === "needs_attention" || syncView === "calendar_only" || syncView === "sync_issue") &&
-        (w.exercises?.length ?? 0) === 0 ? (
+        (w.exercises?.length ?? 0) === 0 &&
+        w.watchCoverage?.coverage !== "none" ? (
           <button className="btn" disabled={retry.isPending} onClick={() => retry.mutate()}>
             Sync to COROS
           </button>

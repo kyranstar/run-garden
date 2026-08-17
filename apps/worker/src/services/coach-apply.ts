@@ -24,6 +24,7 @@ import {
   type UserPreferences,
 } from "@rg/domain";
 import { chunkIds, chunkedInsert, type Db } from "./db.js";
+import { separateDayCollisions, windowTimeFor } from "./day-placement.js";
 import { stampName } from "./coros-stamp.js";
 import { applyMove } from "./jobs.js";
 import { recordIntent } from "./sync-intents.js";
@@ -277,15 +278,15 @@ async function insertSession(
   now: string,
   opts: { corosWritesEnabled?: boolean; prefs?: UserPreferences; thresholdPaceSecPerKm?: number } = {},
 ): Promise<void> {
-  // Land in the athlete's own slot, not a hardcoded dawn (audit#2 #15).
-  const window = session.category === "long" || session.category === "race" ? "morning" : (opts.prefs?.defaultWindow ?? "morning");
-  const isWeekend = [0, 6].includes(new Date(`${date}T12:00:00Z`).getUTCDay());
+  // Land in the athlete's own slot, not a hardcoded dawn (audit#2 #15) — and
+  // in the SAME slot the importer would have chosen, from the one shared
+  // window function (`day-placement.ts`), rather than a second hand-rolled copy
+  // of the rule. Whether this session can keep that slot, or has to queue up
+  // behind what already occupies the day, is settled by `separateDayCollisions`
+  // once the whole apply has landed: a coach add on top of a plan session is
+  // now the ordinary case, and two 09:00 appointments is not a day.
   const effectiveTime = opts.prefs
-    ? window === "evening"
-      ? opts.prefs.weekdayEveningTime
-      : isWeekend
-        ? opts.prefs.weekendMorningTime
-        : opts.prefs.weekdayMorningTime
+    ? windowTimeFor({ category: session.category, date }, opts.prefs)
     : "07:00";
   await db
     .insert(plannedWorkouts)
@@ -474,6 +475,10 @@ export async function applyOps(
     .limit(1);
   const thresholdPaceSecPerKm = thresholdRow?.v ?? undefined;
   const out: ApplyResult = { created: [], updated: [], archived: [], missed: [] };
+  /** Every day this apply put a session on, changed the length of, or moved one
+   * to. Handed to `separateDayCollisions` at the end so the athlete never
+   * approves a proposal that books two appointments at the same hour. */
+  const touchedDates = new Set<string>();
 
   for (let i = 0; i < ops.length; i++) {
     const op = ops[i]!;
@@ -484,7 +489,7 @@ export async function applyOps(
         // workout id alone — `planned_workout_stages` carries no user column,
         // so an id that isn't this athlete's must never reach it.
         const [target] = await db
-          .select({ id: plannedWorkouts.id })
+          .select({ id: plannedWorkouts.id, effectiveDate: plannedWorkouts.effectiveDate })
           .from(plannedWorkouts)
           .where(and(eq(plannedWorkouts.id, op.workoutId), eq(plannedWorkouts.userId, userId)))
           .limit(1);
@@ -516,6 +521,10 @@ export async function applyOps(
           payload: { fingerprint: fingerprint(op.session) },
           source: "coach_ease",
         });
+        // An ease REPLACES the session, so it also replaces how long the day's
+        // block is — a 35-minute jog where a 100-minute session was leaves a
+        // gap, and a longer one can land on top of its neighbour.
+        touchedDates.add(target.effectiveDate);
         out.updated.push(op.workoutId);
         break;
       }
@@ -535,6 +544,7 @@ export async function applyOps(
             corosWritesEnabled: prefs.corosWritesEnabled ?? false,
           });
         }
+        touchedDates.add(op.toDate);
         out.updated.push(op.workoutId);
         break;
       }
@@ -561,6 +571,8 @@ export async function applyOps(
           });
           out.updated.push(w.id);
         }
+        touchedDates.add(op.dayA);
+        touchedDates.add(op.dayB);
         break;
       }
       case "skip": {
@@ -596,6 +608,7 @@ export async function applyOps(
             prefs,
             thresholdPaceSecPerKm,
           });
+          touchedDates.add(date);
           out.created.push(id);
         }
         break;
@@ -609,6 +622,7 @@ export async function applyOps(
             prefs,
             thresholdPaceSecPerKm,
           });
+          touchedDates.add(s.date);
           out.created.push(id);
         }
         break;
@@ -621,6 +635,7 @@ export async function applyOps(
             prefs,
             thresholdPaceSecPerKm,
           });
+          touchedDates.add(s.date);
           out.created.push(id);
         }
         await db
@@ -670,6 +685,7 @@ export async function applyOps(
             prefs,
             thresholdPaceSecPerKm,
           });
+          touchedDates.add(s.date);
           out.created.push(id);
         }
         break;
@@ -699,6 +715,7 @@ export async function applyOps(
             prefs,
             thresholdPaceSecPerKm,
           });
+          touchedDates.add(s.date);
           out.created.push(id);
         }
         for (const wk of op.shapeWeeks) {
@@ -772,6 +789,16 @@ export async function applyOps(
       }
     }
   }
+
+  // ── Placement, last, over every day this apply touched ─────────────────────
+  // The SAME pass the importer runs, so the two cannot disagree about where a
+  // session sits: a coach add that lands on a day the plan already owns queues
+  // up behind it instead of booking a second appointment at the same hour, and
+  // a day whose blocks already clear each other is not touched at all. Not
+  // reported in the receipt — the athlete approved sessions, and the time of
+  // day a filler ends up at is placement, not a mutation they asked about.
+  await separateDayCollisions(db, userId, [...touchedDates], prefs, { from: today, now });
+
   return out;
 }
 

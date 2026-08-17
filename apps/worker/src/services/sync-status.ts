@@ -6,8 +6,8 @@ import {
   studioPlanPushes,
   studioPlans,
 } from "@rg/database";
-import type { UserPreferences } from "@rg/domain";
-import { openMoveIntents } from "./sync-intents.js";
+import type { UserPreferences, WorkoutSyncView } from "@rg/domain";
+import { openContentIntentTargets, openMoveIntents } from "./sync-intents.js";
 import type { Db } from "./db.js";
 
 /** Legacy constant — last consumers (device routes) die in Phase C Task 4. */
@@ -39,6 +39,14 @@ export interface SyncStatus {
   state: SyncStatusState;
   pendingCount: number;
   issueCount: number;
+  /**
+   * Sessions whose content Run Garden has rewritten since COROS was last given
+   * them (open `content` intents). NOT folded into `issueCount`: an issue is
+   * something the Retry button acts on, and there is no content-write job for
+   * it to enqueue. It is a standing fact, so the line states it instead of
+   * badging it.
+   */
+  contentStaleCount: number;
   lastCorosReadAt: string | null;
   writesEnabled: boolean;
   registered: boolean;
@@ -50,10 +58,19 @@ export async function computeSyncStatus(
   prefs: UserPreferences,
 ): Promise<SyncStatus> {
   // Polled every 30s from a worker that can sit cross-region from D1: every
-  // sequential await here is a full round trip. All six reads below are
+  // sequential await here is a full round trip. All seven reads below are
   // independent of one another (only failedStudio, in the second wave,
   // depends on a result), so they go out as one Promise.all wave.
-  const [presence, pending, failedJobs, openIntents, failedCoachCreateRows, studioPlanRows, corosConnRows] =
+  const [
+    presence,
+    pending,
+    failedJobs,
+    openIntents,
+    contentStaleTargets,
+    failedCoachCreateRows,
+    studioPlanRows,
+    corosConnRows,
+  ] =
     await Promise.all([
       cloudPresence(db, userId),
       db
@@ -86,6 +103,9 @@ export async function computeSyncStatus(
           ),
         ),
       openMoveIntents(db, userId),
+      // The one divergence this line CAN detect that isn't a job: an approved
+      // ease rewrote a session COROS still holds in its old form.
+      openContentIntentTargets(db, userId),
       // A terminally-failed coach watch-push is an issue the user can see and
       // act on (audit#2 #6) — it has no move intent, so count it directly.
       db
@@ -154,6 +174,7 @@ export async function computeSyncStatus(
     state,
     pendingCount: pending.length,
     issueCount,
+    contentStaleCount: contentStaleTargets.size,
     lastCorosReadAt: corosConn?.lastSyncAt ?? null,
     writesEnabled: prefs.corosWritesEnabled,
     registered: presence.registered,
@@ -161,20 +182,58 @@ export async function computeSyncStatus(
 }
 
 /**
- * Per-workout view, in the LEGACY CorosSyncState vocabulary so CorosPill and
- * COROS_SYNC_LABELS keep working unchanged (the line-level SyncStatusState is
- * a separate type with its own five values).
+ * Per-workout view, in the CorosSyncState vocabulary CorosPill already speaks
+ * plus the one value only a derivation can produce (`WorkoutSyncView`). The
+ * line-level `SyncStatusState` is a separate type with its own four values.
+ *
+ * THIS USED TO BE A DATE COMPARISON AND NOTHING ELSE. `effectiveDate ===
+ * lastVerifiedCorosDate && !pending` returned "synced", which meant it had no
+ * opinion whatsoever about the session's CONTENT — and it took a
+ * `hasOpenIntent` argument it never read, so the shape of the fix was already
+ * in the signature.
+ *
+ * That mattered because easing a pushed session changes content and nothing
+ * else: the date does not move, there is no COROS job kind that writes
+ * content, so no job is enqueued, nothing is pending and nothing has failed.
+ * The pill read "synced", `hideWhenHealthy` then hid it, and the session
+ * sheet's banner was gated on the same date comparison so it did not render
+ * either. Zero indicators, and an athlete who had been told their calf-sparing
+ * 30 minutes was on their watch arrived at 5×3min at threshold.
+ *
+ * The signal was already recorded: `ease` writes an open `content` intent
+ * (sync-intents.ts), designed never to resolve, because nothing on COROS can
+ * ever confirm it. So the states now mean, in words:
+ *
+ *   · `synced`             — COROS has this session, on this day, as written.
+ *   · `content_stale`      — COROS has it on the right day, but the version
+ *                            there is the one Run Garden replaced.
+ *   · `calendar_only`      — Run Garden and Calendar have a change COROS
+ *                            does not; nothing is on its way.
+ *   · `syncing` / `waiting_for_device` — a write is queued, running or
+ *                            waiting on the COROS connection.
+ *   · `sync_issue`         — the last write failed and can be retried.
+ *
+ * The date comparison keeps its precedence over content: a session that is on
+ * the WRONG DAY on the watch is told about as a wrong day, because that is the
+ * fact the athlete acts on. (A session that is both moved and eased therefore
+ * reads `calendar_only` — the loudest true thing — and the sheet's banner
+ * names the date. See the report: this is a deliberate single-valued pill, not
+ * an oversight.)
  */
 export function deriveWorkoutSync(v: {
   effectiveDate: string;
   lastVerifiedCorosDate: string;
-  hasOpenIntent: boolean;
+  /** An open `content` intent: an approved ease rewrote this session after
+   * COROS was last given it. Never resolves — COROS cannot confirm content. */
+  hasOpenContentIntent: boolean;
   hasPendingJob: boolean;
   hasFailedJob: boolean;
   presence: CloudPresence;
   writesEnabled: boolean;
-}): "synced" | "syncing" | "waiting_for_device" | "calendar_only" | "sync_issue" {
-  if (v.effectiveDate === v.lastVerifiedCorosDate && !v.hasPendingJob) return "synced";
+}): WorkoutSyncView {
+  if (v.effectiveDate === v.lastVerifiedCorosDate && !v.hasPendingJob) {
+    return v.hasOpenContentIntent ? "content_stale" : "synced";
+  }
   // "waiting_for_device" survives in the legacy per-workout vocabulary (the
   // CorosPill labels key on it) but now means "no cloud connection to run it".
   if (v.hasPendingJob) return v.presence.online ? "syncing" : "waiting_for_device";

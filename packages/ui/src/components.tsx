@@ -10,7 +10,7 @@ import {
   type ReactNode,
   type RefObject,
 } from "react";
-import type { CorosSyncState, CompletionState } from "@rg/domain";
+import type { CompletionState, WatchCoverageView, WorkoutSyncView } from "@rg/domain";
 import type { SyncNoteDto, SyncStatusDto } from "@rg/api-client";
 import {
   IconAlert,
@@ -275,8 +275,22 @@ export function relativeDay(date: string, today: string): string {
 
 // ── Status pills ────────────────────────────────────────────────────────────
 
-const COROS_PILL: Record<CorosSyncState, { label: string; cls: string; icon: ReactNode; title: string }> = {
+const COROS_PILL: Record<WorkoutSyncView, { label: string; cls: string; icon: ReactNode; title: string }> = {
   synced: { label: "Synced", cls: "pill-ok", icon: <IconCheck />, title: "This workout's date matches your COROS watch." },
+  /* The state that had no pill because the derivation had no eyes: COROS has
+     this session, on the right day, in the version Run Garden replaced. Not
+     `pill-warn` — nothing is wrong and nothing failed; the coach changed the
+     plan and the watch cannot be told. `pill-neutral` is the same weight
+     `calendar_only` carries, and the two labels are deliberately the two
+     different sentences an athlete needs to tell apart: "not sent yet" vs
+     "sent, but that was the old one". */
+  content_stale: {
+    label: "Older on watch",
+    cls: "pill-neutral",
+    icon: <IconCalendarOnly />,
+    title:
+      "Your COROS watch has this session on the right day, but with the version Run Garden replaced. There is no way to rewrite a session's content on COROS, so the watch keeps the older one.",
+  },
   syncing: { label: "Syncing", cls: "pill-progress", icon: <IconSync />, title: "Sending this change to your COROS watch." },
   waiting_for_device: { label: "Waiting for COROS", cls: "pill-progress", icon: <IconSync />, title: "Queued — this reaches your watch once COROS is connected in Settings." },
   calendar_only: {
@@ -295,7 +309,10 @@ const COROS_PILL: Record<CorosSyncState, { label: string; cls: string; icon: Rea
   },
 };
 
-export function CorosPill({ state, hideWhenHealthy }: { state: CorosSyncState; hideWhenHealthy?: boolean }) {
+export function CorosPill({ state, hideWhenHealthy }: { state: WorkoutSyncView; hideWhenHealthy?: boolean }) {
+  // `hideWhenHealthy` hides SYNCED and nothing else, which is the whole point
+  // of the new state: a content-stale session used to derive as `synced` and
+  // was therefore hidden by this line, leaving zero indicators anywhere.
   if (hideWhenHealthy && state === "synced") return null;
   const p = COROS_PILL[state];
   return (
@@ -303,6 +320,96 @@ export function CorosPill({ state, hideWhenHealthy }: { state: CorosSyncState; h
       {p.icon}
       {p.label}
     </span>
+  );
+}
+
+// ── What the watch will show ────────────────────────────────────────────────
+
+/**
+ * THE COPY FOR A BOUNDARY, not for a bug.
+ *
+ * The app's one previous disclosure — "This lives in Run Garden and your
+ * Calendar — it was never written to your COROS watch" — is true, reasonless,
+ * and reads as a defect report. Every sentence below names the reason, in the
+ * athlete's terms rather than the wire's, because a reason is what turns "the
+ * app failed to do a thing" into "the watch cannot hold this kind of thing".
+ *
+ * One function, three surfaces (session sheet, Today card, proposal manifest),
+ * so the words cannot drift between the place a decision is made and the place
+ * it is lived with. `null` whenever there is nothing to say.
+ */
+export function watchCoverageSentences(view: WatchCoverageView | undefined): string[] {
+  if (!view || view.coverage === "full") return [];
+  const noun = view.discipline === "lift" ? "a lift" : view.discipline === "mobility" ? "a mobility session" : "this";
+  const out: string[] = [];
+  for (const gap of view.gaps) {
+    switch (gap.code) {
+      case "discipline_off_wire":
+        out.push(
+          `Your COROS watch won't show this — Run Garden writes timed running sessions to the watch and nothing else, so ${noun} lives here and in your Calendar.`,
+        );
+        break;
+      case "distance_target":
+        out.push(
+          "Your COROS watch won't show this — it's measured in distance, and Run Garden only writes timed steps to the watch.",
+        );
+        break;
+      case "empty_body":
+        out.push("Your COROS watch won't show this — there's no timed structure for it to hold.");
+        break;
+      case "off_catalog": {
+        const names = gap.names ?? [];
+        if (names.length === 0) break;
+        out.push(
+          `Your watch's exercise library has no ${listPhrase(names)}, so ${names.length === 1 ? "it" : "they"} could never be written there by name either.`,
+        );
+        break;
+      }
+      case "pace_targets_owed":
+        out.push(
+          `Your watch will show the steps but no pace targets${gap.count ? ` on ${gap.count} of them` : ""} — Run Garden doesn't know your threshold pace yet.`,
+        );
+        break;
+    }
+  }
+  return out;
+}
+
+/** The same fact in the space a card can spare — used where the long form
+ * would outweigh everything around it (the Today card, a manifest line). */
+export function watchCoverageShort(view: WatchCoverageView | undefined): string | null {
+  if (!view || view.coverage === "full") return null;
+  const lead = view.gaps[0]?.code;
+  if (lead === "distance_target") return "Not on your watch — measured in distance";
+  if (lead === "empty_body") return "Not on your watch — nothing timed to send";
+  if (lead === "pace_targets_owed") return "On your watch, without pace targets";
+  return view.discipline === "run"
+    ? "Not on your watch — lives here and in Calendar"
+    : `Not on your watch — ${view.discipline === "lift" ? "a lift" : "a mobility session"} lives here and in Calendar`;
+}
+
+/** "Skier hops", "Skier hops and Copenhagen planks", "A, B and C". */
+function listPhrase(names: string[]): string {
+  if (names.length <= 1) return names[0] ?? "";
+  return `${names.slice(0, -1).join(", ")} and ${names[names.length - 1]}`;
+}
+
+/**
+ * The disclosure itself: a `.note`, which is this app's primitive for "a
+ * sentence that just says something" (System 1 — a `.pill` is `nowrap` by
+ * contract and prose does not go in one, and a `Banner` is for a state the
+ * reader may need to act on). Renders nothing at all when coverage is full,
+ * which is what keeps a normal synced run exactly as quiet as it was.
+ */
+export function WatchCoverageNote({ view }: { view: WatchCoverageView | undefined }) {
+  const sentences = watchCoverageSentences(view);
+  if (sentences.length === 0) return null;
+  return (
+    <div className="note watch-note">
+      {sentences.map((s) => (
+        <p key={s}>{s}</p>
+      ))}
+    </div>
   );
 }
 
@@ -336,6 +443,32 @@ export function SyncStatusLine({
   onRetry?: () => void;
   retrying?: boolean;
 }) {
+  /**
+   * THE LINE STOPPED CLAIMING THE WATCH.
+   *
+   * "Calendar, COROS and watch in sync" was three claims and the app could
+   * support one and a half of them. It counted in-flight write jobs and failed
+   * jobs with an open MOVE intent, so it read "in sync" while two sessions
+   * differed from the watch in content and fifteen were missing locally. Two
+   * separate over-claims, and they have separate answers:
+   *
+   *  · The watch itself is never verified. `WatchSyncState` says so in the
+   *    domain ("we can verify the COROS calendar, not the watch") and the
+   *    connection only ever proves what COROS's own calendar holds. The word
+   *    is gone from the healthy line; nothing else changes about it.
+   *  · Content divergence IS knowable — an approved ease records an open
+   *    `content` intent that never resolves — so the line learns exactly that
+   *    one fact and states it. It is not folded into `issueCount` and does not
+   *    change `state`, because those drive a Retry button and there is no
+   *    content-write job for a retry to enqueue. A count with no action is a
+   *    sentence, not a badge.
+   *
+   * What it still cannot see (rows COROS holds that Run Garden has never
+   * imported) it now simply does not speak for: "Calendar and COROS in sync"
+   * is a claim about the two things this app reconciles.
+   */
+  const contentStale = status.contentStaleCount ?? 0;
+  const staleLine = `Your watch has an older version of ${contentStale} session${contentStale === 1 ? "" : "s"}`;
   const line = (() => {
     // Cloud-direct COROS (spec §5): the connection's health outranks Mac
     // presence — "synced X ago" or an honest error, never a Mac mystery.
@@ -349,11 +482,13 @@ export function SyncStatusLine({
       if (status.state === "sync_issue") {
         return `${status.issueCount} change${status.issueCount === 1 ? "" : "s"} couldn't sync`;
       }
+      if (contentStale > 0) return staleLine;
       return `Synced with COROS${status.cloud.lastSyncAt ? ` · ${relativeTime(status.cloud.lastSyncAt)}` : " · first sync pending"}`;
     }
+    if (contentStale > 0 && status.state === "in_sync") return staleLine;
     switch (status.state) {
       case "in_sync":
-        return `Calendar, COROS and watch in sync${status.lastCorosReadAt ? ` · ${relativeTime(status.lastCorosReadAt)}` : ""}`;
+        return `Calendar and COROS in sync${status.lastCorosReadAt ? ` · ${relativeTime(status.lastCorosReadAt)}` : ""}`;
       case "syncing":
         return `Syncing ${status.pendingCount} change${status.pendingCount === 1 ? "" : "s"}…`;
       case "not_synced":

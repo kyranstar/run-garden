@@ -946,6 +946,25 @@ a.note {
   border-color: color-mix(in srgb, var(--warn) 35%, transparent);
 }
 
+/* WHAT THE WATCH WILL SHOW. A plain `.note` and emphatically NOT `.note-warn`:
+   a lift that stays in the app is a boundary of the product, not a fault, and
+   the moment it is painted in `--warn` the athlete reads it as something to
+   fix. The only additions are paragraph rhythm — a session can owe two
+   sentences (the discipline, then the movements the library lacks) and they
+   must not run together into a wall. */
+.watch-note > p {
+  margin: 0;
+}
+.watch-note > p + p {
+  margin-top: var(--space-2);
+}
+/* The one-clause form, for a card that has no room for the sentence. Not a
+   `.note` box at all — inside a card it would read as a second card. */
+.watch-note-short {
+  margin: var(--space-3) 0 0;
+  font-size: var(--text-xs);
+}
+
 /* THE scroll owner. Every box that can clip its content wears this — and
    only one box per dialog does, so a dialog has exactly one thing to scroll.
    It carries the affordance with it: a real scrollbar where the platform
@@ -4777,7 +4796,13 @@ a.note {
 .coach-op-what { display: flex; flex-direction: column; min-width: 0; }
 .coach-op-summary { overflow-wrap: anywhere; }
 .coach-op-change { font-size: var(--text-xs); color: var(--ink-soft); overflow-wrap: anywhere; }
+/* "Not on your watch — a lift lives here and in Calendar", on the manifest
+   line it belongs to. Same rank as `.coach-op-change` (rank 3 supporting
+   text, System 2) and deliberately no colour of its own: this is a boundary,
+   not a warning, and the palette is how the app says which. */
+.coach-op-watch { font-size: var(--text-xs); color: var(--ink-soft); overflow-wrap: anywhere; }
 .coach-ops-all { display: inline-block; margin-top: var(--space-3); font-size: var(--text-xs); }
+.coach-ops-watch { margin: var(--space-4) 0 0; }
 
 /* The whole manifest, in a Sheet. A twelve-op plan is a page, and a page
    unfolding inside a message would push the rest of the conversation down by

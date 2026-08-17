@@ -22,6 +22,7 @@ import {
   Spinner,
   SyncNotesStack,
   useIsDesktop,
+  WatchCoverageNote,
 } from "../components.js";
 import { MoveSheet } from "./move-sheet.js";
 import { MatchSheet } from "./match-sheet.js";
@@ -127,15 +128,26 @@ function WorkoutDetail({
   // legacy column is the fallback for any DTO that hasn't opted into it.
   const syncView = w.corosSyncView ?? w.corosSyncState;
   // "" = COROS has never verified this row (coach-apply.ts) — the session was
-  // authored here, not imported, and for a lift/mobility session it can
-  // never go to the watch at all. That is a different fact from "your move
+  // authored here, not imported. That is a different fact from "your move
   // hasn't reached the watch yet", and it gets different words below.
   const neverOnWatch = w.lastVerifiedCorosDate === "";
-  const offWatch = (w.exercises ?? []).filter((e) => !e.onWatch).map((e) => e.name);
   const outOfSync = syncView === "needs_attention" || syncView === "calendar_only" || syncView === "sync_issue";
-  // An exercise session has no run program to write; nothing a retry could
-  // send. Everything else that is out of sync can still be pushed.
-  const canSyncToCoros = outOfSync && corosWritesEnabled && (w.exercises?.length ?? 0) === 0;
+  // Nothing a retry could send. `watchCoverage.coverage === "none"` IS the
+  // push predicate (domain/watch-coverage.ts), so this now also suppresses the
+  // button on a distance-measured run — which the old `exercises.length` test
+  // let through, offering a retry that could only ever fail (see today.tsx).
+  const canSyncToCoros =
+    outOfSync && corosWritesEnabled && (w.exercises?.length ?? 0) === 0 && w.watchCoverage?.coverage !== "none";
+  // The banner is for COROS's DISAGREEMENT with the app — a wrong date or a
+  // stale copy. It is no longer the carrier of the app-only story: that is a
+  // standing property of the session, not a state, and it has its own note.
+  //
+  // And when the note has already said "your watch won't show this, it lives
+  // here and in your Calendar", the banner's never-on-watch sentence is the
+  // same sentence with the reason removed. One telling, not two.
+  const corosDisagrees =
+    (w.effectiveDate !== w.lastVerifiedCorosDate || syncView === "content_stale") &&
+    !(neverOnWatch && w.watchCoverage?.coverage === "none");
 
   const displayTitle = humanizeWorkoutTitle(w.title, w.category, w.qualitySubtype);
   const canMove = completion === "scheduled" && w.category !== "rest";
@@ -238,25 +250,35 @@ function WorkoutDetail({
           undoPendingId={undoNote.isPending ? undoNote.variables : null}
           undoErrors={undoErrors}
         />
-        {w.effectiveDate !== w.lastVerifiedCorosDate ? (
+        {/* WHAT THE WATCH WILL SHOW — a standing property of the session,
+            rendered as a `.note` (a sentence that just says something) rather
+            than folded into the sync Banner (a state you may need to act on).
+            They used to be the same element, which is how "it was never
+            written to your COROS watch" came to be gated on a DATE comparison:
+            a lift is app-only whether or not its date agrees with anything.
+            Silent whenever the whole session crosses — the field is absent. */}
+        <WatchCoverageNote view={w.watchCoverage} />
+        {corosDisagrees ? (
           <Banner kind={syncView === "needs_attention" || syncView === "sync_issue" ? "warn" : "info"}>
             {/* `lastVerifiedCorosDate` is "" when COROS has never seen this
-                row at all — every coach-created session. Every branch below
-                formats that date, so the app told you your watch "still has
-                this on undefined, undefined NaN" (2026-08-16). A session
+                row at all — every coach-created session. Every dated branch
+                below formats that date, so the app told you your watch "still
+                has this on undefined, undefined NaN" (2026-08-16). A session
                 that was never on the watch needs its own sentence, not a
-                move-that-didn't-land sentence with a hole in it. */}
+                move-that-didn't-land sentence with a hole in it — and when the
+                note above has already given the reason, this one says only the
+                part the note doesn't: that Calendar has it and COROS doesn't. */}
             {neverOnWatch
-              ? offWatch.length > 0
-                ? `This lives in Run Garden and your Calendar. It can't be written to your COROS watch: ${offWatch.join(", ")} ${offWatch.length === 1 ? "isn't" : "aren't"} in your watch's exercise library.`
-                : "This lives in Run Garden and your Calendar — it was never written to your COROS watch."
-              : syncView === "needs_attention"
-                ? `COROS has this on ${formatDayLong(w.lastVerifiedCorosDate)}; Run Garden has ${formatDayLong(w.effectiveDate)}. Pick where it should live.`
-                : syncView === "calendar_only"
-                  ? `Your COROS watch still has this on ${formatDayLong(w.lastVerifiedCorosDate)} — this move hasn't been written to COROS.`
-                  : syncView === "sync_issue"
-                    ? `The last update to COROS failed — your watch still shows ${formatDayLong(w.lastVerifiedCorosDate)}. Retry below.`
-                    : `COROS still shows ${formatDayLong(w.lastVerifiedCorosDate)} — the update is on its way.`}
+              ? "This lives in Run Garden and your Google Calendar. COROS has never been given it."
+              : syncView === "content_stale"
+                ? `Your COROS watch has this on ${formatDayLong(w.lastVerifiedCorosDate)}, but with the version Run Garden replaced — COROS has no way to be told a session's new content, so the watch keeps the old one until you open it here.`
+                : syncView === "needs_attention"
+                  ? `COROS has this on ${formatDayLong(w.lastVerifiedCorosDate)}; Run Garden has ${formatDayLong(w.effectiveDate)}. Pick where it should live.`
+                  : syncView === "calendar_only"
+                    ? `Your COROS watch still has this on ${formatDayLong(w.lastVerifiedCorosDate)} — this move hasn't been written to COROS.`
+                    : syncView === "sync_issue"
+                      ? `The last update to COROS failed — your watch still shows ${formatDayLong(w.lastVerifiedCorosDate)}. Retry below.`
+                      : `COROS still shows ${formatDayLong(w.lastVerifiedCorosDate)} — the update is on its way.`}
           </Banner>
         ) : null}
         <div className="hero-durations">
@@ -281,13 +303,20 @@ function WorkoutDetail({
               <span className="rounds">{w.exerciseRounds} rounds of:</span>
             ) : null}
             <ul className="exercise-list">
-              {w.exercises!.map((e) => (
-                <li key={e.line}>
+              {/* Index-keyed: two identical lines in one circuit are real. */}
+              {w.exercises!.map((e, ei) => (
+                <li key={`${ei}-${e.line}`}>
                   {e.line}
                   {e.onWatch ? null : (
-                    <span className="faint" title="Your COROS library has no matching movement, so this session stays in Run Garden and your Calendar.">
+                    /* Per-movement, and careful about what it claims: the
+                       session is app-only because it is a lift, not because
+                       of this name (the note above says so). What THIS says
+                       is narrower and still worth saying — the library has no
+                       such movement, which is the one thing a rename could
+                       change. */
+                    <span className="faint" title="Your COROS exercise library has no movement by this name.">
                       {" "}
-                      · not on watch
+                      · not in watch library
                     </span>
                   )}
                 </li>
@@ -342,8 +371,12 @@ function WorkoutDetail({
 
         {/* The settings nudge only applies to a session COROS could carry —
             telling someone to enable writes for a wall-sit circuit that the
-            watch can never hold is a false promise. */}
-        {outOfSync && !corosWritesEnabled && (w.exercises?.length ?? 0) === 0 ? (
+            watch can never hold is a false promise. Same predicate as the
+            button, for the same reason. */}
+        {outOfSync &&
+        !corosWritesEnabled &&
+        (w.exercises?.length ?? 0) === 0 &&
+        w.watchCoverage?.coverage !== "none" ? (
           <p className="faint">
             COROS sync is off, so this can't be pushed to your watch.{" "}
             <Link to="/settings">Enable it in Settings</Link>.

@@ -21,6 +21,28 @@ export const COROS_SYNC_LABELS: Record<CorosSyncState, string> = {
   sync_issue: "Sync issue",
 };
 
+/**
+ * The per-workout view the API DERIVES (`sync-status.ts` `deriveWorkoutSync`),
+ * as opposed to the `coros_sync_state` column above.
+ *
+ * A superset by exactly one member, and the member is the reason the type had
+ * to fork. `CorosSyncState` is a claim about a session's DATE — every one of
+ * its six values compares "where Run Garden has it" with "where COROS has it"
+ * — so the derivation could return `synced` for a session whose date matched
+ * while the coach had rewritten its content underneath. There is no COROS job
+ * kind that writes content, so nothing was pending, nothing was failed, and
+ * the athlete was told their calf-sparing 30 minutes was on their watch when
+ * the watch held 5×3min at threshold.
+ *
+ * `content_stale` is that case, and it is a different sentence from
+ * `calendar_only`: "on your watch, but the version there is older" versus
+ * "not sent yet". Keeping it out of `CorosSyncState` keeps it out of the
+ * stored column, which no writer should ever put it in — it is not a fact
+ * about the calendar, and it is recomputed from the open content intent on
+ * every read.
+ */
+export type WorkoutSyncView = CorosSyncState | "content_stale";
+
 /** Relationship between a planned workout and its managed Calendar event. */
 export type CalendarSyncState =
   | "not_created" // no managed event yet (e.g. Calendar not connected)
