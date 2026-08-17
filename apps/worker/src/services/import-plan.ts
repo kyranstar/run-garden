@@ -55,6 +55,10 @@ export interface ImportStats {
   dedupedMirrors: number;
   verifiedJobs: number;
   conflicts: number;
+  /** Rows whose stage_summary was re-derived because the FORMATTER changed,
+   * not the workout. Never counts as a content change (no plan version, no
+   * sync note, no calendar state flip) — see the heal below. */
+  rewordedSummaries: number;
   unchanged: number;
 }
 
@@ -89,6 +93,7 @@ export async function importPlanSnapshot(
     dedupedMirrors: 0,
     verifiedJobs: 0,
     conflicts: 0,
+    rewordedSummaries: 0,
     unchanged: 0,
   };
 
@@ -538,6 +543,32 @@ export async function importPlanSnapshot(
       if (current.calendarSyncState === "synced") updates.calendarSyncState = "pending";
       await replaceStages(db, current.id, src);
       stats.updatedContent += 1;
+      touched = true;
+    } else if (
+      stageSummary !== undefined &&
+      current.stageSummary !== stageSummary &&
+      !contentIntentIds.has(current.id)
+    ) {
+      // WORDING HEAL (2026-08-17). The fingerprints agree, so COROS is
+      // serving the same workout this row already holds and the stored stage
+      // rows are the ones this summary was built from — the only thing that
+      // can have moved is how we WRITE it. Sub-minute stages used to round to
+      // whole minutes, so every row imported before the fix says "4 × 0 min
+      // Training / 1 min Rest" for a 15s-on/45s-off stride set, and would say
+      // it forever: nothing else rewrites this column while a workout is
+      // unchanged upstream. Today's card would then read "1 min" where the
+      // sheet it opens reads "30s".
+      //
+      // Deliberately narrow. It writes one derived string and nothing else:
+      // no dates, no state, no fingerprint, no `updatedContent`, so it can't
+      // capture a plan version, post a sync note, or flip a calendar row to
+      // pending. It is idempotent (second read: values equal, no write). And
+      // it stands down when a `content` intent claims the row — that summary
+      // was written by an approved coach edit from the session the athlete
+      // said yes to, and re-deriving it from COROS's untouched snapshot is
+      // exactly how audit#3 D1 silently reverted an ease.
+      updates.stageSummary = stageSummary;
+      stats.rewordedSummaries += 1;
       touched = true;
     }
 

@@ -1,7 +1,12 @@
 import { describe, expect, it } from "vitest";
 import type { PlannedStage } from "@rg/domain";
 import { estimateDuration } from "../src/estimate.js";
-import { deriveWorkoutSeconds, flattenStages, summarizeStages } from "../src/stages.js";
+import {
+  deriveWorkoutSeconds,
+  flattenStages,
+  summarizeStageRows,
+  summarizeStages,
+} from "../src/stages.js";
 
 const paceContext = { defaultPaceSecPerKm: 390 };
 
@@ -130,5 +135,77 @@ describe("summarizeStages", () => {
   it("produces a compact readable summary", () => {
     const s = summarizeStages(thresholdStages);
     expect(s).toBe("15 min warmup · 5 × 5 min / 2 min recovery · 10 min cooldown");
+  });
+
+  /**
+   * The stored summary IS the prescription for the Today card, the plan sheet
+   * and the coach's UPCOMING lines. It used to round every stage to whole
+   * minutes, and prod's real interval sessions are where that breaks:
+   * `9ca6bb02` (15s on / 45s off) was stored as "4 × 0 min Training / 1 min
+   * Rest" — a prescription of zero, and a recovery that read the same as the
+   * genuinely-60s cooldown one segment earlier.
+   */
+  it("writes a sub-minute stage in seconds, not as '0 min'", () => {
+    const strides: PlannedStage[] = [
+      { id: "w", order: 1, kind: "work", durationType: "time", durationSeconds: 2400, label: "Training" },
+      { id: "c", order: 2, kind: "cooldown", durationType: "time", durationSeconds: 60, label: "Cool Down" },
+      { id: "r", order: 3, kind: "repeat", repeatCount: 4, durationType: "none" },
+      { id: "on", order: 1, parentStageId: "r", kind: "work", durationType: "time", durationSeconds: 15, label: "Training" },
+      { id: "off", order: 2, parentStageId: "r", kind: "recovery", durationType: "time", durationSeconds: 45, label: "Rest" },
+    ];
+    expect(summarizeStages(strides)).toBe(
+      "40 min Training · 1 min Cool Down · 4 × 15s Training / 45s Rest",
+    );
+    // Boundary-anchored: "40 min" contains "0 min", and a naive substring
+    // check here passes for the wrong reason.
+    expect(summarizeStages(strides)).not.toMatch(/(^|[ ·/])0 min/);
+  });
+
+  it("keeps a 30s/60s strides block's work:rest ratio readable", () => {
+    // Live prod row 0a66a4b3: stored as "4 × 1 min Training / 1 min Rest",
+    // which turns 1:2 into 1:1 — the one number the block is about.
+    const hills: PlannedStage[] = [
+      { id: "r", order: 1, kind: "repeat", repeatCount: 4, durationType: "none" },
+      { id: "on", order: 1, parentStageId: "r", kind: "work", durationType: "time", durationSeconds: 30, label: "Training" },
+      { id: "off", order: 2, parentStageId: "r", kind: "recovery", durationType: "time", durationSeconds: 60, label: "Rest" },
+    ];
+    expect(summarizeStages(hills)).toBe("4 × 30s Training / 1 min Rest");
+  });
+
+  it("says 90 seconds as the interval idiom, not as a rounded 2 min", () => {
+    // Live prod row cfac25ab: 800m repeats off 90s recovery, stored "2 min".
+    const repeats: PlannedStage[] = [
+      { id: "r", order: 1, kind: "repeat", repeatCount: 4, durationType: "none" },
+      { id: "on", order: 1, parentStageId: "r", kind: "work", durationType: "distance", distanceMeters: 804.67, label: "Training" },
+      { id: "off", order: 2, parentStageId: "r", kind: "recovery", durationType: "time", durationSeconds: 90, label: "Rest" },
+    ];
+    expect(summarizeStages(repeats)).toBe("4 × 805 m Training / 90s Rest");
+  });
+});
+
+describe("summarizeStageRows", () => {
+  /**
+   * The detail route re-derives the summary from the stored rows so the
+   * sheet's summary line cannot contradict the stage list beside it. That only
+   * holds if the two entry points produce the SAME string — this is the drift
+   * guard for the row-shape adapter (`ord` vs `order`, nulls vs absent).
+   */
+  it("gives byte-identical output to summarizeStages for the same stages", () => {
+    const rows = [
+      { id: "w", ord: 16777216, kind: "work", durationType: "time", durationSeconds: 2400, label: "Training", parentStageId: null, repeatCount: null, distanceMeters: null },
+      { id: "c", ord: 33554432, kind: "cooldown", durationType: "time", durationSeconds: 60, label: "Cool Down", parentStageId: null, repeatCount: null, distanceMeters: null },
+      { id: "r", ord: 50331648, kind: "repeat", durationType: "none", repeatCount: 4, parentStageId: null, durationSeconds: null, distanceMeters: null, label: null },
+      { id: "on", ord: 50397184, kind: "work", durationType: "time", durationSeconds: 15, label: "Training", parentStageId: "r", repeatCount: null, distanceMeters: null },
+      { id: "off", ord: 50462720, kind: "recovery", durationType: "time", durationSeconds: 45, label: "Rest", parentStageId: "r", repeatCount: null, distanceMeters: null },
+    ];
+    // The exact shape prod stores for `9ca6bb02`, huge sortNo `ord`s and all.
+    expect(summarizeStageRows(rows)).toBe(
+      "40 min Training · 1 min Cool Down · 4 × 15s Training / 45s Rest",
+    );
+  });
+
+  it("has no summary to give when a workout has no stage rows", () => {
+    // Coach-authored sessions: the caller must fall back to the stored string.
+    expect(summarizeStageRows([])).toBe("");
   });
 });

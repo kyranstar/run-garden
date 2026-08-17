@@ -7,6 +7,7 @@ import {
   type CoachRunBlock,
   type CoachSession,
 } from "./coach.js";
+import { formatStageDuration } from "./duration.js";
 import { isoWeekday } from "./time.js";
 
 /**
@@ -93,9 +94,12 @@ function blockDetail(b: CoachExerciseBlock): string[] {
 }
 
 function runBlockDetail(b: CoachRunBlock): string {
+  // Durations through the shared formatter (`value` is MINUTES here) so the
+  // manifest, the stored stage summary and the sheet's stage list have one
+  // vocabulary. Whole minutes read exactly as they always did.
   const work =
     b.kind === "duration"
-      ? `${b.value} min`
+      ? formatStageDuration(b.value * 60)
       : b.value >= 1000
         ? `${Number((b.value / 1000).toFixed(2))} km`
         : `${b.value} m`;

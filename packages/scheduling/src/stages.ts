@@ -1,4 +1,4 @@
-import type { PlannedStage } from "@rg/domain";
+import { formatStageDuration, type PlannedStage } from "@rg/domain";
 
 /**
  * Stage flattening and duration derivation — the fallback estimator used when
@@ -103,7 +103,7 @@ export function deriveStageSeconds(stage: PlannedStage, ctx: PaceResolutionConte
         ctx.openStageDefaults?.[stage.kind] ??
         DEFAULT_OPEN_STAGE_SECONDS[stage.kind] ??
         10 * 60;
-      assumptions.push(`Assumed ${Math.round(fallback / 60)} min for open ${stage.kind} stage`);
+      assumptions.push(`Assumed ${formatStageDuration(fallback)} for open ${stage.kind} stage`);
       return { seconds: fallback, assumptions };
     }
     case "none":
@@ -126,7 +126,16 @@ export function deriveWorkoutSeconds(
   return { seconds: Math.round(total), assumptions: [...assumptions] };
 }
 
-/** Compact human summary like "15 min easy · 5 × 5 min threshold / 2 min jog · 10 min cooldown". */
+/**
+ * Compact human summary like "15 min warmup · 5 × 5 min / 2 min recovery ·
+ * 10 min cooldown" — the string stored in `planned_workouts.stage_summary`.
+ *
+ * Durations go through `formatStageDuration` (@rg/domain), the SAME formatter
+ * the client's stage tree uses, because the stored summary and the sheet's
+ * "Full structure" list sit one tap apart on the same screen: when this said
+ * "0 min Training" and that said "15s", a reader had two prescriptions for one
+ * interval and no way to tell which to run.
+ */
 export function summarizeStages(stages: PlannedStage[]): string {
   const byParent = new Map<string | null, PlannedStage[]>();
   for (const s of stages) {
@@ -138,7 +147,7 @@ export function summarizeStages(stages: PlannedStage[]): string {
   const fmt = (s: PlannedStage): string => {
     const amount =
       s.durationType === "time" && s.durationSeconds
-        ? `${Math.round(s.durationSeconds / 60)} min`
+        ? formatStageDuration(s.durationSeconds)
         : s.durationType === "distance" && s.distanceMeters
           ? s.distanceMeters >= 1000
             ? `${(s.distanceMeters / 1000).toFixed(s.distanceMeters % 1000 === 0 ? 0 : 1)} km`
@@ -159,4 +168,58 @@ export function summarizeStages(stages: PlannedStage[]): string {
     }
   }
   return parts.join(" · ");
+}
+
+/**
+ * A `planned_workout_stages` row, as the database hands it back: `ord` instead
+ * of `order`, and every optional column nullable rather than absent.
+ */
+export interface StoredStageRow {
+  id: string;
+  parentStageId?: string | null;
+  ord: number;
+  kind: string;
+  repeatCount?: number | null;
+  durationType: string;
+  durationSeconds?: number | null;
+  distanceMeters?: number | null;
+  label?: string | null;
+}
+
+/**
+ * The summary a workout's STORED stage rows say it has.
+ *
+ * `stage_summary` is derived text with no upstream of its own: it is whatever
+ * `summarizeStages` produced from the stage rows at import time, so any reader
+ * holding those rows can recompute it — and a reader that recomputes cannot be
+ * shown wording from before a formatter fix while the stage list beside it
+ * shows wording from after. The workout-detail route (which already loads the
+ * rows, for the "Full structure" list) does exactly that.
+ *
+ * Same function, same string: the only difference from `summarizeStages` is
+ * the row shape. The enum casts are honest — SQLite holds no enum constraint,
+ * and the writer validated these values on the way in.
+ */
+export function summarizeStageRows(rows: readonly StoredStageRow[]): string {
+  return summarizeStages(
+    rows.map((r) => ({
+      id: r.id,
+      ...(r.parentStageId !== null && r.parentStageId !== undefined
+        ? { parentStageId: r.parentStageId }
+        : {}),
+      order: r.ord,
+      kind: r.kind as PlannedStage["kind"],
+      ...(r.repeatCount !== null && r.repeatCount !== undefined
+        ? { repeatCount: r.repeatCount }
+        : {}),
+      durationType: r.durationType as PlannedStage["durationType"],
+      ...(r.durationSeconds !== null && r.durationSeconds !== undefined
+        ? { durationSeconds: r.durationSeconds }
+        : {}),
+      ...(r.distanceMeters !== null && r.distanceMeters !== undefined
+        ? { distanceMeters: r.distanceMeters }
+        : {}),
+      ...(r.label !== null && r.label !== undefined ? { label: r.label } : {}),
+    })),
+  );
 }

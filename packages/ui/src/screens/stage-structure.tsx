@@ -1,4 +1,5 @@
 import type { ReactNode, Ref } from "react";
+import { formatStageDuration } from "@rg/domain";
 import { formatDistance, formatPace, type Units } from "../components.js";
 
 /**
@@ -90,7 +91,12 @@ function repeatLabel(stage: StageRow): string | null {
 }
 
 /** One leaf stage's line: kind, amount, target band, label — unchanged from
- * the flat list it replaces, so nothing a reader relied on moved. */
+ * the flat list it replaces, so nothing a reader relied on moved.
+ *
+ * The amount is `formatStageDuration` (@rg/domain), shared with the stored
+ * `stage_summary` line a few pixels above this list. Before that, both rounded
+ * to whole minutes independently, and prod's own strides session — 15s on, 45s
+ * off — read "work — 0 min" here and "0 min Training / 1 min Rest" there. */
 function describeStage(stage: StageRow, units: Units): string {
   // Pace targets arrive either way round — COROS writes recovery blocks
   // slow-first — so order by value, not by column.
@@ -105,7 +111,7 @@ function describeStage(stage: StageRow, units: Units): string {
   const label = str(stage.label);
   return [
     String(stage.kind ?? ""),
-    seconds ? ` — ${Math.round(seconds / 60)} min` : "",
+    seconds ? ` — ${formatStageDuration(seconds)}` : "",
     metres ? ` — ${formatDistance(metres, units, 2)}` : "",
     band
       ? ` @ ${formatPace(band.fast, units).replace(` /${units}`, "")}–${formatPace(band.slow, units)}`

@@ -208,6 +208,110 @@ describe("importPlanSnapshot through the reconciler", () => {
   });
 });
 
+/**
+ * `stage_summary` is DERIVED text: whatever `summarizeStages` made of the stage
+ * rows at import time. So a row imported before the sub-minute fix keeps that
+ * fix's absence forever — prod's strides session reads "4 × 0 min / 1 min
+ * recovery" while the sheet's own stage list, rebuilt from the same rows, reads
+ * "15s / 45s". Same reader, one tap apart, two prescriptions.
+ */
+describe("stage-summary wording heal", () => {
+  /** The prod shape the fixture now carries: 15s on, 45s off, inside a 4× group. */
+  const stridesRow = async () =>
+    (
+      await db
+        .select()
+        .from(plannedWorkouts)
+        .where(eq(plannedWorkouts.title, "Easy Run with 15-Second Strides"))
+    )[0]!;
+
+  it("imports short intervals in seconds, so nothing is prescribed as '0 min'", async () => {
+    await importFromProvider();
+    const w = await stridesRow();
+    expect(w.stageSummary).toBe("40 min · 1 min cooldown · 4 × 15s / 45s recovery");
+    // Boundary-anchored: "40 min" contains "0 min", so the bare substring
+    // check passes for the wrong reason (it did, twice, while writing this).
+    expect(w.stageSummary).not.toMatch(/(^|[ ·/])0 min/);
+  });
+
+  it("re-derives a summary written by an older formatter, and nothing else", async () => {
+    await importFromProvider();
+    const before = await stridesRow();
+    // Exactly what prod holds for `9ca6bb02`, in this fixture's label voice.
+    await db
+      .update(plannedWorkouts)
+      .set({ stageSummary: "40 min · 1 min cooldown · 4 × 0 min / 1 min recovery" })
+      .where(eq(plannedWorkouts.id, before.id));
+
+    const stats = await importFromProvider();
+    expect(stats.rewordedSummaries).toBe(1);
+    // NOT a content change: no plan version, no calendar churn, no date move.
+    expect(stats.updatedContent).toBe(0);
+
+    const after = await stridesRow();
+    expect(after.stageSummary).toBe("40 min · 1 min cooldown · 4 × 15s / 45s recovery");
+    expect(after.sourceContentFingerprint).toBe(before.sourceContentFingerprint);
+    expect(after.effectiveDate).toBe(before.effectiveDate);
+    expect(after.calendarSyncState).toBe(before.calendarSyncState);
+    expect(after.corosSyncState).toBe(before.corosSyncState);
+  });
+
+  it("is idempotent — a second read writes nothing", async () => {
+    await importFromProvider();
+    const stats = await importFromProvider();
+    expect(stats.rewordedSummaries).toBe(0);
+  });
+
+  it("never overwrites a summary a coach edit owns", async () => {
+    // audit#3 D1's exact failure mode: re-deriving content from COROS's
+    // untouched snapshot silently un-does an approved ease. The wording heal
+    // reads from that same snapshot, so it must stand down the same way.
+    // An `ease` rewrites the fingerprint too (coach-apply.ts), so this row
+    // takes rule 7's claim branch...
+    await importFromProvider();
+    const w = await stridesRow();
+    await db
+      .update(plannedWorkouts)
+      .set({ stageSummary: "30 min easy", sourceContentFingerprint: "app-fnv-claim" })
+      .where(eq(plannedWorkouts.id, w.id));
+    await recordIntent(db, {
+      userId,
+      targetKind: "workout",
+      targetId: w.id,
+      kind: "content",
+      source: "coach_ease",
+    });
+
+    const stats = await importFromProvider();
+    expect(stats.rewordedSummaries).toBe(0);
+    expect((await stridesRow()).stageSummary).toBe("30 min easy");
+  });
+
+  it("stands down for a claimed row even when the fingerprints agree", async () => {
+    // ...and the heal must ALSO refuse when they don't diverge, or it becomes
+    // a second, quieter way for the snapshot to reclaim content the athlete
+    // approved. Today only the branch above can happen; this pins the guard so
+    // a future fingerprint change can't open the hole.
+    await importFromProvider();
+    const w = await stridesRow();
+    await db
+      .update(plannedWorkouts)
+      .set({ stageSummary: "30 min easy" }) // fingerprint deliberately untouched
+      .where(eq(plannedWorkouts.id, w.id));
+    await recordIntent(db, {
+      userId,
+      targetKind: "workout",
+      targetId: w.id,
+      kind: "content",
+      source: "coach_ease",
+    });
+
+    const stats = await importFromProvider();
+    expect(stats.rewordedSummaries).toBe(0);
+    expect((await stridesRow()).stageSummary).toBe("30 min easy");
+  });
+});
+
 describe("rule 8 provenance guard (audit#2 finding 1)", () => {
   it("coach-authored rows are NEVER archived by the absence sweep; COROS-verified absentees still are", async () => {
     await importFromProvider();

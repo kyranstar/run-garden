@@ -53,7 +53,10 @@ describe("applyOps", () => {
     expect(w!.title).toBe("Steady 40 Z2");
     expect(w!.category).toBe("easy");
     expect(w!.corosSyncState).toBe("calendar_only");
-    expect(w!.stageSummary).toBe("40min easy");
+    // One vocabulary with the imported summaries this column also holds — a
+    // coach row and a COROS row share the Today card, and "40min easy" beside
+    // "40 min Training" is two products on one screen.
+    expect(w!.stageSummary).toBe("40 min easy");
   });
 
   it("skip resolves the workout", async () => {

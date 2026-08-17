@@ -35,7 +35,7 @@ import {
   type UserPreferences,
 } from "@rg/domain";
 import { conditionWord, DEFAULT_GARDEN_CONFIG, type GardenSnapshot } from "@rg/garden-engine";
-import { proposeReschedules } from "@rg/scheduling";
+import { proposeReschedules, summarizeStageRows } from "@rg/scheduling";
 import type { AppContext } from "../auth/middleware.js";
 import { requireUser } from "../auth/middleware.js";
 import { googleCalendarClient } from "../services/google-calendar.js";
@@ -127,6 +127,19 @@ function workoutDto(
   w: typeof plannedWorkouts.$inferSelect,
   corosSyncView?: ReturnType<typeof deriveWorkoutSync>,
   catalog?: Map<string, string>,
+  /**
+   * The summary recomputed from this workout's stage rows — passed by the
+   * detail route, which loads them anyway for the "Full structure" list.
+   *
+   * `stage_summary` is derived text, so a row stored before a formatter fix
+   * carries that fix's absence forever: prod's strides session still says
+   * "4 × 0 min Training / 1 min Rest" for 15s on / 45s off. Re-deriving where
+   * the rows are already in hand costs no query and makes the sheet agree with
+   * itself for EVERY row ever written — including archived and long-past ones
+   * that no COROS read will ever refresh. Falls back to the stored string for
+   * coach-authored sessions, which have no stage rows at all.
+   */
+  derivedStageSummary?: string,
 ) {
   // COROS structured names are frequently opaque codes ("T1004") — every UI
   // surface gets the humanized name; the raw one rides along as corosName
@@ -147,8 +160,13 @@ function workoutDto(
     workoutSeconds: w.sourceEstimatedDurationSeconds ?? w.fallbackEstimatedDurationSeconds,
     estimateSource: (w.durationEstimate as { source?: string } | null)?.source,
     calendarSeconds: w.calendarBlockDurationSeconds,
-    stageSummary:
-      w.stageSummary && catalog ? resolveCodesInText(w.stageSummary, catalog) : w.stageSummary,
+    stageSummary: (() => {
+      // The derived one is built from stage rows whose labels this route has
+      // already resolved, so it needs no second pass; the stored one still
+      // does (its exercise names are raw catalog codes).
+      if (derivedStageSummary) return derivedStageSummary;
+      return w.stageSummary && catalog ? resolveCodesInText(w.stageSummary, catalog) : w.stageSummary;
+    })(),
     calendarSyncState: w.calendarSyncState,
     corosSyncState: w.corosSyncState,
     // Derived per-workout view (sync-transparency Task 10), alongside the
@@ -695,7 +713,12 @@ planRoutes.get("/workouts/:id", async (c) => {
     .orderBy(desc(corosWriteJobs.requestedAt))
     .limit(3);
   return c.json({
-    workout: workoutDto(w, syncViews.get(w.id), catalog),
+    workout: workoutDto(
+      w,
+      syncViews.get(w.id),
+      catalog,
+      stages.length > 0 ? summarizeStageRows(stages) : undefined,
+    ),
     durationEstimate: w.durationEstimate,
     stages,
     match: match

@@ -12,6 +12,7 @@ import {
   addDays,
   addOpDates,
   formatExerciseBlock,
+  formatStageDuration,
   newId,
   nowInstant,
   paceBandFor,
@@ -71,8 +72,15 @@ function fingerprint(v: unknown): string {
 
 function stageSummary(s: CoachSession): string {
   if (s.run && s.run.blocks.length > 0) {
+    // `formatStageDuration`, like the imported summaries this column also
+    // holds: coach rows and COROS rows sit in the same Today card and the same
+    // week list, and "40min easy" beside "40 min Training" is two products on
+    // one screen. A duration block's `value` is MINUTES on the wire.
     return s.run.blocks
-      .map((b) => `${b.kind === "duration" ? `${b.value}min` : `${(b.value / 1000).toFixed(1)}km`}${b.intensity ? ` ${b.intensity}` : ""}`)
+      .map(
+        (b) =>
+          `${b.kind === "duration" ? formatStageDuration(b.value * 60) : `${(b.value / 1000).toFixed(1)}km`}${b.intensity ? ` ${b.intensity}` : ""}`,
+      )
       .join(" · ");
   }
   // One formatter, shared with the session sheet (domain/coach.ts) — a hold

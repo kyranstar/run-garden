@@ -149,6 +149,42 @@ describe("the shapes production is actually full of", () => {
     expect(markup).toContain("repeat");
   });
 
+  /**
+   * The prescription's own numbers. This list sits a few pixels under the
+   * stored `stageSummary` line, and both used to round to whole minutes
+   * independently, so prod's strides session (`9ca6bb02`: 15s on, 45s off)
+   * printed "work — 0 min" here — a step with no duration at all — and the
+   * 45s recovery printed the same "1 min" as the genuinely-60s cooldown.
+   */
+  it("prints a sub-minute stage in seconds — a 15s stride is never '0 min'", () => {
+    const markup = html([
+      stage({ id: "g", ord: 1, kind: "repeat", repeatCount: 4, label: "Group" }),
+      stage({ id: "on", ord: 2, kind: "work", parentStageId: "g", durationSeconds: 15, label: "Training" }),
+      stage({ id: "off", ord: 3, kind: "recovery", parentStageId: "g", durationSeconds: 45, label: "Rest" }),
+    ]);
+    expect(markup).toContain("work — 15s (Training)");
+    expect(markup).toContain("recovery — 45s (Rest)");
+    // Boundary-anchored: "40 min" contains "0 min", so a bare substring check
+    // would pass for the wrong reason on any longer session.
+    expect(markup).not.toMatch(/(^|[ >])0 min/);
+  });
+
+  it("does not spell 45s and 60s the same way", () => {
+    const markup = html([
+      stage({ id: "a", ord: 1, kind: "recovery", durationSeconds: 45 }),
+      stage({ id: "b", ord: 2, kind: "cooldown", durationSeconds: 60 }),
+    ]);
+    expect(markup).toContain("recovery — 45s");
+    expect(markup).toContain("cooldown — 1 min");
+  });
+
+  it("says 90s the way an interval session is written", () => {
+    // 13 prod recovery stages are 90s; every one of them read "2 min".
+    expect(html([stage({ id: "a", ord: 1, kind: "recovery", durationSeconds: 90 })])).toContain(
+      "recovery — 90s",
+    );
+  });
+
   it("shows a pace band ordered fast→slow whichever way round it was stored", () => {
     const markup = html([
       stage({ id: "a", ord: 1, kind: "work", durationSeconds: 300, targetType: "pace", targetLow: 266, targetHigh: 255 }),
