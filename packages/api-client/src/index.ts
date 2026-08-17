@@ -40,11 +40,28 @@ export class ApiError extends Error {
  * request actually REJECTS. Long-running AI calls pass their own budget. */
 const DEFAULT_TIMEOUT_MS = 30_000;
 
-async function request<T>(path: string, init?: RequestInit, timeoutMs = DEFAULT_TIMEOUT_MS): Promise<T> {
+/**
+ * No deadline at all — for a request the UI FIRES rather than waits on.
+ *
+ * The coach's wake thinks for minutes inside its own request (a detached
+ * `waitUntil` is cancelled seconds after the response — measured in prod,
+ * 2026-08-17), and an abort is the one thing that could cut that thinking
+ * short: the worker demonstrably keeps working after the client goes away,
+ * but not after the connection is torn down. So these are sent with no
+ * signal, and nothing in the UI depends on them settling — the reply arrives
+ * through `coachState`'s `coachThinking` poll instead.
+ */
+export const NO_DEADLINE = null;
+
+async function request<T>(
+  path: string,
+  init?: RequestInit,
+  timeoutMs: number | null = DEFAULT_TIMEOUT_MS,
+): Promise<T> {
   const res = await fetch(path, {
     credentials: "same-origin",
     headers: init?.body ? { "Content-Type": "application/json" } : undefined,
-    signal: AbortSignal.timeout(timeoutMs),
+    signal: timeoutMs === null ? undefined : AbortSignal.timeout(timeoutMs),
     ...init,
   });
   if (!res.ok) {
@@ -60,7 +77,7 @@ async function request<T>(path: string, init?: RequestInit, timeoutMs = DEFAULT_
 }
 
 export const get = <T>(path: string) => request<T>(path);
-export const post = <T>(path: string, body?: unknown, timeoutMs?: number) =>
+export const post = <T>(path: string, body?: unknown, timeoutMs?: number | null) =>
   request<T>(
     path,
     { method: "POST", body: body === undefined ? undefined : JSON.stringify(body) },
@@ -469,11 +486,9 @@ export interface CoachStateResponse {
 }
 
 export interface CoachWakeResult {
-  /** "working": the wake was dispatched and is thinking past this response
-   * (2026-08-17). The reply arrives through ["coach-state"], which polls
-   * while `coachThinking` — the same path that already carries a reply
-   * across a navigation. */
-  status: "ok" | "skipped" | "busy" | "resting" | "error" | "working";
+  /** Arrives when the wake is FINISHED — minutes, possibly never (see
+   * `NO_DEADLINE`). Useful when it lands; nothing waits for it. */
+  status: "ok" | "skipped" | "busy" | "resting" | "error";
   coachMessageId?: string;
   proposalIds?: string[];
 }
@@ -755,12 +770,13 @@ export const api = {
   // ── The coach (worker routes: apps/worker/src/routes/coach.ts) ───────────
   coachState: (before?: string) =>
     get<CoachStateResponse>(`/api/coach/state${before ? `?before=${encodeURIComponent(before)}` : ""}`),
-  // Wakes return as soon as they are dispatched (2026-08-17) — the thinking
-  // outlives the request, so these are ordinary short calls again. The old
-  // 320s budget was the client waiting out the whole model call, which is
-  // what turned a slow wake into an aborted one.
-  coachWake: (force = false) => post<CoachWakeResult>("/api/coach/wake", { force }),
-  coachMessage: (body: string) => post<CoachWakeResult>("/api/coach/message", { body }),
+  // A wake runs INSIDE its request and takes minutes, so these carry no
+  // deadline (2026-08-17): the old 320s budget was the athlete's patience
+  // acting as the ceiling on the coaching, and its abort was the only thing
+  // that could actually cut a live wake short. Fire, then watch
+  // `coachState().coachThinking`.
+  coachWake: (force = false) => post<CoachWakeResult>("/api/coach/wake", { force }, NO_DEADLINE),
+  coachMessage: (body: string) => post<CoachWakeResult>("/api/coach/message", { body }, NO_DEADLINE),
   coachAnalyze: (activityId: string, force = false) =>
     post<CoachAnalyzeResult>(`/api/coach/analyze/${activityId}`, { force }, 320_000),
   coachApprove: (proposalId: string) =>
@@ -768,7 +784,7 @@ export const api = {
   coachDecline: (proposalId: string) =>
     post<{ ok: boolean }>(`/api/coach/proposals/${proposalId}/decline`),
   coachAnswerQuestion: (questionId: string, answer: string) =>
-    post<{ ok: boolean }>(`/api/coach/questions/${questionId}/answer`, { answer }),
+    post<{ ok: boolean }>(`/api/coach/questions/${questionId}/answer`, { answer }, NO_DEADLINE),
   coachDismissQuestion: (questionId: string) =>
     post<{ ok: boolean }>(`/api/coach/questions/${questionId}/dismiss`),
   coachMemoryList: () => get<{ memory: CoachMemoryItem[] }>("/api/coach/memory"),

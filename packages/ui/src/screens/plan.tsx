@@ -409,6 +409,12 @@ function proposalActionErrorMessage(err: unknown): string {
   return "Couldn't reach the coach — try again.";
 }
 
+/** How long "we just asked for a wake" counts as thinking on its own, before
+ * the server's own answer takes over. Long enough for the request to reach
+ * the route and for the 3s poll to read back what it wrote; short enough
+ * that a send which never arrived clears itself. */
+const WAKE_BRIDGE_MS = 15_000;
+
 /**
  * Coach data wiring (Plan B Task B2): one shared ["coach-state"] query feeds
  * the panel AND the week's ghost diffs. On mount, a wake fires only when
@@ -417,15 +423,46 @@ function proposalActionErrorMessage(err: unknown): string {
  */
 function usePlanCoach() {
   const qc = useQueryClient();
+  // A wake we have just asked for, before the server has had the chance to
+  // say it is thinking. The POST itself is fired and never waited on (see
+  // `NO_DEADLINE`), so mutation state can't drive the spinner: a request
+  // that never settles would pin "Coach is thinking…" on forever. Server
+  // truth (`coachThinking`) drives it; this bridges the seconds before the
+  // first read that can see the wake — including a read already in flight
+  // when we fired, which would otherwise answer "not thinking" from before
+  // our request and stop the poll dead.
+  //
+  // It expires on a timer rather than by comparing clocks at render time:
+  // if the polled state stops changing, nothing re-renders, and a bridge
+  // that can only end during a render would never end at all.
+  const [bridging, setBridging] = useState(false);
+  const [wakesAsked, setWakesAsked] = useState(0);
+  const fired = () => {
+    setBridging(true);
+    setWakesAsked((n) => n + 1); // re-arms the timer below, even mid-bridge
+  };
+  useEffect(() => {
+    if (wakesAsked === 0) return;
+    const t = setTimeout(() => setBridging(false), WAKE_BRIDGE_MS);
+    return () => clearTimeout(t);
+  }, [wakesAsked]);
   const state = useQuery({
     queryKey: ["coach-state"],
     queryFn: () => api.coachState(),
     // While a wake runs server-side, poll until the reply lands — this is
-    // what keeps "Coach is thinking…" true across page navigations.
-    refetchInterval: (q) => (q.state.data?.coachThinking ? 3_000 : false),
+    // what keeps "Coach is thinking…" true across page navigations, and what
+    // carries every reply now that no response is waited on.
+    refetchInterval: (q) => (q.state.data?.coachThinking || bridging ? 3_000 : false),
   });
+  const thinking = (state.data?.coachThinking ?? false) || bridging;
   const invalidate = () => void qc.invalidateQueries({ queryKey: ["coach-state"] });
-  const wakeMut = useMutation({ mutationFn: (force: boolean) => api.coachWake(force), onSettled: invalidate });
+  const wakeMut = useMutation({
+    mutationFn: (force: boolean) => api.coachWake(force),
+    onMutate: fired,
+    // Settles when the wake FINISHES (minutes), or never. Either is fine —
+    // the poll has already carried the reply by then.
+    onSettled: invalidate,
+  });
   const wakeFired = useRef(false);
   useEffect(() => {
     if (state.data?.wakeAdvised && !wakeFired.current) {
@@ -466,7 +503,10 @@ function usePlanCoach() {
   };
   const send = useMutation({
     mutationFn: (v: { localId: string; body: string }) => api.coachMessage(v.body),
-    onMutate: (v) => echo(v.localId, v.body),
+    onMutate: (v) => {
+      echo(v.localId, v.body);
+      fired();
+    },
     // Audit C16: a network-failed send used to silently vanish — the draft
     // was cleared on submit, and `onSettled: invalidate` (which ran even on
     // error) replaced the cache with the server's truth, which never saw
@@ -474,11 +514,12 @@ function usePlanCoach() {
     // optimistic echo itself so CoachThread can offer a retry instead of
     // erasing it.
     onError: (err, v) => {
-      // Audit C16 residual: a timeout can fire AFTER the request reached the
-      // server — the route persists the athlete's message before it answers
-      // (and before the wake is even dispatched), so an abort doesn't prove
-      // the words were lost the way a network error (never left the browser)
-      // does.
+      // Audit C16 residual: an abort can fire AFTER the request reached the
+      // server — the route persists the athlete's message before the wake
+      // spends a second thinking, so an abort doesn't prove the words were
+      // lost the way a network error (never left the browser) does. The send
+      // carries no deadline of its own any more, but a navigation or an
+      // unload still aborts it in flight.
       // Refetch first and only mark it failed if it's genuinely absent.
       const isAbort = err instanceof DOMException && (err.name === "AbortError" || err.name === "TimeoutError");
       if (isAbort) {
@@ -495,6 +536,8 @@ function usePlanCoach() {
       markSendFailed(v.localId, v.body);
     },
     onSuccess: (res, v) => {
+      // Opportunistic, never depended on — this lands when the wake is done,
+      // long after the poll has shown the reply.
       // "busy": another wake held the lock past our patience — the message
       // IS saved server-side, but no reply came. Mark the echo so the
       // existing retry affordance offers to ask again (audit finding 16).
@@ -535,6 +578,7 @@ function usePlanCoach() {
   });
   const answer = useMutation({
     mutationFn: (v: { id: string; answer: string }) => api.coachAnswerQuestion(v.id, v.answer),
+    onMutate: fired,
     onSettled: invalidate,
   });
   const dismissQuestion = useMutation({
@@ -543,7 +587,10 @@ function usePlanCoach() {
   });
   return {
     state,
-    busy: wakeMut.isPending || send.isPending || answer.isPending || (state.data?.coachThinking ?? false),
+    // Deliberately NOT the mutations' isPending: those requests have no
+    // deadline, so one that never settles would disable the composer for
+    // good. The server says when the coach is thinking, and stops saying it.
+    busy: thinking,
     acting: approve.isPending || decline.isPending,
     proposalErrors,
     send: (b: string) => send.mutate({ localId: `local-${newLocalId()}`, body: b }),

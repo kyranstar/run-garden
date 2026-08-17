@@ -51,14 +51,9 @@ test("the athlete's verbatim ski-prep message produces real proposals with real 
   });
   expect(res.ok()).toBeTruthy();
 
-  // The wake outlives the request it was asked for (2026-08-17): the route
-  // dispatches and answers "working", and `coachThinking` says when it's
-  // done — the same signal the app itself polls.
-  let state = await (await context.request.get(`${baseURL}/api/coach/state`)).json();
-  for (let i = 0; i < 120 && state.coachThinking === true; i++) {
-    await new Promise((r) => setTimeout(r, 1_000));
-    state = await (await context.request.get(`${baseURL}/api/coach/state`)).json();
-  }
+  // The wake is awaited inside the POST above (2026-08-17), so by the time
+  // it answered, the thread is finished.
+  const state = await (await context.request.get(`${baseURL}/api/coach/state`)).json();
   console.log("\n=== RECEIPTS / MESSAGES ===");
   for (const m of state.messages as Array<Record<string, unknown>>) {
     console.log(`  [${m.role}] ${String(m.body).slice(0, 220)}`);

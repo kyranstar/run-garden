@@ -8,7 +8,8 @@ import { and, eq } from "drizzle-orm";
 import { schema } from "@rg/database";
 import { addDays, newId, nowInstant, todayInZone } from "@rg/domain";
 import type { Db } from "../src/services/db.js";
-import { openWakeIsFresh, wake } from "../src/services/coach-wake.js";
+import { openWakeIsFresh, wake, WAKE_LOCK_STALE_MINUTES } from "../src/services/coach-wake.js";
+import { claimUserLock, touchUserLock } from "../src/services/locks.js";
 import { makeTestDb, makeTestUser } from "./helpers.js";
 import type { Env } from "../src/env.js";
 
@@ -1204,5 +1205,79 @@ describe("the second call has to earn itself", () => {
     expect(msgs).toHaveLength(1);
     const props = await db.select().from(schema.coachProposals).where(eq(schema.coachProposals.userId, userId));
     expect(props).toHaveLength(1);
+  });
+});
+
+/**
+ * THE WAKE LOCK: a dead holder is cheap, a live one is untouchable
+ * (2026-08-17).
+ *
+ * Live, a cancelled wake left a `coach_locks` row nobody had released. It
+ * self-heals — but the window was ten minutes, chosen back when nothing
+ * bounded a wake, and for those ten minutes the athlete's next attempt would
+ * have been told "busy" while `/coach/state` went on insisting the coach was
+ * thinking about a wake that no longer existed.
+ *
+ * The window is `WAKE_LOCK_STALE_MINUTES` now, and the holder heartbeats, so
+ * shortening it cannot cost a genuinely slow wake its claim.
+ */
+describe("the wake lock's staleness window", () => {
+  async function seedLock(db: Db, userId: string, ageMinutes: number): Promise<void> {
+    await db.insert(schema.coachLocks).values({
+      userId,
+      kind: "wake",
+      token: "someone-elses",
+      claimedAt: new Date(Date.now() - ageMinutes * 60_000).toISOString(),
+    });
+  }
+
+  it("a lock stranded past the window is taken over — the next wake answers", async () => {
+    const db = makeTestDb();
+    const { userId, prefs } = await makeTestUser(db);
+    await seedLock(db, userId, WAKE_LOCK_STALE_MINUTES + 1);
+    const { fetchImpl } = scriptedFetch([chatBody({ ...RESTRAINT, briefing: "Here's where you stand." })]);
+    const res = await wake(db, makeEnv(), userId, prefs, { kind: "manual" }, fetchImpl);
+    expect(res.status).toBe("ok");
+    const msgs = await db
+      .select()
+      .from(schema.coachMessages)
+      .where(and(eq(schema.coachMessages.userId, userId), eq(schema.coachMessages.role, "coach")));
+    expect(msgs.map((m) => m.body)).toEqual(["Here's where you stand."]);
+  });
+
+  it("a lock inside the window still holds single-flight shut", async () => {
+    const db = makeTestDb();
+    const { userId, prefs } = await makeTestUser(db);
+    await seedLock(db, userId, 1);
+    const { fetchImpl, calls } = scriptedFetch([chatBody(RESTRAINT)]);
+    const res = await wake(db, makeEnv(), userId, prefs, { kind: "manual" }, fetchImpl);
+    expect(res.status).toBe("skipped");
+    expect(calls).toHaveLength(0); // never even asked the model
+  });
+
+  it("a heartbeat re-arms the window, so a slow wake cannot be robbed mid-thought", async () => {
+    const db = makeTestDb();
+    const { userId } = await makeTestUser(db);
+    const mine = await claimUserLock(db, userId, "wake", WAKE_LOCK_STALE_MINUTES);
+    expect(mine).not.toBeNull();
+
+    // Still thinking, longer than the entire window — the shape the shorter
+    // window would otherwise punish (the stranded-lock test above is the
+    // same age, and IS taken over, because nothing beat there).
+    const ancient = new Date(Date.now() - (WAKE_LOCK_STALE_MINUTES + 1) * 60_000).toISOString();
+    await db
+      .update(schema.coachLocks)
+      .set({ claimedAt: ancient })
+      .where(and(eq(schema.coachLocks.userId, userId), eq(schema.coachLocks.kind, "wake")));
+
+    // …but saying so, which is all it takes to keep the claim.
+    await touchUserLock(db, userId, "wake", mine!);
+    expect(await claimUserLock(db, userId, "wake", WAKE_LOCK_STALE_MINUTES)).toBeNull();
+
+    // A beat from a token that no longer holds the lock changes nothing.
+    const before = (await db.select().from(schema.coachLocks).where(eq(schema.coachLocks.userId, userId)))[0]!;
+    await touchUserLock(db, userId, "wake", "a-token-from-a-dead-isolate");
+    const after = (await db.select().from(schema.coachLocks).where(eq(schema.coachLocks.userId, userId)))[0]!;
+    expect(after.claimedAt).toBe(before.claimedAt);
   });
 });

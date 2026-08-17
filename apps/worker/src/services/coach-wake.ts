@@ -35,7 +35,7 @@ import {
 import { buildDossier } from "./coach-context.js";
 import { loadExerciseIndex, resolveOpsExercises } from "./exercise-catalog.js";
 import { consumeTriggers, pendingTriggers, recordUnansweredMessage } from "./coach-triggers.js";
-import { claimUserLock, releaseUserLock } from "./locks.js";
+import { claimUserLock, releaseUserLock, touchUserLock } from "./locks.js";
 import { disciplineOf } from "@rg/analytics";
 
 /**
@@ -47,17 +47,14 @@ import { disciplineOf } from "@rg/analytics";
 
 export type WakeCause =
   /** `recorded` = the route already wrote the athlete's words and the
-   * awaiting-reply trigger (see `recordAthleteMessage`), because the wake
-   * itself now runs detached from that request. */
+   * awaiting-reply trigger (see `recordAthleteMessage`), so the wake must
+   * not write them a second time. */
   | { kind: "message"; body: string; recorded?: boolean }
   | { kind: "open" }
   | { kind: "manual" }; // user-invoked check-in: never skipped, still budget-gated
 
 export interface WakeResult {
-  /** "working" = dispatched to run past this response; the client polls
-   * `/coach/state` (`coachThinking`) for the reply, exactly as it already
-   * does across a navigation. */
-  status: "ok" | "skipped" | "busy" | "resting" | "error" | "working";
+  status: "ok" | "skipped" | "busy" | "resting" | "error";
   coachMessageId?: string;
   proposalIds?: string[];
 }
@@ -84,6 +81,28 @@ const STALE_BRIEFING_HOURS = 20;
  */
 const WAKE_DEADLINE_MS = 240_000;
 const REPAIR_MIN_REMAINING_MS = 120_000;
+
+/**
+ * How long a wake lock may sit untouched before the next wake takes it, and
+ * how often its holder says it is still alive.
+ *
+ * Ten minutes used to be the number, chosen when nothing bounded a wake. It
+ * is what a dead wake costs the next one: live on 2026-08-17 a cancelled
+ * wake left a row behind, and the athlete's next attempt would have been
+ * told "busy" for the rest of that window — and `/coach/state` would have
+ * gone on reporting "thinking" about a wake that no longer existed.
+ *
+ * Five is the honest number NOW: `WAKE_DEADLINE_MS` (240s) plus the
+ * persistence that follows it is every second a wake can legitimately spend
+ * before it starts a call it cannot afford. The deadline gates extra calls
+ * rather than aborting one in flight, though, so a single very slow model
+ * call can still outrun it — which is exactly what the heartbeat is for. A
+ * wake that is genuinely thinking keeps its claim however long it takes; a
+ * wake whose isolate is gone stops breathing and is taken over in five
+ * minutes, not ten. Single-flight is not weakened in either direction.
+ */
+export const WAKE_LOCK_STALE_MINUTES = 5;
+const WAKE_LOCK_HEARTBEAT_MS = 30_000;
 /** Above this much raw output, a schema repair is a bet the live evidence
  * says loses (see the repair site). A well-shaped reply is a few thousand
  * characters; this is six times that. */
@@ -800,11 +819,12 @@ async function guardrailCtx(
 /**
  * The athlete's words, and the marker that says they are owed a reply.
  *
- * Split out of `wake` so the ROUTE can do it synchronously and the thinking
- * can happen detached (`waitUntil`): the response the browser gets back must
- * already contain the message in the thread, and the awaiting-reply trigger
- * must already exist, because that trigger is what makes the reply survive
- * this request dying, the tab closing, or the athlete walking away.
+ * Split out of `wake` so the ROUTE can do it first, before the wake's own
+ * gates get a chance to return "resting" or "busy" and before it spends a
+ * single second thinking: the words must be in the thread and the
+ * awaiting-reply trigger must exist, because that trigger is what makes the
+ * reply survive this request dying, the tab closing, or the athlete walking
+ * away. `wake` still does it itself for any caller that didn't (the cron).
  */
 export async function recordAthleteMessage(db: Db, userId: string, body: string): Promise<void> {
   await persistMessage(db, userId, "user", body);
@@ -846,14 +866,22 @@ export async function wake(
   // a lost race can't drop them. A MESSAGE deserves a reply, though — the
   // user is watching (audit finding 16): wait out the holder for up to a
   // minute before giving up with an honest "busy" the client can surface.
-  let lock = await claimUserLock(db, userId, "wake");
+  let lock = await claimUserLock(db, userId, "wake", WAKE_LOCK_STALE_MINUTES);
   if (!lock && cause.kind === "message") {
     for (let i = 0; i < 12 && !lock; i++) {
       await new Promise((r) => setTimeout(r, 5_000));
-      lock = await claimUserLock(db, userId, "wake");
+      lock = await claimUserLock(db, userId, "wake", WAKE_LOCK_STALE_MINUTES);
     }
   }
   if (!lock) return { status: cause.kind === "message" ? "busy" : "skipped" };
+
+  // …and having claimed it, keep saying so. This is what lets the staleness
+  // window be five minutes instead of ten (see WAKE_LOCK_STALE_MINUTES): a
+  // slow model call cannot cost this wake its claim, and a wake that stops
+  // existing stops breathing. Cleared in the same `finally` that releases.
+  const heartbeat = setInterval(() => {
+    void touchUserLock(db, userId, "wake", lock!).catch(() => undefined);
+  }, WAKE_LOCK_HEARTBEAT_MS);
 
   /**
    * Hoisted out of the `try` on purpose: the id of the briefing, once one
@@ -1252,6 +1280,7 @@ export async function wake(
     await persistWakeFailure(db, userId, "The coach couldn't think just now — try again in a moment.");
     return { status: "error" };
   } finally {
+    clearInterval(heartbeat);
     await releaseUserLock(db, userId, "wake", lock).catch(() => undefined);
   }
 }

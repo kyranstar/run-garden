@@ -770,39 +770,182 @@ describe("COROS plan detail (user nit 2026-08-12: the card must open)", () => {
 });
 
 /**
- * A wake thinks for minutes; an HTTP request must not (2026-08-17).
+ * WORK THE ATHLETE IS WAITING ON MAY NOT RIDE ON POST-RESPONSE EXECUTION
+ * (2026-08-17).
  *
- * Live: `api-client` aborted POST /coach/message at 320s while the wake was
- * 5m20s into two Opus calls. The request's lifetime and the coach's thinking
- * time were one clock, and the athlete's patience was setting the ceiling on
- * the coaching. They are separate clocks now — but only if the words and the
- * awaiting-reply trigger are already durable when the response goes out,
- * because that trigger is what makes the reply survive everything after.
+ * This is the test that was missing when the wake was moved to `waitUntil`
+ * so that a client abort could not cut it short. Prod answered in one wake:
+ *
+ *   waitUntil() tasks did not complete within the allowed time after
+ *   invocation end and have been cancelled.
+ *
+ * Zero coach messages, zero `llm_usage` rows, the trigger still unconsumed —
+ * the detached task died before the first model call even returned, so the
+ * persist-early invariant never got its chance. The old test passed, because
+ * it asserted the dispatch and not the delivery.
+ *
+ * So each of these three routes is driven with an execution context that
+ * KEEPS whatever it is handed instead of running it, which is the runtime's
+ * behaviour after the response, and the coach's answer has to be on disk
+ * anyway by the time the response exists.
  */
-describe("message dispatch is not the same clock as thinking", () => {
-  it("answers immediately with working, having already persisted the words and the marker", async () => {
-    // A gateway that never answers: if the route awaited the wake, this test
-    // would hang instead of returning.
-    vi.stubGlobal("fetch", (async () => new Promise<Response>(() => {})) as typeof fetch);
-    const res = await client().post("/api/coach/message", { body: "replan this week around a trip on the 26th" });
-    expect(res.status).toBe(200);
-    expect(((await res.json()) as { status: string }).status).toBe("working");
+describe("a wake is awaited inside its request, never deferred past it", () => {
+  const BRIEFING = "Tuesday and Friday are the two real leg sessions.";
+  const WAKE_OUTPUT = JSON.stringify({
+    briefing: BRIEFING,
+    proposals: [],
+    question: null,
+    memoryOps: [],
+  });
 
-    const msgs = await db
+  /** A runtime that never runs deferred work — anything handed here is work
+   * the athlete never gets. */
+  function cancellingCtx() {
+    const deferred: Promise<unknown>[] = [];
+    return {
+      deferred,
+      ctx: {
+        waitUntil: (p: Promise<unknown>) => void deferred.push(p),
+        passThroughOnException: () => {},
+      } as unknown as ExecutionContext,
+    };
+  }
+
+  function stubGateway(): void {
+    vi.stubGlobal(
+      "fetch",
+      (async () =>
+        new Response(
+          JSON.stringify({
+            choices: [{ message: { content: WAKE_OUTPUT }, finish_reason: "stop" }],
+            usage: { prompt_tokens: 100, completion_tokens: 50 },
+          }),
+          { status: 200, headers: { "content-type": "application/json" } },
+        )) as typeof fetch,
+    );
+  }
+
+  async function coachSaid(): Promise<string[]> {
+    const rows = await db
       .select()
       .from(schema.coachMessages)
-      .where(and(eq(schema.coachMessages.userId, userId), eq(schema.coachMessages.role, "user")));
-    expect(msgs.map((m) => m.body)).toEqual(["replan this week around a trip on the 26th"]);
+      .where(and(eq(schema.coachMessages.userId, userId), eq(schema.coachMessages.role, "coach")));
+    return rows.map((m) => m.body);
+  }
 
-    const triggers = await db
-      .select()
-      .from(schema.coachTriggers)
-      .where(eq(schema.coachTriggers.userId, userId));
-    expect(triggers.filter((t) => t.kind === "unanswered_message" && !t.consumedAt)).toHaveLength(1);
+  const cases: Array<[string, string, unknown]> = [
+    ["POST /wake", "/api/coach/wake", { force: true }],
+    ["POST /message", "/api/coach/message", { body: "replan this week around a trip on the 26th" }],
+  ];
 
-    // …and the client is told to keep watching, by the same flag that
-    // already survives a navigation.
-    const state = (await (await client().get("/api/coach/state")).json()) as { coachThinking: boolean };
-    expect(state.coachThinking).toBe(true);
+  for (const [label, path, payload] of cases) {
+    it(`${label}: the reply exists when the response does, and nothing was deferred`, async () => {
+      stubGateway();
+      const { deferred, ctx } = cancellingCtx();
+      const app = mountRoutes(db, "/api/coach", coachRoutes);
+      const res = await app.request(
+        path,
+        {
+          method: "POST",
+          headers: { Cookie: cookie, "Content-Type": "application/json" },
+          body: JSON.stringify(payload),
+        },
+        makeEnv(),
+        ctx,
+      );
+      expect(res.status).toBe(200);
+
+      // Nothing about the coach's answer was handed to a hook the runtime
+      // cancels seconds later.
+      expect(deferred).toHaveLength(0);
+      // …and the answer itself is already durable, right now, with no
+      // further awaiting of anything.
+      expect(await coachSaid()).toEqual([BRIEFING]);
+    });
+  }
+
+  it("POST /questions/:id/answer: same rule — the answer's wake finishes in the request", async () => {
+    stubGateway();
+    await db.insert(schema.coachQuestions).values({
+      id: "q1",
+      userId,
+      body: "Finish strong or chase a time?",
+      chips: ["Finish strong", "Sub 1:45"],
+      askedAt: nowInstant(),
+    });
+    const { deferred, ctx } = cancellingCtx();
+    const app = mountRoutes(db, "/api/coach", coachRoutes);
+    const res = await app.request(
+      "/api/coach/questions/q1/answer",
+      {
+        method: "POST",
+        headers: { Cookie: cookie, "Content-Type": "application/json" },
+        body: JSON.stringify({ answer: "Sub 1:45" }),
+      },
+      makeEnv(),
+      ctx,
+    );
+    expect(res.status).toBe(200);
+    expect(deferred).toHaveLength(0);
+    expect(await coachSaid()).toEqual([BRIEFING]);
+  });
+
+  /**
+   * The other half of the contract: the athlete's words are durable before
+   * the wake risks a single second, so a client that walks away mid-request
+   * still finds its message in the thread and is still owed a reply.
+   */
+  it("the words and the awaiting-reply marker land before the thinking starts", async () => {
+    let messagesWhenTheModelWasAsked: string[] = [];
+    let triggersWhenTheModelWasAsked = 0;
+    vi.stubGlobal("fetch", (async () => {
+      messagesWhenTheModelWasAsked = (
+        await db
+          .select()
+          .from(schema.coachMessages)
+          .where(and(eq(schema.coachMessages.userId, userId), eq(schema.coachMessages.role, "user")))
+      ).map((m) => m.body);
+      triggersWhenTheModelWasAsked = (
+        await db.select().from(schema.coachTriggers).where(eq(schema.coachTriggers.userId, userId))
+      ).filter((t) => t.kind === "unanswered_message" && !t.consumedAt).length;
+      return new Response(
+        JSON.stringify({
+          choices: [{ message: { content: WAKE_OUTPUT }, finish_reason: "stop" }],
+          usage: { prompt_tokens: 100, completion_tokens: 50 },
+        }),
+        { status: 200, headers: { "content-type": "application/json" } },
+      );
+    }) as typeof fetch);
+
+    const res = await client().post("/api/coach/message", { body: "replan this week around a trip on the 26th" });
+    expect(res.status).toBe(200);
+    expect(messagesWhenTheModelWasAsked).toEqual(["replan this week around a trip on the 26th"]);
+    expect(triggersWhenTheModelWasAsked).toBe(1);
+  });
+
+  /**
+   * And the flag the UI now watches instead of the response: true while the
+   * wake holds its lock, false the moment it is done. The client fires the
+   * POST and never depends on it settling, so this is the whole delivery
+   * path for a reply.
+   */
+  it("coachThinking is true mid-wake and false once the wake has landed", async () => {
+    let thinkingDuringTheWake: boolean | undefined;
+    vi.stubGlobal("fetch", (async () => {
+      const state = (await (await client().get("/api/coach/state")).json()) as { coachThinking: boolean };
+      thinkingDuringTheWake = state.coachThinking;
+      return new Response(
+        JSON.stringify({
+          choices: [{ message: { content: WAKE_OUTPUT }, finish_reason: "stop" }],
+          usage: { prompt_tokens: 100, completion_tokens: 50 },
+        }),
+        { status: 200, headers: { "content-type": "application/json" } },
+      );
+    }) as typeof fetch);
+
+    await client().post("/api/coach/message", { body: "how does this week look?" });
+    expect(thinkingDuringTheWake).toBe(true);
+    const after = (await (await client().get("/api/coach/state")).json()) as { coachThinking: boolean };
+    expect(after.coachThinking).toBe(false);
   });
 });

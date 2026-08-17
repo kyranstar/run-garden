@@ -41,8 +41,7 @@ import {
   openWakeIsFresh,
   recordAthleteMessage,
   wake,
-  type WakeCause,
-  type WakeResult,
+  WAKE_LOCK_STALE_MINUTES,
 } from "../services/coach-wake.js";
 import type { Db } from "../services/db.js";
 
@@ -163,16 +162,22 @@ coachRoutes.get("/state", async (c) => {
   // fresh existing briefing.
   const wakeAdvised = !(await openWakeIsFresh(db, userId, triggers.length));
 
-  // "Coach is thinking" must survive navigation (user report 2026-08-12):
-  // the client's mutation state dies with the page, so the truth comes from
-  // the server — a live wake lock, or a still-unanswered message younger
-  // than the lock's own staleness window.
+  // "Coach is thinking" must survive navigation (user report 2026-08-12) —
+  // and, since 2026-08-17, it is what the client watches INSTEAD of the
+  // wake's own response, which it no longer waits for. Either way the truth
+  // comes from the server: a live wake lock, or a still-unanswered message.
+  //
+  // Same window as the lock's own takeover (`WAKE_LOCK_STALE_MINUTES`), and
+  // the holder heartbeats: a wake that is genuinely alive keeps saying so
+  // however long it thinks, and a wake whose isolate died stops claiming to
+  // think within one window rather than misreporting for ten minutes.
   const [wakeLock] = await db
     .select()
     .from(coachLocks)
     .where(and(eq(coachLocks.userId, userId), eq(coachLocks.kind, "wake")))
     .limit(1);
-  const lockFresh = !!wakeLock && Date.now() - Date.parse(wakeLock.claimedAt) < 10 * 60_000;
+  const lockFresh =
+    !!wakeLock && Date.now() - Date.parse(wakeLock.claimedAt) < WAKE_LOCK_STALE_MINUTES * 60_000;
   const pendingReply = triggers.some(
     (t) => t.kind === "unanswered_message" && Date.now() - Date.parse(t.firedAt) < 5 * 60_000,
   );
@@ -190,35 +195,37 @@ coachRoutes.get("/state", async (c) => {
 });
 
 /**
- * A wake THINKS FOR MINUTES, so it does not get to hold an HTTP request open
- * (2026-08-17).
+ * A WAKE IS AWAITED INSIDE ITS REQUEST — and the CLIENT is what gets
+ * decoupled (2026-08-17, second attempt).
  *
- * The live failure: an Opus wake spent 2m35s on its first call and 3m27s on
- * its second while `api-client` aborted the POST at 320s and the athlete
- * stared at a spinner. The request's lifetime and the coach's thinking time
- * were the same clock, so every second of thinking was a second of risk to
- * the answer — and the client's patience, not the coaching, set the ceiling.
+ * The first attempt handed the wake to `waitUntil` so that a client abort
+ * could not cut the thinking short. Prod answered inside one wake:
  *
- * They are separate clocks now. The route hands the wake to `waitUntil` and
- * answers immediately with "working"; the client learns the reply landed the
- * same way it already learns it after a navigation — `/coach/state`'s
- * `coachThinking` (live wake lock, or a message still awaiting its reply),
- * which it polls every 3s. Nothing about the wake's own durability rests on
- * this: it persists the briefing the moment it has one, precisely because
- * `waitUntil` is a best effort and not a promise.
+ *   waitUntil() tasks did not complete within the allowed time after
+ *   invocation end and have been cancelled.
+ *
+ * Zero coach messages, zero `llm_usage` rows, the trigger still unconsumed:
+ * the detached task was killed before the first model call even came back,
+ * so the persist-early invariant never got the chance to fire. Post-response
+ * execution is not somewhere work the athlete is waiting on can live.
+ *
+ * The same forensics exonerate the synchronous handler. Its `finally` ran
+ * (`coach_locks` was empty afterwards) and one of its D1 writes landed 42s
+ * AFTER the client's own 320s abort had already fired. The runtime was never
+ * the constraint — the client's timeout was, and coupling the two made the
+ * athlete's patience the ceiling on the coaching.
+ *
+ * So the wake goes back inside the request, and the client stops depending
+ * on the response: `api-client` sends these with no deadline at all, and the
+ * UI drives its "thinking" state from `/coach/state`'s `coachThinking` (live
+ * wake lock, or a message still awaiting its reply) polled every 3s. A fetch
+ * that never resolves is then merely uninteresting.
+ *
+ * What does NOT change: the athlete's words and the awaiting-reply trigger
+ * are persisted before the wake starts thinking (`recordAthleteMessage`),
+ * which is what makes the reply survive the tab closing; and the wake still
+ * persists its briefing the first moment one parses.
  */
-function dispatchWake(
-  c: Parameters<typeof waitUntilSafe>[0],
-  db: Db,
-  env: AppContext["Bindings"],
-  userId: string,
-  prefs: Awaited<ReturnType<typeof loadPreferences>>,
-  cause: WakeCause,
-): WakeResult {
-  waitUntilSafe(c, wake(db, env, userId, prefs, cause));
-  return { status: "working" };
-}
-
 coachRoutes.post("/wake", async (c) => {
   const db = c.get("db");
   const userId = c.get("userId");
@@ -226,7 +233,8 @@ coachRoutes.post("/wake", async (c) => {
   const prefs = await loadPreferences(db, userId);
   // force = the user's own "Check in" button: bypasses the skip rule (a
   // fresh briefing doesn't matter — they asked), never the budget gate.
-  return c.json(dispatchWake(c, db, c.env, userId, prefs, { kind: force ? "manual" : "open" }));
+  const result = await wake(db, c.env, userId, prefs, { kind: force ? "manual" : "open" });
+  return c.json(result);
 });
 
 coachRoutes.post("/analyze/:activityId", async (c) => {
@@ -258,11 +266,12 @@ coachRoutes.post("/message", async (c) => {
     return c.json({ error: "bad_request" }, 400);
   }
   const prefs = await loadPreferences(db, userId);
-  // The words and the awaiting-reply trigger land BEFORE the response, so a
-  // client that never sees the wake finish still sees its own message in the
-  // thread and still gets the reply on the next open.
+  // The words and the awaiting-reply trigger land BEFORE anything that can
+  // fail, so a client that never sees this request finish still sees its own
+  // message in the thread and still gets the reply on the next open.
   await recordAthleteMessage(db, userId, body);
-  return c.json(dispatchWake(c, db, c.env, userId, prefs, { kind: "message", body, recorded: true }));
+  const result = await wake(db, c.env, userId, prefs, { kind: "message", body, recorded: true });
+  return c.json(result);
 });
 
 coachRoutes.post("/proposals/:id/approve", async (c) => {
@@ -339,11 +348,7 @@ coachRoutes.post("/questions/:id/answer", async (c) => {
   // The answer continues the conversation like any message.
   const prefs = await loadPreferences(db, userId);
   await recordAthleteMessage(db, userId, answer);
-  const result = dispatchWake(c, db, c.env, userId, prefs, {
-    kind: "message",
-    body: answer,
-    recorded: true,
-  });
+  const result = await wake(db, c.env, userId, prefs, { kind: "message", body: answer, recorded: true });
   return c.json({ ok: true, memoryId, wake: result });
 });
 

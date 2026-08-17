@@ -40,6 +40,27 @@ export async function claimUserLock(
   return row?.token === token ? token : null;
 }
 
+/**
+ * "I am still here" — re-stamp `claimedAt` on a claim you already hold.
+ *
+ * A lock's staleness window has to cover the longest run its holder can
+ * legitimately have, so without a heartbeat the window is set by the worst
+ * case and a holder that DIED strands the lock for that whole worst case
+ * (live, 2026-08-17: a cancelled wake left a row that nothing else could
+ * take for ten minutes). With one, the window means "nobody has breathed
+ * here recently" instead of "nobody could still be working", so it can be
+ * tightened to the honest number without ever stealing a live claim.
+ *
+ * Token-scoped, so a beat that fires after the release (or after someone
+ * else took over) updates nothing.
+ */
+export async function touchUserLock(db: Db, userId: string, kind: string, token: string): Promise<void> {
+  await db
+    .update(coachLocks)
+    .set({ claimedAt: nowInstant() })
+    .where(and(eq(coachLocks.userId, userId), eq(coachLocks.kind, kind), eq(coachLocks.token, token)));
+}
+
 export async function releaseUserLock(db: Db, userId: string, kind: string, token: string): Promise<void> {
   await db
     .delete(coachLocks)

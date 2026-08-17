@@ -39,25 +39,13 @@ async function arm(
   expect(res.ok()).toBeTruthy();
 }
 
-/**
- * The wake runs past the response it was asked for (2026-08-17) — the route
- * dispatches and answers "working", and `coachThinking` is how the client
- * learns it finished. Tests read state the same way the app does.
- */
-async function settle(request: APIRequestContext, baseURL: string): Promise<Record<string, unknown>> {
-  for (let i = 0; i < 120; i++) {
-    const state = (await (await request.get(`${baseURL}/api/coach/state`)).json()) as Record<string, unknown>;
-    if (state.coachThinking !== true) return state;
-    await new Promise((r) => setTimeout(r, 1_000));
-  }
-  throw new Error("wake never settled");
-}
-
-/** One athlete message → one wake → whatever receipts it produced. */
+/** One athlete message → one wake → whatever receipts it produced. The wake
+ * is awaited inside the POST (2026-08-17), so the response means "done" and
+ * the state read after it is the finished thread. */
 async function ask(request: APIRequestContext, baseURL: string, body: string): Promise<string[]> {
   const res = await request.post(`${baseURL}/api/coach/message`, { data: { body }, timeout: 90_000 });
   expect(res.ok(), await res.text()).toBeTruthy();
-  const state = await settle(request, baseURL);
+  const state = await (await request.get(`${baseURL}/api/coach/state`)).json();
   return (state.messages as Array<{ role: string; body: string }>)
     .filter((m) => m.role === "receipt")
     .map((m) => m.body);
