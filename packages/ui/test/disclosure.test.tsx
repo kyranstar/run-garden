@@ -223,7 +223,7 @@ describe("a disclosure's detail is written after its trigger", () => {
   it("the coach proposal's rationale and error follow the actions row", () => {
     const card = src.coachPanel.slice(
       at(src.coachPanel, "export function ProposalCard("),
-      at(src.coachPanel, "export function PendingTray("),
+      at(src.coachPanel, "export type ThreadItem ="),
     );
     const actions = at(card, "proposal-actions");
     expect(at(card, "coach-prop-why")).toBeGreaterThan(actions);
@@ -536,7 +536,12 @@ describe("ProposalCard renders a closed, addressable disclosure", () => {
 
   it("the trigger is present, closed, and points at the detail it reveals", () => {
     const html = render(
-      createElement(ProposalCard, { proposal, onApprove: () => undefined, onDecline: () => undefined }),
+      createElement(ProposalCard, {
+        proposal,
+        title: proposal.title,
+        onApprove: () => undefined,
+        onDecline: () => undefined,
+      }),
     );
     expect(html).toContain('aria-expanded="false"');
     expect(html).toContain('aria-controls="proposal-why-p1"');

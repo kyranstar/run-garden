@@ -1,20 +1,26 @@
 /**
- * Coach panel presentational suite (Plan B Task B1) + the pendingByDate ghost
- * derivation (Task B3): proposals render ONLY from the tray, receipts are
- * inert, the tray caps, and ghosts land on the right calendar days.
+ * Coach panel presentational suite: ONE timeline (messages, receipts and
+ * proposals in the order they happened), the manifest every proposal card
+ * now renders, the trade-off frame that replaced "breaks a rule", the
+ * bottom-anchored scroll, and the pendingByDate ghost derivation (Task B3).
  */
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { MemoryRouter } from "react-router-dom";
 import { describe, expect, it } from "vitest";
-import type { CoachMessageDto, CoachPlanDto, CoachProposalDto } from "@rg/api-client";
+import type { CoachMessageDto, CoachProposalDto } from "@rg/api-client";
+import type { PlannedRef } from "@rg/domain";
 import {
+  buildThread,
   CoachPanel,
   CoachThread,
+  opDayLabel,
   pendingByDate,
-  PendingTray,
   ProposalCard,
   proposalDiscipline,
+  proposalLines,
+  SettledProposalCard,
+  settledFromReceipt,
 } from "../src/screens/coach-panel.js";
 
 const noop = () => undefined;
@@ -34,47 +40,260 @@ function prop(id: string, over: Partial<CoachProposalDto> = {}): CoachProposalDt
   };
 }
 
+/** A pending proposal card on its own, the way the thread renders one. */
+function card(p: CoachProposalDto, over: Record<string, unknown> = {}): string {
+  return render(
+    createElement(ProposalCard, { proposal: p, onApprove: noop, onDecline: noop, ...over } as never),
+  );
+}
+
 function render(el: React.ReactElement): string {
   return renderToStaticMarkup(createElement(MemoryRouter, null, el));
 }
 
-describe("PendingTray", () => {
-  it("caps at four with an overflow link and hides entirely when empty", () => {
-    const six = ["a", "b", "c", "d", "e", "f"].map((id) => prop(id));
-    const html = render(
-      createElement(PendingTray, { proposals: six, onApprove: noop, onDecline: noop }),
-    );
-    expect(html).toContain("Needs you · 6");
-    expect((html.match(/coach-prop-title/g) ?? []).length).toBe(4);
-    expect(html).toContain("and 2 more");
+const msg = (id: string, over: Partial<CoachMessageDto> = {}): CoachMessageDto => ({
+  id,
+  role: "coach",
+  body: `body ${id}`,
+  refs: {},
+  at: "2026-08-06T10:00:00Z",
+  ...over,
+});
 
-    const empty = render(
-      createElement(PendingTray, { proposals: [], onApprove: noop, onDecline: noop }),
-    );
-    expect(empty).toBe("");
+// ── 1. What the proposal DOES ──────────────────────────────────────────────
+
+describe("the proposal card renders the manifest, not one word", () => {
+  const skiOps = [
+    {
+      kind: "add",
+      date: "2026-08-18",
+      dates: ["2026-08-18", "2026-08-21"],
+      session: {
+        category: "strength",
+        title: "Ski legs — holds and eccentrics",
+        durationMinutes: 45,
+        lift: {
+          exercises: [
+            { name: "Wall sit", sets: 3, holdSeconds: 45, restSeconds: 90, weight: { type: "bodyweight" } },
+          ],
+        },
+      },
+    },
+  ];
+
+  it("a one-op skip is one line and offers nothing more to open", () => {
+    const planned = new Map<string, PlannedRef>([
+      ["w1", { date: "2026-08-23", summary: "Recovery Run" }],
+    ]);
+    const html = card(prop("a"), { planned });
+    expect(html).toContain("Sun 23");
+    expect(html).toContain("Recovery Run — skipped");
+    // Nothing behind a Sheet: one line, no sessions. The control that would
+    // open an empty dialog is not rendered at all.
+    expect(html).not.toContain("coach-ops-all");
   });
 
-  it("renders evidence, rule flags, and a skip-contextual decline label", () => {
+  it("a multi-date add expands to one line per day, and the whole thing is one tap away", () => {
+    const html = card(prop("b", { ops: skiOps }));
+    expect(html).toContain("Tue 18");
+    expect(html).toContain("Fri 21");
+    expect(html).toContain("Ski legs — holds and eccentrics · 45 min");
+    // The Sheet trigger appears because there are sessions to show.
+    expect(html).toContain("Session by session");
+    // …and the exercise list is NOT on the card — it lives in the Sheet.
+    expect(html).not.toContain("Wall sit 3×45s");
+  });
+
+  it("a long manifest shows a glance and says how much more there is", () => {
+    const days = ["2026-08-17", "2026-08-18", "2026-08-19", "2026-08-20", "2026-08-21", "2026-08-22"];
+    const ops = days.map((date) => ({
+      kind: "add",
+      date,
+      session: { category: "easy", title: `Run ${date.slice(8)}`, durationMinutes: 30 },
+    }));
+    const html = card(prop("c", { ops }));
+    expect(html).toContain("All 6 changes");
+    // Three lines at a glance, not six: a twelve-op plan must not turn one
+    // message into a page.
+    expect((html.match(/coach-op-summary/g) ?? []).length).toBe(3);
+    expect(html).toContain("Run 17");
+    expect(html).not.toContain("Run 22");
+  });
+
+  it("an ease says what it replaces, on the day it replaces it", () => {
+    const planned = new Map<string, PlannedRef>([
+      ["w9", { date: "2026-08-18", summary: "6×600m at 10K pace" }],
+    ]);
+    const lines = proposalLines(
+      prop("d", {
+        ops: [
+          {
+            kind: "ease",
+            workoutId: "w9",
+            session: { category: "easy", title: "Easy 35", durationMinutes: 35 },
+          },
+        ],
+      }),
+      planned,
+    );
+    expect(lines).toHaveLength(1);
+    expect(lines[0]!.date).toBe("2026-08-18");
+    expect(lines[0]!.change).toBe("6×600m at 10K pace → Easy 35");
+  });
+
+  it("never throws on ops it cannot describe — the buttons still render", () => {
+    const html = card(prop("e", { ops: [{ kind: "somethingNewNobodyShipped" }] }));
+    expect(html).toContain("Make it so");
+    expect(html).not.toContain("coach-op-summary");
+  });
+
+  it("names the weekday off the ISO string, not through a timezone", () => {
+    expect(opDayLabel("2026-08-17")).toBe("Mon 17");
+    expect(opDayLabel("2026-08-22")).toBe("Sat 22");
+  });
+});
+
+// ── 2. The trade-off frame ─────────────────────────────────────────────────
+
+describe("flags read as a trade-off the coach made, never as an accusation", () => {
+  it("one flag is one sentence with the coach owning the choice", () => {
+    const html = card(prop("a", { flags: ["eases Tuesday's 10K-pace intervals in a build week"] }));
+    expect(html).toContain("The trade-off");
+    expect(html).toContain("eases Tuesday&#x27;s 10K-pace intervals in a build week");
+    // The word the athlete objected to, and the frame that carried it.
+    expect(html).not.toContain("breaks a rule");
+    expect(html).not.toMatch(/\brule\b/);
+  });
+
+  it("several flags are a list under one lede, still no severity vocabulary", () => {
+    const html = card(prop("b", { flags: ["moves your Saturday long run", "two hard days back to back"] }));
+    expect(html).toContain("The trade-offs");
+    expect(html).toContain("moves your Saturday long run");
+    expect(html).toContain("two hard days back to back");
+    for (const word of ["breaks", "violation", "warning", "severity", "critical"]) {
+      expect(html.toLowerCase(), word).not.toContain(word);
+    }
+  });
+
+  it("no flags, no note", () => {
+    expect(card(prop("c"))).not.toContain("coach-prop-tradeoff");
+  });
+});
+
+// ── 3. Proposals live in the conversation ──────────────────────────────────
+
+describe("buildThread merges messages and proposals into one timeline", () => {
+  it("a pending proposal sits at its createdAt, between the messages it belongs to", () => {
+    const items = buildThread(
+      [
+        msg("m1", { at: "2026-08-06T09:00:00Z" }),
+        msg("m2", { at: "2026-08-06T11:00:00Z" }),
+      ],
+      [prop("p1", { createdAt: "2026-08-06T10:00:00Z" })],
+    );
+    expect(items.map((i) => i.id)).toEqual(["m1", "p1", "m2"]);
+    expect(items[1]!.kind).toBe("pending");
+  });
+
+  it("a resolved proposal's receipt BECOMES the settled card — never both", () => {
+    const items = buildThread(
+      [
+        msg("r1", {
+          role: "receipt",
+          body: "✓ approved — Move Saturday's long run",
+          refs: { proposalId: "p1" },
+          at: "2026-08-06T12:00:00Z",
+        }),
+      ],
+      [],
+    );
+    expect(items).toHaveLength(1);
+    expect(items[0]).toMatchObject({
+      kind: "settled",
+      mark: { status: "approved", word: "Approved", title: "Move Saturday's long run" },
+    });
+  });
+
+  it("keeps the manifest — and the real title — of a proposal that resolved while the reader watched", () => {
+    const p = prop("p1", {
+      title: "Ski-prep leg block",
+      ops: [{ kind: "add", date: "2026-08-20", session: { category: "easy", title: "Shakeout", durationMinutes: 20 } }],
+    });
+    const items = buildThread(
+      [msg("r1", { role: "receipt", body: "✓ approved — Proposal p1", refs: { proposalId: "p1" }, at: "2026-08-06T12:00:00Z" })],
+      [],
+      new Map([["p1", p]]),
+    );
+    const it0 = items[0]!;
+    expect(it0.kind === "settled" && it0.proposal).toBe(p);
+    // The proposal's own title beats the one parsed out of the receipt.
+    expect(it0.kind === "settled" && it0.mark.title).toBe("Ski-prep leg block");
+  });
+
+  it("the receipt wins over a stale pending copy of the same proposal", () => {
+    const items = buildThread(
+      [msg("r1", { role: "receipt", body: "Expired — the moment passed: Proposal p1", refs: { proposalId: "p1" }, at: "2026-08-07T00:00:00Z" })],
+      [prop("p1")],
+    );
+    expect(items).toHaveLength(1);
+    expect(items[0]!.kind === "settled" && items[0]!.mark.status).toBe("expired");
+  });
+
+  // The structural fact is `refs.proposalId`, which the worker attaches to
+  // those four receipts and to nothing else. Keying the CARD on the regex
+  // instead meant a copy edit in another package would silently revert every
+  // settled proposal in the thread to a one-line receipt.
+  it("still renders a card when the worker's wording is one this build has never seen", () => {
+    const body = "Rolled back — the Tuesday reshuffle";
+    const items = buildThread(
+      [msg("r1", { role: "receipt", body, refs: { proposalId: "p1" }, at: "2026-08-07T00:00:00Z" })],
+      [],
+    );
+    expect(items[0]!.kind).toBe("settled");
+    // No word is invented; the worker's own sentence is the line.
+    expect(items[0]!.kind === "settled" && items[0]!.mark).toEqual({ title: body });
     const html = render(
-      createElement(PendingTray, {
-        proposals: [prop("a", { flags: ["Long runs stay on Saturdays"] })],
-        onApprove: noop,
-        onDecline: noop,
+      createElement(SettledProposalCard, { mark: { title: body }, proposal: null, domId: "r1" }),
+    );
+    expect(html).toContain("coach-prop--settled");
+    expect(html).toContain(body);
+    expect(html).not.toContain("pill");
+  });
+
+  it("an ordinary receipt — no proposal ref — is still an ordinary receipt line", () => {
+    const items = buildThread(
+      [msg("r1", { role: "receipt", body: "Synced to your watch", refs: {}, at: "2026-08-07T00:00:00Z" })],
+      [],
+    );
+    expect(items[0]!.kind).toBe("message");
+  });
+
+  it("reads all four outcomes the worker writes, in the DTO's own vocabulary", () => {
+    expect(settledFromReceipt("✓ approved — X")).toMatchObject({ status: "approved", title: "X" });
+    expect(settledFromReceipt("Left as planned — X")).toMatchObject({ status: "declined", title: "X" });
+    expect(settledFromReceipt("Expired — the moment passed: X")).toMatchObject({ status: "expired", title: "X" });
+    expect(settledFromReceipt("Superseded: X")).toMatchObject({ status: "superseded", title: "X" });
+  });
+
+  it("a settled card is inert: no approve, no decline, no Why?", () => {
+    const html = render(
+      createElement(SettledProposalCard, {
+        mark: { status: "approved", word: "Approved", title: "Move Saturday's long run" },
+        proposal: null,
+        domId: "r1",
       }),
     );
-    expect(html).toContain("slept 5h avg");
-    expect(html).toContain("breaks a rule: Long runs stay on Saturdays");
-    expect(html).toContain("Make it so");
-    expect(html).toContain("Keep it planned");
+    expect(html).toContain("coach-prop--settled");
+    expect(html).toContain("Approved");
+    expect(html).not.toContain("Make it so");
+    expect(html).not.toContain("Leave it");
+    expect(html).not.toContain("Why?");
   });
+});
 
-  // Audit C17: approve/decline used to have no in-flight state at all (the
-  // computed `acting` boolean existed but was never wired to the buttons)
-  // and a failed 409 was indistinguishable from success.
+describe("ProposalCard", () => {
   it("disables Make it so / Leave it while acting, but never Why?", () => {
-    const html = render(
-      createElement(ProposalCard, { proposal: prop("a"), onApprove: noop, onDecline: noop, acting: true }),
-    );
+    const html = card(prop("a"), { acting: true });
     expect(html).toMatch(/Make it so<\/button>/);
     const approveBtn = html.match(/<button[^>]*>Make it so/)![0];
     expect(approveBtn).toContain("disabled");
@@ -89,9 +308,7 @@ describe("PendingTray", () => {
     // "Why?" is a 24px link between two 44px buttons, so its hit pad reaches
     // 10px past its box; the row's 8px gap put that pad on a neighbour. The
     // container is what licenses a pad, so the row wears `.tap-clear`.
-    const html = render(
-      createElement(ProposalCard, { proposal: prop("a"), onApprove: noop, onDecline: noop }),
-    );
+    const html = card(prop("a"));
     expect(html).toMatch(/class="row proposal-actions tap-clear"/);
     // …and it may not re-declare a narrower gap inline, which would win over
     // the class and silently take the clearance back.
@@ -100,14 +317,7 @@ describe("PendingTray", () => {
   });
 
   it("shows why the last approve/decline failed instead of silently vanishing", () => {
-    const html = render(
-      createElement(ProposalCard, {
-        proposal: prop("a"),
-        onApprove: noop,
-        onDecline: noop,
-        error: "This already resolved elsewhere — nothing changed here.",
-      }),
-    );
+    const html = card(prop("a"), { error: "This already resolved elsewhere — nothing changed here." });
     expect(html).toContain("coach-prop-error");
     expect(html).toContain("This already resolved elsewhere");
   });
@@ -117,16 +327,20 @@ describe("PendingTray", () => {
   // resolve to the visible card. The old idPrefix threading (audit C27)
   // retired with the dual mount.
   it("renders a plain, unprefixed DOM id for ghost-tap targeting", () => {
-    const html = render(createElement(ProposalCard, { proposal: prop("a"), onApprove: noop, onDecline: noop }));
-    expect(html).toContain('id="proposal-a"');
+    expect(card(prop("a"))).toContain('id="proposal-a"');
   });
 });
+
+// ── 4. The thread itself ───────────────────────────────────────────────────
+
+const thread = (messages: CoachMessageDto[], proposals: CoachProposalDto[] = []) =>
+  render(createElement(CoachThread, { items: buildThread(messages, proposals) }));
 
 describe("CoachPanel thread", () => {
   it("receipts are centered inert text — no buttons — and memory chips link out", () => {
     const messages: CoachMessageDto[] = [
       { id: "1", role: "coach", body: "Noted.", refs: { memoryIds: ["m1"] }, at: "2026-08-06T10:00:00Z" },
-      { id: "2", role: "receipt", body: "✓ approved — eased Thursday", refs: { proposalId: "p" }, at: "2026-08-06T10:01:00Z" },
+      { id: "2", role: "receipt", body: "the coach is resting", refs: {}, at: "2026-08-06T10:01:00Z" },
       { id: "3", role: "user", body: "thanks", refs: {}, at: "2026-08-06T10:02:00Z" },
     ];
     const html = render(
@@ -138,10 +352,11 @@ describe("CoachPanel thread", () => {
         onApprove: noop,
         onDecline: noop,
         onAnswer: noop,
+        onDismiss: noop,
       }),
     );
     const receipt = html.match(/<div class="coach-receipt faint">([^<]*)<\/div>/);
-    expect(receipt?.[1]).toContain("approved");
+    expect(receipt?.[1]).toContain("resting");
     expect(html).toContain("coach-msg-user");
     expect(html).toContain('href="/settings#coach-memory"');
     expect(html).toContain("Race goal?");
@@ -154,29 +369,26 @@ describe("CoachPanel thread", () => {
   // accumulated before that fix shipped.
   it("collapses runs of identical consecutive wake-failure receipts into one line", () => {
     const fail = "The coach couldn't think just now — try again in a moment.";
-    const messages: CoachMessageDto[] = [
+    const html = thread([
       { id: "1", role: "receipt", body: fail, refs: { wakeFailure: true }, at: "2026-08-06T10:00:00Z" },
       { id: "2", role: "receipt", body: fail, refs: { wakeFailure: true }, at: "2026-08-06T10:05:00Z" },
       { id: "3", role: "receipt", body: fail, refs: { wakeFailure: true }, at: "2026-08-06T10:10:00Z" },
       { id: "4", role: "receipt", body: "Expired — the moment passed: Ease Thursday", refs: {}, at: "2026-08-06T10:15:00Z" },
-    ];
-    const html = render(
-      createElement(CoachThread, { messages }),
-    );
+    ]);
     expect((html.match(/coach-receipt/g) ?? []).length).toBe(2); // one "couldn't think", one "Expired"
     expect(html).toContain("Expired");
   });
 
   // Audit C4/C14 followup: the collapse is scoped to `refs.wakeFailure`
   // specifically — an ordinary receipt that happens to share body text with
-  // another (e.g. two "✓ approved — Ease Thursday" lines for two different
-  // proposals) is a real, distinct event and must never be merged away.
+  // another is a real, distinct event and must never be merged away. (Two
+  // "✓ approved" lines now become two settled CARDS, so this checks the
+  // shape that is left over: an unparsed receipt with no proposal ref.)
   it("does not collapse identical-looking receipts that aren't wake failures", () => {
-    const messages: CoachMessageDto[] = [
-      { id: "1", role: "receipt", body: "✓ approved — Ease Thursday", refs: { proposalId: "p1" }, at: "2026-08-06T10:00:00Z" },
-      { id: "2", role: "receipt", body: "✓ approved — Ease Thursday", refs: { proposalId: "p2" }, at: "2026-08-06T10:05:00Z" },
-    ];
-    const html = render(createElement(CoachThread, { messages }));
+    const html = thread([
+      { id: "1", role: "receipt", body: "Synced to your watch", refs: {}, at: "2026-08-06T10:00:00Z" },
+      { id: "2", role: "receipt", body: "Synced to your watch", refs: {}, at: "2026-08-06T10:05:00Z" },
+    ]);
     expect((html.match(/coach-receipt/g) ?? []).length).toBe(2);
   });
 
@@ -185,12 +397,11 @@ describe("CoachPanel thread", () => {
   // — comparing only immediate neighbors let that break the chain.
   it("collapses identical wake-failure receipts even when a different receipt sits between them", () => {
     const fail = "The coach couldn't think just now — try again in a moment.";
-    const messages: CoachMessageDto[] = [
+    const html = thread([
       { id: "1", role: "receipt", body: fail, refs: { wakeFailure: true }, at: "2026-08-06T10:00:00Z" },
       { id: "2", role: "receipt", body: "Expired — the moment passed: Ease Thursday", refs: {}, at: "2026-08-06T10:05:00Z" },
       { id: "3", role: "receipt", body: fail, refs: { wakeFailure: true }, at: "2026-08-06T10:10:00Z" },
-    ];
-    const html = render(createElement(CoachThread, { messages }));
+    ]);
     expect((html.match(/coach-receipt/g) ?? []).length).toBe(2); // one failure (deduped), one Expired
     expect(html).toContain("Expired");
   });
@@ -199,13 +410,34 @@ describe("CoachPanel thread", () => {
   // once the settle-time refetch landed — no error, no way to recover the
   // text. A failed optimistic echo now stays, marked, with a retry.
   it("marks a failed optimistic message and offers a retry instead of erasing it", () => {
-    const messages: CoachMessageDto[] = [
+    const html = thread([
       { id: "local-1", role: "user", body: "long run felt awful today", refs: {}, at: "2026-08-06T10:00:00Z", failed: true },
-    ];
-    const html = render(createElement(CoachThread, { messages }));
+    ]);
     expect(html).toContain("coach-msg-failed");
     expect(html).toContain("tap to retry");
     expect(html).toContain("long run felt awful today");
+  });
+
+  // The complaint this rework exists for: "'Needs you' section forces scroll
+  // to the top". There is no separate region left to scroll to.
+  it("has no tray: a proposal is a message in the thread", () => {
+    const html = render(
+      createElement(CoachPanel, {
+        messages: [msg("m1", { at: "2026-08-06T09:00:00Z" })],
+        proposals: [prop("p1", { createdAt: "2026-08-06T10:00:00Z" })],
+        question: null,
+        onSend: noop,
+        onApprove: noop,
+        onDecline: noop,
+        onAnswer: noop,
+        onDismiss: noop,
+      }),
+    );
+    expect(html).not.toContain("coach-tray");
+    expect(html).not.toContain("Needs you ·");
+    // …and the card is INSIDE the thread, after the message that precedes it.
+    expect(html.indexOf("coach-thread")).toBeLessThan(html.indexOf("coach-prop"));
+    expect(html.indexOf("body m1")).toBeLessThan(html.indexOf("coach-prop"));
   });
 });
 
@@ -225,7 +457,7 @@ describe("proposalDiscipline + pendingByDate", () => {
   });
 
   it("maps ease/move/add/skip onto the right calendar days", () => {
-    const dates = new Map([["w1", "2026-08-07"]]);
+    const dates = new Map([["w1", { date: "2026-08-07", summary: "Steady 40" }]]);
     const ghosts = pendingByDate(
       [
         prop("a", {

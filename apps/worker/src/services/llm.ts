@@ -222,6 +222,15 @@ export async function generateWeeklyReview(
           // sync_runs: every call since launch failed with gateway_400).
           // The system prompt demands JSON-only and extraction tolerates
           // prose/fences, so prompt discipline carries it.
+          //
+          // No reasoning_effort either, and that is a finding rather than an
+          // omission: the gateway parses the field but never forwards it to
+          // Anthropic's `output_config` on Opus-4.7-and-later models. This
+          // path runs Haiku 4.5, which does no thinking unless asked, so
+          // there is nothing here to turn down. The full probe — including
+          // the prompt-caching field that IS available, and the Anthropic
+          // Messages surface that does carry effort — is written up above
+          // `chatCompletion` in studio-llm.ts.
         }),
       });
     } finally {

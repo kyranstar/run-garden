@@ -94,22 +94,28 @@ describe("prose never wears the label primitive", () => {
     expect(actions.slice(0, actions.indexOf("</div>"))).not.toContain("pill");
   });
 
-  it("a coach proposal's rule flags are notes — a whole rule, wrapped, readable", () => {
+  it("a coach proposal's trade-off note is a note — a whole sentence, wrapped, readable", () => {
     const proposal: CoachProposalDto = {
       id: "p1",
       title: "Move Saturday's long run",
       evidence: "slept 5h avg",
       rationale: "Because rest beats a junk tempo.",
-      flags: ["Long runs stay on Saturdays"],
+      flags: ["eases Tuesday's 10K-pace intervals in a build week"],
       ops: [{ kind: "skip", workoutId: "w1", reason: "rest" }],
       status: "pending",
       createdAt: "2026-08-06T10:00:00Z",
       expiresAt: "2026-08-08",
     } as CoachProposalDto;
-    const html = render(createElement(ProposalCard, { proposal, onApprove: noop, onDecline: noop }));
+    const html = render(
+      createElement(ProposalCard, { proposal, title: proposal.title, onApprove: noop, onDecline: noop }),
+    );
     expect(html).toContain("note note-warn");
-    expect(html).toContain("breaks a rule: Long runs stay on Saturdays");
+    expect(html).toContain("The trade-off");
+    expect(html).toContain("eases Tuesday&#x27;s 10K-pace intervals in a build week");
     expect(html).not.toContain("pill pill-warnsoft");
+    // It is a sentence, and a pill is nowrap by contract — these clipped at
+    // scrollWidth 461 in a 327px card.
+    expect(html).not.toMatch(/class="pill[^"]*">[^<]*eases/);
   });
 
   it("every COROS-check state is a note, not a pill", () => {
@@ -171,13 +177,13 @@ describe("one scroll owner per dialog", () => {
   it("no dialog child sizes itself against the viewport", () => {
     // The 84vh panel inside an 85dvh sheet is exactly how the coach tray came
     // to paint 39px above the sheet's own top edge, out over the backdrop.
-    for (const selector of [".coach-panel", ".coach-sheet-panel", ".coach-thread", ".coach-scroll"]) {
+    for (const selector of [".coach-panel", ".coach-sheet-panel", ".coach-thread", ".coach-scroll", ".coach-scroll-wrap"]) {
       expect(ruleBody(selector), selector).not.toMatch(/\d+(vh|dvh)/);
     }
     expect(ruleBody(".sheet")).toContain("overflow: hidden");
   });
 
-  it("the coach panel scrolls its tray and thread together, head and composer pinned", () => {
+  it("the coach panel scrolls the whole conversation as one, head and composer pinned", () => {
     const html = render(
       createElement(CoachPanel, {
         messages: [
@@ -347,11 +353,13 @@ describe("late-mounting boxes still get measured", () => {
     expect(typeof handed).toBe("function");
   });
 
-  it("nothing needing action starts hidden: the tray shares the thread's scroller", () => {
-    // The scroll owner holds the tray AND the thread, so "scroll to the
-    // newest message" on open would start below "Needs you · N". CoachThread
-    // takes `trayAbove` for exactly that case; the ordering here is what
-    // makes it necessary.
+  it("nothing needing action starts hidden: a proposal IS a message in the one scroller", () => {
+    // There is no second region any more. The tray used to sit above the
+    // thread INSIDE the same scroller, which is why opening the panel had to
+    // choose between "show the newest message" and "show what needs you" —
+    // and chose the top, 1,143px above the newest message at 390. A proposal
+    // is now an item in the thread at its own moment in time, so the bottom
+    // is both answers at once.
     const html = render(
       createElement(CoachPanel, {
         messages: [
@@ -366,8 +374,8 @@ describe("late-mounting boxes still get measured", () => {
             flags: [],
             ops: [],
             status: "pending",
-            createdAt: "2026-08-06T10:00:00Z",
-            expiresAt: "2026-08-08",
+            createdAt: "2026-08-16T10:00:00Z",
+            expiresAt: "2026-08-18",
           } as CoachProposalDto,
         ],
         question: null,
@@ -378,10 +386,13 @@ describe("late-mounting boxes still get measured", () => {
         onDismiss: noop,
       }),
     );
-    const scroll = html.indexOf("coach-scroll");
-    expect(scroll).toBeLessThan(html.indexOf("coach-tray"));
-    expect(html.indexOf("coach-tray")).toBeLessThan(html.indexOf("coach-thread"));
-    expect(html).toContain("Needs you · 1");
+    expect(html).not.toContain("coach-tray");
+    const scroll = html.indexOf("coach-scroll scroller");
+    expect(scroll).toBeLessThan(html.indexOf("coach-thread"));
+    expect(html.indexOf("coach-thread")).toBeLessThan(html.indexOf("coach-prop"));
+    // The wrapper that lets the jump chip float is NOT the scroll owner.
+    expect(html.indexOf("coach-scroll-wrap")).toBeLessThan(scroll);
+    expect((html.match(/scroller/g) ?? []).length).toBe(1);
   });
 });
 

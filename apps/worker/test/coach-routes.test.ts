@@ -4,7 +4,7 @@
  * honored by the next dossier, question answers becoming memory.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { and, eq } from "drizzle-orm";
+import { and, eq, isNull } from "drizzle-orm";
 import { schema } from "@rg/database";
 import { addDays, newId, nowInstant, startOfIsoWeek, todayInZone, type UserPreferences } from "@rg/domain";
 import type { Env } from "../src/env.js";
@@ -947,5 +947,166 @@ describe("a wake is awaited inside its request, never deferred past it", () => {
     expect(thinkingDuringTheWake).toBe(true);
     const after = (await (await client().get("/api/coach/state")).json()) as { coachThinking: boolean };
     expect(after.coachThinking).toBe(false);
+  });
+});
+
+/**
+ * A page visit must not cost a third of a dollar.
+ *
+ * Replays the live 2026-08-17 sequence at the HTTP boundary, which is exactly
+ * what "navigate, remount, poll" reduces to: the panel re-reads
+ * /api/coach/state on every mount and fires POST /api/coach/wake whenever the
+ * server says `wakeAdvised`. The per-mount `useRef` in plan.tsx is re-armed by
+ * every remount, so the client cannot be the thing that holds the line — the
+ * server has to refuse, and these assert that it does.
+ */
+describe("the $0.33-per-visit leak (live 2026-08-17)", () => {
+  const BRIEFING = JSON.stringify({
+    briefing: "Ski legs before the 26th — here's the shape of it.",
+    proposals: [],
+    question: null,
+    memoryOps: [],
+  });
+
+  /** Every gateway call the coach makes, so a test can assert on spend. */
+  function countingGateway(): () => number {
+    let calls = 0;
+    vi.stubGlobal("fetch", (async () => {
+      calls += 1;
+      return new Response(
+        JSON.stringify({
+          choices: [{ message: { content: BRIEFING }, finish_reason: "stop" }],
+          usage: { prompt_tokens: 20_943, completion_tokens: 9_031 },
+        }),
+        { status: 200, headers: { "content-type": "application/json" } },
+      );
+    }) as typeof fetch);
+    return () => calls;
+  }
+
+  /** The athlete marks a session skipped — which is what fired the ambient
+   * `missed_workout` trigger two minutes before the second wake. */
+  async function skipASession() {
+    const today = todayInZone(prefs.timezone);
+    await db.insert(schema.plannedWorkouts).values({
+      id: "w-skipped",
+      userId,
+      planId: "p",
+      sourceWorkoutId: "4738:w-skipped",
+      title: "Easy 40",
+      category: "easy",
+      sport: "run",
+      originalPlanDate: addDays(today, -2),
+      lastVerifiedCorosDate: addDays(today, -2),
+      effectiveDate: addDays(today, -2),
+      effectiveTime: "07:00",
+      completionState: "skipped",
+      sourceContentFingerprint: "fp",
+      calendarBlockDurationSeconds: 2400,
+      createdAt: nowInstant(),
+      updatedAt: nowInstant(),
+    });
+  }
+
+  async function stateBody() {
+    return (await (await client().get("/api/coach/state")).json()) as { wakeAdvised: boolean };
+  }
+
+  it("REGRESSION: a remount minutes after a briefing does not bill a second wake", async () => {
+    const calls = countingGateway();
+
+    // 1. The athlete asks something; the coach answers. One Opus call.
+    await client().post("/api/coach/message", { body: "replan around a ski trip on the 26th" });
+    expect(calls()).toBe(1);
+
+    // 2. Acting on that briefing, they mark a stale session skipped. The next
+    //    /state poll evaluates triggers and `missed_workout` fires — a real,
+    //    freshly-fired, correctly-deduped trigger. Nothing is broken here.
+    await skipASession();
+    const afterSkip = await stateBody();
+    const triggers = await db
+      .select()
+      .from(schema.coachTriggers)
+      .where(and(eq(schema.coachTriggers.userId, userId), isNull(schema.coachTriggers.consumedAt)));
+    expect(triggers.map((t) => t.kind)).toContain("missed_workout");
+
+    // 3. …and the server still declines to advise a wake, because the
+    //    briefing is minutes old and the next one would say the same thing.
+    expect(afterSkip.wakeAdvised).toBe(false);
+
+    // 4. Navigate away and back — the ref re-arms, the panel remounts, and it
+    //    would fire the wake if the server let it. It doesn't, and even a
+    //    client that POSTs anyway is refused before a token is spent.
+    await client().post("/api/coach/wake", { force: false });
+    expect(calls()).toBe(1);
+  });
+
+  it('"Check in" still works on the same state — force bypasses the gate', async () => {
+    const calls = countingGateway();
+    await client().post("/api/coach/message", { body: "replan around a ski trip on the 26th" });
+    await skipASession();
+    expect((await stateBody()).wakeAdvised).toBe(false);
+
+    await client().post("/api/coach/wake", { force: true });
+    expect(calls()).toBe(2);
+  });
+
+  it("a genuinely new athlete message still wakes the coach immediately", async () => {
+    const calls = countingGateway();
+    await client().post("/api/coach/message", { body: "replan around a ski trip on the 26th" });
+    await skipASession();
+    expect((await stateBody()).wakeAdvised).toBe(false);
+
+    await client().post("/api/coach/message", { body: "actually the trip moved to the 28th" });
+    expect(calls()).toBe(2);
+  });
+
+  it("an unanswered message survives a dropped wake and is advised on the next open", async () => {
+    // The gateway is down: the words and the trigger land, the reply doesn't.
+    vi.stubGlobal("fetch", (async () => new Response("nope", { status: 500 })) as typeof fetch);
+    await client().post("/api/coach/message", { body: "how does this week look?" });
+    // Age the failure receipt past the backoff so it isn't what's talking.
+    await db
+      .update(schema.coachMessages)
+      .set({ at: new Date(Date.now() - 40 * 60_000).toISOString() })
+      .where(and(eq(schema.coachMessages.userId, userId), eq(schema.coachMessages.role, "receipt")));
+    expect((await stateBody()).wakeAdvised).toBe(true);
+    // 20s, not the 5s default: a failed message wake sleeps 2s and retries
+    // before it writes its receipt, and that pause is the real behaviour.
+  }, 20_000);
+});
+
+describe("cost visibility", () => {
+  it("reports rolling 7-day spend by kind, and ignores what fell out of the window", async () => {
+    const rows = [
+      { kind: "coach_wake", cost: 330_490, at: nowInstant() },
+      { kind: "coach_wake", cost: 327_670, at: nowInstant() },
+      { kind: "coach_read", cost: 21_780, at: nowInstant() },
+      { kind: "coach_wake", cost: 999_999, at: new Date(Date.now() - 8 * 86_400_000).toISOString() },
+    ];
+    for (const r of rows) {
+      await db.insert(schema.llmUsage).values({
+        id: newId(),
+        userId,
+        kind: r.kind,
+        model: "anthropic/claude-opus-5",
+        inputTokens: 100,
+        outputTokens: 200,
+        costMicros: r.cost,
+        cacheHit: false,
+        requestFingerprint: newId(),
+        createdAt: r.at,
+      });
+    }
+    const body = (await (await client().get("/api/coach/spend")).json()) as {
+      spentMicros: number;
+      spentUsd: number;
+      byKind: Array<{ kind: string; calls: number; costMicros: number }>;
+    };
+    expect(body.spentMicros).toBe(330_490 + 327_670 + 21_780);
+    expect(body.spentUsd).toBe(0.68);
+    // Sorted by spend, so the expensive thing is the first thing you read.
+    expect(body.byKind[0]).toMatchObject({ kind: "coach_wake", calls: 2, costMicros: 658_160 });
+    expect(body.byKind[1]).toMatchObject({ kind: "coach_read", calls: 1 });
   });
 });

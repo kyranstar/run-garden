@@ -8,7 +8,13 @@ import { and, eq } from "drizzle-orm";
 import { schema } from "@rg/database";
 import { addDays, newId, nowInstant, todayInZone } from "@rg/domain";
 import type { Db } from "../src/services/db.js";
-import { openWakeIsFresh, wake, WAKE_LOCK_STALE_MINUTES } from "../src/services/coach-wake.js";
+import {
+  AMBIENT_TRIGGER_QUIET_MINUTES,
+  openWakeIsFresh,
+  wake,
+  WAKE_LOCK_STALE_MINUTES,
+} from "../src/services/coach-wake.js";
+import { pendingTriggers } from "../src/services/coach-triggers.js";
 import { claimUserLock, touchUserLock } from "../src/services/locks.js";
 import { makeTestDb, makeTestUser } from "./helpers.js";
 import type { Env } from "../src/env.js";
@@ -490,7 +496,140 @@ describe("single-flight + focus (2026-08-11 rework §R2/§3)", () => {
     });
     // No triggers pending, only the analysis row exists → an open wake is NOT
     // redundant (the athlete has never been briefed).
-    expect(await openWakeIsFresh(db, userId, 0)).toBe(false);
+    expect(await openWakeIsFresh(db, userId, [])).toBe(false);
+  });
+});
+
+/**
+ * The $0.33-per-page-visit leak (live, 2026-08-17). Briefing at 04:13:26,
+ * athlete marks a stale session skipped at 04:22:36, `missed_workout` fires
+ * at 04:24:35, opening the plan page bills a second Opus call at 04:27:54
+ * that re-derives the same proposal. The triggers were fine — the judgement
+ * wasn't.
+ */
+describe("open-wake gate: an ambient trigger does not outrank a fresh briefing", () => {
+  const briefing = async (db: Db, userId: string, agoMs: number) => {
+    await db.insert(schema.coachMessages).values({
+      id: newId(),
+      userId,
+      role: "coach",
+      body: "Ski legs before the 26th.",
+      refs: {},
+      at: new Date(Date.now() - agoMs).toISOString(),
+    });
+  };
+  const trigger = async (db: Db, userId: string, kind: string, agoMs = 0) => {
+    await db.insert(schema.coachTriggers).values({
+      id: newId(),
+      userId,
+      kind,
+      evidence: {},
+      firedAt: new Date(Date.now() - agoMs).toISOString(),
+    });
+  };
+
+  it("REGRESSION: missed_workout 11 minutes after a briefing does NOT advise a wake", async () => {
+    const db = makeTestDb();
+    const { userId } = await makeTestUser(db);
+    await briefing(db, userId, 11 * 60_000);
+    await trigger(db, userId, "missed_workout");
+    const pending = await pendingTriggers(db, userId);
+    // Pre-fix this returned false (= "advise a wake") purely because
+    // triggers.length > 0, before the briefing was ever consulted.
+    expect(await openWakeIsFresh(db, userId, pending)).toBe(true);
+  });
+
+  it("the same trigger DOES advise a wake once the briefing ages past the quiet window", async () => {
+    const db = makeTestDb();
+    const { userId } = await makeTestUser(db);
+    await briefing(db, userId, (AMBIENT_TRIGGER_QUIET_MINUTES + 5) * 60_000);
+    await trigger(db, userId, "missed_workout");
+    const pending = await pendingTriggers(db, userId);
+    expect(await openWakeIsFresh(db, userId, pending)).toBe(false);
+  });
+
+  it("an unanswered message always advises a wake, however fresh the briefing", async () => {
+    const db = makeTestDb();
+    const { userId } = await makeTestUser(db);
+    await briefing(db, userId, 60_000); // one minute ago
+    await trigger(db, userId, "unanswered_message");
+    const pending = await pendingTriggers(db, userId);
+    expect(await openWakeIsFresh(db, userId, pending)).toBe(false);
+  });
+
+  it("an unanswered message alongside an ambient signal still advises a wake", async () => {
+    const db = makeTestDb();
+    const { userId } = await makeTestUser(db);
+    await briefing(db, userId, 60_000);
+    await trigger(db, userId, "missed_workout");
+    await trigger(db, userId, "unanswered_message");
+    const pending = await pendingTriggers(db, userId);
+    expect(await openWakeIsFresh(db, userId, pending)).toBe(false);
+  });
+
+  it("no trigger at all still uses the far longer stale-briefing window", async () => {
+    const db = makeTestDb();
+    const { userId } = await makeTestUser(db);
+    // Older than the ambient quiet window, far younger than 20h.
+    await briefing(db, userId, 3 * 3600_000);
+    expect(await openWakeIsFresh(db, userId, [])).toBe(true);
+  });
+
+  it("a recent wake failure still outranks everything, including an unanswered message", async () => {
+    const db = makeTestDb();
+    const { userId } = await makeTestUser(db);
+    await db.insert(schema.coachMessages).values({
+      id: newId(),
+      userId,
+      role: "receipt",
+      body: "The coach couldn't think just now — try again in a moment.",
+      refs: { wakeFailure: true },
+      at: nowInstant(),
+    });
+    await trigger(db, userId, "unanswered_message");
+    const pending = await pendingTriggers(db, userId);
+    expect(await openWakeIsFresh(db, userId, pending)).toBe(true);
+  });
+
+  it("the wake itself refuses an open cause the gate calls redundant — no model call", async () => {
+    const db = makeTestDb();
+    const { userId, prefs } = await makeTestUser(db);
+    await briefing(db, userId, 11 * 60_000);
+    await trigger(db, userId, "missed_workout");
+    let calls = 0;
+    const fetchImpl = (async () => {
+      calls += 1;
+      throw new Error("the gate should have refused before any gateway call");
+    }) as unknown as typeof fetch;
+    const res = await wake(db, makeEnv(), userId, prefs, { kind: "open" }, fetchImpl);
+    expect(res.status).toBe("skipped");
+    expect(calls).toBe(0);
+  });
+
+  it('"Check in" (manual) is never gated — it bypasses the quiet window entirely', async () => {
+    const db = makeTestDb();
+    const { userId, prefs } = await makeTestUser(db);
+    await briefing(db, userId, 60_000);
+    await trigger(db, userId, "missed_workout");
+    const { fetchImpl } = scriptedFetch([chatBody(RESTRAINT)]);
+    const res = await wake(db, makeEnv(), userId, prefs, { kind: "manual" }, fetchImpl);
+    expect(res.status).toBe("ok");
+  });
+
+  it("a genuinely new athlete message is never gated either", async () => {
+    const db = makeTestDb();
+    const { userId, prefs } = await makeTestUser(db);
+    await briefing(db, userId, 60_000);
+    const { fetchImpl } = scriptedFetch([chatBody(RESTRAINT)]);
+    const res = await wake(
+      db,
+      makeEnv(),
+      userId,
+      prefs,
+      { kind: "message", body: "how should I ski-prep?" },
+      fetchImpl,
+    );
+    expect(res.status).toBe("ok");
   });
 });
 
@@ -920,6 +1059,58 @@ describe("the wake prompt (2026-08-16 rewrite)", () => {
     expect(WAKE_SYSTEM_PROMPT).toContain("offer to draft");
   });
 
+  /**
+   * The division of labour (2026-08-17): the app computes the manifest
+   * (`describeOps`), the model writes the reasoning. The old rule — describe
+   * only ops that exist — still left the model counting its own ops in prose,
+   * which is a thing that drifts and which nothing in the product could
+   * check. The prompt must forbid the whole category, not warn about it, and
+   * it must not ask for a count anywhere else.
+   */
+  it("forbids the model from stating anything the ops already encode", async () => {
+    const { WAKE_SYSTEM_PROMPT } = await import("../src/services/coach-wake.js");
+    expect(WAKE_SYSTEM_PROMPT).toContain("NEVER STATE WHAT THE OPS ALREADY SAY");
+    // The reason, in the prompt itself: the manifest is rendered beside it.
+    expect(WAKE_SYSTEM_PROMPT).toMatch(/app prints the manifest/);
+    expect(WAKE_SYSTEM_PROMPT).toContain("Nothing countable or enumerable");
+    // …and the counterpart: what the model is FOR.
+    expect(WAKE_SYSTEM_PROMPT).toContain("the app says what changes");
+    // No surviving invitation to count in prose. "Count the days and say the
+    // count" was the last one, and it lived under DOSE AGAINST THE HORIZON.
+    expect(WAKE_SYSTEM_PROMPT).not.toContain("say the count");
+    expect(WAKE_SYSTEM_PROMPT).not.toContain("explain the split");
+  });
+
+  /**
+   * A rule the examples break is a rule the model breaks: voice is copied
+   * from demonstrations far more reliably than from instructions.
+   */
+  it("no example's prose states a fact the manifest already carries", async () => {
+    const wake = await import("../src/services/coach-wake.js");
+    const { wakeOutputSchema } = await import("@rg/domain");
+    const countedThings = /\b(one|two|three|four|five|six|seven|eight|nine|ten|\d+)\s+(sessions?|workouts?|lifts?|runs?|bouts?|adds?)\b/i;
+    const countedDays = /\bon\s+(one|two|three|four|five|six|seven|eight|nine|ten|\d+)\s+days?\b/i;
+    const weekdays = /\b(Monday|Tuesday|Wednesday|Thursday|Friday|Saturday|Sunday)('s)?\b/i;
+    const credit = /\bI'?ve\s+(added|moved|written|left|dropped|swapped)\b/i;
+    for (const name of ["WAKE_EXAMPLE_OUTPUT", "WAKE_EXAMPLE_CREATE_PLAN", "WAKE_EXAMPLE_LIFT"] as const) {
+      const out = wakeOutputSchema.parse(JSON.parse(wake[name]));
+      // Prose only: `evidence` cites the dossier by design, and titles are
+      // the manifest rather than a claim about it.
+      const prose = [out.briefing, out.focus, out.raceLine, ...out.proposals.map((p) => p.rationale)]
+        .filter((s): s is string => typeof s === "string");
+      for (const s of prose) {
+        for (const [what, re] of [
+          ["counts sessions", countedThings],
+          ["counts days", countedDays],
+          ["names weekdays", weekdays],
+          ["takes credit", credit],
+        ] as const) {
+          expect(re.test(s), `${name} ${what}: "${s}"`).toBe(false);
+        }
+      }
+    }
+  });
+
   it("carries the programming vocabulary the coach had none of", async () => {
     const { WAKE_SYSTEM_PROMPT } = await import("../src/services/coach-wake.js");
     // The audit's own grep: `isometric` 0 hits in source, `eccentric` 1 (a
@@ -978,19 +1169,21 @@ describe("the wake prompt (2026-08-16 rewrite)", () => {
     expect(advertised.filter((k) => !shown.has(k)), "op kinds with no example to copy").toEqual([]);
   });
 
-  it("the lift example's briefing describes exactly the sessions its ops contain", async () => {
+  it("the lift example proposes what its briefing reasons about", async () => {
     const { WAKE_EXAMPLE_LIFT } = await import("../src/services/coach-wake.js");
     const { wakeOutputSchema } = await import("@rg/domain");
     const out = wakeOutputSchema.parse(JSON.parse(WAKE_EXAMPLE_LIFT));
     const ops = out.proposals[0]!.ops;
-    // The example the model copies its voice from must itself obey the
-    // honesty rule — the previous one narrated "two ski-prep leg sessions"
-    // over a single leg session, which is the failure in miniature.
+    // The example the model copies its voice from must obey the honesty rule
+    // in both directions: the bouts it reasons about exist as ops…
     const legSessions = ops.filter(
       (o) => o.kind === "add" && o.session.category === "strength" && o.session.durationMinutes >= 30,
     );
     expect(legSessions).toHaveLength(2);
-    expect(out.briefing).toContain("two real leg sessions");
+    // …and it does NOT count them in prose (2026-08-17) — the app prints the
+    // manifest, and an example that enumerates teaches enumeration.
+    expect(out.briefing).toContain("in bouts");
+    expect(out.briefing).not.toContain("two real leg sessions");
     // …and the compensatory work it mentions is a scheduled session, not advice.
     expect(ops.some((o) => o.kind === "add" && o.session.mobility)).toBe(true);
     // …and the budget it spends is paid for by an op that takes something out.

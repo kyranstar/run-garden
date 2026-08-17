@@ -50,9 +50,10 @@ import type { Db } from "./db.js";
 export const DEFAULT_MODEL_STRONG = "anthropic/claude-opus-5";
 const DEFAULT_MODEL_EDIT = "anthropic/claude-haiku-4.5";
 const DEFAULT_GATEWAY = "https://ai-gateway.vercel.sh/v1";
-// Opus-5-class models think adaptively before answering (uncontrollable on
-// the gateway's chat-completions surface), so a large plan can legitimately
-// take minutes. Never cut off a generation that is still making progress:
+// Opus-5-class models think adaptively before answering — and "uncontrollable
+// on the gateway's chat-completions surface" is now a measured fact rather
+// than an assumption; see the probe write-up above `chatCompletion`. A large
+// plan can legitimately take minutes. Never cut off a generation that is still making progress:
 // Workers place no wall-clock limit on awaited subrequests while the client
 // stays connected, and the browser fetch has no default timeout either.
 const TIMEOUT_MS = 600_000;
@@ -554,13 +555,55 @@ function feedbackMessage(feedback: string): string {
 // feedback-retry). Transient gateway failures get one automatic in-place
 // retry here, below the feedback-retry layer.
 //
-// Prompt-cache passthrough: investigated per spec §3 ("try it once, don't
-// invent wire fields if you can't verify one"). llm.ts — the only other
-// gateway caller in this codebase — sends no cache-control-shaped field or
-// header, and nothing in this repo documents one for the Vercel AI Gateway's
-// OpenAI-compatible endpoint. Not implemented; left as a documented gap
-// rather than a guess. The load-bearing efficiency measure is the
-// stable-prefix-first message ordering above, per spec.
+// ── WHAT THIS SURFACE WILL AND WON'T CARRY (probed 2026-08-17) ────────────
+//
+// Method, and why you can trust it without spending a cent: the gateway
+// validates the request body BEFORE it authenticates. Post a deliberately
+// invalid value for a field with no API key and you learn whether the field
+// is in its schema at all — a 400 naming the field means it is parsed, a 401
+// means it was dropped as unknown. Re-probing `response_format:
+// {"type":"json_object"}` this way reproduces the exact 400 recorded below
+// from live traffic, which is what makes the rest of these trustworthy.
+//
+//   curl -sS -X POST https://ai-gateway.vercel.sh/v1/chat/completions \
+//     -H 'Authorization: Bearer sk-invalid' -H 'Content-Type: application/json' \
+//     -d '{"model":"anthropic/claude-opus-5","max_tokens":8,
+//          "reasoning_effort":"banana","messages":[{"role":"user","content":"hi"}]}'
+//
+// 1. REASONING / THINKING — accepted by the schema, DOES NOT REACH THE MODEL.
+//    `reasoning_effort` (and its nested twin `reasoning: {effort}`) is a real
+//    field here: the invalid value above is rejected 400 with
+//    `param: "reasoning.effort"` and the enum
+//    none|minimal|low|medium|high|xhigh|max. But Vercel's own docs for this
+//    endpoint say plainly that on "Claude Opus 4.7 and later, Claude 5" the
+//    `reasoning` object "does not currently reach" Anthropic's
+//    `output_config` field — effort returns no reasoning tokens and
+//    `reasoning.max_tokens` is rejected downstream with a 400.
+//
+//    So the ~6.6k output tokens a wake bills but never shows the athlete are
+//    Claude Opus 5's DEFAULT adaptive thinking, with `display` defaulting to
+//    "omitted" — thinking we pay for, cannot see, and CANNOT TUNE from this
+//    surface. Do not "fix" this by adding `reasoning_effort` here: it is a
+//    no-op on opus-5, and `reasoning.max_tokens` would break prod outright.
+//    The knob lives on the gateway's Anthropic-native Messages surface
+//    (POST /v1/messages on the SAME host and the SAME API key), which
+//    validates `output_config.effort` against Anthropic's own enum
+//    low|medium|high|max|xhigh. That is a transport migration, deliberately
+//    not taken in this pass.
+//
+// 2. PROMPT CACHING — available here, contrary to what this comment used to
+//    say. `cache_control: {"type":"ephemeral"}` on a message object IS in the
+//    schema (an invalid type 400s with
+//    `param: "messages.0.cache_control.type"`), as is
+//    `providerOptions.gateway.caching: "auto"`. The earlier investigation
+//    concluded "no documented wire field" and stopped; both are documented
+//    and schema-enforced. Worth taking: a wake ships ~21k input tokens of
+//    largely stable dossier every call. Not enabled in this pass only because
+//    it changes live billing behaviour and wants one measured before/after.
+//
+// 3. `response_format: {"type":"json_object"}` — still rejected (400,
+//    `param: "response_format"`); only json_schema / legacy json are
+//    supported. Unchanged, and re-verified by the probe above.
 // ─────────────────────────────────────────────────────────────────────────
 
 export async function chatCompletion(

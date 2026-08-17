@@ -35,7 +35,12 @@ import {
 } from "./studio-llm.js";
 import { buildDossier } from "./coach-context.js";
 import { loadExerciseIndex, resolveOpsExercises } from "./exercise-catalog.js";
-import { consumeTriggers, pendingTriggers, recordUnansweredMessage } from "./coach-triggers.js";
+import {
+  consumeTriggers,
+  pendingTriggers,
+  recordUnansweredMessage,
+  type CoachTriggerKind,
+} from "./coach-triggers.js";
 import { claimUserLock, releaseUserLock, touchUserLock } from "./locks.js";
 import { disciplineOf } from "@rg/analytics";
 
@@ -113,18 +118,44 @@ const MAX_REPAIRABLE_RAW_CHARS = 24_000;
  * role='coach' message while the LLM is down, so wakeAdvised stays true and
  * every Plan visit re-fires (and re-fails) the wake. */
 export const WAKE_FAILURE_BACKOFF_MINUTES = 30;
+/**
+ * How long a briefing keeps AMBIENT signals quiet — the minimum interval
+ * between unforced wakes, expressed against the thing a wake produces.
+ *
+ * A trigger is a cheap deterministic row; a wake is an Opus call that bills
+ * around a third of a dollar. Live, 2026-08-17: the coach briefed at 04:13:26
+ * and proposed "Ski legs before the 26th". At 04:22:36 the athlete marked a
+ * four-day-old session skipped — acting on that very briefing. At 04:24:35 a
+ * `/coach/state` poll evaluated triggers, `missed_workout` had aged out of
+ * its 72h dedupe, and it fired. `wakeAdvised` flipped true; opening the plan
+ * page remounted the panel and fired the automatic wake. 04:27:54: a second
+ * $0.33 Opus call that re-derived the SAME proposal and superseded the first.
+ * Two wakes, $0.66, one answer.
+ *
+ * Nothing there was broken in the trigger machinery — the row fired and
+ * cleared exactly as designed. What was wrong is the judgement: an ambient
+ * signal does not outrank a briefing written eleven minutes ago, because the
+ * next briefing would be written from the same dossier and say the same
+ * thing. So ambient triggers wait for the briefing to age past this window;
+ * they stay pending, and the next wake picks them up for free.
+ *
+ * Deliberately NOT applied to `unanswered_message`: the athlete asked
+ * something and is owed a reply, however recently the coach spoke. And not
+ * applied at all to "Check in" or a new message, which never consult this.
+ */
+export const AMBIENT_TRIGGER_QUIET_MINUTES = 45;
 
 /** A complete, schema-valid example output — embedded in the prompt AND
  * parsed in a test (coach-wake.test.ts) so prompt and schema can never
  * drift apart. Complex ops (add/createPlan sessions) are where live wakes
  * kept failing validation (2026-08-12). */
 export const WAKE_EXAMPLE_OUTPUT = JSON.stringify({
-  briefing: "Adding a taper shakeout Friday and a recovery block after the race.",
+  briefing: "Race week — nothing left to gain but freshness, so what goes in is short and cheap.",
   proposals: [
     {
       title: "Shakeout before race day",
       evidence: "race in 2 days · 7d load 1.1× base",
-      rationale: "20 easy minutes with 4 strides keeps legs alive without cost.",
+      rationale: "Enough to keep the legs awake without spending anything you want on the day.",
       expiresAt: "2026-10-22",
       flags: [],
       ops: [
@@ -149,19 +180,19 @@ export const WAKE_EXAMPLE_OUTPUT = JSON.stringify({
   ],
   question: null,
   memoryOps: [],
-  focus: "Race week: everything easy except Saturday's shakeout strides.",
-  raceLine: "Two quality sessions left — arrive at Saturday fresh, not fit.",
+  focus: "Race week: keep it all easy — the fitness is already banked.",
+  raceLine: "The building is done; what's left is arriving fresh rather than fitter.",
 });
 
 /** A second drift-tested example: createPlan is the op live wakes failed on
  * three times (2026-08-12/13) — models must see its exact working shape. */
 export const WAKE_EXAMPLE_CREATE_PLAN = JSON.stringify({
-  briefing: "Drafting the post-race recovery block as a proposal.",
+  briefing: "Nothing is planned past the race, and that is where people undo the build.",
   proposals: [
     {
       title: "4-week post-race block",
       evidence: "race 2026-10-23 · plan ends 2026-10-03",
-      rationale: "One true recovery week written out; three sketched to shape after the race.",
+      rationale: "The first week is written out; the rest stays a sketch until we see how you come out of the race.",
       expiresAt: "2026-10-25",
       flags: [],
       ops: [
@@ -218,13 +249,13 @@ export const WAKE_EXAMPLE_CREATE_PLAN = JSON.stringify({
  * ops each re-serialising the same two exercises. */
 export const WAKE_EXAMPLE_LIFT = JSON.stringify({
   briefing:
-    "Ten days out, and you've lifted once in three months — so this is two real leg sessions (Tuesday and Friday) rather than the daily block you asked for, plus ten minutes of ankles and hips each day from Thursday. Thursday's run drops to 30 easy to pay for Friday's legs. Nothing heavy after the 24th.",
+    "Ten days out, and you've lifted once in three months — so this is real leg work in bouts rather than the daily block you asked for: the first hard exposure does most of the protecting, and piling more on top only buys soreness. The daily part is there, but as mobility that costs you nothing. Nothing heavy after the 24th.",
   proposals: [
     {
       title: "Ski-prep legs — two bouts",
       evidence: "ski trip 2026-08-26 (10 days) · 1 strength session in 90d · tight IT band on file",
       rationale:
-        "A ski day is eccentric quad work held at length, single-leg lateral control, and hours on your feet in the cold — hence the holds, the four-second lowering, and the per-side work. Ten days buys tissue tolerance and freshness, not strength, and unaccustomed eccentric work is dosed in bouts: Tuesday does most of the protecting, Friday banks it, a third would only buy soreness. Loads are deliberately small because your last strength session was in May, and your IT band is why the lateral work stays slow. Thursday's easy run drops 45→30 to pay for Friday.",
+        "A ski day is eccentric quad work held at length, single-leg lateral control, and hours on your feet in the cold — hence the holds, the four-second lowering, and the per-side work. Ten days buys tissue tolerance and freshness, not strength, and unaccustomed eccentric work is dosed in bouts: the first does most of the protecting, a second 48 hours later banks it, and more would only buy soreness. Loads are deliberately small because your last strength session was in May, and your IT band is why the lateral work stays slow. The easy run before the second bout gives up its length to pay for it.",
       expiresAt: "2026-08-18",
       flags: [],
       ops: [
@@ -304,7 +335,7 @@ export const WAKE_EXAMPLE_LIFT = JSON.stringify({
   memoryOps: [
     { op: "add", kind: "note", text: "Ski trip 2026-08-26 to 2026-08-30.", expiresAt: "2026-08-31" },
   ],
-  focus: "Two leg sessions this week — the runs stay easy around them.",
+  focus: "Legs are the work this week — the runs stay easy around them.",
 });
 
 /**
@@ -418,6 +449,20 @@ export const WAKE_EXAMPLE_OPS = JSON.stringify([
  * interface rather than opinion: dossier section names, op kinds, field
  * names, enum values, the JSON contract.
  *
+ * THE MODEL NEVER STATES A FACT THE SYSTEM CAN COMPUTE (2026-08-17). The
+ * HONESTY rule was already absolute — describe only ops that exist — and it
+ * still could not make a briefing right about the SHAPE of those ops, because
+ * it left the model counting in prose, and counting drifts. Live: a briefing
+ * put a ten-minute mobility piece "on four days" off one multi-date `add`,
+ * and the review that reported it as wrong by one had counted only the
+ * `dates` array and missed the primary `date`. Neither reader could check the
+ * other, because the only place the list existed was the sentence. The app
+ * now computes it: `describeOps` (@rg/domain) turns the ops into a manifest —
+ * one line per day, per session, per exercise — rendered beside the briefing,
+ * so the prompt forbids the model from restating any of it and asks for the
+ * half only it can write. The EXAMPLES obey the same rule: a demonstration
+ * that enumerates teaches enumeration, whatever the rule above it says.
+ *
  * Dossier dependency (coach-context.ts): this prompt reads EXERCISE CATALOG,
  * STRENGTH PLAN, per-session stageSummary on UPCOMING lines, the 90-day
  * per-discipline HISTORY block, LIMITS, and training load. Each is referenced
@@ -435,25 +480,25 @@ export const WAKE_EXAMPLE_OPS = JSON.stringify([
 export const WAKE_SYSTEM_PROMPT = `You are the athlete's running and lifting coach inside Run Garden. You read one dossier and reply with ONE JSON object — nothing else.
 
 HONESTY — this outranks everything below it.
-- Your briefing may describe ONLY changes that exist in THIS reply's ops. Not what you intend, not what you would like to add — what is actually in the JSON. If the op is not there, the change is not real, and describing it is the worst thing you can do to this athlete.
-- So: no "I've added", "I've moved", "I've left Saturday alone", "your week now looks like", and no counting sessions unless every one of them is an op in this reply.
-- Cannot express it? Say so and offer to draft it: "I'd put real leg work Tuesday and Friday and keep the runs easy around them — want me to write those two up?" That is a good answer. Confident prose over an empty ops array is not.
-- Work the athlete already has is theirs, not yours. Name it as theirs; never re-add it and never take credit for it.
+- Your briefing may describe ONLY changes that exist in THIS reply's ops — not what you intend, not what you would like to add. If the op is not there, the change is not real, and saying otherwise is the worst thing you can do to this athlete.
+- NEVER STATE WHAT THE OPS ALREADY SAY. The app prints the manifest — every day, every session, every exercise — beside your words, so narrating it only gives you something to contradict. Nothing countable or enumerable: no number of sessions or days, no weekday lists, no "three sessions and a filler", no totals, no "I've added", no "your week now looks like". Yours is the reasoning — why this, why now, what it costs; the app says what changes.
+- Cannot express it as ops? Say so and offer to draft it: "I'd put real leg work in this week and keep the runs easy around it — want me to write that up?" That is a good answer. Confident prose over an empty ops array is not.
+- Work the athlete already has is theirs, not yours — name it as theirs and never take credit for it.
 
 NUMBERS CARRY THEIR MEANING.
 - Never hand back a bare dossier figure — the interpretation rides in the same sentence: "recovery reads 100%, but that score hasn't moved since you stopped training and there's no HRV behind it — treat it as no information", never just "recovery reads 100%".
 - Name weak evidence as weak: stale, one night, no baseline, unknown. A number that froze when the training stopped is an artefact, not a verdict. Prefer the figure that carries information over the one that happens to be present.
 - Every state word you use — taper, rest mode, under_prepared, detrained, threshold, base — gets one plain clause of context in the same sentence. This athlete has never read a coaching textbook.
-- Use the dossier's units as given, and never invent a figure it does not contain.
+- Use the dossier's units as given. Never invent a figure, or the contents of a section you were not shown — say what you could not see instead.
 
 PROGRAMMING — how you answer "get me ready for X", whatever X is.
 - DEMANDS FIRST, WORDS SECOND. Before writing a session, name what the goal asks of the body: which tissues, which contraction types (eccentric / isometric / concentric / elastic), which planes, how long one effort lasts and how often it repeats, and the environment (cold, altitude, terrain, all day on your feet). Write sessions against that list and put the list in the rationale — it is how the athlete sees that you thought.
 - HONOUR THE INTENT BEHIND A NAMED EXERCISE, not its literal wording: when they name a movement they are naming a quality they want. Keep their choice when it is a good one, add the higher-leverage options with a plain-words reason, and prefer controlled tempo over more reps whenever the demand is tissue tolerance rather than fitness.
 - READ WHAT THEY ALREADY HAVE, FIRST. Each UPCOMING line carries that session's stageSummary — its real contents — and STRENGTH PLAN carries their lift work and their stated constraints. Never prescribe what is already prescribed: extend it, load it, or leave it alone and say why.
 - CLOSE THE GAP THE DOSSIER MEASURES. Wherever it sets what they are doing beside what the goal demands — terrain, pace, frequency, long-run duration, volume, time on feet, months since a discipline — and the two disagree, name that gap ONCE in its own numbers and propose the session that closes it. Its figures are the only facts you have: never invent the size of a gap, and never quote one and then coach as though it said nothing.
-- DOSE AGAINST THE HORIZON. Count the days and say the count. Under about three weeks buys motor rehearsal, tissue tolerance and freshness — not strength; say so plainly instead of implying a transformation. A long horizon buys real adaptation, and then progression is the point.
+- DOSE AGAINST THE HORIZON. Read the days between now and the event, and dose against them. Under about three weeks buys motor rehearsal, tissue tolerance and freshness — not strength; say so plainly instead of implying a transformation. A long horizon buys real adaptation, and then progression is the point.
 - UNACCUSTOMED ECCENTRIC OR HIGH-TENSION WORK IS DOSED IN BOUTS, NOT DAYS. The first hard exposure does most of the damage and most of the protecting; a second 48–72h later banks it. Further bouts inside a short block buy soreness, not protection. Two or three, never six.
-- "DAILY" IS USUALLY THE WRONG ANSWER, AND SAYING SO IS YOUR JOB. Give them a daily piece that genuinely costs nothing plus two to four real loading sessions, and explain the split warmly in one sentence. Never write a week with no rest day: a day with nothing on it is training.
+- "DAILY" IS USUALLY THE WRONG ANSWER, AND SAYING SO IS YOUR JOB. Give them a daily piece that genuinely costs nothing plus two to four real loading sessions, and say warmly why not daily. Never write a week with no rest day: a day with nothing on it is training.
 - TAPER INTO ANYTHING THEY CARE ABOUT, not only races — a trip, a hike, a match, a move. Name the cutoff date: "nothing heavy after the 24th".
 - PRESCRIBE AGAINST HISTORY, NOT AGAINST THE PLAN. HISTORY gives 90 days per discipline and states detraining outright. Months without a discipline means untrained in it however well the others are going — a fact about tissue, not a judgement about the person. Start light, and say the numbers are deliberately light and why.
 - NAME A SPECIFIC RISK ONCE, WITHOUT ALARM: name the tissue they told you about, say what you did about it, move on ("your IT band is why the lateral work is slow and small"). No disclaimers, no "see a professional", no repeating it.
@@ -461,10 +506,9 @@ PROGRAMMING — how you answer "get me ready for X", whatever X is.
 - ONE BUDGET, ONE BODY. Adding to one discipline inside another's build costs something: say what you took out to pay for it, and propose the op that takes it out.
 - COMPENSATORY WORK IS A SESSION. Mobility, prehab, ankle and hip work: if it matters it is an add with a mobility body on real dates, not a line of advice in the briefing.
 - RECORD DATED EVENTS. A trip, a holiday, an event they are travelling to — write it to memoryOps as a note with the date as YYYY-MM-DD inside the text and an expiresAt just after it. Nothing else in this app remembers it, and next week neither will you. That date is also what stops you putting hard work the day before it.
-- Work from the sections you were actually given, say what you couldn't see, and never invent the contents of one you weren't.
 
 ${HARD_LIMITS_PROMPT}
-- These are a floor, not a target: sitting just inside a ceiling is not the same as coaching well, and a limit you had to work around is worth one plain clause in the rationale ("your own two lifts already spend the week's budget, so mine is short").
+- These are a floor, not a target: sitting just inside a ceiling is not the same as coaching well, and a limit you had to work around is worth one plain clause in the rationale.
 
 Your contract:
 - PROPOSE, never act. Every plan change is a proposal the athlete taps to approve; nothing you say changes anything by itself.
@@ -479,17 +523,16 @@ Your contract:
 - MEMORY: when the athlete tells you something durable, record it via memoryOps (fact = who they are, rule = a standing preference, note = time-boxed, with expiresAt). Prefer update over add for near-duplicates; ids are in the dossier.
 - FLAGS: if a proposal goes against a standing rule, say so in its flags array ("moves your Saturday long run").
 - EVIDENCE: every proposal's evidence cites dossier data ("slept 5h avg · HRV −9%"), and expiresAt is min(end of first affected day, +3 days).
-- GARDEN VOICE: MILESTONES carries the garden's state. AT MOST ONE garden reference per briefing, always tied to a concrete action ("an easy 30 tomorrow brings the rain back"), never guilt. Say nothing about the garden during rest mode or taper, or when its forecast stage is already a loss stage — one loss voice at a time.
+- GARDEN VOICE: MILESTONES carries the garden's state. AT MOST ONE garden reference per briefing, always tied to a concrete action ("an easy run tomorrow brings the rain back"), never guilt. Say nothing about the garden during rest mode or taper, or when its forecast stage is already a loss stage — one loss voice at a time.
 - SKIP TREATMENT: when proposing a skip, state in the rationale what the garden will see: the first sanctioned skip in a rolling week counts as a genuine rest day; further ones are merely neutral. OPEN ITEMS shows current mercy usage.
 - FOCUS: one sentence (≤160 chars) naming the week's anchor and at most one adjustment — the plan page shows it as "the coach's line". null when you have nothing genuinely useful to say.
 - RACELINE: only when the dossier has a RACE section — ONE sentence (≤160 chars) on the build as a whole, since focus already covers this week. null KEEPS the previous line; write a new one only when the story genuinely moves.
 
 LENGTH IS A COST and the athlete pays it in waiting. A long reply is not a thorough one.
 - VOICE: brief, warm, specific. A coach, not an app. No headers, no bullet-point walls.
-- briefing: 1–4 sentences — what changed, why, and the one thing to know. Session-by-session prose in a briefing is how you end up describing work you never wrote. A request to plan IS a request for detail — so give the detail, but give it in the proposal's rationale, where every line of it is tied to a session that exists.
-- rationale: AT MOST 5 SENTENCES — the demands, the dose, the risk, and what you took out to pay for it. Do NOT restate the sessions the ops already contain; the athlete is looking at them.
+- briefing: 1–4 sentences — why the week looks like this, and the one thing to know. A request to plan IS a request for detail — so give the detail, but give it in the proposal's rationale, as reasoning rather than a list of sessions.
+- rationale: AT MOST 5 SENTENCES — the demands, the dose, the risk, and what you took out to pay for it.
 - ONE proposal is usually right, two is a lot, and one intention is never split across several.
-- FEWER, LARGER OPS. A session that repeats is ONE add carrying all its dates, never one add per day.
 
 Output JSON exactly matching:
 {"briefing": string|null, "proposals": [{"title","evidence","rationale","expiresAt","flags":[],"ops":[...]}], "question": {"text","chips":[]}|null, "memoryOps": [...], "focus": string|null, "raceLine": string|null}
@@ -500,7 +543,7 @@ A session is {category, title, durationMinutes, and AT MOST ONE body: run? | lif
 · run: {blocks:[{kind:"duration"|"distance", value, intensity?}]} — minutes (duration) / meters (distance). Values are INTEGERS; intensity ∈ easy|steady|threshold|interval|rest.
 · lift / mobility: {rounds?, exercises:[...]}. Give "rounds" ONLY for a circuit — the whole list cycled that many times, each exercise's "sets" being its work per round. Omit it for straight sets.
 · An exercise is {name, sets, and either reps or holdSeconds} plus optional perSide, eccentricSeconds, weight, restSeconds, note. holdSeconds is seconds of work per set (a wall sit, a plank, 30s hops). perSide:true means sets × reps happen on EACH side. eccentricSeconds is the slow lowering ("4s down"). weight defaults to bodyweight — a plain number means kilos; restSeconds defaults to 60.
-· REPEATS: "dates" carries the other days this same session happens on, up to 14, and the server writes one real session per date. Ten days of the same ten-minute mobility piece is ONE add with ten dates. Vary the work and it is a different session, so it is a different op.
+· REPEATS: "dates" carries the other days this same session happens on, up to 14 — the server writes one real session per date, so a recurring piece is ONE add and never one add per day. Vary the work and it is a different session, so it is a different op.
 · EXERCISE NAMES: plain English. EXERCISE CATALOG lists the movements this athlete's watch knows — prefer one of those names and the session can reach the watch; anything else still works and simply lives in the app. Never let the catalog stop you prescribing the right thing, and never spend words on ids: the server resolves every name itself.
 · shapeWeeks volumeTarget stays under ~6 words. A proposal holds up to 20 ops.
 Match these examples' shapes EXACTLY:
@@ -657,11 +700,11 @@ async function recentWakeFailure(db: Db, userId: string): Promise<boolean> {
   );
 }
 
-/** Whether the last coach briefing is still fresh enough that an "open"
- * wake with no new trigger would be redundant. Filters out legacy per-effort
- * analyses (refs.kind='analysis') — an ambient read is not a briefing, and
- * counting it silently muted the coach for 20h after every read. */
-async function freshBriefing(db: Db, userId: string): Promise<boolean> {
+/** How long ago the athlete was last briefed, in ms — null if never.
+ * Filters out legacy per-effort analyses (refs.kind='analysis') — an ambient
+ * read is not a briefing, and counting it silently muted the coach for 20h
+ * after every read. */
+async function briefingAgeMs(db: Db, userId: string): Promise<number | null> {
   const [lastCoach] = await db
     .select()
     .from(coachMessages)
@@ -674,28 +717,53 @@ async function freshBriefing(db: Db, userId: string): Promise<boolean> {
     )
     .orderBy(desc(coachMessages.at))
     .limit(1);
-  return (
-    !!lastCoach && Date.parse(nowInstant()) - Date.parse(lastCoach.at) < STALE_BRIEFING_HOURS * 3600 * 1000
-  );
+  return lastCoach ? Date.parse(nowInstant()) - Date.parse(lastCoach.at) : null;
 }
 
 /**
  * Whether an "open" (auto) wake would be redundant right now (audit
- * C4/C14). A recent failure/rest wins over everything, INCLUDING pending
- * triggers — the whole point of the backoff is to stop retrying while the
- * coach just failed, and a trigger alone doesn't get to override that (it
- * stays unconsumed until a wake actually succeeds, so ungating it here
- * would mean the backoff never actually applies whenever anything is
- * pending — the common case during an outage). Short of a recent failure,
- * a pending trigger always makes a wake worth attempting; with no trigger,
- * a fresh existing briefing makes it redundant. Shared by the internal
- * "open" skip rule below and the `wakeAdvised` the client uses to decide
- * whether to bother calling wake at all.
+ * C4/C14, revisited 2026-08-17). Shared by the internal "open" skip rule
+ * below and the `wakeAdvised` the client uses to decide whether to bother
+ * calling wake at all — so the server is the single authority on whether a
+ * page visit is allowed to cost money, and a client that asks anyway is
+ * refused here before the lock is claimed or a token is spent.
+ *
+ * Three tiers, in this order:
+ *
+ * 1. A recent failure/rest wins over everything, INCLUDING pending triggers
+ *    — the whole point of the backoff is to stop retrying while the coach
+ *    just failed, and a trigger alone doesn't get to override that (it stays
+ *    unconsumed until a wake actually succeeds, so ungating it here would
+ *    mean the backoff never applies whenever anything is pending — the
+ *    common case during an outage).
+ *
+ * 2. An UNANSWERED MESSAGE is never redundant. The athlete asked something
+ *    and hasn't been answered; no briefing, however fresh, substitutes for
+ *    that. This is the trigger that carries a dropped reply across a closed
+ *    tab, and it must keep working on the very next open.
+ *
+ * 3. Everything else is an AMBIENT signal — a missed session, a flagged
+ *    read, a plan running out of firm detail. Those are worth a wake only
+ *    once the last briefing has aged past `AMBIENT_TRIGGER_QUIET_MINUTES`;
+ *    see that constant for the live incident that set it. With no trigger at
+ *    all, the far longer `STALE_BRIEFING_HOURS` applies as before.
+ *
+ * Nothing here gates "Check in" (`manual`) or a new message, which never
+ * reach this function.
  */
-export async function openWakeIsFresh(db: Db, userId: string, triggerCount: number): Promise<boolean> {
+export async function openWakeIsFresh(
+  db: Db,
+  userId: string,
+  triggers: ReadonlyArray<{ kind: CoachTriggerKind }>,
+): Promise<boolean> {
   if (await recentWakeFailure(db, userId)) return true;
-  if (triggerCount > 0) return false;
-  return freshBriefing(db, userId);
+  if (triggers.some((t) => t.kind === "unanswered_message")) return false;
+  const quietMs =
+    triggers.length > 0
+      ? AMBIENT_TRIGGER_QUIET_MINUTES * 60 * 1000
+      : STALE_BRIEFING_HOURS * 3600 * 1000;
+  const age = await briefingAgeMs(db, userId);
+  return age !== null && age < quietMs;
 }
 
 /** Dates an op touches — for supersede matching. */
@@ -902,7 +970,7 @@ export async function wake(
 
   const triggers = await pendingTriggers(db, userId);
   if (cause.kind === "open") {
-    if (await openWakeIsFresh(db, userId, triggers.length)) return { status: "skipped" };
+    if (await openWakeIsFresh(db, userId, triggers)) return { status: "skipped" };
   }
 
   // Single-flight (rework spec R2): claimed AFTER the cheap gates so quiet

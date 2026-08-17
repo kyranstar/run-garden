@@ -1,5 +1,5 @@
 import { Hono } from "hono";
-import { and, desc, eq, inArray, isNull, lt } from "drizzle-orm";
+import { and, desc, eq, gte, inArray, isNull, lt, sql } from "drizzle-orm";
 import {
   activities,
   coachLocks,
@@ -9,6 +9,7 @@ import {
   coachPlans,
   coachProposals,
   coachQuestions,
+  llmUsage,
   plannedWorkouts,
   studioPlanPushes,
   studioPlans,
@@ -31,6 +32,7 @@ import { requireUser } from "../auth/middleware.js";
 import { loadPreferences } from "../services/calendar-sync.js";
 import { waitUntilSafe } from "../services/wait-until.js";
 import { ensureRead } from "../services/coach-reads.js";
+import { LLM_BUDGET } from "../services/llm.js";
 import { executeCloudJobs } from "../services/coros-write-cloud.js";
 import { exerciseNameMap, resolveExerciseName } from "../services/exercise-catalog.js";
 import { liftProgressions, liftWeekSummary, runProgressions } from "../services/plan-progressions.js";
@@ -154,13 +156,15 @@ coachRoutes.get("/state", async (c) => {
     .where(and(eq(coachMessages.userId, userId), eq(coachMessages.role, "coach")))
     .orderBy(desc(coachMessages.at))
     .limit(1);
-  // Shares the wake pipeline's own "would an open wake be redundant?" check
-  // (audit C4/C14): a recent failed/resting attempt wins over a pending
-  // trigger (triggers stay unconsumed until a wake succeeds, so without this
-  // a missed-workout trigger alone would force a retry on every single Plan
-  // visit during an outage); short of that, a trigger always outweighs a
-  // fresh existing briefing.
-  const wakeAdvised = !(await openWakeIsFresh(db, userId, triggers.length));
+  // Shares the wake pipeline's own "would an open wake be redundant?" check,
+  // and passes the TRIGGERS rather than their count: which kind is pending is
+  // the whole question. An unanswered message always earns a wake; an ambient
+  // signal has to outlive the quiet window after the last briefing, because
+  // otherwise a page visit minutes after a full briefing bills another Opus
+  // call to say the same thing (live, 2026-08-17 — see
+  // AMBIENT_TRIGGER_QUIET_MINUTES). A recent failed/resting attempt still
+  // wins over both.
+  const wakeAdvised = !(await openWakeIsFresh(db, userId, triggers));
 
   // "Coach is thinking" must survive navigation (user report 2026-08-12) —
   // and, since 2026-08-17, it is what the client watches INSTEAD of the
@@ -191,6 +195,57 @@ coachRoutes.get("/state", async (c) => {
     lastCoachAt: lastCoach?.at ?? null,
     wakeAdvised,
     coachThinking,
+  });
+});
+
+/**
+ * What the coach actually costs, by kind, over the same rolling 7 days the
+ * budget cutoff uses.
+ *
+ * `llm_usage` has recorded every call since launch and nothing ever read it
+ * back, which is the only reason a per-page-visit wake could bill $0.33 twice
+ * in fourteen minutes without anyone noticing. Deliberately NOT folded into
+ * `/coach/state`: that endpoint polls every three seconds while the coach is
+ * thinking, and an aggregate nobody is watching does not belong on a hot
+ * path. This is a separate, on-demand read — one grouped query, no joins.
+ *
+ * `spentMicros` is the same figure `llmBudgetStatus` gates on, so the totals
+ * here and the "coach is resting" cutoff can never disagree.
+ */
+coachRoutes.get("/spend", async (c) => {
+  const db = c.get("db");
+  const userId = c.get("userId");
+  const since = new Date(Date.now() - 7 * 86_400_000).toISOString();
+  const rows = await db
+    .select({
+      kind: llmUsage.kind,
+      calls: sql<number>`count(*)`,
+      inputTokens: sql<number>`sum(${llmUsage.inputTokens})`,
+      outputTokens: sql<number>`sum(${llmUsage.outputTokens})`,
+      costMicros: sql<number>`sum(${llmUsage.costMicros})`,
+    })
+    .from(llmUsage)
+    .where(and(eq(llmUsage.userId, userId), gte(llmUsage.createdAt, since)))
+    .groupBy(llmUsage.kind);
+  const byKind = rows
+    .map((r) => ({
+      kind: r.kind,
+      calls: Number(r.calls ?? 0),
+      inputTokens: Number(r.inputTokens ?? 0),
+      outputTokens: Number(r.outputTokens ?? 0),
+      costMicros: Number(r.costMicros ?? 0),
+    }))
+    .sort((a, b) => b.costMicros - a.costMicros);
+  const spentMicros = byKind.reduce((sum, r) => sum + r.costMicros, 0);
+  return c.json({
+    since,
+    spentMicros,
+    // Dollars alongside micros so a human reading the raw JSON doesn't have
+    // to divide by a million to know whether to worry.
+    spentUsd: Math.round(spentMicros / 10_000) / 100,
+    warnMicros: LLM_BUDGET.warnMicros,
+    cutoffMicros: LLM_BUDGET.cutoffMicros,
+    byKind,
   });
 });
 

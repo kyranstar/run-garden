@@ -1,19 +1,69 @@
-import { useEffect, useRef, useState, type FormEvent, type ReactNode } from "react";
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type FormEvent,
+  type ReactNode,
+  type RefObject,
+} from "react";
 import { Link } from "react-router-dom";
 import type {
   CoachMessageDto,
   CoachProposalDto,
   CoachQuestionDto,
 } from "@rg/api-client";
+import { describeOps, type CoachOp, type OpLine, type PlannedRef } from "@rg/domain";
+import {
+  countNoun,
+  dayOfMonth,
+  revealInView,
+  Sheet,
+  useIsomorphicLayoutEffect,
+  weekdayShort,
+} from "../components.js";
 
 /**
- * The coach panel (Plan B, spec: 2026-08-06-coach-ux-design.md §2): pinned
- * self-expiring proposal tray, thread with inert receipts, one composer.
+ * The coach panel: ONE timeline. Messages, receipts and proposals are the
+ * same conversation in the same scroller, in the order they happened, and it
+ * opens at the bottom of it (rework 2026-08-17).
+ *
+ * It used to be two regions — a pinned "Needs you · N" tray of proposal cards
+ * above an inert thread — and the split cost three separate things:
+ *
+ *   · the tray had to win the opening scroll, so the panel opened 1,143px
+ *     above the newest message on a phone and every poll that changed the
+ *     tray's height re-argued the point;
+ *   · a proposal had no place in time. It appeared above a conversation it
+ *     was part of, and when it resolved it vanished from the tray and left
+ *     a one-line receipt at the far end of the thread;
+ *   · and the card described three operations with the single word "Mixed".
+ *
+ * Now: proposals are messages (`buildThread`), a resolved one stays where it
+ * settled and goes quiet instead of disappearing, the bottom is the resting
+ * place (`useBottomAnchor`), and every card renders the manifest —
+ * `describeOps`, the domain's one answer to "what will this do to my
+ * calendar" — three lines at a glance with the whole thing one tap away in a
+ * Sheet, which is the disclosure family that measures 0px of displacement.
+ *
  * Presentational only — every callback is injected, so the whole surface is
  * static-markup testable (the arrival-block.tsx pattern).
  */
 
-const TRAY_CAP = 4;
+/** Op lines shown on the card itself; the rest are behind the Sheet. Small
+ * on purpose: a twelve-op plan must not turn a message into a page. */
+const GLANCE_LINES = 3;
+
+/** How close to the bottom still counts as "at the bottom" — one line of
+ * slack, so a stray wheel tick doesn't unstick the thread. */
+const STICK_SLACK_PX = 48;
+
+/** After new content arrives, keep re-pinning for this long while the layout
+ * settles (a late font, a wrapped line, a query answering a beat after the
+ * sheet opened). Outside this window, growth is the reader's own doing — a
+ * disclosure they opened — and must not move them. */
+const SETTLE_MS = 1200;
 
 /** Which discipline(s) a proposal touches, from its ops' sessions. Mobility
  * sessions read as "Mobility" rather than falling through to "Run" — the
@@ -59,7 +109,9 @@ export interface PendingGhost {
 
 export function pendingByDate(
   proposals: CoachProposalDto[],
-  workoutDates: Map<string, string>,
+  /** The same workoutId → what-the-plan-holds map the manifest reads; only
+   * the date is used here. */
+  planned: ReadonlyMap<string, PlannedRef>,
 ): Map<string, PendingGhost[]> {
   const out = new Map<string, PendingGhost[]>();
   const push = (date: string | undefined, g: PendingGhost) => {
@@ -71,14 +123,14 @@ export function pendingByDate(
       const kind = op.kind as string;
       const session = op.session as { title?: string } | undefined;
       if (kind === "ease") {
-        push(workoutDates.get(op.workoutId as string), {
+        push(planned.get(op.workoutId as string)?.date, {
           kind: "rewrite",
           label: session?.title ?? "changed",
           proposalId: p.id,
           title: p.title,
         });
       } else if (kind === "move") {
-        push(workoutDates.get(op.workoutId as string), {
+        push(planned.get(op.workoutId as string)?.date, {
           kind: "outgoing",
           label: "moves away",
           proposalId: p.id,
@@ -86,7 +138,7 @@ export function pendingByDate(
         });
         push(op.toDate as string, { kind: "incoming", label: "arrives here", proposalId: p.id, title: p.title });
       } else if (kind === "skip") {
-        push(workoutDates.get(op.workoutId as string), {
+        push(planned.get(op.workoutId as string)?.date, {
           kind: "skip",
           label: "skipped",
           proposalId: p.id,
@@ -123,6 +175,297 @@ export function pendingByDate(
   return out;
 }
 
+// ── The manifest ───────────────────────────────────────────────────────────
+
+/** "Tue 18" — the day column of a manifest line. The same two formatters the
+ * week grid's own column headers use, so a day is named identically wherever
+ * the app names one. (Both read the ISO string's own fields; neither lets a
+ * bare date be parsed as UTC midnight and named as the day before.) */
+export function opDayLabel(iso: string): string {
+  return `${weekdayShort(iso)} ${dayOfMonth(iso)}`;
+}
+
+/** A manifest line's React key. One op can produce several lines on the same
+ * day, so the index is part of it. */
+const lineKey = (l: OpLine, i: number) => `${l.kind}-${l.date ?? "plan"}-${i}`;
+
+/** The lines a proposal's ops come to. `planned` (workoutId → what the plan
+ * holds today) is what lets an `ease` say "6×600m at 10K pace → Easy 35" on
+ * the right day instead of an undated rewrite — the panel already builds that
+ * map for the calendar's ghosts. Never throws: a proposal whose ops predate
+ * the current op vocabulary must still render its title and its buttons. */
+export function proposalLines(
+  proposal: CoachProposalDto,
+  planned?: ReadonlyMap<string, PlannedRef>,
+): OpLine[] {
+  try {
+    return describeOps(proposal.ops as CoachOp[], planned);
+  } catch {
+    return [];
+  }
+}
+
+function OpRow({ line }: { line: OpLine }) {
+  return (
+    <li className="coach-op">
+      {/* An undated line is a plan-level op (retire a plan, resolve the race
+          date) — it gets no day cell rather than a fabricated one. */}
+      {line.date ? <span className="coach-op-day">{opDayLabel(line.date)}</span> : null}
+      <span className="coach-op-what">
+        <span className="coach-op-summary">{line.summary}</span>
+        {line.change ? <span className="coach-op-change">{line.change}</span> : null}
+      </span>
+    </li>
+  );
+}
+
+/** The one control that opens the whole manifest. Both cards use it, so the
+ * caret and the affordance cannot drift apart between them. */
+function OpenManifest({ label, onClick }: { label: string; onClick: () => void }) {
+  return (
+    <button type="button" className="linklike coach-ops-all" onClick={onClick}>
+      {label}
+      <span className="disclosure-caret" aria-hidden>
+        →
+      </span>
+    </button>
+  );
+}
+
+/**
+ * The glance: the first few lines of the manifest, plus the one control that
+ * opens the whole thing.
+ *
+ * The control opens a Sheet, not an in-flow disclosure. Both were tried on
+ * paper; the twelve-op plan settles it — twelve days with their exercise
+ * lists is a page, and a page unfolding inside a message pushes the whole
+ * conversation below it down by however long the proposal happens to be.
+ * A Sheet displaces 0px by construction (System 4), and it can hold the
+ * per-session detail the card has no room for at any length.
+ */
+function ProposalGlance({ lines, onOpenAll }: { lines: OpLine[]; onOpenAll: () => void }) {
+  if (lines.length === 0) return null;
+  const shown = lines.slice(0, GLANCE_LINES);
+  const hidden = lines.length - shown.length;
+  const hasDetail = lines.some((l) => l.detail.length > 0);
+  return (
+    <>
+      <ul className="coach-ops">
+        {shown.map((l, i) => (
+          <OpRow key={lineKey(l, i)} line={l} />
+        ))}
+      </ul>
+      {hidden > 0 || hasDetail ? (
+        <OpenManifest
+          label={hidden > 0 ? `All ${countNoun(lines.length, "change")}` : "Session by session"}
+          onClick={onOpenAll}
+        />
+      ) : null}
+    </>
+  );
+}
+
+/** The whole manifest, every line and every session's contents. */
+export function ProposalDetailSheet({
+  title,
+  lines,
+  open,
+  onClose,
+}: {
+  title: string;
+  lines: OpLine[];
+  open: boolean;
+  onClose: () => void;
+}) {
+  return (
+    <Sheet open={open} onClose={onClose} title={title}>
+      <p className="faint coach-ops-full-lede">
+        {countNoun(lines.length, "change")}, in full — nothing is applied until you say so.
+      </p>
+      <ol className="coach-ops-full">
+        {lines.map((l, i) => (
+          <li key={lineKey(l, i)}>
+            <p className="coach-ops-full-head">
+              {l.date ? <span className="coach-op-day">{opDayLabel(l.date)}</span> : null}
+              <span className="coach-op-summary">{l.summary}</span>
+            </p>
+            {l.change ? <p className="coach-op-change">{l.change}</p> : null}
+            {l.detail.length > 0 ? (
+              <ul className="coach-op-detail muted">
+                {l.detail.map((d) => (
+                  <li key={d}>{d}</li>
+                ))}
+              </ul>
+            ) : null}
+          </li>
+        ))}
+      </ol>
+    </Sheet>
+  );
+}
+
+/**
+ * A card's manifest and the Sheet that holds all of it. Shared by the pending
+ * card and the settled one, which is the whole overlap between them.
+ *
+ * The Sheet is MOUNTED only while open. `Sheet` returns null when closed, but
+ * the element tree is built before it can say so — for the twelve-op plan this
+ * file is designed for that is ~140 React elements allocated and thrown away
+ * on every render of a card nobody has opened.
+ */
+function useManifest(proposal: CoachProposalDto | null, planned?: ReadonlyMap<string, PlannedRef>) {
+  const [open, setOpen] = useState(false);
+  const lines = useMemo(
+    () => (proposal ? proposalLines(proposal, planned) : []),
+    [proposal, planned],
+  );
+  return {
+    lines,
+    open,
+    onOpen: useCallback(() => setOpen(true), []),
+    onClose: useCallback(() => setOpen(false), []),
+  };
+}
+
+/**
+ * THE TRADE-OFF NOTE — what `flags` actually are.
+ *
+ * This rendered as "breaks a rule: eases Monday's 10K-pace intervals in a
+ * build week" and the athlete was right to object: they had never stated a
+ * rule, and easing a session in a build week is not a violation of anything
+ * — it is a cost the coach decided was worth paying. Two shapes arrive in
+ * `flags` and neither is an accusation: the model's own note about what its
+ * proposal spends ("eases Monday's 10K-pace intervals in a build week") and
+ * the guardrails' soft finding against a standing preference the athlete DID
+ * state ("Long runs stay on Saturdays"). "The trade-off" is true of both and
+ * accusatory in neither, and the reasoning it implies is one tap away where
+ * it already lived — under "Why?", directly below.
+ *
+ * The strings themselves come from the model and are not ours to rewrite, so
+ * the frame is what carries the tone. No severity levels, no second
+ * explainer: the garden asks, it never accuses.
+ */
+function TradeOffNote({ flags }: { flags: string[] }) {
+  if (flags.length === 0) return null;
+  return (
+    <div className="note note-warn coach-prop-tradeoff">
+      {flags.length === 1 ? (
+        <span>
+          <span className="coach-prop-tradeoff-lede">The trade-off</span> — {flags[0]}
+        </span>
+      ) : (
+        <>
+          <span className="coach-prop-tradeoff-lede">The trade-offs</span>
+          <ul>
+            {flags.map((f) => (
+              <li key={f}>{f}</li>
+            ))}
+          </ul>
+        </>
+      )}
+    </div>
+  );
+}
+
+// ── Proposal cards ─────────────────────────────────────────────────────────
+
+/**
+ * How a proposal ended — the label on a settled card, and nothing structural.
+ *
+ * WHAT MAKES A RECEIPT A SETTLED PROPOSAL IS `refs.proposalId`, not this.
+ * The worker attaches that ref to exactly the four receipts that resolve one
+ * (approve, decline, expiry sweep, supersede) and to no other receipt, so
+ * "this receipt is a proposal's ending" is already a fact in the data. The
+ * sentences are only how it is worded, and wording is what changes: keying
+ * the CARD on a regex over worker prose meant a copy edit in another package
+ * — a recased word, a different dash — would silently revert every settled
+ * proposal in the thread to a one-line receipt, with nothing to fail.
+ *
+ * So an unrecognised sentence still gets a card; it just carries the
+ * worker's own line instead of a word and a title, which reads correctly for
+ * anything the worker might say next.
+ */
+export interface SettledMark {
+  /** Shares the DTO's own vocabulary so the two cannot drift. `undefined`
+   * when the receipt's wording is not one this build knows. */
+  status?: Exclude<CoachProposalDto["status"], "pending">;
+  /** "Approved", "Left as planned", "Expired", "Replaced" — absent when the
+   * wording is unknown, in which case `title` is the whole receipt. */
+  word?: string;
+  /** The proposal's title, as the receipt carried it. */
+  title: string;
+}
+
+const SETTLED_SHAPES: Array<[RegExp, NonNullable<SettledMark["status"]>, string]> = [
+  [/^✓ approved — (.+)$/s, "approved", "Approved"],
+  [/^Left as planned — (.+)$/s, "declined", "Left as planned"],
+  [/^Expired — the moment passed: (.+)$/s, "expired", "Expired"],
+  [/^Superseded: (.+)$/s, "superseded", "Replaced"],
+];
+
+/**
+ * Split a proposal receipt into its outcome word and the proposal's title.
+ * Total: an unknown wording comes back as the whole body under no word.
+ */
+export function settledFromReceipt(body: string): SettledMark {
+  for (const [re, status, word] of SETTLED_SHAPES) {
+    const m = re.exec(body);
+    if (m) return { status, word, title: m[1]! };
+  }
+  return { title: body };
+}
+
+/**
+ * A proposal that has been decided. Still in the conversation, at the moment
+ * it settled, visibly done: no controls that ask for anything, and — while
+ * this session still holds the proposal it came from — the way back into
+ * what it actually did.
+ */
+export function SettledProposalCard({
+  mark,
+  proposal,
+  planned,
+  domId,
+}: {
+  mark: SettledMark;
+  /** Null once the page reloads: `/api/coach/state` returns pending
+   * proposals only, so all that survives is the receipt. */
+  proposal: CoachProposalDto | null;
+  planned?: ReadonlyMap<string, PlannedRef>;
+  /** The receipt's own id — the only stable handle a settled card has. */
+  domId: string;
+}) {
+  const manifest = useManifest(proposal, planned);
+  // One settled look whichever way it went — the outcome shows through the
+  // pill, so the card carries no per-status modifier for nothing to style.
+  return (
+    <div className="coach-prop coach-prop--settled" id={`proposal-${domId}`}>
+      <div className="coach-prop-settled-head">
+        {mark.word ? (
+          <span className={`pill ${mark.status === "approved" ? "pill-ok" : "pill-neutral"}`}>
+            {mark.word}
+          </span>
+        ) : null}
+        <strong className="coach-prop-title">{mark.title}</strong>
+      </div>
+      {manifest.lines.length > 0 ? (
+        <OpenManifest
+          label={mark.status === "approved" ? "What it did" : "What it would have done"}
+          onClick={manifest.onOpen}
+        />
+      ) : null}
+      {manifest.open ? (
+        <ProposalDetailSheet
+          title={mark.title}
+          lines={manifest.lines}
+          open
+          onClose={manifest.onClose}
+        />
+      ) : null}
+    </div>
+  );
+}
+
 export function ProposalCard({
   proposal,
   onApprove,
@@ -130,6 +473,7 @@ export function ProposalCard({
   busy,
   acting,
   error,
+  planned,
 }: {
   proposal: CoachProposalDto;
   onApprove: (id: string) => void;
@@ -140,12 +484,24 @@ export function ProposalCard({
   acting?: boolean;
   /** Why the last approve/decline on this card failed, if it did (C17). */
   error?: string;
+  /** workoutId → what the plan holds there today, so `ease`/`move`/`skip`
+   * lines can name their day and what they replace. */
+  planned?: ReadonlyMap<string, PlannedRef>;
 }) {
   const [why, setWhy] = useState(false);
-  const discipline = proposalDiscipline(proposal);
-  const isSkip = (proposal.ops as Array<{ kind?: string }>).some((o) => o.kind === "skip");
+  const manifest = useManifest(proposal, planned);
+  // Everything else derived from the ops, on the same dependency as the
+  // manifest — `proposalDiscipline` walks every op and allocates per op.
+  const { discipline, isSkip } = useMemo(
+    () => ({
+      discipline: proposalDiscipline(proposal),
+      isSkip: (proposal.ops as Array<{ kind?: string }>).some((o) => o.kind === "skip"),
+    }),
+    [proposal],
+  );
+
   return (
-    <div className="coach-prop" id={`proposal-${proposal.id}`}>
+    <div className="coach-prop coach-prop--pending" id={`proposal-${proposal.id}`} data-pending-proposal="">
       <div className="row" style={{ gap: "var(--space-4)" }}>
         {discipline ? (
           <span className={`pill ${discipline === "run" ? "pill-run" : "pill-lift"}`}>
@@ -161,20 +517,10 @@ export function ProposalCard({
         <strong className="coach-prop-title">{proposal.title}</strong>
       </div>
       <p className="coach-prop-evidence faint">{proposal.evidence}</p>
-      {proposal.flags.length > 0 ? (
-        <div className="coach-prop-flags">
-          {/* `.note`, not `.pill`: a flag is a whole rule in a sentence
-              ("breaks a rule: Long runs stay on Saturdays"), and a pill is
-              nowrap by contract — these clipped at scrollWidth 461 in a
-              327px card, so the one line that says the coach is breaking
-              your rule was the one line you couldn't finish reading. */}
-          {proposal.flags.map((f) => (
-            <span key={f} className="note note-warn">
-              breaks a rule: {f}
-            </span>
-          ))}
-        </div>
-      ) : null}
+      {/* WHAT IT DOES, before what it costs, before the buttons. The card
+          used to go straight from the evidence line to "Make it so". */}
+      <ProposalGlance lines={manifest.lines} onOpenAll={manifest.onOpen} />
+      <TradeOffNote flags={proposal.flags} />
       {/* The actions row comes BEFORE everything it reveals (System 4 D3).
           The rationale used to render here, above its own trigger, so asking
           "Why?" pushed the button you had just pressed 114px down the phone
@@ -225,51 +571,31 @@ export function ProposalCard({
         </p>
       ) : null}
       {error ? <p className="coach-prop-error">{error}</p> : null}
-    </div>
-  );
-}
-
-export function PendingTray({
-  proposals,
-  onApprove,
-  onDecline,
-  busy,
-  acting,
-  errors,
-}: {
-  proposals: CoachProposalDto[];
-  onApprove: (id: string) => void;
-  onDecline: (id: string) => void;
-  busy?: boolean;
-  acting?: boolean;
-  /** proposal id → why its last approve/decline failed (audit C17). */
-  errors?: Record<string, string>;
-}) {
-  const [showAll, setShowAll] = useState(false);
-  if (proposals.length === 0) return null;
-  const visible = showAll ? proposals : proposals.slice(0, TRAY_CAP);
-  return (
-    <div className="coach-tray">
-      <h3 className="coach-tray-head">Needs you · {proposals.length}</h3>
-      {visible.map((p) => (
-        <ProposalCard
-          key={p.id}
-          proposal={p}
-          onApprove={onApprove}
-          onDecline={onDecline}
-          busy={busy}
-          acting={acting}
-          error={errors?.[p.id]}
+      {manifest.open ? (
+        <ProposalDetailSheet
+          title={proposal.title}
+          lines={manifest.lines}
+          open
+          onClose={manifest.onClose}
         />
-      ))}
-      {proposals.length > TRAY_CAP && !showAll ? (
-        <button type="button" className="linklike" onClick={() => setShowAll(true)}>
-          and {proposals.length - TRAY_CAP} more…
-        </button>
       ) : null}
     </div>
   );
 }
+
+// ── The one timeline ───────────────────────────────────────────────────────
+
+export type ThreadItem =
+  | { kind: "message"; id: string; at: string; message: CoachMessageDto }
+  | { kind: "pending"; id: string; at: string; proposal: CoachProposalDto }
+  | {
+      kind: "settled";
+      id: string;
+      at: string;
+      mark: SettledMark;
+      /** The proposal the receipt refers to, if this session still holds it. */
+      proposal: CoachProposalDto | null;
+    };
 
 /**
  * Repeats of the SAME wake-failure receipt ("couldn't think" / "resting")
@@ -294,63 +620,199 @@ function collapseRepeatedReceipts(messages: CoachMessageDto[]): CoachMessageDto[
   });
 }
 
+/**
+ * Messages and proposals, in the order they happened.
+ *
+ * A PENDING proposal sits at its `createdAt`, which is the moment the coach
+ * raised it — almost always beside the briefing that explains it. A RESOLVED
+ * one sits at its receipt, which is the moment it settled, and the receipt is
+ * absorbed into the card rather than duplicated beside it. That is the one
+ * anchor available both live and after a reload: `/api/coach/state` returns
+ * pending proposals only, so a resolved proposal's whole surviving record is
+ * the receipt line.
+ *
+ * `known` remembers every proposal this session has seen, so the card the
+ * athlete just approved keeps its manifest instead of degrading to a title
+ * the instant the refetch lands.
+ */
+export function buildThread(
+  messages: CoachMessageDto[],
+  proposals: CoachProposalDto[],
+  known?: ReadonlyMap<string, CoachProposalDto>,
+): ThreadItem[] {
+  const items: ThreadItem[] = [];
+  const resolved = new Set<string>();
+  for (const m of collapseRepeatedReceipts(messages)) {
+    // `refs.proposalId` on a receipt IS the settlement — the worker attaches
+    // it to those four receipts and to nothing else. What the sentence SAYS
+    // only decides the label (see `settledFromReceipt`).
+    const proposalId = m.role === "receipt" ? m.refs.proposalId : undefined;
+    if (proposalId) {
+      resolved.add(proposalId);
+      const known_ = known?.get(proposalId) ?? null;
+      const mark = settledFromReceipt(m.body);
+      items.push({
+        kind: "settled",
+        id: m.id,
+        at: m.at,
+        // The proposal's own title beats the one parsed out of prose.
+        mark: known_ ? { ...mark, title: known_.title } : mark,
+        proposal: known_,
+      });
+      continue;
+    }
+    items.push({ kind: "message", id: m.id, at: m.at, message: m });
+  }
+  for (const p of proposals) {
+    // A proposal cannot be both pending and settled; if the receipt is
+    // already in the thread the receipt wins, because it is the later truth.
+    if (resolved.has(p.id)) continue;
+    items.push({ kind: "pending", id: p.id, at: p.createdAt, proposal: p });
+  }
+  // `Array.prototype.sort` has been stable since ES2019, so same-instant items
+  // keep the order they were pushed in — which puts a wake's briefing above
+  // the proposals that wake created.
+  return items.sort((a, b) => (a.at < b.at ? -1 : a.at > b.at ? 1 : 0));
+}
+
+/**
+ * THE BOTTOM IS THE RESTING PLACE.
+ *
+ * Verbatim, from the athlete: "'Needs you' section forces scroll to the top,
+ * and actually scrolls us to the top - it should always load the bottom of
+ * the conversation, never scroll us back to the top."
+ *
+ * It did, and the reason was structural: the tray shared the scroller with
+ * the thread, so "show the newest message" and "show the thing waiting on
+ * you" were opposite instructions and the tray won — measured at 390, the
+ * mobile sheet opened at scrollTop 0 with 1,143px of conversation below the
+ * fold. With proposals IN the thread the two instructions are the same one.
+ *
+ * Two mechanisms, because there are two ways content arrives:
+ *
+ *   1. A layout effect on the timeline's signature — a new message, a new
+ *      proposal, a proposal settling — pins to the bottom BEFORE paint if
+ *      the reader was already there. A poll that changes nothing changes no
+ *      signature and therefore scrolls nothing.
+ *   2. A ResizeObserver for everything that lands after that effect ran: a
+ *      query answering a beat after the sheet opened, a line rewrapping, a
+ *      font. It re-pins only inside `SETTLE_MS` of a signature change —
+ *      outside that window the growth is a disclosure the reader opened, and
+ *      moving them would break the rule that nothing at or above a trigger
+ *      moves.
+ *
+ * Scrolling ONE container's own `scrollTop` never touches an ancestor's, the
+ * bug `endRef.scrollIntoView` shipped (audit C3): the coach panel sits at the
+ * top of the document, so that call yanked the whole page up with it.
+ */
+export function useBottomAnchor(signature: string) {
+  const ref = useRef<HTMLDivElement | null>(null);
+  const stuck = useRef(true);
+  const settleUntil = useRef(0);
+
+  const onScroll = useCallback(() => {
+    const el = ref.current;
+    if (!el) return;
+    stuck.current = el.scrollHeight - el.scrollTop - el.clientHeight <= STICK_SLACK_PX;
+  }, []);
+
+  /**
+   * The reader touched something in here, so whatever grows next grew
+   * because they asked — end the settle window now rather than waiting it
+   * out. Without this a message landing in the second before a press hands
+   * that press's disclosure to the auto-scroll: measured at 390, opening
+   * "Why?" 900ms after a receipt arrived moved its own trigger 164px.
+   */
+  const onInteract = useCallback(() => {
+    settleUntil.current = 0;
+  }, []);
+
+  useIsomorphicLayoutEffect(() => {
+    const el = ref.current;
+    if (!el) return;
+    settleUntil.current = Date.now() + SETTLE_MS;
+    if (stuck.current) el.scrollTop = el.scrollHeight;
+  }, [signature]);
+
+  useEffect(() => {
+    const el = ref.current;
+    if (!el || typeof ResizeObserver === "undefined") return;
+    const ro = new ResizeObserver(() => {
+      if (!stuck.current || Date.now() > settleUntil.current) return;
+      el.scrollTop = el.scrollHeight;
+    });
+    ro.observe(el);
+    // The content, not just the box: the box's own height rarely changes.
+    if (el.firstElementChild) ro.observe(el.firstElementChild);
+    return () => ro.disconnect();
+  }, []);
+
+  return { ref, onScroll, onInteract };
+}
+
 export function CoachThread({
-  messages,
+  items,
+  planned,
+  onApprove = () => undefined,
+  onDecline = () => undefined,
+  busy,
+  acting,
+  errors,
   onRetrySend,
-  trayAbove,
 }: {
-  messages: CoachMessageDto[];
+  /** The merged timeline. ONE derivation — `buildThread` is called once, by
+   * the panel, which also reads its own scroll signature off the result. */
+  items: ThreadItem[];
+  planned?: ReadonlyMap<string, PlannedRef>;
+  onApprove?: (id: string) => void;
+  onDecline?: (id: string) => void;
+  busy?: boolean;
+  acting?: boolean;
+  errors?: Record<string, string>;
   /** Resend a failed optimistic message (audit C16). */
   onRetrySend?: (localId: string, body: string) => void;
-  /** Pending proposals share the scroller above this thread — so an opening
-   * sheet must show the TOP, not the newest message (System 1). */
-  trayAbove?: boolean;
 }) {
-  const threadRef = useRef<HTMLDivElement | null>(null);
-  // How many messages there were when this thread mounted. Anything past it
-  // ARRIVED while the reader was here, which is the only case that earns a
-  // scroll.
-  const atOpen = useRef(messages.length);
-  useEffect(() => {
-    // Audit C3: this used to be `endRef.scrollIntoView({block:"end"})`,
-    // which scrolls EVERY scrollable ancestor including the window — since
-    // the coach panel sits at the top of the document, every new message
-    // (including a failed auto-wake's receipt) yanked the whole page back
-    // to the top, defeating the plan's land-on-today scroll. Setting one
-    // container's own scrollTop never touches an ancestor's scroll.
-    //
-    // That container is the panel's scroll owner (`.coach-scroll`, which
-    // holds the tray AND the thread) rather than the thread itself — the
-    // thread stopped being a scroller when the panel went to one scroll
-    // owner. Falling back to the thread keeps this correct if a CoachThread
-    // is ever rendered outside a panel.
-    const el = threadRef.current;
-    if (!el) return;
-    const owner = el.closest<HTMLElement>(".scroller") ?? el;
-    // Sharing the scroller with the pending tray made "scroll to the newest
-    // message" mean "start below the tray": the mobile coach sheet opened
-    // with "Needs you · 2" already off screen, when it had been the first
-    // thing the sheet showed. Something waiting on the reader must never
-    // begin hidden, so on arrival the top wins — but only while nothing has
-    // come in since, so a message landing in front of an open sheet still
-    // scrolls to itself. `trayAbove` is in the deps because the proposals
-    // query can resolve a beat after the sheet opens.
-    if (messages.length <= atOpen.current && trayAbove) {
-      owner.scrollTop = 0;
-      return;
-    }
-    owner.scrollTop = owner.scrollHeight;
-  }, [messages.length, trayAbove]);
-  const collapsed = collapseRepeatedReceipts(messages);
   return (
-    <div className="coach-thread" ref={threadRef}>
-      {collapsed.map((m) =>
-        m.role === "receipt" ? (
-          <div key={m.id} className="coach-receipt faint">
-            {m.body}
-          </div>
-        ) : (
-          <div key={m.id} className={`coach-msg coach-msg-${m.role}${m.failed ? " coach-msg-failed" : ""}`}>
+    <div className="coach-thread">
+      {items.map((it) => {
+        if (it.kind === "pending") {
+          return (
+            <ProposalCard
+              key={it.id}
+              proposal={it.proposal}
+              planned={planned}
+              onApprove={onApprove}
+              onDecline={onDecline}
+              busy={busy}
+              acting={acting}
+              error={errors?.[it.proposal.id]}
+            />
+          );
+        }
+        if (it.kind === "settled") {
+          return (
+            <SettledProposalCard
+              key={it.id}
+              mark={it.mark}
+              proposal={it.proposal}
+              planned={planned}
+              domId={it.id}
+            />
+          );
+        }
+        const m = it.message;
+        if (m.role === "receipt") {
+          return (
+            <div key={it.id} className="coach-receipt faint">
+              {m.body}
+            </div>
+          );
+        }
+        return (
+          <div
+            key={it.id}
+            className={`coach-msg coach-msg-${m.role}${m.failed ? " coach-msg-failed" : ""}`}
+          >
             {m.refs.kind === "analysis" ? (
               <span className="tagchip" style={{ marginRight: "var(--space-3)" }}>
                 effort read
@@ -359,8 +821,8 @@ export function CoachThread({
             <span style={{ whiteSpace: "pre-wrap" }}>{m.body}</span>
             {m.role === "coach" && m.refs.memoryIds?.length ? (
               <span className="coach-memchips">
-                {m.refs.memoryIds.map((id) => (
-                  <Link key={id} to="/settings#coach-memory" className="tagchip">
+                {m.refs.memoryIds.map((mid) => (
+                  <Link key={mid} to="/settings#coach-memory" className="tagchip">
                     noted ✓
                   </Link>
                 ))}
@@ -370,16 +832,80 @@ export function CoachThread({
               <button
                 type="button"
                 className="linklike coach-msg-retry"
-                onClick={() => onRetrySend?.(m.id, m.body)}
+                onClick={() => onRetrySend?.(it.id, m.body)}
               >
                 Couldn't send — tap to retry
               </button>
             ) : null}
           </div>
-        ),
-      )}
+        );
+      })}
     </div>
   );
+}
+
+/** Every pending proposal card currently in a scroller, in thread order. */
+const pendingCardsIn = (root: HTMLElement | null): HTMLElement[] =>
+  root ? [...root.querySelectorAll<HTMLElement>("[data-pending-proposal]")] : [];
+
+/**
+ * The nearest pending proposal that is off screen, and which way it lies.
+ * Null when one of them is visible — there is nothing to point at.
+ *
+ * Live geometry, deliberately. An IntersectionObserver entry carries a rect
+ * from the moment it last CROSSED the root's edge, and a card can go from
+ * above the fold to below it in one jump (tapping the chip, or a `scrollTop`
+ * assignment) without ever crossing — measured: after a jump from the bottom
+ * of the thread to the top, the first card's cached direction still read "up"
+ * while every card was below the fold, so the chip pointed the wrong way.
+ * Five rects, read only when something actually changed.
+ */
+function nearestOffscreen(root: HTMLElement | null): { dir: "up" | "down"; el: HTMLElement } | null {
+  const cards = pendingCardsIn(root);
+  if (!root || cards.length === 0) return null;
+  const rr = root.getBoundingClientRect();
+  let best: { dir: "up" | "down"; el: HTMLElement; gap: number } | null = null;
+  for (const el of cards) {
+    const r = el.getBoundingClientRect();
+    if (r.bottom > rr.top && r.top < rr.bottom) return null; // this one is in view
+    const above = r.bottom <= rr.top;
+    const gap = above ? rr.top - r.bottom : r.top - rr.bottom;
+    if (!best || gap < best.gap) best = { dir: above ? "up" : "down", el, gap };
+  }
+  return best && { dir: best.dir, el: best.el };
+}
+
+/**
+ * WHICH WAY THE PENDING PROPOSALS ARE, when none of them is on screen.
+ *
+ * The tray guaranteed findability by never moving; a chronological thread
+ * cannot, so this takes over that one job.
+ *
+ * An IntersectionObserver drives it rather than a scroll handler: visibility
+ * is exactly what it answers, it answers off the compositor, and it fires on
+ * the two or three enter/exit transitions in a gesture instead of running on
+ * all 120 frames of it. The scroll-handler version read `offsetTop` and
+ * `offsetHeight` off every card on every tick — layout reads, in the one
+ * interaction this rework is built around. Re-established on `signature`,
+ * which is precisely when the set of cards can have changed.
+ */
+function usePendingOffscreen(
+  scroller: RefObject<HTMLElement | null>,
+  signature: string,
+): "up" | "down" | null {
+  const [away, setAway] = useState<"up" | "down" | null>(null);
+  useEffect(() => {
+    const root = scroller.current;
+    const cards = pendingCardsIn(root);
+    if (!root || cards.length === 0 || typeof IntersectionObserver === "undefined") {
+      setAway(null);
+      return;
+    }
+    const io = new IntersectionObserver(() => setAway(nearestOffscreen(root)?.dir ?? null), { root });
+    for (const c of cards) io.observe(c);
+    return () => io.disconnect();
+  }, [scroller, signature]);
+  return away;
 }
 
 export function CoachComposer({
@@ -456,6 +982,7 @@ export function CoachPanel({
   busy,
   acting,
   proposalErrors,
+  planned,
   onSend,
   onApprove,
   onDecline,
@@ -475,6 +1002,9 @@ export function CoachPanel({
   acting?: boolean;
   /** proposal id → why its last approve/decline failed (audit C17). */
   proposalErrors?: Record<string, string>;
+  /** workoutId → what the plan holds there today (date + summary), so the
+   * manifest can say what an `ease` replaces and on which day. */
+  planned?: ReadonlyMap<string, PlannedRef>;
   onSend: (body: string) => void;
   onApprove: (id: string) => void;
   onDecline: (id: string) => void;
@@ -489,6 +1019,36 @@ export function CoachPanel({
   /** Skip the internal header (a wrapping Sheet already provides one). */
   hideHead?: boolean;
 }) {
+  // Every proposal this mount has seen. A card that resolves while the reader
+  // is looking at it keeps its manifest; without this the refetch that drops
+  // it from `pendingProposals` would leave only the receipt's title.
+  const known = useRef(new Map<string, CoachProposalDto>()).current;
+
+  // ONE derivation of the timeline, and it is not free: `messages` and
+  // `proposals` keep their identity across a poll that changed nothing
+  // (react-query's structural sharing), so a render caused by anything else
+  // on the plan page — a media-query change, a week page, a dialog opening —
+  // reuses this instead of re-walking the thread and re-parsing every
+  // receipt. The `known` update belongs INSIDE, before the build reads it.
+  const { items, signature } = useMemo(() => {
+    for (const p of proposals) known.set(p.id, p);
+    const built = buildThread(messages, proposals, known);
+    // What "the conversation changed" means — not the array's identity (the
+    // poll hands back a new one every time and nothing has happened) and not
+    // its length (a proposal settling swaps one item for another).
+    return { items: built, signature: built.map((i) => i.id).join(",") };
+  }, [messages, proposals, known]);
+
+  const { ref: scrollRef, onScroll, onInteract } = useBottomAnchor(signature);
+  const away = usePendingOffscreen(scrollRef, signature);
+
+  // The arrow and the tap answer from ONE function, so the chip can never
+  // point one way and travel another. `revealInView` resolves the scroll
+  // owner itself (stopping at the dialog, so the mobile sheet's scroller is
+  // never the page's), moves the least it can, and honours
+  // `prefers-reduced-motion`.
+  const jump = () => revealInView(nearestOffscreen(scrollRef.current)?.el);
+
   return (
     <section className="coach-panel" aria-label="Coach">
       {hideHead ? (
@@ -515,25 +1075,39 @@ export function CoachPanel({
           </span>
         </div>
       )}
-      {/* One scroll owner for the panel (System 1 §2): the tray and the
-          thread share it, so a four-card tray can no longer take 339px off
-          the top of a 564px sheet and squeeze the conversation — the thing
-          you came for — down to 120px. The head above and the composer below
-          stay pinned and visible either way. */}
-      <div className="coach-scroll scroller">
-        <PendingTray
-          proposals={proposals}
-          onApprove={onApprove}
-          onDecline={onDecline}
-          busy={busy}
-          acting={acting}
-          errors={proposalErrors}
-        />
-        <CoachThread
-          messages={messages}
-          onRetrySend={onRetrySend}
-          trayAbove={proposals.length > 0}
-        />
+      {/* One scroll owner for the panel (System 1 §2), and now one thing
+          inside it. The wrapper exists so the jump chip can float over the
+          scroll region without scrolling with it and without taking a single
+          pixel of flow — a chip that appears on scroll and pushes the
+          conversation would be the disclosure bug in a new hat. */}
+      <div className="coach-scroll-wrap">
+        <div
+          className="coach-scroll scroller"
+          ref={scrollRef}
+          onScroll={onScroll}
+          onPointerDownCapture={onInteract}
+          onKeyDownCapture={onInteract}
+        >
+          <CoachThread
+            items={items}
+            planned={planned}
+            onApprove={onApprove}
+            onDecline={onDecline}
+            busy={busy}
+            acting={acting}
+            errors={proposalErrors}
+            onRetrySend={onRetrySend}
+          />
+        </div>
+        {/* Absolutely positioned over the scroll region, never in flow: a
+            control that appears the moment you scroll past the last open
+            proposal must not shove the conversation around to do it. */}
+        {away ? (
+          <button type="button" className={`chipbtn coach-jump coach-jump--${away}`} onClick={jump}>
+            Needs you · {proposals.length}
+            <span aria-hidden> {away === "up" ? "↑" : "↓"}</span>
+          </button>
+        ) : null}
       </div>
       <CoachComposer onSend={onSend} question={question} onAnswer={onAnswer} onDismiss={onDismiss} busy={busy} />
     </section>

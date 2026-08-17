@@ -748,11 +748,34 @@ export function PlanScreen() {
 
   const [coachOpen, setCoachOpen] = useState(false); // mobile sheet
 
-  // ── Ghosts ─────────────────────────────────────────────────────────────
-  const ghostsByDate = useMemo(() => {
-    const dates = new Map((plan.data?.workouts ?? []).map((w) => [w.id, w.effectiveDate]));
-    return pendingByDate(coach.state.data?.pendingProposals ?? [], dates);
-  }, [plan.data?.workouts, coach.state.data?.pendingProposals]);
+  // ── What the plan holds today ──────────────────────────────────────────
+  // ONE answer to "where does workout X sit, and what is it", read by two
+  // consumers: the calendar ghosts and the proposal manifest. They used to
+  // build one map each from the same array, one a strict subset of the other
+  // — two answers that would drift the moment either gained a filter.
+  //
+  // An `ease` op carries the session a day BECOMES and nothing about what it
+  // was, so without this the manifest can only say "rewrites the session
+  // already planned", on no particular day; with it, "Threshold 5x5 → Easy
+  // 35" on Tuesday.
+  //
+  // The TITLE, not `stageSummary`. The stage line is richer where a session
+  // has structure and worthless where it does not — the fixture's recovery
+  // run carries "30 min", which turned the manifest's skip line into
+  // "30 min — skipped" and named nothing at all. The title is the app's own
+  // name for the session on every other surface (week grid, workout sheet,
+  // calendar ghost), so the manifest calls it the same thing they do.
+  const plannedRefs = useMemo(
+    () =>
+      new Map(
+        (plan.data?.workouts ?? []).map((w) => [w.id, { date: w.effectiveDate, summary: w.title }]),
+      ),
+    [plan.data?.workouts],
+  );
+  const ghostsByDate = useMemo(
+    () => pendingByDate(coach.state.data?.pendingProposals ?? [], plannedRefs),
+    [plannedRefs, coach.state.data?.pendingProposals],
+  );
   const onGhostTap = (proposalId: string) => {
     if (isDesktop) {
       openWindow();
@@ -870,22 +893,27 @@ export function PlanScreen() {
   const coachUnavailableCopy = coach.state.isLoading
     ? "Reading your week…"
     : "The coach is unreachable — manual controls all work.";
-  const coachPanelEl = coach.state.data ? (
-    <CoachPanel
-      messages={coach.state.data.messages}
-      proposals={coach.state.data.pendingProposals}
-      question={coach.state.data.openQuestion}
-      busy={coach.busy}
-      acting={coach.acting}
-      proposalErrors={coach.proposalErrors}
-      onSend={coach.send}
-      onApprove={coach.approve}
-      onDecline={coach.decline}
-      onAnswer={coach.answer}
-      onDismiss={coach.dismissQuestion}
-      onCheckIn={coach.checkIn}
-      onRetrySend={coach.resend}
-    />
+  // ONE prop list for the panel's two mounts. They differ by `hideHead` and
+  // nothing else, and every prop added to the surface used to have to be
+  // added in both places or work at one width only.
+  const coachProps = coach.state.data && {
+    messages: coach.state.data.messages,
+    proposals: coach.state.data.pendingProposals,
+    question: coach.state.data.openQuestion,
+    busy: coach.busy,
+    acting: coach.acting,
+    proposalErrors: coach.proposalErrors,
+    planned: plannedRefs,
+    onSend: coach.send,
+    onApprove: coach.approve,
+    onDecline: coach.decline,
+    onAnswer: coach.answer,
+    onDismiss: coach.dismissQuestion,
+    onCheckIn: coach.checkIn,
+    onRetrySend: coach.resend,
+  };
+  const coachPanelEl = coachProps ? (
+    <CoachPanel {...coachProps} />
   ) : (
     <section className="coach-panel" aria-label="Coach">
       <div className="coach-panel-head">
@@ -897,7 +925,6 @@ export function PlanScreen() {
     </section>
   );
 
-  const anyDialogOpen = !!selected || !!planParam || coachOpen;
   // Claimed from two answers we actually hold. `?? 0` used to turn a query
   // that had not answered — or one that had FAILED — into "you have no plan".
   const emptyPlan =
@@ -958,7 +985,6 @@ export function PlanScreen() {
           pendingCount={pendingCount}
           onOpen={openWindow}
           onMinimize={minimizeWindow}
-          dialogOpen={anyDialogOpen}
         >
           {coachPanelEl}
         </CoachWindow>
@@ -980,23 +1006,8 @@ export function PlanScreen() {
               viewport and paint outside the sheet (System 1 §2). */}
           <Sheet open={coachOpen} onClose={() => setCoachOpen(false)} title="Coach" fill>
             <div className="coach-sheet-panel">
-              {coach.state.data ? (
-                <CoachPanel
-                  hideHead
-                  messages={coach.state.data.messages}
-                  proposals={coach.state.data.pendingProposals}
-                  question={coach.state.data.openQuestion}
-                  busy={coach.busy}
-                  acting={coach.acting}
-                  proposalErrors={coach.proposalErrors}
-                  onSend={coach.send}
-                  onApprove={coach.approve}
-                  onDecline={coach.decline}
-                  onAnswer={coach.answer}
-                  onDismiss={coach.dismissQuestion}
-                  onCheckIn={coach.checkIn}
-                  onRetrySend={coach.resend}
-                />
+              {coachProps ? (
+                <CoachPanel hideHead {...coachProps} />
               ) : (
                 <section className="coach-panel" aria-label="Coach">
                   <div className="coach-thread">

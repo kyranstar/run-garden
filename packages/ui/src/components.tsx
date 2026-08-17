@@ -26,7 +26,7 @@ import {
  * here measure their own layout, which only exists in a browser; React warns
  * (loudly, and our smoke tests read warnings as failures) about the layout
  * variant during `renderToStaticMarkup`. */
-const useIsomorphicLayoutEffect = typeof window === "undefined" ? useEffect : useLayoutEffect;
+export const useIsomorphicLayoutEffect = typeof window === "undefined" ? useEffect : useLayoutEffect;
 
 /** ≥1024px — where the garden becomes a full-viewport stage and the plan
  * page's coach column becomes a persistent sidebar instead of a pill+sheet.
@@ -715,10 +715,10 @@ const FOCUSABLE =
   'a[href], button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])';
 
 /**
- * Every currently-open dialog (Sheet or Drawer), most-recently-opened last.
- * Module-level rather than per-hook state because Escape and the body-scroll
- * lock need to reason about ALL open dialogs at once, not just the one whose
- * effect happens to run — see `useDialogFocus` (audit M17).
+ * Everything currently claiming Escape, most-recently-opened last.
+ * Module-level rather than per-hook state because Escape has to be resolved
+ * across ALL of them at once, not just the one whose effect happens to run
+ * (audit M17).
  */
 const openDialogTokens: symbol[] = [];
 
@@ -728,32 +728,75 @@ export function isTopDialog(stack: readonly symbol[], token: symbol): boolean {
 }
 
 /**
- * Dialog focus contract shared by Sheet and Drawer: move focus into the
- * dialog on open, keep Tab cycling inside it, close on Escape, and restore
- * focus to the opener on close. Body scroll locks while any dialog is open.
+ * ESCAPE BELONGS TO THE TOP THING, and this is the only way to ask for it.
  *
- * Two stacked dialogs (e.g. the garden's species sheet opened from inside
- * the Collection drawer) used to both close on one Escape press — every
- * mounted instance listened on `document` independently with no notion of
- * which one was "on top". A module-level stack (`openDialogTokens`) fixes
- * both halves of that: Escape only calls `onClose` for the top-of-stack
- * dialog, and the body-scroll lock only lifts once the stack empties, so
- * dismissing the inner sheet no longer unlocks scroll while the drawer
- * underneath is still open (audit M17).
+ * Two stacked dialogs (the garden's species sheet opened from inside the
+ * Collection drawer) used to both close on one press — every mounted instance
+ * listened on `document` independently with no notion of which was on top
+ * (audit M17). The stack fixed that for Sheet and Drawer, and then the coach
+ * WINDOW opted out of it: being a non-modal panel rather than a dialog, it
+ * listened on `document` itself and guarded with a `dialogOpen` boolean the
+ * page had to compute and keep current. That boolean cannot say WHICH thing
+ * is on top, and every dialog opened anywhere inside the coach panel had to
+ * remember to tell the page it existed — a chain of `onDialogChange` props
+ * threaded three components deep just to keep one boolean true (2026-08-17).
+ * A non-modal panel can take a token like anything else; only the modal half
+ * (focus trap, scroll lock) belongs to `useDialogFocus`.
+ *
+ * THE STACK IS ORDERED BY WHEN SOMETHING OPENED, not by when its parent last
+ * re-rendered. `onClose` used to be in the dependency list, and almost every
+ * caller passes an inline arrow — `onClose={() => setCoachOpen(false)}` — so a
+ * new identity arrived on every render of the page. The effect tore down and
+ * re-registered, which spliced that dialog's token out and pushed it back on
+ * TOP. Opening a nested dialog re-renders the page that owns the outer one, so
+ * the outer dialog reliably jumped above the inner one and one Escape closed
+ * the wrong thing: the coach proposal's detail sheet, opened inside the mobile
+ * coach sheet, took the whole coach sheet down with it. The handler lives in a
+ * ref instead, so it stays current without the effect depending on it.
  */
-export function useDialogFocus(ref: RefObject<HTMLElement | null>, open: boolean, onClose: () => void) {
+export function useEscapeKey(open: boolean, onEscape: () => void): void {
+  const fire = useRef(onEscape);
+  fire.current = onEscape;
   useEffect(() => {
     if (!open) return;
-    const token = Symbol("dialog");
+    const token = Symbol("escape");
     openDialogTokens.push(token);
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape" && isTopDialog(openDialogTokens, token)) fire.current();
+    };
+    document.addEventListener("keydown", onKey);
+    return () => {
+      document.removeEventListener("keydown", onKey);
+      const idx = openDialogTokens.indexOf(token);
+      if (idx !== -1) openDialogTokens.splice(idx, 1);
+    };
+  }, [open]);
+}
+
+/**
+ * How many MODAL dialogs are open. Separate from the Escape stack because a
+ * non-modal panel (the coach window) claims Escape without locking the page
+ * behind it — counting tokens for the lock would leave the body unscrollable
+ * for as long as that panel stayed open.
+ */
+let modalDepth = 0;
+
+/**
+ * Dialog focus contract shared by Sheet and Drawer: move focus into the
+ * dialog on open, keep Tab cycling inside it, close on Escape (via
+ * `useEscapeKey`, so a nested dialog wins the press), and restore focus to the
+ * opener on close. Body scroll locks while any MODAL dialog is open and lifts
+ * only when the last one closes — dismissing an inner sheet must not unlock
+ * scroll while the drawer underneath is still up (audit M17).
+ */
+export function useDialogFocus(ref: RefObject<HTMLElement | null>, open: boolean, onClose: () => void) {
+  useEscapeKey(open, onClose);
+  useEffect(() => {
+    if (!open) return;
     const dialog = ref.current;
     const opener = document.activeElement as HTMLElement | null;
     dialog?.focus();
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") {
-        if (isTopDialog(openDialogTokens, token)) onClose();
-        return;
-      }
       if (e.key !== "Tab" || !dialog) return;
       const focusables = [...dialog.querySelectorAll<HTMLElement>(FOCUSABLE)].filter(
         (el) => el.offsetParent !== null,
@@ -771,15 +814,15 @@ export function useDialogFocus(ref: RefObject<HTMLElement | null>, open: boolean
       }
     };
     document.addEventListener("keydown", onKey);
+    modalDepth += 1;
     document.body.style.overflow = "hidden";
     return () => {
       document.removeEventListener("keydown", onKey);
-      const idx = openDialogTokens.indexOf(token);
-      if (idx !== -1) openDialogTokens.splice(idx, 1);
-      if (openDialogTokens.length === 0) document.body.style.overflow = "";
+      modalDepth -= 1;
+      if (modalDepth === 0) document.body.style.overflow = "";
       opener?.focus();
     };
-  }, [ref, open, onClose]);
+  }, [ref, open]);
 }
 
 /**

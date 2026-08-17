@@ -200,6 +200,7 @@ export const coachRunBlockSchema = z
     intensity: orNull(z.enum(["easy", "steady", "threshold", "interval", "rest"]).optional()),
   })
   .strict();
+export type CoachRunBlock = z.infer<typeof coachRunBlockSchema>;
 
 /**
  * A list of exercises and how it is performed.

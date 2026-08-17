@@ -33,6 +33,21 @@ function render(el: React.ReactElement): string {
   );
 }
 
+/** The controls the touch-floor block hands `position: relative` to by name. */
+function listOfPadSelectors(): Set<string> {
+  const from = css.indexOf("\n:where(\n  .tap-pad,");
+  expect(from, "the pad list").toBeGreaterThan(-1);
+  return new Set(
+    css
+      .slice(from, css.indexOf("{", from))
+      .replace(/^\s*:where\(/, "")
+      .replace(/\)\s*$/, "")
+      .split(",")
+      .map((x) => x.trim())
+      .filter(Boolean),
+  );
+}
+
 /** The `:root` block, where every scale is declared. */
 const rootBlock = css.slice(css.indexOf(":root {"), css.indexOf("\n}\n", css.indexOf(":root {")));
 /** Everything after the token blocks — the rules that must USE the scales. */
@@ -242,7 +257,7 @@ describe("emphasis comes from one of three ranks", () => {
     // label`, the same label the stage has always used, and the class no
     // longer exists to be checked.)
     for (const s of [".card-title", ".week-header", ".signal-group-label", ".studio-week-label",
-      ".coach-tray-head", ".race-h", ".plan-week-dow", ".prog-chip-label", ".wkrow-state",
+      ".race-h", ".plan-week-dow", ".prog-chip-label", ".wkrow-state",
       ".new-ring", ".codex-newring", ".nudge-disc", ".rarity", ".today-tag"]) {
       expect(selector, s).toContain(`${s},`.replace(",", ""));
     }
@@ -434,7 +449,7 @@ describe("one touch floor, enforced", () => {
     expect(pad).toContain("clamp(100%, calc(100% + 2 * var(--tap-clear-y, var(--tap-clear, var(--tap)))), var(--tap))");
     // Every named offender is in the pad list, and — the bug this rule was
     // split into two rules to hide — every one of them is also `relative`.
-    const padList = css.slice(css.indexOf("\n.tap-pad,\n.btn-small,"));
+    const padList = css.slice(css.indexOf("\n:where(\n  .tap-pad,"));
     const relative = padList.slice(0, padList.indexOf("{"));
     const after = css.slice(css.indexOf("\n.tap-pad::after,"));
     const afterList = after.slice(0, after.indexOf("{"));
@@ -483,12 +498,14 @@ describe("one touch floor, enforced", () => {
       return new Set(
         css
           .slice(from, css.indexOf("{", from))
+          .replace(/^\s*:where\(/, "")
+          .replace(/\)\s*$/, "")
           .split(",")
           .map((s) => s.replace("::after", "").trim())
           .filter(Boolean),
       );
     };
-    const relative = listOf("\n.tap-pad,\n.btn-small,");
+    const relative = listOf("\n:where(\n  .tap-pad,");
     const afterList = listOf("\n.tap-pad::after,");
     const floor = listOf("\n  .tap-pad,\n  .btn-small,");
     expect([...afterList].sort()).toEqual([...relative].sort());
@@ -513,6 +530,56 @@ describe("one touch floor, enforced", () => {
           `${sel} declares its own \`min-height: ${mh[1]!.trim()}\` but no \`--tap-own\`; ` +
             `the touch floor's makeup rule will replace it, not compose with it.`,
         ).toMatch(/--tap-own:/);
+      }
+    }
+  });
+
+  it("the pad list DEFAULTS `position`, it does not assert it", () => {
+    /*
+     * The pad needs its host to be a containing block; it does not care which
+     * positioned value. But the list said `position: relative` for thirty
+     * controls by name, at one class of specificity, four thousand lines
+     * below where those controls are laid out — so it silently beat any
+     * control that positioned ITSELF, and a tie goes to whichever came last.
+     *
+     * Shipped twice, and the second one is what the athlete reported as "the
+     * Minimize button is clipped off the screen": `.coach-window-min
+     * { position: absolute }` became `relative`, and the control fell into
+     * flow as a stretched flex item of the coach window — measured at 1440 a
+     * 398 × 36px box (the full width of the panel), its left edge 12px
+     * outside the window and clipped away, pushing the panel head 36px down.
+     * `.ceremony-close` had the same wound, unnoticed: 123.8px from its
+     * card's top instead of 8.6px, 271.7px from its right edge instead of
+     * 8.6px, and the card 19.2px taller for it.
+     *
+     * `:where()` makes the whole list zero-specificity. A control that says
+     * nothing still gets `relative`; a control that says `absolute` keeps it,
+     * in either source order, without having to know this block exists. One
+     * structural invariant instead of a per-control audit nobody will run.
+     */
+    const at = css.indexOf("\n:where(\n  .tap-pad,");
+    expect(at, "the pad list is not :where()-wrapped").toBeGreaterThan(-1);
+    const rule = css.slice(at, css.indexOf("}", at));
+    expect(rule).toContain(") {");
+    expect(rule).toContain("position: relative;");
+    // The two that pay for it, kept honest: they say `absolute` at one plain
+    // class and that is now all they have to say.
+    for (const sel of [".coach-window-min", ".ceremony-close"]) {
+      const own = new RegExp(`\\n\\${sel} \\{[^}]*position: absolute`).exec(css);
+      expect(own, `${sel} should position itself at one plain class`).not.toBeNull();
+    }
+    // …and nothing else in the pad list needs a compound selector to survive.
+    for (const sel of listOfPadSelectors()) {
+      if (!/^\.[a-z0-9-]+$/.test(sel)) continue;
+      const cls = sel.slice(1);
+      for (const r of css.matchAll(new RegExp(`(?:^|\\n)[^{}\\n]*\\.${cls}\\s*\\{([^}]*)\\}`, "g"))) {
+        const pos = /position:\s*([a-z-]+)/.exec(r[1]!);
+        if (!pos || pos[1] === "relative") continue;
+        expect(
+          r[0].slice(0, r[0].indexOf("{")).trim(),
+          `${sel} positions itself, so its selector must not have been widened to win a fight ` +
+            `the pad list no longer picks`,
+        ).toBe(sel);
       }
     }
   });

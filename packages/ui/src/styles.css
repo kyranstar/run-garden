@@ -696,7 +696,6 @@ h1,
 .hud-rail button,
 .ceremony-eyebrow,
 .bot-earn-label,
-.coach-tray-head,
 .plan-brief-who,
 .race-h,
 .plan-week-dow,
@@ -4632,42 +4631,135 @@ a.note {
   border-bottom: 1px solid var(--border);
   flex: none;
 }
-/* The panel's ONE scroll owner: the tray and the thread share it, so a tall
-   tray can no longer squeeze the conversation to 120px of a 564px sheet —
-   it just makes the shared region longer, and the region says so. The head
-   above it and the composer below it stay pinned and visible. */
-.coach-scroll {
+/* The panel's ONE scroll owner: the whole conversation — messages, receipts
+   and proposal cards alike — lives in it, so the head above and the composer
+   below are the only pinned things and there is exactly one place to be.
+   The wrapper is NOT the scroller: it exists so the jump chip can float over
+   the region without scrolling with it and without taking a pixel of flow. */
+.coach-scroll-wrap {
+  position: relative;
   flex: 1 1 auto;
   min-height: 6rem;
   display: flex;
   flex-direction: column;
 }
+.coach-scroll {
+  flex: 1 1 auto;
+  display: flex;
+  flex-direction: column;
+}
 .coach-panel-head h2 { margin: 0; }
 
-.coach-tray {
-  padding: var(--space-4) var(--space-6);
-  border-bottom: 1px solid var(--border);
-  background: var(--coach-tray-bg);
-  flex: none;
-}
-.coach-tray-head {
-  color: var(--warn);
-  margin: 0 0 var(--space-4);
-}
+/* ── A proposal, in the conversation ────────────────────────────────────
+   It used to live in a pinned tray above the thread. Now it is a message
+   like any other, at the moment it happened, and it stays there when it
+   settles instead of vanishing and leaving a one-line receipt at the far
+   end of the thread. The warm field the tray carried moved onto the card
+   that is actually waiting on you (`--coach-tray-bg` keeps its name — it is
+   still the "something needs you" ground, it just fits the thing that needs
+   you now rather than a whole region). */
 .coach-prop {
+  align-self: stretch;
   border: 1px solid var(--border-strong);
   border-radius: var(--radius-md);
   background: var(--bg-raised);
   padding: var(--space-4) var(--space-5);
-  margin-bottom: var(--space-4);
 }
-.coach-prop:last-child { margin-bottom: 0; }
+.coach-prop--pending {
+  background: var(--coach-tray-bg);
+  border-left: 3px solid var(--warn);
+}
+/* Settled: still here, visibly done. Quieter ground, no accent edge, no
+   controls that ask for a decision — only the way back into what it did. */
+.coach-prop--settled {
+  background: var(--bg-sunken);
+  border-color: var(--border);
+  color: var(--ink-soft);
+}
+.coach-prop-settled-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: var(--space-2) var(--space-4);
+}
+.coach-prop--settled .coach-prop-title { font-weight: var(--weight-medium); }
 .coach-prop-title { font-size: var(--text-sm); }
 .coach-prop-evidence { margin: var(--space-2) 0 0; }
-/* A column, not a row of pills: "breaks a rule: …" is a whole rule sentence,
-   and as a nowrap pill it clipped at scrollWidth 461 in a 327px card with no
-   way to scroll to the end of the very sentence that matters. */
-.coach-prop-flags { display: flex; flex-direction: column; gap: var(--space-2); margin-top: var(--space-2); }
+
+/* THE MANIFEST AT A GLANCE. Two columns so the days line up and the eye can
+   run down them; the day cell does not shrink, because "which day" is the
+   first question and a wrapped "Tue<br>18" answers it worse than a wrapped
+   session title does. An undated (plan-level) line simply has no day cell
+   and the summary starts at the left edge. */
+.coach-ops {
+  list-style: none;
+  margin: var(--space-4) 0 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+.coach-op {
+  display: flex;
+  gap: var(--space-4);
+  align-items: baseline;
+  font-size: var(--text-sm);
+}
+.coach-op-day {
+  flex: none;
+  min-width: 3.4em;
+  color: var(--ink-soft);
+  font-variant-numeric: tabular-nums;
+  font-weight: var(--weight-medium);
+}
+.coach-op-what { display: flex; flex-direction: column; min-width: 0; }
+.coach-op-summary { overflow-wrap: anywhere; }
+.coach-op-change { font-size: var(--text-xs); color: var(--ink-soft); overflow-wrap: anywhere; }
+.coach-ops-all { display: inline-block; margin-top: var(--space-3); font-size: var(--text-xs); }
+
+/* The whole manifest, in a Sheet. A twelve-op plan is a page, and a page
+   unfolding inside a message would push the rest of the conversation down by
+   however long the proposal happens to be; a Sheet displaces 0px. */
+.coach-ops-full-lede { margin: 0 0 var(--space-5); }
+.coach-ops-full {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-5);
+}
+.coach-ops-full > li {
+  border-top: 1px solid var(--border);
+  padding-top: var(--space-4);
+}
+.coach-ops-full-head {
+  display: flex;
+  gap: var(--space-4);
+  align-items: baseline;
+  margin: 0;
+  font-size: var(--text-sm);
+  font-weight: var(--weight-medium);
+}
+.coach-ops-full .coach-op-change { display: block; margin: var(--space-2) 0 0; }
+/* Shared by the Sheet's per-session lines and the trade-off note's list. */
+.coach-op-detail,
+.coach-prop-tradeoff ul {
+  margin: var(--space-3) 0 0;
+  padding-left: var(--space-6);
+  font-size: var(--text-xs);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+}
+
+/* THE TRADE-OFF NOTE. `.note`, not `.pill`: a flag is a whole sentence
+   ("eases Tuesday's 10K-pace intervals in a build week"), and a pill is
+   nowrap by contract — these clipped at scrollWidth 461 in a 327px card, so
+   the one line naming what the change costs was the one line you could not
+   finish reading. */
+.coach-prop-tradeoff { margin-top: var(--space-4); }
+.coach-prop-tradeoff-lede { font-weight: var(--weight-medium); }
 /* Three controls of two different heights in one row: the 24px "Why?" link
    needs 10px of clearance for its pad, so the row wraps rather than squeeze. */
 .proposal-actions { flex-wrap: wrap; }
@@ -4675,6 +4767,33 @@ a.note {
 /* Audit C17: approve/decline used to fail silently (a 409 read exactly
    like success — the card just vanished). */
 .coach-prop-error { margin: var(--space-3) 0 0; font-size: var(--text-xs); color: var(--danger); }
+
+/* The way back to a pending proposal that has scrolled out of sight — the
+   one job the pinned tray did that a chronological thread cannot do by
+   itself. Absolute, over the scroll region: it appears and disappears as you
+   scroll, and a control that did that IN FLOW would shove the conversation
+   around under the reader. */
+/* `.chipbtn` carries the shape, the type and the touch floor (which is
+   `--tap-fine` under a mouse and `--tap` on a coarse pointer, like every
+   other chip). This adds only where it floats and that it is the warn voice.
+
+   `.coach-jump.chipbtn`, because `.chipbtn` is declared LATER in this sheet
+   and its `border:` shorthand and `background:` would otherwise win the tie
+   and take the amber back — measured once already on this chip. A variant of
+   a base class outranks the base by naming both, which is also what it is. */
+.coach-jump.chipbtn {
+  position: absolute;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 2;
+  border-color: var(--warn);
+  background: var(--coach-tray-bg);
+  color: var(--warn);
+  box-shadow: var(--shadow-md);
+  white-space: nowrap;
+}
+.coach-jump--up { top: var(--space-4); }
+.coach-jump--down { bottom: var(--space-4); }
 
 /* Not a scroller any more — `.coach-scroll` above owns that. It still grows
    to fill the region so a short thread keeps the composer at the bottom. */
@@ -5787,10 +5906,19 @@ a.note {
   min-height: 0;
 }
 /* The absolutely-positioned minimize control sits in the head's top-right —
-   without this inset the "what I know →" link runs underneath it. */
+   without this inset the "what I know →" link runs underneath it. The inset
+   is the control's own box (38.7px measured at 1440) plus the gutter it sits
+   in plus a gap, not a round number: at `--space-10` alone the arrow of
+   "what I know →" was under the button. */
 .coach-window .coach-panel-head {
-  padding-right: var(--space-10);
+  padding-right: calc(var(--space-10) + var(--space-5));
 }
+/* Absolute, and it stays absolute: the touch-floor list defaults
+   `position: relative` at zero specificity (`:where(...)` — see "Touch
+   floor"), so this one class wins. It used to lose, and the control fell into
+   flow as a 398px-wide bar hanging off the panel's left edge. Its 44px pad
+   still lands correctly — `absolute` is a positioned ancestor too, so the
+   `::after` measures against the button. */
 .coach-window-min {
   position: absolute;
   top: var(--space-4);
@@ -6091,38 +6219,56 @@ a.note {
 /* ONE pad rule. `.tap-pad` is the opt-in class; the rest are the controls that
    opted in by name. (Previously two rules that had already drifted apart —
    `.ceremony-close` was in the pad list but never got `position: relative`,
-   so its pad was laid out against the page instead of the button.) */
-.tap-pad,
-.btn-small,
-.plan-brief-chip,
-.plan-brief-needs,
-.race-check-btn,
-.plan-week-back,
-.plan-week-jump summary,
-.reviews-earlier > summary,
-.chart-tip-action,
-.ceremony-close,
-.ceremony-see,
-.balance-detail-close,
-.balance-detail-next,
-.week-pull,
-.wildlife-chip,
-.race-strip-toggle,
-.studio-toggle,
-.coach-msg-retry,
-.btn-row > .linklike,
-.memory-row .linklike,
-.coach-tray > .linklike,
-.coach-panel-head .linklike,
-.proposal-actions > .linklike,
-.garden-below-intro .linklike,
-.hud-beat-dismiss,
-.hud-beat-seeall,
-.hud-nudge,
-.hud-rail button,
-.dock-attention,
-.dock-collapse,
-.dock-grows {
+   so its pad was laid out against the page instead of the button.)
+
+   `:where()`, so this is a DEFAULT and not an assertion. The pad only needs
+   its host to be A containing block — any positioned value will do — but the
+   list named thirty controls at one class of specificity, four thousand lines
+   below where those controls are laid out, and a tie goes to whichever came
+   last. It therefore silently overrode any control that positioned ITSELF:
+   `.coach-window-min { position: absolute }` became `relative`, so the coach
+   window's minimize button fell into flow as a stretched flex item — measured
+   at 1440, a 398 × 36px box (the full width of the panel) with its left edge
+   12px outside the window and clipped away, pushing the panel head 36px down;
+   the athlete reported it as "the Minimize button is clipped off the screen".
+   `.ceremony-close` had the same wound: 123.8px from its card's top instead of
+   8.6, and 271.7px from its right edge instead of 8.6.
+
+   At zero specificity a component rule wins on its own merits, in either
+   source order, and a control that says nothing still gets `relative`. */
+:where(
+  .tap-pad,
+  .btn-small,
+  .plan-brief-chip,
+  .plan-brief-needs,
+  .race-check-btn,
+  .plan-week-back,
+  .plan-week-jump summary,
+  .reviews-earlier > summary,
+  .chart-tip-action,
+  .ceremony-close,
+  .ceremony-see,
+  .balance-detail-close,
+  .balance-detail-next,
+  .week-pull,
+  .wildlife-chip,
+  .race-strip-toggle,
+  .studio-toggle,
+  .coach-msg-retry,
+  .btn-row > .linklike,
+  .memory-row .linklike,
+  .coach-ops-all,
+  .coach-panel-head .linklike,
+  .proposal-actions > .linklike,
+  .garden-below-intro .linklike,
+  .hud-beat-dismiss,
+  .hud-beat-seeall,
+  .hud-nudge,
+  .hud-rail button,
+  .dock-attention,
+  .dock-collapse,
+  .dock-grows
+) {
   position: relative;
 }
 .tap-pad::after,
@@ -6145,7 +6291,7 @@ a.note {
 .coach-msg-retry::after,
 .btn-row > .linklike::after,
 .memory-row .linklike::after,
-.coach-tray > .linklike::after,
+.coach-ops-all::after,
 .coach-panel-head .linklike::after,
 .proposal-actions > .linklike::after,
 .garden-below-intro .linklike::after,
@@ -6313,7 +6459,7 @@ a.note {
   .coach-msg-retry,
   .btn-row > .linklike,
   .memory-row .linklike,
-  .coach-tray > .linklike,
+  .coach-ops-all,
   .coach-panel-head .linklike,
   .proposal-actions > .linklike,
   .garden-below-intro .linklike,

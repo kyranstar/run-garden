@@ -1,4 +1,5 @@
-import { useEffect, type ReactNode } from "react";
+import { type ReactNode } from "react";
+import { useEscapeKey } from "../components.js";
 
 /**
  * The floating coach window (rework spec §6, desktop ≥1024px only — the page
@@ -6,13 +7,18 @@ import { useEffect, type ReactNode } from "react";
  * and the coach overlays it, non-modal, when open. Controlled — the page owns
  * open state, the last-seen watermark, and localStorage persistence, so a
  * ghost tap and new-activity auto-open live beside the other page state.
+ *
+ * Escape goes through the shared dialog stack (`useEscapeKey`). It used to be
+ * a `document` listener of its own, guarded by a `dialogOpen` boolean the page
+ * computed — which meant every dialog opened anywhere inside the panel had to
+ * report itself back up to the page or one press would close it AND minimise
+ * the window behind it (2026-08-17). A token orders itself.
  */
 export function CoachWindow({
   open,
   pendingCount,
   onOpen,
   onMinimize,
-  dialogOpen,
   children,
 }: {
   open: boolean;
@@ -20,18 +26,9 @@ export function CoachWindow({
   onOpen: () => void;
   /** Minimizing marks everything seen (the page advances its watermark). */
   onMinimize: () => void;
-  /** True while any Sheet/dialog is up — Esc then belongs to the dialog. */
-  dialogOpen: boolean;
   children: ReactNode;
 }) {
-  useEffect(() => {
-    if (!open || dialogOpen) return;
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") onMinimize();
-    };
-    document.addEventListener("keydown", onKey);
-    return () => document.removeEventListener("keydown", onKey);
-  }, [open, dialogOpen, onMinimize]);
+  useEscapeKey(open, onMinimize);
 
   if (!open) {
     return (
