@@ -27,7 +27,7 @@ describe("buildDossier", () => {
   it("renders all sections with explicit unknowns on an empty account", async () => {
     const db = makeTestDb();
     const { userId, prefs } = await makeTestUser(db);
-    const d = await buildDossier(db, userId, prefs);
+    const d = await buildDossier(db, userId, prefs, todayInZone(prefs.timezone));
     for (const s of SECTIONS) expect(d.sections).toContain(s);
     expect(d.text).toContain("no coached plans");
     expect(d.text).toContain("can be skipped or moved by proposal");
@@ -61,7 +61,7 @@ describe("buildDossier", () => {
         updatedAt: nowInstant(),
       });
     }
-    const d = await buildDossier(db, userId, prefs);
+    const d = await buildDossier(db, userId, prefs, todayInZone(prefs.timezone));
     expect(d.text).toContain(
       "readiness today: poor — RHR 8 bpm above your baseline · HRV 60 (base 62)",
     );
@@ -92,7 +92,7 @@ describe("buildDossier", () => {
       createdAt: at,
       updatedAt: at,
     });
-    const d = await buildDossier(db, userId, prefs);
+    const d = await buildDossier(db, userId, prefs, todayInZone(prefs.timezone));
     expect(d.text).toContain(`"Long Run" · run [wo:up-imported] · imported`);
   });
 
@@ -143,8 +143,8 @@ describe("buildDossier", () => {
       });
     }
 
-    const a = await buildDossier(db, userId, prefs);
-    const b = await buildDossier(db, userId, prefs);
+    const a = await buildDossier(db, userId, prefs, todayInZone(prefs.timezone));
+    const b = await buildDossier(db, userId, prefs, todayInZone(prefs.timezone));
     expect(a.text).toBe(b.text);
     expect(a.text).toContain("rule [mem1]: Long runs stay on Saturdays");
     expect(a.text).toContain("plan [cp1] Fall Half · run · active");
@@ -185,7 +185,7 @@ describe("RECENT READS (2026-08-11 rework §3)", () => {
         completedAt: `2026-08-0${Math.min(i + 1, 9)}T12:00:00.000Z`,
       });
     }
-    const dossier = await buildDossier(db, userId, prefs);
+    const dossier = await buildDossier(db, userId, prefs, todayInZone(prefs.timezone));
     expect(dossier.sections).toContain("RECENT READS");
     expect(dossier.text).toContain("glance number 8");
     expect(dossier.text).toContain("(hr_drift)");
@@ -197,7 +197,7 @@ describe("RECENT READS (2026-08-11 rework §3)", () => {
   it("omits the section when nothing new was read", async () => {
     const db = makeTestDb();
     const { userId, prefs } = await makeTestUser(db);
-    const dossier = await buildDossier(db, userId, prefs);
+    const dossier = await buildDossier(db, userId, prefs, todayInZone(prefs.timezone));
     expect(dossier.sections).not.toContain("RECENT READS");
   });
 });
@@ -244,7 +244,7 @@ describe("what the coach can see (2026-08-16 input audit)", () => {
     const db = makeTestDb();
     const { userId, prefs } = await makeTestUser(db);
     await seedCatalog(db);
-    const d = await buildDossier(db, userId, prefs);
+    const d = await buildDossier(db, userId, prefs, todayInZone(prefs.timezone));
     // The vocabulary, in words the model can match a prescription against.
     expect(d.text).toContain("Reverse Step-Down");
     expect(d.text).toContain("Copenhagen Plank");
@@ -326,7 +326,7 @@ describe("what the coach can see (2026-08-16 input audit)", () => {
       updatedAt: at,
     });
 
-    const d = await buildDossier(db, userId, prefs);
+    const d = await buildDossier(db, userId, prefs, todayInZone(prefs.timezone));
     // Verbatim, because a paraphrased injury list is one the coach can ignore.
     expect(d.text).toContain("tight IT band, glutes, quads, shoulders, a bit of pelvic tilt");
     expect(d.text).toContain("I haven't lifted in a long time");
@@ -361,7 +361,7 @@ describe("what the coach can see (2026-08-16 input audit)", () => {
       createdAt: at,
       updatedAt: at,
     });
-    const d = await buildDossier(db, userId, prefs);
+    const d = await buildDossier(db, userId, prefs, todayInZone(prefs.timezone));
     // Zero lower-body content — which the coach called adequate ski coverage
     // from the title, because the title was all it had.
     expect(d.text).toContain("contains: 2 × open Cat-Cow Stretch · 2 × open Push-ups");
@@ -387,7 +387,7 @@ describe("what the coach can see (2026-08-16 input audit)", () => {
       updatedAt: at,
     });
 
-    const d = await buildDossier(db, userId, prefs);
+    const d = await buildDossier(db, userId, prefs, todayInZone(prefs.timezone));
     expect(d.text).toContain(`days since last run: 5 (last run ${addDays(today, -5)})`);
     expect(d.text).toContain("strength: 0 sessions in 90d · 1 all-time");
     expect(d.text).toContain("treat as untrained");
@@ -418,7 +418,7 @@ describe("what the coach can see (2026-08-16 input audit)", () => {
         updatedAt: at,
       });
     }
-    const d = await buildDossier(db, userId, prefs);
+    const d = await buildDossier(db, userId, prefs, todayInZone(prefs.timezone));
     expect(d.text).toContain("sleep: NO DATA AT ALL — sleep_records is empty");
     expect(d.text).toContain(`COROS 7-day training load: 119 on ${today}`);
     expect(d.text).toContain("-86% off peak — this is a COLLAPSE in load");
@@ -434,7 +434,7 @@ describe("what the coach can see (2026-08-16 input audit)", () => {
     const { userId, prefs } = await makeTestUser(db, { units: "mi" });
     const today = todayInZone(prefs.timezone);
     await seedActivity(db, userId, { sport: "run", date: addDays(today, -2), distanceMeters: 8046.72 });
-    const d = await buildDossier(db, userId, prefs);
+    const d = await buildDossier(db, userId, prefs, todayInZone(prefs.timezone));
     expect(d.text).toContain('units: miles');
     expect(d.text).toContain("5mi in 90d");
     expect(d.text).toContain("unplanned run · 50min 5.0mi");
@@ -466,7 +466,7 @@ describe("what the coach can see (2026-08-16 input audit)", () => {
         at: `2026-08-1${i}T00:00:00.000Z`,
       });
     }
-    const d = await buildDossier(db, userId, prefs);
+    const d = await buildDossier(db, userId, prefs, todayInZone(prefs.timezone));
     expect(d.sections).not.toContain("EXERCISE CATALOG");
     expect(d.sections).toContain("STRENGTH PLAN");
     expect(d.text).toContain("tight IT band and a bad wrist");
@@ -507,8 +507,10 @@ describe("what the coach can see (2026-08-16 input audit)", () => {
       createdAt: at,
       updatedAt: at,
     });
-    const guard = await guardrailCtx(db, userId, prefs);
-    const d = await buildDossier(db, userId, prefs, guard);
+    const guard = await guardrailCtx(db, userId, prefs, today);
+    // `guard.today`, not a second read: the wake threads one date through both
+    // (ONE CLOCK PER WAKE — coach-wake.ts), and the tests hold the same rule.
+    const d = await buildDossier(db, userId, prefs, guard.today, guard);
     expect(d.sections).toContain("LIMITS");
     // No strength history, so the absolute ceiling applies — and 56 of it is
     // already spent by the athlete's own session.
@@ -523,7 +525,7 @@ describe("what the coach can see (2026-08-16 input audit)", () => {
     // a wall plans around it silently instead of naming it.
     expect(d.text).toContain("going past one does not reject anything");
     // Without a guardrail context the section is absent rather than guessed.
-    expect((await buildDossier(db, userId, prefs)).sections).not.toContain("LIMITS");
+    expect((await buildDossier(db, userId, prefs, today)).sections).not.toContain("LIMITS");
   });
 });
 
@@ -592,7 +594,7 @@ describe("the dossier says which sessions can still be changed", () => {
       });
     }
 
-    const d = await buildDossier(db, userId, prefs);
+    const d = await buildDossier(db, userId, prefs, todayInZone(prefs.timezone));
     const handles = new Set(handlesIn(d.text));
     // The same predicate `validateOps` applies: unresolved, and its day has not
     // gone. Written out here rather than imported so the two agreeing is a
@@ -647,7 +649,7 @@ describe("the dossier says which sessions can still be changed", () => {
       createdAt: at,
       updatedAt: at,
     });
-    const d = await buildDossier(db, userId, prefs);
+    const d = await buildDossier(db, userId, prefs, todayInZone(prefs.timezone));
     expect(handlesIn(d.text)).toEqual(["only-today"]);
     expect(d.text.split("Threshold repeats").length - 1).toBe(1);
   });

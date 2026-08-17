@@ -26,7 +26,7 @@
  * would only reach by luck.
  */
 import { describe, expect, it } from "vitest";
-import { addDays, todayInZone } from "../src/time.js";
+import { addDays } from "../src/time.js";
 import {
   addOpDates,
   formatExercise,
@@ -42,7 +42,13 @@ import { D1_BIND_LIMIT, makeTestDb, makeTestUser } from "../../../apps/worker/te
 import { applyOps } from "../../../apps/worker/src/services/coach-apply.js";
 import { buildExerciseIndex, resolveExerciseOriginId } from "../../../apps/worker/src/services/exercise-catalog.js";
 import { guardrailCtx } from "../../../apps/worker/src/services/coach-wake.js";
-import { athletes, nextMonday, TZ, type AthleteState } from "./coach-survival/athletes.js";
+import {
+  athletes,
+  nextMonday,
+  today as harnessToday,
+  TZ,
+  type AthleteState,
+} from "./coach-survival/athletes.js";
 import { englishName, liveExerciseCatalog } from "./coach-survival/catalog.js";
 import { INTENTS, REGISTER_B, rngFor, wakeEnvelope, mobilitySession, runSession } from "./coach-survival/plans.js";
 import { dossierHandles, runSample, seedAthlete, type SampleResult } from "./coach-survival/pipeline.js";
@@ -164,7 +170,7 @@ describe("coach plan survival rate", () => {
       const intent = usable[Math.floor(rng() * usable.length)]!;
       const ops = intent.ops(rng, s);
       if (ops.length === 0) continue;
-      const envelope = wakeEnvelope(rng, ops, addDays(todayInZone(TZ), 2)) as Record<string, unknown>;
+      const envelope = wakeEnvelope(rng, ops, addDays(TODAY, 2)) as Record<string, unknown>;
       // Register B: exactly one model-natural variation, or none.
       let register: "A" | "B" = "A";
       let variation = "";
@@ -174,7 +180,10 @@ describe("coach plan survival rate", () => {
           leakedIds: leaks.get(s.key) ?? [],
           ...(s.importedPlanIds[0] ? { importedPlanId: s.importedPlanIds[0] } : {}),
           weekStart: s.A,
-          today: todayInZone(TZ),
+          // The date this sample will be JUDGED against, not a fresh read of
+          // the clock: `s.ctx.today` is what `validateOps` holds, so a
+          // variation that writes "today" writes the same today.
+          today: s.ctx.today,
         };
         if (v.apply(rng, ops, envelope, vctx)) {
           register = "B";
@@ -217,7 +226,7 @@ describe("coach plan survival rate", () => {
     say("");
     say("═".repeat(96));
     say(`COACH PLAN SURVIVAL — seed ${SEED}, ${results.length} plans, ${((Date.now() - started) / 1000).toFixed(1)}s`);
-    say(`catalog ${INDEX.ids.size} exercises · anchor Monday ${nextMonday()} · today ${todayInZone(TZ)}`);
+    say(`catalog ${INDEX.ids.size} exercises · anchor Monday ${nextMonday()} · today ${TODAY}`);
     say(`register A obeys the three FATAL rules by construction (real handles, future dates, own plans) —`);
     say(`that is what "a competent coach reading the dossier" means. Register B breaks them the way a model does.`);
     say("═".repeat(96));
@@ -526,7 +535,10 @@ describe("plans a good coach would write, one at a time", () => {
  * ==================================================================== */
 
 const A = nextMonday();
-const TODAY = todayInZone(TZ);
+/** The harness's single read of the clock, borrowed from the fixtures so the
+ * report, the probes and every athlete's `ctx.today` cannot disagree about the
+ * day (see the note on `today()` in coach-survival/athletes.ts). */
+const TODAY = harnessToday();
 
 function skiCtx(over: Partial<GuardrailCtx> = {}): GuardrailCtx {
   const base = athletes().find((x) => x.key === "ski-prep")!;
@@ -923,7 +935,7 @@ describe("tonight's five, against inputs they were not fixed for", () => {
         updatedAt: now,
       });
     }
-    const ctx = await guardrailCtx(db, userId, prefs);
+    const ctx = await guardrailCtx(db, userId, prefs, TODAY);
     record("#2 archived rows in the guardrail calendar", ctx.workouts.length === 1 ? "clean" : "LEAKING", `${ctx.workouts.length} of 3 rows visible`);
     expect(ctx.workouts.map((w) => w.id)).toEqual(["live"]);
   });

@@ -9,7 +9,7 @@ import {
 import {
   addDays,
   racePrediction,
-  todayInZone,
+  type LocalDate,
   type RacePrediction,
   type UserPreferences,
 } from "@rg/domain";
@@ -75,14 +75,21 @@ export const DEFAULT_RACE_CHECKLIST: Array<{ id: string; label: string }> = [
   { id: "travel", label: "Morning-of logistics planned" },
 ];
 
+/**
+ * `today` is the caller's, not this function's — it is read INSIDE the coach's
+ * wake (see ONE CLOCK PER WAKE in coach-wake.ts), and "12 days out · phase
+ * taper" printed in a dossier headed with a different date is the whole class of
+ * bug that note exists for. Route callers pass `todayInZone(prefs.timezone)`
+ * themselves; the compiler enforces it.
+ */
 export async function buildRaceHub(
   db: Db,
   userId: string,
   prefs: UserPreferences,
+  today: LocalDate,
 ): Promise<RaceHub | null> {
   const raceDate = prefs.raceDate;
   if (!raceDate) return null;
-  const today = todayInZone(prefs.timezone);
   const daysToRace = Math.round((Date.parse(raceDate) - Date.parse(today)) / 86_400_000);
   if (daysToRace < -DEBRIEF_DAYS) return null;
 
@@ -166,7 +173,7 @@ export async function buildRaceHub(
         : Promise.resolve([]),
     ]);
 
-  const terrain = await buildTerrainReport(db, userId, prefs);
+  const terrain = await buildTerrainReport(db, userId, prefs, today);
   const ltsp = thresholdRow[0]?.ltsp ?? null;
   const goal =
     ltsp !== null

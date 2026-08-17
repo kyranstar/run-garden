@@ -795,7 +795,7 @@ planRoutes.get("/race", async (c) => {
   const db = c.get("db");
   const userId = c.get("userId");
   const prefs = await loadPreferences(db, userId);
-  return c.json({ race: await buildRaceHub(db, userId, prefs) });
+  return c.json({ race: await buildRaceHub(db, userId, prefs, todayInZone(prefs.timezone)) });
 });
 
 const raceChecklistSchema = z.object({

@@ -23,7 +23,6 @@ import {
   daysBetween,
   formatExercise,
   humanizeWorkoutTitle,
-  todayInZone,
   type GuardrailCtx,
   type LocalDate,
   type UserPreferences,
@@ -194,6 +193,15 @@ export async function buildDossier(
   userId: string,
   prefs: UserPreferences,
   /**
+   * The athlete's local date, established ONCE by the caller — see ONE CLOCK
+   * PER WAKE on `wake` (coach-wake.ts). Every window, every rendered date and
+   * the `canTarget` handle predicate below hang off it, so a dossier that read
+   * the clock for itself could describe a different day from the one its ops
+   * are judged against. The wake passes `ctx.today`, the very field
+   * `validateOps` reads.
+   */
+  today: LocalDate,
+  /**
    * The guardrail calendar, when the caller has one (the wake always does).
    * It is what turns LIMITS from a restatement of the rules into a statement
    * of this athlete's remaining budget, and passing the SAME object the
@@ -201,7 +209,6 @@ export async function buildDossier(
    */
   guard?: GuardrailCtx,
 ): Promise<Dossier> {
-  const today = todayInZone(prefs.timezone);
   const since14 = addDays(today, -14);
   const since30 = addDays(today, -30);
   const since90 = addDays(today, -HISTORY_WINDOW_DAYS);
@@ -233,7 +240,7 @@ export async function buildDossier(
   const raceConflict = await findRaceConflict(db, userId, prefs);
   // The race strip's data, in coach-readable form — this is what makes the
   // raceLine output field writable with real numbers (race hub 2026-08-14).
-  const raceHub = await buildRaceHub(db, userId, prefs);
+  const raceHub = await buildRaceHub(db, userId, prefs, today);
   // Wellness rows are loaded here (rather than down in §5, where they are
   // also used) so the ATHLETE header can open with how the athlete is
   // actually doing today — the same verdict the garden dock shows, from the

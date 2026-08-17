@@ -218,7 +218,7 @@ describe("coach routes", () => {
     expect(del.status).toBe(200);
     const after = await client().get("/api/coach/memory");
     expect(((await after.json()) as { memory: unknown[] }).memory).toHaveLength(0);
-    const dossier = await buildDossier(db, userId, prefs);
+    const dossier = await buildDossier(db, userId, prefs, todayInZone(prefs.timezone));
     expect(dossier.text).not.toContain("Prefers mornings");
   });
 

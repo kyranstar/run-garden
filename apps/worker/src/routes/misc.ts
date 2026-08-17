@@ -1218,7 +1218,10 @@ insightRoutes.get("/", async (c) => {
     evidence,
     reviews,
     interpreted,
-    terrain: discipline === "run" ? await buildTerrainReport(db, userId, prefs) : undefined,
+    terrain:
+      discipline === "run"
+        ? await buildTerrainReport(db, userId, prefs, todayInZone(prefs.timezone))
+        : undefined,
   });
 });
 

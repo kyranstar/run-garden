@@ -5,7 +5,7 @@ import {
   compareTerrain,
   metresPerKm,
   raceMetresPerKm,
-  todayInZone,
+  type LocalDate,
   type TerrainComparison,
   type UserPreferences,
 } from "@rg/domain";
@@ -37,14 +37,16 @@ export interface TerrainReport {
   comparison: TerrainComparison | null;
 }
 
-/** Climb per km across the athlete's recent real runs. */
+/** Climb per km across the athlete's recent real runs. `today` comes from the
+ * caller so the window is the same day the rest of that request (or that wake —
+ * see ONE CLOCK PER WAKE in coach-wake.ts) is written against. */
 export async function recentTerrainExposure(
   db: Db,
   userId: string,
   prefs: UserPreferences,
+  today: LocalDate,
   days = EXPOSURE_DAYS,
 ): Promise<TerrainExposure | null> {
-  const today = todayInZone(prefs.timezone);
   const since = addDays(today, -days);
   const rows = await db
     .select({
@@ -85,8 +87,9 @@ export async function buildTerrainReport(
   db: Db,
   userId: string,
   prefs: UserPreferences,
+  today: LocalDate,
 ): Promise<TerrainReport> {
-  const recent = await recentTerrainExposure(db, userId, prefs);
+  const recent = await recentTerrainExposure(db, userId, prefs, today);
   const raceRate = raceMetresPerKm(
     prefs.raceCourseClimbMetres,
     prefs.raceCourseProfile,

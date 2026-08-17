@@ -147,7 +147,10 @@ export interface DossierHandles {
 
 export async function dossierHandles(s: AthleteState): Promise<DossierHandles> {
   const h = await seedAthlete(s);
-  const d = await buildDossier(h.db, h.userId, h.prefs, s.ctx);
+  // `s.ctx.today` and `s.ctx` — one date, threaded, exactly as the wake does
+  // it (ONE CLOCK PER WAKE, coach-wake.ts). A dossier reading its own clock is
+  // how a handle the validator refuses gets printed as if it were offered.
+  const d = await buildDossier(h.db, h.userId, h.prefs, s.ctx.today, s.ctx);
   // `[wo:...]` with a literal ellipsis is the prose that explains the
   // convention to the model, not a handle it can copy.
   const offered = [

@@ -178,7 +178,7 @@ describe("coach paths survive an athlete with 200 planned workouts", () => {
     await seedCoachPlan(db, userId, today);
     await seedBusyAthlete(db, userId, { count: 200, from: addDays(today, -45), to: addDays(today, 55) });
 
-    const dossier = await buildDossier(db, userId, prefs);
+    const dossier = await buildDossier(db, userId, prefs, todayInZone(prefs.timezone));
     expect(dossier.sections).toContain("LAST 14 DAYS");
     expect(dossier.text.length).toBeGreaterThan(0);
   });
@@ -254,7 +254,7 @@ describe("the dossier's recent-window match lookup", () => {
     // cap. The point is to pin the chunking in place, not to model a human.
     await seedBusyAthlete(db, userId, { count: 140, from: addDays(today, -13), to: today });
 
-    const dossier = await buildDossier(db, userId, prefs);
+    const dossier = await buildDossier(db, userId, prefs, todayInZone(prefs.timezone));
     expect(dossier.sections).toContain("LAST 14 DAYS");
   });
 });

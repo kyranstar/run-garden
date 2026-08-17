@@ -31,13 +31,13 @@ describe("buildRaceHub", () => {
   it("returns null without a race date, and after the debrief window closes", async () => {
     const db = makeTestDb();
     const { userId, prefs } = await makeTestUser(db);
-    expect(await buildRaceHub(db, userId, prefs)).toBeNull();
+    expect(await buildRaceHub(db, userId, prefs, todayInZone(prefs.timezone))).toBeNull();
     const today = todayInZone(prefs.timezone);
     expect(
-      await buildRaceHub(db, userId, { ...prefs, raceDate: addDays(today, -15) }),
+      await buildRaceHub(db, userId, { ...prefs, raceDate: addDays(today, -15) }, todayInZone(prefs.timezone)),
     ).toBeNull();
     expect(
-      await buildRaceHub(db, userId, { ...prefs, raceDate: addDays(today, -14) }),
+      await buildRaceHub(db, userId, { ...prefs, raceDate: addDays(today, -14) }, todayInZone(prefs.timezone)),
     ).not.toBeNull();
   });
 
@@ -48,16 +48,16 @@ describe("buildRaceHub", () => {
     await seedHealth(db, userId, addDays(today, -2), { thresholdPaceSecPerKm: 300, staminaLevel: 77 });
     await seedHealth(db, userId, today, { thresholdPaceSecPerKm: 289, staminaLevel: 79 });
 
-    const build = await buildRaceHub(db, userId, { ...prefs, raceDate: addDays(today, 60) });
+    const build = await buildRaceHub(db, userId, { ...prefs, raceDate: addDays(today, 60) }, todayInZone(prefs.timezone));
     expect(build!.phase).toBe("build");
     expect(build!.goal).toMatchObject({ thresholdPaceSecPerKm: 289, asOf: today });
     // No race distance set → no time claim at all (audit#3-b #1).
     expect(build!.goal!.prediction).toBeNull();
     expect(build!.stamina.map((s) => s.value)).toEqual([77, 79]);
 
-    const taper = await buildRaceHub(db, userId, { ...prefs, raceDate: addDays(today, 14) });
+    const taper = await buildRaceHub(db, userId, { ...prefs, raceDate: addDays(today, 14) }, todayInZone(prefs.timezone));
     expect(taper!.phase).toBe("taper");
-    const raceWeek = await buildRaceHub(db, userId, { ...prefs, raceDate: addDays(today, 3) });
+    const raceWeek = await buildRaceHub(db, userId, { ...prefs, raceDate: addDays(today, 3) }, todayInZone(prefs.timezone));
     expect(raceWeek!.phase).toBe("race_week");
   });
 
@@ -65,7 +65,7 @@ describe("buildRaceHub", () => {
     const db = makeTestDb();
     const { userId, prefs } = await makeTestUser(db);
     const today = todayInZone(prefs.timezone);
-    const hub = await buildRaceHub(db, userId, { ...prefs, raceDate: addDays(today, 30) });
+    const hub = await buildRaceHub(db, userId, { ...prefs, raceDate: addDays(today, 30) }, todayInZone(prefs.timezone));
     expect(hub!.goal).toBeNull();
     expect(hub!.checklist.length).toBeGreaterThan(0);
   });
@@ -96,7 +96,7 @@ describe("buildRaceHub", () => {
       updatedAt: nowInstant(),
     });
 
-    const before = await buildRaceHub(db, userId, { ...prefs, raceDate });
+    const before = await buildRaceHub(db, userId, { ...prefs, raceDate }, todayInZone(prefs.timezone));
     expect(before!.checklist.find((i) => i.id === "coach-restructure")!.done).toBe(false);
     expect(before!.checklist.find((i) => i.id === "coach-lifts")!.done).toBe(false);
 
@@ -124,7 +124,7 @@ describe("buildRaceHub", () => {
       .set({ calendarBlockDurationSeconds: 1200 })
       .where(eq(schema.plannedWorkouts.id, "lift-1"));
 
-    const after = await buildRaceHub(db, userId, { ...prefs, raceDate });
+    const after = await buildRaceHub(db, userId, { ...prefs, raceDate }, todayInZone(prefs.timezone));
     expect(after!.checklist.find((i) => i.id === "coach-restructure")!.done).toBe(true);
     expect(after!.checklist.find((i) => i.id === "coach-lifts")!.done).toBe(true);
   });
@@ -153,7 +153,7 @@ describe("buildRaceHub", () => {
         updatedAt: nowInstant(),
       });
     }
-    const hub = await buildRaceHub(db, userId, { ...prefs, raceDate });
+    const hub = await buildRaceHub(db, userId, { ...prefs, raceDate }, todayInZone(prefs.timezone));
     expect(hub!.phase).toBe("post");
     expect(hub!.debrief).toMatchObject({ activityId: "race", durationSeconds: 2894 });
   });
@@ -164,15 +164,15 @@ describe("race hub — audit#3-b regressions", () => {
     const db = makeTestDb();
     const { userId, prefs } = await makeTestUser(db);
     const today = todayInZone(prefs.timezone);
-    const hub = await buildRaceHub(db, userId, { ...prefs, raceDate: today });
+    const hub = await buildRaceHub(db, userId, { ...prefs, raceDate: today }, todayInZone(prefs.timezone));
     expect(hub!.daysToRace).toBe(0);
     expect(hub!.phase).toBe("race_week");
     // …and the day the taper opens is already the taper.
-    const taper = await buildRaceHub(db, userId, { ...prefs, raceDate: addDays(today, 21) });
+    const taper = await buildRaceHub(db, userId, { ...prefs, raceDate: addDays(today, 21) }, todayInZone(prefs.timezone));
     expect(taper!.phase).toBe("taper");
-    const build = await buildRaceHub(db, userId, { ...prefs, raceDate: addDays(today, 22) });
+    const build = await buildRaceHub(db, userId, { ...prefs, raceDate: addDays(today, 22) }, todayInZone(prefs.timezone));
     expect(build!.phase).toBe("build");
-    const lastBuildDay = await buildRaceHub(db, userId, { ...prefs, raceDate: addDays(today, 7) });
+    const lastBuildDay = await buildRaceHub(db, userId, { ...prefs, raceDate: addDays(today, 7) }, todayInZone(prefs.timezone));
     expect(lastBuildDay!.phase).toBe("taper");
   });
 
@@ -186,7 +186,7 @@ describe("race hub — audit#3-b regressions", () => {
       ...prefs,
       raceDate: addDays(today, 30),
       raceDistanceKm: 10,
-    });
+    }, todayInZone(prefs.timezone));
     // A 10K takes under an hour, so it runs slightly FASTER than threshold.
     expect(tenK!.goal!.prediction!.fastSecPerKm).toBeLessThan(289);
     expect(tenK!.goal!.prediction!.distanceKm).toBe(10);
@@ -195,7 +195,7 @@ describe("race hub — audit#3-b regressions", () => {
       ...prefs,
       raceDate: addDays(today, 30),
       raceDistanceKm: 42.195,
-    });
+    }, todayInZone(prefs.timezone));
     // A marathon runs materially slower than threshold — the old code
     // claimed threshold pace for every distance regardless.
     expect(marathon!.goal!.prediction!.fastSecPerKm).toBeGreaterThan(289 + 15);
@@ -206,7 +206,7 @@ describe("race hub — audit#3-b regressions", () => {
     const db = makeTestDb();
     const { userId, prefs } = await makeTestUser(db);
     const today = todayInZone(prefs.timezone);
-    const hub = await buildRaceHub(db, userId, { ...prefs, raceDate: addDays(today, 40) });
+    const hub = await buildRaceHub(db, userId, { ...prefs, raceDate: addDays(today, 40) }, todayInZone(prefs.timezone));
     const lifts = hub!.checklist.find((i) => i.id === "coach-lifts")!;
     expect(lifts.done).toBe(false);
     expect(lifts.note).toBe("race week not written yet");
@@ -238,7 +238,7 @@ describe("race hub — audit#3-b regressions", () => {
       createdAt: nowInstant(),
       updatedAt: nowInstant(),
     });
-    const hub = await buildRaceHub(db, userId, { ...prefs, raceDate });
+    const hub = await buildRaceHub(db, userId, { ...prefs, raceDate }, todayInZone(prefs.timezone));
     expect(hub!.checklist.find((i) => i.id === "coach-lifts")!.done).toBe(true);
   });
 
@@ -254,14 +254,14 @@ describe("race hub — audit#3-b regressions", () => {
       refs: { raceLine: "Six quality sessions left before the taper." },
       at: nowInstant(),
     });
-    const hub = await buildRaceHub(db, userId, { ...prefs, raceDate: addDays(today, 30) });
+    const hub = await buildRaceHub(db, userId, { ...prefs, raceDate: addDays(today, 30) }, todayInZone(prefs.timezone));
     expect(hub!.raceLine?.text).toBe("Six quality sessions left before the taper.");
 
     await db
       .update(schema.coachMessages)
       .set({ at: new Date(Date.now() - 8 * 24 * 3600 * 1000).toISOString() })
       .where(eq(schema.coachMessages.id, "m-fresh"));
-    const stale = await buildRaceHub(db, userId, { ...prefs, raceDate: addDays(today, 30) });
+    const stale = await buildRaceHub(db, userId, { ...prefs, raceDate: addDays(today, 30) }, todayInZone(prefs.timezone));
     expect(stale!.raceLine).toBeNull();
   });
 
@@ -275,11 +275,11 @@ describe("race hub — audit#3-b regressions", () => {
       raceDate: raceA,
       raceChecklist: [{ id: `${raceA}:bib`, label: "Bib pickup / registration sorted", done: true }],
     };
-    const a = await buildRaceHub(db, userId, withTicks);
+    const a = await buildRaceHub(db, userId, withTicks, todayInZone(prefs.timezone));
     expect(a!.checklist.find((i) => i.id === `${raceA}:bib`)!.done).toBe(true);
 
     // Same stored ticks, different race → everything opens fresh.
-    const b = await buildRaceHub(db, userId, { ...withTicks, raceDate: addDays(today, 200) });
+    const b = await buildRaceHub(db, userId, { ...withTicks, raceDate: addDays(today, 200) }, todayInZone(prefs.timezone));
     expect(b!.checklist.filter((i) => i.kind === "user").every((i) => !i.done)).toBe(true);
   });
 
@@ -292,7 +292,7 @@ describe("race hub — audit#3-b regressions", () => {
       ...prefs,
       raceDate: addDays(today, 30),
       raceDistanceKm: 10,
-    });
+    }, todayInZone(prefs.timezone));
     expect(hub!.goal).toBeNull();
     expect(hub!.stamina).toEqual([]);
   });
@@ -338,7 +338,7 @@ describe("terrain awareness (2026-08-14)", () => {
       raceDate: addDays(today, 40),
       raceDistanceKm: 10,
       raceCourseClimbMetres: 120,
-    });
+    }, todayInZone(prefs.timezone));
     expect(hub!.terrain.recent).toMatchObject({ runs: 2, totalClimbMetres: 53 });
     expect(hub!.terrain.recent!.metresPerKm).toBeCloseTo(3, 0);
     expect(hub!.terrain.raceMetresPerKm).toBe(12);
@@ -355,11 +355,11 @@ describe("terrain awareness (2026-08-14)", () => {
       ...prefs,
       raceDate: addDays(today, 40),
       raceCourseProfile: "rolling",
-    });
+    }, todayInZone(prefs.timezone));
     expect(byProfile!.terrain.raceMetresPerKm).toBe(12);
     expect(byProfile!.terrain.comparison!.verdict).toBe("matched");
 
-    const unset = await buildRaceHub(db, userId, { ...prefs, raceDate: addDays(today, 40) });
+    const unset = await buildRaceHub(db, userId, { ...prefs, raceDate: addDays(today, 40) }, todayInZone(prefs.timezone));
     expect(unset!.terrain.recent!.metresPerKm).toBe(12);
     expect(unset!.terrain.raceMetresPerKm).toBeNull();
     expect(unset!.terrain.comparison).toBeNull();
@@ -374,7 +374,7 @@ describe("terrain awareness (2026-08-14)", () => {
       raceDate: addDays(today, 40),
       raceCourseClimbMetres: 120,
       raceDistanceKm: 10,
-    });
+    }, todayInZone(prefs.timezone));
     expect(hub!.terrain.recent).toBeNull();
     expect(hub!.terrain.comparison).toBeNull();
   });

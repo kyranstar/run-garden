@@ -856,13 +856,34 @@ export const REGISTER_B: Variation[] = [
       return true;
     },
   },
+  /**
+   * A wake that started before midnight and finished after it — the case the
+   * harness models on purpose, and the one that changed meaning on 2026-08-17.
+   *
+   * The coach dates a session on the day its dossier called today, because when
+   * it wrote the sentence that was the day. What happens next is entirely up to
+   * whether the pipeline agrees with itself about the date: `validateOps` refuses
+   * `past_date` on `date < ctx.today`, so today is the exact boundary. While the
+   * wake read the clock three times over — once for the prompt's "Today is …",
+   * once inside `guardrailCtx`, once inside `buildDossier`, with up to a minute
+   * of lock-waiting between the first and the second — a crossing turned the
+   * coach's "today" into the validator's "yesterday" and this variation was
+   * FATAL. It is now the invariant instead: one clock per wake (coach-wake.ts),
+   * so `c.today` is `ctx.today` is the dossier's header date, and a session
+   * dated on it survives to the athlete.
+   *
+   * Kept in register B rather than moved to the probes because it belongs in the
+   * counted population: "the coach wrote something for today" is ordinary, not
+   * exotic, and if this class ever becomes fatal again the ranked table should
+   * say so in numbers.
+   */
   {
-    key: "ref: dated yesterday",
-    why: "a wake that started before midnight and finished after it",
+    key: "ref: dated the wake's own today",
+    why: "a wake that started before midnight and finished after it — the coach dates a session on the day the dossier called today",
     apply: (_r, ops, _env, c) => {
       const a = firstAdd(ops);
       if (!a) return false;
-      a.date = addDays(c.today, -1);
+      a.date = c.today;
       delete a.dates;
       return true;
     },

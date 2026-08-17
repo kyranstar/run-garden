@@ -17,8 +17,21 @@ import type { GuardrailCtx, GuardrailWorkout } from "../../src/coach-guardrails.
 
 export const TZ = "America/Los_Angeles";
 
+/**
+ * ONE READ for the whole harness, at import.
+ *
+ * `today()` used to call `todayInZone` afresh every time, and it is called a
+ * dozen times while the fixtures are built — for `nextMonday()`, for each
+ * athlete's `ctx.today`, and for the two already-completed rows. A run that
+ * crossed local midnight between two of those calls would build a calendar
+ * against one date and judge it against another, which is the exact defect this
+ * harness exists to measure in the wake (ONE CLOCK PER WAKE, coach-wake.ts).
+ * Measuring it while committing it is not a position an instrument can hold.
+ */
+const TODAY = todayInZone(TZ);
+
 export function today(): string {
-  return todayInZone(TZ);
+  return TODAY;
 }
 
 /** ISO weekday 1(Mon)..7(Sun). */

@@ -23,6 +23,7 @@ import {
   validateOps,
   type CoachOp,
   type GuardrailCtx,
+  type LocalDate,
   type UserPreferences,
   type WakeOutput,
 } from "@rg/domain";
@@ -869,13 +870,19 @@ function opAffectedDates(op: CoachOp, workoutDates: Map<string, string>): string
  * dossier filters archived rows, so those sessions have no [wo:id] the coach
  * could ease, skip or even mention. It was being asked to resolve a conflict
  * on a day it could not see.
+ *
+ * `today` IS A PARAMETER, and the compiler is what keeps it one. This function
+ * used to read the clock itself, which made `ctx.today` a second opinion about
+ * the date rather than the wake's one answer — see the ONE CLOCK PER WAKE note
+ * on {@link wake}. Every caller passes the date the rest of that wake is
+ * written against; nothing here may ask the clock again.
  */
 export async function guardrailCtx(
   db: Db,
   userId: string,
   prefs: UserPreferences,
+  today: LocalDate,
 ): Promise<GuardrailCtx> {
-  const today = todayInZone(prefs.timezone);
   const horizon = addDays(today, 60);
   const rows = await db
     .select()
@@ -1002,6 +1009,46 @@ export async function recordAthleteMessage(db: Db, userId: string, body: string)
   await recordUnansweredMessage(db, userId, body);
 }
 
+/**
+ * ONE CLOCK PER WAKE.
+ *
+ * `today` below is read ONCE, here, and threaded through everything that needs
+ * the athlete's calendar date: the guardrail context (`ctx.today`, which is
+ * what `validateOps` and `allowedNowLines` judge against), the dossier (its
+ * header date, its 14-day windows, its `canTarget` handle predicate), the race
+ * hub's phase and days-to-race, and every `expiresAt` this wake writes. It is
+ * also the date the prompt states out loud ("Today is …").
+ *
+ * It used to be read three times over — here, in `guardrailCtx`, and again in
+ * `buildDossier` — and a wake takes 75–125 seconds on a synchronous request,
+ * with up to a MINUTE of lock-waiting (see the claim loop below) between the
+ * first read and the second. A wake that starts at 23:59 therefore built its
+ * context against one date and validated against the next, and the symptoms
+ * were all mutually deniable: the prompt said "Today is the 16th" while the
+ * validator held the 17th, so a session the coach dated today became a
+ * `past_date` FATAL between being written and being checked; `canTarget` — the
+ * dossier predicate deliberately made identical to `validateOps`'s condition —
+ * disagreed with it and withheld handles the validator would have accepted; and
+ * the ISO week buckets that ramp, cold-start and rest-day findings count in
+ * shifted, so the coach was judged against a different week from the one it was
+ * shown. None of it is visible from a receipt.
+ *
+ * THE BOUNDARY IS APPROVAL. `applyOps` (coach-apply.ts) takes its OWN fresh
+ * read, and must: it runs when the athlete taps approve, minutes or hours (or a
+ * night) after the wake, and the question it asks — "is this date still in the
+ * future, what is this week" — is a question about the moment of the tap, not
+ * about the moment of the drafting. Threading the wake's date into the approval
+ * path would freeze a stale calendar into the mutation. The wake's date governs
+ * what the coach was TOLD and what it is JUDGED on; the apply's date governs
+ * what actually happens to the plan.
+ *
+ * Anything that is genuinely an INSTANT still reads the real clock, and should:
+ * a row's `createdAt`/`at`, the lock's heartbeat and staleness window, the
+ * elapsed-time budget checks (`startedAt` / `timeForAnotherCall`), the
+ * failure-receipt dedupe window, and the LLM budget's rolling seven days. None
+ * of those is the athlete's calendar date, and pinning them would make a
+ * 125-second wake claim it took no time at all.
+ */
 export async function wake(
   db: Db,
   env: Env,
@@ -1071,8 +1118,14 @@ export async function wake(
     // the same tables could differ by a sync landing mid-wake, and the coach
     // would then be rejected by a limit that moved after it was told the
     // number — the one failure mode this whole change exists to remove.
-    const ctx = await guardrailCtx(db, userId, prefs);
-    const dossier = await buildDossier(db, userId, prefs, ctx);
+    //
+    // …and ONE date, `today`, which the ctx now carries as `ctx.today`. The
+    // dossier is handed `ctx.today` rather than `today` on purpose: the value is
+    // the same, and passing the field the validator reads makes "the document
+    // and the judgement agree about the day" structural instead of a thing to
+    // remember. See ONE CLOCK PER WAKE above.
+    const ctx = await guardrailCtx(db, userId, prefs, today);
+    const dossier = await buildDossier(db, userId, prefs, ctx.today, ctx);
     const causeBlock =
       cause.kind === "message"
         ? `The athlete just said:\n"""${cause.body}"""`

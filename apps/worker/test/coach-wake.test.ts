@@ -3,6 +3,8 @@
  * schema repair, guardrail rejection, supersede, restraint, and the rule
  * that the athlete's words are persisted before anything can fail.
  */
+import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
 import { describe, expect, it, vi } from "vitest";
 import { and, eq } from "drizzle-orm";
 import { schema } from "@rg/database";
@@ -845,7 +847,7 @@ describe("the guardrail calendar is the athlete's calendar", () => {
     await seedRow(db, userId, { id: "wed-live", date: wed, category: "strength", sport: "strength", minutes: 56 });
     await seedRow(db, userId, { id: "wed-mirror", date: wed, category: "strength", sport: "strength", minutes: 56, archiveReason: "duplicate_mirror" });
 
-    const ctx = await guardrailCtx(db, userId, prefs);
+    const ctx = await guardrailCtx(db, userId, prefs, todayInZone(prefs.timezone));
     expect(ctx.workouts.map((w) => w.id).sort()).toEqual(["tue-live", "wed-live"]);
     // Tuesday is an easy run and nothing else — not a hard day.
     expect(ctx.workouts.filter((w) => w.date === tue)).toHaveLength(1);
@@ -891,7 +893,7 @@ describe("the guardrail calendar is the athlete's calendar", () => {
         },
       },
     ];
-    const out = validateOps(ops, await guardrailCtx(db, userId, prefs));
+    const out = validateOps(ops, await guardrailCtx(db, userId, prefs, todayInZone(prefs.timezone)));
     expect(out.fatal, "the phantom Tuesday quality run must not reject this").toEqual([]);
     // …and must not even show up as a cost the athlete is asked to weigh.
     expect(out.advisory, "a session that does not exist has no trade-off to name").toEqual([]);
@@ -1988,8 +1990,8 @@ describe("tonight's five failures reach the athlete as choices", () => {
     const today = todayInZone(prefs.timezone);
     const yesterday = addDays(today, -1);
     await seedRow(db, userId, { id: "yday-long", date: yesterday, category: "long", minutes: 116, state: "completed" });
-    const guard = await guardrailCtx(db, userId, prefs);
-    const d = await buildDossier(db, userId, prefs, guard);
+    const guard = await guardrailCtx(db, userId, prefs, today);
+    const d = await buildDossier(db, userId, prefs, guard.today, guard);
     expect(d.text).toContain(yesterday);
     expect(d.text).toContain("the first is yesterday — already done");
   });
@@ -2140,5 +2142,216 @@ describe("convergence: a fatal violation is a retry, not a loss", () => {
     } finally {
       nowSpy.mockRestore();
     }
+  });
+});
+
+/* ══════════════════════════════════════════════════════════════════════ *
+ * ONE CLOCK PER WAKE
+ *
+ * A wake spends 75–125 seconds on a synchronous request, and up to a further
+ * minute waiting out a lock before it starts. It used to read the athlete's
+ * local date THREE times over that window — once for the prompt's "Today is
+ * …", once inside `guardrailCtx`, once inside `buildDossier` — so a wake that
+ * began at 23:59 built its context against one day and judged its answer
+ * against the next. Every symptom was deniable from a receipt: a session the
+ * coach dated today became a `past_date` FATAL between being written and being
+ * checked, `canTarget` stopped agreeing with the `validateOps` condition it was
+ * deliberately made identical to, and the ISO week buckets the ramp and
+ * rest-day findings count in shifted under the coach's feet.
+ *
+ * Two guards, because the invariant has two halves. The first is structural —
+ * the date is read once and threaded, and the compiler is what keeps it that
+ * way. The second is behavioural: hand the wake a clock that answers a
+ * different day every single time it is asked, and the wake still speaks with
+ * one date. Neither is a date-dependent test: the source scan reads text, and
+ * the clock below is a fixed instant, never "now".
+ * ══════════════════════════════════════════════════════════════════════ */
+
+describe("one clock per wake", () => {
+  const source = (name: string): string =>
+    readFileSync(fileURLToPath(new URL(`../src/services/${name}`, import.meta.url)), "utf8");
+
+  /** Source with whole-line comments dropped, so the scan counts CALLS and the
+   * prose above them stays free to name what it is talking about. */
+  const codeOf = (name: string): string =>
+    source(name)
+      .split("\n")
+      .filter((l) => !/^\s*(\/\/|\/?\*)/.test(l))
+      .join("\n");
+
+  /**
+   * The modules that render or judge the athlete's calendar date inside a wake:
+   * `wake` itself, the dossier it is shown, the race hub's phase and countdown
+   * that the dossier prints, and the terrain window under it.
+   *
+   * A curated list rather than the import closure, deliberately. The closure
+   * from `coach-wake.ts` reaches `calendar-sync`, `studio-push` and `jobs`
+   * through one `savePreferences` call, and those DO read the clock — in
+   * functions no wake calls. A scan that has to excuse three quarters of its
+   * own subjects stops being read. Add a module here when a wake starts asking
+   * it what day it is.
+   */
+  const WAKE_PATH = ["coach-wake.ts", "coach-context.ts", "race-hub.ts", "terrain.ts"] as const;
+
+  it("reads the athlete's local date exactly once, at the top of `wake`", () => {
+    for (const name of WAKE_PATH) {
+      const code = codeOf(name);
+      const reads = [...code.matchAll(/todayInZone\(/g)];
+      if (name !== "coach-wake.ts") {
+        expect(
+          reads.length,
+          `${name} must take the date from its caller — a second read is a second opinion about what day it is`,
+        ).toBe(0);
+        continue;
+      }
+      expect(reads.length, "the wake reads the clock once and threads the answer").toBe(1);
+      // …and that one read is inside `wake`, above everything it feeds.
+      expect(reads[0]!.index!).toBeGreaterThan(code.indexOf("export async function wake("));
+    }
+  });
+
+  it("every consumer of that date takes it as a parameter, so the compiler carries the thread", () => {
+    for (const [file, fn] of [
+      ["coach-wake.ts", "guardrailCtx"],
+      ["coach-context.ts", "buildDossier"],
+      ["race-hub.ts", "buildRaceHub"],
+      ["terrain.ts", "buildTerrainReport"],
+      ["terrain.ts", "recentTerrainExposure"],
+    ] as const) {
+      const src = source(file);
+      const at = src.indexOf(`export async function ${fn}(`);
+      expect(at, `${fn} not found in ${file}`).toBeGreaterThan(-1);
+      const params = src.slice(at, src.indexOf("):", at));
+      expect(params, `${fn} must be handed the wake's date rather than find its own`).toContain(
+        "today: LocalDate",
+      );
+    }
+  });
+
+  it("the approval path keeps its OWN fresh read — that boundary is the point", () => {
+    // `applyOps` runs when the athlete taps approve, minutes or hours or a
+    // night after the wake drafted the proposal. "Is this date still in the
+    // future, and what is this week" is a question about the moment of the tap.
+    // Threading the wake's date in here would freeze a stale calendar into the
+    // mutation, so if a future tidy-up "finishes the job" by making this a
+    // parameter too, it should have to delete this test and read why.
+    const code = codeOf("coach-apply.ts");
+    expect([...code.matchAll(/todayInZone\(/g)]).toHaveLength(1);
+    const at = code.indexOf("export async function applyOps(");
+    expect(code.slice(at, code.indexOf("):", at))).not.toContain("today: LocalDate");
+  });
+
+  /**
+   * A clock that answers a DIFFERENT DAY every time it is asked.
+   *
+   * Deliberately brutal rather than realistic: the real bug needs a midnight to
+   * fall between two reads, which is a few seconds a day. A clock that moves a
+   * whole day per read makes every extra read visible at once, and it can only
+   * be satisfied by asking once. `Date.now()` and the no-argument `new Date()`
+   * both move (that is the pair `todayInZone` and `nowInstant` are built on);
+   * `new Date(x)` is left alone so parsing a stored timestamp still works.
+   */
+  function clockThatMovesEveryRead(from: string): { restore: () => void; reads: () => number } {
+    const Real = globalThis.Date;
+    const t0 = Real.parse(from);
+    let reads = 0;
+    const at = (): number => t0 + reads++ * 86_400_000;
+    class Moving extends Real {
+      constructor(...args: unknown[]) {
+        if (args.length === 0) super(at());
+        else super(...(args as [number]));
+      }
+      static override now(): number {
+        return at();
+      }
+    }
+    globalThis.Date = Moving as unknown as DateConstructor;
+    return {
+      restore: () => {
+        globalThis.Date = Real;
+      },
+      reads: () => reads,
+    };
+  }
+
+  it("a wake whose clock moves under it still speaks with one date, and a session dated today survives", async () => {
+    const db = makeTestDb();
+    const { userId, prefs } = await makeTestUser(db);
+    expect(prefs.timezone).toBe("America/Los_Angeles");
+
+    // What the coach was told, scraped out of the prompt it was actually sent.
+    const seen: { header?: string; stated?: string } = {};
+    const fetchImpl = (async (_url: unknown, init: RequestInit) => {
+      const body = JSON.parse(String(init.body)) as { messages: Array<{ content: string }> };
+      const prompt = body.messages.at(-1)!.content;
+      seen.header = /# ATHLETE DOSSIER · (\d{4}-\d{2}-\d{2})/.exec(prompt)?.[1];
+      seen.stated = /Today is (\d{4}-\d{2}-\d{2})\./.exec(prompt)?.[1];
+      // The most ordinary answer there is — put something on today — written
+      // against the date the prompt states. It is legal only while the date the
+      // coach was shown is the date its ops are judged against.
+      return new Response(
+        JSON.stringify(
+          chatBody({
+            briefing: "One easy thing today.",
+            proposals: [
+              {
+                title: "Something easy today",
+                evidence: "nothing on the calendar",
+                rationale: "Short, and it costs nothing.",
+                expiresAt: seen.stated,
+                flags: [],
+                ops: [
+                  {
+                    kind: "add",
+                    date: seen.stated,
+                    session: {
+                      category: "easy",
+                      title: "Easy 30",
+                      durationMinutes: 30,
+                      run: { blocks: [{ kind: "duration", value: 30, intensity: "easy" }] },
+                    },
+                  },
+                ],
+              },
+            ],
+            question: null,
+            memoryOps: [],
+            focus: null,
+          }),
+        ),
+        { status: 200, headers: { "content-type": "application/json" } },
+      );
+    }) as typeof fetch;
+
+    // 2026-08-17T06:59:30Z is 23:59:30 the previous evening in Los Angeles: the
+    // athlete's day turns over on the very next read.
+    const clock = clockThatMovesEveryRead("2026-08-17T06:59:30.000Z");
+    let res: Awaited<ReturnType<typeof wake>>;
+    try {
+      res = await wake(db, makeEnv(), userId, prefs, { kind: "manual" }, fetchImpl);
+    } finally {
+      clock.restore();
+    }
+
+    // The clock really was consulted many times over — the wake is full of
+    // legitimate "now" reads (row timestamps, the lock heartbeat, the elapsed
+    // budget) and those must keep moving.
+    expect(clock.reads(), "the clock is still read for instants").toBeGreaterThan(3);
+    // …but only ONE of those reads was about what day it is for the athlete.
+    expect(seen.stated, "the prompt has to state a date").toBeTruthy();
+    expect(seen.header, "the dossier's header and the prompt's date are the same day").toBe(
+      seen.stated,
+    );
+    expect(res.status).toBe("ok");
+    expect(res.proposalIds, "a session dated today is not `past_date` to its own wake").toHaveLength(
+      1,
+    );
+    expect(res.rejectedProposalIds).toBeUndefined();
+    const props = await db
+      .select()
+      .from(schema.coachProposals)
+      .where(eq(schema.coachProposals.userId, userId));
+    expect(props.map((p) => p.status)).toEqual(["pending"]);
+    expect((props[0]!.ops as Array<{ date: string }>)[0]!.date).toBe(seen.stated);
   });
 });
