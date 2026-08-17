@@ -31,6 +31,17 @@ export interface SampleResult {
   detail: string;
   /** Failures nobody is told about: no throw, no violation, no effect. */
   silent: string[];
+  /**
+   * The same class of failure, but SAID OUT LOUD — an op that promised a
+   * mutation and performed none, which `applyOps` now reports in
+   * `ApplyResult.missed` so the receipt can carry it (2026-08-17).
+   *
+   * Counted apart from `silent` because the distinction is the whole point:
+   * the plan still did not do what it said, but the athlete is told rather
+   * than handed a success receipt for nothing. A disclosed miss keeps the
+   * plan out of the survival count and out of the silent column.
+   */
+  disclosed: string[];
   exercises: number;
   offCatalog: number;
   /** Movements the athlete's synced catalog has no row for. */
@@ -224,6 +235,7 @@ export async function runSample(
     causes: [],
     detail: "",
     silent: [],
+    disclosed: [],
     exercises: 0,
     offCatalog: 0,
     offCatalogNames: [],
@@ -285,20 +297,26 @@ export async function runSample(
   if (opts.skipApply) return { ...base, survived: true };
   const h = await seedAthlete(s, opts.corosWritesEnabled ?? false);
   const snap = await snapshot(h.db);
+  let applied;
   try {
-    await applyOps(h.db, h.userId, h.prefs, `prop-${s.key}-${intent}`, ops);
+    applied = await applyOps(h.db, h.userId, h.prefs, `prop-${s.key}-${intent}`, ops);
   } catch (e) {
     return { ...base, failedAt: "apply", causes: [`apply:threw — ${String(e).slice(0, 120)}`], detail: String(e) };
   }
   const missed = await verifyApply(h.db, ops, snap);
   if (missed.length > 0) {
+    // Whether the apply TOLD anyone is the difference between a bad receipt
+    // and a lying one, so the two are counted separately. `applied.missed` is
+    // the apply's own account of what it could not do; anything the verifier
+    // found that the apply did not mention is still silent.
     return {
       ...base,
       failedAt: "apply",
       causes: missed.map((m) => `apply:${m}`),
       detail: missed.join("; "),
-      silent: missed,
+      silent: applied.missed.length > 0 ? [] : missed,
+      disclosed: applied.missed,
     };
   }
-  return { ...base, survived: true };
+  return { ...base, survived: true, disclosed: applied.missed };
 }

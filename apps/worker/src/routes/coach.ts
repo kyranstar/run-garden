@@ -386,7 +386,11 @@ coachRoutes.post("/proposals/:id/approve", async (c) => {
     .update(coachProposals)
     .set({ status: "approved", resolvedAt: nowInstant() })
     .where(eq(coachProposals.id, id));
-  await receipt(db, userId, `✓ approved — ${p.title}`, p.id);
+  // The receipt tells the truth about what the apply could not do. An op that
+  // promised a change and made none used to be invisible here: the athlete
+  // read "✓ approved" and believed their plan had changed.
+  const shortfall = applied.missed.length > 0 ? ` · ${applied.missed.join("; ")}` : "";
+  await receipt(db, userId, `✓ approved — ${p.title}${shortfall}`, p.id);
   // Cloud-direct: any watch writes the approval enqueued execute now.
   waitUntilSafe(c, executeCloudJobs(db, c.env, userId, prefs).catch(() => undefined),);
   return c.json({ ok: true, applied });
@@ -985,6 +989,9 @@ coachRoutes.post("/plans/:id/retire", async (c) => {
   const applied = await applyOps(db, userId, prefs, `retire-${c.req.param("id")}`, [
     { kind: "retirePlan", planId: c.req.param("id") },
   ]);
+  // A tap on "retire" against a plan that is not there is a 404, not a
+  // receipt saying it was retired.
+  if (applied.missed.length > 0) return c.json({ error: "not_found" }, 404);
   await receipt(db, userId, "Plan retired — completed history stays.");
   return c.json({ ok: true, applied });
 });

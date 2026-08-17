@@ -27,7 +27,15 @@
  */
 import { describe, expect, it } from "vitest";
 import { addDays, todayInZone } from "../src/time.js";
-import { wakeOutputSchema, addOpDates, type CoachOp } from "../src/coach.js";
+import {
+  addOpDates,
+  formatExercise,
+  sessionExercises,
+  sessionSport,
+  strippedPaths,
+  wakeOutputSchema,
+  type CoachOp,
+} from "../src/coach.js";
 import { GUARDRAIL_LIMITS, HARD_LIMITS_PROMPT, validateOps, type GuardrailCtx } from "../src/coach-guardrails.js";
 import { schema } from "../../database/src/index.js";
 import { D1_BIND_LIMIT, makeTestDb, makeTestUser } from "../../../apps/worker/test/helpers.js";
@@ -94,18 +102,25 @@ interface Sample extends SampleResult {
  * ==================================================================== */
 
 describe("the instrument itself", () => {
-  it("reports an apply that silently does nothing", async () => {
+  it("reports an apply that does nothing, and says whether anyone was told", async () => {
     // retirePlan against a plan id the guardrail context trusts but
     // `coach_plans` does not hold: no throw, no violation, no effect. If the
     // apply verifier cannot catch this, an `apply 0` in the report means
     // nothing.
+    //
+    // Since 2026-08-17 the apply DISCLOSES it (`ApplyResult.missed` → the
+    // receipt), so this case proves two things at once: the verifier still
+    // catches an apply that did nothing, and the silent column below is empty
+    // because the class was fixed rather than because the instrument is blind.
     const s = athletes().find((x) => x.key === "build-coached")!;
     const ghost: AthleteState = { ...s, ctx: { ...s.ctx, coachPlanIds: [...s.ctx.coachPlanIds, "cp-ghost"] } };
     const env = wakeEnvelope(rngFor(99), [{ kind: "retirePlan", planId: "cp-ghost" }], addDays(TODAY, 1));
     const r = await runSample(ghost, "instrument-check", env, { index: INDEX });
     expect(r.survived).toBe(false);
     expect(r.failedAt).toBe("apply");
-    expect(r.silent).toEqual(["retirePlan: no such plan, nothing retired"]);
+    expect(r.causes).toEqual(["apply:retirePlan: no such plan, nothing retired"]);
+    expect(r.disclosed).toEqual(["the plan it retires isn't there any more, so nothing was retired"]);
+    expect(r.silent).toEqual([]);
   });
 
   it("reproduces exactly from its seed", async () => {
@@ -258,6 +273,14 @@ describe("coach plan survival rate", () => {
       say(`   The three silent classes that DID exist are now fatal rules; the probe matrix below has the rest.)`);
     }
     for (const r of silent.slice(0, 10)) say(`  ${pad(r.athlete, 16)} ${pad(r.intent, 20)} ${r.silent.join("; ")}`);
+    say("");
+    // The same failure, said out loud. An op that promised a mutation and
+    // performed none still costs the plan, but since 2026-08-17 `applyOps`
+    // reports it and the receipt carries it — so it belongs in a column of its
+    // own rather than hidden inside "survived" or inside "silent".
+    const disclosed = results.filter((r) => r.disclosed.length > 0);
+    say(`  DISCLOSED SHORTFALLS — an op did nothing, and the receipt says so: ${disclosed.length} of ${results.length}`);
+    for (const r of disclosed.slice(0, 6)) say(`  ${pad(r.athlete, 16)} ${pad(r.intent, 20)} ${r.disclosed.join("; ")}`);
     say("");
     say("  RANKED ADVISORIES — no longer fatal; each is a trade-off line on the card");
     say(`  ${pad("rule", 62)} ${pad("count", 7)} share of all plans`);
@@ -568,9 +591,12 @@ describe("probes: the neighbours", () => {
   });
 
   it("an empty dates array on an add", () => {
-    const r = parseOps([{ kind: "add", date: addDays(A, 1), dates: [], session: mobilitySession(rngFor(3), 10) }]);
-    record("add with `dates: []` (means the same as omitting it)", r.ok ? "accepted" : "REFUSED AT PARSE", r.issue);
-    expect(r.ok).toBe(false);
+    const day = addDays(A, 1);
+    const r = parseOps([{ kind: "add", date: day, dates: [], session: mobilitySession(rngFor(3), 10) }]);
+    expect(r.ok).toBe(true);
+    const dates = addOpDates(r.ops[0] as Extract<CoachOp, { kind: "add" }>);
+    record("add with `dates: []` (means the same as omitting it)", "accepted", `reads as ${dates.length} session on ${dates[0]}`);
+    expect(dates).toEqual([day]);
   });
 
   it("duplicate dates on an add", () => {
@@ -612,16 +638,23 @@ describe("probes: the neighbours", () => {
     const r = parseOps([
       { kind: "add", date: addDays(A, 1), session: { category: "strength", title: "Legs — details to follow", durationMinutes: 30, lift: { exercises: [] } } },
     ]);
-    record("strength session with `lift: { exercises: [] }`", r.ok ? "accepted" : "REFUSED AT PARSE", r.issue);
-    expect(r.ok).toBe(false);
+    expect(r.ok).toBe(true);
+    const empty = (r.ops[0] as Extract<CoachOp, { kind: "add" }>).session;
+    record(
+      "strength session with `lift: { exercises: [] }`",
+      "accepted",
+      `files as ${sessionSport(empty)} — the duration is the prescription`,
+    );
 
-    // …while the same session with no body at all is fine, which is the
-    // workaround nobody is told about.
+    // …and the same session with no body at all agrees with it, which is the
+    // whole point: two spellings of one intention cannot have opposite fates.
     const bodyless = parseOps([
       { kind: "add", date: addDays(A, 1), session: { category: "strength", title: "Legs — details to follow", durationMinutes: 30 } },
     ]);
-    record("the same session with the `lift` key omitted entirely", bodyless.ok ? "accepted" : "REFUSED", "still files as strength");
     expect(bodyless.ok).toBe(true);
+    const none = (bodyless.ops[0] as Extract<CoachOp, { kind: "add" }>).session;
+    record("the same session with the `lift` key omitted entirely", "accepted", `also files as ${sessionSport(none)}`);
+    expect(sessionSport(empty)).toBe(sessionSport(none));
   });
 
   it("a circuit with rounds: 1", () => {
@@ -722,19 +755,27 @@ describe("probes: the neighbours", () => {
   });
 
   it("a plausible but unknown key on a session", () => {
-    const r = parseOps([
+    const raw = [
       { kind: "add", date: addDays(A, 1), session: { category: "strength", title: "Legs", durationMinutes: 30, notes: "keep it snappy", lift: { exercises: [{ name: "Wall sit", sets: 3, holdSeconds: 45 }] } } },
-    ]);
-    record("session carrying an extra `notes` key", r.ok ? "accepted" : "REFUSED AT PARSE", r.issue);
-    expect(r.ok).toBe(false);
+    ];
+    const r = parseOps(raw);
+    expect(r.ok).toBe(true);
+    // Stripped, not silent: the path is reported so a key the coach keeps
+    // reaching for reads as a schema gap in the logs.
+    const lost = strippedPaths(raw[0], r.ops[0]);
+    record("session carrying an extra `notes` key", "accepted (key stripped)", `reported as: ${lost.join(", ")}`);
+    expect(lost).toEqual(["session.notes"]);
+    expect((r.ops[0] as unknown as { session: Record<string, unknown> }).session.notes).toBeUndefined();
   });
 
   it("an exercise with neither reps nor holdSeconds", () => {
     const r = parseOps([
       { kind: "add", date: addDays(A, 1), session: { category: "strength", title: "Legs", durationMinutes: 30, lift: { exercises: [{ name: "Back squat", sets: 3 }] } } },
     ]);
-    record("exercise with sets but no reps and no hold", r.ok ? "accepted" : "REFUSED AT PARSE", r.issue);
-    expect(r.ok).toBe(false);
+    expect(r.ok).toBe(true);
+    const ex = sessionExercises((r.ops[0] as Extract<CoachOp, { kind: "add" }>).session)[0]!;
+    record("exercise with sets but no reps and no hold", "accepted", `renders as “${formatExercise(ex)}”`);
+    expect(formatExercise(ex)).toBe("Back squat 3 sets");
   });
 
   it("retirePlan against a plan id the guardrails trust but the table lacks", async () => {
@@ -746,18 +787,26 @@ describe("probes: the neighbours", () => {
     const out = await applyOps(h.db, h.userId, h.prefs, "probe-retire-ghost", r.ops);
     record(
       "retirePlan on a plan id with no coach_plans row",
-      fatal.length ? "refused" : "ACCEPTED SILENTLY",
-      `apply returned created=${out.created.length} updated=${out.updated.length} archived=${out.archived.length} — nothing at all, and it says so to nobody`,
+      out.missed.length ? "does nothing, and SAYS so" : "ACCEPTED SILENTLY",
+      `apply returned created=${out.created.length} updated=${out.updated.length} archived=${out.archived.length} · missed: ${out.missed.join("; ") || "(nothing reported)"}`,
     );
+    // Still no guardrail violation, and rightly so — the guardrails read the
+    // plan ids that existed at WAKE time and this row can go between the wake
+    // and the tap. The honesty has to come out of the apply.
     expect(fatal).toEqual([]);
-    expect(out).toEqual({ created: [], updated: [], archived: [] });
+    expect(out.created).toEqual([]);
+    expect(out.updated).toEqual([]);
+    expect(out.archived).toEqual([]);
+    expect(out.missed).toEqual(["the plan it retires isn't there any more, so nothing was retired"]);
   });
 
   it("a two-word movement name against a three-word catalog entry", () => {
-    // Jaccard at MIN_OVERLAP 0.7: two shared tokens over three distinct ones
-    // is 0.667, so ONE extra word on the catalog's side loses the match. The
-    // athlete's synced catalog holds "Cat-Cow Stretch"; the coach writes what
-    // everyone writes.
+    // The near-miss class, fixed 2026-08-17. Jaccard at MIN_OVERLAP 0.7 scored
+    // "cat cow" against "cat cow stretch" at 2/3 = 0.667 and lost the match:
+    // ONE extra word on the catalog's side was enough. Now a generic trailing
+    // word ("stretch", "pose", "hold") folds away on both sides, and full
+    // containment of a ≥2-word name with at most one extra word counts as a
+    // match when it is the unique best.
     const cat = liveExerciseCatalog();
     const idx = buildExerciseIndex(cat);
     const hit = resolveExerciseOriginId("Cat cow", idx);
@@ -765,10 +814,18 @@ describe("probes: the neighbours", () => {
     record(
       "coach writes “Cat cow”, catalog holds “Cat-Cow Stretch”",
       hit ? "matched" : "OFF-CATALOG",
-      `catalog contains it: ${catalogHas}; token overlap 2/3 = 0.67 is under MIN_OVERLAP 0.7, so the session can never reach the watch`,
+      `catalog contains it: ${catalogHas}; resolves to ${hit ? englishName(cat.get(hit)!) : "nothing"}`,
     );
     expect(catalogHas).toBe(true);
-    expect(hit).toBeNull();
+    expect(hit).not.toBeNull();
+    expect(englishName(cat.get(hit!)!)).toBe("Cat-Cow Stretch");
+    // …and the guesses it must still refuse against this same live catalog:
+    // one word cannot claim a family it does not name exactly ("Lunge" has no
+    // plain row, only lunge variants), and an ambiguous two-word name where
+    // two entries could equally claim it stays off-catalog.
+    expect(resolveExerciseOriginId("Lunge", idx)).toBeNull();
+    expect(resolveExerciseOriginId("Hamstring curl", idx)).toBeNull();
+    expect(resolveExerciseOriginId("Suspended squat", idx)).toBeNull();
   });
 
   it("a swap of two days where only one carries a session", async () => {

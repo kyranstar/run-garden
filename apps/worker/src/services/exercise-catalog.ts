@@ -205,6 +205,41 @@ export function normalizeExerciseKey(name: string): string {
   return alias ? fold(alias) : folded;
 }
 
+/**
+ * Words COROS hangs on the END of a name that a coach simply leaves off:
+ * "Cat-Cow Stretch" is written "Cat cow", "Side Plank Hold" is written
+ * "Side plank", "Ankle Dorsiflexion Drill" is written without the drill.
+ * They carry no movement identity of their own, so they are shaved off
+ * SYMMETRICALLY — the coach's name and every catalog entry — before the
+ * near-match pass.
+ *
+ * Trailing only, on purpose. The same words elsewhere in a COROS name are
+ * equipment, not decoration ("Exercise Ball Crunches", "Stretch Strap
+ * Squat", "Crunch - Legs On Exercise Ball"), and shaving them loses real
+ * matches — which is also why "exercise" itself is NOT on this list.
+ *
+ * Floored at two tokens, also on purpose (see `stripGenericTail`): the
+ * danger of this fold is collapsing a name to a single generic word —
+ * "Lunge Stretch" must never become "lunge", or a coach writing "Lunge"
+ * would silently be handed a mobility drill.
+ */
+const GENERIC_TAIL_WORDS = new Set(["stretch", "pose", "hold", "drill", "variation"]);
+
+/**
+ * Shave generic words off the end while MORE THAN two tokens remain, so the
+ * result is never empty and never a lone word.
+ */
+function stripGenericTail(tokens: string[]): string[] {
+  let out = tokens;
+  while (out.length > 2 && GENERIC_TAIL_WORDS.has(out[out.length - 1]!)) out = out.slice(0, -1);
+  return out;
+}
+
+/** The token set a near match compares on: folded key, generic tail shaved. */
+function matchTokens(key: string): Set<string> {
+  return new Set(stripGenericTail(key.split(" ")));
+}
+
 export interface ExerciseIndex {
   /** normalized human name → catalog originId. */
   byKey: Map<string, string>;
@@ -229,7 +264,7 @@ export function buildExerciseIndex(catalog: Map<string, string>): ExerciseIndex 
     const key = normalizeExerciseKey(human);
     if (!key) continue;
     if (!byKey.has(key)) byKey.set(key, id);
-    tokens.push({ id, key, set: new Set(key.split(" ")) });
+    tokens.push({ id, key, set: matchTokens(key) });
   }
   return { byKey, tokens, ids: new Set(catalog.keys()) };
 }
@@ -248,24 +283,42 @@ export function resolveExerciseOriginId(name: string, index: ExerciseIndex): str
   if (!key) return null;
   const exact = index.byKey.get(key);
   if (exact) return exact;
-  // Near match: token overlap (Jaccard) against every catalog entry, taken
-  // only when one candidate clearly wins — "squat" must not silently become
-  // "Bulgarian Split Squat".
-  const want = new Set(key.split(" "));
-  let best: { id: string; score: number } | null = null;
+  // Near match, on generic-tail-shaved token sets. Two rules, both of which
+  // demand a UNIQUE winner — "squat" must not silently become "Bulgarian
+  // Split Squat":
+  //
+  //  · containment — every word the coach wrote is in the catalog entry and
+  //    the entry adds at most one word of its own ("cat cow" ⊂ "cat cow
+  //    stretch", "thoracic rotation" ⊂ "thoracic spine rotation"). The
+  //    coach's name must carry at least two words, so a bare "squat" can
+  //    never reach in;
+  //  · Jaccard overlap at or above MIN_OVERLAP, as before.
+  //
+  // Ambiguity is measured on the catalog KEY, not the id: the catalog holds
+  // genuine duplicates ("Plank Jacks" is both T1077 and T1259) and two rows
+  // of the same name are one answer, not a tie.
+  const want = matchTokens(key);
+  if (!want.size) return null;
+  let best: { key: string; id: string; score: number; contains: boolean } | null = null;
   let tie = false;
   for (const e of index.tokens) {
     let shared = 0;
     for (const t of want) if (e.set.has(t)) shared += 1;
     const score = shared / (want.size + e.set.size - shared);
+    // Containment always outscores non-containment (its score is at least
+    // k/(k+1), and missing even one of the coach's k words caps the score at
+    // (k−1)/k), so it never needs its own ranking pass — it only widens what
+    // counts as good enough once a candidate has already won on score.
+    const contains = want.size >= 2 && shared === want.size && e.set.size <= want.size + 1;
     if (!best || score > best.score) {
-      best = { id: e.id, score };
+      best = { key: e.key, id: e.id, score, contains };
       tie = false;
-    } else if (best && score === best.score && e.id !== best.id) {
+    } else if (score === best.score && e.key !== best.key) {
       tie = true;
     }
   }
-  if (!best || best.score < MIN_OVERLAP || tie) return null;
+  if (!best || tie) return null;
+  if (!best.contains && best.score < MIN_OVERLAP) return null;
   return best.id;
 }
 

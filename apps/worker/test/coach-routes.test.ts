@@ -165,6 +165,33 @@ describe("coach routes", () => {
     expect(second.status).toBe(409);
   });
 
+  it("the approve receipt says when an op did nothing — no success for a plan that isn't there", async () => {
+    // The proposal was written when the plan existed; by the time the athlete
+    // taps, the row is gone. Approving is still the right thing to do (the
+    // other ops in a proposal may be fine), but the receipt must not claim a
+    // retirement that did not happen.
+    const today = todayInZone(prefs.timezone);
+    await db.insert(schema.coachProposals).values({
+      id: "p-ghost",
+      userId,
+      title: "Retire the autumn block",
+      evidence: "e",
+      rationale: "r",
+      flags: [],
+      ops: [{ kind: "retirePlan", planId: "cp-gone" }],
+      status: "pending",
+      createdAt: nowInstant(),
+      expiresAt: addDays(today, 1),
+    });
+    const res = await client().post("/api/coach/proposals/p-ghost/approve");
+    expect(res.status).toBe(200);
+    const applied = (await res.json()) as { applied: { missed: string[] } };
+    expect(applied.applied.missed).toEqual(["the plan it retires isn't there any more, so nothing was retired"]);
+    const msgs = await db.select().from(schema.coachMessages).where(eq(schema.coachMessages.userId, userId));
+    const receipt = msgs.find((m) => m.role === "receipt" && m.body.includes("Retire the autumn block"));
+    expect(receipt?.body).toContain("isn't there any more");
+  });
+
   it("decline retires the proposal without touching the plan", async () => {
     const today = todayInZone(prefs.timezone);
     await seedProposal("p1", addDays(today, 1));
@@ -251,6 +278,18 @@ describe("coach routes", () => {
       plans: Array<{ name: string; status: string }>;
     };
     expect(plans.plans[0]).toMatchObject({ name: "Autumn Half", status: "retired" });
+  });
+
+  it("retiring a plan that isn't there is a 404, not a receipt saying it was retired", async () => {
+    // The last silent failure in the coach pipeline (2026-08-17): `retirePlan`
+    // against a missing `coach_plans` row did nothing, threw nothing, and the
+    // caller wrote "Plan retired" regardless.
+    const before = await db.select().from(schema.coachMessages).where(eq(schema.coachMessages.userId, userId));
+    const gone = await client().post("/api/coach/plans/cp-does-not-exist/retire");
+    expect(gone.status).toBe(404);
+    const after = await db.select().from(schema.coachMessages).where(eq(schema.coachMessages.userId, userId));
+    expect(after.length).toBe(before.length);
+    expect(after.some((m) => m.body.includes("Plan retired"))).toBe(false);
   });
 });
 

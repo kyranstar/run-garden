@@ -110,6 +110,7 @@ export type GuardrailRule =
   | "unknown_workout"
   | "past_date"
   | "imported_plan_structure"
+  | "runaway_size"
   | "hard_adjacency"
   | "ramp"
   | "cold_start"
@@ -152,6 +153,21 @@ export const RULE_CLASS: Record<GuardrailRule, RuleClass> = {
    * authorship guard while `firmUp`/`extendPlan` write rows into a plan that
    * has no coach_plans row at all — half the op silently lands. */
   imported_plan_structure: "fatal",
+  /**
+   * One proposal that would write more sessions than an approval can execute.
+   *
+   * This rule is the OTHER HALF of the schema's 2026-08-17 loosening. The
+   * array caps in coach.ts were sized for a runaway model rather than for real
+   * work — 14 dates on an add, 12 blocks in a run — and they refused a
+   * three-week daily mobility piece and a 12×400m session while a determined
+   * model could still write 20 ops of 14 dates. Now the caps fit real work and
+   * the runaway is caught HERE, where it belongs: `applyOps` does several
+   * writes per session inside one request, and a proposal of hundreds cannot
+   * finish inside a Worker's subrequest budget — the athlete would tap approve
+   * and get a half-written plan. Fatal, and refusing it costs one proposal
+   * rather than the whole wake, which is exactly why it moved.
+   */
+  runaway_size: "fatal",
 
   /** Two hard days in a row. Real, and real is exactly why the athlete gets
    * to decide: front-loading before a trip is a legitimate thing to buy. */
@@ -216,6 +232,14 @@ const EVENT_TAPER_DAYS = 2;
 
 const RAMP_CAP = 1.1;
 const RACE_WINDOW_DAYS = 7;
+/**
+ * The most sessions ONE proposal may write. Two months of daily work, or a
+ * whole 20-week block firmed up at six a week, both fit under it; nothing a
+ * coach writes on purpose comes close, and an approval past it cannot finish
+ * inside one request (each session is an insert plus its stages plus, when
+ * writes are on, a queued watch job).
+ */
+const MAX_PROPOSAL_SESSIONS = 120;
 
 /**
  * Every number this file enforces, in one place, because the MODEL IS NOW
@@ -242,6 +266,7 @@ export const GUARDRAIL_LIMITS = {
   eventTaperDays: EVENT_TAPER_DAYS,
   rampCap: RAMP_CAP,
   raceWindowDays: RACE_WINDOW_DAYS,
+  maxProposalSessions: MAX_PROPOSAL_SESSIONS,
 } as const;
 
 /**
@@ -268,6 +293,7 @@ export const HARD_LIMITS_PROMPT = [
   `- THE PAST IS FIXED: no op dated before today, and no op on a session already completed, skipped or missed.`,
   `- REAL SESSIONS ONLY: ease/move/skip must name a [wo:...] id that appears in this dossier. An id that isn't there changes nothing at all when approved.`,
   `- IMPORTED PLANS KEEP THEIR STRUCTURE: reshapeWeek/firmUp/extendPlan/windDown/retirePlan may only name a plan YOU authored (PLANS says which). An imported plan's individual sessions are still yours to ease, move, skip or add around — that is how you restructure one.`,
+  `- ONE PROPOSAL WRITES AT MOST ${MAX_PROPOSAL_SESSIONS} SESSIONS, counting every date on an add and every session in a structural op. Long enough for two months of daily work or a whole firmed-up block; past it the approval cannot finish, so split the work across proposals.`,
   ``,
   `DISCLOSED TO THE ATHLETE — these do NOT reject anything. Each one the app finds is printed on the proposal as a trade-off, directly above the approve button, and they decide. So they are yours to spend deliberately: plan inside them, and when you go past one on purpose, give the reason in the rationale. Spending one you hadn't noticed is the failure; spending one you can defend is coaching.`,
   `- HARD IS DEFINED: a session in category ${[...HARD_CATEGORIES].join("/")}, or a strength session of ${HARD_LIFT_MINUTES}min or more — and in a discipline they have barely touched (${DETRAINED_WEEK_MINUTES}min/week or less over the last 4 weeks), any strength session of ${TRIVIAL_LIFT_MINUTES}min or more. Under ${TRIVIAL_LIFT_MINUTES}min is never hard, and neither is mobility work of any length.`,
@@ -758,6 +784,33 @@ function newWorkDates(op: CoachOp): string[] {
   }
 }
 
+/**
+ * How many NEW planned_workouts rows this op would write. Distinct from
+ * {@link newWorkDates}, which answers "which days does this put work on": a
+ * `move` or a `swap` lands work on a day without creating anything, and a
+ * multi-date `add` creates one row per date.
+ */
+function newSessionCount(op: CoachOp): number {
+  switch (op.kind) {
+    case "add":
+      return addOpDates(op).length;
+    case "reshapeWeek":
+    case "firmUp":
+    case "windDown":
+      return op.sessions.length;
+    case "createPlan":
+      return op.firmSessions.length;
+    case "ease":
+    case "move":
+    case "swap":
+    case "skip":
+    case "extendPlan":
+    case "retirePlan":
+    case "resolveRaceConflict":
+      return 0;
+  }
+}
+
 export interface ValidationResult {
   /** The proposal cannot be applied — reject it, and let the wake converge. */
   fatal: Violation[];
@@ -767,11 +820,6 @@ export interface ValidationResult {
    * their flag text is the athlete's own words out of coach memory, not ours;
    * `rule` is the memory row id, not a {@link GuardrailRule}. */
   soft: Violation[];
-  /**
-   * @deprecated Alias of `fatal`, kept only so an in-flight property-test
-   * harness written against the pre-split shape keeps compiling. Read `fatal`.
-   */
-  hard: Violation[];
 }
 
 export function validateOps(ops: CoachOp[], ctx: GuardrailCtx): ValidationResult {
@@ -867,6 +915,19 @@ export function validateOps(ops: CoachOp[], ctx: GuardrailCtx): ValidationResult
       }
     }
   });
+
+  // How much this ONE proposal would write, across every op in it. The
+  // schema's per-op caps are sized for real sessions now (60 dates on an add,
+  // 60 blocks in a run), so the only thing standing between a runaway model
+  // and a half-executed approval is this total.
+  const written = ops.reduce((n, op) => n + newSessionCount(op), 0);
+  if (written > MAX_PROPOSAL_SESSIONS) {
+    found(
+      "runaway_size",
+      0,
+      `it would put ${written} separate sessions on your calendar in one approval — more than can be written at once, so it needs splitting into blocks`,
+    );
+  }
 
   const cal = resultingCalendar(ops, ctx);
 
@@ -1042,5 +1103,5 @@ export function validateOps(ops: CoachOp[], ctx: GuardrailCtx): ValidationResult
     }
   }
 
-  return { fatal, advisory, soft, hard: fatal };
+  return { fatal, advisory, soft };
 }

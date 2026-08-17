@@ -39,6 +39,23 @@ export interface ApplyResult {
   created: string[];
   updated: string[];
   archived: string[];
+  /**
+   * Ops that promised a mutation and performed NONE — in the athlete's words,
+   * for the receipt (2026-08-17).
+   *
+   * The last silent failure in this pipeline lived here: `retirePlan` against
+   * a plan id with no `coach_plans` row returned `{created:[],updated:[],
+   * archived:[]}` with no throw and no violation, so the athlete tapped
+   * approve and was handed a success receipt for nothing. The guardrails
+   * cannot catch it — they read the plan ids that existed at WAKE time, and
+   * the row can go between the wake and the tap — so the truth has to travel
+   * out of the apply itself.
+   *
+   * Not a throw: the other ops in the proposal have already been performed by
+   * then, and a 500 would tell the athlete nothing happened when most of it
+   * did. Empty on every ordinary apply.
+   */
+  missed: string[];
 }
 
 function fingerprint(v: unknown): string {
@@ -52,7 +69,7 @@ function fingerprint(v: unknown): string {
 }
 
 function stageSummary(s: CoachSession): string {
-  if (s.run) {
+  if (s.run && s.run.blocks.length > 0) {
     return s.run.blocks
       .map((b) => `${b.kind === "duration" ? `${b.value}min` : `${(b.value / 1000).toFixed(1)}km`}${b.intensity ? ` ${b.intensity}` : ""}`)
       .join(" · ");
@@ -60,8 +77,12 @@ function stageSummary(s: CoachSession): string {
   // One formatter, shared with the session sheet (domain/coach.ts) — a hold
   // must never render as "Wall sit 3×undefined", which is what the old
   // `${e.sets}×${e.reps}` produced the moment reps became optional.
+  //
+  // An EMPTY body ("strength Friday, movements on the day") falls through to
+  // the title, exactly as a bodyless session does: since 2026-08-17 an empty
+  // exercise list and an absent one parse alike, so they must also read alike.
   const block = s.lift ?? s.mobility;
-  if (block) return formatExerciseBlock(block);
+  if (block && block.exercises.length > 0) return formatExerciseBlock(block);
   return s.title;
 }
 
@@ -346,7 +367,7 @@ export async function applyOps(
     .orderBy(desc(dailyHealth.date))
     .limit(1);
   const thresholdPaceSecPerKm = thresholdRow?.v ?? undefined;
-  const out: ApplyResult = { created: [], updated: [], archived: [] };
+  const out: ApplyResult = { created: [], updated: [], archived: [], missed: [] };
 
   for (let i = 0; i < ops.length; i++) {
     const op = ops[i]!;
@@ -577,7 +598,13 @@ export async function applyOps(
           .from(coachPlans)
           .where(and(eq(coachPlans.id, op.planId), eq(coachPlans.userId, userId)))
           .limit(1);
-        if (!plan) break;
+        if (!plan) {
+          // The plan is gone (retired by hand, or never the athlete's). Say so
+          // — the alternative, and what this did until 2026-08-17, is a
+          // success receipt for an op that touched nothing.
+          out.missed.push("the plan it retires isn't there any more, so nothing was retired");
+          break;
+        }
         const rows = await db
           .select()
           .from(plannedWorkouts)

@@ -211,3 +211,104 @@ describe("name → originId resolution", () => {
     expect(normalizeExerciseKey("Eccentric wall sit")).toBe(normalizeExerciseKey("wall sit"));
   });
 });
+
+/**
+ * The near-miss class (2026-08-17). A survival harness measured 43.5% of
+ * coach-written movement names failing to resolve, and the cheapest slice of
+ * that was ONE extra word on COROS's side: "Cat cow" vs "Cat-Cow Stretch" is
+ * a Jaccard overlap of 2/3, under the 0.7 floor, so the match was lost.
+ *
+ * Two rules fix it without letting the matcher guess — a generic TRAILING
+ * word ("stretch", "pose", "hold", "drill", "variation") shaved off both
+ * sides but never below two tokens, and containment: every word the coach
+ * wrote is in the entry, the coach wrote at least two words, the entry adds
+ * at most one of its own, and exactly one entry qualifies.
+ */
+describe("name → originId: the one-extra-word near miss", () => {
+  /** Real T-codes and their real English names, chosen to be the traps. */
+  const cat = new Map<string, string>([
+    ["id-cat-cow", "T1234"], // Cat-Cow Stretch
+    ["id-thoracic", "T1248"], // Thoracic Spine Rotation
+    ["id-side-plank", "T1185"], // Side Plank
+    ["id-lunge-stretch", "T1274"], // Lunge Stretch
+    ["id-bird-dog", "T1150"], // Bird Dog
+    ["id-standing-ham", "T1255"], // Standing Hamstring Curl
+    ["id-nordic-ham", "T1365"], // Nordic Hamstring Curl
+    ["id-split-bench", "T1164"], // Split Bench Squat
+    ["id-trx-split", "T1086"], // TRX Suspended Split Squat
+    ["id-sumo-squat", "T1295"], // Sumo Squat
+    ["id-box-squat", "T1291"], // Box Squat
+    ["id-frog-pose", "T1240"], // Frog Pose
+  ]);
+  const index = () => buildExerciseIndex(cat);
+
+  it("resolves a name COROS spells with one extra generic word", () => {
+    const i = index();
+    // The measured bug: folded "cat cow" vs "cat cow stretch" is 2/3 overlap.
+    expect(resolveExerciseOriginId("Cat cow", i)).toBe("id-cat-cow");
+    expect(resolveExerciseOriginId("Cat-Cow", i)).toBe("id-cat-cow");
+    expect(resolveExerciseOriginId("cat cows", i)).toBe("id-cat-cow");
+    // Same class, generic word on the COACH's side instead — the fold is
+    // symmetric, so "Side plank hold" still finds plain "Side Plank".
+    expect(resolveExerciseOriginId("Side plank hold", i)).toBe("id-side-plank");
+  });
+
+  it("resolves a name COROS spells with one extra ORDINARY word", () => {
+    const i = index();
+    // "thoracic rotation" ⊂ "thoracic spine rotation": containment, not a
+    // generic word, and exactly one entry qualifies.
+    expect(resolveExerciseOriginId("Thoracic rotation", i)).toBe("id-thoracic");
+  });
+
+  it("a one-word name never reaches the containment rule", () => {
+    const i = index();
+    // Three squats in the catalog and no plain one: "squat" must stay null
+    // rather than silently becoming any of them.
+    expect(resolveExerciseOriginId("squat", i)).toBeNull();
+    expect(resolveExerciseOriginId("Squats", i)).toBeNull();
+    // The generic-tail fold must never collapse an entry to a lone word:
+    // "Lunge Stretch" stays two tokens, so a coach writing "Lunge" is not
+    // handed a mobility drill.
+    expect(resolveExerciseOriginId("Lunge", i)).toBeNull();
+    expect(resolveExerciseOriginId("Plank", i)).toBeNull();
+    expect(resolveExerciseOriginId("Stretch", i)).toBeNull();
+    // ...but the full name still resolves exactly.
+    expect(resolveExerciseOriginId("Lunge stretch", i)).toBe("id-lunge-stretch");
+  });
+
+  it("a name two entries could equally claim stays null", () => {
+    const i = index();
+    // Both "Standing Hamstring Curl" and "Nordic Hamstring Curl" contain the
+    // whole of "hamstring curl" with one extra word. A naive containment
+    // rule takes whichever it saw first; this one refuses.
+    expect(resolveExerciseOriginId("Hamstring curl", i)).toBeNull();
+    // Spelling out which one is meant works.
+    expect(resolveExerciseOriginId("Nordic hamstring curl", i)).toBe("id-nordic-ham");
+  });
+
+  it("containment is not mere word-sharing", () => {
+    const i = index();
+    // "Bird Dog" shares "dog" and nothing else — the coach's whole name has
+    // to be inside the entry, so this is a miss, not a Bird Dog.
+    expect(resolveExerciseOriginId("Downward dog", i)).toBeNull();
+    // "Frog Pose" folds to "frog", not to "pose": no pigeon here.
+    expect(resolveExerciseOriginId("Pigeon pose", i)).toBeNull();
+    // Two extra words is past the budget — "TRX Suspended Split Squat" is
+    // not what a coach writing "suspended squat" meant.
+    expect(resolveExerciseOriginId("Suspended squat", i)).toBeNull();
+  });
+
+  it("two catalog rows of the SAME name are one answer, not a tie", () => {
+    // The live catalog carries genuine duplicates: "Plank Jacks" is both
+    // T1077 and T1259. Ambiguity is judged on the name, so a near match
+    // across a duplicated name must still resolve.
+    const dup = buildExerciseIndex(
+      new Map([
+        ["id-jacks-a", "T1077"], // Plank Jacks
+        ["id-jacks-b", "T1259"], // Plank Jacks (same name, second row)
+        ["id-side-plank", "T1185"], // Side Plank
+      ]),
+    );
+    expect(resolveExerciseOriginId("Plank jack hold", dup)).toBe("id-jacks-a");
+  });
+});

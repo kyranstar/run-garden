@@ -17,6 +17,7 @@ import {
   HARD_LIMITS_PROMPT,
   newId,
   nowInstant,
+  strippedPaths,
   todayInZone,
   wakeOutputSchema,
   validateOps,
@@ -571,11 +572,12 @@ Output JSON exactly matching:
 
 Op kinds: ease{workoutId,session} · move{workoutId,toDate} · swap{dayA,dayB} · skip{workoutId,reason} · add{date,dates?,session} · reshapeWeek{planId,weekStart,sessions} · firmUp{planId,weekStart,sessions} · extendPlan{planId,shapeWeeks} · windDown{planId,sessions} · createPlan{discipline,name,startDate,endDate,raceDate?,firmSessions,shapeWeeks} · retirePlan{planId} · resolveRaceConflict{keep:"settings"|"plan"}
 A session is {category, title, durationMinutes, and AT MOST ONE body: run? | lift? | mobility?}.
-· category ∈ easy|long|quality|recovery|race|rest|strength|yoga. Use "yoga" with a mobility body — a mobility session filed as a run corrupts the athlete's discipline balance.
-· run: {blocks:[{kind:"duration"|"distance", value, intensity?}]} — minutes (duration) / meters (distance). Values are INTEGERS; intensity ∈ easy|steady|threshold|interval|rest.
-· lift / mobility: {rounds?, exercises:[...]}. Give "rounds" ONLY for a circuit — the whole list cycled that many times, each exercise's "sets" being its work per round. Omit it for straight sets.
-· An exercise is {name, sets, and either reps or holdSeconds} plus optional perSide, eccentricSeconds, weight, restSeconds, note. holdSeconds is seconds of work per set (a wall sit, a plank, 30s hops). perSide:true means sets × reps happen on EACH side. eccentricSeconds is the slow lowering ("4s down"). weight defaults to bodyweight — a plain number means kilos; restSeconds defaults to 60.
-· REPEATS: "dates" carries the other days this same session happens on, up to 14 — the server writes one real session per date, so a recurring piece is ONE add and never one add per day. Vary the work and it is a different session, so it is a different op.
+· category ∈ easy|long|quality|recovery|race|rest|strength|yoga. Use "yoga" with a mobility body — a mobility session filed as a run corrupts the athlete's discipline balance. The app has three disciplines and none of them is cycling or swimming: there is no honest category for a bike session, so don't write one.
+· A REST DAY is {category:"rest", durationMinutes:0, no body}. Zero is the honest number; never invent five minutes of something to fill it.
+· run: {blocks:[{kind:"duration"|"distance", value, intensity?}]} — minutes (duration) / meters (distance). Values are INTEGERS; intensity ∈ easy|steady|threshold|interval|rest. Write the session HONESTLY, one block per piece of work: 12×400m off 60s is 26 blocks, and that is right, not verbose. Omit intensity when the effort is by feel.
+· lift / mobility: {rounds?, exercises:[...]}. Give "rounds" ONLY for a circuit — the whole list cycled that many times, each exercise's "sets" being its work per round. Omit it for straight sets. "exercises" may be EMPTY when the session is real but the movements are the athlete's choice on the day.
+· An exercise is {name, sets} plus reps OR holdSeconds when you can say, plus optional perSide, eccentricSeconds, weight, restSeconds, note. Sets alone is a complete prescription for ramping work ("3 sets, stop when it gets heavy"). holdSeconds is seconds of work per set (a wall sit, a plank, 30s hops). perSide:true means sets × reps happen on EACH side. eccentricSeconds is the slow lowering ("4s down"). weight defaults to bodyweight — a plain number means kilos; restSeconds defaults to 60.
+· REPEATS: "dates" carries the other days this same session happens on, up to 60 — the server writes one real session per date, so a recurring piece is ONE add and never one add per day. Three weeks of a daily ten-minute piece is one op with twenty dates. Vary the work and it is a different session, so it is a different op.
 · EXERCISE NAMES: plain English. EXERCISE CATALOG lists the movements this athlete's watch knows — prefer one of those names and the session can reach the watch; anything else still works and simply lives in the app. Never let the catalog stop you prescribing the right thing, and never spend words on ids: the server resolves every name itself.
 · shapeWeeks volumeTarget stays under ~6 words. A proposal holds up to 20 ops.
 Match these examples' shapes EXACTLY:
@@ -1095,7 +1097,35 @@ export async function wake(
       await recordUsage(db, userId, "coach_wake", model, "strong", chat, `wake:${userId}:${nowInstant()}`);
       const json = extractJson(chat.content);
       const parsed = wakeOutputSchema.safeParse(json);
-      if (parsed.success) return { out: parsed.data, raw: chat.content, issues: "" };
+      if (parsed.success) {
+        // Since 2026-08-17 an unexpected key is stripped rather than fatal.
+        // Stripping SILENTLY would be the next mistake: a key the coach keeps
+        // reaching for is a schema gap, and a word an optional enum dropped is
+        // vocabulary we do not speak yet. Both show up here, in one line, so
+        // `wrangler tail` says what the athlete's plan lost.
+        const dropped = strippedPaths(json, parsed.data);
+        if (dropped.length > 0) {
+          console.warn(`[coach-wake] output carried ${dropped.length} field(s) the schema does not hold — stripped: ${dropped.join(", ")}`);
+        }
+        // …and the one case tolerance must NOT swallow. Every field of the
+        // envelope is optional (restraint is a complete answer), so an object
+        // whose keys are ALL unrecognised now parses — as silence. That is a
+        // different shape wearing our envelope, not a coach with nothing to
+        // say, and the difference is a repair retry: without this it would
+        // reach the athlete as a wake that said nothing at all.
+        const said =
+          parsed.data.briefing ??
+          parsed.data.question ??
+          parsed.data.focus ??
+          parsed.data.raceLine ??
+          (parsed.data.proposals.length + parsed.data.memoryOps.length > 0 ? "ops" : null);
+        if (said === null && dropped.length > 0) {
+          const issues = `(root): nothing in the reply matched the output shape — its fields were ${dropped.join(", ")}`;
+          console.error(`[coach-wake] schema reject: ${issues} · raw head: ${chat.content.slice(0, 1200)}`);
+          return { out: null, raw: chat.content, issues };
+        }
+        return { out: parsed.data, raw: chat.content, issues: "" };
+      }
       // The repair prompt needs the actual issues — "didn't match" alone
       // reproduces the same mistake (live-observed: two wakes, four calls,
       // zero corrections). Also logged so `wrangler tail` shows ground truth.
@@ -1433,7 +1463,11 @@ export async function wake(
         }
       }
       const firstDay = [...affected].sort()[0];
-      const cappedExpiry = [p.expiresAt, firstDay ?? p.expiresAt, addDays(today, 3)].sort()[0]!;
+      // `expiresAt` is optional on the draft (2026-08-17): the ceiling below
+      // IS its default, so an omitted expiry costs the proposal nothing but a
+      // day or two of life. It was never worth a dead wake.
+      const stated = p.expiresAt ?? addDays(today, 3);
+      const cappedExpiry = [stated, firstDay ?? stated, addDays(today, 3)].sort()[0]!;
       await db.insert(coachProposals).values({
         id,
         userId,

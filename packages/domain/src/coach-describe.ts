@@ -206,7 +206,9 @@ export function describeOps(ops: CoachOp[], planned?: ReadonlyMap<string, Planne
         lines.push({
           date: was?.date ?? null,
           summary: was?.summary ? `${was.summary} — skipped` : "A planned session is skipped",
-          change: `comes off the plan — ${op.reason}`,
+          // `reason` is optional (a skip with no stated reason is still a
+          // skip), so the line must read as a sentence without one.
+          change: op.reason ? `comes off the plan — ${op.reason}` : "comes off the plan",
           detail: [],
           kind: op.kind,
         });

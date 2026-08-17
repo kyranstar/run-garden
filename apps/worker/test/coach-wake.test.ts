@@ -1046,10 +1046,38 @@ describe("model-natural JSON parses (live createPlan failures 2026-08-12/13)", (
     expect(ex.every((e) => e.originId === undefined)).toBe(true);
   });
 
-  it("a session with no work at all is still rejected — the vocabulary is loose, not absent", async () => {
-    const { coachExerciseSchema } = await import("@rg/domain");
-    expect(coachExerciseSchema.safeParse({ name: "Wall sit", sets: 3 }).success).toBe(false);
+  it("a reply whose every field is unrecognised is repaired, not passed off as restraint", async () => {
+    // The hazard created by tolerance (2026-08-17): every envelope field is
+    // optional, so an object of entirely foreign keys now PARSES — as silence.
+    // A wake must not hand that to the athlete as "the coach had nothing to
+    // say"; it is a misshapen reply, and misshapen replies get the repair call.
+    const db = makeTestDb();
+    const { userId, prefs } = await makeTestUser(db);
+    const foreign = { summary: "here is your week", plan_changes: [{ day: "Tuesday", do: "easy 40" }] };
+    const { fetchImpl, calls } = scriptedFetch([chatBody(foreign), chatBody(RESTRAINT)]);
+    const res = await wake(db, makeEnv(), userId, prefs, { kind: "manual" }, fetchImpl);
+    // Two calls: the first reply was rejected and repaired.
+    expect(calls).toHaveLength(2);
+    expect(res.status).toBe("ok");
+    // …and nothing from the foreign shape reached the athlete as a briefing.
+    const msgs = await db.select().from(schema.coachMessages).where(eq(schema.coachMessages.userId, userId));
+    expect(msgs.some((m) => m.body.includes("here is your week"))).toBe(false);
+  });
+
+  it("the exercise floor is the name and the sets — the vocabulary is loose, not absent", async () => {
+    const { coachExerciseSchema, formatExercise } = await import("@rg/domain");
+    // Sets with no reps and no hold USED to be rejected here. The survival
+    // harness showed what that refused: "three ramping sets of squats, stop
+    // when it gets heavy", where the set count IS the prescription and the load
+    // is the athlete's judgement on the day (2026-08-17). It now parses and
+    // renders honestly rather than as "3×undefined".
+    const ramping = coachExerciseSchema.parse({ name: "Back squat", sets: 3, note: "ramp to a hard triple" });
+    expect(formatExercise(ramping)).toBe("Back squat 3 sets");
     expect(coachExerciseSchema.safeParse({ name: "Wall sit", sets: 3, holdSeconds: 45 }).success).toBe(true);
+    // What is still absent-intolerant: an exercise with no name is not a
+    // movement, and one with no sets is not a prescription.
+    expect(coachExerciseSchema.safeParse({ sets: 3, reps: 10 }).success).toBe(false);
+    expect(coachExerciseSchema.safeParse({ name: "Wall sit" }).success).toBe(false);
   });
 
   it("model-natural value forms: string numbers, prose weights, and a mobility body", async () => {

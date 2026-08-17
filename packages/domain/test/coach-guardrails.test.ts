@@ -103,6 +103,22 @@ const CASES: Record<GuardrailRule, { ops: CoachOp[]; ctx: GuardrailCtx; says: st
     ctx: ctx(),
     says: "came from your watch",
   },
+  runaway_size: {
+    /**
+     * The other half of the schema's loosening (2026-08-17): `dates` now
+     * carries up to 60 so a three-week daily piece fits, and THIS is what
+     * stops twenty of those ops. Three 45-day adds = 135 sessions, past the
+     * 120 an approval can actually write.
+     */
+    ops: [0, 1, 2].map((k) => ({
+      kind: "add" as const,
+      date: addDaysIso("2026-08-06", k * 45),
+      dates: Array.from({ length: 44 }, (_, i) => addDaysIso("2026-08-06", k * 45 + i + 1)),
+      session: mobility(10),
+    })),
+    ctx: ctx(),
+    says: "separate sessions on your calendar in one approval",
+  },
   hard_adjacency: {
     // Quality Friday next to Saturday's long run.
     ops: [{ kind: "add", date: "2026-08-07", session: quality() }],
@@ -176,9 +192,26 @@ describe("every rule chooses a side", () => {
     });
   }
 
-  it("`hard` is still the fatal list, for callers that have not moved yet", () => {
-    const out = validateOps(CASES.past_date.ops, CASES.past_date.ctx);
-    expect(out.hard).toBe(out.fatal);
+  it("a proposal just under the session ceiling is not charged for size", () => {
+    // 120 exactly — the ceiling is where real work still fits, so the rule
+    // must fire at 121 and never at 120 (two months of daily mobility).
+    const ops: CoachOp[] = [
+      {
+        kind: "add",
+        date: "2026-08-06",
+        dates: Array.from({ length: 59 }, (_, i) => addDaysIso("2026-08-06", i + 1)),
+        session: mobility(10),
+      },
+      {
+        kind: "add",
+        date: "2026-10-06",
+        dates: Array.from({ length: 59 }, (_, i) => addDaysIso("2026-10-06", i + 1)),
+        session: mobility(10),
+      },
+    ];
+    const out = validateOps(ops, ctx());
+    expect(ops.reduce((n, o) => n + addOpDates(o as Extract<CoachOp, { kind: "add" }>).length, 0)).toBe(120);
+    expect(out.fatal.filter((v) => v.rule === "runaway_size")).toEqual([]);
   });
 });
 
