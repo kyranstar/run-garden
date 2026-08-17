@@ -15,10 +15,13 @@ import type {
 
 const TRAY_CAP = 4;
 
-/** Which discipline(s) a proposal touches, from its ops' sessions. */
-export function proposalDiscipline(p: CoachProposalDto): "run" | "lift" | "both" | null {
+/** Which discipline(s) a proposal touches, from its ops' sessions. Mobility
+ * sessions read as "Mobility" rather than falling through to "Run" — the
+ * same lie the sport mapping used to tell (2026-08-16). */
+export function proposalDiscipline(p: CoachProposalDto): "run" | "lift" | "mobility" | "both" | null {
   let run = false;
   let lift = false;
+  let mobility = false;
   for (const op of p.ops as Array<Record<string, unknown>>) {
     const sessions: Array<Record<string, unknown>> = [];
     const one = op.session as Record<string, unknown> | undefined;
@@ -31,6 +34,7 @@ export function proposalDiscipline(p: CoachProposalDto): "run" | "lift" | "both"
     }
     for (const s of sessions) {
       if (s.lift) lift = true;
+      else if (s.mobility) mobility = true;
       else if (s.run) run = true;
     }
     if (op.kind === "createPlan" || op.kind === "retirePlan" || op.kind === "extendPlan") {
@@ -38,8 +42,9 @@ export function proposalDiscipline(p: CoachProposalDto): "run" | "lift" | "both"
       if ((op.discipline as string) === "run") run = true;
     }
   }
-  if (run && lift) return "both";
+  if ([run, lift, mobility].filter(Boolean).length > 1) return "both";
   if (lift) return "lift";
+  if (mobility) return "mobility";
   if (run) return "run";
   return null;
 }
@@ -143,8 +148,14 @@ export function ProposalCard({
     <div className="coach-prop" id={`proposal-${proposal.id}`}>
       <div className="row" style={{ gap: "var(--space-4)" }}>
         {discipline ? (
-          <span className={`pill ${discipline === "lift" ? "pill-lift" : "pill-run"}`}>
-            {discipline === "both" ? "Run + Lift" : discipline === "lift" ? "Lift" : "Run"}
+          <span className={`pill ${discipline === "run" ? "pill-run" : "pill-lift"}`}>
+            {discipline === "both"
+              ? "Mixed"
+              : discipline === "lift"
+                ? "Lift"
+                : discipline === "mobility"
+                  ? "Mobility"
+                  : "Run"}
           </span>
         ) : null}
         <strong className="coach-prop-title">{proposal.title}</strong>

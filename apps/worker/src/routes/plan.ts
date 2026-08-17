@@ -21,6 +21,8 @@ import {
 import { computeConsistency } from "@rg/analytics";
 import {
   addDays,
+  coachExerciseSchema,
+  formatExercise,
   humanizeWorkoutTitle,
   isAdventureSport,
   looksLikeCodeTitle,
@@ -156,7 +158,34 @@ function workoutDto(
     ...(corosSyncView !== undefined ? { corosSyncView } : {}),
     completionState: w.completionState,
     archived: !!w.archivedAt,
+    // Lift/mobility prescription, formatted once here so the sheet can't
+    // invent its own notation, and carrying the ONE fact the flat
+    // stageSummary cannot: which movements the watch's own library knows
+    // (2026-08-16). `onWatch: false` is why a session is app-only.
+    ...exercisesDto(w.structuredJson),
   };
+}
+
+/** `structured_json` → the DTO's exercise lines. Tolerant of every historical
+ * shape in the column (studio exercises, coach exercises, junk) — a session
+ * detail must never fail to render because an old row is shaped oddly. */
+function exercisesDto(
+  structured: { exercises?: unknown[]; rounds?: number } | null,
+): { exercises?: Array<{ name: string; line: string; onWatch: boolean }>; exerciseRounds?: number } {
+  const raw = structured?.exercises;
+  if (!Array.isArray(raw) || raw.length === 0) return {};
+  const exercises = raw.flatMap((e) => {
+    const parsed = coachExerciseSchema.safeParse(e);
+    if (!parsed.success) {
+      const name = (e as { name?: unknown })?.name;
+      return typeof name === "string" ? [{ name, line: name, onWatch: false }] : [];
+    }
+    return [
+      { name: parsed.data.name, line: formatExercise(parsed.data), onWatch: !!parsed.data.originId },
+    ];
+  });
+  if (exercises.length === 0) return {};
+  return { exercises, ...(structured?.rounds ? { exerciseRounds: structured.rounds } : {}) };
 }
 
 /** The Today payload: next workout, statuses, readiness, garden preview. */

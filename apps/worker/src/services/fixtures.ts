@@ -57,6 +57,31 @@ const FIXTURE_EXERCISE_CATALOG = [
   { id: "425898928110747653", name: "Bent-Over Row" },
   { id: "425898928110747654", name: "Romanian Deadlift" },
   { id: "425898928110747655", name: "Plank" },
+  // Real ids and real i18n KEYS, copied from the production catalog
+  // (2026-08-16). The eight rows above are human-named, which the live
+  // catalog never is — all 382 synced names are T-codes — so without these
+  // nothing in fixture mode exercised the key→English path that the coach's
+  // name→originId resolution depends on. These are the movements a
+  // lower-body / ski-prep session actually asks for.
+  { id: "469646870080307200", name: "T1231" }, // Wall Sit
+  { id: "425827856334110721", name: "T1010" }, // Planks
+  { id: "428453358030995457", name: "T1185" }, // Side Plank
+  { id: "469664891494645760", name: "T1368" }, // Copenhagen Plank
+  { id: "469654960724951040", name: "T1275" }, // Single-Leg Calf Raise
+  { id: "425832417320943617", name: "T1070" }, // Standing Calf Raises
+  { id: "425832054396207105", name: "T1061" }, // Squats
+  { id: "426801851300757504", name: "T1167" }, // Single Leg Squats
+  { id: "425845051235680257", name: "T1086" }, // TRX Suspended Split Squat
+  { id: "425832124457861121", name: "T1064" }, // Dumbbell Lunges
+  { id: "426618429085237248", name: "T1150" }, // Bird Dog
+  { id: "426801473612070912", name: "T1160" }, // Single Leg Bridge
+  { id: "425828538697039872", name: "T1014" }, // Box Jumps
+  { id: "425830845094477824", name: "T1033" }, // Bridge
+  { id: "426801647558246401", name: "T1164" }, // Split Bench Squat
+  { id: "469664598899998720", name: "T1365" }, // Nordic Hamstring Curl
+  { id: "469664622790754304", name: "T1367" }, // Reverse Step-Down
+  { id: "426939619892969472", name: "T1174" }, // Ski Step
+  { id: "469646614529753088", name: "T1217" }, // Lateral Squats
 ];
 const [SQUAT, BENCH, DEADLIFT, OHP, PULLUP, ROW, RDL, PLANK] = FIXTURE_EXERCISE_CATALOG.map((e) => e.id) as [
   string,

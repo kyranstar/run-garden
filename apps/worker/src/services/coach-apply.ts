@@ -10,9 +10,12 @@ import {
 } from "@rg/database";
 import {
   addDays,
+  formatExerciseBlock,
   newId,
   nowInstant,
   paceBandFor,
+  sessionExercises,
+  sessionSport,
   todayInZone,
   type CoachOp,
   type CoachSession,
@@ -53,21 +56,40 @@ function stageSummary(s: CoachSession): string {
       .map((b) => `${b.kind === "duration" ? `${b.value}min` : `${(b.value / 1000).toFixed(1)}km`}${b.intensity ? ` ${b.intensity}` : ""}`)
       .join(" · ");
   }
-  if (s.lift) {
-    return s.lift.exercises.map((e) => `${e.name} ${e.sets}×${e.reps}`).join(" · ");
-  }
+  // One formatter, shared with the session sheet (domain/coach.ts) — a hold
+  // must never render as "Wall sit 3×undefined", which is what the old
+  // `${e.sets}×${e.reps}` produced the moment reps became optional.
+  const block = s.lift ?? s.mobility;
+  if (block) return formatExerciseBlock(block);
   return s.title;
 }
 
 /** A session the create executor can put on the watch today: a run whose
  * blocks are all DURATION-based (distance targets are not spike-verified on
- * the wire — create-executor.ts refuses them). */
+ * the wire — create-executor.ts refuses them).
+ *
+ * Lift and mobility sessions are app-only regardless of catalog resolution:
+ * the coach create executor builds a structured RUN program and nothing
+ * else (coros-write-cloud.ts → buildRunProgram). Resolving an exercise to a
+ * catalog originId is what would MAKE a strength push possible later; it is
+ * not what makes one happen today, and this predicate must not claim
+ * otherwise. `offCatalogExercises` carries the per-exercise truth. */
 export function watchPushable(session: CoachSession): boolean {
   return (
     !!session.run &&
     session.run.blocks.length > 0 &&
     session.run.blocks.every((b) => b.kind === "duration")
   );
+}
+
+/** `coach_plans.discipline` for the bucket a session belongs in. Mobility
+ * gets its own bucket rather than stretching the running plan's dates —
+ * `routes/coach.ts` only special-cases "lift", so a mobility plan reads as
+ * a generic block (no lift progressions), which is the honest render. */
+function planDisciplineOf(session: CoachSession): "run" | "lift" | "mobility" {
+  if (session.lift) return "lift";
+  if (session.mobility) return "mobility";
+  return "run";
 }
 
 async function insertSession(
@@ -99,7 +121,7 @@ async function insertSession(
       sourceWorkoutId: id,
       title: session.title,
       category: session.category,
-      sport: session.lift ? "strength" : "run",
+      sport: sessionSport(session),
       originalPlanDate: date,
       // "" = COROS has never verified this row (audit#2 #1): the absence
       // sweep must skip it and the sync pill must not read "synced". The
@@ -113,10 +135,18 @@ async function insertSession(
       // consumer fell back to a fictitious 45 minutes (audit#2 #15).
       fallbackEstimatedDurationSeconds: session.durationMinutes * 60,
       stageSummary: stageSummary(session),
-      // Lift structure survives apply (rework spec §5): the exercises array
-      // is what lets plan-detail graph a coached progression; the flattened
-      // stageSummary above stays as the display string.
-      structuredJson: session.lift ? { exercises: session.lift.exercises } : null,
+      // Lift/mobility structure survives apply (rework spec §5): the
+      // exercises array is what lets plan-detail graph a coached
+      // progression AND what tells the session sheet which movements the
+      // watch's catalog doesn't know; the flattened stageSummary above
+      // stays as the display string. `rounds` rides along so a circuit
+      // still reads as a circuit after a round trip.
+      structuredJson: session.lift ?? session.mobility
+        ? {
+            exercises: sessionExercises(session),
+            ...((session.lift ?? session.mobility)!.rounds ? { rounds: (session.lift ?? session.mobility)!.rounds } : {}),
+          }
+        : null,
       corosSyncState: "calendar_only",
       completionState: "scheduled",
       createdAt: now,
@@ -322,7 +352,7 @@ export async function applyOps(
           .set({
             title: op.session.title,
             category: op.session.category,
-            sport: op.session.lift ? "strength" : "run",
+            sport: sessionSport(op.session),
             calendarBlockDurationSeconds: op.session.durationMinutes * 60,
             stageSummary: stageSummary(op.session),
             sourceContentFingerprint: fingerprint(op.session),
@@ -587,7 +617,9 @@ async function ensureAdhocPlan(
   date: string,
   now: string,
 ): Promise<string> {
-  const discipline = session.lift ? "lift" : "run";
+  // Plan buckets follow the session's discipline, so a mobility one-off
+  // never lands in (and stretches) the running plan.
+  const discipline = planDisciplineOf(session);
   const id = `adhoc-${discipline}-${userId.slice(0, 8)}`;
   const [existing] = await db
     .select()
@@ -627,7 +659,9 @@ async function activeCoachPlanId(
   userId: string,
   session: CoachSession,
 ): Promise<string | null> {
-  const discipline = session.lift ? "lift" : "run";
+  // Plan buckets follow the session's discipline, so a mobility one-off
+  // never lands in (and stretches) the running plan.
+  const discipline = planDisciplineOf(session);
   const [plan] = await db
     .select({ id: coachPlans.id })
     .from(coachPlans)

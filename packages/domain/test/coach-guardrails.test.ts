@@ -4,20 +4,33 @@
  * UI's "breaks your rule" chip is guaranteed truthful.
  */
 import { describe, expect, it } from "vitest";
-import { validateOps, type GuardrailCtx } from "../src/coach-guardrails.js";
+import { datedEventsFromMemory, validateOps, type GuardrailCtx } from "../src/coach-guardrails.js";
 import type { CoachOp } from "../src/coach.js";
 
-const easy = (title = "Easy 40") => ({
+const easy = (title = "Easy 40", durationMinutes = 40) => ({
   category: "easy" as const,
   title,
-  durationMinutes: 40,
-  run: { blocks: [{ kind: "duration" as const, value: 40, intensity: "easy" as const }] },
+  durationMinutes,
+  run: { blocks: [{ kind: "duration" as const, value: durationMinutes, intensity: "easy" as const }] },
 });
 const quality = () => ({
   category: "quality" as const,
   title: "Tempo 3×10",
   durationMinutes: 50,
   run: { blocks: [{ kind: "duration" as const, value: 50, intensity: "threshold" as const }] },
+});
+/** A lift session of any length — duration is the only intensity signal. */
+const lift = (durationMinutes: number, title = "Legs") => ({
+  category: "strength" as const,
+  title,
+  durationMinutes,
+  lift: { exercises: [{ name: "Wall sit", sets: 3, holdSeconds: 45 }] },
+});
+const mobility = (durationMinutes: number) => ({
+  category: "yoga" as const,
+  title: "Ankles and hips",
+  durationMinutes,
+  mobility: { exercises: [{ name: "Couch stretch", sets: 2, holdSeconds: 45 }] },
 });
 
 function ctx(overrides: Partial<GuardrailCtx> = {}): GuardrailCtx {
@@ -38,6 +51,8 @@ function ctx(overrides: Partial<GuardrailCtx> = {}): GuardrailCtx {
       { id: "r-tue-quality", kind: "fixed_slot", category: "quality", weekday: 2 },
     ],
     coachPlanIds: ["cp1"],
+    datedEvents: [],
+    ...overrides,
   };
 }
 
@@ -131,6 +146,166 @@ describe("hard rules", () => {
   it("H7: structural ops on a coach-authored plan pass", () => {
     const out = validateOps([{ kind: "retirePlan", planId: "cp1" }], ctx());
     expect(out.hard.filter((v) => v.rule === "imported_plan_structure")).toHaveLength(0);
+  });
+});
+
+/**
+ * The 2026-08-16 ski-prep failure, rule by rule. Every case below is a thing
+ * the coach actually did to a real athlete and nothing stopped it.
+ */
+describe("the detrained athlete (2026-08-16)", () => {
+  it("a 45-minute leg session the day after the long run is now hard enough to reject", () => {
+    // HARD_LIFT_MINUTES was 60, so a 45-minute lift was not a "hard" day and
+    // hard_adjacency could never fire for one — which rewarded prescribing
+    // 55-minute sessions next to hard runs.
+    const out = validateOps([{ kind: "add", date: "2026-08-09", session: lift(45) }], ctx());
+    expect(out.hard.some((v) => v.rule === "hard_adjacency")).toBe(true);
+    expect(out.hard.find((v) => v.rule === "hard_adjacency")!.detail).toContain("Sat 8 Aug");
+  });
+
+  it("with no strength history, even a 20-minute lift counts as a hard day", () => {
+    const detrained = ctx({ weeklyMinutesByDiscipline: { run: [180, 190, 200, 190], strength: [0, 0, 0, 0] } });
+    const out = validateOps([{ kind: "add", date: "2026-08-09", session: lift(20) }], detrained);
+    expect(out.hard.some((v) => v.rule === "hard_adjacency")).toBe(true);
+    // …and for someone who lifts every week, the same 20 minutes is not.
+    const trained = validateOps([{ kind: "add", date: "2026-08-09", session: lift(20) }], ctx());
+    expect(trained.hard.filter((v) => v.rule === "hard_adjacency")).toHaveLength(0);
+  });
+
+  it("the few-minute daily piece is never a hard day, however detrained", () => {
+    const detrained = ctx({ weeklyMinutesByDiscipline: { strength: [0, 0, 0, 0] } });
+    const out = validateOps([{ kind: "add", date: "2026-08-09", session: mobility(10) }], detrained);
+    expect(out.hard).toHaveLength(0);
+  });
+
+  it("cold start: a strength block for someone with no strength history is capped in absolute minutes", () => {
+    // The ramp check is multiplicative, so with a trailing average of zero it
+    // said nothing at all — silent for exactly the athlete it protects.
+    const detrained = ctx({ weeklyMinutesByDiscipline: { run: [180, 190, 200, 190], strength: [0, 0, 0, 0] } });
+    const ops: CoachOp[] = [
+      { kind: "add", date: "2026-08-10", session: lift(50) },
+      { kind: "add", date: "2026-08-12", session: lift(50) },
+      { kind: "add", date: "2026-08-14", session: lift(50) },
+    ];
+    const out = validateOps(ops, detrained);
+    const v = out.hard.find((x) => x.rule === "cold_start");
+    expect(v, "150 minutes of strength from a standing start must be rejected").toBeTruthy();
+    // Legible to the ATHLETE — this string is printed into their receipt.
+    expect(v!.detail).toContain("no strength work in the last four weeks");
+    expect(v!.detail).toContain("150 minutes");
+    expect(v!.detail).toContain("week of Mon 10 Aug");
+  });
+
+  it("cold start stays quiet for someone who already trains that discipline", () => {
+    const ops: CoachOp[] = [{ kind: "add", date: "2026-08-10", session: lift(45) }];
+    expect(validateOps(ops, ctx()).hard.filter((v) => v.rule === "cold_start")).toHaveLength(0);
+  });
+
+  it("a week with no rest day left in it is rejected", () => {
+    // Next week holds only the race; fill the other six days and the athlete
+    // has nine consecutive days on. Trailing run volume is set high enough
+    // that the ramp rule is not what catches this.
+    const roomy = ctx({ weeklyMinutesByDiscipline: { run: [300, 300, 300, 300], strength: [90, 90, 90, 90] } });
+    const ops: CoachOp[] = ["10", "11", "12", "13", "14", "15"].map((d) => ({
+      kind: "add" as const,
+      date: `2026-08-${d}`,
+      session: easy("Easy 30", 30),
+    }));
+    const out = validateOps(ops, roomy);
+    const v = out.hard.find((x) => x.rule === "no_rest_day");
+    expect(v, "seven loaded days in a week must be rejected").toBeTruthy();
+    expect(v!.detail).toContain("no rest day at all");
+  });
+
+  it("…but a day carrying only the ten-minute daily piece still counts as rest", () => {
+    const roomy = ctx({ weeklyMinutesByDiscipline: { run: [300, 300, 300, 300], strength: [90, 90, 90, 90] } });
+    const ops: CoachOp[] = ["10", "11", "12", "14", "15"]
+      .map((d) => ({ kind: "add" as const, date: `2026-08-${d}`, session: easy("Easy 30", 30) }))
+      .concat([{ kind: "add" as const, date: "2026-08-13", session: mobility(10) }]);
+    expect(validateOps(ops, roomy).hard.filter((v) => v.rule === "no_rest_day")).toHaveLength(0);
+  });
+
+  it("loading inside 48h of a remembered trip is rejected", () => {
+    const trip = ctx({
+      firmHorizonEnd: "2026-08-31",
+      datedEvents: [{ id: "mem1", label: "ski trip", date: "2026-08-26" }],
+    });
+    const out = validateOps([{ kind: "add", date: "2026-08-25", session: lift(45) }], trip);
+    const v = out.hard.find((x) => x.rule === "event_taper");
+    expect(v, "a heavy leg session the day before the trip must be rejected").toBeTruthy();
+    expect(v!.detail).toContain("ski trip");
+    expect(v!.detail).toContain("Wed 26 Aug");
+    // Four days out is the coach's business, not the guardrail's.
+    expect(
+      validateOps([{ kind: "add", date: "2026-08-22", session: lift(45) }], trip).hard.filter(
+        (x) => x.rule === "event_taper",
+      ),
+    ).toHaveLength(0);
+  });
+
+  it("dated events are read out of memory prose, and only when they carry a real date", () => {
+    expect(
+      datedEventsFromMemory([
+        { id: "m1", body: "Ski trip 2026-08-26 to 2026-08-30 — ski prep is the priority." },
+        { id: "m2", body: "Prefers the long run on Saturday." },
+        { id: "m3", body: "Old trip 2026-01-04", active: false },
+        { id: "m4", body: "Wedding on 2026-09-12" },
+      ]),
+    ).toEqual([
+      { id: "m1", label: "Ski trip", date: "2026-08-26" },
+      { id: "m4", label: "Wedding", date: "2026-09-12" },
+    ]);
+  });
+});
+
+describe("two sessions of one category on one day", () => {
+  /**
+   * Reachable today — the fixture calendar already has two run rows on
+   * Tuesday 18 Aug. `entryFor` matched on date+category, so both ids
+   * resolved to whichever row came first and an op aimed at the second
+   * silently rewrote the first.
+   */
+  const twoOnADay = (): GuardrailCtx =>
+    ctx({
+      today: "2026-08-16",
+      workouts: [
+        { id: "r1", date: "2026-08-18", category: "easy", completionState: "scheduled", durationMinutes: 30, discipline: "run" },
+        { id: "r2", date: "2026-08-18", category: "easy", completionState: "scheduled", durationMinutes: 90, discipline: "run" },
+      ],
+      weeklyMinutesByDiscipline: { run: [100, 100, 100, 100] },
+      raceDates: [],
+      rules: [],
+      firmHorizonEnd: "2026-08-31",
+    });
+
+  it("an ease lands on the workout it names, not the day's first row", () => {
+    // Easing r2 (90) up to 120 leaves the day at 120 + r1's 30 = 150.
+    // The old lookup eased r1 instead, leaving 120 + r2's 90 = 210.
+    const out = validateOps(
+      [{ kind: "ease", workoutId: "r2", session: easy("Easy 120", 120) }],
+      twoOnADay(),
+    );
+    const ramp = out.hard.find((v) => v.rule === "ramp");
+    expect(ramp).toBeTruthy();
+    expect(ramp!.detail).toContain("150 minutes");
+    expect(ramp!.detail).not.toContain("210");
+  });
+
+  it("a skip removes the workout it names, not the day's first row", () => {
+    // Skipping r2 (90) leaves r1's 30 + the new 100 = 130. The old lookup
+    // removed r1 instead, leaving r2's 90 + 100 = 190 — the guardrail
+    // reasoning about a calendar the athlete would never have had.
+    const out = validateOps(
+      [
+        { kind: "skip", workoutId: "r2", reason: "doubling up isn't helping" },
+        { kind: "add", date: "2026-08-19", session: easy("Easy 100", 100) },
+      ],
+      twoOnADay(),
+    );
+    const ramp = out.hard.find((v) => v.rule === "ramp");
+    expect(ramp).toBeTruthy();
+    expect(ramp!.detail).toContain("130 minutes");
+    expect(ramp!.detail).not.toContain("190");
   });
 });
 

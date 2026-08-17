@@ -518,13 +518,53 @@ describe("wake resilience (user requirement 2026-08-12: never error, survive nav
     const { userId, prefs } = await makeTestUser(db);
     // Both attempts return JSON whose briefing is fine but whose proposals
     // are malformed — the live plan-extension failure shape.
-    const bad = { briefing: "Here's how I'd extend the block toward Oct 23…", proposals: [{ nope: true }] };
+    const bad = {
+      briefing: "Here's how I'd extend the block toward Oct 23…",
+      proposals: [{ title: "Four more weeks", ops: [{ kind: "add" }, { kind: "add" }], nope: true }],
+    };
     const { fetchImpl } = scriptedFetch([chatBody(bad), chatBody(bad)]);
     const res = await wake(db, makeEnv(), userId, prefs, { kind: "message", body: "extend my plan" }, fetchImpl);
     expect(res.status).toBe("ok");
     const msgs = await db.select().from(schema.coachMessages).where(eq(schema.coachMessages.userId, userId));
     expect(msgs.some((m) => m.role === "coach" && m.body.startsWith("Here's how I'd extend"))).toBe(true);
-    expect(msgs.some((m) => m.role === "receipt" && m.body.includes("couldn't be formatted"))).toBe(true);
+    // The receipt must NAME what was lost (2026-08-16). "Couldn't be
+    // formatted" left the athlete believing the prose was a plan.
+    const receipt = msgs.find((m) => m.role === "receipt")!;
+    expect(receipt.body).toContain("Four more weeks");
+    expect(receipt.body).toContain("2 adds");
+    expect(receipt.body).toContain("Nothing was applied");
+  });
+
+  it("a proposal dropped by the guardrails says so too — same mechanism as salvage", async () => {
+    const db = makeTestDb();
+    const { userId, prefs } = await makeTestUser(db);
+    // Rewriting an imported plan's structure is a hard guardrail violation
+    // (H7); the repair round-trip returns the same thing, so the proposal is
+    // filtered out entirely and — before this — vanished without a word.
+    const bad = {
+      briefing: "Rebuilding next week from scratch.",
+      proposals: [
+        {
+          title: "Rebuild next week",
+          evidence: "e",
+          rationale: "r",
+          expiresAt: "2026-01-02",
+          flags: [],
+          ops: [{ kind: "reshapeWeek", planId: "an-imported-plan", weekStart: "2026-01-05", sessions: [] }],
+        },
+      ],
+      question: null,
+      memoryOps: [],
+      focus: null,
+    };
+    const { fetchImpl } = scriptedFetch([chatBody(bad), chatBody(bad)]);
+    const res = await wake(db, makeEnv(), userId, prefs, { kind: "message", body: "rebuild next week" }, fetchImpl);
+    expect(res.status).toBe("ok");
+    expect(res.proposalIds ?? []).toHaveLength(0);
+    const msgs = await db.select().from(schema.coachMessages).where(eq(schema.coachMessages.userId, userId));
+    const receipt = msgs.find((m) => m.role === "receipt" && m.body.includes("Rebuild next week"));
+    expect(receipt, "a dropped proposal must leave a receipt naming it").toBeTruthy();
+    expect(receipt!.body).toContain("Nothing was applied");
   });
 
   it("a message wake that dies leaves an unanswered_message marker; the next open wake answers and consumes it", async () => {
@@ -641,5 +681,199 @@ describe("model-natural JSON parses (live createPlan failures 2026-08-12/13)", (
     const { wakeOutputSchema } = await import("@rg/domain");
     expect(WAKE_SYSTEM_PROMPT).toContain(WAKE_EXAMPLE_CREATE_PLAN);
     expect(wakeOutputSchema.safeParse(JSON.parse(WAKE_EXAMPLE_CREATE_PLAN)).success).toBe(true);
+  });
+
+  it("the LIFT prompt example parses too — the op kind that had no example (2026-08-16)", async () => {
+    const { WAKE_EXAMPLE_LIFT, WAKE_SYSTEM_PROMPT } = await import("../src/services/coach-wake.js");
+    const { wakeOutputSchema } = await import("@rg/domain");
+    expect(WAKE_SYSTEM_PROMPT).toContain(WAKE_EXAMPLE_LIFT);
+    const parsed = wakeOutputSchema.safeParse(JSON.parse(WAKE_EXAMPLE_LIFT));
+    if (!parsed.success) console.error(parsed.error.issues);
+    expect(parsed.success).toBe(true);
+    // The example must actually exercise the two prescriptions the old
+    // vocabulary could not express, or it guards nothing.
+    const ops = parsed.data!.proposals[0]!.ops as Array<{ session: { lift?: { rounds?: number; exercises: Array<Record<string, unknown>> } } }>;
+    const all = ops.flatMap((o) => o.session.lift?.exercises ?? []);
+    expect(all.some((e) => typeof e.holdSeconds === "number")).toBe(true);
+    expect(all.some((e) => typeof e.eccentricSeconds === "number")).toBe(true);
+    expect(all.some((e) => e.perSide === true)).toBe(true);
+    expect(ops.some((o) => typeof o.session.lift?.rounds === "number")).toBe(true);
+  });
+
+  /**
+   * The live 2026-08-16 reject, byte for byte from `coach_messages.refs
+   * .schemaIssues`: three exercises rejected for missing originId, weight
+   * and restSeconds — on a WALL SIT, where none of the three is knowable.
+   */
+  it("the exact live ski-prep session that was dropped now parses", async () => {
+    const { wakeOutputSchema } = await import("@rg/domain");
+    const modelOutput = {
+      briefing: "Three real leg sessions plus a 12-minute filler on run days.",
+      proposals: [
+        {
+          title: "Ski-prep block",
+          evidence: "ski trip 2026-08-26",
+          rationale: "Quads, single-leg control and eccentric strength.",
+          expiresAt: "2026-08-18",
+          flags: [],
+          ops: [
+            {
+              kind: "add",
+              date: "2026-08-18",
+              session: {
+                category: "strength",
+                title: "Ski legs",
+                durationMinutes: 45,
+                lift: {
+                  exercises: [
+                    { name: "Wall sit", sets: 3, holdSeconds: 45 },
+                    { name: "Goblet squat", sets: 4, reps: 10, weight: 20, eccentricSeconds: 4 },
+                    { name: "Bulgarian split squat", sets: 3, reps: 8, perSide: true },
+                  ],
+                },
+              },
+            },
+          ],
+        },
+      ],
+      question: null,
+      memoryOps: [],
+      focus: null,
+    };
+    const parsed = wakeOutputSchema.safeParse(modelOutput);
+    if (!parsed.success) console.error(parsed.error.issues);
+    expect(parsed.success).toBe(true);
+    const ex = (parsed.data!.proposals[0]!.ops[0]! as { session: { lift: { exercises: Array<Record<string, unknown>> } } }).session.lift.exercises;
+    // A hold is a hold — never faked as reps.
+    expect(ex[0]).toMatchObject({ name: "Wall sit", sets: 3, holdSeconds: 45 });
+    expect(ex[0]!.reps).toBeUndefined();
+    // Defaults fill what a coach doesn't know: bodyweight, 60s rest.
+    expect(ex[0]!.weight).toEqual({ type: "bodyweight" });
+    expect(ex[0]!.restSeconds).toBe(60);
+    // A bare number means kilos.
+    expect(ex[1]!.weight).toEqual({ type: "kg", value: 20 });
+    expect(ex[2]).toMatchObject({ perSide: true, reps: 8 });
+    // originId is never the model's job.
+    expect(ex.every((e) => e.originId === undefined)).toBe(true);
+  });
+
+  it("a session with no work at all is still rejected — the vocabulary is loose, not absent", async () => {
+    const { coachExerciseSchema } = await import("@rg/domain");
+    expect(coachExerciseSchema.safeParse({ name: "Wall sit", sets: 3 }).success).toBe(false);
+    expect(coachExerciseSchema.safeParse({ name: "Wall sit", sets: 3, holdSeconds: 45 }).success).toBe(true);
+  });
+
+  it("model-natural value forms: string numbers, prose weights, and a mobility body", async () => {
+    const { coachExerciseSchema, coachSessionSchema, sessionSport } = await import("@rg/domain");
+    const a = coachExerciseSchema.parse({ name: "Plank", sets: "3", holdSeconds: "45s", weight: "bodyweight" });
+    expect(a).toMatchObject({ sets: 3, holdSeconds: 45, weight: { type: "bodyweight" } });
+    const b = coachExerciseSchema.parse({ name: "Goblet squat", sets: 4, reps: 10, weight: "45 lb" });
+    expect(b.weight).toEqual({ type: "kg", value: 20.4 });
+    // The third discipline body: a mobility session must NOT be a run.
+    const yoga = coachSessionSchema.parse({
+      category: "yoga",
+      title: "Hip and ankle mobility",
+      durationMinutes: 20,
+      mobility: { exercises: [{ name: "Couch stretch", sets: 2, holdSeconds: 60, perSide: true }] },
+    });
+    expect(sessionSport(yoga)).toBe("yoga");
+    expect(sessionSport(coachSessionSchema.parse({ category: "easy", title: "Jog", durationMinutes: 30, run: { blocks: [{ kind: "duration", value: 30 }] } }))).toBe("run");
+  });
+});
+
+/**
+ * The prompt is code. Its content is the thing that decides what the coach
+ * says, and until 2026-08-16 nothing in this repo asserted a single word of
+ * it — which is how fourteen bullets of format and permissions, with one
+ * line of physiology between them, survived to answer "get me ready to ski".
+ */
+describe("the wake prompt (2026-08-16 rewrite)", () => {
+  it("leads with the honesty rule: prose may only describe ops that exist", async () => {
+    const { WAKE_SYSTEM_PROMPT } = await import("../src/services/coach-wake.js");
+    const honesty = WAKE_SYSTEM_PROMPT.indexOf("HONESTY");
+    expect(honesty).toBeGreaterThan(-1);
+    // Before the contract, the voice rules, everything.
+    expect(honesty).toBeLessThan(WAKE_SYSTEM_PROMPT.indexOf("Your contract:"));
+    expect(WAKE_SYSTEM_PROMPT).toContain("ONLY changes that exist in THIS reply's ops");
+    expect(WAKE_SYSTEM_PROMPT).toContain("offer to draft");
+  });
+
+  it("carries the programming vocabulary the coach had none of", async () => {
+    const { WAKE_SYSTEM_PROMPT } = await import("../src/services/coach-wake.js");
+    // The audit's own grep: `isometric` 0 hits in source, `eccentric` 1 (a
+    // test), `detrain` 0 — while the STUDIO prompt got a certified-strength-
+    // coach persona. The thing the athlete talks to got none of it.
+    for (const word of [
+      "eccentric",
+      "isometric",
+      "concentric",
+      "elastic",
+      "tissue",
+      "detrain",
+      "taper",
+      "rest day",
+      "BOUTS, NOT DAYS",
+    ]) {
+      expect(WAKE_SYSTEM_PROMPT.toLowerCase(), `prompt must mention "${word}"`).toContain(word.toLowerCase());
+    }
+  });
+
+  it("a request to plan clears the brevity bar, and the detail belongs in the rationale", async () => {
+    const { WAKE_SYSTEM_PROMPT } = await import("../src/services/coach-wake.js");
+    expect(WAKE_SYSTEM_PROMPT).toContain("A request to plan IS a request for detail");
+    expect(WAKE_SYSTEM_PROMPT).toContain("give it in the proposal's rationale");
+    // RESTRAINT must no longer read as "answer a planning request with a summary".
+    expect(WAKE_SYSTEM_PROMPT).toContain("RESTRAINT IS A COMPLETE ANSWER — until they ask");
+  });
+
+  it("every op kind the prompt advertises has a drift-tested example", async () => {
+    const {
+      WAKE_EXAMPLE_OUTPUT,
+      WAKE_EXAMPLE_CREATE_PLAN,
+      WAKE_EXAMPLE_LIFT,
+      WAKE_EXAMPLE_OPS,
+      WAKE_SYSTEM_PROMPT,
+    } = await import("../src/services/coach-wake.js");
+    const { coachOpSchema } = await import("@rg/domain");
+    expect(WAKE_SYSTEM_PROMPT).toContain(WAKE_EXAMPLE_OPS);
+
+    const refOps = JSON.parse(WAKE_EXAMPLE_OPS) as Array<{ kind: string }>;
+    for (const op of refOps) {
+      const parsed = coachOpSchema.safeParse(op);
+      if (!parsed.success) console.error(op.kind, parsed.error.issues);
+      expect(parsed.success, `reference op "${op.kind}" must parse`).toBe(true);
+    }
+
+    const shown = new Set(refOps.map((o) => o.kind));
+    for (const ex of [WAKE_EXAMPLE_OUTPUT, WAKE_EXAMPLE_CREATE_PLAN, WAKE_EXAMPLE_LIFT]) {
+      for (const p of JSON.parse(ex).proposals as Array<{ ops: Array<{ kind: string }> }>) {
+        for (const o of p.ops) shown.add(o.kind);
+      }
+    }
+    const advertised = (
+      coachOpSchema.options as Array<{ shape: { kind: { value: string } } }>
+    ).map((o) => o.shape.kind.value);
+    expect(advertised.filter((k) => !shown.has(k)), "op kinds with no example to copy").toEqual([]);
+  });
+
+  it("the lift example's briefing describes exactly the sessions its ops contain", async () => {
+    const { WAKE_EXAMPLE_LIFT } = await import("../src/services/coach-wake.js");
+    const { wakeOutputSchema } = await import("@rg/domain");
+    const out = wakeOutputSchema.parse(JSON.parse(WAKE_EXAMPLE_LIFT));
+    const ops = out.proposals[0]!.ops;
+    // The example the model copies its voice from must itself obey the
+    // honesty rule — the previous one narrated "two ski-prep leg sessions"
+    // over a single leg session, which is the failure in miniature.
+    const legSessions = ops.filter(
+      (o) => o.kind === "add" && o.session.category === "strength" && o.session.durationMinutes >= 30,
+    );
+    expect(legSessions).toHaveLength(2);
+    expect(out.briefing).toContain("two real leg sessions");
+    // …and the compensatory work it mentions is a scheduled session, not advice.
+    expect(ops.some((o) => o.kind === "add" && o.session.mobility)).toBe(true);
+    // …and the budget it spends is paid for by an op that takes something out.
+    expect(ops.some((o) => o.kind === "ease")).toBe(true);
+    // …and the dated event it plans around is written to memory with an ISO date.
+    expect(out.memoryOps.some((m) => m.op === "add" && /\d{4}-\d{2}-\d{2}/.test(m.text))).toBe(true);
   });
 });

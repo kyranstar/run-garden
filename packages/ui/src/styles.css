@@ -1110,6 +1110,31 @@ a.note {
   padding: var(--space-4) var(--space-5);
   margin-bottom: var(--space-5);
 }
+/* A lift/mobility prescription, one movement per line. Same sunken card as
+   .stage-summary (it replaces that line for exercise sessions), but a list:
+   a hold, a per-side count and a tempo do not survive being run together
+   into one sentence. */
+.exercise-prescription {
+  font-size: var(--text-sm);
+  color: var(--ink-soft);
+  background: var(--bg-sunken);
+  border-radius: var(--radius-sm);
+  padding: var(--space-4) var(--space-5);
+  margin-bottom: var(--space-5);
+}
+.exercise-prescription .rounds {
+  display: block;
+  color: var(--ink-faint);
+  margin-bottom: var(--space-2);
+}
+.exercise-list {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.exercise-list li + li {
+  margin-top: var(--space-2);
+}
 
 /* ── Plan list ──────────────────────────────────────────────────────────── */
 

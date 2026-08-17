@@ -178,7 +178,18 @@ export function NextWorkout({ w, today }: { w: WorkoutDto; today: string }) {
           <div className="lbl">Calendar block</div>
         </div>
       </div>
-      {w.stageSummary ? <div className="stage-summary">{w.stageSummary}</div> : null}
+      {(w.exercises?.length ?? 0) > 0 ? (
+        <div className="exercise-prescription">
+          {w.exerciseRounds ? <span className="rounds">{w.exerciseRounds} rounds of:</span> : null}
+          <ul className="exercise-list">
+            {w.exercises!.map((e) => (
+              <li key={e.line}>{e.line}</li>
+            ))}
+          </ul>
+        </div>
+      ) : w.stageSummary ? (
+        <div className="stage-summary">{w.stageSummary}</div>
+      ) : null}
       <div className="btn-row">
         <Link className="btn btn-primary" to={`/plan?workout=${w.id}`}>
           View workout
@@ -186,7 +197,11 @@ export function NextWorkout({ w, today }: { w: WorkoutDto; today: string }) {
         <button className="btn" onClick={() => setMoving(true)}>
           Move
         </button>
-        {syncView === "needs_attention" || syncView === "calendar_only" || syncView === "sync_issue" ? (
+        {/* Not offered on an exercise session: the create executor builds a
+            structured RUN program and nothing else, so there is nothing a
+            retry could send (2026-08-16 — same reasoning as plan.tsx). */}
+        {(syncView === "needs_attention" || syncView === "calendar_only" || syncView === "sync_issue") &&
+        (w.exercises?.length ?? 0) === 0 ? (
           <button className="btn" disabled={retry.isPending} onClick={() => retry.mutate()}>
             Sync to COROS
           </button>

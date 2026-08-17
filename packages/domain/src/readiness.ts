@@ -42,13 +42,28 @@ export interface ReadinessSignals {
   /** This morning's resting HR (bpm) and the median of the recent window. */
   restingHeartRate?: number | null;
   rhrBaseline?: number | null;
-  /** How many days of wellness data the baseline was drawn from. */
+  /**
+   * How many days in the window carried AT LEAST ONE USABLE READING — not how
+   * many rows exist. COROS writes a `daily_health` row every day whether or
+   * not the watch measured anything (live: 77 rows, 73 of them with a null
+   * recovery score), so a row count is a count of days the sync ran, and
+   * gating on it let a fortnight of empty rows read as a fortnight of
+   * evidence. Callers count with {@link hasUsableReading}.
+   */
   sampleDays: number;
 }
 
 /** Under three days there is no "usual" to be unusual against. Same floor the
  * Today screen's Readiness card already uses — one number, not two. */
 const MIN_SAMPLE_DAYS = 3;
+
+/**
+ * The caveat a thin verdict carries with it, so no surface can print the state
+ * word alone. The product rule is that a state word always travels with its
+ * explainer, and `reasons` is the channel every surface already renders.
+ */
+const SOLE_SIGNAL_NOTE =
+  "thin evidence: one reading and nothing to corroborate it";
 
 /**
  * HRV suppression, as a percentage below the athlete's own median. Day-to-day
@@ -89,6 +104,24 @@ function reading(v: number | null | undefined, [min, max]: [number, number]): nu
   return v;
 }
 
+/**
+ * Did this day's wellness row measure anything at all? Exported so the count
+ * that feeds {@link ReadinessSignals.sampleDays} uses the same plausibility
+ * gate as the verdict — a row whose only value is a COROS 0 is a row with no
+ * reading, and must not inflate the sample.
+ */
+export function hasUsableReading(row: {
+  hrv?: number | null;
+  restingHeartRate?: number | null;
+  recoveryScore?: number | null;
+}): boolean {
+  return (
+    reading(row.hrv, HRV_RANGE) != null ||
+    reading(row.restingHeartRate, RHR_RANGE) != null ||
+    reading(row.recoveryScore, RECOVERY_RANGE) != null
+  );
+}
+
 /** 0 = fine, 1 = caution, 2 = poor. Worst signal wins the verdict. */
 type Rank = 0 | 1 | 2;
 const LEVELS: Record<Rank, ReadinessLevel> = { 0: "good", 1: "caution", 2: "poor" };
@@ -96,10 +129,21 @@ const LEVELS: Record<Rank, ReadinessLevel> = { 0: "good", 1: "caution", 2: "poor
 /**
  * The verdict, or `null` when the evidence is too thin to have one.
  *
- * Null happens three ways: fewer than {@link MIN_SAMPLE_DAYS} days of data,
- * no usable reading at all, or readings with nothing to compare them to (an
- * HRV with no baseline and no COROS recovery score is a number, not a
- * judgement). Callers render nothing in that case — never an empty slot.
+ * Null happens four ways: fewer than {@link MIN_SAMPLE_DAYS} days that
+ * carried a reading, no usable reading at all, readings with nothing to
+ * compare them to (an HRV with no baseline and no COROS recovery score is a
+ * number, not a judgement), or — added 2026-08-16 — a lone all-clear with
+ * nothing beside it. Callers render nothing in that case, never an empty slot.
+ *
+ * That last case is the audit's: on 2026-08-16 HRV and RHR were both null and
+ * the only surviving signal was a recovery score that had read exactly 100 for
+ * four days running. This function returned a confident `good — recovery 100%`
+ * off it, the dock showed it, and the coach wrote "recovery reads 100%" to an
+ * athlete five days off running. One unaccompanied normal number is not
+ * evidence that you are fine. A lone WARNING still speaks — the asymmetry is
+ * deliberate, since the cost of a missed warning is not the cost of a missed
+ * reassurance — but it carries {@link SOLE_SIGNAL_NOTE} so no surface can
+ * state the level without saying how thin it is.
  */
 export function readinessVerdict(signals: ReadinessSignals): ReadinessVerdict | null {
   if (!Number.isFinite(signals.sampleDays) || signals.sampleDays < MIN_SAMPLE_DAYS) return null;
@@ -155,11 +199,17 @@ export function readinessVerdict(signals: ReadinessSignals): ReadinessVerdict | 
   if (scored.length === 0) return null;
 
   const worst = scored.reduce<Rank>((w, s) => (s.rank > w ? s.rank : w), 0);
+  // ONE judgeable signal and no other reading in sight. Withhold an all-clear
+  // outright; let a warning through, labelled.
+  const soleSignal = scored.length === 1 && context.length === 0;
+  if (soleSignal && worst === 0) return null;
+
   // Stable sort (guaranteed since ES2019): worst first, otherwise the order
   // they were gathered in — HRV, RHR, recovery.
   const reasons = [...scored]
     .sort((a, b) => b.rank - a.rank)
     .map((s) => s.reason)
     .concat(context);
+  if (soleSignal) reasons.push(SOLE_SIGNAL_NOTE);
   return { level: LEVELS[worst], reasons };
 }

@@ -1,12 +1,23 @@
 import type { RawCorosActivityDetail, RawCorosActivityListItem } from "../coros/raw-types.js";
 
 /**
- * COROS reports times in centiseconds at the item level too (like the detail
- * summary), so a plain minute count needs ×100×60 to become totalTime/workoutTime.
+ * UNITS, once, because getting them wrong here is invisible until something
+ * downstream reasons about volume.
+ *
+ * COROS's DETAIL summary reports times in centiseconds; the LIST item
+ * reports plain SECONDS — prod-verified 2026-08-12 ("a 67-min activity
+ * rides the list as 4038"), which is why normalize.ts divides the summary
+ * and never the item. A fixture that ships no detail must therefore put
+ * plain seconds on the item.
+ *
+ * The strength and yoga fixtures below did not (2026-08-16): a 45-minute
+ * lift was seeded as 270000 seconds — 75 hours. Nothing displayed it, so
+ * nothing caught it, until the fixture athlete's trailing strength volume
+ * read 1125 min/week and the cold-start guardrail — the one written for the
+ * athlete who has not lifted in months — could not fire in fixture mode.
+ * The threshold fixture's item values are still centisecond-scaled legacy,
+ * harmlessly: its detail summary shadows them.
  */
-function centiseconds(seconds: number): number {
-  return seconds * 100;
-}
 
 /**
  * A completed threshold session as it appears from BOTH providers — the same
@@ -102,8 +113,10 @@ export function fixtureCorosCompletedStrength(
     startTime: startUnix,
     endTime: startUnix + durationSeconds,
     startTimezone: -28, // UTC-7 (PDT) in 15-minute units
-    totalTime: centiseconds(durationSeconds),
-    workoutTime: centiseconds(durationSeconds),
+    // Plain seconds: this fixture ships no detail, so the LIST value is the
+    // one normalize.ts reads (see the note on `centiseconds` above).
+    totalTime: durationSeconds,
+    workoutTime: durationSeconds,
     avgHr: 118,
     maxHr: 142,
     device: "COROS PACE 3",
@@ -130,8 +143,10 @@ export function fixtureCorosCompletedYoga(
     startTime: startUnix,
     endTime: startUnix + durationSeconds,
     startTimezone: -28,
-    totalTime: centiseconds(durationSeconds),
-    workoutTime: centiseconds(durationSeconds),
+    // Plain seconds: this fixture ships no detail, so the LIST value is the
+    // one normalize.ts reads (see the note on `centiseconds` above).
+    totalTime: durationSeconds,
+    workoutTime: durationSeconds,
     avgHr: 96,
     maxHr: 112,
     device: "COROS PACE 3",

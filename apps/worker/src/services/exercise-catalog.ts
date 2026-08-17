@@ -10,7 +10,7 @@
 import { asc, sql } from "drizzle-orm";
 import { corosExercises } from "@rg/database";
 import { COROS_EXERCISE_NAMES } from "@rg/providers";
-import { nowInstant } from "@rg/domain";
+import { nowInstant, sessionExercises, type CoachOp, type CoachSession } from "@rg/domain";
 import { chunkedInsert, type Db } from "./db.js";
 
 const STALE_AFTER_MS = 7 * 24 * 60 * 60 * 1000;
@@ -98,6 +98,233 @@ export function resolveExerciseName(
     if (translated) return translated;
   }
   return name;
+}
+
+/* ------------------------------------------------------------------ *
+ * The REVERSE direction: a model-supplied NAME → a catalog originId.
+ *
+ * `resolveExerciseName` above answers "what is T1231 called?". The coach
+ * needs the opposite: it is never handed the catalog (the studio path is —
+ * jobs.ts, `catalog is only the entries THIS session needs`), so it writes
+ * "Wall sit" and something has to find T1231's row. Without this, the only
+ * way to get an originId was to require it of the model, which is what
+ * silently killed the 2026-08-16 ski-prep plan.
+ *
+ * Matching runs on the HUMAN names (COROS_EXERCISE_NAMES), because the
+ * stored catalog names are themselves i18n keys — all 382 synced rows are
+ * T-codes, live-verified.
+ * ------------------------------------------------------------------ */
+
+/**
+ * Word-level aliases applied before matching. Kept deliberately short: each
+ * entry is a form a coach writes and COROS does not, not a thesaurus.
+ */
+const WORD_ALIASES: Record<string, string> = {
+  db: "dumbbell",
+  bb: "barbell",
+  kb: "kettlebell",
+  sl: "single leg",
+  bw: "bodyweight",
+  ohp: "overhead press",
+  rdl: "romanian deadlift",
+  ghr: "glute ham raise",
+  situp: "sit up",
+  pushup: "push up",
+  pullup: "pull up",
+  stepup: "step up",
+  pressup: "push up",
+  unilateral: "single leg",
+  // Prescription adjectives, not part of any catalog name — the tempo and
+  // the hold live in their own fields now.
+  eccentric: "",
+  isometric: "",
+  tempo: "",
+  slow: "",
+};
+
+/** Whole-phrase synonyms — different words, same movement. Keys are in
+ * FOLDED form (lowercase, singular, alias-expanded); see normalizeExerciseKey. */
+const PHRASE_ALIASES: Record<string, string> = {
+  "wall squat": "wall sit",
+  "wall sit hold": "wall sit",
+  // COROS calls it "Split Bench Squat"; nobody else does.
+  "bulgarian split squat": "split bench squat",
+  "rear foot elevated split squat": "split bench squat",
+  rfess: "split bench squat",
+  "side squat": "lateral squat",
+  "front plank": "plank",
+  "forearm plank": "plank",
+  "hip bridge": "glute bridge",
+  "hip thrust": "glute bridge",
+  "skater bound": "lateral bound",
+  "skater jump": "lateral bound",
+  "calf raise": "standing calf raise",
+  "heel raise": "standing calf raise",
+  "nordic curl": "nordic hamstring curl",
+  "air squat": "bodyweight squat",
+  "body weight squat": "bodyweight squat",
+};
+
+/** Crude but predictable singularizer — catalog names are title-case English. */
+function singular(w: string): string {
+  if (w.length <= 2 || w.endsWith("ss")) return w;
+  // "crunches"→crunch, "boxes"→box, "presses"→press. NOT "raises"→"rais":
+  // a bare s before "es" is part of the stem unless it is a doubled ss.
+  if (/(ch|sh|x|z|ss)es$/.test(w)) return w.slice(0, -2);
+  if (w.endsWith("ies")) return `${w.slice(0, -3)}y`;
+  if (w.endsWith("s")) return w.slice(0, -1);
+  return w;
+}
+
+/**
+ * The matching key: case, punctuation, accents, plurals and the alias table
+ * all folded away. "Single-Leg Calf Raises" and "single leg calf raise" and
+ * "SL calf raises" all land on the same string.
+ */
+function fold(name: string): string {
+  return name
+    .toLowerCase()
+    .normalize("NFKD")
+    .replace(/[̀-ͯ]/g, "")
+    .replace(/&/g, " and ")
+    .replace(/[^a-z0-9]+/g, " ")
+    .trim()
+    .split(" ")
+    .flatMap((w) => (WORD_ALIASES[w] ?? w).split(" "))
+    .filter(Boolean)
+    .map(singular)
+    .join(" ");
+}
+
+export function normalizeExerciseKey(name: string): string {
+  // Phrase aliases are matched on the FOLDED form, so "heel raises",
+  // "Heel Raise" and "heel-raises" all reach the same entry. Their values
+  // are folded again because an alias target is itself English.
+  const folded = fold(name);
+  const alias = PHRASE_ALIASES[folded];
+  return alias ? fold(alias) : folded;
+}
+
+export interface ExerciseIndex {
+  /** normalized human name → catalog originId. */
+  byKey: Map<string, string>;
+  /** normalized name → its token set, for the near-match pass. */
+  tokens: Array<{ id: string; key: string; set: Set<string> }>;
+  /** Every id in the athlete's synced catalog — for checking a
+   * model-supplied originId is real rather than invented. */
+  ids: Set<string>;
+}
+
+/**
+ * Build the name→id index once per wake. Ambiguity is resolved by keeping
+ * the FIRST id for a key — the catalog contains genuine duplicates
+ * ("Plank Jacks" is both T1077 and T1259) and either is equally correct.
+ */
+export function buildExerciseIndex(catalog: Map<string, string>): ExerciseIndex {
+  const byKey = new Map<string, string>();
+  const tokens: ExerciseIndex["tokens"] = [];
+  for (const [id, stored] of catalog) {
+    const human = COROS_EXERCISE_NAMES[stored.trim()] ?? stored;
+    if (!human || isCodeName(human)) continue;
+    const key = normalizeExerciseKey(human);
+    if (!key) continue;
+    if (!byKey.has(key)) byKey.set(key, id);
+    tokens.push({ id, key, set: new Set(key.split(" ")) });
+  }
+  return { byKey, tokens, ids: new Set(catalog.keys()) };
+}
+
+/** Ratio below which a near-match is a guess, not a match. */
+const MIN_OVERLAP = 0.7;
+
+/**
+ * name → catalog originId, or null when the athlete's synced catalog simply
+ * has no such exercise. Null is a NORMAL outcome, not an error: the session
+ * still persists and still shows in the app, it just can never reach the
+ * watch. Silently dropping it is the bug this whole path exists to fix.
+ */
+export function resolveExerciseOriginId(name: string, index: ExerciseIndex): string | null {
+  const key = normalizeExerciseKey(name);
+  if (!key) return null;
+  const exact = index.byKey.get(key);
+  if (exact) return exact;
+  // Near match: token overlap (Jaccard) against every catalog entry, taken
+  // only when one candidate clearly wins — "squat" must not silently become
+  // "Bulgarian Split Squat".
+  const want = new Set(key.split(" "));
+  let best: { id: string; score: number } | null = null;
+  let tie = false;
+  for (const e of index.tokens) {
+    let shared = 0;
+    for (const t of want) if (e.set.has(t)) shared += 1;
+    const score = shared / (want.size + e.set.size - shared);
+    if (!best || score > best.score) {
+      best = { id: e.id, score };
+      tie = false;
+    } else if (best && score === best.score && e.id !== best.id) {
+      tie = true;
+    }
+  }
+  if (!best || best.score < MIN_OVERLAP || tie) return null;
+  return best.id;
+}
+
+/** Everything a wake needs to resolve names, loaded in one query. */
+export async function loadExerciseIndex(db: Db): Promise<ExerciseIndex> {
+  return buildExerciseIndex(await exerciseNameMap(db));
+}
+
+export interface ExerciseResolution {
+  name: string;
+  originId: string | null;
+  /** "model" = the model supplied a real catalog id (it is given the
+   * catalog in its dossier); "name" = this resolver matched the name;
+   * null = the athlete's catalog has no such movement. */
+  via: "model" | "name" | null;
+}
+
+/** Every session an op carries, whatever its shape. */
+function opSessions(op: CoachOp): CoachSession[] {
+  const out: CoachSession[] = [];
+  const one = (op as { session?: CoachSession }).session;
+  if (one) out.push(one);
+  for (const s of (op as { sessions?: Array<{ session: CoachSession }> }).sessions ?? []) out.push(s.session);
+  for (const s of (op as { firmSessions?: Array<{ session: CoachSession }> }).firmSessions ?? []) {
+    out.push(s.session);
+  }
+  return out;
+}
+
+/**
+ * Stamp every exercise in these ops with its catalog originId, IN PLACE,
+ * and report what happened. Run once per wake, before the proposals are
+ * persisted, so the stored ops — and therefore the apply, the session
+ * sheet, and any future push — all see the same answer.
+ *
+ * Belt and braces on the model's own id. A model-supplied `originId` is
+ * KEPT when it names a row in the athlete's synced catalog — the coach's
+ * dossier can carry the catalog, and when it does the model's own choice is
+ * better informed than a string match. An id the catalog does not contain
+ * is a hallucination and is discarded in favour of matching the name.
+ *
+ * A null resolution is not an error and never removes an exercise. The
+ * session persists whole; it simply carries an honest "the watch's library
+ * has no such movement" mark that `offCatalogExercises` reads back.
+ */
+export function resolveOpsExercises(ops: CoachOp[], index: ExerciseIndex): ExerciseResolution[] {
+  const report: ExerciseResolution[] = [];
+  for (const op of ops) {
+    for (const session of opSessions(op)) {
+      for (const ex of sessionExercises(session)) {
+        const claimed = ex.originId && index.ids.has(ex.originId) ? ex.originId : null;
+        const originId = claimed ?? resolveExerciseOriginId(ex.name, index);
+        if (originId) ex.originId = originId;
+        else delete (ex as { originId?: string }).originId;
+        report.push({ name: ex.name, originId, via: originId ? (claimed ? "model" : "name") : null });
+      }
+    }
+  }
+  return report;
 }
 
 /**

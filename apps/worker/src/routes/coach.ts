@@ -592,7 +592,17 @@ coachRoutes.get("/plans/:id/detail", async (c) => {
             weekday: 1,
             exercises: (
               (w.structuredJson?.exercises ?? []) as LiftingPlan["weeks"][number]["sessions"][number]["exercises"]
-            ).map((ex) => ({ ...ex, name: resolveExerciseName(ex.name, ex.originId, catalog) })),
+            ).map((ex) => ({
+              ...ex,
+              // Coach exercises carry no originId when the athlete's catalog
+              // has no match (2026-08-16). liftProgressions groups BY
+              // originId, so a shared `undefined` would merge every
+              // off-catalog movement into one bogus series — the name is
+              // the identity when the catalog has none.
+              originId: ex.originId ?? `name:${ex.name.trim().toLowerCase()}`,
+              weight: ex.weight ?? { type: "bodyweight" },
+              name: resolveExerciseName(ex.name, ex.originId, catalog),
+            })),
           })),
       }));
       const doneWeeks = new Set(facts.filter((f) => f.done).map((f) => f.week));

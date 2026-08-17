@@ -101,6 +101,17 @@ export interface WorkoutDto {
   corosSyncView?: CorosSyncState;
   completionState: CompletionState;
   archived: boolean;
+  /**
+   * A lift/mobility session's prescription, one line per movement, already
+   * formatted (`formatExercise`) and already name-resolved server-side.
+   * `onWatch: false` means the athlete's synced COROS library has no
+   * matching movement — the session is real and stays in the app, it just
+   * can never be written to the watch. Absent for runs and rest days, and
+   * for any route that hasn't opted into loading it.
+   */
+  exercises?: Array<{ name: string; line: string; onWatch: boolean }>;
+  /** Set when the exercise list is a CIRCUIT cycled this many times. */
+  exerciseRounds?: number;
 }
 
 export interface TodayResponse {

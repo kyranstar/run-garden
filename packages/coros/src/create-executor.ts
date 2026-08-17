@@ -482,14 +482,20 @@ export function buildStrengthProgram(
       originId: "0",
     });
 
+    // A TIMED HOLD is a time target, not a rep count (2026-08-16). This was
+    // hardcoded to REPS, so a wall sit could only ever go to the watch as
+    // "3 × 1 rep" with the real prescription stranded in a free-text note —
+    // exactly how the athlete's existing plank already displays. The wire
+    // has supported `targetType: 2 = time(s)` all along (raw-types.ts), and
+    // `normalize.ts` already reads it back correctly.
+    const hold = (step as { holdSeconds?: number }).holdSeconds;
     const child: RawCorosExercise = {
       ...EXERCISE_METADATA,
       id: childId,
       name,
       exerciseType: 2, // main / training
       sportType: 4,
-      targetType: 3, // REPS
-      targetValue: step.reps,
+      ...(hold ? { targetType: 2, targetValue: hold } : { targetType: 3, targetValue: step.reps }),
       sets: 1,
       sortNo: groupSort + SUB_SORT,
       restType: step.restSeconds > 0 ? REST_TYPE_EXPLICIT : REST_TYPE_SKIP,

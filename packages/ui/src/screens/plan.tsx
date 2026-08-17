@@ -126,7 +126,16 @@ function WorkoutDetail({
   // Derived view (sync-transparency Task 10) takes precedence; the stored
   // legacy column is the fallback for any DTO that hasn't opted into it.
   const syncView = w.corosSyncView ?? w.corosSyncState;
+  // "" = COROS has never verified this row (coach-apply.ts) — the session was
+  // authored here, not imported, and for a lift/mobility session it can
+  // never go to the watch at all. That is a different fact from "your move
+  // hasn't reached the watch yet", and it gets different words below.
+  const neverOnWatch = w.lastVerifiedCorosDate === "";
+  const offWatch = (w.exercises ?? []).filter((e) => !e.onWatch).map((e) => e.name);
   const outOfSync = syncView === "needs_attention" || syncView === "calendar_only" || syncView === "sync_issue";
+  // An exercise session has no run program to write; nothing a retry could
+  // send. Everything else that is out of sync can still be pushed.
+  const canSyncToCoros = outOfSync && corosWritesEnabled && (w.exercises?.length ?? 0) === 0;
 
   const displayTitle = humanizeWorkoutTitle(w.title, w.category, w.qualitySubtype);
   const canMove = completion === "scheduled" && w.category !== "rest";
@@ -134,7 +143,7 @@ function WorkoutDetail({
   const hasActions =
     canMove ||
     asks ||
-    (outOfSync && corosWritesEnabled) ||
+    canSyncToCoros ||
     w.calendarSyncState === "user_deleted" ||
     w.completionState === "completed" ||
     w.completionState === "skipped" ||
@@ -174,7 +183,11 @@ function WorkoutDetail({
           </button>
         </>
       ) : null}
-      {outOfSync && corosWritesEnabled ? (
+      {/* `canSyncToCoros`, not `outOfSync`: offering a retry on a session
+          that can never be written is the same dishonesty as dropping it
+          silently. A lift or mobility session has no COROS representation
+          the create executor can build, so the button is not shown. */}
+      {canSyncToCoros ? (
         <button className="btn" disabled={retry.isPending} onClick={() => retry.mutate()}>
           Sync to COROS
         </button>
@@ -227,13 +240,23 @@ function WorkoutDetail({
         />
         {w.effectiveDate !== w.lastVerifiedCorosDate ? (
           <Banner kind={syncView === "needs_attention" || syncView === "sync_issue" ? "warn" : "info"}>
-            {syncView === "needs_attention"
-              ? `COROS has this on ${formatDayLong(w.lastVerifiedCorosDate)}; Run Garden has ${formatDayLong(w.effectiveDate)}. Pick where it should live.`
-              : syncView === "calendar_only"
-                ? `Your COROS watch still has this on ${formatDayLong(w.lastVerifiedCorosDate)} — this move hasn't been written to COROS.`
-                : syncView === "sync_issue"
-                  ? `The last update to COROS failed — your watch still shows ${formatDayLong(w.lastVerifiedCorosDate)}. Retry below.`
-                  : `COROS still shows ${formatDayLong(w.lastVerifiedCorosDate)} — the update is on its way.`}
+            {/* `lastVerifiedCorosDate` is "" when COROS has never seen this
+                row at all — every coach-created session. Every branch below
+                formats that date, so the app told you your watch "still has
+                this on undefined, undefined NaN" (2026-08-16). A session
+                that was never on the watch needs its own sentence, not a
+                move-that-didn't-land sentence with a hole in it. */}
+            {neverOnWatch
+              ? offWatch.length > 0
+                ? `This lives in Run Garden and your Calendar. It can't be written to your COROS watch: ${offWatch.join(", ")} ${offWatch.length === 1 ? "isn't" : "aren't"} in your watch's exercise library.`
+                : "This lives in Run Garden and your Calendar — it was never written to your COROS watch."
+              : syncView === "needs_attention"
+                ? `COROS has this on ${formatDayLong(w.lastVerifiedCorosDate)}; Run Garden has ${formatDayLong(w.effectiveDate)}. Pick where it should live.`
+                : syncView === "calendar_only"
+                  ? `Your COROS watch still has this on ${formatDayLong(w.lastVerifiedCorosDate)} — this move hasn't been written to COROS.`
+                  : syncView === "sync_issue"
+                    ? `The last update to COROS failed — your watch still shows ${formatDayLong(w.lastVerifiedCorosDate)}. Retry below.`
+                    : `COROS still shows ${formatDayLong(w.lastVerifiedCorosDate)} — the update is on its way.`}
           </Banner>
         ) : null}
         <div className="hero-durations">
@@ -246,7 +269,34 @@ function WorkoutDetail({
             <div className="lbl">Calendar block</div>
           </div>
         </div>
-        {w.stageSummary ? <div className="stage-summary">{w.stageSummary}</div> : null}
+        {/* A lift or mobility session's real prescription. It used to reach
+            the sheet only as the flattened `stageSummary` line, which cannot
+            say which movements the watch's own library knows — and a hold,
+            a per-side count and a tempo all had to survive that flattening
+            intact. The lines are formatted server-side (`formatExercise`),
+            so this list and the summary can never disagree. */}
+        {(w.exercises?.length ?? 0) > 0 ? (
+          <div className="exercise-prescription">
+            {w.exerciseRounds ? (
+              <span className="rounds">{w.exerciseRounds} rounds of:</span>
+            ) : null}
+            <ul className="exercise-list">
+              {w.exercises!.map((e) => (
+                <li key={e.line}>
+                  {e.line}
+                  {e.onWatch ? null : (
+                    <span className="faint" title="Your COROS library has no matching movement, so this session stays in Run Garden and your Calendar.">
+                      {" "}
+                      · not on watch
+                    </span>
+                  )}
+                </li>
+              ))}
+            </ul>
+          </div>
+        ) : w.stageSummary ? (
+          <div className="stage-summary">{w.stageSummary}</div>
+        ) : null}
         {stages.length > 0 ? (
           /* Non-destructive growth inside a frozen frame has to be brought to
              the reader, or it is not a disclosure (System 4 R2). Opening this
@@ -313,7 +363,10 @@ function WorkoutDetail({
           </>
         ) : null}
 
-        {outOfSync && !corosWritesEnabled ? (
+        {/* The settings nudge only applies to a session COROS could carry —
+            telling someone to enable writes for a wall-sit circuit that the
+            watch can never hold is a false promise. */}
+        {outOfSync && !corosWritesEnabled && (w.exercises?.length ?? 0) === 0 ? (
           <p className="faint">
             COROS sync is off, so this can't be pushed to your watch.{" "}
             <Link to="/settings">Enable it in Settings</Link>.

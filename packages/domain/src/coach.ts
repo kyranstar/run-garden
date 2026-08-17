@@ -1,5 +1,4 @@
 import { z } from "zod";
-import { studioExerciseSchema } from "./studio.js";
 
 /**
  * The coach's typed vocabulary (spec: docs/superpowers/specs/2026-08-06-
@@ -51,6 +50,144 @@ const echoedId = z
  */
 const prose = (max: number) => z.string().min(1).transform((s) => (s.length > max ? s.slice(0, max) : s));
 
+/**
+ * Model-natural integer. A coach that writes `"reps": "8"`, `"sets": 3.0` or
+ * `"holdSeconds": "45s"` means the number in all three cases; the studio's
+ * bare `z.number().int()` rejected two of them. Non-numeric input falls
+ * through unchanged so the real error still names the real problem.
+ */
+const intish = (min: number, max: number) =>
+  z.preprocess((v) => {
+    if (typeof v === "number") return Math.round(v);
+    if (typeof v === "string") {
+      const m = v.match(/-?\d+(?:\.\d+)?/);
+      return m ? Math.round(Number(m[0])) : v;
+    }
+    return v;
+  }, z.number().int().min(min).max(max));
+
+const MAX_SETS = 10;
+/** 100, not the studio's 50: "50 skater bounds per side" is a real drill. */
+const MAX_REPS = 100;
+/** 20 minutes — a farmer's-carry / ruck block is still one "set". */
+const MAX_HOLD_SECONDS = 1200;
+const MAX_REST_SECONDS = 900;
+/** A tempo prescription past this is a hold, and holdSeconds says it better. */
+const MAX_ECCENTRIC_SECONDS = 15;
+const MAX_WEIGHT_KG = 500;
+/** What a coach means by "short rest" when it doesn't say. */
+const DEFAULT_REST_SECONDS = 60;
+const LB_TO_KG = 0.45359237;
+
+/**
+ * Load, as a coach actually writes it. The studio's discriminated union is
+ * unproducible without being told the shape — the live 2026-08-16 failure
+ * rejected three exercises for a missing `weight` on a WALL SIT, where the
+ * only true answer is "your body". So: absent means bodyweight, a bare
+ * number means kilos, and the common prose forms are understood. The studio
+ * union itself still parses, so a model that copies that shape is right too.
+ */
+export const coachWeightSchema = z
+  .preprocess(
+    (v) => {
+      if (v === null || v === undefined) return { type: "bodyweight" };
+      if (typeof v === "number") return v > 0 ? { type: "kg", value: v } : { type: "bodyweight" };
+      if (typeof v === "string") {
+        const s = v.trim().toLowerCase();
+        const m = s.match(/(\d+(?:\.\d+)?)\s*(kgs?|kilos?|lbs?|pounds?)?/);
+        if (!m) return { type: "bodyweight" }; // "heavy", "moderate" — say it in `note`
+        const n = Number(m[1]);
+        const lb = /lb|pound/.test(m[2] ?? "");
+        return { type: "kg", value: lb ? Math.round(n * LB_TO_KG * 10) / 10 : n };
+      }
+      return v;
+    },
+    z.discriminatedUnion("type", [
+      z.object({ type: z.literal("bodyweight") }).strict(),
+      z.object({ type: z.literal("kg"), value: z.number().min(0).max(MAX_WEIGHT_KG) }).strict(),
+    ]),
+  )
+  .default({ type: "bodyweight" });
+export type CoachWeight = z.infer<typeof coachWeightSchema>;
+
+/**
+ * The coach's exercise vocabulary — deliberately NOT `studioExerciseSchema`.
+ *
+ * The studio's schema is written for the plan-generation path, where the
+ * model is HANDED the COROS catalog (jobs.ts: "catalog is only the entries
+ * THIS session needs"). It requires `originId`, `weight` and `restSeconds`.
+ * The coach wake gets no catalog, so `originId` is unproducible — and on
+ * 2026-08-16 a real ski-prep session (wall sits + leg work) was rejected on
+ * exactly those three fields and silently dropped, prose intact, ops gone.
+ *
+ * What the model must supply is only what a coach knows without a catalog:
+ * the name, and the work. Everything else has a defensible default, and
+ * `originId` is resolved SERVER-side from the name (exercise-catalog.ts) —
+ * a model-supplied value is always overwritten, never trusted.
+ *
+ * The work itself is `reps` OR `holdSeconds`, because the studio's sets+reps
+ * could not express a wall sit at all — a 45-second hold had to be faked as
+ * reps or dropped. `perSide` and `eccentricSeconds` are here for the same
+ * reason: unilateral work and a slow lowering are the substance of ski prep
+ * and of injury-resistant strength generally, and neither had a home.
+ */
+export const coachExerciseSchema = z
+  .object({
+    /** What the coach calls it. Resolved to a catalog id server-side. */
+    name: prose(60),
+    sets: intish(1, MAX_SETS),
+    /** Reps per set — PER SIDE when `perSide`. One of reps/holdSeconds. */
+    reps: orNull(intish(1, MAX_REPS).optional()),
+    /** Seconds of work per set: a hold (wall sit, plank, Copenhagen) or a
+     * timed effort (30s skier hops). One of reps/holdSeconds. */
+    holdSeconds: orNull(intish(3, MAX_HOLD_SECONDS).optional()),
+    /** The prescription happens on EACH leg/arm — sets × reps per side. */
+    perSide: orNull(z.boolean().optional()),
+    /** Seconds to lower under control. The eccentric is the point of a
+     * ski-prep squat; "4s down" had no field before this. */
+    eccentricSeconds: orNull(intish(1, MAX_ECCENTRIC_SECONDS).optional()),
+    weight: coachWeightSchema,
+    restSeconds: z
+      .preprocess(
+        (v) => (v === null || v === undefined ? DEFAULT_REST_SECONDS : v),
+        intish(0, MAX_REST_SECONDS),
+      )
+      .default(DEFAULT_REST_SECONDS),
+    /** Cueing, or anything the fields above can't hold ("pause at the
+     * bottom", "heavy enough that set 3 is hard"). */
+    note: orNull(prose(160)),
+    /**
+     * SERVER-FILLED, never the model's job: the `coros_exercises` id this
+     * name resolved to. Absent after a wake means the athlete's synced
+     * catalog has no match — the session still persists and still shows,
+     * it just can never be written to the watch. Optional in the schema so
+     * a model that omits it (it always will) parses cleanly.
+     */
+    originId: orNull(z.string().min(1).optional()),
+  })
+  .strict()
+  .refine((e) => e.reps !== undefined || e.holdSeconds !== undefined, {
+    message: "exercise needs reps or holdSeconds — how much work is one set?",
+    path: ["reps"],
+  });
+export type CoachExercise = z.infer<typeof coachExerciseSchema>;
+
+/**
+ * One exercise as a line of text — the single formatter, so the stage
+ * summary the worker stores, the coach's own dossier, and the session sheet
+ * cannot disagree about what "3×8/side @ 4s down" means.
+ */
+export function formatExercise(e: CoachExercise): string {
+  const work =
+    e.holdSeconds !== undefined
+      ? `${e.sets}×${e.holdSeconds}s`
+      : `${e.sets}×${e.reps}`;
+  const side = e.perSide ? "/side" : "";
+  const load = e.weight.type === "kg" ? ` @ ${e.weight.value} kg` : "";
+  const tempo = e.eccentricSeconds !== undefined ? ` (${e.eccentricSeconds}s down)` : "";
+  return `${e.name} ${work}${side}${load}${tempo}`;
+}
+
 /** One structured run block — the COROS-write-confirmed topology. */
 export const coachRunBlockSchema = z
   .object({
@@ -61,18 +198,113 @@ export const coachRunBlockSchema = z
   })
   .strict();
 
-/** A discipline-generic planned session. Exactly one discipline body. */
+/**
+ * A list of exercises and how it is performed.
+ *
+ * `rounds` is what makes a CIRCUIT expressible. Without it the only shape
+ * available was straight sets, so the athlete's literal ask — "12-minute
+ * wall-sit-and-core fillers" — had to be faked as three separate sets-of-one
+ * exercises or hidden in the title where nothing can read it. With it,
+ * "3 rounds of wall sit 45s / plank 45s / side plank 30s per side" is one
+ * honest object, and each exercise's `sets` is the work done PER ROUND
+ * (almost always 1). Absent = straight sets, exercise by exercise.
+ */
+export const coachExerciseBlockSchema = z
+  .object({
+    rounds: orNull(intish(1, 20).optional()),
+    exercises: z.array(coachExerciseSchema).min(1).max(12),
+  })
+  .strict();
+export type CoachExerciseBlock = z.infer<typeof coachExerciseBlockSchema>;
+
+/**
+ * A discipline-generic planned session. AT MOST ONE discipline body.
+ *
+ * `mobility` is the third body (2026-08-16): the app has three first-class
+ * disciplines (run/strength/yoga) and the coach could speak two, so every
+ * mobility or yoga session it wrote was stored as `sport: "run"` by
+ * coach-apply's `session.lift ? "strength" : "run"` — growing the garden's
+ * run bar and feeding false running volume into load and insights. Its
+ * content is movements and holds, which the exercise vocabulary above
+ * already covers exactly, so it shares the block shape rather than
+ * inventing a parallel one.
+ */
 export const coachSessionSchema = z
   .object({
-    category: z.enum(["easy", "long", "quality", "recovery", "race", "rest", "strength"]),
+    category: z.enum(["easy", "long", "quality", "recovery", "race", "rest", "strength", "yoga"]),
     title: prose(80),
     durationMinutes: z.number().int().min(5).max(360),
     run: orNull(z.object({ blocks: z.array(coachRunBlockSchema).min(1).max(12) }).strict().optional()),
-    lift: orNull(z.object({ exercises: z.array(studioExerciseSchema).min(1).max(12) }).strict().optional()),
+    lift: orNull(coachExerciseBlockSchema.optional()),
+    mobility: orNull(coachExerciseBlockSchema.optional()),
   })
   .strict()
-  .refine((s) => !(s.run && s.lift), { message: "session cannot be both run and lift" });
+  .refine((s) => [s.run, s.lift, s.mobility].filter(Boolean).length <= 1, {
+    message: "a session has at most one discipline body (run, lift or mobility)",
+  });
 export type CoachSession = z.infer<typeof coachSessionSchema>;
+
+/**
+ * The `planned_workouts.sport` this session belongs to — TOTAL, by
+ * construction. The old `session.lift ? "strength" : "run"` was a binary
+ * fallback masquerading as a mapping: it filed every non-lift session,
+ * including mobility and rest, under running.
+ *
+ * The switch is exhaustive over the category enum with a `never` check, so
+ * adding a category without deciding its discipline is a compile error
+ * rather than a silent "run". The runtime throw only fires for data that
+ * bypassed zod entirely — loudly, which is the point.
+ */
+export function sessionSport(s: CoachSession): "run" | "strength" | "yoga" {
+  if (s.lift) return "strength";
+  if (s.mobility) return "yoga";
+  if (s.run) return "run";
+  // Bodyless: the category is the only evidence there is.
+  switch (s.category) {
+    case "strength":
+      return "strength";
+    case "yoga":
+      return "yoga";
+    // Rest has no discipline at all. "run" matches how every imported COROS
+    // rest day is already stored (COROS's plan namespace has no rest sport),
+    // and `disciplineOf` reads category first, so nothing counts it as
+    // running volume — analytics filter `category !== "rest"` upstream.
+    case "rest":
+    case "easy":
+    case "long":
+    case "quality":
+    case "recovery":
+    case "race":
+      return "run";
+    default: {
+      const never: never = s.category;
+      throw new Error(`session category has no discipline mapping: ${String(never)}`);
+    }
+  }
+}
+
+/** The session's exercise block, whichever body carries it. */
+export function sessionExercises(s: CoachSession): CoachExercise[] {
+  return s.lift?.exercises ?? s.mobility?.exercises ?? [];
+}
+
+/**
+ * Exercise names that found no match in the athlete's synced COROS catalog
+ * (see exercise-catalog.ts). Empty for a run or a rest day. A non-empty
+ * result is NOT a failure — it is the honest reason a session can live in
+ * the app and never reach the watch.
+ */
+export function offCatalogExercises(s: CoachSession): string[] {
+  return sessionExercises(s)
+    .filter((e) => !e.originId)
+    .map((e) => e.name);
+}
+
+/** A whole block as one line — "3 rounds: Wall sit 1×45s · Plank 1×45s". */
+export function formatExerciseBlock(b: CoachExerciseBlock): string {
+  const line = b.exercises.map(formatExercise).join(" · ");
+  return b.rounds ? `${b.rounds} rounds: ${line}` : line;
+}
 
 const datedSession = z.object({ date: isoDate, session: coachSessionSchema }).strict();
 

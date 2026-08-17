@@ -10,7 +10,7 @@
  * recovery 100, 14-day medians ≈ 62.5 HRV / 46.5 RHR).
  */
 import { describe, expect, it } from "vitest";
-import { readinessVerdict, type ReadinessSignals } from "../src/readiness.js";
+import { hasUsableReading, readinessVerdict, type ReadinessSignals } from "../src/readiness.js";
 
 const signals = (over: Partial<ReadinessSignals> = {}): ReadinessSignals => ({
   hrv: 64,
@@ -68,22 +68,26 @@ describe("readinessVerdict — levels", () => {
   });
 
   it("thresholds sit exactly where they are documented", () => {
+    // Each helper below carries one extra unbaselined reading purely so the
+    // lone-signal rule (see "withholding") doesn't swallow the good cases —
+    // an unaccompanied all-clear is withheld, and that is asserted there.
     // HRV: 5% caution, 10% poor (baseline 100 makes the percent literal).
     const hrvAt = (v: number) =>
-      readinessVerdict({ hrv: v, hrvBaseline: 100, sampleDays: 14 })!.level;
+      readinessVerdict({ hrv: v, hrvBaseline: 100, restingHeartRate: 47, sampleDays: 14 })!.level;
     expect(hrvAt(96)).toBe("good");
     expect(hrvAt(95)).toBe("caution");
     expect(hrvAt(91)).toBe("caution");
     expect(hrvAt(90)).toBe("poor");
     // RHR: +4 caution, +7 poor.
     const rhrAt = (v: number) =>
-      readinessVerdict({ restingHeartRate: v, rhrBaseline: 46, sampleDays: 14 })!.level;
+      readinessVerdict({ restingHeartRate: v, rhrBaseline: 46, hrv: 64, sampleDays: 14 })!.level;
     expect(rhrAt(49)).toBe("good");
     expect(rhrAt(50)).toBe("caution");
     expect(rhrAt(52)).toBe("caution");
     expect(rhrAt(53)).toBe("poor");
     // Recovery: <60 caution, <33 poor.
-    const recAt = (v: number) => readinessVerdict({ recoveryScore: v, sampleDays: 14 })!.level;
+    const recAt = (v: number) =>
+      readinessVerdict({ recoveryScore: v, hrv: 64, sampleDays: 14 })!.level;
     expect(recAt(60)).toBe("good");
     expect(recAt(59)).toBe("caution");
     expect(recAt(33)).toBe("caution");
@@ -129,6 +133,57 @@ describe("readinessVerdict — withholding", () => {
 
   it("a nonsense sampleDays is thin evidence, not a pass", () => {
     expect(readinessVerdict(signals({ sampleDays: Number.NaN }))).toBeNull();
+  });
+
+  // The 2026-08-16 shape, exactly: HRV and RHR both absent, leaving one
+  // COROS recovery score that had read 100 for four days running. This
+  // returned a confident "good — recovery 100%" and the coach repeated it to
+  // an athlete five days off running.
+  it("withholds an all-clear that rests on one unaccompanied reading", () => {
+    expect(
+      readinessVerdict({
+        hrv: null,
+        hrvBaseline: 62,
+        restingHeartRate: null,
+        rhrBaseline: 46,
+        recoveryScore: 100,
+        sampleDays: 14,
+      }),
+    ).toBeNull();
+    // Same for a lone baselined HRV or RHR with nothing beside it.
+    expect(readinessVerdict({ hrv: 64, hrvBaseline: 62, sampleDays: 14 })).toBeNull();
+    expect(readinessVerdict({ restingHeartRate: 45, rhrBaseline: 46, sampleDays: 14 })).toBeNull();
+  });
+
+  it("but a lone WARNING still speaks — labelled, never bare", () => {
+    // Asymmetric on purpose: a missed warning costs more than a missed
+    // reassurance. The caveat rides in `reasons`, which every surface renders,
+    // so the state word can never appear without its explainer.
+    const v = readinessVerdict({ recoveryScore: 20, sampleDays: 14 })!;
+    expect(v.level).toBe("poor");
+    expect(v.reasons).toEqual(["recovery 20%", "thin evidence: one reading and nothing to corroborate it"]);
+  });
+
+  it("one companion reading is enough to trust an all-clear again", () => {
+    const v = readinessVerdict({ recoveryScore: 100, hrv: 64, sampleDays: 14 })!;
+    expect(v.level).toBe("good");
+    expect(v.reasons).toEqual(["recovery 100%", "HRV 64"]);
+  });
+});
+
+describe("hasUsableReading — what counts as a day of evidence", () => {
+  it("a row COROS wrote but never measured is not a sample day", () => {
+    // Live: 77 daily_health rows, 73 with a null recovery score. Counting
+    // rows counted the days the sync ran, not the days the watch read.
+    expect(hasUsableReading({ hrv: null, restingHeartRate: null, recoveryScore: null })).toBe(false);
+    expect(hasUsableReading({})).toBe(false);
+    // A COROS 0 is "not computed", so it is not a reading either.
+    expect(hasUsableReading({ hrv: 0, restingHeartRate: 0, recoveryScore: 0 })).toBe(false);
+    // Out-of-range junk is dropped by the same gate the verdict uses.
+    expect(hasUsableReading({ hrv: 4000, restingHeartRate: 300 })).toBe(false);
+    // Any one plausible value makes the day count.
+    expect(hasUsableReading({ hrv: null, restingHeartRate: null, recoveryScore: 100 })).toBe(true);
+    expect(hasUsableReading({ hrv: 64 })).toBe(true);
   });
 });
 

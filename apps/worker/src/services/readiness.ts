@@ -1,4 +1,4 @@
-import { readinessVerdict, type ReadinessVerdict } from "@rg/domain";
+import { hasUsableReading, readinessVerdict, type ReadinessVerdict } from "@rg/domain";
 
 /**
  * The ONE construction of "readiness" the server hands out.
@@ -24,6 +24,9 @@ export interface ReadinessHealthRow {
 export interface ReadinessView<T> {
   latest: T | null;
   baseline: { restingHeartRate: number | null; hrv: number | null } | null;
+  /** Days in the window that actually MEASURED something — not rows returned.
+   * COROS writes a row daily whether the watch read anything or not, so a row
+   * count is a count of sync days (2026-08-16 input audit). */
   sampleDays: number;
   /** Null whenever the evidence is too thin to judge — surfaces render
    * nothing rather than an empty slot. */
@@ -57,10 +60,12 @@ export function buildReadiness<T extends ReadinessHealthRow>(recent: T[]): Readi
           hrv: median(recent.map((h) => h.hrv).filter(nonNull)),
         }
       : null;
+  // Days that measured something, not rows that exist — see ReadinessView.
+  const sampleDays = recent.filter(hasUsableReading).length;
   return {
     latest,
     baseline,
-    sampleDays: recent.length,
+    sampleDays,
     verdict: latest
       ? readinessVerdict({
           recoveryScore: latest.recoveryScore,
@@ -68,7 +73,7 @@ export function buildReadiness<T extends ReadinessHealthRow>(recent: T[]): Readi
           hrvBaseline: baseline?.hrv,
           restingHeartRate: latest.restingHeartRate,
           rhrBaseline: baseline?.restingHeartRate,
-          sampleDays: recent.length,
+          sampleDays,
         })
       : null,
   };
