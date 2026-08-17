@@ -3,11 +3,41 @@ import { addOpDates, sessionSport } from "./coach.js";
 import type { CoachOp, CoachSession } from "./coach.js";
 
 /**
- * The hard floor outside the model (spec §4): pure, exhaustive, unit-tested.
- * Hard violations reject a proposal (after one repair round-trip); soft
- * violations are FLAGS the proposal must carry — the wake pipeline unions
- * these with whatever the model volunteered, so the "breaks your rule" chip
- * can never be forgotten.
+ * The floor outside the model (spec §4): pure, exhaustive, unit-tested.
+ *
+ * EVERY RULE IS EITHER FATAL OR ADVISORY, AND THE CHOICE IS DATA (2026-08-17).
+ *
+ * Until tonight every rule in this file was a hard rejection, and a single
+ * objection binned the whole proposal — seven ops and $0.397 of thinking, gone,
+ * with the athlete never told what was on the table. Verbatim, from prod: the
+ * athlete asked for "3 real sessions as a compromise", the coach wrote three
+ * and reasoned about what they cost, and `hard_adjacency` refused on the
+ * athlete's behalf because two of the days it chose were next to each other.
+ *
+ * Nothing in this product is autonomous. Every proposal is a card with an
+ * approve button on it. A rule that silently discards a plan the athlete never
+ * sees is not protecting them from harm — it is protecting them from
+ * information they asked for. So:
+ *
+ *   FATAL     the proposal is WRONG, not merely aggressive. It edits the past,
+ *             names a session that does not exist, or asks for a mutation the
+ *             apply cannot perform. Approving it would produce a broken plan
+ *             rather than a risky one, so it is rejected — and then the wake
+ *             gets a bounded convergence retry to fix it, because these are
+ *             exactly the errors a model can correct when told what is legal.
+ *
+ *   ADVISORY  every judgement about load: adjacency, ramp, cold start, rest
+ *             days, tapers, race weeks, plan horizons. These become trade-off
+ *             lines on the proposal ("The trade-off — …", rendered directly
+ *             above the approve/decline buttons) and the athlete decides.
+ *
+ * {@link RULE_CLASS} is the single place that choice is recorded, it is a
+ * `Record` over a closed union, and `validateOps` routes through it — so a new
+ * rule is a compile error until someone chooses a side for it, and
+ * coach-guardrails.test.ts fails until someone writes the case that proves it.
+ *
+ * Advisory text is written to earn the athlete's judgement, not to nag: what
+ * the cost is, in their terms, once. Fatal text is written for the receipt.
  */
 
 export interface GuardrailWorkout {
@@ -64,10 +94,89 @@ export interface GuardrailCtx {
 }
 
 export interface Violation {
+  /** A {@link GuardrailRule}, or — for a standing-rule finding — the coach
+   * memory row's id, because that row's own words are what the athlete reads. */
   rule: string;
   opIndex: number;
   detail: string;
 }
+
+/**
+ * Every rule this file can find. Closed on purpose: {@link RULE_CLASS} is a
+ * `Record` over it, so adding a member without classifying it does not compile.
+ */
+export type GuardrailRule =
+  | "touch_resolved"
+  | "unknown_workout"
+  | "past_date"
+  | "imported_plan_structure"
+  | "hard_adjacency"
+  | "ramp"
+  | "cold_start"
+  | "no_rest_day"
+  | "race_week_intensity"
+  | "event_taper"
+  | "beyond_horizon"
+  | "never_skip_race";
+
+export type RuleClass = "fatal" | "advisory";
+
+/**
+ * THE SPLIT, with the defence of each placement.
+ *
+ * The test for FATAL is not "is this dangerous" — the athlete is looking at an
+ * approve button and can judge danger themselves. It is "would approving this
+ * produce a broken plan rather than a risky one": an op the apply cannot
+ * perform, a row it would write into the past, an id that resolves to nothing.
+ * Those four are the whole list, and each one is also the kind of mistake a
+ * model fixes on the first retry once it is told what IS legal.
+ *
+ * Everything else is a training judgement. The coach is shown the number
+ * before it plans (HARD_LIMITS_PROMPT + the dossier's LIMITS section), and if
+ * it spends the budget anyway the athlete is shown what it cost and decides.
+ * That is the whole product: the coach proposes, the athlete approves.
+ */
+export const RULE_CLASS: Record<GuardrailRule, RuleClass> = {
+  /** The row is already resolved, or its day has gone. The apply would write
+   * history — and a completed session's result is a fact, not a plan. */
+  touch_resolved: "fatal",
+  /** ease/move/skip naming an id that is not on the calendar. `applyOps`
+   * UPDATEs zero rows and reports success: the athlete taps approve, the
+   * receipt says approved, and nothing whatsoever happens. */
+  unknown_workout: "fatal",
+  /** A session dated before today. `insertSession` would happily create it,
+   * and the athlete would find work on a day they have already lived. */
+  past_date: "fatal",
+  /** reshapeWeek/firmUp/extendPlan/windDown/retirePlan against a plan the
+   * coach did not author. `archiveWeek` and `retirePlan` no-op on the
+   * authorship guard while `firmUp`/`extendPlan` write rows into a plan that
+   * has no coach_plans row at all — half the op silently lands. */
+  imported_plan_structure: "fatal",
+
+  /** Two hard days in a row. Real, and real is exactly why the athlete gets
+   * to decide: front-loading before a trip is a legitimate thing to buy. */
+  hard_adjacency: "advisory",
+  /** More than a 10% weekly step in a discipline. A judgement, and one the
+   * athlete may knowingly take for a specific week. */
+  ramp: "advisory",
+  /** A big first block in a discipline with no recent history. Same. */
+  cold_start: "advisory",
+  /** A week that ends up with work on all seven days. Same. */
+  no_rest_day: "advisory",
+  /** New intensity inside race week. The athlete owns their race. */
+  race_week_intensity: "advisory",
+  /** Hard work in the 48h before a dated event. Same. */
+  event_taper: "advisory",
+  /** A session dated past the end of the planned weeks. Applies perfectly
+   * well — `add` mints a "Coach one-offs" plan for exactly this — so it was
+   * never more than a note about tidiness, and as a rejection it was a
+   * catastrophe: an athlete with an empty calendar has `firmHorizonEnd ===
+   * today`, which made EVERY future session the coach proposed illegal. */
+  beyond_horizon: "advisory",
+  /** Skipping a race. Nothing breaks; the athlete may simply not be running
+   * it. Taking their race off the plan without asking is the wrong side. */
+  never_skip_race: "advisory",
+};
 
 const HARD_CATEGORIES = new Set(["quality", "long", "race"]);
 /**
@@ -143,17 +252,34 @@ export const GUARDRAIL_LIMITS = {
  *
  * Principles, not cases: these are the rules as `validateOps` applies them to
  * anyone, phrased so a model can count against them before it writes.
+ *
+ * IT NOW STATES THE SPLIT, because a prompt that lies about the consequence is
+ * worse than one that says nothing (2026-08-17). This block used to open with
+ * "Breaking ONE rejects the WHOLE proposal", and after tonight that is true of
+ * three rules and false of eight. A model told that every number is a wall
+ * plans to the wall and then apologises for the wall; a model told which ones
+ * are walls and which ones are prices it may pay — out loud, with a reason —
+ * writes the plan the athlete actually asked for.
  */
 export const HARD_LIMITS_PROMPT = [
-  `HARD LIMITS — enforced outside you, in numbers, against the calendar AS YOUR OPS LEAVE IT. Breaking ONE rejects the WHOLE proposal, so count before you write; the dossier's LIMITS section carries this athlete's actual figures and what is left of each.`,
+  `THE ENFORCED NUMBERS — checked outside you, against the calendar AS YOUR OPS LEAVE IT. Two kinds, and the difference decides how you write. The dossier's LIMITS section carries this athlete's actual figures and what is left of each.`,
+  ``,
+  `REJECTED OUTRIGHT — a proposal doing one of these is not a bold plan, it is a broken one, and the athlete never sees it:`,
+  `- THE PAST IS FIXED: no op dated before today, and no op on a session already completed, skipped or missed.`,
+  `- REAL SESSIONS ONLY: ease/move/skip must name a [wo:...] id that appears in this dossier. An id that isn't there changes nothing at all when approved.`,
+  `- IMPORTED PLANS KEEP THEIR STRUCTURE: reshapeWeek/firmUp/extendPlan/windDown/retirePlan may only name a plan YOU authored (PLANS says which). An imported plan's individual sessions are still yours to ease, move, skip or add around — that is how you restructure one.`,
+  ``,
+  `DISCLOSED TO THE ATHLETE — these do NOT reject anything. Each one the app finds is printed on the proposal as a trade-off, directly above the approve button, and they decide. So they are yours to spend deliberately: plan inside them, and when you go past one on purpose, give the reason in the rationale. Spending one you hadn't noticed is the failure; spending one you can defend is coaching.`,
   `- HARD IS DEFINED: a session in category ${[...HARD_CATEGORIES].join("/")}, or a strength session of ${HARD_LIFT_MINUTES}min or more — and in a discipline they have barely touched (${DETRAINED_WEEK_MINUTES}min/week or less over the last 4 weeks), any strength session of ${TRIVIAL_LIFT_MINUTES}min or more. Under ${TRIVIAL_LIFT_MINUTES}min is never hard, and neither is mobility work of any length.`,
-  `- HARD DAYS NEVER TOUCH: no two consecutive days may both be hard. Easing or skipping one side is how you make room — the check reads the calendar AFTER your ops, so a hard day you eased is no longer hard.`,
-  `- RAMP: in any week you touch, a discipline's total minutes may not exceed ${Math.round(RAMP_CAP * 100)}% of its 4-week trailing average.`,
-  `- COLD START: in a discipline at ${DETRAINED_WEEK_MINUTES}min/week or less, a week may hold at most ${COLD_START_WEEK_MINUTES}min of HARD work in it — counting what is ALREADY on the calendar, not just what you add. Their own scheduled sessions spend this budget; to add beyond it you must ease or skip something first.`,
-  `- REST DAY: no week you touch may end with work on all seven days. A day holding nothing, a rest row, or only a strength/mobility piece under ${TRIVIAL_LIFT_MINUTES}min still counts as rest.`,
-  `- EVENT TAPER: nothing hard on a dated event's day or the ${EVENT_TAPER_DAYS} days before it.`,
-  `- RACE WEEK: no new quality session in the ${RACE_WINDOW_DAYS} days before a race.`,
-  `- THE PAST IS FIXED: no op on a day before today, or on a session already completed, skipped or missed.`,
+  `- HARD DAYS NEVER TOUCH: two consecutive hard days cost the second one. Easing or skipping a side is how you make room — the check reads the calendar AFTER your ops, so a hard day you eased is no longer hard.`,
+  `- RAMP: in any week you touch, a discipline's total minutes above ${Math.round(RAMP_CAP * 100)}% of its 4-week trailing average is a step up worth naming.`,
+  `- COLD START: in a discipline at ${DETRAINED_WEEK_MINUTES}min/week or less, ${COLD_START_WEEK_MINUTES}min of HARD work in a week is already a big first block — counting what is ALREADY on the calendar, not just what you add.`,
+  `- REST DAY: a week you leave with work on all seven days has no day off in it.`,
+  `- EVENT TAPER: hard work on a dated event's day, or the ${EVENT_TAPER_DAYS} days before it, arrives as soreness on the day itself.`,
+  `- RACE WEEK: a new quality session in the ${RACE_WINDOW_DAYS} days before a race spends freshness.`,
+  `- PLAN HORIZON: a session past the last planned day lands as a one-off rather than part of a block; propose extendPlan or createPlan when you mean a block.`,
+  ``,
+  `DO NOT PUT ANY OF THE DISCLOSED FINDINGS IN "flags" — the app computes each one and prints it, the same rule as the manifest. "flags" is for the trade-offs only you can see ("eases Tuesday's 10K-pace intervals in a build week"). Your job is the reasoning: why the cost is worth it.`,
 ].join("\n");
 
 interface CalEntry {
@@ -171,6 +297,9 @@ interface CalEntry {
   discipline: string;
   /** Introduced or rewritten by these ops (drives race-week "new intensity"). */
   fromOp: number | null;
+  /** Already trained. Only `hard_adjacency` reads it, and only to word its
+   * advisory honestly — see the note on that rule. */
+  done: boolean;
 }
 
 function isoWeekday(date: string): number {
@@ -315,8 +444,8 @@ export function athleteLimitLines(ctx: GuardrailCtx): string[] {
   for (let i = 0, w = mondayOf(ctx.today); i < LIMIT_WEEKS; i++, w = addDays(w, 7)) weeks.push(w);
 
   const lines = [
-    "the ENFORCED numbers for this athlete, from the same code that rejects proposals — plan inside them, and say so when a limit is what shaped the plan.",
-    `nothing you propose may land after ${ctx.firmHorizonEnd} (the last planned day) unless it is firmUp/extendPlan/reshapeWeek/windDown/createPlan.`,
+    "the numbers for this athlete, from the same code that checks your reply. These are the DISCLOSED kind: going past one does not reject anything, it prints a trade-off line on your proposal for the athlete to weigh. Plan inside them; when you spend one on purpose, say why in the rationale.",
+    `the last planned day is ${ctx.firmHorizonEnd}; anything after it lands as a one-off unless it is firmUp/extendPlan/reshapeWeek/windDown/createPlan.`,
   ];
 
   // Volume, per discipline: the ramp ceiling, or the absolute cold-start one
@@ -350,13 +479,20 @@ export function athleteLimitLines(ctx: GuardrailCtx): string[] {
 
   // Adjacency and rest, as days — UPCOMING carries no durations, so this is
   // the only place the coach can see which existing sessions COUNT as hard.
+  //
+  // It starts YESTERDAY, not today (2026-08-17). `hard_adjacency` reads the
+  // whole calendar, including a session already completed, so a hard day
+  // yesterday makes today's hard session the second of a pair — and the coach
+  // could not see that, because this list began at today. It met the finding
+  // for the first time in a rejection, about a day it cannot change. Nothing
+  // earlier than yesterday can be adjacent to anything the coach may write.
   const weekEnd = addDays(weeks[weeks.length - 1]!, 6);
-  const inWindow = live.filter((w) => w.date >= ctx.today && w.date <= weekEnd);
+  const inWindow = live.filter((w) => w.date >= addDays(ctx.today, -1) && w.date <= weekEnd);
   const hardDays = [...new Set(inWindow.filter((w) => isHard(w, ctx)).map((w) => w.date))].sort();
   lines.push(
     hardDays.length
-      ? `already hard, so nothing hard may sit on the day before or after one of these: ${hardDays.join(", ")}. Ease or skip one and its neighbours open up.`
-      : "no hard days scheduled between now and the end of that window.",
+      ? `already hard, so anything hard on the day before or after one of these is a back-to-back pair the athlete gets told about: ${hardDays.join(", ")}${hardDays[0]! < ctx.today ? " (the first is yesterday — already done, so only easing what comes AFTER it helps)" : ""}. Easing or skipping a future one opens its neighbours up.`
+      : "no hard days between yesterday and the end of that window.",
   );
   for (const w of weeks) {
     const loaded = loadedDaysIn(live, w);
@@ -367,25 +503,59 @@ export function athleteLimitLines(ctx: GuardrailCtx): string[] {
     const ahead = free.filter((d) => d >= ctx.today);
     lines.push(
       free.length === 0
-        ? `week of ${w}: all seven days already carry work — you did not do that, so it is not held against you, but do not add to it.`
+        ? `week of ${w}: all seven days already carry work — you did not do that, so it is not laid at your door, but adding to it is.`
         : `week of ${w}: ${free.length} free day${free.length === 1 ? "" : "s"}, ` +
-          (ahead.length ? `${ahead.join(", ")} still ahead` : "all of them already past, so the rule is met") +
-          ` — at least one must survive.`,
+          (ahead.length ? `${ahead.join(", ")} still ahead` : "all of them already past, so the week keeps its day off") +
+          ` — fill the last one and the week has no rest day.`,
     );
   }
 
-  // The two dated windows, spelled out as the days they forbid.
+  // The two dated windows, spelled out as the days they cover.
   for (const ev of ctx.datedEvents) {
     if (ev.date < ctx.today) continue;
     lines.push(
-      `nothing hard on ${addDays(ev.date, -EVENT_TAPER_DAYS)}–${ev.date} — ${ev.label} (${ev.date}).`,
+      `hard work on ${addDays(ev.date, -EVENT_TAPER_DAYS)}–${ev.date} arrives as soreness on ${ev.label} (${ev.date}).`,
     );
   }
   for (const race of ctx.raceDates) {
     if (race < ctx.today) continue;
-    lines.push(`no new quality session on ${addDays(race, -RACE_WINDOW_DAYS)}–${addDays(race, -1)} — race ${race}.`);
+    lines.push(`a new quality session on ${addDays(race, -RACE_WINDOW_DAYS)}–${addDays(race, -1)} spends race-week freshness — race ${race}.`);
   }
   return lines;
+}
+
+/**
+ * WHAT THE COACH MAY DO RIGHT NOW, for a convergence retry.
+ *
+ * The wake's guardrail repair used to hand back only the violation, and it was
+ * useless for exactly the reason a compiler error without the type is useless:
+ * the model was told what was wrong and not what was allowed, so it guessed,
+ * and the guess broke the same rule a different way. This is the other half —
+ * the structural facts the FATAL rules test against (today, the ids that
+ * exist, the plans it authored), followed by {@link athleteLimitLines}, which
+ * is the budget it was already shown in the dossier and must still respect.
+ *
+ * Derived from the SAME `GuardrailCtx` the retry will be judged against, so
+ * what the coach is told it may do is precisely what it will be allowed to do.
+ */
+export function allowedNowLines(ctx: GuardrailCtx): string[] {
+  const targetable = ctx.workouts
+    .filter((w) => w.completionState === "scheduled" || w.completionState === "planned")
+    .filter((w) => w.date >= ctx.today)
+    .sort((a, b) => (a.date < b.date ? -1 : a.date > b.date ? 1 : 0));
+  return [
+    `today is ${ctx.today}. Nothing you write may be dated before it.`,
+    targetable.length > 0
+      ? `the ONLY ids ease/move/skip may name (everything else on your calendar is resolved or gone): ${targetable
+          .slice(0, 40)
+          .map((w) => `[wo:${w.id}] ${w.date} ${w.category}`)
+          .join(" · ")}.`
+      : `there is nothing on the calendar to ease, move or skip — only add/createPlan can put work there.`,
+    ctx.coachPlanIds.length > 0
+      ? `plans you authored, and the only ones reshapeWeek/firmUp/extendPlan/windDown/retirePlan may name: ${ctx.coachPlanIds.join(", ")}.`
+      : `you have authored no plans, so reshapeWeek/firmUp/extendPlan/windDown/retirePlan have nothing legal to name — restructure by composition (ease/move/skip the sessions that exist, add your own around them) or createPlan a new block.`,
+    ...athleteLimitLines(ctx),
+  ];
 }
 
 /**
@@ -422,6 +592,7 @@ function resultingCalendar(ops: CoachOp[], ctx: GuardrailCtx): CalEntry[] {
       durationMinutes: w.durationMinutes,
       discipline: w.discipline,
       fromOp: null,
+      done: w.completionState === "completed",
     }));
   const entryFor = (id: string): CalEntry | undefined => cal.find((e) => e.id === id);
 
@@ -475,6 +646,7 @@ function resultingCalendar(ops: CoachOp[], ctx: GuardrailCtx): CalEntry[] {
             durationMinutes: op.session.durationMinutes,
             discipline: disciplineOfSession(op.session),
             fromOp: i,
+            done: false,
           });
         }
         break;
@@ -489,6 +661,7 @@ function resultingCalendar(ops: CoachOp[], ctx: GuardrailCtx): CalEntry[] {
             durationMinutes: s.session.durationMinutes,
             discipline: disciplineOfSession(s.session),
             fromOp: i,
+            done: false,
           });
         }
         break;
@@ -501,6 +674,7 @@ function resultingCalendar(ops: CoachOp[], ctx: GuardrailCtx): CalEntry[] {
             durationMinutes: s.session.durationMinutes,
             discipline: disciplineOfSession(s.session),
             fromOp: i,
+            done: false,
           });
         }
         break;
@@ -551,38 +725,117 @@ const HORIZON_EXEMPT = new Set([
   "resolveRaceConflict",
 ]);
 
-export function validateOps(
-  ops: CoachOp[],
-  ctx: GuardrailCtx,
-): { hard: Violation[]; soft: Violation[] } {
-  const hard: Violation[] = [];
+/**
+ * The dates an op would put NEW work on — as distinct from {@link opDates},
+ * which also includes the day an id-addressed op's existing session sits on.
+ *
+ * `past_date` needs exactly this distinction: easing yesterday's session is
+ * `touch_resolved` (the row is resolved, and the message should say so), while
+ * ADDING a session to yesterday is a different and previously unguarded
+ * mistake — nothing in this file looked at an `add`'s own dates against today,
+ * so `insertSession` would have written work onto a day already lived.
+ */
+function newWorkDates(op: CoachOp): string[] {
+  switch (op.kind) {
+    case "ease":
+    case "skip":
+    case "extendPlan":
+    case "retirePlan":
+    case "resolveRaceConflict":
+      return [];
+    case "move":
+      return [op.toDate];
+    case "swap":
+      return [op.dayA, op.dayB];
+    case "add":
+      return addOpDates(op);
+    case "reshapeWeek":
+    case "firmUp":
+    case "windDown":
+      return op.sessions.map((s) => s.date);
+    case "createPlan":
+      return op.firmSessions.map((s) => s.date);
+  }
+}
+
+export interface ValidationResult {
+  /** The proposal cannot be applied — reject it, and let the wake converge. */
+  fatal: Violation[];
+  /** Costs the athlete decides on, rendered as the proposal's trade-off. */
+  advisory: Violation[];
+  /** Advisories against a standing rule the ATHLETE stated. Separate because
+   * their flag text is the athlete's own words out of coach memory, not ours;
+   * `rule` is the memory row id, not a {@link GuardrailRule}. */
+  soft: Violation[];
+  /**
+   * @deprecated Alias of `fatal`, kept only so an in-flight property-test
+   * harness written against the pre-split shape keeps compiling. Read `fatal`.
+   */
+  hard: Violation[];
+}
+
+export function validateOps(ops: CoachOp[], ctx: GuardrailCtx): ValidationResult {
+  const fatal: Violation[] = [];
+  const advisory: Violation[] = [];
   const soft: Violation[] = [];
   const byId = new Map(ctx.workouts.map((w) => [w.id, w]));
 
-  // H3 / H6 / H4 — per-op checks.
+  /**
+   * The ONE routing point. Every finding names a {@link GuardrailRule} and
+   * {@link RULE_CLASS} decides which list it lands in — so classification
+   * cannot drift away from the map, and a new rule cannot be pushed at all
+   * until it has a class.
+   */
+  const found = (rule: GuardrailRule, opIndex: number, detail: string): void => {
+    (RULE_CLASS[rule] === "fatal" ? fatal : advisory).push({ rule, opIndex, detail });
+  };
+
   ops.forEach((op, i) => {
-    const targeted =
-      op.kind === "ease" || op.kind === "move" || op.kind === "skip" ? byId.get(op.workoutId) : undefined;
+    const idAddressed = op.kind === "ease" || op.kind === "move" || op.kind === "skip";
+    const targeted = idAddressed ? byId.get(op.workoutId) : undefined;
+    // An id that resolves to nothing is the quietest failure this app has:
+    // `applyOps` UPDATEs zero rows, pushes the id into `updated`, and the
+    // receipt says approved. The athlete is told their plan changed.
+    if (idAddressed && !targeted) {
+      found(
+        "unknown_workout",
+        i,
+        `it changes a session that isn't on your calendar any more — approving it wouldn't do anything`,
+      );
+    }
     if (targeted) {
       if (targeted.completionState !== "scheduled" && targeted.completionState !== "planned") {
-        hard.push({
-          rule: "touch_resolved",
-          opIndex: i,
-          detail: `${humanDate(targeted.date)} is already ${targeted.completionState} — only sessions still on the calendar can be changed`,
-        });
-      } else if (targeted.date <= ctx.today && targeted.date < ctx.today) {
-        hard.push({
-          rule: "touch_resolved",
-          opIndex: i,
-          detail: `${humanDate(targeted.date)} has already been and gone — the past can't be rewritten`,
-        });
+        found(
+          "touch_resolved",
+          i,
+          `${humanDate(targeted.date)} is already ${targeted.completionState} — only sessions still on the calendar can be changed`,
+        );
+      } else if (targeted.date < ctx.today) {
+        found(
+          "touch_resolved",
+          i,
+          `${humanDate(targeted.date)} has already been and gone — the past can't be rewritten`,
+        );
       }
       if (op.kind === "skip" && targeted.category === "race") {
-        hard.push({ rule: "never_skip_race", opIndex: i, detail: "race days are never skipped" });
+        found(
+          "never_skip_race",
+          i,
+          `${humanDate(targeted.date)} is your race day — approving this takes it off the plan`,
+        );
       }
     }
-    // H7 — structural ops on plans the coach did not author. Imported COROS
-    // plans can have sessions skipped/moved, never their structure rewritten.
+    for (const d of newWorkDates(op)) {
+      if (d < ctx.today) {
+        found("past_date", i, `it puts work on ${humanDate(d)}, which has already been and gone`);
+        break;
+      }
+    }
+    // Structural ops on plans the coach did not author. Imported COROS plans
+    // can have sessions skipped/moved, never their structure rewritten — and
+    // this one is fatal because the apply is HALF-guarded: archiveWeek and
+    // retirePlan check authorship and no-op, while firmUp and extendPlan
+    // happily write rows into a plan id that has no coach_plans row at all.
     if (
       (op.kind === "reshapeWeek" ||
         op.kind === "firmUp" ||
@@ -591,20 +844,24 @@ export function validateOps(
         op.kind === "retirePlan") &&
       !ctx.coachPlanIds.includes(op.planId)
     ) {
-      hard.push({
-        rule: "imported_plan_structure",
-        opIndex: i,
-        detail: `that plan came from your watch — its sessions can be moved or skipped, but its structure can't be rewritten here`,
-      });
+      found(
+        "imported_plan_structure",
+        i,
+        `that plan came from your watch — its sessions can be moved or skipped, but its structure can't be rewritten here`,
+      );
     }
-    if (!HORIZON_EXEMPT.has(op.kind)) {
+    // The horizon says nothing at all to an athlete with an empty calendar:
+    // `firmHorizonEnd` falls back to today, which made every future session
+    // "past the end of your planned weeks". Silent when there are no planned
+    // weeks to be past.
+    if (!HORIZON_EXEMPT.has(op.kind) && ctx.firmHorizonEnd > ctx.today) {
       for (const d of opDates(op, ctx)) {
         if (d > ctx.firmHorizonEnd) {
-          hard.push({
-            rule: "beyond_horizon",
-            opIndex: i,
-            detail: `${humanDate(d)} is past the end of your planned weeks (${humanDate(ctx.firmHorizonEnd)}) — the plan has to be extended first`,
-          });
+          found(
+            "beyond_horizon",
+            i,
+            `${humanDate(d)} is past the end of your planned weeks (${humanDate(ctx.firmHorizonEnd)}) — it lands as a one-off rather than part of the block`,
+          );
           break;
         }
       }
@@ -616,6 +873,19 @@ export function validateOps(
   // H2 — hard sessions on consecutive days (in the resulting calendar,
   // counting only pairs where at least one side was op-touched: pre-existing
   // adjacency is the plan's business, not this proposal's).
+  //
+  // A COMPLETED SESSION ON THE EARLIER DAY STILL COUNTS, deliberately
+  // (2026-08-17 — the product owner asked). Tonight this fired on a Saturday
+  // long run that had already happened, and as a REJECTION that was
+  // indefensible: the only "fix" available to the coach is not to coach, since
+  // it cannot ease a day the athlete has already run. As an ADVISORY it is
+  // simply true — Sunday after a hard Saturday is Sunday on tired legs whether
+  // or not the plan admits it — and the athlete can act on it in the one way
+  // that matters, by deciding. So the finding stays and the wording changes:
+  // a day already trained is named as already trained, never as something to
+  // go and make easy. `athleteLimitLines` was widened to list yesterday's hard
+  // day for the same reason, so the coach can see the stack before it plans
+  // instead of meeting it in a rejection.
   const hardDays = new Map<string, CalEntry[]>();
   for (const e of cal) {
     if (isHard(e, ctx)) hardDays.set(e.date, [...(hardDays.get(e.date) ?? []), e]);
@@ -626,11 +896,14 @@ export function validateOps(
     const touched = [...entries, ...next].some((e) => e.fromOp !== null);
     if (touched) {
       const opIndex = [...entries, ...next].find((e) => e.fromOp !== null)!.fromOp!;
-      hard.push({
-        rule: "hard_adjacency",
+      const already = entries.some((e) => e.done);
+      found(
+        "hard_adjacency",
         opIndex,
-        detail: `hard days back to back on ${humanDate(date)} and ${humanDate(addDays(date, 1))} — one of the two needs to be easy`,
-      });
+        already
+          ? `${humanDate(addDays(date, 1))} comes the day after ${humanDate(date)}, which you've already trained hard — they stack whether the plan says so or not`
+          : `${humanDate(date)} and ${humanDate(addDays(date, 1))} are both hard days, back to back — the second one gets done on tired legs`,
+      );
     }
   }
 
@@ -675,25 +948,24 @@ export function validateOps(
       if (avg === null || avg <= DETRAINED_WEEK_MINUTES) {
         const loading = weekMinutes(cal, week, disc, ctx, true);
         if (loading > COLD_START_WEEK_MINUTES) {
-          hard.push({
-            rule: "cold_start",
+          found(
+            "cold_start",
             opIndex,
-            detail:
-              `you've done essentially no ${disciplineWord(disc)} in the last four weeks, so ${Math.round(loading)} minutes of it ` +
-              `in the week of ${humanDate(week)} is too much to start with — about ${COLD_START_WEEK_MINUTES} minutes is a sane first week`,
-          });
+            `you've done essentially no ${disciplineWord(disc)} in the last four weeks, so ${Math.round(loading)} minutes of it ` +
+              `in the week of ${humanDate(week)} is a big first block — the soreness turns up a day or two after each session`,
+          );
         }
         continue; // a cold start has no percentage to measure against
       }
 
       if (avg > 0 && minutes > avg * RAMP_CAP) {
-        hard.push({
-          rule: "ramp",
+        found(
+          "ramp",
           opIndex,
-          detail:
-            `${Math.round(minutes)} minutes of ${disciplineWord(disc)} in the week of ${humanDate(week)}, ` +
-            `against a recent average of ${Math.round(avg)} — more than the 10% step up that keeps this safe (${Math.round(avg * RAMP_CAP)} minutes)`,
-        });
+          `${Math.round(minutes)} minutes of ${disciplineWord(disc)} in the week of ${humanDate(week)}, ` +
+            `against a recent average of ${Math.round(avg)} — a ${Math.round((minutes / avg - 1) * 100)}% step up in one week, ` +
+            `and big steps are where niggles start`,
+        );
       }
     }
   }
@@ -704,18 +976,18 @@ export function validateOps(
   //
   // Fires only when THESE ops removed the last one — a week that already had
   // no rest day is the plan's problem, and the coach adding a stretch to it
-  // shouldn't be rejected for a fault it inherited. That mirrors the ramp
+  // shouldn't be flagged for a fault it inherited. That mirrors the ramp
   // rule's baseline gate.
   for (const week of touchedWeeks) {
     const baselineLoaded = loadedDaysIn(live, week);
     const resultLoaded = loadedDaysIn(cal, week);
     if (resultLoaded.size >= 7 && baselineLoaded.size < 7) {
       const opIndex = cal.find((e) => e.fromOp !== null && mondayOf(e.date) === week)!.fromOp!;
-      hard.push({
-        rule: "no_rest_day",
+      found(
+        "no_rest_day",
         opIndex,
-        detail: `the week of ${humanDate(week)} ends up with work on all seven days and no rest day at all — a day off is part of the training`,
-      });
+        `the week of ${humanDate(week)} ends up with work on all seven days — no rest day at all in it`,
+      );
     }
   }
 
@@ -725,11 +997,11 @@ export function validateOps(
     for (const e of cal) {
       if (e.fromOp === null) continue;
       if (e.date >= from && e.date < race && e.category === "quality") {
-        hard.push({
-          rule: "race_week_intensity",
-          opIndex: e.fromOp,
-          detail: `hard intensity on ${humanDate(e.date)} with your race on ${humanDate(race)} — race week stays easy`,
-        });
+        found(
+          "race_week_intensity",
+          e.fromOp,
+          `hard intensity on ${humanDate(e.date)} with your race on ${humanDate(race)} — that spends freshness you'd want on the day`,
+        );
       }
     }
   }
@@ -746,13 +1018,12 @@ export function validateOps(
     for (const e of cal) {
       if (e.fromOp === null) continue;
       if (e.date >= from && e.date <= ev.date && isHard(e, ctx)) {
-        hard.push({
-          rule: "event_taper",
-          opIndex: e.fromOp,
-          detail:
-            `hard work on ${humanDate(e.date)} lands inside the last two days before ${ev.label} (${humanDate(ev.date)}) — ` +
-            `you'd arrive sore, which is the opposite of the point`,
-        });
+        found(
+          "event_taper",
+          e.fromOp,
+          `hard work on ${humanDate(e.date)} lands inside the last two days before ${ev.label} (${humanDate(ev.date)}) — ` +
+            `soreness from a bout peaks about then, so you'd arrive stiff`,
+        );
       }
     }
   }
@@ -771,5 +1042,5 @@ export function validateOps(
     }
   }
 
-  return { hard, soft };
+  return { fatal, advisory, soft, hard: fatal };
 }

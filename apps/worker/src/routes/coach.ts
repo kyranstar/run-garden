@@ -45,7 +45,7 @@ import {
   wake,
   WAKE_LOCK_STALE_MINUTES,
 } from "../services/coach-wake.js";
-import type { Db } from "../services/db.js";
+import { chunkIds, type Db } from "../services/db.js";
 
 /**
  * The coach's HTTP surface (Plan A Tasks A7+A9). Proposals are STATE with a
@@ -140,6 +140,44 @@ coachRoutes.get("/state", async (c) => {
     .from(coachProposals)
     .where(and(eq(coachProposals.userId, userId), eq(coachProposals.status, "pending")))
     .orderBy(coachProposals.expiresAt);
+  // EVERY PROPOSAL THIS PAGE OF THE THREAD REFERS TO.
+  //
+  // A receipt carrying `refs.proposalId` IS a settled proposal — the worker
+  // attaches that ref to exactly the receipts that end one (approve, decline,
+  // expiry, supersede, and now a rejection that could not be applied) and to
+  // no other receipt. The panel renders those as settled cards with the
+  // manifest one tap away… but only while the tab that saw them live is still
+  // open, because this route used to return pending rows and nothing else. On
+  // reload, "what it did" degraded to a title.
+  //
+  // That mattered a little for an approved proposal and a lot for a rejected
+  // one, whose whole point is that the draft survives as something the athlete
+  // can open and read. So: resolve the ids the returned messages actually
+  // name. Chunked because D1 caps bound variables, and status-blind on purpose
+  // — a rejected row is inert everywhere that matters (approve/decline 409
+  // anything not pending, and the expiry sweep above only touches pending).
+  //
+  // Capped at the NEWEST few, because this endpoint polls every 3s while a
+  // wake is running and a proposal's `ops` is the largest JSON the coach
+  // produces. Older settled cards keep the title-only rendering they have
+  // always had; nobody scrolls back thirty messages during a wake.
+  const settledIds = [
+    ...new Set(
+      msgs // newest first, before the reverse below
+        .filter((m) => m.role === "receipt")
+        .map((m) => m.refs.proposalId)
+        .filter((id): id is string => !!id),
+    ),
+  ].slice(0, 12);
+  const settled = [];
+  for (const ids of chunkIds(settledIds)) {
+    settled.push(
+      ...(await db
+        .select()
+        .from(coachProposals)
+        .where(and(eq(coachProposals.userId, userId), inArray(coachProposals.id, ids)))),
+    );
+  }
   const [openQuestion] = await db
     .select()
     .from(coachQuestions)
@@ -190,6 +228,7 @@ coachRoutes.get("/state", async (c) => {
   return c.json({
     messages: [...msgs].reverse(),
     pendingProposals: pending,
+    settledProposals: settled,
     openQuestion: openQuestion ?? null,
     memoryCount: memoryRows.length,
     lastCoachAt: lastCoach?.at ?? null,

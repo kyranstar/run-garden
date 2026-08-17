@@ -12,6 +12,7 @@ import {
 import {
   addDays,
   addOpDates,
+  allowedNowLines,
   datedEventsFromMemory,
   HARD_LIMITS_PROMPT,
   newId,
@@ -63,6 +64,9 @@ export interface WakeResult {
   status: "ok" | "skipped" | "busy" | "resting" | "error";
   coachMessageId?: string;
   proposalIds?: string[];
+  /** Drafts that could not be applied and were kept as `rejected` rows so the
+   * athlete can still see what the coach tried to do (never approvable). */
+  rejectedProposalIds?: string[];
 }
 
 const MAX_OUTPUT_TOKENS_WAKE = 64_000; // a wake may draft a whole plan
@@ -87,6 +91,24 @@ const STALE_BRIEFING_HOURS = 20;
  */
 const WAKE_DEADLINE_MS = 240_000;
 const REPAIR_MIN_REMAINING_MS = 120_000;
+
+/**
+ * How many times a wake may re-ask the model to fix a FATAL guardrail
+ * violation before it gives up and keeps the draft as a rejected proposal.
+ *
+ * Two bounds, and both are load-bearing. This count is what makes the loop
+ * provably finite regardless of the clock — a model that returns the same
+ * illegal ops forever costs three calls, not an isolate. `timeForAnotherCall`
+ * is what makes it affordable: in practice a first call over two minutes buys
+ * zero retries, so the usual number of extra calls is one or none, and the
+ * count only matters when the model is fast and wrong.
+ *
+ * Convergence is also MONOTONE (see the loop): a repair is adopted only if it
+ * leaves strictly fewer proposals rejected than the answer it replaces, so a
+ * retry can never make the reply worse, and an answer that repeats itself ends
+ * the loop immediately rather than spending the rest of the budget on it.
+ */
+const MAX_GUARDRAIL_REPAIRS = 2;
 
 /**
  * How long a wake lock may sit untouched before the next wake takes it, and
@@ -476,6 +498,15 @@ export const WAKE_EXAMPLE_OPS = JSON.stringify([
  * because the coach plans carefully against a number that still rejects it.
  * That is not hypothetical: the live ski-prep wake proposed 313 minutes of
  * strength work against a 120-minute cold-start ceiling it was never shown.
+ *
+ * AND THE RULES ARE SPLIT IN TWO AS WELL (2026-08-17, later). Three of them
+ * reject a proposal; eight of them print a trade-off on it and let the athlete
+ * decide (@rg/domain `RULE_CLASS`). The prompt has to say which is which,
+ * because the consequence changes what good writing looks like: a wall is
+ * something to plan around silently, a price is something to name out loud and
+ * spend on purpose. Telling the model everything is a wall — which this prompt
+ * did — produced a coach that refused a request the athlete had explicitly
+ * made and defended the refusal in prose the athlete never asked for.
  */
 export const WAKE_SYSTEM_PROMPT = `You are the athlete's running and lifting coach inside Run Garden. You read one dossier and reply with ONE JSON object — nothing else.
 
@@ -512,6 +543,7 @@ ${HARD_LIMITS_PROMPT}
 
 Your contract:
 - PROPOSE, never act. Every plan change is a proposal the athlete taps to approve; nothing you say changes anything by itself.
+- THEY DECIDE, NOT YOU. Because nothing is applied without that tap, and because every cost the app can compute is printed on the card right above it, an aggressive request you can defend is a request you should ANSWER — with the ops, and with what it costs said plainly. Talking them out of something they asked for, while attaching nothing, is deciding for them. Say no to what you would say no to with them standing in front of you, and give them the version you'd give then: "here's the harder one, and here's what it takes out of the running."
 - SCOPE — you can fulfil essentially any plan request, and you must never claim otherwise:
   · ease/move/skip/swap reach ANY session in UPCOMING or LAST 14 DAYS by its [wo:...] id, imported COROS sessions included; approved moves of those ARE written to the watch and verified.
   · add creates sessions on any dates. Approved DURATION-block runs reach the watch too; distance-block runs and lift/mobility adds are app + Google Calendar only (say so only when it matters).
@@ -521,7 +553,7 @@ Your contract:
 - RESTRAINT IS A COMPLETE ANSWER — until they ask. Unprompted, propose only when a change genuinely beats the current plan; acknowledging a missed workout kindly, or saying nothing (briefing: null), is often correct. But a direct request to plan — "replan my week", "get me ready for X", "add lifting" — is not an invitation to summarise. It is the work. Answer it with ops, or with an honest offer to draft them.
 - NEVER ask what the dossier's ATHLETE section already answers, and never repeat a question listed in OPEN ITEMS. At most ONE question, only when the answer would change your coaching, with short tappable chips.
 - MEMORY: when the athlete tells you something durable, record it via memoryOps (fact = who they are, rule = a standing preference, note = time-boxed, with expiresAt). Prefer update over add for near-duplicates; ids are in the dossier.
-- FLAGS: if a proposal goes against a standing rule, say so in its flags array ("moves your Saturday long run").
+- FLAGS: the costs only YOU can see — a standing preference you are going against ("moves your Saturday long run"), or a judgement about their week no number captures. Never the enforced findings above: the app computes and prints every one of those itself, and a second copy in your words just contradicts the first.
 - EVIDENCE: every proposal's evidence cites dossier data ("slept 5h avg · HRV −9%"), and expiresAt is min(end of first affected day, +3 days).
 - GARDEN VOICE: MILESTONES carries the garden's state. AT MOST ONE garden reference per briefing, always tied to a concrete action ("an easy run tomorrow brings the rain back"), never guilt. Say nothing about the garden during rest mode or taper, or when its forecast stage is already a loss stage — one loss voice at a time.
 - SKIP TREATMENT: when proposing a skip, state in the rationale what the garden will see: the first sanctioned skip in a rolling week counts as a genuine rest day; further ones are merely neutral. OPEN ITEMS shows current mercy usage.
@@ -609,6 +641,31 @@ function summarizeOpKinds(kinds: string[]): string {
   const counts = new Map<string, number>();
   for (const k of kinds) counts.set(k, (counts.get(k) ?? 0) + 1);
   return [...counts.entries()].map(([k, n]) => (n > 1 ? `${n} ${k}s` : `1 ${k}`)).join(", ");
+}
+
+/**
+ * The receipt for a proposal that could not be applied — the LAYER-3 half of
+ * "never lose the work", and deliberately a different shape from
+ * {@link lostWorkBody}.
+ *
+ * `lostWorkBody` is for the schema boundary, where the ops never parsed and
+ * there is genuinely nothing left but a title: prose is all it can offer. Here
+ * the ops DID parse. They are a real, inspectable draft, and they are stored
+ * as a `coach_proposals` row with status `rejected` — so this receipt carries
+ * `refs.proposalId`, the panel absorbs it into a settled card, and the athlete
+ * can open the manifest and read exactly what the coach tried to do, day by
+ * day, session by session. Prose describing something invisible is what this
+ * replaces.
+ *
+ * The wording keeps what the old receipt got right — it names the rule's
+ * consequence, the days, and what would fix it — and is parsed back by
+ * `settledFromReceipt` in the panel into a pill, a title and a reason line. It
+ * has to read correctly as a plain sentence too, because an older client (or
+ * a wording this build does not know) renders it verbatim.
+ */
+function rejectedProposalBody(title: string, opKinds: string[], reasons: string[]): string {
+  const ops = opKinds.length > 0 ? ` (${summarizeOpKinds(opKinds)})` : "";
+  return `Not applied — “${title}”${ops}: ${reasons.join("; ")}. Nothing changed, and the draft is still here to look at.`;
 }
 
 /** Read proposal titles/op kinds out of JSON too broken to schema-parse —
@@ -1197,56 +1254,115 @@ export async function wake(
       return { status: "error" };
     }
 
-    // Guardrails: hard violations get one repair round-trip, then drop.
-    // `ctx` is the one built before the dossier — same numbers the coach was
-    // shown, so a rejection is never news about a limit it could not read.
+    // ── GUARDRAILS: converge, don't surrender ──────────────────────────
+    //
+    // Only FATAL violations reach here — a proposal that cannot be applied at
+    // all (it edits the past, names a session that does not exist, or asks
+    // for a structural rewrite of a plan the coach did not author). Every
+    // judgement about load is ADVISORY now and rides the proposal to the
+    // athlete as a trade-off line; see RULE_CLASS in @rg/domain for the split
+    // and its defence.
+    //
+    // What was here before was one re-ask that told the model what was wrong
+    // and not what was allowed, which is why it almost never worked: the
+    // model guessed, and the guess broke the same rule differently. The retry
+    // now carries `allowedNowLines(ctx)` — today's date, the ids that exist,
+    // the plans it authored, and the same budget the dossier showed it — all
+    // derived from the SAME ctx the retry will be judged against.
+    //
+    // `ctx` is the one built before the dossier, so a rejection is never news
+    // about a limit the coach could not read.
     let proposals = out.proposals;
-    const violated = proposals
-      .map((p, i) => ({ i, v: validateOps(p.ops, ctx) }))
-      .filter((x) => x.v.hard.length > 0);
-    if (violated.length > 0) {
-      const detail = violated
-        .map((x) => `proposal ${x.i} ("${proposals[x.i]!.title}"): ${x.v.hard.map((h) => `${h.rule} — ${h.detail}`).join("; ")}`)
-        .join("\n");
+    const fatalFor = (list: typeof proposals) =>
+      list.map((p, i) => ({ i, p, v: validateOps(p.ops, ctx) })).filter((x) => x.v.fatal.length > 0);
+    let stillBad = fatalFor(proposals);
+
+    for (let round = 0; stillBad.length > 0 && round < MAX_GUARDRAIL_REPAIRS; round++) {
       // Budget-gated like the schema repair, and for the same reason: the
       // briefing has already landed, so the cost of not asking again is one
       // proposal the athlete re-requests. The cost of asking again with no
       // time left was, live on 2026-08-17, the entire reply.
-      const repair = timeForAnotherCall()
-        ? await attemptParse([
-            ...messages,
-            { role: "assistant" as const, content: JSON.stringify(out) },
-            { role: "user" as const, content: `These proposals violate hard safety rules and were rejected:\n${detail}\nReply with ONLY the corrected full JSON (fix or drop the violating proposals; keep everything else).` },
-          ])
-        : { out: null };
-      if (repair.out) {
-        out = repair.out;
-        proposals = out.proposals;
-        coachMessageId = await landBriefing(out.briefing, out.focus, out.raceLine, coachMessageId);
-      }
-      const stillBad = proposals
-        .map((p, i) => ({ i, p, v: validateOps(p.ops, ctx) }))
-        .filter((x) => x.v.hard.length > 0);
-      // Dropping a proposal on the floor and saying nothing is the same
-      // failure as the salvage path, one stage later — the briefing still
-      // promises the change. Same mechanism, same honesty.
-      if (stillBad.length > 0) {
-        await persistMessage(
-          db,
-          userId,
-          "receipt",
-          lostWorkBody(
-            stillBad.map((x) => ({
-              title: x.p.title,
-              ops: x.p.ops.map((o) => o.kind),
-              reason: x.v.hard.map((h) => h.detail).join("; "),
-            })),
-          ),
+      if (!timeForAnotherCall()) {
+        console.warn(
+          `[coach-wake] guardrail repair skipped (out of budget) — ${Math.round((Date.now() - startedAt) / 1000)}s spent,` +
+            ` ${stillBad.length} proposal(s) still rejected`,
         );
+        break;
       }
-      const stillBadIdx = new Set(stillBad.map((x) => x.i));
-      proposals = proposals.filter((_, i) => !stillBadIdx.has(i));
+      const detail = stillBad
+        .map((x) => `proposal ${x.i} ("${x.p.title}"): ${x.v.fatal.map((h) => `${h.rule} — ${h.detail}`).join("; ")}`)
+        .join("\n");
+      const attempt = await attemptParse([
+        ...messages,
+        { role: "assistant" as const, content: JSON.stringify(out) },
+        {
+          role: "user" as const,
+          content:
+            `That reply was rejected before the athlete saw it. These are not judgement calls — each one means the proposal could not be applied at all:\n${detail}\n\n` +
+            `WHAT YOU MAY WORK WITH, right now:\n${allowedNowLines(ctx).join("\n")}\n\n` +
+            `Reply with ONLY the corrected full JSON — same intent, legal ops. Keep every proposal not listed above exactly as it is. If one genuinely cannot be expressed legally, drop that proposal and say what you'd do instead in the briefing rather than guessing at an id or a date.`,
+        },
+      ]);
+      if (!attempt.out) break; // a repair that doesn't even parse is not progress
+      const candidateBad = fatalFor(attempt.out.proposals);
+      // MONOTONE: adopt only a strict improvement. A model that returns the
+      // same illegal ops (which is the common case) ends the loop here
+      // instead of spending the rest of the budget hearing it again, and a
+      // repair can never cost the athlete a proposal that was already fine.
+      if (candidateBad.length >= stillBad.length) break;
+      out = attempt.out;
+      proposals = out.proposals;
+      stillBad = candidateBad;
+      coachMessageId = await landBriefing(out.briefing, out.focus, out.raceLine, coachMessageId);
     }
+
+    // ── AND IF IT STILL FAILS, KEEP THE WORK ───────────────────────────
+    //
+    // The draft is stored as a `rejected` proposal — inert (approve/decline
+    // 409 anything not pending, the expiry sweep only touches pending) but
+    // real, so the panel can render it as a settled card with its manifest
+    // one tap away. Dropping seven ops on the floor and describing them in a
+    // sentence is what this replaces; the receipt still names the rule, the
+    // days and what would fix it, and now it also points at the thing itself.
+    const rejectedIds: string[] = [];
+    for (const x of stillBad) {
+      const rejectedId = newId();
+      const rejectedAt = nowInstant();
+      await db.insert(coachProposals).values({
+        id: rejectedId,
+        userId,
+        planId: null,
+        title: x.p.title,
+        evidence: x.p.evidence,
+        rationale: x.p.rationale,
+        // Stored, not shown: the settled card renders the reason and the
+        // manifest, never a trade-off note — "here is what this would have
+        // cost you" is an odd thing to say about something that did not
+        // happen. They are on the row so a later reader (a diagnosis, a
+        // re-proposal) has the whole picture the wake had.
+        flags: [...new Set([...x.p.flags, ...x.v.advisory.map((a) => a.detail)])],
+        ops: x.p.ops,
+        status: "rejected",
+        createdAt: rejectedAt,
+        // Inert, and dated so nothing ever treats it as live.
+        expiresAt: today,
+        resolvedAt: rejectedAt,
+      });
+      await persistMessage(
+        db,
+        userId,
+        "receipt",
+        rejectedProposalBody(
+          x.p.title,
+          x.p.ops.map((o) => o.kind),
+          x.v.fatal.map((h) => h.detail),
+        ),
+        { proposalId: rejectedId },
+      );
+      rejectedIds.push(rejectedId);
+    }
+    const stillBadIdx = new Set(stillBad.map((x) => x.i));
+    proposals = proposals.filter((_, i) => !stillBadIdx.has(i));
 
     // Name → catalog originId, once for the whole wake (2026-08-16). The
     // coach is never handed the catalog, so this is the ONLY place an
@@ -1266,16 +1382,38 @@ export async function wake(
       );
     }
 
-    // Union validator-found soft flags into each surviving proposal.
+    // THE TRADE-OFFS, onto each surviving proposal.
+    //
+    // Three sources, one list, and the panel renders it above the approve
+    // button as "The trade-off — …":
+    //
+    //   · the model's own flags — the costs only it can see ("eases Tuesday's
+    //     10K-pace intervals in a build week");
+    //   · every ADVISORY the validator found — the costs the app can compute,
+    //     which is why the prompt now forbids the model from writing them
+    //     itself (same rule as the manifest: the model never states a fact the
+    //     system can compute, because two counts drift and neither can be
+    //     checked against the other);
+    //   · standing-rule findings, in the athlete's OWN words out of coach
+    //     memory ("Long runs stay on Saturdays") rather than ours.
+    //
+    // This is the whole of layer one. Every judgement that used to bin a
+    // proposal now arrives here instead, and the athlete decides.
     const workoutDates = new Map(ctx.workouts.map((w) => [w.id, w.date]));
     const now = nowInstant();
     const proposalIds: string[] = [];
     for (const p of proposals) {
-      const soft = validateOps(p.ops, ctx).soft;
+      const { advisory, soft } = validateOps(p.ops, ctx);
       const ruleBodies = new Map(
         (await db.select().from(coachMemory).where(eq(coachMemory.userId, userId))).map((r) => [r.id, r.body]),
       );
-      const flags = [...new Set([...p.flags, ...soft.map((v) => ruleBodies.get(v.rule) ?? v.rule)])];
+      const flags = [
+        ...new Set([
+          ...p.flags,
+          ...advisory.map((v) => v.detail),
+          ...soft.map((v) => ruleBodies.get(v.rule) ?? v.detail),
+        ]),
+      ];
 
       // Supersede: at most one live proposal per affected day.
       const affected = new Set(p.ops.flatMap((op) => opAffectedDates(op, workoutDates)));
@@ -1382,7 +1520,12 @@ export async function wake(
     });
 
     await consumeOnce();
-    return { status: "ok", coachMessageId, proposalIds };
+    return {
+      status: "ok",
+      coachMessageId,
+      proposalIds,
+      ...(rejectedIds.length > 0 ? { rejectedProposalIds: rejectedIds } : {}),
+    };
   } catch (err) {
     // A crash AFTER the briefing landed is not "the coach couldn't think" —
     // it thought, it spoke, and the plan changes fell over behind the words.

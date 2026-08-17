@@ -389,18 +389,28 @@ export interface SettledMark {
   /** Shares the DTO's own vocabulary so the two cannot drift. `undefined`
    * when the receipt's wording is not one this build knows. */
   status?: Exclude<CoachProposalDto["status"], "pending">;
-  /** "Approved", "Left as planned", "Expired", "Replaced" — absent when the
-   * wording is unknown, in which case `title` is the whole receipt. */
+  /** "Approved", "Left as planned", "Expired", "Replaced", "Not applied" —
+   * absent when the wording is unknown, in which case `title` is the whole
+   * receipt. */
   word?: string;
   /** The proposal's title, as the receipt carried it. */
   title: string;
+  /** Why it ended this way, when the receipt says. Only a rejection does: the
+   * other four endings are the athlete's own doing or the clock's, and need
+   * no explanation. */
+  reason?: string;
 }
 
-const SETTLED_SHAPES: Array<[RegExp, NonNullable<SettledMark["status"]>, string]> = [
+/** `[shape, status, word, reasonGroup?]`. Group 1 is always the title. */
+const SETTLED_SHAPES: Array<[RegExp, NonNullable<SettledMark["status"]>, string, number?]> = [
   [/^✓ approved — (.+)$/s, "approved", "Approved"],
   [/^Left as planned — (.+)$/s, "declined", "Left as planned"],
   [/^Expired — the moment passed: (.+)$/s, "expired", "Expired"],
   [/^Superseded: (.+)$/s, "superseded", "Replaced"],
+  // "Not applied — “Ski legs” (3 adds, 1 skip): <why>. Nothing changed, …"
+  // The op summary is dropped on the floor here — the card renders the real
+  // manifest — and the reason becomes its own line.
+  [/^Not applied — “(.+?)”(?: \(.+?\))?: ([^]+)$/, "rejected", "Not applied", 2],
 ];
 
 /**
@@ -408,18 +418,26 @@ const SETTLED_SHAPES: Array<[RegExp, NonNullable<SettledMark["status"]>, string]
  * Total: an unknown wording comes back as the whole body under no word.
  */
 export function settledFromReceipt(body: string): SettledMark {
-  for (const [re, status, word] of SETTLED_SHAPES) {
+  for (const [re, status, word, reasonGroup] of SETTLED_SHAPES) {
     const m = re.exec(body);
-    if (m) return { status, word, title: m[1]! };
+    if (m) return { status, word, title: m[1]!, reason: reasonGroup ? m[reasonGroup] : undefined };
   }
   return { title: body };
 }
 
 /**
  * A proposal that has been decided. Still in the conversation, at the moment
- * it settled, visibly done: no controls that ask for anything, and — while
- * this session still holds the proposal it came from — the way back into
- * what it actually did.
+ * it settled, visibly done: no controls that ask for anything, and the way
+ * back into what it actually did.
+ *
+ * IT IS ALSO WHERE A REJECTED DRAFT LIVES (2026-08-17). When the guardrails
+ * find something FATAL in a proposal and the coach's convergence retries
+ * cannot fix it, the ops are not thrown away — they are stored as a `rejected`
+ * proposal and land here, with the reason on the card and the whole manifest
+ * behind "What it would have done". The alternative, and what this replaces,
+ * was a sentence of prose describing seven operations the athlete could not
+ * see. No new surface was invented for it: a rejection is an ending like any
+ * other, and this card already renders endings.
  */
 export function SettledProposalCard({
   mark,
@@ -428,8 +446,9 @@ export function SettledProposalCard({
   domId,
 }: {
   mark: SettledMark;
-  /** Null once the page reloads: `/api/coach/state` returns pending
-   * proposals only, so all that survives is the receipt. */
+  /** Null only when this build's thread page doesn't carry it — `/api/coach/
+   * state` resolves every proposal its receipts refer to, so a settled card
+   * keeps its manifest across a reload. */
   proposal: CoachProposalDto | null;
   planned?: ReadonlyMap<string, PlannedRef>;
   /** The receipt's own id — the only stable handle a settled card has. */
@@ -448,6 +467,9 @@ export function SettledProposalCard({
         ) : null}
         <strong className="coach-prop-title">{mark.title}</strong>
       </div>
+      {/* Why, when there is a why — a rejection is the only ending the athlete
+          did not choose, so it is the only one that owes them a sentence. */}
+      {mark.reason ? <p className="coach-prop-evidence faint">{mark.reason}</p> : null}
       {manifest.lines.length > 0 ? (
         <OpenManifest
           label={mark.status === "approved" ? "What it did" : "What it would have done"}
@@ -978,6 +1000,7 @@ export function CoachComposer({
 export function CoachPanel({
   messages,
   proposals,
+  settledProposals,
   question,
   busy,
   acting,
@@ -995,6 +1018,11 @@ export function CoachPanel({
 }: {
   messages: CoachMessageDto[];
   proposals: CoachProposalDto[];
+  /** Every proposal the thread's receipts refer to, whatever its status. It is
+   * what lets a settled card — approved, declined, expired, replaced, or a
+   * REJECTED draft that could not be applied — still open its manifest after
+   * a reload. Never rendered as pending: `buildThread` keys on the receipt. */
+  settledProposals?: CoachProposalDto[];
   question: CoachQuestionDto | null;
   busy?: boolean;
   /** An approve/decline is in flight (audit C17) — disables every card's
@@ -1031,13 +1059,16 @@ export function CoachPanel({
   // reuses this instead of re-walking the thread and re-parsing every
   // receipt. The `known` update belongs INSIDE, before the build reads it.
   const { items, signature } = useMemo(() => {
+    // Settled first: a proposal that is somehow in both lists is pending, and
+    // the pending copy is the newer truth.
+    for (const p of settledProposals ?? []) known.set(p.id, p);
     for (const p of proposals) known.set(p.id, p);
     const built = buildThread(messages, proposals, known);
     // What "the conversation changed" means — not the array's identity (the
     // poll hands back a new one every time and nothing has happened) and not
     // its length (a proposal settling swaps one item for another).
     return { items: built, signature: built.map((i) => i.id).join(",") };
-  }, [messages, proposals, known]);
+  }, [messages, proposals, settledProposals, known]);
 
   const { ref: scrollRef, onScroll, onInteract } = useBottomAnchor(signature);
   const away = usePendingOffscreen(scrollRef, signature);

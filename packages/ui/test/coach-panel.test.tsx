@@ -268,11 +268,91 @@ describe("buildThread merges messages and proposals into one timeline", () => {
     expect(items[0]!.kind).toBe("message");
   });
 
-  it("reads all four outcomes the worker writes, in the DTO's own vocabulary", () => {
+  it("reads every outcome the worker writes, in the DTO's own vocabulary", () => {
     expect(settledFromReceipt("✓ approved — X")).toMatchObject({ status: "approved", title: "X" });
     expect(settledFromReceipt("Left as planned — X")).toMatchObject({ status: "declined", title: "X" });
     expect(settledFromReceipt("Expired — the moment passed: X")).toMatchObject({ status: "expired", title: "X" });
     expect(settledFromReceipt("Superseded: X")).toMatchObject({ status: "superseded", title: "X" });
+  });
+
+  /**
+   * THE DRAFT THAT COULD NOT BE APPLIED.
+   *
+   * Layer three of the guardrail rework: when the coach's convergence retries
+   * cannot make a proposal legal, the ops are kept as a `rejected` row and
+   * arrive here — the athlete reads why, and opens the manifest to see the
+   * seven operations that used to be described in one sentence and shown
+   * nowhere. No new surface: a rejection is an ending, and this card already
+   * renders endings.
+   */
+  describe("a rejected draft is an ending like any other", () => {
+    const body =
+      "Not applied — “Ski legs — front-loaded bouts before the 26th” (3 adds, 1 skip): " +
+      "Sat 15 Aug is already completed — only sessions still on the calendar can be changed. " +
+      "Nothing changed, and the draft is still here to look at.";
+
+    it("splits the worker's receipt into a pill, a title and a reason", () => {
+      const mark = settledFromReceipt(body);
+      expect(mark.status).toBe("rejected");
+      expect(mark.word).toBe("Not applied");
+      expect(mark.title).toBe("Ski legs — front-loaded bouts before the 26th");
+      expect(mark.reason).toContain("only sessions still on the calendar can be changed");
+      // The op summary belongs to the manifest, not to the sentence.
+      expect(mark.reason).not.toContain("3 adds");
+    });
+
+    it("renders the reason and the way into what it would have done — and no way to approve it", () => {
+      const rejected = prop("p9", {
+        status: "rejected",
+        title: "Ski legs — front-loaded bouts before the 26th",
+        ops: [{ kind: "add", date: "2026-08-16", session: { category: "strength", title: "Ski legs", durationMinutes: 45, lift: { exercises: [{ name: "Wall sit", sets: 3, holdSeconds: 45, weight: { type: "bodyweight" } }] } } }],
+      });
+      const html = render(
+        createElement(SettledProposalCard, { mark: settledFromReceipt(body), proposal: rejected, domId: "r9" }),
+      );
+      expect(html).toContain("Not applied");
+      expect(html).toContain("only sessions still on the calendar can be changed");
+      expect(html).toContain("What it would have done");
+      expect(html).not.toContain("What it did");
+      expect(html).not.toContain("Make it so");
+      expect(html).not.toContain("Leave it");
+    });
+
+    it("the thread absorbs the receipt into the card rather than printing both", () => {
+      const rejected = prop("p9", { status: "rejected", title: "Ski legs" });
+      const items = buildThread(
+        [msg("r9", { role: "receipt", body, refs: { proposalId: "p9" }, at: "2026-08-07T00:00:00Z" })],
+        [],
+        new Map([["p9", rejected]]),
+      );
+      expect(items).toHaveLength(1);
+      expect(items[0]!.kind).toBe("settled");
+      // …and a rejected proposal is never rendered as pending, because the
+      // receipt is what puts it in the thread.
+      expect(items.some((i) => i.kind === "pending")).toBe(false);
+    });
+
+    it("a settled proposal keeps its manifest across a reload", () => {
+      // `/api/coach/state` resolves every proposal its receipts refer to, and
+      // the panel seeds them into `known` — without that, "what it did"
+      // degraded to a title the moment the tab was reopened.
+      const settled = prop("p9", { status: "rejected", title: "Ski legs" });
+      const html = render(
+        createElement(CoachPanel, {
+          messages: [msg("r9", { role: "receipt", body, refs: { proposalId: "p9" }, at: "2026-08-07T00:00:00Z" })],
+          proposals: [],
+          settledProposals: [settled],
+          question: null,
+          onSend: noop,
+          onApprove: noop,
+          onDecline: noop,
+          onAnswer: noop,
+          onDismiss: noop,
+        } as never),
+      );
+      expect(html).toContain("Not applied");
+      expect(html).toContain("What it would have done");
+    });
   });
 
   it("a settled card is inert: no approve, no decline, no Why?", () => {

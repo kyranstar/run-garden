@@ -515,8 +515,13 @@ describe("what the coach can see (2026-08-16 input audit)", () => {
     expect(d.text).toContain("COLD START");
     expect(d.text).toContain("holds 56min (64min left)");
     // Which day is already hard: unanswerable from UPCOMING's duration-less
-    // lines, and the reason a 56-minute lift was invisible to the coach.
-    expect(d.text).toContain(`nothing hard may sit on the day before or after one of these: ${wed}`);
+    // lines, and the reason a 56-minute lift was invisible to the coach. The
+    // wording says what the finding DOES now — adjacency is advisory, so the
+    // athlete is told about a back-to-back pair, not refused one.
+    expect(d.text).toContain(`is a back-to-back pair the athlete gets told about: ${wed}`);
+    // …and LIMITS says so in its own header, because a model told a price is
+    // a wall plans around it silently instead of naming it.
+    expect(d.text).toContain("going past one does not reject anything");
     // Without a guardrail context the section is absent rather than guessed.
     expect((await buildDossier(db, userId, prefs)).sections).not.toContain("LIMITS");
   });

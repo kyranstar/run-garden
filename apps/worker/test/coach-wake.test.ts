@@ -16,7 +16,7 @@ import {
 } from "../src/services/coach-wake.js";
 import { pendingTriggers } from "../src/services/coach-triggers.js";
 import { claimUserLock, touchUserLock } from "../src/services/locks.js";
-import { makeTestDb, makeTestUser } from "./helpers.js";
+import { D1_BIND_LIMIT, makeTestDb, makeTestUser } from "./helpers.js";
 import type { Env } from "../src/env.js";
 
 function makeEnv(): Env {
@@ -325,7 +325,7 @@ describe("wake", () => {
     expect(msgs.filter((m) => m.role === "coach")).toHaveLength(0);
   });
 
-  it("hard violations: repair keeps trying, unrepaired proposals are dropped", async () => {
+  it("fatal violations: the repair is tried, and what survives it is KEPT as a rejected draft", async () => {
     const db = makeTestDb();
     const { userId, prefs } = await makeTestUser(db);
     const today = todayInZone(prefs.timezone);
@@ -358,12 +358,31 @@ describe("wake", () => {
       memoryOps: [],
     };
     // Model returns the same bad output on the repair attempt too.
-    const { fetchImpl } = scriptedFetch([chatBody(bad), chatBody(bad)]);
+    const { fetchImpl, calls } = scriptedFetch([chatBody(bad), chatBody(bad)]);
     const res = await wake(db, makeEnv(), userId, prefs, { kind: "message", body: "do it" }, fetchImpl);
     expect(res.status).toBe("ok");
     expect(res.proposalIds).toHaveLength(0);
+    // An answer that repeats itself ends the loop at once — convergence is
+    // monotone, so a repair that fixes nothing is not paid for twice.
+    expect(calls.length).toBe(2);
+    // The draft is not on the floor. It is a `rejected` row: inert, never
+    // approvable, and the panel renders it as a settled card whose manifest
+    // shows exactly what the coach tried to do.
     const props = await db.select().from(schema.coachProposals).where(eq(schema.coachProposals.userId, userId));
-    expect(props).toHaveLength(0);
+    expect(props.map((p) => p.status)).toEqual(["rejected"]);
+    expect(props[0]!.ops).toHaveLength(1);
+    expect(res.rejectedProposalIds).toEqual([props[0]!.id]);
+    // …and the receipt points at it, so the card and the sentence are one
+    // thing rather than two accounts of the same loss.
+    const rs = await db
+      .select()
+      .from(schema.coachMessages)
+      .where(and(eq(schema.coachMessages.userId, userId), eq(schema.coachMessages.role, "receipt")));
+    const rejection = rs.find((r) => r.body.startsWith("Not applied"))!;
+    expect(rejection, "a rejected proposal must leave a receipt naming it").toBeTruthy();
+    expect(rejection.refs.proposalId).toBe(props[0]!.id);
+    expect(rejection.body).toContain("Rewrite the past");
+    expect(rejection.body).toContain("already completed");
   });
 
   it("supersede: a new proposal touching the same day retires the old one", async () => {
@@ -675,12 +694,14 @@ describe("wake resilience (user requirement 2026-08-12: never error, survive nav
     expect(receipt.body).toContain("Nothing was applied");
   });
 
-  it("a proposal dropped by the guardrails says so too — same mechanism as salvage", async () => {
+  it("a proposal the guardrails cannot pass says so too — and keeps the draft", async () => {
     const db = makeTestDb();
     const { userId, prefs } = await makeTestUser(db);
-    // Rewriting an imported plan's structure is a hard guardrail violation
-    // (H7); the repair round-trip returns the same thing, so the proposal is
-    // filtered out entirely and — before this — vanished without a word.
+    // Rewriting an imported plan's structure is a FATAL guardrail violation:
+    // `archiveWeek` no-ops on the authorship guard while `firmUp` would write
+    // rows into a plan with no coach_plans row, so half the op silently lands.
+    // The repair round-trip returns the same thing, so the proposal is filtered
+    // out of the pending set and — before this — vanished without a word.
     const bad = {
       briefing: "Rebuilding next week from scratch.",
       proposals: [
@@ -703,8 +724,13 @@ describe("wake resilience (user requirement 2026-08-12: never error, survive nav
     expect(res.proposalIds ?? []).toHaveLength(0);
     const msgs = await db.select().from(schema.coachMessages).where(eq(schema.coachMessages.userId, userId));
     const receipt = msgs.find((m) => m.role === "receipt" && m.body.includes("Rebuild next week"));
-    expect(receipt, "a dropped proposal must leave a receipt naming it").toBeTruthy();
-    expect(receipt!.body).toContain("Nothing was applied");
+    expect(receipt, "a rejected proposal must leave a receipt naming it").toBeTruthy();
+    expect(receipt!.body).toContain("came from your watch");
+    expect(receipt!.body).toContain("still here to look at");
+    // The receipt is the card: `refs.proposalId` is what `buildThread` keys on.
+    const [kept] = await db.select().from(schema.coachProposals).where(eq(schema.coachProposals.userId, userId));
+    expect(kept!.status).toBe("rejected");
+    expect(receipt!.refs.proposalId).toBe(kept!.id);
   });
 
   it("a message wake that dies leaves an unanswered_message marker; the next open wake answers and consumes it", async () => {
@@ -866,7 +892,9 @@ describe("the guardrail calendar is the athlete's calendar", () => {
       },
     ];
     const out = validateOps(ops, await guardrailCtx(db, userId, prefs));
-    expect(out.hard, "the phantom Tuesday quality run must not reject this").toEqual([]);
+    expect(out.fatal, "the phantom Tuesday quality run must not reject this").toEqual([]);
+    // …and must not even show up as a cost the athlete is asked to weigh.
+    expect(out.advisory, "a session that does not exist has no trade-off to name").toEqual([]);
   });
 });
 
@@ -1630,5 +1658,459 @@ describe("the wake lock's staleness window", () => {
     await touchUserLock(db, userId, "wake", "a-token-from-a-dead-isolate");
     const after = (await db.select().from(schema.coachLocks).where(eq(schema.coachLocks.userId, userId)))[0]!;
     expect(after.claimedAt).toBe(before.claimedAt);
+  });
+});
+
+/* ══════════════════════════════════════════════════════════════════════ *
+ * TONIGHT'S FIVE, REPLAYED — every one of them must now reach the athlete
+ *
+ * Five separate failures in one evening, five different causes, one
+ * architecture: a single objection discarded the whole proposal, there was no
+ * negotiation, and the athlete was never consulted. Verbatim, from prod:
+ *
+ *   Athlete: "I would like this to be a bit more intense and front loaded.
+ *   I asked for ski prep lifting every day and you just gave me one real
+ *   session. Perhaps we can do 3 real sessions as a compromise."
+ *
+ *   Receipt: "One plan change didn't make it … hard days back to back on
+ *   Sat 15 Aug and Sun 16 Aug — one of the two needs to be easy. Nothing
+ *   was applied."
+ *
+ * Seven ops and $0.397, binned, over a Saturday long run that had ALREADY
+ * HAPPENED. Each test below drives the whole pipeline — recorded model reply →
+ * zod → guardrails → the rows the panel reads — and asserts the proposal is
+ * PENDING and carries the right trade-off, because "reaches the athlete" means
+ * a card with an approve button on it, not a validator returning an array.
+ * ══════════════════════════════════════════════════════════════════════ */
+describe("tonight's five failures reach the athlete as choices", () => {
+  /** One planned row, with the fields "hard" actually depends on. */
+  async function seedRow(
+    db: Db,
+    userId: string,
+    row: {
+      id: string;
+      date: string;
+      category: string;
+      sport?: string;
+      minutes?: number;
+      state?: string;
+      archiveReason?: string;
+    },
+  ): Promise<void> {
+    const at = nowInstant();
+    await db.insert(schema.plannedWorkouts).values({
+      id: row.id,
+      userId,
+      planId: "p",
+      sourceWorkoutId: `4738:${row.id}`,
+      title: row.category,
+      category: row.category,
+      sport: row.sport ?? "run",
+      originalPlanDate: row.date,
+      lastVerifiedCorosDate: row.date,
+      effectiveDate: row.date,
+      effectiveTime: "07:00",
+      completionState: row.state ?? "scheduled",
+      sourceContentFingerprint: `fp-${row.id}`,
+      calendarBlockDurationSeconds: (row.minutes ?? 60) * 60,
+      archivedAt: row.archiveReason ? at : null,
+      archiveReason: row.archiveReason ?? null,
+      createdAt: at,
+      updatedAt: at,
+    });
+  }
+
+  /** A model reply carrying one proposal made of `ops`. */
+  const reply = (title: string, ops: unknown[], briefing = "Here's the week.") => ({
+    briefing,
+    proposals: [{ title, evidence: "e", rationale: "r", expiresAt: "2026-12-31", flags: [], ops }],
+    question: null,
+    memoryOps: [],
+    focus: null,
+  });
+
+  const lift = (minutes: number, title = "Ski legs") => ({
+    category: "strength",
+    title,
+    durationMinutes: minutes,
+    lift: { exercises: [{ name: "Wall sit", sets: 3, holdSeconds: 45 }] },
+  });
+  const easyRun = (minutes: number) => ({
+    category: "easy",
+    title: `Easy ${minutes}`,
+    durationMinutes: minutes,
+    run: { blocks: [{ kind: "duration", value: minutes, intensity: "easy" }] },
+  });
+
+  async function pendingOf(db: Db, userId: string) {
+    return db
+      .select()
+      .from(schema.coachProposals)
+      .where(and(eq(schema.coachProposals.userId, userId), eq(schema.coachProposals.status, "pending")));
+  }
+  async function receiptsOf(db: Db, userId: string) {
+    return db
+      .select()
+      .from(schema.coachMessages)
+      .where(and(eq(schema.coachMessages.userId, userId), eq(schema.coachMessages.role, "receipt")));
+  }
+
+  /**
+   * #1 — THE OVER-STRICT EXERCISE SCHEMA. "Wall sits and anything else that
+   * will get me prepared" produced three exercises the schema could not
+   * accept, and the whole proposal went with them. A hold, a slow eccentric
+   * and per-side work are the entire vocabulary of ski prep.
+   */
+  it("#1 a lift written in holds, eccentrics and per-side work survives, in ONE call", async () => {
+    const db = makeTestDb();
+    const { userId, prefs } = await makeTestUser(db);
+    const day = addDays(todayInZone(prefs.timezone), 3);
+    await seedRow(db, userId, { id: "later", date: addDays(day, 7), category: "easy" });
+    const ops = [
+      {
+        kind: "add",
+        date: day,
+        session: {
+          category: "strength",
+          title: "Ski legs — holds and eccentrics",
+          durationMinutes: 40,
+          lift: {
+            exercises: [
+              { name: "Wall sit", sets: 3, holdSeconds: 45, restSeconds: 60 },
+              { name: "Bulgarian split squat", sets: 3, reps: 8, perSide: true, eccentricSeconds: 4, weight: { type: "kg", value: 12 } },
+              { name: "Copenhagen plank", sets: 2, holdSeconds: 20, perSide: true, note: "knee-bent is fine" },
+            ],
+          },
+        },
+      },
+    ];
+    const { fetchImpl, calls } = scriptedFetch([chatBody(reply("Ski-prep legs", ops))]);
+    const res = await wake(db, makeEnv(), userId, prefs, { kind: "message", body: "wall sits and whatever else" }, fetchImpl);
+
+    expect(res.status).toBe("ok");
+    expect(calls.length, "a well-shaped answer costs one call").toBe(1);
+    const pending = await pendingOf(db, userId);
+    expect(pending, "the proposal must reach the athlete").toHaveLength(1);
+    // The exercises survive intact — the sheet and the manifest read these.
+    const kept = (pending[0]!.ops as Array<{ session: { lift: { exercises: unknown[] } } }>)[0]!;
+    expect(kept.session.lift.exercises).toHaveLength(3);
+    expect(await receiptsOf(db, userId)).toHaveLength(0);
+  });
+
+  /**
+   * #2 — THE PHANTOM CALENDAR. `guardrailCtx` was the one read of
+   * `planned_workouts` in the coach path with no `archivedAt` filter, so the
+   * validator judged a Tuesday holding one real easy run and three sessions
+   * COROS had dropped. The coach could not even NAME them: the dossier filters
+   * archived rows, so they carry no [wo:id].
+   */
+  it("#2 archived phantoms cannot object on the athlete's behalf", async () => {
+    const db = makeTestDb();
+    const { userId, prefs } = await makeTestUser(db);
+    const today = todayInZone(prefs.timezone);
+    const mon = addDays(today, 1);
+    const tue = addDays(today, 2);
+    await seedRow(db, userId, { id: "mon-600s", date: mon, category: "quality", minutes: 100 });
+    await seedRow(db, userId, { id: "tue-live", date: tue, category: "easy", minutes: 75 });
+    await seedRow(db, userId, { id: "tue-gone", date: tue, category: "quality", minutes: 60, archiveReason: "absence_confirmed" });
+    await seedRow(db, userId, { id: "tue-lift-gone", date: tue, category: "strength", sport: "strength", minutes: 56, archiveReason: "duplicate_mirror" });
+
+    const { fetchImpl } = scriptedFetch([
+      chatBody(
+        reply("Ski legs — first bout", [
+          { kind: "ease", workoutId: "mon-600s", session: easyRun(35) },
+          { kind: "add", date: mon, session: lift(33) },
+        ]),
+      ),
+    ]);
+    const res = await wake(db, makeEnv(), userId, prefs, { kind: "message", body: "get me ready to ski" }, fetchImpl);
+
+    expect(res.status).toBe("ok");
+    const pending = await pendingOf(db, userId);
+    expect(pending).toHaveLength(1);
+    // Tuesday is an easy run. Nothing may mention it as a hard day.
+    expect(pending[0]!.flags.join(" ")).not.toContain(tue);
+    expect(pending[0]!.flags).toEqual([]);
+  });
+
+  /**
+   * #3 — UNCHUNKED D1 BINDS. A live wake spent 125 seconds and an LLM call,
+   * persisted its briefing, then died on a 134-id `inArray`. `makeTestDb`'s
+   * bound-variable cap makes that failure reproduce in milliseconds; without
+   * it the whole class is invisible locally, because better-sqlite3 binds
+   * thousands quite happily.
+   */
+  it("#3 a 130-workout calendar still gets a proposal, at D1's real bind ceiling", async () => {
+    const db = makeTestDb({ boundVariableCap: D1_BIND_LIMIT });
+    const { userId, prefs } = await makeTestUser(db);
+    const today = todayInZone(prefs.timezone);
+    for (let i = 0; i < 130; i++) {
+      await seedRow(db, userId, { id: `w${i}`, date: addDays(today, 1 + (i % 50)), category: "easy", minutes: 40 });
+    }
+    const { fetchImpl } = scriptedFetch([
+      chatBody(reply("Ease tomorrow", [{ kind: "ease", workoutId: "w0", session: easyRun(30) }])),
+    ]);
+    const res = await wake(db, makeEnv(), userId, prefs, { kind: "message", body: "ease tomorrow" }, fetchImpl);
+    expect(res.status).toBe("ok");
+    expect(await pendingOf(db, userId)).toHaveLength(1);
+  });
+
+  /**
+   * #4 — THE NUMBERS THE MODEL COULD NOT SEE. The live wake proposed 313
+   * minutes of strength against a 120-minute cold-start ceiling nobody had
+   * shown it. Both halves are fixed: the ceiling is in the prompt and the
+   * remaining budget is in the dossier — AND, when the coach spends it anyway,
+   * that is the athlete's call to make and not a reason to bin the plan.
+   */
+  it("#4 a cold-start block far over the ceiling arrives as a trade-off, not a refusal", async () => {
+    const db = makeTestDb();
+    const { userId, prefs } = await makeTestUser(db);
+    const today = todayInZone(prefs.timezone);
+    // A Monday at least a week out, computed rather than offset: the three
+    // bouts must land in ONE week whatever weekday the suite runs on, or the
+    // cold-start total splits and the test measures the calendar instead of
+    // the rule. (A test that reads the real clock is a time bomb — this repo
+    // has had one go off on a Saturday.)
+    const dow = new Date(`${today}T12:00:00Z`).getUTCDay(); // 0 = Sunday
+    const mon = addDays(today, 7 + ((8 - dow) % 7));
+    expect(new Date(`${mon}T12:00:00Z`).getUTCDay(), "the anchor must be a Monday").toBe(1);
+    await seedRow(db, userId, { id: "anchor", date: addDays(mon, 20), category: "easy" });
+    // No strength history at all: the cold-start ceiling is what applies.
+    const ops = [0, 2, 4].map((n) => ({ kind: "add", date: addDays(mon, n), session: lift(105, `Bout ${n}`) }));
+    const { fetchImpl, calls } = scriptedFetch([chatBody(reply("Ski legs — three bouts", ops))]);
+    const res = await wake(db, makeEnv(), userId, prefs, { kind: "message", body: "3 real sessions as a compromise" }, fetchImpl);
+
+    expect(res.status).toBe("ok");
+    expect(calls.length, "an advisory is not a reason to re-ask the model").toBe(1);
+    const pending = await pendingOf(db, userId);
+    expect(pending, "315 minutes of strength is a choice, not an error").toHaveLength(1);
+    const flags = pending[0]!.flags.join(" | ");
+    expect(flags).toContain("no strength work in the last four weeks");
+    expect(flags).toContain("315 minutes");
+    // …and it earns the judgement rather than nagging: the cost, once.
+    expect(flags).toContain("the soreness turns up a day or two after each session");
+    expect(flags).not.toMatch(/too much|must|should|needs to/);
+    expect(await receiptsOf(db, userId)).toHaveLength(0);
+  });
+
+  /**
+   * #5 — HARD ADJACENCY, ON A SATURDAY THAT HAD ALREADY HAPPENED. The exact
+   * proposal from the transcript: the athlete asked for three real sessions,
+   * the coach wrote them and reasoned about the cost, and a rule refused on
+   * the athlete's behalf over a long run they had already run.
+   *
+   * The finding is unchanged and still true. What changed is who decides.
+   */
+  it("#5 the front-loaded ski block the athlete asked for is approvable, and says what it costs", async () => {
+    const db = makeTestDb();
+    const { userId, prefs } = await makeTestUser(db);
+    const today = todayInZone(prefs.timezone);
+    const tomorrow = addDays(today, 1);
+    // The long run is TODAY and already done — nothing the coach proposes can
+    // change it, which is why refusing over it was indefensible.
+    await seedRow(db, userId, { id: "sat-long", date: today, category: "long", minutes: 116, state: "completed" });
+    await seedRow(db, userId, { id: "mon-q", date: addDays(today, 2), category: "quality", minutes: 80 });
+
+    const { fetchImpl, calls } = scriptedFetch([
+      chatBody(
+        reply(
+          "Ski legs — front-loaded bouts before the 26th",
+          [{ kind: "add", date: tomorrow, session: lift(45, "Ski legs — first bout") }],
+          "Three real bouts, and the runs give up length to pay for them.",
+        ),
+      ),
+    ]);
+    const res = await wake(
+      db,
+      makeEnv(),
+      userId,
+      prefs,
+      { kind: "message", body: "more intense and front loaded — 3 real sessions as a compromise" },
+      fetchImpl,
+    );
+
+    expect(res.status).toBe("ok");
+    expect(calls.length).toBe(1);
+    const pending = await pendingOf(db, userId);
+    expect(pending, "the athlete asked for this — it must reach them").toHaveLength(1);
+    const flags = pending[0]!.flags.join(" | ");
+    // The cost is named honestly, INCLUDING that the earlier day is done: the
+    // old wording told the athlete to go and make yesterday easy.
+    expect(flags).toContain("which you've already trained hard");
+    expect(flags).toContain("they stack whether the plan says so or not");
+    expect(flags).not.toContain("needs to be easy");
+    // Nothing was lost, so nothing apologises for losing it.
+    expect(await receiptsOf(db, userId)).toHaveLength(0);
+    // And the trade-off is on the card the athlete taps, which is the whole
+    // architecture: the panel renders `flags` directly above approve/decline.
+    expect(pending[0]!.status).toBe("pending");
+  });
+
+  /**
+   * …and the coach can still SEE the stack before it plans. The advisory
+   * would be a nasty surprise if the dossier's LIMITS section still began at
+   * today, which is exactly what it did: the coach met this finding for the
+   * first time in a rejection, about a day it could not change.
+   */
+  it("the dossier lists yesterday's hard day, so the coach is not ambushed by it", async () => {
+    const { buildDossier } = await import("../src/services/coach-context.js");
+    const { guardrailCtx } = await import("../src/services/coach-wake.js");
+    const db = makeTestDb();
+    const { userId, prefs } = await makeTestUser(db);
+    const today = todayInZone(prefs.timezone);
+    const yesterday = addDays(today, -1);
+    await seedRow(db, userId, { id: "yday-long", date: yesterday, category: "long", minutes: 116, state: "completed" });
+    const guard = await guardrailCtx(db, userId, prefs);
+    const d = await buildDossier(db, userId, prefs, guard);
+    expect(d.text).toContain(yesterday);
+    expect(d.text).toContain("the first is yesterday — already done");
+  });
+});
+
+/* ══════════════════════════════════════════════════════════════════════ *
+ * CONVERGENCE — the coach gets a bounded chance to fix what is genuinely
+ * broken, instead of losing the work.
+ *
+ * The schema repair loop is the precedent and this reuses its shape and its
+ * budget discipline. Two things are proved here that the earlier one-shot
+ * repair could not claim: the retry is told what is ALLOWED (an earlier
+ * attempt fed back only the violation, and the model just broke the same rule
+ * differently), and it cannot loop — bounded by a hard count AND by the wake
+ * deadline, whichever bites first.
+ * ══════════════════════════════════════════════════════════════════════ */
+describe("convergence: a fatal violation is a retry, not a loss", () => {
+  const easySession = (minutes: number) => ({
+    category: "easy",
+    title: `Easy ${minutes}`,
+    durationMinutes: minutes,
+    run: { blocks: [{ kind: "duration", value: minutes, intensity: "easy" }] },
+  });
+  const wrap = (ops: unknown[]) => ({
+    briefing: "Easing what needs easing.",
+    proposals: [{ title: "Ease it", evidence: "e", rationale: "r", expiresAt: "2026-12-31", flags: [], ops }],
+    question: null,
+    memoryOps: [],
+    focus: null,
+  });
+
+  it("a ghost workout id is fixed on the retry, and the athlete gets the proposal", async () => {
+    const db = makeTestDb();
+    const { userId, prefs } = await makeTestUser(db);
+    const date = addDays(todayInZone(prefs.timezone), 2);
+    await seedWorkout(db, userId, date, "w-real");
+
+    // First answer names an id nobody has — the quietest failure the pipeline
+    // has, because `applyOps` would UPDATE nothing and report success.
+    const ghost = wrap([{ kind: "ease", workoutId: "wo-hallucinated", session: easySession(30) }]);
+    const fixed = wrap([{ kind: "ease", workoutId: "w-real", session: easySession(30) }]);
+    const { fetchImpl, calls } = scriptedFetch([chatBody(ghost), chatBody(fixed)]);
+    const res = await wake(db, makeEnv(), userId, prefs, { kind: "message", body: "ease that one" }, fetchImpl);
+
+    expect(res.status).toBe("ok");
+    expect(calls.length).toBe(2);
+    expect(res.proposalIds).toHaveLength(1);
+    expect(res.rejectedProposalIds).toBeUndefined();
+    const props = await db.select().from(schema.coachProposals).where(eq(schema.coachProposals.userId, userId));
+    expect(props.map((p) => p.status)).toEqual(["pending"]);
+    // Nothing was lost, so nothing says anything was.
+    const rs = await db
+      .select()
+      .from(schema.coachMessages)
+      .where(and(eq(schema.coachMessages.userId, userId), eq(schema.coachMessages.role, "receipt")));
+    expect(rs).toHaveLength(0);
+  });
+
+  it("the retry is told what is ALLOWED, not only what was wrong", async () => {
+    const db = makeTestDb();
+    const { userId, prefs } = await makeTestUser(db);
+    const today = todayInZone(prefs.timezone);
+    const date = addDays(today, 2);
+    await seedWorkout(db, userId, date, "w-real");
+
+    const bodies: string[] = [];
+    const ghost = wrap([{ kind: "ease", workoutId: "wo-hallucinated", session: easySession(30) }]);
+    const fetchImpl = (async (_url: unknown, init: RequestInit) => {
+      bodies.push(String(init.body));
+      return new Response(JSON.stringify(chatBody(ghost)), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+    }) as unknown as typeof fetch;
+    await wake(db, makeEnv(), userId, prefs, { kind: "message", body: "ease that one" }, fetchImpl);
+
+    expect(bodies.length).toBe(2);
+    const repairPrompt = bodies[1]!;
+    // The violation…
+    expect(repairPrompt).toContain("unknown_workout");
+    // …and the budget, which is the half that was missing. Without the ids it
+    // may actually name, the model can only guess at another one.
+    expect(repairPrompt).toContain("[wo:w-real]");
+    expect(repairPrompt).toContain(`today is ${today}`);
+    expect(repairPrompt).toContain("WHAT YOU MAY WORK WITH");
+  });
+
+  it("it cannot loop: an unfixable answer costs a bounded number of calls", async () => {
+    const db = makeTestDb();
+    const { userId, prefs } = await makeTestUser(db);
+    // Two independently-broken proposals, so "fewer than before" has room to
+    // be true and the loop is not ended by the monotone guard on round one.
+    const stubborn = {
+      briefing: "Both of these are impossible.",
+      proposals: ["a", "b"].map((k) => ({
+        title: `Impossible ${k}`,
+        evidence: "e",
+        rationale: "r",
+        expiresAt: "2026-12-31",
+        flags: [],
+        ops: [{ kind: "retirePlan", planId: `not-a-coach-plan-${k}` }],
+      })),
+      question: null,
+      memoryOps: [],
+      focus: null,
+    };
+    // Nine scripted answers available; the bound is what stops it, not supply.
+    const { fetchImpl, calls } = scriptedFetch(Array.from({ length: 9 }, () => chatBody(stubborn)));
+    const res = await wake(db, makeEnv(), userId, prefs, { kind: "message", body: "retire it" }, fetchImpl);
+
+    expect(res.status).toBe("ok");
+    // One first call, and at most MAX_GUARDRAIL_REPAIRS after it — and in fact
+    // exactly one, because an answer that repeats itself ends the loop.
+    expect(calls.length).toBeLessThanOrEqual(3);
+    expect(calls.length).toBe(2);
+    // Both drafts survive as rejected rows, each with its own receipt.
+    const props = await db.select().from(schema.coachProposals).where(eq(schema.coachProposals.userId, userId));
+    expect(props.map((p) => p.status)).toEqual(["rejected", "rejected"]);
+    expect(res.rejectedProposalIds).toHaveLength(2);
+  });
+
+  it("it respects the deadline: no retry when there is not enough time left", async () => {
+    const db = makeTestDb();
+    const { userId, prefs } = await makeTestUser(db);
+    await seedWorkout(db, userId, addDays(todayInZone(prefs.timezone), 2), "w-real");
+    const ghost = wrap([{ kind: "ease", workoutId: "wo-hallucinated", session: easySession(30) }]);
+
+    // A model call that "takes" 150 seconds of wall clock. The wake budget is
+    // 240s with a 120s floor for another call, so after the first there are
+    // 90s left and the retry must not be attempted — this is the live failure
+    // that turned a slow wake into a dead one, and the reason a repair is a
+    // luxury bought out of time left over rather than a step.
+    const realNow = Date.now.bind(Date);
+    let skew = 0;
+    const nowSpy = vi.spyOn(Date, "now").mockImplementation(() => realNow() + skew);
+    try {
+      const { fetchImpl, calls } = scriptedFetch([chatBody(ghost), chatBody(ghost)]);
+      const slow = (async (...args: Parameters<typeof fetch>) => {
+        skew += 150_000;
+        return fetchImpl(...args);
+      }) as typeof fetch;
+      const res = await wake(db, makeEnv(), userId, prefs, { kind: "message", body: "ease that one" }, slow);
+      expect(res.status).toBe("ok");
+      expect(calls.length, "no second call once the budget is gone").toBe(1);
+      // …and the draft is still kept rather than thrown away.
+      const props = await db.select().from(schema.coachProposals).where(eq(schema.coachProposals.userId, userId));
+      expect(props.map((p) => p.status)).toEqual(["rejected"]);
+    } finally {
+      nowSpy.mockRestore();
+    }
   });
 });

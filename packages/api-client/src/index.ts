@@ -312,7 +312,10 @@ export interface CoachProposalDto {
   rationale: string;
   flags: string[];
   ops: unknown[];
-  status: "pending" | "approved" | "declined" | "superseded" | "expired";
+  /** `rejected` = the guardrails found something FATAL in it and the coach's
+   * convergence retries could not fix it. Kept, inspectable, never
+   * approvable — the draft is not lost, it just cannot be applied. */
+  status: "pending" | "approved" | "declined" | "superseded" | "expired" | "rejected";
   createdAt: string;
   expiresAt: string;
 }
@@ -476,6 +479,10 @@ export interface CorosConnectResponse {
 export interface CoachStateResponse {
   messages: CoachMessageDto[];
   pendingProposals: CoachProposalDto[];
+  /** Every proposal a receipt in `messages` refers to, whatever its status —
+   * so a settled card (approved, declined, expired, replaced, rejected) keeps
+   * its manifest across a reload instead of degrading to a title. */
+  settledProposals?: CoachProposalDto[];
   openQuestion: CoachQuestionDto | null;
   memoryCount: number;
   lastCoachAt: string | null;

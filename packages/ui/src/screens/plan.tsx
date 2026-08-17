@@ -899,6 +899,7 @@ export function PlanScreen() {
   const coachProps = coach.state.data && {
     messages: coach.state.data.messages,
     proposals: coach.state.data.pendingProposals,
+    settledProposals: coach.state.data.settledProposals,
     question: coach.state.data.openQuestion,
     busy: coach.busy,
     acting: coach.acting,
