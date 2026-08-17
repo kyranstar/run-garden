@@ -483,3 +483,73 @@ describe("pace targets on coach sessions (2026-08-14)", () => {
     expect(stages[0]).toMatchObject({ targetType: "none", targetLow: null, targetHigh: null });
   });
 });
+
+/**
+ * One `add` op, N real sessions (2026-08-17). The op got cheaper to WRITE —
+ * a ten-day daily piece used to cost ten ops each re-serialising the same
+ * exercise list, and cost a live wake 16k output tokens — but what the
+ * athlete approves must be indistinguishable from what ten adds produced:
+ * one planned_workouts row per date, each with its own id and its own
+ * calendar block.
+ */
+describe("an add carrying multiple dates expands into one session per date", () => {
+  it("writes a real row for every date, ids distinct, and is idempotent", async () => {
+    const db = makeTestDb();
+    const { userId, prefs } = await makeTestUser(db);
+    const today = todayInZone(prefs.timezone);
+    const dates = [addDays(today, 1), addDays(today, 2), addDays(today, 3)];
+    const op = {
+      kind: "add",
+      date: dates[0],
+      dates: [dates[1], dates[2]],
+      session: {
+        category: "yoga",
+        title: "Ankles and hips",
+        durationMinutes: 10,
+        mobility: {
+          rounds: 2,
+          exercises: [
+            {
+              name: "Couch stretch",
+              sets: 1,
+              holdSeconds: 45,
+              perSide: true,
+              weight: { type: "bodyweight" },
+              restSeconds: 0,
+            },
+          ],
+        },
+      },
+    } as unknown as CoachOp;
+
+    const out = await applyOps(db, userId, prefs, "prop-daily", [op]);
+    expect(out.created).toHaveLength(3);
+    expect(new Set(out.created).size).toBe(3);
+    const rows = await db
+      .select()
+      .from(schema.plannedWorkouts)
+      .where(and(eq(schema.plannedWorkouts.userId, userId), isNull(schema.plannedWorkouts.archivedAt)));
+    expect(rows.map((r) => r.effectiveDate).sort()).toEqual([...dates].sort());
+    // A mobility body is a yoga session on every one of them, not a run.
+    expect(rows.every((r) => r.sport === "yoga")).toBe(true);
+    expect(rows.every((r) => r.title === "Ankles and hips")).toBe(true);
+
+    // Re-applying the same proposal (crash, retry, double tap) adds nothing.
+    await applyOps(db, userId, prefs, "prop-daily", [op]);
+    const again = await db
+      .select()
+      .from(schema.plannedWorkouts)
+      .where(and(eq(schema.plannedWorkouts.userId, userId), isNull(schema.plannedWorkouts.archivedAt)));
+    expect(again).toHaveLength(3);
+  });
+
+  it("a plain single-date add is unchanged — every op ever persisted still applies", async () => {
+    const db = makeTestDb();
+    const { userId, prefs } = await makeTestUser(db);
+    const date = addDays(todayInZone(prefs.timezone), 1);
+    const out = await applyOps(db, userId, prefs, "prop-one", [
+      { kind: "add", date, session: run40 } as CoachOp,
+    ]);
+    expect(out.created).toHaveLength(1);
+  });
+});

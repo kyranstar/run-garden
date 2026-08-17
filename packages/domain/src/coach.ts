@@ -75,6 +75,9 @@ const MAX_REST_SECONDS = 900;
 /** A tempo prescription past this is a hold, and holdSeconds says it better. */
 const MAX_ECCENTRIC_SECONDS = 15;
 const MAX_WEIGHT_KG = 500;
+/** Two weeks of a genuinely daily piece in one op — past that it is a plan,
+ * and `createPlan` is the op for a plan. */
+const MAX_ADD_DATES = 14;
 /** What a coach means by "short rest" when it doesn't say. */
 const DEFAULT_REST_SECONDS = 60;
 const LB_TO_KG = 0.45359237;
@@ -325,7 +328,30 @@ export const coachOpSchema = z.discriminatedUnion("kind", [
   z.object({ kind: z.literal("move"), workoutId: echoedId, toDate: isoDate }).strict(),
   z.object({ kind: z.literal("swap"), dayA: isoDate, dayB: isoDate }).strict(),
   z.object({ kind: z.literal("skip"), workoutId: echoedId, reason: prose(200) }).strict(),
-  z.object({ kind: z.literal("add"), date: isoDate, session: coachSessionSchema }).strict(),
+  z
+    .object({
+      kind: z.literal("add"),
+      date: isoDate,
+      /**
+       * The OTHER dates this same session happens on — a recurring piece is
+       * ONE op, not one op per day (2026-08-17).
+       *
+       * A daily ten-minute mobility piece across a ten-day block used to cost
+       * ten `add` ops, each re-serialising the whole exercise list; a live
+       * wake wrote 16k output tokens and 3.5 minutes trying. The session is
+       * identical on every date, so the dates are the only thing that varies
+       * and the only thing worth repeating.
+       *
+       * `date` stays required and stays the first date, so every op ever
+       * persisted still reads correctly and every consumer that only knows
+       * `date` still gets a real one. Read the full set through `addOpDates`,
+       * which unions and de-duplicates — a model that repeats the primary
+       * date inside `dates` and one that omits it both mean the same thing.
+       */
+      dates: orNull(z.array(isoDate).min(1).max(MAX_ADD_DATES).optional()),
+      session: coachSessionSchema,
+    })
+    .strict(),
   z
     .object({
       kind: z.literal("reshapeWeek"),
@@ -370,6 +396,14 @@ export const coachOpSchema = z.discriminatedUnion("kind", [
   z.object({ kind: z.literal("resolveRaceConflict"), keep: z.enum(["settings", "plan"]) }).strict(),
 ]);
 export type CoachOp = z.infer<typeof coachOpSchema>;
+
+/** An `add` op's full date set — the ONE reader of `date`+`dates`, so the
+ * calendar the guardrails simulate, the days a proposal supersedes, and the
+ * sessions `applyOps` actually writes can never disagree about how many
+ * sessions one op means. Unioned, de-duplicated, in date order. */
+export function addOpDates(op: Extract<CoachOp, { kind: "add" }>): string[] {
+  return [...new Set([op.date, ...(op.dates ?? [])])].sort();
+}
 
 export const coachProposalDraftSchema = z
   .object({

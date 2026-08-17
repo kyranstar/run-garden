@@ -469,7 +469,11 @@ export interface CoachStateResponse {
 }
 
 export interface CoachWakeResult {
-  status: "ok" | "skipped" | "busy" | "resting" | "error";
+  /** "working": the wake was dispatched and is thinking past this response
+   * (2026-08-17). The reply arrives through ["coach-state"], which polls
+   * while `coachThinking` — the same path that already carries a reply
+   * across a navigation. */
+  status: "ok" | "skipped" | "busy" | "resting" | "error" | "working";
   coachMessageId?: string;
   proposalIds?: string[];
 }
@@ -751,8 +755,12 @@ export const api = {
   // ── The coach (worker routes: apps/worker/src/routes/coach.ts) ───────────
   coachState: (before?: string) =>
     get<CoachStateResponse>(`/api/coach/state${before ? `?before=${encodeURIComponent(before)}` : ""}`),
-  coachWake: (force = false) => post<CoachWakeResult>("/api/coach/wake", { force }, 320_000),
-  coachMessage: (body: string) => post<CoachWakeResult>("/api/coach/message", { body }, 320_000),
+  // Wakes return as soon as they are dispatched (2026-08-17) — the thinking
+  // outlives the request, so these are ordinary short calls again. The old
+  // 320s budget was the client waiting out the whole model call, which is
+  // what turned a slow wake into an aborted one.
+  coachWake: (force = false) => post<CoachWakeResult>("/api/coach/wake", { force }),
+  coachMessage: (body: string) => post<CoachWakeResult>("/api/coach/message", { body }),
   coachAnalyze: (activityId: string, force = false) =>
     post<CoachAnalyzeResult>(`/api/coach/analyze/${activityId}`, { force }, 320_000),
   coachApprove: (proposalId: string) =>
@@ -760,7 +768,7 @@ export const api = {
   coachDecline: (proposalId: string) =>
     post<{ ok: boolean }>(`/api/coach/proposals/${proposalId}/decline`),
   coachAnswerQuestion: (questionId: string, answer: string) =>
-    post<{ ok: boolean }>(`/api/coach/questions/${questionId}/answer`, { answer }, 320_000),
+    post<{ ok: boolean }>(`/api/coach/questions/${questionId}/answer`, { answer }),
   coachDismissQuestion: (questionId: string) =>
     post<{ ok: boolean }>(`/api/coach/questions/${questionId}/dismiss`),
   coachMemoryList: () => get<{ memory: CoachMemoryItem[] }>("/api/coach/memory"),

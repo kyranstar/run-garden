@@ -1,5 +1,5 @@
 import { addDays } from "./time.js";
-import { sessionSport } from "./coach.js";
+import { addOpDates, sessionSport } from "./coach.js";
 import type { CoachOp, CoachSession } from "./coach.js";
 
 /**
@@ -290,14 +290,20 @@ function resultingCalendar(ops: CoachOp[], ctx: GuardrailCtx): CalEntry[] {
         break;
       }
       case "add":
-        cal.push({
-          id: null,
-          date: op.date,
-          category: op.session.category,
-          durationMinutes: op.session.durationMinutes,
-          discipline: disciplineOfSession(op.session),
-          fromOp: i,
-        });
+        // One op, one session, N dates (2026-08-17). Every date is a real
+        // day of load: a recurring piece written as ONE op must weigh exactly
+        // what the same piece written as N ops weighed, or the cheaper
+        // vocabulary would also be the way around the ramp check.
+        for (const date of addOpDates(op)) {
+          cal.push({
+            id: null,
+            date,
+            category: op.session.category,
+            durationMinutes: op.session.durationMinutes,
+            discipline: disciplineOfSession(op.session),
+            fromOp: i,
+          });
+        }
         break;
       case "reshapeWeek":
       case "firmUp":
@@ -348,7 +354,7 @@ function opDates(op: CoachOp, ctx: GuardrailCtx): string[] {
     case "swap":
       return [op.dayA, op.dayB];
     case "add":
-      return [op.date];
+      return addOpDates(op);
     case "reshapeWeek":
     case "firmUp":
     case "windDown":

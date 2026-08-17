@@ -56,9 +56,10 @@ import { buildReadiness } from "./readiness.js";
  */
 
 /**
- * 20k, up from 12k (2026-08-16). The EXERCISE CATALOG alone is ~3.7k tokens
- * of byte-stable reference data and the athlete's strength brief another
- * ~700; measured against prod the whole dossier assembles at ~7k. The ceiling
+ * 20k, up from 12k (2026-08-16). The EXERCISE CATALOG was ~3.7k tokens of
+ * byte-stable reference data and is ~1.7k since its useless 18-digit ids
+ * came out (2026-08-17); the athlete's strength brief is another ~700, and
+ * measured against prod the whole dossier assembles at ~5k. The ceiling
  * is headroom for a long conversation tail, not a target — and when it IS hit,
  * `truncate` drops whole sections from the tail (catalog first) rather than
  * slicing a line in half.
@@ -717,7 +718,7 @@ export async function buildDossier(
       : ["no conversation yet"],
   );
 
-  // 10 · EXERCISE CATALOG — LAST, deliberately.
+  // 10 · EXERCISE CATALOG — LAST, deliberately, and NAMES ONLY.
   //
   // The wake prompt tells the model "lifts use catalog exercises" and it was
   // never given the catalog: 382 synced COROS movements, passed to the Studio
@@ -726,13 +727,24 @@ export async function buildDossier(
   // therefore app-only. Names come through COROS_EXERCISE_NAMES because the
   // stored names are i18n T-codes ("T1367"), not words.
   //
+  // The IDS ARE GONE (2026-08-17), and they were most of the block. A COROS
+  // exercise id is an 18-digit snowflake ("425827615547506688") — ~7 tokens
+  // of pure noise each, 382 of them, and the model was never able to use one
+  // anyway: `resolveOpsExercises` re-resolves every exercise from its NAME
+  // server-side and overwrites whatever id the model echoed. So the catalog
+  // was spending ~2.7k input tokens per wake to offer a fact the pipeline
+  // discards. What the model actually needs from this block is the
+  // VOCABULARY — which movements this watch can be told about — and that is
+  // the names. One comma-separated list, de-duplicated, ~half the block.
+  //
   // Its position is the whole trick: byte-stable across wakes (so it is the
   // one block worth caching), largest block in the document, and the only one
   // the coach can partly work around — so it is what truncation eats first.
-  if (catalogRows.length > 0) {
+  const catalogNames = [...new Set(catalogRows.map((r) => humanName(r.name).trim()).filter(Boolean))];
+  if (catalogNames.length > 0) {
     push("EXERCISE CATALOG", [
-      `${catalogRows.length} COROS movements this athlete's watch knows, as \`id|name\`. Every lift you prescribe MUST cite one of these ids, copied exactly — a movement that is not here cannot reach the watch.`,
-      ...catalogRows.map((r) => `${r.id}|${humanName(r.name)}`),
+      `The ${catalogNames.length} movements this athlete's watch knows, by name. Prefer these names so a lift can reach the watch; anything else still works and simply lives in the app. Write names, never ids — the server resolves them.`,
+      catalogNames.join(", "),
     ]);
   }
 

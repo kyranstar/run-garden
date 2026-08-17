@@ -3,7 +3,7 @@
  * schema repair, guardrail rejection, supersede, restraint, and the rule
  * that the athlete's words are persisted before anything can fail.
  */
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { and, eq } from "drizzle-orm";
 import { schema } from "@rg/database";
 import { addDays, newId, nowInstant, todayInZone } from "@rg/domain";
@@ -875,5 +875,334 @@ describe("the wake prompt (2026-08-16 rewrite)", () => {
     expect(ops.some((o) => o.kind === "ease")).toBe(true);
     // …and the dated event it plans around is written to memory with an ISO date.
     expect(out.memoryOps.some((m) => m.op === "add" && /\d{4}-\d{2}-\d{2}/.test(m.text))).toBe(true);
+  });
+});
+
+/**
+ * THE NEVER-LOSE-EVERYTHING INVARIANT (live failure, 2026-08-17).
+ *
+ * What happened in prod: one wake, two Opus calls (2m35s, then 3m27s),
+ * 27,864 output tokens, $0.92 — and afterwards `coach_messages` held nothing
+ * from that wake at all. No briefing, no proposal, and no receipt, because
+ * the "couldn't think" receipt matched one written FOUR DAYS earlier and the
+ * dedupe suppressed it. The athlete got a spinner and then silence, from a
+ * request that had spent six minutes and a dollar thinking about them.
+ *
+ * Every test here fails on the code as it shipped. The rule they encode:
+ * whatever the model does — a huge valid answer, a huge broken one, or a
+ * second call that simply never comes back — the thread is never silent
+ * afterwards, and a briefing that was already parsed is never thrown away
+ * because a later step was slow or died.
+ *
+ * They are also the class of test that was missing entirely: 1,755 tests
+ * passed against recorded model responses that were all small and all
+ * well-formed, which is why none of them saw this.
+ */
+describe("resilience: a wake never loses everything (2026-08-17)", () => {
+  /** ~15k tokens of prose — the size the live model actually wrote. */
+  const HUGE = "The demand here is eccentric quad tolerance and single-leg control, dosed in bouts. ".repeat(720);
+
+  async function coachMessages(db: Db, userId: string) {
+    return db
+      .select()
+      .from(schema.coachMessages)
+      .where(and(eq(schema.coachMessages.userId, userId), eq(schema.coachMessages.role, "coach")));
+  }
+  async function receipts(db: Db, userId: string) {
+    return db
+      .select()
+      .from(schema.coachMessages)
+      .where(and(eq(schema.coachMessages.userId, userId), eq(schema.coachMessages.role, "receipt")));
+  }
+
+  /** Schema-valid JSON, but enormous — the good case that must not be slow
+   * to land or expensive to confirm. */
+  function hugeValidOutput(date: string) {
+    return {
+      briefing: "Two real leg sessions this week, and the daily piece is ten minutes of ankles and hips.",
+      proposals: [
+        {
+          title: "Ski-prep legs",
+          evidence: "trip in 10 days · 1 strength session in 90d",
+          rationale: HUGE,
+          expiresAt: date,
+          flags: [],
+          ops: [
+            {
+              kind: "ease",
+              workoutId: "w1",
+              session: {
+                category: "easy",
+                title: "Easy 30",
+                durationMinutes: 30,
+                run: { blocks: [{ kind: "duration", value: 30, intensity: "easy" }] },
+              },
+            },
+          ],
+        },
+      ],
+      question: null,
+      memoryOps: [],
+      focus: "Two leg sessions, easy runs around them.",
+    };
+  }
+
+  it("15k tokens of VALID JSON lands as a briefing and a proposal, in ONE call", async () => {
+    const db = makeTestDb();
+    const { userId, prefs } = await makeTestUser(db);
+    const date = addDays(todayInZone(prefs.timezone), 2);
+    await seedWorkout(db, userId, date, "w1");
+    const { fetchImpl, calls } = scriptedFetch([chatBody(hugeValidOutput(date))]);
+    const res = await wake(db, makeEnv(), userId, prefs, { kind: "message", body: "replan my week" }, fetchImpl);
+    expect(res.status).toBe("ok");
+    expect(calls.length).toBe(1); // size alone must never trigger a second call
+    const msgs = await coachMessages(db, userId);
+    expect(msgs).toHaveLength(1);
+    expect(msgs[0]!.body).toContain("Two real leg sessions");
+    const props = await db.select().from(schema.coachProposals).where(eq(schema.coachProposals.userId, userId));
+    expect(props).toHaveLength(1);
+  });
+
+  it("15k tokens of MALFORMED JSON still lands the briefing, and says what it lost", async () => {
+    const db = makeTestDb();
+    const { userId, prefs } = await makeTestUser(db);
+    // Parseable JSON, unparseable OPS: `date` is prose, so the add is
+    // rejected and the whole proposal with it. This is the live shape — the
+    // words were always fine, the structure never was.
+    const broken = {
+      briefing: "Two real leg sessions this week — Tuesday and Friday.",
+      proposals: [
+        {
+          title: "Ski-prep legs",
+          evidence: "trip in 10 days",
+          rationale: HUGE,
+          expiresAt: "2026-08-18",
+          flags: [],
+          ops: [{ kind: "add", date: "next Tuesday", session: { category: "strength", title: "Legs", durationMinutes: 40 } }],
+        },
+      ],
+      question: null,
+      memoryOps: [],
+    };
+    const { fetchImpl } = scriptedFetch([chatBody(broken), chatBody(broken)]);
+    const res = await wake(db, makeEnv(), userId, prefs, { kind: "message", body: "replan my week" }, fetchImpl);
+    expect(res.status).toBe("ok");
+    const msgs = await coachMessages(db, userId);
+    expect(msgs).toHaveLength(1);
+    expect(msgs[0]!.body).toContain("Two real leg sessions");
+    // …and the loss is named, by title and by op kind, never silent.
+    const rs = await receipts(db, userId);
+    expect(rs.some((r) => r.body.includes("Ski-prep legs") && r.body.includes("1 add"))).toBe(true);
+  });
+
+  it("the briefing is on disk BEFORE the second call goes out — a call that never returns loses nothing", async () => {
+    const db = makeTestDb();
+    const { userId, prefs } = await makeTestUser(db);
+    const broken = {
+      briefing: "Tuesday and Friday are the two real leg sessions.",
+      proposals: [
+        {
+          title: "Ski-prep legs",
+          evidence: "trip in 10 days",
+          rationale: "Bouts, not days.",
+          expiresAt: "2026-08-18",
+          flags: [],
+          ops: [{ kind: "add", date: "whenever", session: { category: "strength", title: "Legs", durationMinutes: 40 } }],
+        },
+      ],
+      question: null,
+      memoryOps: [],
+    };
+    let secondCallStarted = false;
+    let messagesWhenSecondCallStarted = -1;
+    const fetchImpl = (async () => {
+      if (!secondCallStarted && messagesWhenSecondCallStarted < 0) {
+        // First call: the model answers with prose the app can use and ops
+        // it cannot.
+        messagesWhenSecondCallStarted = 0;
+        return new Response(JSON.stringify(chatBody(broken)), {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        });
+      }
+      // Second call — the repair. It NEVER comes back, exactly like a worker
+      // killed mid-flight or a gateway that swallows the request.
+      secondCallStarted = true;
+      messagesWhenSecondCallStarted = (await coachMessages(db, userId)).length;
+      return new Promise<Response>(() => {
+        /* never resolves, and holds no timer, so the test process still exits */
+      });
+    }) as typeof fetch;
+
+    // Deliberately NOT awaited: this wake never finishes, which is the point.
+    void wake(db, makeEnv(), userId, prefs, { kind: "message", body: "replan my week" }, fetchImpl);
+    await vi.waitFor(() => expect(secondCallStarted).toBe(true));
+
+    // The invariant, twice over: the briefing existed before the doomed call
+    // was made, and it is still there while that call hangs.
+    expect(messagesWhenSecondCallStarted).toBe(1);
+    const msgs = await coachMessages(db, userId);
+    expect(msgs).toHaveLength(1);
+    expect(msgs[0]!.body).toContain("two real leg sessions");
+  });
+
+  it("a failure receipt from four days ago does not swallow today's — the exact live silence", async () => {
+    const db = makeTestDb();
+    const { userId, prefs } = await makeTestUser(db);
+    const body = "The coach couldn't think just now — try again in a moment.";
+    // The 2026-08-12 row that suppressed the 2026-08-17 one in prod.
+    await db.insert(schema.coachMessages).values({
+      id: newId(),
+      userId,
+      role: "receipt",
+      body,
+      refs: { wakeFailure: true },
+      at: new Date(Date.now() - 4 * 24 * 3600 * 1000).toISOString(),
+    });
+    const { fetchImpl } = failingFetch();
+    const res = await wake(db, makeEnv(), userId, prefs, { kind: "message", body: "replan my week" }, fetchImpl);
+    expect(res.status).toBe("error");
+    const rs = (await receipts(db, userId)).filter((r) => r.body === body);
+    expect(rs, "a four-day-old identical receipt is history, not a duplicate").toHaveLength(2);
+  });
+
+  it("…while the same failure inside the backoff window is still deduped", async () => {
+    const db = makeTestDb();
+    const { userId, prefs } = await makeTestUser(db);
+    const body = "The coach couldn't think just now — try again in a moment.";
+    await db.insert(schema.coachMessages).values({
+      id: newId(),
+      userId,
+      role: "receipt",
+      body,
+      refs: { wakeFailure: true },
+      at: new Date(Date.now() - 60_000).toISOString(),
+    });
+    const { fetchImpl } = failingFetch();
+    await wake(db, makeEnv(), userId, prefs, { kind: "manual" }, fetchImpl);
+    const rs = (await receipts(db, userId)).filter((r) => r.body === body);
+    expect(rs).toHaveLength(1);
+  });
+
+  it("a crash after the briefing landed reports the plan changes as lost, not the coach as broken", async () => {
+    const db = makeTestDb();
+    const { userId, prefs } = await makeTestUser(db);
+    const date = addDays(todayInZone(prefs.timezone), 2);
+    await seedWorkout(db, userId, date, "w1");
+    const out = hugeValidOutput(date);
+    const { fetchImpl } = scriptedFetch([chatBody(out)]);
+    // Break the op pipeline underneath a perfectly good briefing: an op that
+    // parses but whose plan row cannot be written.
+    const brokenDb = new Proxy(db, {
+      get(target, prop, receiver) {
+        if (prop === "insert") {
+          return (table: unknown) => {
+            if (table === schema.coachProposals) throw new Error("D1_ERROR: simulated");
+            return (Reflect.get(target, prop, receiver) as (t: unknown) => unknown).call(target, table);
+          };
+        }
+        return Reflect.get(target, prop, receiver);
+      },
+    }) as Db;
+    const res = await wake(brokenDb, makeEnv(), userId, prefs, { kind: "message", body: "replan" }, fetchImpl);
+    expect(res.status).toBe("ok");
+    const msgs = await coachMessages(db, userId);
+    expect(msgs).toHaveLength(1);
+    const rs = await receipts(db, userId);
+    expect(rs.some((r) => r.body.includes("didn't make it"))).toBe(true);
+    expect(rs.some((r) => r.body.includes("couldn't think"))).toBe(false);
+  });
+});
+
+/**
+ * The repair round-trip is a LUXURY, not a step (2026-08-17). Live, it is
+ * what turned a slow wake into a dead one: the re-ask of an 11,577-token
+ * answer came back at 16,287 tokens and 3m27s, and nothing survived it.
+ */
+describe("the second call has to earn itself", () => {
+  it("a runaway first answer is salvaged, not re-asked", async () => {
+    const db = makeTestDb();
+    const { userId, prefs } = await makeTestUser(db);
+    const broken = {
+      briefing: "Two real leg sessions this week — Tuesday and Friday.",
+      proposals: [
+        {
+          title: "Ski-prep legs",
+          evidence: "trip in 10 days",
+          // ~30k chars of visible answer: past the point where re-asking has
+          // ever produced a smaller one.
+          rationale: "Bouts, not days, and here is why at length. ".repeat(700),
+          expiresAt: "2026-08-18",
+          flags: [],
+          ops: [{ kind: "add", date: "sometime next week", session: { category: "strength", title: "Legs", durationMinutes: 40 } }],
+        },
+      ],
+      question: null,
+      memoryOps: [],
+    };
+    const { fetchImpl, calls } = scriptedFetch([chatBody(broken)]);
+    const res = await wake(db, makeEnv(), userId, prefs, { kind: "message", body: "replan my week" }, fetchImpl);
+    expect(res.status).toBe("ok");
+    expect(calls.length, "no repair on a runaway — the words are already safe").toBe(1);
+    const msgs = await db
+      .select()
+      .from(schema.coachMessages)
+      .where(and(eq(schema.coachMessages.userId, userId), eq(schema.coachMessages.role, "coach")));
+    expect(msgs).toHaveLength(1);
+    expect(msgs[0]!.body).toContain("Two real leg sessions");
+  });
+
+  it("a normal-sized broken answer still gets its one repair", async () => {
+    const db = makeTestDb();
+    const { userId, prefs } = await makeTestUser(db);
+    const date = addDays(todayInZone(prefs.timezone), 2);
+    await seedWorkout(db, userId, date, "w1");
+    const broken = {
+      briefing: "Easing tomorrow.",
+      proposals: [
+        {
+          title: "Ease it",
+          evidence: "slept 5h",
+          rationale: "Short.",
+          expiresAt: date,
+          flags: [],
+          ops: [{ kind: "ease", workoutId: "w1", session: { category: "easy", title: "Easy", durationMinutes: "thirty" } }],
+        },
+      ],
+      question: null,
+      memoryOps: [],
+    };
+    const fixed = {
+      ...broken,
+      proposals: [
+        {
+          ...broken.proposals[0],
+          ops: [
+            {
+              kind: "ease",
+              workoutId: "w1",
+              session: {
+                category: "easy",
+                title: "Easy 30",
+                durationMinutes: 30,
+                run: { blocks: [{ kind: "duration", value: 30, intensity: "easy" }] },
+              },
+            },
+          ],
+        },
+      ],
+    };
+    const { fetchImpl, calls } = scriptedFetch([chatBody(broken), chatBody(fixed)]);
+    const res = await wake(db, makeEnv(), userId, prefs, { kind: "message", body: "ease tomorrow" }, fetchImpl);
+    expect(res.status).toBe("ok");
+    expect(calls.length).toBe(2);
+    // One message, upgraded in place — never a salvage row plus a real one.
+    const msgs = await db
+      .select()
+      .from(schema.coachMessages)
+      .where(and(eq(schema.coachMessages.userId, userId), eq(schema.coachMessages.role, "coach")));
+    expect(msgs).toHaveLength(1);
+    const props = await db.select().from(schema.coachProposals).where(eq(schema.coachProposals.userId, userId));
+    expect(props).toHaveLength(1);
   });
 });

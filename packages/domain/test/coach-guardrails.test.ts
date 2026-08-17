@@ -5,6 +5,7 @@
  */
 import { describe, expect, it } from "vitest";
 import { datedEventsFromMemory, validateOps, type GuardrailCtx } from "../src/coach-guardrails.js";
+import { addOpDates } from "../src/coach.js";
 import type { CoachOp } from "../src/coach.js";
 
 const easy = (title = "Easy 40", durationMinutes = 40) => ({
@@ -319,5 +320,53 @@ describe("soft rules", () => {
   it("keeping the long run on a Saturday stays unflagged", () => {
     const out = validateOps([{ kind: "move", workoutId: "w-sat", toDate: "2026-08-15" }], ctx());
     expect(out.soft.filter((v) => v.rule === "r-sat-long")).toHaveLength(0);
+  });
+});
+
+/**
+ * A recurring session is ONE op carrying N dates (2026-08-17). The whole
+ * point of the cheaper vocabulary is token cost, so the one thing that must
+ * NOT get cheaper is the load: an add with ten dates has to weigh exactly
+ * what ten adds weighed, or `dates` becomes the way around the ramp check.
+ */
+describe("add ops carrying multiple dates", () => {
+  it("addOpDates unions date and dates, de-duplicates, and orders", () => {
+    expect(
+      addOpDates({
+        kind: "add",
+        date: "2026-08-20",
+        dates: ["2026-08-22", "2026-08-20", "2026-08-21"],
+        session: mobility(10),
+      } as Extract<CoachOp, { kind: "add" }>),
+    ).toEqual(["2026-08-20", "2026-08-21", "2026-08-22"]);
+  });
+
+  it("every date is a real day of load — one op cannot smuggle a week past the ramp", () => {
+    const dates = ["2026-08-11", "2026-08-12", "2026-08-13", "2026-08-14", "2026-08-15", "2026-08-16", "2026-08-17"];
+    const oneOp: CoachOp[] = [
+      { kind: "add", date: dates[0]!, dates: dates.slice(1), session: lift(60) } as CoachOp,
+    ];
+    const manyOps: CoachOp[] = dates.map((d) => ({ kind: "add", date: d, session: lift(60) }) as CoachOp);
+    const c = ctx({ raceDates: [], workouts: [] });
+    const one = validateOps(oneOp, c);
+    const many = validateOps(manyOps, c);
+    // Same rules fire either way — the vocabulary changed, the physics didn't.
+    expect(one.hard.length).toBeGreaterThan(0);
+    expect(new Set(one.hard.map((h) => h.rule))).toEqual(new Set(many.hard.map((h) => h.rule)));
+  });
+
+  it("a genuinely cheap daily piece still passes as one op", () => {
+    const res = validateOps(
+      [
+        {
+          kind: "add",
+          date: "2026-08-09",
+          dates: ["2026-08-10", "2026-08-11", "2026-08-12"],
+          session: mobility(10),
+        } as CoachOp,
+      ],
+      ctx(),
+    );
+    expect(res.hard).toEqual([]);
   });
 });

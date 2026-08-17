@@ -37,7 +37,13 @@ import { liftProgressions, liftWeekSummary, runProgressions } from "../services/
 import { applyOps } from "../services/coach-apply.js";
 import { evaluateTriggers, pendingTriggers } from "../services/coach-triggers.js";
 import { coachBlockAdherence, plansEndedOn } from "../services/coach-plans.js";
-import { openWakeIsFresh, wake } from "../services/coach-wake.js";
+import {
+  openWakeIsFresh,
+  recordAthleteMessage,
+  wake,
+  type WakeCause,
+  type WakeResult,
+} from "../services/coach-wake.js";
 import type { Db } from "../services/db.js";
 
 /**
@@ -183,6 +189,36 @@ coachRoutes.get("/state", async (c) => {
   });
 });
 
+/**
+ * A wake THINKS FOR MINUTES, so it does not get to hold an HTTP request open
+ * (2026-08-17).
+ *
+ * The live failure: an Opus wake spent 2m35s on its first call and 3m27s on
+ * its second while `api-client` aborted the POST at 320s and the athlete
+ * stared at a spinner. The request's lifetime and the coach's thinking time
+ * were the same clock, so every second of thinking was a second of risk to
+ * the answer — and the client's patience, not the coaching, set the ceiling.
+ *
+ * They are separate clocks now. The route hands the wake to `waitUntil` and
+ * answers immediately with "working"; the client learns the reply landed the
+ * same way it already learns it after a navigation — `/coach/state`'s
+ * `coachThinking` (live wake lock, or a message still awaiting its reply),
+ * which it polls every 3s. Nothing about the wake's own durability rests on
+ * this: it persists the briefing the moment it has one, precisely because
+ * `waitUntil` is a best effort and not a promise.
+ */
+function dispatchWake(
+  c: Parameters<typeof waitUntilSafe>[0],
+  db: Db,
+  env: AppContext["Bindings"],
+  userId: string,
+  prefs: Awaited<ReturnType<typeof loadPreferences>>,
+  cause: WakeCause,
+): WakeResult {
+  waitUntilSafe(c, wake(db, env, userId, prefs, cause));
+  return { status: "working" };
+}
+
 coachRoutes.post("/wake", async (c) => {
   const db = c.get("db");
   const userId = c.get("userId");
@@ -190,8 +226,7 @@ coachRoutes.post("/wake", async (c) => {
   const prefs = await loadPreferences(db, userId);
   // force = the user's own "Check in" button: bypasses the skip rule (a
   // fresh briefing doesn't matter — they asked), never the budget gate.
-  const result = await wake(db, c.env, userId, prefs, { kind: force ? "manual" : "open" });
-  return c.json(result);
+  return c.json(dispatchWake(c, db, c.env, userId, prefs, { kind: force ? "manual" : "open" }));
 });
 
 coachRoutes.post("/analyze/:activityId", async (c) => {
@@ -223,8 +258,11 @@ coachRoutes.post("/message", async (c) => {
     return c.json({ error: "bad_request" }, 400);
   }
   const prefs = await loadPreferences(db, userId);
-  const result = await wake(db, c.env, userId, prefs, { kind: "message", body });
-  return c.json(result);
+  // The words and the awaiting-reply trigger land BEFORE the response, so a
+  // client that never sees the wake finish still sees its own message in the
+  // thread and still gets the reply on the next open.
+  await recordAthleteMessage(db, userId, body);
+  return c.json(dispatchWake(c, db, c.env, userId, prefs, { kind: "message", body, recorded: true }));
 });
 
 coachRoutes.post("/proposals/:id/approve", async (c) => {
@@ -300,7 +338,12 @@ coachRoutes.post("/questions/:id/answer", async (c) => {
     .where(eq(coachQuestions.id, id));
   // The answer continues the conversation like any message.
   const prefs = await loadPreferences(db, userId);
-  const result = await wake(db, c.env, userId, prefs, { kind: "message", body: answer });
+  await recordAthleteMessage(db, userId, answer);
+  const result = dispatchWake(c, db, c.env, userId, prefs, {
+    kind: "message",
+    body: answer,
+    recorded: true,
+  });
   return c.json({ ok: true, memoryId, wake: result });
 });
 

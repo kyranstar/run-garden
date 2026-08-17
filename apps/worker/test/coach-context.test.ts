@@ -240,15 +240,21 @@ describe("what the coach can see (2026-08-16 input audit)", () => {
       updatedAt: at,
     });
 
-  it("renders the exercise catalog as id|name, in words, at the very end", async () => {
+  it("renders the exercise catalog as names in words — no ids — at the very end", async () => {
     const db = makeTestDb();
     const { userId, prefs } = await makeTestUser(db);
     await seedCatalog(db);
     const d = await buildDossier(db, userId, prefs);
-    // The ids the wake prompt tells it to cite, with names it can match on.
-    expect(d.text).toContain("469664622790754304|Reverse Step-Down");
-    expect(d.text).toContain("469664891494645760|Copenhagen Plank");
-    expect(d.text).toContain("426939619892969472|Ski Step");
+    // The vocabulary, in words the model can match a prescription against.
+    expect(d.text).toContain("Reverse Step-Down");
+    expect(d.text).toContain("Copenhagen Plank");
+    expect(d.text).toContain("Ski Step");
+    // And NOT the 18-digit snowflakes (2026-08-17). They were ~7 tokens each
+    // × 382 rows of input the model could never use: every exercise is
+    // re-resolved from its NAME server-side and the model's id is overwritten.
+    for (const id of ["469664622790754304", "469664891494645760", "426939619892969472"]) {
+      expect(d.text, "catalog ids must not reach the model").not.toContain(id);
+    }
     // Last, so defensive truncation eats it before anything else.
     expect(d.sections.at(-1)).toBe("EXERCISE CATALOG");
   });

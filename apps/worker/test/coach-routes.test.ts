@@ -768,3 +768,41 @@ describe("COROS plan detail (user nit 2026-08-12: the card must open)", () => {
     expect(body.progressions.some((p) => p.key === "run:long-run")).toBe(true);
   });
 });
+
+/**
+ * A wake thinks for minutes; an HTTP request must not (2026-08-17).
+ *
+ * Live: `api-client` aborted POST /coach/message at 320s while the wake was
+ * 5m20s into two Opus calls. The request's lifetime and the coach's thinking
+ * time were one clock, and the athlete's patience was setting the ceiling on
+ * the coaching. They are separate clocks now — but only if the words and the
+ * awaiting-reply trigger are already durable when the response goes out,
+ * because that trigger is what makes the reply survive everything after.
+ */
+describe("message dispatch is not the same clock as thinking", () => {
+  it("answers immediately with working, having already persisted the words and the marker", async () => {
+    // A gateway that never answers: if the route awaited the wake, this test
+    // would hang instead of returning.
+    vi.stubGlobal("fetch", (async () => new Promise<Response>(() => {})) as typeof fetch);
+    const res = await client().post("/api/coach/message", { body: "replan this week around a trip on the 26th" });
+    expect(res.status).toBe(200);
+    expect(((await res.json()) as { status: string }).status).toBe("working");
+
+    const msgs = await db
+      .select()
+      .from(schema.coachMessages)
+      .where(and(eq(schema.coachMessages.userId, userId), eq(schema.coachMessages.role, "user")));
+    expect(msgs.map((m) => m.body)).toEqual(["replan this week around a trip on the 26th"]);
+
+    const triggers = await db
+      .select()
+      .from(schema.coachTriggers)
+      .where(eq(schema.coachTriggers.userId, userId));
+    expect(triggers.filter((t) => t.kind === "unanswered_message" && !t.consumedAt)).toHaveLength(1);
+
+    // …and the client is told to keep watching, by the same flag that
+    // already survives a navigation.
+    const state = (await (await client().get("/api/coach/state")).json()) as { coachThinking: boolean };
+    expect(state.coachThinking).toBe(true);
+  });
+});

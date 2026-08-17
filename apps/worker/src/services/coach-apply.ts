@@ -10,6 +10,7 @@ import {
 } from "@rg/database";
 import {
   addDays,
+  addOpDates,
   formatExerciseBlock,
   newId,
   nowInstant,
@@ -428,16 +429,23 @@ export async function applyOps(
         break;
       }
       case "add": {
-        const planId =
-          (await activeCoachPlanId(db, userId, op.session)) ??
-          (await ensureAdhocPlan(db, userId, op.session, op.date, now));
-        const id = opId(0);
-        await insertSession(db, userId, planId, id, op.date, op.session, now, {
-          corosWritesEnabled: prefs.corosWritesEnabled,
-          prefs,
-          thresholdPaceSecPerKm,
-        });
-        out.created.push(id);
+        // A recurring piece is ONE op carrying N dates (2026-08-17), and it
+        // expands HERE — one real planned_workouts row per date, each with
+        // its own id, its own calendar block and its own watch write. The
+        // vocabulary is what got cheaper; the sessions the athlete approves
+        // are exactly the sessions they would have got from N separate adds.
+        for (const [n, date] of addOpDates(op).entries()) {
+          const planId =
+            (await activeCoachPlanId(db, userId, op.session)) ??
+            (await ensureAdhocPlan(db, userId, op.session, date, now));
+          const id = opId(n);
+          await insertSession(db, userId, planId, id, date, op.session, now, {
+            corosWritesEnabled: prefs.corosWritesEnabled,
+            prefs,
+            thresholdPaceSecPerKm,
+          });
+          out.created.push(id);
+        }
         break;
       }
       case "reshapeWeek": {

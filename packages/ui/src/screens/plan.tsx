@@ -474,10 +474,11 @@ function usePlanCoach() {
     // optimistic echo itself so CoachThread can offer a retry instead of
     // erasing it.
     onError: (err, v) => {
-      // Audit C16 residual: the 320s timeout can fire AFTER the request
-      // reached the server — coach-wake.ts persists the user's message
-      // before anything else can fail, so an abort doesn't prove the words
-      // were lost the way a network error (never left the browser) does.
+      // Audit C16 residual: a timeout can fire AFTER the request reached the
+      // server — the route persists the athlete's message before it answers
+      // (and before the wake is even dispatched), so an abort doesn't prove
+      // the words were lost the way a network error (never left the browser)
+      // does.
       // Refetch first and only mark it failed if it's genuinely absent.
       const isAbort = err instanceof DOMException && (err.name === "AbortError" || err.name === "TimeoutError");
       if (isAbort) {
