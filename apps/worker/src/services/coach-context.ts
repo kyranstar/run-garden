@@ -18,11 +18,13 @@ import {
 } from "@rg/database";
 import {
   addDays,
+  athleteLimitLines,
   coachExerciseSchema,
   daysBetween,
   formatExercise,
   humanizeWorkoutTitle,
   todayInZone,
+  type GuardrailCtx,
   type LocalDate,
   type UserPreferences,
 } from "@rg/domain";
@@ -99,6 +101,7 @@ const PROTECTED_SECTIONS = new Set([
   "PLANS",
   "STRENGTH PLAN",
   "UPCOMING 14 DAYS",
+  "LIMITS",
   "HISTORY 90D",
 ]);
 
@@ -168,6 +171,13 @@ export async function buildDossier(
   db: Db,
   userId: string,
   prefs: UserPreferences,
+  /**
+   * The guardrail calendar, when the caller has one (the wake always does).
+   * It is what turns LIMITS from a restatement of the rules into a statement
+   * of this athlete's remaining budget, and passing the SAME object the
+   * validation will use is the only way the two can't disagree.
+   */
+  guard?: GuardrailCtx,
 ): Promise<Dossier> {
   const today = todayInZone(prefs.timezone);
   const since14 = addDays(today, -14);
@@ -379,6 +389,20 @@ export async function buildDossier(
         )
       : ["nothing scheduled in the next 14 days"],
   );
+
+  // 3.2 · LIMITS — what is LEFT of each hard limit, on this calendar.
+  //
+  // Immediately after UPCOMING because it is the arithmetic ON those lines,
+  // and because UPCOMING cannot carry it: those rows have no durations, so
+  // "is Wednesday's lift a hard day?" — a question with a numeric answer the
+  // validator computes — was unanswerable from the dossier. The coach was
+  // being rejected by ceilings it had never been shown a figure for; live on
+  // 2026-08-16 it proposed 313 minutes of strength against a 120-minute
+  // cold-start ceiling, and the receipt was the first mention of either
+  // number. The generic rules live in the wake prompt (HARD_LIMITS_PROMPT);
+  // only the remaining budget can live here, because only here is the
+  // calendar. Both are generated from the validator's own constants.
+  if (guard) push("LIMITS", athleteLimitLines(guard));
 
   // 4 · LAST 14 DAYS — planned vs actual, one line per session.
   const recentWorkouts = await db

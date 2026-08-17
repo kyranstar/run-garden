@@ -108,6 +108,54 @@ const EVENT_TAPER_DAYS = 2;
 const RAMP_CAP = 1.1;
 const RACE_WINDOW_DAYS = 7;
 
+/**
+ * Every number this file enforces, in one place, because the MODEL IS NOW
+ * SHOWN THEM (2026-08-17).
+ *
+ * The coach was being judged against limits it could not read: the wake
+ * prompt named the KINDS of hard limit ("a first block in a discipline you
+ * have no recent history in") without a single figure, and the live ski-prep
+ * wake proposed 313 minutes of strength against a 120-minute ceiling. It had
+ * no way to know. So `HARD_LIMITS_PROMPT` (the generic rules) and
+ * `athleteLimitLines` (this athlete's remaining budget, in the dossier) are
+ * both GENERATED from the constants below rather than retyped into prose — a
+ * stated ceiling that has drifted from the enforced one is worse than saying
+ * nothing, because the coach would then plan carefully against a number that
+ * still rejects it.
+ */
+export const GUARDRAIL_LIMITS = {
+  /** Categories that are hard whatever the clock says. */
+  hardCategories: [...HARD_CATEGORIES] as readonly string[],
+  hardLiftMinutes: HARD_LIFT_MINUTES,
+  trivialLiftMinutes: TRIVIAL_LIFT_MINUTES,
+  detrainedWeekMinutes: DETRAINED_WEEK_MINUTES,
+  coldStartWeekMinutes: COLD_START_WEEK_MINUTES,
+  eventTaperDays: EVENT_TAPER_DAYS,
+  rampCap: RAMP_CAP,
+  raceWindowDays: RACE_WINDOW_DAYS,
+} as const;
+
+/**
+ * The generic half of the budget, for the wake system prompt. Every number in
+ * it is interpolated from {@link GUARDRAIL_LIMITS}; the athlete-specific half
+ * (what is LEFT of each allowance this week) is `athleteLimitLines`, which
+ * belongs in the dossier because only the dossier knows the calendar.
+ *
+ * Principles, not cases: these are the rules as `validateOps` applies them to
+ * anyone, phrased so a model can count against them before it writes.
+ */
+export const HARD_LIMITS_PROMPT = [
+  `HARD LIMITS — enforced outside you, in numbers, against the calendar AS YOUR OPS LEAVE IT. Breaking ONE rejects the WHOLE proposal, so count before you write; the dossier's LIMITS section carries this athlete's actual figures and what is left of each.`,
+  `- HARD IS DEFINED: a session in category ${[...HARD_CATEGORIES].join("/")}, or a strength session of ${HARD_LIFT_MINUTES}min or more — and in a discipline they have barely touched (${DETRAINED_WEEK_MINUTES}min/week or less over the last 4 weeks), any strength session of ${TRIVIAL_LIFT_MINUTES}min or more. Under ${TRIVIAL_LIFT_MINUTES}min is never hard, and neither is mobility work of any length.`,
+  `- HARD DAYS NEVER TOUCH: no two consecutive days may both be hard. Easing or skipping one side is how you make room — the check reads the calendar AFTER your ops, so a hard day you eased is no longer hard.`,
+  `- RAMP: in any week you touch, a discipline's total minutes may not exceed ${Math.round(RAMP_CAP * 100)}% of its 4-week trailing average.`,
+  `- COLD START: in a discipline at ${DETRAINED_WEEK_MINUTES}min/week or less, a week may hold at most ${COLD_START_WEEK_MINUTES}min of HARD work in it — counting what is ALREADY on the calendar, not just what you add. Their own scheduled sessions spend this budget; to add beyond it you must ease or skip something first.`,
+  `- REST DAY: no week you touch may end with work on all seven days. A day holding nothing, a rest row, or only a strength/mobility piece under ${TRIVIAL_LIFT_MINUTES}min still counts as rest.`,
+  `- EVENT TAPER: nothing hard on a dated event's day or the ${EVENT_TAPER_DAYS} days before it.`,
+  `- RACE WEEK: no new quality session in the ${RACE_WINDOW_DAYS} days before a race.`,
+  `- THE PAST IS FIXED: no op on a day before today, or on a session already completed, skipped or missed.`,
+].join("\n");
+
 interface CalEntry {
   /**
    * The planned-workout id this entry came from, or null for one the ops
@@ -213,6 +261,131 @@ function loadedDaysIn(entries: Array<{ date: string } & Loadish>, week: string):
     if (e.date >= week && e.date <= weekEnd && isLoading(e)) days.add(e.date);
   }
   return days;
+}
+
+/**
+ * Minutes of one discipline inside [week, week+6] — the two sums the two
+ * volume rules compare against, in one function so the dossier can state the
+ * SAME arithmetic the validator applies. `hardOnly` is the cold-start count
+ * (loading work); otherwise it is the ramp count (everything but rest).
+ */
+function weekMinutes(
+  entries: Array<{ date: string } & Loadish>,
+  week: string,
+  discipline: string,
+  ctx: GuardrailCtx,
+  hardOnly: boolean,
+): number {
+  const weekEnd = addDays(week, 6);
+  let total = 0;
+  for (const e of entries) {
+    if (e.date < week || e.date > weekEnd) continue;
+    if (e.discipline !== discipline) continue;
+    if (hardOnly ? !isHard(e, ctx) : e.category === "rest") continue;
+    total += e.durationMinutes;
+  }
+  return total;
+}
+
+/** The calendar as the guardrails see it before any op — skipped and missed
+ * sessions are already gone, exactly as `resultingCalendar` starts. */
+function liveWorkouts(ctx: GuardrailCtx): GuardrailWorkout[] {
+  return ctx.workouts.filter((w) => !["skipped", "missed"].includes(w.completionState));
+}
+
+/** How many weeks of budget the dossier states. Two full weeks plus the
+ * current one is the whole horizon a wake ever plans inside; beyond that the
+ * numbers are noise the athlete pays for in input tokens. */
+const LIMIT_WEEKS = 3;
+
+/**
+ * THIS athlete's remaining budget, for the dossier — the other half of
+ * {@link HARD_LIMITS_PROMPT}.
+ *
+ * The generic rules belong in the prompt because they never change; the
+ * numbers below cannot live there, because "120 minutes is your cold-start
+ * ceiling" is useless next to a week that already holds 112 of them. Every
+ * figure is computed by the same helpers `validateOps` uses, from the same
+ * `GuardrailCtx` the validation will run against, so what the coach is told
+ * it has left is precisely what it will be allowed to spend.
+ */
+export function athleteLimitLines(ctx: GuardrailCtx): string[] {
+  const live = liveWorkouts(ctx);
+  const weeks: string[] = [];
+  for (let i = 0, w = mondayOf(ctx.today); i < LIMIT_WEEKS; i++, w = addDays(w, 7)) weeks.push(w);
+
+  const lines = [
+    "the ENFORCED numbers for this athlete, from the same code that rejects proposals — plan inside them, and say so when a limit is what shaped the plan.",
+    `nothing you propose may land after ${ctx.firmHorizonEnd} (the last planned day) unless it is firmUp/extendPlan/reshapeWeek/windDown/createPlan.`,
+  ];
+
+  // Volume, per discipline: the ramp ceiling, or the absolute cold-start one
+  // when there is no history to take a percentage of.
+  const disciplines = [...new Set(["run", "strength", ...live.map((w) => w.discipline)])];
+  for (const disc of disciplines) {
+    const avg = trailingAvg(ctx, disc);
+    const word = disciplineWord(disc);
+    if (isDetrained(ctx, disc)) {
+      const spent = weeks.map((w) => {
+        const held = weekMinutes(live, w, disc, ctx, true);
+        return `${w} holds ${Math.round(held)}min (${Math.max(0, COLD_START_WEEK_MINUTES - Math.round(held))}min left)`;
+      });
+      lines.push(
+        `${word}: ${avg === null ? "no history at all" : `${Math.round(avg)}min/week over 4 weeks`} — COLD START, so the ceiling is an absolute ${COLD_START_WEEK_MINUTES}min of HARD work per week, their own scheduled sessions included: ${spent.join(" · ")}.`,
+      );
+    } else {
+      // FLOOR, not round: a stated ceiling must never be above the enforced
+      // one, or the coach plans to the number it was given and is rejected by
+      // the number that counts. Erring under costs at most a minute.
+      const cap = Math.floor(avg! * RAMP_CAP);
+      const spent = weeks.map((w) => {
+        const held = Math.round(weekMinutes(live, w, disc, ctx, false));
+        return `${w} holds ${held}min (${held >= cap ? "already at the cap — add none" : `${cap - held}min left`})`;
+      });
+      lines.push(
+        `${word}: ${Math.round(avg!)}min/week over 4 weeks → weekly ceiling ${cap}min: ${spent.join(" · ")}.`,
+      );
+    }
+  }
+
+  // Adjacency and rest, as days — UPCOMING carries no durations, so this is
+  // the only place the coach can see which existing sessions COUNT as hard.
+  const weekEnd = addDays(weeks[weeks.length - 1]!, 6);
+  const inWindow = live.filter((w) => w.date >= ctx.today && w.date <= weekEnd);
+  const hardDays = [...new Set(inWindow.filter((w) => isHard(w, ctx)).map((w) => w.date))].sort();
+  lines.push(
+    hardDays.length
+      ? `already hard, so nothing hard may sit on the day before or after one of these: ${hardDays.join(", ")}. Ease or skip one and its neighbours open up.`
+      : "no hard days scheduled between now and the end of that window.",
+  );
+  for (const w of weeks) {
+    const loaded = loadedDaysIn(live, w);
+    const free = Array.from({ length: 7 }, (_, i) => addDays(w, i)).filter((d) => !loaded.has(d));
+    // A rest day that has already happened still satisfies the rule, but it
+    // is not a day the coach can plan into — so the count is all seven days
+    // and the LIST is only what is still ahead.
+    const ahead = free.filter((d) => d >= ctx.today);
+    lines.push(
+      free.length === 0
+        ? `week of ${w}: all seven days already carry work — you did not do that, so it is not held against you, but do not add to it.`
+        : `week of ${w}: ${free.length} free day${free.length === 1 ? "" : "s"}, ` +
+          (ahead.length ? `${ahead.join(", ")} still ahead` : "all of them already past, so the rule is met") +
+          ` — at least one must survive.`,
+    );
+  }
+
+  // The two dated windows, spelled out as the days they forbid.
+  for (const ev of ctx.datedEvents) {
+    if (ev.date < ctx.today) continue;
+    lines.push(
+      `nothing hard on ${addDays(ev.date, -EVENT_TAPER_DAYS)}–${ev.date} — ${ev.label} (${ev.date}).`,
+    );
+  }
+  for (const race of ctx.raceDates) {
+    if (race < ctx.today) continue;
+    lines.push(`no new quality session on ${addDays(race, -RACE_WINDOW_DAYS)}–${addDays(race, -1)} — race ${race}.`);
+  }
+  return lines;
 }
 
 /**
@@ -472,17 +645,9 @@ export function validateOps(
   // running minutes it did not add a single one of. The guard exists to
   // stop the COACH ramping you, so it fires only on a discipline whose
   // minutes these ops actually increased.
-  const baselineWeekMinutes = (week: string, disc: string): number => {
-    const weekEnd = addDays(week, 6);
-    let total = 0;
-    for (const w of ctx.workouts) {
-      if (["skipped", "missed"].includes(w.completionState)) continue;
-      if (w.date >= week && w.date <= weekEnd && w.category !== "rest" && w.discipline === disc) {
-        total += w.durationMinutes;
-      }
-    }
-    return total;
-  };
+  const live = liveWorkouts(ctx);
+  const baselineWeekMinutes = (week: string, disc: string): number =>
+    weekMinutes(live, week, disc, ctx, false);
   const touchedWeeks = new Set(cal.filter((e) => e.fromOp !== null).map((e) => mondayOf(e.date)));
   for (const week of touchedWeeks) {
     const weekEnd = addDays(week, 6);
@@ -508,12 +673,7 @@ export function validateOps(
       // is free, or the rule would forbid the safest way to say yes to
       // "something every day".
       if (avg === null || avg <= DETRAINED_WEEK_MINUTES) {
-        let loading = 0;
-        for (const e of cal) {
-          if (e.date >= week && e.date <= weekEnd && e.discipline === disc && isHard(e, ctx)) {
-            loading += e.durationMinutes;
-          }
-        }
+        const loading = weekMinutes(cal, week, disc, ctx, true);
         if (loading > COLD_START_WEEK_MINUTES) {
           hard.push({
             rule: "cold_start",
@@ -547,10 +707,7 @@ export function validateOps(
   // shouldn't be rejected for a fault it inherited. That mirrors the ramp
   // rule's baseline gate.
   for (const week of touchedWeeks) {
-    const baselineLoaded = loadedDaysIn(
-      ctx.workouts.filter((w) => !["skipped", "missed"].includes(w.completionState)),
-      week,
-    );
+    const baselineLoaded = loadedDaysIn(live, week);
     const resultLoaded = loadedDaysIn(cal, week);
     if (resultLoaded.size >= 7 && baselineLoaded.size < 7) {
       const opIndex = cal.find((e) => e.fromOp !== null && mondayOf(e.date) === week)!.fromOp!;

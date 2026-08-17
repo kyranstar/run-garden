@@ -474,4 +474,50 @@ describe("what the coach can see (2026-08-16 input audit)", () => {
     expect(d.text).toContain("dropped to fit the context budget: EXERCISE CATALOG");
     expect(d.approxTokens).toBeLessThanOrEqual(20_000);
   });
+
+  /**
+   * LIMITS (2026-08-17). UPCOMING lists sessions without durations, so "does
+   * Wednesday's lift already count as a hard day, and how much of the
+   * cold-start budget does it spend?" — a question with a numeric answer the
+   * validator computes to the minute — could not be answered from the
+   * dossier at all. The coach proposed 313 minutes of strength against a
+   * 120-minute ceiling and learned both numbers from the rejection.
+   */
+  it("LIMITS states what is LEFT of each hard limit, from the guardrail's own calendar", async () => {
+    const { guardrailCtx } = await import("../src/services/coach-wake.js");
+    const db = makeTestDb();
+    const { userId, prefs } = await makeTestUser(db);
+    const today = todayInZone(prefs.timezone);
+    const wed = addDays(today, 3);
+    await db.insert(schema.plannedWorkouts).values({
+      id: "wed-lift",
+      userId,
+      planId: "p",
+      sourceWorkoutId: "4738:wed",
+      title: "Posterior chain",
+      category: "strength",
+      sport: "strength",
+      originalPlanDate: wed,
+      lastVerifiedCorosDate: wed,
+      effectiveDate: wed,
+      effectiveTime: "07:00",
+      completionState: "scheduled",
+      sourceContentFingerprint: "fp",
+      calendarBlockDurationSeconds: 56 * 60,
+      createdAt: at,
+      updatedAt: at,
+    });
+    const guard = await guardrailCtx(db, userId, prefs);
+    const d = await buildDossier(db, userId, prefs, guard);
+    expect(d.sections).toContain("LIMITS");
+    // No strength history, so the absolute ceiling applies — and 56 of it is
+    // already spent by the athlete's own session.
+    expect(d.text).toContain("COLD START");
+    expect(d.text).toContain("holds 56min (64min left)");
+    // Which day is already hard: unanswerable from UPCOMING's duration-less
+    // lines, and the reason a 56-minute lift was invisible to the coach.
+    expect(d.text).toContain(`nothing hard may sit on the day before or after one of these: ${wed}`);
+    // Without a guardrail context the section is absent rather than guessed.
+    expect((await buildDossier(db, userId, prefs)).sections).not.toContain("LIMITS");
+  });
 });

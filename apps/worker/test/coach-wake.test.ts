@@ -610,6 +610,127 @@ describe("wake resilience (user requirement 2026-08-12: never error, survive nav
   });
 });
 
+/**
+ * THE PHANTOM CALENDAR (live, 2026-08-16 — the ski-prep rejection).
+ *
+ * `guardrailCtx` was the only read of `planned_workouts` in the coach path
+ * without an `archivedAt` filter, so the validator judged proposals against
+ * sessions COROS had dropped (`absence_confirmed`) and dedupe copies of live
+ * rows (`duplicate_mirror`). Prod, week of Mon 17 Aug: Tuesday held one real
+ * 75-minute easy run and three archived phantoms — a 60-minute quality run
+ * and two 56-minute lifts — and Wednesday's single 56-minute lift existed
+ * three times over.
+ *
+ * The athlete's plan was rejected twice on that evidence: "hard days back to
+ * back on Mon 17 Aug and Tue 18 Aug" against a day that is an easy run, and
+ * "313 minutes" of strength (280 phantom + the 33 the coach actually
+ * proposed) against a 120-minute cold-start ceiling. Neither was fixable by
+ * the model: the dossier filters archived rows, so those sessions have no
+ * [wo:id] it could ease, skip, or so much as name.
+ */
+describe("the guardrail calendar is the athlete's calendar", () => {
+  const seedRow = async (
+    db: Db,
+    userId: string,
+    row: {
+      id: string;
+      date: string;
+      category: string;
+      sport: string;
+      minutes: number;
+      archiveReason?: string;
+    },
+  ) => {
+    await db.insert(schema.plannedWorkouts).values({
+      id: row.id,
+      userId,
+      planId: "p",
+      sourceWorkoutId: `4738:${row.id}`,
+      title: row.category,
+      category: row.category,
+      sport: row.sport,
+      originalPlanDate: row.date,
+      lastVerifiedCorosDate: row.date,
+      effectiveDate: row.date,
+      effectiveTime: "07:00",
+      completionState: "scheduled",
+      sourceContentFingerprint: `fp-${row.id}`,
+      calendarBlockDurationSeconds: row.minutes * 60,
+      archivedAt: row.archiveReason ? nowInstant() : null,
+      archiveReason: row.archiveReason ?? null,
+      createdAt: nowInstant(),
+      updatedAt: nowInstant(),
+    });
+  };
+
+  it("excludes archived rows — the sessions the coach cannot see cannot reject it", async () => {
+    const { guardrailCtx } = await import("../src/services/coach-wake.js");
+    const db = makeTestDb();
+    const { userId, prefs } = await makeTestUser(db);
+    const today = todayInZone(prefs.timezone);
+    const tue = addDays(today, 2);
+    const wed = addDays(today, 3);
+    // Tuesday as prod holds it: one live easy run, three phantoms.
+    await seedRow(db, userId, { id: "tue-live", date: tue, category: "easy", sport: "run", minutes: 75 });
+    await seedRow(db, userId, { id: "tue-gone", date: tue, category: "quality", sport: "run", minutes: 60, archiveReason: "absence_confirmed" });
+    await seedRow(db, userId, { id: "tue-gone2", date: tue, category: "easy", sport: "run", minutes: 75, archiveReason: "absence_confirmed" });
+    await seedRow(db, userId, { id: "tue-lift-gone", date: tue, category: "strength", sport: "strength", minutes: 56, archiveReason: "absence_confirmed" });
+    await seedRow(db, userId, { id: "tue-lift-mirror", date: tue, category: "strength", sport: "strength", minutes: 56, archiveReason: "duplicate_mirror" });
+    // Wednesday's one real lift, and its two dead copies.
+    await seedRow(db, userId, { id: "wed-live", date: wed, category: "strength", sport: "strength", minutes: 56 });
+    await seedRow(db, userId, { id: "wed-mirror", date: wed, category: "strength", sport: "strength", minutes: 56, archiveReason: "duplicate_mirror" });
+
+    const ctx = await guardrailCtx(db, userId, prefs);
+    expect(ctx.workouts.map((w) => w.id).sort()).toEqual(["tue-live", "wed-live"]);
+    // Tuesday is an easy run and nothing else — not a hard day.
+    expect(ctx.workouts.filter((w) => w.date === tue)).toHaveLength(1);
+    // …and Wednesday's lift weighs 56 minutes, not 112.
+    expect(
+      ctx.workouts.filter((w) => w.date === wed).reduce((n, w) => n + w.durationMinutes, 0),
+    ).toBe(56);
+  });
+
+  it("a proposal is not rejected for a conflict that exists only among archived rows", async () => {
+    const { guardrailCtx } = await import("../src/services/coach-wake.js");
+    const { validateOps } = await import("@rg/domain");
+    const db = makeTestDb();
+    const { userId, prefs } = await makeTestUser(db);
+    const today = todayInZone(prefs.timezone);
+    const mon = addDays(today, 1);
+    const tue = addDays(today, 2);
+    await seedRow(db, userId, { id: "mon-600s", date: mon, category: "quality", sport: "run", minutes: 100 });
+    await seedRow(db, userId, { id: "tue-live", date: tue, category: "easy", sport: "run", minutes: 75 });
+    await seedRow(db, userId, { id: "tue-gone", date: tue, category: "quality", sport: "run", minutes: 60, archiveReason: "absence_confirmed" });
+
+    // The live shape: ease Monday's intervals, put the ski-prep bout on that
+    // same Monday. Tuesday is an easy run, so nothing is back to back.
+    const ops = [
+      {
+        kind: "ease" as const,
+        workoutId: "mon-600s",
+        session: {
+          category: "easy" as const,
+          title: "Easy 35",
+          durationMinutes: 35,
+          run: { blocks: [{ kind: "duration" as const, value: 35, intensity: "easy" as const }] },
+        },
+      },
+      {
+        kind: "add" as const,
+        date: mon,
+        session: {
+          category: "strength" as const,
+          title: "Ski legs",
+          durationMinutes: 33,
+          lift: { exercises: [{ name: "Wall sit", sets: 3, holdSeconds: 45, restSeconds: 60, perSide: false, weight: { type: "bodyweight" as const } }] },
+        },
+      },
+    ];
+    const out = validateOps(ops, await guardrailCtx(db, userId, prefs));
+    expect(out.hard, "the phantom Tuesday quality run must not reject this").toEqual([]);
+  });
+});
+
 describe("capability plumbing (user requirement 2026-08-12: the coach can fulfil plan requests)", () => {
   it("the prompt's example output parses against the real wake schema — prompt and schema cannot drift", async () => {
     const { WAKE_EXAMPLE_OUTPUT, WAKE_SYSTEM_PROMPT } = await import("../src/services/coach-wake.js");
@@ -876,6 +997,43 @@ describe("the wake prompt (2026-08-16 rewrite)", () => {
     expect(ops.some((o) => o.kind === "ease")).toBe(true);
     // …and the dated event it plans around is written to memory with an ISO date.
     expect(out.memoryOps.some((m) => m.op === "add" && /\d{4}-\d{2}-\d{2}/.test(m.text))).toBe(true);
+  });
+
+  /**
+   * The coach was being judged against numbers it could not see. The FLAGS
+   * line named the KINDS of hard limit — "a first block in a discipline with
+   * no recent history" — without a single figure, and the live ski-prep wake
+   * proposed 313 minutes of strength against a 120-minute ceiling. The
+   * receipt was the first mention of either number.
+   *
+   * The fix is derivation, not prose: the prompt's HARD LIMITS block IS the
+   * validator's constants, interpolated. This test fails if anyone reverts to
+   * typing a number into the prompt by hand.
+   */
+  it("states every enforced limit, in the validator's own numbers", async () => {
+    const { WAKE_SYSTEM_PROMPT } = await import("../src/services/coach-wake.js");
+    const { HARD_LIMITS_PROMPT, GUARDRAIL_LIMITS } = await import("@rg/domain");
+    // Not "contains these words" — contains the generated block verbatim.
+    expect(WAKE_SYSTEM_PROMPT).toContain(HARD_LIMITS_PROMPT);
+    for (const n of [
+      GUARDRAIL_LIMITS.coldStartWeekMinutes,
+      GUARDRAIL_LIMITS.hardLiftMinutes,
+      GUARDRAIL_LIMITS.trivialLiftMinutes,
+      GUARDRAIL_LIMITS.detrainedWeekMinutes,
+      GUARDRAIL_LIMITS.eventTaperDays,
+      GUARDRAIL_LIMITS.raceWindowDays,
+    ]) {
+      expect(WAKE_SYSTEM_PROMPT, `the model must be shown ${n}`).toContain(String(n));
+    }
+    expect(WAKE_SYSTEM_PROMPT).toContain(`${Math.round(GUARDRAIL_LIMITS.rampCap * 100)}%`);
+    // Every rule `validateOps` can reject with is named up there — a limit
+    // enforced but unstated is the whole bug.
+    for (const phrase of ["HARD DAYS NEVER TOUCH", "RAMP", "COLD START", "REST DAY", "EVENT TAPER", "RACE WEEK", "THE PAST IS FIXED"]) {
+      expect(WAKE_SYSTEM_PROMPT).toContain(phrase);
+    }
+    // And it points at where the remaining budget lives, which is the half
+    // that cannot be written into a static prompt.
+    expect(WAKE_SYSTEM_PROMPT).toContain("LIMITS section");
   });
 });
 

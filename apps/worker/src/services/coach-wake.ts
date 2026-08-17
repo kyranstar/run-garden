@@ -13,6 +13,7 @@ import {
   addDays,
   addOpDates,
   datedEventsFromMemory,
+  HARD_LIMITS_PROMPT,
   newId,
   nowInstant,
   todayInZone,
@@ -419,8 +420,17 @@ export const WAKE_EXAMPLE_OPS = JSON.stringify([
  *
  * Dossier dependency (coach-context.ts): this prompt reads EXERCISE CATALOG,
  * STRENGTH PLAN, per-session stageSummary on UPCOMING lines, the 90-day
- * per-discipline HISTORY block, and training load. Each is referenced by
- * name and degrades to "the coach looks and finds nothing" if absent.
+ * per-discipline HISTORY block, LIMITS, and training load. Each is referenced
+ * by name and degrades to "the coach looks and finds nothing" if absent.
+ *
+ * THE BUDGET IS SPLIT IN TWO, on purpose (2026-08-17). `HARD_LIMITS_PROMPT`
+ * below is generated from the validator's own constants and says what the
+ * rules ARE; the dossier's LIMITS section says what is LEFT of each of them
+ * for this athlete this week. Neither half is retyped prose — a ceiling the
+ * prompt states and the validator does not enforce is worse than silence,
+ * because the coach plans carefully against a number that still rejects it.
+ * That is not hypothetical: the live ski-prep wake proposed 313 minutes of
+ * strength work against a 120-minute cold-start ceiling it was never shown.
  */
 export const WAKE_SYSTEM_PROMPT = `You are the athlete's running and lifting coach inside Run Garden. You read one dossier and reply with ONE JSON object — nothing else.
 
@@ -453,6 +463,9 @@ PROGRAMMING — how you answer "get me ready for X", whatever X is.
 - RECORD DATED EVENTS. A trip, a holiday, an event they are travelling to — write it to memoryOps as a note with the date as YYYY-MM-DD inside the text and an expiresAt just after it. Nothing else in this app remembers it, and next week neither will you. That date is also what stops you putting hard work the day before it.
 - Work from the sections you were actually given, say what you couldn't see, and never invent the contents of one you weren't.
 
+${HARD_LIMITS_PROMPT}
+- These are a floor, not a target: sitting just inside a ceiling is not the same as coaching well, and a limit you had to work around is worth one plain clause in the rationale ("your own two lifts already spend the week's budget, so mine is short").
+
 Your contract:
 - PROPOSE, never act. Every plan change is a proposal the athlete taps to approve; nothing you say changes anything by itself.
 - SCOPE — you can fulfil essentially any plan request, and you must never claim otherwise:
@@ -464,7 +477,7 @@ Your contract:
 - RESTRAINT IS A COMPLETE ANSWER — until they ask. Unprompted, propose only when a change genuinely beats the current plan; acknowledging a missed workout kindly, or saying nothing (briefing: null), is often correct. But a direct request to plan — "replan my week", "get me ready for X", "add lifting" — is not an invitation to summarise. It is the work. Answer it with ops, or with an honest offer to draft them.
 - NEVER ask what the dossier's ATHLETE section already answers, and never repeat a question listed in OPEN ITEMS. At most ONE question, only when the answer would change your coaching, with short tappable chips.
 - MEMORY: when the athlete tells you something durable, record it via memoryOps (fact = who they are, rule = a standing preference, note = time-boxed, with expiresAt). Prefer update over add for near-duplicates; ids are in the dossier.
-- FLAGS: if a proposal goes against a standing rule, say so in its flags array ("moves your Saturday long run"). Hard limits are enforced outside you and reject the whole proposal — stay inside them: weekly ramp over 10%, a first block in a discipline with no recent history, hard days back to back (strength counts as hard from 30 minutes, and from the first minute when they haven't lifted in a month), race-week intensity, a week with no rest day left in it, hard work inside the 48h before a dated event you recorded, and editing the past.
+- FLAGS: if a proposal goes against a standing rule, say so in its flags array ("moves your Saturday long run").
 - EVIDENCE: every proposal's evidence cites dossier data ("slept 5h avg · HRV −9%"), and expiresAt is min(end of first affected day, +3 days).
 - GARDEN VOICE: MILESTONES carries the garden's state. AT MOST ONE garden reference per briefing, always tied to a concrete action ("an easy 30 tomorrow brings the rain back"), never guilt. Say nothing about the garden during rest mode or taper, or when its forecast stage is already a loss stage — one loss voice at a time.
 - SKIP TREATMENT: when proposing a skip, state in the rationale what the garden will see: the first sanctioned skip in a rolling week counts as a genuine rest day; further ones are merely neutral. OPEN ITEMS shows current mercy usage.
@@ -708,7 +721,29 @@ function opAffectedDates(op: CoachOp, workoutDates: Map<string, string>): string
   }
 }
 
-async function guardrailCtx(
+/**
+ * The calendar the guardrails reason about — and, since 2026-08-17, the
+ * calendar the coach is shown its budget against (the dossier's LIMITS
+ * section renders `athleteLimitLines` from this exact object). Exported so a
+ * test can assert what it contains, because what it contained was a bug.
+ *
+ * ARCHIVED ROWS ARE NOT ON THE CALENDAR. This query had no `archivedAt`
+ * filter — the only read of `planned_workouts` in the whole coach path that
+ * didn't — so the validator judged a calendar containing sessions COROS had
+ * dropped (`absence_confirmed`) and dedupe copies of live ones
+ * (`duplicate_mirror`). Live, 2026-08-16, week of the 17th: Tuesday held one
+ * real 75-minute easy run and three phantoms (a 60-minute quality run and two
+ * 56-minute lifts), so a proposal that correctly eased Monday's intervals was
+ * rejected for "hard days back to back on Mon 17 and Tue 18" — against a day
+ * that is an easy run. The same phantoms made one 56-minute Wednesday lift
+ * weigh 168 minutes and produced the "313 minutes of strength" rejection.
+ *
+ * Unfixable from the model's side, which is what made it so expensive: the
+ * dossier filters archived rows, so those sessions have no [wo:id] the coach
+ * could ease, skip or even mention. It was being asked to resolve a conflict
+ * on a day it could not see.
+ */
+export async function guardrailCtx(
   db: Db,
   userId: string,
   prefs: UserPreferences,
@@ -718,7 +753,7 @@ async function guardrailCtx(
   const rows = await db
     .select()
     .from(plannedWorkouts)
-    .where(and(eq(plannedWorkouts.userId, userId)));
+    .where(and(eq(plannedWorkouts.userId, userId), isNull(plannedWorkouts.archivedAt)));
   const workouts = rows
     .filter((w) => w.effectiveDate >= addDays(today, -35) && w.effectiveDate <= horizon)
     .map((w) => ({
@@ -738,6 +773,11 @@ async function guardrailCtx(
   // 2026-08-16 would then reject their perfectly ordinary strength week. So
   // unmatched activities are folded in — matched ones are already counted
   // through their planned row, and counting both would double them.
+  //
+  // That fold is also why dropping archived rows above costs no history: an
+  // activity whose planned row is archived is no longer in `matched`, so it
+  // is counted here directly. What the athlete DID is measured from what they
+  // did; only the phantom plan rows left.
   const since = addDays(today, -28);
   const acts = await db
     .select()
@@ -898,7 +938,14 @@ export async function wake(
   let triggersConsumed = false;
 
   try {
-    const dossier = await buildDossier(db, userId, prefs);
+    // ONE guardrail context, built before the model call and reused to judge
+    // its answer. The dossier renders this athlete's remaining budget from
+    // it; `validateOps` below enforces against the same object. Two reads of
+    // the same tables could differ by a sync landing mid-wake, and the coach
+    // would then be rejected by a limit that moved after it was told the
+    // number — the one failure mode this whole change exists to remove.
+    const ctx = await guardrailCtx(db, userId, prefs);
+    const dossier = await buildDossier(db, userId, prefs, ctx);
     const causeBlock =
       cause.kind === "message"
         ? `The athlete just said:\n"""${cause.body}"""`
@@ -1083,7 +1130,8 @@ export async function wake(
     }
 
     // Guardrails: hard violations get one repair round-trip, then drop.
-    const ctx = await guardrailCtx(db, userId, prefs);
+    // `ctx` is the one built before the dossier — same numbers the coach was
+    // shown, so a rejection is never news about a limit it could not read.
     let proposals = out.proposals;
     const violated = proposals
       .map((p, i) => ({ i, v: validateOps(p.ops, ctx) }))

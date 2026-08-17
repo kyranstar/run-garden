@@ -4,8 +4,16 @@
  * UI's "breaks your rule" chip is guaranteed truthful.
  */
 import { describe, expect, it } from "vitest";
-import { datedEventsFromMemory, validateOps, type GuardrailCtx } from "../src/coach-guardrails.js";
+import {
+  athleteLimitLines,
+  datedEventsFromMemory,
+  GUARDRAIL_LIMITS,
+  HARD_LIMITS_PROMPT,
+  validateOps,
+  type GuardrailCtx,
+} from "../src/coach-guardrails.js";
 import { addOpDates } from "../src/coach.js";
+import { addDays as addDaysIso } from "../src/time.js";
 import type { CoachOp } from "../src/coach.js";
 
 const easy = (title = "Easy 40", durationMinutes = 40) => ({
@@ -307,6 +315,261 @@ describe("two sessions of one category on one day", () => {
     expect(ramp).toBeTruthy();
     expect(ramp!.detail).toContain("130 minutes");
     expect(ramp!.detail).not.toContain("190");
+  });
+});
+
+/**
+ * THE SKI-PREP WEEK, as prod actually holds it (2026-08-17).
+ *
+ * Every row below is a real live session from the week of Mon 17 Aug —
+ * durations included, because durations are what decide "hard". The wake that
+ * produced this plan was rejected twice: `hard_adjacency` on Mon 17 / Tue 18,
+ * and `cold_start` at "313 minutes" of strength. Both figures came from
+ * ARCHIVED rows the guardrail context was reading and the coach could not see
+ * (fixed in coach-wake's `guardrailCtx`); against the calendar the athlete
+ * actually has, every one of these five ops is legal.
+ *
+ * The proposal, op for op, is the one the receipt described — "2 eases, 2
+ * adds, 1 skip".
+ */
+describe("the ski-prep proposal that was rejected against a calendar nobody had", () => {
+  const skiWeek = (): GuardrailCtx =>
+    ctx({
+      today: "2026-08-16",
+      workouts: [
+        { id: "mon-600s", date: "2026-08-17", category: "quality", completionState: "scheduled", durationMinutes: 100, discipline: "run" },
+        { id: "tue-easy", date: "2026-08-18", category: "easy", completionState: "scheduled", durationMinutes: 75, discipline: "run" },
+        { id: "wed-lift", date: "2026-08-19", category: "strength", completionState: "scheduled", durationMinutes: 56, discipline: "strength" },
+        { id: "thu-strides", date: "2026-08-20", category: "quality", completionState: "scheduled", durationMinutes: 73, discipline: "run" },
+        { id: "sat-long", date: "2026-08-22", category: "long", completionState: "scheduled", durationMinutes: 116, discipline: "run" },
+        { id: "sun-easy", date: "2026-08-23", category: "easy", completionState: "scheduled", durationMinutes: 65, discipline: "run" },
+        { id: "mon-800s", date: "2026-08-24", category: "quality", completionState: "scheduled", durationMinutes: 80, discipline: "run" },
+      ],
+      // Running is going; strength has not happened in a month.
+      weeklyMinutesByDiscipline: { run: [420, 400, 380, 429], strength: [0, 0, 0, 0] },
+      raceDates: [],
+      rules: [],
+      firmHorizonEnd: "2026-08-30",
+      datedEvents: [{ id: "mem1", label: "ski trip", date: "2026-08-26" }],
+    });
+
+  /** Ease Monday's intervals, put the first ski-prep bout on that same
+   * Monday, ease Thursday's strides, hang the daily mobility piece on four
+   * days, and give Sunday off. */
+  const skiPrepOps = (): CoachOp[] => [
+    { kind: "ease", workoutId: "mon-600s", session: easy("Easy 35", 35) },
+    { kind: "add", date: "2026-08-17", session: lift(33, "Ski legs — first bout") },
+    { kind: "ease", workoutId: "thu-strides", session: easy("Easy 35", 35) },
+    {
+      kind: "add",
+      date: "2026-08-18",
+      dates: ["2026-08-20", "2026-08-22", "2026-08-24"],
+      session: mobility(10),
+    } as CoachOp,
+    { kind: "skip", workoutId: "sun-easy", reason: "your rest day this week" },
+  ];
+
+  it("is legal in full — the whole proposal passes", () => {
+    expect(validateOps(skiPrepOps(), skiWeek()).hard).toEqual([]);
+  });
+
+  it("no adjacency: Monday's intervals are eased and Tuesday is an easy run", () => {
+    expect(validateOps(skiPrepOps(), skiWeek()).hard.filter((v) => v.rule === "hard_adjacency")).toEqual([]);
+    // The rule has not been switched off — move the same bout to Tuesday and
+    // it lands against Wednesday's own 56-minute lift, which the ops do
+    // nothing about.
+    const stacked = skiPrepOps().map((op) =>
+      op.kind === "add" && op.date === "2026-08-17" ? { ...op, date: "2026-08-18" } : op,
+    );
+    const bad = validateOps(stacked, skiWeek());
+    expect(bad.hard.some((v) => v.rule === "hard_adjacency")).toBe(true);
+    expect(bad.hard.find((v) => v.rule === "hard_adjacency")!.detail).toContain("Tue 18 Aug");
+  });
+
+  /**
+   * THE decisive shape, on a calendar bare enough that only one thing can be
+   * deciding the answer: the ease. Judged against the calendar BEFORE the ops
+   * this is quality-then-lift and must be rejected; judged against the
+   * calendar the ops LEAVE, Tuesday is an easy 35 and it is fine.
+   */
+  it("ease a hard session, add a lift the next day: legal, because the eased calendar is legal", () => {
+    const bare = (): GuardrailCtx =>
+      ctx({
+        today: "2026-08-16",
+        workouts: [
+          { id: "tue-q", date: "2026-08-18", category: "quality", completionState: "scheduled", durationMinutes: 60, discipline: "run" },
+        ],
+        weeklyMinutesByDiscipline: { run: [200, 200, 200, 200], strength: [60, 60, 60, 60] },
+        raceDates: [],
+        rules: [],
+        firmHorizonEnd: "2026-08-31",
+      });
+    const ease: CoachOp = { kind: "ease", workoutId: "tue-q", session: easy("Easy 35", 35) };
+    const addLift: CoachOp = { kind: "add", date: "2026-08-19", session: lift(45) };
+
+    expect(validateOps([ease, addLift], bare()).hard).toEqual([]);
+    // Without the ease — the same add against the untouched calendar — the
+    // rule fires, naming both days.
+    const unresolved = validateOps([addLift], bare()).hard.find((v) => v.rule === "hard_adjacency");
+    expect(unresolved, "quality Tuesday next to a 45-minute lift Wednesday must reject").toBeTruthy();
+    expect(unresolved!.detail).toContain("Tue 18 Aug");
+    expect(unresolved!.detail).toContain("Wed 19 Aug");
+    // Order must not matter either: the ops are a set, not a sequence of
+    // states the checker peeks at halfway through.
+    expect(validateOps([addLift, ease], bare()).hard).toEqual([]);
+  });
+
+  it("the cold-start budget counts the athlete's own lifts, and 89 minutes fits under 120", () => {
+    // Wednesday's own 56 + the coach's 33. The "313 minutes" the athlete was
+    // shown was 280 minutes of phantom rows plus this same 33.
+    expect(validateOps(skiPrepOps(), skiWeek()).hard.filter((v) => v.rule === "cold_start")).toEqual([]);
+    // One minute over the ceiling and it is rejected — the budget is real.
+    const tooMuch = skiPrepOps().map((op) =>
+      op.kind === "add" && op.date === "2026-08-17"
+        ? { ...op, session: lift(GUARDRAIL_LIMITS.coldStartWeekMinutes - 56 + 1) }
+        : op,
+    );
+    expect(validateOps(tooMuch, skiWeek()).hard.some((v) => v.rule === "cold_start")).toBe(true);
+  });
+
+  it("LIMITS tells the coach exactly that, BEFORE it plans", () => {
+    const lines = athleteLimitLines(skiWeek()).join("\n");
+    // The remaining budget, not just the ceiling: 120 − Wednesday's 56.
+    expect(lines).toContain("2026-08-17 holds 56min (64min left)");
+    // Which existing days are hard — unanswerable from UPCOMING, which
+    // carries no durations, and the reason a 56-minute lift is invisible.
+    expect(lines).toContain("2026-08-17, 2026-08-19, 2026-08-20, 2026-08-22, 2026-08-24");
+    expect(lines).toContain("2026-08-21"); // Friday, the week's free day
+    expect(lines).toContain("nothing hard on 2026-08-24–2026-08-26 — ski trip");
+    expect(lines).toContain("nothing you propose may land after 2026-08-30");
+  });
+});
+
+/**
+ * The budget the coach is SHOWN and the budget the validator ENFORCES are one
+ * thing said twice, and these tests fail if either copy moves alone. Both the
+ * prompt block and the dossier lines are generated from `GUARDRAIL_LIMITS`,
+ * so the remaining risk is a constant changed without its rule — which is
+ * what the boundary cases below catch.
+ */
+describe("the stated budget is the enforced budget", () => {
+  it("every limit in the prompt block is the constant the validator uses", () => {
+    const { coldStartWeekMinutes, detrainedWeekMinutes, hardLiftMinutes, trivialLiftMinutes, rampCap, raceWindowDays, eventTaperDays, hardCategories } =
+      GUARDRAIL_LIMITS;
+    for (const n of [coldStartWeekMinutes, detrainedWeekMinutes, hardLiftMinutes, trivialLiftMinutes, raceWindowDays, eventTaperDays]) {
+      expect(HARD_LIMITS_PROMPT, `the prompt must state ${n}`).toContain(String(n));
+    }
+    expect(HARD_LIMITS_PROMPT).toContain(`${Math.round(rampCap * 100)}%`);
+    for (const c of hardCategories) expect(HARD_LIMITS_PROMPT).toContain(c);
+  });
+
+  it("COLD START: the stated ceiling is the enforced one, to the minute", () => {
+    const detrained = ctx({
+      workouts: [],
+      raceDates: [],
+      weeklyMinutesByDiscipline: { run: [180, 190, 200, 190], strength: [0, 0, 0, 0] },
+    });
+    const at = GUARDRAIL_LIMITS.coldStartWeekMinutes;
+    expect(validateOps([{ kind: "add", date: "2026-08-10", session: lift(at) }], detrained).hard).toEqual([]);
+    expect(
+      validateOps([{ kind: "add", date: "2026-08-10", session: lift(at + 1) }], detrained).hard.some(
+        (v) => v.rule === "cold_start",
+      ),
+    ).toBe(true);
+    expect(athleteLimitLines(detrained).join("\n")).toContain(`${at}min left`);
+  });
+
+  it("DETRAINED: the stated threshold is where the cold-start rule switches on", () => {
+    const at = GUARDRAIL_LIMITS.detrainedWeekMinutes;
+    const barely = (weekly: number) =>
+      ctx({ workouts: [], raceDates: [], weeklyMinutesByDiscipline: { strength: [weekly, weekly, weekly, weekly] } });
+    const over = GUARDRAIL_LIMITS.coldStartWeekMinutes + 60;
+    // At the threshold: cold start, and the absolute ceiling bites.
+    expect(
+      validateOps([{ kind: "add", date: "2026-08-10", session: lift(over) }], barely(at)).hard.some(
+        (v) => v.rule === "cold_start",
+      ),
+    ).toBe(true);
+    expect(athleteLimitLines(barely(at)).join("\n")).toContain("COLD START");
+    // One minute of weekly history above it and the percentage ramp takes
+    // over — a different rule, with a different number, and LIMITS says so.
+    const trained = barely(at + 1);
+    expect(validateOps([{ kind: "add", date: "2026-08-10", session: lift(over) }], trained).hard.some(
+      (v) => v.rule === "cold_start",
+    )).toBe(false);
+    expect(athleteLimitLines(trained).join("\n")).toContain(
+      `weekly ceiling ${Math.floor((at + 1) * GUARDRAIL_LIMITS.rampCap)}min`,
+    );
+  });
+
+  it("HARD LIFT: the stated minutes are where a lift starts costing the next day", () => {
+    const at = GUARDRAIL_LIMITS.hardLiftMinutes;
+    // Trained in strength, so only the duration decides. Friday already holds
+    // a lift; Saturday is the long run.
+    expect(
+      validateOps([{ kind: "add", date: "2026-08-09", session: lift(at) }], ctx()).hard.some(
+        (v) => v.rule === "hard_adjacency",
+      ),
+    ).toBe(true);
+    expect(
+      validateOps([{ kind: "add", date: "2026-08-09", session: lift(at - 1) }], ctx()).hard.some(
+        (v) => v.rule === "hard_adjacency",
+      ),
+    ).toBe(false);
+  });
+
+  it("TRIVIAL: the stated minutes are where a piece stops being free", () => {
+    const at = GUARDRAIL_LIMITS.trivialLiftMinutes;
+    const detrained = ctx({ weeklyMinutesByDiscipline: { run: [180, 190, 200, 190], strength: [0, 0, 0, 0] } });
+    expect(
+      validateOps([{ kind: "add", date: "2026-08-09", session: lift(at) }], detrained).hard.some(
+        (v) => v.rule === "hard_adjacency",
+      ),
+    ).toBe(true);
+    expect(validateOps([{ kind: "add", date: "2026-08-09", session: lift(at - 1) }], detrained).hard).toEqual([]);
+  });
+
+  it("RAMP / RACE WINDOW / EVENT TAPER: stated day counts and percentage bite where they say", () => {
+    const base = ctx({ workouts: [], raceDates: ["2026-08-16"], weeklyMinutesByDiscipline: { run: [100, 100, 100, 100] } });
+    const cap = Math.floor(100 * GUARDRAIL_LIMITS.rampCap);
+    expect(validateOps([{ kind: "add", date: "2026-08-10", session: easy("Easy", cap) }], base).hard).toEqual([]);
+    expect(
+      validateOps([{ kind: "add", date: "2026-08-10", session: easy("Easy", cap + 2) }], base).hard.some(
+        (v) => v.rule === "ramp",
+      ),
+    ).toBe(true);
+    expect(athleteLimitLines(base).join("\n")).toContain(`weekly ceiling ${cap}min`);
+
+    // Race window: the first day inside it rejects new quality, the day
+    // before it does not.
+    const raceDay = "2026-08-16";
+    const firstIn = addDaysIso(raceDay, -GUARDRAIL_LIMITS.raceWindowDays);
+    expect(
+      validateOps([{ kind: "add", date: firstIn, session: quality() }], base).hard.some(
+        (v) => v.rule === "race_week_intensity",
+      ),
+    ).toBe(true);
+    expect(athleteLimitLines(base).join("\n")).toContain(`no new quality session on ${firstIn}–2026-08-15`);
+
+    // Event taper: same shape, in days before a remembered date.
+    const trip = ctx({
+      workouts: [],
+      raceDates: [],
+      firmHorizonEnd: "2026-08-31",
+      datedEvents: [{ id: "m", label: "ski trip", date: "2026-08-26" }],
+    });
+    const firstTaper = addDaysIso("2026-08-26", -GUARDRAIL_LIMITS.eventTaperDays);
+    expect(
+      validateOps([{ kind: "add", date: firstTaper, session: lift(45) }], trip).hard.some(
+        (v) => v.rule === "event_taper",
+      ),
+    ).toBe(true);
+    expect(
+      validateOps([{ kind: "add", date: addDaysIso(firstTaper, -1), session: lift(45) }], trip).hard.filter(
+        (v) => v.rule === "event_taper",
+      ),
+    ).toEqual([]);
+    expect(athleteLimitLines(trip).join("\n")).toContain(`nothing hard on ${firstTaper}–2026-08-26`);
   });
 });
 
