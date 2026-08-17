@@ -11,7 +11,7 @@ import {
   sleepRecords,
 } from "@rg/database";
 import { addDays, newId, nowInstant, type LocalDate, type UserPreferences } from "@rg/domain";
-import type { Db } from "./db.js";
+import { chunkIds, type Db } from "./db.js";
 
 /**
  * The coach's free layer (spec §1): six deterministic rules that MARK — a
@@ -80,10 +80,15 @@ export async function consumeTriggers(
   at: string,
 ): Promise<void> {
   if (ids.length === 0) return;
-  await db
-    .update(coachTriggers)
-    .set({ consumedAt: at })
-    .where(and(eq(coachTriggers.userId, userId), inArray(coachTriggers.id, ids)));
+  // Chunked: the seven auto kinds dedupe to one unconsumed row each, but
+  // `unanswered_message` is inserted per athlete message and only cleared by a
+  // SUCCESSFUL wake — so a run of failing wakes grows this list without bound.
+  for (const chunk of chunkIds(ids)) {
+    await db
+      .update(coachTriggers)
+      .set({ consumedAt: at })
+      .where(and(eq(coachTriggers.userId, userId), inArray(coachTriggers.id, chunk)));
+  }
 }
 
 /** Kinds currently blocked by dedupe (unconsumed, or consumed <72h ago). */

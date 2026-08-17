@@ -24,7 +24,7 @@ import {
   type WakeOutput,
 } from "@rg/domain";
 import type { Env } from "../env.js";
-import type { Db } from "./db.js";
+import { chunkIds, type Db } from "./db.js";
 import { llmBudgetStatus } from "./llm.js";
 import {
   chatCompletion,
@@ -743,14 +743,18 @@ async function guardrailCtx(
     .select()
     .from(activities)
     .where(and(eq(activities.userId, userId), gte(activities.startTime, `${since}T00:00:00Z`)));
-  const matched = new Set(
-    (
-      await db
-        .select({ activityId: workoutCompletionMatches.activityId })
-        .from(workoutCompletionMatches)
-        .where(inArray(workoutCompletionMatches.workoutId, workouts.map((w) => w.id).concat("-")))
-    ).map((m) => m.activityId),
-  );
+  // Chunked: an `inArray` binds one variable per id and D1 caps a statement at
+  // ~100. Unchunked, this threw "too many SQL variables" and killed the wake
+  // AFTER the briefing persisted — same failure calendar-sync already learned.
+  const matched = new Set<string>();
+  for (const ids of chunkIds(workouts.map((w) => w.id))) {
+    for (const m of await db
+      .select({ activityId: workoutCompletionMatches.activityId })
+      .from(workoutCompletionMatches)
+      .where(inArray(workoutCompletionMatches.workoutId, ids))) {
+      matched.add(m.activityId);
+    }
+  }
   const weekly: Record<string, number[]> = {};
   const bump = (discipline: string, date: string, minutes: number) => {
     for (let k = 4; k >= 1; k--) {

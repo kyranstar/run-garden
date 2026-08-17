@@ -22,7 +22,7 @@ import {
   type CoachSession,
   type UserPreferences,
 } from "@rg/domain";
-import { chunkedInsert, type Db } from "./db.js";
+import { chunkIds, chunkedInsert, type Db } from "./db.js";
 import { applyMove } from "./jobs.js";
 import { recordIntent } from "./sync-intents.js";
 import { resolveRaceConflict } from "./race-conflict.js";
@@ -314,10 +314,15 @@ async function archiveWeek(
       ),
     );
   if (rows.length > 0) {
-    await db
-      .update(plannedWorkouts)
-      .set({ archivedAt: now, archiveReason: "user_removed", updatedAt: now })
-      .where(inArray(plannedWorkouts.id, rows.map((r) => r.id)));
+    // Chunked like every other id-list bind: D1 caps a statement at ~100 bound
+    // variables. One week of one plan is small today, but the cap is not worth
+    // betting an approval on.
+    for (const ids of chunkIds(rows.map((r) => r.id))) {
+      await db
+        .update(plannedWorkouts)
+        .set({ archivedAt: now, archiveReason: "user_removed", updatedAt: now })
+        .where(inArray(plannedWorkouts.id, ids));
+    }
     await suppressAndUnpush(db, userId, rows, now, prefs);
   }
   return rows.map((r) => r.id);
@@ -586,10 +591,15 @@ export async function applyOps(
             ),
           );
         if (rows.length > 0) {
-          await db
-            .update(plannedWorkouts)
-            .set({ archivedAt: now, archiveReason: "user_removed", updatedAt: now })
-            .where(inArray(plannedWorkouts.id, rows.map((r) => r.id)));
+          // Chunked: this is EVERY future scheduled session in the plan — a
+          // 20-week block at 6 sessions/week is 120 ids, well past D1's ~100
+          // bound-variable cap. Unchunked it would fail at approval time.
+          for (const ids of chunkIds(rows.map((r) => r.id))) {
+            await db
+              .update(plannedWorkouts)
+              .set({ archivedAt: now, archiveReason: "user_removed", updatedAt: now })
+              .where(inArray(plannedWorkouts.id, ids));
+          }
           await suppressAndUnpush(db, userId, rows, now, prefs);
           out.archived.push(...rows.map((r) => r.id));
         }

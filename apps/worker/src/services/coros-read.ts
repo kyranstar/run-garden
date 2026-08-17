@@ -4,7 +4,7 @@ import { addDays, todayInZone, type UserPreferences } from "@rg/domain";
 import { buildSnapshot, loadNameResolver } from "@rg/coros";
 import type { NameResolver } from "@rg/providers";
 import { fixtureModeEnabled, type Env } from "../env.js";
-import type { Db } from "./db.js";
+import { chunkIds, type Db } from "./db.js";
 import { corosClient, touchCorosSync } from "./coros-connection.js";
 import { ingestActivities } from "./completion.js";
 import { ingestDailyHealth } from "./health-ingest.js";
@@ -122,15 +122,20 @@ export async function corosReadNow(
       // The wound isn't part of the fingerprint, so ingest would skip the
       // healed record as "unchanged" — void the stored fingerprint to force
       // the refresh through.
-      await db
-        .update(activitySourceLinks)
-        .set({ contentFingerprint: "" })
-        .where(
-          and(
-            eq(activitySourceLinks.provider, "coros"),
-            inArray(activitySourceLinks.providerActivityId, [...needsDetail]),
-          ),
-        );
+      // Chunked: this set is every coros activity the user has ever synced
+      // whose telemetry reads as list-grade — after a mass clobber that is
+      // ALL of them, hundreds of ids, far past D1's ~100 bound-variable cap.
+      for (const ids of chunkIds([...needsDetail])) {
+        await db
+          .update(activitySourceLinks)
+          .set({ contentFingerprint: "" })
+          .where(
+            and(
+              eq(activitySourceLinks.provider, "coros"),
+              inArray(activitySourceLinks.providerActivityId, ids),
+            ),
+          );
+      }
     }
 
     const resolver = await nameResolver(fetchImpl);

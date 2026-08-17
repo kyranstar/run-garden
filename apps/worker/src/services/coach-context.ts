@@ -34,7 +34,7 @@ import {
   nextUnlocks,
   type GardenSnapshot,
 } from "@rg/garden-engine";
-import type { Db } from "./db.js";
+import { chunkIds, type Db } from "./db.js";
 import { pendingTriggers } from "./coach-triggers.js";
 import { resolveCodesInText } from "./exercise-catalog.js";
 import { findRaceConflict } from "./race-conflict.js";
@@ -390,10 +390,18 @@ export async function buildDossier(
     .select()
     .from(activities)
     .where(and(eq(activities.userId, userId), gte(activities.startTime, `${since14}T00:00:00Z`)));
-  const matches = await db
-    .select()
-    .from(workoutCompletionMatches)
-    .where(inArray(workoutCompletionMatches.workoutId, recentWorkouts.map((w) => w.id).concat("-")));
+  // Chunked: an `inArray` binds one variable per id and D1 caps a statement at
+  // ~100. Unchunked, this threw "too many SQL variables" mid-wake once the
+  // dossier's window widened — same failure calendar-sync already learned.
+  const matches: (typeof workoutCompletionMatches.$inferSelect)[] = [];
+  for (const ids of chunkIds(recentWorkouts.map((w) => w.id))) {
+    matches.push(
+      ...(await db
+        .select()
+        .from(workoutCompletionMatches)
+        .where(inArray(workoutCompletionMatches.workoutId, ids))),
+    );
+  }
   const actById = new Map(recentActs.map((a) => [a.id, a]));
   const matchByWorkout = new Map(matches.map((m) => [m.workoutId, m]));
   const trainingLines = recentWorkouts

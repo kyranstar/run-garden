@@ -914,7 +914,10 @@ export async function pushStudioPlan(
 
   // A re-push replaces whatever is in flight for these rows; otherwise an
   // older job's result would land on a row that has since been re-planned.
-  for (const ids of chunkIds(rows.map((r) => r.id))) {
+  // Chunk of 80, not the default 90: this statement also binds `userId` and
+  // the four IN_FLIGHT statuses, so a full 90-id chunk would sit at 95 of
+  // D1's ~100 — too close to spend the headroom the default assumes.
+  for (const ids of chunkIds(rows.map((r) => r.id), 80)) {
     await db
       .update(corosWriteJobs)
       .set({ status: "superseded", completedAt: now, updatedAt: now })

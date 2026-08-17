@@ -11,8 +11,60 @@ import { savePreferences } from "../src/services/calendar-sync.js";
 
 const MIGRATIONS_DIR = join(__dirname, "../../../packages/database/migrations");
 
-/** In-memory SQLite with the real D1 migrations applied. */
-export function makeTestDb(): Db {
+/**
+ * D1's real per-statement bound-variable ceiling. SQLite compiled for D1 keeps
+ * `SQLITE_LIMIT_VARIABLE_NUMBER` at 100; better-sqlite3 ships 32766, which is
+ * precisely why an unchunked `inArray` passes every local test and then throws
+ * `D1_ERROR: too many SQL variables` in production.
+ */
+export const D1_BIND_LIMIT = 100;
+
+/**
+ * Make the test driver as strict as D1 about bound variables.
+ *
+ * Without this the whole class of "too many SQL variables" bug is invisible
+ * locally: better-sqlite3 happily binds thousands. A live coach wake burned
+ * 125 seconds and an LLM call, persisted its briefing, and then died on an
+ * unchunked 134-id `inArray` that every test in this repo had been passing
+ * over for months. Tests that opt into `boundVariableCap` fail the same way,
+ * in milliseconds.
+ */
+function installBoundVariableCap(sqlite: Database.Database, cap: number): void {
+  const prepare = sqlite.prepare.bind(sqlite);
+  const guard = (stmt: Record<string, unknown>, method: string): void => {
+    const original = stmt[method];
+    if (typeof original !== "function") return;
+    const bound = (original as (...a: unknown[]) => unknown).bind(stmt);
+    stmt[method] = (...params: unknown[]) => {
+      // Drizzle's better-sqlite3 driver spreads params as individual args.
+      const count =
+        params.length === 1 && Array.isArray(params[0]) ? (params[0] as unknown[]).length : params.length;
+      if (count > cap) {
+        throw new Error(
+          `D1_ERROR: too many SQL variables at offset 0: SQLITE_ERROR ` +
+            `(statement bound ${count} variables, D1 allows ${cap}) — ` +
+            `chunk the id list with chunkIds() from services/db.ts`,
+        );
+      }
+      return bound(...params);
+    };
+  };
+  (sqlite as unknown as { prepare: unknown }).prepare = (...args: unknown[]) => {
+    const stmt = (prepare as (...a: unknown[]) => unknown)(...args) as Record<string, unknown>;
+    // `.raw()`/`.pluck()` return the same statement object, so guarding these
+    // four own-properties covers every path drizzle takes to execute it.
+    for (const method of ["run", "get", "all", "iterate"]) guard(stmt, method);
+    return stmt;
+  };
+}
+
+/**
+ * In-memory SQLite with the real D1 migrations applied.
+ *
+ * Pass `{ boundVariableCap: D1_BIND_LIMIT }` to also enforce D1's bound-variable
+ * ceiling — see `installBoundVariableCap`.
+ */
+export function makeTestDb(opts: { boundVariableCap?: number } = {}): Db {
   const sqlite = new Database(":memory:");
   for (const file of readdirSync(MIGRATIONS_DIR).filter((f) => f.endsWith(".sql")).sort()) {
     const sql = readFileSync(join(MIGRATIONS_DIR, file), "utf8");
@@ -21,6 +73,9 @@ export function makeTestDb(): Db {
       if (trimmed) sqlite.exec(trimmed);
     }
   }
+  // Installed after the migrations: DDL binds nothing, and the cap should only
+  // ever police application queries.
+  if (opts.boundVariableCap !== undefined) installBoundVariableCap(sqlite, opts.boundVariableCap);
   return drizzle(sqlite, { schema }) as unknown as Db;
 }
 

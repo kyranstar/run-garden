@@ -208,14 +208,22 @@ activityRoutes.get("/", async (c) => {
 
   // Attach the planned workout each activity completed (if any), so the UI can
   // distinguish plan runs from unplanned ("bonus") runs.
+  // Chunked: `?limit=100` is caller-controllable and each id binds one
+  // variable, which lands exactly on D1's ~100 cap.
   const matchIds = rows.map((r) => r.completionMatchId).filter((x): x is string => !!x);
-  const matches = matchIds.length
-    ? await db.select().from(workoutCompletionMatches).where(inArray(workoutCompletionMatches.id, matchIds))
-    : [];
+  const matches = (
+    await Promise.all(
+      chunkIds(matchIds).map((ids) =>
+        db.select().from(workoutCompletionMatches).where(inArray(workoutCompletionMatches.id, ids)),
+      ),
+    )
+  ).flat();
   const woIds = matches.map((m) => m.workoutId);
-  const wos = woIds.length
-    ? await db.select().from(plannedWorkouts).where(inArray(plannedWorkouts.id, woIds))
-    : [];
+  const wos = (
+    await Promise.all(
+      chunkIds(woIds).map((ids) => db.select().from(plannedWorkouts).where(inArray(plannedWorkouts.id, ids))),
+    )
+  ).flat();
   const woById = new Map(wos.map((w) => [w.id, w]));
   const matchById = new Map(matches.map((m) => [m.id, m]));
 
