@@ -25,7 +25,20 @@ import {
   type RawCorosSchedule,
 } from "@rg/providers";
 import type { CorosClient } from "./client.js";
-import { createWorkout, deleteWorkout } from "./create-executor.js";
+import {
+  createWorkout,
+  deleteWorkout,
+  issueGuardedDelete,
+  locate as locateInPlan,
+  nextIdInPlan,
+  observationFromSpan,
+  observationSpan,
+  planView,
+  readFullSpan,
+  type Located,
+  type PlanView,
+  type StampPredicate,
+} from "./create-executor.js";
 
 export interface MoveJob {
   id: string;
@@ -79,12 +92,6 @@ export interface StudioJobOptions {
   executors?: StudioExecutors;
 }
 
-interface Located {
-  entity: RawCorosEntity;
-  program: RawCorosProgram | undefined;
-  date: string;
-}
-
 /**
  * Find one plan's entity/program in a (possibly merged multi-plan) schedule
  * read. idInPlan is only unique within its own plan — schedule/query merges
@@ -110,7 +117,21 @@ function versionOf(program: RawCorosProgram | undefined): string | undefined {
   return program?.version != null ? String(program.version) : undefined;
 }
 
-export async function executeMoveJob(client: CorosClient, job: MoveJob): Promise<MoveJobResult> {
+export interface MoveJobOptions {
+  /**
+   * yyyy-mm-dd anchor for the plan-wide sweep the remove-and-add fallback
+   * needs (id derivation and the delete-ambiguity guard both reason over the
+   * whole plan, not a window). Defaults to the system date.
+   */
+  today?: string;
+}
+
+export async function executeMoveJob(
+  client: CorosClient,
+  job: MoveJob,
+  opts: MoveJobOptions = {},
+): Promise<MoveJobResult> {
+  const today = opts.today ?? new Date().toISOString().slice(0, 10);
   const windowStart = addDays(minLocalDate(job.originalDate, job.destinationDate), -3);
   const windowEnd = addDays(maxLocalDate(job.originalDate, job.destinationDate), 3);
   const idInPlan = job.workout.sourceIdInPlan;
@@ -238,12 +259,33 @@ export async function executeMoveJob(client: CorosClient, job: MoveJob): Promise
   }
 
   // 8. Server rejected the update cleanly → remove-and-add fallback.
-  return removeAndAdd(client, job, readWindow, planId, destDay, planStartDay, result);
+  return removeAndAdd(client, job, readWindow, planId, destDay, planStartDay, result, {
+    today,
+    preFingerprint,
+  });
 }
 
 /**
  * Insert-before-delete fallback (decision D5): a mid-operation failure leaves
  * a visible, recoverable duplicate rather than a lost workout.
+ *
+ * EVERYTHING DESTRUCTIVE HERE GOES THROUGH THE CREATE-EXECUTOR'S GUARDS
+ * (2026-08-17). This path used to be the one place in the codebase that
+ * violated the safety core's own invariants:
+ *
+ *  - INVARIANT 2 (ids come from observation, not the counter). The clone's
+ *    slot was `maxIdInPlan + 1`. A live plan was observed reporting
+ *    `maxIdInPlan: 0` while carrying ids up to 45, and the mock reproduces
+ *    exactly that (`reassignsIdInPlan: "counter"`): a simulated move onto
+ *    such a plan derived a slot already occupied by a hand-made workout and
+ *    then DELETED it as the "clone". The slot is now
+ *    `max(counter, observed) + 1` swept plan-wide, gated on occupancy the way
+ *    `createWorkout` gates it.
+ *  - INVARIANT 4 (deletes are triple-addressed and re-proven). Both deletes
+ *    addressed a remembered id with no re-proof at all. Both now run through
+ *    `issueGuardedDelete`, against a PLAN-WIDE snapshot, after re-proving that
+ *    the thing at that address is still the workout we mean — by program name
+ *    for the clone, by content fingerprint for the original.
  */
 async function removeAndAdd(
   client: CorosClient,
@@ -253,11 +295,13 @@ async function removeAndAdd(
   destDay: number,
   planStartDay: number | undefined,
   result: (partial: Omit<MoveJobResult, "jobId">) => MoveJobResult,
+  ctx: { today: string; preFingerprint: string },
 ): Promise<MoveJobResult> {
   const idInPlan = job.workout.sourceIdInPlan;
+  const { today, preFingerprint } = ctx;
 
-  // (a) Re-read: fresh maxIdInPlan + raw objects to clone. Nothing written yet,
-  // so a failure here is a clean write_failed.
+  // (a) Re-read: raw objects to clone. Nothing written yet, so a failure here
+  // is a clean write_failed.
   let fresh: RawCorosSchedule;
   try {
     fresh = await readWindow();
@@ -271,7 +315,48 @@ async function removeAndAdd(
   if (original.date !== job.originalDate) {
     return result({ outcome: "upstream_changed", observedDate: original.date });
   }
-  const newIdInPlan = Number(fresh.maxIdInPlan ?? 0) + 1;
+  // The direct-update path checked the content guard before writing; the
+  // fallback DELETES, so it re-checks against its own fresh read rather than
+  // trusting a fingerprint taken several round trips ago.
+  if (corosProgramFingerprint(original.program) !== preFingerprint) {
+    return result({
+      outcome: "upstream_changed",
+      errorCategory: "content_changed",
+      observedDate: original.date,
+    });
+  }
+  /** The nearest thing a move has to an ownership stamp: the program's name. */
+  const isOurs: StampPredicate = (name) =>
+    String(name ?? "") === String(original.program?.name ?? "");
+
+  // (a2) The clone's slot, derived exactly the way `createWorkout` derives
+  // one. The sweep can only exclude ids it can SEE, so a date outside it
+  // would be a blind derivation: refuse instead of guessing.
+  const observable = observationSpan(today);
+  if (
+    job.originalDate < observable.start ||
+    job.originalDate > observable.end ||
+    job.destinationDate < observable.start ||
+    job.destinationDate > observable.end
+  ) {
+    return result({ outcome: "write_failed", errorCategory: "out_of_span" });
+  }
+  let beforeSpan: PlanView;
+  let newIdInPlan: number;
+  try {
+    const raw = await readFullSpan(client, today);
+    beforeSpan = planView(raw, planId);
+    newIdInPlan = nextIdInPlan(observationFromSpan(raw, planId, today));
+  } catch {
+    return result({ outcome: "write_failed", errorCategory: "network" });
+  }
+  // Final occupancy gate, plan-wide: the derivation already excluded every id
+  // it saw, so anything here is a genuine race. Never write onto it, and
+  // never — as the counter-derived slot could — delete it as "the clone".
+  if (locateInPlan(beforeSpan, newIdInPlan)) {
+    return result({ outcome: "write_failed", errorCategory: "slot_occupied" });
+  }
+
   const entityClone: RawCorosEntity = { ...original.entity, happenDay: destDay };
   if (planStartDay != null && planStartDay > 0) {
     entityClone.dayNo =
@@ -289,23 +374,30 @@ async function removeAndAdd(
     addThrew = true; // clone may or may not exist — the verification read decides
   }
 
-  // (c) Verify the clone exists at the destination.
-  let afterAdd: RawCorosSchedule;
+  // (c) Verify the clone exists at the destination. PLAN-WIDE, because this
+  // same snapshot is what both deletes below are guarded against and a
+  // `status: 3` delete reaches the whole plan, not the window.
+  let afterAdd: PlanView;
   try {
-    afterAdd = await readWindow();
+    afterAdd = planView(await readFullSpan(client, today), planId);
   } catch {
     return result({ outcome: "ambiguous", errorCategory: "network" });
   }
-  const clone = locate(afterAdd, planId, String(newIdInPlan));
+  const clone = locateInPlan(afterAdd, newIdInPlan);
   if (!clone || clone.date !== job.destinationDate) {
     if (clone) {
       // Visible but wrong — roll the clone back before reporting failure.
+      // Guarded like every other delete: if the address is shared, or what
+      // sits there is not the program we just wrote, nothing is sent and the
+      // duplicate is reported rather than gambled with.
+      if (String(clone.program?.name ?? "") !== String(original.program.name ?? "")) {
+        return result({ outcome: "verification_failed", errorCategory: "duplicate_left" });
+      }
       try {
-        await client.removeScheduleEntity(
-          newIdInPlan,
-          String(clone.entity.planProgramId ?? newIdInPlan),
-          planId,
-        );
+        const rollback = await issueGuardedDelete(client, afterAdd, clone, isOurs, planId);
+        if (!rollback.sent) {
+          return result({ outcome: "verification_failed", errorCategory: "duplicate_left" });
+        }
       } catch {
         return result({ outcome: "verification_failed", errorCategory: "duplicate_left" });
       }
@@ -322,15 +414,40 @@ async function removeAndAdd(
     });
   }
 
-  // (d) Delete the original. A failure here leaves a duplicate — visible and
-  // recoverable, never silently ignored.
+  // (d) Delete the original — re-located and re-proven in the SAME plan-wide
+  // snapshot that just verified the clone, never by the id we remembered.
+  // A failure here leaves a duplicate: visible and recoverable, never
+  // silently ignored.
+  const originalNow = locateInPlan(afterAdd, idInPlan);
+  if (!originalNow) {
+    // Already gone between the insert and now: the move is effectively done.
+    return result({
+      outcome: "verified",
+      pathUsed: "remove_and_add",
+      observedDate: clone.date,
+      observedFingerprint: clone.program ? corosProgramFingerprint(clone.program) : undefined,
+      observedVersion: versionOf(clone.program),
+    });
+  }
+  if (
+    originalNow.date !== job.originalDate ||
+    !originalNow.program ||
+    corosProgramFingerprint(originalNow.program) !== preFingerprint
+  ) {
+    // Something else is at that address now. The clone stands; the original is
+    // not ours to remove on a guess.
+    return result({
+      outcome: "verification_failed",
+      errorCategory: "duplicate_left",
+      observedDate: originalNow.date,
+    });
+  }
   try {
-    const del = await client.removeScheduleEntity(
-      idInPlan,
-      String(original.entity.planProgramId ?? idInPlan),
-      planId,
-    );
-    if (!del.ok) {
+    const del = await issueGuardedDelete(client, afterAdd, originalNow, isOurs, planId);
+    if (!del.sent) {
+      return result({ outcome: "verification_failed", errorCategory: "duplicate_left" });
+    }
+    if (del.code !== undefined && del.code !== "0000") {
       return result({ outcome: "verification_failed", errorCategory: "duplicate_left" });
     }
   } catch {

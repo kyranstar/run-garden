@@ -165,6 +165,39 @@ describe("describeOps — the live ski-prep proposal", () => {
       "2026-08-24",
     ]);
   });
+
+  it("says what a sub-minute block and a unit-bearing one actually are", () => {
+    // The manifest is the ONE place the athlete reads what they are approving,
+    // so the vocabulary that lets a coach write "15s" has to arrive here as
+    // fifteen seconds. A duration block's `value` is minutes — 0.25 of one —
+    // and the shared stage formatter is what keeps this line, the stored stage
+    // summary and the session sheet from disagreeing about it.
+    const strides = coachOpSchema.parse({
+      kind: "add",
+      date: "2026-08-20",
+      session: {
+        category: "quality",
+        title: "Strides",
+        durationMinutes: 40,
+        run: {
+          blocks: [
+            { kind: "duration", value: "15 min", intensity: "easy" },
+            { kind: "duration", value: "15s", intensity: "interval" },
+            { kind: "duration", value: "45s", intensity: "easy" },
+            { kind: "duration", value: "90s", intensity: "threshold" },
+            { kind: "distance", value: "1km", intensity: "steady" },
+          ],
+        },
+      },
+    });
+    expect(describeOps([strides])[0]!.detail).toEqual([
+      "15 min easy",
+      "15s interval",
+      "45s easy",
+      "90s threshold",
+      "1 km steady",
+    ]);
+  });
 });
 
 /**

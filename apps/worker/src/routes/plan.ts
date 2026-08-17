@@ -51,6 +51,7 @@ import { cloudPresence, deriveWorkoutSync, type CloudPresence } from "../service
 import { exerciseNameMap, resolveCodesInText } from "../services/exercise-catalog.js";
 import { buildReadiness } from "../services/readiness.js";
 import { isLoosePlan } from "../services/coach-plans.js";
+import { repairPlannedWorkoutFidelity } from "../services/plan-repair.js";
 import { executeCloudJobs } from "../services/coros-write-cloud.js";
 
 export const planRoutes = new Hono<AppContext>();
@@ -866,6 +867,45 @@ planRoutes.post("/race-conflict/resolve", async (c) => {
   const prefs = await loadPreferences(db, userId);
   const resolved = await resolveRaceConflict(db, userId, prefs, parsed.data.keep);
   return c.json({ ok: true, resolved: resolved !== null });
+});
+
+// ── POST /api/plan/repair-fidelity ───────────────────────────────────────────
+//
+// A one-shot, human-driven repair of live rows damaged by two now-fixed write
+// bugs: an `ease` that relabelled a session without replacing its body, and an
+// ownership stamp that round-tripped into the athlete's title. The reasoning,
+// the discriminator and everything it refuses to guess at live in
+// `services/plan-repair.ts`; this route is validation and nothing else.
+//
+// Same contract as `POST /api/studio/plans/:id/repair-exercise-ids`: `dryRun` is
+// REQUIRED and never defaulted, a live run writes the pre-change rows to
+// `audit_events` before touching anything, and the response is a per-row account
+// of what changed (or would). It never pushes to COROS or Google Calendar —
+// both re-derive from these rows on their next sync.
+const fidelityRepairSchema = z
+  .object({
+    /** Required, never defaulted: a caller that forgot the field must not be
+     *  guessed at in the direction that rewrites live sessions. */
+    dryRun: z.boolean(),
+    /** Optional narrowing. Omitted, every row an approved ease claims is
+     *  examined. Named rows still have to carry the damage signature. */
+    workoutIds: z.array(z.string().min(1)).min(1).max(200).optional(),
+  })
+  .strict();
+
+planRoutes.post("/repair-fidelity", async (c) => {
+  const db = c.get("db");
+  const userId = c.get("userId");
+  let body: unknown;
+  try {
+    body = await c.req.json();
+  } catch {
+    return c.json({ error: "invalid_json" }, 400);
+  }
+  const parsed = fidelityRepairSchema.safeParse(body);
+  if (!parsed.success) return c.json({ error: "invalid_request", details: parsed.error.issues }, 400);
+  const report = await repairPlannedWorkoutFidelity(db, userId, parsed.data);
+  return c.json({ ok: true, ...report });
 });
 
 const moveSchema = z.object({ toDate: z.string(), toTime: z.string() });

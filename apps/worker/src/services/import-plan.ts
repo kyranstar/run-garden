@@ -19,6 +19,7 @@ import {
 import { classifyWorkout, estimateDuration, summarizeStages } from "@rg/scheduling";
 import type { SourcePlannedWorkout, TrainingPlanInfo } from "@rg/providers";
 import { chunkedInsert, type Db } from "./db.js";
+import { loadOwnProgramNames, unstampTitle } from "./coros-stamp.js";
 import { openMoveIntents, resolveIntent } from "./sync-intents.js";
 import { postSyncNote } from "./sync-notes.js";
 import { reconcileWorkout } from "./reconcile.js";
@@ -251,12 +252,27 @@ export async function importPlanSnapshot(
     ).map((r) => r.targetId),
   );
 
+  // Our own ownership stamp is plumbing, not a session name (`coros-stamp.ts`).
+  // COROS serves a program's name back verbatim and `normalize.ts` reads it as
+  // the workout's title, so without this the discriminator we append to make a
+  // create provable — "Legs-back jog — 2026-10-26" — lands in the row's title
+  // and becomes what the athlete sees on the watch, in the app and in Google
+  // Calendar. Loaded once for the window, never queried per row.
+  const ownProgramNames = await loadOwnProgramNames(db, input.userId, {
+    start: input.rangeStart,
+    end: input.rangeEnd,
+  });
+
   const seenSourceIds = new Set<string>();
 
   for (const src of admitted) {
     seenSourceIds.add(src.sourceWorkoutId);
+    // The athlete-facing title for this wire workout: ours un-stamped, anyone
+    // else's exactly as COROS serves it. Resolved before classification, so a
+    // stamp can never influence how the session is filed either.
+    const title = unstampTitle(src.title, ownProgramNames);
     const classification = classifyWorkout({
-      title: src.title,
+      title,
       sport: src.sport,
       stages: src.stages,
       plannedDurationSeconds: src.estimatedDurationSeconds,
@@ -303,7 +319,7 @@ export async function importPlanSnapshot(
       await db
         .update(plannedWorkouts)
         .set({
-          title: src.title,
+          title,
           category,
           qualitySubtype: classification.qualitySubtype ?? null,
           sport: src.sport,
@@ -351,7 +367,7 @@ export async function importPlanSnapshot(
         sourceWorkoutId: src.sourceWorkoutId,
         sourceProgramId: src.sourceProgramId ?? null,
         sourceIdInPlan: src.sourceIdInPlan ?? null,
-        title: src.title,
+        title,
         category,
         qualitySubtype: classification.qualitySubtype ?? null,
         sport: src.sport,
@@ -528,7 +544,7 @@ export async function importPlanSnapshot(
       stats.unchanged += 1;
     } else if (src.contentFingerprint !== current.sourceContentFingerprint) {
       // Rule 7: content changed upstream — update, preserve time of day.
-      updates.title = src.title;
+      updates.title = title;
       updates.category = category;
       updates.qualitySubtype = classification.qualitySubtype ?? null;
       updates.sourceContentFingerprint = src.contentFingerprint;

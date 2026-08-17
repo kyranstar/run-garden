@@ -24,6 +24,7 @@ import {
   type UserPreferences,
 } from "@rg/domain";
 import { chunkIds, chunkedInsert, type Db } from "./db.js";
+import { stampName } from "./coros-stamp.js";
 import { applyMove } from "./jobs.js";
 import { recordIntent } from "./sync-intents.js";
 import { resolveRaceConflict } from "./race-conflict.js";
@@ -95,6 +96,149 @@ function stageSummary(s: CoachSession): string {
   return s.title;
 }
 
+/**
+ * Meters this session PRESCRIBES — only when it says so. Duration blocks state
+ * no distance, so a session built of them has none, and `null` is the honest
+ * answer rather than the distance of whatever the row used to hold.
+ *
+ * Not cosmetic: `providers/matching.ts` scores a finished activity against this
+ * number. A 35-minute easy run still carrying the 11 km of the interval session
+ * it replaced fails its own completion match by a factor of two.
+ */
+function plannedDistanceMeters(session: CoachSession): number | null {
+  if (!session.run) return null;
+  const meters = session.run.blocks
+    .filter((b) => b.kind === "distance")
+    .reduce((sum, b) => sum + b.value, 0);
+  return meters > 0 ? meters : null;
+}
+
+/**
+ * EVERY `planned_workouts` column a `CoachSession` determines — the one place
+ * that answers "what does this session make the row say".
+ *
+ * It exists because `ease` and `add` used to answer it separately. `add`
+ * inserted a whole row; `ease` updated a hand-written list of seven columns and
+ * left the rest holding the PREVIOUS session's facts. On a live row that read
+ * as: title "Easy first run back", stage_summary "35min easy", block 35min —
+ * beside seven untouched stage rows prescribing 6 × 643 m at 4:49/km, an
+ * `expected_distance_meters` of 11104.52 and a `source_estimated_duration_
+ * seconds` of 4509. The session sheet showed the intervals (it prefers the
+ * summary derived from stage rows), the plan card said 75 minutes, and Google
+ * Calendar booked 100. The ease relabelled the session without changing it.
+ *
+ * One writer, so a column added for one caller cannot be missed by the other.
+ * Callers add only what a session CANNOT know: its id, its date, its plan.
+ *
+ * The nulls are deliberate, not omissions:
+ *
+ *  - `qualitySubtype` — the coach vocabulary has no subtype field, so any value
+ *    here is a classification of the workout this row USED to hold.
+ *    `humanizeWorkoutTitle` re-titles a code-titled `quality` row from it, so a
+ *    surviving "tempo" can rename an eased session all by itself.
+ *  - `sourceEstimatedDurationSeconds` — COROS's estimate for the old body.
+ *    Every duration consumer reads `source ?? fallback`, so leaving it set is
+ *    what made the calendar block and the plan card ignore the ease entirely.
+ *  - `durationEstimate` — the estimator's own output. There is none here: the
+ *    coach's stated duration IS the estimate (audit#2 #15), and the DTO's
+ *    `estimateSource` should say nothing rather than name a run of the
+ *    estimator that described different content.
+ *
+ * `sourceVersion` is deliberately NOT in this list. It records the version of
+ * COROS's copy, which a local ease does not change, and `jobs.ts` uses it as a
+ * move job's optimistic-concurrency check. Clearing it would blind that check.
+ */
+function sessionColumns(session: CoachSession) {
+  const body = session.lift ?? session.mobility;
+  return {
+    title: session.title,
+    category: session.category,
+    qualitySubtype: null,
+    sport: sessionSport(session),
+    sourceContentFingerprint: fingerprint(session),
+    sourceEstimatedDurationSeconds: null,
+    // The coach's own stated duration IS the estimate — without this every
+    // consumer fell back to a fictitious 45 minutes (audit#2 #15).
+    fallbackEstimatedDurationSeconds: session.durationMinutes * 60,
+    calendarBlockDurationSeconds: session.durationMinutes * 60,
+    durationEstimate: null,
+    expectedDistanceMeters: plannedDistanceMeters(session),
+    stageSummary: stageSummary(session),
+    // Lift/mobility structure survives apply (rework spec §5): the exercises
+    // array is what lets plan-detail graph a coached progression AND what
+    // tells the session sheet which movements the watch's catalog doesn't
+    // know; the flattened stageSummary above stays as the display string.
+    // `rounds` rides along so a circuit still reads as a circuit after a round
+    // trip.
+    //
+    // `null` for a run or a bodyless session is the load-bearing half: the DTO
+    // renders `exercises` in PREFERENCE to `stageSummary`, so a lift eased into
+    // a jog kept showing the lift's movement list as its prescription.
+    structuredJson: body
+      ? {
+          exercises: sessionExercises(session),
+          ...(body.rounds ? { rounds: body.rounds } : {}),
+        }
+      : null,
+    corosSyncState: "calendar_only",
+  };
+}
+
+/**
+ * The session's stage rows, replacing whatever the row held before.
+ *
+ * The delete is UNCONDITIONAL, and that is the point. Stages are the body of
+ * the session, so a run eased into a lift — or into nothing — must lose the
+ * run's intervals; leaving them is how `routes/plan.ts` came to render the
+ * pre-ease prescription (it passes `summarizeStageRows(stages)` whenever stage
+ * rows exist, and that derived string beats the stored `stageSummary`).
+ *
+ * Stage ids derive from the workout id, so re-applying is idempotent.
+ */
+async function writeStages(
+  db: Db,
+  workoutId: string,
+  session: CoachSession,
+  thresholdPaceSecPerKm?: number,
+): Promise<void> {
+  await db.delete(plannedWorkoutStages).where(eq(plannedWorkoutStages.workoutId, workoutId));
+  const blocks = session.run?.blocks ?? [];
+  if (blocks.length === 0) return;
+  // Structured stages so the app's session detail shows the prescription
+  // (incl. pace bands) immediately — a later COROS re-import replaces these
+  // with the wire's own truth, which matches because pace round-trips
+  // exactly (2026-08-14).
+  const stageRows = blocks.map((b, i) => {
+    const band = paceBandFor(b.intensity, thresholdPaceSecPerKm);
+    return {
+      id: `${workoutId}:${i}`,
+      workoutId,
+      parentStageId: null,
+      ord: i,
+      kind: i === 0 && blocks.length >= 2 ? "warmup" : "work",
+      repeatCount: null,
+      durationType: b.kind === "duration" ? "time" : "distance",
+      // A duration block's `value` is MINUTES and no longer has to be whole —
+      // "45s" stores as 0.75 so the unit could stay minutes for the three
+      // consumers that multiply by 60 (domain/coach.ts). `seconds / 60` is
+      // binary-exact for whole minutes and every 5-second step under one, but
+      // ~4% of whole seconds (125, 245, 485…) come back 2.3e-13 off. Every
+      // reader of this column formats or rounds that away, so nothing is broken
+      // — but this is the column, so it is stored exact rather than
+      // exact-by-luck-of-the-formatter.
+      durationSeconds: b.kind === "duration" ? Math.round(b.value * 60) : null,
+      distanceMeters: b.kind === "distance" ? b.value : null,
+      targetType: band ? "pace" : "none",
+      targetLow: band?.fastSecPerKm ?? null,
+      targetHigh: band?.slowSecPerKm ?? null,
+      paceZone: null,
+      hrZone: null,
+      label: b.intensity ?? null,
+    };
+  });
+  await chunkedInsert(stageRows, 15, (batch) => db.insert(plannedWorkoutStages).values(batch));
+}
+
 /** A session the create executor can put on the watch today: a run whose
  * blocks are all DURATION-based (distance targets are not spike-verified on
  * the wire — create-executor.ts refuses them).
@@ -150,9 +294,6 @@ async function insertSession(
       userId,
       planId,
       sourceWorkoutId: id,
-      title: session.title,
-      category: session.category,
-      sport: sessionSport(session),
       originalPlanDate: date,
       // "" = COROS has never verified this row (audit#2 #1): the absence
       // sweep must skip it and the sync pill must not read "synced". The
@@ -160,61 +301,15 @@ async function insertSession(
       lastVerifiedCorosDate: "",
       effectiveDate: date,
       effectiveTime,
-      sourceContentFingerprint: fingerprint(session),
-      calendarBlockDurationSeconds: session.durationMinutes * 60,
-      // The coach's own stated duration IS the estimate — without this every
-      // consumer fell back to a fictitious 45 minutes (audit#2 #15).
-      fallbackEstimatedDurationSeconds: session.durationMinutes * 60,
-      stageSummary: stageSummary(session),
-      // Lift/mobility structure survives apply (rework spec §5): the
-      // exercises array is what lets plan-detail graph a coached
-      // progression AND what tells the session sheet which movements the
-      // watch's catalog doesn't know; the flattened stageSummary above
-      // stays as the display string. `rounds` rides along so a circuit
-      // still reads as a circuit after a round trip.
-      structuredJson: session.lift ?? session.mobility
-        ? {
-            exercises: sessionExercises(session),
-            ...((session.lift ?? session.mobility)!.rounds ? { rounds: (session.lift ?? session.mobility)!.rounds } : {}),
-          }
-        : null,
-      corosSyncState: "calendar_only",
       completionState: "scheduled",
       createdAt: now,
       updatedAt: now,
+      // Everything the SESSION decides — the same writer `ease` uses.
+      ...sessionColumns(session),
     })
     .onConflictDoNothing();
 
-  // Structured stages so the app's session detail shows the prescription
-  // (incl. pace bands) immediately — a later COROS re-import replaces these
-  // with the wire's own truth, which matches because pace round-trips
-  // exactly (2026-08-14).
-  if (session.run) {
-    const stageRows = session.run.blocks.map((b, i) => {
-      const band = paceBandFor(b.intensity, opts.thresholdPaceSecPerKm);
-      return {
-        id: `${id}:${i}`,
-        workoutId: id,
-        parentStageId: null,
-        ord: i,
-        kind: i === 0 && session.run!.blocks.length >= 2 ? "warmup" : "work",
-        repeatCount: null,
-        durationType: b.kind === "duration" ? "time" : "distance",
-        durationSeconds: b.kind === "duration" ? b.value * 60 : null,
-        distanceMeters: b.kind === "distance" ? b.value : null,
-        targetType: band ? "pace" : "none",
-        targetLow: band?.fastSecPerKm ?? null,
-        targetHigh: band?.slowSecPerKm ?? null,
-        paceZone: null,
-        hrZone: null,
-        label: b.intensity ?? null,
-      };
-    });
-    await db
-      .delete(plannedWorkoutStages)
-      .where(eq(plannedWorkoutStages.workoutId, id));
-    await chunkedInsert(stageRows, 15, (batch) => db.insert(plannedWorkoutStages).values(batch));
-  }
+  await writeStages(db, id, session, opts.thresholdPaceSecPerKm);
 
   // Coach adds reach the WATCH (user requirement 2026-08-12): duration-block
   // run sessions ride the same verified create pipeline as studio pushes.
@@ -233,11 +328,13 @@ async function insertSession(
         destinationDate: date,
         // The name is the OWNERSHIP STAMP on COROS and must be unique per
         // plan — raw titles ("Long Run" ×6) refuse every create after the
-        // first (audit#2 #7).
+        // first (audit#2 #7). Machine plumbing that happens to be legible:
+        // `coros-stamp.ts` strips it back off on the way in, so the stamp
+        // never becomes the athlete's session name.
         payload: {
           workoutId: id,
           happenDay: date,
-          name: `${session.title} — ${date}`,
+          name: stampName(session.title, date),
           session,
           ...(opts.thresholdPaceSecPerKm ? { thresholdPaceSecPerKm: opts.thresholdPaceSecPerKm } : {}),
         },
@@ -383,19 +480,31 @@ export async function applyOps(
     const opId = (n: number | string) => `cw-${proposalId}-${i}-${n}`;
     switch (op.kind) {
       case "ease": {
+        // Ownership first, because the stage write below is keyed on the
+        // workout id alone — `planned_workout_stages` carries no user column,
+        // so an id that isn't this athlete's must never reach it.
+        const [target] = await db
+          .select({ id: plannedWorkouts.id })
+          .from(plannedWorkouts)
+          .where(and(eq(plannedWorkouts.id, op.workoutId), eq(plannedWorkouts.userId, userId)))
+          .limit(1);
+        if (!target) {
+          // Same class of silent failure `missed` was invented for: the row
+          // can go between the wake that proposed the ease and the tap that
+          // approves it, and an update matching nothing returned a success
+          // receipt for a session that was never changed.
+          out.missed.push("the session it eases isn't on the calendar any more, so nothing was changed");
+          break;
+        }
+        // An ease REPLACES the session, so it writes exactly what a fresh
+        // insert writes — one writer, no parallel column list to fall behind.
         await db
           .update(plannedWorkouts)
-          .set({
-            title: op.session.title,
-            category: op.session.category,
-            sport: sessionSport(op.session),
-            calendarBlockDurationSeconds: op.session.durationMinutes * 60,
-            stageSummary: stageSummary(op.session),
-            sourceContentFingerprint: fingerprint(op.session),
-            corosSyncState: "calendar_only",
-            updatedAt: now,
-          })
+          .set({ ...sessionColumns(op.session), updatedAt: now })
           .where(and(eq(plannedWorkouts.id, op.workoutId), eq(plannedWorkouts.userId, userId)));
+        // The body, too: a run eased into a lift loses the run's stage rows,
+        // and a lift eased into a run loses the lift's exercise list.
+        await writeStages(db, op.workoutId, op.session, thresholdPaceSecPerKm);
         // The approved edit is the app's permanent claim on this session's
         // content — without it, import rule 7 hands the row back to the
         // COROS snapshot within one pull (audit#3 D1).

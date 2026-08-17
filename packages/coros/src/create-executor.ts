@@ -42,8 +42,10 @@ import {
   type StudioSession,
   type StudioWeight,
 } from "@rg/domain";
+import type { PaceIntensity } from "@rg/domain";
 import {
   corosDayToLocalDate,
+  corosProgramFingerprint,
   localDateToCorosDay,
   type RawCorosEntity,
   type RawCorosExercise,
@@ -70,6 +72,28 @@ export interface CreateWorkoutSpec {
    * present, run blocks carry pace targets derived from it; when absent the
    * workout pushes with no intensity target, exactly as before. */
   thresholdPaceSecPerKm?: number;
+}
+
+/**
+ * How many blocks of this session asked for a pace band and did not get one.
+ *
+ * A "bare timer" push is a real outcome, not an error — but it used to be a
+ * SILENT one (`buildRunProgram` just wrote `intensityType: 5` and moved on),
+ * and all three of the sessions the coach has pushed live went to the watch
+ * as bare timers while the athlete's threshold of 289 s/km already existed.
+ * The caller is the only layer that can do anything about that (re-resolve the
+ * threshold, re-push later, tell the athlete), so the count is reported rather
+ * than swallowed. Blocks the coach marked `rest` are NOT counted: a walk has
+ * no honest pace band and never will.
+ */
+export function missingPaceTargets(
+  session: CoachSession,
+  thresholdPaceSecPerKm?: number,
+): number {
+  const blocks = session.run?.blocks ?? [];
+  return blocks.filter(
+    (b) => b.intensity != null && b.intensity !== "rest" && !paceBandFor(b.intensity, thresholdPaceSecPerKm),
+  ).length;
 }
 
 /** Why a create did not end in a verified workout. */
@@ -118,6 +142,25 @@ export interface CreateResult {
    * — mislabelling its own stray as a user edit.
    */
   serverHappenDay?: string;
+  /**
+   * Run creates only: how many blocks went to the watch as a BARE TIMER
+   * because no pace band could be derived (see `missingPaceTargets`). Absent
+   * or `0` means every block that wanted a target got one. Reported on
+   * SUCCESS as well as failure — a verified create can still owe the athlete
+   * its targets, and nothing else in the pipeline can notice.
+   */
+  paceTargetsOwed?: number;
+  /**
+   * `corosProgramFingerprint` of the program this call actually PUT ON THE
+   * WIRE — after `/training/program/calculate` spliced its duration and load
+   * in, which is the version the server stores and the next read returns.
+   *
+   * Callers stamp this so a later move's content guard compares like with
+   * like. Rebuilding it caller-side cannot work: the builders emit
+   * `duration: 0` and the fingerprint covers duration, so a caller-built
+   * stamp describes a program that was never written.
+   */
+  wireFingerprint?: string;
   error?: string;
 }
 
@@ -289,45 +332,124 @@ export function applyWeightIntensity(exercise: RawCorosExercise, weight: StudioW
   wire.intensityCustom = 0;
 }
 
-/**
- * Build a structured strength program (sportType 4) from one studio session.
- *
- * "3 sets of 10" is STRUCTURE, not a field (§(d)): each exercise becomes a
- * repeat-group container (`sets` = the set count) wrapping one child step at
- * `reps` reps with the weight encoding above. Containers are never counted in
- * `exerciseNum` (§5.4).
- *
- * `catalog` maps originId → display name and is the server-side validation
- * gate: an exercise the account's own COROS catalog does not know THROWS here,
- * before any wire call, rather than being rejected (or silently mangled) by
- * the server. The catalog's name wins over the caller's label, because the
- * catalog is the authority at push time.
- *
- * The session is RE-VALIDATED here with `studioSessionSchema` rather than
- * trusted. This is the last code between an LLM-authored plan and the user's
- * real calendar, and it is reached from several callers (jobs, the spike, a
- * future retry path); a self-validating safety core is cheaper than proving
- * every caller validated first. Out-of-range sets/reps/weights and unknown
- * fields throw here, before any wire call.
- *
- * `idInPlan`/`planId` are placeholders — the caller splices in the derived
- * values (as `addScheduleEntity` does anyway) immediately before the write.
- */
 /** COROS catalog origin ids for generic run blocks — the exact values the
  * live spike created and verified (COROS_WRITE_PROTOCOL.md TEST B). */
 export const RUN_WARMUP_ORIGIN_ID = "425895398452936705";
 export const RUN_WORK_ORIGIN_ID = "426109589008859136";
 
 /**
+ * What a run block IS, as the watch announces it. The wire has carried all
+ * four since forever (`raw-types.ts`: `1=warmup 2=work 3=cooldown
+ * 4=rest/recovery`) and `normalize.ts` has always read all four back — the
+ * coach lane just never wrote more than two of them, so a "walk back down"
+ * arrived on the watch as *run for 3 minutes*.
+ */
+export type RunBlockRole = "warmup" | "work" | "cooldown" | "recovery";
+
+/**
+ * role → the two wire fields that carry it, and the label COROS's own
+ * programs use for it (the athlete's imported plan spells them T1120 "Warm
+ * Up", T3001 "Run", T1122 "Cool Down", T1123 "Recover"; the hand-built spike
+ * proved plain English round-trips, so the words go on the wire directly).
+ *
+ * `originId`: the catalog ids are spike-verified for warmup and work ONLY
+ * (COROS_WRITE_PROTOCOL.md TEST B). No cooldown/recovery run-catalog id has
+ * ever been observed on this account — the synced catalog is sportType 4
+ * only, and COROS's own run programs carry no `originId` at all — so the
+ * generic work id rides along and the ROLE is carried by `exerciseType`,
+ * which is the field the read path actually reads.
+ */
+const RUN_ROLE_WIRE: Record<RunBlockRole, { exerciseType: number; name: string; originId: string }> = {
+  warmup: { exerciseType: 1, name: "Warm up", originId: RUN_WARMUP_ORIGIN_ID },
+  work: { exerciseType: 2, name: "Run", originId: RUN_WORK_ORIGIN_ID },
+  cooldown: { exerciseType: 3, name: "Cool down", originId: RUN_WORK_ORIGIN_ID },
+  recovery: { exerciseType: 4, name: "Recover", originId: RUN_WORK_ORIGIN_ID },
+};
+
+/** Intensities that make the blocks around them warm-ups and cool-downs. */
+const HARD_INTENSITIES = new Set<PaceIntensity>(["steady", "threshold", "interval"]);
+
+/** Words an upstream `role` field may use, folded onto the four wire roles. */
+const ROLE_WORDS: Record<string, RunBlockRole> = {
+  warmup: "warmup",
+  warm: "warmup",
+  work: "work",
+  main: "work",
+  interval: "work",
+  cooldown: "cooldown",
+  cool: "cooldown",
+  recovery: "recovery",
+  recover: "recovery",
+  rest: "recovery",
+  float: "recovery",
+  walk: "recovery",
+};
+
+/** A block's declared role, when it has one. Tolerant of spelling. */
+function declaredRole(block: unknown): RunBlockRole | undefined {
+  const raw = (block as { role?: unknown } | null)?.role;
+  if (typeof raw !== "string") return undefined;
+  return ROLE_WORDS[raw.toLowerCase().replace(/[^a-z]/g, "")];
+}
+
+/**
+ * The role of every block of a session — derived from what the block IS, not
+ * from where it sits.
+ *
+ * The rule this replaces was `index === 0 && blocks.length >= 2`, which
+ * labelled the opening rep of a VO2 session "Warm up" on the watch (verified
+ * live: a 3:58–4:13/km interval called `Warm up`) and, because a single-block
+ * session got `work`, disagreed with itself about what position even meant.
+ *
+ * Precedence:
+ *  1. AN EXPLICIT `role` ON THE BLOCK WINS. Nothing upstream writes one today
+ *     — `coachRunBlockSchema` has `kind`, `value` and `intensity` and zod
+ *     strips what it does not declare — so this is dormant until the coach
+ *     vocabulary grows the field. THAT is the field that would make warm-up
+ *     vs. cool-down explicit rather than inferred; everything below is
+ *     inference and says so.
+ *  2. `intensity: "rest"` is a RECOVERY block. This is the coach's own word
+ *     for "walk back down"/"stand"/"off" (RUN_INTENSITY_SYNONYMS folds all
+ *     three onto `rest`), and it is the one role the session data states
+ *     outright.
+ *  3. An EASY block that opens a session containing harder work is a warm-up;
+ *     an easy block that closes one is a cool-down. Both are inferences, but
+ *     they are the inferences the words carry: `warmup`/`warm up`/`cooldown`/
+ *     `cool down` all normalize to `easy` upstream, so intensity alone cannot
+ *     separate them and position is the only remaining signal — used ONLY
+ *     where the block is easy and the session really does contain hard work.
+ *  4. Everything else is work, including the first block of a session that is
+ *     hard from the gun.
+ */
+export function runBlockRoles(
+  blocks: ReadonlyArray<{ intensity?: PaceIntensity | undefined }>,
+): RunBlockRole[] {
+  const hard = blocks.map((b) => b.intensity != null && HARD_INTENSITIES.has(b.intensity));
+  return blocks.map((b, i) => {
+    const declared = declaredRole(b);
+    if (declared) return declared;
+    if (b.intensity === "rest") return "recovery";
+    if (b.intensity !== "easy" || blocks.length < 2) return "work";
+    if (i === 0 && hard.slice(1).some(Boolean)) return "warmup";
+    if (i === blocks.length - 1 && hard.slice(0, i).some(Boolean)) return "cooldown";
+    return "work";
+  });
+}
+
+/**
  * Build a structured RUN program (sportType 1) from one coach session —
  * Bundle A Task A10, the coach-era generalization of the safety core.
  *
- * The wire shape is EXACTLY the live-verified minimal topology (protocol
- * §4.4 point 9 / TEST B): N sequential blocks, first block warmup
- * (exerciseType 1) when there are ≥2 blocks, the rest training
- * (exerciseType 2); NO repeat groups, NO cooldown block kind; targetType 2
- * (TIME, whole seconds); intensityType 5 ("none") so nothing round-trips
- * through HR-zone remapping.
+ * The wire shape is the live-verified minimal topology (protocol §4.4 point
+ * 9 / TEST B): N sequential blocks, no repeat groups, targetType 2 (TIME,
+ * whole seconds), and pace as the only intensity that round-trips (HR is
+ * remapped onto the account's own zones by the server).
+ *
+ * EACH BLOCK'S ROLE IS ITS OWN (2026-08-17, `runBlockRoles`). The topology
+ * used to emit `exerciseType` 1 and 2 and nothing else — first block warmup,
+ * everything else training — which meant the coach could not write the two
+ * roles the athlete's own library is full of (67 cooldown, 48 recovery
+ * stages), and a `rest` block reached the watch as *run for 3 minutes*.
  *
  * DISTANCE blocks are refused here: distance targets have not been spike-
  * verified on the wire, and this is the last code before the user's real
@@ -364,19 +486,26 @@ export function buildRunProgram(spec: {
   // not — the server remaps it onto the account's own zones). Bounds are
   // milliseconds per km: intensityValue is the fast edge, extend the slow.
   let anyPaceTarget = false;
+  const roles = runBlockRoles(run.blocks);
   const exercises: RawCorosExercise[] = run.blocks.map((b, index) => {
     const id = index + 1;
-    const isWarmup = index === 0 && run.blocks.length >= 2;
+    const wire = RUN_ROLE_WIRE[roles[index]!];
     const band = paceBandFor(b.intensity, spec.thresholdPaceSecPerKm);
     if (band) anyPaceTarget = true;
     return {
       ...EXERCISE_METADATA,
       id,
-      name: isWarmup ? "Warm up" : "Run",
-      exerciseType: isWarmup ? 1 : 2,
+      name: wire.name,
+      exerciseType: wire.exerciseType,
       sportType: 1,
       targetType: 2, // TIME, whole seconds
-      targetValue: b.value * 60,
+      // WHOLE seconds, explicitly rounded. `value` is minutes and is no
+      // longer guaranteed integral — a 15-second stride is 0.25 minutes, and
+      // the domain's own quantiser lands on `round(seconds)/60`, which is
+      // exact "to within 2.3e-13". Every app-side consumer rounds that away;
+      // the wire is the one consumer that cannot, and `targetValue:
+      // 899.9999999999999` is not a number to hand a watch.
+      targetValue: Math.round(b.value * 60),
       ...(band
         ? {
             intensityType: 3, // PACE
@@ -390,7 +519,7 @@ export function buildRunProgram(spec: {
       restValue: 0,
       groupId: "0",
       isGroup: false,
-      originId: isWarmup ? RUN_WARMUP_ORIGIN_ID : RUN_WORK_ORIGIN_ID,
+      originId: wire.originId,
     };
   });
 
@@ -432,83 +561,323 @@ export function buildRunProgram(spec: {
   };
 }
 
+/** The load encoding is identical in both vocabularies; the types are not. */
+type WireWeight = StudioWeight;
+
+/**
+ * One strength step, normalized out of whichever vocabulary wrote it. The
+ * studio's `sets`/`reps` and the coach's `holdSeconds`/`perSide`/
+ * `eccentricSeconds` all land here, so the wire builder below has exactly one
+ * shape to reason about.
+ */
+interface StrengthStep {
+  originId: string;
+  /** The author's label. Only ever used in an error message: the CATALOG's
+   * name is what goes on the wire. */
+  label: string;
+  sets: number;
+  reps?: number;
+  holdSeconds?: number;
+  perSide: boolean;
+  eccentricSeconds?: number;
+  weight: WireWeight;
+  restSeconds: number;
+  note?: string;
+}
+
+/** A whole strength body: its steps, and whether they are a CIRCUIT. */
+interface StrengthPlan {
+  steps: StrengthStep[];
+  /** Set = the steps are one circuit cycled this many times (coach `rounds`). */
+  rounds?: number;
+}
+
+/**
+ * A hard ceiling on emitted wire steps. The coach vocabulary allows 30
+ * exercises × 30 sets, and per-side work doubles the children, so an
+ * unbounded expansion could put 1800 steps on the athlete's watch. Refusing
+ * is the safe direction: nothing legitimate comes near this.
+ */
+const MAX_WIRE_STEPS = 200;
+
+/** Reps, hold, per-side and tempo are all the STUDIO's shape or the COACH's;
+ * a StudioSession is `{title, weekday, exercises}` and carries none of the
+ * discipline bodies, so the discriminator is unambiguous. */
+function isCoachShaped(session: unknown): boolean {
+  const o = session as Record<string, unknown> | null;
+  if (!o) return false;
+  return (
+    typeof o["category"] === "string" ||
+    o["lift"] !== undefined ||
+    o["mobility"] !== undefined ||
+    o["run"] !== undefined
+  );
+}
+
+/**
+ * Re-validate the session with the schema that actually describes it, and
+ * normalize it to `StrengthStep`s.
+ *
+ * THE BUG THIS CLOSES (audit 2026-08-17 #3): the builder re-parsed every
+ * session with `studioSessionSchema.safeParse`, which is `.strict()` and was
+ * written for the plan-generation path. A coach lift session does not merely
+ * lose its extra keys there — it is REJECTED outright (`Unrecognized key(s)
+ * in object: 'holdSeconds'`), which is why the `targetType: 2` hold branch
+ * added the day before was dead code: the value could never reach it. The
+ * fix is not to loosen the studio schema (its strictness is load-bearing for
+ * LLM drift) but to parse each vocabulary with its own.
+ */
+function readStrengthSession(
+  session: StudioSession | CoachSession,
+  name: string,
+): StrengthPlan {
+  const invalid = (issues: Array<{ path: PropertyKey[]; message: string }>): Error =>
+    new Error(
+      `cannot build "${name}": invalid session — ` +
+        issues.map((i) => `${i.path.join(".") || "session"}: ${i.message}`).join("; "),
+    );
+
+  if (isCoachShaped(session)) {
+    const parsed = coachSessionSchema.safeParse(session);
+    if (!parsed.success) throw invalid(parsed.error.issues);
+    const block = parsed.data.lift ?? parsed.data.mobility;
+    if (!block) {
+      throw new Error(`cannot build "${name}": the session has no lift or mobility body`);
+    }
+    const steps = block.exercises.map((e): StrengthStep => {
+      if (!e.originId) {
+        // originId is SERVER-filled from the exercise name
+        // (exercise-catalog.ts). Absent means the athlete's synced catalog
+        // has no match, and the wire has nowhere to put the movement.
+        throw new Error(
+          `exercise "${e.name}" has no COROS catalog id — refusing to build a program` +
+            " the server would reject",
+        );
+      }
+      return {
+        originId: e.originId,
+        label: e.name,
+        sets: e.sets,
+        reps: e.reps,
+        holdSeconds: e.holdSeconds,
+        perSide: e.perSide === true,
+        eccentricSeconds: e.eccentricSeconds,
+        weight: e.weight,
+        restSeconds: e.restSeconds,
+        note: e.note,
+      };
+    });
+    return { steps, ...(block.rounds != null ? { rounds: block.rounds } : {}) };
+  }
+
+  const parsed = studioSessionSchema.safeParse(session);
+  if (!parsed.success) throw invalid(parsed.error.issues);
+  return {
+    steps: parsed.data.exercises.map((e) => ({
+      originId: e.originId,
+      label: e.name,
+      sets: e.sets,
+      reps: e.reps,
+      perSide: false,
+      weight: e.weight,
+      restSeconds: e.restSeconds,
+      note: e.note,
+    })),
+  };
+}
+
+/**
+ * Prose the wire has no field for, parked in `overview` — the one free-text
+ * slot a step has.
+ *
+ * `eccentricSeconds` is the honest case: COROS's exercise object models sets,
+ * reps, time, distance and load, and has NO tempo field of any kind. "4s
+ * down" therefore cannot reach the watch as a prescription; it can only be
+ * disclosed. The app's own session sheet renders it (`formatExercise`), so
+ * the athlete does see it — just not mid-set.
+ */
+function stepOverview(step: StrengthStep): string {
+  const bits: string[] = [];
+  if (step.eccentricSeconds != null) bits.push(`${step.eccentricSeconds}s down`);
+  if (step.perSide) bits.push("each side");
+  if (step.note) bits.push(step.note);
+  return bits.join(" · ");
+}
+
+/**
+ * Build a structured strength program (sportType 4) from one STUDIO session
+ * or one COACH lift/mobility session — both vocabularies, each parsed with
+ * its own schema (`readStrengthSession`).
+ *
+ * "3 sets of 10" is STRUCTURE, not a field (§(d)): straight sets become one
+ * repeat-group container per exercise (`sets` = the set count) wrapping the
+ * real step; a CIRCUIT (`rounds`) becomes one container repeated `rounds`
+ * times with every exercise as a child of it. Containers are never counted in
+ * `exerciseNum` (§5.4).
+ *
+ * `catalog` maps originId → display name and is the server-side validation
+ * gate: an exercise the account's own COROS catalog does not know THROWS here,
+ * before any wire call, rather than being rejected (or silently mangled) by
+ * the server. The catalog's name wins over the caller's label, because the
+ * catalog is the authority at push time.
+ *
+ * The session is RE-VALIDATED here rather than trusted. This is the last code
+ * between an LLM-authored plan and the user's real calendar, and it is reached
+ * from several callers (jobs, the spike, a future retry path); a
+ * self-validating safety core is cheaper than proving every caller validated
+ * first. Out-of-range sets/reps/weights and unknown fields throw here.
+ *
+ * MOBILITY PUSHES AS sportType 4. The program namespace COROS documents is
+ * 1 Run / 2 Bike / 3 Swim / 4 Strength — there is no mobility or yoga
+ * program sport, so a mobility session files under strength on the watch.
+ * The app keeps the honest discipline (`sessionSport` → "yoga"); only the
+ * watch's own filing is coarse.
+ *
+ * `idInPlan`/`planId` are placeholders — the caller splices in the derived
+ * values (as `addScheduleEntity` does anyway) immediately before the write.
+ */
 export function buildStrengthProgram(
   spec: CreateWorkoutSpec,
   catalog: Map<string, string>,
 ): RawCorosProgram {
-  const parsed = studioSessionSchema.safeParse(spec.session);
-  if (!parsed.success) {
-    const detail = parsed.error.issues
-      .map((issue) => `${issue.path.join(".") || "session"}: ${issue.message}`)
-      .join("; ");
-    throw new Error(`cannot build "${spec.name}": invalid session — ${detail}`);
-  }
-  const steps = parsed.data.exercises;
+  const { steps, rounds } = readStrengthSession(spec.session, spec.name);
   if (steps.length === 0) {
     throw new Error(`cannot build "${spec.name}": the session has no exercises`);
   }
-
-  const exercises: RawCorosExercise[] = [];
-  let totalSets = 0;
-  steps.forEach((step, index) => {
-    const name = catalog.get(step.originId);
-    if (name === undefined) {
+  for (const step of steps) {
+    if (!catalog.has(step.originId)) {
       throw new Error(
-        `exercise originId ${step.originId} ("${step.name}") is not in the COROS exercise catalog` +
+        `exercise originId ${step.originId} ("${step.label}") is not in the COROS exercise catalog` +
           " — refusing to build a program the server would reject",
       );
     }
-    const n = index + 1; // 1-based top-level step number for the sortNo scheme
-    const containerId = index * 2 + 1;
-    const childId = containerId + 1;
-    const groupSort = TOP_SORT * n;
+  }
 
-    exercises.push({
-      ...EXERCISE_METADATA,
-      id: containerId,
-      name: "Group",
-      exerciseType: 0, // repeat-group container
-      sportType: 4,
-      intensityType: 0,
-      intensityValue: 0,
-      targetType: 2, // TIME per iteration
-      targetValue: CONTAINER_SECONDS_PER_SET,
-      sets: step.sets,
-      sortNo: groupSort,
-      restType: REST_TYPE_SKIP, // §5.4 pins the container itself to "skip rests"
-      restValue: 0,
-      groupId: "0",
-      isGroup: true,
-      originId: "0",
-    });
-
-    // A TIMED HOLD is a time target, not a rep count (2026-08-16). This was
-    // hardcoded to REPS, so a wall sit could only ever go to the watch as
-    // "3 × 1 rep" with the real prescription stranded in a free-text note —
-    // exactly how the athlete's existing plank already displays. The wire
-    // has supported `targetType: 2 = time(s)` all along (raw-types.ts), and
-    // `normalize.ts` already reads it back correctly.
-    const hold = (step as { holdSeconds?: number }).holdSeconds;
+  /**
+   * One real (non-container) step. `sortNo` is the caller's business: §5.3
+   * numbers sub-steps `groupSort + 2^16·(j+1)`.
+   *
+   * PER-SIDE WORK IS TWO STEPS, not one (2026-08-17). The wire has no
+   * `perSide` flag, and emitting a single step would prescribe HALF the work
+   * the coach wrote — a silent under-prescription. Two identical children is
+   * what the athlete actually does, and `overview` says "each side" so the
+   * pairing is legible rather than looking like a duplicate.
+   */
+  const childOf = (
+    step: StrengthStep,
+    id: number,
+    groupId: number,
+    sortNo: number,
+  ): RawCorosExercise => {
+    const overview = stepOverview(step);
     const child: RawCorosExercise = {
       ...EXERCISE_METADATA,
-      id: childId,
-      name,
+      id,
+      // The catalog is the authority at push time — and its names are the
+      // T-codes the app resolves for display, so nothing is appended to them.
+      name: catalog.get(step.originId)!,
       exerciseType: 2, // main / training
       sportType: 4,
-      ...(hold ? { targetType: 2, targetValue: hold } : { targetType: 3, targetValue: step.reps }),
+      // A TIMED HOLD is a time target, not a rep count. Hardcoding REPS meant
+      // a wall sit could only go to the watch as "3 × 1 rep" with the real
+      // prescription stranded in prose. `targetType: 2 = time(s)` has been on
+      // the wire all along and `normalize.ts` already reads it back.
+      // A step with NEITHER ("three ramping sets, stop when it gets heavy")
+      // is an OPEN step: no target value can be honest, and `normalize.ts`
+      // maps an unknown targetType to `durationType: "open"`.
+      ...(step.holdSeconds != null
+        ? { targetType: 2, targetValue: step.holdSeconds }
+        : step.reps != null
+          ? { targetType: 3, targetValue: step.reps }
+          : { targetType: 0, targetValue: 0 }),
       sets: 1,
-      sortNo: groupSort + SUB_SORT,
+      sortNo,
       restType: step.restSeconds > 0 ? REST_TYPE_EXPLICIT : REST_TYPE_SKIP,
       restValue: step.restSeconds > 0 ? step.restSeconds : 0,
-      groupId: String(containerId),
+      groupId: String(groupId),
       isGroup: false,
       originId: step.originId,
+      ...(overview ? { overview } : {}),
     };
     applyWeightIntensity(child, step.weight);
-    exercises.push(child);
+    return child;
+  };
 
-    totalSets += step.sets;
+  /** The repeat-group container: `sets` is the repeat count (§(d)). */
+  const containerOf = (id: number, sets: number, sortNo: number): RawCorosExercise => ({
+    ...EXERCISE_METADATA,
+    id,
+    name: "Group",
+    exerciseType: 0, // repeat-group container
+    sportType: 4,
+    intensityType: 0,
+    intensityValue: 0,
+    targetType: 2, // TIME per iteration
+    targetValue: CONTAINER_SECONDS_PER_SET,
+    sets,
+    sortNo,
+    restType: REST_TYPE_SKIP, // §5.4 pins the container itself to "skip rests"
+    restValue: 0,
+    groupId: "0",
+    isGroup: true,
+    originId: "0",
   });
+
+  const exercises: RawCorosExercise[] = [];
+  let realSteps = 0;
+  let totalSets = 0;
+  let nextId = 1;
+
+  if (rounds != null) {
+    // A CIRCUIT: one container repeated `rounds` times, every exercise a child
+    // of it. This shape is not new — `buildStrengthProgram` has emitted it per
+    // exercise since the spike, and `normalize.ts` reads `exerciseType: 0` +
+    // `sets` back as `repeatCount` (the athlete's own library holds 370 such
+    // stages). It was simply never reachable from the coach's `rounds`, so
+    // "3 rounds of wall sit / plank / side plank" had to go to the watch as
+    // three unrelated straight-set blocks — a different session.
+    const containerId = nextId++;
+    const groupSort = TOP_SORT;
+    exercises.push(containerOf(containerId, rounds, groupSort));
+    let sub = 0;
+    for (const step of steps) {
+      // `sets` inside a circuit is the work done PER ROUND (coach.ts), so a
+      // rare sets>1 is that many passes of the movement within one round.
+      for (let set = 0; set < step.sets; set++) {
+        for (let side = 0; side < (step.perSide ? 2 : 1); side++) {
+          sub += 1;
+          if (realSteps + 1 > MAX_WIRE_STEPS) {
+            throw new Error(
+              `cannot build "${spec.name}": the session expands to more than ${MAX_WIRE_STEPS}` +
+                " wire steps — refusing to write a program that size",
+            );
+          }
+          realSteps += 1;
+          exercises.push(childOf(step, nextId++, containerId, groupSort + SUB_SORT * sub));
+        }
+      }
+    }
+    totalSets = rounds * realSteps;
+  } else {
+    // STRAIGHT SETS: one container per exercise, `sets` the repeat count.
+    steps.forEach((step, index) => {
+      const containerId = nextId++;
+      const groupSort = TOP_SORT * (index + 1);
+      exercises.push(containerOf(containerId, step.sets, groupSort));
+      const sides = step.perSide ? 2 : 1;
+      for (let side = 0; side < sides; side++) {
+        if (realSteps + 1 > MAX_WIRE_STEPS) {
+          throw new Error(
+            `cannot build "${spec.name}": the session expands to more than ${MAX_WIRE_STEPS}` +
+              " wire steps — refusing to write a program that size",
+          );
+        }
+        realSteps += 1;
+        exercises.push(childOf(step, nextId++, containerId, groupSort + SUB_SORT * (side + 1)));
+      }
+      totalSets += step.sets * sides;
+    });
+  }
 
   return {
     idInPlan: 0,
@@ -524,7 +893,7 @@ export function buildStrengthProgram(
     estimatedType: 0,
     distance: 0,
     estimatedDistance: 0,
-    exerciseNum: steps.length, // real steps only — containers must NOT count
+    exerciseNum: realSteps, // real steps only — containers must NOT count
     totalSets,
     hybridTotalSets: 0,
     gradeSystemVersion: 0,
@@ -1096,18 +1465,38 @@ export async function createWorkout(
   // minimal run topology; everything downstream (id derivation, write,
   // verify) is program-agnostic.
   let program: RawCorosProgram;
+  // Run creates only: how much of the prescription is going to the watch as a
+  // bare timer. Computed BEFORE the write so it is reported whatever happens.
+  let paceTargetsOwed = 0;
   try {
-    program = (spec.session as { run?: unknown }).run
-      ? buildRunProgram({
-          happenDay: date,
-          name: spec.name,
-          session: spec.session as CoachSession,
-          thresholdPaceSecPerKm: spec.thresholdPaceSecPerKm,
-        })
-      : buildStrengthProgram(spec as CreateWorkoutSpec & { session: StudioSession }, opts.catalog);
+    if ((spec.session as { run?: unknown }).run) {
+      const session = spec.session as CoachSession;
+      program = buildRunProgram({
+        happenDay: date,
+        name: spec.name,
+        session,
+        thresholdPaceSecPerKm: spec.thresholdPaceSecPerKm,
+      });
+      paceTargetsOwed = missingPaceTargets(session, spec.thresholdPaceSecPerKm);
+      if (paceTargetsOwed > 0) {
+        // NOT silent any more (audit 2026-08-17 #6). All three sessions the
+        // coach has pushed live carry `intensityType: 5` on every block
+        // because the job payload's threshold was null — while the athlete's
+        // 289 s/km had existed since that same day. The executor cannot fix
+        // that (it has no database); it can refuse to hide it.
+        log(
+          `  no pace band for ${paceTargetsOwed}/${session.run?.blocks.length ?? 0} block(s)` +
+            ` — they push as bare timers (threshold=${spec.thresholdPaceSecPerKm ?? "none"})`,
+        );
+      }
+    } else {
+      program = buildStrengthProgram(spec as CreateWorkoutSpec & { session: StudioSession }, opts.catalog);
+    }
   } catch (e) {
     return { ok: false, reason: "error", error: errText(e) };
   }
+  /** Every return past this point carries the pace debt, success or not. */
+  const owed = paceTargetsOwed > 0 ? { paceTargetsOwed } : {};
 
   const windowStart = addDays(date, -WRITE_WINDOW_PAD_DAYS);
   const windowEnd = addDays(date, WRITE_WINDOW_PAD_DAYS);
@@ -1144,7 +1533,7 @@ export async function createWorkout(
       };
       if (existing.date === date) {
         log(`  "${spec.name}" is already on ${date} (idInPlan ${ids.serverIdInPlan})`);
-        return { ok: true, reason: "already_present", ...ids };
+        return { ok: true, reason: "already_present", ...ids, ...owed };
       }
       // NO ids on the cross-day refusal. `serverIdInPlan`/`serverProgramId`
       // mean "the workout THIS call put on THIS day" — the contract that makes
@@ -1214,6 +1603,9 @@ export async function createWorkout(
     } catch (e) {
       log(`  program/calculate failed (${errText(e)}) — proceeding without estimates`);
     }
+    // Taken HERE, off the exact object about to be written: after calculate,
+    // before the write. See `CreateResult.wireFingerprint`.
+    const wireFingerprint = corosProgramFingerprint(program);
     const planStartDay = freshRaw.startDay != null ? Number(freshRaw.startDay) : undefined;
     const entity = buildEntity({
       idInPlan,
@@ -1282,9 +1674,10 @@ export async function createWorkout(
           `server rejected the create (result ${code ?? "-"}) for idInPlan ${idInPlan};` +
             " not retrying with other ids — the server may allocate ids itself",
         ...ids,
+        ...owed,
       };
     }
-    if (found) return { ok: true, code, ...ids };
+    if (found) return { ok: true, code, ...ids, ...owed, wireFingerprint };
     if (elsewhere) {
       return {
         ok: false,
@@ -1292,6 +1685,8 @@ export async function createWorkout(
         reason: "wrong_date",
         error: `the create landed on ${elsewhere.date}, not the requested ${date}`,
         ...ids,
+        ...owed,
+        wireFingerprint,
       };
     }
     return {

@@ -806,6 +806,71 @@ export const REGISTER_B: Variation[] = [
       return true;
     },
   },
+  // ── quantities written with their units ──────────────────────────────
+  // Added 2026-08-17, after a day in which every one of these PARSED and
+  // stored a number one to three orders of magnitude out (see the units block
+  // in coach.ts). They are register B for the usual reason — a legitimate
+  // prescription in a shape the schema did not document — but they are also the
+  // only variations here whose old failure was silent, so they are the ones
+  // whose survival number means the least on its own: coach.test.ts asserts the
+  // stored QUANTITY, and these assert that a plan carrying one still lands.
+  {
+    key: "strides written as seconds",
+    why: "four 20-second strides on the end of an easy run — the block unit is minutes, so the only honest spelling is a unit",
+    apply: (_r, ops) => {
+      const s = sessionsIn(ops).find((x) => x.run);
+      if (!s) return false;
+      const blocks = (s.run as Obj).blocks as Obj[];
+      if (!blocks.length) return false;
+      blocks.push(
+        ...Array.from({ length: 4 }, () => [
+          { kind: "duration", value: "20s", intensity: "interval" },
+          { kind: "duration", value: "40s", intensity: "easy" },
+        ]).flat(),
+      );
+      return true;
+    },
+  },
+  {
+    key: "distance in kilometres",
+    why: `"5km easy" is how the session is said out loud; the block unit is metres`,
+    apply: (_r, ops) => {
+      const s = sessionsIn(ops).find((x) => x.run);
+      if (!s) return false;
+      (s.run as Obj).blocks = [{ kind: "distance", value: "5km", intensity: "easy" }];
+      return true;
+    },
+  },
+  {
+    key: "durationMinutes in hours",
+    why: `a ninety-minute long run written the way a coach says it — "1.5 hours"`,
+    apply: (_r, ops) => {
+      const s = sessionsIn(ops).find((x) => x.run);
+      if (!s) return false;
+      s.durationMinutes = "1.5 hours";
+      return true;
+    },
+  },
+  {
+    key: "restSeconds in minutes",
+    why: `"2 min" between heavy sets is the normal way to write two minutes`,
+    apply: (rng, ops) => {
+      const e = exercisesIn(ops)[0];
+      if (!e) return false;
+      e.restSeconds = pick(rng, ["2 min", "1:30", "90s"]);
+      return true;
+    },
+  },
+  {
+    key: "a pair of dumbbells",
+    why: `"2×20kg" is a pair of twenties — the notation every gym uses for the load in each hand`,
+    apply: (_r, ops) => {
+      const e = exercisesIn(ops)[0];
+      if (!e) return false;
+      e.weight = "2×20kg";
+      return true;
+    },
+  },
   // ── references the coach gets wrong ──────────────────────────────────
   // Not shapes: mistakes about WHICH row or WHICH plan. Each is fatal, and each
   // is here so the ranked list carries real counts for the fatal rules rather

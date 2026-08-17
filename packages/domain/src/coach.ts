@@ -31,6 +31,25 @@ import { z } from "zod";
  *
  * This lesson was already learned three times in this file before it was
  * applied here — `orNull`, `prose()` and `intish` are all the same lesson.
+ *
+ * AND ITS LIMIT, LEARNED THE HARD WAY THE NEXT DAY (2026-08-17):
+ *
+ *   TOLERANCE MAY CHANGE A SPELLING. IT MAY NEVER CHANGE A NUMBER.
+ *
+ * `intish` was extended to unit-bearing fields, where reading the leading
+ * digits and discarding the rest is not tolerance but a wrong number in
+ * tolerance's clothing: `{kind:"distance", value:"1km"}` stored ONE METRE and
+ * rendered "0.0km"; `durationMinutes: "1.5 hours"` stored 2, so the calendar
+ * block was 120 seconds while the same row's summary said "90 min";
+ * `restSeconds: "2 min"` stored two seconds; `weight: "2×20kg"` stored the
+ * multiplier. Every one of them PARSED, passed the guardrails, and reached the
+ * athlete's calendar — which is strictly worse than the rejection it replaced,
+ * because a rejection gets a bounded repair retry and a stored number gets
+ * trained on. So every field whose unit this schema fixes now goes through
+ * {@link quantity}: a unit the coach writes is CONVERTED or REFUSED, never
+ * dropped, and the two magnitudes that are nonsense in every context (a
+ * one-metre rep, a thirteen-hour block) are bounded here rather than left to
+ * an advisory the athlete would have to catch by eye.
  */
 
 /**
@@ -88,10 +107,20 @@ const echoedId = z
 const prose = (max: number) => z.string().min(1).transform((s) => (s.length > max ? s.slice(0, max) : s));
 
 /**
- * Model-natural integer. A coach that writes `"reps": "8"`, `"sets": 3.0` or
- * `"holdSeconds": "45s"` means the number in all three cases; the studio's
- * bare `z.number().int()` rejected two of them. Non-numeric input falls
- * through unchanged so the real error still names the real problem.
+ * Model-natural COUNT — a pure number with no unit: sets, reps, rounds.
+ *
+ * A coach that writes `"reps": "8"`, `"sets": 3.0` or `"reps": "8-12"` means
+ * the number in all three cases, and the studio's bare `z.number().int()`
+ * rejected two of them. A range keeps its LOW end, which is what a coach means
+ * by "8–12": the number you are guaranteed to do.
+ *
+ * DELIBERATELY NOT USED FOR ANY FIELD WITH A UNIT (2026-08-17). `intish` reads
+ * the leading digits and throws the rest away, which is right for a count and
+ * catastrophic for a quantity: `"1km"` in a metres field became 1, `"2 min"` in
+ * a seconds field became 2, `"1.5 hours"` in a minutes field became 2. Every
+ * one of those parsed, passed the guardrails, and reached the athlete's
+ * calendar as a number off by one to three orders of magnitude. Unit-bearing
+ * fields go through {@link quantity}, which honours the unit or refuses it.
  */
 const intish = (min: number, max: number) =>
   z.preprocess((v) => {
@@ -102,6 +131,263 @@ const intish = (min: number, max: number) =>
     }
     return v;
   }, z.number().int().min(min).max(max));
+
+/* ======================================================================= *
+ * UNITS — honour it or refuse it, never ignore it.
+ *
+ * Every field below whose unit is fixed by the schema (minutes, seconds,
+ * metres, kilos) is read by {@link quantity} rather than by digit extraction.
+ * The rule, and the reason:
+ *
+ *   A UNIT THE MODEL WROTE IS EITHER CONVERTED OR REFUSED. Never dropped.
+ *
+ * Dropping it is not tolerance, it is a wrong number wearing tolerance's
+ * clothes — and a wrong number is worse than a retried wake, because the wake
+ * has a bounded repair loop and the athlete's calendar does not. Measured on
+ * 2026-08-17, all through parse → applyOps → the stored row: `{kind:"distance",
+ * value:"1km"}` stored 1 metre and rendered "0.0km"; `durationMinutes:
+ * "1.5 hours"` stored 2, so the calendar block was 120 seconds while the same
+ * row's summary said "90 min"; `restSeconds: "2 min"` stored 2 seconds;
+ * `restSeconds: "1:00"` stored 1; `weight: "2×20kg"` stored the multiplier.
+ *
+ * The irony this replaces: `RUN_BLOCK_KIND_SYNONYMS` refused `kind:"km"`
+ * because it "would silently prescribe five metres", and the identical hazard
+ * through `value` was wide open. Both are closed the same way now — whichever
+ * of the two states a unit, it is honoured (see `coachRunBlockSchema`).
+ * ======================================================================= */
+
+type Dimension = "time" | "distance" | "mass";
+
+const LB_TO_KG = 0.45359237;
+
+/**
+ * Every unit token this file understands, in BASE units: seconds, metres,
+ * kilograms.
+ *
+ * Matched EXACTLY after folding, never by prefix — "min" and "mi" differ by
+ * three orders of magnitude and a prefix match would read one as the other.
+ * `m` is deliberately in two tables: it is minutes in a time field and metres
+ * in a distance field, which is not ambiguity but context (see
+ * {@link readQuantity}: the field's own dimension is looked up first).
+ */
+const UNIT_TOKENS: Record<Dimension, Record<string, number>> = {
+  time: {
+    s: 1, sec: 1, secs: 1, second: 1, seconds: 1, '"': 1,
+    m: 60, min: 60, mins: 60, minute: 60, minutes: 60, "'": 60,
+    h: 3600, hr: 3600, hrs: 3600, hour: 3600, hours: 3600,
+  },
+  distance: {
+    m: 1, meter: 1, meters: 1, metre: 1, metres: 1,
+    km: 1000, k: 1000, kilometer: 1000, kilometers: 1000, kilometre: 1000, kilometres: 1000,
+    mi: 1609.344, mile: 1609.344, miles: 1609.344,
+    yd: 0.9144, yds: 0.9144, yard: 0.9144, yards: 0.9144,
+  },
+  mass: {
+    kg: 1, kgs: 1, kilo: 1, kilos: 1, kilogram: 1, kilograms: 1,
+    lb: LB_TO_KG, lbs: LB_TO_KG, pound: LB_TO_KG, pounds: LB_TO_KG,
+    g: 0.001, gram: 0.001, grams: 0.001,
+  },
+};
+
+/**
+ * How ONE field is measured: its dimension, what its own unit is worth in base
+ * units, the resolution the stored number is snapped to, and how to tell the
+ * model what to write when the value could not be read (the zod message goes
+ * verbatim into the wake's repair prompt).
+ */
+interface FieldUnit {
+  dim: Dimension;
+  /** Base units in one of this field's units — a minutes field is 60. */
+  per: number;
+  /** Base units → the number this field stores. */
+  quantise: (base: number) => number;
+  name: string;
+  hint: string;
+}
+
+/** Whole seconds. */
+const SECONDS: FieldUnit = {
+  dim: "time",
+  per: 1,
+  quantise: (base) => Math.round(base),
+  name: "seconds",
+  hint: `seconds as a number (45), or with a unit ("2 min", "1:30")`,
+};
+/** Whole minutes — a session's own length is a calendar block, and nothing
+ * downstream can hold a fraction of a minute of it. */
+const WHOLE_MINUTES: FieldUnit = {
+  dim: "time",
+  per: 60,
+  quantise: (base) => Math.round(base / 60),
+  name: "minutes",
+  hint: `minutes as a number (90), or with a unit ("1.5 h")`,
+};
+/**
+ * Minutes, TO THE SECOND — the run-block unit.
+ *
+ * The stored number is still minutes, because every consumer computes
+ * `value * 60` (coach-apply's `durationSeconds`, create-executor's whole-second
+ * `targetValue`, describeOps' `formatStageDuration`) and that arithmetic must
+ * not change meaning. What changes is that the number no longer has to be a
+ * WHOLE minute: 0.75 is a 45-second stride, and `0.75 * 60` is exactly 45.
+ *
+ * `seconds / 60` is exact in binary for every whole minute and for every
+ * five-second step under a minute — i.e. for every value the athlete's real
+ * library contains and every value a coach writes. For the 3.8% of whole
+ * seconds where it is not (125/60 has no exact double), `value * 60` is that
+ * second to within 2.3e-13, which every consumer rounds or formats away; the
+ * test that pins this is in coach.test.ts. See the note on sub-minute blocks
+ * in `coachRunBlockSchema`.
+ */
+const MINUTES_TO_THE_SECOND: FieldUnit = {
+  dim: "time",
+  per: 60,
+  quantise: (base) => Math.round(base) / 60,
+  name: "minutes",
+  hint: `minutes as a number (40), seconds with their unit ("45s"), or a fraction (0.75)`,
+};
+/** Whole metres. */
+const METRES: FieldUnit = {
+  dim: "distance",
+  per: 1,
+  quantise: (base) => Math.round(base),
+  name: "meters",
+  hint: `meters as a number (400), or with a unit ("1km", "3 miles")`,
+};
+/** Kilos to a tenth — the resolution a plate exists in. */
+const KILOS: FieldUnit = {
+  dim: "mass",
+  per: 1,
+  quantise: (base) => Math.round(base * 10) / 10,
+  name: "kilos",
+  hint: `kilos as a number (20), or with a unit ("45lb") — "heavy" and "70% 1RM" belong in the note`,
+};
+
+interface Reading {
+  dim: Dimension;
+  /** Seconds, metres or kilograms. */
+  base: number;
+}
+type ReadFailure = { error: string };
+const failed = (r: Reading | ReadFailure): r is ReadFailure => "error" in r;
+
+const NUMBER = String.raw`\d+(?:\.\d+)?`;
+const UNIT = String.raw`[a-z%'"]*`;
+const CLOCK = /^(\d{1,3}):([0-5]\d)(?::([0-5]\d))?$/;
+const RANGE = new RegExp(String.raw`^(${NUMBER})\s*(${UNIT})\s*(?:-|to|~)\s*(${NUMBER})\s*(${UNIT})$`);
+const TIMES = new RegExp(String.raw`^(${NUMBER})\s*(${UNIT})\s*x\s*(${NUMBER})\s*(${UNIT})$`);
+const TOKENS = new RegExp(String.raw`(-?${NUMBER})\s*(${UNIT})`, "g");
+
+/** Case, spacing, thousands commas and the four multiplication signs folded —
+ * so `"2 × 20 KG"`, `"2x20kg"` and `"1,500m"` are the strings they mean. */
+function foldQuantity(s: string): string {
+  return s
+    .trim()
+    .toLowerCase()
+    .replace(/(\d),(?=\d{3}(?!\d))/g, "$1")
+    .replace(/[×✕⨯*]/g, "x")
+    .replace(/[–—]/g, "-")
+    .replace(/\s+/g, " ");
+}
+
+/**
+ * THE READER. What the model wrote → a quantity in base units, a refusal with
+ * a reason, or `undefined` for "this is not a number at all" (which the caller
+ * decides about: a weight of "heavy" is bodyweight, everything else is a type
+ * error naming its own field).
+ *
+ * `alt` is the OTHER dimension a unit may legitimately name — supplied only by
+ * the run block, where the value's unit is allowed to overrule the block's
+ * kind (`{kind:"duration", value:"5km"}` is a distance block, not five
+ * minutes). Everywhere else a unit from another dimension is a refusal: a
+ * `restSeconds` of "2 reps" is not two seconds, it is a mistake.
+ */
+function readQuantity(raw: unknown, u: FieldUnit, alt?: Dimension): Reading | ReadFailure | undefined {
+  if (typeof raw === "number") return Number.isFinite(raw) ? { dim: u.dim, base: raw * u.per } : undefined;
+  if (typeof raw !== "string") return undefined;
+  const s = foldQuantity(raw);
+  if (!/\d/.test(s)) return undefined;
+  const quoted = JSON.stringify(raw);
+
+  /** One number and the unit written against it. */
+  const resolve = (n: number, token: string): Reading | ReadFailure => {
+    if (!token) return { dim: u.dim, base: n * u.per };
+    const here = UNIT_TOKENS[u.dim][token];
+    if (here !== undefined) return { dim: u.dim, base: n * here };
+    const there = alt === undefined ? undefined : UNIT_TOKENS[alt][token];
+    if (there !== undefined) return { dim: alt!, base: n * there };
+    return { error: `${quoted}: "${token}" is not ${u.name} — write ${u.hint}` };
+  };
+
+  // "1:30" / "1:30:00". Minutes:seconds where the field IS seconds, and
+  // hours:minutes:seconds always. In a MINUTES field the two-part form is
+  // refused rather than guessed: "1:30" is 90 minutes to one reader and 90
+  // seconds to another, and that is a 60× error either way.
+  const clock = CLOCK.exec(s);
+  if (clock) {
+    if (u.dim !== "time") return { error: `${quoted} is a clock time, not ${u.name} — write ${u.hint}` };
+    const [a, b, c] = [Number(clock[1]), Number(clock[2]), clock[3] === undefined ? null : Number(clock[3])];
+    if (c !== null) return { dim: "time", base: a * 3600 + b * 60 + c };
+    if (u.per === 1) return { dim: "time", base: a * 60 + b };
+    return { error: `${quoted} could be ${a}h${clock[2]} or ${a * 60 + b} seconds — write ${u.hint}` };
+  }
+
+  // "8-12", "20-24kg", "1.5-2 hours": the low end, carrying whichever side
+  // stated the unit. Same reading `intish` already gives ranges of reps.
+  const range = RANGE.exec(s);
+  if (range) return resolve(Number(range[1]), range[2] || range[4] || "");
+
+  // "2×20kg" — two twenties, so the LOAD is 20 and the 2 is a count. Only a
+  // mass field reads it: "12x400m" in a run block is a rep scheme, and
+  // collapsing it to one 400m block would silently drop eleven reps.
+  const times = TIMES.exec(s);
+  if (times) {
+    if (u.dim !== "mass") {
+      return { error: `${quoted} is a rep scheme, not one ${u.name} value — write one block per piece of work` };
+    }
+    const [n1, t1, n2, t2] = [Number(times[1]), times[2] ?? "", Number(times[3]), times[4] ?? ""];
+    return t1 && !t2 ? resolve(n1, t1) : resolve(n2, t2 || t1);
+  }
+
+  const tokens = [...s.matchAll(TOKENS)].map((m) => ({ n: Number(m[1]), t: m[2] ?? "" }));
+  if (tokens.length === 0) return undefined;
+
+  // "1h30m", "2 min 30 s", "5'30\"" — a compound quantity, summed. Every part
+  // must carry a unit: "1h30" is 60 or 90 depending on the reader, so it falls
+  // through to the refusal below rather than being guessed.
+  if (tokens.length > 1 && tokens.every((t) => t.t && UNIT_TOKENS[u.dim][t.t] !== undefined)) {
+    return { dim: u.dim, base: tokens.reduce((sum, t) => sum + t.n * UNIT_TOKENS[u.dim][t.t]!, 0) };
+  }
+  if (tokens.length > 1) {
+    return { error: `${quoted} holds more than one number — write a single ${u.name} value (${u.hint})` };
+  }
+  return resolve(tokens[0]!.n, tokens[0]!.t);
+}
+
+/**
+ * A field measured in a fixed unit. Bounds are in the FIELD's unit; the stored
+ * number is quantised to the field's resolution, so what the schema returns is
+ * always a number every consumer can multiply by 60 and store.
+ */
+const quantity = (u: FieldUnit, min: number, max: number) =>
+  z
+    .union([z.number(), z.string()])
+    .transform((v, ctx) => {
+      const r = readQuantity(v, u);
+      if (r === undefined) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: `${JSON.stringify(v)} is not a number of ${u.name} — write ${u.hint}`,
+        });
+        return z.NEVER;
+      }
+      if (failed(r)) {
+        ctx.addIssue({ code: z.ZodIssueCode.custom, message: r.error });
+        return z.NEVER;
+      }
+      return u.quantise(r.base);
+    })
+    .pipe(z.number().min(min).max(max));
 
 /**
  * A word the coach writes → the word this schema stores.
@@ -121,10 +407,20 @@ const intish = (min: number, max: number) =>
  * Synonyms are only added where the mapping is unambiguous. Where two readings
  * are genuinely available the word is deliberately absent (see the tables).
  */
+/** Case and punctuation out of a word the model wrote, so "Long_Run", "long
+ * run" and "LONG RUN" are one lookup. Shared with the run-block kind table,
+ * which does the same folding against units rather than synonyms. */
+const fold = (v: string): string =>
+  v
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, " ")
+    .trim();
+
 const enumish = <U extends string, T extends [U, ...U[]]>(values: T, synonyms: Record<string, U>) =>
   z.preprocess((v) => {
     if (typeof v !== "string") return v;
-    const folded = v.trim().toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
+    const folded = fold(v);
     if ((values as readonly string[]).includes(folded)) return folded;
     return synonyms[folded] ?? synonyms[folded.replace(/ /g, "")] ?? v;
   }, z.enum(values));
@@ -174,7 +470,42 @@ const MAX_EXERCISES = 30;
 const MAX_WEEK_SESSIONS = 21;
 /** What a coach means by "short rest" when it doesn't say. */
 const DEFAULT_REST_SECONDS = 60;
-const LB_TO_KG = 0.45359237;
+
+/**
+ * A RUN BLOCK'S PLAUSIBLE RANGE — the bounds that stop a unit error, or a
+ * dropped "k", reaching the athlete's calendar as a prescription.
+ *
+ * These live in the SCHEMA rather than in coach-guardrails.ts, and the
+ * placement is the argument: a guardrail is advisory, it exists so the ATHLETE
+ * can weigh a training judgement, and "run one metre" is not a judgement they
+ * can weigh — it is a typo wearing an approve button. The guardrails never see
+ * a block value either (they read `durationMinutes` only), so a 1-metre rep is
+ * invisible there. Refusing at the parse costs one repair round-trip, which
+ * the wake can afford and a wrong calendar row cannot.
+ */
+/** Five seconds. Under it, a "block" is a movement rather than a piece of
+ * work — and every value below it seen in the wild was a unit error. */
+const MIN_BLOCK_SECONDS = 5;
+/** Twelve hours in one continuous block: a hundred-miler, and headroom. The
+ * old ceiling was 100_000, which as MINUTES is sixty-nine days. */
+const MAX_BLOCK_MINUTES = 720;
+/** Ten metres is a shuttle. One metre is not a rep, it is a dropped "k". */
+const MIN_BLOCK_METERS = 10;
+/** A hundred kilometres in one block. */
+const MAX_BLOCK_METERS = 100_000;
+/**
+ * How much more work a block list may describe than the session it belongs to
+ * before the two numbers stop being about the same session.
+ *
+ * A coach under-counts all the time (blocks for the interval set only, no
+ * warm-up), and that is fine — this is one-sided. Over-counting is the unit
+ * error: eight reps written as `{kind:"duration", value:45}` for a
+ * 45-SECOND rep describe six hours of work inside a fifty-minute session,
+ * which is 7× and up. Five is chosen with headroom over the worst legitimate
+ * case the survival harness produces (a 61-minute 12×400m block list attached
+ * to a 20-minute eased session, 3.05×) and well under every mis-scale.
+ */
+const MAX_BLOCK_OVERRUN = 5;
 
 /**
  * Load, as a coach actually writes it. The studio's discriminated union is
@@ -183,29 +514,53 @@ const LB_TO_KG = 0.45359237;
  * only true answer is "your body". So: absent means bodyweight, a bare
  * number means kilos, and the common prose forms are understood. The studio
  * union itself still parses, so a model that copies that shape is right too.
+ *
+ * THE UNIT IS READ, NOT SKIPPED (2026-08-17). The old regex took the first
+ * number and an OPTIONAL trailing unit, so `"2×20kg"` — two twenty-kilo
+ * dumbbells, the way every coach writes a pair — stored 2 kg, and `"70%"`
+ * stored seventy kilos of nothing. Both go through {@link readQuantity} now:
+ * a multiplier resolves to the load rather than the count, and a unit that is
+ * not a mass is refused instead of dropped. Prose with no number at all
+ * ("heavy", "moderate") still means bodyweight, because the honest place for
+ * it is `note` and refusing it would cost a wake over a word.
  */
+export type CoachWeight = { type: "bodyweight" } | { type: "kg"; value: number };
+
+const weightObject = z.discriminatedUnion("type", [
+  z.object({ type: z.literal("bodyweight") }),
+  z.object({ type: z.literal("kg"), value: z.number().min(0).max(MAX_WEIGHT_KG) }),
+]);
+
 export const coachWeightSchema = z
-  .preprocess(
-    (v) => {
-      if (v === null || v === undefined) return { type: "bodyweight" };
-      if (typeof v === "number") return v > 0 ? { type: "kg", value: v } : { type: "bodyweight" };
-      if (typeof v === "string") {
-        const s = v.trim().toLowerCase();
-        const m = s.match(/(\d+(?:\.\d+)?)\s*(kgs?|kilos?|lbs?|pounds?)?/);
-        if (!m) return { type: "bodyweight" }; // "heavy", "moderate" — say it in `note`
-        const n = Number(m[1]);
-        const lb = /lb|pound/.test(m[2] ?? "");
-        return { type: "kg", value: lb ? Math.round(n * LB_TO_KG * 10) / 10 : n };
-      }
-      return v;
-    },
-    z.discriminatedUnion("type", [
-      z.object({ type: z.literal("bodyweight") }),
-      z.object({ type: z.literal("kg"), value: z.number().min(0).max(MAX_WEIGHT_KG) }),
-    ]),
-  )
+  .unknown()
+  .transform((v, ctx): CoachWeight => {
+    if (v === null || v === undefined) return { type: "bodyweight" };
+    if (typeof v === "object") {
+      const parsed = weightObject.safeParse(v);
+      if (parsed.success) return parsed.data;
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: `${JSON.stringify(v)} is not a load — write kilos as a number (20), or {"type":"bodyweight"}`,
+      });
+      return z.NEVER;
+    }
+    const r = readQuantity(v, KILOS);
+    // "heavy", "moderate", "bodyweight" — a real prescription with no number
+    // in it. It belongs in `note`, and it is never worth a wake.
+    if (r === undefined) return { type: "bodyweight" };
+    if (failed(r)) {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, message: r.error });
+      return z.NEVER;
+    }
+    const kg = KILOS.quantise(r.base);
+    if (kg <= 0) return { type: "bodyweight" };
+    if (kg > MAX_WEIGHT_KG) {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, message: `${kg}kg is past the ${MAX_WEIGHT_KG}kg ceiling` });
+      return z.NEVER;
+    }
+    return { type: "kg", value: kg };
+  })
   .default({ type: "bodyweight" });
-export type CoachWeight = z.infer<typeof coachWeightSchema>;
 
 /**
  * The coach's exercise vocabulary — deliberately NOT `studioExerciseSchema`.
@@ -242,18 +597,21 @@ export const coachExerciseSchema = z
     /** Reps per set — PER SIDE when `perSide`. One of reps/holdSeconds. */
     reps: orNull(intish(1, MAX_REPS).optional()),
     /** Seconds of work per set: a hold (wall sit, plank, Copenhagen) or a
-     * timed effort (30s skier hops). One of reps/holdSeconds. */
-    holdSeconds: orNull(intish(3, MAX_HOLD_SECONDS).optional()),
+     * timed effort (30s skier hops). One of reps/holdSeconds. A unit is
+     * honoured, so "45s", "1:30" and "2 min" are 45, 90 and 120. */
+    holdSeconds: orNull(quantity(SECONDS, 3, MAX_HOLD_SECONDS).optional()),
     /** The prescription happens on EACH leg/arm — sets × reps per side. */
     perSide: orNull(z.boolean().optional()),
     /** Seconds to lower under control. The eccentric is the point of a
      * ski-prep squat; "4s down" had no field before this. */
-    eccentricSeconds: orNull(intish(1, MAX_ECCENTRIC_SECONDS).optional()),
+    eccentricSeconds: orNull(quantity(SECONDS, 1, MAX_ECCENTRIC_SECONDS).optional()),
     weight: coachWeightSchema,
+    /** Seconds between sets. "2 min" is 120 and "1:00" is 60 — both used to
+     * store the leading digits and prescribe a two-second rest. */
     restSeconds: z
       .preprocess(
         (v) => (v === null || v === undefined ? DEFAULT_REST_SECONDS : v),
-        intish(0, MAX_REST_SECONDS),
+        quantity(SECONDS, 0, MAX_REST_SECONDS),
       )
       .default(DEFAULT_REST_SECONDS),
     /** Cueing, or anything the fields above can't hold ("pause at the
@@ -291,23 +649,64 @@ export function formatExercise(e: CoachExercise): string {
 }
 
 /**
- * How a block is measured. Synonyms are UNIT-NEUTRAL only: "time"/"minutes"
- * mean the same as "duration", "meters" the same as "distance". "km" and
- * "miles" are deliberately absent — the value's unit is fixed by the kind, so
- * accepting `{kind:"km", value:5}` would silently prescribe five metres.
+ * How a block is measured — and, when the word carries one, IN WHAT UNIT.
+ *
+ * This table used to be unit-NEUTRAL, with a comment explaining that
+ * `{kind:"km", value:5}` had to be refused because it "would silently
+ * prescribe five metres". That was true of a schema which threw the unit away.
+ * It is not true of one that reads it: a kind of "km" says the value is
+ * kilometres, and five of them is 5000 metres. Every entry below is therefore
+ * a dimension AND a scale, and the same reading is applied to a unit written
+ * on the VALUE instead (`{kind:"duration", value:"5km"}`), which is the same
+ * statement in the other slot. Whichever one states a unit wins; a unit
+ * belonging to the other dimension moves the block to that dimension, because
+ * a coach who writes kilometres means a distance whatever the kind field says.
+ *
+ * A word in neither this table nor the other dimension's is a refusal, not a
+ * guess: `{kind:"laps"}` has no length until someone says how big the track is.
  */
-const RUN_BLOCK_KIND_SYNONYMS: Record<string, "duration" | "distance"> = {
-  time: "duration",
-  minutes: "duration",
-  minute: "duration",
-  mins: "duration",
-  min: "duration",
-  timed: "duration",
-  meters: "distance",
-  metres: "distance",
-  meter: "distance",
-  metre: "distance",
-  m: "distance",
+interface BlockUnit {
+  dim: Dimension;
+  /** Base units (seconds / metres) in one of this kind's units. */
+  per: number;
+}
+const TIME_KIND: BlockUnit = { dim: "time", per: 60 };
+const DISTANCE_KIND: BlockUnit = { dim: "distance", per: 1 };
+const RUN_BLOCK_KINDS: Record<string, BlockUnit> = {
+  duration: TIME_KIND,
+  time: TIME_KIND,
+  timed: TIME_KIND,
+  minutes: TIME_KIND,
+  minute: TIME_KIND,
+  mins: TIME_KIND,
+  min: TIME_KIND,
+  seconds: { dim: "time", per: 1 },
+  second: { dim: "time", per: 1 },
+  secs: { dim: "time", per: 1 },
+  sec: { dim: "time", per: 1 },
+  hours: { dim: "time", per: 3600 },
+  hour: { dim: "time", per: 3600 },
+  hrs: { dim: "time", per: 3600 },
+  hr: { dim: "time", per: 3600 },
+  distance: DISTANCE_KIND,
+  meters: DISTANCE_KIND,
+  metres: DISTANCE_KIND,
+  meter: DISTANCE_KIND,
+  metre: DISTANCE_KIND,
+  m: DISTANCE_KIND,
+  km: { dim: "distance", per: 1000 },
+  k: { dim: "distance", per: 1000 },
+  kilometers: { dim: "distance", per: 1000 },
+  kilometres: { dim: "distance", per: 1000 },
+  kilometer: { dim: "distance", per: 1000 },
+  kilometre: { dim: "distance", per: 1000 },
+  miles: { dim: "distance", per: 1609.344 },
+  mile: { dim: "distance", per: 1609.344 },
+  mi: { dim: "distance", per: 1609.344 },
+  yards: { dim: "distance", per: 0.9144 },
+  yard: { dim: "distance", per: 0.9144 },
+  yds: { dim: "distance", per: 0.9144 },
+  yd: { dim: "distance", per: 0.9144 },
 };
 
 /**
@@ -353,24 +752,110 @@ const RUN_INTENSITY_SYNONYMS: Record<string, "easy" | "steady" | "threshold" | "
   off: "rest",
 };
 
-/** One structured run block — the COROS-write-confirmed topology. */
-export const coachRunBlockSchema = z.object({
-  kind: enumish(["duration", "distance"], RUN_BLOCK_KIND_SYNONYMS),
-  /** Minutes for duration blocks; meters for distance blocks. `intish` for the
-   * same reason as everywhere else in this file: `"400"` and `2.5` are numbers
-   * a coach writes, and a bare `z.number().int()` rejected both. */
-  value: intish(1, 100_000),
-  /**
-   * Optional by design, and therefore DROPPED rather than fatal when the word
-   * is one no synonym covers: a block with no stated intensity is a block the
-   * athlete runs by feel, which is a real prescription and infinitely better
-   * than losing the wake over "fartlek". `strippedPaths` reports the drop.
-   */
-  intensity: orNull(enumish(["easy", "steady", "threshold", "interval", "rest"], RUN_INTENSITY_SYNONYMS).optional()).catch(
-    undefined,
-  ),
-});
-export type CoachRunBlock = z.infer<typeof coachRunBlockSchema>;
+export type RunIntensity = "easy" | "steady" | "threshold" | "interval" | "rest";
+export type CoachRunBlock = { kind: "duration" | "distance"; value: number; intensity?: RunIntensity };
+
+/**
+ * One structured run block — the COROS-write-confirmed topology.
+ *
+ * SUB-MINUTE WORK IS EXPRESSIBLE (2026-08-17), and the limitation never
+ * belonged to the wire: `targetType: 2` is whole seconds, and 42 of the 244
+ * time-based stages in the athlete's own library are under a minute. It
+ * belonged to `intish`, which rounded — so a 15-second stride written as 0.25
+ * was refused outright, a 30-second one written as 0.5 became a whole minute,
+ * and the only way left to say "45 seconds" was `45`, which this schema reads
+ * as forty-five MINUTES.
+ *
+ * The fix is deliberately NOT a new block kind and NOT a unit tag on the
+ * stored value, both of which would change what `value` MEANS to three
+ * consumers that compute `value * 60` — coach-apply's `durationSeconds`,
+ * create-executor's whole-second `targetValue`, describeOps'
+ * `formatStageDuration` — and a meaning that changes in one place and not the
+ * other two is exactly the silent-wrong-number class this change exists to
+ * close. Instead:
+ *
+ *   THE UNIT STAYS MINUTES, AND THE NUMBER STOPS HAVING TO BE WHOLE.
+ *
+ * `value * 60` is still the seconds, still what every consumer already
+ * computes, and 0.75 × 60 is exactly 45. What the schema stores is always a
+ * whole number of seconds over 60.
+ *
+ * A BARE NUMBER IS STILL MINUTES, and is not second-guessed.
+ * `{kind:"duration", value:45}` probably means a 45-second rep — but
+ * "probably" is how you prescribe a 45-second long run to the athlete who
+ * meant a 45-minute one. So the schema states the unit, honours any unit the
+ * coach writes instead ("45s" → 0.75, "0:45" refused as ambiguous, 0.75 taken
+ * exactly), and catches the mis-scaled case where it is CHECKABLE rather than
+ * guessable — see the block-overrun refinement on `coachSessionSchema`, which
+ * reads the session's own `durationMinutes` back against the work its blocks
+ * describe.
+ */
+export const coachRunBlockSchema = z
+  .object({
+    // `unknown`, because kind and value cannot be parsed apart: the unit may
+    // be written on either one, and whichever states it decides both.
+    kind: z.unknown(),
+    value: z.unknown(),
+    /**
+     * Optional by design, and therefore DROPPED rather than fatal when the word
+     * is one no synonym covers: a block with no stated intensity is a block the
+     * athlete runs by feel, which is a real prescription and infinitely better
+     * than losing the wake over "fartlek". `strippedPaths` reports the drop.
+     */
+    intensity: orNull(
+      enumish(["easy", "steady", "threshold", "interval", "rest"], RUN_INTENSITY_SYNONYMS).optional(),
+    ).catch(undefined),
+  })
+  .transform((b, ctx): CoachRunBlock => {
+    const word = typeof b.kind === "string" ? fold(b.kind) : "";
+    const spec = RUN_BLOCK_KINDS[word] ?? RUN_BLOCK_KINDS[word.replace(/ /g, "")];
+    if (!spec) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["kind"],
+        message: `${JSON.stringify(b.kind)} is not a block kind — "duration" (minutes) or "distance" (meters); a unit ("km", "seconds") is read as the unit of "value"`,
+      });
+      return z.NEVER;
+    }
+    const unit: FieldUnit =
+      spec.dim === "time" ? { ...MINUTES_TO_THE_SECOND, per: spec.per } : { ...METRES, per: spec.per };
+    const read = readQuantity(b.value, unit, spec.dim === "time" ? "distance" : "time");
+    if (read === undefined || failed(read)) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["value"],
+        message:
+          read === undefined ? `${JSON.stringify(b.value)} is not a block length — write ${unit.hint}` : read.error,
+      });
+      return z.NEVER;
+    }
+    const intensity = b.intensity ?? undefined;
+    // The unit decides the dimension, and the dimension decides the kind: a
+    // "5km" written into a duration block is a distance block, because that is
+    // what the coach said and the other reading is five minutes.
+    if (read.dim === "time") {
+      const seconds = Math.round(read.base);
+      if (seconds < MIN_BLOCK_SECONDS || seconds > MAX_BLOCK_MINUTES * 60) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ["value"],
+          message: `a block of ${seconds}s is not a piece of work — write between ${MIN_BLOCK_SECONDS}s and ${MAX_BLOCK_MINUTES} minutes`,
+        });
+        return z.NEVER;
+      }
+      return { kind: "duration", value: seconds / 60, intensity };
+    }
+    const meters = Math.round(read.base);
+    if (meters < MIN_BLOCK_METERS || meters > MAX_BLOCK_METERS) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["value"],
+        message: `a block of ${meters}m is not a piece of work — write between ${MIN_BLOCK_METERS}m and ${MAX_BLOCK_METERS / 1000}km (did a "km" go missing?)`,
+      });
+      return z.NEVER;
+    }
+    return { kind: "distance", value: meters, intensity };
+  });
 
 /**
  * A list of exercises and how it is performed.
@@ -491,8 +976,14 @@ export const coachSessionSchema = z
      * The ceiling is a day, not six hours — a 380-minute ultra long run was
      * refused by a 360 cap, and nothing between "six hours" and "a whole day"
      * is incoherent enough to be worth killing a wake over.
+     *
+     * WHOLE MINUTES, and a unit is honoured: "1.5 hours" is 90, not 2 (which
+     * is what the leading digits used to make it — a 90-minute session whose
+     * calendar block was two minutes long while its own summary said 90).
+     * A session's length is a calendar block; nothing downstream holds a
+     * fraction of a minute of one.
      */
-    durationMinutes: intish(0, 1440),
+    durationMinutes: quantity(WHOLE_MINUTES, 0, 1440),
     /** Empty blocks = an unstructured run, the same as omitting `run`. */
     run: orNull(z.object({ blocks: z.array(coachRunBlockSchema).max(MAX_RUN_BLOCKS) }).optional()),
     lift: orNull(coachExerciseBlockSchema.optional()),
@@ -500,7 +991,39 @@ export const coachSessionSchema = z
   })
   .refine((s) => [s.run, s.lift, s.mobility].filter(Boolean).length <= 1, {
     message: "a session has at most one discipline body (run, lift or mobility)",
-  });
+  })
+  /**
+   * THE TWO NUMBERS MUST BE ABOUT THE SAME SESSION.
+   *
+   * A session states its length twice — once as `durationMinutes`, once as the
+   * work its blocks describe — and the schema can therefore check the one
+   * thing a unit-aware parse still cannot know: whether a bare number was
+   * written in the unit the field is measured in. Eight reps of
+   * `{kind:"duration", value:45}` meaning 45 SECONDS describe six hours inside
+   * a fifty-minute session. That is not a training judgement for the athlete
+   * to weigh (it is not a plan at all), and by apply time they have already
+   * approved a card built from the wrong number — so it is refused here, where
+   * the wake's repair loop can be told which two numbers disagree.
+   *
+   * One-sided and generous: blocks that describe LESS than the session are
+   * ordinary (a block list for the interval set only, no warm-up), and up to
+   * {@link MAX_BLOCK_OVERRUN}× more is still accepted.
+   */
+  .refine(
+    (s) => {
+      if (!s.run || s.durationMinutes <= 0) return true;
+      const blockMinutes = s.run.blocks
+        .filter((b) => b.kind === "duration")
+        .reduce((sum, b) => sum + b.value, 0);
+      return blockMinutes <= s.durationMinutes * MAX_BLOCK_OVERRUN;
+    },
+    (s) => ({
+      path: ["run", "blocks"],
+      message: `the blocks describe ${Math.round(
+        (s.run?.blocks ?? []).filter((b) => b.kind === "duration").reduce((sum, b) => sum + b.value, 0),
+      )} minutes of work in a session of ${s.durationMinutes} — one of the two numbers is in the wrong unit (a duration block's "value" is MINUTES; write "45s" or 0.75 for a 45-second rep)`,
+    }),
+  );
 export type CoachSession = z.infer<typeof coachSessionSchema>;
 
 /**

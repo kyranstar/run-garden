@@ -389,6 +389,271 @@ describe("the schema accepts vocabulary and normalises it", () => {
   });
 });
 
+/* ===================================================================== *
+ * UNITS — the spelling the coach wrote, and the PHYSICAL QUANTITY stored.
+ *
+ * Every case below is asserted as the quantity a CONSUMER computes, never as
+ * "it parsed": a duration block is checked as `value * 60` seconds (what
+ * coach-apply writes into `durationSeconds` and create-executor puts on the
+ * wire as whole-second `targetValue`), a distance block as metres, a weight as
+ * kilos. That distinction is the point of this whole file — on 2026-08-17
+ * every one of the wrong values in the table below PARSED, and the schema
+ * tests passed by construction because they only ever asserted that.
+ * ===================================================================== */
+
+/** One run block, as the seconds or metres a consumer would store. The
+ * session is given a deliberately long `durationMinutes` so these cases are
+ * about the block's unit and never about the block-overrun refinement. */
+function blockQuantity(raw: unknown): { seconds: number } | { meters: number } {
+  const s = coachSessionSchema.parse({
+    category: "quality",
+    title: "t",
+    durationMinutes: 600,
+    run: { blocks: [raw] },
+  });
+  const b = s.run!.blocks[0]!;
+  return b.kind === "duration" ? { seconds: b.value * 60 } : { meters: b.value };
+}
+
+const exercise = (over: Record<string, unknown>) =>
+  sessionExercises(
+    coachSessionSchema.parse({
+      category: "strength",
+      title: "t",
+      durationMinutes: 40,
+      lift: { exercises: [{ name: "Back squat", sets: 3, ...over }] },
+    }),
+  )[0]!;
+
+describe("units: honour it or refuse it, never ignore it", () => {
+  it("reads a duration block as the seconds the wire will carry", () => {
+    const cases: Array<[unknown, number]> = [
+      // The documented dialect: a bare number is MINUTES, unchanged.
+      [{ kind: "duration", value: 40 }, 2400],
+      [{ kind: "duration", value: "40" }, 2400],
+      [{ kind: "time", value: 30 }, 1800],
+      // Sub-minute work, which used to be unexpressible: 0.25 killed the wake
+      // and 0.5 was rounded up to a whole minute.
+      [{ kind: "duration", value: 0.25 }, 15],
+      [{ kind: "duration", value: 0.5 }, 30],
+      [{ kind: "duration", value: 0.75 }, 45],
+      [{ kind: "duration", value: "45s" }, 45],
+      [{ kind: "duration", value: "45 sec" }, 45],
+      [{ kind: "duration", value: "30 seconds" }, 30],
+      [{ kind: "duration", value: "90s" }, 90],
+      // …and the unit-bearing kinds, which say the same thing in the other slot.
+      [{ kind: "seconds", value: 45 }, 45],
+      [{ kind: "minutes", value: 45 }, 2700],
+      [{ kind: "hours", value: 1 }, 3600],
+      // Bigger units, converted rather than truncated.
+      [{ kind: "duration", value: "2 min" }, 120],
+      [{ kind: "duration", value: "1.5" }, 90],
+      [{ kind: "duration", value: "1h" }, 3600],
+      [{ kind: "duration", value: "1h30m" }, 5400],
+      [{ kind: "duration", value: "2 min 30 s" }, 150],
+    ];
+    for (const [raw, seconds] of cases) {
+      expect(blockQuantity(raw), JSON.stringify(raw)).toEqual({ seconds });
+    }
+  });
+
+  it("reads a distance block as metres", () => {
+    const cases: Array<[unknown, number]> = [
+      [{ kind: "distance", value: 400 }, 400],
+      [{ kind: "distance", value: "400" }, 400],
+      [{ kind: "distance", value: "400m" }, 400],
+      // THE HEADLINE BUG: "1km" stored 1 metre and rendered "0.0km".
+      [{ kind: "distance", value: "1km" }, 1000],
+      [{ kind: "distance", value: "1 km" }, 1000],
+      [{ kind: "distance", value: "1.5km" }, 1500],
+      [{ kind: "distance", value: "1,500m" }, 1500],
+      [{ kind: "km", value: 5 }, 5000],
+      [{ kind: "distance", value: "1 mile" }, 1609],
+      [{ kind: "miles", value: 1 }, 1609],
+    ];
+    for (const [raw, meters] of cases) {
+      expect(blockQuantity(raw), JSON.stringify(raw)).toEqual({ meters });
+    }
+  });
+
+  it("lets the unit overrule the kind, because the unit is the thing stated", () => {
+    // A coach who writes kilometres means a distance whatever the kind says,
+    // and one who writes minutes means a duration. Both readings used to be a
+    // magnitude error: "5km" in a duration block was five minutes.
+    expect(blockQuantity({ kind: "duration", value: "5km" })).toEqual({ meters: 5000 });
+    expect(blockQuantity({ kind: "distance", value: "30 min" })).toEqual({ seconds: 1800 });
+    // "m" is minutes in a time field and metres in a distance one: the kind
+    // supplies the namespace, so neither reading is a guess.
+    expect(blockQuantity({ kind: "duration", value: "45m" })).toEqual({ seconds: 2700 });
+    expect(blockQuantity({ kind: "distance", value: "45m" })).toEqual({ meters: 45 });
+  });
+
+  it("reads a session's own length in whole minutes", () => {
+    const minutes = (v: unknown): number =>
+      coachSessionSchema.parse({ category: "easy", title: "t", durationMinutes: v }).durationMinutes;
+    expect(minutes(40)).toBe(40);
+    expect(minutes("40")).toBe(40);
+    expect(minutes("40 min")).toBe(40);
+    expect(minutes("40 minutes")).toBe(40);
+    // Stored 2 before this change, while the same row's summary said "90 min".
+    expect(minutes("1.5 hours")).toBe(90);
+    expect(minutes("1.5h")).toBe(90);
+    expect(minutes("1h30m")).toBe(90);
+    expect(minutes("2h")).toBe(120);
+    expect(minutes(0)).toBe(0);
+  });
+
+  it("reads every seconds field as seconds", () => {
+    const cases: Array<[unknown, number]> = [
+      [45, 45],
+      ["45", 45],
+      ["45s", 45],
+      ["45 sec", 45],
+      ["1 min", 60],
+      ["2 min", 120],
+      ["1:00", 60],
+      ["1:30", 90],
+      ["0:45", 45],
+    ];
+    for (const [raw, seconds] of cases) {
+      expect(exercise({ holdSeconds: raw }).holdSeconds, `holdSeconds ${JSON.stringify(raw)}`).toBe(seconds);
+      expect(exercise({ restSeconds: raw }).restSeconds, `restSeconds ${JSON.stringify(raw)}`).toBe(seconds);
+    }
+    // …including the two that used to store a two-second rest between sets.
+    expect(exercise({ restSeconds: "2 min" }).restSeconds).toBe(120);
+    expect(exercise({ restSeconds: "1:00" }).restSeconds).toBe(60);
+    // A range keeps its low end, and its unit.
+    expect(exercise({ restSeconds: "60-90" }).restSeconds).toBe(60);
+    expect(exercise({ restSeconds: "90-120s" }).restSeconds).toBe(90);
+    // Absent and null still mean the default.
+    expect(exercise({}).restSeconds).toBe(60);
+    expect(exercise({ restSeconds: null }).restSeconds).toBe(60);
+    // The eccentric, in the two spellings a coach uses for "4s down".
+    expect(exercise({ reps: 5, eccentricSeconds: 4 }).eccentricSeconds).toBe(4);
+    expect(exercise({ reps: 5, eccentricSeconds: "4s" }).eccentricSeconds).toBe(4);
+    expect(exercise({ reps: 5, eccentricSeconds: "0.5 min" }).eccentricSeconds).toBe(30);
+  });
+
+  it("reads a load as kilos, and a multiplier as the load rather than the count", () => {
+    const kg = (raw: unknown): unknown => exercise({ reps: 5, weight: raw }).weight;
+    expect(kg(20)).toEqual({ type: "kg", value: 20 });
+    expect(kg("20")).toEqual({ type: "kg", value: 20 });
+    expect(kg("20kg")).toEqual({ type: "kg", value: 20 });
+    expect(kg("24 kilos")).toEqual({ type: "kg", value: 24 });
+    expect(kg("45 lbs")).toEqual({ type: "kg", value: 20.4 });
+    expect(kg("30 pounds")).toEqual({ type: "kg", value: 13.6 });
+    // Two twenty-kilo dumbbells. Stored 2 kg before this change.
+    expect(kg("2×20kg")).toEqual({ type: "kg", value: 20 });
+    expect(kg("2 x 20 kg")).toEqual({ type: "kg", value: 20 });
+    expect(kg("20kg x 2")).toEqual({ type: "kg", value: 20 });
+    expect(kg("20-24kg")).toEqual({ type: "kg", value: 20 });
+    // Prose with no number in it is bodyweight, and belongs in `note` — never
+    // worth a wake, and the one case where dropping the words is right.
+    expect(kg("heavy")).toEqual({ type: "bodyweight" });
+    expect(kg(null)).toEqual({ type: "bodyweight" });
+    expect(kg(undefined)).toEqual({ type: "bodyweight" });
+    expect(kg({ type: "bodyweight" })).toEqual({ type: "bodyweight" });
+    expect(kg({ type: "kg", value: 100 })).toEqual({ type: "kg", value: 100 });
+  });
+
+  it("refuses a unit it cannot read instead of keeping the number", () => {
+    // Each of these stored a plausible-looking wrong number before today. A
+    // refusal costs one repair round-trip; the number costs the athlete's week.
+    const refused: Array<[string, () => unknown]> = [
+      // "%" is not a mass. 70 kg is not what "70% of 1RM" means.
+      ["weight 70%", () => exercise({ reps: 5, weight: "70%" })],
+      ["weight in reps", () => exercise({ reps: 5, weight: "2 reps" })],
+      ["restSeconds in reps", () => exercise({ reps: 5, restSeconds: "8 reps" })],
+      ["holdSeconds in kilos", () => exercise({ holdSeconds: "20kg" })],
+      // A clock in a MINUTES field: 1h30 to one reader, 90 seconds to another.
+      ["durationMinutes 1:30", () => coachSessionSchema.parse({ category: "easy", title: "t", durationMinutes: "1:30" })],
+      ["block value 0:45", () => blockQuantity({ kind: "duration", value: "0:45" })],
+      // A rep scheme is not one block — collapsing it would drop eleven reps.
+      ["block value 12x400m", () => blockQuantity({ kind: "duration", value: "12x400m" })],
+      // Two numbers with no structure between them.
+      ["block value 1h30", () => blockQuantity({ kind: "duration", value: "1h30" })],
+      ["block kind laps", () => blockQuantity({ kind: "laps", value: 4 })],
+      ["block value in reps", () => blockQuantity({ kind: "duration", value: "8 reps" })],
+    ];
+    for (const [name, run] of refused) expect(run, name).toThrow();
+  });
+
+  it("refuses a magnitude that is not a prescription in any context", () => {
+    // A one-metre rep is a dropped "k", not a judgement the athlete can weigh
+    // — which is why this is a schema bound and not an advisory guardrail.
+    expect(() => blockQuantity({ kind: "distance", value: 1 })).toThrow();
+    expect(() => blockQuantity({ kind: "distance", value: "1m" })).toThrow();
+    expect(() => blockQuantity({ kind: "duration", value: 0.05 })).toThrow(); // 3 seconds
+    expect(() => blockQuantity({ kind: "duration", value: 800 })).toThrow(); // 13 hours
+    expect(() => blockQuantity({ kind: "distance", value: 200_000 })).toThrow();
+    // …and the neighbours that ARE prescriptions still pass.
+    expect(blockQuantity({ kind: "distance", value: 10 })).toEqual({ meters: 10 });
+    expect(blockQuantity({ kind: "duration", value: "5s" })).toEqual({ seconds: 5 });
+    expect(blockQuantity({ kind: "duration", value: 380 })).toEqual({ seconds: 22_800 });
+  });
+
+  it("refuses a block list that describes a different session from the one it is in", () => {
+    // The mis-scale a unit-aware parse still cannot see: eight reps of
+    // `value: 45` meaning 45 SECONDS are six hours inside a 50-minute session.
+    // The session states its length twice, so the schema can check it.
+    const intervals = (value: number, durationMinutes: number) =>
+      coachSessionSchema.parse({
+        category: "quality",
+        title: "8×45s hill sprints",
+        durationMinutes,
+        run: {
+          blocks: [
+            { kind: "duration", value: 15, intensity: "easy" },
+            ...Array.from({ length: 8 }, () => ({ kind: "duration", value, intensity: "interval" })),
+            { kind: "duration", value: 10, intensity: "easy" },
+          ],
+        },
+      });
+    expect(() => intervals(45, 50)).toThrow(/wrong unit/);
+    // The same session written honestly, in either spelling.
+    expect(intervals(0.75, 50).run?.blocks[1]!.value).toBe(0.75);
+    // …and a block list merely longer than the session's stated length is
+    // ordinary, not a unit error: a 12×400m list on a session whose duration
+    // was never updated is 3× and still lands.
+    expect(intervals(2, 20).run?.blocks).toHaveLength(10);
+  });
+
+  it("stores a number every consumer can multiply by 60", () => {
+    // The invariant the whole sub-minute design rests on: `value * 60` is the
+    // seconds, for every consumer that computes it (coach-apply's
+    // durationSeconds, create-executor's whole-second targetValue,
+    // describeOps' formatStageDuration).
+    //
+    // EXACT for whole minutes — the overwhelming majority of blocks, and
+    // untouched by this change — and for every five-second step under a
+    // minute, which is every sub-minute stage in the athlete's real library
+    // (15s ×10, 30s ×10, 45s ×12).
+    const seconds = (v: unknown): number => (blockQuantity({ kind: "duration", value: v }) as { seconds: number }).seconds;
+    for (let s = 5; s < 60; s += 5) expect(seconds(`${s}s`), `${s}s`).toBe(s);
+    for (let m = 1; m <= 720; m++) expect(seconds(m), `${m} min`).toBe(m * 60);
+    // …and for every OTHER whole second, `value * 60` is that second to within
+    // a rounding: 125/60 has no exact double, so 125s comes back as
+    // 125.00000000000001. The worst case across the whole range is 2.3e-13 of
+    // a second, which every consumer rounds or formats away. Making it exact
+    // end to end is one `Math.round` in each of the two `* 60` call sites.
+    for (let s = 5; s <= 3600; s++) {
+      const got = seconds(`${s}s`);
+      expect(Math.round(got), `${s}s rounds`).toBe(s);
+      expect(Math.abs(got - s), `${s}s dust`).toBeLessThan(1e-9);
+    }
+    // …and re-parsing what the schema produced changes nothing, because
+    // create-executor and the write-job payload both parse the session again.
+    const once = coachSessionSchema.parse({
+      category: "quality",
+      title: "Strides",
+      durationMinutes: "40 min",
+      run: { blocks: [{ kind: "duration", value: "15s" }, { kind: "distance", value: "1km" }] },
+    });
+    expect(coachSessionSchema.parse(once)).toEqual(once);
+    expect(once.run?.blocks.map((b) => b.value)).toEqual([0.25, 1000]);
+  });
+});
+
 describe("what the schema still refuses, and what guards what it let go", () => {
   it("refuses a session that is two sessions", () => {
     // Unexecutable, not unusual: one row has one sport and one stage list, and
@@ -404,11 +669,23 @@ describe("what the schema still refuses, and what guards what it let go", () => 
     expect(() => coachSessionSchema.parse({ category: "swim", title: "Masters", durationMinutes: 60 })).toThrow();
   });
 
-  it("refuses a unit-ambiguous block kind rather than guessing metres", () => {
-    // `{kind:"km", value:5}` would prescribe five metres. "time"/"meters" are
-    // unit-neutral and map; "km"/"miles" are not and do not.
+  it("reads a unit-bearing block kind as its unit instead of refusing it", () => {
+    // This test used to assert the opposite, and the comment explaining why
+    // was the whole bug in one sentence: `{kind:"km", value:5}` was refused
+    // because it "would silently prescribe five metres". That was true of a
+    // schema that threw the unit away. Now the unit is read, so five
+    // kilometres is five thousand metres and there is nothing to refuse.
+    const s = coachSessionSchema.parse({
+      category: "easy",
+      title: "5k",
+      durationMinutes: 25,
+      run: { blocks: [{ kind: "km", value: 5 }] },
+    });
+    expect(s.run?.blocks[0]).toEqual({ kind: "distance", value: 5000, intensity: undefined });
+    // A kind that names no unit at all still is refused — "laps" has no length
+    // until someone says how big the track is.
     expect(() =>
-      coachSessionSchema.parse({ category: "easy", title: "5k", durationMinutes: 25, run: { blocks: [{ kind: "km", value: 5 }] } }),
+      coachSessionSchema.parse({ category: "easy", title: "Track", durationMinutes: 25, run: { blocks: [{ kind: "laps", value: 12 }] } }),
     ).toThrow();
   });
 

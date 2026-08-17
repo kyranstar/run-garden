@@ -582,10 +582,16 @@ describe("probes: the neighbours", () => {
     record(
       "op targets a workout id that does not exist",
       fatal.length ? "REFUSED (fatal)" : "ACCEPTED",
-      `${fatal.map((x) => x.rule).join(", ")}; unguarded, apply reports updated=[${out.updated.join(", ")}] and changes ${changed} rows`,
+      `${fatal.map((x) => x.rule).join(", ")}; unguarded, apply reports updated=[${out.updated.join(", ")}], missed=${out.missed.length} and changes ${changed} rows`,
     );
     expect(fatal.map((x) => x.rule)).toEqual(["unknown_workout", "unknown_workout"]);
-    expect(out.updated).toEqual(["wo-does-not-exist", "also-not-real"]);
+    // `ease` now reads the row before it writes (it has to — the stage write is
+    // keyed on the workout id alone, which carries no user), so a ghost id is
+    // reported as MISSED rather than handed back as a success. `skip` still
+    // claims it: an UPDATE matching nothing is silent, which is exactly why the
+    // guardrail rule above has to stay fatal rather than advisory.
+    expect(out.updated).toEqual(["also-not-real"]);
+    expect(out.missed).toHaveLength(1);
     expect(changed).toBe(0);
   });
 

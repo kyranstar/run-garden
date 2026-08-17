@@ -1,8 +1,14 @@
-import { and, eq } from "drizzle-orm";
-import { corosWriteJobs, plannedWorkouts } from "@rg/database";
+import { and, desc, eq, isNotNull } from "drizzle-orm";
+import { corosWriteJobs, dailyHealth, plannedWorkouts } from "@rg/database";
 import { nowInstant, todayInZone, type CorosWriteResult, type UserPreferences } from "@rg/domain";
-import { buildRunProgram, createWorkout, deleteWorkout, executeMoveJob, executeStudioJob, type StudioJob } from "@rg/coros";
-import { corosProgramFingerprint, localDateToCorosDay } from "@rg/providers";
+import {
+  createWorkout,
+  deleteWorkout,
+  executeMoveJob,
+  executeStudioJob,
+  type StudioJob,
+} from "@rg/coros";
+import { localDateToCorosDay } from "@rg/providers";
 import {
   coachCreateWorkoutJobSchema,
   coachDeleteWorkoutJobSchema,
@@ -16,6 +22,7 @@ import { corosReadNow } from "./coros-read.js";
 import { applyJobResult, claimNextJob } from "./jobs.js";
 import { bridgeJobPayload } from "./studio-push.js";
 import { claimUserLock, releaseUserLock } from "./locks.js";
+import { exerciseNameMap } from "./exercise-catalog.js";
 
 /**
  * Cloud write consumer (cloud-direct spec §4): the same job queue with all
@@ -27,6 +34,32 @@ import { claimUserLock, releaseUserLock } from "./locks.js";
  */
 
 export const CLOUD_DEVICE_ID = "cloud";
+
+/**
+ * The athlete's most recent COROS threshold pace, read at EXECUTION time.
+ *
+ * The job payload carries the threshold that was known when the coach's
+ * proposal was applied, and that is routinely too early: all three sessions
+ * the coach has pushed live went out on 2026-08-13 at 05:27 UTC with a null
+ * threshold, while the day's own reading of 289 s/km — the one every pace
+ * band in the app is derived from — landed later the same day. The result was
+ * three workouts on the watch with `intensityType: 5` (no target) on every
+ * block, permanently: nothing re-pushes when a threshold arrives.
+ *
+ * Resolving here instead closes that window. The push is asynchronous by
+ * design (queued at apply, executed by the write loop), so "as late as
+ * possible" is strictly more informed than "as early as possible", and it
+ * costs one bounded single-row read per create.
+ */
+async function latestThresholdPace(db: Db, userId: string): Promise<number | undefined> {
+  const [row] = await db
+    .select({ v: dailyHealth.thresholdPaceSecPerKm })
+    .from(dailyHealth)
+    .where(and(eq(dailyHealth.userId, userId), isNotNull(dailyHealth.thresholdPaceSecPerKm)))
+    .orderBy(desc(dailyHealth.date))
+    .limit(1);
+  return row?.v ?? undefined;
+}
 
 /** Mirror of the bridge's toStudioJob: re-validate before touching the
  * user's real calendar, even though this process built the payload. */
@@ -95,34 +128,44 @@ export async function executeCloudJobs(
           continue;
         }
         const spec = parsed.data;
+        // The freshest threshold wins over the one frozen into the payload at
+        // apply time — see `latestThresholdPace`. A payload value is only
+        // used when there is nothing newer to have.
+        const threshold = (await latestThresholdPace(db, userId)) ?? spec.thresholdPaceSecPerKm;
+        // A lift/mobility session needs the COROS catalog to resolve its
+        // steps; a run session never touches it, so the ~382-row read is
+        // paid only when there is something to resolve.
+        const catalog = spec.session.run ? new Map<string, string>() : await exerciseNameMap(db);
         const result = await createWorkout(
           client,
           {
             happenDay: String(localDateToCorosDay(spec.happenDay)),
             name: spec.name,
             session: spec.session,
-            thresholdPaceSecPerKm: spec.thresholdPaceSecPerKm,
+            thresholdPaceSecPerKm: threshold,
           },
-          { catalog: new Map(), log: () => undefined },
+          { catalog, log: () => undefined },
         );
+        if (result.paceTargetsOwed) {
+          // Recorded, not swallowed: the athlete's session went to the watch
+          // as a timer for these blocks and the row says so.
+          console.error(
+            `coach create pushed ${result.paceTargetsOwed} block(s) with no pace target` +
+              ` (${spec.name}); no usable threshold pace`,
+          );
+        }
         const done = nowInstant();
         if (result.ok) {
           // Stamp the WIRE fingerprint so a follow-up move compares like with
           // like (audit#2 #12) — the app-side FNV stamp guaranteed a
           // content_changed mismatch until the next snapshot healed it.
-          let wireFp: string | undefined;
-          try {
-            wireFp = corosProgramFingerprint(
-              buildRunProgram({
-                happenDay: String(localDateToCorosDay(spec.happenDay)),
-                name: spec.name,
-                session: spec.session,
-                thresholdPaceSecPerKm: spec.thresholdPaceSecPerKm,
-              }),
-            );
-          } catch {
-            /* fingerprint healing is best-effort; the next pull repairs it */
-          }
+          //
+          // It comes STRAIGHT FROM THE EXECUTOR now (2026-08-17). Rebuilding
+          // it here re-ran the builder, which emits `duration: 0`, while the
+          // program on the wire had been through `/program/calculate` — so the
+          // "healed" stamp never matched what the next read returns, and for a
+          // lift session `buildRunProgram` simply threw and healed nothing.
+          const wireFp = result.wireFingerprint;
           await db
             .update(plannedWorkouts)
             .set({
@@ -146,7 +189,20 @@ export async function executeCloudJobs(
             .where(eq(plannedWorkouts.id, spec.workoutId));
           await db
             .update(corosWriteJobs)
-            .set({ status: "verified", completedAt: done, updatedAt: done })
+            // `verifiedAt` is what a "verified" row MEANS — applyJobResult
+            // stamps it on every other kind, and 3 live coach creates sat
+            // verified with it NULL because this branch writes the status by
+            // hand (audit 2026-08-17). `lastErrorCategory` doubles as the pace
+            // debt ledger: a create can be verified AND still owe targets.
+            .set({
+              status: "verified",
+              verifiedAt: done,
+              completedAt: done,
+              updatedAt: done,
+              ...(result.paceTargetsOwed
+                ? { lastErrorCategory: "pace_targets_owed" }
+                : { lastErrorCategory: null }),
+            })
             .where(eq(corosWriteJobs.id, job.id));
         } else {
           // Transient outcomes retry (same taxonomy the studio retries via
@@ -213,7 +269,7 @@ export async function executeCloudJobs(
             .where(eq(plannedWorkouts.id, spec.workoutId));
           await db
             .update(corosWriteJobs)
-            .set({ status: "verified", completedAt: done, updatedAt: done })
+            .set({ status: "verified", verifiedAt: done, completedAt: done, updatedAt: done })
             .where(eq(corosWriteJobs.id, job.id));
         } else {
           // Refusals (ambiguous stamp, drifted address) are terminal — the
