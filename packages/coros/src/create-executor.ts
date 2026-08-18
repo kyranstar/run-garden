@@ -1117,38 +1117,68 @@ export function locate(view: PlanView, idInPlan: string | number): Located | und
 export type StampPredicate = (name: unknown) => boolean;
 
 /**
- * Every placement in this plan whose program carries the caller's stamp.
+ * "IS THIS PLACEMENT THE ONE I MEAN?" — the general form of the question the
+ * stamp answers.
  *
- * A link key must resolve UNANIMOUSLY. If a stamped and an unstamped program
+ * The stamp answers it by AUTHORSHIP: only this app emits that exact program
+ * name, so a program carrying it is one we wrote. That is the only proof
+ * available for a workout we created, and it stays the proof for those.
+ *
+ * It is not the only honest answer to the question, though, and assuming it was
+ * is what made `enqueueContentConvergence` refuse `no_recorded_stamp` for the
+ * majority of the athlete's plan — the sessions COROS authored and the coach
+ * eased (see `content-executor.ts`, THE SECOND PROOF). A caller that recorded
+ * what it SAW at an address can answer the same question by re-reading it. So
+ * the two ownership functions below take a predicate over the placement rather
+ * than over its name, and `stampedPlacements`/`stampAmbiguities` become the
+ * name-shaped case of it. Every existing caller is unchanged, deliberately:
+ * nothing about the stamp discipline is relaxed by giving it a sibling.
+ */
+export type PlacementPredicate = (program: RawCorosProgram, entity: RawCorosEntity) => boolean;
+
+/**
+ * Every placement in this plan the caller can prove is theirs.
+ *
+ * A link key must resolve UNANIMOUSLY. If a matching and a non-matching program
  * share it, the entity's real workout is genuinely ambiguous — claiming it
  * would let a delete take a workout we did not create — so nothing is claimed
- * and `stampAmbiguities` reports the situation instead of hiding it.
+ * and `ownershipAmbiguities` reports the situation instead of hiding it.
  */
-export function stampedPlacements(view: PlanView, isStamped: StampPredicate): Located[] {
+export function ownedPlacements(view: PlanView, isOurs: PlacementPredicate): Located[] {
   const found: Located[] = [];
   for (const entity of view.entities) {
     const programs = programsFor(view, entity);
-    if (programs.length === 0 || !programs.every((p) => isStamped(p.name))) continue;
+    if (programs.length === 0 || !programs.every((p) => isOurs(p, entity))) continue;
     found.push({ entity, program: programs[0], date: corosDayToLocalDate(entity.happenDay) });
   }
   return found;
 }
 
 /**
- * Entities whose link key resolves to BOTH stamped and unstamped programs.
- * Never actioned; always reported, because such an entity may be residue of
- * ours that cannot be safely removed.
+ * Entities whose link key resolves to BOTH ours and not-ours. Never actioned;
+ * always reported, because such an entity may be residue of ours that cannot be
+ * safely removed.
  */
-export function stampAmbiguities(view: PlanView, isStamped: StampPredicate): Located[] {
+export function ownershipAmbiguities(view: PlanView, isOurs: PlacementPredicate): Located[] {
   const out: Located[] = [];
   for (const entity of view.entities) {
     const programs = programsFor(view, entity);
     if (programs.length < 2) continue;
-    if (!programs.some((p) => isStamped(p.name))) continue;
-    if (!programs.some((p) => !isStamped(p.name))) continue;
+    if (!programs.some((p) => isOurs(p, entity))) continue;
+    if (!programs.some((p) => !isOurs(p, entity))) continue;
     out.push({ entity, program: programs[0], date: corosDayToLocalDate(entity.happenDay) });
   }
   return out;
+}
+
+/** Every placement in this plan whose program carries the caller's stamp. */
+export function stampedPlacements(view: PlanView, isStamped: StampPredicate): Located[] {
+  return ownedPlacements(view, (p) => isStamped(p.name));
+}
+
+/** Entities whose link key resolves to BOTH stamped and unstamped programs. */
+export function stampAmbiguities(view: PlanView, isStamped: StampPredicate): Located[] {
+  return ownershipAmbiguities(view, (p) => isStamped(p.name));
 }
 
 /** Everything in this plan the caller did NOT stamp — never touchable. */
@@ -1177,10 +1207,10 @@ export function stampOf(found: Located): string {
  * miss an entity that classification got wrong, and the whole point of this
  * guard is to be the last line when classification is wrong.
  */
-export function deleteWouldBeAmbiguous(
+export function writeAddressClash(
   view: PlanView,
   target: Located,
-  isStamped: StampPredicate,
+  isOurs: PlacementPredicate,
 ): Located | undefined {
   const key = (entity: RawCorosEntity): string =>
     [String(entity.idInPlan), String(entity.planProgramId ?? entity.idInPlan)].join("|");
@@ -1189,9 +1219,18 @@ export function deleteWouldBeAmbiguous(
   if (!other) return undefined;
   return {
     entity: other,
-    program: programsFor(view, other).find((p) => !isStamped(p.name)),
+    program: programsFor(view, other).find((p) => !isOurs(p, other)),
     date: corosDayToLocalDate(other.happenDay),
   };
+}
+
+/** `writeAddressClash` for a caller that proves ownership by stamp. */
+export function deleteWouldBeAmbiguous(
+  view: PlanView,
+  target: Located,
+  isStamped: StampPredicate,
+): Located | undefined {
+  return writeAddressClash(view, target, (p) => isStamped(p.name));
 }
 
 /**

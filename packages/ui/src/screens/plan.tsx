@@ -272,34 +272,37 @@ function WorkoutDetail({
             a lift is app-only whether or not its date agrees with anything.
             Silent whenever the whole session crosses — the field is absent. */}
         <WatchCoverageNote view={w.watchCoverage} />
-        {corosDisagrees ? (
-          <Banner kind={syncView === "needs_attention" || syncView === "sync_issue" ? "warn" : "info"}>
-            {/* `lastVerifiedCorosDate` is "" when COROS has never seen this
-                row at all — every coach-created session. Every dated branch
-                below formats that date, so the app told you your watch "still
-                has this on undefined, undefined NaN" (2026-08-16). A session
-                that was never on the watch needs its own sentence, not a
-                move-that-didn't-land sentence with a hole in it — and when the
-                note above has already given the reason, this one says only the
-                part the note doesn't: that Calendar has it and COROS doesn't. */}
-            {neverOnWatch
-              ? "This lives in Run Garden and your Google Calendar. COROS has never been given it."
-              : syncView === "needs_attention"
-                ? `COROS has this on ${formatDayLong(w.lastVerifiedCorosDate)}; Run Garden has ${formatDayLong(w.effectiveDate)}.`
-                : syncView === "calendar_only"
-                  ? `Your COROS watch still has this on ${formatDayLong(w.lastVerifiedCorosDate)} — this move hasn't been written to COROS.`
-                  : syncView === "sync_issue"
-                    ? `The last update to COROS failed — your watch still shows ${formatDayLong(w.lastVerifiedCorosDate)}.`
-                    : `COROS still shows ${formatDayLong(w.lastVerifiedCorosDate)} — the update is on its way.`}
-          </Banner>
-        ) : null}
-        {/* …AND WHAT TO DO ABOUT IT — last of the three, because it is the
-            conclusion: the note above says what the watch can carry, the banner
-            says what COROS currently holds, and this says who has to act and
-            what the one thing is. Absent whenever the answer is "nothing", so a
-            synced session renders exactly what it rendered before this existed. */}
+        {/* WHAT COROS HOLDS, AND WHAT TO DO ABOUT IT — one block, because they
+            are one situation. The dated sentence and the to-do used to be two
+            adjacent banners saying "COROS has never been given it." and "This
+            hasn't reached your COROS watch yet.", which is two alerts for one
+            fact. `SyncActionNote` renders the reason alone when there is no
+            action (a past session's watch copy is history), and nothing at all
+            when there is neither — so a synced session is exactly as quiet as
+            it was before any of this existed. */}
         <SyncActionNote
           action={w.syncAction}
+          kind={syncView === "needs_attention" || syncView === "sync_issue" ? "warn" : "info"}
+          reason={
+            corosDisagrees
+              ? /* `lastVerifiedCorosDate` is "" when COROS has never seen this
+                   row at all — every coach-created session. Every dated branch
+                   below formats that date, so the app told you your watch "still
+                   has this on undefined, undefined NaN" (2026-08-16). */
+                neverOnWatch
+                ? "This lives in Run Garden and your Google Calendar. COROS has never been given it."
+                : syncView === "needs_attention"
+                  ? `COROS has this on ${formatDayLong(w.lastVerifiedCorosDate)}; Run Garden has ${formatDayLong(w.effectiveDate)}.`
+                  : syncView === "calendar_only"
+                    ? `Your COROS watch still has this on ${formatDayLong(w.lastVerifiedCorosDate)} — this move hasn't been written to COROS.`
+                    : syncView === "sync_issue"
+                      ? `The last update to COROS failed — your watch still shows ${formatDayLong(w.lastVerifiedCorosDate)}.`
+                      : `COROS still shows ${formatDayLong(w.lastVerifiedCorosDate)} — the update is on its way.`
+              : undefined
+          }
+          /* The coverage note above is the reason for a wire limit, in full and
+             by name; the action must not list the same four movements again. */
+          reasonShown={!!w.watchCoverage}
           settingsLink={<Link to="/settings">Open Settings</Link>}
         />
         <div className="hero-durations">

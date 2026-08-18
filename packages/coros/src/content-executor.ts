@@ -33,6 +33,63 @@
  * "recreate"`) is delete-then-create through the two already-proven executors,
  * and it only ever runs when ownership WAS proven (or the workout is provably
  * absent) — never on a maybe.
+ *
+ * ─────────────────────────────────────────────────────────────────────────────
+ * THE SECOND PROOF, and why the first one could not reach most of the plan.
+ *
+ * The stamp proves AUTHORSHIP: only this app emits that exact program name, so
+ * a program carrying it is one we wrote. Sound, and useless for the sessions
+ * that matter most — the athlete's plan is mostly IMPORTED. COROS authored those
+ * workouts; the coach only EASES them. They carry no stamp because we never
+ * created them, so `enqueueContentConvergence` refused every one of them with
+ * `no_recorded_stamp` and the majority of the plan stayed permanently diverged.
+ * That was the athlete's actual complaint, and the stamp could never fix it.
+ *
+ * A stamp is not the only way to answer "is the thing at this address still the
+ * thing I think it is". For an imported row the app already recorded what it
+ * SAW, and two of those records are durable identities rather than guesses. So
+ * the second proof is a RE-READ, and it has three parts, all required:
+ *
+ *   1. ADDRESS — the plan holds a placement at the recorded `idInPlan`;
+ *   2. IDENTITY — its program carries the recorded COROS `program.id`;
+ *   3. CONTENT — its `corosProgramFingerprint` equals the recorded one;
+ *   and (4) the placement is on the recorded DAY, checked by the caller.
+ *
+ * WHY THAT IS AS SAFE AS THE STAMP. The danger the stamp exists to stop is
+ * `idInPlan` RECYCLING: COROS frees a slot after a delete and re-uses it, so the
+ * number recorded in March can name a workout the athlete built by hand in
+ * August. Part 2 is what stops it, and it stops it more directly than a stamp
+ * does. `program.id` is issued by COROS, globally unique, and belongs to the
+ * program OBJECT: a recycled slot is a different object and carries a different
+ * id. Nothing the athlete can do in the COROS app forges one. Compare the stamp,
+ * which is a NAME WE CHOSE and whose uniqueness we have to maintain ourselves —
+ * and which a rename in COROS silently destroys, where an id survives it. On
+ * every axis the stamp guards, the id guards at least as well.
+ *
+ * Part 3 then adds what the stamp cannot: a stamp match says nothing about
+ * content, so the stamp path knowingly overwrites a workout whose body changed
+ * on the wire after we wrote it. Here the fingerprint is the optimistic-
+ * concurrency claim — "the wire still holds what the app last observed at this
+ * address" — and a mismatch refuses rather than clobbers.
+ *
+ * NEITHER PART IS USED ALONE. Fingerprints are not unique inside a plan (a week
+ * with two identical easy runs has two identical fingerprints), so content can
+ * confirm but never locate. And an id without a content check would happily
+ * overwrite a change made between the app's last read and this write. The
+ * address plus the day locates; the id proves the object; the fingerprint proves
+ * the moment. All four, or nothing is written.
+ *
+ * `planProgramId` IS NOT ONE OF THE PARTS, deliberately — see `isOursImported`
+ * for the reason: `planned_workouts.source_program_id` answers two different
+ * questions depending on whether the row was imported or created, and the write
+ * is addressed at the placement this proof LOCATED rather than at any remembered
+ * number anyway.
+ *
+ * WHAT THE SECOND PROOF DOES NOT BUY. It never authorizes a `recreate` fallback.
+ * The stamp path may re-create a workout it wrote and lost; an imported workout
+ * that has vanished from a COROS-authored plan vanished for a reason we do not
+ * own, and putting it back would overrule the athlete inside their own plan at a
+ * brand-new `idInPlan`. `not_found` is terminal here, always.
  */
 
 import type { CoachSession, StudioSession } from "@rg/domain";
@@ -48,34 +105,29 @@ import {
   buildProgramFor,
   createWorkout,
   deleteWorkout,
-  deleteWouldBeAmbiguous,
   describeForeignForConsole,
   describeForeignForReport,
   errText,
   isRunSession,
   missingPaceTargets,
   observationSpan,
+  ownedPlacements,
+  ownershipAmbiguities,
   planView,
+  programsFor,
   readFullSpan,
-  stampAmbiguities,
   stampedPlacements,
+  writeAddressClash,
   type CreateResult,
   type Located,
-  type StampPredicate,
+  type PlacementPredicate,
 } from "./create-executor.js";
 
-/**
- * What the caller recorded when the workout was pushed. Every field is a
- * *claim*: the executor re-reads and re-proves all of it before writing.
- * Identical in shape to `DeleteWorkoutTarget`, deliberately — a content update
- * is addressed by the same triple a delete is, and a caller that can address
- * one can address the other.
- */
-export interface UpdateContentTarget {
+/** The three numbers that address a workout, plus the day it sits on. Every one
+ *  of them is a CLAIM the executor re-reads and re-proves before writing. */
+interface AddressedTarget {
   /** COROS calendar day, YYYYMMDD (the wire format, not yyyy-mm-dd). */
   happenDay: string;
-  /** The exact program-name stamp recorded at push time. */
-  name: string;
   /** The idInPlan the server stored it under. A claim, not an identity. */
   idInPlan: string;
   /** The recorded `planProgramId` — third element of the write address. */
@@ -83,6 +135,48 @@ export interface UpdateContentTarget {
   /** The container plan. Nothing outside it is ever read or written. */
   planId: string;
 }
+
+/**
+ * A workout THIS APP CREATED, proven by the program-name stamp it left.
+ * Identical in shape to `DeleteWorkoutTarget`, deliberately — a content update
+ * is addressed by the same triple a delete is, and a caller that can address
+ * one can address the other.
+ */
+export interface StampProvenTarget extends AddressedTarget {
+  /** The exact program-name stamp recorded at push time. */
+  name: string;
+  importedFingerprint?: undefined;
+}
+
+/**
+ * A workout COROS AUTHORED and this app imported, proven by re-reading it —
+ * see THE SECOND PROOF at the top of this file. There is no `name`, because
+ * there is no stamp: we did not write this program and never claimed to.
+ */
+export interface ImportProvenTarget extends AddressedTarget {
+  name?: undefined;
+  /**
+   * COROS'S OWN ID FOR THE PROGRAM — `planned_workouts.source_program_id` as an
+   * IMPORT wrote it (`normalize.ts` stores `program.id`, an 18-digit
+   * server-issued identifier). This is the identity anchor: a recycled slot
+   * holds a different program OBJECT, so it carries a different id, and no
+   * amount of content coincidence can forge one.
+   */
+  importedProgramId: string;
+  /**
+   * `corosProgramFingerprint` of the program AS THE APP LAST OBSERVED IT —
+   * `planned_workouts.source_content_fingerprint`. The identity above says it is
+   * the same program; this says nothing has changed on the wire since the app
+   * last looked, which is the optimistic-concurrency half.
+   */
+  importedFingerprint: string;
+}
+
+/**
+ * Where the caller believes the workout is, and how it can prove the thing
+ * there is the thing it means. Exactly one proof, chosen by which field is set.
+ */
+export type UpdateContentTarget = StampProvenTarget | ImportProvenTarget;
 
 export interface UpdateWorkoutContentSpec {
   /** Where the caller believes our workout is, and under what stamp. */
@@ -95,13 +189,17 @@ export interface UpdateWorkoutContentSpec {
    */
   session: StudioSession | CoachSession;
   /**
-   * The stamp the rewritten program carries. Defaults to `target.name` — a
-   * pure content change keeps the workout's identity.
+   * The name the rewritten program carries.
    *
-   * Pass it only for a deliberate RENAME (the coach's stamp is
-   * `${title} — ${date}`, so an eased session whose title changed has a new
-   * one). A rename is refused if anything in the plan already carries the new
-   * stamp: two placements under one stamp make every later delete ambiguous.
+   * STAMP-PROVEN target: defaults to `target.name` — a pure content change keeps
+   * the workout's identity. Pass it only for a deliberate RENAME (the coach's
+   * stamp is `${title} — ${date}`, so an eased session whose title changed has a
+   * new one). A rename is refused if anything in the plan already carries the
+   * new stamp: two placements under one stamp make every later delete ambiguous.
+   *
+   * IMPORT-PROVEN target: REQUIRED, and it is a title, not a stamp — see
+   * `updateWorkoutContent`'s rename section for why we do not stamp a session
+   * COROS authored.
    */
   name?: string;
   /** Threshold pace (sec/km) anchoring the new session's pace targets. */
@@ -120,10 +218,12 @@ export type UpdateContentReason =
    * Nothing was written. */
   | "not_found"
   /** The recorded address is occupied, but not by a workout provably ours on
-   * the recorded day. Drift: never overwritten. */
+   * the recorded day. Drift: never overwritten. Under the IMPORTED proof this
+   * is also how "the address holds different content than we imported" refuses
+   * — the athlete edited it in COROS, or the slot was recycled. */
   | "stamp_mismatch"
-  /** Our stamp is in the plan, on another day — the athlete moved it in COROS.
-   * `serverHappenDay` says where. Nothing was written. */
+  /** The workout is in the plan, on another day — the athlete moved it in
+   * COROS. `serverHappenDay` says where. Nothing was written. */
   | "moved"
   /** Two placements carry the stamp, the link key resolves to both our program
    * and one we did not write, or the write address is shared with another
@@ -280,13 +380,14 @@ export function rewriteProgramContent(
  * Sequence — the create/delete invariants, applied to an overwrite:
  *   1. build the new program FIRST (schema + catalog validation before any wire
  *      call, so a bad session can never reach the account);
- *   2. plan-wide sweep → re-prove ownership by stamp on the recorded day, and
- *      refuse every ambiguity (shared stamp, mixed link key, shared address);
+ *   2. plan-wide sweep → re-prove ownership on the recorded day, by whichever
+ *      proof the target carries (stamp, or the imported re-read), and refuse
+ *      every ambiguity (two matches, mixed link key, shared write address);
  *   3. calculate-then-write, and if the post-calculate program is already what
  *      the address holds, send NOTHING (`already_current`);
  *   4. `status: 2` update, addressed at the placement the proof found;
- *   5. read-after-write: the placement must carry the new stamp on the same day
- *      AND its fingerprint must equal what we put on the wire;
+ *   5. read-after-write: the placement must still be on the same day AND its
+ *      fingerprint must equal what we put on the wire;
  *   6. return the server's own address plus the wire fingerprint the caller
  *      must stamp.
  *
@@ -302,11 +403,82 @@ export async function updateWorkoutContent(
   const verbose = opts.verbose === true;
   const target = spec.target;
   const date = corosDayToLocalDate(Number(target.happenDay));
-  const newName = spec.name ?? target.name;
-  /** Ownership: the stamp recorded at push time, and nothing else. */
-  const isOurs: StampPredicate = (name) => name === target.name;
-  /** After the write it is the NEW stamp that identifies the workout. */
-  const isNewStamp: StampPredicate = (name) => name === newName;
+  /** Which of the two proofs this target carries — see THE SECOND PROOF above. */
+  const imported = target.importedFingerprint !== undefined;
+  const newName: string | undefined = spec.name ?? target.name;
+  /**
+   * Does this placement carry the recorded content, at the recorded address?
+   * The imported proof, as one predicate: `idInPlan` locates and the fingerprint
+   * confirms, and BOTH have to hold. Never used alone — the caller of
+   * `ownedPlacements` still requires the recorded DAY as well.
+   *
+   * `target.programId` IS DELIBERATELY NOT PART OF THIS TEST, and that is not a
+   * relaxation. Two reasons, and the first is a bug in the column:
+   *
+   *  1. `planned_workouts.source_program_id` answers two different questions
+   *     depending on where the row came from. An import stores COROS's own
+   *     `program.id` (`normalize.ts`: `program?.id`) — an 18-digit server id. A
+   *     create stores `planProgramId ?? idInPlan` (the delete triple's third
+   *     element), which on the athlete's live account is the literal string
+   *     "42". Gating on it would compare an 18-digit program id against a
+   *     two-digit slot number and refuse every imported row as `not_found`.
+   *  2. It was never load-bearing for identity anyway. The STAMP proof is name
+   *     plus day and ignores the address entirely — `stampedPlacements` sweeps
+   *     the whole plan — so `idInPlan` + fingerprint + day is strictly MORE
+   *     address discrimination than the shipped proof uses, not less. And the
+   *     write is addressed at `addressOf(found)`, the server's own ids from the
+   *     placement this proof located, never at the remembered claim; the danger
+   *     a shared address poses is caught by `writeAddressClash` below, which
+   *     reads the located entity rather than the caller's memory.
+   */
+  const importClaim = target.importedFingerprint !== undefined ? target : undefined;
+  const isOursImported: PlacementPredicate = (program, entity) =>
+    importClaim !== undefined &&
+    String(entity.idInPlan) === importClaim.idInPlan &&
+    String(program.id ?? "") === importClaim.importedProgramId &&
+    corosProgramFingerprint(program) === importClaim.importedFingerprint;
+  /** Ownership: the stamp recorded at push time, or the imported re-read. */
+  const isOurs: PlacementPredicate = imported
+    ? isOursImported
+    : (program): boolean => program.name === target.name;
+  /**
+   * Where the workout is expected to be AFTER the write.
+   *
+   * Stamp-proven: the NEW stamp identifies it (an ease can rename it).
+   * Import-proven: the address does — the fingerprint that identified it before
+   * the write is precisely the thing the write replaced, so re-proving with it
+   * would look for the workout we just deliberately changed. The address is
+   * unmoved by a `status: 2` in-place rewrite, which is what makes it the right
+   * anchor, and the fingerprint comparison below is what actually verifies.
+   */
+  const isOursAfter: PlacementPredicate = imported
+    ? (_program, entity): boolean => String(entity.idInPlan) === target.idInPlan
+    : (program): boolean => program.name === newName;
+
+  if (newName === undefined) {
+    // Only reachable for an import-proven target: a stamp-proven rewrite can
+    // default its name to the stamp it is replacing, an imported one has no
+    // stamp to default to, and silently keeping COROS's old title would leave
+    // the watch naming a session the app has renamed.
+    return {
+      ok: false,
+      reason: "error",
+      error: "an import-proven rewrite must be given the name to write; there is no stamp to reuse",
+    };
+  }
+  if (imported && opts.fallback === "recreate") {
+    // Not a caller mistake to route around — a refusal, at the safety core.
+    // Re-creating an imported workout puts a session back into a plan this app
+    // does not own, at a brand-new idInPlan, after the athlete (or COROS) took
+    // it out. See THE SECOND PROOF: `not_found` is terminal for these.
+    return {
+      ok: false,
+      reason: "error",
+      error:
+        "refusing `fallback: recreate` for an import-proven rewrite — this app did not create this" +
+        " workout and must not re-create it inside a COROS-authored plan",
+    };
+  }
 
   if (target.planId === "") {
     return {
@@ -363,8 +535,10 @@ export async function updateWorkoutContent(
     //    the address holds, so this is the only thing standing between a stale
     //    remembered id and someone else's workout.
     const before = planView(await readFullSpan(client, today), target.planId);
+    /** What the proof is called in a refusal the operator has to act on. */
+    const proofName = imported ? "recorded content" : "recorded stamp";
 
-    if (stampAmbiguities(before, isOurs).some((a) => a.date === date)) {
+    if (ownershipAmbiguities(before, isOurs).some((a) => a.date === date)) {
       return {
         ok: false,
         reason: "ambiguous",
@@ -375,24 +549,26 @@ export async function updateWorkoutContent(
       };
     }
 
-    const stamped = stampedPlacements(before, isOurs);
-    if (stamped.length > 1) {
-      // The stamp is what makes ownership decidable; two of them make it
-      // undecidable. `createWorkout` refuses to ever produce this state, so it
-      // means something outside this app duplicated the workout.
+    const ours = ownedPlacements(before, isOurs);
+    if (ours.length > 1) {
+      // The proof is what makes ownership decidable; two matches make it
+      // undecidable. For a stamp: `createWorkout` refuses to ever produce this
+      // state, so it means something outside this app duplicated the workout.
+      // For an import: two entities share one address AND one content, and
+      // nothing observable separates them.
       return {
         ok: false,
         reason: "ambiguous",
         error:
-          `${stamped.length} workouts in plan ${target.planId} carry the recorded stamp` +
-          ` (${stamped.map((f) => f.date).join(", ")}) — refusing to guess which one to rewrite`,
+          `${ours.length} workouts in plan ${target.planId} match the ${proofName}` +
+          ` (${ours.map((f) => f.date).join(", ")}) — refusing to guess which one to rewrite`,
         ...owed,
       };
     }
 
-    const found = stamped.find((f) => f.date === date);
+    const found = ours.find((f) => f.date === date);
     if (!found) {
-      const elsewhere = stamped[0];
+      const elsewhere = ours[0];
       if (elsewhere) {
         // Provably ours, on a day the caller did not ask about. Rewriting it
         // would edit a workout the athlete deliberately moved, and the caller
@@ -402,21 +578,23 @@ export async function updateWorkoutContent(
           reason: "moved",
           serverHappenDay: elsewhere.date,
           error:
-            `the workout carrying this stamp is on ${elsewhere.date}, not ${date} — it was moved` +
-            " in COROS; re-address the update (or move it back) rather than rewriting blind",
+            `the workout matching the ${proofName} is on ${elsewhere.date}, not ${date} — it was` +
+            " moved in COROS; re-address the update (or move it back) rather than rewriting blind",
           ...owed,
         };
       }
       // Nothing of ours on the day. Is the recorded address occupied?
+      // Keyed the same way the ownership predicate above is keyed, so a refusal
+      // and a proof never disagree about what "the recorded address" means.
       const atAddress = before.entities.find(
         (e) =>
           String(e.idInPlan) === target.idInPlan &&
-          String(e.planProgramId ?? e.idInPlan) === target.programId,
+          (imported || String(e.planProgramId ?? e.idInPlan) === target.programId),
       );
       if (atAddress) {
         const occupant: Located = {
           entity: atAddress,
-          program: undefined,
+          program: programsFor(before, atAddress)[0],
           date: corosDayToLocalDate(atAddress.happenDay),
         };
         log(`  address occupied by ${describeForLog(occupant, verbose)} — NOT rewritten`);
@@ -424,10 +602,21 @@ export async function updateWorkoutContent(
           ok: false,
           reason: "stamp_mismatch",
           serverHappenDay: occupant.date,
-          error:
-            `idInPlan ${target.idInPlan} in plan ${target.planId} no longer carries the recorded` +
-            ` stamp on ${date} — ${describeForeignForReport(occupant)}; COROS recycles idInPlan` +
-            " slots, so this address is a claim and not an identity. Refusing to overwrite it",
+          // The observed fingerprint is the EVIDENCE for an imported refusal —
+          // "the address holds something other than what we imported" is only
+          // actionable if the operator can see what it holds. It never contains
+          // a title, so it is safe to persist and to report.
+          ...(imported && occupant.program
+            ? { observedFingerprint: corosProgramFingerprint(occupant.program) }
+            : {}),
+          error: imported
+            ? `idInPlan ${target.idInPlan} in plan ${target.planId} no longer holds the workout this` +
+              ` app imported on ${date} — its content has changed (the athlete edited it in COROS,` +
+              " or COROS recycled the slot). The address is a claim and not an identity." +
+              " Refusing to overwrite it"
+            : `idInPlan ${target.idInPlan} in plan ${target.planId} no longer carries the recorded` +
+              ` stamp on ${date} — ${describeForeignForReport(occupant)}; COROS recycles idInPlan` +
+              " slots, so this address is a claim and not an identity. Refusing to overwrite it",
           ...owed,
         };
       }
@@ -459,7 +648,7 @@ export async function updateWorkoutContent(
     // A `status: 2` update is addressed by (planId, idInPlan, planProgramId) —
     // the delete triple exactly — so a shared address is as dangerous here as
     // it is for a delete: the server cannot tell our workout from the other one.
-    const clash = deleteWouldBeAmbiguous(before, found, isOurs);
+    const clash = writeAddressClash(before, found, isOurs);
     if (clash) {
       log(
         `  !! write address idInPlan=${String(entity.idInPlan)} is shared with` +
@@ -476,10 +665,29 @@ export async function updateWorkoutContent(
       };
     }
 
+    // THE NAME AN IMPORTED REWRITE LEAVES IS A TITLE, NOT A STAMP — and the
+    // stamp-uniqueness guard below is deliberately not applied to it.
+    //
+    // We do not stamp a session COROS authored. The stamp is an authorship
+    // claim ("only this app emits this exact name"), and putting one on a
+    // workout inside the athlete's own COROS plan would assert a fact that is
+    // not true, rename the session in the COROS app and on the watch face, and
+    // make the next import strip a name it should never have had to see. What
+    // goes on the wire is the app's plain session title, which is exactly what
+    // convergence means: the watch says what the app says.
+    //
+    // Uniqueness is not needed for it, because nothing's ownership keys on it —
+    // the imported proof reads the address and the fingerprint, never the name.
+    // Requiring it would refuse the ordinary COROS plan, which repeats "Easy
+    // Run" all week. The one collision that could matter is a title that is
+    // character-for-character a coach STAMP (`${title} — ${date}`); that would
+    // make the coach row's own next write refuse `ambiguous`, which is the
+    // fail-safe direction, not a wrong write.
+    //
     // A rename must not produce two placements under one stamp: that is the
     // state `createWorkout` refuses to create and `deleteWorkout` cannot act on.
-    if (newName !== target.name) {
-      const takers = stampedPlacements(before, isNewStamp);
+    if (!imported && newName !== target.name) {
+      const takers = stampedPlacements(before, (name) => name === newName);
       if (takers.length > 0) {
         return {
           ok: false,
@@ -550,8 +758,8 @@ export async function updateWorkoutContent(
     //    are four requests on a path that runs once per approved change.
     const after = planView(await readFullSpan(client, today), planId);
     const now =
-      stampedPlacements(after, isNewStamp).find((f) => f.date === date) ??
-      stampedPlacements(after, isOurs).find((f) => f.date === date);
+      ownedPlacements(after, isOursAfter).find((f) => f.date === date) ??
+      ownedPlacements(after, isOurs).find((f) => f.date === date);
     const observedFingerprint = now?.program ? corosProgramFingerprint(now.program) : undefined;
     const observedIds = now ? addressOf(now, planId) : ids;
 
@@ -703,6 +911,18 @@ async function deleteThenCreate(
 ): Promise<UpdateContentResult> {
   const { target } = spec;
   const { today, log, verbose, newName, owed } = ctx;
+  if (target.name === undefined) {
+    // Structurally unreachable — `updateWorkoutContent` refuses `recreate` for
+    // an import-proven target before it reads anything — and stated rather than
+    // asserted, because `deleteWorkout` is authorized BY THE STAMP and there is
+    // no honest value to pass it here.
+    return {
+      ok: false,
+      reason: "error",
+      error: "delete-then-create needs a stamp to authorize the delete; an imported target has none",
+      ...owed,
+    };
+  }
 
   const del = await deleteWorkout(
     client,

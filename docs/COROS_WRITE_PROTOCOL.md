@@ -71,10 +71,10 @@ an identity. Steps:
 
 1. **Build first.** Session schema + exercise catalog are validated before any
    wire call; a session the builders refuse costs zero requests.
-2. **Re-prove ownership** from a plan-wide sweep, by program-name stamp on the
-   recorded day — exactly as `deleteWorkout` proves it — and refuse every
-   ambiguity: two placements under the stamp, a link key resolving to both our
-   program and one we did not write, or a write address (planId / idInPlan /
+2. **Re-prove ownership** from a plan-wide sweep, on the recorded day, by
+   [whichever of the two proofs](#two-ownership-proofs) the target carries — and
+   refuse every ambiguity: two matching placements, a link key resolving to both
+   our program and one we did not write, or a write address (planId / idInPlan /
    planProgramId) shared with another entity of the plan.
 3. **Write to the PROVEN address**, not the recorded one (a live account was
    observed renumbering on create); the result reports the address it used so
@@ -82,10 +82,13 @@ an identity. Steps:
 4. **Calculate-then-write**, and if the post-calculate program already equals
    what the address holds, send nothing (`already_current`) — the call is safe
    on every apply.
-5. **Read-after-write**: the new stamp on the same day AND a program fingerprint
-   equal to what was put on the wire. A stamp match alone is not verification;
-   the failure this verb exists for was a workout whose name was right and whose
-   content was months stale.
+5. **Read-after-write**: the placement still on the same day AND a program
+   fingerprint equal to what was put on the wire. A stamp match alone is not
+   verification; the failure this verb exists for was a workout whose name was
+   right and whose content was months stale. (Stamp-proven targets re-locate by
+   the NEW stamp; import-proven ones re-locate by the address, because the
+   fingerprint that identified them beforehand is precisely what the write
+   replaced.)
 
 Refusals, none of which send a byte: `stamp_mismatch` (the address holds
 something not provably ours), `not_found` (gone from COROS), `moved` (our stamp
@@ -109,6 +112,49 @@ opt-in and the result reports `pathUsed: "delete_and_create"`.
 `/program/calculate`). Callers must stamp it: an app-side fingerprint of an
 eased session describes a program that was never written, and the move path's
 content guard reads that as `content_changed`.
+
+### Two ownership proofs
+
+The stamp proves **authorship** — only this app emits that exact program name —
+and so it exists only for workouts this app CREATED. The athlete's plan is
+mostly **imported**: COROS authored those workouts and the coach only eases
+them, so none of them carries a stamp and every convergence used to refuse them
+`no_recorded_stamp`. The app could rewrite the sessions it invented and none of
+the ones the athlete actually follows.
+
+| | stamp-proven | import-proven |
+|---|---|---|
+| target field | `name` | `importedProgramId` + `importedFingerprint` |
+| locates by | the stamp, plan-wide | the recorded `idInPlan` |
+| identity | the program name we wrote | COROS's own `program.id` |
+| content check | none | recorded `corosProgramFingerprint` must match |
+| day | must match | must match |
+| leaves behind | a new stamp (`${title} — ${date}`) | the plain session title |
+| `fallback: "recreate"` | allowed | **refused outright** |
+
+Both are re-read from a fresh plan-wide sweep before a byte is written, and both
+refuse in the same vocabulary. The import proof is as safe as the stamp for the
+danger the stamp exists to stop: a recycled `idInPlan` holds a different program
+OBJECT, so it carries a different server-issued `program.id`, which nothing the
+athlete can do in the COROS app forges. It is stricter in one direction — a
+stamp match says nothing about content, while a fingerprint mismatch here
+refuses rather than clobbers — and it deliberately leaves **no stamp**, because
+the app does not claim authorship of a workout COROS wrote and a stamp would
+rename the session inside the athlete's own plan.
+
+`planProgramId` is **not** part of the import proof.
+`planned_workouts.source_program_id` answers two different questions depending
+on provenance: an import stores COROS's `program.id` (18 digits), a create
+stores `planProgramId ?? idInPlan` (the delete triple's third element — "42" on
+the live account). The write is addressed at the placement the proof LOCATED
+anyway, never at a remembered number, and the shared-address danger is caught by
+`writeAddressClash` reading the located entity.
+
+An imported session is only ever rewritten when it carries an **open `content`
+intent** — an edit the athlete approved. It is never unpushed: a delete would
+make it absent upstream, and import rule 8 then archives the athlete's own
+approved session out of the app two reads later, turning a divergence into a
+deletion.
 
 ## Fallback: remove-and-add (insert-before-delete)
 

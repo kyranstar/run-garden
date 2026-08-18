@@ -32,13 +32,24 @@ const DATE = "2026-09-14";
 /**
  * Every column a `CoachSession` decides. The list is the contract: an ease and
  * an insert of the same session must agree on all of it.
+ *
+ * `sourceContentFingerprint` LEFT THIS LIST (2026-08-17), and the removal is the
+ * fix rather than a concession. That column records the UPSTREAM copy as the app
+ * last observed it — import writes it from the snapshot and the write consumer
+ * re-stamps it from the wire — so a session does not decide it and an ease must
+ * not touch it. It was in `sessionColumns`, which meant every approved ease
+ * overwrote the record of what COROS holds with a hash of the local edit; the
+ * second ownership proof re-reads exactly that column before rewriting an
+ * imported session on the watch, so an eased row destroyed its own evidence at
+ * the moment it created the need for it. An `add` still seeds the column at
+ * insert (it is NOT NULL, and a new row has no upstream copy yet), which is why
+ * a fresh insert and an eased row legitimately differ on it now.
  */
 const SESSION_COLUMNS = [
   "title",
   "category",
   "qualitySubtype",
   "sport",
-  "sourceContentFingerprint",
   "sourceEstimatedDurationSeconds",
   "fallbackEstimatedDurationSeconds",
   "calendarBlockDurationSeconds",

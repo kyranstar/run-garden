@@ -8,7 +8,13 @@
  */
 import { describe, expect, it } from "vitest";
 import { sessionNoun } from "@rg/analytics";
-import { countNoun, formatMinutes, isTopDialog } from "../src/components.js";
+import {
+  countNoun,
+  formatMinutes,
+  isTopDialog,
+  syncActionCopy,
+  syncActionShort,
+} from "../src/components.js";
 
 describe("formatMinutes (M5)", () => {
   it("renders null/undefined as an em dash", () => {
@@ -71,5 +77,66 @@ describe("isTopDialog (M17)", () => {
     const a = Symbol("a");
     const stranger = Symbol("stranger");
     expect(isTopDialog([a], stranger)).toBe(false);
+  });
+});
+
+/**
+ * THE WORDS FOR EVERY ACTION. `syncActionCopy` is a total function over the
+ * code union, so the compiler already forces a case per code — what it cannot
+ * force is that the words match the AGENT, and that is the whole design: an
+ * `app` or `nobody` action must never carry an instruction, because there is
+ * nothing for the athlete to do and a sentence in the imperative is how a
+ * receipt comes to read as a chore.
+ */
+describe("syncActionCopy (2026-08-17)", () => {
+  const CODES = [
+    ["sending", "app"],
+    ["removing_from_watch", "app"],
+    ["pace_targets_pending", "app"],
+    ["connect_coros", "athlete"],
+    ["enable_coros_writes", "athlete"],
+    ["retry_write", "athlete"],
+    ["choose_a_date", "athlete"],
+    ["make_it_measurable", "athlete"],
+    ["name_it_on_the_watch", "athlete"],
+    ["lives_here", "nobody"],
+    ["watch_keeps_old_copy", "nobody"],
+  ] as const;
+
+  it("gives an instruction to the athlete and to nobody else", () => {
+    for (const [code, agent] of CODES) {
+      const { says, todo } = syncActionCopy({ agent, code, names: ["Nordic curl"] });
+      expect(says.length, `${code} says nothing`).toBeGreaterThan(10);
+      if (agent === "athlete") expect(todo, `${code} tells the athlete nothing to do`).toBeTruthy();
+      else expect(todo, `${code} hands work to ${agent}`).toBeNull();
+    }
+  });
+
+  it("never words a boundary as a failure", () => {
+    // "Not on your watch" read as a bug report for months. The two states
+    // nobody can fix must not contain the vocabulary of breakage.
+    for (const code of ["lives_here", "watch_keeps_old_copy"] as const) {
+      const { says } = syncActionCopy({ agent: "nobody", code });
+      expect(says).not.toMatch(/fail|error|couldn't|broken|problem/i);
+    }
+  });
+
+  it("names the movements, because the names are the actionable part", () => {
+    const { says, todo } = syncActionCopy({
+      agent: "athlete",
+      code: "name_it_on_the_watch",
+      names: ["Nordic curl", "Copenhagen plank"],
+    });
+    expect(says).toContain("Nordic curl and Copenhagen plank");
+    expect(todo).toMatch(/COROS exercise library/);
+  });
+
+  it("shows only the athlete's half in the short form a card can spare", () => {
+    expect(syncActionShort({ agent: "app", code: "sending" })).toBeNull();
+    expect(syncActionShort({ agent: "nobody", code: "watch_keeps_old_copy" })).toBeNull();
+    expect(syncActionShort({ agent: "athlete", code: "retry_write", control: "retry" })).toBe(
+      "Send it to COROS.",
+    );
+    expect(syncActionShort(undefined)).toBeNull();
   });
 });

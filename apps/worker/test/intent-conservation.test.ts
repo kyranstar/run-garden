@@ -298,6 +298,13 @@ const NOT_SESSION_DECIDED = new Set([
   "sourceProgramId",
   "sourceIdInPlan",
   "sourceVersion",
+  // Records the UPSTREAM copy as the app last observed it — written by import
+  // and re-stamped by the write consumer from the wire, never decided by a
+  // session (2026-08-17). It used to be in `sessionColumns`, so an ease
+  // overwrote what COROS holds with a hash of the local edit and destroyed the
+  // evidence the second ownership proof re-reads. An `add` still SEEDS it at
+  // insert, which is the only reason a fresh insert and an eased row differ.
+  "sourceContentFingerprint",
   "originalPlanDate",
   "lastVerifiedCorosDate",
   "effectiveDate",

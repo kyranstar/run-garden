@@ -27,7 +27,7 @@ import { chunkIds, chunkedInsert, type Db } from "./db.js";
 import { separateDayCollisions, windowTimeFor } from "./day-placement.js";
 import { recordedStampFor, stampName } from "./coros-stamp.js";
 import { applyMove } from "./jobs.js";
-import { recordIntent } from "./sync-intents.js";
+import { openIntentFor, recordIntent } from "./sync-intents.js";
 import { resolveRaceConflict } from "./race-conflict.js";
 import { isLoosePlan } from "./coach-plans.js";
 
@@ -144,6 +144,26 @@ function plannedDistanceMeters(session: CoachSession): number | null {
  * `sourceVersion` is deliberately NOT in this list. It records the version of
  * COROS's copy, which a local ease does not change, and `jobs.ts` uses it as a
  * move job's optimistic-concurrency check. Clearing it would blind that check.
+ *
+ * NEITHER IS `sourceContentFingerprint`, AND FOR THE SAME REASON — which took
+ * the imported-convergence work to notice (2026-08-17). That column means "the
+ * UPSTREAM copy as the app last observed it": import writes it from the
+ * snapshot, and the write consumer re-stamps it with the wire's own fingerprint
+ * after a verified push. An `ease` changes the APP's copy and by definition not
+ * COROS's, so writing `fingerprint(session)` here put a hash of the local edit
+ * into a column that is a statement about the remote one.
+ *
+ * That was not cosmetic. It is the fact the second ownership proof re-reads
+ * (`ownershipProofFor`), so every eased imported row destroyed its own evidence
+ * at the moment it created the need for it — the two live rows of 17 and 22 Aug
+ * hold a `coach-…` hash of the eased session where the import's wire fingerprint
+ * should be. It also made import rule 7's drift test permanently true for eased
+ * rows, which only ever went unnoticed because the content-intent exception is
+ * checked first.
+ *
+ * `insertSession` still seeds the column (it is NOT NULL and a brand-new row has
+ * no upstream copy yet); the create's verify replaces the seed with the wire's
+ * own fingerprint the moment one exists.
  */
 function sessionColumns(session: CoachSession) {
   const body = session.lift ?? session.mobility;
@@ -152,7 +172,6 @@ function sessionColumns(session: CoachSession) {
     category: session.category,
     qualitySubtype: null,
     sport: sessionSport(session),
-    sourceContentFingerprint: fingerprint(session),
     sourceEstimatedDurationSeconds: null,
     // The coach's own stated duration IS the estimate — without this every
     // consumer fell back to a fictitious 45 minutes (audit#2 #15).
@@ -351,6 +370,11 @@ async function insertSession(
       updatedAt: now,
       // Everything the SESSION decides — the same writer `ease` uses.
       ...sessionColumns(session),
+      // The SEED for a column that is otherwise only ever written by something
+      // that has observed COROS. A brand-new row has no upstream copy, so the
+      // app's own hash is the only honest placeholder; the create's verify
+      // replaces it with the wire's fingerprint as soon as there is one.
+      sourceContentFingerprint: fingerprint(session),
     })
     .onConflictDoNothing();
 
@@ -438,9 +462,102 @@ export type ConvergeRefusal =
   /** The row has no proven COROS address, so the watch is not holding this
    *  session at all and there is nothing to converge. */
   | "not_on_the_watch"
-  /** COROS holds it, but this account recorded no program-name stamp for it —
-   *  ownership cannot be re-proven, and nothing is written on a maybe. */
-  | "no_recorded_stamp";
+  /** COROS holds it, and NEITHER ownership proof is available: no program-name
+   *  stamp this account wrote, and no recorded import fingerprint to re-read
+   *  against. Ownership cannot be re-proven, and nothing is written on a maybe. */
+  | "no_ownership_proof"
+  /** An imported row with no OPEN CONTENT INTENT. COROS authored this session
+   *  and the athlete has not approved a change to it, so there is nothing the
+   *  app is entitled to write over it — see `ownershipProofFor`. */
+  | "not_athlete_approved"
+  /** An imported row whose new content cannot cross the wire. The rewrite is
+   *  impossible and the unpush is worse than the divergence — see
+   *  `ownershipProofFor`. */
+  | "cannot_unpush_imported"
+  /** An imported row whose `source_content_fingerprint` is a LOCAL hash rather
+   *  than an observation of COROS — the state every ease left behind until
+   *  `sessionColumns` stopped writing that column. One COROS read repairs it
+   *  (import rule 7's content-intent branch); nothing is written until it does. */
+  | "stale_local_fingerprint";
+
+/**
+ * Is this recorded fingerprint an OBSERVATION OF COROS, or a local hash?
+ *
+ * `corosProgramFingerprint` runs its input through `@rg/domain`'s `fingerprint`,
+ * which emits exactly sixteen lowercase hex characters. This module's own
+ * `fingerprint` helper prefixes `coach-`, and that is what an ease used to write
+ * into `source_content_fingerprint` — so the shape is a structural, not
+ * cosmetic, test of where the value came from.
+ *
+ * It is written as a POSITIVE test of the wire's format rather than a negative
+ * test of ours on purpose: it stays correct if the local prefix ever changes,
+ * and it refuses anything it cannot recognise, which is the safe direction.
+ *
+ * It matters because the second ownership proof compares this value against the
+ * wire. A local hash can never match, so a row carrying one cannot converge —
+ * and the census must SAY that rather than promise a rewrite that will come back
+ * `stamp_mismatch`.
+ */
+export function isUpstreamFingerprint(fp: string): boolean {
+  return /^[0-9a-f]{16}$/.test(fp);
+}
+
+/**
+ * HOW THIS ROW PROVES THE WORKOUT AT ITS ADDRESS IS STILL ITS WORKOUT.
+ *
+ * Two proofs, and the second one is why the athlete's plan can converge at all.
+ *
+ *  · BY STAMP — a verified coach create (or a previous rewrite) carrying the
+ *    exact program name we put on the wire. Authorship. Available only for the
+ *    sessions THIS APP created.
+ *
+ *  · BY RE-READ — the address, the day and `source_content_fingerprint` the
+ *    import recorded. Available for the sessions COROS authored, which is most
+ *    of the athlete's plan: the coach eases those, it never creates them, so
+ *    they have no stamp and `no_recorded_stamp` refused every single one of
+ *    them. The rewrite that fixed today's session could not reach the other six
+ *    days of the week. The executor re-reads the address before writing and
+ *    refuses if what is there is not what we imported; see `content-executor.ts`
+ *    THE SECOND PROOF for why that is as safe as the stamp.
+ *
+ * THE STAMP IS TRIED FIRST and its absence is what opens the second door, so a
+ * coach-created row's proof never changes. Nothing about the stamp discipline is
+ * relaxed: this adds a proof, it does not weaken one.
+ *
+ * AN IMPORTED ROW NEEDS ONE MORE THING THAT A COACH ROW DOES NOT: an OPEN
+ * `content` INTENT. A coach-created session is ours by construction — the app is
+ * the only thing that has ever written it, so re-pushing it is only ever
+ * re-asserting what the app already said. A COROS-authored session is not, and
+ * the only thing that entitles the app to overwrite one is the athlete having
+ * approved a change to it. `ease` writes that intent before it enqueues, and the
+ * backfill selects on it; requiring it here means no future caller can converge
+ * an imported session the athlete never touched, however it gets wired up.
+ */
+export type OwnershipProof =
+  | { kind: "stamp"; recordedName: string }
+  | { kind: "imported"; importedProgramId: string; importedFingerprint: string };
+
+export async function ownershipProofFor(
+  db: Db,
+  userId: string,
+  workout: { id: string; sourceProgramId: string | null; sourceContentFingerprint: string },
+): Promise<OwnershipProof | ConvergeRefusal> {
+  const recordedName = await recordedStampFor(db, userId, workout.id);
+  if (recordedName) return { kind: "stamp", recordedName };
+  // Both halves or neither. `source_program_id` is COROS's own `program.id` for
+  // an imported row — the identity — and the fingerprint is what the app last
+  // observed there. A row missing either cannot make the second proof, and a
+  // half-proof is not a proof.
+  if (!workout.sourceProgramId || !workout.sourceContentFingerprint) return "no_ownership_proof";
+  if (!isUpstreamFingerprint(workout.sourceContentFingerprint)) return "stale_local_fingerprint";
+  const intent = await openIntentFor(db, userId, workout.id, "content");
+  if (!intent) return "not_athlete_approved";
+  return {
+    kind: "imported",
+    importedProgramId: workout.sourceProgramId,
+    importedFingerprint: workout.sourceContentFingerprint,
+  };
+}
 
 /** What a convergence attempt did. `kind` names the job actually queued: a
  * rewrite when the new content can cross the wire, an UNPUSH when it cannot. */
@@ -493,8 +610,8 @@ export async function enqueueContentConvergence(
   if (!v.corosWritesEnabled) return { refused: "writes_disabled" };
   const address = watchAddressOf(v.workout);
   if (!address) return { refused: "not_on_the_watch" };
-  const recordedName = await recordedStampFor(db, v.userId, v.workout.id);
-  if (!recordedName) return { refused: "no_recorded_stamp" };
+  const proof = await ownershipProofFor(db, v.userId, v.workout);
+  if (typeof proof === "string") return { refused: proof };
 
   // A stale rewrite must never outlive the change that replaced it: an ease to B
   // queued behind an ease to C would put B on the watch last. Same supersede
@@ -528,6 +645,19 @@ export async function enqueueContentConvergence(
   };
 
   if (!watchPushable(v.session)) {
+    // AN IMPORTED SESSION IS NEVER UNPUSHED, and this is the one place the
+    // "leaving the watch prescribing withdrawn work is indefensible" rule loses.
+    //
+    // Two reasons, and the second is decisive. A `coach_delete_workout` is
+    // authorized by the STAMP and an imported row has none, so there is nothing
+    // honest to put in the payload. And the outcome would be worse than the
+    // divergence: deleting the workout makes it absent from the COROS plan, so
+    // import RULE 8 counts two missing reads and ARCHIVES the athlete's own
+    // eased session out of the app. They approved a change and the session
+    // disappears. The app's copy stays authoritative and visible; the watch
+    // keeps COROS's original until the athlete resolves it, and the report says
+    // exactly that.
+    if (proof.kind === "imported") return { refused: "cannot_unpush_imported" };
     const jobId = `${v.workout.id}-unpush-${to}`;
     await db
       .insert(corosWriteJobs)
@@ -538,7 +668,7 @@ export async function enqueueContentConvergence(
         payload: {
           workoutId: v.workout.id,
           happenDay: address.happenDay,
-          name: recordedName,
+          name: proof.recordedName,
           idInPlan: address.idInPlan,
           programId: address.programId,
           corosPlanId: address.corosPlanId,
@@ -558,12 +688,32 @@ export async function enqueueContentConvergence(
       payload: {
         workoutId: v.workout.id,
         happenDay: address.happenDay,
-        // The stamp the rewrite LEAVES: derived from the session's current
-        // title, because an ease can rename the session and the name is what the
+        // THE NAME THE REWRITE LEAVES, and it is not the same kind of thing in
+        // the two cases.
+        //
+        // Coach-created: the STAMP, derived from the session's current title,
+        // because an ease can rename the session and the name is what the
         // athlete reads on the watch. `coros-stamp.ts` knows this kind names a
         // program, so the new stamp is stripped back off on the way in.
-        name: stampName(v.session.title, address.happenDay),
-        recordedName,
+        //
+        // Imported: the PLAIN TITLE. We do not stamp a session COROS authored —
+        // the stamp is an authorship claim we would be making falsely, it would
+        // rename the session inside the athlete's own COROS plan, and the next
+        // import would have to strip a name it should never have seen. A plain
+        // title needs no stripping (`loadOwnProgramNames` records a mapping only
+        // when the name genuinely EXTENDS the title, so `name === title` is
+        // skipped and `unstampTitle` passes it straight through) and it makes
+        // the watch read what the app reads, which is the point.
+        name:
+          proof.kind === "stamp"
+            ? stampName(v.session.title, address.happenDay)
+            : v.session.title,
+        ...(proof.kind === "stamp"
+          ? { recordedName: proof.recordedName }
+          : {
+              importedProgramId: proof.importedProgramId,
+              importedFingerprint: proof.importedFingerprint,
+            }),
         idInPlan: address.idInPlan,
         programId: address.programId,
         corosPlanId: address.corosPlanId,

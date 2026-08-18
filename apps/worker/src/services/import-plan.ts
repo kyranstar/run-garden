@@ -732,6 +732,26 @@ export async function importPlanSnapshot(
       // Rule 7 exception (audit#3 D1): the coach eased this session and the
       // athlete approved — the app's content wins over the snapshot, every
       // snapshot, or the approval silently un-happens within one pull.
+      //
+      // THE FINGERPRINT STILL MOVES, THOUGH (2026-08-17), and only the
+      // fingerprint. What the app's claim wins is the CONTENT — the title, the
+      // stages, the estimates, all left exactly as the ease wrote them. What
+      // this column records is something else entirely: "the upstream copy as
+      // the app last observed it", and this branch has just observed it. Not
+      // updating it left the column frozen at whatever it held when the ease
+      // landed, which for an eased row is a hash of the LOCAL session
+      // (`sessionColumns` used to write one there), i.e. a statement about
+      // COROS that was never true.
+      //
+      // It is load-bearing now: the second ownership proof re-reads this column
+      // before rewriting an imported session on the watch
+      // (`coach-apply.ts` `ownershipProofFor`). A row whose recorded fingerprint
+      // is a local hash can never match the wire, so it could never converge —
+      // and this is the read that repairs it. Identity is proven separately and
+      // independently, by COROS's own `program.id`, so refreshing the content
+      // record here cannot launder a recycled slot into looking like ours.
+      updates.sourceContentFingerprint = src.contentFingerprint;
+      touched = true;
       stats.unchanged += 1;
     } else if (src.contentFingerprint !== current.sourceContentFingerprint) {
       // Rule 7: content changed upstream — update, preserve time of day.

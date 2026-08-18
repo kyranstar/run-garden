@@ -47,10 +47,20 @@
  *  - IT DOES NOT REWRITE `planned_workouts` CONTENT. The app's copy is the one
  *    that is right; this pushes it. The only row columns it can change are the
  *    ones the write consumer stamps when the wire confirms.
- *  - IT NEVER WRITES ON A MAYBE. No proven address, or no recorded ownership
- *    stamp, and the row is reported skipped — `enqueueContentConvergence` refuses
- *    for the same reasons and this reports its refusal rather than second-guessing
- *    it.
+ *  - IT NEVER WRITES ON A MAYBE. No proven address, or NEITHER ownership proof,
+ *    and the row is reported skipped or unfixable — `enqueueContentConvergence`
+ *    refuses for the same reasons and this reports its refusal rather than
+ *    second-guessing it.
+ *
+ * WHAT CHANGED WHEN THE SECOND PROOF ARRIVED (2026-08-17). This shipped able to
+ * converge only the sessions THIS APP CREATED, because ownership could only be
+ * proven by a stamp we had written — and the athlete's plan is mostly IMPORTED.
+ * Their two eased sessions (17 and 22 Aug) came back `unfixable`,
+ * `no_recorded_stamp`, permanently: the coach had eased workouts COROS authored,
+ * so no create job of ours ever named them. `ownershipProofFor` now offers the
+ * second proof (address + day + the import's own content fingerprint,
+ * re-checked on the wire before anything is written), so those rows report
+ * `rewrite` and the backfill queues real jobs for them.
  */
 
 import { and, asc, desc, eq, inArray, isNotNull, isNull } from "drizzle-orm";
@@ -71,8 +81,12 @@ import {
   type CoachSession,
 } from "@rg/domain";
 import { chunkIds, type Db } from "./db.js";
-import { enqueueContentConvergence, watchAddressOf, watchPushable } from "./coach-apply.js";
-import { recordedStampFor } from "./coros-stamp.js";
+import {
+  enqueueContentConvergence,
+  ownershipProofFor,
+  watchAddressOf,
+  watchPushable,
+} from "./coach-apply.js";
 
 /** `audit_events.kind` for the pre-change backup written by a live run. */
 export const CONTENT_CONVERGE_BACKUP_KIND = "coach_content_convergence_backfilled";
@@ -105,15 +119,36 @@ export interface ContentConvergeRowReport {
   /** What the app's own copy prescribes, as the operator needs to read it —
    * so what would be written is visible before it is written. */
   prescription: string | null;
-  /** The claim a rewrite would be aimed at. Every field is re-proven by the
-   * executor; it is shown so an operator can see what is being claimed. */
-  address: {
-    corosPlanId: string;
-    idInPlan: string;
-    programId: string;
-    happenDay: string;
-    stamp: string;
-  } | null;
+  /**
+   * The claim a rewrite would be aimed at, and HOW IT WOULD BE PROVEN. Every
+   * field is re-proven by the executor; it is shown so an operator can see what
+   * is being claimed before it is written.
+   *
+   * `proof` is the interesting half. `stamp` is a session this app created and
+   * can name; `imported` is one COROS authored, where ownership is re-proven by
+   * re-reading the address and comparing the content fingerprint the import
+   * recorded (`content-executor.ts` THE SECOND PROOF). The census used to call
+   * every imported row `unfixable` because it only knew the first.
+   */
+  address:
+    | {
+        corosPlanId: string;
+        idInPlan: string;
+        programId: string;
+        happenDay: string;
+        proof: "stamp";
+        stamp: string;
+      }
+    | {
+        corosPlanId: string;
+        idInPlan: string;
+        programId: string;
+        happenDay: string;
+        proof: "imported";
+        importedProgramId: string;
+        importedFingerprint: string;
+      }
+    | null;
   /** Set on a live run. */
   jobId?: string;
 }
@@ -345,18 +380,56 @@ export async function convergeDivergedContent(
       });
       continue;
     }
-    const stamp = await recordedStampFor(db, userId, row.id);
-    if (!stamp) {
+    const proof = await ownershipProofFor(db, userId, row);
+    if (typeof proof === "string") {
       reports.push({
         ...base,
         action: "unfixable",
         reason:
-          "COROS holds this session but this account recorded no program-name stamp for it — " +
-          "ownership cannot be re-proven, and nothing is rewritten on a maybe",
+          proof === "not_athlete_approved"
+            ? "COROS authored this session and the athlete has not approved a change to it — " +
+              "an imported session is only ever rewritten to carry an approved edit"
+            : proof === "stale_local_fingerprint"
+              ? "COROS authored this session, and the record of what COROS holds for it was " +
+                "overwritten by the ease itself (a local hash, not an observation of the wire) — " +
+                "so ownership cannot be re-proven yet. THE NEXT COROS READ REPAIRS THIS: import " +
+                "rule 7's content-intent branch re-records the upstream fingerprint without " +
+                "touching the athlete's approved edit, and this row becomes a rewrite. Run a sync " +
+                "first, then this backfill"
+              : "COROS holds this session but neither ownership proof is available: no program-name " +
+                "stamp this account wrote, and no recorded import fingerprint to re-read against — " +
+                "ownership cannot be re-proven, and nothing is rewritten on a maybe",
       });
       continue;
     }
-    const located = { ...address, stamp };
+    const located =
+      proof.kind === "stamp"
+        ? ({ ...address, proof: "stamp", stamp: proof.recordedName } as const)
+        : ({
+            ...address,
+            proof: "imported",
+            importedProgramId: proof.importedProgramId,
+            importedFingerprint: proof.importedFingerprint,
+          } as const);
+
+    // AN IMPORTED SESSION IS NEVER UNPUSHED — the same refusal
+    // `enqueueContentConvergence` makes, reported rather than second-guessed.
+    // Deleting a workout out of a COROS-authored plan makes it absent upstream,
+    // and import rule 8 then archives the athlete's own approved session out of
+    // the app two reads later. That turns a divergence into a deletion.
+    if (proof.kind === "imported" && session && !watchPushable(session)) {
+      reports.push({
+        ...base,
+        action: "unfixable",
+        address: located,
+        reason:
+          "the app's own copy cannot cross the wire, and this session is COROS-authored — removing " +
+          "it from the athlete's own COROS plan would make it absent upstream, which import rule 8 " +
+          "turns into an archive of the very session they approved. The app's copy stays " +
+          "authoritative; the watch keeps COROS's original until the athlete resolves it there",
+      });
+      continue;
+    }
 
     if (!session) {
       reports.push({

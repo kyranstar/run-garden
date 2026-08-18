@@ -18,7 +18,11 @@
 
 import { describe, expect, it } from "vitest";
 import type { CoachSession } from "@rg/domain";
-import { corosProgramFingerprint, normalizeCorosSchedule } from "@rg/providers";
+import {
+  corosProgramFingerprint,
+  normalizeCorosSchedule,
+  type RawCorosEntity,
+} from "@rg/providers";
 import { CorosClient } from "../src/client.js";
 import {
   createWorkout,
@@ -27,7 +31,8 @@ import {
 } from "../src/create-executor.js";
 import {
   updateWorkoutContent,
-  type UpdateContentTarget,
+  type ImportProvenTarget,
+  type StampProvenTarget,
   type UpdateWorkoutContentOptions,
 } from "../src/content-executor.js";
 import { mockCorosServer, nextMonday, type MockCorosServer } from "./mock-coros-server.js";
@@ -111,7 +116,7 @@ async function pushed(
   server: MockCorosServer;
   client: CorosClient;
   result: CreateResult;
-  target: UpdateContentTarget;
+  target: StampProvenTarget;
 }> {
   const { server, client } = await setup();
   const result = await createWorkout(client, spec, { today: TODAY, catalog: CATALOG, log: noop });
@@ -806,5 +811,289 @@ describe("fallback: \"recreate\" converges through the two proven executors", ()
     expect(update.ok).toBe(false);
     expect(update.reason).toBe("ambiguous");
     expect(planSnapshot(server)).toEqual(snapshot);
+  });
+});
+
+// ── 6. THE SECOND PROOF: the sessions COROS authored ─────────────────────────
+
+/**
+ * THE MAJORITY OF THE ATHLETE'S PLAN, and the half the stamp could not reach.
+ *
+ * Everything above proves ownership by a program-name STAMP — a name only this
+ * app emits, which only exists for workouts this app CREATED. The athlete's plan
+ * is mostly IMPORTED: COROS authored those workouts and the coach only eases
+ * them, so not one of them carries a stamp and every convergence refused
+ * `no_recorded_stamp`. The app could rewrite the sessions it made up and none of
+ * the ones the athlete actually follows.
+ *
+ * The fixture plan below is exactly that shape — "Threshold 5x5", "Easy Run 45
+ * min", real COROS exercise ids, no stamp anywhere — so these tests import from
+ * it the way the real importer does (address, day, `corosProgramFingerprint`)
+ * and then ask for the rewrite. Same discipline as the stamp suites: every
+ * refusal asserts the category AND that not one byte was written.
+ */
+describe("a session COROS authored can be eased, proven by what the import recorded", () => {
+  /**
+   * What `import-plan.ts` stores for one wire workout: the address, the day it
+   * was verified on, and `source_content_fingerprint`. Read out of the mock
+   * through the same fingerprint function the importer uses, so the test cannot
+   * agree with the executor by sharing a bug the importer does not have.
+   */
+  async function imported(
+    server: MockCorosServer,
+    programName: string,
+  ): Promise<{ target: ImportProvenTarget; date: string; entity: RawCorosEntity }> {
+    const program = (server.state.schedule.programs ?? []).find((p) => p.name === programName);
+    expect(program, `the fixture plan must hold "${programName}"`).toBeDefined();
+    const entity = (server.state.schedule.entities ?? []).find(
+      (e) => String(e.planProgramId ?? e.idInPlan) === String(program!.idInPlan),
+    );
+    expect(entity, "…and an entity placing it on a day").toBeDefined();
+    const date = isoFromDay(entity!.happenDay);
+    return {
+      entity: entity!,
+      date,
+      target: {
+        happenDay: String(entity!.happenDay),
+        idInPlan: String(entity!.idInPlan),
+        programId: String(entity!.planProgramId ?? entity!.idInPlan),
+        planId: String(server.state.schedule.id ?? ""),
+        // Exactly what `normalize.ts` records for an imported row: COROS's own
+        // program id, and the fingerprint of the program as read.
+        importedProgramId: String(program!.id ?? ""),
+        importedFingerprint: corosProgramFingerprint(program!),
+      },
+    };
+  }
+
+  const isoFromDay = (day: number | string): string =>
+    String(day).replace(/(\d{4})(\d{2})(\d{2})/, "$1-$2-$3");
+
+  /** Read one day of the plan back through the REAL normalizer. */
+  async function watchOn(client: CorosClient, date: string) {
+    const raw = await client.getRawSchedule(addDaysIso(date, -1), addDaysIso(date, 1));
+    return normalizeCorosSchedule(raw).workouts.filter((w) => w.date === date);
+  }
+
+  it("rewrites the imported workout in place and leaves NO stamp on it", async () => {
+    const { server, client } = await setup();
+    const { target, date } = await imported(server, "Threshold 5x5");
+
+    const before = (await watchOn(client, date)).find((w) => w.title === "Threshold 5x5");
+    expect(before, "COROS's own session is on the watch first").toBeDefined();
+    expect(before!.stages.length).toBeGreaterThan(1);
+
+    const writesBefore = server.counts.scheduleWrites;
+    const snapshot = planSnapshot(server);
+    const update = await updateWorkoutContent(
+      client,
+      {
+        target,
+        // The PLAIN TITLE, not `${title} — ${date}`. The app does not claim
+        // authorship of a workout COROS wrote.
+        name: easedSession.title,
+        session: easedSession,
+        thresholdPaceSecPerKm: THRESHOLD,
+      },
+      options({ today: TODAY }),
+    );
+
+    expect(update.ok, update.error).toBe(true);
+    expect(update.pathUsed).toBe("in_place_update");
+    // ONE write, at the address the import recorded — the COROS identity of the
+    // athlete's own session is untouched, which is what keeps it movable.
+    expect(server.counts.scheduleWrites).toBe(writesBefore + 1);
+    expect(update.serverIdInPlan).toBe(target.idInPlan);
+    expect(update.serverProgramId).toBe(target.programId);
+    expect(update.serverHappenDay).toBe(date);
+
+    const after = await watchOn(client, date);
+    const eased = after.find((w) => w.title === easedSession.title);
+    expect(eased, "the eased session is on the watch under its plain title").toBeDefined();
+    expect(eased!.stages).toHaveLength(1);
+    expect(eased!.stages[0]).toMatchObject({
+      durationType: "time",
+      durationSeconds: 2100,
+      targetType: "pace",
+      targetLow: 349,
+      targetHigh: 409,
+    });
+    // NOT stamped: the name carries no " — <date>" discriminator, so the next
+    // import reads it as a title and has nothing to strip.
+    expect(eased!.title).not.toContain(" — ");
+    // The old prescription is gone, not sitting beside it as a duplicate.
+    expect(after.find((w) => w.title === "Threshold 5x5")).toBeUndefined();
+
+    // AND NOTHING ELSE MOVED. Every other program in the plan is byte-identical.
+    const now = planSnapshot(server);
+    for (const [id, fp] of snapshot) {
+      if (id === target.idInPlan) continue;
+      expect(now.get(id), `program ${id} must be untouched`).toBe(fp);
+    }
+  });
+
+  it("is idempotent: asked twice, the second call writes nothing", async () => {
+    const { server, client } = await setup();
+    const { target, date } = await imported(server, "Threshold 5x5");
+    const spec = {
+      target,
+      name: easedSession.title,
+      session: easedSession,
+      thresholdPaceSecPerKm: THRESHOLD,
+    };
+    const first = await updateWorkoutContent(client, spec, options({ today: TODAY }));
+    expect(first.ok, first.error).toBe(true);
+
+    // The recorded fingerprint is now stale by construction — the write
+    // consumer re-stamps the row with `wireFingerprint`, which is what the
+    // SECOND rewrite proves against. That self-healing is what lets a session be
+    // eased twice.
+    const retry = {
+      ...spec,
+      target: { ...target, importedFingerprint: first.wireFingerprint! },
+    };
+    const writesBefore = server.counts.scheduleWrites;
+    const second = await updateWorkoutContent(client, retry, options({ today: TODAY }));
+    expect(second.ok).toBe(true);
+    expect(second.reason).toBe("already_current");
+    expect(server.counts.scheduleWrites, "nothing on the wire").toBe(writesBefore);
+    expect((await watchOn(client, date)).find((w) => w.title === easedSession.title)).toBeDefined();
+  });
+
+  // ── The adversarial half ───────────────────────────────────────────────────
+
+  it("REFUSES when the address holds different content than we imported", async () => {
+    // The athlete edited this session in COROS after the app last read it — or
+    // COROS recycled the slot. Either way the thing at the address is not the
+    // thing the athlete asked to change, and the stamp path's `stamp_mismatch`
+    // is exactly the right refusal.
+    const { server, client } = await setup();
+    const { target } = await imported(server, "Threshold 5x5");
+    const program = server.programByIdInPlan(target.idInPlan)!;
+    program.exercises = [{ ...program.exercises![0]!, targetValue: 1234 }];
+    const drifted = corosProgramFingerprint(program);
+
+    const writesBefore = server.counts.scheduleWrites;
+    const snapshot = planSnapshot(server);
+    const update = await updateWorkoutContent(
+      client,
+      { target, name: easedSession.title, session: easedSession },
+      options({ today: TODAY }),
+    );
+
+    expect(update.ok).toBe(false);
+    expect(update.reason).toBe("stamp_mismatch");
+    // The evidence an operator needs: what is actually there.
+    expect(update.observedFingerprint).toBe(drifted);
+    expect(update.error).toMatch(/content has changed/);
+    expect(server.counts.scheduleWrites, "not one byte").toBe(writesBefore);
+    expect(planSnapshot(server)).toEqual(snapshot);
+  });
+
+  it("REFUSES when the address holds nothing at all", async () => {
+    const { server, client } = await setup();
+    const { target } = await imported(server, "Threshold 5x5");
+    server.state.schedule.entities = (server.state.schedule.entities ?? []).filter(
+      (e) => String(e.idInPlan) !== target.idInPlan,
+    );
+    server.state.schedule.programs = (server.state.schedule.programs ?? []).filter(
+      (p) => String(p.idInPlan) !== target.idInPlan,
+    );
+
+    const writesBefore = server.counts.scheduleWrites;
+    const update = await updateWorkoutContent(
+      client,
+      { target, name: easedSession.title, session: easedSession },
+      options({ today: TODAY }),
+    );
+
+    expect(update.ok).toBe(false);
+    expect(update.reason).toBe("not_found");
+    expect(server.counts.scheduleWrites).toBe(writesBefore);
+  });
+
+  it("REFUSES when the content matches but the day moved", async () => {
+    // The athlete dragged the session to another day in COROS. The content
+    // still proves it is ours to change; the DAY says the app is addressing a
+    // stale placement, and rewriting blind would edit a day the caller cannot
+    // even record the change against.
+    const { server, client } = await setup();
+    const { target, entity, date } = await imported(server, "Threshold 5x5");
+    const movedTo = addDaysIso(date, 2);
+    entity.happenDay = Number(movedTo.replaceAll("-", ""));
+
+    const writesBefore = server.counts.scheduleWrites;
+    const snapshot = planSnapshot(server);
+    const update = await updateWorkoutContent(
+      client,
+      { target, name: easedSession.title, session: easedSession },
+      options({ today: TODAY }),
+    );
+
+    expect(update.ok).toBe(false);
+    expect(update.reason).toBe("moved");
+    expect(update.serverHappenDay).toBe(movedTo);
+    expect(server.counts.scheduleWrites).toBe(writesBefore);
+    expect(planSnapshot(server)).toEqual(snapshot);
+  });
+
+  it("REFUSES two placements that both match the recorded content", async () => {
+    // Fingerprints are not unique inside a plan — that is precisely why the
+    // address locates and the fingerprint only confirms. When both resolve to
+    // two entities, nothing observable separates them.
+    const { server, client } = await setup();
+    const { target, entity, date } = await imported(server, "Threshold 5x5");
+    server.state.schedule.entities!.push({
+      ...entity,
+      id: "sv-entity-twin",
+      happenDay: Number(addDaysIso(date, 1).replaceAll("-", "")),
+    });
+
+    const writesBefore = server.counts.scheduleWrites;
+    const update = await updateWorkoutContent(
+      client,
+      { target, name: easedSession.title, session: easedSession },
+      options({ today: TODAY }),
+    );
+
+    expect(update.ok).toBe(false);
+    expect(update.reason).toBe("ambiguous");
+    expect(server.counts.scheduleWrites).toBe(writesBefore);
+  });
+
+  it("REFUSES `fallback: recreate` outright — it did not author this plan", async () => {
+    // The stamp path may re-create a workout it wrote and lost. An imported one
+    // that has vanished from a COROS-authored plan vanished for a reason this
+    // app does not own, and putting it back would overrule the athlete inside
+    // their own plan at a brand-new idInPlan.
+    const { server, client } = await setup();
+    const { target } = await imported(server, "Threshold 5x5");
+
+    const writesBefore = server.counts.scheduleWrites;
+    const update = await updateWorkoutContent(
+      client,
+      { target, name: easedSession.title, session: easedSession },
+      options({ today: TODAY, fallback: "recreate" }),
+    );
+
+    expect(update.ok).toBe(false);
+    expect(update.reason).toBe("error");
+    expect(update.error).toMatch(/must not re-create it inside a COROS-authored plan/);
+    // Refused BEFORE any read — nothing on the wire, at all.
+    expect(server.counts.scheduleWrites).toBe(writesBefore);
+  });
+
+  it("REFUSES a rewrite with no name to write — there is no stamp to default to", async () => {
+    const { server, client } = await setup();
+    const { target } = await imported(server, "Threshold 5x5");
+    const update = await updateWorkoutContent(
+      client,
+      { target, session: easedSession },
+      options({ today: TODAY }),
+    );
+    expect(update.ok).toBe(false);
+    expect(update.reason).toBe("error");
+    expect(update.error).toMatch(/no stamp to reuse/);
+    expect(server.counts.scheduleWrites).toBe(0);
   });
 });

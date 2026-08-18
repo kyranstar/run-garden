@@ -462,9 +462,13 @@ export function syncActionCopy(action: SyncAction): { says: string; todo: string
         todo: "Turn on COROS updates in Settings — changes from then on reach your watch.",
       };
     case "retry_write":
+      // Deliberately neutral about WHY it hasn't landed. This state covers a
+      // change that was never sent and one whose write failed, the banner above
+      // already names which, and copy that assumed a failure told an athlete
+      // their watch had rejected a session nobody had tried to send yet.
       return {
-        says: "The last update to your COROS watch didn't land.",
-        todo: "Send it again.",
+        says: "This hasn't reached your COROS watch yet.",
+        todo: "Send it to COROS.",
       };
     case "choose_a_date":
       return {
@@ -522,19 +526,49 @@ export function syncActionCopy(action: SyncAction): { says: string; todo: string
 export function SyncActionNote({
   action,
   settingsLink,
+  reasonShown,
+  reason,
+  kind = "info",
 }: {
   action: SyncAction | undefined;
   /** The screen's own `<Link to="/settings">`. */
   settingsLink?: ReactNode;
+  /**
+   * The surface's own sentence about what is off — the session sheet's dated
+   * banner ("Your COROS watch still has this on Tuesday…"). Rendered INSIDE
+   * this block rather than beside it: two adjacent banners, one stating a fact
+   * and one stating the to-do about that same fact, is two alerts for one
+   * situation (measured at 1440 — "COROS has never been given it." sat directly
+   * above "Send it to COROS."). The caller keeps rendering it standalone when
+   * there is no action to attach.
+   */
+  reason?: ReactNode;
+  /** `warn` for the states the app is unhappy about; the caller decides. */
+  kind?: "warn" | "info";
+  /**
+   * The surface is ALREADY rendering `WatchCoverageNote`, which states the
+   * reason in full. Measured live at 390: without this, a lift whose movements
+   * are off-catalog listed all four names twice, one sentence apart — the
+   * coverage note's "your COROS exercise library has no …" followed immediately
+   * by the action's. So the state sentence yields to the note that owns it and
+   * only the TO-DO — the half nothing else says — is rendered.
+   */
+  reasonShown?: boolean;
 }) {
-  if (!action) return null;
+  if (!action) return reason ? <Banner kind={kind}>{reason}</Banner> : null;
   const { says, todo } = syncActionCopy(action);
+  // Nothing left to add: the reason is on screen and there is no action.
+  if (reasonShown && !todo && !reason) return null;
   // Spans, not paragraphs: `Banner` wraps its children in a `<span>`, and a
   // `<p>` inside inline content is invalid markup the browser silently
   // restructures. `.sync-action-*` make them blocks in both containers.
   const body = (
     <>
-      <span className="sync-action-says">{says}</span>
+      {/* The caller's own sentence outranks the generic one: it names the days
+          and this cannot. When it is here, `says` would be the same claim in
+          weaker words. */}
+      {reason ? <span className="sync-action-says">{reason}</span> : null}
+      {reason || reasonShown ? null : <span className="sync-action-says">{says}</span>}
       {todo ? (
         <span className="sync-action-todo">
           {todo}
@@ -543,8 +577,8 @@ export function SyncActionNote({
       ) : null}
     </>
   );
-  return action.agent === "athlete" ? (
-    <Banner kind="info">{body}</Banner>
+  return action.agent === "athlete" || reason ? (
+    <Banner kind={kind}>{body}</Banner>
   ) : (
     <div className="note sync-action">{body}</div>
   );

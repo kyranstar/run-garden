@@ -27,7 +27,7 @@ import { corosProgramFingerprint, normalizeCorosSchedule } from "@rg/providers";
 import { mockCorosServer } from "../../../packages/coros/test/mock-coros-server.js";
 import { connectCoros } from "../src/services/coros-connection.js";
 import { executeCloudJobs } from "../src/services/coros-write-cloud.js";
-import { applyOps, watchPushable } from "../src/services/coach-apply.js";
+import { applyOps, enqueueContentConvergence, watchPushable } from "../src/services/coach-apply.js";
 import { importPlanSnapshot } from "../src/services/import-plan.js";
 import { stampName } from "../src/services/coros-stamp.js";
 import {
@@ -490,7 +490,9 @@ describe("the convergence backfill", () => {
     expect(row.action).toBe("rewrite");
     // What would go on the wire, visible BEFORE it goes.
     expect(row.prescription).toContain("35 min");
-    expect(row.address!.stamp).toContain(PUSHED.title);
+    // A session THIS APP created: ownership is proven by the stamp it left.
+    expect(row.address!.proof).toBe("stamp");
+    expect(row.address!.proof === "stamp" && row.address!.stamp).toContain(PUSHED.title);
     // And nothing was queued.
     expect(await updateJobs(db, userId)).toHaveLength(0);
   });
@@ -855,5 +857,479 @@ describe("a lift session survives the round trip through the watch", () => {
     // in its own column because the wire states it with the value ABSENT.
     expect(perSide!.loadBodyweight).toBe(true);
     expect(perSide!.loadKg).toBeNull();
+  });
+});
+
+// ── Leg 4: the sessions COROS authored — most of the athlete's plan ──────────
+
+/**
+ * THE HALF THE FIRST SHIP COULD NOT REACH.
+ *
+ * Everything above converges sessions THIS APP CREATED, because ownership was
+ * provable only by a stamp this app had written. The athlete's plan is mostly
+ * IMPORTED: COROS authored those workouts and the coach only eases them, so not
+ * one of them carries a stamp, `enqueueContentConvergence` refused every one
+ * with `no_recorded_stamp`, and the two sessions they actually eased (17 and 22
+ * Aug) sat `calendar_only` with the original intervals still on the watch.
+ *
+ * The proof for those rows is the one the import already recorded — the address,
+ * the day, and `source_content_fingerprint` — re-checked on the wire before a
+ * byte is written. This suite is that path end to end, on real COROS-authored
+ * fixture workouts, plus the failure mode that would be worse than divergence:
+ * a COROS read AFTER the rewrite putting the original back.
+ */
+describe("an imported COROS session converges too", () => {
+  /** One full COROS read → import, exactly as the sync route runs it. */
+  async function readAndImport(
+    db: Db,
+    userId: string,
+    prefs: Awaited<ReturnType<typeof makeTestUser>>["prefs"],
+    server: ReturnType<typeof mockCorosServer>,
+  ): Promise<void> {
+    const today = todayInZone(prefs.timezone);
+    const normalized = normalizeCorosSchedule(server.state.schedule);
+    await importPlanSnapshot(
+      db,
+      {
+        userId,
+        plan: {
+          sourcePlanId: normalized.planId,
+          name: normalized.planName,
+          ...(normalized.planStart ? { startDate: normalized.planStart } : {}),
+          ...(normalized.planEnd ? { endDate: normalized.planEnd } : {}),
+        },
+        workouts: normalized.workouts,
+        rangeStart: addDays(today, -40),
+        rangeEnd: addDays(today, 80),
+        source: "fixture",
+      },
+      prefs,
+    );
+  }
+
+  /**
+   * The live shape: a COROS-authored workout, imported, then eased. Nothing here
+   * is hand-built — the row's address and fingerprint come from a real import of
+   * a real fixture program the app never wrote.
+   */
+  async function importThenEase(title = "Threshold 5x5") {
+    const db = makeTestDb();
+    const { userId, prefs } = await makeTestUser(db, { corosWritesEnabled: true });
+    const server = mockCorosServer();
+    await connect(db, userId, server);
+    await seedThreshold(db, userId, todayInZone(prefs.timezone));
+    await readAndImport(db, userId, prefs, server);
+
+    const [row] = await db
+      .select()
+      .from(schema.plannedWorkouts)
+      .where(and(eq(schema.plannedWorkouts.userId, userId), eq(schema.plannedWorkouts.title, title)));
+    expect(row, `the fixture plan's "${title}" must import`).toBeDefined();
+    // The two facts the second proof is built from, both written by the import.
+    expect(row!.sourceWorkoutId).toMatch(/^\d+:\d+$/);
+    expect(row!.lastVerifiedCorosDate).toBe(row!.effectiveDate);
+    expect(row!.sourceContentFingerprint).toBeTruthy();
+
+    const eased = await applyOps(db, userId, prefs, "p-ease-imported", [
+      coachOpSchema.parse({ kind: "ease", workoutId: row!.id, session: EASED }),
+    ]);
+    expect(eased.missed).toEqual([]);
+    return { db, userId, prefs, server, workoutId: row!.id, date: row!.effectiveDate, row: row! };
+  }
+
+  /** Every program in the mock's plan, by idInPlan → fingerprint. */
+  const planSnapshot = (server: ReturnType<typeof mockCorosServer>): Map<string, string> =>
+    new Map(
+      (server.state.schedule.programs ?? []).map((p) => [
+        String(p.idInPlan),
+        corosProgramFingerprint(p),
+      ]),
+    );
+
+  it("queues a rewrite proven by what the import recorded, not by a stamp", async () => {
+    const { db, userId, workoutId, date, row } = await importThenEase();
+
+    const jobs = await updateJobs(db, userId);
+    expect(jobs, "an imported session must be convergeable — this is most of the plan").toHaveLength(1);
+    const payload = jobs[0]!.payload as Record<string, unknown>;
+    expect(jobs[0]!.workoutId).toBe(workoutId);
+    // THE SECOND PROOF, and not the first: there is no stamp, because this app
+    // never created this workout and does not claim it did.
+    expect(payload.recordedName).toBeUndefined();
+    expect(payload.importedFingerprint).toBe(row.sourceContentFingerprint);
+    expect(payload.idInPlan).toBeTruthy();
+    expect(payload.programId).toBeTruthy();
+    expect(payload.happenDay).toBe(date);
+    // The name it will leave is the PLAIN TITLE — no ` — <date>` stamp on a
+    // session inside the athlete's own COROS plan.
+    expect(payload.name).toBe(EASED.title);
+    expect(payload.name).not.toContain(" — ");
+  });
+
+  it("converges for real: the watch ends up holding the eased session, and nothing else moves", async () => {
+    const { db, userId, prefs, server, workoutId, date } = await importThenEase();
+    const before = planSnapshot(server);
+    const targetIdInPlan = ((await updateJobs(db, userId))[0]!.payload as { idInPlan: string })
+      .idInPlan;
+
+    await executeCloudJobs(db, makeEnv(), userId, prefs, { fetchImpl: server.fetchImpl });
+    const [job] = await updateJobs(db, userId);
+    expect(job!.status, job!.lastErrorCategory ?? "").toBe("verified");
+
+    // What the WATCH holds, through the real normalizer.
+    const onWire = normalizeCorosSchedule(server.state.schedule).workouts.filter(
+      (w) => w.date === date,
+    );
+    const eased = onWire.find((w) => w.title === EASED.title);
+    expect(eased, "the eased session must be on the watch").toBeDefined();
+    expect(eased!.stages).toHaveLength(1);
+    expect(eased!.stages[0]).toMatchObject({ durationType: "time", durationSeconds: 2100 });
+    expect(onWire.find((w) => w.title === "Threshold 5x5")).toBeUndefined();
+
+    // NOTHING ELSE MOVED — every other program in the athlete's COROS plan is
+    // byte-identical. An update writes over whatever is at an address.
+    const after = planSnapshot(server);
+    for (const [id, fp] of before) {
+      if (id === targetIdInPlan) continue;
+      expect(after.get(id), `program ${id} must be untouched`).toBe(fp);
+    }
+
+    // The row now says the two agree, stamped with the WIRE's own fingerprint…
+    const [stored] = await db
+      .select()
+      .from(schema.plannedWorkouts)
+      .where(eq(schema.plannedWorkouts.id, workoutId));
+    expect(stored!.corosSyncState).toBe("synced");
+    expect(stored!.sourceContentFingerprint).toBe(eased!.contentFingerprint);
+    // …and the content intent, which could never close, is closed.
+    const intents = await db
+      .select()
+      .from(schema.syncIntents)
+      .where(and(eq(schema.syncIntents.targetId, workoutId), eq(schema.syncIntents.kind, "content")));
+    expect(intents[0]!.resolvedAt, "the approved edit is settled").toBeTruthy();
+  });
+
+  it("SURVIVES THE NEXT COROS READ — import rule 7 does not put the original back", async () => {
+    // The failure mode that would be worse than the divergence itself. Rule 7
+    // overwrites a row whose upstream content changed, and after the rewrite the
+    // upstream content HAS changed — we changed it. If the fingerprints did not
+    // line up, the very next pull would hand the athlete their intervals back
+    // and the ease would flip-flop every eleven minutes.
+    const { db, userId, prefs, server, workoutId, date } = await importThenEase();
+    await executeCloudJobs(db, makeEnv(), userId, prefs, { fetchImpl: server.fetchImpl });
+    expect((await updateJobs(db, userId))[0]!.status).toBe("verified");
+
+    const stagesOf = async (id: string) =>
+      (
+        await db
+          .select()
+          .from(schema.plannedWorkoutStages)
+          .where(eq(schema.plannedWorkoutStages.workoutId, id))
+      ).sort((a, b) => a.ord - b.ord);
+    const [afterWrite] = await db
+      .select()
+      .from(schema.plannedWorkouts)
+      .where(eq(schema.plannedWorkouts.id, workoutId));
+    const stagesAfterWrite = await stagesOf(workoutId);
+
+    // TWO full reads — rule 8's absence sweep needs two to act, so one read
+    // proves nothing about what a second one does.
+    await readAndImport(db, userId, prefs, server);
+    await readAndImport(db, userId, prefs, server);
+
+    const [reread] = await db
+      .select()
+      .from(schema.plannedWorkouts)
+      .where(eq(schema.plannedWorkouts.id, workoutId));
+    expect(reread, "the row must still exist").toBeDefined();
+    expect(reread!.title, "the eased title must survive the read").toBe(EASED.title);
+    expect(reread!.archivedAt, "and must not be archived").toBeNull();
+    expect(reread!.effectiveDate).toBe(date);
+    expect(reread!.sourceContentFingerprint).toBe(afterWrite!.sourceContentFingerprint);
+    // The BODY, which is what the athlete actually runs: one easy 35, not the
+    // interval session COROS used to hold.
+    const stagesNow = await stagesOf(workoutId);
+    expect(stagesNow.map((s) => [s.durationType, s.durationSeconds])).toEqual(
+      stagesAfterWrite.map((s) => [s.durationType, s.durationSeconds]),
+    );
+    expect(stagesNow.filter((s) => s.kind !== "repeat")).toHaveLength(1);
+    // And no second copy of the session appeared beside it.
+    const sameDay = await db
+      .select()
+      .from(schema.plannedWorkouts)
+      .where(and(eq(schema.plannedWorkouts.userId, userId), eq(schema.plannedWorkouts.effectiveDate, date)));
+    expect(sameDay.filter((w) => w.archivedAt === null)).toHaveLength(1);
+  });
+
+  it("NEVER rewrites an imported session the athlete has not edited", async () => {
+    // The row is on the watch and has both halves of the second proof — and
+    // that is deliberately not enough. A COROS-authored session is not ours to
+    // overwrite; the only thing that entitles the app to change one is the
+    // athlete having approved the change.
+    const db = makeTestDb();
+    const { userId, prefs } = await makeTestUser(db, { corosWritesEnabled: true });
+    const server = mockCorosServer();
+    await connect(db, userId, server);
+    await readAndImport(db, userId, prefs, server);
+    const [row] = await db
+      .select()
+      .from(schema.plannedWorkouts)
+      .where(
+        and(
+          eq(schema.plannedWorkouts.userId, userId),
+          eq(schema.plannedWorkouts.title, "Threshold 5x5"),
+        ),
+      );
+    expect(row).toBeDefined();
+
+    const outcome = await enqueueContentConvergence(db, {
+      userId,
+      workout: row!,
+      session: EASED,
+      now: nowInstant(),
+      corosWritesEnabled: true,
+    });
+    expect(outcome.jobId).toBeUndefined();
+    expect(outcome.refused).toBe("not_athlete_approved");
+    expect(await updateJobs(db, userId)).toHaveLength(0);
+  });
+
+  it("REFUSES to unpush an imported session, because rule 8 would then delete it from the app", async () => {
+    // The one place "never leave the watch prescribing withdrawn work" loses.
+    // A `coach_delete_workout` is authorized BY THE STAMP and there is none —
+    // and worse, removing the workout from the athlete's COROS plan makes it
+    // absent upstream, which import rule 8 turns into an archive of the very
+    // session they approved. A divergence beats a deletion.
+    const distanceEase = parse({
+      category: "easy",
+      title: "Five easy kilometres",
+      durationMinutes: 30,
+      run: { blocks: [{ kind: "distance", value: 5000, intensity: "easy" }] },
+    });
+    expect(watchPushable(distanceEase), "a distance block cannot cross the wire").toBe(false);
+
+    const { db, userId, prefs, server } = await importThenEase();
+    const [row] = await db
+      .select()
+      .from(schema.plannedWorkouts)
+      .where(and(eq(schema.plannedWorkouts.userId, userId), eq(schema.plannedWorkouts.title, EASED.title)));
+    const outcome = await enqueueContentConvergence(db, {
+      userId,
+      workout: row!,
+      session: distanceEase,
+      now: nowInstant(),
+      corosWritesEnabled: true,
+    });
+    expect(outcome.jobId).toBeUndefined();
+    expect(outcome.refused).toBe("cannot_unpush_imported");
+    const deletes = await db
+      .select()
+      .from(schema.corosWriteJobs)
+      .where(
+        and(
+          eq(schema.corosWriteJobs.userId, userId),
+          eq(schema.corosWriteJobs.kind, "coach_delete_workout"),
+        ),
+      );
+    expect(deletes, "nothing may be removed from a plan this app does not own").toHaveLength(0);
+    // …and the watch still holds what it held.
+    expect(
+      normalizeCorosSchedule(server.state.schedule).workouts.some((w) => w.title === "Threshold 5x5"),
+    ).toBe(true);
+  });
+
+  it("the census calls an imported diverged row REWRITABLE, not unfixable", async () => {
+    // The live prediction for `GET /api/sync/converge-content/census`: the two
+    // eased rows that reported `unfixable / no_recorded_stamp` are rewrites.
+    const { db, userId, prefs, server, workoutId } = await importThenEase();
+    // Clear the job the ease queued, so the census is answering about the ROW
+    // and the backfill has something to queue — the state those live rows are
+    // in, where the ease predates the content-write kind entirely.
+    await db.delete(schema.corosWriteJobs).where(eq(schema.corosWriteJobs.userId, userId));
+
+    const census = await countDivergedContent(db, userId);
+    expect(census.candidates).toBe(1);
+    expect(census.rewrites).toBe(1);
+    expect(census.unfixable).toBe(0);
+    expect(census.unfixableIds).toEqual([]);
+
+    const dry = await convergeDivergedContent(db, userId, { dryRun: true });
+    expect(dry.rows[0]!.action).toBe("rewrite");
+    expect(dry.rows[0]!.evidence).toContain("open_content_intent");
+    // The report says HOW ownership would be proven, so an operator can see the
+    // claim before it is written.
+    expect(dry.rows[0]!.address!.proof).toBe("imported");
+
+    // And the live run queues a real job that really converges.
+    const live = await convergeDivergedContent(db, userId, { dryRun: false });
+    expect(live.rows[0]!.jobId).toBeTruthy();
+    await executeCloudJobs(db, makeEnv(), userId, prefs, { fetchImpl: server.fetchImpl });
+    expect((await updateJobs(db, userId))[0]!.status).toBe("verified");
+    expect(
+      normalizeCorosSchedule(server.state.schedule).workouts.some((w) => w.title === EASED.title),
+    ).toBe(true);
+    // Re-running finds nothing: the intent is closed.
+    expect((await countDivergedContent(db, userId)).candidates).toBe(0);
+    expect(workoutId).toBeTruthy();
+  });
+
+  it("an ease no longer destroys the evidence the rewrite needs", async () => {
+    // `sessionColumns` used to write `fingerprint(session)` — a hash of the
+    // LOCAL edit — into `source_content_fingerprint`, a column that means "the
+    // upstream copy as the app last observed it". Every eased imported row
+    // therefore destroyed its own ownership evidence at the exact moment it
+    // created the need for it.
+    const db = makeTestDb();
+    const { userId, prefs } = await makeTestUser(db, { corosWritesEnabled: true });
+    const server = mockCorosServer();
+    await connect(db, userId, server);
+    await readAndImport(db, userId, prefs, server);
+    const [before] = await db
+      .select()
+      .from(schema.plannedWorkouts)
+      .where(
+        and(
+          eq(schema.plannedWorkouts.userId, userId),
+          eq(schema.plannedWorkouts.title, "Threshold 5x5"),
+        ),
+      );
+    expect(before!.sourceContentFingerprint.startsWith("coach-")).toBe(false);
+
+    await applyOps(db, userId, prefs, "p-ease-keep-fp", [
+      coachOpSchema.parse({ kind: "ease", workoutId: before!.id, session: EASED }),
+    ]);
+    const [after] = await db
+      .select()
+      .from(schema.plannedWorkouts)
+      .where(eq(schema.plannedWorkouts.id, before!.id));
+    // The app's copy changed…
+    expect(after!.title).toBe(EASED.title);
+    // …and the record of what COROS holds did not, because COROS still holds it.
+    expect(after!.sourceContentFingerprint).toBe(before!.sourceContentFingerprint);
+  });
+
+  it("a COROS read REPAIRS a row whose fingerprint an older ease overwrote", async () => {
+    // THE TWO LIVE ROWS (17 and 22 Aug). They were eased before the fix above,
+    // so they hold a `coach-…` hash of the eased session where the import's wire
+    // fingerprint belongs, and no amount of re-easing puts it back. Import rule
+    // 7's content-intent branch is the repair: it has just READ upstream, so it
+    // is entitled to record what upstream says — while the app's content claim
+    // still wins for the title, the stages and the dates.
+    const { db, userId, prefs, server, workoutId } = await importThenEase();
+    const legacy = "coach-deadbeef";
+    await db
+      .update(schema.plannedWorkouts)
+      .set({ sourceContentFingerprint: legacy })
+      .where(eq(schema.plannedWorkouts.id, workoutId));
+    await db.delete(schema.corosWriteJobs).where(eq(schema.corosWriteJobs.userId, userId));
+
+    // In that state the proof cannot be made — and the census SAYS so rather
+    // than promising a rewrite that would come back `stamp_mismatch`. A local
+    // `coach-…` hash is not sixteen hex characters, so it is structurally not an
+    // observation of the wire.
+    const stuck = await convergeDivergedContent(db, userId, { dryRun: true });
+    expect(stuck.rows[0]!.action).toBe("unfixable");
+    expect(stuck.rows[0]!.reason).toMatch(/NEXT COROS READ REPAIRS THIS/);
+    expect(await updateJobs(db, userId)).toHaveLength(0);
+
+    // One ordinary COROS read later, the column says what COROS says again…
+    await readAndImport(db, userId, prefs, server);
+    const [repaired] = await db
+      .select()
+      .from(schema.plannedWorkouts)
+      .where(eq(schema.plannedWorkouts.id, workoutId));
+    expect(repaired!.sourceContentFingerprint).not.toBe(legacy);
+    // …while the athlete's approved edit is untouched by the repair.
+    expect(repaired!.title).toBe(EASED.title);
+    const stages = await db
+      .select()
+      .from(schema.plannedWorkoutStages)
+      .where(eq(schema.plannedWorkoutStages.workoutId, workoutId));
+    expect(stages.filter((st) => st.kind !== "repeat")).toHaveLength(1);
+
+    // …and now it converges.
+    await convergeDivergedContent(db, userId, { dryRun: false });
+    await executeCloudJobs(db, makeEnv(), userId, prefs, { fetchImpl: server.fetchImpl });
+    expect((await updateJobs(db, userId))[0]!.status).toBe("verified");
+    expect(
+      normalizeCorosSchedule(server.state.schedule).workouts.some((w) => w.title === EASED.title),
+    ).toBe(true);
+  });
+
+  it("keeps COROS's own program id on the row, so a SECOND ease can still prove ownership", async () => {
+    // `source_program_id` holds COROS's `program.id` for an imported row and
+    // `planProgramId` for a created one. Re-stamping it from an in-place rewrite
+    // would swap the first for the second and strand the row: the next ease
+    // could never prove ownership again.
+    const { db, userId, prefs, server, workoutId } = await importThenEase();
+    const [before] = await db
+      .select()
+      .from(schema.plannedWorkouts)
+      .where(eq(schema.plannedWorkouts.id, workoutId));
+    await executeCloudJobs(db, makeEnv(), userId, prefs, { fetchImpl: server.fetchImpl });
+    const [after] = await db
+      .select()
+      .from(schema.plannedWorkouts)
+      .where(eq(schema.plannedWorkouts.id, workoutId));
+    expect(after!.sourceProgramId).toBe(before!.sourceProgramId);
+
+    // And prove it by easing again, for real, end to end.
+    const second = parse({
+      category: "easy",
+      title: "Twenty, very easy",
+      durationMinutes: 20,
+      run: { blocks: [{ kind: "duration", value: 20, intensity: "easy" }] },
+    });
+    await applyOps(db, userId, prefs, "p-ease-2", [
+      coachOpSchema.parse({ kind: "ease", workoutId, session: second }),
+    ]);
+    await executeCloudJobs(db, makeEnv(), userId, prefs, { fetchImpl: server.fetchImpl });
+    const jobs = await updateJobs(db, userId);
+    expect(jobs).toHaveLength(2);
+    for (const j of jobs) expect(j.status, j.lastErrorCategory ?? "").toBe("verified");
+    // BOTH rewrites took the imported path. The first one's payload `name` is a
+    // plain title, and `recordedStampFor` must not promote it into a stamp — if
+    // it did, this second ease would rename the athlete's own COROS session to
+    // "Twenty, very easy — <date>" on their watch.
+    for (const j of jobs) {
+      const payload = j.payload as { name: string; recordedName?: string };
+      expect(payload.recordedName).toBeUndefined();
+      expect(payload.name).not.toContain(" — ");
+    }
+    expect(
+      normalizeCorosSchedule(server.state.schedule).workouts.some((w) => w.title === second.title),
+    ).toBe(true);
+  });
+
+  it("REFUSES when COROS's copy drifted after the import — the athlete edited it there", async () => {
+    // The second proof's whole job. The address still resolves, but what is
+    // there is not what we imported, so the app must not overwrite it.
+    const { db, userId, prefs, server } = await importThenEase();
+    const idInPlan = ((await updateJobs(db, userId))[0]!.payload as { idInPlan: string }).idInPlan;
+    const program = server.programByIdInPlan(idInPlan)!;
+    program.exercises = [{ ...program.exercises![0]!, targetValue: 4321 }];
+    const drifted = corosProgramFingerprint(program);
+
+    await executeCloudJobs(db, makeEnv(), userId, prefs, { fetchImpl: server.fetchImpl });
+    const [job] = await updateJobs(db, userId);
+    expect(job!.status).toBe("failed");
+    expect(job!.lastErrorCategory).toBe("stamp_mismatch");
+    // Nothing written, and the row says so rather than claiming success.
+    expect(corosProgramFingerprint(server.programByIdInPlan(idInPlan)!)).toBe(drifted);
+    const [row] = await db
+      .select()
+      .from(schema.plannedWorkouts)
+      .where(eq(schema.plannedWorkouts.id, job!.workoutId));
+    expect(row!.corosSyncState).toBe("sync_issue");
+    // The old copy is still there, so the column that says COROS confirmed it
+    // on that date is still true.
+    expect(row!.lastVerifiedCorosDate).not.toBe("");
+    const intents = await db
+      .select()
+      .from(schema.syncIntents)
+      .where(
+        and(eq(schema.syncIntents.targetId, job!.workoutId), eq(schema.syncIntents.kind, "content")),
+      );
+    expect(intents[0]!.resolvedAt, "the disagreement is not settled").toBeNull();
   });
 });

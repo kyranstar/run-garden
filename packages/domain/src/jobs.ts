@@ -90,49 +90,88 @@ export type CoachCreateWorkoutJob = z.infer<typeof coachCreateWorkoutJobSchema>;
  *
  * WHAT THE PAYLOAD CARRIES, and why each half is here:
  *
- *  · THE OWNERSHIP CLAIM — `recordedName` plus the delete triple (`corosPlanId`,
- *    `idInPlan`, `programId`) and `happenDay`. Every one of these is a CLAIM
+ *  · THE OWNERSHIP CLAIM — the delete triple (`corosPlanId`, `idInPlan`,
+ *    `programId`), `happenDay`, and EXACTLY ONE PROOF that the workout at that
+ *    address is still the one this job means. Every one of these is a CLAIM
  *    recorded when the workout was written, never an identity: COROS recycles a
  *    plan's `idInPlan` slots after deletes, so `planId:idInPlan` can silently
  *    come to mean a different workout (live-observed — see import-plan.ts's
- *    recycled-slot branch). The executor therefore re-reads and re-proves all of
- *    it, by STAMP, before it touches anything, exactly as `deleteWorkout` does.
+ *    recycled-slot branch). The executor re-reads and re-proves all of it before
+ *    it touches anything, exactly as `deleteWorkout` does.
  *
- *  · THE NEW CONTENT — `session`, and `name` as the stamp the rewrite leaves
- *    behind. `name`/`session` mean here precisely what they mean in the create
- *    payload ("the program I wrote, and the title I meant"), which is what lets
- *    `coros-stamp.ts` un-stamp a rewritten title on the way back in without a
- *    second rule.
+ *  · THE NEW CONTENT — `session`, and `name` as what the rewrite leaves behind.
  *
- * A rewrite CAN change the stamp, because an ease can change the title, and the
- * name is what the athlete reads on the watch. Uniqueness is unaffected — the
- * date is the uniquifier and a rewrite never moves the session.
+ * TWO PROOFS, because one of them could not reach most of the athlete's plan.
+ * `recordedName` is the STAMP: the exact program name this app put on the wire,
+ * which only exists for the sessions this app CREATED. The athlete's plan is
+ * mostly imported — COROS authored those workouts and the coach only eases them
+ * — so every one of them was refused `no_recorded_stamp` and stayed diverged
+ * forever. `importedFingerprint` is the second proof: `corosProgramFingerprint`
+ * of the program as the import last read it, re-checked at the recorded address
+ * on the recorded day before a byte is written. See `content-executor.ts` THE
+ * SECOND PROOF for why it is as safe as the stamp, and `coach-apply.ts`
+ * `ownershipProofFor` for which rows may use it (only ones carrying an open
+ * `content` intent — an approved change, never an untouched imported session).
+ *
+ * A STAMPED rewrite CAN change the stamp, because an ease can change the title,
+ * and the name is what the athlete reads on the watch. Uniqueness is unaffected
+ * — the date is the uniquifier and a rewrite never moves the session. An
+ * IMPORTED rewrite writes the plain session title and deliberately leaves no
+ * stamp; the app does not claim authorship of a workout COROS wrote.
  */
-export const coachUpdateWorkoutJobSchema = z
-  .object({
-    workoutId: z.string().min(1),
-    /** The day COROS holds it on — the other half of the address. */
-    happenDay: localDate,
-    /** The program-name stamp the rewrite LEAVES on the wire. */
-    name: z.string().min(1),
-    /** The stamp recorded when this workout was last written: the ownership
-     * claim that authorizes the rewrite. Equal to `name` when the title did not
-     * change, which is the ordinary case. */
-    recordedName: z.string().min(1),
-    idInPlan: z.string().min(1),
-    /** The recorded `planProgramId` — third element of the delete triple. */
-    programId: z.string().min(1),
-    corosPlanId: z.string().min(1),
-    /** What the app now holds, and what the watch must end up saying. */
-    session: coachSessionSchema,
-    /** Threshold pace (sec/km) known at enqueue time. The executor prefers a
-     * fresher reading — see `latestThresholdPace` — so this is a floor, not an
-     * instruction. */
-    thresholdPaceSecPerKm: z.number().positive().optional(),
-    /** Executor-side retry counter (transient failures requeue, cap 3). */
-    attempts: z.number().int().min(0).optional(),
-  })
-  .strict();
+const coachUpdateWorkoutBase = {
+  workoutId: z.string().min(1),
+  /** The day COROS holds it on — the other half of the address. */
+  happenDay: localDate,
+  /** The program name the rewrite LEAVES on the wire: the new stamp for a
+   * coach-created session, the plain session title for an imported one. */
+  name: z.string().min(1),
+  idInPlan: z.string().min(1),
+  /** The recorded `planProgramId` — third element of the delete triple. */
+  programId: z.string().min(1),
+  corosPlanId: z.string().min(1),
+  /** What the app now holds, and what the watch must end up saying. */
+  session: coachSessionSchema,
+  /** Threshold pace (sec/km) known at enqueue time. The executor prefers a
+   * fresher reading — see `latestThresholdPace` — so this is a floor, not an
+   * instruction. */
+  thresholdPaceSecPerKm: z.number().positive().optional(),
+  /** Executor-side retry counter (transient failures requeue, cap 3). */
+  attempts: z.number().int().min(0).optional(),
+};
+
+/**
+ * A UNION, not two optional fields, and that is the whole safety argument in the
+ * type system: a payload carrying both proofs, or neither, cannot be built and
+ * cannot be parsed. `.strict()` on each arm is what makes "both" fail — the
+ * stamp arm rejects an unknown `importedFingerprint` and vice versa — so a
+ * caller cannot smuggle a fingerprint past the stamp path or the reverse.
+ */
+export const coachUpdateWorkoutJobSchema = z.union([
+  z
+    .object({
+      ...coachUpdateWorkoutBase,
+      /** PROOF BY STAMP. The exact program name recorded when this workout was
+       * last written by this app. Equal to `name` when the title did not change,
+       * which is the ordinary case. */
+      recordedName: z.string().min(1),
+    })
+    .strict(),
+  z
+    .object({
+      ...coachUpdateWorkoutBase,
+      /** PROOF BY RE-READ, part 1 — IDENTITY. COROS's own `program.id` as the
+       * import recorded it (`planned_workouts.source_program_id`). A recycled
+       * `idInPlan` holds a different program object and so a different id. */
+      importedProgramId: z.string().min(1),
+      /** PROOF BY RE-READ, part 2 — CONTENT. `corosProgramFingerprint` of the
+       * program as the app last observed it
+       * (`planned_workouts.source_content_fingerprint`). The executor refuses
+       * unless the recorded address, on the recorded day, still carries both. */
+      importedFingerprint: z.string().min(1),
+    })
+    .strict(),
+]);
 export type CoachUpdateWorkoutJob = z.infer<typeof coachUpdateWorkoutJobSchema>;
 
 /**

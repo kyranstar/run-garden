@@ -145,6 +145,25 @@ export async function loadOwnProgramNames(
  * not verified has not changed what the wire holds, so an unverified job's stamp
  * must never authorize anything — that is the ordering the `verifiedAt` sort
  * buys. `requestedAt` breaks ties for two jobs verified in the same instant.
+ *
+ * AN IMPORT-PROVEN REWRITE LEFT NO STAMP, AND MUST NOT BE READ AS ONE. Its
+ * payload's `name` is the app's PLAIN SESSION TITLE, written onto a workout
+ * COROS authored (`coach-apply.ts`: the app does not claim authorship of a
+ * session it did not create). It carries no discriminator, guarantees no
+ * uniqueness inside the plan, and proves nothing about who wrote the program.
+ *
+ * Returning it would be a quiet promotion with two live consequences: the NEXT
+ * ease of that session would take the stamp path and rename the athlete's own
+ * COROS session to "Twenty, very easy — 2026-08-25" on their watch, and an
+ * unpush would be authorized by a name that could match any workout in the plan
+ * that happens to share the title. `importedFingerprint` in the payload is the
+ * exact, structural tell — the job schema's two arms are mutually exclusive — so
+ * those jobs are skipped and the row keeps proving ownership the way it always
+ * did.
+ *
+ * (`loadOwnProgramNames` needs no such rule: it records an entry only when the
+ * name EXTENDS the title, and an imported rewrite writes `name === title`, so it
+ * is already skipped there by construction.)
  */
 export async function recordedStampFor(
   db: Db,
@@ -164,7 +183,9 @@ export async function recordedStampFor(
     )
     .orderBy(desc(corosWriteJobs.verifiedAt), desc(corosWriteJobs.requestedAt));
   for (const row of rows) {
-    const name = (row.payload as { name?: unknown } | null)?.name;
+    const payload = row.payload as { name?: unknown; importedFingerprint?: unknown } | null;
+    if (typeof payload?.importedFingerprint === "string") continue;
+    const name = payload?.name;
     if (typeof name === "string" && name.length > 0) return name;
   }
   return null;

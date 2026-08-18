@@ -299,22 +299,35 @@ export async function executeCloudJobs(
         // touches it, so the ~382-row read is paid only when there is something
         // to resolve. Same rule the create branch uses.
         const catalog = spec.session.run ? new Map<string, string>() : await exerciseNameMap(db);
+        // WHICH PROOF THIS JOB CARRIES — see `jobs.ts` and `content-executor.ts`
+        // THE SECOND PROOF. The schema union guarantees exactly one is present;
+        // this reads whichever it is and hands the executor the matching target.
+        const importedProof = "importedFingerprint" in spec;
         const result = await updateWorkoutContent(
           client,
           {
             target: {
               happenDay: String(localDateToCorosDay(spec.happenDay)),
-              // The stamp recorded at push time is the ONLY thing that
-              // authorizes this write. The address rides along and is re-proven.
-              name: spec.recordedName,
+              // The proof is the ONLY thing that authorizes this write: for a
+              // coach-created session the stamp recorded at push time, for an
+              // imported one the content fingerprint the import recorded. The
+              // address rides along and is re-proven either way.
+              ...(importedProof
+                ? {
+                    importedProgramId: spec.importedProgramId,
+                    importedFingerprint: spec.importedFingerprint,
+                  }
+                : { name: spec.recordedName }),
               idInPlan: spec.idInPlan,
               programId: spec.programId,
               planId: spec.corosPlanId,
             },
             session: spec.session,
-            // The stamp the rewrite leaves. Equal to `recordedName` unless the
-            // ease renamed the session, which the executor treats as a rename and
-            // refuses if the new stamp is already taken.
+            // What the rewrite leaves. A STAMP for a coach-created session,
+            // equal to `recordedName` unless the ease renamed it (which the
+            // executor treats as a rename and refuses if the new stamp is
+            // taken); the PLAIN TITLE for an imported one, which claims no
+            // authorship and needs no uniqueness.
             name: spec.name,
             ...(threshold ? { thresholdPaceSecPerKm: threshold } : {}),
           },
@@ -337,7 +350,13 @@ export async function executeCloudJobs(
             // what the app says the day holds — and the row it was enqueued for
             // is `scheduled` and unarchived, i.e. a session the app is actively
             // prescribing.
-            fallback: "recreate",
+            //
+            // NEVER FOR AN IMPORTED SESSION. This app did not create those and
+            // must not re-create one inside a COROS-authored plan at a brand-new
+            // idInPlan after the athlete removed it. The executor refuses the
+            // combination outright; asking for it here would be the request it
+            // refuses, so it is not asked for.
+            ...(importedProof ? {} : { fallback: "recreate" as const }),
             log: () => undefined,
           },
         );
@@ -363,11 +382,24 @@ export async function executeCloudJobs(
               // be re-stamped or every later move and delete is aimed at a slot
               // this session no longer occupies. An in-place executor returns the
               // same ids and this rewrites them to themselves.
+              //
+              // EXCEPT `sourceProgramId` ON AN IMPORTED ROW, which must be left
+              // alone. That column carries two different things: COROS's own
+              // `program.id` when an import wrote it, and `planProgramId` when a
+              // create did (`create-executor.ts`'s `planProgramId ?? idInPlan`,
+              // which is why the athlete's coach-created rows hold the literal
+              // "42"/"43"/"44"). `serverProgramId` is the second kind, so writing
+              // it over an imported row would replace the program identity the
+              // second ownership proof re-reads with a two-digit slot number —
+              // and the NEXT ease of that session could never prove ownership
+              // again. An in-place rewrite changes no address at all, so there is
+              // nothing to re-stamp; only `delete_and_create` moves a session,
+              // and that path is refused outright for imported rows.
               ...(result.serverPlanId != null && result.serverIdInPlan != null
                 ? {
                     sourceWorkoutId: `${result.serverPlanId}:${result.serverIdInPlan}`,
                     sourceIdInPlan: String(result.serverIdInPlan),
-                    ...(result.serverProgramId != null
+                    ...(result.serverProgramId != null && !importedProof
                       ? { sourceProgramId: String(result.serverProgramId) }
                       : {}),
                   }
