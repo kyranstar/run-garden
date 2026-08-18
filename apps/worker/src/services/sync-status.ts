@@ -70,6 +70,7 @@ export async function computeSyncStatus(
     openIntents,
     contentStaleTargets,
     failedCoachCreateRows,
+    verifiedCoachWriteRows,
     studioPlanRows,
     corosConnRows,
   ] =
@@ -116,7 +117,7 @@ export async function computeSyncStatus(
       // about. Leaving it out would have made the one kind that closes that gap
       // the one kind whose failure was silent.
       db
-        .select({ id: corosWriteJobs.id })
+        .select({ id: corosWriteJobs.id, workoutId: corosWriteJobs.workoutId, requestedAt: corosWriteJobs.requestedAt })
         .from(corosWriteJobs)
         .innerJoin(plannedWorkouts, eq(corosWriteJobs.workoutId, plannedWorkouts.id))
         .where(
@@ -125,6 +126,18 @@ export async function computeSyncStatus(
             inArray(corosWriteJobs.kind, ["coach_create_workout", "coach_update_workout"]),
             eq(corosWriteJobs.status, "failed"),
             isNull(plannedWorkouts.archivedAt),
+          ),
+        ),
+      // The successes, so a failure a later write superseded can be told apart
+      // from one that still stands. See `failedCoachCreates` below.
+      db
+        .select({ workoutId: corosWriteJobs.workoutId, requestedAt: corosWriteJobs.requestedAt })
+        .from(corosWriteJobs)
+        .where(
+          and(
+            eq(corosWriteJobs.userId, userId),
+            inArray(corosWriteJobs.kind, ["coach_create_workout", "coach_update_workout"]),
+            eq(corosWriteJobs.status, "verified"),
           ),
         ),
       // Scoped to the NEWEST studio plan — the same predicate POST
@@ -151,7 +164,26 @@ export async function computeSyncStatus(
   const failedMoveCount = new Set(
     failedJobs.map((j) => j.workoutId).filter((id) => openIntentTargets.has(id)),
   ).size;
-  const failedCoachCreates = failedCoachCreateRows.length;
+  /**
+   * A FAILED JOB THAT A LATER WRITE SUPERSEDED IS HISTORY, NOT AN ISSUE.
+   *
+   * Job ids are content-derived, so converging a session mints a NEW id and the
+   * old attempt's row stays `failed` for ever. Live, that left the athlete
+   * reading "1 change couldn't sync" about a session that had synced minutes
+   * earlier — a badge no Retry could clear, describing a watch that was already
+   * correct, which is exactly the misleading no-op C15 was fixed to remove.
+   *
+   * A failed row counts only when nothing newer for the same workout succeeded.
+   */
+  const settledAfter = new Map<string, string>();
+  for (const j of verifiedCoachWriteRows) {
+    const prev = settledAfter.get(j.workoutId);
+    if (prev === undefined || j.requestedAt > prev) settledAfter.set(j.workoutId, j.requestedAt);
+  }
+  const failedCoachCreates = failedCoachCreateRows.filter((j) => {
+    const newerSuccess = settledAfter.get(j.workoutId);
+    return newerSuccess === undefined || newerSuccess < j.requestedAt;
+  }).length;
   const currentStudioPlan = studioPlanRows[0];
   const [corosConn] = corosConnRows;
 

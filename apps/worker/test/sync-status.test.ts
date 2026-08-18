@@ -144,6 +144,58 @@ describe("computeSyncStatus", () => {
     expect(status.issueCount).toBe(1);
   });
 
+  it("a failed coach write a LATER write superseded → issueCount 0 (history, not an issue)", async () => {
+    // Live (2026-08-18): the athlete read "1 change couldn't sync" about a
+    // session that had synced minutes earlier. Job ids are content-derived, so
+    // converging a session mints a NEW id and the old attempt's row stays
+    // `failed` for ever — a badge no Retry could clear, describing a watch that
+    // was already correct.
+    const db = makeTestDb();
+    const { userId, prefs } = await makeTestUser(db, { corosWritesEnabled: true });
+    await connectTestCoros(db, userId);
+    const workoutId = await insertWorkout(db, userId);
+    const base = {
+      userId,
+      workoutId,
+      kind: "coach_update_workout" as const,
+      expectedContentFingerprint: "fp",
+      originalDate: "2026-08-10",
+      destinationDate: "2026-08-10",
+      updatedAt: "2026-08-10T00:00:00.000Z",
+    };
+    await db.insert(schema.corosWriteJobs).values([
+      { ...base, id: `${workoutId}-content-old`, status: "failed", requestedAt: "2026-08-10T00:00:00.000Z" },
+      { ...base, id: `${workoutId}-content-new`, status: "verified", requestedAt: "2026-08-10T00:05:00.000Z" },
+    ]);
+
+    const status = await computeSyncStatus(db, userId, prefs);
+    expect(status.issueCount, "the superseded failure is history").toBe(0);
+    expect(status.state).not.toBe("sync_issue");
+  });
+
+  it("…but a failure NEWER than the last success still counts", async () => {
+    const db = makeTestDb();
+    const { userId, prefs } = await makeTestUser(db, { corosWritesEnabled: true });
+    await connectTestCoros(db, userId);
+    const workoutId = await insertWorkout(db, userId);
+    const base = {
+      userId,
+      workoutId,
+      kind: "coach_update_workout" as const,
+      expectedContentFingerprint: "fp",
+      originalDate: "2026-08-10",
+      destinationDate: "2026-08-10",
+      updatedAt: "2026-08-10T00:00:00.000Z",
+    };
+    await db.insert(schema.corosWriteJobs).values([
+      { ...base, id: `${workoutId}-content-old`, status: "verified", requestedAt: "2026-08-10T00:00:00.000Z" },
+      { ...base, id: `${workoutId}-content-new`, status: "failed", requestedAt: "2026-08-10T00:05:00.000Z" },
+    ]);
+
+    const status = await computeSyncStatus(db, userId, prefs);
+    expect(status.issueCount).toBe(1);
+  });
+
   it("failed move job whose workout was later archived → issueCount 0, not sync_issue (nothing left to retry behind an archived row)", async () => {
     const db = makeTestDb();
     const { userId, prefs } = await makeTestUser(db, { corosWritesEnabled: true });

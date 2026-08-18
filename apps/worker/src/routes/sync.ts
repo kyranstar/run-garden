@@ -24,6 +24,7 @@ import { pushStudioPlan, undoStudioAdoption } from "../services/studio-push.js";
 import { corosReadNow } from "../services/coros-read.js";
 import { countOrphanedMirrors, repairOrphanedMirrors } from "../services/mirror-repair.js";
 import { convergeDivergedContent, countDivergedContent } from "../services/content-converge.js";
+import { countAbsentPushable, pushAbsentSessions } from "../services/push-absent.js";
 import { processCoachReads } from "../services/coach-reads.js";
 import { waitUntilSafe } from "../services/wait-until.js";
 
@@ -443,6 +444,44 @@ const convergeContentSchema = z
     workoutIds: z.array(z.string().min(1)).min(1).max(200).optional(),
   })
   .strict();
+
+// ── POST /api/sync/push-absent ───────────────────────────────────────────────
+//
+// Sessions that never reached the watch because they were approved BEFORE the
+// app could push their kind. `watchPushable` admitted runs only until
+// 2026-08-17 15:39; lifts and mobility approved earlier queued nothing and were
+// never reconsidered. The reasoning and the pushability test live in
+// `services/push-absent.ts`; this route is validation and nothing else.
+//
+// GET FIRST. `/push-absent/census` is read-only and IS this backfill's own dry
+// run, summarised.
+const pushAbsentSchema = z
+  .object({
+    /** Required, never defaulted: a caller that forgot the field must not be
+     *  guessed at in the direction that writes to the athlete's watch. */
+    dryRun: z.boolean(),
+    /** Optional narrowing. Omitted, every unaddressed future row is examined.
+     *  Named rows still have to pass the same pushability test. */
+    workoutIds: z.array(z.string().min(1)).min(1).max(200).optional(),
+  })
+  .strict();
+
+syncRoutes.get("/push-absent/census", async (c) =>
+  c.json({ ok: true, ...(await countAbsentPushable(c.get("db"), c.get("userId"))) }),
+);
+
+syncRoutes.post("/push-absent", async (c) => {
+  let body: unknown;
+  try {
+    body = await c.req.json();
+  } catch {
+    return c.json({ error: "invalid_json" }, 400);
+  }
+  const parsed = pushAbsentSchema.safeParse(body);
+  if (!parsed.success) return c.json({ error: "invalid_request", details: parsed.error.issues }, 400);
+  const report = await pushAbsentSessions(c.get("db"), c.get("userId"), parsed.data);
+  return c.json({ ok: true, ...report });
+});
 
 syncRoutes.get("/converge-content/census", async (c) =>
   c.json({ ok: true, ...(await countDivergedContent(c.get("db"), c.get("userId"))) }),

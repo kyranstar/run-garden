@@ -384,11 +384,43 @@ async function insertSession(
   // run sessions ride the same verified create pipeline as studio pushes.
   // The stored state stays calendar_only until the executor verifies; the
   // pending job already renders as "syncing" through deriveWorkoutSync.
-  if (opts.corosWritesEnabled && watchPushable(session)) {
+  if (opts.corosWritesEnabled) {
+    await enqueueWatchCreate(db, userId, id, date, session, now, opts.thresholdPaceSecPerKm);
+  }
+}
+
+/**
+ * PUT A COACH SESSION ON THE WATCH — the one enqueue, shared by the live add
+ * and by `POST /api/sync/push-absent`.
+ *
+ * Extracted because the two must not drift, and because the reason the backfill
+ * exists is that this predicate CHANGED. Until `a8b1f04` (2026-08-17 15:39)
+ * `watchPushable` admitted runs only; a lift or mobility session approved before
+ * that — the athlete's were applied 14 hours earlier — took the `false` branch,
+ * queued nothing, and was never reconsidered. Nothing in the system retries a
+ * session that becomes pushable later, so the capability shipped and the
+ * sessions that needed it stayed off the watch.
+ *
+ * Returns the job id when it queued one, `null` when the session cannot ride the
+ * wire. Idempotent by deterministic id, so calling it on a session that already
+ * has a job is a no-op rather than a duplicate create.
+ */
+export async function enqueueWatchCreate(
+  db: Db,
+  userId: string,
+  id: string,
+  date: string,
+  session: CoachSession,
+  now: string,
+  thresholdPaceSecPerKm?: number,
+): Promise<string | null> {
+  if (!watchPushable(session)) return null;
+  const jobId = `${id}-push`;
+  {
     await db
       .insert(corosWriteJobs)
       .values({
-        id: `${id}-push`,
+        id: jobId,
         userId,
         workoutId: id,
         kind: "coach_create_workout",
@@ -405,7 +437,7 @@ async function insertSession(
           happenDay: date,
           name: stampName(session.title, date),
           session,
-          ...(opts.thresholdPaceSecPerKm ? { thresholdPaceSecPerKm: opts.thresholdPaceSecPerKm } : {}),
+          ...(thresholdPaceSecPerKm ? { thresholdPaceSecPerKm } : {}),
         },
         requestedAt: now,
         status: "queued",
@@ -415,6 +447,7 @@ async function insertSession(
       // deterministic id makes skip-on-conflict exactly right.
       .onConflictDoNothing();
   }
+  return jobId;
 }
 
 // ── Convergence: keeping the watch's copy equal to the app's ────────────────
