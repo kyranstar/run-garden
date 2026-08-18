@@ -1,0 +1,16 @@
+import { chromium, devices } from "@playwright/test";
+const BASE = "http://localhost:5246";
+const S = "/private/tmp/claude-501/-Users-kyranadams-src-run-garden--claude-worktrees-garden-ux-audit/1772806f-a9e5-44be-ae13-6cd7ce16001b/scratchpad";
+const browser = await chromium.launch();
+const context = await browser.newContext({ ...devices["iPhone 13"], colorScheme: "light", timezoneId: "America/New_York" });
+await context.request.post(`${BASE}/api/dev/fixture-login`);
+const page = await context.newPage();
+await page.clock.install({ time: new Date("2026-08-18T10:30:00-04:00") });
+await page.goto(`${BASE}/`);
+await page.waitForLoadState("networkidle");
+await page.waitForTimeout(1800);
+await page.addStyleTag({ content: ".banner-info[role='status'] { display: none !important; }" });
+await page.waitForTimeout(300);
+await page.screenshot({ path: `${S}/cmp_before_fold.png` });
+await browser.close();
+console.log("done");

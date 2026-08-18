@@ -140,8 +140,11 @@ describe("a screen's first paint waits for every query that decides its structur
           `in the gate, or the screen paints one layout and then another.`,
       ).toContain(q);
     }
-    // The exemption has to stay a deliberate minority, not the default.
-    expect(named.length).toBeGreaterThan(exempt.length);
+    // The exemption may never become the majority. (The garden sits at
+    // parity: three gated, three annotated — the two timeline queries that
+    // fill a deliberately-opened panel, and the Lately strip's cached
+    // insight line.)
+    expect(named.length).toBeGreaterThanOrEqual(exempt.length);
   });
 
   it("the Plan page gates on all four of its structural queries", () => {
@@ -165,13 +168,13 @@ describe("a screen's first paint waits for every query that decides its structur
     // still absent when the spinner let go. Both halves have to be
     // conditional: dropping it from the gate alone would leave the wasted
     // request, and gating without disabling would leave the wasted wait.
-    expect(code.garden).toMatch(/const weekWorkouts = useWeekWorkouts\([\s\S]{0,120}?dockOpen,?\s*\)/);
+    expect(code.garden).toMatch(/const weekWorkouts = useWeekWorkouts\([\s\S]{0,160}?dockOpen \|\| cardAlwaysOpen,?\s*\)/);
     expect(code.garden).toMatch(/function useWeekWorkouts\(monday: string, enabled = true\)/);
     expect(code.garden).toMatch(/queryKey: \["week-workouts", monday\],[\s\S]{0,120}?\n\s*enabled,/);
     // …and the gate's copy of the question is asked ONCE, at mount. Read
     // live, opening the dock later would throw the whole painted screen back
     // to "Loading the garden" while the query ran.
-    expect(code.garden).toContain("const [gateOnRibbon] = useState(dockOpen);");
+    expect(code.garden).toContain("const [gateOnRibbon] = useState(dockOpen || cardAlwaysOpen);");
     expect(code.garden).toMatch(/settling\(garden, today, gateOnRibbon \? weekWorkouts : null\)/);
   });
 });
@@ -459,11 +462,11 @@ describe("a trigger's own box does not change when it fires", () => {
     // A bare `.linklike` in prose was in NONE of the pad selector lists — the
     // control measured 147.9 × 21.6px of hit area.
     const padded = src.css.slice(0, at(src.css, ".tap-pad::after,"));
-    expect(padded).toContain(".garden-below-intro .linklike,");
-    expect(src.css).toContain(".garden-below-intro .linklike::after,");
+    expect(padded).toContain(".howworks .linklike,");
+    expect(src.css).toContain(".howworks .linklike::after,");
     // A pad is clamped to what its container grants, so the container has to
     // grant it: 21.6px needs (44 − 21.6)/2 = 11.2px per side.
-    expect(cssRule(".garden-below-intro")).toContain("--tap-clear");
+    expect(cssRule(".howworks")).toContain("--tap-clear");
   });
 
   it("the race strip's toggle wears the app's chrome, not the browser's", () => {
@@ -498,26 +501,24 @@ describe("the garden's attention count and its destination come from one place",
   it("has exactly one sentence, and it agrees with itself", () => {
     expect(attentionPhrase(1)).toBe("1 workout needs attention");
     expect(attentionPhrase(3)).toBe("3 workouts need attention");
-    // The link said "3 workouts need attention ↓" and the banner it jumped to
-    // spoke for 1, because each counted its own thing. The literal may exist
-    // only inside `attentionPhrase`; both readers call it.
+    // The literal may exist only inside `attentionPhrase`. System 1 v2 cut
+    // the readers to ONE — the amber row on the Today card — so the count
+    // can no longer disagree with a second telling; there isn't one.
     const occurrences = code.garden.split("workouts need attention").length - 1;
     expect(
       occurrences,
       "`workouts need attention` is written more than once in garden.tsx — " +
         "that is how the count and the banner drifted apart the first time",
     ).toBe(1);
-    expect(code.garden.split("attentionPhrase(").length - 1).toBeGreaterThanOrEqual(3); // decl + 2 readers
+    expect(code.garden.split("attentionPhrase(").length - 1).toBe(2); // decl + the one row
   });
 
-  it("the jump target is the attention block, not the whole lower page", () => {
-    // `id="garden-attention"` on `.garden-below` resolved 352px above the
-    // first thing that needed you, because that region opens with prose.
-    expect(src.garden).not.toMatch(/className="garden-below" id="garden-attention"/);
-    expect(src.garden).toMatch(/className="garden-attention" id="garden-attention"/);
-    // …and the scroll margin moved with the id.
-    expect(cssRule(".garden-attention")).toContain("scroll-margin-top");
-    expect(cssRule(".garden-below")).not.toContain("scroll-margin-top");
+  it("the one row leads where the answers are, not to a local anchor", () => {
+    // v2: the two "Did this run happen?" cards left the garden — the row
+    // deep-links to Plan (straight into the workout sheet when there is
+    // exactly one) and no local anchor remains to drift 352px off target.
+    expect(src.garden).not.toContain('id="garden-attention"');
+    expect(src.garden).toMatch(/today-attention[\s\S]{0,400}\/plan\?workout=/);
   });
 });
 

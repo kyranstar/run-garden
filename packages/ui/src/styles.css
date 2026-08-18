@@ -691,9 +691,7 @@ h1,
 .week-header,
 .studio-week-label,
 .signal-group-label,
-.dock-verdict-who,
 .hud-beat-label,
-.hud-rail button,
 .ceremony-eyebrow,
 .bot-earn-label,
 .plan-brief-who,
@@ -706,7 +704,9 @@ h1,
 .codex-newring,
 .nudge-disc,
 .rarity,
-.today-tag {
+.today-tag,
+.today-eyebrow,
+.lately-eyebrow {
   font-size: var(--text-2xs);
   font-weight: var(--weight-medium);
   letter-spacing: 0.06em;
@@ -724,7 +724,9 @@ h1,
 .plan-brief-headline,
 .plan-week-title,
 .side-nav .brand,
-.coach-panel-head h2 {
+.coach-panel-head h2,
+.today-title,
+.streak-n {
   font-family: var(--font-display);
   font-size: var(--text-lg);
   font-weight: var(--weight-medium);
@@ -1566,41 +1568,193 @@ a.note {
   flex-direction: column;
   gap: var(--space-6);
 }
-/* The scrims exist to lift type off ARTWORK. Below lg the type sits on the
-   page, so there is nothing to scrim. */
-.stage-scrim {
+/* Conditional banners only, above the stage — on a healthy home-timezone day
+   this box has no children and no height. */
+.garden-plumbing {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+}
+.garden-plumbing:empty {
   display: none;
 }
 
-/* 1 — the scene. One box: the bordered card below lg, the full-bleed stage
-   from lg (see `.garden-scene` in the stage block). Its width — and so, at
-   16:9, its height — is the column's; the 900px cap it used to carry was a
-   fourth measure in a column that now has one. */
-.garden-scene {
+/* 1 — the hero: the scene with the condition word printed ON it, at every
+   width (System 1 v2). Below lg it is a cropped card — a fixed-height box the
+   `slice` svg fills, like a viewfinder onto the garden — and the streak band
+   below fuses onto its bottom edge. From lg it is an inset-0 layer of the
+   full-viewport stage and every stage rule reads through it. */
+.stage-hero {
   position: relative;
-  width: 100%;
+  height: clamp(280px, 42vh, 420px);
   border-radius: var(--radius);
   overflow: hidden;
   border: 1px solid var(--border);
   background: var(--bg-raised);
+}
+.garden-stage:has(.streak-band) .stage-hero {
+  border-bottom-left-radius: 0;
+  border-bottom-right-radius: 0;
+  border-bottom: none;
+}
+.garden-scene {
+  position: absolute;
+  inset: 0;
   line-height: 0;
 }
-
-/* 2 — the voice. Centred TEXT in a full-width box, not a centred box: an auto
-   cross-axis margin on a flex item cancels `stretch` and shrink-wraps it, so
-   `margin: 0 auto` here gave the condition block a left edge of its own
-   (x=231 at 900, against the column's 52). The column owns the measure now. */
-.hud-topleft {
-  text-align: center;
+.garden-scene [data-garden-wrapper] {
+  position: absolute !important;
+  inset: 0;
 }
+.stage-scene-svg {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  display: block;
+}
+/* The scrims lift type and chips off the artwork — needed at EVERY width now
+   that the condition word sits on the picture. The lg block re-tunes them for
+   the full stage. */
+.stage-scrim {
+  display: block;
+  position: absolute;
+  left: 0;
+  right: 0;
+  pointer-events: none;
+}
+.stage-scrim-top {
+  top: 0;
+  height: 22%;
+  background: linear-gradient(rgba(var(--scrim-rgb), 0.28), rgba(var(--scrim-rgb), 0.08) 60%, transparent);
+}
+.stage-scrim-bottom {
+  bottom: 0;
+  height: 46%;
+  background: linear-gradient(transparent, rgba(var(--scrim-rgb), 0.16) 45%, rgba(var(--scrim-rgb), 0.55));
+}
+
+/* The scene's quiet tool chips, on the picture (the rail section, retired).
+   30px boxes, so their 44px pads reach 7px — the row grants 8px and nothing
+   else sits within reach. */
+.scene-tools {
+  position: absolute;
+  top: var(--space-4);
+  right: var(--space-4);
+  display: flex;
+  --tap-clear: var(--space-4);
+  gap: var(--tap-clear);
+  z-index: 5;
+}
+.scene-chip {
+  height: 30px;
+  min-width: 30px;
+  padding: 0 var(--space-4);
+  border: none;
+  border-radius: var(--radius-pill);
+  background: rgba(var(--scrim-rgb), 0.42);
+  color: var(--on-scene);
+  font: var(--weight-regular) var(--text-xs) var(--font);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-2);
+  cursor: pointer;
+  backdrop-filter: blur(3px);
+}
+.scene-chip:hover,
+.scene-chip:focus-visible {
+  background: rgba(var(--scrim-rgb), 0.6);
+}
+
+/* 2 — the voice, printed on the hero's bottom scrim. */
+.hud-topleft {
+  position: absolute;
+  left: var(--space-6);
+  right: var(--space-6);
+  bottom: var(--space-5);
+  text-align: left;
+  color: var(--on-scene);
+  text-shadow: var(--scene-text-shadow);
+}
+/* The scene word: rank 3's face, sized against the viewport (7vw ≈ 27px on a
+   phone, capped at the page rank) — the one heading whose page IS the scene. */
 .hud-condition {
-  color: var(--green-ink);
+  font-size: clamp(var(--text-xl), 7vw, var(--text-2xl));
+  letter-spacing: -0.01em;
+  line-height: 1.12;
+  color: inherit;
   margin: 0 0 var(--space-1);
 }
 .hud-weather {
   margin: 0;
   font-size: var(--text-sm);
+  line-height: 1.45;
+  color: inherit;
+  opacity: 0.97;
+}
+
+/* 2b — the streak band: the celebrated metric, fused under the hero. */
+.stage-ledger {
+  display: contents;
+}
+.streak-band {
+  margin-top: calc(-1 * var(--space-6));
+  background: var(--bg-raised);
+  border: 1px solid var(--border);
+  border-top: none;
+  border-radius: 0 0 var(--radius) var(--radius);
+  padding: var(--space-5) var(--space-6);
+  box-shadow: var(--shadow);
+}
+.streak-row {
+  display: flex;
+  align-items: baseline;
+  gap: var(--space-4);
+}
+/* Shares rank 3's face and weight; the size is the band's own celebration
+   step and the colour is semantic. */
+.streak-n {
+  font-size: var(--text-xl);
+  color: var(--green-ink);
+}
+.streak-word {
+  font-size: var(--text-sm);
+  font-weight: var(--weight-medium);
+}
+.streak-pct {
+  margin-left: auto;
+  font-size: var(--text-xs);
   color: var(--ink-soft);
+}
+.streak-weeks {
+  display: flex;
+  gap: var(--space-2);
+  margin-top: var(--space-4);
+}
+.streak-week {
+  flex: 1;
+  height: 12px;
+  border-radius: var(--radius-hair);
+}
+.streak-full {
+  background: var(--green);
+}
+.streak-partial {
+  background: color-mix(in srgb, var(--green) 40%, var(--bg-sunken));
+}
+.streak-quiet {
+  background: var(--bg-sunken);
+  border: 1px solid var(--border);
+}
+.streak-current {
+  background: var(--bg-raised);
+  border: 1.5px dashed var(--green);
+}
+.streak-cap {
+  margin: var(--space-4) 0 0;
+  font-size: var(--text-2xs);
+  color: var(--ink-faint);
 }
 
 /* 3 — the beat: what changed. The dismiss ✕ is the stage's; on a card it is
@@ -1618,11 +1772,12 @@ a.note {
   display: flex;
   flex-wrap: wrap;
   align-items: baseline;
-  justify-content: center;
+  justify-content: flex-start;
   --tap-clear: var(--space-5);
   gap: var(--tap-clear);
-  margin: var(--space-3) 0 0;
+  margin: 0 var(--space-2);
   font-size: var(--text-sm);
+  color: var(--ink-soft);
 }
 .hud-beat-label {
   flex: none;
@@ -1662,40 +1817,11 @@ a.note {
   align-items: stretch;
   gap: var(--tap-clear);
 }
+/* Below lg the Today card IS the page and never collapses; the pill is the
+   collapsed control from lg only (its whole visual treatment lives in the
+   stage block). */
 .dock-pill {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: baseline;
-  gap: var(--space-3);
-  width: 100%;
-  min-height: var(--tap);
-  padding: var(--space-4) var(--space-5);
-  text-align: left;
-  cursor: pointer;
-  background: var(--bg-raised);
-  border: 1px solid var(--border);
-  /* Severity is a left edge, not a second tinted field — the same device
-     `.card-prompt` uses. The phrase inside says the level too; the edge and
-     the dot are never the only signal. */
-  border-left: 3px solid var(--verdict-ink, var(--green));
-  border-radius: var(--radius-sm);
-  color: var(--ink);
-  font: var(--weight-medium) var(--text-md) var(--font);
-}
-/* With no plan there is no panel behind this row, so it is rendered as a <p>
-   rather than a <button> — a control that looks pressable and isn't is worse
-   than a label. It keeps every other pixel of the pill's treatment. */
-.dock-pill-static {
-  margin: 0;
-  cursor: default;
-}
-.dock-pill-verdict {
-  font-weight: var(--weight-bold);
-}
-/* The verdict leads; the workout is the quieter second half of the same line
-   (or, on a phone, the second row — the pill wraps rather than truncating). */
-.dock-pill-workout {
-  color: var(--ink-soft);
+  display: none;
 }
 .dock-panel {
   border: 1px solid var(--border);
@@ -1773,108 +1899,239 @@ a.note {
   color: var(--green-ink);
 }
 
-/* The readiness verdict (2026-08-14) — until now a stage-only feature.
-   Colour is the existing semantic vocabulary — --green-ink / --warn /
-   --danger, the same three the pills, banners and charts already speak —
-   routed through one local custom property so a level is named in exactly one
-   place. Colour is never the only signal: the PHRASE beside the dot says the
-   same thing, and the dot itself is aria-hidden. */
-.dock-verdict-good {
+/* The readiness verdict, System 1 v2: ONE chip on the Today card, one sheet
+   behind it. Colour is the existing semantic vocabulary — --green-ink /
+   --warn / --danger — routed through one local custom property; the phrase
+   beside the dot says the level too, so colour is never the only signal. */
+.ready-good {
   --verdict-ink: var(--green-ink);
 }
-.dock-verdict-caution {
+.ready-caution {
   --verdict-ink: var(--warn);
 }
-.dock-verdict-poor {
+.ready-poor {
   --verdict-ink: var(--danger);
 }
-.dock-verdict {
-  padding: var(--space-4);
-  border-bottom: 1px solid var(--border);
+.ready-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-3);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-pill);
+  padding: var(--space-2) var(--space-5);
+  background: var(--bg);
+  color: var(--ink-soft);
+  font: var(--weight-regular) var(--text-xs) var(--font);
+  cursor: pointer;
 }
-.dock-verdict-dot {
+.ready-dot {
   flex: none;
   display: inline-block;
+  width: 0.5rem;
+  height: 0.5rem;
+  border-radius: var(--radius-round);
+  background: var(--verdict-ink, var(--green));
+}
+/* The sheet: verdict, the three morning numbers, the why, the provenance. */
+.ready-verdict {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  margin: 0 0 var(--space-5);
+  font-size: var(--text-md);
+  font-weight: var(--weight-medium);
+  color: var(--verdict-ink, var(--ink));
+}
+.ready-verdict .ready-dot {
   width: 0.6rem;
   height: 0.6rem;
-  margin-right: var(--space-3);
-  border-radius: var(--radius-round);
-  background: var(--verdict-ink);
 }
-/* The panel head's leading line, now that the verdict phrase stays on the
-   pill below (see DockVerdict): the numbers behind the reading, nothing
-   else. */
-.dock-verdict-why {
-  margin: 0;
-  font-size: var(--text-xs);
+.ready-vitals {
+  display: flex;
+  gap: var(--space-4);
+}
+.ready-vital {
+  flex: 1;
+  background: var(--bg-sunken);
+  border-radius: var(--radius-md);
+  padding: var(--space-4) var(--space-5);
+}
+.ready-vital b {
+  display: block;
+  font-size: var(--text-lg);
+  font-weight: var(--weight-medium);
+}
+.ready-vital small {
+  display: block;
+  margin-top: var(--space-1);
+  font-size: var(--text-2xs);
+  color: var(--ink-faint);
+  line-height: 1.35;
+}
+.ready-why {
+  margin: var(--space-5) 0 0;
+  font-size: var(--text-sm);
   color: var(--ink-soft);
   font-variant-numeric: tabular-nums;
 }
-/* The coach's weekly line, mirroring the plan brief's Coach/text pairing so
-   the two surfaces quote the same person the same way. Dated, because it was
-   written about the week — never about today's readiness. */
-.dock-verdict-coach {
+.ready-prov {
+  margin: var(--space-5) 0 0;
+  line-height: 1.5;
+}
+
+/* The one attention row on the Today card — the two prompt cards it replaces
+   live where the answers live (Plan). Its own padding makes the 44px floor,
+   so it sits in no pad list. */
+.today-attention {
   display: flex;
+  align-items: center;
   gap: var(--space-3);
-  align-items: baseline;
-  margin: var(--space-4) 0 0;
-  font-size: var(--text-xs);
-  color: var(--ink);
-}
-.dock-verdict-who {
-  flex: none;
-  color: var(--ink-soft);
-  white-space: nowrap;
-}
-.dock-attention {
-  color: var(--green-ink);
+  min-height: var(--tap);
+  padding: var(--space-4) var(--space-5);
+  background: var(--warn-soft);
+  border-radius: var(--radius-sm);
+  color: var(--warn);
   font-size: var(--text-sm);
   font-weight: var(--weight-medium);
   text-decoration: none;
 }
-.dock-attention:hover {
+.today-attention:hover {
+  text-decoration: underline;
+}
+.today-attention > [aria-hidden] {
+  margin-left: auto;
+}
+
+/* The Today card's own furniture. */
+.today-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-5);
+}
+.today-eyebrow {
+  color: var(--ink-faint);
+}
+/* Rank 3's face; the card's lead takes the xl step. */
+.today-title {
+  margin: 0;
+  font-size: var(--text-xl);
+  line-height: 1.15;
+}
+.today-meta {
+  margin: 0;
+  font-size: var(--text-sm);
+  color: var(--ink-soft);
+}
+.today-structure {
+  background: var(--bg-sunken);
+  border-radius: var(--radius-sm);
+  padding: var(--space-4) var(--space-5);
+  font-size: var(--text-xs);
+  color: var(--ink-soft);
+  line-height: 1.45;
+}
+.today-coach {
+  display: flex;
+  gap: var(--space-5);
+  padding-top: var(--space-5);
+  border-top: 1px solid var(--border);
+}
+.today-coach-mark {
+  flex: none;
+  width: 26px;
+  height: 26px;
+  border-radius: var(--radius-round);
+  background: var(--green-soft);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: var(--text-xs);
+}
+.today-coach-body {
+  margin: 0;
+  font-size: var(--text-sm);
+  line-height: 1.5;
+}
+.today-coach-who {
+  font-weight: var(--weight-bold);
+  color: var(--green-ink);
+}
+.today-coach-ask {
+  color: var(--green-ink);
+  font-weight: var(--weight-medium);
+  text-decoration: none;
+  white-space: nowrap;
+}
+.today-coach-ask:hover {
   text-decoration: underline;
 }
 
 /* 6 — quiet utilities: what each discipline is growing, then the panels.
    The gap is the clearance this container grants its 24.8px-tall controls —
    see `--tap-clear` at the foot of the sheet; the two step together. */
-.hud-corner {
+/* 6 — "Lately": the unboxed strip. Whitespace and hairlines do the grouping,
+   not card chrome (System 1 v2 — the round-2 feedback was fewer boxes). */
+.lately {
   display: flex;
   flex-direction: column;
-  align-items: flex-start;
+  margin: var(--space-4) var(--space-2) 0;
+}
+.lately-eyebrow {
+  color: var(--ink-faint);
+  margin-bottom: var(--space-5);
+}
+.lately-healthy {
+  margin: 0;
+  font-size: var(--text-sm);
+  color: var(--green-ink);
+}
+.lately-cap {
+  margin: var(--space-5) 0 0;
+  font-size: var(--text-xs);
+  color: var(--ink-soft);
+  line-height: 1.5;
+}
+.lately-cap-loss {
+  color: var(--warn);
+}
+.lately-cap strong {
+  color: var(--warn);
+  font-weight: var(--weight-medium);
+}
+.lately-line {
+  margin: var(--space-5) 0 0;
+  padding-top: var(--space-5);
+  border-top: 1px solid var(--border);
+  font-size: var(--text-xs);
+  color: var(--ink-soft);
+  line-height: 1.5;
+}
+.lately-more {
+  align-self: flex-start;
+  margin-top: var(--space-5);
+  font-size: var(--text-sm);
+  font-weight: var(--weight-medium);
+  color: var(--green-ink);
+  text-decoration: none;
+}
+.lately-more:hover {
+  text-decoration: underline;
+}
+/* The meters inside the strip: the same BalanceStrip, as stacked label/track/
+   caption rows rather than three columns — thin, quiet, tappable. */
+.lately .balance-bars {
+  flex-direction: column;
   gap: var(--space-5);
 }
-.hud-nudge {
-  background: none;
-  border: none;
-  cursor: pointer;
-  text-align: left;
-  color: var(--ink-soft);
-  font: var(--weight-regular) var(--text-sm) var(--font);
-  padding: var(--space-2) 0;
+.lately .balance-bar {
+  display: grid;
+  grid-template-columns: 44px 1fr 56px;
+  gap: var(--space-5);
+  align-items: center;
 }
-.hud-nudge:hover {
-  color: var(--ink);
-  text-decoration: underline;
-  text-underline-offset: 3px;
-}
-.hud-rail {
-  display: flex;
-  flex-wrap: wrap;
-  gap: var(--space-7);
-}
-.hud-rail button {
-  background: none;
-  border: none;
-  cursor: pointer;
-  padding: var(--space-2) 0;
-  color: var(--ink-soft);
-  font-variant-numeric: tabular-nums;
-}
-.hud-rail button:hover,
-.hud-rail button:focus-visible {
-  color: var(--ink);
+.lately .balance-bar-caption {
+  text-align: right;
 }
 
 /* The scrubber, when it is open: centred under the scene in the stack, a
@@ -1884,31 +2141,24 @@ a.note {
   justify-content: center;
 }
 
-/* Below the garden: the story, how it works, and the plumbing. In the stack
-   it is simply the next thing in the column; from lg it is the reading column
-   that returns underneath the full-bleed stage. */
+/* Below the garden: the one quiet foot line. */
 .garden-below {
   display: flex;
   flex-direction: column;
   gap: var(--space-6);
 }
-/* System 4 D8: the jump target. `scroll-margin-top` moved here off
-   `.garden-below` with the id — a scroll margin on a region 352px taller than
-   the thing being pointed at is a margin on the wrong box. */
-.garden-attention {
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-4);
-  scroll-margin-top: var(--space-6);
-}
-.garden-below-intro {
-  max-width: 62ch;
-  /* Grants its inline disclosure the 11.2px per side its 21.6px box needs to
-     reach the 44px floor. The button sits at the END of the paragraph, so the
-     pad only ever reaches into `.garden-below`'s own 16px gap, and there is no
-     second control in this prose for it to steal a tap from. */
+/* Grants its inline disclosure the 11.2px per side its 21.6px box needs to
+   reach the 44px floor; there is no second control in this prose to rob. */
+.howworks {
+  margin: var(--space-4) 0 0;
+  text-align: center;
+  font-size: var(--text-xs);
   --tap-clear: var(--space-5);
 }
+.howworks .linklike {
+  color: var(--ink-faint);
+}
+
 /* System 4 D4/D3: a disclosure trigger's LABEL is constant — the caret is the
    only thing that changes. A fixed-width glyph box means ▸ and ▾ occupy the
    same space, so neither the button nor the sentence it sits in can re-wrap
@@ -1959,13 +2209,21 @@ a.note {
     overflow: hidden;
     background: var(--stage-bg);
   }
-  /* The same box that is a bordered card below lg, now full-bleed artwork. */
-  .garden-scene {
+  /* The hero wrapper dissolves into an inset-0 layer: the scene fills the
+     stage, and every positioned box inside it (the scene, the top-left
+     voice) lands exactly where the stage block below expects. Later siblings
+     (ledger, dock, instruments) paint above it by DOM order. */
+  .stage-hero {
     position: absolute;
     inset: 0;
+    height: auto;
     border: none;
     border-radius: 0;
     background: none;
+    overflow: visible;
+  }
+  .garden-stage:has(.streak-band) .stage-hero {
+    border: none;
   }
   /* Descendant, not child: `.scene-rotor` (the portrait-fullscreen rotation
      box, `display: contents` at rest) sits between them. */
@@ -2003,6 +2261,8 @@ a.note {
     position: absolute;
     top: clamp(1.4rem, 3.2vh, 2.4rem);
     left: clamp(1.6rem, 3.2vw, 3.2rem);
+    right: auto;
+    bottom: auto;
     max-width: min(36rem, 44vw);
     margin: 0;
     text-align: left;
@@ -2013,30 +2273,12 @@ a.note {
      viewport, bounded top and bottom by scale steps. The immersive garden is
      the one screen whose largest visible type is not its <h1> — that <h1> is
      deliberately `.visually-hidden` there, because the scene IS the page. */
-  .hud-condition {
-    font-family: var(--font-display);
-    font-size: clamp(var(--text-xl), 2.5vw, var(--text-2xl));
-    font-weight: var(--weight-medium);
-    letter-spacing: -0.01em;
-    line-height: 1.15;
-    color: inherit;
-  }
   .hud-weather {
     margin-top: var(--space-2);
     font-size: var(--text-md);
     line-height: 1.45;
     opacity: 0.84;
     color: inherit;
-  }
-  .hud-forecast.forecast-line {
-    margin: var(--space-4) 0 0;
-    font-size: var(--text-md);
-    color: var(--on-scene);
-    opacity: 0.96;
-  }
-  .hud-forecast.forecast-line strong {
-    color: var(--on-scene-accent);
-    font-weight: var(--weight-medium);
   }
   .hud-beat {
     display: flex;
@@ -2081,11 +2323,50 @@ a.note {
      every rule it enabled lived in here — so below lg the class was inert and
      read like a mobile/desktop switch that wasn't one. Printed-on-artwork is
      a property of where a thing sits, and this is the box it sits in. */
-  .hud-topright {
-    position: absolute;
+  /* The scene chips keep the true top-right; the Lately instruments start
+     one chip-row below them. */
+  .scene-tools {
     top: clamp(1.5rem, 3.4vh, 2.5rem);
     right: clamp(1.6rem, 3.2vw, 3.2rem);
+  }
+  .hud-topright {
+    position: absolute;
+    top: calc(clamp(1.5rem, 3.4vh, 2.5rem) + 44px);
+    right: clamp(1.6rem, 3.2vw, 3.2rem);
     width: 232px;
+  }
+  /* The Lately strip, printed on the artwork. */
+  .hud-topright .lately {
+    margin: 0;
+  }
+  .hud-topright .lately-eyebrow {
+    color: rgba(var(--on-scene-rgb), 0.75);
+    text-shadow: var(--scene-text-shadow);
+  }
+  .hud-topright .lately-healthy {
+    color: var(--on-scene);
+    text-shadow: var(--scene-text-shadow);
+  }
+  .hud-topright .lately-cap {
+    color: rgba(var(--on-scene-rgb), 0.85);
+    text-shadow: var(--scene-text-shadow);
+  }
+  .hud-topright .lately-cap-loss,
+  .hud-topright .lately-cap strong {
+    color: var(--on-scene-accent);
+  }
+  .hud-topright .lately-line {
+    color: rgba(var(--on-scene-rgb), 0.85);
+    text-shadow: var(--scene-text-shadow);
+    border-top-color: rgba(var(--on-scene-rgb), 0.25);
+  }
+  .hud-topright .lately-more {
+    color: var(--on-scene);
+    text-shadow: var(--scene-text-shadow);
+  }
+  .hud-topright .review-pull {
+    color: rgba(var(--on-scene-rgb), 0.85);
+    text-shadow: var(--scene-text-shadow);
   }
   .hud-topright .balance-bar-label {
     color: rgba(var(--on-scene-rgb), 0.86);
@@ -2129,8 +2410,9 @@ a.note {
     display: flex;
     flex-direction: column;
     align-items: flex-start;
-    /* --space-4 before: `.dock-attention` is 21.6px tall, so its hit pad
-       reached 11.2px down — 3.2px into the verdict pill below it. */
+    /* 12px: the gap the short controls inside the dock need their pads
+       clamped to (the attention row is self-padded now, but Minimize and the
+       grows line are not). */
     gap: var(--tap-clear);
     max-width: min(30rem, 40vw);
   }
@@ -2181,11 +2463,6 @@ a.note {
      decoration in CSS, so it never lands in the accessible name as a stray
      character. In the stack the pill is a wrapping flex row and the gap does
      this job; a "·" there becomes a leading orphan on the second row. */
-  .dock-pill-verdict + .dock-pill-workout::before {
-    content: "·";
-    margin: 0 var(--space-3);
-    color: rgba(var(--on-scene-rgb), 0.6);
-  }
   .dock-pill-workout {
     color: rgba(var(--on-scene-rgb), 0.92);
   }
@@ -2221,15 +2498,6 @@ a.note {
     box-shadow: var(--shadow-lg);
     padding: var(--space-3);
   }
-  /* On the pill the type sits on artwork, not on the panel's surface, so the
-     phrase stays white (its own contrast treatment) and only the dot carries
-     hue — lifted toward white so a light-theme --danger can't sink into a
-     dark scene. Mixing an existing token, not a new colour. */
-  .dock-pill .dock-verdict-dot {
-    background: color-mix(in srgb, var(--verdict-ink) 55%, var(--on-scene));
-    box-shadow: var(--scene-text-shadow);
-  }
-
   /* The bar detail panel floats below the HUD instrument cluster. */
   .hud-topright .balance-detail {
     position: absolute;
@@ -2242,32 +2510,21 @@ a.note {
     box-shadow: var(--shadow-lg);
     text-shadow: none;
   }
-  .dock-attention {
-    color: var(--on-scene-accent);
-    text-shadow: var(--scene-text-shadow);
-  }
-
-  /* Hierarchy 6: quiet utilities, bottom-right. */
-  .hud-corner {
+  /* Hierarchy 6: the ledger corner, bottom-right — the streak band and the
+     beat line, printed on the scene. The corner scrim below carries their
+     contrast (the page-wide bottom scrim is too broad and too weak). */
+  .stage-ledger {
+    display: flex;
     position: absolute;
     right: clamp(1.6rem, 3.2vw, 3.2rem);
     bottom: clamp(1.3rem, 3vh, 2.2rem);
-    display: flex;
     flex-direction: column;
     align-items: flex-end;
     gap: var(--space-5);
     text-align: right;
+    max-width: min(22rem, 30vw);
   }
-  /* Contrast for the type that sits straight on the scene (audit 2026-08-14:
-     the unlock lines and the rail measured ~3.7:1 over a sunlit afternoon —
-     below AA). The page-wide bottom scrim is too broad and too weak to carry
-     this corner, and a heavier text-shadow only smears the letterforms. A
-     short gradient pooled under the corner does it instead: strongest behind
-     the smallest type, gone by ~75% of the way out, so the plants keep their
-     light. Absolutely positioned, so it is not a flex item; the z-indexes
-     keep it behind the text rather than painted over it (a positioned
-     pseudo-element otherwise paints ABOVE static siblings). */
-  .hud-corner::before {
+  .stage-ledger::before {
     content: "";
     position: absolute;
     inset: calc(var(--space-6) * -1) calc(var(--space-7) * -1) calc(var(--space-7) * -1) calc(var(--space-9) * -1);
@@ -2281,29 +2538,47 @@ a.note {
     );
     pointer-events: none;
   }
-  .hud-corner > * {
+  .stage-ledger > * {
     position: relative;
     z-index: 1;
   }
-  .hud-nudge {
-    text-align: inherit;
-    color: rgba(var(--on-scene-rgb), 0.94);
-    text-shadow: var(--scene-text-shadow);
-  }
-  .hud-nudge:hover {
+  /* The band sheds its card: white type on the corner scrim, squares intact. */
+  .streak-band {
+    margin: 0;
+    background: none;
+    border: none;
+    border-radius: 0;
+    padding: 0;
+    box-shadow: none;
     color: var(--on-scene);
-    text-decoration: underline;
-    text-underline-offset: 3px;
-  }
-  .hud-rail button {
-    /* 12px uppercase gets no large-text exemption — with the corner scrim
-       behind it this clears AA where 0.7 did not. */
-    color: rgba(var(--on-scene-rgb), 0.86);
     text-shadow: var(--scene-text-shadow);
+    width: 100%;
   }
-  .hud-rail button:hover,
-  .hud-rail button:focus-visible {
+  .streak-row {
+    justify-content: flex-end;
+  }
+  .streak-n {
     color: var(--on-scene);
+  }
+  .streak-pct {
+    color: rgba(var(--on-scene-rgb), 0.8);
+  }
+  .streak-weeks {
+    margin-top: var(--space-3);
+  }
+  .streak-week {
+    min-width: 10px;
+  }
+  .streak-quiet {
+    background: rgba(var(--on-scene-rgb), 0.22);
+    border: none;
+  }
+  .streak-current {
+    background: none;
+    border-color: rgba(var(--on-scene-rgb), 0.75);
+  }
+  .streak-cap {
+    display: none;
   }
 
   /* The timeline floats over the scene as the one central panel. */
@@ -6419,12 +6694,12 @@ a.note {
   .coach-ops-all,
   .coach-panel-head .linklike,
   .proposal-actions > .linklike,
-  .garden-below-intro .linklike,
+  .howworks .linklike,
   .hud-beat-dismiss,
   .hud-beat-seeall,
-  .hud-nudge,
-  .hud-rail button,
-  .dock-attention,
+  .scene-chip,
+  .ready-chip,
+  .lately-more,
   .dock-collapse,
   .dock-grows
 ) {
@@ -6453,12 +6728,12 @@ a.note {
 .coach-ops-all::after,
 .coach-panel-head .linklike::after,
 .proposal-actions > .linklike::after,
-.garden-below-intro .linklike::after,
+.howworks .linklike::after,
 .hud-beat-dismiss::after,
 .hud-beat-seeall::after,
-.hud-nudge::after,
-.hud-rail button::after,
-.dock-attention::after,
+.scene-chip::after,
+.ready-chip::after,
+.lately-more::after,
 .dock-collapse::after,
 .dock-grows::after {
   content: "";
@@ -6481,8 +6756,8 @@ a.note {
 
 /* Containers of padded controls, each naming the clearance it actually has.
    Every one of these keeps its layout to the pixel except `.hud-dock`, which
-   widens 8 → 12px because `.dock-attention` is 21.6px tall and its pad reached
-   3.2px into the verdict pill below it.
+   widens 8 → 12px for its short linklike rows (Minimize, the grows line),
+   whose pads reach 11.2px.
 
    A block-flow container has no `gap` to set; what it names is the room its own
    padding and its children's margins already leave (`.card`, `.race-strip-h`,
@@ -6495,13 +6770,12 @@ a.note {
 .row,
 .row-between,
 .week-ribbon { --tap-clear: var(--space-4); }
-/* 12px, not 8 (and `.hud-corner`'s own `gap` steps with it, in both the base
-   and the stage block): with 8 the rail's 24.8px-tall buttons reached only
-   40.8px — under the 44px floor, and `LOG` measured 41px on a phone. A pad is
-   clamped to what its container grants, so the container has to grant enough.
-   12px buys each button the 9.6px it needs and still leaves 2.4px between a
-   pad and the neighbouring nudge's visible box. */
-.hud-corner { --tap-clear: var(--space-5); }
+/* The Lately strip's rows are 12px apart and its controls are short (the
+   30px meters, the 21.6px "All insights ›") — 12px is what their pads need
+   and what the strip's own gaps leave. `.today-head` grants the readiness
+   chip the 7px its 30px box needs; the eyebrow beside it is not a control. */
+.lately { --tap-clear: var(--space-5); }
+.today-head { --tap-clear: var(--space-5); }
 .act-actions,
 .act-status-slot,
 .wildlife-row,
@@ -6513,15 +6787,7 @@ a.note {
 .race-strip-h,
 .hud-dock { --tap-clear: var(--space-5); }
 .switch-row { --tap-clear: var(--space-6); }
-/* The rail's own gap is 24px WIDE, but the nudge column sits 12px above it, so
-   the two axes are not the same number. Left as one value, the 24.8px-tall
-   rail buttons' pads reached into the "Yoga grows…" nudge's visible box.
-   Same shape one level down: the drawer's close button is 42px wide with the
-   garden HUD showing beside it, so it may not grow sideways at all. */
-.hud-rail {
-  --tap-clear: var(--space-7);
-  --tap-clear-y: var(--space-5);
-}
+
 /* 12px, not 8: the close button's own box is 28px tall with a 1px border, and
    `100%` on an absolutely-positioned pad resolves against the PADDING box —
    so 8px of grant bought 26 + 16 = 42px, two short of the floor, measured. A
@@ -6621,12 +6887,12 @@ a.note {
   .coach-ops-all,
   .coach-panel-head .linklike,
   .proposal-actions > .linklike,
-  .garden-below-intro .linklike,
+  .howworks .linklike,
   .hud-beat-dismiss,
   .hud-beat-seeall,
-  .hud-nudge,
-  .hud-rail button,
-  .dock-attention,
+  .scene-chip,
+  .ready-chip,
+  .lately-more,
   .dock-collapse,
   .dock-grows {
     min-height: max(

@@ -1,0 +1,10 @@
+import { chromium } from "@playwright/test";
+const S = "/private/tmp/claude-501/-Users-kyranadams-src-run-garden--claude-worktrees-garden-ux-audit/1772806f-a9e5-44be-ae13-6cd7ce16001b/scratchpad";
+const browser = await chromium.launch();
+const page = await browser.newPage({ viewport: { width: 1100, height: 1200 }, deviceScaleFactor: 1 });
+await page.goto(`file://${S}/system1-review.html`);
+await page.waitForTimeout(1200);
+const h = await page.evaluate(() => document.scrollingElement.scrollHeight);
+console.log("page height", h);
+await page.screenshot({ path: `${S}/review_check.png`, fullPage: true });
+await browser.close();

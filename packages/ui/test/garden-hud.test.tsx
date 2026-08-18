@@ -13,10 +13,13 @@
  *    decides whether the Next Workout dock should default to its minimized
  *    pill on a short stage, so the panel never opens already covering the
  *    HUD above it.
- *  - DockVerdict / DockPill (readiness-first dock, 2026-08-14): the dock
- *    leads with a readiness verdict and names the workout second — and when
- *    there is no verdict it must fall back to the exact card that shipped
- *    before, not an empty slot.
+ *  - DockPill (System 1 v2): the collapsed control from lg names the workout
+ *    and ONLY the workout — readiness moved to the Today card's chip and the
+ *    Readiness sheet behind it, in exactly one place.
+ *  - ReadinessSheet: the numbers say "usually N", never "baseline median";
+ *    the provenance paragraph survives the card it replaced.
+ *  - loopLine (System 1 v2): the cause→effect sentence on the scene — every
+ *    weather state names what training does to the garden, both directions.
  */
 import { createElement } from "react";
 import { renderToStaticMarkup as render } from "react-dom/server";
@@ -27,9 +30,10 @@ import { initialSnapshot, type GardenSnapshot, type GardenState } from "@rg/gard
 import {
   BalanceStrip,
   DockPill,
-  DockVerdict,
   dockCoversStage,
   forecastVoice,
+  loopLine,
+  ReadinessSheet,
 } from "../src/screens/garden.js";
 
 const balance = (over: Partial<DisciplineBalance> = {}): DisciplineBalance => ({
@@ -150,101 +154,109 @@ const workout = (over: Partial<WorkoutDto> = {}): WorkoutDto =>
     ...over,
   }) as WorkoutDto;
 
-describe("DockVerdict (readiness-first dock)", () => {
-  it("prints the evidence, and leaves the verdict phrase to the pill below it", () => {
-    const html = render(createElement(DockVerdict, { verdict: goodVerdict }));
-    expect(html).toContain("HRV 64 (base 62) · RHR 47 (base 46) · recovery 100%");
-    // NOT the phrase: the pill renders that in both dock states, so the words
-    // the reader is looking at hold one y instead of jumping 509px on expand.
-    expect(html).not.toContain("Good to go");
-    // The numbers still announce what they are evidence for.
-    expect(html).toContain("Why: ");
-    // The level is on the wrapper (colour).
-    expect(html).toContain("dock-verdict-good");
-  });
-
-  it("a poor morning still shows its numbers, and still names its level in the markup", () => {
-    const html = render(createElement(DockVerdict, { verdict: poorVerdict }));
-    expect(html).not.toContain("Recovery is low");
-    expect(html).toContain("RHR 9 bpm above your baseline");
-    expect(html).toContain("dock-verdict-poor");
-  });
-
-  it("renders NOTHING when there is no verdict — no empty readiness slot", () => {
-    expect(render(createElement(DockVerdict, { verdict: null }))).toBe("");
-    expect(render(createElement(DockVerdict, { verdict: undefined }))).toBe("");
-    // Not even the coach line: with no verdict the dock is the card it was
-    // before readiness led it.
-    expect(
-      render(
-        createElement(DockVerdict, {
-          verdict: null,
-          focus: { text: "Saturday's long run is the anchor.", at: "2026-08-14T07:12:54.826Z" },
-        }),
-      ),
-    ).toBe("");
-  });
-
-  it("quotes the coach's own line, labelled and dated so it never reads as a remark about today", () => {
+describe("ReadinessSheet (the one place the numbers live)", () => {
+  it("phrases every number without jargon — the reading, then 'usually N'", () => {
     const html = render(
-      createElement(DockVerdict, {
-        verdict: goodVerdict,
-        focus: { text: "Saturday&#x27;s long run is the anchor.", at: "2026-08-14T07:12:54.826Z" },
-      }),
-    );
-    expect(html).toContain("Coach · Fri Aug 14");
-    expect(html).toContain("long run is the anchor");
-    expect(html).toContain("not a comment on today&#x27;s readiness");
-  });
-
-  it("shows no coach line at all when the server withheld a stale one", () => {
-    const html = render(createElement(DockVerdict, { verdict: goodVerdict, focus: null }));
-    expect(html).not.toContain("Coach");
-    expect(html).toContain("HRV 64 (base 62)");
-  });
-});
-
-describe("DockPill (collapsed dock)", () => {
-  it("leads with the verdict, then names the workout", () => {
-    const html = render(
-      createElement(DockPill, {
-        verdict: goodVerdict,
-        workout: workout(),
-        today: "2026-08-14",
-        onOpen: () => {},
+      createElement(ReadinessSheet, {
+        readiness: {
+          latest: { date: "2026-08-14", restingHeartRate: 47, hrv: 64, recoveryScore: 100, trainingLoad7d: null },
+          baseline: { restingHeartRate: 46, hrv: 62 },
+          sampleDays: 14,
+          verdict: goodVerdict,
+        },
+        onClose: () => {},
       }),
     );
     expect(html).toContain("Good to go");
-    expect(html).toContain("Hill Strides · Today 9 AM");
-    expect(html).toContain("dock-verdict-good");
-    // The verdict is the headline, so the old "Next:" prefix steps aside.
-    expect(html).not.toContain("Next:");
+    expect(html).toContain("usually 46");
+    expect(html).toContain("usually 62");
+    expect(html).toContain("COROS recovery");
+    // The banned vocabulary: the sheet speaks plainly or not at all.
+    expect(html).not.toContain("baseline");
+    expect(html).not.toContain("median");
   });
 
-  it("with no verdict it is exactly the pill that shipped before", () => {
+  it("keeps the provenance honesty: dated, windowed, context-not-instructions", () => {
     const html = render(
-      createElement(DockPill, {
-        verdict: null,
-        workout: workout(),
-        today: "2026-08-14",
-        onOpen: () => {},
+      createElement(ReadinessSheet, {
+        readiness: {
+          latest: { date: "2026-08-14", restingHeartRate: 47, hrv: null, recoveryScore: null, trainingLoad7d: null },
+          baseline: null,
+          sampleDays: 14,
+          verdict: null,
+        },
+        onClose: () => {},
       }),
     );
+    expect(html).toContain("From COROS, as of Fri Aug 14");
+    expect(html).toContain("your last 14 days");
+    expect(html).toContain("you know your body best");
+  });
+
+  it("claims no window it does not have — under 3 sample days the sentence drops the comparison", () => {
+    const html = render(
+      createElement(ReadinessSheet, {
+        readiness: {
+          latest: { date: "2026-08-14", restingHeartRate: 47, hrv: null, recoveryScore: null, trainingLoad7d: null },
+          baseline: null,
+          sampleDays: 1,
+          verdict: null,
+        },
+        onClose: () => {},
+      }),
+    );
+    expect(html).not.toContain("your last 1 days");
+    expect(html).toContain("you know your body best");
+  });
+});
+
+describe("loopLine (the loop, stated on every visit)", () => {
+  it("every weather state names cause AND effect", () => {
+    const weathers = [
+      "fresh_rain", "recovery_rain", "soft_sun", "clear_sun",
+      "seasonal_breeze", "light_clouds", "dry_spell", "mild_drought",
+    ] as const;
+    for (const wx of weathers) {
+      const line = loopLine(wx, 3);
+      // One sentence, two halves: the weather word, then what training does.
+      expect(line, wx).toMatch(/—/);
+      expect(line.length, wx).toBeGreaterThan(20);
+    }
+  });
+
+  it("the growing direction credits the workout; the drying direction counts the days", () => {
+    expect(loopLine("clear_sun", 0)).toContain("every workout you finish waters it");
+    expect(loopLine("dry_spell", 4)).toContain("4 days without a run");
+    expect(loopLine("mild_drought", 15)).toContain("15 days without a run");
+    expect(loopLine("dry_spell", 1)).toContain("1 day without");
+  });
+});
+
+describe("DockPill (collapsed control, lg only)", () => {
+  it("names the workout and nothing else — readiness is the chip's job now", () => {
+    const html = render(
+      createElement(DockPill, { workout: workout(), today: "2026-08-14", onOpen: () => {} }),
+    );
     expect(html).toContain("Next: Hill Strides · Today 9 AM");
+    expect(html).not.toContain("Good to go");
     expect(html).not.toContain("dock-verdict");
   });
 
-  it("keeps the rest-day and no-plan wordings, verdict or not", () => {
-    const rest = { workout: workout({ category: "rest" }), today: "2026-08-14", onOpen: () => {} };
-    expect(render(createElement(DockPill, { ...rest, verdict: null }))).toContain("Rest day · Today");
-    const withVerdict = render(createElement(DockPill, { ...rest, verdict: poorVerdict }));
-    expect(withVerdict).toContain("Recovery is low");
-    expect(withVerdict).toContain("Rest day · Today");
+  it("keeps the rest-day and no-plan wordings", () => {
     expect(
-      render(
-        createElement(DockPill, { verdict: null, workout: null, today: "2026-08-14", onOpen: () => {} }),
-      ),
+      render(createElement(DockPill, { workout: workout({ category: "rest" }), today: "2026-08-14", onOpen: () => {} })),
+    ).toContain("Rest day · Today");
+    expect(
+      render(createElement(DockPill, { workout: null, today: "2026-08-14", onOpen: () => {} })),
     ).toContain("No active training plan");
+  });
+
+  it("with no plan it is a status line, not a button", () => {
+    const html = render(
+      createElement(DockPill, { workout: null, today: "2026-08-14", onOpen: () => {}, disclosable: false }),
+    );
+    expect(html).toContain("<p");
+    expect(html).not.toContain("<button");
   });
 });
 

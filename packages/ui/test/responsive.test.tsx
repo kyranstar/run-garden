@@ -376,16 +376,15 @@ describe("the garden's information exists at every width", () => {
     expect(order).toEqual([...GARDEN_PART_KEYS]);
   });
 
-  it("DOM order is the STACK order — the dock before the bars", () => {
-    // Measured: with the bars first, opening a bar's detail pushed the
-    // readiness verdict (and everything under it) down 184px, because the
-    // detail expanded ABOVE the dock in the stack. The stage already ranks
-    // them this way — the dock is bottom-left, the bars are top-right
-    // peripheral furniture — so the stack was the one disagreeing.
+  it("DOM order is the STACK order — the Today card before the Lately strip", () => {
+    // Measured (pre-v2): with the bars first, opening a bar's detail pushed
+    // the readiness verdict (and everything under it) down 184px. The card
+    // outranks the strip at both widths, so the stack agrees with the stage.
     const order = [...html.matchAll(/data-part="(\w+)"/g)].map((m) => m[1]!);
-    expect(order.indexOf("dock")).toBeLessThan(order.indexOf("balance"));
-    // …and the parts a reader meets before either of them, in that order.
-    expect(order.slice(0, 5)).toEqual(["scene", "condition", "beat", "ceremony", "dock"]);
+    expect(order.indexOf("today")).toBeLessThan(order.indexOf("lately"));
+    // …and the parts a reader meets before either of them, in that order:
+    // banners, the picture (with its voice), the celebrated band, the news.
+    expect(order.slice(0, 6)).toEqual(["plumbing", "scene", "condition", "streak", "beat", "ceremony"]);
   });
 
   it("nothing below lg may reshuffle the dock's DOM order", () => {
@@ -396,9 +395,9 @@ describe("the garden's information exists at every width", () => {
     // this sheet is mobile-first, so no garden part may carry `order` at all
     // — the one genuine disagreement is expressed as POSITION on the stage,
     // where the box is an overlay anyway and reflows nothing.
-    const gardenOrder = [...css.matchAll(/\.(hud|dock|balance|garden|stage)[\w-]*[^{}]*\{[^}]*?\border:\s*\d/g)];
+    const gardenOrder = [...css.matchAll(/\.(hud|dock|balance|garden|stage|streak|lately|today)[\w-]*[^{}]*\{[^}]*?\border:\s*\d/g)];
     expect(gardenOrder.map((m) => m[0].slice(0, 60))).toEqual([]);
-    for (const sel of [".dock-pill", ".dock-panel", ".dock-attention", ".hud-dock"]) {
+    for (const sel of [".dock-pill", ".dock-panel", ".today-attention", ".hud-dock"]) {
       const rules = [...css.matchAll(new RegExp(`\\${sel} \\{([^}]*)\\}`, "g"))];
       for (const r of rules) expect(r[1], `${sel}: ${r[1]!.trim()}`).not.toMatch(/\border:/);
     }
@@ -458,20 +457,24 @@ describe("the garden's information exists at every width", () => {
       const body = governedStatement(gardenCode, m.index! + m[0].length);
       expect(body, `${m[0]}${body.slice(0, 90)}`).not.toMatch(/<|\bparts\b|GardenBody|return\s*\(/);
     }
-    // Five mentions, and every one is the same decision: the pure helper's
-    // parameter and its single use, the live subscription, the one call that
-    // reads it, and the one behaviour it scopes. Nothing else knows the tier.
-    expect([...gardenCode.matchAll(/\bisDesktop\b/g)].length).toBe(5);
+    // Six mentions, and every one is the same decision: the pure helper's
+    // parameter and its guard, the live subscription, `cardAlwaysOpen` (the
+    // named boolean the card/ribbon read as an operand, never a ternary), the
+    // one call that reads the helper, and the one behaviour it scopes.
+    // Nothing else knows the tier.
+    expect([...gardenCode.matchAll(/\bisDesktop\b/g)].length).toBe(6);
   });
 
   it("the parts that were stage-only carry real content on the shared tree", () => {
     // Named in the type, so a future part has to be declared before it can be
-    // forgotten. `dock` is the verdict + the coach's line + the attention link.
-    for (const key of ["dock", "rail", "balance", "condition"]) {
+    // forgotten. `today` is the readiness chip + the coach's line + the
+    // attention row; `streak` is the celebrated metric; `lately` the meters.
+    for (const key of ["today", "lately", "streak", "condition"]) {
       expect(GARDEN_PART_KEYS as readonly string[], key).toContain(key);
     }
-    expect(gardenSrc).toContain("<DockVerdict verdict={d.readiness.verdict} focus={d.focus} />");
-    expect(gardenSrc).toContain('className="dock-attention"');
+    expect(gardenSrc).toContain("<ReadinessSheet readiness={d.readiness}");
+    expect(gardenSrc).toContain('className="today-attention"');
+    expect(gardenSrc).toContain('className="today-coach"');
   });
 });
 
@@ -486,7 +489,10 @@ describe("the garden's hierarchy is not lg-only styling", () => {
     // were the stage. Below it the garden had `display: flex; gap` and nothing
     // else — no verdict, no coach line, no rail.
     for (const sel of [
+      ".stage-hero",
       ".garden-scene",
+      ".scene-tools",
+      ".scene-chip",
       ".hud-topleft",
       ".hud-condition",
       ".hud-weather",
@@ -495,13 +501,11 @@ describe("the garden's hierarchy is not lg-only styling", () => {
       ".hud-dock",
       ".dock-pill",
       ".dock-panel",
-      ".dock-verdict",
-      ".dock-verdict-why",
-      ".dock-verdict-coach",
-      ".dock-attention",
-      ".hud-corner",
-      ".hud-nudge",
-      ".hud-rail",
+      ".streak-band",
+      ".ready-chip",
+      ".today-attention",
+      ".today-coach",
+      ".lately",
       ".garden-below",
     ]) {
       expect(baseLayer, sel).toContain(`${sel} {`);
@@ -524,12 +528,9 @@ describe("the garden's hierarchy is not lg-only styling", () => {
     // nothing below lg), or a modifier whose whole meaning is "this is
     // printed on the artwork". Neither can be a feature.
     expect([...new Set(introduced)].sort()).toEqual([
-      ".hud-forecast", // a modifier meaning "this line is on the artwork"
-      ".hud-topright", // a positioning box for `parts.balance`
+      ".dock-pill-workout", // type on the artwork; the pill itself is lg-only
+      ".hud-topright", // a positioning box for `parts.lately`
       ".shell-main--immersive", // the shell's own stage modifier
-      ".stage-scene-svg", // the scene's <svg>, absolutely filling the stage
-      ".stage-scrim-bottom", // ┐ artwork scrims: nothing to lift type off
-      ".stage-scrim-top", //    ┘ when the type is on the page
     ]);
   });
 
@@ -556,12 +557,12 @@ describe("the garden's hierarchy is not lg-only styling", () => {
 
   it("the readiness verdict's colour vocabulary is declared once, in the base", () => {
     for (const level of ["good", "caution", "poor"]) {
-      expect(baseLayer).toContain(`.dock-verdict-${level} {`);
-      expect(lgBody).not.toContain(`.dock-verdict-${level} {`);
+      expect(baseLayer).toContain(`.ready-${level} {`);
+      expect(lgBody).not.toContain(`.ready-${level} {`);
     }
-    // Colour is never the only signal: the pill carries a left EDGE in the
-    // same token, and the phrase inside says the level in words.
-    expect(baseLayer).toMatch(/\.dock-pill \{[\s\S]*?border-left: 3px solid var\(--verdict-ink/);
+    // Colour is never the only signal: the dot paints in the token and the
+    // phrase beside it says the level in words (VERDICT_PHRASE on the chip).
+    expect(baseLayer).toMatch(/\.ready-dot \{[\s\S]*?background: var\(--verdict-ink/);
   });
 });
 
@@ -686,14 +687,14 @@ describe("the no-plan state", () => {
     // The guidance may not be gated on `dockOpen` — a first screen's only
     // instruction cannot be a tap away. It is gated on `planActive` alone,
     // which is the same predicate that decides the pill is not a button.
-    const dock = gardenSrc.slice(gardenSrc.indexOf("\n    dock: ("), gardenSrc.indexOf("\n    balance:"));
+    const dock = gardenSrc.slice(gardenSrc.indexOf("\n    today: ("), gardenSrc.indexOf("\n    lately:"));
     expect(dock.length).toBeGreaterThan(200); // the slice actually found the part
     const guidance = dock.slice(dock.indexOf("dock-noplan"));
     expect(dock).toMatch(/\{!planActive \? \(\s*<div className="dock-panel dock-noplan">/);
     expect(guidance).not.toContain("dockOpen");
     expect(dock).toContain("disclosable={planActive}");
-    // …and the panel is gated on the same thing, so the two can never
+    // …and the card is gated on the same thing, so the two can never
     // disagree about whether there is anything to open.
-    expect(gardenSrc).toContain("const dockPanelOpen = dockOpen && planActive;");
+    expect(gardenSrc).toContain("const dockPanelOpen = (dockOpen || cardAlwaysOpen) && planActive;");
   });
 });

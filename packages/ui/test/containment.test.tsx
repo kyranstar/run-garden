@@ -24,7 +24,7 @@ import { Sheet, useSpaceAbove } from "../src/components.js";
 import { Drawer } from "../src/drawer.js";
 import { CoachPanel, ProposalCard } from "../src/screens/coach-panel.js";
 import { CorosCheck } from "../src/screens/coros-check.js";
-import { DockPill, DockVerdict } from "../src/screens/garden.js";
+import { DockPill } from "../src/screens/garden.js";
 import { WeeklyBrief } from "../src/screens/plan-brief.js";
 
 const noop = () => undefined;
@@ -37,6 +37,7 @@ function render(el: React.ReactElement): string {
 }
 
 const css = readFileSync(fileURLToPath(new URL("../src/styles.css", import.meta.url)), "utf8");
+const gardenSrc = readFileSync(fileURLToPath(new URL("../src/screens/garden.tsx", import.meta.url)), "utf8");
 
 /** The declarations of one rule, by its exact selector text. */
 function ruleBody(selector: string): string {
@@ -257,38 +258,34 @@ describe("disclosure anchoring", () => {
   const verdict: ReadinessVerdict = { level: "good", reasons: ["HRV 64 (base 62)"] };
   const workout = { id: "w1", title: "Hill Strides", category: "quality", sport: "run", effectiveDate: "2026-08-14", effectiveTime: "09:00" } as WorkoutDto;
 
-  it("the dock pill keeps the verdict word-for-word when the panel opens", () => {
+  it("the pill never carries the verdict — the chip is its one home", () => {
+    // v2: readiness lives on the Today card's chip and in the sheet behind
+    // it, exactly once. The pill is the collapsed workout control from lg;
+    // opening and closing it can no longer move a verdict the reader was
+    // looking at, because the pill never had one.
     const collapsed = render(
-      createElement(DockPill, { verdict, workout, today: "2026-08-14", onOpen: noop }),
+      createElement(DockPill, { workout, today: "2026-08-14", onOpen: noop }),
     );
-    expect(collapsed).toContain("Good to go");
     expect(collapsed).toContain('aria-expanded="false"');
-
+    expect(collapsed).not.toContain("Good to go");
     const expanded = render(
-      createElement(DockPill, { verdict, workout, today: "2026-08-14", onOpen: noop, expanded: true }),
+      createElement(DockPill, { workout, today: "2026-08-14", onOpen: noop, expanded: true }),
     );
     expect(expanded).toContain('aria-expanded="true"');
-    // Not just the pill: the PHRASE holds its position. Dropping it here and
-    // letting the panel head print it instead kept the box still and moved
-    // the words 509px, which is the same defect with a different subject.
-    expect(expanded).toContain("Good to go");
-    // The verdict SPAN is character-for-character identical in both states —
-    // same markup, same first child, so it cannot reflow when the panel opens.
-    const verdictSpan = (h: string) => h.slice(h.indexOf('<span class="dock-pill-verdict"'), h.indexOf("</span></span>") + 14);
-    expect(verdictSpan(expanded)).toBe(verdictSpan(collapsed));
-    // What the expanded row DOES drop is the workout identity, because the
-    // panel it just opened is naming it in full immediately beside it — the
-    // same sentence twice, adjacent, once the two stopped being an overlay
-    // and a card on different screens. The verdict is what must not move; the
-    // workout is what must not be said twice.
-    const visible = (h: string) => h.replace(/ aria-label="[^"]*"/, "");
-    expect(visible(collapsed)).toContain("Hill Strides · Today 9 AM");
-    expect(visible(expanded)).not.toContain("Hill Strides");
-    // …and never at the cost of the accessible name, which carries the whole
-    // sentence in both states and does not change under the reader.
-    const name = /aria-label="([^"]*)"/;
-    expect(collapsed.match(name)?.[1]).toBe("Good to go · Hill Strides · Today 9 AM");
-    expect(expanded.match(name)?.[1]).toBe(collapsed.match(name)?.[1]);
+    expect(expanded).not.toContain("Good to go");
+    // The workout text itself is identical in both states — the row cannot
+    // reflow under the finger that pressed it.
+    expect(collapsed.match(/aria-label="([^"]*)"/)?.[1]).toBe("Next: Hill Strides · Today 9 AM");
+    expect(expanded.match(/aria-label="([^"]*)"/)?.[1]).toBe(collapsed.match(/aria-label="([^"]*)"/)?.[1]);
+  });
+
+  it("the verdict phrase exists in exactly one screen location — the chip's", () => {
+    // The sheet may restate it (a dialog is its own surface); on the PAGE the
+    // chip is the only bearer. Both render from VERDICT_PHRASE, so the words
+    // cannot drift between them.
+    const chipCount = [...gardenSrc.matchAll(/VERDICT_PHRASE\[verdict\.level\]/g)].length;
+    expect(chipCount).toBe(2); // the chip + the sheet, nothing else
+    expect(gardenSrc).not.toContain("dock-pill-verdict");
   });
 
   it("a pill with no panel behind it is not a button", () => {
@@ -309,12 +306,6 @@ describe("disclosure anchoring", () => {
     expect(dead).not.toContain("aria-expanded");
     expect(dead).not.toContain("aria-controls");
     expect(dead).toContain("No active training plan");
-  });
-
-  it("the panel head does not repeat the verdict — it renders exactly once", () => {
-    const html = render(createElement(DockVerdict, { verdict }));
-    expect(html).toContain("HRV 64 (base 62)");
-    expect(html).not.toContain("Good to go");
   });
 
   it("a centred desktop dialog freezes its geometry on the disclosure, not on open", () => {

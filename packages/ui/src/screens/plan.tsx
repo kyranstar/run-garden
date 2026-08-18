@@ -818,6 +818,26 @@ export function PlanScreen() {
   };
   const openCoachSurface = () => (isDesktop ? openWindow() : setCoachOpen(true));
 
+  // ?coach=1 — the garden's "Ask me ›" lands with the coach already open
+  // (System 1 v2). Consumed once: the param is stripped so back/refresh
+  // doesn't re-open a sheet the user closed.
+  const coachParam = params.get("coach");
+  useEffect(() => {
+    if (!coachParam) return;
+    openCoachSurface();
+    setParams(
+      (p) => {
+        const next = new URLSearchParams(p);
+        next.delete("coach");
+        return next;
+      },
+      { replace: true },
+    );
+    // openCoachSurface/setParams are stable enough for a consume-once effect;
+    // re-running on their identity would re-open the sheet on unrelated renders.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [coachParam]);
+
   // ── Jump menu: the active plans' weeks, longest plan numbering the list ─
   const jumpWeeks = useMemo(() => {
     if (activePlans.length === 0) return [];

@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { Link } from "react-router-dom";
 import { keepPreviousData, useQuery } from "@tanstack/react-query";
-import { api, type ActivityDto, type DisciplineBalance, type WorkoutDto } from "@rg/api-client";
+import { api, type ActivityDto, type DisciplineBalance, type TodayResponse, type WorkoutDto } from "@rg/api-client";
 import {
   addDays,
   GARDEN_CONDITION_LABELS,
@@ -26,12 +26,14 @@ import {
 } from "@rg/garden-engine";
 import { GardenScene, type SceneImpulse } from "@rg/garden-renderer";
 import { IconClose } from "../icons.js";
-import { Banner, CATEGORY_LABELS, EmptyState, formatDayShort, formatTime, localTodayGuess, relativeDay, settling, Sheet, Spinner, useHeldInPlace, useIsDesktop, useSpaceAbove } from "../components.js";
+import { Banner, CategoryDot, CATEGORY_LABELS, EmptyState, formatDayShort, formatMinutes, formatTime, localTodayGuess, relativeDay, settling, Sheet, Spinner, syncActionShort, useHeldInPlace, useIsDesktop, useSpaceAbove, watchCoverageShort } from "../components.js";
 import { Drawer } from "../drawer.js";
 import { cap, eventSentence, selectArrival, type ArrivalEvent } from "./arrival.js";
 import { CeremonyCard } from "./arrival-block.js";
 import { BotanicalCard } from "./botanical.js";
-import { EvidenceCard, NextWorkout, Readiness, ReviewPull, SyncPanel, TimezoneNudge, UnresolvedCard } from "./today.js";
+import { MoveSheet } from "./move-sheet.js";
+import { pickStatusStripMetric } from "../signal-tiles.js";
+import { ReviewPull, SyncPanel, TimezoneNudge } from "./today.js";
 import { useUnits } from "../use-units.js";
 import {
   CATEGORY_ORDER,
@@ -134,16 +136,34 @@ const WEATHER_LABEL: Record<GardenWeatherState, string> = {
   mild_drought: "drought",
 };
 
-const WEATHER_WHY: Record<GardenWeatherState, string> = {
-  fresh_rain: "a planned run landed today, so rain is watering everything.",
-  recovery_rain: "you're back after a dry stretch — recovery rain is restoring the soil.",
-  soft_sun: "a rest day, so gentle sun while the soil recovers.",
-  clear_sun: "warm and steady between runs.",
-  seasonal_breeze: "calm and seasonal — all is well.",
-  light_clouds: "a few days without a run — the air is starting to dry.",
-  dry_spell: "a few days without a run — the air is starting to dry.",
-  mild_drought: "about two weeks without a run, so the garden is in drought.",
-};
+/**
+ * The loop, stated on every visit (System 1 §2): one sentence that names the
+ * weather AND the cause→effect that drives it, in both directions. This
+ * replaces three prose voices (the weather-why line, the on-page forecast
+ * line, and the conditionStory paragraph) — a first-time visitor learns how
+ * the garden works from this line alone, without opening "How the garden
+ * works". Exported for the copy test.
+ */
+export function loopLine(weather: GardenWeatherState, daysSinceRun: number): string {
+  const dry = `${daysSinceRun} day${daysSinceRun === 1 ? "" : "s"} without a run`;
+  switch (weather) {
+    case "fresh_rain":
+      return "Fresh rain — today's workout is watering everything.";
+    case "recovery_rain":
+      return "Recovery rain — you're back, and the garden is drinking it in.";
+    case "soft_sun":
+      return "Soft sun — a rest day; the soil recovers with you.";
+    case "clear_sun":
+      return "Clear sun — every workout you finish waters it.";
+    case "seasonal_breeze":
+      return "A seasonal breeze — steady training keeps it calm.";
+    case "light_clouds":
+    case "dry_spell":
+      return `A dry spell — ${dry}, and the air is drying.`;
+    case "mild_drought":
+      return `Drought — ${dry}. Your next run starts the rain.`;
+  }
+}
 
 /** Unobtrusive breakdown of plant-family diversity in the garden. */
 function DiversityStrip({ snapshot }: { snapshot: GardenSnapshot }) {
@@ -773,25 +793,6 @@ function WeekRibbon({
   );
 }
 
-function conditionStory(
-  condition: GardenConditionWord,
-  snapshot: GardenSnapshot,
-  plants: number,
-  speciesCount: number,
-): string {
-  const days = snapshot.state.daysSinceCompletedRun;
-  const base: Record<GardenConditionWord, string> = {
-    flourishing: "Your running has been steady, so it's lush and flowering.",
-    well_watered: "Recent runs are keeping the soil moist and growing.",
-    growing: "It's coming along — keep running to fill it in.",
-    a_little_dry: `It's been ${days} day${days === 1 ? "" : "s"} since a run, so it's drying out — a run brings the rain.`,
-    in_drought: `${days} days without a run, so it's in drought. Your next run starts the recovery.`,
-    recovering: "You're back — it's drinking in recovery rain.",
-    dormant: "Rest mode is on, so it's peacefully dormant and won't decline.",
-  };
-  const counts = `${plants} plant${plants === 1 ? "" : "s"}${speciesCount ? `, ${speciesCount} species` : ""}.`;
-  return `${base[condition] ?? ""} ${counts}`;
-}
 
 // Mirrors .dock-panel's cap in styles.css (`max-height: min(32rem, calc(100dvh
 // - 14rem))`) at a 16px root, so the two never drift apart silently. The
@@ -852,114 +853,28 @@ export const VERDICT_PHRASE: Record<ReadinessLevel, string> = {
 };
 
 /**
- * The EVIDENCE head of the dock panel: why today reads the way it does, and —
- * only when it is fresh — the coach's own line. The verdict PHRASE is not
- * here; it is on the pill directly below, where it also sits when the panel
- * is shut.
+ * The dock's control row — from lg only (below lg the Today card IS the page
+ * and never collapses, so the stylesheet hides this row there). It names the
+ * workout and toggles the card; readiness is not its job any more — the
+ * verdict lives on the card's chip and in the Readiness sheet behind it, in
+ * exactly one place (System 1 v2: one voice per fact).
  *
- * That split is the fix for a measured regression. The first cut moved the
- * phrase into this head while the expanded pill dropped it, so the pill (the
- * click target) held still but the words the reader was actually looking at
- * jumped 509px up the screen — the container stopped moving and the content
- * did not. The pill now renders the verdict identically in both states and
- * this head carries the evidence only, so the phrase is on screen exactly
- * once, at exactly one y, whatever the dock is doing.
- *
- * Renders NOTHING when there is no verdict (thin data, no reading, nothing
- * comparable). The dock then falls back to being workout-first exactly as it
- * was before readiness led it — an empty "readiness" slot would be worse
- * than the old card, not better.
- *
- * The coach line is the weekly action line the coach already wrote
- * (`refs.focus`), gated server-side by the same 72h staleness rule the plan
- * brief uses — no new LLM call, and no new rule. It is labelled AND dated
- * because it was written about the week: it must never read as a remark
- * about today's HRV.
- */
-export function DockVerdict({
-  verdict,
-  focus,
-}: {
-  verdict: ReadinessVerdict | null | undefined;
-  focus?: { text: string; at: string } | null;
-}) {
-  if (!verdict) return null;
-  return (
-    <div className={`dock-verdict dock-verdict-${verdict.level}`}>
-      {/* A screen reader reaching this list of numbers cold needs to know
-          what they are FOR. Not by repeating the phrase — that is the pill's
-          job, and one verdict rendered twice is the defect this replaced. */}
-      <p className="dock-verdict-why">
-        <span className="visually-hidden">Why: </span>
-        {verdict.reasons.join(" · ")}
-      </p>
-      {focus ? (
-        <p
-          className="dock-verdict-coach"
-          title={`Your coach's focus for the week, written ${formatDayShort(focus.at.slice(0, 10))} — not a comment on today's readiness.`}
-        >
-          <span className="dock-verdict-who">Coach · {formatDayShort(focus.at.slice(0, 10))}</span>
-          <span>{focus.text}</span>
-        </p>
-      ) : null}
-    </div>
-  );
-}
-
-/**
- * The dock's control row. It leads with the verdict too ("● Good to go · Hill
- * Strides Today 9:00 AM") so collapsing the panel never costs the athlete the
- * headline — and with no verdict it is character-for-character the pill that
- * shipped before ("Next: …"), which is the whole fallback contract.
- *
- * It STAYS PUT while the panel is open (System 1 §5), and so does every word
- * in it. The dock is bottom-anchored, so expanding it can only grow upward;
- * expanding used to replace this row with the panel, which moved the verdict
- * line the athlete was reading by dy −467px. Now the panel overlays the scene
- * above a row that never moves.
- *
- * The row keeps the verdict phrase while expanded — it does not hand it to
- * the panel. Handing it over was tried and measured: the pill held its y but
- * the phrase itself jumped −509px into the panel head, which is the same
- * defect wearing a different element. The panel head carries the evidence
- * only (see DockVerdict), so the phrase renders in exactly one place at a
- * time and that place never moves.
- *
- * What it DOES hand over while expanded is the workout IDENTITY (audit#4).
- * The panel directly beside this row already names the workout in full ("NEXT
- * WORKOUT / Quality / Hill Strides · 6 × 20s / Today at 9 AM"), so carrying
- * it here too printed the same sentence twice, adjacent — obvious once the
- * two stopped being an overlay and a card on different screens and became two
- * rows of one column. Only the second half is dropped, and only when there is
- * a verdict to be the row's remaining content, so the phrase this row exists
- * to hold still is untouched in either state.
- *
- * The accessible name is written explicitly rather than left to the concatenated
- * text, for two reasons. It was WRONG: the "·" between the two spans is a CSS
- * `::before` that only exists at lg, and at lg the pill is `display: block`, so
- * the name computed to "Take it easyLong Run · Today 8 AM" — no separator, no
- * space, two words run together — while the same pill on a phone (a flex row,
- * whose items each get a space) read correctly. And it is now the one place the
- * whole sentence survives collapsing, so a screen-reader user hears the same
- * name whether the panel is open or shut.
+ * With no plan it renders as the status line it actually is, not as a button
+ * that looks pressable and does nothing (audit#4 D1).
  */
 export function DockPill({
-  verdict,
   workout,
   today,
   onOpen,
   expanded = false,
   disclosable = true,
 }: {
-  verdict: ReadinessVerdict | null | undefined;
   workout: WorkoutDto | null | undefined;
   today: string;
   onOpen: () => void;
-  /** True while the panel above is open — this row then collapses it. */
+  /** True while the card above is open — this row then collapses it. */
   expanded?: boolean;
-  /** False when there is no panel behind this row (no plan — audit#4 D1).
-   *  It then renders as the status line it actually is, not as a button that
-   *  looks pressable and does nothing. */
+  /** False when there is no card behind this row (no plan). */
   disclosable?: boolean;
 }) {
   const workoutLabel = !workout
@@ -967,26 +882,11 @@ export function DockPill({
     : workout.category === "rest"
       ? `Rest day · ${relativeDay(workout.effectiveDate, today)}`
       : `${workout.title} · ${relativeDay(workout.effectiveDate, today)} ${formatTime(workout.effectiveTime)}`;
-  const workoutText =
-    verdict || !workout || workout.category === "rest" ? workoutLabel : `Next: ${workoutLabel}`;
-  const phrase = verdict ? VERDICT_PHRASE[verdict.level] : null;
-  const body = (
-    <>
-      {phrase ? (
-        <span className="dock-pill-verdict">
-          <span className="dock-verdict-dot" aria-hidden="true" />
-          {phrase}
-        </span>
-      ) : null}
-      {/* The panel beside it is already saying this — see above. */}
-      {expanded && phrase ? null : <span className="dock-pill-workout">{workoutText}</span>}
-    </>
-  );
-  const className = `dock-pill${verdict ? ` dock-verdict-${verdict.level}` : ""}`;
-  const label = phrase ? `${phrase} · ${workoutText}` : workoutText;
+  const workoutText = !workout || workout.category === "rest" ? workoutLabel : `Next: ${workoutLabel}`;
+  const body = <span className="dock-pill-workout">{workoutText}</span>;
   if (!disclosable) {
     return (
-      <p className={`${className} dock-pill-static`} aria-label={label}>
+      <p className="dock-pill dock-pill-static" aria-label={workoutText}>
         {body}
       </p>
     );
@@ -994,13 +894,10 @@ export function DockPill({
   return (
     <button
       type="button"
-      className={className}
+      className="dock-pill"
       aria-expanded={expanded}
-      // The panel it discloses is its next sibling in the DOM, but on the
-      // stage it is positioned ABOVE this row, so name it explicitly rather
-      // than leaving assistive tech to infer a relationship from position.
       aria-controls="dock-panel"
-      aria-label={label}
+      aria-label={workoutText}
       onClick={onOpen}
     >
       {body}
@@ -1009,88 +906,137 @@ export function DockPill({
 }
 
 /**
+ * The Readiness sheet — the ONE place the morning numbers live (System 1 v2).
+ * The Today card's chip opens it; nothing on the page repeats it. Numbers are
+ * phrased without jargon ("usually 46", never "baseline median"), and the
+ * provenance paragraph keeps the honesty contract the old card carried:
+ * a single morning reading, context not instructions.
+ */
+export function ReadinessSheet({
+  readiness,
+  onClose,
+}: {
+  readiness: TodayResponse["readiness"];
+  onClose: () => void;
+}) {
+  const verdict = readiness.verdict;
+  const latest = readiness.latest;
+  const baseline = readiness.baseline;
+  return (
+    <Sheet open onClose={onClose} title="Readiness">
+      {verdict ? (
+        <p className={`ready-verdict ready-${verdict.level}`}>
+          <span className="ready-dot" aria-hidden="true" />
+          {VERDICT_PHRASE[verdict.level]}
+        </p>
+      ) : null}
+      {latest ? (
+        <div className="ready-vitals">
+          {latest.restingHeartRate != null ? (
+            <div className="ready-vital">
+              <b>{Math.round(latest.restingHeartRate)}</b>
+              <small>
+                resting HR
+                {baseline?.restingHeartRate != null
+                  ? ` · usually ${Math.round(baseline.restingHeartRate)}`
+                  : ""}
+              </small>
+            </div>
+          ) : null}
+          {latest.hrv != null ? (
+            <div className="ready-vital">
+              <b>{Math.round(latest.hrv)} ms</b>
+              <small>HRV{baseline?.hrv != null ? ` · usually ${Math.round(baseline.hrv)}` : ""}</small>
+            </div>
+          ) : null}
+          {latest.recoveryScore != null ? (
+            <div className="ready-vital">
+              <b>{Math.round(latest.recoveryScore)}%</b>
+              <small>COROS recovery</small>
+            </div>
+          ) : null}
+        </div>
+      ) : null}
+      {verdict && verdict.reasons.length > 0 ? (
+        <p className="ready-why">{verdict.reasons.join(" · ")}</p>
+      ) : null}
+      <p className="faint ready-prov">
+        {latest?.date ? `From COROS, as of ${formatDayShort(latest.date)} — ` : ""}
+        {readiness.sampleDays >= 3
+          ? `a single morning reading against your last ${readiness.sampleDays} days. `
+          : ""}
+        Context, not instructions — you know your body best.
+      </p>
+    </Sheet>
+  );
+}
+
+/**
  * Every piece of information the garden shows, named once, in the order the
- * garden's hierarchy reads them: scene → the condition word and forecast →
- * what changed → the readiness verdict and the workout behind it → the
- * discipline bars → what each discipline is growing, and the panels.
- *
- * The point of naming them is that there is exactly ONE place each is placed
- * (`GardenBody`). Before this, the screen returned two independent trees —
- * a desktop stage and a mobile stack — and three things had been built into
- * only the first: the readiness verdict, the coach's weekly line, and the
- * attention link. They were not desktop treatments of shared features, they
- * were features a phone could not reach. A `Record` of named slots makes that
- * mistake unrepresentable: adding a part means adding a key, and a key with
- * nowhere to go does not render at all (`responsive.test.tsx` renders
- * `GardenBody` with a marker in every slot and asserts all of them land).
+ * page reads them: the scene (with the condition word and the loop sentence
+ * printed on it), the streak band, what changed, today's card, and the
+ * "Lately" strip. ONE place places each (`GardenBody`); a part cannot land on
+ * one viewport only, because there is only one place to put it
+ * (`responsive.test.tsx` renders a marker in every slot and asserts all of
+ * them land).
  */
 export interface GardenParts {
-  /** The picture. A bordered card below lg, the full-viewport stage from lg. */
+  /** The picture, plus its quiet tool chips (collection / log / timeline /
+   *  fullscreen). A cropped hero below lg, the full-viewport stage from lg. */
   scene: ReactNode;
-  /** The condition word (serif, dominant), the weather, and the forecast. */
+  /** The condition word and the ONE cause→effect loop sentence — printed on
+   *  the scene at every width. */
   condition: ReactNode;
-  /** What changed since you last looked, and what happened today. */
+  /** The celebrated metric: streak, twelve week-squares, one percentage. */
+  streak: ReactNode;
+  /** What changed since you last looked — one dismissible line. */
   beat: ReactNode;
   /** An unlock celebrating itself. */
   ceremony: ReactNode;
-  /** Readiness verdict → the workout it is about → what needs attention. */
-  dock: ReactNode;
-  /** The three discipline bars, and the detail behind whichever is open. */
-  balance: ReactNode;
-  /** What each discipline is growing next. */
-  nudges: ReactNode;
-  /** Collection · Log · Timeline. */
-  rail: ReactNode;
+  /** Conditional banners only (timezone, calendar, sync). Empty = invisible. */
+  plumbing: ReactNode;
+  /** The one card: readiness chip, the workout, the coach's line, what it
+   *  grows, the week, the attention row, the actions. */
+  today: ReactNode;
+  /** The unboxed strip: balance meters, the one loss voice, the top insight. */
+  lately: ReactNode;
   /** The history scrubber, when it is open. */
   timeline: ReactNode;
-  /** Below the garden: the story, how it works, and the plumbing. */
+  /** The quiet foot: "How the garden works". */
   below: ReactNode;
   /** Drawers and sheets — dialogs, so their position is their own. */
   overlays: ReactNode;
 }
 
-/** The keys of `GardenParts`, in STACK order — which is DOM order, which is
- *  reading and tab order below lg. Exported so a test can enumerate the
- *  contract rather than restate it. */
 export const GARDEN_PART_KEYS = [
+  "plumbing",
   "scene",
   "condition",
+  "streak",
   "beat",
   "ceremony",
-  "dock",
-  "balance",
-  "nudges",
-  "rail",
+  "today",
+  "lately",
   "timeline",
   "below",
   "overlays",
 ] as const satisfies ReadonlyArray<keyof GardenParts>;
 
 /**
- * The garden, at every width. Below lg `.garden-stage` is simply the column
- * these parts stack in; from lg the same nodes are positioned onto the
- * artwork (top-left voice, top-right instruments, bottom-left dock,
- * bottom-right utilities) and take the scene's type treatment.
+ * The garden, at every width. Below lg the stage is the reading column these
+ * parts stack in; from lg the same nodes are positioned onto the artwork.
  *
- * DOM ORDER IS THE STACK ORDER, and that is the whole rule (audit#4 D3/D4).
- * This sheet is mobile-first, so the order these appear in below is the order
- * they are read and tabbed in below lg, with no `order` declaration anywhere
- * in the base layer to make the two disagree. The previous cut claimed
- * "reading order and tab order agree with the visual one" and it was true on
- * the stage and false in the stack: `.hud-dock`'s children were written
- * panel → pill → attention for the stage's bottom-anchored geometry and then
- * flipped back visually with `order` below lg, so tab reached the panel's
- * contents at y=1082 and then jumped 576px BACK UP to the pill.
+ * DOM ORDER IS THE STACK ORDER below lg, with no `order` anywhere in the base
+ * layer (System 3/4). The two wrappers that exist here are geometry, not
+ * reshuffling: `.stage-hero` is the positioned box the condition overlay
+ * needs below lg (from lg it is an inset-0 layer and every stage rule reads
+ * through it), and `.stage-ledger` is `display: contents` below lg (streak
+ * then beat, exactly the stack) and becomes the bottom-right corner box on
+ * the stage.
  *
- * At lg the parts are absolutely positioned onto the artwork, so their boxes
- * no longer have a single "before/after" to agree with — they are corners of
- * a picture. Reading order there is the hierarchy: voice, then dock, then the
- * instruments and utilities that qualify them.
- *
- * `stageRef` is `useSpaceAbove`'s callback ref: from lg the stage is sized
- * against the space it actually has rather than against the window (System 1
- * §4). Below lg it publishes a custom property nothing reads, which costs one
- * property write.
+ * `plumbing` sits ABOVE the stage: a banner there is exactly what
+ * `useSpaceAbove` already subtracts from the lg stage height, and on a phone
+ * an actionable banner belongs before the picture, not woven into the story.
  */
 export function GardenBody({
   parts,
@@ -1101,31 +1047,26 @@ export function GardenBody({
 }) {
   return (
     <div className="garden-home">
-      {/* The stage's largest type is the condition word, not this — on the
-          artwork the scene IS the page, so the <h1> is hidden at both widths
-          and the labelling stays consistent. */}
+      {/* The stage's largest type is the condition word, not this — the <h1>
+          is hidden at both widths and the labelling stays consistent. */}
       <h1 className="visually-hidden">Garden</h1>
+      {parts.plumbing ? <div className="garden-plumbing">{parts.plumbing}</div> : null}
       <div className="garden-stage" ref={stageRef}>
-        {parts.scene}
-        <div className="stage-scrim stage-scrim-top" aria-hidden="true" />
-        <div className="stage-scrim stage-scrim-bottom" aria-hidden="true" />
-        <div className="hud-topleft">
-          {parts.condition}
+        <div className="stage-hero">
+          {parts.scene}
+          <div className="stage-scrim stage-scrim-top" aria-hidden="true" />
+          <div className="stage-scrim stage-scrim-bottom" aria-hidden="true" />
+          <div className="hud-topleft">{parts.condition}</div>
+        </div>
+        <div className="stage-ledger">
+          {parts.streak}
           {parts.beat}
         </div>
-        {/* The celebration gets its own moment — centred in the empty sky on
-            the stage, in the reading column below it. */}
+        {/* The celebration gets its own moment — centred on the stage, after
+            the band in the reading column below it. */}
         {parts.ceremony ? <div className="hud-ceremony">{parts.ceremony}</div> : null}
-        {/* Before the bars, in the stack and in the DOM: the workout you are
-            about to do outranks the balance ledger, and opening a bar's detail
-            must not shove the readiness verdict down the page (it moved it
-            +184px when the bars came first). */}
-        <div className="hud-dock">{parts.dock}</div>
-        {parts.balance ? <div className="hud-topright">{parts.balance}</div> : null}
-        <div className="hud-corner">
-          {parts.nudges}
-          {parts.rail}
-        </div>
+        <div className="hud-dock">{parts.today}</div>
+        {parts.lately ? <div className="hud-topright">{parts.lately}</div> : null}
         {parts.timeline ? <div className="stage-timeline">{parts.timeline}</div> : null}
       </div>
       {parts.below}
@@ -1155,6 +1096,21 @@ export function GardenScreen() {
   const [dayIndexOverride, setDayIndexOverride] = useState<number | null>(null);
   const [openDrawer, setOpenDrawer] = useState<"collection" | "log" | null>(null);
   const [openBalanceKey, setOpenBalanceKey] = useState<DisciplineKey | null>(null);
+  // The readiness sheet — the ONE place the morning numbers live (System 1
+  // v2: the chip on the Today card opens it; no card repeats it).
+  const [readinessOpen, setReadinessOpen] = useState(false);
+  // The Today card's Move control (the card absorbed NextWorkout's job).
+  const [movingToday, setMovingToday] = useState(false);
+
+  // The "Lately" strip's insight line — the SAME query key and staleness
+  // the insights screen and ReviewPull already share: one cached fetch.
+  // not-structural: it feeds two below-the-fold text lines in a strip whose
+  // frame (eyebrow, meters, caption, link) paints without it.
+  const insights = useQuery({
+    queryKey: ["insights"],
+    queryFn: () => api.insights(),
+    staleTime: 5 * 60_000,
+  });
   // The dock's state is a CHOICE, held as null until one is made, rather than
   // a boolean seeded from a first-paint measurement (audit#4 D2). The seeded
   // form froze `window.innerHeight` at mount and applied the lg overlay
@@ -1167,6 +1123,10 @@ export function GardenScreen() {
     return stored === "open" ? true : stored === "collapsed" ? false : null;
   });
   const isDesktop = useIsDesktop();
+  // Below lg the Today card IS the page: it never collapses, so the ribbon's
+  // box always exists there and a stored desktop "minimize" cannot strand a
+  // phone (the collapsed pill is display:none below lg).
+  const cardAlwaysOpen = !isDesktop;
   const stageHeight = useViewportHeight();
   // The arrival block: which ceremony is showing, and whether the text
   // lines were dismissed this mount. What counts as "new" comes from the
@@ -1237,7 +1197,9 @@ export function GardenScreen() {
   // not "desktop skips it" — it is "the box that reads it decides".)
   const weekWorkouts = useWeekWorkouts(
     mondayOf(today.data?.today ?? localTodayGuess()),
-    dockOpen,
+    // The box that reads the ribbon decides: from lg that is the dock's
+    // state; below lg the card is always open.
+    dockOpen || cardAlwaysOpen,
   );
   // …and the GATE reads that question as it stood at MOUNT. `dockOpen` is
   // live, so a gate reading it directly would throw the whole screen back to
@@ -1245,7 +1207,7 @@ export function GardenScreen() {
   // in — a first-paint gate re-firing on a deliberate tap, which is the very
   // shape of defect this system exists to remove. First paint happens once;
   // so does this question.
-  const [gateOnRibbon] = useState(dockOpen);
+  const [gateOnRibbon] = useState(dockOpen || cardAlwaysOpen);
 
   // Fetched only once the scrubber is opened, then cached — scrubbing itself
   // is then all client-side (no per-frame requests).
@@ -1670,16 +1632,38 @@ export function GardenScreen() {
     setReplaying(true);
   };
 
-  // ONE derivation, read by the link and by the block it jumps to (D8).
+  // ONE derivation, read by the one row that voices it (D8, tightened in v2).
   const attention = gardenAttention(d);
-  // The panel only exists when there is a workout to put in it; with no plan
-  // the pill has nothing to disclose and stops being a button entirely.
-  const dockPanelOpen = dockOpen && planActive;
+  // The card only exists when there is a workout to put in it.
+  const dockPanelOpen = (dockOpen || cardAlwaysOpen) && planActive;
   // The best next thing, per axis — and what today's planned workout grows.
   const trio = nextUnlocksByDiscipline(codex);
   const grows = d?.nextWorkout ? unlockGrownBy(codex, d.nextWorkout.category) : null;
   const toggleBalanceKey = (k: DisciplineKey) =>
     setOpenBalanceKey((cur) => (cur === k ? null : k));
+
+  // ── The "Lately" strip's content ──────────────────────────────────────
+  // One loss voice, as ever (audit#4 D9) — but it now lives beside the meters
+  // it is about, not on the scene. A calm forecast line (a shield, recovery
+  // rain, a taper) speaks here too; when nothing speaks and no practiced axis
+  // is in its damage zone, the meters collapse to one healthy sentence.
+  const anyAxisLow =
+    !!liveBalance &&
+    BALANCE_BARS.some(({ key }) => {
+      const { days, health } = liveBalance[key];
+      return days !== null && health < DAMAGE_NOTCH[key];
+    });
+  const latelyCaption =
+    forecast?.line ??
+    (anyAxisLow && liveBalance ? WEAKEST_COPY[weakestDiscipline(liveBalance)] : null);
+  const latelyHealthy = !restMode.active && !latelyCaption && !anyAxisLow;
+  // The top ranked signal — the SAME pick (and the same confidence gates)
+  // the insights status strip uses, so home and Insights can never headline
+  // different alarms on the same morning.
+  const strip = pickStatusStripMetric(insights.data?.interpreted ?? []);
+  const topSignal = strip.severity === "clear" ? null : strip.metric;
+  const evidenceLine =
+    (insights.data?.evidence as { id: string; text: string } | null | undefined) ?? null;
 
   const todayFrac = maxDayIndex > 0 ? todayIndex / maxDayIndex : 1;
   const timelinePanel = (
@@ -1807,46 +1791,15 @@ export function GardenScreen() {
     </Banner>
   ) : null;
 
-  const plumbing = (
-    <>
-      <TimezoneNudge />
-      {d ? (
-        d.sync.calendarConnected ? (
-          <SyncPanel />
-        ) : (
-          <Banner kind="info">Your training plan is safe, but Calendar mirroring is paused.</Banner>
-        )
-      ) : null}
-      {/* The jump target, and everything it promised, in one box (D8). The id
-          used to sit on `.garden-below` — the whole lower region, prose and
-          plumbing included — so "3 workouts need attention ↓" landed you 352px
-          above the first of them. The heading is the SAME sentence the link
-          shows, from the same derivation, so the number you tapped is the
-          number you arrive at; the mismatch banner beneath it names its own
-          subset without restating a competing total. */}
-      {attention.count > 0 ? (
-        <section className="garden-attention" id="garden-attention" aria-labelledby="garden-attention-h">
-          <h2 id="garden-attention-h" className="card-title">
-            {attentionPhrase(attention.count)}
-          </h2>
-          {attention.mismatched.length > 0 ? (
-            <Banner kind="warn">
-              {attention.mismatched.length === 1
-                ? `“${attention.mismatched[0]!.title}” — COROS and Run Garden disagree.`
-                : `${attention.mismatched.length} of them — COROS and Run Garden disagree.`}{" "}
-              <Link to="/plan">Review</Link>
-            </Banner>
-          ) : null}
-          {attention.unresolved.map((w) => (
-            <UnresolvedCard key={w.id} w={w} />
-          ))}
-        </section>
-      ) : null}
-      {d ? <Readiness readiness={d.readiness} /> : null}
-      <EvidenceCard />
-      <ReviewPull />
-    </>
-  );
+  // Conditional banners ONLY — on a healthy, home-timezone day this whole
+  // part is null and the slot does not exist. The attention cards and the
+  // readiness/evidence cards that used to live down here are gone: attention
+  // is one row on the Today card (the answers live on Plan), readiness lives
+  // in its sheet, evidence in the Lately strip.
+  const calendarBanner =
+    d && !d.sync.calendarConnected ? (
+      <Banner kind="info">Your training plan is safe, but Calendar mirroring is paused.</Banner>
+    ) : null;
 
   const sheets = (
     <>
@@ -1894,6 +1847,10 @@ export function GardenScreen() {
      that placement is a stack in the reading column or furniture positioned
      on the artwork. A new part cannot land on one viewport only, because
      there is only one place to put it. */
+  const w = d?.nextWorkout ?? null;
+  const verdict = d?.readiness.verdict ?? null;
+  const streakData = d?.consistency ?? null;
+
   const parts: GardenParts = {
     scene: (
       <div className={`garden-scene${sceneFull ? " garden-scene-fullscreen" : ""}`}>
@@ -1913,21 +1870,50 @@ export function GardenScreen() {
             enteringPlantIds={viewingLive ? arrival.enteringPlantIds : undefined}
             highlightPlantId={viewingLive ? highlightPlantId : null}
             impulse={viewingLive ? impulse : null}
-            // `slice` is a no-op in the card form (the box takes the svg's own
-            // aspect ratio, so there is nothing to crop) and is what fills the
-            // stage — and the phone's fullscreen — without letterboxing.
+            // `slice` fills the hero crop below lg and the stage above it —
+            // the box, not the svg's own aspect ratio, decides the height.
             preserveAspectRatio="xMidYMax slice"
             className="stage-scene-svg"
           />
         </div>
-        <button
-          type="button"
-          className="scene-full-toggle"
-          aria-label={sceneFull ? "Exit fullscreen garden" : "View garden fullscreen"}
-          onClick={() => setSceneFull((f) => !f)}
-        >
-          {sceneFull ? <IconClose size={16} /> : "⤢"}
-        </button>
+        {/* The quiet tools, on the picture: what the rail section used to be.
+            Chips, not a nav block — three content drawers and (below lg) the
+            fullscreen crop toggle. */}
+        <div className="scene-tools">
+          <button
+            type="button"
+            className="scene-chip"
+            onClick={() => setOpenDrawer("collection")}
+            aria-label={`Collection — ${unlockedCount} of ${codex.length} species`}
+          >
+            ❀ {unlockedCount}/{codex.length}
+          </button>
+          <button
+            type="button"
+            className="scene-chip"
+            onClick={() => setOpenDrawer("log")}
+            aria-label="Garden log"
+          >
+            ≡
+          </button>
+          <button
+            type="button"
+            className="scene-chip"
+            onClick={() => (timelineOpen ? closeTimeline() : openTimeline())}
+            aria-expanded={timelineOpen}
+            aria-label="Timeline"
+          >
+            ↺
+          </button>
+          <button
+            type="button"
+            className="scene-chip scene-full-toggle"
+            aria-label={sceneFull ? "Exit fullscreen garden" : "View garden fullscreen"}
+            onClick={() => setSceneFull((f) => !f)}
+          >
+            {sceneFull ? <IconClose size={14} /> : "⤢"}
+          </button>
+        </div>
       </div>
     ),
 
@@ -1936,61 +1922,75 @@ export function GardenScreen() {
         <h2 className="hud-condition">{GARDEN_CONDITION_LABELS[displayCondition]}</h2>
         <p className="hud-weather">
           {viewingLive
-            ? cap(WEATHER_LABEL[weather])
+            ? loopLine(weather, displaySnapshot.state.daysSinceCompletedRun)
             : viewingFuture
               ? `Projected: ${WEATHER_LABEL[weather]}`
-              : `That day: ${WEATHER_LABEL[weather]}`}{" "}
-          — {WEATHER_WHY[weather]}
+              : `That day: ${WEATHER_LABEL[weather]}`}
         </p>
-        {forecast ? <p className="forecast-line hud-forecast">{forecast.line}</p> : null}
         {restMode.active ? (
           <p className="hud-weather">Rest mode — nothing declines while you're away.</p>
         ) : null}
       </>
     ),
 
-    beat: (
-      <>
-        {viewingLive && beatLinesAll.length > 0 ? (
-          <p className="hud-beat">
-            <span className="hud-beat-label">Since {formatDayShort(sinceLabel)}</span>
-            <span>{beatLinesAll.join(" ")}</span>
-            {arrival.beatOverflow ? (
-              <button
-                type="button"
-                className="linklike hud-beat-seeall"
-                onClick={() => setOpenDrawer("log")}
-              >
-                See all →
-              </button>
-            ) : null}
+    streak:
+      viewingLive && streakData && streakData.adherencePct !== null ? (
+        <div className="streak-band">
+          <div className="streak-row">
+            {streakData.streakWeeks > 0 ? (
+              <>
+                <span className="streak-n">
+                  {streakData.streakWeeks} week{streakData.streakWeeks === 1 ? "" : "s"}
+                </span>
+                <span className="streak-word">consistent</span>
+                <span className="streak-pct">{streakData.adherencePct}% of plan</span>
+              </>
+            ) : (
+              <>
+                <span className="streak-n">{streakData.adherencePct}%</span>
+                <span className="streak-word">of plan done</span>
+              </>
+            )}
+          </div>
+          <div
+            className="streak-weeks"
+            role="img"
+            aria-label={`Last 12 weeks: ${streakData.weeks.filter((x) => x.band === "full").length} on plan, ${streakData.weeks.filter((x) => x.band === "partial").length} partial`}
+          >
+            {streakData.weeks.map((x) => (
+              <span key={x.weekStart} className={`streak-week streak-${x.band}`} title={`Week of ${formatDayShort(x.weekStart)}`} />
+            ))}
+          </div>
+          <p className="streak-cap">One square per week, last 12 weeks.</p>
+        </div>
+      ) : null,
+
+    beat:
+      viewingLive && (beatLinesAll.length > 0 || todayLinesAll.length > 0) ? (
+        <p className="hud-beat">
+          <span className="hud-beat-label">
+            {beatLinesAll.length > 0 ? `Since ${formatDayShort(sinceLabel)}` : "Today"}
+          </span>
+          <span>{[...beatLinesAll, ...todayLinesAll].join(" ")}</span>
+          {arrival.beatOverflow || arrival.todayOverflow ? (
             <button
               type="button"
-              className="hud-beat-dismiss"
-              onClick={dismissBlock}
-              aria-label="Dismiss"
+              className="linklike hud-beat-seeall"
+              onClick={() => setOpenDrawer("log")}
             >
-              <IconClose size={12} />
+              See all →
             </button>
-          </p>
-        ) : null}
-        {viewingLive && todayLinesAll.length > 0 ? (
-          <p className="hud-beat">
-            <span className="hud-beat-label">Today</span>
-            <span>{todayLinesAll.join(" ")}</span>
-            {arrival.todayOverflow ? (
-              <button
-                type="button"
-                className="linklike hud-beat-seeall"
-                onClick={() => setOpenDrawer("log")}
-              >
-                See all →
-              </button>
-            ) : null}
-          </p>
-        ) : null}
-      </>
-    ),
+          ) : null}
+          <button
+            type="button"
+            className="hud-beat-dismiss"
+            onClick={dismissBlock}
+            aria-label="Dismiss"
+          >
+            <IconClose size={12} />
+          </button>
+        </p>
+      ) : null,
 
     ceremony: currentCeremony ? (
       <CeremonyCard
@@ -2004,57 +2004,137 @@ export function GardenScreen() {
       />
     ) : null,
 
-    /* Readiness leads; the workout is named second. The panel grows AWAY from
-       the row you pressed at both widths (System 1 §5) — downward in the
-       stack, where it is simply the pill's next sibling, and upward over the
-       scene on the stage, where it is absolutely positioned above the row and
-       reflows nothing. Positioning, not `order`: an `order` flip is what made
-       tab order jump 576px back up the page below lg. */
-    dock: (
+    plumbing:
+      d ? (
+        <>
+          <TimezoneNudge />
+          {d.sync.calendarConnected ? <SyncPanel quietWhenHealthy /> : calendarBanner}
+        </>
+      ) : null,
+
+    /* THE one card (System 1 v2). The pill above it exists from lg only (the
+       stylesheet hides it below), where it is the collapsed form; below lg
+       the card is the page. */
+    today: (
       <>
         <DockPill
-          verdict={d?.readiness.verdict}
-          workout={d?.nextWorkout}
+          workout={w}
           today={d?.today ?? todayDate}
           expanded={dockPanelOpen}
           disclosable={planActive}
           onOpen={() => setDockOpen(!dockPanelOpen)}
         />
-        {dockPanelOpen && d?.nextWorkout ? (
-          <div className="dock-panel scroller" id="dock-panel">
-            {/* With no verdict this renders nothing and the panel opens on
-                the workout, exactly as it always did. */}
-            <DockVerdict verdict={d.readiness.verdict} focus={d.focus} />
-            <NextWorkout w={d.nextWorkout} today={d.today} />
-            {grows?.progress ? (
+        {dockPanelOpen && w ? (
+          <div className="dock-panel today-card scroller" id="dock-panel">
+            <div className="today-head">
+              <span className="today-eyebrow">
+                {cap(relativeDay(w.effectiveDate, d!.today))} · {formatDayShort(w.effectiveDate)}
+              </span>
+              {verdict ? (
+                <button
+                  type="button"
+                  className={`ready-chip ready-${verdict.level}`}
+                  onClick={() => setReadinessOpen(true)}
+                >
+                  <span className="ready-dot" aria-hidden="true" />
+                  {VERDICT_PHRASE[verdict.level]} ›
+                </button>
+              ) : null}
+            </div>
+            {w.category === "rest" ? (
+              <>
+                <h3 className="today-title">Rest day</h3>
+                <p className="muted">
+                  A planned rest day. The garden rests with you — soil health improves today.
+                </p>
+              </>
+            ) : (
+              <>
+                <h3 className="today-title">{w.title}</h3>
+                <p className="today-meta">
+                  {formatTime(w.effectiveTime)} · {formatMinutes(w.workoutSeconds)} ·{" "}
+                  <CategoryDot category={w.category} />{" "}
+                  {(CATEGORY_LABELS[w.category] ?? w.category).toLowerCase()}
+                </p>
+                {(w.exercises?.length ?? 0) > 0 ? (
+                  <div className="today-structure">
+                    {w.exerciseRounds ? `${w.exerciseRounds} rounds of: ` : ""}
+                    {w.exercises!.map((e) => e.line).join(" · ")}
+                  </div>
+                ) : w.stageSummary ? (
+                  <div className="today-structure">{w.stageSummary}</div>
+                ) : null}
+                {watchCoverageShort(w.watchCoverage) ? (
+                  <p className="faint watch-note-short">{watchCoverageShort(w.watchCoverage)}</p>
+                ) : null}
+                {syncActionShort(w.syncAction) ? (
+                  <p className="faint watch-note-short">{syncActionShort(w.syncAction)}</p>
+                ) : null}
+              </>
+            )}
+            {d?.focus ? (
+              <div className="today-coach">
+                <span className="today-coach-mark" aria-hidden="true">
+                  🌱
+                </span>
+                <p
+                  className="today-coach-body"
+                  title={`Your coach's focus for the week, written ${formatDayShort(d.focus.at.slice(0, 10))} — not a comment on today's readiness.`}
+                >
+                  <span className="today-coach-who">Coach</span> — {d.focus.text}{" "}
+                  <Link className="today-coach-ask" to="/plan?coach=1">
+                    Ask me ›
+                  </Link>
+                </p>
+              </div>
+            ) : null}
+            {grows?.progress && w.category !== "rest" ? (
               <button
                 type="button"
                 className="linklike dock-grows"
                 onClick={() => setOpenSpeciesId(grows.speciesId)}
               >
-                This workout grows the {grows.name}
+                🌿 Finishing it grows the {grows.name}
                 {Math.max(0, grows.progress.target - grows.progress.current) === 1
                   ? " — the last one needed"
                   : grows.progress.target >= 1000
                     ? ` · ${progressText(grows.progress, units)}`
-                    : ` · ${Math.max(0, grows.progress.target - grows.progress.current)} more to go`}
+                    : ` — ${Math.max(0, grows.progress.target - grows.progress.current)} to go`}
               </button>
             ) : null}
             <div className="dock-week">
               <WeekRibbon todayDate={todayDate} codex={codex} onOpenSpecies={setOpenSpeciesId} />
             </div>
+            {attention.count > 0 ? (
+              <Link
+                className="today-attention"
+                to={
+                  attention.count === 1 && attention.unresolved[0]
+                    ? `/plan?workout=${attention.unresolved[0].id}`
+                    : "/plan"
+                }
+              >
+                ⚠ {attentionPhrase(attention.count)} <span aria-hidden="true">›</span>
+              </Link>
+            ) : null}
+            {w.category !== "rest" ? (
+              <div className="btn-row today-actions">
+                <Link className="btn btn-primary" to={`/plan?workout=${w.id}`}>
+                  View workout
+                </Link>
+                <button type="button" className="btn" onClick={() => setMovingToday(true)}>
+                  Move
+                </button>
+              </div>
+            ) : null}
             <button type="button" className="linklike dock-collapse" onClick={() => setDockOpen(false)}>
               Minimize
             </button>
           </div>
         ) : null}
         {/* No plan: the pill above is a status line, not a control, and this
-            is the guidance it would otherwise be hiding. Not behind a
-            disclosure — this is a new athlete's first screen, and the one
-            thing on it that tells them what to do next cannot be a tap away
-            (audit#4 D1: it had been deleted outright, leaving a pill that
-            reported "No active training plan" and did nothing when pressed at
-            either width). */}
+            is the guidance it would otherwise be hiding — a new athlete's
+            first screen (audit#4 D1). */}
         {!planActive ? (
           <div className="dock-panel dock-noplan">
             <EmptyState art="🌿" title="No active COROS training plan was found">
@@ -2063,115 +2143,61 @@ export function GardenScreen() {
             </EmptyState>
           </div>
         ) : null}
-        {attention.count > 0 ? (
-          <a className="dock-attention" href="#garden-attention">
-            {attentionPhrase(attention.count)} ↓
-          </a>
-        ) : null}
       </>
     ),
 
-    balance:
-      liveBalance && viewingLive ? (
-        <>
-          <BalanceStrip
-            balance={liveBalance}
-            // audit#2: only claim "plan paused" when the sim's clock IS
-            // paused — a no-plan day the sim still decays through must not be
-            // captioned as a pause it isn't getting.
-            runPaused={!planActive && runDecayPaused}
-            runSheltered={runClockSheltered}
-            runTrueRecencyDays={runTrueRecencyDays}
-            // One loss voice at a time, at every width — but only when there
-            // IS another voice. See `balanceQuiet`.
-            quiet={balanceQuiet}
-            activeKey={openBalanceKey}
-            onToggle={toggleBalanceKey}
-          />
-          {openBalanceKey ? (
-            <BalanceDetail
-              k={openBalanceKey}
-              balance={liveBalance}
-              snapshot={snapshot}
-              trio={trio}
-              todayDate={todayDate}
-              onOpenSpecies={setOpenSpeciesId}
-              onClose={() => setOpenBalanceKey(null)}
-            />
-          ) : null}
-        </>
+    lately:
+      viewingLive && liveBalance ? (
+        <section className="lately" aria-label="Lately">
+          <span className="lately-eyebrow">Lately</span>
+          {latelyHealthy ? (
+            <p className="lately-healthy">All three disciplines are fed — the garden is thriving.</p>
+          ) : (
+            <>
+              <BalanceStrip
+                balance={liveBalance}
+                runPaused={!planActive && runDecayPaused}
+                runSheltered={runClockSheltered}
+                runTrueRecencyDays={runTrueRecencyDays}
+                quiet
+                activeKey={openBalanceKey}
+                onToggle={toggleBalanceKey}
+              />
+              {openBalanceKey ? (
+                <BalanceDetail
+                  k={openBalanceKey}
+                  balance={liveBalance}
+                  snapshot={snapshot}
+                  trio={trio}
+                  todayDate={todayDate}
+                  onOpenSpecies={setOpenSpeciesId}
+                  onClose={() => setOpenBalanceKey(null)}
+                />
+              ) : null}
+              {latelyCaption ? (
+                <p className={`lately-cap${forecast?.kind === "loss" || anyAxisLow ? " lately-cap-loss" : ""}`}>
+                  {latelyCaption}
+                </p>
+              ) : null}
+            </>
+          )}
+          {topSignal?.meaning ? <p className="lately-line">{topSignal.meaning}</p> : null}
+          {evidenceLine ? <p className="lately-line">{evidenceLine.text}</p> : null}
+          <ReviewPull />
+          <Link className="lately-more" to="/insights">
+            All insights ›
+          </Link>
+        </section>
       ) : null,
-
-    nudges: (
-      <>
-        {(["run", "strength", "yoga"] as const).map((dk) => {
-          const c = trio[dk];
-          if (!c?.progress) return null;
-          const remaining =
-            c.progress.target >= 1000
-              ? progressText(c.progress, units)
-              : `${Math.max(0, c.progress.target - c.progress.current)} to go`;
-          return (
-            <button
-              type="button"
-              key={dk}
-              className="hud-nudge"
-              onClick={() => setOpenSpeciesId(c.speciesId)}
-            >
-              {NUDGE_DISCIPLINE_LABEL[dk]} grows {c.name} · {remaining}
-            </button>
-          );
-        })}
-      </>
-    ),
-
-    rail: (
-      <nav className="hud-rail" aria-label="Garden panels">
-        <button type="button" onClick={() => setOpenDrawer("collection")}>
-          Collection · {unlockedCount}/{codex.length}
-        </button>
-        <button type="button" onClick={() => setOpenDrawer("log")}>
-          Log
-        </button>
-        <button type="button" onClick={() => (timelineOpen ? closeTimeline() : openTimeline())}>
-          Timeline
-        </button>
-      </nav>
-    ),
 
     timeline: timelineOpen ? timelinePanel : null,
 
     below: (
       <div className="garden-below">
-        <p className="muted garden-below-intro">
-          {conditionStory(
-            displayCondition,
-            displaySnapshot,
-            livingPlantsCount,
-            viewingLive ? species.length : displaySnapshot.unlockedSpeciesIds.length,
-          )}{" "}
-          {/* The label does NOT change (System 4 D4). It used to collapse from
-              "How the garden works" (148px) to "Hide" (31px), and because the
-              control is inline in a wrapping paragraph the box did not shrink
-              in place — it re-flowed onto the previous line: measured at 390px
-              the before and after rectangles did not overlap AT ALL
-              (dx +253, dy −21). A disclosure that teleports out from under the
-              finger that opened it cannot be closed by the same finger.
-
-              `aria-expanded` carries the state that the words used to, and
-              the caret shows it. A CONSTANT label needs no width rule: the
-              box is the same box before and after, so neither the button nor
-              the sentence it sits in can re-wrap when it fires. (An earlier
-              pass claimed a `.garden-below-toggle` class was holding the
-              width. There was no such rule in styles.css — the class was a
-              JSX string and two test anchors and nothing else, so the
-              sentence was describing a mechanism the fix does not need and
-              the app did not have. It is gone; the caret's own fixed 1em box
-              is the only width rule here, and it is real.)
-
-              Its 44px tap pad is declared beside the other in-prose links in
-              styles.css — a bare `.linklike` was in none of the pad selector
-              lists, so this one control was 147.9 × 21.6px of hit area. */}
+        <p className="howworks">
+          {/* The label does NOT change (System 4 D4) — aria-expanded and the
+              caret carry the state, so the box never re-wraps under the
+              finger that opened it. */}
           <button
             type="button"
             className="linklike"
@@ -2186,7 +2212,6 @@ export function GardenScreen() {
           </button>
         </p>
         {howItWorks}
-        {plumbing}
       </div>
     ),
 
@@ -2210,6 +2235,12 @@ export function GardenScreen() {
         <Drawer open={openDrawer === "log"} onClose={() => setOpenDrawer(null)} title="Garden log">
           {renderLog(fullLog)}
         </Drawer>
+        {readinessOpen && d ? (
+          <ReadinessSheet readiness={d.readiness} onClose={() => setReadinessOpen(false)} />
+        ) : null}
+        {w && movingToday ? (
+          <MoveSheet workout={w} open onClose={() => setMovingToday(false)} />
+        ) : null}
         {sheets}
       </>
     ),

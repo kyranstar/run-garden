@@ -19,9 +19,8 @@ import { MemoryRouter } from "react-router-dom";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { describe, expect, it } from "vitest";
 import type { PlanDetailDto, PlanSummaryDto } from "@rg/api-client";
-import type { WorkoutDto } from "@rg/domain";
 import { Card } from "../src/components.js";
-import { NextWorkout, TimezoneNudge } from "../src/screens/today.js";
+import { TimezoneNudge } from "../src/screens/today.js";
 import { PlanCards } from "../src/screens/plan-cards.js";
 
 const css = readFileSync(fileURLToPath(new URL("../src/styles.css", import.meta.url)), "utf8");
@@ -322,25 +321,6 @@ describe("a section has a heading", () => {
 });
 
 describe("heading levels do not skip", () => {
-  const workout = {
-    id: "w1",
-    title: "Hill Strides",
-    category: "quality",
-    sport: "run",
-    effectiveDate: "2026-08-14",
-    effectiveTime: "09:00",
-    workoutSeconds: 2700,
-    calendarSeconds: 3600,
-    corosSyncState: "synced",
-  } as WorkoutDto;
-
-  it("the card's title is the section and the workout's name is the item", () => {
-    // Two <h2>s and no <h1> was the shape of this screen's cards.
-    const html = render(createElement(NextWorkout, { w: workout, today: "2026-08-14" }));
-    expect(html).toContain('class="card-title">Next workout</h2>');
-    expect(html).toContain('<h3 class="hero-title">Hill Strides</h3>');
-    expect((html.match(/<h2/g) ?? []).length).toBe(1);
-  });
 
   it("the plan's sport organizers are headings, not just aria-labels", () => {
     const plans = [
@@ -455,7 +435,7 @@ describe("one touch floor, enforced", () => {
     const afterList = after.slice(0, after.indexOf("{"));
     for (const sel of [".tap-pad", ".btn-small", ".plan-brief-chip", ".plan-brief-needs",
       ".race-check-btn", ".plan-week-back", ".plan-week-jump summary", ".ceremony-close",
-      ".hud-rail button", ".proposal-actions > .linklike", ".hud-beat-seeall"]) {
+      ".scene-chip", ".ready-chip", ".proposal-actions > .linklike", ".hud-beat-seeall"]) {
       expect(afterList, sel).toContain(`${sel}::after`);
       expect(relative, sel).toContain(sel);
     }
@@ -597,7 +577,7 @@ describe("one touch floor, enforced", () => {
     expect(block).toContain("min-width: max(");
     expect(block).toContain("var(--tap-clear-x, var(--tap-clear, var(--tap)))");
     // `max(0px, …)` because the product is NEGATIVE wherever the container is
-    // generous (`.hud-rail` grants 24px: 44 − 48 = −4).
+    // generous (a 44px-tall control in any granting container: 44 − 44+ = ≤0).
     expect(block).toMatch(/min-width: max\(\s*0px,/);
     // …and a container can refuse the payment as well as the room. The drawer's
     // ✕ is a deliberate 42px-wide target (the garden HUD sits beside it), so
@@ -669,21 +649,16 @@ describe("one touch floor, enforced", () => {
     // Every container of a padded control names its clearance. Widened rows
     // stay widened; `.hud-dock` joins them (its pad reached 3.2px into the
     // verdict pill).
-    for (const sel of [".plan-brief-chips", ".race-checklist", ".hud-dock", ".hud-corner",
-      ".row", ".act-actions", ".wildlife-row", ".switch-row", ".hud-rail", ".drawer-head",
-      ".plan-brief-head", ".plan-brief-race-actions", ".card"])
+    for (const sel of [".plan-brief-chips", ".race-checklist", ".hud-dock", ".lately",
+      ".row", ".act-actions", ".wildlife-row", ".switch-row", ".scene-tools", ".drawer-head",
+      ".plan-brief-head", ".plan-brief-race-actions", ".card", ".today-head", ".howworks"])
       expect(rules, sel).toMatch(new RegExp(`${sel.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}[,\\s][^{]*\\{[^}]*--tap-clear`));
-    // The two containers whose room differs by axis say so. The rail's y
-    // clearance is --space-5 (12px), not --space-4: a pad is CLAMPED to what
-    // its container grants, so 8px capped the 24.8px rail buttons at 40.8px —
-    // measured 41px for `LOG`, under the 44px floor. `.hud-corner`'s own gap
-    // steps with it so the extra reach lands in the gap, not in the nudge.
-    expect(rules).toMatch(/\.hud-rail \{\s*--tap-clear: var\(--space-7\);\s*--tap-clear-y: var\(--space-5\);/);
     // The arithmetic the floor actually depends on: control height + 2 ×
     // clearance must REACH --tap, or the clamp's middle term never wins.
-    const RAIL_CONTROL_PX = 24.8; // measured; --text-md line box + --space-2 × 2
-    expect(RAIL_CONTROL_PX + 2 * 12).toBeGreaterThanOrEqual(44);
-    expect(RAIL_CONTROL_PX + 2 * 8).toBeLessThan(44); // …and 8px did not
+    // The scene chips are 30px boxes in a row granting 8px — 30 + 2 × 7 = 44
+    // exactly, and the 8px gap keeps each pad out of its neighbour's box.
+    const CHIP_CONTROL_PX = 30;
+    expect(CHIP_CONTROL_PX + 2 * 7).toBeGreaterThanOrEqual(44);
     expect(rules).toMatch(/\.drawer-head \{\s*--tap-clear: var\(--space-5\);\s*--tap-clear-x: 0px;/);
     // …and the one container that had to widen writes its gap from the same
     // property, so the two can never disagree again.
