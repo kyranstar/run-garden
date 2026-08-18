@@ -1774,7 +1774,11 @@ a.note {
   align-items: baseline;
   justify-content: flex-start;
   --tap-clear: var(--space-5);
-  gap: var(--tap-clear);
+  /* One step wider than the clearance: a pad's reach is CLAMPED to the
+     grant, so a gap equal to it lets rounding put the ✕'s pad a fraction of
+     a pixel inside "See all →"'s visible box (measured 0.98px). 16px leaves
+     4px of true daylight between reach and neighbour. */
+  gap: var(--space-6);
   margin: 0 var(--space-2);
   font-size: var(--text-sm);
   color: var(--ink-soft);
@@ -2348,15 +2352,19 @@ a.note {
   .hud-topright::before {
     content: "";
     position: absolute;
-    inset: calc(var(--space-6) * -1) calc(var(--space-7) * -1) calc(var(--space-7) * -1) calc(var(--space-9) * -1);
+    inset: calc(var(--space-6) * -1) calc(var(--space-7) * -1) calc(var(--space-7) * -1) calc(var(--space-7) * -1);
     z-index: 0;
     border-radius: var(--radius-lg);
-    background: radial-gradient(
-      135% 125% at 100% 0%,
+    /* An even slab, not a corner radial: the strip is tall, and a gradient
+       that gives out by 78% left its lower lines at 1.8:1 on bright grass
+       (verify round). Soft only at the very foot. */
+    background: linear-gradient(
+      180deg,
       rgba(var(--scrim-rgb), 0.5),
-      rgba(var(--scrim-rgb), 0.34) 45%,
-      rgba(var(--scrim-rgb), 0) 78%
+      rgba(var(--scrim-rgb), 0.46) 72%,
+      rgba(var(--scrim-rgb), 0.28)
     );
+    backdrop-filter: blur(6px);
     pointer-events: none;
   }
   .hud-topright > * {
@@ -2529,6 +2537,12 @@ a.note {
   .dock-collapse {
     display: block;
   }
+  /* While the card is open it already names the workout in its title, and
+     Minimize is the collapse control — a visible pill under it would say the
+     same sentence twice, 12px apart (one voice per fact). */
+  .dock-pill[aria-expanded="true"] {
+    display: none;
+  }
   /* The bar detail panel floats below the HUD instrument cluster. */
   .hud-topright .balance-detail {
     position: absolute;
@@ -2554,6 +2568,20 @@ a.note {
     gap: var(--space-5);
     text-align: right;
     max-width: min(22rem, 30vw);
+    /* Everything in this corner is printed on the artwork — including the
+       beat line, which inherited theme ink and measured 1.06:1 on daytime
+       grass (verify round). */
+    color: var(--on-scene);
+    text-shadow: var(--scene-text-shadow);
+  }
+  .stage-ledger .hud-beat {
+    color: var(--on-scene);
+  }
+  .stage-ledger .hud-beat-label {
+    color: rgba(var(--on-scene-rgb), 0.75);
+  }
+  .stage-ledger .hud-beat-seeall {
+    color: var(--on-scene-accent);
   }
   .stage-ledger::before {
     content: "";

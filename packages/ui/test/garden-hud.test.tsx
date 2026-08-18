@@ -29,6 +29,7 @@ import type { ReadinessVerdict } from "@rg/domain";
 import { initialSnapshot, type GardenSnapshot, type GardenState } from "@rg/garden-engine";
 import {
   BalanceStrip,
+  coachClause,
   DockPill,
   dockCoversStage,
   forecastVoice,
@@ -207,6 +208,27 @@ describe("ReadinessSheet (the one place the numbers live)", () => {
     );
     expect(html).not.toContain("your last 1 days");
     expect(html).toContain("you know your body best");
+  });
+});
+
+describe("coachClause (the coach is reachable even when the weekly line is stale)", () => {
+  it("applies the verdict to the day instead of restating the chip's phrase", () => {
+    for (const level of ["poor", "caution", "good"] as const) {
+      const c = coachClause(level, "quality")!;
+      expect(c, level).toBeTruthy();
+      // The chip already says the level; the clause says what to do with it.
+      expect(c, level).not.toContain("Recovery is low");
+      expect(c, level).not.toContain("Good to go");
+      expect(c, level).not.toContain("Take it easy");
+    }
+    expect(coachClause("poor", "quality")).toContain("easy end");
+    expect(coachClause("good", "long")).toContain("full effort");
+  });
+
+  it("stays silent on rest days and without a verdict", () => {
+    expect(coachClause("poor", "rest")).toBeNull();
+    expect(coachClause(null, "quality")).toBeNull();
+    expect(coachClause(undefined, undefined)).toBeNull();
   });
 });
 

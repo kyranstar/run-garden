@@ -15,6 +15,9 @@ possible. Desktop already reads well and must not regress.
 
 Below lg, in DOM/stack order:
 
+0. **Plumbing slot** — conditional banners only (TimezoneNudge, calendar
+   paused, SyncPanel quietWhenHealthy), above everything. Empty and invisible
+   on a healthy day.
 1. **Hero** — the scene, with:
    - condition word + ONE cause→effect loop sentence on the bottom scrim
      ("Clear sun — every workout you finish waters it" / loss direction:
@@ -27,23 +30,30 @@ Below lg, in DOM/stack order:
    "One square per week, last 12 weeks." The page's only large number.
 3. **Beat line** — ONE dismissible line: "Since Friday — …" (leads + beat +
    today lines merged; See-all → log drawer when overflowing). Conditional.
-4. **Plumbing slot** — conditional banners only (TimezoneNudge, calendar
-   paused, SyncPanel quietWhenHealthy). Empty and invisible on a healthy day.
+4. *(As built: the plumbing slot sits ABOVE the hero, not here — a banner
+   above the stage is exactly what `useSpaceAbove` already subtracts from the
+   lg stage height, and an actionable banner belongs before the picture.)*
 5. **Today card — the ONLY card**:
    - head: eyebrow "Today · Tue Aug 18" + readiness chip "● Recovery low ›"
      (chip opens the Readiness sheet; DockVerdict + Readiness card die)
    - workout: serif title, "7:00 AM · 54 min · quality run", one structure
      strip (exercises/stageSummary as today)
-   - **coach line inside the card**, under a hairline: "Coach — <focus text>"
-     + "Ask me ›" → /plan?coach=1. Source: existing `focus` (72h-gated) +
-     readiness-derived clause; no new LLM calls.
+   - **coach line inside the card**, under a hairline: "Coach — <focus text>
+     <readiness clause>" + "Ask me ›" → /plan?coach=1. Sources: existing
+     `focus` (72h-gated) and/or `coachClause(verdict.level, category)` — a
+     pure client-side application of the morning's verdict to today's
+     session (never a restatement of the chip's phrase; silent on rest days).
+     Renders whenever either exists, so the coach — and "Ask me" — survive a
+     stale focus. No new LLM calls.
    - grows line: "Finishing it grows the Century rose — 18 to go" (existing
      dock-grows logic, reworded; nudge buttons die — collection drawer keeps
      DisciplineNudges)
    - week ribbon (existing WeekRibbon + arrival caption)
-   - attention row (conditional): "⚠ 2 past runs need an answer ›" — one
-     amber row; count===1 links /plan?workout=<id>, else /plan. The two
-     UnresolvedCards leave the garden (Plan keeps the actions).
+   - attention row (conditional): one amber row using the shared
+     `attentionPhrase` ("N workouts need attention" — it also covers COROS
+     mismatches, which "past runs need an answer" would misdescribe);
+     count===1 links /plan?workout=<id>, else /plan. The two UnresolvedCards
+     leave the garden (Plan keeps the actions).
    - actions: View workout (primary) · Move
    - no-plan state: the existing EmptyState copy takes the card body instead.
 6. **Lately (unboxed)** — eyebrow "Lately", then:
@@ -60,10 +70,13 @@ Below lg, in DOM/stack order:
 7. **Foot**: "How the garden works" toggle (existing banner content), quiet.
 8. Timeline panel, drawers, sheets, ceremony: unchanged behavior.
 
-At lg the same parts place onto the stage: topleft = condition + loop +
-compact streak + beat; bottom-left dock = Today card (collapse/Minimize kept
-at lg ONLY — below lg the card is the page and never collapses); topright =
-Lately; chips top-right. Timeline/ceremony as today.
+At lg the same parts place onto the stage: topleft = condition + loop;
+bottom-right ledger corner = streak (compact, no caption) + beat, on-scene
+type over the corner scrim; bottom-left dock = Today card (collapse/Minimize
+kept at lg ONLY — below lg the card is the page and never collapses; while
+open, the pill hides — the card names the workout and Minimize is the
+collapse control); topright = Lately on an even glass slab; chips top-right
+above it. Timeline/ceremony as today.
 
 ## Deleted from the page (destinations)
 

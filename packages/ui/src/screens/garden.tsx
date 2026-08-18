@@ -906,6 +906,30 @@ export function DockPill({
 }
 
 /**
+ * The coach's readiness-derived clause (System 1 spec §Today): the morning's
+ * verdict APPLIED to today's session, in the coach's voice — so the card has
+ * a coach even when the weekly focus line is stale, and "Ask me" is always
+ * reachable from home. Derived client-side from data already on the payload;
+ * no LLM call. It never RESTATES the chip's phrase — the chip names the
+ * level, this clause says what to do with it. Null on rest days (there is
+ * nothing to pace) and when there is no verdict to derive from.
+ */
+export function coachClause(
+  level: ReadinessLevel | null | undefined,
+  category: string | undefined,
+): string | null {
+  if (!level || !category || category === "rest") return null;
+  switch (level) {
+    case "poor":
+      return "With recovery low, ride the easy end of today — effort, not pace.";
+    case "caution":
+      return "Take today steady — save the extra gear for later in the week.";
+    case "good":
+      return "Green lights this morning — today can take its full effort.";
+  }
+}
+
+/**
  * The Readiness sheet — the ONE place the morning numbers live (System 1 v2).
  * The Today card's chip opens it; nothing on the page repeats it. Numbers are
  * phrased without jargon ("usually 46", never "baseline median"), and the
@@ -2073,22 +2097,31 @@ export function GardenScreen() {
                 ) : null}
               </>
             )}
-            {d?.focus ? (
-              <div className="today-coach">
-                <span className="today-coach-mark" aria-hidden="true">
-                  🌱
-                </span>
-                <p
-                  className="today-coach-body"
-                  title={`Your coach's focus for the week, written ${formatDayShort(d.focus.at.slice(0, 10))} — not a comment on today's readiness.`}
-                >
-                  <span className="today-coach-who">Coach</span> — {d.focus.text}{" "}
-                  <Link className="today-coach-ask" to="/plan?coach=1">
-                    Ask me ›
-                  </Link>
-                </p>
-              </div>
-            ) : null}
+            {(() => {
+              const clause = coachClause(verdict?.level, w.category);
+              if (!d?.focus && !clause) return null;
+              return (
+                <div className="today-coach">
+                  <span className="today-coach-mark" aria-hidden="true">
+                    🌱
+                  </span>
+                  <p
+                    className="today-coach-body"
+                    title={
+                      d?.focus
+                        ? `Your coach's focus for the week, written ${formatDayShort(d.focus.at.slice(0, 10))} — not a comment on today's readiness.`
+                        : undefined
+                    }
+                  >
+                    <span className="today-coach-who">Coach</span> — {d?.focus ? `${d.focus.text} ` : ""}
+                    {clause ? `${clause} ` : ""}
+                    <Link className="today-coach-ask" to="/plan?coach=1">
+                      Ask me ›
+                    </Link>
+                  </p>
+                </div>
+              );
+            })()}
             {grows?.progress && w.category !== "rest" ? (
               <button
                 type="button"
