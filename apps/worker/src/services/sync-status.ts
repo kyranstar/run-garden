@@ -108,7 +108,10 @@ export async function computeSyncStatus(
       openMoveIntents(db, userId),
       // The one divergence this line CAN detect that isn't a job: an approved
       // ease rewrote a session COROS still holds in its old form.
-      openContentIntentTargets(db, userId),
+      // Completed sessions excluded: their watch copy is history, and counting
+      // one made the status line hand the athlete a job about a run they had
+      // already finished.
+      openContentIntentTargets(db, userId, { excludeCompleted: true }),
       // A terminally-failed coach watch-push is an issue the user can see and
       // act on (audit#2 #6) — it has no move intent, so count it directly.
       // A failed CONTENT REWRITE counts the same way and for the same reason:

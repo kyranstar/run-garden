@@ -1,4 +1,4 @@
-import { and, eq, isNull } from "drizzle-orm";
+import { and, eq, isNull, ne } from "drizzle-orm";
 import { plannedWorkouts, syncIntents } from "@rg/database";
 import { newId, nowInstant } from "@rg/domain";
 import type { Db } from "./db.js";
@@ -114,7 +114,27 @@ export async function openMoveIntents(
  * uses: a divergence behind a session that has been removed from the plan is
  * not divergence the athlete can see or care about.
  */
-export async function openContentIntentTargets(db: Db, userId: string): Promise<Set<string>> {
+export async function openContentIntentTargets(
+  db: Db,
+  userId: string,
+  opts: {
+    /**
+     * Drop sessions the athlete has already DONE.
+     *
+     * A completed workout's watch copy is a record, not a plan: the divergence
+     * is real and permanently unactionable, because there is nothing left to
+     * run and nothing worth rewriting. Counting it turned the account line into
+     * "Your watch keeps an older version of 1 session — Run Garden has the one
+     * to run" about a run finished hours earlier (2026-08-18).
+     *
+     * Off by default, and deliberately: `routes/plan.ts` uses this set to decide
+     * whether a row's stored stages are the app's rather than the wire's, which
+     * stays true after the session is done — dropping completed rows there would
+     * render the detail sheet from the wrong copy.
+     */
+    excludeCompleted?: boolean;
+  } = {},
+): Promise<Set<string>> {
   const rows = await db
     .select({ targetId: syncIntents.targetId })
     .from(syncIntents)
@@ -127,6 +147,7 @@ export async function openContentIntentTargets(db: Db, userId: string): Promise<
         isNull(syncIntents.resolvedAt),
         isNull(syncIntents.supersededBy),
         isNull(plannedWorkouts.archivedAt),
+        ...(opts.excludeCompleted ? [ne(plannedWorkouts.completionState, "completed")] : []),
       ),
     );
   return new Set(rows.map((r) => r.targetId));

@@ -4,6 +4,7 @@ import { schema } from "@rg/database";
 import { newId, nowInstant } from "@rg/domain";
 import type { Db } from "../src/services/db.js";
 import { applyJobResult, applyMove } from "../src/services/jobs.js";
+import { recordIntent } from "../src/services/sync-intents.js";
 import { cloudPresence, computeSyncStatus } from "../src/services/sync-status.js";
 import { connectTestCoros, makeTestDb, makeTestUser } from "./helpers.js";
 
@@ -142,6 +143,31 @@ describe("computeSyncStatus", () => {
     const status = await computeSyncStatus(db, userId, prefs);
     expect(status.state).toBe("sync_issue");
     expect(status.issueCount).toBe(1);
+  });
+
+  it("a COMPLETED session's stale watch copy is not counted — it is history, not a job", async () => {
+    // Live (2026-08-18): the athlete ran their session, and the status line then
+    // told them "Your watch keeps an older version of 1 session — Run Garden has
+    // the one to run" about a run finished hours earlier. The divergence is real
+    // and permanently unactionable; there is nothing left to run.
+    const db = makeTestDb();
+    const { userId, prefs } = await makeTestUser(db, { corosWritesEnabled: true });
+    await connectTestCoros(db, userId);
+    const workoutId = await insertWorkout(db, userId);
+    await recordIntent(db, {
+      userId,
+      targetKind: "workout",
+      targetId: workoutId,
+      kind: "content",
+      source: "coach_ease",
+    });
+    expect((await computeSyncStatus(db, userId, prefs)).contentStaleCount).toBe(1);
+
+    await db
+      .update(schema.plannedWorkouts)
+      .set({ completionState: "completed" })
+      .where(eq(schema.plannedWorkouts.id, workoutId));
+    expect((await computeSyncStatus(db, userId, prefs)).contentStaleCount).toBe(0);
   });
 
   it("a failed coach write a LATER write superseded → issueCount 0 (history, not an issue)", async () => {
