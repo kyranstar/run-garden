@@ -29,7 +29,13 @@ import { auditEvents, dailyHealth, plannedWorkouts, plannedWorkoutStages } from 
 import { newId, nowInstant, todayInZone } from "@rg/domain";
 import { chunkIds, type Db } from "./db.js";
 import { loadPreferences } from "./calendar-sync.js";
-import { enqueueWatchCreate, watchAddressOf, watchPushable } from "./coach-apply.js";
+import {
+  enqueueWatchCreate,
+  sessionColumns,
+  watchAddressOf,
+  watchPushable,
+  writeStages,
+} from "./coach-apply.js";
 import { sessionFromRow } from "./content-converge.js";
 
 /** `audit_events.kind` for the pre-change backup written by a live run. */
@@ -232,4 +238,89 @@ export async function countAbsentPushable(
     ...report.totals,
     unpushableIds: report.rows.filter((r) => r.action === "unpushable").map((r) => r.workoutId),
   };
+}
+
+/**
+ * RE-RENDER A SESSION THE APP WROTE, FROM THE APP'S OWN COPY.
+ *
+ * Pushing a coach session to COROS and reading it back used to overwrite the
+ * row with COROS's echo of it, because the create path stamped the fingerprint
+ * of what we SENT and COROS re-encodes on save — so the next import saw drift
+ * on a workout nobody had touched and rule 7 took the wire's version as
+ * authoritative. A lift card that had read as the coach's prescription became
+ * "3 × open Reverse Lunge / open Reverse Lunge": reps gone, movements
+ * duplicated, fourteen stage rows for five exercises.
+ *
+ * The create path no longer does that. This repairs the rows it already did it
+ * to. It is only possible because rule 7 never touches `structured_json` — the
+ * coach's exercise list survived underneath the damaged summary, which is also
+ * why the detail sheet stayed correct while the card did not.
+ *
+ * Narrow by construction: it writes only what `sessionColumns` and `writeStages`
+ * write, from the row's OWN stored session, for rows that actually disagree with
+ * it. A row already rendering correctly is left completely alone.
+ */
+export async function restoreAuthoredSessions(
+  db: Db,
+  userId: string,
+  opts: { dryRun: boolean; workoutIds?: string[] },
+): Promise<{
+  dryRun: boolean;
+  rows: Array<{ workoutId: string; effectiveDate: string; was: string | null; now: string }>;
+  totals: { candidates: number; restored: number };
+}> {
+  const now = nowInstant();
+  const rows = (
+    await db
+      .select()
+      .from(plannedWorkouts)
+      .where(and(eq(plannedWorkouts.userId, userId), isNull(plannedWorkouts.archivedAt)))
+  ).filter(
+    (row) =>
+      row.structuredJson !== null &&
+      (opts.workoutIds === undefined || opts.workoutIds.includes(row.id)),
+  );
+
+  const out: Array<{ workoutId: string; effectiveDate: string; was: string | null; now: string }> = [];
+  for (const row of rows) {
+    // `sessionFromRow` reads `structured_json` for a lift or mobility row, which
+    // is the app's own copy and the thing the import cannot reach.
+    const session = sessionFromRow(row, []);
+    if (!session) continue;
+    const rendered = sessionColumns(session).stageSummary;
+    if (rendered === row.stageSummary) continue;
+    out.push({ workoutId: row.id, effectiveDate: row.effectiveDate, was: row.stageSummary, now: rendered });
+  }
+  if (opts.dryRun || out.length === 0) {
+    return { dryRun: opts.dryRun, rows: out, totals: { candidates: rows.length, restored: 0 } };
+  }
+
+  const auditEventId = newId();
+  await db.insert(auditEvents).values({
+    id: auditEventId,
+    userId,
+    kind: "authored_sessions_restored",
+    detail: { previous: out },
+    createdAt: now,
+  });
+
+  const [threshold] = await db
+    .select({ v: dailyHealth.thresholdPaceSecPerKm })
+    .from(dailyHealth)
+    .where(and(eq(dailyHealth.userId, userId), isNotNull(dailyHealth.thresholdPaceSecPerKm)))
+    .orderBy(desc(dailyHealth.date))
+    .limit(1);
+
+  for (const entry of out) {
+    const row = rows.find((r) => r.id === entry.workoutId)!;
+    const session = sessionFromRow(row, [])!;
+    // The SAME writers the coach uses, so a restored session and an approved one
+    // cannot be two different things.
+    await db
+      .update(plannedWorkouts)
+      .set({ ...sessionColumns(session), updatedAt: now })
+      .where(eq(plannedWorkouts.id, row.id));
+    await writeStages(db, row.id, session, threshold?.v ?? undefined);
+  }
+  return { dryRun: false, rows: out, totals: { candidates: rows.length, restored: out.length } };
 }

@@ -165,7 +165,7 @@ function plannedDistanceMeters(session: CoachSession): number | null {
  * no upstream copy yet); the create's verify replaces the seed with the wire's
  * own fingerprint the moment one exists.
  */
-function sessionColumns(session: CoachSession) {
+export function sessionColumns(session: CoachSession) {
   const body = session.lift ?? session.mobility;
   return {
     title: session.title,
@@ -211,7 +211,7 @@ function sessionColumns(session: CoachSession) {
  *
  * Stage ids derive from the workout id, so re-applying is idempotent.
  */
-async function writeStages(
+export async function writeStages(
   db: Db,
   workoutId: string,
   session: CoachSession,

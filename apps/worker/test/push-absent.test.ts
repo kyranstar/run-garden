@@ -12,7 +12,11 @@ import { describe, expect, it } from "vitest";
 import { eq } from "drizzle-orm";
 import { schema } from "@rg/database";
 import { newId, nowInstant, todayInZone, type CoachSession } from "@rg/domain";
-import { countAbsentPushable, pushAbsentSessions } from "../src/services/push-absent.js";
+import {
+  countAbsentPushable,
+  pushAbsentSessions,
+  restoreAuthoredSessions,
+} from "../src/services/push-absent.js";
 import { makeTestDb, makeTestUser } from "./helpers.js";
 
 const { plannedWorkouts, corosWriteJobs, trainingPlans } = schema;
@@ -177,5 +181,38 @@ describe("pushing sessions that never reached the watch", () => {
     const report = await pushAbsentSessions(db, userId, { dryRun: false });
     expect(report.totals.pushes).toBe(0);
     expect(await db.select().from(corosWriteJobs).where(eq(corosWriteJobs.workoutId, id))).toHaveLength(0);
+  });
+});
+
+describe("restoring a session COROS's echo overwrote", () => {
+  it("re-renders the card from the app's own copy, and leaves a correct row alone", async () => {
+    // Live: pushing a lift to COROS and reading it back turned the card into
+    // "3 × open Reverse Lunge / open Reverse Lunge" — reps gone, movements
+    // duplicated — because the create stamped the fingerprint of what was SENT
+    // and COROS re-encodes on save, so the next import saw drift and took the
+    // wire's version. `structured_json` survived underneath, which is the only
+    // reason this is repairable.
+    const db = await makeTestDb();
+    const { userId, prefs } = await makeTestUser(db, { corosWritesEnabled: true });
+    const id = await seed(db, userId, lift([SQUAT, SQUAT]), todayInZone(prefs.timezone), {
+      stageSummary: "3 × open Reverse Lunge / open Reverse Lunge",
+    });
+
+    const dry = await restoreAuthoredSessions(db, userId, { dryRun: true });
+    expect(dry.totals.restored).toBe(0);
+    expect(dry.rows).toHaveLength(1);
+    expect(dry.rows[0]!.was).toBe("3 × open Reverse Lunge / open Reverse Lunge");
+    expect((await db.select().from(plannedWorkouts).where(eq(plannedWorkouts.id, id)))[0]!.stageSummary)
+      .toBe("3 × open Reverse Lunge / open Reverse Lunge");
+
+    const live = await restoreAuthoredSessions(db, userId, { dryRun: false });
+    expect(live.totals.restored).toBe(1);
+    const [row] = await db.select().from(plannedWorkouts).where(eq(plannedWorkouts.id, id));
+    expect(row!.stageSummary).not.toContain("open Reverse Lunge / open Reverse Lunge");
+    expect(row!.stageSummary).toContain("Movement 0");
+
+    // Idempotent: a row already rendering correctly is not rewritten.
+    const again = await restoreAuthoredSessions(db, userId, { dryRun: false });
+    expect(again.totals.restored).toBe(0);
   });
 });

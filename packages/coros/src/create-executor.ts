@@ -1781,7 +1781,21 @@ export async function createWorkout(
         ...owed,
       };
     }
-    if (found) return { ok: true, code, ...ids, ...owed, wireFingerprint };
+    if (found) {
+      // THE SERVER'S OWN ENCODING, not ours — the same correction the content
+      // rewrite needed (2026-08-18). The caller stamps this on
+      // `source_content_fingerprint`, which means "the upstream copy as we last
+      // observed it", and the NEXT import re-hashes what COROS serves. COROS
+      // re-encodes on save (it stores a `"871.00"` distance as `871`), so
+      // stamping the program we SENT guarantees the next read sees drift on a
+      // session that never changed — and rule 7 then hands the athlete's row
+      // back to COROS's lossy echo of our own workout. That is not theoretical:
+      // it turned a pushed lift session's card from the coach's prescription
+      // into "3 × open Reverse Lunge / open Reverse Lunge", reps gone,
+      // movements duplicated, minutes after the push succeeded.
+      const observed = found.program ? corosProgramFingerprint(found.program) : undefined;
+      return { ok: true, code, ...ids, ...owed, wireFingerprint: observed ?? wireFingerprint };
+    }
     if (elsewhere) {
       return {
         ok: false,

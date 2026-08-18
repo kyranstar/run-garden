@@ -24,7 +24,11 @@ import { pushStudioPlan, undoStudioAdoption } from "../services/studio-push.js";
 import { corosReadNow } from "../services/coros-read.js";
 import { countOrphanedMirrors, repairOrphanedMirrors } from "../services/mirror-repair.js";
 import { convergeDivergedContent, countDivergedContent } from "../services/content-converge.js";
-import { countAbsentPushable, pushAbsentSessions } from "../services/push-absent.js";
+import {
+  countAbsentPushable,
+  pushAbsentSessions,
+  restoreAuthoredSessions,
+} from "../services/push-absent.js";
 import { processCoachReads } from "../services/coach-reads.js";
 import { waitUntilSafe } from "../services/wait-until.js";
 
@@ -481,6 +485,20 @@ syncRoutes.post("/push-absent", async (c) => {
   if (!parsed.success) return c.json({ error: "invalid_request", details: parsed.error.issues }, 400);
   const report = await pushAbsentSessions(c.get("db"), c.get("userId"), parsed.data);
   return c.json({ ok: true, ...report });
+});
+
+// POST /api/sync/restore-authored — undo the damage a push-then-read did to
+// rows the app itself wrote. Same contract: `dryRun` required, backup first.
+syncRoutes.post("/restore-authored", async (c) => {
+  let body: unknown;
+  try {
+    body = await c.req.json();
+  } catch {
+    return c.json({ error: "invalid_json" }, 400);
+  }
+  const parsed = pushAbsentSchema.safeParse(body);
+  if (!parsed.success) return c.json({ error: "invalid_request", details: parsed.error.issues }, 400);
+  return c.json({ ok: true, ...(await restoreAuthoredSessions(c.get("db"), c.get("userId"), parsed.data)) });
 });
 
 syncRoutes.get("/converge-content/census", async (c) =>
