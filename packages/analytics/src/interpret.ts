@@ -102,6 +102,10 @@ export interface InterpretedMetric {
   status: "ok" | "insufficient_data";
   value?: string;
   band?: Band;
+  /** What the band's pill SAYS, when severity vocabulary would mislead —
+   * "Easy-running share 29%" is an alert-level band whose honest label is
+   * "Low", not "High". Absent → the UI's default label for the band. */
+  bandLabel?: string;
   range?: string;
   meaning: string;
   suggestion?: string;
@@ -138,6 +142,7 @@ export interface InterpretedMetric {
 export interface Presentation {
   value: string;
   band?: Band;
+  bandLabel?: string;
   range?: string;
   meaning: string;
   suggestion?: string;
@@ -172,6 +177,7 @@ export function interpret<T>(
     status: "ok",
     value: p.value,
     band: p.band,
+    bandLabel: p.bandLabel,
     range: p.range,
     meaning: p.meaning,
     suggestion: p.suggestion,

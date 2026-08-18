@@ -340,9 +340,9 @@ function StripBoxes({ strip, kind }: { strip: MetricStripCell[]; kind: StripKind
  * identical behavior to that screen's `BandPill`: normal earns silence,
  * so a `healthy` (or absent) band renders nothing.
  */
-function BandPill({ band }: { band?: string }) {
+function BandPill({ band, bandLabel }: { band?: string; bandLabel?: string }) {
   if (!band || band === "healthy") return null;
-  const label = band === "watch" ? "Watch" : band === "low" ? "Below norm" : "High";
+  const label = bandLabel ?? (band === "watch" ? "Watch" : band === "low" ? "Below norm" : "High");
   const cls = band === "watch" ? "pill-warn" : "pill-neutral";
   return <span className={`pill ${cls}`}>{label}</span>;
 }
@@ -386,7 +386,7 @@ export function SignalTile({
     >
       <div className="metric-head">
         <span className="metric-title">{m.title}</span>
-        {!insufficient ? <BandPill band={m.band} /> : null}
+        {!insufficient ? <BandPill band={m.band} bandLabel={m.bandLabel} /> : null}
       </div>
 
       {insufficient ? (

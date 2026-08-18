@@ -1044,7 +1044,7 @@ insightRoutes.get("/", async (c) => {
       ceilingNote,
     ),
     withNote(
-      interpret("lowIntensityShare", "Low-intensity share", recentIntensity, (v) => {
+      interpret("lowIntensityShare", "Easy-running share", recentIntensity, (v) => {
         // Honest suppression (audit#2 (a4)): when the band flips inside the
         // ceiling's ±5 bpm error bar, the number is shown but the verdict —
         // band, its gauge, and the band-derived advice — is withheld. An
@@ -1053,7 +1053,11 @@ insightRoutes.get("/", async (c) => {
         return {
           value: `${v.lowPct}%`,
           band,
-          range: "aim ≥75%, classic target ~80%",
+          // Severity says "high"; the honest pill for a share that is LOW
+          // says so (System 2 round 2 — a HIGH flag on a number the reader
+          // sees as low misled on the deployed page).
+          bandLabel: band === "high" ? "Low" : undefined,
+          range: "aim ≈75%",
           gauge: recentIntensityConfident
             ? { min: 40, max: 100, healthyLo: 75, healthyHi: 100, value: v.lowPct }
             : undefined,

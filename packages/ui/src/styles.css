@@ -3444,6 +3444,12 @@ a.note {
 .chart-caption-aside {
   flex: none;
 }
+/* A frame whose caller supplies the section head passes title="" — the
+   empty box must not keep its margin. */
+.chart-title:empty,
+.chart-caption:has(> .chart-caption-text > .chart-title:empty) {
+  display: none;
+}
 .chart-title {
   font-weight: var(--weight-medium);
   font-size: var(--text-md);

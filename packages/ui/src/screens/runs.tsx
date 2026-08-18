@@ -13,6 +13,7 @@ import {
   EmptyState,
   formatDayLong,
   formatDistance,
+  formatShortDate,
   formatMinutes,
   formatPace,
   localTodayGuess,
@@ -605,7 +606,6 @@ export function RunsScreen() {
       {data ? (
         <>
           <section className="dash-sect" aria-label="Training">
-            <h2 className="dash-eyebrow">Training</h2>
             {recentTraining.length === 0 ? (
               <p className="muted">Completed sessions will appear here.</p>
             ) : (
@@ -642,7 +642,7 @@ export function RunsScreen() {
                     still waiting on an answer.
                   </p>
                 )}
-                <ConsistencyHeatmap days={data.consistency.days} />
+                <ConsistencyHeatmap days={data.consistency.days} title="" />
               </>
             ) : (
               <p className="muted">Plan consistency appears once the plan has workouts in it.</p>
@@ -682,7 +682,7 @@ export function RunsScreen() {
                   <li key={r.id} className="dash-rec">
                     <b>{r.title}</b> — {r.value}
                     <span className="dash-rec-when">
-                      {formatDayLong(r.achievedOn)}
+                      {formatShortDate(r.achievedOn)}
                       {isRecentRecord(r.achievedOn, localTodayGuess()) ? (
                         <span className="new-ring">New</span>
                       ) : null}
@@ -723,7 +723,7 @@ export function RunsScreen() {
               <section key={wk.monday} className="fw-week" aria-label={`Week of ${wk.monday}`}>
                 <div className="fw-head">
                   <h3 className="fw-title">
-                    {wk.monday === todayMonday ? "This week" : `Week of ${formatDayLong(wk.monday)}`}
+                    {wk.monday === todayMonday ? "This week" : `Week of ${formatShortDate(wk.monday)}`}
                   </h3>
                   <span className="fw-stats">
                     {countNoun(wk.items.length, "session")} · {formatHours(total)}
