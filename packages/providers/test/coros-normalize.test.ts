@@ -4,6 +4,9 @@ import { flattenStages, deriveWorkoutSeconds, estimateDuration } from "@rg/sched
 import {
   corosDayToLocalDate,
   corosProgramFingerprint,
+  describeProgramDelta,
+  NO_PROGRAM_DELTA,
+  sameProgramContent,
   localDateToCorosDay,
   normalizeCorosActivity,
   normalizeCorosLaps,
@@ -521,3 +524,65 @@ describe("COROS time-unit contract: list seconds, detail centiseconds", () => {
     expect(a.avgPaceSecPerKm).toBeGreaterThan(180); // ~6:13/km, not 0:04/km
   });
 });
+
+/**
+ * WHAT COST AN EVENING (2026-08-17). A content rewrite reached the athlete's
+ * watch, COROS accepted it with `result 0000`, and our own read-after-write
+ * refused it — because we sent `distance: "871.00"` and COROS stored `871`.
+ * The session was correct on both sides; only the comparison was wrong, and it
+ * left the row reading `sync_issue` for a watch that was perfectly in sync.
+ *
+ * `RawCorosProgram` documents the trap in its own type: `distance?: string |
+ * number; // centimetres, 2dp string`.
+ */
+describe("comparing a program we sent with the one the server stored", () => {
+  const sent = {
+    idInPlan: 10,
+    name: "Easy hour",
+    sportType: 1,
+    duration: 3300,
+    distance: "871.00",
+    exercises: [
+      { id: 1, exerciseType: 1, targetType: 2, targetValue: 600, groupId: "0" },
+      { id: 2, exerciseType: 2, targetType: 2, targetValue: 2100, groupId: 0 },
+    ],
+  };
+
+  it("treats the server's re-encoding of a number as the SAME content", () => {
+    const stored = {
+      ...sent,
+      distance: 871,
+      exercises: [
+        { ...sent.exercises[0]!, groupId: 0 },
+        { ...sent.exercises[1]!, groupId: "0" },
+      ],
+    };
+    expect(describeProgramDelta(sent, stored)).toBe(NO_PROGRAM_DELTA);
+    expect(sameProgramContent(sent, stored)).toBe(true);
+    // …while the raw hash, correctly, does NOT agree — which is exactly why the
+    // read-after-write must not use it.
+    expect(corosProgramFingerprint(sent)).not.toBe(corosProgramFingerprint(stored));
+  });
+
+  it("still catches a real change, and names the field", () => {
+    const edited = {
+      ...sent,
+      exercises: [sent.exercises[0]!, { ...sent.exercises[1]!, targetValue: 2400 }],
+    };
+    expect(sameProgramContent(sent, edited)).toBe(false);
+    expect(describeProgramDelta(sent, edited)).toContain("ex[1].targetValue 2100→2400");
+  });
+
+  it("catches a dropped stage", () => {
+    const truncated = { ...sent, exercises: [sent.exercises[0]!] };
+    expect(describeProgramDelta(sent, truncated)).toContain("exercises 2→1");
+  });
+
+  it("reports a changed name WITHOUT printing it — the text is the athlete's", () => {
+    const renamed = { ...sent, name: "Marathon pace 3 x 2 miles" };
+    const delta = describeProgramDelta(sent, renamed);
+    expect(delta).toContain("name differs");
+    expect(delta).not.toContain("Marathon");
+  });
+});
+

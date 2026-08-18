@@ -97,6 +97,7 @@ import {
   corosDayToLocalDate,
   corosProgramFingerprint,
   describeProgramDelta,
+  sameProgramContent,
   type RawCorosEntity,
   type RawCorosProgram,
 } from "@rg/providers";
@@ -801,13 +802,26 @@ export async function updateWorkoutContent(
       };
     }
 
-    if (observedFingerprint === wireFingerprint) {
+    // VERIFIED when the server is holding what we sent — by VALUE, not by
+    // encoding. The hash equality is kept as the fast path; `sameProgramContent`
+    // is the honest one, because COROS re-encodes on save (it stored our
+    // `"871.00"` distance as `871`) and a raw hash compare across a write
+    // therefore reports a content change that never happened. Live, that refused
+    // a rewrite which had landed perfectly and left the row in `sync_issue`.
+    if (
+      observedFingerprint === wireFingerprint ||
+      (now?.program && sameProgramContent(rewritten, now.program))
+    ) {
       return {
         ok: true,
         code,
         pathUsed: "in_place_update",
         ...observedIds,
-        wireFingerprint,
+        // THE SERVER'S OWN ENCODING is what the caller stamps on the row, not
+        // ours. `source_content_fingerprint` means "the upstream copy as we last
+        // observed it", and the next read re-hashes the server's version — stamp
+        // what we sent and that read sees phantom drift on every import, forever.
+        wireFingerprint: observedFingerprint ?? wireFingerprint,
         observedFingerprint,
         ...owed,
       };

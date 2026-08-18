@@ -414,9 +414,13 @@ export async function executeCloudJobs(
             );
           }
           // The wire's OWN fingerprint, straight from the executor — the program
-          // it wrote after `/program/calculate` spliced duration and load in,
-          // which is the version the next read returns. Rebuilding it here would
-          // describe a program that was never written (audit 2026-08-17).
+          // the SERVER stored, after `/program/calculate` spliced duration and
+          // load in and after COROS re-encoded whatever it chose to. That is the
+          // version the next read returns, so it is the only value that keeps
+          // rule 7 quiet; stamping what we SENT re-introduces the phantom drift
+          // this whole evening was spent chasing (`"871.00"` sent, `871`
+          // stored). Rebuilding it here would describe a program that was never
+          // written (audit 2026-08-17).
           await db
             .update(plannedWorkouts)
             .set({

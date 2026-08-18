@@ -283,14 +283,30 @@ export function corosProgramFingerprint(program: RawCorosProgram): string {
  * numbers, ids and structural flags only — never a workout name — so this is
  * safe to persist and to show.
  */
+/** `describeProgramDelta`'s answer when the two programs agree. */
+export const NO_PROGRAM_DELTA = "no field in the fingerprint differs";
+
 export function describeProgramDelta(
   sent: RawCorosProgram,
   observed: RawCorosProgram,
   limit = 8,
 ): string {
   const diffs: string[] = [];
+  /**
+   * ENCODING IS NOT CONTENT. COROS declares `distance` as a "2dp string" and
+   * `groupId` as `string | number`, and it re-encodes on save: a rewrite that
+   * sent `"871.00"` came back as `871`. Raw `===` called that a content change
+   * and refused a write that had in fact landed perfectly — so a numeric
+   * comparison is made on the VALUE whenever both sides are numeric, and only
+   * a genuine difference is reported.
+   */
   const cmp = (field: string, a: unknown, b: unknown): void => {
     if (a === b) return;
+    const na = typeof a === "string" && a.trim() !== "" ? Number(a) : a;
+    const nb = typeof b === "string" && b.trim() !== "" ? Number(b) : b;
+    if (typeof na === "number" && typeof nb === "number" && !Number.isNaN(na) && !Number.isNaN(nb)) {
+      if (na === nb) return;
+    }
     const show = (v: unknown): string => (v === undefined || v === null ? "absent" : String(v));
     diffs.push(`${field} ${show(a)}→${show(b)}`);
   };
@@ -321,10 +337,26 @@ export function describeProgramDelta(
     cmp(`ex[${i}].isGroup`, x.isGroup, y.isGroup);
     cmp(`ex[${i}].groupId`, x.groupId, y.groupId);
   }
-  if (diffs.length === 0) return "no field in the fingerprint differs";
+  if (diffs.length === 0) return NO_PROGRAM_DELTA;
   return diffs.length > limit
     ? `${diffs.slice(0, limit).join("; ")} (+${diffs.length - limit} more)`
     : diffs.join("; ");
+}
+
+/**
+ * IS WHAT THE SERVER STORED THE THING WE SENT? — the read-after-write test.
+ *
+ * Deliberately NOT `corosProgramFingerprint(a) === corosProgramFingerprint(b)`.
+ * That hash is the right tool for asking whether COROS's copy changed between
+ * two READS, where both sides come from the same encoder and a raw compare is
+ * stable. It is the wrong tool across a WRITE, where one side is what we built
+ * and the other is what the server chose to store: COROS re-encodes `"871.00"`
+ * as `871`, and the hash then reports a content change that did not happen.
+ * Live, that refused a correct rewrite and left the athlete's watch and app
+ * disagreeing while both were in fact right.
+ */
+export function sameProgramContent(sent: RawCorosProgram, observed: RawCorosProgram): boolean {
+  return describeProgramDelta(sent, observed) === NO_PROGRAM_DELTA;
 }
 
 /**
