@@ -96,6 +96,7 @@ import type { CoachSession, StudioSession } from "@rg/domain";
 import {
   corosDayToLocalDate,
   corosProgramFingerprint,
+  describeProgramDelta,
   type RawCorosEntity,
   type RawCorosProgram,
 } from "@rg/providers";
@@ -872,8 +873,8 @@ export async function updateWorkoutContent(
       code,
       reason: "verification_failed",
       error:
-        `the rewrite returned 0000 but the program on ${date} is not what was sent` +
-        " (fingerprint mismatch)",
+        `the rewrite returned 0000 but the program on ${date} is not what was sent —` +
+        ` ${now?.program ? describeProgramDelta(rewritten, now.program) : "nothing to compare"}`,
       ...observedIds,
       wireFingerprint,
       ...(observedFingerprint !== undefined ? { observedFingerprint } : {}),

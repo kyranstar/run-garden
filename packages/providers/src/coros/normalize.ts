@@ -269,6 +269,65 @@ export function corosProgramFingerprint(program: RawCorosProgram): string {
 }
 
 /**
+ * WHICH FIELDS TWO PROGRAMS DISAGREE ON — the fingerprint's own components,
+ * named, for a refusal a person has to act on.
+ *
+ * `corosProgramFingerprint` collapses a program to one hash, which answers "is
+ * this the same content?" and nothing else. When a read-after-write says the
+ * stored program is not what was sent, that hash cannot say whether the server
+ * renumbered a group id, recomputed a duration, or dropped a target — and those
+ * demand opposite responses (ignore it, accept it, or refuse loudly).
+ *
+ * Derived from the same field list as the fingerprint, immediately below it, so
+ * the two cannot drift into disagreeing about what "content" means. Values are
+ * numbers, ids and structural flags only — never a workout name — so this is
+ * safe to persist and to show.
+ */
+export function describeProgramDelta(
+  sent: RawCorosProgram,
+  observed: RawCorosProgram,
+  limit = 8,
+): string {
+  const diffs: string[] = [];
+  const cmp = (field: string, a: unknown, b: unknown): void => {
+    if (a === b) return;
+    const show = (v: unknown): string => (v === undefined || v === null ? "absent" : String(v));
+    diffs.push(`${field} ${show(a)}→${show(b)}`);
+  };
+  // `name` is compared but never printed: a changed title matters, its text is
+  // the athlete's and does not belong in an error column.
+  if (sent.name !== observed.name) diffs.push("name differs");
+  cmp("sportType", sent.sportType, observed.sportType);
+  cmp("duration", sent.duration, observed.duration);
+  cmp("estimatedTime", sent.estimatedTime, observed.estimatedTime);
+  cmp("distance", sent.estimatedDistance ?? sent.distance, observed.estimatedDistance ?? observed.distance);
+  const a = sent.exercises ?? [];
+  const b = observed.exercises ?? [];
+  if (a.length !== b.length) diffs.push(`exercises ${a.length}→${b.length}`);
+  for (let i = 0; i < Math.max(a.length, b.length) && diffs.length < limit; i++) {
+    const x = a[i];
+    const y = b[i];
+    if (!x || !y) {
+      diffs.push(`exercises[${i}] ${x ? "dropped" : "added"}`);
+      continue;
+    }
+    cmp(`ex[${i}].exerciseType`, x.exerciseType, y.exerciseType);
+    cmp(`ex[${i}].targetType`, x.targetType, y.targetType);
+    cmp(`ex[${i}].targetValue`, x.targetValue, y.targetValue);
+    cmp(`ex[${i}].intensityType`, x.intensityType, y.intensityType);
+    cmp(`ex[${i}].intensityValue`, x.intensityValue, y.intensityValue);
+    cmp(`ex[${i}].intensityValueExtend`, x.intensityValueExtend, y.intensityValueExtend);
+    cmp(`ex[${i}].sets`, x.sets, y.sets);
+    cmp(`ex[${i}].isGroup`, x.isGroup, y.isGroup);
+    cmp(`ex[${i}].groupId`, x.groupId, y.groupId);
+  }
+  if (diffs.length === 0) return "no field in the fingerprint differs";
+  return diffs.length > limit
+    ? `${diffs.slice(0, limit).join("; ")} (+${diffs.length - limit} more)`
+    : diffs.join("; ");
+}
+
+/**
  * One workout as COROS reports it — a `SourcePlannedWorkout` whose stages carry
  * the strength numbers as well (`NormalizedPlannedStage`). Assignable to
  * `SourcePlannedWorkout` anywhere one is expected; the extra fields are simply
