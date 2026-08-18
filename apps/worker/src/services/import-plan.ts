@@ -458,6 +458,40 @@ export async function importPlanSnapshot(
     ).map((r) => r.targetId),
   );
 
+  /**
+   * EVERY SESSION THE APP ITSELF WROTE TO THE WATCH.
+   *
+   * `contentClaimedIds` covers rows an ease rewrote. It does NOT cover rows the
+   * coach CREATED and pushed, which carry no content intent at all — and those
+   * are the ones that broke (2026-08-18). Nine backfilled lift and mobility
+   * sessions went to COROS correctly, and the next read rewrote their cards from
+   * COROS's echo of our own workout:
+   *
+   *     Wall Sit 3×60s · Reverse Lunge 3×8/side (4s down), 90s rest
+   *     3 × 1 min Wall Sit · 3 × open Reverse Lunge / open Reverse Lunge
+   *
+   * Restoring them was not enough: the very next read undid eight of nine,
+   * because nothing marked them as ours.
+   *
+   * Keyed on the write jobs rather than on `structured_json`, which is null for
+   * a coach-created RUN and would have protected only half the sessions, and
+   * rather than on the `cw-` id prefix, which is a naming convention and not a
+   * fact about authorship.
+   */
+  const appAuthoredIds = new Set(
+    (
+      await db
+        .select({ workoutId: corosWriteJobs.workoutId })
+        .from(corosWriteJobs)
+        .where(
+          and(
+            eq(corosWriteJobs.userId, input.userId),
+            inArray(corosWriteJobs.kind, ["coach_create_workout", "coach_update_workout"]),
+          ),
+        )
+    ).map((r) => r.workoutId),
+  );
+
   const seenSourceIds = new Set<string>();
 
   for (const src of admitted) {
@@ -817,7 +851,8 @@ export async function importPlanSnapshot(
     } else if (
       stageSummary !== undefined &&
       current.stageSummary !== stageSummary &&
-      !contentClaimedIds.has(current.id)
+      !contentClaimedIds.has(current.id) &&
+      !appAuthoredIds.has(current.id)
     ) {
       // WORDING HEAL (2026-08-17). The fingerprints agree, so COROS is serving
       // the same workout this row already holds and the stored stage rows are

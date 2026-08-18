@@ -318,6 +318,39 @@ describe("stage-summary wording heal", () => {
     expect((await stridesRow()).stageSummary).toBe("30 min easy");
   });
 
+  it("stands down for a session the APP created and pushed, which has no content intent", async () => {
+    // The live regression (2026-08-18) that survived the first fix. A coach
+    // CREATED session carries no content intent at all, so the claimed-row guard
+    // never applied: nine sessions pushed to COROS correctly and the next read
+    // rewrote their cards from COROS's echo of our own workout — "Wall Sit 3×60s
+    // · Reverse Lunge 3×8/side (4s down), 90s rest" became "3 × 1 min Wall Sit ·
+    // 3 × open Reverse Lunge / open Reverse Lunge". Restoring them was not
+    // enough; the next read undid eight of the nine.
+    await importFromProvider();
+    const w = await stridesRow();
+    await db
+      .update(plannedWorkouts)
+      .set({ stageSummary: "the coach's own wording" })
+      .where(eq(plannedWorkouts.id, w.id));
+    // The mark of authorship: a write job this app enqueued for that session.
+    await db.insert(corosWriteJobs).values({
+      id: `${w.id}-push`,
+      userId,
+      workoutId: w.id,
+      kind: "coach_create_workout",
+      expectedContentFingerprint: "fp",
+      originalDate: w.effectiveDate,
+      destinationDate: w.effectiveDate,
+      status: "verified",
+      requestedAt: nowInstant(),
+      updatedAt: nowInstant(),
+    });
+
+    const stats = await importFromProvider();
+    expect(stats.rewordedSummaries).toBe(0);
+    expect((await stridesRow()).stageSummary).toBe("the coach's own wording");
+  });
+
   it("stands down for a claimed row even when the fingerprints agree", async () => {
     // ...and the heal must ALSO refuse when they don't diverge, or it becomes
     // a second, quieter way for the snapshot to reclaim content the athlete
