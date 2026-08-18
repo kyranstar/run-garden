@@ -17,6 +17,7 @@ import {
   buildStrengthProgram,
   createWorkout,
   deleteWorkout,
+  programsFor,
   type CreateWorkoutSpec,
 } from "../src/create-executor.js";
 import { mockCorosServer, nextMonday, REASSIGN_OFFSET, type MockCorosServer } from "./mock-coros-server.js";
@@ -119,6 +120,57 @@ function seedPushed(
     sportType: 4,
   });
 }
+
+/**
+ * THE LINK KEY, pinned against RECORDED WIRE DATA rather than the fixture.
+ *
+ * `docs/reports/coros-inspect-2026-08-02.json` is a real read of a real COROS
+ * account. Its programs carry idInPlan ∈ {1,2,3,15,21,23,24,45}; its entities
+ * carry (idInPlan, planProgramId) pairs including (45,43) and (23,16) — so 43
+ * and 16 name no program at all, while every entity's own idInPlan does. That
+ * shape is reproduced literally below, because the synthetic schedule fixture
+ * sets `planProgramId: String(t.idInPlan)` and therefore cannot express it.
+ */
+describe("linking a placement to its program (real wire numbering)", () => {
+  const view = {
+    planId: "p1",
+    entities: [
+      { idInPlan: 45, planId: "p1", planProgramId: 43, happenDay: 20260823 },
+      { idInPlan: 10, planId: "p1", planProgramId: 14, happenDay: 20260822 },
+      { idInPlan: 2, planId: "p1", planProgramId: 2, happenDay: 20260824 },
+    ] as RawCorosEntity[],
+    programs: [
+      { id: "prog-45", idInPlan: 45, planId: "p1", name: "P10679" },
+      { id: "prog-10", idInPlan: 10, planId: "p1", name: "the athlete's Saturday" },
+      { id: "prog-14", idInPlan: 14, planId: "p1", name: "somebody else's session" },
+      { id: "prog-2", idInPlan: 2, planId: "p1", name: "app-created" },
+    ],
+  };
+
+  it("keys on the ENTITY's idInPlan, not planProgramId", () => {
+    // Live consequence of getting this wrong: the 2026-08-22 rewrite resolved to
+    // program …159 here and …148 in the importer, so the content proof could
+    // never match and the write refused while blaming the athlete.
+    expect(programsFor(view, view.entities[1]!).map((p) => p.id)).toEqual(["prog-10"]);
+  });
+
+  it("still resolves a placement whose planProgramId names no program", () => {
+    expect(programsFor(view, view.entities[0]!).map((p) => p.id)).toEqual(["prog-45"]);
+  });
+
+  it("is unchanged for app-created placements, where the two numbers agree", () => {
+    expect(programsFor(view, view.entities[2]!).map((p) => p.id)).toEqual(["prog-2"]);
+  });
+
+  it("falls back to planProgramId when nothing claims the entity's idInPlan", () => {
+    const orphan = {
+      planId: "p1",
+      entities: [{ idInPlan: 99, planId: "p1", planProgramId: 14, happenDay: 20260822 }],
+      programs: view.programs,
+    } as typeof view;
+    expect(programsFor(orphan, orphan.entities[0]!).map((p) => p.id)).toEqual(["prog-14"]);
+  });
+});
 
 describe("buildStrengthProgram — §(d) weight encodings", () => {
   it("encodes bodyweight as an empty STRING value with custom 1", () => {

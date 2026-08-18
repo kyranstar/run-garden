@@ -1091,8 +1091,38 @@ export function planBreakdown(
  * entity whose `planProgramId` differed look program-less.
  */
 export function programsFor(view: PlanView, entity: RawCorosEntity): RawCorosProgram[] {
-  const linkKey = String(entity.planProgramId ?? entity.idInPlan);
-  return view.programs.filter((p) => String(p.idInPlan) === linkKey);
+  /**
+   * THE LINK IS `entity.idInPlan` → `program.idInPlan`, and it took a live
+   * refusal to establish that (2026-08-17).
+   *
+   * This used to key on `planProgramId ?? idInPlan`, which is right for every
+   * workout THIS APP creates — we emit both numbers equal, so the `??` fallback
+   * hid the difference and no test could see it (the schedule fixture sets
+   * `planProgramId: String(t.idInPlan)`). It is wrong for a placement COROS
+   * authored. In the recorded wire capture `docs/reports/coros-inspect-2026-08-02.json`
+   * the programs carry `idInPlan` ∈ {1,2,3,15,21,23,24,45}; every ENTITY's
+   * `idInPlan` appears in that set, while `planProgramId` values 43 and 16 match
+   * no program at all:
+   *
+   *     entity idInPlan=45 planProgramId=43 → by idInPlan: P10679, by planProgramId: nothing
+   *     entity idInPlan=23 planProgramId=16 → by idInPlan: P10667, by planProgramId: nothing
+   *
+   * `providers/coros/normalize.ts` had it right all along, keying imports on
+   * `idInPlan`. The disagreement was invisible until an import-proven rewrite
+   * asked both sides about one placement and got two different programs — the
+   * athlete's 2026-08-22 session resolved to program …148 for the importer and
+   * …159 here, so the content proof could never match and the write refused as
+   * `stamp_mismatch` while blaming the athlete for editing in COROS.
+   *
+   * `planProgramId` remains the third element of the DELETE TRIPLE — that is
+   * addressing, not linking, and is untouched. It stays here only as a fallback
+   * for a placement no program claims by `idInPlan`, so nothing that resolves
+   * today stops resolving.
+   */
+  const byIdInPlan = view.programs.filter((p) => String(p.idInPlan) === String(entity.idInPlan));
+  if (byIdInPlan.length > 0) return byIdInPlan;
+  const fallback = String(entity.planProgramId ?? entity.idInPlan);
+  return view.programs.filter((p) => String(p.idInPlan) === fallback);
 }
 
 /**
