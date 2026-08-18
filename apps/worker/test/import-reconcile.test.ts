@@ -20,7 +20,7 @@ import { makeTestDb, makeTestUser, connectTestCoros } from "./helpers.js";
  * the bridge/sync route right after import) to re-derive the write.
  */
 
-const { plannedWorkouts, corosWriteJobs, syncNotes } = schema;
+const { plannedWorkouts, corosWriteJobs, syncNotes, syncIntents } = schema;
 
 // Fixture's raw COROS plan id — not validated by the fixture provider's write
 // path (only sourceIdInPlan is), but mirrors vertical-loop.test.ts's usage.
@@ -281,6 +281,37 @@ describe("stage-summary wording heal", () => {
       kind: "content",
       source: "coach_ease",
     });
+
+    const stats = await importFromProvider();
+    expect(stats.rewordedSummaries).toBe(0);
+    expect((await stridesRow()).stageSummary).toBe("30 min easy");
+  });
+
+  it("stands down for a row whose content intent has RESOLVED — the app still wrote it", async () => {
+    // The live regression (2026-08-18). A content rewrite converged the session
+    // onto the watch and, correctly, RESOLVED the intent — the disagreement
+    // really was settled. The heal read that as "the app has no claim here",
+    // re-derived from COROS's echo of our own session, and replaced the coach's
+    // wording with COROS's while the stage rows behind the card were unchanged.
+    // `resolvedAt` means "the wire matches the app now", never "the app did not
+    // write this".
+    await importFromProvider();
+    const w = await stridesRow();
+    await db
+      .update(plannedWorkouts)
+      .set({ stageSummary: "30 min easy" })
+      .where(eq(plannedWorkouts.id, w.id));
+    const intentId = await recordIntent(db, {
+      userId,
+      targetKind: "workout",
+      targetId: w.id,
+      kind: "content",
+      source: "coach_ease",
+    });
+    await db
+      .update(syncIntents)
+      .set({ resolvedAt: nowInstant() })
+      .where(eq(syncIntents.id, intentId));
 
     const stats = await importFromProvider();
     expect(stats.rewordedSummaries).toBe(0);

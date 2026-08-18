@@ -404,8 +404,13 @@ export async function importPlanSnapshot(
 
   // Approved coach edits are the app's permanent claim on a session's
   // CONTENT (audit#3 D1): rule 7 and the recycled-slot rewrite must never
-  // hand these rows back to the COROS snapshot. Content intents deliberately
-  // never resolve — nothing on COROS can confirm them.
+  // hand these rows back to the COROS snapshot.
+  //
+  // OPEN intents only, and that is right for rule 7: an OPEN content intent
+  // means the wire has not caught up with the app yet, and the app's copy must
+  // win. Once a rewrite converges the session, the intent resolves and rule 7
+  // may treat the wire as authoritative again — because by then the wire IS the
+  // app's session.
   const contentIntentIds = new Set(
     (
       await db
@@ -419,6 +424,37 @@ export async function importPlanSnapshot(
             isNull(syncIntents.supersededBy),
           ),
         )
+    ).map((r) => r.targetId),
+  );
+
+  /**
+   * EVERY ROW THE APP HAS EVER AUTHORED THE CONTENT OF — open intents AND
+   * resolved ones, which is the difference that matters.
+   *
+   * "Content intents deliberately never resolve" was true until the content
+   * rewrite lane shipped: a verified write settles the disagreement and
+   * resolves the intent, correctly. But `resolvedAt` says "the wire matches the
+   * app now", NOT "the app never authored this". Rule 7 wants the first
+   * question. The wording heal wants the second, and asking the first is how a
+   * successful convergence silently degraded a card: the watch took the eased
+   * session, COROS echoed it back in ITS vocabulary, the intent had just
+   * resolved, and the heal rewrote the coach's
+   * "10 min easy · 35 min easy · 10 min easy" to
+   * "10 min Run · 35 min Run · 10 min Run" — while the stage rows the detail
+   * sheet reads still said "easy".
+   *
+   * A row whose content the app wrote keeps the app's wording for good. COROS
+   * gets no vote on how a session we authored is phrased, and the two renderers
+   * are genuinely different — the coach writes `sessionSummaryLine`, the import
+   * writes `summarizeStages` — so letting the import re-render an eased row
+   * would flatten the coach's phrasing even when every stage agrees.
+   */
+  const contentClaimedIds = new Set(
+    (
+      await db
+        .select({ targetId: syncIntents.targetId })
+        .from(syncIntents)
+        .where(and(eq(syncIntents.userId, input.userId), eq(syncIntents.kind, "content")))
     ).map((r) => r.targetId),
   );
 
@@ -781,76 +817,38 @@ export async function importPlanSnapshot(
     } else if (
       stageSummary !== undefined &&
       current.stageSummary !== stageSummary &&
-      !contentIntentIds.has(current.id)
+      !contentClaimedIds.has(current.id)
     ) {
-      // WORDING HEAL (2026-08-17). The fingerprints agree, so COROS is
-      // serving the same workout this row already holds and the stored stage
-      // rows are the ones this summary was built from — the only thing that
-      // can have moved is how we WRITE it. Sub-minute stages used to round to
-      // whole minutes, so every row imported before the fix says "4 × 0 min
-      // Training / 1 min Rest" for a 15s-on/45s-off stride set, and would say
-      // it forever: nothing else rewrites this column while a workout is
-      // unchanged upstream. Today's card would then read "1 min" where the
-      // sheet it opens reads "30s".
+      // WORDING HEAL (2026-08-17). The fingerprints agree, so COROS is serving
+      // the same workout this row already holds and the stored stage rows are
+      // the ones this summary was built from — the only thing that can have
+      // moved is how we WRITE it. Sub-minute stages used to round to whole
+      // minutes, so every row imported before the fix says "4 × 0 min Training /
+      // 1 min Rest" for a 15s-on/45s-off stride set, and would say it forever:
+      // nothing else rewrites this column while a workout is unchanged upstream.
+      // Today's card would then read "1 min" where the sheet it opens reads
+      // "30s".
       //
-      // Deliberately narrow. It writes one derived string and nothing else:
-      // no dates, no state, no fingerprint, no `updatedContent`, so it can't
+      // Deliberately narrow. It writes one derived string and nothing else: no
+      // dates, no state, no fingerprint, no `updatedContent`, so it can't
       // capture a plan version, post a sync note, or flip a calendar row to
-      // pending. It is idempotent (second read: values equal, no write). And
-      // it stands down when a `content` intent claims the row — that summary
-      // was written by an approved coach edit from the session the athlete
-      // said yes to, and re-deriving it from COROS's untouched snapshot is
-      // exactly how audit#3 D1 silently reverted an ease.
-      // DERIVED FROM THE ROW'S OWN STAGES, not from the wire — which is what
-      // the paragraph above already claims ("the stored stage rows are the ones
-      // this summary was built from") and what the code did not do.
+      // pending. It is idempotent (second read: values equal, no write).
       //
-      // The difference is invisible for an ordinary imported row, where the
-      // stored stages ARE the wire's. It matters the moment the APP authored
-      // the wire copy: after a content convergence the watch holds our session,
-      // COROS echoes it back in ITS vocabulary, and re-deriving from the wire
-      // replaced the coach's "10 min easy · 35 min easy · 10 min easy" with
-      // "10 min Run · 35 min Run · 10 min Run" — while the stage rows the detail
-      // sheet reads still said "easy". A card disagreeing with the sheet it
-      // opens is the divergence the single-renderer work removed, reintroduced
-      // by a successful sync. Re-running today's formatter over the row's own
-      // stages fixes the wording bug this heal exists for and cannot import
-      // COROS's words.
-      const storedStages = await db
-        .select()
-        .from(plannedWorkoutStages)
-        .where(eq(plannedWorkoutStages.workoutId, current.id));
-      const fromStored =
-        storedStages.length > 0
-          ? summarizeStages(
-              storedStages
-                .slice()
-                .sort((a, b) => a.ord - b.ord)
-                .map((r) => ({
-                  id: r.id,
-                  parentStageId: r.parentStageId,
-                  order: r.ord,
-                  kind: r.kind as PlannedStage["kind"],
-                  durationType: r.durationType as PlannedStage["durationType"],
-                  ...(r.repeatCount != null ? { repeatCount: r.repeatCount } : {}),
-                  ...(r.durationSeconds != null ? { durationSeconds: r.durationSeconds } : {}),
-                  ...(r.distanceMeters != null ? { distanceMeters: r.distanceMeters } : {}),
-                  ...(r.targetType ? { targetType: r.targetType as PlannedStage["targetType"] } : {}),
-                  ...(r.targetLow != null ? { targetLow: r.targetLow } : {}),
-                  ...(r.targetHigh != null ? { targetHigh: r.targetHigh } : {}),
-                  ...(r.label ? { label: r.label } : {}),
-                })),
-            )
-          : stageSummary;
-      if (fromStored === current.stageSummary) {
-        // Today's formatter over today's stages already IS what the row holds.
-        // Only the wire disagreed, and the wire does not get a vote on wording.
-        stats.unchanged += 1;
-      } else {
-        updates.stageSummary = fromStored;
-        stats.rewordedSummaries += 1;
-        touched = true;
-      }
+      // IT STANDS DOWN FOR ANY ROW THE APP AUTHORED, resolved intent included —
+      // `contentClaimedIds`, not `contentIntentIds`, and that one word is the
+      // whole fix (2026-08-18). Re-deriving from COROS's untouched snapshot is
+      // how audit#3 D1 silently reverted an ease; re-deriving from COROS's ECHO
+      // of our own session is how a SUCCESSFUL convergence degraded one. The
+      // watch took the eased session, the write resolved the intent, and the
+      // next read turned the coach's "10 min easy · 35 min easy · 10 min easy"
+      // into "10 min Run · 35 min Run · 10 min Run" while the stage rows behind
+      // the card still said "easy" — a card disagreeing with the sheet it opens.
+      // The two renderers really are different (`sessionSummaryLine` for the
+      // coach, `summarizeStages` here), so this is not only about vocabulary:
+      // the import must not re-render a session it did not write.
+      updates.stageSummary = stageSummary;
+      stats.rewordedSummaries += 1;
+      touched = true;
     }
 
     if (touched) {
