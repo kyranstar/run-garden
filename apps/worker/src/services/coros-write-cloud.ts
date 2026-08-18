@@ -28,6 +28,7 @@ import {
 import type { Env } from "../env.js";
 import type { Db } from "./db.js";
 import { corosClient } from "./coros-connection.js";
+import { isRuntimeLimit } from "./runtime-limit.js";
 import { corosReadNow } from "./coros-read.js";
 import { applyJobResult, claimNextJob } from "./jobs.js";
 import { bridgeJobPayload } from "./studio-push.js";
@@ -120,28 +121,6 @@ function detailOf(error: unknown): string | null {
   const trimmed = text.trim();
   if (trimmed === "") return null;
   return trimmed.length > 600 ? `${trimmed.slice(0, 599)}…` : trimmed;
-}
-
-/**
- * THE RUNTIME RAN OUT, NOT THE WORKOUT.
- *
- * Cloudflare caps subrequests per Worker invocation, and one COROS write costs
- * roughly ten (a plan-wide read across observation windows, `/program/calculate`,
- * the write, the verify read). Draining a backfill of nine creates in one
- * invocation therefore hits the ceiling partway down the queue — which is what
- * happened live: two of the athlete's mobility sessions burned all three
- * attempts on it and went terminal, while the sessions either side of them
- * pushed perfectly.
- *
- * That is an environmental limit and says nothing about the job. It must not
- * consume the retry budget and it must not mark anything failed; the honest
- * response is to leave the job queued and STOP the drain, because every
- * remaining job in this invocation would hit the same wall.
- */
-function isRuntimeLimit(error: unknown): boolean {
-  return /too many subrequests|exceeded .*(limit|quota)|cpu time limit/i.test(
-    typeof error === "string" ? error : error instanceof Error ? error.message : String(error ?? ""),
-  );
 }
 
 function contentRewriteRetryable(reason: UpdateContentReason | undefined): boolean {

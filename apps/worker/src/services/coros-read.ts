@@ -1,6 +1,6 @@
 import { and, eq, inArray } from "drizzle-orm";
 import { activities, activitySourceLinks, providerConnections } from "@rg/database";
-import { addDays, todayInZone, type UserPreferences } from "@rg/domain";
+import { addDays, nowInstant, todayInZone, type UserPreferences } from "@rg/domain";
 import { buildSnapshot, loadNameResolver } from "@rg/coros";
 import type { NameResolver } from "@rg/providers";
 import { fixtureModeEnabled, type Env } from "../env.js";
@@ -9,6 +9,7 @@ import { corosClient, touchCorosSync } from "./coros-connection.js";
 import { ingestActivities } from "./completion.js";
 import { ingestDailyHealth } from "./health-ingest.js";
 import { importPlanSnapshot } from "./import-plan.js";
+import { isRuntimeLimit } from "./runtime-limit.js";
 import { loadPreferences } from "./calendar-sync.js";
 import { resimulateFrom } from "./garden-sync.js";
 import { enqueueCoachReads, processCoachReads } from "./coach-reads.js";
@@ -32,6 +33,9 @@ const FULL_SCHEDULE_STALE_MS = 6 * 3600 * 1000;
 export interface ReadNowResult {
   status: "ok" | "fresh" | "busy" | "not_connected" | "coros_unreachable" | "bad_credentials";
   ingested?: number;
+  /** The read ran out of Worker budget rather than failing at COROS. Reported so
+   *  a caller can retry without treating the connection as unhealthy. */
+  runtimeLimited?: boolean;
 }
 
 /** Cached per-isolate — the locale bundle is static reference data. */
@@ -73,6 +77,9 @@ export async function corosReadNow(
   const lock = await claimUserLock(db, userId, "coros_read", 5);
   if (!lock) return { status: "busy" };
 
+  // Hoisted so the catch can preserve it while adding the failure detail —
+  // spreading a stale copy would silently drop `lastFullScheduleAt`.
+  const meta = (conn.meta ?? {}) as Record<string, unknown> & { lastFullScheduleAt?: string };
   try {
     const client = await corosClient(db, env, userId, fetchImpl);
     if (!client) {
@@ -88,7 +95,6 @@ export async function corosReadNow(
     }
 
     const today = todayInZone(prefs.timezone);
-    const meta = (conn.meta ?? {}) as Record<string, unknown> & { lastFullScheduleAt?: string };
     const fullScheduleDue =
       !meta.lastFullScheduleAt || Date.now() - Date.parse(meta.lastFullScheduleAt) > FULL_SCHEDULE_STALE_MS;
     const rangeStart = addDays(today, -ACTIVITY_WINDOW_DAYS);
@@ -191,10 +197,32 @@ export async function corosReadNow(
     }
     await touchCorosSync(db, userId);
     return { status: "ok", ingested };
-  } catch {
+  } catch (e) {
+    // WHAT ACTUALLY WENT WRONG, and whose fault it is.
+    //
+    // This was a bare `catch` that stamped `api_error` and returned
+    // `coros_unreachable` for anything at all. Live on 2026-08-18 that reported
+    // COROS as unreachable for a read in which every COROS endpoint had already
+    // answered `result=0000` — the failure was ours, after the network calls,
+    // and the athlete was shown an outage that did not exist. The connection
+    // then carried a red error indefinitely, because only a later SUCCESSFUL
+    // read clears it.
+    const detail = e instanceof Error ? e.message : String(e);
+    console.error(`[coros-read] failed after the wire calls: ${detail}`);
+    if (isRuntimeLimit(e)) {
+      // Our own Worker budget, not COROS. Marking the connection would be a
+      // lie, and it is the one error the athlete can do nothing about — the
+      // next invocation starts with a fresh allowance.
+      return { status: "coros_unreachable", runtimeLimited: true };
+    }
     await db
       .update(providerConnections)
-      .set({ lastErrorCategory: "api_error" })
+      .set({
+        lastErrorCategory: "api_error",
+        // `provider_connections` has no detail column and this does not warrant
+        // a migration; `meta` is already the connection's own scratch space.
+        meta: { ...meta, lastErrorDetail: detail.slice(0, 400), lastErrorAt: nowInstant() },
+      })
       .where(eq(providerConnections.id, conn.id));
     return { status: "coros_unreachable" };
   } finally {
