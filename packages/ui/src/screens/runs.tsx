@@ -753,14 +753,12 @@ export function RunsScreen() {
                   const dow = ["SUN", "MON", "TUE", "WED", "THU", "FRI", "SAT"][
                     new Date(`${a.date}T12:00:00Z`).getUTCDay()
                   ];
+                  // Duration, distance, pace — never load: the expansion's
+                  // effort line owns that number (one voice per fact).
                   const statBits = [
                     formatMinutes(a.durationSeconds),
                     a.distanceMeters ? formatDistance(a.distanceMeters, units) : null,
-                    a.avgPaceSecPerKm
-                      ? formatPace(a.avgPaceSecPerKm, units)
-                      : a.trainingLoad != null
-                        ? `load ${Math.round(a.trainingLoad)}`
-                        : null,
+                    a.avgPaceSecPerKm ? formatPace(a.avgPaceSecPerKm, units) : null,
                   ].filter(Boolean);
                   return (
                     <article key={a.id} className={`fw-act act-hue-${catKey}${open ? " fw-act-open" : ""}`}>

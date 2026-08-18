@@ -23,20 +23,19 @@ export function CoachRead({
    * instead of serving the ledger back. */
   force?: boolean;
 }) {
-  const started = useRef(false);
-  const alive = useRef(true);
   const analyze = useMutation<CoachAnalyzeResult, unknown, boolean>({
     mutationFn: (f: boolean) => api.coachAnalyze(activityId, f),
   });
-  const { mutate, data } = analyze;
+  const { mutate, data, status } = analyze;
+  // Fire on idle, not via a mount-once ref: under StrictMode's double-effect
+  // the ref-guarded call belonged to the FIRST, torn-down mount, and its
+  // settled error never notified the surviving subscription — measured live
+  // as an eternal spinner exactly on the ai_disabled path (System 2 verify).
+  // `status === "idle"` is false the moment the surviving mount's call is in
+  // flight, so this fires exactly once per mounted component.
   useEffect(() => {
-    if (started.current) return;
-    started.current = true;
-    mutate(force);
-    return () => {
-      alive.current = false;
-    };
-  }, [mutate]);
+    if (status === "idle") mutate(force);
+  }, [status, mutate, force]);
 
   // 202 working → someone else is generating; check back shortly. Bounded
   // (audit finding 14): a read stuck in a stale claim window otherwise kept
@@ -47,7 +46,7 @@ export function CoachRead({
     if (polls.current >= WORKING_POLL_MAX) return;
     const t = setTimeout(() => {
       polls.current += 1;
-      if (alive.current) mutate(false);
+      mutate(false);
     }, WORKING_POLL_MS);
     return () => clearTimeout(t);
   }, [data, mutate]);

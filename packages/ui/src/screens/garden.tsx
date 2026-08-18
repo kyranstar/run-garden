@@ -2218,7 +2218,7 @@ export function GardenScreen() {
           {topSignalLine ? <p className="lately-line">{topSignalLine}</p> : null}
           {evidenceLine ? <p className="lately-line">{evidenceLine.text}</p> : null}
           <ReviewPull />
-          <Link className="lately-more" to="/insights">
+          <Link className="lately-more" to="/runs">
             All insights ›
           </Link>
         </section>

@@ -5606,7 +5606,6 @@ a.note {
   border-radius: 0 var(--radius-md) var(--radius-md) 0;
   box-shadow: var(--shadow);
   border-bottom: none;
-  margin: var(--space-2) 0;
 }
 .fw-row {
   display: flex;
@@ -5824,7 +5823,6 @@ a.note {
    effort chip up beside the shape where it has always sat, while the caption
    drops to a full-width line of its own. */
 .act-shape-note {
-  order: 1;
   flex-basis: 100%;
   margin: 0;
   font-size: var(--text-2xs);
@@ -6983,6 +6981,10 @@ a.note {
   .scene-chip,
   .ready-chip,
   .lately-more,
+  .dash-more,
+  .fw-earlier .linklike,
+  .fw-story-more,
+  .fw-fresh,
   .dock-collapse,
   .dock-grows
 ) {
@@ -7017,6 +7019,10 @@ a.note {
 .scene-chip::after,
 .ready-chip::after,
 .lately-more::after,
+.dash-more::after,
+.fw-earlier .linklike::after,
+.fw-story-more::after,
+.fw-fresh::after,
 .dock-collapse::after,
 .dock-grows::after {
   content: "";
@@ -7176,6 +7182,10 @@ a.note {
   .scene-chip,
   .ready-chip,
   .lately-more,
+  .dash-more,
+  .fw-earlier .linklike,
+  .fw-story-more,
+  .fw-fresh,
   .dock-collapse,
   .dock-grows {
     min-height: max(
