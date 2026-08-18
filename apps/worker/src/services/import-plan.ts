@@ -1092,5 +1092,5 @@ async function replaceStages(db: Db, workoutId: string, src: SourcePlannedWorkou
     restSeconds: s.restSeconds ?? null,
     note: s.note ?? null,
   }));
-  await chunkedInsert(stageRows, 15, (batch) => db.insert(plannedWorkoutStages).values(batch));
+  await chunkedInsert(stageRows, (batch) => db.insert(plannedWorkoutStages).values(batch));
 }

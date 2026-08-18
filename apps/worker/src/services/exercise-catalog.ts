@@ -36,7 +36,7 @@ export async function upsertExerciseCatalog(
     raw: { id: item.id, name: item.name } as Record<string, unknown>,
     updatedAt: now,
   }));
-  await chunkedInsert(rows, 4, (batch) =>
+  await chunkedInsert(rows, (batch) =>
     db
       .insert(corosExercises)
       .values(batch)

@@ -19,13 +19,23 @@ export type Db = BaseSQLiteDatabase<"async" | "sync", unknown, typeof schema>;
  * history grows, so split them into safe batches. `columns` is the row width;
  * we keep each statement under ~90 variables.
  */
-export async function chunkedInsert<T>(
+export async function chunkedInsert<T extends object>(
   rows: T[],
-  columns: number,
   insertBatch: (batch: T[]) => Promise<unknown>,
 ): Promise<void> {
   if (rows.length === 0) return;
-  const perBatch = Math.max(1, Math.floor(90 / Math.max(1, columns)));
+  // COUNTED, NEVER PASSED IN. This took a hand-written column count until
+  // 2026-08-18, and `import-plan.ts` and `coach-apply.ts` both said 15 for
+  // `planned_workout_stages`. Five columns were later added to that table
+  // (`reps`, `loadKg`, `loadBodyweight`, `restSeconds`, `note`) and the literals
+  // stayed 15, so the batch stayed 6 rows while each row grew to 20 bindings:
+  // 120 against D1's ~100 cap. Every import of a workout with six or more
+  // stages then threw `D1_ERROR: too many SQL variables`, and because the read's
+  // catch blamed the wire it reached the athlete as "COROS unreachable" on a
+  // connection answering `result=0000`. Tests never saw it — better-sqlite3 has
+  // no such cap — and no reviewer would spot a number that was right when
+  // written. A count that cannot be stale is the only version worth having.
+  const perBatch = Math.max(1, Math.floor(90 / Math.max(1, Object.keys(rows[0] as object).length)));
   for (let i = 0; i < rows.length; i += perBatch) {
     await insertBatch(rows.slice(i, i + perBatch));
   }

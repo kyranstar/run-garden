@@ -266,7 +266,7 @@ async function writeStages(
       label: b.intensity ?? null,
     };
   });
-  await chunkedInsert(stageRows, 15, (batch) => db.insert(plannedWorkoutStages).values(batch));
+  await chunkedInsert(stageRows, (batch) => db.insert(plannedWorkoutStages).values(batch));
 }
 
 /**

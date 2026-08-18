@@ -128,7 +128,7 @@ async function persistSnapshot(db: Db, userId: string, snapshot: GardenSnapshot)
     diedAt: p.diedAt ?? null,
     habitatRole: p.habitatRole ?? null,
   }));
-  await chunkedInsert(plantRows, 17, (batch) => db.insert(gardenPlants).values(batch));
+  await chunkedInsert(plantRows, (batch) => db.insert(gardenPlants).values(batch));
   // audit#2 #22: `since` is the ARRIVAL date, not the walk-end date. A single
   // persist can land a walk spanning many days (or a whole resim), so
   // lastSimulatedDate is usually well past the day the wildlife actually
@@ -179,7 +179,7 @@ async function persistSnapshot(db: Db, userId: string, snapshot: GardenSnapshot)
       });
     }
   }
-  await chunkedInsert(wildlifeInserts, 5, (batch) => db.insert(gardenWildlife).values(batch));
+  await chunkedInsert(wildlifeInserts, (batch) => db.insert(gardenWildlife).values(batch));
 }
 
 /** Build the resolved inputs for one calendar day from the database. */
@@ -624,7 +624,7 @@ async function walkForward(
         simulationVersion: e.simulationVersion,
         createdAt: nowIso,
       }));
-      await chunkedInsert(eventRows, 14, (batch) =>
+      await chunkedInsert(eventRows, (batch) =>
         db.insert(gardenEvents).values(batch).onConflictDoNothing(),
       );
       for (const e of result.events) {
