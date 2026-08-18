@@ -413,11 +413,16 @@ export async function enqueueWatchCreate(
   session: CoachSession,
   now: string,
   thresholdPaceSecPerKm?: number,
+  /** A human is asking again — retry a job of this id that previously failed.
+   *  Set only by `POST /api/sync/push-absent`; the live add path must not
+   *  re-drive a write that already refused. Same reasoning as
+   *  `enqueueContentConvergence`'s `reviveFailed`. */
+  reviveFailed = false,
 ): Promise<string | null> {
   if (!watchPushable(session)) return null;
   const jobId = `${id}-push`;
   {
-    await db
+    const insert = db
       .insert(corosWriteJobs)
       .values({
         id: jobId,
@@ -442,10 +447,35 @@ export async function enqueueWatchCreate(
         requestedAt: now,
         status: "queued",
         updatedAt: now,
-      })
-      // Re-applying an approve must be idempotent (audit#2 #13) — the
-      // deterministic id makes skip-on-conflict exactly right.
-      .onConflictDoNothing();
+      });
+    // Re-applying an approve must be idempotent (audit#2 #13) — the
+    // deterministic id makes skip-on-conflict exactly right.
+    await (reviveFailed
+      ? insert.onConflictDoUpdate({
+          target: corosWriteJobs.id,
+          setWhere: eq(corosWriteJobs.status, "failed"),
+          set: {
+            status: "queued",
+            claimedByDeviceId: null,
+            claimedAt: null,
+            lastErrorCategory: null,
+            lastErrorDetail: null,
+            completedAt: null,
+            // The attempt counter lives in the payload, so reviving must reset
+            // it too — otherwise a job that exhausted its three tries fails
+            // again immediately and the re-run looks like it did nothing.
+            payload: {
+              workoutId: id,
+              happenDay: date,
+              name: stampName(session.title, date),
+              session,
+              ...(thresholdPaceSecPerKm ? { thresholdPaceSecPerKm } : {}),
+            },
+            requestedAt: now,
+            updatedAt: now,
+          },
+        })
+      : insert.onConflictDoNothing());
   }
   return jobId;
 }

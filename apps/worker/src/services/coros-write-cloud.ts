@@ -122,6 +122,28 @@ function detailOf(error: unknown): string | null {
   return trimmed.length > 600 ? `${trimmed.slice(0, 599)}…` : trimmed;
 }
 
+/**
+ * THE RUNTIME RAN OUT, NOT THE WORKOUT.
+ *
+ * Cloudflare caps subrequests per Worker invocation, and one COROS write costs
+ * roughly ten (a plan-wide read across observation windows, `/program/calculate`,
+ * the write, the verify read). Draining a backfill of nine creates in one
+ * invocation therefore hits the ceiling partway down the queue — which is what
+ * happened live: two of the athlete's mobility sessions burned all three
+ * attempts on it and went terminal, while the sessions either side of them
+ * pushed perfectly.
+ *
+ * That is an environmental limit and says nothing about the job. It must not
+ * consume the retry budget and it must not mark anything failed; the honest
+ * response is to leave the job queued and STOP the drain, because every
+ * remaining job in this invocation would hit the same wall.
+ */
+function isRuntimeLimit(error: unknown): boolean {
+  return /too many subrequests|exceeded .*(limit|quota)|cpu time limit/i.test(
+    typeof error === "string" ? error : error instanceof Error ? error.message : String(error ?? ""),
+  );
+}
+
 function contentRewriteRetryable(reason: UpdateContentReason | undefined): boolean {
   return (
     reason === undefined ||
@@ -164,8 +186,10 @@ export async function executeCloudJobs(
   if (!lock) return { executed: 0 };
 
   let executed = 0;
+  /** Set when the invocation hits a runtime ceiling — see `isRuntimeLimit`. */
+  let outOfBudget = false;
   try {
-    for (let i = 0; i < cap; i++) {
+    for (let i = 0; i < cap && !outOfBudget; i++) {
       // Backfill chunks have their own worker-side walker with pacing —
       // excluded at claim time so a queued backfill can never head-of-line-
       // block moves and studio pushes (2026-08-12 incident).
@@ -295,22 +319,32 @@ export async function executeCloudJobs(
           await db
             .update(corosWriteJobs)
             .set(
-              retryable && attempts < 3
+              isRuntimeLimit(result.error)
                 ? {
+                    // Requeued WITHOUT touching `attempts`: the runtime ran out,
+                    // the job never got its turn.
                     status: "queued",
                     claimedByDeviceId: null,
                     claimedAt: null,
-                    payload: { ...spec, attempts },
                     updatedAt: done,
                   }
-                : {
-                    status: "failed",
-                    lastErrorCategory: result.reason ?? "error",
-                    lastErrorDetail: detailOf(result.error),
-                    updatedAt: done,
-                  },
+                : retryable && attempts < 3
+                  ? {
+                      status: "queued",
+                      claimedByDeviceId: null,
+                      claimedAt: null,
+                      payload: { ...spec, attempts },
+                      updatedAt: done,
+                    }
+                  : {
+                      status: "failed",
+                      lastErrorCategory: result.reason ?? "error",
+                      lastErrorDetail: detailOf(result.error),
+                      updatedAt: done,
+                    },
             )
             .where(eq(corosWriteJobs.id, job.id));
+          if (isRuntimeLimit(result.error)) outOfBudget = true;
         }
         executed += 1;
         continue;

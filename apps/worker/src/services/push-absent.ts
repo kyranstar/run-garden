@@ -202,6 +202,9 @@ export async function pushAbsentSessions(
       session,
       now,
       thresholdPaceSecPerKm,
+      // An operator asked for this run explicitly, so a create that failed
+      // before is retried rather than silently colliding with its own row.
+      true,
     );
     const base = {
       workoutId: row.id,

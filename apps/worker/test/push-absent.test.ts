@@ -112,6 +112,34 @@ describe("pushing sessions that never reached the watch", () => {
     expect(await db.select().from(corosWriteJobs).where(eq(corosWriteJobs.workoutId, id))).toHaveLength(1);
   });
 
+  it("an operator re-run RETRIES a create that failed, and clears its attempt count", async () => {
+    // Live (2026-08-18): two mobility sessions burned all three attempts on a
+    // Cloudflare subrequest ceiling and went terminal. Re-running the backfill
+    // reported them queued while `onConflictDoNothing` dropped the write — the
+    // same silent no-op the content lane had.
+    const db = await makeTestDb();
+    const { userId, prefs } = await makeTestUser(db, { corosWritesEnabled: true });
+    const id = await seed(db, userId, lift([SQUAT]), todayInZone(prefs.timezone));
+    await pushAbsentSessions(db, userId, { dryRun: false });
+    await db
+      .update(corosWriteJobs)
+      .set({
+        status: "failed",
+        lastErrorCategory: "error",
+        payload: { attempts: 3 },
+        completedAt: nowInstant(),
+      })
+      .where(eq(corosWriteJobs.workoutId, id));
+
+    await pushAbsentSessions(db, userId, { dryRun: false });
+    const [job] = await db.select().from(corosWriteJobs).where(eq(corosWriteJobs.workoutId, id));
+    expect(job!.status).toBe("queued");
+    expect(job!.lastErrorCategory).toBeNull();
+    // The counter lives in the payload; leaving it at 3 would fail the job again
+    // on its first tick and make the re-run look like it did nothing.
+    expect((job!.payload as { attempts?: number }).attempts).toBeUndefined();
+  });
+
   it("calls an off-catalog session unpushable and SAYS what the athlete can do", async () => {
     const db = await makeTestDb();
     const { userId, prefs } = await makeTestUser(db, { corosWritesEnabled: true });
