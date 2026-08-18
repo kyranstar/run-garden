@@ -9,7 +9,14 @@ import {
   trainingPlans,
   workoutCompletionMatches,
 } from "@rg/database";
-import { addDays, newId, nowInstant, todayInZone, type UserPreferences } from "@rg/domain";
+import {
+  addDays,
+  newId,
+  nowInstant,
+  todayInZone,
+  type PlannedStage,
+  type UserPreferences,
+} from "@rg/domain";
 import { classifyWorkout, estimateDuration, summarizeStages } from "@rg/scheduling";
 import type { SourcePlannedWorkout, TrainingPlanInfo } from "@rg/providers";
 import { chunkedInsert, type Db } from "./db.js";
@@ -794,9 +801,56 @@ export async function importPlanSnapshot(
       // was written by an approved coach edit from the session the athlete
       // said yes to, and re-deriving it from COROS's untouched snapshot is
       // exactly how audit#3 D1 silently reverted an ease.
-      updates.stageSummary = stageSummary;
-      stats.rewordedSummaries += 1;
-      touched = true;
+      // DERIVED FROM THE ROW'S OWN STAGES, not from the wire — which is what
+      // the paragraph above already claims ("the stored stage rows are the ones
+      // this summary was built from") and what the code did not do.
+      //
+      // The difference is invisible for an ordinary imported row, where the
+      // stored stages ARE the wire's. It matters the moment the APP authored
+      // the wire copy: after a content convergence the watch holds our session,
+      // COROS echoes it back in ITS vocabulary, and re-deriving from the wire
+      // replaced the coach's "10 min easy · 35 min easy · 10 min easy" with
+      // "10 min Run · 35 min Run · 10 min Run" — while the stage rows the detail
+      // sheet reads still said "easy". A card disagreeing with the sheet it
+      // opens is the divergence the single-renderer work removed, reintroduced
+      // by a successful sync. Re-running today's formatter over the row's own
+      // stages fixes the wording bug this heal exists for and cannot import
+      // COROS's words.
+      const storedStages = await db
+        .select()
+        .from(plannedWorkoutStages)
+        .where(eq(plannedWorkoutStages.workoutId, current.id));
+      const fromStored =
+        storedStages.length > 0
+          ? summarizeStages(
+              storedStages
+                .slice()
+                .sort((a, b) => a.ord - b.ord)
+                .map((r) => ({
+                  id: r.id,
+                  parentStageId: r.parentStageId,
+                  order: r.ord,
+                  kind: r.kind as PlannedStage["kind"],
+                  durationType: r.durationType as PlannedStage["durationType"],
+                  ...(r.repeatCount != null ? { repeatCount: r.repeatCount } : {}),
+                  ...(r.durationSeconds != null ? { durationSeconds: r.durationSeconds } : {}),
+                  ...(r.distanceMeters != null ? { distanceMeters: r.distanceMeters } : {}),
+                  ...(r.targetType ? { targetType: r.targetType as PlannedStage["targetType"] } : {}),
+                  ...(r.targetLow != null ? { targetLow: r.targetLow } : {}),
+                  ...(r.targetHigh != null ? { targetHigh: r.targetHigh } : {}),
+                  ...(r.label ? { label: r.label } : {}),
+                })),
+            )
+          : stageSummary;
+      if (fromStored === current.stageSummary) {
+        // Today's formatter over today's stages already IS what the row holds.
+        // Only the wire disagreed, and the wire does not get a vote on wording.
+        stats.unchanged += 1;
+      } else {
+        updates.stageSummary = fromStored;
+        stats.rewordedSummaries += 1;
+        touched = true;
+      }
     }
 
     if (touched) {

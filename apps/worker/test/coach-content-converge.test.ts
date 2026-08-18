@@ -1059,6 +1059,16 @@ describe("an imported COROS session converges too", () => {
       .from(schema.plannedWorkouts)
       .where(and(eq(schema.plannedWorkouts.userId, userId), eq(schema.plannedWorkouts.effectiveDate, date)));
     expect(sameDay.filter((w) => w.archivedAt === null)).toHaveLength(1);
+    // AND THE CARD STILL AGREES WITH THE SHEET IT OPENS. Live, a successful
+    // convergence resolved the row's content intent, which dropped the guard on
+    // the wording heal, which then re-derived the summary from COROS's echo of
+    // our own session: the card read "10 min Run · 35 min Run · 10 min Run"
+    // while the stage rows behind it still said "easy". The summary must keep
+    // being a rendering of the row's OWN stages.
+    expect(reread!.stageSummary).toBe(afterWrite!.stageSummary);
+    for (const stage of stagesNow) {
+      if (stage.label) expect(reread!.stageSummary).toContain(stage.label);
+    }
   });
 
   it("NEVER rewrites an imported session the athlete has not edited", async () => {
