@@ -842,6 +842,9 @@ export const api = {
   coachMessage: (body: string) => post<CoachWakeResult>("/api/coach/message", { body }, NO_DEADLINE),
   coachAnalyze: (activityId: string, force = false) =>
     post<CoachAnalyzeResult>(`/api/coach/analyze/${activityId}`, { force }, 320_000),
+  /** A cached read or null — never generates, never spends (System 2). */
+  coachReadPeek: (activityId: string) =>
+    get<{ read: CoachAnalyzeResult["read"] | null }>(`/api/coach/analyze/${activityId}`),
   coachApprove: (proposalId: string) =>
     post<{ ok: boolean }>(`/api/coach/proposals/${proposalId}/approve`),
   coachDecline: (proposalId: string) =>

@@ -5,6 +5,7 @@ import {
   coachLocks,
   coachMemory,
   coachMessages,
+  coachReads,
   coachPlanWeeks,
   coachPlans,
   coachProposals,
@@ -329,6 +330,34 @@ coachRoutes.post("/wake", async (c) => {
   // fresh briefing doesn't matter — they asked), never the budget gate.
   const result = await wake(db, c.env, userId, prefs, { kind: force ? "manual" : "open" });
   return c.json(result);
+});
+
+/**
+ * Peek at a CACHED read (System 2): the dashboard's expanded session shows
+ * an existing read automatically, and a read that doesn't exist stays a
+ * deliberate, visibly-priced tap (the POST below). This never generates,
+ * never claims a ledger row, and spends nothing.
+ */
+coachRoutes.get("/analyze/:activityId", async (c) => {
+  const db = c.get("db");
+  const userId = c.get("userId");
+  const [existing] = await db
+    .select()
+    .from(coachReads)
+    .where(
+      and(eq(coachReads.userId, userId), eq(coachReads.activityId, c.req.param("activityId"))),
+    )
+    .limit(1);
+  if (!existing || existing.status !== "done") return c.json({ read: null });
+  return c.json({
+    read: {
+      id: existing.id,
+      glance: existing.glance ?? "",
+      body: existing.body ?? "",
+      flags: existing.flags,
+      at: existing.completedAt ?? existing.createdAt,
+    },
+  });
 });
 
 coachRoutes.post("/analyze/:activityId", async (c) => {
