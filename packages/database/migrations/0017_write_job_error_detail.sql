@@ -1,0 +1,13 @@
+-- WHY A CATEGORY WAS NOT ENOUGH (2026-08-17).
+--
+-- A content convergence refused in prod with `last_error_category =
+-- 'stamp_mismatch'` and nothing else. The executor had produced an exact
+-- sentence naming which of the three proof parts failed — "0 workouts in plan
+-- X match the recorded content", or "…is on 2026-08-23, not 2026-08-22" — and
+-- every failure site in `coros-write-cloud.ts` discarded it, keeping only the
+-- bucket. Diagnosing then meant re-running the job against the athlete's real
+-- COROS account, which is the one thing an operator should never have to do to
+-- find out what happened.
+--
+-- The category stays the thing logic branches on. This column is the sentence.
+ALTER TABLE coros_write_jobs ADD COLUMN last_error_detail text;

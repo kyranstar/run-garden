@@ -215,6 +215,16 @@ export const corosWriteJobs = sqliteTable(
     degraded: integer("degraded", { mode: "boolean" }).notNull().default(false),
     verifiedAt: text("verified_at"),
     lastErrorCategory: text("last_error_category"),
+    /**
+     * The executor's own sentence about WHY, kept beside the category it was
+     * bucketed into. `updateWorkoutContent` can refuse for three structurally
+     * different reasons that all land in `stamp_mismatch` — nothing matched the
+     * proof, several things did, or the one that did is on another day — and a
+     * category alone cannot tell an operator which, so diagnosing meant
+     * re-running the write against the athlete's live watch. Written at every
+     * terminal failure; null while a job is healthy.
+     */
+    lastErrorDetail: text("last_error_detail"),
     completedAt: text("completed_at"),
     /** `studio_plan_pushes.id` this job acts on (studio kinds only). */
     studioPushId: text("studio_push_id"),

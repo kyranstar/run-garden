@@ -1331,5 +1331,54 @@ describe("an imported COROS session converges too", () => {
         and(eq(schema.syncIntents.targetId, job!.workoutId), eq(schema.syncIntents.kind, "content")),
       );
     expect(intents[0]!.resolvedAt, "the disagreement is not settled").toBeNull();
+    // AND THE ROW SAYS WHICH REFUSAL IT WAS. Three structurally different
+    // failures bucket into `stamp_mismatch` — nothing matched, several did, or
+    // the match is on another day — and in prod the category alone sent an
+    // operator back to the athlete's live watch to find out which. The sentence
+    // the executor already produced is now kept beside it.
+    expect(job!.lastErrorDetail, "the executor's own sentence is recorded").toBeTruthy();
+    expect(job!.lastErrorDetail).toMatch(/no longer holds the workout this app imported/);
+  });
+
+  it("an operator re-running the backfill RETRIES a failed job; a wake does not", async () => {
+    // Job ids are content-derived, so a re-request for an unchanged session
+    // collides with the row already there. Live, that made the backfill report
+    // "1 rewrite" while the drain then executed 0 — queued nothing, said it had.
+    const { db, userId, prefs, server } = await importThenEase();
+    const idInPlan = ((await updateJobs(db, userId))[0]!.payload as { idInPlan: string }).idInPlan;
+    const program = server.programByIdInPlan(idInPlan)!;
+    // A value the drift test above does not also use: these suites share a
+    // mock server, so reusing its number would re-apply content the import had
+    // already recorded and there would be no drift to refuse.
+    program.exercises = [{ ...program.exercises![0]!, targetValue: 9137 }];
+    await executeCloudJobs(db, makeEnv(), userId, prefs, { fetchImpl: server.fetchImpl });
+    expect((await updateJobs(db, userId))[0]!.status).toBe("failed");
+
+    const [row] = await db
+      .select()
+      .from(schema.plannedWorkouts)
+      .where(eq(schema.plannedWorkouts.id, (await updateJobs(db, userId))[0]!.workoutId));
+    const args = {
+      userId,
+      workout: row!,
+      session: EASED,
+      now: nowInstant(),
+      corosWritesEnabled: true,
+      thresholdPaceSecPerKm: THRESHOLD,
+    };
+
+    // The automatic path leaves the failure alone — a permanently-refusing job
+    // must not be re-driven on every page visit.
+    await enqueueContentConvergence(db, args);
+    expect((await updateJobs(db, userId))[0]!.status, "a wake does not revive it").toBe("failed");
+
+    // The operator's explicit re-run does retry it, and clears the stale verdict
+    // so the next failure cannot be read as the last one.
+    await enqueueContentConvergence(db, { ...args, reviveFailed: true });
+    const [revived] = await updateJobs(db, userId);
+    expect(revived!.status).toBe("queued");
+    expect(revived!.lastErrorCategory).toBeNull();
+    expect(revived!.lastErrorDetail).toBeNull();
+    expect(revived!.completedAt).toBeNull();
   });
 });

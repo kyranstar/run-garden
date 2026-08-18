@@ -504,6 +504,9 @@ export async function convergeDivergedContent(
     // and the stamp itself; a refusal here means the row changed under us between
     // the plan and the write, and it is reported rather than forced.
     const outcome = await enqueueContentConvergence(db, {
+      // An operator asked for this run explicitly, so a job that failed before
+      // is retried rather than silently colliding — see `reviveFailed`.
+      reviveFailed: true,
       userId,
       workout: row,
       session,

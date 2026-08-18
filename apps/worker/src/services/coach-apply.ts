@@ -602,6 +602,21 @@ export async function enqueueContentConvergence(
     workout: typeof plannedWorkouts.$inferSelect;
     /** What the app now prescribes. */
     session: CoachSession;
+    /**
+     * A HUMAN IS ASKING AGAIN — revive a job of this id that previously failed.
+     *
+     * Job ids are content-derived, so a re-request for an unchanged session
+     * collides with the existing row and `onConflictDoNothing` makes the second
+     * call a silent no-op. That is right for the automatic path: a wake must not
+     * re-drive a write that already refused, or a permanently-refusing job would
+     * be retried on every page visit forever.
+     *
+     * It is wrong for `POST /api/sync/converge-content`, which runs only because
+     * an operator asked for it, and where the no-op reports "1 rewrite queued"
+     * while the drain then executes nothing — the exact confusion this ends. Set
+     * only there.
+     */
+    reviveFailed?: boolean;
     now: string;
     corosWritesEnabled: boolean;
     thresholdPaceSecPerKm?: number;
@@ -679,7 +694,7 @@ export async function enqueueContentConvergence(
   }
 
   const jobId = `${v.workout.id}-content-${from}-${to}`;
-  await db
+  const insert = db
     .insert(corosWriteJobs)
     .values({
       ...common,
@@ -721,8 +736,26 @@ export async function enqueueContentConvergence(
         ...(v.thresholdPaceSecPerKm ? { thresholdPaceSecPerKm: v.thresholdPaceSecPerKm } : {}),
       },
       requestedAt: v.now,
-    })
-    .onConflictDoNothing();
+    });
+  await (v.reviveFailed
+    ? insert.onConflictDoUpdate({
+        target: corosWriteJobs.id,
+        // Only a FAILED row is revived. A queued job is already going to run and
+        // resetting it would drop an in-flight claim; a verified one is done and
+        // re-running it would rewrite the watch with nobody asking.
+        setWhere: eq(corosWriteJobs.status, "failed"),
+        set: {
+          status: "queued",
+          claimedByDeviceId: null,
+          claimedAt: null,
+          lastErrorCategory: null,
+          lastErrorDetail: null,
+          completedAt: null,
+          requestedAt: v.now,
+          updatedAt: v.now,
+        },
+      })
+    : insert.onConflictDoNothing());
   return { jobId, kind: "coach_update_workout" };
 }
 

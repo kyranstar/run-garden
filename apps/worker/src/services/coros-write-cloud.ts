@@ -1,3 +1,4 @@
+import { ZodError } from "zod";
 import { and, desc, eq, isNotNull } from "drizzle-orm";
 import { corosWriteJobs, dailyHealth, plannedWorkouts } from "@rg/database";
 import {
@@ -92,6 +93,35 @@ async function latestThresholdPace(db: Db, userId: string): Promise<number | und
  * refusal burns the budget and then reports the same reason three attempts later
  * than the athlete could have been told it.
  */
+/**
+ * THE SENTENCE BEHIND THE CATEGORY, bounded and safe to store.
+ *
+ * A write refuses with a `reason` (the bucket logic branches on) and an `error`
+ * (the sentence that says which of several structurally different refusals it
+ * actually was). Only the bucket was ever recorded, so a live `stamp_mismatch`
+ * could mean nothing matched the proof, or several things did, or the one that
+ * did was on another day — indistinguishable without re-running the write
+ * against the athlete's real watch.
+ *
+ * A zod error contributes its issue paths rather than its default multi-line
+ * dump, which is unreadable in a table cell. Length is capped because this is a
+ * diagnosis for a person, not a log sink.
+ */
+function detailOf(error: unknown): string | null {
+  if (error == null) return null;
+  const text =
+    typeof error === "string"
+      ? error
+      : error instanceof ZodError
+        ? error.issues.map((i) => `${i.path.join(".") || "(root)"}: ${i.message}`).join("; ")
+        : error instanceof Error
+          ? error.message
+          : String(error);
+  const trimmed = text.trim();
+  if (trimmed === "") return null;
+  return trimmed.length > 600 ? `${trimmed.slice(0, 599)}…` : trimmed;
+}
+
 function contentRewriteRetryable(reason: UpdateContentReason | undefined): boolean {
   return (
     reason === undefined ||
@@ -162,7 +192,12 @@ export async function executeCloudJobs(
         if (!parsed.success) {
           await db
             .update(corosWriteJobs)
-            .set({ status: "failed", lastErrorCategory: "malformed_payload", updatedAt: now })
+            .set({
+              status: "failed",
+              lastErrorCategory: "malformed_payload",
+              lastErrorDetail: detailOf(parsed.error),
+              updatedAt: now,
+            })
             .where(eq(corosWriteJobs.id, job.id));
           executed += 1;
           continue;
@@ -268,7 +303,12 @@ export async function executeCloudJobs(
                     payload: { ...spec, attempts },
                     updatedAt: done,
                   }
-                : { status: "failed", lastErrorCategory: result.reason ?? "error", updatedAt: done },
+                : {
+                    status: "failed",
+                    lastErrorCategory: result.reason ?? "error",
+                    lastErrorDetail: detailOf(result.error),
+                    updatedAt: done,
+                  },
             )
             .where(eq(corosWriteJobs.id, job.id));
         }
@@ -284,7 +324,12 @@ export async function executeCloudJobs(
         if (!parsed.success) {
           await db
             .update(corosWriteJobs)
-            .set({ status: "failed", lastErrorCategory: "malformed_payload", updatedAt: nowInstant() })
+            .set({
+              status: "failed",
+              lastErrorCategory: "malformed_payload",
+              lastErrorDetail: detailOf(parsed.error),
+              updatedAt: nowInstant(),
+            })
             .where(eq(corosWriteJobs.id, job.id));
           executed += 1;
           continue;
@@ -468,6 +513,7 @@ export async function executeCloudJobs(
               .set({
                 status: "failed",
                 lastErrorCategory: result.reason ?? "error",
+                lastErrorDetail: detailOf(result.error),
                 completedAt: done,
                 updatedAt: done,
               })
@@ -484,7 +530,12 @@ export async function executeCloudJobs(
         if (!parsed.success) {
           await db
             .update(corosWriteJobs)
-            .set({ status: "failed", lastErrorCategory: "malformed_payload", updatedAt: nowInstant() })
+            .set({
+              status: "failed",
+              lastErrorCategory: "malformed_payload",
+              lastErrorDetail: detailOf(parsed.error),
+              updatedAt: nowInstant(),
+            })
             .where(eq(corosWriteJobs.id, job.id));
           executed += 1;
           continue;
@@ -544,6 +595,7 @@ export async function executeCloudJobs(
                 : {
                     status: "failed",
                     lastErrorCategory: result.refused ?? "error",
+                    lastErrorDetail: detailOf(result.error),
                     updatedAt: done,
                   },
             )
