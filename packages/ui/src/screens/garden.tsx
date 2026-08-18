@@ -32,7 +32,7 @@ import { cap, eventSentence, selectArrival, type ArrivalEvent } from "./arrival.
 import { CeremonyCard } from "./arrival-block.js";
 import { BotanicalCard } from "./botanical.js";
 import { MoveSheet } from "./move-sheet.js";
-import { pickStatusStripMetric } from "../signal-tiles.js";
+import { pickStatusStripMetric, statusStripBaseText } from "../signal-tiles.js";
 import { ReviewPull, SyncPanel, TimezoneNudge } from "./today.js";
 import { useUnits } from "../use-units.js";
 import {
@@ -957,9 +957,6 @@ export function ReadinessSheet({
           ) : null}
         </div>
       ) : null}
-      {verdict && verdict.reasons.length > 0 ? (
-        <p className="ready-why">{verdict.reasons.join(" · ")}</p>
-      ) : null}
       <p className="faint ready-prov">
         {latest?.date ? `From COROS, as of ${formatDayShort(latest.date)} — ` : ""}
         {readiness.sampleDays >= 3
@@ -1661,7 +1658,11 @@ export function GardenScreen() {
   // the insights status strip uses, so home and Insights can never headline
   // different alarms on the same morning.
   const strip = pickStatusStripMetric(insights.data?.interpreted ?? []);
-  const topSignal = strip.severity === "clear" ? null : strip.metric;
+  // The insights strip's own one-liner ("⚠ Low-intensity share: 29% — …"),
+  // so home and Insights say the same words about the same alarm. Nothing
+  // renders when all signals are in range — silence, not an all-clear badge.
+  const topSignalLine =
+    strip.severity === "clear" ? null : statusStripBaseText(strip, insights.data?.interpreted ?? []).base;
   const evidenceLine =
     (insights.data?.evidence as { id: string; text: string } | null | undefined) ?? null;
 
@@ -2181,7 +2182,7 @@ export function GardenScreen() {
               ) : null}
             </>
           )}
-          {topSignal?.meaning ? <p className="lately-line">{topSignal.meaning}</p> : null}
+          {topSignalLine ? <p className="lately-line">{topSignalLine}</p> : null}
           {evidenceLine ? <p className="lately-line">{evidenceLine.text}</p> : null}
           <ReviewPull />
           <Link className="lately-more" to="/insights">

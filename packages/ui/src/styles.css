@@ -1885,8 +1885,9 @@ a.note {
    block-level <button> already was: the panel's flex default is `stretch`,
    and under it "Minimize" grew from a 64px box to the panel's full 402px —
    a whole row of the panel that silently closed it. */
+/* lg only: below lg the Today card is the page and never collapses. */
 .dock-collapse {
-  display: block;
+  display: none;
   align-self: start;
   font-size: var(--text-xs);
   color: var(--ink-faint);
@@ -1894,6 +1895,7 @@ a.note {
 .dock-grows {
   display: block;
   align-self: start;
+  text-align: left;
   font-size: var(--text-sm);
   font-weight: var(--weight-medium);
   color: var(--green-ink);
@@ -1967,12 +1969,6 @@ a.note {
   font-size: var(--text-2xs);
   color: var(--ink-faint);
   line-height: 1.35;
-}
-.ready-why {
-  margin: var(--space-5) 0 0;
-  font-size: var(--text-sm);
-  color: var(--ink-soft);
-  font-variant-numeric: tabular-nums;
 }
 .ready-prov {
   margin: var(--space-5) 0 0;
@@ -2335,6 +2331,27 @@ a.note {
     right: clamp(1.6rem, 3.2vw, 3.2rem);
     width: 232px;
   }
+  /* The strip carries paragraphs now, not just bar labels — white type on an
+     open sky needs the same pooled gradient the ledger corner has, strongest
+     behind the smallest type, gone before the trees. */
+  .hud-topright::before {
+    content: "";
+    position: absolute;
+    inset: calc(var(--space-6) * -1) calc(var(--space-7) * -1) calc(var(--space-7) * -1) calc(var(--space-9) * -1);
+    z-index: 0;
+    border-radius: var(--radius-lg);
+    background: radial-gradient(
+      135% 125% at 100% 0%,
+      rgba(var(--scrim-rgb), 0.5),
+      rgba(var(--scrim-rgb), 0.34) 45%,
+      rgba(var(--scrim-rgb), 0) 78%
+    );
+    pointer-events: none;
+  }
+  .hud-topright > * {
+    position: relative;
+    z-index: 1;
+  }
   /* The Lately strip, printed on the artwork. */
   .hud-topright .lately {
     margin: 0;
@@ -2497,6 +2514,9 @@ a.note {
     border: 1px solid var(--border);
     box-shadow: var(--shadow-lg);
     padding: var(--space-3);
+  }
+  .dock-collapse {
+    display: block;
   }
   /* The bar detail panel floats below the HUD instrument cluster. */
   .hud-topright .balance-detail {
@@ -5381,25 +5401,9 @@ a.note {
 }
 .memory-row:last-child { border-bottom: 0; }
 
-/* ── Mobile fullscreen garden: the scene can take the whole viewport; the
-   toggle floats in its top-right. From lg the scene IS the viewport, so the
-   toggle hides. */
-.scene-full-toggle {
-  position: absolute;
-  top: var(--space-4);
-  right: var(--space-4);
-  min-width: var(--tap);
-  min-height: var(--tap);
-  border: none;
-  border-radius: var(--radius-pill);
-  background: rgba(var(--scrim-rgb), 0.55);
-  color: var(--on-scene);
-  font-size: var(--text-md);
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  z-index: 5;
-}
+/* ── Mobile fullscreen garden: the scene can take the whole viewport. The
+   toggle is one of the scene chips now (the row positions it); from lg the
+   scene IS the viewport, so the toggle hides. */
 .garden-scene-fullscreen {
   position: fixed;
   inset: 0;
