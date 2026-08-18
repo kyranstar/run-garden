@@ -1892,13 +1892,22 @@ a.note {
   font-size: var(--text-xs);
   color: var(--ink-faint);
 }
-.dock-grows {
+.dock-grows,
+/* two classes: .linklike's own underline (declared later) must lose here */
+.linklike.dock-grows {
   display: block;
   align-self: start;
   text-align: left;
   font-size: var(--text-sm);
   font-weight: var(--weight-medium);
   color: var(--green-ink);
+  text-decoration: none;
+}
+/* Only the species name wears the link's underline — the sentence is the
+   button, the name is the promise. */
+.dock-grows-name {
+  text-decoration: underline;
+  text-underline-offset: 2px;
 }
 
 /* The readiness verdict, System 1 v2: ONE chip on the Today card, one sheet

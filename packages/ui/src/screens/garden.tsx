@@ -2095,7 +2095,7 @@ export function GardenScreen() {
                 className="linklike dock-grows"
                 onClick={() => setOpenSpeciesId(grows.speciesId)}
               >
-                🌿 Finishing it grows the {grows.name}
+                🌿 Finishing it grows the <span className="dock-grows-name">{grows.name}</span>
                 {Math.max(0, grows.progress.target - grows.progress.current) === 1
                   ? " — the last one needed"
                   : grows.progress.target >= 1000
