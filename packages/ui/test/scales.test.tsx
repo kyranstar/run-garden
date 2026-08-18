@@ -181,7 +181,7 @@ describe("a raw length is a lint error waiting to happen", () => {
   it("no JSX inline style leaks a raw length either", () => {
     // 112 inline style objects were the other half of the sprawl.
     const files = ["components.tsx", "shell.tsx", "screens/onboarding.tsx", "screens/settings.tsx",
-      "screens/studio.tsx", "screens/today.tsx", "screens/insights.tsx", "screens/plan.tsx",
+      "screens/studio.tsx", "screens/today.tsx", "screens/signals-panel.tsx", "screens/plan.tsx",
       "screens/coach-panel.tsx", "screens/garden.tsx", "screens/codex.tsx", "screens/welcome.tsx"];
     const SIZE = /^(margin|padding|gap|rowGap|columnGap|fontSize)/;
     const offenders: string[] = [];
@@ -344,7 +344,7 @@ describe("heading levels do not skip", () => {
     // Insights and Garden each declare two, in mutually exclusive branches
     // (loading vs loaded; stage vs stacked) — that is legal, and the check
     // that matters is that no single RETURN carries two.
-    for (const f of ["screens/insights.tsx", "screens/garden.tsx", "screens/runs.tsx",
+    for (const f of ["screens/signals-panel.tsx", "screens/garden.tsx", "screens/runs.tsx",
       "screens/plan.tsx", "screens/settings.tsx", "screens/today.tsx"]) {
       const src = readFileSync(fileURLToPath(new URL(`../src/${f}`, import.meta.url)), "utf8");
       // `.hero-title` is rank 3 and out-specifies `h1`; an <h1> must never

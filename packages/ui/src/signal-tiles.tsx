@@ -349,7 +349,19 @@ function BandPill({ band }: { band?: string }) {
 
 // ── SignalTile ───────────────────────────────────────────────────────────
 
-export function SignalTile({ m, onDrill }: { m: InterpretedMetric; onDrill?: (m: InterpretedMetric) => void }) {
+export function SignalTile({
+  m,
+  onDrill,
+  compact = false,
+}: {
+  m: InterpretedMetric;
+  onDrill?: (m: InterpretedMetric) => void;
+  /** The dashboard's flagged-tile form (System 2): value, range and visual
+   * only — the meaning/suggestion prose lives one tap down in the drilldown.
+   * Confidence notes are never hidden: a compact tile with a bandNote or
+   * staleNote keeps them (silence would read as a confident claim). */
+  compact?: boolean;
+}) {
   const drillable = !!onDrill && hasDrilldown(m);
   const visual = pickTileVisual(m);
   const insufficient = m.status === "insufficient_data";
@@ -391,8 +403,8 @@ export function SignalTile({ m, onDrill }: { m: InterpretedMetric; onDrill?: (m:
           {visual === "gauge" || visual === "gauge+spark" ? <Gauge g={m.gauge!} /> : null}
           {visual === "gauge+spark" || visual === "sparkline" ? <Sparkline series={m.series!} /> : null}
           {visual === "strip" ? <StripBoxes strip={m.strip!} kind={stripKindForMetricId(m.id)} /> : null}
-          <p className="muted signal-meaning">{m.meaning}</p>
-          {m.suggestion ? <p className="metric-suggestion">{m.suggestion}</p> : null}
+          {!compact ? <p className="muted signal-meaning">{m.meaning}</p> : null}
+          {!compact && m.suggestion ? <p className="metric-suggestion">{m.suggestion}</p> : null}
           {m.staleNote ? <p className="faint signal-stale">{m.staleNote}</p> : null}
           {/* Why this tile shows a number but no status pill (audit#2 (a4)):
               the verdict was withheld, and silence without the reason would

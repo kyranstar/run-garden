@@ -7,7 +7,6 @@ export * from "./charts-math.js";
 export * from "./signal-tiles.js";
 export { PlanScreen } from "./screens/plan.js";
 export { GardenScreen } from "./screens/garden.js";
-export { InsightsScreen } from "./screens/insights.js";
 export { SettingsScreen } from "./screens/settings.js";
 export { WelcomeScreen } from "./screens/welcome.js";
 export { Onboarding } from "./screens/onboarding.js";

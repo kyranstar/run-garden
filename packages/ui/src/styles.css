@@ -706,7 +706,8 @@ h1,
 .rarity,
 .today-tag,
 .today-eyebrow,
-.lately-eyebrow {
+.lately-eyebrow,
+.dash-eyebrow {
   font-size: var(--text-2xs);
   font-weight: var(--weight-medium);
   letter-spacing: 0.06em;
@@ -5492,6 +5493,239 @@ a.note {
   .scene-full-toggle { display: none; }
 }
 .coach-pill-caret { margin-right: var(--space-3); font-size: 0.7em; opacity: 0.85; }
+
+/* ── The Activity dashboard (System 2): overview sections + week feed ──── */
+.dash-sect {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  --tap-clear: var(--space-5);
+  gap: var(--space-5);
+}
+.dash-eyebrow {
+  margin: 0;
+  color: var(--ink-faint);
+}
+.dash-consline {
+  margin: 0;
+  font-size: var(--text-sm);
+}
+.dash-consline b {
+  font-family: var(--font-display);
+  font-size: var(--text-xl);
+  font-weight: var(--weight-medium);
+  color: var(--green-ink);
+  margin-right: var(--space-2);
+}
+.dash-allclear {
+  margin: 0;
+  font-size: var(--text-sm);
+  color: var(--green-ink);
+}
+.dash-more {
+  font-size: var(--text-sm);
+  font-weight: var(--weight-medium);
+  color: var(--green-ink);
+}
+.dash-recs {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  width: 100%;
+}
+.dash-rec {
+  display: flex;
+  align-items: baseline;
+  gap: var(--space-3);
+  padding: var(--space-4) 0;
+  border-bottom: 1px solid var(--border);
+  font-size: var(--text-sm);
+}
+.dash-rec:last-child {
+  border-bottom: none;
+}
+.dash-rec-when {
+  margin-left: auto;
+  display: inline-flex;
+  align-items: baseline;
+  gap: var(--space-3);
+  color: var(--ink-faint);
+  font-size: var(--text-xs);
+  white-space: nowrap;
+}
+
+/* The feed: weeks with a story, rows that open in place. */
+.fw-week {
+  display: flex;
+  flex-direction: column;
+}
+.fw-head {
+  display: flex;
+  align-items: baseline;
+  gap: var(--space-4);
+  margin-top: var(--space-4);
+}
+.fw-title {
+  margin: 0;
+  font-family: var(--font-display);
+  font-size: var(--text-lg);
+  font-weight: var(--weight-medium);
+}
+.fw-stats {
+  margin-left: auto;
+  font-size: var(--text-xs);
+  color: var(--ink-faint);
+  white-space: nowrap;
+}
+.fw-story {
+  margin: var(--space-3) 0 var(--space-2);
+  font-size: var(--text-xs);
+  color: var(--ink-soft);
+  line-height: 1.5;
+  --tap-clear: var(--space-5);
+}
+.fw-story-more {
+  font-weight: var(--weight-medium);
+  color: var(--green-ink);
+}
+.fw-act {
+  border-left: 3px solid var(--act-hue, var(--border-strong));
+  border-bottom: 1px solid var(--border);
+}
+.fw-act:last-child {
+  border-bottom: none;
+}
+.fw-act-open {
+  background: var(--bg-raised);
+  border-radius: 0 var(--radius-md) var(--radius-md) 0;
+  box-shadow: var(--shadow);
+  border-bottom: none;
+  margin: var(--space-2) 0;
+}
+.fw-row {
+  display: flex;
+  align-items: center;
+  gap: var(--space-5);
+  width: 100%;
+  padding: var(--space-4) var(--space-3) var(--space-4) var(--space-5);
+  background: none;
+  border: none;
+  font: inherit;
+  color: inherit;
+  text-align: left;
+  cursor: pointer;
+  min-height: var(--tap);
+}
+.fw-when {
+  flex: none;
+  width: 34px;
+  text-align: center;
+}
+.fw-when b {
+  display: block;
+  font-size: var(--text-md);
+  font-weight: var(--weight-medium);
+}
+.fw-when small {
+  font-size: var(--text-2xs);
+  color: var(--ink-faint);
+}
+.fw-what {
+  min-width: 0;
+}
+.fw-what b {
+  display: block;
+  font-size: var(--text-sm);
+  font-weight: var(--weight-medium);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.fw-what small {
+  font-size: var(--text-xs);
+  color: var(--ink-soft);
+}
+.fw-caret {
+  margin-left: auto;
+  flex: none;
+  color: var(--ink-faint);
+  padding: 0 var(--space-3);
+}
+.fw-detail {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  --tap-clear: var(--space-5);
+  gap: var(--space-5);
+  padding: 0 var(--space-5) var(--space-5);
+}
+.fw-statline {
+  margin: 0;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-5);
+  font-size: var(--text-sm);
+}
+.fw-trend {
+  margin: 0;
+  font-size: var(--text-xs);
+  color: var(--ink-soft);
+}
+.fw-coach {
+  display: flex;
+  gap: var(--space-5);
+  padding-top: var(--space-5);
+  border-top: 1px solid var(--border);
+  width: 100%;
+}
+.fw-coach-mark {
+  flex: none;
+  width: 24px;
+  height: 24px;
+  border-radius: var(--radius-round);
+  background: var(--green-soft);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: var(--text-xs);
+}
+.fw-coach-body {
+  margin: 0;
+  font-size: var(--text-xs);
+  line-height: 1.5;
+}
+.fw-coach-who {
+  font-weight: var(--weight-bold);
+  color: var(--green-ink);
+}
+.fw-fresh {
+  margin-top: var(--space-3);
+  font-size: var(--text-xs);
+  color: var(--ink-faint);
+}
+.fw-open {
+  margin: 0;
+  font-size: var(--text-sm);
+}
+.fw-open a {
+  color: var(--green-ink);
+  font-weight: var(--weight-medium);
+  text-decoration: none;
+}
+.fw-open a:hover {
+  text-decoration: underline;
+}
+.fw-earlier {
+  text-align: center;
+  margin: var(--space-4) 0 0;
+  --tap-clear: var(--space-5);
+}
+.fw-earlier .linklike {
+  font-size: var(--text-sm);
+  font-weight: var(--weight-medium);
+  color: var(--green-ink);
+}
 
 /* ── Activity specimen cards (activities-page redesign) ─────────────────── */
 /* Phone form first (System 3 §A, inverted from a `max-width: 640` block):

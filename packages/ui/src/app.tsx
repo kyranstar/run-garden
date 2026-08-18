@@ -7,7 +7,6 @@ import { ErrorBoundary, Spinner } from "./components.js";
 import { PlanScreen } from "./screens/plan.js";
 import { RunsScreen } from "./screens/runs.js";
 import { GardenScreen } from "./screens/garden.js";
-import { InsightsScreen } from "./screens/insights.js";
 import { SettingsScreen } from "./screens/settings.js";
 import { WelcomeScreen } from "./screens/welcome.js";
 import { Onboarding } from "./screens/onboarding.js";
@@ -60,30 +59,36 @@ function AuthedApp() {
       <Routes>
         <Route path="/" element={<GardenScreen />} />
         <Route path="/plan" element={<PlanScreen />} />
-        <Route path="/runs" element={<RunsScreen />} />
-        <Route path="/garden" element={<GardenScreen />} />
         {/* The boundary sits OUTSIDE the screen rather than inside it: a
             boundary never catches an error thrown by its own render, so
             wrapping the screen's returned tree would have missed anything
             the screen body itself threw (the payload destructuring, say).
-            Only this route is wrapped — a chart bug on Insights must not
-            take the rest of the app down with it, and the rest of the app
-            keeps failing loudly in dev. */}
+            Only this route is wrapped — the dashboard carries every chart in
+            the app now (System 2), and a chart bug must not take the rest of
+            the app down with it; everything else keeps failing loudly in dev. */}
         <Route
-          path="/insights"
+          path="/runs"
           element={
             <ErrorBoundary
-              title="Couldn't render insights"
+              title="Couldn't render activity"
               // Not voided: ErrorBoundary awaits this promise before
               // clearing its error state, so the remount happens against
               // freshly refetched data rather than the same cached payload
               // that crashed the first render.
-              onRetry={() => queryClient.refetchQueries({ queryKey: ["insights"] })}
+              onRetry={() =>
+                Promise.all([
+                  queryClient.refetchQueries({ queryKey: ["runs"] }),
+                  queryClient.refetchQueries({ queryKey: ["insights"] }),
+                ])
+              }
             >
-              <InsightsScreen />
+              <RunsScreen />
             </ErrorBoundary>
           }
         />
+        <Route path="/garden" element={<GardenScreen />} />
+        {/* Insights merged into the Activity dashboard (System 2). */}
+        <Route path="/insights" element={<Navigate to="/runs" replace />} />
         <Route path="/settings" element={<SettingsScreen />} />
         <Route path="*" element={<Navigate to="/" replace />} />
       </Routes>

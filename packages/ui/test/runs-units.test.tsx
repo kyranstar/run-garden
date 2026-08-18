@@ -10,8 +10,8 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { MemoryRouter } from "react-router-dom";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { describe, expect, it } from "vitest";
-import type { ActivityDto } from "@rg/api-client";
-import { RunsScreen } from "../src/screens/runs.js";
+import type { ActivityDto, InsightsResponse } from "@rg/api-client";
+import { PaceShape, RunsScreen } from "../src/screens/runs.js";
 
 const activity: ActivityDto = {
   id: "a1",
@@ -33,16 +33,48 @@ const activity: ActivityDto = {
   matched: null,
 };
 
+/** The dashboard's structural query — minimal but complete (System 2). */
+export function emptyInsights(): InsightsResponse {
+  return {
+    discipline: "run",
+    availableDisciplines: ["run"],
+    consistency: {
+      planned: 0, completed: 0, skipped: 0, missed: 0, moved: 0, pending: 0,
+      unresolved: 0, adherenceRate: 0, weeklyBreakdown: [], days: [],
+    },
+    weekly: { weeks: [], fourWeekAvgDuration: null },
+    records: [],
+    evidence: null,
+    reviews: [],
+    interpreted: [],
+  } as unknown as InsightsResponse;
+}
+
 function renderRuns(units: "km" | "mi", over: Partial<ActivityDto> = {}): string {
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false, staleTime: Infinity } } });
   qc.setQueryData(["runs"], { activities: [{ ...activity, ...over }] });
   qc.setQueryData(["settings"], { prefs: { units } });
+  qc.setQueryData(["insights", "run"], emptyInsights());
   return renderToStaticMarkup(
     createElement(
       QueryClientProvider,
       { client: qc },
       createElement(MemoryRouter, null, createElement(RunsScreen)),
     ),
+  );
+}
+
+/** PaceShape rendered directly — the figure now lives inside the expanded
+ * session, which a static render can't click open. Its honesty contract is
+ * the figure's own, not the screen's. */
+function renderShape(units: "km" | "mi", over: Partial<ActivityDto> = {}): string {
+  const a = { ...activity, ...over };
+  return renderToStaticMarkup(
+    createElement(PaceShape, {
+      laps: a.laps!,
+      units,
+      durationSeconds: a.durationSeconds,
+    }),
   );
 }
 
@@ -60,8 +92,10 @@ describe("RunsScreen units", () => {
     expect(html).toContain("10 km");
     expect(html).toContain("5:00 /km");
     expect(html).not.toContain("/mi");
-    // PaceShape lap tooltip goes through the same helper.
-    expect(html).toContain("5:10 /km"); // lap 1, 310 s/km
+    // PaceShape lap tooltip goes through the same helper (the figure lives
+    // inside the expanded session now — rendered directly).
+    expect(renderShape("km")).toContain("5:10 /km"); // lap 1, 310 s/km
+    expect(renderShape("mi")).not.toContain("/km");
   });
 });
 
@@ -75,7 +109,7 @@ describe("RunsScreen units", () => {
  */
 describe("PaceShape honesty + reach", () => {
   it("is one focusable figure described by a live caption — not a mouse-only tooltip", () => {
-    const html = renderRuns("km");
+    const html = renderShape("km");
     expect(html).toContain('tabindex="0"');
     expect(html).toContain('aria-live="polite"');
     expect(html).toContain("arrows step through the laps");
@@ -90,12 +124,12 @@ describe("PaceShape honesty + reach", () => {
   it("says how much of the activity the laps actually cover when they fall short", () => {
     // The fixture's three laps are 30 min of a 50 min activity — the
     // silhouette is not the shape of the other 20.
-    const html = renderRuns("km");
+    const html = renderShape("km");
     expect(html).toContain("3 laps · 30 min of 50 min drawn");
   });
 
   it("keeps quiet about coverage when the laps do add up to the activity", () => {
-    const html = renderRuns("km", { durationSeconds: 1800 });
+    const html = renderShape("km", { durationSeconds: 1800 });
     expect(html).not.toContain(" drawn");
     expect(html).toContain("3 laps · 5:10 /km–4:55 /km");
   });
@@ -106,7 +140,7 @@ describe("PaceShape honesty + reach", () => {
     // caption says how many bars are not to scale. The lap itself is still
     // drawn and still tappable: on this data a 3s lap may be a duration that
     // was never repaired, and hiding it would bury exactly that.
-    const html = renderRuns("km", {
+    const html = renderShape("km", {
       durationSeconds: 2403,
       laps: [
         { s: 3, p: 340 },

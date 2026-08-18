@@ -1,14 +1,14 @@
 import type { ReactNode } from "react";
 import { NavLink, useLocation } from "react-router-dom";
 import { PRODUCT_NAME } from "@rg/domain";
-import { IconGarden, IconInsights, IconPlan, IconRuns, IconSettings } from "./icons.js";
+import { IconGarden, IconPlan, IconRuns, IconSettings } from "./icons.js";
 import { useCorosReadNow } from "./screens/use-coros-read.js";
 
+// Four tabs (System 2): Insights merged into Activity — /insights redirects.
 const NAV = [
   { to: "/", label: "Garden", icon: <IconGarden /> },
   { to: "/plan", label: "Plan", icon: <IconPlan /> },
   { to: "/runs", label: "Activity", icon: <IconRuns /> },
-  { to: "/insights", label: "Insights", icon: <IconInsights /> },
   { to: "/settings", label: "Settings", icon: <IconSettings /> },
 ];
 

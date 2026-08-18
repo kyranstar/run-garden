@@ -1,22 +1,30 @@
-import { useId, useMemo, useRef, useState } from "react";
+import { useEffect, useId, useMemo, useRef, useState } from "react";
 import { Link } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { api, type ActivityDto, type WorkoutDto } from "@rg/api-client";
-import { isAdventureSport, sportLabel } from "@rg/domain";
+import { api, type ActivityDto, type InsightsResponse, type WorkoutDto } from "@rg/api-client";
+import { addDays, isAdventureSport, sportLabel } from "@rg/domain";
+import type { Discipline } from "@rg/analytics";
 import { useMeasuredWidth } from "../chart-kit.js";
 import {
   Banner,
   CategoryDot,
   CATEGORY_LABELS,
+  countNoun,
   EmptyState,
   formatDayLong,
   formatDistance,
   formatMinutes,
   formatPace,
+  localTodayGuess,
+  settling,
   Sheet,
   Spinner,
   type Units,
 } from "../components.js";
+import { ConsistencyHeatmap, ChartFrame, WeeklyDurationChart } from "../charts.js";
+import { formatHours, isRecentRecord } from "../charts-math.js";
+import { firstSentence, SignalTile } from "../signal-tiles.js";
+import { MetricDrilldown, RENDERED_METRIC_IDS, ReviewBody, SignalsPanel } from "./signals-panel.js";
 import { CoachRead } from "./coach-read.js";
 import { useCorosReadNow } from "./use-coros-read.js";
 import { CorosCheck } from "./coros-check.js";
@@ -136,7 +144,7 @@ const COVERAGE_FLOOR = 0.95;
  * on this data set an implausibly short one may be a duration that never got
  * repaired, which is exactly the kind of thing hiding it would bury.
  */
-function PaceShape({
+export function PaceShape({
   laps,
   units,
   durationSeconds,
@@ -369,38 +377,181 @@ function LinkSheet({ activity, onClose }: { activity: ActivityDto; onClose: () =
   );
 }
 
+/** Monday of the ISO week containing `date`. */
+function mondayOf(date: string): string {
+  const dow = (new Date(`${date}T12:00:00Z`).getUTCDay() + 6) % 7;
+  return addDays(date, -dow);
+}
+
+type InterpretedMetric = InsightsResponse["interpreted"][number];
+
+/**
+ * The flagged tiles — the SAME eligibility gates the old status strip used
+ * (rendered id, confident, not stale), then band high|watch. These are the
+ * dashboard's alarm; everything in range lives behind "All N signals".
+ */
+export function flaggedSignals(interpreted: readonly InterpretedMetric[]): InterpretedMetric[] {
+  return interpreted.filter(
+    (m) =>
+      RENDERED_METRIC_IDS.has(m.id) &&
+      m.status === "ok" &&
+      !m.bandNote &&
+      !m.staleNote &&
+      (m.band === "high" || m.band === "watch"),
+  );
+}
+
+/**
+ * Where a run sits on the athlete's efficiency trend, in one plain clause —
+ * this run's metres-per-beat against the median of the five scored runs
+ * before it. Null when the run isn't scored or has nothing to compare to.
+ */
+export function efficiencyClause(
+  efficiency: InsightsResponse["efficiency"],
+  activityId: string,
+): string | null {
+  if (!efficiency || efficiency.status !== "ok") return null;
+  const runs = efficiency.value.perRun;
+  const i = runs.findIndex((r) => r.activityId === activityId);
+  if (i < 0) return null;
+  const prior = runs.slice(Math.max(0, i - 5), i).map((r) => r.efficiency);
+  if (prior.length < 3) return null;
+  const median = [...prior].sort((a, b) => a - b)[Math.floor(prior.length / 2)]!;
+  if (median <= 0) return null;
+  const r = runs[i]!.efficiency / median;
+  if (r >= 1.02) return "Above your efficiency trend — easier speed than usual.";
+  if (r <= 0.98) return "Below your efficiency trend — a harder-won pace than usual.";
+  return "Right on your efficiency trend.";
+}
+
+/** The feed, grouped by ISO week, newest first. */
+export function groupByWeek(items: ActivityDto[]): Array<{ monday: string; items: ActivityDto[] }> {
+  const map = new Map<string, ActivityDto[]>();
+  for (const a of items) {
+    const wk = mondayOf(a.date);
+    const list = map.get(wk);
+    if (list) list.push(a);
+    else map.set(wk, [a]);
+  }
+  return [...map.entries()]
+    .sort((a, b) => (a[0] < b[0] ? 1 : -1))
+    .map(([monday, list]) => ({
+      monday,
+      items: list.sort((a, b) => (a.date < b.date ? 1 : -1)),
+    }));
+}
+
+/** An expanded session's insights, in place (System 2). */
+function ActivityDetail({
+  a,
+  units,
+  efficiency,
+  onLink,
+}: {
+  a: ActivityDto;
+  units: Units;
+  efficiency: InsightsResponse["efficiency"];
+  onLink: (a: ActivityDto) => void;
+}) {
+  // A CACHED read renders automatically — the peek never generates and never
+  // spends. Generation stays the explicit, priced tap below (CoachRead).
+  const peek = useQuery({
+    queryKey: ["coach-read-peek", a.id],
+    queryFn: () => api.coachReadPeek(a.id),
+    staleTime: 5 * 60_000,
+  });
+  const [generating, setGenerating] = useState(false);
+  const clause = efficiencyClause(efficiency, a.id);
+  return (
+    <div className="fw-detail">
+      {a.laps ? <PaceShape laps={a.laps} units={units} durationSeconds={a.durationSeconds} /> : null}
+      <p className="fw-statline">
+        <EffortChip load={a.trainingLoad} feel={a.feel} />
+        {a.matched ? (
+          <span className="pill pill-ok" title={`Counted as your ${a.matched.title}`}>
+            ✓ {a.matched.title}
+          </span>
+        ) : (
+          <button type="button" className="btn btn-small" onClick={() => onLink(a)}>
+            Link to a workout
+          </button>
+        )}
+      </p>
+      {clause ? <p className="fw-trend">{clause}</p> : null}
+      {peek.data?.read && !generating ? (
+        <div className="fw-coach">
+          <span className="fw-coach-mark" aria-hidden="true">
+            🌱
+          </span>
+          <div>
+            <p className="fw-coach-body">
+              <span className="fw-coach-who">Coach</span> — {peek.data.read.glance}{" "}
+              {peek.data.read.body}
+            </p>
+            <button type="button" className="linklike fw-fresh" onClick={() => setGenerating(true)}>
+              ↻ Fresh read
+            </button>
+          </div>
+        </div>
+      ) : generating || peek.data?.read === null ? (
+        generating ? (
+          <CoachRead activityId={a.id} force={peek.data?.read != null} />
+        ) : (
+          <button type="button" className="btn btn-small" onClick={() => setGenerating(true)}>
+            ✨ Get the coach&rsquo;s read
+          </button>
+        )
+      ) : null}
+      {a.matched ? (
+        <p className="fw-open">
+          <Link to={`/plan?workout=${a.matched.workoutId}`}>Open in Plan ›</Link>
+        </p>
+      ) : null}
+    </div>
+  );
+}
+
 export function RunsScreen() {
   const corosCheck = useCorosReadNow();
-  const qc = useQueryClient();
   const runs = useQuery({ queryKey: ["runs"], queryFn: () => api.activities(40) });
   const settings = useQuery({ queryKey: ["settings"], queryFn: api.settings, staleTime: 60_000 });
   const units: Units = settings.data?.prefs.units ?? "km";
-  const [linking, setLinking] = useState<ActivityDto | null>(null);
-  const [note, setNote] = useState<string | null>(null);
   const [filter, setFilter] = useState<DisciplineFilter>("all");
-  const [readOpen, setReadOpen] = useState<string | null>(null);
-
-  const backfill = useMutation({
-    mutationFn: () => api.backfillHistory(),
-    onSuccess: (r) => {
-      // The walk runs in the cloud, chunk by chunk, so this only reports
-      // that it was queued — Settings shows the progress.
-      setNote(
-        !r.enqueued
-          ? r.reason === "already_running"
-            ? "A history read is already queued or running — see Settings for progress."
-            : "Couldn't start the backfill — connect COROS in Settings and try again."
-          : "Queued — runs, lifts, yoga, and adventures land chunk by chunk. Progress is in Settings.",
-      );
-      void qc.invalidateQueries({ queryKey: ["runs"] });
-      void qc.invalidateQueries({ queryKey: ["plan"] });
-      void qc.invalidateQueries({ queryKey: ["garden"] });
-    },
-    onError: () => setNote("Backfill failed. Try again in a moment."),
+  // The overview reads insights for the chip's discipline; All and Adventures
+  // show running — the default discipline and the product's center.
+  const insightsDiscipline: Discipline =
+    filter === "strength" ? "strength" : filter === "yoga" ? "yoga" : "run";
+  const insights = useQuery({
+    queryKey: ["insights", insightsDiscipline],
+    queryFn: () => api.insights(insightsDiscipline),
+    staleTime: 60_000,
   });
+  const [linking, setLinking] = useState<ActivityDto | null>(null);
+  const [drill, setDrill] = useState<InterpretedMetric | null>(null);
+  const [signalsOpen, setSignalsOpen] = useState(false);
+  const [recordsOpen, setRecordsOpen] = useState(false);
+  const [openId, setOpenId] = useState<string | null>(null);
+  const [openStory, setOpenStory] = useState<string | null>(null);
+  const [weeksShown, setWeeksShown] = useState(3);
 
-  if (runs.isLoading) return <Spinner label="Loading activity" />;
-  if (runs.isError) {
+  // The weekly review's client-side seen mark (earned-moments spec §2) —
+  // the dashboard is now where reviews live, so it writes the mark the old
+  // Insights page wrote; home's ReviewPull goes quiet after a visit here.
+  useEffect(() => {
+    const latest = insights.data?.reviews?.[0];
+    if (!latest) return;
+    try {
+      window.localStorage.setItem("rg-review-seen", latest.weekStart);
+    } catch {
+      // Storage unavailable — the pull will simply show again.
+    }
+  }, [insights.data]);
+
+  // First-paint gate: the overview's blocks and the feed arrive together —
+  // a page that paints its feed and then grows charts above it is the
+  // layout-shift defect the gate exists to prevent.
+  if (settling(runs, insights)) return <Spinner label="Loading activity" />;
+  if (runs.isError || !runs.data) {
     // A failed load must never masquerade as "you have no activity".
     return (
       <div className="stack">
@@ -411,19 +562,30 @@ export function RunsScreen() {
       </div>
     );
   }
-  const items = (runs.data?.activities ?? []).filter((a) =>
+
+  const items = (runs.data.activities ?? []).filter((a) =>
     filter === "all" ? true : filter === "adventure" ? isAdventureSport(a.sport) : a.sport === filter,
   );
   const empty = EMPTY_COPY[filter];
+  const data = insights.data ?? null;
+  const flagged = data ? flaggedSignals(data.interpreted) : [];
+  const signalCount = data
+    ? data.interpreted.filter((m) => RENDERED_METRIC_IDS.has(m.id)).length
+    : 0;
+  const resolved = data
+    ? data.consistency.completed + data.consistency.skipped + data.consistency.missed
+    : 0;
+  const adherencePct = data ? Math.round(data.consistency.adherenceRate * 100) : 0;
+  const recentTraining = data ? data.weekly.weeks.slice(-8) : [];
+  const records = data?.records ?? [];
+  const todayMonday = mondayOf(localTodayGuess());
+  const weeks = groupByWeek(items);
 
   return (
-    <div>
+    <div className="stack">
       <div className="row-between screen-title">
         <h1>Activity</h1>
         <CorosCheck state={corosCheck.state} />
-        <button className="btn btn-small" disabled={backfill.isPending} onClick={() => backfill.mutate()}>
-          {backfill.isPending ? "Starting…" : "Backfill history"}
-        </button>
       </div>
       <div className="discipline-chips" role="tablist" aria-label="Filter by discipline">
         {FILTERS.map((f) => (
@@ -439,78 +601,214 @@ export function RunsScreen() {
           </button>
         ))}
       </div>
-      {note ? <Banner kind="info">{note}</Banner> : null}
-      {/* The feed's own heading: the page had an <h1> and no h2/h3 at all, so
-          every activity card sat at the top level of the outline. The label is
-          visually hidden because the filter chips above already say it. */}
-      <h2 className="visually-hidden">Recent activity</h2>
+
+      {data ? (
+        <>
+          <section className="dash-sect" aria-label="Training">
+            <h2 className="dash-eyebrow">Training</h2>
+            {recentTraining.length === 0 ? (
+              <p className="muted">Completed sessions will appear here.</p>
+            ) : (
+              <ChartFrame
+                title="Training time per week"
+                legend={[
+                  { label: "Easy time", colorVar: "--chart-1" },
+                  { label: "Hard time", colorVar: "--chart-2" },
+                ]}
+                summary={recentTraining
+                  .map((w) => `Week of ${w.weekStart}: ${formatHours(w.durationSeconds)}.`)
+                  .join(" ")}
+              >
+                <WeeklyDurationChart
+                  weeks={recentTraining}
+                  avgSeconds={data.weekly.fourWeekAvgDuration}
+                  avgLabel="4-wk avg"
+                />
+              </ChartFrame>
+            )}
+          </section>
+
+          <section className="dash-sect" aria-label="Consistency">
+            <h2 className="dash-eyebrow">Consistency</h2>
+            {data.consistency.planned > 0 ? (
+              <>
+                {resolved > 0 ? (
+                  <p className="dash-consline">
+                    <b>{adherencePct}%</b> of planned workouts done.
+                  </p>
+                ) : (
+                  <p className="muted">
+                    Nothing has resolved yet — {countNoun(data.consistency.pending, "workout")}{" "}
+                    still waiting on an answer.
+                  </p>
+                )}
+                <ConsistencyHeatmap days={data.consistency.days} />
+              </>
+            ) : (
+              <p className="muted">Plan consistency appears once the plan has workouts in it.</p>
+            )}
+          </section>
+
+          <section className="dash-sect" aria-label="Signals">
+            <h2 className="dash-eyebrow">Signals</h2>
+            {flagged.length > 0 ? (
+              <div className="signal-grid">
+                {flagged.map((m) => (
+                  <SignalTile key={m.id} m={m} onDrill={setDrill} compact />
+                ))}
+              </div>
+            ) : (
+              <p className="dash-allclear">All {signalCount} signals in range.</p>
+            )}
+            <button
+              type="button"
+              className="linklike dash-more"
+              aria-expanded={signalsOpen}
+              onClick={() => setSignalsOpen((v) => !v)}
+            >
+              All {signalCount} signals
+              <span className="disclosure-caret" aria-hidden>
+                {signalsOpen ? "▾" : "▸"}
+              </span>
+            </button>
+            {signalsOpen ? <SignalsPanel data={data} onDrill={setDrill} /> : null}
+          </section>
+
+          {records.length > 0 ? (
+            <section className="dash-sect" aria-label="Records">
+              <h2 className="dash-eyebrow">Records</h2>
+              <ul className="dash-recs">
+                {(recordsOpen ? records : records.slice(0, 3)).map((r) => (
+                  <li key={r.id} className="dash-rec">
+                    <b>{r.title}</b> — {r.value}
+                    <span className="dash-rec-when">
+                      {formatDayLong(r.achievedOn)}
+                      {isRecentRecord(r.achievedOn, localTodayGuess()) ? (
+                        <span className="new-ring">New</span>
+                      ) : null}
+                    </span>
+                  </li>
+                ))}
+              </ul>
+              {records.length > 3 ? (
+                <button
+                  type="button"
+                  className="linklike dash-more"
+                  aria-expanded={recordsOpen}
+                  onClick={() => setRecordsOpen((v) => !v)}
+                >
+                  All {records.length} records
+                  <span className="disclosure-caret" aria-hidden>
+                    {recordsOpen ? "▾" : "▸"}
+                  </span>
+                </button>
+              ) : null}
+            </section>
+          ) : null}
+        </>
+      ) : null}
+
+      <h2 className="visually-hidden">Every session</h2>
       {items.length === 0 ? (
         <EmptyState art={empty.art} title={empty.title}>
           {empty.body}
         </EmptyState>
       ) : (
-        items.map((a) => {
-          const catKey = a.matched?.category ?? (isAdventureSport(a.sport) ? "adventure" : a.sport);
-          return (
-            <div key={a.id}>
-              <article className={`act-card act-hue-${catKey}`}>
-                <div className="act-spine" aria-hidden="true" />
-                <div className="act-main">
-                  <div className="act-titlerow">
-                    <h3 className="act-title">{a.title || sportLabel(a.sport)}</h3>
-                    <span className="act-sport faint">{sportLabel(a.sport)}</span>
-                  </div>
-                  <div className="act-meta faint">
-                    <span>{formatDayLong(a.date)}</span>
-                    <span>{formatMinutes(a.durationSeconds)}</span>
-                    {a.distanceMeters ? <span>{formatDistance(a.distanceMeters, units)}</span> : null}
-                    {a.avgPaceSecPerKm ? <span>{formatPace(a.avgPaceSecPerKm, units)}</span> : null}
-                    {/* Climb is only worth a chip when the run actually
-                        climbed — a flat city loop shouldn't carry "2 m". */}
-                    {a.elevationGainMeters != null && a.elevationGainMeters >= 20 ? (
-                      <span title="Total climb">↑ {Math.round(a.elevationGainMeters)} m</span>
-                    ) : null}
-                  </div>
-                  {a.laps || a.trainingLoad != null || a.feel != null ? (
-                    <div className="act-glance">
-                      {a.laps ? (
-                        <PaceShape laps={a.laps} units={units} durationSeconds={a.durationSeconds} />
-                      ) : null}
-                      <EffortChip load={a.trainingLoad} feel={a.feel} />
-                    </div>
-                  ) : null}
+        <>
+          {weeks.slice(0, weeksShown).map((wk) => {
+            const total = wk.items.reduce((s2, a) => s2 + (a.durationSeconds ?? 0), 0);
+            const review = data?.reviews.find((r) => r.weekStart === wk.monday) ?? null;
+            const storyOpen = openStory === wk.monday;
+            return (
+              <section key={wk.monday} className="fw-week" aria-label={`Week of ${wk.monday}`}>
+                <div className="fw-head">
+                  <h3 className="fw-title">
+                    {wk.monday === todayMonday ? "This week" : `Week of ${formatDayLong(wk.monday)}`}
+                  </h3>
+                  <span className="fw-stats">
+                    {countNoun(wk.items.length, "session")} · {formatHours(total)}
+                  </span>
                 </div>
-                {/* Fixed-geometry action column: the status slot renders EITHER
-                    the linked pill OR the Link button in the same box, so a
-                    state change can never reflow the card. */}
-                <div className="act-actions">
-                  <div className="act-status-slot">
-                    {a.matched ? (
-                      <span className="pill pill-ok" title={`Counted as your ${a.matched.title}`}>
-                        ✓ {CATEGORY_LABELS[a.matched.category] ?? a.matched.category}
+                {review?.narrative ? (
+                  <p className="fw-story">
+                    “{firstSentence(review.narrative)}”{" "}
+                    <button
+                      type="button"
+                      className="linklike fw-story-more"
+                      aria-expanded={storyOpen}
+                      onClick={() => setOpenStory(storyOpen ? null : wk.monday)}
+                    >
+                      Full review
+                      <span className="disclosure-caret" aria-hidden>
+                        {storyOpen ? "▾" : "▸"}
                       </span>
-                    ) : (
-                      <button className="btn btn-small" onClick={() => setLinking(a)}>
-                        Link to a workout
+                    </button>
+                  </p>
+                ) : null}
+                {storyOpen && review ? <ReviewBody r={review} /> : null}
+                {wk.items.map((a) => {
+                  const catKey =
+                    a.matched?.category ?? (isAdventureSport(a.sport) ? "adventure" : a.sport);
+                  const open = openId === a.id;
+                  const dow = ["SUN", "MON", "TUE", "WED", "THU", "FRI", "SAT"][
+                    new Date(`${a.date}T12:00:00Z`).getUTCDay()
+                  ];
+                  const statBits = [
+                    formatMinutes(a.durationSeconds),
+                    a.distanceMeters ? formatDistance(a.distanceMeters, units) : null,
+                    a.avgPaceSecPerKm
+                      ? formatPace(a.avgPaceSecPerKm, units)
+                      : a.trainingLoad != null
+                        ? `load ${Math.round(a.trainingLoad)}`
+                        : null,
+                  ].filter(Boolean);
+                  return (
+                    <article key={a.id} className={`fw-act act-hue-${catKey}${open ? " fw-act-open" : ""}`}>
+                      <button
+                        type="button"
+                        className="fw-row"
+                        aria-expanded={open}
+                        onClick={() => setOpenId(open ? null : a.id)}
+                      >
+                        <span className="fw-when">
+                          <b>{Number(a.date.slice(8, 10))}</b>
+                          <small>{dow}</small>
+                        </span>
+                        <span className="fw-what">
+                          <b>{a.title || sportLabel(a.sport)}</b>
+                          <small>
+                            {isAdventureSport(a.sport) ? `${sportLabel(a.sport)} · ` : ""}
+                            {statBits.join(" · ")}
+                            {a.elevationGainMeters != null && a.elevationGainMeters >= 20
+                              ? ` · ↑ ${Math.round(a.elevationGainMeters)} m`
+                              : ""}
+                          </small>
+                        </span>
+                        <span className="fw-caret" aria-hidden="true">
+                          ›
+                        </span>
                       </button>
-                    )}
-                  </div>
-                  <button
-                    className="btn btn-small"
-                    aria-expanded={readOpen === a.id}
-                    title="Ask the coach for a read of this effort"
-                    onClick={() => setReadOpen(readOpen === a.id ? null : a.id)}
-                  >
-                    {readOpen === a.id ? "Hide read" : "✨ Coach's read"}
-                  </button>
-                </div>
-              </article>
-              {readOpen === a.id ? <CoachRead activityId={a.id} /> : null}
-            </div>
-          );
-        })
+                      {open ? (
+                        <ActivityDetail a={a} units={units} efficiency={data?.efficiency} onLink={setLinking} />
+                      ) : null}
+                    </article>
+                  );
+                })}
+              </section>
+            );
+          })}
+          {weeks.length > weeksShown ? (
+            <p className="fw-earlier">
+              <button type="button" className="linklike" onClick={() => setWeeksShown((n) => n + 3)}>
+                Earlier weeks ›
+              </button>
+            </p>
+          ) : null}
+        </>
       )}
+
       {linking ? <LinkSheet activity={linking} onClose={() => setLinking(null)} /> : null}
+      {drill ? <MetricDrilldown m={drill} onClose={() => setDrill(null)} /> : null}
     </div>
   );
 }

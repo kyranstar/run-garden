@@ -13,17 +13,26 @@ const WORKING_POLL_MS = 4000;
  * synchronously, and a 202 "working" (another tab or the ambient pipeline is
  * mid-read) polls instead of double-calling the model.
  */
-export function CoachRead({ activityId }: { activityId: string }) {
+export function CoachRead({
+  activityId,
+  force = false,
+}: {
+  activityId: string;
+  /** True when a cached read already exists and the athlete asked for a
+   * fresh one (System 2's "↻ Fresh read") — the first call regenerates
+   * instead of serving the ledger back. */
+  force?: boolean;
+}) {
   const started = useRef(false);
   const alive = useRef(true);
   const analyze = useMutation<CoachAnalyzeResult, unknown, boolean>({
-    mutationFn: (force: boolean) => api.coachAnalyze(activityId, force),
+    mutationFn: (f: boolean) => api.coachAnalyze(activityId, f),
   });
   const { mutate, data } = analyze;
   useEffect(() => {
     if (started.current) return;
     started.current = true;
-    mutate(false);
+    mutate(force);
     return () => {
       alive.current = false;
     };
