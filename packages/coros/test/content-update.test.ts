@@ -985,7 +985,13 @@ describe("a session COROS authored can be eased, proven by what the import recor
     expect(update.reason).toBe("stamp_mismatch");
     // The evidence an operator needs: what is actually there.
     expect(update.observedFingerprint).toBe(drifted);
-    expect(update.error).toMatch(/content has changed/);
+    // The refusal must carry its EVIDENCE, not a guessed cause. Live, this
+    // message said "its content has changed (the athlete edited it in COROS)"
+    // for a slot nothing had touched — two reads eighteen minutes apart hashed
+    // identically — and that wrong story cost an hour. It now reports expected
+    // vs found so the reader can tell drift from the two sides disagreeing.
+    expect(update.error).toMatch(/does not hold what this app imported/);
+    expect(update.error).toMatch(/Expected program .* content \w+; found program/);
     expect(server.counts.scheduleWrites, "not one byte").toBe(writesBefore);
     expect(planSnapshot(server)).toEqual(snapshot);
   });

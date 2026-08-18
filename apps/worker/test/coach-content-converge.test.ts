@@ -1337,7 +1337,10 @@ describe("an imported COROS session converges too", () => {
     // operator back to the athlete's live watch to find out which. The sentence
     // the executor already produced is now kept beside it.
     expect(job!.lastErrorDetail, "the executor's own sentence is recorded").toBeTruthy();
-    expect(job!.lastErrorDetail).toMatch(/no longer holds the workout this app imported/);
+    expect(job!.lastErrorDetail).toMatch(/does not hold what this app imported/);
+    expect(job!.lastErrorDetail, "expected and found are both named").toMatch(
+      /Expected program .* found program/,
+    );
   });
 
   it("an operator re-running the backfill RETRIES a failed job; a wake does not", async () => {

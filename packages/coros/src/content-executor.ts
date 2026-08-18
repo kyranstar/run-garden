@@ -610,10 +610,16 @@ export async function updateWorkoutContent(
             ? { observedFingerprint: corosProgramFingerprint(occupant.program) }
             : {}),
           error: imported
-            ? `idInPlan ${target.idInPlan} in plan ${target.planId} no longer holds the workout this` +
-              ` app imported on ${date} — its content has changed (the athlete edited it in COROS,` +
-              " or COROS recycled the slot). The address is a claim and not an identity." +
-              " Refusing to overwrite it"
+            ? `idInPlan ${target.idInPlan} in plan ${target.planId} does not hold what this app` +
+              ` imported on ${date}, so it is not ours to overwrite. Expected program` +
+              ` ${importClaim?.importedProgramId ?? "?"} content` +
+              ` ${importClaim?.importedFingerprint ?? "?"}; found program` +
+              ` ${String(occupant.program?.id ?? "none")} content` +
+              ` ${occupant.program ? corosProgramFingerprint(occupant.program) : "none"}` +
+              ` (entity idInPlan ${String(atAddress.idInPlan)}, planProgramId` +
+              ` ${String(atAddress.planProgramId ?? "absent")}).` +
+              " Either COROS holds something else now, or the two sides disagree about which" +
+              " program this placement links to. The address is a claim and not an identity"
             : `idInPlan ${target.idInPlan} in plan ${target.planId} no longer carries the recorded` +
               ` stamp on ${date} — ${describeForeignForReport(occupant)}; COROS recycles idInPlan` +
               " slots, so this address is a claim and not an identity. Refusing to overwrite it",
