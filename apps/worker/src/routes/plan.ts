@@ -34,6 +34,7 @@ import {
   syncAction,
   todayInZone,
   watchCoverage,
+  type LocalDate,
   type PlannedWorkout,
   type SyncAction,
   type UserPreferences,
@@ -474,6 +475,7 @@ planRoutes.get("/today", async (c) => {
     gardenEventsRecent,
     yesterdayDone,
     latestCoachMsg,
+    consistencyRows,
   ] = await Promise.all([
     exerciseNameMap(db),
     db
@@ -562,6 +564,19 @@ planRoutes.get("/today", async (c) => {
       .orderBy(desc(coachMessages.at))
       .limit(1)
       .then((r) => r[0]),
+    // The streak band's 12 ISO weeks (homeConsistency) — all disciplines,
+    // archived rows excluded like every other read here.
+    db
+      .select()
+      .from(plannedWorkouts)
+      .where(
+        and(
+          eq(plannedWorkouts.userId, userId),
+          gte(plannedWorkouts.effectiveDate, addDays(startOfIsoWeek(today), -77)),
+          lte(plannedWorkouts.effectiveDate, today),
+          isNull(plannedWorkouts.archivedAt),
+        ),
+      ),
   ]);
   const next = upcoming.find((w) => w.category !== "rest") ?? upcoming[0];
   const snapshot = gardenRows[0]?.snapshot as unknown as GardenSnapshot | undefined;
@@ -595,6 +610,13 @@ planRoutes.get("/today", async (c) => {
     // and dates it — it was written about the week, not about today's
     // readiness, and must never be read as a comment on it.
     focus: deriveFocus(latestCoachMsg),
+    // The streak band (System 1): squares + one percentage + the same streak
+    // counter the garden's vines grow on.
+    consistency: homeConsistency(
+      consistencyRows,
+      today,
+      snapshot?.state.consecutiveConsistentWeeks ?? 0,
+    ),
     garden: snapshot
       ? {
           condition: conditionWord(snapshot.state, DEFAULT_GARDEN_CONFIG),
@@ -691,6 +713,63 @@ function deriveFocus(
   if (!latestCoachMsg || !text) return null;
   if (Date.now() - Date.parse(latestCoachMsg.at) >= FOCUS_STALE_MS) return null;
   return { text, at: latestCoachMsg.at };
+}
+
+/** The home page's celebrated metric (System 1 spec §server): 12 ISO weeks
+ * of plan adherence as bands, one 12-week percentage, and the garden's own
+ * streak counter. */
+export interface TodayConsistency {
+  /** Exactly 12, oldest first; the last entry is always the current week. */
+  weeks: Array<{ weekStart: string; band: "full" | "partial" | "quiet" | "current" }>;
+  adherencePct: number | null;
+  streakWeeks: number;
+}
+
+/**
+ * Band rules: the current ISO week is "current" (still being written); a past
+ * week is "full" at ≥80% adherence, "partial" above zero, and "quiet"
+ * otherwise — including weeks with nothing planned and weeks whose workouts
+ * are all unresolved. There is deliberately no "missed" band: the squares
+ * celebrate, the garden never accuses.
+ *
+ * Coach-sanctioned skips leave the ledger entirely — the same mercy /week's
+ * adherence chip applies (a trip the coach cleared must not dim a square).
+ */
+export function homeConsistency(
+  rows: Array<{ completionState: string; sanctionedBy?: string | null }>,
+  today: LocalDate,
+  streakWeeks: number,
+): TodayConsistency {
+  const asPlanned = rows.filter(
+    (w) => !(w.completionState === "skipped" && w.sanctionedBy === "coach"),
+  ) as unknown as PlannedWorkout[];
+  const currentWeek = startOfIsoWeek(today);
+  const start = addDays(currentWeek, -77);
+  const report = computeConsistency(asPlanned, { start, end: today }, today);
+  const byWeek = new Map(report.weeklyBreakdown.map((w) => [w.weekStart, w]));
+  const weeks: TodayConsistency["weeks"] = [];
+  for (let ws = start; ws <= currentWeek; ws = addDays(ws, 7)) {
+    const wk = byWeek.get(ws);
+    weeks.push({
+      weekStart: ws,
+      band:
+        ws === currentWeek
+          ? "current"
+          : !wk || wk.planned === 0 || wk.adherence <= 0
+            ? "quiet"
+            : wk.adherence >= 0.8
+              ? "full"
+              : "partial",
+    });
+  }
+  // Mirrors /week's windowPct: the rate already excludes still-ahead and
+  // unresolved work; null (not 0) when nothing has resolved at all.
+  const denom = report.planned - report.unresolved;
+  return {
+    weeks,
+    adherencePct: denom > 0 ? Math.round(report.adherenceRate * 100) : null,
+    streakWeeks,
+  };
 }
 
 /** The weekly brief + one pickable week in a single call (rework spec §4). */

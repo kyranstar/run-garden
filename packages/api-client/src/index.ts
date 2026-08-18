@@ -186,6 +186,14 @@ export interface TodayResponse {
    * rule server-side (absent/stale → null). It was written about the WEEK,
    * never about today's readiness — surfaces must label and date it. */
   focus: { text: string; at: string } | null;
+  /** The streak band (System 1): exactly 12 ISO weeks oldest-first (last is
+   * always the current week), a 12-week adherence percentage (null until
+   * anything has resolved), and the garden's own consistency streak. */
+  consistency: {
+    weeks: Array<{ weekStart: string; band: "full" | "partial" | "quiet" | "current" }>;
+    adherencePct: number | null;
+    streakWeeks: number;
+  };
   garden: {
     condition: GardenConditionWord;
     weather: GardenWeatherState;
