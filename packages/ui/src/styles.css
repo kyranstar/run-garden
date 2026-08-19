@@ -4286,6 +4286,16 @@ a.note {
   padding: var(--space-4) 0;
   border-bottom: 1px solid var(--border);
 }
+/* The control never shrinks and the text never pushes it off the card — a
+   three-line description (Sleep from COROS) was clipping its Connect button
+   at 390px before the text column owned the squeeze. */
+.switch-row > div:first-child {
+  min-width: 0;
+}
+.switch-row > .btn,
+.switch-row > .btn-row {
+  flex-shrink: 0;
+}
 .switch-row:last-child {
   border-bottom: none;
 }

@@ -880,6 +880,9 @@ export const api = {
     post<CorosConnectResponse>("/api/coros/connect", body, 60_000),
   corosDisconnect: () =>
     request<{ ok: boolean }>("/api/coros/connect", { method: "DELETE" }),
+  /** The official-MCP sleep connection (sleep/recovery phase 2); connect is a
+   * full-page redirect to /api/auth/coros-mcp/start, never an XHR. */
+  corosMcpDisconnect: () => post<{ ok: boolean }>("/api/auth/coros-mcp/disconnect", {}),
   coachPlans: () => get<{ plans: CoachPlanDto[] }>("/api/coach/plans"),
   planWeek: (start?: string) =>
     get<PlanWeekResponse>(`/api/plan/week${start ? `?start=${encodeURIComponent(start)}` : ""}`),

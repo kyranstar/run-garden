@@ -345,6 +345,53 @@ function BackfillRow() {
   );
 }
 
+/**
+ * The official COROS sleep connection (sleep/recovery phase 2). This is the
+ * ONE opt-in that adds nightly duration and depth: OAuth on the athlete's
+ * own COROS account via the first-party MCP server — never the mobile API
+ * that logs the phone app out. Nightly sleep HRV already flows without it.
+ */
+function CorosSleepRow({
+  conn,
+}: {
+  conn: { status: string; lastSyncAt: string | null; lastErrorCategory: string | null } | undefined;
+}) {
+  const qc = useQueryClient();
+  const disconnect = useMutation({
+    mutationFn: api.corosMcpDisconnect,
+    onSuccess: () => void qc.invalidateQueries({ queryKey: ["me"] }),
+  });
+  const connected = conn?.status === "connected";
+  const needsReauth = conn?.status === "error";
+  return (
+    <div className="switch-row">
+      <div>
+        <strong>Sleep from COROS</strong>
+        <p className="faint">
+          {needsReauth
+            ? "Sleep sync stopped — COROS expired the connection. Reconnect to resume."
+            : connected
+              ? `Connected · nightly duration and depth${conn?.lastSyncAt ? ` · synced ${relativeTime(conn.lastSyncAt)}` : ""}`
+              : "Adds nightly duration and deep/REM. Opens COROS sign-in — your watch and phone app are untouched."}
+        </p>
+      </div>
+      {connected ? (
+        <button
+          className="btn btn-small"
+          disabled={disconnect.isPending}
+          onClick={() => disconnect.mutate()}
+        >
+          Disconnect
+        </button>
+      ) : (
+        <a className="btn btn-small" href="/api/auth/coros-mcp/start?redirect=/settings">
+          {needsReauth ? "Reconnect" : "Connect"}
+        </a>
+      )}
+    </div>
+  );
+}
+
 function ConnectionsSection() {
   const qc = useQueryClient();
   const me = useQuery({ queryKey: ["me"], queryFn: api.me });
@@ -396,6 +443,8 @@ function ConnectionsSection() {
           </a>
         )}
       </div>
+
+      <CorosSleepRow conn={conn("coros_mcp")} />
 
       <Sheet open={chooseOpen} onClose={() => setChooseOpen(false)} title="Choose a calendar">
         <div className="stack">

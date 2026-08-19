@@ -16,6 +16,14 @@ import {
 } from "../auth/google.js";
 import { encryptSecret } from "../auth/crypto.js";
 import {
+  completeCorosMcpAuth,
+  consumeCorosMcpState,
+  disconnectCorosMcp,
+  startCorosMcpAuth,
+  syncCorosMcpSleep,
+} from "../services/coros-mcp.js";
+import { loadPreferences } from "../services/calendar-sync.js";
+import {
   clearSessionCookie,
   createSession,
   destroySession,
@@ -115,6 +123,51 @@ authRoutes.get("/google/callback", async (c) => {
   c.header("Set-Cookie", sessionCookie(token, secure));
 
   return c.redirect(safeRedirectPath(stored.redirectTo));
+});
+
+/**
+ * The official COROS sleep connection (sleep/recovery phase 2): OAuth against
+ * the athlete's own COROS account via the first-party MCP server. Start and
+ * callback both ride the session cookie — this connects an existing signed-in
+ * user, unlike google/callback's sign-in duty.
+ */
+authRoutes.get("/coros-mcp/start", requireUser, async (c) => {
+  try {
+    const url = await startCorosMcpAuth(
+      c.get("db"),
+      c.env,
+      c.get("userId"),
+      safeRedirectPath(c.req.query("redirect")),
+    );
+    return c.redirect(url);
+  } catch (e) {
+    console.error("coros-mcp start failed", String(e).slice(0, 200));
+    return c.redirect(`${c.env.APP_URL}/settings?corosSleep=error`);
+  }
+});
+
+authRoutes.get("/coros-mcp/callback", requireUser, async (c) => {
+  const db = c.get("db");
+  const code = c.req.query("code");
+  const state = c.req.query("state");
+  if (!code || !state) return c.text("Missing code or state", 400);
+  const stored = await consumeCorosMcpState(db, state);
+  if (!stored) return c.text("Invalid or expired state", 400);
+  const ok = await completeCorosMcpAuth(db, c.env, c.get("userId"), code, stored.codeVerifier);
+  const dest = safeRedirectPath(stored.redirectTo);
+  if (!ok) return c.redirect(`${c.env.APP_URL}${dest}?corosSleep=error`);
+  // First pull right away — the athlete should see last night, not a
+  // "connected, come back tomorrow" shrug. Best-effort; the sweep covers it.
+  const prefs = await loadPreferences(db, c.get("userId"));
+  c.executionCtx.waitUntil(
+    syncCorosMcpSleep(db, c.env, c.get("userId"), prefs.timezone).catch(() => undefined),
+  );
+  return c.redirect(`${c.env.APP_URL}${dest}?corosSleep=connected`);
+});
+
+authRoutes.post("/coros-mcp/disconnect", requireUser, async (c) => {
+  await disconnectCorosMcp(c.get("db"), c.env, c.get("userId"));
+  return c.json({ ok: true });
 });
 
 authRoutes.post("/logout", async (c) => {

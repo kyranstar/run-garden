@@ -30,6 +30,7 @@ import { healLegacySyncState } from "./services/heal-legacy-sync.js";
 import { evaluateTriggers } from "./services/coach-triggers.js";
 import { processCoachReads } from "./services/coach-reads.js";
 import { corosReadSweep } from "./services/coros-read.js";
+import { corosMcpSleepSweep } from "./services/coros-mcp.js";
 import { executeCloudJobs } from "./services/coros-write-cloud.js";
 import { purgeExpiredSessions, createSession, sessionCookie } from "./auth/sessions.js";
 import { purgeExpiredStates } from "./auth/google.js";
@@ -118,6 +119,11 @@ async function halfHourly(db: Db, env: Env): Promise<void> {
   // ingest) during the transition.
   await corosReadSweep(db, env).catch((e: unknown) =>
     console.error(`coros read sweep failed: ${e instanceof Error ? e.message : "unknown"}`),
+  );
+  // Official-MCP sleep pull (sleep/recovery phase 2) — throttled per user
+  // inside; wake-date-keyed data needs at most one pull a night.
+  await corosMcpSleepSweep(db, env, async (userId) => (await loadPreferences(db, userId)).timezone).catch(
+    (e: unknown) => console.error(`coros mcp sleep sweep failed: ${e instanceof Error ? e.message : "unknown"}`),
   );
   // Cloud backfill: one 90-day chunk per tick per user with an active walk.
   for (const userId of await allUserIds(db)) {

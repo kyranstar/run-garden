@@ -112,3 +112,26 @@ Worker: snapshot mapping of sd/fullRecoveryHours; ingest COALESCE; readiness DTO
 `sleep` metric emitted only with data. UI: sheet render variants (band vs usually, slept row, night
 row), tile shapes, stage chart, scales/responsive suites stay green. Fixtures seed sleepHrvBase/sd +
 below-band nights + gaps so every state is screenshottable.
+
+## Phase 2 — the official sleep connection (built 2026-08-19)
+
+COROS's partner API needs a company-style application with private docs, but the first-party MCP
+server (`mcp.coros.com`) fronts `querySleepData` with a standard OAuth 2.0 stack — probe-verified
+live: RFC 9728/8414 discovery, RFC 7591 dynamic registration (returns a public client, scopes
+`openid mcp.tools offline_access`), PKCE S256, rotating refresh tokens. The worker is an ordinary
+OAuth public client on the athlete's own account; the phone-app-killing mobile API stays untouched.
+
+- **Flow**: `/api/auth/coros-mcp/start` (session-authed) → discovery + per-user dynamic
+  registration (client id pinned in `provider_connections.meta`, issuer-scoped) → PKCE verifier
+  parked in `oauth_states` → COROS sign-in → `/api/auth/coros-mcp/callback` exchanges and stores
+  tokens AES-GCM-encrypted (`provider = "coros_mcp"`), then fires the first pull immediately.
+- **Sync**: half-hourly cron sweep, throttled to one pull per 6h per athlete (wake-date-keyed data
+  needs one a night). First pull reaches 42 days; steady state 7. Arguments are built FROM the
+  tool's own `tools/list` inputSchema (exact names/formats unpublished); responses may be plain
+  JSON or SSE. The normalizer accepts minutes-or-seconds durations, times-or-ratios stages,
+  epoch-s/ms windows; an unreadable-but-substantial payload marks `shape_error` on the connection —
+  never a guessed record. `ingestSleep` fingerprint-skips and COALESCEs like `ingestDailyHealth`.
+- **Settings**: one row in Connections — Connect / Connected · synced / Reconnect on
+  `needs_reauth`; Disconnect revokes best-effort and forgets tokens.
+- Every phase-1 surface (slept vital, Sleep tile + stage chart, coach lines, sleep_deficit
+  trigger, steady-week gates via richer nights) lights up from the data with zero further changes.
