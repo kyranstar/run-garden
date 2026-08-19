@@ -1000,17 +1000,6 @@ export function ReadinessSheet({
       ) : null}
       {latest ? (
         <div className="ready-vitals">
-          {latest.restingHeartRate != null ? (
-            <div className="ready-vital">
-              <b>{Math.round(latest.restingHeartRate)}</b>
-              <small>
-                resting HR
-                {baseline?.restingHeartRate != null
-                  ? ` · usually ${Math.round(baseline.restingHeartRate)}`
-                  : ""}
-              </small>
-            </div>
-          ) : null}
           {latest.hrv != null ? (
             <div className="ready-vital">
               <b>{Math.round(latest.hrv)} ms</b>
@@ -1021,6 +1010,17 @@ export function ReadinessSheet({
                   : baseline?.hrv != null
                     ? ` · usually ${Math.round(baseline.hrv)}`
                     : ""}
+              </small>
+            </div>
+          ) : null}
+          {latest.restingHeartRate != null ? (
+            <div className="ready-vital">
+              <b>{Math.round(latest.restingHeartRate)}</b>
+              <small>
+                resting HR
+                {baseline?.restingHeartRate != null
+                  ? ` · usually ${Math.round(baseline.restingHeartRate)}`
+                  : ""}
               </small>
             </div>
           ) : null}

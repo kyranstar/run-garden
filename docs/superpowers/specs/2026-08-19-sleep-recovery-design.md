@@ -51,7 +51,8 @@ no dew: sleep can never hurt the garden (the adventure contract).
 - Dew freeze folds into the existing adventure-freeze sites; punitive paths only. Counters start at
   zero the day this ships — no retroactive rewrites of garden history.
 - New unlock gates `dewy_mornings` / `steady_sleep_weeks` (three exhaustive switches + species):
-  **Evening primrose** (uncommon, 10 dewy mornings), **Moonflower** (rare, 3 steady weeks).
+  **Evening primrose** (uncommon, 10 dewy mornings), **Night phlox** (rare, 3 steady weeks —
+  "Moonflower" from the mocks already existed as the evening-runs species).
   `disciplineOfGate` → null (they don't join the per-discipline nudge trio).
 - **Luna moth** rare visitor: eligible after ≥5 settled nights in the last 7 on a tended garden;
   seeded scarcity like the heron.

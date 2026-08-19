@@ -436,7 +436,7 @@ function dewGlints(plants: GardenPlant[], anchor: PlantAnchor): ReactNode {
     for (let i = 0; i < count; i++) {
       const dx = (r() - 0.5) * 26 * a.s;
       const dy = -(6 + r() * 26) * a.s;
-      const rad = 1.4 + r() * 1.1;
+      const rad = 2.2 + r() * 1.6;
       drops.push(
         <g key={`${pl.id}-${i}`} transform={`translate(${n(a.x + dx)} ${n(a.y + dy)})`}>
           <circle r={n(rad)} fill="#dfeaf4" opacity={0.75} />

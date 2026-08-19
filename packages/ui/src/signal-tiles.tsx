@@ -69,13 +69,23 @@ export function pickTileVisual(m: {
  * nothing but the meaning text already printed on the tile.
  *
  * An empty `series` array counts as absent, matching `pickTileVisual`.
+ *
+ * `nights` and `pairs` (0020) are drill-down evidence in their own right:
+ * the stage chart and the strain-answer chart live only in the sheet.
  */
 export function hasDrilldown(m: {
   detail?: unknown;
   series?: MetricSeriesPoint[];
   baseline?: unknown;
+  nights?: unknown[];
+  pairs?: unknown[];
 }): boolean {
-  return !!m.detail || (!!m.baseline && (m.series?.length ?? 0) > 0);
+  return (
+    !!m.detail ||
+    (!!m.baseline && (m.series?.length ?? 0) > 0) ||
+    (m.nights?.length ?? 0) > 0 ||
+    (m.pairs?.length ?? 0) > 0
+  );
 }
 
 // ── Status-strip priority (pure; unit-tested) ───────────────────────────────
