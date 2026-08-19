@@ -170,6 +170,37 @@ authRoutes.post("/coros-mcp/disconnect", requireUser, async (c) => {
   return c.json({ ok: true });
 });
 
+/** Re-run the sleep pull on demand (the cron throttle doesn't apply) and
+ * report the outcome — the athlete's own diagnosis surface for a connection
+ * that says sync stopped. */
+authRoutes.post("/coros-mcp/sync-now", requireUser, async (c) => {
+  const db = c.get("db");
+  const prefs = await loadPreferences(db, c.get("userId"));
+  const result = await syncCorosMcpSleep(db, c.env, c.get("userId"), prefs.timezone);
+  return c.json(result);
+});
+
+/** The user's own connection diagnostics: status + the values-redacted shape
+ * skeleton stored on the last tool failure. Their row, their eyes only. */
+authRoutes.get("/coros-mcp/debug", requireUser, async (c) => {
+  const db = c.get("db");
+  const row = (
+    await db
+      .select()
+      .from(providerConnections)
+      .where(eq(providerConnections.userId, c.get("userId")))
+  ).find((r) => r.provider === "coros_mcp");
+  if (!row) return c.json({ error: "not_connected" }, 404);
+  const meta = (row.meta ?? {}) as { lastToolError?: string; issuer?: string };
+  return c.json({
+    status: row.status,
+    lastSyncAt: row.lastSyncAt,
+    lastErrorCategory: row.lastErrorCategory,
+    issuer: meta.issuer ?? null,
+    lastToolError: meta.lastToolError ?? null,
+  });
+});
+
 authRoutes.post("/logout", async (c) => {
   await destroySession(c.get("db"), getCookie(c, SESSION_COOKIE));
   c.header("Set-Cookie", clearSessionCookie(c.env.APP_URL.startsWith("https")));

@@ -651,6 +651,28 @@ export async function ingestSleep(
   return { written, skipped };
 }
 
+/**
+ * A values-REDACTED skeleton of an unreadable payload: keys and types only,
+ * arrays sampled to their first element, capped small. Safe to store in
+ * connection meta and show back to the account's own user — it can name
+ * fields like "sleepScore" but never carry a reading.
+ */
+export function shapeSkeleton(value: unknown, depth = 0): unknown {
+  if (depth > 5) return "…";
+  if (value === null) return "null";
+  if (Array.isArray(value)) {
+    return value.length === 0 ? [] : [shapeSkeleton(value[0], depth + 1), `×${value.length}`];
+  }
+  if (typeof value === "object") {
+    const out: Record<string, unknown> = {};
+    for (const [k, v] of Object.entries(value as Record<string, unknown>).slice(0, 30)) {
+      out[k] = shapeSkeleton(v, depth + 1);
+    }
+    return out;
+  }
+  return typeof value;
+}
+
 export interface McpSleepSyncResult {
   status: "ok" | "not_connected" | "needs_reauth" | "tool_missing" | "shape_error" | "error";
   written?: number;
@@ -688,10 +710,14 @@ export async function syncCorosMcpSleep(
       // content we couldn't read, record the shape for prod diagnosis.
       const hadContent = JSON.stringify(result ?? {}).length > 200;
       if (hadContent) {
+        // Store the payload's SKELETON (keys/types only, values redacted) so
+        // the real wire shape is diagnosable from the account itself — the
+        // schema was never published, and a name alone diagnoses nothing.
+        const skeleton = JSON.stringify(shapeSkeleton(result)).slice(0, 2000);
         await db
           .update(providerConnections)
           .set({
-            meta: { ...(row.meta as McpMeta | null), lastToolError: "unrecognized querySleepData shape" },
+            meta: { ...(row.meta as McpMeta | null), lastToolError: `unrecognized querySleepData shape: ${skeleton}` },
             lastErrorCategory: "shape_error",
             updatedAt: nowInstant(),
           })
