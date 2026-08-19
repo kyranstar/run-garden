@@ -499,14 +499,33 @@ function buildTelemetry(
   t.bestKmSecPerKm = positive(summary?.bestKm);
   if (summary?.pauseTime != null) t.pauseSeconds = Math.round(summary.pauseTime / 100);
 
-  const deviceTemp = positive(item.waterTemperature);
-  if (deviceTemp != null) t.deviceTempC = deviceTemp / 100;
+  // Temperatures are NOT gated by `positive()`: 0 °C and every sub-zero
+  // reading are real values, and this account has ten Whistler/Alberta
+  // winter activities (coach-input audit 2026-08-18). Every freezing run
+  // used to lose its ENTIRE weather record — temperature gated the block, so
+  // humidity and wind vanished with it — and the coach was then told
+  // "no weather data (indoor?)" about an outdoor run in the snow.
+  //
+  // The absent-sentinel risk runs the other way for the wrist thermometer:
+  // `waterTemperature: 0` on a watch with no reading is plausible, and a
+  // wrist-warmed sensor at exactly 0.00 °C is not — so 0 stays "absent"
+  // there, while negatives pass.
+  const deviceTemp = item.waterTemperature;
+  if (deviceTemp != null && deviceTemp !== 0) t.deviceTempC = deviceTemp / 100;
 
-  if (weather && positive(weather.temperature) != null) {
-    t.weatherTempC = weather.temperature! / 10;
-    if (positive(weather.bodyFeelTemp) != null) t.weatherFeelsLikeC = weather.bodyFeelTemp! / 10;
-    if (positive(weather.humidity) != null) t.humidityPercent = weather.humidity! / 10;
-    if (weather.windSpeed != null) t.windKph = weather.windSpeed / 10;
+  // A weather record is real when ANY of its fields carries a non-zero
+  // value — an all-zero object is treated as filler. Within a real record,
+  // 0 °C is a legal temperature.
+  const weatherReal =
+    weather != null &&
+    [weather.temperature, weather.bodyFeelTemp, weather.humidity, weather.windSpeed].some(
+      (v) => v != null && v !== 0,
+    );
+  if (weatherReal) {
+    if (weather!.temperature != null) t.weatherTempC = weather!.temperature / 10;
+    if (weather!.bodyFeelTemp != null) t.weatherFeelsLikeC = weather!.bodyFeelTemp / 10;
+    if (positive(weather!.humidity) != null) t.humidityPercent = weather!.humidity! / 10;
+    if (weather!.windSpeed != null) t.windKph = weather!.windSpeed / 10;
   }
 
   t.feelRating = positive(feel?.feelType);

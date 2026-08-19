@@ -476,8 +476,20 @@ export async function buildDossier(
     .filter((w) => !canTarget(w, today))
     .map((w) => {
       const act = matchByWorkout.get(w.id) ? actById.get(matchByWorkout.get(w.id)!.activityId) : undefined;
+      // HR, load and felt ride the line (coach-input audit 2026-08-18): the
+      // rows were already fetched, and "did 45min 8km" without effort data
+      // made two very different weeks read identically.
+      const evidence = act
+        ? [
+            act.avgHeartRate != null ? `HR ${Math.round(act.avgHeartRate)}` : null,
+            act.trainingLoad != null ? `load ${Math.round(act.trainingLoad)}` : null,
+            act.telemetry?.feelRating != null ? `felt ${act.telemetry.feelRating}/5` : null,
+          ]
+            .filter(Boolean)
+            .join(" · ")
+        : "";
       const actual = act
-        ? `did ${Math.round(act.durationSeconds / 60)}min${act.distanceMeters ? ` ${dist(act.distanceMeters, units)} ${pace(act.distanceMeters, act.durationSeconds, units)}` : ""}`
+        ? `did ${Math.round(act.durationSeconds / 60)}min${act.distanceMeters ? ` ${dist(act.distanceMeters, units)} ${pace(act.distanceMeters, act.durationSeconds, units)}` : ""}${evidence ? ` · ${evidence}` : ""}`
         : w.completionState === "completed"
           ? "completed (details unknown)"
           : w.completionState === "scheduled" || w.completionState === "planned"

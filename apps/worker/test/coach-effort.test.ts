@@ -66,7 +66,7 @@ describe("buildEffortPackage", () => {
     const pkg = (await buildEffortPackage(db, userId, id))!;
     for (const s of SECTIONS) expect(pkg.sections).toContain(s);
     expect(pkg.text).toContain("cadence unknown");
-    expect(pkg.text).toContain("no weather data (indoor?)");
+    expect(pkg.text).toContain("no weather record on this activity");
     expect(pkg.text).toContain("self-reported feel: not logged");
     expect(pkg.text).toContain("no splits recorded");
     expect(pkg.text).toContain("unplanned effort — no workout matched");

@@ -403,6 +403,45 @@ describe("COROS telemetry extras (probe-verified 2026-08-06)", () => {
     expect(t.windKph).toBe(1.8);
   });
 
+  it("keeps freezing weather: 0 °C and sub-zero readings are values, not absences", () => {
+    // The zero-gate defect (coach-input audit 2026-08-18): temperature ≤ 0
+    // dropped the ENTIRE weather block — humidity and wind vanished with it —
+    // and every Whistler winter run reached the coach as "no weather data
+    // (indoor?)". A record is real when any field is non-zero; within a real
+    // record 0 °C is a legal temperature.
+    const winter = normalizeCorosActivity(item, {
+      ...detail,
+      weather: { temperature: -82, bodyFeelTemp: -145, humidity: 710, windSpeed: 95 },
+    });
+    const wt = winter.telemetry!;
+    expect(wt.weatherTempC).toBe(-8.2);
+    expect(wt.weatherFeelsLikeC).toBe(-14.5);
+    expect(wt.humidityPercent).toBe(71);
+    expect(wt.windKph).toBe(9.5);
+
+    const freezing = normalizeCorosActivity(item, {
+      ...detail,
+      weather: { temperature: 0, bodyFeelTemp: -30, humidity: 800, windSpeed: 40 },
+    });
+    expect(freezing.telemetry!.weatherTempC).toBe(0);
+    expect(freezing.telemetry!.weatherFeelsLikeC).toBe(-3);
+
+    // …but an ALL-ZERO record is filler, not a reading, and the wrist
+    // thermometer keeps treating 0 as absent (a sensor at exactly 0.00 °C is
+    // less plausible than a zero sentinel).
+    const filler = normalizeCorosActivity(
+      { ...item, waterTemperature: 0 },
+      { ...detail, weather: { temperature: 0, bodyFeelTemp: 0, humidity: 0, windSpeed: 0 } },
+    );
+    expect(filler.telemetry?.weatherTempC).toBeUndefined();
+    expect(filler.telemetry?.humidityPercent).toBeUndefined();
+    expect(filler.telemetry?.deviceTempC).toBeUndefined();
+
+    // Sub-zero wrist thermometer still passes.
+    const coldWrist = normalizeCorosActivity({ ...item, waterTemperature: -350 }, detail);
+    expect(coldWrist.telemetry!.deviceTempC).toBe(-3.5);
+  });
+
   it("keeps the self-reported feel and derives pause stats from pauseList", () => {
     expect(t.feelRating).toBe(4);
     expect(t.pauseSeconds).toBe(136); // centiseconds → seconds

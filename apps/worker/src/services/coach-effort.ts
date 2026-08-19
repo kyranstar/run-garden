@@ -107,7 +107,8 @@ export async function buildEffortPackage(
     `stride ${t.avgStrideLengthCm ? `${t.avgStrideLengthCm}cm` : "unknown"}` +
       ` · elevation +${fmt(act.elevationGainMeters)}m · load ${fmt(act.trainingLoad)}`,
     `training effect: aerobic ${fmt(t.aerobicEffect, 1)} · anaerobic ${fmt(t.anaerobicEffect, 1)} (0–5)` +
-      ` · VO2max est ${fmt(t.vo2maxEstimate)}`,
+      ` · VO2max est ${fmt(t.vo2maxEstimate)}` +
+      `${t.staminaLevel7d != null ? ` · COROS stamina ${Math.round(t.staminaLevel7d)}/100 (7d running-fitness gauge)` : ""}`,
     `best km ${t.bestKmSecPerKm ? mmss(t.bestKmSecPerKm) : "unknown"}` +
       ` · pauses ${t.pauseCount != null ? `${t.pauseCount}× / ${hms(t.pauseSeconds ?? 0)} total / longest ${hms(t.longestPauseSeconds ?? 0)}` : t.pauseSeconds != null ? hms(t.pauseSeconds) : "none recorded"}`,
   ];
@@ -123,7 +124,9 @@ export async function buildEffortPackage(
         `${t.windKph != null ? ` · wind ${t.windKph.toFixed(0)}km/h` : ""}`,
     );
   } else {
-    condLines.push("no weather data (indoor?)");
+    condLines.push(
+      "no weather record on this activity (indoor, non-GPS, or COROS attached none — absence of a record, not evidence of conditions)",
+    );
   }
   if (t.deviceTempC != null)
     condLines.push(`watch thermometer ${t.deviceTempC.toFixed(0)}°C (wrist-warmed, reads high)`);
