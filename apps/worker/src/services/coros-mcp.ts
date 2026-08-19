@@ -734,7 +734,13 @@ export async function syncCorosMcpSleep(
         // Store the payload's SKELETON (keys/types only, values redacted) so
         // the real wire shape is diagnosable from the account itself — the
         // schema was never published, and a name alone diagnoses nothing.
-        const skeleton = JSON.stringify(shapeSkeleton(result)).slice(0, 2000);
+        // When the payload is a text block that would not JSON.parse, the
+        // skeleton says only "text: string" — so include a digit-masked
+        // preview of the text itself (every 0-9 becomes #): field names and
+        // syntax survive for diagnosis, readings do not.
+        const firstText = (asError.content ?? []).find((i) => i.type === "text")?.text;
+        const preview = firstText ? ` textPreview: ${firstText.slice(0, 600).replace(/[0-9]/g, "#")}` : "";
+        const skeleton = JSON.stringify(shapeSkeleton(result)).slice(0, 1200) + preview;
         await db
           .update(providerConnections)
           .set({
