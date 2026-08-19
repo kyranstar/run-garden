@@ -704,6 +704,27 @@ export async function syncCorosMcpSleep(
     if (!tool) return { status: "tool_missing" };
     const args = buildDateArgs(tool, startDate, today);
     const result = await mcpRequest(token, "tools/call", { name: tool.name, arguments: args }, fetchImpl);
+    const asError = result as { isError?: boolean; content?: Array<{ type?: string; text?: string }> };
+    if (asError.isError) {
+      // The TOOL rejected the call — its message is diagnosis, not data.
+      // Store it with the schema it advertised and the args we derived, so
+      // one debug read shows the whole disagreement.
+      const errText = (asError.content ?? []).map((i) => i.text ?? "").join(" ").slice(0, 500);
+      const detail = JSON.stringify({
+        error: errText,
+        schema: tool.inputSchema ?? null,
+        argsSent: args,
+      }).slice(0, 2000);
+      await db
+        .update(providerConnections)
+        .set({
+          meta: { ...(row.meta as McpMeta | null), lastToolError: `querySleepData rejected the call: ${detail}` },
+          lastErrorCategory: "shape_error",
+          updatedAt: nowInstant(),
+        })
+        .where(eq(providerConnections.id, row.id));
+      return { status: "shape_error" };
+    }
     const nights = extractNights(result);
     if (nights.length === 0) {
       // Not necessarily wrong (a brand-new watch), but when the payload had
