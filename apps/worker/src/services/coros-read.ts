@@ -7,7 +7,7 @@ import { fixtureModeEnabled, type Env } from "../env.js";
 import { chunkIds, type Db } from "./db.js";
 import { corosClient, touchCorosSync } from "./coros-connection.js";
 import { ingestActivities } from "./completion.js";
-import { ingestDailyHealth } from "./health-ingest.js";
+import { ingestDailyHealth, upsertAthleteZones } from "./health-ingest.js";
 import { importPlanSnapshot } from "./import-plan.js";
 import { isRuntimeLimit } from "./runtime-limit.js";
 import { loadPreferences } from "./calendar-sync.js";
@@ -188,6 +188,11 @@ export async function corosReadNow(
     }
 
     await ingestDailyHealth(db, userId, snapshot.health as unknown as Array<Record<string, unknown>>);
+    // Zone definitions ride every pull and replace whole (0018) — cheap, and
+    // a changed threshold should land the same hour the watch learns it.
+    if (snapshot.zones) {
+      await upsertAthleteZones(db, userId, snapshot.zones).catch(() => undefined);
+    }
 
     if (fullScheduleDue) {
       await db

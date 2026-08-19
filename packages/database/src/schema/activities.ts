@@ -120,16 +120,41 @@ export const dailyHealth = sqliteTable(
     recoveryScore: real("recovery_score"),
     fatigueScore: real("fatigue_score"),
     trainingLoad7d: real("training_load_7d"),
-    // COROS "now" physiology, stamped daily (race hub 2026-08-14).
+    // COROS per-day physiology. stamina/thresholds were once "now" values
+    // stamped onto the current day only; the dayDetail wire carries them (and
+    // the rest) per day, so they are history now (coach-input audit 0018).
     staminaLevel: real("stamina_level"),
     thresholdPaceSecPerKm: real("threshold_pace_sec_per_km"),
     thresholdHr: real("threshold_hr"),
+    /** COROS's own sleep-HRV baseline for the day, ms. */
+    sleepHrvBase: real("sleep_hrv_base"),
+    /** COROS's own acute:chronic workload ratio (ACWR). */
+    loadRatio: real("load_ratio"),
+    acuteTi: real("acute_ti"),
+    chronicTi: real("chronic_ti"),
+    /** The single day's training load (t7d is the 7-day sum). */
+    dayLoad: real("day_load"),
+    vo2max: real("vo2max"),
     provider: text("provider").notNull().default("coros"),
     contentFingerprint: text("content_fingerprint").notNull(),
     updatedAt: text("updated_at").notNull(),
   },
   (t) => [uniqueIndex("daily_health_unique").on(t.userId, t.date)],
 );
+
+/** The athlete's own COROS zone definitions (coach-input audit 0018) —
+ * boundaries, not time-in-zone; one row per user, replaced on each pull. */
+export const athleteZones = sqliteTable("athlete_zones", {
+  userId: text("user_id").primaryKey(),
+  maxHr: real("max_hr"),
+  lthr: real("lthr"),
+  ltsp: real("ltsp"),
+  /** JSON: Array<{index, hr, ratioPct}> */
+  lthrZones: text("lthr_zones", { mode: "json" }).$type<Array<{ index: number; hr: number; ratioPct: number }> | null>(),
+  /** JSON: Array<{index, paceSecPerKm, ratioPct}> */
+  ltspZones: text("ltsp_zones", { mode: "json" }).$type<Array<{ index: number; paceSecPerKm: number; ratioPct: number }> | null>(),
+  updatedAt: text("updated_at").notNull(),
+});
 
 export const sleepRecords = sqliteTable(
   "sleep_records",

@@ -17,7 +17,15 @@ import {
   type ActivityTelemetry,
 } from "@rg/domain";
 import { COROS_EXERCISE_NAMES } from "@rg/providers";
+import { loadPreferences } from "./calendar-sync.js";
 import type { Db } from "./db.js";
+
+/** Storage is °C; the athlete reads their own unit (prefs.temperatureUnit,
+ * default °F) and the model must never convert — a converted number is an
+ * invented one (the weekly-review rule). */
+function tempStr(c: number, unit: "F" | "C", digits = 0): string {
+  return unit === "F" ? `${((c * 9) / 5 + 32).toFixed(digits)}°F` : `${c.toFixed(digits)}°C`;
+}
 
 /**
  * The effort package (effort-analysis spec §3): everything the coach reads to
@@ -87,6 +95,8 @@ export async function buildEffortPackage(
   if (!act) return null;
 
   const t: ActivityTelemetry = act.telemetry ?? {};
+  const prefs = await loadPreferences(db, userId);
+  const tu = prefs.temperatureUnit;
   const date = localDateOf(act);
   const out: string[] = [];
   const sections: string[] = [];
@@ -118,8 +128,8 @@ export async function buildEffortPackage(
   const condLines: string[] = [];
   if (t.weatherTempC != null) {
     condLines.push(
-      `weather ${t.weatherTempC.toFixed(1)}°C` +
-        `${t.weatherFeelsLikeC != null ? ` (feels ${t.weatherFeelsLikeC.toFixed(1)}°C)` : ""}` +
+      `weather ${tempStr(t.weatherTempC, tu, 1)}` +
+        `${t.weatherFeelsLikeC != null ? ` (feels ${tempStr(t.weatherFeelsLikeC, tu, 1)})` : ""}` +
         `${t.humidityPercent != null ? ` · humidity ${Math.round(t.humidityPercent)}%` : ""}` +
         `${t.windKph != null ? ` · wind ${t.windKph.toFixed(0)}km/h` : ""}`,
     );
@@ -129,19 +139,24 @@ export async function buildEffortPackage(
     );
   }
   if (t.deviceTempC != null)
-    condLines.push(`watch thermometer ${t.deviceTempC.toFixed(0)}°C (wrist-warmed, reads high)`);
+    condLines.push(`watch thermometer ${tempStr(t.deviceTempC, tu)} (wrist-warmed, reads high)`);
   condLines.push(
     `self-reported feel: ${t.feelRating != null ? `${t.feelRating}/5 (5 = strongest)` : "not logged"}`,
   );
   if (t.sportNote) condLines.push(`athlete note: "${t.sportNote}"`);
   push("CONDITIONS", condLines);
 
-  // 3 · SPLITS
-  const laps = await db
+  // 3 · SPLITS — the workout view leads (it carries the session's shape and
+  // exercise keys); when per-km auto-laps ALSO exist (0018 stores both) they
+  // ride as one condensed line instead of interleaving two views.
+  const allLaps = await db
     .select()
     .from(activityLaps)
     .where(eq(activityLaps.activityId, act.id))
     .orderBy(activityLaps.lapIndex);
+  const workoutLaps = allLaps.filter((l) => l.splitType === "workout");
+  const laps = workoutLaps.length > 0 ? workoutLaps : allLaps.filter((l) => l.splitType !== "workout");
+  const autoKmLaps = workoutLaps.length > 0 ? allLaps.filter((l) => l.splitType === "auto_km") : [];
   const splitLines = laps.slice(0, MAX_SPLITS).map((l, i) => {
     const label =
       l.splitType === "auto_km"
@@ -158,6 +173,14 @@ export async function buildEffortPackage(
     );
   });
   if (laps.length > MAX_SPLITS) splitLines.push(`…and ${laps.length - MAX_SPLITS} more laps`);
+  if (autoKmLaps.length > 0) {
+    splitLines.push(
+      `per-km paces: ${autoKmLaps
+        .slice(0, MAX_SPLITS)
+        .map((l) => (l.avgPaceSecPerKm ? mmss(l.avgPaceSecPerKm).replace("/km", "") : "—"))
+        .join(", ")} (auto 1km splits of the same effort)`,
+    );
+  }
   push("SPLITS", splitLines.length ? splitLines : ["no splits recorded"]);
 
   // 4 · PLAN CONTEXT — the matched planned workout with its stage targets, so
@@ -236,7 +259,7 @@ export async function buildEffortPackage(
       `${p.distanceMeters ? ` · ${(p.distanceMeters / 1000).toFixed(1)}km · ${mmss(p.avgPaceSecPerKm)}` : ""}` +
       `${p.avgHeartRate ? ` · HR ${Math.round(p.avgHeartRate)}` : ""}` +
       `${p.trainingLoad ? ` · load ${Math.round(p.trainingLoad)}` : ""}` +
-      `${pt.weatherTempC != null ? ` · ${pt.weatherTempC.toFixed(0)}°C` : ""}`
+      `${pt.weatherTempC != null ? ` · ${tempStr(pt.weatherTempC, tu)}` : ""}`
     );
   });
   if (act.sport === "run") {
@@ -300,12 +323,35 @@ export async function buildEffortPackage(
       .reduce((sum, r) => sum + (r.trainingLoad ?? 0), 0);
   const load7 = inWindow(7);
   const load28 = inWindow(28);
+  const [effortDayHealth] = await db
+    .select({ loadRatio: dailyHealth.loadRatio })
+    .from(dailyHealth)
+    .where(and(eq(dailyHealth.userId, userId), eq(dailyHealth.date, date)))
+    .limit(1);
   push("LOAD", [
     `trailing 7d load ${Math.round(load7)} · 28d ${Math.round(load28)}` +
-      ` · 7d/28d weekly ratio ${load28 > 0 ? ((load7 / (load28 / 4))).toFixed(2) : "unknown"}`,
+      ` · 7d/28d weekly ratio ${load28 > 0 ? ((load7 / (load28 / 4))).toFixed(2) : "unknown"}` +
+      `${effortDayHealth?.loadRatio != null ? ` · COROS's own acute:chronic ratio that day: ${effortDayHealth.loadRatio.toFixed(2)}` : ""}`,
   ]);
 
-  // 8 · MEMORY — the coach's standing knowledge, verbatim.
+  // 8 · READING THESE NUMBERS — one clause per datapoint, so no figure ever
+  // arrives without its meaning. Context, never rules: the athlete's own
+  // words and feel outrank any single number here.
+  push("READING THESE NUMBERS", [
+    "training load: COROS session strain — roughly, under 40 is gentle, 40–80 steady, above 80 strong for THIS athlete's history; compare against their own recent loads, not absolutes",
+    "7d/28d weekly ratio (and COROS's acute:chronic): ≈0.8–1.3 reads as steady training; well above is a sharp ramp worth naming, well below is a wind-down or detraining",
+    "training effect (0–5): COROS's estimate of how much the session moved aerobic vs anaerobic fitness — 2s maintain, 3s improve, 4+ is a hard stimulus",
+    "VO2max est and COROS stamina: watch estimates — directionally useful over weeks, noisy day to day; never diagnose from one reading",
+    "HRV/RHR vs baseline: lower HRV or higher RHR than baseline suggests incomplete recovery; a single odd morning is weather, not fate",
+    "feel (1–5, 5 = strongest): the athlete's own report — when it disagrees with the watch numbers, say so and weigh the athlete first",
+    "RealFeel: humidity/wind-adjusted temperature — pace drifts upward in heat; judge effort by HR, not pace, on hot or humid days",
+    "watch thermometer: wrist-warmed, reads a few degrees above the air — trust the weather line over it outdoors",
+    "zones: each line already carries its own bounds and time in band — 'zone' means those printed numbers, nothing generic",
+    "splits: workout laps are the session's structure; per-km paces (when listed) are the same effort re-cut by distance",
+    "these are context, not instructions — weigh them against the plan's intent and the athlete's own words",
+  ]);
+
+  // 9 · MEMORY — the coach's standing knowledge, verbatim.
   const memory = await db
     .select()
     .from(coachMemory)

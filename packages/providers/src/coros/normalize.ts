@@ -657,26 +657,31 @@ export function normalizeCorosLaps(detail: RawCorosActivityDetail): Array<{
   avgPowerWatts?: number;
   exerciseNameKey?: string;
 }> {
-  // Prefer the structured-workout lap view when present; else the 1 km auto-laps.
+  // BOTH lap views survive (coach-input audit 0018): the structured-workout
+  // laps AND the 1 km auto-laps ride the same response, and discarding one
+  // wholesale meant a structured workout lost its per-km splits forever (and
+  // vice versa). Readers pick a view by `splitType`; they must never mix the
+  // two, or every lap-by-lap sum counts the effort twice.
   const lists = detail.lapList ?? [];
-  const chosen =
-    lists.find((l) => (l.lapItemList?.length ?? 0) > 0 && l.lapDistance !== 100000) ??
-    lists.find((l) => (l.lapItemList?.length ?? 0) > 0);
-  if (!chosen?.lapItemList) return [];
-  return chosen.lapItemList.map((lap, i) => ({
-    lapIndex: lap.lapIndex ?? i,
-    durationSeconds: (lap.time ?? 0) / 100, // centiseconds
-    distanceMeters: lap.distance != null ? lap.distance / 100 : undefined,
-    avgHeartRate: lap.avgHr,
-    avgPaceSecPerKm: lap.avgPace,
-    splitType: chosen.lapDistance === 100000 ? "auto_km" : "workout",
-    avgCadenceSpm: positive(lap.avgCadence),
-    minHeartRate: positive(lap.minHr),
-    maxHeartRate: positive(lap.maxHr),
-    // 0 is legitimate for grade/elevation (flat lap) — keep as reported.
-    elevGainMeters: lap.elevGain,
-    avgGradePercent: lap.avgGrade,
-    avgPowerWatts: positive(lap.avgPower),
-    exerciseNameKey: lap.exerciseNameKey || undefined,
-  }));
+  const views = lists.filter((l) => (l.lapItemList?.length ?? 0) > 0);
+  const workout = views.find((l) => l.lapDistance !== 100000);
+  const autoKm = views.find((l) => l.lapDistance === 100000);
+  const mapView = (view: (typeof lists)[number] | undefined, splitType: "workout" | "auto_km") =>
+    (view?.lapItemList ?? []).map((lap, i) => ({
+      lapIndex: lap.lapIndex ?? i,
+      durationSeconds: (lap.time ?? 0) / 100, // centiseconds
+      distanceMeters: lap.distance != null ? lap.distance / 100 : undefined,
+      avgHeartRate: lap.avgHr,
+      avgPaceSecPerKm: lap.avgPace,
+      splitType,
+      avgCadenceSpm: positive(lap.avgCadence),
+      minHeartRate: positive(lap.minHr),
+      maxHeartRate: positive(lap.maxHr),
+      // 0 is legitimate for grade/elevation (flat lap) — keep as reported.
+      elevGainMeters: lap.elevGain,
+      avgGradePercent: lap.avgGrade,
+      avgPowerWatts: positive(lap.avgPower),
+      exerciseNameKey: lap.exerciseNameKey || undefined,
+    }));
+  return [...mapView(workout, "workout"), ...mapView(autoKm, "auto_km")];
 }

@@ -19,6 +19,8 @@ export interface ReadinessHealthRow {
   restingHeartRate: number | null;
   hrv: number | null;
   recoveryScore: number | null;
+  /** COROS's own sleep-HRV baseline, when the feed carries it (0018). */
+  sleepHrvBase?: number | null;
 }
 
 export interface ReadinessView<T> {
@@ -53,11 +55,17 @@ const MIN_BASELINE_DAYS = 7;
  */
 export function buildReadiness<T extends ReadinessHealthRow>(recent: T[]): ReadinessView<T> {
   const latest = recent[0] ?? null;
+  // The HRV baseline prefers COROS's OWN per-day baseline when the feed
+  // carries one (0018): it is the number the watch face compares against, so
+  // "usually N" here matches what the athlete already sees on their wrist.
+  // The 14-day median stays the fallback — and stays the only source for RHR,
+  // which COROS ships no baseline for.
+  const corosHrvBase = recent.find((h) => h.sleepHrvBase != null)?.sleepHrvBase ?? null;
   const baseline =
     recent.length >= MIN_BASELINE_DAYS
       ? {
           restingHeartRate: median(recent.map((h) => h.restingHeartRate).filter(nonNull)),
-          hrv: median(recent.map((h) => h.hrv).filter(nonNull)),
+          hrv: corosHrvBase ?? median(recent.map((h) => h.hrv).filter(nonNull)),
         }
       : null;
   // Days that measured something, not rows that exist — see ReadinessView.

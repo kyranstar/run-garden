@@ -19,6 +19,7 @@ const SECTIONS = [
   "HISTORY",
   "LOAD",
   "MEMORY",
+  "READING THESE NUMBERS",
 ];
 
 async function seedActivity(
@@ -51,6 +52,18 @@ async function seedActivity(
 }
 
 describe("buildEffortPackage", () => {
+  it("renders temperatures in the athlete's own unit — °C on request, never both", async () => {
+    const db = makeTestDb();
+    const user = await makeTestUser(db, { temperatureUnit: "C" });
+    const id = await seedActivity(db, user.userId, {
+      telemetry: { weatherTempC: 25.5, deviceTempC: 28 },
+    });
+    const pkg = (await buildEffortPackage(db, user.userId, id))!;
+    expect(pkg.text).toContain("weather 25.5°C");
+    expect(pkg.text).toContain("watch thermometer 28°C");
+    expect(pkg.text).not.toContain("°F");
+  });
+
   it("returns null for missing or foreign activities", async () => {
     const db = makeTestDb();
     const { userId } = await makeTestUser(db);
@@ -210,8 +223,8 @@ describe("buildEffortPackage", () => {
     expect(a.text).toContain("cadence 152spm (max 184)");
     expect(a.text).toContain("power 160W (max 383)");
     expect(a.text).toContain("aerobic 2.9 · anaerobic 3.0");
-    expect(a.text).toContain("weather 25.5°C (feels 31.4°C) · humidity 59% · wind 2km/h");
-    expect(a.text).toContain("watch thermometer 28°C");
+    expect(a.text).toContain("weather 77.9°F (feels 88.5°F) · humidity 59% · wind 2km/h");
+    expect(a.text).toContain("watch thermometer 82°F");
     expect(a.text).toContain("self-reported feel: 4/5");
     expect(a.text).toContain("pauses 4× / 2:16 total / longest 1:04");
     expect(a.text).toContain("lap 1: 5:00 · 0.53km · 9:26/km · HR 133 (112–148) · 143spm · grade 3.0% · +26m");

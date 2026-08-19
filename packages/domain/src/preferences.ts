@@ -55,6 +55,10 @@ export const userPreferencesSchema = schedulingPreferencesSchema.extend({
    * renders (2026-08-14). Stored values stay metric; conversion happens at
    * the display edge only. */
   units: z.enum(["km", "mi"]).default("km"),
+  /** Display unit for temperatures (weather, watch thermometer) — its own
+   * setting, not derived from `units`: metric-distance athletes who read °F
+   * exist and asked. Storage stays °C. */
+  temperatureUnit: z.enum(["F", "C"]).default("F"),
   /** Hand-ticked race-hub checklist items (coach items are derived from
    * data, never stored). Seeded with defaults on first read. */
   raceChecklist: z

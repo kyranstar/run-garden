@@ -1,6 +1,7 @@
 import { and, desc, eq, gte, inArray, isNull, lte, sql } from "drizzle-orm";
 import {
   activities,
+  athleteZones,
   coachMemory,
   coachMessages,
   coachPlans,
@@ -256,6 +257,11 @@ export async function buildDossier(
       .sort((a, b) => b.date.localeCompare(a.date))
       .slice(0, READINESS_WINDOW_DAYS),
   );
+  const [zoneRow] = await db
+    .select()
+    .from(athleteZones)
+    .where(eq(athleteZones.userId, userId))
+    .limit(1);
   push("ATHLETE", [
     // The unit contract, first line: every figure this dossier COMPUTES is
     // already in it, so the model quotes rather than converts (a converted
@@ -268,6 +274,22 @@ export async function buildDossier(
         ? `${readiness.verdict.level} — ${readiness.verdict.reasons.join(" · ")}`
         : "unknown — too little recent COROS wellness data to judge"
     }`,
+    ...(zoneRow
+      ? [
+          `COROS zones (the athlete's own definitions, from their watch): ` +
+            [
+              zoneRow.lthr != null ? `threshold HR ${Math.round(zoneRow.lthr)}bpm` : null,
+              zoneRow.ltsp != null ? `threshold pace ${Math.floor(zoneRow.ltsp / 60)}:${String(Math.round(zoneRow.ltsp % 60)).padStart(2, "0")}/km` : null,
+              zoneRow.maxHr != null ? `max HR ${Math.round(zoneRow.maxHr)}bpm` : null,
+              zoneRow.lthrZones && zoneRow.lthrZones.length > 0
+                ? `HR zones ${zoneRow.lthrZones.map((z) => `Z${z.index} ${Math.round(z.hr)}bpm`).join(" · ")}`
+                : null,
+            ]
+              .filter(Boolean)
+              .join(" · ") +
+            ` — name zones by THESE numbers when you talk about intensity, not by generic formulas`,
+        ]
+      : []),
     prefs.raceDate ? `race day (settings): ${prefs.raceDate}` : "race day (settings): none set",
     ...(raceHub && raceHub.daysToRace >= 0
       ? [
@@ -649,6 +671,20 @@ export async function buildDossier(
         (deltaPct <= -50
           ? " — this is a COLLAPSE in load, not a taper: the athlete is detrained right now"
           : ""),
+    );
+  }
+
+  // COROS's own acute:chronic workload ratio (0018) — their number, not our
+  // derived 7d/28d, and it comes with its own reading guide.
+  const acwrSeries = series((h) => h.loadRatio).filter((p) => p.value != null) as Array<{
+    date: LocalDate;
+    value: number;
+  }>;
+  if (acwrSeries.length > 0) {
+    const latestAcwr = acwrSeries[acwrSeries.length - 1]!;
+    wellnessLines.push(
+      `COROS load ratio (their acute:chronic workload ratio): ${latestAcwr.value.toFixed(2)} on ${latestAcwr.date}` +
+        ` — ≈0.8–1.3 reads as steady training; well above is a sharp ramp worth naming, well below is a wind-down or detraining. Context, not a rule.`,
     );
   }
 

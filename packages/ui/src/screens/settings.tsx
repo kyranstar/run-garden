@@ -243,6 +243,18 @@ export function SchedulingSection({ prefs }: { prefs: UserPreferences }) {
         </select>
         <span className="hint">Paces and distances everywhere follow this.</span>
       </div>
+      <div className="field">
+        <label htmlFor="s-temp">Temperature</label>
+        <select
+          id="s-temp"
+          value={draft.temperatureUnit}
+          onChange={(e) => set("temperatureUnit", e.target.value as "F" | "C")}
+        >
+          <option value="F">Fahrenheit</option>
+          <option value="C">Celsius</option>
+        </select>
+        <span className="hint">Weather on activities follows this.</span>
+      </div>
       <div className="row" style={{ gap: "var(--space-4)" }}>
         <button className="btn btn-primary" disabled={save.isPending} onClick={() => save.mutate()}>
           Save scheduling

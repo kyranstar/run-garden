@@ -21,7 +21,7 @@ import {
   type SourcePlannedWorkout,
   type TrainingPlanInfo,
 } from "@rg/providers";
-import type { CorosClient, CorosDashboardSubset } from "./client.js";
+import type { CorosAccountZones, CorosClient, CorosDashboardSubset } from "./client.js";
 
 export const COROS_LOCALE_URL =
   "https://static.coros.com/locale/coros-traininghub-v2/en-US.prod.js";
@@ -68,6 +68,8 @@ export interface BridgeSnapshot {
   skippedSportTypes?: Record<string, number>;
   /** COROS strength-exercise catalog (id/name pairs); see BuildSnapshotOptions. */
   exerciseCatalog?: Array<{ id: string; name: string }>;
+  /** The athlete's own zone definitions (coach-input audit 0018). */
+  zones?: CorosAccountZones;
 }
 
 export interface BuildSnapshotOptions {
@@ -167,6 +169,12 @@ export async function buildSnapshot(
   } catch {
     dashboard = undefined;
   }
+  let zones: CorosAccountZones | undefined;
+  try {
+    zones = await client.getAccountZones();
+  } catch {
+    zones = undefined;
+  }
 
   // Only stamp the dashboard's recoveryPct when Coros's latest daily-health
   // day is CURRENT — today or yesterday in the user's timezone (COROS health
@@ -192,10 +200,27 @@ export async function buildSnapshot(
         hrv: numberOrUndefined(d.avgSleepHrv),
         fatigueScore: numberOrUndefined(d.tiredRateNew),
         trainingLoad7d: numberOrUndefined(d.t7d),
+        // The dayDetail wire carries these per day (coach-input audit 0018) —
+        // they were dashboard-stamped "now" values before, which left history
+        // permanently blank. Dashboard stays the fallback on the stamp day
+        // for accounts whose dayDetail omits them.
+        staminaLevel:
+          numberOrUndefined(d.staminaLevel) ??
+          (stampDashboard ? numberOrUndefined(dashboard?.staminaLevel) : undefined),
+        thresholdPaceSecPerKm:
+          numberOrUndefined(d.ltsp) ??
+          (stampDashboard ? numberOrUndefined(dashboard?.ltsp) : undefined),
+        thresholdHr:
+          numberOrUndefined(d.lthr) ??
+          (stampDashboard ? numberOrUndefined(dashboard?.lthr) : undefined),
+        sleepHrvBase: numberOrUndefined(d.sleepHrvBase),
+        loadRatio: numberOrUndefined(d.trainingLoadRatio),
+        acuteTi: numberOrUndefined(d.ati),
+        chronicTi: numberOrUndefined(d.cti),
+        dayLoad: numberOrUndefined(d.trainingLoad),
+        vo2max: numberOrUndefined(d.vo2max),
+        // Recovery % still lives only on the dashboard.
         recoveryScore: stampDashboard ? numberOrUndefined(dashboard?.recoveryPct) : undefined,
-        staminaLevel: stampDashboard ? numberOrUndefined(dashboard?.staminaLevel) : undefined,
-        thresholdPaceSecPerKm: stampDashboard ? numberOrUndefined(dashboard?.ltsp) : undefined,
-        thresholdHr: stampDashboard ? numberOrUndefined(dashboard?.lthr) : undefined,
         provider: "coros" as const,
       };
       return { ...base, contentFingerprint: fingerprint(base) };
@@ -224,6 +249,7 @@ export async function buildSnapshot(
     health,
     ...(Object.keys(skipped).length > 0 ? { skippedSportTypes: skipped } : {}),
     ...(exerciseCatalog ? { exerciseCatalog } : {}),
+    ...(zones ? { zones } : {}),
   };
 }
 

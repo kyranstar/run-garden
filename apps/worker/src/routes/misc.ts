@@ -237,16 +237,24 @@ activityRoutes.get("/", async (c) => {
           lapIndex: activityLaps.lapIndex,
           durationSeconds: activityLaps.durationSeconds,
           avgPaceSecPerKm: activityLaps.avgPaceSecPerKm,
+          splitType: activityLaps.splitType,
         })
         .from(activityLaps)
         .where(inArray(activityLaps.activityId, ids)),
     ),
   );
   const lapsByActivity = new Map<string, Array<{ lapIndex: number; s: number; p: number | null }>>();
+  const byActivityRaw = new Map<string, Array<(typeof lapChunks)[number][number]>>();
   for (const l of lapChunks.flat()) {
-    const list = lapsByActivity.get(l.activityId) ?? [];
-    list.push({ lapIndex: l.lapIndex, s: l.durationSeconds, p: l.avgPaceSecPerKm });
-    lapsByActivity.set(l.activityId, list);
+    const list = byActivityRaw.get(l.activityId) ?? [];
+    list.push(l);
+    byActivityRaw.set(l.activityId, list);
+  }
+  for (const [activityId, rows] of byActivityRaw) {
+    lapsByActivity.set(
+      activityId,
+      preferLapView(rows).map((l) => ({ lapIndex: l.lapIndex, s: l.durationSeconds, p: l.avgPaceSecPerKm })),
+    );
   }
 
   return c.json({
@@ -362,6 +370,18 @@ const RECOVERY_STALE_DAYS = 2;
 const INTENSITY_HEADLINE_DAYS = 27;
 /** Usable max-HR readings needed in the 26-week window before the ceiling is quoted without a caveat. */
 const MIN_HRMAX_RUNS = 10;
+
+/**
+ * One lap VIEW per activity (0018): both the structured-workout laps and the
+ * per-km auto-laps are stored, and any reader that sums or iterates laps must
+ * pick one or count the effort twice. Workout laps win (they carry the
+ * session's shape and the exercise keys); auto-km is the fallback — which is
+ * also every pre-0018 row (splitType "auto_km" or null).
+ */
+export function preferLapView<T extends { splitType?: string | null }>(rows: T[]): T[] {
+  const workout = rows.filter((r) => r.splitType === "workout");
+  return workout.length > 0 ? workout : rows;
+}
 
 function rowToLap(row: typeof activityLaps.$inferSelect): ActivityLap {
   return {
@@ -574,7 +594,14 @@ insightRoutes.get("/", async (c) => {
     a.completionMatchId ? (categoryByMatchId.get(a.completionMatchId) ?? "unknown") : "unknown";
 
   const lapsByActivity = new Map<string, ActivityLap[]>();
+  // One view per activity (0018) — the metrics below sum lap seconds.
+  const lapRowsByActivity = new Map<string, typeof lapRows>();
   for (const row of lapRows) {
+    const list = lapRowsByActivity.get(row.activityId) ?? [];
+    list.push(row);
+    lapRowsByActivity.set(row.activityId, list);
+  }
+  for (const row of [...lapRowsByActivity.values()].flatMap((rows) => preferLapView(rows))) {
     const lap = rowToLap(row);
     const list = lapsByActivity.get(lap.activityId);
     if (list) list.push(lap);
@@ -1410,6 +1437,7 @@ export async function deleteAllUserData(db: Db, userId: string): Promise<void> {
     activityLaps,
     activitySourceLinks,
     activityStreamSummaries,
+    athleteZones,
     backfillState,
     calendarEventSuppressions,
     coachLocks,
@@ -1498,6 +1526,7 @@ export async function deleteAllUserData(db: Db, userId: string): Promise<void> {
   const userTables = [
     plannedWorkouts,
     activities,
+    athleteZones,
     dailyHealth,
     sleepRecords,
     gardenEvents,

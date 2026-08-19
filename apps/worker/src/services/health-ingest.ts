@@ -1,5 +1,5 @@
 import { inArray, sql } from "drizzle-orm";
-import { dailyHealth } from "@rg/database";
+import { athleteZones, dailyHealth } from "@rg/database";
 import { fingerprint, nowInstant } from "@rg/domain";
 import { chunkIds, type Db } from "./db.js";
 
@@ -50,6 +50,12 @@ export async function ingestDailyHealth(
         staminaLevel: (h.staminaLevel as number) ?? null,
         thresholdPaceSecPerKm: (h.thresholdPaceSecPerKm as number) ?? null,
         thresholdHr: (h.thresholdHr as number) ?? null,
+        sleepHrvBase: (h.sleepHrvBase as number) ?? null,
+        loadRatio: (h.loadRatio as number) ?? null,
+        acuteTi: (h.acuteTi as number) ?? null,
+        chronicTi: (h.chronicTi as number) ?? null,
+        dayLoad: (h.dayLoad as number) ?? null,
+        vo2max: (h.vo2max as number) ?? null,
         provider: "coros",
         contentFingerprint: fp,
         updatedAt: now,
@@ -65,6 +71,12 @@ export async function ingestDailyHealth(
           staminaLevel: sql`COALESCE(excluded.stamina_level, ${dailyHealth.staminaLevel})`,
           thresholdPaceSecPerKm: sql`COALESCE(excluded.threshold_pace_sec_per_km, ${dailyHealth.thresholdPaceSecPerKm})`,
           thresholdHr: sql`COALESCE(excluded.threshold_hr, ${dailyHealth.thresholdHr})`,
+          sleepHrvBase: sql`COALESCE(excluded.sleep_hrv_base, ${dailyHealth.sleepHrvBase})`,
+          loadRatio: sql`COALESCE(excluded.load_ratio, ${dailyHealth.loadRatio})`,
+          acuteTi: sql`COALESCE(excluded.acute_ti, ${dailyHealth.acuteTi})`,
+          chronicTi: sql`COALESCE(excluded.chronic_ti, ${dailyHealth.chronicTi})`,
+          dayLoad: sql`COALESCE(excluded.day_load, ${dailyHealth.dayLoad})`,
+          vo2max: sql`COALESCE(excluded.vo2max, ${dailyHealth.vo2max})`,
           contentFingerprint: fp,
           updatedAt: now,
         },
@@ -73,4 +85,42 @@ export async function ingestDailyHealth(
     storedFingerprints.set(id, fp);
   }
   return { received: incoming.length, written, skipped };
+}
+
+/** The athlete's own zone definitions — one row, replaced whole (0018). */
+export async function upsertAthleteZones(
+  db: Db,
+  userId: string,
+  zones: {
+    maxHr?: number;
+    lthr?: number;
+    ltsp?: number;
+    lthrZones?: Array<{ index: number; bound: number; ratioPct: number | undefined }>;
+    ltspZones?: Array<{ index: number; bound: number; ratioPct: number | undefined }>;
+  },
+): Promise<void> {
+  const mapHr = zones.lthrZones?.map((z) => ({ index: z.index, hr: z.bound, ratioPct: z.ratioPct ?? 0 })) ?? null;
+  const mapPace = zones.ltspZones?.map((z) => ({ index: z.index, paceSecPerKm: z.bound, ratioPct: z.ratioPct ?? 0 })) ?? null;
+  await db
+    .insert(athleteZones)
+    .values({
+      userId,
+      maxHr: zones.maxHr ?? null,
+      lthr: zones.lthr ?? null,
+      ltsp: zones.ltsp ?? null,
+      lthrZones: mapHr,
+      ltspZones: mapPace,
+      updatedAt: nowInstant(),
+    })
+    .onConflictDoUpdate({
+      target: athleteZones.userId,
+      set: {
+        maxHr: zones.maxHr ?? null,
+        lthr: zones.lthr ?? null,
+        ltsp: zones.ltsp ?? null,
+        lthrZones: mapHr,
+        ltspZones: mapPace,
+        updatedAt: nowInstant(),
+      },
+    });
 }

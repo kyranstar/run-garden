@@ -11,10 +11,18 @@ export interface DailyHealth {
   /** COROS running-fitness score 0-100 — a "now" value stamped onto the
    * current day only (race hub 2026-08-14). */
   staminaLevel?: number;
-  /** Lactate-threshold pace (sec/km) and HR — same current-day stamping. */
+  /** Lactate-threshold pace (sec/km) and HR. */
   thresholdPaceSecPerKm?: number;
   thresholdHr?: number;
-  steps?: number;
+  /** COROS's own sleep-HRV baseline for the day, ms. */
+  sleepHrvBase?: number;
+  /** COROS's own acute:chronic workload ratio. */
+  loadRatio?: number;
+  acuteTi?: number;
+  chronicTi?: number;
+  /** This single day's training load (trainingLoad7d is the 7-day sum). */
+  dayLoad?: number;
+  vo2max?: number;
   provider: "coros";
   contentFingerprint: string;
 }

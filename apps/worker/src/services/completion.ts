@@ -533,7 +533,9 @@ export async function ingestActivities(db: Db, input: IngestInput): Promise<Inge
     if (laps && laps.length > 0) {
       await db.delete(activityLaps).where(eq(activityLaps.activityId, activityId));
       const lapRows = laps.map((l) => ({
-        id: `${activityId}:${l.lapIndex}`,
+        // The view is part of the identity: workout laps and auto-km laps
+        // share lapIndex ranges (0018 — both views are stored now).
+        id: `${activityId}:${l.splitType ?? "lap"}:${l.lapIndex}`,
         activityId,
         lapIndex: l.lapIndex,
         durationSeconds: l.durationSeconds,

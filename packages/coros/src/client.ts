@@ -134,6 +134,15 @@ export interface CorosDashboardSubset {
   lthr?: number;
 }
 
+/** Zone boundaries from /account/query, wire ratios already ÷1000 to %. */
+export interface CorosAccountZones {
+  maxHr?: number;
+  lthr?: number;
+  ltsp?: number;
+  lthrZones?: Array<{ index: number; bound: number; ratioPct: number | undefined }>;
+  ltspZones?: Array<{ index: number; bound: number; ratioPct: number | undefined }>;
+}
+
 /** dayList[] item of GET /analyse/dayDetail/query. */
 export interface CorosDayDetail {
   happenDay: number | string;
@@ -499,6 +508,39 @@ export class CorosClient {
       staminaLevel: num(s.staminaLevel),
       ltsp: num(s.ltsp),
       lthr: num(s.lthr),
+    };
+  }
+
+  /** The athlete's own zone definitions + profile ceilings (coach-input
+   * audit 0018). `/account/query` is the cheapest authenticated call; zone
+   * `ratio` rides the wire in permille-of-percent (59000 = 59%). */
+  async getAccountZones(): Promise<CorosAccountZones> {
+    const data = await this.requireData<Record<string, unknown> | null>(
+      "account.query",
+      "GET",
+      "/account/query",
+    );
+    const num = (v: unknown) => (typeof v === "number" ? v : undefined);
+    const zoneData = (data?.zoneData ?? {}) as Record<string, unknown>;
+    const zones = (v: unknown, key: "hr" | "pace") =>
+      Array.isArray(v)
+        ? v
+            .map((z) => {
+              const r = z as Record<string, unknown>;
+              const bound = num(r[key]);
+              const index = num(r.index);
+              if (bound == null || index == null) return null;
+              const ratio = num(r.ratio);
+              return { index, bound, ratioPct: ratio != null ? ratio / 1000 : undefined };
+            })
+            .filter((z): z is { index: number; bound: number; ratioPct: number | undefined } => z != null)
+        : undefined;
+    return {
+      maxHr: num(data?.maxHr),
+      lthr: num(zoneData.lthr),
+      ltsp: num(zoneData.ltsp),
+      lthrZones: zones(zoneData.lthrZone, "hr"),
+      ltspZones: zones(zoneData.ltspZone, "pace"),
     };
   }
 
