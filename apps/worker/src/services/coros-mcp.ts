@@ -543,8 +543,82 @@ export function normalizeNight(raw: Record<string, unknown>): NormalizedNight | 
   };
 }
 
+/**
+ * The live server answers in PROSE, not JSON (observed 2026-08-19 on the
+ * athlete's own account via the masked debug preview):
+ *
+ *   Sleep Data
+ *   ========================
+ *   Note: each record below is dated by its wake-up day.
+ *
+ *   2026-08-19
+ *   Naps Total: 43 min
+ *   ...
+ *
+ * Records start at a bare ISO date line; fields are "Label: value" lines.
+ * Labels for main-sleep fields are matched by family (total/deep/REM/...)
+ * since only nap-bearing records have been observed so far; durations come
+ * as "7h 16min" or "43 min". A record with ONLY naps is not a night — real
+ * COROS accounts exist whose sleep list is naps all the way down, and that
+ * is an empty import, not an error.
+ */
+export function parseSleepText(text: string): { recognized: boolean; nights: NormalizedNight[] } {
+  if (!/each record below is dated|sleep data/i.test(text.slice(0, 200))) {
+    return { recognized: false, nights: [] };
+  }
+  const toSecs = (v: string): number | null => {
+    const hm = /(?:(\d+)\s*h)?\s*(?:(\d+)\s*min)?/.exec(v.trim());
+    if (!hm || (hm[1] === undefined && hm[2] === undefined)) return null;
+    return (Number(hm[1] ?? 0) * 3600 + Number(hm[2] ?? 0) * 60) || null;
+  };
+  const nights: NormalizedNight[] = [];
+  let current: { date: LocalDate; fields: Array<[string, string]> } | null = null;
+  const flush = () => {
+    if (!current) return;
+    const get = (re: RegExp) => current!.fields.find(([k]) => re.test(k))?.[1];
+    const napFree = current.fields.filter(([k]) => !/nap/i.test(k));
+    const durationStr = get(/^(total sleep|sleep time|total time|main sleep|duration|sleep duration)/i);
+    const duration = durationStr ? toSecs(durationStr) : null;
+    if (duration != null && duration >= 30 * 60 && duration <= 20 * 3600 && napFree.length > 0) {
+      const scoreStr = get(/score|quality|performance/i);
+      const score = scoreStr ? Number(/\d+/.exec(scoreStr)?.[0]) : NaN;
+      const stage = (re: RegExp) => {
+        const v = get(re);
+        return v ? toSecs(v) : null;
+      };
+      nights.push({
+        date: current.date,
+        durationSeconds: duration,
+        deepSeconds: stage(/deep/i),
+        remSeconds: stage(/rem|eye/i),
+        lightSeconds: stage(/light/i),
+        awakeSeconds: stage(/awake|wake(?!.*up)/i),
+        // The prose carries clock times without dates/zones — no instants.
+        startTime: null,
+        endTime: null,
+        qualityScore: Number.isFinite(score) && score >= 0 && score <= 100 ? score : null,
+      });
+    }
+    current = null;
+  };
+  for (const raw of text.split("\n")) {
+    const line = raw.trim();
+    const dateMatch = /^(\d{4}-\d{2}-\d{2})/.exec(line);
+    if (dateMatch && line.length <= 24) {
+      flush();
+      current = { date: dateMatch[1] as LocalDate, fields: [] };
+      continue;
+    }
+    const field = /^([^:]{2,40}):\s*(.+)$/.exec(line);
+    if (field && current) current.fields.push([field[1]!.trim(), field[2]!.trim()]);
+  }
+  flush();
+  return { recognized: true, nights: nights.sort((a, b) => (a.date < b.date ? -1 : 1)) };
+}
+
 /** Dig night objects out of the tool result: structuredContent when the
- * server sends it, else the first parseable JSON text block; then every
+ * server sends it, else the first parseable JSON text block (with the prose
+ * format above as the observed-in-the-wild fallback); then every
  * array of objects that normalizes. */
 export function extractNights(result: unknown): NormalizedNight[] {
   const root = (result ?? {}) as {
@@ -559,7 +633,8 @@ export function extractNights(result: unknown): NormalizedNight[] {
           data = JSON.parse(item.text);
           break;
         } catch {
-          /* not JSON — keep looking */
+          const prose = parseSleepText(item.text);
+          if (prose.recognized) return prose.nights;
         }
       }
     }
@@ -726,7 +801,13 @@ export async function syncCorosMcpSleep(
       return { status: "shape_error" };
     }
     const nights = extractNights(result);
-    if (nights.length === 0) {
+    // A recognized prose payload with zero main-sleep nights is a REAL
+    // answer (naps-only accounts exist — the athlete's own is one), never a
+    // shape error.
+    const proseRecognized = (asError.content ?? []).some(
+      (i) => i.type === "text" && i.text && parseSleepText(i.text).recognized,
+    );
+    if (nights.length === 0 && !proseRecognized) {
       // Not necessarily wrong (a brand-new watch), but when the payload had
       // content we couldn't read, record the shape for prod diagnosis.
       const hadContent = JSON.stringify(result ?? {}).length > 200;

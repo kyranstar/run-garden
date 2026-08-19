@@ -436,3 +436,84 @@ describe("shape helpers", () => {
     expect(row.qualityScore).toBe(80);
   });
 });
+
+describe("the prose wire format (observed live 2026-08-19)", () => {
+  const NAPS_ONLY = `Sleep Data
+========================
+Note: each record below is dated by its wake-up day.
+
+2026-08-19
+Naps Total: 43 min
+
+2026-08-18
+Naps Total: 12 min
+`;
+  const FULL = `Sleep Data
+========================
+Note: each record below is dated by its wake-up day.
+
+2026-08-19
+Sleep Score: 78
+Total Sleep: 7h 16min
+Deep: 1h 20min
+REM: 1h 16min
+Light: 4h 24min
+Awake: 16min
+Naps Total: 43 min
+
+2026-08-18
+Total Sleep: 6h 2min
+`;
+
+  it("naps-only records are a recognized, EMPTY import — never a shape error", async () => {
+    const { parseSleepText } = await import("../src/services/coros-mcp.js");
+    const parsed = parseSleepText(NAPS_ONLY);
+    expect(parsed.recognized).toBe(true);
+    expect(parsed.nights).toHaveLength(0);
+
+    const db = makeTestDb();
+    const { userId } = await makeTestUser(db);
+    const env = makeEnv();
+    const mock = mockMcp({ toolResult: { content: [{ type: "text", text: NAPS_ONLY }], isError: false } });
+    await connect(db, env, userId, mock);
+    const result = await syncCorosMcpSleep(db, env, userId, "America/New_York", mock.fetchImpl);
+    expect(result.status).toBe("ok");
+    expect(result.written).toBe(0);
+    const conn = (
+      await db.select().from(providerConnections).where(eq(providerConnections.userId, userId))
+    ).find((c) => c.provider === "coros_mcp")!;
+    expect(conn.lastErrorCategory).toBeNull();
+    expect(conn.lastSyncAt).not.toBeNull();
+  });
+
+  it("full records parse: h/min durations, stages, score; a stage-less night still counts", async () => {
+    const { parseSleepText } = await import("../src/services/coros-mcp.js");
+    const parsed = parseSleepText(FULL);
+    expect(parsed.recognized).toBe(true);
+    expect(parsed.nights).toHaveLength(2);
+    const n19 = parsed.nights.find((n) => n.date === "2026-08-19")!;
+    expect(n19.durationSeconds).toBe(7 * 3600 + 16 * 60);
+    expect(n19.deepSeconds).toBe(80 * 60);
+    expect(n19.remSeconds).toBe(76 * 60);
+    expect(n19.lightSeconds).toBe(4 * 3600 + 24 * 60);
+    expect(n19.awakeSeconds).toBe(16 * 60);
+    expect(n19.qualityScore).toBe(78);
+    const n18 = parsed.nights.find((n) => n.date === "2026-08-18")!;
+    expect(n18.durationSeconds).toBe(6 * 3600 + 2 * 60);
+    expect(n18.deepSeconds).toBeNull();
+
+    const db = makeTestDb();
+    const { userId } = await makeTestUser(db);
+    const env = makeEnv();
+    const mock = mockMcp({ toolResult: { content: [{ type: "text", text: FULL }], isError: false } });
+    await connect(db, env, userId, mock);
+    const result = await syncCorosMcpSleep(db, env, userId, "America/New_York", mock.fetchImpl);
+    expect(result.status).toBe("ok");
+    expect(result.written).toBe(2);
+  });
+
+  it("unrelated prose stays a shape error", async () => {
+    const { parseSleepText } = await import("../src/services/coros-mcp.js");
+    expect(parseSleepText("Weekly Report\n2026-08-19\nSteps: 9000").recognized).toBe(false);
+  });
+});
