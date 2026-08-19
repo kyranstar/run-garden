@@ -133,14 +133,17 @@ describe("describeOps — the live ski-prep proposal", () => {
     expect(strength.change).toBeNull();
   });
 
-  it("names what an eased session was, when the caller knows", () => {
+  it("names what an eased session was, when the caller knows — as a struck 'was', never an arrow", () => {
     const planned = new Map<string, PlannedRef>([
-      ["4d2708c7", { date: "2026-08-24", summary: "6×600m at 10K pace" }],
+      ["4d2708c7", { date: "2026-08-24", summary: "6×600m at 10K pace", durationMinutes: 45 }],
     ]);
     const lines = describeOps(liveOps, planned);
     const ease = lines.find((l) => l.kind === "ease")!;
     expect(ease.date).toBe("2026-08-24");
-    expect(ease.change).toBe("6×600m at 10K pace → Easy 35 — legs back under you");
+    // The old state is one clause (with its old length, since that changed
+    // too); the new state is the summary; nothing repeats.
+    expect(ease.was).toBe("6×600m at 10K pace · 45 min");
+    expect(ease.change).toBeNull();
     // …and with that date it takes its real place in the manifest.
     expect(lines.map((l) => l.date)).toEqual([
       "2026-08-17",
@@ -281,9 +284,10 @@ describe("describeOps — every op kind is described", () => {
 
     const planned = new Map<string, PlannedRef>([["w1", { date: "2026-08-18", summary: "Threshold 4×8" }]]);
     const move = describeOps([coachOpSchema.parse(SAMPLES.move)], planned);
-    expect(move.map((l) => [l.date, l.change])).toEqual([
-      ["2026-08-18", "moves to Thu 20 Aug"],
-      ["2026-08-20", "moves here from Tue 18 Aug"],
+    // ONE line, under the destination — the origin is the struck "was"; the
+    // destination is the day header's job (manifest dedup, 2026-08-19).
+    expect(move.map((l) => [l.date, l.summary, l.was])).toEqual([
+      ["2026-08-20", "Threshold 4×8", "Tue 18 Aug"],
     ]);
     // Without the lookup there is only the day it lands on — never invented.
     expect(describeOps([coachOpSchema.parse(SAMPLES.move)]).map((l) => l.date)).toEqual(["2026-08-20"]);

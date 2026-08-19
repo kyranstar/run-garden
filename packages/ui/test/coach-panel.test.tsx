@@ -138,7 +138,8 @@ describe("the proposal card renders the manifest, not one word", () => {
     );
     expect(lines).toHaveLength(1);
     expect(lines[0]!.date).toBe("2026-08-18");
-    expect(lines[0]!.change).toBe("6×600m at 10K pace → Easy 35");
+    expect(lines[0]!.was).toBe("6×600m at 10K pace");
+    expect(lines[0]!.change).toBeNull();
   });
 
   it("never throws on ops it cannot describe — the buttons still render", () => {

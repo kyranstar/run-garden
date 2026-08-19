@@ -707,7 +707,9 @@ h1,
 .today-tag,
 .today-eyebrow,
 .lately-eyebrow,
-.dash-eyebrow {
+.dash-eyebrow,
+.coach-op-verb,
+.coach-op-day-h {
   font-size: var(--text-2xs);
   font-weight: var(--weight-medium);
   letter-spacing: 0.06em;
@@ -5155,11 +5157,46 @@ a.note {
   flex-direction: column;
   gap: var(--space-2);
 }
+/* Manifest rows (redesign 2026-08-19): a verb chip names the kind, the
+   summary is the NEW state, the struck "was" is the old one — each fact once
+   (the day lives in the group header above the rows). */
 .coach-op {
   display: flex;
   gap: var(--space-4);
   align-items: baseline;
   font-size: var(--text-sm);
+  padding-left: var(--space-4);
+  border-left: 3px solid var(--op-hue, var(--border-strong));
+}
+.coach-op--eased { --op-hue: var(--warn); }
+.coach-op--moved { --op-hue: var(--hue-long); }
+.coach-op--added { --op-hue: var(--green); }
+.coach-op--quiet { --op-hue: var(--border-strong); }
+.coach-op-verb {
+  flex: none;
+  align-self: flex-start;
+  min-width: 4.6em;
+  text-align: center;
+  border-radius: var(--radius-pill);
+  padding: var(--space-1) var(--space-4);
+}
+.coach-op-verb--eased { background: var(--warn-soft); color: var(--warn); }
+.coach-op-verb--moved { background: var(--accent-soft); color: var(--accent); }
+.coach-op-verb--added { background: var(--green-soft); color: var(--green-ink); }
+.coach-op-verb--quiet { background: var(--bg-sunken); color: var(--ink-faint); }
+.coach-op-was {
+  font-size: var(--text-xs);
+  color: var(--ink-faint);
+  overflow-wrap: anywhere;
+}
+.coach-op-was s {
+  text-decoration-color: color-mix(in srgb, var(--ink-faint) 55%, transparent);
+}
+.coach-op-day-group {
+  margin-top: var(--space-4);
+}
+.coach-op-day-h {
+  margin-bottom: var(--space-3);
 }
 .coach-op-day {
   flex: none;

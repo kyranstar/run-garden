@@ -39,9 +39,14 @@ import { sessionWatchCoverage, type WatchCoverageView } from "./watch-coverage.j
 export interface OpLine {
   /** ISO date this line concerns, or null for plan-level ops. */
   date: string | null;
-  /** One-line human summary, e.g. "Ski legs — holds and eccentrics · 40 min" */
+  /** One-line human summary of the NEW state, e.g. "Easy 35 · 35 min". */
   summary: string;
-  /** What changes, e.g. "6×600m at 10K pace → Easy 35 — legs back under you". */
+  /** What this replaced — rendered struck-through after "was". Only ever a
+   * REAL difference: when before and after read the same, this is null
+   * rather than an X → X (the deployed defect this field replaced). */
+  was: string | null;
+  /** A sentence for what `was` can't say (a skip's reason, a plan-level
+   * consequence). Never a restatement of `summary` or `was`. */
   change: string | null;
   /** Session contents, already formatted, e.g. "Wall Sit 3×45s". Empty for non-session ops. */
   detail: string[];
@@ -85,6 +90,9 @@ export interface PlannedRef {
   date?: string;
   /** What it is today — its title, or the richer stageSummary. */
   summary?: string;
+  /** Its planned length — the fallback delta when the wording is identical
+   * (an ease that shortens a run without renaming it). */
+  durationMinutes?: number;
 }
 
 const WEEKDAYS = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
@@ -170,6 +178,7 @@ function shapeWeekLine(
   return {
     date: wk.weekStart,
     summary: `Week of ${dayLabel(wk.weekStart)} — ${wk.volumeTarget}`,
+    was: null,
     change: wk.keySessions.length > 0 ? `sketched: ${wk.keySessions.join(" · ")}` : null,
     detail: [],
     kind,
@@ -183,6 +192,7 @@ function datedSessionLines(
   return sessions.map((s) => ({
     date: s.date,
     summary: sessionSummary(s.session),
+    was: null,
     change: null,
     detail: sessionPrescription(s.session),
     watch: sessionWatchCoverage(s.session),
@@ -207,12 +217,22 @@ export function describeOps(ops: CoachOp[], planned?: ReadonlyMap<string, Planne
     switch (op.kind) {
       case "ease": {
         const was = planned?.get(op.workoutId);
+        // The "was" clause carries only a REAL difference: wording when it
+        // changed (with the old length when that changed too), the old
+        // length alone when only the length moved — and nothing at all when
+        // before and after read the same. Never an X → X.
+        const differsInWording = was?.summary != null && was.summary !== op.session.title;
+        const differsInLength =
+          was?.durationMinutes != null && was.durationMinutes !== op.session.durationMinutes;
         lines.push({
           date: was?.date ?? null,
           summary: sessionSummary(op.session),
-          change: was?.summary
-            ? `${was.summary} → ${op.session.title}`
-            : "rewrites the session already on this day",
+          was: differsInWording
+            ? `${was!.summary}${differsInLength ? ` · ${was!.durationMinutes} min` : ""}`
+            : differsInLength
+              ? `${was!.durationMinutes} min`
+              : null,
+          change: was ? null : "rewrites the session already on this day",
           detail: sessionPrescription(op.session),
           watch: sessionWatchCoverage(op.session),
           kind: op.kind,
@@ -222,21 +242,14 @@ export function describeOps(ops: CoachOp[], planned?: ReadonlyMap<string, Planne
       case "move": {
         const from = planned?.get(op.workoutId);
         const what = from?.summary ?? "The session planned for this day";
-        // Two days change, so two lines — the same shape the calendar's
-        // outgoing/incoming ghosts already use.
-        if (from?.date && from.date !== op.toDate) {
-          lines.push({
-            date: from.date,
-            summary: what,
-            change: `moves to ${dayLabel(op.toDate)}`,
-            detail: [],
-            kind: op.kind,
-          });
-        }
+        // ONE line, under the destination — the day it lands on is the day
+        // header's job, so the line says only where it came from (the old
+        // two-line form repeated the destination the header already named).
         lines.push({
           date: op.toDate,
           summary: what,
-          change: from?.date ? `moves here from ${dayLabel(from.date)}` : "moves here from its planned day",
+          was: from?.date && from.date !== op.toDate ? dayLabel(from.date) : null,
+          change: from?.date ? null : "moved from its planned day",
           detail: [],
           kind: op.kind,
         });
@@ -250,6 +263,7 @@ export function describeOps(ops: CoachOp[], planned?: ReadonlyMap<string, Planne
           lines.push({
             date: day,
             summary: `Swaps days with ${dayLabel(other)}`,
+          was: null,
             change: `this day's session and ${dayLabel(other)}'s trade places`,
             detail: [],
             kind: op.kind,
@@ -262,6 +276,7 @@ export function describeOps(ops: CoachOp[], planned?: ReadonlyMap<string, Planne
         lines.push({
           date: was?.date ?? null,
           summary: was?.summary ? `${was.summary} — skipped` : "A planned session is skipped",
+          was: null,
           // `reason` is optional (a skip with no stated reason is still a
           // skip), so the line must read as a sentence without one.
           change: op.reason ? `comes off the plan — ${op.reason}` : "comes off the plan",
@@ -277,6 +292,7 @@ export function describeOps(ops: CoachOp[], planned?: ReadonlyMap<string, Planne
           lines.push({
             date,
             summary: sessionSummary(op.session),
+          was: null,
             change: null,
             detail: sessionPrescription(op.session),
             watch: sessionWatchCoverage(op.session),
@@ -289,6 +305,7 @@ export function describeOps(ops: CoachOp[], planned?: ReadonlyMap<string, Planne
         lines.push({
           date: op.weekStart,
           summary: `Week of ${dayLabel(op.weekStart)} rewritten`,
+          was: null,
           change: "everything already planned that week comes off",
           detail: [],
           kind: op.kind,
@@ -300,6 +317,7 @@ export function describeOps(ops: CoachOp[], planned?: ReadonlyMap<string, Planne
         lines.push({
           date: op.weekStart,
           summary: `Week of ${dayLabel(op.weekStart)} — sketch becomes real sessions`,
+          was: null,
           change: null,
           detail: [],
           kind: op.kind,
@@ -316,6 +334,7 @@ export function describeOps(ops: CoachOp[], planned?: ReadonlyMap<string, Planne
         lines.push({
           date: first,
           summary: "Wind-down",
+          was: null,
           change: "what is still planned in these weeks comes off, replaced by the sessions below",
           detail: [],
           kind: op.kind,
@@ -327,6 +346,7 @@ export function describeOps(ops: CoachOp[], planned?: ReadonlyMap<string, Planne
         lines.push({
           date: op.startDate,
           summary: `New plan: ${op.name} · ${dayLabel(op.startDate)} to ${dayLabel(op.endDate)}`,
+          was: null,
           change: op.raceDate ? `race day ${dayLabel(op.raceDate)}` : null,
           detail: [],
           kind: op.kind,
@@ -339,6 +359,7 @@ export function describeOps(ops: CoachOp[], planned?: ReadonlyMap<string, Planne
         lines.push({
           date: null,
           summary: "Retires the coached plan",
+          was: null,
           change: "its remaining sessions come off the calendar",
           detail: [],
           kind: op.kind,
@@ -352,6 +373,7 @@ export function describeOps(ops: CoachOp[], planned?: ReadonlyMap<string, Planne
             op.keep === "settings"
               ? "Your race day stands"
               : "Your race day moves to the plan's race date",
+          was: null,
           change:
             op.keep === "settings"
               ? "the plan's race-labelled session becomes a hard session"

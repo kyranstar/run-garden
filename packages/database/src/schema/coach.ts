@@ -89,6 +89,13 @@ export const coachProposals = sqliteTable(
     expiresAt: text("expires_at").notNull(),
     resolvedAt: text("resolved_at"),
     supersededBy: text("superseded_by"),
+    /** workoutId → what the plan held when this applied (manifest 0019):
+     * settled cards read THIS, never the live plan, so "What it did" keeps
+     * its true before-state as the plan moves on. */
+    appliedRefs: text("applied_refs", { mode: "json" }).$type<Record<
+      string,
+      { date?: string; summary?: string; durationMinutes?: number }
+    > | null>(),
   },
   (t) => [index("coach_proposals_user_status_idx").on(t.userId, t.status)],
 );

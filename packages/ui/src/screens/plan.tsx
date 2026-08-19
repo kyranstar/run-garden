@@ -799,7 +799,16 @@ export function PlanScreen() {
   const plannedRefs = useMemo(
     () =>
       new Map(
-        (plan.data?.workouts ?? []).map((w) => [w.id, { date: w.effectiveDate, summary: w.title }]),
+        (plan.data?.workouts ?? []).map((w) => [
+          w.id,
+          {
+            date: w.effectiveDate,
+            summary: w.title,
+            ...(w.workoutSeconds != null
+              ? { durationMinutes: Math.round(w.workoutSeconds / 60) }
+              : {}),
+          },
+        ]),
       ),
     [plan.data?.workouts],
   );

@@ -17,6 +17,7 @@ import type {
 import { describeOps, type CoachOp, type OpLine, type PlannedRef } from "@rg/domain";
 import {
   countNoun,
+  formatDayLong,
   dayOfMonth,
   revealInView,
   Sheet,
@@ -191,6 +192,46 @@ export function opDayLabel(iso: string): string {
  * day, so the index is part of it. */
 const lineKey = (l: OpLine, i: number) => `${l.kind}-${l.date ?? "plan"}-${i}`;
 
+/** The verb chip per op kind — colour-coded with EXISTING semantic classes,
+ * so the manifest introduces no new colour vocabulary. */
+export const OP_VERB: Record<OpLine["kind"], { word: string; tone: "eased" | "moved" | "added" | "quiet" }> = {
+  ease: { word: "Eased", tone: "eased" },
+  move: { word: "Moved", tone: "moved" },
+  swap: { word: "Swapped", tone: "moved" },
+  skip: { word: "Skipped", tone: "quiet" },
+  add: { word: "Added", tone: "added" },
+  reshapeWeek: { word: "Rewrote", tone: "eased" },
+  firmUp: { word: "Firmed", tone: "added" },
+  extendPlan: { word: "Extended", tone: "added" },
+  windDown: { word: "Wound down", tone: "eased" },
+  createPlan: { word: "Planned", tone: "added" },
+  retirePlan: { word: "Retired", tone: "quiet" },
+  resolveRaceConflict: { word: "Resolved", tone: "quiet" },
+};
+
+/** "eased 2 · moved 1 · added 1" — the collapsed link's summary of a settled
+ * manifest, counted from the lines themselves. */
+export function verbCounts(lines: OpLine[]): string {
+  const counts = new Map<string, number>();
+  for (const l of lines) {
+    const word = OP_VERB[l.kind]?.word.toLowerCase() ?? l.kind;
+    counts.set(word, (counts.get(word) ?? 0) + 1);
+  }
+  return [...counts.entries()].map(([w, n]) => `${w} ${n}`).join(" · ");
+}
+
+/** Lines grouped by day, chronological, plan-level last — the day is said
+ * once, as a header, and never again inside a row. */
+export function groupLinesByDay(lines: OpLine[]): Array<{ date: string | null; lines: OpLine[] }> {
+  const out: Array<{ date: string | null; lines: OpLine[] }> = [];
+  for (const l of lines) {
+    const last = out[out.length - 1];
+    if (last && last.date === l.date) last.lines.push(l);
+    else out.push({ date: l.date, lines: [l] });
+  }
+  return out;
+}
+
 /** The lines a proposal's ops come to. `planned` (workoutId → what the plan
  * holds today) is what lets an `ease` say "6×600m at 10K pace → Easy 35" on
  * the right day instead of an undated rewrite — the panel already builds that
@@ -207,22 +248,59 @@ export function proposalLines(
   }
 }
 
-function OpRow({ line }: { line: OpLine }) {
+function OpRow({ line, full = false }: { line: OpLine; full?: boolean }) {
+  const verb = OP_VERB[line.kind] ?? { word: line.kind, tone: "quiet" as const };
   return (
-    <li className="coach-op">
-      {/* An undated line is a plan-level op (retire a plan, resolve the race
-          date) — it gets no day cell rather than a fabricated one. */}
-      {line.date ? <span className="coach-op-day">{opDayLabel(line.date)}</span> : null}
+    <li className={`coach-op coach-op--${verb.tone}`}>
+      <span className={`coach-op-verb coach-op-verb--${verb.tone}`}>{verb.word}</span>
       <span className="coach-op-what">
         <span className="coach-op-summary">{line.summary}</span>
+        {/* The old state, struck — only ever a real difference (never X → X;
+            describeOps guarantees it). */}
+        {line.was ? (
+          <span className="coach-op-was">
+            was <s>{line.was}</s>
+          </span>
+        ) : null}
         {line.change ? <span className="coach-op-change">{line.change}</span> : null}
-        {/* One clause, on the line it belongs to. The glance is three lines
-            in a message bubble, so the full sentence lives in the Sheet. */}
-        {watchCoverageShort(line.watch) ? (
+        {full && line.detail.length > 0 ? (
+          <ul className="coach-op-detail muted">
+            {/* Index, not the string: a session can legitimately repeat a
+                line ("400 m interval" twice), and a duplicate React key
+                silently drops one of them from the very list whose whole
+                job is to be complete. */}
+            {line.detail.map((d, di) => (
+              <li key={`${di}-${d}`}>{d}</li>
+            ))}
+          </ul>
+        ) : null}
+        {full ? (
+          <WatchCoverageNote view={line.watch} />
+        ) : watchCoverageShort(line.watch) ? (
           <span className="coach-op-watch">{watchCoverageShort(line.watch)}</span>
         ) : null}
       </span>
     </li>
+  );
+}
+
+/** Day-grouped rows: the day said once as a header, `limit` rows in total
+ * (the glance caps; the sheet renders every line with its detail). */
+function GroupedOps({ lines, limit = Infinity, full = false }: { lines: OpLine[]; limit?: number; full?: boolean }) {
+  const shown = Number.isFinite(limit) ? lines.slice(0, limit) : lines;
+  return (
+    <>
+      {groupLinesByDay(shown).map((g, gi) => (
+        <div key={`${g.date ?? "plan"}-${gi}`} className="coach-op-day-group">
+          <div className="coach-op-day-h">{g.date ? opDayLabel(g.date) : "Plan"}</div>
+          <ul className="coach-ops">
+            {g.lines.map((l, i) => (
+              <OpRow key={lineKey(l, i)} line={l} full={full} />
+            ))}
+          </ul>
+        </div>
+      ))}
+    </>
   );
 }
 
@@ -287,16 +365,11 @@ function OpenManifest({ label, onClick }: { label: string; onClick: () => void }
  */
 function ProposalGlance({ lines, onOpenAll }: { lines: OpLine[]; onOpenAll: () => void }) {
   if (lines.length === 0) return null;
-  const shown = lines.slice(0, GLANCE_LINES);
-  const hidden = lines.length - shown.length;
+  const hidden = Math.max(0, lines.length - GLANCE_LINES);
   const hasDetail = lines.some((l) => l.detail.length > 0);
   return (
     <>
-      <ul className="coach-ops">
-        {shown.map((l, i) => (
-          <OpRow key={lineKey(l, i)} line={l} />
-        ))}
-      </ul>
+      <GroupedOps lines={lines} limit={GLANCE_LINES} />
       {/* Below the lines and above the control that opens the rest: the
           athlete reads down to the buttons, and this is the last thing that
           should reach them before "Make it so". It is a whole-proposal fact,
@@ -318,44 +391,22 @@ export function ProposalDetailSheet({
   lines,
   open,
   onClose,
+  lede,
 }: {
   title: string;
   lines: OpLine[];
   open: boolean;
   onClose: () => void;
+  /** Overrides the pending-tense lede — a settled sheet must not promise
+   * "nothing is applied until you say so" under a "Made it so" pill. */
+  lede?: string;
 }) {
   return (
     <Sheet open={open} onClose={onClose} title={title}>
       <p className="faint coach-ops-full-lede">
-        {countNoun(lines.length, "change")}, in full — nothing is applied until you say so.
+        {lede ?? `${countNoun(lines.length, "change")}, in full — nothing is applied until you say so.`}
       </p>
-      <ol className="coach-ops-full">
-        {lines.map((l, i) => (
-          <li key={lineKey(l, i)}>
-            <p className="coach-ops-full-head">
-              {l.date ? <span className="coach-op-day">{opDayLabel(l.date)}</span> : null}
-              <span className="coach-op-summary">{l.summary}</span>
-            </p>
-            {l.change ? <p className="coach-op-change">{l.change}</p> : null}
-            {l.detail.length > 0 ? (
-              <ul className="coach-op-detail muted">
-                {/* Index, not the string: a session can legitimately repeat a
-                    line ("400 m interval" twice), and a duplicate React key
-                    silently drops one of them from the very list whose whole
-                    job is to be complete. */}
-                {l.detail.map((d, di) => (
-                  <li key={`${di}-${d}`}>{d}</li>
-                ))}
-              </ul>
-            ) : null}
-            {/* The full reason, per session, in the one place with room for
-                it. Same words the session sheet will use after approval, from
-                the same function — so nothing the athlete agreed to changes
-                its story once it is on the calendar. */}
-            <WatchCoverageNote view={l.watch} />
-          </li>
-        ))}
-      </ol>
+      <GroupedOps lines={lines} full />
     </Sheet>
   );
 }
@@ -510,7 +561,14 @@ export function SettledProposalCard({
   /** The receipt's own id — the only stable handle a settled card has. */
   domId: string;
 }) {
-  const manifest = useManifest(proposal, planned);
+  // The snapshot taken when it APPLIED (manifest 0019) outranks the live
+  // plan: recomputing "before" from the post-apply plan is how every applied
+  // ease came to render X → X.
+  const appliedMap = useMemo(
+    () => (proposal?.appliedRefs ? new Map(Object.entries(proposal.appliedRefs)) : undefined),
+    [proposal?.appliedRefs],
+  );
+  const manifest = useManifest(proposal, appliedMap ?? planned);
   // One settled look whichever way it went — the outcome shows through the
   // pill, so the card carries no per-status modifier for nothing to style.
   return (
@@ -528,7 +586,11 @@ export function SettledProposalCard({
       {mark.reason ? <p className="coach-prop-evidence faint">{mark.reason}</p> : null}
       {manifest.lines.length > 0 ? (
         <OpenManifest
-          label={mark.status === "approved" ? "What it did" : "What it would have done"}
+          label={
+            mark.status === "approved"
+              ? `What it did — ${verbCounts(manifest.lines)}`
+              : "What it would have done"
+          }
           onClick={manifest.onOpen}
         />
       ) : null}
@@ -538,6 +600,11 @@ export function SettledProposalCard({
           lines={manifest.lines}
           open
           onClose={manifest.onClose}
+          lede={
+            mark.status === "approved"
+              ? `applied ${proposal?.resolvedAt ? formatDayLong(proposal.resolvedAt.slice(0, 10)) : "earlier"}`
+              : "was never applied"
+          }
         />
       ) : null}
     </div>

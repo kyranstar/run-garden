@@ -3,6 +3,7 @@ import {
   calendarEventSuppressions,
   coachPlanWeeks,
   coachPlans,
+  coachProposals,
   corosWriteJobs,
   dailyHealth,
   plannedWorkoutStages,
@@ -13,6 +14,7 @@ import {
   addOpDates,
   sessionSummaryLine,
   newId,
+  humanizeWorkoutTitle,
   nowInstant,
   paceBandFor,
   sessionExercises,
@@ -988,6 +990,50 @@ export async function applyOps(
     .limit(1);
   const thresholdPaceSecPerKm = thresholdRow?.v ?? undefined;
   const out: ApplyResult = { created: [], updated: [], archived: [], missed: [] };
+
+  // ── Before-state snapshot (manifest 0019) ────────────────────────────
+  // "What it did" must keep its true befores after the plan moves on: the
+  // settled card used to recompute them from the post-apply plan, which
+  // rendered every applied ease as X → X. Captured BEFORE any op touches a
+  // row, written to the proposal so history can never drift again.
+  const touchedIds = [
+    ...new Set(
+      ops.flatMap((o) =>
+        o.kind === "ease" || o.kind === "move" || o.kind === "skip" ? [o.workoutId] : [],
+      ),
+    ),
+  ];
+  if (touchedIds.length > 0) {
+    const beforeRows: (typeof plannedWorkouts.$inferSelect)[] = [];
+    for (const ids of chunkIds(touchedIds)) {
+      beforeRows.push(
+        ...(await db
+          .select()
+          .from(plannedWorkouts)
+          .where(and(eq(plannedWorkouts.userId, userId), inArray(plannedWorkouts.id, ids)))),
+      );
+    }
+    const appliedRefs = Object.fromEntries(
+      beforeRows.map((w) => [
+        w.id,
+        {
+          date: w.effectiveDate,
+          summary: humanizeWorkoutTitle(w.title, w.category, w.qualitySubtype),
+          ...(w.sourceEstimatedDurationSeconds != null || w.fallbackEstimatedDurationSeconds != null
+            ? {
+                durationMinutes: Math.round(
+                  (w.sourceEstimatedDurationSeconds ?? w.fallbackEstimatedDurationSeconds!) / 60,
+                ),
+              }
+            : {}),
+        },
+      ]),
+    );
+    await db
+      .update(coachProposals)
+      .set({ appliedRefs })
+      .where(and(eq(coachProposals.id, proposalId), eq(coachProposals.userId, userId)));
+  }
   /** Every day this apply put a session on, changed the length of, or moved one
    * to. Handed to `separateDayCollisions` at the end so the athlete never
    * approves a proposal that books two appointments at the same hour. */

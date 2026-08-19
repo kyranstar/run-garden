@@ -351,6 +351,10 @@ export interface CoachProposalDto {
   status: "pending" | "approved" | "declined" | "superseded" | "expired" | "rejected";
   createdAt: string;
   expiresAt: string;
+  resolvedAt?: string | null;
+  /** workoutId → the plan's state when this APPLIED (manifest 0019) —
+   * settled cards read this, never the live plan. */
+  appliedRefs?: Record<string, { date?: string; summary?: string; durationMinutes?: number }> | null;
 }
 
 export interface CoachQuestionDto {
