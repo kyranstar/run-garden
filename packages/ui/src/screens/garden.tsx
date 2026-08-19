@@ -1176,6 +1176,9 @@ export function GardenScreen() {
   // time (rarest first). The renderer lets a user selection win, so the
   // one-filtered-plant budget holds either way.
   const [highlightPlantId, setHighlightPlantId] = useState<string | null>(null);
+  // A deliberate tap on the ceremony's "taken root" line outranks the
+  // arrival glow schedule — once the athlete points, the tour stops.
+  const manualGlowRef = useRef(false);
 
   // The desktop stage is sized against the space it actually has, not the
   // window — one banner above it used to push the whole bottom HUD row off
@@ -1336,9 +1339,11 @@ export function GardenScreen() {
       .slice(0, 3)
       .map((pl) => pl.id);
     if (ranked.length === 0) return;
+    manualGlowRef.current = false;
     let i = 0;
     let timer = 0;
     const step = () => {
+      if (manualGlowRef.current) return;
       if (i >= ranked.length) {
         setHighlightPlantId(null);
         return;
@@ -2025,6 +2030,15 @@ export function GardenScreen() {
         snapshot={snapshot}
         onSeePlant={seePlantFromCeremony}
         onDismiss={dismissCeremony}
+        onHighlight={(plantId) => {
+          manualGlowRef.current = true;
+          setHighlightPlantId(plantId);
+          // Below lg the ceremony sits under the hero — bring the plant's
+          // scene back on screen so the glow is actually visible.
+          document
+            .querySelector(".stage-hero")
+            ?.scrollIntoView({ behavior: reducedMotion ? "auto" : "smooth", block: "start" });
+        }}
         variant="hud"
       />
     ) : null,

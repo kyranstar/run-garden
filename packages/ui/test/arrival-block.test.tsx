@@ -45,6 +45,34 @@ describe("CeremonyCard", () => {
     expect(html).toContain("See it in the garden");
   });
 
+  it("the taken-root line is the highlight control when the plant lives and a handler exists", () => {
+    const html = render(
+      createElement(CeremonyCard, {
+        ceremony: { kind: "species", speciesId: "clover", fromPreview: true },
+        codexEntry: cloverEntry,
+        queueLeft: 0,
+        snapshot,
+        onSeePlant: () => undefined,
+        onDismiss: () => undefined,
+        onHighlight: () => undefined,
+      }),
+    );
+    expect(html).toContain('class="ceremony-eyebrow ceremony-eyebrow-btn"');
+    expect(html).toContain("A new species has taken root");
+    // Without a handler the line stays a plain eyebrow — no dead button.
+    const plain = render(
+      createElement(CeremonyCard, {
+        ceremony: { kind: "species", speciesId: "clover", fromPreview: true },
+        codexEntry: cloverEntry,
+        queueLeft: 0,
+        snapshot,
+        onSeePlant: () => undefined,
+        onDismiss: () => undefined,
+      }),
+    );
+    expect(plain).not.toContain("ceremony-eyebrow-btn");
+  });
+
   it("ground ceremony renders the ground name, carving copy, and no see-plant pull", () => {
     const html = render(
       createElement(CeremonyCard, {

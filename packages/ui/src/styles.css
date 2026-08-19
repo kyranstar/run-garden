@@ -2671,6 +2671,22 @@ a.note {
 }
 
 /* ── Unlock ceremony ─────────────────────────────────────────────────────── */
+/* The "taken root" line doubles as the highlight control: same eyebrow type
+   (the shared rank-2 rule styles the class), no UA chrome, a hand cursor and
+   a hover underline to say it does something. */
+.ceremony-eyebrow-btn {
+  background: none;
+  border: none;
+  padding: 0;
+  text-align: left;
+  cursor: pointer;
+}
+.ceremony-eyebrow-btn:hover,
+.ceremony-eyebrow-btn:focus-visible {
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
 .ceremony {
   position: relative;
   display: grid;
@@ -6963,6 +6979,7 @@ a.note {
   .chart-tip-action,
   .ceremony-close,
   .ceremony-see,
+  .ceremony-eyebrow-btn,
   .balance-detail-close,
   .balance-detail-next,
   .week-pull,
@@ -7001,6 +7018,7 @@ a.note {
 .chart-tip-action::after,
 .ceremony-close::after,
 .ceremony-see::after,
+.ceremony-eyebrow-btn::after,
 .balance-detail-close::after,
 .balance-detail-next::after,
 .week-pull::after,
@@ -7164,6 +7182,7 @@ a.note {
   .chart-tip-action,
   .ceremony-close,
   .ceremony-see,
+  .ceremony-eyebrow-btn,
   .balance-detail-close,
   .balance-detail-next,
   .week-pull,

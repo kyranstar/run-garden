@@ -18,6 +18,7 @@ export function CeremonyCard({
   snapshot,
   onSeePlant,
   onDismiss,
+  onHighlight,
   variant,
 }: {
   ceremony: ArrivalCeremony;
@@ -28,6 +29,10 @@ export function CeremonyCard({
   snapshot: GardenSnapshot;
   onSeePlant: (plantId: string) => void;
   onDismiss: () => void;
+  /** Lights the plant up IN the scene (outline glow) without opening its
+   * sheet — the "taken root" line is the trigger. Optional so older callers
+   * keep a plain eyebrow. */
+  onHighlight?: (plantId: string) => void;
   variant?: "hud";
 }) {
   const isGround = ceremony.kind === "ground";
@@ -88,9 +93,20 @@ export function CeremonyCard({
         )}
       </div>
       <div className="ceremony-body">
-        <div className="ceremony-eyebrow">
-          {entry ? "A new species has taken root" : "New ground carved"}
-        </div>
+        {entry && livePlant && onHighlight ? (
+          <button
+            type="button"
+            className="ceremony-eyebrow ceremony-eyebrow-btn"
+            onClick={() => onHighlight(livePlant.id)}
+            title="Light it up in the garden"
+          >
+            A new species has taken root
+          </button>
+        ) : (
+          <div className="ceremony-eyebrow">
+            {entry ? "A new species has taken root" : "New ground carved"}
+          </div>
+        )}
         <div className="ceremony-name">
           {entry ? entry.name : ground!.name}
           {entry && entry.rarity !== "common" ? (
