@@ -751,7 +751,9 @@ export async function seedFixtures(db: Db, env: Env, userId: string): Promise<Se
         date,
         restingHeartRate: unworn ? null : 44 + (i % 5),
         hrv: unworn ? null : 58 + ((i * 7) % 18),
-        recoveryScore: 60 + ((i * 11) % 35),
+        // Unworn means UNWORN: no recovery % either, or the night row's gap
+        // state can never occur (nightState falls back to recovery).
+        recoveryScore: unworn ? null : 60 + ((i * 11) % 35),
         trainingLoad7d: 280 + ((i * 13) % 120),
         dayLoad: i % 3 === 1 ? 120 + ((i * 29) % 60) : 30 + ((i * 7) % 45),
         sleepHrvBase: 68,

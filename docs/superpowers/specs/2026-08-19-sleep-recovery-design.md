@@ -26,10 +26,21 @@ no dew: sleep can never hurt the garden (the adventure contract).
   `hrv != null && sleepHrvBase != null` → settled iff `hrv >= sleepHrvBase - (sleepHrvSd ?? 0.1*base)`
   (one-sided: a high HRV night is never "unsettled"). Else if `recoveryScore != null` → settled iff
   `>= 60`. Else **gap** (no reading → no claim).
-- **Tended**: `min(daysSinceCompletedRun, daysSinceStrength, daysSinceYoga) <= 3` at the start of
-  the simulated day (engine state counters).
+- **Tended** (revised after adversarial verify round 1): a **run** within `DEW_TENDED_DAYS` (3),
+  running today included, computed by the WORKER's `buildDayInput` from the durable `activities`
+  table. Three rejected alternatives, each a confirmed bug: engine counters freeze under dew and
+  self-renew (finding: one dewy morning tended forever); an engine `lastTrainedDate` snapshot field
+  diverges between genesis replay and incremental sim; and any-discipline tending let sleep + two
+  yoga sessions a week pin the run clock forever — sleep replacing running, the thing option C
+  forbids. Runs bring the rain; dew is water.
+- **DEW_EPOCH** (`2026-08-19`, in garden-sync): nights before it derive neither `settledNight` nor
+  `dew` on any path. Resims re-run `buildDayInput` and overwrite stored inputs, so without the gate
+  a resim would retroactively mint dew across pre-feature history.
 - **Dew morning**: settled night AND tended → that day's punitive decay paths freeze, exactly like
-  an adventure grace day (credit still accrues). Also increments `dewyMornings`.
+  an adventure grace day (credit still accrues). Also increments `dewyMornings`. A banked adventure
+  grace day is NOT spent on a morning dew already shields. The engine consumes two input fields —
+  `settledNight` (feeds the weekly count) and `dew` (settled + tended; shields) — and derives
+  nothing itself.
 - **Steady week**: at week close, `weekSettledNights >= 5` AND the week was a consistent training
   week (`weekAdherence >= 0.75`). Consecutive count in `steadySleepWeeks`. Slept-only or
   trained-only weeks do not count — the unlock can't be earned from the couch.
@@ -50,29 +61,36 @@ no dew: sleep can never hurt the garden (the adventure contract).
   `weekSettledNights`, `steadySleepWeeks`, `bestSteadySleepWeeks`, `dewToday` (derived, for UI).
 - Dew freeze folds into the existing adventure-freeze sites; punitive paths only. Counters start at
   zero the day this ships — no retroactive rewrites of garden history.
+- **One band, one voice**: "your band" always means COROS base ± sd EXACTLY, printed only when a
+  real sd (> 0) exists — never clamped, never our 10% stand-in dressed as the watch's. Without a
+  real sd the sheet says "usually N", the tile says "within 10% of your N ms baseline"
+  (bandSource "derived"), and only `nightState` keeps a silent 10% floor for classification.
 - New unlock gates `dewy_mornings` / `steady_sleep_weeks` (three exhaustive switches + species):
   **Evening primrose** (uncommon, 10 dewy mornings), **Night phlox** (rare, 3 steady weeks —
   "Moonflower" from the mocks already existed as the evening-runs species).
   `disciplineOfGate` → null (they don't join the per-discipline nudge trio).
-- **Luna moth** rare visitor: eligible after ≥5 settled nights in the last 7 on a tended garden;
-  seeded scarcity like the heron.
+- **Luna moth** rare visitor: ≥4 settled nights among the stored last-7 day inputs (today's input
+  is never stored, so the window is at most 6 rows) plus ≥2 runs that week; seeded scarcity like
+  the heron.
 - Forecast/`projectedBalance`: dew today freezes today in the projection (forecast mirrors the sim).
 
 ### Home (System 1)
 - ReadinessSheet: "HRV · usually 70" → "sleep HRV · your band 62–74" (falls back to "usually N"
   when no sd); new conditional vitals: slept h (+ deep/REM when a sleep record exists — fixture-only
   until phase 2) and "until full recovery, says COROS"; a 7-night row (settled / low ✕ / dashed gap).
-- Scene: dew glints on plants on a dew morning (deterministic placement); loop line speaks for it;
-  BalanceDetail countdown gets a faint "· dew held it a day" suffix on dew mornings.
+- Scene: dew glints on plants on a dew morning (deterministic placement); the forecast voice
+  speaks for it. (The mocked BalanceDetail "· dew held it a day" suffix was dropped — one voice
+  per fact; the forecast owns it.)
 
 ### Dashboard (System 2)
 - The existing `hrv` metric is upgraded in place (same id — no duplicate voice, old clients safe):
   title "Sleep HRV", gauge with the personal band, 14-night series, baseline; drilldown keeps
   BaselineBandChart ("Nights") and adds **Strain & answer** (day load above the line, following
   night below it, same column) fed by `daily_health.day_load` + nightly HRV.
-- New metric id `sleep` emitted only when ≥3 sleep records exist in 30d (prod: absent until
-  phase 2; fixtures show it): duration tile + stage chart (deep/REM/light stacked bottom-up,
-  7h reference, absent nights as base ticks). Stage ramp: #3a4494 / #5560c9 / #a9b3e6 (validated:
+- New metric id `sleep` emitted only when `computeSleepNights` returns ok (≥3 recorded nights in
+  30d, newest ≤7d old) — with no data the metric is simply absent, never a dead "Need 3; have 0"
+  tile (prod: absent until phase 2; fixtures show it): duration tile + stage chart (deep/REM/light
+  stacked bottom-up, 7h reference). Stage ramp: #3a4494 / #5560c9 / #a9b3e6 (validated:
   lightness-ordered, adjacent ΔE 11.6/25.6).
 - Insight sentences are rule-based (`meaning`/`sampleNote` conventions), never invented.
 

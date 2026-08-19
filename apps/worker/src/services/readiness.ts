@@ -91,12 +91,17 @@ export function buildReadiness<T extends ReadinessHealthRow>(
   // The band comes from the newest row that carries COROS's own base; its sd
   // (or the classifier's 10% floor) sets the width. Rounded here so every
   // surface prints the same two integers.
-  const bandRow = recent.find((h) => h.sleepHrvBase != null);
+  // Only a REAL spread makes a printable band (sd = 0 or absent → null, and
+  // the sheet falls back to "usually N"): every surface that says "your
+  // band" must mean the same two integers — base ± sd, never a clamp, never
+  // our 10% stand-in dressed up as the watch's (verify round 1, findings
+  // 3/6/7). nightState keeps its silent 10% floor for CLASSIFICATION only.
+  const bandRow = recent.find((h) => h.sleepHrvBase != null && h.sleepHrvBase > 0);
   const band =
-    bandRow?.sleepHrvBase != null
+    bandRow?.sleepHrvBase != null && bandRow.sleepHrvSd != null && bandRow.sleepHrvSd > 0
       ? {
-          lo: Math.round(bandRow.sleepHrvBase - (bandRow.sleepHrvSd ?? bandRow.sleepHrvBase * 0.1)),
-          hi: Math.round(bandRow.sleepHrvBase + (bandRow.sleepHrvSd ?? bandRow.sleepHrvBase * 0.1)),
+          lo: Math.round(bandRow.sleepHrvBase - bandRow.sleepHrvSd),
+          hi: Math.round(bandRow.sleepHrvBase + bandRow.sleepHrvSd),
         }
       : null;
   // Last 7 nights ending today (falling back to the newest row's date when

@@ -652,14 +652,16 @@ export async function buildDossier(
   // sharper evidence than our 30d mean whenever the feed carries it. "HRV"
   // in this dossier is always the OVERNIGHT sleep reading.
   const bandRow = [...health]
-    .filter((h) => h.date <= today && h.sleepHrvBase != null)
+    .filter((h) => h.date <= today && h.sleepHrvBase != null && h.sleepHrvBase > 0)
     .sort((a, b) => b.date.localeCompare(a.date))[0];
+  // "COROS's own" is only claimed when both numbers really are the watch's —
+  // a base without a spread stays a plain baseline in the line above.
   const bandLine =
-    bandRow?.sleepHrvBase != null
+    bandRow?.sleepHrvBase != null && bandRow.sleepHrvSd != null && bandRow.sleepHrvSd > 0
       ? `sleep-HRV band (COROS's own, from the watch): ${Math.round(
-          bandRow.sleepHrvBase - (bandRow.sleepHrvSd ?? bandRow.sleepHrvBase * 0.1),
+          bandRow.sleepHrvBase - bandRow.sleepHrvSd,
         )}–${Math.round(
-          bandRow.sleepHrvBase + (bandRow.sleepHrvSd ?? bandRow.sleepHrvBase * 0.1),
+          bandRow.sleepHrvBase + bandRow.sleepHrvSd,
         )}ms — nights inside it are this athlete's normal`
       : null;
   const latestRecoveryEta = [...health]

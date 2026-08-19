@@ -37,6 +37,7 @@ import {
   conditionWord,
   DEFAULT_GARDEN_CONFIG,
   disciplineBalance,
+  DEW_TENDED_DAYS,
   initialSnapshot,
   nextUnlocks,
   qualifiesAsAdventure,
@@ -56,6 +57,13 @@ import {
 // insights route — a second copy is how the garden and the dashboard come to
 // disagree about what counts as a yoga session.
 import { disciplineOf } from "@rg/analytics";
+
+/** The morning dew first became derivable (sleep/recovery 0020). Nights
+ * before this date produce neither `settledNight` nor `dew` on ANY path —
+ * buildDayInput is re-run by every resim, so without this gate a resim would
+ * retroactively mint dew across history the athlete already watched accrue
+ * ("counts start at zero the day this ships" is a promise to them). */
+const DEW_EPOCH = "2026-08-19";
 import { chunkedInsert, type Db } from "./db.js";
 import { coachBlockAdherence, COACHED_BLOCK_ADHERENCE, plansEndedOn } from "./coach-plans.js";
 import {
@@ -449,15 +457,48 @@ export async function buildDayInput(
   // night that ended that morning. "gap" stays undefined — no reading is
   // never a bad night, and the engine treats absent exactly like pre-feature
   // stored inputs.
-  const night = healthRow[0]
-    ? nightState({
-        hrv: healthRow[0].hrv,
-        sleepHrvBase: healthRow[0].sleepHrvBase,
-        sleepHrvSd: healthRow[0].sleepHrvSd,
-        recoveryScore: healthRow[0].recoveryScore,
-      })
-    : "gap";
-  if (night !== "gap") input.dew = night === "settled";
+  //
+  // DEW_EPOCH: nights before the feature shipped derive NOTHING, in every
+  // path — resims re-derive day inputs from these same tables (walkForward
+  // overwrites stored rows), so without the gate any resimulateFrom would
+  // retroactively mint dew across pre-feature history and disagree with the
+  // state the athlete already watched accrue (verify round 1, finding 1).
+  //
+  // Tended-ness (option C) is decided HERE, from the durable activities
+  // table — a RUN within DEW_TENDED_DAYS, running today included. Not engine
+  // state (a clock dew itself freezes self-renews; a snapshot backfill
+  // diverges between replay paths — findings 1–2), and not any-discipline
+  // (sleep + two yoga sessions a week pinned the run clock forever —
+  // finding 2). Runs bring the rain; dew is water.
+  if (date >= DEW_EPOCH && healthRow[0]) {
+    const night = nightState({
+      hrv: healthRow[0].hrv,
+      sleepHrvBase: healthRow[0].sleepHrvBase,
+      sleepHrvSd: healthRow[0].sleepHrvSd,
+      recoveryScore: healthRow[0].recoveryScore,
+    });
+    if (night !== "gap") {
+      input.settledNight = night === "settled";
+      if (input.settledNight) {
+        const ranToday = completedRuns.some((r) => (r.discipline ?? "run") === "run");
+        const recentRun = ranToday
+          ? [{}]
+          : await db
+              .select({ id: activities.id })
+              .from(activities)
+              .where(
+                and(
+                  eq(activities.userId, userId),
+                  eq(activities.sport, "run"),
+                  gte(activities.startTimeLocal, addDays(date, -DEW_TENDED_DAYS)),
+                  lt(activities.startTimeLocal, addDays(date, 1)),
+                ),
+              )
+              .limit(1);
+        if (recentRun.length > 0) input.dew = true;
+      }
+    }
+  }
 
   // Fairness spec §4: the day AFTER a coached plan's final day, at ≥85%
   // block adherence, counts a coached block (→ the Keystone pine).
@@ -1140,7 +1181,9 @@ export async function buildGardenView(
     const dayRuns = recentInputs.map((r) => ({
       date: r.date,
       runs: ((r.input as { completedRuns?: unknown }).completedRuns ?? []) as VisitorDayRuns["runs"],
-      dew: (r.input as { dew?: boolean }).dew,
+      settledNight:
+        (r.input as { settledNight?: boolean }).settledNight ??
+        (r.input as { dew?: boolean }).dew,
     }));
     todayVisitor = visitorForDate(today, snapshot.state.season, dayRuns);
     if (todayVisitor) {

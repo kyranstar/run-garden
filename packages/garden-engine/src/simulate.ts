@@ -8,7 +8,6 @@ import { SPECIES, speciesOrThrow, type Species } from "./species.js";
 import { gateSatisfied, matureTreeCount as codexMatureTreeCount } from "./unlocks.js";
 import {
   DEFAULT_GARDEN_CONFIG,
-  DEW_TENDED_DAYS,
   SIMULATION_VERSION,
   STEADY_WEEK_NIGHTS,
   type CompletedRunInput,
@@ -65,7 +64,6 @@ export function initialSnapshot(createdDate: LocalDate): GardenSnapshot {
     steadySleepWeeks: 0,
     bestSteadySleepWeeks: 0,
     lastDewDate: null,
-    lastTrainedDate: null,
     weekDisciplines: {
       weekStart: startOfIsoWeek(createdDate),
       run: false,
@@ -213,7 +211,6 @@ export function simulateDay(
   state.steadySleepWeeks ??= 0;
   state.bestSteadySleepWeeks ??= 0;
   state.lastDewDate ??= null;
-  state.lastTrainedDate ??= null;
   state.weekDisciplines ??= {
     weekStart: startOfIsoWeek(input.date),
     run: false,
@@ -283,30 +280,22 @@ export function simulateDay(
     },
   );
   const adventureFrozen = adventureToday || graceDay;
-  if (graceDay && input.recoveryScore === undefined) {
-    state.adventureGraceDays = Math.max(0, (state.adventureGraceDays ?? 0) - 1);
-  }
 
-  // Dew (sleep/recovery 0020, option C): a settled night leaves dew only on
-  // a TENDED garden — training today or within the last DEW_TENDED_DAYS. On
-  // such a morning the punitive clocks rest, exactly like an adventure grace
-  // day. A rough night leaves nothing, and an untended garden thirsts
-  // normally: sleep multiplies training, it can never substitute for it —
-  // and never hurt anything.
-  if (input.dew === true) state.weekSettledNights += 1;
-  // Tended-ness reads lastTrainedDate (a real calendar date), NEVER the
-  // daysSince* counters: dew freezes those counters, so a counter-based test
-  // would let one dewy morning keep the garden "tended" forever — the exact
-  // sleep-replaces-running loop option C forbids.
-  const tendedForDew =
-    runs.length > 0 ||
-    (state.lastTrainedDate != null &&
-      daysBetween(state.lastTrainedDate, input.date) <= DEW_TENDED_DAYS);
-  const dewToday = input.dew === true && tendedForDew;
-  if (runs.length > 0) state.lastTrainedDate = input.date;
+  // Dew (sleep/recovery 0020, option C): the worker hands in `dew` already
+  // tended-gated (a settled night AND a run within DEW_TENDED_DAYS, derived
+  // from durable tables so every replay agrees). On a dewy morning the
+  // punitive clocks rest, exactly like an adventure grace day. A rough night
+  // leaves nothing; a well-slept but unrun garden thirsts normally.
+  if (input.settledNight === true || input.dew === true) state.weekSettledNights += 1;
+  const dewToday = input.dew === true;
   if (dewToday) {
     state.dewyMorningCount += 1;
     state.lastDewDate = input.date;
+  }
+  // Dew shields for free — a banked adventure grace day is only spent when
+  // it is the thing actually doing the shielding (verify round 1 finding 9).
+  if (graceDay && input.recoveryScore === undefined && !dewToday) {
+    state.adventureGraceDays = Math.max(0, (state.adventureGraceDays ?? 0) - 1);
   }
   const shieldedToday = adventureFrozen || dewToday;
 

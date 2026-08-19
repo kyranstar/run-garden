@@ -241,7 +241,9 @@ export interface NightSignals {
  */
 export function nightState(signals: NightSignals): NightState {
   const { hrv, sleepHrvBase: base, recoveryScore } = signals;
-  if (hrv != null && hrv > 0 && base != null && base > 0) {
+  // Same plausibility window the verdict uses ([5,300] ms) — a 4000 ms
+  // artifact must not read as a settled night and mint dew.
+  if (hrv != null && hrv >= 5 && hrv <= 300 && base != null && base >= 5 && base <= 300) {
     const sd = signals.sleepHrvSd != null && signals.sleepHrvSd > 0
       ? signals.sleepHrvSd
       : base * 0.1;

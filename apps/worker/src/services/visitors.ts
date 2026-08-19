@@ -33,7 +33,7 @@ export interface VisitorDayRuns {
   date: LocalDate;
   runs: CompletedRunInput[];
   /** The night into this date settled the body (sleep/recovery 0020). */
-  dew?: boolean;
+  settledNight?: boolean;
 }
 
 const HARD_CATEGORIES = new Set(["quality", "long", "race"]);
@@ -84,12 +84,14 @@ export function visitorForDate(
   // Fox: autumn dusk, drawn by recent quality work.
   if (season === "autumn" && last3.some((r) => r.category === "quality")) eligible.push("fox");
 
-  // Luna moth: a week of settled nights on a garden that is also trained —
+  // Luna moth: a week of settled nights on a garden that is also run —
   // the sleep/recovery reward (0020). Same compound rule as everything in
-  // option C: the moth never visits a well-slept couch.
+  // option C: the moth never visits a well-slept couch. The bar is 4, not 5:
+  // stored day inputs never include today (walkForward stops before it) and
+  // often not yesterday, so "the last 7 nights" is at most 6 rows here.
   const nights7 = days.filter((d) => d.date > addDays(date, -7) && d.date <= date);
-  const settled7 = nights7.filter((d) => d.dew === true).length;
-  if (settled7 >= 5 && last7.length >= 2) eligible.push("luna_moth");
+  const settled7 = nights7.filter((d) => d.settledNight === true).length;
+  if (settled7 >= 4 && last7.length >= 2) eligible.push("luna_moth");
 
   if (eligible.length === 0) return null;
   // Most eligible days pass quietly — scarcity is the point.

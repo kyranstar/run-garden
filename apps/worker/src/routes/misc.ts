@@ -559,8 +559,7 @@ insightRoutes.get("/", async (c) => {
           lte(sleepRecords.date, today),
         ),
       )
-      .then((rows) => rows)
-      .catch(() => []),
+      ,
   ]);
 
   // Laps and matches are scoped BY ID to what was just fetched. The previous
@@ -925,6 +924,20 @@ insightRoutes.get("/", async (c) => {
   }));
   const strainPairs = rawPairs.some((p) => p.load != null && p.load > 0) ? rawPairs : undefined;
 
+  // Emitted ONLY with data (spec): production has no sleep records until the
+  // phase-2 COROS connection, and a permanent "Need 3; have 0" tile would be
+  // a dead promise the athlete can't act on (verify round 1, finding 4).
+  const sleepMetricResult = computeSleepNights(
+    sleepRows.map((r) => ({
+      date: r.date,
+      durationSeconds: r.durationSeconds,
+      deepSeconds: r.deepSeconds,
+      remSeconds: r.remSeconds,
+      lightSeconds: r.lightSeconds,
+    })),
+    today,
+  );
+
   const interpreted: InterpretedMetric[] = [
     withNote(
       interpret("loadRatio", "Load vs your norm", computeLoadRatio(loadsByDay, today), (v) => ({
@@ -1087,20 +1100,9 @@ insightRoutes.get("/", async (c) => {
         };
       },
     ),
-    interpret(
-      "sleep",
-      "Sleep",
-      computeSleepNights(
-        sleepRows.map((r) => ({
-          date: r.date,
-          durationSeconds: r.durationSeconds,
-          deepSeconds: r.deepSeconds,
-          remSeconds: r.remSeconds,
-          lightSeconds: r.lightSeconds,
-        })),
-        today,
-      ),
-      (v) => {
+    ...(sleepMetricResult.status === "ok"
+      ? [
+    interpret("sleep", "Sleep", sleepMetricResult, (v) => {
         const stale = v.staleDays > RECOVERY_STALE_DAYS;
         const h = (sec: number) => (sec / 3600).toFixed(1);
         return {
@@ -1120,6 +1122,8 @@ insightRoutes.get("/", async (c) => {
         };
       },
     ),
+        ]
+      : []),
     withNote(
       interpret("hardStack", "Hard-day stacking", computeHardDayStacking(hardDates, today), (v) => ({
         value: days(v.consecutive),

@@ -131,10 +131,6 @@ export interface EngineGardenState {
   bestSteadySleepWeeks: number;
   /** The last date that opened with dew — surfaces derive "dew today". */
   lastDewDate?: LocalDate | null;
-  /** Last REAL date with any completed session. Dew's "tended" test reads
-   * this, not the daysSince* counters — those freeze under shields, and a
-   * tended-ness that reads a frozen clock renews itself forever. */
-  lastTrainedDate?: LocalDate | null;
   /** Discipline flags for the in-progress Mon–Sun week. */
   weekDisciplines: {
     weekStart: LocalDate;
@@ -212,6 +208,13 @@ export interface GardenDayInput {
   /** The night into this morning settled the body (sleep HRV inside the
    * athlete's own band, or recovery ≥ 60), when known. Absent = no reading —
    * never a bad night (sleep/recovery 0020). */
+  settledNight?: boolean;
+  /** A dewy morning: settled night AND a run within DEW_TENDED_DAYS —
+   * computed by the worker from durable data (activities + daily_health), so
+   * a genesis replay and the incremental sim derive the SAME answer. The
+   * engine never re-derives tended-ness: a state-based test read clocks that
+   * dew itself freezes, and a snapshot-backfill test diverged between replay
+   * paths (verify round 1, findings 1–2). Implies settledNight. */
   dew?: boolean;
   /** True on the day after a coached plan completed at ≥85% adherence. */
   coachedBlockCompleted?: boolean;
@@ -234,8 +237,11 @@ export interface DayResult {
   shield?: { adventureFrozen: boolean; graceDay: boolean; dewToday?: boolean };
 }
 
-/** Dew forms only on a tended garden: some training within this many days
- * (option C — sleep multiplies running, it can never substitute for it). */
+/** Dew forms only on a tended garden: a RUN within this many days (option C
+ * — sleep multiplies running, it can never substitute for it; verify round 1
+ * finding 2 showed any-discipline tending let sleep + two yoga sessions a
+ * week pin the run clock forever). Consumed by the worker's buildDayInput —
+ * the engine itself never derives tended-ness. */
 export const DEW_TENDED_DAYS = 3;
 /** Settled nights a Mon–Sun week needs to count as steady. Nights without a
  * reading count for nothing, in either direction. */

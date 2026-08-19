@@ -185,6 +185,7 @@ export function computeHrvTrend(
     .filter((r) => r.date <= today && r.sleepHrvBase != null && r.sleepHrvBase > 0)
     .sort((a, b) => (a.date < b.date ? 1 : -1))[0];
   const corosBase = corosRow?.sleepHrvBase ?? null;
+  const corosSd = corosRow?.sleepHrvSd != null && corosRow.sleepHrvSd > 0 ? corosRow.sleepHrvSd : null;
 
   const needed = corosBase != null ? 5 : 17;
   if (valid.length < needed) {
@@ -221,14 +222,23 @@ export function computeHrvTrend(
   let baseline: number;
   let thresholdPct: number;
   let bandSource: "coros" | "derived";
-  if (corosBase != null) {
-    // The watch's own band: base ± sd, as a percentage of base so the rest
-    // of the math (and the gauge, drawn in %) is unchanged.
+  if (corosBase != null && corosSd != null) {
+    // The watch's own band: base ± sd EXACTLY, as a percentage of base so
+    // the rest of the math (and the gauge, drawn in %) is unchanged. Never
+    // clamped — a clamp made this band disagree with the readiness sheet
+    // and nightState, which print/classify against the raw sd (verify
+    // round 1, finding 3). "From your own watch" is only claimed here,
+    // where every number really is the watch's.
     baseline = corosBase;
-    const sd = corosRow?.sleepHrvSd ?? null;
-    thresholdPct =
-      sd != null && sd > 0 ? roundTo(clamp((sd / corosBase) * 100, 5, 15), 1) : 10;
+    thresholdPct = roundTo((corosSd / corosBase) * 100, 1);
     bandSource = "coros";
+  } else if (corosBase != null) {
+    // A base without a spread: the center is the watch's, the width is our
+    // 10% convention — so the band is "derived" and the copy must not
+    // attribute it to the watch (finding 7).
+    baseline = corosBase;
+    thresholdPct = 10;
+    bandSource = "derived";
   } else {
     const baselineReadings = valid.slice(7, 37); // ranks 8..37; guaranteed >= 10 given the length-17 gate above
     baseline = median(baselineReadings.map((r) => r.hrv));

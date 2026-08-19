@@ -1,14 +1,16 @@
 /**
- * Dew (sleep/recovery 0020, option C): a settled night leaves dew only on a
- * TENDED garden. The four laws under test: dew needs BOTH the night and the
- * training; it is never punitive; its counters feed the night-bloomer gates;
- * and a history replayed without dew inputs is byte-identical to before the
- * feature existed.
+ * Dew (sleep/recovery 0020, option C): the worker computes both `settledNight`
+ * and `dew` (settled + a run within DEW_TENDED_DAYS) from durable tables, so
+ * the engine's laws are input-level: dew shields and counts ONLY when the
+ * input says so; a settled-but-unrun morning counts for the week but shields
+ * nothing; nothing is ever punitive; and a history replayed without night
+ * inputs is byte-identical to before the feature existed. (The engine
+ * deliberately holds NO tended state — verify round 1 showed both a
+ * frozen-counter renewal loop and replay divergence when it did.)
  */
 import { describe, expect, it } from "vitest";
 import { addDays } from "@rg/domain";
 import {
-  DEW_TENDED_DAYS,
   describeGate,
   gateProgress,
   gateSatisfied,
@@ -50,44 +52,57 @@ function fold(days: GardenDayInput[], from?: GardenSnapshot) {
   return { snapshot, lastShield };
 }
 
-describe("dew needs both the night and the training", () => {
-  it("a settled night on a tended garden is a dewy morning", () => {
+describe("dew is exactly what the worker's tended-gate handed in", () => {
+  it("a dewy-morning input shields and counts", () => {
     const { snapshot, lastShield } = fold([
       runDay(START),
-      { ...emptyDay(addDays(START, 1)), dew: true },
+      { ...emptyDay(addDays(START, 1)), settledNight: true, dew: true },
     ]);
     expect(lastShield?.dewToday).toBe(true);
     expect(snapshot.state.dewyMorningCount).toBe(1);
     expect(snapshot.state.lastDewDate).toBe(addDays(START, 1));
   });
 
-  it("a settled night on an UNTENDED garden leaves no dew — sleep cannot replace running", () => {
-    // No training at all: every counter grows past DEW_TENDED_DAYS.
-    const days = Array.from({ length: DEW_TENDED_DAYS + 3 }, (_, i) => ({
+  it("a settled-but-unrun morning counts for the week and shields NOTHING", () => {
+    const days = Array.from({ length: 6 }, (_, i) => ({
       ...emptyDay(addDays(START, i)),
-      dew: true,
+      settledNight: true,
     }));
     const { snapshot, lastShield } = fold(days);
     expect(lastShield?.dewToday).toBe(false);
     expect(snapshot.state.dewyMorningCount).toBe(0);
+    expect(snapshot.state.weekSettledNights).toBe(6);
+    // The thirst clock ticked normally — sleep alone protected nothing.
+    expect(snapshot.state.daysSinceCompletedRun).toBeGreaterThanOrEqual(5);
   });
 
-  it("training today counts as tended even after a long gap", () => {
-    const gap = Array.from({ length: 10 }, (_, i) => emptyDay(addDays(START, i)));
-    const { snapshot, lastShield } = fold([
-      ...gap,
-      runDay(addDays(START, 10), { dew: true }),
-    ]);
-    expect(lastShield?.dewToday).toBe(true);
-    expect(snapshot.state.dewyMorningCount).toBe(1);
-  });
-
-  it("a rough night (dew absent/false) on a tended garden changes nothing", () => {
-    const withNight = fold([runDay(START), { ...emptyDay(addDays(START, 1)), dew: false }]);
+  it("a rough night (both fields absent/false) on a run day changes nothing", () => {
+    const withNight = fold([runDay(START), { ...emptyDay(addDays(START, 1)), settledNight: false }]);
     const without = fold([runDay(START), emptyDay(addDays(START, 1))]);
     expect(withNight.snapshot.state.moisture).toBe(without.snapshot.state.moisture);
     expect(withNight.snapshot.state.dewyMorningCount).toBe(0);
     expect(withNight.lastShield?.dewToday).toBe(false);
+  });
+
+  it("a dewy morning never spends a banked adventure grace day", () => {
+    // Set up a banked grace day, then a dewy morning with no recovery score:
+    // the bank must be untouched (dew did the shielding for free).
+    let snapshot = initialSnapshot(START);
+    snapshot = structuredClone(snapshot);
+    snapshot.state.adventureGraceDays = 2;
+    snapshot.state.lastAdventureDate = START;
+    const r1 = simulateDay(snapshot, {
+      ...emptyDay(addDays(START, 1)),
+      settledNight: true,
+      dew: true,
+    });
+    expect(r1.shield?.dewToday).toBe(true);
+    expect(r1.snapshot.state.adventureGraceDays).toBe(2);
+    // Same morning without dew: the grace day IS spent.
+    const r2 = simulateDay(snapshot, emptyDay(addDays(START, 1)));
+    if (r2.shield?.graceDay) {
+      expect(r2.snapshot.state.adventureGraceDays).toBe(1);
+    }
   });
 });
 
@@ -96,7 +111,7 @@ describe("dew is a shield, never a whip", () => {
     // Same shape: run on Monday, then three empty days; only the middle day's
     // night differs. The dewy garden must be wetter, never drier.
     const base = [runDay(START), emptyDay(addDays(START, 1)), emptyDay(addDays(START, 2))];
-    const dewy = [runDay(START), { ...emptyDay(addDays(START, 1)), dew: true }, emptyDay(addDays(START, 2))];
+    const dewy = [runDay(START), { ...emptyDay(addDays(START, 1)), settledNight: true, dew: true }, emptyDay(addDays(START, 2))];
     const dry = fold(base).snapshot.state;
     const held = fold(dewy).snapshot.state;
     expect(held.moisture).toBeGreaterThan(dry.moisture);
@@ -105,7 +120,7 @@ describe("dew is a shield, never a whip", () => {
 
   it("dew never makes any state WORSE than the same days without it", () => {
     const plain = fold([runDay(START), emptyDay(addDays(START, 1))]).snapshot.state;
-    const dewed = fold([runDay(START), { ...emptyDay(addDays(START, 1)), dew: true }]).snapshot.state;
+    const dewed = fold([runDay(START), { ...emptyDay(addDays(START, 1)), settledNight: true, dew: true }]).snapshot.state;
     expect(dewed.moisture).toBeGreaterThanOrEqual(plain.moisture);
     expect(dewed.soilHealth).toBeGreaterThanOrEqual(plain.soilHealth);
   });
@@ -114,11 +129,11 @@ describe("dew is a shield, never a whip", () => {
 describe("night counters feed the gates", () => {
   it("dewy_mornings gate counts and describes", () => {
     const gate = { kind: "dewy_mornings", count: 2 } as const;
-    const one = fold([runDay(START), { ...emptyDay(addDays(START, 1)), dew: true }]).snapshot;
+    const one = fold([runDay(START), { ...emptyDay(addDays(START, 1)), settledNight: true, dew: true }]).snapshot;
     expect(gateSatisfied(gate, one)).toBe(false);
     expect(gateProgress(gate, one)).toEqual({ current: 1, target: 2 });
     const two = fold(
-      [runDay(addDays(START, 2), { dew: true })],
+      [runDay(addDays(START, 2), { settledNight: true, dew: true })],
       one,
     ).snapshot;
     expect(gateSatisfied(gate, two)).toBe(true);
@@ -128,14 +143,14 @@ describe("night counters feed the gates", () => {
   it("a steady week needs BOTH ≥5 settled nights and a trained week", () => {
     // Week 1: run Mon/Wed/Fri, dew on 6 nights. Week 2's Monday carries the
     // closing adherence.
-    const week = (mon: string, dew: boolean, adherence?: number): GardenDayInput[] => [
+    const week = (mon: string, settled: boolean, adherence?: number): GardenDayInput[] => [
       { ...runDay(mon), weekAdherence: adherence },
-      { ...emptyDay(addDays(mon, 1)), dew },
-      { ...runDay(addDays(mon, 2)), dew },
-      { ...emptyDay(addDays(mon, 3)), dew },
-      { ...runDay(addDays(mon, 4)), dew },
-      { ...emptyDay(addDays(mon, 5)), dew },
-      { ...emptyDay(addDays(mon, 6)), dew },
+      { ...emptyDay(addDays(mon, 1)), settledNight: settled },
+      { ...runDay(addDays(mon, 2)), settledNight: settled },
+      { ...emptyDay(addDays(mon, 3)), settledNight: settled },
+      { ...runDay(addDays(mon, 4)), settledNight: settled },
+      { ...emptyDay(addDays(mon, 5)), settledNight: settled },
+      { ...emptyDay(addDays(mon, 6)), settledNight: settled },
     ];
     // Slept AND trained → chain grows.
     const good = fold([...week(START, true), ...week(addDays(START, 7), true, 1)]).snapshot;
@@ -153,14 +168,12 @@ describe("night counters feed the gates", () => {
     expect(describeGate(gate)).toContain("well trained, well slept");
   });
 
-  it("weekSettledNights counts settled nights even when untended (the week is about sleep)", () => {
-    const days = Array.from({ length: 6 }, (_, i) => ({
-      ...emptyDay(addDays(START, i)),
-      dew: true,
-    }));
-    const { snapshot } = fold(days);
-    expect(snapshot.state.weekSettledNights).toBe(6);
-    expect(snapshot.state.dewyMorningCount).toBeLessThanOrEqual(DEW_TENDED_DAYS + 1);
+  it("weekSettledNights never double-counts a morning that carries both flags", () => {
+    const { snapshot } = fold([
+      runDay(START),
+      { ...emptyDay(addDays(START, 1)), settledNight: true, dew: true },
+    ]);
+    expect(snapshot.state.weekSettledNights).toBe(1);
   });
 });
 
@@ -178,5 +191,22 @@ describe("history without dew inputs replays exactly as before", () => {
     expect(a.state.steadySleepWeeks).toBe(0);
     expect(a.state.lastDewDate).toBeNull();
     expect(JSON.stringify(a.state)).toBe(JSON.stringify(b.state));
+  });
+
+  it("an incremental fold from a mid-history snapshot agrees with a genesis replay", () => {
+    // The verify-round divergence: replay knew training history that a
+    // backfilled snapshot didn't. With tended-ness computed by the WORKER
+    // from durable tables, both paths consume identical inputs — so the
+    // engine must produce identical state from either starting point.
+    const days = [
+      runDay(START),
+      { ...emptyDay(addDays(START, 1)), settledNight: true, dew: true },
+      runDay(addDays(START, 2)),
+      { ...emptyDay(addDays(START, 3)), settledNight: true, dew: true },
+    ];
+    const genesis = fold(days).snapshot;
+    const mid = fold(days.slice(0, 2)).snapshot;
+    const resumed = fold(days.slice(2), mid).snapshot;
+    expect(JSON.stringify(resumed.state)).toBe(JSON.stringify(genesis.state));
   });
 });

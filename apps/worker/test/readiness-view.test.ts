@@ -34,9 +34,13 @@ describe("buildReadiness band + nights", () => {
     expect(v.band).toEqual({ lo: 62, hi: 74 });
   });
 
-  it("without sd the band widens to the classifier's 10% floor; without base there is none", () => {
-    const rows = Array.from({ length: 8 }, (_, i) => row(`2026-08-${18 - i}`, { sleepHrvSd: null }));
-    expect(buildReadiness(rows, "2026-08-18").band).toEqual({ lo: 61, hi: 75 }); // 68 ± 6.8
+  it("no real sd, no printed band — the 10% stand-in classifies but is never dressed as the watch's", () => {
+    // (Verify round 1, findings 3/6/7: every surface that says "your band"
+    // must mean the same two integers.)
+    const noSd = Array.from({ length: 8 }, (_, i) => row(`2026-08-${18 - i}`, { sleepHrvSd: null }));
+    expect(buildReadiness(noSd, "2026-08-18").band).toBeNull();
+    const zeroSd = Array.from({ length: 8 }, (_, i) => row(`2026-08-${18 - i}`, { sleepHrvSd: 0 }));
+    expect(buildReadiness(zeroSd, "2026-08-18").band).toBeNull();
     const bare = Array.from({ length: 8 }, (_, i) =>
       row(`2026-08-${18 - i}`, { sleepHrvBase: null, sleepHrvSd: null }),
     );
