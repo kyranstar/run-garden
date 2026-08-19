@@ -281,7 +281,7 @@ describe("nothing in either chart layer can re-introduce a fixed size", () => {
    */
   it("every chart builds its viewBox from a measured width", () => {
     for (const [name, code, count] of [
-      ["charts.tsx", chartsSrc, 6],
+      ["charts.tsx", chartsSrc, 8],
       ["screens/plan-charts.tsx", planSrc, 2],
     ] as const) {
       expect([...code.matchAll(/^\s*const (?:width|VB_W) = (\d+);/gm)].map((m) => m[0]!.trim()), name).toEqual([]);
@@ -303,7 +303,7 @@ describe("nothing in either chart layer can re-introduce a fixed size", () => {
     // two ever differ, the scale factor is back and so is the whole defect.
     const pattern = /viewBox=\{`0 0 \$\{(\w+)\} [^`]*`\}\s*\n\s*style=\{svgStyle\(([^)]*)\)\}/g;
     const svgs = [...chartsSrc.matchAll(pattern), ...planSrc.matchAll(pattern)];
-    expect(svgs.length).toBe(9);
+    expect(svgs.length).toBe(11);
     for (const m of svgs) expect(m[2]!.trim(), m[0]).toBe(m[1]!.trim());
   });
 
@@ -319,8 +319,10 @@ describe("nothing in either chart layer can re-introduce a fixed size", () => {
       .replace(/\/\/[^\n]*/g, "");
     // Fifteen in the Insights layer plus three in the plan layer (its week
     // labels, its unit, its point callouts — the y axis is `GridLines`, which
-    // both layers now import from chart-kit rather than keeping a copy of).
-    expect([...code.matchAll(/fontSize=\{CHART_LABEL_PX\}/g)].length).toBe(18);
+    // both layers now import from chart-kit rather than keeping a copy of),
+    // plus six in the sleep/recovery pair (0020): StrainAnswerChart's two
+    // lane labels and two date labels, SleepStagesChart's two date labels.
+    expect([...code.matchAll(/fontSize=\{CHART_LABEL_PX\}/g)].length).toBe(24);
     expect([...code.matchAll(/fontSize=\{[\d.]+\}/g)].map((m) => m[0])).toEqual([]);
     expect([...code.matchAll(/fontSize="[^"]*"/g)].map((m) => m[0])).toEqual([]);
   });

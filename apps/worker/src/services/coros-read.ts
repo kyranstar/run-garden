@@ -150,7 +150,9 @@ export async function corosReadNow(
     const catalogStale = await isExerciseCatalogStale(db);
     const snapshot = await buildSnapshot(client, rangeStart, rangeEnd, today, resolver, {
       includeExerciseCatalog: catalogStale,
-      healthRangeStart: addDays(today, -7),
+      // 42 days, not 7: the sleep-HRV band and night series need history,
+      // and dayDetail accepts up to 24 weeks (sleep/recovery 0020).
+      healthRangeStart: addDays(today, -42),
       detailFilter: (item) => !seen.has(item.labelId) || needsDetail.has(item.labelId),
     });
     if (snapshot.exerciseCatalog && snapshot.exerciseCatalog.length > 0) {

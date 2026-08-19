@@ -118,6 +118,23 @@ export interface EngineGardenState {
   yogaSessionCount: number;
   /** Mon–Sun weeks that held at least one run, one lift and one yoga session. */
   balancedWeekCount: number;
+  /** Mornings that opened with dew — a settled night on a TENDED garden
+   * (training within DEW_TENDED_DAYS). Counts start the day the feature
+   * shipped; history is never rewritten (sleep/recovery 0020). */
+  dewyMorningCount: number;
+  /** Settled nights inside the in-progress Mon–Sun week, tended or not. */
+  weekSettledNights: number;
+  /** Consecutive closed weeks that were steady: ≥ STEADY_WEEK_NIGHTS settled
+   * nights AND a consistent training week. Slept-only weeks don't count —
+   * the unlock can't be earned from the couch (option C). */
+  steadySleepWeeks: number;
+  bestSteadySleepWeeks: number;
+  /** The last date that opened with dew — surfaces derive "dew today". */
+  lastDewDate?: LocalDate | null;
+  /** Last REAL date with any completed session. Dew's "tended" test reads
+   * this, not the daysSince* counters — those freeze under shields, and a
+   * tended-ness that reads a frozen clock renews itself forever. */
+  lastTrainedDate?: LocalDate | null;
   /** Discipline flags for the in-progress Mon–Sun week. */
   weekDisciplines: {
     weekStart: LocalDate;
@@ -192,6 +209,10 @@ export interface GardenDayInput {
   adventures?: Array<{ sport: string; trainingLoad?: number; durationMin?: number }>;
   /** Coros recovery 0-100 for this date (higher = more recovered), when known. */
   recoveryScore?: number;
+  /** The night into this morning settled the body (sleep HRV inside the
+   * athlete's own band, or recovery ≥ 60), when known. Absent = no reading —
+   * never a bad night (sleep/recovery 0020). */
+  dew?: boolean;
   /** True on the day after a coached plan completed at ≥85% adherence. */
   coachedBlockCompleted?: boolean;
 }
@@ -210,5 +231,12 @@ export interface DayResult {
    * the fold consumed on an intermediate day, or an adventure the fold
    * logged that the pre-fold state didn't know about yet).
    */
-  shield?: { adventureFrozen: boolean; graceDay: boolean };
+  shield?: { adventureFrozen: boolean; graceDay: boolean; dewToday?: boolean };
 }
+
+/** Dew forms only on a tended garden: some training within this many days
+ * (option C — sleep multiplies running, it can never substitute for it). */
+export const DEW_TENDED_DAYS = 3;
+/** Settled nights a Mon–Sun week needs to count as steady. Nights without a
+ * reading count for nothing, in either direction. */
+export const STEADY_WEEK_NIGHTS = 5;

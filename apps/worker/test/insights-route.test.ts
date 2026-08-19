@@ -964,6 +964,7 @@ describe("payload shape", () => {
       "monotony",
       "restingHr",
       "hrv",
+      "sleep",
       "hardStack",
       "lowIntensityShare",
       "easyDiscipline",

@@ -648,11 +648,36 @@ export async function buildDossier(
   const series = (pick: (h: (typeof health)[number]) => number | null) =>
     window14.map((h) => ({ date: h.date as LocalDate, value: pick(h) }));
 
+  // The athlete's own sleep-HRV band, straight from COROS (base ± sd, 0020) —
+  // sharper evidence than our 30d mean whenever the feed carries it. "HRV"
+  // in this dossier is always the OVERNIGHT sleep reading.
+  const bandRow = [...health]
+    .filter((h) => h.date <= today && h.sleepHrvBase != null)
+    .sort((a, b) => b.date.localeCompare(a.date))[0];
+  const bandLine =
+    bandRow?.sleepHrvBase != null
+      ? `sleep-HRV band (COROS's own, from the watch): ${Math.round(
+          bandRow.sleepHrvBase - (bandRow.sleepHrvSd ?? bandRow.sleepHrvBase * 0.1),
+        )}–${Math.round(
+          bandRow.sleepHrvBase + (bandRow.sleepHrvSd ?? bandRow.sleepHrvBase * 0.1),
+        )}ms — nights inside it are this athlete's normal`
+      : null;
+  const latestRecoveryEta = [...health]
+    .filter((h) => h.date <= today && h.fullRecoveryHours != null && h.fullRecoveryHours > 0)
+    .sort((a, b) => b.date.localeCompare(a.date))[0];
   const wellnessLines: string[] = [
     anySleepEver === 0
       ? "sleep: NO DATA AT ALL — sleep_records is empty for this athlete (0 rows, ever). Never state, infer, or ask them to confirm anything about their sleep."
       : `30d sleep baseline: ${fmt(sleepBase, 1)}h`,
-    `30d baselines: HRV ${fmt(hrvBase)}ms · RHR ${fmt(rhrBase)}bpm`,
+    `30d baselines: HRV ${fmt(hrvBase)}ms · RHR ${fmt(rhrBase)}bpm (HRV here is measured overnight, during sleep)`,
+    ...(bandLine ? [bandLine] : []),
+    ...(latestRecoveryEta
+      ? [
+          `COROS full-recovery estimate on ${latestRecoveryEta.date}: ~${Math.round(
+            latestRecoveryEta.fullRecoveryHours!,
+          )}h to fully recovered — their model's read, not a rule`,
+        ]
+      : []),
   ];
 
   // Training load: today's figure plus enough trajectory to see a collapse.

@@ -135,6 +135,12 @@ export const dailyHealth = sqliteTable(
     /** The single day's training load (t7d is the 7-day sum). */
     dayLoad: real("day_load"),
     vo2max: real("vo2max"),
+    /** COROS's own sleep-HRV standard deviation — base ± sd is the athlete's
+     * personal band (sleep/recovery 0020). */
+    sleepHrvSd: real("sleep_hrv_sd"),
+    /** COROS's "hours until fully recovered" — a "now" value stamped onto the
+     * current day only, like recoveryScore. */
+    fullRecoveryHours: real("full_recovery_hours"),
     provider: text("provider").notNull().default("coros"),
     contentFingerprint: text("content_fingerprint").notNull(),
     updatedAt: text("updated_at").notNull(),

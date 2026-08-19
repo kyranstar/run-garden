@@ -31,7 +31,12 @@ export type UnlockGate =
   | { kind: "ground"; ground: "stream" | "terrace" | "glade" }
   | { kind: "races"; count: number } // planned races finished
   | { kind: "evening_runs"; count: number } // planned evening runs
-  | { kind: "coached_blocks"; count: number }; // coached plans seen through
+  | { kind: "coached_blocks"; count: number } // coached plans seen through
+  // Night gates — sleep/recovery 0020. Both compound sleep WITH training:
+  // a dewy morning already requires a tended garden, and a steady week
+  // requires the training week to have been consistent too.
+  | { kind: "dewy_mornings"; count: number }
+  | { kind: "steady_sleep_weeks"; count: number };
 
 export interface Species {
   id: string;
@@ -97,6 +102,10 @@ export const SPECIES: Species[] = [
   { id: "cosmos", name: "Cosmos", category: "flower", rarity: "uncommon", unlock: { kind: "quality_runs", count: 8 }, growthDays: 12, spacing: 0.033, depthBand: [0.45, 0.85], flowers: true, archetype: "flower_daisy", palette: { primary: "#6a8a5c", secondary: "#e3a8b8", accent: "#e8d27a" } },
   { id: "tulip", name: "Wild tulip", category: "flower", rarity: "uncommon", unlock: { kind: "quality_runs", count: 10 }, growthDays: 13, spacing: 0.03, depthBand: [0.5, 0.85], flowers: true, archetype: "flower_cup", palette: { primary: "#5f8054", secondary: "#e0b04e" } },
   { id: "dahlia", name: "Garden dahlia", category: "flower", rarity: "rare", unlock: { kind: "quality_runs", count: 14 }, growthDays: 16, spacing: 0.04, depthBand: [0.45, 0.8], flowers: true, archetype: "flower_cluster", palette: { primary: "#587a4f", secondary: "#d98a68", accent: "#b45a6a" } },
+  // Night bloomers (sleep/recovery 0020) — earned by settled nights on a
+  // garden that is also being trained.
+  { id: "evening_primrose", name: "Evening primrose", category: "flower", rarity: "uncommon", unlock: { kind: "dewy_mornings", count: 10 }, growthDays: 12, spacing: 0.032, depthBand: [0.45, 0.85], flowers: true, archetype: "flower_cup", palette: { primary: "#5e7d51", secondary: "#e8d27a", accent: "#f2ecd2" } },
+  { id: "moonflower", name: "Moonflower", category: "flower", rarity: "rare", unlock: { kind: "steady_sleep_weeks", count: 3 }, growthDays: 15, spacing: 0.036, depthBand: [0.4, 0.8], flowers: true, archetype: "flower_cup", palette: { primary: "#5c7a63", secondary: "#ece7f2", accent: "#c9d3e8" } },
   { id: "wildflower_mix", name: "Wildflower cluster", category: "flower", rarity: "common", unlock: { kind: "quality_runs", count: 3 }, growthDays: 9, spacing: 0.045, depthBand: [0.5, 0.9], flowers: true, archetype: "flower_cluster", palette: { primary: "#66865c", secondary: "#d1b2d8", accent: "#e2c76e" } },
 
   // ── Ferns & shade plants ─────────────────────────────────────────────────

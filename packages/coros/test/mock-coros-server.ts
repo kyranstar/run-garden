@@ -105,6 +105,8 @@ export interface MockCorosServer {
     activities: RawCorosActivityListItem[];
     details: Record<string, RawCorosActivityDetail>;
     dayList: Array<Record<string, unknown>>;
+    /** Dashboard sleepHrvData (0020) — tests pin per-night sd history here. */
+    sleepHrvData: Record<string, unknown>;
   };
   counts: {
     login: number;
@@ -277,6 +279,7 @@ export function mockCorosServer(opts: { baseMonday?: string } = {}): MockCorosSe
           avgSleepHrv: 69,
         },
       ],
+      sleepHrvData: { avgSleepHrv: 72 },
     },
     counts: { login: 0, scheduleQuery: 0, scheduleWrites: 0, localeFetches: 0 },
     updateRejectResult: null,
@@ -586,7 +589,7 @@ export function mockCorosServer(opts: { baseMonday?: string } = {}): MockCorosSe
             rhr: 47,
             recoveryPct: 88,
             fullRecoveryHours: 9,
-            sleepHrvData: { avgSleepHrv: 72 },
+            sleepHrvData: structuredClone(server.state.sleepHrvData),
             lthr: 171,
           },
         });

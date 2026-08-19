@@ -15,6 +15,7 @@ import {
   plannedWorkouts,
   providerConnections,
   scheduleOverrides,
+  sleepRecords,
   trainingPlans,
   workoutCompletionMatches,
 } from "@rg/database";
@@ -452,6 +453,18 @@ function exercisesDto(
   return { exercises, ...(structured?.rounds ? { exerciseRounds: structured.rounds } : {}) };
 }
 
+/** Last night's sleep, or null — the readiness sheet's "slept" vital (0020). */
+function sleepDto(
+  row: { durationSeconds: number; deepSeconds: number | null; remSeconds: number | null } | undefined,
+): { durationSeconds: number; deepSeconds: number | null; remSeconds: number | null } | null {
+  if (!row) return null;
+  return {
+    durationSeconds: row.durationSeconds,
+    deepSeconds: row.deepSeconds,
+    remSeconds: row.remSeconds,
+  };
+}
+
 /** The Today payload: next workout, statuses, readiness, garden preview. */
 planRoutes.get("/today", async (c) => {
   const db = c.get("db");
@@ -476,6 +489,7 @@ planRoutes.get("/today", async (c) => {
     yesterdayDone,
     latestCoachMsg,
     consistencyRows,
+    lastNight,
   ] = await Promise.all([
     exerciseNameMap(db),
     db
@@ -577,6 +591,14 @@ planRoutes.get("/today", async (c) => {
           isNull(plannedWorkouts.archivedAt),
         ),
       ),
+    // Last night, when a sleep record exists (wake-date keyed: last night's
+    // sleep carries today's date). Prod has none until the sleep connection
+    // ships; fixtures and future providers light this up (0020).
+    db
+      .select()
+      .from(sleepRecords)
+      .where(and(eq(sleepRecords.userId, userId), eq(sleepRecords.date, today)))
+      .limit(1),
   ]);
   const next = upcoming.find((w) => w.category !== "rest") ?? upcoming[0];
   const snapshot = gardenRows[0]?.snapshot as unknown as GardenSnapshot | undefined;
@@ -604,7 +626,7 @@ planRoutes.get("/today", async (c) => {
     // Same three fields as ever (other surfaces read them), plus the computed
     // `verdict` the garden dock leads with — built by the one shared helper so
     // the dock and the Today card can't disagree about "your baseline".
-    readiness: buildReadiness(health),
+    readiness: { ...buildReadiness(health, today), sleep: sleepDto(lastNight[0]) },
     // The coach's own weekly action line, gated by the SAME 72h staleness
     // rule /week uses (`deriveFocus`). The dock labels it as the coach's line
     // and dates it — it was written about the week, not about today's

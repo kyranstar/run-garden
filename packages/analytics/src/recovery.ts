@@ -145,6 +145,9 @@ export interface HrvValue {
   pctVsBaseline: number;
   /** clamp(0.5 * CV% of baseline readings, 5, 15); 10 when the baseline has no variability to measure. */
   thresholdPct: number;
+  /** Where the band came from: the watch's own base ± sd ("coros") or our
+   * derived median + smallest-worthwhile-change ("derived") (0020). */
+  bandSource: "coros" | "derived";
   staleDays: number;
   /** Last 60 days of valid readings, ascending. */
   series: Array<{ date: string; value: number }>;
@@ -160,19 +163,37 @@ export interface HrvValue {
  * user, an uncapped baseline would silently drift into an all-time average
  * after ~6 weeks, which defeats detecting a real recovery-trend shift.) */
 export function computeHrvTrend(
-  rows: ReadonlyArray<{ date: string; hrv: number | null }>,
+  rows: ReadonlyArray<{
+    date: string;
+    hrv: number | null;
+    /** COROS's own per-night baseline ± sd, when the feed carries it (0020).
+     * With a watch-provided band the 17-reading self-baseline gate relaxes:
+     * the band was computed on-wrist from data we never saw, so five of our
+     * own readings are enough to have something to compare against it. */
+    sleepHrvBase?: number | null;
+    sleepHrvSd?: number | null;
+  }>,
   today: string,
 ): MetricResult<HrvValue> {
   const valid = rows
-    .filter((r): r is { date: string; hrv: number } => r.hrv != null && r.hrv > 0)
+    .filter((r): r is { date: string; hrv: number; sleepHrvBase?: number | null; sleepHrvSd?: number | null } =>
+      r.hrv != null && r.hrv > 0)
     .filter((r) => r.date <= today)
     .sort((a, b) => (a.date < b.date ? 1 : -1)); // newest first
 
-  if (valid.length < 17) {
+  const corosRow = rows
+    .filter((r) => r.date <= today && r.sleepHrvBase != null && r.sleepHrvBase > 0)
+    .sort((a, b) => (a.date < b.date ? 1 : -1))[0];
+  const corosBase = corosRow?.sleepHrvBase ?? null;
+
+  const needed = corosBase != null ? 5 : 17;
+  if (valid.length < needed) {
     return insufficient(
-      17,
+      needed,
       valid.length,
-      `HRV trend needs at least 17 valid COROS readings (7 recent + 10 baseline); you have ${valid.length}.`,
+      corosBase != null
+        ? `Sleep HRV needs at least 5 valid overnight readings; you have ${valid.length}.`
+        : `HRV trend needs at least 17 valid COROS readings (7 recent + 10 baseline); you have ${valid.length}.`,
     );
   }
 
@@ -188,7 +209,7 @@ export function computeHrvTrend(
 
   const recentReadings = valid.slice(0, 7);
   const oldestRecentDays = daysBetween(recentReadings[recentReadings.length - 1]!.date, today);
-  if (oldestRecentDays > 14) {
+  if (corosBase == null && oldestRecentDays > 14) {
     return insufficient(
       17,
       0,
@@ -196,20 +217,33 @@ export function computeHrvTrend(
     );
   }
 
-  const baselineReadings = valid.slice(7, 37); // ranks 8..37; guaranteed >= 10 given the length-17 gate above
   const recent = median(recentReadings.map((r) => r.hrv));
-  const baseline = median(baselineReadings.map((r) => r.hrv));
+  let baseline: number;
+  let thresholdPct: number;
+  let bandSource: "coros" | "derived";
+  if (corosBase != null) {
+    // The watch's own band: base ± sd, as a percentage of base so the rest
+    // of the math (and the gauge, drawn in %) is unchanged.
+    baseline = corosBase;
+    const sd = corosRow?.sleepHrvSd ?? null;
+    thresholdPct =
+      sd != null && sd > 0 ? roundTo(clamp((sd / corosBase) * 100, 5, 15), 1) : 10;
+    bandSource = "coros";
+  } else {
+    const baselineReadings = valid.slice(7, 37); // ranks 8..37; guaranteed >= 10 given the length-17 gate above
+    baseline = median(baselineReadings.map((r) => r.hrv));
+    const baselineValues = baselineReadings.map((r) => r.hrv);
+    const baselineMean = mean(baselineValues);
+    const baselineSd = populationStdDev(baselineValues);
+    // A baseline with zero observed variability can't produce a meaningful
+    // smallest-worthwhile-change threshold (clamping 0 up to the floor of 5
+    // would imply more confidence than the data supports), so fall back to a
+    // sensible default instead.
+    thresholdPct =
+      baselineMean > 0 && baselineSd > 0 ? roundTo(clamp(0.5 * ((baselineSd / baselineMean) * 100), 5, 15), 1) : 10;
+    bandSource = "derived";
+  }
   const pctVsBaseline = baseline > 0 ? roundTo(((recent - baseline) / baseline) * 100, 1) : 0;
-
-  const baselineValues = baselineReadings.map((r) => r.hrv);
-  const baselineMean = mean(baselineValues);
-  const baselineSd = populationStdDev(baselineValues);
-  // A baseline with zero observed variability can't produce a meaningful
-  // smallest-worthwhile-change threshold (clamping 0 up to the floor of 5
-  // would imply more confidence than the data supports), so fall back to a
-  // sensible default instead.
-  const thresholdPct =
-    baselineMean > 0 && baselineSd > 0 ? roundTo(clamp(0.5 * ((baselineSd / baselineMean) * 100), 5, 15), 1) : 10;
 
   const windowStart = addDays(today, -59);
   const series = [...valid]
@@ -218,9 +252,88 @@ export function computeHrvTrend(
     .map((r) => ({ date: r.date, value: r.hrv }));
 
   return ok(
-    { recent: Math.round(recent), baseline: Math.round(baseline), pctVsBaseline, thresholdPct, staleDays, series },
+    {
+      recent: Math.round(recent),
+      baseline: Math.round(baseline),
+      pctVsBaseline,
+      thresholdPct,
+      staleDays,
+      series,
+      bandSource,
+    },
     valid.length,
-    "Median of your 7 most recent HRV readings versus a baseline from earlier, non-overlapping readings.",
+    bandSource === "coros"
+      ? "Median of your 7 most recent overnight readings versus the band your own watch computed."
+      : "Median of your 7 most recent HRV readings versus a baseline from earlier, non-overlapping readings.",
+  );
+}
+
+export interface SleepNightsValue {
+  /** Last night's (or the newest) duration, seconds. */
+  latestSeconds: number;
+  latestDate: string;
+  /** 30-day mean nightly duration, seconds. */
+  meanSeconds: number;
+  /** Nights in the window, oldest first. */
+  nights: Array<{
+    date: string;
+    totalSeconds: number;
+    deepSeconds: number | null;
+    remSeconds: number | null;
+    lightSeconds: number | null;
+  }>;
+  series: Array<{ date: string; value: number }>;
+  staleDays: number;
+}
+
+/**
+ * Nightly sleep duration + stages (0020). Prod carries no sleep records until
+ * the COROS sleep connection ships, so this metric simply doesn't exist for
+ * most athletes yet — the worker only emits it when the data does.
+ */
+export function computeSleepNights(
+  rows: ReadonlyArray<{
+    date: string;
+    durationSeconds: number;
+    deepSeconds: number | null;
+    remSeconds: number | null;
+    lightSeconds: number | null;
+  }>,
+  today: string,
+): MetricResult<SleepNightsValue> {
+  const valid = rows
+    .filter((r) => r.durationSeconds > 0 && r.date <= today)
+    .sort((a, b) => (a.date < b.date ? -1 : 1)); // oldest first
+  if (valid.length < 3) {
+    return insufficient(
+      3,
+      valid.length,
+      `Sleep needs at least 3 recorded nights in the last 30 days; you have ${valid.length}.`,
+    );
+  }
+  const newest = valid[valid.length - 1]!;
+  const staleDays = daysBetween(newest.date, today);
+  if (staleDays > 7) {
+    return insufficient(3, 0, `Your newest sleep record is ${staleDays} days old.`);
+  }
+  const meanSeconds = mean(valid.map((r) => r.durationSeconds));
+  return ok(
+    {
+      latestSeconds: newest.durationSeconds,
+      latestDate: newest.date,
+      meanSeconds,
+      nights: valid.map((r) => ({
+        date: r.date,
+        totalSeconds: r.durationSeconds,
+        deepSeconds: r.deepSeconds,
+        remSeconds: r.remSeconds,
+        lightSeconds: r.lightSeconds,
+      })),
+      series: valid.map((r) => ({ date: r.date, value: roundTo(r.durationSeconds / 3600, 1) })),
+      staleDays,
+    },
+    valid.length,
+    "Each recorded night in the last 30 days, straight off the watch.",
   );
 }
 

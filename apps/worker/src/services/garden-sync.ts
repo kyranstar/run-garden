@@ -22,6 +22,7 @@ import {
   isAdventureSport,
   isoWeekday,
   newId,
+  nightState,
   nowInstant,
   todayInZone,
   type GardenConditionWord,
@@ -443,6 +444,20 @@ export async function buildDayInput(
     .limit(1);
   const recovery = recoveryScoreFrom(healthRow[0]?.recoveryScore, healthRow[0]?.fatigueScore);
   if (recovery !== undefined) input.recoveryScore = recovery;
+  // Dew (sleep/recovery 0020): did the night INTO this date settle the body?
+  // daily_health rows are wake-date keyed, so the row of `date` describes the
+  // night that ended that morning. "gap" stays undefined — no reading is
+  // never a bad night, and the engine treats absent exactly like pre-feature
+  // stored inputs.
+  const night = healthRow[0]
+    ? nightState({
+        hrv: healthRow[0].hrv,
+        sleepHrvBase: healthRow[0].sleepHrvBase,
+        sleepHrvSd: healthRow[0].sleepHrvSd,
+        recoveryScore: healthRow[0].recoveryScore,
+      })
+    : "gap";
+  if (night !== "gap") input.dew = night === "settled";
 
   // Fairness spec §4: the day AFTER a coached plan's final day, at ≥85%
   // block adherence, counts a coached block (→ the Keystone pine).
@@ -951,6 +966,9 @@ export interface GardenView {
   balance: DisciplineBalance;
   /** Today's adventure shield: sheltered day + what to name in the caption. */
   adventure: { frozenToday: boolean; graceDay: boolean; lastSport: string | null; lastDate: string | null };
+  /** Dew this morning (option C, 0020): a settled night on a tended garden.
+   * The forecast speaks for it; the scene reads it from the snapshot itself. */
+  dewToday: boolean;
   /**
    * True calendar date of the most recent completed run activity (any
    * discipline-agnostic run, matched or unmatched to a planned workout) —
@@ -1001,7 +1019,7 @@ export async function previewToday(
    * actually computed it (C11) — undefined only when the fold didn't run
    * (see the gapDays guard below), in which case a caller should fall back
    * to deriving the shield from durable state directly. */
-  todayShield?: { adventureFrozen: boolean; graceDay: boolean };
+  todayShield?: { adventureFrozen: boolean; graceDay: boolean; dewToday?: boolean };
 }> {
   const gapDays = daysBetween(snapshot.state.lastSimulatedDate, today);
   if (gapDays < 1 || gapDays > 14) return { snapshot, events: [], todayInput: null };
@@ -1009,7 +1027,7 @@ export async function previewToday(
     let cursor = snapshot;
     let events: GardenEvent[] = [];
     let todayInput: GardenDayInput | null = null;
-    let todayShield: { adventureFrozen: boolean; graceDay: boolean } | undefined;
+    let todayShield: { adventureFrozen: boolean; graceDay: boolean; dewToday?: boolean } | undefined;
     for (
       let date = addDays(snapshot.state.lastSimulatedDate, 1);
       date <= today;
@@ -1122,6 +1140,7 @@ export async function buildGardenView(
     const dayRuns = recentInputs.map((r) => ({
       date: r.date,
       runs: ((r.input as { completedRuns?: unknown }).completedRuns ?? []) as VisitorDayRuns["runs"],
+      dew: (r.input as { dew?: boolean }).dew,
     }));
     todayVisitor = visitorForDate(today, snapshot.state.season, dayRuns);
     if (todayVisitor) {
@@ -1226,10 +1245,15 @@ export async function buildGardenView(
   // the snapshot (todayInput + the shield above — same sourcing rule as
   // C11). When the preview didn't run at all (a >14-day durable outage),
   // claim nothing: false keeps the projection honest about an unknown day.
+  // Dew: same sourcing rule as the adventure shield (C11) — the fold's own
+  // flag when the preview ran, the committed state's lastDewDate otherwise.
+  const dewToday =
+    todayShield?.dewToday ?? snapshot.state.lastDewDate === today;
   const runDecayPausedToday =
     snapshot.state.restMode ||
     frozenToday ||
     graceDay ||
+    dewToday ||
     (todayInput !== null && (todayInput.planGap || todayInput.restObserved));
 
   const seenRow = (
@@ -1314,6 +1338,7 @@ export async function buildGardenView(
     },
     lastRunDate,
     runDecayPausedToday,
+    dewToday,
   };
 }
 

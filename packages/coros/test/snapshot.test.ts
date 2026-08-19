@@ -87,3 +87,32 @@ describe("buildSnapshot recovery stamping", () => {
     }
   });
 });
+
+describe("sleep-HRV band + full-recovery mapping (0020)", () => {
+  it("maps per-day sleepHrvSd from the dashboard's night list, and fullRecoveryHours onto the stamp day only", async () => {
+    const yesterday = addDays(TODAY, -1);
+    const { server, client } = await setup([yesterday, TODAY]);
+    server.state.sleepHrvData = {
+      happenDay: corosDay(TODAY),
+      avgSleepHrv: 72,
+      sleepHrvBase: 68,
+      sleepHrvSd: 6,
+      sleepHrvList: [
+        { happenDay: corosDay(yesterday), avgSleepHrv: 65, sleepHrvBase: 67, sleepHrvSd: 5 },
+      ],
+    };
+    const snapshot = await snapshotFor(client, addDays(TODAY, 7));
+    const byDate = new Map(snapshot.health.map((h) => [h.date, h]));
+    expect(byDate.get(TODAY)?.sleepHrvSd).toBe(6);
+    expect(byDate.get(yesterday)?.sleepHrvSd).toBe(5);
+    expect(byDate.get(TODAY)?.fullRecoveryHours).toBe(9); // mock dashboard value
+    expect(byDate.get(yesterday)?.fullRecoveryHours).toBeUndefined();
+  });
+
+  it("carries no sd when the dashboard has none — absent, never invented", async () => {
+    const { server, client } = await setup([TODAY]);
+    server.state.sleepHrvData = { avgSleepHrv: 72 };
+    const snapshot = await snapshotFor(client, addDays(TODAY, 7));
+    expect(snapshot.health.find((h) => h.date === TODAY)?.sleepHrvSd).toBeUndefined();
+  });
+});

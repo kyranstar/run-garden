@@ -739,21 +739,30 @@ export async function seedFixtures(db: Db, env: Env, userId: string): Promise<Se
   for (let i = 0; i < 60; i++) {
     const date = addDays(today, -i);
     if (date < monday) break;
+    // Every ~9th night the watch "wasn't worn": no HRV, no sleep record — the
+    // gap state every sleep surface must render honestly (0020). hrv 58-75
+    // against the COROS band 62-74 gives a few genuinely low nights too.
+    const unworn = i % 9 === 4;
     await db
       .insert(dailyHealth)
       .values({
         id: `${userId}:${date}`,
         userId,
         date,
-        restingHeartRate: 44 + (i % 5),
-        hrv: 58 + ((i * 7) % 18),
+        restingHeartRate: unworn ? null : 44 + (i % 5),
+        hrv: unworn ? null : 58 + ((i * 7) % 18),
         recoveryScore: 60 + ((i * 11) % 35),
         trainingLoad7d: 280 + ((i * 13) % 120),
+        dayLoad: i % 3 === 1 ? 120 + ((i * 29) % 60) : 30 + ((i * 7) % 45),
+        sleepHrvBase: 68,
+        sleepHrvSd: 6,
+        fullRecoveryHours: i === 0 ? 9 : null,
         provider: "coros",
-        contentFingerprint: fingerprint({ date, i }),
+        contentFingerprint: fingerprint({ date, i, v: 2 }),
         updatedAt: now,
       })
       .onConflictDoNothing();
+    if (unworn) continue;
     await db
       .insert(sleepRecords)
       .values({

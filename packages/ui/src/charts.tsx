@@ -1313,3 +1313,280 @@ export function BaselineBandChart({
     </ChartFrame>
   );
 }
+
+// ── Sleep & recovery (0020) ─────────────────────────────────────────────────
+
+/**
+ * Strain & answer: each training day's load above the divider, the night
+ * that followed it below — same day column, so "hard day → the night dips →
+ * it settles" is one vertical read. Loads are bars (magnitude), nights are
+ * dots against the athlete's own band (the shaded strip). A day without load
+ * is an empty slot; a night without a reading is a base tick, never a guess.
+ */
+export function StrainAnswerChart({
+  pairs,
+  band,
+  unit = "ms",
+}: {
+  pairs: Array<{ date: string; load: number | null; value: number | null }>;
+  /** Absolute night-band edges in `unit` (the hrv metric's baseline band). */
+  band: { lo: number; hi: number } | null;
+  unit?: string;
+}) {
+  const { wrapperProps, tooltip, registerMarks, measured } = useChartTooltip();
+  const width = chartWidth(measured, 560);
+  const height = 190;
+  const top = CHART_HEADER_H;
+  const innerW = width - M.left - M.right;
+  const laneDivider = top + 62; // load lane above, night lane below
+  const nightTop = laneDivider + 18;
+  const nightBottom = height - M.bottom;
+
+  const slotW = innerW / Math.max(1, pairs.length);
+  const barW = Math.max(6, Math.min(18, slotW - 4));
+  const xOf = (i: number) => M.left + slotW * (i + 0.5);
+
+  const maxLoad = Math.max(1, ...pairs.map((p) => p.load ?? 0));
+  const loadH = (load: number) => Math.max(2, (load / maxLoad) * (laneDivider - top - 6));
+
+  const nightVals = pairs.map((p) => p.value).filter((v): v is number => v != null);
+  const lo = Math.min(...(band ? [band.lo] : []), ...nightVals);
+  const hi = Math.max(...(band ? [band.hi] : []), ...nightVals);
+  const span = Math.max(1, hi - lo);
+  const yNight = (v: number) =>
+    nightBottom - ((v - lo) / span) * (nightBottom - nightTop);
+
+  registerMarks(
+    pairs.flatMap((p, i) => {
+      const marks: ChartMark[] = [];
+      if (p.load != null && p.load > 0) {
+        marks.push({
+          x: xOf(i),
+          y: laneDivider - loadH(p.load),
+          label: `${formatShortDate(p.date)}: load ${Math.round(p.load)}`,
+        });
+      }
+      if (p.value != null) {
+        marks.push({
+          x: xOf(i),
+          y: yNight(p.value),
+          label: `night after ${formatShortDate(p.date)}: ${Math.round(p.value)} ${unit}`,
+        });
+      }
+      return marks;
+    }),
+  );
+
+  const withLoad = pairs.filter((p) => p.load != null && p.load > 0).length;
+  const lowNights = band
+    ? pairs.filter((p) => p.value != null && p.value < band.lo).length
+    : 0;
+  const summary =
+    `Fourteen days of training load, each paired with the night that followed. ` +
+    `${withLoad} days carried load; ` +
+    (band
+      ? `${lowNights} following night${lowNights === 1 ? "" : "s"} fell below your ${band.lo}–${band.hi} ${unit} band.`
+      : `no personal night band is known yet.`);
+
+  return (
+    <ChartFrame
+      title="Strain & answer"
+      subtitle="Each day's training, and how the night answered · 14 days"
+      summary={summary}
+      note={
+        band
+          ? `Dots: the night AFTER each day, against your ${band.lo}–${band.hi} ${unit} band · a tick at the base is a night without a reading`
+          : "Dots: the night after each day · a tick at the base is a night without a reading"
+      }
+    >
+      <div {...wrapperProps}>
+        <svg
+          role="img"
+          aria-label={summary}
+          viewBox={`0 0 ${width} ${height}`}
+          style={svgStyle(width)}
+        >
+          <text x={M.left} y={CHART_HEADER_BASELINE} fontSize={CHART_LABEL_PX} fill={INK_FAINT}>
+            load
+          </text>
+          {pairs.map((p, i) =>
+            p.load != null && p.load > 0 ? (
+              <path
+                key={`l-${p.date}`}
+                d={roundedTopBarPath(xOf(i) - barW / 2, laneDivider - loadH(p.load), barW, loadH(p.load), 3)}
+                fill="var(--border-strong)"
+              />
+            ) : null,
+          )}
+          <line x1={M.left} x2={width - M.right} y1={laneDivider} y2={laneDivider} stroke="var(--chart-grid)" />
+          <text x={M.left} y={laneDivider + 13} fontSize={CHART_LABEL_PX} fill={INK_FAINT}>
+            the night after
+          </text>
+          {band ? (
+            <ShadedBand x1={M.left} x2={width - M.right} y1={yNight(band.hi)} y2={yNight(band.lo)} />
+          ) : null}
+          {pairs.map((p, i) => {
+            if (p.value == null) {
+              return (
+                <line
+                  key={`n-${p.date}`}
+                  x1={xOf(i)}
+                  x2={xOf(i)}
+                  y1={nightBottom}
+                  y2={nightBottom - 5}
+                  stroke="var(--border-strong)"
+                />
+              );
+            }
+            const low = band != null && p.value < band.lo;
+            return (
+              <circle
+                key={`n-${p.date}`}
+                cx={xOf(i)}
+                cy={yNight(p.value)}
+                r={3}
+                fill={low ? "var(--warn)" : "var(--ink)"}
+                opacity={0.8}
+              />
+            );
+          })}
+          <text x={M.left} y={height - 8} fontSize={CHART_LABEL_PX} fill={INK_FAINT}>
+            {formatShortDate(pairs[0]!.date)}
+          </text>
+          <text
+            x={width - M.right}
+            y={height - 8}
+            textAnchor="end"
+            fontSize={CHART_LABEL_PX}
+            fill={INK_FAINT}
+          >
+            {formatShortDate(pairs[pairs.length - 1]!.date)}
+          </text>
+        </svg>
+        {tooltip}
+      </div>
+    </ChartFrame>
+  );
+}
+
+/**
+ * Sleep by stage: each recorded night stacked deep → REM → light from the
+ * ground up (depth at the root, like soil), against a 7 h reference line.
+ * Nights whose stages are unknown draw as a single pale bar — duration is
+ * never withheld just because depth wasn't measured. Gap nights (no record)
+ * simply aren't slots: the wire only carries recorded nights, and inventing
+ * empty columns for unworn-watch nights would read as insomnia.
+ */
+export function SleepStagesChart({
+  nights,
+}: {
+  nights: Array<{
+    date: string;
+    totalSeconds: number;
+    deepSeconds?: number | null;
+    remSeconds?: number | null;
+    lightSeconds?: number | null;
+  }>;
+}) {
+  const { wrapperProps, tooltip, registerMarks, measured } = useChartTooltip();
+  const shown = nights.slice(-14);
+  const width = chartWidth(measured, 560);
+  const height = 180;
+  const top = CHART_HEADER_H;
+  const innerW = width - M.left - M.right;
+  const bottom = height - M.bottom;
+
+  const slotW = innerW / Math.max(1, shown.length);
+  const barW = Math.max(8, Math.min(22, slotW - 4));
+  const xOf = (i: number) => M.left + slotW * (i + 0.5);
+
+  const maxH = Math.max(9, ...shown.map((n) => n.totalSeconds / 3600));
+  const yOf = (hours: number) => bottom - (hours / maxH) * (bottom - top - 6);
+
+  registerMarks(
+    shown.map((nt, i) => ({
+      x: xOf(i),
+      y: yOf(nt.totalSeconds / 3600),
+      label: `${formatShortDate(nt.date)}: ${(nt.totalSeconds / 3600).toFixed(1)} h`,
+    })),
+  );
+
+  if (shown.length === 0) return null;
+
+  const summary =
+    `${shown.length} recorded nights from ${formatShortDate(shown[0]!.date)} to ` +
+    `${formatShortDate(shown[shown.length - 1]!.date)}, stacked by depth where known, ` +
+    `against a 7 hour reference line.`;
+
+  const GAP = 2;
+  return (
+    <ChartFrame
+      title="Sleep"
+      subtitle={`Depth of each recorded night · line marks 7 h`}
+      summary={summary}
+      legend={[
+        { label: "deep", swatch: <span className="chart-legend-chip" style={{ background: "var(--night-deep)" }} /> },
+        { label: "REM", swatch: <span className="chart-legend-chip" style={{ background: "var(--night-rem)" }} /> },
+        { label: "light", swatch: <span className="chart-legend-chip" style={{ background: "var(--night-light)" }} /> },
+      ]}
+      note="Only recorded nights are drawn — a night the watch wasn't worn is absent, not zero"
+    >
+      <div {...wrapperProps}>
+        <svg
+          role="img"
+          aria-label={summary}
+          viewBox={`0 0 ${width} ${height}`}
+          style={svgStyle(width)}
+        >
+          {shown.map((nt, i) => {
+            const x = xOf(i) - barW / 2;
+            const totalH = yOf(0) - yOf(nt.totalSeconds / 3600);
+            const deep = nt.deepSeconds ?? null;
+            const rem = nt.remSeconds ?? null;
+            if (deep == null && rem == null) {
+              return (
+                <path
+                  key={nt.date}
+                  d={roundedTopBarPath(x, yOf(nt.totalSeconds / 3600), barW, totalH, 3)}
+                  fill="var(--night-light)"
+                  opacity={0.75}
+                />
+              );
+            }
+            // light = the remainder, unless the wire carried it explicitly.
+            const light =
+              nt.lightSeconds ?? Math.max(0, nt.totalSeconds - (deep ?? 0) - (rem ?? 0));
+            const hPx = (sec: number) => (sec / 3600 / maxH) * (bottom - top - 6);
+            const deepH = Math.max(0, hPx(deep ?? 0) - GAP);
+            const remH = Math.max(0, hPx(rem ?? 0) - GAP);
+            const lightH = Math.max(0, hPx(light) - GAP);
+            let cursor = bottom;
+            const segs: ReactNode[] = [];
+            if (deepH > 0) {
+              segs.push(<rect key="d" x={x} y={cursor - deepH} width={barW} height={deepH} fill="var(--night-deep)" />);
+              cursor -= deepH + GAP;
+            }
+            if (remH > 0) {
+              segs.push(<rect key="r" x={x} y={cursor - remH} width={barW} height={remH} fill="var(--night-rem)" />);
+              cursor -= remH + GAP;
+            }
+            if (lightH > 0) {
+              segs.push(
+                <path key="g" d={roundedTopBarPath(x, cursor - lightH, barW, lightH, 3)} fill="var(--night-light)" />,
+              );
+            }
+            return <g key={nt.date}>{segs}</g>;
+          })}
+          <ReferenceLine x1={M.left} x2={width - M.right} y={yOf(7)} label="7 h" />
+          <text x={M.left} y={height - 8} fontSize={CHART_LABEL_PX} fill={INK_FAINT}>
+            {formatShortDate(shown[0]!.date)}
+          </text>
+          <text x={width - M.right} y={height - 8} textAnchor="end" fontSize={CHART_LABEL_PX} fill={INK_FAINT}>
+            {formatShortDate(shown[shown.length - 1]!.date)}
+          </text>
+        </svg>
+        {tooltip}
+      </div>
+    </ChartFrame>
+  );
+}

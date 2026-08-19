@@ -7,6 +7,8 @@ import {
   DivergingPaceBars,
   LapHrBars,
   RunSeriesChart,
+  SleepStagesChart,
+  StrainAnswerChart,
 } from "../charts.js";
 import { TrendChip } from "../chart-kit.js";
 import { SignalTile } from "../signal-tiles.js";
@@ -84,6 +86,19 @@ export function MetricDrilldown({ m, onClose }: { m: InterpretedMetric; onClose:
           />
         ) : null}
 
+        {/* Strain & answer (0020): the hrv drilldown's second chart — the
+            training day above the line, the night that followed below it. */}
+        {m.pairs && m.pairs.length > 0 ? (
+          <StrainAnswerChart
+            pairs={m.pairs}
+            band={baseline ? { lo: baseline.lo, hi: baseline.hi } : null}
+            unit={baseline?.unit ?? "ms"}
+          />
+        ) : null}
+
+        {/* Sleep by stage (0020): only recorded nights exist on the wire. */}
+        {m.nights && m.nights.length > 0 ? <SleepStagesChart nights={m.nights} /> : null}
+
         {/* `pacing` is run-only (RUN_ONLY_METRICS), so this drilldown only ever
             opens on the run discipline — "run by run" is always true here. */}
         {m.id === "pacing" && paceRuns.length > 0 ? (
@@ -124,7 +139,7 @@ export function MetricDrilldown({ m, onClose }: { m: InterpretedMetric; onClose:
  *  metric from a newer worker must never crash an older client. */
 export const METRIC_GROUPS: Array<{ title: string; ids: string[] }> = [
   { title: "Load", ids: ["loadRatio", "ramp", "monotony"] },
-  { title: "Recovery", ids: ["restingHr", "hrv", "hardStack"] },
+  { title: "Recovery", ids: ["restingHr", "hrv", "sleep", "hardStack"] },
   { title: "Execution", ids: ["lowIntensityShare", "easyDiscipline", "pacing"] },
 ];
 

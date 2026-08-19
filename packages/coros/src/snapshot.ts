@@ -188,6 +188,14 @@ export async function buildSnapshot(
   // recoveryScore unstamped forever.)
   const latestDay = days.reduce((m, d) => Math.max(m, Number(d.happenDay ?? 0)), 0);
   const latestIsCurrent = latestDay > 0 && corosDayToLocalDate(latestDay) >= addDays(today, -1);
+  // COROS's own per-night band rides the dashboard, not dayDetail: the top
+  // level is the newest night and sleepHrvList is a short history. Index sd
+  // by day so each health row can carry its own band (sleep/recovery 0020).
+  const sdByDay = new Map<number, number>();
+  for (const night of [dashboard?.sleepHrvData, ...(dashboard?.sleepHrvData?.sleepHrvList ?? [])]) {
+    const day = Number(night?.happenDay ?? 0);
+    if (day > 0 && night?.sleepHrvSd !== undefined) sdByDay.set(day, night.sleepHrvSd);
+  }
   const health: DailyHealth[] = days
     .filter((d) => d.happenDay != null)
     .map((d) => {
@@ -214,6 +222,14 @@ export async function buildSnapshot(
           numberOrUndefined(d.lthr) ??
           (stampDashboard ? numberOrUndefined(dashboard?.lthr) : undefined),
         sleepHrvBase: numberOrUndefined(d.sleepHrvBase),
+        sleepHrvSd:
+          numberOrUndefined(d.sleepHrvSd) ?? sdByDay.get(Number(d.happenDay)) ??
+          (stampDashboard ? numberOrUndefined(dashboard?.sleepHrvData?.sleepHrvSd) : undefined),
+        // Like recoveryScore: a "now" value that only makes sense on the
+        // current day.
+        fullRecoveryHours: stampDashboard
+          ? numberOrUndefined(dashboard?.fullRecoveryHours)
+          : undefined,
         loadRatio: numberOrUndefined(d.trainingLoadRatio),
         acuteTi: numberOrUndefined(d.ati),
         chronicTi: numberOrUndefined(d.cti),

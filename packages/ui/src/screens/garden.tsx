@@ -494,6 +494,10 @@ interface ForecastInput {
   balance?: DisciplineBalance;
   /** The adventure shield — frozen today or still in its grace window. Outranks every loss line. */
   adventure?: { frozenToday: boolean; graceDay: boolean; lastSport: string | null; lastDate: string | null };
+  /** Dew this morning (option C, 0020) — a settled night on a tended garden.
+   * A calm voice like the shields; the adventure branches outrank it only
+   * because an adventure names a concrete thing the athlete did. */
+  dew?: boolean;
 }
 
 /**
@@ -520,6 +524,7 @@ export function forecastVoice({
   nextWorkout,
   balance,
   adventure,
+  dew,
 }: ForecastInput): { kind: "loss" | "calm"; line: ReactNode } | null {
   const f = gardenForecast(snapshot, daysAhead);
   // Active soil/life decay outranks a merely-pending dry spell: when the rain
@@ -556,6 +561,12 @@ export function forecastVoice({
     );
   } else if (f.recovering) {
     line = <>Recovery rain — the garden is drinking it in.</>;
+  } else if (dew) {
+    line = (
+      <>
+        <strong>Dew</strong> from a settled night — the garden holds its water today.
+      </>
+    );
   } else if (f.next?.stage === "dry" && (soilOver > 0 || lifeOver > 0)) {
     kind = "loss";
     line =
@@ -929,6 +940,39 @@ export function coachClause(
   }
 }
 
+/** 7h10m-style clock for the slept vital. */
+function sleepClock(seconds: number): string {
+  const h = Math.floor(seconds / 3600);
+  const m = Math.round((seconds % 3600) / 60);
+  return `${h}:${String(m).padStart(2, "0")} h`;
+}
+
+function sleepStages(sleep: { deepSeconds: number | null; remSeconds: number | null }): string {
+  const parts: string[] = [];
+  if (sleep.deepSeconds != null) parts.push(`${(sleep.deepSeconds / 3600).toFixed(1)}h deep`);
+  if (sleep.remSeconds != null) parts.push(`${(sleep.remSeconds / 3600).toFixed(1)}h REM`);
+  return parts.length ? ` · ${parts.join(" · ")}` : "";
+}
+
+/**
+ * The last 7 nights as cells: settled, low (✕ — colour is never the only
+ * signal), or a dashed gap when the watch didn't read. Renders nothing until
+ * at least one night has a reading — an all-gap row is noise, not data.
+ */
+function NightRow({ nights }: { nights: TodayResponse["readiness"]["nights"] }) {
+  if (!nights || !nights.some((n) => n.state !== "gap")) return null;
+  return (
+    <div className="ready-nights">
+      {nights.map((n) => (
+        <i key={n.date} className={`ready-night ready-night-${n.state}`} aria-hidden="true">
+          {n.state === "low" ? "✕" : ""}
+        </i>
+      ))}
+      <small>last 7 nights</small>
+    </div>
+  );
+}
+
 /**
  * The Readiness sheet — the ONE place the morning numbers live (System 1 v2).
  * The Today card's chip opens it; nothing on the page repeats it. Numbers are
@@ -970,7 +1014,20 @@ export function ReadinessSheet({
           {latest.hrv != null ? (
             <div className="ready-vital">
               <b>{Math.round(latest.hrv)} ms</b>
-              <small>HRV{baseline?.hrv != null ? ` · usually ${Math.round(baseline.hrv)}` : ""}</small>
+              <small>
+                sleep HRV
+                {readiness.band
+                  ? ` · your band ${readiness.band.lo}–${readiness.band.hi}`
+                  : baseline?.hrv != null
+                    ? ` · usually ${Math.round(baseline.hrv)}`
+                    : ""}
+              </small>
+            </div>
+          ) : null}
+          {readiness.sleep ? (
+            <div className="ready-vital">
+              <b>{sleepClock(readiness.sleep.durationSeconds)}</b>
+              <small>slept{sleepStages(readiness.sleep)}</small>
             </div>
           ) : null}
           {latest.recoveryScore != null ? (
@@ -979,8 +1036,15 @@ export function ReadinessSheet({
               <small>COROS recovery</small>
             </div>
           ) : null}
+          {latest.fullRecoveryHours != null && latest.fullRecoveryHours > 0 ? (
+            <div className="ready-vital">
+              <b>{Math.round(latest.fullRecoveryHours)} h</b>
+              <small>until full recovery, says COROS</small>
+            </div>
+          ) : null}
         </div>
       ) : null}
+      <NightRow nights={readiness.nights} />
       <p className="faint ready-prov">
         {latest?.date ? `From COROS, as of ${formatDayShort(latest.date)} — ` : ""}
         {readiness.sampleDays >= 3
@@ -1636,6 +1700,7 @@ export function GardenScreen() {
           nextWorkout: d?.nextWorkout,
           balance: liveBalance,
           adventure,
+          dew: (garden.data.dewToday as boolean | undefined) ?? false,
         })
       : null;
   // Rest mode is not silence: `.hud-weather` prints "Rest mode — nothing

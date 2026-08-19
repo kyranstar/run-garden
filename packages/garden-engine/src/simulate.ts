@@ -8,7 +8,9 @@ import { SPECIES, speciesOrThrow, type Species } from "./species.js";
 import { gateSatisfied, matureTreeCount as codexMatureTreeCount } from "./unlocks.js";
 import {
   DEFAULT_GARDEN_CONFIG,
+  DEW_TENDED_DAYS,
   SIMULATION_VERSION,
+  STEADY_WEEK_NIGHTS,
   type CompletedRunInput,
   type DayResult,
   type Discipline,
@@ -58,6 +60,12 @@ export function initialSnapshot(createdDate: LocalDate): GardenSnapshot {
     strengthSessionCount: 0,
     yogaSessionCount: 0,
     balancedWeekCount: 0,
+    dewyMorningCount: 0,
+    weekSettledNights: 0,
+    steadySleepWeeks: 0,
+    bestSteadySleepWeeks: 0,
+    lastDewDate: null,
+    lastTrainedDate: null,
     weekDisciplines: {
       weekStart: startOfIsoWeek(createdDate),
       run: false,
@@ -200,6 +208,12 @@ export function simulateDay(
   state.lifeBonusFlowering ??= 0;
   state.lastAdventureDate ??= null;
   state.adventureGraceDays ??= 0;
+  state.dewyMorningCount ??= 0;
+  state.weekSettledNights ??= 0;
+  state.steadySleepWeeks ??= 0;
+  state.bestSteadySleepWeeks ??= 0;
+  state.lastDewDate ??= null;
+  state.lastTrainedDate ??= null;
   state.weekDisciplines ??= {
     weekStart: startOfIsoWeek(input.date),
     run: false,
@@ -223,10 +237,16 @@ export function simulateDay(
 
   // A new Mon–Sun week: bank the week that just closed, then start fresh.
   const weekStart = startOfIsoWeek(input.date);
+  let closingSettledNights: number | null = null;
   if (weekStart !== state.weekDisciplines.weekStart) {
     const closing = state.weekDisciplines;
     if (closing.run && closing.strength && closing.yoga) state.balancedWeekCount += 1;
     state.weekDisciplines = { weekStart, run: false, strength: false, yoga: false, adventure: false };
+    // The steady-week test needs the closing week's adherence too, which
+    // arrives as input.weekAdherence on the same boundary day — banked in
+    // step 10 below.
+    closingSettledNights = state.weekSettledNights;
+    state.weekSettledNights = 0;
   }
 
   // Rest-mode transitions.
@@ -267,8 +287,31 @@ export function simulateDay(
     state.adventureGraceDays = Math.max(0, (state.adventureGraceDays ?? 0) - 1);
   }
 
+  // Dew (sleep/recovery 0020, option C): a settled night leaves dew only on
+  // a TENDED garden — training today or within the last DEW_TENDED_DAYS. On
+  // such a morning the punitive clocks rest, exactly like an adventure grace
+  // day. A rough night leaves nothing, and an untended garden thirsts
+  // normally: sleep multiplies training, it can never substitute for it —
+  // and never hurt anything.
+  if (input.dew === true) state.weekSettledNights += 1;
+  // Tended-ness reads lastTrainedDate (a real calendar date), NEVER the
+  // daysSince* counters: dew freezes those counters, so a counter-based test
+  // would let one dewy morning keep the garden "tended" forever — the exact
+  // sleep-replaces-running loop option C forbids.
+  const tendedForDew =
+    runs.length > 0 ||
+    (state.lastTrainedDate != null &&
+      daysBetween(state.lastTrainedDate, input.date) <= DEW_TENDED_DAYS);
+  const dewToday = input.dew === true && tendedForDew;
+  if (runs.length > 0) state.lastTrainedDate = input.date;
+  if (dewToday) {
+    state.dewyMorningCount += 1;
+    state.lastDewDate = input.date;
+  }
+  const shieldedToday = adventureFrozen || dewToday;
+
   // 1. Missed runs resolved today (explicit skips / aged-out) — dryness debt only.
-  if (!state.restMode && !adventureFrozen) {
+  if (!state.restMode && !shieldedToday) {
     for (const missed of input.missedRuns) {
       state.moisture = Math.max(0.05, state.moisture - 0.06);
       for (const p of livingPlants(snapshot.plants)) {
@@ -327,7 +370,7 @@ export function simulateDay(
     if (input.restObserved) {
       state.soilHealth = Math.min(1, state.soilHealth + 0.01);
       emit({ kind: "rest_observed" });
-    } else if (!input.planGap && !adventureFrozen) {
+    } else if (!input.planGap && !shieldedToday) {
       state.daysSinceCompletedRun += 1;
       applyDailyDecay(snapshot, input.date, cfg, emit);
     }
@@ -341,15 +384,15 @@ export function simulateDay(
     if (state.daysSinceStrength >= 3) emit({ kind: "soil_tended" });
     state.daysSinceStrength = 0;
     state.hasStrength = true;
-  } else if (!state.restMode && !adventureFrozen) state.daysSinceStrength += 1;
+  } else if (!state.restMode && !shieldedToday) state.daysSinceStrength += 1;
   if (yogaSessions.length > 0) {
     if (state.daysSinceYoga >= 3) emit({ kind: "life_tended" });
     state.daysSinceYoga = 0;
     state.hasYoga = true;
-  } else if (!state.restMode && !adventureFrozen) state.daysSinceYoga += 1;
+  } else if (!state.restMode && !shieldedToday) state.daysSinceYoga += 1;
 
   // 6. Neglect: each axis wilts on its own clock, gently and with a floor.
-  if (!state.restMode && !input.planGap && !adventureFrozen) {
+  if (!state.restMode && !input.planGap && !shieldedToday) {
     if (state.daysSinceStrength > 7) {
       state.soilHealth = Math.max(0.2, state.soilHealth - 0.02);
     }
@@ -388,6 +431,19 @@ export function simulateDay(
         state.consecutiveConsistentWeeks,
       );
     } else state.consecutiveConsistentWeeks = 0;
+    // Steady-sleep chain (option C): the week that just closed counts only
+    // when it was BOTH slept (≥ STEADY_WEEK_NIGHTS settled nights) and
+    // trained (the same 0.75 adherence bar as consistency). A boundary day
+    // without adherence data leaves the chain untouched, same as above.
+    if (closingSettledNights !== null) {
+      if (closingSettledNights >= STEADY_WEEK_NIGHTS && input.weekAdherence >= 0.75) {
+        state.steadySleepWeeks += 1;
+        state.bestSteadySleepWeeks = Math.max(
+          state.bestSteadySleepWeeks,
+          state.steadySleepWeeks,
+        );
+      } else state.steadySleepWeeks = 0;
+    }
   }
 
   // 11. Unlocks, wildlife, regions, derived metrics.
@@ -413,7 +469,7 @@ export function simulateDay(
   }
 
   state.lastSimulatedDate = input.date;
-  return { snapshot, events, shield: { adventureFrozen, graceDay } };
+  return { snapshot, events, shield: { adventureFrozen, graceDay, dewToday } };
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

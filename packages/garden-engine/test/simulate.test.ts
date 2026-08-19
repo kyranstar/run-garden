@@ -1088,19 +1088,19 @@ describe("adventures", () => {
   describe("DayResult.shield", () => {
     it("is unfrozen and grace-free on an ordinary day", () => {
       const { shield } = simulateDay(initialSnapshot(START), emptyDay(addDays(START, 1)));
-      expect(shield).toEqual({ adventureFrozen: false, graceDay: false });
+      expect(shield).toEqual({ adventureFrozen: false, graceDay: false, dewToday: false });
     });
 
     it("reports adventureFrozen (not graceDay) on the adventure's own day", () => {
       const { shield } = simulateDay(initialSnapshot(START), adventureDay(addDays(START, 1)));
-      expect(shield).toEqual({ adventureFrozen: true, graceDay: false });
+      expect(shield).toEqual({ adventureFrozen: true, graceDay: false, dewToday: false });
     });
 
     it("reports both adventureFrozen and graceDay on a shielded day after a big trip", () => {
       let snap = initialSnapshot(START);
       snap = simulateDay(snap, adventureDay(addDays(START, 1))).snapshot; // big → banks 1
       const { shield } = simulateDay(snap, emptyDay(addDays(START, 2))); // spends it
-      expect(shield).toEqual({ adventureFrozen: true, graceDay: true });
+      expect(shield).toEqual({ adventureFrozen: true, graceDay: true, dewToday: false });
     });
 
     it("is undefined on the idempotent no-op path (date already simulated)", () => {
@@ -1121,7 +1121,7 @@ describe("adventures", () => {
       expect(preFoldGraceDays).toBe(1);
       snap = simulateDay(snap, emptyDay(addDays(START, 2))).snapshot; // fold day 1: spends it
       const { shield } = simulateDay(snap, emptyDay(addDays(START, 3))); // fold day 2 ("today")
-      expect(shield).toEqual({ adventureFrozen: false, graceDay: false });
+      expect(shield).toEqual({ adventureFrozen: false, graceDay: false, dewToday: false });
     });
   });
 });

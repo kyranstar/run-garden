@@ -422,18 +422,49 @@ function ladybugShapes(p: string, animate: boolean, plants: GardenPlant[], ancho
   );
 }
 
+/* ── dew ──────────────────────────────────────────────────────────────────
+   A settled night on a tended garden leaves droplets on the leaves (option
+   C, sleep/recovery 0020). Deterministic per plant (`dew:{id}`), non-
+   interactive, and deliberately sparse — a glint, not a weather effect. */
+function dewGlints(plants: GardenPlant[], anchor: PlantAnchor): ReactNode {
+  const living = plants.filter((pl) => pl.state !== "dead" && pl.maturity > 0.2);
+  const drops: ReactNode[] = [];
+  for (const pl of living.slice(0, 16)) {
+    const r = rng(`dew:${pl.id}`);
+    const a = anchor(pl);
+    const count = pl.category === "tree" ? 2 : 1;
+    for (let i = 0; i < count; i++) {
+      const dx = (r() - 0.5) * 26 * a.s;
+      const dy = -(6 + r() * 26) * a.s;
+      const rad = 1.4 + r() * 1.1;
+      drops.push(
+        <g key={`${pl.id}-${i}`} transform={`translate(${n(a.x + dx)} ${n(a.y + dy)})`}>
+          <circle r={n(rad)} fill="#dfeaf4" opacity={0.75} />
+          <circle r={n(rad * 0.45)} cx={n(-rad * 0.25)} cy={n(-rad * 0.25)} fill="#ffffff" opacity={0.9} />
+        </g>,
+      );
+    }
+  }
+  return (
+    <g data-scene="dew" pointerEvents="none">
+      {drops}
+    </g>
+  );
+}
+
 /* ── rare visitors ────────────────────────────────────────────────────────
    One-day guests decided by the worker (see visitors.ts). Each shows only
    during its own hours — an owl announced in the morning beat is found by
    looking at night. Silhouette-styled, muted, never interactive. */
 
-export type SceneVisitor = "deer" | "heron" | "owl" | "fox";
+export type SceneVisitor = "deer" | "heron" | "owl" | "fox" | "luna_moth";
 
 const VISITOR_PERIODS: Record<SceneVisitor, ReadonlySet<string>> = {
   deer: new Set(["dawn", "morning"]),
   heron: new Set(["morning", "midday", "golden"]),
   owl: new Set(["night", "dusk"]),
   fox: new Set(["dusk", "golden"]),
+  luna_moth: new Set(["dawn", "morning"]),
 };
 
 function visitorShapes(kind: SceneVisitor, plants: GardenPlant[], anchor: PlantAnchor): ReactNode {
@@ -519,6 +550,31 @@ function visitorShapes(kind: SceneVisitor, plants: GardenPlant[], anchor: PlantA
           <path d="M0,-4 L0.9,-2.5 L-0.9,-2.5 Z" fill="#c9a13c" />
           {/* folded-wing line */}
           <path d="M-3.6,1 C-2,2.1 2,2.1 3.6,1" stroke="#3c362e" strokeWidth={0.8} fill="none" opacity={0.6} />
+        </g>
+      );
+    }
+    case "luna_moth": {
+      // Rests on the nearest flowering thing at first light (0020) —
+      // pale sage, faint eyespots, the two swept hindwing tails.
+      const host =
+        firstById(plants, (pl) => pl.category === "flower" && pl.state !== "dead") ??
+        firstById(plants, (pl) => pl.state !== "dead");
+      const a = host ? anchor(host) : { x: 420, y: 430, s: 1 };
+      const y = a.y - 26 * a.s;
+      return (
+        <g data-visitor="luna_moth" pointerEvents="none" transform={`translate(${n(a.x + 6)} ${n(y)}) scale(0.9)`} opacity={0.92}>
+          {/* forewings, swept back */}
+          <path d="M-1,-1 C-8,-8 -15,-8.5 -17,-4.5 C-18.5,-1.5 -14,2 -8,2.2 L-1,1.2 Z" fill="#aac9a2" />
+          <path d="M1,-1 C8,-8 15,-8.5 17,-4.5 C18.5,-1.5 14,2 8,2.2 L1,1.2 Z" fill="#aac9a2" />
+          {/* hindwings with tails */}
+          <path d="M-1,1 C-5,5 -7,9 -5.2,13.5 C-4.2,15.8 -2.4,15 -1.8,12 L-0.6,3 Z" fill="#b7d2ae" />
+          <path d="M1,1 C5,5 7,9 5.2,13.5 C4.2,15.8 2.4,15 1.8,12 L0.6,3 Z" fill="#b7d2ae" />
+          {/* eyespots */}
+          <circle cx={-9} cy={-3.4} r={1} fill="#6f8a68" opacity={0.8} />
+          <circle cx={9} cy={-3.4} r={1} fill="#6f8a68" opacity={0.8} />
+          {/* body + antennae */}
+          <ellipse cx={0} cy={1.5} rx={1.3} ry={3.4} fill="#e7efdc" />
+          <path d="M-0.6,-2 C-2,-4.5 -3.6,-5.6 -5.2,-5.4 M0.6,-2 C2,-4.5 3.6,-5.6 5.2,-5.4" stroke="#6f8a68" strokeWidth={0.6} fill="none" />
         </g>
       );
     }
@@ -656,6 +712,14 @@ export function GardenScene({
   // ~10% further up the host; a broken chain draws them back (recoverable —
   // the plant itself stays). Pure display of tracked state.
   const vineReach = Math.min(1, 0.3 + 0.1 * snapshot.state.consecutiveConsistentWeeks);
+
+  // Dew (sleep/recovery 0020): pure display of tracked state, like the vines.
+  // The engine stamps lastDewDate on a morning that earned dew, so a replayed
+  // timeline day shows the dew IT earned. Glints render through daylight and
+  // are gone by dusk — night dew under moonlight reads as rain.
+  const dewToday =
+    snapshot.state.lastDewDate != null &&
+    snapshot.state.lastDewDate === snapshot.state.lastSimulatedDate;
 
   const svg = (
     <svg
@@ -833,6 +897,10 @@ export function GardenScene({
         moisture={clamp01(snapshot.state.moisture)}
         soilHealth={clamp01(snapshot.state.soilHealth)}
       />
+
+      {dewToday && (light.period === "dawn" || light.period === "morning" || light.period === "midday")
+        ? dewGlints(sorted, anchor)
+        : null}
 
       <WeatherOverlay p={p} weather={weather} animate={animate} />
       <Rainbow p={p} light={light} />

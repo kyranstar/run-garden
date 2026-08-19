@@ -10,7 +10,7 @@
  * recovery 100, 14-day medians ≈ 62.5 HRV / 46.5 RHR).
  */
 import { describe, expect, it } from "vitest";
-import { hasUsableReading, readinessVerdict, type ReadinessSignals } from "../src/readiness.js";
+import { hasUsableReading, nightState, readinessVerdict, type ReadinessSignals } from "../src/readiness.js";
 
 const signals = (over: Partial<ReadinessSignals> = {}): ReadinessSignals => ({
   hrv: 64,
@@ -219,5 +219,30 @@ describe("readinessVerdict — zero/NaN guards", () => {
       level: "good",
       reasons: ["RHR 47 (base 46)", "recovery 100%"],
     });
+  });
+});
+
+describe("nightState (0020)", () => {
+  it("classifies against the athlete's own band, one-sided", () => {
+    const base = { sleepHrvBase: 68, sleepHrvSd: 6 };
+    expect(nightState({ hrv: 66, ...base })).toBe("settled"); // inside
+    expect(nightState({ hrv: 80, ...base })).toBe("settled"); // HIGH is never a problem
+    expect(nightState({ hrv: 61, ...base })).toBe("low"); // below base − sd
+    expect(nightState({ hrv: 62, ...base })).toBe("settled"); // exactly on the edge
+  });
+
+  it("falls back to a 10% floor without sd, and to recovery without a band", () => {
+    expect(nightState({ hrv: 62, sleepHrvBase: 68 })).toBe("settled"); // 68 − 6.8 = 61.2
+    expect(nightState({ hrv: 61, sleepHrvBase: 68 })).toBe("low");
+    expect(nightState({ recoveryScore: 60 })).toBe("settled");
+    expect(nightState({ recoveryScore: 42 })).toBe("low");
+  });
+
+  it("no reading is a gap, never a guess — including implausible zeros", () => {
+    expect(nightState({})).toBe("gap");
+    expect(nightState({ hrv: null, sleepHrvBase: null, recoveryScore: null })).toBe("gap");
+    expect(nightState({ hrv: 66 })).toBe("gap"); // a reading with nothing to judge it against
+    expect(nightState({ hrv: 0, sleepHrvBase: 68 })).toBe("gap"); // 0 = absent on this wire
+    expect(nightState({ recoveryScore: 0 })).toBe("gap"); // COROS sends 0 for "not computed"
   });
 });

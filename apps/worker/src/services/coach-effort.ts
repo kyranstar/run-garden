@@ -342,7 +342,7 @@ export async function buildEffortPackage(
     "7d/28d weekly ratio (and COROS's acute:chronic): ≈0.8–1.3 reads as steady training; well above is a sharp ramp worth naming, well below is a wind-down or detraining",
     "training effect (0–5): COROS's estimate of how much the session moved aerobic vs anaerobic fitness — 2s maintain, 3s improve, 4+ is a hard stimulus",
     "VO2max est and COROS stamina: watch estimates — directionally useful over weeks, noisy day to day; never diagnose from one reading",
-    "HRV/RHR vs baseline: lower HRV or higher RHR than baseline suggests incomplete recovery; a single odd morning is weather, not fate",
+    "HRV/RHR vs baseline: HRV is measured overnight during sleep; lower HRV or higher RHR than baseline suggests incomplete recovery; a single odd morning is weather, not fate",
     "feel (1–5, 5 = strongest): the athlete's own report — when it disagrees with the watch numbers, say so and weigh the athlete first",
     "RealFeel: humidity/wind-adjusted temperature — pace drifts upward in heat; judge effort by HR, not pace, on hot or humid days",
     "watch thermometer: wrist-warmed, reads a few degrees above the air — trust the weather line over it outdoors",

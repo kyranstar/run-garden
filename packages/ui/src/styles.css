@@ -124,6 +124,11 @@
   --chart-1: #2b8a55;
   --chart-2: #c25a2e;
   --chart-3: #5560c9;
+  /* Sleep-stage ramp (0020): deep → REM → light, lightness-ordered so the
+     stack reads under every color-vision type. */
+  --night-deep: #3a4494;
+  --night-rem: #5560c9;
+  --night-light: #a9b3e6;
   --chart-track: #eeeae1;
   --chart-grid: #e5e1d6;
 
@@ -316,6 +321,9 @@
     --chart-1: #3da868;
     --chart-2: #cc7a3a;
     --chart-3: #7f8ce0;
+  --night-deep: #6a76d4;
+  --night-rem: #98a2e6;
+  --night-light: #cdd4f2;
     --chart-track: #2b2f2c;
     --chart-grid: #32362f;
     /* Verified 5.5:1 (--warn text) and 6.9:1 (--green-ink linklike) against
@@ -378,6 +386,9 @@
   --chart-1: #3da868;
   --chart-2: #cc7a3a;
   --chart-3: #7f8ce0;
+  --night-deep: #6a76d4;
+  --night-rem: #98a2e6;
+  --night-light: #cdd4f2;
   --chart-track: #2b2f2c;
   --chart-grid: #32362f;
   --coach-tray-bg: #3a3020;
@@ -1968,10 +1979,12 @@ a.note {
 }
 .ready-vitals {
   display: flex;
+  flex-wrap: wrap; /* five vitals can now show; three stay one row */
   gap: var(--space-4);
 }
 .ready-vital {
   flex: 1;
+  min-width: 8rem;
   background: var(--bg-sunken);
   border-radius: var(--radius-md);
   padding: var(--space-4) var(--space-5);
@@ -1991,6 +2004,40 @@ a.note {
 .ready-prov {
   margin: var(--space-5) 0 0;
   line-height: 1.5;
+}
+/* Last 7 nights (0020): settled / low / gap cells. Non-interactive — the ✕
+   glyph keeps low from being colour-alone, and a gap is a dashed absence. */
+.ready-nights {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  margin-top: var(--space-4);
+}
+.ready-night {
+  width: 1.1rem;
+  height: 1.1rem;
+  border-radius: var(--radius-xs);
+  font-style: normal;
+  font-size: var(--text-2xs);
+  line-height: 1.1rem;
+  text-align: center;
+}
+.ready-night-settled {
+  background: var(--green-soft);
+  border: 1px solid var(--green);
+}
+.ready-night-low {
+  background: var(--warn-soft);
+  border: 1px solid var(--warn);
+  color: var(--warn);
+}
+.ready-night-gap {
+  border: 1px dashed var(--border-strong);
+}
+.ready-nights small {
+  margin-left: var(--space-2);
+  font-size: var(--text-2xs);
+  color: var(--ink-faint);
 }
 
 /* The one attention row on the Today card — the two prompt cards it replaces

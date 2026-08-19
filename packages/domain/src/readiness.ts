@@ -213,3 +213,42 @@ export function readinessVerdict(signals: ReadinessSignals): ReadinessVerdict | 
   if (soleSignal) reasons.push(SOLE_SIGNAL_NOTE);
   return { level: LEVELS[worst], reasons };
 }
+
+// ── Night classification (sleep/recovery 0020) ─────────────────────────────
+
+export type NightState = "settled" | "low" | "gap";
+
+export interface NightSignals {
+  /** Overnight sleep HRV (ms) — daily_health.hrv IS avgSleepHrv. */
+  hrv?: number | null;
+  /** COROS's own band for that athlete: base ± sd. */
+  sleepHrvBase?: number | null;
+  sleepHrvSd?: number | null;
+  /** COROS recovery 0–100 — the fallback when no band exists. */
+  recoveryScore?: number | null;
+}
+
+/**
+ * Did the night settle the body? One classifier shared by the garden's dew
+ * input, the readiness sheet's night row, and the dashboard's night tile, so
+ * every surface calls the same night by the same name.
+ *
+ * One-sided on purpose: only a LOW night is "low" — sleep HRV above the band
+ * is not a problem to report. The sd fallback (10% of base) mirrors the
+ * verdict's own noise floor. With neither a band nor a recovery score there
+ * is no reading, and no reading is a "gap", never a guess — the same
+ * withhold-rather-than-guess rule as the verdict above.
+ */
+export function nightState(signals: NightSignals): NightState {
+  const { hrv, sleepHrvBase: base, recoveryScore } = signals;
+  if (hrv != null && hrv > 0 && base != null && base > 0) {
+    const sd = signals.sleepHrvSd != null && signals.sleepHrvSd > 0
+      ? signals.sleepHrvSd
+      : base * 0.1;
+    return hrv >= base - sd ? "settled" : "low";
+  }
+  if (recoveryScore != null && recoveryScore >= 1 && recoveryScore <= 100) {
+    return recoveryScore >= 60 ? "settled" : "low";
+  }
+  return "gap";
+}

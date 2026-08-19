@@ -175,12 +175,23 @@ export interface TodayResponse {
       hrv: number | null;
       recoveryScore: number | null;
       trainingLoad7d: number | null;
+      /** COROS's "hours until fully recovered", stamped on the current day
+       * only (sleep/recovery 0020). */
+      fullRecoveryHours?: number | null;
     } | null;
     baseline: { restingHeartRate: number | null; hrv: number | null } | null;
     sampleDays: number;
     /** The server's one judgement on those numbers — null when the evidence
      * is too thin to have one, in which case surfaces show nothing at all. */
     verdict: ReadinessVerdict | null;
+    /** The athlete's own sleep-HRV band (COROS base ± sd), when known —
+     * what "usually" means, said precisely. */
+    band?: { lo: number; hi: number } | null;
+    /** Last 7 nights ending today, oldest first; "gap" = no reading. */
+    nights?: Array<{ date: string; state: "settled" | "low" | "gap" }>;
+    /** Last night's sleep, when a record exists (prod: only after the sleep
+     * connection ships; fixtures carry it today). */
+    sleep?: { durationSeconds: number; deepSeconds: number | null; remSeconds: number | null } | null;
   };
   /** The coach's own weekly action line, already gated by the 72h staleness
    * rule server-side (absent/stale → null). It was written about the WEEK,

@@ -45,6 +45,7 @@ import {
   computeEasyDiscipline,
   computeHardDayStacking,
   computeHrvTrend,
+  computeSleepNights,
   computeLoadRatio,
   computeLowIntensityShare,
   computeMonotony,
@@ -483,7 +484,7 @@ insightRoutes.get("/", async (c) => {
   // bucketed by LOCAL date, so the fetch is padded a day on the early side and
   // re-filtered on local date below — without the pad, a late-evening run near
   // the window edge appears or vanishes depending on the user's UTC offset.
-  const [workoutRows, actRows, dismissed, healthRows, reviews, storedRows, hrMaxRows] =
+  const [workoutRows, actRows, dismissed, healthRows, reviews, storedRows, hrMaxRows, sleepRows] =
     await Promise.all([
     db
       .select()
@@ -548,6 +549,18 @@ insightRoutes.get("/", async (c) => {
           gte(activities.startTime, `${addDays(twentySixWeeksAgo, -1)}T00:00:00Z`),
         ),
       ),
+    db
+      .select()
+      .from(sleepRecords)
+      .where(
+        and(
+          eq(sleepRecords.userId, userId),
+          gte(sleepRecords.date, addDays(today, -30)),
+          lte(sleepRecords.date, today),
+        ),
+      )
+      .then((rows) => rows)
+      .catch(() => []),
   ]);
 
   // Laps and matches are scoped BY ID to what was just fetched. The previous
@@ -900,6 +913,18 @@ insightRoutes.get("/", async (c) => {
       ? `${Math.round(recentIntensity.value.noHrSeconds / 60)} min of running had no heart rate and was excluded.`
       : "";
 
+  // Strain & answer (0020): (training day, following night) pairs for the
+  // hrv drilldown. Emitted only when at least one day actually carries load —
+  // an all-null lane is a chart with nothing to say.
+  const healthByDate = new Map(healthRows.map((h) => [h.date, h]));
+  const pairWindow = Array.from({ length: 14 }, (_, i) => addDays(today, i - 14));
+  const rawPairs = pairWindow.map((d) => ({
+    date: d,
+    load: healthByDate.get(d)?.dayLoad ?? null,
+    value: healthByDate.get(addDays(d, 1))?.hrv ?? null,
+  }));
+  const strainPairs = rawPairs.some((p) => p.load != null && p.load > 0) ? rawPairs : undefined;
+
   const interpreted: InterpretedMetric[] = [
     withNote(
       interpret("loadRatio", "Load vs your norm", computeLoadRatio(loadsByDay, today), (v) => ({
@@ -1007,18 +1032,28 @@ insightRoutes.get("/", async (c) => {
     ),
     interpret(
       "hrv",
-      "HRV trend",
+      "Sleep HRV",
       computeHrvTrend(
-        healthRows.map((h) => ({ date: h.date, hrv: h.hrv })),
+        healthRows.map((h) => ({
+          date: h.date,
+          hrv: h.hrv,
+          sleepHrvBase: h.sleepHrvBase,
+          sleepHrvSd: h.sleepHrvSd,
+        })),
         today,
       ),
       (v) => {
         const stale = v.staleDays > RECOVERY_STALE_DAYS;
         const below = v.pctVsBaseline <= -v.thresholdPct;
+        const bandLo = Math.round(v.baseline * (1 - v.thresholdPct / 100));
+        const bandHi = Math.round(v.baseline * (1 + v.thresholdPct / 100));
         return {
           value: `${signed(v.pctVsBaseline)}% vs baseline`,
           band: stale ? undefined : below ? "watch" : "healthy",
-          range: `within ${v.thresholdPct}% of your ${v.baseline} ms baseline`,
+          range:
+            v.bandSource === "coros"
+              ? `your band ${bandLo}–${bandHi} ms, from your own watch`
+              : `within ${v.thresholdPct}% of your ${v.baseline} ms baseline`,
           gauge: stale
             ? undefined
             : { min: -25, max: 25, healthyLo: -v.thresholdPct, healthyHi: 25, value: v.pctVsBaseline },
@@ -1035,12 +1070,52 @@ insightRoutes.get("/", async (c) => {
           },
           staleNote: stale ? `last reading ${days(v.staleDays)} ago` : undefined,
           meaning:
-            "Your recent heart-rate variability against a baseline built from earlier, separate readings. " +
-            `Day-to-day HRV wanders, so the line that means anything for you is ±${v.thresholdPct}% — ` +
-            "derived from your own variability, not a number from a magazine.",
+            "Heart-rate variability, measured by your watch overnight while you sleep. " +
+            (v.bandSource === "coros"
+              ? "The band is the one COROS itself computed for you — nights inside it are your normal. "
+              : "The baseline is built from earlier, separate readings. ") +
+            `Day-to-day it wanders, so the line that means anything for you is ±${v.thresholdPct}% — ` +
+            "derived from your own nights, not a number from a magazine.",
           suggestion:
             !stale && below
               ? "A drop past your own noise threshold usually means accumulated stress — training, sleep, life. Easy days work here."
+              : undefined,
+          // Strain & answer (0020): each of the last 14 training days paired
+          // with the night that followed it. daily_health is wake-date keyed,
+          // so day D's load answers in the row dated D+1.
+          pairs: strainPairs,
+        };
+      },
+    ),
+    interpret(
+      "sleep",
+      "Sleep",
+      computeSleepNights(
+        sleepRows.map((r) => ({
+          date: r.date,
+          durationSeconds: r.durationSeconds,
+          deepSeconds: r.deepSeconds,
+          remSeconds: r.remSeconds,
+          lightSeconds: r.lightSeconds,
+        })),
+        today,
+      ),
+      (v) => {
+        const stale = v.staleDays > RECOVERY_STALE_DAYS;
+        const h = (sec: number) => (sec / 3600).toFixed(1);
+        return {
+          value: `${h(v.latestSeconds)} h`,
+          band: stale ? undefined : v.latestSeconds < 6 * 3600 ? "watch" : "healthy",
+          range: `averaging ${h(v.meanSeconds)} h`,
+          series: v.series,
+          nights: v.nights,
+          staleNote: stale ? `last record ${days(v.staleDays)} ago` : undefined,
+          meaning:
+            "Each night your watch recorded, with its depth when known. Duration is the part that answers " +
+            "training — deep and REM mostly take care of themselves once the hours are there.",
+          suggestion:
+            !stale && v.latestSeconds < 6 * 3600
+              ? "Under six hours before a training day borrows from tomorrow. Protecting tonight beats a harder session on the deficit."
               : undefined,
         };
       },

@@ -136,6 +136,18 @@ export interface InterpretedMetric {
   bandNote?: string;
   /** Per-run evidence for the drilldown sheet, when the metric has it. */
   detail?: MetricDetail;
+  /** Strain & answer (0020): each training day paired with the night that
+   * followed it, oldest first. `load` null = no training that day; `value`
+   * null = the night went unread. Renders as the two-lane chart. */
+  pairs?: Array<{ date: string; load: number | null; value: number | null }>;
+  /** Nightly sleep evidence (0020) — duration + stages when known. */
+  nights?: Array<{
+    date: string;
+    totalSeconds: number;
+    deepSeconds?: number | null;
+    remSeconds?: number | null;
+    lightSeconds?: number | null;
+  }>;
 }
 
 /** What a metric's `present` callback returns for the "ok" case. */
@@ -153,6 +165,8 @@ export interface Presentation {
   strip?: MetricStripCell[];
   staleNote?: string;
   bandNote?: string;
+  pairs?: InterpretedMetric["pairs"];
+  nights?: InterpretedMetric["nights"];
 }
 
 export function interpret<T>(
@@ -189,5 +203,7 @@ export function interpret<T>(
     strip: p.strip,
     staleNote: p.staleNote,
     bandNote: p.bandNote,
+    pairs: p.pairs,
+    nights: p.nights,
   };
 }

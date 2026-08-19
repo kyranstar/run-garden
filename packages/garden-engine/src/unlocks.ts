@@ -62,6 +62,10 @@ export function gateSatisfied(gate: UnlockGate, snapshot: GardenSnapshot): boole
       return s.eveningRunCount >= gate.count;
     case "coached_blocks":
       return (s.coachedBlockCount ?? 0) >= gate.count;
+    case "dewy_mornings":
+      return (s.dewyMorningCount ?? 0) >= gate.count;
+    case "steady_sleep_weeks":
+      return (s.steadySleepWeeks ?? 0) >= gate.count;
   }
 }
 
@@ -116,6 +120,10 @@ export function describeGate(gate: UnlockGate): string {
       return gate.count === 1
         ? "See a coached block through, start to finish"
         : `See ${gate.count} coached blocks through`;
+    case "dewy_mornings":
+      return `Wake to ${gate.count} dewy morning${gate.count === 1 ? "" : "s"} — settled nights on a tended garden`;
+    case "steady_sleep_weeks":
+      return `${gate.count} steady week${gate.count === 1 ? "" : "s"} in a row — well trained, well slept`;
   }
 }
 
@@ -158,6 +166,10 @@ export function gateProgress(
       return { current: s.eveningRunCount, target: gate.count };
     case "coached_blocks":
       return { current: s.coachedBlockCount ?? 0, target: gate.count };
+    case "dewy_mornings":
+      return { current: s.dewyMorningCount ?? 0, target: gate.count };
+    case "steady_sleep_weeks":
+      return { current: s.steadySleepWeeks ?? 0, target: gate.count };
     default:
       // `ground` (like start/comeback/dead_wood) is binary — no bar.
       return null;

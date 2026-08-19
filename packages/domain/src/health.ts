@@ -16,6 +16,12 @@ export interface DailyHealth {
   thresholdHr?: number;
   /** COROS's own sleep-HRV baseline for the day, ms. */
   sleepHrvBase?: number;
+  /** COROS's own sleep-HRV standard deviation, ms — base ± sd is the
+   * athlete's personal band. */
+  sleepHrvSd?: number;
+  /** COROS's "hours until fully recovered" — stamped onto the current day
+   * only, like recoveryScore. */
+  fullRecoveryHours?: number;
   /** COROS's own acute:chronic workload ratio. */
   loadRatio?: number;
   acuteTi?: number;

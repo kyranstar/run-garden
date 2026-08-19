@@ -121,11 +121,44 @@ export interface CorosExerciseCatalogItem {
   [key: string]: unknown;
 }
 
+function parseSleepHrvDay(v: unknown): CorosSleepHrvDay | undefined {
+  if (typeof v !== "object" || v === null) return undefined;
+  const o = v as Record<string, unknown>;
+  const num = (x: unknown) => (typeof x === "number" ? x : undefined);
+  return {
+    happenDay: typeof o.happenDay === "number" || typeof o.happenDay === "string" ? o.happenDay : undefined,
+    avgSleepHrv: num(o.avgSleepHrv),
+    sleepHrvBase: num(o.sleepHrvBase),
+    sleepHrvSd: num(o.sleepHrvSd),
+  };
+}
+
+function parseSleepHrvData(
+  v: unknown,
+): (CorosSleepHrvDay & { sleepHrvList?: CorosSleepHrvDay[] }) | undefined {
+  const day = parseSleepHrvDay(v);
+  if (!day) return undefined;
+  const list = (v as Record<string, unknown>).sleepHrvList;
+  const days = Array.isArray(list)
+    ? list.map(parseSleepHrvDay).filter((d): d is CorosSleepHrvDay => d !== undefined)
+    : undefined;
+  return days ? { ...day, sleepHrvList: days } : day;
+}
+
+/** One day inside dashboard sleepHrvData — COROS's own band per night. */
+export interface CorosSleepHrvDay {
+  happenDay?: number | string;
+  avgSleepHrv?: number;
+  sleepHrvBase?: number;
+  sleepHrvSd?: number;
+}
+
 export interface CorosDashboardSubset {
   rhr?: number;
   recoveryPct?: number;
   fullRecoveryHours?: number;
-  sleepHrvData?: unknown;
+  /** Current night plus a short history in sleepHrvList (sleep/recovery 0020). */
+  sleepHrvData?: CorosSleepHrvDay & { sleepHrvList?: CorosSleepHrvDay[] };
   /** COROS running-fitness score 0–100 (probe-verified 2026-08-14). */
   staminaLevel?: number;
   /** Lactate-threshold pace, seconds per km. */
@@ -504,7 +537,7 @@ export class CorosClient {
       rhr: num(s.rhr),
       recoveryPct: num(s.recoveryPct),
       fullRecoveryHours: num(s.fullRecoveryHours),
-      sleepHrvData: s.sleepHrvData,
+      sleepHrvData: parseSleepHrvData(s.sleepHrvData),
       staminaLevel: num(s.staminaLevel),
       ltsp: num(s.ltsp),
       lthr: num(s.lthr),

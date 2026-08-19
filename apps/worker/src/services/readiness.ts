@@ -1,4 +1,11 @@
-import { hasUsableReading, readinessVerdict, type ReadinessVerdict } from "@rg/domain";
+import {
+  addDays,
+  hasUsableReading,
+  nightState,
+  readinessVerdict,
+  type NightState,
+  type ReadinessVerdict,
+} from "@rg/domain";
 
 /**
  * The ONE construction of "readiness" the server hands out.
@@ -21,6 +28,8 @@ export interface ReadinessHealthRow {
   recoveryScore: number | null;
   /** COROS's own sleep-HRV baseline, when the feed carries it (0018). */
   sleepHrvBase?: number | null;
+  /** COROS's own sleep-HRV spread — base ± sd is the athlete's band (0020). */
+  sleepHrvSd?: number | null;
 }
 
 export interface ReadinessView<T> {
@@ -33,6 +42,12 @@ export interface ReadinessView<T> {
   /** Null whenever the evidence is too thin to judge — surfaces render
    * nothing rather than an empty slot. */
   verdict: ReadinessVerdict | null;
+  /** The athlete's own sleep-HRV band (COROS base ± sd), when the feed
+   * carries one — what "usually" means, said precisely (0020). */
+  band: { lo: number; hi: number } | null;
+  /** The last 7 nights ending today, oldest first. A date without a usable
+   * reading is a "gap" — rendered as a gap, never guessed at. */
+  nights: Array<{ date: string; state: NightState }>;
 }
 
 function nonNull<T>(v: T | null | undefined): v is T {
@@ -53,7 +68,10 @@ const MIN_BASELINE_DAYS = 7;
  * @param recent wellness rows for the readiness window, NEWEST FIRST
  *   (`order by date desc limit 14`), already clipped to dates ≤ today.
  */
-export function buildReadiness<T extends ReadinessHealthRow>(recent: T[]): ReadinessView<T> {
+export function buildReadiness<T extends ReadinessHealthRow>(
+  recent: T[],
+  today?: string,
+): ReadinessView<T> {
   const latest = recent[0] ?? null;
   // The HRV baseline prefers COROS's OWN per-day baseline when the feed
   // carries one (0018): it is the number the watch face compares against, so
@@ -70,6 +88,29 @@ export function buildReadiness<T extends ReadinessHealthRow>(recent: T[]): Readi
       : null;
   // Days that measured something, not rows that exist — see ReadinessView.
   const sampleDays = recent.filter(hasUsableReading).length;
+  // The band comes from the newest row that carries COROS's own base; its sd
+  // (or the classifier's 10% floor) sets the width. Rounded here so every
+  // surface prints the same two integers.
+  const bandRow = recent.find((h) => h.sleepHrvBase != null);
+  const band =
+    bandRow?.sleepHrvBase != null
+      ? {
+          lo: Math.round(bandRow.sleepHrvBase - (bandRow.sleepHrvSd ?? bandRow.sleepHrvBase * 0.1)),
+          hi: Math.round(bandRow.sleepHrvBase + (bandRow.sleepHrvSd ?? bandRow.sleepHrvBase * 0.1)),
+        }
+      : null;
+  // Last 7 nights ending today (falling back to the newest row's date when
+  // the caller has no clock). daily_health is wake-date keyed, so each date's
+  // row describes the night that ended that morning.
+  const byDate = new Map(recent.map((h) => [h.date, h]));
+  const anchor = today ?? latest?.date ?? null;
+  const nights = anchor
+    ? Array.from({ length: 7 }, (_, i) => {
+        const date = addDays(anchor, i - 6);
+        const row = byDate.get(date);
+        return { date, state: row ? nightState(row) : ("gap" as NightState) };
+      })
+    : [];
   return {
     latest,
     baseline,
@@ -84,5 +125,7 @@ export function buildReadiness<T extends ReadinessHealthRow>(recent: T[]): Readi
           sampleDays,
         })
       : null,
+    band,
+    nights,
   };
 }

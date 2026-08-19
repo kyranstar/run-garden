@@ -10,13 +10,14 @@ import { roll, type CompletedRunInput } from "@rg/garden-engine";
  * passes quietly.
  */
 
-export type VisitorKind = "deer" | "heron" | "owl" | "fox";
+export type VisitorKind = "deer" | "heron" | "owl" | "fox" | "luna_moth";
 
 export const VISITOR_HINTS: Record<VisitorKind, string> = {
   deer: "Deer pass through after a week that held a long run and steady running.",
   heron: "The heron only visits a true recovery week — one that follows hard training.",
   owl: "Owls come on the nights after you run past dark.",
   fox: "The fox slips by at dusk in autumn, drawn by quality work.",
+  luna_moth: "The luna moth drifts in at first light, after a week of settled nights on a tended garden.",
 };
 
 /** How the visitor is announced on the page, keyed by kind. */
@@ -25,11 +26,14 @@ export const VISITOR_LINES: Record<VisitorKind, string> = {
   heron: "A heron waded through the wet meadow.",
   owl: "An owl kept watch last night.",
   fox: "A fox slipped along the hedge at dusk.",
+  luna_moth: "A luna moth rested on a leaf at first light.",
 };
 
 export interface VisitorDayRuns {
   date: LocalDate;
   runs: CompletedRunInput[];
+  /** The night into this date settled the body (sleep/recovery 0020). */
+  dew?: boolean;
 }
 
 const HARD_CATEGORIES = new Set(["quality", "long", "race"]);
@@ -79,6 +83,13 @@ export function visitorForDate(
 
   // Fox: autumn dusk, drawn by recent quality work.
   if (season === "autumn" && last3.some((r) => r.category === "quality")) eligible.push("fox");
+
+  // Luna moth: a week of settled nights on a garden that is also trained —
+  // the sleep/recovery reward (0020). Same compound rule as everything in
+  // option C: the moth never visits a well-slept couch.
+  const nights7 = days.filter((d) => d.date > addDays(date, -7) && d.date <= date);
+  const settled7 = nights7.filter((d) => d.dew === true).length;
+  if (settled7 >= 5 && last7.length >= 2) eligible.push("luna_moth");
 
   if (eligible.length === 0) return null;
   // Most eligible days pass quietly — scarcity is the point.
