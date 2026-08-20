@@ -517,3 +517,85 @@ Total Sleep: 6h 2min
     expect(parseSleepText("Weekly Report\n2026-08-19\nSteps: 9000").recognized).toBe(false);
   });
 });
+
+describe("queryDailyHealthData prose — where main sleep actually lives", () => {
+  const DAILY = `Daily Health Data — Last 7 days | Resting HR: 46 bpm | HRV Baseline: 61 ms
+Note: sleep entries are dated by their wake-up day.
+
+--- 20260817 ---
+Steps: 9,234 | Calories: 456 kcal | Exercise: 5 min
+Stress: Avg 23
+Sleep Summary:
+  Total: 7h 5min | Deep: 1h 5min | Light: 4h 12min | REM: 45 min | Awake: 12 min
+  Sleep HR: Avg 52 bpm | Min 48 bpm | Max 68 bpm
+
+--- 20260818 ---
+Steps: 812 | Calories: 89 kcal | Exercise: 0 min
+Stress: Avg 31
+
+--- 20260819 ---
+Steps: 4,102 | Calories: 231 kcal | Exercise: 42 min
+Stress: Avg 19
+Sleep Summary:
+  Total: 6h 44min | Deep: 58 min | Light: 3h 51min | REM: 1h 40min | Awake: 15 min
+  Sleep HR: Avg 50 bpm | Min 47 bpm | Max 61 bpm
+`;
+
+  it("parses sleep summaries; a day without one is skipped, never zeroed", async () => {
+    const { parseDailyHealthText } = await import("../src/services/coros-mcp.js");
+    const parsed = parseDailyHealthText(DAILY);
+    expect(parsed.recognized).toBe(true);
+    expect(parsed.nights.map((n) => n.date)).toEqual(["2026-08-17", "2026-08-19"]);
+    const n17 = parsed.nights[0]!;
+    expect(n17.durationSeconds).toBe(7 * 3600 + 5 * 60);
+    expect(n17.deepSeconds).toBe(3600 + 5 * 60);
+    expect(n17.lightSeconds).toBe(4 * 3600 + 12 * 60);
+    expect(n17.remSeconds).toBe(45 * 60);
+    expect(n17.awakeSeconds).toBe(12 * 60);
+    const n19 = parsed.nights[1]!;
+    expect(n19.remSeconds).toBe(3600 + 40 * 60);
+  });
+
+  it("the sync prefers queryDailyHealthData and ingests its nights", async () => {
+    const db = makeTestDb();
+    const { userId } = await makeTestUser(db);
+    const env = makeEnv();
+    // Mock lists BOTH tools; daily returns the real prose, sleep returns
+    // naps-only. The sync must land the daily nights.
+    const mock = mockMcp({ toolResult: { content: [{ type: "text", text: "Sleep Data\nNote: each record below is dated by its wake-up day.\n\n2026-08-19\nNaps Total: 4 min\n" }], isError: false } });
+    const base = mock.fetchImpl;
+    const fetchImpl = (async (input: RequestInfo | URL, init?: RequestInit) => {
+      const body = typeof init?.body === "string" ? init.body : "";
+      if (String(input) === "https://mcp.coros.com/mcp" && body.includes('"tools/list"')) {
+        return new Response(
+          JSON.stringify({
+            jsonrpc: "2.0",
+            id: 1,
+            result: {
+              tools: [
+                { name: "queryDailyHealthData", inputSchema: { properties: { days: { type: "integer" } } } },
+                { name: "querySleepData", inputSchema: { properties: {} } },
+              ],
+            },
+          }),
+          { status: 200, headers: { "Content-Type": "application/json" } },
+        );
+      }
+      if (String(input) === "https://mcp.coros.com/mcp" && body.includes("queryDailyHealthData")) {
+        const req = JSON.parse(body);
+        expect(req.params.arguments.days).toBeGreaterThanOrEqual(42);
+        return new Response(
+          JSON.stringify({ jsonrpc: "2.0", id: 1, result: { content: [{ type: "text", text: DAILY }], isError: false } }),
+          { status: 200, headers: { "Content-Type": "application/json" } },
+        );
+      }
+      return base(input as RequestInfo, init);
+    }) as typeof fetch;
+    await connect(db, env, userId, mock);
+    const result = await syncCorosMcpSleep(db, env, userId, "America/New_York", fetchImpl);
+    expect(result.status).toBe("ok");
+    expect(result.written).toBe(2);
+    const rows = await db.select().from(sleepRecords).where(eq(sleepRecords.userId, userId));
+    expect(rows.map((r) => r.date).sort()).toEqual(["2026-08-17", "2026-08-19"]);
+  });
+});

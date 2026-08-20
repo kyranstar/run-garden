@@ -1,6 +1,6 @@
 import { and, eq, inArray, sql } from "drizzle-orm";
 import { oauthStates, providerConnections, sleepRecords } from "@rg/database";
-import { addDays, fingerprint, newId, nowInstant, todayInZone, type LocalDate } from "@rg/domain";
+import { addDays, daysBetween, fingerprint, newId, nowInstant, todayInZone, type LocalDate } from "@rg/domain";
 import { decryptSecret, encryptSecret } from "../auth/crypto.js";
 import type { Env } from "../env.js";
 import { chunkIds, type Db } from "./db.js";
@@ -443,6 +443,12 @@ export function buildDateArgs(
   const compact = (d: LocalDate) => Number(d.replaceAll("-", ""));
   for (const [name, schema] of Object.entries(props)) {
     const n = name.toLowerCase();
+    // A bare window-size property (queryDailyHealthData's shape: no
+    // start/end, just how far back).
+    if (/^(days|numdays|lastdays|dayCount)$/i.test(name) && (schema.type === "integer" || schema.type === "number")) {
+      args[name] = Math.max(1, Math.min(42, daysBetween(startDate, endDate) + 1));
+      continue;
+    }
     const isStart = /start|from|begin/.test(n);
     const isEnd = /end|to$|until/.test(n);
     if (!isStart && !isEnd) continue;
@@ -616,9 +622,71 @@ export function parseSleepText(text: string): { recognized: boolean; nights: Nor
   return { recognized: true, nights: nights.sort((a, b) => (a.date < b.date ? -1 : 1)) };
 }
 
+/**
+ * queryDailyHealthData's prose (observed live 2026-08-19, masked probe) is
+ * where the MAIN sleep actually lives — querySleepData lists only naps:
+ *
+ *   Daily Health Data — Last 7 days | Resting HR: 46 bpm | ...
+ *   Note: sleep entries are dated by their wake-up day.
+ *
+ *   --- 20260817 ---
+ *   Steps: 9,234 | Calories: 456 kcal | Exercise: 5 min
+ *   Stress: Avg 23
+ *   Sleep Summary:
+ *     Total: 7h 5min | Deep: 1h 5min | Light: 4h 12min | REM: 45 min | Awake: 12 min
+ *     Sleep HR: Avg 52 bpm | Min 48 bpm | Max 68 bpm
+ *
+ * Records are delimited by "--- YYYYMMDD ---"; sleep fields ride ONE
+ * pipe-separated line under "Sleep Summary:". Days without a summary are
+ * simply nights the watch didn't record — skipped, never zeroed.
+ */
+export function parseDailyHealthText(text: string): { recognized: boolean; nights: NormalizedNight[] } {
+  if (!/daily health data/i.test(text.slice(0, 200)) && !/^--- \d{8} ---$/m.test(text)) {
+    return { recognized: false, nights: [] };
+  }
+  const toSecs = (v: string): number | null => {
+    const hm = /(?:(\d+)\s*h)?\s*(?:(\d+)\s*min)?/.exec(v.trim());
+    if (!hm || (hm[1] === undefined && hm[2] === undefined)) return null;
+    return (Number(hm[1] ?? 0) * 3600 + Number(hm[2] ?? 0) * 60) || null;
+  };
+  const nights: NormalizedNight[] = [];
+  const blocks = text.split(/^--- (\d{8}) ---$/m);
+  // split() alternates [preamble, date, block, date, block, ...]
+  for (let i = 1; i + 1 < blocks.length + 1 && blocks[i] !== undefined; i += 2) {
+    const dateRaw = blocks[i]!;
+    const body = blocks[i + 1] ?? "";
+    const date = corosDayToIso(Number(dateRaw));
+    if (!date) continue;
+    const summary = /sleep summary:\s*\n([^]*?)(?=\n\s*\n|$)/i.exec(body)?.[1];
+    if (!summary) continue;
+    const fields = new Map<string, string>();
+    for (const line of summary.split("\n")) {
+      for (const seg of line.split("|")) {
+        const kv = /^\s*([A-Za-z ]{2,20}):\s*(.+?)\s*$/.exec(seg);
+        if (kv) fields.set(kv[1]!.trim().toLowerCase(), kv[2]!.trim());
+      }
+    }
+    const total = fields.has("total") ? toSecs(fields.get("total")!) : null;
+    if (total == null || total < 30 * 60 || total > 20 * 3600) continue;
+    const stage = (k: string) => (fields.has(k) ? toSecs(fields.get(k)!) : null);
+    nights.push({
+      date,
+      durationSeconds: total,
+      deepSeconds: stage("deep"),
+      remSeconds: stage("rem"),
+      lightSeconds: stage("light"),
+      awakeSeconds: stage("awake"),
+      startTime: null,
+      endTime: null,
+      qualityScore: null,
+    });
+  }
+  return { recognized: true, nights: nights.sort((a, b) => (a.date < b.date ? -1 : 1)) };
+}
+
 /** Dig night objects out of the tool result: structuredContent when the
  * server sends it, else the first parseable JSON text block (with the prose
- * format above as the observed-in-the-wild fallback); then every
+ * formats above as the observed-in-the-wild fallbacks); then every
  * array of objects that normalizes. */
 export function extractNights(result: unknown): NormalizedNight[] {
   const root = (result ?? {}) as {
@@ -633,6 +701,8 @@ export function extractNights(result: unknown): NormalizedNight[] {
           data = JSON.parse(item.text);
           break;
         } catch {
+          const daily = parseDailyHealthText(item.text);
+          if (daily.recognized) return daily.nights;
           const prose = parseSleepText(item.text);
           if (prose.recognized) return prose.nights;
         }
@@ -775,6 +845,28 @@ export async function syncCorosMcpSleep(
 
   try {
     const tools = await mcpToolList(token, fetchImpl);
+    // Main sleep lives in queryDailyHealthData (observed live: querySleepData
+    // lists only naps). Try it first; fall back to querySleepData for
+    // accounts/servers where the daily tool is absent or sleepless.
+    const daily = tools.find((t) => t.name === "queryDailyHealthData");
+    if (daily) {
+      const dailyArgs = buildDateArgs(daily, startDate, today);
+      const dailyResult = await mcpRequest(
+        token,
+        "tools/call",
+        { name: daily.name, arguments: dailyArgs },
+        fetchImpl,
+      ).catch(() => null);
+      const dailyNights = dailyResult ? extractNights(dailyResult) : [];
+      if (dailyNights.length > 0) {
+        const { written, skipped } = await ingestSleep(db, userId, dailyNights);
+        await db
+          .update(providerConnections)
+          .set({ lastSyncAt: nowInstant(), lastErrorCategory: null, updatedAt: nowInstant() })
+          .where(eq(providerConnections.id, row.id));
+        return { status: "ok", written, skipped };
+      }
+    }
     const tool = tools.find((t) => t.name === "querySleepData");
     if (!tool) return { status: "tool_missing" };
     const args = buildDateArgs(tool, startDate, today);
