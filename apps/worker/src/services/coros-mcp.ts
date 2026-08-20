@@ -697,15 +697,26 @@ export function extractNights(result: unknown): NormalizedNight[] {
   if (data === undefined) {
     for (const item of root.content ?? []) {
       if (item.type === "text" && item.text) {
+        // The live server DOUBLE-ENCODES some tools' prose (the text block is
+        // a JSON string literal — starts with a quote, newlines escaped), so
+        // a successful JSON.parse can still hand back prose. Whatever string
+        // we end up with, the prose parsers get their look at it.
+        let text = item.text;
         try {
-          data = JSON.parse(item.text);
-          break;
+          const parsed: unknown = JSON.parse(item.text);
+          if (typeof parsed === "string") {
+            text = parsed;
+          } else {
+            data = parsed;
+            break;
+          }
         } catch {
-          const daily = parseDailyHealthText(item.text);
-          if (daily.recognized) return daily.nights;
-          const prose = parseSleepText(item.text);
-          if (prose.recognized) return prose.nights;
+          /* raw prose — fall through */
         }
+        const daily = parseDailyHealthText(text);
+        if (daily.recognized) return daily.nights;
+        const prose = parseSleepText(text);
+        if (prose.recognized) return prose.nights;
       }
     }
   }

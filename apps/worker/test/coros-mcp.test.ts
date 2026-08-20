@@ -556,6 +556,14 @@ Sleep Summary:
     expect(n19.remSeconds).toBe(3600 + 40 * 60);
   });
 
+  it("a DOUBLE-ENCODED prose block (JSON string literal) still parses — the live server does this", async () => {
+    const { parseDailyHealthText } = await import("../src/services/coros-mcp.js");
+    void parseDailyHealthText; // shape covered above; this test goes through extractNights
+    const { extractNights } = await import("../src/services/coros-mcp.js");
+    const nights = extractNights({ content: [{ type: "text", text: JSON.stringify(DAILY) }], isError: false });
+    expect(nights.map((n) => n.date)).toEqual(["2026-08-17", "2026-08-19"]);
+  });
+
   it("the sync prefers queryDailyHealthData and ingests its nights", async () => {
     const db = makeTestDb();
     const { userId } = await makeTestUser(db);
