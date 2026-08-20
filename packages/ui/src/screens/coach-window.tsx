@@ -1,5 +1,6 @@
 import { type ReactNode } from "react";
 import { useEscapeKey } from "../components.js";
+import { IconCoach } from "../icons.js";
 
 /**
  * The floating coach window (rework spec §6, desktop ≥1024px only — the page
@@ -38,9 +39,7 @@ export function CoachWindow({
         aria-expanded={false}
         onClick={onOpen}
       >
-        <span aria-hidden="true" className="coach-pill-caret">
-          ▴
-        </span>
+        <IconCoach size={20} />
         Coach{pendingCount > 0 ? ` · ${pendingCount}` : ""}
       </button>
     );

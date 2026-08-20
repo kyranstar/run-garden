@@ -61,6 +61,28 @@ export const IconSettings = ({ size }: IconProps) => (
   </svg>
 );
 
+/** The coach's mark (2026-08-20): a speech bubble growing the garden
+ * glyph's own two-leaf sprout — the coach is the garden's voice. Use at
+ * 18px and up; below that, IconCoachSmall. */
+export const IconCoach = ({ size }: IconProps) => (
+  <svg {...base(size)}>
+    <path d="M21.5 6.5A3.5 3.5 0 0 0 18 3H6A3.5 3.5 0 0 0 2.5 6.5v7.2A3.5 3.5 0 0 0 6 17.2h1.2V21l4.6-3.8H18a3.5 3.5 0 0 0 3.5-3.5Z" />
+    <path d="M12 14.6v-3.4" />
+    <path d="M12 11.2c0-2.5 1.8-4.3 4.3-4.3 0 2.5-1.8 4.3-4.3 4.3Z" />
+    <path d="M12 9.8c0-2.5-1.8-4.3-4.3-4.3 0 2.5 1.8 4.3 4.3 4.3Z" />
+  </svg>
+);
+
+/** The small cut of the coach mark for <18px (feed read-marks): same
+ * bubble, one big leaf — two leaves and a stem can't resolve that small. */
+export const IconCoachSmall = ({ size }: IconProps) => (
+  <svg {...base(size)} strokeWidth={2}>
+    <path d="M21.5 6.5A3.5 3.5 0 0 0 18 3H6A3.5 3.5 0 0 0 2.5 6.5v7.2A3.5 3.5 0 0 0 6 17.2h1.2V21l4.6-3.8H18a3.5 3.5 0 0 0 3.5-3.5Z" />
+    <path d="M10.2 14.3c0-3.4 2.5-5.9 5.9-5.9 0 3.4-2.5 5.9-5.9 5.9Z" />
+    <path d="M10.2 14.3c-1.1.9-1.8 1.7-2.2 2.5" />
+  </svg>
+);
+
 export const IconCheck = ({ size }: IconProps) => (
   <svg {...base(size)}>
     <path d="M4.5 12.5l5 5L19.5 7" />

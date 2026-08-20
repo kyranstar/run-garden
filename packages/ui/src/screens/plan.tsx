@@ -3,6 +3,7 @@ import { Link, useSearchParams } from "react-router-dom";
 import { keepPreviousData, useMutation, useQueries, useQuery, useQueryClient } from "@tanstack/react-query";
 import { api, ApiError, type PlanDetailResponse, type WorkoutDto } from "@rg/api-client";
 import { addDays, humanizeWorkoutTitle, startOfIsoWeek } from "@rg/domain";
+import { IconCoach } from "../icons.js";
 import {
   Banner,
   CategoryDot,
@@ -1057,9 +1058,7 @@ export function PlanScreen() {
             aria-expanded={coachOpen}
             onClick={() => setCoachOpen(true)}
           >
-            <span aria-hidden="true" className="coach-pill-caret">
-              ▴
-            </span>
+            <IconCoach size={20} />
             Coach{pendingCount > 0 ? ` · ${pendingCount}` : ""}
           </button>
           {/* `fill`: the coach panel owns its own scroll region, so the sheet

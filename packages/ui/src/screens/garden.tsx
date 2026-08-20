@@ -25,7 +25,7 @@ import {
   SPECIES_BY_ID,
 } from "@rg/garden-engine";
 import { GardenScene, type SceneImpulse } from "@rg/garden-renderer";
-import { IconClose } from "../icons.js";
+import { IconClose, IconCoach } from "../icons.js";
 import { Banner, CategoryDot, CATEGORY_LABELS, EmptyState, formatDayShort, formatMinutes, formatTime, localTodayGuess, relativeDay, settling, Sheet, Spinner, syncActionShort, useHeldInPlace, useIsDesktop, useSpaceAbove, watchCoverageShort } from "../components.js";
 import { Drawer } from "../drawer.js";
 import { cap, eventSentence, selectArrival, type ArrivalEvent } from "./arrival.js";
@@ -2182,7 +2182,7 @@ export function GardenScreen() {
               return (
                 <div className="today-coach">
                   <span className="today-coach-mark" aria-hidden="true">
-                    🌱
+                    <IconCoach size={18} />
                   </span>
                   <p
                     className="today-coach-body"

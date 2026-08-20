@@ -2104,6 +2104,7 @@ a.note {
   height: 26px;
   border-radius: var(--radius-round);
   background: var(--green-soft);
+  color: var(--green-ink);
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -5608,7 +5609,11 @@ a.note {
 @media (min-width: 1024px) {
   .scene-full-toggle { display: none; }
 }
-.coach-pill-caret { margin-right: var(--space-3); font-size: 0.7em; opacity: 0.85; }
+/* The coach mark (icons.tsx IconCoach) replaced the text caret 2026-08-20. */
+.coach-pill svg {
+  flex: none;
+  margin-right: var(--space-3);
+}
 
 /* ── The Activity dashboard (System 2): overview sections + week feed ──── */
 .dash-sect {
@@ -5800,6 +5805,7 @@ a.note {
   height: 24px;
   border-radius: var(--radius-round);
   background: var(--green-soft);
+  color: var(--green-ink);
   display: inline-flex;
   align-items: center;
   justify-content: center;

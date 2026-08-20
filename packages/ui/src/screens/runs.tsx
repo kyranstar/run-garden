@@ -5,6 +5,7 @@ import { api, type ActivityDto, type InsightsResponse, type WorkoutDto } from "@
 import { addDays, isAdventureSport, sportLabel } from "@rg/domain";
 import type { Discipline } from "@rg/analytics";
 import { useMeasuredWidth } from "../chart-kit.js";
+import { IconCoachSmall } from "../icons.js";
 import {
   Banner,
   CategoryDot,
@@ -482,7 +483,7 @@ function ActivityDetail({
       {peek.data?.read && !generating ? (
         <div className="fw-coach">
           <span className="fw-coach-mark" aria-hidden="true">
-            🌱
+            <IconCoachSmall size={16} />
           </span>
           <div>
             <p className="fw-coach-body">
