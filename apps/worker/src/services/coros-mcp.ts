@@ -845,6 +845,51 @@ export async function syncCorosMcpSleep(
   }
 }
 
+/** Tools the account-owner may probe through the debug endpoint. Read-only
+ * health queries only — never FIT downloads (they have a daily quota). */
+const PROBE_TOOLS = new Set([
+  "querySleepData",
+  "queryDailyHealthData",
+  "querySleepHrv",
+  "queryRecoveryStatus",
+]);
+
+/**
+ * One masked look at what a health tool actually returns for THIS account —
+ * every digit becomes '#', so field names and structure survive while
+ * readings do not. The diagnosis surface that found the prose format is now
+ * a general one: "does COROS's server hold my sleep anywhere?" is a probe,
+ * not a guess.
+ */
+export async function probeMcpTool(
+  db: Db,
+  env: Env,
+  userId: string,
+  toolName: string,
+  days: number,
+  timezone: string,
+  fetchImpl: typeof fetch = fetch,
+): Promise<{ error?: string; argsSent?: Record<string, unknown>; preview?: string }> {
+  if (!PROBE_TOOLS.has(toolName)) return { error: "tool not probeable" };
+  const token = await corosMcpAccessToken(db, env, userId, fetchImpl);
+  if (!token) return { error: "not connected" };
+  try {
+    const tools = await mcpToolList(token, fetchImpl);
+    const tool = tools.find((t) => t.name === toolName);
+    if (!tool) return { error: `server does not list ${toolName}` };
+    const today = todayInZone(timezone);
+    const args = buildDateArgs(tool, addDays(today, -Math.max(1, Math.min(days, 42))), today);
+    const result = await mcpRequest(token, "tools/call", { name: toolName, arguments: args }, fetchImpl);
+    const root = result as { content?: Array<{ type?: string; text?: string }>; structuredContent?: unknown };
+    const text =
+      root.content?.find((i) => i.type === "text")?.text ??
+      JSON.stringify(root.structuredContent ?? root);
+    return { argsSent: args, preview: text.slice(0, 1600).replace(/[0-9]/g, "#") };
+  } catch (e) {
+    return { error: String(e).slice(0, 200) };
+  }
+}
+
 /** All connected athletes, throttled — riding the same cron as the COROS
  * read sweep. Sleep lands wake-date keyed, so one pull a night is plenty. */
 export async function corosMcpSleepSweep(

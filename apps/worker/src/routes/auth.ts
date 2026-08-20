@@ -19,6 +19,7 @@ import {
   completeCorosMcpAuth,
   consumeCorosMcpState,
   disconnectCorosMcp,
+  probeMcpTool,
   startCorosMcpAuth,
   syncCorosMcpSleep,
 } from "../services/coros-mcp.js";
@@ -181,9 +182,18 @@ authRoutes.post("/coros-mcp/sync-now", requireUser, async (c) => {
 });
 
 /** The user's own connection diagnostics: status + the values-redacted shape
- * skeleton stored on the last tool failure. Their row, their eyes only. */
+ * skeleton stored on the last tool failure. With ?probe=<tool>, one masked
+ * (digits → #) look at what a whitelisted health tool returns for THIS
+ * account. Their row, their data, their eyes only. */
 authRoutes.get("/coros-mcp/debug", requireUser, async (c) => {
   const db = c.get("db");
+  const probe = c.req.query("probe");
+  if (probe) {
+    const prefs = await loadPreferences(db, c.get("userId"));
+    const days = Number(c.req.query("days") ?? 3);
+    const result = await probeMcpTool(db, c.env, c.get("userId"), probe, days, prefs.timezone);
+    return c.json(result);
+  }
   const row = (
     await db
       .select()
