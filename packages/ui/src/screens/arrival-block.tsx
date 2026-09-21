@@ -19,6 +19,7 @@ export function CeremonyCard({
   onSeePlant,
   onDismiss,
   onHighlight,
+  onPreview,
   variant,
 }: {
   ceremony: ArrivalCeremony;
@@ -33,6 +34,16 @@ export function CeremonyCard({
    * sheet — the "taken root" line is the trigger. Optional so older callers
    * keep a plain eyebrow. */
   onHighlight?: (plantId: string) => void;
+  /**
+   * Peek at the plant while the pointer (or keyboard focus) is on the
+   * "taken root" line, and let go when it leaves — `null` means released.
+   *
+   * Deliberately separate from {@link onHighlight}: hovering is a look,
+   * clicking is a decision. Only the click stops the arrival glow tour and
+   * scrolls the scene into view, because a page that jumps because your
+   * cursor crossed a line is worse than no feature at all.
+   */
+  onPreview?: (plantId: string | null) => void;
   variant?: "hud";
 }) {
   const isGround = ceremony.kind === "ground";
@@ -98,7 +109,14 @@ export function CeremonyCard({
             type="button"
             className="ceremony-eyebrow ceremony-eyebrow-btn"
             onClick={() => onHighlight(livePlant.id)}
-            title="Light it up in the garden"
+            // Focus/blur as well as the pointer: the control is already a
+            // real button, so keyboard users get the same peek for free.
+            onMouseEnter={onPreview ? () => onPreview(livePlant.id) : undefined}
+            onMouseLeave={onPreview ? () => onPreview(null) : undefined}
+            onFocus={onPreview ? () => onPreview(livePlant.id) : undefined}
+            onBlur={onPreview ? () => onPreview(null) : undefined}
+            // Describes the CLICK — hovering is what lights it now.
+            title="Keep it lit"
           >
             A new species has taken root
           </button>

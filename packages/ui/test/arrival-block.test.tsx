@@ -73,6 +73,46 @@ describe("CeremonyCard", () => {
     expect(plain).not.toContain("ceremony-eyebrow-btn");
   });
 
+  /*
+   * Hover is a PEEK, click is the commitment. The static-markup suite cannot
+   * fire a mouseenter, so what is pinned here is the contract the handler
+   * depends on: the control is a real <button> (so focus/blur give keyboard
+   * users the same preview for free) and its title describes the CLICK, now
+   * that hovering is what does the lighting.
+   */
+  it("the highlight control is focusable and its title describes the click, not the hover", () => {
+    const html = render(
+      createElement(CeremonyCard, {
+        ceremony: { kind: "species", speciesId: "clover", fromPreview: true },
+        codexEntry: cloverEntry,
+        queueLeft: 0,
+        snapshot,
+        onSeePlant: () => undefined,
+        onDismiss: () => undefined,
+        onHighlight: () => undefined,
+        onPreview: () => undefined,
+      }),
+    );
+    expect(html).toContain('<button type="button" class="ceremony-eyebrow ceremony-eyebrow-btn"');
+    expect(html).toContain('title="Keep it lit"');
+    expect(html).not.toContain("Light it up in the garden");
+  });
+
+  it("stays a plain eyebrow when only onPreview is given — preview alone is not a control", () => {
+    const html = render(
+      createElement(CeremonyCard, {
+        ceremony: { kind: "species", speciesId: "clover", fromPreview: true },
+        codexEntry: cloverEntry,
+        queueLeft: 0,
+        snapshot,
+        onSeePlant: () => undefined,
+        onDismiss: () => undefined,
+        onPreview: () => undefined,
+      }),
+    );
+    expect(html).not.toContain("ceremony-eyebrow-btn");
+  });
+
   it("ground ceremony renders the ground name, carving copy, and no see-plant pull", () => {
     const html = render(
       createElement(CeremonyCard, {

@@ -1243,6 +1243,14 @@ export function GardenScreen() {
   // A deliberate tap on the ceremony's "taken root" line outranks the
   // arrival glow schedule — once the athlete points, the tour stops.
   const manualGlowRef = useRef(false);
+  /**
+   * The plant being PEEKED at while the pointer or keyboard focus rests on
+   * the "taken root" line. It overlays `highlightPlantId` rather than
+   * replacing it (see the scene's `highlightPlantId` prop below), so letting
+   * go restores whatever was lit without this needing to remember it — and a
+   * stray mouse-over can never corrupt the arrival tour's own state.
+   */
+  const [previewPlantId, setPreviewPlantId] = useState<string | null>(null);
 
   // The desktop stage is sized against the space it actually has, not the
   // window — one banner above it used to push the whole bottom HUD row off
@@ -1963,7 +1971,9 @@ export function GardenScreen() {
             atmosphere={!timelineOpen}
             visitor={viewingLive && visitor ? visitor.kind : null}
             enteringPlantIds={viewingLive ? arrival.enteringPlantIds : undefined}
-            highlightPlantId={viewingLive ? highlightPlantId : null}
+            // A peek wins while it lasts; underneath, the tour (or a
+            // committed tap) keeps whatever it had.
+            highlightPlantId={viewingLive ? (previewPlantId ?? highlightPlantId) : null}
             impulse={viewingLive ? impulse : null}
             // `slice` fills the hero crop below lg and the stage above it —
             // the box, not the svg's own aspect ratio, decides the height.
@@ -2095,6 +2105,7 @@ export function GardenScreen() {
         snapshot={snapshot}
         onSeePlant={seePlantFromCeremony}
         onDismiss={dismissCeremony}
+        onPreview={setPreviewPlantId}
         onHighlight={(plantId) => {
           manualGlowRef.current = true;
           setHighlightPlantId(plantId);
