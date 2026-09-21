@@ -6,6 +6,7 @@ import { describe, expect, it } from "vitest";
 import { schema } from "@rg/database";
 import { addDays, newId, nowInstant, todayInZone } from "@rg/domain";
 import { initialSnapshot } from "@rg/garden-engine";
+import type { Db } from "../src/services/db.js";
 import { buildDossier } from "../src/services/coach-context.js";
 import { makeTestDb, makeTestUser } from "./helpers.js";
 
@@ -652,5 +653,127 @@ describe("the dossier says which sessions can still be changed", () => {
     const d = await buildDossier(db, userId, prefs, todayInZone(prefs.timezone));
     expect(handlesIn(d.text)).toEqual(["only-today"]);
     expect(d.text.split("Threshold repeats").length - 1).toBe(1);
+  });
+});
+
+/**
+ * PLAN SHAPE (spec 2026-09-20 §4). Selectors address workouts by property, so
+ * a handle is no longer needed to act — but the coach still has to KNOW a
+ * block runs past the 14-day window, or it will never think to reach for it.
+ * No handles here on purpose: this section is knowledge, not targets.
+ */
+describe("buildDossier · PLAN SHAPE", () => {
+  async function seedBlock(db: Db, userId: string, today: string) {
+    const at = nowInstant();
+    // Lifts every Monday and Thursday for six weeks — well past UPCOMING's
+    // fortnight, which is the whole point.
+    for (let week = 0; week < 6; week++) {
+      for (const [n, offset] of [1, 4].entries()) {
+        const date = addDays(today, week * 7 + offset);
+        await db.insert(schema.plannedWorkouts).values({
+          id: `lift-${week}-${n}`,
+          userId,
+          planId: "blk",
+          sourceWorkoutId: `s-${week}-${n}`,
+          title: n === 0 ? "Lower Body" : "Upper Body",
+          category: "strength",
+          sport: "strength",
+          originalPlanDate: date,
+          lastVerifiedCorosDate: date,
+          effectiveDate: date,
+          effectiveTime: "07:00",
+          completionState: "scheduled",
+          sourceContentFingerprint: `fp-${week}-${n}`,
+          calendarBlockDurationSeconds: 2700,
+          createdAt: at,
+          updatedAt: at,
+        });
+      }
+    }
+  }
+
+  it("reports each discipline's count, span and usual days beyond the fortnight", async () => {
+    const db = makeTestDb();
+    const { userId, prefs } = await makeTestUser(db);
+    const today = todayInZone(prefs.timezone);
+    await seedBlock(db, userId, today);
+
+    const d = await buildDossier(db, userId, prefs, today);
+    expect(d.sections).toContain("PLAN SHAPE");
+    const shape = d.text.split("## PLAN SHAPE")[1]!.split("##")[0]!;
+    // 8, not 12: the four inside the fortnight are UPCOMING's job, and this
+    // section exists to describe only what UPCOMING cannot show.
+    expect(shape).toContain("strength · 8 sessions");
+    expect(shape).toContain(addDays(today, 15)); // first one past the window
+    expect(shape).toContain(addDays(today, 39)); // the last one, five weeks out
+    // The days a selector would name, so the coach can describe the block.
+    expect(shape).toMatch(/usually [A-Z][a-z]{2}, [A-Z][a-z]{2}/);
+    // Knowledge, not targets: a handle here would invite an op on a session
+    // UPCOMING deliberately did not offer.
+    expect(shape).not.toContain("[wo:");
+  });
+
+  it("says so plainly when there is nothing past the fortnight", async () => {
+    const db = makeTestDb();
+    const { userId, prefs } = await makeTestUser(db);
+    const d = await buildDossier(db, userId, prefs, todayInZone(prefs.timezone));
+    expect(d.text).toContain("nothing is scheduled beyond the next 14 days");
+  });
+});
+
+/**
+ * RECENT STRENGTH DETAIL (spec 2026-09-20 §5). The conversational coach saw
+ * "did 48min" for a lift and nothing else — the exercises were in
+ * `activity_laps` all along, read only by the per-activity effort package.
+ */
+describe("buildDossier · RECENT STRENGTH DETAIL", () => {
+  it("lists the exercises actually performed, from the laps", async () => {
+    const db = makeTestDb();
+    const { userId, prefs } = await makeTestUser(db);
+    const today = todayInZone(prefs.timezone);
+    const at = nowInstant();
+    await db.insert(schema.activities).values({
+      id: "act1",
+      userId,
+      startTime: `${addDays(today, -2)}T17:00:00Z`,
+      startTimeLocal: `${addDays(today, -2)}T10:00:00`,
+      sport: "strength",
+      durationSeconds: 2880,
+      sourceMergeConfidence: 1,
+      createdAt: at,
+      updatedAt: at,
+    });
+    const sets: Array<[number, string]> = [
+      [0, "Back Squat"],
+      [1, "Back Squat"],
+      [2, "Back Squat"],
+      [3, "Romanian Deadlift"],
+      [4, "Romanian Deadlift"],
+    ];
+    for (const [i, name] of sets) {
+      await db.insert(schema.activityLaps).values({
+        id: `lap-${i}`,
+        activityId: "act1",
+        lapIndex: i,
+        durationSeconds: 60,
+        exerciseNameKey: name,
+      });
+    }
+
+    const d = await buildDossier(db, userId, prefs, today);
+    expect(d.sections).toContain("RECENT STRENGTH DETAIL");
+    const detail = d.text.split("## RECENT STRENGTH DETAIL")[1]!.split("##")[0]!;
+    expect(detail).toContain("Back Squat ×3");
+    expect(detail).toContain("Romanian Deadlift ×2");
+    // The ceiling, stated in the dossier itself so the coach never invents a
+    // load it was never given.
+    expect(detail).toContain("no weights or reps");
+  });
+
+  it("is omitted entirely when there is no strength work to describe", async () => {
+    const db = makeTestDb();
+    const { userId, prefs } = await makeTestUser(db);
+    const d = await buildDossier(db, userId, prefs, todayInZone(prefs.timezone));
+    expect(d.sections).not.toContain("RECENT STRENGTH DETAIL");
   });
 });

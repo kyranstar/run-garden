@@ -639,3 +639,75 @@ describe("a one-off's plan row", () => {
     expect(blk.endDate).toBe(addDays(today, 27));
   });
 });
+
+/**
+ * remove / restore / adjust (spec 2026-09-20 §3): the three verbs that reach
+ * parity with what the athlete can already do by hand, and the three that the
+ * selector verbs resolve into.
+ */
+describe("applyOps · remove, restore, adjust", () => {
+  it("remove archives the row instead of resolving it — it is NOT a skip", async () => {
+    const db = makeTestDb();
+    const { userId, prefs } = await makeTestUser(db);
+    const today = todayInZone(prefs.timezone);
+    await seedWorkout(db, userId, "w1", addDays(today, 2));
+
+    const out = await applyOps(db, userId, prefs, "p-rm", [{ kind: "remove", workoutId: "w1" }]);
+
+    expect(out.archived).toEqual(["w1"]);
+    expect(out.missed).toEqual([]);
+    const [w] = await db.select().from(schema.plannedWorkouts).where(eq(schema.plannedWorkouts.id, "w1"));
+    expect(w!.archivedAt).not.toBeNull();
+    expect(w!.archiveReason).toBe("user_removed");
+    // The distinction that makes this a separate verb: a removed session is
+    // never counted as rest, the way a skip is.
+    expect(w!.completionState).toBe("scheduled");
+    expect(w!.sanctionedBy).toBeNull();
+  });
+
+  it("restore puts a skipped session back and clears the coach's sanction", async () => {
+    const db = makeTestDb();
+    const { userId, prefs } = await makeTestUser(db);
+    const today = todayInZone(prefs.timezone);
+    await seedWorkout(db, userId, "w1", addDays(today, 2));
+    await applyOps(db, userId, prefs, "p-sk", [{ kind: "skip", workoutId: "w1", reason: "away" }]);
+
+    const out = await applyOps(db, userId, prefs, "p-re", [{ kind: "restore", workoutId: "w1" }]);
+
+    expect(out.updated).toEqual(["w1"]);
+    const [w] = await db.select().from(schema.plannedWorkouts).where(eq(schema.plannedWorkouts.id, "w1"));
+    expect(w!.completionState).toBe("scheduled");
+    expect(w!.sanctionedBy).toBeNull();
+    expect(w!.resolutionDate).toBeNull();
+  });
+
+  it("adjust changes duration only, leaving category and title alone", async () => {
+    const db = makeTestDb();
+    const { userId, prefs } = await makeTestUser(db);
+    const today = todayInZone(prefs.timezone);
+    await seedWorkout(db, userId, "w1", addDays(today, 2));
+
+    const out = await applyOps(db, userId, prefs, "p-adj", [
+      { kind: "adjust", workoutId: "w1", durationMinutes: 25 },
+    ]);
+
+    expect(out.updated).toEqual(["w1"]);
+    const [w] = await db.select().from(schema.plannedWorkouts).where(eq(schema.plannedWorkouts.id, "w1"));
+    expect(w!.calendarBlockDurationSeconds).toBe(25 * 60);
+    expect(w!.category).toBe("quality");
+    expect(w!.title).toBe("Tempo 3×10");
+  });
+
+  it("reports a target that is gone rather than claiming it changed", async () => {
+    const db = makeTestDb();
+    const { userId, prefs } = await makeTestUser(db);
+    const out = await applyOps(db, userId, prefs, "p-ghost", [
+      { kind: "remove", workoutId: "not-a-workout" },
+      { kind: "adjust", workoutId: "also-not", durationMinutes: 30 },
+      { kind: "restore", workoutId: "nope" },
+    ]);
+    expect(out.archived).toEqual([]);
+    expect(out.updated).toEqual([]);
+    expect(out.missed).toHaveLength(3);
+  });
+});

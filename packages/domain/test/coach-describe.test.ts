@@ -244,6 +244,9 @@ const SAMPLES: Record<CoachOp["kind"], unknown> = {
   },
   retirePlan: { kind: "retirePlan", planId: "cp1" },
   resolveRaceConflict: { kind: "resolveRaceConflict", keep: "settings" },
+  remove: { kind: "remove", workoutId: "w1" },
+  restore: { kind: "restore", workoutId: "w1" },
+  adjust: { kind: "adjust", workoutId: "w1", durationMinutes: 30 },
 };
 
 describe("describeOps — every op kind is described", () => {

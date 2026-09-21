@@ -5317,6 +5317,18 @@ a.note {
    finish reading. */
 .coach-prop-tradeoff { margin-top: var(--space-4); }
 .coach-prop-tradeoff-lede { font-weight: var(--weight-medium); }
+/* The selector's own words, directly under the evidence line: what the
+   athlete ASKED FOR, above the list of what that resolved to. Quieter than
+   the title, because it is a restatement of scope and not a claim. */
+.coach-prop-selector {
+  margin: var(--space-2) 0 0;
+  font-size: var(--text-sm);
+  color: var(--text-muted);
+}
+/* The premise sits with the trade-off note, not with the evidence: both are
+   things to weigh immediately before approving, and both read as sentences. */
+.coach-prop-premise { margin-top: var(--space-3); font-size: var(--text-sm); }
+.coach-prop-premise-lede { font-weight: var(--weight-medium); }
 /* Three controls of two different heights in one row: the 24px "Why?" link
    needs 10px of clearance for its pad, so the row wraps rather than squeeze. */
 .proposal-actions { flex-wrap: wrap; }

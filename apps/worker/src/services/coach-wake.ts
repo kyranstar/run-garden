@@ -21,6 +21,10 @@ import {
   todayInZone,
   wakeOutputSchema,
   validateOps,
+  expandSelectors,
+  describeSelector,
+  isSelectorOp,
+  type CoachAuthoredOp,
   type CoachOp,
   type GuardrailCtx,
   type LocalDate,
@@ -376,8 +380,25 @@ export const WAKE_EXAMPLE_LIFT = JSON.stringify({
  */
 export const WAKE_EXAMPLE_OPS = JSON.stringify([
   { kind: "move", workoutId: "wo7c31", toDate: "2026-08-20" },
+  { kind: "move", workoutId: "wo7c31", toDate: "2026-08-20", toTime: "17:30" },
   { kind: "swap", dayA: "2026-08-19", dayB: "2026-08-21" },
   { kind: "skip", workoutId: "wo9f02", reason: "you're travelling — this one costs more than it gives" },
+  { kind: "remove", workoutId: "wo9f02" },
+  { kind: "restore", workoutId: "wo9f02" },
+  { kind: "adjust", workoutId: "wo7c31", durationMinutes: 35 },
+  {
+    kind: "moveEach",
+    select: { by: "match", from: "2026-08-19", to: "2026-10-01", discipline: "strength" },
+    shiftDays: 7,
+  },
+  { kind: "skipEach", select: { by: "match", from: "2026-08-21", to: "2026-08-23" }, reason: "you're away" },
+  { kind: "removeEach", select: { by: "ids", ids: ["wo7c31", "wo9f02"] } },
+  { kind: "restoreEach", select: { by: "ids", ids: ["wo9f02"] } },
+  {
+    kind: "adjustEach",
+    select: { by: "match", from: "2026-08-24", to: "2026-08-30", category: "easy" },
+    durationDeltaMinutes: -10,
+  },
   {
     kind: "reshapeWeek",
     planId: "cp1",
@@ -567,11 +588,23 @@ LENGTH IS A COST and the athlete pays it in waiting. A long reply is not a thoro
 - briefing: 1–4 sentences — why the week looks like this, and the one thing to know. A request to plan IS a request for detail — so give the detail, but give it in the proposal's rationale, as reasoning rather than a list of sessions.
 - rationale: AT MOST 5 SENTENCES — the demands, the dose, the risk, and what you took out to pay for it.
 - ONE proposal is usually right, two is a lot, and one intention is never split across several.
+- PREMISE: when a proposal CREATES OR REWRITES PLAN STRUCTURE on something you have concluded rather than been told outright, say so in the proposal's premise field — one plain sentence, in the athlete's terms ("the 3 Oct race is a real entry you are running"). It is printed directly above the approve button so they can reject the assumption instead of the plan. Leave it null when the request was explicit and nothing was inferred; never use it to restate the title.
 
 Output JSON exactly matching:
-{"briefing": string|null, "proposals": [{"title","evidence","rationale","expiresAt","flags":[],"ops":[...]}], "question": {"text","chips":[]}|null, "memoryOps": [...], "focus": string|null, "raceLine": string|null}
+{"briefing": string|null, "proposals": [{"title","evidence","rationale","expiresAt","flags":[],"premise":string|null,"ops":[...]}], "question": {"text","chips":[]}|null, "memoryOps": [...], "focus": string|null, "raceLine": string|null}
 
-Op kinds: ease{workoutId,session} · move{workoutId,toDate} · swap{dayA,dayB} · skip{workoutId,reason} · add{date,dates?,session} · reshapeWeek{planId,weekStart,sessions} · firmUp{planId,weekStart,sessions} · extendPlan{planId,shapeWeeks} · windDown{planId,sessions} · createPlan{discipline,name,startDate,endDate,raceDate?,firmSessions,shapeWeeks} · retirePlan{planId} · resolveRaceConflict{keep:"settings"|"plan"}
+Op kinds, one session at a time: ease{workoutId,session} · move{workoutId,toDate,toTime?} · swap{dayA,dayB} · skip{workoutId,reason} · remove{workoutId} · restore{workoutId} · adjust{workoutId,durationMinutes} · add{date,dates?,session} · reshapeWeek{planId,weekStart,sessions} · firmUp{planId,weekStart,sessions} · extendPlan{planId,shapeWeeks} · windDown{planId,sessions} · createPlan{discipline,name,startDate,endDate,raceDate?,firmSessions,shapeWeeks} · retirePlan{planId} · resolveRaceConflict{keep:"settings"|"plan"}
+
+SKIP vs REMOVE — they are not the same and the athlete feels the difference. skip = it was planned and is not happening (the garden reads it as agreed rest). remove = it should not be on the plan at all (it simply goes, and counts as nothing). "Cancel Saturday, I am away" is a skip. "Get rid of that, it should never have been there" is a remove. restore undoes a skip. adjust changes ONLY how long a session is.
+
+OPS THAT NAME A SET — use these whenever the athlete's request is about a GROUP, and never hand-write one op per session to do the same job:
+  moveEach{select,shiftDays,toTime?} · skipEach{select,reason?} · removeEach{select} · restoreEach{select} · adjustEach{select, durationDeltaMinutes|durationScale}
+  select is EITHER {by:"ids", ids:[...]} — the exact sessions, by handle — OR {by:"match", from, to, discipline?, category?, titleContains?}. from and to are always required on a match; there is no way to say "all of it".
+  "Move all my lifting a week later but leave the running" is ONE op: moveEach{select:{by:"match",from:<today>,to:<end of the block>,discipline:"strength"},shiftDays:7}.
+  "Clear Friday to Sunday, I am away" is ONE op: skipEach{select:{by:"match",from:<Fri>,to:<Sun>},reason:"…"}.
+  "Take ten minutes off every easy run next week" is ONE op: adjustEach{select:{by:"match",from:…,to:…,category:"easy"},durationDeltaMinutes:-10}.
+  A selector reaches PLAN SHAPE — everything in the plan, not just the fortnight UPCOMING lists. It silently ignores sessions that are finished or past, so you never need to exclude them yourself. The athlete is shown the resolved list before they approve, so selecting is never a way of hiding scale from them.
+  If a selector matches nothing the whole proposal is rejected, so select a range you can see something in.
 A session is {category, title, durationMinutes, and AT MOST ONE body: run? | lift? | mobility?}.
 · category ∈ easy|long|quality|recovery|race|rest|strength|yoga. Use "yoga" with a mobility body — a mobility session filed as a run corrupts the athlete's discipline balance. The app has three disciplines and none of them is cycling or swimming: there is no honest category for a bike session, so don't write one.
 · A REST DAY is {category:"rest", durationMinutes:0, no body}. Zero is the honest number; never invent five minutes of something to fill it.
@@ -884,7 +917,11 @@ export async function guardrailCtx(
   prefs: UserPreferences,
   today: LocalDate,
 ): Promise<GuardrailCtx> {
-  const horizon = addDays(today, 60);
+  // 180 rather than 60 (2026-09-20): selectors address workouts by property
+  // rather than by handle, so this window is now what the coach can REACH,
+  // not merely what the guardrails simulate. At 60 days "move all my lifting
+  // a week later" silently stopped two months out, in the middle of a block.
+  const horizon = addDays(today, 180);
   const rows = await db
     .select()
     .from(plannedWorkouts)
@@ -894,6 +931,7 @@ export async function guardrailCtx(
     .map((w) => ({
       id: w.id,
       date: w.effectiveDate,
+      title: w.title,
       category: w.category,
       completionState: w.completionState,
       durationMinutes: Math.round((w.calendarBlockDurationSeconds ?? 3600) / 60),
@@ -1356,10 +1394,50 @@ export async function wake(
     //
     // `ctx` is the one built before the dossier, so a rejection is never news
     // about a limit the coach could not read.
-    let proposals = out.proposals;
-    const fatalFor = (list: typeof proposals) =>
-      list.map((p, i) => ({ i, p, v: validateOps(p.ops, ctx) })).filter((x) => x.v.fatal.length > 0);
-    let stillBad = fatalFor(proposals);
+    // ── SELECTOR EXPANSION ────────────────────────────────────────────────
+    //
+    // THE SEAM (spec 2026-09-20 §2). Everything above may contain selector
+    // ops; nothing below ever does. `expandSelectors` resolves each one
+    // against `ctx.workouts` — the single snapshot the guardrails already
+    // judge against, so what the coach selected and what the rules see cannot
+    // disagree — and hands back ordinary ops.
+    //
+    // This placement is the whole reason a change this size touches one
+    // function: `describeOps`, `validateOps`, `applyOps` and the card are
+    // unmodified, because by the time any of them runs the selectors are
+    // gone. Re-expanded on every repair round, because a repair rewrites the
+    // ops and may well rewrite a selector with them.
+    //
+    // The repair loop below works on AUTHORED proposals (which may still hold
+    // selectors, since a repair rewrites ops wholesale and may rewrite a
+    // selector with them); expansion happens inside the validity check and
+    // once more when the loop settles.
+    type Authored = (typeof out.proposals)[number];
+    /** Selectors gone, ops ordinary — the type every consumer below expects. */
+    type Expanded = Omit<Authored, "ops"> & { ops: CoachOp[]; selectors?: string[] };
+    const expandOne = (p: Authored): { p: Expanded; expansion?: { empty: { opIndex: number; detail: string }[] } } => {
+      const authored = p.ops as CoachAuthoredOp[];
+      // No selector, nothing to resolve — and the cast is sound precisely
+      // because `isSelectorOp` found none.
+      if (!authored.some(isSelectorOp)) return { p: { ...p, ops: authored as CoachOp[] } };
+      const { ops, empty } = expandSelectors(authored, ctx.workouts, today);
+      return {
+        // `selectors` becomes the card's heading — "every strength session,
+        // 22 Sep – 1 Nov" — so twelve resolved lines read as one intent.
+        p: { ...p, ops, selectors: authored.filter(isSelectorOp).map((op) => describeSelector(op.select)) },
+        expansion: { empty },
+      };
+    };
+    const fatalFor = (list: Authored[]) =>
+      list
+        .map((p, i) => {
+          const { p: ep, expansion } = expandOne(p);
+          return { i, p: ep, v: validateOps(ep.ops, ctx, expansion) };
+        })
+        .filter((x) => x.v.fatal.length > 0);
+
+    let authoredProposals = out.proposals;
+    let stillBad = fatalFor(authoredProposals);
 
     for (let round = 0; stillBad.length > 0 && round < MAX_GUARDRAIL_REPAIRS; round++) {
       // Budget-gated like the schema repair, and for the same reason: the
@@ -1395,10 +1473,13 @@ export async function wake(
       // repair can never cost the athlete a proposal that was already fine.
       if (candidateBad.length >= stillBad.length) break;
       out = attempt.out;
-      proposals = out.proposals;
+      authoredProposals = out.proposals;
       stillBad = candidateBad;
       coachMessageId = await landBriefing(out.briefing, out.focus, out.raceLine, coachMessageId);
     }
+
+    // The loop has settled: from here down, every proposal holds ordinary ops.
+    let proposals = authoredProposals.map((p) => expandOne(p).p);
 
     // ── AND IF IT STILL FAILS, KEEP THE WORK ───────────────────────────
     //
@@ -1426,6 +1507,8 @@ export async function wake(
         // re-proposal) has the whole picture the wake had.
         flags: [...new Set([...x.p.flags, ...x.v.advisory.map((a) => a.detail)])],
         ops: x.p.ops,
+        selectors: (x.p as { selectors?: string[] }).selectors ?? null,
+        premise: x.p.premise ?? null,
         status: "rejected",
         createdAt: rejectedAt,
         // Inert, and dated so nothing ever treats it as live.
@@ -1531,6 +1614,10 @@ export async function wake(
         rationale: p.rationale,
         flags,
         ops: p.ops,
+        // The intent behind an expanded list, and the assumption a structural
+        // change rests on. Both are read by the card, never by the apply.
+        selectors: (p as { selectors?: string[] }).selectors ?? null,
+        premise: p.premise ?? null,
         status: "pending",
         createdAt: now,
         expiresAt: cappedExpiry < today ? today : cappedExpiry,

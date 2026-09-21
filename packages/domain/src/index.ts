@@ -22,3 +22,4 @@ export * from "./watch-coverage.js";
 export * from "./sync-action.js";
 export * from "./coach-describe.js";
 export * from "./coach-guardrails.js";
+export * from "./coach-selectors.js";

@@ -383,6 +383,53 @@ export function describeOps(ops: CoachOp[], planned?: ReadonlyMap<string, Planne
         });
         break;
       }
+      case "remove": {
+        const was = planned?.get(op.workoutId);
+        lines.push({
+          date: was?.date ?? null,
+          summary: was?.summary ? `${was.summary} — removed` : "A planned session is removed",
+          was: null,
+          // Said explicitly, because the difference from `skip` is the whole
+          // reason this op exists and it is invisible from the calendar.
+          // Both halves are load-bearing. The first is the difference from a
+          // skip; the second is the honest contract until the delete lane is
+          // generalised to workouts the app did not author (spec §7 phase B),
+          // and it is true either way — nothing here ever writes to the watch.
+          change: "taken off the plan entirely — not counted as a missed or rested day · your watch is not changed",
+          detail: [],
+          kind: op.kind,
+        });
+        break;
+      }
+      case "restore": {
+        const was = planned?.get(op.workoutId);
+        lines.push({
+          date: was?.date ?? null,
+          summary: was?.summary ? `${was.summary} — back on` : "A skipped session goes back on the plan",
+          was: null,
+          change: "counts again, as though it had never been skipped",
+          detail: [],
+          kind: op.kind,
+        });
+        break;
+      }
+      case "adjust": {
+        const was = planned?.get(op.workoutId);
+        const before = was?.durationMinutes;
+        lines.push({
+          date: was?.date ?? null,
+          summary: was?.summary
+            ? `${was.summary} — ${op.durationMinutes} min`
+            : `A planned session becomes ${op.durationMinutes} min`,
+          // The one fact this op changes, so it is the one `was` worth
+          // showing — and only when it really differs.
+          was: before != null && before !== op.durationMinutes ? `${before} min` : null,
+          change: null,
+          detail: [],
+          kind: op.kind,
+        });
+        break;
+      }
       default: {
         // A new op kind must arrive with a description. Compile error here,
         // test failure in coach-describe.test.ts — never a silent blank line

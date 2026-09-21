@@ -82,11 +82,22 @@ function ctx(overrides: Partial<GuardrailCtx> = {}): GuardrailCtx {
  * the map promises. A rule cannot be added by accident, and a rule cannot be
  * quietly reclassified without a test moving.
  */
-const CASES: Record<GuardrailRule, { ops: CoachOp[]; ctx: GuardrailCtx; says: string }> = {
+const CASES: Record<
+  GuardrailRule,
+  { ops: CoachOp[]; ctx: GuardrailCtx; says: string; expansion?: { empty: { opIndex: number; detail: string }[] } }
+> = {
   touch_resolved: {
     ops: [{ kind: "move", workoutId: "w-past", toDate: "2026-08-09" }],
     ctx: ctx(),
     says: "already completed",
+  },
+  empty_selection: {
+    // Produced by expandSelectors, not by the op list: by validation time the
+    // selector that matched nothing has already been rewritten away.
+    ops: [{ kind: "skip", workoutId: "w-thu", reason: "rest" }],
+    ctx: ctx(),
+    expansion: { empty: [{ opIndex: 0, detail: "there are no yoga sessions between 2026-08-06 and 2026-09-01" }] },
+    says: "nothing matched",
   },
   unknown_workout: {
     ops: [{ kind: "ease", workoutId: "wo-nobody-has", session: easy() }],
@@ -175,11 +186,11 @@ describe("every rule chooses a side", () => {
     expect(Object.keys(CASES).sort()).toEqual(Object.keys(RULE_CLASS).sort());
   });
 
-  for (const [rule, { ops, ctx: c, says }] of Object.entries(CASES) as Array<
+  for (const [rule, { ops, ctx: c, says, expansion }] of Object.entries(CASES) as Array<
     [GuardrailRule, (typeof CASES)[GuardrailRule]]
   >) {
     it(`${rule} is ${RULE_CLASS[rule]}, and lands in that list`, () => {
-      const out = validateOps(ops, c);
+      const out = validateOps(ops, c, expansion);
       const wanted = RULE_CLASS[rule] === "fatal" ? out.fatal : out.advisory;
       const other = RULE_CLASS[rule] === "fatal" ? out.advisory : out.fatal;
       const hit = wanted.find((v) => v.rule === rule);

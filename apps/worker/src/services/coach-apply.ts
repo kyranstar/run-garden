@@ -1117,12 +1117,16 @@ export async function applyOps(
           .from(plannedWorkouts)
           .where(and(eq(plannedWorkouts.id, op.workoutId), eq(plannedWorkouts.userId, userId)))
           .limit(1);
-        if (w && w.effectiveDate !== op.toDate) {
+        // A move that only changes the time of day is still a move: the
+        // date-only test used to drop "same day, but in the afternoon"
+        // silently, which is why `toTime` had no expressible form at all.
+        const toTime = op.toTime ?? w?.effectiveTime ?? "07:00";
+        if (w && (w.effectiveDate !== op.toDate || toTime !== w.effectiveTime)) {
           await applyMove(db, {
             userId,
             workoutId: op.workoutId,
             toDate: op.toDate,
-            toTime: w.effectiveTime,
+            toTime,
             source: "app",
             corosWritesEnabled: prefs.corosWritesEnabled ?? false,
           });
@@ -1163,6 +1167,99 @@ export async function applyOps(
         await db
           .update(plannedWorkouts)
           .set({ completionState: "skipped", resolutionDate: today, sanctionedBy: "coach", updatedAt: now })
+          .where(and(eq(plannedWorkouts.id, op.workoutId), eq(plannedWorkouts.userId, userId)));
+        out.updated.push(op.workoutId);
+        break;
+      }
+      /**
+       * REMOVE IS NOT SKIP. A skip resolves the row and the garden reads it as
+       * agreed rest; a remove archives it, so the session simply is not on the
+       * plan — the same mutation `workouts/:id/remove` performs. Answering
+       * "can we get rid of that" with a skip (live, 2026-08-06) told the
+       * garden the athlete had rested on a day they never intended to train.
+       */
+      case "remove": {
+        const [row] = await db
+          .select({ id: plannedWorkouts.id })
+          .from(plannedWorkouts)
+          .where(
+            and(
+              eq(plannedWorkouts.id, op.workoutId),
+              eq(plannedWorkouts.userId, userId),
+              isNull(plannedWorkouts.archivedAt),
+            ),
+          )
+          .limit(1);
+        if (!row) {
+          out.missed.push("a session it takes off the plan isn't there any more, so nothing was removed");
+          break;
+        }
+        await db
+          .update(plannedWorkouts)
+          .set({ archivedAt: now, archiveReason: "user_removed", updatedAt: now })
+          .where(and(eq(plannedWorkouts.id, op.workoutId), eq(plannedWorkouts.userId, userId)));
+        out.archived.push(op.workoutId);
+        break;
+      }
+      case "restore": {
+        const [row] = await db
+          .select({ id: plannedWorkouts.id })
+          .from(plannedWorkouts)
+          .where(
+            and(
+              eq(plannedWorkouts.id, op.workoutId),
+              eq(plannedWorkouts.userId, userId),
+              eq(plannedWorkouts.completionState, "skipped"),
+              isNull(plannedWorkouts.archivedAt),
+            ),
+          )
+          .limit(1);
+        if (!row) {
+          out.missed.push("a session it puts back isn't skipped any more, so nothing was restored");
+          break;
+        }
+        // `sanctionedBy` clears with the skip: the garden's mercy was granted
+        // for a rest day that is no longer being taken.
+        await db
+          .update(plannedWorkouts)
+          .set({ completionState: "scheduled", resolutionDate: null, sanctionedBy: null, updatedAt: now })
+          .where(and(eq(plannedWorkouts.id, op.workoutId), eq(plannedWorkouts.userId, userId)));
+        out.updated.push(op.workoutId);
+        break;
+      }
+      /**
+       * Duration only. `ease` is the op that rewrites what a session IS; this
+       * one changes how long it lasts and touches nothing else, which is what
+       * lets a taper reach twelve sessions without twelve session bodies.
+       */
+      case "adjust": {
+        const [row] = await db
+          .select({
+            id: plannedWorkouts.id,
+            seconds: plannedWorkouts.calendarBlockDurationSeconds,
+          })
+          .from(plannedWorkouts)
+          .where(
+            and(
+              eq(plannedWorkouts.id, op.workoutId),
+              eq(plannedWorkouts.userId, userId),
+              isNull(plannedWorkouts.archivedAt),
+            ),
+          )
+          .limit(1);
+        if (!row) {
+          out.missed.push("a session it re-times isn't there any more, so its length is unchanged");
+          break;
+        }
+        await db
+          .update(plannedWorkouts)
+          .set({
+            calendarBlockDurationSeconds: op.durationMinutes * 60,
+            // The watch no longer matches what the app holds, exactly as an
+            // `ease` leaves it — the push lane is what makes them agree again.
+            corosSyncState: "calendar_only",
+            updatedAt: now,
+          })
           .where(and(eq(plannedWorkouts.id, op.workoutId), eq(plannedWorkouts.userId, userId)));
         out.updated.push(op.workoutId);
         break;

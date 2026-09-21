@@ -207,6 +207,12 @@ export const OP_VERB: Record<OpLine["kind"], { word: string; tone: "eased" | "mo
   createPlan: { word: "Planned", tone: "added" },
   retirePlan: { word: "Retired", tone: "quiet" },
   resolveRaceConflict: { word: "Resolved", tone: "quiet" },
+  // "Removed" is deliberately a different word AND a different tone from
+  // "Skipped": one takes the session off the plan, the other records that it
+  // did not happen, and the athlete needs to see which they are approving.
+  remove: { word: "Removed", tone: "quiet" },
+  restore: { word: "Restored", tone: "added" },
+  adjust: { word: "Retimed", tone: "eased" },
 };
 
 /** "eased 2 · moved 1 · added 1" — the collapsed link's summary of a settled
@@ -662,10 +668,26 @@ export function ProposalCard({
         <strong className="coach-prop-title">{proposal.title}</strong>
       </div>
       <p className="coach-prop-evidence faint">{proposal.evidence}</p>
+      {/* ONE REQUEST, NOT TWELVE EDITS. A selector op is stored expanded, so
+          without this line a "move all my lifting a week later" reads as
+          twelve unrelated moves and the athlete has to infer the pattern
+          from the manifest. Computed from the selector, never narrated. */}
+      {proposal.selectors?.length ? (
+        <p className="coach-prop-selector">{proposal.selectors.join(" · ")}</p>
+      ) : null}
       {/* WHAT IT DOES, before what it costs, before the buttons. The card
           used to go straight from the evidence line to "Make it so". */}
       <ProposalGlance lines={manifest.lines} onOpenAll={manifest.onOpen} />
       <TradeOffNote flags={proposal.flags} />
+      {/* THE ASSUMPTION, where it can be rejected. 2026-09-19: the coach read
+          a three-word reply as confirming a race date and built a whole block
+          on it. The reasoning was sound; it was simply never shown, so the
+          only way to reject the premise was to reject the plan. */}
+      {proposal.premise ? (
+        <p className="coach-prop-premise">
+          <span className="coach-prop-premise-lede">Assuming</span> — {proposal.premise}
+        </p>
+      ) : null}
       {/* The actions row comes BEFORE everything it reveals (System 4 D3).
           The rationale used to render here, above its own trigger, so asking
           "Why?" pushed the button you had just pressed 114px down the phone

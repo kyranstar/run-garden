@@ -96,6 +96,13 @@ export const coachProposals = sqliteTable(
       string,
       { date?: string; summary?: string; durationMinutes?: number }
     > | null>(),
+    /** Rendered selector intents (migration 0021): the ops stored above are
+     * already expanded, so this is the only record that twelve move lines
+     * were one request — "every strength session, 22 Sep – 1 Nov". */
+    selectors: text("selectors", { mode: "json" }).$type<string[] | null>(),
+    /** What a structural proposal assumes to be true, shown above the approve
+     * button so an inference can be rejected without rejecting the plan. */
+    premise: text("premise"),
   },
   (t) => [index("coach_proposals_user_status_idx").on(t.userId, t.status)],
 );

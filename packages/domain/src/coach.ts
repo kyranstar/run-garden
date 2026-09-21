@@ -64,6 +64,17 @@ import { formatStageDuration } from "./duration.js";
  * (`05/08/2026`) are deliberately NOT accepted — that one is ambiguous by
  * nationality, and guessing it would move a session by three months.
  */
+/**
+ * A wall-clock time of day, `HH:MM`. Accepts a single-digit hour and drops a
+ * seconds component, for the same reason `isoDate` tolerates `2026-8-5`: the
+ * value is unambiguous and refusing it would cost a whole proposal.
+ */
+const clockTime = z.preprocess((v) => {
+  if (typeof v !== "string") return v;
+  const m = v.trim().match(/^(\d{1,2}):(\d{2})(?::\d{2})?$/);
+  return m ? `${m[1]!.padStart(2, "0")}:${m[2]}` : v;
+}, z.string().regex(/^([01]\d|2[0-3]):[0-5]\d$/));
+
 const isoDate = z.preprocess((v) => {
   if (typeof v !== "string") return v;
   const m = v.trim().match(/^(\d{4})[-/.](\d{1,2})[-/.](\d{1,2})(.*)$/);
@@ -1147,7 +1158,9 @@ export type CoachShapeWeek = z.infer<typeof coachShapeWeekSchema>;
  */
 export const coachOpSchema = z.discriminatedUnion("kind", [
   z.object({ kind: z.literal("ease"), workoutId: echoedId, session: coachSessionSchema }),
-  z.object({ kind: z.literal("move"), workoutId: echoedId, toDate: isoDate }),
+  // `toTime` reaches parity with `applyMove`, which has always accepted one:
+  // "move my long run to the afternoon" had no expressible form before.
+  z.object({ kind: z.literal("move"), workoutId: echoedId, toDate: isoDate, toTime: orNull(clockTime.optional()) }),
   z.object({ kind: z.literal("swap"), dayA: isoDate, dayB: isoDate }),
   // A skip with no stated reason is still a skip: the reason is for the
   // athlete to read, and its absence cannot stop the op being performed.
@@ -1242,8 +1255,115 @@ export const coachOpSchema = z.discriminatedUnion("kind", [
   // athlete's race day, and there is no synonym for either that is not a
   // guess about which truth they meant.
   z.object({ kind: z.literal("resolveRaceConflict"), keep: z.enum(["settings", "plan"]) }),
+  /**
+   * REMOVE IS NOT SKIP. `skip` says the session did not happen, and the
+   * garden reads it as sanctioned rest; `remove` says it should not be on the
+   * plan at all, and archives the row exactly as the athlete's own
+   * `workouts/:id/remove` does. Overloading one verb for both is why "can we
+   * get rid of that" (live, 2026-08-06) was answered with a skip.
+   */
+  z.object({ kind: z.literal("remove"), workoutId: echoedId }),
+  /** Reverses a skip, clearing the coach's sanction with it. */
+  z.object({ kind: z.literal("restore"), workoutId: echoedId }),
+  /**
+   * Duration only — never category, never structure. This is what a bulk
+   * taper resolves into, and it exists separately from `ease` because `ease`
+   * carries a whole replacement session, which cannot be written once and
+   * applied to twelve different workouts.
+   */
+  z.object({
+    kind: z.literal("adjust"),
+    workoutId: echoedId,
+    durationMinutes: quantity(WHOLE_MINUTES, 0, 1440),
+  }),
 ]);
 export type CoachOp = z.infer<typeof coachOpSchema>;
+
+/**
+ * WHO MAY BE NAMED (spec 2026-09-20 §2).
+ *
+ * A selector addresses workouts by property or by explicit id, and the two
+ * modes are a DISCRIMINATED union rather than one object with an optional
+ * `ids`. A payload where `ids` and `discipline` can both appear has no single
+ * reading — and this file has already paid for that class of mistake once:
+ * see the note on `add` carrying both `date` and `dates`, which "fooled an
+ * inspection script into misreporting to the user".
+ *
+ * `from`/`to` are REQUIRED on a match selector. There is deliberately no way
+ * to say "every workout I have": an unbounded selector is one model slip away
+ * from clearing a whole season.
+ */
+/** Matches MAX_ADD_DATES: the most sessions one op may ever name. */
+const MAX_SELECTED_IDS = 60;
+
+export const workoutSelectorSchema = z.discriminatedUnion("by", [
+  z.object({ by: z.literal("ids"), ids: z.array(echoedId).min(1).max(MAX_SELECTED_IDS) }).strict(),
+  z
+    .object({
+      by: z.literal("match"),
+      from: isoDate,
+      to: isoDate,
+      discipline: z.enum(["run", "strength", "yoga"]).optional(),
+      category: z.enum(["easy", "long", "quality", "recovery", "race", "rest", "strength", "yoga"]).optional(),
+      titleContains: prose(60).optional(),
+    })
+    .strict(),
+]);
+export type WorkoutSelector = z.infer<typeof workoutSelectorSchema>;
+
+/**
+ * The ops the MODEL may write but the pipeline never persists: each one names
+ * a set and `expandSelectors` rewrites it into ordinary ops before anything
+ * judges, describes or applies it. That is the whole trick — `describeOps`,
+ * `validateOps` and `applyOps` never learn that selectors exist.
+ */
+export const coachSelectorOpSchema = z.discriminatedUnion("kind", [
+  z.object({
+    kind: z.literal("moveEach"),
+    select: workoutSelectorSchema,
+    /** Relative, and bounded: a shift is "a week later", not a new calendar. */
+    shiftDays: z.number().int().min(-28).max(28),
+    toTime: orNull(clockTime.optional()),
+  }),
+  z.object({ kind: z.literal("skipEach"), select: workoutSelectorSchema, reason: orNull(prose(200).optional()) }),
+  z.object({ kind: z.literal("removeEach"), select: workoutSelectorSchema }),
+  z.object({ kind: z.literal("restoreEach"), select: workoutSelectorSchema }),
+  z.object({
+    kind: z.literal("adjustEach"),
+    select: workoutSelectorSchema,
+    durationDeltaMinutes: z.number().int().min(-180).max(180).optional(),
+    durationScale: z.number().min(0.1).max(3).optional(),
+  }),
+])
+  // Carried here rather than on the member: zod's discriminatedUnion requires
+  // plain objects, and a `.refine()` makes its member a ZodEffects.
+  .superRefine((op, ctx) => {
+    if (op.kind !== "adjustEach") return;
+    if ((op.durationDeltaMinutes === undefined) === (op.durationScale === undefined)) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: "adjustEach needs exactly one of durationDeltaMinutes or durationScale",
+      });
+    }
+  });
+export type CoachSelectorOp = z.infer<typeof coachSelectorOpSchema>;
+
+/** What a proposal may contain as written by the model, before expansion. */
+export const coachAuthoredOpSchema = z.union([coachOpSchema, coachSelectorOpSchema]);
+export type CoachAuthoredOp = z.infer<typeof coachAuthoredOpSchema>;
+
+/** Closed list, so the drift test can demand a worked example for each. */
+export const SELECTOR_OP_KINDS = [
+  "moveEach",
+  "skipEach",
+  "removeEach",
+  "restoreEach",
+  "adjustEach",
+] as const;
+
+export function isSelectorOp(op: CoachAuthoredOp): op is CoachSelectorOp {
+  return (SELECTOR_OP_KINDS as readonly string[]).includes(op.kind);
+}
 
 /** An `add` op's full date set — the ONE reader of `date`+`dates`, so the
  * calendar the guardrails simulate, the days a proposal supersedes, and the
@@ -1272,7 +1392,20 @@ export const coachProposalDraftSchema = z.object({
    * half an intention — the one thing worse than refusing it. 20 is well past
    * any real proposal (a whole week of restructuring is one op).
    */
-  ops: z.array(coachOpSchema).min(1).max(20),
+  ops: z.array(coachAuthoredOpSchema).min(1).max(20),
+  /**
+   * The premise this proposal rests on, when it creates or rewrites plan
+   * STRUCTURE — one declarative sentence of what the coach believes to be
+   * true ("the 3 Oct race is a real entry").
+   *
+   * Live, 2026-09-19: the athlete answered "Real race I'm doing", the coach
+   * read that as confirming a date it had inferred, and built a whole bridge
+   * block on it. They approved, then immediately asked why 3 Oct was a race
+   * day at all. The inference was sound and invisible, and invisible is what
+   * made it uncorrectable — so it now rides above the approve button, where
+   * one tap can reject the premise instead of the plan.
+   */
+  premise: orNull(prose(160).optional()),
 });
 export type CoachProposalDraft = z.infer<typeof coachProposalDraftSchema>;
 

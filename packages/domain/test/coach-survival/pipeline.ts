@@ -7,7 +7,8 @@
  * migrations and D1's 100-bound-variable ceiling installed, because "would
  * apply succeed" cannot be answered by reading the function.
  */
-import { wakeOutputSchema, addOpDates, type CoachOp } from "../../src/coach.js";
+import { wakeOutputSchema, addOpDates, isSelectorOp, type CoachOp } from "../../src/coach.js";
+import { expandSelectors } from "../../src/coach-selectors.js";
 import { validateOps } from "../../src/coach-guardrails.js";
 import { schema } from "../../../database/src/index.js";
 import { D1_BIND_LIMIT, makeTestDb, makeTestUser } from "../../../../apps/worker/test/helpers.js";
@@ -18,7 +19,7 @@ import type { Db } from "../../../../apps/worker/src/services/db.js";
 import type { AthleteState } from "./athletes.js";
 import { TZ } from "./athletes.js";
 
-export type Stage = "parse" | "resolve" | "guardrail" | "apply";
+export type Stage = "parse" | "expand" | "resolve" | "guardrail" | "apply";
 
 export interface SampleResult {
   athlete: string;
@@ -43,6 +44,10 @@ export interface SampleResult {
    * plan out of the survival count and out of the silent column.
    */
   disclosed: string[];
+  /** How many ops in the envelope named a SET rather than one session. */
+  selectorOps: number;
+  /** How many ordinary ops those selectors resolved to. */
+  resolvedFromSelectors: number;
   exercises: number;
   offCatalog: number;
   /** Movements the athlete's synced catalog has no row for. */
@@ -282,6 +287,8 @@ export async function runSample(
     detail: "",
     silent: [],
     disclosed: [],
+    selectorOps: 0,
+    resolvedFromSelectors: 0,
     exercises: 0,
     offCatalog: 0,
     offCatalogNames: [],
@@ -304,7 +311,21 @@ export async function runSample(
       detail: `${clause(first.path)}: ${first.message}`,
     };
   }
-  const ops = parsed.data.proposals[0]?.ops ?? [];
+  const authored = parsed.data.proposals[0]?.ops ?? [];
+
+  // ── stage 1.5: selector expansion ─────────────────────────────────────
+  // Selector ops name a SET; everything after this point sees only ordinary
+  // ops. A selector that matched nothing is carried into the guardrails as
+  // `empty_selection`, exactly as the wake does it.
+  let expansion;
+  try {
+    expansion = expandSelectors(authored, s.ctx.workouts, s.ctx.today);
+  } catch (e) {
+    return { ...base, failedAt: "expand", causes: ["expand:threw"], detail: String(e) };
+  }
+  const ops = expansion.ops;
+  base.selectorOps = authored.filter(isSelectorOp).length;
+  base.resolvedFromSelectors = base.selectorOps > 0 ? ops.length : 0;
 
   // ── stage 2: exercise resolution ──────────────────────────────────────
   const before = JSON.stringify(ops);
@@ -323,7 +344,7 @@ export async function runSample(
   }
 
   // ── stage 3: guardrails ───────────────────────────────────────────────
-  const { fatal, advisory, soft } = validateOps(ops, s.ctx);
+  const { fatal, advisory, soft } = validateOps(ops, s.ctx, { empty: expansion.empty });
   const seenRule = new Set<string>();
   base.advisories = [
     ...advisory.map((a) => ({ rule: a.rule, detail: a.detail })),

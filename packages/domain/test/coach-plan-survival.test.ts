@@ -242,7 +242,23 @@ describe("coach plan survival rate", () => {
     say(`  …before tonight's fatal/advisory split, the same ${results.length} plans would have been ${pct(survivedPreSplit, results.length)} (${survivedPreSplit}) —`);
     say(`     every advisory used to reject the whole proposal. The split is worth ${survived - survivedPreSplit} plans out of ${results.length}.`);
     say("");
-    say(`  by stage:  parse ${byStage.get("parse") ?? 0} · resolve ${byStage.get("resolve") ?? 0} · guardrail(fatal) ${byStage.get("guardrail") ?? 0} · apply ${byStage.get("apply") ?? 0}`);
+    say(`  by stage:  parse ${byStage.get("parse") ?? 0} · expand ${byStage.get("expand") ?? 0} · resolve ${byStage.get("resolve") ?? 0} · guardrail(fatal) ${byStage.get("guardrail") ?? 0} · apply ${byStage.get("apply") ?? 0}`);
+
+    // SELECTORS (2026-09-20). One op that names a set is the whole point of
+    // the new vocabulary, so the instrument has to show that the generator
+    // actually exercised it and what it cost — a selector that resolves to
+    // nothing, or to one op, is not buying anything.
+    const withSelectors = results.filter((r) => r.selectorOps > 0);
+    if (withSelectors.length > 0) {
+      const resolved = withSelectors.reduce((n, r) => n + r.resolvedFromSelectors, 0);
+      const authored = withSelectors.reduce((n, r) => n + r.selectorOps, 0);
+      const lived = withSelectors.filter((r) => r.survived).length;
+      say("");
+      say(
+        `  SELECTOR OPS   ${withSelectors.length} plans used one · ${authored} selector ops resolved to ${resolved} real ops ` +
+          `(${(resolved / Math.max(1, authored)).toFixed(1)} sessions each) · ${((100 * lived) / withSelectors.length).toFixed(1)}% reached the athlete`,
+      );
+    }
     say("");
     say("  RANKED FAILURE CAUSES — what actually stops a plan reaching the athlete");
     say(`  ${pad("cause", 88)} ${pad("count", 7)} share`);

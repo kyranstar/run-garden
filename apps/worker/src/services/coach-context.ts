@@ -1,6 +1,7 @@
-import { and, desc, eq, gte, inArray, isNull, lte, sql } from "drizzle-orm";
+import { and, desc, eq, gt, gte, inArray, isNull, lte, sql } from "drizzle-orm";
 import {
   activities,
+  activityLaps,
   athleteZones,
   coachMemory,
   coachMessages,
@@ -29,6 +30,7 @@ import {
   type UserPreferences,
 } from "@rg/domain";
 import { COROS_EXERCISE_NAMES } from "@rg/providers";
+import { disciplineOf } from "@rg/analytics";
 import {
   conditionWord,
   DEFAULT_GARDEN_CONFIG,
@@ -451,6 +453,63 @@ export async function buildDossier(
       : ["nothing scheduled in the next 14 days"]),
   ]);
 
+  // 3.2 · PLAN SHAPE — what exists past the fortnight (spec 2026-09-20 §4).
+  //
+  // Selectors address workouts by PROPERTY, so a handle is no longer what
+  // grants permission to act — which is what finally removes the 14-day
+  // ceiling on "move all my lifting a week later". But the coach still has to
+  // know the block is there: UPCOMING stops at 14 days, and a lifting block
+  // running to November was simply invisible, so it was never reached for.
+  //
+  // Deliberately handle-free and deliberately coarse: counts, spans and modal
+  // weekdays. A handle here would invite an op on a session UPCOMING withheld
+  // on purpose, and a full list would cost the tokens UPCOMING already spent.
+  const beyond = await db
+    .select({
+      date: plannedWorkouts.effectiveDate,
+      category: plannedWorkouts.category,
+      sport: plannedWorkouts.sport,
+    })
+    .from(plannedWorkouts)
+    .where(
+      and(
+        eq(plannedWorkouts.userId, userId),
+        isNull(plannedWorkouts.archivedAt),
+        eq(plannedWorkouts.completionState, "scheduled"),
+        gt(plannedWorkouts.effectiveDate, addDays(today, 14)),
+      ),
+    )
+    .orderBy(plannedWorkouts.effectiveDate);
+  const shapeByDiscipline = new Map<string, { dates: string[] }>();
+  for (const w of beyond) {
+    const d = disciplineOf(w.category, w.sport);
+    if (!shapeByDiscipline.has(d)) shapeByDiscipline.set(d, { dates: [] });
+    shapeByDiscipline.get(d)!.dates.push(w.date);
+  }
+  const planShapeLines = [...shapeByDiscipline.entries()]
+    .sort((a, b) => b[1].dates.length - a[1].dates.length || a[0].localeCompare(b[0]))
+    .map(([discipline, { dates }]) => {
+      const counts = new Map<number, number>();
+      for (const d of dates) {
+        const wd = (new Date(`${d}T12:00:00Z`).getUTCDay() + 6) % 7;
+        counts.set(wd, (counts.get(wd) ?? 0) + 1);
+      }
+      // Only days that carry a real share of the block — "usually Mon, Thu"
+      // must not degrade into a list of every weekday it ever lands on.
+      const usual = [...counts.entries()]
+        .filter(([, n]) => n >= Math.max(2, dates.length / (counts.size * 2)))
+        .sort((a, b) => a[0] - b[0])
+        .map(([wd]) => WEEKDAY_NAMES[wd]);
+      return (
+        `${discipline} · ${dates.length} session${dates.length === 1 ? "" : "s"} · ` +
+        `${dates[0]} → ${dates.at(-1)}${usual.length ? ` · usually ${usual.join(", ")}` : ""}`
+      );
+    });
+  push("PLAN SHAPE", [
+    `what lies past UPCOMING's fortnight. No session handles here, on purpose — you reach these with a SELECTOR (by discipline, category or date range), never by naming them one at a time.`,
+    ...(planShapeLines.length ? planShapeLines : ["nothing is scheduled beyond the next 14 days"]),
+  ]);
+
   // 3.2 · LIMITS — what is LEFT of each hard limit, on this calendar.
   //
   // Immediately after UPCOMING because it is the arithmetic ON those lines,
@@ -612,6 +671,50 @@ export async function buildDossier(
     `what has already happened — no [wo:...] handles in this section, on purpose: none of it can be eased, moved or skipped. Cite these days by date as evidence.`,
     ...([...trainingLines, ...unplanned].length ? [...trainingLines, ...unplanned] : ["no sessions recorded"]),
   ]);
+
+  // 4.5 · RECENT STRENGTH DETAIL — what was actually lifted (spec §5).
+  //
+  // `activity_laps` has carried one row per SET, tagged with the COROS
+  // exercise key, since the lap telemetry migration — and `coach-effort.ts`
+  // has always read it. The conversational coach never did: it saw "did
+  // 48min" and a ≤180-word prose read, so it could not answer "what did I
+  // lift on Tuesday", let alone reason about progression.
+  //
+  // THE CEILING IS STATED IN THE SECTION ITSELF. Laps carry an exercise name
+  // and a duration; there is no reps or weight column, and `RawCorosLapItem`
+  // documents none. A coach that is shown set counts and not told loads are
+  // missing is a coach that will eventually invent one.
+  const strengthActs = recentActs
+    .filter((a) => ["strength", "yoga"].includes(a.sport))
+    .sort((a, b) => (b.startTimeLocal ?? b.startTime).localeCompare(a.startTimeLocal ?? a.startTime))
+    .slice(0, 5);
+  const strengthLines: string[] = [];
+  for (const act of strengthActs) {
+    const laps = await db
+      .select({ key: activityLaps.exerciseNameKey })
+      .from(activityLaps)
+      .where(eq(activityLaps.activityId, act.id))
+      .orderBy(activityLaps.lapIndex);
+    // One row per set, so the count of rows sharing a key IS the set count.
+    const perExercise = new Map<string, number>();
+    for (const l of laps) {
+      if (!l.key) continue;
+      const name = COROS_EXERCISE_NAMES[l.key.trim()] ?? catalogRawNames.get(l.key.trim()) ?? l.key;
+      perExercise.set(name, (perExercise.get(name) ?? 0) + 1);
+    }
+    if (perExercise.size === 0) continue;
+    const day = (act.startTimeLocal ?? act.startTime).slice(0, 10);
+    strengthLines.push(
+      `${day} · ${Math.round(act.durationSeconds / 60)}min · ` +
+        [...perExercise.entries()].map(([name, sets]) => `${name} ×${sets}`).join(" · "),
+    );
+  }
+  if (strengthLines.length > 0) {
+    push("RECENT STRENGTH DETAIL", [
+      `the exercises and SET COUNTS actually performed, from the watch's own lap data. COROS records no weights or reps here, so never quote or assume a load — ask if it matters.`,
+      ...strengthLines,
+    ]);
+  }
 
   // 5 · WELLNESS 14D — with 30d baselines, COROS training load, and explicit
   // markers on evidence too weak to quote.

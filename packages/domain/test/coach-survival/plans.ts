@@ -354,6 +354,83 @@ export const INTENTS: Intent[] = [
       return ops.length ? ops : [{ kind: "skip", workoutId: id(rng, rows[0]!.id), reason: "easing back in" }];
     },
   },
+  /* ---------------------------------------------- selector intents --- */
+  /*
+   * The 2026-09-20 vocabulary. These are the shapes that used to have no
+   * expressible form at all: a whole discipline shifted, a travel weekend
+   * cleared, a set of sessions shortened. Each is ONE op that names a set,
+   * so what the harness measures here is the resolver — whether a plausible
+   * selector survives expansion, the guardrails and a real apply.
+   */
+  {
+    key: "shift-a-discipline",
+    applies: (s) => liveRows(s).some((r) => r.discipline === "strength"),
+    ops: (rng, s) => {
+      const rows = liveRows(s).filter((r) => r.discipline === "strength");
+      return [
+        {
+          kind: "moveEach",
+          select: {
+            by: "match",
+            from: d(rng, rows[0]!.date),
+            to: d(rng, rows.at(-1)!.date),
+            discipline: "strength",
+          },
+          shiftDays: pick(rng, [-2, 1, 2, 7]),
+        },
+      ];
+    },
+  },
+  {
+    key: "clear-a-travel-window",
+    applies: (s) => liveRows(s).length >= 2,
+    ops: (rng, s) => {
+      const rows = liveRows(s).filter((r) => r.category !== "race");
+      if (rows.length === 0) return [{ kind: "skipEach", select: { by: "ids", ids: [id(rng, liveRows(s)[0]!.id)] } }];
+      const start = pick(rng, rows).date;
+      return [
+        {
+          kind: chance(rng, 0.5) ? "skipEach" : "removeEach",
+          select: { by: "match", from: d(rng, start), to: d(rng, addDays(start, int(rng, 1, 3))) },
+          ...(chance(rng, 0.7) ? { reason: "you're away that weekend" } : {}),
+        },
+      ];
+    },
+  },
+  {
+    key: "shorten-a-set-of-sessions",
+    applies: (s) => liveRows(s).length >= 2,
+    ops: (rng, s) => {
+      const rows = liveRows(s);
+      return [
+        {
+          kind: "adjustEach",
+          select: {
+            by: "match",
+            from: d(rng, rows[0]!.date),
+            to: d(rng, rows.at(-1)!.date),
+            ...(chance(rng, 0.5) ? { category: rows[0]!.category } : {}),
+          },
+          ...(chance(rng, 0.5)
+            ? { durationDeltaMinutes: pick(rng, [-15, -10, -5, 10]) }
+            : { durationScale: pick(rng, [0.7, 0.8, 0.9, 1.2]) }),
+        },
+      ];
+    },
+  },
+  {
+    key: "name-exact-sessions",
+    applies: (s) => liveRows(s).length >= 2,
+    ops: (rng, s) => {
+      const rows = shuffled(rng, liveRows(s)).slice(0, int(rng, 1, 3));
+      return [
+        {
+          kind: pick(rng, ["skipEach", "removeEach"]),
+          select: { by: "ids", ids: rows.map((r) => id(rng, r.id)) },
+        },
+      ];
+    },
+  },
   {
     key: "ease-one-session",
     applies: (s) => liveRows(s).length > 0,

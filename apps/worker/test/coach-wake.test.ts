@@ -8,7 +8,7 @@ import { fileURLToPath } from "node:url";
 import { describe, expect, it, vi } from "vitest";
 import { and, eq } from "drizzle-orm";
 import { schema } from "@rg/database";
-import { addDays, newId, nowInstant, todayInZone } from "@rg/domain";
+import { addDays, describeSelector, newId, nowInstant, todayInZone } from "@rg/domain";
 import type { Db } from "../src/services/db.js";
 import {
   AMBIENT_TRIGGER_QUIET_MINUTES,
@@ -1212,12 +1212,15 @@ describe("the wake prompt (2026-08-16 rewrite)", () => {
       WAKE_EXAMPLE_OPS,
       WAKE_SYSTEM_PROMPT,
     } = await import("../src/services/coach-wake.js");
-    const { coachOpSchema } = await import("@rg/domain");
+    // The reference list is what the MODEL may write, so it is judged by the
+    // authored schema — which includes the selector ops the pipeline expands
+    // away before anything else sees them.
+    const { coachOpSchema, coachAuthoredOpSchema, SELECTOR_OP_KINDS } = await import("@rg/domain");
     expect(WAKE_SYSTEM_PROMPT).toContain(WAKE_EXAMPLE_OPS);
 
     const refOps = JSON.parse(WAKE_EXAMPLE_OPS) as Array<{ kind: string }>;
     for (const op of refOps) {
-      const parsed = coachOpSchema.safeParse(op);
+      const parsed = coachAuthoredOpSchema.safeParse(op);
       if (!parsed.success) console.error(op.kind, parsed.error.issues);
       expect(parsed.success, `reference op "${op.kind}" must parse`).toBe(true);
     }
@@ -1228,9 +1231,12 @@ describe("the wake prompt (2026-08-16 rewrite)", () => {
         for (const o of p.ops) shown.add(o.kind);
       }
     }
-    const advertised = (
-      coachOpSchema.options as Array<{ shape: { kind: { value: string } } }>
-    ).map((o) => o.shape.kind.value);
+    const advertised = [
+      ...(coachOpSchema.options as Array<{ shape: { kind: { value: string } } }>).map(
+        (o) => o.shape.kind.value,
+      ),
+      ...SELECTOR_OP_KINDS,
+    ];
     expect(advertised.filter((k) => !shown.has(k)), "op kinds with no example to copy").toEqual([]);
   });
 
@@ -2360,5 +2366,138 @@ describe("one clock per wake", () => {
       .where(eq(schema.coachProposals.userId, userId));
     expect(props.map((p) => p.status)).toEqual(["pending"]);
     expect((props[0]!.ops as Array<{ date: string }>)[0]!.date).toBe(seen.stated);
+  });
+});
+
+/**
+ * SELECTORS, END TO END (spec 2026-09-20 §2) — the request that motivated the
+ * whole design: "move all my lifting workouts a week later, leave the running
+ * alone", over a block that runs well past the fortnight UPCOMING shows.
+ */
+describe("wake · selector ops", () => {
+  /** Six weeks of Mon/Thu lifts and Tue/Sat runs, from tomorrow. */
+  async function seedBlock(db: Db, userId: string, today: string) {
+    const at = nowInstant();
+    for (let week = 0; week < 6; week++) {
+      for (const [offset, sport, category, title] of [
+        [1, "strength", "strength", "Lower Body"],
+        [2, "run", "easy", "Easy 40"],
+        [4, "strength", "strength", "Upper Body"],
+        [6, "run", "long", "Long Run"],
+      ] as Array<[number, string, string, string]>) {
+        const date = addDays(today, week * 7 + offset);
+        await db.insert(schema.plannedWorkouts).values({
+          id: `${sport}-${week}-${offset}`,
+          userId,
+          planId: "blk",
+          sourceWorkoutId: `s-${week}-${offset}`,
+          title,
+          category,
+          sport,
+          originalPlanDate: date,
+          lastVerifiedCorosDate: date,
+          effectiveDate: date,
+          effectiveTime: "07:00",
+          completionState: "scheduled",
+          sourceContentFingerprint: `fp-${week}-${offset}`,
+          calendarBlockDurationSeconds: 3600,
+          createdAt: at,
+          updatedAt: at,
+        });
+      }
+    }
+  }
+
+  it("one moveEach shifts every lift in the block and leaves the runs where they are", async () => {
+    const db = makeTestDb();
+    const { userId, prefs } = await makeTestUser(db);
+    const today = todayInZone(prefs.timezone);
+    await seedBlock(db, userId, today);
+
+    const output = {
+      briefing: "Pushing the lifting week back.",
+      proposals: [
+        {
+          title: "Lifting moves a week later",
+          evidence: "you asked",
+          rationale: "The running rhythm is what holds the block together, so it stays.",
+          expiresAt: addDays(today, 1),
+          flags: [],
+          ops: [
+            {
+              kind: "moveEach",
+              select: { by: "match", from: today, to: addDays(today, 60), discipline: "strength" },
+              shiftDays: 7,
+            },
+          ],
+        },
+      ],
+      question: null,
+      memoryOps: [],
+      focus: null,
+      raceLine: null,
+    };
+    const { fetchImpl, calls } = scriptedFetch([chatBody(output)]);
+    const res = await wake(db, makeEnv(), userId, prefs, { kind: "message", body: "move all my lifting a week later, leave the running" }, fetchImpl);
+
+    expect(res.status).toBe("ok");
+    expect(res.proposalIds).toHaveLength(1);
+    // No repair round-trip: a selector is not something to fix.
+    expect(calls).toHaveLength(1);
+
+    const [p] = await db.select().from(schema.coachProposals).where(eq(schema.coachProposals.userId, userId));
+    const ops = p!.ops as Array<{ kind: string; workoutId: string; toDate: string }>;
+    // Twelve lifts, every one of them, including the eight that UPCOMING
+    // never showed — and nothing else.
+    expect(ops).toHaveLength(12);
+    expect(new Set(ops.map((o) => o.kind))).toEqual(new Set(["move"]));
+    expect(ops.every((o) => o.workoutId.startsWith("strength-"))).toBe(true);
+    // Stored expanded, so the manifest and the apply path see ordinary ops.
+    expect(ops[0]!.toDate).toBe(addDays(today, 8));
+    // …but the card still reads as ONE change, not twelve.
+    expect(p!.selectors).toEqual([
+      describeSelector({ by: "match", from: today, to: addDays(today, 60), discipline: "strength" }),
+    ]);
+  });
+
+  it("a selector that matches nothing is rejected, and the athlete is told why", async () => {
+    const db = makeTestDb();
+    const { userId, prefs } = await makeTestUser(db);
+    const today = todayInZone(prefs.timezone);
+    await seedBlock(db, userId, today);
+
+    const output = {
+      briefing: "Clearing the yoga.",
+      proposals: [
+        {
+          title: "Clear the yoga week",
+          evidence: "you asked",
+          rationale: "Nothing else changes.",
+          expiresAt: addDays(today, 1),
+          flags: [],
+          ops: [
+            {
+              kind: "skipEach",
+              select: { by: "match", from: today, to: addDays(today, 7), discipline: "yoga" },
+              reason: "away",
+            },
+          ],
+        },
+      ],
+      question: null,
+      memoryOps: [],
+      focus: null,
+      raceLine: null,
+    };
+    // Same output on the repair attempt too.
+    const { fetchImpl } = scriptedFetch([chatBody(output), chatBody(output), chatBody(output)]);
+    const res = await wake(db, makeEnv(), userId, prefs, { kind: "message", body: "clear my yoga" }, fetchImpl);
+
+    expect(res.status).toBe("ok");
+    expect(res.proposalIds).toHaveLength(0);
+    const msgs = await db.select().from(schema.coachMessages).where(eq(schema.coachMessages.userId, userId));
+    const receipt = msgs.find((m) => m.role === "receipt" && m.body.includes("Clear the yoga week"));
+    expect(receipt).toBeDefined();
+    expect(receipt!.body).toContain("no yoga sessions");
   });
 });

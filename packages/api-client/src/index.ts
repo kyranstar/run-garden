@@ -366,6 +366,13 @@ export interface CoachProposalDto {
   /** workoutId → the plan's state when this APPLIED (manifest 0019) —
    * settled cards read this, never the live plan. */
   appliedRefs?: Record<string, { date?: string; summary?: string; durationMinutes?: number }> | null;
+  /** Rendered selector intents — "every strength session, 22 Sep – 1 Nov".
+   * The ops below are already expanded, so this is the only thing that says
+   * twelve lines were one request. */
+  selectors?: string[] | null;
+  /** What a structural proposal assumes to be true, shown above the approve
+   * button so the assumption can be rejected without the plan. */
+  premise?: string | null;
 }
 
 export interface CoachQuestionDto {

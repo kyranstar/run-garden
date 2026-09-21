@@ -43,6 +43,8 @@ import type { CoachOp, CoachSession } from "./coach.js";
 export interface GuardrailWorkout {
   id: string;
   date: string;
+  /** Needed by selector matching (titleContains); see coach-selectors.ts. */
+  title: string;
   category: string;
   completionState: string;
   durationMinutes: number;
@@ -108,6 +110,7 @@ export interface Violation {
 export type GuardrailRule =
   | "touch_resolved"
   | "unknown_workout"
+  | "empty_selection"
   | "past_date"
   | "imported_plan_structure"
   | "runaway_size"
@@ -145,6 +148,14 @@ export const RULE_CLASS: Record<GuardrailRule, RuleClass> = {
    * UPDATEs zero rows and reports success: the athlete taps approve, the
    * receipt says approved, and nothing whatsoever happens. */
   unknown_workout: "fatal",
+  /**
+   * A selector that matched nothing. Fatal rather than silently dropped: the
+   * alternative is a card with an approve button over zero changes, which
+   * tells the athlete their plan is about to change when it is not. Fatal
+   * also means the coach is TOLD, and the guardrail repair round carries the
+   * reason — so it can re-ask with a range that exists.
+   */
+  empty_selection: "fatal",
   /** A session dated before today. `insertSession` would happily create it,
    * and the athlete would find work on a day they have already lived. */
   past_date: "fatal",
@@ -721,6 +732,11 @@ function opDates(op: CoachOp, ctx: GuardrailCtx): string[] {
   switch (op.kind) {
     case "ease":
     case "skip":
+    // remove/restore/adjust all address one existing row and create nothing,
+    // so the day they concern is that row's own day.
+    case "remove":
+    case "restore":
+    case "adjust":
       return byId.has(op.workoutId) ? [byId.get(op.workoutId)!.date] : [];
     case "move":
       return byId.has(op.workoutId) ? [byId.get(op.workoutId)!.date, op.toDate] : [op.toDate];
@@ -768,6 +784,10 @@ function newWorkDates(op: CoachOp): string[] {
     case "extendPlan":
     case "retirePlan":
     case "resolveRaceConflict":
+    // None of these put work on a day that did not already have it.
+    case "remove":
+    case "restore":
+    case "adjust":
       return [];
     case "move":
       return [op.toDate];
@@ -807,6 +827,12 @@ function newSessionCount(op: CoachOp): number {
     case "extendPlan":
     case "retirePlan":
     case "resolveRaceConflict":
+    // remove/restore/adjust each rewrite one existing row; none writes a new
+    // session, so a bulk taper can never trip `runaway_size` however many
+    // sessions a selector resolved to.
+    case "remove":
+    case "restore":
+    case "adjust":
       return 0;
   }
 }
@@ -822,7 +848,19 @@ export interface ValidationResult {
   soft: Violation[];
 }
 
-export function validateOps(ops: CoachOp[], ctx: GuardrailCtx): ValidationResult {
+export function validateOps(
+  ops: CoachOp[],
+  ctx: GuardrailCtx,
+  /**
+   * Findings from `expandSelectors`, which runs BEFORE this and is the only
+   * thing that can know a selector matched nothing (by then the selector has
+   * already been rewritten away). They are routed through `found` like every
+   * other rule so that {@link RULE_CLASS} stays the single place severity is
+   * decided — the alternative was the wake constructing a fatal violation by
+   * hand, with its own idea of how fatal it is.
+   */
+  expansion?: { empty?: { opIndex: number; detail: string }[] },
+): ValidationResult {
   const fatal: Violation[] = [];
   const advisory: Violation[] = [];
   const soft: Violation[] = [];
@@ -838,9 +876,25 @@ export function validateOps(ops: CoachOp[], ctx: GuardrailCtx): ValidationResult
     (RULE_CLASS[rule] === "fatal" ? fatal : advisory).push({ rule, opIndex, detail });
   };
 
+  for (const e of expansion?.empty ?? []) {
+    found("empty_selection", e.opIndex, `nothing matched — ${e.detail}`);
+  }
+
   ops.forEach((op, i) => {
-    const idAddressed = op.kind === "ease" || op.kind === "move" || op.kind === "skip";
+    const idAddressed =
+      op.kind === "ease" ||
+      op.kind === "move" ||
+      op.kind === "skip" ||
+      op.kind === "remove" ||
+      op.kind === "restore" ||
+      op.kind === "adjust";
     const targeted = idAddressed ? byId.get(op.workoutId) : undefined;
+    // `restore` is the one op whose whole purpose is to reach a RESOLVED row:
+    // un-skipping a session that is still scheduled is meaningless, and
+    // judging it by `touch_resolved` would make the op unusable by
+    // construction. Its own targetability (skipped, and not in the past) is
+    // enforced below and by the selector resolver.
+    const mayTouchResolved = op.kind === "restore";
     // An id that resolves to nothing is the quietest failure this app has:
     // `applyOps` UPDATEs zero rows, pushes the id into `updated`, and the
     // receipt says approved. The athlete is told their plan changed.
@@ -852,7 +906,23 @@ export function validateOps(ops: CoachOp[], ctx: GuardrailCtx): ValidationResult
       );
     }
     if (targeted) {
-      if (targeted.completionState !== "scheduled" && targeted.completionState !== "planned") {
+      if (mayTouchResolved && targeted.completionState !== "skipped") {
+        found(
+          "touch_resolved",
+          i,
+          `${humanDate(targeted.date)} isn't skipped, so there is nothing to put back`,
+        );
+      } else if (mayTouchResolved && targeted.date < ctx.today) {
+        found(
+          "touch_resolved",
+          i,
+          `${humanDate(targeted.date)} has already been and gone — the past can't be rewritten`,
+        );
+      } else if (
+        !mayTouchResolved &&
+        targeted.completionState !== "scheduled" &&
+        targeted.completionState !== "planned"
+      ) {
         found(
           "touch_resolved",
           i,
