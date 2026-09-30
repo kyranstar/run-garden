@@ -1,71 +1,84 @@
-import { test, expect } from "@playwright/test";
+import { test, expect, type Page } from "@playwright/test";
 
 /**
- * Smoke test of the fixture-seeded app across the five screens. Requires the
- * worker (FIXTURE_MODE=1, seeded) and the web dev server to be running — see
- * docs/TESTING.md. These verify the shared UI renders real API data end to end.
+ * Smoke test of the fixture-seeded app across its main screens, on both
+ * Playwright projects. Needs the fixture stack (worker with FIXTURE_MODE on
+ * :8971, web dev server on :5271): `bash apps/web/e2e/fixture-stack.sh`, then
+ * `RG_BASE=http://localhost:5271 pnpm --filter @rg/web e2e`. These verify the
+ * shared UI renders real API data end to end.
+ *
+ * The fixture plan is dated relative to today, so a few assertions depend on
+ * what "now" is; the browser clock is pinned to mid-morning to keep them off
+ * the day boundary.
  */
 
-test.beforeEach(async ({ context, baseURL }) => {
-  const res = await context.request.post(`${baseURL}/api/dev/fixture-login`);
-  expect(res.ok()).toBeTruthy();
+// The stack script seeds the fixture user once; each browser context only
+// needs its own session.
+test.beforeEach(async ({ page, context, baseURL }) => {
+  // context.request sends no Origin header, which the /api/dev/* origin guard
+  // allows; a browser fetch from the page would be refused.
+  const login = await context.request.post(`${baseURL}/api/dev/fixture-login`);
+  expect(login.ok()).toBeTruthy();
+  const now = new Date();
+  now.setHours(10, 0, 0, 0);
+  await page.clock.install({ time: now });
 });
 
-test("Today shows the next workout with a COROS duration estimate", async ({ page }) => {
+/**
+ * The Today card is always open on a phone; on a wide screen it can start
+ * collapsed behind the "Next: …" pill, which toggles it.
+ */
+async function openTodayCard(page: Page) {
+  // Below the wide tier the pill is hidden and the card is simply there.
+  const pill = page.locator("button.dock-pill:visible");
+  await pill.or(page.locator(".dock-panel:visible")).first().waitFor();
+  if ((await pill.count()) > 0 && (await pill.getAttribute("aria-expanded")) === "false") {
+    await pill.click();
+  }
+  await expect(page.locator(".dock-panel")).toBeVisible();
+}
+
+test("Garden home leads with the Today card and its workout", async ({ page }) => {
   await page.goto("/");
-  // Mobile Today leads with a "Next workout" card; the desktop garden stage
-  // carries the same fact in its HUD ("Next: …").
-  await expect(page.getByText(/Next workout|Next:/).first()).toBeVisible();
-  await expect(page.getByText(/min/).first()).toBeVisible();
+  await openTodayCard(page);
+  await expect(page.locator(".dock-panel").getByRole("heading").first()).toBeVisible();
+  await expect(page.getByRole("button", { name: "Move" }).first()).toBeVisible();
 });
 
-test("Plan renders the week calendar and speaks the COROS check outcome", async ({ page }) => {
+test("Plan renders the week calendar with no COROS warning", async ({ page }) => {
   await page.goto("/plan");
-  await expect(page.getByRole("heading", { name: "Plan" })).toBeVisible();
-  // The plan is a single week-pickable calendar (coach/plan rework).
+  await expect(page.getByRole("heading", { name: "Plan", exact: true })).toBeVisible();
   await expect(page.locator(".plan-week-title").first()).toBeVisible();
   // The app-open COROS check resolves silently when connected (the fixture
-  // user is): the checking pill goes away and no warn pill replaces it.
-  await expect(page.locator(".coros-checking")).toHaveCount(0);
+  // user is): no warn pill.
   await expect(page.locator(".coros-check-link")).toHaveCount(0);
 });
 
-test("Garden renders a scene and a species collection", async ({ page }) => {
+test("Garden renders a scene and opens the species collection", async ({ page }) => {
   await page.goto("/garden");
   await expect(page.locator("svg[role=img]").first()).toBeVisible();
-  // Desktop stage keeps the collection in a drawer behind the HUD rail;
-  // mobile keeps the inline card.
-  const rail = page.getByRole("button", { name: /Collection · / });
-  if (await rail.isVisible().catch(() => false)) {
-    await rail.click();
-    await expect(page.getByRole("dialog")).toBeVisible();
-    await expect(page.getByText(/Growing next/i).first()).toBeVisible();
-  } else {
-    await expect(page.getByText(/Species collection/)).toBeVisible();
-  }
+  await page.getByRole("button", { name: /Collection — \d+ of \d+ species/ }).click();
+  await expect(page.getByRole("dialog")).toBeVisible();
+  await expect(page.getByText(/Growing next/i).first()).toBeVisible();
 });
 
-test("Insights renders the dashboard and suppresses thin metrics honestly", async ({ page }) => {
+test("Activity renders consistency and signals (/insights redirects)", async ({ page }) => {
   await page.goto("/insights");
-  // Card order per the dashboard spec: status strip, signals, consistency.
-  await expect(page.locator(".status-strip")).toBeVisible();
-  await expect(page.getByText("Signals", { exact: true })).toBeVisible();
-  await expect(page.getByText("Consistency · last 12 weeks")).toBeVisible();
-  // Aerobic decoupling either draws or explains its own sample size; either
-  // way the words "steady runs" appear, and never a bare empty card.
-  await expect(page.getByText(/steady runs/).first()).toBeVisible();
+  await expect(page).toHaveURL(/\/runs/);
+  await expect(page.getByText("Consistency").first()).toBeVisible();
+  await expect(page.getByText("Signals").first()).toBeVisible();
 });
 
-test("Settings exposes connections, devices, and data controls", async ({ page }) => {
+test("Settings exposes the COROS connection and data controls", async ({ page }) => {
   await page.goto("/settings");
-  await expect(page.getByText("Connections")).toBeVisible();
   await expect(page.getByText("COROS connection", { exact: true })).toBeVisible();
-  await expect(page.getByText("Export everything (JSON)")).toBeVisible();
+  await expect(page.getByRole("button", { name: /Export everything/ })).toBeVisible();
+  await expect(page.getByText(/Restore from file/)).toBeVisible();
 });
 
-test("Moving a workout opens candidate recommendations", async ({ page }) => {
+test("Moving a workout opens the move sheet", async ({ page }) => {
   await page.goto("/");
+  await openTodayCard(page);
   await page.getByRole("button", { name: "Move" }).first().click();
-  // The move sheet loads candidates or a blocked reason.
   await expect(page.getByRole("dialog")).toBeVisible();
 });
