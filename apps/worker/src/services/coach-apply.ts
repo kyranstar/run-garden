@@ -30,7 +30,7 @@ import { separateDayCollisions, windowTimeFor } from "./day-placement.js";
 import { recordedStampFor, stampName } from "./coros-stamp.js";
 import { applyMove } from "./jobs.js";
 import { openIntentFor, recordIntent } from "./sync-intents.js";
-import { enqueueUnpushIfOurs, removeFromPlan } from "./plan-mutations.js";
+import { enqueueUnpushIfOurs, removeFromPlan, unskipWorkout } from "./plan-mutations.js";
 import { resolveRaceConflict } from "./race-conflict.js";
 import { isLoosePlan } from "./coach-plans.js";
 
@@ -1170,6 +1170,8 @@ export async function applyOps(
         break;
       }
       case "restore": {
+        // Not-archived is a coach-only guard (the manual route never sees
+        // archived rows); the mutation itself is the athlete's own unskip.
         const [row] = await db
           .select({ id: plannedWorkouts.id })
           .from(plannedWorkouts)
@@ -1177,21 +1179,18 @@ export async function applyOps(
             and(
               eq(plannedWorkouts.id, op.workoutId),
               eq(plannedWorkouts.userId, userId),
-              eq(plannedWorkouts.completionState, "skipped"),
               isNull(plannedWorkouts.archivedAt),
             ),
           )
           .limit(1);
-        if (!row) {
+        const res = row
+          ? await unskipWorkout(db, userId, op.workoutId, { now, source: "coach" })
+          : { restored: false, resolvedOn: null };
+        if (!res.restored) {
           out.missed.push("a session it puts back isn't skipped any more, so nothing was restored");
           break;
         }
-        // `sanctionedBy` clears with the skip: the garden's mercy was granted
-        // for a rest day that is no longer being taken.
-        await db
-          .update(plannedWorkouts)
-          .set({ completionState: "scheduled", resolutionDate: null, sanctionedBy: null, updatedAt: now })
-          .where(and(eq(plannedWorkouts.id, op.workoutId), eq(plannedWorkouts.userId, userId)));
+        noteResim(res.resolvedOn);
         out.updated.push(op.workoutId);
         break;
       }

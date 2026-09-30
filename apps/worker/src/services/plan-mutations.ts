@@ -1,5 +1,5 @@
 import { and, eq } from "drizzle-orm";
-import { calendarEventSuppressions, corosWriteJobs, plannedWorkouts } from "@rg/database";
+import { calendarEventSuppressions, corosWriteJobs, plannedWorkouts, scheduleOverrides } from "@rg/database";
 import { newId, type UserPreferences } from "@rg/domain";
 import type { Db } from "./db.js";
 import { recordedStampFor } from "./coros-stamp.js";
@@ -122,4 +122,51 @@ export async function enqueueUnpushIfOurs(
       updatedAt: now,
     })
     .onConflictDoNothing();
+}
+
+export interface UnskipResult {
+  restored: boolean;
+  resolvedOn: string | null;
+  reason?: "not_found" | "not_skipped";
+}
+
+/**
+ * Reverse a skip: only valid while still `skipped` (a completed/matched
+ * workout has moved on and isn't "un-skippable"). Back to scheduled, the
+ * skip's resolutionDate and sanction cleared, and a `restore` override
+ * recorded. `resolvedOn` is the date the skip fed the garden sim — the caller
+ * resimulates from it so the garden forgets the miss.
+ */
+export async function unskipWorkout(
+  db: Db,
+  userId: string,
+  workoutId: string,
+  opts: { now: string; source: "app" | "coach" },
+): Promise<UnskipResult> {
+  const [w] = await db
+    .select()
+    .from(plannedWorkouts)
+    .where(and(eq(plannedWorkouts.id, workoutId), eq(plannedWorkouts.userId, userId)))
+    .limit(1);
+  if (!w) return { restored: false, resolvedOn: null, reason: "not_found" };
+  if (w.completionState !== "skipped") return { restored: false, resolvedOn: null, reason: "not_skipped" };
+  const { now } = opts;
+  // buildDayInput falls back to effectiveDate when resolutionDate is unset;
+  // matching that fallback here keeps the resim target correct either way.
+  const resolvedOn = w.resolutionDate ?? w.effectiveDate;
+  // `sanctionedBy` clears with the skip: the garden's mercy was granted for a
+  // rest day that is no longer being taken.
+  await db
+    .update(plannedWorkouts)
+    .set({ completionState: "scheduled", resolutionDate: null, sanctionedBy: null, updatedAt: now })
+    .where(and(eq(plannedWorkouts.id, w.id), eq(plannedWorkouts.userId, userId)));
+  await db.insert(scheduleOverrides).values({
+    id: newId(),
+    workoutId: w.id,
+    kind: "restore",
+    fromDate: resolvedOn,
+    source: opts.source,
+    createdAt: now,
+  });
+  return { restored: true, resolvedOn };
 }

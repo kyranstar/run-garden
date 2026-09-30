@@ -52,7 +52,7 @@ import { waitUntilSafe } from "../services/wait-until.js";
 import { loadPreferences, restoreCalendarEvent, savePreferences, syncCalendar } from "../services/calendar-sync.js";
 import { chunkIds, type Db } from "../services/db.js";
 import { applyMove } from "../services/jobs.js";
-import { removeFromPlan } from "../services/plan-mutations.js";
+import { removeFromPlan, unskipWorkout } from "../services/plan-mutations.js";
 import { recentGardenEvents, resimulateFrom } from "../services/garden-sync.js";
 import {
   openContentIntentTargets,
@@ -1308,33 +1308,11 @@ planRoutes.post("/workouts/:id/skip", async (c) => {
 planRoutes.post("/workouts/:id/unskip", async (c) => {
   const db = c.get("db");
   const userId = c.get("userId");
-  const w = (
-    await db
-      .select()
-      .from(plannedWorkouts)
-      .where(and(eq(plannedWorkouts.id, c.req.param("id")), eq(plannedWorkouts.userId, userId)))
-      .limit(1)
-  )[0];
-  if (!w) return c.json({ error: "not_found" }, 404);
-  if (w.completionState !== "skipped") return c.json({ error: "not_skipped" }, 422);
-  const now = nowInstant();
-  // buildDayInput falls back to effectiveDate when resolutionDate is unset;
-  // matching that fallback here keeps the resim target correct either way.
-  const resolvedOn = w.resolutionDate ?? w.effectiveDate;
-  await db
-    .update(plannedWorkouts)
-    .set({ completionState: "scheduled", resolutionDate: null, sanctionedBy: null, updatedAt: now })
-    .where(and(eq(plannedWorkouts.id, w.id), eq(plannedWorkouts.userId, userId)));
-  await db.insert(scheduleOverrides).values({
-    id: newId(),
-    workoutId: w.id,
-    kind: "restore",
-    fromDate: resolvedOn,
-    source: "app",
-    createdAt: now,
-  });
+  const res = await unskipWorkout(db, userId, c.req.param("id"), { now: nowInstant(), source: "app" });
+  if (res.reason === "not_found") return c.json({ error: "not_found" }, 404);
+  if (res.reason === "not_skipped") return c.json({ error: "not_skipped" }, 422);
   const prefs = await loadPreferences(db, userId);
-  await resimulateFrom(db, userId, resolvedOn, prefs).catch(() => undefined);
+  await resimulateFrom(db, userId, res.resolvedOn!, prefs).catch(() => undefined);
   return c.json({ ok: true });
 });
 

@@ -3,7 +3,7 @@ import { eq } from "drizzle-orm";
 import { schema } from "@rg/database";
 import { addDays, nowInstant, todayInZone } from "@rg/domain";
 import { applyOps } from "../src/services/coach-apply.js";
-import { removeFromPlan } from "../src/services/plan-mutations.js";
+import { removeFromPlan, unskipWorkout } from "../src/services/plan-mutations.js";
 import { openIntentFor, recordIntent } from "../src/services/sync-intents.js";
 import { makeTestDb, makeTestUser } from "./helpers.js";
 
@@ -82,5 +82,41 @@ describe("coach remove ≡ manual remove", () => {
     expect(past.resimFrom).toBe(pastDate);
     const a = await applyOps(db, userId, prefs, "p1", [{ kind: "remove", workoutId: "future" }]);
     expect(a.resimFrom).toBeNull();
+  });
+});
+
+describe("unskipWorkout", () => {
+  it("clears the skip, writes a restore override, and reports the resolved date", async () => {
+    const db = makeTestDb();
+    const { userId, prefs } = await makeTestUser(db);
+    const today = todayInZone(prefs.timezone);
+    await seed(db, userId, "w1", today);
+    await db.update(schema.plannedWorkouts)
+      .set({ completionState: "skipped", resolutionDate: today, sanctionedBy: "coach" })
+      .where(eq(schema.plannedWorkouts.id, "w1"));
+    const out = await unskipWorkout(db, userId, "w1", { now: nowInstant(), source: "coach" });
+    expect(out).toEqual({ restored: true, resolvedOn: today });
+    const [w] = await db.select().from(schema.plannedWorkouts).where(eq(schema.plannedWorkouts.id, "w1"));
+    expect([w!.completionState, w!.resolutionDate, w!.sanctionedBy]).toEqual(["scheduled", null, null]);
+    const ov = await db.select().from(schema.scheduleOverrides).where(eq(schema.scheduleOverrides.workoutId, "w1"));
+    expect(ov.map((o) => [o.kind, o.source])).toEqual([["restore", "coach"]]);
+  });
+  it("refuses a row that is not skipped", async () => {
+    const db = makeTestDb();
+    const { userId, prefs } = await makeTestUser(db);
+    await seed(db, userId, "w1", todayInZone(prefs.timezone));
+    expect(await unskipWorkout(db, userId, "w1", { now: nowInstant(), source: "app" }))
+      .toEqual({ restored: false, resolvedOn: null, reason: "not_skipped" });
+  });
+  it("coach restore sets resimFrom to the skip's resolution date", async () => {
+    const db = makeTestDb();
+    const { userId, prefs } = await makeTestUser(db);
+    const today = todayInZone(prefs.timezone);
+    await seed(db, userId, "w1", addDays(today, 1));
+    await db.update(schema.plannedWorkouts)
+      .set({ completionState: "skipped", resolutionDate: today }).where(eq(schema.plannedWorkouts.id, "w1"));
+    const out = await applyOps(db, userId, prefs, "p", [{ kind: "restore", workoutId: "w1" }]);
+    expect(out.updated).toEqual(["w1"]);
+    expect(out.resimFrom).toBe(today);
   });
 });

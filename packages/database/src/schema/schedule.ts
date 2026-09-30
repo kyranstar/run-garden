@@ -165,7 +165,7 @@ export const scheduleOverrides = sqliteTable(
     fromDate: text("from_date"),
     toDate: text("to_date"),
     toTime: text("to_time"),
-    source: text("source"), // app | calendar_edit | reconciler
+    source: text("source"), // app | calendar_edit | reconciler | coach
     note: text("note"),
     createdAt: text("created_at").notNull(),
   },
