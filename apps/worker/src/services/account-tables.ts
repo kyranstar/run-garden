@@ -1,0 +1,327 @@
+/**
+ * ONE registry of every table the schema declares, and how each one belongs to
+ * an account (Phase 0 Task 8).
+ *
+ * Export, restore, delete-all, the staging copier and the parity harness all
+ * need the same answer to "which rows are this person's?". Before this each
+ * kept its own hand-written list, and they drifted: the old export covered 11
+ * of ~50 tables, and delete-all had missed 13 before a coverage test caught
+ * it. Now there is one list, and `account-tables.test.ts` fails the moment a
+ * table exists in the schema barrel without an entry here.
+ *
+ * Scopes:
+ *  - `user`     — the table has its own `user_id` column.
+ *  - `child`    — no `user_id`; its rows are reached through a parent table's
+ *                 ids (`column` on this table → `parentKey` on the parent, which
+ *                 is itself a `user` table).
+ *  - `identity` — the `users` row itself: exported, never restored over.
+ *  - `excluded` — not account data at all (auth sessions, OAuth handshakes,
+ *                 global catalogs, app versioning).
+ *
+ * Column names in scopes and `secretColumns` are SQL names (`activity_id`),
+ * not drizzle property keys — they are the database-level identity and what a
+ * raw statement needs; `columnKey` maps one to its row-object key.
+ *
+ * Also here: the shared row ORDER and HASH (Ruling R2). Every consumer that
+ * compares tables — the parity harness, the copier's verify, the export's
+ * paging — orders rows by primary key and hashes canonical JSON, so two
+ * databases holding the same rows agree no matter how the rows got there.
+ * `rowid` is deliberately not used: a table rebuild renumbers it.
+ */
+import { asc, eq, getTableColumns, getTableName, sql, type Column, type SQL } from "drizzle-orm";
+import { getTableConfig, type SQLiteTable } from "drizzle-orm/sqlite-core";
+import {
+  activities,
+  activityLaps,
+  activitySourceLinks,
+  activityStreamSummaries,
+  athleteZones,
+  auditEvents,
+  backfillState,
+  calendarEventLinks,
+  calendarEventSuppressions,
+  coachLocks,
+  coachMemory,
+  coachMessages,
+  coachPlans,
+  coachPlanWeeks,
+  coachProposals,
+  coachQuestions,
+  coachReads,
+  coachTriggers,
+  computedMetrics,
+  corosExercises,
+  corosScheduleSnapshots,
+  corosWriteAttempts,
+  corosWriteJobs,
+  dailyHealth,
+  dismissedInsights,
+  gardenDayInputs,
+  gardenEvents,
+  gardenPlants,
+  gardenSceneLayouts,
+  gardenSeen,
+  gardenSnapshots,
+  gardenSpecies,
+  gardenState,
+  gardenUnlocks,
+  gardenVisitors,
+  gardenWildlife,
+  llmUsage,
+  motivationEvidence,
+  oauthStates,
+  plannedWorkouts,
+  plannedWorkoutStages,
+  providerConnections,
+  providerCursorState,
+  scheduleOverrides,
+  schemaVersions,
+  sessions,
+  sleepRecords,
+  studioPlanPushes,
+  studioPlans,
+  syncErrors,
+  syncIntents,
+  syncNotes,
+  syncRuns,
+  trainingPlans,
+  trainingPlanVersions,
+  userPreferences,
+  users,
+  weeklyReviews,
+  workoutCompletionMatches,
+} from "@rg/database";
+import type { Db } from "./db.js";
+
+export type TableScope =
+  | { kind: "user" }
+  | { kind: "child"; parent: string; column: string; parentKey?: string }
+  | { kind: "identity" }
+  | { kind: "excluded"; reason: string };
+
+export interface AccountTable {
+  name: string;
+  table: SQLiteTable;
+  scope: TableScope;
+  /** Dependency order: parents before children. Restore inserts ascending;
+   * a wipe deletes descending (children first, while the parent ids that
+   * reach them still exist). */
+  order: number;
+}
+
+const USER = { kind: "user" } as const;
+const child = (parent: string, column: string): TableScope => ({ kind: "child", parent, column });
+const excluded = (reason: string): TableScope => ({ kind: "excluded", reason });
+
+/**
+ * Listed in dependency order — the position IS `order`. Identity first, then
+ * every `user` table, then the children (each after its parent), then the
+ * tables that belong to no account.
+ */
+const ENTRIES: ReadonlyArray<readonly [SQLiteTable, TableScope]> = [
+  [users, { kind: "identity" }],
+
+  // identity & preferences
+  [userPreferences, USER],
+  [providerConnections, USER],
+  // schedule
+  [trainingPlans, USER],
+  [plannedWorkouts, USER],
+  [corosScheduleSnapshots, USER],
+  [corosWriteJobs, USER],
+  [syncIntents, USER],
+  [syncNotes, USER],
+  // activities & health
+  [activities, USER],
+  [dailyHealth, USER],
+  [athleteZones, USER],
+  [sleepRecords, USER],
+  // garden
+  [gardenState, USER],
+  [gardenPlants, USER],
+  [gardenEvents, USER],
+  [gardenUnlocks, USER],
+  [gardenWildlife, USER],
+  [gardenSceneLayouts, USER],
+  [gardenSnapshots, USER],
+  [gardenVisitors, USER],
+  [gardenDayInputs, USER],
+  [gardenSeen, USER],
+  // product
+  [computedMetrics, USER],
+  [motivationEvidence, USER],
+  [weeklyReviews, USER],
+  [dismissedInsights, USER],
+  [llmUsage, USER],
+  // ops
+  [syncRuns, USER],
+  [syncErrors, USER],
+  [providerCursorState, USER],
+  [auditEvents, USER],
+  [backfillState, USER],
+  // studio
+  [studioPlans, USER],
+  // coach
+  [coachMemory, USER],
+  [coachQuestions, USER],
+  [coachMessages, USER],
+  [coachProposals, USER],
+  [coachTriggers, USER],
+  [coachPlans, USER],
+  [coachReads, USER],
+  [coachLocks, USER],
+
+  // children — reached only through a parent's ids
+  [trainingPlanVersions, child("training_plans", "plan_id")],
+  [plannedWorkoutStages, child("planned_workouts", "workout_id")],
+  [scheduleOverrides, child("planned_workouts", "workout_id")],
+  [workoutCompletionMatches, child("planned_workouts", "workout_id")],
+  [calendarEventLinks, child("planned_workouts", "workout_id")],
+  [calendarEventSuppressions, child("planned_workouts", "workout_id")],
+  [corosWriteAttempts, child("coros_write_jobs", "job_id")],
+  [activityLaps, child("activities", "activity_id")],
+  [activitySourceLinks, child("activities", "activity_id")],
+  [activityStreamSummaries, child("activities", "activity_id")],
+  [studioPlanPushes, child("studio_plans", "plan_id")],
+  [coachPlanWeeks, child("coach_plans", "plan_id")],
+
+  // no account owns these
+  [sessions, excluded("auth: a session is a sign-in on one device, never data to carry")],
+  [oauthStates, excluded("auth: short-lived OAuth handshakes with no owner")],
+  [gardenSpecies, excluded("global catalog shared by every account")],
+  [corosExercises, excluded("global COROS exercise catalog shared by every account")],
+  [schemaVersions, excluded("app component versions, not account data")],
+];
+
+export const ACCOUNT_TABLES: readonly AccountTable[] = ENTRIES.map(([table, scope], order) => ({
+  name: getTableName(table),
+  table,
+  scope,
+  order,
+}));
+
+const BY_NAME = new Map(ACCOUNT_TABLES.map((t) => [t.name, t]));
+
+/** The registry entry for a table's SQL name; throws on an unknown table. */
+export function accountTable(name: string): AccountTable {
+  const entry = BY_NAME.get(name);
+  if (!entry) throw new Error(`account-tables: unknown table "${name}"`);
+  return entry;
+}
+
+/** Columns that hold credentials: exported as null, never restored, scrubbed
+ * on any copy. SQL names. */
+const SECRETS: Readonly<Record<string, readonly string[]>> = {
+  provider_connections: ["encrypted_access_token", "encrypted_refresh_token"],
+};
+
+export function secretColumns(name: string): readonly string[] {
+  accountTable(name); // throws on an unknown table
+  return SECRETS[name] ?? [];
+}
+
+/** The drizzle column whose SQL name is `sqlName`. */
+export function columnBySqlName(table: SQLiteTable, sqlName: string): Column {
+  const col = Object.values(getTableColumns(table)).find((c) => c.name === sqlName);
+  if (!col) throw new Error(`account-tables: ${getTableName(table)} has no column "${sqlName}"`);
+  return col;
+}
+
+/** The row-object key (drizzle property name) for a SQL column name. */
+export function columnKey(table: SQLiteTable, sqlName: string): string {
+  const entry = Object.entries(getTableColumns(table)).find(([, c]) => c.name === sqlName);
+  if (!entry) throw new Error(`account-tables: ${getTableName(table)} has no column "${sqlName}"`);
+  return entry[0];
+}
+
+/**
+ * The WHERE condition selecting one account's rows of a table. A child is
+ * reached with a subquery on its parent's ids — ONE bound variable whatever
+ * the parent count, so it never meets D1's 100-variable ceiling and needs no
+ * chunking. Excluded tables have no account rows and throw.
+ */
+export function scopeWhere(entry: AccountTable, userId: string): SQL {
+  const scope = entry.scope;
+  switch (scope.kind) {
+    case "identity":
+      return eq(columnBySqlName(entry.table, "id"), userId);
+    case "user":
+      return eq(columnBySqlName(entry.table, "user_id"), userId);
+    case "child": {
+      const parent = accountTable(scope.parent);
+      const parentKey = columnBySqlName(parent.table, scope.parentKey ?? "id");
+      return sql`${columnBySqlName(entry.table, scope.column)} in (select ${parentKey} from ${parent.table} where ${scopeWhere(parent, userId)})`;
+    }
+    case "excluded":
+      throw new Error(`account-tables: "${entry.name}" belongs to no account (${scope.reason})`);
+  }
+}
+
+/** Primary-key columns in declaration order (composite keys included); every
+ * column when the table declares no primary key. */
+export function orderColumns(table: SQLiteTable): Column[] {
+  const config = getTableConfig(table);
+  const composite = config.primaryKeys.flatMap((pk) => pk.columns);
+  if (composite.length > 0) return composite;
+  const single = config.columns.filter((c) => c.primary);
+  if (single.length > 0) return single;
+  return config.columns;
+}
+
+/** SQLite needs a LIMIT before an OFFSET; this is "no limit". */
+const NO_LIMIT = 2_147_483_647;
+
+/**
+ * Every row of `table` in primary-key order (Ruling R2). With `userId`, only
+ * that account's rows (via the registry's scope). `offset`/`limit` page over
+ * the same total order, so a page boundary is deterministic.
+ */
+export async function orderedRows(
+  db: Db,
+  table: SQLiteTable,
+  opts: { userId?: string; offset?: number; limit?: number } = {},
+): Promise<Record<string, unknown>[]> {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  let q = (db.select().from(table as any) as any).$dynamic();
+  if (opts.userId !== undefined) q = q.where(scopeWhere(accountTable(getTableName(table)), opts.userId));
+  q = q.orderBy(...orderColumns(table).map((c) => asc(c)));
+  if (opts.limit !== undefined || opts.offset !== undefined) {
+    q = q.limit(opts.limit ?? NO_LIMIT).offset(opts.offset ?? 0);
+  }
+  return (await q) as Record<string, unknown>[];
+}
+
+/**
+ * Deterministic JSON: object keys sorted at every depth, `undefined` (and
+ * non-finite numbers) as `null`, `-0` as `0`. Two equal row sets serialize to
+ * the same string whatever order their keys were built in.
+ */
+export function canonicalJson(value: unknown): string {
+  if (value === null || value === undefined) return "null";
+  switch (typeof value) {
+    case "number":
+      return Number.isFinite(value) ? JSON.stringify(Object.is(value, -0) ? 0 : value) : "null";
+    case "string":
+    case "boolean":
+      return JSON.stringify(value);
+    case "bigint":
+      return value.toString();
+    case "object": {
+      if (Array.isArray(value)) return `[${value.map(canonicalJson).join(",")}]`;
+      if (value instanceof Date) return JSON.stringify(value.toISOString());
+      const obj = value as Record<string, unknown>;
+      const keys = Object.keys(obj).sort();
+      return `{${keys.map((k) => `${JSON.stringify(k)}:${canonicalJson(obj[k])}`).join(",")}}`;
+    }
+    default:
+      return "null";
+  }
+}
+
+/** sha-256 (hex) of the canonical JSON of `rows`, in the order given — order
+ * them with `orderedRows` first. */
+export async function hashRows(rows: readonly unknown[]): Promise<string> {
+  const bytes = new TextEncoder().encode(canonicalJson(rows));
+  const digest = await crypto.subtle.digest("SHA-256", bytes);
+  return [...new Uint8Array(digest)].map((b) => b.toString(16).padStart(2, "0")).join("");
+}
