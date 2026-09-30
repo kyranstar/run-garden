@@ -251,6 +251,22 @@ test("step list shape", () => {
   expect(plan.plannedSeconds).toBe(Builder.costOf(plan.steps));
 });
 
+describe("the seed and the program (audit M14)", () => {
+  test("the build seed includes the program id; without one it is the standalone seed", () => {
+    const plain = Builder.build(data, input());
+    expect(plain.seed).toBe(["2026-09-29", "consistent", "hipsPosture", 30, "home"].join("|"));
+    const p1 = Builder.build(data, input({ programId: "program-1" }));
+    const p2 = Builder.build(data, input({ programId: "program-2" }));
+    expect(p1.seed).toBe(`${plain.seed}|program-1`);
+    expect(p2.seed).not.toBe(p1.seed);
+    // Two programs on the same day with the same inputs don't get the same sessions every day.
+    const days = ["2026-09-22", "2026-09-23", "2026-09-24", "2026-09-25", "2026-09-26", "2026-09-27", "2026-09-28"];
+    const ids = (programId: string) => days.map(d => idsOf(Builder.build(data, input({ today: d, programId }))).join(",")).join(";");
+    expect(ids("program-1")).not.toBe(ids("program-2"));
+    expect(Builder.build(data, input({ programId: "program-1" }))).toEqual(p1);   // still deterministic
+  });
+});
+
 describe("beyond the standalone suite", () => {
   const DAYS = ["2026-09-22", "2026-09-23", "2026-09-24", "2026-09-25", "2026-09-26", "2026-09-27", "2026-09-28", "2026-09-29"];
   const gymBuilds = (pre: number | null, extra = {}) => DAYS.flatMap(d => data.themes.filter(t => t.modes.includes("build")).map(theme =>

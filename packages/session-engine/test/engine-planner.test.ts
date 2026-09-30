@@ -166,6 +166,12 @@ describe("beyond the standalone suite", () => {
     expect(Planner.swap(day, T, "prep:1", "c", "a").swaps["prep:1"]).toBeUndefined();
   });
 
+  test("the program's id seeds its builds (audit M14)", () => {
+    const s = fresh();
+    expect(Planner.planToday(data, { today: T, day: null }, { ...s.program, programId: "program-1" }).view.plan.seed).toMatch(/\|program-1$/);
+    expect(Planner.planToday(data, { today: T, day: null }, s.program).view.plan.seed).not.toMatch(/program/);
+  });
+
   test("planToday is pure: it never changes the state it was given", () => {
     const s = fresh();
     const before = JSON.stringify(s);

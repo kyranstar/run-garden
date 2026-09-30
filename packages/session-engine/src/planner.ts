@@ -41,6 +41,8 @@ export interface PlannerSettings {
 
 /** What the planner reads from storage. Blocks are judged with Home's gear (id "home", else the first place). */
 export interface ProgramState {
+  /** The program's id: seeds its builds, so two programs don't plan identical sessions. */
+  programId?: string;
   settings: PlannerSettings;
   locations: readonly EngineLocation[];
   prefs: Prefs;
@@ -115,7 +117,7 @@ function context(data: EngineData, input: PlanTodayInput, program: ProgramState)
   const minutes = t.override.minutes || program.settings.defaultMinutes;
   const location = locationOf(program.locations, t.override.location || program.settings.location);
   const buildInput: BuildInput = {
-    today, mode, theme, minutes, location, unit: program.settings.unit,
+    today, ...(program.programId ? { programId: program.programId } : {}), mode, theme, minutes, location, unit: program.settings.unit,
     sessions: program.sessions, prefs: program.prefs, savedIds: program.savedIds, block: ensured.block, checks: t.checks, swaps: t.swaps,
   };
   return { t, ensured, proposal, mode, themeProposal, chosen, theme, minutes, location, buildInput };

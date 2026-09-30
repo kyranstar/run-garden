@@ -333,7 +333,8 @@ function fillCore(budget: number, ctx: Ctx): { groups: Group[]; spent: number } 
 function makeContext(data: EngineData, input: BuildInput): Ctx {
   const unit = input.unit || "lb";
   const sessions = input.sessions || [];
-  const seed = [input.today, input.mode, input.theme ? input.theme.id : "", input.minutes, input.location.id].join("|");
+  // The date, the session's shape and the program (spec §7.2); without a program id, the standalone seed.
+  const seed = [input.today, input.mode, input.theme ? input.theme.id : "", input.minutes, input.location.id, ...(input.programId ? [input.programId] : [])].join("|");
   const debt = Coverage.debt(data, sessions, input.today);
   const newMoveWeek = !Hist.newMoveThisWeek(data, sessions, input.today);
   return {

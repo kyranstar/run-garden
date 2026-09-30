@@ -53,6 +53,8 @@ export interface Block {
 /** One day's session request. `mode` and `theme` (a theme id) are overrides; the proposal decides otherwise. */
 export interface EngineInput {
   today: LocalDate;
+  /** The program the session belongs to; part of the build seed (programme spec §7.2). */
+  programId?: string;
   mode?: Mode;
   theme?: string;
   minutes: number;
