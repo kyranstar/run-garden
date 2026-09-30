@@ -536,7 +536,10 @@ export async function restoreRows(
 
   // Rows lost to a conflict (another row already holds the key, or a unique
   // index): the page said "ok" before and the loss was silent (finding 2).
-  const wanted = rows.map((r) => r.row[pkKey]).filter((v): v is string => typeof v === "string");
+  const wanted = rows
+    .map((r) => r.row[pkKey])
+    .filter((v): v is string | number => typeof v === "string" || typeof v === "number")
+    .map(String);
   const present = new Set<string>();
   for (const ids of chunkIds([...new Set(wanted)])) {
     const found2 = await db
