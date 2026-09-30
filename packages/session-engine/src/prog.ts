@@ -127,7 +127,15 @@ function harderFor(data: EngineData, ex: ExerciseRecord, ctx: ProgCtx): Exercise
   return null;
 }
 
-function summary(entry: ProgEntry | null): string | null {
+/** A logged flag as its active profile names it (lower case); flags of profiles not active now aren't shown. */
+function flagLabels(data: EngineData, flags: readonly string[]): string[] {
+  return (flags || []).flatMap(f => {
+    const p = active(data).find(x => x.setFlag && x.setFlag.id === f);
+    return p && p.setFlag ? [p.setFlag.label.toLowerCase()] : [];
+  });
+}
+
+function summary(data: EngineData, entry: ProgEntry | null): string | null {
   if (!entry) return null;
   const sets = entry.sets.map(s => {
     if (s.w && s.reps != null) return `${formatWeight(s.w)} × ${s.reps}`;
@@ -136,7 +144,7 @@ function summary(entry: ProgEntry | null): string | null {
     if (s.secs) return `${s.secs} s`;
     return s.reps != null ? `${s.reps} reps` : "done";
   });
-  return `${sets.join(", ")}${(entry.flags || []).map(f => ` · ${f}`).join("")}`;
+  return `${sets.join(", ")}${flagLabels(data, entry.flags).map(f => ` · ${f}`).join("")}`;
 }
 
 type Fields = Partial<Target>;
@@ -151,7 +159,7 @@ function suggest(data: EngineData, ex: ExerciseRecord, history: readonly ProgEnt
   const [lo, hi] = ex.dose.range;
   const last = history[0] ?? null;
   const result = (f: Fields): Target => ({
-    lo, hi, type: ex.dose.type, w: null, reps: null, secs: null, graduate: null, last: summary(last), lastDate: last ? last.date : null,
+    lo, hi, type: ex.dose.type, w: null, reps: null, secs: null, graduate: null, last: summary(data, last), lastDate: last ? last.date : null,
     action: "start", note: "",
     ...f,
   });

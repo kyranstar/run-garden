@@ -25,7 +25,7 @@ export interface Theme {
 
 export const THEMES: readonly Theme[] = [
   {
-    id: "deskUnwind", name: "Desk unwind", blurb: "Undo a day of sitting: open the upper back and hips, quiet the jaw.",
+    id: "deskUnwind", name: "Desk unwind", blurb: "Undo a day of sitting: open the upper back and hips, ease the neck.",
     modes: ["recovery", "consistent", "build"],
     emphasis: { patterns: { mobility: 1, rotate: 1.5, "pull-h": 1 }, regions: { thoracic: 2, hips: 1.5, neck: 1, "upper-back": 1 }, tags: { "desk-relief": 2 } },
     formats: ["flow", "superset"], coreBias: ["row", "hinge"],
@@ -43,7 +43,7 @@ export const THEMES: readonly Theme[] = [
     formats: ["superset", "ladder", "flow"], coreBias: ["row", "press"],
   },
   {
-    id: "carryDay", name: "Carry day", blurb: "Walk tall under load: carries and side-bend resistance without clenching.",
+    id: "carryDay", name: "Carry day", blurb: "Walk tall under load: carries and side-bend resistance, breathing easy.",
     modes: ["consistent", "build"],
     emphasis: { patterns: { carry: 2, "anti-lateral": 2, "anti-rotate": 1.5 }, regions: { core: 2, shoulders: 1, "upper-back": 1 } },
     formats: ["straight", "circuit"], coreBias: ["carry", "hinge"],

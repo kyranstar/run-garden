@@ -1,7 +1,7 @@
 import { addDays } from "@rg/domain";
 import { EXERCISES, MODE_IDS, SKELETON, makeEngineData, type EngineData } from "@rg/exercise-library";
 import { describe, expect, test } from "vitest";
-import { Lib, Planner, Records, Recorder, type HistorySession, type ProgramState, type TodayView } from "../src/index.js";
+import { Lib, Planner, Prog, Records, Recorder, type HistorySession, type ProgramState, type TodayView } from "../src/index.js";
 import { PLACES } from "./builder-fixtures.js";
 
 // Review Focus 2: an engine with no condition profile active never reads a rating, has no care block, splits
@@ -79,6 +79,20 @@ describe("no condition profile active (Review Focus 2)", () => {
     }
     expect(views.some(v => v.mode === "build"), "general rules alone reach build within the week").toBe(true);
     expect(views.every(v => v.mode !== "recovery"), "nothing but a profile proposes recovery").toBe(true);
+  });
+
+  test("history logged with a profile's flags, and the themes on offer, show no condition words (audit M7)", () => {
+    // Flags logged while TMJ was active, then the profile switched off.
+    const { sessions } = week(makeEngineData({ activeProfiles: ["tmj"], careProfiles: ["tmj"], exercises: EXERCISES }), 3);
+    const flagged = sessions.map(s => ({ ...s, entries: s.entries.map(e => ({ ...e, flags: ["clenched"] })) }));
+    const lift = EXERCISES.find(e => flagged.some(s => s.entries.some(x => x.id === e.id)) && e.load === "external")!;
+    const target = Prog.suggest(none, lift, Prog.historyFor(none, flagged, lift.id), { mode: "build", checks: {}, implement: "kettlebell", kbWeights: [], unit: "lb", equipment: ["kettlebell"] });
+    expect(target.last, String(target.last)).not.toMatch(CONDITION_WORDS);
+    for (const t of none.themes) expect(`${t.name} ${t.blurb}`, t.id).not.toMatch(CONDITION_WORDS);
+    // With TMJ active the summary reads as before.
+    const tmjData = makeEngineData({ activeProfiles: ["tmj"], careProfiles: ["tmj"], exercises: EXERCISES });
+    const withTmj = Prog.suggest(tmjData, lift, Prog.historyFor(tmjData, flagged, lift.id), { mode: "build", checks: {}, implement: "kettlebell", kbWeights: [], unit: "lb", equipment: ["kettlebell"] });
+    expect(withTmj.last).toMatch(/ · clenched$/);
   });
 
   test("no rating is read: records with no ratings at all are eligible and never throw", () => {
