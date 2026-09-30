@@ -639,12 +639,10 @@ export async function restoreRows(
   if (!(await activeRestore(db, userId, input.restoreId))) return { ok: false, status: 409, error: "no_active_restore" };
   const result = await restoreRowsInto(db, userId, input as { restoreId: string; table: unknown; rows: unknown; token?: unknown }, ctx);
   // The heartbeat says "this restore is still running" (B10): every page
-  // that lands beats it; a page this run cannot send stops it, so the
-  // notice says the restore didn't finish right away rather than in two
-  // minutes.
-  await patchAccountState(db, userId, {
-    restoreHeartbeatAt: result.ok ? nowInstant(ctx.now ?? new Date()) : null,
-  });
+  // that lands beats it. A refused page leaves it alone (m5) — it may come
+  // from a stale tab while the tab doing the restore is still sending good
+  // pages; a restore that really stopped stops beating within two minutes.
+  if (result.ok) await patchAccountState(db, userId, { restoreHeartbeatAt: nowInstant(ctx.now ?? new Date()) });
   return result;
 }
 
@@ -723,8 +721,15 @@ async function restoreRowsInto(
       return q.onConflictDoUpdate({ target: pk as any, set: set as any });
     }
     if (winsOn && fromFile) {
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      return q.onConflictDoUpdate({ target: winsOn.map((k) => tableColumns[k]!) as any, set: fromFile as any });
+      return q.onConflictDoUpdate({
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        target: winsOn.map((k) => tableColumns[k]!) as any,
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        set: fromFile as any,
+        // Only ever this account's own row (m1): a key held by another
+        // account stays theirs, and the file's row is counted lost.
+        setWhere: eq(tableColumns.userId!, userId),
+      });
     }
     return q.onConflictDoNothing();
   };

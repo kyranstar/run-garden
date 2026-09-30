@@ -305,6 +305,22 @@ describe("a restore trusts the file's garden (B4 amended)", () => {
     expect(after.state!.lastSimulatedDate > addDays(today, -3)).toBe(true);
   }, 120_000);
 
+  it("finish stays inside a small statement budget: counts and bookkeeping, no simulation (m6)", async () => {
+    const { db, count } = countingDb();
+    const { userId } = await restModeGarden(db, addDays(todayInZone("America/Los_Angeles"), -100));
+    const file = await exportAll(db, userId);
+    let finish = -1;
+    await restoreAll(db, userId, file, {
+      beforeFinish: async () => {
+        count();
+      },
+    }).then(() => {
+      finish = count();
+    });
+    expect(finish).toBeGreaterThan(0);
+    expect(finish).toBeLessThanOrEqual(80);
+  }, 120_000);
+
   it("a restore with no garden in the file leaves no catch-up pending", async () => {
     const db = makeTestDb();
     const { userId } = await makeTestUser(db);

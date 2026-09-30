@@ -498,13 +498,20 @@ describe("finish and Start fresh", () => {
     const f = await exportAll(db, userId);
     const { restoreId, tokens } = await begin(db, userId, f);
     expect(restoreStatusOf(await loadAccountState(db, userId))).toMatchObject({ restoreId, running: true });
-    // A page this run cannot send stops the heartbeat: "didn't finish" at once.
+    // A refused page — a stale tab of this same restore, say — neither beats
+    // nor stops the heartbeat (m5): the restore sending good pages is still
+    // running, and another device may not start fresh over it.
+    await stopBeating(db, userId);
+    const before = (await loadAccountState(db, userId))?.restoreHeartbeatAt;
     const refused = await restoreRows(db, userId, { restoreId, table: "activities", rows: [], token: tokens.get("activities#0") }, secret);
     expect(refused).toMatchObject({ ok: false, error: "check_required" });
-    expect(restoreStatusOf(await loadAccountState(db, userId))).toMatchObject({ restoreId, running: false });
-    // Pages beat it again; begin's own device names its restore to start fresh.
+    expect((await loadAccountState(db, userId))?.restoreHeartbeatAt).toBe(before);
     await restoreRows(db, userId, { restoreId, table: "activities", rows: f.tables.activities, token: tokens.get("activities#0") }, secret);
     expect(restoreStatusOf(await loadAccountState(db, userId))).toMatchObject({ running: true });
+    const again = await restoreRows(db, userId, { restoreId, table: "activities", rows: [], token: tokens.get("activities#0") }, secret);
+    expect(again).toMatchObject({ ok: false });
+    expect(restoreStatusOf(await loadAccountState(db, userId))).toMatchObject({ running: true });
+    expect(await startFresh(db, userId)).toEqual({ ok: false, status: 409, error: "restore_running" });
     expect(restoreStatusOf(await loadAccountState(db, userId), new Date(Date.now() + 3 * 60_000))).toMatchObject({ running: false });
     expect(await startFresh(db, userId, { restoreId })).toEqual({ ok: true });
   });

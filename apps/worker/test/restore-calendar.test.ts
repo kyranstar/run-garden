@@ -317,6 +317,36 @@ describe("the one-shot post-restore calendar reconcile (B6)", () => {
     expect(stats.adopted).toBe(1);
   });
 
+  it("never marks a session deleted, or deletes an event, because the file linked another app's event (m2)", async () => {
+    const { db, userId, today, fake } = await restoredAccount();
+    // The file links these sessions to events another deployment wrote into
+    // the same calendar (a prod file rehearsed in staging, or APP_URL changed).
+    const live = await workout(db, userId, addDays(today, 3));
+    const liveForeign = fake.add({ workoutId: live, date: addDays(today, 3), origin: "https://prod.test" });
+    await link(db, live, liveForeign);
+    const cancelled = await workout(db, userId, addDays(today, 4));
+    const cancelledForeign = fake.add({ workoutId: cancelled, date: addDays(today, 4), origin: "https://prod.test", status: "cancelled" });
+    await link(db, cancelled, cancelledForeign);
+    const archived = await workout(db, userId, addDays(today, 5), { archivedAt: nowInstant() });
+    const archivedForeign = fake.add({ workoutId: archived, date: addDays(today, 5), origin: "https://prod.test" });
+    await link(db, archived, archivedForeign);
+
+    await syncCalendar(db, env, userId);
+
+    for (const w of [live, cancelled]) {
+      const [row] = await db.select().from(schema.plannedWorkouts).where(eq(schema.plannedWorkouts.id, w));
+      expect(row!.calendarSyncState, w).not.toBe("user_deleted");
+      expect(await db.select().from(schema.calendarEventSuppressions).where(eq(schema.calendarEventSuppressions.workoutId, w))).toEqual([]);
+      expect(fake.calls).toContain(`insert:${w}`);
+    }
+    for (const e of [liveForeign, archivedForeign]) {
+      expect(fake.live(e), e).toBe(true);
+      expect(fake.calls).not.toContain(`patch:${e}`);
+      expect(fake.calls).not.toContain(`delete:${e}`);
+    }
+    expect(await linkOf(db, archived)).toBeNull();
+  });
+
   it("deletes at most 25 orphans a sync and resumes on the next full read", async () => {
     const { db, userId, today, fake } = await restoredAccount();
     const orphans = Array.from({ length: 30 }, (_, i) => fake.add({ workoutId: `orphan-${i}`, date: addDays(today, 1 + (i % 10)) }));

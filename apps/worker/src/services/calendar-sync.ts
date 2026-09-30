@@ -656,13 +656,33 @@ async function adoptAndRecreate(
     input.stats.adopted = (input.stats.adopted ?? 0) + 1;
   }
 
+  // A link the file holds to an event stamped by ANOTHER app (m2) is not
+  // this app's to keep: left in place, the ordinary pass — which does not
+  // see that event — would read it as deleted by the athlete and suppress
+  // the session for good, or delete that app's event for an archived row.
+  // Dropped, the session gets its own event.
+  const foreignIds = new Set(
+    input.items
+      .filter((e) => {
+        const stamped = originFromEvent(e.extendedProperties);
+        return stamped !== undefined && stamped !== origin;
+      })
+      .map((e) => e.id),
+  );
+  for (const l of input.links) {
+    if (!foreignIds.has(l.eventId)) continue;
+    await db.delete(calendarEventLinks).where(eq(calendarEventLinks.id, l.id));
+    input.stats.recreated = (input.stats.recreated ?? 0) + 1;
+  }
+  const kept = input.links.filter((l) => !foreignIds.has(l.eventId));
+
   // (b)
   const deletedInFile = new Set(
     input.suppressions
       .filter((s) => s.reason === "user_deleted" && (!input.restoreFinishedAt || s.createdAt <= input.restoreFinishedAt))
       .map((s) => s.workoutId),
   );
-  const linkBy = new Map(input.links.map((l) => [l.workoutId, l]));
+  const linkBy = new Map(kept.map((l) => [l.workoutId, l]));
   for (const w of input.workouts) {
     if (w.archivedAt || w.category === "rest") continue;
     const restored = linkBy.get(w.id);

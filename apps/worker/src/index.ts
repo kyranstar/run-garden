@@ -4,6 +4,7 @@ import {
   activities,
   gardenEvents,
   plannedWorkouts,
+  syncRuns,
   users,
   workoutCompletionMatches,
 } from "@rg/database";
@@ -152,15 +153,22 @@ export async function halfHourly(db: Db, env: Env): Promise<void> {
  * that account while the loop was working on it (ruling B9). */
 class RestoreBegan extends Error {}
 
+/** A run row written into an account a restore began replacing is not the
+ * restored account's history (m7): the loop removes its own row. */
+async function dropSyncRun(db: Db, runId: string): Promise<void> {
+  await db.delete(syncRuns).where(eq(syncRuns.id, runId));
+}
+
 export async function hourly(db: Db, env: Env): Promise<void> {
   await closeStrandedSyncRuns(db).catch(() => undefined);
   await sweepStaleSuppressions(db).catch(() => undefined);
   for (const userId of await allUserIds(db)) {
-    const runId = await startSyncRun(db, "reconcile", userId);
     // The loop was handed this account before any step ran, and a step (the
     // garden's, a coach read) can take seconds: a restore that began since
     // must stop every step still to come, not only the ones that check the
-    // marker themselves.
+    // marker themselves — and leave no run row in the account it restores.
+    if (await restoreInProgress(db, userId)) continue;
+    const runId = await startSyncRun(db, "reconcile", userId);
     const stillOurs = async (): Promise<void> => {
       if (await restoreInProgress(db, userId)) throw new RestoreBegan();
     };
@@ -188,7 +196,7 @@ export async function hourly(db: Db, env: Env): Promise<void> {
       await executeCloudJobs(db, env, userId, prefs).catch(() => undefined);
       await finishSyncRun(db, runId, "ok", { ...rec, ...garden });
     } catch (e) {
-      if (e instanceof RestoreBegan) await finishSyncRun(db, runId, "ok", { skipped: "restoring" });
+      if (e instanceof RestoreBegan) await dropSyncRun(db, runId);
       else await finishSyncRun(db, runId, "error");
     }
   }
@@ -196,6 +204,7 @@ export async function hourly(db: Db, env: Env): Promise<void> {
 
 export async function weekly(db: Db, env: Env): Promise<void> {
   for (const userId of await allUserIds(db)) {
+    if (await restoreInProgress(db, userId)) continue;
     const runId = await startSyncRun(db, "weekly_review", userId);
     try {
       const prefs = await loadPreferences(db, userId);
@@ -276,7 +285,7 @@ export async function weekly(db: Db, env: Env): Promise<void> {
       // A restore that began while this week's facts were gathered wins
       // (B9); generateWeeklyReview checks again before it writes.
       if (await restoreInProgress(db, userId)) {
-        await finishSyncRun(db, runId, "ok", { skipped: "restoring" });
+        await dropSyncRun(db, runId);
         continue;
       }
       const result = await generateWeeklyReview(

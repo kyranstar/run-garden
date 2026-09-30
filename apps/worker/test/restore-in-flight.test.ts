@@ -27,7 +27,7 @@ vi.mock("../src/services/coros-connection.js", async (importOriginal) => ({
   corosClient: vi.fn(async () => fakes.coros),
 }));
 
-import { hourly } from "../src/index.js";
+import { hourly, weekly } from "../src/index.js";
 import { insightRoutes } from "../src/routes/misc.js";
 import { coachRoutes } from "../src/routes/coach.js";
 import { generateWeeklyReview } from "../src/services/llm.js";
@@ -384,6 +384,49 @@ describe("a garden walk already running when begin fires", () => {
       .where(and(eq(schema.gardenUnlocks.userId, userId), eq(schema.gardenUnlocks.speciesId, fileUnlock.speciesId as string)));
     expect(unlocks).toEqual([fileUnlock]);
   });
+});
+
+describe("the file-wins upsert only ever takes this account's own rows (m1)", () => {
+  it("a file row naming another account's garden row ids leaves that account's rows alone, and is counted lost", async () => {
+    const db = makeTestDb({ boundVariableCap: 100 });
+    const a = await makeTestUser(db);
+    await seedRuns(db, a.userId, a.prefs.timezone, 8);
+    await ensureGarden(db, a.userId, a.prefs, addDays(todayInZone(a.prefs.timezone), -40));
+    await advanceGarden(db, a.userId, a.prefs);
+    const [victimEvent] = await db.select().from(schema.gardenEvents).where(eq(schema.gardenEvents.userId, a.userId)).limit(1);
+    const [victimInput] = await db.select().from(schema.gardenDayInputs).where(eq(schema.gardenDayInputs.userId, a.userId)).limit(1);
+    const [victimSnap] = await db.select().from(schema.gardenSnapshots).where(eq(schema.gardenSnapshots.userId, a.userId)).limit(1);
+
+    const b = await makeTestUser(db);
+    const file = await exportAll(db, b.userId);
+    file.tables.garden_events = [{ ...victimEvent!, userId: b.userId, detail: "b-wrote-this" } as never];
+    file.tables.garden_day_inputs = [{ ...victimInput!, userId: b.userId, input: { stolen: true } } as never];
+    file.tables.garden_snapshots = [{ ...victimSnap!, userId: b.userId } as never];
+    const out = await restoreAll(db, b.userId, file);
+
+    const [ev] = await db.select().from(schema.gardenEvents).where(eq(schema.gardenEvents.id, victimEvent!.id));
+    const [inp] = await db.select().from(schema.gardenDayInputs).where(eq(schema.gardenDayInputs.id, victimInput!.id));
+    const [snp] = await db.select().from(schema.gardenSnapshots).where(eq(schema.gardenSnapshots.id, victimSnap!.id));
+    expect(ev).toEqual(victimEvent);
+    expect(inp).toEqual(victimInput);
+    expect(snp).toEqual(victimSnap);
+    expect(out.lost).toBe(3);
+  });
+});
+
+describe("a cron loop that meets a restore leaves no run row in the restored account (m7)", () => {
+  for (const loop of ["hourly", "weekly"] as const) {
+    it(`${loop}: begin fired as the run row was written`, async () => {
+      const s = scene();
+      const { userId } = await makeTestUser(s.db);
+      s.setUser(userId);
+      s.markWhen(/insert into "sync_runs"/);
+      const env = makeEnv({ AI_GATEWAY_API_KEY: undefined });
+      if (loop === "hourly") await hourly(s.db, env);
+      else await weekly(s.db, env);
+      expect(await s.db.select().from(schema.syncRuns).where(eq(schema.syncRuns.userId, userId))).toEqual([]);
+    });
+  }
 });
 
 describe("computed_metrics: the file's row wins over a same-key row", () => {
