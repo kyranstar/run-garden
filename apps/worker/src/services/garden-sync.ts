@@ -1,5 +1,6 @@
-import { and, asc, desc, eq, gte, inArray, isNull, lt, lte, max, min, sql } from "drizzle-orm";
+import { and, asc, desc, eq, gt, gte, inArray, isNull, lt, lte, max, min, sql } from "drizzle-orm";
 import {
+  accountState,
   activities,
   dailyHealth,
   gardenDayInputs,
@@ -843,36 +844,53 @@ export async function advanceGarden(
  * resimulation take while the catch-up is pending (N2): both walk the same
  * days, and two walks at once interleave writes from different folds —
  * events are insert-or-ignore, so the first writer of a day wins for good.
- * A dead holder's lock goes stale after a minute; a step (at most
- * CATCH_UP_MAX_DAYS days) never holds it anywhere near that long.
+ * Nobody waits for it (ruling B11): a step that finds it held skips, and a
+ * resimulation that finds it held records its change for the next step. A
+ * dead holder's lock goes stale after a minute.
  */
 const GARDEN_LOCK = "garden";
 const GARDEN_LOCK_STALE_MINUTES = 1;
-/** How long a resimulation waits for a catch-up step to finish — past the
- * stale window, so a dead holder's lock is always taken over. */
-const GARDEN_LOCK_WAIT_MS = 75_000;
 
-const sleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
-
-async function waitForGardenLock(db: Db, userId: string): Promise<string | null> {
-  const deadline = Date.now() + GARDEN_LOCK_WAIT_MS;
-  let pause = 100;
-  for (;;) {
-    const lock = await claimUserLock(db, userId, GARDEN_LOCK, GARDEN_LOCK_STALE_MINUTES);
-    if (lock || Date.now() >= deadline) return lock;
-    await sleep(Math.min(pause, Math.max(0, deadline - Date.now())));
-    pause = Math.min(pause * 2, 2_000);
-  }
+/**
+ * Record an input change the step holding the lock will replay (B11): the
+ * earliest changed date wins, the sequence moves on every record, and the
+ * catch-up is marked pending so a step that was about to clear it cannot.
+ * One statement; never waits.
+ */
+async function recordGardenChange(db: Db, userId: string, date: LocalDate): Promise<void> {
+  await db
+    .update(accountState)
+    .set({
+      gardenChangedFrom: sql`CASE WHEN ${accountState.gardenChangedFrom} IS NULL OR ${accountState.gardenChangedFrom} > ${date} THEN ${date} ELSE ${accountState.gardenChangedFrom} END`,
+      gardenChangedSeq: sql`${accountState.gardenChangedSeq} + 1`,
+      gardenCatchUpPending: true,
+      updatedAt: nowInstant(),
+    })
+    .where(eq(accountState.userId, userId));
 }
 
 /**
- * One post-restore catch-up step (B4 amended), under the garden lock: walk
- * forward from `garden_state` at most `maxResimDays` days, persist
- * `garden_state` where the walk stopped, delete nothing. Everything the file
- * brought (events, day inputs, checkpoints, unlocks) stays exactly as
- * exported; only days after its last simulated day are added. A step that
- * dies part-way has moved nothing durable: the days it wrote are rewritten
- * identically by the next step. The step that reaches today clears the flag.
+ * One post-restore catch-up step, under the garden lock (rulings B4 amended,
+ * amended-2 and B11).
+ *
+ * First, the earliest input change on record (B11 — recorded by a
+ * resimulation that found the lock held, or by the one running this step):
+ * at or before the cursor it is replayed from the checkpoint before it
+ * through the cursor, and that is this step's work; past the cursor the walk
+ * below reads it fresh. The record is cleared only once that is done, so a
+ * step that dies part-way leaves it for the next one.
+ *
+ * Then rows dated AFTER `garden_state.lastSimulatedDate` are deleted: they
+ * belong to no world — a step that died part-way wrote them from a fold
+ * whose inputs may since have changed, or a walk of the account the restore
+ * replaced landed them after begin's wipe — and events and checkpoints are
+ * insert-or-ignore, so left in place they would keep this walk's rows out
+ * and seed a later resimulation. Nothing at or before the cursor is ever
+ * deleted here: the file's history stays as exported.
+ *
+ * Then a forward walk of at most `maxResimDays` days, `garden_state`
+ * persisted where it stopped. The step that reaches today clears the flag —
+ * unless a change was recorded meanwhile, which the next step replays.
  */
 async function catchUpStep(
   db: Db,
@@ -881,7 +899,33 @@ async function catchUpStep(
   now: Date,
   opts?: GardenAdvanceOptions,
 ): Promise<GardenSimResult> {
+  const account = await loadAccountState(db, userId);
+  const recorded = account?.gardenChangedFrom ?? null;
+  const seq = account?.gardenChangedSeq ?? 0;
+  const from = recorded;
   const start = await ensureGarden(db, userId, prefs);
+  const cursor = start.state.lastSimulatedDate;
+  // The record is cleared only if nothing was recorded while this step ran:
+  // a change that landed meanwhile may be one this step read too early.
+  const clearRecorded = async (): Promise<void> => {
+    if (recorded === null) return;
+    await db
+      .update(accountState)
+      .set({ gardenChangedFrom: null, updatedAt: nowInstant() })
+      .where(and(eq(accountState.userId, userId), eq(accountState.gardenChangedSeq, seq)));
+  };
+
+  if (from !== null && from <= cursor) {
+    const res = await resimulate(db, userId, from, prefs, now, opts, cursor);
+    await clearRecorded();
+    return { ...res, resimPending: true };
+  }
+
+  await db.delete(gardenEvents).where(and(eq(gardenEvents.userId, userId), gt(gardenEvents.date, cursor)));
+  await db.delete(gardenDayInputs).where(and(eq(gardenDayInputs.userId, userId), gt(gardenDayInputs.date, cursor)));
+  await db.delete(gardenSnapshots).where(and(eq(gardenSnapshots.userId, userId), gt(gardenSnapshots.date, cursor)));
+  await db.delete(gardenUnlocks).where(and(eq(gardenUnlocks.userId, userId), gt(gardenUnlocks.unlockedOn, cursor)));
+
   const { snapshot, simulatedDays, eventsEmitted, capped } = await walkForward(
     db,
     userId,
@@ -892,7 +936,13 @@ async function catchUpStep(
     { maxDays: opts?.maxResimDays ?? CATCH_UP_MAX_DAYS },
   );
   await persistSnapshot(db, userId, snapshot);
-  if (!capped) await patchAccountState(db, userId, { gardenCatchUpPending: false });
+  await clearRecorded();
+  if (!capped) {
+    await db
+      .update(accountState)
+      .set({ gardenCatchUpPending: false, updatedAt: nowInstant() })
+      .where(and(eq(accountState.userId, userId), isNull(accountState.gardenChangedFrom)));
+  }
   return {
     simulatedDays,
     eventsEmitted,
@@ -1022,12 +1072,13 @@ export async function resimulateFrom(
 }
 
 /**
- * An input changed while a restored garden is still catching up (N2). Takes
- * the garden lock — waiting out a catch-up step that holds it — then:
- *  - a change past the catch-up's cursor needs nothing redone: this call
- *    runs the next catch-up step, which reads that day fresh;
- *  - a change at or before it replays from the checkpoint before it, but
- *    only up to the cursor — the days beyond are the catch-up's to walk.
+ * An input changed while a restored garden is still catching up (N2, B11).
+ * With the garden lock free, this call takes it and runs the catch-up step
+ * with its change (replayed through the cursor when at or before it, read
+ * fresh by the forward walk when past it). With the lock held — a step is
+ * walking, or a dead one's claim has not gone stale — it never waits: the
+ * change is recorded and the next step replays it. A request (approve, a
+ * skip, a match) or a `waitUntil` ingest therefore always returns at once.
  */
 async function catchUpResimulate(
   db: Db,
@@ -1037,19 +1088,19 @@ async function catchUpResimulate(
   now: Date,
   opts?: GardenAdvanceOptions,
 ): Promise<GardenSimResult> {
-  const lock = await waitForGardenLock(db, userId);
+  // Recorded first either way: durable before any purge, so a step that dies
+  // mid-replay leaves the change for the next one.
+  await recordGardenChange(db, userId, affectedDate);
+  const lock = await claimUserLock(db, userId, GARDEN_LOCK, GARDEN_LOCK_STALE_MINUTES);
+  if (!lock) return { ...(await standDown(db, userId, prefs, now)), resimPending: true };
   try {
     const current = await loadGarden(db, userId);
     if (current && (current.version ?? 1) < SIMULATION_VERSION) {
       return await upgradeResimulate(db, userId, current, prefs, now, opts, affectedDate);
     }
-    if (!current || affectedDate > current.state.lastSimulatedDate) {
-      return await catchUpStep(db, userId, prefs, now, opts);
-    }
-    const res = await resimulate(db, userId, affectedDate, prefs, now, opts, current.state.lastSimulatedDate);
-    return { ...res, resimPending: true };
+    return await catchUpStep(db, userId, prefs, now, opts);
   } finally {
-    if (lock) await releaseUserLock(db, userId, GARDEN_LOCK, lock).catch(() => undefined);
+    await releaseUserLock(db, userId, GARDEN_LOCK, lock).catch(() => undefined);
   }
 }
 

@@ -110,7 +110,12 @@ export const schemaVersions = sqliteTable("schema_versions", {
  * `gardenCatchUpPending`: a restored garden is still catching up from the
  * file's last simulated day (B4 amended) — a forward-only walk, capped per
  * invocation, that persists `garden_state` where each step stops and deletes
- * nothing. Cleared by the step that reaches today.
+ * nothing at or before it. Cleared by the step that reaches today.
+ *
+ * `gardenChangedFrom` / `gardenChangedSeq`: the earliest input change a
+ * resimulation recorded because a catch-up step held the garden lock (B11),
+ * and a counter bumped by every record — the step that replays the change
+ * clears it only if nothing was recorded meanwhile.
  */
 export const accountState = sqliteTable("account_state", {
   userId: text("user_id").primaryKey(),
@@ -127,5 +132,7 @@ export const accountState = sqliteTable("account_state", {
     sweep: boolean;
   }>(),
   gardenCatchUpPending: integer("garden_catch_up_pending", { mode: "boolean" }).notNull().default(false),
+  gardenChangedFrom: text("garden_changed_from"),
+  gardenChangedSeq: integer("garden_changed_seq").notNull().default(0),
   updatedAt: text("updated_at").notNull(),
 });
