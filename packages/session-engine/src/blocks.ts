@@ -25,11 +25,11 @@ interface FullCtx extends BlockCtx {
   rng: () => number;
 }
 
-/** A core lift every active profile allows as a block's lift candidate. */
+/** A core lift every active profile allows as a block's lift candidate (and never rules out). */
 const coreAllowed = (data: EngineData, ex: ExerciseRecord): boolean =>
   data.profiles.active.every(p => {
     const a = attrsOf(ex, p);
-    return a != null && p.coreCandidate(a);
+    return a != null && !p.never(a) && p.coreCandidate(a);
   });
 
 function familyCandidates(data: EngineData, familyId: string, { equipment, excluded = [] }: { equipment: readonly string[] | null | undefined; excluded?: readonly string[] }): ExerciseRecord[] {
