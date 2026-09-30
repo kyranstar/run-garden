@@ -28,7 +28,7 @@ import { openIntentFor } from "../src/services/sync-intents.js";
 import { createSession, SESSION_COOKIE } from "../src/auth/sessions.js";
 import { makeTestDb, makeTestUser, mountRoutes, connectTestCoros } from "./helpers.js";
 
-const { corosWriteJobs, plannedWorkouts, scheduleOverrides } = schema;
+const { activities, corosWriteJobs, plannedWorkouts, scheduleOverrides, workoutCompletionMatches } = schema;
 
 function makeEnv(): Env {
   return {
@@ -55,6 +55,16 @@ function client() {
   return {
     post: (path: string) =>
       app.request(path, { method: "POST", headers: { Cookie: cookie } }, makeEnv()),
+    postJson: (path: string, body: unknown) =>
+      app.request(
+        path,
+        {
+          method: "POST",
+          headers: { Cookie: cookie, "Content-Type": "application/json" },
+          body: JSON.stringify(body),
+        },
+        makeEnv(),
+      ),
     get: (path: string) => app.request(path, { headers: { Cookie: cookie } }, makeEnv()),
   };
 }
@@ -117,6 +127,45 @@ describe("POST /api/plan/workouts/:id/remove", () => {
       await db.select().from(plannedWorkouts).where(eq(plannedWorkouts.id, workoutId))
     )[0]!;
     expect(workout.archivedAt).not.toBeNull();
+  });
+});
+
+async function insertActivity(): Promise<string> {
+  const id = newId();
+  await db.insert(activities).values({
+    id,
+    userId,
+    startTime: "2026-08-08T14:00:00Z",
+    startTimeLocal: "2026-08-08T07:00:00",
+    sport: "run",
+    durationSeconds: 3600,
+    sourceMergeConfidence: 1,
+    createdAt: nowInstant(),
+    updatedAt: nowInstant(),
+  });
+  return id;
+}
+
+describe("POST /api/plan/workouts/:id/match", () => {
+  it("refuses a second manual match on a workout that already holds one, leaving the second activity unmatched", async () => {
+    const workoutId = await insertWorkout();
+    const first = await insertActivity();
+    const second = await insertActivity();
+
+    const ok = await client().postJson(`/api/plan/workouts/${workoutId}/match`, { activityId: first });
+    expect(ok.status).toBe(200);
+
+    const res = await client().postJson(`/api/plan/workouts/${workoutId}/match`, { activityId: second });
+    expect(res.status).toBe(422);
+    expect(await res.json()).toEqual({ error: "workout_already_matched" });
+
+    const b = (await db.select().from(activities).where(eq(activities.id, second)))[0]!;
+    expect(b.completionMatchId).toBeNull();
+    const rows = await db
+      .select()
+      .from(workoutCompletionMatches)
+      .where(eq(workoutCompletionMatches.workoutId, workoutId));
+    expect(rows).toHaveLength(1);
   });
 });
 

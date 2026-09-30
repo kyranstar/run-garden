@@ -153,4 +153,34 @@ describe("planned-to-completed matching", () => {
     expect(cand).not.toBeNull();
     expect(cand!.parts!.sport).toBeGreaterThan(0);
   });
+  const sportActivity = (sport: string): NormalizedActivity => ({
+    id: "act-s",
+    startTime: "2026-08-04T15:00:00Z",
+    startTimeLocal: "2026-08-04T08:00:00",
+    sport,
+    durationSeconds: 1800,
+    sourceMergeConfidence: 1,
+  });
+
+  it("a yoga activity never completes a strength workout", () => {
+    expect(scoreWorkoutActivity(workout({ category: "strength", sport: "strength" }), sportActivity("yoga"))).toBeNull();
+  });
+
+  it("a strength activity can complete a yoga (mobility) workout", () => {
+    expect(scoreWorkoutActivity(workout({ category: "yoga", sport: "run" }), sportActivity("strength"))).not.toBeNull();
+  });
+
+  it("a bike ride never completes a strength workout", () => {
+    expect(scoreWorkoutActivity(workout({ category: "strength", sport: "strength" }), sportActivity("bike"))).toBeNull();
+  });
+
+  it("a strength activity completes a strength workout, a bike ride a cross-training one", () => {
+    expect(scoreWorkoutActivity(workout({ category: "strength", sport: "strength" }), sportActivity("strength"))).not.toBeNull();
+    expect(scoreWorkoutActivity(workout({ category: "cross_training", sport: "run" }), sportActivity("bike"))).not.toBeNull();
+  });
+
+  it("a run never completes a yoga workout and a yoga activity never completes a run", () => {
+    expect(scoreWorkoutActivity(workout({ category: "yoga", sport: "run" }), sportActivity("run"))).toBeNull();
+    expect(scoreWorkoutActivity(workout({}), sportActivity("yoga"))).toBeNull();
+  });
 });

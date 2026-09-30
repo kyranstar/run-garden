@@ -1357,6 +1357,12 @@ planRoutes.post("/workouts/:id/match", async (c) => {
   )[0];
   if (!w || !a) return c.json({ error: "not_found" }, 404);
   if (a.completionMatchId) return c.json({ error: "activity_already_matched" }, 422);
+  const held = await db
+    .select({ id: workoutCompletionMatches.id })
+    .from(workoutCompletionMatches)
+    .where(and(eq(workoutCompletionMatches.workoutId, w.id), isNull(workoutCompletionMatches.undoneAt)))
+    .limit(1);
+  if (held.length > 0) return c.json({ error: "workout_already_matched" }, 422);
   const now = nowInstant();
   const matchId = newId();
   await db.insert(workoutCompletionMatches).values({

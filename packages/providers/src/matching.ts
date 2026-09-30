@@ -43,9 +43,7 @@ export function scoreWorkoutActivity(
           : 0;
   if (parts.date === 0) return null; // more than a day off is never a match
 
-  const runSports = new Set(["run"]);
-  const workoutIsRun = !["cross_training", "strength", "yoga"].includes(w.category);
-  parts.sport = workoutIsRun === runSports.has(a.sport) ? 0.15 : 0;
+  parts.sport = sportCompatible(w, a.sport) ? 0.15 : 0;
   if (parts.sport === 0) return null;
 
   const est = w.sourceEstimatedDurationSeconds ?? w.fallbackEstimatedDurationSeconds;
@@ -69,6 +67,31 @@ export function scoreWorkoutActivity(
 
   const confidence = Math.min(1, Object.values(parts).reduce((x, y) => x + y, 0) + 0.1);
   return { workoutId: w.id, activityId: a.id, confidence, method: "scored", parts };
+}
+
+type Discipline = "run" | "strength" | "yoga" | "cross_training";
+
+/** Category first: COROS files planned yoga/mobility with sport "run". */
+function workoutDiscipline(w: PlannedWorkout): Discipline {
+  if (w.category === "strength" || w.sport === "strength") return "strength";
+  if (w.category === "yoga" || w.sport === "yoga") return "yoga";
+  if (w.category === "cross_training") return "cross_training";
+  return "run";
+}
+
+/** Run ← run; strength ← strength; yoga ← yoga or strength (mobility is
+ * filed on the watch as Strength); cross-training ← any non-run activity. */
+function sportCompatible(w: PlannedWorkout, activitySport: string): boolean {
+  switch (workoutDiscipline(w)) {
+    case "run":
+      return activitySport === "run";
+    case "strength":
+      return activitySport === "strength";
+    case "yoga":
+      return activitySport === "yoga" || activitySport === "strength";
+    case "cross_training":
+      return activitySport !== "run";
+  }
 }
 
 function daysDiff(a: string, b: string): number {
