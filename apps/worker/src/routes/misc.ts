@@ -1,24 +1,20 @@
-import { Hono } from "hono";
+import { Hono, type Context } from "hono";
 import { and, desc, eq, gte, inArray, isNull, lte } from "drizzle-orm";
 import {
   activities,
   activityLaps,
-  auditEvents,
-  calendarEventLinks,
   computedMetrics,
   corosWriteJobs,
   dailyHealth,
   dismissedInsights,
-  gardenEvents,
   gardenState,
-  llmUsage,
+  oauthStates,
   plannedWorkouts,
   providerConnections,
+  sessions,
   sleepRecords,
   syncErrors,
   syncRuns,
-  trainingPlans,
-  userPreferences,
   users,
   weeklyReviews,
   workoutCompletionMatches,
@@ -99,6 +95,14 @@ import {
 } from "../services/completion.js";
 import { resimulateFrom } from "../services/garden-sync.js";
 import { enqueueBackfill, runBackfillChunkCloud } from "../services/backfill.js";
+import { wipeAccountData } from "../services/account-tables.js";
+import {
+  EXPORT_PAGE_SIZE,
+  exportManifest,
+  exportTablePage,
+  NotExportable,
+} from "../services/account-export.js";
+import { beginRestore, finishRestore, restoreRows } from "../services/account-restore.js";
 
 // ── Calendar management ──────────────────────────────────────────────────────
 
@@ -1451,58 +1455,57 @@ settingsRoutes.get("/diagnostics", async (c) => {
   });
 });
 
-/** Full personal data export (sanitized: no tokens, no credentials). */
-settingsRoutes.get("/export", async (c) => {
-  const db = c.get("db");
-  const userId = c.get("userId");
-  const [prefs, workouts, acts, health, sleep, gardenRows, events, reviews, usage] =
-    await Promise.all([
-      loadPreferences(db, userId),
-      db.select().from(plannedWorkouts).where(eq(plannedWorkouts.userId, userId)),
-      db.select().from(activities).where(eq(activities.userId, userId)),
-      db.select().from(dailyHealth).where(eq(dailyHealth.userId, userId)),
-      db.select().from(sleepRecords).where(eq(sleepRecords.userId, userId)),
-      db.select().from(gardenState).where(eq(gardenState.userId, userId)),
-      db.select().from(gardenEvents).where(eq(gardenEvents.userId, userId)),
-      db.select().from(weeklyReviews).where(eq(weeklyReviews.userId, userId)),
-      db.select().from(llmUsage).where(eq(llmUsage.userId, userId)),
-    ]);
-  // Laps and matches have no user_id column; scope them by this user's own
-  // activity/workout ids (chunked: an `inArray` binds one variable per id and
-  // D1 caps a statement at ~100) — the unscoped selects exported every
-  // account's rows.
-  const [lapChunks, matchChunks] = await Promise.all([
-    Promise.all(
-      chunkIds(acts.map((a) => a.id)).map((ids) =>
-        db.select().from(activityLaps).where(inArray(activityLaps.activityId, ids)),
-      ),
-    ),
-    Promise.all(
-      chunkIds(workouts.map((w) => w.id)).map((ids) =>
-        db
-          .select()
-          .from(workoutCompletionMatches)
-          .where(inArray(workoutCompletionMatches.workoutId, ids)),
-      ),
-    ),
-  ]);
-  const laps = lapChunks.flat();
-  const matches = matchChunks.flat();
-  c.header("Content-Disposition", 'attachment; filename="run-garden-export.json"');
-  return c.json({
-    exportedAt: nowInstant(),
-    preferences: prefs,
-    plannedWorkouts: workouts,
-    activities: acts,
-    laps,
-    completionMatches: matches,
-    dailyHealth: health,
-    sleep,
-    garden: gardenRows[0]?.snapshot ?? null,
-    gardenEvents: events,
-    weeklyReviews: reviews,
-    llmUsage: usage,
+/**
+ * The account export (Phase 0 Task 9): a manifest, then every table page by
+ * page — the client assembles the file. The old one-shot `/export` covered 11
+ * tables; its path now answers with the manifest so an old link still works.
+ */
+const manifestRoute = async (c: Context<AppContext>) =>
+  c.json(await exportManifest(c.get("db"), c.get("userId")));
+settingsRoutes.get("/export", manifestRoute);
+settingsRoutes.get("/export/manifest", manifestRoute);
+
+settingsRoutes.get("/export/table/:name", async (c) => {
+  const cursor = Number(c.req.query("cursor") ?? "0");
+  const limit = Number(c.req.query("limit") ?? String(EXPORT_PAGE_SIZE));
+  if (!Number.isInteger(cursor) || cursor < 0 || !Number.isInteger(limit) || limit < 1) {
+    return c.json({ error: "bad_cursor" }, 400);
+  }
+  try {
+    return c.json(await exportTablePage(c.get("db"), c.get("userId"), c.req.param("name"), cursor, limit));
+  } catch (e) {
+    if (e instanceof NotExportable) return c.json({ error: "unknown_table" }, 404);
+    throw e;
+  }
+});
+
+/** Restore (Phase 0 Task 9): begin → rows per table → finish. See
+ * services/account-restore.ts for what each step refuses and why. */
+settingsRoutes.post("/restore/begin", async (c) => {
+  const body = await c.req.json<{ schemaVersion?: unknown; replace?: unknown }>().catch(() => null);
+  if (!body) return c.json({ error: "bad_request" }, 400);
+  const res = await beginRestore(c.get("db"), c.get("userId"), {
+    schemaVersion: body.schemaVersion,
+    replace: body.replace,
   });
+  if (!res.ok) return c.json({ error: res.error }, res.status);
+  return c.json({ tables: res.tables });
+});
+
+settingsRoutes.post("/restore/rows", async (c) => {
+  const body = await c.req.json<{ table?: unknown; rows?: unknown; sourceUserId?: unknown }>().catch(() => null);
+  if (!body) return c.json({ error: "bad_request" }, 400);
+  const res = await restoreRows(c.get("db"), c.get("userId"), {
+    table: body.table,
+    rows: body.rows,
+    sourceUserId: body.sourceUserId,
+  });
+  if (!res.ok) return c.json({ error: res.error }, res.status);
+  return c.json({ received: res.received, skipped: res.skipped });
+});
+
+settingsRoutes.post("/restore/finish", async (c) => {
+  return c.json(await finishRestore(c.get("db"), c.get("userId")));
 });
 
 /**
@@ -1510,150 +1513,18 @@ settingsRoutes.get("/export", async (c) => {
  * the route so the table list is directly testable — a table forgotten here
  * leaves the user's data behind after they asked for it to be gone, and a
  * route-shaped test cannot see that.
+ *
+ * The table list is the registry's (services/account-tables.ts): every `user`
+ * and `child` table, children scoped through this account's parent ids —
+ * never a WHERE-less delete that would reach another account's rows. Then
+ * what the registry deliberately leaves to delete-all: the sessions, the
+ * OAuth handshakes (no owner column — single-user, cleared entirely, as
+ * before) and the user row itself.
  */
 export async function deleteAllUserData(db: Db, userId: string): Promise<void> {
-  const {
-    activityLaps,
-    activitySourceLinks,
-    activityStreamSummaries,
-    athleteZones,
-    backfillState,
-    calendarEventSuppressions,
-    coachLocks,
-    coachMemory,
-    coachMessages,
-    coachPlans,
-    coachPlanWeeks,
-    coachProposals,
-    coachQuestions,
-    coachReads,
-    coachTriggers,
-    corosScheduleSnapshots,
-    corosWriteAttempts,
-    computedMetrics,
-      dismissedInsights,
-    gardenDayInputs,
-    gardenPlants,
-    gardenSceneLayouts,
-    gardenSeen,
-    gardenSnapshots,
-    gardenUnlocks,
-    gardenVisitors,
-    gardenWildlife,
-    motivationEvidence,
-    oauthStates,
-    plannedWorkoutStages,
-    providerCursorState,
-    scheduleOverrides,
-    sessions,
-    studioPlanPushes,
-    studioPlans,
-    syncErrors,
-    syncIntents,
-    syncNotes,
-    syncRuns,
-    trainingPlanVersions,
-    workoutCompletionMatches,
-  } = await import("@rg/database");
-
-  // Child tables keyed by workout/activity/job (not userId) — single-user, so
-  // clearing them entirely is correct and leaves no orphans.
-  //
-  // NOTHING BELONGING TO ANOTHER ACCOUNT MAY GO IN THIS LIST. Every table here
-  // is deleted with no WHERE clause, so a table that can hold a second user's
-  // rows would be wiped wholesale by one account's deletion. `studioPlanPushes`
-  // was briefly here and is not: it is keyed by studio plan, and studio plans
-  // are per-user, so it is deleted plan-scoped below instead.
-  const childTables = [
-    activityLaps,
-    activitySourceLinks,
-    activityStreamSummaries,
-    calendarEventLinks,
-    calendarEventSuppressions,
-    corosWriteAttempts,
-    plannedWorkoutStages,
-    scheduleOverrides,
-    trainingPlanVersions,
-    workoutCompletionMatches,
-  ] as const;
-  for (const t of childTables) await db.delete(t as any);
-
-  // Push rows carry no userId — they are reached through their studio plan.
-  // Scoped to THIS user's plans, and done BEFORE the plans themselves are
-  // deleted, or the ids needed to find them would be gone.
-  const myStudioPlanIds = (
-    await db
-      .select({ id: studioPlans.id })
-      .from(studioPlans)
-      .where(eq(studioPlans.userId, userId))
-  ).map((p) => p.id);
-  for (const ids of chunkIds(myStudioPlanIds)) {
-    await db.delete(studioPlanPushes).where(inArray(studioPlanPushes.planId, ids));
-  }
-
-  // Same shape as studioPlanPushes above: coach_plan_weeks carries no userId,
-  // only planId, so it is reached through this account's coach plans and
-  // cleared BEFORE coachPlans itself (below, in userTables) removes the ids.
-  const myCoachPlanIds = (
-    await db.select({ id: coachPlans.id }).from(coachPlans).where(eq(coachPlans.userId, userId))
-  ).map((p) => p.id);
-  for (const ids of chunkIds(myCoachPlanIds)) {
-    await db.delete(coachPlanWeeks).where(inArray(coachPlanWeeks.planId, ids));
-  }
-
-  // User-scoped tables.
-  const userTables = [
-    plannedWorkouts,
-    activities,
-    athleteZones,
-    dailyHealth,
-    sleepRecords,
-    gardenEvents,
-    gardenState,
-    gardenPlants,
-    gardenSnapshots,
-    gardenDayInputs,
-    gardenUnlocks,
-    gardenWildlife,
-    gardenVisitors,
-    gardenSeen,
-    gardenSceneLayouts,
-    weeklyReviews,
-    llmUsage,
-    corosWriteJobs,
-    corosScheduleSnapshots,
-    computedMetrics,
-    motivationEvidence,
-    dismissedInsights,
-    providerConnections,
-    providerCursorState,
-    userPreferences,
-    trainingPlans,
-    studioPlans,
-    syncErrors,
-    syncRuns,
-    syncIntents,
-    syncNotes,
-    auditEvents,
-    sessions,
-    backfillState,
-    coachMemory,
-    coachQuestions,
-    coachMessages,
-    coachProposals,
-    coachTriggers,
-    coachReads,
-    coachLocks,
-    coachPlans,
-  ] as const;
-  for (const t of userTables) {
-    const table = t as unknown as { userId: never };
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    await (db.delete(t as any) as any).where(eq(table.userId, userId as never));
-  }
-  // Tables without a userId column — single-user, clear entirely.
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  for (const t of [oauthStates] as const) await db.delete(t as any);
+  await wipeAccountData(db, userId, { keep: [] });
+  await db.delete(sessions).where(eq(sessions.userId, userId));
+  await db.delete(oauthStates);
   await db.delete(users).where(eq(users.id, userId));
 }
 

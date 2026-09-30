@@ -1,8 +1,25 @@
-import { useState } from "react";
+import { useRef, useState, type ChangeEvent } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { api } from "@rg/api-client";
+import {
+  api,
+  ApiError,
+  exportAccount,
+  exportFileName,
+  NotAnExportError,
+  readExportFile,
+  restoreAccount,
+  type RestoreProgress,
+} from "@rg/api-client";
 import type { UserPreferences } from "@rg/domain";
-import { Banner, Card, formatDayShort, relativeTime, Sheet, Spinner } from "../components.js";
+import {
+  Banner,
+  Card,
+  formatDayLong,
+  formatDayShort,
+  relativeTime,
+  Sheet,
+  Spinner,
+} from "../components.js";
 import { md5Hex } from "../md5.js";
 
 const TZ_OPTIONS: string[] = (() => {
@@ -809,30 +826,170 @@ function DiagRows({ data }: { data: Record<string, unknown> }) {
   );
 }
 
-function DangerSection() {
+/** A chosen export file, parsed locally, waiting on the confirm sheet. */
+export interface PendingRestore {
+  file: File;
+  exportedAt: string;
+}
+
+function saveBlob(blob: Blob, name: string): void {
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = name;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  URL.revokeObjectURL(url);
+}
+
+function restoreErrorText(err: unknown): string | null {
+  if (!err) return null;
+  const code = err instanceof ApiError ? (err.body as { error?: string } | null)?.error : undefined;
+  if (code === "schema_mismatch") return "This export is from a different app version.";
+  if (err instanceof NotAnExportError) return "That file isn't a Run Garden export.";
+  return "Restore stopped partway. Try again.";
+}
+
+/**
+ * The restore confirm step: names the export's date and the one action, and
+ * nothing is sent until that action is pressed. Exported for the Data card
+ * test (static render; the file itself is parsed by `readExportFile`).
+ */
+export function RestoreConfirm({
+  pending,
+  progress,
+  busy,
+  error,
+  onCancel,
+  onConfirm,
+}: {
+  pending: PendingRestore | null;
+  progress: RestoreProgress | null;
+  busy: boolean;
+  error: string | null;
+  onCancel: () => void;
+  onConfirm: () => void;
+}) {
+  const day = pending ? new Date(pending.exportedAt).toLocaleDateString("en-CA") : null;
+  return (
+    <Sheet
+      open={pending !== null}
+      onClose={busy ? () => undefined : onCancel}
+      title="Restore from file"
+      centered
+      footer={
+        <div className="btn-row">
+          <button type="button" className="btn" disabled={busy} onClick={onCancel}>
+            Cancel
+          </button>
+          <button type="button" className="btn btn-danger" disabled={busy} onClick={onConfirm}>
+            Replace everything in this account
+          </button>
+        </div>
+      }
+    >
+      <div className="stack">
+        {day ? <p>Exported {formatDayLong(day)}</p> : null}
+        {progress ? (
+          <p className="muted">
+            Restoring… {progress.done.toLocaleString()} of {progress.total.toLocaleString()} rows
+          </p>
+        ) : null}
+        {error ? <Banner kind="warn">{error}</Banner> : null}
+      </div>
+    </Sheet>
+  );
+}
+
+/** Export everything, restore from a file, delete everything. */
+export function DataSection() {
+  const qc = useQueryClient();
   const [confirming, setConfirming] = useState(false);
+  const fileInput = useRef<HTMLInputElement>(null);
+  const [pending, setPending] = useState<PendingRestore | null>(null);
+  const [progress, setProgress] = useState<RestoreProgress | null>(null);
+  const [notice, setNotice] = useState<string | null>(null);
   const del = useMutation({
     mutationFn: api.deleteAll,
     onSuccess: () => {
       window.location.href = "/";
     },
   });
+  const exp = useMutation({
+    mutationFn: exportAccount,
+    onSuccess: (blob) => saveBlob(blob, exportFileName()),
+  });
+  const restore = useMutation({
+    mutationFn: (file: File) => restoreAccount(file, { replace: true }, setProgress),
+    onSuccess: () => {
+      setPending(null);
+      setProgress(null);
+      setNotice("Restored.");
+      void qc.invalidateQueries();
+    },
+    onError: () => setProgress(null),
+  });
+  const choose = async (e: ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    e.target.value = "";
+    if (!file) return;
+    setNotice(null);
+    restore.reset();
+    try {
+      const data = await readExportFile(file);
+      setPending({ file, exportedAt: data.exportedAt });
+    } catch {
+      setNotice("That file isn't a Run Garden export.");
+    }
+  };
   return (
     <Card title="Your data">
-      <div className="btn-row">
-        <a className="btn" href="/api/settings/export" download>
-          Export everything (JSON)
-        </a>
-        {!confirming ? (
-          <button className="btn btn-danger" onClick={() => setConfirming(true)}>
-            Delete all data
+      <div className="stack">
+        <div className="btn-row">
+          <button className="btn" disabled={exp.isPending} onClick={() => exp.mutate()}>
+            {exp.isPending ? "Exporting…" : "Export everything (JSON)"}
           </button>
-        ) : (
-          <button className="btn btn-danger" disabled={del.isPending} onClick={() => del.mutate()}>
-            Really delete everything — cannot be undone
+          <button
+            className="btn"
+            disabled={restore.isPending}
+            onClick={() => fileInput.current?.click()}
+          >
+            Restore from file…
           </button>
-        )}
+          <input
+            ref={fileInput}
+            type="file"
+            accept="application/json,.json"
+            hidden
+            onChange={(e) => void choose(e)}
+          />
+          {!confirming ? (
+            <button className="btn btn-danger" onClick={() => setConfirming(true)}>
+              Delete all data
+            </button>
+          ) : (
+            <button className="btn btn-danger" disabled={del.isPending} onClick={() => del.mutate()}>
+              Really delete everything — cannot be undone
+            </button>
+          )}
+        </div>
+        {exp.isError ? <Banner kind="warn">Export failed. Try again.</Banner> : null}
+        {notice ? <Banner kind="info">{notice}</Banner> : null}
       </div>
+      <RestoreConfirm
+        pending={pending}
+        progress={progress}
+        busy={restore.isPending}
+        error={restoreErrorText(restore.error)}
+        onCancel={() => {
+          setPending(null);
+          restore.reset();
+        }}
+        onConfirm={() => {
+          if (pending) restore.mutate(pending.file);
+        }}
+      />
     </Card>
   );
 }
@@ -1005,7 +1162,7 @@ export function SettingsScreen() {
       <CoachMemorySection />
       <GardenSection />
       <DiagnosticsSection />
-      <DangerSection />
+      <DataSection />
       <div>
         <button className="btn" disabled={logout.isPending} onClick={() => logout.mutate()}>
           Sign out

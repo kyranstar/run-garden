@@ -28,8 +28,8 @@
  * databases holding the same rows agree no matter how the rows got there.
  * `rowid` is deliberately not used: a table rebuild renumbers it.
  */
-import { asc, eq, getTableColumns, getTableName, sql, type Column, type SQL } from "drizzle-orm";
-import { getTableConfig, type SQLiteTable } from "drizzle-orm/sqlite-core";
+import { asc, eq, getTableColumns, getTableName, sql, type SQL } from "drizzle-orm";
+import { getTableConfig, type SQLiteColumn, type SQLiteTable } from "drizzle-orm/sqlite-core";
 import {
   activities,
   activityLaps,
@@ -221,7 +221,7 @@ export function secretColumns(name: string): readonly string[] {
 }
 
 /** The drizzle column whose SQL name is `sqlName`. */
-export function columnBySqlName(table: SQLiteTable, sqlName: string): Column {
+export function columnBySqlName(table: SQLiteTable, sqlName: string): SQLiteColumn {
   const col = Object.values(getTableColumns(table)).find((c) => c.name === sqlName);
   if (!col) throw new Error(`account-tables: ${getTableName(table)} has no column "${sqlName}"`);
   return col;
@@ -259,13 +259,41 @@ export function scopeWhere(entry: AccountTable, userId: string): SQL {
 
 /** Primary-key columns in declaration order (composite keys included); every
  * column when the table declares no primary key. */
-export function orderColumns(table: SQLiteTable): Column[] {
+export function orderColumns(table: SQLiteTable): SQLiteColumn[] {
   const config = getTableConfig(table);
   const composite = config.primaryKeys.flatMap((pk) => pk.columns);
   if (composite.length > 0) return composite;
   const single = config.columns.filter((c) => c.primary);
   if (single.length > 0) return single;
   return config.columns;
+}
+
+/**
+ * Delete every `user` and `child` row belonging to this account, except the
+ * tables named in `keep`. Children go first (descending `order`), while the
+ * parent ids their scope subquery reads still exist. Identity (`users`) and
+ * excluded tables (`sessions`, `oauth_states`, catalogs) are never touched
+ * here — delete-all removes the session and the user row itself, and a
+ * restore must keep both.
+ *
+ * Every child delete is scoped to THIS account's parent ids. The old
+ * delete-all cleared child tables with no WHERE at all (a single-user
+ * shortcut); a restore's wipe runs on a live account and must never reach
+ * another account's rows.
+ */
+export async function wipeAccountData(
+  db: Db,
+  userId: string,
+  opts: { keep: readonly string[] },
+): Promise<void> {
+  const keep = new Set(opts.keep);
+  const targets = ACCOUNT_TABLES.filter(
+    (t) => (t.scope.kind === "user" || t.scope.kind === "child") && !keep.has(t.name),
+  ).sort((a, b) => b.order - a.order);
+  for (const t of targets) {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    await db.delete(t.table as any).where(scopeWhere(t, userId));
+  }
 }
 
 /** SQLite needs a LIMIT before an OFFSET; this is "no limit". */

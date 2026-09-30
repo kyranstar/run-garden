@@ -950,6 +950,141 @@ export const api = {
   retrySync: () => post<RetrySyncResponse>("/api/sync/retry"),
 };
 
+// ── Account export / restore (worker: services/account-export.ts, account-restore.ts)
+
+export const EXPORT_FORMAT = "run-garden-export";
+
+export interface ExportManifest {
+  format: typeof EXPORT_FORMAT;
+  schemaVersion: string;
+  tables: Array<{ name: string; rows: number }>;
+}
+
+export interface ExportTablePage {
+  rows: Array<Record<string, unknown>>;
+  nextCursor: number | null;
+}
+
+/** The downloaded file: every account table, keyed by SQL table name. */
+export interface AccountExportFile {
+  format: typeof EXPORT_FORMAT;
+  schemaVersion: string;
+  exportedAt: string;
+  tables: Record<string, Array<Record<string, unknown>>>;
+}
+
+export interface RestoreProgress {
+  done: number;
+  total: number;
+  table: string | null;
+}
+
+/** Rows per restore request — a page the worker inserts well inside its
+ * per-request query budget, even for the widest table. */
+const RESTORE_PAGE_ROWS = 200;
+
+/** Every table of the signed-in account, page by page, as one object. */
+export async function exportAccountData(): Promise<AccountExportFile> {
+  const manifest = await get<ExportManifest>("/api/settings/export/manifest");
+  const tables: AccountExportFile["tables"] = {};
+  for (const { name } of manifest.tables) {
+    const rows: Array<Record<string, unknown>> = [];
+    let cursor: number | null = 0;
+    while (cursor !== null) {
+      const page: ExportTablePage = await get<ExportTablePage>(
+        `/api/settings/export/table/${encodeURIComponent(name)}?cursor=${cursor}`,
+      );
+      rows.push(...page.rows);
+      cursor = page.nextCursor;
+    }
+    tables[name] = rows;
+  }
+  return {
+    format: EXPORT_FORMAT,
+    schemaVersion: manifest.schemaVersion,
+    exportedAt: new Date().toISOString(),
+    tables,
+  };
+}
+
+/** The whole account as a JSON file body. */
+export async function exportAccount(): Promise<Blob> {
+  const data = await exportAccountData();
+  return new Blob([JSON.stringify(data)], { type: "application/json" });
+}
+
+/** `run-garden-export-YYYY-MM-DD.json`, dated in the device's own zone. */
+export function exportFileName(now: Date = new Date()): string {
+  const y = now.getFullYear();
+  const m = String(now.getMonth() + 1).padStart(2, "0");
+  const d = String(now.getDate()).padStart(2, "0");
+  return `run-garden-export-${y}-${m}-${d}.json`;
+}
+
+/** Thrown by `readExportFile` for a file that is not a Run Garden export. */
+export class NotAnExportError extends Error {
+  constructor() {
+    super("not_an_export");
+  }
+}
+
+/** Parse and shape-check an export file, locally — no request is made. */
+export async function readExportFile(file: Blob): Promise<AccountExportFile> {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(await file.text());
+  } catch {
+    throw new NotAnExportError();
+  }
+  const f = parsed as Partial<AccountExportFile> | null;
+  if (
+    !f ||
+    typeof f !== "object" ||
+    f.format !== EXPORT_FORMAT ||
+    typeof f.schemaVersion !== "string" ||
+    typeof f.exportedAt !== "string" ||
+    !f.tables ||
+    typeof f.tables !== "object" ||
+    Object.values(f.tables).some((rows) => !Array.isArray(rows))
+  ) {
+    throw new NotAnExportError();
+  }
+  return f as AccountExportFile;
+}
+
+/**
+ * Restore an export into the signed-in account: begin (the worker refuses a
+ * file from another schema, and an account with data unless `replace`), then
+ * every table the worker names — parents first — in pages, then finish.
+ * Rejects with `ApiError` (409 `not_empty`, 422 `schema_mismatch`) or
+ * `NotAnExportError`.
+ */
+export async function restoreAccount(
+  file: Blob,
+  opts: { replace: boolean },
+  onProgress?: (p: RestoreProgress) => void,
+): Promise<{ counts: Record<string, number> }> {
+  const data = await readExportFile(file);
+  const begun = await post<{ tables: string[] }>("/api/settings/restore/begin", {
+    schemaVersion: data.schemaVersion,
+    replace: opts.replace,
+  });
+  const sourceUserId = data.tables.users?.[0]?.id;
+  const total = begun.tables.reduce((n, t) => n + (data.tables[t]?.length ?? 0), 0);
+  let done = 0;
+  onProgress?.({ done, total, table: null });
+  for (const table of begun.tables) {
+    const rows = data.tables[table] ?? [];
+    for (let i = 0; i < rows.length; i += RESTORE_PAGE_ROWS) {
+      const page = rows.slice(i, i + RESTORE_PAGE_ROWS);
+      await post("/api/settings/restore/rows", { table, rows: page, sourceUserId }, 120_000);
+      done += page.length;
+      onProgress?.({ done, total, table });
+    }
+  }
+  return post<{ counts: Record<string, number> }>("/api/settings/restore/finish", {}, 120_000);
+}
+
 /** One previously generated plan + the brief (prompt) that produced it. */
 export interface StudioHistoryEntryDto {
   id: string;

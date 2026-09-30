@@ -1,5 +1,5 @@
 /**
- * Security audit S2 — user scoping on settings/diagnostics and settings/export.
+ * Security audit S2 — user scoping on settings/diagnostics and the settings export.
  *
  * diagnostics used to select sync_errors and sync_runs with no user filter;
  * export used to dump EVERY activity_laps and workout_completion_matches row
@@ -134,6 +134,9 @@ describe("settings/diagnostics scoping (S2)", () => {
 });
 
 describe("settings/export scoping (S2)", () => {
+  // The export is paged per table since Phase 0 Task 9; the S2 property is
+  // unchanged: laps and matches (no user_id of their own) come back only
+  // through the signed-in user's own activities and workouts.
   it("exports only the signed-in user's laps and completion matches", async () => {
     const db = makeTestDb();
     const { userId: me } = await makeTestUser(db);
@@ -141,17 +144,18 @@ describe("settings/export scoping (S2)", () => {
     const mine = await seedTraining(db, me, "mine");
     await seedTraining(db, other, "theirs");
 
-    const res = await request(db, me, "/api/settings/export");
-    expect(res.status).toBe(200);
-    const body = (await res.json()) as {
-      activities: { id: string }[];
-      plannedWorkouts: { id: string }[];
-      laps: { activityId: string }[];
-      completionMatches: { workoutId: string }[];
+    const page = async <T>(table: string): Promise<T[]> => {
+      const res = await request(db, me, `/api/settings/export/table/${table}`);
+      expect(res.status).toBe(200);
+      return ((await res.json()) as { rows: T[] }).rows;
     };
-    expect(body.activities.map((a) => a.id)).toEqual([mine.activityId]);
-    expect(body.plannedWorkouts.map((w) => w.id)).toEqual([mine.workoutId]);
-    expect(body.laps.map((l) => l.activityId)).toEqual([mine.activityId]);
-    expect(body.completionMatches.map((m) => m.workoutId)).toEqual([mine.workoutId]);
+    expect((await page<{ id: string }>("activities")).map((a) => a.id)).toEqual([mine.activityId]);
+    expect((await page<{ id: string }>("planned_workouts")).map((w) => w.id)).toEqual([mine.workoutId]);
+    expect((await page<{ activityId: string }>("activity_laps")).map((l) => l.activityId)).toEqual([
+      mine.activityId,
+    ]);
+    expect(
+      (await page<{ workoutId: string }>("workout_completion_matches")).map((m) => m.workoutId),
+    ).toEqual([mine.workoutId]);
   });
 });

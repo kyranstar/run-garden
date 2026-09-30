@@ -85,8 +85,14 @@ payload = base64url(iv ‖ ciphertext), fresh random 12-byte IV per encryption �
 
 ## Your data, your exit
 
-- **Export**: `GET /api/settings/export` streams a full JSON export of your
-  data — sanitized: no tokens, no credentials.
+- **Export**: Settings → "Export everything" assembles every account table
+  from `GET /api/settings/export/manifest` and `GET
+  /api/settings/export/table/:name` pages into one JSON file — sanitized:
+  provider tokens are nulled, sessions and OAuth handshakes are never
+  included.
+- **Restore**: `POST /api/settings/restore/begin|rows|finish` loads that file
+  back into the signed-in account; it refuses another schema version, never
+  touches the user row or sessions, and never restores a token.
 - **Full delete**: `POST /api/settings/delete-all` (requires the literal
   confirmation phrase) removes all rows for the user.
 - **Provider disconnect**: per-provider disconnect endpoints null out the
