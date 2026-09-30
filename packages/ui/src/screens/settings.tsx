@@ -21,6 +21,7 @@ import {
   Spinner,
 } from "../components.js";
 import { md5Hex } from "../md5.js";
+import { RestorePendingNotice } from "./restore-notice.js";
 
 const TZ_OPTIONS: string[] = (() => {
   const sv = (Intl as unknown as { supportedValuesOf?: (k: string) => string[] }).supportedValuesOf;
@@ -943,9 +944,11 @@ export function DataSection() {
       setNotice("That file isn't a Run Garden export.");
     }
   };
+  const me = useQuery({ queryKey: ["me"], queryFn: api.me, retry: false });
   return (
-    <Card title="Your data">
+    <Card title="Your data" anchor="your-data">
       <div className="stack">
+        <RestorePendingNotice restore={me.data?.restore} onRestoreAgain={() => fileInput.current?.click()} />
         <div className="btn-row">
           <button className="btn" disabled={exp.isPending} onClick={() => exp.mutate()}>
             {exp.isPending ? "Exporting…" : "Export everything (JSON)"}

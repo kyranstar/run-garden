@@ -55,6 +55,7 @@ function AuthedApp() {
     <AppShell
       fixtureMode={me.data?.fixtureMode}
       footer={<span>{me.data?.email}</span>}
+      restore={me.data?.restore ?? null}
     >
       <Routes>
         <Route path="/" element={<GardenScreen />} />

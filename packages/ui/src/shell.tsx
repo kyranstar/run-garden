@@ -1,8 +1,10 @@
 import type { ReactNode } from "react";
-import { NavLink, useLocation } from "react-router-dom";
+import { NavLink, useLocation, useNavigate } from "react-router-dom";
 import { PRODUCT_NAME } from "@rg/domain";
+import type { RestoreStatus } from "@rg/api-client";
 import { IconGarden, IconPlan, IconRuns, IconSettings } from "./icons.js";
 import { useCorosReadNow } from "./screens/use-coros-read.js";
+import { RestorePendingNotice } from "./screens/restore-notice.js";
 
 // Four tabs (System 2): Insights merged into Activity — /insights redirects.
 const NAV = [
@@ -16,11 +18,15 @@ export function AppShell({
   children,
   fixtureMode,
   footer,
+  restore,
 }: {
   children: ReactNode;
   fixtureMode?: boolean;
   footer?: ReactNode;
+  /** An unfinished restore (`/api/auth/me`): every screen says so. */
+  restore?: RestoreStatus | null;
 }) {
+  const navigate = useNavigate();
   // The garden route escapes the reading column on desktop — the scene is a
   // stage, not a card (see .garden-stage). The plan route gets the milder
   // wide treatment (rework spec §6): the week grid and the floating coach
@@ -52,6 +58,13 @@ export function AppShell({
         {fixtureMode ? (
           <div className="banner banner-info" style={{ marginBottom: "var(--space-6)" }} role="status">
             Fixture mode — showing sample data, no real providers connected.
+          </div>
+        ) : null}
+        {/* Settings carries the same notice on its Data card, beside the file
+            picker "Restore again" needs. */}
+        {pathname !== "/settings" ? (
+          <div style={{ marginBottom: "var(--space-6)" }}>
+            <RestorePendingNotice restore={restore} onRestoreAgain={() => navigate("/settings#your-data")} />
           </div>
         ) : null}
         {children}

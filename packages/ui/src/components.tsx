@@ -863,17 +863,20 @@ export function Card({
   children,
   className,
   level = 2,
+  anchor,
 }: {
   title?: string;
   children: ReactNode;
   className?: string;
   /** Heading level for `title`. 2 by default; 3 inside a dialog. */
   level?: 2 | 3 | 4;
+  /** Element id, so a link elsewhere can jump to this card. */
+  anchor?: string;
 }) {
   const id = useId();
   const Heading = `h${level}` as "h2" | "h3" | "h4";
   return (
-    <section className={`card ${className ?? ""}`} aria-labelledby={title ? id : undefined}>
+    <section id={anchor} className={`card ${className ?? ""}`} aria-labelledby={title ? id : undefined}>
       {title ? (
         <Heading id={id} className="card-title">
           {title}

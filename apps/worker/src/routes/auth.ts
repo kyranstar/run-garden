@@ -24,6 +24,7 @@ import {
   syncCorosMcpSleep,
 } from "../services/coros-mcp.js";
 import { loadPreferences } from "../services/calendar-sync.js";
+import { loadAccountState, restoreStatusOf } from "../services/account-state.js";
 import {
   clearSessionCookie,
   createSession,
@@ -233,5 +234,7 @@ authRoutes.get("/me", requireUser, async (c) => {
     email: c.get("userEmail"),
     connections,
     fixtureMode: c.env.FIXTURE_MODE === "1",
+    // "A restore didn't finish" — every screen shows it while this is set.
+    restore: restoreStatusOf(await loadAccountState(db, c.get("userId"))),
   });
 });

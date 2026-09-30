@@ -4328,6 +4328,11 @@ a.note {
   background: var(--warn-soft);
   color: var(--warn);
 }
+/* "A restore didn't finish": the message, then its two actions, wrapping at
+   phone width instead of squeezing the buttons. */
+.restore-pending {
+  flex-wrap: wrap;
+}
 .banner-info {
   background: var(--accent-soft);
   color: var(--accent);

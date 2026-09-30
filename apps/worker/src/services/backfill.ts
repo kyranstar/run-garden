@@ -19,6 +19,7 @@ import { claimUserLock, releaseUserLock } from "./locks.js";
 import type { Env } from "../env.js";
 import type { UserPreferences } from "@rg/domain";
 import type { Db } from "./db.js";
+import { restoreInProgress } from "./account-state.js";
 import { resimulateFrom } from "./garden-sync.js";
 import { CLAIM_TIMEOUT_MS } from "./jobs.js";
 
@@ -131,6 +132,7 @@ export async function enqueueBackfill(
   userId: string,
   today: string,
 ): Promise<{ enqueued: boolean; reason?: string }> {
+  if (await restoreInProgress(db, userId)) return { enqueued: false, reason: "restoring" };
   const inFlight = await db
     .select({ id: corosWriteJobs.id })
     .from(corosWriteJobs)
@@ -314,6 +316,8 @@ export async function runBackfillChunkCloud(
   prefs: UserPreferences,
   fetchImpl: typeof fetch = fetch,
 ): Promise<{ ran: boolean }> {
+  // A restore is replacing the account (B2): no history walk meanwhile.
+  if (await restoreInProgress(db, userId)) return { ran: false };
   const state = (
     await db.select().from(backfillState).where(eq(backfillState.userId, userId)).limit(1)
   )[0];

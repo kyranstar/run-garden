@@ -35,6 +35,7 @@ import { executeCloudJobs } from "./services/coros-write-cloud.js";
 import { purgeExpiredSessions, createSession, sessionCookie } from "./auth/sessions.js";
 import { purgeExpiredStates } from "./auth/google.js";
 import { ensureFixtureUser, seedFixtures } from "./services/fixtures.js";
+import { accountsRestoring } from "./services/account-state.js";
 
 const app = new Hono<AppContext>();
 
@@ -97,12 +98,19 @@ app.all("*", async (c) => c.env.ASSETS.fetch(c.req.raw));
 
 // ── Cron ─────────────────────────────────────────────────────────────────────
 
+/**
+ * Every account a cron may work on: all of them except one a restore is
+ * replacing (ruling B2) — the file is still arriving into a half-wiped
+ * account, and anything written now would win over it. Each writer checks the
+ * marker again itself; skipping here just keeps the loop from trying.
+ */
 async function allUserIds(db: Db): Promise<string[]> {
   const rows = await db.select({ id: users.id }).from(users);
-  return rows.map((r) => r.id);
+  const restoring = await accountsRestoring(db);
+  return rows.map((r) => r.id).filter((id) => !restoring.has(id));
 }
 
-async function halfHourly(db: Db, env: Env): Promise<void> {
+export async function halfHourly(db: Db, env: Env): Promise<void> {
   for (const userId of await allUserIds(db)) {
     const runId = await startSyncRun(db, "calendar_sync", userId);
     try {
@@ -140,7 +148,7 @@ async function halfHourly(db: Db, env: Env): Promise<void> {
   await purgeExpiredStates(db);
 }
 
-async function hourly(db: Db, env: Env): Promise<void> {
+export async function hourly(db: Db, env: Env): Promise<void> {
   await closeStrandedSyncRuns(db).catch(() => undefined);
   await sweepStaleSuppressions(db).catch(() => undefined);
   for (const userId of await allUserIds(db)) {
@@ -167,7 +175,7 @@ async function hourly(db: Db, env: Env): Promise<void> {
   }
 }
 
-async function weekly(db: Db, env: Env): Promise<void> {
+export async function weekly(db: Db, env: Env): Promise<void> {
   for (const userId of await allUserIds(db)) {
     const runId = await startSyncRun(db, "weekly_review", userId);
     try {

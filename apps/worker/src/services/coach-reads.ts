@@ -5,6 +5,7 @@ import { z } from "zod";
 import type { Env } from "../env.js";
 import { fixtureModeEnabled } from "../env.js";
 import type { Db } from "./db.js";
+import { restoreInProgress } from "./account-state.js";
 import { llmBudgetStatus } from "./llm.js";
 import { chatCompletion, DEFAULT_MODEL_STRONG, extractJson, recordUsage } from "./studio-llm.js";
 import { buildEffortPackage } from "./coach-effort.js";
@@ -338,8 +339,10 @@ export async function processCoachReads(
   userId: string,
   prefs: UserPreferences,
   opts: { cap?: number; fetchImpl?: typeof fetch } = {},
-): Promise<{ processed: number; skipped: ReadGateReason | "budget_reserve" | null }> {
+): Promise<{ processed: number; skipped: ReadGateReason | "budget_reserve" | "restoring" | null }> {
   const fetchImpl = opts.fetchImpl ?? fetch;
+  // A restore is replacing the account (B2): nothing is spent on the LLM.
+  if (await restoreInProgress(db, userId)) return { processed: 0, skipped: "restoring" };
   const gate = gateReason(env, prefs);
   if (gate) return { processed: 0, skipped: gate };
   const budget = await llmBudgetStatus(db, userId);

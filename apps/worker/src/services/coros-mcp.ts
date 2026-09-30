@@ -4,6 +4,7 @@ import { addDays, daysBetween, fingerprint, newId, nowInstant, todayInZone, type
 import { decryptSecret, encryptSecret } from "../auth/crypto.js";
 import type { Env } from "../env.js";
 import { chunkIds, type Db } from "./db.js";
+import { restoreInProgress } from "./account-state.js";
 
 /**
  * The official COROS sleep connection (sleep/recovery phase 2).
@@ -845,6 +846,8 @@ export async function syncCorosMcpSleep(
 ): Promise<McpSleepSyncResult> {
   const row = await connRow(db, userId);
   if (!row || row.status === "disconnected") return { status: "not_connected" };
+  // A restore is replacing the account (B2): nothing is read in meanwhile.
+  if (await restoreInProgress(db, userId)) return { status: "not_connected" };
   const token = await corosMcpAccessToken(db, env, userId, fetchImpl);
   if (!token) return { status: "needs_reauth" };
 
@@ -1008,6 +1011,7 @@ export async function corosMcpSleepSweep(
   for (const row of rows) {
     const last = row.lastSyncAt ? Date.parse(row.lastSyncAt) : 0;
     if (Date.now() - last < SYNC_MIN_INTERVAL_MS) continue;
+    if (await restoreInProgress(db, row.userId)) continue;
     const timezone = await loadTimezone(row.userId);
     await syncCorosMcpSleep(db, env, row.userId, timezone, fetchImpl).catch(() => undefined);
   }

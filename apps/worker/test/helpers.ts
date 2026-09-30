@@ -59,12 +59,39 @@ function installBoundVariableCap(sqlite: Database.Database, cap: number): void {
 }
 
 /**
+ * Report every statement the application executes (its SQL text), for tests
+ * that count statements against D1's per-invocation budget or prove a code
+ * path writes nothing.
+ */
+function installStatementHook(sqlite: Database.Database, onStatement: (sql: string) => void): void {
+  const prepare = sqlite.prepare.bind(sqlite);
+  (sqlite as unknown as { prepare: unknown }).prepare = (...args: unknown[]) => {
+    const stmt = (prepare as (...a: unknown[]) => unknown)(...args) as Record<string, unknown>;
+    const text = String(args[0]);
+    for (const method of ["run", "get", "all", "iterate"]) {
+      const original = stmt[method];
+      if (typeof original !== "function") continue;
+      const bound = (original as (...a: unknown[]) => unknown).bind(stmt);
+      stmt[method] = (...params: unknown[]) => {
+        onStatement(text);
+        return bound(...params);
+      };
+    }
+    return stmt;
+  };
+}
+
+/** True for a statement that changes data (what "wrote nothing" rules out). */
+export const isWrite = (sql: string): boolean => /^\s*(insert|update|delete|replace)\b/i.test(sql);
+
+/**
  * In-memory SQLite with the real D1 migrations applied.
  *
  * Pass `{ boundVariableCap: D1_BIND_LIMIT }` to also enforce D1's bound-variable
- * ceiling — see `installBoundVariableCap`.
+ * ceiling — see `installBoundVariableCap`. Pass `onStatement` to observe every
+ * statement the application runs (migrations are not reported).
  */
-export function makeTestDb(opts: { boundVariableCap?: number } = {}): Db {
+export function makeTestDb(opts: { boundVariableCap?: number; onStatement?: (sql: string) => void } = {}): Db {
   const sqlite = new Database(":memory:");
   for (const file of readdirSync(MIGRATIONS_DIR).filter((f) => f.endsWith(".sql")).sort()) {
     const sql = readFileSync(join(MIGRATIONS_DIR, file), "utf8");
@@ -76,6 +103,7 @@ export function makeTestDb(opts: { boundVariableCap?: number } = {}): Db {
   // Installed after the migrations: DDL binds nothing, and the cap should only
   // ever police application queries.
   if (opts.boundVariableCap !== undefined) installBoundVariableCap(sqlite, opts.boundVariableCap);
+  if (opts.onStatement) installStatementHook(sqlite, opts.onStatement);
   return drizzle(sqlite, { schema }) as unknown as Db;
 }
 

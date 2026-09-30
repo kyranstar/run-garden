@@ -33,6 +33,7 @@ import { chunkIds, type Db } from "./db.js";
 import { googleCalendarClient, type GoogleCalendarClient } from "./google-calendar.js";
 import { activeSyncNotes, postSyncNote } from "./sync-notes.js";
 import { applyMove } from "./jobs.js";
+import { restoreInProgress } from "./account-state.js";
 
 /**
  * Google Calendar mirror: at least 8 weeks ahead and 2 weeks back, one padded
@@ -117,6 +118,12 @@ export async function syncCalendar(
     notesPreserved: 0,
     skipped: false,
   };
+  // A restore is replacing the account (B2): the links and suppressions the
+  // file carries are not in yet, so any sync now would duplicate every event.
+  if (await restoreInProgress(db, userId)) {
+    stats.skipped = true;
+    return stats;
+  }
   const prefs = await loadPreferences(db, userId);
   const client = await googleCalendarClient(db, env, userId);
   if (!client || !prefs.calendarId) {
@@ -220,6 +227,12 @@ export async function syncCalendar(
   let listResult = await client.listEvents(calendarId, { syncToken, timeMin, timeMax });
   if (listResult.fullSyncRequired) {
     listResult = await client.listEvents(calendarId, { timeMin, timeMax });
+  }
+
+  // The read takes a while; a restore that began meanwhile wins.
+  if (await restoreInProgress(db, userId)) {
+    stats.skipped = true;
+    return stats;
   }
 
   const rawEvents = (listResult.items as RawGoogleEvent[]).filter(

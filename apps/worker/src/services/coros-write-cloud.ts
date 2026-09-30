@@ -28,6 +28,7 @@ import {
 } from "@rg/domain";
 import type { Env } from "../env.js";
 import type { Db } from "./db.js";
+import { restoreInProgress } from "./account-state.js";
 import { corosClient } from "./coros-connection.js";
 import { isRuntimeLimit } from "./runtime-limit.js";
 import { corosReadNow } from "./coros-read.js";
@@ -159,6 +160,9 @@ export async function executeCloudJobs(
 ): Promise<{ executed: number }> {
   const cap = opts.cap ?? 3;
   const fetchImpl = opts.fetchImpl ?? fetch;
+  // A restore is replacing the account (B2): no queued change reaches the
+  // watch until it has finished.
+  if (await restoreInProgress(db, userId)) return { executed: 0 };
 
   const client = await corosClient(db, env, userId, fetchImpl);
   if (!client) return { executed: 0 }; // not cloud-connected — devices may still claim
@@ -171,6 +175,7 @@ export async function executeCloudJobs(
   let outOfBudget = false;
   try {
     for (let i = 0; i < cap && !outOfBudget; i++) {
+      if (i > 0 && (await restoreInProgress(db, userId))) break;
       // Backfill chunks have their own worker-side walker with pacing —
       // excluded at claim time so a queued backfill can never head-of-line-
       // block moves and studio pushes (2026-08-12 incident).

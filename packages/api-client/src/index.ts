@@ -231,6 +231,15 @@ export interface MeResponse {
     lastErrorCategory: string | null;
   }>;
   fixtureMode: boolean;
+  /** Set while a restore has begun and not finished. */
+  restore: RestoreStatus | null;
+}
+
+/** An unfinished restore: when it began, and the file it was restoring. */
+export interface RestoreStatus {
+  startedAt: string | null;
+  fileExportedAt: string | null;
+  fileExportedFrom: string | null;
 }
 
 export interface CandidateResponse {

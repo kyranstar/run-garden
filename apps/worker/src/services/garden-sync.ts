@@ -65,6 +65,7 @@ import { disciplineOf } from "@rg/analytics";
  * ("counts start at zero the day this ships" is a promise to them). */
 const DEW_EPOCH = "2026-08-19";
 import { chunkedInsert, type Db } from "./db.js";
+import { restoreInProgress } from "./account-state.js";
 import { coachBlockAdherence, COACHED_BLOCK_ADHERENCE, plansEndedOn } from "./coach-plans.js";
 import {
   VISITOR_HINTS,
@@ -105,6 +106,10 @@ export async function ensureGarden(
 }
 
 async function persistSnapshot(db: Db, userId: string, snapshot: GardenSnapshot): Promise<void> {
+  // A restore is replacing this account (ruling B2): the file's garden must
+  // not lose to one simulated here — a genesis stub from ensureGarden, or a
+  // walk that started before the restore did.
+  if (await restoreInProgress(db, userId)) return;
   const now = nowInstant();
   const existing = await db.select({ userId: gardenState.userId }).from(gardenState).where(eq(gardenState.userId, userId)).limit(1);
   const value = {
@@ -739,6 +744,16 @@ async function walkForward(
   return { snapshot, simulatedDays: simulated, eventsEmitted, capped };
 }
 
+/** While a restore is replacing the account nothing is simulated (B2). */
+async function standDown(db: Db, userId: string, prefs: UserPreferences, now: Date): Promise<GardenSimResult> {
+  const current = await loadGarden(db, userId);
+  return {
+    simulatedDays: 0,
+    eventsEmitted: 0,
+    lastSimulatedDate: current?.state.lastSimulatedDate ?? addDays(todayInZone(prefs.timezone, now), -1),
+  };
+}
+
 /** Advance the simulation through all eligible days. */
 export async function advanceGarden(
   db: Db,
@@ -747,6 +762,7 @@ export async function advanceGarden(
   now: Date = new Date(),
   opts?: GardenAdvanceOptions,
 ): Promise<GardenSimResult> {
+  if (await restoreInProgress(db, userId)) return standDown(db, userId, prefs, now);
   const startSnapshot = await ensureGarden(db, userId, prefs);
 
   // Simulation upgraded since this garden was last written: rebuild the whole
@@ -881,6 +897,7 @@ export async function resimulateFrom(
   now: Date = new Date(),
   opts?: GardenAdvanceOptions,
 ): Promise<GardenSimResult> {
+  if (await restoreInProgress(db, userId)) return standDown(db, userId, prefs, now);
   const current = await loadGarden(db, userId);
   if (!current || affectedDate > current.state.lastSimulatedDate) {
     return advanceGarden(db, userId, prefs, now, opts);
@@ -1107,6 +1124,9 @@ export async function buildGardenView(
   userId: string,
   prefs: UserPreferences,
 ): Promise<GardenView> {
+  // A restore is replacing the account (B2): the read still answers, from
+  // whatever is there, but heals and ledgers nothing.
+  const restoring = await restoreInProgress(db, userId);
   await advanceGarden(db, userId, prefs).catch(() => undefined);
   let snapshot = await ensureGarden(db, userId, prefs);
 
@@ -1152,7 +1172,7 @@ export async function buildGardenView(
   const missing = snapshot.unlockedSpeciesIds.filter(
     (id) => !have.has(id) && SPECIES_BY_ID.get(id)?.unlock.kind === "start",
   );
-  if (missing.length > 0) {
+  if (missing.length > 0 && !restoring) {
     for (const speciesId of missing) {
       await db
         .insert(gardenUnlocks)
@@ -1186,7 +1206,7 @@ export async function buildGardenView(
         (r.input as { dew?: boolean }).dew,
     }));
     todayVisitor = visitorForDate(today, snapshot.state.season, dayRuns);
-    if (todayVisitor) {
+    if (todayVisitor && !restoring) {
       const id = `${userId}:${todayVisitor}`;
       const existing = await db.select().from(gardenVisitors).where(eq(gardenVisitors.id, id)).limit(1);
       if (!existing[0]) {

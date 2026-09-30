@@ -15,6 +15,7 @@ import { resimulateFrom } from "./garden-sync.js";
 import { enqueueCoachReads, processCoachReads } from "./coach-reads.js";
 import { claimUserLock, releaseUserLock } from "./locks.js";
 import { isExerciseCatalogStale, upsertExerciseCatalog } from "./exercise-catalog.js";
+import { restoreInProgress } from "./account-state.js";
 
 /**
  * The cloud pull (cloud-direct spec §3): what the bridge's snapshot sync did,
@@ -31,7 +32,8 @@ const FULL_SCHEDULE_SPAN_DAYS = 90;
 const FULL_SCHEDULE_STALE_MS = 6 * 3600 * 1000;
 
 export interface ReadNowResult {
-  status: "ok" | "fresh" | "busy" | "not_connected" | "coros_unreachable" | "bad_credentials";
+  /** "restoring": a restore is replacing the account — nothing is read in (B2). */
+  status: "ok" | "fresh" | "busy" | "not_connected" | "coros_unreachable" | "bad_credentials" | "restoring";
   ingested?: number;
   /** The read ran out of Worker budget rather than failing at COROS. Reported so
    *  a caller can retry without treating the connection as unhealthy. */
@@ -57,6 +59,7 @@ export async function corosReadNow(
   // Fixture mode never talks to real providers (repo-wide convention) — the
   // seeded connection reports "fresh" so the UI reads as healthy and silent.
   if (fixtureModeEnabled(env)) return { status: "fresh" };
+  if (await restoreInProgress(db, userId)) return { status: "restoring" };
   const fetchImpl = opts.fetchImpl ?? fetch;
 
   const [conn] = await db
@@ -158,6 +161,9 @@ export async function corosReadNow(
     if (snapshot.exerciseCatalog && snapshot.exerciseCatalog.length > 0) {
       await upsertExerciseCatalog(db, snapshot.exerciseCatalog);
     }
+    // The wire calls take seconds: a restore may have begun since the check
+    // above. Nothing is written into an account being replaced.
+    if (await restoreInProgress(db, userId)) return { status: "restoring" };
 
     // Same ingest order as the bridge-sync route: plan first, then
     // activities (matching sees fresh workouts), then health.
@@ -244,6 +250,7 @@ export async function corosReadSweep(db: Db, env: Env): Promise<void> {
     .from(providerConnections)
     .where(and(eq(providerConnections.provider, "coros"), eq(providerConnections.status, "connected")));
   for (const { userId } of rows) {
+    if (await restoreInProgress(db, userId)) continue;
     const prefs = await loadPreferences(db, userId);
     const result = await corosReadNow(db, env, userId, prefs, { force: true }).catch(() => null);
     if (result) {

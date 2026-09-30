@@ -33,6 +33,7 @@ import {
 } from "@rg/domain";
 import type { Env } from "../env.js";
 import { chunkIds, type Db } from "./db.js";
+import { restoreInProgress } from "./account-state.js";
 import { llmBudgetStatus } from "./llm.js";
 import {
   chatCompletion,
@@ -1104,6 +1105,9 @@ export async function wake(
   cause: WakeCause,
   fetchImpl: typeof fetch = fetch,
 ): Promise<WakeResult> {
+  // A restore is replacing the account (B2): no wake — message or automatic —
+  // thinks, spends or writes until it has finished.
+  if (await restoreInProgress(db, userId)) return { status: "skipped" };
   const startedAt = Date.now();
   const today = todayInZone(prefs.timezone);
   // The athlete's words are never lost — persist before anything can fail,
