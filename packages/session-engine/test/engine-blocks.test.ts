@@ -2,7 +2,7 @@ import { parseWeightList, type Weight } from "@rg/domain";
 import { makeEngineData } from "@rg/exercise-library";
 import { describe, expect, test } from "vitest";
 import { Blocks, Lib, Rng, type Block, type BlockCtx } from "../src/index.js";
-import { dataWith, ex, lifted, session } from "./fixtures.js";
+import { dataWith, ex, lifted, session, tmj } from "./fixtures.js";
 
 // Ported from the standalone tests/engine-blocks.test.js.
 
@@ -150,5 +150,28 @@ describe("beyond the standalone suite", () => {
     const sessions = ["2026-09-03", "2026-09-05", "2026-09-08"].map((d, i) => session(d, { entries: [{ id: "gobletSquat", clenched: i > 0, sets: [{ w: lb(25), reps: 6 + i }] }] }));
     expect(Blocks.ensure(none, b, ctx({ today: "2026-09-10", sessions })).block.core.squat).toBe("gobletSquat");
     expect(Blocks.familyCandidates(none, "press", { equipment: home }).map(x => x.id)).toContain("ohPress");
+  });
+
+  describe("a block lift an active profile forbids is not kept (audit M6)", () => {
+    // heavySquat is clench 3 (TMJ never), e.g. assigned while no profile was active; ohPress is overhead pressing.
+    const withHeavy = dataWith([...data.exercises.map(e => e as never), lifted("heavySquat", { family: "squat", conditions: tmj(3) })]);
+    const block = (core: Record<string, string>): Block => ({ ...Blocks.ensure(withHeavy, null, ctx()).block, core: { ...Blocks.ensure(withHeavy, null, ctx()).block.core, ...core } });
+
+    test("mid-block, an unpinned or pinned forbidden lift rotates out with the profile's reason", () => {
+      for (const pinned of [[], ["heavySquat"]]) {
+        const { block: next, events } = Blocks.ensure(withHeavy, block({ squat: "heavySquat" }), ctx({ today: "2026-09-03", prefs: { ...prefs, pinned } }));
+        expect(next.core.squat).not.toBe("heavySquat");
+        expect(events.join(" ")).toMatch(/heavySquat → .+: not allowed with TMJ\./);
+      }
+      const { block: next } = Blocks.ensure(withHeavy, block({ press: "ohPress" }), ctx({ today: "2026-09-03", prefs: { ...prefs, pinned: ["ohPress"] } }));
+      expect(next.core.press).not.toBe("ohPress");
+    });
+
+    test("a pinned forbidden lift is not carried into the next block", () => {
+      const old = { ...block({ squat: "heavySquat" }), startedAt: "2026-07-01" };
+      const next = Blocks.ensure(withHeavy, old, ctx({ today: "2026-09-03", prefs: { ...prefs, pinned: ["heavySquat"] } })).block;
+      expect(next.number).toBe(2);
+      expect(next.core.squat).not.toBe("heavySquat");
+    });
   });
 });

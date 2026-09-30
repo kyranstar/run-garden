@@ -1,5 +1,5 @@
 import type { Weight, WeightUnit } from "@rg/domain";
-import { attrsOf, type EngineData, type ExerciseRecord, type HistorySession, type Mode, type Theme } from "@rg/exercise-library";
+import { attrsOf, type ConditionProfile, type EngineData, type ExerciseRecord, type HistorySession, type Mode, type Theme } from "@rg/exercise-library";
 import { Hist } from "./hist.js";
 import { Lib } from "./lib.js";
 import { Prog } from "./prog.js";
@@ -31,6 +31,15 @@ const coreAllowed = (data: EngineData, ex: ExerciseRecord): boolean =>
     const a = attrsOf(ex, p);
     return a != null && !p.never(a) && p.coreCandidate(a);
   });
+
+/** The first active profile that rules this lift out as a block's lift (never, not a core candidate, or not assignable). */
+function forbiddenBy(data: EngineData, ex: ExerciseRecord): ConditionProfile | null {
+  for (const p of data.profiles.active) {
+    const a = attrsOf(ex, p);
+    if (!a || p.never(a) || !p.coreCandidate(a) || !p.blockAssignable(ex)) return p;
+  }
+  return null;
+}
 
 function familyCandidates(data: EngineData, familyId: string, { equipment, excluded = [] }: { equipment: readonly string[] | null | undefined; excluded?: readonly string[] }): ExerciseRecord[] {
   const fam = data.coreFamilies.find(f => f.id === familyId);
@@ -79,7 +88,9 @@ function start(data: EngineData, prev: Block | null, ctx: FullCtx): Block {
   const core: Record<string, string | null> = {};
   for (const fam of data.coreFamilies) {
     const prevId = prev ? prev.core[fam.id] ?? null : null;
-    const pinned = prevId && (ctx.prefs.pinned || []).includes(prevId) ? Lib.get(data, prevId) : null;
+    const pinnedLift = prevId && (ctx.prefs.pinned || []).includes(prevId) ? Lib.get(data, prevId) : null;
+    // A pin never carries a lift an active profile rules out.
+    const pinned = pinnedLift && !forbiddenBy(data, pinnedLift) ? pinnedLift : null;
     const pick = pinned || pickVariant(data, fam.id, ctx, prevId);
     core[fam.id] = pick ? pick.id : null;
   }
@@ -113,9 +124,12 @@ function ensure(data: EngineData, block: Block | null, ctx: BlockCtx): { block: 
   const events: string[] = [];
   for (const fam of data.coreFamilies) {
     const id = core[fam.id];
-    if (!id || c.prefs.pinned.includes(id)) continue;
+    if (!id) continue;
+    const lift = Lib.get(data, id);
+    const ruledOut = lift ? forbiddenBy(data, lift) : null;   // e.g. assigned while no profile was active
+    if (!ruledOut && c.prefs.pinned.includes(id)) continue;
     if (rotations.some(r => r.family === fam.id && r.date === ctx.today)) continue;   // at most once a day
-    const why = rotateReason(data, id, ctx.sessions || [], { ...block, core, rotations }, fam.id);
+    const why = ruledOut ? `not allowed with ${ruledOut.label}` : rotateReason(data, id, ctx.sessions || [], { ...block, core, rotations }, fam.id);
     if (!why) continue;
     // Lifts rotated out earlier in this block stay out.
     const out = [id, ...rotations.filter(r => r.family === fam.id).map(r => r.from).filter((x): x is string => Boolean(x))];
