@@ -81,18 +81,44 @@ function splice(steps: readonly Step[], slotKey: string, fresh: readonly Step[])
   return out;
 }
 
-/** Whether the slot can take `choice` in this plan. */
-function fits(state: SwapState, steps: readonly Step[], slotKey: string, choice: SlotChoice): boolean {
+/**
+ * One slot's judge in this plan: the same answer as checking `choice` against every other slot with `clash` and
+ * `unpaired`, and the planned seconds of `splice(steps, slotKey, choice.steps)`, worked out in one pass.
+ */
+function judge(state: SwapState, steps: readonly Step[], slotKey: string): (choice: SlotChoice) => boolean {
   const slot = state.slots[slotKey];
   const here = state.current[slotKey];
-  if (!slot || !here || choice.id === here.id) return false;
+  if (!slot || !here) return () => false;
+  // For every id and move key held elsewhere: whether each slot holding it still holds the plan's own move.
+  const ids = new Map<string, boolean>();
+  const keys = new Map<string, boolean>();
   for (const [key, c] of Object.entries(state.current)) {
-    if (key !== slotKey && clash(state, slotKey, choice, key, c)) return false;
+    if (key === slotKey) continue;
+    const original = isOriginal(state, key, c);
+    ids.set(c.id, (ids.get(c.id) ?? true) && original);
+    keys.set(c.moveKey, (keys.get(c.moveKey) ?? true) && original);
   }
-  const partner = slot.partner ? state.current[slot.partner] : undefined;
-  if (partner && unpaired(state, slotKey, choice, slot.partner!, partner)) return false;
-  return costOf(splice(steps, slotKey, choice.steps)) <= state.budget + state.slack;
+  let others = 0;
+  const sets = new Set<number | null>();
+  for (const s of steps) {
+    if (s.kind !== "rest" && s.slotKey === slotKey) sets.add(s.setIndex);
+    else others += s.seconds + (s.prepGap || 0);
+  }
+  const partnerKey = slot.partner;
+  const partner = partnerKey ? state.current[partnerKey] : undefined;
+  return (choice) => {
+    if (choice.id === here.id) return false;
+    const mine = slot.original.id === choice.id;
+    const byId = ids.get(choice.id), byKey = keys.get(choice.moveKey);
+    if (byId !== undefined && !(mine && byId)) return false;
+    if (byKey !== undefined && !(mine && byKey)) return false;
+    if (partner && unpaired(state, slotKey, choice, partnerKey!, partner)) return false;
+    return others + costOf(choice.steps.filter(x => sets.has(x.setIndex))) <= state.budget + state.slack;
+  };
 }
+
+/** Whether the slot can take `choice` in this plan. */
+const fits = (state: SwapState, steps: readonly Step[], slotKey: string, choice: SlotChoice): boolean => judge(state, steps, slotKey)(choice);
 
 /** The plan with the slot holding `choice` (no checks: call `fits` or `offered` first). */
 function apply(state: SwapState, steps: readonly Step[], slotKey: string, choice: SlotChoice): { state: SwapState; steps: Step[] } {
@@ -105,10 +131,11 @@ function offered(state: SwapState, steps: readonly Step[], slotKey: string, k = 
   const here = state.current[slotKey];
   if (!slot || !here) return [];
   const list = here.id !== slot.original.id ? [slot.original, ...slot.pool] : slot.pool;
+  const ok = judge(state, steps, slotKey);
   const out: SlotChoice[] = [];
   for (const c of list) {
     if (out.length >= k) break;
-    if (!out.some(o => o.id === c.id) && fits(state, steps, slotKey, c)) out.push(c);
+    if (!out.some(o => o.id === c.id) && ok(c)) out.push(c);
   }
   return out;
 }

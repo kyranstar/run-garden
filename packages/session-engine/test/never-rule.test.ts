@@ -1,7 +1,7 @@
 import { EXERCISES, LOCATION_PRESETS, TMJ, makeEngineData, type ConditionProfile, type EngineData, type ExerciseRecord, type Mode } from "@rg/exercise-library";
 import { describe, expect, test } from "vitest";
 import {
-  Blocks, Builder, Planner, Recorder, Review,
+  Blocks, Builder, Planner, Recorder, Review, Swapping,
   type Block, type BuildInput, type BuildResult, type DayState, type EngineLocation, type HistorySession, type ProgramState,
 } from "../src/index.js";
 
@@ -49,6 +49,11 @@ const leaks = (plan: BuildResult): string[] => [
     ...(TWINS.has(a.id) ? [`alternative ${k}=${a.id}`] : []),
     ...a.steps.filter(s => s.exerciseId && TWINS.has(s.exerciseId)).map(() => `alternative step ${k}`),
   ])),
+  // The swap state's pools are what the player offers offline (re-review m2).
+  ...Object.values(plan.swapState.slots).flatMap(slot => [slot.original, ...slot.pool].flatMap(c => [
+    ...(TWINS.has(c.id) ? [`pool ${slot.slotKey}=${c.id}`] : []),
+    ...c.steps.filter(s => s.exerciseId && TWINS.has(s.exerciseId)).map(() => `pool step ${slot.slotKey}`),
+  ])),
 ];
 
 const input = (o: Partial<BuildInput>): BuildInput => ({
@@ -73,14 +78,20 @@ describe.each([["TMJ", tmjData], ["a profile whose only exercise rule is never",
   test("a swap to a twin at every slot, and k = 20 alternatives, never bring one in", () => {
     for (const mode of MODES) for (const loc of ["home", "gym", "mat"]) {
       const i = input({ mode, theme: themeFor(mode, 0), location: place(loc), block: twinBlock });
-      const plan = Builder.build(data, i);
+      // build = finish(prepare(input), swaps): one prepared plan serves every swap below.
+      const prepared = Builder.prepare(data, i);
+      const plan = Builder.finish(prepared, {});
+      expect(Builder.build(data, i)).toEqual(plan);
       for (const it of plan.items) {
-        const swapped = Builder.build(data, { ...i, swaps: { [it.slotKey]: { from: it.exercise.id, to: twinId(it.exercise.id) } } });
+        const swapped = Builder.finish(prepared, { [it.slotKey]: { from: it.exercise.id, to: twinId(it.exercise.id) } });
         expect(leaks(swapped), `${mode} ${loc} ${it.slotKey}`).toEqual([]);
-        if (loc === "gym") expect(Builder.alternatives(data, i, it.slotKey, 20).filter(a => TWINS.has(a.id))).toEqual([]);
+        // The pools hold every move a slot may take, so k = 20 lists and the offline pools carry no twin either.
+        expect(Swapping.offered(plan.swapState, plan.steps, it.slotKey, 20).filter(a => TWINS.has(a.id))).toEqual([]);
+        expect(plan.swapState.slots[it.slotKey]!.pool.filter(c => TWINS.has(c.id))).toEqual([]);
       }
+      expect(Builder.alternatives(data, i, plan.items[0]!.slotKey, 20).filter(a => TWINS.has(a.id))).toEqual([]);
     }
-  }, 60_000);
+  });
 
   test("swaps chosen while no profile was active are refused once the profile is active", () => {
     for (const mode of MODES) {

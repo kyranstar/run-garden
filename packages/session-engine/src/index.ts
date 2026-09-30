@@ -9,6 +9,7 @@ export { Blocks, type BlockCtx } from "./blocks.js";
 export { Select, type ExerciseStats, type Scored, type SelectCtx } from "./select.js";
 export { Builder, type Prepared } from "./builder.js";
 export { Swapping, type Pairing, type SlotChoice, type SwapSlot, type SwapState } from "./swapping.js";
+export { Payload, type BuildPayload } from "./payload.js";
 export { Records, type Milestone, type RecordEvent } from "./records.js";
 export {
   Planner, type BlockUpdate, type DayOverride, type DayState, type GraduationOffer, type PlanTodayInput, type PlannerSettings,
