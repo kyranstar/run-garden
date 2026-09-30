@@ -101,6 +101,43 @@ describe("activities.source", () => {
     expect(await db.select().from(schema.workoutCompletionMatches)).toEqual([]);
   });
 
+  it("merges an app mobility session with the watch's Strength copy of it — and only an app one (audit 1, ingest MINOR #3)", async () => {
+    // The watch files a pushed mobility program as Strength (402); the app
+    // saved the same session as yoga. One physical session, counted once
+    // (spec §10.6) — but only for the deliberate app+watch merge: a legacy
+    // COROS-source yoga row and a strength session are two sessions.
+    const db = makeTestDb();
+    const { userId } = await makeTestUser(db);
+    await db.insert(schema.activities).values({
+      id: "app-mob",
+      userId,
+      startTime: T,
+      sport: "yoga",
+      durationSeconds: 1800,
+      source: "app",
+      createdAt: nowInstant(),
+      updatedAt: nowInstant(),
+    });
+    await ingestActivities(db, { userId, sources: [corosStrength(2)] });
+    const merged = await db.select().from(schema.activities);
+    expect(merged.map((r) => r.id)).toEqual(["app-mob"]);
+    expect(merged[0]!.corosActivityId).toBe("c-1");
+
+    const db2 = makeTestDb();
+    const { userId: u2 } = await makeTestUser(db2);
+    await db2.insert(schema.activities).values({
+      id: "legacy-yoga",
+      userId: u2,
+      startTime: T,
+      sport: "yoga",
+      durationSeconds: 1800,
+      createdAt: nowInstant(),
+      updatedAt: nowInstant(),
+    });
+    await ingestActivities(db2, { userId: u2, sources: [corosStrength(2)] });
+    expect((await db2.select().from(schema.activities)).map((r) => r.id).sort()).toHaveLength(2);
+  });
+
   it("rows inserted without a source read back as coros", async () => {
     const db = makeTestDb();
     const { userId } = await makeTestUser(db);

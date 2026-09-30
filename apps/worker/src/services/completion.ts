@@ -238,6 +238,12 @@ export async function repairTimestamps(db: Db, userId: string): Promise<string[]
   return [...affected].sort();
 }
 
+/** Yoga on one side, strength on the other: a mobility session the app saved
+ * as yoga and the watch recorded under Strength. */
+function isMobilityPair(a: string, b: string): boolean {
+  return (a === "yoga" && b === "strength") || (a === "strength" && b === "yoga");
+}
+
 export function sanitizeRunDuration(a: NormalizedActivity): NormalizedActivity {
   if (
     a.sport === "run" &&
@@ -492,7 +498,13 @@ export async function ingestActivities(db: Db, input: IngestInput): Promise<Inge
         if (row.source === "import") continue; // imported history is never adopted
         const { score } = scoreAgainstStoredRow(src, {
           startTime: row.startTime,
-          sport: row.sport,
+          // THE APP+WATCH MERGE ACROSS THE COARSE FILING (audit 1, ingest
+          // MINOR #3). The watch records a pushed mobility program in Strength
+          // mode — COROS has no mobility program type — while the app saved the
+          // same session as yoga. For an APP row only, the pair is one session
+          // (spec §10.6: counted once); any other yoga row and a strength
+          // session stay two, which is what the scorer's hard sport reject is for.
+          sport: row.source === "app" && isMobilityPair(row.sport, src.sport) ? src.sport : row.sport,
           durationSeconds: row.durationSeconds,
           distanceMeters: row.distanceMeters ?? undefined,
         });
