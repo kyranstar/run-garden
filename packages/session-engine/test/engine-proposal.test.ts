@@ -1,7 +1,7 @@
 import { addDays } from "@rg/domain";
 import { makeEngineData, type EngineData } from "@rg/exercise-library";
 import { describe, expect, test } from "vitest";
-import { Proposal, type HistorySession } from "../src/index.js";
+import { Hist, Proposal, type HistorySession } from "../src/index.js";
 import { dataWith, ex, session } from "./fixtures.js";
 
 // Ported from the standalone tests/engine-proposal.test.js.
@@ -102,5 +102,38 @@ describe("beyond the standalone suite", () => {
     expect(noneMode([]).reasons).toEqual(["First session — start steady."]);
     expect(noneMode([session(day(5))]).reasons[0]).toMatch(/5 days since your last session/);
     for (const reason of [...r.reasons, ...noneMode(calmWeek.slice(1)).reasons]) expect(reason).not.toMatch(/tmj|jaw|clench/i);
+  });
+});
+
+describe("two sessions on the same day (spec §5 change 2, Review Focus 5)", () => {
+  const themed: EngineData = {
+    ...data,
+    targets: { patterns: {}, regions: { hips: 2, neck: 2 } },
+    themes: [
+      { id: "hips", name: "Hips", blurb: "", modes: ["consistent"], emphasis: { patterns: {}, regions: { hips: 2 } }, formats: ["flow"], coreBias: [] },
+      { id: "neck", name: "Neck", blurb: "", modes: ["consistent"], emphasis: { patterns: {}, regions: { neck: 2 } }, formats: ["flow"], coreBias: [] },
+    ],
+  };
+  const neckDone = session(day(1), { done: [{ id: "neckEase" }] });
+
+  test("a second session today doesn't repeat the theme of today's first", () => {
+    // Debt favours hips; the morning session already was hips, so the evening one isn't.
+    expect(Proposal.theme(themed, { mode: "consistent", sessions: [neckDone], today }).theme?.id).toBe("hips");
+    const morning = session(today, { startedAt: `${today}T07:00:00`, theme: "hips" });
+    expect(Proposal.theme(themed, { mode: "consistent", sessions: [neckDone, morning], today }).theme?.id).toBe("neck");
+    // Today's theme outranks yesterday's avoidance: with yesterday's theme also avoided, today's still isn't repeated.
+    const yesterdayNeck = session(day(1), { theme: "neck", done: [{ id: "neckEase" }] });
+    expect(Proposal.theme(themed, { mode: "consistent", sessions: [yesterdayNeck, morning], today }).theme?.id).toBe("neck");
+    expect(Proposal.theme(themed, { mode: "consistent", sessions: [neckDone, morning], today, lastThemeId: "neck" }).theme?.id).toBe("neck");
+  });
+
+  test("the second session's proposal says 'earlier today', and the week's new move still counts", () => {
+    const morning = session(today, { startedAt: `${today}T07:00:00`, mode: "build", done: [{ id: "hipOpener" }] });
+    const r = mode({ sessions: [...calmWeek, morning] });
+    expect(r.reasons[0]).toBe("You built strength earlier today — give it 48 hours.");
+    // hipOpener was first done this morning: the week's new move is already taken for the evening session.
+    expect(Hist.newMoveThisWeek(data, [...calmWeek, morning], today)).toBe(true);
+    expect(Hist.newMoveThisWeek(data, calmWeek, today)).toBe(false);
+    expect(Hist.firstDone(data, [...calmWeek, morning]).get("hipOpener")).toBe(today);
   });
 });

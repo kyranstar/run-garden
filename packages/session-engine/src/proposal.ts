@@ -47,6 +47,9 @@ function mode(data: EngineData, { checks = {}, sessions = [], today, weeklyGoal 
   return out("consistent", [failed[1]]);
 }
 
+/** Outweighs any debt and the previous-theme penalty, so today's theme only repeats when nothing else suits the mode. */
+const SAME_DAY_PENALTY = 1e6;
+
 export interface ThemeArgs {
   mode: Mode;
   sessions?: readonly HistorySession[];
@@ -66,6 +69,8 @@ function theme(data: EngineData, { mode: m, sessions = [], today, lastThemeId = 
   const rng = Rng.create(`${today}|${m}|theme`);
   const previous = Hist.sorted(sessions).filter(s => s.date < today && s.theme).pop();
   const avoid = lastThemeId != null ? lastThemeId : previous ? previous.theme : null;
+  // A second session today never repeats a theme already done today (spec §5 change 2).
+  const doneToday = new Set(sessions.filter(s => s.date === today && s.theme).map(s => s.theme));
 
   let best: { theme: Theme; score: number; parts: Array<[string, number]> } | null = null;
   for (const t of options) {
@@ -79,6 +84,7 @@ function theme(data: EngineData, { mode: m, sessions = [], today, lastThemeId = 
       }
     }
     if (t.id === avoid) score -= 100;
+    if (doneToday.has(t.id)) score -= SAME_DAY_PENALTY;
     score += rng() * 0.5;
     if (!best || score > best.score) best = { theme: t, score, parts };
   }
