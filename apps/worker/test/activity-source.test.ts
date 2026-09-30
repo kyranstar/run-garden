@@ -60,6 +60,47 @@ describe("activities.source", () => {
     expect(rows[0]!.corosActivityId).toBe("c-1");
   });
 
+  it("never lets an import-source activity complete a planned session (audit 1, ingest MINOR #2)", async () => {
+    // Spec §10.7: imported history carries no match and never enters the
+    // garden, and a completion credits the garden. The ingest's auto-matcher
+    // read every unmatched activity, so any COROS activity that brought the
+    // date into play let an imported lift complete an open planned one.
+    const db = makeTestDb();
+    const { userId } = await makeTestUser(db);
+    const day = T.slice(0, 10);
+    await db.insert(schema.plannedWorkouts).values({
+      id: "lift",
+      userId,
+      planId: "p",
+      sourceWorkoutId: "4738:lift",
+      title: "Legs",
+      category: "strength",
+      sport: "strength",
+      originalPlanDate: day,
+      lastVerifiedCorosDate: day,
+      effectiveDate: day,
+      effectiveTime: "05:00",
+      sourceContentFingerprint: "fp",
+      fallbackEstimatedDurationSeconds: 1800,
+      calendarBlockDurationSeconds: 1800,
+      completionState: "unresolved",
+      createdAt: nowInstant(),
+      updatedAt: nowInstant(),
+    });
+    await insertActivity(db, userId, "imp", "import");
+    // An unrelated COROS run that day is what brings the date into matching.
+    await ingestActivities(db, {
+      userId,
+      sources: [corosStrength(300, { providerActivityId: "run-1", sport: "run", contentFingerprint: "fp-run" })],
+    });
+
+    const [lift] = await db.select().from(schema.plannedWorkouts).where(eq(schema.plannedWorkouts.id, "lift"));
+    expect(lift!.completionState).toBe("unresolved");
+    const [imp] = await db.select().from(schema.activities).where(eq(schema.activities.id, "imp"));
+    expect(imp!.completionMatchId).toBeNull();
+    expect(await db.select().from(schema.workoutCompletionMatches)).toEqual([]);
+  });
+
   it("rows inserted without a source read back as coros", async () => {
     const db = makeTestDb();
     const { userId } = await makeTestUser(db);

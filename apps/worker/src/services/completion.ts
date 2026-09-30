@@ -588,10 +588,20 @@ export async function ingestActivities(db: Db, input: IngestInput): Promise<Inge
         ),
       );
 
+    // Imported history never completes a planned session (spec §10.7: import
+    // activities carry no match and never enter the garden, and a completion
+    // credits the garden) — adoption already skipped them; matching did not
+    // (audit 1, ingest MINOR #2).
     const unmatchedActivities = await db
       .select()
       .from(activities)
-      .where(and(eq(activities.userId, input.userId), isNull(activities.completionMatchId)));
+      .where(
+        and(
+          eq(activities.userId, input.userId),
+          isNull(activities.completionMatchId),
+          ne(activities.source, "import"),
+        ),
+      );
     const candidates = unmatchedActivities
       .filter((a) => {
         const d = (a.startTimeLocal ?? a.startTime).slice(0, 10);
