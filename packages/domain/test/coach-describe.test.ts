@@ -12,7 +12,7 @@
  */
 import { describe, expect, it } from "vitest";
 import { coachOpSchema, type CoachOp } from "../src/coach.js";
-import { describeOps, type PlannedRef } from "../src/coach-describe.js";
+import { describeOps, hasWatchAddress, type PlannedRef } from "../src/coach-describe.js";
 
 const LIVE_OPS: unknown[] = [
   {
@@ -294,6 +294,18 @@ describe("describeOps — every op kind is described", () => {
     ]);
     // Without the lookup there is only the day it lands on — never invented.
     expect(describeOps([coachOpSchema.parse(SAMPLES.move)]).map((l) => l.date)).toEqual(["2026-08-20"]);
+  });
+
+  it("an adjust on a watch-addressed row says the watch is unchanged; an unpushed coach row does not", () => {
+    const op = [coachOpSchema.parse(SAMPLES.adjust)];
+    const ref = (src: string | null, inPlan: string | null, prog: string | null): PlannedRef => ({
+      summary: "Tempo",
+      onWatch: hasWatchAddress({ sourceWorkoutId: src, sourceIdInPlan: inPlan, sourceProgramId: prog }),
+    });
+    const onWatch = describeOps(op, new Map([["w1", ref("4738:12", "3", "9")]]));
+    expect(onWatch[0]!.summary.endsWith("· watch unchanged")).toBe(true);
+    const coachRow = describeOps(op, new Map([["w1", ref("coach-abc", null, null)]]));
+    expect(coachRow[0]!.summary).not.toContain("watch unchanged");
   });
 
   it("renders a circuit as rounds rather than as loose sets", () => {

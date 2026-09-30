@@ -805,6 +805,7 @@ export function PlanScreen() {
           {
             date: w.effectiveDate,
             summary: w.title,
+            ...(w.hasWatchAddress ? { onWatch: true } : {}),
             ...(w.workoutSeconds != null
               ? { durationMinutes: Math.round(w.workoutSeconds / 60) }
               : {}),

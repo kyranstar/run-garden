@@ -93,6 +93,20 @@ export interface PlannedRef {
   /** Its planned length — the fallback delta when the wording is identical
    * (an ease that shortens a run without renaming it). */
   durationMinutes?: number;
+  /** The row carries a COROS watch address (a plan-authored workout). Only
+   * then is "watch unchanged" a fact worth saying; a coach-authored row that
+   * was never pushed has no watch copy to leave alone. */
+  onWatch?: boolean;
+}
+
+/** The shape `watchAddressOf` (worker) requires of a planned row: a
+ * `planId:workoutId` source id plus the program and in-plan ids. */
+export function hasWatchAddress(w: {
+  sourceWorkoutId?: string | null;
+  sourceIdInPlan?: string | null;
+  sourceProgramId?: string | null;
+}): boolean {
+  return !!w.sourceWorkoutId && /^\d+:\d+$/.test(w.sourceWorkoutId) && !!w.sourceIdInPlan && !!w.sourceProgramId;
 }
 
 const WEEKDAYS = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
@@ -418,9 +432,11 @@ export function describeOps(ops: CoachOp[], planned?: ReadonlyMap<string, Planne
         const before = was?.durationMinutes;
         lines.push({
           date: was?.date ?? null,
-          summary: was?.summary
-            ? `${was.summary} — ${op.durationMinutes} min`
-            : `A planned session becomes ${op.durationMinutes} min`,
+          summary:
+            (was?.summary
+              ? `${was.summary} — ${op.durationMinutes} min`
+              : `A planned session becomes ${op.durationMinutes} min`) +
+            (was?.onWatch ? " · watch unchanged" : ""),
           // The one fact this op changes, so it is the one `was` worth
           // showing — and only when it really differs.
           was: before != null && before !== op.durationMinutes ? `${before} min` : null,

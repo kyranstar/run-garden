@@ -698,6 +698,18 @@ describe("applyOps · remove, restore, adjust", () => {
     expect(w!.title).toBe("Tempo 3×10");
   });
 
+  it("adjust rewrites the block and the fallback estimate, and leaves sync state alone", async () => {
+    const db = makeTestDb();
+    const { userId, prefs } = await makeTestUser(db);
+    await seedWorkout(db, userId, "w1", addDays(todayInZone(prefs.timezone), 2));
+    await db.update(schema.plannedWorkouts).set({ corosSyncState: "synced" }).where(eq(schema.plannedWorkouts.id, "w1"));
+    await applyOps(db, userId, prefs, "p", [{ kind: "adjust", workoutId: "w1", durationMinutes: 30 }]);
+    const [w] = await db.select().from(schema.plannedWorkouts).where(eq(schema.plannedWorkouts.id, "w1"));
+    expect(w!.calendarBlockDurationSeconds).toBe(1800);
+    expect(w!.fallbackEstimatedDurationSeconds).toBe(1800);
+    expect(w!.corosSyncState).toBe("synced");
+  });
+
   it("reports a target that is gone rather than claiming it changed", async () => {
     const db = makeTestDb();
     const { userId, prefs } = await makeTestUser(db);

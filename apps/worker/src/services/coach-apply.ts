@@ -1204,6 +1204,7 @@ export async function applyOps(
           .select({
             id: plannedWorkouts.id,
             seconds: plannedWorkouts.calendarBlockDurationSeconds,
+            effectiveDate: plannedWorkouts.effectiveDate,
           })
           .from(plannedWorkouts)
           .where(
@@ -1222,12 +1223,17 @@ export async function applyOps(
           .update(plannedWorkouts)
           .set({
             calendarBlockDurationSeconds: op.durationMinutes * 60,
-            // The watch no longer matches what the app holds, exactly as an
-            // `ease` leaves it — the push lane is what makes them agree again.
-            corosSyncState: "calendar_only",
+            // The estimate the load maths falls back on moves with the block,
+            // or the two would disagree about how long the session is.
+            fallbackEstimatedDurationSeconds: op.durationMinutes * 60,
+            // `corosSyncState` is left alone on purpose: no push job is
+            // enqueued here, so flipping it to `calendar_only` stranded the
+            // row as "not synced" forever. The watch copy is unchanged.
             updatedAt: now,
           })
           .where(and(eq(plannedWorkouts.id, op.workoutId), eq(plannedWorkouts.userId, userId)));
+        // A longer or shorter block can collide with its neighbours.
+        touchedDates.add(row.effectiveDate);
         out.updated.push(op.workoutId);
         break;
       }

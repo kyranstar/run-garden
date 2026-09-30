@@ -113,6 +113,8 @@ export interface WorkoutDto {
   stageSummary?: string | null;
   calendarSyncState: CalendarSyncState;
   corosSyncState: CorosSyncState;
+  /** The row carries a COROS watch address. Absent otherwise. */
+  hasWatchAddress?: boolean;
   /** Derived per-workout view (sync-transparency Task 10) — `corosSyncState`'s
    * vocabulary plus `content_stale`, the one value only a derivation can
    * produce (see `WorkoutSyncView`). Computed fresh from the open content

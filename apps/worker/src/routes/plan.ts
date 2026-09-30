@@ -24,6 +24,7 @@ import {
   coachExerciseSchema,
   exerciseCuesAsText,
   formatExercise,
+  hasWatchAddress,
   humanizeWorkoutTitle,
   isAdventureSport,
   looksLikeCodeTitle,
@@ -403,6 +404,9 @@ function workoutDto(
     })(),
     calendarSyncState: w.calendarSyncState,
     corosSyncState: w.corosSyncState,
+    // Present only when the row has a COROS watch address (a plan-authored
+    // workout) — the coach manifest says "watch unchanged" only for those.
+    ...(hasWatchAddress(w) ? { hasWatchAddress: true } : {}),
     // Derived per-workout view (sync-transparency Task 10), alongside the
     // legacy stored `corosSyncState` above — not a replacement for it.
     // Optional: routes that don't bulk-load it (or callers that predate this
