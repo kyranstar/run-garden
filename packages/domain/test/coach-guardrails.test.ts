@@ -870,17 +870,71 @@ describe("remove, restore and adjust are simulated, not ignored", () => {
     expect(out.advisory.some((v) => v.rule === "ramp")).toBe(true);
   });
 
-  it("adjust shortens a hard strength session below HARD_LIFT_MINUTES and clears hard_adjacency", () => {
+  /**
+   * A SHORTENING NEVER ADDS A LOAD FINDING (audit 1, coach finding 5).
+   *
+   * The Task 4 version of this test asserted the opposite — that shortening a
+   * 60-minute lift to 30 next to a quality day must flag `hard_adjacency` —
+   * because every adjust was marked as "touched by this proposal". The rules
+   * that gate on that mark then charged a taper with the load it REMOVED:
+   * pre-existing adjacency is the plan's business, and a shorter session is
+   * not a new cost. A lengthening one is, so it still speaks.
+   */
+  it("a shortening adjust adds no finding; a lengthening one does", () => {
     const c = base([
       wk("q1", "2026-08-17", "quality", 50, "run"),
       wk("s1", "2026-08-18", "strength", 60, "strength"),
     ]);
-    const stays = validateOps([{ kind: "adjust", workoutId: "s1", durationMinutes: GUARDRAIL_LIMITS.hardLiftMinutes }], c);
-    expect(stays.advisory.some((v) => v.rule === "hard_adjacency")).toBe(true);
-    const out = validateOps(
+    const shorter = validateOps([{ kind: "adjust", workoutId: "s1", durationMinutes: GUARDRAIL_LIMITS.hardLiftMinutes }], c);
+    expect([...shorter.fatal, ...shorter.advisory, ...shorter.soft]).toEqual([]);
+    const trivial = validateOps(
       [{ kind: "adjust", workoutId: "s1", durationMinutes: GUARDRAIL_LIMITS.trivialLiftMinutes - 1 }],
       c,
     );
-    expect(out.advisory.filter((v) => v.rule === "hard_adjacency")).toEqual([]);
+    expect([...trivial.fatal, ...trivial.advisory, ...trivial.soft]).toEqual([]);
+
+    const easyLift = base([
+      wk("q1", "2026-08-17", "quality", 50, "run"),
+      wk("s1", "2026-08-18", "strength", 20, "strength"),
+    ]);
+    const longer = validateOps([{ kind: "adjust", workoutId: "s1", durationMinutes: 45 }], easyLift);
+    expect(longer.advisory.map((v) => v.rule)).toContain("hard_adjacency");
+  });
+
+  it("a taper inside race week, an event's window, and next to a hard day says nothing", () => {
+    // The survival diff's five false positives, and the verifier's three
+    // probes, in one calendar: every one of them a pure shortening.
+    const c = ctx({
+      today: "2026-08-05",
+      workouts: [
+        wk("q-thu", "2026-08-06", "quality", 50, "run"),
+        wk("s-fri", "2026-08-07", "strength", 45, "strength"),
+        wk("l-sat", "2026-08-08", "long", 90, "run"),
+        wk("q-race-week", "2026-08-12", "quality", 60, "run"),
+      ],
+      datedEvents: [{ id: "m1", label: "ski trip", date: "2026-08-10" }],
+    });
+    const taper = validateOps(
+      [
+        { kind: "adjust", workoutId: "q-thu", durationMinutes: 40 },
+        { kind: "adjust", workoutId: "l-sat", durationMinutes: 70 },
+        { kind: "adjust", workoutId: "q-race-week", durationMinutes: 40 },
+      ],
+      c,
+    );
+    expect([...taper.fatal, ...taper.advisory, ...taper.soft]).toEqual([]);
+  });
+
+  it("a lengthening adjust is charged for the load, but never for a weekday it did not choose", () => {
+    const c = ctx({
+      today: "2026-08-05",
+      workouts: [wk("q-race-week", "2026-08-12", "quality", 60, "run")],
+    });
+    const out = validateOps([{ kind: "adjust", workoutId: "q-race-week", durationMinutes: 80 }], c);
+    expect(out.advisory.map((v) => v.rule)).toContain("race_week_intensity");
+    // `r-tue-quality` asks for quality on Tuesdays and this one is a Wednesday
+    // — but the adjust did not put it there, so the standing rule is not the
+    // adjust's to answer for.
+    expect(out.soft).toEqual([]);
   });
 });

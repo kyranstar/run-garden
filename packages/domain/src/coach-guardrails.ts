@@ -332,8 +332,15 @@ interface CalEntry {
   category: string;
   durationMinutes: number;
   discipline: string;
-  /** Introduced or rewritten by these ops (drives race-week "new intensity"). */
+  /** Introduced or rewritten by these ops (drives race-week "new intensity").
+   * An adjust sets it only when it LENGTHENS the session: a shorter session is
+   * less load, never a new cost (audit 1, coach finding 5). */
   fromOp: number | null;
+  /** These ops chose this entry's DAY or its kind — an add, a move, a swap, a
+   * restore, an ease, a structural op. An adjust changes neither, so it never
+   * sets this, and the athlete's standing weekday rules (which read it) are
+   * not the adjust's to answer for. */
+  placed: boolean;
   /** Already trained. Only `hard_adjacency` reads it, and only to word its
    * advisory honestly — see the note on that rule. */
   done: boolean;
@@ -629,6 +636,7 @@ function resultingCalendar(ops: CoachOp[], ctx: GuardrailCtx): CalEntry[] {
       durationMinutes: w.durationMinutes,
       discipline: w.discipline,
       fromOp: null,
+      placed: false,
       done: w.completionState === "completed",
     }));
   const entryFor = (id: string): CalEntry | undefined => cal.find((e) => e.id === id);
@@ -642,6 +650,7 @@ function resultingCalendar(ops: CoachOp[], ctx: GuardrailCtx): CalEntry[] {
           e.durationMinutes = op.session.durationMinutes;
           e.discipline = disciplineOfSession(op.session);
           e.fromOp = i;
+          e.placed = true;
         }
         break;
       }
@@ -650,6 +659,7 @@ function resultingCalendar(ops: CoachOp[], ctx: GuardrailCtx): CalEntry[] {
         if (e) {
           e.date = op.toDate;
           e.fromOp = i;
+          e.placed = true;
         }
         break;
       }
@@ -658,9 +668,11 @@ function resultingCalendar(ops: CoachOp[], ctx: GuardrailCtx): CalEntry[] {
           if (e.date === op.dayA) {
             e.date = op.dayB;
             e.fromOp = i;
+            e.placed = true;
           } else if (e.date === op.dayB) {
             e.date = op.dayA;
             e.fromOp = i;
+            e.placed = true;
           }
         }
         break;
@@ -684,16 +696,23 @@ function resultingCalendar(ops: CoachOp[], ctx: GuardrailCtx): CalEntry[] {
             durationMinutes: was.durationMinutes,
             discipline: was.discipline,
             fromOp: i,
+            placed: true,
             done: false,
           });
         }
         break;
       }
       case "adjust": {
+        // A SHORTER SESSION IS NEVER A NEW COST (audit 1, coach finding 5).
+        // Every rule without a baseline gate — hard adjacency, race-week
+        // intensity, the event taper — reads `fromOp` as "these ops put this
+        // load here", so marking a shortening charged a taper with the load it
+        // removed. A lengthening adds load, so it is marked; it never chose
+        // the day, so `placed` stays as it was.
         const e = entryFor(op.workoutId);
         if (e) {
+          if (op.durationMinutes > e.durationMinutes) e.fromOp = i;
           e.durationMinutes = op.durationMinutes;
-          e.fromOp = i;
         }
         break;
       }
@@ -710,6 +729,7 @@ function resultingCalendar(ops: CoachOp[], ctx: GuardrailCtx): CalEntry[] {
             durationMinutes: op.session.durationMinutes,
             discipline: disciplineOfSession(op.session),
             fromOp: i,
+            placed: true,
             done: false,
           });
         }
@@ -725,6 +745,7 @@ function resultingCalendar(ops: CoachOp[], ctx: GuardrailCtx): CalEntry[] {
             durationMinutes: s.session.durationMinutes,
             discipline: disciplineOfSession(s.session),
             fromOp: i,
+            placed: true,
             done: false,
           });
         }
@@ -738,6 +759,7 @@ function resultingCalendar(ops: CoachOp[], ctx: GuardrailCtx): CalEntry[] {
             durationMinutes: s.session.durationMinutes,
             discipline: disciplineOfSession(s.session),
             fromOp: i,
+            placed: true,
             done: false,
           });
         }
@@ -1191,10 +1213,13 @@ export function validateOps(
     }
   }
 
-  // Soft — structured standing rules on op-touched entries.
+  // Soft — structured standing rules on entries these ops PLACED. A standing
+  // rule is about which weekday a kind of session sits on, and an adjust picks
+  // neither: "puts your quality session on Wed, not Tue" about a session the
+  // proposal only re-timed was a finding about a choice nobody made here.
   for (const rule of ctx.rules) {
     for (const e of cal) {
-      if (e.fromOp === null) continue;
+      if (!e.placed || e.fromOp === null) continue;
       if (e.category === rule.category && isoWeekday(e.date) !== rule.weekday) {
         soft.push({
           rule: rule.id,
