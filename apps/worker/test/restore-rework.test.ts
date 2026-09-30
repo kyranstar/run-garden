@@ -357,7 +357,7 @@ describe("insert errors and silent losses (findings 2 and 5)", () => {
 });
 
 describe("finish and Start fresh", () => {
-  it("finish clears the marker and flags the garden rebuild and the calendar reconcile", async () => {
+  it("finish clears the marker and flags the garden catch-up and the calendar reconcile", async () => {
     const db = makeTestDb();
     const { userId } = await makeTestUser(db);
     await seedFullAccount(db, userId);
@@ -372,8 +372,7 @@ describe("finish and Start fresh", () => {
     expect(state).toMatchObject({
       restoreId: null,
       calendarReconcile: { phase: "pending", sweep: true },
-      gardenRebuildPending: true,
-      gardenRebuildFrom: (f.tables.garden_state![0]!.snapshot as { state: { createdDate: string } }).state.createdDate,
+      gardenCatchUpPending: true,
     });
     expect(state?.restoreFinishedAt).not.toBeNull();
   });

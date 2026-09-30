@@ -1,7 +1,7 @@
 /**
  * Per-account bookkeeping (`account_state`, migration 0023): the restore
- * marker, the post-restore calendar reconcile flag and the pending garden
- * rebuild. None of it is account data — it is never exported or restored, and
+ * marker, the post-restore calendar reconcile flag and the post-restore garden
+ * catch-up flag. None of it is account data — it is never exported or restored, and
  * delete-all removes it.
  *
  * THE RESTORE MARKER (ruling B2). Restore begin sets `restoreId`; finish or

@@ -194,7 +194,7 @@ const ENTRIES: ReadonlyArray<readonly [SQLiteTable, TableScope]> = [
   [schemaVersions, excluded("app component versions, not account data")],
   [
     accountState,
-    excluded("this environment's restore marker and pending rebuilds — bookkeeping, never data to carry; delete-all removes it"),
+    excluded("this environment's restore marker and post-restore flags — bookkeeping, never data to carry; delete-all removes it"),
   ],
 ];
 

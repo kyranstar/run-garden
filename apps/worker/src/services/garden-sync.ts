@@ -66,6 +66,7 @@ import { disciplineOf } from "@rg/analytics";
 const DEW_EPOCH = "2026-08-19";
 import { chunkedInsert, type Db } from "./db.js";
 import { isRestoring, loadAccountState, patchAccountState, restoreInProgress } from "./account-state.js";
+import { claimUserLock, releaseUserLock } from "./locks.js";
 import { coachBlockAdherence, COACHED_BLOCK_ADHERENCE, plansEndedOn } from "./coach-plans.js";
 import {
   VISITOR_HINTS,
@@ -578,17 +579,18 @@ export interface GardenSimResult {
   simulatedDays: number;
   eventsEmitted: number;
   lastSimulatedDate: LocalDate;
-  /** True when a capped version-upgrade rebuild stopped early (P3d).
-   * `garden_state` still holds the pre-upgrade snapshot — reads keep showing
-   * it — and the next advanceGarden call (hourly cron, or any garden read)
-   * resumes from the durable checkpoint cursor. */
+  /** True when a capped walk stopped early. On a version-upgrade rebuild
+   * (P3d) `garden_state` still holds the pre-upgrade snapshot and the next
+   * advanceGarden call resumes from the durable checkpoint cursor; on a
+   * post-restore catch-up (B4 amended) `garden_state` holds the day the step
+   * stopped at and the next call walks on from there. */
   resimPending?: boolean;
 }
 
 export interface GardenAdvanceOptions {
-  /** Per-invocation day cap for version-upgrade rebuilds. Defaults to
-   * UPGRADE_RESIM_MAX_DAYS; tests set it low to exercise resumption without
-   * touching SIMULATION_VERSION. */
+  /** Per-invocation day cap for version-upgrade rebuilds and post-restore
+   * catch-up steps. Defaults to UPGRADE_RESIM_MAX_DAYS / CATCH_UP_MAX_DAYS;
+   * tests set it low to exercise resumption. */
   maxResimDays?: number;
 }
 
@@ -603,6 +605,24 @@ export interface GardenAdvanceOptions {
  * forever.
  */
 const UPGRADE_RESIM_MAX_DAYS = 45;
+
+/**
+ * How many days one post-restore catch-up step may walk (B4 amended). Same
+ * arithmetic as UPGRADE_RESIM_MAX_DAYS: a restored file can be months behind
+ * the calendar, and walking all of it in one request is what used to fail
+ * restore finish (audit 1 data finding 6).
+ */
+const CATCH_UP_MAX_DAYS = 45;
+
+interface WalkLimits {
+  /** Stop after this many simulated days (`capped` in the result). */
+  maxDays?: number;
+  /** Write a checkpoint at the exact day a capped walk stopped — the version
+   * upgrade's durable cursor. The catch-up's cursor is `garden_state`. */
+  checkpointAtCap?: boolean;
+  /** Walk no further than this day, even when today is later. */
+  through?: LocalDate;
+}
 
 /**
  * Walk `snapshot` forward day-by-day to `today`, writing events/day-inputs/
@@ -631,16 +651,17 @@ async function walkForward(
   startSnapshot: GardenSnapshot,
   today: LocalDate,
   nowIso: string,
-  maxDays?: number,
+  limits: WalkLimits = {},
 ): Promise<{ snapshot: GardenSnapshot; simulatedDays: number; eventsEmitted: number; capped: boolean }> {
+  const { maxDays, checkpointAtCap = false, through } = limits;
   let snapshot = startSnapshot;
   let simulated = 0;
   let eventsEmitted = 0;
   let capped = false;
   let date = addDays(snapshot.state.lastSimulatedDate, 1);
-  while (date < today) {
+  while (date < today && (through === undefined || date <= through)) {
     // P3d: a capped walk stops mid-history instead of burning through the
-    // subrequest budget; the cursor checkpoint below makes it resumable.
+    // subrequest budget; the caller's cursor makes it resumable.
     if (maxDays !== undefined && simulated >= maxDays) {
       capped = true;
       break;
@@ -727,7 +748,7 @@ async function walkForward(
   // cursor). Checkpoint content is a pure function of the fold, so an extra
   // non-Monday row changes nothing downstream: any resim restarting from it
   // replays byte-identically.
-  if (capped && simulated > 0) {
+  if (capped && checkpointAtCap && simulated > 0) {
     await db
       .insert(gardenSnapshots)
       .values({
@@ -754,38 +775,6 @@ async function standDown(db: Db, userId: string, prefs: UserPreferences, now: Da
   };
 }
 
-/**
- * One step of a PENDING REBUILD (account_state.garden_rebuild_*): a restore
- * flagged the whole garden (ruling B4), or a resimulation was too long for
- * one request. It runs through the same capped, resumable walk a version
- * upgrade uses, so it can never outgrow a request's statement budget.
- *
- * `changedFrom` is the first date whose inputs changed since the rebuild's
- * last step (the restore's genesis date on the first step; a late activity's
- * date if one arrives mid-rebuild), or null to resume from the newest
- * checkpoint the rebuild itself wrote. `garden_state` — what every read
- * renders — moves only when the walk lands uncapped; until then reads keep
- * showing the garden as it was.
- */
-async function rebuildStep(
-  db: Db,
-  userId: string,
-  current: GardenSnapshot,
-  prefs: UserPreferences,
-  now: Date,
-  opts: GardenAdvanceOptions | undefined,
-  changedFrom: LocalDate | null,
-): Promise<GardenSimResult> {
-  const res = await upgradeResimulate(db, userId, current, prefs, now, opts, changedFrom ?? undefined);
-  await patchAccountState(db, userId, {
-    gardenRebuildPending: res.resimPending === true,
-    gardenRebuildFrom: null,
-  });
-  return res;
-}
-
-const earlierOf = (a: LocalDate | null | undefined, b: LocalDate): LocalDate => (a && a < b ? a : b);
-
 /** Advance the simulation through all eligible days. */
 export async function advanceGarden(
   db: Db,
@@ -798,18 +787,29 @@ export async function advanceGarden(
   if (isRestoring(account)) return standDown(db, userId, prefs, now);
   const startSnapshot = await ensureGarden(db, userId, prefs);
 
-  if (account?.gardenRebuildPending) {
-    return rebuildStep(db, userId, startSnapshot, prefs, now, opts, account.gardenRebuildFrom);
-  }
-
   // Simulation upgraded since this garden was last written: rebuild the whole
-  // history from the stored inputs so version-3 state (earned grounds) exists
-  // for past expansions too. Deterministic — same inputs, same garden. The
+  // history — every day input re-derived from the live tables (buildDayInput)
+  // with the preferences in force NOW, not replayed from the stored inputs —
+  // so version-3 state (earned grounds) exists for past expansions too. The
   // rebuild is capped per invocation and resumable (P3d): each call here —
   // hourly cron or any garden read — advances the durable checkpoint cursor
   // until the walk reaches today, and only then does garden_state move.
   if ((startSnapshot.version ?? 1) < SIMULATION_VERSION) {
     return upgradeResimulate(db, userId, startSnapshot, prefs, now, opts);
+  }
+
+  // A restored garden still catching up from the file's last day (B4
+  // amended): one capped, forward-only step.
+  if (account?.gardenCatchUpPending) {
+    const lock = await claimUserLock(db, userId, GARDEN_LOCK, GARDEN_LOCK_STALE_MINUTES);
+    // Another step, or an ingest's resimulation, is walking this garden
+    // right now: two walks at once write the same days from different folds.
+    if (!lock) return { ...(await standDown(db, userId, prefs, now)), resimPending: true };
+    try {
+      return await catchUpStep(db, userId, prefs, now, opts);
+    } finally {
+      await releaseUserLock(db, userId, GARDEN_LOCK, lock).catch(() => undefined);
+    }
   }
 
   const today = todayInZone(prefs.timezone, now);
@@ -818,6 +818,69 @@ export async function advanceGarden(
 
   await persistSnapshot(db, userId, snapshot);
   return { simulatedDays, eventsEmitted, lastSimulatedDate: snapshot.state.lastSimulatedDate };
+}
+
+/**
+ * The per-user lock a post-restore catch-up step and an ingest's
+ * resimulation take while the catch-up is pending (N2): both walk the same
+ * days, and two walks at once interleave writes from different folds —
+ * events are insert-or-ignore, so the first writer of a day wins for good.
+ * A dead holder's lock goes stale after a minute; a step (at most
+ * CATCH_UP_MAX_DAYS days) never holds it anywhere near that long.
+ */
+const GARDEN_LOCK = "garden";
+const GARDEN_LOCK_STALE_MINUTES = 1;
+/** How long a resimulation waits for a catch-up step to finish — past the
+ * stale window, so a dead holder's lock is always taken over. */
+const GARDEN_LOCK_WAIT_MS = 75_000;
+
+const sleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
+
+async function waitForGardenLock(db: Db, userId: string): Promise<string | null> {
+  const deadline = Date.now() + GARDEN_LOCK_WAIT_MS;
+  let pause = 100;
+  for (;;) {
+    const lock = await claimUserLock(db, userId, GARDEN_LOCK, GARDEN_LOCK_STALE_MINUTES);
+    if (lock || Date.now() >= deadline) return lock;
+    await sleep(Math.min(pause, Math.max(0, deadline - Date.now())));
+    pause = Math.min(pause * 2, 2_000);
+  }
+}
+
+/**
+ * One post-restore catch-up step (B4 amended), under the garden lock: walk
+ * forward from `garden_state` at most `maxResimDays` days, persist
+ * `garden_state` where the walk stopped, delete nothing. Everything the file
+ * brought (events, day inputs, checkpoints, unlocks) stays exactly as
+ * exported; only days after its last simulated day are added. A step that
+ * dies part-way has moved nothing durable: the days it wrote are rewritten
+ * identically by the next step. The step that reaches today clears the flag.
+ */
+async function catchUpStep(
+  db: Db,
+  userId: string,
+  prefs: UserPreferences,
+  now: Date,
+  opts?: GardenAdvanceOptions,
+): Promise<GardenSimResult> {
+  const start = await ensureGarden(db, userId, prefs);
+  const { snapshot, simulatedDays, eventsEmitted, capped } = await walkForward(
+    db,
+    userId,
+    prefs,
+    start,
+    todayInZone(prefs.timezone, now),
+    nowInstant(now),
+    { maxDays: opts?.maxResimDays ?? CATCH_UP_MAX_DAYS },
+  );
+  await persistSnapshot(db, userId, snapshot);
+  if (!capped) await patchAccountState(db, userId, { gardenCatchUpPending: false });
+  return {
+    simulatedDays,
+    eventsEmitted,
+    lastSimulatedDate: snapshot.state.lastSimulatedDate,
+    ...(capped ? { resimPending: true } : {}),
+  };
 }
 
 /**
@@ -902,7 +965,7 @@ async function upgradeResimulate(
     startSnapshot,
     today,
     nowIso,
-    opts?.maxResimDays ?? UPGRADE_RESIM_MAX_DAYS,
+    { maxDays: opts?.maxResimDays ?? UPGRADE_RESIM_MAX_DAYS, checkpointAtCap: true },
   );
 
   if (capped) {
@@ -936,14 +999,54 @@ export async function resimulateFrom(
 ): Promise<GardenSimResult> {
   const account = await loadAccountState(db, userId);
   if (isRestoring(account)) return standDown(db, userId, prefs, now);
-  const current = await loadGarden(db, userId);
+  if (account?.gardenCatchUpPending) return catchUpResimulate(db, userId, affectedDate, prefs, now, opts);
+  return resimulate(db, userId, affectedDate, prefs, now, opts);
+}
 
-  // A rebuild is already under way: this change joins it — the rebuild's
-  // cursor is only trusted up to the day before the change.
-  if (current && account?.gardenRebuildPending) {
-    return rebuildStep(db, userId, current, prefs, now, opts, earlierOf(account.gardenRebuildFrom, affectedDate));
+/**
+ * An input changed while a restored garden is still catching up (N2). Takes
+ * the garden lock — waiting out a catch-up step that holds it — then:
+ *  - a change past the catch-up's cursor needs nothing redone: this call
+ *    runs the next catch-up step, which reads that day fresh;
+ *  - a change at or before it replays from the checkpoint before it, but
+ *    only up to the cursor — the days beyond are the catch-up's to walk.
+ */
+async function catchUpResimulate(
+  db: Db,
+  userId: string,
+  affectedDate: LocalDate,
+  prefs: UserPreferences,
+  now: Date,
+  opts?: GardenAdvanceOptions,
+): Promise<GardenSimResult> {
+  const lock = await waitForGardenLock(db, userId);
+  try {
+    const current = await loadGarden(db, userId);
+    if (current && (current.version ?? 1) < SIMULATION_VERSION) {
+      return await upgradeResimulate(db, userId, current, prefs, now, opts, affectedDate);
+    }
+    if (!current || affectedDate > current.state.lastSimulatedDate) {
+      return await catchUpStep(db, userId, prefs, now, opts);
+    }
+    const res = await resimulate(db, userId, affectedDate, prefs, now, opts, current.state.lastSimulatedDate);
+    return { ...res, resimPending: true };
+  } finally {
+    if (lock) await releaseUserLock(db, userId, GARDEN_LOCK, lock).catch(() => undefined);
   }
+}
 
+/** The replay itself. `through` stops the walk at that day (the post-restore
+ * catch-up's cursor) instead of today. */
+async function resimulate(
+  db: Db,
+  userId: string,
+  affectedDate: LocalDate,
+  prefs: UserPreferences,
+  now: Date,
+  opts?: GardenAdvanceOptions,
+  through?: LocalDate,
+): Promise<GardenSimResult> {
+  const current = await loadGarden(db, userId);
   if (!current || affectedDate > current.state.lastSimulatedDate) {
     return advanceGarden(db, userId, prefs, now, opts);
   }
@@ -973,15 +1076,6 @@ export async function resimulateFrom(
     restartAfter = startSnapshot.state.lastSimulatedDate;
   }
 
-  // Too long for one request (a backfill of old history, the usual next
-  // step after restoring an old export): this used to walk every day to
-  // today uncapped and fail past D1's budget, leaving the event log
-  // truncated. Hand it to the resumable rebuild instead (verifier R6).
-  const maxDays = opts?.maxResimDays ?? UPGRADE_RESIM_MAX_DAYS;
-  if (daysBetween(restartAfter, todayInZone(prefs.timezone, now)) > maxDays + 1) {
-    return rebuildStep(db, userId, current, prefs, now, opts, affectedDate);
-  }
-
   // Drop events/inputs/checkpoints after the restart point; they'll be
   // rebuilt by walkForward below. Safe to do even though nothing has been
   // persisted to garden_state yet: on a mid-walk crash the rendered garden
@@ -999,7 +1093,9 @@ export async function resimulateFrom(
 
   const today = todayInZone(prefs.timezone, now);
   const nowIso = nowInstant(now);
-  const { snapshot, simulatedDays, eventsEmitted } = await walkForward(db, userId, prefs, startSnapshot, today, nowIso);
+  const { snapshot, simulatedDays, eventsEmitted } = await walkForward(db, userId, prefs, startSnapshot, today, nowIso, {
+    through,
+  });
 
   // Only now — once the FULL walk has succeeded — does the durable garden
   // pointer move. If walkForward throws above, execution never reaches this

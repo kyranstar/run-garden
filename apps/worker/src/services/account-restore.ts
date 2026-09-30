@@ -17,8 +17,9 @@
  *          neutralised on the way in (B3). An insert error is a 422 naming the
  *          table and row; rows lost to a conflict are counted.
  *   finish { restoreId } — count what landed against what the checked pages
- *          promised, flag the garden for a full capped rebuild and the
- *          calendar for its one-shot post-restore reconcile, clear the marker.
+ *          promised, flag the garden to catch up from the file's last day
+ *          and the calendar for its one-shot post-restore reconcile, clear
+ *          the marker.
  *   start-fresh — abandon an unfinished restore: wipe as begin does and clear
  *          the marker.
  *
@@ -383,8 +384,7 @@ export async function beginRestore(
     restoreExpected: expected,
     restoreFinishedAt: null,
     calendarReconcile: null,
-    gardenRebuildPending: false,
-    gardenRebuildFrom: null,
+    gardenCatchUpPending: false,
   });
   await wipeAccountData(db, userId, { keep: [] });
   return { ok: true, restoreId, tables: restorableTables().map((t) => t.name) };
@@ -595,8 +595,10 @@ export type FinishRestoreResult =
  * Finish: count what landed, compare it with what the checked pages
  * promised, and hand the slow work to the paths built for it — never do it
  * here (ruling B4):
- *  - the garden is flagged for a FULL rebuild from its genesis through the
- *    resumable, day-capped rebuild; the next garden reads walk it forward;
+ *  - the garden is TRUSTED as the file holds it (B4 amended): state, events,
+ *    day inputs, checkpoints, unlocks — nothing is rebuilt or deleted. It is
+ *    only flagged to catch up from the file's last simulated day, forward
+ *    only and capped per step, on the next garden reads;
  *  - the calendar gets a one-shot reconcile on its first successful full
  *    read once Google is reconnected (B6) — allowed to delete orphaned
  *    events only when no table came back short.
@@ -630,18 +632,16 @@ export async function finishRestore(
   }
 
   const [garden] = await db
-    .select({ snapshot: gardenState.snapshot })
+    .select({ userId: gardenState.userId })
     .from(gardenState)
     .where(eq(gardenState.userId, userId))
     .limit(1);
-  const createdDate = (garden?.snapshot as { state?: { createdDate?: unknown } } | undefined)?.state?.createdDate;
 
   await patchAccountState(db, userId, {
     restoreId: null,
     restoreFinishedAt: nowInstant(now),
     calendarReconcile: { phase: "pending", sweep: short.length === 0 },
-    gardenRebuildPending: garden !== undefined,
-    gardenRebuildFrom: garden !== undefined && typeof createdDate === "string" ? createdDate : null,
+    gardenCatchUpPending: garden !== undefined,
   });
   return { ok: true, counts, expected, short };
 }
@@ -664,8 +664,7 @@ export async function startFresh(
     restoreExpected: null,
     restoreFinishedAt: null,
     calendarReconcile: null,
-    gardenRebuildPending: false,
-    gardenRebuildFrom: null,
+    gardenCatchUpPending: false,
   });
   return { ok: true };
 }

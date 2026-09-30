@@ -21,10 +21,12 @@
  *
  * The garden tables go LAST: a resimulation deletes and rebuilds date ranges,
  * so reading them after everything else keeps the moment they are read as
- * close together as the export allows. (A restore rebuilds the garden from the
- * restored rows anyway — ruling B4 — which heals any disagreement between
- * them.) `coach_locks` is not exported: it holds live claims with no primary
- * key, and a restore never writes it.
+ * close together as the export allows. A restore trusts them exactly as read
+ * (ruling B4 amended) and only walks forward from the file's last simulated
+ * day, so an export that raced a resimulation keeps that walk's gap in its
+ * timeline; `garden_state` — the garden itself — is written last by every
+ * walk and is always whole. `coach_locks` is not exported: it holds live
+ * claims with no primary key, and a restore never writes it.
  */
 import { count } from "drizzle-orm";
 import { SCHEMA_VERSION } from "@rg/database";

@@ -7,8 +7,9 @@
 -- `restore_expected` holds the per-table row counts the checked pages
 -- promised, so finish can say which table came back short.
 -- `calendar_reconcile` is the one-shot post-restore calendar reconcile.
--- `garden_rebuild_*` is a pending, resumable, day-capped garden rebuild
--- (a restore, or a resimulation too long for one request).
+-- `garden_catch_up_pending`: a restored garden still catching up from the
+-- file's last simulated day — forward only, capped per invocation, nothing
+-- deleted (ruling B4 amended).
 CREATE TABLE `account_state` (
   `user_id` text PRIMARY KEY NOT NULL,
   `restore_id` text,
@@ -18,7 +19,6 @@ CREATE TABLE `account_state` (
   `restore_expected` text,
   `restore_finished_at` text,
   `calendar_reconcile` text,
-  `garden_rebuild_pending` integer DEFAULT false NOT NULL,
-  `garden_rebuild_from` text,
+  `garden_catch_up_pending` integer DEFAULT false NOT NULL,
   `updated_at` text NOT NULL
 );

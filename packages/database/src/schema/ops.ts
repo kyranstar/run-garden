@@ -103,10 +103,10 @@ export const schemaVersions = sqliteTable("schema_versions", {
  * `calendarReconcile` is the one-shot post-restore calendar reconcile (B6):
  * null when there is nothing to do.
  *
- * `gardenRebuildPending`/`gardenRebuildFrom`: a garden rebuild that runs in
- * day-capped steps across requests (B4). `gardenRebuildFrom` is the first
- * changed date for the NEXT step; null means "resume from the newest
- * checkpoint the rebuild itself wrote".
+ * `gardenCatchUpPending`: a restored garden is still catching up from the
+ * file's last simulated day (B4 amended) — a forward-only walk, capped per
+ * invocation, that persists `garden_state` where each step stops and deletes
+ * nothing. Cleared by the step that reaches today.
  */
 export const accountState = sqliteTable("account_state", {
   userId: text("user_id").primaryKey(),
@@ -121,7 +121,6 @@ export const accountState = sqliteTable("account_state", {
     /** False when the restore came back short: link and recreate, never delete. */
     sweep: boolean;
   }>(),
-  gardenRebuildPending: integer("garden_rebuild_pending", { mode: "boolean" }).notNull().default(false),
-  gardenRebuildFrom: text("garden_rebuild_from"),
+  gardenCatchUpPending: integer("garden_catch_up_pending", { mode: "boolean" }).notNull().default(false),
   updatedAt: text("updated_at").notNull(),
 });
