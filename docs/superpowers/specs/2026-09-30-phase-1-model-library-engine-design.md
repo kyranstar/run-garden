@@ -11,7 +11,7 @@ Scope: additive only. Nothing existing changes behaviour; nothing new is visible
 2. `@rg/session-engine` — a TypeScript port of the standalone engine and recorder, with every condition-specific
    rule behind the profile contract (§4), and every standalone test ported (§7).
 3. Weight parsing and formatting in `@rg/domain`; the `weightUnit` and `equipmentWishlist` preferences.
-4. Migrations `0023`+ for the programme spec §8 tables and columns; Drizzle schema; registration in the table
+4. Migrations `0024`+ for the programme spec §8 tables and columns; Drizzle schema; registration in the table
    registry, export/restore and delete-all.
 5. COROS catalog enrichment: `coros_exercises.raw` keeps `muscle`, `part`, `equipment`, `exerciseType`,
    `targetType`.
@@ -223,12 +223,12 @@ consistent mode stepping weight up only after two clean top-of-range sessions.
 `saved` (the "from your saves" bonus) reads a per-user set of exercise ids passed in `EngineInput.savedIds`
 (from `exercise_provenance`), not a field on the public record.
 
-## 6. Data model (migrations 0023+)
+## 6. Data model (migrations 0024+)
 
 Hand-authored; one migration per concern so each can be reviewed alone.
 
 ```sql
--- 0023_programs.sql
+-- 0024_programs.sql
 CREATE TABLE `programs` (
   `id` text PRIMARY KEY NOT NULL, `user_id` text NOT NULL, `kind` text NOT NULL, `name` text NOT NULL,
   `status` text NOT NULL, `disciplines` text NOT NULL, `start_date` text, `end_date` text, `race_date` text,
@@ -244,12 +244,12 @@ CREATE TABLE `program_blocks` (
   `created_at` text NOT NULL, `updated_at` text NOT NULL);
 CREATE UNIQUE INDEX `program_blocks_number_unique` ON `program_blocks` (`program_id`, `number`);
 
--- 0024_planned_session_columns.sql
+-- 0025_planned_session_columns.sql
 ALTER TABLE `planned_workouts` ADD `origin` text;
 ALTER TABLE `planned_workouts` ADD `content_state` text;
 ALTER TABLE `planned_workouts` ADD `session_params` text;
 
--- 0025_performed_sessions.sql
+-- 0026_performed_sessions.sql
 CREATE TABLE `session_builds` (
   `id` text PRIMARY KEY NOT NULL, `user_id` text NOT NULL, `workout_id` text NOT NULL, `version` integer NOT NULL,
   `engine_version` text NOT NULL, `inputs_hash` text NOT NULL, `payload` text NOT NULL, `locked_at` text,
@@ -276,7 +276,7 @@ CREATE TABLE `condition_checks` (
   `performed_session_id` text, `workout_id` text);
 CREATE INDEX `condition_checks_user_date_idx` ON `condition_checks` (`user_id`, `local_date`);
 
--- 0026_exercise_settings.sql
+-- 0027_exercise_settings.sql
 CREATE TABLE `user_conditions` (
   `user_id` text NOT NULL, `profile_id` text NOT NULL, `active` integer NOT NULL, `since` text NOT NULL,
   `settings` text NOT NULL DEFAULT '{}', PRIMARY KEY (`user_id`, `profile_id`));

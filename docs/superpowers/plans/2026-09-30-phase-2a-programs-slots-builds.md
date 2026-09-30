@@ -12,7 +12,7 @@
 
 ## Global Constraints
 
-- Prerequisites merged into this branch: Phase 0 Tasks 1–9, Phase 1 Tasks 1–11 (engine, library, migrations 0023–0026, domain `program.ts`/`performed.ts`/`weights.ts`, registry entries).
+- Prerequisites merged into this branch: Phase 0 Tasks 1–9, Phase 1 Tasks 1–11 (engine, library, migrations 0024–0027, domain `program.ts`/`performed.ts`/`weights.ts`, registry entries).
 - Tests on the default Node 21; wrangler on Node 22 only. Gates per task: `pnpm -r typecheck`, `pnpm test`, `pnpm build:web`.
 - D1: ≤ 100 bound variables per statement (`chunkIds`); `makeTestDb({ boundVariableCap: 100 })` in every new DB test.
 - Program rows: `lastVerifiedCorosDate = ''`, `corosSyncState = 'calendar_only'`, `origin = 'program'`, `sourceContentFingerprint = 'program'`, ids `slot-<programId>-<YYYY-MM-DD>`.

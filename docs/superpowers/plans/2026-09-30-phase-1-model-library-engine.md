@@ -116,7 +116,7 @@
 
 ### Task 10: Migrations, schema, domain schemas, registry (orchestrator worktree, after Phase 0's Task 7)
 
-**Files:** `packages/database/migrations/0023_programs.sql`…`0026_exercise_settings.sql` (spec §6), `packages/database/src/schema/{programs,performed}.ts` (+ barrel export), `packages/domain/src/{program,performed}.ts`, `apps/worker/src/services/account-tables.ts` (register the new tables), `apps/worker/src/routes/misc.ts` (`deleteAllUserData` via the registry), tests: `delete-all-data.test.ts` stays green; `account-tables.test.ts` covers the new tables; a schema round-trip test inserting and selecting one row per new table.
+**Files:** `packages/database/migrations/0024_programs.sql`…`0027_exercise_settings.sql` (spec §6), `packages/database/src/schema/{programs,performed}.ts` (+ barrel export), `packages/domain/src/{program,performed}.ts`, `apps/worker/src/services/account-tables.ts` (register the new tables), `apps/worker/src/routes/misc.ts` (`deleteAllUserData` via the registry), tests: `delete-all-data.test.ts` stays green; `account-tables.test.ts` covers the new tables; a schema round-trip test inserting and selecting one row per new table.
 
 - [ ] Write the four migrations exactly as spec §6; Drizzle tables to match; zod schemas; registry entries (`performed_sets` child of `performed_sessions`; `program_versions`, `program_blocks` children of `programs`).
 - [ ] Gates; commit `feat(db): programs, builds, performed sessions, checks and per-user exercise settings (additive)`.
@@ -132,4 +132,4 @@
 
 - Spec coverage: §2 packages (1, 4), §3 library + validation (1, 2), §4 contract + mapping + history shape + skeleton (1, 4–8), §5 behaviour changes (5, 6, 7, 8), §6 data model + domain (3, 10), §7 test port (2, 4–9), §8 catalog (11).
 - Tasks 1–9 touch only new packages plus `packages/domain/src/{weights,preferences,index}.ts`; they can run in their own worktree in parallel with Phase 0 and merge with no overlap except `pnpm-lock.yaml` (regenerate with `pnpm install` on merge).
-- Task 10 depends on Phase 0 Task 8 (the registry) and takes migration numbers after Phase 0's `0022`.
+- Task 10 depends on Phase 0 Task 8 (the registry) and takes migration numbers after Phase 0's `0023` (0024–0027).
