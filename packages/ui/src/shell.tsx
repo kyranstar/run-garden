@@ -1,4 +1,4 @@
-import type { ReactNode } from "react";
+import { useEffect, useState, type ReactNode } from "react";
 import { NavLink, useLocation } from "react-router-dom";
 import { PRODUCT_NAME } from "@rg/domain";
 import { IconGarden, IconPlan, IconRuns, IconSettings } from "./icons.js";
@@ -26,6 +26,13 @@ export function AppShell({
   // wide treatment (rework spec §6): the week grid and the floating coach
   // both need more than the 880px reading column. Every other route keeps it.
   const { pathname } = useLocation();
+  const [staging, setStaging] = useState(false);
+  useEffect(() => {
+    void fetch("/api/health")
+      .then((r) => r.json())
+      .then((h: { staging?: boolean }) => setStaging(!!h.staging))
+      .catch(() => undefined);
+  }, []);
   // The app-open COROS pull fires from the shell so EVERY entry route pulls —
   // opening the PWA to the garden used to trigger nothing (audit finding 11).
   // Headless here: the visible outcome chip lives on Plan/Activity (same
@@ -49,6 +56,11 @@ export function AppShell({
       <main
         className={`shell-main${immersive ? " shell-main--immersive" : ""}${wide ? " shell-main--wide" : ""}`}
       >
+        {staging ? (
+          <div className="banner banner-info" style={{ marginBottom: "var(--space-6)" }} role="status">
+            Staging
+          </div>
+        ) : null}
         {fixtureMode ? (
           <div className="banner banner-info" style={{ marginBottom: "var(--space-6)" }} role="status">
             Fixture mode — showing sample data, no real providers connected.
