@@ -934,7 +934,15 @@ export async function guardrailCtx(
       title: w.title,
       category: w.category,
       completionState: w.completionState,
-      durationMinutes: Math.round((w.calendarBlockDurationSeconds ?? 3600) / 60),
+      // The length the athlete SEES — `source ?? fallback`, the one every
+      // display and the adjust itself use (audit 1, coach finding 4). The
+      // calendar block carries the default buffers for an imported session
+      // (60 minutes of work, an 85-minute block), so reading it made a ×0.8
+      // taper propose 68 minutes for a 60-minute session.
+      durationMinutes: Math.round(
+        (w.sourceEstimatedDurationSeconds ?? w.fallbackEstimatedDurationSeconds ?? w.calendarBlockDurationSeconds ?? 3600) /
+          60,
+      ),
       discipline: disciplineOf(w.category, w.sport) as "run" | "strength" | "yoga",
     }));
   // Trailing 4 weeks of minutes per discipline — what the athlete ACTUALLY

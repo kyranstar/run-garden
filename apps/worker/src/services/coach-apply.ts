@@ -1239,6 +1239,20 @@ export async function applyOps(
        * Duration only. `ease` is the op that rewrites what a session IS; this
        * one changes how long it lasts and touches nothing else, which is what
        * lets a taper reach twelve sessions without twelve session bodies.
+       *
+       * THE LENGTH THE ATHLETE SEES (audit 1, coach finding 4). Every display
+       * and placement reader — Plan, Today, the calendar event, day placement,
+       * the matcher — reads `sourceEstimatedDurationSeconds ?? fallback`, so an
+       * imported session (which always carries COROS's estimate) ignored an
+       * adjust that only moved the block and the fallback: the card said 48 and
+       * every screen still said 60. The COROS estimate describes COROS's copy,
+       * not the app's any more, so it is cleared — exactly as `sessionColumns`
+       * and the fidelity repair clear it — and the fallback becomes the length.
+       *
+       * A later COROS read of the SAME content leaves this alone (rule 7 only
+       * writes durations when the wire's content changed). An upstream CONTENT
+       * edit does replace it: upstream wins for every field the app holds no
+       * claim on, and an adjust records none (see the audit's finding 11).
        */
       case "adjust": {
         const found = await actionable(op.workoutId);
@@ -1254,6 +1268,10 @@ export async function applyOps(
             // The estimate the load maths falls back on moves with the block,
             // or the two would disagree about how long the session is.
             fallbackEstimatedDurationSeconds: op.durationMinutes * 60,
+            // …and nothing ahead of it in `source ?? fallback` may still say
+            // the old length.
+            sourceEstimatedDurationSeconds: null,
+            durationEstimate: null,
             // `corosSyncState` is left alone on purpose: no push job is
             // enqueued here, so flipping it to `calendar_only` stranded the
             // row as "not synced" forever. The watch copy is unchanged.

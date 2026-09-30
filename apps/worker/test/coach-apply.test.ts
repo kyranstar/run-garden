@@ -9,8 +9,9 @@ import { addDays, newId, nowInstant, todayInZone, type CoachOp } from "@rg/domai
 import type { Db } from "../src/services/db.js";
 import { applyOps } from "../src/services/coach-apply.js";
 import { buildDayInput } from "../src/services/garden-sync.js";
+import { importPlanSnapshot } from "../src/services/import-plan.js";
 import { openIntentFor } from "../src/services/sync-intents.js";
-import { makeTestDb, makeTestUser } from "./helpers.js";
+import { connectTestCoros, makeTestDb, makeTestUser } from "./helpers.js";
 
 const run40 = {
   category: "easy" as const,
@@ -709,6 +710,84 @@ describe("applyOps · remove, restore, adjust", () => {
     expect(w!.calendarBlockDurationSeconds).toBe(1800);
     expect(w!.fallbackEstimatedDurationSeconds).toBe(1800);
     expect(w!.corosSyncState).toBe("synced");
+  });
+
+  it("adjust changes the length the athlete sees on a session carrying a COROS estimate", async () => {
+    // Audit 1, coach finding 4. Every display and placement reader prefers
+    // `sourceEstimatedDurationSeconds`, so an adjust that only moved the block
+    // and the fallback changed nothing anyone could see.
+    const db = makeTestDb();
+    const { userId, prefs } = await makeTestUser(db);
+    await seedWorkout(db, userId, "w1", addDays(todayInZone(prefs.timezone), 2));
+    await db
+      .update(schema.plannedWorkouts)
+      .set({
+        sourceEstimatedDurationSeconds: 3600,
+        durationEstimate: { source: "coros_native", workoutSeconds: 3600 },
+        calendarBlockDurationSeconds: 5100,
+      })
+      .where(eq(schema.plannedWorkouts.id, "w1"));
+
+    await applyOps(db, userId, prefs, "p-taper", [{ kind: "adjust", workoutId: "w1", durationMinutes: 48 }]);
+
+    const [w] = await db.select().from(schema.plannedWorkouts).where(eq(schema.plannedWorkouts.id, "w1"));
+    expect(w!.sourceEstimatedDurationSeconds ?? w!.fallbackEstimatedDurationSeconds).toBe(48 * 60);
+    expect(w!.sourceEstimatedDurationSeconds).toBeNull();
+    expect(w!.durationEstimate).toBeNull();
+    expect(w!.calendarBlockDurationSeconds).toBe(48 * 60);
+  });
+
+  it("an adjusted imported session keeps its new length through the next COROS read of the same content", async () => {
+    const db = makeTestDb();
+    const { userId, prefs } = await makeTestUser(db);
+    await connectTestCoros(db, userId);
+    const today = todayInZone(prefs.timezone);
+    const day = addDays(today, 4);
+    const read = (contentFingerprint: string) =>
+      importPlanSnapshot(
+        db,
+        {
+          userId,
+          plan: { sourcePlanId: "700000000000000002", name: "Plan" },
+          workouts: [
+            {
+              sourceWorkoutId: "700000000000000002:5",
+              sourcePlanId: "700000000000000002",
+              sourceIdInPlan: "5",
+              sourceProgramId: "55",
+              date: day,
+              title: "Tempo 3x10",
+              sport: "run",
+              stages: [],
+              contentFingerprint,
+              isRestDay: false,
+              estimatedDurationSeconds: 3600,
+            },
+          ],
+          rangeStart: addDays(today, -30),
+          rangeEnd: addDays(today, 60),
+          source: "fixture",
+        },
+        prefs,
+      );
+    const shown = (r: typeof schema.plannedWorkouts.$inferSelect) =>
+      (r.sourceEstimatedDurationSeconds ?? r.fallbackEstimatedDurationSeconds)! / 60;
+
+    await read("fp-1");
+    const [imported] = await db.select().from(schema.plannedWorkouts).where(eq(schema.plannedWorkouts.userId, userId));
+    expect(shown(imported!)).toBe(60);
+
+    await applyOps(db, userId, prefs, "p-taper", [{ kind: "adjust", workoutId: imported!.id, durationMinutes: 48 }]);
+    const [adjusted] = await db.select().from(schema.plannedWorkouts).where(eq(schema.plannedWorkouts.id, imported!.id));
+    expect(shown(adjusted!)).toBe(48);
+
+    // COROS serves the same workout again: nothing about the adjust reverts.
+    await read("fp-1");
+    const [reread] = await db.select().from(schema.plannedWorkouts).where(eq(schema.plannedWorkouts.id, imported!.id));
+    expect(shown(reread!)).toBe(48);
+    expect(reread!.calendarBlockDurationSeconds).toBe(48 * 60);
+    // (An upstream CONTENT change is rule 7 — upstream wins for every field
+    // the app has not claimed, this one included. Documented on the adjust.)
   });
 
   it("reports a target that is gone rather than claiming it changed", async () => {

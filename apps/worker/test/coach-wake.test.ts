@@ -898,6 +898,41 @@ describe("the guardrail calendar is the athlete's calendar", () => {
     // …and must not even show up as a cost the athlete is asked to weigh.
     expect(out.advisory, "a session that does not exist has no trade-off to name").toEqual([]);
   });
+
+  it("measures a session by the length the athlete sees, not its padded calendar block", async () => {
+    // Audit 1, coach finding 4. An imported 60-minute session is stored with a
+    // COROS estimate of 3600 s and an 85-minute calendar block (the default
+    // 10 + 15 minute buffers). The context read the BLOCK, so a ×0.8 taper
+    // produced `adjust → 68` for a session every screen shows as 60 — a
+    // shortening that read as a lengthening, and landed as one.
+    const { guardrailCtx } = await import("../src/services/coach-wake.js");
+    const { expandSelectors } = await import("@rg/domain");
+    const db = makeTestDb();
+    const { userId, prefs } = await makeTestUser(db);
+    const today = todayInZone(prefs.timezone);
+    await seedRow(db, userId, { id: "imported", date: addDays(today, 2), category: "quality", sport: "run", minutes: 85 });
+    await db
+      .update(schema.plannedWorkouts)
+      .set({ sourceEstimatedDurationSeconds: 3600 })
+      .where(eq(schema.plannedWorkouts.id, "imported"));
+    // A coach row: no COROS estimate, its own stated length as the fallback.
+    await seedRow(db, userId, { id: "coach", date: addDays(today, 3), category: "easy", sport: "run", minutes: 30 });
+    await db
+      .update(schema.plannedWorkouts)
+      .set({ fallbackEstimatedDurationSeconds: 1800 })
+      .where(eq(schema.plannedWorkouts.id, "coach"));
+
+    const ctx = await guardrailCtx(db, userId, prefs, today);
+    const minutes = Object.fromEntries(ctx.workouts.map((w) => [w.id, w.durationMinutes]));
+    expect(minutes).toEqual({ imported: 60, coach: 30 });
+
+    const taper = expandSelectors(
+      [{ kind: "adjustEach", select: { by: "match", from: today, to: addDays(today, 7), category: "quality" }, durationScale: 0.8 }],
+      ctx.workouts,
+      today,
+    );
+    expect(taper.ops).toEqual([{ kind: "adjust", workoutId: "imported", durationMinutes: 48 }]);
+  });
 });
 
 describe("capability plumbing (user requirement 2026-08-12: the coach can fulfil plan requests)", () => {
