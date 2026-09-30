@@ -512,11 +512,29 @@ describe("content claims against the snapshot (audit#3 D1/D2)", () => {
     const [still] = await db.select().from(plannedWorkouts).where(eq(plannedWorkouts.id, row!.id));
     expect(still!.archivedAt).not.toBeNull();
     expect(still!.archiveReason).toBe("user_removed");
-    const links = await db
+  });
+
+  it("the coach remove's SUPPRESSION alone keeps the row out — even when the row's own reason is gone", async () => {
+    // Audit 1, coach finding 9. The test above passes on the pre-Task-1 code
+    // too: `archiveReason = user_removed` blocks healing all by itself. This
+    // one clears the reason (the half-state a legacy archive can leave) so the
+    // `user_removed` suppression the coach remove now writes is the ONLY
+    // evidence left — and it has to be enough.
+    await importFromProvider();
+    const [row] = await db.select().from(plannedWorkouts).where(eq(plannedWorkouts.userId, userId));
+    await applyOps(db, userId, prefs, "prop-remove", [{ kind: "remove", workoutId: row!.id }]);
+    await db.update(plannedWorkouts).set({ archiveReason: null }).where(eq(plannedWorkouts.id, row!.id));
+    const suppressions = await db
       .select()
-      .from(schema.calendarEventLinks)
-      .where(eq(schema.calendarEventLinks.workoutId, row!.id));
-    expect(links).toHaveLength(0);
+      .from(schema.calendarEventSuppressions)
+      .where(eq(schema.calendarEventSuppressions.workoutId, row!.id));
+    expect(suppressions.map((s) => s.reason)).toEqual(["user_removed"]);
+
+    const stats = await importFromProvider();
+
+    expect(stats.unarchived).toBe(0);
+    const [still] = await db.select().from(plannedWorkouts).where(eq(plannedWorkouts.id, row!.id));
+    expect(still!.archivedAt).not.toBeNull();
   });
 });
 
