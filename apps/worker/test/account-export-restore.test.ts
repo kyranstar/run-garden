@@ -16,7 +16,13 @@ import { newId, nowInstant } from "@rg/domain";
 import type { Db } from "../src/services/db.js";
 import type { Env } from "../src/env.js";
 import { ACCOUNT_TABLES, hashRows, wipeAccountData } from "../src/services/account-tables.js";
-import { EXPORT_FORMAT, exportManifest, exportTablePage } from "../src/services/account-export.js";
+import {
+  EXPORT_FORMAT,
+  exportableTables,
+  exportManifest,
+  exportTablePage,
+  NOT_EXPORTED,
+} from "../src/services/account-export.js";
 import {
   beginRestore,
   finishRestore,
@@ -81,35 +87,65 @@ describe("export → wipe → restore → export", () => {
     const { userId } = await makeTestUser(db);
     await seedFullAccount(db, userId);
 
-    const manifest = await exportManifest(db, userId);
+    const manifest = await exportManifest(db, userId, { appUrl: "https://app.test/some/path" });
     expect(manifest.format).toBe(EXPORT_FORMAT);
     expect(manifest.schemaVersion).toBe(SCHEMA_VERSION);
+    expect(manifest.exportedFrom).toBe("https://app.test");
     const listed = manifest.tables.map((t) => t.name);
-    expect(listed).toEqual(["users", ...userAndChildTables()]);
+    const expected = ["users", ...userAndChildTables().filter((n) => !(NOT_EXPORTED as readonly string[]).includes(n))];
+    expect([...listed].sort()).toEqual([...expected].sort());
+    // Garden tables last (ruling B5), everything else in dependency order.
+    const firstGarden = listed.findIndex((n) => n.startsWith("garden_"));
+    expect(listed.slice(firstGarden).every((n) => n.startsWith("garden_"))).toBe(true);
+    expect(listed.slice(0, firstGarden)).toEqual(expected.filter((n) => !n.startsWith("garden_")));
     const empty = manifest.tables.filter((t) => t.rows === 0).map((t) => t.name);
     expect(empty).toEqual([]);
-    for (const excluded of ["sessions", "oauth_states", "garden_species", "coros_exercises", "schema_versions", "account_state"]) {
+    for (const excluded of ["sessions", "oauth_states", "garden_species", "coros_exercises", "schema_versions", "account_state", "coach_locks"]) {
       expect(listed).not.toContain(excluded);
     }
   });
 
-  it("pages a table in primary-key order with a cursor that ends in null", async () => {
+  it("pages a table by primary key with an opaque cursor that ends in null", async () => {
     const db = makeTestDb({ boundVariableCap: 100 });
     const { userId } = await makeTestUser(db);
     await seedFullAccount(db, userId);
 
-    const first = await exportTablePage(db, userId, "planned_workouts", 0);
+    const first = await exportTablePage(db, userId, "planned_workouts", null);
     expect(first.rows).toHaveLength(SEED_PLANNED_WORKOUTS); // ≤ 500 per page
     expect(first.nextCursor).toBeNull();
 
-    const p1 = await exportTablePage(db, userId, "planned_workouts", 0, 100);
-    expect(p1.nextCursor).toBe(100);
-    const p3 = await exportTablePage(db, userId, "planned_workouts", 200, 100);
-    expect(p3.rows).toHaveLength(50);
-    expect(p3.nextCursor).toBeNull();
-    const ids = first.rows.map((r) => String(r.id));
+    const pages: Row[][] = [];
+    let cursor: string | null = null;
+    do {
+      const page = await exportTablePage(db, userId, "planned_workouts", cursor, 100);
+      pages.push(page.rows);
+      cursor = page.nextCursor;
+    } while (cursor !== null);
+    expect(pages.map((p) => p.length)).toEqual([100, 100, 50]);
+    const ids = pages.flat().map((r) => String(r.id));
+    expect(ids).toEqual(first.rows.map((r) => String(r.id)));
     expect(ids).toEqual([...ids].sort());
-    await expect(exportTablePage(db, userId, "sessions", 0)).rejects.toThrow(/sessions/);
+    await expect(exportTablePage(db, userId, "sessions", null)).rejects.toThrow(/sessions/);
+    await expect(exportTablePage(db, userId, "coach_locks", null)).rejects.toThrow(/coach_locks/);
+    await expect(exportTablePage(db, userId, "planned_workouts", "not-a-cursor")).rejects.toThrow(/cursor/);
+  });
+
+  it("never skips a row when an earlier one is deleted between pages (finding 4)", async () => {
+    const db = makeTestDb({ boundVariableCap: 100 });
+    const { userId } = await makeTestUser(db);
+    for (const id of ["a", "b", "c", "d", "e", "f", "g", "h", "i", "j"]) {
+      await db.insert(schema.dismissedInsights).values({ id, userId, cardId: `card-${id}`, dismissedAt: nowInstant() });
+    }
+    const p1 = await exportTablePage(db, userId, "dismissed_insights", null, 4);
+    expect(p1.rows.map((r) => r.id)).toEqual(["a", "b", "c", "d"]);
+    // A row before the cursor goes away mid-export — the shape of a COROS
+    // content edit replacing a workout's stages with one fewer.
+    await db.delete(schema.dismissedInsights).where(eq(schema.dismissedInsights.id, "b"));
+    const p2 = await exportTablePage(db, userId, "dismissed_insights", p1.nextCursor, 4);
+    expect(p2.rows.map((r) => r.id)).toEqual(["e", "f", "g", "h"]);
+    const p3 = await exportTablePage(db, userId, "dismissed_insights", p2.nextCursor, 4);
+    expect(p3.rows.map((r) => r.id)).toEqual(["i", "j"]);
+    expect(p3.nextCursor).toBeNull();
   });
 });
 
@@ -349,21 +385,29 @@ describe("settings export/restore routes", () => {
     for (const path of ["/api/settings/export", "/api/settings/export/manifest"]) {
       const res = await call(db, userId, path);
       expect(res.status).toBe(200);
-      const body = (await res.json()) as { format: string; schemaVersion: string; tables: { name: string }[] };
+      const body = (await res.json()) as { format: string; schemaVersion: string; exportedFrom: string; tables: { name: string }[] };
       expect(body.format).toBe(EXPORT_FORMAT);
       expect(body.schemaVersion).toBe(SCHEMA_VERSION);
+      expect(body.exportedFrom).toBe("https://app.test");
       expect(body.tables.map((t) => t.name)).toContain("activity_laps");
     }
 
-    const page = await call(db, userId, "/api/settings/export/table/planned_workouts?cursor=200&limit=100");
+    const first = await call(db, userId, "/api/settings/export/table/planned_workouts?limit=200");
+    const p1 = (await first.json()) as { rows: Row[]; nextCursor: string | null };
+    expect(p1.rows).toHaveLength(200);
+    const page = await call(db, userId, `/api/settings/export/table/planned_workouts?after=${p1.nextCursor}&limit=100`);
     expect(page.status).toBe(200);
-    const body = (await page.json()) as { rows: Row[]; nextCursor: number | null };
+    const body = (await page.json()) as { rows: Row[]; nextCursor: string | null };
     expect(body.rows).toHaveLength(50);
     expect(body.nextCursor).toBeNull();
+    // An old cached client's first page still works; its offset paging does not.
+    expect((await call(db, userId, "/api/settings/export/table/planned_workouts?cursor=0")).status).toBe(200);
+    expect((await call(db, userId, "/api/settings/export/table/planned_workouts?cursor=200")).status).toBe(400);
 
     expect((await call(db, userId, "/api/settings/export/table/sessions")).status).toBe(404);
     expect((await call(db, userId, "/api/settings/export/table/nope")).status).toBe(404);
-    expect((await call(db, userId, "/api/settings/export/table/activities?cursor=-1")).status).toBe(400);
+    expect((await call(db, userId, "/api/settings/export/table/activities?after=%%%")).status).toBe(400);
+    expect((await call(db, userId, "/api/settings/export/table/activities?limit=0")).status).toBe(400);
   });
 
   it("names the tables to send and the ones to skip", async () => {

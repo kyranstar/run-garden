@@ -34,12 +34,12 @@ export async function exportAll(db: Db, userId: string, pageSize = 100): Promise
   const tables: Record<string, Row[]> = {};
   for (const { name } of manifest.tables) {
     const rows: Row[] = [];
-    let cursor: number | null = 0;
-    while (cursor !== null) {
+    let cursor: string | null = null;
+    do {
       const page = await exportTablePage(db, userId, name, cursor, pageSize);
       rows.push(...page.rows);
       cursor = page.nextCursor;
-    }
+    } while (cursor !== null);
     tables[name] = rows;
   }
   return { format: manifest.format, schemaVersion: manifest.schemaVersion, exportedAt: nowInstant(), tables };

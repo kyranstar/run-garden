@@ -971,12 +971,15 @@ export const EXPORT_FORMAT = "run-garden-export";
 export interface ExportManifest {
   format: typeof EXPORT_FORMAT;
   schemaVersion: string;
+  /** The app the export is taken from (its origin). */
+  exportedFrom?: string | null;
   tables: Array<{ name: string; rows: number }>;
 }
 
 export interface ExportTablePage {
   rows: Array<Record<string, unknown>>;
-  nextCursor: number | null;
+  /** Opaque keyset cursor for the next page; null on the last one. */
+  nextCursor: string | null;
 }
 
 /** The downloaded file: every account table, keyed by SQL table name. */
@@ -999,26 +1002,41 @@ export interface RestoreProgress {
  * per-request query budget, even for the widest table. */
 const RESTORE_PAGE_ROWS = 200;
 
-/** Every table of the signed-in account, page by page, as one object. */
+/** One table, every page, following the worker's keyset cursor. */
+async function exportTableRows(name: string): Promise<Array<Record<string, unknown>>> {
+  const rows: Array<Record<string, unknown>> = [];
+  let after: string | null = null;
+  do {
+    const query: string = after === null ? "" : `?after=${encodeURIComponent(after)}`;
+    const page: ExportTablePage = await get<ExportTablePage>(
+      `/api/settings/export/table/${encodeURIComponent(name)}${query}`,
+    );
+    rows.push(...page.rows);
+    after = page.nextCursor;
+  } while (after !== null);
+  return rows;
+}
+
+/**
+ * Every table of the signed-in account, page by page, as one object. Each
+ * table's row count is checked against the manifest; a table that came back
+ * short is read once more (rows removed mid-export legitimately shrink it —
+ * the second read settles which it was). Garden tables come last, in the
+ * manifest's order.
+ */
 export async function exportAccountData(): Promise<AccountExportFile> {
   const manifest = await get<ExportManifest>("/api/settings/export/manifest");
   const tables: AccountExportFile["tables"] = {};
-  for (const { name } of manifest.tables) {
-    const rows: Array<Record<string, unknown>> = [];
-    let cursor: number | null = 0;
-    while (cursor !== null) {
-      const page: ExportTablePage = await get<ExportTablePage>(
-        `/api/settings/export/table/${encodeURIComponent(name)}?cursor=${cursor}`,
-      );
-      rows.push(...page.rows);
-      cursor = page.nextCursor;
-    }
+  for (const { name, rows: expected } of manifest.tables) {
+    let rows = await exportTableRows(name);
+    if (rows.length < expected) rows = await exportTableRows(name);
     tables[name] = rows;
   }
   return {
     format: EXPORT_FORMAT,
     schemaVersion: manifest.schemaVersion,
     exportedAt: new Date().toISOString(),
+    ...(manifest.exportedFrom ? { exportedFrom: manifest.exportedFrom } : {}),
     tables,
   };
 }

@@ -28,7 +28,7 @@
  * databases holding the same rows agree no matter how the rows got there.
  * `rowid` is deliberately not used: a table rebuild renumbers it.
  */
-import { asc, eq, getTableColumns, getTableName, sql, type SQL } from "drizzle-orm";
+import { and, asc, eq, getTableColumns, getTableName, gt, sql, type SQL } from "drizzle-orm";
 import { getTableConfig, type SQLiteColumn, type SQLiteTable } from "drizzle-orm/sqlite-core";
 import {
   accountState,
@@ -328,15 +328,26 @@ const NO_LIMIT = 2_147_483_647;
  * Every row of `table` in primary-key order (Ruling R2). With `userId`, only
  * that account's rows (via the registry's scope). `offset`/`limit` page over
  * the same total order, so a page boundary is deterministic.
+ *
+ * `after` is a KEYSET cursor: only rows whose primary key sorts after it
+ * (single-column keys only). Unlike an offset it cannot skip a row when an
+ * earlier one is deleted between pages (audit 1 data finding 4).
  */
 export async function orderedRows(
   db: Db,
   table: SQLiteTable,
-  opts: { userId?: string; offset?: number; limit?: number } = {},
+  opts: { userId?: string; offset?: number; limit?: number; after?: string | number } = {},
 ): Promise<Record<string, unknown>[]> {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   let q = (db.select().from(table as any) as any).$dynamic();
-  if (opts.userId !== undefined) q = q.where(scopeWhere(accountTable(getTableName(table)), opts.userId));
+  const conditions: SQL[] = [];
+  if (opts.userId !== undefined) conditions.push(scopeWhere(accountTable(getTableName(table)), opts.userId));
+  if (opts.after !== undefined) {
+    const pk = getTableConfig(table).columns.filter((c) => c.primary);
+    if (pk.length !== 1) throw new Error(`account-tables: ${getTableName(table)} has no single primary key to page after`);
+    conditions.push(gt(pk[0]!, opts.after));
+  }
+  if (conditions.length > 0) q = q.where(and(...conditions));
   q = q.orderBy(...orderColumns(table).map((c) => asc(c)));
   if (opts.limit !== undefined || opts.offset !== undefined) {
     q = q.limit(opts.limit ?? NO_LIMIT).offset(opts.offset ?? 0);

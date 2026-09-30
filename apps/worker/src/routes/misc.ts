@@ -99,6 +99,7 @@ import { resimulateFrom } from "../services/garden-sync.js";
 import { enqueueBackfill, runBackfillChunkCloud } from "../services/backfill.js";
 import { deleteOrphanedChildren, wipeAccountData } from "../services/account-tables.js";
 import {
+  BadCursor,
   EXPORT_PAGE_SIZE,
   exportManifest,
   exportTablePage,
@@ -1472,20 +1473,24 @@ settingsRoutes.get("/diagnostics", async (c) => {
  * tables; its path now answers with the manifest so an old link still works.
  */
 const manifestRoute = async (c: Context<AppContext>) =>
-  c.json(await exportManifest(c.get("db"), c.get("userId")));
+  c.json(await exportManifest(c.get("db"), c.get("userId"), { appUrl: c.env.APP_URL }));
 settingsRoutes.get("/export", manifestRoute);
 settingsRoutes.get("/export/manifest", manifestRoute);
 
+/** `?after=<cursor>` pages by primary key. A numeric `cursor` is the old
+ * offset paging (finding 4): only its first page (0) is still served, so a
+ * stale cached client fails loudly instead of exporting a file with holes. */
 settingsRoutes.get("/export/table/:name", async (c) => {
-  const cursor = Number(c.req.query("cursor") ?? "0");
+  const legacy = c.req.query("cursor");
+  if (legacy !== undefined && legacy !== "0") return c.json({ error: "bad_cursor" }, 400);
+  const after = c.req.query("after") ?? null;
   const limit = Number(c.req.query("limit") ?? String(EXPORT_PAGE_SIZE));
-  if (!Number.isInteger(cursor) || cursor < 0 || !Number.isInteger(limit) || limit < 1) {
-    return c.json({ error: "bad_cursor" }, 400);
-  }
+  if (!Number.isInteger(limit) || limit < 1) return c.json({ error: "bad_cursor" }, 400);
   try {
-    return c.json(await exportTablePage(c.get("db"), c.get("userId"), c.req.param("name"), cursor, limit));
+    return c.json(await exportTablePage(c.get("db"), c.get("userId"), c.req.param("name"), after, limit));
   } catch (e) {
     if (e instanceof NotExportable) return c.json({ error: "unknown_table" }, 404);
+    if (e instanceof BadCursor) return c.json({ error: "bad_cursor" }, 400);
     throw e;
   }
 });
