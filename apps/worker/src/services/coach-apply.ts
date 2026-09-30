@@ -30,6 +30,7 @@ import { separateDayCollisions, windowTimeFor } from "./day-placement.js";
 import { recordedStampFor, stampName } from "./coros-stamp.js";
 import { applyMove } from "./jobs.js";
 import { openIntentFor, recordIntent } from "./sync-intents.js";
+import { enqueueUnpushIfOurs, removeFromPlan } from "./plan-mutations.js";
 import { resolveRaceConflict } from "./race-conflict.js";
 import { isLoosePlan } from "./coach-plans.js";
 
@@ -62,6 +63,11 @@ export interface ApplyResult {
    * did. Empty on every ordinary apply.
    */
   missed: string[];
+  /**
+   * The earliest date <= today that an op resolved, archived or restored — the
+   * caller resimulates the garden from here. Null when no op reached back.
+   */
+  resimFrom: string | null;
 }
 
 function fingerprint(v: unknown): string {
@@ -844,50 +850,7 @@ async function suppressAndUnpush(
     await db
       .insert(calendarEventSuppressions)
       .values({ id: newId(), workoutId: w.id, eventId: null, reason: "user_removed", createdAt: now });
-    if (!prefs.corosWritesEnabled) continue;
-    // ADDRESS, NOT SYNC STATE. This gate used to read `corosSyncState !==
-    // "synced"`, and that column is not a statement about whether COROS holds
-    // the row — it is a statement about whether the two agree. An eased session
-    // is `calendar_only` (correctly: COROS has the OLD body) while still sitting
-    // on the athlete's watch, so archiving one skipped the unpush and left the
-    // pre-ease intervals scheduled on the watch permanently, inside the very
-    // code path that exists to stop exactly that (audit#3 D2). `content_stale`
-    // and `sync_issue` had the same hole. The address is the durable fact.
-    const address = watchAddressOf(w);
-    if (!address) continue;
-    // The delete triple's stamp is the exact program name we last wrote, which
-    // is never persisted on the row — read it back off this account's own
-    // settled write jobs (a rewrite renames, so the newest one wins).
-    const stamp = await recordedStampFor(db, userId, w.id);
-    if (!stamp) continue;
-    const [createJob] = await db
-      .select({ expectedContentFingerprint: corosWriteJobs.expectedContentFingerprint })
-      .from(corosWriteJobs)
-      .where(eq(corosWriteJobs.id, `${w.id}-push`))
-      .limit(1);
-    await db
-      .insert(corosWriteJobs)
-      .values({
-        id: `${w.id}-unpush`,
-        userId,
-        workoutId: w.id,
-        kind: "coach_delete_workout",
-        expectedContentFingerprint: createJob?.expectedContentFingerprint ?? "",
-        originalDate: w.effectiveDate,
-        destinationDate: w.effectiveDate,
-        payload: {
-          workoutId: w.id,
-          happenDay: address.happenDay,
-          name: stamp,
-          idInPlan: address.idInPlan,
-          programId: address.programId,
-          corosPlanId: address.corosPlanId,
-        },
-        requestedAt: now,
-        status: "queued",
-        updatedAt: now,
-      })
-      .onConflictDoNothing();
+    await enqueueUnpushIfOurs(db, userId, w, now, prefs);
   }
 }
 
@@ -989,7 +952,10 @@ export async function applyOps(
     .orderBy(desc(dailyHealth.date))
     .limit(1);
   const thresholdPaceSecPerKm = thresholdRow?.v ?? undefined;
-  const out: ApplyResult = { created: [], updated: [], archived: [], missed: [] };
+  const out: ApplyResult = { created: [], updated: [], archived: [], missed: [], resimFrom: null };
+  const noteResim = (date: string | null | undefined) => {
+    if (date && date <= today && (out.resimFrom === null || date < out.resimFrom)) out.resimFrom = date;
+  };
 
   // ── Before-state snapshot (manifest 0019) ────────────────────────────
   // "What it did" must keep its true befores after the plan moves on: the
@@ -1168,6 +1134,7 @@ export async function applyOps(
           .update(plannedWorkouts)
           .set({ completionState: "skipped", resolutionDate: today, sanctionedBy: "coach", updatedAt: now })
           .where(and(eq(plannedWorkouts.id, op.workoutId), eq(plannedWorkouts.userId, userId)));
+        noteResim(today);
         out.updated.push(op.workoutId);
         break;
       }
@@ -1180,7 +1147,7 @@ export async function applyOps(
        */
       case "remove": {
         const [row] = await db
-          .select({ id: plannedWorkouts.id })
+          .select()
           .from(plannedWorkouts)
           .where(
             and(
@@ -1194,10 +1161,11 @@ export async function applyOps(
           out.missed.push("a session it takes off the plan isn't there any more, so nothing was removed");
           break;
         }
-        await db
-          .update(plannedWorkouts)
-          .set({ archivedAt: now, archiveReason: "user_removed", updatedAt: now })
-          .where(and(eq(plannedWorkouts.id, op.workoutId), eq(plannedWorkouts.userId, userId)));
+        // The athlete's own remove, verbatim: suppression, intent, move-intent
+        // close — then the unpush a verified watch-pushed row needs.
+        await removeFromPlan(db, userId, op.workoutId, { now, source: "coach_remove" });
+        await enqueueUnpushIfOurs(db, userId, row, now, prefs);
+        noteResim(row.effectiveDate);
         out.archived.push(op.workoutId);
         break;
       }

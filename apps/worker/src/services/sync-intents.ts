@@ -5,7 +5,7 @@ import type { Db } from "./db.js";
 
 export type IntentSource =
   | "user_move" | "calendar_drag" | "studio_push" | "studio_retire"
-  | "remove_from_plan" | "auto_resolve" | "undo" | "coach_ease";
+  | "remove_from_plan" | "auto_resolve" | "undo" | "coach_ease" | "coach_remove";
 
 export interface RecordIntentInput {
   userId: string;

@@ -4,7 +4,6 @@ import { and, asc, desc, eq, gte, inArray, isNull, lte, sql } from "drizzle-orm"
 import {
   activities,
   calendarEventLinks,
-  calendarEventSuppressions,
   coachMessages,
   coachPlans,
   coachPlanWeeks,
@@ -53,13 +52,11 @@ import { waitUntilSafe } from "../services/wait-until.js";
 import { loadPreferences, restoreCalendarEvent, savePreferences, syncCalendar } from "../services/calendar-sync.js";
 import { chunkIds, type Db } from "../services/db.js";
 import { applyMove } from "../services/jobs.js";
+import { removeFromPlan } from "../services/plan-mutations.js";
 import { recentGardenEvents, resimulateFrom } from "../services/garden-sync.js";
 import {
   openContentIntentTargets,
-  openIntentFor,
   openMoveIntents,
-  recordIntent,
-  resolveIntent,
 } from "../services/sync-intents.js";
 import { findRaceConflict, resolveRaceConflict } from "../services/race-conflict.js";
 import { buildRaceHub } from "../services/race-hub.js";
@@ -1463,49 +1460,20 @@ planRoutes.post("/workouts/:id/unmatch", async (c) => {
 planRoutes.post("/workouts/:id/remove", async (c) => {
   const db = c.get("db");
   const userId = c.get("userId");
-  const w = (
-    await db
-      .select()
-      .from(plannedWorkouts)
-      .where(and(eq(plannedWorkouts.id, c.req.param("id")), eq(plannedWorkouts.userId, userId)))
-      .limit(1)
-  )[0];
-  if (!w) return c.json({ error: "not_found" }, 404);
-  if (w.archivedAt) return c.json({ ok: true });
-  const now = nowInstant();
-  const workoutId = w.id;
-  await db
-    .update(plannedWorkouts)
-    .set({ archivedAt: now, updatedAt: now, archiveReason: "user_removed" })
-    .where(eq(plannedWorkouts.id, workoutId));
-  await db.insert(calendarEventSuppressions).values({
-    id: newId(),
-    workoutId: workoutId,
-    eventId: null,
-    // "user_removed" (not the absence-detector's "workout_removed"): a hand
-    // removal is a decision, and import's presence-healing must never undo it.
-    reason: "user_removed",
-    createdAt: now,
-  });
-  await recordIntent(db, {
-    userId,
-    targetKind: "workout",
-    targetId: workoutId,
-    kind: "remove_local",
-    source: "remove_from_plan",
-  });
-  // Close out any open move intent for this workout too — once it's removed
-  // from the plan there's nothing left to sync, and leaving the move intent
-  // open behind an archived workout would strand a permanent, uncloseable
-  // sync_issue (emitPendingWork resolves it too, but this closes the gap
-  // immediately rather than waiting for the next bridge sync).
-  const openMove = await openIntentFor(db, userId, workoutId, "move");
-  if (openMove) await resolveIntent(db, openMove.id, now);
+  const id = c.req.param("id");
+  const [exists] = await db
+    .select({ id: plannedWorkouts.id })
+    .from(plannedWorkouts)
+    .where(and(eq(plannedWorkouts.id, id), eq(plannedWorkouts.userId, userId)))
+    .limit(1);
+  if (!exists) return c.json({ error: "not_found" }, 404);
+  const removed = await removeFromPlan(db, userId, id, { now: nowInstant(), source: "remove_from_plan" });
+  if (!removed.removed || !removed.effectiveDate) return c.json({ ok: true });
   await syncCalendar(db, c.env, userId).catch(() => undefined);
   const prefs = await loadPreferences(db, userId);
   const today = todayInZone(prefs.timezone);
   // A removed past workout must stop counting against the garden.
-  const resimFrom = w.effectiveDate < today ? w.effectiveDate : today;
+  const resimFrom = removed.effectiveDate < today ? removed.effectiveDate : today;
   await resimulateFrom(db, userId, resimFrom, prefs).catch(() => undefined);
   return c.json({ ok: true });
 });

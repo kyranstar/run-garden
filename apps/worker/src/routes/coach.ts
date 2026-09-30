@@ -30,7 +30,8 @@ import {
 } from "@rg/domain";
 import type { AppContext } from "../auth/middleware.js";
 import { requireUser } from "../auth/middleware.js";
-import { loadPreferences } from "../services/calendar-sync.js";
+import { loadPreferences, syncCalendar } from "../services/calendar-sync.js";
+import { resimulateFrom } from "../services/garden-sync.js";
 import { waitUntilSafe } from "../services/wait-until.js";
 import { ensureRead } from "../services/coach-reads.js";
 import { LLM_BUDGET } from "../services/llm.js";
@@ -420,6 +421,10 @@ coachRoutes.post("/proposals/:id/approve", async (c) => {
   // read "✓ approved" and believed their plan had changed.
   const shortfall = applied.missed.length > 0 ? ` · ${applied.missed.join("; ")}` : "";
   await receipt(db, userId, `✓ approved — ${p.title}${shortfall}`, p.id);
+  // Same aftermath as the athlete's own edits: the garden forgets what the
+  // ops resolved/archived/restored, and the calendar follows the plan.
+  if (applied.resimFrom) await resimulateFrom(db, userId, applied.resimFrom, prefs).catch(() => undefined);
+  waitUntilSafe(c, syncCalendar(db, c.env, userId).catch(() => undefined));
   // Cloud-direct: any watch writes the approval enqueued execute now.
   waitUntilSafe(c, executeCloudJobs(db, c.env, userId, prefs).catch(() => undefined),);
   return c.json({ ok: true, applied });

@@ -4,6 +4,7 @@ import { schema } from "@rg/database";
 import { addDays, nowInstant, todayInZone, type UserPreferences } from "@rg/domain";
 import { FixtureTrainingProvider } from "@rg/providers";
 import type { Db } from "../src/services/db.js";
+import { applyOps } from "../src/services/coach-apply.js";
 import { importPlanSnapshot } from "../src/services/import-plan.js";
 import { applyMove, emitPendingWork } from "../src/services/jobs.js";
 import { openIntentFor, recordIntent } from "../src/services/sync-intents.js";
@@ -499,6 +500,23 @@ describe("content claims against the snapshot (audit#3 D1/D2)", () => {
 
     const [still] = await db.select().from(plannedWorkouts).where(eq(plannedWorkouts.id, row!.id));
     expect(still!.archivedAt).not.toBeNull();
+  });
+
+  it("a coach remove of an imported row survives the next snapshot that still lists it", async () => {
+    await importFromProvider();
+    const [row] = await db.select().from(plannedWorkouts).where(eq(plannedWorkouts.userId, userId));
+    await applyOps(db, userId, prefs, "prop-remove", [{ kind: "remove", workoutId: row!.id }]);
+
+    await importFromProvider();
+
+    const [still] = await db.select().from(plannedWorkouts).where(eq(plannedWorkouts.id, row!.id));
+    expect(still!.archivedAt).not.toBeNull();
+    expect(still!.archiveReason).toBe("user_removed");
+    const links = await db
+      .select()
+      .from(schema.calendarEventLinks)
+      .where(eq(schema.calendarEventLinks.workoutId, row!.id));
+    expect(links).toHaveLength(0);
   });
 });
 
