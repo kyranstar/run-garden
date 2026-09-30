@@ -15,7 +15,14 @@
 import { beforeEach, describe, expect, it } from "vitest";
 import { and, asc, eq } from "drizzle-orm";
 import { schema } from "@rg/database";
-import { nowInstant, type CoachOp, type CoachSession, type UserPreferences } from "@rg/domain";
+import {
+  addDays,
+  nowInstant,
+  todayInZone,
+  type CoachOp,
+  type CoachSession,
+  type UserPreferences,
+} from "@rg/domain";
 import type { Db } from "../src/services/db.js";
 import type { Env } from "../src/env.js";
 import { createSession, SESSION_COOKIE } from "../src/auth/sessions.js";
@@ -27,7 +34,9 @@ import { makeTestDb, makeTestUser, mountRoutes } from "./helpers.js";
 
 const { auditEvents, corosWriteJobs, plannedWorkoutStages, plannedWorkouts } = schema;
 
-const DATE = "2026-09-14";
+// Relative, and in the future: `applyOps` refuses to touch a session whose day
+// has gone (audit 1, coach finding 2), and a fixed date was a time bomb.
+const DATE = addDays(todayInZone("America/Los_Angeles"), 14);
 
 /**
  * Every column a `CoachSession` decides. The list is the contract: an ease and
@@ -316,8 +325,8 @@ describe("the ownership stamp is not the athlete's title", () => {
         userId,
         plan: { sourcePlanId: "9001", name: "COROS plan" },
         workouts: snapshot(names),
-        rangeStart: "2026-09-01",
-        rangeEnd: "2026-09-30",
+        rangeStart: addDays(DATE, -14),
+        rangeEnd: addDays(DATE, 14),
         source: "fixture",
       },
       prefs,

@@ -165,6 +165,44 @@ describe("coach routes", () => {
     expect(second.status).toBe(409);
   });
 
+  it("approve refuses a proposal whose moment has passed, even from a page that still shows it pending", async () => {
+    // The expiry sweep runs on state reads and the hourly job, so a pending
+    // row can outlive its `expiresAt` by up to an hour — and a stale page can
+    // tap approve on it after midnight (audit 1, coach finding 2).
+    const today = todayInZone(prefs.timezone);
+    const yesterday = addDays(today, -1);
+    await db.insert(schema.plannedWorkouts).values({
+      id: "w1",
+      userId,
+      planId: "p",
+      sourceWorkoutId: "4738:w1",
+      title: "Tempo",
+      category: "quality",
+      sport: "run",
+      originalPlanDate: today,
+      lastVerifiedCorosDate: today,
+      effectiveDate: today,
+      effectiveTime: "07:00",
+      completionState: "scheduled",
+      sourceContentFingerprint: "fp",
+      calendarBlockDurationSeconds: 3600,
+      createdAt: nowInstant(),
+      updatedAt: nowInstant(),
+    });
+    await seedProposal("p-old", yesterday);
+
+    const res = await client().post("/api/coach/proposals/p-old/approve");
+
+    expect(res.status).toBe(409);
+    expect(await res.json()).toEqual({ error: "not_pending", status: "expired" });
+    const [w] = await db.select().from(schema.plannedWorkouts).where(eq(schema.plannedWorkouts.id, "w1"));
+    expect(w!.completionState).toBe("scheduled");
+    const [p] = await db.select().from(schema.coachProposals).where(eq(schema.coachProposals.id, "p-old"));
+    expect(p!.status).toBe("expired");
+    const msgs = await db.select().from(schema.coachMessages).where(eq(schema.coachMessages.userId, userId));
+    expect(msgs.map((m) => m.body)).toEqual(["Expired — the moment passed: Ease tomorrow"]);
+  });
+
   it("the approve receipt says when an op did nothing — no success for a plan that isn't there", async () => {
     // The proposal was written when the plan existed; by the time the athlete
     // taps, the row is gone. Approving is still the right thing to do (the

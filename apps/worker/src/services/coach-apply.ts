@@ -1013,6 +1013,42 @@ export async function applyOps(
    * approves a proposal that books two appointments at the same hour. */
   const touchedDates = new Set<string>();
 
+  /**
+   * THE ROW AN ID-ADDRESSED OP MAY STILL CHANGE — re-checked at the tap, not
+   * trusted from the wake (audit 1, coach finding 2).
+   *
+   * The wake's fatal `touch_resolved` rule judged the calendar as it stood when
+   * the proposal was drafted, and approval can come hours later: "skip today's
+   * tempo", approved that evening after the athlete ran it anyway, overwrote the
+   * completion and the garden lost the run for good (a remove archived it, with
+   * the same result). So every op that names a session re-asks the same
+   * question `validateOps` asked — still on the calendar, still unresolved, its
+   * day not yet gone — and an op whose answer changed is reported as a
+   * shortfall, the way every other op that could not do its job is.
+   *
+   * `why` completes "a session it <verb> …" in the athlete's words.
+   */
+  const actionable = async (
+    workoutId: string,
+  ): Promise<{ row: typeof plannedWorkouts.$inferSelect; why?: undefined } | { why: string }> => {
+    const [row] = await db
+      .select()
+      .from(plannedWorkouts)
+      .where(and(eq(plannedWorkouts.id, workoutId), eq(plannedWorkouts.userId, userId)))
+      .limit(1);
+    if (!row || row.archivedAt) return { why: "isn't on the calendar any more" };
+    if (row.completionState === "completed") return { why: "has already been done" };
+    if (row.completionState === "skipped") return { why: "was already skipped" };
+    if (row.completionState === "missed") return { why: "was already missed" };
+    if (row.effectiveDate < today || row.completionState === "unresolved") {
+      return { why: "has already had its day" };
+    }
+    if (row.completionState !== "scheduled" && row.completionState !== "planned") {
+      return { why: `is already ${row.completionState}` };
+    }
+    return { row };
+  };
+
   for (let i = 0; i < ops.length; i++) {
     const op = ops[i]!;
     const opId = (n: number | string) => `cw-${proposalId}-${i}-${n}`;
@@ -1025,19 +1061,16 @@ export async function applyOps(
         // and the fingerprint COROS is still holding — and `sessionColumns`
         // overwrites the fingerprint two statements from now, so this read is
         // the last moment the pre-ease truth exists.
-        const [target] = await db
-          .select()
-          .from(plannedWorkouts)
-          .where(and(eq(plannedWorkouts.id, op.workoutId), eq(plannedWorkouts.userId, userId)))
-          .limit(1);
-        if (!target) {
+        const found = await actionable(op.workoutId);
+        if (found.why !== undefined) {
           // Same class of silent failure `missed` was invented for: the row
-          // can go between the wake that proposed the ease and the tap that
-          // approves it, and an update matching nothing returned a success
-          // receipt for a session that was never changed.
-          out.missed.push("the session it eases isn't on the calendar any more, so nothing was changed");
+          // can go (or be run, or be skipped) between the wake that proposed
+          // the ease and the tap that approves it, and an update matching
+          // nothing returned a success receipt for a session never changed.
+          out.missed.push(`a session it eases ${found.why}, so nothing was changed`);
           break;
         }
+        const target = found.row;
         // An ease REPLACES the session, so it writes exactly what a fresh
         // insert writes — one writer, no parallel column list to fall behind.
         await db
@@ -1086,16 +1119,17 @@ export async function applyOps(
         break;
       }
       case "move": {
-        const [w] = await db
-          .select()
-          .from(plannedWorkouts)
-          .where(and(eq(plannedWorkouts.id, op.workoutId), eq(plannedWorkouts.userId, userId)))
-          .limit(1);
+        const found = await actionable(op.workoutId);
+        if (found.why !== undefined) {
+          out.missed.push(`a session it moves ${found.why}, so it stayed where it was`);
+          break;
+        }
+        const w = found.row;
         // A move that only changes the time of day is still a move: the
         // date-only test used to drop "same day, but in the afternoon"
         // silently, which is why `toTime` had no expressible form at all.
-        const toTime = op.toTime ?? w?.effectiveTime ?? "07:00";
-        if (w && (w.effectiveDate !== op.toDate || toTime !== w.effectiveTime)) {
+        const toTime = op.toTime ?? w.effectiveTime ?? "07:00";
+        if (w.effectiveDate !== op.toDate || toTime !== w.effectiveTime) {
           await applyMove(db, {
             userId,
             workoutId: op.workoutId,
@@ -1118,6 +1152,9 @@ export async function applyOps(
               eq(plannedWorkouts.userId, userId),
               inArray(plannedWorkouts.effectiveDate, [op.dayA, op.dayB]),
               eq(plannedWorkouts.completionState, "scheduled"),
+              // A removed session keeps its date; trading days must not drag
+              // it (and a watch move job for it) back into the plan.
+              isNull(plannedWorkouts.archivedAt),
             ),
           );
         for (const w of days) {
@@ -1137,6 +1174,11 @@ export async function applyOps(
         break;
       }
       case "skip": {
+        const found = await actionable(op.workoutId);
+        if (found.why !== undefined) {
+          out.missed.push(`a session it skips ${found.why}, so it was left as it was`);
+          break;
+        }
         // Coach-sanctioned: the garden treats it as agreed rest (spec §1).
         await db
           .update(plannedWorkouts)
@@ -1154,21 +1196,12 @@ export async function applyOps(
        * garden the athlete had rested on a day they never intended to train.
        */
       case "remove": {
-        const [row] = await db
-          .select()
-          .from(plannedWorkouts)
-          .where(
-            and(
-              eq(plannedWorkouts.id, op.workoutId),
-              eq(plannedWorkouts.userId, userId),
-              isNull(plannedWorkouts.archivedAt),
-            ),
-          )
-          .limit(1);
-        if (!row) {
-          out.missed.push("a session it takes off the plan isn't there any more, so nothing was removed");
+        const found = await actionable(op.workoutId);
+        if (found.why !== undefined) {
+          out.missed.push(`a session it takes off the plan ${found.why}, so nothing was removed`);
           break;
         }
+        const row = found.row;
         // The athlete's own remove, verbatim: suppression, intent, move-intent
         // close — then the unpush a verified watch-pushed row needs.
         await removeFromPlan(db, userId, op.workoutId, { now, source: "coach_remove" });
@@ -1208,25 +1241,12 @@ export async function applyOps(
        * lets a taper reach twelve sessions without twelve session bodies.
        */
       case "adjust": {
-        const [row] = await db
-          .select({
-            id: plannedWorkouts.id,
-            seconds: plannedWorkouts.calendarBlockDurationSeconds,
-            effectiveDate: plannedWorkouts.effectiveDate,
-          })
-          .from(plannedWorkouts)
-          .where(
-            and(
-              eq(plannedWorkouts.id, op.workoutId),
-              eq(plannedWorkouts.userId, userId),
-              isNull(plannedWorkouts.archivedAt),
-            ),
-          )
-          .limit(1);
-        if (!row) {
-          out.missed.push("a session it re-times isn't there any more, so its length is unchanged");
+        const found = await actionable(op.workoutId);
+        if (found.why !== undefined) {
+          out.missed.push(`a session it re-times ${found.why}, so its length is unchanged`);
           break;
         }
+        const row = found.row;
         await db
           .update(plannedWorkouts)
           .set({

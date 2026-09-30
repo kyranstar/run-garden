@@ -70,17 +70,23 @@ describe("coach remove ≡ manual remove", () => {
     expect(sup).toHaveLength(1);
   });
 
-  it("reports resimFrom for a past-dated removal and null for a future one", async () => {
+  it("reports resimFrom for a removal today, null for a future one, and refuses a past-dated one", async () => {
     const db = makeTestDb();
     const { userId, prefs } = await makeTestUser(db);
     const today = todayInZone(prefs.timezone);
-    const pastDate = addDays(today, -2);
-    await seed(db, userId, "past", pastDate);
+    await seed(db, userId, "today", today);
+    await seed(db, userId, "past", addDays(today, -2));
     await seed(db, userId, "future", addDays(today, 2));
-    // Past rows are refused by guardrails upstream, but apply itself must still report honestly.
-    const past = await applyOps(db, userId, prefs, "p0", [{ kind: "remove", workoutId: "past" }]);
-    expect(past.resimFrom).toBe(pastDate);
-    const a = await applyOps(db, userId, prefs, "p1", [{ kind: "remove", workoutId: "future" }]);
+    const now = await applyOps(db, userId, prefs, "p0", [{ kind: "remove", workoutId: "today" }]);
+    expect(now.resimFrom).toBe(today);
+    // A past row is refused by the guardrails at wake AND, since audit 1
+    // (coach finding 2), by apply itself at the tap: its day has gone, so it is
+    // reported as a shortfall and nothing reaches back into the garden.
+    const past = await applyOps(db, userId, prefs, "p1", [{ kind: "remove", workoutId: "past" }]);
+    expect(past.archived).toEqual([]);
+    expect(past.missed).toEqual(["a session it takes off the plan has already had its day, so nothing was removed"]);
+    expect(past.resimFrom).toBeNull();
+    const a = await applyOps(db, userId, prefs, "p2", [{ kind: "remove", workoutId: "future" }]);
     expect(a.resimFrom).toBeNull();
   });
 });

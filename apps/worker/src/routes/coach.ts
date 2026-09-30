@@ -411,6 +411,20 @@ coachRoutes.post("/proposals/:id/approve", async (c) => {
   if (p.status !== "pending") return c.json({ error: "not_pending", status: p.status }, 409);
 
   const prefs = await loadPreferences(db, userId);
+  // A PROPOSAL WHOSE MOMENT HAS PASSED IS NOT APPROVABLE, whether or not a
+  // sweep has run yet (audit 1, coach finding 2). `expiresAt` is capped at the
+  // first day the ops touch, and the sweep only runs on state reads and the
+  // hourly job — so a page left open overnight could approve yesterday's "skip
+  // today's tempo" against a session that has since been run. Expiring it here
+  // is the same sweep, with the same receipt; the 409 is the one every other
+  // stale tap already gets. (Together with `applyOps`'s per-op state guard this
+  // re-asserts the wake's fatal checks at the tap: nothing an op names can be
+  // dated before today, and nothing resolved since the wake is touched.)
+  const today = todayInZone(prefs.timezone);
+  if (p.expiresAt < today) {
+    await sweepExpiredProposals(db, userId, today);
+    return c.json({ error: "not_pending", status: "expired" }, 409);
+  }
   const applied = await applyOps(db, userId, prefs, p.id, p.ops as CoachOp[]);
   await db
     .update(coachProposals)

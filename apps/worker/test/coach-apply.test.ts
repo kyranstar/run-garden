@@ -8,6 +8,7 @@ import { schema } from "@rg/database";
 import { addDays, newId, nowInstant, todayInZone, type CoachOp } from "@rg/domain";
 import type { Db } from "../src/services/db.js";
 import { applyOps } from "../src/services/coach-apply.js";
+import { buildDayInput } from "../src/services/garden-sync.js";
 import { openIntentFor } from "../src/services/sync-intents.js";
 import { makeTestDb, makeTestUser } from "./helpers.js";
 
@@ -721,5 +722,193 @@ describe("applyOps · remove, restore, adjust", () => {
     expect(out.archived).toEqual([]);
     expect(out.updated).toEqual([]);
     expect(out.missed).toHaveLength(3);
+  });
+});
+
+/**
+ * THE APPROVE-TIME STATE GUARD (audit 1, coach finding 2).
+ *
+ * A proposal is drafted at wake and approved whenever the athlete taps — often
+ * after the session it names has been run. Approving "skip today's tempo" that
+ * evening used to overwrite the completion (`skipped`, sanctioned by the coach)
+ * and a remove archived it, so `buildDayInput` stopped counting the run: the
+ * garden lost it permanently and the Plan had no way back. The fatal
+ * `touch_resolved` rule the wake applied must still hold at approve time, so
+ * every id-addressed op re-checks its row and reports a shortfall instead.
+ */
+describe("applyOps re-checks each op's target at approve time", () => {
+  async function seedResolved(db: Db, userId: string, id: string, date: string, state: string) {
+    await seedWorkout(db, userId, id, date);
+    await db
+      .update(schema.plannedWorkouts)
+      .set({ completionState: state, resolutionDate: state === "scheduled" ? null : date })
+      .where(eq(schema.plannedWorkouts.id, id));
+  }
+  const everyOp = (id: string, toDate: string): CoachOp[] => [
+    { kind: "ease", workoutId: id, session: run40 },
+    { kind: "move", workoutId: id, toDate },
+    { kind: "skip", workoutId: id, reason: "rest" },
+    { kind: "remove", workoutId: id },
+    { kind: "adjust", workoutId: id, durationMinutes: 20 },
+  ];
+
+  it("a completed session keeps its run: skip and remove leave it, and the garden still counts it", async () => {
+    const db = makeTestDb();
+    const { userId, prefs } = await makeTestUser(db);
+    const today = todayInZone(prefs.timezone);
+    for (const id of ["a", "b"]) {
+      await seedResolved(db, userId, id, today, "completed");
+      await db.insert(schema.activities).values({
+        id: `act-${id}`,
+        userId,
+        startTime: `${today}T14:00:00Z`,
+        startTimeLocal: `${today}T07:00:00`,
+        sport: "run",
+        durationSeconds: 3600,
+        distanceMeters: 10000,
+        completionMatchId: `m-${id}`,
+        sourceMergeConfidence: 1,
+        createdAt: nowInstant(),
+        updatedAt: nowInstant(),
+      });
+      await db.insert(schema.workoutCompletionMatches).values({
+        id: `m-${id}`,
+        workoutId: id,
+        activityId: `act-${id}`,
+        confidence: 1,
+        method: "scored_auto",
+        matchedAt: nowInstant(),
+      });
+    }
+    expect((await buildDayInput(db, userId, today, prefs)).completedRuns).toHaveLength(2);
+
+    const out = await applyOps(db, userId, prefs, "p-late", [
+      { kind: "skip", workoutId: "a", reason: "tired" },
+      { kind: "remove", workoutId: "b" },
+    ]);
+
+    expect(out.updated).toEqual([]);
+    expect(out.archived).toEqual([]);
+    expect(out.resimFrom).toBeNull();
+    expect(out.missed).toEqual([
+      "a session it skips has already been done, so it was left as it was",
+      "a session it takes off the plan has already been done, so nothing was removed",
+    ]);
+    const rows = await db.select().from(schema.plannedWorkouts).where(eq(schema.plannedWorkouts.userId, userId));
+    expect(rows.map((r) => [r.id, r.completionState, r.sanctionedBy, r.archivedAt])).toEqual([
+      ["a", "completed", null, null],
+      ["b", "completed", null, null],
+    ]);
+    expect((await buildDayInput(db, userId, today, prefs)).completedRuns).toHaveLength(2);
+  });
+
+  for (const state of ["completed", "skipped", "missed"] as const) {
+    it(`no op but restore touches a ${state} session`, async () => {
+      const db = makeTestDb();
+      const { userId, prefs } = await makeTestUser(db);
+      const today = todayInZone(prefs.timezone);
+      const date = addDays(today, 1);
+      // A skip of an already-skipped session is the re-apply case (finding 7),
+      // pinned on its own.
+      const ops = everyOp("w1", addDays(today, 3)).filter((o) => !(state === "skipped" && o.kind === "skip"));
+      await seedResolved(db, userId, "w1", date, state);
+      const [before] = await db.select().from(schema.plannedWorkouts).where(eq(schema.plannedWorkouts.id, "w1"));
+
+      const out = await applyOps(db, userId, prefs, `p-${state}`, ops);
+
+      expect(out.updated).toEqual([]);
+      expect(out.archived).toEqual([]);
+      expect(out.missed).toHaveLength(ops.length);
+      const [after] = await db.select().from(schema.plannedWorkouts).where(eq(schema.plannedWorkouts.id, "w1"));
+      expect({ ...after, updatedAt: null }).toEqual({ ...before, updatedAt: null });
+      expect(await db.select().from(schema.scheduleOverrides)).toEqual([]);
+    });
+  }
+
+  it("a session whose day has gone is not rewritten, moved, skipped, removed or re-timed", async () => {
+    const db = makeTestDb();
+    const { userId, prefs } = await makeTestUser(db);
+    const today = todayInZone(prefs.timezone);
+    await seedWorkout(db, userId, "w-past", addDays(today, -1));
+    const [before] = await db.select().from(schema.plannedWorkouts).where(eq(schema.plannedWorkouts.id, "w-past"));
+
+    const out = await applyOps(db, userId, prefs, "p-past", everyOp("w-past", addDays(today, 2)));
+
+    expect(out.updated).toEqual([]);
+    expect(out.archived).toEqual([]);
+    expect(out.resimFrom).toBeNull();
+    expect(out.missed).toContain("a session it moves has already had its day, so it stayed where it was");
+    expect(out.missed).toHaveLength(5);
+    const [after] = await db.select().from(schema.plannedWorkouts).where(eq(schema.plannedWorkouts.id, "w-past"));
+    expect({ ...after, updatedAt: null }).toEqual({ ...before, updatedAt: null });
+  });
+
+  it("an archived session is not eased, moved or re-timed back into view", async () => {
+    const db = makeTestDb();
+    const { userId, prefs } = await makeTestUser(db);
+    const today = todayInZone(prefs.timezone);
+    await seedWorkout(db, userId, "w-gone", addDays(today, 2));
+    await db
+      .update(schema.plannedWorkouts)
+      .set({ archivedAt: nowInstant(), archiveReason: "absence_confirmed" })
+      .where(eq(schema.plannedWorkouts.id, "w-gone"));
+    const out = await applyOps(db, userId, prefs, "p-gone", [
+      { kind: "ease", workoutId: "w-gone", session: run40 },
+      { kind: "move", workoutId: "w-gone", toDate: addDays(today, 4) },
+      { kind: "adjust", workoutId: "w-gone", durationMinutes: 20 },
+    ]);
+    expect(out.updated).toEqual([]);
+    expect(out.missed).toEqual([
+      "a session it eases isn't on the calendar any more, so nothing was changed",
+      "a session it moves isn't on the calendar any more, so it stayed where it was",
+      "a session it re-times isn't on the calendar any more, so its length is unchanged",
+    ]);
+    const [w] = await db.select().from(schema.plannedWorkouts).where(eq(schema.plannedWorkouts.id, "w-gone"));
+    expect([w!.title, w!.effectiveDate, w!.calendarBlockDurationSeconds]).toEqual([
+      "Tempo 3×10",
+      addDays(today, 2),
+      3600,
+    ]);
+  });
+
+  it("a move or skip naming a session that does not exist says so instead of claiming success", async () => {
+    const db = makeTestDb();
+    const { userId, prefs } = await makeTestUser(db);
+    const today = todayInZone(prefs.timezone);
+    const out = await applyOps(db, userId, prefs, "p-ghost2", [
+      { kind: "move", workoutId: "nope", toDate: addDays(today, 2) },
+      { kind: "skip", workoutId: "nope-either", reason: "rest" },
+    ]);
+    expect(out.updated).toEqual([]);
+    expect(out.missed).toHaveLength(2);
+  });
+
+  it("a swap leaves an archived session where it is", async () => {
+    const db = makeTestDb();
+    const { userId, prefs } = await makeTestUser(db);
+    const today = todayInZone(prefs.timezone);
+    await seedWorkout(db, userId, "live", addDays(today, 2));
+    await seedWorkout(db, userId, "removed", addDays(today, 3));
+    await db
+      .update(schema.plannedWorkouts)
+      .set({ archivedAt: nowInstant(), archiveReason: "user_removed" })
+      .where(eq(schema.plannedWorkouts.id, "removed"));
+    const out = await applyOps(db, userId, prefs, "p-swap", [
+      { kind: "swap", dayA: addDays(today, 2), dayB: addDays(today, 3) },
+    ]);
+    expect(out.updated).toEqual(["live"]);
+    const [removed] = await db.select().from(schema.plannedWorkouts).where(eq(schema.plannedWorkouts.id, "removed"));
+    expect(removed!.effectiveDate).toBe(addDays(today, 3));
+  });
+
+  it("a scheduled session today or later is still changed exactly as before", async () => {
+    const db = makeTestDb();
+    const { userId, prefs } = await makeTestUser(db);
+    const today = todayInZone(prefs.timezone);
+    await seedWorkout(db, userId, "t", today);
+    const out = await applyOps(db, userId, prefs, "p-today", [{ kind: "skip", workoutId: "t", reason: "rest" }]);
+    expect(out.updated).toEqual(["t"]);
+    expect(out.missed).toEqual([]);
+    expect(out.resimFrom).toBe(today);
   });
 });

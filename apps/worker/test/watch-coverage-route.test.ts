@@ -223,6 +223,10 @@ describe("GET /api/plan/workouts/:id — watchCoverage", () => {
   it("turns an eased-but-pushed session from 'synced' into 'older on watch'", async () => {
     // THE HEADLINE CASE. A row COROS already holds, eased in place: the date
     // does not move, no job exists, and the derivation used to answer "synced".
+    //
+    // Dated in the future: an approved ease is refused for a session whose day
+    // has already gone (audit 1, coach finding 2).
+    const day = addDays(todayInZone(prefs.timezone), 7);
     const id = "pushed-run";
     await db.insert(plannedWorkouts).values({
       id,
@@ -233,9 +237,9 @@ describe("GET /api/plan/workouts/:id — watchCoverage", () => {
       title: "Threshold 5×5",
       category: "quality",
       sport: "run",
-      originalPlanDate: "2026-08-20",
-      lastVerifiedCorosDate: "2026-08-20",
-      effectiveDate: "2026-08-20",
+      originalPlanDate: day,
+      lastVerifiedCorosDate: day,
+      effectiveDate: day,
       effectiveTime: "07:00",
       sourceContentFingerprint: "fp",
       calendarBlockDurationSeconds: 3600,
@@ -263,7 +267,7 @@ describe("GET /api/plan/workouts/:id — watchCoverage", () => {
     expect(after.watchCoverage).toBeUndefined();
     expect(
       (await db.select({ d: plannedWorkouts.effectiveDate }).from(plannedWorkouts).where(eq(plannedWorkouts.id, id)))[0]!.d,
-    ).toBe("2026-08-20");
+    ).toBe(day);
   });
 
   it("keeps a rest day out of it entirely", async () => {
