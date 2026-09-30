@@ -45,6 +45,7 @@ const CATEGORY_LABEL: Partial<Record<WorkoutCategory, string>> = {
   race: "Race",
   cross_training: "Cross-train",
   strength: "Strength",
+  yoga: "Yoga",
   unknown: "Run",
 };
 

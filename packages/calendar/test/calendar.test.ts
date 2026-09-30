@@ -38,6 +38,10 @@ function makeResource(over: Partial<EventWorkoutInfo> = {}, userNotes?: string) 
 }
 
 describe("event body", () => {
+  it("titles yoga sessions Yoga, not Run", () => {
+    expect(buildEventTitle(workoutInfo({ category: "yoga", title: "Hips & posture" }))).toBe("Yoga · Hips & posture");
+  });
+
   it("builds the title, padded block, and reminder overrides", () => {
     const r = makeResource();
     expect(r.summary).toBe("Run · Threshold 5x5");

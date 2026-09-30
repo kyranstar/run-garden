@@ -157,7 +157,12 @@ export function isQuality(w: Pick<PlannedWorkout, "category">): boolean {
 }
 
 export function isRunning(w: Pick<PlannedWorkout, "category">): boolean {
-  return w.category !== "rest" && w.category !== "cross_training" && w.category !== "strength";
+  return (
+    w.category !== "rest" &&
+    w.category !== "cross_training" &&
+    w.category !== "strength" &&
+    w.category !== "yoga"
+  );
 }
 
 /** User-facing category labels — shared by worker summaries and the UI so a
