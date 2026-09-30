@@ -389,8 +389,8 @@ Prefs JSON gains `weightUnit: "lb" | "kg"` (default `lb`) and `equipmentWishlist
 ### 8.5 Existing tables
 
 - `activities.source`: `coros` (default, backfilled for every existing row) | `app` | `import`.
-  - COROS adoption considers **only** `source = 'app'` rows (the deliberate merge, §10.6). `import` rows are never
-    adopted.
+  - COROS adoption never considers `import` rows. Adopting an `app` row is the deliberate merge (§10.6); legacy
+    `coros` rows without a COROS id keep today's adoption behaviour.
   - `repairTimestamps` and every repair or dedupe path skip non-`coros` rows.
 - `activity_source_links.provider` gains `app` and `import`.
 - `workout_completion_matches.method` gains `app_session`.
@@ -472,7 +472,7 @@ graduations persist **only on Save**.
 5. `resimulateFrom(local_date)` for the garden; records and insights recompute on read as today.
 
 **One physical session is counted once.** If the athlete also wore the watch, the COROS activity arrives later; the
-ingest's adoption step now considers only `source = 'app'` rows and merges into it: COROS is the authority for HR,
+ingest's adoption step (which never touches `import` rows) merges into the `app` row: COROS is the authority for HR,
 duration and load; the row id, the match and every performed set survive; `activities.source` becomes `coros` and a
 source link records both. The garden sees one activity with a stable id.
 
@@ -625,7 +625,8 @@ side effects, `resultingCalendar` cases, stale guardrail wording), the yoga cale
 non-run sports, a single active match per workout. Complete export + tested restore; delete-all coverage.
 `activities.source` + adoption/repair guards (schema, additive). Staging (§13.2) and the copier; the Time Travel
 runbook; the parity harness (§13.3). The e2e smoke suite refreshed and added to CI. Spikes: COROS unmapped moves (API
-level), the lap reps/weight probe (masked keys only), an IndexedDB outbox in the PWA.
+level) and the lap reps/weight probe (masked keys only). (The IndexedDB outbox spike opens Phase 2b, where the
+outbox is built.)
 
 **Phase 1 — unified model, additively.** Migrations for §8 (programs, blocks, versions, builds, performed sessions,
 sets, checks, conditions, locations, prefs, provenance; the three `planned_workouts` columns). Domain schemas and
