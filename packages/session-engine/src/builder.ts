@@ -1,4 +1,4 @@
-import { sameWeight, toKg, type Weight, type WeightUnit } from "@rg/domain";
+import type { Weight, WeightUnit } from "@rg/domain";
 import {
   attrsOf, modeSkeleton, positionGroup,
   type BlockId, type CheckReading, type EngineData, type ExerciseRecord, type Format, type FormatId, type Mode, type ModeSkeleton, type Theme,
@@ -344,15 +344,6 @@ function fillCore(budget: number, ctx: Ctx): { groups: Group[]; spent: number } 
   return { groups: [], spent: 0 };
 }
 
-/** Kettlebells at this place, light to heavy, without duplicates. */
-function bellsAt(input: BuildInput): Weight[] {
-  const out: Weight[] = [];
-  for (const w of [...(input.location.implements?.kettlebell ?? [])].sort((a, b) => toKg(a) - toKg(b))) {
-    if (w && w.v > 0 && !out.some(o => sameWeight(o, w))) out.push(w);
-  }
-  return out;
-}
-
 function makeContext(data: EngineData, input: BuildInput): Ctx {
   const unit = input.unit || "lb";
   const sessions = input.sessions || [];
@@ -367,7 +358,7 @@ function makeContext(data: EngineData, input: BuildInput): Ctx {
     prefs: { ratings: {}, excluded: [], pinned: [], ...(input.prefs || {}) },
     equipment: input.location.equipment || [],
     unit,
-    kbWeights: bellsAt(input),
+    kbWeights: Lib.kettlebellsAt(input.location),
     rng: Rng.create(seed),
     jitter: (id: string) => Rng.create(`${seed}|${id}`)(),
     debt,

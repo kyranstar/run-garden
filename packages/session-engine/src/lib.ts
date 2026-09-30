@@ -1,6 +1,8 @@
+import { sameWeight, toKg, type Weight } from "@rg/domain";
 import {
   LOAD_IMPLEMENTS, coreFamilyOf, eligible, fitsMode, flareSafe, hasEquipment, type EngineData, type ExerciseRecord,
 } from "@rg/exercise-library";
+import type { EngineLocation } from "./types.js";
 
 // The exercise library: lookup (including renamed ids), equipment and mode eligibility, core families.
 // Every function that reads library data takes the EngineData first; lookups are indexed per exercise list,
@@ -39,4 +41,13 @@ function implementFor(ex: ExerciseRecord, equipment: readonly string[] | null | 
   return candidates.find(i => have.has(i)) ?? null;
 }
 
-export const Lib = { get, all, flareSafe, hasEquipment, implementFor, fitsMode, eligible, coreFamilyOf };
+/** The kettlebells at a place, light to heavy, without duplicates. */
+function kettlebellsAt(location: EngineLocation): Weight[] {
+  const out: Weight[] = [];
+  for (const w of [...(location.implements?.kettlebell ?? [])].sort((a, b) => toKg(a) - toKg(b))) {
+    if (w && w.v > 0 && !out.some(o => sameWeight(o, w))) out.push(w);
+  }
+  return out;
+}
+
+export const Lib = { get, all, flareSafe, hasEquipment, implementFor, fitsMode, eligible, coreFamilyOf, kettlebellsAt };
