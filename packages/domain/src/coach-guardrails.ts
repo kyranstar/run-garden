@@ -291,8 +291,8 @@ export const GUARDRAIL_LIMITS = {
  *
  * IT NOW STATES THE SPLIT, because a prompt that lies about the consequence is
  * worse than one that says nothing (2026-08-17). This block used to open with
- * "Breaking ONE rejects the WHOLE proposal", and after tonight that is true of
- * three rules and false of eight. A model told that every number is a wall
+ * "Breaking ONE rejects the WHOLE proposal", and that is only true of the
+ * fatal rules in `RULE_CLASS`; the advisory ones print a trade-off. A model told that every number is a wall
  * plans to the wall and then apologises for the wall; a model told which ones
  * are walls and which ones are prices it may pay — out loud, with a reason —
  * writes the plan the athlete actually asked for.
@@ -665,9 +665,36 @@ function resultingCalendar(ops: CoachOp[], ctx: GuardrailCtx): CalEntry[] {
         }
         break;
       }
-      case "skip": {
+      case "skip":
+      // A removed row leaves the load calendar exactly as a skipped one does.
+      case "remove": {
         const idx = cal.findIndex((e) => e.id === op.workoutId);
         if (idx >= 0) cal.splice(idx, 1);
+        break;
+      }
+      case "restore": {
+        // `cal` dropped skipped/missed rows, so the row comes from the
+        // unfiltered list. Restoring a row that is already live is a no-op.
+        const was = ctx.workouts.find((w) => w.id === op.workoutId);
+        if (was && was.completionState === "skipped" && !entryFor(was.id)) {
+          cal.push({
+            id: was.id,
+            date: was.date,
+            category: was.category,
+            durationMinutes: was.durationMinutes,
+            discipline: was.discipline,
+            fromOp: i,
+            done: false,
+          });
+        }
+        break;
+      }
+      case "adjust": {
+        const e = entryFor(op.workoutId);
+        if (e) {
+          e.durationMinutes = op.durationMinutes;
+          e.fromOp = i;
+        }
         break;
       }
       case "add":
@@ -721,6 +748,11 @@ function resultingCalendar(ops: CoachOp[], ctx: GuardrailCtx): CalEntry[] {
       // reshapes no training day, so the load calendar is untouched.
       case "resolveRaceConflict":
         break;
+      default: {
+        // The next op kind is a compile error here, not a silent no-op.
+        const _never: never = op;
+        void _never;
+      }
     }
   });
   return cal;

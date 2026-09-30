@@ -833,3 +833,54 @@ describe("add ops carrying multiple dates", () => {
     expect(res.advisory).toEqual([]);
   });
 });
+
+describe("remove, restore and adjust are simulated, not ignored", () => {
+  const wk = (id: string, date: string, category: string, durationMinutes: number, discipline: "run" | "strength" | "yoga", completionState = "scheduled") => ({
+    id,
+    date,
+    title: id,
+    category,
+    completionState,
+    durationMinutes,
+    discipline,
+  });
+  const base = (workouts: ReturnType<typeof wk>[]) =>
+    ctx({
+      today: "2026-08-16",
+      workouts,
+      weeklyMinutesByDiscipline: { run: [180, 180, 180, 180], strength: [60, 60, 60, 60] },
+      raceDates: [],
+      rules: [],
+      firmHorizonEnd: "2026-08-31",
+    });
+
+  it("a ramp advisory disappears when the proposal removes the session that caused it", () => {
+    // The week already holds S (100 min against a 60 average), so the ramp
+    // rule only speaks when the ops ADD strength minutes beyond that baseline.
+    const c = base([wk("s1", "2026-08-18", "strength", 100, "strength")]);
+    const extra = { kind: "add" as const, date: "2026-08-19", session: lift(100) };
+    expect(validateOps([extra], c).advisory.some((v) => v.rule === "ramp")).toBe(true);
+    const swapped = validateOps([{ kind: "remove", workoutId: "s1" }, extra], c);
+    expect(swapped.advisory.filter((v) => v.rule === "ramp")).toEqual([]);
+  });
+
+  it("restore puts a skipped session back on the load calendar", () => {
+    const c = base([wk("s1", "2026-08-18", "strength", 300, "strength", "skipped")]);
+    const out = validateOps([{ kind: "restore", workoutId: "s1" }], c);
+    expect(out.advisory.some((v) => v.rule === "ramp")).toBe(true);
+  });
+
+  it("adjust shortens a hard strength session below HARD_LIFT_MINUTES and clears hard_adjacency", () => {
+    const c = base([
+      wk("q1", "2026-08-17", "quality", 50, "run"),
+      wk("s1", "2026-08-18", "strength", 60, "strength"),
+    ]);
+    const stays = validateOps([{ kind: "adjust", workoutId: "s1", durationMinutes: GUARDRAIL_LIMITS.hardLiftMinutes }], c);
+    expect(stays.advisory.some((v) => v.rule === "hard_adjacency")).toBe(true);
+    const out = validateOps(
+      [{ kind: "adjust", workoutId: "s1", durationMinutes: GUARDRAIL_LIMITS.trivialLiftMinutes - 1 }],
+      c,
+    );
+    expect(out.advisory.filter((v) => v.rule === "hard_adjacency")).toEqual([]);
+  });
+});

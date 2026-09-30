@@ -522,9 +522,9 @@ export const WAKE_EXAMPLE_OPS = JSON.stringify([
  * That is not hypothetical: the live ski-prep wake proposed 313 minutes of
  * strength work against a 120-minute cold-start ceiling it was never shown.
  *
- * AND THE RULES ARE SPLIT IN TWO AS WELL (2026-08-17, later). Three of them
- * reject a proposal; eight of them print a trade-off on it and let the athlete
- * decide (@rg/domain `RULE_CLASS`). The prompt has to say which is which,
+ * AND THE RULES ARE SPLIT IN TWO AS WELL (2026-08-17, later). The fatal rules in
+ * `RULE_CLASS` (@rg/domain) reject a proposal; the advisory ones print a
+ * trade-off on it and let the athlete decide. The prompt has to say which is which,
  * because the consequence changes what good writing looks like: a wall is
  * something to plan around silently, a price is something to name out loud and
  * spend on purpose. Telling the model everything is a wall — which this prompt
