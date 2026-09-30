@@ -108,14 +108,10 @@ test("swapping a swapped slot again keeps the newest choice; swapping back to th
   const first = today(fresh(), T);
   const item = first.view.plan.items.find(i => i.block === "prep")!;
   const original = item.exercise.id;
-  const alts = (s: State, k = 3) => Planner.alternatives(data, { today: T, day: s.day }, s.program, item.slotKey, k);
+  const alts = (s: State) => Planner.alternatives(data, { today: T, day: s.day }, s.program, item.slotKey);
   const [a] = alts(first.data);
   let s = withDay(first.data, Planner.swap(first.data.day, T, item.slotKey, original, a!.id));
-  // A swap is validated against the unswapped plan, so the second choice must not already be in it. (The
-  // standalone test picked the first other alternative, which with the standalone library's saves bonus
-  // happened to be one; without that bonus the first is a move the unswapped plan holds elsewhere.)
-  const unswapped = new Set(first.view.plan.items.map(i => i.exercise.id));
-  const b = alts(s, 20).find(x => x.id !== original && x.id !== a!.id && !unswapped.has(x.id));
+  const b = alts(s).find(x => x.id !== original && x.id !== a!.id);
   expect(b, "needs a second alternative").toBeTruthy();
   s = withDay(s, Planner.swap(s.day, T, item.slotKey, a!.id, b!.id));
   expect(s.day!.swaps[item.slotKey]).toEqual({ from: original, to: b!.id });

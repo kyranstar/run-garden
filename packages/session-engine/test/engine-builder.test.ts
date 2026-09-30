@@ -281,11 +281,15 @@ describe("beyond the standalone suite", () => {
         }
       }
     }
-    // For a timed slot, the precomputed steps are exactly what the swapped build plays in that slot.
-    const slot = plan.items.find(i => i.block === "prep")!;
-    const alt = plan.alternatives[slot.slotKey]![0]!;
-    const swapped = Builder.build(data, input({ mode: "build", minutes: 40, theme: themeFor("build"), swaps: { [slot.slotKey]: { from: slot.exercise.id, to: alt.id } } }));
-    expect(swapped.steps.filter(s => s.slotKey === slot.slotKey && s.kind !== "rest")).toEqual(alt.steps);
+    // In every slot, each offered alternative's steps are exactly what the swapped build plays there
+    // (swaps.test.ts checks this over a few hundred seeded builds).
+    for (const slot of plan.items) {
+      for (const alt of plan.alternatives[slot.slotKey]!) {
+        const swapped = Builder.build(data, input({ mode: "build", minutes: 40, theme: themeFor("build"), swaps: { [slot.slotKey]: { from: slot.exercise.id, to: alt.id } } }));
+        expect(swapped.items.find(i => i.slotKey === slot.slotKey)!.exercise.id).toBe(alt.id);
+        expect(swapped.steps.filter(s => s.slotKey === slot.slotKey && s.kind !== "rest")).toEqual(alt.steps);
+      }
+    }
   });
 
   test("alternatives follow the day's checks too: no overhead pressing offered on a rough day", () => {

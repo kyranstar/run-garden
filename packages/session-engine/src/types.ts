@@ -2,6 +2,7 @@ import type { LocalDate, Weight, WeightUnit } from "@rg/domain";
 import type {
   BlockId, CheckReading, DoseType, EngineData, ExerciseRecord, FormatId, HistoryEntry, HistorySession, HistorySet, Mode, Theme,
 } from "@rg/exercise-library";
+import type { SlotChoice, SwapState } from "./swapping.js";
 
 // The engine's inputs and outputs. The history shapes and EngineData come from the library (the condition
 // profile contract reads them); everything here is plain data in, plain data out.
@@ -151,15 +152,12 @@ export interface Plan {
   newMove: string | null;
 }
 
-/** A swap the player can make offline: the move, why, and the slot's steps if it were swapped in. */
-export interface Alternative {
-  id: string;
-  name: string;
-  reasons: string[];
-  steps: Step[];
-}
+/** A swap the plan offers: the move, why, the slot's steps with it swapped in, and what checking it needs. */
+export type Alternative = SlotChoice;
 
 export interface BuildResult extends Plan {
-  /** Top alternatives per slot key, computed once per build. */
+  /** Up to 3 swaps each slot can take in this plan; applying one produces exactly its steps in that slot. */
   alternatives: Record<string, Alternative[]>;
+  /** The swap state, for recomputing the alternatives offline after a mid-session swap (see Swapping). */
+  swapState: SwapState;
 }

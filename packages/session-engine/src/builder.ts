@@ -10,12 +10,14 @@ import { Lib } from "./lib.js";
 import { Prog } from "./prog.js";
 import { Rng } from "./rng.js";
 import { Select, type Scored, type SelectCtx } from "./select.js";
-import type { Alternative, Block, BuildInput, BuildResult, Group, Item, Plan, Prefs, Step, Swaps, Target } from "./types.js";
+import { Swapping, type SlotChoice, type SwapSlot, type SwapState } from "./swapping.js";
+import type { Block, BuildInput, BuildResult, Group, Item, Plan, Prefs, Step, Swaps, Target } from "./types.js";
 
 // Builds a session: skeleton blocks → exercises → formats → a flat step list the timer plays.
 // The skeleton (including a cared-for profile's care block) comes from EngineData; every condition rule
 // comes from the active profiles, and today's checks decide what the day allows.
-// swaps: { "<block>:<index>": { from: exId, to: exId } }
+// The plan is filled without swaps; swaps (`{ "<block>:<index>": { from: exId, to: exId } }`) are then applied to
+// it exactly, slot by slot, with the pure swap rules in swapping.ts (audit I1, I2, M4).
 
 const PREP_SECONDS = 8;
 const CHIME_SECONDS = 3;
@@ -31,7 +33,6 @@ interface Ctx extends SelectCtx {
   checks: Readonly<Record<string, CheckReading>>;
   sessions: BuildInput["sessions"];
   block: Block | null;
-  swaps: Swaps;
   seed: string;
   prefs: Prefs;
   equipment: readonly string[];
@@ -39,8 +40,6 @@ interface Ctx extends SelectCtx {
   kbWeights: Weight[];
   jitter: (id: string) => number;
   used: Set<string>;
-  banned: Set<string>;
-  reserved: Set<string>;
   /** Whether this week still wants a new move (fixed for the whole build). */
   newMoveWeek: boolean;
   /** Closes once a new move is picked. */
@@ -186,23 +185,20 @@ const moveKey = (ex: ExerciseRecord): string => `${ex.family}|${[...ex.regions].
 function movesInPlan(ctx: Ctx): Set<string> {
   const keys = new Set<string>();
   for (const id of ctx.used) {
-    if (ctx.banned.has(id)) continue;
     const ex = Lib.get(ctx.data, id);
     if (ex) keys.add(moveKey(ex));
   }
   return keys;
 }
 
-// allowReserved: include exercises reserved for a user's swap (only the swap's own slot may take them).
 // The day's checks apply (Lib.eligible with checks): e.g. overhead pressing needs an answered, calm check.
-function candidates(block: BlockId, formatId: FormatId, ctx: Ctx, allowReserved = false): ExerciseRecord[] {
+function candidates(block: BlockId, formatId: FormatId, ctx: Ctx): ExerciseRecord[] {
   const taken = movesInPlan(ctx);
   return Lib.all(ctx.data).filter(ex =>
     !taken.has(moveKey(ex)) &&
     fitsBlock(ctx, ex, block) &&
     Lib.eligible(ctx.data, ex, { equipment: ctx.equipment, mode: ctx.mode, excluded: ctx.prefs.excluded, checks: ctx.checks }) &&
     !ctx.used.has(ex.id) &&
-    (allowReserved || !ctx.reserved.has(ex.id)) &&
     accepts(ctx.data, formatId, ex));
 }
 
@@ -226,13 +222,6 @@ function makeItem(scored: Pick<Scored, "ex" | "reasons" | "isNew">, block: Block
   };
 }
 
-/** The user's swap for this slot, if it's a valid choice here. */
-function swapFor(slotKey: string, pool: readonly ExerciseRecord[], ctx: Ctx): Scored | null {
-  const swap = ctx.swaps[slotKey];
-  const ex = swap && swap.to ? Lib.get(ctx.data, swap.to) : null;
-  return ex && pool.some(c => c.id === ex.id) ? { ex, total: 0, reasons: [SWAPPED], isNew: false } : null;
-}
-
 function timedFormat(block: BlockId, ctx: Ctx): FormatId {
   const modeFormats = ctx.data.modes[ctx.mode].formats;
   const allowed = (ctx.skeleton.blocks[block]?.formats ?? []).filter(f => modeFormats.includes(f));
@@ -253,13 +242,12 @@ function fillTimed(block: BlockId, budget: number, ctx: Ctx, group: Group | null
     if (!pool.length) break;
     const slotKey = `${block}:${items.length}`;
     const prevPosition = items.length ? items[items.length - 1]!.exercise.position : null;
-    const swap = swapFor(slotKey, candidates(block, formatId, ctx, true), ctx);
-    const ranked = swap ? [swap] : Select.rank(ctx.data, pool, { ...ctx, prevPosition, coreRegions: block === "prep" ? ctx.coreRegions : null });
+    const ranked = Select.rank(ctx.data, pool, { ...ctx, prevPosition, coreRegions: block === "prep" ? ctx.coreRegions : null });
     let picked: { item: Item; cost: number } | null = null;
     for (const r of ranked) {
       const item = makeItem(r, block, slotKey, formatId, ctx);
       const cost = costOf(windows(item, formatId));
-      if (spent + cost <= budget || items.length < min || r === swap) { picked = { item, cost }; break; }
+      if (spent + cost <= budget || items.length < min) { picked = { item, cost }; break; }
     }
     if (!picked) break;
     items.push(picked.item);
@@ -317,14 +305,12 @@ function fillCore(budget: number, ctx: Ctx): { groups: Group[]; spent: number } 
   const picks: Array<{ family: string; ex: ExerciseRecord; slotKey: string; swapped: boolean }> = [];
   for (const family of families) {
     const slotKey = `core:${picks.length}`;
-    const all = corePool(family, ctx);
-    const pool = all.filter(ex => !ctx.reserved.has(ex.id));
-    const swap = swapFor(slotKey, all, ctx);
-    let ex = swap ? swap.ex : Blocks.resolveCore(ctx.data, ctx.block, family, ctx.equipment, ctx.mode);
-    if (ex && !swap && !pool.some(c => c.id === ex!.id)) ex = pool[0] ?? null;
+    const pool = corePool(family, ctx);
+    let ex = Blocks.resolveCore(ctx.data, ctx.block, family, ctx.equipment, ctx.mode);
+    if (ex && !pool.some(c => c.id === ex!.id)) ex = pool[0] ?? null;
     if (!ex) continue;
     ctx.used.add(ex.id);
-    picks.push({ family, ex, slotKey, swapped: Boolean(swap) });
+    picks.push({ family, ex, slotKey, swapped: false });
   }
 
   const setsFor = (ex: ExerciseRecord, minimal: boolean) => (minimal || ctx.mode !== "build" ? setsRange(ex)[0] : Math.round(mid(setsRange(ex))));
@@ -347,14 +333,12 @@ function fillCore(budget: number, ctx: Ctx): { groups: Group[]; spent: number } 
 function makeContext(data: EngineData, input: BuildInput): Ctx {
   const unit = input.unit || "lb";
   const sessions = input.sessions || [];
-  const swaps = input.swaps || {};
   const seed = [input.today, input.mode, input.theme ? input.theme.id : "", input.minutes, input.location.id].join("|");
   const debt = Coverage.debt(data, sessions, input.today);
-  const swapped = Object.values(swaps);
   const newMoveWeek = !Hist.newMoveThisWeek(data, sessions, input.today);
   return {
     data, today: input.today, mode: input.mode, theme: input.theme || null, checks: input.checks || {},
-    sessions, block: input.block || null, swaps, seed,
+    sessions, block: input.block || null, seed,
     prefs: { ratings: {}, excluded: [], pinned: [], ...(input.prefs || {}) },
     equipment: input.location.equipment || [],
     unit,
@@ -366,47 +350,12 @@ function makeContext(data: EngineData, input: BuildInput): Ctx {
     coverageLast: Coverage.exposures(data, sessions, input.today).last,
     stats: Select.stats(data, sessions, input.today),
     saved: new Set(input.savedIds || []),
-    used: new Set(swapped.map(s => s && s.from).filter((x): x is string => Boolean(x))),
-    banned: new Set(swapped.map(s => s && s.from).filter((x): x is string => Boolean(x))),
-    reserved: new Set(swapped.map(s => s && s.to).filter((x): x is string => Boolean(x))),
+    used: new Set(),
     newMoveWeek,
     newMoveOpen: newMoveWeek,
     coreRegions: null,
     skeleton: modeSkeleton(data.skeleton, input.mode),
   };
-}
-
-// Swaps are checked against the plan without them: a swap applies only if its slot still holds the
-// exercise it replaced (no stale swaps), and the new move exists, isn't already in the plan, fits the
-// slot's block, format, and mode, and is allowed today. Anything else is ignored entirely.
-function validSwaps(data: EngineData, input: BuildInput): Swaps {
-  const swaps = input.swaps || {};
-  const keys = Object.keys(swaps);
-  if (!keys.length) return {};
-  const basePlan = buildPlan(data, { ...input, swaps: {} });
-  const ctx = makeContext(data, { ...input, swaps: {} });
-  const inPlan = new Set(basePlan.items.map(it => it.exercise.id));
-  const out: Record<string, { from: string; to: string }> = {};
-  for (const key of keys) {
-    const s = swaps[key] || {};
-    const at = basePlan.items.find(it => it.slotKey === key);
-    const to = s.to ? Lib.get(data, s.to) : null;
-    if (!at || !to || inPlan.has(to.id)) continue;
-    if (s.from && Hist.canonical(data, s.from) !== at.exercise.id) continue;
-    if (!Lib.eligible(data, to, { equipment: ctx.equipment, mode: input.mode, excluded: ctx.prefs.excluded, checks: ctx.checks })) continue;
-    if (at.block === "core" ? Lib.coreFamilyOf(data, to) !== at.coreFamily : !(fitsBlock(ctx, to, at.block) && accepts(data, at.format, to))) continue;
-    if (at.format === "superset") {
-      const partner = basePlan.items.find(it => it.block === at.block && it.format === "superset" && it !== at);
-      if (partner && !pairable(partner.exercise, to)) continue;
-    }
-    out[key] = { from: at.exercise.id, to: to.id };
-  }
-  return out;
-}
-
-function build(data: EngineData, input: BuildInput): BuildResult {
-  const plan = buildPlan(data, { ...input, swaps: validSwaps(data, input) });
-  return { ...plan, alternatives: alternativesFor(data, input, plan, 3) };
 }
 
 function buildPlan(data: EngineData, input: BuildInput): Plan {
@@ -476,10 +425,7 @@ function tryFormat(formatId: FormatId, budget: number, ctx: Ctx): Group | null {
     const slotKey = `accessory:${i}`;
     const prevPosition = items.length ? items[items.length - 1]!.exercise.position : null;
     const newOpen = ctx.newMoveOpen && !items.some(it => it.isNew);
-    const swapPool = candidates("accessory", formatId, ctx, true)
-      .filter(ex => !items.some(it => it.exercise.id === ex.id))
-      .filter(ex => formatId !== "superset" || !items.length || pairable(items[0]!.exercise, ex));
-    const choice = swapFor(slotKey, swapPool, ctx) || Select.rank(ctx.data, pool, { ...ctx, prevPosition, newMoveOpen: newOpen, coreRegions: null })[0]!;
+    const choice = Select.rank(ctx.data, pool, { ...ctx, prevPosition, newMoveOpen: newOpen, coreRegions: null })[0]!;
     items.push(makeItem(choice, "accessory", slotKey, formatId, ctx));
   }
   if (items.length < minN) return null;
@@ -601,7 +547,6 @@ function ensureNewMove(groups: Record<BlockId, Group[]>, budget: number, ctx: Ct
       const order = g.items.map((it, i) => ({ i, secs: costOf(groupSteps(ctx.data, { ...g, format: alone, items: [it] })) })).sort((a, b) => b.secs - a.secs || b.i - a.i);
       for (const { i } of order) {
         const old = g.items[i]!;
-        if (old.why.includes(SWAPPED)) continue;
         const partner = g.format === "superset" ? g.items[1 - i] ?? null : null;
         const pool = candidates(block, g.format, ctx)
           .filter(ex => neverDone(ex, ctx))
@@ -622,45 +567,127 @@ function ensureNewMove(groups: Record<BlockId, Group[]>, budget: number, ctx: Ct
   }
 }
 
-/** The steps a slot would play with `ex` swapped in (same format, sets and group). */
-function stepsIfSwapped(plan: Plan, item: Item, ex: ExerciseRecord, ctx: Ctx): Step[] {
-  const group = plan.groups.find(g => g.items.includes(item));
-  if (!group) return [];
+// ---- Swaps (audit I1, I2, M4). The plan above is filled without swaps. A slot's swap choices are ranked once per
+// build (the standalone alternatives' ranking); whether one is offered or applied is decided by the pure rules in
+// swapping.ts against the plan it would land in, so every offered choice is exactly what applying it produces.
+
+/** A move in this slot as a swap plays it: the slot's format, sets and group, the move's own target. */
+function swapItem(item: Item, ex: ExerciseRecord, ctx: Ctx): Item {
   const swapped: Item = item.block === "core"
     ? coreItem(ctx, { family: item.coreFamily ?? "", ex, slotKey: item.slotKey, swapped: true }, item.sets, 0)
     : makeItem({ ex, reasons: [SWAPPED], isNew: false }, item.block, item.slotKey, item.format, ctx);
-  const alt: Item = { ...swapped, format: item.format, sets: item.sets, group: item.group };
-  return groupSteps(ctx.data, { ...group, items: group.items.map(it => (it === item ? alt : it)) })
+  return { ...swapped, format: item.format, sets: item.sets, group: item.group };
+}
+
+const pairingOf = (ex: ExerciseRecord) => ({ doseType: ex.dose.type, patterns: ex.patterns, positionGroup: positionGroup(ex.position) });
+
+function choiceOf(ctx: Ctx, group: Group, item: Item, ex: ExerciseRecord, reasons: string[]): SlotChoice {
+  const inSlot = ex.id === item.exercise.id ? item : swapItem(item, ex, ctx);
+  const steps = groupSteps(ctx.data, { ...group, items: group.items.map(it => (it === item ? inSlot : it)) })
     .filter(s => s.kind !== "rest" && s.slotKey === item.slotKey);
+  return { id: ex.id, name: ex.name, reasons, steps, moveKey: moveKey(ex), pairing: pairingOf(ex) };
 }
 
-/** Ranked alternatives for one slot of a built plan. */
-function slotAlternatives(plan: Plan, item: Item, ctx: Ctx, k: number): Alternative[] {
-  // Other versions of the slot's own move are fair alternatives.
-  const slotCtx: Ctx = { ...ctx, banned: new Set([...ctx.banned, item.exercise.id]) };
-  const partner = item.format === "superset" ? plan.items.find(it => it.format === "superset" && it.block === item.block && it !== item) ?? null : null;
-  const pool = (item.block === "core" ? corePool(item.coreFamily ?? "", slotCtx) : candidates(item.block, item.format, slotCtx))
-    .filter(ex => !partner || pairable(partner.exercise, ex));
-  return Select.rank(ctx.data, pool, slotCtx).slice(0, k)
-    .map(r => ({ id: r.ex.id, name: r.ex.name, reasons: r.reasons, steps: stepsIfSwapped(plan, item, r.ex, slotCtx) }));
+/** Every move this slot may take on its own terms: block, format, family, gear, mode and today's checks. */
+function slotCandidates(ctx: Ctx, item: Item): ExerciseRecord[] {
+  if (item.block === "core") {
+    return Blocks.familyCandidates(ctx.data, item.coreFamily ?? "", { equipment: ctx.equipment, excluded: ctx.prefs.excluded })
+      .filter(ex => ex.id !== item.exercise.id && Lib.coreFamilyOf(ctx.data, ex) === item.coreFamily && Lib.fitsMode(ctx.data, ex, ctx.mode, ctx.checks));
+  }
+  return Lib.all(ctx.data).filter(ex =>
+    ex.id !== item.exercise.id && fitsBlock(ctx, ex, item.block) &&
+    Lib.eligible(ctx.data, ex, { equipment: ctx.equipment, mode: ctx.mode, excluded: ctx.prefs.excluded, checks: ctx.checks }) &&
+    accepts(ctx.data, item.format, ex));
 }
 
-function alternativesFor(data: EngineData, input: BuildInput, plan: Plan, k: number): Record<string, Alternative[]> {
-  const ctx = makeContext(data, { ...input, swaps: {} });
-  plan.items.forEach(it => ctx.used.add(it.exercise.id));
-  const out: Record<string, Alternative[]> = {};
-  for (const item of plan.items) out[item.slotKey] = slotAlternatives(plan, item, ctx, k);
-  return out;
+/** A plan filled without swaps, with every slot's ranked swap choices. */
+export interface Prepared {
+  data: EngineData;
+  ctx: Ctx;
+  base: Plan;
+  state: SwapState;
+}
+
+/**
+ * The unswapped plan and each slot's swap pool. The pool is the slot's best `k + plan size` choices, so k are left
+ * after the plan's own moves (and their other versions) are set aside, before or after other swaps.
+ */
+function prepare(data: EngineData, input: BuildInput, k = 3): Prepared {
+  const base = buildPlan(data, input);
+  const ctx = makeContext(data, input);
+  const slots: Record<string, SwapSlot> = {};
+  const current: Record<string, SlotChoice> = {};
+  for (const group of base.groups) {
+    for (const item of group.items) {
+      const partner = group.format === "superset" ? group.items.find(o => o !== item)?.slotKey ?? null : null;
+      const original = choiceOf(ctx, group, item, item.exercise, item.why);
+      const pool = Select.rank(data, slotCandidates(ctx, item), ctx).slice(0, k + base.items.length)
+        .map(r => choiceOf(ctx, group, item, r.ex, r.reasons));
+      slots[item.slotKey] = { slotKey: item.slotKey, partner, original, pool };
+      current[item.slotKey] = original;
+    }
+  }
+  return { data, ctx, base, state: { budget: input.minutes * 60, current, slots } };
+}
+
+/** The choice a stored swap asks for, if its slot still holds what it replaced and the move suits the slot. */
+function chosen(p: Prepared, slotKey: string, swap: { from?: string | null; to?: string | null }): SlotChoice | null {
+  const slot = p.state.slots[slotKey];
+  const item = p.base.items.find(it => it.slotKey === slotKey);
+  const to = swap.to ? Lib.get(p.data, swap.to) : null;
+  if (!slot || !item || !to || to.id === item.exercise.id) return null;
+  if (swap.from && Hist.canonical(p.data, swap.from) !== item.exercise.id) return null;   // stale: the slot holds something else now
+  const pooled = slot.pool.find(c => c.id === to.id);
+  if (pooled) return pooled;
+  if (!slotCandidates(p.ctx, item).some(ex => ex.id === to.id)) return null;
+  const group = p.base.groups.find(g => g.items.includes(item))!;
+  return choiceOf(p.ctx, group, item, to, Select.score(p.data, to, p.ctx).reasons);
+}
+
+/**
+ * The plan with its swaps applied and each slot's offered alternatives. Swaps that together break a rule (a move
+ * twice, two versions of a move, an unpaired superset, over time) are applied one at a time in the order stored,
+ * and any that no longer fits is left out.
+ */
+function finish(p: Prepared, swaps: Swaps | undefined, k = 3): BuildResult {
+  const { data, ctx, base } = p;
+  const wanted: Array<{ slotKey: string; choice: SlotChoice }> = [];
+  for (const [slotKey, s] of Object.entries(swaps || {})) {
+    const choice = s ? chosen(p, slotKey, s) : null;
+    if (choice) wanted.push({ slotKey, choice });
+  }
+  let done = { state: p.state, steps: base.steps };
+  for (const w of wanted) done = Swapping.apply(done.state, done.steps, w.slotKey, w.choice);
+  if (!Swapping.consistent(done.state, done.steps)) {
+    done = { state: p.state, steps: base.steps };
+    for (const w of wanted) if (Swapping.fits(done.state, done.steps, w.slotKey, w.choice)) done = Swapping.apply(done.state, done.steps, w.slotKey, w.choice);
+  }
+  const replaced = new Map<Item, Item>();
+  for (const item of base.items) {
+    const c = done.state.current[item.slotKey];
+    const ex = c && c.id !== item.exercise.id ? Lib.get(data, c.id) : null;
+    if (ex) replaced.set(item, swapItem(item, ex, ctx));
+  }
+  const swapped = (it: Item) => replaced.get(it) ?? it;
+  const items = base.items.map(swapped);
+  const newItem = items.find(it => it.isNew);
+  const alternatives = Object.fromEntries(items.map(it => [it.slotKey, Swapping.offered(done.state, done.steps, it.slotKey, k)]));
+  return {
+    ...base,
+    groups: base.groups.map(g => ({ ...g, items: g.items.map(swapped) })),
+    items, steps: done.steps, plannedSeconds: costOf(done.steps), newMove: newItem ? newItem.exercise.id : null,
+    alternatives, swapState: done.state,
+  };
+}
+
+function build(data: EngineData, input: BuildInput): BuildResult {
+  return finish(prepare(data, input), input.swaps);
 }
 
 /** Up to k alternatives for one slot (the build carries the top 3 for every slot). */
-function alternatives(data: EngineData, input: BuildInput, slotKey: string, k = 3): Alternative[] {
-  const plan = buildPlan(data, { ...input, swaps: validSwaps(data, input) });
-  const item = plan.items.find(it => it.slotKey === slotKey);
-  if (!item) return [];
-  const ctx = makeContext(data, { ...input, swaps: {} });
-  plan.items.forEach(it => ctx.used.add(it.exercise.id));
-  return slotAlternatives(plan, item, ctx, k);
+function alternatives(data: EngineData, input: BuildInput, slotKey: string, k = 3): SlotChoice[] {
+  const built = finish(prepare(data, input, k), input.swaps, k);
+  return Swapping.offered(built.swapState, built.steps, slotKey, k);
 }
 
-export const Builder = { build, alternatives, groupSteps, costOf, PREP_SECONDS, CHIME_SECONDS };
+export const Builder = { build, prepare, finish, alternatives, groupSteps, costOf, PREP_SECONDS, CHIME_SECONDS };
