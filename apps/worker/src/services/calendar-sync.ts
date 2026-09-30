@@ -219,6 +219,7 @@ export async function syncCalendar(
   if (postRestore && fullRead && postRestore.phase === "pending") {
     await adoptAndRecreate(db, userId, {
       calendarId,
+      appUrl: env.APP_URL,
       items: listResult.items as RawGoogleEvent[],
       workouts,
       links,
@@ -274,9 +275,19 @@ export async function syncCalendar(
     });
   }
 
-  const rawEvents = (listResult.items as RawGoogleEvent[]).filter(
-    (e) => workoutIdFromEvent(e.extendedProperties) !== undefined,
-  );
+  // During the post-restore reconcile the ordinary pass below sees only the
+  // events adoption would claim (B10, M7): this app's, or unstamped ones the
+  // file itself linked. Otherwise it would take the rest over anyway — edit
+  // another deployment's event (prod's, when a local stack restores prod's
+  // file into the same calendar) because it carries the same workout id.
+  const thisOrigin = appOrigin(env.APP_URL);
+  const linkedEventIds = new Set(links.map((l) => l.eventId));
+  const rawEvents = (listResult.items as RawGoogleEvent[]).filter((e) => {
+    if (workoutIdFromEvent(e.extendedProperties) === undefined) return false;
+    if (!postRestore) return true;
+    const origin = originFromEvent(e.extendedProperties);
+    return origin === undefined ? linkedEventIds.has(e.id) : thisOrigin !== undefined && origin === thisOrigin;
+  });
   let actual = rawEvents.map(toActualEvent);
 
   // With an incremental token we only see CHANGED events; merge with links so
@@ -576,7 +587,12 @@ const liveEvent = (e: RawGoogleEvent) => e.status !== "cancelled";
  * (a) An event whose rgWorkoutId names a row of this account — live OR
  *     archived — is that row's event: link it (keeping the athlete's notes and
  *     treating our own last-written fingerprint as the one it carries), unless
- *     the row is already linked to an event that is still there. Without this
+ *     the row is already linked to an event that is still there. Only an
+ *     event stamped with THIS app's origin qualifies, or an unstamped one the
+ *     file itself already linked (B10, M7): the same ids in another
+ *     deployment's events (a local stack restoring prod's file into prod's
+ *     calendar) are that deployment's, and adopting them would let the
+ *     ordinary path delete an archived row's event it never wrote. Without this
  *     a restored row whose event was written after the export got a second
  *     event, or was "updated" forever without a link, reverting every edit
  *     the athlete made to it. An archived row's event is then deleted by the
@@ -591,6 +607,7 @@ async function adoptAndRecreate(
   userId: string,
   input: {
     calendarId: string;
+    appUrl: string;
     items: RawGoogleEvent[];
     workouts: Array<typeof plannedWorkouts.$inferSelect>;
     links: Array<typeof calendarEventLinks.$inferSelect>;
@@ -601,10 +618,16 @@ async function adoptAndRecreate(
 ): Promise<void> {
   const now = nowInstant();
   const liveIds = new Set(input.items.filter(liveEvent).map((e) => e.id));
+  const origin = appOrigin(input.appUrl);
+  const linkedInFile = new Set(input.links.map((l) => l.eventId));
+  const ours = (e: RawGoogleEvent): boolean => {
+    const stamped = originFromEvent(e.extendedProperties);
+    return stamped === undefined ? linkedInFile.has(e.id) : origin !== undefined && stamped === origin;
+  };
   const eventByWorkout = new Map<string, RawGoogleEvent>();
   for (const e of input.items) {
     const wid = workoutIdFromEvent(e.extendedProperties);
-    if (wid && liveEvent(e) && !eventByWorkout.has(wid)) eventByWorkout.set(wid, e);
+    if (wid && liveEvent(e) && ours(e) && !eventByWorkout.has(wid)) eventByWorkout.set(wid, e);
   }
 
   // (a)

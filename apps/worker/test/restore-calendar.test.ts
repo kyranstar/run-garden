@@ -14,7 +14,10 @@
  * Now the first SUCCESSFUL FULL read after a restore — marker clear, Google
  * reconnected — runs a one-shot reconcile:
  *  (a) links events whose rgWorkoutId names a row of this account, live or
- *      archived (the normal path then deletes an archived row's event);
+ *      archived (the normal path then deletes an archived row's event) — only
+ *      events stamped with THIS app's origin, or unstamped ones the file
+ *      already linked (ruling B10, M7): another deployment writing into the
+ *      same calendar keeps its events;
  *  (b) recreates a restored link's event that is gone, unless the file held
  *      a user_deleted suppression for it;
  *  (c) deletes, at most 25 per sync and resuming on later syncs, events that
@@ -273,6 +276,45 @@ describe("the one-shot post-restore calendar reconcile (B6)", () => {
     fake.calls = [];
     await syncCalendar(db, env, userId);
     expect(fake.calls[0]).toBe("list:incremental");
+  });
+
+  it("adopts only this app's events, or unstamped ones the file already linked (B10, M7)", async () => {
+    const { db, userId, today, fake } = await restoredAccount();
+    // Another deployment (prod, say, when a local stack restores prod's file)
+    // wrote these into the same calendar, for the same workout ids.
+    const live = await workout(db, userId, addDays(today, 3));
+    const liveForeign = fake.add({ workoutId: live, date: addDays(today, 3), origin: "https://prod.test" });
+    const archived = await workout(db, userId, addDays(today, 4), { archivedAt: nowInstant() });
+    const archivedForeign = fake.add({ workoutId: archived, date: addDays(today, 4), origin: "https://prod.test" });
+    // Unstamped, and nothing in the file links it: not ours to claim.
+    const bare = await workout(db, userId, addDays(today, 5));
+    const bareEvent = fake.add({ workoutId: bare, date: addDays(today, 5), origin: null });
+    // Unstamped, but the file's own link names it: it stays linked.
+    const linked = await workout(db, userId, addDays(today, 6));
+    const linkedEvent = fake.add({ workoutId: linked, date: addDays(today, 6), origin: null });
+    await link(db, linked, linkedEvent);
+    // This app's own event: adopted, as before.
+    const ours = await workout(db, userId, addDays(today, 2));
+    const oursEvent = fake.add({ workoutId: ours, date: addDays(today, 2) });
+
+    const stats = await syncCalendar(db, env, userId);
+
+    // The other deployment's events are neither adopted, nor edited, nor deleted.
+    for (const kept of [liveForeign, archivedForeign, bareEvent]) {
+      expect(fake.live(kept), kept).toBe(true);
+      expect(fake.calls).not.toContain(`patch:${kept}`);
+      expect(fake.calls).not.toContain(`delete:${kept}`);
+    }
+    expect((await linkOf(db, live))?.eventId).not.toBe(liveForeign);
+    expect(fake.calls).toContain(`insert:${live}`);
+    expect(await linkOf(db, archived)).toBeNull();
+    expect((await linkOf(db, bare))?.eventId).not.toBe(bareEvent);
+    expect(fake.calls).toContain(`insert:${bare}`);
+    expect(await linkOf(db, linked)).toMatchObject({ eventId: linkedEvent });
+    expect(fake.calls).not.toContain(`insert:${linked}`);
+    expect(await linkOf(db, ours)).toMatchObject({ eventId: oursEvent });
+    expect(fake.calls).not.toContain(`insert:${ours}`);
+    expect(stats.adopted).toBe(1);
   });
 
   it("deletes at most 25 orphans a sync and resumes on the next full read", async () => {
