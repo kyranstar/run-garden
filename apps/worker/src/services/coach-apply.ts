@@ -8,6 +8,7 @@ import {
   dailyHealth,
   plannedWorkoutStages,
   plannedWorkouts,
+  scheduleOverrides,
 } from "@rg/database";
 import {
   addDays,
@@ -1000,21 +1001,27 @@ export async function applyOps(
    */
   const actionable = async (
     workoutId: string,
-  ): Promise<{ row: typeof plannedWorkouts.$inferSelect; why?: undefined } | { why: string }> => {
+  ): Promise<
+    | { row: typeof plannedWorkouts.$inferSelect; why?: undefined }
+    | { row?: typeof plannedWorkouts.$inferSelect; why: string }
+  > => {
     const [row] = await db
       .select()
       .from(plannedWorkouts)
       .where(and(eq(plannedWorkouts.id, workoutId), eq(plannedWorkouts.userId, userId)))
       .limit(1);
-    if (!row || row.archivedAt) return { why: "isn't on the calendar any more" };
-    if (row.completionState === "completed") return { why: "has already been done" };
-    if (row.completionState === "skipped") return { why: "was already skipped" };
-    if (row.completionState === "missed") return { why: "was already missed" };
+    // The row rides along with a refusal, so an op can recognise its OWN
+    // target state (a re-apply, finding 7) rather than report it as a shortfall.
+    if (!row) return { why: "isn't on the calendar any more" };
+    if (row.archivedAt) return { row, why: "isn't on the calendar any more" };
+    if (row.completionState === "completed") return { row, why: "has already been done" };
+    if (row.completionState === "skipped") return { row, why: "was already skipped" };
+    if (row.completionState === "missed") return { row, why: "was already missed" };
     if (row.effectiveDate < today || row.completionState === "unresolved") {
-      return { why: "has already had its day" };
+      return { row, why: "has already had its day" };
     }
     if (row.completionState !== "scheduled" && row.completionState !== "planned") {
-      return { why: `is already ${row.completionState}` };
+      return { row, why: `is already ${row.completionState}` };
     }
     return { row };
   };
@@ -1146,6 +1153,15 @@ export async function applyOps(
       case "skip": {
         const found = await actionable(op.workoutId);
         if (found.why !== undefined) {
+          // ALREADY IN THIS OP'S TARGET STATE — a re-apply after a first
+          // attempt that threw later on (audit 1, coach finding 7), or the
+          // athlete's own skip since. A silent success: nothing is rewritten,
+          // and the resim the first attempt may never have reached still runs.
+          if (found.row && !found.row.archivedAt && found.row.completionState === "skipped") {
+            noteResim(found.row.resolutionDate ?? today);
+            out.updated.push(op.workoutId);
+            break;
+          }
           out.missed.push(`a session it skips ${found.why}, so it was left as it was`);
           break;
         }
@@ -1168,6 +1184,19 @@ export async function applyOps(
       case "remove": {
         const found = await actionable(op.workoutId);
         if (found.why !== undefined) {
+          // ALREADY REMOVED — a re-apply (audit 1, coach finding 7), or the
+          // athlete's own remove since. Not a shortfall: the session is off the
+          // plan. The idempotent aftermath still runs, because a first attempt
+          // that threw between the archive and the unpush left the watch
+          // holding the session and the retry is the only thing that can reach
+          // it (settle and unpush are both no-ops the second time).
+          if (found.row?.archivedAt && found.row.archiveReason === "user_removed") {
+            await settleWatchJobsOnArchive(db, userId, found.row.id, now);
+            await enqueueUnpushIfOurs(db, userId, found.row, now, prefs);
+            noteResim(found.row.effectiveDate);
+            out.archived.push(op.workoutId);
+            break;
+          }
           out.missed.push(`a session it takes off the plan ${found.why}, so nothing was removed`);
           break;
         }
@@ -1184,7 +1213,7 @@ export async function applyOps(
         // Not-archived is a coach-only guard (the manual route never sees
         // archived rows); the mutation itself is the athlete's own unskip.
         const [row] = await db
-          .select({ id: plannedWorkouts.id })
+          .select()
           .from(plannedWorkouts)
           .where(
             and(
@@ -1198,6 +1227,22 @@ export async function applyOps(
           ? await unskipWorkout(db, userId, op.workoutId, { now, source: "coach" })
           : { restored: false, resolvedOn: null };
         if (!res.restored) {
+          // ALREADY BACK ON THE PLAN — a re-apply (audit 1, coach finding 7)
+          // or the athlete's own un-skip. A silent success, and the garden
+          // still forgets the skip: the resim reaches back to where the last
+          // restore said the skip had counted, which the first attempt may
+          // never have got to.
+          if (row && (row.completionState === "scheduled" || row.completionState === "planned")) {
+            const [last] = await db
+              .select({ fromDate: scheduleOverrides.fromDate })
+              .from(scheduleOverrides)
+              .where(and(eq(scheduleOverrides.workoutId, row.id), eq(scheduleOverrides.kind, "restore")))
+              .orderBy(desc(scheduleOverrides.createdAt))
+              .limit(1);
+            noteResim(last?.fromDate);
+            out.updated.push(op.workoutId);
+            break;
+          }
           out.missed.push("a session it puts back isn't skipped any more, so nothing was restored");
           break;
         }

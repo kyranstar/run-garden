@@ -980,6 +980,94 @@ describe("applyOps re-checks each op's target at approve time", () => {
     expect(removed!.effectiveDate).toBe(addDays(today, 3));
   });
 
+  /**
+   * RE-APPLY AFTER A PARTIAL FAILURE (audit 1, coach finding 7).
+   *
+   * When applyOps throws partway (a D1 error), the proposal stays pending and
+   * the athlete taps approve again. The ops that already landed used to come
+   * back as shortfalls — "a session it takes off the plan isn't there any more,
+   * so nothing was removed" about a session it HAD removed — and an unpush lost
+   * to the throw was never queued, because the retry skipped archived rows. A
+   * row already in the op's target state is a silent success, and the
+   * idempotent follow-ups (settle, unpush, resim) still run.
+   */
+  it("re-applied remove: success, not a shortfall, and the unpush the first attempt lost is queued", async () => {
+    const db = makeTestDb();
+    const { userId, prefs } = await makeTestUser(db, { corosWritesEnabled: true });
+    const today = todayInZone(prefs.timezone);
+    const date = addDays(today, 2);
+    await seedWorkout(db, userId, "w1", date);
+    await db
+      .update(schema.plannedWorkouts)
+      .set({
+        sourceWorkoutId: "473846232060707016:42",
+        sourceIdInPlan: "42",
+        sourceProgramId: "9001",
+        // The first attempt archived it, then threw before the unpush.
+        archivedAt: nowInstant(),
+        archiveReason: "user_removed",
+      })
+      .where(eq(schema.plannedWorkouts.id, "w1"));
+    await db.insert(schema.corosWriteJobs).values({
+      id: "w1-push",
+      userId,
+      workoutId: "w1",
+      kind: "coach_create_workout",
+      expectedContentFingerprint: "fp",
+      originalDate: date,
+      destinationDate: date,
+      payload: { workoutId: "w1", happenDay: date, name: `Tempo 3×10 — ${date}` },
+      requestedAt: nowInstant(),
+      status: "verified",
+      updatedAt: nowInstant(),
+    });
+
+    const out = await applyOps(db, userId, prefs, "p-retry", [{ kind: "remove", workoutId: "w1" }]);
+
+    expect(out.missed).toEqual([]);
+    expect(out.archived).toEqual(["w1"]);
+    const [unpush] = await db.select().from(schema.corosWriteJobs).where(eq(schema.corosWriteJobs.id, "w1-unpush"));
+    expect(unpush?.status).toBe("queued");
+  });
+
+  it("re-applied restore: success, and the garden still forgets the skip", async () => {
+    const db = makeTestDb();
+    const { userId, prefs } = await makeTestUser(db);
+    const today = todayInZone(prefs.timezone);
+    await seedWorkout(db, userId, "w1", today);
+    await db
+      .update(schema.plannedWorkouts)
+      .set({ completionState: "skipped", resolutionDate: today, sanctionedBy: "coach" })
+      .where(eq(schema.plannedWorkouts.id, "w1"));
+    // The first attempt restored it, and threw before the route resimulated.
+    const first = await applyOps(db, userId, prefs, "p-restore", [{ kind: "restore", workoutId: "w1" }]);
+    expect(first.resimFrom).toBe(today);
+
+    const again = await applyOps(db, userId, prefs, "p-restore", [{ kind: "restore", workoutId: "w1" }]);
+    expect(again.missed).toEqual([]);
+    expect(again.updated).toEqual(["w1"]);
+    expect(again.resimFrom).toBe(today);
+    // …and no second restore override.
+    expect(await db.select().from(schema.scheduleOverrides)).toHaveLength(1);
+  });
+
+  it("re-applied skip: success, and the row is left exactly as the first attempt wrote it", async () => {
+    const db = makeTestDb();
+    const { userId, prefs } = await makeTestUser(db);
+    const today = todayInZone(prefs.timezone);
+    await seedWorkout(db, userId, "w1", addDays(today, 1));
+    await applyOps(db, userId, prefs, "p-skip", [{ kind: "skip", workoutId: "w1", reason: "rest" }]);
+    const [before] = await db.select().from(schema.plannedWorkouts).where(eq(schema.plannedWorkouts.id, "w1"));
+
+    const again = await applyOps(db, userId, prefs, "p-skip", [{ kind: "skip", workoutId: "w1", reason: "rest" }]);
+
+    expect(again.missed).toEqual([]);
+    expect(again.updated).toEqual(["w1"]);
+    expect(again.resimFrom).toBe(today);
+    const [after] = await db.select().from(schema.plannedWorkouts).where(eq(schema.plannedWorkouts.id, "w1"));
+    expect(after).toEqual(before);
+  });
+
   it("a scheduled session today or later is still changed exactly as before", async () => {
     const db = makeTestDb();
     const { userId, prefs } = await makeTestUser(db);
