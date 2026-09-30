@@ -1,9 +1,10 @@
 /**
  * Restore begin / rows / finish after audit 1 (data findings 1, 2, 5, 8, 11,
- * 12; rulings B1-B3).
+ * 12; rulings B1-B3, B10).
  *
- *  - begin needs the clean check's page tokens, and `rows` only accepts a page
- *    whose rows are exactly the ones a clean check signed;
+ *  - begin needs a check session and page tokens of THAT session covering its
+ *    manifest exactly, and `rows` only accepts a page whose rows are exactly
+ *    the ones a clean check of this restore signed;
  *  - `rows` and `finish` need the id of the restore in progress, so a second
  *    tab's begin (or no begin at all) cannot merge a file into a live account;
  *  - unfinished work in the file lands switched off (B3) — a restored queued
@@ -18,14 +19,8 @@ import { schema, SCHEMA_VERSION } from "@rg/database";
 import { isTerminalJobStatus, newId, nowInstant, type CoachSession } from "@rg/domain";
 import { enqueueWatchCreate } from "../src/services/coach-apply.js";
 import type { Db } from "../src/services/db.js";
-import {
-  beginRestore,
-  checkRestorePage,
-  finishRestore,
-  restoreRows,
-  startFresh,
-} from "../src/services/account-restore.js";
-import { loadAccountState, restoreInProgress } from "../src/services/account-state.js";
+import { beginRestore, finishRestore, restoreRows, startFresh } from "../src/services/account-restore.js";
+import { loadAccountState, restoreInProgress, restoreStatusOf } from "../src/services/account-state.js";
 import { claimNextJob } from "../src/services/jobs.js";
 import { exportManifest } from "../src/services/account-export.js";
 import { makeTestDb, makeTestUser } from "./helpers.js";
@@ -62,39 +57,106 @@ function job(id: string, status: string, over: Record<string, unknown> = {}) {
 }
 
 async function begin(db: Db, userId: string, f: ExportFile) {
-  const { tokens, errors } = await checkFile(db, userId, f);
+  const { session, tokens, errors } = await checkFile(db, userId, f);
   expect(errors).toEqual([]);
-  const res = await beginRestore(db, userId, { schemaVersion: f.schemaVersion, replace: true, tokens: [...tokens.values()] }, secret);
+  const res = await beginRestore(db, userId, { session, replace: true, tokens: [...tokens.values()] }, secret);
   if (!res.ok) throw new Error(res.error);
   return { restoreId: res.restoreId, tokens };
 }
 
+/** Make the marked restore look like it stopped a while ago. */
+async function stopBeating(db: Db, userId: string): Promise<void> {
+  await db
+    .update(schema.accountState)
+    .set({ restoreHeartbeatAt: new Date(Date.now() - 10 * 60_000).toISOString() })
+    .where(eq(schema.accountState.userId, userId));
+}
+
 describe("begin needs a clean check", () => {
-  it("refuses tokens that are missing, tampered, another account's or stale", async () => {
+  it("refuses tokens that are missing, tampered, another account's, another check's or forged", async () => {
     const db = makeTestDb();
     const { userId } = await makeTestUser(db);
     const { userId: other } = await makeTestUser(db);
     await seedFullAccount(db, userId);
     const f = await exportAll(db, userId);
-    const page = { schemaVersion: SCHEMA_VERSION, table: "activities", rows: f.tables.activities };
-    const mine = await checkRestorePage(page, { userId, secret: TEST_SECRET });
-    const theirs = await checkRestorePage(page, { userId: other, secret: TEST_SECRET });
-    const stale = await checkRestorePage(page, { userId, secret: TEST_SECRET, now: new Date(Date.now() - 25 * 3600 * 1000) });
-    const forged = await checkRestorePage(page, { userId, secret: "some-other-secret" });
-    if (!mine.ok || !theirs.ok || !stale.ok || !forged.ok) throw new Error("setup");
-    const [body, sig] = mine.token.split(".");
-    const tampered = `${body!.slice(0, -2)}AA.${sig}`;
+    const mine = await checkFile(db, userId, f);
+    const again = await checkFile(db, userId, f); // a second check: another session
+    const theirs = await checkFile(db, other, f);
+    const all = (c: { tokens: Map<string, string> }) => [...c.tokens.values()];
+    const [body, sig] = mine.session.split(".");
+    const tamperedSession = `${body!.slice(0, -2)}AA.${sig}`;
+    const [pBody, pSig] = mine.tokens.get("activities#0")!.split(".");
+    const tamperedPage = `${pBody!.slice(0, -2)}AA.${pSig}`;
 
-    for (const tokens of [undefined, [], ["nonsense"], [tampered], [theirs.token], [stale.token], [forged.token], [mine.token, "x"]]) {
-      const res = await beginRestore(db, userId, { schemaVersion: SCHEMA_VERSION, replace: true, tokens }, secret);
+    const attempts: Array<{ session: unknown; tokens: unknown }> = [
+      { session: undefined, tokens: all(mine) },
+      { session: "nonsense", tokens: all(mine) },
+      { session: tamperedSession, tokens: all(mine) },
+      { session: theirs.session, tokens: all(mine) },
+      { session: mine.session, tokens: undefined },
+      { session: mine.session, tokens: [...all(mine), "nonsense"] },
+      { session: mine.session, tokens: all(mine).map((t) => (t === mine.tokens.get("activities#0") ? tamperedPage : t)) },
+      // Pages from another check of the same file are not this session's (M3).
+      { session: mine.session, tokens: all(again) },
+      { session: again.session, tokens: all(mine) },
+      { session: mine.session, tokens: all(theirs) },
+      // A page (or a session) mistaken for the other.
+      { session: mine.tokens.get("activities#0"), tokens: all(mine) },
+      { session: mine.session, tokens: [...all(mine), mine.session] },
+    ];
+    for (const attempt of attempts) {
+      const res = await beginRestore(db, userId, { ...attempt, replace: true }, secret);
       expect(res).toEqual({ ok: false, status: 422, error: "check_required" });
     }
-    // A token for another schema version than the one begin is told.
-    const older = await beginRestore(db, userId, { schemaVersion: "0021", replace: true, tokens: [mine.token] }, secret);
-    expect(older).toEqual({ ok: false, status: 422, error: "check_required" });
+    const forged = await checkFile(db, userId, f, 200);
+    const forgedSession = await beginRestore(db, userId, { session: forged.session, replace: true, tokens: all(forged) }, { secret: "some-other-secret" });
+    expect(forgedSession).toEqual({ ok: false, status: 422, error: "check_required" });
     // Nothing was wiped, and no marker was set.
     expect((await exportManifest(db, userId)).tables.find((t) => t.name === "activities")?.rows).toBe(2);
     expect(await restoreInProgress(db, userId)).toBe(false);
+  });
+
+  it("begin needs every row of the manifest, each page once (M1, M2)", async () => {
+    const db = makeTestDb();
+    const { userId } = await makeTestUser(db);
+    await seedFullAccount(db, userId);
+    const f = await exportAll(db, userId);
+    const checked = await checkFile(db, userId, f);
+    const all = [...checked.tokens.values()];
+    const one = checked.tokens.get("dismissed_insights#0") ?? checked.tokens.get("activities#0")!;
+    for (const tokens of [
+      [], // nothing checked
+      [one], // one page of a file that holds far more (the re-review's probe)
+      all.filter((t) => t !== checked.tokens.get("planned_workouts#1")), // a page missing
+      [...all, checked.tokens.get("activities#0")!], // a page twice
+    ]) {
+      const res = await beginRestore(db, userId, { session: checked.session, replace: true, tokens }, secret);
+      expect(res).toEqual({ ok: false, status: 422, error: "check_incomplete" });
+    }
+    expect((await exportManifest(db, userId)).tables.find((t) => t.name === "planned_workouts")?.rows).toBe(250);
+    expect(await restoreInProgress(db, userId)).toBe(false);
+    // The whole file, each page once: begins, as the check session's restore.
+    const res = await beginRestore(db, userId, { session: checked.session, replace: true, tokens: all }, secret);
+    expect(res).toMatchObject({ ok: true, restoreId: checked.restoreId });
+  });
+
+  it("an expired check says so (M10), at begin and at rows", async () => {
+    const db = makeTestDb();
+    const { userId } = await makeTestUser(db);
+    await seedFullAccount(db, userId);
+    const f = await exportAll(db, userId);
+    const old = await checkFile(db, userId, f, 200, { now: new Date(Date.now() - 25 * 3600 * 1000) });
+    expect(await beginRestore(db, userId, { session: old.session, replace: true, tokens: [...old.tokens.values()] }, secret)).toEqual({
+      ok: false,
+      status: 422,
+      error: "check_expired",
+    });
+    // A restore in progress, sent a page from a check that has since expired.
+    const { restoreId } = await begin(db, userId, f);
+    const stale = await checkFile(db, userId, f, 200, { now: new Date(Date.now() - 25 * 3600 * 1000) });
+    expect(
+      await restoreRows(db, userId, { restoreId, table: "activities", rows: f.tables.activities, token: stale.tokens.get("activities#0") }, secret),
+    ).toEqual({ ok: false, status: 422, error: "check_expired" });
   });
 
   it("rows refuses a page that is not exactly the page the check signed", async () => {
@@ -106,11 +168,14 @@ describe("begin needs a clean check", () => {
     const token = tokens.get("activities#0");
     const rows = f.tables.activities!;
     const edited = [{ ...rows[0]!, durationSeconds: null }, ...rows.slice(1)];
+    // The same page, checked in another session: not this restore's (M3).
+    const elsewhere = (await checkFile(db, userId, f)).tokens.get("activities#0");
     for (const attempt of [
       { table: "activities", rows: edited, token },
       { table: "activities", rows: rows.slice(1), token },
       { table: "activity_laps", rows, token },
       { table: "activities", rows, token: undefined },
+      { table: "activities", rows, token: elsewhere },
     ]) {
       expect(await restoreRows(db, userId, { restoreId, ...attempt }, secret)).toEqual({
         ok: false,
@@ -139,10 +204,23 @@ describe("rows and finish need the restore in progress (finding 12)", () => {
     expect(await finishRestore(db, userId, { restoreId: "made-up" })).toEqual({ ok: false, status: 409, error: "no_active_restore" });
 
     const first = await begin(db, userId, f);
-    const second = await begin(db, userId, f); // "Restore again" in another tab
+    // "Restore again" in another tab while the first is still sending pages
+    // is refused (M6)...
+    const secondCheck = await checkFile(db, userId, f);
+    const tokensOf = [...secondCheck.tokens.values()];
+    expect(await beginRestore(db, userId, { session: secondCheck.session, replace: true, tokens: tokensOf }, secret)).toEqual({
+      ok: false,
+      status: 409,
+      error: "restore_running",
+    });
+    // ...and once the first has stopped, it replaces it.
+    await stopBeating(db, userId);
+    const second = await beginRestore(db, userId, { session: secondCheck.session, replace: true, tokens: tokensOf }, secret);
+    if (!second.ok) throw new Error(second.error);
     expect(second.restoreId).not.toBe(first.restoreId);
+    const secondPage = { ...page, token: secondCheck.tokens.get("activities#0") };
     expect(await restoreRows(db, userId, { restoreId: first.restoreId, ...page }, secret)).toMatchObject({ status: 409 });
-    expect(await restoreRows(db, userId, { restoreId: second.restoreId, ...page }, secret)).toMatchObject({ ok: true });
+    expect(await restoreRows(db, userId, { restoreId: second.restoreId, ...secondPage }, secret)).toMatchObject({ ok: true });
     expect(await finishRestore(db, userId, { restoreId: first.restoreId })).toMatchObject({ ok: false, status: 409 });
   });
 });
@@ -398,6 +476,12 @@ describe("finish and Start fresh", () => {
     const { restoreId, tokens } = await begin(db, userId, f);
     await restoreRows(db, userId, { restoreId, table: "activities", rows: f.tables.activities, token: tokens.get("activities#0") }, secret);
 
+    // Still running — a page just landed: another device may not (M6)...
+    expect(await startFresh(db, userId)).toEqual({ ok: false, status: 409, error: "restore_running" });
+    expect(await startFresh(db, userId, { restoreId: "someone-elses" })).toEqual({ ok: false, status: 409, error: "restore_running" });
+    expect(await restoreInProgress(db, userId)).toBe(true);
+    // ...the one running it may, and so may anyone once it has stopped.
+    await stopBeating(db, userId);
     expect(await startFresh(db, userId)).toEqual({ ok: true });
     expect(await restoreInProgress(db, userId)).toBe(false);
     const manifest = await exportManifest(db, userId);
@@ -405,5 +489,23 @@ describe("finish and Start fresh", () => {
     expect(await restoreRows(db, userId, { restoreId, table: "activities", rows: f.tables.activities, token: tokens.get("activities#0") }, secret)).toMatchObject({
       status: 409,
     });
+  });
+
+  it("the device running the restore may start fresh at once; the heartbeat says running or stopped", async () => {
+    const db = makeTestDb();
+    const { userId } = await makeTestUser(db);
+    await seedFullAccount(db, userId);
+    const f = await exportAll(db, userId);
+    const { restoreId, tokens } = await begin(db, userId, f);
+    expect(restoreStatusOf(await loadAccountState(db, userId))).toMatchObject({ restoreId, running: true });
+    // A page this run cannot send stops the heartbeat: "didn't finish" at once.
+    const refused = await restoreRows(db, userId, { restoreId, table: "activities", rows: [], token: tokens.get("activities#0") }, secret);
+    expect(refused).toMatchObject({ ok: false, error: "check_required" });
+    expect(restoreStatusOf(await loadAccountState(db, userId))).toMatchObject({ restoreId, running: false });
+    // Pages beat it again; begin's own device names its restore to start fresh.
+    await restoreRows(db, userId, { restoreId, table: "activities", rows: f.tables.activities, token: tokens.get("activities#0") }, secret);
+    expect(restoreStatusOf(await loadAccountState(db, userId))).toMatchObject({ running: true });
+    expect(restoreStatusOf(await loadAccountState(db, userId), new Date(Date.now() + 3 * 60_000))).toMatchObject({ running: false });
+    expect(await startFresh(db, userId, { restoreId })).toEqual({ ok: true });
   });
 });

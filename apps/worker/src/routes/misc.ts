@@ -108,6 +108,7 @@ import {
 import {
   beginRestore,
   checkRestorePage,
+  openCheckSession,
   finishRestore,
   restorableTables,
   restoreRows,
@@ -1515,35 +1516,63 @@ settingsRoutes.get("/restore/status", async (c) => {
   return c.json({ restore: restoreStatusOf(state) });
 });
 
+/** Open a check session (B10) — the file's manifest, signed. No side
+ * effects. 200 either way: the check ran. */
+settingsRoutes.post("/restore/check/start", async (c) => {
+  const body = await c.req
+    .json<{ schemaVersion?: unknown; manifest?: unknown; sourceUserId?: unknown; exportedAt?: unknown; exportedFrom?: unknown }>()
+    .catch(() => null);
+  if (!body) return c.json({ error: "bad_request" }, 400);
+  const res = await openCheckSession(
+    {
+      schemaVersion: body.schemaVersion,
+      manifest: body.manifest,
+      sourceUserId: body.sourceUserId,
+      exportedAt: body.exportedAt,
+      exportedFrom: body.exportedFrom,
+    },
+    { userId: c.get("userId"), secret: c.env.SESSION_SECRET },
+  );
+  return c.json(res);
+});
+
 /** Validate one page — no side effects. 200 either way: the check ran. */
 settingsRoutes.post("/restore/check", async (c) => {
   const body = await c.req
-    .json<{ schemaVersion?: unknown; table?: unknown; rows?: unknown; offset?: unknown }>()
+    .json<{ session?: unknown; table?: unknown; rows?: unknown; offset?: unknown }>()
     .catch(() => null);
   if (!body) return c.json({ error: "bad_request" }, 400);
   const res = await checkRestorePage(
-    { schemaVersion: body.schemaVersion, table: body.table, rows: body.rows, offset: body.offset },
+    { session: body.session, table: body.table, rows: body.rows, offset: body.offset },
     { userId: c.get("userId"), secret: c.env.SESSION_SECRET },
   );
   return c.json(res);
 });
 
 settingsRoutes.post("/restore/begin", async (c) => {
-  const body = await c.req
-    .json<{ schemaVersion?: unknown; replace?: unknown; tokens?: unknown; exportedAt?: unknown; exportedFrom?: unknown }>()
-    .catch(() => null);
+  const body = await c.req.json<{ session?: unknown; replace?: unknown; tokens?: unknown }>().catch(() => null);
   if (!body) return c.json({ error: "bad_request" }, 400);
-  const res = await beginRestore(c.get("db"), c.get("userId"), body as never, { secret: c.env.SESSION_SECRET });
+  const res = await beginRestore(
+    c.get("db"),
+    c.get("userId"),
+    { session: body.session, replace: body.replace, tokens: body.tokens },
+    { secret: c.env.SESSION_SECRET },
+  );
   if (!res.ok) return c.json({ error: res.error }, res.status);
   return c.json({ restoreId: res.restoreId, tables: res.tables });
 });
 
 settingsRoutes.post("/restore/rows", async (c) => {
   const body = await c.req
-    .json<{ restoreId?: unknown; table?: unknown; rows?: unknown; token?: unknown; sourceUserId?: unknown }>()
+    .json<{ restoreId?: unknown; table?: unknown; rows?: unknown; token?: unknown }>()
     .catch(() => null);
   if (!body) return c.json({ error: "bad_request" }, 400);
-  const res = await restoreRows(c.get("db"), c.get("userId"), body as never, { secret: c.env.SESSION_SECRET });
+  const res = await restoreRows(
+    c.get("db"),
+    c.get("userId"),
+    { restoreId: body.restoreId, table: body.table, rows: body.rows, token: body.token },
+    { secret: c.env.SESSION_SECRET },
+  );
   if (!res.ok) {
     if (res.error === "insert_failed") {
       return c.json({ error: res.error, table: res.table, row: res.row, detail: res.detail }, 422);
@@ -1560,9 +1589,11 @@ settingsRoutes.post("/restore/finish", async (c) => {
   return c.json({ counts: res.counts, expected: res.expected, short: res.short });
 });
 
-/** "Start fresh" after a restore that didn't finish. */
+/** "Start fresh" after a restore that didn't finish. Refused (409
+ * restore_running) while it is still running, unless the caller names it. */
 settingsRoutes.post("/restore/start-fresh", async (c) => {
-  const res = await startFresh(c.get("db"), c.get("userId"));
+  const body = await c.req.json<{ restoreId?: unknown }>().catch(() => ({ restoreId: undefined }));
+  const res = await startFresh(c.get("db"), c.get("userId"), { restoreId: body?.restoreId });
   if (!res.ok) return c.json({ error: res.error }, res.status);
   return c.json({ ok: true });
 });

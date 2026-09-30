@@ -237,7 +237,13 @@ export interface MeResponse {
 
 /** An unfinished restore: when it began, and the file it was restoring. */
 export interface RestoreStatus {
+  restoreId: string;
   startedAt: string | null;
+  /** When its begin or last page arrived. */
+  heartbeatAt: string | null;
+  /** Still running (a page arrived under two minutes ago) — on this device
+   * or another — rather than abandoned. */
+  running: boolean;
   fileExportedAt: string | null;
   fileExportedFrom: string | null;
 }
@@ -1111,6 +1117,10 @@ type CheckPageResult =
 /** A file every page of which the worker checked clean — what begin needs. */
 export interface CheckedRestore {
   schemaVersion: string;
+  /** The signed check session (the file's manifest) begin needs. */
+  session: string;
+  /** The restore this check clears — begin's id, and Start fresh's. */
+  restoreId: string;
   /** Tables in the worker's restore order, each with its checked pages. */
   pages: Array<{ table: string; rows: Array<Record<string, unknown>>; token: string }>;
   /** Rows the file holds per table the worker restores. */
@@ -1125,8 +1135,11 @@ const CHECK_ERROR_LIMIT = 5;
 
 /**
  * Check every page of a parsed export with the worker — no side effects, the
- * account is untouched — and collect the page tokens begin will need. Stops
- * early once it has a handful of errors to show.
+ * account is untouched — and collect the page tokens begin will need. The
+ * check runs in a session that signs the file's manifest (rows per table the
+ * worker restores, every one named) and the account it came from, so begin
+ * can insist on exactly this file, whole. Stops early once it has a handful
+ * of errors to show.
  */
 export async function checkRestore(
   data: AccountExportFile,
@@ -1142,6 +1155,18 @@ export async function checkRestore(
   const pages: CheckedRestore["pages"] = [];
   const fileCounts: Record<string, number> = {};
   const errors: RestoreRowError[] = [];
+  const sourceUserId = data.tables.users?.[0]?.id;
+  const started = await post<{ ok: true; session: string; restoreId: string } | { ok: false; errors: Array<Omit<RestoreRowError, "table">> }>(
+    "/api/settings/restore/check/start",
+    {
+      schemaVersion: data.schemaVersion,
+      manifest: Object.fromEntries(plan.tables.map((t) => [t, data.tables[t]?.length ?? 0])),
+      sourceUserId: typeof sourceUserId === "string" ? sourceUserId : null,
+      exportedAt: data.exportedAt,
+      exportedFrom: data.exportedFrom ?? null,
+    },
+  );
+  if (!started.ok) return { ok: false, errors: started.errors.map((e) => ({ ...e, table: "" })) };
   let done = 0;
   onProgress?.({ done, total, table: null });
   for (const table of order) {
@@ -1157,7 +1182,7 @@ export async function checkRestore(
       const page = rows.slice(offset, offset + RESTORE_PAGE_ROWS);
       const res = await post<CheckPageResult>(
         "/api/settings/restore/check",
-        { schemaVersion: data.schemaVersion, table, rows: page, offset },
+        { session: started.session, table, rows: page, offset },
         120_000,
       );
       if (res.ok) pages.push({ table, rows: page, token: res.token });
@@ -1170,7 +1195,10 @@ export async function checkRestore(
     }
   }
   if (errors.length > 0) return { ok: false, errors };
-  return { ok: true, checked: { schemaVersion: data.schemaVersion, pages, fileCounts, total } };
+  return {
+    ok: true,
+    checked: { schemaVersion: data.schemaVersion, session: started.session, restoreId: started.restoreId, pages, fileCounts, total },
+  };
 }
 
 /** A table that came back with fewer rows than the file holds. */
@@ -1202,13 +1230,10 @@ export async function runRestore(
   onProgress?: (p: RestoreProgress) => void,
 ): Promise<RestoreSummary> {
   const begun = await post<{ restoreId: string; tables: string[] }>("/api/settings/restore/begin", {
-    schemaVersion: checked.schemaVersion,
+    session: checked.session,
     replace: true,
     tokens: checked.pages.map((p) => p.token),
-    exportedAt: data.exportedAt,
-    exportedFrom: data.exportedFrom ?? null,
   });
-  const sourceUserId = data.tables.users?.[0]?.id;
   let done = 0;
   let lost = 0;
   onProgress?.({ done, total: checked.total, table: null });
@@ -1216,7 +1241,7 @@ export async function runRestore(
     for (const page of checked.pages.filter((p) => p.table === table)) {
       const res = await post<{ received: number; skipped: number; lost: number }>(
         "/api/settings/restore/rows",
-        { restoreId: begun.restoreId, table, rows: page.rows, token: page.token, sourceUserId },
+        { restoreId: begun.restoreId, table, rows: page.rows, token: page.token },
         120_000,
       );
       lost += res.lost ?? 0;
@@ -1238,8 +1263,11 @@ export async function runRestore(
   return { counts: finished.counts, short: [...short.values()], lost };
 }
 
-/** Abandon a restore that didn't finish: wipe the account, clear the notice. */
-export const restoreStartFresh = () => post<{ ok: true }>("/api/settings/restore/start-fresh");
+/** Abandon a restore that didn't finish: wipe the account, clear the notice.
+ * Refused (409 `restore_running`) while it is still running elsewhere; the
+ * device that ran it names its restore id to start fresh at once. */
+export const restoreStartFresh = (restoreId?: string) =>
+  post<{ ok: true }>("/api/settings/restore/start-fresh", restoreId ? { restoreId } : {});
 
 /** One previously generated plan + the brief (prompt) that produced it. */
 export interface StudioHistoryEntryDto {

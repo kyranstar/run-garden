@@ -14,7 +14,7 @@ import { schema, SCHEMA_VERSION } from "@rg/database";
 import { nowInstant } from "@rg/domain";
 import type { Db } from "../src/services/db.js";
 import type { Env } from "../src/env.js";
-import { checkRestorePage, RESTORE_MAX_ROWS } from "../src/services/account-restore.js";
+import { checkRestorePage, openCheckSession, restorableTables, RESTORE_MAX_ROWS } from "../src/services/account-restore.js";
 import { settingsRoutes } from "../src/routes/misc.js";
 import { createSession, SESSION_COOKIE } from "../src/auth/sessions.js";
 import { makeTestDb, makeTestUser, mountRoutes } from "./helpers.js";
@@ -22,6 +22,22 @@ import { seedFullAccount } from "./account-fixture.js";
 import { exportAll, TEST_SECRET } from "./restore-driver.js";
 
 const ctx = (userId: string) => ({ userId, secret: TEST_SECRET });
+
+/** Check one page the way the client does: open a check session whose
+ * manifest holds exactly this page, then check it. A refusal of the session
+ * itself (a newer schema) comes back in the same shape as a page's. */
+async function checkOne(
+  input: { schemaVersion: unknown; table: unknown; rows: unknown },
+  userId: string,
+): ReturnType<typeof checkRestorePage> {
+  const manifest: Record<string, number> = Object.fromEntries(restorableTables().map((t) => [t.name, 0]));
+  if (typeof input.table === "string" && input.table in manifest && Array.isArray(input.rows)) {
+    manifest[input.table] = input.rows.length;
+  }
+  const opened = await openCheckSession({ schemaVersion: input.schemaVersion, manifest, sourceUserId: null }, ctx(userId));
+  if (!opened.ok) return { ok: false, errors: opened.errors };
+  return checkRestorePage({ session: opened.session, table: input.table, rows: input.rows }, ctx(userId));
+}
 
 function activityRow(over: Record<string, unknown> = {}): Record<string, unknown> {
   return {
@@ -43,7 +59,7 @@ describe("restore check — a clean page", () => {
     await seedFullAccount(db, userId);
     const file = await exportAll(db, userId);
     for (const table of ["planned_workouts", "activities", "user_preferences", "garden_state", "activity_laps"]) {
-      const res = await checkRestorePage({ schemaVersion: file.schemaVersion, table, rows: file.tables[table] }, ctx(userId));
+      const res = await checkOne({ schemaVersion: file.schemaVersion, table, rows: file.tables[table] }, userId);
       expect(res, table).toMatchObject({ ok: true, rows: file.tables[table]!.length });
       if (res.ok) expect(res.token).toMatch(/^[\w-]+\.[\w-]+$/);
     }
@@ -53,7 +69,7 @@ describe("restore check — a clean page", () => {
     const db = makeTestDb();
     const { userId } = await makeTestUser(db);
     // activities.source arrived in 0022 with DEFAULT 'coros'.
-    const res = await checkRestorePage({ schemaVersion: "0021", table: "activities", rows: [activityRow()] }, ctx(userId));
+    const res = await checkOne({ schemaVersion: "0021", table: "activities", rows: [activityRow()] }, userId);
     expect(res.ok).toBe(true);
   });
 
@@ -62,8 +78,8 @@ describe("restore check — a clean page", () => {
     const { userId } = await makeTestUser(db);
     await seedFullAccount(db, userId);
     const before = await exportAll(db, userId);
-    await checkRestorePage({ schemaVersion: SCHEMA_VERSION, table: "planned_workouts", rows: before.tables.planned_workouts }, ctx(userId));
-    await checkRestorePage({ schemaVersion: SCHEMA_VERSION, table: "activities", rows: [activityRow({ durationSeconds: null })] }, ctx(userId));
+    await checkOne({ schemaVersion: SCHEMA_VERSION, table: "planned_workouts", rows: before.tables.planned_workouts }, userId);
+    await checkOne({ schemaVersion: SCHEMA_VERSION, table: "activities", rows: [activityRow({ durationSeconds: null })] }, userId);
     const after = await exportAll(db, userId);
     expect(after.tables).toEqual(before.tables);
     expect(await db.select().from(schema.accountState)).toEqual([]);
@@ -75,9 +91,9 @@ describe("restore check — what it refuses", () => {
     const db = makeTestDb();
     const { userId } = await makeTestUser(db);
     const { durationSeconds: _drop, ...noDuration } = activityRow();
-    const res = await checkRestorePage(
+    const res = await checkOne(
       { schemaVersion: SCHEMA_VERSION, table: "activities", rows: [activityRow({ id: "ok" }), noDuration, activityRow({ id: "n", sport: null })] },
-      ctx(userId),
+      userId,
     );
     expect(res.ok).toBe(false);
     if (res.ok) return;
@@ -90,7 +106,7 @@ describe("restore check — what it refuses", () => {
   it("refuses a value of the wrong type for its column", async () => {
     const db = makeTestDb();
     const { userId } = await makeTestUser(db);
-    const res = await checkRestorePage(
+    const res = await checkOne(
       {
         schemaVersion: SCHEMA_VERSION,
         table: "activities",
@@ -101,7 +117,7 @@ describe("restore check — what it refuses", () => {
           activityRow({ sport: 7 }), // number in a text column
         ],
       },
-      ctx(userId),
+      userId,
     );
     expect(res.ok).toBe(false);
     if (res.ok) return;
@@ -117,13 +133,13 @@ describe("restore check — what it refuses", () => {
   it("refuses a boolean column holding anything but true or false", async () => {
     const db = makeTestDb();
     const { userId } = await makeTestUser(db);
-    const res = await checkRestorePage(
+    const res = await checkOne(
       {
         schemaVersion: SCHEMA_VERSION,
         table: "garden_wildlife",
         rows: [{ id: "w", userId, kind: "bees", present: "yes", since: null }],
       },
-      ctx(userId),
+      userId,
     );
     expect(res).toMatchObject({ ok: false, errors: [expect.objectContaining({ column: "present", code: "wrong_type" })] });
   });
@@ -131,9 +147,9 @@ describe("restore check — what it refuses", () => {
   it("refuses preferences that fail the preferences schema", async () => {
     const db = makeTestDb();
     const { userId } = await makeTestUser(db);
-    const res = await checkRestorePage(
+    const res = await checkOne(
       { schemaVersion: SCHEMA_VERSION, table: "user_preferences", rows: [{ userId, prefs: { timezone: 42 }, updatedAt: nowInstant() }] },
-      ctx(userId),
+      userId,
     );
     expect(res).toMatchObject({
       ok: false,
@@ -144,13 +160,13 @@ describe("restore check — what it refuses", () => {
   it("refuses a garden snapshot the rebuild could not start from", async () => {
     const db = makeTestDb();
     const { userId } = await makeTestUser(db);
-    const res = await checkRestorePage(
+    const res = await checkOne(
       {
         schemaVersion: SCHEMA_VERSION,
         table: "garden_state",
         rows: [{ userId, snapshot: { plants: [] }, simulationVersion: 3, lastSimulatedDate: "2026-09-01", updatedAt: nowInstant() }],
       },
-      ctx(userId),
+      userId,
     );
     expect(res).toMatchObject({ ok: false, errors: [expect.objectContaining({ code: "bad_garden" })] });
   });
@@ -158,9 +174,9 @@ describe("restore check — what it refuses", () => {
   it("refuses a column this app does not have", async () => {
     const db = makeTestDb();
     const { userId } = await makeTestUser(db);
-    const res = await checkRestorePage(
+    const res = await checkOne(
       { schemaVersion: "0020", table: "activities", rows: [activityRow({ retiredColumn: 1 })] },
-      ctx(userId),
+      userId,
     );
     expect(res).toMatchObject({ ok: false, errors: [expect.objectContaining({ column: "retiredColumn", code: "unknown_column" })] });
   });
@@ -169,7 +185,7 @@ describe("restore check — what it refuses", () => {
     const db = makeTestDb();
     const { userId } = await makeTestUser(db);
     const code = async (table: unknown) => {
-      const res = await checkRestorePage({ schemaVersion: SCHEMA_VERSION, table, rows: [] }, ctx(userId));
+      const res = await checkOne({ schemaVersion: SCHEMA_VERSION, table, rows: [] }, userId);
       return res.ok ? "ok" : res.errors[0]!.code;
     };
     expect(await code("nope")).toBe("unknown_table");
@@ -194,7 +210,7 @@ describe("restore check — what it refuses", () => {
     const db = makeTestDb();
     const { userId } = await makeTestUser(db);
     const first = async (input: { schemaVersion: unknown; table: unknown; rows: unknown }) => {
-      const res = await checkRestorePage(input, ctx(userId));
+      const res = await checkOne(input, userId);
       return res.ok ? "ok" : res.errors[0]!.code;
     };
     const newer = String(Number(SCHEMA_VERSION) + 1).padStart(4, "0");
@@ -210,7 +226,7 @@ describe("restore check — what it refuses", () => {
     const db = makeTestDb();
     const { userId } = await makeTestUser(db);
     const rows = Array.from({ length: 50 }, (_, i) => activityRow({ id: `a${i}`, durationSeconds: null }));
-    const res = await checkRestorePage({ schemaVersion: SCHEMA_VERSION, table: "activities", rows }, ctx(userId));
+    const res = await checkOne({ schemaVersion: SCHEMA_VERSION, table: "activities", rows }, userId);
     expect(res.ok ? 0 : res.errors.length).toBe(20);
   });
 });
@@ -246,8 +262,11 @@ describe("POST /api/settings/restore/check", () => {
   it("answers 200 with per-row errors or a token, and never touches the account", async () => {
     const db = makeTestDb();
     const { userId } = await makeTestUser(db);
+    const manifest = Object.fromEntries(restorableTables().map((t) => [t.name, t.name === "activities" ? 1 : 0]));
+    const started = await post(db, userId, "/api/settings/restore/check/start", { schemaVersion: SCHEMA_VERSION, manifest });
+    const { session } = (await started.json()) as { session: string };
     const bad = await post(db, userId, "/api/settings/restore/check", {
-      schemaVersion: SCHEMA_VERSION,
+      session,
       table: "activities",
       rows: [activityRow({ durationSeconds: null })],
     });
@@ -255,7 +274,7 @@ describe("POST /api/settings/restore/check", () => {
     expect(await bad.json()).toMatchObject({ ok: false, errors: [{ row: 0, column: "duration_seconds", code: "missing_column" }] });
 
     const good = await post(db, userId, "/api/settings/restore/check", {
-      schemaVersion: SCHEMA_VERSION,
+      session,
       table: "activities",
       rows: [activityRow()],
     });

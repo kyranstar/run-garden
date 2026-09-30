@@ -12,7 +12,15 @@ import { describe, expect, it } from "vitest";
 import { AppShell } from "../src/shell.js";
 import { RestorePendingNotice } from "../src/screens/restore-notice.js";
 
-const restore = { startedAt: "2026-09-30T10:00:00.000Z", fileExportedAt: "2026-09-20T10:00:00.000Z", fileExportedFrom: "https://app.test" };
+const restore = {
+  restoreId: "r1",
+  startedAt: "2026-09-30T10:00:00.000Z",
+  heartbeatAt: "2026-09-30T10:00:00.000Z",
+  running: false,
+  fileExportedAt: "2026-09-20T10:00:00.000Z",
+  fileExportedFrom: "https://app.test",
+};
+const running = { ...restore, running: true };
 
 function render(el: React.ReactElement, path = "/"): string {
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false, staleTime: Infinity, enabled: false } } });
@@ -30,6 +38,22 @@ describe("RestorePendingNotice", () => {
     expect(html).toContain('role="alert"');
   });
 
+  it("a restore still running is not 'didn't finish', and offers nothing that would cut it short (B10)", () => {
+    const html = render(createElement(RestorePendingNotice, { restore: running, onRestoreAgain: () => undefined }));
+    expect(html).toContain("A restore is running — here or on another device.");
+    expect(html).not.toContain("didn&#x27;t finish");
+    expect(html).not.toContain(">Start fresh<");
+    expect(html).not.toContain(">Restore again<");
+  });
+
+  it("the device whose own restore just failed may start fresh at once", () => {
+    const html = render(createElement(RestorePendingNotice, { restore: running, onRestoreAgain: () => undefined, ownRestoreId: "r1" }));
+    expect(html).toContain("A restore didn&#x27;t finish.");
+    expect(html).toContain(">Start fresh<");
+    const other = render(createElement(RestorePendingNotice, { restore: running, onRestoreAgain: () => undefined, ownRestoreId: "r0" }));
+    expect(other).toContain("A restore is running");
+  });
+
   it("renders nothing when no restore is unfinished", () => {
     expect(render(createElement(RestorePendingNotice, { restore: null, onRestoreAgain: () => undefined }))).toBe("");
   });
@@ -42,5 +66,6 @@ describe("the shell banner", () => {
     }
     expect(render(createElement(AppShell, { restore, children: null }), "/settings")).not.toContain("A restore didn");
     expect(render(createElement(AppShell, { restore: null, children: null }), "/plan")).not.toContain("A restore didn");
+    expect(render(createElement(AppShell, { restore: running, children: null }), "/plan")).toContain("A restore is running");
   });
 });

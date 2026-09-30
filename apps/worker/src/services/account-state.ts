@@ -41,17 +41,40 @@ export async function restoreInProgress(db: Db, userId: string): Promise<boolean
   return typeof row?.restoreId === "string" && row.restoreId.length > 0;
 }
 
+/** A restore whose begin, or last page, arrived this recently is still
+ * running (ruling B10): another device may not start fresh over it or begin
+ * another one, and the notice says "running", not "didn't finish". */
+export const RESTORE_HEARTBEAT_MS = 2 * 60 * 1000;
+
+/** Is a marked restore still running — its begin or last page recent? */
+export function restoreRunning(
+  state: Pick<AccountStateRow, "restoreId" | "restoreHeartbeatAt"> | null | undefined,
+  now: Date = new Date(),
+): boolean {
+  if (!state?.restoreId || !state.restoreHeartbeatAt) return false;
+  return now.getTime() - Date.parse(state.restoreHeartbeatAt) < RESTORE_HEARTBEAT_MS;
+}
+
 /** What the app says about an unfinished restore — null when none is. */
 export interface RestoreStatus {
+  restoreId: string;
   startedAt: string | null;
+  /** When its begin or last page arrived. */
+  heartbeatAt: string | null;
+  /** Still running (heartbeat under two minutes old) — on this device or
+   * another — rather than abandoned. */
+  running: boolean;
   fileExportedAt: string | null;
   fileExportedFrom: string | null;
 }
 
-export function restoreStatusOf(state: AccountStateRow | null | undefined): RestoreStatus | null {
+export function restoreStatusOf(state: AccountStateRow | null | undefined, now: Date = new Date()): RestoreStatus | null {
   if (!isRestoring(state)) return null;
   return {
+    restoreId: state!.restoreId!,
     startedAt: state!.restoreStartedAt,
+    heartbeatAt: state!.restoreHeartbeatAt,
+    running: restoreRunning(state, now),
     fileExportedAt: state!.restoreFileExportedAt,
     fileExportedFrom: state!.restoreFileExportedFrom,
   };

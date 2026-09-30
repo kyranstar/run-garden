@@ -864,8 +864,14 @@ function restoreErrorText(err: unknown): string {
       return `The restore stopped at ${body.table} row ${(body.row ?? 0) + 1}.`;
     case "no_active_restore":
       return "Another restore started, in another tab or device.";
+    case "restore_running":
+      return "A restore is already running on another device. Let it finish, or try again in a couple of minutes.";
     case "check_required":
       return "The file changed after it was checked. Choose it again.";
+    case "check_expired":
+      return "The check expired — it lasts a day. Choose the file again to check it.";
+    case "check_incomplete":
+      return "The check didn't cover the whole file. Choose it again.";
     case "newer_schema":
       return "This file is from a newer version of the app.";
     default:
@@ -1074,7 +1080,13 @@ export function DataSection({ appOrigin }: { appOrigin?: string } = {}) {
   /** Bumped per chosen file, so the sheet's own state starts fresh. */
   const [attempt, setAttempt] = useState(0);
   const [notice, setNotice] = useState<string | null>(null);
-  const me = useQuery({ queryKey: ["me"], queryFn: api.me, retry: false });
+  const me = useQuery({
+    queryKey: ["me"],
+    queryFn: api.me,
+    retry: false,
+    // A restore running elsewhere says so until it stops (B10): look again.
+    refetchInterval: (q) => (q.state.data?.restore?.running ? 30_000 : false),
+  });
   const origin = appOrigin ?? (typeof window !== "undefined" ? window.location.origin : "");
   const del = useMutation({
     mutationFn: api.deleteAll,
@@ -1139,7 +1151,11 @@ export function DataSection({ appOrigin }: { appOrigin?: string } = {}) {
   return (
     <Card title="Your data" anchor="your-data">
       <div className="stack">
-        <RestorePendingNotice restore={me.data?.restore} onRestoreAgain={() => fileInput.current?.click()} />
+        <RestorePendingNotice
+          restore={me.data?.restore}
+          onRestoreAgain={() => fileInput.current?.click()}
+          ownRestoreId={step.kind === "failed" ? (step.checked?.restoreId ?? null) : null}
+        />
         <div className="btn-row">
           <button className="btn" disabled={exp.isPending} onClick={() => exp.mutate()}>
             {exp.isPending ? "Exporting…" : "Export everything (JSON)"}

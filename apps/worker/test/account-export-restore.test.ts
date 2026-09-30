@@ -155,10 +155,10 @@ describe("restore — refusals and idempotency", () => {
     const { userId } = await makeTestUser(db);
     await seedFullAccount(db, userId);
     const file = await exportAll(db, userId);
-    const { tokens } = await checkFile(db, userId, file);
+    const { session, tokens } = await checkFile(db, userId, file);
 
     for (const replace of [false, undefined, "yes"]) {
-      const res = await beginRestore(db, userId, { schemaVersion: SCHEMA_VERSION, replace, tokens: [...tokens.values()] }, { secret: TEST_SECRET });
+      const res = await beginRestore(db, userId, { session, replace, tokens: [...tokens.values()] }, { secret: TEST_SECRET });
       expect(res).toEqual({ ok: false, status: 400, error: "replace_required" });
     }
     // Nothing was wiped.
@@ -171,8 +171,11 @@ describe("restore — refusals and idempotency", () => {
     const { userId } = await makeTestUser(db);
     await seedFullAccount(db, userId);
     const newer = String(Number(SCHEMA_VERSION) + 1).padStart(4, "0");
-    const res = await beginRestore(db, userId, { schemaVersion: newer, replace: true, tokens: ["x"] }, { secret: TEST_SECRET });
-    expect(res).toEqual({ ok: false, status: 422, error: "newer_schema" });
+    const file = { ...(await exportAll(db, userId)), schemaVersion: newer };
+    const checked = await checkFile(db, userId, file);
+    expect(checked.errors[0]).toMatchObject({ code: "newer_schema" });
+    const res = await beginRestore(db, userId, { session: checked.session, replace: true, tokens: ["x"] }, { secret: TEST_SECRET });
+    expect(res).toEqual({ ok: false, status: 422, error: "check_required" });
     const manifest = await exportManifest(db, userId);
     expect(manifest.tables.find((t) => t.name === "planned_workouts")?.rows).toBe(SEED_PLANNED_WORKOUTS);
   });
@@ -183,9 +186,9 @@ describe("restore — refusals and idempotency", () => {
     await seedFullAccount(db, userId);
     await createSession(db, userId, "test");
     const file = await exportAll(db, userId);
-    const { tokens } = await checkFile(db, userId, file);
+    const { session, tokens } = await checkFile(db, userId, file);
 
-    const res = await beginRestore(db, userId, { schemaVersion: SCHEMA_VERSION, replace: true, tokens: [...tokens.values()] }, { secret: TEST_SECRET });
+    const res = await beginRestore(db, userId, { session, replace: true, tokens: [...tokens.values()] }, { secret: TEST_SECRET });
     expect(res.ok).toBe(true);
     expect(await db.select().from(schema.users).where(eq(schema.users.id, userId))).toHaveLength(1);
     expect(await db.select().from(schema.sessions).where(eq(schema.sessions.userId, userId))).toHaveLength(1);
@@ -200,8 +203,8 @@ describe("restore — refusals and idempotency", () => {
     const { userId } = await makeTestUser(db);
     await seedFullAccount(db, userId);
     const file = await exportAll(db, userId);
-    const { tokens } = await checkFile(db, userId, file);
-    const begun = await beginRestore(db, userId, { schemaVersion: SCHEMA_VERSION, replace: true, tokens: [...tokens.values()] }, { secret: TEST_SECRET });
+    const { session, tokens } = await checkFile(db, userId, file);
+    const begun = await beginRestore(db, userId, { session, replace: true, tokens: [...tokens.values()] }, { secret: TEST_SECRET });
     if (!begun.ok) throw new Error(begun.error);
 
     const page = pagesOf(file.tables.planned_workouts!, 200)[0]!;
@@ -225,8 +228,8 @@ describe("restore — refusals and idempotency", () => {
     const { userId } = await makeTestUser(db);
     await seedFullAccount(db, userId);
     const file = await exportAll(db, userId);
-    const { tokens } = await checkFile(db, userId, file);
-    const begun = await beginRestore(db, userId, { schemaVersion: SCHEMA_VERSION, replace: true, tokens: [...tokens.values()] }, { secret: TEST_SECRET });
+    const { session, tokens } = await checkFile(db, userId, file);
+    const begun = await beginRestore(db, userId, { session, replace: true, tokens: [...tokens.values()] }, { secret: TEST_SECRET });
     if (!begun.ok) throw new Error(begun.error);
     const restoreId = begun.restoreId;
     const row = { id: "x", userId, createdAt: nowInstant(), expiresAt: nowInstant() };
@@ -427,45 +430,60 @@ describe("settings export/restore routes", () => {
     await seedFullAccount(db, userId);
     const file = await exportAll(db, userId);
 
-    const check = await call(db, userId, "/api/settings/restore/check", {
+    // A file holding only its activities: the manifest names every table.
+    const manifest = Object.fromEntries(restorableTables().map((t) => [t.name, 0]));
+    manifest.activities = file.tables.activities!.length;
+    const started = await call(db, userId, "/api/settings/restore/check/start", {
       schemaVersion: SCHEMA_VERSION,
+      manifest,
+      sourceUserId: userId,
+      exportedAt: file.exportedAt,
+      exportedFrom: "https://app.test",
+    });
+    const { session } = (await started.json()) as { session: string };
+    const check = await call(db, userId, "/api/settings/restore/check", {
+      session,
       table: "activities",
       rows: file.tables.activities,
+      offset: 0,
     });
     const { token } = (await check.json()) as { token: string };
 
-    const noReplace = await call(db, userId, "/api/settings/restore/begin", { schemaVersion: SCHEMA_VERSION, tokens: [token] });
+    const noReplace = await call(db, userId, "/api/settings/restore/begin", { session, tokens: [token] });
     expect(noReplace.status).toBe(400);
     expect(await noReplace.json()).toEqual({ error: "replace_required" });
 
-    const unchecked = await call(db, userId, "/api/settings/restore/begin", { schemaVersion: SCHEMA_VERSION, replace: true, tokens: [] });
+    const unchecked = await call(db, userId, "/api/settings/restore/begin", { session, replace: true, tokens: [] });
     expect(unchecked.status).toBe(422);
-    expect(await unchecked.json()).toEqual({ error: "check_required" });
+    expect(await unchecked.json()).toEqual({ error: "check_incomplete" });
+
+    const twice = await call(db, userId, "/api/settings/restore/begin", { session, replace: true, tokens: [token, token] });
+    expect(twice.status).toBe(422);
+    expect(await twice.json()).toEqual({ error: "check_incomplete" });
+
+    const noSession = await call(db, userId, "/api/settings/restore/begin", { replace: true, tokens: [token] });
+    expect(noSession.status).toBe(422);
+    expect(await noSession.json()).toEqual({ error: "check_required" });
 
     const noBegin = await call(db, userId, "/api/settings/restore/rows", { restoreId: "nope", table: "activities", rows: file.tables.activities, token });
     expect(noBegin.status).toBe(409);
     expect(await noBegin.json()).toEqual({ error: "no_active_restore" });
 
-    const begin = await call(db, userId, "/api/settings/restore/begin", {
-      schemaVersion: SCHEMA_VERSION,
-      replace: true,
-      tokens: [token],
-      exportedAt: file.exportedAt,
-      exportedFrom: "https://app.test",
-    });
+    const begin = await call(db, userId, "/api/settings/restore/begin", { session, replace: true, tokens: [token] });
     expect(begin.status).toBe(200);
     const { restoreId, tables } = (await begin.json()) as { restoreId: string; tables: string[] };
     expect(tables).toEqual(restorableTables().map((t) => t.name));
 
     const status = await call(db, userId, "/api/settings/restore/status");
-    expect(await status.json()).toMatchObject({ restore: { fileExportedAt: file.exportedAt, fileExportedFrom: "https://app.test" } });
+    expect(await status.json()).toMatchObject({
+      restore: { restoreId, running: true, fileExportedAt: file.exportedAt, fileExportedFrom: "https://app.test" },
+    });
 
     const rows = await call(db, userId, "/api/settings/restore/rows", {
       restoreId,
       table: "activities",
       rows: file.tables.activities,
       token,
-      sourceUserId: userId,
     });
     expect(rows.status).toBe(200);
     expect(await rows.json()).toEqual({ received: file.tables.activities!.length, skipped: 0, lost: 0 });

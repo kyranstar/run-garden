@@ -352,7 +352,7 @@ describe("computed_metrics: the file's row wins over a same-key row", () => {
     const begun = await beginRestore(
       db,
       userId,
-      { schemaVersion: file.schemaVersion, replace: true, tokens: [...checked.tokens.values()] },
+      { session: checked.session, replace: true, tokens: [...checked.tokens.values()] },
       { secret: TEST_SECRET },
     );
     if (!begun.ok) throw new Error(begun.error);

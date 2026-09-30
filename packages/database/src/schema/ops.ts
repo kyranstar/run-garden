@@ -97,8 +97,12 @@ export const schemaVersions = sqliteTable("schema_versions", {
  * While it is set every writer skips the account, so nothing races the file
  * into the half-wiped tables (audit 1 data F2/F8, ruling B2).
  *
- * `restoreExpected` is `{ table: rows }` from the checked pages begin was
- * shown; finish compares the landed counts against it.
+ * `restoreHeartbeatAt` is when begin, or the restore's last page, arrived:
+ * under two minutes old means the restore is still running (B10), so another
+ * device may not start fresh over it or begin a different one.
+ *
+ * `restoreExpected` is the check session's manifest (`{ table: rows }`);
+ * finish compares the landed counts against it.
  *
  * `calendarReconcile` is the one-shot post-restore calendar reconcile (B6):
  * null when there is nothing to do.
@@ -112,6 +116,7 @@ export const accountState = sqliteTable("account_state", {
   userId: text("user_id").primaryKey(),
   restoreId: text("restore_id"),
   restoreStartedAt: text("restore_started_at"),
+  restoreHeartbeatAt: text("restore_heartbeat_at"),
   restoreFileExportedAt: text("restore_file_exported_at"),
   restoreFileExportedFrom: text("restore_file_exported_from"),
   restoreExpected: text("restore_expected", { mode: "json" }).$type<Record<string, number>>(),

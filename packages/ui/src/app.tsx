@@ -22,7 +22,13 @@ const queryClient = new QueryClient({
 });
 
 function AuthedApp() {
-  const me = useQuery({ queryKey: ["me"], queryFn: api.me, retry: false });
+  const me = useQuery({
+    queryKey: ["me"],
+    queryFn: api.me,
+    retry: false,
+    // A restore running elsewhere says so until it stops (B10): look again.
+    refetchInterval: (q) => (q.state.data?.restore?.running ? 30_000 : false),
+  });
 
   if (me.isLoading) {
     return (

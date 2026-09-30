@@ -66,7 +66,15 @@ interface Worker {
   releaseRows: () => void;
 }
 
-function stubWorker(opts: { checkErrors?: Record<string, unknown[]>; failRowsOn?: string; holdRows?: boolean } = {}): Worker {
+function stubWorker(
+  opts: {
+    checkErrors?: Record<string, unknown[]>;
+    failRowsOn?: string;
+    holdRows?: boolean;
+    beginError?: string;
+    restore?: unknown;
+  } = {},
+): Worker {
   const calls: string[] = [];
   let release: () => void = () => undefined;
   const json = (body: unknown, status = 200) =>
@@ -79,22 +87,29 @@ function stubWorker(opts: { checkErrors?: Record<string, unknown[]>; failRowsOn?
       calls.push(`${init?.method ?? "GET"} ${path}${body.table ? ` ${String(body.table)}` : ""}`);
       switch (path) {
         case "/api/auth/me":
-          return json({ userId: "u1", email: "runner@example.com", connections: [], fixtureMode: false, restore: null });
+          return json({ userId: "u1", email: "runner@example.com", connections: [], fixtureMode: false, restore: opts.restore ?? null });
         case "/api/settings/restore/tables":
           return json({
             schemaVersion: "0023",
             tables: ["user_preferences", "planned_workouts", "activities", "garden_day_inputs"],
             skip: ["users", "provider_connections", "provider_cursor_state", "coach_locks"],
           });
+        case "/api/settings/restore/check/start":
+          calls[calls.length - 1] += ` ${JSON.stringify(body.manifest)} ${String(body.sourceUserId)}`;
+          return json({ ok: true, session: "sess-1", restoreId: "r1" });
         case "/api/settings/restore/check": {
+          if (body.session !== "sess-1") return json({ ok: false, errors: [{ row: -1, code: "check_required", message: "no session" }] });
           const errors = opts.checkErrors?.[String(body.table)];
           if (errors) return json({ ok: false, errors });
           return json({ ok: true, token: `tok-${String(body.table)}`, rows: (body.rows as Row[]).length });
         }
         case "/api/settings/restore/begin":
+          if (opts.beginError) return json({ error: opts.beginError }, opts.beginError === "restore_running" ? 409 : 422);
+          if (body.session !== "sess-1") return json({ error: "check_required" }, 422);
           return json({ restoreId: "r1", tables: ["user_preferences", "planned_workouts", "activities", "garden_day_inputs"] });
         case "/api/settings/restore/rows":
           if (opts.holdRows) await new Promise<void>((r) => (release = r));
+          if ("sourceUserId" in body) return json({ error: "unsigned_source" }, 400);
           if (body.table === opts.failRowsOn) {
             return json({ error: "insert_failed", table: body.table, row: 1, detail: "x" }, 422);
           }
@@ -105,6 +120,9 @@ function stubWorker(opts: { checkErrors?: Record<string, unknown[]>; failRowsOn?
             expected: { user_preferences: 1, planned_workouts: 3, activities: 2, garden_day_inputs: 1 },
             short: [],
           });
+        case "/api/settings/restore/start-fresh":
+          calls[calls.length - 1] += ` ${JSON.stringify(body)}`;
+          return json({ ok: true });
         default:
           return json({ error: "not_found" }, 404);
       }
@@ -179,9 +197,12 @@ describe("Settings → Your data → Restore from file", () => {
     await choose(exportFile());
     await until(() => !!button("Replace everything in this account"), "the confirm step");
 
-    // Only side-effect-free calls so far: the table list and one check per page.
+    // Only side-effect-free calls so far: the table list, the check session
+    // (every table the worker restores, with the file's count, and the id of
+    // the account it came from), and one check per page.
     expect(worker.calls.filter((c) => !c.includes("/api/auth/me"))).toEqual([
       "GET /api/settings/restore/tables",
+      'POST /api/settings/restore/check/start {"user_preferences":1,"planned_workouts":3,"activities":2,"garden_day_inputs":1} u-old',
       "POST /api/settings/restore/check user_preferences",
       "POST /api/settings/restore/check planned_workouts",
       "POST /api/settings/restore/check activities",
@@ -260,6 +281,48 @@ describe("Settings → Your data → Restore from file", () => {
     await click("Try again");
     await until(() => text().includes("The restore stopped"), "the second failure");
     expect(worker.calls[0]).toBe("POST /api/settings/restore/begin");
+  });
+
+  it("an expired check, an incomplete one and a restore running elsewhere each say what happened (M6, M10)", async () => {
+    for (const [error, says] of [
+      ["check_expired", "The check expired — it lasts a day. Choose the file again to check it."],
+      ["check_incomplete", "The check didn't cover the whole file. Choose it again."],
+      ["restore_running", "A restore is already running on another device. Let it finish, or try again in a couple of minutes."],
+      ["check_required", "The file changed after it was checked. Choose it again."],
+    ] as const) {
+      stubWorker({ beginError: error });
+      mount();
+      await choose(exportFile());
+      await until(() => !!button("Replace everything in this account"), "the confirm step");
+      await click("Replace everything in this account");
+      await until(() => text().includes(says), error);
+      act(() => root?.unmount());
+      root = null;
+      vi.unstubAllGlobals();
+      document.body.innerHTML = "";
+    }
+  });
+
+  it("after its own restore failed, this device may start fresh at once — naming its restore", async () => {
+    const running = {
+      restoreId: "r1",
+      startedAt: EXPORTED_AT,
+      heartbeatAt: EXPORTED_AT,
+      running: true,
+      fileExportedAt: EXPORTED_AT,
+      fileExportedFrom: APP,
+    };
+    const worker = stubWorker({ failRowsOn: "activities", restore: running });
+    mount();
+    await choose(exportFile());
+    await until(() => !!button("Replace everything in this account"), "the confirm step");
+    await click("Replace everything in this account");
+    await until(() => text().includes("The restore stopped at activities row 2."), "the failure");
+    await until(() => !!button("Start fresh"), "the notice");
+    await click("Start fresh");
+    await click("Delete everything and start fresh");
+    await until(() => worker.calls.some((c) => c.includes("start-fresh")), "start fresh");
+    expect(worker.calls.find((c) => c.includes("start-fresh"))).toBe('POST /api/settings/restore/start-fresh {"restoreId":"r1"}');
   });
 
   it("a file that fails the check lists what is wrong and never offers the replace", async () => {

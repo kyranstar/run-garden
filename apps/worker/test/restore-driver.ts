@@ -1,6 +1,7 @@
 /**
  * What the client does, as plain service calls: export the account page by
- * page, and restore a file by checking every page, then begin → rows → finish.
+ * page, and restore a file by opening a check session with the file's
+ * manifest, checking every page, then begin → rows → finish.
  * Shared by the restore suites so each one drives the real sequence rather
  * than a shortcut that skips the check.
  */
@@ -11,6 +12,8 @@ import {
   beginRestore,
   checkRestorePage,
   finishRestore,
+  openCheckSession,
+  restorableTables,
   restoreRows,
   restoreSkips,
   type RowError,
@@ -53,13 +56,39 @@ export function pagesOf(rows: Row[], pageSize: number): Row[][] {
 }
 
 export interface CheckedFile {
+  /** The check session's token and the restore id it will begin. */
+  session: string;
+  restoreId: string;
   /** `${table}#${page}` → the page's token. */
   tokens: Map<string, string>;
   errors: RowError[];
 }
 
-export async function checkFile(db: Db, userId: string, file: ExportFile, pageSize = 200): Promise<CheckedFile> {
+/** Rows per restorable table, as the file holds them — every table named. */
+export function manifestOf(file: ExportFile): Record<string, number> {
+  return Object.fromEntries(restorableTables().map((t) => [t.name, file.tables[t.name]?.length ?? 0]));
+}
+
+export async function checkFile(
+  db: Db,
+  userId: string,
+  file: ExportFile,
+  pageSize = 200,
+  opts: { now?: Date } = {},
+): Promise<CheckedFile> {
   void db;
+  const ctx = { userId, secret: TEST_SECRET, now: opts.now };
+  const opened = await openCheckSession(
+    {
+      schemaVersion: file.schemaVersion,
+      manifest: manifestOf(file),
+      sourceUserId: (file.tables.users?.[0]?.id as string | undefined) ?? null,
+      exportedAt: file.exportedAt,
+      exportedFrom: file.exportedFrom,
+    },
+    ctx,
+  );
+  if (!opened.ok) return { session: "", restoreId: "", tokens: new Map(), errors: opened.errors };
   const skip = new Set(restoreSkips());
   const tokens = new Map<string, string>();
   const errors: RowError[] = [];
@@ -67,15 +96,12 @@ export async function checkFile(db: Db, userId: string, file: ExportFile, pageSi
     if (skip.has(table)) continue;
     const pages = pagesOf(rows, pageSize);
     for (let p = 0; p < pages.length; p += 1) {
-      const res = await checkRestorePage(
-        { schemaVersion: file.schemaVersion, table, rows: pages[p] },
-        { userId, secret: TEST_SECRET },
-      );
+      const res = await checkRestorePage({ session: opened.session, table, rows: pages[p], offset: p * pageSize }, ctx);
       if (res.ok) tokens.set(`${table}#${p}`, res.token);
       else errors.push(...res.errors);
     }
   }
-  return { tokens, errors };
+  return { session: opened.session, restoreId: opened.restoreId, tokens, errors };
 }
 
 export interface RestoreOutcome {
@@ -91,7 +117,7 @@ export async function restoreAll(
   db: Db,
   userId: string,
   file: ExportFile,
-  opts: { pageSize?: number; beforeFinish?: () => Promise<void> } = {},
+  opts: { pageSize?: number; beforeRows?: () => Promise<void>; beforeFinish?: () => Promise<void> } = {},
 ): Promise<RestoreOutcome> {
   const pageSize = opts.pageSize ?? 200;
   const checked = await checkFile(db, userId, file, pageSize);
@@ -99,17 +125,11 @@ export async function restoreAll(
   const begun = await beginRestore(
     db,
     userId,
-    {
-      schemaVersion: file.schemaVersion,
-      replace: true,
-      tokens: [...checked.tokens.values()],
-      exportedAt: file.exportedAt,
-      exportedFrom: file.exportedFrom,
-    },
+    { session: checked.session, replace: true, tokens: [...checked.tokens.values()] },
     { secret: TEST_SECRET },
   );
   if (!begun.ok) throw new Error(`begin refused: ${begun.error}`);
-  const sourceUserId = String(file.tables.users?.[0]?.id ?? "");
+  await opts.beforeRows?.();
   let lost = 0;
   for (const table of begun.tables) {
     const pages = pagesOf(file.tables[table] ?? [], pageSize);
@@ -117,7 +137,7 @@ export async function restoreAll(
       const res = await restoreRows(
         db,
         userId,
-        { restoreId: begun.restoreId, table, rows: pages[p], token: checked.tokens.get(`${table}#${p}`), sourceUserId },
+        { restoreId: begun.restoreId, table, rows: pages[p], token: checked.tokens.get(`${table}#${p}`) },
         { secret: TEST_SECRET },
       );
       if (!res.ok) throw new Error(`rows refused for ${table}: ${res.error}`);
