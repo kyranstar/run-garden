@@ -65,7 +65,7 @@ import { disciplineOf } from "@rg/analytics";
  * ("counts start at zero the day this ships" is a promise to them). */
 const DEW_EPOCH = "2026-08-19";
 import { chunkedInsert, type Db } from "./db.js";
-import { restoreInProgress } from "./account-state.js";
+import { isRestoring, loadAccountState, patchAccountState, restoreInProgress } from "./account-state.js";
 import { coachBlockAdherence, COACHED_BLOCK_ADHERENCE, plansEndedOn } from "./coach-plans.js";
 import {
   VISITOR_HINTS,
@@ -754,6 +754,38 @@ async function standDown(db: Db, userId: string, prefs: UserPreferences, now: Da
   };
 }
 
+/**
+ * One step of a PENDING REBUILD (account_state.garden_rebuild_*): a restore
+ * flagged the whole garden (ruling B4), or a resimulation was too long for
+ * one request. It runs through the same capped, resumable walk a version
+ * upgrade uses, so it can never outgrow a request's statement budget.
+ *
+ * `changedFrom` is the first date whose inputs changed since the rebuild's
+ * last step (the restore's genesis date on the first step; a late activity's
+ * date if one arrives mid-rebuild), or null to resume from the newest
+ * checkpoint the rebuild itself wrote. `garden_state` — what every read
+ * renders — moves only when the walk lands uncapped; until then reads keep
+ * showing the garden as it was.
+ */
+async function rebuildStep(
+  db: Db,
+  userId: string,
+  current: GardenSnapshot,
+  prefs: UserPreferences,
+  now: Date,
+  opts: GardenAdvanceOptions | undefined,
+  changedFrom: LocalDate | null,
+): Promise<GardenSimResult> {
+  const res = await upgradeResimulate(db, userId, current, prefs, now, opts, changedFrom ?? undefined);
+  await patchAccountState(db, userId, {
+    gardenRebuildPending: res.resimPending === true,
+    gardenRebuildFrom: null,
+  });
+  return res;
+}
+
+const earlierOf = (a: LocalDate | null | undefined, b: LocalDate): LocalDate => (a && a < b ? a : b);
+
 /** Advance the simulation through all eligible days. */
 export async function advanceGarden(
   db: Db,
@@ -762,8 +794,13 @@ export async function advanceGarden(
   now: Date = new Date(),
   opts?: GardenAdvanceOptions,
 ): Promise<GardenSimResult> {
-  if (await restoreInProgress(db, userId)) return standDown(db, userId, prefs, now);
+  const account = await loadAccountState(db, userId);
+  if (isRestoring(account)) return standDown(db, userId, prefs, now);
   const startSnapshot = await ensureGarden(db, userId, prefs);
+
+  if (account?.gardenRebuildPending) {
+    return rebuildStep(db, userId, startSnapshot, prefs, now, opts, account.gardenRebuildFrom);
+  }
 
   // Simulation upgraded since this garden was last written: rebuild the whole
   // history from the stored inputs so version-3 state (earned grounds) exists
@@ -897,8 +934,16 @@ export async function resimulateFrom(
   now: Date = new Date(),
   opts?: GardenAdvanceOptions,
 ): Promise<GardenSimResult> {
-  if (await restoreInProgress(db, userId)) return standDown(db, userId, prefs, now);
+  const account = await loadAccountState(db, userId);
+  if (isRestoring(account)) return standDown(db, userId, prefs, now);
   const current = await loadGarden(db, userId);
+
+  // A rebuild is already under way: this change joins it — the rebuild's
+  // cursor is only trusted up to the day before the change.
+  if (current && account?.gardenRebuildPending) {
+    return rebuildStep(db, userId, current, prefs, now, opts, earlierOf(account.gardenRebuildFrom, affectedDate));
+  }
+
   if (!current || affectedDate > current.state.lastSimulatedDate) {
     return advanceGarden(db, userId, prefs, now, opts);
   }
@@ -926,6 +971,15 @@ export async function resimulateFrom(
   } else {
     startSnapshot = initialSnapshot(current.state.createdDate);
     restartAfter = startSnapshot.state.lastSimulatedDate;
+  }
+
+  // Too long for one request (a backfill of old history, the usual next
+  // step after restoring an old export): this used to walk every day to
+  // today uncapped and fail past D1's budget, leaving the event log
+  // truncated. Hand it to the resumable rebuild instead (verifier R6).
+  const maxDays = opts?.maxResimDays ?? UPGRADE_RESIM_MAX_DAYS;
+  if (daysBetween(restartAfter, todayInZone(prefs.timezone, now)) > maxDays + 1) {
+    return rebuildStep(db, userId, current, prefs, now, opts, affectedDate);
   }
 
   // Drop events/inputs/checkpoints after the restart point; they'll be
