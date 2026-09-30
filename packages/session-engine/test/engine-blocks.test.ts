@@ -167,6 +167,13 @@ describe("beyond the standalone suite", () => {
       expect(next.core.press).not.toBe("ohPress");
     });
 
+    test("graduation never switches a block to a lift an active profile rules out (re-review m6)", () => {
+      const b = block({ press: "floorPress" });
+      expect(Blocks.graduate(withHeavy, b, "press", "ohPress", "2026-09-03", home)).toBe(b);
+      expect(Blocks.graduate(withHeavy, block({ squat: "gobletSquat" }), "squat", "heavySquat", "2026-09-03", home).core.squat).toBe("gobletSquat");
+      expect(Blocks.graduate(withHeavy, block({ squat: "gobletSquat" }), "squat", "frontSquat", "2026-09-03", home).core.squat).toBe("frontSquat");
+    });
+
     test("a pinned forbidden lift is not carried into the next block", () => {
       const old = { ...block({ squat: "heavySquat" }), startedAt: "2026-07-01" };
       const next = Blocks.ensure(withHeavy, old, ctx({ today: "2026-09-03", prefs: { ...prefs, pinned: ["heavySquat"] } })).block;

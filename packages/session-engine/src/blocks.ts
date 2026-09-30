@@ -182,7 +182,9 @@ const weekOf = (block: Pick<Block, "startedAt">, today: string): number => Math.
 
 /** Accepting a "ready for the harder move?" suggestion: the block's lift for that family changes. */
 function graduate(data: EngineData, block: Block, familyId: string, exId: string, today: string, equipment: readonly string[]): Block {
-  if (!familyCandidates(data, familyId, { equipment }).some(ex => ex.id === exId)) return block;
+  const lift = familyCandidates(data, familyId, { equipment }).find(ex => ex.id === exId);
+  // Never a lift an active profile rules out as a block's lift (it would rotate out the next day).
+  if (!lift || forbiddenBy(data, lift)) return block;
   return {
     ...block,
     core: { ...block.core, [familyId]: exId },
