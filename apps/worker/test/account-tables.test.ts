@@ -123,6 +123,48 @@ describe("ACCOUNT_TABLES — classification", () => {
   });
 });
 
+/**
+ * Audit 1 data finding 13: `SECRETS` is a hand-written list, so a new column
+ * holding a credential would be exported in the clear the day it is added.
+ * Every column whose name looks like one must be either a declared secret
+ * (nulled on export, never restored) or on this list with the reason it is
+ * not a secret — so adding one is a decision, not an accident.
+ */
+const SECRET_LOOKING = /token|secret|password|key|verifier|encrypted/i;
+const NOT_SECRETS: Record<string, string> = {
+  "provider_connections.access_token_expires_at": "an expiry time, not the token",
+  "provider_cursor_state.cursor_key": "which cursor this is (e.g. events_sync_token:<calendar>)",
+  "computed_metrics.metric_key": "a metric's name",
+  "activity_laps.exercise_name_key": "the COROS catalog key of a lap's exercise",
+  "llm_usage.input_tokens": "a count of model tokens",
+  "llm_usage.output_tokens": "a count of model tokens",
+  "coach_reads.claim_token": "a single-flight lock token, meaningless outside the claim",
+  "coach_locks.token": "a single-flight lock token (and the table is not exported)",
+};
+
+describe("secret columns (finding 13)", () => {
+  it("every column that looks like a credential is a declared secret or explained here", () => {
+    const undeclared: string[] = [];
+    for (const entry of ACCOUNT_TABLES) {
+      if (entry.scope.kind === "excluded") continue;
+      for (const name of sqlColumnNames(entry.table)) {
+        if (!SECRET_LOOKING.test(name)) continue;
+        const key = `${entry.name}.${name}`;
+        if (secretColumns(entry.name).includes(name) || key in NOT_SECRETS) continue;
+        undeclared.push(key);
+      }
+    }
+    expect(undeclared).toEqual([]);
+  });
+
+  it("the explanations still name real columns", () => {
+    for (const key of Object.keys(NOT_SECRETS)) {
+      const [table, column] = key.split(".");
+      expect(sqlColumnNames(accountTable(table!).table), key).toContain(column);
+    }
+  });
+});
+
 describe("orderedRows — primary-key order, optionally scoped to one account", () => {
   it("returns rows in primary-key order regardless of insertion order", async () => {
     const db = makeTestDb();
