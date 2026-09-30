@@ -154,15 +154,42 @@ describe("unskipWorkout", () => {
     expect(await unskipWorkout(db, userId, "w1", { now: nowInstant(), source: "app" }))
       .toEqual({ restored: false, resolvedOn: null, reason: "not_skipped" });
   });
-  it("coach restore sets resimFrom to the skip's resolution date", async () => {
+  /**
+   * THE DAY THE SKIP COUNTED ON (audit 1, coach finding 8). A skip lands in the
+   * garden on the LATER of the session's date and its resolution date
+   * (`resolutionLandedOn`, garden-sync.ts), so that is the day a restore has to
+   * replay from. Resimulating from the resolution date alone reached back weeks
+   * for a session skipped early — a replay run inline in the request for days
+   * no skip ever touched.
+   */
+  it("restore resims from the day the skip counted on: the later of its date and its resolution", async () => {
     const db = makeTestDb();
     const { userId, prefs } = await makeTestUser(db);
     const today = todayInZone(prefs.timezone);
-    await seed(db, userId, "w1", addDays(today, 1));
+    // Skipped three days ago, for a session two days ahead: the skip will
+    // count on its own day, which has not come yet — nothing to replay.
+    await seed(db, userId, "ahead", addDays(today, 2));
     await db.update(schema.plannedWorkouts)
-      .set({ completionState: "skipped", resolutionDate: today }).where(eq(schema.plannedWorkouts.id, "w1"));
-    const out = await applyOps(db, userId, prefs, "p", [{ kind: "restore", workoutId: "w1" }]);
-    expect(out.updated).toEqual(["w1"]);
-    expect(out.resimFrom).toBe(today);
+      .set({ completionState: "skipped", resolutionDate: addDays(today, -3) })
+      .where(eq(schema.plannedWorkouts.id, "ahead"));
+    const out = await applyOps(db, userId, prefs, "p", [{ kind: "restore", workoutId: "ahead" }]);
+    expect(out.updated).toEqual(["ahead"]);
+    expect(out.resimFrom).toBeNull();
+
+    // An overdue session skipped today counted TODAY, not on its own day.
+    await seed(db, userId, "overdue", addDays(today, -2));
+    await db.update(schema.plannedWorkouts)
+      .set({ completionState: "skipped", resolutionDate: today })
+      .where(eq(schema.plannedWorkouts.id, "overdue"));
+    expect(await unskipWorkout(db, userId, "overdue", { now: nowInstant(), source: "app" }))
+      .toEqual({ restored: true, resolvedOn: today });
+
+    // No resolution date: it counted on its own day.
+    await seed(db, userId, "bare", today);
+    await db.update(schema.plannedWorkouts)
+      .set({ completionState: "skipped", resolutionDate: null })
+      .where(eq(schema.plannedWorkouts.id, "bare"));
+    expect(await unskipWorkout(db, userId, "bare", { now: nowInstant(), source: "app" }))
+      .toEqual({ restored: true, resolvedOn: today });
   });
 });

@@ -202,9 +202,13 @@ export async function unskipWorkout(
   if (!w) return { restored: false, resolvedOn: null, reason: "not_found" };
   if (w.completionState !== "skipped") return { restored: false, resolvedOn: null, reason: "not_skipped" };
   const { now } = opts;
-  // buildDayInput falls back to effectiveDate when resolutionDate is unset;
-  // matching that fallback here keeps the resim target correct either way.
-  const resolvedOn = w.resolutionDate ?? w.effectiveDate;
+  // THE DAY THE SKIP COUNTED ON: the later of the session's date and its
+  // resolution date — the same expression as garden-sync's
+  // `resolutionLandedOn`, which is what fed the miss into the sim (audit 1,
+  // coach finding 8). The resolution date alone reached back weeks for a
+  // session skipped early, replaying days no skip ever touched.
+  const resolvedOn =
+    w.resolutionDate && w.resolutionDate > w.effectiveDate ? w.resolutionDate : w.effectiveDate;
   // `sanctionedBy` clears with the skip: the garden's mercy was granted for a
   // rest day that is no longer being taken.
   await db
