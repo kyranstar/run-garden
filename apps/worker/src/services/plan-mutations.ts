@@ -1,4 +1,4 @@
-import { and, eq } from "drizzle-orm";
+import { and, eq, inArray } from "drizzle-orm";
 import { calendarEventSuppressions, corosWriteJobs, plannedWorkouts, scheduleOverrides } from "@rg/database";
 import { newId, type UserPreferences } from "@rg/domain";
 import type { Db } from "./db.js";
@@ -15,6 +15,50 @@ import { openIntentFor, recordIntent, resolveIntent, type IntentSource } from ".
 export interface RemoveResult {
   removed: boolean;
   effectiveDate: string | null;
+}
+
+/**
+ * The job kinds that would still PUT this session on the watch (or rewrite or
+ * re-date it there) once they run. A removal is not among them: a queued unpush
+ * is the archive's own aftermath, never a competing claim.
+ */
+const WATCH_PLACING_KINDS = ["coach_create_workout", "move_scheduled_workout", "coach_update_workout"] as const;
+
+/**
+ * AN ARCHIVED ROW'S QUEUED WATCH WRITES ARE SETTLED, NOT LEFT TO RUN (audit 1,
+ * coach finding 1).
+ *
+ * An approve drains three writes and the hourly cron three more, so a session
+ * removed while its create was still queued used to be created on the watch
+ * anyway — and nothing ever unpushed an archived row afterwards. The watch kept
+ * a session the app no longer shows. The same held for a queued move (it
+ * re-dated the session the unpush was aimed at) and a queued content rewrite.
+ *
+ * QUEUED only. A claimed job is mid-flight under the executor's lock, and
+ * flipping its status here would be overwritten by the executor's own verdict a
+ * moment later; the executor re-reads the row instead (`coros-write-cloud.ts`),
+ * and the unpush addresses the session where COROS holds it when the delete runs.
+ *
+ * Cancelling a create that never ran is not a watch removal: the session was
+ * never on the watch. Idempotent — a second call finds nothing queued.
+ */
+export async function settleWatchJobsOnArchive(
+  db: Db,
+  userId: string,
+  workoutId: string,
+  now: string,
+): Promise<void> {
+  await db
+    .update(corosWriteJobs)
+    .set({ status: "superseded", updatedAt: now })
+    .where(
+      and(
+        eq(corosWriteJobs.userId, userId),
+        eq(corosWriteJobs.workoutId, workoutId),
+        eq(corosWriteJobs.status, "queued"),
+        inArray(corosWriteJobs.kind, [...WATCH_PLACING_KINDS]),
+      ),
+    );
 }
 
 /**
@@ -41,6 +85,7 @@ export async function removeFromPlan(
     .update(plannedWorkouts)
     .set({ archivedAt: now, updatedAt: now, archiveReason: "user_removed" })
     .where(eq(plannedWorkouts.id, w.id));
+  await settleWatchJobsOnArchive(db, userId, w.id, now);
   await db.insert(calendarEventSuppressions).values({
     id: newId(),
     workoutId: w.id,

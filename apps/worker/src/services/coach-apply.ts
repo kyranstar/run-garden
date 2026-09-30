@@ -30,7 +30,12 @@ import { separateDayCollisions, windowTimeFor } from "./day-placement.js";
 import { recordedStampFor, stampName } from "./coros-stamp.js";
 import { applyMove } from "./jobs.js";
 import { openIntentFor, recordIntent } from "./sync-intents.js";
-import { enqueueUnpushIfOurs, removeFromPlan, unskipWorkout } from "./plan-mutations.js";
+import {
+  enqueueUnpushIfOurs,
+  removeFromPlan,
+  settleWatchJobsOnArchive,
+  unskipWorkout,
+} from "./plan-mutations.js";
 import { resolveRaceConflict } from "./race-conflict.js";
 import { isLoosePlan } from "./coach-plans.js";
 
@@ -850,6 +855,9 @@ async function suppressAndUnpush(
     await db
       .insert(calendarEventSuppressions)
       .values({ id: newId(), workoutId: w.id, eventId: null, reason: "user_removed", createdAt: now });
+    // A queued create/move/rewrite would still put the retired session on the
+    // watch — same settle every archive path runs (audit 1, coach finding 1).
+    await settleWatchJobsOnArchive(db, userId, w.id, now);
     await enqueueUnpushIfOurs(db, userId, w, now, prefs);
   }
 }

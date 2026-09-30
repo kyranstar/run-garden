@@ -35,6 +35,8 @@ import { bridgeJobPayload } from "./studio-push.js";
 import { claimUserLock, releaseUserLock } from "./locks.js";
 import { exerciseNameMap } from "./exercise-catalog.js";
 import { openIntentFor, resolveIntent } from "./sync-intents.js";
+import { enqueueUnpushIfOurs } from "./plan-mutations.js";
+import { watchAddressOf } from "./coach-apply.js";
 
 /**
  * Cloud write consumer (cloud-direct spec §4): the same job queue with all
@@ -190,6 +192,22 @@ export async function executeCloudJobs(
         // A coach-authored session headed for the watch (2026-08-12): the
         // SAME create+verify core as studio pushes, reporting straight onto
         // the planned_workouts row instead of the studio push ledger.
+        //
+        // THE ROW IS READ AGAIN BEFORE ANYTHING IS WRITTEN (audit 1, coach
+        // finding 1). `claimNextJob` loads it fresh, and a session that has left
+        // the plan since the job was queued must not be created on the watch: a
+        // create that never ran is simply cancelled, which is not a removal the
+        // athlete has to be told about. (Every archive path supersedes the queued
+        // create itself; this catches the rows that reached here anyway — a
+        // legacy archive, or one that raced the claim.)
+        if (!job.workout || job.workout.archivedAt) {
+          await db
+            .update(corosWriteJobs)
+            .set({ status: "superseded", updatedAt: nowInstant() })
+            .where(eq(corosWriteJobs.id, job.id));
+          executed += 1;
+          continue;
+        }
         const parsed = coachCreateWorkoutJobSchema.safeParse(job.payload);
         const now = nowInstant();
         if (!parsed.success) {
@@ -282,6 +300,17 @@ export async function executeCloudJobs(
                 : { lastErrorCategory: null }),
             })
             .where(eq(corosWriteJobs.id, job.id));
+          // REMOVED WHILE THE CREATE WAS IN FLIGHT. The remove found a claimed
+          // job it could not cancel and no stamp to unpush by, so it queued
+          // nothing — and the session has just landed on the watch. Now the
+          // stamp is recorded (the job above is verified), so the unpush the
+          // remove could not write can be written here.
+          const [landed] = await db
+            .select()
+            .from(plannedWorkouts)
+            .where(eq(plannedWorkouts.id, spec.workoutId))
+            .limit(1);
+          if (landed?.archivedAt) await enqueueUnpushIfOurs(db, userId, landed, done, prefs);
         } else {
           // Transient outcomes retry (same taxonomy the studio retries via
           // mapCreateResult); one blip must not strand a session app-only
@@ -558,14 +587,29 @@ export async function executeCloudJobs(
           continue;
         }
         const spec = parsed.data;
+        // WHERE COROS HOLDS IT NOW, not where it stood when the unpush was
+        // queued (audit 1, coach finding 1). A move that was already in flight
+        // when the session was removed lands first — the lock serialises them —
+        // and re-dates the session; a delete aimed at the pre-move day then
+        // found the address occupied on another date, refused `stamp_mismatch`,
+        // and left the session on the watch. The row's verified address is
+        // re-read at claim; the payload's is the fallback for a row that no
+        // longer proves one. The stamp still authorizes the delete either way.
+        const heldAt = job.workout ? watchAddressOf(job.workout) : null;
+        const target = heldAt ?? {
+          happenDay: spec.happenDay,
+          idInPlan: spec.idInPlan,
+          programId: spec.programId,
+          corosPlanId: spec.corosPlanId,
+        };
         const result = await deleteWorkout(
           client,
           {
-            happenDay: String(localDateToCorosDay(spec.happenDay)),
+            happenDay: String(localDateToCorosDay(target.happenDay)),
             name: spec.name,
-            idInPlan: spec.idInPlan,
-            programId: spec.programId,
-            planId: spec.corosPlanId,
+            idInPlan: target.idInPlan,
+            programId: target.programId,
+            planId: target.corosPlanId,
           },
           { today: todayInZone(prefs.timezone) },
         );
