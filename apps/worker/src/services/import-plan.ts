@@ -149,6 +149,31 @@ function resolveClaimant(
   })[0];
 }
 
+/**
+ * A LOCAL YOGA/MOBILITY ROW THAT COROS SERVES BACK AS STRENGTH IS THE SAME
+ * PROGRAM TYPE (audit 1, ingest IMPORTANT; Ruling A2).
+ *
+ * COROS's program namespace is 1 Run / 2 Bike / 3 Swim / 4 Strength — there is
+ * no yoga or mobility program sport — so `buildStrengthProgram` files a mobility
+ * session under Strength, and every read of it comes back with sport
+ * "strength". That is the one sport "flip" that is not a flip: treating it as a
+ * recycled slot rewrote the coach's mobility session to category/sport
+ * strength, and the sport-aware matcher then refused the Yoga-mode activity the
+ * athlete actually recorded, so the garden booked a miss against a session they
+ * did. Keeping the row's own category and sport keeps its intent and its garden
+ * axis. (The cost, accepted by the ruling: a COROS-built mobility session that
+ * reaches the app as category yoga keeps it while the wire says strength.)
+ */
+function mobilityFiledAsStrength(local: { category: string; sport: string }, wireSport: string): boolean {
+  return wireSport === "strength" && (local.category === "yoga" || local.sport === "yoga");
+}
+
+/** COROS now holds a DIFFERENT KIND of workout at this row's address — the
+ * recycled-slot tell — as opposed to the same session in its coarse filing. */
+function sportFlipped(local: { category: string; sport: string }, wireSport: string): boolean {
+  return local.sport !== wireSport && !mobilityFiledAsStrength(local, wireSport);
+}
+
 export async function importPlanSnapshot(
   db: Db,
   input: ImportInput,
@@ -544,21 +569,24 @@ export async function importPlanSnapshot(
     // unique index owns the slot); completed history is the one thing never
     // rewritten — those rows keep their story and the slot's new occupant
     // stays out of the app until the row ages out.
+    //
+    // `sportFlipped`, not `!==`: a mobility session served back as strength is
+    // its own coarse filing, not a replacement (Ruling A2).
     if (
       current &&
-      current.sport !== src.sport &&
+      sportFlipped(current, src.sport) &&
       current.completionState === "completed"
     ) {
       stats.skippedForeignWorkouts += 1;
       continue;
     }
-    if (current && current.sport !== src.sport && contentIntentIds.has(current.id)) {
+    if (current && sportFlipped(current, src.sport) && contentIntentIds.has(current.id)) {
       // Not a recycled slot: the coach's approved ease flipped this row's
       // sport locally. Same content claim as rule 7 — the app wins.
       stats.unchanged += 1;
       continue;
     }
-    if (current && current.sport !== src.sport) {
+    if (current && sportFlipped(current, src.sport)) {
       // The athlete's window. Whether this session can actually HAVE it — or
       // has to queue up behind what already occupies the day — is settled once
       // for the whole snapshot by `separateDayCollisions` below, which can see
@@ -833,7 +861,10 @@ export async function importPlanSnapshot(
     } else if (src.contentFingerprint !== current.sourceContentFingerprint) {
       // Rule 7: content changed upstream — update, preserve time of day.
       updates.title = title;
-      updates.category = category;
+      // …except the program TYPE a mobility row reads back under: the
+      // classifier puts the wire's sport hint first and would file it as
+      // strength on the first upstream edit (Ruling A2).
+      updates.category = mobilityFiledAsStrength(current, src.sport) ? current.category : category;
       updates.qualitySubtype = classification.qualitySubtype ?? null;
       updates.sourceContentFingerprint = src.contentFingerprint;
       updates.sourceVersion = src.sourceVersion ?? null;

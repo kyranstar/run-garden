@@ -183,4 +183,14 @@ describe("planned-to-completed matching", () => {
     expect(scoreWorkoutActivity(workout({ category: "yoga", sport: "run" }), sportActivity("run"))).toBeNull();
     expect(scoreWorkoutActivity(workout({}), sportActivity("yoga"))).toBeNull();
   });
+
+  it("the discipline is read from the CATEGORY first: a yoga session filed as strength is still yoga", () => {
+    // Audit 1, ingest IMPORTANT (Ruling A2). COROS has no mobility program
+    // type, so a pushed mobility session can carry sport "strength" while its
+    // category says yoga. The athlete does it in Yoga mode; that must count.
+    expect(scoreWorkoutActivity(workout({ category: "yoga", sport: "strength" }), sportActivity("yoga"))).not.toBeNull();
+    // …while a real lift still refuses a yoga activity, whatever its sport.
+    expect(scoreWorkoutActivity(workout({ category: "strength", sport: "yoga" }), sportActivity("yoga"))).toBeNull();
+    expect(scoreWorkoutActivity(workout({ category: "strength", sport: "strength" }), sportActivity("yoga"))).toBeNull();
+  });
 });

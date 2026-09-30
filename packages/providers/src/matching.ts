@@ -71,11 +71,21 @@ export function scoreWorkoutActivity(
 
 type Discipline = "run" | "strength" | "yoga" | "cross_training";
 
-/** Category first: COROS files planned yoga/mobility with sport "run". */
+/**
+ * Category first, genuinely: COROS files planned yoga/mobility with sport
+ * "run", and a mobility session the app pushed comes back filed under
+ * "strength" (there is no yoga program type) — the category is the row's own
+ * statement of what the session is. The sport decides only when the category
+ * says nothing about it (audit 1, ingest IMPORTANT: this used to test
+ * `sport === "strength"` before `category === "yoga"`, so a yoga row filed as
+ * strength refused the Yoga-mode activity the athlete recorded).
+ */
 function workoutDiscipline(w: PlannedWorkout): Discipline {
-  if (w.category === "strength" || w.sport === "strength") return "strength";
-  if (w.category === "yoga" || w.sport === "yoga") return "yoga";
+  if (w.category === "strength") return "strength";
+  if (w.category === "yoga") return "yoga";
   if (w.category === "cross_training") return "cross_training";
+  if (w.sport === "strength") return "strength";
+  if (w.sport === "yoga") return "yoga";
   return "run";
 }
 
