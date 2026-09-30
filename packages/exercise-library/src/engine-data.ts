@@ -44,6 +44,10 @@ function mergeTargets(base: Readonly<Record<string, number>>, extra: Readonly<Re
 export function makeEngineData({ activeProfiles, careProfiles, exercises }: MakeEngineDataOptions): EngineData {
   const active = [...new Set(activeProfiles)].map(profileById);
   const care = [...new Set(careProfiles)].map(profileById);
+  // Care content without the profile's rules would plan care moves with none of its limits.
+  for (const p of care) {
+    if (!active.includes(p)) throw new Error(`The program cares for condition profile "${p.id}", which isn't active: activate it first.`);
+  }
   const skeleton = composeSkeleton(care);   // throws for more than one cared-for profile
   const careIds = new Set(care.map(p => p.id));
   let targets: CoverageTargets = { patterns: { ...COVERAGE_TARGETS.patterns }, regions: { ...COVERAGE_TARGETS.regions } };

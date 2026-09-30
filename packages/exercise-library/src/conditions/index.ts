@@ -15,6 +15,6 @@ export function isProfileId(id: string): id is ProfileId {
 }
 
 export function profileById(id: string): ConditionProfile {
-  if (!isProfileId(id)) throw new Error(`Unknown condition profile "${id}"`);
+  if (!isProfileId(id)) throw new Error(`Unknown condition profile "${id}" (known: ${PROFILE_IDS.join(", ")})`);
   return PROFILES[id];
 }

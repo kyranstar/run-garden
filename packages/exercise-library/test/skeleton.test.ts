@@ -91,6 +91,11 @@ describe("makeEngineData", () => {
   });
 
   it("unknown profiles are refused", () => {
-    expect(() => makeEngineData({ activeProfiles: ["nope"], careProfiles: [], exercises: [] })).toThrow(/Unknown condition profile/);
+    expect(() => makeEngineData({ activeProfiles: ["nope"], careProfiles: [], exercises: [] })).toThrow(/Unknown condition profile "nope" \(known: tmj\)/);
+  });
+
+  it("a program can only care for a profile that is active (audit M8)", () => {
+    expect(() => makeEngineData({ activeProfiles: [], careProfiles: ["tmj"], exercises: [] })).toThrow(/cares for condition profile "tmj", which isn't active/);
+    expect(() => makeEngineData({ activeProfiles: ["tmj"], careProfiles: ["tmj"], exercises: [] })).not.toThrow();
   });
 });
