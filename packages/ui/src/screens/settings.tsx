@@ -1,14 +1,18 @@
-import { useRef, useState, type ChangeEvent } from "react";
+import { Fragment, useEffect, useRef, useState, type ChangeEvent, type ReactNode } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   api,
   ApiError,
+  checkRestore,
   exportAccount,
   exportFileName,
-  NotAnExportError,
   readExportFile,
-  restoreAccount,
+  runRestore,
+  type AccountExportFile,
+  type CheckedRestore,
   type RestoreProgress,
+  type RestoreRowError,
+  type RestoreSummary,
 } from "@rg/api-client";
 import type { UserPreferences } from "@rg/domain";
 import {
@@ -827,12 +831,6 @@ function DiagRows({ data }: { data: Record<string, unknown> }) {
   );
 }
 
-/** A chosen export file, parsed locally, waiting on the confirm sheet. */
-export interface PendingRestore {
-  file: File;
-  exportedAt: string;
-}
-
 function saveBlob(blob: Blob, name: string): void {
   const url = URL.createObjectURL(blob);
   const a = document.createElement("a");
@@ -844,73 +842,240 @@ function saveBlob(blob: Blob, name: string): void {
   URL.revokeObjectURL(url);
 }
 
-function restoreErrorText(err: unknown): string | null {
-  if (!err) return null;
-  const code = err instanceof ApiError ? (err.body as { error?: string } | null)?.error : undefined;
-  if (code === "schema_mismatch") return "This export is from a different app version.";
-  if (err instanceof NotAnExportError) return "That file isn't a Run Garden export.";
-  return "Restore stopped partway. Try again.";
+/**
+ * Where a restore stands (audit 1 data findings 5, 7, 8; rulings B1, B7, B8):
+ * the file is checked page by page with the worker — no side effects — and
+ * only a clean check reaches the confirm step; the confirm step says what the
+ * file is before the one destructive tap; the summary says what to do next.
+ */
+export type RestoreStep =
+  | { kind: "idle" }
+  | { kind: "checking"; file: AccountExportFile; progress: RestoreProgress | null }
+  | { kind: "problems"; file: AccountExportFile; errors: RestoreRowError[] }
+  | { kind: "confirm"; file: AccountExportFile; checked: CheckedRestore }
+  | { kind: "running"; file: AccountExportFile; checked: CheckedRestore; progress: RestoreProgress | null }
+  | { kind: "done"; file: AccountExportFile; summary: RestoreSummary }
+  | { kind: "failed"; file: AccountExportFile; checked: CheckedRestore | null; message: string };
+
+function restoreErrorText(err: unknown): string {
+  const body = err instanceof ApiError ? (err.body as { error?: string; table?: string; row?: number } | null) : null;
+  switch (body?.error) {
+    case "insert_failed":
+      return `The restore stopped at ${body.table} row ${(body.row ?? 0) + 1}.`;
+    case "no_active_restore":
+      return "Another restore started, in another tab or device.";
+    case "check_required":
+      return "The file changed after it was checked. Choose it again.";
+    case "newer_schema":
+      return "This file is from a newer version of the app.";
+    default:
+      return "Restore stopped partway. Try again.";
+  }
 }
 
+const hostOf = (origin: string | undefined): string | null => {
+  if (!origin) return null;
+  try {
+    return new URL(origin).host;
+  } catch {
+    return origin;
+  }
+};
+
+function ageText(exportedAt: string, now: Date): string {
+  const days = Math.floor((now.getTime() - Date.parse(exportedAt)) / 86_400_000);
+  if (!(days > 0)) return "today";
+  return days === 1 ? "1 day ago" : `${days.toLocaleString()} days ago`;
+}
+
+const localDay = (iso: string) => new Date(iso).toLocaleDateString("en-CA");
+
+/** Rows per table, plain names for the ones an athlete recognises. */
+const TABLE_LABELS: Record<string, string> = {
+  planned_workouts: "Workouts",
+  activities: "Activities",
+  garden_day_inputs: "Garden days",
+};
+
 /**
- * The restore confirm step: names the export's date and the one action, and
- * nothing is sent until that action is pressed. Exported for the Data card
- * test (static render; the file itself is parsed by `readExportFile`).
+ * The restore sheet. Exported for the Data card tests. Nothing is sent to
+ * `begin` until "Replace everything in this account" is pressed; the checks
+ * before it have no side effects.
  */
-export function RestoreConfirm({
-  pending,
-  progress,
-  busy,
-  error,
+export function RestoreSheet({
+  step,
+  signedInEmail,
+  appOrigin,
+  now = new Date(),
   onCancel,
   onConfirm,
+  onRetry,
 }: {
-  pending: PendingRestore | null;
-  progress: RestoreProgress | null;
-  busy: boolean;
-  error: string | null;
+  step: RestoreStep;
+  signedInEmail: string | null;
+  /** This app's origin — a file from anywhere else needs a second yes. */
+  appOrigin: string;
+  now?: Date;
   onCancel: () => void;
   onConfirm: () => void;
+  onRetry: () => void;
 }) {
-  const day = pending ? new Date(pending.exportedAt).toLocaleDateString("en-CA") : null;
+  const [foreignOk, setForeignOk] = useState(false);
+  if (step.kind === "idle") return null;
+  const busy = step.kind === "checking" || step.kind === "running";
+  const file = step.file;
+  const fileEmail = typeof file.tables.users?.[0]?.email === "string" ? (file.tables.users[0]!.email as string) : null;
+  const fromHost = hostOf(file.exportedFrom);
+  const foreign = !file.exportedFrom || hostOf(file.exportedFrom) !== hostOf(appOrigin);
+  const counts = step.kind === "confirm" || step.kind === "running" ? step.checked.fileCounts : null;
+
+  let footer: ReactNode;
+  if (step.kind === "confirm") {
+    footer = (
+      <div className="btn-row">
+        <button type="button" className="btn" onClick={onCancel}>
+          Cancel
+        </button>
+        <button type="button" className="btn btn-danger" disabled={foreign && !foreignOk} onClick={onConfirm}>
+          Replace everything in this account
+        </button>
+      </div>
+    );
+  } else if (step.kind === "failed") {
+    footer = (
+      <div className="btn-row">
+        <button type="button" className="btn" onClick={onCancel}>
+          Close
+        </button>
+        {step.checked ? (
+          <button type="button" className="btn btn-danger" onClick={onRetry}>
+            Try again
+          </button>
+        ) : null}
+      </div>
+    );
+  } else {
+    footer = (
+      <div className="btn-row">
+        <button type="button" className="btn" disabled={busy} onClick={onCancel}>
+          {step.kind === "done" ? "Done" : "Cancel"}
+        </button>
+      </div>
+    );
+  }
+
   return (
-    <Sheet
-      open={pending !== null}
-      onClose={busy ? () => undefined : onCancel}
-      title="Restore from file"
-      centered
-      footer={
-        <div className="btn-row">
-          <button type="button" className="btn" disabled={busy} onClick={onCancel}>
-            Cancel
-          </button>
-          <button type="button" className="btn btn-danger" disabled={busy} onClick={onConfirm}>
-            Replace everything in this account
-          </button>
-        </div>
-      }
-    >
+    <Sheet open onClose={busy ? () => undefined : onCancel} title="Restore from file" centered footer={footer}>
       <div className="stack">
-        {day ? <p>Exported {formatDayLong(day)}</p> : null}
-        {progress ? (
+        {step.kind === "checking" ? (
           <p className="muted">
-            Restoring… {progress.done.toLocaleString()} of {progress.total.toLocaleString()} rows
+            Checking the file…
+            {step.progress ? ` ${step.progress.done.toLocaleString()} of ${step.progress.total.toLocaleString()} rows` : ""}
           </p>
         ) : null}
-        {error ? <Banner kind="warn">{error}</Banner> : null}
+
+        {step.kind === "problems" ? (
+          <>
+            <Banner kind="warn">This file can't be restored.</Banner>
+            <ul className="restore-problems">
+              {step.errors.map((e, i) => (
+                <li key={i}>{e.message}</li>
+              ))}
+            </ul>
+          </>
+        ) : null}
+
+        {step.kind === "confirm" || step.kind === "running" ? (
+          <>
+            <dl className="restore-facts">
+              <dt>From</dt>
+              <dd>{fromHost ?? "Unknown"}</dd>
+              <dt>Account</dt>
+              <dd>{fileEmail ?? "Unknown"}</dd>
+              <dt>Exported</dt>
+              <dd>
+                {formatDayLong(localDay(file.exportedAt))} · {ageText(file.exportedAt, now)}
+              </dd>
+              {Object.entries(TABLE_LABELS).map(([table, label]) => (
+                <Fragment key={table}>
+                  <dt>{label}</dt>
+                  <dd>{(counts?.[table] ?? 0).toLocaleString()}</dd>
+                </Fragment>
+              ))}
+            </dl>
+            <details>
+              <summary>All tables</summary>
+              <ul className="restore-tables">
+                {Object.entries(counts ?? {}).map(([table, n]) => (
+                  <li key={table}>
+                    {table}: {n.toLocaleString()}
+                  </li>
+                ))}
+              </ul>
+            </details>
+            {fileEmail && signedInEmail && fileEmail !== signedInEmail ? (
+              <Banner kind="warn">
+                This file is from {fileEmail}. You're signed in as {signedInEmail}.
+              </Banner>
+            ) : null}
+            {foreign ? (
+              <>
+                <Banner kind="warn">
+                  {fromHost ? `This file came from ${fromHost}, not this app.` : "This file doesn't say which app it came from."}
+                </Banner>
+                {step.kind === "confirm" ? (
+                  <label className="row" style={{ fontWeight: 500, cursor: "pointer" }}>
+                    <input type="checkbox" checked={foreignOk} onChange={(e) => setForeignOk(e.target.checked)} />
+                    Use it anyway
+                  </label>
+                ) : null}
+              </>
+            ) : null}
+            <p>
+              COROS and Google Calendar will be disconnected, and changes waiting to go to your watch won't be sent.
+            </p>
+          </>
+        ) : null}
+
+        {step.kind === "running" && step.progress ? (
+          <p className="muted">
+            Restoring… {step.progress.done.toLocaleString()} of {step.progress.total.toLocaleString()} rows
+          </p>
+        ) : null}
+
+        {step.kind === "done" ? (
+          <>
+            <p>Restored.</p>
+            <p>
+              Reconnect COROS and Google Calendar, then run Backfill history to bring back activities since{" "}
+              {formatDayLong(localDay(file.exportedAt))}.
+            </p>
+            {step.summary.short.length > 0 ? (
+              <Banner kind="warn">
+                Some tables came back short:{" "}
+                {step.summary.short.map((s) => `${s.table} (${s.restored.toLocaleString()} of ${s.expected.toLocaleString()})`).join(", ")}.
+              </Banner>
+            ) : null}
+          </>
+        ) : null}
+
+        {step.kind === "failed" ? <Banner kind="warn">{step.message}</Banner> : null}
       </div>
     </Sheet>
   );
 }
 
 /** Export everything, restore from a file, delete everything. */
-export function DataSection() {
+export function DataSection({ appOrigin }: { appOrigin?: string } = {}) {
   const qc = useQueryClient();
   const [confirming, setConfirming] = useState(false);
   const fileInput = useRef<HTMLInputElement>(null);
-  const [pending, setPending] = useState<PendingRestore | null>(null);
-  const [progress, setProgress] = useState<RestoreProgress | null>(null);
+  const [step, setStep] = useState<RestoreStep>({ kind: "idle" });
+  /** Bumped per chosen file, so the sheet's own state starts fresh. */
+  const [attempt, setAttempt] = useState(0);
   const [notice, setNotice] = useState<string | null>(null);
+  const me = useQuery({ queryKey: ["me"], queryFn: api.me, retry: false });
+  const origin = appOrigin ?? (typeof window !== "undefined" ? window.location.origin : "");
   const del = useMutation({
     mutationFn: api.deleteAll,
     onSuccess: () => {
@@ -921,30 +1086,56 @@ export function DataSection() {
     mutationFn: exportAccount,
     onSuccess: (blob) => saveBlob(blob, exportFileName()),
   });
-  const restore = useMutation({
-    mutationFn: (file: File) => restoreAccount(file, setProgress),
-    onSuccess: () => {
-      setPending(null);
-      setProgress(null);
-      setNotice("Restored.");
-      void qc.invalidateQueries();
-    },
-    onError: () => setProgress(null),
-  });
-  const choose = async (e: ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
-    e.target.value = "";
-    if (!file) return;
-    setNotice(null);
-    restore.reset();
+
+  // Leaving mid-restore leaves a half-wiped account: ask first (finding 8).
+  useEffect(() => {
+    if (step.kind !== "running") return;
+    const hold = (e: BeforeUnloadEvent) => {
+      e.preventDefault();
+      e.returnValue = "";
+    };
+    window.addEventListener("beforeunload", hold);
+    return () => window.removeEventListener("beforeunload", hold);
+  }, [step.kind]);
+
+  const run = async (file: AccountExportFile, checked: CheckedRestore) => {
+    setStep({ kind: "running", file, checked, progress: null });
     try {
-      const data = await readExportFile(file);
-      setPending({ file, exportedAt: data.exportedAt });
-    } catch {
-      setNotice("That file isn't a Run Garden export.");
+      const summary = await runRestore(file, checked, (progress) =>
+        setStep({ kind: "running", file, checked, progress }),
+      );
+      setStep({ kind: "done", file, summary });
+    } catch (err) {
+      setStep({ kind: "failed", file, checked, message: restoreErrorText(err) });
+    } finally {
+      // Success or not, every screen's cached data is now stale — and a
+      // failure must show "A restore didn't finish" right away.
+      void qc.invalidateQueries();
     }
   };
-  const me = useQuery({ queryKey: ["me"], queryFn: api.me, retry: false });
+
+  const choose = async (e: ChangeEvent<HTMLInputElement>) => {
+    const chosen = e.target.files?.[0];
+    e.target.value = "";
+    if (!chosen) return;
+    setNotice(null);
+    setAttempt((n) => n + 1);
+    let file: AccountExportFile;
+    try {
+      file = await readExportFile(chosen);
+    } catch {
+      setNotice("That file isn't a Run Garden export.");
+      return;
+    }
+    setStep({ kind: "checking", file, progress: null });
+    try {
+      const check = await checkRestore(file, (progress) => setStep({ kind: "checking", file, progress }));
+      setStep(check.ok ? { kind: "confirm", file, checked: check.checked } : { kind: "problems", file, errors: check.errors });
+    } catch {
+      setStep({ kind: "failed", file, checked: null, message: "Couldn't check the file. Try again." });
+    }
+  };
+
   return (
     <Card title="Your data" anchor="your-data">
       <div className="stack">
@@ -955,7 +1146,7 @@ export function DataSection() {
           </button>
           <button
             className="btn"
-            disabled={restore.isPending}
+            disabled={step.kind === "checking" || step.kind === "running"}
             onClick={() => fileInput.current?.click()}
           >
             Restore from file…
@@ -980,17 +1171,17 @@ export function DataSection() {
         {exp.isError ? <Banner kind="warn">Export failed. Try again.</Banner> : null}
         {notice ? <Banner kind="info">{notice}</Banner> : null}
       </div>
-      <RestoreConfirm
-        pending={pending}
-        progress={progress}
-        busy={restore.isPending}
-        error={restoreErrorText(restore.error)}
-        onCancel={() => {
-          setPending(null);
-          restore.reset();
-        }}
+      <RestoreSheet
+        key={attempt}
+        step={step}
+        signedInEmail={me.data?.email ?? null}
+        appOrigin={origin}
+        onCancel={() => setStep({ kind: "idle" })}
         onConfirm={() => {
-          if (pending) restore.mutate(pending.file);
+          if (step.kind === "confirm") void run(step.file, step.checked);
+        }}
+        onRetry={() => {
+          if (step.kind === "failed" && step.checked) void run(step.file, step.checked);
         }}
       />
     </Card>

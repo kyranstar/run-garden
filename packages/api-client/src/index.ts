@@ -1238,24 +1238,6 @@ export async function runRestore(
   return { counts: finished.counts, short: [...short.values()], lost };
 }
 
-/** Check, then restore — for callers with no confirm step between. */
-export async function restoreAccount(
-  file: Blob,
-  onProgress?: (p: RestoreProgress) => void,
-): Promise<RestoreSummary> {
-  const data = await readExportFile(file);
-  const check = await checkRestore(data);
-  if (!check.ok) throw new RestoreCheckError(check.errors);
-  return runRestore(data, check.checked, onProgress);
-}
-
-/** Thrown by `restoreAccount` when the file failed the check. */
-export class RestoreCheckError extends Error {
-  constructor(public errors: RestoreRowError[]) {
-    super("restore_check_failed");
-  }
-}
-
 /** Abandon a restore that didn't finish: wipe the account, clear the notice. */
 export const restoreStartFresh = () => post<{ ok: true }>("/api/settings/restore/start-fresh");
 
