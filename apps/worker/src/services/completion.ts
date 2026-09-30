@@ -1,4 +1,4 @@
-import { and, eq, gt, gte, inArray, isNull, lte, sql } from "drizzle-orm";
+import { and, eq, gt, gte, inArray, isNull, lte, ne, sql } from "drizzle-orm";
 import {
   activities,
   activityLaps,
@@ -183,6 +183,7 @@ export async function repairTimestamps(db: Db, userId: string): Promise<string[]
           gte(activities.startTime, windowStart),
           lte(activities.startTime, windowEnd),
           isNull(activities.corosActivityId),
+          ne(activities.source, "import"),
           eq(activities.sport, row.sport),
         ),
       );
@@ -295,6 +296,9 @@ async function upsertNormalized(
         title: normalized.title ?? existing?.title ?? null,
         telemetry: mergedTelemetry,
         sourceMergeConfidence: normalized.sourceMergeConfidence,
+        // Adopting an app-recorded row is the deliberate watch+app merge:
+        // COROS is now the metric authority.
+        ...(existing?.source === "app" ? { source: "coros" as const } : {}),
         updatedAt: now,
       })
       .where(eq(activities.id, existingId));
@@ -485,6 +489,7 @@ export async function ingestActivities(db: Db, input: IngestInput): Promise<Inge
       let bestScore = 0;
       for (const row of nearby) {
         if (row.corosActivityId) continue; // already has a COROS source
+        if (row.source === "import") continue; // imported history is never adopted
         const { score } = scoreAgainstStoredRow(src, {
           startTime: row.startTime,
           sport: row.sport,

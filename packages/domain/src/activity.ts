@@ -2,6 +2,10 @@ import { z } from "zod";
 
 export type ActivityProviderName = "coros";
 
+/** Where an activity row came from: the watch, the in-app player, or imported history. */
+export const ACTIVITY_SOURCES = ["coros", "app", "import"] as const;
+export type ActivitySource = (typeof ACTIVITY_SOURCES)[number];
+
 const zoneBucketSchema = z.object({
   lo: z.number(),
   hi: z.number(),

@@ -7,6 +7,7 @@ export const activities = sqliteTable(
     id: text("id").primaryKey(),
     userId: text("user_id").notNull(),
     corosActivityId: text("coros_activity_id"),
+    source: text("source").notNull().default("coros"),
     startTime: text("start_time").notNull(),
     startTimeLocal: text("start_time_local"),
     timezone: text("timezone"),
