@@ -1412,6 +1412,19 @@ planRoutes.post("/workouts/:id/unmatch", async (c) => {
   const db = c.get("db");
   const userId = c.get("userId");
   const now = nowInstant();
+  // THE WORKOUT IS THIS ATHLETE'S, FIRST (audit 1, ingest MINOR #10). The
+  // match lookup and the activity update carry no user column of their own, so
+  // without this any signed-in account that knew a workout id could undo
+  // another account's completion. Everything below is keyed off a row this
+  // lookup proved is theirs.
+  const w = (
+    await db
+      .select({ effectiveDate: plannedWorkouts.effectiveDate })
+      .from(plannedWorkouts)
+      .where(and(eq(plannedWorkouts.id, c.req.param("id")), eq(plannedWorkouts.userId, userId)))
+      .limit(1)
+  )[0];
+  if (!w) return c.json({ error: "not_found" }, 404);
   const match = (
     await db
       .select()
@@ -1432,27 +1445,20 @@ planRoutes.post("/workouts/:id/unmatch", async (c) => {
   await db
     .update(activities)
     .set({ completionMatchId: null, updatedAt: now })
-    .where(eq(activities.id, match.activityId));
+    .where(and(eq(activities.id, match.activityId), eq(activities.userId, userId)));
   // D5: the match being undone may have credited a PAST day (buildDayInput
   // keys the completion on the workout's effectiveDate), so resimulating from
   // today only would strand that day's garden events as if the run still
   // counted. Mirror the matching path (completion.ts adds
   // workout.effectiveDate to affectedDates): replay from the earlier of the
   // workout's day and today.
-  const w = (
-    await db
-      .select({ effectiveDate: plannedWorkouts.effectiveDate })
-      .from(plannedWorkouts)
-      .where(and(eq(plannedWorkouts.id, c.req.param("id")), eq(plannedWorkouts.userId, userId)))
-      .limit(1)
-  )[0];
   await db
     .update(plannedWorkouts)
     .set({ completionState: "unresolved", resolutionDate: null, updatedAt: now })
     .where(and(eq(plannedWorkouts.id, c.req.param("id")), eq(plannedWorkouts.userId, userId)));
   const prefs = await loadPreferences(db, userId);
   const today = todayInZone(prefs.timezone);
-  const resimFrom = w && w.effectiveDate < today ? w.effectiveDate : today;
+  const resimFrom = w.effectiveDate < today ? w.effectiveDate : today;
   await resimulateFrom(db, userId, resimFrom, prefs).catch(() => undefined);
   return c.json({ ok: true });
 });

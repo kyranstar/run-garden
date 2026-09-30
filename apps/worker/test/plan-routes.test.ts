@@ -258,6 +258,75 @@ describe("POST /api/plan/workouts/:id/match", () => {
   });
 });
 
+describe("POST /api/plan/workouts/:id/unmatch", () => {
+  it("cannot undo another account's match (audit 1, ingest MINOR #10)", async () => {
+    // The match lookup and the activity update were not scoped by user —
+    // only the planned-workout update was — so anyone signed in who knew a
+    // workout id could undo another account's completion.
+    const { userId: other } = await makeTestUser(db);
+    const workoutId = newId();
+    await db.insert(plannedWorkouts).values({
+      id: workoutId,
+      userId: other,
+      planId: "p",
+      sourceWorkoutId: `4738:${workoutId.slice(0, 4)}`,
+      title: "Their run",
+      category: "easy",
+      sport: "run",
+      originalPlanDate: "2026-08-08",
+      lastVerifiedCorosDate: "2026-08-08",
+      effectiveDate: "2026-08-08",
+      effectiveTime: "07:00",
+      sourceContentFingerprint: "fp",
+      calendarBlockDurationSeconds: 3600,
+      completionState: "completed",
+      createdAt: nowInstant(),
+      updatedAt: nowInstant(),
+    });
+    await db.insert(activities).values({
+      id: "their-act",
+      userId: other,
+      startTime: "2026-08-08T14:00:00Z",
+      sport: "run",
+      durationSeconds: 3600,
+      completionMatchId: "their-match",
+      sourceMergeConfidence: 1,
+      createdAt: nowInstant(),
+      updatedAt: nowInstant(),
+    });
+    await db.insert(workoutCompletionMatches).values({
+      id: "their-match",
+      workoutId,
+      activityId: "their-act",
+      confidence: 1,
+      method: "manual",
+      matchedAt: nowInstant(),
+    });
+
+    const res = await client().post(`/api/plan/workouts/${workoutId}/unmatch`);
+
+    expect(res.status).toBe(404);
+    const [m] = await db.select().from(workoutCompletionMatches).where(eq(workoutCompletionMatches.id, "their-match"));
+    expect(m!.undoneAt).toBeNull();
+    const [a] = await db.select().from(activities).where(eq(activities.id, "their-act"));
+    expect(a!.completionMatchId).toBe("their-match");
+  });
+
+  it("still undoes the athlete's own match", async () => {
+    const workoutId = await insertWorkout();
+    const activityId = await insertActivity();
+    expect((await client().postJson(`/api/plan/workouts/${workoutId}/match`, { activityId })).status).toBe(200);
+
+    const res = await client().post(`/api/plan/workouts/${workoutId}/unmatch`);
+
+    expect(res.status).toBe(200);
+    const [a] = await db.select().from(activities).where(eq(activities.id, activityId));
+    expect(a!.completionMatchId).toBeNull();
+    const [w] = await db.select().from(plannedWorkouts).where(eq(plannedWorkouts.id, workoutId));
+    expect(w!.completionState).toBe("unresolved");
+  });
+});
+
 describe("POST /api/plan/workouts/:id/retry-coros", () => {
   it("supersedes the terminally failed job before re-arming: emitPendingWork enqueues nothing beforehand, a fresh queued job exists after", async () => {
     const deviceId = "test-executor";
