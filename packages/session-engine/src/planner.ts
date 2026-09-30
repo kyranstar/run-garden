@@ -169,8 +169,8 @@ function swap(day: DayState | null | undefined, today: string, slotKey: string, 
   const prev = t.swaps[slotKey];
   const original = prev && prev.to === from && prev.from ? prev.from : from;
   const swaps: Record<string, { from?: string | null; to?: string | null } | null | undefined> = { ...t.swaps };
-  if (to === original) delete swaps[slotKey];
-  else swaps[slotKey] = { from: original, to };
+  delete swaps[slotKey];   // stored in the order made, so a re-swap comes after the swaps before it
+  if (to !== original) swaps[slotKey] = { from: original, to };
   return withDay(t, today, { swaps });
 }
 

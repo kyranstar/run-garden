@@ -1,11 +1,13 @@
 import type { DoseType } from "@rg/exercise-library";
 import type { Step } from "./types.js";
 
-// Swaps as an exact, pure operation on a built plan (audit I1, I2, M4). A swap replaces one slot's move and
-// nothing else: the slot keeps its format, sets and rests; its own steps become the choice's steps. Whether a
-// swap is allowed depends only on the plan it lands in (no move twice, one version of a move, superset partners
-// that pair, the time budget), so a choice the plan offers is exactly what applying it produces — before Start
-// (the server applies the same functions) and mid-session (the player applies them offline, with no library).
+// Swaps as an exact, pure operation on a built plan (audit I1, I2, M4; re-review N1). A swap replaces one slot's
+// move and nothing else: the slot keeps its format, sets and rests; its own steps become the choice's steps.
+// Whether a swap is allowed depends only on the plan it lands in (no move twice, one version of a move, superset
+// partners that pair, the time budget plus a small slack), so a choice the plan offers is exactly what applying
+// it produces — before Start (the server applies the same functions) and mid-session (the player applies them
+// offline, with no library). The rules judge what swaps bring in: two slots that both still hold the plan's own
+// moves are never in conflict, even if the plan filled them with two versions of one move.
 
 /** What superset pairing needs to know about a move. */
 export interface Pairing {
@@ -32,14 +34,16 @@ export interface SwapSlot {
   partner: string | null;
   /** The move the plan chose. */
   original: SlotChoice;
-  /** Other moves this slot can take, best first; checked against the plan when offered. */
+  /** Every other move this slot can take, best first; checked against the plan when offered. */
   pool: SlotChoice[];
 }
 
 /** A built plan's swap state: what each slot holds now, and what it could hold. */
 export interface SwapState {
-  /** Planned seconds may not exceed this. */
+  /** The session's planned seconds (minutes × 60). */
   budget: number;
+  /** How far swaps may take the plan past the budget, in seconds (plans are filled to within seconds of it). */
+  slack: number;
   current: Record<string, SlotChoice>;
   slots: Record<string, SwapSlot>;
 }
@@ -48,6 +52,21 @@ const costOf = (steps: readonly Step[]): number => steps.reduce((sum, s) => sum 
 
 const pairable = (a: Pairing, b: Pairing): boolean =>
   a.doseType === "reps" && b.doseType === "reps" && !a.patterns.some(p => b.patterns.includes(p)) && a.positionGroup === b.positionGroup;
+
+/** Whether the slot holds the plan's own move. */
+const isOriginal = (state: SwapState, slotKey: string, choice: SlotChoice | undefined = state.current[slotKey]): boolean =>
+  Boolean(choice && state.slots[slotKey] && state.slots[slotKey]!.original.id === choice.id);
+
+/** Two slots' moves conflict (same move, or two versions of one) unless both are the plan's own. */
+function clash(state: SwapState, keyA: string, a: SlotChoice, keyB: string, b: SlotChoice): boolean {
+  if (a.id !== b.id && a.moveKey !== b.moveKey) return false;
+  return !(isOriginal(state, keyA, a) && isOriginal(state, keyB, b));
+}
+
+/** Superset partners that don't pair, unless both are the plan's own. */
+function unpaired(state: SwapState, keyA: string, a: SlotChoice, keyB: string, b: SlotChoice): boolean {
+  return !pairable(a.pairing, b.pairing) && !(isOriginal(state, keyA, a) && isOriginal(state, keyB, b));
+}
 
 /** The slot's steps replaced set by set with `fresh` (as a mid-session rebase does); every other step stays. */
 function splice(steps: readonly Step[], slotKey: string, fresh: readonly Step[]): Step[] {
@@ -68,11 +87,11 @@ function fits(state: SwapState, steps: readonly Step[], slotKey: string, choice:
   const here = state.current[slotKey];
   if (!slot || !here || choice.id === here.id) return false;
   for (const [key, c] of Object.entries(state.current)) {
-    if (key !== slotKey && (c.id === choice.id || c.moveKey === choice.moveKey)) return false;
+    if (key !== slotKey && clash(state, slotKey, choice, key, c)) return false;
   }
   const partner = slot.partner ? state.current[slot.partner] : undefined;
-  if (partner && !pairable(partner.pairing, choice.pairing)) return false;
-  return costOf(splice(steps, slotKey, choice.steps)) <= state.budget;
+  if (partner && unpaired(state, slotKey, choice, slot.partner!, partner)) return false;
+  return costOf(splice(steps, slotKey, choice.steps)) <= state.budget + state.slack;
 }
 
 /** The plan with the slot holding `choice` (no checks: call `fits` or `offered` first). */
@@ -94,18 +113,20 @@ function offered(state: SwapState, steps: readonly Step[], slotKey: string, k = 
   return out;
 }
 
-/** Every rule at once: distinct moves, one version of each, partners that pair, within the budget. */
+/** Every rule at once, as `fits` judges each swap: no clash, partners that pair, within the budget and slack. */
 function consistent(state: SwapState, steps: readonly Step[]): boolean {
   const current = Object.entries(state.current);
-  const ids = new Set(current.map(([, c]) => c.id));
-  const keys = new Set(current.map(([, c]) => c.moveKey));
-  if (ids.size !== current.length || keys.size !== current.length) return false;
+  for (let i = 0; i < current.length; i++) {
+    for (let j = i + 1; j < current.length; j++) {
+      if (clash(state, current[i]![0], current[i]![1], current[j]![0], current[j]![1])) return false;
+    }
+  }
   for (const [slotKey, c] of current) {
     const partner = state.slots[slotKey]?.partner;
     const other = partner ? state.current[partner] : undefined;
-    if (other && !pairable(other.pairing, c.pairing)) return false;
+    if (other && unpaired(state, slotKey, c, partner!, other)) return false;
   }
-  return costOf(steps) <= state.budget;
+  return costOf(steps) <= state.budget + state.slack;
 }
 
 export const Swapping = { offered, fits, apply, splice, consistent, pairable, costOf };

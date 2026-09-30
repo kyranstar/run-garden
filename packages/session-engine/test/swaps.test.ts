@@ -51,7 +51,9 @@ function expectApplied(before: BuildResult, after: BuildResult, slotKey: string,
   expect(got?.exercise.id, label).toBe(alt.id);
   expect(slotSteps(after, slotKey), label).toEqual(alt.steps);
   expect(others(after, slotKey), label).toEqual(others(before, slotKey));
-  expect(after.plannedSeconds, label).toBeLessThanOrEqual(after.swapState.budget);
+  // A swap may take the plan up to the slack past its minutes (plans are filled to within seconds of them).
+  expect(after.swapState.slack).toBe(60);
+  expect(after.plannedSeconds, label).toBeLessThanOrEqual(after.swapState.budget + after.swapState.slack);
 }
 
 const INPUTS = ["alpha", "bravo", "charlie", "delta"].flatMap(seed => seeded(seed, 60));
@@ -155,5 +157,98 @@ describe("after a mid-session swap the player recomputes the alternatives offlin
     const next = Recorder.rebase(data, live, { steps: offline.steps, plannedSeconds: Swapping.costOf(offline.steps) }, i, slot.slotKey);
     const doneSets = new Set(plan.steps.slice(0, i).filter(s => s.slotKey === slot.slotKey && s.kind !== "rest").map(s => s.setIndex));
     expect(next.steps.slice(i).filter(s => s.slotKey === slot.slotKey && s.kind !== "rest")).toEqual(y.steps.filter(s => !doneSets.has(s.setIndex)));
+  });
+});
+
+describe("swap sequences rebuild exactly, including plans that already hold two versions of a move (re-review N1)", () => {
+  const moveKeysRepeat = (plan: BuildResult) => {
+    const keys = Object.values(plan.swapState.current).map(c => c.moveKey);
+    return new Set(keys).size < keys.length;
+  };
+  const withDuplicates = INPUTS.filter(i => moveKeysRepeat(Builder.build(data, i)));
+
+  /** Swaps chosen from the offered lists (re-swaps and swap-backs included), recorded as Planner.swap records them. */
+  function runSequence(input: BuildInput, seed: string, steps: number): void {
+    const rng = Rng.create(seed);
+    const prepared = Builder.prepare(data, input);
+    let built = Builder.finish(prepared, {});
+    let offline = { state: built.swapState, steps: built.steps };
+    let day = Planner.blankDay(input.today);
+    for (let n = 0; n < steps; n++) {
+      const slots = built.items.filter(i => Swapping.offered(offline.state, offline.steps, i.slotKey).length);
+      if (!slots.length) return;
+      const slot = slots[Math.floor(rng() * slots.length)]!;
+      const offered = Swapping.offered(offline.state, offline.steps, slot.slotKey);
+      const choice = offered[Math.floor(rng() * offered.length)]!;
+      day = Planner.swap(day, input.today, slot.slotKey, offline.state.current[slot.slotKey]!.id, choice.id);
+      offline = Swapping.apply(offline.state, offline.steps, slot.slotKey, choice);
+      built = Builder.finish(prepared, day.swaps);
+      const label = `${input.today} step ${n}: ${slot.slotKey}->${choice.id} swaps=${JSON.stringify(day.swaps)}`;
+      expect(built.items.map(i => i.exercise.id), label).toEqual(built.items.map(i => offline.state.current[i.slotKey]!.id));
+      expect(built.steps, label).toEqual(offline.steps);
+      expect(built.swapState.current, label).toEqual(offline.state.current);
+    }
+  }
+
+  test("the seeded inputs include plans that already hold two versions of a move", () => {
+    expect(withDuplicates.length).toBeGreaterThanOrEqual(5);
+  });
+
+  test("random sequences of offered swaps on those plans rebuild exactly", () => {
+    withDuplicates.forEach((input, n) => { for (let r = 0; r < 12; r++) runSequence(input, `dup-${n}-${r}`, 5); });
+  });
+
+  test("random sequences of offered swaps on the other plans rebuild exactly", () => {
+    INPUTS.filter((_, n) => n % 6 === 0).forEach((input, n) => { for (let r = 0; r < 3; r++) runSequence(input, `plain-${n}-${r}`, 5); });
+  });
+
+  test("two slots can exchange their moves (A→Y, B→A's move, A→B's move)", () => {
+    let exchanged = 0;
+    for (const input of INPUTS) {
+      const prepared = Builder.prepare(data, input);
+      const plan = Builder.finish(prepared, {});
+      const prep = plan.items.filter(i => i.block === "prep");
+      for (let a = 0; a < prep.length && !exchanged; a++) for (let b = 0; b < prep.length && !exchanged; b++) {
+        if (a === b) continue;
+        const A = prep[a]!, B = prep[b]!;
+        const y = plan.alternatives[A.slotKey]![0];
+        if (!y) continue;
+        let day = Planner.swap(null, input.today, A.slotKey, A.exercise.id, y.id);
+        let built = Builder.finish(prepared, day.swaps);
+        const xa = built.alternatives[B.slotKey]!.find(c => c.id === A.exercise.id);
+        if (!xa) continue;
+        day = Planner.swap(day, input.today, B.slotKey, B.exercise.id, xa.id);
+        built = Builder.finish(prepared, day.swaps);
+        const xb = built.alternatives[A.slotKey]!.find(c => c.id === B.exercise.id);
+        if (!xb) continue;
+        day = Planner.swap(day, input.today, A.slotKey, y.id, xb.id);
+        built = Builder.finish(prepared, day.swaps);
+        expect(built.items.find(i => i.slotKey === A.slotKey)!.exercise.id).toBe(B.exercise.id);
+        expect(built.items.find(i => i.slotKey === B.slotKey)!.exercise.id).toBe(A.exercise.id);
+        exchanged++;
+      }
+      if (exchanged) break;
+    }
+    expect(exchanged).toBe(1);
+  });
+});
+
+describe("how many alternatives a slot offers (re-review: short lists)", () => {
+  test("a slot offers 3 whenever 3 valid moves exist, and the distribution is recorded", () => {
+    const dist = [0, 0, 0, 0];
+    const shortWhileThreeExist: string[] = [];
+    for (const input of INPUTS.filter((_, n) => n % 2 === 0)) {
+      const plan = Builder.build(data, input);
+      for (const it of plan.items) {
+        const offered = plan.alternatives[it.slotKey]!.length;
+        dist[offered]!++;
+        if (offered < 3) {
+          const valid = Builder.alternatives(data, input, it.slotKey, 1000).length;
+          if (valid > offered) shortWhileThreeExist.push(`${input.today} ${input.minutes}m ${it.slotKey}: ${offered} of ${valid}`);
+        }
+      }
+    }
+    console.log(`alternatives per slot (0/1/2/3): ${dist.join("/")}`);
+    expect(shortWhileThreeExist).toEqual([]);
   });
 });
