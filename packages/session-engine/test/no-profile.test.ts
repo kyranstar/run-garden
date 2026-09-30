@@ -78,7 +78,7 @@ describe("no condition profile active (Review Focus 2)", () => {
       }
     }
     expect(views.some(v => v.mode === "build"), "general rules alone reach build within the week").toBe(true);
-    expect(views.every(v => v.mode !== "recovery"), "nothing but a profile proposes recovery").toBe(true);
+    expect(views.every(v => v.mode !== "recovery"), "no recovery trigger fires in this week").toBe(true);
   });
 
   test("history logged with a profile's flags, and the themes on offer, show no condition words (audit M7)", () => {

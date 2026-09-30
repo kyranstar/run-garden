@@ -103,6 +103,13 @@ describe("beyond the standalone suite", () => {
     expect(noneMode([session(day(5))]).reasons[0]).toMatch(/5 days since your last session/);
     for (const reason of [...r.reasons, ...noneMode(calmWeek.slice(1)).reasons]) expect(reason).not.toMatch(/tmj|jaw|clench/i);
   });
+
+  test("feeling off is a general rule: it proposes recovery with or without a profile (audit M12)", () => {
+    const none = makeEngineData({ activeProfiles: [], careProfiles: [], exercises: data.exercises });
+    expect(Proposal.mode(none, { checks: {}, feelingOff: true, sessions: calmWeek, today })).toEqual({ mode: "recovery", reasons: ["You said you're feeling off."] });
+    expect(Proposal.mode(data, { checks: { tmj: { pre: 1, post: null, feelingOff: false } }, feelingOff: true, sessions: calmWeek, today })).toEqual({ mode: "recovery", reasons: ["You said you're feeling off."] });
+    expect(Proposal.mode(none, { checks: {}, feelingOff: false, sessions: calmWeek, today }).mode).toBe("build");
+  });
 });
 
 describe("two sessions on the same day (spec §5 change 2, Review Focus 5)", () => {

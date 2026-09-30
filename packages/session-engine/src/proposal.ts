@@ -8,6 +8,8 @@ import { Rng } from "./rng.js";
 
 export interface ModeArgs {
   checks?: Readonly<Record<string, CheckReading>>;
+  /** "I'm feeling off" for the day, whatever profiles are active: recovery, first of all. */
+  feelingOff?: boolean;
   sessions?: readonly HistorySession[];
   today: string;
   weeklyGoal?: number;
@@ -18,7 +20,7 @@ export interface ModeProposal {
   reasons: string[];
 }
 
-function mode(data: EngineData, { checks = {}, sessions = [], today, weeklyGoal = 4 }: ModeArgs): ModeProposal {
+function mode(data: EngineData, { checks = {}, feelingOff = false, sessions = [], today, weeklyGoal = 4 }: ModeArgs): ModeProposal {
   const past = Hist.sorted(sessions).filter(s => s.date <= today);
   const last = past[past.length - 1] ?? null;
   const week = past.filter(s => Hist.daysBetween(s.date, today) < 7);
@@ -26,6 +28,7 @@ function mode(data: EngineData, { checks = {}, sessions = [], today, weeklyGoal 
   const ctxFor = (id: string): ProposalCtx => ({ today, reading: checks[id] ?? UNANSWERED, past, last, week });
   const out = (m: Mode, reasons: string[]): ModeProposal => ({ mode: m, reasons });
 
+  if (feelingOff) return out("recovery", ["You said you're feeling off."]);
   for (const p of profiles) {
     const why = p.recoveryReason(ctxFor(p.id));
     if (why) return out("recovery", [why]);

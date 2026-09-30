@@ -24,6 +24,8 @@ export interface DayOverride {
 export interface DayState {
   date: string;
   checks: Readonly<Record<string, CheckReading>>;
+  /** "I'm feeling off" today, whatever profiles are active. */
+  feelingOff?: boolean;
   override: DayOverride;
   swaps: Swaps;
 }
@@ -83,7 +85,7 @@ export interface GraduationOffer {
   to: string;
 }
 
-const blankDay = (today: string): DayState => ({ date: today, checks: {}, override: {}, swaps: {} });
+const blankDay = (today: string): DayState => ({ date: today, checks: {}, feelingOff: false, override: {}, swaps: {} });
 
 /** The stored day if it is today's; otherwise a fresh one. */
 const dayOf = (day: DayState | null | undefined, today: string): DayState => (day && day.date === today ? day : blankDay(today));
@@ -105,7 +107,7 @@ function context(data: EngineData, input: PlanTodayInput, program: ProgramState)
     today, equipment: home.equipment, prefs: program.prefs, weeks: program.settings.blockWeeks,
     sessions: program.sessions, kbWeights: Lib.kettlebellsAt(home), unit: program.settings.unit,
   });
-  const proposal = Proposal.mode(data, { checks: t.checks, sessions: program.sessions, today, weeklyGoal: program.settings.weeklyGoal });
+  const proposal = Proposal.mode(data, { checks: t.checks, feelingOff: Boolean(t.feelingOff), sessions: program.sessions, today, weeklyGoal: program.settings.weeklyGoal });
   const mode = t.override.mode || proposal.mode;
   const themeProposal = Proposal.theme(data, { mode, sessions: program.sessions, today });
   const chosen = t.override.theme ? data.themes.find(th => th.id === t.override.theme && th.modes.includes(mode)) ?? null : null;
@@ -140,7 +142,10 @@ function planToday(data: EngineData, input: PlanTodayInput, program: ProgramStat
 const alternatives = (data: EngineData, input: PlanTodayInput, program: ProgramState, slotKey: string, k = 3): Alternative[] =>
   Builder.alternatives(data, context(data, input, program).buildInput, slotKey, k);
 
-/** Today's check for one profile (e.g. the pre-session reading, or "feeling off"). */
+/** "I'm feeling off" today: recovery, whatever profiles are active. */
+const setFeelingOff = (day: DayState | null | undefined, today: string, value: boolean): DayState => withDay(day, today, { feelingOff: Boolean(value) });
+
+/** Today's check for one profile (e.g. the pre-session reading). */
 function setCheck(day: DayState | null | undefined, today: string, profileId: string, patch: Partial<CheckReading>): DayState {
   const t = dayOf(day, today);
   const current = t.checks[profileId] ?? { pre: null, post: null, feelingOff: false };
@@ -194,4 +199,4 @@ function graduationOffers(data: EngineData, program: ProgramState, session: Hist
   return offers;
 }
 
-export const Planner = { planToday, alternatives, blankDay, dayOf, setCheck, setOverride, swap, acceptGraduate, graduationOffers, locationOf };
+export const Planner = { planToday, alternatives, blankDay, dayOf, setCheck, setFeelingOff, setOverride, swap, acceptGraduate, graduationOffers, locationOf };

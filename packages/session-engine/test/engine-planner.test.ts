@@ -1,3 +1,4 @@
+import { makeEngineData } from "@rg/exercise-library";
 import { describe, expect, test } from "vitest";
 import { Lib, Planner, type DayState, type ExerciseRecord, type HistorySession, type ProgramState, type TodayView } from "../src/index.js";
 import { PLACES, data } from "./builder-fixtures.js";
@@ -51,8 +52,13 @@ test("a new day starts clean: yesterday's check, overrides, and swaps don't carr
 
 test("feeling off means recovery", () => {
   const s = today(fresh(), T).data;
-  const off = withDay(s, Planner.setCheck(s.day, T, "tmj", { feelingOff: true }));
+  const off = withDay(s, Planner.setFeelingOff(s.day, T, true));
   expect(today(off, T).view.mode).toBe("recovery");
+  expect(today(off, T).view.modeReasons).toEqual(["You said you're feeling off."]);
+  // The profile's own reading still counts, and with no profile active the general rule still holds.
+  expect(today(withDay(s, Planner.setCheck(s.day, T, "tmj", { feelingOff: true })), T).view.mode).toBe("recovery");
+  const none = makeEngineData({ activeProfiles: [], careProfiles: [], exercises: data.exercises });
+  expect(Planner.planToday(none, { today: T, day: Planner.setFeelingOff(null, T, true) }, s.program).view.mode).toBe("recovery");
 });
 
 test("overrides for mode, theme, minutes, and location apply, and the proposal is still shown", () => {
