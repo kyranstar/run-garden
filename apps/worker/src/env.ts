@@ -5,6 +5,8 @@ export interface Env {
   APP_URL: string;
   FIXTURE_MODE: string;
   AI_DEFAULT_ENABLED: string;
+  /** "1" on the staging Worker: no crons, outbound fetch guarded. Var. */
+  STAGING?: string;
 
   // Secrets
   SESSION_SECRET: string;
@@ -30,6 +32,8 @@ export interface Env {
   COROS_MCP_URL?: string;
   COROS_MCP_TOKEN?: string;
 }
+
+export const stagingEnabled = (env: Env): boolean => env.STAGING === "1";
 
 export function fixtureModeEnabled(env: Env): boolean {
   return env.FIXTURE_MODE === "1";

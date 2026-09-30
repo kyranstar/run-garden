@@ -11,7 +11,8 @@ import {
 import { addDays, startOfIsoWeek, todayInZone } from "@rg/domain";
 import { computeWeeklyFacts, DISCIPLINES } from "@rg/analytics";
 import type { Env } from "./env.js";
-import { fixtureModeEnabled } from "./env.js";
+import { fixtureModeEnabled, stagingEnabled } from "./env.js";
+import { installStagingGuard } from "./services/staging.js";
 import { withDb, requireUser, type AppContext } from "./auth/middleware.js";
 import { authRoutes } from "./routes/auth.js";
 import { planRoutes } from "./routes/plan.js";
@@ -74,7 +75,7 @@ app.route("/api/settings", settingsRoutes);
 app.route("/api/studio", studioRoutes);
 app.route("/api/sync", syncRoutes);
 
-app.get("/api/health", (c) => c.json({ ok: true, fixtureMode: fixtureModeEnabled(c.env) }));
+app.get("/api/health", (c) => c.json({ ok: true, fixtureMode: fixtureModeEnabled(c.env), staging: stagingEnabled(c.env) }));
 
 // ── Fixture mode (explicit, never silent) ────────────────────────────────────
 
@@ -308,8 +309,12 @@ export async function weekly(db: Db, env: Env): Promise<void> {
 }
 
 export default {
-  fetch: app.fetch,
+  fetch(req: Request, env: Env, ctx: ExecutionContext): Response | Promise<Response> {
+    if (stagingEnabled(env)) installStagingGuard();
+    return app.fetch(req, env, ctx);
+  },
   async scheduled(event: ScheduledController, env: Env, ctx: ExecutionContext): Promise<void> {
+    if (stagingEnabled(env)) return;
     const db = makeDb(env.DB);
     switch (event.cron) {
       case "*/30 * * * *":
