@@ -11,6 +11,7 @@ import { corosReadNow } from "../services/coros-read.js";
 import { waitUntilSafe } from "../services/wait-until.js";
 import { processCoachReads } from "../services/coach-reads.js";
 import { loadPreferences } from "../services/calendar-sync.js";
+import { MAX_WINDOW_DAYS, probeStrengthLapKeys } from "../services/coros-lap-probe.js";
 
 /**
  * Cloud COROS connection surface (cloud-direct spec §1). The password's MD5
@@ -68,4 +69,31 @@ corosRoutes.post("/read-now", async (c) => {
   // an empty queue costs one SELECT.
   waitUntilSafe(c, processCoachReads(db, c.env, userId, prefs, {}).catch(() => undefined));
   return c.json(result);
+});
+
+const lapProbeQuery = z.object({
+  days: z.coerce.number().int().min(1).max(MAX_WINDOW_DAYS).default(30),
+});
+
+/**
+ * Masked lap probe (Task 15): the key skeleton of the most recent strength
+ * activities' laps and summary — keys and types only, never a value. Read-only.
+ */
+corosRoutes.get("/debug/lap-keys", async (c) => {
+  const parsed = lapProbeQuery.safeParse({ days: c.req.query("days") });
+  if (!parsed.success) return c.json({ error: "invalid_request" }, 400);
+  const db = c.get("db");
+  const userId = c.get("userId");
+  const prefs = await loadPreferences(db, userId);
+  const result = await probeStrengthLapKeys(db, c.env, userId, prefs, parsed.data.days);
+  switch (result.status) {
+    case "fixture_mode":
+      return c.json({ error: "not_found" }, 404);
+    case "not_connected":
+      return c.json({ error: "not_connected" }, 409);
+    case "coros_error":
+      return c.json({ error: "coros_error", ...(result.code ? { code: result.code } : {}) }, 502);
+    case "ok":
+      return c.json(result.body);
+  }
 });
