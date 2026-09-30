@@ -97,7 +97,13 @@ function create(data: EngineData, plan: PlanSteps, meta: RecorderMeta): Live {
   const entries: Record<string, LiveEntry> = {};
   const order: string[] = [];
   const sparse: Record<string, Array<LiveSet | undefined>> = {};
-  for (const step of plan.steps) {
+  // A stored plan may name a move the library has since renamed: every step reads its current id, so what you
+  // reach and log lands on the entry under that id.
+  const steps = plan.steps.map(s => {
+    const ex = s.exerciseId ? Lib.get(data, s.exerciseId) : null;
+    return ex && ex.id !== s.exerciseId ? { ...s, exerciseId: ex.id } : s;
+  });
+  for (const step of steps) {
     if (!step.log || !step.exerciseId) continue;
     const ex = Lib.get(data, step.exerciseId);
     if (!ex) continue;   // a move no longer in the library is played, not logged
@@ -116,7 +122,7 @@ function create(data: EngineData, plan: PlanSteps, meta: RecorderMeta): Live {
     };
   }
   for (const id of order) entries[id]!.sets = Array.from(sparse[id]!, s => s || blankSet());
-  return { meta, plan, steps: plan.steps, entries, order, reached: new Set(), secs: {}, runningMs: 0 };
+  return { meta, plan, steps, entries, order, reached: new Set(), secs: {}, runningMs: 0 };
 }
 
 /** Reaching a set counts it; a timed hold only counts when you leave it (finishTimed). */

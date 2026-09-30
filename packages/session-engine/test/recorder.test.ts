@@ -199,6 +199,29 @@ describe("recorder regressions and the save shape", () => {
     expect(s.done.map(d => d.id)).toContain("retiredMove");
   });
 
+  test("a plan stored before an exercise was renamed keeps every logged set under the new id", () => {
+    const plan = planFor();
+    const liftId = plan.steps.find(s => s.kind === "set" && s.log)!.exerciseId!;
+    // The library renames the lift after the plan was built; the old id stays as a legacy id.
+    const renamed = { ...data, exercises: data.exercises.map(ex => (ex.id === liftId ? { ...ex, id: "renamedLift", legacyIds: [liftId] } : ex)) };
+    const live = Recorder.create(renamed, plan, meta(plan));
+    expect(Object.keys(live.entries)).toContain("renamedLift");
+    const indices = live.steps.map((s, k) => (s.exerciseId === "renamedLift" ? k : -1)).filter(k => k >= 0);
+    expect(indices.length).toBeGreaterThan(0);
+    indices.forEach(k => Recorder.reach(live, k));
+    Recorder.update(live, "renamedLift", 0, "reps", 11);
+    Recorder.setFlag(live, "renamedLift", "clenched", true);
+    const entry = live.entries.renamedLift!;
+    expect(entry.sets.every(x => x.done)).toBe(true);
+    expect(entry.sets[0]!.reps).toBe(11);
+    const s = Recorder.toSession(live, { endedAt: "x", note: "", completed: false });
+    const saved = s.entries.find(e => e.id === "renamedLift");
+    expect(saved?.sets.length).toBe(entry.sets.length);
+    expect(saved?.flags).toEqual(["clenched"]);
+    expect(s.done.map(d => d.id)).toContain("renamedLift");
+    expect(s.done.map(d => d.id)).not.toContain(liftId);
+  });
+
   test("the saved session carries checks per profile and feeds records and graduation offers directly", () => {
     const plan = planFor();
     const live = Recorder.create(data, plan, meta(plan));
