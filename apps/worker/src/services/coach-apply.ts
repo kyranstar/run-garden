@@ -1203,9 +1203,9 @@ export async function applyOps(
         }
         const row = found.row;
         // The athlete's own remove, verbatim: suppression, intent, move-intent
-        // close — then the unpush a verified watch-pushed row needs.
-        await removeFromPlan(db, userId, op.workoutId, { now, source: "coach_remove" });
-        await enqueueUnpushIfOurs(db, userId, row, now, prefs);
+        // close, queued watch writes settled, and the unpush a session the app
+        // pushed needs — one mutation for both sides (Ruling A1).
+        await removeFromPlan(db, userId, op.workoutId, { now, source: "coach_remove", prefs });
         noteResim(row.effectiveDate);
         out.archived.push(op.workoutId);
         break;

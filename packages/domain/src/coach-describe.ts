@@ -97,6 +97,10 @@ export interface PlannedRef {
    * then is "watch unchanged" a fact worth saying; a coach-authored row that
    * was never pushed has no watch copy to leave alone. */
   onWatch?: boolean;
+  /** The APP put this session on the watch (verified create stamp + address,
+   * writes on), so removing it takes it back off (Ruling A1). An imported
+   * session never has this: its watch copy is never touched. */
+  appPushed?: boolean;
 }
 
 /** The shape `watchAddressOf` (worker) requires of a planned row: a
@@ -406,10 +410,16 @@ export function describeOps(ops: CoachOp[], planned?: ReadonlyMap<string, Planne
           // Said explicitly, because the difference from `skip` is the whole
           // reason this op exists and it is invisible from the calendar.
           // Both halves are load-bearing. The first is the difference from a
-          // skip; the second is the honest contract until the delete lane is
-          // generalised to workouts the app did not author (spec §7 phase B),
-          // and it is true either way — nothing here ever writes to the watch.
-          change: "taken off the plan entirely — not counted as a missed or rested day · your watch is not changed",
+          // skip; the second is what happens on the watch, and it depends on
+          // who put the session there (Ruling A1). A session the APP pushed
+          // (verified stamp + address) is unpushed by the remove — the
+          // athlete's own remove does the same — so the card says it comes off.
+          // An imported COROS session is never touched on the watch until the
+          // delete lane is generalised to workouts the app did not author
+          // (spec §7 phase B), and a never-pushed one has no watch copy at all.
+          change: `taken off the plan entirely — not counted as a missed or rested day · ${
+            was?.appPushed ? "comes off your watch" : "your watch is not changed"
+          }`,
           detail: [],
           kind: op.kind,
         });

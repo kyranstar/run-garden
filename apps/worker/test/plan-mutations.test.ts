@@ -23,7 +23,7 @@ describe("removeFromPlan", () => {
     const date = addDays(todayInZone(prefs.timezone), 2);
     await seed(db, userId, "w1", date);
     await recordIntent(db, { userId, targetKind: "workout", targetId: "w1", kind: "move", source: "user_move" });
-    const out = await removeFromPlan(db, userId, "w1", { now: nowInstant(), source: "remove_from_plan" });
+    const out = await removeFromPlan(db, userId, "w1", { now: nowInstant(), source: "remove_from_plan", prefs });
     expect(out).toEqual({ removed: true, effectiveDate: date });
     const [w] = await db.select().from(schema.plannedWorkouts).where(eq(schema.plannedWorkouts.id, "w1"));
     expect(w!.archiveReason).toBe("user_removed");
@@ -39,7 +39,7 @@ describe("removeFromPlan", () => {
     const { userId, prefs } = await makeTestUser(db);
     const { userId: other } = await makeTestUser(db);
     await seed(db, other, "w2", addDays(todayInZone(prefs.timezone), 1));
-    expect(await removeFromPlan(db, userId, "w2", { now: nowInstant(), source: "remove_from_plan" }))
+    expect(await removeFromPlan(db, userId, "w2", { now: nowInstant(), source: "remove_from_plan", prefs }))
       .toEqual({ removed: false, effectiveDate: null });
   });
 });
@@ -57,6 +57,46 @@ describe("coach remove ≡ manual remove", () => {
     expect(sup).toHaveLength(1);
     expect(sup[0]!.reason).toBe("user_removed");
     expect(await openIntentFor(db, userId, "w1", "remove_local")).toBeTruthy();
+  });
+
+  it("both removes unpush a session the app pushed, and neither touches an imported one", async () => {
+    // Ruling A1 option (b): the watch follows the plan for sessions the app put
+    // there (verified stamp + address) whichever side removes them.
+    const db = makeTestDb();
+    const { userId, prefs } = await makeTestUser(db, { corosWritesEnabled: true });
+    const date = addDays(todayInZone(prefs.timezone), 3);
+    for (const id of ["coach-pushed", "hand-pushed", "coach-imported", "hand-imported"]) {
+      await seed(db, userId, id, date);
+      await db
+        .update(schema.plannedWorkouts)
+        .set({ sourceWorkoutId: `4738:${id.length}${id.charCodeAt(0)}`, sourceIdInPlan: "12", sourceProgramId: "99" })
+        .where(eq(schema.plannedWorkouts.id, id));
+      if (id.endsWith("-pushed")) {
+        await db.insert(schema.corosWriteJobs).values({
+          id: `${id}-push`,
+          userId,
+          workoutId: id,
+          kind: "coach_create_workout",
+          expectedContentFingerprint: "fp",
+          originalDate: date,
+          destinationDate: date,
+          payload: { workoutId: id, happenDay: date, name: `Easy 40 — ${date}` },
+          requestedAt: nowInstant(),
+          status: "verified",
+          updatedAt: nowInstant(),
+        });
+      }
+    }
+    await applyOps(db, userId, prefs, "p-rm", [
+      { kind: "remove", workoutId: "coach-pushed" },
+      { kind: "remove", workoutId: "coach-imported" },
+    ]);
+    for (const id of ["hand-pushed", "hand-imported"]) {
+      await removeFromPlan(db, userId, id, { now: nowInstant(), source: "remove_from_plan", prefs });
+    }
+    const unpushes = await db.select().from(schema.corosWriteJobs)
+      .where(eq(schema.corosWriteJobs.kind, "coach_delete_workout"));
+    expect(unpushes.map((j) => j.workoutId).sort()).toEqual(["coach-pushed", "hand-pushed"]);
   });
 
   it("re-applying the same remove adds no second suppression", async () => {

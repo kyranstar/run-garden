@@ -130,6 +130,95 @@ describe("POST /api/plan/workouts/:id/remove", () => {
   });
 });
 
+/**
+ * REMOVE PARITY WITH THE COACH, ON THE WATCH TOO (audit 1, coach finding 3;
+ * Ruling A1 option b). A session the APP pushed — a verified create stamp plus
+ * a COROS address — comes off the watch when the athlete removes it, exactly as
+ * it does when the coach removes it; an imported COROS session never does. The
+ * DTO says which, so the dialog can tell the athlete before they confirm.
+ */
+describe("POST /api/plan/workouts/:id/remove — the watch", () => {
+  async function insertAddressed(id: string, opts: { appPushed: boolean }): Promise<string> {
+    const date = addDays(todayInZone(prefs.timezone), 3);
+    await db.insert(plannedWorkouts).values({
+      id,
+      userId,
+      planId: "p",
+      sourceWorkoutId: `473846232060707016:${opts.appPushed ? 42 : 43}`,
+      sourceIdInPlan: opts.appPushed ? "42" : "43",
+      sourceProgramId: "9001",
+      title: "Easy 30",
+      category: "easy",
+      sport: "run",
+      originalPlanDate: date,
+      lastVerifiedCorosDate: date,
+      effectiveDate: date,
+      effectiveTime: "07:00",
+      sourceContentFingerprint: "0123456789abcdef",
+      calendarBlockDurationSeconds: 1800,
+      corosSyncState: "synced",
+      completionState: "scheduled",
+      createdAt: nowInstant(),
+      updatedAt: nowInstant(),
+    });
+    if (opts.appPushed) {
+      await db.insert(corosWriteJobs).values({
+        id: `${id}-push`,
+        userId,
+        workoutId: id,
+        kind: "coach_create_workout",
+        expectedContentFingerprint: "fp",
+        originalDate: date,
+        destinationDate: date,
+        payload: { workoutId: id, happenDay: date, name: `Easy 30 — ${date}` },
+        requestedAt: nowInstant(),
+        status: "verified",
+        verifiedAt: nowInstant(),
+        updatedAt: nowInstant(),
+      });
+    }
+    return date;
+  }
+
+  it("a session the app pushed comes off the watch: an unpush is queued, and the DTO said so", async () => {
+    const date = await insertAddressed("pushed", { appPushed: true });
+    const dto = (await (await client().get("/api/plan/workouts/pushed")).json()) as {
+      workout: { appPushed?: boolean };
+    };
+    expect(dto.workout.appPushed).toBe(true);
+
+    const res = await client().post("/api/plan/workouts/pushed/remove");
+    expect(res.status).toBe(200);
+
+    const [unpush] = await db.select().from(corosWriteJobs).where(eq(corosWriteJobs.id, "pushed-unpush"));
+    expect(unpush?.kind).toBe("coach_delete_workout");
+    expect(unpush?.status).toBe("queued");
+    expect(unpush?.payload).toMatchObject({
+      workoutId: "pushed",
+      happenDay: date,
+      name: `Easy 30 — ${date}`,
+      idInPlan: "42",
+      programId: "9001",
+      corosPlanId: "473846232060707016",
+    });
+  });
+
+  it("an imported session stays on the watch: nothing is queued, and the DTO does not claim otherwise", async () => {
+    await insertAddressed("imported", { appPushed: false });
+    const dto = (await (await client().get("/api/plan/workouts/imported")).json()) as {
+      workout: { appPushed?: boolean; hasWatchAddress?: boolean };
+    };
+    expect(dto.workout.appPushed).toBeUndefined();
+    expect(dto.workout.hasWatchAddress).toBe(true);
+
+    const res = await client().post("/api/plan/workouts/imported/remove");
+    expect(res.status).toBe(200);
+    const [w] = await db.select().from(plannedWorkouts).where(eq(plannedWorkouts.id, "imported"));
+    expect(w!.archivedAt).not.toBeNull();
+    expect(await db.select().from(corosWriteJobs).where(eq(corosWriteJobs.workoutId, "imported"))).toEqual([]);
+  });
+});
+
 async function insertActivity(): Promise<string> {
   const id = newId();
   await db.insert(activities).values({

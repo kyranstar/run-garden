@@ -308,6 +308,21 @@ describe("describeOps — every op kind is described", () => {
     expect(coachRow[0]!.summary).not.toContain("watch unchanged");
   });
 
+  it("a remove says the session comes off the watch only when the app pushed it there", () => {
+    // Ruling A1 (b): removing a session the app pushed unpushes it; an imported
+    // or never-pushed session's watch copy is not touched, and the card says so.
+    const op = [coachOpSchema.parse({ kind: "remove", workoutId: "w1" })];
+    const pushed = describeOps(op, new Map([["w1", { summary: "Easy 30", appPushed: true }]]));
+    expect(pushed[0]!.change).toBe(
+      "taken off the plan entirely — not counted as a missed or rested day · comes off your watch",
+    );
+    const imported = describeOps(op, new Map([["w1", { summary: "Easy 30", onWatch: true }]]));
+    expect(imported[0]!.change).toBe(
+      "taken off the plan entirely — not counted as a missed or rested day · your watch is not changed",
+    );
+    expect(describeOps(op)[0]!.change).toContain("your watch is not changed");
+  });
+
   it("renders a circuit as rounds rather than as loose sets", () => {
     const op = coachOpSchema.parse({
       kind: "add",

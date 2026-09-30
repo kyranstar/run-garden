@@ -13,6 +13,7 @@ import type { CoachPlanDto, PlanDetailResponse, PlanWeekResponse, WorkoutDto } f
 import { BriefExplainerSheet, HEADLINE_COPY, headlineContext, WeeklyBrief } from "../src/screens/plan-brief.js";
 import { PlanCards, progressionHeadline } from "../src/screens/plan-cards.js";
 import { CoachWindow } from "../src/screens/coach-window.js";
+import { removeConfirmCopy } from "../src/screens/plan.js";
 import {
   centerScrollTop,
   jumplistDropsUp,
@@ -76,6 +77,17 @@ function weekFixture(over: Partial<PlanWeekResponse> = {}): PlanWeekResponse {
     ...over,
   };
 }
+
+describe("remove confirmation (Ruling A1)", () => {
+  it("says a session the app pushed comes off the watch, and an imported one's watch is untouched", () => {
+    expect(removeConfirmCopy("Easy 30", true)).toBe(
+      "“Easy 30” is cleared from Run Garden, from your Calendar and from your COROS watch.",
+    );
+    expect(removeConfirmCopy("Easy 30", false)).toBe(
+      "“Easy 30” is cleared from Run Garden and from your Calendar. Your COROS watch is untouched.",
+    );
+  });
+});
 
 describe("WeeklyBrief", () => {
   it("renders the headline, the chips, the focus line, and the needs-you pill — but never the load-ratio chip", () => {

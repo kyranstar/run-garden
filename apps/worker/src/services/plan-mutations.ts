@@ -62,17 +62,21 @@ export async function settleWatchJobsOnArchive(
 }
 
 /**
- * Remove a workout from the plan: archived locally, calendar event suppressed.
- * Never touches the COROS calendar — for COROS-sourced workouts the archived
- * row keeps its sourceWorkoutId, so future imports update it in place without
- * resurrecting it into the visible plan. No-op (removed: false) for a missing,
- * foreign or already-archived row.
+ * Remove a workout from the plan: archived locally, calendar event suppressed,
+ * its queued watch writes settled — and, for a session the APP pushed (a
+ * verified create stamp plus a COROS address), an unpush so the watch follows
+ * the plan (Ruling A1, option b: the athlete's remove and the coach's are one
+ * mutation, on the watch too). An IMPORTED COROS session is never touched on
+ * the watch: it has no stamp, so `enqueueUnpushIfOurs` declines, and the
+ * archived row keeps its sourceWorkoutId so future imports update it in place
+ * without resurrecting it into the visible plan. No-op (removed: false) for a
+ * missing, foreign or already-archived row.
  */
 export async function removeFromPlan(
   db: Db,
   userId: string,
   workoutId: string,
-  opts: { now: string; source: IntentSource },
+  opts: { now: string; source: IntentSource; prefs: UserPreferences },
 ): Promise<RemoveResult> {
   const [w] = await db
     .select()
@@ -109,6 +113,9 @@ export async function removeFromPlan(
   // immediately rather than waiting for the next bridge sync).
   const openMove = await openIntentFor(db, userId, w.id, "move");
   if (openMove) await resolveIntent(db, openMove.id, now);
+  // Last, from the row as it stood BEFORE the archive: its address is where
+  // COROS holds the session. Declines for anything the app did not push.
+  await enqueueUnpushIfOurs(db, userId, w, now, opts.prefs);
   return { removed: true, effectiveDate: w.effectiveDate };
 }
 

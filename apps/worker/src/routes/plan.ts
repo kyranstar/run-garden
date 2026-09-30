@@ -67,6 +67,7 @@ import { buildReadiness } from "../services/readiness.js";
 import { isLoosePlan } from "../services/coach-plans.js";
 import { repairPlannedWorkoutFidelity } from "../services/plan-repair.js";
 import { executeCloudJobs } from "../services/coros-write-cloud.js";
+import { watchAddressOf } from "../services/coach-apply.js";
 
 export const planRoutes = new Hono<AppContext>();
 planRoutes.use("*", requireUser);
@@ -110,6 +111,13 @@ interface WorkoutView {
    * that reads as a receipt.
    */
   syncAction?: SyncAction;
+  /**
+   * The APP put this session on the watch — a verified coach create plus a
+   * COROS address — and watch writes are on, so removing it (by hand or by the
+   * coach) takes it back off the watch (Ruling A1). Absent for an imported
+   * COROS session, a never-pushed one, or one already unpushed.
+   */
+  appPushed?: boolean;
 }
 
 /**
@@ -302,6 +310,9 @@ async function loadWorkoutViews(
 
   const pendingIds = new Set<string>();
   const failedIds = new Set<string>();
+  /** Rows a verified coach create put on the watch — the stamp `enqueueUnpushIfOurs`
+   * authorizes an unpush with. Imported rows never get a coach create. */
+  const pushedIds = new Set<string>();
   // What the lane is DOING about each row, in the action layer's own three
   // words. In flight outranks failed (a superseded failure has been replaced by
   // a live attempt), and an unpush is distinguished from a send because the two
@@ -309,6 +320,7 @@ async function loadWorkoutViews(
   const lanes = new Map<string, WriteLane>();
   for (const jobs of jobChunks) {
     for (const j of jobs) {
+      if (j.kind === "coach_create_workout" && j.status === "verified") pushedIds.add(j.workoutId);
       if ((IN_FLIGHT_JOB_STATUSES as readonly string[]).includes(j.status)) {
         pendingIds.add(j.workoutId);
         if (lanes.get(j.workoutId) !== "sending") {
@@ -349,10 +361,13 @@ async function loadWorkoutViews(
       // convergence backfill applies when it picks rows.
       settled: w.completionState !== "scheduled" || w.effectiveDate < today,
     });
+    const appPushed =
+      prefs.corosWritesEnabled && pushedIds.has(w.id) && watchAddressOf(w) !== null;
     map.set(w.id, {
       corosSyncView,
       ...(coverage ? { watchCoverage: coverage } : {}),
       ...(action ? { syncAction: action } : {}),
+      ...(appPushed ? { appPushed: true } : {}),
     });
   }
   return map;
@@ -422,6 +437,9 @@ function workoutDto(
     // (`@rg/domain` sync-action.ts). Absent whenever the answer is "nothing" —
     // which keeps a synced session's payload byte-identical to before.
     ...(view?.syncAction ? { syncAction: view.syncAction } : {}),
+    // Removing it takes it off the watch — the remove dialog and the coach
+    // manifest say so before the athlete confirms (Ruling A1).
+    ...(view?.appPushed ? { appPushed: true } : {}),
     completionState: w.completionState,
     archived: !!w.archivedAt,
     // Lift/mobility prescription, formatted once here so the sheet can't
@@ -1440,10 +1458,12 @@ planRoutes.post("/workouts/:id/unmatch", async (c) => {
 });
 
 /**
- * Remove a workout from the plan: archived locally, calendar event suppressed.
- * Never touches the COROS calendar — for COROS-sourced workouts the archived
- * row keeps its sourceWorkoutId, so future imports update it in place without
- * resurrecting it into the visible plan.
+ * Remove a workout from the plan: archived locally, calendar event suppressed —
+ * the same mutation the coach's `remove` performs (`removeFromPlan`). A session
+ * the APP pushed to the watch comes back off it (Ruling A1); an imported COROS
+ * session's watch copy is never touched, and its archived row keeps its
+ * sourceWorkoutId so future imports update it in place without resurrecting it
+ * into the visible plan. The DTO's `appPushed` is what the dialog discloses.
  */
 planRoutes.post("/workouts/:id/remove", async (c) => {
   const db = c.get("db");
@@ -1455,10 +1475,12 @@ planRoutes.post("/workouts/:id/remove", async (c) => {
     .where(and(eq(plannedWorkouts.id, id), eq(plannedWorkouts.userId, userId)))
     .limit(1);
   if (!exists) return c.json({ error: "not_found" }, 404);
-  const removed = await removeFromPlan(db, userId, id, { now: nowInstant(), source: "remove_from_plan" });
-  if (!removed.removed || !removed.effectiveDate) return c.json({ ok: true });
-  await syncCalendar(db, c.env, userId).catch(() => undefined);
   const prefs = await loadPreferences(db, userId);
+  const removed = await removeFromPlan(db, userId, id, { now: nowInstant(), source: "remove_from_plan", prefs });
+  if (!removed.removed || !removed.effectiveDate) return c.json({ ok: true });
+  // Cloud-direct: the unpush a pushed session needs executes now.
+  waitUntilSafe(c, executeCloudJobs(db, c.env, userId, prefs).catch(() => undefined));
+  await syncCalendar(db, c.env, userId).catch(() => undefined);
   const today = todayInZone(prefs.timezone);
   // A removed past workout must stop counting against the garden.
   const resimFrom = removed.effectiveDate < today ? removed.effectiveDate : today;

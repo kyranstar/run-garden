@@ -42,6 +42,18 @@ import { askable, displayCompletionState, WeekView, weekRangeLabel } from "./wee
 import { useCorosReadNow } from "./use-coros-read.js";
 import { CorosCheck } from "./coros-check.js";
 
+/**
+ * What "Remove from plan" does, said before the athlete confirms. A session the
+ * APP put on the watch comes back off it — the same remove the coach performs
+ * (Ruling A1) — while an imported COROS session's watch copy is left alone, and
+ * the sentence has to say which, because the two now differ.
+ */
+export function removeConfirmCopy(displayTitle: string, appPushed: boolean): string {
+  return appPushed
+    ? `“${displayTitle}” is cleared from Run Garden, from your Calendar and from your COROS watch.`
+    : `“${displayTitle}” is cleared from Run Garden and from your Calendar. Your COROS watch is untouched.`;
+}
+
 function WorkoutDetail({
   w,
   today,
@@ -410,8 +422,7 @@ function WorkoutDetail({
         busy={remove.isPending}
         onConfirm={() => remove.mutate()}
       >
-        “{displayTitle}” is cleared from Run Garden and from your Calendar. Your COROS watch is
-        untouched.
+        {removeConfirmCopy(displayTitle, !!w.appPushed)}
       </ConfirmDialog>
     </Sheet>
   );
@@ -806,6 +817,7 @@ export function PlanScreen() {
             date: w.effectiveDate,
             summary: w.title,
             ...(w.hasWatchAddress ? { onWatch: true } : {}),
+            ...(w.appPushed ? { appPushed: true } : {}),
             ...(w.workoutSeconds != null
               ? { durationMinutes: Math.round(w.workoutSeconds / 60) }
               : {}),

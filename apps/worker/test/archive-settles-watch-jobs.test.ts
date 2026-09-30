@@ -137,7 +137,7 @@ describe("every archive path supersedes the row's queued watch jobs", () => {
     const { userId, prefs } = await makeTestUser(db, { corosWritesEnabled: true });
     const date = addDays(todayInZone(prefs.timezone), 4);
     await seedRowWithQueuedJobs(db, userId, "w1", date);
-    await removeFromPlan(db, userId, "w1", { now: nowInstant(), source: "remove_from_plan" });
+    await removeFromPlan(db, userId, "w1", { now: nowInstant(), source: "remove_from_plan", prefs });
     expect(await statusById(db, "w1")).toEqual(SETTLED("w1"));
   });
 
@@ -193,7 +193,7 @@ describe("a removed session whose create is still queued never reaches the watch
     ).map((j) => j.workoutId);
     expect(stillQueued.length).toBeGreaterThanOrEqual(2);
     const [byHand, byCoach] = stillQueued;
-    await removeFromPlan(db, userId, byHand!, { now: nowInstant(), source: "remove_from_plan" });
+    await removeFromPlan(db, userId, byHand!, { now: nowInstant(), source: "remove_from_plan", prefs });
     await applyOps(db, userId, prefs, "pr", [{ kind: "remove", workoutId: byCoach! }]);
 
     await executeCloudJobs(db, makeEnv(), userId, prefs, { fetchImpl: server.fetchImpl });
@@ -287,7 +287,7 @@ describe("the create executor re-reads the row it is about to put on the watch",
       const url = new URL(typeof input === "string" ? input : input instanceof URL ? input.href : input.url);
       if (!removed && url.pathname === "/training/schedule/update") {
         removed = true;
-        await removeFromPlan(db, userId, "wb", { now: nowInstant(), source: "remove_from_plan" });
+        await removeFromPlan(db, userId, "wb", { now: nowInstant(), source: "remove_from_plan", prefs });
       }
       return server.fetchImpl(input, init);
     };

@@ -115,6 +115,11 @@ export interface WorkoutDto {
   corosSyncState: CorosSyncState;
   /** The row carries a COROS watch address. Absent otherwise. */
   hasWatchAddress?: boolean;
+  /** The APP put this session on the watch (verified create + address, writes
+   * on), so removing it takes it back off the watch. Absent for imported,
+   * never-pushed and already-unpushed sessions — whose watch copy a remove
+   * leaves alone. */
+  appPushed?: boolean;
   /** Derived per-workout view (sync-transparency Task 10) — `corosSyncState`'s
    * vocabulary plus `content_stale`, the one value only a derivation can
    * produce (see `WorkoutSyncView`). Computed fresh from the open content
