@@ -9,6 +9,7 @@ import {
 } from "@rg/database";
 import {
   addDays,
+  CALENDAR_EVENT_PROPERTY_NS,
   COROS_SYNC_LABELS,
   newId,
   nowInstant,
@@ -19,9 +20,12 @@ import {
 } from "@rg/domain";
 import { computeBlock, planReminders } from "@rg/scheduling";
 import {
+  appOrigin,
   buildEventResource,
   eventContentFingerprint,
+  extractUserNotes,
   NOTES_MARKER,
+  originFromEvent,
   reconcileCalendar,
   workoutIdFromEvent,
   type ActualEvent,
@@ -33,7 +37,7 @@ import { chunkIds, type Db } from "./db.js";
 import { googleCalendarClient, type GoogleCalendarClient } from "./google-calendar.js";
 import { activeSyncNotes, postSyncNote } from "./sync-notes.js";
 import { applyMove } from "./jobs.js";
-import { restoreInProgress } from "./account-state.js";
+import { isRestoring, loadAccountState, patchAccountState, restoreInProgress } from "./account-state.js";
 
 /**
  * Google Calendar mirror: at least 8 weeks ahead and 2 weeks back, one padded
@@ -101,6 +105,10 @@ export interface CalendarSyncStats {
   skipped: boolean;
   /** Ops that failed and were skipped this run (each retried next run). */
   opErrors?: number;
+  /** Post-restore reconcile (B6): events linked, links recreated, orphans deleted. */
+  adopted?: number;
+  recreated?: number;
+  orphansDeleted?: number;
 }
 
 export async function syncCalendar(
@@ -120,7 +128,8 @@ export async function syncCalendar(
   };
   // A restore is replacing the account (B2): the links and suppressions the
   // file carries are not in yet, so any sync now would duplicate every event.
-  if (await restoreInProgress(db, userId)) {
+  const account = await loadAccountState(db, userId);
+  if (isRestoring(account)) {
     stats.skipped = true;
     return stats;
   }
@@ -147,6 +156,39 @@ export async function syncCalendar(
       ),
     );
 
+  // ── Actual state (incremental sync with fallback to windowed read) ───────
+  const cursorId = `${userId}:google_calendar:events_sync_token:${calendarId}`;
+  const cursorRows = await db
+    .select()
+    .from(providerCursorState)
+    .where(eq(providerCursorState.id, cursorId))
+    .limit(1);
+  // After a restore the stored token (if any) predates the file: the one-shot
+  // reconcile needs the whole window, so every sync reads it in full until
+  // the reconcile is done.
+  const postRestore = account?.calendarReconcile ?? null;
+  const syncToken = opts.fullResync || postRestore ? undefined : cursorRows[0]?.value;
+
+  // Bounds pad one day each side: stapling `Z` onto LOCAL dates cut up to
+  // ~8h off the window's edges for a Pacific user, and an evening workout on
+  // the last local day read as user-deleted on a full read (audit#2 #20).
+  const timeMin = `${addDays(windowStart, -1)}T00:00:00Z`;
+  const timeMax = `${addDays(windowEnd, 1)}T23:59:59Z`;
+  let listResult = await client.listEvents(calendarId, { syncToken, timeMin, timeMax });
+  let fullRead = !syncToken;
+  if (listResult.fullSyncRequired) {
+    listResult = await client.listEvents(calendarId, { timeMin, timeMax });
+    fullRead = true;
+  }
+  // A read Google still refused is not a full picture of the calendar.
+  if (listResult.fullSyncRequired) fullRead = false;
+
+  // The read takes a while; a restore that began meanwhile wins.
+  if (await restoreInProgress(db, userId)) {
+    stats.skipped = true;
+    return stats;
+  }
+
   // D1 caps bound variables (~100/statement) and the workout window has
   // outgrown it — an unchunked inArray here failed EVERY calendar sync once
   // the lifting plan landed ("too many SQL variables", live-observed), which
@@ -154,17 +196,39 @@ export async function syncCalendar(
   const workoutIds = workouts.map((w) => w.id);
   const links: (typeof calendarEventLinks.$inferSelect)[] = [];
   const suppressions: (typeof calendarEventSuppressions.$inferSelect)[] = [];
-  for (const ids of chunkIds(workoutIds)) {
-    links.push(
-      ...(await db.select().from(calendarEventLinks).where(inArray(calendarEventLinks.workoutId, ids))),
-    );
-    suppressions.push(
-      ...(await db
-        .select()
-        .from(calendarEventSuppressions)
-        .where(inArray(calendarEventSuppressions.workoutId, ids))),
-    );
+  const loadLinks = async (): Promise<void> => {
+    links.length = 0;
+    suppressions.length = 0;
+    for (const ids of chunkIds(workoutIds)) {
+      links.push(
+        ...(await db.select().from(calendarEventLinks).where(inArray(calendarEventLinks.workoutId, ids))),
+      );
+      suppressions.push(
+        ...(await db
+          .select()
+          .from(calendarEventSuppressions)
+          .where(inArray(calendarEventSuppressions.workoutId, ids))),
+      );
+    }
+  };
+  await loadLinks();
+
+  // ── One-shot post-restore reconcile, part 1 (ruling B6 a, b) ───────────
+  // Only on a FULL read that succeeded: a failed read threw above, and an
+  // incremental one sees only what changed.
+  if (postRestore && fullRead && postRestore.phase === "pending") {
+    await adoptAndRecreate(db, userId, {
+      calendarId,
+      items: listResult.items as RawGoogleEvent[],
+      workouts,
+      links,
+      suppressions,
+      restoreFinishedAt: account?.restoreFinishedAt ?? null,
+      stats,
+    });
+    await loadLinks();
   }
+
   const linkByWorkout = new Map(links.map((l) => [l.workoutId, l]));
 
   const desired: DesiredEvent[] = [];
@@ -208,31 +272,6 @@ export async function syncCalendar(
         userNotes: linkByWorkout.get(w.id)?.userNotes ?? undefined,
       }),
     });
-  }
-
-  // ── Actual state (incremental sync with fallback to windowed read) ───────
-  const cursorId = `${userId}:google_calendar:events_sync_token:${calendarId}`;
-  const cursorRows = await db
-    .select()
-    .from(providerCursorState)
-    .where(eq(providerCursorState.id, cursorId))
-    .limit(1);
-  const syncToken = opts.fullResync ? undefined : cursorRows[0]?.value;
-
-  // Bounds pad one day each side: stapling `Z` onto LOCAL dates cut up to
-  // ~8h off the window's edges for a Pacific user, and an evening workout on
-  // the last local day read as user-deleted on a full read (audit#2 #20).
-  const timeMin = `${addDays(windowStart, -1)}T00:00:00Z`;
-  const timeMax = `${addDays(windowEnd, 1)}T23:59:59Z`;
-  let listResult = await client.listEvents(calendarId, { syncToken, timeMin, timeMax });
-  if (listResult.fullSyncRequired) {
-    listResult = await client.listEvents(calendarId, { timeMin, timeMax });
-  }
-
-  // The read takes a while; a restore that began meanwhile wins.
-  if (await restoreInProgress(db, userId)) {
-    stats.skipped = true;
-    return stats;
   }
 
   const rawEvents = (listResult.items as RawGoogleEvent[]).filter(
@@ -283,6 +322,14 @@ export async function syncCalendar(
   });
 
   await executeOps(db, env, userId, client, calendarId, ops, prefs, stats);
+
+  // ── One-shot post-restore reconcile, part 2: the orphan sweep (B6 c) ────
+  if (postRestore && fullRead) {
+    const done = postRestore.sweep
+      ? await sweepOrphans(db, client, calendarId, env.APP_URL, listResult.items as RawGoogleEvent[], stats)
+      : true;
+    await patchAccountState(db, userId, { calendarReconcile: done ? null : { phase: "sweeping", sweep: true } });
+  }
 
   if (listResult.nextSyncToken) {
     const now = nowInstant();
@@ -501,6 +548,146 @@ function rebuildWithNotes(
       ? `${resource.description}\n\n${notesBlock}`
       : `${resource.description.slice(0, idx)}${notesBlock}${resource.description.slice(idx)}`;
   return { ...resource, description };
+}
+
+/** Most orphaned events one sync deletes after a restore; the rest wait. */
+export const POST_RESTORE_DELETE_CAP = 25;
+
+/** Of `ids`, those naming a planned_workouts row — of this account when
+ * `userId` is given, of ANY account otherwise. Live or archived alike. */
+async function workoutIdsWithRows(db: Db, ids: string[], userId?: string): Promise<Set<string>> {
+  const found = new Set<string>();
+  for (const chunk of chunkIds([...new Set(ids)])) {
+    const rows = await db
+      .select({ id: plannedWorkouts.id })
+      .from(plannedWorkouts)
+      .where(userId ? and(inArray(plannedWorkouts.id, chunk), eq(plannedWorkouts.userId, userId)) : inArray(plannedWorkouts.id, chunk));
+    for (const r of rows) found.add(r.id);
+  }
+  return found;
+}
+
+const liveEvent = (e: RawGoogleEvent) => e.status !== "cancelled";
+
+/**
+ * Post-restore (a) and (b), database only — the ordinary reconcile that
+ * follows does the Google writes.
+ *
+ * (a) An event whose rgWorkoutId names a row of this account — live OR
+ *     archived — is that row's event: link it (keeping the athlete's notes and
+ *     treating our own last-written fingerprint as the one it carries), unless
+ *     the row is already linked to an event that is still there. Without this
+ *     a restored row whose event was written after the export got a second
+ *     event, or was "updated" forever without a link, reverting every edit
+ *     the athlete made to it. An archived row's event is then deleted by the
+ *     ordinary removed-workout path — never by the sweep.
+ * (b) A restored link of a live row in the window whose event is gone is
+ *     dropped, so the reconcile creates the event again — unless the FILE held
+ *     a user_deleted suppression for it (created before the restore
+ *     finished): then the athlete deleted it, and it stays deleted.
+ */
+async function adoptAndRecreate(
+  db: Db,
+  userId: string,
+  input: {
+    calendarId: string;
+    items: RawGoogleEvent[];
+    workouts: Array<typeof plannedWorkouts.$inferSelect>;
+    links: Array<typeof calendarEventLinks.$inferSelect>;
+    suppressions: Array<typeof calendarEventSuppressions.$inferSelect>;
+    restoreFinishedAt: string | null;
+    stats: CalendarSyncStats;
+  },
+): Promise<void> {
+  const now = nowInstant();
+  const liveIds = new Set(input.items.filter(liveEvent).map((e) => e.id));
+  const eventByWorkout = new Map<string, RawGoogleEvent>();
+  for (const e of input.items) {
+    const wid = workoutIdFromEvent(e.extendedProperties);
+    if (wid && liveEvent(e) && !eventByWorkout.has(wid)) eventByWorkout.set(wid, e);
+  }
+
+  // (a)
+  const owned = await workoutIdsWithRows(db, [...eventByWorkout.keys()], userId);
+  const existing = new Map<string, typeof calendarEventLinks.$inferSelect>();
+  for (const ids of chunkIds([...owned])) {
+    for (const l of await db.select().from(calendarEventLinks).where(inArray(calendarEventLinks.workoutId, ids))) {
+      existing.set(l.workoutId, l);
+    }
+  }
+  for (const workoutId of owned) {
+    const current = existing.get(workoutId);
+    if (current && liveIds.has(current.eventId)) continue;
+    const event = eventByWorkout.get(workoutId)!;
+    const values = {
+      calendarId: input.calendarId,
+      eventId: event.id,
+      state: "synced",
+      lastWrittenFingerprint: event.extendedProperties?.private?.[`${CALENDAR_EVENT_PROPERTY_NS}Fingerprint`] ?? null,
+      lastWrittenAt: now,
+      userNotes: extractUserNotes(event.description) ?? null,
+      updatedAt: now,
+    };
+    if (current) await db.update(calendarEventLinks).set(values).where(eq(calendarEventLinks.id, current.id));
+    else await db.insert(calendarEventLinks).values({ id: newId(), workoutId, createdAt: now, ...values });
+    input.stats.adopted = (input.stats.adopted ?? 0) + 1;
+  }
+
+  // (b)
+  const deletedInFile = new Set(
+    input.suppressions
+      .filter((s) => s.reason === "user_deleted" && (!input.restoreFinishedAt || s.createdAt <= input.restoreFinishedAt))
+      .map((s) => s.workoutId),
+  );
+  const linkBy = new Map(input.links.map((l) => [l.workoutId, l]));
+  for (const w of input.workouts) {
+    if (w.archivedAt || w.category === "rest") continue;
+    const restored = linkBy.get(w.id);
+    if (!restored || liveIds.has(restored.eventId)) continue;
+    if (eventByWorkout.has(w.id)) continue; // (a) linked another event carrying its id
+    if (deletedInFile.has(w.id)) continue;
+    await db.delete(calendarEventLinks).where(eq(calendarEventLinks.id, restored.id));
+    input.stats.recreated = (input.stats.recreated ?? 0) + 1;
+  }
+}
+
+/**
+ * Post-restore (c): delete events that carry THIS app's origin and whose
+ * rgWorkoutId names no row — sessions the restore took away (added after the
+ * export), whose events nothing else would ever remove. The id is looked up
+ * against every planned_workouts row, not the sync's window (an event on the
+ * day before the window is still a live row's), and against every account
+ * (a row of another account is never this sweep's to judge). An unstamped
+ * event is never deleted: it may predate the stamp, or belong to another
+ * deployment writing into the same calendar. At most
+ * POST_RESTORE_DELETE_CAP deletions per sync; returns true once none remain.
+ */
+async function sweepOrphans(
+  db: Db,
+  client: GoogleCalendarClient,
+  calendarId: string,
+  appUrl: string,
+  items: RawGoogleEvent[],
+  stats: CalendarSyncStats,
+): Promise<boolean> {
+  const origin = appOrigin(appUrl);
+  if (!origin) return true;
+  const stamped = items.filter(
+    (e) => liveEvent(e) && originFromEvent(e.extendedProperties) === origin && workoutIdFromEvent(e.extendedProperties),
+  );
+  const named = await workoutIdsWithRows(db, stamped.map((e) => workoutIdFromEvent(e.extendedProperties)!));
+  const orphans = stamped.filter((e) => !named.has(workoutIdFromEvent(e.extendedProperties)!));
+  for (const e of orphans.slice(0, POST_RESTORE_DELETE_CAP)) {
+    try {
+      await client.deleteEvent(calendarId, e.id);
+      stats.deleted += 1;
+      stats.orphansDeleted = (stats.orphansDeleted ?? 0) + 1;
+    } catch {
+      stats.opErrors = (stats.opErrors ?? 0) + 1;
+      return false; // tried again on the next full read
+    }
+  }
+  return orphans.length <= POST_RESTORE_DELETE_CAP;
 }
 
 /** Restore a user-deleted event (explicit user action). */

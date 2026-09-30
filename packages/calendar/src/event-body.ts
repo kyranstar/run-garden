@@ -123,8 +123,19 @@ export function eventContentFingerprint(resource: GoogleEventResource): string {
   });
 }
 
+/** The origin of an app URL ("https://host[:port]"), or undefined. */
+export function appOrigin(appUrl: string | undefined): string | undefined {
+  if (!appUrl) return undefined;
+  try {
+    return new URL(appUrl).origin;
+  } catch {
+    return undefined;
+  }
+}
+
 export function buildEventResource(input: BuildEventInput): GoogleEventResource {
   const { workout: w, block, reminders, timezone, appUrl, userNotes } = input;
+  const origin = appOrigin(appUrl);
   const resource: GoogleEventResource = {
     summary: buildEventTitle(w),
     description: buildEventDescription(w, appUrl, userNotes),
@@ -138,6 +149,12 @@ export function buildEventResource(input: BuildEventInput): GoogleEventResource 
       private: {
         [`${CALENDAR_EVENT_PROPERTY_NS}WorkoutId`]: w.workoutId,
         [`${CALENDAR_EVENT_PROPERTY_NS}App`]: PRODUCT_NAME,
+        // Which deployment wrote it (audit 1 data, ruling B6). A staging or
+        // local stack signed in to the same Google account writes events into
+        // the same calendar; the post-restore sweep deletes only events that
+        // carry THIS origin, and never an unstamped one. Not part of the
+        // content fingerprint, so stamping never rewrites an existing event.
+        ...(origin ? { [`${CALENDAR_EVENT_PROPERTY_NS}Origin`]: origin } : {}),
       },
     },
     transparency: "opaque",
@@ -151,4 +168,11 @@ export function workoutIdFromEvent(extendedProperties?: {
   private?: Record<string, string>;
 }): string | undefined {
   return extendedProperties?.private?.[`${CALENDAR_EVENT_PROPERTY_NS}WorkoutId`];
+}
+
+/** The deployment that wrote an event, if it was stamped. */
+export function originFromEvent(extendedProperties?: {
+  private?: Record<string, string>;
+}): string | undefined {
+  return extendedProperties?.private?.[`${CALENDAR_EVENT_PROPERTY_NS}Origin`];
 }

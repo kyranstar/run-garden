@@ -2,12 +2,14 @@ import { describe, expect, it } from "vitest";
 import { DEFAULT_SCHEDULING_PREFERENCES } from "@rg/domain";
 import { computeBlock, planReminders } from "@rg/scheduling";
 import {
+  appOrigin,
   buildEventDescription,
   buildEventResource,
   buildEventTitle,
   eventContentFingerprint,
   extractUserNotes,
   NOTES_MARKER,
+  originFromEvent,
   workoutIdFromEvent,
   type EventWorkoutInfo,
 } from "../src/event-body.js";
@@ -77,6 +79,19 @@ describe("event body", () => {
     const r = makeResource();
     expect(workoutIdFromEvent(r.extendedProperties)).toBe("w-11");
     expect(r.extendedProperties.private["rgFingerprint"]).toBe(eventContentFingerprint(r));
+  });
+
+  it("stamps the app's origin, so a post-restore sweep only ever touches this app's events (B6)", () => {
+    const r = makeResource();
+    expect(r.extendedProperties.private["rgOrigin"]).toBe("https://rg.example.com");
+    expect(originFromEvent(r.extendedProperties)).toBe("https://rg.example.com");
+    expect(originFromEvent({ private: { rgWorkoutId: "w" } })).toBeUndefined();
+    expect(appOrigin("https://rg.example.com/some/path")).toBe("https://rg.example.com");
+    expect(appOrigin("not a url")).toBeUndefined();
+    // The stamp is not content: adding it never rewrites an existing event.
+    const unstamped = { ...r, extendedProperties: { private: { ...r.extendedProperties.private } } };
+    delete unstamped.extendedProperties.private["rgOrigin"];
+    expect(eventContentFingerprint(unstamped)).toBe(eventContentFingerprint(r));
   });
 });
 
