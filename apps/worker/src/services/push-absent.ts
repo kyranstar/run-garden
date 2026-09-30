@@ -26,16 +26,10 @@
 
 import { and, desc, eq, gte, inArray, isNotNull, isNull } from "drizzle-orm";
 import { auditEvents, dailyHealth, plannedWorkouts, plannedWorkoutStages } from "@rg/database";
-import { newId, nowInstant, todayInZone } from "@rg/domain";
+import { newId, nowInstant, todayInZone, watchAddressOf } from "@rg/domain";
 import { chunkIds, type Db } from "./db.js";
 import { loadPreferences } from "./calendar-sync.js";
-import {
-  enqueueWatchCreate,
-  sessionColumns,
-  watchAddressOf,
-  watchPushable,
-  writeStages,
-} from "./coach-apply.js";
+import { enqueueWatchCreate, sessionColumns, watchPushable, writeStages } from "./coach-apply.js";
 import { sessionFromRow } from "./content-converge.js";
 
 /** `audit_events.kind` for the pre-change backup written by a live run. */

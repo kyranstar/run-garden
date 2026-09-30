@@ -10,6 +10,7 @@ import {
 import { formatStageDistance, formatStageDuration } from "./duration.js";
 import { isoWeekday } from "./time.js";
 import { sessionWatchCoverage, type WatchCoverageView } from "./watch-coverage.js";
+import { watchAddressOf, type WatchAddressFields } from "./watch-address.js";
 
 /**
  * THE MANIFEST: what a proposal actually does, computed from its ops.
@@ -103,14 +104,12 @@ export interface PlannedRef {
   appPushed?: boolean;
 }
 
-/** The shape `watchAddressOf` (worker) requires of a planned row: a
- * `planId:workoutId` source id plus the program and in-plan ids. */
-export function hasWatchAddress(w: {
-  sourceWorkoutId?: string | null;
-  sourceIdInPlan?: string | null;
-  sourceProgramId?: string | null;
-}): boolean {
-  return !!w.sourceWorkoutId && /^\d+:\d+$/.test(w.sourceWorkoutId) && !!w.sourceIdInPlan && !!w.sourceProgramId;
+/** Does COROS provably hold this row? The SAME predicate the worker's writes
+ * are gated on (`watchAddressOf`), so the manifest cannot call a session "on
+ * the watch" that the write lane would refuse as not there (audit 1, coach
+ * finding 6). */
+export function hasWatchAddress(w: WatchAddressFields): boolean {
+  return watchAddressOf(w) !== null;
 }
 
 const WEEKDAYS = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];

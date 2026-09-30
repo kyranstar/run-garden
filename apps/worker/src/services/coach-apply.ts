@@ -20,6 +20,7 @@ import {
   sessionExercises,
   sessionSport,
   todayInZone,
+  watchAddressOf,
   type CoachOp,
   type CoachSession,
   type UserPreferences,
@@ -494,42 +495,11 @@ export async function enqueueWatchCreate(
 }
 
 // ── Convergence: keeping the watch's copy equal to the app's ────────────────
-
-/**
- * The address COROS is holding a session at, when the row can prove one.
- *
- * Every field is a CLAIM the executor re-proves; this function's whole job is to
- * refuse to produce a half-address. `sourceWorkoutId` is `${corosPlanId}:${idInPlan}`
- * for a wire row and the row's own uuid for an app-authored one, so the shape
- * test is what separates "COROS has this" from "the app made this up".
- *
- * `lastVerifiedCorosDate` is required and is the interesting half: `""` means
- * COROS has never confirmed this row (audit#2 #1), and a rewrite addressed at a
- * day COROS never put the session on is a rewrite aimed at nothing.
- */
-export interface WatchAddress {
-  corosPlanId: string;
-  idInPlan: string;
-  programId: string;
-  happenDay: string;
-}
-
-export function watchAddressOf(w: {
-  sourceWorkoutId: string | null;
-  sourceIdInPlan: string | null;
-  sourceProgramId: string | null;
-  lastVerifiedCorosDate: string;
-}): WatchAddress | null {
-  if (!w.sourceWorkoutId || !/^\d+:\d+$/.test(w.sourceWorkoutId)) return null;
-  if (!w.sourceIdInPlan || !w.sourceProgramId) return null;
-  if (!w.lastVerifiedCorosDate) return null;
-  return {
-    corosPlanId: w.sourceWorkoutId.split(":")[0]!,
-    idInPlan: w.sourceIdInPlan,
-    programId: w.sourceProgramId,
-    happenDay: w.lastVerifiedCorosDate,
-  };
-}
+//
+// `watchAddressOf` — "the address COROS is holding a session at, when the row
+// can prove one" — lives in @rg/domain (watch-address.ts) since audit 1 (coach
+// finding 6), so the manifest's `hasWatchAddress` and every write gate here
+// read one predicate instead of two that had drifted.
 
 /** Why no convergence job was queued, in the vocabulary the caller reports in. */
 export type ConvergeRefusal =

@@ -4,6 +4,7 @@ import { corosWriteJobs, dailyHealth, plannedWorkouts } from "@rg/database";
 import {
   nowInstant,
   todayInZone,
+  watchAddressOf,
   type CoachSession,
   type CorosWriteResult,
   type UserPreferences,
@@ -36,7 +37,6 @@ import { claimUserLock, releaseUserLock } from "./locks.js";
 import { exerciseNameMap } from "./exercise-catalog.js";
 import { openIntentFor, resolveIntent } from "./sync-intents.js";
 import { enqueueUnpushIfOurs } from "./plan-mutations.js";
-import { watchAddressOf } from "./coach-apply.js";
 
 /**
  * Cloud write consumer (cloud-direct spec §4): the same job queue with all

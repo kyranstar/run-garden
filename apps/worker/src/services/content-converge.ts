@@ -78,15 +78,11 @@ import {
   newId,
   nowInstant,
   sessionSummaryLine,
+  watchAddressOf,
   type CoachSession,
 } from "@rg/domain";
 import { chunkIds, type Db } from "./db.js";
-import {
-  enqueueContentConvergence,
-  ownershipProofFor,
-  watchAddressOf,
-  watchPushable,
-} from "./coach-apply.js";
+import { enqueueContentConvergence, ownershipProofFor, watchPushable } from "./coach-apply.js";
 
 /** `audit_events.kind` for the pre-change backup written by a live run. */
 export const CONTENT_CONVERGE_BACKUP_KIND = "coach_content_convergence_backfilled";

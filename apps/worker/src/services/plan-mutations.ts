@@ -1,9 +1,8 @@
 import { and, eq, inArray } from "drizzle-orm";
 import { calendarEventSuppressions, corosWriteJobs, plannedWorkouts, scheduleOverrides } from "@rg/database";
-import { newId, type UserPreferences } from "@rg/domain";
+import { newId, watchAddressOf, type UserPreferences } from "@rg/domain";
 import type { Db } from "./db.js";
 import { recordedStampFor } from "./coros-stamp.js";
-import { watchAddressOf } from "./coach-apply.js";
 import { openIntentFor, recordIntent, resolveIntent, type IntentSource } from "./sync-intents.js";
 
 /**

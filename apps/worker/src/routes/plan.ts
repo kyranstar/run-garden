@@ -34,6 +34,7 @@ import {
   startOfIsoWeek,
   syncAction,
   todayInZone,
+  watchAddressOf,
   watchCoverage,
   type LocalDate,
   type PlannedWorkout,
@@ -67,7 +68,6 @@ import { buildReadiness } from "../services/readiness.js";
 import { isLoosePlan } from "../services/coach-plans.js";
 import { repairPlannedWorkoutFidelity } from "../services/plan-repair.js";
 import { executeCloudJobs } from "../services/coros-write-cloud.js";
-import { watchAddressOf } from "../services/coach-apply.js";
 
 export const planRoutes = new Hono<AppContext>();
 planRoutes.use("*", requireUser);

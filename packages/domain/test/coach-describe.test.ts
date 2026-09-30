@@ -13,6 +13,7 @@
 import { describe, expect, it } from "vitest";
 import { coachOpSchema, type CoachOp } from "../src/coach.js";
 import { describeOps, hasWatchAddress, type PlannedRef } from "../src/coach-describe.js";
+import { watchAddressOf } from "../src/watch-address.js";
 
 const LIVE_OPS: unknown[] = [
   {
@@ -298,14 +299,41 @@ describe("describeOps — every op kind is described", () => {
 
   it("an adjust on a watch-addressed row says the watch is unchanged; an unpushed coach row does not", () => {
     const op = [coachOpSchema.parse(SAMPLES.adjust)];
-    const ref = (src: string | null, inPlan: string | null, prog: string | null): PlannedRef => ({
+    const ref = (src: string | null, inPlan: string | null, prog: string | null, verified = "2026-08-20"): PlannedRef => ({
       summary: "Tempo",
-      onWatch: hasWatchAddress({ sourceWorkoutId: src, sourceIdInPlan: inPlan, sourceProgramId: prog }),
+      onWatch: hasWatchAddress({
+        sourceWorkoutId: src,
+        sourceIdInPlan: inPlan,
+        sourceProgramId: prog,
+        lastVerifiedCorosDate: verified,
+      }),
     });
     const onWatch = describeOps(op, new Map([["w1", ref("4738:12", "3", "9")]]));
     expect(onWatch[0]!.summary.endsWith("· watch unchanged")).toBe(true);
     const coachRow = describeOps(op, new Map([["w1", ref("coach-abc", null, null)]]));
     expect(coachRow[0]!.summary).not.toContain("watch unchanged");
+    // Audit 1, coach finding 6: a pushed lift eased into content that cannot
+    // be pushed is UNPUSHED, which clears `lastVerifiedCorosDate` and keeps the
+    // source ids. It is no longer on the watch, so there is nothing "unchanged".
+    const unpushed = describeOps(op, new Map([["w1", ref("4738:12", "3", "9", "")]]));
+    expect(unpushed[0]!.summary).not.toContain("watch unchanged");
+  });
+
+  it("the manifest and the worker read ONE watch-address predicate", () => {
+    const rows = [
+      { sourceWorkoutId: "4738:12", sourceIdInPlan: "3", sourceProgramId: "9", lastVerifiedCorosDate: "2026-08-20" },
+      { sourceWorkoutId: "4738:12", sourceIdInPlan: "3", sourceProgramId: "9", lastVerifiedCorosDate: "" },
+      { sourceWorkoutId: "coach-abc", sourceIdInPlan: "3", sourceProgramId: "9", lastVerifiedCorosDate: "2026-08-20" },
+      { sourceWorkoutId: "4738:12", sourceIdInPlan: null, sourceProgramId: "9", lastVerifiedCorosDate: "2026-08-20" },
+      { sourceWorkoutId: "4738:12", sourceIdInPlan: "3", sourceProgramId: null, lastVerifiedCorosDate: "2026-08-20" },
+    ];
+    expect(rows.map(hasWatchAddress)).toEqual(rows.map((r) => watchAddressOf(r) !== null));
+    expect(watchAddressOf(rows[0]!)).toEqual({
+      corosPlanId: "4738",
+      idInPlan: "3",
+      programId: "9",
+      happenDay: "2026-08-20",
+    });
   });
 
   it("a remove says the session comes off the watch only when the app pushed it there", () => {

@@ -19,6 +19,7 @@ export * from "./devices.js";
 export * from "./studio.js";
 export * from "./coach.js";
 export * from "./watch-coverage.js";
+export * from "./watch-address.js";
 export * from "./sync-action.js";
 export * from "./coach-describe.js";
 export * from "./coach-guardrails.js";
