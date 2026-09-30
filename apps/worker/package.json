@@ -6,6 +6,8 @@
   "scripts": {
     "dev": "wrangler dev --port 8787",
     "deploy": "wrangler deploy",
+    "deploy:staging": "wrangler deploy --env staging",
+    "migrate:staging": "wrangler d1 migrations apply run-garden-db-staging --remote --env staging",
     "build": "wrangler deploy --dry-run --outdir dist",
     "typecheck": "tsc --noEmit",
     "db:migrate:local": "wrangler d1 migrations apply run-garden-db --local",

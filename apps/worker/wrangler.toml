@@ -60,3 +60,26 @@ FIXTURE_MODE = "0"
 AI_DEFAULT_ENABLED = "1"
 # LLM via Vercel AI Gateway (OpenAI-compatible). Key is a secret; model is here.
 AI_GATEWAY_MODEL = "anthropic/claude-haiku-4.5"
+
+# ── Staging (inert: no crons, outbound fetch guarded — see docs/STAGING.md) ──
+# vars, d1_databases and triggers are declared in full; nothing here points at
+# production's database.
+[env.staging]
+name = "run-garden-staging"
+workers_dev = true
+
+[env.staging.vars]
+APP_URL = "https://run-garden-staging.kyranadams.workers.dev"
+FIXTURE_MODE = "0"
+AI_DEFAULT_ENABLED = "0"
+STAGING = "1"
+
+[[env.staging.d1_databases]]
+binding = "DB"
+database_name = "run-garden-db-staging"
+# The orchestrator fills this when the database is created.
+database_id = "REPLACED_ON_CREATE"
+migrations_dir = "../../packages/database/migrations"
+
+[env.staging.triggers]
+crons = []
