@@ -375,6 +375,8 @@ export async function processCoachReads(
     const token = await claimRead(db, userId, candidate, now);
     if (!token) continue; // lost the race for this row — try the next
     const gen = await generateRead(db, env, userId, candidate.activityId, fetchImpl);
+    // A restore that began during the model call wins (B9): nothing lands.
+    if (await restoreInProgress(db, userId)) break;
     if (gen.ok && gen.out) {
       const model = env.AI_COACH_READ_MODEL || env.AI_STUDIO_MODEL_STRONG || DEFAULT_MODEL_STRONG;
       if (await completeRead(db, candidate.id, token, gen.out, model)) processed += 1;
@@ -485,6 +487,7 @@ export async function ensureRead(
   if (!token) return { status: "working" };
 
   const gen = await generateRead(db, env, userId, activityId, fetchImpl);
+  if (await restoreInProgress(db, userId)) return { status: "error" };
   if (!gen.ok || !gen.out) {
     await failRead(db, row.id, token, row.attempt + 1);
     return { status: "error" };

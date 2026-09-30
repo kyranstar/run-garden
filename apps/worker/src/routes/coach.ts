@@ -30,6 +30,7 @@ import {
 } from "@rg/domain";
 import type { AppContext } from "../auth/middleware.js";
 import { requireUser } from "../auth/middleware.js";
+import { restoreInProgress } from "../services/account-state.js";
 import { loadPreferences, syncCalendar } from "../services/calendar-sync.js";
 import { resimulateFrom } from "../services/garden-sync.js";
 import { waitUntilSafe } from "../services/wait-until.js";
@@ -122,9 +123,14 @@ coachRoutes.get("/state", async (c) => {
   const userId = c.get("userId");
   const prefs = await loadPreferences(db, userId);
   const today = todayInZone(prefs.timezone);
-  await sweepExpiredProposals(db, userId, today);
-  await sweepStaleQuestions(db, userId, nowInstant());
-  await evaluateTriggers(db, userId, prefs, today).catch(() => []);
+  // A restore is replacing the account (ruling B9): the read answers, but it
+  // expires, sweeps and marks nothing — a trigger evaluated against a
+  // half-restored account would recommend a paid wake on a false signal.
+  if (!(await restoreInProgress(db, userId))) {
+    await sweepExpiredProposals(db, userId, today);
+    await sweepStaleQuestions(db, userId, nowInstant());
+    await evaluateTriggers(db, userId, prefs, today).catch(() => []);
+  }
 
   const before = c.req.query("before");
   const msgs = await db

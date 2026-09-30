@@ -3,6 +3,7 @@ import { llmUsage, weeklyReviews } from "@rg/database";
 import { fingerprint, newId, nowInstant, type UserPreferences } from "@rg/domain";
 import type { Env } from "../env.js";
 import type { Db } from "./db.js";
+import { restoreInProgress } from "./account-state.js";
 
 /**
  * The only place the app talks to an LLM. Routed through the Vercel AI Gateway
@@ -158,6 +159,10 @@ export async function generateWeeklyReview(
   }
 
   const persist = async (narrative: string | null, llmCostMicros: number | null): Promise<void> => {
+    // A restore that began during the model call wins (ruling B9): the file
+    // carries its own reviews, and this one was drawn from the account the
+    // restore is replacing.
+    if (await restoreInProgress(db, userId)) return;
     if (existing[0]) {
       await db
         .update(weeklyReviews)

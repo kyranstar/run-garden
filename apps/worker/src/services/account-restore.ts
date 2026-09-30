@@ -448,6 +448,17 @@ export function neutralise(table: string, row: Row, now: string): Row {
   }
 }
 
+/**
+ * Tables that hold one row per account AND key, under a unique index other
+ * than the primary key: the FILE's row must win a key some writer took first
+ * (ruling B9). `computed_metrics` is one row per (account, metric) — a
+ * records row upserted mid-restore by an insights read would otherwise keep
+ * the file's row out with the same id, and nothing would count it lost.
+ */
+const ONE_ROW_PER_KEY: Record<string, string[]> = {
+  computed_metrics: ["userId", "metricKey"],
+};
+
 /** The single primary-key column (every restorable table has exactly one). */
 function pkColumn(entry: AccountTable): SQLiteColumn {
   const [pk, ...rest] = orderColumns(entry.table);
@@ -505,7 +516,9 @@ export async function restoreRows(
   // garden, the backfill checkpoint): the FILE must win it, even over a row
   // some writer slipped in before the marker was seen.
   const singleton = pk.name === "user_id";
-  const perInsert = singleton ? 1 : Math.max(1, Math.floor(100 / columns.length));
+  const keyedBy = ONE_ROW_PER_KEY[entry.name];
+  const perInsert = singleton || keyedBy ? 1 : Math.max(1, Math.floor(100 / columns.length));
+  const tableColumns = getTableColumns(entry.table) as Record<string, SQLiteColumn>;
   const insert = (batch: Row[]) => {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const q = db.insert(entry.table as any).values(batch as any);
@@ -513,6 +526,12 @@ export async function restoreRows(
       const { [pkKey]: _pk, ...set } = batch[0]!;
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       return q.onConflictDoUpdate({ target: pk as any, set: set as any });
+    }
+    if (keyedBy) {
+      const set: Row = { ...batch[0]! };
+      for (const k of keyedBy) delete set[k];
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      return q.onConflictDoUpdate({ target: keyedBy.map((k) => tableColumns[k]!) as any, set: set as any });
     }
     return q.onConflictDoNothing();
   };

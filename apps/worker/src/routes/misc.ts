@@ -114,7 +114,7 @@ import {
   restoreSkips,
   startFresh,
 } from "../services/account-restore.js";
-import { loadAccountState, restoreStatusOf } from "../services/account-state.js";
+import { loadAccountState, restoreInProgress, restoreStatusOf } from "../services/account-state.js";
 
 // ── Calendar management ──────────────────────────────────────────────────────
 
@@ -895,7 +895,10 @@ insightRoutes.get("/", async (c) => {
         id: r.id.includes(":") ? r.id : `run:${r.id}`,
       }));
   const records = mergeRecords(fresh, storedRecords);
-  if (JSON.stringify(records) !== JSON.stringify(storedRecords)) {
+  // While a restore is replacing the account this read serves what it
+  // computed but stores nothing (ruling B9): a records row upserted from a
+  // half-restored account would take the file's row's key.
+  if (JSON.stringify(records) !== JSON.stringify(storedRecords) && !(await restoreInProgress(db, userId))) {
     const persisted = {
       computedAt: nowInstant(),
       inputFingerprint: stableHash(JSON.stringify(fresh)),

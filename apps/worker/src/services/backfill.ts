@@ -353,6 +353,9 @@ export async function runBackfillChunkCloud(
     const chunk = await buildActivityBackfill(client, payload.chunkStart, payload.chunkEnd, undefined, {
       delayMs: 25,
     });
+    // The pull takes a while; a restore that began meanwhile wins (B9) —
+    // the job stays queued in the file's account as the file has it.
+    if (await restoreInProgress(db, userId)) return { ran: false };
     await recordChunk(db, userId, {
       chunkStart: payload.chunkStart,
       chunkEnd: payload.chunkEnd,

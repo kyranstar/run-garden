@@ -1097,6 +1097,10 @@ export async function recordAthleteMessage(db: Db, userId: string, body: string)
  * of those is the athlete's calendar date, and pinning them would make a
  * 125-second wake claim it took no time at all.
  */
+/** A restore began while this wake was thinking (ruling B9): it stops
+ * before it writes a word — the account is being replaced under it. */
+class RestoreBegan extends Error {}
+
 export async function wake(
   db: Db,
   env: Env,
@@ -1199,6 +1203,10 @@ export async function wake(
         return { out: null, raw: "", issues: "" };
       }
       await recordUsage(db, userId, "coach_wake", model, "strong", chat, `wake:${userId}:${nowInstant()}`);
+      // Every model call takes long enough for a restore to begin meanwhile;
+      // everything this wake writes comes after one, so this is where it
+      // stands down (the spend above did happen, and stays on the record).
+      if (await restoreInProgress(db, userId)) throw new RestoreBegan();
       const json = extractJson(chat.content);
       const parsed = wakeOutputSchema.safeParse(json);
       if (parsed.success) {
@@ -1714,6 +1722,7 @@ export async function wake(
       ...(rejectedIds.length > 0 ? { rejectedProposalIds: rejectedIds } : {}),
     };
   } catch (err) {
+    if (err instanceof RestoreBegan) return { status: "skipped" };
     // A crash AFTER the briefing landed is not "the coach couldn't think" —
     // it thought, it spoke, and the plan changes fell over behind the words.
     // Saying the wrong one of those costs the athlete their answer.

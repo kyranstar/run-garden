@@ -35,7 +35,7 @@ import { executeCloudJobs } from "./services/coros-write-cloud.js";
 import { purgeExpiredSessions, createSession, sessionCookie } from "./auth/sessions.js";
 import { purgeExpiredStates } from "./auth/google.js";
 import { ensureFixtureUser, seedFixtures } from "./services/fixtures.js";
-import { accountsRestoring } from "./services/account-state.js";
+import { accountsRestoring, restoreInProgress } from "./services/account-state.js";
 
 const app = new Hono<AppContext>();
 
@@ -148,29 +148,48 @@ export async function halfHourly(db: Db, env: Env): Promise<void> {
   await purgeExpiredStates(db);
 }
 
+/** Thrown between steps of a per-user cron loop when a restore began for
+ * that account while the loop was working on it (ruling B9). */
+class RestoreBegan extends Error {}
+
 export async function hourly(db: Db, env: Env): Promise<void> {
   await closeStrandedSyncRuns(db).catch(() => undefined);
   await sweepStaleSuppressions(db).catch(() => undefined);
   for (const userId of await allUserIds(db)) {
     const runId = await startSyncRun(db, "reconcile", userId);
+    // The loop was handed this account before any step ran, and a step (the
+    // garden's, a coach read) can take seconds: a restore that began since
+    // must stop every step still to come, not only the ones that check the
+    // marker themselves.
+    const stillOurs = async (): Promise<void> => {
+      if (await restoreInProgress(db, userId)) throw new RestoreBegan();
+    };
     try {
       const prefs = await loadPreferences(db, userId);
+      await stillOurs();
       const rec = await reconcileCompletionStates(db, userId, prefs);
+      await stillOurs();
       const garden = await advanceGarden(db, userId, prefs);
+      await stillOurs();
       await healLegacySyncState(db, userId);
+      await stillOurs();
       // Coach trigger marks are cheap SQL — a fired row waits for the next
       // wake; nothing here thinks (spec §1).
       await evaluateTriggers(db, userId, prefs, todayInZone(prefs.timezone)).catch(() => []);
+      await stillOurs();
       await sweepUserProposals(db, userId, prefs.timezone).catch(() => undefined);
+      await stillOurs();
       // Perception catch-up: drains reads a dropped waitUntil missed. Cap 2
       // per tick keeps the per-user loop bounded (rework spec §1).
       await processCoachReads(db, env, userId, prefs, {}).catch(() => undefined);
+      await stillOurs();
       // Cloud-direct writes (spec §4): queued watch updates execute here
       // when a cloud connection exists — the Mac is no longer in the loop.
       await executeCloudJobs(db, env, userId, prefs).catch(() => undefined);
       await finishSyncRun(db, runId, "ok", { ...rec, ...garden });
-    } catch {
-      await finishSyncRun(db, runId, "error");
+    } catch (e) {
+      if (e instanceof RestoreBegan) await finishSyncRun(db, runId, "ok", { skipped: "restoring" });
+      else await finishSyncRun(db, runId, "error");
     }
   }
 }
@@ -254,6 +273,12 @@ export async function weekly(db: Db, env: Env): Promise<void> {
         },
       });
 
+      // A restore that began while this week's facts were gathered wins
+      // (B9); generateWeeklyReview checks again before it writes.
+      if (await restoreInProgress(db, userId)) {
+        await finishSyncRun(db, runId, "ok", { skipped: "restoring" });
+        continue;
+      }
       const result = await generateWeeklyReview(
         db,
         env,
