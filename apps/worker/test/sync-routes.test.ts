@@ -47,6 +47,7 @@ function makeEnv(): Env {
 
 afterEach(() => {
   vi.unstubAllGlobals();
+  vi.useRealTimers();
 });
 
 let db: Db;
@@ -194,7 +195,14 @@ async function seedAdoptedPush(): Promise<{ planId: string; pushId: string }> {
   return { planId, pushId };
 }
 
+// The studio fixtures place workouts on 2026-09-07, and undo only re-plans
+// days still ahead of today — pin "today" before them so the suite doesn't
+// rot with the real clock. Only Date is faked; timers stay real.
+const PINNED_NOW = new Date("2026-09-02T12:00:00Z");
+
 beforeEach(async () => {
+  vi.useFakeTimers({ toFake: ["Date"] });
+  vi.setSystemTime(PINNED_NOW);
   db = makeTestDb();
   const user = await makeTestUser(db, { corosWritesEnabled: true });
   userId = user.userId;

@@ -8,7 +8,7 @@ import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { MemoryRouter } from "react-router-dom";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { CoachPlanDto, PlanDetailResponse, PlanWeekResponse, WorkoutDto } from "@rg/api-client";
 import { BriefExplainerSheet, HEADLINE_COPY, headlineContext, WeeklyBrief } from "../src/screens/plan-brief.js";
 import { PlanCards, progressionHeadline } from "../src/screens/plan-cards.js";
@@ -215,6 +215,17 @@ describe("jump-to-week menu placement", () => {
 });
 
 describe("PlanCards", () => {
+  // "Current" vs "upcoming" is read off the real clock — pin today inside
+  // runPlan's window and before the upcoming block starts (2026-10-24), or the
+  // grouping assertions rot as the calendar passes the fixtures.
+  beforeEach(() => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(new Date("2026-09-02T12:00:00Z"));
+  });
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
   const runPlan: CoachPlanDto = {
     id: "cp1",
     discipline: "run",

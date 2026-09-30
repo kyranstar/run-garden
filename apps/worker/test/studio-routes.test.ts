@@ -18,7 +18,7 @@
  * with `FIXTURE_MODE` off.
  */
 
-import { beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { Hono } from "hono";
 import { eq } from "drizzle-orm";
 import { schema } from "@rg/database";
@@ -299,7 +299,18 @@ function chatResponse(content: unknown): Response {
   );
 }
 
+// The fixtures hardcode plan weeks from 2026-09-07 on, and generate rejects a
+// start date before today — pin "today" ahead of them, or the suite rots the
+// day the real clock passes the fixtures. Only Date is faked; timers stay real.
+const PINNED_NOW = new Date("2026-09-02T12:00:00Z");
+
+afterEach(() => {
+  vi.useRealTimers();
+});
+
 beforeEach(async () => {
+  vi.useFakeTimers({ toFake: ["Date"] });
+  vi.setSystemTime(PINNED_NOW);
   db = makeTestDb();
   const user = await makeTestUser(db, { corosWritesEnabled: true });
   userId = user.userId;
