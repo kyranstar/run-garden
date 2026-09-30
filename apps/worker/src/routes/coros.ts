@@ -12,6 +12,8 @@ import { waitUntilSafe } from "../services/wait-until.js";
 import { processCoachReads } from "../services/coach-reads.js";
 import { loadPreferences } from "../services/calendar-sync.js";
 import { MAX_WINDOW_DAYS, probeStrengthLapKeys } from "../services/coros-lap-probe.js";
+import { runUnmappedMoveSpike, SPIKE_CONFIRM } from "../services/coros-unmapped-spike.js";
+import { fixtureModeEnabled } from "../env.js";
 
 /**
  * Cloud COROS connection surface (cloud-direct spec §1). The password's MD5
@@ -94,6 +96,35 @@ corosRoutes.get("/debug/lap-keys", async (c) => {
     case "coros_error":
       return c.json({ error: "coros_error", ...(result.code ? { code: result.code } : {}) }, 502);
     case "ok":
+      return c.json(result.body);
+  }
+});
+
+const spikeConfirmSchema = z.object({ confirm: z.literal(SPIKE_CONFIRM) }).strict();
+
+/**
+ * Owner-gated write spike (Task 16): writes ONE stamped strength workout to
+ * the real COROS account, reads it back, deletes it. Absent (404) unless the
+ * body is exactly `{ "confirm": "write a test workout" }` AND COROS writes are
+ * enabled for the account.
+ */
+corosRoutes.post("/spike/unmapped-moves", async (c) => {
+  const notFound = () => c.json({ error: "not_found" }, 404);
+  const confirmed = spikeConfirmSchema.safeParse(await c.req.json().catch(() => null));
+  if (!confirmed.success || fixtureModeEnabled(c.env)) return notFound();
+  const db = c.get("db");
+  const userId = c.get("userId");
+  const prefs = await loadPreferences(db, userId);
+  if (prefs.corosWritesEnabled !== true) return notFound();
+  const result = await runUnmappedMoveSpike(db, c.env, userId, prefs);
+  switch (result.status) {
+    case "not_connected":
+      return c.json({ error: "not_connected" }, 409);
+    case "busy":
+      return c.json({ error: "busy" }, 409);
+    case "catalog_incomplete":
+      return c.json({ error: "catalog_incomplete", message: result.message }, 422);
+    case "done":
       return c.json(result.body);
   }
 });
