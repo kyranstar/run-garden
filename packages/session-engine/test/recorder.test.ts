@@ -268,6 +268,18 @@ describe("review: decisions are a pending change set, applied on save (spec §5 
     expect(Review.pending(Review.graduate(review, "squat", harder.id, false), offers).graduations).toEqual([]);
   });
 
+  test("an offer withdrawn by an edit and then offered again comes back unaccepted (audit library #13)", () => {
+    const squat = block.core.squat!;
+    const harder = data.exercises.find(ex => Lib.coreFamilyOf(data, ex) === "squat" && ex.id !== squat && Lib.hasEquipment(ex, home.equipment))!;
+    const offers = [{ family: "squat", from: squat, to: harder.id }];
+    let review = Review.prune(Review.graduate(Review.start(), "squat", harder.id, true), offers);
+    expect(Review.pending(review, offers).graduations).toEqual([{ family: "squat", to: harder.id }]);
+    review = Review.prune(review, []);        // an edit withdraws the offer (the review re-renders)
+    review = Review.prune(review, offers);    // another edit brings it back
+    expect(review.graduate).toEqual({});
+    expect(Review.pending(review, offers).graduations).toEqual([]);
+  });
+
   test("the live session is untouched by review decisions", () => {
     const plan = planFor();
     const live: Live = Recorder.create(data, plan, meta(plan));

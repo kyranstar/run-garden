@@ -309,6 +309,13 @@ function graduateInReview(review: ReviewState, family: string, to: string, accep
 const stillOffered = (offers: readonly ReviewOffer[], accepted: Readonly<Record<string, string>>): Record<string, string> =>
   Object.fromEntries(Object.entries(accepted).filter(([f, to]) => offers.some(o => o.family === f && o.to === to)));
 
+/**
+ * The review with every "yes" to an offer that no longer stands dropped. Call it each time the offers are
+ * recomputed (after every edit), as the standalone review did, so an offer that is withdrawn and then comes back
+ * returns unaccepted.
+ */
+const prune = (review: ReviewState, offers: readonly ReviewOffer[]): ReviewState => ({ ...review, graduate: stillOffered(offers, review.graduate) });
+
 function pending(review: ReviewState, offers: readonly ReviewOffer[]): PendingChanges {
   return {
     ratings: { ...review.ratings },
@@ -341,4 +348,4 @@ function applyReview(data: EngineData, state: { prefs: Prefs; block: Block | nul
   return { prefs: applyToPrefs(state.prefs, changes), block };
 }
 
-export const Review = { start: startReview, rate, graduate: graduateInReview, stillOffered, pending, effectivePrefs, apply: applyReview };
+export const Review = { start: startReview, rate, graduate: graduateInReview, stillOffered, prune, pending, effectivePrefs, apply: applyReview };
