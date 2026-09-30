@@ -48,7 +48,7 @@
  *    account when the file came from a different one — that id is the one the
  *    check session signed, never one a later request names.
  */
-import { and, count, eq, getTableColumns, inArray } from "drizzle-orm";
+import { and, count, eq, getTableColumns, inArray, sql } from "drizzle-orm";
 import type { SQLiteColumn } from "drizzle-orm/sqlite-core";
 import { gardenState, SCHEMA_VERSION } from "@rg/database";
 import { isLocalDate, newId, nowInstant, userPreferencesSchema } from "@rg/domain";
@@ -604,14 +604,23 @@ export function neutralise(table: string, row: Row, now: string): Row {
 }
 
 /**
- * Tables that hold one row per account AND key, under a unique index other
- * than the primary key: the FILE's row must win a key some writer took first
- * (ruling B9). `computed_metrics` is one row per (account, metric) — a
- * records row upserted mid-restore by an insights read would otherwise keep
- * the file's row out with the same id, and nothing would count it lost.
+ * Tables whose rows a writer that missed the marker could land under the
+ * very key a row of the file will arrive with: the FILE's row must win that
+ * key (ruling B9), and a plain insert-or-ignore would keep it out silently —
+ * the key is present, so nothing counts it lost. Upserted on the key named.
+ *  - `computed_metrics`: one row per (account, metric); an insights read
+ *    upserts the records row.
+ *  - The garden's log (B4 amended: the file's garden is trusted, and nothing
+ *    rebuilds it afterwards): a walk already running when begin fired writes
+ *    events, day inputs and checkpoints under ids derived from the date, and
+ *    unlocks under (account, species).
  */
-const ONE_ROW_PER_KEY: Record<string, string[]> = {
+const FILE_WINS_ON: Record<string, string[]> = {
   computed_metrics: ["userId", "metricKey"],
+  garden_events: ["id"],
+  garden_day_inputs: ["id"],
+  garden_snapshots: ["id"],
+  garden_unlocks: ["userId", "speciesId"],
 };
 
 /** The single primary-key column (every restorable table has exactly one). */
@@ -694,9 +703,17 @@ async function restoreRowsInto(
   // garden, the backfill checkpoint): the FILE must win it, even over a row
   // some writer slipped in before the marker was seen.
   const singleton = pk.name === "user_id";
-  const keyedBy = ONE_ROW_PER_KEY[entry.name];
-  const perInsert = singleton || keyedBy ? 1 : Math.max(1, Math.floor(100 / columns.length));
+  const perInsert = singleton ? 1 : Math.max(1, Math.floor(100 / columns.length));
   const tableColumns = getTableColumns(entry.table) as Record<string, SQLiteColumn>;
+  const winsOn = FILE_WINS_ON[entry.name];
+  // Every other column takes the incoming (file's) value.
+  const fromFile = winsOn
+    ? Object.fromEntries(
+        columns
+          .filter(([key]) => !winsOn.includes(key))
+          .map(([key, col]) => [key, sql`excluded.${sql.identifier(col.name)}`]),
+      )
+    : null;
   const insert = (batch: Row[]) => {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const q = db.insert(entry.table as any).values(batch as any);
@@ -705,11 +722,9 @@ async function restoreRowsInto(
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       return q.onConflictDoUpdate({ target: pk as any, set: set as any });
     }
-    if (keyedBy) {
-      const set: Row = { ...batch[0]! };
-      for (const k of keyedBy) delete set[k];
+    if (winsOn && fromFile) {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      return q.onConflictDoUpdate({ target: keyedBy.map((k) => tableColumns[k]!) as any, set: set as any });
+      return q.onConflictDoUpdate({ target: winsOn.map((k) => tableColumns[k]!) as any, set: fromFile as any });
     }
     return q.onConflictDoNothing();
   };

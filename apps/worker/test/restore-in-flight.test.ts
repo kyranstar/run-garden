@@ -37,7 +37,8 @@ import { ensureRead, processCoachReads } from "../src/services/coach-reads.js";
 import { loadPreferences } from "../src/services/calendar-sync.js";
 import { beginRestore, finishRestore, restoreRows } from "../src/services/account-restore.js";
 import { createSession, SESSION_COOKIE } from "../src/auth/sessions.js";
-import { checkFile, exportAll, pagesOf, TEST_SECRET } from "./restore-driver.js";
+import { checkFile, exportAll, pagesOf, restoreAll, TEST_SECRET } from "./restore-driver.js";
+import { advanceGarden, ensureGarden } from "../src/services/garden-sync.js";
 
 function makeEnv(overrides: Partial<Env> = {}): Env {
   return {
@@ -328,6 +329,60 @@ describe("work already running when begin fires re-checks before it persists", (
         if (restoring) expect(s.after().filter((w) => !/"llm_usage"/.test(w))).toEqual([]);
       }
     }
+  });
+});
+
+describe("a garden walk already running when begin fires", () => {
+  it("stops within a week of days, and moves nothing durable", async () => {
+    const s = scene();
+    const { userId, prefs } = await makeTestUser(s.db);
+    s.setUser(userId);
+    const today = todayInZone(prefs.timezone);
+    await ensureGarden(s.db, userId, prefs, addDays(today, -120));
+    // Begin fires as the walk writes its first day.
+    s.markWhen(/insert into "garden_day_inputs"/);
+    await advanceGarden(s.db, userId, prefs);
+    const days = s.after().filter((w) => /"garden_day_inputs"/.test(w)).length;
+    expect(days).toBeLessThanOrEqual(7);
+    expect(s.after().filter((w) => /"garden_state"|"garden_plants"|"garden_wildlife"/.test(w))).toEqual([]);
+  });
+
+  it("the file's garden rows win over rows such a walk landed after the wipe", async () => {
+    const db = makeTestDb({ boundVariableCap: 100 });
+    const { userId, prefs } = await makeTestUser(db);
+    const today = todayInZone(prefs.timezone);
+    await seedRuns(db, userId, prefs.timezone, 8);
+    await ensureGarden(db, userId, prefs, addDays(today, -30));
+    await advanceGarden(db, userId, prefs);
+    await db.insert(schema.gardenUnlocks).values({ id: newId(), userId, speciesId: "clover", unlockedOn: addDays(today, -20) });
+    const file = await exportAll(db, userId);
+    const fileEvent = file.tables.garden_events![0]!;
+    const fileInput = file.tables.garden_day_inputs![0]!;
+    const fileSnapshot = file.tables.garden_snapshots![0]!;
+    const fileUnlock = file.tables.garden_unlocks![0]!;
+    await restoreAll(db, userId, file, {
+      // A walk that started before begin writes into the wiped account: the
+      // same ids (they derive from the date), different content.
+      beforeRows: async () => {
+        await db.insert(schema.gardenEvents).values({ ...(fileEvent as object), detail: "stale" } as never);
+        await db.insert(schema.gardenDayInputs).values({ ...(fileInput as object), input: { stale: true } } as never);
+        await db.insert(schema.gardenSnapshots).values({ ...(fileSnapshot as object), snapshot: { stale: true } } as never);
+        await db
+          .insert(schema.gardenUnlocks)
+          .values({ id: newId(), userId, speciesId: fileUnlock.speciesId as string, unlockedOn: "2020-01-01" });
+      },
+    });
+    const [event] = await db.select().from(schema.gardenEvents).where(eq(schema.gardenEvents.id, fileEvent.id as string));
+    expect(event).toEqual(fileEvent);
+    const [input] = await db.select().from(schema.gardenDayInputs).where(eq(schema.gardenDayInputs.id, fileInput.id as string));
+    expect(input).toEqual(fileInput);
+    const [snap] = await db.select().from(schema.gardenSnapshots).where(eq(schema.gardenSnapshots.id, fileSnapshot.id as string));
+    expect(snap).toEqual(fileSnapshot);
+    const unlocks = await db
+      .select()
+      .from(schema.gardenUnlocks)
+      .where(and(eq(schema.gardenUnlocks.userId, userId), eq(schema.gardenUnlocks.speciesId, fileUnlock.speciesId as string)));
+    expect(unlocks).toEqual([fileUnlock]);
   });
 });
 

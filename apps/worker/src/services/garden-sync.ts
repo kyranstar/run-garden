@@ -614,6 +614,15 @@ const UPGRADE_RESIM_MAX_DAYS = 45;
  */
 const CATCH_UP_MAX_DAYS = 45;
 
+/**
+ * A walk looks for the restore marker every this many simulated days (B9):
+ * a long walk already running when begin fires stops within a week of days
+ * instead of writing the rest of its range into the account being replaced.
+ * One indexed read a week of walking; the restore's garden rows then win the
+ * handful of keys it wrote (account-restore's FILE_WINS_ON).
+ */
+const MARKER_CHECK_DAYS = 7;
+
 interface WalkLimits {
   /** Stop after this many simulated days (`capped` in the result). */
   maxDays?: number;
@@ -658,12 +667,21 @@ async function walkForward(
   let simulated = 0;
   let eventsEmitted = 0;
   let capped = false;
+  let halted = false;
   let date = addDays(snapshot.state.lastSimulatedDate, 1);
   while (date < today && (through === undefined || date <= through)) {
     // P3d: a capped walk stops mid-history instead of burning through the
     // subrequest budget; the caller's cursor makes it resumable.
     if (maxDays !== undefined && simulated >= maxDays) {
       capped = true;
+      break;
+    }
+    if (simulated > 0 && simulated % MARKER_CHECK_DAYS === 0 && (await restoreInProgress(db, userId))) {
+      // A restore began while this walk ran: stop writing. Reported as
+      // capped so no caller treats the walk as having reached today; the
+      // persist that follows is refused while the marker is set.
+      capped = true;
+      halted = true;
       break;
     }
     const graceDate = addDays(today, -2);
@@ -748,7 +766,7 @@ async function walkForward(
   // cursor). Checkpoint content is a pure function of the fold, so an extra
   // non-Monday row changes nothing downstream: any resim restarting from it
   // replays byte-identically.
-  if (capped && checkpointAtCap && simulated > 0) {
+  if (capped && checkpointAtCap && simulated > 0 && !halted) {
     await db
       .insert(gardenSnapshots)
       .values({
