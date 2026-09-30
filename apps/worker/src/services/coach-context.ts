@@ -431,7 +431,7 @@ export async function buildDossier(
   // because this section is protected from truncation and is where the coach
   // meets its first handle. It is stated once, for the whole document.
   push("UPCOMING 14 DAYS", [
-    `the [wo:...] handle IS the permission: a line that carries one can still be eased, moved or skipped — a line without one is already resolved, or its day has gone. Read those as evidence and never name one in an op.`,
+    `the [wo:...] handle IS the permission: a line that carries one can still be eased, moved or skipped — unless it is marked "skipped", when restore is the only op that may name it — and a line without one is already resolved, or its day has gone. Read those as evidence and never name one in an op.`,
     ...(upcoming.length
       ? upcoming.map(
           (w) =>
@@ -439,10 +439,16 @@ export async function buildDossier(
             // A session already done, skipped or missed sits in this window
             // whenever it happened earlier TODAY. It is real, it is evidence,
             // and it is not addressable — so it keeps its line and loses its
-            // handle, which is the same trade LAST 14 DAYS makes.
+            // handle, which is the same trade LAST 14 DAYS makes. The one
+            // exception is a SKIPPED session: `restore` exists for exactly
+            // that row, and `validateOps` lets it through while the day has
+            // not gone (audit 1, coach finding 10). Without a handle a
+            // restore could only happen through a date-matched restoreEach.
             (canTarget(w, today)
               ? ` [wo:${w.id}]`
-              : ` · already ${w.completionState}, so no handle — it cannot be changed`) +
+              : w.completionState === "skipped" && w.effectiveDate >= today
+                ? ` [wo:${w.id}] · skipped — restore is the only op that may name it`
+                : ` · already ${w.completionState}, so no handle — it cannot be changed`) +
             `${coachPlanIdSet.has(w.planId ?? "") ? "" : " · imported"}` +
             ` · contains: ${
               w.stageSummary

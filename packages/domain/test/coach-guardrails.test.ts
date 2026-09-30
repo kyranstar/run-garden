@@ -661,6 +661,20 @@ describe("the stated budget is the enforced budget", () => {
     for (const c of hardCategories) expect(HARD_LIMITS_PROMPT).toContain(c);
   });
 
+  it("the prompt states the one exception touch_resolved makes: restore reaches a skipped session", () => {
+    // Audit 1, coach finding 10. The fatal rule allows `restore` on a skipped
+    // session dated today or later, and the prompt said no op may touch a
+    // skipped session at all — so the coach was told it could not do the one
+    // thing `restore` exists for.
+    expect(HARD_LIMITS_PROMPT).toContain("only restore/restoreEach may target a skipped session");
+    const legal = validateOps([{ kind: "restore", workoutId: "w-skipped" }], ctx({
+      workouts: [
+        { id: "w-skipped", date: "2026-08-06", category: "easy", completionState: "skipped", durationMinutes: 40, discipline: "run" },
+      ],
+    }));
+    expect(legal.fatal).toEqual([]);
+  });
+
   it("COLD START: the stated ceiling is the enforced one, to the minute", () => {
     const detrained = ctx({
       workouts: [],

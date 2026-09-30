@@ -598,12 +598,20 @@ describe("the dossier says which sessions can still be changed", () => {
     const d = await buildDossier(db, userId, prefs, todayInZone(prefs.timezone));
     const handles = new Set(handlesIn(d.text));
     // The same predicate `validateOps` applies: unresolved, and its day has not
-    // gone. Written out here rather than imported so the two agreeing is a
-    // fact this test checks instead of one it inherits.
+    // gone — plus the one op whose whole purpose is a RESOLVED row: `restore`
+    // may name a skipped session dated today or later (audit 1, coach finding
+    // 10). Written out here rather than imported so the two agreeing is a fact
+    // this test checks instead of one it inherits.
     const mayName = rows
-      .filter((r) => (r.state === "scheduled" || r.state === "planned") && r.date >= today)
+      .filter(
+        (r) =>
+          (r.state === "scheduled" || r.state === "planned" || r.state === "skipped") && r.date >= today,
+      )
       .map((r) => r.id);
     expect([...handles].sort()).toEqual([...mayName].sort());
+    // …and a skipped session's handle says which op it is for, so it is not
+    // read as an invitation to ease or move a resolved row.
+    expect(d.text).toContain("[wo:today-skipped] · skipped — restore is the only op that may name it");
 
     // …and the history is all still THERE. Withholding the handle must not
     // withhold the evidence: the coach's every claim rests on finished work, so

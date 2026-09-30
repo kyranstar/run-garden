@@ -165,8 +165,11 @@ export async function dossierHandles(s: AthleteState): Promise<DossierHandles> {
   const leaked = offered.filter((id) => {
     const w = byId.get(id);
     if (!w) return true;
-    const unresolved = w.completionState === "scheduled" || w.completionState === "planned";
-    return !unresolved || w.date < s.ctx.today;
+    // A skipped session dated today or later carries a restore-only handle
+    // (audit 1, coach finding 10): `restore` is legal on it, so it is not a leak.
+    const nameable =
+      w.completionState === "scheduled" || w.completionState === "planned" || w.completionState === "skipped";
+    return !nameable || w.date < s.ctx.today;
   });
   return { offered, leaked };
 }
