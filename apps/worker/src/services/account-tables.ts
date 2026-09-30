@@ -31,6 +31,7 @@
 import { asc, eq, getTableColumns, getTableName, sql, type SQL } from "drizzle-orm";
 import { getTableConfig, type SQLiteColumn, type SQLiteTable } from "drizzle-orm/sqlite-core";
 import {
+  accountState,
   activities,
   activityLaps,
   activitySourceLinks,
@@ -191,6 +192,10 @@ const ENTRIES: ReadonlyArray<readonly [SQLiteTable, TableScope]> = [
   [gardenSpecies, excluded("global catalog shared by every account")],
   [corosExercises, excluded("global COROS exercise catalog shared by every account")],
   [schemaVersions, excluded("app component versions, not account data")],
+  [
+    accountState,
+    excluded("this environment's restore marker and pending rebuilds — bookkeeping, never data to carry; delete-all removes it"),
+  ],
 ];
 
 export const ACCOUNT_TABLES: readonly AccountTable[] = ENTRIES.map(([table, scope], order) => ({
@@ -293,6 +298,26 @@ export async function wipeAccountData(
   for (const t of targets) {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     await db.delete(t.table as any).where(scopeWhere(t, userId));
+  }
+}
+
+/**
+ * Delete child rows whose parent row no longer exists, in EVERY account.
+ * Such a row belongs to no account (its only link to one is gone), so this is
+ * safe with any number of users — unlike the WHERE-less child delete the old
+ * delete-all used, which removed other accounts' live rows too. Delete-all
+ * runs it after the scoped wipe (audit 1 data finding 10).
+ */
+export async function deleteOrphanedChildren(db: Db): Promise<void> {
+  for (const t of ACCOUNT_TABLES) {
+    if (t.scope.kind !== "child") continue;
+    const parent = accountTable(t.scope.parent);
+    const parentKey = columnBySqlName(parent.table, t.scope.parentKey ?? "id");
+    const col = columnBySqlName(t.table, t.scope.column);
+    await db
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      .delete(t.table as any)
+      .where(sql`${col} not in (select ${parentKey} from ${parent.table})`);
   }
 }
 

@@ -975,6 +975,8 @@ export interface AccountExportFile {
   format: typeof EXPORT_FORMAT;
   schemaVersion: string;
   exportedAt: string;
+  /** The app the file came from (its origin). Older exports lack it. */
+  exportedFrom?: string;
   tables: Record<string, Array<Record<string, unknown>>>;
 }
 
@@ -1057,38 +1059,178 @@ export async function readExportFile(file: Blob): Promise<AccountExportFile> {
   return f as AccountExportFile;
 }
 
+/** What the worker restores, in order, and what an export carries that a
+ * restore deliberately leaves out. */
+export interface RestoreTablesResponse {
+  schemaVersion: string;
+  tables: string[];
+  skip: string[];
+}
+
+/** One problem the check found in the file. `row` is the row's index within
+ * its table (-1 for the table as a whole); `message` is plain text. */
+export interface RestoreRowError {
+  table: string;
+  row: number;
+  column?: string;
+  code: string;
+  message: string;
+}
+
+type CheckPageResult =
+  | { ok: true; token: string; rows: number }
+  | { ok: false; errors: Array<Omit<RestoreRowError, "table">> };
+
+/** A file every page of which the worker checked clean — what begin needs. */
+export interface CheckedRestore {
+  schemaVersion: string;
+  /** Tables in the worker's restore order, each with its checked pages. */
+  pages: Array<{ table: string; rows: Array<Record<string, unknown>>; token: string }>;
+  /** Rows the file holds per table the worker restores. */
+  fileCounts: Record<string, number>;
+  total: number;
+}
+
+export type RestoreCheck = { ok: true; checked: CheckedRestore } | { ok: false; errors: RestoreRowError[] };
+
+/** Errors worth showing: the first few say what is wrong. */
+const CHECK_ERROR_LIMIT = 5;
+
 /**
- * Restore an export into the signed-in account: begin (the worker refuses a
- * file from another schema, and an account with data unless `replace`), then
- * every table the worker names — parents first — in pages, then finish.
- * Rejects with `ApiError` (409 `not_empty`, 422 `schema_mismatch`) or
- * `NotAnExportError`.
+ * Check every page of a parsed export with the worker — no side effects, the
+ * account is untouched — and collect the page tokens begin will need. Stops
+ * early once it has a handful of errors to show.
  */
-export async function restoreAccount(
-  file: Blob,
-  opts: { replace: boolean },
+export async function checkRestore(
+  data: AccountExportFile,
   onProgress?: (p: RestoreProgress) => void,
-): Promise<{ counts: Record<string, number> }> {
-  const data = await readExportFile(file);
-  const begun = await post<{ tables: string[] }>("/api/settings/restore/begin", {
-    schemaVersion: data.schemaVersion,
-    replace: opts.replace,
-  });
-  const sourceUserId = data.tables.users?.[0]?.id;
-  const total = begun.tables.reduce((n, t) => n + (data.tables[t]?.length ?? 0), 0);
+): Promise<RestoreCheck> {
+  const plan = await get<RestoreTablesResponse>("/api/settings/restore/tables");
+  const skip = new Set(plan.skip);
+  const order = [
+    ...plan.tables.filter((t) => t in data.tables),
+    ...Object.keys(data.tables).filter((t) => !plan.tables.includes(t) && !skip.has(t)),
+  ];
+  const total = order.reduce((n, t) => n + (data.tables[t]?.length ?? 0), 0);
+  const pages: CheckedRestore["pages"] = [];
+  const fileCounts: Record<string, number> = {};
+  const errors: RestoreRowError[] = [];
   let done = 0;
   onProgress?.({ done, total, table: null });
-  for (const table of begun.tables) {
+  for (const table of order) {
     const rows = data.tables[table] ?? [];
-    for (let i = 0; i < rows.length; i += RESTORE_PAGE_ROWS) {
-      const page = rows.slice(i, i + RESTORE_PAGE_ROWS);
-      await post("/api/settings/restore/rows", { table, rows: page, sourceUserId }, 120_000);
+    const known = plan.tables.includes(table);
+    if (known) fileCounts[table] = rows.length;
+    const offsets: number[] = [];
+    for (let i = 0; i < rows.length; i += RESTORE_PAGE_ROWS) offsets.push(i);
+    // A table the worker does not restore is sent even when it is empty, so
+    // the check can say what it is.
+    if (offsets.length === 0 && !known) offsets.push(0);
+    for (const offset of offsets) {
+      const page = rows.slice(offset, offset + RESTORE_PAGE_ROWS);
+      const res = await post<CheckPageResult>(
+        "/api/settings/restore/check",
+        { schemaVersion: data.schemaVersion, table, rows: page, offset },
+        120_000,
+      );
+      if (res.ok) pages.push({ table, rows: page, token: res.token });
+      else {
+        errors.push(...res.errors.map((e) => ({ ...e, table })));
+        if (errors.length >= CHECK_ERROR_LIMIT) return { ok: false, errors: errors.slice(0, CHECK_ERROR_LIMIT) };
+      }
       done += page.length;
       onProgress?.({ done, total, table });
     }
   }
-  return post<{ counts: Record<string, number> }>("/api/settings/restore/finish", {}, 120_000);
+  if (errors.length > 0) return { ok: false, errors };
+  return { ok: true, checked: { schemaVersion: data.schemaVersion, pages, fileCounts, total } };
 }
+
+/** A table that came back with fewer rows than the file holds. */
+export interface ShortTable {
+  table: string;
+  expected: number;
+  restored: number;
+}
+
+export interface RestoreSummary {
+  counts: Record<string, number>;
+  /** Tables whose restored count is below the file's — named to the athlete. */
+  short: ShortTable[];
+  /** Rows the worker reported lost to a conflict. */
+  lost: number;
+}
+
+/**
+ * Replace the signed-in account with a checked file: begin (which wipes the
+ * account and disconnects COROS and Google Calendar), every checked page in
+ * the worker's order, then finish. The finish counts are compared with the
+ * file here too, so a table that came back short is named rather than
+ * reported as "Restored". Rejects with `ApiError` on any refusal — a 422
+ * `insert_failed` names the table and row.
+ */
+export async function runRestore(
+  data: AccountExportFile,
+  checked: CheckedRestore,
+  onProgress?: (p: RestoreProgress) => void,
+): Promise<RestoreSummary> {
+  const begun = await post<{ restoreId: string; tables: string[] }>("/api/settings/restore/begin", {
+    schemaVersion: checked.schemaVersion,
+    replace: true,
+    tokens: checked.pages.map((p) => p.token),
+    exportedAt: data.exportedAt,
+    exportedFrom: data.exportedFrom ?? null,
+  });
+  const sourceUserId = data.tables.users?.[0]?.id;
+  let done = 0;
+  let lost = 0;
+  onProgress?.({ done, total: checked.total, table: null });
+  for (const table of begun.tables) {
+    for (const page of checked.pages.filter((p) => p.table === table)) {
+      const res = await post<{ received: number; skipped: number; lost: number }>(
+        "/api/settings/restore/rows",
+        { restoreId: begun.restoreId, table, rows: page.rows, token: page.token, sourceUserId },
+        120_000,
+      );
+      lost += res.lost ?? 0;
+      done += page.rows.length;
+      onProgress?.({ done, total: checked.total, table });
+    }
+  }
+  const finished = await post<{ counts: Record<string, number>; short: ShortTable[] }>(
+    "/api/settings/restore/finish",
+    { restoreId: begun.restoreId },
+    120_000,
+  );
+  const short = new Map<string, ShortTable>((finished.short ?? []).map((s) => [s.table, s]));
+  for (const table of begun.tables) {
+    const expected = checked.fileCounts[table] ?? 0;
+    const restored = finished.counts[table] ?? 0;
+    if (restored < expected && !short.has(table)) short.set(table, { table, expected, restored });
+  }
+  return { counts: finished.counts, short: [...short.values()], lost };
+}
+
+/** Check, then restore — for callers with no confirm step between. */
+export async function restoreAccount(
+  file: Blob,
+  onProgress?: (p: RestoreProgress) => void,
+): Promise<RestoreSummary> {
+  const data = await readExportFile(file);
+  const check = await checkRestore(data);
+  if (!check.ok) throw new RestoreCheckError(check.errors);
+  return runRestore(data, check.checked, onProgress);
+}
+
+/** Thrown by `restoreAccount` when the file failed the check. */
+export class RestoreCheckError extends Error {
+  constructor(public errors: RestoreRowError[]) {
+    super("restore_check_failed");
+  }
+}
+
+/** Abandon a restore that didn't finish: wipe the account, clear the notice. */
+export const restoreStartFresh = () => post<{ ok: true }>("/api/settings/restore/start-fresh");
 
 /** One previously generated plan + the brief (prompt) that produced it. */
 export interface StudioHistoryEntryDto {

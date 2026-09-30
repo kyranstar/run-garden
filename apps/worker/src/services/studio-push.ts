@@ -1293,7 +1293,7 @@ export async function applyStudioJobResult(
   )[0];
   if (!job) throw new Error("job_not_found");
   if (!isStudioJobKind(job.kind)) throw new Error("not_a_studio_job");
-  if (["verified", "failed", "superseded", "cancelled"].includes(job.status)) {
+  if (["verified", "failed", "superseded", "cancelled", "restored"].includes(job.status)) {
     return { jobStatus: job.status, pushStatus: "unchanged" };
   }
   const studio = result.studio;

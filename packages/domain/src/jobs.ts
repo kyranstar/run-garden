@@ -13,6 +13,10 @@ export const COROS_WRITE_JOB_STATUSES = [
   "needs_attention", // upstream conflict or ambiguous result; user decision required
   "superseded", // a newer job for the same workout replaced this one
   "cancelled",
+  // Unfinished when its account was exported, and brought back by a restore
+  // (audit 1 data finding 1, ruling B3): terminal, so nothing runs it again —
+  // a restore changes the app's data only, never the watch.
+  "restored",
 ] as const;
 export type CorosWriteJobStatus = (typeof COROS_WRITE_JOB_STATUSES)[number];
 
@@ -364,6 +368,7 @@ export function isTerminalJobStatus(s: CorosWriteJobStatus): boolean {
     s === "failed" ||
     s === "superseded" ||
     s === "cancelled" ||
-    s === "needs_attention"
+    s === "needs_attention" ||
+    s === "restored"
   );
 }

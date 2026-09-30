@@ -1,70 +1,36 @@
 /**
- * Complete, paged export and a round-trip-tested restore (Phase 0 Task 9).
+ * Complete, paged export and a round-trip-tested restore (Phase 0 Task 9,
+ * reworked for audit 1 data findings 1-8).
  *
- * The export used to cover 11 of ~50 tables and there was no restore at all.
- * Both are now driven by the one table registry (account-tables.ts), and the
- * property that matters is pinned directly: export → wipe → restore → export
- * is identical, table by table, on an account with a row in every table —
- * under D1's 100-bound-variable cap, with enough planned workouts to force
- * both export paging and restore chunking.
+ * The property that matters is pinned directly: export → wipe → restore →
+ * export is identical, table by table, on an account with a row in every
+ * table — under D1's 100-bound-variable cap, with enough planned workouts to
+ * force both export paging and restore chunking. The three tables a restore
+ * never writes (provider connections, provider cursors, coach locks) come
+ * back empty: the athlete reconnects COROS and Google after a restore.
  */
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { and, eq, getTableColumns } from "drizzle-orm";
 import { schema, SCHEMA_VERSION } from "@rg/database";
-import { addDays, newId, nowInstant, todayInZone } from "@rg/domain";
+import { newId, nowInstant } from "@rg/domain";
 import type { Db } from "../src/services/db.js";
 import type { Env } from "../src/env.js";
 import { ACCOUNT_TABLES, hashRows, wipeAccountData } from "../src/services/account-tables.js";
 import { EXPORT_FORMAT, exportManifest, exportTablePage } from "../src/services/account-export.js";
-import { beginRestore, finishRestore, restoreRows } from "../src/services/account-restore.js";
+import {
+  beginRestore,
+  finishRestore,
+  NEVER_RESTORED,
+  restorableTables,
+  restoreRows,
+} from "../src/services/account-restore.js";
 import { deleteAllUserData, settingsRoutes } from "../src/routes/misc.js";
 import { createSession, SESSION_COOKIE } from "../src/auth/sessions.js";
-import { ensureGarden } from "../src/services/garden-sync.js";
-import { loadPreferences } from "../src/services/calendar-sync.js";
 import { makeTestDb, makeTestUser, mountRoutes } from "./helpers.js";
 import { seedFullAccount, SEED_PLANNED_WORKOUTS } from "./account-fixture.js";
+import { checkFile, exportAll, pagesOf, restoreAll, TEST_SECRET, type ExportFile } from "./restore-driver.js";
 
 type Row = Record<string, unknown>;
-interface ExportFile {
-  format: string;
-  schemaVersion: string;
-  exportedAt: string;
-  tables: Record<string, Row[]>;
-}
-
-/** What the client does: the manifest, then every table page by page. A
- * small page size forces the 250 planned workouts across several pages. */
-async function exportAll(db: Db, userId: string, pageSize = 100): Promise<ExportFile> {
-  const manifest = await exportManifest(db, userId);
-  const tables: Record<string, Row[]> = {};
-  for (const { name } of manifest.tables) {
-    const rows: Row[] = [];
-    let cursor: number | null = 0;
-    while (cursor !== null) {
-      const page = await exportTablePage(db, userId, name, cursor, pageSize);
-      rows.push(...page.rows);
-      cursor = page.nextCursor;
-    }
-    tables[name] = rows;
-  }
-  return { format: manifest.format, schemaVersion: manifest.schemaVersion, exportedAt: nowInstant(), tables };
-}
-
-/** What the client does on restore: begin(replace) → rows per table in the
- * server's order, 200 at a time → finish. */
-async function restoreAll(db: Db, userId: string, file: ExportFile): Promise<Record<string, number>> {
-  const begun = await beginRestore(db, userId, { schemaVersion: file.schemaVersion, replace: true });
-  if (!begun.ok) throw new Error(`begin refused: ${begun.error}`);
-  const sourceUserId = String(file.tables.users?.[0]?.id ?? "");
-  for (const table of begun.tables) {
-    const rows = file.tables[table] ?? [];
-    for (let i = 0; i < rows.length; i += 200) {
-      const res = await restoreRows(db, userId, { table, rows: rows.slice(i, i + 200), sourceUserId });
-      if (!res.ok) throw new Error(`rows refused for ${table}: ${res.error}`);
-    }
-  }
-  return (await finishRestore(db, userId)).counts;
-}
 
 const stripVolatile = (file: ExportFile) => {
   const { exportedAt: _drop, ...rest } = file;
@@ -73,6 +39,8 @@ const stripVolatile = (file: ExportFile) => {
 
 const userAndChildTables = () =>
   ACCOUNT_TABLES.filter((t) => t.scope.kind === "user" || t.scope.kind === "child").map((t) => t.name);
+
+const never = new Set<string>(NEVER_RESTORED);
 
 afterEach(() => {
   vi.useRealTimers();
@@ -91,14 +59,21 @@ describe("export → wipe → restore → export", () => {
     const wiped = await exportManifest(db, userId);
     expect(wiped.tables.find((t) => t.name === "planned_workouts")?.rows).toBe(0);
 
-    const counts = await restoreAll(db, userId, before);
+    const outcome = await restoreAll(db, userId, before);
     const after = await exportAll(db, userId);
 
     for (const name of Object.keys(before.tables)) {
-      expect(after.tables[name], name).toEqual(before.tables[name]);
+      if (never.has(name)) expect(after.tables[name], name).toEqual([]);
+      else expect(after.tables[name], name).toEqual(before.tables[name]);
     }
-    expect(stripVolatile(after)).toEqual(stripVolatile(before));
-    expect(counts.planned_workouts).toBe(SEED_PLANNED_WORKOUTS);
+    const restorable = (f: ExportFile) => ({
+      ...stripVolatile(f),
+      tables: Object.fromEntries(Object.entries(f.tables).filter(([n]) => !never.has(n))),
+    });
+    expect(restorable(after)).toEqual(restorable(before));
+    expect(outcome.counts.planned_workouts).toBe(SEED_PLANNED_WORKOUTS);
+    expect(outcome.short).toEqual([]);
+    expect(outcome.lost).toBe(0);
   });
 
   it("exports at least one row from every user and child table of a seeded account", async () => {
@@ -110,13 +85,10 @@ describe("export → wipe → restore → export", () => {
     expect(manifest.format).toBe(EXPORT_FORMAT);
     expect(manifest.schemaVersion).toBe(SCHEMA_VERSION);
     const listed = manifest.tables.map((t) => t.name);
-    expect(listed).toEqual([
-      "users",
-      ...userAndChildTables(),
-    ]);
+    expect(listed).toEqual(["users", ...userAndChildTables()]);
     const empty = manifest.tables.filter((t) => t.rows === 0).map((t) => t.name);
     expect(empty).toEqual([]);
-    for (const excluded of ["sessions", "oauth_states", "garden_species", "coros_exercises", "schema_versions"]) {
+    for (const excluded of ["sessions", "oauth_states", "garden_species", "coros_exercises", "schema_versions", "account_state"]) {
       expect(listed).not.toContain(excluded);
     }
   });
@@ -142,52 +114,49 @@ describe("export → wipe → restore → export", () => {
 });
 
 describe("restore — refusals and idempotency", () => {
-  it("refuses to restore over a non-empty account without replace", async () => {
+  it("refuses to begin without replace: a restore always replaces the whole account", async () => {
     const db = makeTestDb({ boundVariableCap: 100 });
     const { userId } = await makeTestUser(db);
     await seedFullAccount(db, userId);
+    const file = await exportAll(db, userId);
+    const { tokens } = await checkFile(db, userId, file);
 
-    const res = await beginRestore(db, userId, { schemaVersion: SCHEMA_VERSION, replace: false });
-    expect(res).toEqual({ ok: false, status: 409, error: "not_empty" });
+    for (const replace of [false, undefined, "yes"]) {
+      const res = await beginRestore(db, userId, { schemaVersion: SCHEMA_VERSION, replace, tokens: [...tokens.values()] }, { secret: TEST_SECRET });
+      expect(res).toEqual({ ok: false, status: 400, error: "replace_required" });
+    }
     // Nothing was wiped.
     const manifest = await exportManifest(db, userId);
     expect(manifest.tables.find((t) => t.name === "planned_workouts")?.rows).toBe(SEED_PLANNED_WORKOUTS);
   });
 
-  it("accepts an account with nothing in it yet without replace", async () => {
-    const db = makeTestDb({ boundVariableCap: 100 });
-    const { userId } = await makeTestUser(db);
-    const res = await beginRestore(db, userId, { schemaVersion: SCHEMA_VERSION, replace: false });
-    expect(res.ok).toBe(true);
-    // A fresh account's defaults (its preferences row) are cleared so the
-    // file's rows land instead of losing to them on conflict.
-    expect(await db.select().from(schema.userPreferences).where(eq(schema.userPreferences.userId, userId))).toHaveLength(0);
-  });
-
-  it("refuses a different schemaVersion", async () => {
+  it("refuses a newer schemaVersion before touching anything", async () => {
     const db = makeTestDb({ boundVariableCap: 100 });
     const { userId } = await makeTestUser(db);
     await seedFullAccount(db, userId);
-    const res = await beginRestore(db, userId, { schemaVersion: "0001", replace: true });
-    expect(res).toEqual({ ok: false, status: 422, error: "schema_mismatch" });
+    const newer = String(Number(SCHEMA_VERSION) + 1).padStart(4, "0");
+    const res = await beginRestore(db, userId, { schemaVersion: newer, replace: true, tokens: ["x"] }, { secret: TEST_SECRET });
+    expect(res).toEqual({ ok: false, status: 422, error: "newer_schema" });
     const manifest = await exportManifest(db, userId);
     expect(manifest.tables.find((t) => t.name === "planned_workouts")?.rows).toBe(SEED_PLANNED_WORKOUTS);
   });
 
-  it("a replace never deletes the signed-in user, their session or their provider connections", async () => {
+  it("a replace wipes every account table — provider connections and cursors included — but never the user or their session", async () => {
     const db = makeTestDb({ boundVariableCap: 100 });
     const { userId } = await makeTestUser(db);
     await seedFullAccount(db, userId);
     await createSession(db, userId, "test");
+    const file = await exportAll(db, userId);
+    const { tokens } = await checkFile(db, userId, file);
 
-    const res = await beginRestore(db, userId, { schemaVersion: SCHEMA_VERSION, replace: true });
+    const res = await beginRestore(db, userId, { schemaVersion: SCHEMA_VERSION, replace: true, tokens: [...tokens.values()] }, { secret: TEST_SECRET });
     expect(res.ok).toBe(true);
     expect(await db.select().from(schema.users).where(eq(schema.users.id, userId))).toHaveLength(1);
     expect(await db.select().from(schema.sessions).where(eq(schema.sessions.userId, userId))).toHaveLength(1);
-    expect(
-      await db.select().from(schema.providerConnections).where(eq(schema.providerConnections.userId, userId)),
-    ).toHaveLength(2);
-    expect(await db.select().from(schema.plannedWorkouts).where(eq(schema.plannedWorkouts.userId, userId))).toHaveLength(0);
+    const manifest = await exportManifest(db, userId);
+    expect(manifest.tables.filter((t) => t.name !== "users" && t.rows > 0)).toEqual([]);
+    expect(await db.select().from(schema.providerConnections).where(eq(schema.providerConnections.userId, userId))).toEqual([]);
+    expect(await db.select().from(schema.providerCursorState).where(eq(schema.providerCursorState.userId, userId))).toEqual([]);
   });
 
   it("a resent rows page is a no-op", async () => {
@@ -195,33 +164,43 @@ describe("restore — refusals and idempotency", () => {
     const { userId } = await makeTestUser(db);
     await seedFullAccount(db, userId);
     const file = await exportAll(db, userId);
-    await beginRestore(db, userId, { schemaVersion: SCHEMA_VERSION, replace: true });
+    const { tokens } = await checkFile(db, userId, file);
+    const begun = await beginRestore(db, userId, { schemaVersion: SCHEMA_VERSION, replace: true, tokens: [...tokens.values()] }, { secret: TEST_SECRET });
+    if (!begun.ok) throw new Error(begun.error);
 
-    const page = file.tables.planned_workouts!.slice(0, 120);
-    const stagePage = file.tables.planned_workout_stages!;
+    const page = pagesOf(file.tables.planned_workouts!, 200)[0]!;
+    const stagePage = pagesOf(file.tables.planned_workout_stages!, 200)[0]!;
     for (let attempt = 0; attempt < 2; attempt += 1) {
-      expect((await restoreRows(db, userId, { table: "planned_workouts", rows: page })).ok).toBe(true);
-      expect((await restoreRows(db, userId, { table: "planned_workout_stages", rows: stagePage })).ok).toBe(true);
+      const a = await restoreRows(db, userId, { restoreId: begun.restoreId, table: "planned_workouts", rows: page, token: tokens.get("planned_workouts#0") }, { secret: TEST_SECRET });
+      expect(a).toMatchObject({ ok: true, lost: 0 });
+      const b = await restoreRows(db, userId, { restoreId: begun.restoreId, table: "planned_workout_stages", rows: stagePage, token: tokens.get("planned_workout_stages#0") }, { secret: TEST_SECRET });
+      expect(b).toMatchObject({ ok: true, lost: 0 });
     }
-    const { counts } = await finishRestore(db, userId);
-    expect(counts.planned_workouts).toBe(120);
-    expect(counts.planned_workout_stages).toBe(stagePage.length);
+    const done = await finishRestore(db, userId, { restoreId: begun.restoreId });
+    if (!done.ok) throw new Error(done.error);
+    expect(done.counts.planned_workouts).toBe(200);
+    expect(done.counts.planned_workout_stages).toBe(stagePage.length);
+    // The second planned_workouts page never arrived — finish says so.
+    expect(done.short).toContainEqual({ table: "planned_workouts", expected: SEED_PLANNED_WORKOUTS, restored: 200 });
   });
 
-  it("refuses rows for the identity table, excluded tables and unknown tables", async () => {
+  it("refuses rows for the identity table, excluded, never-restored and unknown tables", async () => {
     const db = makeTestDb({ boundVariableCap: 100 });
     const { userId } = await makeTestUser(db);
+    await seedFullAccount(db, userId);
+    const file = await exportAll(db, userId);
+    const { tokens } = await checkFile(db, userId, file);
+    const begun = await beginRestore(db, userId, { schemaVersion: SCHEMA_VERSION, replace: true, tokens: [...tokens.values()] }, { secret: TEST_SECRET });
+    if (!begun.ok) throw new Error(begun.error);
+    const restoreId = begun.restoreId;
     const row = { id: "x", userId, createdAt: nowInstant(), expiresAt: nowInstant() };
-    expect(await restoreRows(db, userId, { table: "users", rows: [row] })).toEqual({
-      ok: false,
-      status: 422,
-      error: "not_restorable",
-    });
-    for (const table of ["sessions", "oauth_states", "garden_species", "coros_exercises", "schema_versions"]) {
-      expect(await restoreRows(db, userId, { table, rows: [row] })).toMatchObject({ ok: false, error: "not_restorable" });
+    const rows = (table: string, r: unknown) => restoreRows(db, userId, { restoreId, table, rows: r }, { secret: TEST_SECRET });
+    expect(await rows("users", [row])).toEqual({ ok: false, status: 422, error: "not_restorable" });
+    for (const table of ["sessions", "oauth_states", "garden_species", "coros_exercises", "schema_versions", "account_state", ...NEVER_RESTORED]) {
+      expect(await rows(table, [row]), table).toMatchObject({ ok: false, error: "not_restorable" });
     }
-    expect(await restoreRows(db, userId, { table: "nope", rows: [] })).toMatchObject({ ok: false, error: "unknown_table" });
-    expect(await restoreRows(db, userId, { table: "activities", rows: "x" })).toMatchObject({ ok: false, error: "bad_rows" });
+    expect(await rows("nope", [])).toMatchObject({ ok: false, error: "unknown_table" });
+    expect(await rows("activities", "x")).toMatchObject({ ok: false, error: "bad_rows" });
     expect(await db.select().from(schema.sessions)).toHaveLength(0);
   });
 });
@@ -271,20 +250,33 @@ describe("export and restore stay inside one account", () => {
     expect(mine.tables.filter((t) => t.name !== "users" && t.rows > 0)).toEqual([]);
   });
 
+  it("a restore leaves every row of another account untouched", async () => {
+    const db = makeTestDb({ boundVariableCap: 100 });
+    const { userId: me } = await makeTestUser(db);
+    const { userId: other } = await makeTestUser(db);
+    await seedFullAccount(db, me);
+    await seedFullAccount(db, other);
+    const theirsBefore = await exportAll(db, other);
+    await restoreAll(db, me, await exportAll(db, me));
+    expect(stripVolatile(await exportAll(db, other))).toEqual(stripVolatile(theirsBefore));
+  });
+
   it("drops child rows whose parent is not this account's", async () => {
     const db = makeTestDb({ boundVariableCap: 100 });
     const { userId: me } = await makeTestUser(db);
     const { userId: other } = await makeTestUser(db);
     await seedFullAccount(db, other);
-    const theirActivity = (
-      await db.select().from(schema.activities).where(eq(schema.activities.userId, other))
-    )[0]!;
+    const theirActivity = (await db.select().from(schema.activities).where(eq(schema.activities.userId, other)))[0]!;
 
-    const res = await restoreRows(db, me, {
-      table: "activity_laps",
-      rows: [{ id: newId(), activityId: theirActivity.id, lapIndex: 99, durationSeconds: 60 }],
-    });
-    expect(res).toEqual({ ok: true, received: 1, skipped: 1 });
+    const lap = { id: newId(), activityId: theirActivity.id, lapIndex: 99, durationSeconds: 60 };
+    const file: ExportFile = {
+      format: EXPORT_FORMAT,
+      schemaVersion: SCHEMA_VERSION,
+      exportedAt: nowInstant(),
+      tables: { activity_laps: [lap] },
+    };
+    const outcome = await restoreAll(db, me, file);
+    expect(outcome.short).toEqual([{ table: "activity_laps", expected: 1, restored: 0 }]);
     expect(
       await db
         .select()
@@ -317,73 +309,6 @@ describe("export and restore stay inside one account", () => {
     expect(after.tables.activity_laps!.length).toBe(file.tables.activity_laps!.length);
     expect(JSON.stringify(after.tables)).not.toContain(`"userId":"${old}"`);
   });
-
-  it("restores a provider connection's metadata without tokens, and only when the account has none for it", async () => {
-    const db = makeTestDb({ boundVariableCap: 100 });
-    const { userId } = await makeTestUser(db);
-    const existingId = newId();
-    await db.insert(schema.providerConnections).values({
-      id: existingId,
-      userId,
-      provider: "coros",
-      status: "connected",
-      encryptedRefreshToken: "live-secret",
-      createdAt: nowInstant(),
-      updatedAt: nowInstant(),
-    });
-    const base = {
-      userId: "someone-else",
-      status: "connected",
-      encryptedAccessToken: "leaked-access",
-      encryptedRefreshToken: "leaked-refresh",
-      accessTokenExpiresAt: null,
-      scope: "calendar",
-      externalAccountId: "acct-1",
-      meta: { region: "us" },
-      createdAt: nowInstant(),
-      updatedAt: nowInstant(),
-      lastSyncAt: null,
-      lastErrorCategory: null,
-    };
-    const res = await restoreRows(db, userId, {
-      table: "provider_connections",
-      rows: [
-        { ...base, id: newId(), provider: "coros" },
-        { ...base, id: newId(), provider: "google_calendar" },
-      ],
-    });
-    expect(res).toEqual({ ok: true, received: 2, skipped: 1 });
-
-    const rows = await db.select().from(schema.providerConnections).where(eq(schema.providerConnections.userId, userId));
-    const coros = rows.find((r) => r.provider === "coros")!;
-    expect(coros.id).toBe(existingId);
-    expect(coros.encryptedRefreshToken).toBe("live-secret");
-    const google = rows.find((r) => r.provider === "google_calendar")!;
-    expect(google.encryptedAccessToken).toBeNull();
-    expect(google.encryptedRefreshToken).toBeNull();
-    expect(google.status).toBe("disconnected");
-    expect(google.meta).toEqual({ region: "us" });
-    expect(google.externalAccountId).toBe("acct-1");
-  });
-});
-
-describe("restore finish", () => {
-  it("catches a restored garden that stopped before yesterday up to yesterday", async () => {
-    vi.useFakeTimers({ toFake: ["Date"] });
-    vi.setSystemTime(new Date("2026-06-10T18:00:00Z"));
-    const db = makeTestDb({ boundVariableCap: 100 });
-    const { userId } = await makeTestUser(db);
-    const prefs = await loadPreferences(db, userId);
-    const today = todayInZone(prefs.timezone);
-    await ensureGarden(db, userId, prefs, addDays(today, -6));
-
-    const { counts } = await finishRestore(db, userId);
-
-    const [garden] = await db.select().from(schema.gardenState).where(eq(schema.gardenState.userId, userId));
-    expect(garden!.lastSimulatedDate).toBe(addDays(today, -1));
-    expect(counts.garden_state).toBe(1);
-    expect(counts.garden_day_inputs).toBeGreaterThan(0);
-  });
 });
 
 // ── Routes ──────────────────────────────────────────────────────────────────
@@ -395,7 +320,7 @@ function makeEnv(): Env {
     APP_URL: "https://app.test",
     FIXTURE_MODE: "0",
     AI_DEFAULT_ENABLED: "1",
-    SESSION_SECRET: "test-session-secret",
+    SESSION_SECRET: TEST_SECRET,
     TOKEN_ENCRYPTION_KEY: "test-token-encryption-key",
     ALLOWED_GOOGLE_EMAIL: "runner@example.com",
     GOOGLE_CLIENT_ID: "test-client-id",
@@ -441,39 +366,76 @@ describe("settings export/restore routes", () => {
     expect((await call(db, userId, "/api/settings/export/table/activities?cursor=-1")).status).toBe(400);
   });
 
-  it("maps restore refusals to 409 / 422 and runs begin → rows → finish", async () => {
+  it("names the tables to send and the ones to skip", async () => {
+    const db = makeTestDb();
+    const { userId } = await makeTestUser(db);
+    const res = await call(db, userId, "/api/settings/restore/tables");
+    expect(await res.json()).toEqual({
+      schemaVersion: SCHEMA_VERSION,
+      tables: restorableTables().map((t) => t.name),
+      skip: ["users", ...NEVER_RESTORED],
+    });
+  });
+
+  it("maps refusals to 400 / 409 / 422 and runs check → begin → rows → finish", async () => {
     const db = makeTestDb({ boundVariableCap: 100 });
     const { userId } = await makeTestUser(db);
     await seedFullAccount(db, userId);
     const file = await exportAll(db, userId);
 
-    const notEmpty = await call(db, userId, "/api/settings/restore/begin", { schemaVersion: SCHEMA_VERSION, replace: false });
-    expect(notEmpty.status).toBe(409);
-    expect(await notEmpty.json()).toEqual({ error: "not_empty" });
-
-    const mismatch = await call(db, userId, "/api/settings/restore/begin", { schemaVersion: "0001", replace: true });
-    expect(mismatch.status).toBe(422);
-    expect(await mismatch.json()).toEqual({ error: "schema_mismatch" });
-
-    const identity = await call(db, userId, "/api/settings/restore/rows", { table: "users", rows: file.tables.users });
-    expect(identity.status).toBe(422);
-
-    const begin = await call(db, userId, "/api/settings/restore/begin", { schemaVersion: SCHEMA_VERSION, replace: true });
-    expect(begin.status).toBe(200);
-    const { tables } = (await begin.json()) as { tables: string[] };
-    expect(tables).toEqual(userAndChildTables());
-
-    const rows = await call(db, userId, "/api/settings/restore/rows", {
+    const check = await call(db, userId, "/api/settings/restore/check", {
+      schemaVersion: SCHEMA_VERSION,
       table: "activities",
       rows: file.tables.activities,
+    });
+    const { token } = (await check.json()) as { token: string };
+
+    const noReplace = await call(db, userId, "/api/settings/restore/begin", { schemaVersion: SCHEMA_VERSION, tokens: [token] });
+    expect(noReplace.status).toBe(400);
+    expect(await noReplace.json()).toEqual({ error: "replace_required" });
+
+    const unchecked = await call(db, userId, "/api/settings/restore/begin", { schemaVersion: SCHEMA_VERSION, replace: true, tokens: [] });
+    expect(unchecked.status).toBe(422);
+    expect(await unchecked.json()).toEqual({ error: "check_required" });
+
+    const noBegin = await call(db, userId, "/api/settings/restore/rows", { restoreId: "nope", table: "activities", rows: file.tables.activities, token });
+    expect(noBegin.status).toBe(409);
+    expect(await noBegin.json()).toEqual({ error: "no_active_restore" });
+
+    const begin = await call(db, userId, "/api/settings/restore/begin", {
+      schemaVersion: SCHEMA_VERSION,
+      replace: true,
+      tokens: [token],
+      exportedAt: file.exportedAt,
+      exportedFrom: "https://app.test",
+    });
+    expect(begin.status).toBe(200);
+    const { restoreId, tables } = (await begin.json()) as { restoreId: string; tables: string[] };
+    expect(tables).toEqual(restorableTables().map((t) => t.name));
+
+    const status = await call(db, userId, "/api/settings/restore/status");
+    expect(await status.json()).toMatchObject({ restore: { fileExportedAt: file.exportedAt, fileExportedFrom: "https://app.test" } });
+
+    const rows = await call(db, userId, "/api/settings/restore/rows", {
+      restoreId,
+      table: "activities",
+      rows: file.tables.activities,
+      token,
       sourceUserId: userId,
     });
     expect(rows.status).toBe(200);
-    const finish = await call(db, userId, "/api/settings/restore/finish", {});
+    expect(await rows.json()).toEqual({ received: file.tables.activities!.length, skipped: 0, lost: 0 });
+    const finish = await call(db, userId, "/api/settings/restore/finish", { restoreId });
     expect(finish.status).toBe(200);
-    const { counts } = (await finish.json()) as { counts: Record<string, number> };
-    expect(counts.activities).toBe(file.tables.activities!.length);
-    expect(counts.planned_workouts).toBe(0);
+    const done = (await finish.json()) as { counts: Record<string, number>; short: unknown[] };
+    expect(done.counts.activities).toBe(file.tables.activities!.length);
+    expect(done.counts.planned_workouts).toBe(0);
+    expect(done.short).toEqual([]);
+
+    const cleared = await call(db, userId, "/api/settings/restore/status");
+    expect(await cleared.json()).toEqual({ restore: null });
+    const again = await call(db, userId, "/api/settings/restore/finish", { restoreId });
+    expect(again.status).toBe(409);
   });
 });
 

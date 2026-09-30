@@ -424,7 +424,7 @@ export async function applyJobResult(
     }
     return { jobStatus: ok ? "verified" : "failed", corosSyncState: "unchanged" };
   }
-  if (["verified", "failed", "superseded", "cancelled"].includes(job.status)) {
+  if (["verified", "failed", "superseded", "cancelled", "restored"].includes(job.status)) {
     return { jobStatus: job.status, corosSyncState: "unchanged" };
   }
 

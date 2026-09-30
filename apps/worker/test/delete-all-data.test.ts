@@ -272,3 +272,40 @@ describe("deleteAllUserData — the 13 previously-missed tables (C20)", () => {
     expect(await db.select().from(studioPlans).where(eq(studioPlans.userId, other.userId))).toHaveLength(1);
   });
 });
+
+describe("deleteAllUserData — orphans and bookkeeping (audit 1 data finding 10)", () => {
+  it("removes child rows whose parent is already gone, and leaves every live child of another account", async () => {
+    const db = makeTestDb();
+    const { userId } = await makeTestUser(db);
+    const other = await makeTestUser(db);
+    const theirs = newId();
+    await db.insert(schema.activities).values({
+      id: theirs,
+      userId: other.userId,
+      startTime: "2026-09-01T14:00:00Z",
+      sport: "run",
+      durationSeconds: 1800,
+      createdAt: nowInstant(),
+      updatedAt: nowInstant(),
+    });
+    const summary = (activityId: string) =>
+      db.insert(schema.activityStreamSummaries).values({ id: newId(), activityId, streamType: "hr", sampleCount: 10 });
+    await summary(theirs);
+    // repairTimestamps' duplicate merge deletes the duplicate activity but not
+    // its stream summary: a row whose parent is gone, reachable by no account.
+    await summary("deleted-duplicate-activity");
+
+    await deleteAllUserData(db, userId);
+
+    const left = await db.select().from(schema.activityStreamSummaries);
+    expect(left.map((r) => r.activityId)).toEqual([theirs]);
+  });
+
+  it("clears a restore marker, so a fresh sign-in is not stuck on 'A restore didn't finish'", async () => {
+    const db = makeTestDb();
+    const { userId } = await makeTestUser(db);
+    await db.insert(schema.accountState).values({ userId, restoreId: "r1", updatedAt: nowInstant() });
+    await deleteAllUserData(db, userId);
+    expect(await db.select().from(schema.accountState)).toEqual([]);
+  });
+});

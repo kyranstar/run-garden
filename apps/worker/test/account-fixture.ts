@@ -71,8 +71,14 @@ export async function seedFullAccount(db: Db, userId: string): Promise<void> {
     const rows = Array.from({ length: rowCount(entry) }, (_, i) => fillRow(entry, i, userId, tag, parents));
     if (entry.name === "garden_state") {
       // A garden already simulated through yesterday — current, exactly as a
-      // same-day export restores it — so restore's catch-up has nothing to do.
+      // same-day export restores it. The snapshot keeps its synthetic body
+      // but carries the two dates a restore's check reads.
       rows[0]![columnKey(entry.table, "last_simulated_date")] = yesterday;
+      const snapshotKey = columnKey(entry.table, "snapshot");
+      rows[0]![snapshotKey] = {
+        ...(rows[0]![snapshotKey] as Row),
+        state: { createdDate: addDays(yesterday, -30), lastSimulatedDate: yesterday },
+      };
     }
     const perInsert = Math.max(1, Math.floor(100 / Object.keys(getTableColumns(entry.table)).length));
     for (let i = 0; i < rows.length; i += perInsert) {

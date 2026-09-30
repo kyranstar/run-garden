@@ -921,7 +921,7 @@ export function DataSection() {
     onSuccess: (blob) => saveBlob(blob, exportFileName()),
   });
   const restore = useMutation({
-    mutationFn: (file: File) => restoreAccount(file, { replace: true }, setProgress),
+    mutationFn: (file: File) => restoreAccount(file, setProgress),
     onSuccess: () => {
       setPending(null);
       setProgress(null);

@@ -468,7 +468,7 @@ export async function enqueueWatchCreate(
     await (reviveFailed
       ? insert.onConflictDoUpdate({
           target: corosWriteJobs.id,
-          setWhere: eq(corosWriteJobs.status, "failed"),
+          setWhere: inArray(corosWriteJobs.status, ["failed", "restored"]),
           set: {
             status: "queued",
             claimedByDeviceId: null,
@@ -787,10 +787,12 @@ export async function enqueueContentConvergence(
   await (v.reviveFailed
     ? insert.onConflictDoUpdate({
         target: corosWriteJobs.id,
-        // Only a FAILED row is revived. A queued job is already going to run and
-        // resetting it would drop an in-flight claim; a verified one is done and
-        // re-running it would rewrite the watch with nobody asking.
-        setWhere: eq(corosWriteJobs.status, "failed"),
+        // Only a FAILED row is revived — or one a restore switched off
+        // ('restored'), which the athlete is now asking for again. A queued job
+        // is already going to run and resetting it would drop an in-flight
+        // claim; a verified one is done and re-running it would rewrite the
+        // watch with nobody asking.
+        setWhere: inArray(corosWriteJobs.status, ["failed", "restored"]),
         set: {
           status: "queued",
           claimedByDeviceId: null,

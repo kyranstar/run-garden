@@ -1,6 +1,7 @@
 import { Hono, type Context } from "hono";
 import { and, desc, eq, gte, inArray, isNull, lte } from "drizzle-orm";
 import {
+  accountState,
   activities,
   activityLaps,
   computedMetrics,
@@ -15,6 +16,7 @@ import {
   sleepRecords,
   syncErrors,
   syncRuns,
+  SCHEMA_VERSION,
   users,
   weeklyReviews,
   workoutCompletionMatches,
@@ -95,14 +97,23 @@ import {
 } from "../services/completion.js";
 import { resimulateFrom } from "../services/garden-sync.js";
 import { enqueueBackfill, runBackfillChunkCloud } from "../services/backfill.js";
-import { wipeAccountData } from "../services/account-tables.js";
+import { deleteOrphanedChildren, wipeAccountData } from "../services/account-tables.js";
 import {
   EXPORT_PAGE_SIZE,
   exportManifest,
   exportTablePage,
   NotExportable,
 } from "../services/account-export.js";
-import { beginRestore, finishRestore, restoreRows } from "../services/account-restore.js";
+import {
+  beginRestore,
+  checkRestorePage,
+  finishRestore,
+  restorableTables,
+  restoreRows,
+  restoreSkips,
+  startFresh,
+} from "../services/account-restore.js";
+import { loadAccountState, restoreStatusOf } from "../services/account-state.js";
 
 // ── Calendar management ──────────────────────────────────────────────────────
 
@@ -1479,33 +1490,73 @@ settingsRoutes.get("/export/table/:name", async (c) => {
   }
 });
 
-/** Restore (Phase 0 Task 9): begin → rows per table → finish. See
- * services/account-restore.ts for what each step refuses and why. */
-settingsRoutes.post("/restore/begin", async (c) => {
-  const body = await c.req.json<{ schemaVersion?: unknown; replace?: unknown }>().catch(() => null);
+/** Restore (Phase 0 Task 9, reworked for audit 1): tables → check every page
+ * → begin → rows per page → finish. See services/account-restore.ts for what
+ * each step refuses and why. */
+settingsRoutes.get("/restore/tables", (c) =>
+  c.json({
+    schemaVersion: SCHEMA_VERSION,
+    tables: restorableTables().map((t) => t.name),
+    skip: restoreSkips(),
+  }),
+);
+
+/** The restore marker, for the "A restore didn't finish" notice. */
+settingsRoutes.get("/restore/status", async (c) => {
+  const state = await loadAccountState(c.get("db"), c.get("userId"));
+  return c.json({ restore: restoreStatusOf(state) });
+});
+
+/** Validate one page — no side effects. 200 either way: the check ran. */
+settingsRoutes.post("/restore/check", async (c) => {
+  const body = await c.req
+    .json<{ schemaVersion?: unknown; table?: unknown; rows?: unknown; offset?: unknown }>()
+    .catch(() => null);
   if (!body) return c.json({ error: "bad_request" }, 400);
-  const res = await beginRestore(c.get("db"), c.get("userId"), {
-    schemaVersion: body.schemaVersion,
-    replace: body.replace,
-  });
+  const res = await checkRestorePage(
+    { schemaVersion: body.schemaVersion, table: body.table, rows: body.rows, offset: body.offset },
+    { userId: c.get("userId"), secret: c.env.SESSION_SECRET },
+  );
+  return c.json(res);
+});
+
+settingsRoutes.post("/restore/begin", async (c) => {
+  const body = await c.req
+    .json<{ schemaVersion?: unknown; replace?: unknown; tokens?: unknown; exportedAt?: unknown; exportedFrom?: unknown }>()
+    .catch(() => null);
+  if (!body) return c.json({ error: "bad_request" }, 400);
+  const res = await beginRestore(c.get("db"), c.get("userId"), body as never, { secret: c.env.SESSION_SECRET });
   if (!res.ok) return c.json({ error: res.error }, res.status);
-  return c.json({ tables: res.tables });
+  return c.json({ restoreId: res.restoreId, tables: res.tables });
 });
 
 settingsRoutes.post("/restore/rows", async (c) => {
-  const body = await c.req.json<{ table?: unknown; rows?: unknown; sourceUserId?: unknown }>().catch(() => null);
+  const body = await c.req
+    .json<{ restoreId?: unknown; table?: unknown; rows?: unknown; token?: unknown; sourceUserId?: unknown }>()
+    .catch(() => null);
   if (!body) return c.json({ error: "bad_request" }, 400);
-  const res = await restoreRows(c.get("db"), c.get("userId"), {
-    table: body.table,
-    rows: body.rows,
-    sourceUserId: body.sourceUserId,
-  });
-  if (!res.ok) return c.json({ error: res.error }, res.status);
-  return c.json({ received: res.received, skipped: res.skipped });
+  const res = await restoreRows(c.get("db"), c.get("userId"), body as never, { secret: c.env.SESSION_SECRET });
+  if (!res.ok) {
+    if (res.error === "insert_failed") {
+      return c.json({ error: res.error, table: res.table, row: res.row, detail: res.detail }, 422);
+    }
+    return c.json({ error: res.error }, res.status);
+  }
+  return c.json({ received: res.received, skipped: res.skipped, lost: res.lost });
 });
 
 settingsRoutes.post("/restore/finish", async (c) => {
-  return c.json(await finishRestore(c.get("db"), c.get("userId")));
+  const body = await c.req.json<{ restoreId?: unknown }>().catch(() => ({ restoreId: undefined }));
+  const res = await finishRestore(c.get("db"), c.get("userId"), { restoreId: body.restoreId });
+  if (!res.ok) return c.json({ error: res.error }, res.status);
+  return c.json({ counts: res.counts, expected: res.expected, short: res.short });
+});
+
+/** "Start fresh" after a restore that didn't finish. */
+settingsRoutes.post("/restore/start-fresh", async (c) => {
+  const res = await startFresh(c.get("db"), c.get("userId"));
+  if (!res.ok) return c.json({ error: res.error }, res.status);
+  return c.json({ ok: true });
 });
 
 /**
@@ -1523,6 +1574,11 @@ settingsRoutes.post("/restore/finish", async (c) => {
  */
 export async function deleteAllUserData(db: Db, userId: string): Promise<void> {
   await wipeAccountData(db, userId, { keep: [] });
+  // Child rows whose parent is already gone (repairTimestamps' duplicate
+  // merge leaves stream summaries behind) belong to no account, so the
+  // scoped wipe cannot reach them — and "delete everything" must (finding 10).
+  await deleteOrphanedChildren(db);
+  await db.delete(accountState).where(eq(accountState.userId, userId));
   await db.delete(sessions).where(eq(sessions.userId, userId));
   await db.delete(oauthStates);
   await db.delete(users).where(eq(users.id, userId));

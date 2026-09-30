@@ -87,3 +87,41 @@ export const schemaVersions = sqliteTable("schema_versions", {
   version: text("version").notNull(),
   appliedAt: text("applied_at").notNull(),
 });
+
+/**
+ * Per-account bookkeeping that is NOT account data: never exported, never
+ * restored, removed by delete-all (migration 0023).
+ *
+ * `restoreId` is the RESTORE MARKER. Restore begin sets it (with a fresh id the
+ * later `rows`/`finish` calls must present), finish or "Start fresh" clears it.
+ * While it is set every writer skips the account, so nothing races the file
+ * into the half-wiped tables (audit 1 data F2/F8, ruling B2).
+ *
+ * `restoreExpected` is `{ table: rows }` from the checked pages begin was
+ * shown; finish compares the landed counts against it.
+ *
+ * `calendarReconcile` is the one-shot post-restore calendar reconcile (B6):
+ * null when there is nothing to do.
+ *
+ * `gardenRebuildPending`/`gardenRebuildFrom`: a garden rebuild that runs in
+ * day-capped steps across requests (B4). `gardenRebuildFrom` is the first
+ * changed date for the NEXT step; null means "resume from the newest
+ * checkpoint the rebuild itself wrote".
+ */
+export const accountState = sqliteTable("account_state", {
+  userId: text("user_id").primaryKey(),
+  restoreId: text("restore_id"),
+  restoreStartedAt: text("restore_started_at"),
+  restoreFileExportedAt: text("restore_file_exported_at"),
+  restoreFileExportedFrom: text("restore_file_exported_from"),
+  restoreExpected: text("restore_expected", { mode: "json" }).$type<Record<string, number>>(),
+  restoreFinishedAt: text("restore_finished_at"),
+  calendarReconcile: text("calendar_reconcile", { mode: "json" }).$type<{
+    phase: "pending" | "sweeping";
+    /** False when the restore came back short: link and recreate, never delete. */
+    sweep: boolean;
+  }>(),
+  gardenRebuildPending: integer("garden_rebuild_pending", { mode: "boolean" }).notNull().default(false),
+  gardenRebuildFrom: text("garden_rebuild_from"),
+  updatedAt: text("updated_at").notNull(),
+});
