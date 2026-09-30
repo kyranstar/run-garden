@@ -227,6 +227,22 @@ importers:
         specifier: ^5.7.3
         version: 5.9.3
 
+  packages/exercise-library:
+    dependencies:
+      zod:
+        specifier: ^3.24.1
+        version: 3.25.76
+    devDependencies:
+      '@types/node':
+        specifier: ^22.10.0
+        version: 22.20.1
+      typescript:
+        specifier: ^5.7.3
+        version: 5.9.3
+      vitest:
+        specifier: ^3.0.0
+        version: 3.2.7(@types/node@22.20.1)(terser@5.49.0)(tsx@4.23.1)
+
   packages/garden-engine:
     dependencies:
       '@rg/domain':
@@ -314,6 +330,25 @@ importers:
       vitest:
         specifier: ^3.0.0
         version: 3.2.7(@types/node@22.20.1)(jsdom@25.0.1)(terser@5.49.0)(tsx@4.23.1)
+
+  packages/session-engine:
+    dependencies:
+      '@rg/domain':
+        specifier: workspace:*
+        version: link:../domain
+      '@rg/exercise-library':
+        specifier: workspace:*
+        version: link:../exercise-library
+    devDependencies:
+      '@types/node':
+        specifier: ^22.10.0
+        version: 22.20.1
+      typescript:
+        specifier: ^5.7.3
+        version: 5.9.3
+      vitest:
+        specifier: ^3.0.0
+        version: 3.2.7(@types/node@22.20.1)(terser@5.49.0)(tsx@4.23.1)
 
   packages/ui:
     dependencies:

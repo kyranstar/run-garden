@@ -64,6 +64,12 @@ export const userPreferencesSchema = schedulingPreferencesSchema.extend({
   raceChecklist: z
     .array(z.object({ id: z.string(), label: z.string(), done: z.boolean() }))
     .default([]),
+  /** Unit for suggested and typed exercise weights. Logged weights keep the
+   * unit they were typed in; comparisons happen in kg. */
+  weightUnit: z.enum(["lb", "kg"]).default("lb"),
+  /** Equipment the athlete plans to get (library ids); shows which moves it
+   * would unlock. */
+  equipmentWishlist: z.array(z.string()).default([]),
 });
 export type UserPreferences = z.infer<typeof userPreferencesSchema>;
 
