@@ -284,6 +284,18 @@ test("damaged history doesn't throw", () => {
 });
 
 describe("beyond the standalone suite", () => {
+  test("a session with a malformed date still counts, like the standalone, and never throws (audit library #2)", () => {
+    const sessions = [
+      on(0, { entries: [lift("gobletSquat", lb(25), 8)] }),
+      normalise({ id: "garbage", date: "garbage", entries: [lift("deadlift", lb(30), 5)] }),
+      normalise({ id: "stamp", date: "2026-09-02T10:00:00Z", entries: [lift("gobletSquat", lb(30), 5)] }),
+    ];
+    const out = Records.compute(data, sessions);
+    expect(out.records.map(r => [r.kind, r.exerciseId, r.sessionId])).toContainEqual(["first", "deadlift", "garbage"]);
+    expect(out.records.map(r => [r.kind, r.exerciseId, r.sessionId])).toContainEqual(["weight", "gobletSquat", "stamp"]);
+    expect(out.milestones.some(m => /NaN|garbage/.test(m.id))).toBe(false);
+  });
+
   test("calm streaks come from each profile's own check and label; none without a profile", () => {
     const calm = daily(5, () => ({ pre: 3, post: 2 }));
     expect(milestoneIds(calm, "calm-")).toEqual(["calm-5"]);

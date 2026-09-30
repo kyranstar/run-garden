@@ -1,4 +1,4 @@
-import { addDays, formatWeight, startOfIsoWeek, toKg, type Weight } from "@rg/domain";
+import { addDays, formatWeight, isLocalDate, startOfIsoWeek, toKg, type Weight } from "@rg/domain";
 import type { EngineData, ExerciseRecord, HistoryEntry, HistorySession, HistorySet } from "@rg/exercise-library";
 import { Hist } from "./hist.js";
 import { Lib } from "./lib.js";
@@ -122,9 +122,10 @@ function compute(data: EngineData, sessions: readonly (HistorySession | null)[] 
     count += 1;
     if (SESSION_COUNTS.includes(count)) award(`sessions-${count}`, `${count} sessions`);
 
-    const week = startOfIsoWeek(s.date);
-    weekCounts.set(week, (weekCounts.get(week) || 0) + 1);
-    if (weekCounts.get(week) === weeklyGoal) {
+    // A malformed date still counts for records and session totals; it just belongs to no week.
+    const week = isLocalDate(s.date) ? startOfIsoWeek(s.date) : null;
+    if (week) weekCounts.set(week, (weekCounts.get(week) || 0) + 1);
+    if (week && weekCounts.get(week) === weeklyGoal) {
       const streak = (weekStreaks.get(addDays(week, -7)) || 0) + 1;
       weekStreaks.set(week, streak);
       if (GOAL_STREAKS.includes(streak)) award(`goal-weeks-${streak}`, `${streak} weeks in a row at your goal`);
@@ -153,6 +154,7 @@ function compute(data: EngineData, sessions: readonly (HistorySession | null)[] 
       heaviestBellKg = Math.max(heaviestBellKg ?? bellKg, bellKg);
     }
 
+    if (!week) continue;
     const families = weekFamilies.get(week) || new Set<string>();
     for (const raw of Hist.idsIn(s)) { const f = Lib.coreFamilyOf(data, Lib.get(data, raw)); if (f) families.add(f); }
     weekFamilies.set(week, families);
