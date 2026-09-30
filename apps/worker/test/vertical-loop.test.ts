@@ -653,6 +653,58 @@ describe("completion: adopting a legacy source-less row", () => {
     expect(acts[0]!.trainingLoad).toBe(82); // COROS metrics carried over
   });
 
+  it("the self-heal never reunites a repaired row with an IMPORTED twin (Task 7 gap)", async () => {
+    // Imported history is never adopted (completion.ts), and the timestamp
+    // repair's own twin search carries the same exclusion — which had no test.
+    // The same session, one copy imported and one year-7625 COROS row: the
+    // repair rescales the COROS row and leaves the imported one exactly as it
+    // was, both still present.
+    await importFromProvider();
+    const w = (
+      await db.select().from(plannedWorkouts).where(eq(plannedWorkouts.title, "Threshold 5x5"))
+    )[0]!;
+    const startIso = `${w.effectiveDate}T14:02:05Z`;
+    await db.insert(activities).values({
+      id: "imported-twin",
+      userId,
+      startTime: startIso,
+      startTimeLocal: startIso.replace("Z", ""),
+      sport: "run",
+      durationSeconds: 3260,
+      distanceMeters: 9805,
+      title: "Morning Threshold",
+      source: "import",
+      sourceMergeConfidence: 1,
+      createdAt: nowInstant(),
+      updatedAt: nowInstant(),
+    });
+    const { item, detail } = fixtureCorosCompletedThreshold(startIso);
+    const coros = normalizeCorosActivity(item, detail);
+    const startUnix = Math.floor(Date.parse(startIso) / 1000);
+    const bogus = {
+      ...coros,
+      startTime: new Date(startUnix * 100 * 1000).toISOString().replace(".000Z", "Z"),
+      startTimeLocal: new Date((startUnix * 100 - 28 * 15 * 60) * 1000)
+        .toISOString()
+        .replace(".000Z", "")
+        .replace("Z", ""),
+    };
+    await ingestActivities(db, { userId, sources: [bogus] });
+    const [before] = await db.select().from(activities).where(eq(activities.id, "imported-twin"));
+
+    await ingestActivities(db, { userId, sources: [] });
+
+    const acts = await db.select().from(activities).where(eq(activities.userId, userId));
+    expect(acts).toHaveLength(2);
+    const repaired = acts.find((a) => a.id !== "imported-twin")!;
+    expect(repaired.startTime).toBe(startIso);
+    expect(repaired.corosActivityId).toBeTruthy();
+    const [imported] = await db.select().from(activities).where(eq(activities.id, "imported-twin"));
+    expect(imported).toEqual(before);
+    expect(imported!.source).toBe("import");
+    expect(imported!.corosActivityId).toBeNull();
+  });
+
   it("re-ingesting the same COROS activity is idempotent", async () => {
     await importFromProvider();
     const w = (
