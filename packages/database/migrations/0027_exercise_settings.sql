@@ -3,7 +3,7 @@
 -- user_conditions and exercise_prefs are keyed by a single `id` — by
 -- convention `<user_id>:<profile_id>` / `<user_id>:<exercise_id>`, the way
 -- daily_health and garden_wildlife are — with a unique index on the pair,
--- rather than the spec's composite PRIMARY KEY: export paging, restore's
+-- rather than a composite PRIMARY KEY (ruling P1-R9): export paging, restore's
 -- lost-row check and the copier's keyset all page and match on ONE primary-key
 -- column (account-restore.ts refuses any other table), and a restore into
 -- another account re-keys `<old user id>:` ids for free.

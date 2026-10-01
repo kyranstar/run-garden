@@ -137,7 +137,8 @@ describe("one fully populated row per new table round-trips (D1's 100-variable c
         {
           id: "ps-1", userId, workoutId: "pw-1", activityId: "ps-1", buildId: "sb-1", source: "app", sourceRef: null,
           localDate: "2026-10-01", startedAt: at, endedAt: "2026-10-01T12:31:00.000Z", seconds: 1860, plannedSeconds: 1800,
-          mode: "build", theme: "pull-day", locationId: "loc-1", blockRef: "pb-1", completed: true, stepsTotal: 24,
+          minutes: 30, mode: "build", theme: "pull-day", locationId: "loc-1", blockRef: "pb-1", blockNumber: 1, completed: true,
+          stepsTotal: 24,
           stepsDone: 22, movesDone: [{ exerciseId: "goblet-squat", seconds: 240 }, { exerciseId: "cat-cow", seconds: 60 }],
           note: "felt good", newMove: "cat-cow", payloadHash: "ph", createdAt: at, updatedAt: at,
         },

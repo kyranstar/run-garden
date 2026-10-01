@@ -109,12 +109,15 @@ export const performedSessionSaveSchema = z
     /** Time actually running, in seconds. */
     seconds: count,
     plannedSeconds: count.nullable(),
+    /** The session length asked for. */
+    minutes: count.nullable(),
     mode: sessionModeSchema.nullable(),
     /** Theme id. */
     theme: z.string().min(1).max(60).nullable(),
     locationId: id.nullable(),
-    /** The training block the session belonged to (`program_blocks.id`). */
+    /** The training block the session belonged to (`program_blocks.id`) and its number then. */
     blockRef: id.nullable(),
+    blockNumber: count.nullable(),
     completed: z.boolean(),
     stepsTotal: count.nullable(),
     stepsDone: count.nullable(),

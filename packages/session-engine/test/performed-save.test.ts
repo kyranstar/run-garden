@@ -2,7 +2,7 @@ import { describe, expect, test } from "vitest";
 import { performedSessionSaveSchema, SESSION_FORMATS, SESSION_MODES, type PerformedSessionWire } from "@rg/domain";
 import { FORMAT_IDS, MODE_IDS } from "@rg/exercise-library";
 import {
-  Builder, historyFromPerformed, Recorder, Review, toPerformedSave,
+  Builder, historyFromPerformed, Recorder, Records, Review, toPerformedSave,
   type BuildInput, type HistorySession, type PendingChanges, type PerformedSessionSave, type RecorderMeta,
 } from "../src/index.js";
 import { block, checksFor, data, home } from "./builder-fixtures.js";
@@ -66,14 +66,12 @@ describe("toPerformedSave → historyFromPerformed", () => {
     const wire = toPerformedSave(save, pending, { source: "app", workoutId: "pw-1", buildId: "sb-1" });
     const received = overTheWire(wire);
     expect(received).toEqual(wire);
-    expect(historyFromPerformed(received, { blockNumber: block.number })).toEqual(asHistory(save));
+    expect(historyFromPerformed(received)).toEqual(asHistory(save));
   });
 
   test("the engine plans the next day identically from the wire's history and from the recorder's save", () => {
     const { save, pending } = playedSession();
-    const fromWire = historyFromPerformed(overTheWire(toPerformedSave(save, pending, { source: "app", workoutId: null, buildId: null })), {
-      blockNumber: block.number,
-    });
+    const fromWire = historyFromPerformed(overTheWire(toPerformedSave(save, pending, { source: "app", workoutId: null, buildId: null })));
     const next = (sessions: HistorySession[]) => Builder.build(data, input({ today: "2026-09-30", mode: "consistent", sessions }));
     expect(next([fromWire])).toEqual(next([save]));
   });
@@ -84,7 +82,8 @@ describe("toPerformedSave → historyFromPerformed", () => {
     expect(wire).toMatchObject({
       id: "perf-1", source: "app", sourceRef: null, workoutId: "pw-1", buildId: "sb-1", localDate: "2026-09-29",
       startedAt: "2026-09-29T18:00:00.000Z", endedAt: "2026-09-29T18:41:00.000Z", seconds: 2400, plannedSeconds: save.plannedSeconds,
-      mode: "build", theme: "t", locationId: "home", blockRef: block.id, completed: true, stepsTotal: save.stepsTotal,
+      minutes: 40, mode: "build", theme: "t", locationId: "home", blockRef: block.id, blockNumber: block.number, completed: true,
+      stepsTotal: save.stepsTotal,
       stepsDone: save.stepsDone, note: "felt strong", newMove: save.newMove,
     });
     expect(wire.movesDone).toEqual(save.done.map(d => ({ exerciseId: d.id, seconds: d.secs })));
@@ -99,6 +98,21 @@ describe("toPerformedSave → historyFromPerformed", () => {
     expect(wire.review).toEqual({
       ratings: pending.ratings, excluded: pending.excluded, graduations: [{ family: "squat", to: "front-squat" }],
     });
+  });
+
+  test("block milestones read straight from saved sessions: \"Block N complete\" through the wire into Records", () => {
+    const { save, pending } = playedSession();
+    // Two sessions in block 1, then one in block 2 — the third completes block 1.
+    const saves = [
+      { ...save, id: "s1", date: "2026-09-27", startedAt: "2026-09-27T18:00:00.000Z", blockNumber: 1 },
+      { ...save, id: "s2", date: "2026-09-28", startedAt: "2026-09-28T18:00:00.000Z", blockNumber: 1 },
+      { ...save, id: "s3", date: "2026-09-29", startedAt: "2026-09-29T18:00:00.000Z", blockNumber: 2 },
+    ];
+    const history = saves.map(s => historyFromPerformed(overTheWire(toPerformedSave(s, pending, { source: "app", workoutId: null, buildId: null }))));
+    expect(history.map(h => h.blockNumber)).toEqual([1, 1, 2]);
+    const blocks = Records.compute(data, history).milestones.filter(m => m.id.startsWith("block-"));
+    expect(blocks).toEqual([{ id: "block-1", sessionId: "s3", date: "2026-09-29", text: "Block 1 complete" }]);
+    expect(Records.compute(data, history)).toEqual(Records.compute(data, saves));
   });
 
   test("an import names its source session; without one it is refused at Save", () => {
@@ -120,13 +134,13 @@ describe("toPerformedSave — what the recorder holds that the rows normalise", 
   test("a reading with nothing answered writes no check, and reads back as no reading", () => {
     const wire = toPerformedSave({ ...base(), checks: { tmj: { pre: null, post: null, feelingOff: false } } }, none, ctx);
     expect(wire.checks).toEqual([]);
-    expect(historyFromPerformed(wire, { blockNumber: null }).checks).toEqual({});
+    expect(historyFromPerformed(wire).checks).toEqual({});
   });
 
   test("feeling off with no number is a pre check with a null value", () => {
     const wire = toPerformedSave({ ...base(), checks: { tmj: { pre: null, post: 3, feelingOff: true } } }, none, ctx);
     expect(wire.checks.map(c => [c.kind, c.value, c.feelingOff])).toEqual([["pre", null, true], ["post", 3, false]]);
-    expect(historyFromPerformed(wire, { blockNumber: null }).checks).toEqual({ tmj: { pre: null, post: 3, feelingOff: true } });
+    expect(historyFromPerformed(wire).checks).toEqual({ tmj: { pre: null, post: 3, feelingOff: true } });
   });
 
   test("counts are whole, ratings are signs, an empty note or place is null", () => {
@@ -147,12 +161,13 @@ describe("historyFromPerformed — rows from other sources", () => {
     const [first, second] = wire.entries;
     const edited: PerformedSessionWire = {
       ...wire,
+      blockNumber: 2,
       entries: [
         { ...first!, sets: [{ ...first!.sets[0]!, flags: ["b"] }, { ...first!.sets[0]!, setIndex: 1, done: false, flags: ["a", "b"] }] },
         { ...second!, sets: second!.sets.map(s => ({ ...s, done: false })) },
       ],
     };
-    const history = historyFromPerformed(edited, { blockNumber: 2 });
+    const history = historyFromPerformed(edited);
     expect(history.entries).toHaveLength(1);
     expect(history.entries[0]!.sets).toHaveLength(1);
     expect(history.entries[0]!.flags).toEqual(["b", "a"]);
@@ -163,7 +178,7 @@ describe("historyFromPerformed — rows from other sources", () => {
     const { save, pending } = playedSession();
     const wire = toPerformedSave({ ...save, checks: {} }, pending, { source: "app", workoutId: null, buildId: null });
     const withDaily = { ...wire, checks: [{ profileId: "tmj", kind: "daily" as const, value: 4, feelingOff: false, at: "2026-09-29T08:00:00.000Z" }] };
-    expect(historyFromPerformed(withDaily, { blockNumber: null }).checks).toEqual({});
+    expect(historyFromPerformed(withDaily).checks).toEqual({});
   });
 });
 

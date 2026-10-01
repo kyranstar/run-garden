@@ -258,8 +258,9 @@ CREATE UNIQUE INDEX `session_builds_version_unique` ON `session_builds` (`workou
 CREATE TABLE `performed_sessions` (
   `id` text PRIMARY KEY NOT NULL, `user_id` text NOT NULL, `workout_id` text, `activity_id` text, `build_id` text,
   `source` text NOT NULL, `source_ref` text, `local_date` text NOT NULL, `started_at` text, `ended_at` text,
-  `seconds` integer NOT NULL DEFAULT 0, `planned_seconds` integer, `mode` text, `theme` text, `location_id` text,
-  `block_ref` text, `completed` integer NOT NULL DEFAULT 0, `steps_total` integer, `steps_done` integer,
+  `seconds` integer NOT NULL DEFAULT 0, `planned_seconds` integer, `minutes` integer, `mode` text, `theme` text,
+  `location_id` text, `block_ref` text, `block_number` integer, `completed` integer NOT NULL DEFAULT 0,
+  `steps_total` integer, `steps_done` integer, `moves_done` text NOT NULL DEFAULT '[]',
   `note` text, `new_move` text, `payload_hash` text NOT NULL, `created_at` text NOT NULL, `updated_at` text NOT NULL);
 CREATE INDEX `performed_sessions_user_date_idx` ON `performed_sessions` (`user_id`, `local_date`);
 CREATE UNIQUE INDEX `performed_sessions_source_unique` ON `performed_sessions` (`user_id`, `source`, `source_ref`);
@@ -278,17 +279,19 @@ CREATE INDEX `condition_checks_user_date_idx` ON `condition_checks` (`user_id`, 
 
 -- 0027_exercise_settings.sql
 CREATE TABLE `user_conditions` (
-  `user_id` text NOT NULL, `profile_id` text NOT NULL, `active` integer NOT NULL, `since` text NOT NULL,
-  `settings` text NOT NULL DEFAULT '{}', PRIMARY KEY (`user_id`, `profile_id`));
+  `id` text PRIMARY KEY NOT NULL, `user_id` text NOT NULL, `profile_id` text NOT NULL, `active` integer NOT NULL,
+  `since` text NOT NULL, `settings` text NOT NULL DEFAULT '{}');
+CREATE UNIQUE INDEX `user_conditions_profile_unique` ON `user_conditions` (`user_id`, `profile_id`);
 CREATE TABLE `locations` (
   `id` text PRIMARY KEY NOT NULL, `user_id` text NOT NULL, `name` text NOT NULL, `equipment` text NOT NULL,
   `implements` text NOT NULL DEFAULT '{}', `is_default` integer NOT NULL DEFAULT 0,
   `created_at` text NOT NULL, `updated_at` text NOT NULL);
 CREATE INDEX `locations_user_idx` ON `locations` (`user_id`);
 CREATE TABLE `exercise_prefs` (
-  `user_id` text NOT NULL, `exercise_id` text NOT NULL, `rating` integer, `excluded` integer NOT NULL DEFAULT 0,
-  `pinned` integer NOT NULL DEFAULT 0, `introduced_on` text, `updated_at` text NOT NULL,
-  PRIMARY KEY (`user_id`, `exercise_id`));
+  `id` text PRIMARY KEY NOT NULL, `user_id` text NOT NULL, `exercise_id` text NOT NULL, `rating` integer,
+  `excluded` integer NOT NULL DEFAULT 0, `pinned` integer NOT NULL DEFAULT 0, `introduced_on` text,
+  `updated_at` text NOT NULL);
+CREATE UNIQUE INDEX `exercise_prefs_exercise_unique` ON `exercise_prefs` (`user_id`, `exercise_id`);
 CREATE TABLE `exercise_provenance` (
   `id` text PRIMARY KEY NOT NULL, `user_id` text NOT NULL, `exercise_id` text NOT NULL, `source_type` text NOT NULL,
   `url` text, `creator` text, `source_key` text, `created_at` text NOT NULL);
@@ -298,13 +301,32 @@ CREATE UNIQUE INDEX `exercise_provenance_key_unique` ON `exercise_provenance` (`
 `performed_sets` is a child of `performed_sessions`; `program_versions` and `program_blocks` are children of
 `programs`; every other new table is user-scoped. All join the table registry, export/restore and delete-all.
 
+As built (rulings P1-R9–R12):
+
+- `user_conditions` and `exercise_prefs` are keyed by a single `id` — by convention `<user_id>:<profile_id>` /
+  `<user_id>:<exercise_id>`, as `daily_health` is — plus a unique index on the pair, not a composite primary key:
+  the registry's export paging, restore's lost-row check and the copier's keyset all work on one primary-key
+  column, and a restore into another account re-keys `<old user id>:` ids. Writers upsert on the pair.
+- `performed_sessions.moves_done` (JSON `[{exerciseId, seconds}]`) is every move the session reached, logged or
+  not — the engine's `done`. Played-only moves (mobility, breathing) have no `performed_sets` rows, and the engine's
+  repetition penalty, first-done dates and coverage read them.
+- `performed_sessions.block_number` (the block's number when the session was done, beside `block_ref`) and
+  `minutes` (the length asked for) keep a session's history whole without the block row — an import's past blocks
+  have none — so "Block N complete" milestones read straight from saved sessions.
+- A `firm_week` block's `intent` is `{}` (the column is NOT NULL); a `shape_week`'s is `{volumeTarget, keySessions}`;
+  a `core_block`'s is `{core, rotations}`.
+- Multi-row inserts into these tables pass every defaulted column explicitly: Drizzle binds an omitted column's
+  default as a parameter, which `chunkedInsert`'s per-row key count does not see (D1's 100-variable cap).
+
 Domain (zod, `packages/domain/src/`):
 
-- `program.ts`: `programKindSchema`, `adaptiveConfigSchema` (`weeklyGoal` 1–7 default 4, `preferredDays` 0–6[],
+- `program.ts`: `programKindSchema`, `adaptiveConfigSchema` (`weeklyGoal` 1–7 default 4, `preferredDays` 0–6[]
+  where 0 = Monday … 6 = Sunday (ISO weekday − 1, an offset from the ISO week's Monday),
   `defaultMinutes` 10–90 default 30, `defaultLocationId`, `blockWeeks` 4–6 default 5, `modes`, `careProfiles`,
   `placementWeeksAhead` 1–4 default 2), `blockIntentSchema`.
-- `performed.ts`: `performedSessionSaveSchema` (the outbox payload, Phase 2b), `performedSetSchema`,
-  `conditionCheckSchema`.
+- `performed.ts`: `performedSessionSaveSchema` (the outbox payload, Phase 2b — the wire contract, ruling P1-R3),
+  `performedSetSchema`, `conditionCheckSchema`. The engine's recorder output maps to it through one function,
+  `toPerformedSave` in `@rg/session-engine`; `historyFromPerformed` maps a saved session back to `HistorySession`.
 - `weights.ts`: `Weight {v, u}`, `parseWeight(text, defaultUnit)`, `toKg`, `formatWeight`, `formatWeightIn`,
   `parseWeightList`, `sameWeight` (tolerance 0.05 kg); pounds use the exact definition 1 lb = 0.45359237 kg.
 - `preferences.ts`: `weightUnit: z.enum(["lb","kg"]).default("lb")`, `equipmentWishlist: z.array(z.string()).default([])`.

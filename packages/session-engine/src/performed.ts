@@ -54,10 +54,12 @@ export function toPerformedSave(save: PerformedSessionSave, review: PendingChang
     endedAt: save.endedAt,
     seconds: Math.round(save.seconds),
     plannedSeconds: whole(save.plannedSeconds),
+    minutes: whole(save.minutes),
     mode: save.mode,
     theme: save.theme,
     locationId: save.locationId || null,
     blockRef: save.blockId,
+    blockNumber: save.blockNumber,
     completed: save.completed,
     stepsTotal: save.stepsTotal,
     stepsDone: save.stepsDone,
@@ -87,11 +89,10 @@ export function toPerformedSave(save: PerformedSessionSave, review: PendingChang
 const UNANSWERED: CheckReading = { pre: null, post: null, feelingOff: false };
 
 /**
- * A saved session → the history the engine reads (Phase 1 spec §4.3). `blockNumber` is the number of the block
- * `blockRef` names (`program_blocks.number`); the payload holds the reference, not the number. Only done sets are
- * history (as the recorder keeps them); an entry with none is dropped. An entry's flags are its sets' flags.
+ * A saved session → the history the engine reads (Phase 1 spec §4.3). Only done sets are history (as the recorder
+ * keeps them); an entry with none is dropped. An entry's flags are its sets' flags.
  */
-export function historyFromPerformed(p: PerformedSessionWire, opts: { blockNumber: number | null }): HistorySession {
+export function historyFromPerformed(p: PerformedSessionWire): HistorySession {
   const checks: Record<string, CheckReading> = {};
   for (const c of p.checks) {
     if (c.kind === "daily") continue;
@@ -111,7 +112,7 @@ export function historyFromPerformed(p: PerformedSessionWire, opts: { blockNumbe
     });
   }
   return {
-    id: p.id, date: p.localDate, startedAt: p.startedAt, mode: p.mode, theme: p.theme, blockNumber: opts.blockNumber,
+    id: p.id, date: p.localDate, startedAt: p.startedAt, mode: p.mode, theme: p.theme, blockNumber: p.blockNumber,
     checks, done: p.movesDone.map(m => ({ id: m.exerciseId, secs: m.seconds })), entries,
   };
 }

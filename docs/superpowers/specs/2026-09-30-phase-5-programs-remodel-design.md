@@ -45,7 +45,7 @@ tables that reference `programs.id`:
 | `training_plans` | `programs` kind `coros_import`; `source = {provider, sourcePlanId, pbVersion, sourceVersion, contentFingerprint}`; status `active`/`archived` |
 | `training_plan_versions` | `program_versions` (same ids) |
 | `coach_plans` | `programs` kind `coach`; `disciplines = [discipline]`; `config = {loose: bool, stampPrefix}` (`loose` true exactly for `adhoc-` ids); status `draft`/`active`/`completed`/`retired`; `race_date` |
-| `coach_plan_weeks` | `program_blocks` kind `firm_week`/`shape_week`, `number` = week index from the plan start, `start_date` = weekStart, `weeks` = 1, `intent` = the shape JSON (null for firm) — ids preserved |
+| `coach_plan_weeks` | `program_blocks` kind `firm_week`/`shape_week`, `number` = week index from the plan start, `start_date` = weekStart, `weeks` = 1, `intent` = the shape JSON `{volumeTarget, keySessions}`, or `{}` for a firm week (`intent` is NOT NULL; ruling P1-R12) — ids preserved |
 | `studio_plans` | `programs` kind `studio`; `config = {brief, plan, version}`; "current" = newest `created_at` (one definition everywhere — the dossier's `updated_at` reading is corrected) |
 | `studio_plan_pushes` | **kept** as the Studio push ledger, `plan_id` → `programs.id` (same ids); retired with the Studio code in Phase 6 once no pushed Studio session remains in the future |
 

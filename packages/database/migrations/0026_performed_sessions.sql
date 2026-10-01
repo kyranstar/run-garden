@@ -20,7 +20,11 @@ CREATE UNIQUE INDEX `session_builds_version_unique` ON `session_builds` (`workou
 -- `source`: app | watch_review | import. `source_ref` is the source's own
 -- session id (import); NULL for app saves, and SQLite treats NULLs as
 -- distinct, so the unique index only ever binds imports.
--- `moves_done` (beyond the spec's list): JSON `[{exerciseId, seconds}]`, every
+-- `minutes` is the length asked for; `block_number` the training block's
+-- number when the session was done (block_ref names the row) — kept on the
+-- session so history is whole without the block row (an import's past blocks
+-- have none) and "Block N complete" milestones read straight from it.
+-- `moves_done`: JSON `[{exerciseId, seconds}]`, every
 -- move the session reached, logged or not — the engine's `done`. A mobility
 -- hold or a breathing step is played, never logged, so it has no
 -- performed_sets row; without this the engine's history would lose it (its
@@ -38,10 +42,12 @@ CREATE TABLE `performed_sessions` (
 	`ended_at` text,
 	`seconds` integer NOT NULL DEFAULT 0,
 	`planned_seconds` integer,
+	`minutes` integer,
 	`mode` text,
 	`theme` text,
 	`location_id` text,
 	`block_ref` text,
+	`block_number` integer,
 	`completed` integer NOT NULL DEFAULT 0,
 	`steps_total` integer,
 	`steps_done` integer,

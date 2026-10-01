@@ -45,10 +45,14 @@ export const performedSessions = sqliteTable(
     endedAt: text("ended_at"),
     seconds: integer("seconds").notNull().default(0),
     plannedSeconds: integer("planned_seconds"),
+    /** The session length asked for. */
+    minutes: integer("minutes"),
     mode: text("mode"),
     theme: text("theme"),
     locationId: text("location_id"),
     blockRef: text("block_ref"),
+    /** The block's number when the session was done: history (and "Block N complete") without the block row. */
+    blockNumber: integer("block_number"),
     completed: integer("completed", { mode: "boolean" }).notNull().default(false),
     stepsTotal: integer("steps_total"),
     stepsDone: integer("steps_done"),
