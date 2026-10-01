@@ -2,7 +2,9 @@
  * THE SESSION ENGINE'S INPUTS, FROM THE DATABASE (Phase 2 spec §2a "Build API" → Inputs; programme spec §7.2).
  *
  *   history       every `performed_sessions` row of the user, any source, with its done sets and its checks,
- *                 mapped through the engine's one mapping (`historyFromPerformed`, ruling P1-R3), oldest first
+ *                 mapped through the engine's one mapping (`historyFromPerformed`, ruling P1-R3), oldest first —
+ *                 for a build, only what it reads: the sessions `Hist.trim` keeps and `Hist.summarize` of the rest,
+ *                 both in SQL (`loadBuildHistory`, ruling 2a-R6)
  *   program state the program's latest `program_blocks` row as the engine's `Block`
  *   prefs         `exercise_prefs` (ratings, "not for me", pins); saved ids from `exercise_provenance`
  *   place         the override, else the program's default place, else the account's default, else the first;
@@ -13,7 +15,7 @@
  * Every list comes back in a fixed order, so the same rows always make the same inputs (and the same inputs hash).
  * Reads only, apart from `saveProgramState` — a no-op while a restore is replacing the account (ruling B2).
  */
-import { and, asc, desc, eq, inArray } from "drizzle-orm";
+import { and, asc, desc, eq, inArray, isNull, sql } from "drizzle-orm";
 import {
   conditionChecks,
   exercisePrefs,
@@ -41,7 +43,16 @@ import {
   type WeightUnit,
 } from "@rg/domain";
 import { isProfileId, LOCATION_PRESETS } from "@rg/exercise-library";
-import { historyFromPerformed, type Block, type EngineLocation, type HistorySession, type Prefs } from "@rg/session-engine";
+import {
+  Hist,
+  historyFromPerformed,
+  type Block,
+  type EngineLocation,
+  type HistorySession,
+  type HistorySummary,
+  type MoveSummary,
+  type Prefs,
+} from "@rg/session-engine";
 import { restoreInProgress } from "./account-state.js";
 import { loadPreferences } from "./calendar-sync.js";
 import { chunkIds, type Db } from "./db.js";
@@ -122,39 +133,23 @@ function toWire(s: SessionRow, sets: readonly SetRow[], checks: readonly CheckRo
   };
 }
 
-/**
- * Every performed session of the user (app, watch review, import), oldest first, as the engine's history.
- * A session's checks are its own `pre`/`post` rows, plus a `pre` the session sheet recorded for the same slot and
- * day before the session was saved (the save does not record it twice). Exercise ids pass through as stored:
- * one the library no longer has is ignored by the engine, never an error.
- */
-export async function loadHistory(db: Db, userId: string): Promise<HistorySession[]> {
-  const sessions = await db
-    .select()
-    .from(performedSessions)
-    .where(eq(performedSessions.userId, userId))
-    .orderBy(asc(performedSessions.localDate), asc(performedSessions.startedAt), asc(performedSessions.id));
-  if (sessions.length === 0) return [];
-
-  const setsBySession = new Map<string, SetRow[]>();
-  for (const batch of chunkIds(sessions.map((s) => s.id))) {
-    const rows = await db
-      .select()
-      .from(performedSets)
-      .where(inArray(performedSets.performedSessionId, batch))
-      .orderBy(asc(performedSets.performedSessionId), asc(performedSets.entryIndex), asc(performedSets.setIndex));
-    for (const r of rows) {
-      const list = setsBySession.get(r.performedSessionId);
-      if (list) list.push(r);
-      else setsBySession.set(r.performedSessionId, [r]);
-    }
+/** Sets grouped by session, in the order read. */
+function bySession(rows: readonly SetRow[]): Map<string, SetRow[]> {
+  const out = new Map<string, SetRow[]>();
+  for (const r of rows) {
+    const list = out.get(r.performedSessionId);
+    if (list) list.push(r);
+    else out.set(r.performedSessionId, [r]);
   }
+  return out;
+}
 
-  const checks = await db
-    .select()
-    .from(conditionChecks)
-    .where(and(eq(conditionChecks.userId, userId), inArray(conditionChecks.kind, ["pre", "post"])))
-    .orderBy(asc(conditionChecks.at), asc(conditionChecks.id));
+/**
+ * Session rows (oldest first) with their sets and the check rows that may belong to them → the engine's history.
+ * A session's checks are its own `pre`/`post` rows, plus a `pre` the session sheet recorded for the same slot and day
+ * before the session was saved (the save does not record it twice).
+ */
+function toHistory(sessions: readonly SessionRow[], sets: Map<string, SetRow[]>, checks: readonly CheckRow[]): HistorySession[] {
   const linked = new Map<string, CheckRow[]>();
   const bySlotDay = new Map<string, CheckRow[]>();
   const slotDay = (workoutId: string, date: string) => `${workoutId}\u0000${date}`;
@@ -166,14 +161,244 @@ export async function loadHistory(db: Db, userId: string): Promise<HistorySessio
       bySlotDay.set(key, [...(bySlotDay.get(key) ?? []), c]);
     }
   }
-
   return sessions.map((s) => {
     const own = linked.get(s.id) ?? [];
     // The slot's pre-check, for a profile the session has no pre of its own.
     const sheet = s.workoutId === null ? [] : (bySlotDay.get(slotDay(s.workoutId, s.localDate)) ?? []);
     const extra = sheet.filter((c) => !own.some((o) => o.kind === "pre" && o.profileId === c.profileId));
-    return historyFromPerformed(toWire(s, setsBySession.get(s.id) ?? [], [...extra, ...own]));
+    return historyFromPerformed(toWire(s, sets.get(s.id) ?? [], [...extra, ...own]));
   });
+}
+
+/**
+ * Every performed session of the user (app, watch review, import), oldest first, as the engine's history.
+ * Exercise ids pass through as stored: one the library no longer has is ignored by the engine, never an error.
+ * A build reads `loadBuildHistory` instead; this is the whole history (for what needs all of it, and for tests).
+ */
+export async function loadHistory(db: Db, userId: string): Promise<HistorySession[]> {
+  const sessions = await db
+    .select()
+    .from(performedSessions)
+    .where(eq(performedSessions.userId, userId))
+    .orderBy(asc(performedSessions.localDate), asc(performedSessions.startedAt), asc(performedSessions.id));
+  if (sessions.length === 0) return [];
+
+  const sets: SetRow[] = [];
+  for (const batch of chunkIds(sessions.map((s) => s.id))) {
+    sets.push(
+      ...(await db
+        .select()
+        .from(performedSets)
+        .where(inArray(performedSets.performedSessionId, batch))
+        .orderBy(asc(performedSets.performedSessionId), asc(performedSets.entryIndex), asc(performedSets.setIndex))),
+    );
+  }
+  const checks = await db
+    .select()
+    .from(conditionChecks)
+    .where(and(eq(conditionChecks.userId, userId), inArray(conditionChecks.kind, ["pre", "post"])))
+    .orderBy(asc(conditionChecks.at), asc(conditionChecks.id));
+  return toHistory(sessions, bySession(sets), checks);
+}
+
+/** What a build reads of the history: the sessions it reads one by one, and the all-time facts of the rest. */
+export interface BuildHistory {
+  sessions: HistorySession[];
+  summary: HistorySummary;
+}
+
+// ── The build's history in SQL (ruling 2a-R6) ─────────────────────────────────────────────────────────────────
+//
+// The engine says what a build reads (`Hist.trim`, `Hist.summarize`); one query computes both in the database —
+// which sessions to read, and the all-time facts per move — and the held sessions are then read by id, so a build
+// request maps a few dozen sessions and one row per move however long the history grows, instead of every session
+// and set. The SQL mirrors `toWire` + `historyFromPerformed`: an entry is the sets with one entry index, named by its
+// first set's exercise id and format, and it counts only with a done set; its flags are every set's; the moves a
+// session touched are its entries' ids and `moves_done`. A session's start (`w`) is its start time, else its date.
+//
+// Order: SQLite compares start times by bytes, the engine by `localeCompare`. On ISO times the two disagree only
+// between two times equal to the second and written differently (".000Z" against "+00:00"); each "newest N" below
+// keeps a few more sessions than the engine needs, so the engine still finds its own among them (extra sessions
+// never change a build), and a move's first session is the earliest by bytes — on such a tie both sessions share
+// their date, which is all the engine reads of it.
+
+const RECENT_SLACK = 2;
+const ENTRY_SLACK = 1;
+/** Ids per `IN (…)` list, under D1's bound-variable cap with room for the other parameters. */
+const ID_CHUNK = 90;
+
+/** A session's start, as the engine orders sessions: its start time, else its date. */
+const startOf = (alias: string) => sql.raw(`COALESCE(NULLIF(${alias}.started_at, ''), ${alias}.local_date)`);
+/** Newest first in the engine's order (start, then the history's own order on a tie: date, start time, id). */
+const NEWEST = sql.raw(`COALESCE(NULLIF(started_at, ''), local_date) DESC, local_date DESC, started_at DESC, id DESC`);
+
+interface HistoryRow {
+  kind: "held" | "move" | "logged" | "flag";
+  /** The raw exercise id (a held row: the session id). */
+  raw: string;
+  a: string | null;
+  b: string | null;
+  n: number | null;
+}
+
+/**
+ * Every fact a build reads of the whole history, as rows: `held` (a session `Hist.trim` keeps, or one more; `a` its
+ * slot, `n` its place in the history's order), and per raw exercise id `move` (`a` its first session's start and
+ * date, joined by char(1); `b` its last date on or before the day), `logged` (`n`) and `flag` (`a` the flag, `n`
+ * entries).
+ */
+function historyRows(db: Db, userId: string, date: string, from: string): Promise<HistoryRow[]> {
+  return db.all(sql`
+    WITH e AS (
+      -- Logged entries (with a done set). With exactly one MIN() in a query, SQLite takes the bare columns from the
+      -- row holding the minimum: the entry's first set.
+      SELECT ps.performed_session_id AS sid, ps.entry_index AS ei, ps.exercise_id AS ex, ps.format AS fmt,
+             ${startOf("p")} AS w, p.local_date AS local_date, p.started_at AS started_at, MIN(ps.set_index) AS first_set
+      FROM performed_sessions p JOIN performed_sets ps ON ps.performed_session_id = p.id
+      WHERE p.user_id = ${userId}
+      GROUP BY ps.performed_session_id, ps.entry_index
+      HAVING SUM(ps.done) > 0
+    ),
+    ranked AS (
+      -- Each move's progression entries, newest first as the engine orders them.
+      SELECT sid, ROW_NUMBER() OVER (PARTITION BY ex ORDER BY w DESC, local_date, started_at, sid, ei) AS rn
+      FROM e WHERE ex <> '' AND (fmt IS NULL OR fmt NOT IN ('ladder', 'circuit'))
+    ),
+    held AS (
+      SELECT id FROM performed_sessions WHERE user_id = ${userId} AND local_date >= ${from}
+      UNION SELECT id FROM (
+        SELECT id FROM performed_sessions WHERE user_id = ${userId} AND local_date <= ${date}
+        ORDER BY ${NEWEST} LIMIT ${Hist.TRIM.recentSessions + RECENT_SLACK}
+      )
+      UNION SELECT id FROM (
+        SELECT id FROM performed_sessions WHERE user_id = ${userId} AND local_date < ${date} AND COALESCE(theme, '') <> ''
+        ORDER BY ${NEWEST} LIMIT ${1 + RECENT_SLACK}
+      )
+      UNION SELECT sid FROM ranked WHERE rn <= ${Hist.TRIM.progressionEntries + ENTRY_SLACK}
+    ),
+    touched AS (
+      -- The moves each session touched (a move both logged and done twice: the minimum and maximum below don't mind).
+      SELECT sid, ex AS raw FROM e WHERE ex <> ''
+      UNION ALL
+      SELECT p.id, t.atom FROM performed_sessions p, json_tree(p.moves_done) t
+      WHERE p.user_id = ${userId} AND t.key = 'exerciseId' AND COALESCE(t.atom, '') <> ''
+    ),
+    touched_on AS (
+      SELECT t.raw, ${startOf("p")} AS w, p.local_date AS local_date FROM touched t JOIN performed_sessions p ON p.id = t.sid
+    )
+    SELECT 'held' AS kind, p.id AS raw, p.workout_id AS a, NULL AS b,
+           ROW_NUMBER() OVER (ORDER BY p.local_date, p.started_at, p.id) AS n
+    FROM held h JOIN performed_sessions p ON p.id = h.id
+    UNION ALL
+    -- The first session as (start, date) — char(1) sorts below any character of either — and the last date.
+    SELECT 'move', raw, MIN(w || char(1) || local_date), MAX(CASE WHEN local_date <= ${date} THEN local_date END), NULL
+    FROM touched_on GROUP BY raw
+    UNION ALL
+    SELECT 'logged', ex, NULL, NULL, COUNT(*) FROM e WHERE ex <> '' AND local_date <= ${date} GROUP BY ex
+    UNION ALL
+    SELECT 'flag', ex, flag, NULL, COUNT(*) FROM (
+      SELECT DISTINCT e.sid, e.ei, e.ex, e.local_date, j.value AS flag
+      FROM e JOIN performed_sets ps ON ps.performed_session_id = e.sid AND ps.entry_index = e.ei AND ps.flags <> '[]',
+           json_each(ps.flags) j
+    ) WHERE ex <> '' AND local_date <= ${date} GROUP BY ex, flag
+  `) as Promise<HistoryRow[]>;
+}
+
+/** The facts rows → `HistorySummary`, keys sorted (it is part of the inputs hash). */
+function toSummary(rows: readonly HistoryRow[], asOf: string): HistorySummary {
+  type Move = { first: MoveSummary["first"] | null; last: string | null; logged: number; flags: Record<string, number> };
+  const moves = new Map<string, Move>();
+  const at = (raw: string): Move => {
+    let m = moves.get(raw);
+    if (!m) {
+      m = { first: null, last: null, logged: 0, flags: {} };
+      moves.set(raw, m);
+    }
+    return m;
+  };
+  for (const r of rows) {
+    if (r.kind === "held") continue;
+    const m = at(r.raw);
+    if (r.kind === "move") {
+      const [when, date] = r.a!.split("\u0001") as [string, string];
+      m.first = { when, date };
+      m.last = r.b;
+    } else if (r.kind === "logged") m.logged = Number(r.n);
+    else m.flags[String(r.a)] = Number(r.n);
+  }
+  const out: Record<string, MoveSummary> = {};
+  for (const raw of [...moves.keys()].sort()) {
+    const m = moves.get(raw)!;
+    if (!m.first) continue;   // every move a session touched has a first session
+    const flags: Record<string, number> = {};
+    for (const k of Object.keys(m.flags).sort()) flags[k] = m.flags[k]!;
+    out[raw] = { first: m.first, last: m.last, logged: m.logged, flags };
+  }
+  return { asOf, moves: out };
+}
+
+/** One query per chunk of ids, results in chunk order. */
+async function byChunks<T>(ids: readonly string[], read: (chunk: string[]) => Promise<T[]>): Promise<T[]> {
+  const parts = await Promise.all(chunkIds([...ids], ID_CHUNK).map(read));
+  return parts.flat();
+}
+
+/**
+ * What a build on `date` reads of the user's history (ruling 2a-R6): the sessions `Hist.trim` keeps (the recent ones,
+ * the running block's, the last themed one, those holding each move's newest entries; and a few more), mapped exactly
+ * as `loadHistory` maps them, and `Hist.summarize` of the whole history — computed in one query. Then the held
+ * sessions, their sets and their checks by id: five queries and a bounded number of rows (about the window's sessions
+ * plus two per move ever logged) however long the history. The engine plans exactly what it plans from the whole
+ * history (build-history.test.ts; the engine's differential).
+ */
+export async function loadBuildHistory(
+  db: Db,
+  userId: string,
+  date: string,
+  block: Pick<Block, "startedAt" | "weeks" | "rotations"> | null,
+): Promise<BuildHistory> {
+  const rows = await historyRows(db, userId, date, Hist.TRIM.windowFrom(date, block));
+  const summary = toSummary(rows, date);
+  const held = rows.filter((r) => r.kind === "held").sort((x, y) => Number(x.n) - Number(y.n));
+  if (held.length === 0) return { sessions: [], summary };
+  const ids = held.map((r) => r.raw);
+  const slots = [...new Set(held.map((r) => r.a).filter((w): w is string => w !== null))];
+  const [sessionRows, sets, linked, sheet] = await Promise.all([
+    byChunks(ids, (chunk) => db.select().from(performedSessions).where(and(eq(performedSessions.userId, userId), inArray(performedSessions.id, chunk)))),
+    byChunks(ids, (chunk) =>
+      db
+        .select()
+        .from(performedSets)
+        .where(inArray(performedSets.performedSessionId, chunk))
+        .orderBy(asc(performedSets.performedSessionId), asc(performedSets.entryIndex), asc(performedSets.setIndex)),
+    ),
+    // A session's own checks, and a slot's pre-check recorded before its save (each kept in the order loadHistory
+    // reads them: within one session or one slot, by time).
+    byChunks(ids, (chunk) =>
+      db
+        .select()
+        .from(conditionChecks)
+        .where(and(eq(conditionChecks.userId, userId), inArray(conditionChecks.kind, ["pre", "post"]), inArray(conditionChecks.performedSessionId, chunk)))
+        .orderBy(asc(conditionChecks.at), asc(conditionChecks.id)),
+    ),
+    byChunks(slots, (chunk) =>
+      db
+        .select()
+        .from(conditionChecks)
+        .where(
+          and(
+            eq(conditionChecks.userId, userId),
+            eq(conditionChecks.kind, "pre"),
+            isNull(conditionChecks.performedSessionId),
+            inArray(conditionChecks.workoutId, chunk),
+          ),
+        )
+        .orderBy(asc(conditionChecks.at), asc(conditionChecks.id)),
+    ),
+  ]);
+  const place = new Map(ids.map((id, i) => [id, i]));
+  const sessions = [...sessionRows].sort((x, y) => place.get(x.id)! - place.get(y.id)!);
+  return { sessions: toHistory(sessions, bySession(sets), [...linked, ...sheet]), summary };
 }
 
 /** The program's latest block (by number) as the engine's `Block`; null before the first. */

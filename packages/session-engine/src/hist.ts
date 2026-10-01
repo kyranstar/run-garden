@@ -232,6 +232,15 @@ const PROGRESSION_ENTRIES = 2;
 const isProgression = (e: HistorySession["entries"][number] | null | undefined): e is HistorySession["entries"][number] =>
   Boolean(e && e.id && e.format !== "ladder" && e.format !== "circuit" && (e.sets || []).some(Boolean));
 
+/** The first day of `trim`'s window: 14 days back, or the running block's start (or a lift's rotation in) if earlier. */
+function windowFrom(today: string, block: Pick<Block, "startedAt" | "weeks" | "rotations"> | null): string {
+  let from = addDays(today, -WINDOW_DAYS);
+  if (block && !(daysBetween(block.startedAt, today) >= block.weeks * 7)) {
+    for (const d of [block.startedAt, ...(block.rotations || []).map(r => r.date)]) if (d < from) from = d;
+  }
+  return from;
+}
+
 /**
  * The sessions a build on `today` reads one by one (see above), in the history's order: the last 14 days (and
  * anything dated later), from the block's start while it runs; the last 3 sessions on or before today; the last
@@ -240,10 +249,7 @@ const isProgression = (e: HistorySession["entries"][number] | null | undefined):
  */
 function trim(sessions: readonly HistorySession[], today: string, block: Pick<Block, "startedAt" | "weeks" | "rotations"> | null): HistorySession[] {
   const keep = new Set<HistorySession>();
-  let from = addDays(today, -WINDOW_DAYS);
-  if (block && !(daysBetween(block.startedAt, today) >= block.weeks * 7)) {
-    for (const d of [block.startedAt, ...(block.rotations || []).map(r => r.date)]) if (d < from) from = d;
-  }
+  const from = windowFrom(today, block);
   for (const s of sessions) if (!(s.date < from)) keep.add(s);
   const ordered = sorted(sessions);
   for (const s of ordered.filter(x => x.date <= today).slice(-RECENT_SESSIONS)) keep.add(s);
@@ -286,7 +292,10 @@ function summarize(sessions: readonly HistorySession[], asOf: string): HistorySu
   return { asOf, moves };
 }
 
+/** `trim`'s rule for a caller that trims elsewhere (in SQL): its window's first day, how many last sessions and entries per move it keeps. */
+const TRIM = { recentSessions: RECENT_SESSIONS, progressionEntries: PROGRESSION_ENTRIES, windowFrom } as const;
+
 export const Hist = {
-  sorted, idsIn, daysBetween, canonical, firstDone, newMoveThisWeek, lastFamilyDate, trim, summarize,
+  sorted, idsIn, daysBetween, canonical, firstDone, newMoveThisWeek, lastFamilyDate, trim, summarize, TRIM,
   firstDoneIn, newMoveThisWeekIn, lastFamilyDateIn,
 };

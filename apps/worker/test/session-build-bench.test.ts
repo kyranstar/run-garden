@@ -1,9 +1,12 @@
 /**
- * BUILD CPU (Phase 2 spec §2a "CPU budget"; ruling P1-R8): Workers on the free plan allow 10 ms of CPU per
+ * BUILD CPU (Phase 2 spec §2a "CPU budget"; rulings P1-R8, 2a-R6): Workers on the free plan allow 10 ms of CPU per
  * request, and the spec budgets a build at p50 < 5 ms after warm-up over a 200-session history, alternatives
  * computed in the same pass. This times `composeBuild` — the engine's proposal, block upkeep, plan and
  * alternatives plus the payload and view — over a synthetic 200-session history (made with the engine itself,
- * TMJ active and cared for: the heavier case), and reports the parts around it.
+ * TMJ active and cared for: the heavier case) as the worker passes it: what `loadBuildHistory` reads of it (the
+ * sessions the build reads one by one, and the all-time summary of the rest). It also times the request's other
+ * history work — reading it (the JS side: mapping rows; the database's own work is not the Worker's CPU) and the
+ * inputs hash — and checks the cost does not grow with the history.
  *
  * Timing on a shared runner measures the runner, so a fixed calibration loop runs before and after the builds and
  * the p50 is scaled to the reference machine the budgets were measured on (`× reference / calibration`). When the
@@ -11,20 +14,22 @@
  * skips with the reason — never silently.
  *
  * History (ruling 2a-R6): the build cost ~11.5 ms p50 here at 200 sessions, linear in history, because every
- * module rescanned every session for every candidate. The engine now indexes the history once per build
- * (`HistIndex`): ~2.3–2.9 ms p50 here on the reference machine. The budgets are plain tests; the regression
- * ceiling is 1.5× that measurement.
+ * module rescanned every session for every candidate; the request read and hashed the whole history too. The
+ * engine now indexes the history once per build (`HistIndex`) and the worker reads only what a build reads, so the
+ * build costs ~1.3–2 ms here on the reference machine whatever the history's length. The regression ceiling is
+ * 1.5× the measurement.
  */
 import { createHash } from "node:crypto";
 import { performance } from "node:perf_hooks";
+import type Database from "better-sqlite3";
 import { beforeAll, describe, expect, it } from "vitest";
 import { adaptiveConfigSchema, addDays, newId } from "@rg/domain";
 import { LOCATION_PRESETS, makeEngineData, EXERCISES } from "@rg/exercise-library";
-import { Planner, Rng, type Block, type EngineLocation, type HistorySession } from "@rg/session-engine";
+import { Hist, Planner, Rng, type Block, type EngineLocation, type HistorySession } from "@rg/session-engine";
 import { schema } from "@rg/database";
+import type { Db } from "../src/services/db.js";
 import { composeBuild, type ComposeInput } from "../src/services/session-build.js";
-import type { EngineContext } from "../src/services/engine-inputs.js";
-import { loadHistory } from "../src/services/engine-inputs.js";
+import { loadBuildHistory, loadHistory, type BuildHistory, type EngineContext } from "../src/services/engine-inputs.js";
 import { makeTestDb, makeTestUser } from "./helpers.js";
 
 /** The calibration loop's median on the reference machine (Apple silicon, Node 21; measured 5.9–6.4 ms). */
@@ -33,8 +38,10 @@ const REFERENCE_CALIBRATION_MS = 6.2;
 const MAX_RUNNER_RATIO = 1.5;
 const SPEC_BUDGET_P50_MS = 5;
 const WORKERS_CPU_LIMIT_MS = 10;
-/** The build measured 2.3–2.9 ms p50 on the reference machine (indexed history); 1.5× that means something got slower. */
-const REGRESSION_CEILING_P50_MS = 4;
+/** The build measured 1.3–2 ms p50 on the reference machine (trimmed, indexed history); 1.5× that means something got slower. */
+const REGRESSION_CEILING_P50_MS = 3;
+/** How much more a build may cost at 400 sessions than at 100 (it grew 4× when it read every session). */
+const MAX_GROWTH_100_TO_400 = 1.3;
 /** The accepted ceiling for a 40-minute build's payload (session-engine payload test, ruling P1-R8). */
 const PAYLOAD_BUDGET_BYTES = 426_000;
 
@@ -52,14 +59,14 @@ function calibrationLoop(): number {
   return total + JSON.stringify(items.slice(0, 2000)).length;
 }
 
-function medianMs(f: () => unknown, runs: number): number {
-  const times: number[] = [];
+function times(f: () => unknown, runs: number): number[] {
+  const out: number[] = [];
   for (let i = 0; i < runs; i++) {
     const t = performance.now();
     f();
-    times.push(performance.now() - t);
+    out.push(performance.now() - t);
   }
-  return percentile(times, 50);
+  return out;
 }
 
 function percentile(xs: readonly number[], p: number): number {
@@ -85,13 +92,14 @@ const context: EngineContext = {
   config: adaptiveConfigSchema.parse({ defaultMinutes: 30, careProfiles: ["tmj"] }),
 };
 
-/** 200 plausible sessions: the engine plans each day's session and a log of it is kept, about 4 days a week. */
-function synthesize(): { history: HistorySession[]; block: Block } {
+/** Plausible sessions: the engine plans each day's session and a log of it is kept, about 4 days a week. */
+function synthesize(n: number): { history: HistorySession[]; blocks: Block[] } {
   const data = makeEngineData({ activeProfiles: ["tmj"], careProfiles: ["tmj"], exercises: EXERCISES });
   const rng = Rng.create("bench-history");
   const history: HistorySession[] = [];
+  const blocks: Block[] = [];
   let block: Block | null = null;
-  for (let d = 0; history.length < HISTORY_SESSIONS; d++) {
+  for (let d = 0; history.length < n; d++) {
     const date = addDays("2025-10-01", d);
     if (rng() > 0.6) continue;
     const pre = Math.floor(rng() * 4);
@@ -109,6 +117,7 @@ function synthesize(): { history: HistorySession[]; block: Block } {
       },
     );
     block = view.block;
+    blocks.push(block);
     history.push({
       id: `s${history.length}`,
       date,
@@ -130,38 +139,104 @@ function synthesize(): { history: HistorySession[]; block: Block } {
         })),
     });
   }
-  return { history, block: block! };
+  return { history, blocks };
 }
 
+/** The history as the save writes it: sessions, their sets, their pre and post checks. */
+async function store(db: Db, userId: string, history: readonly HistorySession[]): Promise<void> {
+  const now = "2026-10-01T00:00:00.000Z";
+  for (const s of history) {
+    await db.insert(schema.performedSessions).values({
+      id: s.id, userId, workoutId: null, activityId: null, buildId: null, source: "app", sourceRef: null,
+      localDate: s.date, startedAt: s.startedAt, endedAt: null, seconds: 1800, plannedSeconds: 1800, minutes: 30,
+      mode: s.mode, theme: s.theme, locationId: null, blockRef: null, blockNumber: s.blockNumber, completed: true,
+      stepsTotal: null, stepsDone: null, movesDone: s.done.map((m) => ({ exerciseId: m.id, seconds: m.secs })), note: null,
+      newMove: null, payloadHash: "h", createdAt: now, updatedAt: now,
+    });
+    const sets = s.entries.flatMap((e, entryIndex) =>
+      e.sets.map((set, setIndex) => ({
+        id: newId(), performedSessionId: s.id, entryIndex, exerciseId: e.id, implement: e.implement, format: e.format,
+        perSide: e.perSide, setIndex, side: null, reps: set.reps, seconds: set.secs, loadValue: set.w?.v ?? null,
+        loadUnit: set.w?.u ?? null, loadKg: null, done: true, flags: [...e.flags],
+      })),
+    );
+    for (let i = 0; i < sets.length; i += 5) await db.insert(schema.performedSets).values(sets.slice(i, i + 5));
+    for (const [profileId, c] of Object.entries(s.checks)) {
+      for (const kind of ["pre", "post"] as const) {
+        await db.insert(schema.conditionChecks).values({
+          id: newId(), userId, profileId, kind, value: c[kind], feelingOff: false, localDate: s.date, at: s.startedAt!,
+          performedSessionId: s.id, workoutId: null,
+        });
+      }
+    }
+  }
+}
+
+/** Time spent inside SQLite (running statements, building rows): on Workers that is D1's work, not the Worker's CPU. */
+function sqliteClock(db: Db): { reset(): void; ms(): number } {
+  const client = (db as unknown as { $client: Database.Database }).$client;
+  let spent = 0;
+  const prepare = client.prepare.bind(client);
+  (client as unknown as { prepare: (src: string) => unknown }).prepare = (src: string) => {
+    const stmt = prepare(src) as unknown as Record<string, unknown>;
+    for (const method of ["all", "get", "run", "values"]) {
+      const f = stmt[method];
+      if (typeof f !== "function") continue;
+      const bound = (f as (...a: unknown[]) => unknown).bind(stmt);
+      stmt[method] = (...a: unknown[]) => {
+        const t = performance.now();
+        try {
+          return bound(...a);
+        } finally {
+          spent += performance.now() - t;
+        }
+      };
+    }
+    return stmt;
+  };
+  return { reset: () => { spent = 0; }, ms: () => spent };
+}
+
+let all: { history: HistorySession[]; blocks: Block[] };
 let history: HistorySession[];
-let block: Block;
+let db: Db;
+let userId: string;
+let clock: ReturnType<typeof sqliteClock>;
+let loaded: Map<string, BuildHistory>;
 let inputs: ComposeInput[];
 let buildTimes: number[];
 let calibration: number;
 let slowReason: string | null;
 
-beforeAll(() => {
-  ({ history, block } = synthesize());
-  const next = addDays(history[history.length - 1]!.date, 1);
-  // 10 distinct requests (5 days × 30/40 minutes), each built twice.
-  inputs = Array.from({ length: MEASURED }, (_, i) => ({
-    date: addDays(next, i % 5),
-    programId: "bench",
-    context,
-    block,
-    history,
-    checks: { tmj: { pre: 1, feelingOff: false } },
-    overrides: { minutes: i % 2 === 0 ? 30 : 40 },
-    swaps: {},
-  }));
-  const before = medianMs(calibrationLoop, 7);
-  for (let i = 0; i < WARMUP; i++) composeBuild(inputs[i % inputs.length]!);
-  buildTimes = inputs.map((input) => {
-    const t = performance.now();
-    composeBuild(input);
-    return performance.now() - t;
+const blockAt = (n: number) => all.blocks[n - 1]!;
+const firstDay = () => addDays(history[history.length - 1]!.date, 1);
+
+beforeAll(async () => {
+  all = synthesize(2 * HISTORY_SESSIONS);
+  history = all.history.slice(0, HISTORY_SESSIONS);
+  db = makeTestDb({ boundVariableCap: 100 });
+  ({ userId } = await makeTestUser(db));
+  await store(db, userId, history);
+  clock = sqliteClock(db);
+  // 10 distinct requests (5 days × 30/40 minutes), each built twice, from what the worker reads for its day.
+  const block = blockAt(HISTORY_SESSIONS);
+  loaded = new Map();
+  for (let i = 0; i < 5; i++) {
+    const date = addDays(firstDay(), i);
+    loaded.set(date, await loadBuildHistory(db, userId, date, block));
+  }
+  inputs = Array.from({ length: MEASURED }, (_, i) => {
+    const date = addDays(firstDay(), i % 5);
+    const h = loaded.get(date)!;
+    return {
+      date, programId: "bench", context, block, history: h.sessions, summary: h.summary,
+      checks: { tmj: { pre: 1, feelingOff: false } }, overrides: { minutes: i % 2 === 0 ? 30 : 40 }, swaps: {},
+    };
   });
-  const after = medianMs(calibrationLoop, 7);
+  const before = percentile(times(calibrationLoop, 7), 50);
+  for (let i = 0; i < WARMUP; i++) composeBuild(inputs[i % inputs.length]!);
+  buildTimes = inputs.map((input) => times(() => composeBuild(input), 1)[0]!);
+  const after = percentile(times(calibrationLoop, 7), 50);
   calibration = (before + after) / 2;
   const ratio = calibration / REFERENCE_CALIBRATION_MS;
   // Before and after must agree too: a runner whose speed changed mid-measurement cannot be scaled.
@@ -173,14 +248,33 @@ beforeAll(() => {
         `the runner, not the build`
       : null;
   console.log(
-    `[build CPU] ${HISTORY_SESSIONS}-session history, ${MEASURED} warm builds: p50 ${percentile(buildTimes, 50).toFixed(2)} ms, ` +
-      `p95 ${percentile(buildTimes, 95).toFixed(2)} ms; scaled to the reference: p50 ${scaledP50().toFixed(2)} ms ` +
+    `[build CPU] ${HISTORY_SESSIONS}-session history (the build reads ${inputs[0]!.history.length} sessions + a summary of ` +
+      `${Object.keys(inputs[0]!.summary!.moves).length} moves), ${MEASURED} warm builds: p50 ${percentile(buildTimes, 50).toFixed(2)} ms, ` +
+      `p95 ${percentile(buildTimes, 95).toFixed(2)} ms; scaled to the reference: p50 ${scaled(percentile(buildTimes, 50)).toFixed(2)} ms ` +
       `(calibration ${calibration.toFixed(2)} ms; reference ${REFERENCE_CALIBRATION_MS} ms)`,
   );
-}, 120_000);
+}, 180_000);
 
-/** The p50 on the reference machine: the measured p50 scaled by how fast this runner ran the calibration loop. */
-const scaledP50 = () => percentile(buildTimes, 50) * (REFERENCE_CALIBRATION_MS / calibration);
+/** A time on this runner scaled to the reference machine by how fast it ran the calibration loop. */
+const scaled = (ms: number) => ms * (REFERENCE_CALIBRATION_MS / calibration);
+const scaledP50 = () => scaled(percentile(buildTimes, 50));
+
+/** The request's own CPU around the build: read the history (minus SQLite's work), hash it with the inputs. */
+async function requestPath(date: string, block: Block | null): Promise<{ read: number; sqlite: number; hash: number; history: BuildHistory }> {
+  let h: BuildHistory | null = null;
+  const reads: number[] = [];
+  const sqlite: number[] = [];
+  for (let i = 0; i < 9; i++) {
+    clock.reset();
+    const t = performance.now();
+    h = await loadBuildHistory(db, userId, date, block);
+    const total = performance.now() - t;
+    reads.push(total - clock.ms());
+    sqlite.push(clock.ms());
+  }
+  const hash = percentile(times(() => createHash("sha256").update(JSON.stringify(h)).digest("hex"), 11), 50);
+  return { read: percentile(reads.slice(2), 50), sqlite: percentile(sqlite.slice(2), 50), hash, history: h! };
+}
 
 describe("build CPU over a 200-session history", () => {
   it("every build succeeds and fits its minutes", () => {
@@ -189,6 +283,11 @@ describe("build CPU over a 200-session history", () => {
       expect(build.steps.length).toBeGreaterThan(0);
       expect(build.plannedSeconds).toBeLessThanOrEqual((input.overrides.minutes ?? 30) * 60);
     }
+  });
+
+  it("the build from what the worker reads is the build from the whole history", () => {
+    const strip = (c: ReturnType<typeof composeBuild>) => JSON.stringify(c);
+    for (const input of inputs.slice(0, 10)) expect(strip(composeBuild(input)) === strip(composeBuild({ ...input, history, summary: undefined }))).toBe(true);
   });
 
   it(`does not get slower than measured (scaled p50 < ${REGRESSION_CEILING_P50_MS} ms)`, (ctx) => {
@@ -206,44 +305,43 @@ describe("build CPU over a 200-session history", () => {
     expect(scaledP50()).toBeLessThan(SPEC_BUDGET_P50_MS);
   });
 
-  it("reports the parts around the build: the inputs hash and reading the history", async () => {
-    const hashMs = medianMs(() => createHash("sha256").update(JSON.stringify(history)).digest("hex"), 11);
-    // History as the worker reads it: 200 sessions with their sets, from the database (better-sqlite3 here; D1 in
-    // production — this is the mapping's cost plus the local driver's, not the Workers figure).
-    const db = makeTestDb({ boundVariableCap: 100 });
-    const { userId } = await makeTestUser(db);
-    const now = "2026-10-01T00:00:00.000Z";
-    for (const s of history) {
-      await db.insert(schema.performedSessions).values({
-        id: s.id, userId, workoutId: null, activityId: null, buildId: null, source: "app", sourceRef: null,
-        localDate: s.date, startedAt: s.startedAt, endedAt: null, seconds: 1800, plannedSeconds: 1800, minutes: 30,
-        mode: s.mode, theme: s.theme, locationId: null, blockRef: null, blockNumber: s.blockNumber, completed: true,
-        stepsTotal: null, stepsDone: null, movesDone: s.done.map((m) => ({ exerciseId: m.id, seconds: m.secs })), note: null,
-        newMove: null, payloadHash: "h", createdAt: now, updatedAt: now,
-      });
-      const sets = s.entries.flatMap((e, entryIndex) =>
-        e.sets.map((set, setIndex) => ({
-          id: newId(), performedSessionId: s.id, entryIndex, exerciseId: e.id, implement: e.implement, format: e.format,
-          perSide: e.perSide, setIndex, side: null, reps: set.reps, seconds: set.secs, loadValue: set.w?.v ?? null,
-          loadUnit: set.w?.u ?? null, loadKg: null, done: true, flags: [...e.flags],
-        })),
-      );
-      for (let i = 0; i < sets.length; i += 5) await db.insert(schema.performedSets).values(sets.slice(i, i + 5));
-    }
-    await loadHistory(db, userId);
-    const reads: number[] = [];
-    for (let i = 0; i < 5; i++) {
-      const t = performance.now();
-      const loaded = await loadHistory(db, userId);
-      reads.push(performance.now() - t);
-      expect(loaded).toHaveLength(HISTORY_SESSIONS);
-    }
-    const setCount = history.reduce((n, s) => n + s.entries.reduce((m, e) => m + e.sets.length, 0), 0);
+  it(`does not grow with the history (400 sessions cost under ${MAX_GROWTH_100_TO_400}× 100)`, (ctx) => {
+    ctx.skip(slowReason !== null, slowReason ?? "");
+    const p50At = (n: number) => {
+      const whole = all.history.slice(0, n);
+      const date = addDays(whole[whole.length - 1]!.date, 1);
+      const block = blockAt(n);
+      const input: ComposeInput = {
+        date, programId: "bench", context, block, history: Hist.trim(whole, date, block), summary: Hist.summarize(whole, date),
+        checks: { tmj: { pre: 1, feelingOff: false } }, overrides: {}, swaps: {},
+      };
+      for (let i = 0; i < WARMUP; i++) composeBuild(input);
+      return percentile(times(() => composeBuild(input), 15), 50);
+    };
+    const at = Object.fromEntries([100, 200, 400].map((n) => [n, p50At(n)]));
+    console.log(`[build CPU] growth: p50 ${Object.entries(at).map(([n, ms]) => `${n} sessions ${ms.toFixed(2)} ms`).join(", ")}`);
+    expect(at[400]! / at[100]!).toBeLessThan(MAX_GROWTH_100_TO_400);
+  });
+
+  it(`the request around the build — reading the history, the inputs hash — stays well inside the CPU limit`, async (ctx) => {
+    const path = await requestPath(firstDay(), blockAt(HISTORY_SESSIONS));
+    // For comparison: the whole history, as every build read and hashed it before ruling 2a-R6.
+    clock.reset();
+    const t = performance.now();
+    const whole = await loadHistory(db, userId);
+    const wholeRead = performance.now() - t - clock.ms();
+    const wholeHash = percentile(times(() => createHash("sha256").update(JSON.stringify(whole)).digest("hex"), 11), 50);
+    const build = percentile(buildTimes, 50);
     console.log(
-      `[build CPU] around the build: inputs hash ${hashMs.toFixed(2)} ms (history JSON ${JSON.stringify(history).length} B); ` +
-        `loadHistory (${HISTORY_SESSIONS} sessions, ${setCount} sets, better-sqlite3) p50 ${percentile(reads, 50).toFixed(1)} ms`,
+      `[request CPU] read ${path.read.toFixed(2)} ms (JS; SQLite's own work ${path.sqlite.toFixed(2)} ms, D1's on Workers) for ` +
+        `${path.history.sessions.length} sessions + ${Object.keys(path.history.summary.moves).length} moves; inputs hash ` +
+        `${path.hash.toFixed(2)} ms (${JSON.stringify(path.history).length} B); build ${build.toFixed(2)} ms → ` +
+        `${(path.read + path.hash + build).toFixed(2)} ms. Before: read ${wholeRead.toFixed(2)} ms (JS) + hash ${wholeHash.toFixed(2)} ms ` +
+        `(${JSON.stringify(whole).length} B) for ${whole.length} sessions.`,
     );
-    expect(hashMs).toBeGreaterThan(0);
+    expect(path.history.sessions.length).toBeLessThan(whole.length / 2);
+    ctx.skip(slowReason !== null, slowReason ?? "");
+    expect(scaled(path.read + path.hash + build)).toBeLessThan(WORKERS_CPU_LIMIT_MS / 2);
   }, 60_000);
 
   it(`a 40-minute build's stored payload stays within ${PAYLOAD_BUDGET_BYTES.toLocaleString("en-US")} bytes`, () => {

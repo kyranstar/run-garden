@@ -54,6 +54,7 @@ import {
   type BlockUpdate,
   type CheckReading,
   type HistorySession,
+  type HistorySummary,
   type Mode,
   type Step,
   type Swaps,
@@ -64,7 +65,7 @@ import { restoreInProgress } from "./account-state.js";
 import { loadPreferences } from "./calendar-sync.js";
 import type { Db } from "./db.js";
 import { separateDayCollisions } from "./day-placement.js";
-import { loadEngineContext, loadHistory, loadProgramState, saveProgramState, type EngineContext } from "./engine-inputs.js";
+import { loadBuildHistory, loadEngineContext, loadProgramState, saveProgramState, type EngineContext } from "./engine-inputs.js";
 
 /** Bump when the engine's behaviour changes: a stored build from an older engine then no longer matches its inputs. */
 export const ENGINE_VERSION = "session-engine-1";
@@ -281,7 +282,9 @@ export interface ComposeInput {
   programId: string;
   context: EngineContext;
   block: Block | null;
+  /** The history (`loadHistory`), or what a build reads of it: the trimmed sessions plus `summary` (`loadBuildHistory`). */
   history: readonly HistorySession[];
+  summary?: HistorySummary;
   checks: Record<string, CheckAnswer>;
   overrides: BuildOverrides;
   swaps: Swaps;
@@ -337,6 +340,7 @@ export function composeBuild(input: ComposeInput): Composed {
       savedIds: c.savedIds,
       block: input.block,
       sessions: input.history,
+      ...(input.summary ? { summary: input.summary } : {}),
     },
   );
   const plan = v.plan;
@@ -643,12 +647,15 @@ export async function buildSession(
     checks = await slotChecks(db, userId, workoutId, date, ctx.today, context.activeProfiles);
   }
 
-  const [history, block, [program]] = await Promise.all([
-    loadHistory(db, userId),
+  // What the build reads of the history depends on the block (a running block's lifts are judged since it started).
+  const [block, [program]] = await Promise.all([
     loadProgramState(db, row.planId),
     db.select({ name: programs.name }).from(programs).where(eq(programs.id, row.planId)).limit(1),
   ]);
+  const history = await loadBuildHistory(db, userId, date, block);
   const version = await engineVersion();
+  // The engine plans from exactly these (the trimmed sessions and the summary), so they are what the hash covers:
+  // a change to the history that this build cannot read is no reason to build again.
   const historyJson = JSON.stringify(history);
   const hashOf = (b: Block | null) =>
     sha256Hex(
@@ -677,7 +684,7 @@ export async function buildSession(
     return respond(row, builds, ctx.today, preview ? {} : checks, hidden);
   }
 
-  const composed = composeBuild({ date, programId: row.planId, context, block, history, checks, overrides, swaps });
+  const composed = composeBuild({ date, programId: row.planId, context, block, history: history.sessions, summary: history.summary, checks, overrides, swaps });
 
   // A preview never starts or rotates a block: that happens on the session's day.
   let blockRef = block?.id ?? null;
