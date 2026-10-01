@@ -1,6 +1,6 @@
 import { and, eq, inArray } from "drizzle-orm";
 import { calendarEventSuppressions, corosWriteJobs, plannedWorkouts, scheduleOverrides } from "@rg/database";
-import { newId, watchAddressOf, type UserPreferences } from "@rg/domain";
+import { newId, watchAddressOf, type ArchiveReason, type UserPreferences } from "@rg/domain";
 import type { Db } from "./db.js";
 import { recordedStampFor } from "./coros-stamp.js";
 import { openIntentFor, recordIntent, resolveIntent, type IntentSource } from "./sync-intents.js";
@@ -70,12 +70,18 @@ export async function settleWatchJobsOnArchive(
  * archived row keeps its sourceWorkoutId so future imports update it in place
  * without resurrecting it into the visible plan. No-op (removed: false) for a
  * missing, foreign or already-archived row.
+ *
+ * `archiveReason` records WHY the row left (default `user_removed`, a hand
+ * removal). An adaptive program's re-placement passes `program_replaced`; the
+ * calendar suppression stays `user_removed` either way, because what it
+ * instructs is the same: the app took this session off the plan, and nothing an
+ * import observes brings it back.
  */
 export async function removeFromPlan(
   db: Db,
   userId: string,
   workoutId: string,
-  opts: { now: string; source: IntentSource; prefs: UserPreferences },
+  opts: { now: string; source: IntentSource; prefs: UserPreferences; archiveReason?: ArchiveReason },
 ): Promise<RemoveResult> {
   const [w] = await db
     .select()
@@ -86,7 +92,7 @@ export async function removeFromPlan(
   const { now } = opts;
   await db
     .update(plannedWorkouts)
-    .set({ archivedAt: now, updatedAt: now, archiveReason: "user_removed" })
+    .set({ archivedAt: now, updatedAt: now, archiveReason: opts.archiveReason ?? "user_removed" })
     .where(eq(plannedWorkouts.id, w.id));
   await settleWatchJobsOnArchive(db, userId, w.id, now);
   await db.insert(calendarEventSuppressions).values({

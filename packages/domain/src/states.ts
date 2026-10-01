@@ -64,3 +64,20 @@ export type CorosWritePath = "official_api" | "direct_update" | "remove_and_add"
 
 /** Watch sync truthfulness: we can verify the COROS calendar, not the watch. */
 export type WatchSyncState = "calendar_verified_watch_unverified" | "unknown";
+
+/**
+ * Why a planned workout left the plan (`planned_workouts.archive_reason`). Evidence, never an instruction by
+ * itself: import's presence-healing decides from it which archived rows may come back (only
+ * `absence_confirmed` may — the opposite fact is what healing reverses).
+ */
+export const ARCHIVE_REASONS = [
+  /** COROS stopped serving it, confirmed over two reads. */
+  "absence_confirmed",
+  /** A person took it off the plan (the athlete, or the coach on their approval). */
+  "user_removed",
+  /** A second copy of a live session (the mirror dedupe). */
+  "duplicate_mirror",
+  /** An adaptive program's edit no longer wants this future, unmoved, unbuilt slot (re-placement). */
+  "program_replaced",
+] as const;
+export type ArchiveReason = (typeof ARCHIVE_REASONS)[number];

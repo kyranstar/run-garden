@@ -14,6 +14,7 @@ import {
   newId,
   nowInstant,
   todayInZone,
+  type ArchiveReason,
   type PlannedStage,
   type UserPreferences,
 } from "@rg/domain";
@@ -360,6 +361,9 @@ export async function importPlanSnapshot(
   //
   //   user_removed     — a person decided. Nothing an import observes can
   //                      withdraw that; only a restore, which clears the reason.
+  //   program_replaced — the same, decided by an adaptive program's edit (its
+  //                      slots are app-only, so COROS never serves one; listed
+  //                      so the rule does not rest on that).
   //   duplicate_mirror — "show the OTHER copy, not this one". Conditional by
   //                      construction: it says nothing at all once the other
   //                      copy is gone. When no live row still holds the session,
@@ -390,7 +394,7 @@ export async function importPlanSnapshot(
   // reason and the suppression row say the same thing when both exist; either
   // alone is enough (audit#3 D2: a row archived as a decision must stay out even
   // if its suppression row is ever swept).
-  const DECISION_REASONS = ["user_removed", "duplicate_mirror"] as const;
+  const DECISION_REASONS = ["user_removed", "duplicate_mirror", "program_replaced"] as const satisfies readonly ArchiveReason[];
   const archiveEvidence = new Map<string, string>();
   for (const w of existing) {
     if (w.archivedAt && (DECISION_REASONS as readonly string[]).includes(w.archiveReason ?? "")) {

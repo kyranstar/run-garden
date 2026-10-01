@@ -39,6 +39,7 @@ import { purgeExpiredSessions, createSession, sessionCookie } from "./auth/sessi
 import { purgeExpiredStates } from "./auth/google.js";
 import { ensureFixtureUser, seedFixtures } from "./services/fixtures.js";
 import { accountsRestoring, restoreInProgress } from "./services/account-state.js";
+import { placeSlotsForAllPrograms } from "./services/program-slots.js";
 
 const app = new Hono<AppContext>();
 
@@ -205,6 +206,12 @@ export async function hourly(db: Db, env: Env): Promise<void> {
       else await finishSyncRun(db, runId, "error");
     }
   }
+  // Adaptive programs keep their weeks filled as the days roll on (Phase 2a).
+  // Its own pass over every active program; it skips a restoring account
+  // itself, and the half-hourly calendar sync books what it places.
+  await placeSlotsForAllPrograms(db).catch((e: unknown) =>
+    console.error(`slot placement failed: ${e instanceof Error ? e.message : "unknown"}`),
+  );
 }
 
 export async function weekly(db: Db, env: Env): Promise<void> {

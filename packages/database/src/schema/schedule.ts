@@ -82,7 +82,8 @@ export const plannedWorkouts = sqliteTable(
      * treats it as sanctioned rest, 1/rolling-week — fairness spec §1). */
     sanctionedBy: text("sanctioned_by"),
     archivedAt: text("archived_at"),
-    /** Why archivedAt is set: absence_confirmed | user_removed | duplicate_mirror. */
+    /** Why archivedAt is set: absence_confirmed | user_removed | duplicate_mirror | program_replaced
+     * (`ArchiveReason` in @rg/domain). */
     archiveReason: text("archive_reason"),
     /**
      * Sessions the app builds itself (migration 0025; one-workout-system spec
