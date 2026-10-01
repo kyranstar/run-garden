@@ -12,7 +12,12 @@ import { waitUntilSafe } from "../services/wait-until.js";
 import { processCoachReads } from "../services/coach-reads.js";
 import { loadPreferences } from "../services/calendar-sync.js";
 import { MAX_WINDOW_DAYS, probeStrengthLapKeys } from "../services/coros-lap-probe.js";
-import { runUnmappedMoveSpike, SPIKE_CONFIRM } from "../services/coros-unmapped-spike.js";
+import {
+  runSpikeCleanup,
+  runUnmappedMoveSpike,
+  SPIKE_CLEANUP_CONFIRM,
+  SPIKE_CONFIRM,
+} from "../services/coros-unmapped-spike.js";
 import { fixtureModeEnabled } from "../env.js";
 
 /**
@@ -100,13 +105,20 @@ corosRoutes.get("/debug/lap-keys", async (c) => {
   }
 });
 
-const spikeConfirmSchema = z.object({ confirm: z.literal(SPIKE_CONFIRM) }).strict();
+const spikeConfirmSchema = z
+  .object({ confirm: z.union([z.literal(SPIKE_CONFIRM), z.literal(SPIKE_CLEANUP_CONFIRM)]) })
+  .strict();
 
 /**
  * Owner-gated write spike (Task 16): writes ONE stamped strength workout to
  * the real COROS account, reads it back, deletes it. Absent (404) unless the
  * body is exactly `{ "confirm": "write a test workout" }` AND COROS writes are
  * enabled for the account.
+ *
+ * `{ "confirm": "remove test workouts" }` (same gate) is the cleanup-only
+ * call (Ruling C3): it removes spike workouts earlier runs left behind, a
+ * few per call, and writes nothing. The run itself refuses (409
+ * `leftovers`) while any are on COROS.
  */
 corosRoutes.post("/spike/unmapped-moves", async (c) => {
   const notFound = () => c.json({ error: "not_found" }, 404);
@@ -116,6 +128,11 @@ corosRoutes.post("/spike/unmapped-moves", async (c) => {
   const userId = c.get("userId");
   const prefs = await loadPreferences(db, userId);
   if (prefs.corosWritesEnabled !== true) return notFound();
+  if (confirmed.data.confirm === SPIKE_CLEANUP_CONFIRM) {
+    const cleanup = await runSpikeCleanup(db, c.env, userId, prefs);
+    if (cleanup.status !== "done") return c.json({ error: cleanup.status }, 409);
+    return c.json(cleanup.body);
+  }
   const result = await runUnmappedMoveSpike(db, c.env, userId, prefs);
   switch (result.status) {
     case "not_connected":
@@ -124,6 +141,8 @@ corosRoutes.post("/spike/unmapped-moves", async (c) => {
       return c.json({ error: "busy" }, 409);
     case "catalog_incomplete":
       return c.json({ error: "catalog_incomplete", message: result.message }, 422);
+    case "leftovers":
+      return c.json({ error: "leftovers", count: result.count, cleanup: { confirm: SPIKE_CLEANUP_CONFIRM } }, 409);
     case "done":
       return c.json(result.body);
   }

@@ -49,6 +49,15 @@ import { buildExerciseIndex, exerciseNameMap, resolveExerciseOriginId } from "./
 
 /** The exact body the route demands before anything is written. */
 export const SPIKE_CONFIRM = "write a test workout";
+/**
+ * The cleanup-only body (Ruling C3): removes spike workouts earlier runs left
+ * behind and writes nothing else. Leftovers are removed in their own call,
+ * never in the run's: each delete costs about 11 COROS calls, and one
+ * invocation has 50 subrequests on Workers Free (Audit 2 M10).
+ */
+export const SPIKE_CLEANUP_CONFIRM = "remove test workouts";
+/** Leftover deletes per cleanup call; the answer says how many remain. */
+export const SPIKE_CLEANUP_MAX = 3;
 /** How far out the test workout is placed — clear of anything this week. */
 const SPIKE_DAYS_OUT = 14;
 /**
@@ -90,7 +99,23 @@ export type SpikeOutcome =
   | { status: "not_connected" }
   | { status: "busy" }
   | { status: "catalog_incomplete"; message: string }
+  /** Earlier runs' workouts are still on COROS: nothing was written. */
+  | { status: "leftovers"; count: number }
   | { status: "done"; body: SpikeReport };
+
+export interface SpikeCleanupReport {
+  /** Spike workouts (distinct stamp and day) the plan-wide read held. */
+  found: number;
+  /** Of those, deleted or found already gone this call. */
+  removed: number;
+  remaining: number;
+  notes: string[];
+}
+
+export type SpikeCleanupOutcome =
+  | { status: "not_connected" }
+  | { status: "busy" }
+  | { status: "done"; body: SpikeCleanupReport };
 
 /** A real movement for (c)/(d), by English name, else the first nameable one. */
 function pickExercise(
@@ -148,11 +173,23 @@ function targetOf(found: Located, planId: string) {
   };
 }
 
+/** One placement per (stamp, day): one delete removes every copy of a stamp on a day. */
+function distinctStamped(span: RawCorosSchedule, planId: string, isTarget: StampPredicate): Located[] {
+  const seen = new Set<string>();
+  return stampedPlacements(planView(span, planId), isTarget).filter((p) => {
+    const key = `${stampOf(p)}|${p.date}`;
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+}
+
 /**
- * Delete every placement `isTarget` accepts in a plan-wide read (a fresh one
- * unless `span` was read just now), each through `deleteWorkout` — which
- * re-proves the stamp and verifies plan-wide itself. `found` is how many
- * distinct (stamp, day) placements the read held.
+ * Delete placements `isTarget` accepts in a plan-wide read (a fresh one
+ * unless `span` was read just now), at most `limit` of them, each through
+ * `deleteWorkout` — which re-proves the stamp and verifies plan-wide itself.
+ * `found` is how many distinct (stamp, day) placements the read held;
+ * `removed`, how many of those are gone now.
  */
 async function removeStamped(
   client: CorosClient,
@@ -162,17 +199,14 @@ async function removeStamped(
   notes: string[],
   what: string,
   span?: RawCorosSchedule,
-): Promise<{ found: number; allGone: boolean }> {
-  const view = planView(span ?? (await readFullSpan(client, today)), planId);
-  const seen = new Set<string>();
-  let allGone = true;
-  for (const placement of stampedPlacements(view, isTarget)) {
-    const key = `${stampOf(placement)}|${placement.date}`;
-    if (seen.has(key)) continue; // one delete removes every copy of a stamp on a day
-    seen.add(key);
+  limit = Infinity,
+): Promise<{ found: number; removed: number; allGone: boolean }> {
+  const placements = distinctStamped(span ?? (await readFullSpan(client, today)), planId, isTarget);
+  let removed = 0;
+  for (const placement of placements.slice(0, limit)) {
     const res = await deleteWorkout(client, targetOf(placement, planId), { today });
     const gone = res.ok || res.refused === "not_found";
-    if (!gone) allGone = false;
+    if (gone) removed += 1;
     notes.push(
       `${what}: spike workout on ${placement.date} ` +
         (res.ok
@@ -182,7 +216,7 @@ async function removeStamped(
             : `NOT deleted (${res.refused ?? "error"}${res.error ? `: ${res.error}` : ""})`),
     );
   }
-  return { found: seen.size, allGone };
+  return { found: placements.length, removed, allGone: removed === placements.length };
 }
 
 export async function runUnmappedMoveSpike(
@@ -248,19 +282,17 @@ export async function runUnmappedMoveSpike(
     );
     notes.push(`workout: "${stamp}" on ${date}`);
 
-    // 1. A spike that died before its delete leaves a workout behind. Only an
-    //    exact spike stamp (prefix + date) is ever touched.
+    // 1. A spike that died before its delete leaves a workout behind. The run
+    //    never removes it itself (Ruling C3): it stops before writing, and the
+    //    cleanup-only call does that in an invocation of its own.
     const span = await readFullSpan(client, today);
     const planId = String(span.id ?? "");
     if (planId === "") {
       notes.push("no active plan in the schedule read — nothing written");
       return { status: "done", body: { stored, deleted, notes } };
     }
-    const cleanup = await removeStamped(client, today, planId, isSpikeStamp, notes, "cleanup", span);
-    if (!cleanup.allGone) {
-      notes.push("stopped before writing: an earlier spike workout could not be removed");
-      return { status: "done", body: { stored, deleted, notes } };
-    }
+    const leftovers = distinctStamped(span, planId, isSpikeStamp).length;
+    if (leftovers > 0) return { status: "leftovers", count: leftovers };
 
     // 2–3. Create through the production executor, then read it back fresh.
     let created: Awaited<ReturnType<typeof createWorkout>> | undefined;
@@ -331,4 +363,52 @@ export async function runUnmappedMoveSpike(
     await releaseUserLock(db, userId, "coros_write", lock).catch(() => undefined);
   }
   return { status: "done", body: { stored, deleted, notes } };
+}
+
+/**
+ * The cleanup-only call (Ruling C3): one plan-wide read, then at most
+ * `SPIKE_CLEANUP_MAX` leftover spike workouts deleted through the verified
+ * path. Only an exact spike stamp (prefix + date) is ever touched; nothing is
+ * created. Call again while `remaining` is above zero.
+ */
+export async function runSpikeCleanup(
+  db: Db,
+  env: Env,
+  userId: string,
+  prefs: UserPreferences,
+  opts: { fetchImpl?: typeof fetch } = {},
+): Promise<SpikeCleanupOutcome> {
+  const client = await corosClient(db, env, userId, opts.fetchImpl ?? fetch);
+  if (!client) return { status: "not_connected" };
+  // The same lock as the run and the cloud write consumer.
+  const lock = await claimUserLock(db, userId, "coros_write", 10);
+  if (!lock) return { status: "busy" };
+  const notes: string[] = [];
+  const today = todayInZone(prefs.timezone);
+  let found = 0;
+  let removed = 0;
+  try {
+    const span = await readFullSpan(client, today);
+    const planId = String(span.id ?? "");
+    if (planId === "") {
+      notes.push("no active plan in the schedule read — nothing to remove");
+    } else {
+      ({ found, removed } = await removeStamped(
+        client,
+        today,
+        planId,
+        isSpikeStamp,
+        notes,
+        "cleanup",
+        span,
+        SPIKE_CLEANUP_MAX,
+      ));
+      if (found > removed) notes.push(`${found - removed} spike workout(s) remain — call cleanup again`);
+    }
+  } catch (e) {
+    notes.push(`error: ${errText(e)}`);
+  } finally {
+    await releaseUserLock(db, userId, "coros_write", lock).catch(() => undefined);
+  }
+  return { status: "done", body: { found, removed, remaining: found - removed, notes } };
 }

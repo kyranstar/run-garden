@@ -19,6 +19,7 @@ import {
 } from "@rg/domain";
 import { classifyWorkout, estimateDuration, summarizeStages } from "@rg/scheduling";
 import type { SourcePlannedWorkout, TrainingPlanInfo } from "@rg/providers";
+import { isSpikeStamp } from "@rg/coros";
 import { chunkedInsert, type Db } from "./db.js";
 import { separateDayCollisions, windowTimeFor } from "./day-placement.js";
 import { loadOwnProgramNames, unstampTitle } from "./coros-stamp.js";
@@ -212,17 +213,25 @@ export async function importPlanSnapshot(
   // stale rows age out through absence detection, and a wrongly skipped
   // plan self-heals via presence-based un-archiving the moment it's
   // admitted again.
+  //
+  // The write spike's own workout is never the athlete's (Audit 2 E2E I3,
+  // Ruling C3): a full read in the seconds it exists — or after a run that
+  // died before its delete — would make it a planned session here and an
+  // event on the real Google Calendar. Only the exact, anchored stamp
+  // (`isSpikeStamp`) is skipped.
   const SAMPLE_TITLE_RE = /sample workout/i;
+  const workouts = input.workouts.filter((w) => !isSpikeStamp(w.title));
+  stats.skippedForeignWorkouts += input.workouts.length - workouts.length;
   const admittedPlanIds = new Set<string>([input.plan.sourcePlanId]);
-  for (const sourcePlanId of new Set(input.workouts.map((w) => w.sourcePlanId))) {
+  for (const sourcePlanId of new Set(workouts.map((w) => w.sourcePlanId))) {
     if (admittedPlanIds.has(sourcePlanId)) continue;
-    const group = input.workouts.filter((w) => w.sourcePlanId === sourcePlanId);
+    const group = workouts.filter((w) => w.sourcePlanId === sourcePlanId);
     const sampleShare =
       group.length > 0 ? group.filter((w) => SAMPLE_TITLE_RE.test(w.title)).length / group.length : 0;
     if (sampleShare > 0.5) stats.skippedForeignWorkouts += group.length;
     else admittedPlanIds.add(sourcePlanId);
   }
-  const admitted = input.workouts.filter((w) => admittedPlanIds.has(w.sourcePlanId));
+  const admitted = workouts.filter((w) => admittedPlanIds.has(w.sourcePlanId));
 
   // ── Plan rows — one per COROS plan present in this (merged) snapshot ──────
   // schedule/query merges every plan on the account (research §3): the run

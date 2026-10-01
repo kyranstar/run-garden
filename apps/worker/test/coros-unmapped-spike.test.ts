@@ -30,8 +30,10 @@ import {
 } from "@rg/providers";
 import { mockCorosServer } from "../../../packages/coros/test/mock-coros-server.js";
 import { corosRoutes } from "../src/routes/coros.js";
+import { SPIKE_CLEANUP_MAX } from "../src/services/coros-unmapped-spike.js";
 import { createSession, SESSION_COOKIE } from "../src/auth/sessions.js";
 import { connectCoros } from "../src/services/coros-connection.js";
+import { corosReadNow } from "../src/services/coros-read.js";
 import { claimUserLock } from "../src/services/locks.js";
 import type { Env } from "../src/env.js";
 import type { Db } from "../src/services/db.js";
@@ -39,6 +41,7 @@ import { makeTestDb, makeTestUser, mountRoutes } from "./helpers.js";
 
 const TEST_KEY = Buffer.alloc(32, 7).toString("base64");
 const CONFIRM = { confirm: "write a test workout" };
+const CLEANUP = { confirm: "remove test workouts" };
 
 const GENERIC_ID = "900000000000001121";
 const BIRD_DOG_ID = "900000000000001150";
@@ -132,6 +135,23 @@ async function plantingClient(server: Server): Promise<CorosClient> {
   const client = new CorosClient({ region: "us", fetchImpl: server.fetchImpl, logger: () => undefined });
   await client.loginWithHash(server.email, createHash("md5").update(server.password, "utf8").digest("hex"));
   return client;
+}
+
+/** A spike workout left on COROS by a run that died before its delete. */
+async function plantLeftover(client: CorosClient, name: string, on: string, today: string): Promise<void> {
+  const inputs = {
+    happenDay: String(localDateToCorosDay(on)),
+    name,
+    catalog: new Map(CATALOG_ROWS),
+    genericTrainingOriginId: GENERIC_ID,
+    exerciseOriginId: BIRD_DOG_ID,
+  };
+  const { session, catalog: spikeCatalog } = spikeWorkout(inputs);
+  const res = await createWorkout(client, { happenDay: inputs.happenDay, name, session }, {
+    catalog: spikeCatalog,
+    today,
+  });
+  expect(res.ok).toBe(true);
 }
 
 const programNames = (server: Server): string[] =>
@@ -314,32 +334,16 @@ describe("POST /api/coros/spike/unmapped-moves — the run", () => {
     expect(text).not.toContain(server.userId);
   });
 
-  it("clears a leftover spike workout first — exact stamps only — then runs clean", async () => {
+  it("with a leftover, the write call stops before writing; the cleanup-only call removes exact stamps; then the run is clean (Ruling C3)", async () => {
     const { server, writes, post, today } = await setup();
     const date = addDays(today, 14);
     const stamp = spikeStamp(today);
     const client = await plantingClient(server);
-    const catalog = new Map(CATALOG_ROWS);
-    const plant = async (name: string, on: string) => {
-      const inputs = {
-        happenDay: String(localDateToCorosDay(on)),
-        name,
-        catalog,
-        genericTrainingOriginId: GENERIC_ID,
-        exerciseOriginId: BIRD_DOG_ID,
-      };
-      const { session, catalog: spikeCatalog } = spikeWorkout(inputs);
-      const res = await createWorkout(client, { happenDay: inputs.happenDay, name, session }, {
-        catalog: spikeCatalog,
-        today,
-      });
-      expect(res.ok).toBe(true);
-    };
     // A run that died before its delete: today's stamp, on the target day.
-    await plant(stamp, date);
+    await plantLeftover(client, stamp, date, today);
     // An older spike's leftover on another day.
     const staleStamp = spikeStamp(addDays(today, -2));
-    await plant(staleStamp, addDays(today, 12));
+    await plantLeftover(client, staleStamp, addDays(today, 12), today);
     // Carries the prefix but is NOT a spike stamp: never touched.
     const decoy = `${SPIKE_STAMP_PREFIX} ${today} — keep me`;
     const decoySession = coachSessionSchema.parse({
@@ -358,23 +362,65 @@ describe("POST /api/coros/spike/unmapped-moves — the run", () => {
     const entitiesBefore = server.state.schedule.entities!.length;
     writes.length = 0;
 
+    // 1. The write call: leftovers → nothing written, not even a delete.
+    const refused = await post(CONFIRM);
+    expect(refused.status).toBe(409);
+    expect(await refused.json()).toEqual({ error: "leftovers", count: 2, cleanup: CLEANUP });
+    expect(writes).toEqual([]);
+
+    // 2. The cleanup-only call: deletes the two leftovers, writes nothing else.
+    const cleaned = await post(CLEANUP);
+    expect(cleaned.status).toBe(200);
+    const cleanup = (await cleaned.json()) as { found: number; removed: number; remaining: number; notes: string[] };
+    expect(cleanup).toMatchObject({ found: 2, removed: 2, remaining: 0 });
+    expect(cleanup.notes).toContain(`cleanup: spike workout on ${date} deleted`);
+    expect(cleanup.notes).toContain(`cleanup: spike workout on ${addDays(today, 12)} deleted`);
+    expect(writes.map((w) => w.versionObjects[0]!.status)).toEqual([3, 3]);
+    expect(programNames(server)).not.toContain(staleStamp);
+    expect(programNames(server)).toContain(decoy);
+    expect(server.state.schedule.entities!.length).toBe(entitiesBefore - 2);
+
+    // 3. Now the write call runs: its own create and delete only.
+    writes.length = 0;
     const res = await post(CONFIRM);
     expect(res.status).toBe(200);
     const body = (await res.json()) as Body;
-
-    expect(body.notes).toContain(`cleanup: spike workout on ${date} deleted`);
-    expect(body.notes).toContain(`cleanup: spike workout on ${addDays(today, 12)} deleted`);
-    // Two cleanups, then the run's own create and delete.
-    expect(writes.map((w) => w.versionObjects[0]!.status)).toEqual([3, 3, 1, 3]);
+    expect(writes.map((w) => w.versionObjects[0]!.status)).toEqual([1, 3]);
     expect(body.stored.every((s) => s.changed.length === 0)).toBe(true);
     expect(body.deleted).toBe(true);
-
-    const after = programNames(server);
-    expect(after).not.toContain(stamp);
-    expect(after).not.toContain(staleStamp);
-    expect(after).toContain(decoy);
-    // Both leftovers gone, the decoy and every foreign workout still there.
+    expect(programNames(server)).not.toContain(stamp);
+    expect(programNames(server)).toContain(decoy);
     expect(server.state.schedule.entities!.length).toBe(entitiesBefore - 2);
+  });
+
+  it("the cleanup-only call removes at most a few leftovers per call and says how many remain (Ruling C3)", async () => {
+    const { server, writes, post, today } = await setup();
+    const client = await plantingClient(server);
+    for (let i = 0; i < SPIKE_CLEANUP_MAX + 2; i++) {
+      await plantLeftover(client, spikeStamp(addDays(today, -1 - i)), addDays(today, 3 + i), today);
+    }
+    writes.length = 0;
+    const first = (await (await post(CLEANUP)).json()) as { found: number; removed: number; remaining: number };
+    expect(first).toMatchObject({ found: SPIKE_CLEANUP_MAX + 2, removed: SPIKE_CLEANUP_MAX, remaining: 2 });
+    expect(writes).toHaveLength(SPIKE_CLEANUP_MAX);
+    expect(writes.every((w) => w.versionObjects[0]!.status === 3)).toBe(true);
+    const second = (await (await post(CLEANUP)).json()) as { found: number; removed: number; remaining: number };
+    expect(second).toMatchObject({ found: 2, removed: 2, remaining: 0 });
+    const third = (await (await post(CLEANUP)).json()) as { found: number; removed: number; remaining: number };
+    expect(third).toMatchObject({ found: 0, removed: 0, remaining: 0 });
+    expect(programNames(server).some((n) => n.startsWith(SPIKE_STAMP_PREFIX))).toBe(false);
+  });
+
+  it("the cleanup-only call has the same gate: exact body, writes enabled, not fixture mode", async () => {
+    const { server, writes, post } = await setup({ writesEnabled: false });
+    const queriesBefore = server.counts.scheduleQuery;
+    expect((await post(CLEANUP)).status).toBe(404);
+    expect((await post({ confirm: "remove test workout" })).status).toBe(404);
+    expect((await post({ ...CLEANUP, extra: 1 })).status).toBe(404);
+    expect(server.counts.scheduleQuery).toBe(queriesBefore);
+    expect(writes).toHaveLength(0);
+    const enabled = await setup();
+    expect((await enabled.post(CLEANUP, makeEnv({ FIXTURE_MODE: "1" }))).status).toBe(404);
   });
 
   it("reports an honest failure and leaves nothing behind when the create never materializes", async () => {
@@ -388,5 +434,36 @@ describe("POST /api/coros/spike/unmapped-moves — the run", () => {
     expect(body.stored.every((s) => s.changed.join() === "not stored" && s.storedName === null)).toBe(true);
     expect(body.notes).toContain("fresh read: no workout carries the spike stamp");
     expect(body.deleted).toBe(true);
+  });
+});
+
+describe("the COROS import never takes in a spike workout (Audit 2 E2E I3, Ruling C3)", () => {
+  it("a full read while a spike workout is on COROS imports everything else, and not it", async () => {
+    const { db, userId, prefs, server, today } = await setup();
+    const client = await plantingClient(server);
+    const stamp = spikeStamp(today);
+    await plantLeftover(client, stamp, addDays(today, 14), today);
+    // Not an exact stamp: an ordinary workout as far as the import goes.
+    const lookalike = `${SPIKE_STAMP_PREFIX} ${today} — keep me`;
+    const session = coachSessionSchema.parse({
+      category: "strength",
+      title: "Lookalike",
+      durationMinutes: 10,
+      lift: { exercises: [{ name: "Bird Dog", originId: BIRD_DOG_ID, sets: 1, reps: 5 }] },
+    });
+    const planted = await createWorkout(
+      client,
+      { happenDay: String(localDateToCorosDay(addDays(today, 13))), name: lookalike, session },
+      { catalog: new Map([[BIRD_DOG_ID, "T1150"]]), today },
+    );
+    expect(planted.ok).toBe(true);
+
+    const read = await corosReadNow(db, makeEnv(), userId, prefs, { force: true });
+    expect(read.status).not.toBe("coros_unreachable");
+    const titles = (await db.select().from(schema.plannedWorkouts)).map((w) => w.title);
+    expect(titles.length).toBeGreaterThan(2);
+    expect(titles).toContain(lookalike);
+    expect(titles).not.toContain(stamp);
+    expect(titles.some((t) => /^RG SPIKE — SAFE TO DELETE \d{4}-\d{2}-\d{2}$/.test(t))).toBe(false);
   });
 });
