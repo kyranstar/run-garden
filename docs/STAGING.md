@@ -136,16 +136,20 @@ COPIER_KEY="$(openssl rand -base64 32)"     # this shell only; never echoed or s
 printf %s "$COPIER_KEY" | npx wrangler secret put COPIER_KEY -c wrangler.copier.toml
 URL=https://rg-staging-copier.kyranadams.workers.dev
 Q="dst=run-garden-db-staging"
-copier() { curl -s -X POST -H "x-copier-key: $COPIER_KEY" "$URL/$1?$Q${2:+&$2}"; echo; }
+copier() { curl -sS --fail-with-body -X POST -H "x-copier-key: $COPIER_KEY" "$URL/$1?$Q${2:+&$2}"; }
 
-# Step until finished; stop on any error.
-while :; do
-  out="$(copier step)"; echo "$out"
-  case "$out" in *'"finished":true'*) break ;; '' | *'"error"'*) break ;; esac
+# Step until finished. Stop on anything else: a non-2xx answer (curl fails —
+# a Cloudflare error page or a resource-limit 5xx included), an answer that
+# is not the copier's JSON, an error, or 2000 steps.
+for i in $(seq 2000); do
+  out="$(copier step)"; rc=$?; echo "$out"
+  [ "$rc" -eq 0 ] || { echo "step failed (curl $rc)"; break; }
+  case "$out" in *'"finished":true'*) break ;; *'"error"'* | '' | [!{]*) echo "unexpected answer"; break ;; esac
+  sleep 1
 done
 
-copier verify          # {"ok":true,...} — every table's src/dst hash and row count
-copier scrub           # {"ok":true,"remaining":{"secrets":0,"sessions":0,"oauthStates":0}}
+copier verify; echo   # {"ok":true,...} — every table's src/dst hash and row count
+copier scrub; echo    # {"ok":true,"remaining":{"secrets":0,"sessions":0,"oauthStates":0}}
 pnpm copier:delete
 unset COPIER_KEY URL Q
 ```

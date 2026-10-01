@@ -12,6 +12,7 @@
  * Two in-memory databases stand in for the two bindings, both as strict as
  * D1 about bound variables.
  */
+import { spawnSync } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { describe, expect, it, vi } from "vitest";
 import { eq, getTableColumns, isNotNull, or, sql } from "drizzle-orm";
@@ -489,5 +490,27 @@ describe("wrangler.copier.toml", () => {
 
   it("names the sentinel table nothing in the schema uses", () => {
     expect(ACCOUNT_TABLES.map((t) => t.name)).not.toContain(SENTINEL_TABLE);
+  });
+
+  it("the runbook's copy loop stops on a platform error page and is bounded (Audit 2 M3)", () => {
+    const doc = readFileSync(new URL("../../../docs/STAGING.md", import.meta.url), "utf8");
+    expect(doc).toMatch(/^copier\(\) \{ curl -sS --fail-with-body /m);
+    const loop = /^for i in \$\(seq (\d+)\); do\n[\s\S]*?^done$/m.exec(doc);
+    expect(loop, "the copy loop").not.toBeNull();
+    expect(Number(loop![1])).toBeLessThanOrEqual(5000);
+    // `copier` stands in for curl: what it prints, and curl's exit code.
+    const run = (copier: string) =>
+      spawnSync("bash", ["-c", `copier() { ${copier}; }\nsleep() { :; }\n${loop![0]}\necho "steps=$i"`], {
+        encoding: "utf8",
+      }).stdout;
+    // A Cloudflare 1102 page: curl --fail-with-body exits 22.
+    expect(run(`echo '<html>Error 1102</html>'; return 22`)).toMatch(/step failed \(curl 22\)\nsteps=1\n$/);
+    // A 200 that is not the copier's JSON.
+    expect(run(`echo '<html>ok</html>'`)).toMatch(/unexpected answer\nsteps=1\n$/);
+    expect(run(`echo ''`)).toMatch(/unexpected answer\nsteps=1\n$/);
+    // Progress, then finished.
+    expect(
+      run(`if [ "$i" -ge 3 ]; then echo '{"finished":true}'; else echo '{"finished":false}'; fi`),
+    ).toMatch(/steps=3\n$/);
   });
 });
