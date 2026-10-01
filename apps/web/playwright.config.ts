@@ -8,10 +8,16 @@ export default defineConfig({
   testDir: "./e2e",
   timeout: 30_000,
   fullyParallel: false,
+  // A stray `test.only` fails CI instead of running one test and passing
+  // (Audit 2 E2E M1).
+  forbidOnly: !!process.env.CI,
   reporter: [["list"]],
   use: {
     baseURL: process.env.RG_BASE ?? "http://localhost:5173",
-    trace: "on-first-retry",
+    // With no retries, "on-first-retry" never recorded anything (M3). Both
+    // land in test-results/, which CI uploads on failure; fixture data only.
+    trace: "retain-on-failure",
+    screenshot: "only-on-failure",
   },
   projects: [
     { name: "iphone", use: { ...devices["iPhone 13"] } },
