@@ -14,6 +14,10 @@ if ! node -e 'process.exit(+process.versions.node.split(".")[0] >= 22 ? 0 : 1)' 
 fi
 echo "Node: $(node --version)"
 
+# wrangler otherwise appends everything it prints to a debug log on disk
+# (~/Library/Preferences/.wrangler/logs); see docs/STAGING.md.
+export WRANGLER_WRITE_LOGS=false
+
 cd "$(dirname "$0")/.."
 ROOT="$(cd ../.. && pwd)"
 SECRETS="./.prod.secrets"

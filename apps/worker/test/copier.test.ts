@@ -459,8 +459,8 @@ describe("wrangler.copier.toml", () => {
   });
 
   it("has deploy and delete scripts, and the main Worker's config is untouched", () => {
-    expect(pkg.scripts["copier:deploy"]).toBe("wrangler deploy -c wrangler.copier.toml");
-    expect(pkg.scripts["copier:delete"]).toBe("wrangler delete -c wrangler.copier.toml");
+    expect(pkg.scripts["copier:deploy"]).toBe("WRANGLER_WRITE_LOGS=false wrangler deploy -c wrangler.copier.toml");
+    expect(pkg.scripts["copier:delete"]).toBe("WRANGLER_WRITE_LOGS=false wrangler delete -c wrangler.copier.toml");
     const main = readFileSync(new URL("../wrangler.toml", import.meta.url), "utf8");
     expect(main).not.toMatch(/binding = "(SRC|DST)"/);
     expect(main).not.toContain("rg-staging-copier");

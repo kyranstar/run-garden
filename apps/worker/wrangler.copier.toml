@@ -6,7 +6,7 @@
 # after — see docs/STAGING.md, "Copy and rehearse":
 #   pnpm --filter @rg/worker copier:deploy
 #   COPIER_KEY="$(openssl rand -base64 32)"     # this shell only; never echoed or saved
-#   printf %s "$COPIER_KEY" | npx wrangler secret put COPIER_KEY -c wrangler.copier.toml
+#   printf %s "$COPIER_KEY" | WRANGLER_WRITE_LOGS=false npx wrangler secret put COPIER_KEY -c wrangler.copier.toml
 #   ...POST /step until finished, /verify, /scrub...
 #   pnpm --filter @rg/worker copier:delete
 #

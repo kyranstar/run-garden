@@ -17,9 +17,16 @@ Mac. Budget expectations: [COSTS.md](COSTS.md).
 
 ## 1. Create the D1 database
 
+Every wrangler command in this guide runs in a shell with
+`export WRANGLER_WRITE_LOGS=false`: otherwise wrangler appends all it prints
+(query results included) to a debug log in
+`~/Library/Preferences/.wrangler/logs/`. See [STAGING.md](STAGING.md),
+"Production-data rules".
+
 ```bash
 pnpm install
 cd apps/worker
+export WRANGLER_WRITE_LOGS=false
 npx wrangler login
 npx wrangler d1 create run-garden-db
 ```

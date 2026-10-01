@@ -6,8 +6,20 @@ sign-in token exchange throws `StagingOutboundBlocked`
 (`apps/worker/src/services/staging.ts`). It can hold a copy of real data and
 still never reach COROS, Calendar, the COROS MCP or the LLM gateway.
 
-Node: wrangler commands use Node 22 (`export PATH="$HOME/.nvm/versions/node/v22.23.1/bin:$PATH"`
-in that shell only). Tests run on the default Node 21.
+Shell setup for every wrangler command below (that shell only; tests run on
+the default Node 21):
+
+```sh
+export PATH="$HOME/.nvm/versions/node/v22.23.1/bin:$PATH"   # wrangler needs Node 22
+export WRANGLER_WRITE_LOGS=false                            # see below
+```
+
+Why `WRANGLER_WRITE_LOGS=false`: by default wrangler appends everything it
+prints to a debug log in `~/Library/Preferences/.wrangler/logs/`, including
+`d1 execute` query results (only API request bodies are sanitised). A command
+run against production or staging data would leave that data on disk. The
+`@rg/worker` package scripts that reach Cloudflare set it themselves; set it
+in the shell for every `npx wrangler` command here.
 
 ## Why it is inert (evidence)
 
@@ -181,6 +193,8 @@ remove it). Production can hash but never resimulate (`resim: true` → 409).
 - Owner OK, then wipe staging (below) the same day.
 - Staging holds a copy of real data until then: the production-data rules
   apply to it in full.
+- Sweep `~/Library/Preferences/.wrangler/logs` (see the production-data
+  rules): no log written during the rehearsal stays.
 
 ## Wipe
 
@@ -224,7 +238,13 @@ lost, so restore only when that trade is intended.
 - Read-only unless the owner approves a write.
 - Take only the columns and rows the task needs. Never `SELECT *`.
 - Never write query results to disk (no redirects, no temp files, no dumps).
-- Drive prod reads from the browser or a single `wrangler d1 execute` whose
-  output is consumed in the terminal, not saved.
+- Drive prod reads from the browser. A `wrangler d1 execute` is saved to disk
+  twice over unless you prevent it: wrangler writes its output to
+  `~/Library/Preferences/.wrangler/logs/` unless `WRANGLER_WRITE_LOGS=false`
+  is set, and a command an agent runs is kept in the agent's session
+  transcript. If you must use one, set the variable and read only counts.
 - Verify cleanup yourself: no files, no scratch tables, no leftover rows.
+  After any production or staging work, sweep wrangler's log folder: list it
+  with `ls -lt ~/Library/Preferences/.wrangler/logs` and delete any log
+  written since the work began (it holds whatever wrangler printed).
 - Keep personal data out of code, fixtures, tests and docs.

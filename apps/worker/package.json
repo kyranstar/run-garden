@@ -5,15 +5,15 @@
   "type": "module",
   "scripts": {
     "dev": "wrangler dev --port 8787",
-    "deploy": "wrangler deploy",
-    "deploy:staging": "wrangler deploy --env staging",
-    "migrate:staging": "wrangler d1 migrations apply run-garden-db-staging --remote --env staging",
-    "copier:deploy": "wrangler deploy -c wrangler.copier.toml",
-    "copier:delete": "wrangler delete -c wrangler.copier.toml",
+    "deploy": "WRANGLER_WRITE_LOGS=false wrangler deploy",
+    "deploy:staging": "WRANGLER_WRITE_LOGS=false wrangler deploy --env staging",
+    "migrate:staging": "WRANGLER_WRITE_LOGS=false wrangler d1 migrations apply run-garden-db-staging --remote --env staging",
+    "copier:deploy": "WRANGLER_WRITE_LOGS=false wrangler deploy -c wrangler.copier.toml",
+    "copier:delete": "WRANGLER_WRITE_LOGS=false wrangler delete -c wrangler.copier.toml",
     "build": "wrangler deploy --dry-run --outdir dist",
     "typecheck": "tsc --noEmit",
     "db:migrate:local": "wrangler d1 migrations apply run-garden-db --local",
-    "db:migrate:remote": "wrangler d1 migrations apply run-garden-db --remote"
+    "db:migrate:remote": "WRANGLER_WRITE_LOGS=false wrangler d1 migrations apply run-garden-db --remote"
   },
   "dependencies": {
     "@rg/analytics": "workspace:*",

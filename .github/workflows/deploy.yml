@@ -28,6 +28,10 @@ jobs:
   deploy:
     name: Migrate D1 + deploy worker
     runs-on: ubuntu-latest
+    # wrangler otherwise appends all it prints to a debug log on disk
+    # (docs/STAGING.md, "Production-data rules").
+    env:
+      WRANGLER_WRITE_LOGS: "false"
     steps:
       - uses: actions/checkout@v4
 
