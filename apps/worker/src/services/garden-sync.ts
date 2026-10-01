@@ -853,7 +853,9 @@ const GARDEN_LOCK_STALE_MINUTES = 1;
  * Record an input change for the next catch-up step (B11, B12): the
  * earliest changed date wins, the sequence moves on every record, and the
  * catch-up is marked pending so a step that was about to clear it cannot.
- * One statement; never waits.
+ * One statement; never waits. Nothing is recorded once a restore has begun
+ * (NEW-B): the change belongs to the account being replaced, and a record
+ * that outlived the restore would move the file's own history.
  */
 async function recordGardenChange(db: Db, userId: string, date: LocalDate): Promise<void> {
   await db
@@ -864,7 +866,7 @@ async function recordGardenChange(db: Db, userId: string, date: LocalDate): Prom
       gardenCatchUpPending: true,
       updatedAt: nowInstant(),
     })
-    .where(eq(accountState.userId, userId));
+    .where(and(eq(accountState.userId, userId), isNull(accountState.restoreId)));
 }
 
 /**
@@ -904,6 +906,8 @@ async function catchUpStep(
   opts?: GardenAdvanceOptions,
 ): Promise<GardenSimResult> {
   const account = await loadAccountState(db, userId);
+  // A restore began after this step's caller looked: nothing to walk.
+  if (isRestoring(account)) return standDown(db, userId, prefs, now);
   const recorded = account?.gardenChangedFrom ?? null;
   const seq = account?.gardenChangedSeq ?? 0;
   let start = await ensureGarden(db, userId, prefs);

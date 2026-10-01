@@ -12,7 +12,11 @@
  * NEW-2: a resimulation that finds the garden lock held used to wait up to
  * 75 s — past the client's 30 s timeout and `waitUntil`'s — and a change at
  * or before the cursor could then be lost for good. It now records the
- * earliest changed date and returns; the next step replays from it.
+ * earliest changed date and returns; the next step walks from it (B12).
+ *
+ * NEW-B: a change on record outlived begin, finish and Start fresh, so a
+ * second restore's first step re-derived the file's history from it. Begin
+ * and Start fresh now clear it, and nothing is recorded under the marker.
  */
 import { describe, expect, it } from "vitest";
 import { eq } from "drizzle-orm";
@@ -26,8 +30,9 @@ import { claimUserLock } from "../src/services/locks.js";
 import { planRoutes } from "../src/routes/plan.js";
 import { coachRoutes } from "../src/routes/coach.js";
 import { createSession, SESSION_COOKIE } from "../src/auth/sessions.js";
+import { beginRestore, startFresh } from "../src/services/account-restore.js";
 import { makeTestDb, makeTestUser, mountRoutes } from "./helpers.js";
-import { exportAll, restoreAll } from "./restore-driver.js";
+import { checkFile, exportAll, restoreAll, TEST_SECRET } from "./restore-driver.js";
 
 const STAMP = "2026-01-01T00:00:00Z";
 const TZ = "America/Los_Angeles";
@@ -390,7 +395,7 @@ describe("NEW-2: a resimulation never waits on the garden lock (B11)", () => {
     void newId;
   }, 300_000);
 
-  it("a replay that dies part-way leaves its change on record for the next step", async () => {
+  it("a step that dies part-way leaves its change on record for the next step", async () => {
     const build = async (die: boolean) => {
       let armed = false;
       let n = 0;
@@ -433,4 +438,106 @@ describe("NEW-2: a resimulation never waits on the garden lock (B11)", () => {
     const ref = await build(false);
     expect(await garden(dead.db, dead.userId)).toEqual(await garden(ref.db, ref.userId));
   }, 300_000);
+});
+
+// ── NEW-B ───────────────────────────────────────────────────────────────────
+
+describe("NEW-B: a restore starts with no garden change on record (B12)", () => {
+  /** A 230-day garden exported 100 days ago, restored once. */
+  const restoredOnce = async (db: Db) => {
+    const { userId, prefs } = await makeTestUser(db, { timezone: TZ });
+    const genesis = addDays(TODAY, -230);
+    await seed(db, userId, genesis, 1, 228);
+    await ensureGarden(db, userId, prefs, genesis);
+    await advanceGarden(db, userId, prefs, new Date(`${addDays(TODAY, -100)}T20:00:00Z`));
+    const file = await exportAll(db, userId);
+    await restoreAll(db, userId, file);
+    return { userId, prefs, genesis, file, L: file.tables.garden_state![0]!.lastSimulatedDate as string };
+  };
+  /** The garden rows as stored, every column but `garden_state.updated_at`. */
+  const rows = async (db: Db, userId: string) => {
+    const own = <T extends { userId: string }>(r: T[]) => r.filter((x) => x.userId === userId);
+    const byId = <T extends { id: string }>(r: T[]) => [...r].sort((a, b) => (a.id < b.id ? -1 : 1));
+    const [state] = own(await db.select().from(schema.gardenState));
+    return {
+      state: state ? (({ updatedAt: _u, ...rest }) => rest)(state) : null,
+      events: byId(own(await db.select().from(schema.gardenEvents))),
+      inputs: byId(own(await db.select().from(schema.gardenDayInputs))),
+      snapshots: byId(own(await db.select().from(schema.gardenSnapshots))),
+      unlocks: own(await db.select().from(schema.gardenUnlocks)).sort((a, b) => a.speciesId.localeCompare(b.speciesId)),
+    };
+  };
+  const sqlite = (db: Db) => (db as unknown as { $client: { exec: (s: string) => void } }).$client;
+
+  it("a change recorded before a second restore never moves the file's history: its first step walks forward from the file", async () => {
+    const db = makeTestDb({ boundVariableCap: 100 });
+    const { userId, prefs, genesis, file, L } = await restoredOnce(db);
+    // A step is walking (lock held) when a change to an old day lands: recorded.
+    expect(await claimUserLock(db, userId, "garden", 1)).not.toBeNull();
+    await run(db, userId, addDays(genesis, 40), "-old");
+    await resimulateFrom(db, userId, addDays(genesis, 40), prefs);
+    expect((await loadAccountState(db, userId))?.gardenChangedFrom).toBe(addDays(genesis, 40));
+    await db.delete(schema.coachLocks).where(eq(schema.coachLocks.userId, userId));
+
+    // The athlete restores the same file again (the garden looked stuck).
+    await restoreAll(db, userId, file);
+    expect((await loadAccountState(db, userId))?.gardenChangedFrom ?? null).toBeNull();
+    const fileRows = await rows(db, userId); // finish simulates nothing
+    await advanceGarden(db, userId, prefs);
+    const after = await rows(db, userId);
+    expect(after.state!.lastSimulatedDate).toBe(addDays(L, 45));
+    const upTo = <T extends { date: string }>(r: T[]) => r.filter((x) => x.date <= L);
+    expect(upTo(after.events)).toEqual(fileRows.events);
+    expect(upTo(after.inputs)).toEqual(fileRows.inputs);
+    expect(upTo(after.snapshots)).toEqual(fileRows.snapshots);
+  }, 120_000);
+
+  it("begin clears a change on record, and so does Start fresh", async () => {
+    const db = makeTestDb({ boundVariableCap: 100 });
+    const { userId, file } = await restoredOnce(db);
+    const stale = `UPDATE account_state SET garden_changed_from = '2026-01-05', garden_changed_seq = garden_changed_seq + 1 WHERE user_id = '${userId}'`;
+    sqlite(db).exec(stale);
+    const checked = await checkFile(db, userId, file);
+    const begun = await beginRestore(
+      db,
+      userId,
+      { session: checked.session, replace: true, tokens: [...checked.tokens.values()] },
+      { secret: TEST_SECRET },
+    );
+    if (!begun.ok) throw new Error(begun.error);
+    expect((await loadAccountState(db, userId))?.gardenChangedFrom ?? null).toBeNull();
+    sqlite(db).exec(stale); // however one got there
+    expect(await startFresh(db, userId, { restoreId: begun.restoreId })).toEqual({ ok: true });
+    expect((await loadAccountState(db, userId))?.gardenChangedFrom ?? null).toBeNull();
+  }, 120_000);
+
+  it("a resimulation that read the catch-up flag just before begin records nothing and walks nothing", async () => {
+    let inject: (() => void) | null = null;
+    const db = makeTestDb({
+      boundVariableCap: 100,
+      onStatement: (sql) => {
+        if (inject && /^update "account_state" set .*"garden_changed_seq" = "account_state"."garden_changed_seq" \+ 1/i.test(sql)) {
+          const fire = inject;
+          inject = null;
+          fire();
+        }
+      },
+    });
+    const { userId, prefs, L } = await restoredOnce(db);
+    await advanceGarden(db, userId, prefs); // one step: the cursor is past L
+    const before = await rows(db, userId);
+    const old = addDays(L, -30);
+    await run(db, userId, old, "-old");
+    // Begin's bookkeeping lands between the flag read and the record.
+    inject = () =>
+      sqlite(db).exec(
+        `UPDATE account_state SET restore_id = 'r-next', garden_catch_up_pending = 0, garden_changed_from = NULL WHERE user_id = '${userId}'`,
+      );
+    await resimulateFrom(db, userId, old, prefs);
+    expect(inject).toBeNull();
+    const account = await loadAccountState(db, userId);
+    expect(account?.gardenChangedFrom ?? null).toBeNull();
+    expect(account?.gardenCatchUpPending).toBe(false);
+    expect(await rows(db, userId)).toEqual(before);
+  }, 120_000);
 });

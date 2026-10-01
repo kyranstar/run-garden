@@ -540,6 +540,10 @@ export async function beginRestore(
     restoreFinishedAt: null,
     calendarReconcile: null,
     gardenCatchUpPending: false,
+    // A garden change on record belongs to the account being replaced; left
+    // in place, the file's first catch-up step would walk from it (NEW-B).
+    // The seq stays monotonic: it only guards a step's clear of the record.
+    gardenChangedFrom: null,
   });
   await wipeAccountData(db, userId, { keep: [] });
   return { ok: true, restoreId: session.rid, tables: restorableTables().map((t) => t.name) };
@@ -894,6 +898,7 @@ export async function startFresh(
     restoreFinishedAt: null,
     calendarReconcile: null,
     gardenCatchUpPending: false,
+    gardenChangedFrom: null,
   });
   return { ok: true };
 }
