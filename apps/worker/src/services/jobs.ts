@@ -12,6 +12,7 @@ import {
   newId,
   nowInstant,
   todayInZone,
+  watchAddressOf,
   type CorosWriteResult,
   type UserPreferences,
 } from "@rg/domain";
@@ -101,6 +102,20 @@ async function enqueueMoveJob(
 }
 
 /**
+ * A session the APP authored (an adaptive program's slot, an on-demand
+ * session) that COROS holds at no address — ruling 2a-R4. Its date is the
+ * app's and the calendar's alone: there is nothing on the watch to move, so no
+ * verb may queue a COROS write for it. Before this, a moved slot compared its
+ * new date with `lastVerifiedCorosDate = ''`, queued a move the executor could
+ * only mark unsupported (`missing_source_id_in_plan`), and read as a sync issue
+ * no Retry could clear. Once such a row is sent to the watch it holds an
+ * address, and the normal write lane applies again.
+ */
+export function appOnlySession(w: typeof plannedWorkouts.$inferSelect): boolean {
+  return (w.origin === "program" || w.origin === "on_demand") && watchAddressOf(w) === null;
+}
+
+/**
  * Apply a user-approved move: update Run Garden's intended schedule, queue the
  * COROS write, and report the resulting sync state. Calendar sync is the
  * caller's follow-up step.
@@ -138,13 +153,20 @@ export async function applyMove(db: Db, req: MoveRequest): Promise<MoveOutcome> 
     source: req.source === "calendar_edit" ? "calendar_drag" : "user_move",
   });
 
+  const appOnly = appOnlySession(workout);
   const dateChanged = req.toDate !== workout.lastVerifiedCorosDate;
-  const writesPossible = req.corosWritesEnabled && (await writeCapableDeviceExists(db, req.userId));
+  const writesPossible =
+    !appOnly && req.corosWritesEnabled && (await writeCapableDeviceExists(db, req.userId));
 
   let corosSyncState: string;
   let jobId: string | undefined;
 
-  if (!dateChanged) {
+  if (appOnly) {
+    // Nothing is owed to COROS: the intent records the move and closes at
+    // once, so the catch-up pass (`emitPendingWork`) has nothing to emit.
+    corosSyncState = "calendar_only";
+    await resolveIntent(db, intentId, now);
+  } else if (!dateChanged) {
     // Same-COROS-date time change: COROS has no time-of-day, nothing to write.
     corosSyncState = workout.corosSyncState === "needs_attention" ? "needs_attention" : "synced";
     await resolveIntent(db, intentId, now);
@@ -233,6 +255,13 @@ export async function emitPendingWork(
       // An intent for a workout that no longer exists has nothing left to
       // sync — leaving it open would strand a permanent, uncloseable
       // sync_issue behind an archived (or deleted) workout.
+      await resolveIntent(db, intent.id, now);
+      continue;
+    }
+    if (appOnlySession(workout)) {
+      // Ruling 2a-R4: an app-authored session the watch does not hold has no
+      // COROS date to converge (e.g. an intent the one-shot legacy heal opened
+      // for a calendar_only slot). Closed, never turned into a job.
       await resolveIntent(db, intent.id, now);
       continue;
     }
