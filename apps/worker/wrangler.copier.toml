@@ -1,0 +1,38 @@
+# The staging copier (Phase 0 Task 13) — a TEMPORARY Worker, separate from
+# run-garden-api and run-garden-staging. It copies production's D1 into
+# staging's inside Cloudflare (nothing touches disk), then is deleted.
+#
+# Deploy only for a rehearsal the owner has OK'd, and delete it straight
+# after — see docs/STAGING.md, "Copy and rehearse":
+#   pnpm --filter @rg/worker copier:deploy
+#   COPIER_KEY="$(openssl rand -base64 32)"     # this shell only; never echoed or saved
+#   printf %s "$COPIER_KEY" | npx wrangler secret put COPIER_KEY -c wrangler.copier.toml
+#   ...POST /step until finished, /verify, /scrub...
+#   pnpm --filter @rg/worker copier:delete
+#
+# No crons, no static assets, no routes beyond its workers.dev URL. The code
+# refuses to write anything unless DST is staging (src/copier/copy.ts:
+# guardBindings) and every request repeats ?dst=<DST_NAME>.
+name = "rg-staging-copier"
+main = "src/copier/index.ts"
+compatibility_date = "2026-07-01"
+compatibility_flags = ["nodejs_compat"]
+workers_dev = true
+
+[vars]
+DST_NAME = "run-garden-db-staging"
+
+# Production — only ever read.
+[[d1_databases]]
+binding = "SRC"
+database_name = "run-garden-db"
+database_id = "00acb208-8450-4bc0-88da-6b1e75f76280"
+
+# Staging — the only database written.
+[[d1_databases]]
+binding = "DST"
+database_name = "run-garden-db-staging"
+database_id = "c8d38f02-0723-4990-8220-5492a1b29824"
+
+[triggers]
+crons = []

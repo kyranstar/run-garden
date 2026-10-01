@@ -76,18 +76,126 @@ Calendar scopes granted on staging do nothing.
 
 ## Copy and rehearse
 
-Placeholder: Task 13 fills this section (the copier, the rehearsal flow and
-its checks).
+A rehearsal copies production into staging, runs the change there, and
+compares parity hashes before and after. **Each rehearsal needs the owner's
+OK** — the copy reads production. The copy happens inside Cloudflare: a
+temporary copier Worker (`rg-staging-copier`, `apps/worker/wrangler.copier.toml`,
+code in `apps/worker/src/copier/`) is bound to production's D1 as `SRC` (only
+read) and staging's as `DST`. Nothing is exported, downloaded or written to
+disk. If any step fails, stop and ask; never fall back to a local export.
+
+What the copier does:
+
+- Copies every table except `sessions` and `oauth_states`, whole, in
+  primary-key order, in pages (`maxRows`, default 200, at most 500 per call).
+  Provider token columns are written as null.
+- Keeps its progress in staging, so a dropped call or a crash just resumes.
+- Answers with progress, counts and hashes only — never a row.
+- Writes only into a database it has proved is staging: it creates a
+  `staging_sentinel` table in `DST` on the first run, and only if `DST` is
+  completely empty; it refuses if `SRC` has that table (`src_is_staging`), if
+  an unprepared `DST` holds any row (`dst_not_empty`), or if the two bindings
+  are one database (`same_database`). Every call also repeats
+  `?dst=run-garden-db-staging`.
+
+### 1. Before
+
+1. Owner OK for this rehearsal; note the date.
+2. Check out the commit production runs. The copier and staging must have
+   production's schema: the copier selects the columns its code knows.
+3. Staging is empty (first copy, or wiped — see Wipe) and migrated to that
+   schema: `pnpm --filter @rg/worker migrate:staging`. Do not sign in to an
+   empty staging before the first copy (that writes rows; the copier then
+   refuses with `dst_not_empty`).
+4. Copy between production's cron ticks (`:00`, `:15`, `:30`), e.g. starting
+   a few minutes after `:15` or `:30`: a row production writes mid-copy shows
+   up as a `/verify` mismatch.
+
+### 2. Copy
+
+All in one shell, from `apps/worker`, with Node 22 on PATH:
+
+```sh
+pnpm copier:deploy
+COPIER_KEY="$(openssl rand -base64 32)"     # this shell only; never echoed or saved
+printf %s "$COPIER_KEY" | npx wrangler secret put COPIER_KEY -c wrangler.copier.toml
+URL=https://rg-staging-copier.kyranadams.workers.dev
+Q="dst=run-garden-db-staging"
+copier() { curl -s -X POST -H "x-copier-key: $COPIER_KEY" "$URL/$1?$Q${2:+&$2}"; echo; }
+
+# Step until finished; stop on any error.
+while :; do
+  out="$(copier step)"; echo "$out"
+  case "$out" in *'"finished":true'*) break ;; '' | *'"error"'*) break ;; esac
+done
+
+copier verify          # {"ok":true,...} — every table's src/dst hash and row count
+copier scrub           # {"ok":true,"remaining":{"secrets":0,"sessions":0,"oauthStates":0}}
+pnpm copier:delete
+unset COPIER_KEY URL Q
+```
+
+- `/verify` not ok: production wrote to those tables during the copy. Copy
+  again in a quiet window with `copier step restart=1` (empties staging's
+  copied tables, then starts over) and the loop above; `copier verify
+  tables=a,b` checks just those tables.
+- `/scrub` leaves staging with no usable provider connection (tokens null;
+  staging also has its own `TOKEN_ENCRYPTION_KEY`) and no sessions.
+- Delete the copier the same session, even after a failure. Check:
+  `curl -s -o /dev/null -w '%{http_code}\n' -X POST "$URL/step"` no longer
+  answers 401.
+
+### 3. Rehearse
+
+1. `pnpm build:web && pnpm --filter @rg/worker deploy:staging` (same commit),
+   sign in to staging.
+2. Record "before" parity from the browser console on staging (same origin,
+   signed in):
+
+   ```js
+   const j = (p, b) => fetch(p, b && { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(b) }).then((r) => r.json());
+   const dto = (...ps) => j("/api/admin/parity/dto?" + ps.map((p) => "paths=" + encodeURIComponent(p)).join("&"));
+   await j("/api/admin/parity/tables");
+   await j("/api/admin/parity/garden", { resim: false });
+   await j("/api/admin/parity/garden", { resim: true });
+   await j("/api/admin/parity/calendar");
+   await j("/api/admin/parity/jobs?since=2026-01-01");
+   await dto("/api/plan/today", "/api/plan/week?week=<monday>", "/api/garden", "/api/coach/state", "/api/insights?discipline=run");
+   ```
+
+   Answers are hashes, counts and dates only — safe to keep in rehearsal
+   notes. `resim: true` replays the garden from genesis through the ordinary
+   path; on a long garden it can run out of D1 queries in one request — then
+   pass `{ resim: true, from: "<date>" }` (replays from the checkpoint before
+   that day).
+3. Check out the change, `pnpm --filter @rg/worker migrate:staging`, build and
+   deploy staging, record "after" the same way, and compare. Differences
+   should be exactly the ones the change intends.
+
+The parity endpoints answer 404 everywhere except staging, or a deployment
+with the var `PARITY_ENABLED = "1"` (production, for a rehearsal only — then
+remove it). Production can hash but never resimulate (`resim: true` → 409).
+
+### 4. After
+
+- Owner OK, then wipe staging (below) the same day.
+- Staging holds a copy of real data until then: the production-data rules
+  apply to it in full.
 
 ## Wipe
 
-Delete the rows, keep the schema, then re-apply migrations if the schema
-changed:
+Delete the rows, keep the schema (and `d1_migrations`), then re-apply
+migrations if the schema changed. List the tables first — the query returns
+table names only — and paste its output into the second command:
 
 ```sh
-npx wrangler d1 execute run-garden-db-staging --remote --env staging --command "<DELETE statements per table>"
+npx wrangler d1 execute run-garden-db-staging --remote --env staging --command "SELECT 'DELETE FROM ' || name || ';' FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%' AND name NOT LIKE '_cf_%' AND name <> 'd1_migrations'"
+npx wrangler d1 execute run-garden-db-staging --remote --env staging --command "<the DELETE statements printed above>"
 pnpm migrate:staging
 ```
+
+`staging_sentinel` is emptied but kept: staging stays recognisable as staging
+for the next copy.
 
 To start from nothing, `npx wrangler d1 delete run-garden-db-staging`, then
 create again (above).
