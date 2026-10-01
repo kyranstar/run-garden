@@ -6,3 +6,6 @@ export * from "./product.js";
 export * from "./ops.js";
 export * from "./studio.js";
 export * from "./coach.js";
+export * from "./programs.js";
+export * from "./performed.js";
+export * from "./exercise-settings.js";

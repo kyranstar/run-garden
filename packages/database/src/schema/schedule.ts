@@ -84,6 +84,20 @@ export const plannedWorkouts = sqliteTable(
     archivedAt: text("archived_at"),
     /** Why archivedAt is set: absence_confirmed | user_removed | duplicate_mirror. */
     archiveReason: text("archive_reason"),
+    /**
+     * Sessions the app builds itself (migration 0025; one-workout-system spec
+     * §8.2). All three are null on every row written before Phase 2, and null
+     * keeps today's meaning.
+     *
+     * `origin`: program | on_demand (coros | coach | studio backfilled in
+     * Phase 5); null = inferred from which table `planId` lives in.
+     */
+    origin: text("origin"),
+    /** outline → built → started → done; null for rows with fixed content. */
+    contentState: text("content_state"),
+    /** Minutes, focus, location, mode, theme, equipment exclusions, and the
+     * day's overrides and swaps. */
+    sessionParams: text("session_params", { mode: "json" }).$type<Record<string, unknown> | null>(),
     createdAt: text("created_at").notNull(),
     updatedAt: text("updated_at").notNull(),
   },

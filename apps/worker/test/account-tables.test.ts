@@ -93,7 +93,31 @@ describe("ACCOUNT_TABLES — classification", () => {
       studio_plan_pushes: "studio_plans.plan_id",
       coach_plan_weeks: "coach_plans.plan_id",
       coros_write_attempts: "coros_write_jobs.job_id",
+      program_versions: "programs.program_id",
+      program_blocks: "programs.program_id",
+      performed_sets: "performed_sessions.performed_session_id",
     });
+  });
+
+  it("registers the one-workout-system tables (migrations 0024–0027) as account data", () => {
+    const userScoped = [
+      "programs",
+      "session_builds",
+      "performed_sessions",
+      "condition_checks",
+      "user_conditions",
+      "locations",
+      "exercise_prefs",
+      "exercise_provenance",
+    ];
+    for (const name of userScoped) expect(accountTable(name).scope.kind, name).toBe("user");
+    for (const name of ["program_versions", "program_blocks", "performed_sets"]) {
+      expect(accountTable(name).scope.kind, name).toBe("child");
+    }
+    // planned_workouts' three new columns travel with it (export, restore, copy).
+    expect(sqlColumnNames(accountTable("planned_workouts").table)).toEqual(
+      expect.arrayContaining(["origin", "content_state", "session_params"]),
+    );
   });
 
   it("marks users as identity and keeps auth, catalogs and versioning out of any account", () => {
@@ -141,6 +165,7 @@ const NOT_SECRETS: Record<string, string> = {
   "llm_usage.output_tokens": "a count of model tokens",
   "coach_reads.claim_token": "a single-flight lock token, meaningless outside the claim",
   "coach_locks.token": "a single-flight lock token (and the table is not exported)",
+  "exercise_provenance.source_key": "the import's dedupe key for a saved source (its own id for that move)",
 };
 
 describe("secret columns (finding 13)", () => {
