@@ -195,5 +195,13 @@ export function adminRoutes(dispatch: AppDispatch): Hono<AppContext> {
     return c.json(out);
   });
 
+  // The kind only, as the copier does (Audit 2 M6): Hono's default handler
+  // logs the whole error, and an error's text can quote the data it failed
+  // on (V8's JSON errors quote their input).
+  routes.onError((e, c) => {
+    console.error(`parity failed: ${e.name}`);
+    return c.json({ error: "parity_failed", kind: e.name }, 500);
+  });
+
   return routes;
 }

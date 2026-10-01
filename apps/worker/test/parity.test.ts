@@ -568,6 +568,32 @@ describe("/api/admin/parity routes", () => {
     // And the job counts did come through.
     expect(text).toContain("move_scheduled_workout:verified");
   });
+
+  it("a failure logs and answers the error's kind only — never its message (Audit 2 M6)", async () => {
+    const db = makeTestDb();
+    const { userId } = await makeTestUser(db);
+    const token = await createSession(db, userId, "test");
+    // V8's JSON errors quote their input: the message can carry data.
+    const quoting = new SyntaxError('Unexpected token in JSON at position 2: "athlete-private-note"');
+    const app = mountRoutes(
+      db,
+      "/api/admin",
+      adminRoutes(() => {
+        throw quoting;
+      }),
+    );
+    const logged = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    const res = await app.request(
+      "/api/admin/parity/dto?paths=/api/plan/today",
+      { headers: { Cookie: `${SESSION_COOKIE}=${token}` } },
+      makeEnv({ STAGING: "1" }),
+    );
+    const calls = logged.mock.calls;
+    logged.mockRestore();
+    expect(res.status).toBe(500);
+    expect(await res.json()).toEqual({ error: "parity_failed", kind: "SyntaxError" });
+    expect(calls).toEqual([["parity failed: SyntaxError"]]);
+  });
 });
 
 describe("tableHashes reads through the export's own scoping", () => {
