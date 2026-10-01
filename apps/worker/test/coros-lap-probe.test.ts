@@ -302,6 +302,32 @@ describe("GET /api/coros/debug/lap-keys", () => {
     expect(server.counts.login).toBe(loginsBefore);
   });
 
+  it("a lap keyed `constructor` is probed, not reported as a COROS error (Audit 2 E2E M7)", async () => {
+    const { db, userId, prefs, server, get } = await setup();
+    await connect(db, userId, server);
+    const { details } = seedActivities(server, todayInZone(prefs.timezone));
+    const lap = details["lbl-strength-recent-4417"]!.lapList![0] as Record<string, unknown>;
+    lap.lapItemList = [JSON.parse('{"constructor":{"a":1},"__proto__":{"b":2}}'), { constructor: "x" }];
+    const res = await get("/api/coros/debug/lap-keys?days=30");
+    expect(res.status).toBe(200);
+  });
+
+  it("our own subrequest ceiling is a runtime_limit, never a COROS error or a failed detail (Audit 2 E2E M7)", async () => {
+    const { db, userId, prefs, server, get } = await setup();
+    await connect(db, userId, server);
+    seedActivities(server, todayInZone(prefs.timezone));
+    for (const failing of ["/activity/detail/query", "/activity/query"]) {
+      vi.stubGlobal("fetch", (async (input: RequestInfo | URL, init?: RequestInit) => {
+        const url = new URL(typeof input === "string" ? input : input instanceof URL ? input.href : input.url);
+        if (url.pathname === failing) throw new Error("Too many subrequests.");
+        return server.fetchImpl(input, init);
+      }) as typeof fetch);
+      const res = await get("/api/coros/debug/lap-keys?days=30");
+      expect(res.status, failing).toBe(503);
+      expect(await res.json()).toEqual({ error: "runtime_limit" });
+    }
+  });
+
   it("requires a signed-in user", async () => {
     const db = makeTestDb();
     const app = mountRoutes(db, "/api/coros", corosRoutes);
@@ -359,6 +385,41 @@ describe("keySkeleton", () => {
     expect(text).not.toContain("k".repeat(80));
     expect(skeleton.ok).toBe("number");
     expect(skeleton["(masked key)"]).toEqual({ hr: "number", "(type)": "number|object" });
+  });
+
+  it("passes only plain camelCase field names with at most two digits; every other key is masked (Audit 2 E2E M6)", () => {
+    const data = [
+      "Kyran Adams",
+      "runner@example.com",
+      "123",
+      "555-123-987",
+      "e5c4a1b2d3f6",
+      "37.774,-122.419",
+      "06:30",
+      "a1b2c3d4-e5f6",
+      "snake_case",
+      "Capitalised",
+    ];
+    const skeleton = keySkeleton(
+      Object.fromEntries([...data.map((k) => [k, 1]), ["lapItemList", "x"], ["hrZone2Time", "y"]]),
+    ) as Record<string, unknown>;
+    const text = JSON.stringify(skeleton);
+    for (const key of data) expect(text, key).not.toContain(key);
+    expect(skeleton).toEqual({ "(masked key)": "number", lapItemList: "string", hrZone2Time: "string" });
+  });
+
+  it("survives keys that name Object.prototype members (Audit 2 E2E M7)", () => {
+    const hostile = JSON.parse('{"constructor":{"a":1},"toString":2,"__proto__":{"x":3},"hasOwnProperty":[1]}');
+    expect(keySkeleton({ lapList: [hostile, hostile] })).toEqual({
+      lapList: "array(2)",
+      "lapList[]": {
+        constructor: { a: "number" },
+        toString: "number",
+        hasOwnProperty: "array(1)",
+        "hasOwnProperty[]": "number",
+        "(masked key)": { x: "number" },
+      },
+    });
   });
 
   it("stops descending past a depth cap", () => {

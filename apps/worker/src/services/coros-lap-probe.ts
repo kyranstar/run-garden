@@ -4,6 +4,7 @@ import type { RawCorosActivityDetail } from "@rg/providers";
 import { fixtureModeEnabled, type Env } from "../env.js";
 import type { Db } from "./db.js";
 import { corosClient } from "./coros-connection.js";
+import { isRuntimeLimit } from "./runtime-limit.js";
 
 /**
  * THE MASKED LAP PROBE (Task 15): what does COROS actually put in a strength
@@ -13,7 +14,10 @@ import { corosClient } from "./coros-connection.js";
  *
  * It runs on real personal data, so it returns SHAPE ONLY: every key, its type,
  * and array lengths. Not one value — not a number, not a string, not a name.
- * Keys that are themselves data (ids, dates) are masked too.
+ * Keys pass only when they look like a field name (camelCase, at most two
+ * digits — `maskKey`); everything else, data used as a key included, is
+ * masked. A heuristic: a short lowercase word used as a key would still pass.
+ * Array lengths are reported, so counts (reps, sets) are visible by design.
  */
 
 export type KeySkeleton = { [key: string]: KeySkeletonNode };
@@ -30,9 +34,18 @@ const MASKED_KEY = "(masked key)";
 /** Set on a merged object when some elements were not objects. */
 const TYPE_KEY = "(type)";
 
-/** A key that could carry data of its own: digit runs (ids, dates) or very long. */
+/** A COROS field name: camelCase, short, few digits (Audit 2 E2E M6 — an
+ * allowlist; the old denylist passed names, emails, coordinates and ids). */
+const FIELD_NAME = /^[a-z][A-Za-z0-9]{0,40}$/;
+
 function maskKey(key: string): string {
-  return /\d{4,}/.test(key) || key.length > 64 ? MASKED_KEY : key;
+  return FIELD_NAME.test(key) && (key.match(/\d/g)?.length ?? 0) <= 2 ? key : MASKED_KEY;
+}
+
+/** Accumulators without a prototype: a key named `constructor` or
+ * `toString` is just a key (Audit 2 E2E M7). */
+function skeletonObject(...from: KeySkeleton[]): KeySkeleton {
+  return Object.assign(Object.create(null) as KeySkeleton, ...from);
 }
 
 function typeLabel(value: unknown): string {
@@ -70,7 +83,7 @@ function mergeNodes(a: KeySkeletonNode | undefined, b: KeySkeletonNode): KeySkel
   if (a === undefined) return b;
   if (typeof a === "string" && typeof b === "string") return unionTypes(a, b);
   if (typeof a === "object" && typeof b === "object") {
-    const out: KeySkeleton = { ...a };
+    const out = skeletonObject(a);
     for (const [k, v] of Object.entries(b)) out[k] = mergeNodes(out[k], v);
     return out;
   }
@@ -79,13 +92,13 @@ function mergeNodes(a: KeySkeletonNode | undefined, b: KeySkeletonNode): KeySkel
   const obj = (typeof a === "object" ? a : b) as KeySkeleton;
   const other = (typeof a === "string" ? a : b) as string;
   const prior = typeof obj[TYPE_KEY] === "string" ? (obj[TYPE_KEY] as string) : "object";
-  return { ...obj, [TYPE_KEY]: unionTypes(prior, other) };
+  return skeletonObject(obj, { [TYPE_KEY]: unionTypes(prior, other) });
 }
 
 function nodeOf(value: unknown, depth: number): KeySkeletonNode {
   if (value === null || typeof value !== "object" || Array.isArray(value)) return typeLabel(value);
   if (depth >= MAX_DEPTH) return "object";
-  const out: KeySkeleton = {};
+  const out = skeletonObject();
   for (const [rawKey, v] of Object.entries(value as Record<string, unknown>)) {
     const key = maskKey(rawKey);
     out[key] = mergeNodes(out[key], nodeOf(v, depth + 1));
@@ -110,7 +123,7 @@ export function keySkeleton(value: unknown): KeySkeletonNode {
 
 /** One level only: each top-level key and what kind of thing it holds. */
 function shallowKeys(value: Record<string, unknown>): Record<string, string> {
-  const out: Record<string, string> = {};
+  const out = Object.create(null) as Record<string, string>;
   for (const [rawKey, v] of Object.entries(value)) {
     const label = v !== null && typeof v === "object" && !Array.isArray(v) ? "object" : typeLabel(v);
     const key = maskKey(rawKey);
@@ -123,6 +136,10 @@ export type LapProbeResult =
   | { status: "fixture_mode" }
   | { status: "not_connected" }
   | { status: "coros_error"; code?: string }
+  /** Our own subrequest/CPU ceiling — never COROS's failure (runtime-limit.ts). */
+  | { status: "runtime_limit" }
+  /** The probe's own code failed on what COROS sent. */
+  | { status: "probe_error" }
   | {
       status: "ok";
       body: {
@@ -164,16 +181,21 @@ export async function probeStrengthLapKeys(
         // The same detail call corosReadNow's snapshot makes.
         detail = await client.getActivityDetail(item.labelId, item.sportType);
       } catch (e) {
+        if (isRuntimeLimit(e)) throw e; // the whole run hit our ceiling, not this detail
         activities.push({
           error: "detail_failed",
           ...(e instanceof CorosApiError && e.resultCode ? { code: e.resultCode } : {}),
         });
         continue;
       }
-      activities.push({
-        detailKeys: shallowKeys(detail as Record<string, unknown>),
-        skeleton: keySkeleton({ summary: detail.summary, lapList: detail.lapList }),
-      });
+      try {
+        activities.push({
+          detailKeys: shallowKeys(detail as Record<string, unknown>),
+          skeleton: keySkeleton({ summary: detail.summary, lapList: detail.lapList }),
+        });
+      } catch {
+        return { status: "probe_error" };
+      }
     }
     return {
       status: "ok",
@@ -185,6 +207,7 @@ export async function probeStrengthLapKeys(
       },
     };
   } catch (e) {
+    if (isRuntimeLimit(e)) return { status: "runtime_limit" };
     // Result code only — a CorosApiError message never carries account data,
     // but nothing but the code is needed.
     return { status: "coros_error", ...(e instanceof CorosApiError && e.resultCode ? { code: e.resultCode } : {}) };

@@ -100,6 +100,10 @@ corosRoutes.get("/debug/lap-keys", async (c) => {
       return c.json({ error: "not_connected" }, 409);
     case "coros_error":
       return c.json({ error: "coros_error", ...(result.code ? { code: result.code } : {}) }, 502);
+    case "runtime_limit":
+      return c.json({ error: "runtime_limit" }, 503);
+    case "probe_error":
+      return c.json({ error: "probe_error" }, 500);
     case "ok":
       return c.json(result.body);
   }
