@@ -10,7 +10,7 @@
 
 **Spec:** `docs/superpowers/specs/2026-09-30-phase-1-model-library-engine-design.md` (authority: `docs/superpowers/specs/2026-09-30-one-workout-system-design.md`).
 
-**Port source (read-only, local):** `/Users/kyranadams/src/tmj_tool` — `data/*.js`, `data/exercises/*.js`, `engine/*.js`, `js/recorder.js`, `js/units.js`, `tests/*.test.js`, `tests/fixtures.js`, `tests/load.js`. Never copy `sources` fields, URLs or creator names out of it. Never modify it.
+**Port source (read-only, local):** the standalone tool's local repository (not public) — `data/*.js`, `data/exercises/*.js`, `engine/*.js`, `js/recorder.js`, `js/units.js`, `tests/*.test.js`, `tests/fixtures.js`, `tests/load.js`. Never copy `sources` fields, URLs or creator names out of it. Never modify it.
 
 ## Global Constraints
 
