@@ -38,15 +38,43 @@ const STAMP = "2026-01-01T00:00:00Z";
  * the hourly cron shares its budget with other work. */
 const STEP_BUDGET = 800;
 
-function countingDb(): { db: Db; count: () => number } {
+/** D1 refuses every statement past this many in one invocation. */
+const INVOCATION_LIMIT = 1000;
+
+function countingDb(): {
+  db: Db;
+  count: () => number;
+  /** One Worker invocation: a fresh count, and D1's limit enforced (the
+   * call fails the way D1 fails it). Returns the statements it spent. */
+  invocation: (fn: () => Promise<unknown>) => Promise<{ n: number; error: string | null }>;
+} {
   let n = 0;
-  const db = makeTestDb({ boundVariableCap: 100, onStatement: () => (n += 1) });
+  let limit = Number.POSITIVE_INFINITY;
+  const db = makeTestDb({
+    boundVariableCap: 100,
+    onStatement: () => {
+      n += 1;
+      if (n > limit) throw new Error("Too many API requests by single worker invocation.");
+    },
+  });
   return {
     db,
     count: () => {
       const out = n;
       n = 0;
       return out;
+    },
+    invocation: async (fn) => {
+      n = 0;
+      limit = INVOCATION_LIMIT;
+      try {
+        await fn();
+        return { n, error: null };
+      } catch (e) {
+        return { n, error: String(e) };
+      } finally {
+        limit = Number.POSITIVE_INFINITY;
+      }
     },
   };
 }
@@ -417,6 +445,95 @@ describe("an ingest running at the same time as a catch-up step (N2/N3)", () => 
         expect(got.unlocks, order).toEqual(reference.unlocks);
         expect(got.plants, order).toEqual(reference.plants);
       }
+    }, 240_000);
+  }
+});
+
+describe("a change far behind the catch-up's cursor (NEW-A, ruling B12)", () => {
+  const TZ = "America/Los_Angeles";
+  /** A 400-day garden (a run every third day), exported 200 days ago. */
+  const oldFile = async (db: Db) => {
+    const { userId, prefs } = await makeTestUser(db, { timezone: TZ });
+    const today = todayInZone(TZ);
+    const genesis = addDays(today, -400);
+    for (let d = 3; d < 398; d += 3) await run(db, userId, addDays(genesis, d));
+    await ensureGarden(db, userId, prefs, genesis);
+    await advanceGarden(db, userId, prefs, new Date(`${addDays(today, -200)}T20:00:00Z`));
+    const [state] = await db.select().from(schema.gardenState).where(eq(schema.gardenState.userId, userId));
+    return { userId, prefs, L: state!.lastSimulatedDate };
+  };
+  /** The garden with wall-clock columns, minted unlock ids and the account
+   * id factored out, so two databases compare. */
+  const comparable = async (db: Db, userId: string) => {
+    const d = await gardenDump(db, userId);
+    const strip = <T extends Record<string, unknown>>(rows: T[]) => rows.map(({ createdAt: _c, updatedAt: _u, ...r }) => r);
+    const out = {
+      ...d,
+      events: strip(d.events),
+      inputs: strip(d.inputs),
+      snapshots: strip(d.snapshots),
+      unlocks: d.unlocks.map(({ id: _i, ...u }) => u),
+    };
+    return JSON.parse(JSON.stringify(out).split(userId).join("U")) as typeof out;
+  };
+
+  // The re-review's wedge: 3 reads (cursor L+135) then a run at L+3; and 1
+  // read (cursor L+45) then a change at L−60. Both used to replay uncapped
+  // through the cursor, die on D1's budget, and retry the same replay forever.
+  for (const { reads, offset } of [
+    { reads: 3, offset: 3 },
+    { reads: 1, offset: -60 },
+  ]) {
+    it(`${reads} catch-up read(s), then a run dated L${offset > 0 ? "+" : ""}${offset}: capped steps absorb it and converge on the ordinary garden`, async () => {
+      // Reference: the account never restored — the run ingested and
+      // resimulated the ordinary way, with no budget.
+      const refDb = makeTestDb({ boundVariableCap: 100 });
+      const ref = await oldFile(refDb);
+      await run(refDb, ref.userId, addDays(ref.L, offset), "-late");
+      await resimulateFrom(refDb, ref.userId, addDays(ref.L, offset), ref.prefs);
+      await advanceGarden(refDb, ref.userId, ref.prefs);
+
+      const { db, invocation } = countingDb();
+      const { userId, prefs, L } = await oldFile(db);
+      await restoreAll(db, userId, await exportAll(db, userId));
+      const spent: Array<{ at: string; n: number; error: string | null }> = [];
+      for (let i = 0; i < reads; i += 1) spent.push({ at: `read ${i + 1}`, ...(await invocation(() => advanceGarden(db, userId, prefs))) });
+      const [mid] = await db.select().from(schema.gardenState).where(eq(schema.gardenState.userId, userId));
+      expect(mid!.lastSimulatedDate).toBe(addDays(L, 45 * reads));
+
+      // The run arrives (COROS reconnect, a backfill chunk, a manual match).
+      const late = addDays(L, offset);
+      await run(db, userId, late, "-late");
+      spent.push({ at: "resim", ...(await invocation(() => resimulateFrom(db, userId, late, prefs))) });
+      // Hourly ticks until the catch-up has landed; a dead invocation's lock
+      // is stale by the next one.
+      for (let h = 1; h <= 12; h += 1) {
+        const account = await loadAccountState(db, userId);
+        if (!account?.gardenCatchUpPending && account?.gardenChangedFrom == null) break;
+        await db
+          .update(schema.coachLocks)
+          .set({ claimedAt: new Date(Date.now() - 3_600_000).toISOString() })
+          .where(eq(schema.coachLocks.userId, userId));
+        spent.push({ at: `hour ${h}`, ...(await invocation(() => advanceGarden(db, userId, prefs))) });
+      }
+
+      for (const s of spent) {
+        expect(s.error, s.at).toBeNull();
+        expect(s.n, s.at).toBeLessThan(STEP_BUDGET);
+      }
+      const account = await loadAccountState(db, userId);
+      expect(account?.gardenCatchUpPending).toBe(false);
+      expect(account?.gardenChangedFrom ?? null).toBeNull();
+      const got = await comparable(db, userId);
+      expect(got.events.some((e) => e.date === late && e.kind === "run_completed" && e.workoutId === `w-${late}-late`)).toBe(true);
+      const want = await comparable(refDb, ref.userId);
+      expect(got.state).toEqual(want.state);
+      expect(got.events).toEqual(want.events);
+      expect(got.inputs).toEqual(want.inputs);
+      expect(got.snapshots).toEqual(want.snapshots);
+      expect(got.unlocks).toEqual(want.unlocks);
+      expect(got.plants).toEqual(want.plants);
+      expect(got.wildlife).toEqual(want.wildlife);
     }, 240_000);
   }
 });
