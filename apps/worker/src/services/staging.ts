@@ -3,8 +3,13 @@
  * and this guard makes every outbound fetch except the Google sign-in token
  * exchange throw. A staging Worker holding a copy of real data can therefore
  * never reach COROS, Calendar, the MCP or the LLM gateway.
+ *
+ * The exception is ONE request — a POST to exactly the token URL — not the
+ * OAuth origin (Audit 2 M1): staging shares production's OAuth client, so a
+ * call to `/revoke` on the same origin would disconnect production's
+ * Calendar.
  */
-export const STAGING_ALLOWED_ORIGINS = ["https://oauth2.googleapis.com"] as const;
+export const STAGING_ALLOWED_REQUEST = { method: "POST", url: "https://oauth2.googleapis.com/token" } as const;
 
 export class StagingOutboundBlocked extends Error {
   constructor(origin: string) {
@@ -25,13 +30,19 @@ function resolveUrl(input: RequestInfo | URL): URL | null {
   }
 }
 
-function allowedOrigin(origin: string): boolean {
-  return (STAGING_ALLOWED_ORIGINS as readonly string[]).includes(origin);
+/** The method a fetch call will use: init's, else the Request's, else GET. */
+function methodOf(input: RequestInfo | URL, init?: RequestInit): string {
+  const fromRequest = typeof input === "object" && !(input instanceof URL) ? input.method : undefined;
+  return (init?.method ?? fromRequest ?? "GET").toUpperCase();
 }
 
-export function stagingAllows(url: string): boolean {
+function allowed(u: URL, method: string): boolean {
+  return method === STAGING_ALLOWED_REQUEST.method && u.href === STAGING_ALLOWED_REQUEST.url;
+}
+
+export function stagingAllows(url: string, method = "GET"): boolean {
   const u = resolveUrl(url);
-  return u ? allowedOrigin(u.origin) : true;
+  return u ? allowed(u, method.toUpperCase()) : true;
 }
 
 export function installStagingGuard(): void {
@@ -43,7 +54,7 @@ export function installStagingGuard(): void {
   // fetch invoked as a method.
   globalThis.fetch = ((input: RequestInfo | URL, init?: RequestInit) => {
     const u = resolveUrl(input);
-    if (u && !allowedOrigin(u.origin)) {
+    if (u && !allowed(u, methodOf(input, init))) {
       return Promise.reject(new StagingOutboundBlocked(u.origin));
     }
     return original(input, init);

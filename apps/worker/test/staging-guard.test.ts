@@ -38,12 +38,35 @@ describe("staging guard", () => {
     installStagingGuard();
     installStagingGuard(); // idempotent
     await fetch("https://oauth2.googleapis.com/token", { method: "POST" });
-    expect(spy).toHaveBeenCalledTimes(1);
+    await fetch(new Request("https://oauth2.googleapis.com/token", { method: "POST" }));
+    expect(spy).toHaveBeenCalledTimes(2);
   });
 
-  it("allows exactly the token origin", () => {
-    expect(stagingAllows("https://oauth2.googleapis.com/token")).toBe(true);
-    expect(stagingAllows("https://accounts.google.com/x")).toBe(false);
+  it("blocks everything else on Google's OAuth origin — revoke included (Audit 2 M1)", async () => {
+    const spy = vi.fn(async () => new Response("ok"));
+    globalThis.fetch = spy as unknown as typeof fetch;
+    installStagingGuard();
+    // Staging shares production's OAuth client: a revoke from here would
+    // disconnect production's Calendar.
+    await expect(fetch("https://oauth2.googleapis.com/revoke?token=x", { method: "POST" })).rejects.toBeInstanceOf(
+      StagingOutboundBlocked,
+    );
+    await expect(fetch("https://oauth2.googleapis.com/token")).rejects.toBeInstanceOf(StagingOutboundBlocked);
+    await expect(fetch("https://oauth2.googleapis.com/token?x=1", { method: "POST" })).rejects.toBeInstanceOf(
+      StagingOutboundBlocked,
+    );
+    await expect(
+      fetch(new Request("https://oauth2.googleapis.com/tokeninfo", { method: "POST" })),
+    ).rejects.toBeInstanceOf(StagingOutboundBlocked);
+    expect(spy).not.toHaveBeenCalled();
+  });
+
+  it("allows exactly a POST to the token URL", () => {
+    expect(stagingAllows("https://oauth2.googleapis.com/token", "POST")).toBe(true);
+    expect(stagingAllows("https://oauth2.googleapis.com/token", "post")).toBe(true);
+    expect(stagingAllows("https://oauth2.googleapis.com/token")).toBe(false);
+    expect(stagingAllows("https://oauth2.googleapis.com/revoke", "POST")).toBe(false);
+    expect(stagingAllows("https://accounts.google.com/x", "POST")).toBe(false);
     expect(stagingAllows("https://www.googleapis.com/calendar/v3")).toBe(false);
     expect(stagingAllows("/api/x")).toBe(true);
   });

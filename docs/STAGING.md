@@ -82,9 +82,11 @@ Console before signing in to staging:
 https://run-garden-staging.kyranadams.workers.dev/api/auth/google/callback
 ```
 
-Sign-in needs only `https://oauth2.googleapis.com/token`, the one origin the
-guard allows. Calendar sync, COROS and the LLM are blocked in staging, so
-Calendar scopes granted on staging do nothing.
+Sign-in needs only a POST to `https://oauth2.googleapis.com/token`, the one
+request the guard allows — that exact URL and method, not the whole origin:
+staging shares production's OAuth client, so a `/revoke` from staging would
+disconnect production's Calendar. Calendar sync, COROS and the LLM are
+blocked in staging, so Calendar scopes granted on staging do nothing.
 
 ## Copy and rehearse
 
