@@ -9,6 +9,7 @@ import type {
   LiftingPlan,
   PlanBrief,
   ReadinessVerdict,
+  SessionMode,
   SyncAction,
   UserPreferences,
   WatchCoverageView,
@@ -25,6 +26,7 @@ import type {
   StoredRecord,
   WeeklyTrainingReport,
 } from "@rg/analytics";
+import type { Alternative, BlockId, ExerciseRecord, FormatId, Step, Swaps, Target } from "@rg/session-engine";
 
 /**
  * Typed client for the Run Garden worker API. Same-origin; cookie sessions.
@@ -832,6 +834,120 @@ export interface ProgramPatch {
   status?: "active" | "retired";
 }
 
+// ── Sessions (worker routes: apps/worker/src/routes/sessions.ts; service: services/session-build.ts) ──────────
+
+/** A condition profile's answer before a session: 0–10 (null = no number) and "feeling off". */
+export interface SessionCheckAnswer {
+  pre: number | null;
+  feelingOff: boolean;
+}
+
+/** The day's overrides for a session. */
+export interface SessionOverrides {
+  mode?: SessionMode;
+  /** A theme id. */
+  theme?: string;
+  /** 10–90. */
+  minutes?: number;
+  locationId?: string;
+}
+
+/**
+ * `POST /api/sessions/:workoutId/build`. Checks are recorded as the slot's pre-checks. Overrides and swaps left
+ * out keep the day's stored ones; new overrides drop the swaps. Each swap records the slot's original move as
+ * `from` (keyed by slot key).
+ */
+export interface BuildSessionRequest {
+  checks?: Record<string, SessionCheckAnswer>;
+  overrides?: SessionOverrides;
+  swaps?: Swaps;
+}
+
+/** One slot of a built plan. */
+export interface SessionItemDto {
+  slotKey: string;
+  block: BlockId;
+  exerciseId: string;
+  format: FormatId;
+  sets: number;
+  group: string | null;
+  coreFamily: string | null;
+  isNew: boolean;
+  why: string[];
+}
+
+/** A library record as the sheet and player need it, offline. */
+export type SessionExerciseDto = Omit<ExerciseRecord, "providers">;
+
+/** Exact shape of a session's build (programme spec §7.3). */
+export interface SessionBuildDto {
+  /** What a performed session names as its build. */
+  buildId: string;
+  /** 0 = a preview of a day ahead (never lockable); 1, 2, … = the day's builds. */
+  version: number;
+  engineVersion: string;
+  inputsHash: string;
+  builtAt: string;
+  date: string;
+  mode: SessionMode;
+  modeReasons: string[];
+  theme: string | null;
+  themeReasons: string[];
+  minutes: number;
+  locationId: string;
+  blockRef: string | null;
+  weekOfBlock: number | null;
+  plannedSeconds: number;
+  steps: Step[];
+  items: SessionItemDto[];
+  /** Every move in the plan and in its alternatives, with its how-to text. */
+  exercises: Record<string, SessionExerciseDto>;
+  /** Per slot key, the moves it can take now (never 👎-rated or "not for me" ones). Empty = hide ⇄. */
+  alternatives: Record<string, Alternative[]>;
+  targets: Record<string, Target>;
+  newMove: string | null;
+  /** The day's choices this build was made with. */
+  params: { checks: Record<string, SessionCheckAnswer>; overrides: SessionOverrides; swaps: Swaps };
+}
+
+export interface SessionViewDto {
+  mode: SessionMode;
+  proposedMode: SessionMode;
+  modeReasons: string[];
+  theme: { id: string; name: string } | null;
+  proposedTheme: { id: string; name: string } | null;
+  themeReasons: string[];
+  minutes: number;
+  location: { id: string; name: string };
+  block: { number: number; week: number; weeks: number; core: { family: string; name: string | null }[]; events: string[] } | null;
+  /** The exercise id introduced today. */
+  newMove: string | null;
+}
+
+/**
+ * Exact shape of `GET /api/sessions/:workoutId` and of a build or start. Errors: 404 `not_found`; 409
+ * `{error: "not_today", date, today}`, `{error: "locked", session}`, `{error: "not_built"}`; 422 `invalid_build`
+ * or `unknown_profile`.
+ */
+export interface SessionDto {
+  workoutId: string;
+  date: string;
+  contentState: "outline" | "built" | "started" | "done";
+  locked: boolean;
+  /** The slot's day's checks per profile: its own pre-checks, else today's daily check. */
+  checks: Record<string, SessionCheckAnswer>;
+  build: SessionBuildDto | null;
+  view: SessionViewDto | null;
+}
+
+/** A day's condition check (`POST /api/conditions/checks`); null while a restore is replacing the account. */
+export interface ConditionCheckDto {
+  profileId: string;
+  date: string;
+  value: number | null;
+  feelingOff: boolean;
+}
+
 // ── Insights (worker route: apps/worker/src/routes/misc.ts insightRoutes) ──────
 
 /** A weekly narrative row as persisted by `weeklyReviews` — echoed verbatim. */
@@ -1012,6 +1128,14 @@ export const api = {
       method: "PATCH",
       body: JSON.stringify(patch),
     }),
+
+  // ── Sessions (worker routes: apps/worker/src/routes/sessions.ts) ─────────
+  getSession: (workoutId: string) => get<SessionDto>(`/api/sessions/${encodeURIComponent(workoutId)}`),
+  buildSession: (workoutId: string, body: BuildSessionRequest = {}) =>
+    post<SessionDto>(`/api/sessions/${encodeURIComponent(workoutId)}/build`, body),
+  startSession: (workoutId: string) => post<SessionDto>(`/api/sessions/${encodeURIComponent(workoutId)}/start`),
+  recordCheck: (body: { profileId: string; value: number | null; feelingOff?: boolean }) =>
+    post<{ check: ConditionCheckDto | null }>("/api/conditions/checks", body),
 };
 
 // ── Account export / restore (worker: services/account-export.ts, account-restore.ts)

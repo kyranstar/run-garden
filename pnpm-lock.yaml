@@ -161,6 +161,9 @@ importers:
       '@rg/domain':
         specifier: workspace:*
         version: link:../domain
+      '@rg/session-engine':
+        specifier: workspace:*
+        version: link:../session-engine
     devDependencies:
       typescript:
         specifier: ^5.7.3

@@ -11,7 +11,8 @@
   },
   "dependencies": {
     "@rg/analytics": "workspace:*",
-    "@rg/domain": "workspace:*"
+    "@rg/domain": "workspace:*",
+    "@rg/session-engine": "workspace:*"
   },
   "devDependencies": {
     "typescript": "^5.7.3"
