@@ -26,7 +26,7 @@ import { test, expect, type APIRequestContext } from "@playwright/test";
  *   node apps/web/e2e/coach-guardrail-replay-model.mjs                # :8898
  *   cd apps/worker && npx wrangler dev --port 8844 \
  *     --var FIXTURE_MODE:1 --var APP_URL:http://localhost:5244 \
- *     --var AI_GATEWAY_BASE_URL:http://127.0.0.1:8898 --var AI_GATEWAY_API_KEY:stub
+ *     --var FIXTURE_MODEL_URL:http://127.0.0.1:8898 --var AI_GATEWAY_API_KEY:stub
  *   RG_API_PORT=8844 RG_WEB_PORT=5244 pnpm --filter @rg/web dev        # :5244
  *   RG_BASE=http://localhost:5244 RG_MODEL_STUB=1 \
  *     pnpm --filter @rg/web exec playwright test e2e/coach-guardrail-replay.spec.ts

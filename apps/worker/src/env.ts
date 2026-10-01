@@ -23,8 +23,12 @@ export interface Env {
   AI_GATEWAY_API_KEY?: string;
   /** Model slug behind the gateway; defaults to anthropic/claude-haiku-4.5. Var. */
   AI_GATEWAY_MODEL?: string;
-  /** Override the gateway base URL if needed. Var. */
+  /** Override the gateway base URL if needed. Var. Ignored in fixture mode. */
   AI_GATEWAY_BASE_URL?: string;
+  /** Fixture mode only: a recorded-model server on loopback (the coach replay
+   * specs'). The one model a fixture-mode wake may call; without it, or when
+   * it is not loopback, the wake answers with a canned reply. Var. */
+  FIXTURE_MODEL_URL?: string;
   /** Plan Studio strong-tier model (full generate/major-revise); defaults to anthropic/claude-opus-5. Var. */
   AI_STUDIO_MODEL_STRONG?: string;
   /** Plan Studio cheap-tier model (minor edits); defaults to anthropic/claude-haiku-4.5. Var. */

@@ -39,8 +39,12 @@ cd "$ROOT/apps/worker"
 npx wrangler d1 migrations apply run-garden-db --local --persist-to "$STATE" >"$STATE/migrate.log" 2>&1 \
   || { cat "$STATE/migrate.log"; exit 1; }
 
+# No LLM, whatever .dev.vars holds (Ruling C2): fixture mode's coach wake
+# answers with a canned reply, and any other gateway call goes to a dead
+# local port instead of the real gateway.
 npx wrangler dev --port "$API_PORT" --persist-to "$STATE" \
-  --var FIXTURE_MODE:1 --var AI_DEFAULT_ENABLED:0 --var "APP_URL:http://localhost:$WEB_PORT" >"$STATE/worker.log" 2>&1 &
+  --var FIXTURE_MODE:1 --var AI_DEFAULT_ENABLED:0 --var AI_GATEWAY_BASE_URL:http://127.0.0.1:9 \
+  --var "APP_URL:http://localhost:$WEB_PORT" >"$STATE/worker.log" 2>&1 &
 echo $! >>"$PIDS"
 
 cd "$ROOT"
