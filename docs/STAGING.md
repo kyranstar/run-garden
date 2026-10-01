@@ -167,19 +167,31 @@ unset COPIER_KEY URL Q
    ```js
    const j = (p, b) => fetch(p, b && { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(b) }).then((r) => r.json());
    const dto = (...ps) => j("/api/admin/parity/dto?" + ps.map((p) => "paths=" + encodeURIComponent(p)).join("&"));
-   await j("/api/admin/parity/tables");
    await j("/api/admin/parity/garden", { resim: false });
    await j("/api/admin/parity/garden", { resim: true });
+   await dto("/api/plan/today", "/api/plan/week?week=<monday>", "/api/garden", "/api/coach/state", "/api/insights?discipline=run");
+   await j("/api/admin/parity/tables");
    await j("/api/admin/parity/calendar");
    await j("/api/admin/parity/jobs?since=2026-01-01");
-   await dto("/api/plan/today", "/api/plan/week?week=<monday>", "/api/garden", "/api/coach/state", "/api/insights?discipline=run");
    ```
 
    Answers are hashes, counts and dates only — safe to keep in rehearsal
-   notes. `resim: true` replays the garden from genesis through the ordinary
-   path; on a long garden it can run out of D1 queries in one request — then
-   pass `{ resim: true, from: "<date>" }` (replays from the checkpoint before
-   that day).
+   notes. `resim: false` hashes the garden as found; `resim: true` replays it
+   from genesis through the ordinary path (on a long garden it can run out of
+   D1 queries in one request — then pass `{ resim: true, from: "<date>" }`,
+   which replays from the checkpoint before that day).
+
+   The order is load-bearing. The replay and the DTO reads write, as the app
+   does when it opens (the replay rewrites the derived garden tables; GET
+   `/api/garden` advances the garden and fills missing collection rows; GET
+   `/api/coach/state` sweeps proposals). Both run before the table hashes, so
+   "before" and "after" each hash a garden replayed by the code under test.
+   Write stamps those writes leave (`PARITY_VOLATILE_COLUMNS` in
+   `services/parity.ts`, `VOLATILE_DTO_KEYS` in `routes/admin.ts`) are not
+   hashed, so two recordings with no code change between them are identical
+   (tested). Record "before" and "after" on the same local day, and do not
+   use the app in between: a new day advances the garden, and that is a real
+   difference.
 3. Check out the change, `pnpm --filter @rg/worker migrate:staging`, build and
    deploy staging, record "after" the same way, and compare. Differences
    should be exactly the ones the change intends.

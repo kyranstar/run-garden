@@ -41,6 +41,41 @@ const DTO_ROUTES: ReadonlyArray<{ path: string; params: Readonly<Record<string, 
   { path: "/api/insights", params: { discipline: /^(run|strength|yoga)$/ } },
 ];
 
+/**
+ * Write stamps a DTO carries that a garden replay rewrites without changing
+ * anything the screen shows: the stored garden events' `createdAt`. They
+ * are dropped before hashing (Audit 2 I1), by exact key path ("*" = every
+ * item of an array), so the runbook's two recordings of one unchanged
+ * garden agree. Only write stamps belong here, never content.
+ */
+export const VOLATILE_DTO_KEYS: Readonly<Record<string, ReadonlyArray<readonly string[]>>> = {
+  "/api/garden": [["events", "*", "createdAt"]],
+  "/api/plan/today": [["garden", "recentEvents", "*", "createdAt"]],
+};
+
+/** `body` without the keys at `paths` (mutates it; returns it). */
+export function dropVolatile(body: unknown, paths: ReadonlyArray<readonly string[]>): unknown {
+  const drop = (node: unknown, path: readonly string[]): void => {
+    if (node === null || typeof node !== "object" || path.length === 0) return;
+    const [head, ...rest] = path as [string, ...string[]];
+    if (head === "*") {
+      if (Array.isArray(node)) for (const item of node) drop(item, rest);
+      return;
+    }
+    if (Array.isArray(node)) return;
+    const obj = node as Record<string, unknown>;
+    if (rest.length === 0) delete obj[head];
+    else drop(obj[head], rest);
+  };
+  for (const path of paths) drop(body, path);
+  return body;
+}
+
+/** The sha-256 the DTO hash reports for a response body from `pathname`. */
+export async function dtoDigest(pathname: string, body: unknown): Promise<string> {
+  return sha256Hex(canonicalJson(dropVolatile(body, VOLATILE_DTO_KEYS[pathname] ?? [])));
+}
+
 /** At most this many DTOs per call (each is a full handler run). */
 const MAX_DTO_PATHS = 16;
 
@@ -127,7 +162,8 @@ export function adminRoutes(dispatch: AppDispatch): Hono<AppContext> {
    * `?paths=<encoded path>` (repeatable, or comma-separated): each allowlisted
    * DTO is fetched from the app itself, in-process, as the caller — their own
    * session cookie and nothing else — and answered as its status and the
-   * sha-256 of its canonical JSON body.
+   * sha-256 of its canonical JSON body, write stamps dropped
+   * (`VOLATILE_DTO_KEYS`).
    */
   routes.get("/parity/dto", async (c) => {
     const requested = (c.req.queries("paths") ?? [])
@@ -154,7 +190,7 @@ export function adminRoutes(dispatch: AppDispatch): Hono<AppContext> {
       } catch {
         /* hashed as text */
       }
-      out[path] = { status: res.status, sha256: await sha256Hex(canonicalJson(body)) };
+      out[path] = { status: res.status, sha256: await dtoDigest(new URL(path, BASE).pathname, body) };
     }
     return c.json(out);
   });

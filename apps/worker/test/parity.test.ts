@@ -6,6 +6,7 @@
  * token. Every table hash orders rows by primary key and hashes canonical
  * JSON (Ruling R2), through the same helpers the export and the copier use.
  */
+import { readFileSync } from "node:fs";
 import { describe, expect, it, vi } from "vitest";
 import { Hono } from "hono";
 import { and, eq } from "drizzle-orm";
@@ -16,11 +17,18 @@ import type { AppContext } from "../src/auth/middleware.js";
 import { createSession, SESSION_COOKIE } from "../src/auth/sessions.js";
 import { sha256Hex } from "../src/auth/crypto.js";
 import type { Db } from "../src/services/db.js";
-import { ACCOUNT_TABLES, canonicalJson, orderedRows } from "../src/services/account-tables.js";
+import { ACCOUNT_TABLES, canonicalJson, columnKey, orderedRows } from "../src/services/account-tables.js";
 import { patchAccountState } from "../src/services/account-state.js";
 import { advanceGarden, ensureGarden } from "../src/services/garden-sync.js";
-import { calendarHash, gardenHash, jobCounts, ParityRefused, tableHashes } from "../src/services/parity.js";
-import { adminRoutes, allowedDtoPath } from "../src/routes/admin.js";
+import {
+  calendarHash,
+  gardenHash,
+  jobCounts,
+  PARITY_VOLATILE_COLUMNS,
+  ParityRefused,
+  tableHashes,
+} from "../src/services/parity.js";
+import { adminRoutes, allowedDtoPath, dtoDigest, VOLATILE_DTO_KEYS } from "../src/routes/admin.js";
 import { planRoutes } from "../src/routes/plan.js";
 import { gardenRoutes } from "../src/routes/garden.js";
 import { coachRoutes } from "../src/routes/coach.js";
@@ -582,5 +590,139 @@ describe("tableHashes reads through the export's own scoping", () => {
       .from(schema.calendarEventSuppressions)
       .where(and(eq(schema.calendarEventSuppressions.workoutId, theirs)));
     expect(rows).toHaveLength(1);
+  });
+});
+
+describe("the runbook's recording (docs/STAGING.md, Rehearse step 2) is stable", () => {
+  /** The documented recording, call for call and in its documented order. */
+  const RUNBOOK_ORDER = ["garden resim:false", "garden resim:true", "dto", "tables", "calendar", "jobs"];
+
+  type Hashes = Record<string, { sha256: string }>;
+  async function record(db: Db, env: Env, token: string, timezone: string) {
+    const j = async (path: string, body?: unknown) => {
+      const res = await call(db, env, path, { token, method: body === undefined ? "GET" : "POST", body });
+      expect(res.status, path).toBe(200);
+      return res.json();
+    };
+    const monday = startOfIsoWeek(todayInZone(timezone));
+    const paths = ["/api/plan/today", `/api/plan/week?week=${monday}`, "/api/garden", "/api/coach/state", "/api/insights?discipline=run"];
+    const stored = await j("/api/admin/parity/garden", { resim: false });
+    const garden = (await j("/api/admin/parity/garden", { resim: true })) as { snapshot: string };
+    const dto = (await j(`/api/admin/parity/dto?${paths.map((p) => `paths=${encodeURIComponent(p)}`).join("&")}`)) as Hashes;
+    const tables = ((await j("/api/admin/parity/tables")) as { tables: Hashes }).tables;
+    const calendar = await j("/api/admin/parity/calendar");
+    const jobs = await j("/api/admin/parity/jobs?since=2026-01-01");
+    return { stored, garden, dto, tables, calendar, jobs };
+  }
+  const changed = (a: Hashes, b: Hashes): string[] => Object.keys(a).filter((k) => a[k]!.sha256 !== b[k]?.sha256);
+
+  it("is the sequence the runbook documents", () => {
+    const doc = readFileSync(new URL("../../../docs/STAGING.md", import.meta.url), "utf8");
+    const from = doc.indexOf("```js", doc.indexOf('Record "before" parity'));
+    const js = doc.slice(from, doc.indexOf("```", from + 5));
+    const calls = [...js.matchAll(/await (j|dto)\(([^\n]*)\);/g)].map(([, fn, args]) => {
+      if (fn === "dto") return "dto";
+      const what = /parity\/(\w+)/.exec(args!)![1]!;
+      const resim = /resim: (true|false)/.exec(args!);
+      return resim ? `${what} resim:${resim[1]}` : what;
+    });
+    expect(calls).toEqual(RUNBOOK_ORDER);
+  });
+
+  it("twice with no change between: identical table, garden, calendar, job and DTO hashes", async () => {
+    const db = makeTestDb({ boundVariableCap: 100 });
+    const { userId, prefs } = await seedGarden(db);
+    const token = await createSession(db, userId, "test");
+    const env = makeEnv({ STAGING: "1" });
+
+    const before = await record(db, env, token, prefs.timezone);
+    await new Promise((r) => setTimeout(r, 5)); // so every write stamp differs
+    const after = await record(db, env, token, prefs.timezone);
+
+    expect(changed(before.tables, after.tables)).toEqual([]);
+    expect(changed(before.dto, after.dto)).toEqual([]);
+    expect(after).toEqual(before);
+  });
+
+  it("masks only the garden's write stamps: the volatile columns are exactly these, and all are *_at stamps", () => {
+    expect(PARITY_VOLATILE_COLUMNS).toEqual({
+      garden_state: ["updated_at"],
+      garden_events: ["created_at"],
+      garden_snapshots: ["created_at"],
+      garden_day_inputs: ["updated_at"],
+    });
+    for (const [name, cols] of Object.entries(PARITY_VOLATILE_COLUMNS)) {
+      const entry = ACCOUNT_TABLES.find((t) => t.name === name)!;
+      for (const col of cols) {
+        expect(col).toMatch(/^(created|updated)_at$/);
+        expect(() => columnKey(entry.table, col)).not.toThrow();
+      }
+    }
+  });
+
+  it("a write stamp alone leaves the table hash alone; a changed day input changes it", async () => {
+    const db = makeTestDb();
+    const { userId } = await seedGarden(db);
+    const before = await tableHashes(db, userId);
+    await db.update(schema.gardenDayInputs).set({ updatedAt: STAMP }).where(eq(schema.gardenDayInputs.userId, userId));
+    await db.update(schema.gardenEvents).set({ createdAt: STAMP }).where(eq(schema.gardenEvents.userId, userId));
+    await db.update(schema.gardenSnapshots).set({ createdAt: STAMP }).where(eq(schema.gardenSnapshots.userId, userId));
+    await db.update(schema.gardenState).set({ updatedAt: STAMP }).where(eq(schema.gardenState.userId, userId));
+    expect(await tableHashes(db, userId)).toEqual(before);
+
+    const [one] = await orderedRows(db, schema.gardenDayInputs, { userId, limit: 1 });
+    await db
+      .update(schema.gardenDayInputs)
+      .set({ input: { ...(one!.input as Record<string, unknown>), edited: true } })
+      .where(eq(schema.gardenDayInputs.id, String(one!.id)));
+    const after = await tableHashes(db, userId);
+    expect(changed(before, after)).toEqual(["garden_day_inputs"]);
+  });
+
+  it("drops exactly the listed DTO write stamps before hashing — never content", async () => {
+    expect(VOLATILE_DTO_KEYS).toEqual({
+      "/api/garden": [["events", "*", "createdAt"]],
+      "/api/plan/today": [["garden", "recentEvents", "*", "createdAt"]],
+    });
+    const garden = (createdAt: string, detail: string) => ({
+      createdAt: "kept",
+      events: [{ id: "e1", detail, createdAt }, { id: "e2", detail: "d", createdAt }],
+    });
+    const base = await dtoDigest("/api/garden", garden("2026-01-01T00:00:00Z", "a"));
+    expect(await dtoDigest("/api/garden", garden("2026-09-09T09:09:09Z", "a"))).toBe(base);
+    expect(await dtoDigest("/api/garden", garden("2026-01-01T00:00:00Z", "b"))).not.toBe(base);
+    // Only the listed path: a top-level createdAt is content here, and other
+    // DTOs keep every key.
+    expect(await dtoDigest("/api/garden", { ...garden("2026-01-01T00:00:00Z", "a"), createdAt: "other" })).not.toBe(base);
+    const today = (createdAt: string) => ({ garden: { recentEvents: [{ id: "e1", createdAt }] } });
+    expect(await dtoDigest("/api/plan/today", today("x"))).toBe(await dtoDigest("/api/plan/today", today("y")));
+    expect(await dtoDigest("/api/plan/week", today("x"))).not.toBe(await dtoDigest("/api/plan/week", today("y")));
+    expect(await dtoDigest("/api/plan/week", today("x"))).toBe(await sha256Hex(canonicalJson(today("x"))));
+  });
+
+  it("one real change between the two shows up in the tables, the garden and the garden DTOs", async () => {
+    const db = makeTestDb({ boundVariableCap: 100 });
+    const { userId, prefs } = await seedGarden(db);
+    const token = await createSession(db, userId, "test");
+    const env = makeEnv({ STAGING: "1" });
+
+    const before = await record(db, env, token, prefs.timezone);
+    // The session the seed left missed was in fact run.
+    const [missed] = await db
+      .select({ id: schema.plannedWorkouts.id, date: schema.plannedWorkouts.effectiveDate })
+      .from(schema.plannedWorkouts)
+      .where(and(eq(schema.plannedWorkouts.userId, userId), eq(schema.plannedWorkouts.completionState, "missed")));
+    await db
+      .update(schema.plannedWorkouts)
+      .set({ completionState: "completed" })
+      .where(eq(schema.plannedWorkouts.id, missed!.id));
+    await matchActivity(db, userId, missed!.id, missed!.date);
+    const after = await record(db, env, token, prefs.timezone);
+
+    expect(changed(before.tables, after.tables)).toEqual(
+      expect.arrayContaining(["planned_workouts", "activities", "garden_day_inputs"]),
+    );
+    expect(after.garden.snapshot).not.toBe(before.garden.snapshot);
+    expect(changed(before.dto, after.dto)).toEqual(expect.arrayContaining(["/api/garden"]));
   });
 });

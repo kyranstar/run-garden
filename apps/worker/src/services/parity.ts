@@ -33,16 +33,33 @@ export interface TableHash {
 }
 
 /**
+ * Write stamps that a garden walk rewrites without changing what the row
+ * says. A resimulation (the runbook's `resim: true`) re-derives every day
+ * input, event, checkpoint and the state row, stamping each with the moment
+ * it ran — so two recordings of one unchanged garden differed in exactly
+ * these columns (Audit 2 I1). They are hashed as null, as `gardenHash`
+ * already did for events. Only write stamps belong here, never content.
+ */
+export const PARITY_VOLATILE_COLUMNS: Readonly<Record<string, readonly string[]>> = {
+  garden_state: ["updated_at"],
+  garden_events: ["created_at"],
+  garden_snapshots: ["created_at"],
+  garden_day_inputs: ["updated_at"],
+};
+
+/**
  * One hash per table this account owns (every registry table but the
  * excluded ones), over the account's rows in primary-key order. Credential
  * columns are hashed as null: a staging copy never carries them, and a
- * production hash must match a scrubbed copy of the same rows.
+ * production hash must match a scrubbed copy of the same rows. So are the
+ * garden's write stamps (`PARITY_VOLATILE_COLUMNS`).
  */
 export async function tableHashes(db: Db, userId: string): Promise<Record<string, TableHash>> {
   const out: Record<string, TableHash> = {};
   for (const t of ACCOUNT_TABLES) {
     if (t.scope.kind === "excluded") continue;
-    out[t.name] = await hashTable(db, t.table, { userId, mask: secretColumns(t.name) });
+    const mask = [...secretColumns(t.name), ...(PARITY_VOLATILE_COLUMNS[t.name] ?? [])];
+    out[t.name] = await hashTable(db, t.table, { userId, mask });
   }
   return out;
 }
@@ -94,7 +111,7 @@ export async function gardenHash(
     .from(gardenState)
     .where(eq(gardenState.userId, userId))
     .limit(1);
-  const events = await hashTable(db, gardenEvents, { userId, mask: ["created_at"] });
+  const events = await hashTable(db, gardenEvents, { userId, mask: PARITY_VOLATILE_COLUMNS.garden_events });
   return {
     snapshot: await sha256Hex(canonicalJson(state?.snapshot ?? null)),
     events: events.sha256,
