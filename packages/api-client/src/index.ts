@@ -1,4 +1,5 @@
 import type {
+  AdaptiveConfig,
   CorosSyncState,
   CalendarSyncState,
   CompletionState,
@@ -799,6 +800,38 @@ export interface StudioAdoptionUndoResponse {
   };
 }
 
+// ── Programs (worker route: apps/worker/src/routes/programs.ts) ──────────────
+
+/** One core lift of a program's current block. */
+export interface ProgramCoreLiftDto {
+  /** A core family id: squat, hinge, row, press, carry. */
+  family: string;
+  /** Null = no lift for the family yet. */
+  exerciseId: string | null;
+  /** The lift's library name; null with no lift, or one the library no longer has. */
+  name: string | null;
+}
+
+/** Exact shape of each program in `GET /api/programs`, and of `{program}` from POST and PATCH. */
+export interface ProgramDto {
+  id: string;
+  kind: "adaptive";
+  name: string;
+  status: "active" | "retired";
+  config: AdaptiveConfig;
+  /** The latest block; null before the first build starts one. */
+  block: { number: number; week: number; weeks: number; core: ProgramCoreLiftDto[] } | null;
+  /** This ISO week, by where each slot sits now: live slots, the ones done, and the weekly goal. */
+  week: { placed: number; done: number; goal: number };
+}
+
+/** `PATCH /api/programs/:id`: only what is sent changes; `config` keys are merged over the stored config. */
+export interface ProgramPatch {
+  name?: string;
+  config?: Partial<AdaptiveConfig>;
+  status?: "active" | "retired";
+}
+
 // ── Insights (worker route: apps/worker/src/routes/misc.ts insightRoutes) ──────
 
 /** A weekly narrative row as persisted by `weeklyReviews` — echoed verbatim. */
@@ -968,6 +1001,17 @@ export const api = {
   undoSyncNote: (id: string) => post<{ ok: true }>(`/api/sync/notes/${id}/undo`),
   readNow: () => post<ReadNowResponse>("/api/sync/read-now"),
   retrySync: () => post<RetrySyncResponse>("/api/sync/retry"),
+
+  // ── Programs (worker routes: apps/worker/src/routes/programs.ts) ─────────
+  listPrograms: () => get<{ programs: ProgramDto[] }>("/api/programs"),
+  /** Missing config keys take their defaults. 422 `{error, issues}` for an invalid body. */
+  createProgram: (body: { name: string; config: Partial<AdaptiveConfig> }) =>
+    post<{ program: ProgramDto }>("/api/programs", body),
+  updateProgram: (id: string, patch: ProgramPatch) =>
+    request<{ program: ProgramDto }>(`/api/programs/${encodeURIComponent(id)}`, {
+      method: "PATCH",
+      body: JSON.stringify(patch),
+    }),
 };
 
 // ── Account export / restore (worker: services/account-export.ts, account-restore.ts)

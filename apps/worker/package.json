@@ -21,6 +21,7 @@
     "@rg/coros": "workspace:*",
     "@rg/database": "workspace:*",
     "@rg/domain": "workspace:*",
+    "@rg/exercise-library": "workspace:*",
     "@rg/garden-engine": "workspace:*",
     "@rg/providers": "workspace:*",
     "@rg/scheduling": "workspace:*",

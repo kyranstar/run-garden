@@ -90,6 +90,9 @@ importers:
       '@rg/domain':
         specifier: workspace:*
         version: link:../../packages/domain
+      '@rg/exercise-library':
+        specifier: workspace:*
+        version: link:../../packages/exercise-library
       '@rg/garden-engine':
         specifier: workspace:*
         version: link:../../packages/garden-engine
