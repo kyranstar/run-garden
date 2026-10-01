@@ -65,7 +65,11 @@ export interface ProposalCtx {
   today: string;
   /** This profile's check today. */
   reading: CheckReading;
-  /** Sessions on or before today, oldest first. */
+  /**
+   * Sessions on or before today, oldest first. A build may plan from a trimmed history (ruling 2a-R6): only the last
+   * 14 days and the last three sessions are certain to be here, so a rule that reads further back must first be
+   * added to what the session engine's `Hist.trim` keeps.
+   */
   past: readonly HistorySession[];
   last: HistorySession | null;
   /** Past sessions in the trailing 7 days. */

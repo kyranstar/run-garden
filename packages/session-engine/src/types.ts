@@ -50,6 +50,30 @@ export interface Block {
   rotations: readonly Rotation[];
 }
 
+/** One move's all-time facts in a history (see `HistorySummary`), under the raw id the history names it by. */
+export interface MoveSummary {
+  /** The first session that touched it (done or logged), in start order: its start time (else date) and its date. */
+  first: { when: string; date: LocalDate };
+  /** The last date on or before `asOf` it was done or logged; null when only later. */
+  last: LocalDate | null;
+  /** Logged entries on or before `asOf`. */
+  logged: number;
+  /** Of those entries, how many carried each flag. */
+  flags: Readonly<Record<string, number>>;
+}
+
+/**
+ * The all-time facts a build reads that a trimmed history cannot show (ruling 2a-R6): per raw exercise id, when it
+ * was first and last done and how often it was logged and flagged, as of the build's date. A build given a summary
+ * reads `sessions` only for what it reads session by session — `Hist.trim` says which — so a caller can pass the
+ * recent sessions plus a summary (computed in SQL) instead of the whole history, and plan exactly the same session.
+ */
+export interface HistorySummary {
+  /** The build date the summary was taken for. */
+  asOf: LocalDate;
+  moves: Readonly<Record<string, MoveSummary>>;
+}
+
 /** One day's session request. `mode` and `theme` (a theme id) are overrides; the proposal decides otherwise. */
 export interface EngineInput {
   today: LocalDate;
@@ -78,6 +102,8 @@ export interface BuildInput extends Omit<EngineInput, "mode" | "theme" | "prefs"
   savedIds?: readonly string[];
   checks?: Readonly<Record<string, CheckReading>>;
   swaps?: Swaps;
+  /** With a trimmed `sessions` (`Hist.trim`): the all-time facts of the whole history, as of `today`. */
+  summary?: HistorySummary;
 }
 
 export type ProgAction = "start" | "up" | "down" | "hold" | "reps" | "more" | "tempo" | "graduate";

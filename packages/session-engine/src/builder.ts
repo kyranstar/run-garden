@@ -346,7 +346,7 @@ function fillCore(budget: number, ctx: Ctx): { groups: Group[]; spent: number } 
 function makeContext(data: EngineData, input: BuildInput, history?: HistIndex): Ctx {
   const unit = input.unit || "lb";
   const sessions = input.sessions || [];
-  const hist = HistIndex.for(data, sessions, history);
+  const hist = HistIndex.for(data, sessions, history, input.summary);
   // The date, the session's shape and the program (spec §7.2); without a program id, the standalone seed.
   const seed = [input.today, input.mode, input.theme ? input.theme.id : "", input.minutes, input.location.id, ...(input.programId ? [input.programId] : [])].join("|");
   const debt = Coverage.debtIn(hist, input.today);
@@ -647,7 +647,7 @@ const SWAP_SLACK_SECONDS = 60;
  */
 function prepare(data: EngineData, input: BuildInput, _k = 3, history?: HistIndex): Prepared {
   // One history index for the plan and the swap pools (the history is the same; only the plan's own state differs).
-  const hist = HistIndex.for(data, input.sessions || [], history);
+  const hist = HistIndex.for(data, input.sessions || [], history, input.summary);
   const base = buildPlan(data, input, hist);
   const ctx = makeContext(data, input, hist);
   const slots: Record<string, SwapSlot> = {};

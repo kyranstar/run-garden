@@ -18,9 +18,10 @@ export interface CoverageDates {
 // Every session on or before today counts toward when each pattern and region was last trained, and those in the
 // last `days` days toward how often. Worked out per move first (one entry per session and id), then spread over the
 // move's patterns and regions — the same sums, maxima and key order as counting key by key, without the per-key
-// work for every session.
+// work for every session. A trimmed history's summary says when each move was last done.
 function exposuresIn(h: HistIndex, today: string, days = 7): { counts: CoverageMap; last: CoverageDates } {
   return h.memo(`exposures|${today}|${days}`, () => {
+    const summary = h.movesAsOf(today);
     const lastOf = new Map<ExerciseRecord, string>();
     const recentOf = new Map<ExerciseRecord, number>();
     for (const s of h.sessions) {
@@ -30,8 +31,16 @@ function exposuresIn(h: HistIndex, today: string, days = 7): { counts: CoverageM
         const ex = h.get(raw);
         if (!ex) continue;
         const prev = lastOf.get(ex);
-        if (prev === undefined || s.date > prev) lastOf.set(ex, s.date);
+        if (!summary && (prev === undefined || s.date > prev)) lastOf.set(ex, s.date);
         if (recent) recentOf.set(ex, (recentOf.get(ex) ?? 0) + 1);
+      }
+    }
+    if (summary) {
+      for (const [raw, m] of Object.entries(summary)) {
+        const ex = m.last ? h.get(raw) : null;
+        if (!ex) continue;
+        const prev = lastOf.get(ex);
+        if (prev === undefined || m.last! > prev) lastOf.set(ex, m.last!);
       }
     }
     // Maps keep the order moves were first met, so keys go in where counting key by key first met them.

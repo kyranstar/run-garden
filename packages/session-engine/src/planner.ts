@@ -6,7 +6,7 @@ import { HistIndex } from "./hist.js";
 import { Lib } from "./lib.js";
 import { Prog } from "./prog.js";
 import { Proposal } from "./proposal.js";
-import type { Alternative, Block, BuildInput, BuildResult, EngineLocation, Prefs, Swaps } from "./types.js";
+import type { Alternative, Block, BuildInput, BuildResult, EngineLocation, HistorySummary, Prefs, Swaps } from "./types.js";
 
 // Today's session from stored state: the proposal (with the day's overrides), block upkeep, and the built
 // plan. Pure: the program state and the day's state go in; the view and any block change come out, and the
@@ -49,7 +49,10 @@ export interface ProgramState {
   prefs: Prefs;
   savedIds: readonly string[];
   block: Block | null;
+  /** The history, oldest first as stored — or, with `summary`, the sessions `Hist.trim` keeps for today and `block`. */
   sessions: readonly HistorySession[];
+  /** For a trimmed history: `Hist.summarize` of the whole history as of the plan's day (ruling 2a-R6). */
+  summary?: HistorySummary;
 }
 
 export interface PlanTodayInput {
@@ -107,7 +110,7 @@ function context(data: EngineData, input: PlanTodayInput, program: ProgramState)
   const t = dayOf(input.day, today);
   const home = homeOf(program.locations);
   // One index over the history for the block upkeep, the proposal and the build (ruling 2a-R6).
-  const hist = HistIndex.of(data, program.sessions);
+  const hist = HistIndex.of(data, program.sessions, program.summary);
   const ensured = Blocks.ensure(data, program.block, {
     today, equipment: home.equipment, prefs: program.prefs, weeks: program.settings.blockWeeks,
     sessions: program.sessions, kbWeights: Lib.kettlebellsAt(home), unit: program.settings.unit,
@@ -122,6 +125,7 @@ function context(data: EngineData, input: PlanTodayInput, program: ProgramState)
   const buildInput: BuildInput = {
     today, ...(program.programId ? { programId: program.programId } : {}), mode, theme, minutes, location, unit: program.settings.unit,
     sessions: program.sessions, prefs: program.prefs, savedIds: program.savedIds, block: ensured.block, checks: t.checks, swaps: t.swaps,
+    ...(program.summary ? { summary: program.summary } : {}),
   };
   return { t, ensured, proposal, mode, themeProposal, chosen, theme, minutes, location, buildInput, hist };
 }

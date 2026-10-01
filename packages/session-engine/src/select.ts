@@ -59,6 +59,19 @@ function statsIn(h: HistIndex, today: string): Map<string, ExerciseStats> {
       }
       return st;
     };
+    const summary = h.movesAsOf(today);
+    if (summary) {
+      // A trimmed history: the all-time facts from its summary, the last sessions from the sessions.
+      for (const [raw, m] of Object.entries(summary)) {
+        if (m.last === null && !m.logged) continue;
+        const st = get(raw);
+        if (m.last && (!st.lastDate || m.last > st.lastDate)) st.lastDate = m.last;
+        st.logged += m.logged;
+        for (const [flag, n] of Object.entries(m.flags)) st.flags[flag] = (st.flags[flag] || 0) + n;
+      }
+      for (const s of recent) for (const raw of h.idsIn(s)) get(raw).recent += 1;
+      return map;
+    }
     for (const s of ordered) {
       for (const raw of h.idsIn(s)) {
         const st = get(raw);

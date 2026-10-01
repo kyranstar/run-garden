@@ -3,7 +3,7 @@ import { EXERCISES, makeEngineData, type EngineData, type ExerciseRecord } from 
 import { describe, expect, test } from "vitest";
 import {
   Blocks, Builder, Coverage, Hist, Planner, Prog, Proposal, Recorder, Rng, Select,
-  type Block, type DayState, type EngineLocation, type HistorySession, type Mode, type ProgramState,
+  type Block, type DayState, type EngineLocation, type HistorySession, type Mode, type ProgramState, type TodayView,
 } from "../src/index.js";
 import * as Ref from "./reference/index.js";
 import { PLACES } from "./builder-fixtures.js";
@@ -48,7 +48,11 @@ interface Seeded {
   prefs: { ratings: Record<string, number>; excluded: string[]; pinned: string[] };
 }
 
-/** A plausible history: planned sessions logged with variations, imports, retired and renamed ids, odd dates. */
+/**
+ * A plausible history: planned sessions logged with variations, imports, retired and renamed ids, odd dates — in
+ * phases, so the rules that read far back come up: stalls and flares (a block's lift rotating out mid-block on its
+ * log since the block started), runs of imports (no theme; core lifts done but not logged), and breaks.
+ */
 function seededHistory(data: EngineData, renamed: readonly { from: string; to: string }[], seed: string, n: number): Seeded {
   const rng = Rng.create(seed);
   const sessions: HistorySession[] = [];
@@ -59,19 +63,31 @@ function seededHistory(data: EngineData, renamed: readonly { from: string; to: s
     const r = renamed.find(x => x.to === id);
     return r && rng() < 0.5 ? r.from : id;
   };
-  for (let d = 0; sessions.length < n; d++) {
+  let phase: "normal" | "stall" | "flare" | "imports" = "normal";
+  let phaseLeft = 0;
+  let d = 0;
+  while (sessions.length < n) {
+    d += 1;
+    if (phaseLeft <= 0) {
+      const p = rng();
+      phase = p < 0.5 ? "normal" : p < 0.68 ? "stall" : p < 0.82 ? "flare" : "imports";
+      phaseLeft = 3 + Math.floor(rng() * 6);
+      if (rng() < 0.12) d += 14 + Math.floor(rng() * 20);   // a break
+    }
     const today = addDays("2025-11-03", d);
-    const roll = rng();
-    if (roll > 0.62) continue;
+    if (rng() > 0.62) continue;
+    phaseLeft -= 1;
     blocks.push(block);
-    if (roll < 0.06) {
-      // An import (or a watch review): no mode, theme or block; sometimes no start time; ids as the source wrote them.
-      const ids = [...new Set(Array.from({ length: 2 + Math.floor(rng() * 4) }, () => data.exercises[Math.floor(rng() * data.exercises.length)]!.id))];
+    if (phase === "imports" || rng() < 0.05) {
+      // An import (or a watch review): no mode, theme or block; sometimes no start time; ids as the source wrote
+      // them; the block's lifts often done but not logged.
+      const lifts = block ? Object.values(block.core).filter((x): x is string => Boolean(x) && rng() < 0.5) : [];
+      const ids = [...new Set([...lifts, ...Array.from({ length: 2 + Math.floor(rng() * 4) }, () => data.exercises[Math.floor(rng() * data.exercises.length)]!.id)])];
       sessions.push({
         id: `${seed}-imp-${d}`, date: today, startedAt: rng() < 0.4 ? null : `${today}T07:${String(10 + Math.floor(rng() * 40))}:00.000Z`,
         mode: null, theme: null, blockNumber: null, checks: rng() < 0.5 ? {} : { tmj: { pre: Math.floor(rng() * 6), post: null, feelingOff: false } },
         done: [...ids.map(id => ({ id: raw(id), secs: 60 })), ...(rng() < 0.4 ? [{ id: "retired-move", secs: 30 }] : [])],
-        entries: ids.slice(0, 2).map(id => ({
+        entries: ids.slice(lifts.length, lifts.length + 2).map(id => ({
           id: raw(id), implement: null, perSide: false, format: rng() < 0.3 ? "ladder" : null, flags: rng() < 0.2 ? ["clenched"] : [],
           sets: [{ w: rng() < 0.5 ? { v: 20 + 5 * Math.floor(rng() * 4), u: rng() < 0.5 ? "lb" : "kg" } : null, reps: 5 + Math.floor(rng() * 6), secs: null }],
         })),
@@ -99,9 +115,13 @@ function seededHistory(data: EngineData, renamed: readonly { from: string; to: s
       if (step.kind === "timed") Recorder.finishTimed(live, k, rng() < 0.9 ? step.seconds : step.seconds / 3);
       else Recorder.reach(live, k);
     }
+    const core = new Set(plan.items.filter(it => it.block === "core").map(it => it.exercise.id));
     for (const id of live.order) {
-      if (rng() < 0.06) Recorder.setFlag(live, id, "clenched", true);
-      if (rng() < 0.3 && live.entries[id]!.sets[0]?.reps != null) Recorder.update(live, id, 0, "reps", (live.entries[id]!.sets[0]!.reps ?? 0) + (rng() < 0.7 ? 1 : -1));
+      const first = live.entries[id]!.sets[0];
+      if (rng() < (phase === "flare" && core.has(id) ? 0.7 : 0.06)) Recorder.setFlag(live, id, "clenched", true);
+      // A stall: one rep short of the target, every time (no progress).
+      if (phase === "stall" && first?.reps != null) Recorder.update(live, id, 0, "reps", Math.max(1, first.reps - 1));
+      else if (rng() < 0.3 && first?.reps != null) Recorder.update(live, id, 0, "reps", first.reps + (rng() < 0.7 ? 1 : -1));
       if (rng() < 0.05) Recorder.addSet(live, id);
     }
     const saved = Recorder.toSession(live, {
@@ -114,7 +134,10 @@ function seededHistory(data: EngineData, renamed: readonly { from: string; to: s
     };
     sessions.push(session);
     // A second session the same day, now and then.
-    if (rng() < 0.05) sessions.push({ ...session, id: `${session.id}-b`, startedAt: `${today}T20:00:00.000Z`, mode: "recovery", entries: session.entries.slice(0, 1) });
+    if (rng() < 0.05) {
+      blocks.push(block);
+      sessions.push({ ...session, id: `${session.id}-b`, startedAt: `${today}T20:00:00.000Z`, mode: "recovery", entries: session.entries.slice(0, 1) });
+    }
     if (rng() < 0.05 && plan.items[0]) prefs.ratings[plan.items[0].exercise.id] = rng() < 0.6 ? 1 : -1;
     if (rng() < 0.02 && plan.items[1]) prefs.excluded.push(plan.items[1].exercise.id);
   }
@@ -137,6 +160,13 @@ function same(label: string, got: unknown, want: unknown): void {
 
 const MODES: Mode[] = ["recovery", "consistent", "build"];
 
+/** The program with its history trimmed to what a build on `today` reads, plus the summary of the rest (ruling 2a-R6). */
+const trimmedOf = (program: ProgramState, today: string): ProgramState =>
+  ({ ...program, sessions: Hist.trim(program.sessions, today, program.block), summary: Hist.summarize(program.sessions, today) });
+/** A plan without the history it was given (a trimmed history and its summary differ from the whole one by design). */
+const planOnly = (r: { view: TodayView; blockUpdate: unknown }) =>
+  ({ ...r, view: { ...r.view, input: { ...r.view.input, sessions: undefined, summary: undefined } } });
+
 for (const world of WORLDS) {
   describe(`differential vs the frozen engine (${world.name})`, () => {
     const { data, renamed } = world;
@@ -152,12 +182,16 @@ for (const world of WORLDS) {
       expect(all.some(s => all.some(o => o !== s && o.date === s.date))).toBe(true);
       if (renamed.length) expect(all.some(s => s.entries.some(e => renamed.some(r => r.from === e.id)))).toBe(true);
       expect(histories.some(h => h.sessions.length >= 200)).toBe(true);
+      // Long reads come up: a lift rotated out mid-block on its log since the block started, a run of imports.
+      expect(histories.some(h => h.blocks.some(b => b?.rotations.some(r => r.why === "no progress in 3 sessions")))).toBe(true);
+      expect(all.some((s, i) => i >= 3 && all.slice(i - 3, i + 1).every(x => x.theme === null))).toBe(true);
     });
 
     for (const h of histories) {
       test(`${h.seed}: every day's build, its alternatives and graduation offers are byte-identical`, () => {
         const rng = Rng.create(`cases|${world.name}|${h.seed}`);
         let cases = 0;
+        const kept: number[] = [];
         for (let cut = 3; cut <= h.sessions.length; cut += 4 + Math.floor(rng() * 5)) {
           const last = h.sessions[cut - 1]!;
           const today = addDays(last.date, [0, 1, 1, 2, 3, 5, 9, 40][Math.floor(rng() * 8)]!);
@@ -192,6 +226,9 @@ for (const world of WORLDS) {
           const want = Ref.Planner.planToday(data, { today, day }, program);
           const got = Planner.planToday(data, { today, day }, program);
           same(`${label}: planToday`, got, want);
+          const trimmed = trimmedOf(program, today);
+          kept.push(trimmed.sessions.length / Math.max(1, sessions.length));
+          same(`${label}: planToday from a trimmed history`, planOnly(Planner.planToday(data, { today, day }, trimmed)), planOnly(want));
 
           // Swaps taken from the offered alternatives (and one stale one), applied in the order made.
           const slots = Object.entries(want.view.plan.alternatives).filter(([, alts]) => alts.length);
@@ -203,17 +240,26 @@ for (const world of WORLDS) {
             }
             if (rng() < 0.3) swaps["prep:0"] = { from: "not-in-the-slot", to: data.exercises[0]!.id };
             const swapped: DayState = { ...day, swaps };
-            same(`${label}: planToday with swaps`, Planner.planToday(data, { today, day: swapped }, program), Ref.Planner.planToday(data, { today, day: swapped }, program));
+            const wantSwapped = Ref.Planner.planToday(data, { today, day: swapped }, program);
+            same(`${label}: planToday with swaps`, Planner.planToday(data, { today, day: swapped }, program), wantSwapped);
+            same(`${label}: planToday with swaps, trimmed`, planOnly(Planner.planToday(data, { today, day: swapped }, trimmed)), planOnly(wantSwapped));
             const slotKey = slots[Math.floor(rng() * slots.length)]![0];
-            same(`${label}: alternatives(${slotKey})`, Planner.alternatives(data, { today, day: swapped }, program, slotKey, 5), Ref.Planner.alternatives(data, { today, day: swapped }, program, slotKey, 5));
+            const wantAlts = Ref.Planner.alternatives(data, { today, day: swapped }, program, slotKey, 5);
+            same(`${label}: alternatives(${slotKey})`, Planner.alternatives(data, { today, day: swapped }, program, slotKey, 5), wantAlts);
+            same(`${label}: alternatives(${slotKey}), trimmed`, Planner.alternatives(data, { today, day: swapped }, trimmed, slotKey, 5), wantAlts);
           }
           const performed = h.sessions[cut];
           if (performed && program.block) {
-            same(`${label}: graduationOffers`, Planner.graduationOffers(data, program, performed), Ref.Planner.graduationOffers(data, program, performed));
+            const wantOffers = Ref.Planner.graduationOffers(data, program, performed);
+            same(`${label}: graduationOffers`, Planner.graduationOffers(data, program, performed), wantOffers);
+            same(`${label}: graduationOffers, trimmed`, Planner.graduationOffers(data, trimmed, performed), wantOffers);
           }
           cases += 1;
         }
         expect(cases).toBeGreaterThanOrEqual(12);
+        // Trimming is worth it on a long history, even this one, which logs moves from the whole library under two ids each
+        // (each move's two newest entries keep their sessions): the bench's history keeps about a quarter.
+        if (h.sessions.length >= 200) expect(Math.min(...kept.slice(-3))).toBeLessThan(0.7);
       });
 
       test(`${h.seed}: the history helpers each module reads answer identically`, () => {
