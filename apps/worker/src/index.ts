@@ -22,6 +22,7 @@ import { studioRoutes } from "./routes/studio.js";
 import { coachRoutes, sweepUserProposals } from "./routes/coach.js";
 import { corosRoutes } from "./routes/coros.js";
 import { syncRoutes } from "./routes/sync.js";
+import { adminRoutes } from "./routes/admin.js";
 import { makeDb, chunkIds, type Db } from "./services/db.js";
 import { loadPreferences, syncCalendar } from "./services/calendar-sync.js";
 import { advanceGarden } from "./services/garden-sync.js";
@@ -74,6 +75,9 @@ app.route("/api/insights", insightRoutes);
 app.route("/api/settings", settingsRoutes);
 app.route("/api/studio", studioRoutes);
 app.route("/api/sync", syncRoutes);
+// The parity harness: 404 unless staging or PARITY_ENABLED, then requireUser.
+// Its DTO hash calls this same app in-process, as the caller.
+app.route("/api/admin", adminRoutes((req, env, ctx) => app.fetch(req, env, ctx)));
 
 app.get("/api/health", (c) => c.json({ ok: true, fixtureMode: fixtureModeEnabled(c.env), staging: stagingEnabled(c.env) }));
 

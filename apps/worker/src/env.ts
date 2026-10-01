@@ -7,6 +7,9 @@ export interface Env {
   AI_DEFAULT_ENABLED: string;
   /** "1" on the staging Worker: no crons, outbound fetch guarded. Var. */
   STAGING?: string;
+  /** "1" turns on the hash-only parity endpoints (/api/admin/parity/*)
+   * outside staging. Var; unset in production unless a rehearsal needs it. */
+  PARITY_ENABLED?: string;
 
   // Secrets
   SESSION_SECRET: string;

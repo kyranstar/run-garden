@@ -382,10 +382,56 @@ export function canonicalJson(value: unknown): string {
   }
 }
 
+async function sha256OfText(text: string): Promise<string> {
+  const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(text));
+  return [...new Uint8Array(digest)].map((b) => b.toString(16).padStart(2, "0")).join("");
+}
+
 /** sha-256 (hex) of the canonical JSON of `rows`, in the order given — order
  * them with `orderedRows` first. */
 export async function hashRows(rows: readonly unknown[]): Promise<string> {
-  const bytes = new TextEncoder().encode(canonicalJson(rows));
-  const digest = await crypto.subtle.digest("SHA-256", bytes);
-  return [...new Uint8Array(digest)].map((b) => b.toString(16).padStart(2, "0")).join("");
+  return sha256OfText(canonicalJson(rows));
+}
+
+/** Rows one `hashTable` read asks for at a time. */
+export const HASH_PAGE_SIZE = 500;
+
+/**
+ * The digest `hashRows(await orderedRows(db, table, { userId }))` would give,
+ * read in keyset pages so a large table never sits in memory as row objects
+ * all at once (the parity harness and the copier's verify hash whole tables
+ * inside one Worker invocation). `mask` names SQL columns hashed as null —
+ * secrets, which a copy never carries, and volatile stamps. A table with no
+ * single-column key (coach_locks) is read in one query.
+ */
+export async function hashTable(
+  db: Db,
+  table: SQLiteTable,
+  opts: { userId?: string; mask?: readonly string[]; pageSize?: number } = {},
+): Promise<{ rows: number; sha256: string }> {
+  const maskKeys = (opts.mask ?? []).map((col) => columnKey(table, col));
+  const parts: string[] = [];
+  const add = (rows: Record<string, unknown>[]): void => {
+    for (const row of rows) {
+      for (const key of maskKeys) row[key] = null;
+      parts.push(canonicalJson(row));
+    }
+  };
+  const pk = getTableConfig(table).columns.filter((c) => c.primary);
+  if (pk.length !== 1) {
+    add(await orderedRows(db, table, { userId: opts.userId }));
+  } else {
+    const size = Math.max(1, Math.floor(opts.pageSize ?? HASH_PAGE_SIZE));
+    const key = columnKey(table, pk[0]!.name);
+    let after: string | number | undefined;
+    for (;;) {
+      const page = await orderedRows(db, table, { userId: opts.userId, after, limit: size });
+      add(page);
+      if (page.length < size) break;
+      after = page[page.length - 1]![key] as string | number;
+    }
+  }
+  // canonicalJson of an array is exactly "[" + its items' canonical JSON
+  // joined by "," + "]", so this equals hashRows over the same rows.
+  return { rows: parts.length, sha256: await sha256OfText(`[${parts.join(",")}]`) };
 }

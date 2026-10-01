@@ -20,6 +20,7 @@ import {
   accountTable,
   canonicalJson,
   hashRows,
+  hashTable,
   orderedRows,
   secretColumns,
 } from "../src/services/account-tables.js";
@@ -265,5 +266,42 @@ describe("hashRows / canonicalJson", () => {
     const two = { id: "2", v: 2 };
     expect(await hashRows([one, two])).not.toBe(await hashRows([two, one]));
     expect(await hashRows([one])).not.toBe(await hashRows([{ ...one, v: 1.5 }]));
+  });
+});
+
+describe("hashTable — paged, equal to hashRows over orderedRows (Ruling R2)", () => {
+  it("gives the one-read digest whatever the page size, scoped or whole-table", async () => {
+    const db = makeTestDb({ boundVariableCap: 100 });
+    const { userId: me } = await makeTestUser(db);
+    const { userId: other } = await makeTestUser(db);
+    const seed: Array<[string, string[]]> = [
+      [me, ["e", "c", "a", "d", "b"]],
+      [other, ["z", "y"]],
+    ];
+    for (const [userId, ids] of seed) {
+      for (const id of ids) {
+        await db.insert(schema.dismissedInsights).values({ id, userId, cardId: `card-${id}`, dismissedAt: nowInstant() });
+      }
+    }
+    const whole = await hashRows(await orderedRows(db, schema.dismissedInsights));
+    const mine = await hashRows(await orderedRows(db, schema.dismissedInsights, { userId: me }));
+    for (const pageSize of [1, 2, 5, 7, 500]) {
+      expect(await hashTable(db, schema.dismissedInsights, { pageSize })).toEqual({ rows: 7, sha256: whole });
+      expect(await hashTable(db, schema.dismissedInsights, { userId: me, pageSize })).toEqual({ rows: 5, sha256: mine });
+    }
+    expect(mine).not.toBe(whole);
+  });
+
+  it("reads a table with no single-column key in one query, and hashes masked columns as null", async () => {
+    const db = makeTestDb();
+    const { userId } = await makeTestUser(db);
+    await db.insert(schema.coachLocks).values([
+      { userId: "u2", kind: "wake", token: "t2", claimedAt: "2026-01-01T00:00:00Z" },
+      { userId, kind: "wake", token: "t1", claimedAt: "2026-01-01T00:00:00Z" },
+    ]);
+    const rows = await orderedRows(db, schema.coachLocks);
+    expect(await hashTable(db, schema.coachLocks, { pageSize: 1 })).toEqual({ rows: 2, sha256: await hashRows(rows) });
+    const masked = rows.map((r) => ({ ...r, token: null }));
+    expect((await hashTable(db, schema.coachLocks, { mask: ["token"] })).sha256).toBe(await hashRows(masked));
   });
 });
