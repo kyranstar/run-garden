@@ -1,26 +1,34 @@
 /**
- * COROS strength-exercise catalog sync (plan-studio-design §4). The bridge
- * fetches `GET /training/exercise/query?sportType=4` and includes
- * `exerciseCatalog: [{id, name}]` in its snapshot payload when the worker's
- * last sync response said the stored catalog was stale. This is a global,
- * shared reference table (not per-user) — the same ~382 COROS strength
- * exercises apply to every account.
+ * COROS strength-exercise catalog sync (plan-studio-design §4). The cloud
+ * read fetches `GET /training/exercise/query?sportType=4` into the snapshot's
+ * `exerciseCatalog` when the stored catalog is stale. Each entry keeps its id,
+ * name and tags (muscle, part, equipment, exercise type, target type —
+ * one-workout-system spec §8.5) in `raw`; `catalogMeta` reads them back. This
+ * is a global, shared reference table (not per-user) — the same ~382 COROS
+ * strength exercises apply to every account.
  */
 
-import { asc, sql } from "drizzle-orm";
+import { asc, eq, sql } from "drizzle-orm";
 import { corosExercises } from "@rg/database";
+import { catalogExercise, type CorosCatalogExercise } from "@rg/coros";
 import { COROS_EXERCISE_NAMES } from "@rg/providers";
 import { nowInstant, sessionExercises, type CoachOp, type CoachSession } from "@rg/domain";
 import { chunkedInsert, type Db } from "./db.js";
 
 const STALE_AFTER_MS = 7 * 24 * 60 * 60 * 1000;
 
-export interface ExerciseCatalogItem {
-  id: string;
-  name: string;
-}
+/**
+ * A catalog entry to store. The sync sends the tags (muscle, part,
+ * equipment, exercise type, target type — one-workout-system spec §8.5); a
+ * caller with only id and name (the fixture catalog) stores empty ones.
+ */
+export type ExerciseCatalogItem = Pick<CorosCatalogExercise, "id" | "name"> &
+  Partial<Omit<CorosCatalogExercise, "id" | "name">>;
 
-/** Upserts each catalog entry by originId (id). */
+/** What the catalog knows about one originId: its name and its tags. */
+export type CatalogMeta = CorosCatalogExercise;
+
+/** Upserts each catalog entry by originId (id); `raw` keeps its tags. */
 export async function upsertExerciseCatalog(
   db: Db,
   items: ExerciseCatalogItem[],
@@ -30,12 +38,18 @@ export async function upsertExerciseCatalog(
   // was ~382 D1 subrequests inside the bridge-sync request, enough to blow
   // the Worker's budget and fail the whole sync — which re-marked the
   // catalog stale and repeated the failure every 30 minutes.
-  const rows = items.map((item) => ({
-    id: item.id,
-    name: item.name,
-    raw: { id: item.id, name: item.name } as Record<string, unknown>,
-    updatedAt: now,
-  }));
+  const rows = items.map((item) => {
+    const meta: CatalogMeta = {
+      id: item.id,
+      name: item.name,
+      muscle: item.muscle ?? [],
+      part: item.part ?? [],
+      equipment: item.equipment ?? [],
+      exerciseType: item.exerciseType ?? null,
+      targetType: item.targetType ?? null,
+    };
+    return { id: item.id, name: item.name, raw: { ...meta }, updatedAt: now };
+  });
   await chunkedInsert(rows, (batch) =>
     db
       .insert(corosExercises)
@@ -65,6 +79,31 @@ export async function isExerciseCatalogStale(db: Db): Promise<boolean> {
   const oldest = rows[0]?.updatedAt;
   if (!oldest) return true;
   return Date.now() - Date.parse(oldest) > STALE_AFTER_MS;
+}
+
+/** A stored row's meta. `raw` is read with the snapshot's own tolerance: a
+ * row synced before the tags were kept (or a tag of the wrong shape) reads as
+ * untagged, never as junk. */
+function metaOf(row: { id: string; name: string; raw: Record<string, unknown> | null }): CatalogMeta {
+  return catalogExercise({ ...(row.raw ?? {}), id: row.id, name: row.name })!;
+}
+
+/** The catalog's name and tags for one originId; null when the catalog does not hold it. */
+export async function catalogMeta(db: Db, id: string): Promise<CatalogMeta | null> {
+  const [row] = await db
+    .select({ id: corosExercises.id, name: corosExercises.name, raw: corosExercises.raw })
+    .from(corosExercises)
+    .where(eq(corosExercises.id, id))
+    .limit(1);
+  return row ? metaOf(row) : null;
+}
+
+/** Every catalog entry's name and tags by originId, in one query (for mapping many moves at once). */
+export async function catalogMetaById(db: Db): Promise<Map<string, CatalogMeta>> {
+  const rows = await db
+    .select({ id: corosExercises.id, name: corosExercises.name, raw: corosExercises.raw })
+    .from(corosExercises);
+  return new Map(rows.map((r) => [r.id, metaOf(r)]));
 }
 
 /** id → human name, for resolving code-named exercises at display time. */

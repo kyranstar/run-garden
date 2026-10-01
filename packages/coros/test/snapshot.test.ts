@@ -9,8 +9,8 @@
 import { describe, expect, it } from "vitest";
 import { createHash } from "node:crypto";
 import { addDays } from "@rg/domain";
-import { CorosClient } from "../src/client.js";
-import { buildSnapshot } from "../src/snapshot.js";
+import { CorosClient, type CorosExerciseCatalogItem } from "../src/client.js";
+import { buildSnapshot, catalogExercise } from "../src/snapshot.js";
 import { mockCorosServer } from "./mock-coros-server.js";
 
 const noop = (): void => undefined;
@@ -114,5 +114,60 @@ describe("sleep-HRV band + full-recovery mapping (0020)", () => {
     server.state.sleepHrvData = { avgSleepHrv: 72 };
     const snapshot = await snapshotFor(client, addDays(TODAY, 7));
     expect(snapshot.health.find((h) => h.date === TODAY)?.sleepHrvSd).toBeUndefined();
+  });
+});
+
+describe("buildSnapshot exercise catalog (one-workout-system spec §8.5)", () => {
+  it("keeps each item's muscle, part and equipment tags, exercise type and target type", async () => {
+    const { client } = await setup([TODAY]);
+    const snapshot = await buildSnapshot(client, RANGE_START, addDays(TODAY, 7), TODAY, undefined, {
+      includeExerciseCatalog: true,
+    });
+    expect(snapshot.exerciseCatalog).toEqual([
+      {
+        id: "425898928110747648",
+        name: "T2001",
+        muscle: [3, 7],
+        part: [2],
+        equipment: [1, 4],
+        exerciseType: 1,
+        targetType: 2,
+      },
+      // No tags on the wire: empty lists, never undefined.
+      { id: "426109589008859137", name: "T2101", muscle: [], part: [], equipment: [], exerciseType: 2, targetType: 3 },
+    ]);
+  });
+
+  it("leaves the catalog out unless asked", async () => {
+    const { client } = await setup([TODAY]);
+    const snapshot = await snapshotFor(client, addDays(TODAY, 7));
+    expect(snapshot.exerciseCatalog).toBeUndefined();
+  });
+});
+
+describe("catalogExercise", () => {
+  it("keeps scalar tags only, and reads a missing or malformed field as empty / null", () => {
+    // The wire is untyped JSON: CorosExerciseCatalogItem is what we expect, not what we are promised.
+    const malformed = {
+      id: 42,
+      name: "T1",
+      muscle: [1, "2", null, { x: 1 }, Number.NaN, [3]],
+      part: "2",
+      exerciseType: "1",
+      targetType: 3,
+    } as unknown as CorosExerciseCatalogItem;
+    expect(catalogExercise(malformed)).toEqual({
+      id: "42",
+      name: "T1",
+      muscle: [1, "2"],
+      part: [],
+      equipment: [],
+      exerciseType: null,
+      targetType: 3,
+    });
+  });
+
+  it("has no catalog entry for an item without a name", () => {
+    expect(catalogExercise({ id: 1 })).toBeNull();
   });
 });

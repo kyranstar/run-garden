@@ -163,9 +163,24 @@ export const REASSIGN_OFFSET = 7;
 const CALCULATED_DURATION = 1234;
 const CALCULATED_TRAINING_LOAD = 42;
 
-/** Two entries of the sportType=4 exercise catalog (ids double as originIds). */
-const STRENGTH_CATALOG = [
-  { id: "425898928110747648", name: "T2001", sportType: 4, exerciseType: 1, targetType: 2 },
+/**
+ * Two entries of the sportType=4 exercise catalog (ids double as originIds).
+ * The first carries the tag arrays the live catalog returns (synthetic
+ * codes) plus keys the snapshot does not keep; the second has none.
+ */
+export const STRENGTH_CATALOG = [
+  {
+    id: "425898928110747648",
+    name: "T2001",
+    sportType: 4,
+    exerciseType: 1,
+    targetType: 2,
+    muscle: [3, 7],
+    muscleRelevance: [1, 2],
+    part: [2],
+    equipment: [1, 4],
+    overview: "sid_strength_t2001",
+  },
   { id: "426109589008859137", name: "T2101", sportType: 4, exerciseType: 2, targetType: 3 },
 ];
 

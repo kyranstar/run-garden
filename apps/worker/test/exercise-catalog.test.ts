@@ -1,9 +1,13 @@
 import { beforeEach, describe, expect, it } from "vitest";
+import { createHash } from "node:crypto";
 import { eq } from "drizzle-orm";
 import { schema } from "@rg/database";
+import { buildSnapshot, CorosClient } from "@rg/coros";
 import type { Db } from "../src/services/db.js";
 import {
   buildExerciseIndex,
+  catalogMeta,
+  catalogMetaById,
   isExerciseCatalogStale,
   normalizeExerciseKey,
   resolveExerciseOriginId,
@@ -12,6 +16,7 @@ import {
 } from "../src/services/exercise-catalog.js";
 import { coachSessionSchema, offCatalogExercises } from "@rg/domain";
 import { makeTestDb } from "./helpers.js";
+import { mockCorosServer, STRENGTH_CATALOG } from "../../../packages/coros/test/mock-coros-server.js";
 
 const { corosExercises } = schema;
 
@@ -45,7 +50,8 @@ describe("exercise catalog staleness + upsert", () => {
     expect(rows).toHaveLength(2);
     const squat = rows.find((r) => r.id === "425898928110747648")!;
     expect(squat.name).toBe("Barbell Back Squat");
-    expect(squat.raw).toEqual(items[0]);
+    // An item with no tags stores empty ones (one-workout-system spec §8.5).
+    expect(squat.raw).toEqual({ ...items[0], muscle: [], part: [], equipment: [], exerciseType: null, targetType: null });
     expect(typeof squat.updatedAt).toBe("string");
 
     // Second sync: fresh rows → not stale.
@@ -310,5 +316,84 @@ describe("name → originId: the one-extra-word near miss", () => {
       ]),
     );
     expect(resolveExerciseOriginId("Plank jack hold", dup)).toBe("id-jacks-a");
+  });
+});
+
+/**
+ * The catalog's muscle, part and equipment tags, exercise type and target
+ * type (one-workout-system spec §8.5): kept in `raw` on every sync and read
+ * back by `catalogMeta`. Nothing reads them yet; the Phase 3 mapping will.
+ */
+describe("catalog tags", () => {
+  const META_DEFAULTS = { muscle: [], part: [], equipment: [], exerciseType: null, targetType: null };
+
+  it("a mock COROS catalog item's tags round-trip from the wire into raw, and catalogMeta reads them", async () => {
+    const server = mockCorosServer({ baseMonday: "2026-08-03" });
+    const client = new CorosClient({ region: "us", fetchImpl: server.fetchImpl, logger: () => undefined });
+    await client.loginWithHash(server.email, createHash("md5").update(server.password, "utf8").digest("hex"));
+    const snapshot = await buildSnapshot(client, "2026-08-01", "2026-08-10", "2026-08-05", undefined, {
+      includeExerciseCatalog: true,
+    });
+    await upsertExerciseCatalog(db, snapshot.exerciseCatalog!);
+
+    const tagged = STRENGTH_CATALOG[0]!;
+    const [row] = await db.select().from(corosExercises).where(eq(corosExercises.id, tagged.id));
+    expect(row!.raw).toEqual({
+      id: tagged.id,
+      name: tagged.name,
+      muscle: tagged.muscle,
+      part: tagged.part,
+      equipment: tagged.equipment,
+      exerciseType: tagged.exerciseType,
+      targetType: tagged.targetType,
+    });
+    expect(await catalogMeta(db, tagged.id)).toEqual({
+      id: tagged.id,
+      name: "T2001",
+      muscle: [3, 7],
+      part: [2],
+      equipment: [1, 4],
+      exerciseType: 1,
+      targetType: 2,
+    });
+    expect(await catalogMeta(db, STRENGTH_CATALOG[1]!.id)).toEqual({
+      id: STRENGTH_CATALOG[1]!.id,
+      name: "T2101",
+      ...META_DEFAULTS,
+      exerciseType: 2,
+      targetType: 3,
+    });
+  });
+
+  it("a re-sync replaces the tags, and catalogMetaById reads every row in one go", async () => {
+    await upsertExerciseCatalog(db, [{ id: "t1", name: "T1", ...META_DEFAULTS, equipment: [1] }]);
+    await upsertExerciseCatalog(db, [
+      { id: "t1", name: "T1", ...META_DEFAULTS, equipment: [2, 5] },
+      { id: "t2", name: "T2", ...META_DEFAULTS, muscle: ["x"] },
+    ]);
+    const all = await catalogMetaById(db);
+    expect([...all.keys()].sort()).toEqual(["t1", "t2"]);
+    expect(all.get("t1")!.equipment).toEqual([2, 5]);
+    expect(all.get("t2")!.muscle).toEqual(["x"]);
+  });
+
+  it("a row synced before the tags were kept reads as untagged, never as junk", async () => {
+    await db.insert(corosExercises).values([
+      { id: "old", name: "T9", raw: { id: "old", name: "T9" }, updatedAt: "2026-09-01T00:00:00.000Z" },
+      { id: "no-raw", name: "T8", raw: null, updatedAt: "2026-09-01T00:00:00.000Z" },
+      {
+        id: "odd",
+        name: "T7",
+        raw: { muscle: "3", part: [1, { x: 2 }], equipment: null, exerciseType: "1", targetType: 4 },
+        updatedAt: "2026-09-01T00:00:00.000Z",
+      },
+    ]);
+    expect(await catalogMeta(db, "old")).toEqual({ id: "old", name: "T9", ...META_DEFAULTS });
+    expect(await catalogMeta(db, "no-raw")).toEqual({ id: "no-raw", name: "T8", ...META_DEFAULTS });
+    expect(await catalogMeta(db, "odd")).toEqual({ id: "odd", name: "T7", ...META_DEFAULTS, part: [1], targetType: 4 });
+  });
+
+  it("has no meta for an id the catalog does not hold", async () => {
+    expect(await catalogMeta(db, "missing")).toBeNull();
   });
 });

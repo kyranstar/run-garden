@@ -21,7 +21,7 @@ import {
   type SourcePlannedWorkout,
   type TrainingPlanInfo,
 } from "@rg/providers";
-import type { CorosAccountZones, CorosClient, CorosDashboardSubset } from "./client.js";
+import type { CorosAccountZones, CorosClient, CorosDashboardSubset, CorosExerciseCatalogItem } from "./client.js";
 
 export const COROS_LOCALE_URL =
   "https://static.coros.com/locale/coros-traininghub-v2/en-US.prod.js";
@@ -66,10 +66,52 @@ export interface BridgeSnapshot {
    * so new COROS codes worth naming show up.
    */
   skippedSportTypes?: Record<string, number>;
-  /** COROS strength-exercise catalog (id/name pairs); see BuildSnapshotOptions. */
-  exerciseCatalog?: Array<{ id: string; name: string }>;
+  /** COROS strength-exercise catalog (id, name and tags); see BuildSnapshotOptions. */
+  exerciseCatalog?: CorosCatalogExercise[];
   /** The athlete's own zone definitions (coach-input audit 0018). */
   zones?: CorosAccountZones;
+}
+
+/** A tag code as the catalog sends it (the live entries carry codes, not words). */
+export type CorosCatalogTag = string | number;
+
+/**
+ * One strength-catalog entry as the snapshot keeps it: its id (an originId)
+ * and name, plus the tags the Phase 3 library→COROS mapping reads to break
+ * ties and veto a mapping whose equipment disagrees (one-workout-system spec
+ * §8.5). Nothing reads the tags yet.
+ */
+export interface CorosCatalogExercise {
+  id: string;
+  name: string;
+  muscle: CorosCatalogTag[];
+  part: CorosCatalogTag[];
+  equipment: CorosCatalogTag[];
+  exerciseType: number | null;
+  targetType: number | null;
+}
+
+const catalogTags = (value: unknown): CorosCatalogTag[] =>
+  Array.isArray(value)
+    ? value.filter((t): t is CorosCatalogTag => typeof t === "string" || (typeof t === "number" && Number.isFinite(t)))
+    : [];
+
+/**
+ * A raw `/training/exercise/query` entry → what the snapshot keeps. A field
+ * that is missing or not the shape it should be reads as empty (tags) or null
+ * (types), never as junk; an entry with no name is not a catalog entry.
+ */
+export function catalogExercise(item: CorosExerciseCatalogItem): CorosCatalogExercise | null {
+  if (typeof item.name !== "string") return null;
+  return {
+    id: String(item.id),
+    name: item.name,
+    muscle: catalogTags(item.muscle),
+    part: catalogTags(item.part),
+    equipment: catalogTags(item.equipment),
+    exerciseType: numberOrUndefined(item.exerciseType) ?? null,
+    targetType: numberOrUndefined(item.targetType) ?? null,
+  };
 }
 
 export interface BuildSnapshotOptions {
@@ -243,14 +285,12 @@ export async function buildSnapshot(
     });
 
   // ── Exercise catalog (only when the worker last said its copy was stale) ──
-  let exerciseCatalog: Array<{ id: string; name: string }> | undefined;
+  let exerciseCatalog: CorosCatalogExercise[] | undefined;
   if (opts.includeExerciseCatalog) {
     try {
       // sportType 4 = strength (spike-verified, 382 entries live).
       const items = await client.getExerciseCatalog(4);
-      exerciseCatalog = items
-        .filter((i): i is typeof i & { name: string } => typeof i.name === "string")
-        .map((i) => ({ id: String(i.id), name: i.name }));
+      exerciseCatalog = items.map(catalogExercise).filter((e): e is CorosCatalogExercise => e !== null);
     } catch {
       // Best-effort: the worker's catalog stays stale, so the next sync retries.
       exerciseCatalog = undefined;
