@@ -227,13 +227,16 @@ async function holdsAnyRow(db: Db): Promise<boolean> {
   return false;
 }
 
-export type GuardRefusal = "src_is_staging" | "dst_not_prepared" | "dst_not_empty" | "same_database";
+export type GuardRefusal = "src_is_staging" | "src_empty" | "dst_not_prepared" | "dst_not_empty" | "same_database";
 
 /**
  * Null when SRC is not a staging database and DST is one; otherwise why not.
  *
  * - SRC has the sentinel → `src_is_staging` (bindings swapped, or both staging).
- * - DST has it → fine: a prepared staging database.
+ * - DST has it → fine: a prepared staging database — as long as SRC holds
+ *   rows. An empty SRC is `src_empty` (Audit 2 M2): production is never
+ *   empty, and a DST that carries the sentinel with nothing to copy into it
+ *   is a misbinding that `restart=1` would otherwise empty.
  * - DST lacks it and `prepare` is false → `dst_not_prepared` (verify and scrub
  *   never prepare).
  * - DST lacks it and holds ANY row → `dst_not_empty`, before writing anything:
@@ -244,7 +247,7 @@ export type GuardRefusal = "src_is_staging" | "dst_not_prepared" | "dst_not_empt
  */
 export async function guardBindings(src: Db, dst: Db, opts: { prepare: boolean }): Promise<GuardRefusal | null> {
   if (await hasTable(src, SENTINEL_TABLE)) return "src_is_staging";
-  if (await hasTable(dst, SENTINEL_TABLE)) return null;
+  if (await hasTable(dst, SENTINEL_TABLE)) return (await holdsAnyRow(src)) ? null : "src_empty";
   if (!opts.prepare) return "dst_not_prepared";
   if (await holdsAnyRow(dst)) return "dst_not_empty";
   await dst.run(

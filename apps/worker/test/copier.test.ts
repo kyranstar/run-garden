@@ -14,7 +14,7 @@
  */
 import { readFileSync } from "node:fs";
 import { describe, expect, it, vi } from "vitest";
-import { eq, getTableColumns, isNotNull, or } from "drizzle-orm";
+import { eq, getTableColumns, isNotNull, or, sql } from "drizzle-orm";
 import { schema } from "@rg/database";
 import { nowInstant } from "@rg/domain";
 import type { Db } from "../src/services/db.js";
@@ -253,6 +253,27 @@ describe("guardBindings — the copier refuses anything but production → an em
     expect(await guardBindings(alsoProd, prod, { prepare: true })).toBe("dst_not_empty");
     expect(writes.filter((s) => isWrite(s) || /create|drop/i.test(s))).toEqual([]);
     expect(await guardBindings(makeTestDb(CAP), prod, { prepare: false })).toBe("dst_not_prepared");
+  });
+
+  it("refuses a prepared DST when SRC holds no rows — an empty SRC never empties DST (Audit 2 M2)", async () => {
+    // A DST that somehow carries the sentinel table (say, production) with an
+    // empty SRC bound (a freshly recreated staging, bindings swapped): before,
+    // the guard passed and `restart=1` emptied DST.
+    const { src: prod } = await seedSource();
+    await prod.run(sql.raw(`CREATE TABLE ${SENTINEL_TABLE} (id TEXT PRIMARY KEY NOT NULL, state TEXT, updated_at TEXT NOT NULL)`));
+    const empty = makeTestDb(CAP);
+    expect(await guardBindings(empty, prod, { prepare: true })).toBe("src_empty");
+    expect(await guardBindings(empty, prod, { prepare: false })).toBe("src_empty");
+
+    const before = (await prod.select().from(schema.plannedWorkouts)).length;
+    expect(before).toBeGreaterThan(0);
+    const app = copierApp(() => ({ src: empty, dst: prod }));
+    for (const path of ["/step?restart=1", "/step", "/verify", "/scrub"]) {
+      const res = await post(app, `${path}${path.includes("?") ? "&" : "?"}${DST_Q}`, makeCopierEnv());
+      expect(res.status, path).toBe(409);
+      expect(await res.json()).toEqual({ error: "src_empty" });
+    }
+    expect((await prod.select().from(schema.plannedWorkouts)).length).toBe(before);
   });
 
   it("refuses when SRC and DST are the same empty database, and leaves no sentinel behind", async () => {

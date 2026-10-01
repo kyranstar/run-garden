@@ -108,8 +108,9 @@ What the copier does:
 - Writes only into a database it has proved is staging: it creates a
   `staging_sentinel` table in `DST` on the first run, and only if `DST` is
   completely empty; it refuses if `SRC` has that table (`src_is_staging`), if
-  an unprepared `DST` holds any row (`dst_not_empty`), or if the two bindings
-  are one database (`same_database`). Every call also repeats
+  an unprepared `DST` holds any row (`dst_not_empty`), if the two bindings
+  are one database (`same_database`), or if `SRC` holds no rows at all
+  (`src_empty`: production is never empty). Every call also repeats
   `?dst=run-garden-db-staging`.
 
 ### 1. Before
