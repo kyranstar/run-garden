@@ -39,7 +39,11 @@ in the shell for every `npx wrangler` command here.
 
 Done on 2026-09-30: `run-garden-db-staging` exists (region WNAM, empty) and its id is
 in `[[env.staging.d1_databases]]`. To recreate it after a teardown, run the commands
-below and paste the printed id there.
+below and paste the printed id into all three places that pin it:
+`[[env.staging.d1_databases]]` in `apps/worker/wrangler.toml`, the `DST`
+`database_id` in `apps/worker/wrangler.copier.toml`, and the DST id the
+copier test pins (`apps/worker/test/copier.test.ts`, "binds production as SRC
+and staging as DST").
 
 ```sh
 cd apps/worker
@@ -218,20 +222,33 @@ remove it). Production can hash but never resimulate (`resim: true` → 409).
 ## Wipe
 
 Delete the rows, keep the schema (and `d1_migrations`), then re-apply
-migrations if the schema changed. List the tables first — the query returns
-table names only — and paste its output into the second command:
+migrations if the schema changed. From `apps/worker` (wrangler reads
+`--env staging` from its `wrangler.toml`), list the tables first — the query
+returns table names only — and paste its output into the second command:
 
 ```sh
 npx wrangler d1 execute run-garden-db-staging --remote --env staging --command "SELECT 'DELETE FROM ' || name || ';' FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%' AND name NOT LIKE '_cf_%' AND name <> 'd1_migrations'"
 npx wrangler d1 execute run-garden-db-staging --remote --env staging --command "<the DELETE statements printed above>"
-pnpm migrate:staging
+pnpm --filter @rg/worker migrate:staging
+```
+
+Then check that every table is empty. The first query prints one statement
+(table names only); run it with the second, which answers one number:
+
+```sh
+npx wrangler d1 execute run-garden-db-staging --remote --env staging --command "SELECT 'SELECT ' || group_concat('(SELECT count(*) FROM ' || name || ')', ' + ') || ' AS rows_left;' FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%' AND name NOT LIKE '_cf_%' AND name <> 'd1_migrations'"
+npx wrangler d1 execute run-garden-db-staging --remote --env staging --command "<the statement printed above>"   # rows_left = 0
 ```
 
 `staging_sentinel` is emptied but kept: staging stays recognisable as staging
 for the next copy.
 
-To start from nothing, `npx wrangler d1 delete run-garden-db-staging`, then
-create again (above).
+The wipe does not remove the copy everywhere: D1 Time Travel keeps every
+earlier state of `run-garden-db-staging` restorable for its retention window
+(30 days on Workers Paid, 7 on Free), so the wiped copy of production stays
+recoverable until then. When the copy has to be gone now, the step is
+`npx wrangler d1 delete run-garden-db-staging` (that removes its Time Travel
+history too), then create again (above).
 
 ## Time Travel and rollback (production)
 
