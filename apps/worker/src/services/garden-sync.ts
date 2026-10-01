@@ -1,4 +1,4 @@
-import { and, asc, desc, eq, gt, gte, inArray, isNull, lt, lte, max, min, sql } from "drizzle-orm";
+import { and, asc, desc, eq, gt, gte, inArray, isNull, lt, lte, max, min, notInArray, sql } from "drizzle-orm";
 import {
   accountState,
   activities,
@@ -870,6 +870,15 @@ async function recordGardenChange(db: Db, userId: string, date: LocalDate): Prom
 }
 
 /**
+ * Genesis ("start") species: unlocked from the garden's first day, never by
+ * an event. Their unlock rows are stamped at `createdDate` by the garden
+ * view's heal — after the cursor of a garden whose first day is not walked
+ * yet — and are true in every world, so the catch-up's purge keeps them
+ * (NEW-C: deleted, the next view re-healed them under new ids).
+ */
+const START_SPECIES = [...SPECIES_BY_ID.values()].filter((s) => s.unlock.kind === "start").map((s) => s.id);
+
+/**
  * One post-restore catch-up step, under the garden lock (rulings B4 amended,
  * amended-2, B11 and B12).
  *
@@ -936,7 +945,15 @@ async function catchUpStep(
   await db.delete(gardenEvents).where(and(eq(gardenEvents.userId, userId), gt(gardenEvents.date, cursor)));
   await db.delete(gardenDayInputs).where(and(eq(gardenDayInputs.userId, userId), gt(gardenDayInputs.date, cursor)));
   await db.delete(gardenSnapshots).where(and(eq(gardenSnapshots.userId, userId), gt(gardenSnapshots.date, cursor)));
-  await db.delete(gardenUnlocks).where(and(eq(gardenUnlocks.userId, userId), gt(gardenUnlocks.unlockedOn, cursor)));
+  await db
+    .delete(gardenUnlocks)
+    .where(
+      and(
+        eq(gardenUnlocks.userId, userId),
+        gt(gardenUnlocks.unlockedOn, cursor),
+        notInArray(gardenUnlocks.speciesId, START_SPECIES),
+      ),
+    );
 
   const { snapshot, simulatedDays, eventsEmitted, capped } = await walkForward(
     db,

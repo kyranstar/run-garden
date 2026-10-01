@@ -22,6 +22,7 @@ import type { Db } from "../src/services/db.js";
 import {
   advanceGarden,
   buildGardenTimeline,
+  buildGardenView,
   ensureGarden,
   recentGardenEvents,
   resimulateFrom,
@@ -348,6 +349,24 @@ describe("a restore trusts the file's garden (B4 amended)", () => {
     expect(finish).toBeGreaterThan(0);
     expect(finish).toBeLessThanOrEqual(80);
   }, 120_000);
+
+  it("the start species' unlock rows keep their ids through the catch-up (NEW-C)", async () => {
+    const db = makeTestDb({ boundVariableCap: 100 });
+    const { userId, prefs } = await makeTestUser(db);
+    const today = todayInZone(prefs.timezone);
+    // A brand-new garden: its first day is not walked, so the view's heal
+    // stamps the start species at createdDate, after the cursor.
+    await ensureGarden(db, userId, prefs, today);
+    await buildGardenView(db, userId, prefs);
+    const unlocks = () =>
+      db.select().from(schema.gardenUnlocks).where(eq(schema.gardenUnlocks.userId, userId)).orderBy(asc(schema.gardenUnlocks.speciesId));
+    const healed = await unlocks();
+    expect(healed.length).toBeGreaterThan(0);
+    expect(healed.every((u) => u.unlockedOn === today)).toBe(true);
+    await restoreAll(db, userId, await exportAll(db, userId));
+    await advanceGarden(db, userId, prefs); // the first catch-up step
+    expect(await unlocks()).toEqual(healed);
+  });
 
   it("a restore with no garden in the file leaves no catch-up pending", async () => {
     const db = makeTestDb();
