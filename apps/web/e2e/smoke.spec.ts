@@ -1,4 +1,5 @@
-import { test, expect, type Page } from "@playwright/test";
+import type { Page } from "@playwright/test";
+import { test, expect } from "./fixtures.js";
 
 /**
  * Smoke test of the fixture-seeded app across its main screens, on both
@@ -46,12 +47,19 @@ test("Garden home leads with the Today card and its workout", async ({ page }) =
 });
 
 test("Plan renders the week calendar with no COROS warning", async ({ page }) => {
+  const readNow = page.waitForResponse(
+    (r) => new URL(r.url()).pathname === "/api/coros/read-now" && r.request().method() === "POST",
+  );
   await page.goto("/plan");
   await expect(page.getByRole("heading", { name: "Plan", exact: true })).toBeVisible();
   await expect(page.locator(".plan-week-title").first()).toBeVisible();
   // The app-open COROS check resolves silently when connected (the fixture
-  // user is): no warn pill.
-  await expect(page.locator(".coros-check-link")).toHaveCount(0);
+  // user is). Proven only once it has settled (Audit 2 E2E I2): the read
+  // answered, "Checking COROS…" is gone, and no COROS note of any kind —
+  // including the plain ones, unreachable and still syncing — is showing.
+  expect((await readNow).status()).toBe(200);
+  await expect(page.locator(".coros-checking")).toHaveCount(0);
+  await expect(page.getByText(/COROS (not connected|rejected|unreachable)|Still syncing/)).toHaveCount(0);
 });
 
 test("Garden renders a scene and opens the species collection", async ({ page }) => {
