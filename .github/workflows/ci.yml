@@ -7,6 +7,10 @@ on:
   # Lets the e2e job be proven on any branch: gh workflow run ci.yml --ref <branch>
   workflow_dispatch:
 
+# Every job only reads the repo (Audit 2 E2E M4).
+permissions:
+  contents: read
+
 concurrency:
   group: ci-${{ github.ref }}
   cancel-in-progress: true
@@ -104,7 +108,7 @@ jobs:
 
       - name: Fixture stack logs
         if: failure()
-        run: tail -n 80 "${TMPDIR:-/tmp}"/rg-e2e-state/*.log
+        run: tail -n 80 "${TMPDIR:-/tmp}"/rg-e2e-state*/*.log
 
       - name: Upload Playwright report
         if: failure()

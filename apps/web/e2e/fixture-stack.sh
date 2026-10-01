@@ -14,16 +14,19 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
 API_PORT="${RG_API_PORT:-8971}"
 WEB_PORT="${RG_WEB_PORT:-5271}"
-STATE="${RG_E2E_STATE:-${TMPDIR:-/tmp}/rg-e2e-state}"
+# One state dir per checkout: two worktrees' stacks never stop or delete
+# each other's (Audit 2 E2E M5).
+STATE="${RG_E2E_STATE:-${TMPDIR:-/tmp}/rg-e2e-state-$(printf %s "$ROOT" | cksum | cut -d' ' -f1)}"
 PIDS="$STATE/pids"
 
 stop() {
   if [ -f "$PIDS" ]; then
     while read -r pid; do kill "$pid" 2>/dev/null || true; done <"$PIDS"
   fi
-  # wrangler/vite spawn children; clear whatever still holds our ports.
+  # wrangler/vite spawn children; clear whatever still LISTENS on our ports —
+  # never a client connected to them, such as a browser tab on the dev server.
   for p in "$API_PORT" "$WEB_PORT"; do
-    lsof -ti "tcp:$p" 2>/dev/null | xargs kill 2>/dev/null || true
+    lsof -ti "tcp:$p" -sTCP:LISTEN 2>/dev/null | xargs kill 2>/dev/null || true
   done
   rm -rf "$STATE"
 }
