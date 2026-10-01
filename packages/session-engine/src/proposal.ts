@@ -1,6 +1,6 @@
 import { UNANSWERED, label, type CheckReading, type EngineData, type HistorySession, type Mode, type ProposalCtx, type Theme } from "@rg/exercise-library";
 import { Coverage } from "./coverage.js";
-import { Hist } from "./hist.js";
+import { Hist, HistIndex } from "./hist.js";
 import { Rng } from "./rng.js";
 
 // Today's mode (recovery / consistent / build) and theme, each with plain-language reasons. The active
@@ -20,8 +20,8 @@ export interface ModeProposal {
   reasons: string[];
 }
 
-function mode(data: EngineData, { checks = {}, feelingOff = false, sessions = [], today, weeklyGoal = 4 }: ModeArgs): ModeProposal {
-  const past = Hist.sorted(sessions).filter(s => s.date <= today);
+function mode(data: EngineData, { checks = {}, feelingOff = false, sessions = [], today, weeklyGoal = 4 }: ModeArgs, hist?: HistIndex): ModeProposal {
+  const past = HistIndex.for(data, sessions, hist).sorted().filter(s => s.date <= today);
   const last = past[past.length - 1] ?? null;
   const week = past.filter(s => Hist.daysBetween(s.date, today) < 7);
   const profiles = data.profiles.active;
@@ -65,12 +65,13 @@ export interface ThemeProposal {
   reasons: string[];
 }
 
-function theme(data: EngineData, { mode: m, sessions = [], today, lastThemeId = null }: ThemeArgs): ThemeProposal {
+function theme(data: EngineData, { mode: m, sessions = [], today, lastThemeId = null }: ThemeArgs, hist?: HistIndex): ThemeProposal {
   const options = data.themes.filter(t => t.modes.includes(m));
   if (!options.length) return { theme: null, reasons: [] };
-  const debt = Coverage.debt(data, sessions, today);
+  const h = HistIndex.for(data, sessions, hist);
+  const debt = Coverage.debtIn(h, today);
   const rng = Rng.create(`${today}|${m}|theme`);
-  const previous = Hist.sorted(sessions).filter(s => s.date < today && s.theme).pop();
+  const previous = h.sorted().filter(s => s.date < today && s.theme).pop();
   const avoid = lastThemeId != null ? lastThemeId : previous ? previous.theme : null;
   // A second session today never repeats a theme already done today (spec §5 change 2).
   const doneToday = new Set(sessions.filter(s => s.date === today && s.theme).map(s => s.theme));

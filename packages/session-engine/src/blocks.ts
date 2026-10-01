@@ -1,6 +1,6 @@
 import type { Weight, WeightUnit } from "@rg/domain";
 import { attrsOf, type ConditionProfile, type EngineData, type ExerciseRecord, type HistorySession, type Mode, type Theme } from "@rg/exercise-library";
-import { Hist } from "./hist.js";
+import { Hist, HistIndex } from "./hist.js";
 import { Lib } from "./lib.js";
 import { Prog } from "./prog.js";
 import { Rng } from "./rng.js";
@@ -23,6 +23,8 @@ export interface BlockCtx {
 interface FullCtx extends BlockCtx {
   prefs: Prefs;
   rng: () => number;
+  /** The build's history index over `sessions`, when the caller has one. */
+  hist?: HistIndex;
 }
 
 /** A core lift every active profile allows as a block's lift candidate (and never rules out). */
@@ -53,8 +55,8 @@ function familyCandidates(data: EngineData, familyId: string, { equipment, exclu
 }
 
 /** A lift is topped out when progression has nowhere left to go with this equipment. */
-function toppedOut(data: EngineData, ex: ExerciseRecord, ctx: BlockCtx): boolean {
-  const history = Prog.historyFor(data, ctx.sessions || [], ex.id);
+function toppedOut(data: EngineData, ex: ExerciseRecord, ctx: BlockCtx & { hist?: HistIndex }): boolean {
+  const history = Prog.historyForIn(HistIndex.for(data, ctx.sessions || [], ctx.hist), ex.id);
   if (!history.length) return false;
   const s = Prog.suggest(data, ex, history, {
     mode: "build", checks: {}, implement: Lib.implementFor(ex, ctx.equipment),
@@ -99,11 +101,12 @@ function start(data: EngineData, prev: Block | null, ctx: FullCtx): Block {
 }
 
 // Judged only on sessions since the lift joined the block (block start, or the day it rotated in).
-function rotateReason(data: EngineData, exId: string, sessions: readonly HistorySession[], block: Block, familyId: string): string | null {
+function rotateReason(data: EngineData, exId: string, sessions: readonly HistorySession[], block: Block, familyId: string, hist?: HistIndex): string | null {
   if (!Lib.get(data, exId)) return "no longer in the library";
   const joined = [...(block.rotations || [])].reverse().find(r => r.family === familyId && r.to === exId);
-  const recent = sessions.filter(s => (joined ? s.date > joined.date : s.date >= block.startedAt));
-  const log = Prog.historyFor(data, recent, exId);
+  // An entry's date is its session's: the lift's whole log from the day it joined is the same entries, in the same
+  // order, as the log of only the sessions since then.
+  const log = Prog.historyForIn(HistIndex.for(data, sessions, hist), exId).filter(e => (joined ? e.date > joined.date : e.date >= block.startedAt));
   for (const p of data.profiles.active) {
     const why = p.rotateReason(log);
     if (why) return why;
@@ -112,8 +115,12 @@ function rotateReason(data: EngineData, exId: string, sessions: readonly History
   return null;
 }
 
-function ensure(data: EngineData, block: Block | null, ctx: BlockCtx): { block: Block; events: string[] } {
-  const c: FullCtx = { ...ctx, prefs: { ratings: {}, excluded: [], pinned: [], ...(ctx.prefs || {}) }, rng: Rng.create(`${ctx.today}|block`) };
+function ensure(data: EngineData, block: Block | null, ctx: BlockCtx, hist?: HistIndex): { block: Block; events: string[] } {
+  const sessions = ctx.sessions || [];
+  const c: FullCtx = {
+    ...ctx, prefs: { ratings: {}, excluded: [], pinned: [], ...(ctx.prefs || {}) }, rng: Rng.create(`${ctx.today}|block`),
+    hist: HistIndex.for(data, sessions, hist),
+  };
   if (!block) return { block: start(data, null, c), events: ["Block 1 started."] };
   if (Hist.daysBetween(block.startedAt, ctx.today) >= block.weeks * 7) {
     const next = start(data, block, c);
@@ -129,7 +136,7 @@ function ensure(data: EngineData, block: Block | null, ctx: BlockCtx): { block: 
     const ruledOut = lift ? forbiddenBy(data, lift) : null;   // e.g. assigned while no profile was active
     if (!ruledOut && c.prefs.pinned.includes(id)) continue;
     if (rotations.some(r => r.family === fam.id && r.date === ctx.today)) continue;   // at most once a day
-    const why = ruledOut ? `not allowed with ${ruledOut.label}` : rotateReason(data, id, ctx.sessions || [], { ...block, core, rotations }, fam.id);
+    const why = ruledOut ? `not allowed with ${ruledOut.label}` : rotateReason(data, id, sessions, { ...block, core, rotations }, fam.id, c.hist);
     if (!why) continue;
     // Lifts rotated out earlier in this block stay out.
     const out = [id, ...rotations.filter(r => r.family === fam.id).map(r => r.from).filter((x): x is string => Boolean(x))];
@@ -162,13 +169,14 @@ interface FamiliesArgs {
   rng: () => number;
 }
 
-function familiesForSession(data: EngineData, block: Pick<Block, "core">, { mode, sessions = [], today, theme = null, rng }: FamiliesArgs): string[] {
+function familiesForSession(data: EngineData, block: Pick<Block, "core">, { mode, sessions = [], today, theme = null, rng }: FamiliesArgs, hist?: HistIndex): string[] {
   const hi = data.modes[mode].coreCount[1];
   if (!hi) return [];
+  const h = HistIndex.for(data, sessions, hist);
   return data.coreFamilies
     .filter(f => block.core[f.id])
     .map(f => {
-      const last = Hist.lastFamilyDate(data, sessions, f.id, today);
+      const last = Hist.lastFamilyDateIn(h, f.id, today);
       const days = last ? Hist.daysBetween(last, today) : 14;
       const bias = theme && (theme.coreBias || []).includes(f.id) ? 3 : 0;
       return { id: f.id, score: Math.min(days, 14) + bias + rng() * 0.3 };

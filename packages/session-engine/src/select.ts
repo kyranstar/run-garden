@@ -1,6 +1,6 @@
 import { label, positionGroup, type EngineData, type ExerciseRecord, type HistorySession, type Theme } from "@rg/exercise-library";
 import type { CoverageDates, CoverageMap } from "./coverage.js";
-import { Hist } from "./hist.js";
+import { Hist, HistIndex } from "./hist.js";
 import type { Prefs } from "./types.js";
 
 // Scores candidate exercises for a slot and keeps the top reasons as "why this".
@@ -45,34 +45,39 @@ export interface Scored {
   isNew: boolean;
 }
 
-function stats(data: EngineData, sessions: readonly HistorySession[], today: string): Map<string, ExerciseStats> {
-  const ordered = Hist.sorted(sessions).filter(s => s.date <= today);
-  const recent = new Set(ordered.slice(-RECENT_SESSIONS));
-  const map = new Map<string, ExerciseStats>();
-  const get = (raw: string): ExerciseStats => {
-    const id = Hist.canonical(data, raw);
-    let st = map.get(id);
-    if (!st) {
-      st = { lastDate: null, recent: 0, logged: 0, flags: {} };
-      map.set(id, st);
+function statsIn(h: HistIndex, today: string): Map<string, ExerciseStats> {
+  return h.memo(`stats|${today}`, () => {
+    const ordered = h.sorted().filter(s => s.date <= today);
+    const recent = new Set(ordered.slice(-RECENT_SESSIONS));
+    const map = new Map<string, ExerciseStats>();
+    const get = (raw: string): ExerciseStats => {
+      const id = h.canonical(raw);
+      let st = map.get(id);
+      if (!st) {
+        st = { lastDate: null, recent: 0, logged: 0, flags: {} };
+        map.set(id, st);
+      }
+      return st;
+    };
+    for (const s of ordered) {
+      for (const raw of h.idsIn(s)) {
+        const st = get(raw);
+        if (!st.lastDate || s.date > st.lastDate) st.lastDate = s.date;
+        if (recent.has(s)) st.recent += 1;
+      }
+      for (const e of s.entries || []) {
+        if (!e || !e.id) continue;
+        const st = get(e.id);
+        st.logged += 1;
+        const flags = e.flags;
+        if (flags && flags.length) for (const flag of flags.length === 1 ? flags : new Set(flags)) st.flags[flag] = (st.flags[flag] || 0) + 1;
+      }
     }
-    return st;
-  };
-  for (const s of ordered) {
-    for (const raw of Hist.idsIn(s)) {
-      const st = get(raw);
-      if (!st.lastDate || s.date > st.lastDate) st.lastDate = s.date;
-      if (recent.has(s)) st.recent += 1;
-    }
-    for (const e of s.entries || []) {
-      if (!e || !e.id) continue;
-      const st = get(e.id);
-      st.logged += 1;
-      for (const flag of new Set(e.flags || [])) st.flags[flag] = (st.flags[flag] || 0) + 1;
-    }
-  }
-  return map;
+    return map;
+  });
 }
+
+const stats = (data: EngineData, sessions: readonly HistorySession[], today: string): Map<string, ExerciseStats> => statsIn(HistIndex.of(data, sessions), today);
 
 function themeFit(ex: ExerciseRecord, theme: SelectCtx["theme"]): number {
   if (!theme) return 0;
@@ -151,4 +156,4 @@ function score(data: EngineData, ex: ExerciseRecord, ctx: SelectCtx): Scored {
 const rank = (data: EngineData, pool: readonly ExerciseRecord[], ctx: SelectCtx): Scored[] =>
   pool.map(ex => score(data, ex, ctx)).sort((a, b) => b.total - a.total || a.ex.id.localeCompare(b.ex.id));
 
-export const Select = { WEIGHTS, stats, score, rank };
+export const Select = { WEIGHTS, stats, statsIn, score, rank };

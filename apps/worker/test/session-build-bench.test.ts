@@ -10,11 +10,10 @@
  * runner is far from the reference (busy, or much faster), scaling is not trustworthy and every timing assertion
  * skips with the reason — never silently.
  *
- * KNOWN OVER BUDGET (Phase 2a Tasks 3–4 report, for a ruling): on the reference machine the build costs ~11.5 ms
- * p50 at 200 sessions in this runner (≈10 ms under tsx), linear in history (≈1.3 ms with none, ≈5 ms at ~85
- * sessions) — over the spec's 5 ms AND the 10 ms free-plan limit. The spec's next lever: alternatives computed
- * lazily per slot on first swap. Both budget tests are `it.fails`, so they turn red — and must be flipped to `it` —
- * the day the build meets them; meanwhile a regression ceiling keeps it from getting slower.
+ * History (ruling 2a-R6): the build cost ~11.5 ms p50 here at 200 sessions, linear in history, because every
+ * module rescanned every session for every candidate. The engine now indexes the history once per build
+ * (`HistIndex`): ~2.3–2.9 ms p50 here on the reference machine. The budgets are plain tests; the regression
+ * ceiling is 1.5× that measurement.
  */
 import { createHash } from "node:crypto";
 import { performance } from "node:perf_hooks";
@@ -34,8 +33,8 @@ const REFERENCE_CALIBRATION_MS = 6.2;
 const MAX_RUNNER_RATIO = 1.5;
 const SPEC_BUDGET_P50_MS = 5;
 const WORKERS_CPU_LIMIT_MS = 10;
-/** The build measured 11.3–11.7 ms p50 on the reference machine; 1.5× that means something got slower. */
-const REGRESSION_CEILING_P50_MS = 17;
+/** The build measured 2.3–2.9 ms p50 on the reference machine (indexed history); 1.5× that means something got slower. */
+const REGRESSION_CEILING_P50_MS = 4;
 /** The accepted ceiling for a 40-minute build's payload (session-engine payload test, ruling P1-R8). */
 const PAYLOAD_BUDGET_BYTES = 426_000;
 
@@ -197,13 +196,12 @@ describe("build CPU over a 200-session history", () => {
     expect(scaledP50()).toBeLessThan(REGRESSION_CEILING_P50_MS);
   });
 
-  // KNOWN OVER BUDGET (see the header): both are expected to fail until the build is made faster; flip to `it` then.
-  it.fails(`stays under the Workers free-plan CPU limit (scaled p50 < ${WORKERS_CPU_LIMIT_MS} ms)`, (ctx) => {
+  it(`stays under the Workers free-plan CPU limit (scaled p50 < ${WORKERS_CPU_LIMIT_MS} ms)`, (ctx) => {
     ctx.skip(slowReason !== null, slowReason ?? "");
     expect(scaledP50()).toBeLessThan(WORKERS_CPU_LIMIT_MS);
   });
 
-  it.fails(`meets the spec's budget (scaled p50 < ${SPEC_BUDGET_P50_MS} ms)`, (ctx) => {
+  it(`meets the spec's budget (scaled p50 < ${SPEC_BUDGET_P50_MS} ms)`, (ctx) => {
     ctx.skip(slowReason !== null, slowReason ?? "");
     expect(scaledP50()).toBeLessThan(SPEC_BUDGET_P50_MS);
   });

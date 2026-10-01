@@ -2,6 +2,7 @@ import { KG_TO_LB, SAME_WEIGHT_KG, formatWeight, sameWeight, toKg, type Weight, 
 import {
   UNANSWERED, type CheckReading, type ConditionProfile, type EngineData, type ExerciseRecord, type HistorySession, type HistorySet, type Mode,
 } from "@rg/exercise-library";
+import { HistIndex } from "./hist.js";
 import { Lib } from "./lib.js";
 import type { Target } from "./types.js";
 
@@ -234,25 +235,41 @@ function suggest(data: EngineData, ex: ExerciseRecord, history: readonly ProgEnt
   return result({ w: lastW, reps: Math.min(hi, Math.max(lo, top.reps + 1)), action: "reps", note: "Same weight — aim for one more rep." });
 }
 
-/** This exercise's logged sessions, newest first (renamed ids resolve; ladders and circuits don't count). */
-function historyFor(data: EngineData, sessions: readonly HistorySession[], exerciseId: string): ProgEntry[] {
-  const target = Lib.get(data, exerciseId);
-  const id = target ? target.id : exerciseId;
-  const out: ProgEntry[] = [];
-  for (const s of sessions || []) {
-    for (const e of s.entries || []) {
-      // Ladders and circuits use deliberately light or timed sets; they don't say anything about progress.
-      if (!e || !e.id || e.format === "ladder" || e.format === "circuit") continue;
-      const ex = Lib.get(data, e.id);
-      const sets = (e.sets || []).filter(Boolean);
-      if ((ex ? ex.id : e.id) !== id || !sets.length) continue;
-      out.push({
-        date: s.date, startedAt: s.startedAt || s.date, sets, flags: e.flags || [],
-        checks: s.checks || {}, mode: s.mode || null,
-      });
+/** Every exercise's logged entries in session order, by canonical id: one pass over the history. */
+function entriesIn(h: HistIndex): Map<string, ProgEntry[]> {
+  return h.memo("progEntries", () => {
+    const byId = new Map<string, ProgEntry[]>();
+    for (const s of h.sessions) {
+      for (const e of s.entries || []) {
+        // Ladders and circuits use deliberately light or timed sets; they don't say anything about progress.
+        if (!e || !e.id || e.format === "ladder" || e.format === "circuit") continue;
+        const ex = h.get(e.id);
+        const sets = (e.sets || []).filter(Boolean);
+        if (!sets.length) continue;
+        const id = ex ? ex.id : e.id;
+        const entry: ProgEntry = {
+          date: s.date, startedAt: s.startedAt || s.date, sets, flags: e.flags || [],
+          checks: s.checks || {}, mode: s.mode || null,
+        };
+        const list = byId.get(id);
+        if (list) list.push(entry);
+        else byId.set(id, [entry]);
+      }
     }
-  }
-  return out.sort((a, b) => String(b.startedAt).localeCompare(String(a.startedAt)));
+    return byId;
+  });
 }
 
-export const Prog = { suggest, historyFor, improved, stepWeight, startWeight, snap, topSet };
+/** This exercise's logged sessions, newest first (renamed ids resolve; ladders and circuits don't count). */
+function historyForIn(h: HistIndex, exerciseId: string): ProgEntry[] {
+  const target = h.get(exerciseId);
+  const id = target ? target.id : exerciseId;
+  const newest = h.memo(`progHistory|${id}`, () =>
+    [...(entriesIn(h).get(id) ?? [])].sort((a, b) => String(b.startedAt).localeCompare(String(a.startedAt))));
+  return [...newest];
+}
+
+const historyFor = (data: EngineData, sessions: readonly HistorySession[], exerciseId: string): ProgEntry[] =>
+  historyForIn(HistIndex.of(data, sessions), exerciseId);
+
+export const Prog = { suggest, historyFor, historyForIn, improved, stepWeight, startWeight, snap, topSet };

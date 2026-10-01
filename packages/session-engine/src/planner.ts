@@ -2,6 +2,7 @@ import type { WeightUnit } from "@rg/domain";
 import type { CheckReading, EngineData, HistorySession, Mode, Theme } from "@rg/exercise-library";
 import { Blocks } from "./blocks.js";
 import { Builder } from "./builder.js";
+import { HistIndex } from "./hist.js";
 import { Lib } from "./lib.js";
 import { Prog } from "./prog.js";
 import { Proposal } from "./proposal.js";
@@ -105,13 +106,15 @@ function context(data: EngineData, input: PlanTodayInput, program: ProgramState)
   const { today } = input;
   const t = dayOf(input.day, today);
   const home = homeOf(program.locations);
+  // One index over the history for the block upkeep, the proposal and the build (ruling 2a-R6).
+  const hist = HistIndex.of(data, program.sessions);
   const ensured = Blocks.ensure(data, program.block, {
     today, equipment: home.equipment, prefs: program.prefs, weeks: program.settings.blockWeeks,
     sessions: program.sessions, kbWeights: Lib.kettlebellsAt(home), unit: program.settings.unit,
-  });
-  const proposal = Proposal.mode(data, { checks: t.checks, feelingOff: Boolean(t.feelingOff), sessions: program.sessions, today, weeklyGoal: program.settings.weeklyGoal });
+  }, hist);
+  const proposal = Proposal.mode(data, { checks: t.checks, feelingOff: Boolean(t.feelingOff), sessions: program.sessions, today, weeklyGoal: program.settings.weeklyGoal }, hist);
   const mode = t.override.mode || proposal.mode;
-  const themeProposal = Proposal.theme(data, { mode, sessions: program.sessions, today });
+  const themeProposal = Proposal.theme(data, { mode, sessions: program.sessions, today }, hist);
   const chosen = t.override.theme ? data.themes.find(th => th.id === t.override.theme && th.modes.includes(mode)) ?? null : null;
   const theme = chosen || themeProposal.theme;
   const minutes = t.override.minutes || program.settings.defaultMinutes;
@@ -120,13 +123,13 @@ function context(data: EngineData, input: PlanTodayInput, program: ProgramState)
     today, ...(program.programId ? { programId: program.programId } : {}), mode, theme, minutes, location, unit: program.settings.unit,
     sessions: program.sessions, prefs: program.prefs, savedIds: program.savedIds, block: ensured.block, checks: t.checks, swaps: t.swaps,
   };
-  return { t, ensured, proposal, mode, themeProposal, chosen, theme, minutes, location, buildInput };
+  return { t, ensured, proposal, mode, themeProposal, chosen, theme, minutes, location, buildInput, hist };
 }
 
 /** The day's proposal, the upkept block and the built plan. `blockUpdate` is null when the block didn't change. */
 function planToday(data: EngineData, input: PlanTodayInput, program: ProgramState): { view: TodayView; blockUpdate: BlockUpdate | null } {
   const c = context(data, input, program);
-  const plan = Builder.build(data, c.buildInput);
+  const plan = Builder.build(data, c.buildInput, c.hist);
   const view: TodayView = {
     today: c.t,
     mode: c.mode, proposedMode: c.proposal.mode, modeReasons: c.proposal.reasons,
@@ -141,8 +144,10 @@ function planToday(data: EngineData, input: PlanTodayInput, program: ProgramStat
   return { view, blockUpdate: c.ensured.events.length ? { block: c.ensured.block, events: c.ensured.events } : null };
 }
 
-const alternatives = (data: EngineData, input: PlanTodayInput, program: ProgramState, slotKey: string, k = 3): Alternative[] =>
-  Builder.alternatives(data, context(data, input, program).buildInput, slotKey, k);
+function alternatives(data: EngineData, input: PlanTodayInput, program: ProgramState, slotKey: string, k = 3): Alternative[] {
+  const c = context(data, input, program);
+  return Builder.alternatives(data, c.buildInput, slotKey, k, c.hist);
+}
 
 /** "I'm feeling off" today: recovery, whatever profiles are active. */
 const setFeelingOff = (day: DayState | null | undefined, today: string, value: boolean): DayState => withDay(day, today, { feelingOff: Boolean(value) });

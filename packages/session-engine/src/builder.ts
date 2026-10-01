@@ -5,7 +5,7 @@ import {
 } from "@rg/exercise-library";
 import { Blocks } from "./blocks.js";
 import { Coverage } from "./coverage.js";
-import { Hist } from "./hist.js";
+import { Hist, HistIndex } from "./hist.js";
 import { Lib } from "./lib.js";
 import { Prog } from "./prog.js";
 import { Rng } from "./rng.js";
@@ -48,6 +48,8 @@ interface Ctx extends SelectCtx {
   /** Progression targets by exercise id, computed once per build. */
   targets: Map<string, Target | null>;
   skeleton: ModeSkeleton;
+  /** The build's history index over `sessions`. */
+  hist: HistIndex;
 }
 
 function fmt(data: EngineData, id: FormatId): Format {
@@ -218,7 +220,7 @@ function targetFor(ex: ExerciseRecord, ctx: Ctx): Target | null {
   if (ex.load === "none") return null;
   const known = ctx.targets.get(ex.id);   // the same for every slot of one build
   if (known !== undefined) return known;
-  const target = Prog.suggest(ctx.data, ex, Prog.historyFor(ctx.data, ctx.sessions, ex.id), {
+  const target = Prog.suggest(ctx.data, ex, Prog.historyForIn(ctx.hist, ex.id), {
     mode: ctx.mode, checks: ctx.checks, implement: Lib.implementFor(ex, ctx.equipment),
     kbWeights: ctx.kbWeights, unit: ctx.unit, equipment: ctx.equipment,
   });
@@ -311,7 +313,7 @@ function coreItem(ctx: Ctx, pick: { family: string; ex: ExerciseRecord; slotKey:
 function fillCore(budget: number, ctx: Ctx): { groups: Group[]; spent: number } {
   const hi = ctx.data.modes[ctx.mode].coreCount[1];
   if (!hi || !ctx.block) return { groups: [], spent: 0 };
-  const families = Blocks.familiesForSession(ctx.data, ctx.block, { mode: ctx.mode, sessions: ctx.sessions, today: ctx.today, theme: ctx.theme, rng: ctx.rng });
+  const families = Blocks.familiesForSession(ctx.data, ctx.block, { mode: ctx.mode, sessions: ctx.sessions, today: ctx.today, theme: ctx.theme, rng: ctx.rng }, ctx.hist);
   const week = Blocks.weekOf(ctx.block, ctx.today);
   const picks: Array<{ family: string; ex: ExerciseRecord; slotKey: string; swapped: boolean }> = [];
   for (const family of families) {
@@ -341,13 +343,14 @@ function fillCore(budget: number, ctx: Ctx): { groups: Group[]; spent: number } 
   return { groups: [], spent: 0 };
 }
 
-function makeContext(data: EngineData, input: BuildInput): Ctx {
+function makeContext(data: EngineData, input: BuildInput, history?: HistIndex): Ctx {
   const unit = input.unit || "lb";
   const sessions = input.sessions || [];
+  const hist = HistIndex.for(data, sessions, history);
   // The date, the session's shape and the program (spec §7.2); without a program id, the standalone seed.
   const seed = [input.today, input.mode, input.theme ? input.theme.id : "", input.minutes, input.location.id, ...(input.programId ? [input.programId] : [])].join("|");
-  const debt = Coverage.debt(data, sessions, input.today);
-  const newMoveWeek = !Hist.newMoveThisWeek(data, sessions, input.today);
+  const debt = Coverage.debtIn(hist, input.today);
+  const newMoveWeek = !Hist.newMoveThisWeekIn(hist, input.today);
   return {
     data, today: input.today, mode: input.mode, theme: input.theme || null, checks: input.checks || {},
     sessions, block: input.block || null, seed,
@@ -359,8 +362,8 @@ function makeContext(data: EngineData, input: BuildInput): Ctx {
     jitter: (id: string) => Rng.create(`${seed}|${id}`)(),
     debt,
     maxDebt: Math.max(1, ...Object.values(debt.patterns), ...Object.values(debt.regions)),
-    coverageLast: Coverage.exposures(data, sessions, input.today).last,
-    stats: Select.stats(data, sessions, input.today),
+    coverageLast: Coverage.exposuresIn(hist, input.today).last,
+    stats: Select.statsIn(hist, input.today),
     saved: new Set(input.savedIds || []),
     used: new Set(),
     newMoveWeek,
@@ -368,11 +371,12 @@ function makeContext(data: EngineData, input: BuildInput): Ctx {
     coreRegions: null,
     targets: new Map(),
     skeleton: modeSkeleton(data.skeleton, input.mode),
+    hist,
   };
 }
 
-function buildPlan(data: EngineData, input: BuildInput): Plan {
-  const ctx = makeContext(data, input);
+function buildPlan(data: EngineData, input: BuildInput, hist?: HistIndex): Plan {
+  const ctx = makeContext(data, input, hist);
   const budget = input.minutes * 60;
   const shares = ctx.skeleton.shares;
   const mins = ctx.skeleton.min;
@@ -641,9 +645,11 @@ const SWAP_SLACK_SECONDS = 60;
  * The unswapped plan and each slot's swap pool: every move the slot may take on its own terms, best first, so a
  * slot offers 3 alternatives whenever 3 fit the plan, before or after other swaps (`k` is kept for callers).
  */
-function prepare(data: EngineData, input: BuildInput, _k = 3): Prepared {
-  const base = buildPlan(data, input);
-  const ctx = makeContext(data, input);
+function prepare(data: EngineData, input: BuildInput, _k = 3, history?: HistIndex): Prepared {
+  // One history index for the plan and the swap pools (the history is the same; only the plan's own state differs).
+  const hist = HistIndex.for(data, input.sessions || [], history);
+  const base = buildPlan(data, input, hist);
+  const ctx = makeContext(data, input, hist);
   const slots: Record<string, SwapSlot> = {};
   const current: Record<string, SlotChoice> = {};
   // A move scores the same in every slot (no position or prep context in the ranking), so score it once.
@@ -719,13 +725,13 @@ function finish(p: Prepared, swaps: Swaps | undefined, k = 3): BuildResult {
   };
 }
 
-function build(data: EngineData, input: BuildInput): BuildResult {
-  return finish(prepare(data, input), input.swaps);
+function build(data: EngineData, input: BuildInput, hist?: HistIndex): BuildResult {
+  return finish(prepare(data, input, 3, hist), input.swaps);
 }
 
 /** Up to k alternatives for one slot (the build carries the top 3 for every slot). */
-function alternatives(data: EngineData, input: BuildInput, slotKey: string, k = 3): SlotChoice[] {
-  const built = finish(prepare(data, input, k), input.swaps, k);
+function alternatives(data: EngineData, input: BuildInput, slotKey: string, k = 3, hist?: HistIndex): SlotChoice[] {
+  const built = finish(prepare(data, input, k, hist), input.swaps, k);
   return Swapping.offered(built.swapState, built.steps, slotKey, k);
 }
 
