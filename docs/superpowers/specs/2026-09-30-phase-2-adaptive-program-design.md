@@ -24,8 +24,10 @@ an account with no program, so 2a can ship before 2b without a half-feature show
 `placeSlots(db, userId, programId, today, prefs)` — idempotent:
 
 - For each ISO week from this week to `placementWeeksAhead` weeks ahead, count this program's slots **by
-  `originalPlanDate` week**, including skipped, completed, moved and archived-by-replacement rows — so a slot the
-  athlete moved or skipped is never re-placed.
+  `originalPlanDate` week**, including skipped, completed, moved and user-removed rows — so a slot the athlete
+  moved, skipped or removed is never re-placed. Rows archived by re-placement (`program_replaced`) do **not** count:
+  a dropped day or a raised goal must be able to refill, and a day wanted again revives that same row (and drops its
+  suppression) rather than inserting a new one.
 - Missing slots go on `preferredDays` in order, then the week's remaining days Monday→Sunday, skipping dates before
   today and dates that already hold a slot of this program.
 - Row: `id = slot-<programId>-<date>`, `plan_id = programId`, `source_workout_id = id`, `title = program.name`,
