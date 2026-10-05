@@ -431,26 +431,36 @@ export async function saveProgramState(db: Db, programId: string, block: Block, 
     .limit(1);
   if (await restoreInProgress(db, program.userId)) return existing?.id ?? block.id;
   const intent = coreBlockIntentSchema.parse({ core: block.core, rotations: block.rotations });
-  if (existing) {
-    await db
-      .update(programBlocks)
-      .set({ intent, weeks: block.weeks, updatedAt: now })
-      .where(eq(programBlocks.id, existing.id));
-    return existing.id;
-  }
+  const update = async (rowId: string): Promise<string> => {
+    await db.update(programBlocks).set({ intent, weeks: block.weeks, updatedAt: now }).where(eq(programBlocks.id, rowId));
+    return rowId;
+  };
+  if (existing) return update(existing.id);
+  // Two builds of the program can start the same block at once (a double tap, a prefetch beside the sheet): the
+  // number is unique per program, so the later insert does nothing and that save updates the row the first one made,
+  // as a save of a number already stored does (audit M3).
   const id = newId();
-  await db.insert(programBlocks).values({
-    id,
-    programId,
-    number: block.number,
-    kind: "core_block",
-    startDate: block.startedAt,
-    weeks: block.weeks,
-    intent,
-    createdAt: now,
-    updatedAt: now,
-  });
-  return id;
+  await db
+    .insert(programBlocks)
+    .values({
+      id,
+      programId,
+      number: block.number,
+      kind: "core_block",
+      startDate: block.startedAt,
+      weeks: block.weeks,
+      intent,
+      createdAt: now,
+      updatedAt: now,
+    })
+    .onConflictDoNothing({ target: [programBlocks.programId, programBlocks.number] });
+  const [stored] = await db
+    .select({ id: programBlocks.id })
+    .from(programBlocks)
+    .where(and(eq(programBlocks.programId, programId), eq(programBlocks.number, block.number)))
+    .limit(1);
+  if (!stored) throw new Error("program_block_not_stored");
+  return stored.id === id ? id : update(stored.id);
 }
 
 export interface EngineContext {

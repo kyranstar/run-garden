@@ -372,6 +372,17 @@ describe("loadProgramState / saveProgramState", () => {
     expect(await loadProgramState(db, p)).toEqual({ ...next, id: second });
   });
 
+  it("two concurrent saves of a new block number both succeed, onto one row (audit M3)", async () => {
+    const p = await seedProgram(userId);
+    const results = await Promise.allSettled([saveProgramState(db, p, block(), NOW), saveProgramState(db, p, block(), NOW)]);
+    expect(results.map((r) => r.status)).toEqual(["fulfilled", "fulfilled"]);
+    const ids = results.map((r) => (r as PromiseFulfilledResult<string>).value);
+    const rows = await db.select().from(programBlocks).where(eq(programBlocks.programId, p));
+    expect(rows.map((r) => r.id)).toEqual([ids[0]]);
+    expect(ids[1]).toBe(ids[0]);
+    expect(await loadProgramState(db, p)).toEqual({ ...block(), id: ids[0] });
+  });
+
   it("two programs keep their own blocks", async () => {
     const a = await seedProgram(userId);
     const b = await seedProgram(userId);
