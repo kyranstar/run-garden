@@ -48,10 +48,25 @@ export async function exportAll(db: Db, userId: string, pageSize = 100): Promise
   return { format: manifest.format, schemaVersion: manifest.schemaVersion, exportedAt: nowInstant(), tables };
 }
 
-/** The pages a table is sent in — the SAME slices for check and rows. */
-export function pagesOf(rows: Row[], pageSize: number): Row[][] {
+/**
+ * The pages a table is sent in — the SAME slices for check and rows: at most `pageSize` rows, and with `maxBytes`
+ * also at most that many bytes of JSON unless a single row is larger (the client's byte budget, Ruling 2a-R9).
+ */
+export function pagesOf(rows: Row[], pageSize: number, maxBytes = Infinity): Row[][] {
   const out: Row[][] = [];
-  for (let i = 0; i < rows.length; i += pageSize) out.push(rows.slice(i, i + pageSize));
+  let page: Row[] = [];
+  let bytes = 2;
+  for (const row of rows) {
+    const size = JSON.stringify(row).length + 1;
+    if (page.length > 0 && (page.length >= pageSize || bytes + size > maxBytes)) {
+      out.push(page);
+      page = [];
+      bytes = 2;
+    }
+    page.push(row);
+    bytes += size;
+  }
+  if (page.length > 0) out.push(page);
   return out;
 }
 
@@ -74,7 +89,7 @@ export async function checkFile(
   userId: string,
   file: ExportFile,
   pageSize = 200,
-  opts: { now?: Date } = {},
+  opts: { now?: Date; maxBytes?: number } = {},
 ): Promise<CheckedFile> {
   void db;
   const ctx = { userId, secret: TEST_SECRET, now: opts.now };
@@ -94,11 +109,13 @@ export async function checkFile(
   const errors: RowError[] = [];
   for (const [table, rows] of Object.entries(file.tables)) {
     if (skip.has(table)) continue;
-    const pages = pagesOf(rows, pageSize);
+    const pages = pagesOf(rows, pageSize, opts.maxBytes);
+    let offset = 0;
     for (let p = 0; p < pages.length; p += 1) {
-      const res = await checkRestorePage({ session: opened.session, table, rows: pages[p], offset: p * pageSize }, ctx);
+      const res = await checkRestorePage({ session: opened.session, table, rows: pages[p], offset }, ctx);
       if (res.ok) tokens.set(`${table}#${p}`, res.token);
       else errors.push(...res.errors);
+      offset += pages[p]!.length;
     }
   }
   return { session: opened.session, restoreId: opened.restoreId, tokens, errors };
@@ -117,10 +134,18 @@ export async function restoreAll(
   db: Db,
   userId: string,
   file: ExportFile,
-  opts: { pageSize?: number; beforeRows?: () => Promise<void>; beforeFinish?: () => Promise<void> } = {},
+  opts: {
+    pageSize?: number;
+    /** The client's byte budget per request (none by default: row-count pages, as before). */
+    maxBytes?: number;
+    /** Sees every rows page sent. */
+    onPage?: (table: string, rows: Row[]) => void;
+    beforeRows?: () => Promise<void>;
+    beforeFinish?: () => Promise<void>;
+  } = {},
 ): Promise<RestoreOutcome> {
   const pageSize = opts.pageSize ?? 200;
-  const checked = await checkFile(db, userId, file, pageSize);
+  const checked = await checkFile(db, userId, file, pageSize, { maxBytes: opts.maxBytes });
   if (checked.errors.length > 0) throw new Error(`check failed: ${checked.errors[0]!.message}`);
   const begun = await beginRestore(
     db,
@@ -132,8 +157,9 @@ export async function restoreAll(
   await opts.beforeRows?.();
   let lost = 0;
   for (const table of begun.tables) {
-    const pages = pagesOf(file.tables[table] ?? [], pageSize);
+    const pages = pagesOf(file.tables[table] ?? [], pageSize, opts.maxBytes);
     for (let p = 0; p < pages.length; p += 1) {
+      opts.onPage?.(table, pages[p]!);
       const res = await restoreRows(
         db,
         userId,

@@ -34,9 +34,10 @@ import { b64urlDecode, b64urlEncode } from "../auth/crypto.js";
 import {
   ACCOUNT_TABLES,
   accountTable,
+  budgetedRows,
   columnKey,
   orderColumns,
-  orderedRows,
+  PAGE_BYTE_BUDGET,
   scopeWhere,
   secretColumns,
   type AccountTable,
@@ -131,6 +132,12 @@ function decodeCursor(cursor: string): string | number {
  * One page of one table: at most `limit` (≤ EXPORT_PAGE_SIZE) of this
  * account's rows whose primary key sorts after `cursor` (null = from the
  * start), secret columns nulled. `nextCursor` is null on the last page.
+ *
+ * A table with large columns (a session build's payload) is paged by BYTES
+ * too — at most `PAGE_BYTE_BUDGET` per page, one row at the least — so a page
+ * of builds is a few build payloads, not five hundred (Ruling 2a-R9). The
+ * client already follows `nextCursor` until it is null, so a short page needs
+ * nothing from it.
  */
 export async function exportTablePage(
   db: Db,
@@ -142,15 +149,13 @@ export async function exportTablePage(
   const entry = exportable(name);
   const size = Math.max(1, Math.min(EXPORT_PAGE_SIZE, Math.floor(limit)));
   const after = cursor === null ? undefined : decodeCursor(cursor);
-  // One extra row says whether another page exists without a second query.
-  const fetched = await orderedRows(db, entry.table, { userId, after, limit: size + 1 });
-  const rows = fetched.slice(0, size);
+  const { rows, more } = await budgetedRows(db, entry.table, { userId, after, limit: size, budget: PAGE_BYTE_BUDGET });
   const secretKeys = secretColumns(name).map((col) => columnKey(entry.table, col));
   if (secretKeys.length > 0) {
     for (const row of rows) for (const key of secretKeys) row[key] = null;
   }
   const [pk] = orderColumns(entry.table);
   const last = rows[rows.length - 1];
-  const nextCursor = fetched.length > size && last && pk ? encodeCursor(last[columnKey(entry.table, pk.name)]) : null;
+  const nextCursor = more && last && pk ? encodeCursor(last[columnKey(entry.table, pk.name)]) : null;
   return { rows, nextCursor };
 }

@@ -248,6 +248,31 @@ export function secretColumns(name: string): readonly string[] {
   return SECRETS[name] ?? [];
 }
 
+/**
+ * Columns whose values can be large enough that a page of the table must be sized in BYTES, not rows (Ruling
+ * 2a-R9): a stored session build is 107–142 KB of JSON, so the row-count pages every other table uses would hold
+ * tens of megabytes. SQL names. Every reader that pages a table — the export, the copier, a table hash — measures
+ * these columns before it reads (`budgetedRows`).
+ */
+const LARGE_COLUMNS: Readonly<Record<string, readonly string[]>> = {
+  session_builds: ["payload"],
+};
+
+export function largeColumns(name: string): readonly string[] {
+  accountTable(name); // throws on an unknown table
+  return LARGE_COLUMNS[name] ?? [];
+}
+
+/**
+ * The most row data one page carries, on every path that pages a table: an export page, a copier step, a table
+ * hash's read (and, client side, a restore request — `RESTORE_PAGE_BYTES` in @rg/api-client, kept below this).
+ * Sized so a page of build payloads stays a few milliseconds of parsing and serialising, well inside the Worker's
+ * 10 ms CPU limit. A single row larger than this still travels, alone.
+ */
+export const PAGE_BYTE_BUDGET = 256 * 1024;
+/** What a measured row's other (small) columns are counted as. */
+const ROW_OVERHEAD_BYTES = 512;
+
 /** The drizzle column whose SQL name is `sqlName`. */
 export function columnBySqlName(table: SQLiteTable, sqlName: string): SQLiteColumn {
   const col = Object.values(getTableColumns(table)).find((c) => c.name === sqlName);
@@ -359,10 +384,22 @@ const NO_LIMIT = 2_147_483_647;
 export async function orderedRows(
   db: Db,
   table: SQLiteTable,
-  opts: { userId?: string; offset?: number; limit?: number; after?: string | number } = {},
+  opts: PageOpts = {},
 ): Promise<Record<string, unknown>[]> {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  let q = (db.select().from(table as any) as any).$dynamic();
+  return (await pageQuery((db.select().from(table as any) as any).$dynamic(), table, opts)) as Record<string, unknown>[];
+}
+
+interface PageOpts {
+  userId?: string;
+  offset?: number;
+  limit?: number;
+  after?: string | number;
+}
+
+/** `orderedRows`' WHERE, ORDER BY and LIMIT/OFFSET on any select from `table`. */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function pageQuery(q: any, table: SQLiteTable, opts: PageOpts): any {
   const conditions: SQL[] = [];
   if (opts.userId !== undefined) conditions.push(scopeWhere(accountTable(getTableName(table)), opts.userId));
   if (opts.after !== undefined) {
@@ -375,7 +412,58 @@ export async function orderedRows(
   if (opts.limit !== undefined || opts.offset !== undefined) {
     q = q.limit(opts.limit ?? NO_LIMIT).offset(opts.offset ?? 0);
   }
-  return (await q) as Record<string, unknown>[];
+  return q;
+}
+
+export interface BudgetedPage {
+  /** The page, in `orderedRows` order. */
+  rows: Record<string, unknown>[];
+  /** Whether rows follow this page. */
+  more: boolean;
+  /** The page's measured bytes (its large columns plus a per-row allowance); null for a table with none. */
+  bytes: number | null;
+}
+
+/**
+ * The next page of `table` in `orderedRows` order: at most `limit` rows and — for a table with large columns —
+ * at most `budget` bytes of them, measured in SQL before anything is read (Ruling 2a-R9). A page holds at least
+ * one row, however large, unless `orEmpty` (a caller already holding rows of its own budget): then a first row
+ * over the budget leaves the page empty, with `more` set. `more` says whether rows follow (as of the read).
+ */
+export async function budgetedRows(
+  db: Db,
+  table: SQLiteTable,
+  opts: Omit<PageOpts, "limit"> & { limit: number; budget?: number; orEmpty?: boolean },
+): Promise<BudgetedPage> {
+  const limit = Math.max(1, Math.floor(opts.limit));
+  const large = LARGE_COLUMNS[getTableName(table)] ?? [];
+  if (large.length === 0) {
+    const fetched = await orderedRows(db, table, { ...opts, limit: limit + 1 });
+    return { rows: fetched.slice(0, limit), more: fetched.length > limit, bytes: null };
+  }
+  const budget = opts.budget ?? PAGE_BYTE_BUDGET;
+  const size = sql.join(
+    large.map((col) => sql`coalesce(length(cast(${columnBySqlName(table, col)} as blob)), 0)`),
+    sql` + `,
+  );
+  const sizes = (await pageQuery(
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    (db.select({ bytes: sql<number>`${size}` }).from(table as any) as any).$dynamic(),
+    table,
+    { ...opts, limit: limit + 1 },
+  )) as Array<{ bytes: number }>;
+  let take = 0;
+  let bytes = 0;
+  for (const s of sizes) {
+    const rowBytes = Number(s.bytes) + ROW_OVERHEAD_BYTES;
+    if (take >= limit || ((take > 0 || opts.orEmpty) && bytes + rowBytes > budget)) break;
+    take += 1;
+    bytes += rowBytes;
+  }
+  if (take === 0) return { rows: [], more: sizes.length > 0, bytes: 0 };
+  const { budget: _budget, orEmpty: _orEmpty, ...page } = opts;
+  const rows = await orderedRows(db, table, { ...page, limit: take });
+  return { rows, more: sizes.length > take, bytes };
 }
 
 /**
@@ -416,16 +504,54 @@ export async function hashRows(rows: readonly unknown[]): Promise<string> {
   return sha256OfText(canonicalJson(rows));
 }
 
-/** Rows one `hashTable` read asks for at a time. */
+/** Rows one `hashTable` read asks for at a time (fewer for a table with large columns: `budgetedRows`). */
 export const HASH_PAGE_SIZE = 500;
 
 /**
- * The digest `hashRows(await orderedRows(db, table, { userId }))` would give,
- * read in keyset pages so a large table never sits in memory as row objects
- * all at once (the parity harness and the copier's verify hash whole tables
- * inside one Worker invocation). `mask` names SQL columns hashed as null —
- * secrets, which a copy never carries, and volatile stamps. A table with no
- * single-column key (coach_locks) is read in one query.
+ * Canonical JSON text a table hash holds before it digests it. A table whose whole text fits hashes exactly as
+ * `hashRows` would; a longer one is digested in pieces as it is read (below).
+ */
+export const HASH_CHUNK_CHARS = 256 * 1024;
+
+/**
+ * A table's digest, taken incrementally (Ruling 2a-R9). The text is the one `hashRows` digests — "[" + each row's
+ * canonical JSON joined by "," + "]" — fed row by row:
+ *  - while it is at most `HASH_CHUNK_CHARS` long it is held, and its digest is plain sha-256 of it — identical to
+ *    `hashRows` over the same rows, so a small table's hash is what it always was;
+ *  - once it is longer, it is cut into pieces at ROW boundaries (a piece closes after the row that takes it past
+ *    `HASH_CHUNK_CHARS`), each piece is digested as it closes, and the table's digest is sha-256 of
+ *    "chunks:" + the pieces' hex digests in order.
+ * The pieces depend only on the rows, never on how they were paged in, so two databases holding the same rows
+ * agree (the copier's verify, the parity harness); holding one piece at a time keeps a table of build payloads
+ * out of memory.
+ */
+class TableDigest {
+  private text = "[";
+  private pieces: string[] = [];
+  private count = 0;
+
+  async add(rowJson: string): Promise<void> {
+    this.text += this.count === 0 ? rowJson : `,${rowJson}`;
+    this.count += 1;
+    if (this.text.length > HASH_CHUNK_CHARS) {
+      this.pieces.push(await sha256OfText(this.text));
+      this.text = "";
+    }
+  }
+
+  async finish(): Promise<{ rows: number; sha256: string }> {
+    this.text += "]";
+    if (this.pieces.length === 0) return { rows: this.count, sha256: await sha256OfText(this.text) };
+    this.pieces.push(await sha256OfText(this.text));
+    return { rows: this.count, sha256: await sha256OfText(`chunks:${this.pieces.join("")}`) };
+  }
+}
+
+/**
+ * The table's digest (`TableDigest`), read in keyset pages — byte-budgeted for a table with large columns — so
+ * neither the rows nor their text ever sit in memory whole (the parity harness and the copier's verify hash
+ * whole tables inside one Worker invocation). `mask` names SQL columns hashed as null — secrets, which a copy
+ * never carries, and volatile stamps. A table with no single-column key (coach_locks) is read in one query.
  */
 export async function hashTable(
   db: Db,
@@ -433,28 +559,26 @@ export async function hashTable(
   opts: { userId?: string; mask?: readonly string[]; pageSize?: number } = {},
 ): Promise<{ rows: number; sha256: string }> {
   const maskKeys = (opts.mask ?? []).map((col) => columnKey(table, col));
-  const parts: string[] = [];
-  const add = (rows: Record<string, unknown>[]): void => {
+  const digest = new TableDigest();
+  const add = async (rows: Record<string, unknown>[]): Promise<void> => {
     for (const row of rows) {
       for (const key of maskKeys) row[key] = null;
-      parts.push(canonicalJson(row));
+      await digest.add(canonicalJson(row));
     }
   };
   const pk = getTableConfig(table).columns.filter((c) => c.primary);
   if (pk.length !== 1) {
-    add(await orderedRows(db, table, { userId: opts.userId }));
+    await add(await orderedRows(db, table, { userId: opts.userId }));
   } else {
     const size = Math.max(1, Math.floor(opts.pageSize ?? HASH_PAGE_SIZE));
     const key = columnKey(table, pk[0]!.name);
     let after: string | number | undefined;
     for (;;) {
-      const page = await orderedRows(db, table, { userId: opts.userId, after, limit: size });
-      add(page);
-      if (page.length < size) break;
-      after = page[page.length - 1]![key] as string | number;
+      const page = await budgetedRows(db, table, { userId: opts.userId, after, limit: size });
+      await add(page.rows);
+      if (!page.more || page.rows.length === 0) break;
+      after = page.rows[page.rows.length - 1]![key] as string | number;
     }
   }
-  // canonicalJson of an array is exactly "[" + its items' canonical JSON
-  // joined by "," + "]", so this equals hashRows over the same rows.
-  return { rows: parts.length, sha256: await sha256OfText(`[${parts.join(",")}]`) };
+  return digest.finish();
 }

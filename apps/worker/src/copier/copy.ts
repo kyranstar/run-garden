@@ -35,10 +35,11 @@ import { oauthStates, sessions } from "@rg/database";
 import {
   ACCOUNT_TABLES,
   accountTable,
+  budgetedRows,
   columnBySqlName,
   columnKey,
   hashTable,
-  orderedRows,
+  PAGE_BYTE_BUDGET,
   secretColumns,
   type AccountTable,
 } from "../services/account-tables.js";
@@ -95,18 +96,27 @@ function keysetKey(entry: AccountTable): string | null {
 }
 
 /**
- * Copy at most `budget.maxRows` rows, continuing from `state`, and return the
- * state to continue from. Pure in its inputs: the same state against the
- * same SRC copies the same rows, so any returned state can be resumed.
+ * Copy at most `budget.maxRows` rows — and, of a table with large columns (a
+ * session build's payload), at most `budget.maxBytes` (default
+ * `PAGE_BYTE_BUDGET`, one row at the least) — continuing from `state`, and
+ * return the state to continue from. Pure in its inputs: the same state
+ * against the same SRC copies the same rows, so any returned state can be
+ * resumed.
  */
-export async function copyStep(src: Db, dst: Db, state: CopyState, budget: { maxRows: number }): Promise<CopyState> {
+export async function copyStep(
+  src: Db,
+  dst: Db,
+  state: CopyState,
+  budget: { maxRows: number; maxBytes?: number },
+): Promise<CopyState> {
   const done = [...state.done];
   let table = state.table;
   let cursor = state.cursor;
   let rows = state.rows;
   let remaining = Math.max(1, Math.floor(budget.maxRows));
+  let remainingBytes = budget.maxBytes ?? PAGE_BYTE_BUDGET;
 
-  while (remaining > 0) {
+  while (remaining > 0 && remainingBytes > 0) {
     if (table === null) {
       const next = COPY_TABLES.find((t) => !done.includes(t.name));
       if (!next) break;
@@ -117,9 +127,14 @@ export async function copyStep(src: Db, dst: Db, state: CopyState, budget: { max
     const key = keysetKey(entry);
     const limit = remaining;
     const offset = typeof cursor === "number" && key === null ? cursor : 0;
-    const page = key
-      ? await orderedRows(src, entry.table, { after: cursor ?? undefined, limit })
-      : await orderedRows(src, entry.table, { offset, limit });
+    // Once this step holds rows, a heavy row that would take it past the byte budget waits for the next step.
+    const orEmpty = rows > state.rows;
+    const read = key
+      ? await budgetedRows(src, entry.table, { after: cursor ?? undefined, limit, budget: remainingBytes, orEmpty })
+      : await budgetedRows(src, entry.table, { offset, limit, budget: remainingBytes, orEmpty });
+    const page = read.rows;
+    if (read.bytes !== null) remainingBytes -= read.bytes;
+    if (page.length === 0 && read.more) break; // the budget is spent; this table resumes here
 
     if (page.length > 0) {
       const secrets = secretColumns(entry.name).map((col) => columnKey(entry.table, col));
@@ -132,7 +147,7 @@ export async function copyStep(src: Db, dst: Db, state: CopyState, budget: { max
       remaining -= page.length;
     }
 
-    if (page.length < limit) {
+    if (!read.more) {
       done.push(table);
       table = null;
       cursor = null;
