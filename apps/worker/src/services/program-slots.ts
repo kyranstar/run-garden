@@ -30,7 +30,7 @@
  *
  * Every writer here is a no-op while a restore is replacing the account (ruling B2).
  */
-import { and, eq, gt, gte, inArray, isNull, lte, or, sql } from "drizzle-orm";
+import { and, eq, gt, gte, inArray, isNull, lte, max, ne, or, sql } from "drizzle-orm";
 import { calendarEventSuppressions, plannedWorkouts, programs, sessionBuilds } from "@rg/database";
 import { adaptiveConfigSchema, addDays, nowInstant, startOfIsoWeek, todayInZone, type UserPreferences } from "@rg/domain";
 import { restoreInProgress } from "./account-state.js";
@@ -193,7 +193,8 @@ export async function placeSlots(
   const firstMonday = startOfIsoWeek(today);
   const lastSunday = addDays(firstMonday, 7 * (config.placementWeeksAhead + 1) - 1);
   // Planned in the window (rule 1's count, and every id a new slot could take), or sitting in it now (a slot
-  // moved in from outside still holds its date).
+  // moved in from outside still holds its date). A program that wants no slots also reads every live slot past
+  // the window: retiring retracts its flexible future slots wherever an earlier, wider window put them (M2).
   const rows = await db
     .select()
     .from(plannedWorkouts)
@@ -205,6 +206,7 @@ export async function placeSlots(
         or(
           and(gte(plannedWorkouts.originalPlanDate, firstMonday), lte(plannedWorkouts.originalPlanDate, lastSunday)),
           and(gte(plannedWorkouts.effectiveDate, firstMonday), lte(plannedWorkouts.effectiveDate, lastSunday)),
+          goal === 0 ? and(isNull(plannedWorkouts.archivedAt), gt(plannedWorkouts.effectiveDate, lastSunday)) : undefined,
         ),
       ),
     );
@@ -257,6 +259,8 @@ export async function placeSlots(
         else toInsert.push(date);
       }
     }
+    // Past the window only a program that wants no slots reads anything: every flexible one there goes.
+    for (const r of rows) if (r.effectiveDate > lastSunday && flexibleIds.has(r.id)) toArchive.push(r);
     return { toArchive, toRevive, toInsert };
   };
 
@@ -474,9 +478,11 @@ export interface PlacementSweepStats {
 }
 
 /**
- * The hourly pass: every active adaptive program of every user keeps its weeks filled as the days roll on. Each
- * user's today is in their own timezone; an account a restore is replacing is skipped; one program failing does
- * not stop the rest.
+ * The hourly pass: every active adaptive program of every user keeps its weeks filled as the days roll on — and
+ * every adaptive program that is NOT active but still owns a flexible-looking slot after its user's today is
+ * visited too, so its goal-0 pass retracts it (audit 2a-model M2: a retire racing this pass, which read the
+ * program as active and placed the far week after the retire's own pass ran). Each user's today is in their own
+ * timezone; an account a restore is replacing is skipped; one program failing does not stop the rest.
  */
 export async function placeSlotsForAllPrograms(db: Db, at: Date = new Date()): Promise<PlacementSweepStats> {
   const stats: PlacementSweepStats = { programs: 0, placed: 0, archived: 0, failed: 0 };
@@ -484,14 +490,37 @@ export async function placeSlotsForAllPrograms(db: Db, at: Date = new Date()): P
     .select({ id: programs.id, userId: programs.userId })
     .from(programs)
     .where(and(eq(programs.kind, "adaptive"), eq(programs.status, "active")));
-  const byUser = new Map<string, string[]>();
-  for (const p of active) byUser.set(p.userId, [...(byUser.get(p.userId) ?? []), p.id]);
+  // Every zone's today is at most a day behind UTC's, so a slot still ahead of its athlete is dated on or after
+  // UTC's today; each candidate is then held to its own user's today below.
+  const lingering = await db
+    .select({ id: programs.id, userId: programs.userId, latest: max(plannedWorkouts.effectiveDate) })
+    .from(programs)
+    .innerJoin(plannedWorkouts, eq(plannedWorkouts.planId, programs.id))
+    .where(
+      and(
+        eq(programs.kind, "adaptive"),
+        ne(programs.status, "active"),
+        eq(plannedWorkouts.userId, programs.userId),
+        eq(plannedWorkouts.origin, "program"),
+        isNull(plannedWorkouts.archivedAt),
+        eq(plannedWorkouts.completionState, "scheduled"),
+        eq(plannedWorkouts.contentState, "outline"),
+        sql`${plannedWorkouts.effectiveDate} = ${plannedWorkouts.originalPlanDate}`,
+        gte(plannedWorkouts.effectiveDate, todayInZone("UTC", at)),
+      ),
+    )
+    .groupBy(programs.id, programs.userId);
+  const byUser = new Map<string, Array<{ id: string; latest: string | null }>>();
+  for (const p of active) byUser.set(p.userId, [...(byUser.get(p.userId) ?? []), { id: p.id, latest: null }]);
+  for (const p of lingering) byUser.set(p.userId, [...(byUser.get(p.userId) ?? []), { id: p.id, latest: p.latest }]);
 
   const now = nowInstant(at);
-  for (const [userId, programIds] of byUser) {
+  for (const [userId, candidates] of byUser) {
     if (await restoreInProgress(db, userId)) continue;
     const prefs = await loadPreferences(db, userId);
     const today = todayInZone(prefs.timezone, at);
+    // An active program always; one that is not, only while a slot of it is still ahead of today.
+    const programIds = candidates.filter((c) => c.latest === null || c.latest > today).map((c) => c.id);
     for (const programId of programIds) {
       stats.programs += 1;
       try {

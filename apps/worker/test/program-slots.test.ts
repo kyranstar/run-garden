@@ -469,6 +469,20 @@ describe("re-placement after an edit", () => {
     expect(await placeSlots(db, userId, p, MON, prefs, NOW)).toEqual({ placed: [], archived: [] });
   });
 
+  it("retiring retracts every flexible future slot, however far out it sits — even past a shrunk window", async () => {
+    // Audit 2a-model M2 (probe P4): `{placementWeeksAhead: 1, status: "retired"}` retracted 3 slots and left 9.
+    const p = await seedProgram(db, userId, { weeklyGoal: 3, preferredDays: [0, 2, 4], placementWeeksAhead: 4 });
+    await placeSlots(db, userId, p, MON, prefs, NOW);
+    await move(slotId(p, day(3, 2)), day(3, 3)); // the athlete's own move stays
+    await updateProgram(db, userId, p, { config: { placementWeeksAhead: 1 }, status: "retired" }, NOW);
+
+    const res = await placeSlots(db, userId, p, MON, prefs, NOW);
+    expect(res.placed).toEqual([]);
+    const live = (await rowsOf(p)).filter((r) => !r.archivedAt);
+    expect(sorted(live.map((r) => r.id))).toEqual(ids(p, [day(0, 0), day(3, 2)]));
+    expect(await placeSlots(db, userId, p, MON, prefs, NOW)).toEqual({ placed: [], archived: [] });
+  });
+
   it("a slot the athlete touched is never retracted: re-timed on its day, moved away and back, or customised", async () => {
     // Ruling 2a-R12 (audit 2a-model M3): flexibility read only the dates, so these went with a lowered goal.
     const p = await seedProgram(db, userId, { weeklyGoal: 4, preferredDays: PREFERRED, placementWeeksAhead: 3 });
@@ -631,6 +645,22 @@ describe("the hourly job", () => {
     expect(await rowsOf(retired)).toEqual([]);
     expect(await rowsOf(coach)).toEqual([]);
     expect(await rowsOf(marked)).toEqual([]);
+  });
+
+  it("also visits a retired program that still owns flexible future slots, and retracts them", async () => {
+    // Audit 2a-model M2(b): a retire racing the hourly pass — the cron read the program as active and placed the
+    // far week after the retire's own pass ran. Nothing visited a retired program again.
+    const today = todayInZone(prefs.timezone);
+    const p = await seedProgram(db, userId, { weeklyGoal: 3, placementWeeksAhead: 2 });
+    await placeSlots(db, userId, p, today, prefs, nowInstant());
+    await db.update(programs).set({ status: "retired" }).where(eq(programs.id, p));
+    const future = (await rowsOf(p)).filter((r) => r.effectiveDate > today);
+    expect(future.length).toBeGreaterThan(0);
+
+    await placeSlotsForAllPrograms(db);
+    for (const r of future) expect(await row(r.id)).toMatchObject({ archiveReason: "program_replaced" });
+    // Settled: the next sweep finds nothing to visit there.
+    expect(await placeSlotsForAllPrograms(db)).toMatchObject({ programs: 0, placed: 0, archived: 0 });
   });
 });
 
