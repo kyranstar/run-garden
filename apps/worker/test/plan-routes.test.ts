@@ -791,3 +791,88 @@ describe("GET /week — brief facts (2026-08-11 rework §4)", () => {
     expect(deriveHeadline({ adherencePct: 40, loadRatio: 0.9, raceInDays: null, deloadWeek: false })).toBe("rebuilding");
   });
 });
+
+describe("GET /today — todaySessions, origin and content state", () => {
+  const today = () => todayInZone(prefs.timezone);
+
+  async function slot(opts: { id: string; time: string; origin?: "program" | "on_demand"; state?: string; date?: string; archived?: boolean }) {
+    const date = opts.date ?? today();
+    await db.insert(plannedWorkouts).values({
+      id: opts.id,
+      userId,
+      planId: "prog-1",
+      sourceWorkoutId: opts.id,
+      title: "Garden program",
+      category: "yoga",
+      sport: "yoga",
+      originalPlanDate: date,
+      lastVerifiedCorosDate: "",
+      effectiveDate: date,
+      effectiveTime: opts.time,
+      sourceContentFingerprint: "program",
+      calendarBlockDurationSeconds: 1800,
+      corosSyncState: "calendar_only",
+      origin: opts.origin ?? "program",
+      contentState: opts.state ?? "outline",
+      archivedAt: opts.archived ? nowInstant() : null,
+      createdAt: nowInstant(),
+      updatedAt: nowInstant(),
+    });
+  }
+  async function build(workoutId: string, version: number, date: string, mode: string, minutes: number, theme: string | null) {
+    await db.insert(schema.sessionBuilds).values({
+      id: `${workoutId}-b${version}`,
+      userId,
+      workoutId,
+      version,
+      engineVersion: "e",
+      inputsHash: `h${version}`,
+      payload: {
+        build: { date, mode, minutes },
+        view: { mode, minutes, theme: theme ? { id: theme.toLowerCase(), name: theme } : null },
+      },
+      lockedAt: null,
+      createdAt: nowInstant(),
+    });
+  }
+  type Today = {
+    nextWorkout: { id: string } | null;
+    todaySessions: Array<{
+      workout: { id: string; origin: string | null; contentState: string | null; programId: string | null };
+      build: { mode: string; theme: string | null; minutes: number } | null;
+    }>;
+  };
+
+  it("lists a run and a built program slot by time, each with origin and content state, the slot with its build", async () => {
+    const run = await insertWorkout({ effectiveDate: today() }); // 07:00
+    await slot({ id: "slot-prog-1-a", time: "18:00", state: "built" });
+    await build("slot-prog-1-a", 1, today(), "consistent", 35, "Hinge");
+    const body = (await (await client().get("/api/plan/today")).json()) as Today;
+    expect(body.todaySessions.map((s) => s.workout.id)).toEqual([run, "slot-prog-1-a"]);
+    expect(body.todaySessions[0]!.build).toBeNull();
+    expect(body.todaySessions[1]!.workout).toMatchObject({ origin: "program", contentState: "built", programId: "prog-1" });
+    expect(body.todaySessions[1]!.build).toEqual({ mode: "consistent", theme: "Hinge", minutes: 35 });
+    expect(body.nextWorkout?.id).toBe(run);
+  });
+
+  it("an outline slot has no build; an archived row and tomorrow's row are left out; the latest build wins", async () => {
+    await slot({ id: "s-outline", time: "08:00" });
+    await slot({ id: "s-gone", time: "09:00", archived: true });
+    await slot({ id: "s-tomorrow", time: "10:00", date: addDays(today(), 1) });
+    await slot({ id: "s-od", time: "11:00", origin: "on_demand", state: "built" });
+    await build("s-od", 1, today(), "build", 20, null);
+    await build("s-od", 2, today(), "recovery", 25, "Rest");
+    const body = (await (await client().get("/api/plan/today")).json()) as Today;
+    expect(body.todaySessions.map((s) => s.workout.id)).toEqual(["s-outline", "s-od"]);
+    expect(body.todaySessions[0]!.build).toBeNull();
+    expect(body.todaySessions[1]!.build).toEqual({ mode: "recovery", theme: "Rest", minutes: 25 });
+  });
+
+  it("an account with no program gets only its own rows, with no program id", async () => {
+    const run = await insertWorkout({ effectiveDate: today() });
+    const body = (await (await client().get("/api/plan/today")).json()) as Today;
+    expect(body.todaySessions.map((s) => s.workout.id)).toEqual([run]);
+    expect(body.todaySessions[0]!.workout.programId).toBeNull();
+    expect(body.nextWorkout?.id).toBe(run);
+  });
+});

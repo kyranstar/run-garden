@@ -14,6 +14,7 @@ import {
   plannedWorkouts,
   providerConnections,
   scheduleOverrides,
+  sessionBuilds,
   sleepRecords,
   trainingPlans,
   workoutCompletionMatches,
@@ -442,6 +443,11 @@ function workoutDto(
     ...(view?.appPushed ? { appPushed: true } : {}),
     completionState: w.completionState,
     archived: !!w.archivedAt,
+    // Where the row came from and how far its content has got (Phase 2a).
+    // `programId` only for the app's own rows, whose plan id IS the program's.
+    origin: w.origin ?? null,
+    contentState: w.contentState ?? null,
+    programId: w.origin === "program" || w.origin === "on_demand" ? w.planId : null,
     // Lift/mobility prescription, formatted once here so the sheet can't
     // invent its own notation, and carrying the ONE fact the flat
     // stageSummary cannot: which movements the watch's own library knows
@@ -484,6 +490,35 @@ function sleepDto(
   };
 }
 
+/**
+ * Today's rows (one per slot, in the order read) with each program row's current build summarised as
+ * `{mode, theme, minutes}`: the locked build, else the latest made for today. Null for any other row, or an
+ * outline with nothing built for today yet.
+ */
+function groupTodaySessions(
+  rows: Array<{ w: typeof plannedWorkouts.$inferSelect; b: typeof sessionBuilds.$inferSelect | null }>,
+  today: string,
+): Array<{ row: typeof plannedWorkouts.$inferSelect; build: { mode: string; theme: string | null; minutes: number } | null }> {
+  const byId = new Map<string, { row: typeof plannedWorkouts.$inferSelect; builds: Array<typeof sessionBuilds.$inferSelect> }>();
+  for (const { w, b } of rows) {
+    const entry = byId.get(w.id) ?? { row: w, builds: [] };
+    if (b) entry.builds.push(b);
+    byId.set(w.id, entry);
+  }
+  type Stored = { build?: { date?: string }; view?: { mode: string; minutes: number; theme: { name: string } | null } };
+  return [...byId.values()].map(({ row, builds }) => {
+    const sorted = [...builds].sort((a, b) => b.version - a.version);
+    const current =
+      sorted.find((b) => b.lockedAt !== null) ??
+      sorted.find((b) => b.version > 0 && (b.payload as Stored).build?.date === today);
+    const view = current ? (current.payload as Stored).view : undefined;
+    return {
+      row,
+      build: view ? { mode: view.mode, theme: view.theme?.name ?? null, minutes: view.minutes } : null,
+    };
+  });
+}
+
 /** The Today payload: next workout, statuses, readiness, garden preview. */
 planRoutes.get("/today", async (c) => {
   const db = c.get("db");
@@ -509,6 +544,7 @@ planRoutes.get("/today", async (c) => {
     latestCoachMsg,
     consistencyRows,
     lastNight,
+    todayRows,
   ] = await Promise.all([
     exerciseNameMap(db),
     db
@@ -618,7 +654,23 @@ planRoutes.get("/today", async (c) => {
       .from(sleepRecords)
       .where(and(eq(sleepRecords.userId, userId), eq(sleepRecords.date, today)))
       .limit(1),
+    // Every live row dated today with its builds (one join, so one query): the
+    // Today card lists them all, not only the next. Builds only exist for the
+    // app's own rows, so any other row comes back with a null build.
+    db
+      .select({ w: plannedWorkouts, b: sessionBuilds })
+      .from(plannedWorkouts)
+      .leftJoin(sessionBuilds, eq(sessionBuilds.workoutId, plannedWorkouts.id))
+      .where(
+        and(
+          eq(plannedWorkouts.userId, userId),
+          eq(plannedWorkouts.effectiveDate, today),
+          isNull(plannedWorkouts.archivedAt),
+        ),
+      )
+      .orderBy(asc(plannedWorkouts.effectiveTime), asc(plannedWorkouts.id)),
   ]);
+  const todaySessionRows = groupTodaySessions(todayRows, today);
   const next = upcoming.find((w) => w.category !== "rest") ?? upcoming[0];
   const snapshot = gardenRows[0]?.snapshot as unknown as GardenSnapshot | undefined;
 
@@ -626,13 +678,17 @@ planRoutes.get("/today", async (c) => {
   // member of upcoming, included here via the same dedup-by-id map).
   // Presence was already fetched above — threaded through, not re-queried.
   const syncViewSource = new Map<string, typeof plannedWorkouts.$inferSelect>();
-  for (const w of [...upcoming, ...unresolved, ...attention]) syncViewSource.set(w.id, w);
+  for (const w of [...upcoming, ...unresolved, ...attention, ...todaySessionRows.map((t) => t.row)]) syncViewSource.set(w.id, w);
   const syncViews = await loadWorkoutViews(db, userId, [...syncViewSource.values()], prefs, presence, today);
 
   return c.json({
     today,
     nextWorkout: next ? workoutDto(next, syncViews.get(next.id), catalog) : null,
     upcoming: upcoming.map((w) => workoutDto(w, syncViews.get(w.id), catalog)),
+    todaySessions: todaySessionRows.map((t) => ({
+      workout: workoutDto(t.row, syncViews.get(t.row.id), catalog),
+      build: t.build,
+    })),
     unresolved: unresolved.map((w) => workoutDto(w, syncViews.get(w.id), catalog)),
     needsAttention: attention.map((w) => workoutDto(w, syncViews.get(w.id), catalog)),
     sync: {

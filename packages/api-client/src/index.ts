@@ -99,6 +99,12 @@ export const put = <T>(path: string, body?: unknown) =>
 
 export interface WorkoutDto {
   id: string;
+  /** Where the row came from: program | on_demand for the app's own sessions; null for rows not yet labelled. */
+  origin?: string | null;
+  /** How far an app session's content has got; null for rows that have none. */
+  contentState?: "outline" | "built" | "started" | "done" | null;
+  /** The program a program or on-demand row belongs to; null otherwise. */
+  programId?: string | null;
   /** Human display name — the server substitutes category words when COROS
    * sent an opaque code ("T1004"); the raw code rides in corosName. */
   title: string;
@@ -170,6 +176,11 @@ export interface TodayResponse {
   today: string;
   nextWorkout: WorkoutDto | null;
   upcoming: WorkoutDto[];
+  /** Every live row dated today, by time. `build` is the app session's current build, when it has one. */
+  todaySessions: Array<{
+    workout: WorkoutDto;
+    build: { mode: "recovery" | "consistent" | "build"; theme: string | null; minutes: number } | null;
+  }>;
   unresolved: WorkoutDto[];
   needsAttention: WorkoutDto[];
   sync: {
