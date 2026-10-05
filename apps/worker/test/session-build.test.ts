@@ -20,7 +20,9 @@ import {
 import type { Db } from "../src/services/db.js";
 import type { Env } from "../src/env.js";
 import {
+  BUILD_CONFIG_KEYS,
   buildSession,
+  composeBuild,
   loadSession,
   NotBuiltError,
   NotTodayError,
@@ -30,7 +32,7 @@ import {
   startSession,
   type SessionResponse,
 } from "../src/services/session-build.js";
-import { loadProgramState, saveProgramState } from "../src/services/engine-inputs.js";
+import { loadEngineContext, loadProgramState, saveProgramState } from "../src/services/engine-inputs.js";
 import { slotId } from "../src/services/program-slots.js";
 import { conditionRoutes, sessionRoutes } from "../src/routes/sessions.js";
 import { createSession, SESSION_COOKIE } from "../src/auth/sessions.js";
@@ -237,6 +239,36 @@ describe("building today's session", () => {
     expect(allowed).toContain(res.view!.mode);
     expect(res.view!.proposedMode).toBe(res.view!.mode);
     expect(res.view!.modeReasons[0]).toContain(`doesn't include ${proposed} sessions`);
+  });
+
+  it("editing the program's modes rebuilds today's session within them (audit I1)", async () => {
+    const id = await seedSlot(TODAY);
+    const first = await buildSession(db, userId, id, { overrides: { mode: "build" } }, ctx());
+    expect(first.view!.mode).toBe("build");
+    await db
+      .update(programs)
+      .set({ config: adaptiveConfigSchema.parse({ defaultMinutes: 30, modes: ["recovery", "consistent"] }) })
+      .where(eq(programs.id, programId));
+    const again = await buildSession(db, userId, id, {}, ctx({ now: LATER }));
+    expect(again.build!.version).toBe(2);
+    expect(again.view!.mode).toBe("consistent");
+    expect(again.view!.modeReasons[0]).toBe("Your program doesn't include build sessions, so this is a consistent one.");
+  });
+
+  it("the build reads only the program settings the inputs hash covers (audit I1)", async () => {
+    const context = await loadEngineContext(db, userId, programId, { prefs });
+    const read = new Set<string>();
+    const config = new Proxy(context.config, {
+      get: (target, key, receiver) => {
+        if (typeof key === "string") read.add(key);
+        return Reflect.get(target, key, receiver) as unknown;
+      },
+    });
+    for (const overrides of [{}, { mode: "build" as const }]) {
+      composeBuild({ date: TODAY, programId, context: { ...context, config }, block: null, history: [], checks: {}, overrides, swaps: {} });
+    }
+    expect(read.size).toBeGreaterThan(0);
+    expect([...read].filter((k) => !(BUILD_CONFIG_KEYS as readonly string[]).includes(k))).toEqual([]);
   });
 
   it("an identical request returns the stored build — same version, nothing written", async () => {

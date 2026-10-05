@@ -30,7 +30,7 @@
  */
 import { and, eq, inArray, isNull, ne } from "drizzle-orm";
 import { conditionChecks, exercisePrefs, plannedWorkouts, programs, sessionBuilds, userConditions } from "@rg/database";
-import { newId, todayInZone, type UserPreferences } from "@rg/domain";
+import { newId, todayInZone, type AdaptiveConfig, type UserPreferences } from "@rg/domain";
 import {
   CORE_FAMILIES,
   COVERAGE_TARGETS,
@@ -290,10 +290,24 @@ function fallbackReason(from: Mode, to: Mode): string {
   return `Your program doesn't include ${from} sessions, so this is a ${to} one.`;
 }
 
+/**
+ * The program settings a build reads — the one list both `composeBuild` and the inputs hash take them from (audit
+ * I1): `composeBuild` is typed to see only these, and the hash covers exactly these, so a setting the build starts
+ * reading is one it is rebuilt for. (The program's place and care profiles reach the build as `context.location`
+ * and `context.careProfiles`, hashed with the rest of the context.)
+ */
+export const BUILD_CONFIG_KEYS = ["weeklyGoal", "blockWeeks", "defaultMinutes", "modes"] as const satisfies readonly (keyof AdaptiveConfig)[];
+export type BuildConfig = Pick<AdaptiveConfig, (typeof BUILD_CONFIG_KEYS)[number]>;
+/** What a build reads of the engine context: all of it, but of the program's config only `BUILD_CONFIG_KEYS`. */
+export type BuildContext = Omit<EngineContext, "config"> & { config: BuildConfig };
+
+const buildConfigOf = (config: BuildConfig): BuildConfig =>
+  Object.fromEntries(BUILD_CONFIG_KEYS.map((k) => [k, config[k]])) as unknown as BuildConfig;
+
 export interface ComposeInput {
   date: string;
   programId: string;
-  context: EngineContext;
+  context: BuildContext;
   block: Block | null;
   /** The history (`loadHistory`), or what a build reads of it: the trimmed sessions plus `summary` (`loadBuildHistory`). */
   history: readonly HistorySession[];
@@ -685,6 +699,8 @@ export async function buildSession(
   // The engine plans from exactly these (the trimmed sessions and the summary), so they are what the hash covers:
   // a change to the history that this build cannot read is no reason to build again.
   const historyJson = JSON.stringify(history);
+  // The whole context the build reads (unit, places, profiles, prefs, saved ids, and the program settings it reads).
+  const hashedContext: BuildContext = { ...context, config: buildConfigOf(context.config) };
   const hashOf = (b: Block | null) =>
     sha256Hex(
       JSON.stringify(
@@ -692,14 +708,8 @@ export async function buildSession(
           engine: version,
           date,
           programId: row.planId,
-          settings: { unit: context.unit, weeklyGoal: context.config.weeklyGoal, blockWeeks: context.config.blockWeeks, defaultMinutes: context.config.defaultMinutes },
-          location: context.location,
-          locations: context.locations,
-          activeProfiles: context.activeProfiles,
-          careProfiles: context.careProfiles,
+          context: hashedContext,
           block: blockKey(b),
-          prefs: context.prefs,
-          savedIds: context.savedIds,
           checks,
           overrides,
           swaps: Object.entries(swaps),
