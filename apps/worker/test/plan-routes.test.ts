@@ -876,3 +876,60 @@ describe("GET /today — todaySessions, origin and content state", () => {
     expect(body.nextWorkout?.id).toBe(run);
   });
 });
+
+describe("moving an app session (ruling 2a-R7)", () => {
+  async function appRow(id: string, state: string, origin: "program" | "on_demand" = "program") {
+    const date = todayInZone(prefs.timezone);
+    await db.insert(plannedWorkouts).values({
+      id,
+      userId,
+      planId: "prog-1",
+      sourceWorkoutId: id,
+      title: "Garden program",
+      category: "yoga",
+      sport: "yoga",
+      originalPlanDate: date,
+      lastVerifiedCorosDate: "",
+      effectiveDate: date,
+      effectiveTime: "18:00",
+      sourceContentFingerprint: "program",
+      calendarBlockDurationSeconds: 1800,
+      corosSyncState: "calendar_only",
+      calendarSyncState: "synced",
+      origin,
+      contentState: state,
+      createdAt: nowInstant(),
+      updatedAt: nowInstant(),
+    });
+    await db.insert(schema.sessionBuilds).values({
+      id: `${id}-b1`, userId, workoutId: id, version: 1, engineVersion: "e", inputsHash: "h",
+      payload: { build: { date }, view: {} }, lockedAt: null, createdAt: nowInstant(),
+    });
+  }
+  const row = async (id: string) => (await db.select().from(plannedWorkouts).where(eq(plannedWorkouts.id, id)))[0]!;
+  const tomorrow = () => addDays(todayInZone(prefs.timezone), 1);
+
+  it("a built slot moved to another day goes back to an outline, keeps its old build, and the calendar is told", async () => {
+    await appRow("s1", "built");
+    const res = await client().postJson("/api/plan/workouts/s1/move", { toDate: tomorrow(), toTime: "18:00" });
+    expect(res.status).toBe(200);
+    expect(await row("s1")).toMatchObject({ contentState: "outline", effectiveDate: tomorrow() });
+    expect((await row("s1")).calendarSyncState).not.toBe("synced");
+    expect(await db.select().from(schema.sessionBuilds).where(eq(schema.sessionBuilds.workoutId, "s1"))).toHaveLength(1);
+  });
+
+  it("an on-demand built slot reverts too", async () => {
+    await appRow("s2", "built", "on_demand");
+    await client().postJson("/api/plan/workouts/s2/move", { toDate: tomorrow(), toTime: "18:00" });
+    expect((await row("s2")).contentState).toBe("outline");
+  });
+
+  it("a started slot keeps its state, and so does a built one that only changes time", async () => {
+    await appRow("s3", "started");
+    await client().postJson("/api/plan/workouts/s3/move", { toDate: tomorrow(), toTime: "18:00" });
+    expect((await row("s3")).contentState).toBe("started");
+    await appRow("s4", "built");
+    await client().postJson("/api/plan/workouts/s4/move", { toDate: todayInZone(prefs.timezone), toTime: "19:00" });
+    expect(await row("s4")).toMatchObject({ contentState: "built", effectiveTime: "19:00" });
+  });
+});

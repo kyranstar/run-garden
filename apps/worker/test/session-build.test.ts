@@ -201,6 +201,44 @@ describe("building today's session", () => {
     expect(await rowOf(id)).toMatchObject({ category: "yoga", sport: "yoga" });
   });
 
+  it("a mode outside the program's modes falls back to the nearest allowed one, with a plain reason (ruling 2a-R7)", async () => {
+    const only = await seedProgram(userId, { modes: ["recovery", "consistent"] });
+    const id = await seedSlot(TODAY, { program: only });
+    const res = await buildSession(db, userId, id, { overrides: { mode: "build" } }, ctx());
+    expect(res.view!.mode).toBe("consistent");
+    expect(res.build!.mode).toBe("consistent");
+    expect(res.view!.modeReasons[0]).toBe("Your program doesn't include build sessions, so this is a consistent one.");
+  });
+
+  it("an allowed override is left alone", async () => {
+    const only = await seedProgram(userId, { modes: ["recovery", "build"] });
+    const id = await seedSlot(TODAY, { program: only });
+    const res = await buildSession(db, userId, id, { overrides: { mode: "build" } }, ctx());
+    expect(res.view!.mode).toBe("build");
+    expect(res.view!.modeReasons.some((r) => r.includes("doesn't include"))).toBe(false);
+  });
+
+  it("a tie goes to the lower mode", async () => {
+    const only = await seedProgram(userId, { modes: ["recovery", "build"] });
+    const id = await seedSlot(TODAY, { program: only });
+    const res = await buildSession(db, userId, id, { overrides: { mode: "consistent" } }, ctx());
+    expect(res.view!.mode).toBe("recovery");
+    expect(res.view!.modeReasons[0]).toContain("consistent");
+  });
+
+  it("a proposal outside the program's modes falls back too, whatever the proposal was", async () => {
+    // Find what a blank day proposes, then forbid it.
+    const open = await seedProgram(userId);
+    const probe = await buildSession(db, userId, await seedSlot(TODAY, { program: open }), {}, ctx());
+    const proposed = probe.view!.proposedMode;
+    const allowed = (["recovery", "consistent", "build"] as const).filter((m) => m !== proposed);
+    const narrow = await seedProgram(userId, { modes: [...allowed] });
+    const res = await buildSession(db, userId, await seedSlot(TODAY, { program: narrow }), {}, ctx());
+    expect(allowed).toContain(res.view!.mode);
+    expect(res.view!.proposedMode).toBe(res.view!.mode);
+    expect(res.view!.modeReasons[0]).toContain(`doesn't include ${proposed} sessions`);
+  });
+
   it("an identical request returns the stored build — same version, nothing written", async () => {
     const id = await seedSlot(TODAY);
     const first = await buildSession(db, userId, id, {}, ctx());

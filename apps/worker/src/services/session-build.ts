@@ -277,6 +277,19 @@ function engineData(active: readonly string[], care: readonly string[]): EngineD
 /** The block as the hash sees it: its id is the row's (or the engine's), never an input. */
 const blockKey = (b: Block | null) => (b ? { number: b.number, startedAt: b.startedAt, weeks: b.weeks, core: b.core, rotations: b.rotations } : null);
 
+const MODE_ORDER: readonly Mode[] = ["recovery", "consistent", "build"];
+
+/** The allowed mode closest to `mode` (recovery < consistent < build); the lower one on a tie. */
+export function nearestMode(mode: Mode, allowed: readonly Mode[]): Mode {
+  const at = (m: Mode) => MODE_ORDER.indexOf(m);
+  const pool = allowed.length > 0 ? allowed : MODE_ORDER;
+  return [...pool].sort((a, b) => Math.abs(at(a) - at(mode)) - Math.abs(at(b) - at(mode)) || at(a) - at(b))[0]!;
+}
+
+function fallbackReason(from: Mode, to: Mode): string {
+  return `Your program doesn't include ${from} sessions, so this is a ${to} one.`;
+}
+
 export interface ComposeInput {
   date: string;
   programId: string;
@@ -310,7 +323,7 @@ export function composeBuild(input: ComposeInput): Composed {
   const checks: Record<string, CheckReading> = Object.fromEntries(
     Object.entries(input.checks).map(([p, a]) => [p, { pre: a.pre, post: null, feelingOff: a.feelingOff }]),
   );
-  const { view: v, blockUpdate } = Planner.planToday(
+  const planWith = (mode: Mode | undefined) => Planner.planToday(
     data,
     {
       today: input.date,
@@ -319,7 +332,7 @@ export function composeBuild(input: ComposeInput): Composed {
         checks,
         feelingOff: false,
         override: {
-          ...(input.overrides.mode ? { mode: input.overrides.mode } : {}),
+          ...(mode ? { mode } : {}),
           ...(input.overrides.theme ? { theme: input.overrides.theme } : {}),
           ...(input.overrides.minutes ? { minutes: input.overrides.minutes } : {}),
         },
@@ -343,6 +356,21 @@ export function composeBuild(input: ComposeInput): Composed {
       ...(input.summary ? { summary: input.summary } : {}),
     },
   );
+  // The program's own modes bind the build (ruling 2a-R7): an override or a proposal outside them falls back to
+  // the nearest allowed mode, and the reasons say so.
+  const allowed = c.config.modes;
+  let fallback: string | null = null;
+  let planned = planWith(input.overrides.mode ? (allowed.includes(input.overrides.mode) ? input.overrides.mode : nearestMode(input.overrides.mode, allowed)) : undefined);
+  if (input.overrides.mode && !allowed.includes(input.overrides.mode)) {
+    fallback = fallbackReason(input.overrides.mode, nearestMode(input.overrides.mode, allowed));
+  } else if (!input.overrides.mode && !allowed.includes(planned.view.proposedMode)) {
+    const to = nearestMode(planned.view.proposedMode, allowed);
+    planned = planWith(to);
+    fallback = fallbackReason(planned.view.proposedMode, to);
+    planned = { ...planned, view: { ...planned.view, proposedMode: to } };
+  }
+  const { view: v, blockUpdate } = planned;
+  if (fallback) v.modeReasons = [fallback, ...v.modeReasons];
   const plan = v.plan;
 
   const exercises: Record<string, ExerciseSlice> = {};

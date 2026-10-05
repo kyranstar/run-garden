@@ -202,6 +202,13 @@ export async function applyMove(db: Db, req: MoveRequest): Promise<MoveOutcome> 
       // the workout to its new (possibly future) date, which reads as the app
       // asking whether a run in the future already happened.
       ...(workout.completionState === "unresolved" ? { completionState: "scheduled" } : {}),
+      // An app session built for its old day is built for that day's date and checks: on another day that build
+      // is superseded (its rows stay), and the slot is an outline until it is built again (ruling 2a-R7).
+      ...(fromDate !== req.toDate &&
+      (workout.origin === "program" || workout.origin === "on_demand") &&
+      workout.contentState === "built"
+        ? { contentState: "outline" }
+        : {}),
       updatedAt: now,
     })
     .where(eq(plannedWorkouts.id, workout.id));
