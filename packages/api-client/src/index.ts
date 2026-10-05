@@ -847,7 +847,11 @@ export interface ProgramPatch {
 
 // ── Sessions (worker routes: apps/worker/src/routes/sessions.ts; service: services/session-build.ts) ──────────
 
-/** A condition profile's answer before a session: 0–10 (null = no number) and "feeling off". */
+/**
+ * A condition profile's answer before a session: 0–10 (null = no number) and "feeling off". `{pre: null,
+ * feelingOff: false}` is no answer: sent to a build, it records nothing and clears the slot's own pre-check, so the
+ * day's check (if any) stands.
+ */
 export interface SessionCheckAnswer {
   pre: number | null;
   feelingOff: boolean;

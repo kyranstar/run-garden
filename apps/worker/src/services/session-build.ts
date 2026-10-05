@@ -22,7 +22,8 @@
  *    over the block as stored AFTER the build, so the block a first build starts does not make the next identical
  *    request look new.
  *  - Checks in the body are recorded as `pre` checks for this slot and day (one per profile, replaced on a
- *    re-check); with none, a daily check recorded today is used.
+ *    re-check); with none, a daily check recorded today is used. A check with no number and no "feeling off" is no
+ *    answer: it records nothing and clears the slot's own (audit I2).
  *  - 👎-rated and "not for me" moves are filtered out of the alternatives in every response (ruling 2a-R1); the
  *    stored build keeps what the engine offered.
  *
@@ -70,7 +71,10 @@ import { loadBuildHistory, loadEngineContext, loadProgramState, saveProgramState
 /** Bump when the engine's behaviour changes: a stored build from an older engine then no longer matches its inputs. */
 export const ENGINE_VERSION = "session-engine-1";
 
-/** A profile's answer before the session: 0–10 (null = no number), and "feeling off". */
+/**
+ * A profile's answer before the session: 0–10 (null = no number), and "feeling off". Neither a number nor "feeling
+ * off" is no answer (the question not answered yet).
+ */
 export interface CheckAnswer {
   pre: number | null;
   feelingOff: boolean;
@@ -499,7 +503,18 @@ async function activeProfilesOf(db: Db, userId: string): Promise<string[]> {
   return [...new Set(rows.map((r) => r.profileId).filter(isProfileId))].sort();
 }
 
-/** The slot's checks on `date`: its own pre-checks, else (when `date` is today) the day's daily checks. */
+/**
+ * A reading is an answer when it has a number or "feeling off" — the save's own rule (`performed.ts`): a check with
+ * neither is the question not answered yet, never "answered with nothing" (audit I2).
+ */
+const isAnswer = (value: number | null, feelingOff: boolean): boolean => value !== null || feelingOff;
+const answeredOnly = (checks: Record<string, CheckAnswer>): Record<string, CheckAnswer> =>
+  Object.fromEntries(Object.entries(checks).filter(([, a]) => isAnswer(a.pre, a.feelingOff)));
+
+/**
+ * The slot's checks on `date`, per profile: its own pre-check, else (when `date` is today) the day's daily check —
+ * whichever carries an answer; a profile with neither is left out (unanswered).
+ */
 async function slotChecks(
   db: Db,
   userId: string,
@@ -519,7 +534,11 @@ async function slotChecks(
         inArray(conditionChecks.kind, ["pre", "daily"]),
       ),
     );
-  const latest = (xs: typeof rows) => [...xs].sort((a, b) => b.at.localeCompare(a.at) || b.id.localeCompare(a.id))[0];
+  // The latest row, when it carries an answer.
+  const latest = (xs: typeof rows) => {
+    const row = [...xs].sort((a, b) => b.at.localeCompare(a.at) || b.id.localeCompare(a.id))[0];
+    return row && isAnswer(row.value, row.feelingOff) ? row : undefined;
+  };
   const out: Record<string, CheckAnswer> = {};
   for (const profileId of active) {
     const own = latest(rows.filter((r) => r.kind === "pre" && r.workoutId === workoutId && r.profileId === profileId));
@@ -586,7 +605,11 @@ export async function loadSession(db: Db, userId: string, workoutId: string, tod
 
 // ── Writes ────────────────────────────────────────────────────────────────────────────────────────────────────
 
-/** Record the body's checks as this slot's pre-checks for `date`, replacing any answer that changed. */
+/**
+ * Record the body's checks as this slot's pre-checks for `date`, replacing any answer that changed. A check with no
+ * answer records nothing and removes the slot's own pre-check for that profile (un-answering), so the day's check
+ * stands again (audit I2).
+ */
 async function recordPreChecks(
   db: Db,
   userId: string,
@@ -612,6 +635,10 @@ async function recordPreChecks(
   for (const profileId of profiles.sort()) {
     const answer = checks[profileId]!;
     const mine = existing.filter((r) => r.profileId === profileId);
+    if (!isAnswer(answer.pre, answer.feelingOff)) {
+      if (mine.length > 0) await db.delete(conditionChecks).where(inArray(conditionChecks.id, mine.map((r) => r.id)));
+      continue;
+    }
     if (mine.length === 1 && mine[0]!.value === answer.pre && mine[0]!.feelingOff === answer.feelingOff) continue;
     if (mine.length > 0) {
       await db.delete(conditionChecks).where(inArray(conditionChecks.id, mine.map((r) => r.id)));
@@ -682,8 +709,8 @@ export async function buildSession(
 
   let checks: Record<string, CheckAnswer>;
   if (preview) {
-    // A day ahead has no checks of its own yet: only what the request asks about, never recorded.
-    checks = canonical(asked) as Record<string, CheckAnswer>;
+    // A day ahead has no checks of its own yet: only what the request answers, never recorded.
+    checks = canonical(answeredOnly(asked)) as Record<string, CheckAnswer>;
   } else {
     await recordPreChecks(db, userId, workoutId, date, asked, ctx.now);
     checks = await slotChecks(db, userId, workoutId, date, ctx.today, context.activeProfiles);

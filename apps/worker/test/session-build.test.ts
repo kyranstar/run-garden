@@ -337,6 +337,47 @@ describe("building today's session", () => {
     expect(own.checks).toEqual({ tmj: { pre: 2, feelingOff: false } });
   });
 
+  it("a pre-check with no number and no \"feeling off\" is no answer: the day's check stands (audit I2)", async () => {
+    await activateTmj();
+    const id = await seedSlot(TODAY);
+    const ownPre = () => db.select().from(conditionChecks).where(and(eq(conditionChecks.userId, userId), eq(conditionChecks.kind, "pre")));
+    await recordCheck(db, userId, { profileId: "tmj", value: 7, feelingOff: false }, ctx());
+    const unanswered = { tmj: { pre: null, feelingOff: false } };
+    const res = await buildSession(db, userId, id, { checks: unanswered }, ctx());
+    expect(res.checks).toEqual({ tmj: { pre: 7, feelingOff: false } });
+    expect(res.build!.params.checks).toEqual({ tmj: { pre: 7, feelingOff: false } });
+    expect(res.build!.mode).toBe("recovery");
+    expect(await ownPre()).toEqual([]);
+    expect((await loadSession(db, userId, id, TODAY)).checks).toEqual({ tmj: { pre: 7, feelingOff: false } });
+
+    // Answered, then un-answered: the slot's own pre-check goes, and the day's check stands again.
+    const answered = await buildSession(db, userId, id, { checks: { tmj: { pre: 1, feelingOff: false } } }, ctx({ now: LATER }));
+    expect(answered.checks).toEqual({ tmj: { pre: 1, feelingOff: false } });
+    expect(await ownPre()).toHaveLength(1);
+    const cleared = await buildSession(db, userId, id, { checks: unanswered }, ctx({ now: LATER }));
+    expect(cleared.checks).toEqual({ tmj: { pre: 7, feelingOff: false } });
+    expect(await ownPre()).toEqual([]);
+
+    // "Feeling off" with no number is an answer.
+    const off = await buildSession(db, userId, id, { checks: { tmj: { pre: null, feelingOff: true } } }, ctx({ now: LATER }));
+    expect(off.checks).toEqual({ tmj: { pre: null, feelingOff: true } });
+    expect(await ownPre()).toHaveLength(1);
+  });
+
+  it("an own pre-check row that carries no answer falls back to the day's check; with none, the profile is unanswered (audit I2)", async () => {
+    await activateTmj();
+    const id = await seedSlot(TODAY);
+    // A row as the build wrote it before the rule: no number, not feeling off.
+    await db.insert(conditionChecks).values({
+      id: newId(), userId, profileId: "tmj", kind: "pre", value: null, feelingOff: false, localDate: TODAY, at: NOW,
+      performedSessionId: null, workoutId: id,
+    });
+    expect((await loadSession(db, userId, id, TODAY)).checks).toEqual({});
+    await recordCheck(db, userId, { profileId: "tmj", value: 7, feelingOff: false }, ctx());
+    expect((await loadSession(db, userId, id, TODAY)).checks).toEqual({ tmj: { pre: 7, feelingOff: false } });
+    expect((await buildSession(db, userId, id, {}, ctx())).build!.mode).toBe("recovery");
+  });
+
   it("refuses a check for a profile that is not active", async () => {
     const id = await seedSlot(TODAY);
     await expect(buildSession(db, userId, id, { checks: { tmj: { pre: 1, feelingOff: false } } }, ctx())).rejects.toThrow(
@@ -463,6 +504,15 @@ describe("a day ahead, a day gone (Review Focus 2)", () => {
 
     await expect(startSession(db, userId, id, NOW)).rejects.toBeInstanceOf(NotTodayError);
     expect((await buildsOf(id))[0]!.lockedAt).toBeNull();
+  });
+
+  it("a preview's unanswered check is no answer either (audit I2)", async () => {
+    await activateTmj();
+    const id = await seedSlot(addDays(TODAY, 1));
+    const preview = await buildSession(db, userId, id, { checks: { tmj: { pre: null, feelingOff: false } } }, ctx());
+    expect(preview.build!.params.checks).toEqual({});
+    const plain = await buildSession(db, userId, id, {}, ctx({ now: LATER }));
+    expect(plain.build!.inputsHash).toBe(preview.build!.inputsHash);
   });
 
   it("a past slot is not today: 409 not_today, nothing built", async () => {
