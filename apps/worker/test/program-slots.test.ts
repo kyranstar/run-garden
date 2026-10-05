@@ -35,7 +35,7 @@ vi.mock("../src/services/google-calendar.js", async (importOriginal) => ({
   googleCalendarClient: vi.fn(async () => google.fake),
 }));
 
-import { placeSlots, placeSlotsForAllPrograms, slotId } from "../src/services/program-slots.js";
+import { placeSlots, placeSlotsForAllPrograms, retractSlot, slotId } from "../src/services/program-slots.js";
 import { applyMove } from "../src/services/jobs.js";
 import { removeFromPlan } from "../src/services/plan-mutations.js";
 import { importPlanSnapshot } from "../src/services/import-plan.js";
@@ -467,6 +467,67 @@ describe("re-placement after an edit", () => {
       ids(p, [day(0, 0), day(1, 2)]),
     );
     expect(await placeSlots(db, userId, p, MON, prefs, NOW)).toEqual({ placed: [], archived: [] });
+  });
+
+  it("a slot the athlete touched is never retracted: re-timed on its day, moved away and back, or customised", async () => {
+    // Ruling 2a-R12 (audit 2a-model M3): flexibility read only the dates, so these went with a lowered goal.
+    const p = await seedProgram(db, userId, { weeklyGoal: 4, preferredDays: PREFERRED, placementWeeksAhead: 3 });
+    await placeSlots(db, userId, p, MON, prefs, NOW);
+    // Week 1: Saturday re-timed on its own day (a calendar drag writes a time_change override).
+    await applyMove(db, { userId, workoutId: slotId(p, day(1, 5)), toDate: day(1, 5), toTime: "18:00", source: "calendar_edit", corosWritesEnabled: false });
+    // Week 2: Saturday moved to Sunday and back.
+    await move(slotId(p, day(2, 5)), day(2, 6));
+    await move(slotId(p, day(2, 5)), day(2, 5));
+    // Week 3: Saturday's sheet customised ahead of the day (a preview carrying the athlete's overrides) — and
+    // Friday's previewed with nothing chosen, which leaves it as flexible as ever.
+    const preview = (workoutId: string, params: Record<string, unknown>) =>
+      db.insert(sessionBuilds).values({
+        id: newId(),
+        userId,
+        workoutId,
+        version: 0,
+        engineVersion: "test",
+        inputsHash: `h-${workoutId}`,
+        payload: { build: { params }, view: { mode: "consistent" } },
+        lockedAt: null,
+        createdAt: NOW,
+      });
+    await preview(slotId(p, day(3, 5)), { checks: {}, overrides: { mode: "build" }, swaps: {} });
+    await preview(slotId(p, day(3, 4)), { checks: {}, overrides: {}, swaps: {} });
+    for (const w of [1, 2, 3]) expect((await row(slotId(p, day(w, 5)))).effectiveDate).toBe(day(w, 5));
+
+    await setConfig(p, { weeklyGoal: 3 });
+    const res = await placeSlots(db, userId, p, MON, prefs, NOW);
+    // Each week drops one slot; a touched Saturday is never the one, so the week's next-ranked flexible slot goes.
+    expect(sorted(res.archived)).toEqual(ids(p, [day(0, 5), day(1, 4), day(2, 4), day(3, 4)]));
+    for (const w of [1, 2, 3]) expect(await row(slotId(p, day(w, 5)))).toMatchObject({ archivedAt: null });
+    expect(await placeSlots(db, userId, p, MON, prefs, NOW)).toEqual({ placed: [], archived: [] });
+  });
+
+  it("a retraction re-checks the slot as it archives it: a move landing after placement read it keeps the slot", async () => {
+    // Audit 2a-model M4: removeFromPlan checked only archivedAt, so an athlete's move landing between placement's
+    // read and its archive retracted the slot the athlete had just moved.
+    const p = await seedProgram(db, userId, { weeklyGoal: 2, preferredDays: [0, 2], placementWeeksAhead: 1 });
+    await placeSlots(db, userId, p, MON, prefs, NOW);
+    const wed = slotId(p, day(1, 2));
+    const snapshot = await row(wed);
+    await move(wed, day(1, 3)); // lands after placement's read
+    expect(await retractSlot(db, userId, snapshot, MON, prefs, NOW)).toBe(false);
+    expect(await row(wed)).toMatchObject({ archivedAt: null, effectiveDate: day(1, 3) });
+    expect(await suppressionsOf(wed)).toEqual([]);
+
+    // A re-time on its own day after the read (a time_change override, the date unchanged) keeps it too.
+    const mon = slotId(p, day(1, 0));
+    const monSnapshot = await row(mon);
+    await applyMove(db, { userId, workoutId: mon, toDate: day(1, 0), toTime: "18:00", source: "calendar_edit", corosWritesEnabled: false });
+    expect(await retractSlot(db, userId, monSnapshot, MON, prefs, NOW)).toBe(false);
+    expect((await row(mon)).archivedAt).toBeNull();
+
+    // The control: an untouched flexible slot is retracted.
+    const thisWed = slotId(p, day(0, 2));
+    expect(await retractSlot(db, userId, await row(thisWed), MON, prefs, NOW)).toBe(true);
+    expect(await row(thisWed)).toMatchObject({ archiveReason: "program_replaced" });
+    expect((await suppressionsOf(thisWed)).map((s) => s.reason)).toEqual(["user_removed"]);
   });
 
   it("a program_replaced slot carries exactly one suppression, and a raised goal brings it back", async () => {

@@ -68,7 +68,7 @@ function retracted(r: WorkoutRow): boolean {
   return r.archivedAt !== null && r.archiveReason === "program_replaced";
 }
 
-/** Rule 3: the only slots an edit may take away. */
+/** Rule 3, as the row reads: the only slots an edit may take away — unless the athlete touched them (`TOUCHED`). */
 function flexible(r: WorkoutRow, today: string): boolean {
   return (
     r.archivedAt === null &&
@@ -77,6 +77,66 @@ function flexible(r: WorkoutRow, today: string): boolean {
     r.effectiveDate === r.originalPlanDate &&
     r.effectiveDate > today
   );
+}
+
+/**
+ * Rule 3's other half (ruling 2a-R12): a slot the athlete TOUCHED is fixed, whatever its dates say — it has a
+ * schedule override of any kind (re-timed on its own day, moved away and back), or a preview build carrying their
+ * overrides or swaps (a sheet customised ahead of the day). Raw SQL over `planned_workouts.id`, so it reads the
+ * same inside the SELECT that plans and inside the archive's UPDATE.
+ */
+const TOUCHED = sql.raw(
+  "(exists (select 1 from schedule_overrides so where so.workout_id = planned_workouts.id)" +
+    " or exists (select 1 from session_builds sb where sb.workout_id = planned_workouts.id and sb.version = 0" +
+    " and (coalesce(json_extract(sb.payload, '$.build.params.overrides'), '{}') <> '{}'" +
+    " or coalesce(json_extract(sb.payload, '$.build.params.swaps'), '{}') <> '{}')))",
+);
+
+/** Bound per statement for the touched lookup: the ids, nothing else. */
+const TOUCHED_ID_CHUNK = 80;
+
+/** Which of these slots the athlete touched (`TOUCHED`). */
+async function touchedSlots(db: Db, ids: readonly string[]): Promise<Set<string>> {
+  const touched = new Set<string>();
+  for (const batch of chunkIds([...ids], TOUCHED_ID_CHUNK)) {
+    const rows = await db
+      .select({ id: plannedWorkouts.id })
+      .from(plannedWorkouts)
+      .where(and(inArray(plannedWorkouts.id, batch), TOUCHED));
+    for (const r of rows) touched.add(r.id);
+  }
+  return touched;
+}
+
+/**
+ * Rule 4's retraction of one slot, re-checked AS IT ARCHIVES (audit 2a-model M4): the archive's UPDATE carries
+ * rule 3 whole — live, outline, scheduled, unmoved, after today, untouched — so an athlete's move, re-time,
+ * skip or build landing between placement's read and this write keeps the slot, and nothing else of the
+ * retraction (suppression, intent) happens. True when it archived the slot.
+ */
+export async function retractSlot(
+  db: Db,
+  userId: string,
+  slot: Pick<WorkoutRow, "id">,
+  today: string,
+  prefs: UserPreferences,
+  now: string,
+): Promise<boolean> {
+  const removed = await removeFromPlan(db, userId, slot.id, {
+    now,
+    source: "program_replace",
+    prefs,
+    archiveReason: "program_replaced",
+    onlyIf: and(
+      isNull(plannedWorkouts.archivedAt),
+      eq(plannedWorkouts.completionState, "scheduled"),
+      eq(plannedWorkouts.contentState, "outline"),
+      sql`${plannedWorkouts.effectiveDate} = ${plannedWorkouts.originalPlanDate}`,
+      gt(plannedWorkouts.effectiveDate, today),
+      sql`not ${TOUCHED}`,
+    ),
+  });
+  return removed.removed;
 }
 
 /** The week's dates in placement order: preferred days as listed, then the rest Monday → Sunday. */
@@ -149,11 +209,6 @@ export async function placeSlots(
       ),
     );
   const byId = new Map(rows.map((r) => [r.id, r]));
-  const flexibleIds = new Set(rows.filter((r) => flexible(r, today)).map((r) => r.id));
-  // One slot of this program per date: the days a live, fixed slot already sits on.
-  const occupied = new Set(
-    rows.filter((r) => r.archivedAt === null && !flexibleIds.has(r.id)).map((r) => r.effectiveDate),
-  );
 
   const discipline = defaultDiscipline(program);
   // Rule 2's two limits on a NEW slot (ruling 2a-R11): never on today once today's window has passed (it would
@@ -161,52 +216,63 @@ export async function placeSlots(
   // a program started (or a goal raised) mid-week does not cram the week's goal into what is left of it.
   const todayGone = windowGone(today, windowTimeFor({ category: discipline, date: today }, prefs), now, prefs.timezone);
 
-  const toArchive: WorkoutRow[] = [];
-  const toRevive: WorkoutRow[] = [];
-  const toInsert: string[] = [];
-  for (let week = 0; week <= config.placementWeeksAhead; week++) {
-    const monday = addDays(firstMonday, 7 * week);
-    const sunday = addDays(monday, 6);
-    const counted = rows.filter((r) => r.originalPlanDate >= monday && r.originalPlanDate <= sunday && !retracted(r));
-    const movable = new Map(counted.filter((r) => flexibleIds.has(r.id)).map((r) => [r.effectiveDate, r]));
-    const need = Math.max(0, goal - (counted.length - movable.size));
-    const ranked = rankedDays(monday, config.preferredDays);
-    const weekDays = week === 0 ? new Set(ranked.slice(0, goal)) : null;
+  const plan = (flexibleIds: ReadonlySet<string>) => {
+    // One slot of this program per date: the days a live, fixed slot already sits on.
+    const occupied = new Set(
+      rows.filter((r) => r.archivedAt === null && !flexibleIds.has(r.id)).map((r) => r.effectiveDate),
+    );
+    const toArchive: WorkoutRow[] = [];
+    const toRevive: WorkoutRow[] = [];
+    const toInsert: string[] = [];
+    for (let week = 0; week <= config.placementWeeksAhead; week++) {
+      const monday = addDays(firstMonday, 7 * week);
+      const sunday = addDays(monday, 6);
+      const counted = rows.filter((r) => r.originalPlanDate >= monday && r.originalPlanDate <= sunday && !retracted(r));
+      const movable = new Map(counted.filter((r) => flexibleIds.has(r.id)).map((r) => [r.effectiveDate, r]));
+      const need = Math.max(0, goal - (counted.length - movable.size));
+      const ranked = rankedDays(monday, config.preferredDays);
+      const weekDays = week === 0 ? new Set(ranked.slice(0, goal)) : null;
 
-    const want = new Set<string>();
-    for (const date of ranked) {
-      if (want.size >= need) break;
-      if (movable.has(date)) {
+      const want = new Set<string>();
+      for (const date of ranked) {
+        if (want.size >= need) break;
+        if (movable.has(date)) {
+          want.add(date);
+          continue;
+        }
+        if (date < today || occupied.has(date)) continue;
+        if (weekDays && !weekDays.has(date)) continue;
+        if (date === today && todayGone) continue;
+        // The date's id belongs to a slot the athlete moved away, skipped or removed: that day is spoken for.
+        const holder = byId.get(slotId(programId, date));
+        if (holder && !retracted(holder)) continue;
         want.add(date);
-        continue;
       }
-      if (date < today || occupied.has(date)) continue;
-      if (weekDays && !weekDays.has(date)) continue;
-      if (date === today && todayGone) continue;
-      // The date's id belongs to a slot the athlete moved away, skipped or removed: that day is spoken for.
-      const holder = byId.get(slotId(programId, date));
-      if (holder && !retracted(holder)) continue;
-      want.add(date);
-    }
 
-    for (const [date, r] of movable) if (!want.has(date)) toArchive.push(r);
-    for (const date of want) {
-      if (movable.has(date)) continue;
-      const holder = byId.get(slotId(programId, date));
-      if (holder) toRevive.push(holder);
-      else toInsert.push(date);
+      for (const [date, r] of movable) if (!want.has(date)) toArchive.push(r);
+      for (const date of want) {
+        if (movable.has(date)) continue;
+        const holder = byId.get(slotId(programId, date));
+        if (holder) toRevive.push(holder);
+        else toInsert.push(date);
+      }
     }
+    return { toArchive, toRevive, toInsert };
+  };
+
+  // Rule 3 by the row first; the touched check (two lookups) only when the plan would retract something — when
+  // it retracts nothing, a touched slot and an untouched one are kept alike and the plan is the same.
+  const byRow = rows.filter((r) => flexible(r, today)).map((r) => r.id);
+  let planned = plan(new Set(byRow));
+  if (planned.toArchive.length > 0) {
+    const touched = await touchedSlots(db, byRow);
+    if (touched.size > 0) planned = plan(new Set(byRow.filter((id) => !touched.has(id))));
   }
+  const { toArchive, toRevive, toInsert } = planned;
 
   // Retract first, then fill (spec: archive, then place the new pattern).
   for (const r of toArchive) {
-    const removed = await removeFromPlan(db, userId, r.id, {
-      now,
-      source: "program_replace",
-      prefs,
-      archiveReason: "program_replaced",
-    });
-    if (removed.removed) result.archived.push(r.id);
+    if (await retractSlot(db, userId, r, today, prefs, now)) result.archived.push(r.id);
   }
 
   const seconds = config.defaultMinutes * 60;
@@ -363,7 +429,7 @@ async function refreshSlotContent(
     }
   }
 
-  const changedDates: string[] = [];
+  const changes: Array<{ r: (typeof live)[number]; want: Partial<typeof plannedWorkouts.$inferInsert> }> = [];
   for (const r of live) {
     let want: Partial<typeof plannedWorkouts.$inferInsert>;
     if (r.contentState === "outline") {
@@ -382,7 +448,11 @@ async function refreshSlotContent(
     const differs = (Object.keys(want) as Array<keyof typeof want>).some(
       (k) => want[k] !== (r as Record<string, unknown>)[k],
     );
-    if (!differs) continue;
+    if (differs) changes.push({ r, want });
+  }
+
+  const changedDates: string[] = [];
+  for (const { r, want } of changes) {
     await db
       .update(plannedWorkouts)
       .set({
