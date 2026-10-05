@@ -538,10 +538,50 @@ const isAnswer = (value: number | null, feelingOff: boolean): boolean => value !
 const answeredOnly = (checks: Record<string, CheckAnswer>): Record<string, CheckAnswer> =>
   Object.fromEntries(Object.entries(checks).filter(([, a]) => isAnswer(a.pre, a.feelingOff)));
 
+type CheckRow = typeof conditionChecks.$inferSelect;
+
+/** The user's pre-checks and daily checks on `date`: what a slot's checks for that day are made from. */
+function dayCheckRows(db: Db, userId: string, date: string): Promise<CheckRow[]> {
+  return db
+    .select()
+    .from(conditionChecks)
+    .where(and(eq(conditionChecks.userId, userId), eq(conditionChecks.localDate, date), inArray(conditionChecks.kind, ["pre", "daily"])));
+}
+
+/** The latest of these rows, when it carries an answer. */
+function latestAnswer(rows: readonly CheckRow[]): CheckRow | undefined {
+  const row = [...rows].sort((a, b) => b.at.localeCompare(a.at) || b.id.localeCompare(a.id))[0];
+  return row && isAnswer(row.value, row.feelingOff) ? row : undefined;
+}
+
 /**
- * The slot's checks on `date`, per profile: its own pre-check, else (when `date` is today) the day's daily check —
- * whichever carries an answer; a profile with neither is left out (unanswered).
+ * The slot's checks on `date`, per active profile: its own pre-check — the request's answer, when the request asks
+ * about the profile — else (when `date` is today) the day's daily check, whichever carries an answer; a profile with
+ * neither is left out (unanswered). What the slot's checks are once the request's are recorded, worked out before
+ * anything is written.
  */
+function resolveChecks(
+  rows: readonly CheckRow[],
+  workoutId: string,
+  date: string,
+  today: string,
+  active: readonly string[],
+  asked: Record<string, CheckAnswer> = {},
+): Record<string, CheckAnswer> {
+  const out: Record<string, CheckAnswer> = {};
+  for (const profileId of active) {
+    const ask = asked[profileId];
+    const own = ask
+      ? isAnswer(ask.pre, ask.feelingOff) ? { value: ask.pre, feelingOff: ask.feelingOff } : undefined
+      : latestAnswer(rows.filter((r) => r.kind === "pre" && r.workoutId === workoutId && r.profileId === profileId));
+    const daily = date === today ? latestAnswer(rows.filter((r) => r.kind === "daily" && r.profileId === profileId)) : undefined;
+    const pick = own ?? daily;
+    if (pick) out[profileId] = { pre: pick.value, feelingOff: pick.feelingOff };
+  }
+  return out;
+}
+
+/** The slot's checks on `date` (see `resolveChecks`), as stored. */
 async function slotChecks(
   db: Db,
   userId: string,
@@ -551,29 +591,7 @@ async function slotChecks(
   active: readonly string[],
 ): Promise<Record<string, CheckAnswer>> {
   if (active.length === 0) return {};
-  const rows = await db
-    .select()
-    .from(conditionChecks)
-    .where(
-      and(
-        eq(conditionChecks.userId, userId),
-        eq(conditionChecks.localDate, date),
-        inArray(conditionChecks.kind, ["pre", "daily"]),
-      ),
-    );
-  // The latest row, when it carries an answer.
-  const latest = (xs: typeof rows) => {
-    const row = [...xs].sort((a, b) => b.at.localeCompare(a.at) || b.id.localeCompare(a.id))[0];
-    return row && isAnswer(row.value, row.feelingOff) ? row : undefined;
-  };
-  const out: Record<string, CheckAnswer> = {};
-  for (const profileId of active) {
-    const own = latest(rows.filter((r) => r.kind === "pre" && r.workoutId === workoutId && r.profileId === profileId));
-    const daily = date === today ? latest(rows.filter((r) => r.kind === "daily" && r.profileId === profileId)) : undefined;
-    const pick = own ?? daily;
-    if (pick) out[profileId] = { pre: pick.value, feelingOff: pick.feelingOff };
-  }
-  return out;
+  return resolveChecks(await dayCheckRows(db, userId, date), workoutId, date, today, active);
 }
 
 /** Moves never offered as alternatives: 👎-rated (ruling 2a-R1) and "not for me". */
@@ -632,51 +650,51 @@ export async function loadSession(db: Db, userId: string, workoutId: string, tod
 
 // ── Writes ────────────────────────────────────────────────────────────────────────────────────────────────────
 
+/** One profile's pre-check change for a slot: the slot's own rows it replaces, and the answer to record (none: cleared). */
+interface PreCheckWrite {
+  profileId: string;
+  remove: string[];
+  answer: CheckAnswer | null;
+}
+
 /**
- * Record the body's checks as this slot's pre-checks for `date`, replacing any answer that changed. A check with no
- * answer records nothing and removes the slot's own pre-check for that profile (un-answering), so the day's check
- * stands again (audit I2).
+ * The writes that record the request's checks as this slot's pre-checks for the day (`rows`: the day's check rows),
+ * replacing any answer that changed. A check with no answer records nothing and removes the slot's own pre-check for
+ * that profile (un-answering), so the day's check stands again (audit I2).
  */
+function preCheckWrites(asked: Record<string, CheckAnswer>, rows: readonly CheckRow[], workoutId: string): PreCheckWrite[] {
+  const out: PreCheckWrite[] = [];
+  for (const profileId of Object.keys(asked).sort()) {
+    const answer = asked[profileId]!;
+    const mine = rows.filter((r) => r.kind === "pre" && r.workoutId === workoutId && r.profileId === profileId);
+    if (!isAnswer(answer.pre, answer.feelingOff)) {
+      if (mine.length > 0) out.push({ profileId, remove: mine.map((r) => r.id), answer: null });
+      continue;
+    }
+    if (mine.length === 1 && mine[0]!.value === answer.pre && mine[0]!.feelingOff === answer.feelingOff) continue;
+    out.push({ profileId, remove: mine.map((r) => r.id), answer: { pre: answer.pre, feelingOff: answer.feelingOff } });
+  }
+  return out;
+}
+
 async function recordPreChecks(
   db: Db,
   userId: string,
   workoutId: string,
   date: string,
-  checks: Record<string, CheckAnswer>,
+  writes: readonly PreCheckWrite[],
   now: string,
 ): Promise<void> {
-  const profiles = Object.keys(checks);
-  if (profiles.length === 0) return;
-  const existing = await db
-    .select()
-    .from(conditionChecks)
-    .where(
-      and(
-        eq(conditionChecks.userId, userId),
-        eq(conditionChecks.workoutId, workoutId),
-        eq(conditionChecks.localDate, date),
-        eq(conditionChecks.kind, "pre"),
-        inArray(conditionChecks.profileId, profiles),
-      ),
-    );
-  for (const profileId of profiles.sort()) {
-    const answer = checks[profileId]!;
-    const mine = existing.filter((r) => r.profileId === profileId);
-    if (!isAnswer(answer.pre, answer.feelingOff)) {
-      if (mine.length > 0) await db.delete(conditionChecks).where(inArray(conditionChecks.id, mine.map((r) => r.id)));
-      continue;
-    }
-    if (mine.length === 1 && mine[0]!.value === answer.pre && mine[0]!.feelingOff === answer.feelingOff) continue;
-    if (mine.length > 0) {
-      await db.delete(conditionChecks).where(inArray(conditionChecks.id, mine.map((r) => r.id)));
-    }
+  for (const w of writes) {
+    if (w.remove.length > 0) await db.delete(conditionChecks).where(inArray(conditionChecks.id, w.remove));
+    if (!w.answer) continue;
     await db.insert(conditionChecks).values({
       id: newId(),
       userId,
-      profileId,
+      profileId: w.profileId,
       kind: "pre",
-      value: answer.pre,
-      feelingOff: answer.feelingOff,
+      value: w.answer.pre,
+      feelingOff: w.answer.feelingOff,
       localDate: date,
       at: now,
       performedSessionId: null,
@@ -707,7 +725,10 @@ interface DayInputs {
   overrides: BuildOverrides;
   swaps: Swaps;
   context: EngineContext;
+  /** The checks the build is made with: the request's, recorded (see `preChecks`), over the day's. */
   checks: Record<string, CheckAnswer>;
+  /** What recording the request's checks writes — once the build is made, after the restore check (audit M10). */
+  preChecks: PreCheckWrite[];
   block: Block | null;
   programName: string | null;
   history: BuildHistory;
@@ -719,9 +740,10 @@ interface DayInputs {
 
 /**
  * The inputs of a build of `row` on its day — the request's choices over the day's stored ones, the context, the
- * checks (recording the request's, today), the block, what the build reads of the history — and their hash. A build
- * and Start share it: Start derives the hash again to know the build it locks is still the one the day's inputs make
- * (audit I3). Throws `SessionNotFoundError`, `UnknownProfileError`.
+ * checks, the block, what the build reads of the history — and their hash. Reads only: the request's checks are
+ * resolved as they will be once recorded, and recorded by `commitBuild`. A build and Start share it: Start derives
+ * the hash again to know the build it locks is still the one the day's inputs make (audit I3). Throws
+ * `SessionNotFoundError`, `UnknownProfileError`.
  */
 async function dayInputs(db: Db, userId: string, row: SlotRow, builds: readonly BuildRow[], req: BuildRequest, ctx: BuildCtx): Promise<DayInputs> {
   const date = row.effectiveDate;
@@ -747,13 +769,15 @@ async function dayInputs(db: Db, userId: string, row: SlotRow, builds: readonly 
   const asked = req.checks ?? {};
   if (Object.keys(asked).some((p) => !context.activeProfiles.includes(p))) throw new UnknownProfileError();
 
-  let checks: Record<string, CheckAnswer>;
+  let checks: Record<string, CheckAnswer> = {};
+  let preChecks: PreCheckWrite[] = [];
   if (preview) {
     // A day ahead has no checks of its own yet: only what the request answers, never recorded.
     checks = canonical(answeredOnly(asked)) as Record<string, CheckAnswer>;
-  } else {
-    await recordPreChecks(db, userId, row.id, date, asked, ctx.now);
-    checks = await slotChecks(db, userId, row.id, date, ctx.today, context.activeProfiles);
+  } else if (context.activeProfiles.length > 0) {
+    const rows = await dayCheckRows(db, userId, date);
+    checks = resolveChecks(rows, row.id, date, ctx.today, context.activeProfiles, asked);
+    preChecks = preCheckWrites(asked, rows, row.id);
   }
 
   // What the build reads of the history depends on the block (a running block's lifts are judged since it started).
@@ -791,6 +815,7 @@ async function dayInputs(db: Db, userId: string, row: SlotRow, builds: readonly 
     swaps,
     context,
     checks,
+    preChecks,
     block,
     programName: program?.name ?? null,
     history,
@@ -821,10 +846,21 @@ async function commitBuild(
   const { date, preview, previous, overrides, swaps, context, checks, block, history, version, hashOf, inputsHash } = inputs;
   const workoutId = row.id;
   const hidden = hiddenFrom(context.prefs);
+  // A restore can begin while a build reads and plans; it is checked again just before the first write (audit M10).
+  const restoring = async (): Promise<BuildOutcome | null> =>
+    (await restoreInProgress(db, userId)) ? { session: await readResponse(db, userId, row, ctx.today, builds), calendarChanged: false } : null;
   if (previous && previous.inputsHash === inputsHash && previous.engineVersion === version) {
     // A slot moved away and back is an outline again (ruling 2a-R7), yet the build it holds is for this date and these
     // inputs: it is built again (audit M1).
-    if (!preview && row.contentState !== "built") {
+    const rebuilt = !preview && row.contentState !== "built";
+    if (inputs.preChecks.length === 0 && !rebuilt) {
+      return { session: respond(row, builds, ctx.today, preview ? {} : checks, hidden), calendarChanged: false };
+    }
+    const refused = await restoring();
+    if (refused) return refused;
+    // An answer that leaves the day's checks as they were (the day's check, given again) is still the slot's own.
+    await recordPreChecks(db, userId, workoutId, date, inputs.preChecks, ctx.now);
+    if (rebuilt) {
       await db
         .update(plannedWorkouts)
         .set({ contentState: "built", updatedAt: ctx.now })
@@ -841,6 +877,10 @@ async function commitBuild(
   }
 
   const composed = composeBuild({ date, programId: row.planId, context, block, history: history.sessions, summary: history.summary, checks, overrides, swaps });
+
+  const refused = await restoring();
+  if (refused) return refused;
+  await recordPreChecks(db, userId, workoutId, date, inputs.preChecks, ctx.now);
 
   // A preview never starts or rotates a block: that happens on the session's day.
   let blockRef = block?.id ?? null;
@@ -984,6 +1024,8 @@ export async function startSession(db: Db, userId: string, workoutId: string, bu
     const fresh = await commitBuild(db, userId, row, builds, inputs, ctx);
     throw new StaleBuildError(fresh.session, fresh.calendarChanged);
   }
+  // A restore can begin while the inputs are read again: checked once more just before the lock (audit M10).
+  if (await restoreInProgress(db, userId)) return readResponse(db, userId, row, today, builds);
 
   await db.update(sessionBuilds).set({ lockedAt: now }).where(eq(sessionBuilds.id, current.id));
   await db

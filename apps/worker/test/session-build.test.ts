@@ -161,6 +161,24 @@ async function activateTmj(owner: string = userId): Promise<void> {
   await db.insert(userConditions).values({ id: `${owner}:tmj`, userId: owner, profileId: "tmj", active: true, since: "2026-09-01", settings: {} });
 }
 
+/**
+ * A restore of the account begins just before the first statement matching `at` (the restore marker is written, as
+ * `begin` writes it). Returns how many statements had run when it began.
+ */
+function restoreBeginsAt(at: RegExp): () => number {
+  const sqlite = (db as unknown as { $client: { prepare(sql: string): { run(...a: unknown[]): unknown } } }).$client;
+  let began = -1;
+  beforeStatement = (sql) => {
+    if (!at.test(sql)) return;
+    beforeStatement = null;
+    sqlite
+      .prepare("INSERT INTO account_state (user_id, restore_id, restore_started_at, updated_at) VALUES (?, ?, ?, ?)")
+      .run(userId, "restore-1", NOW, NOW);
+    began = statements.length;
+  };
+  return () => began;
+}
+
 /** The slot keys and the move each holds. */
 const moves = (s: SessionResponse): Record<string, string> =>
   Object.fromEntries(s.build!.items.map((i) => [i.slotKey, i.exerciseId]));
@@ -577,6 +595,38 @@ describe("building today's session", () => {
     expect(await db.select().from(sessionBuilds)).toEqual([]);
   });
 
+  it("a restore that begins while a build runs: nothing is written after it began (audit M10)", async () => {
+    await activateTmj();
+    const id = await seedSlot(TODAY);
+    const began = restoreBeginsAt(/^\s*WITH e AS/);
+    const res = await buildSession(db, userId, id, { checks: { tmj: { pre: 3, feelingOff: false } } }, ctx());
+    expect(beforeStatement).toBeNull();
+    expect(statements.slice(began()).filter(isWrite)).toEqual([]);
+    expect(res.build).toBeNull();
+    expect(await buildsOf(id)).toEqual([]);
+    expect(await db.select().from(conditionChecks)).toEqual([]);
+    expect(await db.select().from(programBlocks)).toEqual([]);
+    expect((await rowOf(id)).contentState).toBe("outline");
+  });
+
+  it("the stored build, with an answer to record: recorded, unless a restore began meanwhile (audit M10)", async () => {
+    await activateTmj();
+    const id = await seedSlot(TODAY);
+    await recordCheck(db, userId, { profileId: "tmj", value: 7, feelingOff: false }, ctx());
+    const first = await buildSession(db, userId, id, {}, ctx());
+    // The day's check given again as the slot's own: the build is the stored one, the answer is the slot's.
+    const ownPre = () => db.select().from(conditionChecks).where(and(eq(conditionChecks.userId, userId), eq(conditionChecks.kind, "pre")));
+    const began = restoreBeginsAt(/^\s*WITH e AS/);
+    const during = await buildSession(db, userId, id, { checks: { tmj: { pre: 7, feelingOff: false } } }, ctx({ now: LATER }));
+    expect(statements.slice(began()).filter(isWrite)).toEqual([]);
+    expect(during.build).toEqual(first.build);
+    expect(await ownPre()).toEqual([]);
+    await db.delete(accountState);
+    const after = await buildSession(db, userId, id, { checks: { tmj: { pre: 7, feelingOff: false } } }, ctx({ now: LATER }));
+    expect(after.build).toEqual(first.build);
+    expect(await ownPre()).toHaveLength(1);
+  });
+
   it("writes nothing while a restore is replacing the account", async () => {
     const id = await seedSlot(TODAY);
     await db.insert(accountState).values({ userId, restoreId: newId(), restoreStartedAt: NOW, updatedAt: NOW });
@@ -735,6 +785,18 @@ describe("Start (Review Focus 3)", () => {
       });
     });
   }
+
+  it("a restore that begins while Start checks the build: nothing is locked (audit M10)", async () => {
+    const id = await seedSlot(TODAY);
+    const built = await buildSession(db, userId, id, {}, ctx());
+    const began = restoreBeginsAt(/^\s*WITH e AS/);
+    const res = await startSession(db, userId, id, built.build!.buildId, LATER);
+    expect(beforeStatement).toBeNull();
+    expect(statements.slice(began()).filter(isWrite)).toEqual([]);
+    expect(res.locked).toBe(false);
+    expect((await buildsOf(id)).map((b) => b.lockedAt)).toEqual([null]);
+    expect((await rowOf(id)).contentState).toBe("built");
+  });
 
   it("start with nothing built today is 409 not_built", async () => {
     const id = await seedSlot(TODAY);
