@@ -106,6 +106,15 @@ export function mirrorGroupKey(
 }
 
 /**
+ * A row the APP authored for an adaptive program or on demand (Phase 2 §2a). COROS never serves one, so it is
+ * never a COROS mirror twin: every slot of a program shares the program's name and sport, and two of them on one
+ * day ("I'll do both on Wednesday") are two sessions, not one served twice (audit 2a-model I1).
+ */
+function appAuthoredSession(w: { origin: string | null }): boolean {
+  return w.origin === "program" || w.origin === "on_demand";
+}
+
+/**
  * WHICH stored row is this wire workout, given that its address may be claimed
  * by several (`existingByAddress` above)?
  *
@@ -973,7 +982,10 @@ export async function importPlanSnapshot(
       // instruction, so this release can finally do what it always said it did.
       const partnerIds = existing
         .filter(
-          (p) => p.id !== w.id && mirrorGroupKey(p, ownProgramNames) === mirrorGroupKey(w, ownProgramNames),
+          (p) =>
+            p.id !== w.id &&
+            !appAuthoredSession(p) &&
+            mirrorGroupKey(p, ownProgramNames) === mirrorGroupKey(w, ownProgramNames),
         )
         .map((p) => p.id);
       if (partnerIds.length > 0) {
@@ -1008,6 +1020,8 @@ export async function importPlanSnapshot(
     .where(and(eq(plannedWorkouts.userId, input.userId), isNull(plannedWorkouts.archivedAt)));
   const byMirrorKey = new Map<string, typeof activeNow>();
   for (const w of activeNow) {
+    // A program or on-demand session is never anyone's mirror twin (`appAuthoredSession`).
+    if (appAuthoredSession(w)) continue;
     // Same normalised key the healing gate uses, so the two can never disagree
     // about what one session is — the property the gate's safety rests on: a
     // mirror the gate wrongly frees is re-archived here, in the same import.

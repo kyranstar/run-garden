@@ -468,6 +468,113 @@ describe("other writers leave slots alone", () => {
     for (const id of archived) expect((await suppressionsOf(id)).map((s) => s.reason)).toEqual(["user_removed"]);
   });
 
+  it("a COROS import never takes two slots on one day (or a retired program's same-named slot) for mirror twins", async () => {
+    // Audit 2a-model I1: every slot of a program shares its title and sport, so the import's mirror dedupe read
+    // any two on one date as one COROS session served twice and archived the younger — for good, since its week
+    // still counted it.
+    await connectTestCoros(db, userId);
+    const today = todayInZone(prefs.timezone);
+    const monday = startOfIsoWeek(today);
+    const nextMon = addDays(monday, 7);
+    const nextWed = addDays(monday, 9);
+    const config = { weeklyGoal: 2, preferredDays: [0, 2], placementWeeksAhead: 2 };
+
+    // A retired "Mobility" whose next-Monday session the athlete had moved to Wednesday (so retiring kept it) …
+    const old = await seedProgram(db, userId, config);
+    await placeSlots(db, userId, old, today, prefs, nowInstant());
+    await applyMove(db, { userId, workoutId: slotId(old, nextMon), toDate: nextWed, toTime: "18:00", source: "app", corosWritesEnabled: false });
+    await db.update(programs).set({ status: "retired" }).where(eq(programs.id, old));
+    await placeSlots(db, userId, old, today, prefs, nowInstant());
+    // … and a new "Mobility" with both of next week's sessions on Wednesday ("I'll do both that day").
+    const p = await seedProgram(db, userId, config);
+    await placeSlots(db, userId, p, today, prefs, nowInstant());
+    await applyMove(db, { userId, workoutId: slotId(p, nextMon), toDate: nextWed, toTime: "18:00", source: "app", corosWritesEnabled: false });
+    const onWed = [slotId(old, nextMon), slotId(p, nextMon), slotId(p, nextWed)];
+    for (const id of onWed) expect(await row(id)).toMatchObject({ archivedAt: null, effectiveDate: nextWed, title: "Mobility" });
+
+    const provider = new FixtureTrainingProvider({ baseMonday: monday });
+    const range = { start: monday, end: addDays(monday, 20) };
+    let deduped = 0;
+    for (let i = 0; i < 2; i++) {
+      const stats = await importPlanSnapshot(
+        db,
+        {
+          userId,
+          plan: (await provider.getCurrentPlan())!,
+          workouts: await provider.getPlannedWorkouts(range),
+          rangeStart: range.start,
+          rangeEnd: range.end,
+          source: "fixture",
+        },
+        prefs,
+      );
+      deduped += stats.dedupedMirrors;
+    }
+
+    expect(deduped).toBe(0);
+    for (const id of onWed) {
+      expect(await row(id)).toMatchObject({ archivedAt: null, archiveReason: null, effectiveDate: nextWed });
+      expect(await suppressionsOf(id)).toEqual([]);
+    }
+    expect(await placeSlots(db, userId, p, today, prefs, nowInstant())).toEqual({ placed: [], archived: [] });
+  });
+
+  it("rule 8's mirror release never reaches a slot: a COROS row going absent leaves a same-named slot's suppression", async () => {
+    await connectTestCoros(db, userId);
+    const today = todayInZone(prefs.timezone);
+    const monday = startOfIsoWeek(today);
+    const nextWed = addDays(monday, 9);
+    const p = await seedProgram(db, userId, { weeklyGoal: 1, preferredDays: [2], placementWeeksAhead: 1 });
+    await placeSlots(db, userId, p, today, prefs, nowInstant());
+    const slot = slotId(p, nextWed);
+    // A slot an earlier import's dedupe archived (the I1 defect), carrying its duplicate_mirror suppression …
+    await db
+      .update(plannedWorkouts)
+      .set({ archivedAt: NOW, archiveReason: "duplicate_mirror" })
+      .where(eq(plannedWorkouts.id, slot));
+    await db.insert(calendarEventSuppressions).values({ id: newId(), workoutId: slot, eventId: null, reason: "duplicate_mirror", createdAt: NOW });
+    // … and a verified COROS row with the same name, sport and day, read missing once already.
+    const corosId = newId();
+    await db.insert(plannedWorkouts).values({
+      id: corosId,
+      userId,
+      planId: "coros-plan",
+      sourceWorkoutId: `coros-plan:${corosId}`,
+      title: "Mobility",
+      category: "yoga",
+      sport: "yoga",
+      originalPlanDate: nextWed,
+      lastVerifiedCorosDate: nextWed,
+      effectiveDate: nextWed,
+      effectiveTime: "07:00",
+      sourceContentFingerprint: "fp",
+      fallbackEstimatedDurationSeconds: 1800,
+      calendarBlockDurationSeconds: 1800,
+      completionState: "scheduled",
+      missingReads: 1,
+      createdAt: NOW,
+      updatedAt: NOW,
+    });
+
+    const provider = new FixtureTrainingProvider({ baseMonday: monday });
+    const range = { start: monday, end: addDays(monday, 20) };
+    const stats = await importPlanSnapshot(
+      db,
+      {
+        userId,
+        plan: (await provider.getCurrentPlan())!,
+        workouts: await provider.getPlannedWorkouts(range),
+        rangeStart: range.start,
+        rangeEnd: range.end,
+        source: "fixture",
+      },
+      prefs,
+    );
+    expect(stats.archivedMissing).toBeGreaterThanOrEqual(1);
+    expect(await row(corosId)).toMatchObject({ archiveReason: "absence_confirmed" });
+    expect((await suppressionsOf(slot)).map((s) => s.reason)).toEqual(["duplicate_mirror"]);
+  });
+
   it("the calendar books every slot, deletes a program_replaced slot's event and does not bring it back", async () => {
     const fake = new FakeGoogle();
     google.fake = fake.client();
