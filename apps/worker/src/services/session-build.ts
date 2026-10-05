@@ -29,7 +29,7 @@
  *
  * Every writer here is a no-op while a restore is replacing the account (ruling B2).
  */
-import { and, eq, inArray, isNull, ne, or } from "drizzle-orm";
+import { and, eq, inArray, isNotNull, isNull, ne, notInArray, or } from "drizzle-orm";
 import { conditionChecks, exercisePrefs, plannedWorkouts, programs, sessionBuilds, userConditions } from "@rg/database";
 import { newId, todayInZone, type AdaptiveConfig, type UserPreferences } from "@rg/domain";
 import {
@@ -871,10 +871,22 @@ async function commitBuild(
 
   const next = Math.max(0, ...builds.map((b) => b.version)) + 1;
   const written: BuildRow = { id: newId(), userId, workoutId, version: next, engineVersion: version, inputsHash: recordedHash, payload, lockedAt: null, createdAt: ctx.now };
+  // A Start that landed while this build ran wins (audit M2): this build's version goes, and the request is refused
+  // with the locked session, as any build after Start is.
+  const refuse = async (): Promise<never> => {
+    await db.delete(sessionBuilds).where(and(eq(sessionBuilds.id, written.id), isNull(sessionBuilds.lockedAt)));
+    throw new SessionLockedError(await readResponse(db, userId, await loadSlot(db, userId, workoutId), ctx.today));
+  };
   await db.insert(sessionBuilds).values(written).onConflictDoNothing();
-  const [mine] = await db.select({ id: sessionBuilds.id }).from(sessionBuilds).where(eq(sessionBuilds.id, written.id)).limit(1);
+  const race = await db
+    .select({ id: sessionBuilds.id, lockedAt: sessionBuilds.lockedAt })
+    .from(sessionBuilds)
+    .where(and(eq(sessionBuilds.workoutId, workoutId), or(eq(sessionBuilds.id, written.id), isNotNull(sessionBuilds.lockedAt))));
   // A concurrent build took this version first: its build stands.
-  if (!mine) return { session: await readResponse(db, userId, await loadSlot(db, userId, workoutId), ctx.today), calendarChanged: false };
+  if (!race.some((b) => b.id === written.id)) {
+    return { session: await readResponse(db, userId, await loadSlot(db, userId, workoutId), ctx.today), calendarChanged: false };
+  }
+  if (race.some((b) => b.lockedAt !== null)) return refuse();
 
   const seconds = bookedSeconds(composed.build.plannedSeconds);
   const discipline = composed.hasCoreLift ? "strength" : "yoga";
@@ -890,10 +902,19 @@ async function commitBuild(
     sessionParams: { checks, overrides, swaps } as unknown as Record<string, unknown>,
     updatedAt: ctx.now,
   } satisfies Partial<SlotRow>;
-  await db
+  // Never over a started or done slot: a Start between the check above and here still wins.
+  const updated = await db
     .update(plannedWorkouts)
     .set(changes)
-    .where(and(eq(plannedWorkouts.id, workoutId), eq(plannedWorkouts.userId, userId)));
+    .where(
+      and(
+        eq(plannedWorkouts.id, workoutId),
+        eq(plannedWorkouts.userId, userId),
+        or(isNull(plannedWorkouts.contentState), notInArray(plannedWorkouts.contentState, ["started", "done"])),
+      ),
+    )
+    .returning({ id: plannedWorkouts.id });
+  if (updated.length === 0) return refuse();
   // A longer session can now overlap the day's other plans: the same retime placement and coach edits use.
   const resized = seconds !== row.calendarBlockDurationSeconds || seconds !== row.fallbackEstimatedDurationSeconds;
   if (resized) await separateDayCollisions(db, userId, [date], ctx.prefs, { from: ctx.today, now: ctx.now });

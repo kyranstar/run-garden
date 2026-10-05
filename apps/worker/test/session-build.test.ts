@@ -78,9 +78,19 @@ let userId: string;
 let prefs: UserPreferences;
 let programId: string;
 
+/** Runs just before each statement the application executes (a test arms it to land a concurrent change there). */
+let beforeStatement: ((sql: string) => void) | null;
+
 beforeEach(async () => {
   statements = [];
-  db = makeTestDb({ boundVariableCap: 100, onStatement: (sql) => statements.push(sql) });
+  beforeStatement = null;
+  db = makeTestDb({
+    boundVariableCap: 100,
+    onStatement: (sql) => {
+      statements.push(sql);
+      beforeStatement?.(sql);
+    },
+  });
   ({ userId, prefs } = await makeTestUser(db));
   programId = await seedProgram(userId);
 });
@@ -655,6 +665,46 @@ describe("Start (Review Focus 3)", () => {
     expect(statements.filter(isWrite)).toEqual([]);
     expect((await buildsOf(id)).map((b) => [b.version, b.lockedAt])).toEqual([[2, null]]);
   });
+
+  /**
+   * A concurrent Start, landed just before the first statement matching `at`: its lock of the shown build, and — when
+   * it has finished — the slot marked started.
+   */
+  function startLandsAt(at: RegExp, workoutId: string, buildId: string, finished: boolean): void {
+    const sqlite = (db as unknown as { $client: { prepare(sql: string): { run(...a: unknown[]): unknown } } }).$client;
+    beforeStatement = (sql) => {
+      if (!at.test(sql)) return;
+      beforeStatement = null;
+      sqlite.prepare("UPDATE session_builds SET locked_at = ? WHERE id = ?").run(LATER, buildId);
+      if (finished) sqlite.prepare("UPDATE planned_workouts SET content_state = 'started', updated_at = ? WHERE id = ?").run(LATER, workoutId);
+    };
+  }
+
+  for (const [moment, at, finished] of [
+    ["has locked the build as the build stores its version", /^insert into "session_builds"/i, false],
+    ["has finished as the build updates the row", /^update "planned_workouts"/i, true],
+  ] as const) {
+    it(`a Start that ${moment} wins: the build is refused with the locked session and leaves nothing behind (audit M2)`, async () => {
+      const id = await seedSlot(TODAY);
+      const v1 = await buildSession(db, userId, id, {}, ctx());
+      const shown = await rowOf(id);
+      startLandsAt(at, id, v1.build!.buildId, finished);
+      const err = await buildSession(db, userId, id, { overrides: { minutes: 20 } }, ctx({ now: LATER })).catch((e: unknown) => e);
+      expect(beforeStatement).toBeNull();
+      expect(err).toBeInstanceOf(SessionLockedError);
+      const session = (err as SessionLockedError).session;
+      expect(session.locked).toBe(true);
+      expect(session.build).toEqual(v1.build);
+      expect((await buildsOf(id)).map((b) => [b.version, b.lockedAt])).toEqual([[1, LATER]]);
+      // The row still describes the locked build, not the refused one.
+      expect(await rowOf(id)).toMatchObject({
+        contentState: finished ? "started" : "built",
+        title: shown.title,
+        calendarBlockDurationSeconds: shown.calendarBlockDurationSeconds,
+        sessionParams: shown.sessionParams,
+      });
+    });
+  }
 
   it("start with nothing built today is 409 not_built", async () => {
     const id = await seedSlot(TODAY);
