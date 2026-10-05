@@ -22,6 +22,7 @@ import type { Env } from "../src/env.js";
 import {
   BUILD_CONFIG_KEYS,
   buildSession,
+  buildSessionOutcome,
   composeBuild,
   loadSession,
   NotBuiltError,
@@ -54,6 +55,16 @@ const {
 
 // Each test builds a few whole sessions (a few ms each on a quiet machine); a busy one can stretch that.
 vi.setConfig({ testTimeout: 30_000 });
+
+// The routes hand the calendar sync to waitUntil; the tests count the hand-offs.
+const calendar = vi.hoisted(() => ({ syncs: 0 }));
+vi.mock("../src/services/calendar-sync.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../src/services/calendar-sync.js")>()),
+  syncCalendar: vi.fn(async () => {
+    calendar.syncs += 1;
+    return {};
+  }),
+}));
 
 /** A Wednesday; noon in Los Angeles (the test user's zone). */
 const TODAY = "2026-10-07";
@@ -280,6 +291,40 @@ describe("building today's session", () => {
     expect(again.build).toEqual(first.build);
     expect(statements.filter(isWrite)).toEqual([]);
     expect((await buildsOf(id)).map((b) => b.version)).toEqual([1]);
+  });
+
+  it("says whether the row's calendar event has something new: its title, discipline or booked length (ruling 2a-R8)", async () => {
+    const id = await seedSlot(TODAY);
+    const first = await buildSessionOutcome(db, userId, id, {}, ctx());
+    expect(first.calendarChanged).toBe(true);
+    // A new version that keeps the theme, the discipline and the length (30 minutes is the default) changes nothing shown.
+    const same = await buildSessionOutcome(db, userId, id, { overrides: { minutes: 30 } }, ctx({ now: LATER }));
+    expect(same.session.build!.version).toBe(2);
+    expect(same.calendarChanged).toBe(false);
+    expect((await buildSessionOutcome(db, userId, id, {}, ctx({ now: LATER }))).calendarChanged).toBe(false);
+    const shorter = await buildSessionOutcome(db, userId, id, { overrides: { minutes: 15 } }, ctx({ now: LATER }));
+    expect(shorter.session.build!.version).toBe(3);
+    expect(shorter.calendarChanged).toBe(true);
+    const ahead = await seedSlot(addDays(TODAY, 1));
+    expect((await buildSessionOutcome(db, userId, ahead, {}, ctx())).calendarChanged).toBe(false);
+  });
+
+  it("answers from the row and build it just wrote: nothing is read back after the writes (ruling 2a-R8)", async () => {
+    const id = await seedSlot(TODAY);
+    const afterLastWrite = () => statements.slice(statements.map(isWrite).lastIndexOf(true) + 1);
+    for (const [req, now] of [[{}, NOW], [{ overrides: { minutes: 45 } }, LATER]] as const) {
+      statements.length = 0;
+      const built = await buildSession(db, userId, id, req, ctx({ now }));
+      expect(afterLastWrite()).toEqual([]);
+      expect(await loadSession(db, userId, id, TODAY)).toEqual(built);
+    }
+    const ahead = await seedSlot(addDays(TODAY, 1));
+    for (const req of [{}, { overrides: { minutes: 20 } }]) {
+      statements.length = 0;
+      const preview = await buildSession(db, userId, ahead, req, ctx({ now: LATER }));
+      expect(afterLastWrite()).toEqual([]);
+      expect(await loadSession(db, userId, ahead, TODAY)).toEqual(preview);
+    }
   });
 
   it("an override rebuilds as version 2, and only the latest unlocked version is kept", async () => {
@@ -721,6 +766,19 @@ describe("the routes", () => {
     const started = await call("POST", `/api/sessions/${id}/start`, { buildId: body.session.build!.buildId });
     expect(started.status).toBe(200);
     expect(((await started.json()) as SessionResponse).locked).toBe(true);
+  });
+
+  it("the build route syncs the calendar only when the row's title, discipline or booked length changed (ruling 2a-R8)", async () => {
+    const id = await seedSlot(today);
+    calendar.syncs = 0;
+    expect((await call("POST", `/api/sessions/${id}/build`, {})).status).toBe(200);
+    expect(calendar.syncs).toBe(1);
+    // A new version with the same theme, discipline and length; then the stored build again.
+    expect((await call("POST", `/api/sessions/${id}/build`, { overrides: { minutes: 30 } })).status).toBe(200);
+    expect((await call("POST", `/api/sessions/${id}/build`, {})).status).toBe(200);
+    expect(calendar.syncs).toBe(1);
+    expect((await call("POST", `/api/sessions/${id}/build`, { overrides: { minutes: 15 } })).status).toBe(200);
+    expect(calendar.syncs).toBe(2);
   });
 
   it("a body with no JSON builds with nothing changed", async () => {

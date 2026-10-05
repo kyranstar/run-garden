@@ -832,75 +832,63 @@ async function commitBuild(
     view: composed.view,
   };
 
-  let keep: string;
+  // The response is made from what this writes (ruling 2a-R8), never read back: the row as updated, and the build as
+  // stored — after the prune, the only unlocked build left.
+  const payload = stored as unknown as Record<string, unknown>;
+  const locked = builds.filter((b) => b.lockedAt !== null);
   if (preview) {
     const existing = builds.find((b) => b.version === 0);
-    keep = existing?.id ?? newId();
+    const written: BuildRow = existing
+      ? { ...existing, engineVersion: version, inputsHash: recordedHash, payload, createdAt: ctx.now }
+      : { id: newId(), userId, workoutId, version: 0, engineVersion: version, inputsHash: recordedHash, payload, lockedAt: null, createdAt: ctx.now };
     if (existing) {
       await db
         .update(sessionBuilds)
-        .set({ engineVersion: version, inputsHash: recordedHash, payload: stored as unknown as Record<string, unknown>, createdAt: ctx.now })
+        .set({ engineVersion: version, inputsHash: recordedHash, payload, createdAt: ctx.now })
         .where(eq(sessionBuilds.id, existing.id));
     } else {
-      await db.insert(sessionBuilds).values({
-        id: keep,
-        userId,
-        workoutId,
-        version: 0,
-        engineVersion: version,
-        inputsHash: recordedHash,
-        payload: stored as unknown as Record<string, unknown>,
-        lockedAt: null,
-        createdAt: ctx.now,
-      });
+      await db.insert(sessionBuilds).values(written);
     }
-  } else {
-    keep = newId();
-    const next = Math.max(0, ...builds.map((b) => b.version)) + 1;
-    await db
-      .insert(sessionBuilds)
-      .values({
-        id: keep,
-        userId,
-        workoutId,
-        version: next,
-        engineVersion: version,
-        inputsHash: recordedHash,
-        payload: stored as unknown as Record<string, unknown>,
-        lockedAt: null,
-        createdAt: ctx.now,
-      })
-      .onConflictDoNothing();
-    const [mine] = await db.select({ id: sessionBuilds.id }).from(sessionBuilds).where(eq(sessionBuilds.id, keep)).limit(1);
-    // A concurrent build took this version first: its build stands.
-    if (!mine) return { session: await readResponse(db, userId, await loadSlot(db, userId, workoutId), ctx.today), calendarChanged: false };
-
-    const seconds = bookedSeconds(composed.build.plannedSeconds);
-    const discipline = composed.hasCoreLift ? "strength" : "yoga";
-    const name = inputs.programName ?? row.title;
-    await db
-      .update(plannedWorkouts)
-      .set({
-        title: composed.view.theme ? `${name} · ${composed.view.theme.name}` : name,
-        category: discipline,
-        sport: discipline,
-        calendarBlockDurationSeconds: seconds,
-        fallbackEstimatedDurationSeconds: seconds,
-        contentState: "built",
-        sessionParams: { checks, overrides, swaps } as unknown as Record<string, unknown>,
-        updatedAt: ctx.now,
-      })
-      .where(and(eq(plannedWorkouts.id, workoutId), eq(plannedWorkouts.userId, userId)));
-    // A longer session can now overlap the day's other plans: the same retime placement and coach edits use.
-    if (seconds !== row.calendarBlockDurationSeconds || seconds !== row.fallbackEstimatedDurationSeconds) {
-      await separateDayCollisions(db, userId, [date], ctx.prefs, { from: ctx.today, now: ctx.now });
-    }
+    await pruneBuilds(db, workoutId, written.id);
+    // A preview leaves the row alone: nothing the calendar shows changed.
+    return { session: respond(row, [written, ...locked], ctx.today, {}, hidden), calendarChanged: false };
   }
-  await pruneBuilds(db, workoutId, keep);
 
-  const after = await loadSlot(db, userId, workoutId);
-  // A new build of the day renames and resizes the row: the calendar picks it up through the existing reconciler.
-  return { session: respond(after, await loadBuilds(db, userId, workoutId), ctx.today, preview ? {} : checks, hidden), calendarChanged: !preview };
+  const next = Math.max(0, ...builds.map((b) => b.version)) + 1;
+  const written: BuildRow = { id: newId(), userId, workoutId, version: next, engineVersion: version, inputsHash: recordedHash, payload, lockedAt: null, createdAt: ctx.now };
+  await db.insert(sessionBuilds).values(written).onConflictDoNothing();
+  const [mine] = await db.select({ id: sessionBuilds.id }).from(sessionBuilds).where(eq(sessionBuilds.id, written.id)).limit(1);
+  // A concurrent build took this version first: its build stands.
+  if (!mine) return { session: await readResponse(db, userId, await loadSlot(db, userId, workoutId), ctx.today), calendarChanged: false };
+
+  const seconds = bookedSeconds(composed.build.plannedSeconds);
+  const discipline = composed.hasCoreLift ? "strength" : "yoga";
+  const name = inputs.programName ?? row.title;
+  const title = composed.view.theme ? `${name} · ${composed.view.theme.name}` : name;
+  const changes = {
+    title,
+    category: discipline,
+    sport: discipline,
+    calendarBlockDurationSeconds: seconds,
+    fallbackEstimatedDurationSeconds: seconds,
+    contentState: "built",
+    sessionParams: { checks, overrides, swaps } as unknown as Record<string, unknown>,
+    updatedAt: ctx.now,
+  } satisfies Partial<SlotRow>;
+  await db
+    .update(plannedWorkouts)
+    .set(changes)
+    .where(and(eq(plannedWorkouts.id, workoutId), eq(plannedWorkouts.userId, userId)));
+  // A longer session can now overlap the day's other plans: the same retime placement and coach edits use.
+  const resized = seconds !== row.calendarBlockDurationSeconds || seconds !== row.fallbackEstimatedDurationSeconds;
+  if (resized) await separateDayCollisions(db, userId, [date], ctx.prefs, { from: ctx.today, now: ctx.now });
+  await pruneBuilds(db, workoutId, written.id);
+  return {
+    session: respond({ ...row, ...changes }, [written, ...locked], ctx.today, checks, hidden),
+    // The calendar shows the row's title, discipline and booked length; a build that keeps all three (a swap, a
+    // check that keeps the theme) leaves the event to the half-hourly reconcile (ruling 2a-R8).
+    calendarChanged: resized || title !== row.title || discipline !== row.category,
+  };
 }
 
 /**
