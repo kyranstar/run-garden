@@ -41,6 +41,8 @@ import { StudioModal } from "./studio-modal.js";
 import { askable, displayCompletionState, WeekView, weekRangeLabel } from "./week-view.js";
 import { useCorosReadNow } from "./use-coros-read.js";
 import { CorosCheck } from "./coros-check.js";
+import { SessionSheet } from "../components/session-sheet.js";
+import { isAppSession } from "../components/today-program.js";
 
 /**
  * What "Remove from plan" does, said before the athlete confirms. A session the
@@ -54,7 +56,24 @@ export function removeConfirmCopy(displayTitle: string, appPushed: boolean): str
     : `“${displayTitle}” is cleared from Run Garden and from your Calendar. Your COROS watch is untouched.`;
 }
 
-function WorkoutDetail({
+/**
+ * The workout sheet. A program slot (or an on-demand session) opens the session sheet — its pre-check, what was
+ * built and the moves (Phase 2a) — and every other workout the sheet it always had.
+ */
+export function WorkoutDetail(props: {
+  w: WorkoutDto;
+  today: string;
+  corosWritesEnabled: boolean;
+  onClose: () => void;
+}) {
+  return isAppSession(props.w) ? (
+    <SessionSheet w={props.w} today={props.today} onClose={props.onClose} />
+  ) : (
+    <RunWorkoutDetail {...props} />
+  );
+}
+
+function RunWorkoutDetail({
   w,
   today,
   corosWritesEnabled,

@@ -480,12 +480,70 @@ describe("Start (Review Focus 3)", () => {
       checks: {},
       build: null,
       view: null,
+      profiles: [expect.objectContaining({ profileId: "tmj" })],
+      choices: expect.objectContaining({ modes: ["recovery", "consistent", "build"] }),
     });
     await recordCheck(db, userId, { profileId: "tmj", value: 3, feelingOff: true }, ctx());
     const built = await buildSession(db, userId, id, {}, ctx());
     const read = await loadSession(db, userId, id, TODAY);
     expect(read).toEqual(built);
     expect(read.checks).toEqual({ tmj: { pre: 3, feelingOff: true } });
+  });
+});
+
+/**
+ * What the session sheet labels and picks from (Phase 2a Task 7): the switched-on profiles in their own words, and
+ * the choices its chips offer — the program's modes, the themes a build can take, the account's places.
+ */
+describe("the sheet's profiles and choices", () => {
+  it("an outline: the switched-on profiles with their check and care labels; no profile, none", async () => {
+    const id = await seedSlot(TODAY);
+    expect((await loadSession(db, userId, id, TODAY)).profiles).toEqual([]);
+    await activateTmj();
+    expect((await loadSession(db, userId, id, TODAY)).profiles).toEqual([
+      { profileId: "tmj", check: { label: "Jaw / head", min: 0, max: 10 }, care: "Jaw care" },
+    ]);
+  });
+
+  it("the program's modes; the themes, each with the modes it suits, a cared-for profile's only when cared for", async () => {
+    await activateTmj();
+    const plain = await loadSession(db, userId, await seedSlot(TODAY), TODAY);
+    expect(plain.choices.modes).toEqual(["recovery", "consistent", "build"]);
+    expect(plain.choices.themes.length).toBeGreaterThan(1);
+    for (const t of plain.choices.themes) {
+      expect(t).toEqual({ id: expect.any(String), name: expect.any(String), modes: expect.any(Array) });
+      expect(t.modes.length).toBeGreaterThan(0);
+    }
+    const caring = await seedProgram(userId, { careProfiles: ["tmj"], modes: ["consistent", "build"] });
+    const cared = await loadSession(db, userId, await seedSlot(TODAY, { program: caring }), TODAY);
+    expect(cared.choices.modes).toEqual(["consistent", "build"]);
+    expect(cared.choices.themes.length).toBeGreaterThan(plain.choices.themes.length);
+  });
+
+  it("the places: the library's Home with none set up; the default place first otherwise", async () => {
+    const id = await seedSlot(TODAY);
+    expect((await loadSession(db, userId, id, TODAY)).choices.locations).toEqual([{ id: "home", name: "Home" }]);
+    await db.insert(schema.locations).values([
+      { id: "l-gym", userId, name: "Gym", equipment: ["mat"], implements: {}, isDefault: false, createdAt: NOW, updatedAt: NOW },
+      { id: "l-home", userId, name: "Flat", equipment: ["mat"], implements: {}, isDefault: true, createdAt: LATER, updatedAt: NOW },
+    ]);
+    expect((await loadSession(db, userId, id, TODAY)).choices.locations).toEqual([
+      { id: "l-home", name: "Flat" },
+      { id: "l-gym", name: "Gym" },
+    ]);
+  });
+
+  it("a build, the stored build returned unchanged and a locked session carry the same", async () => {
+    await activateTmj();
+    const id = await seedSlot(TODAY);
+    const read = await loadSession(db, userId, id, TODAY);
+    const built = await buildSession(db, userId, id, {}, ctx());
+    const again = await buildSession(db, userId, id, {}, ctx({ now: LATER }));
+    expect(built.profiles).toEqual(read.profiles);
+    expect(built.choices).toEqual(read.choices);
+    expect(again.choices).toEqual(read.choices);
+    const started = await startSession(db, userId, id, LATER);
+    expect(started.choices).toEqual(read.choices);
   });
 });
 

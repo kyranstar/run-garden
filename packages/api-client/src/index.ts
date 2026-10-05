@@ -960,6 +960,14 @@ export interface SessionDto {
   checks: Record<string, SessionCheckAnswer>;
   build: SessionBuildDto | null;
   view: SessionViewDto | null;
+  /** The switched-on condition profiles, as the sheet labels them (the pre-check, the reading, the care block). */
+  profiles: ConditionViewDto[];
+  /** What the sheet's chips can pick: the program's modes, the themes (each with the modes it suits), the places. */
+  choices: {
+    modes: SessionMode[];
+    themes: Array<{ id: string; name: string; modes: SessionMode[] }>;
+    locations: Array<{ id: string; name: string }>;
+  };
 }
 
 /** A switched-on condition profile as the UI labels it: its check's label and scale, and its care label. */

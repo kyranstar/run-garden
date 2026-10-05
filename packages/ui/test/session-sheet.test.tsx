@@ -1,0 +1,489 @@
+// @vitest-environment jsdom
+/**
+ * Phase 2a Task 7 — the session sheet for program slots (mocks §2–3), driven against a stubbed worker.
+ *
+ *  - The pre-check comes first when today's reading is missing; answering it builds. With it answered, opening
+ *    the sheet builds (or returns the stored build) without asking.
+ *  - Built: mode · theme · time · place chips, each a short picker that rebuilds; one reason line; the moves by
+ *    block with their format, dose, ↑ and New; ⇄ offers the alternatives and Use rebuilds with the swap; ⓘ opens
+ *    the how-to (its rating controls wait for 2c — absent, not dead).
+ *  - Start waits for the player (`features.player`); a day ahead is a preview; a day gone offers a move; a started
+ *    session is read-only.
+ *  - The words are the profile's own: the pre-check, the reading on the meta line, the care block, the note.
+ */
+import { act, createElement } from "react";
+import { createRoot, type Root } from "react-dom/client";
+import { MemoryRouter, Route, Routes } from "react-router-dom";
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import type { SessionDto, SessionExerciseDto, WorkoutDto } from "@rg/api-client";
+import { features } from "../src/features.js";
+import { SessionSheet } from "../src/components/session-sheet.js";
+import { WorkoutDetail } from "../src/screens/plan.js";
+
+(globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
+
+const TODAY = "2026-10-05";
+const SLOT = "slot-p1-2026-10-05";
+
+function ex(id: string, name: string, over: Partial<SessionExerciseDto> = {}): SessionExerciseDto {
+  return {
+    id,
+    legacyIds: [],
+    name,
+    family: "x",
+    patterns: [],
+    regions: [],
+    roles: [],
+    equipment: { all: [], oneOf: [] },
+    position: "standing",
+    laterality: "bilateral",
+    load: "external",
+    dose: { type: "reps", range: [5, 8], sets: [3, 3], restSec: 75 },
+    difficulty: 2,
+    easier: [],
+    harder: [],
+    tags: [],
+    text: { summary: `${name} summary.`, setup: [], steps: [], focus: [], mistakes: [], breathing: "", why: "", conditions: {} },
+    conditions: {},
+    ...over,
+  } as SessionExerciseDto;
+}
+
+const timed = (slotKey: string, block: string, exerciseId: string, seconds: number, format = "flow", side: "Left" | "Right" | null = null) => ({
+  kind: "timed", slotKey, block, exerciseId, side, setIndex: 0, setCount: 1, seconds, prepGap: 0, target: null,
+  format: { id: format, group: null, round: null }, why: [], isNew: false, log: false,
+});
+const setStep = (slotKey: string, exerciseId: string, group: string, i: number) => ({
+  kind: "set", slotKey, block: "core", exerciseId, side: null, setIndex: i, setCount: 3, seconds: 50, prepGap: 0, target: null,
+  format: { id: "superset", group, round: null }, why: [], isNew: false, log: true,
+});
+const target = (reps: number, v: number, action = "start") => ({
+  lo: 5, hi: 10, type: "reps", w: { v, u: "lb" }, reps, secs: null, graduate: null, last: null, lastDate: null, action, note: "",
+});
+
+function session(over: Partial<SessionDto> = {}): SessionDto {
+  return {
+    workoutId: SLOT,
+    date: TODAY,
+    contentState: "built",
+    locked: false,
+    checks: { "p-x": { pre: 1, feelingOff: false } },
+    profiles: [{ profileId: "p-x", check: { label: "Knee / hip", min: 0, max: 10 }, care: "Knee care" }],
+    choices: {
+      modes: ["recovery", "consistent", "build"],
+      themes: [
+        { id: "hipsPosture", name: "Hips & posture", modes: ["consistent", "build"] },
+        { id: "deskUnwind", name: "Desk unwind", modes: ["recovery", "consistent", "build"] },
+      ],
+      locations: [
+        { id: "home", name: "Home" },
+        { id: "gym", name: "Gym" },
+      ],
+    },
+    view: {
+      mode: "build",
+      proposedMode: "build",
+      modeReasons: ["Knee calm (1) · 3 sessions in the last 7 days."],
+      theme: { id: "hipsPosture", name: "Hips & posture" },
+      proposedTheme: { id: "hipsPosture", name: "Hips & posture" },
+      themeReasons: [],
+      minutes: 30,
+      location: { id: "home", name: "Home" },
+      block: { number: 2, week: 3, weeks: 5, core: [{ family: "squat", name: "Goblet squat" }], events: [] },
+      newMove: "rowX",
+    },
+    build: {
+      buildId: "b1",
+      version: 1,
+      engineVersion: "e",
+      inputsHash: "h",
+      builtAt: "2026-10-05T12:00:00.000Z",
+      date: TODAY,
+      mode: "build",
+      modeReasons: [],
+      theme: "hipsPosture",
+      themeReasons: [],
+      minutes: 30,
+      locationId: "home",
+      blockRef: "blk",
+      weekOfBlock: 3,
+      plannedSeconds: 1800,
+      steps: [
+        timed("arrive:0", "arrive", "breath", 90, "holds"),
+        timed("prep:0", "prep", "catCow", 50),
+        setStep("core:0", "goblet", "A", 0),
+        setStep("core:1", "rowX", "B", 0),
+        timed("care:0", "care", "chinTuck", 40, "holds"),
+        timed("cooldown:0", "cooldown", "twist", 45, "flow", "Left"),
+        timed("cooldown:0", "cooldown", "twist", 45, "flow", "Right"),
+      ],
+      items: [
+        { slotKey: "arrive:0", block: "arrive", exerciseId: "breath", format: "holds", sets: 1, group: null, coreFamily: null, isNew: false, why: [] },
+        { slotKey: "prep:0", block: "prep", exerciseId: "catCow", format: "flow", sets: 1, group: null, coreFamily: null, isNew: false, why: [] },
+        { slotKey: "core:0", block: "core", exerciseId: "goblet", format: "superset", sets: 3, group: "A", coreFamily: "squat", isNew: false, why: ["Core lift · block 2 · week 3 of 5"] },
+        { slotKey: "core:1", block: "core", exerciseId: "rowX", format: "superset", sets: 3, group: "B", coreFamily: "row", isNew: true, why: [] },
+        { slotKey: "care:0", block: "care", exerciseId: "chinTuck", format: "holds", sets: 1, group: null, coreFamily: null, isNew: false, why: [] },
+        { slotKey: "cooldown:0", block: "cooldown", exerciseId: "twist", format: "flow", sets: 1, group: null, coreFamily: null, isNew: false, why: [] },
+      ],
+      exercises: {
+        breath: ex("breath", "Physiological sigh"),
+        catCow: ex("catCow", "Cat-cow"),
+        goblet: ex("goblet", "Goblet squat", {
+          equipment: { all: ["kettlebell"], oneOf: [] },
+          easier: ["boxSquat"],
+          harder: ["frontRackSquat"],
+          text: {
+            summary: "Hold the weight at your chest and sit down between your heels.",
+            setup: ["Feet a little wider than hips."],
+            steps: ["Breathe in and sit.", "Stand by pushing the floor away."],
+            focus: ["Knees track over toes"],
+            mistakes: ["Weight pulls the shoulders forward"],
+            breathing: "In on the way down",
+            why: "",
+            conditions: { "p-x": "Keep the knee soft at the bottom." },
+          },
+        }),
+        rowX: ex("rowX", "Supported row", { laterality: "unilateral" }),
+        chinTuck: ex("chinTuck", "Chin tucks"),
+        twist: ex("twist", "Supine twist", { laterality: "unilateral" }),
+        boxSquat: ex("boxSquat", "Goblet box squat"),
+      },
+      alternatives: {
+        "core:0": [{ id: "boxSquat", name: "Goblet box squat", reasons: ["Same weight", "Hips: 5 days since trained"], steps: [], moveKey: "squat|hips", pairing: "any" }],
+      },
+      targets: {
+        goblet: { ...target(6, 30, "up"), last: "25 lb × 8 · 25 lb × 8", lastDate: "2026-09-28" },
+        rowX: target(10, 20),
+      },
+      newMove: "rowX",
+      params: { checks: { "p-x": { pre: 1, feelingOff: false } }, overrides: {}, swaps: {} },
+    },
+    ...over,
+  } as unknown as SessionDto;
+}
+
+function slot(over: Partial<WorkoutDto> = {}): WorkoutDto {
+  return {
+    id: SLOT,
+    title: "Garden program · Hips & posture",
+    category: "strength",
+    qualitySubtype: null,
+    sport: "strength",
+    originalPlanDate: TODAY,
+    lastVerifiedCorosDate: "",
+    effectiveDate: TODAY,
+    effectiveTime: "19:00",
+    workoutSeconds: 1800,
+    calendarSeconds: 1800,
+    stageSummary: null,
+    calendarSyncState: "synced",
+    corosSyncState: "calendar_only",
+    completionState: "scheduled",
+    archived: false,
+    origin: "program",
+    contentState: "built",
+    programId: "p1",
+    ...over,
+  } as WorkoutDto;
+}
+
+const PROGRAMS = {
+  programs: [
+    {
+      id: "p1",
+      kind: "adaptive",
+      name: "Garden program",
+      status: "active",
+      config: { weeklyGoal: 4, preferredDays: [0, 2], defaultMinutes: 30, defaultLocationId: null, blockWeeks: 5, modes: ["recovery", "consistent", "build"], careProfiles: ["p-x"], placementWeeksAhead: 2 },
+      block: { number: 2, week: 3, weeks: 5, core: [{ family: "squat", exerciseId: "goblet", name: "Goblet squat" }, { family: "hinge", exerciseId: "dl", name: "KB deadlift" }] },
+      week: { placed: 4, done: 1, goal: 4 },
+    },
+  ],
+  places: [],
+  profiles: [],
+};
+
+interface Call {
+  method: string;
+  path: string;
+  body: unknown;
+}
+
+let root: Root | null = null;
+let host: HTMLDivElement | null = null;
+
+afterEach(() => {
+  act(() => root?.unmount());
+  host?.remove();
+  root = null;
+  features.player = false;
+  vi.unstubAllGlobals();
+});
+
+function mount(first: SessionDto, opts: { afterBuild?: (body: Record<string, unknown>) => SessionDto; today?: string; w?: WorkoutDto; detail?: boolean } = {}) {
+  const calls: Call[] = [];
+  let current = first;
+  const json = (b: unknown, status = 200) => new Response(JSON.stringify(b), { status, headers: { "Content-Type": "application/json" } });
+  vi.stubGlobal(
+    "fetch",
+    vi.fn(async (url: string, init?: RequestInit) => {
+      const path = url.replace(/\?.*$/, "");
+      const body = init?.body ? (JSON.parse(String(init.body)) as Record<string, unknown>) : null;
+      const method = init?.method ?? "GET";
+      calls.push({ method, path, body });
+      if (path === `/api/sessions/${SLOT}` && method === "GET") return json(current);
+      if (path === `/api/sessions/${SLOT}/build`) {
+        current = opts.afterBuild ? opts.afterBuild(body ?? {}) : { ...current, contentState: "built" };
+        return json(current);
+      }
+      if (path === `/api/sessions/${SLOT}/start`) {
+        current = { ...current, contentState: "started", locked: true };
+        return json(current);
+      }
+      if (path === "/api/programs") return json(PROGRAMS);
+      if (path === "/api/sync/notes") return json({ notes: [] });
+      if (path.startsWith("/api/plan/workouts/")) return json({ ok: true, workout: opts.w ?? slot(), stages: [], match: null });
+      return json({ error: "not_found" }, 404);
+    }),
+  );
+  host = document.createElement("div");
+  document.body.appendChild(host);
+  const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  const sheet = opts.detail
+    ? createElement(WorkoutDetail, { w: opts.w ?? slot(), today: opts.today ?? TODAY, corosWritesEnabled: false, onClose: () => undefined })
+    : createElement(SessionSheet, { w: opts.w ?? slot(), today: opts.today ?? TODAY, onClose: () => undefined });
+  root = createRoot(host);
+  act(() => {
+    root!.render(
+      createElement(
+        QueryClientProvider,
+        { client: qc },
+        createElement(
+          MemoryRouter,
+          { initialEntries: ["/plan"] },
+          createElement(
+            Routes,
+            null,
+            createElement(Route, { path: "/plan", element: sheet }),
+            createElement(Route, { path: "/session/:id", element: createElement("p", null, "the player") }),
+          ),
+        ),
+      ),
+    );
+  });
+  return { calls };
+}
+
+async function until(check: () => boolean, what: string): Promise<void> {
+  for (let i = 0; i < 200; i += 1) {
+    if (check()) return;
+    await act(async () => {
+      await new Promise((r) => setTimeout(r, 5));
+    });
+  }
+  throw new Error(`timed out waiting for: ${what}\n${document.body.textContent}`);
+}
+
+const body = () => (document.body.textContent ?? "").replace(/\s+/g, " ");
+const button = (name: string | RegExp) =>
+  [...document.querySelectorAll<HTMLElement>("button, a")].find((b) => {
+    const t = (b.getAttribute("aria-label") ?? b.textContent ?? "").replace(/\s+/g, " ").trim();
+    return typeof name === "string" ? t === name : name.test(t);
+  });
+const click = async (name: string | RegExp) => {
+  const b = button(name);
+  if (!b) throw new Error(`no control ${String(name)}\n${body()}`);
+  await act(async () => {
+    b.click();
+  });
+};
+const builds = (calls: Call[]) => calls.filter((c) => c.path.endsWith("/build"));
+
+// ── The pre-check ──────────────────────────────────────────────────────────
+
+describe("the pre-check", () => {
+  it("comes first when today's reading is missing — in the profile's words — and nothing is built until it is answered", async () => {
+    const { calls } = mount(session({ contentState: "outline", checks: {}, build: null, view: null }), {
+      afterBuild: () => session(),
+    });
+    await until(() => body().includes("Knee / hip right now"), "the pre-check");
+    expect(document.querySelectorAll(".check-scale button")).toHaveLength(11);
+    expect(body()).toContain("Block 2 · week 3 of 5");
+    expect(body()).toContain("Goblet squat · KB deadlift");
+    expect(button("Move")).toBeTruthy();
+    expect(button("Skip")).toBeTruthy();
+    expect(builds(calls)).toHaveLength(0);
+    await click("Feeling off");
+    await click("3");
+    await until(() => body().includes("Goblet squat"), "the built session");
+    expect(builds(calls).map((c) => c.body)).toEqual([{ checks: { "p-x": { pre: 3, feelingOff: true } } }]);
+  });
+
+  it("answered already (the Today chip): opening builds with what the day holds, without asking", async () => {
+    const { calls } = mount(session({ contentState: "outline", build: null, view: null }), { afterBuild: () => session() });
+    await until(() => body().includes("Supported row"), "the built session");
+    expect(body()).not.toContain("right now");
+    expect(builds(calls).map((c) => c.body)).toEqual([{}]);
+  });
+});
+
+// ── Built ──────────────────────────────────────────────────────────────────
+
+describe("a built session", () => {
+  it("chips, one reason line, the moves by block with format, dose, ↑ and New; the reading on the meta line", async () => {
+    mount(session());
+    await until(() => body().includes("Supported row"), "the moves");
+    const chips = [...document.querySelectorAll(".session-chips button")].map((b) => b.textContent?.replace(/\s+/g, " ").trim());
+    expect(chips).toEqual(["Build ▾", "Hips & posture ▾", "30 min ▾", "Home ▾"]);
+    expect(body()).toContain("Knee calm (1) · 3 sessions in the last 7 days.");
+    expect(body()).toContain("Monday, October 5 at 7 PM · Knee 1");
+    const heads = [...document.querySelectorAll(".session-block-head")].map((h) => h.textContent?.replace(/\s+/g, " ").trim());
+    expect(heads).toEqual(["Arrive", "Prep · Flow", "Core · Superset", "Knee care", "Cool-down · Flow"]);
+    const rows = [...document.querySelectorAll(".session-move")].map((r) => r.textContent?.replace(/\s+/g, " ").trim());
+    expect(rows).toContain("A Goblet squat 3 × 6 @ 30 lb ↑");
+    expect(rows).toContain("B Supported row New 3 × 10 @ 20 lb each side");
+    expect(rows).toContain("Supine twist 45 s each side");
+  });
+
+  it("⇄ only where the slot has alternatives", async () => {
+    mount(session());
+    await until(() => body().includes("Supported row"), "the moves");
+    expect(button("Swap Goblet squat")).toBeTruthy();
+    expect(button("Swap Supported row")).toBeUndefined();
+    expect(button("How to do Supported row")).toBeTruthy();
+  });
+
+  it("the mode chip opens a short picker of the program's modes; picking one rebuilds", async () => {
+    const { calls } = mount(session());
+    await until(() => body().includes("Supported row"), "the moves");
+    await click("Build ▾");
+    expect([...document.querySelectorAll(".choice-list button")].map((b) => b.textContent)).toEqual(["Recovery", "Consistent", "Build"]);
+    await click("Recovery");
+    await until(() => builds(calls).length === 2, "the rebuild");
+    expect(builds(calls)[1]!.body).toEqual({ overrides: { mode: "recovery" } });
+  });
+
+  it("the theme picker offers the themes the session's mode can take; time and place rebuild too", async () => {
+    const { calls } = mount(session({ view: { ...session().view!, mode: "recovery" } }));
+    await until(() => body().includes("Supported row"), "the moves");
+    await click("Hips & posture ▾");
+    expect([...document.querySelectorAll(".choice-list button")].map((b) => b.textContent)).toEqual(["Desk unwind"]);
+    await click("Desk unwind");
+    await click("30 min ▾");
+    await click("45 min");
+    await click("Home ▾");
+    await click("Gym");
+    await until(() => builds(calls).length === 4, "three rebuilds");
+    expect(builds(calls).slice(1).map((c) => c.body)).toEqual([
+      { overrides: { theme: "deskUnwind" } },
+      { overrides: { minutes: 45 } },
+      { overrides: { locationId: "gym" } },
+    ]);
+  });
+
+  it("⇄ lists the alternatives with their reasons; Use rebuilds with the swap; no 'Don't show again' before 2c", async () => {
+    const { calls } = mount(session());
+    await until(() => body().includes("Supported row"), "the moves");
+    await click("Swap Goblet squat");
+    expect(body()).toContain("Goblet box squat");
+    expect(body()).toContain("Same weight · Hips: 5 days since trained");
+    expect(body()).not.toContain("Don't show again");
+    await click("Use");
+    await until(() => builds(calls).length === 2, "the rebuild");
+    expect(builds(calls)[1]!.body).toEqual({ swaps: { "core:0": { from: "goblet", to: "boxSquat" } } });
+  });
+
+  it("ⓘ opens the how-to: dose, why, summary, setup, steps, cues, the profile's note, easier/harder, last time — no rating controls yet", async () => {
+    mount(session());
+    await until(() => body().includes("Supported row"), "the moves");
+    await click("How to do Goblet squat");
+    const how = document.querySelector(".howto")!.textContent!.replace(/\s+/g, " ");
+    expect(how).toContain("3 × 5–8 · rest 75 s · kettlebell");
+    expect(how).toContain("Core lift · block 2 · week 3 of 5");
+    expect(how).toContain("Hold the weight at your chest and sit down between your heels.");
+    expect(how).toContain("Feet a little wider than hips.");
+    expect(how).toContain("Breathe in and sit.");
+    expect(how).toContain("Knees track over toes · Weight pulls the shoulders forward · In on the way down");
+    expect(how).toContain("Knee");
+    expect(how).toContain("Keep the knee soft at the bottom.");
+    expect(how).toContain("Easier · Goblet box squat");
+    expect(how).toContain("Harder · Front rack squat");
+    expect(how).toContain("Last time · Sep 28");
+    expect(how).toContain("25 lb × 8 · 25 lb × 8");
+    for (const word of ["👍", "👎", "Not for me", "Pin"]) expect(how).not.toContain(word);
+  });
+});
+
+// ── Start, and the days around today ────────────────────────────────────────
+
+describe("Start", () => {
+  it("is hidden until the player ships", async () => {
+    mount(session());
+    await until(() => body().includes("Supported row"), "the moves");
+    expect(button(/^Start/)).toBeUndefined();
+  });
+
+  it("with the player: Start · 30 min locks the session and goes to the player", async () => {
+    features.player = true;
+    const { calls } = mount(session());
+    await until(() => body().includes("Supported row"), "the moves");
+    await click("Start · 30 min");
+    await until(() => body().includes("the player"), "the player route");
+    expect(calls.some((c) => c.path.endsWith("/start") && c.method === "POST")).toBe(true);
+  });
+});
+
+describe("a day ahead, a day gone, a started session", () => {
+  it("a day ahead: no pre-check, a preview build, no Start even with the player", async () => {
+    features.player = true;
+    const tomorrow = "2026-10-06";
+    const { calls } = mount(session({ date: tomorrow, contentState: "outline", checks: {}, build: null, view: null }), {
+      w: slot({ effectiveDate: tomorrow, contentState: "outline" }),
+      afterBuild: () => session({ date: tomorrow, contentState: "outline", checks: {} }),
+    });
+    await until(() => body().includes("Supported row"), "the preview");
+    expect(body()).not.toContain("right now");
+    expect(builds(calls).map((c) => c.body)).toEqual([{}]);
+    expect(button(/^Start/)).toBeUndefined();
+  });
+
+  it("a day gone: Move to today, and nothing is built", async () => {
+    const { calls } = mount(session({ date: "2026-10-03", contentState: "outline", checks: {}, build: null, view: null }), {
+      w: slot({ effectiveDate: "2026-10-03", contentState: "outline" }),
+    });
+    await until(() => !!button("Move to today"), "the move offer");
+    expect(builds(calls)).toHaveLength(0);
+    await click("Move to today");
+    await until(() => calls.some((c) => c.path.endsWith("/move")), "the move");
+    expect(calls.find((c) => c.path.endsWith("/move"))!.body).toEqual({ toDate: TODAY, toTime: "19:00" });
+  });
+
+  it("started: read-only — no swaps, no pickers, nothing built; Continue only with the player", async () => {
+    const started = session({ contentState: "started", locked: true });
+    const { calls } = mount(started, { w: slot({ contentState: "started" }) });
+    await until(() => body().includes("Supported row"), "the moves");
+    expect(button("Swap Goblet squat")).toBeUndefined();
+    expect(document.querySelectorAll(".session-chips button")).toHaveLength(0);
+    expect(builds(calls)).toHaveLength(0);
+    expect(button("Continue")).toBeUndefined();
+    expect(button("How to do Goblet squat")).toBeTruthy();
+  });
+});
+
+describe("WorkoutDetail branches on origin", () => {
+  it("a program slot opens the session sheet, titled by its program", async () => {
+    const { calls } = mount(session(), { detail: true });
+    await until(() => body().includes("Supported row"), "the session sheet");
+    expect(document.querySelector("[role=dialog] h2")?.textContent).toBe("Garden program");
+    expect(calls.some((c) => c.path === `/api/sessions/${SLOT}`)).toBe(true);
+    expect(calls.some((c) => c.path === `/api/plan/workouts/${SLOT}`)).toBe(false);
+  });
+
+  it("a run keeps the workout sheet", async () => {
+    const run = slot({ id: "run-1", title: "Threshold 5x5", category: "quality", sport: "run", origin: null, contentState: null, programId: null });
+    const { calls } = mount(session(), { detail: true, w: run });
+    await until(() => body().includes("Threshold 5x5"), "the workout sheet");
+    expect(calls.some((c) => c.path.startsWith("/api/sessions/"))).toBe(false);
+  });
+});

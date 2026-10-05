@@ -66,6 +66,7 @@ import { loadPreferences } from "./calendar-sync.js";
 import type { Db } from "./db.js";
 import { separateDayCollisions } from "./day-placement.js";
 import { loadBuildHistory, loadEngineContext, loadProgramState, saveProgramState, type EngineContext } from "./engine-inputs.js";
+import { conditionView, type ConditionView } from "./condition-views.js";
 
 /** Bump when the engine's behaviour changes: a stored build from an older engine then no longer matches its inputs. */
 export const ENGINE_VERSION = "session-engine-1";
@@ -172,6 +173,23 @@ export interface SessionResponse {
   checks: Record<string, CheckAnswer>;
   build: BuildPayload | null;
   view: SessionView | null;
+  /** The switched-on condition profiles, as the sheet labels them (the pre-check, the reading, the care block). */
+  profiles: ConditionView[];
+  /** What the sheet's chips can pick. */
+  choices: SessionChoices;
+}
+
+/** The program's modes; the themes a build can take, each with the modes it suits; the account's places. */
+export interface SessionChoices {
+  modes: Mode[];
+  themes: Array<{ id: string; name: string; modes: Mode[] }>;
+  locations: Array<{ id: string; name: string }>;
+}
+
+/** What a response says beside the slot and its build: labels and choices, from the build's context. */
+interface SheetExtras {
+  profiles: ConditionView[];
+  choices: SessionChoices;
 }
 
 /** What `session_builds.payload` holds. */
@@ -537,12 +555,37 @@ function toPayload(b: BuildRow, hidden: ReadonlySet<string>): { build: BuildPayl
   return { build: { buildId: b.id, version: b.version, ...stored.build, alternatives }, view: stored.view };
 }
 
+/** The sheet's labels and choices from a build's context: the same context the engine plans with. */
+function sheetExtras(context: EngineContext): SheetExtras {
+  return {
+    profiles: context.activeProfiles.map(conditionView),
+    choices: {
+      modes: [...context.config.modes],
+      themes: engineData(context.activeProfiles, context.careProfiles).themes.map((t) => ({ id: t.id, name: t.name, modes: [...t.modes] })),
+      locations: context.locations.map((l) => ({ id: l.id, name: l.name ?? l.id })),
+    },
+  };
+}
+
+/** The sheet's labels and choices for a slot, read fresh (its program gone: no profiles, every mode, nothing to pick). */
+async function loadExtras(db: Db, userId: string, row: SlotRow): Promise<SheetExtras> {
+  try {
+    return sheetExtras(await loadEngineContext(db, userId, row.planId, {}));
+  } catch (e) {
+    if (e instanceof Error && e.message === "program_not_found") {
+      return { profiles: [], choices: { modes: ["recovery", "consistent", "build"], themes: [], locations: [] } };
+    }
+    throw e;
+  }
+}
+
 function respond(
   row: SlotRow,
   builds: readonly BuildRow[],
   today: string,
   checks: Record<string, CheckAnswer>,
   hidden: ReadonlySet<string>,
+  extras: SheetExtras,
 ): SessionResponse {
   const current = currentBuild(row, builds, today);
   const shown = current ? toPayload(current, hidden) : null;
@@ -555,6 +598,8 @@ function respond(
     checks,
     build: shown?.build ?? null,
     view: shown?.view ?? null,
+    profiles: extras.profiles,
+    choices: extras.choices,
   };
 }
 
@@ -562,7 +607,7 @@ async function readResponse(db: Db, userId: string, row: SlotRow, today: string,
   const all = builds ?? (await loadBuilds(db, userId, row.id));
   const active = await activeProfilesOf(db, userId);
   const checks = await slotChecks(db, userId, row.id, row.effectiveDate, today, active);
-  return respond(row, all, today, checks, await hiddenMoves(db, userId));
+  return respond(row, all, today, checks, await hiddenMoves(db, userId), await loadExtras(db, userId, row));
 }
 
 /** `GET /api/sessions/:workoutId`: the slot, its current build (or none), its day's checks, and the lock. */
@@ -709,7 +754,7 @@ export async function buildSession(
   const inputsHash = await hashOf(block);
   const hidden = hiddenFrom(context.prefs);
   if (previous && previous.inputsHash === inputsHash && previous.engineVersion === version) {
-    return respond(row, builds, ctx.today, preview ? {} : checks, hidden);
+    return respond(row, builds, ctx.today, preview ? {} : checks, hidden, sheetExtras(context));
   }
 
   const composed = composeBuild({ date, programId: row.planId, context, block, history: history.sessions, summary: history.summary, checks, overrides, swaps });
@@ -793,7 +838,7 @@ export async function buildSession(
   await pruneBuilds(db, workoutId, keep);
 
   const after = await loadSlot(db, userId, workoutId);
-  return respond(after, await loadBuilds(db, userId, workoutId), ctx.today, preview ? {} : checks, hidden);
+  return respond(after, await loadBuilds(db, userId, workoutId), ctx.today, preview ? {} : checks, hidden, sheetExtras(context));
 }
 
 /**

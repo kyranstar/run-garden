@@ -135,3 +135,18 @@ export const IconClose = ({ size }: IconProps) => (
     <path d="M6 6l12 12M18 6L6 18" />
   </svg>
 );
+
+/** ⇄ — swap a move for another. */
+export const IconSwap = ({ size }: IconProps) => (
+  <svg {...base(size)}>
+    <path d="M4 8h14M14.5 4.5L18 8l-3.5 3.5M20 16H6M9.5 12.5L6 16l3.5 3.5" />
+  </svg>
+);
+
+/** ⓘ — how to do a move. */
+export const IconInfo = ({ size }: IconProps) => (
+  <svg {...base(size)}>
+    <circle cx="12" cy="12" r="8.5" />
+    <path d="M12 11v5.5M12 7.6v.1" />
+  </svg>
+);
