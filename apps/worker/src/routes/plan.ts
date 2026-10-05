@@ -496,28 +496,50 @@ function sleepDto(
  * outline with nothing built for today yet.
  */
 function groupTodaySessions(
-  rows: Array<{ w: typeof plannedWorkouts.$inferSelect; b: typeof sessionBuilds.$inferSelect | null }>,
+  rows: Array<{ w: typeof plannedWorkouts.$inferSelect } & TodayBuildFields>,
   today: string,
 ): Array<{ row: typeof plannedWorkouts.$inferSelect; build: { mode: string; theme: string | null; minutes: number } | null }> {
-  const byId = new Map<string, { row: typeof plannedWorkouts.$inferSelect; builds: Array<typeof sessionBuilds.$inferSelect> }>();
-  for (const { w, b } of rows) {
+  const byId = new Map<string, { row: typeof plannedWorkouts.$inferSelect; builds: TodayBuildFields[] }>();
+  for (const { w, ...b } of rows) {
     const entry = byId.get(w.id) ?? { row: w, builds: [] };
-    if (b) entry.builds.push(b);
+    if (b.buildVersion !== null) entry.builds.push(b);
     byId.set(w.id, entry);
   }
-  type Stored = { build?: { date?: string }; view?: { mode: string; minutes: number; theme: { name: string } | null } };
   return [...byId.values()].map(({ row, builds }) => {
-    const sorted = [...builds].sort((a, b) => b.version - a.version);
+    const sorted = [...builds].sort((a, b) => Number(b.buildVersion) - Number(a.buildVersion));
     const current =
-      sorted.find((b) => b.lockedAt !== null) ??
-      sorted.find((b) => b.version > 0 && (b.payload as Stored).build?.date === today);
-    const view = current ? (current.payload as Stored).view : undefined;
+      sorted.find((b) => b.buildLockedAt !== null) ??
+      sorted.find((b) => Number(b.buildVersion) > 0 && b.buildDate === today);
     return {
       row,
-      build: view ? { mode: view.mode, theme: view.theme?.name ?? null, minutes: view.minutes } : null,
+      build:
+        current && current.mode !== null && current.minutes !== null
+          ? { mode: current.mode, theme: current.theme, minutes: Number(current.minutes) }
+          : null,
     };
   });
 }
+
+/**
+ * What Today reads of each build (audit M6): the version, the lock, the day it was built for, and the three view
+ * fields it shows — taken from the stored payload in SQL, never the payload itself (100+ KB a build).
+ */
+const todayBuildFields = {
+  buildVersion: sessionBuilds.version,
+  buildLockedAt: sessionBuilds.lockedAt,
+  buildDate: sql<string | null>`json_extract(${sessionBuilds.payload}, '$.build.date')`,
+  mode: sql<string | null>`json_extract(${sessionBuilds.payload}, '$.view.mode')`,
+  theme: sql<string | null>`json_extract(${sessionBuilds.payload}, '$.view.theme.name')`,
+  minutes: sql<number | null>`json_extract(${sessionBuilds.payload}, '$.view.minutes')`,
+};
+type TodayBuildFields = {
+  buildVersion: number | null;
+  buildLockedAt: string | null;
+  buildDate: string | null;
+  mode: string | null;
+  theme: string | null;
+  minutes: number | null;
+};
 
 /** The Today payload: next workout, statuses, readiness, garden preview. */
 planRoutes.get("/today", async (c) => {
@@ -658,9 +680,9 @@ planRoutes.get("/today", async (c) => {
     // Today card lists them all, not only the next. Builds only exist for the
     // app's own rows, so any other row comes back with a null build.
     db
-      .select({ w: plannedWorkouts, b: sessionBuilds })
+      .select({ w: plannedWorkouts, ...todayBuildFields })
       .from(plannedWorkouts)
-      .leftJoin(sessionBuilds, eq(sessionBuilds.workoutId, plannedWorkouts.id))
+      .leftJoin(sessionBuilds, and(eq(sessionBuilds.workoutId, plannedWorkouts.id), eq(sessionBuilds.userId, plannedWorkouts.userId)))
       .where(
         and(
           eq(plannedWorkouts.userId, userId),
