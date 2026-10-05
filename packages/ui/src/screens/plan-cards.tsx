@@ -1,6 +1,95 @@
+import { useState } from "react";
 import { useQuery } from "@tanstack/react-query";
-import { api, type CoachPlanDto, type PlanDetailResponse, type PlanProgression } from "@rg/api-client";
+import {
+  api,
+  type CoachPlanDto,
+  type PlanDetailResponse,
+  type PlanProgression,
+  type ProgramDto,
+  type ProgramsResponse,
+} from "@rg/api-client";
 import { formatShortDate, type Units } from "../components.js";
+import { features } from "../features.js";
+import { ProgramSettingsSheet } from "../components/program-settings-sheet.js";
+
+// ── The program card (Phase 2a Task 8; mocks §6) ────────────────────────────
+
+const familyLabel = (family: string) => family.charAt(0).toUpperCase() + family.slice(1);
+
+/**
+ * The block's core lifts as the card lists them: the first two families on their own rows, the rest on one
+ * ("Row · Press · Carry"). A family with no lift yet is left out.
+ */
+type CoreLift = NonNullable<ProgramDto["block"]>["core"][number];
+
+export function coreRows(core: readonly CoreLift[]): Array<{ label: string; names: string }> {
+  const named = core.filter((c) => c.name);
+  const row = (cs: typeof named) => ({ label: cs.map((c) => familyLabel(c.family)).join(" · "), names: cs.map((c) => c.name!).join(" · ") });
+  if (named.length <= 3) return named.map((c) => row([c]));
+  return [row([named[0]!]), row([named[1]!]), row(named.slice(2))];
+}
+
+/** One program: its name, this week's done of the goal, its block and week, and the block's core lifts. Opens its
+ * settings. */
+export function ProgramCard({ program, onOpen }: { program: ProgramDto; onOpen: () => void }) {
+  const block = program.block;
+  const rows = block ? coreRows(block.core) : [];
+  return (
+    <button type="button" className="card plan-card program-card" aria-label={`${program.name} settings`} onClick={onOpen}>
+      <span className="program-card-top">
+        <span className="plan-card-name">{program.name}</span>{" "}
+        <span className="program-card-count">
+          {program.week.done} of {program.week.goal} this week
+        </span>
+      </span>
+      {block ? (
+        <span className="program-card-block">
+          Block {block.number} · week {block.week} of {block.weeks}
+        </span>
+      ) : null}
+      {rows.length > 0 ? (
+        <span className="program-card-lifts">
+          {rows.map((r) => (
+            <span key={r.label} className="program-card-lift">
+              <b>{r.label}</b> <small>{r.names}</small>
+            </span>
+          ))}
+        </span>
+      ) : null}
+    </button>
+  );
+}
+
+/**
+ * The account's active programs, each a card that opens its settings. Nothing at all for an account with none —
+ * and "New program…" waits for the player (ruling 2a-R5: no program before a session can be played and saved).
+ */
+export function ProgramCards({ data }: { data: ProgramsResponse | undefined }) {
+  const [open, setOpen] = useState<string | null>(null);
+  const active = (data?.programs ?? []).filter((p) => p.status === "active");
+  if (active.length === 0 && !features.player) return null;
+  const editing = open === "new" ? null : active.find((p) => p.id === open);
+  return (
+    <section className="program-cards" aria-label="Programs">
+      {active.map((p) => (
+        <ProgramCard key={p.id} program={p} onOpen={() => setOpen(p.id)} />
+      ))}
+      {features.player ? (
+        <button type="button" className="plan-card plan-card-new" onClick={() => setOpen("new")}>
+          New program…
+        </button>
+      ) : null}
+      {open && (open === "new" || editing) ? (
+        <ProgramSettingsSheet
+          program={editing ?? null}
+          places={data?.places ?? []}
+          profiles={data?.profiles ?? []}
+          onClose={() => setOpen(null)}
+        />
+      ) : null}
+    </section>
+  );
+}
 
 /**
  * Plan title cards (rework spec §6): one card per plan — serif name, week

@@ -849,6 +849,15 @@ export interface ProgramDto {
   week: { placed: number; done: number; goal: number };
 }
 
+/** Exact shape of `GET /api/programs`: the programs, and what their settings pick from. */
+export interface ProgramsResponse {
+  programs: ProgramDto[];
+  /** The account's places, the default first (none until places are set up). */
+  places: Array<{ id: string; name: string; isDefault: boolean }>;
+  /** The switched-on condition profiles; a program can care for each one with care content. */
+  profiles: ConditionViewDto[];
+}
+
 /** `PATCH /api/programs/:id`: only what is sent changes; `config` keys are merged over the stored config. */
 export interface ProgramPatch {
   name?: string;
@@ -1157,7 +1166,7 @@ export const api = {
   retrySync: () => post<RetrySyncResponse>("/api/sync/retry"),
 
   // ── Programs (worker routes: apps/worker/src/routes/programs.ts) ─────────
-  listPrograms: () => get<{ programs: ProgramDto[] }>("/api/programs"),
+  listPrograms: () => get<ProgramsResponse>("/api/programs"),
   /** Missing config keys take their defaults. 422 `{error, issues}` for an invalid body. */
   createProgram: (body: { name: string; config: Partial<AdaptiveConfig> }) =>
     post<{ program: ProgramDto }>("/api/programs", body),

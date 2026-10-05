@@ -2376,6 +2376,136 @@ button.session-chip {
   color: var(--ink-soft);
   font-size: var(--text-xs);
 }
+
+/* Phase 2a — the program card on Plan, and its settings. */
+.program-cards {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-5);
+}
+.program-card-top {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-3) var(--space-5);
+}
+.program-card-count {
+  border-radius: var(--radius-pill);
+  background: var(--bg-sunken);
+  padding: var(--space-2) var(--space-5);
+  font-size: var(--text-xs);
+  color: var(--ink-soft);
+  white-space: nowrap;
+}
+.program-card-block {
+  font-size: var(--text-sm);
+  color: var(--ink-soft);
+}
+.program-card-lifts {
+  display: grid;
+}
+.program-card-lift {
+  display: grid;
+  padding: var(--space-4) 0;
+  border-top: 1px solid var(--border);
+}
+.program-card-lift b {
+  font-weight: var(--weight-medium);
+}
+.program-card-lift small {
+  color: var(--ink-soft);
+  font-size: var(--text-xs);
+}
+.program-field {
+  display: grid;
+  gap: var(--space-3);
+}
+.program-field-label {
+  font-weight: var(--weight-medium);
+  font-size: var(--text-sm);
+}
+.program-field input,
+.program-field select {
+  min-height: var(--tap);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-md);
+  background: var(--bg-raised);
+  color: var(--ink);
+  font: inherit;
+  padding: 0 var(--space-5);
+  min-width: 0;
+}
+/* A segmented choice: equal 44px cells that share the row. */
+.program-seg {
+  display: grid;
+  grid-auto-flow: column;
+  grid-auto-columns: minmax(0, 1fr);
+  gap: var(--space-2);
+}
+.program-seg button {
+  min-height: var(--tap);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-md);
+  background: var(--bg-raised);
+  color: var(--ink);
+  font: var(--weight-medium) var(--text-sm) var(--font);
+  cursor: pointer;
+  padding: 0 var(--space-2);
+}
+.program-seg button[aria-pressed="true"] {
+  background: var(--green);
+  border-color: var(--green);
+  color: var(--on-accent);
+}
+.program-seg button:disabled {
+  cursor: default;
+  opacity: 0.75;
+}
+.program-field-switch {
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+}
+/* On/off: a 44 × 26 track, padded to the 44px floor by its own height. */
+.program-switch {
+  position: relative;
+  width: var(--tap);
+  height: var(--tap);
+  padding: 0;
+  border: 0;
+  background: none;
+  cursor: pointer;
+}
+.program-switch::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: 50%;
+  height: 26px;
+  transform: translateY(-50%);
+  border-radius: var(--radius-pill);
+  background: var(--border-strong);
+}
+.program-switch::after {
+  content: "";
+  position: absolute;
+  top: 50%;
+  left: 3px;
+  width: 20px;
+  height: 20px;
+  transform: translateY(-50%);
+  border-radius: var(--radius-round);
+  background: var(--bg-raised);
+  box-shadow: var(--shadow);
+}
+.program-switch[aria-checked="true"]::before {
+  background: var(--green);
+}
+.program-switch[aria-checked="true"]::after {
+  left: auto;
+  right: 3px;
+}
 .today-coach-mark {
   flex: none;
   width: 26px;

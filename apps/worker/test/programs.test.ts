@@ -282,6 +282,25 @@ describe("the routes", () => {
     expect(program.week).toEqual({ placed: daysLeft, done: 0, goal: 7 });
   });
 
+  it("GET also names the account's places and its switched-on profiles — what the program settings pick from", async () => {
+    const empty = (await (await call("GET", "/api/programs")).json()) as { places: unknown[]; profiles: unknown[] };
+    expect(empty.places).toEqual([]);
+    expect(empty.profiles).toEqual([]);
+    await db.insert(schema.locations).values([
+      { id: "l-gym", userId, name: "Gym", equipment: ["mat"], implements: {}, isDefault: false, createdAt: T0, updatedAt: T0 },
+      { id: "l-home", userId, name: "Flat", equipment: ["mat"], implements: {}, isDefault: true, createdAt: T1, updatedAt: T1 },
+    ]);
+    await db.insert(schema.userConditions).values({ id: `${userId}:tmj`, userId, profileId: "tmj", active: true, since: MON, settings: {} });
+    const { userId: other } = await makeTestUser(db);
+    await db.insert(schema.locations).values({ id: "l-x", userId: other, name: "Theirs", equipment: [], implements: {}, isDefault: true, createdAt: T0, updatedAt: T0 });
+    const body = (await (await call("GET", "/api/programs")).json()) as { places: unknown[]; profiles: unknown[] };
+    expect(body.places).toEqual([
+      { id: "l-home", name: "Flat", isDefault: true },
+      { id: "l-gym", name: "Gym", isDefault: false },
+    ]);
+    expect(body.profiles).toEqual([{ profileId: "tmj", check: { label: "Jaw / head", min: 0, max: 10 }, care: "Jaw care" }]);
+  });
+
   it("GET lists this user's programs only", async () => {
     await call("POST", "/api/programs", { name: "Mobility", config: {} });
     const { userId: other } = await makeTestUser(db);

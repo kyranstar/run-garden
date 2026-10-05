@@ -1,7 +1,8 @@
 /**
  * `/api/programs` — the athlete's adaptive programs (Phase 2 spec §2a "Programs API").
  *
- *   GET    /             the user's programs with their block and this week's count vs goal
+ *   GET    /             the user's programs with their block and this week's count vs goal, plus the places and
+ *                         switched-on profiles their settings pick from
  *   POST   /             {name, config} → create, place its slots, return it (201)
  *   PATCH  /:id          {name?, config? (merged), status? active|retired} → update, re-place, return it
  *
@@ -11,6 +12,9 @@
  */
 import { Hono, type Context } from "hono";
 import { z, ZodError } from "zod";
+import { asc, desc, eq } from "drizzle-orm";
+import { locations } from "@rg/database";
+import { activeProfileIds, conditionView } from "../services/condition-views.js";
 import { adaptiveConfigSchema, nowInstant, todayInZone } from "@rg/domain";
 import type { AppContext } from "../auth/middleware.js";
 import { requireUser } from "../auth/middleware.js";
@@ -63,7 +67,17 @@ programRoutes.get("/", async (c) => {
   const db = c.get("db");
   const userId = c.get("userId");
   const prefs = await loadPreferences(db, userId);
-  return c.json({ programs: await listPrograms(db, userId, todayInZone(prefs.timezone)) });
+  const [list, places, profiles] = await Promise.all([
+    listPrograms(db, userId, todayInZone(prefs.timezone)),
+    // What a program's settings pick from: the account's places (the default first) and its switched-on profiles.
+    db
+      .select({ id: locations.id, name: locations.name, isDefault: locations.isDefault })
+      .from(locations)
+      .where(eq(locations.userId, userId))
+      .orderBy(desc(locations.isDefault), asc(locations.createdAt), asc(locations.id)),
+    activeProfileIds(db, userId),
+  ]);
+  return c.json({ programs: list, places, profiles: profiles.map(conditionView) });
 });
 
 programRoutes.post("/", async (c) => {

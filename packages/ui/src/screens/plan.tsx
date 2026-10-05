@@ -36,7 +36,7 @@ import { WeeklyBrief } from "./plan-brief.js";
 import { RaceStrip, useRaceHub } from "./race-strip.js";
 import { leafStageCount, StageStructure } from "./stage-structure.js";
 import { useUnits } from "../use-units.js";
-import { PlanCards } from "./plan-cards.js";
+import { PlanCards, ProgramCards } from "./plan-cards.js";
 import { StudioModal } from "./studio-modal.js";
 import { askable, displayCompletionState, WeekView, weekRangeLabel } from "./week-view.js";
 import { useCorosReadNow } from "./use-coros-read.js";
@@ -754,6 +754,8 @@ export function PlanScreen() {
   // ── Coach ──────────────────────────────────────────────────────────────
   const coach = usePlanCoach();
   const coachPlans = useQuery({ queryKey: ["coach-plans"], queryFn: api.coachPlans });
+  // The adaptive programs' cards (Phase 2a): in the gate, so a card never lands after the week below it.
+  const programs = useQuery({ queryKey: ["programs"], queryFn: api.listPrograms, staleTime: 60_000 });
   // Subscribed here, rendered by `<RaceStrip>` — one fetch, shared key. The
   // page's first paint waits for it, so the strip never arrives late.
   const raceHub = useRaceHub();
@@ -977,7 +979,7 @@ export function PlanScreen() {
   // All four carry `placeholderData: keepPreviousData` or a stable key, so
   // this holds the FIRST paint only: paging weeks and background refetches
   // still render straight from cache.
-  if (settling(week, plan, coachPlans, raceHub) || (!week.data && week.isPending))
+  if (settling(week, plan, coachPlans, raceHub, programs) || (!week.data && week.isPending))
     return <Spinner label="Loading plan" />;
   if (!week.data) return <EmptyState title="Couldn't load the plan" />;
 
@@ -1047,6 +1049,7 @@ export function PlanScreen() {
           onResolveRace={(keep) => resolveRace.mutate(keep)}
           resolvingRace={resolveRace.isPending}
         />
+        <ProgramCards data={programs.data} />
         <PlanCards
           plans={coachPlans.data?.plans ?? []}
           details={detailById}
