@@ -941,8 +941,8 @@ export interface SessionViewDto {
 
 /**
  * Exact shape of `GET /api/sessions/:workoutId` and of a build or start. Errors: 404 `not_found`; 409
- * `{error: "not_today", date, today}`, `{error: "locked", session}`, `{error: "not_built"}`; 422 `invalid_build`
- * or `unknown_profile`.
+ * `{error: "not_today", date, today}`, `{error: "locked", session}`, `{error: "not_built"}`, and for a start
+ * `{error: "stale", session}` (the fresh build to show); 422 `invalid_build`, `invalid_start` or `unknown_profile`.
  */
 export interface SessionDto {
   workoutId: string;
@@ -1148,7 +1148,12 @@ export const api = {
   getSession: (workoutId: string) => get<SessionDto>(`/api/sessions/${encodeURIComponent(workoutId)}`),
   buildSession: (workoutId: string, body: BuildSessionRequest = {}) =>
     post<SessionDto>(`/api/sessions/${encodeURIComponent(workoutId)}/build`, body),
-  startSession: (workoutId: string) => post<SessionDto>(`/api/sessions/${encodeURIComponent(workoutId)}/start`),
+  /**
+   * Lock the build the athlete was shown. 409 `{error: "stale", session}` when it is no longer the one the day's inputs
+   * make (a check, a save or an edit since): show `session` and Start again with its build id.
+   */
+  startSession: (workoutId: string, buildId: string) =>
+    post<SessionDto>(`/api/sessions/${encodeURIComponent(workoutId)}/start`, { buildId }),
   recordCheck: (body: { profileId: string; value: number | null; feelingOff?: boolean }) =>
     post<{ check: ConditionCheckDto | null }>("/api/conditions/checks", body),
 };

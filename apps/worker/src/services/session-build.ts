@@ -66,7 +66,14 @@ import { restoreInProgress } from "./account-state.js";
 import { loadPreferences } from "./calendar-sync.js";
 import type { Db } from "./db.js";
 import { separateDayCollisions } from "./day-placement.js";
-import { loadBuildHistory, loadEngineContext, loadProgramState, saveProgramState, type EngineContext } from "./engine-inputs.js";
+import {
+  loadBuildHistory,
+  loadEngineContext,
+  loadProgramState,
+  saveProgramState,
+  type BuildHistory,
+  type EngineContext,
+} from "./engine-inputs.js";
 
 /** Bump when the engine's behaviour changes: a stored build from an older engine then no longer matches its inputs. */
 export const ENGINE_VERSION = "session-engine-1";
@@ -215,6 +222,19 @@ export class SessionLockedError extends Error {
 export class NotBuiltError extends Error {
   constructor() {
     super("not_built");
+  }
+}
+
+/**
+ * Start named a build that is no longer the one the day's inputs make (audit I3): `session` is the fresh build, made
+ * as `POST /build {}` makes it; `calendarChanged` when making it changed what the slot's calendar event shows.
+ */
+export class StaleBuildError extends Error {
+  constructor(
+    public readonly session: SessionResponse,
+    public readonly calendarChanged: boolean,
+  ) {
+    super("stale");
   }
 }
 
@@ -668,23 +688,36 @@ async function pruneBuilds(db: Db, workoutId: string, keep: string): Promise<voi
 /** Planned seconds as the calendar books them: rounded up to 5 minutes. */
 const bookedSeconds = (planned: number): number => Math.max(300, Math.ceil(planned / 300) * 300);
 
+type BuildCtx = { today: string; now: string; prefs: UserPreferences };
+
+/** Everything a build of a slot on its day reads, and the hash over it. */
+interface DayInputs {
+  date: string;
+  /** A day ahead: the build is a preview. */
+  preview: boolean;
+  /** The day's latest build (the preview, for a day ahead): its choices stand for any the request leaves out. */
+  previous: BuildRow | null;
+  overrides: BuildOverrides;
+  swaps: Swaps;
+  context: EngineContext;
+  checks: Record<string, CheckAnswer>;
+  block: Block | null;
+  programName: string | null;
+  history: BuildHistory;
+  version: string;
+  /** The inputs hash with a given block (the hash a build records is over the block as stored after it). */
+  hashOf: (b: Block | null) => Promise<string>;
+  inputsHash: string;
+}
+
 /**
- * `POST /api/sessions/:workoutId/build`. Throws `SessionNotFoundError`, `SessionLockedError` (carrying the
- * locked session), `NotTodayError`, `UnknownProfileError`.
+ * The inputs of a build of `row` on its day — the request's choices over the day's stored ones, the context, the
+ * checks (recording the request's, today), the block, what the build reads of the history — and their hash. A build
+ * and Start share it: Start derives the hash again to know the build it locks is still the one the day's inputs make
+ * (audit I3). Throws `SessionNotFoundError`, `UnknownProfileError`.
  */
-export async function buildSession(
-  db: Db,
-  userId: string,
-  workoutId: string,
-  req: BuildRequest,
-  ctx: { today: string; now: string; prefs: UserPreferences },
-): Promise<SessionResponse> {
-  const row = await loadSlot(db, userId, workoutId);
-  const builds = await loadBuilds(db, userId, workoutId);
-  if (lockedOf(row, builds)) throw new SessionLockedError(await readResponse(db, userId, row, ctx.today, builds));
+async function dayInputs(db: Db, userId: string, row: SlotRow, builds: readonly BuildRow[], req: BuildRequest, ctx: BuildCtx): Promise<DayInputs> {
   const date = row.effectiveDate;
-  if (date < ctx.today) throw new NotTodayError(date, ctx.today);
-  if (await restoreInProgress(db, userId)) return readResponse(db, userId, row, ctx.today, builds);
   const preview = date > ctx.today;
 
   // The day's choices: what the request sends, else what the day's latest build was made with.
@@ -712,8 +745,8 @@ export async function buildSession(
     // A day ahead has no checks of its own yet: only what the request answers, never recorded.
     checks = canonical(answeredOnly(asked)) as Record<string, CheckAnswer>;
   } else {
-    await recordPreChecks(db, userId, workoutId, date, asked, ctx.now);
-    checks = await slotChecks(db, userId, workoutId, date, ctx.today, context.activeProfiles);
+    await recordPreChecks(db, userId, row.id, date, asked, ctx.now);
+    checks = await slotChecks(db, userId, row.id, date, ctx.today, context.activeProfiles);
   }
 
   // What the build reads of the history depends on the block (a running block's lifts are judged since it started).
@@ -743,10 +776,46 @@ export async function buildSession(
         }),
       ) + historyJson,
     );
-  const inputsHash = await hashOf(block);
+  return {
+    date,
+    preview,
+    previous,
+    overrides,
+    swaps,
+    context,
+    checks,
+    block,
+    programName: program?.name ?? null,
+    history,
+    version,
+    hashOf,
+    inputsHash: await hashOf(block),
+  };
+}
+
+/** What a build request did: the session, and whether the slot's calendar event has something new to show. */
+export interface BuildOutcome {
+  session: SessionResponse;
+  calendarChanged: boolean;
+}
+
+/**
+ * Build from `inputs`, or return the stored build when its hash matches them (nothing written); store the build and
+ * the day's row as the rules say.
+ */
+async function commitBuild(
+  db: Db,
+  userId: string,
+  row: SlotRow,
+  builds: readonly BuildRow[],
+  inputs: DayInputs,
+  ctx: BuildCtx,
+): Promise<BuildOutcome> {
+  const { date, preview, previous, overrides, swaps, context, checks, block, history, version, hashOf, inputsHash } = inputs;
+  const workoutId = row.id;
   const hidden = hiddenFrom(context.prefs);
   if (previous && previous.inputsHash === inputsHash && previous.engineVersion === version) {
-    return respond(row, builds, ctx.today, preview ? {} : checks, hidden);
+    return { session: respond(row, builds, ctx.today, preview ? {} : checks, hidden), calendarChanged: false };
   }
 
   const composed = composeBuild({ date, programId: row.planId, context, block, history: history.sessions, summary: history.summary, checks, overrides, swaps });
@@ -804,11 +873,11 @@ export async function buildSession(
       .onConflictDoNothing();
     const [mine] = await db.select({ id: sessionBuilds.id }).from(sessionBuilds).where(eq(sessionBuilds.id, keep)).limit(1);
     // A concurrent build took this version first: its build stands.
-    if (!mine) return readResponse(db, userId, await loadSlot(db, userId, workoutId), ctx.today);
+    if (!mine) return { session: await readResponse(db, userId, await loadSlot(db, userId, workoutId), ctx.today), calendarChanged: false };
 
     const seconds = bookedSeconds(composed.build.plannedSeconds);
     const discipline = composed.hasCoreLift ? "strength" : "yoga";
-    const name = program?.name ?? row.title;
+    const name = inputs.programName ?? row.title;
     await db
       .update(plannedWorkouts)
       .set({
@@ -830,15 +899,44 @@ export async function buildSession(
   await pruneBuilds(db, workoutId, keep);
 
   const after = await loadSlot(db, userId, workoutId);
-  return respond(after, await loadBuilds(db, userId, workoutId), ctx.today, preview ? {} : checks, hidden);
+  // A new build of the day renames and resizes the row: the calendar picks it up through the existing reconciler.
+  return { session: respond(after, await loadBuilds(db, userId, workoutId), ctx.today, preview ? {} : checks, hidden), calendarChanged: !preview };
 }
 
 /**
- * `POST /api/sessions/:workoutId/start`: lock the day's latest build (`locked_at`, `content_state = 'started'`).
- * Idempotent: a started or done slot returns as it is. Throws `SessionNotFoundError`, `NotTodayError` (a day
- * ahead is a preview, never lockable; a day gone is not today), `NotBuiltError`.
+ * `POST /api/sessions/:workoutId/build`, with what it means for the calendar. Throws `SessionNotFoundError`,
+ * `SessionLockedError` (carrying the locked session), `NotTodayError`, `UnknownProfileError`.
  */
-export async function startSession(db: Db, userId: string, workoutId: string, now: string): Promise<SessionResponse> {
+export async function buildSessionOutcome(
+  db: Db,
+  userId: string,
+  workoutId: string,
+  req: BuildRequest,
+  ctx: BuildCtx,
+): Promise<BuildOutcome> {
+  const row = await loadSlot(db, userId, workoutId);
+  const builds = await loadBuilds(db, userId, workoutId);
+  if (lockedOf(row, builds)) throw new SessionLockedError(await readResponse(db, userId, row, ctx.today, builds));
+  if (row.effectiveDate < ctx.today) throw new NotTodayError(row.effectiveDate, ctx.today);
+  if (await restoreInProgress(db, userId)) return { session: await readResponse(db, userId, row, ctx.today, builds), calendarChanged: false };
+  return commitBuild(db, userId, row, builds, await dayInputs(db, userId, row, builds, req, ctx), ctx);
+}
+
+/** `POST /api/sessions/:workoutId/build` (see `buildSessionOutcome`): the session. */
+export async function buildSession(db: Db, userId: string, workoutId: string, req: BuildRequest, ctx: BuildCtx): Promise<SessionResponse> {
+  return (await buildSessionOutcome(db, userId, workoutId, req, ctx)).session;
+}
+
+/**
+ * `POST /api/sessions/:workoutId/start` `{buildId}`: lock the build the athlete was shown (`locked_at`,
+ * `content_state = 'started'`) — only while it is still the day's current build and the day's inputs still make it.
+ * The inputs hash is derived again, so a check, a saved session, a rating or a place changed since the build makes
+ * it stale: `StaleBuildError` then carries the fresh build, made as `POST /build {}` makes it, and nothing is locked
+ * (audit I3). Idempotent: a started or done slot returns as it is, whatever build id is named. Throws
+ * `SessionNotFoundError`, `NotTodayError` (a day ahead is a preview, never lockable; a day gone is not today),
+ * `NotBuiltError`, `StaleBuildError`.
+ */
+export async function startSession(db: Db, userId: string, workoutId: string, buildId: string, now: string): Promise<SessionResponse> {
   const row = await loadSlot(db, userId, workoutId);
   const prefs = await loadPreferences(db, userId);
   const today = todayInZone(prefs.timezone, new Date(now));
@@ -848,6 +946,13 @@ export async function startSession(db: Db, userId: string, workoutId: string, no
   const current = currentBuild(row, builds, today);
   if (!current) throw new NotBuiltError();
   if (await restoreInProgress(db, userId)) return readResponse(db, userId, row, today, builds);
+
+  const ctx: BuildCtx = { today, now, prefs };
+  const inputs = await dayInputs(db, userId, row, builds, {}, ctx);
+  if (current.id !== buildId || current.inputsHash !== inputs.inputsHash || current.engineVersion !== inputs.version) {
+    const fresh = await commitBuild(db, userId, row, builds, inputs, ctx);
+    throw new StaleBuildError(fresh.session, fresh.calendarChanged);
+  }
 
   await db.update(sessionBuilds).set({ lockedAt: now }).where(eq(sessionBuilds.id, current.id));
   await db

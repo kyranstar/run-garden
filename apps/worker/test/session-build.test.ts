@@ -29,6 +29,7 @@ import {
   recordCheck,
   SessionLockedError,
   SessionNotFoundError,
+  StaleBuildError,
   startSession,
   type SessionResponse,
 } from "../src/services/session-build.js";
@@ -464,7 +465,7 @@ describe("building today's session", () => {
     const theirs = await seedSlot(TODAY, { owner: other, program: theirProgram });
     await expect(buildSession(db, userId, theirs, {}, ctx())).rejects.toBeInstanceOf(SessionNotFoundError);
     await expect(loadSession(db, userId, theirs, TODAY)).rejects.toBeInstanceOf(SessionNotFoundError);
-    await expect(startSession(db, userId, theirs, NOW)).rejects.toBeInstanceOf(SessionNotFoundError);
+    await expect(startSession(db, userId, theirs, "any", NOW)).rejects.toBeInstanceOf(SessionNotFoundError);
 
     const coros = await seedSlot(addDays(TODAY, 1), { origin: null });
     await expect(buildSession(db, userId, coros, {}, ctx())).rejects.toBeInstanceOf(SessionNotFoundError);
@@ -502,7 +503,7 @@ describe("a day ahead, a day gone (Review Focus 2)", () => {
     expect((await buildsOf(id)).map((b) => b.version)).toEqual([0]);
     expect((await loadSession(db, userId, id, TODAY)).build).toEqual(again.build);
 
-    await expect(startSession(db, userId, id, NOW)).rejects.toBeInstanceOf(NotTodayError);
+    await expect(startSession(db, userId, id, again.build!.buildId, NOW)).rejects.toBeInstanceOf(NotTodayError);
     expect((await buildsOf(id))[0]!.lockedAt).toBeNull();
   });
 
@@ -527,14 +528,15 @@ describe("Start (Review Focus 3)", () => {
     const id = await seedSlot(TODAY);
     await buildSession(db, userId, id, {}, ctx());
     const built = await buildSession(db, userId, id, { overrides: { minutes: 20 } }, ctx());
-    const started = await startSession(db, userId, id, LATER);
+    const started = await startSession(db, userId, id, built.build!.buildId, LATER);
     expect(started).toMatchObject({ contentState: "started", locked: true });
     expect(started.build).toEqual(built.build);
     const stored = await buildsOf(id);
     expect(stored.map((b) => [b.version, b.lockedAt])).toEqual([[2, LATER]]);
     expect(await rowOf(id)).toMatchObject({ contentState: "started", updatedAt: LATER });
 
-    expect(await startSession(db, userId, id, "2026-10-07T20:00:00.000Z")).toEqual(started);
+    // Whatever build id a second Start names, the started slot comes back as it is.
+    expect(await startSession(db, userId, id, "another", "2026-10-07T20:00:00.000Z")).toEqual(started);
     expect((await buildsOf(id))[0]!.lockedAt).toBe(LATER);
 
     statements.length = 0;
@@ -546,9 +548,55 @@ describe("Start (Review Focus 3)", () => {
     expect(statements.filter(isWrite)).toEqual([]);
   });
 
+  it("a check recorded after the build: Start refuses with the fresh build and locks nothing (audit I3)", async () => {
+    await activateTmj();
+    const id = await seedSlot(TODAY);
+    const before = await buildSession(db, userId, id, {}, ctx());
+    expect(before.build!.mode).not.toBe("recovery");
+    await recordCheck(db, userId, { profileId: "tmj", value: 8, feelingOff: false }, ctx({ now: LATER }));
+
+    const err = await startSession(db, userId, id, before.build!.buildId, LATER).catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(StaleBuildError);
+    const fresh = (err as StaleBuildError).session;
+    expect(fresh).toMatchObject({ contentState: "built", locked: false, checks: { tmj: { pre: 8, feelingOff: false } } });
+    expect(fresh.build).toMatchObject({ version: 2, mode: "recovery", params: { checks: { tmj: { pre: 8, feelingOff: false } } } });
+    expect((await buildsOf(id)).map((b) => [b.version, b.lockedAt])).toEqual([[2, null]]);
+    expect((await rowOf(id)).contentState).toBe("built");
+
+    // Started from the build it was shown, it locks that build.
+    const started = await startSession(db, userId, id, fresh.build!.buildId, LATER);
+    expect(started).toMatchObject({ contentState: "started", locked: true });
+    expect(started.build).toEqual(fresh.build);
+  });
+
+  it("an input changed since the build (a rating) makes it stale too; the same inputs lock (audit I3)", async () => {
+    const id = await seedSlot(TODAY);
+    const built = await buildSession(db, userId, id, {}, ctx());
+    const offered = Object.values(built.build!.alternatives).flat()[0]!.id;
+    await db.insert(exercisePrefs).values({ id: `${userId}:${offered}`, userId, exerciseId: offered, rating: 1, excluded: false, pinned: false, introducedOn: null, updatedAt: NOW });
+    const err = await startSession(db, userId, id, built.build!.buildId, LATER).catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(StaleBuildError);
+    const fresh = (err as StaleBuildError).session;
+    expect(fresh.build!.version).toBe(2);
+    expect(fresh.build!.inputsHash).not.toBe(built.build!.inputsHash);
+    expect((await startSession(db, userId, id, fresh.build!.buildId, LATER)).locked).toBe(true);
+  });
+
+  it("a build id that is no longer the day's: Start refuses with the current build, writing nothing (audit I3)", async () => {
+    const id = await seedSlot(TODAY);
+    const v1 = await buildSession(db, userId, id, {}, ctx());
+    const v2 = await buildSession(db, userId, id, { overrides: { minutes: 20 } }, ctx({ now: LATER }));
+    statements.length = 0;
+    const err = await startSession(db, userId, id, v1.build!.buildId, LATER).catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(StaleBuildError);
+    expect((err as StaleBuildError).session.build).toEqual(v2.build);
+    expect(statements.filter(isWrite)).toEqual([]);
+    expect((await buildsOf(id)).map((b) => [b.version, b.lockedAt])).toEqual([[2, null]]);
+  });
+
   it("start with nothing built today is 409 not_built", async () => {
     const id = await seedSlot(TODAY);
-    await expect(startSession(db, userId, id, NOW)).rejects.toBeInstanceOf(NotBuiltError);
+    await expect(startSession(db, userId, id, "none", NOW)).rejects.toBeInstanceOf(NotBuiltError);
   });
 
   it("GET reads the slot: no build yet, then the built one, the day's checks and the lock", async () => {
@@ -643,7 +691,7 @@ describe("the routes", () => {
     const session = (await built.json()) as SessionResponse;
     expect(session.build).toMatchObject({ version: 1, mode: "recovery" });
 
-    const started = await call("POST", `/api/sessions/${id}/start`);
+    const started = await call("POST", `/api/sessions/${id}/start`, { buildId: session.build!.buildId });
     expect(started.status).toBe(200);
     expect(((await started.json()) as SessionResponse).locked).toBe(true);
 
@@ -652,6 +700,27 @@ describe("the routes", () => {
     const body = (await after.json()) as { error: string; session: SessionResponse };
     expect(body.error).toBe("locked");
     expect(body.session.build).toEqual(session.build);
+  });
+
+  it("Start names the build it was shown: 409 stale with the fresh session when the day's inputs moved on; 422 without one (audit I3)", async () => {
+    await activateTmj();
+    const id = await seedSlot(today);
+    const built = (await (await call("POST", `/api/sessions/${id}/build`, {})).json()) as SessionResponse;
+    for (const body of [undefined, {}, { buildId: "" }, { buildId: built.build!.buildId, extra: 1 }]) {
+      const r = await call("POST", `/api/sessions/${id}/start`, body);
+      expect(r.status, JSON.stringify(body)).toBe(422);
+      expect(((await r.json()) as { error: string }).error).toBe("invalid_start");
+    }
+    expect((await call("POST", "/api/conditions/checks", { profileId: "tmj", value: 8, feelingOff: false })).status).toBe(200);
+    const stale = await call("POST", `/api/sessions/${id}/start`, { buildId: built.build!.buildId });
+    expect(stale.status).toBe(409);
+    const body = (await stale.json()) as { error: string; session: SessionResponse };
+    expect(body.error).toBe("stale");
+    expect(body.session).toMatchObject({ locked: false, checks: { tmj: { pre: 8, feelingOff: false } } });
+    expect(body.session.build).toMatchObject({ version: 2, mode: "recovery" });
+    const started = await call("POST", `/api/sessions/${id}/start`, { buildId: body.session.build!.buildId });
+    expect(started.status).toBe(200);
+    expect(((await started.json()) as SessionResponse).locked).toBe(true);
   });
 
   it("a body with no JSON builds with nothing changed", async () => {
@@ -672,7 +741,7 @@ describe("the routes", () => {
 
     const ahead = await seedSlot(addDays(today, 1));
     expect((await call("POST", `/api/sessions/${ahead}/build`, {})).status).toBe(200);
-    const start = await call("POST", `/api/sessions/${ahead}/start`);
+    const start = await call("POST", `/api/sessions/${ahead}/start`, { buildId: "any" });
     expect(start.status).toBe(409);
     expect(((await start.json()) as { error: string }).error).toBe("not_today");
 
@@ -683,7 +752,7 @@ describe("the routes", () => {
       ["POST", `/api/sessions/${theirs}/build`],
       ["POST", `/api/sessions/${theirs}/start`],
     ] as const) {
-      const r = await call(method, path, method === "POST" ? {} : undefined);
+      const r = await call(method, path, method === "POST" ? (path.endsWith("/start") ? { buildId: "any" } : {}) : undefined);
       expect(r.status, `${method} ${path}`).toBe(404);
     }
   });
@@ -720,7 +789,7 @@ describe("the routes", () => {
     const id = await seedSlot(today);
     await db.insert(accountState).values({ userId, restoreId: newId(), restoreStartedAt: nowInstant(), updatedAt: nowInstant() });
     expect((await call("POST", `/api/sessions/${id}/build`, {})).status).toBe(423);
-    expect((await call("POST", `/api/sessions/${id}/start`)).status).toBe(423);
+    expect((await call("POST", `/api/sessions/${id}/start`, { buildId: "any" })).status).toBe(423);
     expect((await call("POST", "/api/conditions/checks", { profileId: "tmj", value: 1 })).status).toBe(423);
     expect((await call("GET", `/api/sessions/${id}`)).status).toBe(200);
   });

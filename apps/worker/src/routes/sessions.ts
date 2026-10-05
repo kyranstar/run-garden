@@ -5,12 +5,12 @@
  *   GET    /api/sessions/:workoutId          the slot, its current build (or none), its day's checks, the lock
  *   POST   /api/sessions/:workoutId/build    {checks?, overrides?, swaps?} → build, or the stored build when the
  *                                            inputs are unchanged; a day ahead is a preview
- *   POST   /api/sessions/:workoutId/start    lock the day's build; idempotent
+ *   POST   /api/sessions/:workoutId/start    {buildId} → lock that build, while it is still the day's; idempotent
  *   POST   /api/conditions/checks            {profileId, value, feelingOff} → the day's check
  *
  * 404 for a slot that is not this user's live program / on-demand row; 409 `not_today` (a day gone, or Start on a
- * day ahead), 409 `locked` with the locked session, 409 `not_built`; 422 for an invalid body or a profile that is
- * not switched on. Everything engine-shaped lives in `services/session-build.ts`. A restore in progress is refused
+ * day ahead), 409 `locked` with the locked session, 409 `not_built`, 409 `stale` with the fresh session (Start named a
+ * build the day's inputs no longer make); 422 for an invalid body or a profile that is not switched on. Everything engine-shaped lives in `services/session-build.ts`. A restore in progress is refused
  * (423) by `requireUser` before any write runs.
  */
 import { Hono, type Context } from "hono";
@@ -20,13 +20,14 @@ import type { AppContext } from "../auth/middleware.js";
 import { requireUser } from "../auth/middleware.js";
 import { loadPreferences, syncCalendar } from "../services/calendar-sync.js";
 import {
-  buildSession,
+  buildSessionOutcome,
   loadSession,
   NotBuiltError,
   NotTodayError,
   recordCheck,
   SessionLockedError,
   SessionNotFoundError,
+  StaleBuildError,
   startSession,
   UnknownProfileError,
 } from "../services/session-build.js";
@@ -63,6 +64,9 @@ const buildSchema = z
       .optional(),
   })
   .strict();
+
+/** Start names the build the athlete was shown (audit I3). */
+const startSchema = z.object({ buildId: z.string().min(1).max(200) }).strict();
 
 const checkSchema = z
   .object({ profileId, value: checkValue, feelingOff: z.boolean().default(false) })
@@ -110,10 +114,10 @@ sessionRoutes.post("/:workoutId/build", async (c) => {
   const today = todayInZone(prefs.timezone);
   const now = nowInstant();
   try {
-    const session = await buildSession(db, userId, c.req.param("workoutId"), parsed.data, { today, now, prefs });
+    const { session, calendarChanged } = await buildSessionOutcome(db, userId, c.req.param("workoutId"), parsed.data, { today, now, prefs });
     // A new build of the day renames and resizes the row: the calendar picks it up through the existing
     // reconciler. A stored build returned unchanged (or a preview) changed nothing it shows.
-    if (session.date === today && session.build?.builtAt === now) waitUntilSafe(c, syncCalendar(db, c.env, userId));
+    if (calendarChanged) waitUntilSafe(c, syncCalendar(db, c.env, userId));
     return c.json(session);
   } catch (e) {
     return refusal(c, e);
@@ -121,9 +125,17 @@ sessionRoutes.post("/:workoutId/build", async (c) => {
 });
 
 sessionRoutes.post("/:workoutId/start", async (c) => {
+  const db = c.get("db");
+  const userId = c.get("userId");
+  const parsed = startSchema.safeParse(await c.req.json().catch(() => null));
+  if (!parsed.success) return c.json({ error: "invalid_start", issues: parsed.error.issues }, 422);
   try {
-    return c.json(await startSession(c.get("db"), c.get("userId"), c.req.param("workoutId"), nowInstant()));
+    return c.json(await startSession(db, userId, c.req.param("workoutId"), parsed.data.buildId, nowInstant()));
   } catch (e) {
+    if (e instanceof StaleBuildError) {
+      if (e.calendarChanged) waitUntilSafe(c, syncCalendar(db, c.env, userId));
+      return c.json({ error: "stale", session: e.session }, 409);
+    }
     return refusal(c, e);
   }
 });
