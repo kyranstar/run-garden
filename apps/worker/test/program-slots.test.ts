@@ -40,9 +40,11 @@ import { applyMove } from "../src/services/jobs.js";
 import { removeFromPlan } from "../src/services/plan-mutations.js";
 import { importPlanSnapshot } from "../src/services/import-plan.js";
 import { savePreferences, syncCalendar } from "../src/services/calendar-sync.js";
+import { updateProgram } from "../src/services/programs.js";
+import { dayCollides } from "../src/services/day-placement.js";
 import { hourly } from "../src/index.js";
 
-const { plannedWorkouts, programs, calendarEventSuppressions, accountState } = schema;
+const { plannedWorkouts, programs, calendarEventSuppressions, accountState, sessionBuilds } = schema;
 
 /** A Monday. */
 const MON = "2026-10-05";
@@ -307,6 +309,113 @@ describe("re-placement after an edit", () => {
     expect((await rowsOf(p)).filter((r) => r.originalPlanDate >= day(1, 0) && r.originalPlanDate <= day(1, 6))).toHaveLength(4);
     // Settled: the retracted Saturdays do not hold their weeks' places, so nothing churns on the next run.
     expect(await placeSlots(db, userId, p, MON, prefs, NOW)).toEqual({ placed: [], archived: [] });
+  });
+
+  it("a rename, a new length or a new lead discipline reaches every live slot from today on, and nothing before it", async () => {
+    // Audit 2a-model I2 (+ build M8): only inserted and revived rows took the program's content, so for weeks the
+    // Plan and the calendar showed the old name and a 30-minute block after the athlete asked for 45.
+    const p = await seedProgram(db, userId, { weeklyGoal: 2, preferredDays: [0, 2], placementWeeksAhead: 2 });
+    await placeSlots(db, userId, p, day(-1, 0), prefs, NOW); // last week's slots: history by MON
+    await placeSlots(db, userId, p, MON, prefs, NOW);
+    const past = [slotId(p, day(-1, 0)), slotId(p, day(-1, 2))];
+    // Today's session is built ("Mobility · Hips", a yoga session of 40 min) …
+    const today = slotId(p, day(0, 0));
+    await db
+      .update(plannedWorkouts)
+      .set({ contentState: "built", title: "Mobility · Hips", calendarBlockDurationSeconds: 2400, fallbackEstimatedDurationSeconds: 2400 })
+      .where(eq(plannedWorkouts.id, today));
+    for (const [version, theme] of [[0, "Preview"], [1, "Back"], [2, "Hips"]] as const) {
+      await db.insert(sessionBuilds).values({
+        id: newId(),
+        userId,
+        workoutId: today,
+        version,
+        engineVersion: "test",
+        inputsHash: `h${version}`,
+        payload: { build: { padding: "x".repeat(100) }, view: { mode: "consistent", theme: { id: theme.toLowerCase(), name: theme } } },
+        lockedAt: null,
+        createdAt: NOW,
+      });
+    }
+    // … one future slot's event is written, one was moved by the athlete, one was skipped …
+    await db.update(plannedWorkouts).set({ calendarSyncState: "synced" }).where(eq(plannedWorkouts.id, slotId(p, day(1, 0))));
+    await move(slotId(p, day(1, 2)), day(1, 3));
+    await db
+      .update(plannedWorkouts)
+      .set({ completionState: "skipped", resolutionDate: MON })
+      .where(eq(plannedWorkouts.id, slotId(p, day(2, 0))));
+    // … and a run sits on next Monday just clear of a 30-minute slot, not of a 45-minute one.
+    const runId = newId();
+    await db.insert(plannedWorkouts).values({
+      id: runId,
+      userId,
+      planId: "coros-plan",
+      sourceWorkoutId: `src-${runId}`,
+      title: "Easy run",
+      category: "easy",
+      sport: "run",
+      originalPlanDate: day(1, 0),
+      lastVerifiedCorosDate: day(1, 0),
+      effectiveDate: day(1, 0),
+      effectiveTime: "08:00",
+      sourceContentFingerprint: "fp",
+      fallbackEstimatedDurationSeconds: 3600,
+      calendarBlockDurationSeconds: 3600,
+      completionState: "scheduled",
+      createdAt: NOW,
+      updatedAt: NOW,
+    });
+
+    await updateProgram(db, userId, p, { name: "Jaw care", config: { defaultMinutes: 45 } }, NOW);
+    await db.update(programs).set({ disciplines: ["strength", "yoga"] }).where(eq(programs.id, p));
+    const LATER = "2026-10-05T13:00:00.000Z";
+    expect(await placeSlots(db, userId, p, MON, prefs, LATER)).toEqual({ placed: [], archived: [] });
+
+    const outlines = [slotId(p, day(0, 2)), slotId(p, day(1, 0)), slotId(p, day(1, 2)), slotId(p, day(2, 2))];
+    for (const id of outlines) {
+      expect(await row(id)).toMatchObject({
+        title: "Jaw care",
+        category: "strength",
+        sport: "strength",
+        fallbackEstimatedDurationSeconds: 45 * 60,
+        calendarBlockDurationSeconds: 45 * 60,
+        updatedAt: LATER,
+      });
+    }
+    expect((await row(slotId(p, day(1, 2)))).effectiveDate).toBe(day(1, 3)); // still where the athlete put it
+    expect((await row(slotId(p, day(1, 0)))).calendarSyncState).toBe("pending");
+    // The built session keeps its build (discipline, length) and takes the new name before its theme.
+    expect(await row(today)).toMatchObject({
+      title: "Jaw care · Hips",
+      category: "yoga",
+      calendarBlockDurationSeconds: 2400,
+      contentState: "built",
+    });
+    // History and a resolved slot stay as they were.
+    for (const id of [...past, slotId(p, day(2, 0))]) {
+      expect(await row(id)).toMatchObject({ title: "Mobility", calendarBlockDurationSeconds: 30 * 60, updatedAt: NOW });
+    }
+    // The longer slot no longer sits on the run's block: the collision pass ran over its day.
+    const monday = (await db.select().from(plannedWorkouts).where(eq(plannedWorkouts.effectiveDate, day(1, 0)))).filter(
+      (r) => !r.archivedAt,
+    );
+    expect(monday).toHaveLength(2);
+    expect(
+      dayCollides(
+        monday.map((r) => ({
+          key: r.id,
+          category: r.category,
+          workoutSeconds: r.fallbackEstimatedDurationSeconds!,
+          currentTime: r.effectiveTime,
+          pinned: false,
+        })),
+        prefs,
+      ),
+    ).toBe(false);
+
+    // Settled: a second pass writes nothing.
+    expect(await placeSlots(db, userId, p, MON, prefs, "2026-10-05T14:00:00.000Z")).toEqual({ placed: [], archived: [] });
+    for (const id of outlines) expect((await row(id)).updatedAt).toBe(LATER);
   });
 
   it("a retired program places nothing", async () => {

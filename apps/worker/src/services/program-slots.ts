@@ -23,15 +23,17 @@
  *  4. Flexible slots the pattern no longer wants (goal lowered, a day dropped, the program retired) are archived
  *     through `removeFromPlan` — `archive_reason = 'program_replaced'` and the one `user_removed` calendar
  *     suppression a hand removal gets — and only then are missing days filled.
+ *  5. A SLOT SAYS WHAT ITS PROGRAM SAYS NOW: a rename, a new length or a new lead discipline reaches the program's
+ *     live slots from today on (`refreshSlotContent`); history keeps what it said.
  *
  * Every writer here is a no-op while a restore is replacing the account (ruling B2).
  */
-import { and, eq, gte, lte, or } from "drizzle-orm";
-import { calendarEventSuppressions, plannedWorkouts, programs } from "@rg/database";
+import { and, eq, gt, gte, inArray, isNull, lte, or, sql } from "drizzle-orm";
+import { calendarEventSuppressions, plannedWorkouts, programs, sessionBuilds } from "@rg/database";
 import { adaptiveConfigSchema, addDays, nowInstant, startOfIsoWeek, todayInZone, type UserPreferences } from "@rg/domain";
 import { restoreInProgress } from "./account-state.js";
 import { loadPreferences } from "./calendar-sync.js";
-import { chunkedInsert, type Db } from "./db.js";
+import { chunkedInsert, chunkIds, type Db } from "./db.js";
 import { separateDayCollisions, windowTimeFor } from "./day-placement.js";
 import { removeFromPlan } from "./plan-mutations.js";
 
@@ -251,11 +253,115 @@ export async function placeSlots(
     result.placed.push(r.id);
   }
 
-  const placedDates = [...toInsert, ...toRevive.map((r) => r.originalPlanDate)];
+  const refreshedDates = await refreshSlotContent(db, userId, program, { discipline, seconds }, today, now);
+
+  const placedDates = [...toInsert, ...toRevive.map((r) => r.originalPlanDate), ...refreshedDates];
   if (placedDates.length > 0) {
     await separateDayCollisions(db, userId, placedDates, prefs, { from: today, now });
   }
   return result;
+}
+
+/** A built session's title: the program's name, then the build's theme (Phase 2 spec §2a "Build rules"). */
+export function builtSessionTitle(programName: string, themeName: string | null | undefined): string {
+  return themeName ? `${programName} · ${themeName}` : programName;
+}
+
+/** Bound per statement for the build lookup: the ids plus the query's own version floor. */
+const BUILD_ID_CHUNK = 80;
+
+/**
+ * Rule 5: a slot shows what its program says NOW. A rename, a new `defaultMinutes` or a new lead discipline reaches
+ * every live, still-scheduled slot of the program dated today or later — wherever it sits, moved or not:
+ *  - an OUTLINE takes the name, the length and the default discipline (it has no content of its own yet);
+ *  - a BUILT, not-started session takes only the name, before its build's theme — its discipline and length are
+ *    the build's.
+ * Started, done, resolved and past rows are history and keep what they said. Only rows that differ are written,
+ * so a settled program writes nothing; a written event is flipped to `pending` so the calendar re-derives it.
+ * Returns the dates whose rows changed, for the collision pass.
+ */
+async function refreshSlotContent(
+  db: Db,
+  userId: string,
+  program: ProgramRow,
+  content: { discipline: "strength" | "yoga"; seconds: number },
+  today: string,
+  now: string,
+): Promise<string[]> {
+  const live = await db
+    .select({
+      id: plannedWorkouts.id,
+      effectiveDate: plannedWorkouts.effectiveDate,
+      title: plannedWorkouts.title,
+      category: plannedWorkouts.category,
+      sport: plannedWorkouts.sport,
+      fallbackEstimatedDurationSeconds: plannedWorkouts.fallbackEstimatedDurationSeconds,
+      calendarBlockDurationSeconds: plannedWorkouts.calendarBlockDurationSeconds,
+      contentState: plannedWorkouts.contentState,
+      calendarSyncState: plannedWorkouts.calendarSyncState,
+    })
+    .from(plannedWorkouts)
+    .where(
+      and(
+        eq(plannedWorkouts.userId, userId),
+        eq(plannedWorkouts.planId, program.id),
+        eq(plannedWorkouts.origin, "program"),
+        isNull(plannedWorkouts.archivedAt),
+        eq(plannedWorkouts.completionState, "scheduled"),
+        gte(plannedWorkouts.effectiveDate, today),
+        inArray(plannedWorkouts.contentState, ["outline", "built"]),
+      ),
+    );
+
+  // A built session's theme, from its latest real build — read in SQL, never by parsing the whole payload.
+  const builtIds = live.filter((r) => r.contentState === "built").map((r) => r.id);
+  const themeOf = new Map<string, { version: number; theme: string | null }>();
+  for (const batch of chunkIds(builtIds, BUILD_ID_CHUNK)) {
+    const builds = await db
+      .select({
+        workoutId: sessionBuilds.workoutId,
+        version: sessionBuilds.version,
+        theme: sql<string | null>`json_extract(${sessionBuilds.payload}, '$.view.theme.name')`,
+      })
+      .from(sessionBuilds)
+      .where(and(inArray(sessionBuilds.workoutId, batch), gt(sessionBuilds.version, 0)));
+    for (const b of builds) {
+      const seen = themeOf.get(b.workoutId);
+      if (!seen || b.version > seen.version) themeOf.set(b.workoutId, { version: b.version, theme: b.theme });
+    }
+  }
+
+  const changedDates: string[] = [];
+  for (const r of live) {
+    let want: Partial<typeof plannedWorkouts.$inferInsert>;
+    if (r.contentState === "outline") {
+      want = {
+        title: program.name,
+        category: content.discipline,
+        sport: content.discipline,
+        fallbackEstimatedDurationSeconds: content.seconds,
+        calendarBlockDurationSeconds: content.seconds,
+      };
+    } else {
+      const built = themeOf.get(r.id);
+      if (!built) continue; // no build to read the theme from: leave the row as its build wrote it
+      want = { title: builtSessionTitle(program.name, built.theme) };
+    }
+    const differs = (Object.keys(want) as Array<keyof typeof want>).some(
+      (k) => want[k] !== (r as Record<string, unknown>)[k],
+    );
+    if (!differs) continue;
+    await db
+      .update(plannedWorkouts)
+      .set({
+        ...want,
+        ...(r.calendarSyncState === "synced" ? { calendarSyncState: "pending" } : {}),
+        updatedAt: now,
+      })
+      .where(and(eq(plannedWorkouts.id, r.id), eq(plannedWorkouts.userId, userId)));
+    changedDates.push(r.effectiveDate);
+  }
+  return changedDates;
 }
 
 export interface PlacementSweepStats {
