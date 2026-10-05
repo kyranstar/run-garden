@@ -36,6 +36,7 @@ import {
 } from "../src/services/session-build.js";
 import { loadEngineContext, loadProgramState, saveProgramState } from "../src/services/engine-inputs.js";
 import { slotId } from "../src/services/program-slots.js";
+import { applyMove } from "../src/services/jobs.js";
 import { conditionRoutes, sessionRoutes } from "../src/routes/sessions.js";
 import { createSession, SESSION_COOKIE } from "../src/auth/sessions.js";
 import { isWrite, makeTestDb, makeTestUser, mountRoutes } from "./helpers.js";
@@ -325,6 +326,22 @@ describe("building today's session", () => {
       expect(afterLastWrite()).toEqual([]);
       expect(await loadSession(db, userId, ahead, TODAY)).toEqual(preview);
     }
+  });
+
+  it("a slot moved away and back shows its stored build as built again: the cache hit restores the state (audit M1)", async () => {
+    const id = await seedSlot(TODAY);
+    const first = await buildSession(db, userId, id, {}, ctx());
+    for (const toDate of [addDays(TODAY, 1), TODAY]) {
+      await applyMove(db, { userId, workoutId: id, toDate, toTime: "18:00", source: "app", corosWritesEnabled: false });
+    }
+    // Moving reverted the row to an outline (ruling 2a-R7); its build for this date still stands.
+    expect((await loadSession(db, userId, id, TODAY)).contentState).toBe("outline");
+    const again = await buildSession(db, userId, id, {}, ctx({ now: LATER }));
+    expect(again.build).toEqual(first.build);
+    expect(again.contentState).toBe("built");
+    expect((await rowOf(id)).contentState).toBe("built");
+    expect((await loadSession(db, userId, id, TODAY)).contentState).toBe("built");
+    expect((await buildsOf(id)).map((b) => b.version)).toEqual([1]);
   });
 
   it("an override rebuilds as version 2, and only the latest unlocked version is kept", async () => {

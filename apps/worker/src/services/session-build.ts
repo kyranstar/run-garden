@@ -29,7 +29,7 @@
  *
  * Every writer here is a no-op while a restore is replacing the account (ruling B2).
  */
-import { and, eq, inArray, isNull, ne } from "drizzle-orm";
+import { and, eq, inArray, isNull, ne, or } from "drizzle-orm";
 import { conditionChecks, exercisePrefs, plannedWorkouts, programs, sessionBuilds, userConditions } from "@rg/database";
 import { newId, todayInZone, type AdaptiveConfig, type UserPreferences } from "@rg/domain";
 import {
@@ -815,6 +815,21 @@ async function commitBuild(
   const workoutId = row.id;
   const hidden = hiddenFrom(context.prefs);
   if (previous && previous.inputsHash === inputsHash && previous.engineVersion === version) {
+    // A slot moved away and back is an outline again (ruling 2a-R7), yet the build it holds is for this date and these
+    // inputs: it is built again (audit M1).
+    if (!preview && row.contentState !== "built") {
+      await db
+        .update(plannedWorkouts)
+        .set({ contentState: "built", updatedAt: ctx.now })
+        .where(
+          and(
+            eq(plannedWorkouts.id, workoutId),
+            eq(plannedWorkouts.userId, userId),
+            or(isNull(plannedWorkouts.contentState), eq(plannedWorkouts.contentState, "outline")),
+          ),
+        );
+      return { session: respond({ ...row, contentState: "built", updatedAt: ctx.now }, builds, ctx.today, checks, hidden), calendarChanged: false };
+    }
     return { session: respond(row, builds, ctx.today, preview ? {} : checks, hidden), calendarChanged: false };
   }
 
