@@ -245,7 +245,13 @@ function windowFrom(today: string, block: Pick<Block, "startedAt" | "weeks" | "r
  * The sessions a build on `today` reads one by one (see above), in the history's order: the last 14 days (and
  * anything dated later), from the block's start while it runs; the last 3 sessions on or before today; the last
  * themed session before today; and the sessions holding each move's 2 newest progression entries. With
- * `summarize(sessions, today)` alongside, a build plans exactly what it plans from the whole history.
+ * `summarize(sessions, today)` alongside, a build plans exactly what it plans from the whole history —
+ *
+ * PRECONDITION: each session's start (`startedAt`) is within a day of its date, as every save and import writes it.
+ * The window is kept by date, while the proposal's last build-mode session is the newest by start, at any age. A
+ * session dated long ago but started after newer ones (a mis-dated import) can be that session in the whole history
+ * yet fall outside the window, and the trimmed build then differs (audit 2a M4: the whole history says "build", the
+ * trimmed one "you built strength yesterday").
  */
 function trim(sessions: readonly HistorySession[], today: string, block: Pick<Block, "startedAt" | "weeks" | "rotations"> | null): HistorySession[] {
   const keep = new Set<HistorySession>();

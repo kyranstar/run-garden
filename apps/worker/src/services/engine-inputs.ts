@@ -217,7 +217,8 @@ export interface BuildHistory {
 // session touched are its entries' ids and `moves_done`. A session's start (`w`) is its start time, else its date.
 //
 // Order: SQLite compares start times by bytes, the engine by `localeCompare`. On ISO times the two disagree only
-// between two times equal to the second and written differently (".000Z" against "+00:00"); each "newest N" below
+// between two times equal to the MINUTE and written differently — ".000Z" against "+00:00", and, since the wire
+// accepts a time with no seconds, "18:00+02:00" against "18:00:30Z" (audit 2a M4); each "newest N" below
 // keeps a few more sessions than the engine needs, so the engine still finds its own among them (extra sessions
 // never change a build), and a move's first session is the earliest by bytes — on such a tie both sessions share
 // their date, which is all the engine reads of it.
