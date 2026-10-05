@@ -395,20 +395,27 @@ export function composeBuild(input: ComposeInput): Composed {
     },
   );
   // The program's own modes bind the build (ruling 2a-R7): an override or a proposal outside them falls back to
-  // the nearest allowed mode, and the reasons say so.
-  const allowed = c.config.modes;
-  let fallback: string | null = null;
-  let planned = planWith(input.overrides.mode ? (allowed.includes(input.overrides.mode) ? input.overrides.mode : nearestMode(input.overrides.mode, allowed)) : undefined);
-  if (input.overrides.mode && !allowed.includes(input.overrides.mode)) {
-    fallback = fallbackReason(input.overrides.mode, nearestMode(input.overrides.mode, allowed));
-  } else if (!input.overrides.mode && !allowed.includes(planned.view.proposedMode)) {
-    const to = nearestMode(planned.view.proposedMode, allowed);
-    planned = planWith(to);
-    fallback = fallbackReason(planned.view.proposedMode, to);
-    planned = { ...planned, view: { ...planned.view, proposedMode: to } };
-  }
-  const { view: v, blockUpdate } = planned;
-  if (fallback) v.modeReasons = [fallback, ...v.modeReasons];
+  // the nearest allowed mode, and the reasons say so. A recovery the engine proposes comes only from a safety
+  // signal — a condition profile's own recovery rule, or "feeling off" — and stands whatever the modes, as does
+  // recovery asked for on such a day (ruling 2a-R10). The proposal shown is always a mode the build could take
+  // (audit M7).
+  const want = input.overrides.mode;
+  const clamp = (m: Mode, modes: readonly Mode[]): Mode => (modes.includes(m) ? m : nearestMode(m, modes));
+  let planned = planWith(want ? clamp(want, c.config.modes) : undefined);
+  const proposed = planned.view.proposedMode;
+  const allowed: readonly Mode[] =
+    proposed === "recovery" && !c.config.modes.includes("recovery") ? [...c.config.modes, "recovery"] : c.config.modes;
+  const proposal = clamp(proposed, allowed);
+  const mode = want ? clamp(want, allowed) : proposal;
+  if (planned.view.mode !== mode) planned = planWith(mode);
+  const from = want ?? proposed;
+  const fallback = from !== mode ? fallbackReason(from, mode) : null;
+  const { blockUpdate } = planned;
+  const v = {
+    ...planned.view,
+    proposedMode: proposal,
+    modeReasons: fallback ? [fallback, ...planned.view.modeReasons] : planned.view.modeReasons,
+  };
   const plan = v.plan;
 
   const exercises: Record<string, ExerciseSlice> = {};

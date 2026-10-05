@@ -264,6 +264,36 @@ describe("building today's session", () => {
     expect(res.view!.modeReasons[0]).toContain(`doesn't include ${proposed} sessions`);
   });
 
+  it("a care profile's recovery stands in a program without recovery: safety over preference (ruling 2a-R10)", async () => {
+    await activateTmj();
+    const noRecovery = await seedProgram(userId, { modes: ["consistent", "build"], careProfiles: ["tmj"] });
+    const id = await seedSlot(TODAY, { program: noRecovery });
+    const flare = await buildSession(db, userId, id, { checks: { tmj: { pre: 7, feelingOff: false } } }, ctx());
+    expect(flare.view).toMatchObject({ mode: "recovery", proposedMode: "recovery" });
+    expect(flare.view!.modeReasons.some((r) => r.includes("doesn't include"))).toBe(false);
+    const off = await buildSession(db, userId, id, { checks: { tmj: { pre: null, feelingOff: true } } }, ctx({ now: LATER }));
+    expect(off.view).toMatchObject({ mode: "recovery", proposedMode: "recovery" });
+    // Asked for on such a day, recovery is not refused either.
+    const asked = await buildSession(db, userId, id, { checks: { tmj: { pre: 7, feelingOff: false } }, overrides: { mode: "recovery" } }, ctx({ now: LATER }));
+    expect(asked.view!.mode).toBe("recovery");
+    // On a calm day the program's modes bind again.
+    const calm = await buildSession(db, userId, id, { checks: { tmj: { pre: 1, feelingOff: false } }, overrides: { mode: "recovery" } }, ctx({ now: LATER }));
+    expect(calm.view!.mode).toBe("consistent");
+    expect(calm.view!.modeReasons[0]).toBe("Your program doesn't include recovery sessions, so this is a consistent one.");
+  });
+
+  it("the proposed mode is always one the program includes, also beside an allowed override (audit M7)", async () => {
+    const open = await seedProgram(userId);
+    const probe = await buildSession(db, userId, await seedSlot(TODAY, { program: open }), {}, ctx());
+    const proposed = probe.view!.proposedMode;
+    expect(proposed).not.toBe("recovery");
+    const allowed = (["recovery", "consistent", "build"] as const).filter((m) => m !== proposed);
+    const narrow = await seedProgram(userId, { modes: [...allowed] });
+    const res = await buildSession(db, userId, await seedSlot(TODAY, { program: narrow }), { overrides: { mode: allowed[0] } }, ctx());
+    expect(res.view!.mode).toBe(allowed[0]);
+    expect(allowed).toContain(res.view!.proposedMode);
+  });
+
   it("editing the program's modes rebuilds today's session within them (audit I1)", async () => {
     const id = await seedSlot(TODAY);
     const first = await buildSession(db, userId, id, { overrides: { mode: "build" } }, ctx());
