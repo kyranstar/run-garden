@@ -15,7 +15,9 @@
  *     The one exception is a slot this file retracted itself (`program_replaced`): it is not the athlete's, and
  *     a later edit that wants that day again brings the same row back.
  *  2. THE WEEK'S GOAL goes on `preferredDays` in order, then the week's other days Monday → Sunday, never before
- *     today, one slot of this program per date.
+ *     today, one slot of this program per date. Two limits on a NEW slot (ruling 2a-R11): none on today once
+ *     today's window has passed in the athlete's zone, and in THIS week only on the days a full week would use
+ *     (the first `weeklyGoal` of that order) — a mid-week start or a raised goal never crams the week.
  *  3. ONLY FLEXIBLE SLOTS MAY GO: a slot that is live, still an outline, unmoved (effective date = planned date),
  *     still scheduled, and after today. Everything else — today's, a moved one, a built one, a past one — is
  *     fixed: it counts toward the goal and stays. Flexible slots on wanted days stay too, so a settled week
@@ -83,6 +85,27 @@ function rankedDays(monday: string, preferredDays: readonly number[]): string[] 
   return [...preferredDays, ...rest].map((d) => addDays(monday, d));
 }
 
+/** The athlete's wall clock at an instant: their local date and "HH:MM". */
+function localClock(instant: string, timezone: string): { date: string; time: string } {
+  const parts = new Intl.DateTimeFormat("en-CA", {
+    timeZone: timezone,
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    hourCycle: "h23",
+  }).formatToParts(new Date(instant));
+  const get = (type: string) => parts.find((p) => p.type === type)?.value ?? "";
+  return { date: `${get("year")}-${get("month")}-${get("day")}`, time: `${get("hour")}:${get("minute")}` };
+}
+
+/** Whether `today`'s session window (`windowTime`) is already behind the athlete at `now`. */
+function windowGone(today: string, windowTime: string, now: string, timezone: string): boolean {
+  const clock = localClock(now, timezone);
+  return clock.date > today || (clock.date === today && clock.time >= windowTime);
+}
+
 /**
  * Place (and re-place) one program's slots. Idempotent: a second run with the same inputs writes nothing.
  * Not this user's program, not adaptive, or a restore in progress → nothing. A program that is not active wants
@@ -132,6 +155,12 @@ export async function placeSlots(
     rows.filter((r) => r.archivedAt === null && !flexibleIds.has(r.id)).map((r) => r.effectiveDate),
   );
 
+  const discipline = defaultDiscipline(program);
+  // Rule 2's two limits on a NEW slot (ruling 2a-R11): never on today once today's window has passed (it would
+  // only become a "Did this happen?" and a miss), and in this week only on the days a full week would hold one —
+  // a program started (or a goal raised) mid-week does not cram the week's goal into what is left of it.
+  const todayGone = windowGone(today, windowTimeFor({ category: discipline, date: today }, prefs), now, prefs.timezone);
+
   const toArchive: WorkoutRow[] = [];
   const toRevive: WorkoutRow[] = [];
   const toInsert: string[] = [];
@@ -141,15 +170,19 @@ export async function placeSlots(
     const counted = rows.filter((r) => r.originalPlanDate >= monday && r.originalPlanDate <= sunday && !retracted(r));
     const movable = new Map(counted.filter((r) => flexibleIds.has(r.id)).map((r) => [r.effectiveDate, r]));
     const need = Math.max(0, goal - (counted.length - movable.size));
+    const ranked = rankedDays(monday, config.preferredDays);
+    const weekDays = week === 0 ? new Set(ranked.slice(0, goal)) : null;
 
     const want = new Set<string>();
-    for (const date of rankedDays(monday, config.preferredDays)) {
+    for (const date of ranked) {
       if (want.size >= need) break;
       if (movable.has(date)) {
         want.add(date);
         continue;
       }
       if (date < today || occupied.has(date)) continue;
+      if (weekDays && !weekDays.has(date)) continue;
+      if (date === today && todayGone) continue;
       // The date's id belongs to a slot the athlete moved away, skipped or removed: that day is spoken for.
       const holder = byId.get(slotId(programId, date));
       if (holder && !retracted(holder)) continue;
@@ -176,7 +209,6 @@ export async function placeSlots(
     if (removed.removed) result.archived.push(r.id);
   }
 
-  const discipline = defaultDiscipline(program);
   const seconds = config.defaultMinutes * 60;
   const content = (date: string) => ({
     title: program.name,

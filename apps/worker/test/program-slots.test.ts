@@ -172,15 +172,44 @@ describe("placement", () => {
     expect((await row(slotId(p, day(0, 5)))).effectiveTime).toBe(prefs.weekendMorningTime);
   });
 
-  it("fills this week from today, never before it: preferred days first, then the rest Monday → Sunday", async () => {
+  it("a mid-week start fills only the week's own days still ahead — no cramming the goal into what is left", async () => {
+    // Ruling 2a-R11 (audit 2a-model M1): a Thursday start with goal 4 used to fill Thu, Fri, Sat and Sun.
     const p = await seedProgram(db, userId, { weeklyGoal: 4, preferredDays: PREFERRED, placementWeeksAhead: 1 });
     const thursday = day(0, 3);
     const res = await placeSlots(db, userId, p, thursday, prefs, NOW);
-    // This week: Fri and Sat (preferred, not past), then Thu and Sun (the rest, from today).
-    const thisWeek = [day(0, 3), day(0, 4), day(0, 5), day(0, 6)];
+    // This week: Fri and Sat — the preferred days still ahead; next week the whole goal.
+    const thisWeek = [day(0, 4), day(0, 5)];
     const nextWeek = PREFERRED.map((d) => day(1, d));
     expect(sorted(res.placed)).toEqual(ids(p, [...thisWeek, ...nextWeek]));
-    expect((await rowsOf(p)).every((r) => r.effectiveDate >= thursday)).toBe(true);
+    expect((await rowsOf(p)).every((r) => r.effectiveDate > thursday)).toBe(true);
+    // Settled, and it stays settled through the week.
+    expect(await placeSlots(db, userId, p, thursday, prefs, NOW)).toEqual({ placed: [], archived: [] });
+    expect(await placeSlots(db, userId, p, day(0, 5), prefs, NOW)).toEqual({ placed: [], archived: [] });
+  });
+
+  it("with fewer preferred days than the goal, the week's own days are where a full week puts them", async () => {
+    // Goal 3 on [Mon] → a week is Mon, then Tue and Wed (the rest, Monday → Sunday). A Tuesday start keeps Tue
+    // and Wed and does not reach for Thursday.
+    const p = await seedProgram(db, userId, { weeklyGoal: 3, preferredDays: [0], placementWeeksAhead: 1 });
+    const res = await placeSlots(db, userId, p, day(0, 1), prefs, NOW);
+    expect(sorted(res.placed)).toEqual(ids(p, [day(0, 1), day(0, 2), day(1, 0), day(1, 1), day(1, 2)]));
+  });
+
+  it("never places a new slot on today once today's window has passed in the athlete's zone", async () => {
+    // Ruling 2a-R11: a program created on Monday evening placed "Monday at 7 AM" — a prompt, then a miss.
+    const p = await seedProgram(db, userId, { weeklyGoal: 2, preferredDays: [0, 2], placementWeeksAhead: 1 });
+    const evening = "2026-10-06T01:30:00.000Z"; // Monday 18:30 in Los Angeles, the window (07:00) long gone
+    const res = await placeSlots(db, userId, p, MON, prefs, evening);
+    expect(sorted(res.placed)).toEqual(ids(p, [day(0, 2), day(1, 0), day(1, 2)]));
+    // Before the window it would have: the same pass at 06:00 local places today's.
+    const q = await seedProgram(db, userId, { weeklyGoal: 2, preferredDays: [0, 2], placementWeeksAhead: 1 });
+    const early = "2026-10-05T13:00:00.000Z"; // Monday 06:00 in Los Angeles
+    expect(sorted((await placeSlots(db, userId, q, MON, prefs, early)).placed)).toEqual(
+      ids(q, [day(0, 0), day(0, 2), day(1, 0), day(1, 2)]),
+    );
+    // A slot already on today stays: the rule is about placing, never about taking away.
+    expect(await placeSlots(db, userId, q, MON, prefs, evening)).toEqual({ placed: [], archived: [] });
+    expect((await row(slotId(q, day(0, 0)))).archivedAt).toBeNull();
   });
 
   it("uses the program's default discipline: strength when the program leads with it", async () => {
@@ -315,7 +344,8 @@ describe("re-placement after an edit", () => {
     // Audit 2a-model I2 (+ build M8): only inserted and revived rows took the program's content, so for weeks the
     // Plan and the calendar showed the old name and a 30-minute block after the athlete asked for 45.
     const p = await seedProgram(db, userId, { weeklyGoal: 2, preferredDays: [0, 2], placementWeeksAhead: 2 });
-    await placeSlots(db, userId, p, day(-1, 0), prefs, NOW); // last week's slots: history by MON
+    await placeSlots(db, userId, p, day(-1, 0), prefs, "2026-09-28T12:00:00.000Z"); // last week's: history by MON
+    await db.update(plannedWorkouts).set({ updatedAt: NOW }).where(eq(plannedWorkouts.planId, p));
     await placeSlots(db, userId, p, MON, prefs, NOW);
     const past = [slotId(p, day(-1, 0)), slotId(p, day(-1, 2))];
     // Today's session is built ("Mobility · Hips", a yoga session of 40 min) …
