@@ -2098,6 +2098,79 @@ a.note {
   padding-top: var(--space-5);
   border-top: 1px solid var(--border);
 }
+/* Phase 2a — the chips beside the eyebrow: readiness, then one per switched-on condition. On a narrow card they
+   wrap under the eyebrow rather than squeeze it; the 12px row gap is the room their 44px pads need. */
+.today-head {
+  flex-wrap: wrap;
+}
+.today-chips {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: var(--space-5) var(--space-3);
+  margin-left: auto;
+}
+/* A program session as one line under the day's run: dot · name over its meta · its action. */
+.today-sessions {
+  display: grid;
+  gap: var(--space-5);
+  padding-top: var(--space-5);
+  border-top: 1px solid var(--border);
+}
+.today-session {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: center;
+  gap: var(--space-5);
+}
+.today-session-text {
+  display: grid;
+  min-width: 0;
+}
+.today-session-name {
+  font-weight: var(--weight-medium);
+}
+.today-session-meta {
+  font-size: var(--text-sm);
+  color: var(--ink-soft);
+}
+.today-session-done {
+  align-self: center;
+  font-size: var(--text-sm);
+  font-weight: var(--weight-medium);
+  color: var(--green-ink);
+}
+/* "↑": the move goes up today. */
+.dose-up {
+  color: var(--green-ink);
+  font-weight: var(--weight-bold);
+}
+/* The condition check's 0–10: two rows of 44px targets (six, then five). */
+.check-scale {
+  display: grid;
+  grid-template-columns: repeat(6, minmax(0, 1fr));
+  gap: var(--space-3);
+}
+.check-scale button {
+  min-height: var(--tap);
+  border-radius: var(--radius-md);
+  border: 1px solid var(--border-strong);
+  background: var(--bg-raised);
+  color: var(--ink);
+  font: var(--weight-medium) var(--text-md) var(--font);
+  font-variant-numeric: tabular-nums;
+  cursor: pointer;
+}
+.check-scale button[aria-pressed="true"] {
+  background: var(--green);
+  border-color: var(--green);
+  color: var(--on-accent);
+}
+.check-off[aria-pressed="true"] {
+  background: var(--green-soft);
+  border-color: var(--green);
+  color: var(--green-ink);
+}
 .today-coach-mark {
   flex: none;
   width: 26px;

@@ -32,6 +32,8 @@ import { cap, eventSentence, selectArrival, type ArrivalEvent } from "./arrival.
 import { CeremonyCard } from "./arrival-block.js";
 import { BotanicalCard } from "./botanical.js";
 import { MoveSheet } from "./move-sheet.js";
+import { todayCardLayout, TodayProgramLead, TodayProgramLines } from "../components/today-program.js";
+import { ConditionCheckSheet, ConditionChips } from "../components/condition-check-sheet.js";
 import { pickStatusStripMetric, statusStripBaseText } from "../signal-tiles.js";
 import { ReviewPull, SyncPanel, TimezoneNudge } from "./today.js";
 import { useUnits } from "../use-units.js";
@@ -1186,6 +1188,8 @@ export function GardenScreen() {
   const [readinessOpen, setReadinessOpen] = useState(false);
   // The Today card's Move control (the card absorbed NextWorkout's job).
   const [movingToday, setMovingToday] = useState(false);
+  // The condition check sheet, opened from its chip beside readiness (Phase 2a).
+  const [checkProfile, setCheckProfile] = useState<string | null>(null);
 
   // The "Lately" strip's insight line — the SAME query key and staleness
   // the insights screen and ReviewPull already share: one cached fetch.
@@ -1737,7 +1741,17 @@ export function GardenScreen() {
   const dockPanelOpen = (dockOpen || cardAlwaysOpen) && planActive;
   // The best next thing, per axis — and what today's planned workout grows.
   const trio = nextUnlocksByDiscipline(codex);
-  const grows = d?.nextWorkout ? unlockGrownBy(codex, d.nextWorkout.category) : null;
+  // Which session titles the card (Phase 2a): a run still to do today keeps it and each program session is a line
+  // under it; on a program day the program session takes it. `todaySessions` is absent only from a payload cached
+  // before it existed, which knows no program sessions.
+  const todayLayout = todayCardLayout(d?.nextWorkout ?? null, d?.todaySessions ?? []);
+  const lead =
+    todayLayout.title?.kind === "program"
+      ? todayLayout.title.session.workout
+      : todayLayout.title?.kind === "run"
+        ? todayLayout.title.workout
+        : null;
+  const grows = lead ? unlockGrownBy(codex, lead.category) : null;
   const toggleBalanceKey = (k: DisciplineKey) =>
     setOpenBalanceKey((cur) => (cur === k ? null : k));
 
@@ -1950,7 +1964,8 @@ export function GardenScreen() {
      that placement is a stack in the reading column or furniture positioned
      on the artwork. A new part cannot land on one viewport only, because
      there is only one place to put it. */
-  const w = d?.nextWorkout ?? null;
+  // The workout the card is titled by — the next workout, unless today's sessions say otherwise (above).
+  const w = lead;
   const verdict = d?.readiness.verdict ?? null;
   const streakData = d?.consistency ?? null;
 
@@ -2145,18 +2160,25 @@ export function GardenScreen() {
               <span className="today-eyebrow">
                 {cap(relativeDay(w.effectiveDate, d!.today))} · {formatDayShort(w.effectiveDate)}
               </span>
-              {verdict ? (
-                <button
-                  type="button"
-                  className={`ready-chip ready-${verdict.level}`}
-                  onClick={() => setReadinessOpen(true)}
-                >
-                  <span className="ready-dot" aria-hidden="true" />
-                  {VERDICT_PHRASE[verdict.level]} ›
-                </button>
-              ) : null}
+              <span className="today-chips">
+                {verdict ? (
+                  <button
+                    type="button"
+                    className={`ready-chip ready-${verdict.level}`}
+                    onClick={() => setReadinessOpen(true)}
+                  >
+                    <span className="ready-dot" aria-hidden="true" />
+                    {VERDICT_PHRASE[verdict.level]} ›
+                  </button>
+                ) : null}
+                {/* The condition check (Phase 2a): one chip per switched-on profile, only while a program is
+                    active — the server sends none otherwise. */}
+                <ConditionChips conditions={d?.conditions ?? []} onOpen={setCheckProfile} />
+              </span>
             </div>
-            {w.category === "rest" ? (
+            {todayLayout.title?.kind === "program" ? (
+              <TodayProgramLead session={todayLayout.title.session} today={d!.today} />
+            ) : w.category === "rest" ? (
               <>
                 <h3 className="today-title">Rest day</h3>
                 <p className="muted">
@@ -2187,6 +2209,7 @@ export function GardenScreen() {
                 ) : null}
               </>
             )}
+            <TodayProgramLines sessions={todayLayout.lines} today={d!.today} />
             {(() => {
               const clause = coachClause(verdict?.level, w.category);
               if (!d?.focus && !clause) return null;
@@ -2241,7 +2264,8 @@ export function GardenScreen() {
                 ⚠ {attentionPhrase(attention.count)} <span aria-hidden="true">›</span>
               </Link>
             ) : null}
-            {w.category !== "rest" ? (
+            {/* A program day's actions are its own (Start/Open, under its title); these are the run's. */}
+            {todayLayout.title?.kind !== "program" && w.category !== "rest" ? (
               <div className="btn-row today-actions">
                 <Link className="btn btn-primary" to={`/plan?workout=${w.id}`}>
                   View workout
@@ -2365,6 +2389,10 @@ export function GardenScreen() {
         {w && movingToday ? (
           <MoveSheet workout={w} open onClose={() => setMovingToday(false)} />
         ) : null}
+        {(() => {
+          const c = checkProfile ? d?.conditions?.find((x) => x.profileId === checkProfile) : undefined;
+          return c ? <ConditionCheckSheet condition={c} onClose={() => setCheckProfile(null)} /> : null;
+        })()}
         {sheets}
       </>
     ),

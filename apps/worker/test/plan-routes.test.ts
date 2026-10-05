@@ -875,6 +875,124 @@ describe("GET /today — todaySessions, origin and content state", () => {
     expect(body.todaySessions[0]!.workout.programId).toBeNull();
     expect(body.nextWorkout?.id).toBe(run);
   });
+
+  it("a built slot's build carries the place it was built for", async () => {
+    await slot({ id: "s-placed", time: "18:00", state: "built" });
+    await db.insert(schema.sessionBuilds).values({
+      id: "s-placed-b1", userId, workoutId: "s-placed", version: 1, engineVersion: "e", inputsHash: "h",
+      payload: {
+        build: { date: today() },
+        view: { mode: "build", minutes: 30, theme: { id: "hipsPosture", name: "Hips & posture" }, location: { id: "l1", name: "Home" } },
+      },
+      lockedAt: null, createdAt: nowInstant(),
+    });
+    const body = (await (await client().get("/api/plan/today")).json()) as Today;
+    expect(body.todaySessions[0]!.build).toEqual({ mode: "build", theme: "Hips & posture", minutes: 30, place: "Home" });
+  });
+
+  it("a built slot's build leads with its core lifts in words, counting the rest", async () => {
+    await slot({ id: "s-lead", time: "18:00", state: "built" });
+    const step = (slotKey: string, kind: string, seconds: number) => ({ slotKey, kind, seconds, side: null, setCount: 3 });
+    await db.insert(schema.sessionBuilds).values({
+      id: "s-lead-b1", userId, workoutId: "s-lead", version: 1, engineVersion: "e", inputsHash: "h",
+      payload: {
+        build: {
+          date: today(),
+          items: [
+            { slotKey: "prep:0", block: "prep", exerciseId: "catCow", sets: 1 },
+            { slotKey: "core:0", block: "core", exerciseId: "goblet", sets: 3 },
+            { slotKey: "cooldown:0", block: "cooldown", exerciseId: "twist", sets: 1 },
+          ],
+          steps: [step("prep:0", "timed", 50), step("core:0", "set", 40), step("core:0", "rest", 75), step("cooldown:0", "timed", 45)],
+          targets: { goblet: { lo: 5, hi: 8, type: "reps", w: { v: 30, u: "lb" }, reps: 6, secs: null, action: "up" } },
+          exercises: {
+            catCow: { name: "Cat-cow", laterality: "bilateral" },
+            goblet: { name: "Goblet squat", laterality: "bilateral" },
+            twist: { name: "Supine twist", laterality: "unilateral" },
+          },
+        },
+        view: { mode: "build", minutes: 30, theme: null, location: { id: "l1", name: "Home" } },
+      },
+      lockedAt: null, createdAt: nowInstant(),
+    });
+    const body = (await (await client().get("/api/plan/today")).json()) as {
+      todaySessions: Array<{ build: { lead?: unknown } | null }>;
+    };
+    expect(body.todaySessions[0]!.build!.lead).toEqual({
+      moves: [
+        { name: "Goblet squat", dose: "3 × 6 @ 30 lb", up: true },
+        { name: "Cat-cow", dose: "50 s", up: false },
+      ],
+      more: 1,
+    });
+  });
+});
+
+/**
+ * The Today card's condition chip (Phase 2a Task 6): each switched-on condition profile with its check's own label
+ * and scale, the care label, and today's reading — the day's check, or a session's pre-check today, whichever came
+ * last. Dark by data: an account with no active program gets none, whatever it has switched on.
+ */
+describe("GET /today — conditions", () => {
+  const today = () => todayInZone(prefs.timezone);
+  type Today = {
+    conditions: Array<{
+      profileId: string;
+      check: { label: string; min: number; max: number };
+      care: string | null;
+      today: { value: number | null; feelingOff: boolean } | null;
+    }>;
+  };
+  async function program(status: "active" | "retired" = "active") {
+    await db.insert(schema.programs).values({
+      id: `prog-${status}`, userId, kind: "adaptive", name: "Garden program", status, disciplines: ["yoga", "strength"],
+      config: { careProfiles: ["tmj"] }, createdAt: nowInstant(), updatedAt: nowInstant(),
+    });
+  }
+  async function condition(active = true) {
+    await db.insert(schema.userConditions).values({
+      id: `${userId}:tmj`, userId, profileId: "tmj", active, since: "2026-06-01", settings: {},
+    });
+  }
+  async function check(kind: "daily" | "pre", value: number | null, at: string, date = today(), feelingOff = false) {
+    await db.insert(schema.conditionChecks).values({
+      id: newId(), userId, profileId: "tmj", kind, value, feelingOff, localDate: date, at,
+      performedSessionId: null, workoutId: kind === "pre" ? "slot-x" : null,
+    });
+  }
+  const get = async () => ((await (await client().get("/api/plan/today")).json()) as Today).conditions;
+
+  it("an account with no active program gets no conditions, even with one switched on", async () => {
+    await condition();
+    expect(await get()).toEqual([]);
+    await program("retired");
+    expect(await get()).toEqual([]);
+  });
+
+  it("with an active program: each switched-on profile, its check label and scale, its care label, no reading yet", async () => {
+    await program();
+    await condition();
+    expect(await get()).toEqual([
+      { profileId: "tmj", check: { label: "Jaw / head", min: 0, max: 10 }, care: "Jaw care", today: null },
+    ]);
+  });
+
+  it("a switched-off profile is left out", async () => {
+    await program();
+    await condition(false);
+    expect(await get()).toEqual([]);
+  });
+
+  it("today's reading is the latest of the day's check and a session's pre-check; yesterday's never counts", async () => {
+    await program();
+    await condition();
+    await check("daily", 4, "2026-01-01T08:00:00.000Z", addDays(today(), -1));
+    expect((await get())[0]!.today).toBeNull();
+    await check("daily", 3, `${today()}T08:00:00.000Z`);
+    expect((await get())[0]!.today).toEqual({ value: 3, feelingOff: false });
+    await check("pre", 1, `${today()}T18:00:00.000Z`, today(), true);
+    expect((await get())[0]!.today).toEqual({ value: 1, feelingOff: true });
+  });
 });
 
 describe("moving an app session (ruling 2a-R7)", () => {

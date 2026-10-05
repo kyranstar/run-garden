@@ -27,3 +27,4 @@ export * from "./coach-selectors.js";
 export * from "./weights.js";
 export * from "./program.js";
 export * from "./performed.js";
+export * from "./session-dose.js";

@@ -9,6 +9,7 @@ import {
   users,
 } from "@rg/database";
 import {
+  adaptiveConfigSchema,
   addDays,
   fingerprint,
   newId,
@@ -20,6 +21,7 @@ import {
   type SourceActivity,
   type StudioExercise,
   type StudioSession,
+  type UserPreferences,
 } from "@rg/domain";
 import {
   FixtureTrainingProvider,
@@ -37,7 +39,20 @@ import { loadPreferences, savePreferences } from "./calendar-sync.js";
 import { advanceGarden, ensureGarden } from "./garden-sync.js";
 import { reconcileCompletionStates } from "./reconcile-daily.js";
 import { upsertExerciseCatalog } from "./exercise-catalog.js";
-import { dailyHealth, sleepRecords } from "@rg/database";
+import {
+  conditionChecks,
+  dailyHealth,
+  locations,
+  plannedWorkouts,
+  programBlocks,
+  programs,
+  sessionBuilds,
+  sleepRecords,
+  userConditions,
+} from "@rg/database";
+import { profileById } from "@rg/exercise-library";
+import { createAdaptiveProgram } from "./programs.js";
+import { placeSlots } from "./program-slots.js";
 
 /**
  * A small curated Plan Studio exercise catalog (plan-studio-design §4/§8).
@@ -793,11 +808,97 @@ export async function seedFixtures(db: Db, env: Env, userId: string): Promise<Se
   // same account-local `today` already computed for it.
   await seedStudioFixtures(db, userId, today);
 
+  // The adaptive program (Phase 2a): after the garden simulation, so its slots — placed from today on — never
+  // reach a day the garden has already folded.
+  await seedFixtureProgram(db, userId, today, prefs, nowInstant());
+
   return {
     planImported: true,
     activitiesIngested: ingest.newActivities + ingest.mergedPairs,
     gardenDays: garden.simulatedDays,
   };
+}
+
+/** The fixture's cared-for condition profile (the library's only one), switched on for the fixture account. */
+const FIXTURE_PROFILE = "tmj";
+
+/** Monday = 0 … Sunday = 6, as `preferredDays` counts. */
+const isoWeekday = (date: string): number => (new Date(`${date}T00:00:00Z`).getUTCDay() + 6) % 7;
+
+/**
+ * The fixture's adaptive program (Phase 2a): synthetic, never personal. Starts over on every seed — the account's
+ * programs, their slots, builds and blocks, its checks, conditions and places are cleared — then one program that
+ * cares for the library's condition profile is created, with two places, and placed from `today`: preferred days
+ * today and two days on, so the Today card has a program session and the week a second.
+ */
+export async function seedFixtureProgram(
+  db: Db,
+  userId: string,
+  today: LocalDate,
+  prefs: UserPreferences,
+  now: string,
+): Promise<string> {
+  const old = await db.select({ id: programs.id }).from(programs).where(eq(programs.userId, userId));
+  const oldIds = old.map((p) => p.id);
+  if (oldIds.length > 0) {
+    await db.delete(plannedWorkouts).where(and(eq(plannedWorkouts.userId, userId), inArray(plannedWorkouts.planId, oldIds)));
+    await db.delete(programBlocks).where(inArray(programBlocks.programId, oldIds));
+    await db.delete(programs).where(inArray(programs.id, oldIds));
+  }
+  await db.delete(sessionBuilds).where(eq(sessionBuilds.userId, userId));
+  await db.delete(conditionChecks).where(eq(conditionChecks.userId, userId));
+  await db.delete(userConditions).where(eq(userConditions.userId, userId));
+  await db.delete(locations).where(eq(locations.userId, userId));
+
+  await db.insert(userConditions).values({
+    id: `${userId}:${FIXTURE_PROFILE}`,
+    userId,
+    profileId: FIXTURE_PROFILE,
+    active: true,
+    since: addDays(today, -60),
+    settings: {},
+  });
+  await db.insert(locations).values([
+    {
+      id: `${userId}:fx-home`,
+      userId,
+      name: "Home",
+      equipment: ["mat", "yoga-block", "kettlebell", "chair", "wall", "towel"],
+      implements: { kettlebell: "10, 15, 20, 25, 30, 35 lb" },
+      isDefault: true,
+      createdAt: now,
+      updatedAt: now,
+    },
+    {
+      id: `${userId}:fx-gym`,
+      userId,
+      name: "Gym",
+      equipment: ["mat", "yoga-block", "kettlebell", "dumbbells", "bench", "chair", "wall", "towel", "band", "cable", "barbell"],
+      implements: { kettlebell: "16, 20, 24 kg", dumbbells: "5, 7.5, 10, 12.5, 15 kg" },
+      isDefault: false,
+      createdAt: now,
+      updatedAt: now,
+    },
+  ]);
+
+  const profile = profileById(FIXTURE_PROFILE);
+  const id = await createAdaptiveProgram(
+    db,
+    userId,
+    {
+      name: profile.care?.block.label ?? profile.label,
+      config: adaptiveConfigSchema.parse({
+        weeklyGoal: 2,
+        preferredDays: [isoWeekday(today), isoWeekday(addDays(today, 2))],
+        defaultMinutes: 30,
+        careProfiles: [FIXTURE_PROFILE],
+        placementWeeksAhead: 1,
+      }),
+    },
+    now,
+  );
+  await placeSlots(db, userId, id, today, prefs, now);
+  return id;
 }
 
 /** Fixture-mode sign-in bypass user (dev only). */

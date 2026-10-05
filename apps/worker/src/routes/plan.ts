@@ -39,6 +39,9 @@ import {
   watchCoverage,
   type LocalDate,
   type PlannedWorkout,
+  sessionLead,
+  type LeadBuild,
+  type SessionLead,
   type SyncAction,
   type UserPreferences,
   type WatchCoverageView,
@@ -69,6 +72,7 @@ import { buildReadiness } from "../services/readiness.js";
 import { isLoosePlan } from "../services/coach-plans.js";
 import { repairPlannedWorkoutFidelity } from "../services/plan-repair.js";
 import { executeCloudJobs } from "../services/coros-write-cloud.js";
+import { todayConditions } from "../services/condition-views.js";
 
 export const planRoutes = new Hono<AppContext>();
 planRoutes.use("*", requireUser);
@@ -492,29 +496,50 @@ function sleepDto(
 
 /**
  * Today's rows (one per slot, in the order read) with each program row's current build summarised as
- * `{mode, theme, minutes}`: the locked build, else the latest made for today. Null for any other row, or an
- * outline with nothing built for today yet.
+ * `{mode, theme, minutes, place, lead}`: the locked build, else the latest made for today. Null for any other row, or
+ * an outline with nothing built for today yet. `place` and `lead` (the Today card's line of moves, `sessionLead`)
+ * are absent only for a stored build that lacks what they read.
  */
 function groupTodaySessions(
   rows: Array<{ w: typeof plannedWorkouts.$inferSelect; b: typeof sessionBuilds.$inferSelect | null }>,
   today: string,
-): Array<{ row: typeof plannedWorkouts.$inferSelect; build: { mode: string; theme: string | null; minutes: number } | null }> {
+): Array<{
+  row: typeof plannedWorkouts.$inferSelect;
+  build: { mode: string; theme: string | null; minutes: number; place?: string; lead?: SessionLead } | null;
+}> {
   const byId = new Map<string, { row: typeof plannedWorkouts.$inferSelect; builds: Array<typeof sessionBuilds.$inferSelect> }>();
   for (const { w, b } of rows) {
     const entry = byId.get(w.id) ?? { row: w, builds: [] };
     if (b) entry.builds.push(b);
     byId.set(w.id, entry);
   }
-  type Stored = { build?: { date?: string }; view?: { mode: string; minutes: number; theme: { name: string } | null } };
+  type Stored = {
+    build?: { date?: string } & Partial<LeadBuild>;
+    view?: { mode: string; minutes: number; theme: { name: string } | null; location?: { name: string } | null };
+  };
   return [...byId.values()].map(({ row, builds }) => {
     const sorted = [...builds].sort((a, b) => b.version - a.version);
     const current =
       sorted.find((b) => b.lockedAt !== null) ??
       sorted.find((b) => b.version > 0 && (b.payload as Stored).build?.date === today);
-    const view = current ? (current.payload as Stored).view : undefined;
+    const stored = current ? (current.payload as Stored) : undefined;
+    const view = stored?.view;
+    const b = stored?.build;
+    const lead =
+      b?.items && b.steps && b.targets && b.exercises && b.items.length > 0
+        ? sessionLead({ items: b.items, steps: b.steps, targets: b.targets, exercises: b.exercises })
+        : null;
     return {
       row,
-      build: view ? { mode: view.mode, theme: view.theme?.name ?? null, minutes: view.minutes } : null,
+      build: view
+        ? {
+            mode: view.mode,
+            theme: view.theme?.name ?? null,
+            minutes: view.minutes,
+            ...(view.location?.name ? { place: view.location.name } : {}),
+            ...(lead ? { lead } : {}),
+          }
+        : null,
     };
   });
 }
@@ -545,6 +570,7 @@ planRoutes.get("/today", async (c) => {
     consistencyRows,
     lastNight,
     todayRows,
+    conditions,
   ] = await Promise.all([
     exerciseNameMap(db),
     db
@@ -669,6 +695,8 @@ planRoutes.get("/today", async (c) => {
         ),
       )
       .orderBy(asc(plannedWorkouts.effectiveTime), asc(plannedWorkouts.id)),
+    // The condition chips: switched-on profiles with today's reading, only while a program is active.
+    todayConditions(db, userId, today),
   ]);
   const todaySessionRows = groupTodaySessions(todayRows, today);
   const next = upcoming.find((w) => w.category !== "rest") ?? upcoming[0];
@@ -689,6 +717,7 @@ planRoutes.get("/today", async (c) => {
       workout: workoutDto(t.row, syncViews.get(t.row.id), catalog),
       build: t.build,
     })),
+    conditions,
     unresolved: unresolved.map((w) => workoutDto(w, syncViews.get(w.id), catalog)),
     needsAttention: attention.map((w) => workoutDto(w, syncViews.get(w.id), catalog)),
     sync: {

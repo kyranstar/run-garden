@@ -9,6 +9,7 @@ import type {
   LiftingPlan,
   PlanBrief,
   ReadinessVerdict,
+  SessionLead,
   SessionMode,
   SyncAction,
   UserPreferences,
@@ -179,8 +180,18 @@ export interface TodayResponse {
   /** Every live row dated today, by time. `build` is the app session's current build, when it has one. */
   todaySessions: Array<{
     workout: WorkoutDto;
-    build: { mode: "recovery" | "consistent" | "build"; theme: string | null; minutes: number } | null;
+    /** `place` = the build's place name; `lead` = its moves in one line (`sessionLead`). Either is absent only for a
+     * stored build that lacks what it reads. */
+    build: {
+      mode: "recovery" | "consistent" | "build";
+      theme: string | null;
+      minutes: number;
+      place?: string;
+      lead?: SessionLead;
+    } | null;
   }>;
+  /** The condition chips: switched-on profiles with today's reading; empty without an active program. */
+  conditions: Array<ConditionViewDto & { today: { value: number | null; feelingOff: boolean } | null }>;
   unresolved: WorkoutDto[];
   needsAttention: WorkoutDto[];
   sync: {
@@ -949,6 +960,14 @@ export interface SessionDto {
   checks: Record<string, SessionCheckAnswer>;
   build: SessionBuildDto | null;
   view: SessionViewDto | null;
+}
+
+/** A switched-on condition profile as the UI labels it: its check's label and scale, and its care label. */
+export interface ConditionViewDto {
+  profileId: string;
+  check: { label: string; min: number; max: number };
+  /** The care block's label; null = the profile has no care content. */
+  care: string | null;
 }
 
 /** A day's condition check (`POST /api/conditions/checks`); null while a restore is replacing the account. */
