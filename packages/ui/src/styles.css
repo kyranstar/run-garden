@@ -2185,11 +2185,15 @@ a.note {
   margin: 0;
   color: var(--ink-soft);
   font-size: var(--text-sm);
-  /* The reading reopens the pre-check (ruling 2a-R14): a line of text padded to the 44px floor. The sheet head's
-     12px margin is above it and the sheet's 16px stack gap below. */
-  --tap-clear: var(--space-5);
 }
+/* The reading reopens the pre-check (ruling 2a-R14). A 44px box of its own rather than a pad: the when-line is the
+   first line of the sheet's scrolling body, which clips whatever is drawn above its top edge (a pad measured 11px
+   short there). The line grows to hold it; the date beside it sits on its middle. */
 .session-reading {
+  display: inline-flex;
+  align-items: center;
+  min-height: var(--tap);
+  vertical-align: middle;
   font-weight: var(--weight-medium);
 }
 /* "Skipped" (ruling 2a-R15). */
@@ -2212,13 +2216,14 @@ a.note {
   font-size: var(--text-xs);
 }
 /* Mode · theme · time · place: the chips each open a short picker. 32px boxes, padded to the 44px floor: the pad's
-   100% is the 30px padding box, so it needs 7px each side — the row grants its own 8px gap (audit 2a-UI M1; at 6px
-   the pad measured 42). */
+   100% is the 30px padding box, so it needs 7px each side — the row grants 8px (audit 2a-UI M1; at 6px the pad
+   measured 42). Wrapped rows sit 12px apart, so the pads of two rows never share a point (at 8px the second row's
+   took the bottom 4px of the first's); side by side a chip is wider than 44px and its pad reaches nothing. */
 .session-chips {
   display: flex;
   flex-wrap: wrap;
   --tap-clear: var(--space-4);
-  gap: var(--tap-clear);
+  gap: var(--space-5) var(--tap-clear);
 }
 .session-chip {
   --tap-own: 32px;
@@ -7572,8 +7577,7 @@ button.session-chip {
   .fw-fresh,
   .dock-collapse,
   .dock-grows,
-  button.session-chip,
-  .session-reading
+  button.session-chip
 ) {
   position: relative;
 }
@@ -7613,8 +7617,7 @@ button.session-chip {
 .fw-fresh::after,
 .dock-collapse::after,
 .dock-grows::after,
-button.session-chip::after,
-.session-reading::after {
+button.session-chip::after {
   content: "";
   position: absolute;
   top: 50%;
@@ -7779,8 +7782,7 @@ button.session-chip::after,
   .fw-fresh,
   .dock-collapse,
   .dock-grows,
-  button.session-chip,
-  .session-reading {
+  button.session-chip {
     min-height: max(
       var(--tap-own, 0px),
       calc(var(--tap) - 2 * var(--tap-clear-y, var(--tap-clear, var(--tap))))

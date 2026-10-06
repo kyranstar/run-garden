@@ -58,18 +58,15 @@ function lists(): { relative: string; after: string; coarse: string } {
 const TAP = px("var(--tap)");
 
 describe("the reading on the session sheet's when-line (ruling 2a-R14)", () => {
-  it("is padded to the floor, and its line leaves the pad room", () => {
+  it("is a 44px box of its own, not a pad — a pad above it would be clipped by the sheet's scroller", () => {
+    // The when-line is the first line of the sheet's scrolling body, which clips anything drawn above its top edge:
+    // measured, a padded reading lost its top 11px. The box itself takes the floor instead.
+    const reading = rule(".session-reading");
+    expect(reading["min-height"]).toBe("var(--tap)");
+    expect(reading.display).toBe("inline-flex");
+    expect(reading["align-items"]).toBe("center");
     const { relative, after, coarse } = lists();
-    expect(relative).toContain(".session-reading");
-    expect(after).toContain(".session-reading::after");
-    expect(coarse).toContain(".session-reading");
-    const clear = px(rule(".session-when")["--tap-clear"]!);
-    // The reading is a line of the when-line's text: 14.4px at the body's 1.5 line height.
-    const line = px(rule(".session-when")["font-size"]!) * 1.5;
-    expect(line + 2 * clear).toBeGreaterThanOrEqual(TAP);
-    // Below it, the sheet's stack gap; above it, the sheet head's margin: neither is narrower than the pad's reach.
-    expect(px(rule(".stack").gap!)).toBeGreaterThanOrEqual(clear);
-    expect(px(rule(".sheet-head")["margin-bottom"]!)).toBeGreaterThanOrEqual(clear);
+    for (const list of [relative, after, coarse]) expect(list).not.toContain(".session-reading");
   });
 });
 
@@ -85,8 +82,14 @@ describe("the session sheet's mode · theme · time · place chips (audit 2a-UI 
     const row = rule(".session-chips");
     const clear = px(row["--tap-clear"]!);
     expect(box + 2 * clear).toBeGreaterThanOrEqual(TAP);
-    const gap = row.gap === "var(--tap-clear)" ? clear : px(row.gap!);
-    expect(gap).toBeGreaterThanOrEqual(clear);
+    // `gap: <row> <column>`. Chips wrap to a second row at phone widths: each pad reaches (44 − 30) / 2 = 7px past
+    // its padding box, 6px past its border, so rows at least 12px apart keep every chip's own 44px square its own
+    // (measured at 8px: the next row's pad took the bottom 4px of the first row's). Side by side, a chip is wider
+    // than 44px, so its pad reaches nothing sideways and the column gap only has to clear a pad's reach.
+    const [rowGap, columnGap = rowGap] = row.gap!.split(/\s+/).map((g) => (g === "var(--tap-clear)" ? clear : px(g)));
+    const reach = (TAP - box) / 2 - px(chip.border!.split(/\s+/)[0]!);
+    expect(rowGap!).toBeGreaterThanOrEqual(2 * reach);
+    expect(columnGap!).toBeGreaterThanOrEqual(clear);
   });
 });
 
