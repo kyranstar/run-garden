@@ -1,4 +1,4 @@
-import { and, eq, inArray } from "drizzle-orm";
+import { and, eq, inArray, type SQL } from "drizzle-orm";
 import { calendarEventSuppressions, corosWriteJobs, plannedWorkouts, scheduleOverrides } from "@rg/database";
 import { newId, watchAddressOf, type ArchiveReason, type UserPreferences } from "@rg/domain";
 import type { Db } from "./db.js";
@@ -76,12 +76,19 @@ export async function settleWatchJobsOnArchive(
  * calendar suppression stays `user_removed` either way, because what it
  * instructs is the same: the app took this session off the plan, and nothing an
  * import observes brings it back.
+ *
+ * `onlyIf` (optional) is a condition the row must still meet AS IT IS ARCHIVED:
+ * it joins the archive's UPDATE … WHERE, and when no row changed nothing else
+ * happens (removed: false). An adaptive program's re-placement passes its
+ * "still flexible" rule, so a slot the athlete moved or touched between the
+ * pass's read and this write stays (audit 2a-model M4). Without it the archive
+ * is exactly as it always was.
  */
 export async function removeFromPlan(
   db: Db,
   userId: string,
   workoutId: string,
-  opts: { now: string; source: IntentSource; prefs: UserPreferences; archiveReason?: ArchiveReason },
+  opts: { now: string; source: IntentSource; prefs: UserPreferences; archiveReason?: ArchiveReason; onlyIf?: SQL },
 ): Promise<RemoveResult> {
   const [w] = await db
     .select()
@@ -90,10 +97,17 @@ export async function removeFromPlan(
     .limit(1);
   if (!w || w.archivedAt) return { removed: false, effectiveDate: null };
   const { now } = opts;
-  await db
+  const archive = db
     .update(plannedWorkouts)
-    .set({ archivedAt: now, updatedAt: now, archiveReason: opts.archiveReason ?? "user_removed" })
-    .where(eq(plannedWorkouts.id, w.id));
+    .set({ archivedAt: now, updatedAt: now, archiveReason: opts.archiveReason ?? "user_removed" });
+  if (opts.onlyIf) {
+    const archived = await archive
+      .where(and(eq(plannedWorkouts.id, w.id), opts.onlyIf))
+      .returning({ id: plannedWorkouts.id });
+    if (archived.length === 0) return { removed: false, effectiveDate: null };
+  } else {
+    await archive.where(eq(plannedWorkouts.id, w.id));
+  }
   await settleWatchJobsOnArchive(db, userId, w.id, now);
   await db.insert(calendarEventSuppressions).values({
     id: newId(),

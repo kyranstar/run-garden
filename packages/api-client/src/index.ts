@@ -1232,6 +1232,31 @@ export interface RestoreProgress {
  * per-request query budget, even for the widest table. */
 const RESTORE_PAGE_ROWS = 200;
 
+/** Bytes of rows (JSON) per restore request: a page of session builds
+ * (107–142 KB each) is one or two of them, inside the worker's CPU limit and
+ * below its `RESTORE_MAX_PAGE_BYTES` (Ruling 2a-R9). A row larger than this
+ * still goes, alone. */
+const RESTORE_PAGE_BYTES = 192 * 1024;
+
+/** Where each page of a table starts and ends: at most RESTORE_PAGE_ROWS
+ * rows and RESTORE_PAGE_BYTES bytes, one row at the least. */
+function restorePageBounds(rows: ReadonlyArray<Record<string, unknown>>): Array<[number, number]> {
+  const bounds: Array<[number, number]> = [];
+  let start = 0;
+  let bytes = 2;
+  for (let i = 0; i < rows.length; i += 1) {
+    const size = JSON.stringify(rows[i]).length + 1;
+    if (i > start && (i - start >= RESTORE_PAGE_ROWS || bytes + size > RESTORE_PAGE_BYTES)) {
+      bounds.push([start, i]);
+      start = i;
+      bytes = 2;
+    }
+    bytes += size;
+  }
+  if (rows.length > start) bounds.push([start, rows.length]);
+  return bounds;
+}
+
 /** One table, every page, following the worker's keyset cursor. */
 async function exportTableRows(name: string): Promise<Array<Record<string, unknown>>> {
   const rows: Array<Record<string, unknown>> = [];
@@ -1397,13 +1422,12 @@ export async function checkRestore(
     const rows = data.tables[table] ?? [];
     const known = plan.tables.includes(table);
     if (known) fileCounts[table] = rows.length;
-    const offsets: number[] = [];
-    for (let i = 0; i < rows.length; i += RESTORE_PAGE_ROWS) offsets.push(i);
+    const bounds = restorePageBounds(rows);
     // A table the worker does not restore is sent even when it is empty, so
     // the check can say what it is.
-    if (offsets.length === 0 && !known) offsets.push(0);
-    for (const offset of offsets) {
-      const page = rows.slice(offset, offset + RESTORE_PAGE_ROWS);
+    if (bounds.length === 0 && !known) bounds.push([0, 0]);
+    for (const [offset, end] of bounds) {
+      const page = rows.slice(offset, end);
       const res = await post<CheckPageResult>(
         "/api/settings/restore/check",
         { session: started.session, table, rows: page, offset },

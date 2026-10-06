@@ -11,6 +11,7 @@ import {
   adaptiveConfigSchema,
   addDays,
   daysBetween,
+  isWeekend,
   newId,
   nowInstant,
   startOfIsoWeek,
@@ -267,19 +268,31 @@ describe("the routes", () => {
   });
 
   it("POST creates the program, places its slots and returns it", async () => {
+    // This runs on the real clock, and today gets a slot only while today's window is still ahead in the
+    // athlete's zone (ruling 2a-R11): read the clock on both sides of the request.
+    const today = todayInZone(prefs.timezone);
+    const window = isWeekend(today) ? prefs.weekendMorningTime : prefs.weekdayMorningTime;
+    const localTime = () =>
+      new Intl.DateTimeFormat("en-GB", { timeZone: prefs.timezone, hour: "2-digit", minute: "2-digit", hourCycle: "h23" }).format(new Date());
+    const goneBefore = localTime() >= window;
     const res = await call("POST", "/api/programs", {
       name: "Mobility",
       config: { weeklyGoal: 7, placementWeeksAhead: 1 },
     });
+    const goneAfter = localTime() >= window;
     expect(res.status).toBe(201);
     const { program } = (await res.json()) as { program: { id: string; week: { placed: number; goal: number } } };
-    const today = todayInZone(prefs.timezone);
     const daysLeft = 7 - daysBetween(startOfIsoWeek(today), today);
     expect(program).toMatchObject({ kind: "adaptive", name: "Mobility", status: "active", block: null });
-    // Every day from today to next Sunday holds one; this week's count is what is left of it.
+    // Every day from tomorrow to next Sunday holds one, and today too unless its window has gone; this week's
+    // count is what is left of it.
     const slots = await db.select().from(plannedWorkouts).where(eq(plannedWorkouts.planId, program.id));
-    expect(slots).toHaveLength(daysLeft + 7);
-    expect(program.week).toEqual({ placed: daysLeft, done: 0, goal: 7 });
+    const todayHeld = slots.some((s) => s.effectiveDate === today);
+    if (!goneAfter) expect(todayHeld).toBe(true);
+    if (goneBefore) expect(todayHeld).toBe(false);
+    const thisWeek = daysLeft - (todayHeld ? 0 : 1);
+    expect(slots).toHaveLength(thisWeek + 7);
+    expect(program.week).toEqual({ placed: thisWeek, done: 0, goal: 7 });
   });
 
   it("GET also names the account's places and its switched-on profiles — what the program settings pick from", async () => {

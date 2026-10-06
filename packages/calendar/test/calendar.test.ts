@@ -68,6 +68,21 @@ describe("event body", () => {
     expect(d).toContain("Open workout: https://rg.example.com/plan?workout=w-11");
   });
 
+  it("leaves both COROS lines out of a session COROS has never held (no verified COROS date)", () => {
+    // Audit 2a-model M6: every program slot's event read "COROS date: Invalid DateTime" and "COROS status: Not
+    // synced to COROS" — a slot is app-only by design (calendar_only).
+    const d = buildEventDescription(
+      workoutInfo({ title: "Mobility", category: "yoga", corosDate: "", corosStatusLabel: "Not synced to COROS" }),
+      APP_URL,
+    );
+    expect(d).not.toContain("COROS");
+    expect(d).not.toContain("Invalid DateTime");
+    expect(d).toContain("Scheduled: Tuesday, August 4 at 7 AM");
+    expect(d).toContain("Open workout: https://rg.example.com/plan?workout=w-11");
+    // A session COROS holds keeps both, exactly as before.
+    expect(buildEventDescription(workoutInfo(), APP_URL)).toContain("COROS date: Tuesday, August 4\nScheduled:");
+  });
+
   it("round-trips user notes through the marker section", () => {
     const d = buildEventDescription(workoutInfo(), APP_URL, "Bring gels.\nMeet Sam at the track.");
     expect(d).toContain(NOTES_MARKER);

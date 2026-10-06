@@ -35,14 +35,16 @@ vi.mock("../src/services/google-calendar.js", async (importOriginal) => ({
   googleCalendarClient: vi.fn(async () => google.fake),
 }));
 
-import { placeSlots, placeSlotsForAllPrograms, slotId } from "../src/services/program-slots.js";
+import { placeSlots, placeSlotsForAllPrograms, retractSlot, slotId } from "../src/services/program-slots.js";
 import { applyMove } from "../src/services/jobs.js";
 import { removeFromPlan } from "../src/services/plan-mutations.js";
 import { importPlanSnapshot } from "../src/services/import-plan.js";
 import { savePreferences, syncCalendar } from "../src/services/calendar-sync.js";
+import { updateProgram } from "../src/services/programs.js";
+import { dayCollides } from "../src/services/day-placement.js";
 import { hourly } from "../src/index.js";
 
-const { plannedWorkouts, programs, calendarEventSuppressions, accountState } = schema;
+const { plannedWorkouts, programs, calendarEventSuppressions, accountState, sessionBuilds } = schema;
 
 /** A Monday. */
 const MON = "2026-10-05";
@@ -170,15 +172,44 @@ describe("placement", () => {
     expect((await row(slotId(p, day(0, 5)))).effectiveTime).toBe(prefs.weekendMorningTime);
   });
 
-  it("fills this week from today, never before it: preferred days first, then the rest Monday → Sunday", async () => {
+  it("a mid-week start fills only the week's own days still ahead — no cramming the goal into what is left", async () => {
+    // Ruling 2a-R11 (audit 2a-model M1): a Thursday start with goal 4 used to fill Thu, Fri, Sat and Sun.
     const p = await seedProgram(db, userId, { weeklyGoal: 4, preferredDays: PREFERRED, placementWeeksAhead: 1 });
     const thursday = day(0, 3);
     const res = await placeSlots(db, userId, p, thursday, prefs, NOW);
-    // This week: Fri and Sat (preferred, not past), then Thu and Sun (the rest, from today).
-    const thisWeek = [day(0, 3), day(0, 4), day(0, 5), day(0, 6)];
+    // This week: Fri and Sat — the preferred days still ahead; next week the whole goal.
+    const thisWeek = [day(0, 4), day(0, 5)];
     const nextWeek = PREFERRED.map((d) => day(1, d));
     expect(sorted(res.placed)).toEqual(ids(p, [...thisWeek, ...nextWeek]));
-    expect((await rowsOf(p)).every((r) => r.effectiveDate >= thursday)).toBe(true);
+    expect((await rowsOf(p)).every((r) => r.effectiveDate > thursday)).toBe(true);
+    // Settled, and it stays settled through the week.
+    expect(await placeSlots(db, userId, p, thursday, prefs, NOW)).toEqual({ placed: [], archived: [] });
+    expect(await placeSlots(db, userId, p, day(0, 5), prefs, NOW)).toEqual({ placed: [], archived: [] });
+  });
+
+  it("with fewer preferred days than the goal, the week's own days are where a full week puts them", async () => {
+    // Goal 3 on [Mon] → a week is Mon, then Tue and Wed (the rest, Monday → Sunday). A Tuesday start keeps Tue
+    // and Wed and does not reach for Thursday.
+    const p = await seedProgram(db, userId, { weeklyGoal: 3, preferredDays: [0], placementWeeksAhead: 1 });
+    const res = await placeSlots(db, userId, p, day(0, 1), prefs, NOW);
+    expect(sorted(res.placed)).toEqual(ids(p, [day(0, 1), day(0, 2), day(1, 0), day(1, 1), day(1, 2)]));
+  });
+
+  it("never places a new slot on today once today's window has passed in the athlete's zone", async () => {
+    // Ruling 2a-R11: a program created on Monday evening placed "Monday at 7 AM" — a prompt, then a miss.
+    const p = await seedProgram(db, userId, { weeklyGoal: 2, preferredDays: [0, 2], placementWeeksAhead: 1 });
+    const evening = "2026-10-06T01:30:00.000Z"; // Monday 18:30 in Los Angeles, the window (07:00) long gone
+    const res = await placeSlots(db, userId, p, MON, prefs, evening);
+    expect(sorted(res.placed)).toEqual(ids(p, [day(0, 2), day(1, 0), day(1, 2)]));
+    // Before the window it would have: the same pass at 06:00 local places today's.
+    const q = await seedProgram(db, userId, { weeklyGoal: 2, preferredDays: [0, 2], placementWeeksAhead: 1 });
+    const early = "2026-10-05T13:00:00.000Z"; // Monday 06:00 in Los Angeles
+    expect(sorted((await placeSlots(db, userId, q, MON, prefs, early)).placed)).toEqual(
+      ids(q, [day(0, 0), day(0, 2), day(1, 0), day(1, 2)]),
+    );
+    // A slot already on today stays: the rule is about placing, never about taking away.
+    expect(await placeSlots(db, userId, q, MON, prefs, evening)).toEqual({ placed: [], archived: [] });
+    expect((await row(slotId(q, day(0, 0)))).archivedAt).toBeNull();
   });
 
   it("uses the program's default discipline: strength when the program leads with it", async () => {
@@ -309,6 +340,114 @@ describe("re-placement after an edit", () => {
     expect(await placeSlots(db, userId, p, MON, prefs, NOW)).toEqual({ placed: [], archived: [] });
   });
 
+  it("a rename, a new length or a new lead discipline reaches every live slot from today on, and nothing before it", async () => {
+    // Audit 2a-model I2 (+ build M8): only inserted and revived rows took the program's content, so for weeks the
+    // Plan and the calendar showed the old name and a 30-minute block after the athlete asked for 45.
+    const p = await seedProgram(db, userId, { weeklyGoal: 2, preferredDays: [0, 2], placementWeeksAhead: 2 });
+    await placeSlots(db, userId, p, day(-1, 0), prefs, "2026-09-28T12:00:00.000Z"); // last week's: history by MON
+    await db.update(plannedWorkouts).set({ updatedAt: NOW }).where(eq(plannedWorkouts.planId, p));
+    await placeSlots(db, userId, p, MON, prefs, NOW);
+    const past = [slotId(p, day(-1, 0)), slotId(p, day(-1, 2))];
+    // Today's session is built ("Mobility · Hips", a yoga session of 40 min) …
+    const today = slotId(p, day(0, 0));
+    await db
+      .update(plannedWorkouts)
+      .set({ contentState: "built", title: "Mobility · Hips", calendarBlockDurationSeconds: 2400, fallbackEstimatedDurationSeconds: 2400 })
+      .where(eq(plannedWorkouts.id, today));
+    for (const [version, theme] of [[0, "Preview"], [1, "Back"], [2, "Hips"]] as const) {
+      await db.insert(sessionBuilds).values({
+        id: newId(),
+        userId,
+        workoutId: today,
+        version,
+        engineVersion: "test",
+        inputsHash: `h${version}`,
+        payload: { build: { padding: "x".repeat(100) }, view: { mode: "consistent", theme: { id: theme.toLowerCase(), name: theme } } },
+        lockedAt: null,
+        createdAt: NOW,
+      });
+    }
+    // … one future slot's event is written, one was moved by the athlete, one was skipped …
+    await db.update(plannedWorkouts).set({ calendarSyncState: "synced" }).where(eq(plannedWorkouts.id, slotId(p, day(1, 0))));
+    await move(slotId(p, day(1, 2)), day(1, 3));
+    await db
+      .update(plannedWorkouts)
+      .set({ completionState: "skipped", resolutionDate: MON })
+      .where(eq(plannedWorkouts.id, slotId(p, day(2, 0))));
+    // … and a run sits on next Monday just clear of a 30-minute slot, not of a 45-minute one.
+    const runId = newId();
+    await db.insert(plannedWorkouts).values({
+      id: runId,
+      userId,
+      planId: "coros-plan",
+      sourceWorkoutId: `src-${runId}`,
+      title: "Easy run",
+      category: "easy",
+      sport: "run",
+      originalPlanDate: day(1, 0),
+      lastVerifiedCorosDate: day(1, 0),
+      effectiveDate: day(1, 0),
+      effectiveTime: "08:00",
+      sourceContentFingerprint: "fp",
+      fallbackEstimatedDurationSeconds: 3600,
+      calendarBlockDurationSeconds: 3600,
+      completionState: "scheduled",
+      createdAt: NOW,
+      updatedAt: NOW,
+    });
+
+    await updateProgram(db, userId, p, { name: "Jaw care", config: { defaultMinutes: 45 } }, NOW);
+    await db.update(programs).set({ disciplines: ["strength", "yoga"] }).where(eq(programs.id, p));
+    const LATER = "2026-10-05T13:00:00.000Z";
+    expect(await placeSlots(db, userId, p, MON, prefs, LATER)).toEqual({ placed: [], archived: [] });
+
+    const outlines = [slotId(p, day(0, 2)), slotId(p, day(1, 0)), slotId(p, day(1, 2)), slotId(p, day(2, 2))];
+    for (const id of outlines) {
+      expect(await row(id)).toMatchObject({
+        title: "Jaw care",
+        category: "strength",
+        sport: "strength",
+        fallbackEstimatedDurationSeconds: 45 * 60,
+        calendarBlockDurationSeconds: 45 * 60,
+        updatedAt: LATER,
+      });
+    }
+    expect((await row(slotId(p, day(1, 2)))).effectiveDate).toBe(day(1, 3)); // still where the athlete put it
+    expect((await row(slotId(p, day(1, 0)))).calendarSyncState).toBe("pending");
+    // The built session keeps its build (discipline, length) and takes the new name before its theme.
+    expect(await row(today)).toMatchObject({
+      title: "Jaw care · Hips",
+      category: "yoga",
+      calendarBlockDurationSeconds: 2400,
+      contentState: "built",
+    });
+    // History and a resolved slot stay as they were.
+    for (const id of [...past, slotId(p, day(2, 0))]) {
+      expect(await row(id)).toMatchObject({ title: "Mobility", calendarBlockDurationSeconds: 30 * 60, updatedAt: NOW });
+    }
+    // The longer slot no longer sits on the run's block: the collision pass ran over its day.
+    const monday = (await db.select().from(plannedWorkouts).where(eq(plannedWorkouts.effectiveDate, day(1, 0)))).filter(
+      (r) => !r.archivedAt,
+    );
+    expect(monday).toHaveLength(2);
+    expect(
+      dayCollides(
+        monday.map((r) => ({
+          key: r.id,
+          category: r.category,
+          workoutSeconds: r.fallbackEstimatedDurationSeconds!,
+          currentTime: r.effectiveTime,
+          pinned: false,
+        })),
+        prefs,
+      ),
+    ).toBe(false);
+
+    // Settled: a second pass writes nothing.
+    expect(await placeSlots(db, userId, p, MON, prefs, "2026-10-05T14:00:00.000Z")).toEqual({ placed: [], archived: [] });
+    for (const id of outlines) expect((await row(id)).updatedAt).toBe(LATER);
+  });
+
   it("a retired program places nothing", async () => {
     const p = await seedProgram(db, userId, { weeklyGoal: 4, preferredDays: PREFERRED }, { status: "retired" });
     expect(await placeSlots(db, userId, p, MON, prefs, NOW)).toEqual({ placed: [], archived: [] });
@@ -328,6 +467,81 @@ describe("re-placement after an edit", () => {
       ids(p, [day(0, 0), day(1, 2)]),
     );
     expect(await placeSlots(db, userId, p, MON, prefs, NOW)).toEqual({ placed: [], archived: [] });
+  });
+
+  it("retiring retracts every flexible future slot, however far out it sits — even past a shrunk window", async () => {
+    // Audit 2a-model M2 (probe P4): `{placementWeeksAhead: 1, status: "retired"}` retracted 3 slots and left 9.
+    const p = await seedProgram(db, userId, { weeklyGoal: 3, preferredDays: [0, 2, 4], placementWeeksAhead: 4 });
+    await placeSlots(db, userId, p, MON, prefs, NOW);
+    await move(slotId(p, day(3, 2)), day(3, 3)); // the athlete's own move stays
+    await updateProgram(db, userId, p, { config: { placementWeeksAhead: 1 }, status: "retired" }, NOW);
+
+    const res = await placeSlots(db, userId, p, MON, prefs, NOW);
+    expect(res.placed).toEqual([]);
+    const live = (await rowsOf(p)).filter((r) => !r.archivedAt);
+    expect(sorted(live.map((r) => r.id))).toEqual(ids(p, [day(0, 0), day(3, 2)]));
+    expect(await placeSlots(db, userId, p, MON, prefs, NOW)).toEqual({ placed: [], archived: [] });
+  });
+
+  it("a slot the athlete touched is never retracted: re-timed on its day, moved away and back, or customised", async () => {
+    // Ruling 2a-R12 (audit 2a-model M3): flexibility read only the dates, so these went with a lowered goal.
+    const p = await seedProgram(db, userId, { weeklyGoal: 4, preferredDays: PREFERRED, placementWeeksAhead: 3 });
+    await placeSlots(db, userId, p, MON, prefs, NOW);
+    // Week 1: Saturday re-timed on its own day (a calendar drag writes a time_change override).
+    await applyMove(db, { userId, workoutId: slotId(p, day(1, 5)), toDate: day(1, 5), toTime: "18:00", source: "calendar_edit", corosWritesEnabled: false });
+    // Week 2: Saturday moved to Sunday and back.
+    await move(slotId(p, day(2, 5)), day(2, 6));
+    await move(slotId(p, day(2, 5)), day(2, 5));
+    // Week 3: Saturday's sheet customised ahead of the day (a preview carrying the athlete's overrides) — and
+    // Friday's previewed with nothing chosen, which leaves it as flexible as ever.
+    const preview = (workoutId: string, params: Record<string, unknown>) =>
+      db.insert(sessionBuilds).values({
+        id: newId(),
+        userId,
+        workoutId,
+        version: 0,
+        engineVersion: "test",
+        inputsHash: `h-${workoutId}`,
+        payload: { build: { params }, view: { mode: "consistent" } },
+        lockedAt: null,
+        createdAt: NOW,
+      });
+    await preview(slotId(p, day(3, 5)), { checks: {}, overrides: { mode: "build" }, swaps: {} });
+    await preview(slotId(p, day(3, 4)), { checks: {}, overrides: {}, swaps: {} });
+    for (const w of [1, 2, 3]) expect((await row(slotId(p, day(w, 5)))).effectiveDate).toBe(day(w, 5));
+
+    await setConfig(p, { weeklyGoal: 3 });
+    const res = await placeSlots(db, userId, p, MON, prefs, NOW);
+    // Each week drops one slot; a touched Saturday is never the one, so the week's next-ranked flexible slot goes.
+    expect(sorted(res.archived)).toEqual(ids(p, [day(0, 5), day(1, 4), day(2, 4), day(3, 4)]));
+    for (const w of [1, 2, 3]) expect(await row(slotId(p, day(w, 5)))).toMatchObject({ archivedAt: null });
+    expect(await placeSlots(db, userId, p, MON, prefs, NOW)).toEqual({ placed: [], archived: [] });
+  });
+
+  it("a retraction re-checks the slot as it archives it: a move landing after placement read it keeps the slot", async () => {
+    // Audit 2a-model M4: removeFromPlan checked only archivedAt, so an athlete's move landing between placement's
+    // read and its archive retracted the slot the athlete had just moved.
+    const p = await seedProgram(db, userId, { weeklyGoal: 2, preferredDays: [0, 2], placementWeeksAhead: 1 });
+    await placeSlots(db, userId, p, MON, prefs, NOW);
+    const wed = slotId(p, day(1, 2));
+    const snapshot = await row(wed);
+    await move(wed, day(1, 3)); // lands after placement's read
+    expect(await retractSlot(db, userId, snapshot, MON, prefs, NOW)).toBe(false);
+    expect(await row(wed)).toMatchObject({ archivedAt: null, effectiveDate: day(1, 3) });
+    expect(await suppressionsOf(wed)).toEqual([]);
+
+    // A re-time on its own day after the read (a time_change override, the date unchanged) keeps it too.
+    const mon = slotId(p, day(1, 0));
+    const monSnapshot = await row(mon);
+    await applyMove(db, { userId, workoutId: mon, toDate: day(1, 0), toTime: "18:00", source: "calendar_edit", corosWritesEnabled: false });
+    expect(await retractSlot(db, userId, monSnapshot, MON, prefs, NOW)).toBe(false);
+    expect((await row(mon)).archivedAt).toBeNull();
+
+    // The control: an untouched flexible slot is retracted.
+    const thisWed = slotId(p, day(0, 2));
+    expect(await retractSlot(db, userId, await row(thisWed), MON, prefs, NOW)).toBe(true);
+    expect(await row(thisWed)).toMatchObject({ archiveReason: "program_replaced" });
+    expect((await suppressionsOf(thisWed)).map((s) => s.reason)).toEqual(["user_removed"]);
   });
 
   it("a program_replaced slot carries exactly one suppression, and a raised goal brings it back", async () => {
@@ -432,6 +646,22 @@ describe("the hourly job", () => {
     expect(await rowsOf(coach)).toEqual([]);
     expect(await rowsOf(marked)).toEqual([]);
   });
+
+  it("also visits a retired program that still owns flexible future slots, and retracts them", async () => {
+    // Audit 2a-model M2(b): a retire racing the hourly pass — the cron read the program as active and placed the
+    // far week after the retire's own pass ran. Nothing visited a retired program again.
+    const today = todayInZone(prefs.timezone);
+    const p = await seedProgram(db, userId, { weeklyGoal: 3, placementWeeksAhead: 2 });
+    await placeSlots(db, userId, p, today, prefs, nowInstant());
+    await db.update(programs).set({ status: "retired" }).where(eq(programs.id, p));
+    const future = (await rowsOf(p)).filter((r) => r.effectiveDate > today);
+    expect(future.length).toBeGreaterThan(0);
+
+    await placeSlotsForAllPrograms(db);
+    for (const r of future) expect(await row(r.id)).toMatchObject({ archiveReason: "program_replaced" });
+    // Settled: the next sweep finds nothing to visit there.
+    expect(await placeSlotsForAllPrograms(db)).toMatchObject({ programs: 0, placed: 0, archived: 0 });
+  });
 });
 
 describe("other writers leave slots alone", () => {
@@ -466,6 +696,113 @@ describe("other writers leave slots alone", () => {
     const key = (r: (typeof before)[number]) => [r.id, r.archivedAt, r.archiveReason, r.effectiveDate, r.completionState];
     expect(after.map(key).sort()).toEqual(before.map(key).sort());
     for (const id of archived) expect((await suppressionsOf(id)).map((s) => s.reason)).toEqual(["user_removed"]);
+  });
+
+  it("a COROS import never takes two slots on one day (or a retired program's same-named slot) for mirror twins", async () => {
+    // Audit 2a-model I1: every slot of a program shares its title and sport, so the import's mirror dedupe read
+    // any two on one date as one COROS session served twice and archived the younger — for good, since its week
+    // still counted it.
+    await connectTestCoros(db, userId);
+    const today = todayInZone(prefs.timezone);
+    const monday = startOfIsoWeek(today);
+    const nextMon = addDays(monday, 7);
+    const nextWed = addDays(monday, 9);
+    const config = { weeklyGoal: 2, preferredDays: [0, 2], placementWeeksAhead: 2 };
+
+    // A retired "Mobility" whose next-Monday session the athlete had moved to Wednesday (so retiring kept it) …
+    const old = await seedProgram(db, userId, config);
+    await placeSlots(db, userId, old, today, prefs, nowInstant());
+    await applyMove(db, { userId, workoutId: slotId(old, nextMon), toDate: nextWed, toTime: "18:00", source: "app", corosWritesEnabled: false });
+    await db.update(programs).set({ status: "retired" }).where(eq(programs.id, old));
+    await placeSlots(db, userId, old, today, prefs, nowInstant());
+    // … and a new "Mobility" with both of next week's sessions on Wednesday ("I'll do both that day").
+    const p = await seedProgram(db, userId, config);
+    await placeSlots(db, userId, p, today, prefs, nowInstant());
+    await applyMove(db, { userId, workoutId: slotId(p, nextMon), toDate: nextWed, toTime: "18:00", source: "app", corosWritesEnabled: false });
+    const onWed = [slotId(old, nextMon), slotId(p, nextMon), slotId(p, nextWed)];
+    for (const id of onWed) expect(await row(id)).toMatchObject({ archivedAt: null, effectiveDate: nextWed, title: "Mobility" });
+
+    const provider = new FixtureTrainingProvider({ baseMonday: monday });
+    const range = { start: monday, end: addDays(monday, 20) };
+    let deduped = 0;
+    for (let i = 0; i < 2; i++) {
+      const stats = await importPlanSnapshot(
+        db,
+        {
+          userId,
+          plan: (await provider.getCurrentPlan())!,
+          workouts: await provider.getPlannedWorkouts(range),
+          rangeStart: range.start,
+          rangeEnd: range.end,
+          source: "fixture",
+        },
+        prefs,
+      );
+      deduped += stats.dedupedMirrors;
+    }
+
+    expect(deduped).toBe(0);
+    for (const id of onWed) {
+      expect(await row(id)).toMatchObject({ archivedAt: null, archiveReason: null, effectiveDate: nextWed });
+      expect(await suppressionsOf(id)).toEqual([]);
+    }
+    expect(await placeSlots(db, userId, p, today, prefs, nowInstant())).toEqual({ placed: [], archived: [] });
+  });
+
+  it("rule 8's mirror release never reaches a slot: a COROS row going absent leaves a same-named slot's suppression", async () => {
+    await connectTestCoros(db, userId);
+    const today = todayInZone(prefs.timezone);
+    const monday = startOfIsoWeek(today);
+    const nextWed = addDays(monday, 9);
+    const p = await seedProgram(db, userId, { weeklyGoal: 1, preferredDays: [2], placementWeeksAhead: 1 });
+    await placeSlots(db, userId, p, today, prefs, nowInstant());
+    const slot = slotId(p, nextWed);
+    // A slot an earlier import's dedupe archived (the I1 defect), carrying its duplicate_mirror suppression …
+    await db
+      .update(plannedWorkouts)
+      .set({ archivedAt: NOW, archiveReason: "duplicate_mirror" })
+      .where(eq(plannedWorkouts.id, slot));
+    await db.insert(calendarEventSuppressions).values({ id: newId(), workoutId: slot, eventId: null, reason: "duplicate_mirror", createdAt: NOW });
+    // … and a verified COROS row with the same name, sport and day, read missing once already.
+    const corosId = newId();
+    await db.insert(plannedWorkouts).values({
+      id: corosId,
+      userId,
+      planId: "coros-plan",
+      sourceWorkoutId: `coros-plan:${corosId}`,
+      title: "Mobility",
+      category: "yoga",
+      sport: "yoga",
+      originalPlanDate: nextWed,
+      lastVerifiedCorosDate: nextWed,
+      effectiveDate: nextWed,
+      effectiveTime: "07:00",
+      sourceContentFingerprint: "fp",
+      fallbackEstimatedDurationSeconds: 1800,
+      calendarBlockDurationSeconds: 1800,
+      completionState: "scheduled",
+      missingReads: 1,
+      createdAt: NOW,
+      updatedAt: NOW,
+    });
+
+    const provider = new FixtureTrainingProvider({ baseMonday: monday });
+    const range = { start: monday, end: addDays(monday, 20) };
+    const stats = await importPlanSnapshot(
+      db,
+      {
+        userId,
+        plan: (await provider.getCurrentPlan())!,
+        workouts: await provider.getPlannedWorkouts(range),
+        rangeStart: range.start,
+        rangeEnd: range.end,
+        source: "fixture",
+      },
+      prefs,
+    );
+    expect(stats.archivedMissing).toBeGreaterThanOrEqual(1);
+    expect(await row(corosId)).toMatchObject({ archiveReason: "absence_confirmed" });
+    expect((await suppressionsOf(slot)).map((s) => s.reason)).toEqual(["duplicate_mirror"]);
   });
 
   it("the calendar books every slot, deletes a program_replaced slot's event and does not bring it back", async () => {

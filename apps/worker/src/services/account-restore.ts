@@ -60,6 +60,7 @@ import {
   columnBySqlName,
   columnKey,
   orderColumns,
+  PAGE_BYTE_BUDGET,
   scopeWhere,
   secretColumns,
   wipeAccountData,
@@ -73,6 +74,16 @@ export const NEVER_RESTORED = ["provider_connections", "provider_cursor_state", 
 
 /** Most rows one `check` or `rows` request may carry. */
 export const RESTORE_MAX_ROWS = 1000;
+
+/**
+ * Most bytes of rows (canonical JSON) one page may carry when it holds more than one row (Ruling 2a-R9). The
+ * client sends at most `RESTORE_PAGE_BYTES` (@rg/api-client, 192 KB) per page, inside the CPU limit. This
+ * ceiling sits well above that so a client from before the byte budget (200 rows a page, whatever their size)
+ * still restores ordinary tables, while a page of many session builds — megabytes the worker would die parsing,
+ * canonicalising and hashing — is refused cleanly at the check, before anything is wiped. A single row larger
+ * than this is still taken, alone. `rows` needs no check of its own: its page must be a checked one.
+ */
+export const RESTORE_MAX_PAGE_BYTES = 4 * PAGE_BYTE_BUDGET;
 
 /** Errors reported per page — the first ones say what is wrong. */
 const MAX_ERRORS_PER_PAGE = 20;
@@ -123,6 +134,7 @@ export type RowErrorCode =
   | "not_restorable"
   | "bad_rows"
   | "too_many_rows"
+  | "page_too_large"
   | "not_an_object"
   | "unknown_column"
   | "missing_column"
@@ -436,6 +448,13 @@ export async function checkRestorePage(
   }
   const errors = checkRows(entry, input.rows, offset);
   if (errors.length > 0) return { ok: false, errors };
+  const text = canonicalJson(input.rows);
+  if (input.rows.length > 1 && text.length > RESTORE_MAX_PAGE_BYTES) {
+    return pageError(
+      "page_too_large",
+      `${entry.name}: more than ${Math.round(RESTORE_MAX_PAGE_BYTES / 1024)} KB of rows in one page. Update the app and try again.`,
+    );
+  }
   const token = await sign(
     {
       v: 2,
@@ -445,7 +464,7 @@ export async function checkRestorePage(
       t: entry.name,
       o: offset,
       n: input.rows.length,
-      d: await pageDigest(input.rows),
+      d: await sha256Hex(text),
       src: session.payload.src,
       iat: now.getTime(),
     },

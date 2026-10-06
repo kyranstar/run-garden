@@ -76,11 +76,15 @@ export function buildEventDescription(w: EventWorkoutInfo, appUrl: string, userN
     for (const part of w.stageSummary.split(" · ")) lines.push(`• ${part}`);
   }
   lines.push("");
-  lines.push(`COROS date: ${humanDate(w.corosDate)}`);
+  // A session COROS has never held (no verified COROS date: a program slot, an app-only or not-yet-pushed
+  // session) has no COROS date to show — `humanDate("")` reads "Invalid DateTime" — and no COROS status worth
+  // a line, so both are left out (audit 2a-model M6).
+  const onCoros = w.corosDate !== "";
+  if (onCoros) lines.push(`COROS date: ${humanDate(w.corosDate)}`);
   lines.push(
     `Scheduled: ${humanDate(w.effectiveDate)} at ${humanTime(w.effectiveDate, w.effectiveTime)}`,
   );
-  lines.push(`COROS status: ${w.corosStatusLabel}`);
+  if (onCoros) lines.push(`COROS status: ${w.corosStatusLabel}`);
   if (w.sleepReminderText) lines.push("", w.sleepReminderText);
   if (userNotes && userNotes.trim().length > 0) {
     lines.push("", NOTES_MARKER, userNotes.trim());
