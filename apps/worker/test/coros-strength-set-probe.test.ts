@@ -261,6 +261,25 @@ describe("GET /api/coros/debug/strength-set-stats", () => {
           missing: { reps: 1, weight: 1, time: 2 },
           other: { reps: 1, weight: 1, time: 1 },
         },
+        // The fixture's filler codes and `sets` are 4-digit (never a small enum code), so they count as "other"
+        // and "above one"; its two activities with items each mix lap types whose sets differ.
+        structure: {
+          lapTypesSameSets: 0,
+          lapTypesDifferentSets: 2,
+          singleLapType: 0,
+          distinctExerciseNameKeys: 9,
+          exerciseSlots: 6,
+          itemsPerSet: { "1": 10, "2": 0, ">2": 0 },
+          setsAboveOne: 9,
+          setsAtMostOne: 1,
+          noRepsNoWeight: { total: 0, withTime: 0, shareExerciseWithRepItems: 0 },
+          codes: {
+            intensityDisplayUnit: { missing: 1, other: 9 },
+            intensityType: { missing: 1, other: 9 },
+            targetType: { missing: 1, other: 9 },
+            exerciseType: { missing: 1, other: 9 },
+          },
+        },
         reps: {
           missing: 1,
           empty: 0,
@@ -598,6 +617,43 @@ describe("strengthSetStats", () => {
       },
     ]);
     expect(stats.lapItems.byLapTypeCarrying).toEqual({ "0": { reps: 1, weight: 1, time: 2 }, "1": { reps: 0, weight: 0, time: 1 } });
+  });
+
+  it("lays out the lap items: duplicate lap types, items per set, holds without reps, enum codes", () => {
+    const set = (lapType: number, exerciseIndex: number, setIndex: number, reps: number, weight: number, time: number) => ({
+      lapType,
+      exerciseIndex,
+      setIndex,
+      reps,
+      weight,
+      time,
+      sets: 1,
+      exerciseNameKey: `k${exerciseIndex}`,
+      intensityDisplayUnit: 2,
+      intensityType: 3,
+      targetType: 4,
+      exerciseType: 5,
+    });
+    const work = [set(0, 1, 1, 8, 20_000, 40), set(0, 1, 2, 8, 20_000, 40), set(0, 2, 1, 0, 0, 30)];
+    const same = { lapList: [{ lapItemList: [...work, ...work.map((i) => ({ ...i, lapType: 1 }))] }] };
+    const different = { lapList: [{ lapItemList: [...work, { ...work[0]!, lapType: 1, reps: 9 }] }] };
+    const single = { lapList: [{ lapItemList: [set(0, 1, 1, 5, 0, 20), { ...set(0, 1, 1, 5, 0, 20), sets: 3 }] }] };
+    const s = strengthSetStats([same, different, single] as unknown as RawCorosActivityDetail[]).lapItems.structure;
+    expect(s).toMatchObject({
+      lapTypesSameSets: 1,
+      lapTypesDifferentSets: 1,
+      singleLapType: 1,
+      distinctExerciseNameKeys: 2,
+      exerciseSlots: 2 + 2 + 1,
+      // same: 3 sets × 2 types; different: 3 + 1; single: one set seen twice.
+      itemsPerSet: { "1": 10, "2": 1, ">2": 0 },
+      setsAboveOne: 1,
+      setsAtMostOne: 11,
+      // The 30 s hold of exercise 2, in each activity's first lap type (no rep item shares its exercise).
+      noRepsNoWeight: { total: 2, withTime: 2, shareExerciseWithRepItems: 0 },
+    });
+    expect(s.codes.intensityDisplayUnit).toEqual({ "2": 12 });
+    expect(s.codes.exerciseType).toEqual({ "5": 12 });
   });
 
   it("survives details that are not the expected shape", () => {

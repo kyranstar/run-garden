@@ -144,6 +144,8 @@ export interface StrengthSetStats {
     byLapType: Record<string, number>;
     /** Per lap type: how many of its items carry positive reps, weight and time (tells a rest lap from a work lap). */
     byLapTypeCarrying: Record<string, { reps: number; weight: number; time: number }>;
+    /** How the lap items are laid out, for the ingest (Task 2) — counts and small enum codes only. */
+    structure: LapStructure;
     reps: FieldStats;
     weight: FieldStats;
     intensityValue: FieldStats;
@@ -161,7 +163,82 @@ export interface StrengthSetStats {
   };
 }
 
+export interface LapStructure {
+  /** Activities whose items under each lap type are the same sets (exerciseIndex, setIndex, reps, weight, time). */
+  lapTypesSameSets: number;
+  /** Activities with more than one lap type whose item lists differ. */
+  lapTypesDifferentSets: number;
+  /** Activities with a single lap type. */
+  singleLapType: number;
+  distinctExerciseNameKeys: number;
+  /** Σ over activities of the distinct exerciseIndex values in its first lap type. */
+  exerciseSlots: number;
+  /** Items per (activity, lap type, exerciseIndex, setIndex): "1", "2", ">2". */
+  itemsPerSet: Record<"1" | "2" | ">2", number>;
+  /** Items whose `sets` is above 1 (an item holding several sets), and at most 1. */
+  setsAboveOne: number;
+  setsAtMostOne: number;
+  /** Items with no reps and no weight: with a positive time; and how many share an exerciseIndex with an item that has reps. */
+  noRepsNoWeight: { total: number; withTime: number; shareExerciseWithRepItems: number };
+  /** Small enum codes (0–99) by field, "other"/"missing" otherwise. */
+  codes: {
+    intensityDisplayUnit: Record<string, number>;
+    intensityType: Record<string, number>;
+    targetType: Record<string, number>;
+    exerciseType: Record<string, number>;
+  };
+}
+
 const POUND_KG = 0.45359237;
+
+function bump(map: Record<string, number>, key: string): void {
+  map[key] = (map[key] ?? 0) + 1;
+}
+
+function setFingerprint(item: Record<string, unknown>): string {
+  return JSON.stringify([item.exerciseIndex, item.setIndex, asNumber(item.reps), asNumber(item.weight), asNumber(item.time)]);
+}
+
+/** The layout of one activity's lap items, folded into `s`. Nothing but counts and enum codes leaves. */
+function foldStructure(s: LapStructure, nameKeys: Set<string>, items: readonly Record<string, unknown>[]): void {
+  const byType = new Map<string, Record<string, unknown>[]>();
+  for (const item of items) {
+    const type = lapTypeKey(item.lapType);
+    byType.set(type, [...(byType.get(type) ?? []), item]);
+    if (typeof item.exerciseNameKey === "string" && item.exerciseNameKey !== "") nameKeys.add(item.exerciseNameKey);
+    const sets = asNumber(item.sets);
+    if (sets !== undefined && sets > 1) s.setsAboveOne += 1;
+    else s.setsAtMostOne += 1;
+    bump(s.codes.intensityDisplayUnit, lapTypeKey(item.intensityDisplayUnit));
+    bump(s.codes.intensityType, lapTypeKey(item.intensityType));
+    bump(s.codes.targetType, lapTypeKey(item.targetType));
+    bump(s.codes.exerciseType, lapTypeKey(item.exerciseType));
+  }
+  const lists = [...byType.values()];
+  if (lists.length <= 1) s.singleLapType += 1;
+  else {
+    const prints = lists.map((list) => list.map(setFingerprint).sort().join("|"));
+    if (prints.every((x) => x === prints[0])) s.lapTypesSameSets += 1;
+    else s.lapTypesDifferentSets += 1;
+  }
+  const first = lists[0] ?? [];
+  s.exerciseSlots += new Set(first.map((i) => JSON.stringify(i.exerciseIndex))).size;
+  for (const list of lists) {
+    const perSet = new Map<string, number>();
+    for (const i of list) {
+      const k = JSON.stringify([i.exerciseIndex, i.setIndex]);
+      perSet.set(k, (perSet.get(k) ?? 0) + 1);
+    }
+    for (const n of perSet.values()) s.itemsPerSet[n === 1 ? "1" : n === 2 ? "2" : ">2"] += 1;
+  }
+  const repExercises = new Set(first.filter((i) => (asNumber(i.reps) ?? 0) > 0).map((i) => JSON.stringify(i.exerciseIndex)));
+  for (const i of first) {
+    if ((asNumber(i.reps) ?? 0) > 0 || (asNumber(i.weight) ?? 0) > 0) continue;
+    s.noRepsNoWeight.total += 1;
+    if ((asNumber(i.time) ?? 0) > 0) s.noRepsNoWeight.withTime += 1;
+    if (repExercises.has(JSON.stringify(i.exerciseIndex))) s.noRepsNoWeight.shareExerciseWithRepItems += 1;
+  }
+}
 
 /** True when `x` is within `tol` of a multiple of `step`. */
 function nearMultiple(x: number, step: number, tol: number): boolean {
@@ -296,6 +373,19 @@ export function strengthSetStats(details: readonly RawCorosActivityDetail[]): St
   };
   const byLapType = new Map<string, number>();
   const carrying = new Map<string, { reps: number; weight: number; time: number }>();
+  const structure: LapStructure = {
+    lapTypesSameSets: 0,
+    lapTypesDifferentSets: 0,
+    singleLapType: 0,
+    distinctExerciseNameKeys: 0,
+    exerciseSlots: 0,
+    itemsPerSet: { "1": 0, "2": 0, ">2": 0 },
+    setsAboveOne: 0,
+    setsAtMostOne: 0,
+    noRepsNoWeight: { total: 0, withTime: 0, shareExerciseWithRepItems: 0 },
+    codes: { intensityDisplayUnit: {}, intensityType: {}, targetType: {}, exerciseType: {} },
+  };
+  const nameKeys = new Set<string>();
   const exerciseIds = new Set<string>();
   let exercisePresent = 0;
   let exerciseAbsent = 0;
@@ -312,6 +402,7 @@ export function strengthSetStats(details: readonly RawCorosActivityDetail[]): St
 
     let hadItems = false;
     let volume = 0;
+    const activityItems: Record<string, unknown>[] = [];
     for (const lap of Array.isArray(detail.lapList) ? detail.lapList : []) {
       const items = isRecord(lap) && Array.isArray(lap.lapItemList) ? (lap.lapItemList as unknown[]) : [];
       if (items.length === 0) continue;
@@ -319,6 +410,7 @@ export function strengthSetStats(details: readonly RawCorosActivityDetail[]): St
       lapListsWithItems += 1;
       for (const raw of items) {
         const item = isRecord(raw) ? raw : {};
+        activityItems.push(item);
         total += 1;
         const type = lapTypeKey(item.lapType);
         byLapType.set(type, (byLapType.get(type) ?? 0) + 1);
@@ -356,7 +448,10 @@ export function strengthSetStats(details: readonly RawCorosActivityDetail[]): St
         }
       }
     }
-    if (hadItems) activitiesWithLapItems += 1;
+    if (hadItems) {
+      activitiesWithLapItems += 1;
+      foldStructure(structure, nameKeys, activityItems);
+    }
     const reported = asNumber(summary?.totalWeight);
     if (reported !== undefined && reported > 0 && volume > 0) {
       totals.compared += 1;
@@ -376,6 +471,7 @@ export function strengthSetStats(details: readonly RawCorosActivityDetail[]): St
       total,
       byLapType: Object.fromEntries([...byLapType.entries()].sort(([a], [b]) => a.localeCompare(b))),
       byLapTypeCarrying: Object.fromEntries([...carrying.entries()].sort(([a], [b]) => a.localeCompare(b))),
+      structure: { ...structure, distinctExerciseNameKeys: nameKeys.size },
       reps,
       weight,
       intensityValue,
