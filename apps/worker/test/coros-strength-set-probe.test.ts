@@ -273,6 +273,22 @@ describe("GET /api/coros/debug/strength-set-stats", () => {
           setsAboveOne: 9,
           setsAtMostOne: 1,
           noRepsNoWeight: { total: 0, withTime: 0, shareExerciseWithRepItems: 0 },
+          pairs: {
+            oneHasData: 0,
+            bothHaveData: 0,
+            neitherHasData: 0,
+            dataItemFirst: 0,
+            dataItemSecond: 0,
+            neitherTimesEqual: 0,
+            neitherTimesDiffer: 0,
+            targetTypeOfDataItem: {},
+            targetTypeOfPartner: {},
+            targetTypeOfNeitherFirst: {},
+            targetTypeOfNeitherSecond: {},
+            pauseTimeOfDataItem: 0,
+            pauseTimeOfPartner: 0,
+          },
+          setsInOneLapTypeOnly: 10,
           codes: {
             intensityDisplayUnit: { missing: 1, other: 9 },
             intensityType: { missing: 1, other: 9 },
@@ -654,6 +670,44 @@ describe("strengthSetStats", () => {
     });
     expect(s.codes.intensityDisplayUnit).toEqual({ "2": 12 });
     expect(s.codes.exerciseType).toEqual({ "5": 12 });
+  });
+
+  it("reads each (exercise, set) pair: a data item and its partner, or two items without data", () => {
+    const item = (o: Record<string, unknown>) => ({ lapType: 0, exerciseIndex: 1, setIndex: 1, ...o });
+    const detail = {
+      lapList: [
+        {
+          lapItemList: [
+            item({ reps: 8, weight: 20_000, time: 40, targetType: 3, pauseTime: 0 }),
+            item({ reps: 0, weight: 0, time: 60, targetType: 2, pauseTime: 5 }),
+            item({ setIndex: 2, reps: 0, weight: 0, time: 60, targetType: 2 }),
+            item({ setIndex: 2, reps: 8, weight: 0, time: 40, targetType: 3 }),
+            item({ exerciseIndex: 2, reps: 0, weight: 0, time: 30, targetType: 2 }),
+            item({ exerciseIndex: 2, reps: 0, weight: 0, time: 30, targetType: 2 }),
+            item({ exerciseIndex: 3, reps: 0, weight: 0, time: 30 }),
+            item({ exerciseIndex: 3, reps: 0, weight: 0, time: 45 }),
+            item({ exerciseIndex: 4, reps: 5, time: 20 }),
+            item({ exerciseIndex: 4, reps: 6, time: 20 }),
+          ],
+        },
+      ],
+    };
+    const s = strengthSetStats([detail] as unknown as RawCorosActivityDetail[]).lapItems.structure;
+    expect(s.pairs).toEqual({
+      oneHasData: 2,
+      bothHaveData: 1,
+      neitherHasData: 2,
+      dataItemFirst: 1,
+      dataItemSecond: 1,
+      neitherTimesEqual: 1,
+      neitherTimesDiffer: 1,
+      targetTypeOfDataItem: { "3": 2 },
+      targetTypeOfPartner: { "2": 2 },
+      targetTypeOfNeitherFirst: { "2": 1, missing: 1 },
+      targetTypeOfNeitherSecond: { "2": 1, missing: 1 },
+      pauseTimeOfDataItem: 0,
+      pauseTimeOfPartner: 1,
+    });
   });
 
   it("survives details that are not the expected shape", () => {

@@ -180,6 +180,28 @@ export interface LapStructure {
   setsAtMostOne: number;
   /** Items with no reps and no weight: with a positive time; and how many share an exerciseIndex with an item that has reps. */
   noRepsNoWeight: { total: number; withTime: number; shareExerciseWithRepItems: number };
+  /**
+   * The two items of an (exerciseIndex, setIndex) pair in each activity's first lap type: whether exactly one, both
+   * or neither carries reps or weight; whether the data item comes first in the list; per role, the targetType code
+   * and how many have a positive pauseTime; for pairs with no data, whether the two times are equal.
+   */
+  pairs: {
+    oneHasData: number;
+    bothHaveData: number;
+    neitherHasData: number;
+    dataItemFirst: number;
+    dataItemSecond: number;
+    neitherTimesEqual: number;
+    neitherTimesDiffer: number;
+    targetTypeOfDataItem: Record<string, number>;
+    targetTypeOfPartner: Record<string, number>;
+    targetTypeOfNeitherFirst: Record<string, number>;
+    targetTypeOfNeitherSecond: Record<string, number>;
+    pauseTimeOfDataItem: number;
+    pauseTimeOfPartner: number;
+  };
+  /** In activities whose lap types differ: how many sets (fingerprints) appear in only one of them. */
+  setsInOneLapTypeOnly: number;
   /** Small enum codes (0–99) by field, "other"/"missing" otherwise. */
   codes: {
     intensityDisplayUnit: Record<string, number>;
@@ -219,9 +241,44 @@ function foldStructure(s: LapStructure, nameKeys: Set<string>, items: readonly R
   else {
     const prints = lists.map((list) => list.map(setFingerprint).sort().join("|"));
     if (prints.every((x) => x === prints[0])) s.lapTypesSameSets += 1;
-    else s.lapTypesDifferentSets += 1;
+    else {
+      s.lapTypesDifferentSets += 1;
+      const sets = lists.map((list) => new Set(list.map(setFingerprint)));
+      const all = new Set(sets.flatMap((x) => [...x]));
+      for (const f of all) if (!sets.every((x) => x.has(f))) s.setsInOneLapTypeOnly += 1;
+    }
   }
   const first = lists[0] ?? [];
+  const hasData = (i: Record<string, unknown>) => (asNumber(i.reps) ?? 0) > 0 || (asNumber(i.weight) ?? 0) > 0;
+  const groups = new Map<string, Record<string, unknown>[]>();
+  for (const i of first) {
+    const k = JSON.stringify([i.exerciseIndex, i.setIndex]);
+    groups.set(k, [...(groups.get(k) ?? []), i]);
+  }
+  for (const g of groups.values()) {
+    if (g.length !== 2) continue;
+    const [a, b] = g as [Record<string, unknown>, Record<string, unknown>];
+    const pa = hasData(a);
+    const pb = hasData(b);
+    if (pa && pb) s.pairs.bothHaveData += 1;
+    else if (pa || pb) {
+      s.pairs.oneHasData += 1;
+      if (pa) s.pairs.dataItemFirst += 1;
+      else s.pairs.dataItemSecond += 1;
+      const data = pa ? a : b;
+      const partner = pa ? b : a;
+      bump(s.pairs.targetTypeOfDataItem, lapTypeKey(data.targetType));
+      bump(s.pairs.targetTypeOfPartner, lapTypeKey(partner.targetType));
+      if ((asNumber(data.pauseTime) ?? 0) > 0) s.pairs.pauseTimeOfDataItem += 1;
+      if ((asNumber(partner.pauseTime) ?? 0) > 0) s.pairs.pauseTimeOfPartner += 1;
+    } else {
+      s.pairs.neitherHasData += 1;
+      if (asNumber(a.time) === asNumber(b.time)) s.pairs.neitherTimesEqual += 1;
+      else s.pairs.neitherTimesDiffer += 1;
+      bump(s.pairs.targetTypeOfNeitherFirst, lapTypeKey(a.targetType));
+      bump(s.pairs.targetTypeOfNeitherSecond, lapTypeKey(b.targetType));
+    }
+  }
   s.exerciseSlots += new Set(first.map((i) => JSON.stringify(i.exerciseIndex))).size;
   for (const list of lists) {
     const perSet = new Map<string, number>();
@@ -383,6 +440,22 @@ export function strengthSetStats(details: readonly RawCorosActivityDetail[]): St
     setsAboveOne: 0,
     setsAtMostOne: 0,
     noRepsNoWeight: { total: 0, withTime: 0, shareExerciseWithRepItems: 0 },
+    pairs: {
+      oneHasData: 0,
+      bothHaveData: 0,
+      neitherHasData: 0,
+      dataItemFirst: 0,
+      dataItemSecond: 0,
+      neitherTimesEqual: 0,
+      neitherTimesDiffer: 0,
+      targetTypeOfDataItem: {},
+      targetTypeOfPartner: {},
+      targetTypeOfNeitherFirst: {},
+      targetTypeOfNeitherSecond: {},
+      pauseTimeOfDataItem: 0,
+      pauseTimeOfPartner: 0,
+    },
+    setsInOneLapTypeOnly: 0,
     codes: { intensityDisplayUnit: {}, intensityType: {}, targetType: {}, exerciseType: {} },
   };
   const nameKeys = new Set<string>();
