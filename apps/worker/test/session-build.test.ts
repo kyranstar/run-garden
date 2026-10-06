@@ -404,6 +404,17 @@ describe("building today's session", () => {
     expect((await buildsOf(id)).map((b) => b.version)).toEqual([1]);
   });
 
+  it("a built slot moved to another day is an outline named by its program, not by the old build's theme (UI M13)", async () => {
+    const id = await seedSlot(TODAY);
+    const built = await buildSession(db, userId, id, { overrides: { mode: "build" } }, ctx());
+    expect(built.view!.theme).not.toBeNull();
+    expect((await rowOf(id)).title).toBe(`Mobility · ${built.view!.theme!.name}`);
+    // Renamed since: the outline takes the program's name as it is now.
+    await db.update(programs).set({ name: "Evening care" }).where(eq(programs.id, programId));
+    await applyMove(db, { userId, workoutId: id, toDate: addDays(TODAY, 1), toTime: "18:00", source: "app", corosWritesEnabled: false });
+    expect(await rowOf(id)).toMatchObject({ title: "Evening care", contentState: "outline", effectiveDate: addDays(TODAY, 1) });
+  });
+
   it("moved away, refreshed as an outline by a placement pass, and back: the cache hit writes the build's title, discipline and length again (re-review R2)", async () => {
     const id = await seedSlot(TODAY);
     const first = await buildSessionOutcome(db, userId, id, { overrides: { mode: "build", minutes: 45 } }, ctx());

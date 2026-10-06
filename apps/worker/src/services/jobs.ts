@@ -5,6 +5,7 @@ import {
   corosWriteAttempts,
   corosWriteJobs,
   plannedWorkouts,
+  programs,
   scheduleOverrides,
 } from "@rg/database";
 import {
@@ -189,6 +190,18 @@ export async function applyMove(db: Db, req: MoveRequest): Promise<MoveOutcome> 
     corosSyncState = (await anyDeviceOnline(db, req.userId)) ? "syncing" : "waiting_for_device";
   }
 
+  // An app session built for its old day is built for that day's date and checks: on another day that build is
+  // superseded (its rows stay), and the slot is an outline until it is built again (ruling 2a-R7). A program's
+  // outline is named by its program as it is now — never by the old build's "<program> · <theme>" (audit 2a-UI M13).
+  const toOutline =
+    fromDate !== req.toDate &&
+    (workout.origin === "program" || workout.origin === "on_demand") &&
+    workout.contentState === "built";
+  const [program] =
+    toOutline && workout.origin === "program"
+      ? await db.select({ name: programs.name }).from(programs).where(eq(programs.id, workout.planId)).limit(1)
+      : [];
+
   await db
     .update(plannedWorkouts)
     .set({
@@ -202,13 +215,7 @@ export async function applyMove(db: Db, req: MoveRequest): Promise<MoveOutcome> 
       // the workout to its new (possibly future) date, which reads as the app
       // asking whether a run in the future already happened.
       ...(workout.completionState === "unresolved" ? { completionState: "scheduled" } : {}),
-      // An app session built for its old day is built for that day's date and checks: on another day that build
-      // is superseded (its rows stay), and the slot is an outline until it is built again (ruling 2a-R7).
-      ...(fromDate !== req.toDate &&
-      (workout.origin === "program" || workout.origin === "on_demand") &&
-      workout.contentState === "built"
-        ? { contentState: "outline" }
-        : {}),
+      ...(toOutline ? { contentState: "outline", ...(program ? { title: program.name } : {}) } : {}),
       updatedAt: now,
     })
     .where(eq(plannedWorkouts.id, workout.id));
