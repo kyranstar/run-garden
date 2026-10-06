@@ -274,7 +274,12 @@ export async function placeSlots(
   }
   const { toArchive, toRevive, toInsert } = planned;
 
+  // A restore that began since this pass's first look owns the account now (audit 2a-model M5): slot ids are
+  // the file's ids too, so not one write may land. Looked at again right before each kind of write.
+  const restoreBegan = () => restoreInProgress(db, userId);
+
   // Retract first, then fill (spec: archive, then place the new pattern).
+  if (toArchive.length > 0 && (await restoreBegan())) return result;
   for (const r of toArchive) {
     if (await retractSlot(db, userId, r, today, prefs, now)) result.archived.push(r.id);
   }
@@ -328,10 +333,12 @@ export async function placeSlots(
       ...content(date),
     };
   });
+  if (fresh.length > 0 && (await restoreBegan())) return result;
   await chunkedInsert(fresh, (batch) => db.insert(plannedWorkouts).values(batch).onConflictDoNothing());
   result.placed.push(...fresh.map((r) => r.id));
 
   // A retracted slot whose day is wanted again: the same row comes back, as a fresh outline on its own day.
+  if (toRevive.length > 0 && (await restoreBegan())) return result;
   for (const r of toRevive) {
     await db
       .update(plannedWorkouts)
@@ -355,7 +362,8 @@ export async function placeSlots(
     result.placed.push(r.id);
   }
 
-  const refreshedDates = await refreshSlotContent(db, userId, program, { discipline, seconds }, today, now);
+  const refreshedDates = await refreshSlotContent(db, userId, program, { discipline, seconds }, today, now, restoreBegan);
+  if (refreshedDates === null) return result;
 
   const placedDates = [...toInsert, ...toRevive.map((r) => r.originalPlanDate), ...refreshedDates];
   if (placedDates.length > 0) {
@@ -380,7 +388,8 @@ const BUILD_ID_CHUNK = 80;
  *    the build's.
  * Started, done, resolved and past rows are history and keep what they said. Only rows that differ are written,
  * so a settled program writes nothing; a written event is flipped to `pending` so the calendar re-derives it.
- * Returns the dates whose rows changed, for the collision pass.
+ * Returns the dates whose rows changed, for the collision pass — or null, writing nothing, when `restoreBegan`
+ * says a restore owns the account now (asked once, before the first write).
  */
 async function refreshSlotContent(
   db: Db,
@@ -389,7 +398,8 @@ async function refreshSlotContent(
   content: { discipline: "strength" | "yoga"; seconds: number },
   today: string,
   now: string,
-): Promise<string[]> {
+  restoreBegan: () => Promise<boolean>,
+): Promise<string[] | null> {
   const live = await db
     .select({
       id: plannedWorkouts.id,
@@ -454,6 +464,7 @@ async function refreshSlotContent(
     );
     if (differs) changes.push({ r, want });
   }
+  if (changes.length > 0 && (await restoreBegan())) return null;
 
   const changedDates: string[] = [];
   for (const { r, want } of changes) {
