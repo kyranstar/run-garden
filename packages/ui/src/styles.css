@@ -2211,12 +2211,14 @@ a.note {
   color: var(--ink-soft);
   font-size: var(--text-xs);
 }
-/* Mode · theme · time · place: the chips each open a short picker. 32px boxes, padded to the 44px floor. */
+/* Mode · theme · time · place: the chips each open a short picker. 32px boxes, padded to the 44px floor: the pad's
+   100% is the 30px padding box, so it needs 7px each side — the row grants its own 8px gap (audit 2a-UI M1; at 6px
+   the pad measured 42). */
 .session-chips {
   display: flex;
   flex-wrap: wrap;
-  gap: var(--space-4);
-  --tap-clear: var(--space-3);
+  --tap-clear: var(--space-4);
+  gap: var(--tap-clear);
 }
 .session-chip {
   --tap-own: 32px;
@@ -2456,12 +2458,13 @@ button.session-chip {
   padding: 0 var(--space-5);
   min-width: 0;
 }
-/* A segmented choice: equal 44px cells that share the row. */
+/* A segmented choice: equal cells that share the row, never narrower than the 44px floor. Seven of them (sessions a
+   week, days) with 2px gaps are 45px each in the sheet at 360 (audit 2a-UI M2: 43.4px with 4px gaps). */
 .program-seg {
   display: grid;
   grid-auto-flow: column;
-  grid-auto-columns: minmax(0, 1fr);
-  gap: var(--space-2);
+  grid-auto-columns: minmax(var(--tap), 1fr);
+  gap: var(--space-1);
 }
 .program-seg button {
   min-height: var(--tap);
@@ -7776,6 +7779,7 @@ button.session-chip::after,
   .fw-fresh,
   .dock-collapse,
   .dock-grows,
+  button.session-chip,
   .session-reading {
     min-height: max(
       var(--tap-own, 0px),

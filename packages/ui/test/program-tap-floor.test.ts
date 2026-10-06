@@ -72,3 +72,39 @@ describe("the reading on the session sheet's when-line (ruling 2a-R14)", () => {
     expect(px(rule(".sheet-head")["margin-bottom"]!)).toBeGreaterThanOrEqual(clear);
   });
 });
+
+describe("the session sheet's mode · theme · time · place chips (audit 2a-UI M1)", () => {
+  it("each pad reaches 44px, and the row's gap is never narrower than a pad's reach", () => {
+    const { relative, after, coarse } = lists();
+    expect(relative).toContain("button.session-chip");
+    expect(after).toContain("button.session-chip::after");
+    expect(coarse).toContain("button.session-chip");
+    const chip = rule(".session-chip");
+    // The pad's 100% is the padding box: the 32px box less its border.
+    const box = px(chip["--tap-own"]!) - 2 * px(chip.border!.split(/\s+/)[0]!);
+    const row = rule(".session-chips");
+    const clear = px(row["--tap-clear"]!);
+    expect(box + 2 * clear).toBeGreaterThanOrEqual(TAP);
+    const gap = row.gap === "var(--tap-clear)" ? clear : px(row.gap!);
+    expect(gap).toBeGreaterThanOrEqual(clear);
+  });
+});
+
+describe("program settings' segments (audit 2a-UI M2)", () => {
+  it("seven cells are each at least 44px wide in the sheet at 360px, and never narrower at any width", () => {
+    const seg = rule(".program-seg");
+    // The floor is structural: no cell is ever narrower than --tap, whatever the width.
+    expect(seg["grid-auto-columns"]).toBe("minmax(var(--tap), 1fr)");
+    // …and at 360 the seven fit the sheet without spilling: the sheet's inline padding (its body's scrollbar
+    // gutter is pulled back by the same amount it pads).
+    const inline = px(rule(".sheet").padding!.split(/\s+(?![^(]*\))/)[1]!);
+    const body = rule(".sheet-body");
+    expect(body["padding-right"]).toBe("var(--space-3)");
+    expect(body["margin-right"]).toBe("calc(var(--space-3) * -1)");
+    const width = 360 - 2 * inline;
+    const gap = px(seg.gap!);
+    const cell = (width - 6 * gap) / 7;
+    expect(cell).toBeGreaterThanOrEqual(TAP);
+    expect(7 * TAP + 6 * gap).toBeLessThanOrEqual(width);
+  });
+});
