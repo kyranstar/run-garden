@@ -488,6 +488,12 @@ describe("the check sheet", () => {
     await act(async () => {
       byText("Save").click();
     });
+    // The answer settles after the request: wait for the line rather than assume one tick is enough.
+    for (let i = 0; i < 100 && !(document.body.textContent ?? "").includes("Not saved"); i += 1) {
+      await act(async () => {
+        await new Promise((r) => setTimeout(r, 5));
+      });
+    }
     expect(calls).toHaveLength(1);
     expect(onClose).not.toHaveBeenCalled();
     expect(document.body.textContent).toContain("Not saved");
