@@ -519,6 +519,29 @@ describe("building today's session", () => {
     expect(own.checks).toEqual({ tmj: { pre: 2, feelingOff: false } });
   });
 
+  it("the chip and the pre-check are one reading: whichever was given last builds the session (ruling 2a-R13)", async () => {
+    await activateTmj();
+    const id = await seedSlot(TODAY);
+    const pre = await buildSessionOutcome(db, userId, id, { checks: { tmj: { pre: 3, feelingOff: false } } }, ctx());
+    expect(pre.session.checks).toEqual({ tmj: { pre: 3, feelingOff: false } });
+    expect(pre.session.build!.mode).not.toBe("recovery");
+
+    // Later, on the Today chip: feeling off. The slot's reading is now that one, on GET and on the next build.
+    await recordCheck(db, userId, { profileId: "tmj", value: null, feelingOff: true }, ctx({ now: LATER }));
+    expect((await loadSession(db, userId, id, TODAY)).checks).toEqual({ tmj: { pre: null, feelingOff: true } });
+    const off = await buildSessionOutcome(db, userId, id, {}, ctx({ now: LATER }));
+    expect(off.session.checks).toEqual({ tmj: { pre: null, feelingOff: true } });
+    expect(off.session.build!.inputsHash).not.toBe(pre.session.build!.inputsHash);
+    expect(off.session.build).toMatchObject({ version: 2, mode: "recovery", params: { checks: { tmj: { pre: null, feelingOff: true } } } });
+
+    // The pre-check given again, the same as before, after the chip's: it is the latest reading once more.
+    const AFTER = "2026-10-07T19:10:00.000Z";
+    const again = await buildSessionOutcome(db, userId, id, { checks: { tmj: { pre: 3, feelingOff: false } } }, ctx({ now: AFTER }));
+    expect(again.session.checks).toEqual({ tmj: { pre: 3, feelingOff: false } });
+    expect((await loadSession(db, userId, id, TODAY)).checks).toEqual({ tmj: { pre: 3, feelingOff: false } });
+    expect((await buildSessionOutcome(db, userId, id, {}, ctx({ now: AFTER }))).session.build!.buildId).toBe(again.session.build!.buildId);
+  });
+
   it("a pre-check with no number and no \"feeling off\" is no answer: the day's check stands (audit I2)", async () => {
     await activateTmj();
     const id = await seedSlot(TODAY);

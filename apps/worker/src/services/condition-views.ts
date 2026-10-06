@@ -21,6 +21,26 @@ export interface TodayReading {
   feelingOff: boolean;
 }
 
+/**
+ * A reading is an answer when it has a number or "feeling off" — the save's own rule (`performed.ts`): a check with
+ * neither is the question not answered yet, never "answered with nothing" (audit I2).
+ */
+export const isAnswer = (value: number | null, feelingOff: boolean): boolean => value !== null || feelingOff;
+
+/**
+ * THE DAY'S READING of a profile (ruling 2a-R13): the latest of these check rows that carries an answer. The Today
+ * chip and a session's pre-check are one reading, so both sides use this one rule — the chip over the day's check
+ * and the day's pre-checks, a slot over the day's check and its own pre-check — and whichever the athlete gave last
+ * is the one shown and the one a session is built with.
+ */
+export function latestReading<R extends { id: string; at: string; value: number | null; feelingOff: boolean }>(
+  rows: readonly R[],
+): R | undefined {
+  return rows
+    .filter((r) => isAnswer(r.value, r.feelingOff))
+    .sort((a, b) => b.at.localeCompare(a.at) || b.id.localeCompare(a.id))[0];
+}
+
 export function conditionView(profileId: string): ConditionView {
   const p = profileById(profileId);
   return {
@@ -68,9 +88,7 @@ export async function todayConditions(
       ),
     );
   return active.map((profileId) => {
-    const latest = rows
-      .filter((r) => r.profileId === profileId)
-      .sort((a, b) => b.at.localeCompare(a.at) || b.id.localeCompare(a.id))[0];
+    const latest = latestReading(rows.filter((r) => r.profileId === profileId));
     return { ...conditionView(profileId), today: latest ? { value: latest.value, feelingOff: latest.feelingOff } : null };
   });
 }

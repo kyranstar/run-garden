@@ -57,8 +57,8 @@ Build rules:
   → `409 {error:"not_today"}` (the sheet offers "Move to today" — the existing move verb).
 - A started/done row returns its locked build and `409 {error:"locked"}` for any change.
 - Checks in the body are recorded as `pre` checks for this workout and date (one per profile, replaced on re-check).
-  A daily check recorded today for the same profile is used as the pre-check when the body carries none. A check
-  with no number and no "feeling off" is no answer: it records nothing and clears the slot's own (audit 2a I2).
+  The slot's reading is the latest answer of its own pre-check and a daily check recorded today for the same profile
+  (the Today chip and the pre-check are one reading, ruling 2a-R13). A check with no number and no "feeling off" is no answer: it records nothing and clears the slot's own (audit 2a I2).
 - The program's `modes` bind the build (ruling 2a-R7), except a recovery proposed by a condition profile's own
   recovery rule or "feeling off", which stands (ruling 2a-R10).
 - Inputs: history = every `performed_sessions` row of the user (all sources) mapped to `HistorySession` with its

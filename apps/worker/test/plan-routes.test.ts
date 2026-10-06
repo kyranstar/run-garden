@@ -980,6 +980,14 @@ describe("GET /today — conditions", () => {
     await check("pre", 1, `${today()}T18:00:00.000Z`, today(), true);
     expect((await get())[0]!.today).toEqual({ value: 1, feelingOff: true });
   });
+
+  it("the reading is the latest ANSWERED one, the rule a session's build uses (ruling 2a-R13): a later check with no answer is none", async () => {
+    await program();
+    await condition();
+    await check("pre", 2, `${today()}T08:00:00.000Z`);
+    await check("daily", null, `${today()}T09:00:00.000Z`);
+    expect((await get())[0]!.today).toEqual({ value: 2, feelingOff: false });
+  });
 });
 
 describe("moving an app session (ruling 2a-R7)", () => {
