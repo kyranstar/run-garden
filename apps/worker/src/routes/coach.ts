@@ -39,6 +39,7 @@ import { LLM_BUDGET } from "../services/llm.js";
 import { executeCloudJobs } from "../services/coros-write-cloud.js";
 import { exerciseNameMap, resolveExerciseName } from "../services/exercise-catalog.js";
 import { liftProgressions, liftWeekSummary, runProgressions } from "../services/plan-progressions.js";
+import { loggedTopKgByWeek } from "../services/logged-sets.js";
 import { applyOps } from "../services/coach-apply.js";
 import { evaluateTriggers, pendingTriggers } from "../services/coach-triggers.js";
 import { coachBlockAdherence, isLoosePlan, plansEndedOn } from "../services/coach-plans.js";
@@ -862,7 +863,13 @@ coachRoutes.get("/plans/:id/detail", async (c) => {
           })),
       }));
       const doneWeeks = new Set(facts.filter((f) => f.done).map((f) => f.week));
-      progressions = liftProgressions({ weeks: liftWeeks }, doneWeeks, currentWeek);
+      // What was actually lifted, per week (watch or app sets, Phase 2a+).
+      const loggedTopKg = await loggedTopKgByWeek(db, userId, {
+        weekOne: planW1,
+        weeks: weekTotal,
+        originIds: liftWeeks.flatMap((wk) => wk.sessions.flatMap((s) => s.exercises.map((ex) => ex.originId))),
+      });
+      progressions = liftProgressions({ weeks: liftWeeks }, doneWeeks, currentWeek, 3, loggedTopKg);
     } else {
       progressions = runProgressions(facts, currentWeek);
     }
@@ -1056,7 +1063,13 @@ coachRoutes.get("/plans/:id/detail", async (c) => {
       if (entry.total > 0 && entry.completed === entry.total) doneWeeks.add(week);
     }
 
-    const progressions = liftProgressions(plan, doneWeeks, currentWeek);
+    // What was actually lifted, per week (watch or app sets, Phase 2a+).
+    const loggedTopKg = await loggedTopKgByWeek(db, userId, {
+      weekOne: planW1,
+      weeks: weekTotal,
+      originIds: plan.weeks.flatMap((wk) => wk.sessions.flatMap((s) => s.exercises.map((ex) => ex.originId))),
+    });
+    const progressions = liftProgressions(plan, doneWeeks, currentWeek, 3, loggedTopKg);
     const weeks = Array.from({ length: weekTotal }, (_, i) => ({
       weekStart: addDays(planW1, i * 7),
       index: i + 1,

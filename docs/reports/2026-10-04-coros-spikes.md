@@ -21,6 +21,17 @@ post-watch quick review from them, and (c) feed logged strength from watch-only 
 populated depends on what the athlete enters on the watch; a follow-up probe should report, as counts only, how many
 lap items carry non-zero reps and weight.
 
+**What the lap fields mean (Phase 2a+, settled by masked counts-only probe runs, 2026-10-06).** `weight` is kilograms ×
+1000 (grams), the program wire's own scale. A weight typed in pounds on the watch arrives as the exact grams of that
+many pounds, so a weight within 0.02 lb of a whole pound or a 2.5 lb step that is not a whole kilogram is read as
+typed in pounds. `intensityValue` is not the same quantity as `weight`, and the summary's `totalWeight` is not the sum
+of reps × weight; neither is used. Every item appears under two `lapType` codes that carry the same sets, so only the
+lowest code is read. Within it, items group by (`exerciseIndex`, `setIndex`): each item with reps or weight is one set
+(a group can hold two, one per side), a following item with neither is that set's rest, and a group with neither is a
+single timed set (a hold) taken from its first item. `time` is in hundredths of a second. `exerciseId` is not an
+exercise's identity (one value spans several exercises); `exerciseNameKey`, the COROS i18n key the exercise catalog's
+`name` also carries, is.
+
 ## 2. Unmapped moves (one stamped test workout, created, read back, deleted)
 
 `POST /api/coros/spike/unmapped-moves` wrote one strength program stamped `RG SPIKE — SAFE TO DELETE <date>` 14 days

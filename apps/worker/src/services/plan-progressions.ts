@@ -2,10 +2,11 @@ import type { LiftingPlan } from "@rg/domain";
 
 /**
  * Deterministic progression extractors (rework spec §4): the numbers a plan
- * PRESCRIBES, graphed honestly. Lifting completion data carries no actual
- * bar weights (COROS sends none), so lift series are the prescription with
- * completed sessions marked; running series carry planned values with an
- * actual-seconds overlay where matches exist.
+ * PRESCRIBES, graphed honestly. Lift series are the prescription with
+ * completed sessions marked, and — where sets were logged (the app, or the
+ * watch's own lap items since Phase 2a+) — the week's heaviest logged set as
+ * `actual`; running series carry planned values with an actual-seconds
+ * overlay where matches exist.
  */
 
 export interface PlanProgressionPoint {
@@ -72,6 +73,12 @@ export function liftProgressions(
   doneWeeks: Set<number>,
   currentWeek: number | null,
   topN = 3,
+  /**
+   * The heaviest logged set per week, in kg, by the plan exercise's originId
+   * (`loggedTopKgByWeek`, Phase 2a+): each prescribed week's point carries it
+   * as `actual`, to a tenth of a kilo.
+   */
+  loggedTopKg: ReadonlyMap<string, ReadonlyMap<number, number>> = new Map(),
 ): PlanProgression[] {
   const byOrigin = new Map<string, { name: string; count: number; weekMax: Map<number, number> }>();
   const setsByWeek = new Map<number, number>();
@@ -100,9 +107,18 @@ export function liftProgressions(
     .sort((a, b) => b[1].count - a[1].count)
     .slice(0, topN);
   for (const [originId, e] of ranked) {
+    const logged = loggedTopKg.get(originId);
     const series: PlanProgressionPoint[] = [...e.weekMax.entries()]
       .sort((a, b) => a[0] - b[0])
-      .map(([week, value]) => ({ week, value, ...(doneWeeks.has(week) ? { done: true } : {}) }));
+      .map(([week, value]) => {
+        const top = logged?.get(week);
+        return {
+          week,
+          value,
+          ...(doneWeeks.has(week) ? { done: true } : {}),
+          ...(top !== undefined ? { actual: Math.round(top * 10) / 10 } : {}),
+        };
+      });
     const from = series[0]!.value;
     const to = peak(series);
     const nowPoint =

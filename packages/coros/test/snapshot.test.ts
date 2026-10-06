@@ -11,6 +11,7 @@ import { createHash } from "node:crypto";
 import { addDays } from "@rg/domain";
 import { CorosClient, type CorosExerciseCatalogItem } from "../src/client.js";
 import { buildSnapshot, catalogExercise } from "../src/snapshot.js";
+import { buildActivityBackfill } from "../src/backfill-fetch.js";
 import { mockCorosServer } from "./mock-coros-server.js";
 
 const noop = (): void => undefined;
@@ -169,5 +170,52 @@ describe("catalogExercise", () => {
 
   it("has no catalog entry for an item without a name", () => {
     expect(catalogExercise({ id: 1 })).toBeNull();
+  });
+});
+
+describe("strength lap lists ride the snapshot (Phase 2a+)", () => {
+  const strengthLaps = [
+    {
+      type: 7301,
+      lapItemList: [
+        { lapIndex: 1, time: 4_500, exerciseIndex: 0, exerciseNameKey: "T1041", setIndex: 0, reps: 8, weight: 22_680, lapType: 0 },
+        { lapIndex: 2, time: 9_000, exerciseIndex: 0, exerciseNameKey: "T1041", setIndex: 0, reps: 0, weight: 0, lapType: 0 },
+      ],
+    },
+  ];
+  function seed(server: ReturnType<typeof mockCorosServer>) {
+    const day = corosDay(addDays(TODAY, -1));
+    const start = Math.floor(Date.parse(`${addDays(TODAY, -1)}T13:00:00Z`) / 1000);
+    server.state.activities = [
+      { labelId: "lbl-lift-31", date: day, name: "Synthetic Upper", sportType: 402, startTime: start, totalTime: 2400 },
+      { labelId: "lbl-run-32", date: day, name: "Synthetic Easy", sportType: 100, startTime: start + 9_000, totalTime: 1800 },
+    ];
+    server.state.details = {
+      "lbl-lift-31": { summary: { name: "Synthetic Upper", workoutTime: 240_000 }, lapList: strengthLaps },
+      "lbl-run-32": { summary: { name: "Synthetic Easy", workoutTime: 180_000 }, lapList: strengthLaps },
+    };
+  }
+
+  it("buildSnapshot keeps a strength activity's lap lists, and only a strength activity's", async () => {
+    const { server, client } = await setup([TODAY]);
+    seed(server);
+    const snapshot = await snapshotFor(client, addDays(TODAY, 7));
+    expect(snapshot.strengthDetailsByProviderId).toEqual({ "lbl-lift-31": { lapList: strengthLaps } });
+  });
+
+  it("buildSnapshot has none for an activity whose detail it skipped", async () => {
+    const { server, client } = await setup([TODAY]);
+    seed(server);
+    const snapshot = await buildSnapshot(client, RANGE_START, addDays(TODAY, 7), TODAY, undefined, {
+      detailFilter: (item) => item.labelId !== "lbl-lift-31",
+    });
+    expect(snapshot.strengthDetailsByProviderId ?? {}).toEqual({});
+  });
+
+  it("the deep backfill's fetch keeps them too", async () => {
+    const { server, client } = await setup([TODAY]);
+    seed(server);
+    const chunk = await buildActivityBackfill(client, RANGE_START, TODAY, undefined, { delayMs: 0 });
+    expect(chunk.strengthDetailsByProviderId).toEqual({ "lbl-lift-31": { lapList: strengthLaps } });
   });
 });

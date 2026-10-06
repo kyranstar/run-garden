@@ -54,11 +54,31 @@ export async function loadNameResolver(
 
 export type NormalizedLap = ReturnType<typeof normalizeCorosLaps>[number];
 
+/** The part of a strength activity's detail the worker reads for its sets. */
+export type StrengthDetail = Pick<RawCorosActivityDetail, "lapList">;
+
+/**
+ * A strength activity's lap lists, when its detail carries any — undefined
+ * for every other sport, and for a detail with no lap items.
+ */
+export function strengthDetailOf(sportType: number, detail: RawCorosActivityDetail): StrengthDetail | undefined {
+  if (sportIdForCorosCode(sportType) !== "strength") return undefined;
+  const lapList = detail.lapList ?? [];
+  return lapList.some((l) => (l.lapItemList?.length ?? 0) > 0) ? { lapList } : undefined;
+}
+
 export interface BridgeSnapshot {
   plan: TrainingPlanInfo | null;
   workouts: SourcePlannedWorkout[];
   activities: SourceActivity[];
   lapsByProviderId: Record<string, NormalizedLap[]>;
+  /**
+   * A strength activity's lap lists as COROS sent them, for each strength
+   * activity whose detail this read fetched: the per-set items (reps, weight,
+   * exercise key) the normalized laps do not keep. The worker derives the
+   * activity's logged sets from them (Phase 2a+).
+   */
+  strengthDetailsByProviderId?: Record<string, StrengthDetail>;
   health: DailyHealth[];
   /**
    * Counts of sportType codes the sport registry could not name (resolved to
@@ -176,6 +196,7 @@ export async function buildSnapshot(
   const items = await client.getActivities(rangeStart, rangeEnd);
   const activities: SourceActivity[] = [];
   const lapsByProviderId: Record<string, NormalizedLap[]> = {};
+  const strengthDetailsByProviderId: Record<string, StrengthDetail> = {};
   const skipped: Record<string, number> = {};
   for (const item of items) {
     // Everything is admitted; tally only codes the registry can't name, so
@@ -196,6 +217,8 @@ export async function buildSnapshot(
     if (detail) {
       const laps = normalizeCorosLaps(detail);
       if (laps.length > 0) lapsByProviderId[item.labelId] = laps;
+      const strength = strengthDetailOf(item.sportType, detail);
+      if (strength) strengthDetailsByProviderId[item.labelId] = strength;
     }
   }
 
@@ -302,6 +325,7 @@ export async function buildSnapshot(
     workouts,
     activities,
     lapsByProviderId,
+    ...(Object.keys(strengthDetailsByProviderId).length > 0 ? { strengthDetailsByProviderId } : {}),
     health,
     ...(Object.keys(skipped).length > 0 ? { skippedSportTypes: skipped } : {}),
     ...(exerciseCatalog ? { exerciseCatalog } : {}),

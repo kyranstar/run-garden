@@ -71,6 +71,8 @@ const RACE_STROKE = "var(--chart-2)";
 const INK_FAINT = "var(--ink-faint)";
 const INK_SOFT = "var(--ink-soft)";
 const DOT_R = 4;
+/** A logged top set's ring (Phase 2a+): the third chart hue, apart from the done dots. */
+const LOGGED = "var(--chart-3)";
 /** Air between a callout's box and the mark it names. */
 const CALLOUT_GAP = 6;
 /** The text box this file reasons with — deliberately the same generous
@@ -432,12 +434,13 @@ export function ProgressionStepChart({
 
   // Every drawn dot is an obstacle for the callouts; the peak is placed first
   // because it is the headline of the two.
-  const obstacles: Box[] = done.map((p) => ({
-    x: x(p.week) - DOT_R,
-    y: y(p.value) - DOT_R,
-    w: DOT_R * 2,
-    h: DOT_R * 2,
-  }));
+  // The week's heaviest logged set, where one was logged (Phase 2a+): a ring
+  // at the weight actually lifted, beside the prescription's step.
+  const logged = s.filter((p): p is typeof p & { actual: number } => p.actual !== undefined);
+  const obstacles: Box[] = [
+    ...done.map((p) => ({ x: x(p.week) - DOT_R, y: y(p.value) - DOT_R, w: DOT_R * 2, h: DOT_R * 2 })),
+    ...logged.map((p) => ({ x: x(p.week) - DOT_R, y: y(p.actual) - DOT_R, w: DOT_R * 2, h: DOT_R * 2 })),
+  ];
   const peakText = `peak ${peak.value} ${progression.unit}${nowOnPeak ? " · now" : ""}`;
   const peakAt = placeCallout(peakText, x(peak.week), y(peak.value), sc, obstacles);
   const nowText = `${progression.now} · now`;
@@ -454,6 +457,9 @@ export function ProgressionStepChart({
     (peak.value > last.value ? `, easing to ${last.value} ${progression.unit} by week ${sc.wMax}` : "") +
     `; ${doneCount} of ${s.length} weeks completed` +
     (progression.now !== null ? `; currently ${progression.now} ${progression.unit}` : "") +
+    (logged.length > 0
+      ? `; logged top set ${logged.map((p) => `${p.actual} ${progression.unit} in week ${p.week}`).join(", ")}`
+      : "") +
     (race ? `; ${race.label}` : "") +
     ".";
 
@@ -462,7 +468,28 @@ export function ProgressionStepChart({
       title={`${progression.label} — by week`}
       subtitle={`prescribed${doneCount > 0 ? " · dots mark completed weeks" : ""}`}
       summary={summary}
-      legend={[]}
+      legend={
+        logged.length > 0
+          ? [
+              {
+                label: "Prescribed",
+                swatch: (
+                  <svg width="14" height="8" viewBox="0 0 14 8" aria-hidden focusable="false">
+                    <line x1="0" y1="4" x2="14" y2="4" stroke={INK_FAINT} strokeWidth="1.5" strokeDasharray="4 3" />
+                  </svg>
+                ),
+              },
+              {
+                label: "Logged top set",
+                swatch: (
+                  <svg width="10" height="10" viewBox="0 0 10 10" aria-hidden focusable="false">
+                    <circle cx="5" cy="5" r="3.5" fill="var(--bg-raised)" stroke={LOGGED} strokeWidth="2" />
+                  </svg>
+                ),
+              },
+            ]
+          : []
+      }
     >
       <div className="chartbox-svg" ref={boxRef}>
         <svg
@@ -484,6 +511,18 @@ export function ProgressionStepChart({
               r={DOT_R}
               fill={color}
               stroke="var(--bg-raised)"
+              strokeWidth="2"
+            />
+          ))}
+          {logged.map((p) => (
+            <circle
+              key={`logged-${p.week}`}
+              data-logged={p.week}
+              cx={x(p.week)}
+              cy={y(p.actual)}
+              r={DOT_R}
+              fill="var(--bg-raised)"
+              stroke={LOGGED}
               strokeWidth="2"
             />
           ))}

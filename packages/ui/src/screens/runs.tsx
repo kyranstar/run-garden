@@ -1,7 +1,14 @@
 import { useEffect, useId, useMemo, useRef, useState } from "react";
 import { Link } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { api, type ActivityDto, type InsightsResponse, type WorkoutDto } from "@rg/api-client";
+import {
+  api,
+  type ActivityDto,
+  type InsightsResponse,
+  type LoggedExerciseDto,
+  type LoggedSetDto,
+  type WorkoutDto,
+} from "@rg/api-client";
 import { addDays, isAdventureSport, sportLabel } from "@rg/domain";
 import type { Discipline } from "@rg/analytics";
 import { useMeasuredWidth } from "../chart-kit.js";
@@ -443,8 +450,41 @@ export function groupByWeek(items: ActivityDto[]): Array<{ monday: string; items
     }));
 }
 
+const trimNumber = (n: number): string => String(Number(n.toFixed(2)));
+
+/** One logged set in words: "50 lb × 8", "15 reps", "45 s", "L 12 kg × 10". */
+export function formatLoggedSet(s: LoggedSetDto): string {
+  const side = s.side === "left" ? "L " : s.side === "right" ? "R " : "";
+  const load = s.load ? `${trimNumber(s.load.v)} ${s.load.u}` : null;
+  const count =
+    s.reps != null
+      ? load
+        ? `× ${s.reps}`
+        : countNoun(s.reps, "rep")
+      : s.seconds != null
+        ? load
+          ? `× ${s.seconds} s`
+          : `${s.seconds} s`
+        : null;
+  return side + [load, count].filter(Boolean).join(" ");
+}
+
+/** What was logged, one line per exercise (Phase 2 mocks §8). */
+export function LoggedSets({ logged }: { logged: LoggedExerciseDto[] }) {
+  return (
+    <ul className="fw-sets" aria-label="Logged sets">
+      {logged.map((e, i) => (
+        <li key={`${i}-${e.exerciseId}`} className="fw-set">
+          <b>{e.name}</b>
+          <small>{e.sets.map(formatLoggedSet).join(" · ")}</small>
+        </li>
+      ))}
+    </ul>
+  );
+}
+
 /** An expanded session's insights, in place (System 2). */
-function ActivityDetail({
+export function ActivityDetail({
   a,
   units,
   efficiency,
@@ -466,6 +506,7 @@ function ActivityDetail({
   const clause = efficiencyClause(efficiency, a.id);
   return (
     <div className="fw-detail">
+      {a.logged && a.logged.length > 0 ? <LoggedSets logged={a.logged} /> : null}
       {a.laps ? <PaceShape laps={a.laps} units={units} durationSeconds={a.durationSeconds} /> : null}
       <p className="fw-statline">
         <EffortChip load={a.trainingLoad} feel={a.feel} />

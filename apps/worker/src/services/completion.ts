@@ -20,8 +20,11 @@ import {
   scoreAgainstStoredRow,
   ORPHAN_ADOPTION_FLOOR,
   singleSourceActivity,
+  type RawCorosActivityDetail,
 } from "@rg/providers";
 import { chunkedInsert, type Db } from "./db.js";
+import { isRuntimeLimit } from "./runtime-limit.js";
+import { linkWatchSessionsToWorkouts, matchedWorkoutId, upsertWatchSession } from "./watch-sets.js";
 
 /**
  * Completed-activity ingestion: source records from COROS are
@@ -51,6 +54,13 @@ export interface IngestInput {
       exerciseNameKey?: string;
     }>
   >;
+  /**
+   * The lap lists of the strength activities whose detail this pull read,
+   * keyed by provider activity id — the per-set items `lapsByProviderId`
+   * does not keep. Each becomes the activity's watch session (watch-sets.ts).
+   * Only `strength` activities ever read it.
+   */
+  strengthDetailsByProviderId?: Record<string, Pick<RawCorosActivityDetail, "lapList">>;
 }
 
 export interface IngestStats {
@@ -385,6 +395,45 @@ async function upsertSourceLink(
   });
 }
 
+/**
+ * A strength activity whose detail this pull read gets its watch session
+ * (watch-sets.ts, Phase 2a+); every other activity is untouched. The sets
+ * are secondary to the activity itself, so their failure is logged and the
+ * ingest goes on — the session row's `pending` marker, or its absence, is
+ * what the watch-sets backfill picks up again. Our own runtime ceiling is
+ * the exception: the invocation is over, so it propagates.
+ */
+async function ingestWatchSets(
+  db: Db,
+  input: IngestInput,
+  src: SourceActivity,
+  activityId: string,
+  adoptedFromApp: boolean,
+): Promise<void> {
+  if (src.provider !== "coros" || src.sport !== "strength") return;
+  const detail = input.strengthDetailsByProviderId?.[src.providerActivityId];
+  if (!detail) return;
+  try {
+    await upsertWatchSession(db, {
+      userId: input.userId,
+      activity: {
+        activityId,
+        providerActivityId: src.providerActivityId,
+        startTime: src.startTime,
+        startTimeLocal: src.startTimeLocal ?? null,
+        durationSeconds: src.durationSeconds,
+        elapsedSeconds: src.elapsedSeconds ?? null,
+      },
+      detail,
+      workoutId: await matchedWorkoutId(db, activityId),
+      adoptedFromApp,
+    });
+  } catch (e) {
+    if (isRuntimeLimit(e)) throw e;
+    console.error(`[watch-sets] ${activityId}: ${(e instanceof Error ? e.message : String(e)).slice(0, 300)}`);
+  }
+}
+
 async function stampSourceFingerprint(db: Db, src: SourceActivity): Promise<void> {
   await db
     .update(activitySourceLinks)
@@ -425,6 +474,8 @@ export async function ingestActivities(db: Db, input: IngestInput): Promise<Inge
       .limit(1);
 
     let activityId: string;
+    // The deliberate app+watch merge: the app's session owns this activity's sets.
+    let adoptedFromApp = false;
     if (link[0]) {
       activityId = link[0].activityId;
       // Unchanged since the last snapshot: nothing to re-normalize, no laps
@@ -433,6 +484,9 @@ export async function ingestActivities(db: Db, input: IngestInput): Promise<Inge
       // snapshot fed all 14 days of history into affectedDates and the
       // garden rewound to a weeks-old checkpoint and replayed, 48×/day.
       if (link[0].contentFingerprint === src.contentFingerprint) {
+        // Its detail can still arrive (the deep backfill, a heal): the sets
+        // refresh — idempotent, and no date joins the resimulation.
+        await ingestWatchSets(db, input, src, activityId, false);
         continue;
       }
       const row = (await db.select().from(activities).where(eq(activities.id, activityId)).limit(1))[0];
@@ -533,6 +587,7 @@ export async function ingestActivities(db: Db, input: IngestInput): Promise<Inge
           orphan.id,
         );
         activityId = orphan.id;
+        adoptedFromApp = orphan.source === "app";
         stats.mergedPairs += 1;
         await upsertSourceLink(db, activityId, src);
       } else {
@@ -576,6 +631,7 @@ export async function ingestActivities(db: Db, input: IngestInput): Promise<Inge
         db.insert(activityLaps).values(batch),
       );
     }
+    await ingestWatchSets(db, input, src, activityId, adoptedFromApp);
     // Commit marker: everything for this source landed, so the skip check may
     // now trust the fingerprint (audit#3 D4).
     await stampSourceFingerprint(db, src);
@@ -677,6 +733,10 @@ export async function ingestActivities(db: Db, input: IngestInput): Promise<Inge
         .where(eq(plannedWorkouts.id, m.workoutId));
       stats.matchesCreated += 1;
       stats.completions += 1;
+      // A watch session is logged before matching runs; it learns its workout here.
+      if (activityRow.sport === "strength") {
+        await linkWatchSessionsToWorkouts(db, input.userId, [{ activityId: m.activityId, workoutId: m.workoutId }], now);
+      }
       // The workout's own day needs resimulating too, not just the activity's
       // day: a cross-day match (matcher's ±1-day window) can complete a
       // workout dated yesterday from an activity synced today, and if
