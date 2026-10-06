@@ -188,6 +188,7 @@ export async function corosReadNow(
         userId,
         sources: snapshot.activities,
         lapsByProviderId: snapshot.lapsByProviderId as never,
+        strengthDetailsByProviderId: snapshot.strengthDetailsByProviderId,
       });
       ingested = stats.newActivities + stats.mergedPairs;
       const earliest = stats.affectedDates[0];

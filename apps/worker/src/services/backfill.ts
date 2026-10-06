@@ -193,6 +193,8 @@ export interface ChunkReport {
   chunkEnd: string;
   activities: SourceActivity[];
   lapsByProviderId: IngestInput["lapsByProviderId"];
+  /** Strength activities' lap lists, for their logged sets (watch-sets.ts). */
+  strengthDetailsByProviderId?: IngestInput["strengthDetailsByProviderId"];
   skippedSportTypes: Record<string, number>;
 }
 
@@ -208,6 +210,7 @@ export async function recordChunk(db: Db, userId: string, chunk: ChunkReport): P
     userId,
     sources: chunk.activities,
     lapsByProviderId: chunk.lapsByProviderId,
+    strengthDetailsByProviderId: chunk.strengthDetailsByProviderId,
   });
 
   const existing = (
@@ -361,6 +364,7 @@ export async function runBackfillChunkCloud(
       chunkEnd: payload.chunkEnd,
       activities: chunk.activities,
       lapsByProviderId: chunk.lapsByProviderId as never,
+      strengthDetailsByProviderId: chunk.strengthDetailsByProviderId,
       skippedSportTypes: chunk.skippedSportTypes,
     });
     const now = nowInstant();

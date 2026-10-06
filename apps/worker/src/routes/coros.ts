@@ -24,6 +24,7 @@ import {
   SPIKE_CONFIRM,
 } from "../services/coros-unmapped-spike.js";
 import { fixtureModeEnabled } from "../env.js";
+import { backfillWatchSets } from "../services/watch-sets.js";
 
 /**
  * Cloud COROS connection surface (cloud-direct spec §1). The password's MD5
@@ -149,6 +150,21 @@ corosRoutes.get("/debug/strength-set-stats", async (c) => {
     case "ok":
       return c.json(result.body);
   }
+});
+
+/**
+ * The watch-sets backfill (Phase 2a+): one bounded batch of stored strength
+ * activities gets its logged sets from COROS (read-only). Call again with
+ * `?before=<next>` until `next` is null. Idempotent: a filled activity drops
+ * out, so running it twice changes nothing.
+ */
+corosRoutes.post("/watch-sets/backfill", async (c) => {
+  const before = c.req.query("before");
+  if (before !== undefined && !(/^\d{4}-\d{2}-\d{2}T/.test(before) && Number.isFinite(Date.parse(before)))) {
+    return c.json({ error: "invalid_cursor" }, 400);
+  }
+  const result = await backfillWatchSets(c.get("db"), c.env, c.get("userId"), before ? { before } : {});
+  return c.json(result);
 });
 
 const spikeConfirmSchema = z

@@ -20,11 +20,13 @@ import {
   type RawCorosActivityDetail,
 } from "@rg/providers";
 import type { CorosClient } from "./client.js";
-import type { NormalizedLap } from "./snapshot.js";
+import { strengthDetailOf, type NormalizedLap, type StrengthDetail } from "./snapshot.js";
 
 export interface ActivityBackfillChunk {
   activities: SourceActivity[];
   lapsByProviderId: Record<string, NormalizedLap[]>;
+  /** A strength activity's lap lists, for its logged sets (see BridgeSnapshot). */
+  strengthDetailsByProviderId: Record<string, StrengthDetail>;
   /**
    * Counts of sportType codes the sport registry could not name (resolved to
    * "other"), by code — admitted and ingested regardless.
@@ -55,6 +57,7 @@ export async function buildActivityBackfill(
 
   const activities: SourceActivity[] = [];
   const lapsByProviderId: Record<string, NormalizedLap[]> = {};
+  const strengthDetailsByProviderId: Record<string, StrengthDetail> = {};
   const skippedSportTypes: Record<string, number> = {};
 
   for (const item of items) {
@@ -73,9 +76,11 @@ export async function buildActivityBackfill(
     if (detail) {
       const laps = normalizeCorosLaps(detail);
       if (laps.length > 0) lapsByProviderId[item.labelId] = laps;
+      const strength = strengthDetailOf(item.sportType, detail);
+      if (strength) strengthDetailsByProviderId[item.labelId] = strength;
     }
     if (delayMs > 0) await new Promise((resolve) => setTimeout(resolve, delayMs));
   }
 
-  return { activities, lapsByProviderId, skippedSportTypes };
+  return { activities, lapsByProviderId, strengthDetailsByProviderId, skippedSportTypes };
 }
