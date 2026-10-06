@@ -124,6 +124,13 @@ describe("todayCardLayout", () => {
     expect(todayCardLayout(run.workout, [run])).toEqual({ title: { kind: "run", workout: run.workout }, lines: [] });
   });
 
+  it("an account with no program: two runs at the same minute keep the next workout's title, not today's order", () => {
+    const first = runSession({ id: "run-a", effectiveTime: "07:00" });
+    const second = runSession({ id: "run-b", effectiveTime: "07:00" });
+    // `nextWorkout` chose run-b; today's list orders run-a first. The card follows `nextWorkout`, as it always did.
+    expect(todayCardLayout(second.workout, [first, second])).toEqual({ title: { kind: "run", workout: second.workout }, lines: [] });
+  });
+
   it("a run and a program session: the run keeps the title, the session is a line", () => {
     const run = runSession();
     const slot = outline();

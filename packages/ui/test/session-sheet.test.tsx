@@ -15,7 +15,7 @@ import { act, createElement } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { SessionDto, SessionExerciseDto, WorkoutDto } from "@rg/api-client";
 import { features } from "../src/features.js";
 import { SessionSheet } from "../src/components/session-sheet.js";
@@ -213,7 +213,15 @@ interface Call {
 let root: Root | null = null;
 let host: HTMLDivElement | null = null;
 
+// The sheet writes the year only when it is not the current one ("Monday, October 5"), so the clock is pinned to TODAY's
+// year (Date alone: timers stay real). Unpinned, the date assertions fail from 2027-01-01 (audit 2a-UI M9).
+beforeEach(() => {
+  vi.useFakeTimers({ toFake: ["Date"] });
+  vi.setSystemTime(new Date(`${TODAY}T12:00:00`));
+});
+
 afterEach(() => {
+  vi.useRealTimers();
   act(() => root?.unmount());
   host?.remove();
   root = null;

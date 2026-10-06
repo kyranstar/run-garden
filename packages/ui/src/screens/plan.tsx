@@ -754,8 +754,9 @@ export function PlanScreen() {
   // ── Coach ──────────────────────────────────────────────────────────────
   const coach = usePlanCoach();
   const coachPlans = useQuery({ queryKey: ["coach-plans"], queryFn: api.coachPlans });
-  // The adaptive programs' cards (Phase 2a): in the gate, so a card never lands after the week below it.
-  const programs = useQuery({ queryKey: ["programs"], queryFn: api.listPrograms, staleTime: 60_000 });
+  // The adaptive programs' cards (Phase 2a): in the gate, so a card never lands after the week below it. One attempt:
+  // a failure shows the page without the card at once rather than holding every account's first paint for retries.
+  const programs = useQuery({ queryKey: ["programs"], queryFn: api.listPrograms, staleTime: 60_000, retry: false });
   // Subscribed here, rendered by `<RaceStrip>` — one fetch, shared key. The
   // page's first paint waits for it, so the strip never arrives late.
   const raceHub = useRaceHub();

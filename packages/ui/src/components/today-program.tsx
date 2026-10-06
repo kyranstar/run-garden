@@ -40,6 +40,9 @@ export const MODE_LABEL: Record<"recovery" | "consistent" | "build", string> = {
  */
 export function todayCardLayout(next: WorkoutDto | null, sessions: readonly TodaySession[]): TodayCardLayout {
   const app = sessions.filter((s) => isAppSession(s.workout));
+  // No app session today: exactly the card as before, titled by the next workout (two runs at the same minute would
+  // otherwise tie-break differently from `nextWorkout`; audit 2a-UI M12).
+  if (app.length === 0) return { title: next ? { kind: "run", workout: next } : null, lines: [] };
   const run = sessions.find(
     (s) => !isAppSession(s.workout) && s.workout.category !== "rest" && s.workout.completionState === "scheduled",
   );
