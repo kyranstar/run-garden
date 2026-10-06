@@ -255,6 +255,12 @@ describe("GET /api/coros/debug/strength-set-stats", () => {
       lapItems: {
         total: 10,
         byLapType: { "2": 6, "3": 1, missing: 2, other: 1 },
+        byLapTypeCarrying: {
+          "2": { reps: 6, weight: 5, time: 6 },
+          "3": { reps: 0, weight: 0, time: 1 },
+          missing: { reps: 1, weight: 1, time: 2 },
+          other: { reps: 1, weight: 1, time: 1 },
+        },
         reps: {
           missing: 1,
           empty: 0,
@@ -574,6 +580,24 @@ describe("strengthSetStats", () => {
     expect(relation(180_000 / 0.45359237)).toMatchObject({ totalIsSumInPounds: 1 });
     expect(relation(180_000 * 0.45359237)).toMatchObject({ totalIsSumInKilograms: 1 });
     expect(relation(123_457)).toMatchObject({ other: 1 });
+  });
+
+  it("says, per lap type, how many items carry reps, weight and time", () => {
+    const stats = strengthSetStats([
+      {
+        lapList: [
+          {
+            lapItemList: [
+              { lapType: 0, reps: 8, weight: 20_000, time: 40 },
+              { lapType: 1, reps: 0, weight: 0, time: 60 },
+              { lapType: 0, reps: 0, weight: 0, time: 30 },
+              { lapType: 1, reps: 0, weight: 0 },
+            ],
+          },
+        ],
+      },
+    ]);
+    expect(stats.lapItems.byLapTypeCarrying).toEqual({ "0": { reps: 1, weight: 1, time: 2 }, "1": { reps: 0, weight: 0, time: 1 } });
   });
 
   it("survives details that are not the expected shape", () => {

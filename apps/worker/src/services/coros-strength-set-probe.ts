@@ -142,6 +142,8 @@ export interface StrengthSetStats {
     total: number;
     /** Small-integer lap types by code; "missing" and "other" otherwise. */
     byLapType: Record<string, number>;
+    /** Per lap type: how many of its items carry positive reps, weight and time (tells a rest lap from a work lap). */
+    byLapTypeCarrying: Record<string, { reps: number; weight: number; time: number }>;
     reps: FieldStats;
     weight: FieldStats;
     intensityValue: FieldStats;
@@ -293,6 +295,7 @@ export function strengthSetStats(details: readonly RawCorosActivityDetail[]): St
     other: 0,
   };
   const byLapType = new Map<string, number>();
+  const carrying = new Map<string, { reps: number; weight: number; time: number }>();
   const exerciseIds = new Set<string>();
   let exercisePresent = 0;
   let exerciseAbsent = 0;
@@ -319,6 +322,11 @@ export function strengthSetStats(details: readonly RawCorosActivityDetail[]): St
         total += 1;
         const type = lapTypeKey(item.lapType);
         byLapType.set(type, (byLapType.get(type) ?? 0) + 1);
+        const carried = carrying.get(type) ?? { reps: 0, weight: 0, time: 0 };
+        if ((asNumber(item.reps) ?? 0) > 0) carried.reps += 1;
+        if ((asNumber(item.weight) ?? 0) > 0) carried.weight += 1;
+        if ((asNumber(item.time) ?? 0) > 0) carried.time += 1;
+        carrying.set(type, carried);
         tally(reps, item.reps);
         tally(weight, item.weight);
         tally(intensityValue, item.intensityValue);
@@ -367,6 +375,7 @@ export function strengthSetStats(details: readonly RawCorosActivityDetail[]): St
     lapItems: {
       total,
       byLapType: Object.fromEntries([...byLapType.entries()].sort(([a], [b]) => a.localeCompare(b))),
+      byLapTypeCarrying: Object.fromEntries([...carrying.entries()].sort(([a], [b]) => a.localeCompare(b))),
       reps,
       weight,
       intensityValue,
