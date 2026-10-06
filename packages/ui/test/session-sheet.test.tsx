@@ -221,7 +221,10 @@ afterEach(() => {
   vi.unstubAllGlobals();
 });
 
-function mount(first: SessionDto, opts: { afterBuild?: (body: Record<string, unknown>) => SessionDto; today?: string; w?: WorkoutDto; detail?: boolean } = {}) {
+function mount(
+  first: SessionDto,
+  opts: { afterBuild?: (body: Record<string, unknown>) => SessionDto; stale?: SessionDto; today?: string; w?: WorkoutDto; detail?: boolean } = {},
+) {
   const calls: Call[] = [];
   let current = first;
   const json = (b: unknown, status = 200) => new Response(JSON.stringify(b), { status, headers: { "Content-Type": "application/json" } });
@@ -238,6 +241,11 @@ function mount(first: SessionDto, opts: { afterBuild?: (body: Record<string, unk
         return json(current);
       }
       if (path === `/api/sessions/${SLOT}/start`) {
+        // The day's inputs changed since the shown build: the server answers with the fresh one, once.
+        if (opts.stale && (body as { buildId?: string } | null)?.buildId !== opts.stale.build?.buildId) {
+          current = opts.stale;
+          return json({ error: "stale", session: opts.stale }, 409);
+        }
         current = { ...current, contentState: "started", locked: true };
         return json(current);
       }
@@ -430,7 +438,29 @@ describe("Start", () => {
     await until(() => body().includes("Supported row"), "the moves");
     await click("Start · 30 min");
     await until(() => body().includes("the player"), "the player route");
-    expect(calls.some((c) => c.path.endsWith("/start") && c.method === "POST")).toBe(true);
+    const start = calls.find((c) => c.path.endsWith("/start") && c.method === "POST");
+    expect(start?.body).toEqual({ buildId: session().build!.buildId });
+  });
+
+  it("with the player: a stale build is replaced by the fresh one, and Start names it", async () => {
+    features.player = true;
+    const first = session();
+    const fresh: SessionDto = {
+      ...first,
+      build: { ...first.build!, buildId: "b-fresh", version: first.build!.version + 1 },
+      view: { ...first.view!, minutes: 25 },
+    };
+    const { calls } = mount(first, { stale: fresh });
+    await until(() => body().includes("Supported row"), "the moves");
+    await click("Start · 30 min");
+    await until(() => !!button("Start · 25 min"), "the fresh build's Start");
+    expect(body()).not.toContain("the player");
+    await click("Start · 25 min");
+    await until(() => body().includes("the player"), "the player route");
+    expect(calls.filter((c) => c.path.endsWith("/start")).map((c) => c.body)).toEqual([
+      { buildId: first.build!.buildId },
+      { buildId: "b-fresh" },
+    ]);
   });
 });
 

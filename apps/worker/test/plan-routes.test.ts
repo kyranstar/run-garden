@@ -890,41 +890,28 @@ describe("GET /today — todaySessions, origin and content state", () => {
     expect(body.todaySessions[0]!.build).toEqual({ mode: "build", theme: "Hips & posture", minutes: 30, place: "Home" });
   });
 
-  it("a built slot's build leads with its core lifts in words, counting the rest", async () => {
+  it("a built slot's build shows the line of moves stored with it, without reading the rest of the payload", async () => {
     await slot({ id: "s-lead", time: "18:00", state: "built" });
-    const step = (slotKey: string, kind: string, seconds: number) => ({ slotKey, kind, seconds, side: null, setCount: 3 });
+    const lead = {
+      moves: [
+        { name: "Goblet squat", dose: "3 × 6 @ 30 lb", up: true },
+        { name: "Cat-cow", dose: "50 s", up: false },
+      ],
+      more: 1,
+    };
     await db.insert(schema.sessionBuilds).values({
       id: "s-lead-b1", userId, workoutId: "s-lead", version: 1, engineVersion: "e", inputsHash: "h",
       payload: {
-        build: {
-          date: today(),
-          items: [
-            { slotKey: "prep:0", block: "prep", exerciseId: "catCow", sets: 1 },
-            { slotKey: "core:0", block: "core", exerciseId: "goblet", sets: 3 },
-            { slotKey: "cooldown:0", block: "cooldown", exerciseId: "twist", sets: 1 },
-          ],
-          steps: [step("prep:0", "timed", 50), step("core:0", "set", 40), step("core:0", "rest", 75), step("cooldown:0", "timed", 45)],
-          targets: { goblet: { lo: 5, hi: 8, type: "reps", w: { v: 30, u: "lb" }, reps: 6, secs: null, action: "up" } },
-          exercises: {
-            catCow: { name: "Cat-cow", laterality: "bilateral" },
-            goblet: { name: "Goblet squat", laterality: "bilateral" },
-            twist: { name: "Supine twist", laterality: "unilateral" },
-          },
-        },
-        view: { mode: "build", minutes: 30, theme: null, location: { id: "l1", name: "Home" } },
+        // Today reads `view.lead` (made with the build by `sessionLead`); a build without it shows no line.
+        build: { date: today() },
+        view: { mode: "build", minutes: 30, theme: null, location: { id: "l1", name: "Home" }, lead },
       },
       lockedAt: null, createdAt: nowInstant(),
     });
     const body = (await (await client().get("/api/plan/today")).json()) as {
       todaySessions: Array<{ build: { lead?: unknown } | null }>;
     };
-    expect(body.todaySessions[0]!.build!.lead).toEqual({
-      moves: [
-        { name: "Goblet squat", dose: "3 × 6 @ 30 lb", up: true },
-        { name: "Cat-cow", dose: "50 s", up: false },
-      ],
-      more: 1,
-    });
+    expect(body.todaySessions[0]!.build!.lead).toEqual(lead);
   });
 });
 

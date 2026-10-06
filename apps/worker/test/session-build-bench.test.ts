@@ -6,7 +6,8 @@
  * TMJ active and cared for: the heavier case) as the worker passes it: what `loadBuildHistory` reads of it (the
  * sessions the build reads one by one, and the all-time summary of the rest). It also times the request's other
  * history work — reading it (the JS side: mapping rows; the database's own work is not the Worker's CPU) and the
- * inputs hash — and checks the cost does not grow with the history.
+ * inputs hash — and checks the cost does not grow with the history. And it times the whole `buildSession` request
+ * (ruling 2a-R8): context, checks, history, hash, build, the writes and the response, on a cache miss and a hit.
  *
  * Timing on a shared runner measures the runner, so a fixed calibration loop runs before and after the builds and
  * the p50 is scaled to the reference machine the budgets were measured on (`× reference / calibration`). When the
@@ -23,12 +24,13 @@ import { createHash } from "node:crypto";
 import { performance } from "node:perf_hooks";
 import type Database from "better-sqlite3";
 import { beforeAll, describe, expect, it } from "vitest";
-import { adaptiveConfigSchema, addDays, newId } from "@rg/domain";
+import { adaptiveConfigSchema, addDays, newId, type UserPreferences } from "@rg/domain";
 import { LOCATION_PRESETS, makeEngineData, EXERCISES } from "@rg/exercise-library";
 import { Hist, Planner, Rng, type Block, type EngineLocation, type HistorySession } from "@rg/session-engine";
 import { schema } from "@rg/database";
 import type { Db } from "../src/services/db.js";
-import { composeBuild, type ComposeInput } from "../src/services/session-build.js";
+import { buildSession, composeBuild, type ComposeInput } from "../src/services/session-build.js";
+import { slotId } from "../src/services/program-slots.js";
 import { loadBuildHistory, loadHistory, type BuildHistory, type EngineContext } from "../src/services/engine-inputs.js";
 import { makeTestDb, makeTestUser } from "./helpers.js";
 
@@ -38,6 +40,14 @@ const REFERENCE_CALIBRATION_MS = 6.2;
 const MAX_RUNNER_RATIO = 1.5;
 const SPEC_BUDGET_P50_MS = 5;
 const WORKERS_CPU_LIMIT_MS = 10;
+/**
+ * The whole build request (ruling 2a-R8): measured 5.7–7.0 ms scaled p50 (p95 8–11 ms) on a cache miss and 2.8–3.6 ms on
+ * a cache hit, after the build stopped reading its own writes back — so the spec's 5 ms is met by the build itself,
+ * not by the request around it, and the honest ceiling is the Workers limit. On Workers, D1 result deserialization,
+ * the auth middleware and a calendar sync (now only when the event changes) come on top: the real invocation is
+ * measured on staging before programs ship (the 2a-R8 gate).
+ */
+const REQUEST_CEILING_P50_MS = WORKERS_CPU_LIMIT_MS;
 /** The build measured 1.3–2 ms p50 on the reference machine (trimmed, indexed history); 1.5× that means something got slower. */
 const REGRESSION_CEILING_P50_MS = 3;
 /** How much more a build may cost at 400 sessions than at 100 (it grew 4× when it read every session). */
@@ -201,6 +211,7 @@ let all: { history: HistorySession[]; blocks: Block[] };
 let history: HistorySession[];
 let db: Db;
 let userId: string;
+let prefs: UserPreferences;
 let clock: ReturnType<typeof sqliteClock>;
 let loaded: Map<string, BuildHistory>;
 let inputs: ComposeInput[];
@@ -215,7 +226,7 @@ beforeAll(async () => {
   all = synthesize(2 * HISTORY_SESSIONS);
   history = all.history.slice(0, HISTORY_SESSIONS);
   db = makeTestDb({ boundVariableCap: 100 });
-  ({ userId } = await makeTestUser(db));
+  ({ userId, prefs } = await makeTestUser(db));
   await store(db, userId, history);
   clock = sqliteClock(db);
   // 10 distinct requests (5 days × 30/40 minutes), each built twice, from what the worker reads for its day.
@@ -343,6 +354,70 @@ describe("build CPU over a 200-session history", () => {
     ctx.skip(slowReason !== null, slowReason ?? "");
     expect(scaled(path.read + path.hash + build)).toBeLessThan(WORKERS_CPU_LIMIT_MS / 2);
   }, 60_000);
+
+  it(`the whole build request — inputs, hash, build, writes, response — stays under ${REQUEST_CEILING_P50_MS} ms scaled p50 (ruling 2a-R8)`, async (ctx) => {
+    // A program slot on the day after the history, its block running, TMJ active and cared for, a place with bells.
+    const now = "2026-10-01T12:00:00.000Z";
+    const programId = "bench-program";
+    await db.insert(schema.programs).values({
+      id: programId, userId, kind: "adaptive", name: "Mobility", status: "active", disciplines: ["yoga", "strength"],
+      startDate: null, endDate: null, raceDate: null, source: null,
+      config: adaptiveConfigSchema.parse({ defaultMinutes: 30, careProfiles: ["tmj"] }), createdAt: now, updatedAt: now, archivedAt: null,
+    });
+    await db.insert(schema.userConditions).values({ id: `${userId}:tmj`, userId, profileId: "tmj", active: true, since: "2025-01-01", settings: {} });
+    await db.insert(schema.locations).values({
+      id: "home", userId, name: "Home", equipment: [...home.equipment], implements: { kettlebell: "8, 12, 16 kg" }, isDefault: true, createdAt: now, updatedAt: now,
+    });
+    const block = blockAt(HISTORY_SESSIONS);
+    await db.insert(schema.programBlocks).values({
+      id: "bench-block", programId, number: block.number, kind: "core_block", startDate: block.startedAt, weeks: block.weeks,
+      intent: { core: block.core, rotations: [...block.rotations] }, createdAt: now, updatedAt: now,
+    });
+    const today = firstDay();
+    const workoutId = slotId(programId, today);
+    await db.insert(schema.plannedWorkouts).values({
+      id: workoutId, userId, planId: programId, sourceWorkoutId: workoutId, title: "Mobility", category: "yoga", sport: "yoga",
+      originalPlanDate: today, lastVerifiedCorosDate: "", effectiveDate: today, effectiveTime: "18:00",
+      sourceContentFingerprint: "program", calendarBlockDurationSeconds: 1800, fallbackEstimatedDurationSeconds: 1800,
+      corosSyncState: "calendar_only", completionState: "scheduled", origin: "program", contentState: "outline", createdAt: now, updatedAt: now,
+    });
+    const at = (i: number) => new Date(Date.parse(now) + i * 1000).toISOString();
+    // Every request differs from the one before (30 / 40 minutes), so each one builds and writes: the cache-miss path.
+    const miss = (i: number) => buildSession(db, userId, workoutId, { overrides: { minutes: i % 2 === 0 ? 30 : 40 } }, { today, now: at(i), prefs });
+    const sample = async (run: () => Promise<unknown>) => {
+      clock.reset();
+      const t = performance.now();
+      await run();
+      return { js: performance.now() - t - clock.ms(), sqlite: clock.ms() };
+    };
+    for (let i = 0; i < WARMUP; i++) await miss(i);
+    const before = percentile(times(calibrationLoop, 7), 50);
+    const misses: Array<{ js: number; sqlite: number }> = [];
+    for (let i = 0; i < MEASURED; i++) misses.push(await sample(() => miss(WARMUP + i)));
+    const hits: Array<{ js: number; sqlite: number }> = [];
+    for (let i = 0; i < 10; i++) hits.push(await sample(() => miss(WARMUP + MEASURED - 1)));
+    const after = percentile(times(calibrationLoop, 7), 50);
+    const cal = (before + after) / 2;
+    const k = REFERENCE_CALIBRATION_MS / cal;
+    const p = (xs: Array<{ js: number }>, q: number) => percentile(xs.map((x) => x.js), q);
+    console.log(
+      `[request CPU] whole build request (cache miss), ${MEASURED} warm requests: JS p50 ${p(misses, 50).toFixed(2)} ms, p95 ` +
+        `${p(misses, 95).toFixed(2)} ms (SQLite's own work p50 ${percentile(misses.map((x) => x.sqlite), 50).toFixed(2)} ms, D1's on Workers); ` +
+        `scaled to the reference: p50 ${(p(misses, 50) * k).toFixed(2)} ms, p95 ${(p(misses, 95) * k).toFixed(2)} ms. Cache hit: JS p50 ` +
+        `${p(hits, 50).toFixed(2)} ms, scaled ${(p(hits, 50) * k).toFixed(2)} ms (calibration ${before.toFixed(1)} / ${after.toFixed(1)} ms; ` +
+        `reference ${REFERENCE_CALIBRATION_MS} ms)`,
+    );
+    const ratio = cal / REFERENCE_CALIBRATION_MS;
+    const drift = Math.max(before, after) / Math.min(before, after);
+    const unscalable = ratio > MAX_RUNNER_RATIO || ratio < 1 / MAX_RUNNER_RATIO || drift > MAX_RUNNER_RATIO;
+    ctx.skip(
+      unscalable,
+      `runner at ${ratio.toFixed(2)}× the reference machine's speed (calibration ${before.toFixed(1)} / ${after.toFixed(1)} ms): ` +
+        `a CPU timing here would measure the runner, not the request`,
+    );
+    expect(p(misses, 50) * k).toBeLessThan(REQUEST_CEILING_P50_MS);
+    expect(p(hits, 50) * k).toBeLessThan(REQUEST_CEILING_P50_MS);
+  }, 120_000);
 
   it(`a 40-minute build's stored payload stays within ${PAYLOAD_BUDGET_BYTES.toLocaleString("en-US")} bytes`, () => {
     const sizes = (["consistent", "build"] as const).map((mode) => {

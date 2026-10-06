@@ -47,7 +47,7 @@ an account with no program, so 2a can ship before 2b without a half-feature show
 |---|---|
 | `GET /api/sessions/:workoutId` | The slot, its latest build (or none), today's recorded checks, and whether it is locked. |
 | `POST /api/sessions/:workoutId/build` | `{checks?, overrides?, swaps?}` → build or return the stored build when the inputs hash is unchanged. |
-| `POST /api/sessions/:workoutId/start` | Lock the latest build (`content_state = 'started'`, `session_builds.locked_at`). Idempotent. |
+| `POST /api/sessions/:workoutId/start` | `{buildId}` → lock that build (`content_state = 'started'`, `session_builds.locked_at`) while it is still the day's latest and the day's inputs still hash to it; otherwise `409 {error:"stale", session}` with the fresh build, nothing locked (audit 2a I3). Idempotent for a started or done slot. |
 | `POST /api/conditions/checks` | Record a daily check `{profileId, value, feelingOff}` (the Today chip). |
 
 Build rules:
@@ -57,7 +57,10 @@ Build rules:
   → `409 {error:"not_today"}` (the sheet offers "Move to today" — the existing move verb).
 - A started/done row returns its locked build and `409 {error:"locked"}` for any change.
 - Checks in the body are recorded as `pre` checks for this workout and date (one per profile, replaced on re-check).
-  A daily check recorded today for the same profile is used as the pre-check when the body carries none.
+  A daily check recorded today for the same profile is used as the pre-check when the body carries none. A check
+  with no number and no "feeling off" is no answer: it records nothing and clears the slot's own (audit 2a I2).
+- The program's `modes` bind the build (ruling 2a-R7), except a recovery proposed by a condition profile's own
+  recovery rule or "feeling off", which stands (ruling 2a-R10).
 - Inputs: history = every `performed_sessions` row of the user (all sources) mapped to `HistorySession` with its
   sets and checks; program state = the program's latest `program_blocks` row; prefs = `exercise_prefs`;
   `savedIds` = `exercise_provenance.exercise_id`; location = the override or the program's default `locations` row;

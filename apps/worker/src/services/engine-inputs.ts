@@ -217,7 +217,8 @@ export interface BuildHistory {
 // session touched are its entries' ids and `moves_done`. A session's start (`w`) is its start time, else its date.
 //
 // Order: SQLite compares start times by bytes, the engine by `localeCompare`. On ISO times the two disagree only
-// between two times equal to the second and written differently (".000Z" against "+00:00"); each "newest N" below
+// between two times equal to the MINUTE and written differently — ".000Z" against "+00:00", and, since the wire
+// accepts a time with no seconds, "18:00+02:00" against "18:00:30Z" (audit 2a M4); each "newest N" below
 // keeps a few more sessions than the engine needs, so the engine still finds its own among them (extra sessions
 // never change a build), and a move's first session is the earliest by bytes — on such a tie both sessions share
 // their date, which is all the engine reads of it.
@@ -431,26 +432,36 @@ export async function saveProgramState(db: Db, programId: string, block: Block, 
     .limit(1);
   if (await restoreInProgress(db, program.userId)) return existing?.id ?? block.id;
   const intent = coreBlockIntentSchema.parse({ core: block.core, rotations: block.rotations });
-  if (existing) {
-    await db
-      .update(programBlocks)
-      .set({ intent, weeks: block.weeks, updatedAt: now })
-      .where(eq(programBlocks.id, existing.id));
-    return existing.id;
-  }
+  const update = async (rowId: string): Promise<string> => {
+    await db.update(programBlocks).set({ intent, weeks: block.weeks, updatedAt: now }).where(eq(programBlocks.id, rowId));
+    return rowId;
+  };
+  if (existing) return update(existing.id);
+  // Two builds of the program can start the same block at once (a double tap, a prefetch beside the sheet): the
+  // number is unique per program, so the later insert does nothing and that save updates the row the first one made,
+  // as a save of a number already stored does (audit M3).
   const id = newId();
-  await db.insert(programBlocks).values({
-    id,
-    programId,
-    number: block.number,
-    kind: "core_block",
-    startDate: block.startedAt,
-    weeks: block.weeks,
-    intent,
-    createdAt: now,
-    updatedAt: now,
-  });
-  return id;
+  await db
+    .insert(programBlocks)
+    .values({
+      id,
+      programId,
+      number: block.number,
+      kind: "core_block",
+      startDate: block.startedAt,
+      weeks: block.weeks,
+      intent,
+      createdAt: now,
+      updatedAt: now,
+    })
+    .onConflictDoNothing({ target: [programBlocks.programId, programBlocks.number] });
+  const [stored] = await db
+    .select({ id: programBlocks.id })
+    .from(programBlocks)
+    .where(and(eq(programBlocks.programId, programId), eq(programBlocks.number, block.number)))
+    .limit(1);
+  if (!stored) throw new Error("program_block_not_stored");
+  return stored.id === id ? id : update(stored.id);
 }
 
 export interface EngineContext {

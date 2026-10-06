@@ -13,6 +13,7 @@ import {
   addDays,
   newId,
   nowInstant,
+  sessionLead,
   todayInZone,
   type AdaptiveConfig,
   type UserPreferences,
@@ -20,18 +21,23 @@ import {
 import type { Db } from "../src/services/db.js";
 import type { Env } from "../src/env.js";
 import {
+  BUILD_CONFIG_KEYS,
   buildSession,
+  buildSessionOutcome,
+  composeBuild,
   loadSession,
   NotBuiltError,
   NotTodayError,
   recordCheck,
   SessionLockedError,
   SessionNotFoundError,
+  StaleBuildError,
   startSession,
   type SessionResponse,
 } from "../src/services/session-build.js";
-import { loadProgramState, saveProgramState } from "../src/services/engine-inputs.js";
+import { loadEngineContext, loadProgramState, saveProgramState } from "../src/services/engine-inputs.js";
 import { slotId } from "../src/services/program-slots.js";
+import { applyMove } from "../src/services/jobs.js";
 import { conditionRoutes, sessionRoutes } from "../src/routes/sessions.js";
 import { createSession, SESSION_COOKIE } from "../src/auth/sessions.js";
 import { isWrite, makeTestDb, makeTestUser, mountRoutes } from "./helpers.js";
@@ -52,6 +58,16 @@ const {
 // Each test builds a few whole sessions (a few ms each on a quiet machine); a busy one can stretch that.
 vi.setConfig({ testTimeout: 30_000 });
 
+// The routes hand the calendar sync to waitUntil; the tests count the hand-offs.
+const calendar = vi.hoisted(() => ({ syncs: 0 }));
+vi.mock("../src/services/calendar-sync.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../src/services/calendar-sync.js")>()),
+  syncCalendar: vi.fn(async () => {
+    calendar.syncs += 1;
+    return {};
+  }),
+}));
+
 /** A Wednesday; noon in Los Angeles (the test user's zone). */
 const TODAY = "2026-10-07";
 const NOW = "2026-10-07T19:00:00.000Z";
@@ -63,9 +79,19 @@ let userId: string;
 let prefs: UserPreferences;
 let programId: string;
 
+/** Runs just before each statement the application executes (a test arms it to land a concurrent change there). */
+let beforeStatement: ((sql: string) => void) | null;
+
 beforeEach(async () => {
   statements = [];
-  db = makeTestDb({ boundVariableCap: 100, onStatement: (sql) => statements.push(sql) });
+  beforeStatement = null;
+  db = makeTestDb({
+    boundVariableCap: 100,
+    onStatement: (sql) => {
+      statements.push(sql);
+      beforeStatement?.(sql);
+    },
+  });
   ({ userId, prefs } = await makeTestUser(db));
   programId = await seedProgram(userId);
 });
@@ -134,6 +160,24 @@ async function buildsOf(workoutId: string) {
 
 async function activateTmj(owner: string = userId): Promise<void> {
   await db.insert(userConditions).values({ id: `${owner}:tmj`, userId: owner, profileId: "tmj", active: true, since: "2026-09-01", settings: {} });
+}
+
+/**
+ * A restore of the account begins just before the first statement matching `at` (the restore marker is written, as
+ * `begin` writes it). Returns how many statements had run when it began.
+ */
+function restoreBeginsAt(at: RegExp): () => number {
+  const sqlite = (db as unknown as { $client: { prepare(sql: string): { run(...a: unknown[]): unknown } } }).$client;
+  let began = -1;
+  beforeStatement = (sql) => {
+    if (!at.test(sql)) return;
+    beforeStatement = null;
+    sqlite
+      .prepare("INSERT INTO account_state (user_id, restore_id, restore_started_at, updated_at) VALUES (?, ?, ?, ?)")
+      .run(userId, "restore-1", NOW, NOW);
+    began = statements.length;
+  };
+  return () => began;
 }
 
 /** The slot keys and the move each holds. */
@@ -239,6 +283,66 @@ describe("building today's session", () => {
     expect(res.view!.modeReasons[0]).toContain(`doesn't include ${proposed} sessions`);
   });
 
+  it("a care profile's recovery stands in a program without recovery: safety over preference (ruling 2a-R10)", async () => {
+    await activateTmj();
+    const noRecovery = await seedProgram(userId, { modes: ["consistent", "build"], careProfiles: ["tmj"] });
+    const id = await seedSlot(TODAY, { program: noRecovery });
+    const flare = await buildSession(db, userId, id, { checks: { tmj: { pre: 7, feelingOff: false } } }, ctx());
+    expect(flare.view).toMatchObject({ mode: "recovery", proposedMode: "recovery" });
+    expect(flare.view!.modeReasons.some((r) => r.includes("doesn't include"))).toBe(false);
+    const off = await buildSession(db, userId, id, { checks: { tmj: { pre: null, feelingOff: true } } }, ctx({ now: LATER }));
+    expect(off.view).toMatchObject({ mode: "recovery", proposedMode: "recovery" });
+    // Asked for on such a day, recovery is not refused either.
+    const asked = await buildSession(db, userId, id, { checks: { tmj: { pre: 7, feelingOff: false } }, overrides: { mode: "recovery" } }, ctx({ now: LATER }));
+    expect(asked.view!.mode).toBe("recovery");
+    // On a calm day the program's modes bind again.
+    const calm = await buildSession(db, userId, id, { checks: { tmj: { pre: 1, feelingOff: false } }, overrides: { mode: "recovery" } }, ctx({ now: LATER }));
+    expect(calm.view!.mode).toBe("consistent");
+    expect(calm.view!.modeReasons[0]).toBe("Your program doesn't include recovery sessions, so this is a consistent one.");
+  });
+
+  it("the proposed mode is always one the program includes, also beside an allowed override (audit M7)", async () => {
+    const open = await seedProgram(userId);
+    const probe = await buildSession(db, userId, await seedSlot(TODAY, { program: open }), {}, ctx());
+    const proposed = probe.view!.proposedMode;
+    expect(proposed).not.toBe("recovery");
+    const allowed = (["recovery", "consistent", "build"] as const).filter((m) => m !== proposed);
+    const narrow = await seedProgram(userId, { modes: [...allowed] });
+    const res = await buildSession(db, userId, await seedSlot(TODAY, { program: narrow }), { overrides: { mode: allowed[0] } }, ctx());
+    expect(res.view!.mode).toBe(allowed[0]);
+    expect(allowed).toContain(res.view!.proposedMode);
+  });
+
+  it("editing the program's modes rebuilds today's session within them (audit I1)", async () => {
+    const id = await seedSlot(TODAY);
+    const first = await buildSession(db, userId, id, { overrides: { mode: "build" } }, ctx());
+    expect(first.view!.mode).toBe("build");
+    await db
+      .update(programs)
+      .set({ config: adaptiveConfigSchema.parse({ defaultMinutes: 30, modes: ["recovery", "consistent"] }) })
+      .where(eq(programs.id, programId));
+    const again = await buildSession(db, userId, id, {}, ctx({ now: LATER }));
+    expect(again.build!.version).toBe(2);
+    expect(again.view!.mode).toBe("consistent");
+    expect(again.view!.modeReasons[0]).toBe("Your program doesn't include build sessions, so this is a consistent one.");
+  });
+
+  it("the build reads only the program settings the inputs hash covers (audit I1)", async () => {
+    const context = await loadEngineContext(db, userId, programId, { prefs });
+    const read = new Set<string>();
+    const config = new Proxy(context.config, {
+      get: (target, key, receiver) => {
+        if (typeof key === "string") read.add(key);
+        return Reflect.get(target, key, receiver) as unknown;
+      },
+    });
+    for (const overrides of [{}, { mode: "build" as const }]) {
+      composeBuild({ date: TODAY, programId, context: { ...context, config }, block: null, history: [], checks: {}, overrides, swaps: {} });
+    }
+    expect(read.size).toBeGreaterThan(0);
+    expect([...read].filter((k) => !(BUILD_CONFIG_KEYS as readonly string[]).includes(k))).toEqual([]);
+  });
+
   it("an identical request returns the stored build — same version, nothing written", async () => {
     const id = await seedSlot(TODAY);
     const first = await buildSession(db, userId, id, {}, ctx());
@@ -246,6 +350,56 @@ describe("building today's session", () => {
     const again = await buildSession(db, userId, id, {}, ctx({ now: LATER }));
     expect(again.build).toEqual(first.build);
     expect(statements.filter(isWrite)).toEqual([]);
+    expect((await buildsOf(id)).map((b) => b.version)).toEqual([1]);
+  });
+
+  it("says whether the row's calendar event has something new: its title, discipline or booked length (ruling 2a-R8)", async () => {
+    const id = await seedSlot(TODAY);
+    const first = await buildSessionOutcome(db, userId, id, {}, ctx());
+    expect(first.calendarChanged).toBe(true);
+    // A new version that keeps the theme, the discipline and the length (30 minutes is the default) changes nothing shown.
+    const same = await buildSessionOutcome(db, userId, id, { overrides: { minutes: 30 } }, ctx({ now: LATER }));
+    expect(same.session.build!.version).toBe(2);
+    expect(same.calendarChanged).toBe(false);
+    expect((await buildSessionOutcome(db, userId, id, {}, ctx({ now: LATER }))).calendarChanged).toBe(false);
+    const shorter = await buildSessionOutcome(db, userId, id, { overrides: { minutes: 15 } }, ctx({ now: LATER }));
+    expect(shorter.session.build!.version).toBe(3);
+    expect(shorter.calendarChanged).toBe(true);
+    const ahead = await seedSlot(addDays(TODAY, 1));
+    expect((await buildSessionOutcome(db, userId, ahead, {}, ctx())).calendarChanged).toBe(false);
+  });
+
+  it("answers from the row and build it just wrote: nothing is read back after the writes (ruling 2a-R8)", async () => {
+    const id = await seedSlot(TODAY);
+    const afterLastWrite = () => statements.slice(statements.map(isWrite).lastIndexOf(true) + 1);
+    for (const [req, now] of [[{}, NOW], [{ overrides: { minutes: 45 } }, LATER]] as const) {
+      statements.length = 0;
+      const built = await buildSession(db, userId, id, req, ctx({ now }));
+      expect(afterLastWrite()).toEqual([]);
+      expect(await loadSession(db, userId, id, TODAY)).toEqual(built);
+    }
+    const ahead = await seedSlot(addDays(TODAY, 1));
+    for (const req of [{}, { overrides: { minutes: 20 } }]) {
+      statements.length = 0;
+      const preview = await buildSession(db, userId, ahead, req, ctx({ now: LATER }));
+      expect(afterLastWrite()).toEqual([]);
+      expect(await loadSession(db, userId, ahead, TODAY)).toEqual(preview);
+    }
+  });
+
+  it("a slot moved away and back shows its stored build as built again: the cache hit restores the state (audit M1)", async () => {
+    const id = await seedSlot(TODAY);
+    const first = await buildSession(db, userId, id, {}, ctx());
+    for (const toDate of [addDays(TODAY, 1), TODAY]) {
+      await applyMove(db, { userId, workoutId: id, toDate, toTime: "18:00", source: "app", corosWritesEnabled: false });
+    }
+    // Moving reverted the row to an outline (ruling 2a-R7); its build for this date still stands.
+    expect((await loadSession(db, userId, id, TODAY)).contentState).toBe("outline");
+    const again = await buildSession(db, userId, id, {}, ctx({ now: LATER }));
+    expect(again.build).toEqual(first.build);
+    expect(again.contentState).toBe("built");
+    expect((await rowOf(id)).contentState).toBe("built");
+    expect((await loadSession(db, userId, id, TODAY)).contentState).toBe("built");
     expect((await buildsOf(id)).map((b) => b.version)).toEqual([1]);
   });
 
@@ -303,6 +457,47 @@ describe("building today's session", () => {
     // A pre-check of its own wins over the daily one.
     const own = await buildSession(db, userId, id, { checks: { tmj: { pre: 2, feelingOff: false } } }, ctx({ now: LATER }));
     expect(own.checks).toEqual({ tmj: { pre: 2, feelingOff: false } });
+  });
+
+  it("a pre-check with no number and no \"feeling off\" is no answer: the day's check stands (audit I2)", async () => {
+    await activateTmj();
+    const id = await seedSlot(TODAY);
+    const ownPre = () => db.select().from(conditionChecks).where(and(eq(conditionChecks.userId, userId), eq(conditionChecks.kind, "pre")));
+    await recordCheck(db, userId, { profileId: "tmj", value: 7, feelingOff: false }, ctx());
+    const unanswered = { tmj: { pre: null, feelingOff: false } };
+    const res = await buildSession(db, userId, id, { checks: unanswered }, ctx());
+    expect(res.checks).toEqual({ tmj: { pre: 7, feelingOff: false } });
+    expect(res.build!.params.checks).toEqual({ tmj: { pre: 7, feelingOff: false } });
+    expect(res.build!.mode).toBe("recovery");
+    expect(await ownPre()).toEqual([]);
+    expect((await loadSession(db, userId, id, TODAY)).checks).toEqual({ tmj: { pre: 7, feelingOff: false } });
+
+    // Answered, then un-answered: the slot's own pre-check goes, and the day's check stands again.
+    const answered = await buildSession(db, userId, id, { checks: { tmj: { pre: 1, feelingOff: false } } }, ctx({ now: LATER }));
+    expect(answered.checks).toEqual({ tmj: { pre: 1, feelingOff: false } });
+    expect(await ownPre()).toHaveLength(1);
+    const cleared = await buildSession(db, userId, id, { checks: unanswered }, ctx({ now: LATER }));
+    expect(cleared.checks).toEqual({ tmj: { pre: 7, feelingOff: false } });
+    expect(await ownPre()).toEqual([]);
+
+    // "Feeling off" with no number is an answer.
+    const off = await buildSession(db, userId, id, { checks: { tmj: { pre: null, feelingOff: true } } }, ctx({ now: LATER }));
+    expect(off.checks).toEqual({ tmj: { pre: null, feelingOff: true } });
+    expect(await ownPre()).toHaveLength(1);
+  });
+
+  it("an own pre-check row that carries no answer falls back to the day's check; with none, the profile is unanswered (audit I2)", async () => {
+    await activateTmj();
+    const id = await seedSlot(TODAY);
+    // A row as the build wrote it before the rule: no number, not feeling off.
+    await db.insert(conditionChecks).values({
+      id: newId(), userId, profileId: "tmj", kind: "pre", value: null, feelingOff: false, localDate: TODAY, at: NOW,
+      performedSessionId: null, workoutId: id,
+    });
+    expect((await loadSession(db, userId, id, TODAY)).checks).toEqual({});
+    await recordCheck(db, userId, { profileId: "tmj", value: 7, feelingOff: false }, ctx());
+    expect((await loadSession(db, userId, id, TODAY)).checks).toEqual({ tmj: { pre: 7, feelingOff: false } });
+    expect((await buildSession(db, userId, id, {}, ctx())).build!.mode).toBe("recovery");
   });
 
   it("refuses a check for a profile that is not active", async () => {
@@ -391,7 +586,7 @@ describe("building today's session", () => {
     const theirs = await seedSlot(TODAY, { owner: other, program: theirProgram });
     await expect(buildSession(db, userId, theirs, {}, ctx())).rejects.toBeInstanceOf(SessionNotFoundError);
     await expect(loadSession(db, userId, theirs, TODAY)).rejects.toBeInstanceOf(SessionNotFoundError);
-    await expect(startSession(db, userId, theirs, NOW)).rejects.toBeInstanceOf(SessionNotFoundError);
+    await expect(startSession(db, userId, theirs, "any", NOW)).rejects.toBeInstanceOf(SessionNotFoundError);
 
     const coros = await seedSlot(addDays(TODAY, 1), { origin: null });
     await expect(buildSession(db, userId, coros, {}, ctx())).rejects.toBeInstanceOf(SessionNotFoundError);
@@ -399,6 +594,38 @@ describe("building today's session", () => {
     await db.update(plannedWorkouts).set({ archivedAt: NOW, archiveReason: "user_removed" }).where(eq(plannedWorkouts.id, archived));
     await expect(buildSession(db, userId, archived, {}, ctx())).rejects.toBeInstanceOf(SessionNotFoundError);
     expect(await db.select().from(sessionBuilds)).toEqual([]);
+  });
+
+  it("a restore that begins while a build runs: nothing is written after it began (audit M10)", async () => {
+    await activateTmj();
+    const id = await seedSlot(TODAY);
+    const began = restoreBeginsAt(/^\s*WITH e AS/);
+    const res = await buildSession(db, userId, id, { checks: { tmj: { pre: 3, feelingOff: false } } }, ctx());
+    expect(beforeStatement).toBeNull();
+    expect(statements.slice(began()).filter(isWrite)).toEqual([]);
+    expect(res.build).toBeNull();
+    expect(await buildsOf(id)).toEqual([]);
+    expect(await db.select().from(conditionChecks)).toEqual([]);
+    expect(await db.select().from(programBlocks)).toEqual([]);
+    expect((await rowOf(id)).contentState).toBe("outline");
+  });
+
+  it("the stored build, with an answer to record: recorded, unless a restore began meanwhile (audit M10)", async () => {
+    await activateTmj();
+    const id = await seedSlot(TODAY);
+    await recordCheck(db, userId, { profileId: "tmj", value: 7, feelingOff: false }, ctx());
+    const first = await buildSession(db, userId, id, {}, ctx());
+    // The day's check given again as the slot's own: the build is the stored one, the answer is the slot's.
+    const ownPre = () => db.select().from(conditionChecks).where(and(eq(conditionChecks.userId, userId), eq(conditionChecks.kind, "pre")));
+    const began = restoreBeginsAt(/^\s*WITH e AS/);
+    const during = await buildSession(db, userId, id, { checks: { tmj: { pre: 7, feelingOff: false } } }, ctx({ now: LATER }));
+    expect(statements.slice(began()).filter(isWrite)).toEqual([]);
+    expect(during.build).toEqual(first.build);
+    expect(await ownPre()).toEqual([]);
+    await db.delete(accountState);
+    const after = await buildSession(db, userId, id, { checks: { tmj: { pre: 7, feelingOff: false } } }, ctx({ now: LATER }));
+    expect(after.build).toEqual(first.build);
+    expect(await ownPre()).toHaveLength(1);
   });
 
   it("writes nothing while a restore is replacing the account", async () => {
@@ -429,8 +656,17 @@ describe("a day ahead, a day gone (Review Focus 2)", () => {
     expect((await buildsOf(id)).map((b) => b.version)).toEqual([0]);
     expect((await loadSession(db, userId, id, TODAY)).build).toEqual(again.build);
 
-    await expect(startSession(db, userId, id, NOW)).rejects.toBeInstanceOf(NotTodayError);
+    await expect(startSession(db, userId, id, again.build!.buildId, NOW)).rejects.toBeInstanceOf(NotTodayError);
     expect((await buildsOf(id))[0]!.lockedAt).toBeNull();
+  });
+
+  it("a preview's unanswered check is no answer either (audit I2)", async () => {
+    await activateTmj();
+    const id = await seedSlot(addDays(TODAY, 1));
+    const preview = await buildSession(db, userId, id, { checks: { tmj: { pre: null, feelingOff: false } } }, ctx());
+    expect(preview.build!.params.checks).toEqual({});
+    const plain = await buildSession(db, userId, id, {}, ctx({ now: LATER }));
+    expect(plain.build!.inputsHash).toBe(preview.build!.inputsHash);
   });
 
   it("a past slot is not today: 409 not_today, nothing built", async () => {
@@ -445,14 +681,15 @@ describe("Start (Review Focus 3)", () => {
     const id = await seedSlot(TODAY);
     await buildSession(db, userId, id, {}, ctx());
     const built = await buildSession(db, userId, id, { overrides: { minutes: 20 } }, ctx());
-    const started = await startSession(db, userId, id, LATER);
+    const started = await startSession(db, userId, id, built.build!.buildId, LATER);
     expect(started).toMatchObject({ contentState: "started", locked: true });
     expect(started.build).toEqual(built.build);
     const stored = await buildsOf(id);
     expect(stored.map((b) => [b.version, b.lockedAt])).toEqual([[2, LATER]]);
     expect(await rowOf(id)).toMatchObject({ contentState: "started", updatedAt: LATER });
 
-    expect(await startSession(db, userId, id, "2026-10-07T20:00:00.000Z")).toEqual(started);
+    // Whatever build id a second Start names, the started slot comes back as it is.
+    expect(await startSession(db, userId, id, "another", "2026-10-07T20:00:00.000Z")).toEqual(started);
     expect((await buildsOf(id))[0]!.lockedAt).toBe(LATER);
 
     statements.length = 0;
@@ -464,9 +701,107 @@ describe("Start (Review Focus 3)", () => {
     expect(statements.filter(isWrite)).toEqual([]);
   });
 
+  it("a check recorded after the build: Start refuses with the fresh build and locks nothing (audit I3)", async () => {
+    await activateTmj();
+    const id = await seedSlot(TODAY);
+    const before = await buildSession(db, userId, id, {}, ctx());
+    expect(before.build!.mode).not.toBe("recovery");
+    await recordCheck(db, userId, { profileId: "tmj", value: 8, feelingOff: false }, ctx({ now: LATER }));
+
+    const err = await startSession(db, userId, id, before.build!.buildId, LATER).catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(StaleBuildError);
+    const fresh = (err as StaleBuildError).session;
+    expect(fresh).toMatchObject({ contentState: "built", locked: false, checks: { tmj: { pre: 8, feelingOff: false } } });
+    expect(fresh.build).toMatchObject({ version: 2, mode: "recovery", params: { checks: { tmj: { pre: 8, feelingOff: false } } } });
+    expect((await buildsOf(id)).map((b) => [b.version, b.lockedAt])).toEqual([[2, null]]);
+    expect((await rowOf(id)).contentState).toBe("built");
+
+    // Started from the build it was shown, it locks that build.
+    const started = await startSession(db, userId, id, fresh.build!.buildId, LATER);
+    expect(started).toMatchObject({ contentState: "started", locked: true });
+    expect(started.build).toEqual(fresh.build);
+  });
+
+  it("an input changed since the build (a rating) makes it stale too; the same inputs lock (audit I3)", async () => {
+    const id = await seedSlot(TODAY);
+    const built = await buildSession(db, userId, id, {}, ctx());
+    const offered = Object.values(built.build!.alternatives).flat()[0]!.id;
+    await db.insert(exercisePrefs).values({ id: `${userId}:${offered}`, userId, exerciseId: offered, rating: 1, excluded: false, pinned: false, introducedOn: null, updatedAt: NOW });
+    const err = await startSession(db, userId, id, built.build!.buildId, LATER).catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(StaleBuildError);
+    const fresh = (err as StaleBuildError).session;
+    expect(fresh.build!.version).toBe(2);
+    expect(fresh.build!.inputsHash).not.toBe(built.build!.inputsHash);
+    expect((await startSession(db, userId, id, fresh.build!.buildId, LATER)).locked).toBe(true);
+  });
+
+  it("a build id that is no longer the day's: Start refuses with the current build, writing nothing (audit I3)", async () => {
+    const id = await seedSlot(TODAY);
+    const v1 = await buildSession(db, userId, id, {}, ctx());
+    const v2 = await buildSession(db, userId, id, { overrides: { minutes: 20 } }, ctx({ now: LATER }));
+    statements.length = 0;
+    const err = await startSession(db, userId, id, v1.build!.buildId, LATER).catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(StaleBuildError);
+    expect((err as StaleBuildError).session.build).toEqual(v2.build);
+    expect(statements.filter(isWrite)).toEqual([]);
+    expect((await buildsOf(id)).map((b) => [b.version, b.lockedAt])).toEqual([[2, null]]);
+  });
+
+  /**
+   * A concurrent Start, landed just before the first statement matching `at`: its lock of the shown build, and — when
+   * it has finished — the slot marked started.
+   */
+  function startLandsAt(at: RegExp, workoutId: string, buildId: string, finished: boolean): void {
+    const sqlite = (db as unknown as { $client: { prepare(sql: string): { run(...a: unknown[]): unknown } } }).$client;
+    beforeStatement = (sql) => {
+      if (!at.test(sql)) return;
+      beforeStatement = null;
+      sqlite.prepare("UPDATE session_builds SET locked_at = ? WHERE id = ?").run(LATER, buildId);
+      if (finished) sqlite.prepare("UPDATE planned_workouts SET content_state = 'started', updated_at = ? WHERE id = ?").run(LATER, workoutId);
+    };
+  }
+
+  for (const [moment, at, finished] of [
+    ["has locked the build as the build stores its version", /^insert into "session_builds"/i, false],
+    ["has finished as the build updates the row", /^update "planned_workouts"/i, true],
+  ] as const) {
+    it(`a Start that ${moment} wins: the build is refused with the locked session and leaves nothing behind (audit M2)`, async () => {
+      const id = await seedSlot(TODAY);
+      const v1 = await buildSession(db, userId, id, {}, ctx());
+      const shown = await rowOf(id);
+      startLandsAt(at, id, v1.build!.buildId, finished);
+      const err = await buildSession(db, userId, id, { overrides: { minutes: 20 } }, ctx({ now: LATER })).catch((e: unknown) => e);
+      expect(beforeStatement).toBeNull();
+      expect(err).toBeInstanceOf(SessionLockedError);
+      const session = (err as SessionLockedError).session;
+      expect(session.locked).toBe(true);
+      expect(session.build).toEqual(v1.build);
+      expect((await buildsOf(id)).map((b) => [b.version, b.lockedAt])).toEqual([[1, LATER]]);
+      // The row still describes the locked build, not the refused one.
+      expect(await rowOf(id)).toMatchObject({
+        contentState: finished ? "started" : "built",
+        title: shown.title,
+        calendarBlockDurationSeconds: shown.calendarBlockDurationSeconds,
+        sessionParams: shown.sessionParams,
+      });
+    });
+  }
+
+  it("a restore that begins while Start checks the build: nothing is locked (audit M10)", async () => {
+    const id = await seedSlot(TODAY);
+    const built = await buildSession(db, userId, id, {}, ctx());
+    const began = restoreBeginsAt(/^\s*WITH e AS/);
+    const res = await startSession(db, userId, id, built.build!.buildId, LATER);
+    expect(beforeStatement).toBeNull();
+    expect(statements.slice(began()).filter(isWrite)).toEqual([]);
+    expect(res.locked).toBe(false);
+    expect((await buildsOf(id)).map((b) => b.lockedAt)).toEqual([null]);
+    expect((await rowOf(id)).contentState).toBe("built");
+  });
+
   it("start with nothing built today is 409 not_built", async () => {
     const id = await seedSlot(TODAY);
-    await expect(startSession(db, userId, id, NOW)).rejects.toBeInstanceOf(NotBuiltError);
+    await expect(startSession(db, userId, id, "none", NOW)).rejects.toBeInstanceOf(NotBuiltError);
   });
 
   it("GET reads the slot: no build yet, then the built one, the day's checks and the lock", async () => {
@@ -533,6 +868,16 @@ describe("the sheet's profiles and choices", () => {
     ]);
   });
 
+  it("a build stores the Today card's line of moves with its view, made from the build itself", async () => {
+    await activateTmj();
+    const id = await seedSlot(TODAY);
+    await buildSession(db, userId, id, {}, ctx());
+    const [stored] = await db.select().from(schema.sessionBuilds).where(eq(schema.sessionBuilds.workoutId, id));
+    const payload = stored!.payload as { build: Parameters<typeof sessionLead>[0]; view: { lead: unknown } };
+    expect(payload.view.lead).toEqual(sessionLead(payload.build));
+    expect((payload.view.lead as { moves: unknown[] }).moves.length).toBeGreaterThan(0);
+  });
+
   it("a build, the stored build returned unchanged and a locked session carry the same", async () => {
     await activateTmj();
     const id = await seedSlot(TODAY);
@@ -542,7 +887,7 @@ describe("the sheet's profiles and choices", () => {
     expect(built.profiles).toEqual(read.profiles);
     expect(built.choices).toEqual(read.choices);
     expect(again.choices).toEqual(read.choices);
-    const started = await startSession(db, userId, id, LATER);
+    const started = await startSession(db, userId, id, again.build!.buildId, LATER);
     expect(started.choices).toEqual(read.choices);
   });
 });
@@ -619,7 +964,7 @@ describe("the routes", () => {
     const session = (await built.json()) as SessionResponse;
     expect(session.build).toMatchObject({ version: 1, mode: "recovery" });
 
-    const started = await call("POST", `/api/sessions/${id}/start`);
+    const started = await call("POST", `/api/sessions/${id}/start`, { buildId: session.build!.buildId });
     expect(started.status).toBe(200);
     expect(((await started.json()) as SessionResponse).locked).toBe(true);
 
@@ -628,6 +973,40 @@ describe("the routes", () => {
     const body = (await after.json()) as { error: string; session: SessionResponse };
     expect(body.error).toBe("locked");
     expect(body.session.build).toEqual(session.build);
+  });
+
+  it("Start names the build it was shown: 409 stale with the fresh session when the day's inputs moved on; 422 without one (audit I3)", async () => {
+    await activateTmj();
+    const id = await seedSlot(today);
+    const built = (await (await call("POST", `/api/sessions/${id}/build`, {})).json()) as SessionResponse;
+    for (const body of [undefined, {}, { buildId: "" }, { buildId: built.build!.buildId, extra: 1 }]) {
+      const r = await call("POST", `/api/sessions/${id}/start`, body);
+      expect(r.status, JSON.stringify(body)).toBe(422);
+      expect(((await r.json()) as { error: string }).error).toBe("invalid_start");
+    }
+    expect((await call("POST", "/api/conditions/checks", { profileId: "tmj", value: 8, feelingOff: false })).status).toBe(200);
+    const stale = await call("POST", `/api/sessions/${id}/start`, { buildId: built.build!.buildId });
+    expect(stale.status).toBe(409);
+    const body = (await stale.json()) as { error: string; session: SessionResponse };
+    expect(body.error).toBe("stale");
+    expect(body.session).toMatchObject({ locked: false, checks: { tmj: { pre: 8, feelingOff: false } } });
+    expect(body.session.build).toMatchObject({ version: 2, mode: "recovery" });
+    const started = await call("POST", `/api/sessions/${id}/start`, { buildId: body.session.build!.buildId });
+    expect(started.status).toBe(200);
+    expect(((await started.json()) as SessionResponse).locked).toBe(true);
+  });
+
+  it("the build route syncs the calendar only when the row's title, discipline or booked length changed (ruling 2a-R8)", async () => {
+    const id = await seedSlot(today);
+    calendar.syncs = 0;
+    expect((await call("POST", `/api/sessions/${id}/build`, {})).status).toBe(200);
+    expect(calendar.syncs).toBe(1);
+    // A new version with the same theme, discipline and length; then the stored build again.
+    expect((await call("POST", `/api/sessions/${id}/build`, { overrides: { minutes: 30 } })).status).toBe(200);
+    expect((await call("POST", `/api/sessions/${id}/build`, {})).status).toBe(200);
+    expect(calendar.syncs).toBe(1);
+    expect((await call("POST", `/api/sessions/${id}/build`, { overrides: { minutes: 15 } })).status).toBe(200);
+    expect(calendar.syncs).toBe(2);
   });
 
   it("a body with no JSON builds with nothing changed", async () => {
@@ -648,7 +1027,7 @@ describe("the routes", () => {
 
     const ahead = await seedSlot(addDays(today, 1));
     expect((await call("POST", `/api/sessions/${ahead}/build`, {})).status).toBe(200);
-    const start = await call("POST", `/api/sessions/${ahead}/start`);
+    const start = await call("POST", `/api/sessions/${ahead}/start`, { buildId: "any" });
     expect(start.status).toBe(409);
     expect(((await start.json()) as { error: string }).error).toBe("not_today");
 
@@ -659,7 +1038,7 @@ describe("the routes", () => {
       ["POST", `/api/sessions/${theirs}/build`],
       ["POST", `/api/sessions/${theirs}/start`],
     ] as const) {
-      const r = await call(method, path, method === "POST" ? {} : undefined);
+      const r = await call(method, path, method === "POST" ? (path.endsWith("/start") ? { buildId: "any" } : {}) : undefined);
       expect(r.status, `${method} ${path}`).toBe(404);
     }
   });
@@ -696,7 +1075,7 @@ describe("the routes", () => {
     const id = await seedSlot(today);
     await db.insert(accountState).values({ userId, restoreId: newId(), restoreStartedAt: nowInstant(), updatedAt: nowInstant() });
     expect((await call("POST", `/api/sessions/${id}/build`, {})).status).toBe(423);
-    expect((await call("POST", `/api/sessions/${id}/start`)).status).toBe(423);
+    expect((await call("POST", `/api/sessions/${id}/start`, { buildId: "any" })).status).toBe(423);
     expect((await call("POST", "/api/conditions/checks", { profileId: "tmj", value: 1 })).status).toBe(423);
     expect((await call("GET", `/api/sessions/${id}`)).status).toBe(200);
   });

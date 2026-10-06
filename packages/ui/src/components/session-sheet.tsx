@@ -98,11 +98,17 @@ export function SessionSheet({ w, today, onClose }: { w: WorkoutDto; today: stri
     },
   });
   const start = useMutation({
-    mutationFn: () => api.startSession(w.id),
+    mutationFn: (buildId: string) => api.startSession(w.id, buildId),
     onSuccess: (next) => {
       qc.setQueryData(key, next);
       refreshPlan();
       navigate(`/session/${encodeURIComponent(w.id)}`);
+    },
+    // The day's inputs changed since this build (a check, a save, an edit): show the fresh build to Start again.
+    onError: (err) => {
+      const body = err instanceof ApiError ? (err.body as { error?: string; session?: SessionDto } | null) : null;
+      if ((body?.error === "stale" || body?.error === "locked") && body.session) qc.setQueryData(key, body.session);
+      else void qc.invalidateQueries({ queryKey: key });
     },
   });
   const skip = useMutation({
@@ -173,7 +179,7 @@ export function SessionSheet({ w, today, onClose }: { w: WorkoutDto; today: stri
   const footer = (
     <div className="btn-row">
       {canPlay && showBuild && !locked ? (
-        <button type="button" className="btn btn-primary" disabled={start.isPending} onClick={() => start.mutate()}>
+        <button type="button" className="btn btn-primary" disabled={start.isPending} onClick={() => start.mutate(s!.build!.buildId)}>
           Start · {view!.minutes} min
         </button>
       ) : null}
