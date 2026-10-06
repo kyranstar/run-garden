@@ -23,7 +23,7 @@
  *    exists that nothing in the corpus travels.
  */
 
-import { beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { eq } from "drizzle-orm";
 import { schema } from "@rg/database";
 import {
@@ -58,9 +58,19 @@ import {
   type SurfaceDivergence,
 } from "./intent-corpus.js";
 
-/** A Monday, comfortably in the future — so `weekStart` arithmetic is trivial
+/** A Monday, after the pinned clock below — so `weekStart` arithmetic is trivial
  * and no op ever races the real clock. */
 const DATE = "2026-10-05";
+
+// The ops refuse rows dated before today, so the clock is pinned before DATE (only Date is faked: the database's
+// async work keeps real timers). Unpinned, every case failed once the calendar passed DATE.
+beforeEach(() => {
+  vi.useFakeTimers({ toFake: ["Date"] });
+  vi.setSystemTime(new Date("2026-10-01T12:00:00Z"));
+});
+afterEach(() => {
+  vi.useRealTimers();
+});
 const PLAN_ID = "cp-test-block";
 
 function addDays(iso: string, days: number): string {
