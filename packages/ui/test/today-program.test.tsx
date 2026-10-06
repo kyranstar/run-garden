@@ -370,7 +370,56 @@ describe("the check sheet", () => {
 
   it("starts from today's reading", () => {
     mount(condition({ today: { value: 2, feelingOff: false } }));
-    expect(buttons().find((b) => b.getAttribute("aria-pressed") === "true")?.textContent).toBe("2");
+    expect(buttons().find((b) => b.getAttribute("aria-checked") === "true")?.textContent).toBe("2");
+  });
+
+  it("the scale is one choice: a radiogroup named by the profile, one tab stop, arrow keys move the choice (audit 2a-UI M3)", async () => {
+    mount(condition({ today: { value: 2, feelingOff: false } }));
+    const group = document.querySelector(".check-scale")!;
+    expect(group.getAttribute("role")).toBe("radiogroup");
+    expect(group.getAttribute("aria-label")).toBe("Knee / hip");
+    expect(buttons().every((b) => b.getAttribute("role") === "radio")).toBe(true);
+    const tabbable = () => buttons().filter((b) => b.tabIndex === 0).map((b) => b.textContent);
+    const checked = () => buttons().filter((b) => b.getAttribute("aria-checked") === "true").map((b) => b.textContent);
+    expect(tabbable()).toEqual(["2"]);
+    const key = async (k: string) => {
+      await act(async () => {
+        (document.activeElement as HTMLElement).dispatchEvent(new KeyboardEvent("keydown", { key: k, bubbles: true }));
+      });
+    };
+    act(() => buttons()[2]!.focus());
+    await key("ArrowRight");
+    expect(checked()).toEqual(["3"]);
+    expect(document.activeElement?.textContent).toBe("3");
+    expect(tabbable()).toEqual(["3"]);
+    await key("ArrowLeft");
+    await key("ArrowLeft");
+    expect(checked()).toEqual(["1"]);
+    await key("End");
+    expect(checked()).toEqual(["10"]);
+    await key("ArrowRight");
+    expect(checked()).toEqual(["0"]);
+    await key("Home");
+    expect(document.activeElement?.textContent).toBe("0");
+    // The chosen number is drawn from the state a reader hears.
+    const sheet = "../src/styles.css"; // a variable: Vite rewrites a literal `new URL(…, import.meta.url)` as an asset
+    const css = readFileSync(fileURLToPath(new URL(sheet, import.meta.url)), "utf8");
+    expect(css).toContain('.check-scale button[aria-checked="true"] {');
+    expect(css).not.toContain('.check-scale button[aria-pressed="true"]');
+  });
+
+  it("tapping the chosen number clears it, so Feeling off alone can be saved (audit 2a-UI M3)", async () => {
+    const { calls } = mount(condition({ today: { value: 2, feelingOff: false } }));
+    act(() => byText("2").click());
+    expect(buttons().filter((b) => b.getAttribute("aria-checked") === "true")).toEqual([]);
+    // With nothing chosen the first number is the group's tab stop.
+    expect(buttons().filter((b) => b.tabIndex === 0).map((b) => b.textContent)).toEqual(["0"]);
+    expect(byText("Save").disabled).toBe(true);
+    act(() => byText("Feeling off").click());
+    await act(async () => {
+      byText("Save").click();
+    });
+    expect(calls).toEqual([{ url: "/api/conditions/checks", body: { profileId: "p-x", value: null, feelingOff: true } }]);
   });
 
   it("Save records the check and closes", async () => {

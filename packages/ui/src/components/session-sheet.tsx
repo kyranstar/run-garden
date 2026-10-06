@@ -156,10 +156,12 @@ export function SessionSheet({ w, today, onClose }: { w: WorkoutDto; today: stri
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [s, locked, skipped, past, needsCheck]);
 
-  const answer = (profileId: string, value: number) => {
-    const next = { ...answers, [profileId]: value };
+  const answer = (profileId: string, value: number | null) => {
+    const next = { ...answers };
+    if (value === null) delete next[profileId];
+    else next[profileId] = value;
     setAnswers(next);
-    if (unanswered.every((p) => next[p.profileId] !== undefined)) {
+    if (value !== null && unanswered.every((p) => next[p.profileId] !== undefined)) {
       asked.current = true;
       build.mutate({
         checks: Object.fromEntries(

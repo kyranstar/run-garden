@@ -2169,7 +2169,7 @@ a.note {
   font-variant-numeric: tabular-nums;
   cursor: pointer;
 }
-.check-scale button[aria-pressed="true"] {
+.check-scale button[aria-checked="true"] {
   background: var(--green);
   border-color: var(--green);
   color: var(--on-accent);
