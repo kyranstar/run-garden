@@ -335,13 +335,15 @@ describe("the check sheet", () => {
     vi.unstubAllGlobals();
   });
 
-  function mount(c: Condition, onClose = vi.fn()) {
+  function mount(c: Condition, onClose = vi.fn(), opts: { restoring?: boolean } = {}) {
     const calls: Array<{ url: string; body: unknown }> = [];
     vi.stubGlobal(
       "fetch",
       vi.fn(async (url: string, init?: RequestInit) => {
         calls.push({ url, body: init?.body ? JSON.parse(String(init.body)) : null });
-        return new Response(JSON.stringify({ check: { profileId: c.profileId, date: TODAY, value: 3, feelingOff: true } }), {
+        // While a restore replaces the account the server records nothing and answers `{check: null}`.
+        const check = opts.restoring ? null : { profileId: c.profileId, date: TODAY, value: 3, feelingOff: true };
+        return new Response(JSON.stringify({ check }), {
           status: 200,
           headers: { "Content-Type": "application/json" },
         });
@@ -432,5 +434,16 @@ describe("the check sheet", () => {
     });
     expect(calls).toEqual([{ url: "/api/conditions/checks", body: { profileId: "p-x", value: 3, feelingOff: true } }]);
     expect(onClose).toHaveBeenCalled();
+  });
+
+  it("a check the server did not record (a restore running) is not saved: the sheet stays and says so (audit 2a-UI M7)", async () => {
+    const { calls, onClose } = mount(condition(), vi.fn(), { restoring: true });
+    act(() => buttons()[3]!.click());
+    await act(async () => {
+      byText("Save").click();
+    });
+    expect(calls).toHaveLength(1);
+    expect(onClose).not.toHaveBeenCalled();
+    expect(document.body.textContent).toContain("Not saved");
   });
 });

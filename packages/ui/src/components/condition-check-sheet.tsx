@@ -136,13 +136,16 @@ export function ConditionCheckSheet({
   const [off, setOff] = useState(condition.today?.feelingOff ?? false);
   const save = useMutation({
     mutationFn: () => api.recordCheck({ profileId: condition.profileId, value, feelingOff: off }),
-    onSuccess: () => {
+    onSuccess: (res) => {
+      // `{check: null}`: a restore is replacing the account and nothing was recorded — not saved (audit 2a-UI M7).
+      if (!res.check) return;
       // The chip reads it from Today; a session built today reads it as its pre-check.
       void qc.invalidateQueries({ queryKey: ["today"] });
       void qc.invalidateQueries({ queryKey: ["session"] });
       onClose();
     },
   });
+  const unrecorded = save.isSuccess && !save.data.check;
   return (
     <Sheet
       open
@@ -171,6 +174,7 @@ export function ConditionCheckSheet({
           <FeelingOffToggle on={off} onToggle={() => setOff((v) => !v)} />
         </div>
         {save.isError ? <Banner kind="warn">Couldn't save that — try again.</Banner> : null}
+        {unrecorded ? <Banner kind="warn">Not saved — a restore is running. Try again once it finishes.</Banner> : null}
       </div>
     </Sheet>
   );

@@ -72,6 +72,7 @@ export function SessionSheet({ w, today, onClose }: { w: WorkoutDto; today: stri
   const navigate = useNavigate();
   const key = ["session", w.id];
   const session = useQuery({ queryKey: key, queryFn: () => api.getSession(w.id) });
+  const gone = session.error instanceof ApiError && session.error.status === 404;
   const programs = useQuery({ queryKey: ["programs"], queryFn: api.listPrograms, staleTime: 60_000 });
   const [picker, setPicker] = useState<Picker | null>(null);
   const [swapping, setSwapping] = useState<string | null>(null);
@@ -216,50 +217,66 @@ export function SessionSheet({ w, today, onClose }: { w: WorkoutDto; today: stri
 
   const showBuild = !!(s?.build && view) && !preCheck;
   const canPlay = features.player && date === today && !past && !skipped;
-  const footer = skipped ? (
-    <div className="btn-row">
-      <button type="button" className="btn" disabled={unskip.isPending} onClick={() => unskip.mutate()}>
+  // The pinned foot holds the sheet's actions — and is left out when there are none (loading, or a started or done
+  // session without the player), rather than drawn as an empty band (audit 2a-UI M6).
+  const actions: React.ReactNode[] = [];
+  if (skipped) {
+    actions.push(
+      <button key="unskip" type="button" className="btn" disabled={unskip.isPending} onClick={() => unskip.mutate()}>
         Un-skip
-      </button>
-    </div>
-  ) : (
-    <div className="btn-row">
-      {preCheck ? (
-        <button type="button" className="btn btn-primary" disabled={!answered || build.isPending} onClick={submit}>
+      </button>,
+    );
+  } else {
+    if (preCheck) {
+      actions.push(
+        <button key="build" type="button" className="btn btn-primary" disabled={!answered || build.isPending} onClick={submit}>
           Build
-        </button>
-      ) : null}
-      {canPlay && showBuild && !locked ? (
-        <button type="button" className="btn btn-primary" disabled={start.isPending} onClick={() => start.mutate(s!.build!.buildId)}>
+        </button>,
+      );
+    }
+    if (canPlay && showBuild && !locked) {
+      actions.push(
+        <button key="start" type="button" className="btn btn-primary" disabled={start.isPending} onClick={() => start.mutate(s!.build!.buildId)}>
           Start · {view!.minutes} min
-        </button>
-      ) : null}
-      {canPlay && s?.contentState === "started" ? (
-        <button type="button" className="btn btn-primary" onClick={() => navigate(`/session/${encodeURIComponent(w.id)}`)}>
+        </button>,
+      );
+    }
+    if (canPlay && s?.contentState === "started") {
+      actions.push(
+        <button key="continue" type="button" className="btn btn-primary" onClick={() => navigate(`/session/${encodeURIComponent(w.id)}`)}>
           Continue
-        </button>
-      ) : null}
-      {past && !locked ? (
-        <button type="button" className="btn btn-primary" disabled={moveToToday.isPending} onClick={() => moveToToday.mutate()}>
+        </button>,
+      );
+    }
+    if (past && !locked) {
+      actions.push(
+        <button key="today" type="button" className="btn btn-primary" disabled={moveToToday.isPending} onClick={() => moveToToday.mutate()}>
           Move to today
-        </button>
-      ) : null}
-      {!locked && s ? (
-        <>
-          <button type="button" className="btn" onClick={() => setMoving(true)}>
-            Move
-          </button>
-          <button type="button" className="btn" disabled={skip.isPending} onClick={() => skip.mutate()}>
-            Skip
-          </button>
-        </>
-      ) : null}
-    </div>
-  );
+        </button>,
+      );
+    }
+    if (!locked && s) {
+      actions.push(
+        <button key="move" type="button" className="btn" onClick={() => setMoving(true)}>
+          Move
+        </button>,
+        <button key="skip" type="button" className="btn" disabled={skip.isPending} onClick={() => skip.mutate()}>
+          Skip
+        </button>,
+      );
+    }
+  }
+  const footer = actions.length > 0 ? <div className="btn-row">{actions}</div> : null;
 
   let body: React.ReactNode;
   if (session.isLoading) body = <Spinner label="Loading the session" />;
-  else if (!s) body = <EmptyState title="This session is no longer in the plan" />;
+  // Only a 404 means the session left the plan; a failure to load says that (audit 2a-UI M7).
+  else if (!s)
+    body = gone ? (
+      <EmptyState title="This session is no longer in the plan" />
+    ) : (
+      <Banner kind="warn">Couldn't load this session — try again in a moment.</Banner>
+    );
   else if (skipped) {
     body = (
       <div className="stack">

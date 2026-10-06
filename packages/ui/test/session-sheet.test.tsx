@@ -231,7 +231,15 @@ afterEach(() => {
 
 function mount(
   first: SessionDto,
-  opts: { afterBuild?: (body: Record<string, unknown>) => SessionDto; stale?: SessionDto; today?: string; w?: WorkoutDto; detail?: boolean } = {},
+  opts: {
+    afterBuild?: (body: Record<string, unknown>) => SessionDto;
+    stale?: SessionDto;
+    today?: string;
+    w?: WorkoutDto;
+    detail?: boolean;
+    /** The GET answers with this status (and no session) instead. */
+    getStatus?: number;
+  } = {},
 ) {
   const calls: Call[] = [];
   let current = first;
@@ -243,7 +251,9 @@ function mount(
       const body = init?.body ? (JSON.parse(String(init.body)) as Record<string, unknown>) : null;
       const method = init?.method ?? "GET";
       calls.push({ method, path, body });
-      if (path === `/api/sessions/${SLOT}` && method === "GET") return json(current);
+      if (path === `/api/sessions/${SLOT}` && method === "GET") {
+        return opts.getStatus ? json({ error: opts.getStatus === 404 ? "not_found" : "internal" }, opts.getStatus) : json(current);
+      }
       if (path === `/api/sessions/${SLOT}/build`) {
         current = opts.afterBuild ? opts.afterBuild(body ?? {}) : { ...current, contentState: "built" };
         return json(current);
@@ -617,6 +627,28 @@ describe("a skipped session (ruling 2a-R15)", () => {
     expect(button(/^Start/)).toBeUndefined();
     expect(button("Un-skip")).toBeTruthy();
     expect(builds(calls)).toHaveLength(0);
+  });
+});
+
+describe("the sheet's edges (audit 2a-UI M6, M7)", () => {
+  it("no pinned foot when there is nothing to do: while loading, and on a started session without the player", async () => {
+    mount(session({ contentState: "started", locked: true }), { w: slot({ contentState: "started" }) });
+    expect(body()).toContain("Loading the session");
+    expect(document.querySelector(".sheet-foot")).toBeNull();
+    await until(() => body().includes("Supported row"), "the moves");
+    expect(document.querySelector(".sheet-foot")).toBeNull();
+  });
+
+  it("a session gone from the plan (404) says so; any other failure says it couldn't load", async () => {
+    mount(session(), { getStatus: 404 });
+    await until(() => !body().includes("Loading the session"), "the answer");
+    expect(body()).toContain("This session is no longer in the plan");
+    act(() => root?.unmount());
+    host?.remove();
+    mount(session(), { getStatus: 500 });
+    await until(() => !body().includes("Loading the session"), "the answer");
+    expect(body()).not.toContain("no longer in the plan");
+    expect(body()).toContain("Couldn't load this session");
   });
 });
 
