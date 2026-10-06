@@ -94,6 +94,59 @@ export function fixtureCorosCompletedThreshold(
 
 
 /**
+ * The lap lists of a watch strength session, in the wire's real skeleton
+ * (docs/reports/2026-10-04-coros-spikes.md §1) with synthetic values: every
+ * item twice, once per lap type; weight in kg × 1000 (a pounds-typed weight
+ * arrives as its exact grams); time in 1/100 s. Per exercise: a work item and
+ * its rest item per set, a per-side pair carrying data on both, and a plank
+ * hold with no reps or weight. Seeds the logged sets the Activity feed shows.
+ */
+export function fixtureCorosStrengthLapList(): NonNullable<RawCorosActivityDetail["lapList"]> {
+  const KEYS = ["T1061", "T1055", "T1041", "T1010"]; // Squats, Dumbbell Row, Bench Press, Planks
+  const items = (lapType: number) => {
+    const out: Array<Record<string, unknown>> = [];
+    const push = (exerciseIndex: number, setIndex: number, fields: Record<string, unknown>) =>
+      out.push({
+        lapIndex: lapType * 100 + out.length + 1,
+        avgHr: 112,
+        exerciseIndex,
+        exerciseNameKey: KEYS[exerciseIndex],
+        exerciseId: "1",
+        exerciseType: 2,
+        setIndex,
+        sets: 1,
+        targetType: 3,
+        intensityType: 1,
+        intensityDisplayUnit: 6,
+        pauseTime: 0,
+        lapType,
+        reps: 0,
+        weight: 0,
+        time: 0,
+        ...fields,
+      });
+    for (let s = 0; s < 3; s++) {
+      push(0, s, { reps: 8, weight: 27_216, time: 3_600 }); // 60 lb
+      push(0, s, { time: 9_000 });
+    }
+    for (let s = 0; s < 2; s++) {
+      push(1, s, { reps: 10, weight: 14_000, time: 3_100 }); // 14 kg, left
+      push(1, s, { reps: 10, weight: 14_000, time: 3_200 }); // right
+    }
+    for (let s = 0; s < 3; s++) {
+      push(2, s, { reps: 6, weight: s === 2 ? 30_000 : 27_500, time: 3_000 });
+      push(2, s, { time: 12_000 });
+    }
+    for (let s = 0; s < 2; s++) {
+      push(3, s, { time: 4_500, targetType: 2 });
+      push(3, s, { time: 6_000, targetType: 2 });
+    }
+    return out;
+  };
+  return [{ type: 2, lapItemList: [...items(0), ...items(1)] }];
+}
+
+/**
  * A completed strength/lifting session (sportType 402, activity namespace):
  * ~45 minutes, HR present, no distance or pace — the tri-discipline garden
  * counts this on the strength clock instead of the run clock.

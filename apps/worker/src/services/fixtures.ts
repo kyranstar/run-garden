@@ -26,6 +26,7 @@ import {
 import {
   FixtureTrainingProvider,
   fixtureCorosCompletedStrength,
+  fixtureCorosStrengthLapList,
   fixtureCorosCompletedThreshold,
   fixtureCorosCompletedYoga,
   normalizeCorosActivity,
@@ -34,7 +35,7 @@ import {
 import type { Env } from "../env.js";
 import type { Db } from "./db.js";
 import { importPlanSnapshot } from "./import-plan.js";
-import { ingestActivities } from "./completion.js";
+import { ingestActivities, type IngestInput } from "./completion.js";
 import { loadPreferences, savePreferences } from "./calendar-sync.js";
 import { advanceGarden, ensureGarden } from "./garden-sync.js";
 import { reconcileCompletionStates } from "./reconcile-daily.js";
@@ -599,6 +600,7 @@ export async function seedFixtures(db: Db, env: Env, userId: string): Promise<Se
   // week 7 comeback; week 8 consistent.
   const sources: SourceActivity[] = [];
   const lapsByProviderId: Record<string, never[]> = {};
+  const strengthDetailsByProviderId: NonNullable<IngestInput["strengthDetailsByProviderId"]> = {};
   let index = 0;
 
   // Adventure fixtures, dated up front so the WEEK loop below can reserve
@@ -723,9 +725,11 @@ export async function seedFixtures(db: Db, env: Env, userId: string): Promise<Se
       `coros-fx-strength-${strengthYogaDate}`,
     );
     sources.push(normalizeCorosActivity(strengthItem));
+    // Its sets as the watch logged them, so Activity shows them (Phase 2a+).
+    strengthDetailsByProviderId[strengthItem.labelId] = { lapList: fixtureCorosStrengthLapList() };
   }
 
-  const ingest = await ingestActivities(db, { userId, sources, lapsByProviderId });
+  const ingest = await ingestActivities(db, { userId, sources, lapsByProviderId, strengthDetailsByProviderId });
 
   // Health + sleep history with variation.
   const now = nowInstant();

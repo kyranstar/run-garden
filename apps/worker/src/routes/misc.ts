@@ -96,6 +96,7 @@ import {
   rowToNormalized,
 } from "../services/completion.js";
 import { resimulateFrom } from "../services/garden-sync.js";
+import { loggedSetsByActivity } from "../services/logged-sets.js";
 import { enqueueBackfill, runBackfillChunkCloud } from "../services/backfill.js";
 import { deleteOrphanedChildren, wipeAccountData } from "../services/account-tables.js";
 import {
@@ -246,21 +247,27 @@ activityRoutes.get("/", async (c) => {
   const matchById = new Map(matches.map((m) => [m.id, m]));
 
   // Compact lap profiles for the list's pace-shape micro chart: seconds +
-  // pace per lap, in lap order. One chunked query for the whole page.
-  const lapChunks = await Promise.all(
-    chunkIds(rows.map((r) => r.id)).map((ids) =>
-      db
-        .select({
-          activityId: activityLaps.activityId,
-          lapIndex: activityLaps.lapIndex,
-          durationSeconds: activityLaps.durationSeconds,
-          avgPaceSecPerKm: activityLaps.avgPaceSecPerKm,
-          splitType: activityLaps.splitType,
-        })
-        .from(activityLaps)
-        .where(inArray(activityLaps.activityId, ids)),
+  // pace per lap, in lap order. One chunked query for the whole page. The
+  // logged sets (any source) ride alongside, in the athlete's weight unit.
+  const [lapChunks, logged] = await Promise.all([
+    Promise.all(
+      chunkIds(rows.map((r) => r.id)).map((ids) =>
+        db
+          .select({
+            activityId: activityLaps.activityId,
+            lapIndex: activityLaps.lapIndex,
+            durationSeconds: activityLaps.durationSeconds,
+            avgPaceSecPerKm: activityLaps.avgPaceSecPerKm,
+            splitType: activityLaps.splitType,
+          })
+          .from(activityLaps)
+          .where(inArray(activityLaps.activityId, ids)),
+      ),
     ),
-  );
+    loadPreferences(db, userId).then((prefs) =>
+      loggedSetsByActivity(db, userId, rows.map((r) => r.id), prefs.weightUnit),
+    ),
+  ]);
   const lapsByActivity = new Map<string, Array<{ lapIndex: number; s: number; p: number | null }>>();
   const byActivityRaw = new Map<string, Array<(typeof lapChunks)[number][number]>>();
   for (const l of lapChunks.flat()) {
@@ -297,6 +304,7 @@ activityRoutes.get("/", async (c) => {
         trainingLoad: a.trainingLoad,
         feel: a.telemetry?.feelRating ?? null,
         laps: laps.length > 1 ? laps : null,
+        logged: logged.get(a.id) ?? null,
         matched: wo
           ? {
               workoutId: wo.id,

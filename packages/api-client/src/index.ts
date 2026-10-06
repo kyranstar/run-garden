@@ -315,8 +315,30 @@ export interface ActivityDto {
   /** Compact lap profile (seconds + pace per lap, in order) for the
    * pace-shape micro chart; null when fewer than two laps exist. */
   laps: Array<{ s: number; p: number | null }> | null;
+  /**
+   * What was logged in this session (app, watch review, import or the watch
+   * itself), by exercise in the order done — names already in words, weights
+   * already in the athlete's unit. Null when nothing was logged.
+   */
+  logged?: LoggedExerciseDto[] | null;
   /** The planned workout this run completed, or null if it was unplanned. */
   matched: { workoutId: string; title: string; category: string; date: string } | null;
+}
+
+/** One logged set, as the activity feed shows it. */
+export interface LoggedSetDto {
+  reps: number | null;
+  seconds: number | null;
+  /** In the athlete's weight unit; null for a bodyweight or timed set. */
+  load: { v: number; u: "lb" | "kg" } | null;
+  side: "left" | "right" | null;
+}
+
+/** One exercise of a logged session and its sets. */
+export interface LoggedExerciseDto {
+  exerciseId: string;
+  name: string;
+  sets: LoggedSetDto[];
 }
 
 export interface SettingsResponse {

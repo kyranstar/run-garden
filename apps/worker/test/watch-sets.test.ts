@@ -15,6 +15,7 @@
  * probe's own fixtures). No value comes from the athlete's account.
  */
 import { describe, expect, it } from "vitest";
+import { fixtureCorosStrengthLapList } from "@rg/providers";
 import { deriveWatchSession, watchLoad } from "../src/services/watch-sets.js";
 import { ACTIVITY, detailOf, duplicateView, item, NOW, USER, workView } from "./watch-sets-fixture.js";
 
@@ -180,6 +181,27 @@ describe("deriveWatchSession — the session row", () => {
     const edited = workView().map((i) => (i.reps === 8 ? { ...i, reps: 7 } : i));
     const c = deriveWatchSession(detailOf(edited), ACTIVITY, USER, { now: NOW, workoutId: "wo-9" });
     expect(c!.session.payloadHash).not.toBe(a!.session.payloadHash);
+  });
+});
+
+describe("the fixture stack's strength lap list", () => {
+  it("derives to the sets it was written to show", () => {
+    const out = deriveWatchSession({ lapList: fixtureCorosStrengthLapList() }, ACTIVITY, USER, { now: NOW });
+    const text = (s: Row) => [s.exerciseId, s.reps ?? `${s.seconds} s`, s.loadValue === null ? "bw" : `${s.loadValue} ${s.loadUnit}`].join(" ");
+    expect((out!.sets as Row[]).map(text)).toEqual([
+      "coros:T1061 8 60 lb",
+      "coros:T1061 8 60 lb",
+      "coros:T1061 8 60 lb",
+      "coros:T1055 10 14 kg",
+      "coros:T1055 10 14 kg",
+      "coros:T1055 10 14 kg",
+      "coros:T1055 10 14 kg",
+      "coros:T1041 6 27.5 kg",
+      "coros:T1041 6 27.5 kg",
+      "coros:T1041 6 30 kg",
+      "coros:T1010 45 s bw",
+      "coros:T1010 45 s bw",
+    ]);
   });
 });
 
