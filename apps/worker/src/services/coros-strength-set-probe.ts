@@ -199,7 +199,17 @@ export interface LapStructure {
     targetTypeOfNeitherSecond: Record<string, number>;
     pauseTimeOfDataItem: number;
     pauseTimeOfPartner: number;
+    /** Pairs where both carry data: the two items have the same reps and weight, or not. */
+    bothDataSameRepsAndWeight: number;
+    bothDataDifferent: number;
+    /** Order-of-magnitude buckets of `time` by role (its unit is not known yet: s, 1/10 s, 1/100 s or ms). */
+    timeOfDataItem: Record<MagnitudeBucket, number>;
+    timeOfPartner: Record<MagnitudeBucket, number>;
+    timeOfNeitherFirst: Record<MagnitudeBucket, number>;
+    timeOfNeitherSecond: Record<MagnitudeBucket, number>;
   };
+  /** In activities whose lap types differ, per lap type code: items, and items carrying reps or weight. */
+  differingLapTypes: Record<string, { items: number; withData: number }>;
   /** In activities whose lap types differ: how many sets (fingerprints) appear in only one of them. */
   setsInOneLapTypeOnly: number;
   /** Small enum codes (0–99) by field, "other"/"missing" otherwise. */
@@ -212,6 +222,15 @@ export interface LapStructure {
 }
 
 const POUND_KG = 0.45359237;
+
+function zeroBuckets(): Record<MagnitudeBucket, number> {
+  return Object.fromEntries(MAGNITUDE_BUCKETS.map((b) => [b, 0])) as Record<MagnitudeBucket, number>;
+}
+
+function bucketTime(into: Record<MagnitudeBucket, number>, value: unknown): void {
+  const n = asNumber(value);
+  if (n !== undefined && n > 0) into[magnitudeBucket(n)] += 1;
+}
 
 function bump(map: Record<string, number>, key: string): void {
   map[key] = (map[key] ?? 0) + 1;
@@ -243,6 +262,12 @@ function foldStructure(s: LapStructure, nameKeys: Set<string>, items: readonly R
     if (prints.every((x) => x === prints[0])) s.lapTypesSameSets += 1;
     else {
       s.lapTypesDifferentSets += 1;
+      for (const [code, list] of byType) {
+        const row = s.differingLapTypes[code] ?? { items: 0, withData: 0 };
+        row.items += list.length;
+        row.withData += list.filter((i) => (asNumber(i.reps) ?? 0) > 0 || (asNumber(i.weight) ?? 0) > 0).length;
+        s.differingLapTypes[code] = row;
+      }
       const sets = lists.map((list) => new Set(list.map(setFingerprint)));
       const all = new Set(sets.flatMap((x) => [...x]));
       for (const f of all) if (!sets.every((x) => x.has(f))) s.setsInOneLapTypeOnly += 1;
@@ -260,8 +285,11 @@ function foldStructure(s: LapStructure, nameKeys: Set<string>, items: readonly R
     const [a, b] = g as [Record<string, unknown>, Record<string, unknown>];
     const pa = hasData(a);
     const pb = hasData(b);
-    if (pa && pb) s.pairs.bothHaveData += 1;
-    else if (pa || pb) {
+    if (pa && pb) {
+      s.pairs.bothHaveData += 1;
+      if (asNumber(a.reps) === asNumber(b.reps) && asNumber(a.weight) === asNumber(b.weight)) s.pairs.bothDataSameRepsAndWeight += 1;
+      else s.pairs.bothDataDifferent += 1;
+    } else if (pa || pb) {
       s.pairs.oneHasData += 1;
       if (pa) s.pairs.dataItemFirst += 1;
       else s.pairs.dataItemSecond += 1;
@@ -271,12 +299,16 @@ function foldStructure(s: LapStructure, nameKeys: Set<string>, items: readonly R
       bump(s.pairs.targetTypeOfPartner, lapTypeKey(partner.targetType));
       if ((asNumber(data.pauseTime) ?? 0) > 0) s.pairs.pauseTimeOfDataItem += 1;
       if ((asNumber(partner.pauseTime) ?? 0) > 0) s.pairs.pauseTimeOfPartner += 1;
+      bucketTime(s.pairs.timeOfDataItem, data.time);
+      bucketTime(s.pairs.timeOfPartner, partner.time);
     } else {
       s.pairs.neitherHasData += 1;
       if (asNumber(a.time) === asNumber(b.time)) s.pairs.neitherTimesEqual += 1;
       else s.pairs.neitherTimesDiffer += 1;
       bump(s.pairs.targetTypeOfNeitherFirst, lapTypeKey(a.targetType));
       bump(s.pairs.targetTypeOfNeitherSecond, lapTypeKey(b.targetType));
+      bucketTime(s.pairs.timeOfNeitherFirst, a.time);
+      bucketTime(s.pairs.timeOfNeitherSecond, b.time);
     }
   }
   s.exerciseSlots += new Set(first.map((i) => JSON.stringify(i.exerciseIndex))).size;
@@ -454,7 +486,14 @@ export function strengthSetStats(details: readonly RawCorosActivityDetail[]): St
       targetTypeOfNeitherSecond: {},
       pauseTimeOfDataItem: 0,
       pauseTimeOfPartner: 0,
+      bothDataSameRepsAndWeight: 0,
+      bothDataDifferent: 0,
+      timeOfDataItem: zeroBuckets(),
+      timeOfPartner: zeroBuckets(),
+      timeOfNeitherFirst: zeroBuckets(),
+      timeOfNeitherSecond: zeroBuckets(),
     },
+    differingLapTypes: {},
     setsInOneLapTypeOnly: 0,
     codes: { intensityDisplayUnit: {}, intensityType: {}, targetType: {}, exerciseType: {} },
   };

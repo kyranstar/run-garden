@@ -287,6 +287,18 @@ describe("GET /api/coros/debug/strength-set-stats", () => {
             targetTypeOfNeitherSecond: {},
             pauseTimeOfDataItem: 0,
             pauseTimeOfPartner: 0,
+            bothDataSameRepsAndWeight: 0,
+            bothDataDifferent: 0,
+            timeOfDataItem: ZERO_BUCKETS,
+            timeOfPartner: ZERO_BUCKETS,
+            timeOfNeitherFirst: ZERO_BUCKETS,
+            timeOfNeitherSecond: ZERO_BUCKETS,
+          },
+          differingLapTypes: {
+            "2": { items: 6, withData: 6 },
+            "3": { items: 1, withData: 0 },
+            missing: { items: 2, withData: 1 },
+            other: { items: 1, withData: 1 },
           },
           setsInOneLapTypeOnly: 10,
           codes: {
@@ -707,6 +719,12 @@ describe("strengthSetStats", () => {
       targetTypeOfNeitherSecond: { "2": 1, missing: 1 },
       pauseTimeOfDataItem: 0,
       pauseTimeOfPartner: 1,
+      bothDataSameRepsAndWeight: 0,
+      bothDataDifferent: 1,
+      timeOfDataItem: { ...ZERO_BUCKETS, "10-100": 2 },
+      timeOfPartner: { ...ZERO_BUCKETS, "10-100": 2 },
+      timeOfNeitherFirst: { ...ZERO_BUCKETS, "10-100": 2 },
+      timeOfNeitherSecond: { ...ZERO_BUCKETS, "10-100": 2 },
     });
   });
 
