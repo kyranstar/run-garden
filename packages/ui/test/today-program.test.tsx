@@ -12,7 +12,8 @@
 import { act, createElement } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { renderToStaticMarkup } from "react-dom/server";
-import { readFileSync } from "node:fs";
+import { readdirSync, readFileSync } from "node:fs";
+import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { MemoryRouter } from "react-router-dom";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
@@ -314,15 +315,60 @@ describe("the condition chip", () => {
   });
 });
 
-describe("no condition word lives in the UI's code", () => {
-  const read = (rel: string) => readFileSync(fileURLToPath(new URL(rel, import.meta.url)), "utf8");
-  it.each(["../src/components/today-program.tsx", "../src/components/condition-check-sheet.tsx", "../src/screens/garden.tsx"])(
-    "%s",
-    (file) => {
-      const code = read(file).replace(/\/\*[\s\S]*?\*\//g, "").replace(/^\s*\/\/.*$/gm, "");
-      expect(code).not.toMatch(/\b(jaw|tmj|clench)/i);
-    },
-  );
+describe("no condition word lives in the UI's code (audit 2a-UI M11d)", () => {
+  // Paths in variables: Vite rewrites a literal `new URL("…", import.meta.url)` as an asset URL.
+  const here = (rel: string) => fileURLToPath(new URL(rel, import.meta.url));
+  const read = (rel: string) => readFileSync(here(rel), "utf8");
+  const src = here("../src/");
+  /** Every source file of the UI, the stylesheet included — not a list someone has to keep up to date. */
+  const files = (readdirSync(src, { recursive: true }) as string[]).filter((f) => /\.(tsx?|css)$/.test(f)).sort();
+  /**
+   * The words the condition profiles themselves use — each profile's id and label, its check label's words and its
+   * flag's label — read from the library, so a profile added there is covered here; plus the stems already known.
+   */
+  const words = (() => {
+    const dir = here("../../exercise-library/src/conditions/");
+    const out = new Set(["jaw", "tmj", "clench"]);
+    // The profile ids: the keys of `PROFILES`.
+    const index = readFileSync(join(dir, "index.ts"), "utf8");
+    for (const m of (/PROFILES = \{([^}]*)\}/.exec(index)?.[1] ?? "").matchAll(/(\w+):/g)) out.add(m[1]!.toLowerCase());
+    for (const f of readdirSync(dir).filter((n) => n.endsWith(".ts") && n !== "index.ts" && n !== "types.ts")) {
+      const text = readFileSync(join(dir, f), "utf8");
+      // The profile's label, its check's label and its flag's label ("TMJ", "Jaw / head", "Clenched"). "head" is
+      // also a word the UI uses for other things (a sheet's head), so it is left to the first word.
+      for (const m of text.matchAll(/^ {2}(?:label|check: \{ label|setFlag: \{ id: [^,]+, label):\s*"([^"]+)"/gm)) {
+        for (const w of m[1]!.split(/[\s/]+/)) if (w.length >= 3 && w.toLowerCase() !== "head") out.add(w.toLowerCase());
+      }
+    }
+    return [...out];
+  })();
+
+  it("reads the profiles' own words, and scans every UI source file", () => {
+    expect(words).toEqual(expect.arrayContaining(["jaw", "tmj", "clench", "clenched"]));
+    expect(files).toEqual(
+      expect.arrayContaining([
+        "components/today-program.tsx",
+        "components/condition-check-sheet.tsx",
+        "components/session-sheet.tsx",
+        "components/exercise-howto.tsx",
+        "components/program-settings-sheet.tsx",
+        "screens/plan-cards.tsx",
+        "screens/plan.tsx",
+        "screens/garden.tsx",
+        "styles.css",
+      ]),
+    );
+  });
+
+  it("finds none of them in any of those files", () => {
+    const word = new RegExp(`\\b(${words.join("|")})`, "i");
+    const hits = files.flatMap((f) => {
+      const code = read(`../src/${f}`).replace(/\/\*[\s\S]*?\*\//g, "").replace(/^\s*\/\/.*$/gm, "");
+      const m = word.exec(code);
+      return m ? [`${f}: "${m[0]}"`] : [];
+    });
+    expect(hits).toEqual([]);
+  });
 });
 
 describe("the check sheet", () => {

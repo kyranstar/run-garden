@@ -13,15 +13,13 @@
 import { act, createElement } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { renderToStaticMarkup } from "react-dom/server";
-import { readFileSync } from "node:fs";
-import { dirname, join } from "node:path";
-import { fileURLToPath } from "node:url";
 import { MemoryRouter } from "react-router-dom";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { ProgramDto, WorkoutDto } from "@rg/api-client";
 import { features } from "../src/features.js";
 import { ProgramCard, ProgramCards } from "../src/screens/plan-cards.js";
+import { PlanScreen } from "../src/screens/plan.js";
 import { WorkoutCell } from "../src/screens/week-view.js";
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
@@ -129,11 +127,115 @@ describe("program slots in the week", () => {
   });
 });
 
-describe("the Plan page waits for the programs before its first paint", () => {
-  it("the programs query is in the gate", () => {
-    const src = readFileSync(join(dirname(fileURLToPath(import.meta.url)), "../src/screens/plan.tsx"), "utf8");
-    const gate = src.slice(src.indexOf("if (settling("), src.indexOf("\n", src.indexOf("if (settling(")));
-    expect(gate).toContain("programs");
+describe("the Plan page waits for the programs before its first paint (audit 2a-UI M11e)", () => {
+  // The page itself, against a stubbed worker: what it shows while the programs are in flight, and after.
+  let root: Root | null = null;
+  let host: HTMLDivElement | null = null;
+  beforeEach(() => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(new Date("2026-10-05T08:00:00"));
+    window.matchMedia = ((query: string) => ({
+      matches: false,
+      media: query,
+      addEventListener() {},
+      removeEventListener() {},
+      addListener() {},
+      removeListener() {},
+    })) as unknown as typeof window.matchMedia;
+  });
+  afterEach(() => {
+    vi.useRealTimers();
+    act(() => root?.unmount());
+    host?.remove();
+    root = null;
+    vi.unstubAllGlobals();
+  });
+
+  const WEEK = {
+    weekStart: "2026-10-05",
+    days: ["05", "06", "07", "08", "09", "10", "11"].map((d) => ({ date: `2026-10-${d}`, workouts: [] })),
+    plannedSeconds: 0,
+    doneCount: 0,
+    sessionCount: 0,
+    weekIndex: null,
+    weekTotal: null,
+    adherence4w: { pct: null, trend: null },
+    loadRatio: null,
+    adventureDays: 0,
+    headline: "on_track",
+    focus: null,
+  };
+
+  /** Mounts the Plan page; `programs` answers `/api/programs` when the test says so. */
+  function mountPlan(programs: () => Promise<Response>) {
+    const calls: string[] = [];
+    const json = (b: unknown, status = 200) => new Response(JSON.stringify(b), { status, headers: { "Content-Type": "application/json" } });
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (url: string) => {
+        const path = url.replace(/\?.*$/, "");
+        calls.push(path);
+        if (path === "/api/programs") return programs();
+        if (path === "/api/plan/week") return json(WEEK);
+        if (path === "/api/plan/workouts") return json({ today: "2026-10-05", workouts: [], plan: null });
+        if (path === "/api/coach/plans") return json({ plans: [] });
+        if (path === "/api/coach/state") {
+          return json({ messages: [], pendingProposals: [], settledProposals: [], openQuestion: null, memoryCount: 0, lastCoachAt: null, wakeAdvised: false });
+        }
+        if (path === "/api/plan/race") return json({ race: null });
+        if (path === "/api/settings") return json({ prefs: { units: "km", timezone: "America/Los_Angeles" } });
+        return json({});
+      }),
+    );
+    host = document.createElement("div");
+    document.body.appendChild(host);
+    // The app's own retry rule (app.tsx: up to two retries), quickly: a query that should not retry has to say so.
+    const qc = new QueryClient({ defaultOptions: { queries: { retry: (count) => count < 2, retryDelay: 1 } } });
+    root = createRoot(host);
+    act(() => {
+      root!.render(
+        createElement(QueryClientProvider, { client: qc }, createElement(MemoryRouter, { initialEntries: ["/plan"] }, createElement(PlanScreen))),
+      );
+    });
+    return { calls };
+  }
+  const settle = async (n = 20) => {
+    for (let i = 0; i < n; i += 1) {
+      await act(async () => {
+        await new Promise((r) => setTimeout(r, 10));
+      });
+    }
+  };
+  const ok = (b: unknown) => new Response(JSON.stringify(b), { status: 200, headers: { "Content-Type": "application/json" } });
+
+  it("holds its first paint while the programs are in flight, then paints the week and the program card together", async () => {
+    let answer: (r: Response) => void = () => undefined;
+    const { calls } = mountPlan(() => new Promise<Response>((resolve) => (answer = resolve)));
+    await settle();
+    // Everything else has answered; the page is still the one spinner, with no week drawn above a card to come.
+    expect(calls).toEqual(expect.arrayContaining(["/api/plan/week", "/api/plan/workouts", "/api/coach/plans", "/api/plan/race"]));
+    expect(host!.textContent).toContain("Loading plan");
+    expect(host!.textContent).not.toContain("This week");
+    answer(ok({ programs: [program()], places: PLACES, profiles: PROFILES }));
+    await settle();
+    expect(host!.textContent).not.toContain("Loading plan");
+    expect(host!.textContent).toContain("This week");
+    expect(host!.querySelector(".program-card")?.textContent).toContain("1 of 4 this week");
+  });
+
+  it("an account with no program: no card, no program section", async () => {
+    mountPlan(async () => ok({ programs: [], places: [], profiles: [] }));
+    await settle();
+    expect(host!.textContent).toContain("This week");
+    expect(host!.querySelector(".program-card, .program-cards")).toBeNull();
+  });
+
+  it("the programs failing paints the page at once, without the card — one attempt, no retries (audit 2a-UI M8)", async () => {
+    const { calls } = mountPlan(async () => new Response(JSON.stringify({ error: "internal" }), { status: 500 }));
+    await settle();
+    expect(host!.textContent).toContain("This week");
+    expect(host!.querySelector(".program-card")).toBeNull();
+    expect(calls.filter((c) => c === "/api/programs")).toHaveLength(1);
   });
 });
 
