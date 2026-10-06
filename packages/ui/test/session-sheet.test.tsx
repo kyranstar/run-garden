@@ -491,10 +491,24 @@ describe("a day ahead, a day gone, a started session", () => {
       w: slot({ effectiveDate: "2026-10-03", contentState: "outline" }),
     });
     await until(() => !!button("Move to today"), "the move offer");
+    // A static line, never a spinner for a build that will never start (audit 2a-UI I2, M11b).
+    await until(() => !document.querySelector("[role=status]"), "the session loaded");
+    expect(document.querySelector(".spinner")).toBeNull();
+    expect(body()).toContain("Nothing was built for this day");
     expect(builds(calls)).toHaveLength(0);
     await click("Move to today");
     await until(() => calls.some((c) => c.path.endsWith("/move")), "the move");
     expect(calls.find((c) => c.path.endsWith("/move"))!.body).toEqual({ toDate: TODAY, toTime: "19:00" });
+  });
+
+  it("a day gone that was built on its day: that build, read-only, with Move to today", async () => {
+    const gone = "2026-10-03";
+    const { calls } = mount(session({ date: gone, build: { ...session().build!, date: gone } }), { w: slot({ effectiveDate: gone }) });
+    await until(() => body().includes("Supported row"), "the day's build");
+    expect(document.querySelectorAll(".session-chips button")).toHaveLength(0);
+    expect(button("Swap Goblet squat")).toBeUndefined();
+    expect(button("Move to today")).toBeTruthy();
+    expect(builds(calls)).toHaveLength(0);
   });
 
   it("started: read-only — no swaps, no pickers, nothing built; Continue only with the player", async () => {

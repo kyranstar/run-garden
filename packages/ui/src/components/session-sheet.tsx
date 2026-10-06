@@ -277,13 +277,17 @@ export function SessionSheet({ w, today, onClose }: { w: WorkoutDto; today: stri
       </div>
     );
   } else if (!showBuild) {
-    body = build.isError ? (
+    // A day gone is never built (audit 2a-UI I2): a plain line, never a spinner for a build that will not start.
+    body = past ? (
+      <p className="session-none">Nothing was built for this day.</p>
+    ) : build.isError ? (
       <Banner kind="warn">Couldn't build this session — try again in a moment.</Banner>
     ) : (
       <Spinner label="Building the session" />
     );
   } else {
-    body = <BuiltSession s={s} locked={locked} onPick={setPicker} onSwap={setSwapping} onHowto={setHowto} />;
+    // A day gone keeps the build it had, read-only: it can no longer be rebuilt (only moved to today).
+    body = <BuiltSession s={s} locked={locked || past} onPick={setPicker} onSwap={setSwapping} onHowto={setHowto} />;
   }
 
   const items = s?.build?.items ?? [];

@@ -2190,6 +2190,11 @@ a.note {
 .session-status {
   margin: 0;
 }
+/* A day gone that was never built (audit 2a-UI I2). */
+.session-none {
+  margin: 0;
+  color: var(--ink-soft);
+}
 .session-blockrow {
   display: grid;
   gap: var(--space-1);
