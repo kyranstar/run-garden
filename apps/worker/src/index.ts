@@ -173,6 +173,14 @@ async function dropSyncRun(db: Db, runId: string): Promise<void> {
 export async function hourly(db: Db, env: Env): Promise<void> {
   await closeStrandedSyncRuns(db).catch(() => undefined);
   await sweepStaleSuppressions(db).catch(() => undefined);
+  // Adaptive programs keep their weeks filled as the days roll on (Phase 2a). FIRST of the per-user work, and
+  // cheap: an invocation that dies later on a CPU or subrequest ceiling (the garden, the coach, the COROS
+  // writes) has still placed the week (audit 2a-model M8). Its own pass over every program; it skips a
+  // restoring account itself, its failure is caught here so every step after it still runs, and the
+  // half-hourly calendar sync books what it places.
+  await placeSlotsForAllPrograms(db).catch((e: unknown) =>
+    console.error(`slot placement failed: ${e instanceof Error ? e.message : "unknown"}`),
+  );
   for (const userId of await allUserIds(db)) {
     // The loop was handed this account before any step ran, and a step (the
     // garden's, a coach read) can take seconds: a restore that began since
@@ -211,12 +219,6 @@ export async function hourly(db: Db, env: Env): Promise<void> {
       else await finishSyncRun(db, runId, "error");
     }
   }
-  // Adaptive programs keep their weeks filled as the days roll on (Phase 2a).
-  // Its own pass over every active program; it skips a restoring account
-  // itself, and the half-hourly calendar sync books what it places.
-  await placeSlotsForAllPrograms(db).catch((e: unknown) =>
-    console.error(`slot placement failed: ${e instanceof Error ? e.message : "unknown"}`),
-  );
 }
 
 export async function weekly(db: Db, env: Env): Promise<void> {
