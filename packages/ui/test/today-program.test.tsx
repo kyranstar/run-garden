@@ -31,6 +31,7 @@ import {
   ConditionChips,
   conditionChipLabel,
 } from "../src/components/condition-check-sheet.js";
+import { DockPill } from "../src/screens/garden.js";
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
@@ -156,6 +157,14 @@ describe("todayCardLayout", () => {
     expect(todayCardLayout(a.workout, [a, b])).toEqual({ title: { kind: "program", session: a }, lines: [b] });
   });
 
+  it("a skipped session is not today's to-do: another session takes the title, and alone it is shown as skipped (ruling 2a-R15)", () => {
+    const skipped = outline({ id: "a", effectiveTime: "07:00", completionState: "skipped" });
+    const later = outline({ id: "b", effectiveTime: "19:00" });
+    const tomorrow = workout({ id: "run-2", effectiveDate: "2026-10-06" });
+    expect(todayCardLayout(later.workout, [skipped, later])).toEqual({ title: { kind: "program", session: later }, lines: [skipped] });
+    expect(todayCardLayout(tomorrow, [skipped])).toEqual({ title: { kind: "program", session: skipped }, lines: [] });
+  });
+
   it("a rest day's row is never a line, and nothing at all is nothing", () => {
     const rest = runSession({ id: "rest", category: "rest" });
     const next = workout({ id: "run-2", effectiveDate: "2026-10-06" });
@@ -202,6 +211,17 @@ describe("TodayProgramLead", () => {
     expect(done).not.toMatch(/Start|Continue/);
   });
 
+  it("skipped: says so, with no play action even with the player — Open, not primary, leads to Un-skip (ruling 2a-R15)", () => {
+    features.player = true;
+    for (const session of [outline({ completionState: "skipped" }), built({ completionState: "skipped" })]) {
+      const out = html(createElement(TodayProgramLead, { session, today: TODAY }));
+      expect(text(out)).toContain("Skipped");
+      expect(text(out)).not.toMatch(/Start|Continue|Done/);
+      expect(out).toContain('href="/plan?workout=slot-p1-2026-10-05"');
+      expect(out).not.toContain("btn-primary");
+    }
+  });
+
   it("without the player a started session still opens, and a done one says so", () => {
     const started = text(html(createElement(TodayProgramLead, { session: built({ contentState: "started" }), today: TODAY })));
     expect(started).toContain("Open");
@@ -231,6 +251,27 @@ describe("TodayProgramLine", () => {
     const done = text(html(createElement(TodayProgramLine, { session: built({ contentState: "done" }), today: TODAY })));
     expect(done).toContain("Done");
     expect(done).not.toMatch(/Start|Continue/);
+  });
+
+  it("skipped: says so, never Start (ruling 2a-R15)", () => {
+    features.player = true;
+    for (const session of [outline({ completionState: "skipped" }), built({ completionState: "skipped" })]) {
+      const out = text(html(createElement(TodayProgramLine, { session, today: TODAY })));
+      expect(out).toContain("Skipped");
+      expect(out).not.toMatch(/Start|Continue|Done/);
+    }
+  });
+});
+
+describe("the collapsed Today row (DockPill) for a skipped session", () => {
+  it("names it skipped, not next (ruling 2a-R15)", () => {
+    const pill = text(html(createElement(DockPill, { workout: slotWorkout({ completionState: "skipped" }), today: TODAY, onOpen: () => undefined })));
+    expect(pill).not.toContain("Next");
+    expect(pill).toContain("Garden program · Today · skipped");
+    // A session still to do reads as it always did.
+    expect(text(html(createElement(DockPill, { workout: workout(), today: TODAY, onOpen: () => undefined })))).toBe(
+      "Next: Easy Run with Strides · Today 7 AM",
+    );
   });
 });
 

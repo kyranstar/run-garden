@@ -509,6 +509,36 @@ describe("a day ahead, a day gone, a started session", () => {
   });
 });
 
+describe("a skipped session (ruling 2a-R15)", () => {
+  it("shows Skipped and Un-skip: no pre-check, nothing built on open, no Skip or Move", async () => {
+    const { calls } = mount(session({ contentState: "outline", checks: {}, build: null, view: null }), {
+      w: slot({ contentState: "outline", completionState: "skipped" }),
+    });
+    await until(() => body().includes("Skipped"), "the skipped session");
+    expect(button("Un-skip")).toBeTruthy();
+    expect(body()).not.toContain("right now");
+    expect(document.querySelector(".spinner")).toBeNull();
+    expect(button("Skip")).toBeUndefined();
+    expect(button("Move")).toBeUndefined();
+    expect(builds(calls)).toHaveLength(0);
+    await click("Un-skip");
+    await until(() => calls.some((c) => c.path.endsWith("/unskip")), "the un-skip");
+    expect(calls.find((c) => c.path.endsWith("/unskip"))).toMatchObject({ method: "POST", path: `/api/plan/workouts/${SLOT}/unskip` });
+    expect(builds(calls)).toHaveLength(0);
+  });
+
+  it("built before it was skipped: the build is shown read-only, never rebuilt", async () => {
+    features.player = true;
+    const { calls } = mount(session(), { w: slot({ completionState: "skipped" }) });
+    await until(() => body().includes("Supported row"), "the moves");
+    expect(document.querySelectorAll(".session-chips button")).toHaveLength(0);
+    expect(button("Swap Goblet squat")).toBeUndefined();
+    expect(button(/^Start/)).toBeUndefined();
+    expect(button("Un-skip")).toBeTruthy();
+    expect(builds(calls)).toHaveLength(0);
+  });
+});
+
 describe("WorkoutDetail branches on origin", () => {
   it("a program slot opens the session sheet, titled by its program", async () => {
     const { calls } = mount(session(), { detail: true });

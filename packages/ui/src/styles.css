@@ -2137,11 +2137,16 @@ a.note {
   font-size: var(--text-sm);
   color: var(--ink-soft);
 }
-.today-session-done {
+.today-session-done,
+.today-session-skipped {
   align-self: center;
   font-size: var(--text-sm);
   font-weight: var(--weight-medium);
   color: var(--green-ink);
+}
+/* Skipped (ruling 2a-R15): a state, not a success. */
+.today-session-skipped {
+  color: var(--ink-soft);
 }
 /* "↑": the move goes up today. */
 .dose-up {
@@ -2180,6 +2185,10 @@ a.note {
   margin: 0;
   color: var(--ink-soft);
   font-size: var(--text-sm);
+}
+/* "Skipped" (ruling 2a-R15). */
+.session-status {
+  margin: 0;
 }
 .session-blockrow {
   display: grid;

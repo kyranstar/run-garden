@@ -9,6 +9,7 @@
  *
  *  - A day ahead is a preview (no pre-check, never startable); a day gone offers "Move to today".
  *  - A started or done session is read-only: no pickers, no swaps.
+ *  - A skipped session says so and offers Un-skip, and nothing else: no pre-check, no build, no Skip (ruling 2a-R15).
  *  - Start (and Continue) belong to the player, which arrives in 2b: hidden behind `features.player` until then.
  *  - "Don't show again" on a swap writes the move's prefs (`PUT /api/library/:id/prefs`, 2c): left out until then.
  */
@@ -25,7 +26,7 @@ import {
   type WorkoutDto,
 } from "@rg/api-client";
 import { doseText, type DoseStep, type DoseTarget } from "@rg/domain";
-import { Banner, EmptyState, formatDayLong, formatTime, Sheet, Spinner } from "../components.js";
+import { Banner, CompletionPill, EmptyState, formatDayLong, formatTime, Sheet, Spinner } from "../components.js";
 import { features } from "../features.js";
 import { IconInfo, IconSwap } from "../icons.js";
 import { MoveSheet } from "../screens/move-sheet.js";
@@ -120,6 +121,15 @@ export function SessionSheet({ w, today, onClose }: { w: WorkoutDto; today: stri
       onClose();
     },
   });
+  const unskip = useMutation({
+    mutationFn: () => api.unskipWorkout(w.id),
+    onSuccess: () => {
+      refreshPlan();
+      // Completion feeds the garden, as the run sheet's Un-skip does.
+      void qc.invalidateQueries({ queryKey: ["garden"] });
+      void qc.invalidateQueries({ queryKey: key });
+    },
+  });
   const moveToToday = useMutation({
     mutationFn: () => api.move(w.id, today, w.effectiveTime),
     onSuccess: () => {
@@ -133,16 +143,18 @@ export function SessionSheet({ w, today, onClose }: { w: WorkoutDto; today: stri
   const locked = !!s && (s.locked || s.contentState === "started" || s.contentState === "done");
   const past = date < today;
   const ahead = date > today;
-  const unanswered = s && !locked && !past && !ahead ? s.profiles.filter((p) => !s.checks[p.profileId]) : [];
+  // Skipped is not today's to-do (ruling 2a-R15): nothing is asked or built until it is un-skipped.
+  const skipped = w.completionState === "skipped";
+  const unanswered = s && !locked && !skipped && !past && !ahead ? s.profiles.filter((p) => !s.checks[p.profileId]) : [];
   const needsCheck = unanswered.length > 0;
 
   // Opening builds — or returns the stored build when nothing changed — unless the pre-check comes first.
   useEffect(() => {
-    if (!s || asked.current || locked || past || needsCheck) return;
+    if (!s || asked.current || locked || skipped || past || needsCheck) return;
     asked.current = true;
     build.mutate({});
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [s, locked, past, needsCheck]);
+  }, [s, locked, skipped, past, needsCheck]);
 
   const answer = (profileId: string, value: number) => {
     const next = { ...answers, [profileId]: value };
@@ -177,8 +189,14 @@ export function SessionSheet({ w, today, onClose }: { w: WorkoutDto; today: stri
   };
 
   const showBuild = !!(s?.build && view) && !needsCheck;
-  const canPlay = features.player && date === today && !past;
-  const footer = (
+  const canPlay = features.player && date === today && !past && !skipped;
+  const footer = skipped ? (
+    <div className="btn-row">
+      <button type="button" className="btn" disabled={unskip.isPending} onClick={() => unskip.mutate()}>
+        Un-skip
+      </button>
+    </div>
+  ) : (
     <div className="btn-row">
       {canPlay && showBuild && !locked ? (
         <button type="button" className="btn btn-primary" disabled={start.isPending} onClick={() => start.mutate(s!.build!.buildId)}>
@@ -211,7 +229,16 @@ export function SessionSheet({ w, today, onClose }: { w: WorkoutDto; today: stri
   let body: React.ReactNode;
   if (session.isLoading) body = <Spinner label="Loading the session" />;
   else if (!s) body = <EmptyState title="This session is no longer in the plan" />;
-  else if (needsCheck) {
+  else if (skipped) {
+    body = (
+      <div className="stack">
+        <p className="session-status">
+          <CompletionPill state="skipped" />
+        </p>
+        {showBuild ? <BuiltSession s={s} locked onPick={setPicker} onSwap={setSwapping} onHowto={setHowto} /> : null}
+      </div>
+    );
+  } else if (needsCheck) {
     body = (
       <div className="stack session-precheck">
         {unanswered.map((p) => (

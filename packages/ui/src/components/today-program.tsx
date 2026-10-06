@@ -34,9 +34,15 @@ export const MODE_LABEL: Record<"recovery" | "consistent" | "build", string> = {
   build: "Build",
 };
 
+/** A skipped session is not today's to-do: it says "Skipped" and offers nothing to play (ruling 2a-R15). */
+export function sessionSkipped(w: WorkoutDto): boolean {
+  return w.completionState === "skipped";
+}
+
 /**
  * Which session the card is titled by. A run still to do today keeps the title, whatever time the program session
- * is; without one, today's first program session takes it; with neither, the next workout does, as before.
+ * is; without one, today's first program session that is not skipped takes it (the first one, as skipped, when every
+ * one is); with neither, the next workout does, as before.
  */
 export function todayCardLayout(next: WorkoutDto | null, sessions: readonly TodaySession[]): TodayCardLayout {
   const app = sessions.filter((s) => isAppSession(s.workout));
@@ -47,8 +53,8 @@ export function todayCardLayout(next: WorkoutDto | null, sessions: readonly Toda
     (s) => !isAppSession(s.workout) && s.workout.category !== "rest" && s.workout.completionState === "scheduled",
   );
   if (run) return { title: { kind: "run", workout: run.workout }, lines: app };
-  if (app.length > 0) return { title: { kind: "program", session: app[0]! }, lines: app.slice(1) };
-  return { title: next ? { kind: "run", workout: next } : null, lines: [] };
+  const lead = app.find((s) => !sessionSkipped(s.workout)) ?? app[0]!;
+  return { title: { kind: "program", session: lead }, lines: app.filter((s) => s !== lead) };
 }
 
 /** The program's name: the row's title without the theme a build appends (" · Hips & posture"). */
@@ -68,9 +74,9 @@ export const sheetHref = (w: WorkoutDto) => `/plan?workout=${encodeURIComponent(
 /** The player (Phase 2b). */
 export const playerHref = (w: WorkoutDto) => `/session/${encodeURIComponent(w.id)}`;
 
-/** The player's way in for this session today, or null (no player yet, not today, or nothing left to play). */
+/** The player's way in for this session today, or null (no player yet, not today, skipped, or nothing left to play). */
 function playAction(w: WorkoutDto, today: string): "Start" | "Continue" | null {
-  if (!features.player || w.effectiveDate !== today || sessionDone(w)) return null;
+  if (!features.player || w.effectiveDate !== today || w.completionState !== "scheduled" || sessionDone(w)) return null;
   return w.contentState === "started" ? "Continue" : "Start";
 }
 
@@ -103,6 +109,7 @@ export function TodayProgramLead({ session, today }: { session: TodaySession; to
   const b = session.build;
   const play = playAction(w, today);
   const done = sessionDone(w);
+  const skipped = !done && sessionSkipped(w);
   return (
     <>
       <h3 className="today-title">{programName(session)}</h3>
@@ -118,12 +125,13 @@ export function TodayProgramLead({ session, today }: { session: TodaySession; to
       ) : null}
       <div className="btn-row today-actions">
         {done ? <span className="today-session-done">Done</span> : null}
+        {skipped ? <span className="today-session-skipped">Skipped</span> : null}
         {play ? (
           <Link className="btn btn-primary today-play" to={playerHref(w)}>
             {play}
           </Link>
         ) : null}
-        <Link className={`btn${play || done ? "" : " btn-primary"}`} to={sheetHref(w)}>
+        <Link className={`btn${play || done || skipped ? "" : " btn-primary"}`} to={sheetHref(w)}>
           Open
         </Link>
       </div>
@@ -147,6 +155,8 @@ export function TodayProgramLine({ session, today }: { session: TodaySession; to
       </div>
       {sessionDone(w) ? (
         <span className="today-session-done">Done</span>
+      ) : sessionSkipped(w) ? (
+        <span className="today-session-skipped">Skipped</span>
       ) : play ? (
         <Link className="btn btn-small btn-primary" to={playerHref(w)}>
           {play}
