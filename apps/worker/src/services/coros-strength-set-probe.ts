@@ -1,0 +1,348 @@
+import { addDays, sportIdForCorosCode, todayInZone, type UserPreferences } from "@rg/domain";
+import { CorosApiError } from "@rg/coros";
+import type { RawCorosActivityDetail } from "@rg/providers";
+import { fixtureModeEnabled, type Env } from "../env.js";
+import type { Db } from "./db.js";
+import { corosClient } from "./coros-connection.js";
+import { isRuntimeLimit } from "./runtime-limit.js";
+
+/**
+ * THE MASKED STRENGTH-SET SCALE PROBE (Phase 2a+ Task 1). The lap-key probe
+ * (coros-lap-probe.ts) proved that a strength activity's lap items carry
+ * `reps`, `weight`, `intensityValue`, `exerciseId` and `lapType`, and that
+ * the summary carries `totalReps` and `totalWeight`. It could not say what
+ * unit `weight` is in: the program wire sends kg × 1000, and the ingest
+ * (Task 2) must not convert before that is settled.
+ *
+ * It runs on real personal data, so it returns COUNTS ONLY: how many items
+ * carry each field, order-of-magnitude buckets of the positive values, and
+ * how `weight` and `intensityValue` relate in scale where both are set. No
+ * value, id, name, date or title leaves the Worker. The one deliberate
+ * exception is the `byLapType` key: a lap type that is a small integer
+ * (0–99, a COROS enum code) is reported as itself, so Task 2 can tell rest
+ * laps from work laps; any other lap type is counted as "other".
+ *
+ * Read-only: the activity list and each detail come through the same cloud
+ * client calls corosReadNow makes. Nothing is stored; the only D1 writes are
+ * the shared client factory's own session bookkeeping (a token refresh, or
+ * marking a failed login), as for every other COROS read.
+ */
+
+/** Window, days back from today (inclusive), when none is asked for. */
+export const STRENGTH_SET_DEFAULT_DAYS = 60;
+/** Requested windows are clamped to 1..this. */
+export const STRENGTH_SET_MAX_DAYS = 120;
+
+/**
+ * COROS HTTP calls this probe may make in one invocation. Workers Free allows
+ * 50 subrequests; the request's own D1 reads (session, preferences, the
+ * connection row, at most one token-cache update) are fixed and few, so 36
+ * leaves a margin of about ten.
+ */
+export const SUBREQUEST_BUDGET = 36;
+/**
+ * The most one detail read can cost: the call, and on an expired token
+ * (result 1019) the client's re-login and one retry.
+ */
+const DETAIL_WORST_CASE = 3;
+
+export function clampWindowDays(days: number): number {
+  return Math.min(STRENGTH_SET_MAX_DAYS, Math.max(1, days));
+}
+
+/** Lower bound inclusive: "1-10" is 1 ≤ v < 10. */
+export const MAGNITUDE_BUCKETS = ["<1", "1-10", "10-100", "100-1k", "1k-10k", "10k-100k", ">=100k"] as const;
+export type MagnitudeBucket = (typeof MAGNITUDE_BUCKETS)[number];
+const MAGNITUDE_FLOORS = [1, 10, 100, 1_000, 10_000, 100_000];
+
+export interface FieldStats {
+  /** Key absent, or null. */
+  missing: number;
+  /** An empty (or blank) string — how COROS writes "no value" in some fields. */
+  empty: number;
+  zero: number;
+  positive: number;
+  negative: number;
+  /** A string that is not a number, a boolean, an object, NaN or Infinity. */
+  nonNumeric: number;
+  /** Of zero/positive/negative: how many arrived as numeric strings. */
+  fromString: number;
+  /** The positive values, by order of magnitude. */
+  magnitude: Record<MagnitudeBucket, number>;
+}
+
+export interface ScaleComparison {
+  /** Items where both `weight` and `intensityValue` are > 0. */
+  compared: number;
+  equal: number;
+  /** weight == intensityValue × 1000 */
+  weightIsIntensityTimes1000: number;
+  /** intensityValue == weight × 1000 */
+  intensityIsWeightTimes1000: number;
+  other: number;
+}
+
+export interface StrengthSetStats {
+  activitiesWithLapItems: number;
+  /** `lapList` entries holding at least one item (more than one per activity means several lap views). */
+  lapListsWithItems: number;
+  lapItems: {
+    total: number;
+    /** Small-integer lap types by code; "missing" and "other" otherwise. */
+    byLapType: Record<string, number>;
+    reps: FieldStats;
+    weight: FieldStats;
+    intensityValue: FieldStats;
+    weightVsIntensity: ScaleComparison;
+    exerciseId: { present: number; absent: number; distinct: number };
+  };
+  summary: {
+    /** Activities whose detail had a summary object. */
+    present: number;
+    totalWeight: FieldStats;
+    totalReps: FieldStats;
+  };
+}
+
+function emptyFieldStats(): FieldStats {
+  return {
+    missing: 0,
+    empty: 0,
+    zero: 0,
+    positive: 0,
+    negative: 0,
+    nonNumeric: 0,
+    fromString: 0,
+    magnitude: Object.fromEntries(MAGNITUDE_BUCKETS.map((b) => [b, 0])) as Record<MagnitudeBucket, number>,
+  };
+}
+
+/** The value as a finite number when it is one (numeric strings included). */
+function asNumber(value: unknown): number | undefined {
+  if (typeof value === "number") return Number.isFinite(value) ? value : undefined;
+  if (typeof value === "string" && value.trim() !== "") {
+    const n = Number(value);
+    return Number.isFinite(n) ? n : undefined;
+  }
+  return undefined;
+}
+
+function magnitudeBucket(n: number): MagnitudeBucket {
+  let i = 0;
+  while (i < MAGNITUDE_FLOORS.length && n >= MAGNITUDE_FLOORS[i]!) i += 1;
+  return MAGNITUDE_BUCKETS[i]!;
+}
+
+function tally(stats: FieldStats, value: unknown): void {
+  if (value === undefined || value === null) {
+    stats.missing += 1;
+    return;
+  }
+  if (typeof value === "string" && value.trim() === "") {
+    stats.empty += 1;
+    return;
+  }
+  const n = asNumber(value);
+  if (n === undefined) {
+    stats.nonNumeric += 1;
+    return;
+  }
+  if (typeof value === "string") stats.fromString += 1;
+  if (n === 0) stats.zero += 1;
+  else if (n < 0) stats.negative += 1;
+  else {
+    stats.positive += 1;
+    stats.magnitude[magnitudeBucket(n)] += 1;
+  }
+}
+
+/** Equal up to floating-point noise (52.5 × 1000 must equal 52500). */
+function same(a: number, b: number): boolean {
+  return Math.abs(a - b) <= 1e-9 * Math.max(Math.abs(a), Math.abs(b));
+}
+
+function lapTypeKey(value: unknown): string {
+  if (value === undefined || value === null) return "missing";
+  return typeof value === "number" && Number.isInteger(value) && value >= 0 && value <= 99 ? String(value) : "other";
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === "object" && !Array.isArray(value);
+}
+
+/**
+ * Counts over the given activity details — pure, and the only place a lap
+ * value is looked at. Everything it returns is a count or a fixed label.
+ */
+export function strengthSetStats(details: readonly RawCorosActivityDetail[]): StrengthSetStats {
+  const reps = emptyFieldStats();
+  const weight = emptyFieldStats();
+  const intensityValue = emptyFieldStats();
+  const totalWeight = emptyFieldStats();
+  const totalReps = emptyFieldStats();
+  const scale: ScaleComparison = {
+    compared: 0,
+    equal: 0,
+    weightIsIntensityTimes1000: 0,
+    intensityIsWeightTimes1000: 0,
+    other: 0,
+  };
+  const byLapType = new Map<string, number>();
+  const exerciseIds = new Set<string>();
+  let exercisePresent = 0;
+  let exerciseAbsent = 0;
+  let activitiesWithLapItems = 0;
+  let lapListsWithItems = 0;
+  let total = 0;
+  let summaries = 0;
+
+  for (const detail of details) {
+    const summary = isRecord(detail.summary) ? detail.summary : undefined;
+    if (summary) summaries += 1;
+    tally(totalWeight, summary?.totalWeight);
+    tally(totalReps, summary?.totalReps);
+
+    let hadItems = false;
+    for (const lap of Array.isArray(detail.lapList) ? detail.lapList : []) {
+      const items = isRecord(lap) && Array.isArray(lap.lapItemList) ? (lap.lapItemList as unknown[]) : [];
+      if (items.length === 0) continue;
+      hadItems = true;
+      lapListsWithItems += 1;
+      for (const raw of items) {
+        const item = isRecord(raw) ? raw : {};
+        total += 1;
+        const type = lapTypeKey(item.lapType);
+        byLapType.set(type, (byLapType.get(type) ?? 0) + 1);
+        tally(reps, item.reps);
+        tally(weight, item.weight);
+        tally(intensityValue, item.intensityValue);
+
+        const w = asNumber(item.weight);
+        const iv = asNumber(item.intensityValue);
+        if (w !== undefined && iv !== undefined && w > 0 && iv > 0) {
+          scale.compared += 1;
+          if (same(w, iv)) scale.equal += 1;
+          else if (same(w, iv * 1000)) scale.weightIsIntensityTimes1000 += 1;
+          else if (same(iv, w * 1000)) scale.intensityIsWeightTimes1000 += 1;
+          else scale.other += 1;
+        }
+
+        const id = item.exerciseId;
+        if (id === undefined || id === null || (typeof id === "string" && id.trim() === "")) {
+          exerciseAbsent += 1;
+        } else {
+          exercisePresent += 1;
+          exerciseIds.add(typeof id === "string" ? id : JSON.stringify(id));
+        }
+      }
+    }
+    if (hadItems) activitiesWithLapItems += 1;
+  }
+
+  return {
+    activitiesWithLapItems,
+    lapListsWithItems,
+    lapItems: {
+      total,
+      byLapType: Object.fromEntries([...byLapType.entries()].sort(([a], [b]) => a.localeCompare(b))),
+      reps,
+      weight,
+      intensityValue,
+      weightVsIntensity: scale,
+      exerciseId: { present: exercisePresent, absent: exerciseAbsent, distinct: exerciseIds.size },
+    },
+    summary: { present: summaries, totalWeight, totalReps },
+  };
+}
+
+export interface StrengthSetProbeBody extends StrengthSetStats {
+  windowDays: number;
+  /** Strength activities in the window. */
+  strengthActivities: number;
+  /** Of those, details read and counted (newest first). */
+  activitiesScanned: number;
+  /** Details COROS refused or that failed to arrive; not counted. */
+  detailFailures: number;
+  /** True when the subrequest budget stopped the scan before the oldest activities. */
+  truncated: boolean;
+  /** COROS HTTP calls this probe made — logins and expired-token retries included. */
+  subrequests: number;
+  subrequestBudget: number;
+}
+
+export type StrengthSetProbeResult =
+  | { status: "fixture_mode" }
+  | { status: "not_connected" }
+  | { status: "coros_error"; code?: string }
+  /** Our own subrequest/CPU ceiling — never COROS's failure (runtime-limit.ts). */
+  | { status: "runtime_limit" }
+  /** The probe's own code failed on what COROS sent. */
+  | { status: "probe_error" }
+  | { status: "ok"; body: StrengthSetProbeBody };
+
+export async function probeStrengthSetStats(
+  db: Db,
+  env: Env,
+  userId: string,
+  prefs: UserPreferences,
+  days: number,
+  fetchImpl: typeof fetch = fetch,
+): Promise<StrengthSetProbeResult> {
+  // Fixture mode never talks to real providers (repo-wide convention).
+  if (fixtureModeEnabled(env)) return { status: "fixture_mode" };
+  let subrequests = 0;
+  const counted: typeof fetch = (input, init) => {
+    subrequests += 1;
+    return fetchImpl(input, init);
+  };
+  const client = await corosClient(db, env, userId, counted);
+  if (!client) return { status: "not_connected" };
+
+  const today = todayInZone(prefs.timezone);
+  try {
+    const items = await client.getActivities(addDays(today, -days), today);
+    const strength = items
+      .filter((item) => sportIdForCorosCode(item.sportType) === "strength")
+      .sort((a, b) => (b.startTime ?? 0) - (a.startTime ?? 0) || b.date - a.date);
+    const details: RawCorosActivityDetail[] = [];
+    let detailFailures = 0;
+    let truncated = false;
+    for (const item of strength) {
+      if (subrequests + DETAIL_WORST_CASE > SUBREQUEST_BUDGET) {
+        truncated = true;
+        break;
+      }
+      try {
+        // The same detail call corosReadNow's snapshot makes.
+        details.push(await client.getActivityDetail(item.labelId, item.sportType));
+      } catch (e) {
+        if (isRuntimeLimit(e)) throw e; // the whole run hit our ceiling, not this detail
+        detailFailures += 1;
+      }
+    }
+    let stats: StrengthSetStats;
+    try {
+      stats = strengthSetStats(details);
+    } catch {
+      return { status: "probe_error" };
+    }
+    return {
+      status: "ok",
+      body: {
+        windowDays: days,
+        strengthActivities: strength.length,
+        activitiesScanned: details.length,
+        detailFailures,
+        truncated,
+        subrequests,
+        subrequestBudget: SUBREQUEST_BUDGET,
+        ...stats,
+      },
+    };
+  } catch (e) {
+    if (isRuntimeLimit(e)) return { status: "runtime_limit" };
+    // Result code only — a CorosApiError message never carries account data,
+    // but nothing but the code is needed.
+    return { status: "coros_error", ...(e instanceof CorosApiError && e.resultCode ? { code: e.resultCode } : {}) };
+  }
+}

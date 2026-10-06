@@ -13,6 +13,11 @@ import { processCoachReads } from "../services/coach-reads.js";
 import { loadPreferences } from "../services/calendar-sync.js";
 import { MAX_WINDOW_DAYS, probeStrengthLapKeys } from "../services/coros-lap-probe.js";
 import {
+  clampWindowDays,
+  probeStrengthSetStats,
+  STRENGTH_SET_DEFAULT_DAYS,
+} from "../services/coros-strength-set-probe.js";
+import {
   runSpikeCleanup,
   runUnmappedMoveSpike,
   SPIKE_CLEANUP_CONFIRM,
@@ -93,6 +98,43 @@ corosRoutes.get("/debug/lap-keys", async (c) => {
   const userId = c.get("userId");
   const prefs = await loadPreferences(db, userId);
   const result = await probeStrengthLapKeys(db, c.env, userId, prefs, parsed.data.days);
+  switch (result.status) {
+    case "fixture_mode":
+      return c.json({ error: "not_found" }, 404);
+    case "not_connected":
+      return c.json({ error: "not_connected" }, 409);
+    case "coros_error":
+      return c.json({ error: "coros_error", ...(result.code ? { code: result.code } : {}) }, 502);
+    case "runtime_limit":
+      return c.json({ error: "runtime_limit" }, 503);
+    case "probe_error":
+      return c.json({ error: "probe_error" }, 500);
+    case "ok":
+      return c.json(result.body);
+  }
+});
+
+const strengthSetQuery = z.object({
+  // An integer, clamped to 1..120 days (an empty or non-integer value is refused).
+  days: z
+    .string()
+    .regex(/^-?\d{1,9}$/)
+    .optional()
+    .transform((s) => clampWindowDays(s === undefined ? STRENGTH_SET_DEFAULT_DAYS : Number(s))),
+});
+
+/**
+ * Masked scale probe (Phase 2a+ Task 1): counts and order-of-magnitude buckets
+ * of the reps, weight and intensityValue on recent strength activities' lap
+ * items — never a value, id, name or date. Read-only.
+ */
+corosRoutes.get("/debug/strength-set-stats", async (c) => {
+  const parsed = strengthSetQuery.safeParse({ days: c.req.query("days") });
+  if (!parsed.success) return c.json({ error: "invalid_request" }, 400);
+  const db = c.get("db");
+  const userId = c.get("userId");
+  const prefs = await loadPreferences(db, userId);
+  const result = await probeStrengthSetStats(db, c.env, userId, prefs, parsed.data.days);
   switch (result.status) {
     case "fixture_mode":
       return c.json({ error: "not_found" }, 404);
