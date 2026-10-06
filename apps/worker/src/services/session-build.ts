@@ -766,6 +766,34 @@ async function pruneBuilds(db: Db, workoutId: string, keep: string): Promise<voi
 /** Planned seconds as the calendar books them: rounded up to 5 minutes. */
 const bookedSeconds = (planned: number): number => Math.max(300, Math.ceil(planned / 300) * 300);
 
+/**
+ * What a build puts on its slot's row (§2a "Output persisted"): `<program> · <theme>`, the discipline (§9.2: a core
+ * lift makes it strength, else yoga) and the planned length as the calendar books it. A fresh build and the stored
+ * build adopted again (a cache hit on a slot that became an outline) write the same thing (re-review R2).
+ */
+function builtRowContent(name: string, theme: { name: string } | null, plannedSeconds: number, hasCoreLift: boolean) {
+  const seconds = bookedSeconds(plannedSeconds);
+  const discipline = hasCoreLift ? "strength" : "yoga";
+  return {
+    title: theme ? `${name} · ${theme.name}` : name,
+    category: discipline,
+    sport: discipline,
+    calendarBlockDurationSeconds: seconds,
+    fallbackEstimatedDurationSeconds: seconds,
+  } satisfies Partial<SlotRow>;
+}
+
+/**
+ * What writing `next` on `row` changes for the calendar: the booked length (then the day's collision pass runs), and
+ * whether the event has anything new to show — its title, discipline or length (ruling 2a-R8).
+ */
+function rowChange(row: SlotRow, next: ReturnType<typeof builtRowContent>): { resized: boolean; calendarChanged: boolean } {
+  const resized =
+    next.calendarBlockDurationSeconds !== row.calendarBlockDurationSeconds ||
+    next.fallbackEstimatedDurationSeconds !== row.fallbackEstimatedDurationSeconds;
+  return { resized, calendarChanged: resized || next.title !== row.title || next.category !== row.category };
+}
+
 type BuildCtx = { today: string; now: string; prefs: UserPreferences };
 
 /** Everything a build of a slot on its day reads, and the hash over it. */
@@ -914,17 +942,40 @@ async function commitBuild(
     // An answer that leaves the day's checks as they were (the day's check, given again) is still the slot's own.
     await recordPreChecks(db, userId, workoutId, date, inputs.preChecks, ctx.now);
     if (rebuilt) {
-      await db
+      // While it was an outline a placement pass may have given it the program's outline content (its name, default
+      // length and discipline): the row takes the stored build's again, exactly as that build first wrote it
+      // (re-review R2).
+      const stored = storedOf(previous);
+      const content = builtRowContent(
+        inputs.programName ?? row.title,
+        stored.view.theme,
+        stored.build.plannedSeconds,
+        stored.build.items.some((i) => i.block === "core"),
+      );
+      const changes = {
+        ...content,
+        contentState: "built",
+        sessionParams: stored.build.params as unknown as Record<string, unknown>,
+        updatedAt: ctx.now,
+      } satisfies Partial<SlotRow>;
+      const updated = await db
         .update(plannedWorkouts)
-        .set({ contentState: "built", updatedAt: ctx.now })
+        .set(changes)
         .where(
           and(
             eq(plannedWorkouts.id, workoutId),
             eq(plannedWorkouts.userId, userId),
             or(isNull(plannedWorkouts.contentState), eq(plannedWorkouts.contentState, "outline")),
           ),
-        );
-      return { session: respond({ ...row, contentState: "built", updatedAt: ctx.now }, builds, ctx.today, checks, hidden, sheetExtras(context)), calendarChanged: false };
+        )
+        .returning({ id: plannedWorkouts.id });
+      // Started (or built) meanwhile: what it is now is the answer.
+      if (updated.length === 0) {
+        return { session: await readResponse(db, userId, await loadSlot(db, userId, workoutId), ctx.today), calendarChanged: false };
+      }
+      const { resized, calendarChanged } = rowChange(row, content);
+      if (resized) await separateDayCollisions(db, userId, [date], ctx.prefs, { from: ctx.today, now: ctx.now });
+      return { session: respond({ ...row, ...changes }, builds, ctx.today, checks, hidden, sheetExtras(context)), calendarChanged };
     }
     return { session: respond(row, builds, ctx.today, preview ? {} : checks, hidden, sheetExtras(context)), calendarChanged: false };
   }
@@ -988,16 +1039,9 @@ async function commitBuild(
   }
   if (race.some((b) => b.lockedAt !== null)) return refuse();
 
-  const seconds = bookedSeconds(composed.build.plannedSeconds);
-  const discipline = composed.hasCoreLift ? "strength" : "yoga";
-  const name = inputs.programName ?? row.title;
-  const title = composed.view.theme ? `${name} · ${composed.view.theme.name}` : name;
+  const content = builtRowContent(inputs.programName ?? row.title, composed.view.theme, composed.build.plannedSeconds, composed.hasCoreLift);
   const changes = {
-    title,
-    category: discipline,
-    sport: discipline,
-    calendarBlockDurationSeconds: seconds,
-    fallbackEstimatedDurationSeconds: seconds,
+    ...content,
     contentState: "built",
     sessionParams: { checks, overrides, swaps } as unknown as Record<string, unknown>,
     updatedAt: ctx.now,
@@ -1023,14 +1067,14 @@ async function commitBuild(
     .returning({ id: plannedWorkouts.id });
   if (updated.length === 0) return refuse();
   // A longer session can now overlap the day's other plans: the same retime placement and coach edits use.
-  const resized = seconds !== row.calendarBlockDurationSeconds || seconds !== row.fallbackEstimatedDurationSeconds;
+  const { resized, calendarChanged } = rowChange(row, content);
   if (resized) await separateDayCollisions(db, userId, [date], ctx.prefs, { from: ctx.today, now: ctx.now });
   await pruneBuilds(db, workoutId, written.id);
   return {
     session: respond({ ...row, ...changes }, [written, ...locked], ctx.today, checks, hidden, sheetExtras(context)),
     // The calendar shows the row's title, discipline and booked length; a build that keeps all three (a swap, a
     // check that keeps the theme) leaves the event to the half-hourly reconcile (ruling 2a-R8).
-    calendarChanged: resized || title !== row.title || discipline !== row.category,
+    calendarChanged,
   };
 }
 

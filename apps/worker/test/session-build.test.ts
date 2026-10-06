@@ -36,7 +36,8 @@ import {
   type SessionResponse,
 } from "../src/services/session-build.js";
 import { loadEngineContext, loadProgramState, saveProgramState } from "../src/services/engine-inputs.js";
-import { slotId } from "../src/services/program-slots.js";
+import { placeSlots, slotId } from "../src/services/program-slots.js";
+import { dayCollides } from "../src/services/day-placement.js";
 import { applyMove } from "../src/services/jobs.js";
 import { conditionRoutes, sessionRoutes } from "../src/routes/sessions.js";
 import { createSession, SESSION_COOKIE } from "../src/auth/sessions.js";
@@ -401,6 +402,65 @@ describe("building today's session", () => {
     expect((await rowOf(id)).contentState).toBe("built");
     expect((await loadSession(db, userId, id, TODAY)).contentState).toBe("built");
     expect((await buildsOf(id)).map((b) => b.version)).toEqual([1]);
+  });
+
+  it("moved away, refreshed as an outline by a placement pass, and back: the cache hit writes the build's title, discipline and length again (re-review R2)", async () => {
+    const id = await seedSlot(TODAY);
+    const first = await buildSessionOutcome(db, userId, id, { overrides: { mode: "build", minutes: 45 } }, ctx());
+    const built = await rowOf(id);
+    // A build with a core lift, longer than the outline: everything R2 is about differs from the outline.
+    expect(built).toMatchObject({ category: "strength", sport: "strength", contentState: "built" });
+    expect(built.title).toBe(first.session.view!.theme ? `Mobility · ${first.session.view!.theme.name}` : "Mobility");
+    expect(built.calendarBlockDurationSeconds).toBeGreaterThan(1800);
+
+    await applyMove(db, { userId, workoutId: id, toDate: addDays(TODAY, 1), toTime: "18:00", source: "app", corosWritesEnabled: false });
+    // Any placement pass while it is away makes it the program's outline again (rule 5).
+    await placeSlots(db, userId, programId, TODAY, prefs, NOW);
+    expect(await rowOf(id)).toMatchObject({ title: "Mobility", category: "yoga", calendarBlockDurationSeconds: 1800, fallbackEstimatedDurationSeconds: 1800, contentState: "outline" });
+    await applyMove(db, { userId, workoutId: id, toDate: TODAY, toTime: "18:00", source: "app", corosWritesEnabled: false });
+
+    // A run just clear of the outline's 30 minutes, and not of the build's own length.
+    const clear = (at: string, seconds: number) =>
+      !dayCollides(
+        [
+          { key: id, category: "strength", workoutSeconds: seconds, currentTime: "18:00", pinned: false },
+          { key: "run", category: "easy", workoutSeconds: 1800, currentTime: at, pinned: false },
+        ],
+        prefs,
+      );
+    const runAt = ["18:30", "18:35", "18:40", "18:45", "18:50", "18:55", "19:00", "19:05", "19:10", "19:15", "19:20"].find((t) => clear(t, 1800))!;
+    expect(clear(runAt, built.fallbackEstimatedDurationSeconds!)).toBe(false);
+    await db.insert(plannedWorkouts).values({
+      id: "run-after", userId, planId: "coros-plan", sourceWorkoutId: "src-run-after", title: "Easy run", category: "easy", sport: "run",
+      originalPlanDate: TODAY, lastVerifiedCorosDate: TODAY, effectiveDate: TODAY, effectiveTime: runAt,
+      sourceContentFingerprint: "fp", fallbackEstimatedDurationSeconds: 1800, calendarBlockDurationSeconds: 1800,
+      completionState: "scheduled", createdAt: NOW, updatedAt: NOW,
+    });
+
+    const again = await buildSessionOutcome(db, userId, id, {}, ctx({ now: LATER }));
+    // The stored build, unchanged (a cache hit, nothing rebuilt)…
+    expect(again.session.build).toEqual(first.session.build);
+    expect((await buildsOf(id)).map((b) => b.version)).toEqual([1]);
+    // …and the row says what that build says, as a fresh build would have written it.
+    expect(await rowOf(id)).toMatchObject({
+      title: built.title,
+      category: "strength",
+      sport: "strength",
+      calendarBlockDurationSeconds: built.calendarBlockDurationSeconds,
+      fallbackEstimatedDurationSeconds: built.fallbackEstimatedDurationSeconds,
+      contentState: "built",
+      sessionParams: built.sessionParams,
+    });
+    expect(again.calendarChanged).toBe(true);
+    // The longer session no longer overlaps the run: the collision pass ran over the day.
+    const day = (await db.select().from(plannedWorkouts).where(eq(plannedWorkouts.effectiveDate, TODAY))).filter((r) => !r.archivedAt);
+    expect(day).toHaveLength(2);
+    expect(
+      dayCollides(
+        day.map((r) => ({ key: r.id, category: r.category, workoutSeconds: r.fallbackEstimatedDurationSeconds!, currentTime: r.effectiveTime, pinned: false })),
+        prefs,
+      ),
+    ).toBe(false);
   });
 
   it("an override rebuilds as version 2, and only the latest unlocked version is kept", async () => {
