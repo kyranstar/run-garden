@@ -2137,11 +2137,16 @@ a.note {
   font-size: var(--text-sm);
   color: var(--ink-soft);
 }
-.today-session-done {
+.today-session-done,
+.today-session-skipped {
   align-self: center;
   font-size: var(--text-sm);
   font-weight: var(--weight-medium);
   color: var(--green-ink);
+}
+/* Skipped (ruling 2a-R15): a state, not a success. */
+.today-session-skipped {
+  color: var(--ink-soft);
 }
 /* "↑": the move goes up today. */
 .dose-up {
@@ -2164,7 +2169,7 @@ a.note {
   font-variant-numeric: tabular-nums;
   cursor: pointer;
 }
-.check-scale button[aria-pressed="true"] {
+.check-scale button[aria-checked="true"] {
   background: var(--green);
   border-color: var(--green);
   color: var(--on-accent);
@@ -2181,6 +2186,25 @@ a.note {
   color: var(--ink-soft);
   font-size: var(--text-sm);
 }
+/* The reading reopens the pre-check (ruling 2a-R14). A 44px box of its own rather than a pad: the when-line is the
+   first line of the sheet's scrolling body, which clips whatever is drawn above its top edge (a pad measured 11px
+   short there). The line grows to hold it; the date beside it sits on its middle. */
+.session-reading {
+  display: inline-flex;
+  align-items: center;
+  min-height: var(--tap);
+  vertical-align: middle;
+  font-weight: var(--weight-medium);
+}
+/* "Skipped" (ruling 2a-R15). */
+.session-status {
+  margin: 0;
+}
+/* A day gone that was never built (audit 2a-UI I2). */
+.session-none {
+  margin: 0;
+  color: var(--ink-soft);
+}
 .session-blockrow {
   display: grid;
   gap: var(--space-1);
@@ -2191,12 +2215,15 @@ a.note {
   color: var(--ink-soft);
   font-size: var(--text-xs);
 }
-/* Mode · theme · time · place: the chips each open a short picker. 32px boxes, padded to the 44px floor. */
+/* Mode · theme · time · place: the chips each open a short picker. 32px boxes, padded to the 44px floor: the pad's
+   100% is the 30px padding box, so it needs 7px each side — the row grants 8px (audit 2a-UI M1; at 6px the pad
+   measured 42). Wrapped rows sit 12px apart, so the pads of two rows never share a point (at 8px the second row's
+   took the bottom 4px of the first's); side by side a chip is wider than 44px and its pad reaches nothing. */
 .session-chips {
   display: flex;
   flex-wrap: wrap;
-  gap: var(--space-4);
-  --tap-clear: var(--space-3);
+  --tap-clear: var(--space-4);
+  gap: var(--space-5) var(--tap-clear);
 }
 .session-chip {
   --tap-own: 32px;
@@ -2436,12 +2463,13 @@ button.session-chip {
   padding: 0 var(--space-5);
   min-width: 0;
 }
-/* A segmented choice: equal 44px cells that share the row. */
+/* A segmented choice: equal cells that share the row, never narrower than the 44px floor. Seven of them (sessions a
+   week, days) with 2px gaps are 45px each in the sheet at 360 (audit 2a-UI M2: 43.4px with 4px gaps). */
 .program-seg {
   display: grid;
   grid-auto-flow: column;
-  grid-auto-columns: minmax(0, 1fr);
-  gap: var(--space-2);
+  grid-auto-columns: minmax(var(--tap), 1fr);
+  gap: var(--space-1);
 }
 .program-seg button {
   min-height: var(--tap);
@@ -7753,7 +7781,8 @@ button.session-chip::after {
   .fw-story-more,
   .fw-fresh,
   .dock-collapse,
-  .dock-grows {
+  .dock-grows,
+  button.session-chip {
     min-height: max(
       var(--tap-own, 0px),
       calc(var(--tap) - 2 * var(--tap-clear-y, var(--tap-clear, var(--tap))))

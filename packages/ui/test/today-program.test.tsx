@@ -12,7 +12,8 @@
 import { act, createElement } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { renderToStaticMarkup } from "react-dom/server";
-import { readFileSync } from "node:fs";
+import { readdirSync, readFileSync } from "node:fs";
+import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { MemoryRouter } from "react-router-dom";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
@@ -31,6 +32,7 @@ import {
   ConditionChips,
   conditionChipLabel,
 } from "../src/components/condition-check-sheet.js";
+import { DockPill } from "../src/screens/garden.js";
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
@@ -156,6 +158,14 @@ describe("todayCardLayout", () => {
     expect(todayCardLayout(a.workout, [a, b])).toEqual({ title: { kind: "program", session: a }, lines: [b] });
   });
 
+  it("a skipped session is not today's to-do: another session takes the title, and alone it is shown as skipped (ruling 2a-R15)", () => {
+    const skipped = outline({ id: "a", effectiveTime: "07:00", completionState: "skipped" });
+    const later = outline({ id: "b", effectiveTime: "19:00" });
+    const tomorrow = workout({ id: "run-2", effectiveDate: "2026-10-06" });
+    expect(todayCardLayout(later.workout, [skipped, later])).toEqual({ title: { kind: "program", session: later }, lines: [skipped] });
+    expect(todayCardLayout(tomorrow, [skipped])).toEqual({ title: { kind: "program", session: skipped }, lines: [] });
+  });
+
   it("a rest day's row is never a line, and nothing at all is nothing", () => {
     const rest = runSession({ id: "rest", category: "rest" });
     const next = workout({ id: "run-2", effectiveDate: "2026-10-06" });
@@ -202,6 +212,17 @@ describe("TodayProgramLead", () => {
     expect(done).not.toMatch(/Start|Continue/);
   });
 
+  it("skipped: says so, with no play action even with the player — Open, not primary, leads to Un-skip (ruling 2a-R15)", () => {
+    features.player = true;
+    for (const session of [outline({ completionState: "skipped" }), built({ completionState: "skipped" })]) {
+      const out = html(createElement(TodayProgramLead, { session, today: TODAY }));
+      expect(text(out)).toContain("Skipped");
+      expect(text(out)).not.toMatch(/Start|Continue|Done/);
+      expect(out).toContain('href="/plan?workout=slot-p1-2026-10-05"');
+      expect(out).not.toContain("btn-primary");
+    }
+  });
+
   it("without the player a started session still opens, and a done one says so", () => {
     const started = text(html(createElement(TodayProgramLead, { session: built({ contentState: "started" }), today: TODAY })));
     expect(started).toContain("Open");
@@ -231,6 +252,27 @@ describe("TodayProgramLine", () => {
     const done = text(html(createElement(TodayProgramLine, { session: built({ contentState: "done" }), today: TODAY })));
     expect(done).toContain("Done");
     expect(done).not.toMatch(/Start|Continue/);
+  });
+
+  it("skipped: says so, never Start (ruling 2a-R15)", () => {
+    features.player = true;
+    for (const session of [outline({ completionState: "skipped" }), built({ completionState: "skipped" })]) {
+      const out = text(html(createElement(TodayProgramLine, { session, today: TODAY })));
+      expect(out).toContain("Skipped");
+      expect(out).not.toMatch(/Start|Continue|Done/);
+    }
+  });
+});
+
+describe("the collapsed Today row (DockPill) for a skipped session", () => {
+  it("names it skipped, not next (ruling 2a-R15)", () => {
+    const pill = text(html(createElement(DockPill, { workout: slotWorkout({ completionState: "skipped" }), today: TODAY, onOpen: () => undefined })));
+    expect(pill).not.toContain("Next");
+    expect(pill).toContain("Garden program · Today · skipped");
+    // A session still to do reads as it always did.
+    expect(text(html(createElement(DockPill, { workout: workout(), today: TODAY, onOpen: () => undefined })))).toBe(
+      "Next: Easy Run with Strides · Today 7 AM",
+    );
   });
 });
 
@@ -273,15 +315,60 @@ describe("the condition chip", () => {
   });
 });
 
-describe("no condition word lives in the UI's code", () => {
-  const read = (rel: string) => readFileSync(fileURLToPath(new URL(rel, import.meta.url)), "utf8");
-  it.each(["../src/components/today-program.tsx", "../src/components/condition-check-sheet.tsx", "../src/screens/garden.tsx"])(
-    "%s",
-    (file) => {
-      const code = read(file).replace(/\/\*[\s\S]*?\*\//g, "").replace(/^\s*\/\/.*$/gm, "");
-      expect(code).not.toMatch(/\b(jaw|tmj|clench)/i);
-    },
-  );
+describe("no condition word lives in the UI's code (audit 2a-UI M11d)", () => {
+  // Paths in variables: Vite rewrites a literal `new URL("…", import.meta.url)` as an asset URL.
+  const here = (rel: string) => fileURLToPath(new URL(rel, import.meta.url));
+  const read = (rel: string) => readFileSync(here(rel), "utf8");
+  const src = here("../src/");
+  /** Every source file of the UI, the stylesheet included — not a list someone has to keep up to date. */
+  const files = (readdirSync(src, { recursive: true }) as string[]).filter((f) => /\.(tsx?|css)$/.test(f)).sort();
+  /**
+   * The words the condition profiles themselves use — each profile's id and label, its check label's words and its
+   * flag's label — read from the library, so a profile added there is covered here; plus the stems already known.
+   */
+  const words = (() => {
+    const dir = here("../../exercise-library/src/conditions/");
+    const out = new Set(["jaw", "tmj", "clench"]);
+    // The profile ids: the keys of `PROFILES`.
+    const index = readFileSync(join(dir, "index.ts"), "utf8");
+    for (const m of (/PROFILES = \{([^}]*)\}/.exec(index)?.[1] ?? "").matchAll(/(\w+):/g)) out.add(m[1]!.toLowerCase());
+    for (const f of readdirSync(dir).filter((n) => n.endsWith(".ts") && n !== "index.ts" && n !== "types.ts")) {
+      const text = readFileSync(join(dir, f), "utf8");
+      // The profile's label, its check's label and its flag's label ("TMJ", "Jaw / head", "Clenched"). "head" is
+      // also a word the UI uses for other things (a sheet's head), so it is left to the first word.
+      for (const m of text.matchAll(/^ {2}(?:label|check: \{ label|setFlag: \{ id: [^,]+, label):\s*"([^"]+)"/gm)) {
+        for (const w of m[1]!.split(/[\s/]+/)) if (w.length >= 3 && w.toLowerCase() !== "head") out.add(w.toLowerCase());
+      }
+    }
+    return [...out];
+  })();
+
+  it("reads the profiles' own words, and scans every UI source file", () => {
+    expect(words).toEqual(expect.arrayContaining(["jaw", "tmj", "clench", "clenched"]));
+    expect(files).toEqual(
+      expect.arrayContaining([
+        "components/today-program.tsx",
+        "components/condition-check-sheet.tsx",
+        "components/session-sheet.tsx",
+        "components/exercise-howto.tsx",
+        "components/program-settings-sheet.tsx",
+        "screens/plan-cards.tsx",
+        "screens/plan.tsx",
+        "screens/garden.tsx",
+        "styles.css",
+      ]),
+    );
+  });
+
+  it("finds none of them in any of those files", () => {
+    const word = new RegExp(`\\b(${words.join("|")})`, "i");
+    const hits = files.flatMap((f) => {
+      const code = read(`../src/${f}`).replace(/\/\*[\s\S]*?\*\//g, "").replace(/^\s*\/\/.*$/gm, "");
+      const m = word.exec(code);
+      return m ? [`${f}: "${m[0]}"`] : [];
+    });
+    expect(hits).toEqual([]);
+  });
 });
 
 describe("the check sheet", () => {
@@ -294,13 +381,15 @@ describe("the check sheet", () => {
     vi.unstubAllGlobals();
   });
 
-  function mount(c: Condition, onClose = vi.fn()) {
+  function mount(c: Condition, onClose = vi.fn(), opts: { restoring?: boolean } = {}) {
     const calls: Array<{ url: string; body: unknown }> = [];
     vi.stubGlobal(
       "fetch",
       vi.fn(async (url: string, init?: RequestInit) => {
         calls.push({ url, body: init?.body ? JSON.parse(String(init.body)) : null });
-        return new Response(JSON.stringify({ check: { profileId: c.profileId, date: TODAY, value: 3, feelingOff: true } }), {
+        // While a restore replaces the account the server records nothing and answers `{check: null}`.
+        const check = opts.restoring ? null : { profileId: c.profileId, date: TODAY, value: 3, feelingOff: true };
+        return new Response(JSON.stringify({ check }), {
           status: 200,
           headers: { "Content-Type": "application/json" },
         });
@@ -329,7 +418,56 @@ describe("the check sheet", () => {
 
   it("starts from today's reading", () => {
     mount(condition({ today: { value: 2, feelingOff: false } }));
-    expect(buttons().find((b) => b.getAttribute("aria-pressed") === "true")?.textContent).toBe("2");
+    expect(buttons().find((b) => b.getAttribute("aria-checked") === "true")?.textContent).toBe("2");
+  });
+
+  it("the scale is one choice: a radiogroup named by the profile, one tab stop, arrow keys move the choice (audit 2a-UI M3)", async () => {
+    mount(condition({ today: { value: 2, feelingOff: false } }));
+    const group = document.querySelector(".check-scale")!;
+    expect(group.getAttribute("role")).toBe("radiogroup");
+    expect(group.getAttribute("aria-label")).toBe("Knee / hip");
+    expect(buttons().every((b) => b.getAttribute("role") === "radio")).toBe(true);
+    const tabbable = () => buttons().filter((b) => b.tabIndex === 0).map((b) => b.textContent);
+    const checked = () => buttons().filter((b) => b.getAttribute("aria-checked") === "true").map((b) => b.textContent);
+    expect(tabbable()).toEqual(["2"]);
+    const key = async (k: string) => {
+      await act(async () => {
+        (document.activeElement as HTMLElement).dispatchEvent(new KeyboardEvent("keydown", { key: k, bubbles: true }));
+      });
+    };
+    act(() => buttons()[2]!.focus());
+    await key("ArrowRight");
+    expect(checked()).toEqual(["3"]);
+    expect(document.activeElement?.textContent).toBe("3");
+    expect(tabbable()).toEqual(["3"]);
+    await key("ArrowLeft");
+    await key("ArrowLeft");
+    expect(checked()).toEqual(["1"]);
+    await key("End");
+    expect(checked()).toEqual(["10"]);
+    await key("ArrowRight");
+    expect(checked()).toEqual(["0"]);
+    await key("Home");
+    expect(document.activeElement?.textContent).toBe("0");
+    // The chosen number is drawn from the state a reader hears.
+    const sheet = "../src/styles.css"; // a variable: Vite rewrites a literal `new URL(…, import.meta.url)` as an asset
+    const css = readFileSync(fileURLToPath(new URL(sheet, import.meta.url)), "utf8");
+    expect(css).toContain('.check-scale button[aria-checked="true"] {');
+    expect(css).not.toContain('.check-scale button[aria-pressed="true"]');
+  });
+
+  it("tapping the chosen number clears it, so Feeling off alone can be saved (audit 2a-UI M3)", async () => {
+    const { calls } = mount(condition({ today: { value: 2, feelingOff: false } }));
+    act(() => byText("2").click());
+    expect(buttons().filter((b) => b.getAttribute("aria-checked") === "true")).toEqual([]);
+    // With nothing chosen the first number is the group's tab stop.
+    expect(buttons().filter((b) => b.tabIndex === 0).map((b) => b.textContent)).toEqual(["0"]);
+    expect(byText("Save").disabled).toBe(true);
+    act(() => byText("Feeling off").click());
+    await act(async () => {
+      byText("Save").click();
+    });
+    expect(calls).toEqual([{ url: "/api/conditions/checks", body: { profileId: "p-x", value: null, feelingOff: true } }]);
   });
 
   it("Save records the check and closes", async () => {
@@ -342,5 +480,16 @@ describe("the check sheet", () => {
     });
     expect(calls).toEqual([{ url: "/api/conditions/checks", body: { profileId: "p-x", value: 3, feelingOff: true } }]);
     expect(onClose).toHaveBeenCalled();
+  });
+
+  it("a check the server did not record (a restore running) is not saved: the sheet stays and says so (audit 2a-UI M7)", async () => {
+    const { calls, onClose } = mount(condition(), vi.fn(), { restoring: true });
+    act(() => buttons()[3]!.click());
+    await act(async () => {
+      byText("Save").click();
+    });
+    expect(calls).toHaveLength(1);
+    expect(onClose).not.toHaveBeenCalled();
+    expect(document.body.textContent).toContain("Not saved");
   });
 });

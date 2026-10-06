@@ -231,7 +231,15 @@ afterEach(() => {
 
 function mount(
   first: SessionDto,
-  opts: { afterBuild?: (body: Record<string, unknown>) => SessionDto; stale?: SessionDto; today?: string; w?: WorkoutDto; detail?: boolean } = {},
+  opts: {
+    afterBuild?: (body: Record<string, unknown>) => SessionDto;
+    stale?: SessionDto;
+    today?: string;
+    w?: WorkoutDto;
+    detail?: boolean;
+    /** The GET answers with this status (and no session) instead. */
+    getStatus?: number;
+  } = {},
 ) {
   const calls: Call[] = [];
   let current = first;
@@ -243,7 +251,9 @@ function mount(
       const body = init?.body ? (JSON.parse(String(init.body)) as Record<string, unknown>) : null;
       const method = init?.method ?? "GET";
       calls.push({ method, path, body });
-      if (path === `/api/sessions/${SLOT}` && method === "GET") return json(current);
+      if (path === `/api/sessions/${SLOT}` && method === "GET") {
+        return opts.getStatus ? json({ error: opts.getStatus === 404 ? "not_found" : "internal" }, opts.getStatus) : json(current);
+      }
       if (path === `/api/sessions/${SLOT}/build`) {
         current = opts.afterBuild ? opts.afterBuild(body ?? {}) : { ...current, contentState: "built" };
         return json(current);
@@ -330,10 +340,77 @@ describe("the pre-check", () => {
     expect(button("Move")).toBeTruthy();
     expect(button("Skip")).toBeTruthy();
     expect(builds(calls)).toHaveLength(0);
-    await click("Feeling off");
+    // The number first, then Feeling off: both count — nothing is sent until Build (ruling 2a-R14; audit 2a-UI I3).
+    expect((button("Build") as HTMLButtonElement).disabled).toBe(true);
     await click("3");
+    expect(builds(calls)).toHaveLength(0);
+    await click("Feeling off");
+    expect(builds(calls)).toHaveLength(0);
+    await click("Build");
     await until(() => body().includes("Goblet squat"), "the built session");
     expect(builds(calls).map((c) => c.body)).toEqual([{ checks: { "p-x": { pre: 3, feelingOff: true } } }]);
+  });
+
+  it("Feeling off alone is an answer (ruling 2a-R14)", async () => {
+    const { calls } = mount(session({ contentState: "outline", checks: {}, build: null, view: null }), { afterBuild: () => session() });
+    await until(() => body().includes("Knee / hip right now"), "the pre-check");
+    await click("Feeling off");
+    await click("Build");
+    await until(() => body().includes("Goblet squat"), "the built session");
+    expect(builds(calls).map((c) => c.body)).toEqual([{ checks: { "p-x": { pre: null, feelingOff: true } } }]);
+  });
+
+  it("Build waits for every profile: a number or Feeling off each (ruling 2a-R14)", async () => {
+    const two = {
+      profiles: [
+        { profileId: "p-x", check: { label: "Knee / hip", min: 0, max: 10 }, care: "Knee care" },
+        { profileId: "p-y", check: { label: "Wrist", min: 0, max: 10 }, care: null },
+      ],
+    };
+    const { calls } = mount(session({ ...two, contentState: "outline", checks: {}, build: null, view: null }), {
+      afterBuild: () => session(two),
+    });
+    await until(() => body().includes("Wrist right now"), "the pre-check");
+    const scale = (label: string) => document.querySelector<HTMLElement>(`[role=radiogroup][aria-label="${label}"]`)!;
+    await act(async () => {
+      [...scale("Knee / hip").querySelectorAll<HTMLButtonElement>("button")].find((b) => b.textContent === "2")!.click();
+    });
+    expect((button("Build") as HTMLButtonElement).disabled).toBe(true);
+    const offs = [...document.querySelectorAll<HTMLButtonElement>(".check-off")];
+    await act(async () => {
+      offs[1]!.click();
+    });
+    expect((button("Build") as HTMLButtonElement).disabled).toBe(false);
+    await click("Build");
+    await until(() => builds(calls).length === 1, "the build");
+    expect(builds(calls)[0]!.body).toEqual({ checks: { "p-x": { pre: 2, feelingOff: false }, "p-y": { pre: null, feelingOff: true } } });
+  });
+
+  it("the reading on the when-line reopens the pre-check with that reading; Build rebuilds with the change (ruling 2a-R14)", async () => {
+    const { calls } = mount(session(), {
+      afterBuild: (b) => session({ checks: (b as { checks?: SessionDto["checks"] }).checks ?? session().checks }),
+    });
+    await until(() => body().includes("Supported row"), "the built session");
+    const reading = button("Knee 1")!;
+    expect(reading.getAttribute("aria-expanded")).toBe("false");
+    await click("Knee 1");
+    expect(button("Knee 1")!.getAttribute("aria-expanded")).toBe("true");
+    expect(body()).toContain("Knee / hip right now");
+    expect(body()).not.toContain("Supported row");
+    expect([...document.querySelectorAll(".check-scale [aria-checked=true]")].map((b) => b.textContent)).toEqual(["1"]);
+    await click("Feeling off");
+    await click("Build");
+    await until(() => body().includes("Supported row"), "the rebuilt session");
+    expect(builds(calls).slice(1).map((c) => c.body)).toEqual([{ checks: { "p-x": { pre: 1, feelingOff: true } } }]);
+    expect(body()).toContain("Knee 1 · off");
+    expect(body()).not.toContain("right now");
+  });
+
+  it("the reading is plain text where nothing can be rebuilt: a started session, a day gone", async () => {
+    mount(session({ contentState: "started", locked: true }), { w: slot({ contentState: "started" }) });
+    await until(() => body().includes("Supported row"), "the moves");
+    expect(body()).toContain("Knee 1");
+    expect(button("Knee 1")).toBeUndefined();
   });
 
   it("answered already (the Today chip): opening builds with what the day holds, without asking", async () => {
@@ -491,10 +568,24 @@ describe("a day ahead, a day gone, a started session", () => {
       w: slot({ effectiveDate: "2026-10-03", contentState: "outline" }),
     });
     await until(() => !!button("Move to today"), "the move offer");
+    // A static line, never a spinner for a build that will never start (audit 2a-UI I2, M11b).
+    await until(() => !document.querySelector("[role=status]"), "the session loaded");
+    expect(document.querySelector(".spinner")).toBeNull();
+    expect(body()).toContain("Nothing was built for this day");
     expect(builds(calls)).toHaveLength(0);
     await click("Move to today");
     await until(() => calls.some((c) => c.path.endsWith("/move")), "the move");
     expect(calls.find((c) => c.path.endsWith("/move"))!.body).toEqual({ toDate: TODAY, toTime: "19:00" });
+  });
+
+  it("a day gone that was built on its day: that build, read-only, with Move to today", async () => {
+    const gone = "2026-10-03";
+    const { calls } = mount(session({ date: gone, build: { ...session().build!, date: gone } }), { w: slot({ effectiveDate: gone }) });
+    await until(() => body().includes("Supported row"), "the day's build");
+    expect(document.querySelectorAll(".session-chips button")).toHaveLength(0);
+    expect(button("Swap Goblet squat")).toBeUndefined();
+    expect(button("Move to today")).toBeTruthy();
+    expect(builds(calls)).toHaveLength(0);
   });
 
   it("started: read-only — no swaps, no pickers, nothing built; Continue only with the player", async () => {
@@ -506,6 +597,58 @@ describe("a day ahead, a day gone, a started session", () => {
     expect(builds(calls)).toHaveLength(0);
     expect(button("Continue")).toBeUndefined();
     expect(button("How to do Goblet squat")).toBeTruthy();
+  });
+});
+
+describe("a skipped session (ruling 2a-R15)", () => {
+  it("shows Skipped and Un-skip: no pre-check, nothing built on open, no Skip or Move", async () => {
+    const { calls } = mount(session({ contentState: "outline", checks: {}, build: null, view: null }), {
+      w: slot({ contentState: "outline", completionState: "skipped" }),
+    });
+    await until(() => body().includes("Skipped"), "the skipped session");
+    expect(button("Un-skip")).toBeTruthy();
+    expect(body()).not.toContain("right now");
+    expect(document.querySelector(".spinner")).toBeNull();
+    expect(button("Skip")).toBeUndefined();
+    expect(button("Move")).toBeUndefined();
+    expect(builds(calls)).toHaveLength(0);
+    await click("Un-skip");
+    await until(() => calls.some((c) => c.path.endsWith("/unskip")), "the un-skip");
+    expect(calls.find((c) => c.path.endsWith("/unskip"))).toMatchObject({ method: "POST", path: `/api/plan/workouts/${SLOT}/unskip` });
+    expect(builds(calls)).toHaveLength(0);
+  });
+
+  it("built before it was skipped: the build is shown read-only, never rebuilt", async () => {
+    features.player = true;
+    const { calls } = mount(session(), { w: slot({ completionState: "skipped" }) });
+    await until(() => body().includes("Supported row"), "the moves");
+    expect(document.querySelectorAll(".session-chips button")).toHaveLength(0);
+    expect(button("Swap Goblet squat")).toBeUndefined();
+    expect(button(/^Start/)).toBeUndefined();
+    expect(button("Un-skip")).toBeTruthy();
+    expect(builds(calls)).toHaveLength(0);
+  });
+});
+
+describe("the sheet's edges (audit 2a-UI M6, M7)", () => {
+  it("no pinned foot when there is nothing to do: while loading, and on a started session without the player", async () => {
+    mount(session({ contentState: "started", locked: true }), { w: slot({ contentState: "started" }) });
+    expect(body()).toContain("Loading the session");
+    expect(document.querySelector(".sheet-foot")).toBeNull();
+    await until(() => body().includes("Supported row"), "the moves");
+    expect(document.querySelector(".sheet-foot")).toBeNull();
+  });
+
+  it("a session gone from the plan (404) says so; any other failure says it couldn't load", async () => {
+    mount(session(), { getStatus: 404 });
+    await until(() => !body().includes("Loading the session"), "the answer");
+    expect(body()).toContain("This session is no longer in the plan");
+    act(() => root?.unmount());
+    host?.remove();
+    mount(session(), { getStatus: 500 });
+    await until(() => !body().includes("Loading the session"), "the answer");
+    expect(body()).not.toContain("no longer in the plan");
+    expect(body()).toContain("Couldn't load this session");
   });
 });
 

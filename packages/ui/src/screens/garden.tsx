@@ -890,12 +890,16 @@ export function DockPill({
   /** False when there is no card behind this row (no plan). */
   disclosable?: boolean;
 }) {
+  // A program session skipped today can head the card; it is not "next" (ruling 2a-R15).
+  const skipped = workout?.completionState === "skipped";
   const workoutLabel = !workout
     ? "No active training plan"
     : workout.category === "rest"
       ? `Rest day · ${relativeDay(workout.effectiveDate, today)}`
-      : `${workout.title} · ${relativeDay(workout.effectiveDate, today)} ${formatTime(workout.effectiveTime)}`;
-  const workoutText = !workout || workout.category === "rest" ? workoutLabel : `Next: ${workoutLabel}`;
+      : skipped
+        ? `${workout.title} · ${relativeDay(workout.effectiveDate, today)} · skipped`
+        : `${workout.title} · ${relativeDay(workout.effectiveDate, today)} ${formatTime(workout.effectiveTime)}`;
+  const workoutText = !workout || workout.category === "rest" || skipped ? workoutLabel : `Next: ${workoutLabel}`;
   const body = <span className="dock-pill-workout">{workoutText}</span>;
   if (!disclosable) {
     return (

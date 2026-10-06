@@ -35,7 +35,9 @@ export function ProgramCard({ program, onOpen }: { program: ProgramDto; onOpen: 
   const block = program.block;
   const rows = block ? coreRows(block.core) : [];
   return (
-    <button type="button" className="card plan-card program-card" aria-label={`${program.name} settings`} onClick={onOpen}>
+    // Named by its content — the count, the block, the lifts — then " settings" for a listener; an aria-label would
+    // replace all of it (audit 2a-UI M15).
+    <button type="button" className="card plan-card program-card" onClick={onOpen}>
       <span className="program-card-top">
         <span className="plan-card-name">{program.name}</span>{" "}
         <span className="program-card-count">
@@ -56,6 +58,7 @@ export function ProgramCard({ program, onOpen }: { program: ProgramDto; onOpen: 
           ))}
         </span>
       ) : null}
+      <span className="visually-hidden"> settings</span>
     </button>
   );
 }

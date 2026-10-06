@@ -63,7 +63,9 @@ export function ProgramSettingsSheet({
   };
   const config = () => ({
     weeklyGoal: goal,
-    preferredDays: days,
+    // Placement fills the preferred days in order: saved in week order, so the order they were tapped in is never an
+    // invisible priority (audit 2a-UI M4).
+    preferredDays: [...days].sort((a, b) => a - b),
     defaultMinutes: minutes,
     defaultLocationId: place,
     blockWeeks,
@@ -222,7 +224,7 @@ export function ProgramSettingsSheet({
           busy={retire.isPending}
           onConfirm={() => retire.mutate()}
         >
-          {`“${program.name}” stops placing sessions and takes back the ones it placed ahead. Sessions you moved or did stay.`}
+          {`“${program.name}” stops placing sessions and takes back the ones it placed after today. Today's session stays, and so does every session you moved, skipped, changed or did.`}
         </ConfirmDialog>
       ) : null}
     </Sheet>

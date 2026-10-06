@@ -5,7 +5,7 @@
  * Every word here comes from the profile (`check.label`, whose first word names the chip); the UI holds none of
  * its own. The reading is the same one the session pre-check asks for: either answers the other.
  */
-import { useState } from "react";
+import { useRef, useState, type KeyboardEvent } from "react";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { api, type ConditionViewDto } from "@rg/api-client";
 import { Banner, Sheet } from "../components.js";
@@ -52,7 +52,11 @@ export function ConditionChips({
   );
 }
 
-/** The 0–10 grid (two rows), shared by the check sheet and the session pre-check. */
+/**
+ * The 0–10 grid (two rows), shared by the check sheet and the session pre-check. One choice, so a radiogroup
+ * (audit 2a-UI M3): one tab stop — the chosen number, else the first — and the arrow keys, Home and End move the
+ * choice. Tapping the chosen number clears it (null), which leaves "Feeling off" alone as an answer.
+ */
 export function CheckScale({
   label,
   min,
@@ -65,19 +69,44 @@ export function CheckScale({
   min: number;
   max: number;
   value: number | null;
-  onPick: (n: number) => void;
+  onPick: (n: number | null) => void;
   disabled?: boolean;
 }) {
   const steps = Array.from({ length: max - min + 1 }, (_, i) => min + i);
+  const refs = useRef<Array<HTMLButtonElement | null>>([]);
+  const stop = value !== null && steps.includes(value) ? steps.indexOf(value) : 0;
+  const onKeyDown = (e: KeyboardEvent<HTMLButtonElement>, i: number) => {
+    const last = steps.length - 1;
+    const to =
+      e.key === "ArrowRight" || e.key === "ArrowDown"
+        ? i === last ? 0 : i + 1
+        : e.key === "ArrowLeft" || e.key === "ArrowUp"
+          ? i === 0 ? last : i - 1
+          : e.key === "Home"
+            ? 0
+            : e.key === "End"
+              ? last
+              : null;
+    if (to === null) return;
+    e.preventDefault();
+    onPick(steps[to]!);
+    refs.current[to]?.focus();
+  };
   return (
-    <div className="check-scale" role="group" aria-label={label}>
-      {steps.map((n) => (
+    <div className="check-scale" role="radiogroup" aria-label={label}>
+      {steps.map((n, i) => (
         <button
           key={n}
+          ref={(el) => {
+            refs.current[i] = el;
+          }}
           type="button"
-          aria-pressed={value === n}
+          role="radio"
+          aria-checked={value === n}
+          tabIndex={i === stop ? 0 : -1}
           disabled={disabled}
-          onClick={() => onPick(n)}
+          onClick={() => onPick(value === n ? null : n)}
+          onKeyDown={(e) => onKeyDown(e, i)}
         >
           {n}
         </button>
@@ -107,13 +136,16 @@ export function ConditionCheckSheet({
   const [off, setOff] = useState(condition.today?.feelingOff ?? false);
   const save = useMutation({
     mutationFn: () => api.recordCheck({ profileId: condition.profileId, value, feelingOff: off }),
-    onSuccess: () => {
+    onSuccess: (res) => {
+      // `{check: null}`: a restore is replacing the account and nothing was recorded — not saved (audit 2a-UI M7).
+      if (!res.check) return;
       // The chip reads it from Today; a session built today reads it as its pre-check.
       void qc.invalidateQueries({ queryKey: ["today"] });
       void qc.invalidateQueries({ queryKey: ["session"] });
       onClose();
     },
   });
+  const unrecorded = save.isSuccess && !save.data.check;
   return (
     <Sheet
       open
@@ -142,6 +174,7 @@ export function ConditionCheckSheet({
           <FeelingOffToggle on={off} onToggle={() => setOff((v) => !v)} />
         </div>
         {save.isError ? <Banner kind="warn">Couldn't save that — try again.</Banner> : null}
+        {unrecorded ? <Banner kind="warn">Not saved — a restore is running. Try again once it finishes.</Banner> : null}
       </div>
     </Sheet>
   );

@@ -22,8 +22,9 @@
  *    over the block as stored AFTER the build, so the block a first build starts does not make the next identical
  *    request look new.
  *  - Checks in the body are recorded as `pre` checks for this slot and day (one per profile, replaced on a
- *    re-check); with none, a daily check recorded today is used. A check with no number and no "feeling off" is no
- *    answer: it records nothing and clears the slot's own (audit I2).
+ *    re-check). A slot's reading is the latest answer of its own pre-check and today's daily check (the Today chip):
+ *    one reading, whichever was given last (ruling 2a-R13). A check with no number and no "feeling off" is no answer:
+ *    it records nothing and clears the slot's own (audit I2).
  *  - 👎-rated and "not for me" moves are filtered out of the alternatives in every response (ruling 2a-R1); the
  *    stored build keeps what the engine offered.
  *
@@ -74,7 +75,7 @@ import {
   type BuildHistory,
   type EngineContext,
 } from "./engine-inputs.js";
-import { conditionView, type ConditionView } from "./condition-views.js";
+import { conditionView, isAnswer, latestReading, type ConditionView } from "./condition-views.js";
 
 /** Bump when the engine's behaviour changes: a stored build from an older engine then no longer matches its inputs. */
 export const ENGINE_VERSION = "session-engine-1";
@@ -182,7 +183,8 @@ export interface SessionResponse {
   date: string;
   contentState: "outline" | "built" | "started" | "done";
   locked: boolean;
-  /** The slot's day's checks: its own pre-checks, else that day's daily checks (today only). */
+  /** The slot's day's checks: the latest answer of its own pre-check and that day's daily check (today only), per
+   * ruling 2a-R13. */
   checks: Record<string, CheckAnswer>;
   build: BuildPayload | null;
   view: SessionView | null;
@@ -556,11 +558,6 @@ async function activeProfilesOf(db: Db, userId: string): Promise<string[]> {
   return [...new Set(rows.map((r) => r.profileId).filter(isProfileId))].sort();
 }
 
-/**
- * A reading is an answer when it has a number or "feeling off" — the save's own rule (`performed.ts`): a check with
- * neither is the question not answered yet, never "answered with nothing" (audit I2).
- */
-const isAnswer = (value: number | null, feelingOff: boolean): boolean => value !== null || feelingOff;
 const answeredOnly = (checks: Record<string, CheckAnswer>): Record<string, CheckAnswer> =>
   Object.fromEntries(Object.entries(checks).filter(([, a]) => isAnswer(a.pre, a.feelingOff)));
 
@@ -574,17 +571,19 @@ function dayCheckRows(db: Db, userId: string, date: string): Promise<CheckRow[]>
     .where(and(eq(conditionChecks.userId, userId), eq(conditionChecks.localDate, date), inArray(conditionChecks.kind, ["pre", "daily"])));
 }
 
-/** The latest of these rows, when it carries an answer. */
-function latestAnswer(rows: readonly CheckRow[]): CheckRow | undefined {
-  const row = [...rows].sort((a, b) => b.at.localeCompare(a.at) || b.id.localeCompare(a.id))[0];
-  return row && isAnswer(row.value, row.feelingOff) ? row : undefined;
-}
+/** The slot's own pre-check rows for a profile, among the day's rows. */
+const ownPre = (rows: readonly CheckRow[], workoutId: string, profileId: string): CheckRow[] =>
+  rows.filter((r) => r.kind === "pre" && r.workoutId === workoutId && r.profileId === profileId);
+/** The day's check rows (the Today chip's) for a profile, among the day's rows. */
+const dailyOf = (rows: readonly CheckRow[], profileId: string): CheckRow[] =>
+  rows.filter((r) => r.kind === "daily" && r.profileId === profileId);
 
 /**
- * The slot's checks on `date`, per active profile: its own pre-check — the request's answer, when the request asks
- * about the profile — else (when `date` is today) the day's daily check, whichever carries an answer; a profile with
- * neither is left out (unanswered). What the slot's checks are once the request's are recorded, worked out before
- * anything is written.
+ * The slot's checks on `date`, per active profile: the day's reading (ruling 2a-R13, `latestReading` — the Today
+ * chip's own rule) over the slot's own pre-check and, when `date` is today, the day's check — whichever answer was
+ * given last. The request's answer, when the request asks about the profile, is the newest reading there is; asked
+ * with no answer, it takes the slot's own away and the day's check stands. A profile with no answer is left out
+ * (unanswered). What the slot's checks are once the request's are recorded, worked out before anything is written.
  */
 function resolveChecks(
   rows: readonly CheckRow[],
@@ -597,11 +596,12 @@ function resolveChecks(
   const out: Record<string, CheckAnswer> = {};
   for (const profileId of active) {
     const ask = asked[profileId];
-    const own = ask
-      ? isAnswer(ask.pre, ask.feelingOff) ? { value: ask.pre, feelingOff: ask.feelingOff } : undefined
-      : latestAnswer(rows.filter((r) => r.kind === "pre" && r.workoutId === workoutId && r.profileId === profileId));
-    const daily = date === today ? latestAnswer(rows.filter((r) => r.kind === "daily" && r.profileId === profileId)) : undefined;
-    const pick = own ?? daily;
+    const daily = date === today ? dailyOf(rows, profileId) : [];
+    const pick = ask
+      ? isAnswer(ask.pre, ask.feelingOff)
+        ? { value: ask.pre, feelingOff: ask.feelingOff }
+        : latestReading(daily)
+      : latestReading([...ownPre(rows, workoutId, profileId), ...daily]);
     if (pick) out[profileId] = { pre: pick.value, feelingOff: pick.feelingOff };
   }
   return out;
@@ -719,12 +719,15 @@ function preCheckWrites(asked: Record<string, CheckAnswer>, rows: readonly Check
   const out: PreCheckWrite[] = [];
   for (const profileId of Object.keys(asked).sort()) {
     const answer = asked[profileId]!;
-    const mine = rows.filter((r) => r.kind === "pre" && r.workoutId === workoutId && r.profileId === profileId);
+    const mine = ownPre(rows, workoutId, profileId);
     if (!isAnswer(answer.pre, answer.feelingOff)) {
       if (mine.length > 0) out.push({ profileId, remove: mine.map((r) => r.id), answer: null });
       continue;
     }
-    if (mine.length === 1 && mine[0]!.value === answer.pre && mine[0]!.feelingOff === answer.feelingOff) continue;
+    // The same answer is written again unless it is already the day's reading: given after a later chip check, it
+    // is the latest once more (ruling 2a-R13).
+    const current = latestReading([...mine, ...dailyOf(rows, profileId)]);
+    if (mine.length === 1 && current === mine[0] && mine[0]!.value === answer.pre && mine[0]!.feelingOff === answer.feelingOff) continue;
     out.push({ profileId, remove: mine.map((r) => r.id), answer: { pre: answer.pre, feelingOff: answer.feelingOff } });
   }
   return out;
@@ -765,6 +768,34 @@ async function pruneBuilds(db: Db, workoutId: string, keep: string): Promise<voi
 
 /** Planned seconds as the calendar books them: rounded up to 5 minutes. */
 const bookedSeconds = (planned: number): number => Math.max(300, Math.ceil(planned / 300) * 300);
+
+/**
+ * What a build puts on its slot's row (§2a "Output persisted"): `<program> · <theme>`, the discipline (§9.2: a core
+ * lift makes it strength, else yoga) and the planned length as the calendar books it. A fresh build and the stored
+ * build adopted again (a cache hit on a slot that became an outline) write the same thing (re-review R2).
+ */
+function builtRowContent(name: string, theme: { name: string } | null, plannedSeconds: number, hasCoreLift: boolean) {
+  const seconds = bookedSeconds(plannedSeconds);
+  const discipline = hasCoreLift ? "strength" : "yoga";
+  return {
+    title: theme ? `${name} · ${theme.name}` : name,
+    category: discipline,
+    sport: discipline,
+    calendarBlockDurationSeconds: seconds,
+    fallbackEstimatedDurationSeconds: seconds,
+  } satisfies Partial<SlotRow>;
+}
+
+/**
+ * What writing `next` on `row` changes for the calendar: the booked length (then the day's collision pass runs), and
+ * whether the event has anything new to show — its title, discipline or length (ruling 2a-R8).
+ */
+function rowChange(row: SlotRow, next: ReturnType<typeof builtRowContent>): { resized: boolean; calendarChanged: boolean } {
+  const resized =
+    next.calendarBlockDurationSeconds !== row.calendarBlockDurationSeconds ||
+    next.fallbackEstimatedDurationSeconds !== row.fallbackEstimatedDurationSeconds;
+  return { resized, calendarChanged: resized || next.title !== row.title || next.category !== row.category };
+}
 
 type BuildCtx = { today: string; now: string; prefs: UserPreferences };
 
@@ -914,17 +945,40 @@ async function commitBuild(
     // An answer that leaves the day's checks as they were (the day's check, given again) is still the slot's own.
     await recordPreChecks(db, userId, workoutId, date, inputs.preChecks, ctx.now);
     if (rebuilt) {
-      await db
+      // While it was an outline a placement pass may have given it the program's outline content (its name, default
+      // length and discipline): the row takes the stored build's again, exactly as that build first wrote it
+      // (re-review R2).
+      const stored = storedOf(previous);
+      const content = builtRowContent(
+        inputs.programName ?? row.title,
+        stored.view.theme,
+        stored.build.plannedSeconds,
+        stored.build.items.some((i) => i.block === "core"),
+      );
+      const changes = {
+        ...content,
+        contentState: "built",
+        sessionParams: stored.build.params as unknown as Record<string, unknown>,
+        updatedAt: ctx.now,
+      } satisfies Partial<SlotRow>;
+      const updated = await db
         .update(plannedWorkouts)
-        .set({ contentState: "built", updatedAt: ctx.now })
+        .set(changes)
         .where(
           and(
             eq(plannedWorkouts.id, workoutId),
             eq(plannedWorkouts.userId, userId),
             or(isNull(plannedWorkouts.contentState), eq(plannedWorkouts.contentState, "outline")),
           ),
-        );
-      return { session: respond({ ...row, contentState: "built", updatedAt: ctx.now }, builds, ctx.today, checks, hidden, sheetExtras(context)), calendarChanged: false };
+        )
+        .returning({ id: plannedWorkouts.id });
+      // Started (or built) meanwhile: what it is now is the answer.
+      if (updated.length === 0) {
+        return { session: await readResponse(db, userId, await loadSlot(db, userId, workoutId), ctx.today), calendarChanged: false };
+      }
+      const { resized, calendarChanged } = rowChange(row, content);
+      if (resized) await separateDayCollisions(db, userId, [date], ctx.prefs, { from: ctx.today, now: ctx.now });
+      return { session: respond({ ...row, ...changes }, builds, ctx.today, checks, hidden, sheetExtras(context)), calendarChanged };
     }
     return { session: respond(row, builds, ctx.today, preview ? {} : checks, hidden, sheetExtras(context)), calendarChanged: false };
   }
@@ -988,16 +1042,9 @@ async function commitBuild(
   }
   if (race.some((b) => b.lockedAt !== null)) return refuse();
 
-  const seconds = bookedSeconds(composed.build.plannedSeconds);
-  const discipline = composed.hasCoreLift ? "strength" : "yoga";
-  const name = inputs.programName ?? row.title;
-  const title = composed.view.theme ? `${name} · ${composed.view.theme.name}` : name;
+  const content = builtRowContent(inputs.programName ?? row.title, composed.view.theme, composed.build.plannedSeconds, composed.hasCoreLift);
   const changes = {
-    title,
-    category: discipline,
-    sport: discipline,
-    calendarBlockDurationSeconds: seconds,
-    fallbackEstimatedDurationSeconds: seconds,
+    ...content,
     contentState: "built",
     sessionParams: { checks, overrides, swaps } as unknown as Record<string, unknown>,
     updatedAt: ctx.now,
@@ -1023,14 +1070,14 @@ async function commitBuild(
     .returning({ id: plannedWorkouts.id });
   if (updated.length === 0) return refuse();
   // A longer session can now overlap the day's other plans: the same retime placement and coach edits use.
-  const resized = seconds !== row.calendarBlockDurationSeconds || seconds !== row.fallbackEstimatedDurationSeconds;
+  const { resized, calendarChanged } = rowChange(row, content);
   if (resized) await separateDayCollisions(db, userId, [date], ctx.prefs, { from: ctx.today, now: ctx.now });
   await pruneBuilds(db, workoutId, written.id);
   return {
     session: respond({ ...row, ...changes }, [written, ...locked], ctx.today, checks, hidden, sheetExtras(context)),
     // The calendar shows the row's title, discipline and booked length; a build that keeps all three (a swap, a
     // check that keeps the theme) leaves the event to the half-hourly reconcile (ruling 2a-R8).
-    calendarChanged: resized || title !== row.title || discipline !== row.category,
+    calendarChanged,
   };
 }
 
