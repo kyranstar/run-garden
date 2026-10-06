@@ -83,6 +83,14 @@ describe("event body", () => {
     expect(buildEventDescription(workoutInfo(), APP_URL)).toContain("COROS date: Tuesday, August 4\nScheduled:");
   });
 
+  it("keeps the status line of a never-held session whose push is in flight or failed", () => {
+    for (const label of ["Sync issue", "Syncing", "Waiting for COROS"]) {
+      const d = buildEventDescription(workoutInfo({ corosDate: "", corosStatusLabel: label }), APP_URL);
+      expect(d).toContain(`COROS status: ${label}`);
+      expect(d).not.toContain("COROS date:");
+    }
+  });
+
   it("round-trips user notes through the marker section", () => {
     const d = buildEventDescription(workoutInfo(), APP_URL, "Bring gels.\nMeet Sam at the track.");
     expect(d).toContain(NOTES_MARKER);

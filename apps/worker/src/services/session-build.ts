@@ -29,7 +29,7 @@
  *
  * Every writer here is a no-op while a restore is replacing the account (ruling B2).
  */
-import { and, eq, inArray, isNotNull, isNull, ne, notInArray, or } from "drizzle-orm";
+import { and, eq, inArray, isNotNull, isNull, ne, notExists, notInArray, or } from "drizzle-orm";
 import { conditionChecks, exercisePrefs, plannedWorkouts, programs, sessionBuilds, userConditions } from "@rg/database";
 import { newId, sessionLead, todayInZone, type AdaptiveConfig, type SessionLead, type UserPreferences } from "@rg/domain";
 import {
@@ -1002,7 +1002,8 @@ async function commitBuild(
     sessionParams: { checks, overrides, swaps } as unknown as Record<string, unknown>,
     updatedAt: ctx.now,
   } satisfies Partial<SlotRow>;
-  // Never over a started or done slot: a Start between the check above and here still wins.
+  // Never over a started or done slot, nor while any build of it is locked: a Start between the check above and here
+  // still wins, even one that has locked but not yet marked the slot started (re-review R3).
   const updated = await db
     .update(plannedWorkouts)
     .set(changes)
@@ -1011,6 +1012,12 @@ async function commitBuild(
         eq(plannedWorkouts.id, workoutId),
         eq(plannedWorkouts.userId, userId),
         or(isNull(plannedWorkouts.contentState), notInArray(plannedWorkouts.contentState, ["started", "done"])),
+        notExists(
+          db
+            .select({ id: sessionBuilds.id })
+            .from(sessionBuilds)
+            .where(and(eq(sessionBuilds.workoutId, workoutId), isNotNull(sessionBuilds.lockedAt))),
+        ),
       ),
     )
     .returning({ id: plannedWorkouts.id });

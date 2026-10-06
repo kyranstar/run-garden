@@ -207,6 +207,12 @@ unset COPIER_KEY URL Q
    deploy staging, record "after" the same way, and compare. Differences
    should be exactly the ones the change intends.
 
+   One known break: the table hash changed in October 2026 (byte-budgeted
+   pages, Ruling 2a-R9). A table whose canonical text is over 256 KB hashes
+   differently on code from before and after that change, with no row changed.
+   When "before" and "after" straddle it, compare those tables by row count,
+   or record "before" with the new code on the old schema.
+
 The parity endpoints answer 404 everywhere except staging, or a deployment
 with the var `PARITY_ENABLED = "1"` (production, for a rehearsal only — then
 remove it). Production can hash but never resimulate (`resim: true` → 409).

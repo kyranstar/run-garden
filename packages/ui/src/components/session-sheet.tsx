@@ -104,11 +104,13 @@ export function SessionSheet({ w, today, onClose }: { w: WorkoutDto; today: stri
       refreshPlan();
       navigate(`/session/${encodeURIComponent(w.id)}`);
     },
-    // The day's inputs changed since this build (a check, a save, an edit): show the fresh build to Start again.
+    // The day's inputs changed since this build (a check, a save, an edit): show the fresh build to Start again. The
+    // fresh build may have renamed or resized the row, so Today and Plan refetch too.
     onError: (err) => {
       const body = err instanceof ApiError ? (err.body as { error?: string; session?: SessionDto } | null) : null;
       if ((body?.error === "stale" || body?.error === "locked") && body.session) qc.setQueryData(key, body.session);
       else void qc.invalidateQueries({ queryKey: key });
+      refreshPlan();
     },
   });
   const skip = useMutation({

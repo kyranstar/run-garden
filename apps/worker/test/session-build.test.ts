@@ -764,6 +764,8 @@ describe("Start (Review Focus 3)", () => {
   for (const [moment, at, finished] of [
     ["has locked the build as the build stores its version", /^insert into "session_builds"/i, false],
     ["has finished as the build updates the row", /^update "planned_workouts"/i, true],
+    // Locked after the build's race read, not yet marked started: the row update itself must see the lock (re-review R3).
+    ["has locked the build as the build updates the row", /^update "planned_workouts"/i, false],
   ] as const) {
     it(`a Start that ${moment} wins: the build is refused with the locked session and leaves nothing behind (audit M2)`, async () => {
       const id = await seedSlot(TODAY);

@@ -1,6 +1,7 @@
 import { DateTime } from "luxon";
 import {
   CALENDAR_EVENT_PROPERTY_NS,
+  COROS_SYNC_LABELS,
   PRODUCT_NAME,
   fingerprint,
   type WorkoutCategory,
@@ -77,14 +78,15 @@ export function buildEventDescription(w: EventWorkoutInfo, appUrl: string, userN
   }
   lines.push("");
   // A session COROS has never held (no verified COROS date: a program slot, an app-only or not-yet-pushed
-  // session) has no COROS date to show — `humanDate("")` reads "Invalid DateTime" — and no COROS status worth
-  // a line, so both are left out (audit 2a-model M6).
+  // session) has no COROS date to show — `humanDate("")` reads "Invalid DateTime" — so that line is left out; its
+  // status line stays only when it says something (a push in flight or failed), not "Not synced to COROS" (audit
+  // 2a-model M6).
   const onCoros = w.corosDate !== "";
   if (onCoros) lines.push(`COROS date: ${humanDate(w.corosDate)}`);
   lines.push(
     `Scheduled: ${humanDate(w.effectiveDate)} at ${humanTime(w.effectiveDate, w.effectiveTime)}`,
   );
-  if (onCoros) lines.push(`COROS status: ${w.corosStatusLabel}`);
+  if (onCoros || w.corosStatusLabel !== COROS_SYNC_LABELS.calendar_only) lines.push(`COROS status: ${w.corosStatusLabel}`);
   if (w.sleepReminderText) lines.push("", w.sleepReminderText);
   if (userNotes && userNotes.trim().length > 0) {
     lines.push("", NOTES_MARKER, userNotes.trim());

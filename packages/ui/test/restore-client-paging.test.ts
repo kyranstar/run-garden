@@ -12,11 +12,13 @@ afterEach(() => {
   vi.unstubAllGlobals();
 });
 
-/** About `bytes` of build-shaped JSON. */
+/** About `bytes` of build-shaped JSON (a running length: re-stringifying the whole list per step took seconds). */
 function heavy(seed: number, bytes = 130_000): Row {
   const steps: Row[] = [];
-  for (let i = 0; JSON.stringify(steps).length < bytes; i++) {
-    steps.push({ id: `step-${seed}-${i}`, exerciseId: `ex-${i % 300}`, reps: 8, seconds: 45, cues: ["Keep the ribs down"] });
+  for (let i = 0, size = 2; size < bytes; i++) {
+    const step = { id: `step-${seed}-${i}`, exerciseId: `ex-${i % 300}`, reps: 8, seconds: 45, cues: ["Keep the ribs down"] };
+    steps.push(step);
+    size += JSON.stringify(step).length + 1;
   }
   return { build: { steps }, view: { mode: "consistent" } };
 }
