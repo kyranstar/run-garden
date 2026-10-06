@@ -2185,6 +2185,12 @@ a.note {
   margin: 0;
   color: var(--ink-soft);
   font-size: var(--text-sm);
+  /* The reading reopens the pre-check (ruling 2a-R14): a line of text padded to the 44px floor. The sheet head's
+     12px margin is above it and the sheet's 16px stack gap below. */
+  --tap-clear: var(--space-5);
+}
+.session-reading {
+  font-weight: var(--weight-medium);
 }
 /* "Skipped" (ruling 2a-R15). */
 .session-status {
@@ -7563,7 +7569,8 @@ button.session-chip {
   .fw-fresh,
   .dock-collapse,
   .dock-grows,
-  button.session-chip
+  button.session-chip,
+  .session-reading
 ) {
   position: relative;
 }
@@ -7603,7 +7610,8 @@ button.session-chip {
 .fw-fresh::after,
 .dock-collapse::after,
 .dock-grows::after,
-button.session-chip::after {
+button.session-chip::after,
+.session-reading::after {
   content: "";
   position: absolute;
   top: 50%;
@@ -7767,7 +7775,8 @@ button.session-chip::after {
   .fw-story-more,
   .fw-fresh,
   .dock-collapse,
-  .dock-grows {
+  .dock-grows,
+  .session-reading {
     min-height: max(
       var(--tap-own, 0px),
       calc(var(--tap) - 2 * var(--tap-clear-y, var(--tap-clear, var(--tap))))

@@ -79,6 +79,8 @@ export function SessionSheet({ w, today, onClose }: { w: WorkoutDto; today: stri
   const [moving, setMoving] = useState(false);
   const [answers, setAnswers] = useState<Record<string, number>>({});
   const [off, setOff] = useState<Record<string, boolean>>({});
+  /** The pre-check reopened from the reading on the when-line, to change the answer (ruling 2a-R14). */
+  const [rechecking, setRechecking] = useState(false);
   const asked = useRef(false);
 
   const refreshPlan = () => {
@@ -145,8 +147,12 @@ export function SessionSheet({ w, today, onClose }: { w: WorkoutDto; today: stri
   const ahead = date > today;
   // Skipped is not today's to-do (ruling 2a-R15): nothing is asked or built until it is un-skipped.
   const skipped = w.completionState === "skipped";
-  const unanswered = s && !locked && !skipped && !past && !ahead ? s.profiles.filter((p) => !s.checks[p.profileId]) : [];
+  const changeable = !!s && !locked && !skipped && !past && !ahead;
+  const unanswered = s && changeable ? s.profiles.filter((p) => !s.checks[p.profileId]) : [];
   const needsCheck = unanswered.length > 0;
+  // What the pre-check asks: the profiles still unanswered, or — reopened from the reading — every one.
+  const asking = needsCheck ? unanswered : s && changeable && rechecking ? s.profiles : [];
+  const preCheck = asking.length > 0;
 
   // Opening builds — or returns the stored build when nothing changed — unless the pre-check comes first.
   useEffect(() => {
@@ -156,19 +162,37 @@ export function SessionSheet({ w, today, onClose }: { w: WorkoutDto; today: stri
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [s, locked, skipped, past, needsCheck]);
 
-  const answer = (profileId: string, value: number | null) => {
-    const next = { ...answers };
-    if (value === null) delete next[profileId];
-    else next[profileId] = value;
-    setAnswers(next);
-    if (value !== null && unanswered.every((p) => next[p.profileId] !== undefined)) {
-      asked.current = true;
-      build.mutate({
+  // The pre-check (ruling 2a-R14): a number, Feeling off, or both, per profile, in any order — nothing is sent until
+  // Build, which waits for every profile asked to have one or the other. Feeling off alone is an answer.
+  const answer = (profileId: string, value: number | null) =>
+    setAnswers((cur) => {
+      const next = { ...cur };
+      if (value === null) delete next[profileId];
+      else next[profileId] = value;
+      return next;
+    });
+  const answered = asking.every((p) => answers[p.profileId] !== undefined || !!off[p.profileId]);
+  const submit = () => {
+    asked.current = true;
+    build.mutate(
+      {
         checks: Object.fromEntries(
-          unanswered.map((p) => [p.profileId, { pre: next[p.profileId]!, feelingOff: !!off[p.profileId] }]),
+          asking.map((p) => [p.profileId, { pre: answers[p.profileId] ?? null, feelingOff: !!off[p.profileId] }]),
         ),
-      });
+      },
+      { onSuccess: () => setRechecking(false) },
+    );
+  };
+  // The reading on the when-line reopens the pre-check, filled in with the reading as it stands.
+  const recheck = () => {
+    if (rechecking || !s) {
+      setRechecking(false);
+      return;
     }
+    const held = s.profiles.flatMap((p) => (s.checks[p.profileId] ? [[p.profileId, s.checks[p.profileId]!] as const] : []));
+    setAnswers(Object.fromEntries(held.flatMap(([id, c]) => (c.pre === null ? [] : [[id, c.pre]]))));
+    setOff(Object.fromEntries(held.map(([id, c]) => [id, c.feelingOff])));
+    setRechecking(true);
   };
 
   const program = programs.data?.programs.find((p) => p.id === w.programId);
@@ -178,7 +202,7 @@ export function SessionSheet({ w, today, onClose }: { w: WorkoutDto; today: stri
         .filter((p) => s.checks[p.profileId])
         .map((p) => conditionChipLabel({ ...p, today: { value: s.checks[p.profileId]!.pre, feelingOff: s.checks[p.profileId]!.feelingOff } }))
     : [];
-  const when = [`${formatDayLong(date)} at ${formatTime(w.effectiveTime)}`, ...readings].join(" · ");
+  const reading = readings.join(" · ");
 
   const view = s?.view ?? null;
   const params = s?.build?.params ?? { checks: {}, overrides: {}, swaps: {} };
@@ -190,7 +214,7 @@ export function SessionSheet({ w, today, onClose }: { w: WorkoutDto; today: stri
     build.mutate({ overrides: { ...rest, ...(keepTheme ? { theme } : {}), mode } });
   };
 
-  const showBuild = !!(s?.build && view) && !needsCheck;
+  const showBuild = !!(s?.build && view) && !preCheck;
   const canPlay = features.player && date === today && !past && !skipped;
   const footer = skipped ? (
     <div className="btn-row">
@@ -200,6 +224,11 @@ export function SessionSheet({ w, today, onClose }: { w: WorkoutDto; today: stri
     </div>
   ) : (
     <div className="btn-row">
+      {preCheck ? (
+        <button type="button" className="btn btn-primary" disabled={!answered || build.isPending} onClick={submit}>
+          Build
+        </button>
+      ) : null}
       {canPlay && showBuild && !locked ? (
         <button type="button" className="btn btn-primary" disabled={start.isPending} onClick={() => start.mutate(s!.build!.buildId)}>
           Start · {view!.minutes} min
@@ -240,10 +269,10 @@ export function SessionSheet({ w, today, onClose }: { w: WorkoutDto; today: stri
         {showBuild ? <BuiltSession s={s} locked onPick={setPicker} onSwap={setSwapping} onHowto={setHowto} /> : null}
       </div>
     );
-  } else if (needsCheck) {
+  } else if (preCheck) {
     body = (
       <div className="stack session-precheck">
-        {unanswered.map((p) => (
+        {asking.map((p) => (
           <section key={p.profileId} className="stack">
             <b>{p.check.label} right now</b>
             <CheckScale
@@ -276,6 +305,7 @@ export function SessionSheet({ w, today, onClose }: { w: WorkoutDto; today: stri
             </small>
           </div>
         ) : null}
+        {build.isError ? <Banner kind="warn">Couldn't build this session — try again in a moment.</Banner> : null}
       </div>
     );
   } else if (!showBuild) {
@@ -298,8 +328,20 @@ export function SessionSheet({ w, today, onClose }: { w: WorkoutDto; today: stri
 
   return (
     <Sheet open onClose={onClose} title={title} footer={footer}>
-      <p className="session-when">{when}</p>
-      {body}
+      <div className="stack session-sheet">
+        <p className="session-when">
+          {formatDayLong(date)} at {formatTime(w.effectiveTime)}
+          {reading ? " · " : null}
+          {reading && changeable && !needsCheck ? (
+            <button type="button" className="linklike session-reading" aria-expanded={rechecking} onClick={recheck}>
+              {reading}
+            </button>
+          ) : (
+            reading
+          )}
+        </p>
+        {body}
+      </div>
       {picker && view && s ? (
         <ChoiceSheet
           title={PICKER_TITLE[picker]}
