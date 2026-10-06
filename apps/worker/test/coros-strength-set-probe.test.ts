@@ -292,6 +292,32 @@ describe("GET /api/coros/debug/strength-set-stats", () => {
           intensityIsWeightTimes1000: 2,
           other: 2,
         },
+        // 47,250 ÷ 47,250; 52,500 ÷ 52.5; and four far below (61.75 ÷ 61,750, 8.25 ÷ 3,333, 123,456 ÷ 2,718,281,
+        // 815.5 ÷ 815,500).
+        weightOverIntensity: {
+          "<0.3": 4,
+          "0.3-0.44": 0,
+          "about 1/2.2046": 0,
+          "0.465-0.9": 0,
+          "0.9-0.99": 0,
+          "about 1": 1,
+          "1.01-1.1": 0,
+          "1.1-2.1": 0,
+          "about 2.2046": 0,
+          "2.3-900": 0,
+          "about 1000": 1,
+          ">=1100": 0,
+        },
+        // 52,500 is half, 47,250 a quarter, the rest off the grid; 8.25 and 0.75 are within 0.02 lb of zero.
+        weightSteps: {
+          positive: 7,
+          whole: 0,
+          half: 1,
+          quarter: 1,
+          offGrid: 5,
+          kgThousandthsOfWholePounds: 2,
+          kgThousandthsOfTwoAndAHalfPounds: 2,
+        },
         exerciseId: { present: 7, absent: 3, distinct: 5 },
       },
       summary: {
@@ -315,6 +341,15 @@ describe("GET /api/coros/debug/strength-set-stats", () => {
           nonNumeric: 0,
           fromString: 1,
           magnitude: { ...ZERO_BUCKETS, "100-1k": 2 },
+        },
+        totalWeightVsSets: {
+          compared: 1,
+          equal: 0,
+          totalIsSumTimes1000: 0,
+          totalIsSumOver1000: 0,
+          totalIsSumInPounds: 0,
+          totalIsSumInKilograms: 0,
+          other: 1,
         },
       },
     });
@@ -502,6 +537,43 @@ describe("strengthSetStats", () => {
       "10k-100k": 2,
       ">=100k": 2,
     });
+  });
+
+  it("tells a kg × 1000 grid from pounds typed in, and buckets weight ÷ intensity around unit mix-ups", () => {
+    const lb = (pounds: number) => Math.round(pounds * 0.45359237 * 1000);
+    const items = [
+      { weight: 24_000, intensityValue: 24_000, reps: 5 }, // whole (kg × 1000), ratio 1
+      { weight: 22_500, intensityValue: 22_500 / 2.20462, reps: 5 }, // half, ratio ≈ 2.2046
+      { weight: 1_250 }, // quarter
+      { weight: lb(35), intensityValue: lb(35) * 1000 }, // 35 lb as kg × 1000: off the grid, ratio 0.001
+      { weight: lb(45) }, // 45 lb: a whole pound and a 2.5 lb step
+      { weight: lb(47.5) }, // a 2.5 lb step, not a whole pound
+      { weight: 0 }, // not positive: not counted
+    ];
+    const stats = strengthSetStats([{ lapList: [{ lapItemList: items }] }]);
+    expect(stats.lapItems.weightSteps).toEqual({
+      positive: 6,
+      whole: 1,
+      half: 1,
+      quarter: 1,
+      offGrid: 3,
+      kgThousandthsOfWholePounds: 2,
+      kgThousandthsOfTwoAndAHalfPounds: 3, // 35, 45 and 47.5 lb
+    });
+    expect(stats.lapItems.weightOverIntensity).toMatchObject({ "<0.3": 1, "about 1": 1, "about 2.2046": 1 });
+    expect(Object.values(stats.lapItems.weightOverIntensity).reduce((a, b) => a + b, 0)).toBe(3);
+  });
+
+  it("relates the summary's total weight to Σ reps × weight of the activity's sets", () => {
+    const sets = { lapList: [{ lapItemList: [{ reps: 5, weight: 20_000 }, { reps: 8, weight: 10_000 }] }] }; // Σ = 180,000
+    const relation = (totalWeight: number) =>
+      strengthSetStats([{ ...sets, summary: { totalWeight } }] as unknown as RawCorosActivityDetail[]).summary.totalWeightVsSets;
+    expect(relation(180_000)).toMatchObject({ compared: 1, equal: 1 });
+    expect(relation(180_000_000)).toMatchObject({ totalIsSumTimes1000: 1 });
+    expect(relation(180)).toMatchObject({ totalIsSumOver1000: 1 });
+    expect(relation(180_000 / 0.45359237)).toMatchObject({ totalIsSumInPounds: 1 });
+    expect(relation(180_000 * 0.45359237)).toMatchObject({ totalIsSumInKilograms: 1 });
+    expect(relation(123_457)).toMatchObject({ other: 1 });
   });
 
   it("survives details that are not the expected shape", () => {

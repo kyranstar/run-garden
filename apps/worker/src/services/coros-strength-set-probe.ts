@@ -82,6 +82,58 @@ export interface ScaleComparison {
   other: number;
 }
 
+/**
+ * Which grid the positive weights sit on, read two ways (a second pass, after the magnitudes alone could not tell
+ * kg × 1000 from lb × 1000): as thousandths of a unit (whole, half, quarter) and as kg × 1000 of a weight typed in
+ * pounds (within 0.02 lb of a whole pound or of a 2.5 lb step). Counts only.
+ */
+export interface WeightSteps {
+  positive: number;
+  /** w is a multiple of 1000 (a whole unit, if the wire is unit × 1000). */
+  whole: number;
+  /** a multiple of 500, not of 1000 */
+  half: number;
+  /** a multiple of 250, not of 500 */
+  quarter: number;
+  /** none of the above */
+  offGrid: number;
+  /** w / 1000 kg is within 0.02 lb of a whole pound */
+  kgThousandthsOfWholePounds: number;
+  /** w / 1000 kg is within 0.02 lb of a multiple of 2.5 lb */
+  kgThousandthsOfTwoAndAHalfPounds: number;
+}
+
+/** weight ÷ intensityValue where both are > 0, bucketed around the ratios a unit mix-up would give (1/2.2046, 2.2046, 1000). */
+export const RATIO_BUCKETS = [
+  "<0.3",
+  "0.3-0.44",
+  "about 1/2.2046",
+  "0.465-0.9",
+  "0.9-0.99",
+  "about 1",
+  "1.01-1.1",
+  "1.1-2.1",
+  "about 2.2046",
+  "2.3-900",
+  "about 1000",
+  ">=1100",
+] as const;
+export type RatioBucket = (typeof RATIO_BUCKETS)[number];
+const RATIO_FLOORS = [0.3, 0.44, 0.465, 0.9, 0.99, 1.01, 1.1, 2.1, 2.3, 900, 1100];
+
+/** How an activity's summary totalWeight relates to Σ reps × weight over its lap items (activities with a positive total). */
+export interface TotalRelation {
+  compared: number;
+  equal: number;
+  totalIsSumTimes1000: number;
+  totalIsSumOver1000: number;
+  /** total ≈ Σ × 2.2046 (one side in pounds) */
+  totalIsSumInPounds: number;
+  /** total ≈ Σ ÷ 2.2046 */
+  totalIsSumInKilograms: number;
+  other: number;
+}
+
 export interface StrengthSetStats {
   activitiesWithLapItems: number;
   /** `lapList` entries holding at least one item (more than one per activity means several lap views). */
@@ -94,6 +146,8 @@ export interface StrengthSetStats {
     weight: FieldStats;
     intensityValue: FieldStats;
     weightVsIntensity: ScaleComparison;
+    weightOverIntensity: Record<RatioBucket, number>;
+    weightSteps: WeightSteps;
     exerciseId: { present: number; absent: number; distinct: number };
   };
   summary: {
@@ -101,7 +155,39 @@ export interface StrengthSetStats {
     present: number;
     totalWeight: FieldStats;
     totalReps: FieldStats;
+    totalWeightVsSets: TotalRelation;
   };
+}
+
+const POUND_KG = 0.45359237;
+
+/** True when `x` is within `tol` of a multiple of `step`. */
+function nearMultiple(x: number, step: number, tol: number): boolean {
+  const r = x / step;
+  return Math.abs(r - Math.round(r)) * step <= tol;
+}
+
+function stepOf(steps: WeightSteps, w: number): void {
+  steps.positive += 1;
+  const rounded = Math.abs(w - Math.round(w)) < 1e-9 ? Math.round(w) : null;
+  if (rounded !== null && rounded % 1000 === 0) steps.whole += 1;
+  else if (rounded !== null && rounded % 500 === 0) steps.half += 1;
+  else if (rounded !== null && rounded % 250 === 0) steps.quarter += 1;
+  else steps.offGrid += 1;
+  const pounds = w / 1000 / POUND_KG;
+  if (nearMultiple(pounds, 1, 0.02)) steps.kgThousandthsOfWholePounds += 1;
+  if (nearMultiple(pounds, 2.5, 0.02)) steps.kgThousandthsOfTwoAndAHalfPounds += 1;
+}
+
+function ratioBucket(r: number): RatioBucket {
+  let i = 0;
+  while (i < RATIO_FLOORS.length && r >= RATIO_FLOORS[i]!) i += 1;
+  return RATIO_BUCKETS[i]!;
+}
+
+/** Within 0.5% of each other. */
+function near(a: number, b: number): boolean {
+  return Math.abs(a - b) <= 0.005 * Math.max(Math.abs(a), Math.abs(b));
 }
 
 function emptyFieldStats(): FieldStats {
@@ -187,6 +273,25 @@ export function strengthSetStats(details: readonly RawCorosActivityDetail[]): St
     intensityIsWeightTimes1000: 0,
     other: 0,
   };
+  const ratios = Object.fromEntries(RATIO_BUCKETS.map((b) => [b, 0])) as Record<RatioBucket, number>;
+  const steps: WeightSteps = {
+    positive: 0,
+    whole: 0,
+    half: 0,
+    quarter: 0,
+    offGrid: 0,
+    kgThousandthsOfWholePounds: 0,
+    kgThousandthsOfTwoAndAHalfPounds: 0,
+  };
+  const totals: TotalRelation = {
+    compared: 0,
+    equal: 0,
+    totalIsSumTimes1000: 0,
+    totalIsSumOver1000: 0,
+    totalIsSumInPounds: 0,
+    totalIsSumInKilograms: 0,
+    other: 0,
+  };
   const byLapType = new Map<string, number>();
   const exerciseIds = new Set<string>();
   let exercisePresent = 0;
@@ -203,6 +308,7 @@ export function strengthSetStats(details: readonly RawCorosActivityDetail[]): St
     tally(totalReps, summary?.totalReps);
 
     let hadItems = false;
+    let volume = 0;
     for (const lap of Array.isArray(detail.lapList) ? detail.lapList : []) {
       const items = isRecord(lap) && Array.isArray(lap.lapItemList) ? (lap.lapItemList as unknown[]) : [];
       if (items.length === 0) continue;
@@ -219,7 +325,13 @@ export function strengthSetStats(details: readonly RawCorosActivityDetail[]): St
 
         const w = asNumber(item.weight);
         const iv = asNumber(item.intensityValue);
+        const r = asNumber(item.reps);
+        if (w !== undefined && w > 0) {
+          stepOf(steps, w);
+          if (r !== undefined && r > 0) volume += r * w;
+        }
         if (w !== undefined && iv !== undefined && w > 0 && iv > 0) {
+          ratios[ratioBucket(w / iv)] += 1;
           scale.compared += 1;
           if (same(w, iv)) scale.equal += 1;
           else if (same(w, iv * 1000)) scale.weightIsIntensityTimes1000 += 1;
@@ -237,6 +349,16 @@ export function strengthSetStats(details: readonly RawCorosActivityDetail[]): St
       }
     }
     if (hadItems) activitiesWithLapItems += 1;
+    const reported = asNumber(summary?.totalWeight);
+    if (reported !== undefined && reported > 0 && volume > 0) {
+      totals.compared += 1;
+      if (near(reported, volume)) totals.equal += 1;
+      else if (near(reported, volume * 1000)) totals.totalIsSumTimes1000 += 1;
+      else if (near(reported, volume / 1000)) totals.totalIsSumOver1000 += 1;
+      else if (near(reported, volume / POUND_KG)) totals.totalIsSumInPounds += 1;
+      else if (near(reported, volume * POUND_KG)) totals.totalIsSumInKilograms += 1;
+      else totals.other += 1;
+    }
   }
 
   return {
@@ -249,9 +371,11 @@ export function strengthSetStats(details: readonly RawCorosActivityDetail[]): St
       weight,
       intensityValue,
       weightVsIntensity: scale,
+      weightOverIntensity: ratios,
+      weightSteps: steps,
       exerciseId: { present: exercisePresent, absent: exerciseAbsent, distinct: exerciseIds.size },
     },
-    summary: { present: summaries, totalWeight, totalReps },
+    summary: { present: summaries, totalWeight, totalReps, totalWeightVsSets: totals },
   };
 }
 
