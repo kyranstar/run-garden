@@ -237,6 +237,17 @@ describe("program settings", () => {
     });
   });
 
+  it("the days go in week order, whatever order they were tapped in — placement fills them in that order (audit 2a-UI M4)", async () => {
+    const { calls } = mount();
+    await press("Garden program settings");
+    await press("W"); // off
+    await press("F");
+    await press("W"); // on again, after F
+    await press("Save");
+    await until(() => calls.some((c) => c.method === "PATCH"), "the patch");
+    expect((calls.find((c) => c.method === "PATCH")!.body as { config: { preferredDays: number[] } }).config.preferredDays).toEqual([0, 2, 4]);
+  });
+
   it("the last mode cannot be switched off", async () => {
     mount(program({ config: { ...program().config, modes: ["consistent"] } }));
     await press("Garden program settings");
@@ -248,6 +259,10 @@ describe("program settings", () => {
     await press("Garden program settings");
     await press("Retire…");
     expect(calls.some((c) => c.method === "PATCH")).toBe(false);
+    // What stays is named, today's session first: it stays on Today under the program's name (audit 2a-UI M5).
+    const question = [...document.querySelectorAll("[role=dialog]")].at(-1)!.textContent!.replace(/\s+/g, " ");
+    expect(question).toContain("Today's session stays");
+    expect(question).toContain("after today");
     await press("Retire program");
     await until(() => calls.some((c) => c.method === "PATCH"), "the retire");
     expect(calls.find((c) => c.method === "PATCH")!.body).toEqual({ status: "retired" });
