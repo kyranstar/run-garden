@@ -87,6 +87,16 @@ describe("the program card", () => {
     expect(out).toContain("Row · Press · Carry Supported row · Floor press · Suitcase carry");
   });
 
+  it("its accessible name is what it shows, then that it opens the settings (audit 2a-UI M15)", () => {
+    const out = html(createElement(ProgramCard, { program: program(), onOpen: () => undefined }));
+    // No aria-label: it would replace the count, the block and the lifts for anyone who hears the card.
+    expect(out).not.toContain("aria-label");
+    expect(out).toMatch(/<span class="visually-hidden"> settings<\/span><\/button>$/);
+    const name = text(out);
+    expect(name.startsWith("Garden program 1 of 4 this week Block 2 · week 3 of 5 Squat Goblet squat")).toBe(true);
+    expect(name.endsWith("settings")).toBe(true);
+  });
+
   it("before its first session: no block line, no lifts", () => {
     const out = text(html(createElement(ProgramCard, { program: program({ block: null, week: { placed: 2, done: 0, goal: 2 } }), onOpen: () => undefined })));
     expect(out).toContain("0 of 2 this week");
@@ -173,6 +183,14 @@ describe("program settings", () => {
       b.click();
     });
   };
+  /** The card opens its settings (its name is its content, then "settings": see M15 above). */
+  const openSettings = async () => {
+    const card = document.querySelector<HTMLButtonElement>(".program-card");
+    if (!card) throw new Error(`no program card\n${document.body.textContent}`);
+    await act(async () => {
+      card.click();
+    });
+  };
   const pressed = (group: string) =>
     [...document.querySelectorAll(`[aria-label="${group}"] [aria-pressed="true"]`)].map((b) => b.textContent);
   const setValue = async (el: HTMLInputElement | HTMLSelectElement, value: string) => {
@@ -194,7 +212,7 @@ describe("program settings", () => {
 
   it("opens from the card with the program's settings, in plain labels, the care switch named by the profile", async () => {
     mount();
-    await press("Garden program settings");
+    await openSettings();
     expect(document.querySelector("[role=dialog] h2")?.textContent).toBe("Garden program");
     expect((byName("Name") as HTMLInputElement).value).toBe("Garden program");
     expect(pressed("Sessions a week")).toEqual(["4"]);
@@ -208,7 +226,7 @@ describe("program settings", () => {
 
   it("Save patches what changed into the program's config", async () => {
     const { calls } = mount();
-    await press("Garden program settings");
+    await openSettings();
     await setValue(byName("Name") as HTMLInputElement, "Evening care");
     await press("3");
     await press("F");
@@ -239,7 +257,7 @@ describe("program settings", () => {
 
   it("the days go in week order, whatever order they were tapped in — placement fills them in that order (audit 2a-UI M4)", async () => {
     const { calls } = mount();
-    await press("Garden program settings");
+    await openSettings();
     await press("W"); // off
     await press("F");
     await press("W"); // on again, after F
@@ -250,13 +268,13 @@ describe("program settings", () => {
 
   it("the last mode cannot be switched off", async () => {
     mount(program({ config: { ...program().config, modes: ["consistent"] } }));
-    await press("Garden program settings");
+    await openSettings();
     expect((byName("Consistent") as HTMLButtonElement).disabled).toBe(true);
   });
 
   it("Retire asks first, then retires", async () => {
     const { calls } = mount();
-    await press("Garden program settings");
+    await openSettings();
     await press("Retire…");
     expect(calls.some((c) => c.method === "PATCH")).toBe(false);
     // What stays is named, today's session first: it stays on Today under the program's name (audit 2a-UI M5).
