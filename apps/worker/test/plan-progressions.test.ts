@@ -111,6 +111,31 @@ describe("liftProgressions", () => {
   });
 });
 
+describe("liftProgressions — logged top sets (Phase 2a+ Task 3)", () => {
+  const deadlift = plan([[kg("Trap Bar Deadlift", 40)], [kg("Trap Bar Deadlift", 60)], [kg("Trap Bar Deadlift", 75)]]);
+
+  it("fills `actual` per week from the heaviest logged set, to a tenth of a kilo", () => {
+    const actual = new Map([["id-Trap Bar Deadlift", new Map([[1, 42.18], [3, 70]])]]);
+    const [lift] = liftProgressions(deadlift, new Set<number>(), 3, 3, actual);
+    expect(lift!.series).toEqual([
+      { week: 1, value: 40, actual: 42.2 },
+      { week: 2, value: 60 },
+      { week: 3, value: 75, actual: 70 },
+    ]);
+  });
+
+  it("adds no point for a logged week the plan prescribes nothing in, and nothing to weekly sets", () => {
+    const actual = new Map([["id-Trap Bar Deadlift", new Map([[5, 90]])]]);
+    const out = liftProgressions(deadlift, new Set<number>(), 3, 3, actual);
+    expect(out.find((p) => p.key.startsWith("lift:id-"))!.series.map((p) => p.week)).toEqual([1, 2, 3]);
+    expect(out.flatMap((p) => p.series).some((p) => p.actual !== undefined)).toBe(false);
+  });
+
+  it("leaves every series as it was when nothing was logged", () => {
+    expect(liftProgressions(deadlift, new Set<number>(), 3, 3, new Map())).toEqual(liftProgressions(deadlift, new Set<number>(), 3));
+  });
+});
+
 describe("liftWeekSummary", () => {
   it("omits bodyweight and cardio movements from the heaviest-lift line", () => {
     const full = {

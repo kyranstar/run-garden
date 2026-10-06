@@ -101,6 +101,27 @@ describe("StudioModal — detail mode", () => {
 });
 
 describe("progression charts", () => {
+  it("ProgressionStepChart: a logged top set is marked where it was lifted, named in the legend and the text (Phase 2a+)", () => {
+    const logged: PlanProgression = {
+      ...bench,
+      series: [
+        { week: 1, value: 52, done: true, actual: 54.4 },
+        { week: 2, value: 54, done: true },
+        { week: 3, value: 56, actual: 55 },
+        { week: 8, value: 66 },
+      ],
+    };
+    const html = renderToStaticMarkup(createElement(ProgressionStepChart, { progression: logged, discipline: "lift" }));
+    expect(html.match(/data-logged="\d+"/g)).toEqual(['data-logged="1"', 'data-logged="3"']);
+    expect(html).toContain("Logged top set");
+    expect(html).toContain("Prescribed");
+    expect(html).toContain("logged top set 54.4 kg in week 1, 55 kg in week 3");
+    // Without logged sets, nothing new is drawn and there is no legend.
+    const plain = renderToStaticMarkup(createElement(ProgressionStepChart, { progression: bench, discipline: "lift" }));
+    expect(plain).not.toContain("data-logged");
+    expect(plain).not.toContain("Logged top set");
+  });
+
   it("ProgressionStepChart: viewBox-only SVG, dashed prescription, done dots, end label", () => {
     const html = renderToStaticMarkup(
       createElement(ProgressionStepChart, { progression: bench, discipline: "lift" }),

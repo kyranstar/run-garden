@@ -7,7 +7,8 @@
 import { describe, expect, it } from "vitest";
 import { schema } from "@rg/database";
 import { newId, nowInstant } from "@rg/domain";
-import { exerciseDisplayName, loggedSetsByActivity } from "../src/services/logged-sets.js";
+import type { ExerciseRecord } from "@rg/exercise-library";
+import { exerciseDisplayName, loggedSetsByActivity, loggedTopKgByWeek } from "../src/services/logged-sets.js";
 import { upsertWatchSession } from "../src/services/watch-sets.js";
 import type { Db } from "../src/services/db.js";
 import { D1_BIND_LIMIT, makeTestDb, makeTestUser } from "./helpers.js";
@@ -115,6 +116,76 @@ describe("loggedSetsByActivity", () => {
     const { db, userId } = await withWatchSession({ cap: true });
     const ids = [...Array.from({ length: 120 }, (_, i) => `act-${i}`), ACTIVITY.activityId];
     expect((await loggedSetsByActivity(db, userId, ids, "lb")).get(ACTIVITY.activityId)).toHaveLength(4);
+  });
+});
+
+describe("loggedTopKgByWeek — a plan's exercises, their heaviest logged set per week", () => {
+  /** A Monday: week 1 of the plan. */
+  const W1 = "2026-09-28";
+
+  async function session(db: Db, userId: string, localDate: string, sets: Array<[string, number | null, boolean?]>) {
+    const id = newId();
+    await db.insert(schema.performedSessions).values({
+      id,
+      userId,
+      source: "watch",
+      sourceRef: id,
+      localDate,
+      payloadHash: "h",
+      createdAt: nowInstant(),
+      updatedAt: nowInstant(),
+    });
+    for (const [i, [exerciseId, kg, done]] of sets.entries()) {
+      await db.insert(schema.performedSets).values({
+        id: newId(),
+        performedSessionId: id,
+        entryIndex: i,
+        exerciseId,
+        setIndex: 0,
+        reps: 5,
+        loadValue: kg,
+        loadUnit: kg === null ? null : "kg",
+        loadKg: kg,
+        done: done ?? true,
+      });
+    }
+  }
+
+  const exact = (id: string, originId: string) =>
+    ({ id, providers: { coros: { originId, confidence: "exact", method: "curated" } } }) as unknown as ExerciseRecord;
+
+  it("matches a plan exercise by its catalog key or its library mapping, week by week", async () => {
+    const db = makeTestDb({ boundVariableCap: D1_BIND_LIMIT });
+    const { userId } = await makeTestUser(db);
+    const other = await makeTestUser(db);
+    await db.insert(schema.corosExercises).values([
+      { id: "41", name: "T1041", updatedAt: nowInstant() },
+      { id: "61", name: "T1061", updatedAt: nowInstant() },
+    ]);
+    await session(db, userId, "2026-09-30", [["coros:T1041", 22.68], ["coros:T1041", 20], ["coros:T1061", 60]]); // week 1
+    await session(db, userId, "2026-10-06", [["benchPressLib", 30], ["coros:T1041", 40, false]]); // week 2; the 40 was not done
+    await session(db, userId, "2026-09-27", [["coros:T1041", 99]]); // the day before the plan
+    await session(db, userId, "2026-10-19", [["coros:T1041", 99]]); // after its three weeks
+    await session(db, userId, "2026-10-13", [["coros:T1041", null]]); // week 3, bodyweight only
+    await session(db, other.userId, "2026-09-30", [["coros:T1041", 99]]);
+
+    const out = await loggedTopKgByWeek(db, userId, {
+      weekOne: W1,
+      weeks: 3,
+      originIds: ["41", "name:sled push"],
+      library: [exact("benchPressLib", "41")],
+    });
+    expect([...out.keys()]).toEqual(["41"]);
+    expect([...out.get("41")!.entries()]).toEqual([
+      [1, 22.68],
+      [2, 30],
+    ]);
+  });
+
+  it("reads nothing when the plan names no exercise the catalog or library knows", async () => {
+    const db = makeTestDb();
+    const { userId } = await makeTestUser(db);
+    expect((await loggedTopKgByWeek(db, userId, { weekOne: W1, weeks: 3, originIds: ["S2"], library: [] })).size).toBe(0);
   });
 });
 

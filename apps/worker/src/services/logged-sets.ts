@@ -10,13 +10,13 @@
  * weight already in that unit stays exactly as typed; a converted one is
  * rounded to the half unit (`weightInUnit`).
  */
-import { and, asc, eq, inArray } from "drizzle-orm";
-import { performedSessions, performedSets } from "@rg/database";
-import { weightInUnit, type Weight, type WeightUnit } from "@rg/domain";
-import { EXERCISES } from "@rg/exercise-library";
+import { and, asc, eq, gt, gte, inArray, lte, sql } from "drizzle-orm";
+import { corosExercises, performedSessions, performedSets } from "@rg/database";
+import { addDays, weightInUnit, type Weight, type WeightUnit } from "@rg/domain";
+import { EXERCISES, type ExerciseRecord } from "@rg/exercise-library";
 import { COROS_EXERCISE_NAMES } from "@rg/providers";
 import { chunkIds, type Db } from "./db.js";
-import { COROS_EXERCISE_PREFIX, WATCH_SOURCE } from "./watch-sets.js";
+import { COROS_EXERCISE_PREFIX, libraryIdsByOrigin, WATCH_SOURCE } from "./watch-sets.js";
 
 export interface LoggedSetDto {
   reps: number | null;
@@ -120,6 +120,82 @@ export async function loggedSetsByActivity(
       side: r.side === "left" || r.side === "right" ? r.side : null,
     });
     out.set(activityId, list);
+  }
+  return out;
+}
+
+/**
+ * A plan's exercises (by COROS originId) → the heaviest set logged for each,
+ * per plan week, in kg (Phase 2a+, for `liftProgressions`' `actual`). A plan
+ * exercise matches the logged sets of its COROS catalog key (`coros:<key>`,
+ * what the watch logs) and of the library move that maps to it exactly (what
+ * the app logs). Done, loaded sets only; dates are the sessions' local days,
+ * week 1 starting on `weekOne`.
+ */
+export async function loggedTopKgByWeek(
+  db: Db,
+  userId: string,
+  plan: { weekOne: string; weeks: number; originIds: readonly string[]; library?: readonly ExerciseRecord[] },
+): Promise<Map<string, Map<number, number>>> {
+  const out = new Map<string, Map<number, number>>();
+  const origins = [...new Set(plan.originIds)];
+  if (origins.length === 0 || plan.weeks <= 0) return out;
+  const originsOf = new Map<string, string[]>();
+  const claim = (exerciseId: string, originId: string) =>
+    originsOf.set(exerciseId, [...(originsOf.get(exerciseId) ?? []), originId]);
+  for (const batch of chunkIds(origins)) {
+    const rows = await db
+      .select({ id: corosExercises.id, name: corosExercises.name })
+      .from(corosExercises)
+      .where(inArray(corosExercises.id, batch));
+    for (const r of rows) claim(`${COROS_EXERCISE_PREFIX}${r.name}`, r.id);
+  }
+  const byOrigin = libraryIdsByOrigin(plan.library);
+  for (const origin of origins) {
+    const libraryId = byOrigin.get(origin);
+    if (libraryId) claim(libraryId, origin);
+  }
+  if (originsOf.size === 0) return out;
+
+  const last = addDays(plan.weekOne, plan.weeks * 7 - 1);
+  const rows = (
+    await Promise.all(
+      chunkIds([...originsOf.keys()]).map((ids) =>
+        db
+          .select({
+            exerciseId: performedSets.exerciseId,
+            localDate: performedSessions.localDate,
+            kg: sql<number>`max(${performedSets.loadKg})`,
+          })
+          .from(performedSets)
+          .innerJoin(performedSessions, eq(performedSessions.id, performedSets.performedSessionId))
+          .where(
+            and(
+              eq(performedSessions.userId, userId),
+              gte(performedSessions.localDate, plan.weekOne),
+              lte(performedSessions.localDate, last),
+              eq(performedSets.done, true),
+              gt(performedSets.loadKg, 0),
+              inArray(performedSets.exerciseId, ids),
+            ),
+          )
+          .groupBy(performedSets.exerciseId, performedSessions.localDate),
+      ),
+    )
+  ).flat();
+  const start = Date.parse(`${plan.weekOne}T00:00:00Z`);
+  for (const r of rows) {
+    const week = Math.floor((Date.parse(`${r.localDate}T00:00:00Z`) - start) / (7 * 86_400_000)) + 1;
+    for (const origin of originsOf.get(r.exerciseId) ?? []) {
+      const weeks = out.get(origin) ?? new Map<number, number>();
+      weeks.set(week, Math.max(weeks.get(week) ?? 0, r.kg));
+      out.set(origin, weeks);
+    }
+  }
+  for (const weeks of out.values()) {
+    const sorted = [...weeks.entries()].sort((a, b) => a[0] - b[0]);
+    weeks.clear();
+    for (const [w, kg] of sorted) weeks.set(w, kg);
   }
   return out;
 }

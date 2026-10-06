@@ -839,6 +839,83 @@ describe("GET /plans/:id/detail (2026-08-11 rework §4)", () => {
     expect(body.weeks[0]!.summary).not.toContain("push-ups");
   });
 
+  it("lift progressions carry the week's heaviest logged set as `actual` (Phase 2a+)", async () => {
+    // Pinned: the plan's weeks are dated from this Wednesday's Monday.
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(new Date("2026-10-07T18:00:00Z"));
+    try {
+      const monday = "2026-10-05";
+      await db.insert(schema.corosExercises).values({ id: "41", name: "T1041", updatedAt: nowInstant() });
+      const week = (kg: number) => ({
+        sessions: [
+          {
+            title: "Upper",
+            weekday: 2,
+            exercises: [{ originId: "41", name: "T1041", sets: 3, reps: 6, weight: { type: "kg", value: kg }, restSeconds: 120 }],
+          },
+        ],
+      });
+      const liftPlan = {
+        name: "Bench Block",
+        brief: {
+          goal: "strength",
+          durationWeeks: 3,
+          sessionsPerWeek: 1,
+          preferredDays: [2],
+          sessionMinutes: 45,
+          equipment: "bench",
+          constraints: "",
+          notes: "",
+          startDate: monday,
+        },
+        weeks: [week(20), week(22.5), week(25)],
+      };
+      await db.insert(schema.studioPlans).values({
+        id: "sp-actual",
+        userId,
+        brief: liftPlan.brief,
+        plan: liftPlan,
+        version: 1,
+        createdAt: nowInstant(),
+        updatedAt: nowInstant(),
+      });
+      // What the watch logged on Tuesday of week 1: 50 lb (22.68 kg) on the bench.
+      await db.insert(schema.performedSessions).values({
+        id: "ps-w1",
+        userId,
+        source: "watch",
+        sourceRef: "lbl-w1",
+        localDate: "2026-10-06",
+        payloadHash: "h",
+        createdAt: nowInstant(),
+        updatedAt: nowInstant(),
+      });
+      await db.insert(schema.performedSets).values({
+        id: "ps-w1:0:0",
+        performedSessionId: "ps-w1",
+        entryIndex: 0,
+        exerciseId: "coros:T1041",
+        setIndex: 0,
+        reps: 6,
+        loadValue: 50,
+        loadUnit: "lb",
+        loadKg: 22.68,
+      });
+
+      const res = await client().get("/api/coach/plans/sp-actual/detail");
+      expect(res.status).toBe(200);
+      const body = (await res.json()) as { progressions: Array<{ label: string; series: Array<{ week: number; value: number; actual?: number }> }> };
+      const bench = body.progressions.find((p) => p.label === "Bench Press")!;
+      expect(bench.series).toEqual([
+        { week: 1, value: 20, actual: 22.7 },
+        { week: 2, value: 22.5 },
+        { week: 3, value: 25 },
+      ]);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("coach run plan: firm/shape weeks, long-run progression, shape weeks excluded from series", async () => {
     const monday = startOfIsoWeek(todayInZone(prefs.timezone));
     const w1 = addDays(monday, -7);

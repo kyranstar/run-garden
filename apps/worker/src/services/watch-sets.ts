@@ -324,6 +324,11 @@ function reverseMapping(library: readonly ExerciseRecord[]): Map<string, string>
 
 let libraryReverse: Map<string, string> | null = null;
 
+/** The library's exact COROS mappings (originId → library id); the shipped library when none is given. */
+export function libraryIdsByOrigin(library?: readonly ExerciseRecord[]): Map<string, string> {
+  return library ? reverseMapping(library) : (libraryReverse ??= reverseMapping(EXERCISES));
+}
+
 /**
  * exerciseNameKey → library id for the keys in this detail: the catalog row
  * named by the key gives its originId, the library's exact mapping of that
@@ -334,7 +339,7 @@ async function libraryResolver(
   detail: Pick<RawCorosActivityDetail, "lapList">,
   library: readonly ExerciseRecord[] | undefined,
 ): Promise<(nameKey: string) => string | null> {
-  const byOrigin = library ? reverseMapping(library) : (libraryReverse ??= reverseMapping(EXERCISES));
+  const byOrigin = libraryIdsByOrigin(library);
   if (byOrigin.size === 0) return () => null;
   const keys = [...new Set(readLapType(detail).map(nameKeyOf).filter((k): k is string => k !== null))];
   const originsByKey = new Map<string, Set<string>>();
