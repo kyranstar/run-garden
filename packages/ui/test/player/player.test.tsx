@@ -59,7 +59,7 @@ async function storedStart(): Promise<OfflineDb> {
   return db;
 }
 
-function mount(opts: { getSession?: () => Promise<SessionDto>; writeDelayMs?: number } = {}) {
+function mount(opts: { getSession?: () => Promise<SessionDto>; writeDelayMs?: number; noIndexedDb?: boolean } = {}) {
   const getSession = vi.fn(opts.getSession ?? (() => Promise.reject(new TypeError("Failed to fetch"))));
   host = document.createElement("div");
   document.body.appendChild(host);
@@ -67,7 +67,7 @@ function mount(opts: { getSession?: () => Promise<SessionDto>; writeDelayMs?: nu
   const player = createElement(PlayerScreen, {
     workoutId: SLOT,
     deps: {
-      db: () => Promise.resolve(db!),
+      db: () => (opts.noIndexedDb ? Promise.reject(new Error("IndexedDB is unavailable")) : Promise.resolve(db!)),
       getSession,
       chimes: noChimes,
       wake: () => () => undefined,
@@ -375,6 +375,19 @@ describe("what a tap changes is kept at once (ruling 2b-R13)", () => {
     await until(() => !!document.querySelector('[role="dialog"]'), "the swap list");
     await click("Use");
     await until(async () => ((await readLive<{ swaps: unknown[] }>(db!, SLOT))?.recorder.swaps.length ?? 0) === 1, "the swap kept at once");
+  });
+});
+
+describe("a device with no IndexedDB (audit 2b-B I-2)", () => {
+  it("plays the session started online — and says from the first moment that it isn't being kept here", async () => {
+    const started = { workoutId: SLOT, contentState: "started", build: build(), view: view(), profiles: profiles() } as unknown as SessionDto;
+    mount({ noIndexedDb: true, getSession: async () => started });
+    await until(() => text().includes("1 of 9"), "the first step");
+    expect(text()).toContain("This session isn't being kept on this device.");
+    // Nothing ever clears it: no write can land.
+    await click("Skip");
+    await at(T0 + 5 * S);
+    expect(text()).toContain("This session isn't being kept on this device.");
   });
 });
 

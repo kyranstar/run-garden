@@ -246,8 +246,11 @@ function Playing({ loaded, db, deps }: { loaded: Extract<Loaded, { kind: "ready"
   /** A panel paused the countdown: closing it resumes. */
   const pausedByPanel = useRef(false);
   const writer = useRef<LiveWriter | null>(null);
-  /** Keeping the session on the device failed (storage full, the database gone): the athlete is told. */
-  const [notKept, setNotKept] = useState(false);
+  /**
+   * Keeping the session on the device failed (storage full, the database gone), or the device has no IndexedDB at all
+   * (blocked site data, a broken private mode): the athlete is told, from the first moment (audit 2b-B I-2).
+   */
+  const [notKept, setNotKept] = useState(db === null);
 
   // ── Persistence: every change; what a tap changed at once, the clock's own changes debounced; flushed when hidden
   //    or left ─────────────────────────────────────────────────────────────────────────────────────────────────────

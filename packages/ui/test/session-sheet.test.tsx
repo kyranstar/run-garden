@@ -529,6 +529,7 @@ describe("Start", () => {
 
   it("with the player: Start · 30 min locks the session and goes to the player", async () => {
     features.player = true;
+    vi.stubGlobal("indexedDB", new IDBFactory());
     const { calls } = mount(session());
     await until(() => body().includes("Supported row"), "the moves");
     await click("Start · 30 min");
@@ -548,6 +549,26 @@ describe("Start", () => {
     const stored = await loadBuild(db, SLOT);
     expect(stored?.build.buildId).toBe(session().build!.buildId);
     expect(await loadExtras(db, SLOT)).toMatchObject({ title: "Garden program", profiles: session().profiles });
+  });
+
+  it("with the player: when the device can't keep the session, the sheet says so and Continue goes on (audit 2b-B I-2)", async () => {
+    features.player = true;
+    vi.stubGlobal("indexedDB", new IDBFactory());
+    const db = await offlineDb();
+    // The storage is full (or the database gone): what Start leaves on the device can't be written.
+    const put = vi.spyOn(db, "put").mockRejectedValue(new DOMException("The quota has been exceeded.", "QuotaExceededError"));
+    try {
+      const { calls } = mount(session());
+      await until(() => body().includes("Supported row"), "the moves");
+      await click("Start · 30 min");
+      await until(() => body().includes("isn't being kept on this device"), "the warning");
+      expect(body()).not.toContain("the player");
+      expect(calls.filter((c) => c.path.endsWith("/start"))).toHaveLength(1);
+      await click("Continue");
+      await until(() => body().includes("the player"), "the player route");
+    } finally {
+      put.mockRestore();
+    }
   });
 
   it("with the player: a stale build is replaced by the fresh one, and Start names it", async () => {

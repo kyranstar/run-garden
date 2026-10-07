@@ -117,16 +117,23 @@ export function SessionSheet({ w, today, onClose }: { w: WorkoutDto; today: stri
   });
   /** The session's name as the player shows it (kept for the Start handler, which runs after this render). */
   const titleRef = useRef("");
+  /** Start locked the session, but the device could not keep it (no IndexedDB, storage full): said before it plays. */
+  const [notKept, setNotKept] = useState(false);
   const start = useMutation({
     mutationFn: (buildId: string) => api.startSession(w.id, buildId),
     onSuccess: async (next) => {
       qc.setQueryData(key, next);
       refreshPlan();
       // The player plays what Start leaves on the device, never the network (ruling 2b-R1). Without IndexedDB it
-      // still opens, online, from the started session.
-      await offlineDb()
-        .then((db) => rememberStart(db, next, titleRef.current, qc.getQueryData<MeResponse>(["me"])?.userId ?? null))
-        .catch(() => undefined);
+      // still opens, online, from the started session — but it keeps nothing, so the sheet says so first and Continue
+      // goes on (audit 2b-B I-2).
+      try {
+        const db = await offlineDb();
+        await rememberStart(db, next, titleRef.current, qc.getQueryData<MeResponse>(["me"])?.userId ?? null);
+      } catch {
+        setNotKept(true);
+        return;
+      }
       navigate(`/session/${encodeURIComponent(w.id)}`);
     },
     // The day's inputs changed since this build (a check, a save, an edit): show the fresh build to Start again. The
@@ -414,6 +421,11 @@ export function SessionSheet({ w, today, onClose }: { w: WorkoutDto; today: stri
             reading
           )}
         </p>
+        {notKept ? (
+          <Banner kind="warn">
+            This session isn't being kept on this device. It plays while you're online, and a reload starts it again.
+          </Banner>
+        ) : null}
         {body}
       </div>
       {picker && view && s ? (
