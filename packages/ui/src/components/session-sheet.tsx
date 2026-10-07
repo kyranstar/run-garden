@@ -453,7 +453,7 @@ export function SessionSheet({ w, today, onClose }: { w: WorkoutDto; today: stri
                 </div>
                 <button
                   type="button"
-                  className="btn btn-small"
+                  className="btn"
                   disabled={build.isPending}
                   onClick={() => {
                     const from = params.swaps[swapItem.slotKey]?.from ?? swapItem.exerciseId;

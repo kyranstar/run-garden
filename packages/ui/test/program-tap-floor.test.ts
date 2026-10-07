@@ -114,3 +114,14 @@ describe("program settings' segments (audit 2a-UI M2)", () => {
     expect(7 * TAP + 6 * gap).toBeLessThanOrEqual(width);
   });
 });
+
+describe("the swap list's Use, on the player and on the session sheet (audit 2b-B I-1)", () => {
+  it("is a 44px box of its own, both ways — not a small button whose 36px box takes the floor only as a pad", () => {
+    // Measured on a phone at 390: "Use" 53×36 on the player's ⇄ sheet, used at arm's length mid-session.
+    const use = rule(".choice-move > .btn");
+    expect(px(use["min-height"]!)).toBeGreaterThanOrEqual(TAP);
+    expect(px(use["min-width"]!)).toBeGreaterThanOrEqual(TAP);
+    // A row is the move's name and reasons beside the button: centred, so the taller button never misaligns them.
+    expect(rule(".choice-move")["align-items"]).toBe("center");
+  });
+});

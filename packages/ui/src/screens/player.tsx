@@ -624,7 +624,7 @@ function Playing({ loaded, db, deps }: { loaded: Extract<Loaded, { kind: "ready"
                 </div>
                 <button
                   type="button"
-                  className="btn btn-small"
+                  className="btn"
                   onClick={() => {
                     pausedByPanel.current = false;
                     setPanel(null);

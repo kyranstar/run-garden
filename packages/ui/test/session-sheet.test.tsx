@@ -488,6 +488,10 @@ describe("a built session", () => {
     expect(body()).toContain("Goblet box squat");
     expect(body()).toContain("Same weight · Hips: 5 days since trained");
     expect(body()).not.toContain("Don't show again");
+    // A full-size button, 44px tall (styles.css `.choice-move > .btn`), as on the player's ⇄ sheet (audit 2b-B I-1).
+    const uses = [...document.querySelectorAll<HTMLButtonElement>("button")].filter((b) => b.textContent === "Use");
+    expect(uses.length).toBeGreaterThan(0);
+    for (const u of uses) expect([...u.classList]).toEqual(["btn"]);
     await click("Use");
     await until(() => builds(calls).length === 2, "the rebuild");
     expect(builds(calls)[1]!.body).toEqual({ swaps: { "core:0": { from: "goblet", to: "boxSquat" } } });

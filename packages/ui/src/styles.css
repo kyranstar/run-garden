@@ -2365,6 +2365,12 @@ button.session-chip {
 .choice-move:last-child {
   border-bottom: 0;
 }
+/* Use is a full 44px box both ways (audit 2b-B I-1): the ⇄ sheet is used at arm's length mid-session, where a 36px
+   small button measured 53×36. */
+.choice-move > .btn {
+  min-height: var(--tap);
+  min-width: var(--tap);
+}
 .choice-move-text {
   display: grid;
   min-width: 0;
