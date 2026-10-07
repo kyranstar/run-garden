@@ -28,7 +28,9 @@
  *  5. The review: ratings and "not for me" → `exercise_prefs`, the new move's first day; an accepted graduation →
  *     the block's lift (once: a retried save finds the lift already switched).
  *  6. The garden replays from the earliest day the save touched: the slot's, the session's, a displaced activity's
- *     or a reopened slot's.
+ *     or a reopened slot's. That day is recorded in the save's own transaction, and the replay is one capped catch-up
+ *     step (ruling 2b-R7): a long walk finishes on later garden reads, and a replay killed after the commit is not
+ *     lost (audit 2b-A M-5). The session's day must be its slot's or the next, and not after tomorrow (422).
  *
  * Never writes to COROS (an app session is never pushed to the watch in 2b). Every write waits for the restore
  * marker to be clear. Every statement stays under D1's 100 bound variables.
@@ -66,7 +68,7 @@ import { restoreInProgress } from "./account-state.js";
 import { ROLLING_WINDOW_DAYS } from "./backfill.js";
 import { chunkIds, insertBatches, runAtomically, type AtomicStatement, type Db } from "./db.js";
 import { loadEngineContext, loadProgramState } from "./engine-inputs.js";
-import { resimulateFrom } from "./garden-sync.js";
+import { gardenChangeStatement, resimulateFrom } from "./garden-sync.js";
 import { claimUserLock, releaseUserLock } from "./locks.js";
 import { engineDataFor, SessionNotFoundError } from "./session-build.js";
 import { PENDING_HASH, removeWatchSessionStatements, WATCH_SOURCE } from "./watch-sets.js";
@@ -370,6 +372,14 @@ export async function savePerformedSession(db: Db, userId: string, performedId: 
     .where(and(eq(plannedWorkouts.id, p.workoutId), eq(plannedWorkouts.userId, userId)))
     .limit(1);
   if (!slot || (slot.origin !== "program" && slot.origin !== "on_demand")) throw new SessionNotFoundError();
+  // Ruling 2b-R7 (audit 2b-A I-4): the session's day is its slot's — or the next, for a session that ran past
+  // midnight — and never after tomorrow. Anything else is a wrong clock or a bug, and would replay the garden from
+  // wherever it says.
+  if (p.localDate < slot.effectiveDate || p.localDate > addDays(slot.effectiveDate, 1) || p.localDate > addDays(today, 1)) {
+    throw new InvalidSaveError([
+      { message: `the session's day must be its slot's (${slot.effectiveDate}) or the next, and not after tomorrow`, path: ["localDate"] },
+    ]);
+  }
   if (await restoreInProgress(db, userId)) return { status: "restoring" };
 
   const lockKind = `save:${performedId}`;
@@ -393,8 +403,13 @@ export async function savePerformedSession(db: Db, userId: string, performedId: 
   } finally {
     await releaseUserLock(db, userId, lockKind, token);
   }
-  // The garden replays from the earliest day the save touched (it stands down by itself while a restore runs).
-  await resimulateFrom(db, userId, written.replayFrom, ctx.prefs, new Date(ctx.now)).catch(() => undefined);
+  // The garden replays from the earliest day the save touched. That day went on record with the save (its
+  // transaction), so this is one capped catch-up step (ruling 2b-R7): a long walk stops at SAVE_REPLAY_MAX_DAYS and
+  // the next garden read or the hourly cron walks on; a step killed part-way leaves the record for the next one
+  // (audit 2b-A M-5). It stands down by itself while a restore runs.
+  await resimulateFrom(db, userId, written.replayFrom, ctx.prefs, new Date(ctx.now), { maxResimDays: SAVE_REPLAY_MAX_DAYS }).catch(
+    () => undefined,
+  );
   return written.outcome;
 }
 
@@ -520,6 +535,13 @@ async function planMatch(db: Db, userId: string, slot: SlotRow, performedId: str
   return { matched: true, notes: other || elsewhere ? ["superseded_auto_match"] : [], statements, alsoFrom };
 }
 
+/**
+ * How many days the save's own garden step may walk. A day costs ~10–16 D1 statements: 30 keeps a save (~35) plus its
+ * step well inside the 1,000-query budget of one invocation; a longer walk finishes on the next garden read or hourly
+ * cron (the catch-up's own cap, 45 days a step).
+ */
+const SAVE_REPLAY_MAX_DAYS = 30;
+
 /** What the write phase did, and the earliest day the garden must replay from. */
 interface Written {
   outcome: SaveOutcome;
@@ -598,6 +620,9 @@ async function write(
   const graduation = await graduationStatements(db, userId, slot, p, now);
   const notes: SaveNote[] = [...match.notes];
   if (!graduation.applied) notes.push("graduation_skipped");
+  // The completed slot credits its own day (buildDayInput keys it on effectiveDate), the session its day, and a
+  // displaced activity or a reopened slot theirs: the replay starts at the earliest (rulings 2b-R5, 2b-R7).
+  const replayFrom = [slot.effectiveDate, p.localDate, ...match.alsoFrom].reduce((a, b) => (b < a ? b : a));
 
   // ── Then write it all, as one transaction. ──
   const statements: AtomicStatement[] = [];
@@ -719,11 +744,11 @@ async function write(
   // 5. The review's decisions.
   statements.push(...prefs, ...graduation.statements);
 
+  // 6. The garden's replay, on record with the save: whatever happens to the replay itself, the change is not lost.
+  statements.push(gardenChangeStatement(db, userId, replayFrom));
+
   // Commit marker: everything above lands with it, or none of it does.
   statements.push(db.update(performedSessions).set({ payloadHash: hash, updatedAt: now }).where(eq(performedSessions.id, performedId)));
   await runAtomically(db, statements);
-  // The completed slot credits its own day (buildDayInput keys it on effectiveDate), the session its day, and a
-  // displaced activity or a reopened slot theirs: the replay starts at the earliest (rulings 2b-R5, 2b-R7).
-  const replayFrom = [slot.effectiveDate, p.localDate, ...match.alsoFrom].reduce((a, b) => (b < a ? b : a));
   return { outcome: { status: "saved", performedId, activityId, matched: match.matched, notes }, replayFrom };
 }

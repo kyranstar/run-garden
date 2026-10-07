@@ -24,7 +24,7 @@ const PLAYED_NOON = "2026-10-06T19:00:00.000Z";
 const SAVED = "2026-10-07T16:00:00.000Z";
 
 describe("a save's D1 statements", () => {
-  it("a typical session: the save's own statements stay under 40, and the garden replay is counted apart", async () => {
+  it("a typical session: the save's own statements stay under 40, and its garden replay of one day under 50", async () => {
     const statements: string[] = [];
     const db = makeTestDb({ boundVariableCap: 100, onStatement: (sql) => statements.push(sql) });
     const { userId, prefs } = await makeTestUser(db);
@@ -75,7 +75,11 @@ describe("a save's D1 statements", () => {
     expect(await savePerformedSession(db, userId, body.id, body, { now: SAVED, prefs })).toMatchObject({ status: "saved", matched: true });
     expect(atReplay).toBeGreaterThan(0);
     const own = atReplay;
-    console.log(`[save] typical session: ${own} statements for the save itself, ${statements.length - own} for the garden replay of 1 day`);
+    const replay = statements.length - own;
+    console.log(`[save] typical session: ${own} statements for the save itself, ${replay} for the garden replay of 1 day`);
     expect(own).toBeLessThan(40);
+    // The replay is a capped catch-up step (ruling 2b-R7): one day's walk plus the step's bookkeeping (audit 2b-A M-10).
+    expect(replay).toBeLessThan(50);
+    expect(own + replay).toBeLessThan(90);
   });
 });

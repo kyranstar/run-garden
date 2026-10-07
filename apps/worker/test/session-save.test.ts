@@ -65,7 +65,10 @@ let statements: string[];
 let userId: string;
 let prefs: UserPreferences;
 let programId: string;
-/** A statement matching this dies (the invocation killed part-way: CPU, the query cap, a dropped connection). */
+/**
+ * The first statement matching this dies (the invocation killed part-way: CPU, the query cap, a dropped connection);
+ * it is cleared as it fires.
+ */
 let killAt: RegExp | null;
 
 beforeEach(async () => {
@@ -75,7 +78,10 @@ beforeEach(async () => {
     boundVariableCap: 100,
     onStatement: (sql) => {
       statements.push(sql);
-      if (killAt?.test(sql)) throw new Error("the invocation died here");
+      if (killAt?.test(sql)) {
+        killAt = null;
+        throw new Error("the invocation died here");
+      }
     },
   });
   ({ userId, prefs } = await makeTestUser(db));
@@ -589,6 +595,108 @@ describe("the garden replays from the session's own day (§2b step 6)", () => {
       expect(credited[0]!.unplanned).toBeUndefined();
     });
   }
+
+  /** Four days on: the garden has walked past the slot's day, which counted as missed while the slot stood open. */
+  const LATE = "2026-10-10T16:00:00.000Z";
+  async function closedDay() {
+    await ensureGarden(db, userId, prefs, "2026-09-28");
+    const s = await started("build");
+    await advanceGarden(db, userId, prefs, new Date(LATE));
+    expect((await dayInput(PLAYED))!.completedRuns).toEqual([]);
+    return s;
+  }
+
+  it("a session that ran past midnight replays from its slot's day, which the completed slot credits (ruling 2b-R7)", async () => {
+    // A Monday slot: the garden's weekly checkpoint is that very day, so a replay from the next day would start after it.
+    const MONDAY = "2026-10-05";
+    await ensureGarden(db, userId, prefs, "2026-09-28");
+    const workoutId = await seedSlot(MONDAY);
+    const built = await buildSession(db, userId, workoutId, { overrides: { mode: "build" } }, { today: MONDAY, now: "2026-10-05T19:00:00.000Z", prefs });
+    const build = (await startSession(db, userId, workoutId, built.build!.buildId, "2026-10-05T19:00:00.000Z")).build!;
+    await advanceGarden(db, userId, prefs, new Date(LATE));
+    expect((await dayInput(MONDAY))!.completedRuns).toEqual([]);
+    // Started at 23:40 on the slot's day, saved with the next day's date.
+    const body = payload({ workoutId, build }, { localDate: PLAYED, startedAt: "2026-10-06T06:40:00.000Z", endedAt: "2026-10-06T07:11:00.000Z" });
+    expect(await save(body, body.id, { now: LATE })).toMatchObject({ status: "saved", matched: true });
+    expect((await dayInput(MONDAY))!.completedRuns.map((r) => r.workoutId)).toEqual([workoutId]);
+  });
+
+  it("a replay killed after the commit is not lost: the day is on record, and the next garden read credits it (audit 2b-A M-5)", async () => {
+    const s = await closedDay();
+    const body = payload(s);
+    // The replay dies at its first day; the save itself had committed.
+    killAt = /^insert into "garden_day_inputs"/;
+    expect(await save(body, body.id, { now: LATE })).toMatchObject({ status: "saved" });
+    expect(killAt).toBeNull();
+    // The response was lost; the outbox's retry finds it saved, and drops the entry.
+    expect(await save(body, body.id, { now: LATE })).toEqual({ status: "same_payload" });
+    // The next garden read (or the hourly cron) walks the change on record.
+    await advanceGarden(db, userId, prefs, new Date(LATE));
+    expect((await dayInput(PLAYED))!.completedRuns.map((r) => r.workoutId)).toEqual([s.workoutId]);
+  });
+
+  it("an old session replays through the capped catch-up: the save stays inside D1's query budget, and the next garden reads finish the walk (ruling 2b-R7, audit 2b-A I-4)", async () => {
+    await ensureGarden(db, userId, prefs, "2026-05-01");
+    const s = await started("build");
+    const old = await seedSlot("2026-05-04");
+    await advanceGarden(db, userId, prefs, new Date(SAVED));
+    // A tablet that saved it offline in May and only now came online.
+    const body = payload(s, {
+      workoutId: old,
+      buildId: null,
+      localDate: "2026-05-04",
+      startedAt: "2026-05-04T19:05:00.000Z",
+      endedAt: "2026-05-04T19:36:00.000Z",
+    });
+    statements.length = 0;
+    expect(await save(body)).toMatchObject({ status: "saved", matched: true });
+    console.log(`[save] a 156-day-old session: ${statements.length} statements, save and capped replay together`);
+    expect(statements.length).toBeLessThan(800);
+    const [account] = await db.select().from(accountState).where(eq(accountState.userId, userId));
+    expect(account!.gardenCatchUpPending).toBe(true);
+    // The save's own step walked a month from the start of May, no more.
+    const [state] = await db.select().from(schema.gardenState).where(eq(schema.gardenState.userId, userId));
+    expect(state!.lastSimulatedDate < "2026-06-05").toBe(true);
+
+    let steps = 0;
+    let result: Awaited<ReturnType<typeof advanceGarden>>;
+    do {
+      result = await advanceGarden(db, userId, prefs, new Date(SAVED));
+      steps += 1;
+    } while (result.resimPending && steps < 10);
+    expect(result.resimPending).toBeFalsy();
+    expect(result.lastSimulatedDate >= "2026-10-05").toBe(true);
+    expect((await dayInput("2026-05-04"))!.completedRuns.map((r) => r.workoutId)).toContain(old);
+    expect((await db.select().from(accountState).where(eq(accountState.userId, userId)))[0]).toMatchObject({ gardenCatchUpPending: false, gardenChangedFrom: null });
+  });
+});
+
+describe("ruling 2b-R7: the session's day is its slot's (audit 2b-A I-4)", () => {
+  it("refuses a day before the slot's or more than a day after it: invalid_save, nothing written", async () => {
+    const s = await started("build");
+    statements.length = 0;
+    for (const localDate of ["2026-10-05", "2026-10-08", "2026-05-02"]) {
+      await expect(save(payload(s, { localDate }))).rejects.toThrow("invalid_save");
+    }
+    expect(statements.filter(isWrite)).toEqual([]);
+  });
+
+  it("refuses a day after tomorrow, whatever the slot says", async () => {
+    const s = await started("build");
+    const ahead = await seedSlot("2026-10-10");
+    const body = payload(s, { workoutId: ahead, buildId: null, localDate: "2026-10-10" });
+    await expect(save(body)).rejects.toThrow("invalid_save");
+    // Its day is tomorrow (a clock a little ahead): taken.
+    expect(await save(body, body.id, { now: "2026-10-09T16:00:00.000Z" })).toMatchObject({ status: "saved" });
+  });
+
+  it("a committed save's retry is same_payload even after its slot moved", async () => {
+    const s = await started("build");
+    const body = payload(s);
+    await save(body);
+    await db.update(plannedWorkouts).set({ effectiveDate: "2026-10-09" }).where(eq(plannedWorkouts.id, s.workoutId));
+    expect(await save(body)).toEqual({ status: "same_payload" });
+  });
 });
 
 describe("the watch and the app, one physical session (programme spec §10.6; ruling 2b-R3; Phase 0 audit 1 ingest #3)", () => {
@@ -955,6 +1063,11 @@ describe("PUT /api/sessions/performed/:id", () => {
     const wrongId = await put(`/api/sessions/performed/abc`, body);
     expect(wrongId.status).toBe(422);
     expect(await wrongId.json()).toMatchObject({ error: "invalid_save" });
+    // A day that is not the slot's (ruling 2b-R7).
+    const wrongDay = payload(s, { id: "5e0c1d2e-3333-4444-8555-966677778888", localDate: "2026-05-02" });
+    const refused = await put(`/api/sessions/performed/${wrongDay.id}`, wrongDay);
+    expect(refused.status).toBe(422);
+    expect(await refused.json()).toMatchObject({ error: "invalid_save", issues: [{ path: ["localDate"] }] });
   });
 
   it("423 while a restore replaces the account; 503 busy while the same session is being saved", async () => {
