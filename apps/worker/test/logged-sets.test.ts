@@ -137,6 +137,21 @@ describe("loggedSetsByActivity", () => {
     const ids = [...Array.from({ length: 120 }, (_, i) => `act-${i}`), ACTIVITY.activityId];
     expect((await loggedSetsByActivity(db, userId, ids, "lb")).get(ACTIVITY.activityId)).toHaveLength(4);
   });
+
+  it("reads the sets of more sessions than one IN list holds, under D1's bind cap (audit M-13)", async () => {
+    const db = makeTestDb({ boundVariableCap: D1_BIND_LIMIT });
+    const { userId } = await makeTestUser(db);
+    // 120: past one IN list (90), and past the cap itself were the sets query not chunked.
+    const ids = Array.from({ length: 120 }, (_, i) => `act-${String(i).padStart(3, "0")}`);
+    for (const [i, activityId] of ids.entries()) {
+      await appSession(db, userId, activityId, [{ entry: 0, exerciseId: "gobletSquat", reps: i + 1, load: null }]);
+    }
+    const out = await loggedSetsByActivity(db, userId, ids, "lb");
+    expect(out.size).toBe(120);
+    expect(out.get("act-119")).toEqual([
+      { exerciseId: "gobletSquat", name: "Goblet squat", sets: [{ reps: 120, seconds: null, load: null, side: null }] },
+    ]);
+  });
 });
 
 describe("loggedTopKgByWeek — a plan's exercises, their heaviest logged set per week", () => {

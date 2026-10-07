@@ -196,6 +196,36 @@ describe("ingestActivities → watch sets", () => {
     expect(await sessionsOf(db, userId)).toEqual([]);
   });
 
+  it("a failure writing the sets is logged and passed: the activity lands and its fingerprint is stamped (audit M-13)", async () => {
+    const db = failOnce(/^\s*insert into "performed_sets"/i, "D1_ERROR: something odd");
+    const { userId } = await makeTestUser(db);
+    const stats = await ingestActivities(db, {
+      userId,
+      sources: [corosActivity()],
+      strengthDetailsByProviderId: { "lbl-strength-9001": detailOf(workView()) },
+    });
+    expect(stats.newActivities).toBe(1);
+    expect(stats.affectedDates).toEqual(["2026-10-01"]);
+    const [link] = await db.select().from(schema.activitySourceLinks);
+    expect(link!.contentFingerprint).toBe("fp-1");
+    // What is left is the half-written marker the heal and the backfill look for — and no reader shows.
+    expect((await sessionsOf(db, userId)).map((s) => s.payloadHash)).toEqual(["pending"]);
+  });
+
+  it("our own runtime ceiling while writing the sets stops the ingest, the fingerprint unstamped (audit M-13)", async () => {
+    const db = failOnce(/^\s*insert into "performed_sets"/i, "Error: Too many subrequests.");
+    const { userId } = await makeTestUser(db);
+    await expect(
+      ingestActivities(db, {
+        userId,
+        sources: [corosActivity()],
+        strengthDetailsByProviderId: { "lbl-strength-9001": detailOf(workView()) },
+      }),
+    ).rejects.toThrow(/Too many subrequests/);
+    const [link] = await db.select().from(schema.activitySourceLinks);
+    expect(link!.contentFingerprint).toBe("pending"); // so the next read does the whole activity again
+  });
+
   it("a failure naming the workout on the session costs the session its link, never the match or its replay (audit M-2)", async () => {
     const db = failOnce(/^\s*update "performed_sessions" set "workout_id"/i, "D1_ERROR: transient");
     const { userId } = await makeTestUser(db);

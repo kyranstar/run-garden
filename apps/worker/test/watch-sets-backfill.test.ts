@@ -262,6 +262,19 @@ describe("backfillWatchSets", () => {
     expect(await walk(db, userId, rec.impl)).toMatchObject({ filled: 1, nothingToLog: 1 });
   });
 
+  it("a walk from the top reads a nothing-to-log activity again, and says so (audit M-7, M-13)", async () => {
+    const { db, userId, server, rec } = await setup();
+    await stored(db, userId, server, "lbl-ok", "2026-09-10T13:00:00.000Z");
+    await stored(db, userId, server, "lbl-empty", "2026-09-11T13:00:00.000Z", { detail: false });
+    expect(await walk(db, userId, rec.impl)).toMatchObject({ filled: 1, nothingToLog: 1 });
+
+    // Its laps are still there and it still has no session, so it is still a candidate: one detail read, reported.
+    rec.paths.length = 0;
+    const again = await backfillWatchSets(db, makeEnv(), userId, { fetchImpl: rec.impl });
+    expect(again).toMatchObject({ status: "ok", filled: 0, nothingToLog: 1, remaining: 0, next: null });
+    expect(detailCalls(rec.paths)).toHaveLength(1);
+  });
+
   it("reads one detail per call — Workers Free's 10 ms CPU — and says how many are left (audit I-1)", async () => {
     const { db, userId, server, rec } = await setup();
     for (const d of ["2026-09-01", "2026-09-02", "2026-09-03"]) await stored(db, userId, server, `lbl-${d}`, `${d}T13:00:00.000Z`);
