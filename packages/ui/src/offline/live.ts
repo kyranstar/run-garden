@@ -70,39 +70,65 @@ export async function hasLiveSession(db: OfflineDb): Promise<boolean> {
 export interface LiveWriter {
   /** Record the latest state; written 250 ms after the last call, or at once on hide / leave / flush. */
   write(session: LiveSession): void;
-  /** Write the pending state now (no-op when none). */
+  /** Write the pending state now (no-op when none). Rejects when the write fails; the state then stays pending. */
   flush(): Promise<void>;
   /** Flush, then stop listening to the page. */
   dispose(): void;
+  /**
+   * Why the last write failed — the storage full (`QuotaExceededError`), the database closed or gone — until a write
+   * lands; null while writes land. The session is NOT being kept while this is set: the player must say so (Task 4).
+   */
+  readonly error: unknown;
 }
 
 type Listens = Pick<EventTarget, "addEventListener" | "removeEventListener">;
 
 /**
  * A debounced writer for one player. `target` is the window (`pagehide`), `doc` the document (`visibilitychange`);
- * both default to the page's own.
+ * both default to the page's own. `onError` hears every write that fails, the timed and the page-hide ones included
+ * (audit 2b-A M-8: they used to be swallowed, and the session silently stopped being kept); the change that failed
+ * stays pending, so the next flush or write tries it again.
  */
 export function createLiveWriter(
   db: OfflineDb,
-  opts: { delayMs?: number; target?: Listens; doc?: Listens & { visibilityState: DocumentVisibilityState } } = {},
+  opts: {
+    delayMs?: number;
+    target?: Listens;
+    doc?: Listens & { visibilityState: DocumentVisibilityState };
+    onError?: (error: unknown) => void;
+  } = {},
 ): LiveWriter {
   const delayMs = opts.delayMs ?? 250;
   const target = opts.target ?? window;
   const doc = opts.doc ?? document;
   let pending: LiveSession | null = null;
   let timer: ReturnType<typeof setTimeout> | null = null;
+  let error: unknown = null;
 
   const flush = async () => {
     if (timer) clearTimeout(timer);
     timer = null;
     const next = pending;
     pending = null;
-    if (next) await writeLive(db, next);
+    if (!next) return;
+    try {
+      await writeLive(db, next);
+      error = null;
+    } catch (e) {
+      // Kept for the next try — unless a newer change arrived meanwhile, which supersedes it.
+      pending ??= next;
+      error = e;
+      throw e;
+    }
+  };
+  /** A flush nobody awaits (the timer, hide, leave, dispose): its failure goes to `onError`, never unhandled. */
+  const flushAndTell = () => {
+    flush().catch((e: unknown) => opts.onError?.(e));
   };
   const onHide = () => {
-    if (doc.visibilityState === "hidden") void flush();
+    if (doc.visibilityState === "hidden") flushAndTell();
   };
-  const onLeave = () => void flush();
+  const onLeave = () => flushAndTell();
   doc.addEventListener("visibilitychange", onHide);
   target.addEventListener("pagehide", onLeave);
 
@@ -110,13 +136,16 @@ export function createLiveWriter(
     write(session) {
       pending = session;
       if (timer) clearTimeout(timer);
-      timer = setTimeout(() => void flush(), delayMs);
+      timer = setTimeout(flushAndTell, delayMs);
     },
     flush,
     dispose() {
       doc.removeEventListener("visibilitychange", onHide);
       target.removeEventListener("pagehide", onLeave);
-      void flush();
+      flushAndTell();
+    },
+    get error() {
+      return error;
     },
   };
 }
