@@ -4,7 +4,8 @@
  * the session's name and the switched-on condition profiles (their words, scales and rules) — and, for the review,
  * the records and graduation basis the server works out at Start (`basis`). They sit in the same store under
  * `player:<workoutId>` and `review:<workoutId>`, written at Start (online), read by the player and the review offline,
- * dropped on Save. Discard keeps them: the slot is still started, and can be played again from them, offline.
+ * dropped on Save — and on Discard, which un-starts the slot (ruling 2b-R9): the device never replays a discarded
+ * session's build.
  */
 import type { ConditionViewDto, ReviewBasisDto, SessionDto } from "@rg/api-client";
 import { forgetBuild, saveBuild } from "../offline/builds.js";
@@ -53,7 +54,7 @@ export function loadBasis(db: OfflineDb, workoutId: string): Promise<ReviewBasis
   return db.get<ReviewBasisDto>("builds", basisKey(workoutId));
 }
 
-/** Saved: nothing of the session stays on the device but what the outbox holds. */
+/** Saved or discarded: nothing of the session stays on the device but what the outbox holds. */
 export async function forgetStart(db: OfflineDb, workoutId: string): Promise<void> {
   await forgetBuild(db, workoutId);
   await db.delete("builds", key(workoutId));

@@ -62,9 +62,11 @@ export function OutboxSync({
  * and, when the server said the sign-in has expired, who is signed in — asked again, so the app goes to sign-in rather
  * than reading "Couldn't load the garden" over a session waiting to sync (audit 2b-B M-3).
  */
-export function afterDrain(qc: QueryClient, result: Pick<DrainResult, "saved" | "signedOut"> | null): void {
+export function afterDrain(qc: QueryClient, result: Pick<DrainResult, "saved" | "signedOut" | "unstarted"> | null): void {
   void qc.invalidateQueries({ queryKey: ["outbox"] });
   if (!result) return;
   if (result.saved > 0) for (const k of SAVED_SESSION_QUERIES) void qc.invalidateQueries({ queryKey: [k] });
+  // A Discard made offline reached the server: the slot is built again, and Today offers Start (ruling 2b-R9).
+  else if ((result.unstarted ?? 0) > 0) for (const k of ["today", "plan", "plan-week", "programs"]) void qc.invalidateQueries({ queryKey: [k] });
   if (result.signedOut) void qc.invalidateQueries({ queryKey: ["me"] });
 }

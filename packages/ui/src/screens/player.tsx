@@ -30,6 +30,7 @@ import { offlineDb, type OfflineDb } from "../offline/idb.js";
 import { meWithOfflineFallback } from "../offline/me.js";
 import { createLiveWriter, readLive, writeLive, type LiveWriter } from "../offline/live.js";
 import type { OutboxApi } from "../offline/outbox.js";
+import type { UnstartApi } from "../offline/unstarts.js";
 import { chimes as appChimes, type Chimes } from "../player/audio.js";
 import { commandFor, type PlayerCommand } from "../player/keys.js";
 import {
@@ -68,6 +69,8 @@ export interface PlayerDeps {
   reviewBasis: (workoutId: string) => Promise<ReviewBasisDto>;
   /** The outbox's delivery (Save tries it at once). */
   savePerformed: OutboxApi["savePerformed"];
+  /** Discard's un-start (ruling 2b-R9): the slot back to built on the server. */
+  unstartSession: UnstartApi["unstartSession"];
   /** Who is signed in, when Start did not say (offline: the answer kept on the device). */
   whoAmI: () => Promise<string | null>;
   chimes: Chimes;
@@ -84,6 +87,7 @@ const defaultDeps: PlayerDeps = {
   getSession: api.getSession,
   reviewBasis: api.reviewBasis,
   savePerformed: api.savePerformed,
+  unstartSession: api.unstartSession,
   whoAmI: async () => (await meWithOfflineFallback().catch(() => null))?.userId ?? null,
   chimes: appChimes,
   wake: () => holdWakeLock(),
@@ -531,7 +535,25 @@ function Playing({ loaded, db, deps }: { loaded: Extract<Loaded, { kind: "ready"
         }}
         onDiscard={async () => {
           await stopWriting();
-          if (db) await discardSession(db, src.workoutId).catch(() => undefined);
+          // The slot is un-started (ruling 2b-R9): Today offers Start again, never a Continue that replays this session.
+          const replanned = () => {
+            for (const k of ["today", "plan", "plan-week", "programs"]) void qc.invalidateQueries({ queryKey: [k] });
+          };
+          const unstart = { unstartSession: deps.unstartSession };
+          if (db) {
+            const userId = extras?.userId ?? qc.getQueryData<MeResponse>(["me"])?.userId ?? (await deps.whoAmI().catch(() => null));
+            await discardSession(db, src.workoutId, {
+              userId,
+              api: unstart,
+              waitMs: deps.saveWaitMs,
+              onDrained: (r) => {
+                if (r && r.unstarted > 0) replanned();
+              },
+            }).catch(() => undefined);
+          } else {
+            await deps.unstartSession(src.workoutId).catch(() => undefined);
+          }
+          replanned();
           navigate("/", { replace: true });
         }}
       />

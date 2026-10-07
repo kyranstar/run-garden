@@ -23,6 +23,7 @@
 import { ApiError } from "@rg/api-client";
 import { canonicalJson, performedSessionSaveSchema, type PerformedSessionWire, type PerformedSessionWireInput } from "@rg/domain";
 import type { OfflineDb } from "./idb.js";
+import { drainUnstarts } from "./unstarts.js";
 
 export type OutboxState = "pending" | "conflict" | "failed";
 
@@ -45,9 +46,10 @@ export interface OutboxEntry {
   createdAt: number;
 }
 
-/** What sending needs: the api client's `savePerformed`. */
+/** What sending needs: the api client's `savePerformed` — and `unstartSession`, for Discards that wait (ruling 2b-R9). */
 export interface OutboxApi {
   savePerformed(performedId: string, payload: PerformedSessionWire): Promise<unknown>;
+  unstartSession?(workoutId: string): Promise<unknown>;
 }
 
 export interface DrainResult {
@@ -68,6 +70,8 @@ export interface DrainResult {
    * same account); the app should ask the athlete to sign in again (audit 2b-B M-3).
    */
   signedOut: boolean;
+  /** Discards made offline that the server has now taken (`startOutboxSync` only; ruling 2b-R9). */
+  unstarted?: number;
 }
 
 export const OUTBOX_BACKOFF_MS = [1_000, 5_000, 30_000] as const;
@@ -280,7 +284,11 @@ export function startOutboxSync(opts: {
     }
     running = (async () => {
       try {
-        const result = await drain(await opts.db(), opts.api, { userId: opts.userId, mode });
+        const db = await opts.db();
+        const result = await drain(db, opts.api, { userId: opts.userId, mode });
+        // Discards made offline go on the same triggers, after the saves (one waiting for the slot drops them).
+        const unstart = opts.api.unstartSession?.bind(opts.api);
+        if (unstart) result.unstarted = (await drainUnstarts(db, { unstartSession: unstart }, { userId: opts.userId }).catch(() => null))?.unstarted ?? 0;
         if (stopped) return;
         if (timer) clearTimeout(timer);
         timer =

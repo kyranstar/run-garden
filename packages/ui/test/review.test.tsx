@@ -22,6 +22,7 @@ import { openOfflineDb, type OfflineDb } from "../src/offline/idb.js";
 import { loadBuild, saveBuild } from "../src/offline/builds.js";
 import { readLive } from "../src/offline/live.js";
 import { outboxEntries } from "../src/offline/outbox.js";
+import { drainUnstarts, queuedUnstarts } from "../src/offline/unstarts.js";
 import { saveBasis, saveExtras } from "../src/player/stored.js";
 import { PlayerScreen } from "../src/screens/player.js";
 import type { Chimes } from "../src/player/audio.js";
@@ -63,10 +64,12 @@ function mount(
     /** How long Save waits for its first send before going to Today. */
     saveWaitMs?: number;
     qc?: QueryClient;
+    unstartSession?: (workoutId: string) => Promise<unknown>;
   } = {},
 ) {
   const getSession = vi.fn(offline);
   const savePerformed = vi.fn(opts.savePerformed ?? offline);
+  const unstartSession = vi.fn(opts.unstartSession ?? offline);
   host = document.createElement("div");
   document.body.appendChild(host);
   const qc = opts.qc ?? new QueryClient({ defaultOptions: { queries: { retry: false } } });
@@ -77,6 +80,7 @@ function mount(
       getSession,
       reviewBasis: vi.fn(offline),
       savePerformed,
+      unstartSession,
       whoAmI: opts.whoAmI ?? (async () => null),
       chimes: noChimes,
       wake: () => () => undefined,
@@ -102,7 +106,7 @@ function mount(
       ),
     );
   });
-  return { getSession, savePerformed };
+  return { getSession, savePerformed, unstartSession };
 }
 
 const flush = () => act(async () => void (await new Promise((r) => setImmediate(r))));
@@ -193,9 +197,9 @@ describe("Review Focus 5 — a session abandoned after two steps", () => {
     expect(getSession).not.toHaveBeenCalled();
   });
 
-  it("Discard keeps nothing: no outbox entry, no session in progress, nothing sent — and the slot keeps its build, not done", async () => {
+  it("Discard keeps nothing and un-starts the slot (ruling 2b-R9): no outbox entry, no session in progress, nothing saved", async () => {
     await stored();
-    const { getSession, savePerformed } = mount();
+    const { getSession, savePerformed, unstartSession } = mount({ unstartSession: async () => ({ workoutId: SLOT, contentState: "built" }) });
     await abandonAfterTwoSteps();
     await click("Discard");
     await until(() => !!control("Discard session"), "the question");
@@ -205,8 +209,29 @@ describe("Review Focus 5 — a session abandoned after two steps", () => {
     expect(await readLive(db!, SLOT)).toBeUndefined();
     expect(savePerformed).not.toHaveBeenCalled();
     expect(getSession).not.toHaveBeenCalled();
-    // Still startable on this device, offline: Continue plays a fresh session from the same locked build.
-    expect((await loadBuild(db!, SLOT))?.build.buildId).toBe("build-1");
+    // The server's slot is built again — Today offers Start, not Continue — and the device forgets the start, so it can
+    // never replay the discarded session's build.
+    expect(unstartSession).toHaveBeenCalledWith(SLOT);
+    expect(await loadBuild(db!, SLOT)).toBeUndefined();
+    expect(await queuedUnstarts(db!, "user-1")).toEqual([]);
+  });
+
+  it("Discard offline: the un-start waits on the device and goes when the network is back", async () => {
+    await stored();
+    const { unstartSession } = mount();
+    await abandonAfterTwoSteps();
+    await click("Discard");
+    await until(() => !!control("Discard session"), "the question");
+    await click("Discard session");
+    await until(() => text().includes("today screen"), "Today");
+    expect(unstartSession).toHaveBeenCalledWith(SLOT);
+    expect((await queuedUnstarts(db!, "user-1")).map((u) => u.workoutId)).toEqual([SLOT]);
+    expect(await loadBuild(db!, SLOT)).toBeUndefined();
+    // Online again: the outbox's triggers send it, once.
+    const online = vi.fn(async () => ({}));
+    expect(await drainUnstarts(db!, { unstartSession: online }, { userId: "user-1" })).toEqual({ unstarted: 1 });
+    expect(online).toHaveBeenCalledWith(SLOT);
+    expect(await queuedUnstarts(db!, "user-1")).toEqual([]);
   });
 });
 

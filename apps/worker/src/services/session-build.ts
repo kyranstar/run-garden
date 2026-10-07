@@ -31,7 +31,7 @@
  * Every writer here is a no-op while a restore is replacing the account (ruling B2).
  */
 import { and, eq, inArray, isNotNull, isNull, ne, notExists, notInArray, or } from "drizzle-orm";
-import { conditionChecks, exercisePrefs, plannedWorkouts, programs, sessionBuilds, userConditions } from "@rg/database";
+import { conditionChecks, exercisePrefs, performedSessions, plannedWorkouts, programs, sessionBuilds, userConditions } from "@rg/database";
 import { newId, sessionLead, todayInZone, type AdaptiveConfig, type SessionLead, type UserPreferences, type Weight } from "@rg/domain";
 import {
   CORE_FAMILIES,
@@ -271,6 +271,20 @@ export class StaleBuildError extends Error {
 export class UnknownProfileError extends Error {
   constructor() {
     super("unknown_profile");
+  }
+}
+
+/** Un-start refused: a performed session exists for the slot (it was saved — here or elsewhere). */
+export class PerformedExistsError extends Error {
+  constructor() {
+    super("performed");
+  }
+}
+
+/** A write refused because a restore began while the request ran (the route's 423). */
+export class RestoringError extends Error {
+  constructor() {
+    super("restore_in_progress");
   }
 }
 
@@ -1199,6 +1213,53 @@ export async function startSessionOutcome(
     if (change.resized) await separateDayCollisions(db, userId, [row.effectiveDate], prefs, { from: today, now });
   }
   return { session: await readResponse(db, userId, await loadSlot(db, userId, workoutId), today), calendarChanged };
+}
+
+/**
+ * `POST /api/sessions/:workoutId/unstart`: the player's Discard (ruling 2b-R9). A started slot goes back to `built`
+ * and its build is unlocked, so Today offers Start again rather than a Continue that would replay the discarded
+ * session; the sheet then shows the same build (or a fresh one, when the day's inputs moved on), and Start locks it.
+ *
+ * Refused (`PerformedExistsError`) once a performed session exists for the slot — the session was saved, from this
+ * device or another, and a save is never taken back. The refusal is also written into the update itself, so a save
+ * landing between the check and the write still wins. Idempotent: a slot already built is answered as it is, with no
+ * write. Throws `SessionNotFoundError` for a slot that is not this user's, `RestoringError` while a restore runs.
+ */
+export async function unstartSession(db: Db, userId: string, workoutId: string, ctx: { today: string; now: string }): Promise<SessionResponse> {
+  const row = await loadSlot(db, userId, workoutId);
+  const builds = await loadBuilds(db, userId, workoutId);
+  const saved = () =>
+    db
+      .select({ id: performedSessions.id })
+      .from(performedSessions)
+      .where(and(eq(performedSessions.userId, userId), eq(performedSessions.workoutId, workoutId)))
+      .limit(1);
+  if (row.contentState === "done" || (await saved()).length > 0) throw new PerformedExistsError();
+  if (row.contentState !== "started" && !builds.some((b) => b.lockedAt !== null)) return readResponse(db, userId, row, ctx.today, builds);
+  if (await restoreInProgress(db, userId)) throw new RestoringError();
+  await db
+    .update(plannedWorkouts)
+    .set({ contentState: "built", updatedAt: ctx.now })
+    .where(
+      and(
+        eq(plannedWorkouts.id, workoutId),
+        eq(plannedWorkouts.userId, userId),
+        eq(plannedWorkouts.contentState, "started"),
+        notExists(
+          db
+            .select({ id: performedSessions.id })
+            .from(performedSessions)
+            .where(and(eq(performedSessions.userId, userId), eq(performedSessions.workoutId, workoutId))),
+        ),
+      ),
+    );
+  const after = await loadSlot(db, userId, workoutId);
+  if (after.contentState !== "built") throw new PerformedExistsError();
+  await db
+    .update(sessionBuilds)
+    .set({ lockedAt: null })
+    .where(and(eq(sessionBuilds.workoutId, workoutId), eq(sessionBuilds.userId, userId), isNotNull(sessionBuilds.lockedAt)));
+  return readResponse(db, userId, after, ctx.today);
 }
 
 /** `GET /api/sessions/:workoutId/current`: whether the build the slot shows is still the one its day's inputs make. */

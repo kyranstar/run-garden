@@ -18,6 +18,7 @@ import { ApiError } from "@rg/api-client";
 import type { PerformedSessionWireInput } from "@rg/domain";
 import { openOfflineDb, type OfflineDb } from "../src/offline/idb.js";
 import { enqueue, outboxEntries } from "../src/offline/outbox.js";
+import { queuedUnstarts, queueUnstart } from "../src/offline/unstarts.js";
 import { OutboxSync } from "../src/components/outbox-sync.js";
 import { refusedFor, UnsyncedSessions } from "../src/components/unsynced-sessions.js";
 import { TodayProgramLead, TodayProgramLine } from "../src/components/today-program.js";
@@ -78,6 +79,25 @@ describe("OutboxSync", () => {
     await until(() => invalidated.includes("today"), "Today refreshed");
     expect(savePerformed).toHaveBeenCalledTimes(1);
     expect(invalidated).toContain("outbox");
+    spy.mockRestore();
+  });
+});
+
+describe("OutboxSync and a Discard made offline (ruling 2b-R9)", () => {
+  it("sends the waiting un-start on its triggers, and Today and Plan are asked again", async () => {
+    db = await openOfflineDb(new IDBFactory());
+    await queueUnstart(db, SLOT, "user-1");
+    const unstartSession = vi.fn(async () => ({}));
+    const qc = new QueryClient();
+    const invalidated: string[] = [];
+    const spy = vi.spyOn(qc, "invalidateQueries").mockImplementation(async (f) => {
+      invalidated.push(String((f as { queryKey?: unknown[] })?.queryKey?.[0]));
+    });
+    render(createElement(OutboxSync, { db: () => Promise.resolve(db!), api: { savePerformed: vi.fn(), unstartSession }, userId: "user-1" }), qc);
+    await until(() => invalidated.includes("today"), "Today asked again");
+    expect(unstartSession).toHaveBeenCalledWith(SLOT);
+    expect(invalidated).toContain("plan");
+    expect(await queuedUnstarts(db, "user-1")).toEqual([]);
     spy.mockRestore();
   });
 });
