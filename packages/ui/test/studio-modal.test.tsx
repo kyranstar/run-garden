@@ -122,6 +122,33 @@ describe("progression charts", () => {
     expect(plain).not.toContain("Logged top set");
   });
 
+  it("ProgressionStepChart: a set lifted exactly as prescribed shows both marks — the done dot inside the ring (audit 2a+ M-8)", () => {
+    const exact: PlanProgression = {
+      ...bench,
+      series: [
+        { week: 1, value: 52, done: true, actual: 52 },
+        { week: 2, value: 54, done: true, actual: 54 },
+        { week: 8, value: 66 },
+      ],
+    };
+    const html = renderToStaticMarkup(createElement(ProgressionStepChart, { progression: exact, discipline: "lift" }));
+    const circles = [...html.matchAll(/<circle([^>]*)>/g)].map((m) => m[1]!);
+    const read = (c: string, name: string) => new RegExp(`(?:^|\\s)${name}="([^"]*)"`).exec(c)?.[1];
+    const at = (c: string) => `${read(c, "cx")},${read(c, "cy")}`;
+    const rings = circles.filter((c) => c.includes("data-logged"));
+    const dots = circles.filter((c) => !c.includes("data-logged"));
+    expect(rings).toHaveLength(2);
+    for (const ring of rings) {
+      const dot = dots.find((d) => at(d) === at(ring));
+      expect(dot).toBeDefined(); // the same point: a ring drawn over the dot would hide it
+      // The ring is drawn first, and its stroke lies wholly outside the dot drawn over it.
+      expect(html.indexOf(ring)).toBeLessThan(html.indexOf(dot!));
+      const inner = Number(read(ring, "r")) - Number(read(ring, "stroke-width")) / 2;
+      const outer = Number(read(dot!, "r")) + Number(read(dot!, "stroke-width")) / 2;
+      expect(inner).toBeGreaterThanOrEqual(outer);
+    }
+  });
+
   it("ProgressionStepChart: viewBox-only SVG, dashed prescription, done dots, end label", () => {
     const html = renderToStaticMarkup(
       createElement(ProgressionStepChart, { progression: bench, discipline: "lift" }),
