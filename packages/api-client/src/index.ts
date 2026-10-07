@@ -1072,6 +1072,51 @@ export interface PlaceInput {
   isDefault?: true;
 }
 
+// ── Import (worker route: routes/imports.ts; service: services/standalone-import.ts) ───────────────────────────
+
+/** Exact shape of `POST /api/import/standalone` (with or without `?dryRun=1`: the same summary). */
+export interface StandaloneImportSummaryDto {
+  dryRun: boolean;
+  /** This import brings the tool's settings (program, block, places, preferences, condition, units, wishlist). */
+  firstImport: boolean;
+  sessions: {
+    total: number;
+    added: number;
+    alreadyImported: number;
+    firstDate: string | null;
+    lastDate: string | null;
+    invalid: Array<{ index: number; id: string | null; reason: string }>;
+  };
+  unknownMoves: number;
+  program: { name: string };
+  places: string[];
+  ratings: number;
+  block: { number: number; week: number; weeks: number } | null;
+  dropped: string[];
+  written: {
+    sessions: number;
+    sets: number;
+    checks: number;
+    activities: number;
+    program: number;
+    block: number;
+    places: number;
+    prefs: number;
+    condition: number;
+    preferences: number;
+  };
+  /** The standalone tool's own numbers over the file, to hold against its Progress tab. */
+  oracle: {
+    sessionCount: number;
+    sessionsPerWeek: Array<{ week: string; sessions: number }>;
+    weeklyVolumeKg: Array<{ week: string; volumeKg: number }>;
+    bestByCoreLift: Array<{ family: string; exerciseId: string; name: string; best: { w: Weight | null; reps: number | null; secs: number | null } | null }>;
+    records: number;
+    prePostPairs: number;
+    block: { number: number; week: number } | null;
+  };
+}
+
 // ── Library (worker routes: apps/worker/src/routes/library.ts; service: services/library-view.ts) ──────────────
 
 /**
@@ -1405,6 +1450,14 @@ export const api = {
     request<{ place: PlaceDto }>(`/api/places/${encodeURIComponent(id)}`, { method: "PATCH", body: JSON.stringify(patch) }),
   /** 409 `{error: "place_in_use", program: {id, name}}` while an active program builds there. */
   deletePlace: (id: string) => request<{ ok: true }>(`/api/places/${encodeURIComponent(id)}`, { method: "DELETE" }),
+
+  // ── Import (worker route: apps/worker/src/routes/imports.ts) ─────────────
+  /**
+   * The standalone tool's backup (the parsed file) → the summary; `dryRun` writes nothing. 422 `invalid_backup`,
+   * 423 while restoring, 503 `busy` while another import of the account is writing.
+   */
+  importStandalone: (backup: unknown, opts: { dryRun?: boolean } = {}) =>
+    post<StandaloneImportSummaryDto>(`/api/import/standalone${opts.dryRun ? "?dryRun=1" : ""}`, backup, 120_000),
 
   // ── Library (worker routes: apps/worker/src/routes/library.ts) ───────────
   listLibrary: (query: LibraryQuery = {}) => get<LibraryListDto>(`/api/library${libraryQueryString(query)}`),
