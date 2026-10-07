@@ -25,7 +25,7 @@ import { buildSession, startSession, type BuildPayload } from "../src/services/s
 import { loadProgramState } from "../src/services/engine-inputs.js";
 import { slotId } from "../src/services/program-slots.js";
 import { ingestActivities } from "../src/services/completion.js";
-import { advanceGarden, ensureGarden } from "../src/services/garden-sync.js";
+import { advanceGarden, buildDayInput, ensureGarden } from "../src/services/garden-sync.js";
 import { savePerformedSession } from "../src/services/session-save.js";
 import { sessionRoutes } from "../src/routes/sessions.js";
 import { createSession, SESSION_COOKIE } from "../src/auth/sessions.js";
@@ -65,10 +65,25 @@ let statements: string[];
 let userId: string;
 let prefs: UserPreferences;
 let programId: string;
+/**
+ * The first statement matching this dies (the invocation killed part-way: CPU, the query cap, a dropped connection);
+ * it is cleared as it fires.
+ */
+let killAt: RegExp | null;
 
 beforeEach(async () => {
   statements = [];
-  db = makeTestDb({ boundVariableCap: 100, onStatement: (sql) => statements.push(sql) });
+  killAt = null;
+  db = makeTestDb({
+    boundVariableCap: 100,
+    onStatement: (sql) => {
+      statements.push(sql);
+      if (killAt?.test(sql)) {
+        killAt = null;
+        throw new Error("the invocation died here");
+      }
+    },
+  });
   ({ userId, prefs } = await makeTestUser(db));
   programId = await seedProgram(userId);
 });
@@ -198,7 +213,8 @@ async function counts() {
 describe("a save writes the session, its sets and checks, an app activity and the slot's match (§2b steps 2–4)", () => {
   it("writes each row as the spec says", async () => {
     const s = await started("build");
-    const body = payload(s);
+    // What the outbox sends: the payload as the client's schema parsed it (defaults filled).
+    const body = performedSessionSaveSchema.parse(payload(s));
     const outcome = await save(body);
     expect(outcome).toEqual({ status: "saved", performedId: body.id, activityId: body.id, matched: true, notes: [] });
 
@@ -218,7 +234,8 @@ describe("a save writes the session, its sets and checks, an app activity and th
       completed: true,
       note: "felt good",
       movesDone: parsed.movesDone,
-      // The commit marker is the payload's hash: sha256 of its canonical JSON, as the client's outbox hashes it.
+      // The commit marker is the payload's hash: sha256 of the canonical JSON of the body sent — the client's own
+      // hash, which its outbox keys the entry by.
       payloadHash: await sha256Hex(canonicalJson(parsed)),
     });
 
@@ -358,6 +375,20 @@ describe("a save writes the session, its sets and checks, an app activity and th
     await save(payload(s, { entries }));
     expect((await counts()).sets).toBe(150);
   });
+
+  it("refuses the audit's 5,000-set body (P3) before any read or write: it could never complete (audit 2b-A M-4)", async () => {
+    const s = await started("build");
+    const entries = Array.from({ length: 100 }, (_, e) => ({
+      exerciseId: `move-${e}`,
+      implement: "kettlebell",
+      format: "straight" as const,
+      perSide: false,
+      sets: Array.from({ length: 50 }, (_, i) => ({ setIndex: i, reps: 8, seconds: null, load: { v: 20, u: "lb" as const } })),
+    }));
+    statements.length = 0;
+    await expect(save(payload(s, { entries }))).rejects.toThrow("invalid_save");
+    expect(statements).toEqual([]);
+  });
 });
 
 describe("exactly once (§2b step 1; Review Focus 2 and 3)", () => {
@@ -384,6 +415,19 @@ describe("exactly once (§2b step 1; Review Focus 2 and 3)", () => {
     expect(await db.select().from(performedSessions)).toEqual(before);
   });
 
+  it("the hash is the client's own, over the body it sent: a retry after a deploy that added a defaulted field is same_payload (audit 2b-A M-6)", async () => {
+    const s = await started("build");
+    // The client sends its fully parsed payload, built with the schema it shipped with. Say that schema had no
+    // `review`: the body has none, and the server before the deploy stored the hash of exactly that body.
+    const { review: _review, ...sent } = performedSessionSaveSchema.parse(payload(s));
+    expect(await save(sent)).toMatchObject({ status: "saved" });
+    await db.update(performedSessions).set({ payloadHash: await sha256Hex(canonicalJson(sent)) }).where(eq(performedSessions.id, sent.id));
+    // The response was lost; the server now defaults `review`. The retry is the same session, the same body.
+    statements.length = 0;
+    expect(await save(JSON.parse(JSON.stringify(sent)))).toEqual({ status: "same_payload" });
+    expect(statements.filter(isWrite)).toEqual([]);
+  });
+
   it("a save that died part-way is finished by the retry: one of everything, committed", async () => {
     const s = await started("build");
     const body = payload(s);
@@ -405,6 +449,74 @@ describe("exactly once (§2b step 1; Review Focus 2 and 3)", () => {
     expect(await counts()).toEqual({ sessions: 1, sets: 3, checks: 0, activities: 1, links: 1, matches: 1 });
     expect((await db.select().from(performedSessions))[0]!.payloadHash).toMatch(/^[0-9a-f]{64}$/);
     expect(await save(body)).toEqual({ status: "same_payload" });
+  });
+
+  it("a save that dies at its last write leaves nothing: no session, activity, match or completed slot (audit 2b-A M-3)", async () => {
+    const s = await started("build");
+    const body = payload(s);
+    const before = await rowOf(s.workoutId);
+    // Killed at the commit marker: everything before it in the write phase must go with it (one transaction).
+    killAt = /^update "performed_sessions" set "payload_hash"/;
+    await expect(save(body)).rejects.toThrow("the invocation died here");
+    killAt = null;
+    expect(await counts()).toEqual({ sessions: 0, sets: 0, checks: 0, activities: 0, links: 0, matches: 0 });
+    expect(await rowOf(s.workoutId)).toEqual(before);
+    expect(await db.select().from(exercisePrefs)).toEqual([]);
+    // Nothing is held either: the retry saves it.
+    expect(await save(body)).toMatchObject({ status: "saved", matched: true });
+    expect(await counts()).toEqual({ sessions: 1, sets: 3, checks: 0, activities: 1, links: 1, matches: 1 });
+  });
+
+  it("two PUTs of the same session at once: one saves, the other waits its turn (busy) or finds it saved — one of everything (audit 2b-A M-10)", async () => {
+    const s = await started("build");
+    const body = payload(s);
+    const outcomes = await Promise.all([save(body), save(JSON.parse(JSON.stringify(body)))]);
+    expect(outcomes.filter((o) => o.status === "saved")).toHaveLength(1);
+    expect(outcomes.every((o) => ["saved", "busy", "same_payload"].includes(o.status))).toBe(true);
+    expect(await save(body)).toEqual({ status: "same_payload" });
+    expect(await counts()).toEqual({ sessions: 1, sets: 3, checks: 0, activities: 1, links: 1, matches: 1 });
+  });
+
+  for (const [edits, answer] of [["the same payload", "same_payload"], ["other edits", "conflict"]] as const) {
+    it(`a second delivery (${edits}) that found nothing saved yet, and got the lock just after the first committed, answers ${answer} (audit 2b-A M-10)`, async () => {
+      const s = await started("build");
+      const body = payload(s);
+      const second = edits === "other edits" ? { ...body, note: "the other tab" } : JSON.parse(JSON.stringify(body));
+      const locks = await import("../src/services/locks.js");
+      const claim = locks.claimUserLock;
+      // The second request has read "nothing saved" and asks for the session's lock: the first request runs whole
+      // just then.
+      let first: Promise<unknown> | null = null;
+      vi.spyOn(locks, "claimUserLock").mockImplementation(async (...args) => {
+        if (args[2] === `save:${body.id}` && first === null) {
+          first = save(body);
+          await first;
+        }
+        return claim(...args);
+      });
+      try {
+        expect(await save(second)).toEqual({ status: answer });
+      } finally {
+        vi.restoreAllMocks();
+      }
+      expect(await first).toMatchObject({ status: "saved" });
+      expect((await db.select().from(performedSessions))[0]!.note).toBe("felt good");
+      expect(await counts()).toEqual({ sessions: 1, sets: 3, checks: 0, activities: 1, links: 1, matches: 1 });
+    });
+  }
+
+  it("two PUTs of the same session with different edits at once: one saves, the other is refused or busy, never merged (audit 2b-A M-10)", async () => {
+    const s = await started("build");
+    const body = payload(s);
+    const edited = { ...body, note: "the other tab" };
+    const outcomes = await Promise.all([save(body), save(edited)]);
+    const won = outcomes.findIndex((o) => o.status === "saved");
+    expect(won).toBeGreaterThanOrEqual(0);
+    expect(["conflict", "busy"]).toContain(outcomes[1 - won]!.status);
+    // Delivered again: the loser is a conflict, for good; the stored session is the winner's, whole.
+    expect(await save(won === 0 ? edited : body)).toEqual({ status: "conflict" });
+    expect((await db.select().from(performedSessions))[0]!.note).toBe(won === 0 ? "felt good" : "the other tab");
+    expect(await counts()).toEqual({ sessions: 1, sets: 3, checks: 0, activities: 1, links: 1, matches: 1 });
   });
 
   it("another save of the same session in flight answers busy, and writes nothing", async () => {
@@ -434,6 +546,17 @@ describe("the review's decisions apply on save (§2b step 5)", () => {
     const rows = await db.select().from(exercisePrefs).where(eq(exercisePrefs.userId, userId));
     const byId = Object.fromEntries(rows.map((r) => [r.exerciseId, [r.rating, r.excluded, r.pinned, r.introducedOn]]));
     expect(byId).toEqual({ [a!]: [-1, false, false, PLAYED], [b!]: [null, true, true, "2026-09-01"] });
+  });
+
+  it("a rating or 'not for me' for an exercise the library does not have is dropped, never stored (audit 2b-A M-4)", async () => {
+    const s = await started("build");
+    const a = s.build.items[0]!.exerciseId;
+    expect(await save(payload(s, { review: { ratings: { [a]: 1, "no-such-move": -1 }, excluded: { "not-a-move-either": true } } }))).toMatchObject({
+      status: "saved",
+    });
+    const rows = await db.select().from(exercisePrefs).where(eq(exercisePrefs.userId, userId));
+    expect(rows.find((r) => r.exerciseId === a)).toMatchObject({ rating: 1 });
+    expect(rows.map((r) => r.exerciseId).filter((id) => id.includes("move"))).toEqual([]);
   });
 
   it("a new move met before keeps the day it was first introduced", async () => {
@@ -497,6 +620,167 @@ describe("the garden replays from the session's own day (§2b step 6)", () => {
       expect(credited[0]!.unplanned).toBeUndefined();
     });
   }
+
+  /** Four days on: the garden has walked past the slot's day, which counted as missed while the slot stood open. */
+  const LATE = "2026-10-10T16:00:00.000Z";
+  async function closedDay() {
+    await ensureGarden(db, userId, prefs, "2026-09-28");
+    const s = await started("build");
+    await advanceGarden(db, userId, prefs, new Date(LATE));
+    expect((await dayInput(PLAYED))!.completedRuns).toEqual([]);
+    return s;
+  }
+
+  it("a session that ran past midnight replays from its slot's day, which the completed slot credits (ruling 2b-R7)", async () => {
+    // A Monday slot: the garden's weekly checkpoint is that very day, so a replay from the next day would start after it.
+    const MONDAY = "2026-10-05";
+    await ensureGarden(db, userId, prefs, "2026-09-28");
+    const workoutId = await seedSlot(MONDAY);
+    const built = await buildSession(db, userId, workoutId, { overrides: { mode: "build" } }, { today: MONDAY, now: "2026-10-05T19:00:00.000Z", prefs });
+    const build = (await startSession(db, userId, workoutId, built.build!.buildId, "2026-10-05T19:00:00.000Z")).build!;
+    await advanceGarden(db, userId, prefs, new Date(LATE));
+    expect((await dayInput(MONDAY))!.completedRuns).toEqual([]);
+    // Started at 23:40 on the slot's day, saved with the next day's date.
+    const body = payload({ workoutId, build }, { localDate: PLAYED, startedAt: "2026-10-06T06:40:00.000Z", endedAt: "2026-10-06T07:11:00.000Z" });
+    expect(await save(body, body.id, { now: LATE })).toMatchObject({ status: "saved", matched: true });
+    expect((await dayInput(MONDAY))!.completedRuns.map((r) => r.workoutId)).toEqual([workoutId]);
+  });
+
+  it("a replay killed after the commit is not lost: the day is on record, and the next garden read credits it (audit 2b-A M-5)", async () => {
+    const s = await closedDay();
+    const body = payload(s);
+    // The replay dies at its first day; the save itself had committed.
+    killAt = /^insert into "garden_day_inputs"/;
+    expect(await save(body, body.id, { now: LATE })).toMatchObject({ status: "saved" });
+    expect(killAt).toBeNull();
+    // The response was lost; the outbox's retry finds it saved, and drops the entry.
+    expect(await save(body, body.id, { now: LATE })).toEqual({ status: "same_payload" });
+    // The next garden read (or the hourly cron) walks the change on record.
+    await advanceGarden(db, userId, prefs, new Date(LATE));
+    expect((await dayInput(PLAYED))!.completedRuns.map((r) => r.workoutId)).toEqual([s.workoutId]);
+  });
+
+  it("an old session replays through the capped catch-up: the save stays inside D1's query budget, and the next garden reads finish the walk (ruling 2b-R7, audit 2b-A I-4)", async () => {
+    await ensureGarden(db, userId, prefs, "2026-05-01");
+    const s = await started("build");
+    const old = await seedSlot("2026-05-04");
+    await advanceGarden(db, userId, prefs, new Date(SAVED));
+    // A tablet that saved it offline in May and only now came online.
+    const body = payload(s, {
+      workoutId: old,
+      buildId: null,
+      localDate: "2026-05-04",
+      startedAt: "2026-05-04T19:05:00.000Z",
+      endedAt: "2026-05-04T19:36:00.000Z",
+    });
+    statements.length = 0;
+    expect(await save(body)).toMatchObject({ status: "saved", matched: true });
+    console.log(`[save] a 156-day-old session: ${statements.length} statements, save and capped replay together`);
+    expect(statements.length).toBeLessThan(800);
+    const [account] = await db.select().from(accountState).where(eq(accountState.userId, userId));
+    expect(account!.gardenCatchUpPending).toBe(true);
+    // The save's own step walked a month from the start of May, no more.
+    const [state] = await db.select().from(schema.gardenState).where(eq(schema.gardenState.userId, userId));
+    expect(state!.lastSimulatedDate < "2026-06-05").toBe(true);
+
+    let steps = 0;
+    let result: Awaited<ReturnType<typeof advanceGarden>>;
+    do {
+      result = await advanceGarden(db, userId, prefs, new Date(SAVED));
+      steps += 1;
+    } while (result.resimPending && steps < 10);
+    expect(result.resimPending).toBeFalsy();
+    expect(result.lastSimulatedDate >= "2026-10-05").toBe(true);
+    expect((await dayInput("2026-05-04"))!.completedRuns.map((r) => r.workoutId)).toContain(old);
+    expect((await db.select().from(accountState).where(eq(accountState.userId, userId)))[0]).toMatchObject({ gardenCatchUpPending: false, gardenChangedFrom: null });
+    // Five months of garden walked twice: ~3 s here, half a minute on a loaded runner.
+  }, 120_000);
+});
+
+describe("ruling 2b-R7 as amended: the session's day is its locked build's, else its slot's (audit 2b-A I-4)", () => {
+  it("refuses a day before the slot's or more than a day after it: invalid_save, nothing written", async () => {
+    const s = await started("build");
+    statements.length = 0;
+    for (const localDate of ["2026-10-05", "2026-10-08", "2026-05-02"]) {
+      await expect(save(payload(s, { localDate }))).rejects.toThrow("invalid_save");
+    }
+    expect(statements.filter(isWrite)).toEqual([]);
+  });
+
+  it("refuses a day after tomorrow, whatever the slot says", async () => {
+    const s = await started("build");
+    const ahead = await seedSlot("2026-10-10");
+    const body = payload(s, { workoutId: ahead, buildId: null, localDate: "2026-10-10" });
+    await expect(save(body)).rejects.toThrow("invalid_save");
+    // Its day is tomorrow (a clock a little ahead): taken.
+    expect(await save(body, body.id, { now: "2026-10-09T16:00:00.000Z" })).toMatchObject({ status: "saved" });
+  });
+
+  it("a committed save's retry is same_payload even after its slot moved", async () => {
+    const s = await started("build");
+    const body = payload(s);
+    await save(body);
+    await db.update(plannedWorkouts).set({ effectiveDate: "2026-10-09" }).where(eq(plannedWorkouts.id, s.workoutId));
+    expect(await save(body)).toEqual({ status: "same_payload" });
+  });
+
+  /** The slot moved to `date` after Start (the athlete in another tab, the coach, a collision pass), before the drain. */
+  const moveSlot = (workoutId: string, date: string) =>
+    db.update(plannedWorkouts).set({ effectiveDate: date }).where(eq(plannedWorkouts.id, workoutId));
+
+  it("amended: the day is the LOCKED build's — a slot moved after Start still saves, completes, and the garden replays from the earliest day touched", async () => {
+    await ensureGarden(db, userId, prefs, "2026-09-28");
+    const s = await started("build"); // built and started on PLAYED
+    const LATE = "2026-10-10T16:00:00.000Z";
+    await advanceGarden(db, userId, prefs, new Date(LATE));
+    // Moved two days back while the save sat in the outbox: the slot now credits that day.
+    const EARLIER = "2026-10-04";
+    await moveSlot(s.workoutId, EARLIER);
+
+    const outcome = await save(payload(s), payload(s).id, { now: LATE });
+    expect(outcome).toMatchObject({ status: "saved", matched: true });
+    expect(await rowOf(s.workoutId)).toMatchObject({ completionState: "completed", contentState: "done", effectiveDate: EARLIER });
+    // The replay reached back to the slot's new day, behind the Monday checkpoint after it.
+    const day = (await db.select().from(gardenDayInputs).where(eq(gardenDayInputs.id, `${userId}:${EARLIER}`)))[0]?.input as unknown as GardenDayInput;
+    expect(day.completedRuns.map((r) => r.workoutId)).toEqual([s.workoutId]);
+  });
+
+  it("amended: the build's day joins the replay — a session past midnight of its Monday build, saved unmatched after the slot moved, is extra training on that Monday", async () => {
+    const MONDAY = "2026-10-05";
+    const LATE = "2026-10-10T16:00:00.000Z";
+    await ensureGarden(db, userId, prefs, "2026-09-28");
+    const workoutId = await seedSlot(MONDAY);
+    const built = await buildSession(db, userId, workoutId, { overrides: { mode: "build" } }, { today: MONDAY, now: "2026-10-05T19:00:00.000Z", prefs });
+    const build = (await startSession(db, userId, workoutId, built.build!.buildId, "2026-10-05T19:00:00.000Z")).build!;
+    await advanceGarden(db, userId, prefs, new Date(LATE));
+    // Moved to Thursday, where the athlete matched another lift by hand: this session cannot match it.
+    await moveSlot(workoutId, "2026-10-08");
+    await db.insert(activities).values({ id: "theirs", userId, startTime: "2026-10-08T14:00:00Z", sport: "strength", durationSeconds: 1500, completionMatchId: "m-hand", createdAt: SAVED, updatedAt: SAVED });
+    await db.insert(workoutCompletionMatches).values({ id: "m-hand", workoutId, activityId: "theirs", confidence: 1, method: "manual", matchedAt: SAVED });
+
+    // Started at 23:40 on the Monday, saved with Tuesday's date.
+    const body = payload({ workoutId, build }, { localDate: PLAYED, startedAt: "2026-10-06T06:40:00.000Z", endedAt: "2026-10-06T07:11:00.000Z" });
+    expect(await save(body, body.id, { now: LATE })).toMatchObject({ status: "saved", matched: false, notes: ["slot_already_matched"] });
+    const monday = (await db.select().from(gardenDayInputs).where(eq(gardenDayInputs.id, `${userId}:${MONDAY}`)))[0]?.input as unknown as GardenDayInput;
+    expect(monday.completedRuns.filter((r) => r.activityId === body.id).map((r) => [r.workoutId, r.unplanned])).toEqual([[`unplanned-${body.id}`, true]]);
+  });
+
+  it("amended: with no build locked, the slot's own day is the reference (an unlocked build's day is not)", async () => {
+    // Built for PLAYED but never started; the slot moved on to the 9th.
+    const workoutId = await seedSlot(PLAYED);
+    const built = await buildSession(db, userId, workoutId, { overrides: { mode: "build" } }, { today: PLAYED, now: PLAYED_NOON, prefs });
+    await moveSlot(workoutId, "2026-10-09");
+    const body = payload({ workoutId, build: built.build! }, { buildId: null, localDate: "2026-10-09" });
+    expect(await save(body, body.id, { now: "2026-10-09T16:00:00.000Z" })).toMatchObject({ status: "saved" });
+  });
+
+  it("amended: a slot moved ahead after Start saves too, and the build's day is still the reference — not the slot's", async () => {
+    const s = await started("build");
+    await moveSlot(s.workoutId, "2026-10-08");
+    // The session's day is the build's (PLAYED), whatever day the slot shows now.
+    await expect(save(payload(s, { localDate: "2026-10-08" }))).rejects.toThrow("invalid_save");
+    expect(await save(payload(s))).toMatchObject({ status: "saved", matched: true });
+  });
 });
 
 describe("the watch and the app, one physical session (programme spec §10.6; ruling 2b-R3; Phase 0 audit 1 ingest #3)", () => {
@@ -571,6 +855,36 @@ describe("the watch and the app, one physical session (programme spec §10.6; ru
     expect((await db.select().from(performedSessions)).map((p) => p.source)).toEqual(["app"]);
   });
 
+  it("a save waits for a COROS read in flight (the ingest's coros_read lock): busy, nothing written, and the read's lock is left alone (audit 2b-A M-7)", async () => {
+    const s = await started("build");
+    const body = payload(s);
+    // A read-now is ingesting: it looked for an app row to adopt a moment ago and is about to insert the watch's.
+    await db.insert(coachLocks).values({ userId, kind: "coros_read", token: "read-now", claimedAt: new Date().toISOString() });
+    statements.length = 0;
+    expect(await save(body)).toEqual({ status: "busy" });
+    expect(statements.filter((q) => isWrite(q) && !/coach_locks/.test(q))).toEqual([]);
+    expect((await db.select().from(coachLocks)).map((l) => [l.kind, l.token])).toEqual([["coros_read", "read-now"]]);
+
+    // The read finishes (its copy of the session landed meanwhile); the outbox's retry joins it — one activity.
+    await ingestActivities(db, { userId, sources: [watch()] });
+    await db.delete(coachLocks);
+    expect(await save(body)).toMatchObject({ status: "saved" });
+    expect(await db.select().from(activities)).toHaveLength(1);
+    // And the save let go of every claim it took: a read-now after it is not refused.
+    expect(await db.select().from(coachLocks)).toEqual([]);
+  });
+
+  it("a session older than the read window also waits for the deep backfill's lock (the backfill ingests those days)", async () => {
+    const s = await started("build");
+    const body = payload(s);
+    await db.insert(coachLocks).values({ userId, kind: "coros_backfill", token: "backfill", claimedAt: new Date().toISOString() });
+    // Delivered three weeks late: the backfill walks those days.
+    expect(await save(body, body.id, { now: "2026-10-28T16:00:00.000Z" })).toEqual({ status: "busy" });
+    // A session inside the read window does not wait for the backfill.
+    expect(await save(body)).toMatchObject({ status: "saved" });
+    expect((await db.select().from(coachLocks)).map((l) => l.kind)).toEqual(["coros_backfill"]);
+  });
+
   it("a watch activity far from the session's time, another sport, or imported is left alone", async () => {
     const s = await started("build");
     const coros = (id: string, startTime: string, sport: string, source = "coros") => ({
@@ -599,6 +913,189 @@ describe("the watch and the app, one physical session (programme spec §10.6; ru
       ["run", "Strength", "run", null],
       ["old", "Strength", "strength", null],
     ]);
+  });
+});
+
+describe("ruling 2b-R5: the app's session supersedes an automatic match, never a manual one (audit 2b-A I-2, I-3)", () => {
+  const YESTERDAY = "2026-10-05";
+  const TOMORROW = "2026-10-07";
+  const watchCopy = (over: Partial<SourceActivity> = {}): SourceActivity => ({
+    provider: "coros",
+    providerActivityId: "lbl-strength-9001",
+    startTime: "2026-10-06T19:06:00Z",
+    startTimeLocal: "2026-10-06T12:06:00",
+    sport: "strength",
+    durationSeconds: 1850,
+    avgHeartRate: 104,
+    title: "Strength",
+    contentFingerprint: "fp-1",
+    ...over,
+  });
+
+  /** Another activity of the athlete's that day (no COROS id: never the session's watch copy). */
+  async function otherActivity(id: string, startTime = "2026-10-06T14:00:00Z", sport = "strength") {
+    await db.insert(activities).values({ id, userId, startTime, sport, durationSeconds: 1500, createdAt: SAVED, updatedAt: SAVED });
+  }
+  /** `activityId` completes `workoutId` by `method`, as the ingest's matcher (or the athlete) left it. */
+  async function matched(matchId: string, workoutId: string, activityId: string, method: string, resolutionDate = PLAYED) {
+    await db.insert(workoutCompletionMatches).values({ id: matchId, workoutId, activityId, confidence: 0.8, method, matchedAt: SAVED });
+    await db.update(activities).set({ completionMatchId: matchId }).where(eq(activities.id, activityId));
+    await db.update(plannedWorkouts).set({ completionState: "completed", resolutionDate }).where(eq(plannedWorkouts.id, workoutId));
+  }
+  const active = async () =>
+    (await db.select().from(workoutCompletionMatches))
+      .filter((m) => m.undoneAt === null)
+      .map((m) => [m.workoutId, m.activityId, m.method])
+      .sort();
+  const pointer = async (id: string) => (await db.select().from(activities).where(eq(activities.id, id)))[0]!.completionMatchId;
+  /** The watch's copy ingested first, with whatever the ingest's matcher did undone: the case under test is planted. */
+  async function watchFirst(): Promise<string> {
+    await ingestActivities(db, { userId, sources: [watchCopy()], strengthDetailsByProviderId: { "lbl-strength-9001": detailOf(workView()) } });
+    await db.delete(workoutCompletionMatches);
+    await db.update(activities).set({ completionMatchId: null });
+    await db.update(plannedWorkouts).set({ completionState: "scheduled", resolutionDate: null });
+    return (await db.select().from(activities))[0]!.id;
+  }
+  async function strengthSlot(date: string): Promise<string> {
+    const id = await seedSlot(date);
+    await db.update(plannedWorkouts).set({ title: "Strength", category: "strength", sport: "strength" }).where(eq(plannedWorkouts.id, id));
+    return id;
+  }
+
+  for (const method of ["scored_auto", "coros_plan_link"]) {
+    it(`a ${method} match of another activity yields: undone, that activity extra training once, the slot the app session's`, async () => {
+      const s = await started("build");
+      await otherActivity("morning-lift");
+      await matched("m-auto", s.workoutId, "morning-lift", method);
+      // The watch logged that lift's sets, and the match named its workout (linkWatchSessionsToWorkouts).
+      await db.insert(performedSessions).values({ id: "watch-morning", userId, workoutId: s.workoutId, activityId: "morning-lift", source: "watch", sourceRef: "lbl-morning", localDate: PLAYED, payloadHash: "h", createdAt: SAVED, updatedAt: SAVED });
+      const body = payload(s);
+
+      expect(await save(body)).toEqual({ status: "saved", performedId: body.id, activityId: body.id, matched: true, notes: ["superseded_auto_match"] });
+      // That lift's own session no longer performed this slot (the slot's pre-check is not its to carry).
+      expect((await db.select().from(performedSessions).where(eq(performedSessions.id, "watch-morning")))[0]!.workoutId).toBeNull();
+      expect((await db.select().from(workoutCompletionMatches).where(eq(workoutCompletionMatches.id, "m-auto")))[0]!.undoneAt).toBe(SAVED);
+      expect(await active()).toEqual([[s.workoutId, body.id, "app_session"]]);
+      expect(await pointer("morning-lift")).toBeNull();
+      expect(await pointer(body.id)).toBe(`app:${body.id}`);
+      expect(await rowOf(s.workoutId)).toMatchObject({ completionState: "completed", resolutionDate: PLAYED, contentState: "done" });
+
+      // The day credits the slot once, with the app's session, and the displaced lift once, as extra training.
+      const day = await buildDayInput(db, userId, PLAYED, prefs);
+      expect(day.completedRuns.map((r) => [r.workoutId, r.activityId, r.unplanned ?? false])).toEqual([
+        [s.workoutId, body.id, false],
+        ["unplanned-morning-lift", "morning-lift", true],
+      ]);
+    });
+  }
+
+  for (const method of ["manual", "app_session"]) {
+    it(`a ${method} match is never superseded: the save lands unmatched and says so`, async () => {
+      const s = await started("build");
+      await otherActivity("theirs");
+      await matched("m-kept", s.workoutId, "theirs", method);
+      const outcome = await save(payload(s));
+      expect(outcome).toMatchObject({ status: "saved", matched: false, notes: ["slot_already_matched"] });
+      expect(await active()).toEqual([[s.workoutId, "theirs", method]]);
+      expect(await pointer("theirs")).toBe("m-kept");
+    });
+  }
+
+  it("a retry of a superseding save supersedes nothing more: one live match, the displaced one undone once", async () => {
+    const s = await started("build");
+    await otherActivity("morning-lift");
+    await matched("m-auto", s.workoutId, "morning-lift", "scored_auto");
+    const body = payload(s);
+    await save(body);
+    // A row an older deploy left pending is redone from the top: the second pass finds its own match on the slot.
+    await db.update(performedSessions).set({ payloadHash: "pending" }).where(eq(performedSessions.id, body.id));
+    expect(await save(body, body.id, { now: "2026-10-07T17:00:00.000Z" })).toMatchObject({ status: "saved", matched: true, notes: [] });
+    expect(await active()).toEqual([[s.workoutId, body.id, "app_session"]]);
+    expect((await db.select().from(workoutCompletionMatches).where(eq(workoutCompletionMatches.id, "m-auto")))[0]!.undoneAt).toBe(SAVED);
+    expect(await db.select().from(workoutCompletionMatches)).toHaveLength(2);
+  });
+
+  it("watch first and already auto-matched to this slot: the same match becomes the app session's (method app_session, confidence 1)", async () => {
+    const s = await started("recovery");
+    const coros = await watchFirst();
+    await matched("m-watch", s.workoutId, coros, "scored_auto");
+    expect(await save(payload(s))).toMatchObject({ status: "saved", activityId: coros, matched: true, notes: [] });
+    const [m] = await db.select().from(workoutCompletionMatches);
+    expect(m).toMatchObject({ id: "m-watch", workoutId: s.workoutId, activityId: coros, method: "app_session", confidence: 1, undoneAt: null });
+  });
+
+  it("watch first, its activity auto-matched to yesterday's slot: moved here, yesterday's slot reopens, and the garden replays from yesterday (I-3)", async () => {
+    await ensureGarden(db, userId, prefs, "2026-09-28");
+    const s = await started("recovery");
+    const yesterday = await seedSlot(YESTERDAY);
+    const coros = await watchFirst();
+    await matched("m-elsewhere", yesterday, coros, "scored_auto", PLAYED);
+    await advanceGarden(db, userId, prefs, new Date(SAVED));
+    const credited = async (date: string, workoutId: string) =>
+      (((await db.select().from(gardenDayInputs).where(eq(gardenDayInputs.id, `${userId}:${date}`)))[0]?.input as unknown as GardenDayInput | undefined)?.completedRuns ?? []).some(
+        (r) => r.workoutId === workoutId,
+      );
+    expect(await credited(YESTERDAY, yesterday)).toBe(true);
+
+    const outcome = await save(payload(s));
+    expect(outcome).toMatchObject({ status: "saved", activityId: coros, matched: true, notes: ["superseded_auto_match"] });
+    expect(await active()).toEqual([[s.workoutId, coros, "app_session"]]);
+    expect(await pointer(coros)).toBe(`app:${payload(s).id}`);
+    expect(await rowOf(yesterday)).toMatchObject({ completionState: "unresolved", resolutionDate: null });
+    expect(await rowOf(s.workoutId)).toMatchObject({ completionState: "completed", resolutionDate: PLAYED });
+    // Yesterday's credit came from a session that was today's: the replay went back for it.
+    expect(await credited(YESTERDAY, yesterday)).toBe(false);
+  });
+
+  it("watch first, its activity matched by hand to another slot: that match stands, and the save says so (I-3)", async () => {
+    const s = await started("recovery");
+    const yesterday = await seedSlot(YESTERDAY);
+    const coros = await watchFirst();
+    await matched("m-hand", yesterday, coros, "manual");
+    expect(await save(payload(s))).toMatchObject({ status: "saved", activityId: coros, matched: false, notes: ["activity_matched_elsewhere"] });
+    expect(await active()).toEqual([[yesterday, coros, "manual"]]);
+    expect(await rowOf(yesterday)).toMatchObject({ completionState: "completed" });
+    expect(await rowOf(s.workoutId)).toMatchObject({ completionState: "scheduled", contentState: "done" });
+  });
+
+  it("the next ingest never files an unmatched app session onto another open slot (I-2, the audit's P6)", async () => {
+    const s = await started("build");
+    await otherActivity("theirs");
+    await matched("m-hand", s.workoutId, "theirs", "manual");
+    const body = payload(s);
+    expect(await save(body)).toMatchObject({ matched: false, notes: ["slot_already_matched"] });
+    const tomorrow = await strengthSlot(TOMORROW);
+    // An unrelated run that evening: its ingest runs the matching pass over these days.
+    await ingestActivities(db, {
+      userId,
+      sources: [watchCopy({ providerActivityId: "lbl-run-1", sport: "run", startTime: "2026-10-07T01:30:00Z", startTimeLocal: "2026-10-06T18:30:00", durationSeconds: 2400, distanceMeters: 6000, contentFingerprint: "fp-run" })],
+    });
+    expect(await pointer(body.id)).toBeNull();
+    expect(await rowOf(tomorrow)).toMatchObject({ completionState: "scheduled" });
+    expect((await active()).filter(([w]) => w === tomorrow)).toEqual([]);
+  });
+
+  it("the next ingest never files the displaced activity onto another open slot either (I-2)", async () => {
+    const s = await started("build");
+    await otherActivity("morning-lift", "2026-10-06T19:50:00Z");
+    await matched("m-auto", s.workoutId, "morning-lift", "scored_auto");
+    await save(payload(s));
+    const tomorrow = await strengthSlot(TOMORROW);
+    await ingestActivities(db, {
+      userId,
+      sources: [watchCopy({ providerActivityId: "lbl-run-1", sport: "run", startTime: "2026-10-07T01:30:00Z", startTimeLocal: "2026-10-06T18:30:00", durationSeconds: 2400, distanceMeters: 6000, contentFingerprint: "fp-run" })],
+    });
+    expect(await pointer("morning-lift")).toBeNull();
+    expect(await rowOf(tomorrow)).toMatchObject({ completionState: "scheduled" });
+  });
+
+  it("a watch-only session still completes an open program slot (R5 leaves the matcher to it)", async () => {
+    const tomorrow = await strengthSlot(TOMORROW);
+    await ingestActivities(db, {
+      userId,
+      sources: [watchCopy({ providerActivityId: "lbl-strength-2", startTime: "2026-10-07T19:06:00Z", startTimeLocal: "2026-10-07T12:06:00", contentFingerprint: "fp-2" })],
+    });
+    expect(await rowOf(tomorrow)).toMatchObject({ completionState: "completed" });
   });
 });
 
@@ -650,6 +1147,11 @@ describe("PUT /api/sessions/performed/:id", () => {
     const wrongId = await put(`/api/sessions/performed/abc`, body);
     expect(wrongId.status).toBe(422);
     expect(await wrongId.json()).toMatchObject({ error: "invalid_save" });
+    // A day that is not the slot's (ruling 2b-R7).
+    const wrongDay = payload(s, { id: "5e0c1d2e-3333-4444-8555-966677778888", localDate: "2026-05-02" });
+    const refused = await put(`/api/sessions/performed/${wrongDay.id}`, wrongDay);
+    expect(refused.status).toBe(422);
+    expect(await refused.json()).toMatchObject({ error: "invalid_save", issues: [{ path: ["localDate"] }] });
   });
 
   it("423 while a restore replaces the account; 503 busy while the same session is being saved", async () => {

@@ -685,6 +685,21 @@ export async function ingestActivities(db: Db, input: IngestInput): Promise<Inge
     // activities carry no match and never enter the garden, and a completion
     // credits the garden) — adoption already skipped them; matching did not
     // (audit 1, ingest MINOR #2).
+    //
+    // Nor is an activity the app's own save decided about ever filed by a
+    // guess (ruling 2b-R5; audit 2b-A I-2): one an app performed session owns
+    // — keyed on performed_sessions, because an adopted app row's source
+    // becomes 'coros' — names its own slot, and when the save could not match
+    // it, it counts as unplanned; one the app's session displaced from a slot
+    // (its undone match sits on a slot an app_session match now holds) is
+    // extra training, not tomorrow's session. A watch-only session still
+    // completes a program slot as before.
+    //
+    // The startTime bounds are a coarse, over-inclusive window (startTime is
+    // UTC; the exact local-date filter below is unchanged), so the scan reads
+    // the matching window's days instead of every unmatched activity ever.
+    const appOwned = sql`exists (select 1 from ${performedSessions} where ${performedSessions.activityId} = ${activities.id} and ${performedSessions.source} = 'app')`;
+    const displacedByApp = sql`exists (select 1 from workout_completion_matches as undone join workout_completion_matches as app_match on app_match.workout_id = undone.workout_id where undone.activity_id = ${activities.id} and undone.undone_at is not null and app_match.undone_at is null and app_match.method = 'app_session')`;
     const unmatchedActivities = await db
       .select()
       .from(activities)
@@ -693,6 +708,10 @@ export async function ingestActivities(db: Db, input: IngestInput): Promise<Inge
           eq(activities.userId, input.userId),
           isNull(activities.completionMatchId),
           ne(activities.source, "import"),
+          gte(activities.startTime, `${addDays(minDate, -1)}T00:00:00`),
+          lte(activities.startTime, `${addDays(maxDate, 2)}T00:00:00`),
+          sql`not ${appOwned}`,
+          sql`not ${displacedByApp}`,
         ),
       );
     const candidates = unmatchedActivities

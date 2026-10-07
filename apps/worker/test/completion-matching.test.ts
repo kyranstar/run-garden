@@ -112,3 +112,52 @@ describe("ingestActivities — matched-workout resim scheduling (C19)", () => {
     expect(stats.affectedDates).toEqual(["2026-08-10"]);
   });
 });
+
+describe("the matching pass's window (audit 2b-A I-2: its scan is bounded in SQL now)", () => {
+  it("still reaches the first and the last local day of its window, whatever the activity's UTC offset", async () => {
+    const db = makeTestDb();
+    const { userId } = await makeTestUser(db); // Los Angeles
+    const early = await insertWorkout(db, userId, { effectiveDate: "2026-08-10", sourceProgramId: "program-early" });
+    const late = await insertWorkout(db, userId, { effectiveDate: "2026-08-12", sourceProgramId: "program-late" });
+    // Two runs already stored and unmatched: one early on the window's first day (13:00 UTC that day), one late on
+    // its last day (05:30 UTC the day after).
+    const run = (id: string, startTime: string, startTimeLocal: string) => ({
+      id,
+      userId,
+      startTime,
+      startTimeLocal,
+      timezone: "America/Los_Angeles",
+      sport: "run",
+      durationSeconds: 2400,
+      distanceMeters: 6000,
+      createdAt: nowInstant(),
+      updatedAt: nowInstant(),
+    });
+    await db.insert(schema.activities).values([
+      run("first-day", "2026-08-10T13:00:00Z", "2026-08-10T06:00:00"),
+      run("last-day", "2026-08-13T05:30:00Z", "2026-08-12T22:30:00"),
+    ]);
+    // Any ingest dated the 11th runs the matching pass over the 10th–12th.
+    await ingestActivities(db, {
+      userId,
+      sources: [
+        {
+          provider: "coros",
+          providerActivityId: "lift-1",
+          startTime: "2026-08-11T19:00:00Z",
+          startTimeLocal: "2026-08-11T12:00:00",
+          sport: "strength",
+          durationSeconds: 1800,
+          contentFingerprint: "fp-lift",
+        },
+      ],
+    });
+    const matches = await db.select().from(schema.workoutCompletionMatches);
+    expect(matches.map((m) => [m.workoutId, m.activityId]).sort()).toEqual(
+      [
+        [early, "first-day"],
+        [late, "last-day"],
+      ].sort(),
+    );
+  });
+});
