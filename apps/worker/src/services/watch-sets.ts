@@ -522,6 +522,58 @@ export async function upsertWatchSession(
   return { status: "written" };
 }
 
+// ── The read-now's heal ───────────────────────────────────────────────────────
+
+/**
+ * Details the read-now re-reads per read to heal watch sets: one, so a read's
+ * CPU stays near what one new strength activity costs (audit 2a+ I-1, M-3).
+ */
+export const WATCH_HEAL_PER_READ = 1;
+/** An upper bound on the candidates read; a two-week window holds a handful. */
+const WATCH_HEAL_CANDIDATES = 30;
+
+/**
+ * The COROS ids (labelIds) of the user's strength activities on or after
+ * `sinceLocalDate` whose sets never landed, or landed only in part: no
+ * settled session of any source, and either a lap naming an exercise (the
+ * detail had sets to read) or a half-written watch session. Newest first.
+ *
+ * The read-now adds the first of them its list holds to the details it reads
+ * (`WATCH_HEAL_PER_READ`): the ingest's unchanged path then logs the sets —
+ * no fingerprint is voided, nothing is re-normalized and no date joins the
+ * garden's replay. Without it only the owner-run backfill repaired a failed
+ * write, since the read-now never re-reads a seen activity's detail.
+ *
+ * Laps naming an exercise, not just any laps: a strength session logged
+ * without exercises has nothing to derive, and would otherwise be read again
+ * on every read for as long as it sat in the window (audit M-7).
+ */
+export async function watchSetsToHeal(db: Db, userId: string, sinceLocalDate: string): Promise<Set<string>> {
+  const rows = await db
+    .select({ labelId: activitySourceLinks.providerActivityId })
+    .from(activities)
+    .innerJoin(
+      activitySourceLinks,
+      and(eq(activitySourceLinks.activityId, activities.id), eq(activitySourceLinks.provider, "coros")),
+    )
+    .where(
+      and(
+        eq(activities.userId, userId),
+        eq(activities.sport, "strength"),
+        // The day it happened where it happened: the activity list's own window is in local dates.
+        sql`coalesce(${activities.startTimeLocal}, ${activities.startTime}) >= ${sinceLocalDate}`,
+        sql`not exists (select 1 from ${performedSessions} where ${performedSessions.userId} = ${activities.userId} and ${performedSessions.activityId} = ${activities.id} and ${performedSessions.payloadHash} <> ${PENDING_HASH})`,
+        or(
+          sql`exists (select 1 from ${activityLaps} where ${activityLaps.activityId} = ${activities.id} and ${activityLaps.exerciseNameKey} is not null)`,
+          sql`exists (select 1 from ${performedSessions} where ${performedSessions.userId} = ${activities.userId} and ${performedSessions.activityId} = ${activities.id} and ${performedSessions.source} = ${WATCH_SOURCE} and ${performedSessions.payloadHash} = ${PENDING_HASH})`,
+        ),
+      ),
+    )
+    .orderBy(desc(activities.startTime), desc(activities.id))
+    .limit(WATCH_HEAL_CANDIDATES);
+  return new Set(rows.map((r) => r.labelId));
+}
+
 // ── The backfill ──────────────────────────────────────────────────────────────
 
 //

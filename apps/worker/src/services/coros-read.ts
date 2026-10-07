@@ -16,6 +16,7 @@ import { enqueueCoachReads, processCoachReads } from "./coach-reads.js";
 import { claimUserLock, releaseUserLock } from "./locks.js";
 import { isExerciseCatalogStale, upsertExerciseCatalog } from "./exercise-catalog.js";
 import { restoreInProgress } from "./account-state.js";
+import { WATCH_HEAL_PER_READ, watchSetsToHeal } from "./watch-sets.js";
 
 /**
  * The cloud pull (cloud-direct spec §3): what the bridge's snapshot sync did,
@@ -147,6 +148,18 @@ export async function corosReadNow(
       }
     }
 
+    // Watch sets that never landed, or landed in part (audit 2a+ M-3): the
+    // first such strength activity the list holds gets its detail again —
+    // one per read (WATCH_HEAL_PER_READ). Its fingerprint stays: the ingest's
+    // unchanged path logs the sets and resimulates nothing.
+    const healSets = await watchSetsToHeal(db, userId, rangeStart);
+    let healBudget = WATCH_HEAL_PER_READ;
+    const healsSets = (labelId: string): boolean => {
+      if (healBudget <= 0 || !healSets.has(labelId)) return false;
+      healBudget -= 1;
+      return true;
+    };
+
     const resolver = await nameResolver(fetchImpl);
     // The exercise catalog also rides the cloud now — the last snapshot duty
     // the desktop bridge held.
@@ -156,7 +169,7 @@ export async function corosReadNow(
       // 42 days, not 7: the sleep-HRV band and night series need history,
       // and dayDetail accepts up to 24 weeks (sleep/recovery 0020).
       healthRangeStart: addDays(today, -42),
-      detailFilter: (item) => !seen.has(item.labelId) || needsDetail.has(item.labelId),
+      detailFilter: (item) => !seen.has(item.labelId) || needsDetail.has(item.labelId) || healsSets(item.labelId),
     });
     if (snapshot.exerciseCatalog && snapshot.exerciseCatalog.length > 0) {
       await upsertExerciseCatalog(db, snapshot.exerciseCatalog);
