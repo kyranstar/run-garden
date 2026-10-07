@@ -3,8 +3,9 @@
  * rulings 2b-R3 and the Phase 0 audit 1 ingest #3 merge rule). `PUT /api/sessions/performed/:id` lands here, from the
  * player's outbox, as often as the outbox needs.
  *
- *  1. Idempotent by the client's id and the payload's hash (sha256 of its canonical JSON — the hash the outbox keys
- *     its entry by): the same id with the same hash → `same_payload`, nothing written; with another hash →
+ *  1. Idempotent by the client's id and the payload's hash (sha256 of the canonical JSON of the body as sent — the
+ *     hash the outbox keys its entry by, never this server's re-parse, audit 2b-A M-6): the same id with the same
+ *     hash → `same_payload`, nothing written; with another hash →
  *     `conflict`, nothing written. Only the app's own saves come here (`source = 'app'`), always for a slot of this
  *     user's (an app session always has a row: on-demand sessions have one too).
  *  2. `performed_sessions` first, marked `pending` (every reader treats such a row as absent, and the watch ingest
@@ -84,11 +85,6 @@ export interface SaveCtx {
 
 type SlotRow = typeof plannedWorkouts.$inferSelect;
 type ActivityRow = typeof activities.$inferSelect;
-
-/** sha256 (hex) of the payload's canonical JSON: what `performed_sessions.payload_hash` holds once committed. */
-export function performedPayloadHash(payload: PerformedSessionWire): Promise<string> {
-  return sha256Hex(canonicalJson(payload));
-}
 
 /** A UTC instant as activity rows store it (`2026-10-06T19:05:00Z`), and the athlete's wall clock then. */
 function startOf(p: PerformedSessionWire, timezone: string): { startTime: string; startTimeLocal: string; elapsedSeconds: number | null } {
@@ -286,7 +282,10 @@ export async function savePerformedSession(db: Db, userId: string, performedId: 
   if (p.id !== performedId) throw new InvalidSaveError([{ message: "the payload's id is not the address's", path: ["id"] }]);
   if (p.source !== "app") throw new InvalidSaveError([{ message: "only the app's own sessions are saved here", path: ["source"] }]);
   if (p.workoutId === null) throw new InvalidSaveError([{ message: "an app session names its slot", path: ["workoutId"] }]);
-  const hash = await performedPayloadHash(p);
+  // The client's own hash: over the body as sent (the client sends its fully parsed payload), never over this server's
+  // re-parse of it — a deploy that adds a defaulted field must not turn a retry of a committed save into a conflict
+  // (audit 2b-A M-6).
+  const hash = await sha256Hex(canonicalJson(body));
 
   const stored = async () =>
     (

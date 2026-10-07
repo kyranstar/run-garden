@@ -198,7 +198,8 @@ async function counts() {
 describe("a save writes the session, its sets and checks, an app activity and the slot's match (§2b steps 2–4)", () => {
   it("writes each row as the spec says", async () => {
     const s = await started("build");
-    const body = payload(s);
+    // What the outbox sends: the payload as the client's schema parsed it (defaults filled).
+    const body = performedSessionSaveSchema.parse(payload(s));
     const outcome = await save(body);
     expect(outcome).toEqual({ status: "saved", performedId: body.id, activityId: body.id, matched: true, notes: [] });
 
@@ -218,7 +219,8 @@ describe("a save writes the session, its sets and checks, an app activity and th
       completed: true,
       note: "felt good",
       movesDone: parsed.movesDone,
-      // The commit marker is the payload's hash: sha256 of its canonical JSON, as the client's outbox hashes it.
+      // The commit marker is the payload's hash: sha256 of the canonical JSON of the body sent — the client's own
+      // hash, which its outbox keys the entry by.
       payloadHash: await sha256Hex(canonicalJson(parsed)),
     });
 
@@ -382,6 +384,19 @@ describe("exactly once (§2b step 1; Review Focus 2 and 3)", () => {
     expect(await save({ ...body, note: "the other tab" })).toEqual({ status: "conflict" });
     expect(statements.filter(isWrite)).toEqual([]);
     expect(await db.select().from(performedSessions)).toEqual(before);
+  });
+
+  it("the hash is the client's own, over the body it sent: a retry after a deploy that added a defaulted field is same_payload (audit 2b-A M-6)", async () => {
+    const s = await started("build");
+    // The client sends its fully parsed payload, built with the schema it shipped with. Say that schema had no
+    // `review`: the body has none, and the server before the deploy stored the hash of exactly that body.
+    const { review: _review, ...sent } = performedSessionSaveSchema.parse(payload(s));
+    expect(await save(sent)).toMatchObject({ status: "saved" });
+    await db.update(performedSessions).set({ payloadHash: await sha256Hex(canonicalJson(sent)) }).where(eq(performedSessions.id, sent.id));
+    // The response was lost; the server now defaults `review`. The retry is the same session, the same body.
+    statements.length = 0;
+    expect(await save(JSON.parse(JSON.stringify(sent)))).toEqual({ status: "same_payload" });
+    expect(statements.filter(isWrite)).toEqual([]);
   });
 
   it("a save that died part-way is finished by the retry: one of everything, committed", async () => {
