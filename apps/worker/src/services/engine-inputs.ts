@@ -406,6 +406,66 @@ export async function loadBuildHistory(
   return { sessions: toHistory(sessions, bySession(sets), [...linked, ...sheet]), summary };
 }
 
+/** loadHistory's order: date, then start time (none first), then id. */
+const historyOrder = (a: SessionRow, b: SessionRow): number => {
+  if (a.localDate !== b.localDate) return a.localDate < b.localDate ? -1 : 1;
+  const x = a.startedAt ?? null;
+  const y = b.startedAt ?? null;
+  if (x !== y) return x === null ? -1 : y === null ? 1 : x < y ? -1 : 1;
+  return a.id < b.id ? -1 : a.id > b.id ? 1 : 0;
+};
+
+/**
+ * These sessions of the user — a few, picked in SQL — mapped exactly as `loadHistory` maps them (their sets, their own
+ * checks and their slots' pre-checks), in the history's order: four queries per 90 ids, whatever the history's length.
+ * A session still being written (`PENDING_HASH`) is left out, as `loadHistory` leaves it out.
+ */
+export async function loadSessionsById(db: Db, userId: string, ids: readonly string[]): Promise<HistorySession[]> {
+  if (ids.length === 0) return [];
+  const rows = (
+    await byChunks([...new Set(ids)], (chunk) =>
+      db
+        .select()
+        .from(performedSessions)
+        .where(and(eq(performedSessions.userId, userId), ne(performedSessions.payloadHash, PENDING_HASH), inArray(performedSessions.id, chunk))),
+    )
+  ).sort(historyOrder);
+  if (rows.length === 0) return [];
+  const held = rows.map((r) => r.id);
+  const slots = [...new Set(rows.map((r) => r.workoutId).filter((w): w is string => w !== null))];
+  const [sets, linked, sheet] = await Promise.all([
+    byChunks(held, (chunk) =>
+      db
+        .select()
+        .from(performedSets)
+        .where(inArray(performedSets.performedSessionId, chunk))
+        .orderBy(asc(performedSets.performedSessionId), asc(performedSets.entryIndex), asc(performedSets.setIndex)),
+    ),
+    byChunks(held, (chunk) =>
+      db
+        .select()
+        .from(conditionChecks)
+        .where(and(eq(conditionChecks.userId, userId), inArray(conditionChecks.kind, ["pre", "post"]), inArray(conditionChecks.performedSessionId, chunk)))
+        .orderBy(asc(conditionChecks.at), asc(conditionChecks.id)),
+    ),
+    byChunks(slots, (chunk) =>
+      db
+        .select()
+        .from(conditionChecks)
+        .where(
+          and(
+            eq(conditionChecks.userId, userId),
+            eq(conditionChecks.kind, "pre"),
+            isNull(conditionChecks.performedSessionId),
+            inArray(conditionChecks.workoutId, chunk),
+          ),
+        )
+        .orderBy(asc(conditionChecks.at), asc(conditionChecks.id)),
+    ),
+  ]);
+  return toHistory(rows, bySession(sets), [...linked, ...sheet]);
+}
+
 /** The program's latest block (by number) as the engine's `Block`; null before the first. */
 export async function loadProgramState(db: Db, programId: string): Promise<Block | null> {
   const [row] = await db

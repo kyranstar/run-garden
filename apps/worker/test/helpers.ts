@@ -63,7 +63,12 @@ function installBoundVariableCap(sqlite: Database.Database, cap: number): void {
  * that count statements against D1's per-invocation budget or prove a code
  * path writes nothing.
  */
-function installStatementHook(sqlite: Database.Database, onStatement: (sql: string) => void): void {
+function installStatementHook(
+  sqlite: Database.Database,
+  onStatement: (sql: string) => void,
+  /** How many rows each read handed back to the application (what a Worker maps, and pays CPU for). */
+  onRows?: (sql: string, rows: number) => void,
+): void {
   const prepare = sqlite.prepare.bind(sqlite);
   (sqlite as unknown as { prepare: unknown }).prepare = (...args: unknown[]) => {
     const stmt = (prepare as (...a: unknown[]) => unknown)(...args) as Record<string, unknown>;
@@ -74,7 +79,10 @@ function installStatementHook(sqlite: Database.Database, onStatement: (sql: stri
       const bound = (original as (...a: unknown[]) => unknown).bind(stmt);
       stmt[method] = (...params: unknown[]) => {
         onStatement(text);
-        return bound(...params);
+        const out = bound(...params);
+        if (onRows && method === "all") onRows(text, Array.isArray(out) ? out.length : 0);
+        if (onRows && method === "get") onRows(text, out === undefined ? 0 : 1);
+        return out;
       };
     }
     return stmt;
@@ -91,7 +99,9 @@ export const isWrite = (sql: string): boolean => /^\s*(insert|update|delete|repl
  * ceiling — see `installBoundVariableCap`. Pass `onStatement` to observe every
  * statement the application runs (migrations are not reported).
  */
-export function makeTestDb(opts: { boundVariableCap?: number; onStatement?: (sql: string) => void } = {}): Db {
+export function makeTestDb(
+  opts: { boundVariableCap?: number; onStatement?: (sql: string) => void; onRows?: (sql: string, rows: number) => void } = {},
+): Db {
   const sqlite = new Database(":memory:");
   for (const file of readdirSync(MIGRATIONS_DIR).filter((f) => f.endsWith(".sql")).sort()) {
     const sql = readFileSync(join(MIGRATIONS_DIR, file), "utf8");
@@ -103,7 +113,7 @@ export function makeTestDb(opts: { boundVariableCap?: number; onStatement?: (sql
   // Installed after the migrations: DDL binds nothing, and the cap should only
   // ever police application queries.
   if (opts.boundVariableCap !== undefined) installBoundVariableCap(sqlite, opts.boundVariableCap);
-  if (opts.onStatement) installStatementHook(sqlite, opts.onStatement);
+  if (opts.onStatement || opts.onRows) installStatementHook(sqlite, opts.onStatement ?? (() => undefined), opts.onRows);
   return drizzle(sqlite, { schema }) as unknown as Db;
 }
 

@@ -233,4 +233,10 @@ function forSession(data: EngineData, sessions: readonly (HistorySession | null)
   return { records: all.records.filter(mine), milestones: all.milestones.filter(mine) };
 }
 
-export const Records = { compute, forSession, baseline, forSessionFrom };
+/**
+ * The milestone steps and how near two weights count as the same — for a baseline worked out elsewhere (the worker
+ * computes it in SQL, ruling 2b-R11) to award exactly what `baseline` would.
+ */
+const STEPS = { sessions: SESSION_COUNTS, goalWeeks: GOAL_STREAKS, calm: CALM_STREAKS, sameKg: SAME_KG } as const;
+
+export const Records = { compute, forSession, baseline, forSessionFrom, STEPS };
