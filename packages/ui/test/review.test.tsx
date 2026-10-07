@@ -224,6 +224,56 @@ describe("whose save it is (ruling 2b-R6)", () => {
   });
 });
 
+describe("the review's own inputs are kept with the session (audit 2b-B M-4)", () => {
+  it("left from the review and opened again later: the post-check, the note and a 👍 are still there, and the session ends when it ended", async () => {
+    await stored();
+    mount();
+    // Ended at 96 s.
+    await abandonAfterTwoSteps();
+    await click("0", controls("0").find((b) => b.getAttribute("role") === "radio"));
+    await type(control("Note") as HTMLTextAreaElement, "kept");
+    await click(/^👍 Low lunge/);
+    // ✕ on the review: Leave, no question asked. The phone is put away; the session is opened again ten minutes on.
+    await click("Leave the session");
+    await until(() => text().includes("today screen"), "Today");
+    act(() => root!.unmount());
+    host?.remove();
+    vi.setSystemTime(T0 + 696 * S);
+    mount();
+    await until(() => !!control("Save"), "the review again");
+    expect(controls("0").find((b) => b.getAttribute("role") === "radio")!.getAttribute("aria-checked")).toBe("true");
+    expect((control("Note") as HTMLTextAreaElement).value).toBe("kept");
+    expect(control(/^👍 Low lunge/)!.getAttribute("aria-pressed")).toBe("true");
+    await click("Save");
+    await until(() => text().includes("today screen"), "Today");
+    const e = await entry();
+    expect(e.payload.endedAt).toBe(new Date(T0 + 96 * S).toISOString());
+    expect(e.payload.note).toBe("kept");
+    expect(e.payload.review.ratings).toEqual({ lowLunge: 1 });
+    expect(e.payload.checks).toEqual(expect.arrayContaining([expect.objectContaining({ profileId: "tmj", kind: "post", value: 0 })]));
+  });
+
+  it("two tabs on one review with the same answers save the same payload (one session, never a conflict)", async () => {
+    await stored();
+    mount();
+    await abandonAfterTwoSteps();
+    await type(control("Note") as HTMLTextAreaElement, "same");
+    await act(async () => window.dispatchEvent(new Event("pagehide")));
+    await until(() => true, "flush");
+    act(() => root!.unmount());
+    host?.remove();
+    // The second tab opens the same review a minute later and saves; then the first does, with the same note.
+    vi.setSystemTime(T0 + 156 * S);
+    mount();
+    await until(() => !!control("Save"), "the review in the second tab");
+    expect((control("Note") as HTMLTextAreaElement).value).toBe("same");
+    await click("Save");
+    await until(() => text().includes("today screen"), "Today");
+    const [first] = await outboxEntries(db!);
+    expect(first!.payload.endedAt).toBe(new Date(T0 + 96 * S).toISOString());
+  });
+});
+
 describe("a hold skipped before half its time (ruling 2b-R15)", () => {
   it("reads Skipped on the review, and the save counts neither the step nor the move", async () => {
     await stored();

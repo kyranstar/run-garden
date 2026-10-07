@@ -15,7 +15,7 @@
 import type { SessionBuildDto, SessionViewDto } from "@rg/api-client";
 import type { Weight } from "@rg/domain";
 import { isProfileId, makeEngineData, type CheckReading, type EngineData, type ExerciseRecord } from "@rg/exercise-library";
-import { Recorder, Swapping, type Live, type LiveEntry, type PerformedSessionSave, type SlotChoice, type Step } from "@rg/session-engine";
+import { Recorder, Swapping, type Live, type LiveEntry, type PerformedSessionSave, type ReviewState, type SlotChoice, type Step } from "@rg/session-engine";
 import type { LiveSession } from "../offline/live.js";
 import { elapsedMs, heldSecs, lengthMs, phaseAt, runningClock, startClock, stopClock, stoppedClock, type PhaseView, type StepClock } from "./timer.js";
 
@@ -45,12 +45,23 @@ export interface PlayerState {
   restExtra: Record<number, number>;
   /** Past the last step (or ended early): the review is next. */
   finished: boolean;
+  /** Epoch ms the session ended (its last step ran out, or End and review): the save's `endedAt`. */
+  finishedAt: number | null;
+  /** What the review has been told so far, kept with the session (audit 2b-B M-4); null before the review. */
+  review: ReviewKept | null;
   /** The new move's how-to has been shown once. */
   newMoveShown: boolean;
   /** An exercise whose how-to should open now (the new move, the first time it comes up). */
   howto: string | null;
   /** Swaps made mid-session, in order: the slot and the move it holds now. */
   swaps: Array<{ slotKey: string; to: string }>;
+}
+
+/** The review's own inputs: the post-check per profile, the note, and its pending ratings, exclusions and switches. */
+export interface ReviewKept {
+  post: Readonly<Record<string, number | null>>;
+  note: string;
+  review: ReviewState;
 }
 
 /** What IndexedDB's `live` store keeps as the recorder state (plain data: no Set). */
@@ -61,6 +72,9 @@ export interface PlayerRecord {
   session: StepClock;
   restExtra: Record<number, number>;
   finished: boolean;
+  /** Absent on a session kept before it was: the moment it was last written stands in. */
+  finishedAt?: number | null;
+  review?: ReviewKept | null;
   newMoveShown: boolean;
   howto: string | null;
   swaps: Array<{ slotKey: string; to: string }>;
@@ -113,6 +127,7 @@ function arrive(s: PlayerState, i: number, from: number, newMove: string | null)
   const step = stepAt(s, i);
   if (!step) {
     s.finished = true;
+    s.finishedAt = from;
     s.clock = stoppedClock();
     s.session = stopClock(s.session, from);
     s.paused = false;
@@ -160,6 +175,8 @@ export function beginPlayer(src: PlayerSource, data: EngineData, opts: { perform
     paused: false,
     restExtra: {},
     finished: false,
+    finishedAt: null,
+    review: null,
     newMoveShown: false,
     howto: null,
     swaps: [],
@@ -264,6 +281,7 @@ export function endSession(state: PlayerState, now: number): PlayerState {
     s.live.reached.delete(s.index);
   }
   s.finished = true;
+  s.finishedAt = now;
   s.paused = false;
   s.clock = stoppedClock();
   s.session = stopClock(s.session, now);
@@ -358,6 +376,8 @@ export function toLiveSession(state: PlayerState, now: number): LiveSession<Play
       session: state.session,
       restExtra: state.restExtra,
       finished: state.finished,
+      finishedAt: state.finishedAt,
+      review: state.review,
       newMoveShown: state.newMoveShown,
       howto: state.howto,
       swaps: state.swaps,
@@ -392,6 +412,8 @@ export function fromLiveSession(stored: LiveSession<unknown>, src: Pick<PlayerSo
     paused: stored.paused,
     restExtra: { ...r.restExtra },
     finished: r.finished,
+    finishedAt: r.finishedAt ?? (r.finished ? stored.updatedAt : null),
+    review: r.review ?? null,
     newMoveShown: r.newMoveShown,
     howto: r.howto,
     swaps: [...r.swaps],
