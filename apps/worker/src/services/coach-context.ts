@@ -24,10 +24,12 @@ import {
   coachExerciseSchema,
   daysBetween,
   formatExercise,
+  formatWeight,
   humanizeWorkoutTitle,
   type GuardrailCtx,
   type LocalDate,
   type UserPreferences,
+  type Weight,
 } from "@rg/domain";
 import { COROS_EXERCISE_NAMES } from "@rg/providers";
 import { disciplineOf } from "@rg/analytics";
@@ -40,6 +42,7 @@ import {
 } from "@rg/garden-engine";
 import { chunkIds, type Db } from "./db.js";
 import { pendingTriggers } from "./coach-triggers.js";
+import { loggedSetsByActivity, type LoggedExerciseDto } from "./logged-sets.js";
 import { resolveCodesInText } from "./exercise-catalog.js";
 import { findRaceConflict } from "./race-conflict.js";
 import { buildRaceHub } from "./race-hub.js";
@@ -78,6 +81,34 @@ const READINESS_WINDOW_DAYS = 14;
  * athlete last touched in January — which is exactly the fact that decides
  * whether a session is a progression or a first-ever. */
 const HISTORY_WINDOW_DAYS = 90;
+
+/** RECENT STRENGTH DETAIL's bounds: the latest sessions it describes, and the
+ * exercises it names in each (the rest are counted as "+N more exercises").
+ * Five sessions of twelve exercises is about 1k tokens at most. */
+const STRENGTH_DETAIL_SESSIONS = 5;
+const STRENGTH_DETAIL_EXERCISES = 12;
+
+/** "Bench Press 3 sets: 6–8 reps, top 55 lb" — one exercise's logged sets, the
+ * weight already in the athlete's unit (`loggedSetsByActivity`). */
+function loggedExerciseLine(exercise: LoggedExerciseDto): string {
+  const span = (xs: number[]): string => {
+    const lo = Math.min(...xs);
+    const hi = Math.max(...xs);
+    return lo === hi ? `${lo}` : `${lo}–${hi}`;
+  };
+  const reps = exercise.sets.map((s) => s.reps ?? 0).filter((r) => r > 0);
+  const seconds = exercise.sets.map((s) => s.seconds ?? 0).filter((t) => t > 0);
+  const top = exercise.sets.reduce<Weight | null>(
+    (best, s) => (s.load && (!best || s.load.v > best.v) ? s.load : best),
+    null,
+  );
+  const parts: string[] = [];
+  if (reps.length > 0) parts.push(`${span(reps)} ${Math.max(...reps) === 1 ? "rep" : "reps"}`);
+  if (seconds.length > 0) parts.push(`${span(seconds)}s`);
+  if (top) parts.push(`top ${formatWeight(top)}`);
+  const n = exercise.sets.length;
+  return `${exercise.name} ${n} ${n === 1 ? "set" : "sets"}${parts.length > 0 ? `: ${parts.join(", ")}` : ""}`;
+}
 
 /** Disciplines HISTORY reports even at zero: these are the two the coach
  * prescribes, and "0 strength sessions in 90d" is load-bearing advice. */
@@ -678,46 +709,62 @@ export async function buildDossier(
     ...([...trainingLines, ...unplanned].length ? [...trainingLines, ...unplanned] : ["no sessions recorded"]),
   ]);
 
-  // 4.5 · RECENT STRENGTH DETAIL — what was actually lifted (spec §5).
+  // 4.5 · RECENT STRENGTH DETAIL — what was actually lifted (spec §5; audit
+  // 2a+ X-1).
   //
-  // `activity_laps` has carried one row per SET, tagged with the COROS
-  // exercise key, since the lap telemetry migration — and `coach-effort.ts`
-  // has always read it. The conversational coach never did: it saw "did
-  // 48min" and a ≤180-word prose read, so it could not answer "what did I
-  // lift on Tuesday", let alone reason about progression.
+  // The conversational coach saw "did 48min" and a ≤180-word prose read, so
+  // it could not answer "what did I lift on Tuesday", let alone reason about
+  // progression. This section gives it the LOGGED sets of each recent lift:
+  // the performed session linked to the activity — the athlete's own log
+  // first, else the watch session the ingest derived — read through the same
+  // `loggedSetsByActivity` the Activity card uses, so the two cannot disagree.
   //
-  // THE CEILING IS STATED IN THE SECTION ITSELF. Laps carry an exercise name
-  // and a duration; there is no reps or weight column, and `RawCorosLapItem`
-  // documents none. A coach that is shown set counts and not told loads are
-  // missing is a coach that will eventually invent one.
+  // It no longer counts `activity_laps`. COROS stores every set beside its
+  // rest item, and can send the same sets again as a second lap type, so a lap
+  // count told the coach at least twice the sets done; and a stored lap keeps
+  // no lap type, reps or weight, so it cannot be counted right. A session with
+  // exercise laps and nothing logged says "no set detail" instead — the
+  // ceiling stated in the section, because a coach shown nothing about a lift
+  // will eventually invent something.
   const strengthActs = recentActs
     .filter((a) => ["strength", "yoga"].includes(a.sport))
-    .sort((a, b) => (b.startTimeLocal ?? b.startTime).localeCompare(a.startTimeLocal ?? a.startTime))
-    .slice(0, 5);
+    .sort(
+      (a, b) =>
+        (b.startTimeLocal ?? b.startTime).localeCompare(a.startTimeLocal ?? a.startTime) || a.id.localeCompare(b.id),
+    )
+    .slice(0, STRENGTH_DETAIL_SESSIONS);
+  const loggedSets = await loggedSetsByActivity(db, userId, strengthActs.map((a) => a.id), prefs.weightUnit);
+  // At most STRENGTH_DETAIL_SESSIONS ids: one statement, far inside the bind cap.
+  const unlogged = strengthActs.filter((a) => !loggedSets.has(a.id)).map((a) => a.id);
+  const withExerciseLaps = new Set(
+    unlogged.length === 0
+      ? []
+      : (
+          await db
+            .selectDistinct({ activityId: activityLaps.activityId })
+            .from(activityLaps)
+            .where(and(inArray(activityLaps.activityId, unlogged), sql`trim(${activityLaps.exerciseNameKey}) <> ''`))
+        ).map((r) => r.activityId),
+  );
   const strengthLines: string[] = [];
   for (const act of strengthActs) {
-    const laps = await db
-      .select({ key: activityLaps.exerciseNameKey })
-      .from(activityLaps)
-      .where(eq(activityLaps.activityId, act.id))
-      .orderBy(activityLaps.lapIndex);
-    // One row per set, so the count of rows sharing a key IS the set count.
-    const perExercise = new Map<string, number>();
-    for (const l of laps) {
-      if (!l.key) continue;
-      const name = COROS_EXERCISE_NAMES[l.key.trim()] ?? catalogRawNames.get(l.key.trim()) ?? l.key;
-      perExercise.set(name, (perExercise.get(name) ?? 0) + 1);
-    }
-    if (perExercise.size === 0) continue;
+    const exercises = loggedSets.get(act.id);
+    // Nothing logged and no exercise laps: nothing to describe (as before).
+    if (!exercises && !withExerciseLaps.has(act.id)) continue;
     const day = (act.startTimeLocal ?? act.startTime).slice(0, 10);
-    strengthLines.push(
-      `${day} · ${Math.round(act.durationSeconds / 60)}min · ` +
-        [...perExercise.entries()].map(([name, sets]) => `${name} ×${sets}`).join(" · "),
-    );
+    const detail = exercises
+      ? [
+          ...exercises.slice(0, STRENGTH_DETAIL_EXERCISES).map(loggedExerciseLine),
+          ...(exercises.length > STRENGTH_DETAIL_EXERCISES
+            ? [`+${exercises.length - STRENGTH_DETAIL_EXERCISES} more exercises`]
+            : []),
+        ]
+      : ["no set detail"];
+    strengthLines.push(`${day} · ${Math.round(act.durationSeconds / 60)}min · ${detail.join(" · ")}`);
   }
   if (strengthLines.length > 0) {
     push("RECENT STRENGTH DETAIL", [
-      `the exercises and SET COUNTS actually performed, from the watch's own lap data. COROS records no weights or reps here, so never quote or assume a load — ask if it matters.`,
+      `the sets logged in each recent strength session, per exercise: set count, reps (lowest–highest), seconds for holds, and the top weight in ${prefs.weightUnit}. From the athlete's own log where there is one, otherwise the watch. No weight listed means none was logged. "no set detail" means no sets were logged for that session, so never quote or assume its sets or loads — ask if it matters.`,
       ...strengthLines,
     ]);
   }

@@ -2,7 +2,7 @@
  * Dossier golden test (Plan A Task A5, spec §2): all eight sections present,
  * unknowns explicit, deterministic given fixed rows, inside the token budget.
  */
-import { describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { schema } from "@rg/database";
 import { addDays, newId, nowInstant, todayInZone } from "@rg/domain";
 import { initialSnapshot } from "@rg/garden-engine";
@@ -730,52 +730,182 @@ describe("buildDossier · PLAN SHAPE", () => {
 });
 
 /**
- * RECENT STRENGTH DETAIL (spec 2026-09-20 §5). The conversational coach saw
- * "did 48min" for a lift and nothing else — the exercises were in
- * `activity_laps` all along, read only by the per-activity effort package.
+ * RECENT STRENGTH DETAIL (spec 2026-09-20 §5; audit 2a+ X-1). The coach reads
+ * the LOGGED sets of each recent lift — the athlete's own log, else the watch
+ * session — never `activity_laps`: COROS stores every set beside its rest item
+ * (and can send a second lap type of the same sets), so counting laps told the
+ * coach at least twice the sets that were done.
  */
 describe("buildDossier · RECENT STRENGTH DETAIL", () => {
-  it("lists the exercises actually performed, from the laps", async () => {
-    const db = makeTestDb();
-    const { userId, prefs } = await makeTestUser(db);
-    const today = todayInZone(prefs.timezone);
-    const at = nowInstant();
+  const TODAY = "2026-10-05";
+  beforeEach(() => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(new Date("2026-10-05T19:00:00Z"));
+  });
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  const AT = "2026-10-05T19:00:00.000Z";
+  async function strengthActivity(db: Db, userId: string, id: string, day: string, seconds = 2880) {
     await db.insert(schema.activities).values({
-      id: "act1",
+      id,
       userId,
-      startTime: `${addDays(today, -2)}T17:00:00Z`,
-      startTimeLocal: `${addDays(today, -2)}T10:00:00`,
+      startTime: `${day}T17:00:00Z`,
+      startTimeLocal: `${day}T10:00:00`,
       sport: "strength",
-      durationSeconds: 2880,
+      durationSeconds: seconds,
       sourceMergeConfidence: 1,
-      createdAt: at,
-      updatedAt: at,
+      createdAt: AT,
+      updatedAt: AT,
     });
-    const sets: Array<[number, string]> = [
-      [0, "Back Squat"],
-      [1, "Back Squat"],
-      [2, "Back Squat"],
-      [3, "Romanian Deadlift"],
-      [4, "Romanian Deadlift"],
-    ];
-    for (const [i, name] of sets) {
-      await db.insert(schema.activityLaps).values({
-        id: `lap-${i}`,
-        activityId: "act1",
-        lapIndex: i,
-        durationSeconds: 60,
-        exerciseNameKey: name,
+  }
+  /** Laps as stored for a lift: every set followed by its rest item, both under the exercise's key. */
+  async function setAndRestLaps(db: Db, activityId: string, keys: string[]) {
+    let i = 0;
+    for (const key of keys) {
+      for (let n = 0; n < 2; n++) {
+        await db.insert(schema.activityLaps).values({
+          id: `${activityId}-lap-${i}`,
+          activityId,
+          lapIndex: i++,
+          durationSeconds: 45,
+          exerciseNameKey: key,
+        });
+      }
+    }
+  }
+  type LoggedSet = { exerciseId: string; reps?: number; seconds?: number; load?: [number, "lb" | "kg"] };
+  async function loggedSession(
+    db: Db,
+    userId: string,
+    activityId: string,
+    sets: LoggedSet[],
+    opts: { source?: string; payloadHash?: string } = {},
+  ) {
+    const id = newId();
+    await db.insert(schema.performedSessions).values({
+      id,
+      userId,
+      activityId,
+      source: opts.source ?? "watch",
+      sourceRef: opts.source === "app" ? null : `lbl-${activityId}`,
+      localDate: TODAY,
+      payloadHash: opts.payloadHash ?? "h",
+      createdAt: AT,
+      updatedAt: AT,
+    });
+    let setIndex = 0;
+    for (const s of sets) {
+      await db.insert(schema.performedSets).values({
+        id: newId(),
+        performedSessionId: id,
+        entryIndex: 0,
+        exerciseId: s.exerciseId,
+        setIndex: setIndex++,
+        reps: s.reps ?? null,
+        seconds: s.seconds ?? null,
+        loadValue: s.load?.[0] ?? null,
+        loadUnit: s.load?.[1] ?? null,
+        loadKg: s.load ? (s.load[1] === "kg" ? s.load[0] : s.load[0] * 0.45359237) : null,
+        done: true,
       });
     }
+  }
+  const section = (text: string): string[] =>
+    text.split("## RECENT STRENGTH DETAIL\n")[1]!.split("\n\n")[0]!.split("\n");
 
-    const d = await buildDossier(db, userId, prefs, today);
-    expect(d.sections).toContain("RECENT STRENGTH DETAIL");
-    const detail = d.text.split("## RECENT STRENGTH DETAIL")[1]!.split("##")[0]!;
-    expect(detail).toContain("Back Squat ×3");
-    expect(detail).toContain("Romanian Deadlift ×2");
-    // The ceiling, stated in the dossier itself so the coach never invents a
-    // load it was never given.
-    expect(detail).toContain("no weights or reps");
+  /** Bench 50/50/55 lb × 8/8/6, rows 12 kg × 10/9, two plank holds, one set of push-ups. */
+  const WATCH_SETS: LoggedSet[] = [
+    { exerciseId: "coros:T1041", reps: 8, load: [50, "lb"] },
+    { exerciseId: "coros:T1041", reps: 8, load: [50, "lb"] },
+    { exerciseId: "coros:T1041", reps: 6, load: [55, "lb"] },
+    { exerciseId: "coros:T1055", reps: 10, load: [12, "kg"] },
+    { exerciseId: "coros:T1055", reps: 9, load: [12, "kg"] },
+    { exerciseId: "coros:T1010", seconds: 45 },
+    { exerciseId: "coros:T1010", seconds: 40 },
+    { exerciseId: "coros:T1004", reps: 15 },
+  ];
+
+  it("reads the logged sets — set count, reps, top weight in the athlete's unit, holds in seconds — never the laps", async () => {
+    const db = makeTestDb();
+    const { userId, prefs } = await makeTestUser(db, { weightUnit: "lb" });
+    await strengthActivity(db, userId, "act-lift", "2026-10-03");
+    // 16 lap rows for 8 sets: what the old section counted.
+    await setAndRestLaps(db, "act-lift", ["T1041", "T1041", "T1041", "T1055", "T1055", "T1010", "T1010", "T1004"]);
+    await loggedSession(db, userId, "act-lift", WATCH_SETS);
+
+    const d = await buildDossier(db, userId, prefs, TODAY);
+    expect(section(d.text)).toEqual([
+      `the sets logged in each recent strength session, per exercise: set count, reps (lowest–highest), seconds for holds, and the top weight in lb. From the athlete's own log where there is one, otherwise the watch. No weight listed means none was logged. "no set detail" means no sets were logged for that session, so never quote or assume its sets or loads — ask if it matters.`,
+      "2026-10-03 · 48min · Bench Press 3 sets: 6–8 reps, top 55 lb · Dumbbell Row 2 sets: 9–10 reps, top 26.5 lb · Planks 2 sets: 40–45s · Push-ups 1 set: 15 reps",
+    ]);
+
+    // A kilograms athlete reads kilograms: 55 lb is 24.9 kg, to the half kilo; 12 kg stays as typed.
+    const kg = await buildDossier(db, userId, { ...prefs, weightUnit: "kg" }, TODAY);
+    const kgLines = section(kg.text);
+    expect(kgLines[0]).toContain("the top weight in kg.");
+    expect(kgLines[1]).toBe(
+      "2026-10-03 · 48min · Bench Press 3 sets: 6–8 reps, top 25 kg · Dumbbell Row 2 sets: 9–10 reps, top 12 kg · Planks 2 sets: 40–45s · Push-ups 1 set: 15 reps",
+    );
+  });
+
+  it("takes the athlete's own log over the watch copy of the same session", async () => {
+    const db = makeTestDb();
+    const { userId, prefs } = await makeTestUser(db, { weightUnit: "lb" });
+    await strengthActivity(db, userId, "act-lift", "2026-10-03");
+    await loggedSession(db, userId, "act-lift", WATCH_SETS);
+    await loggedSession(
+      db,
+      userId,
+      "act-lift",
+      [
+        { exerciseId: "gobletSquat", reps: 10, load: [25, "lb"] },
+        { exerciseId: "gobletSquat", reps: 8, load: [30, "lb"] },
+      ],
+      { source: "app" },
+    );
+
+    const lines = section((await buildDossier(db, userId, prefs, TODAY)).text);
+    expect(lines.slice(1)).toEqual(["2026-10-03 · 48min · Goblet squat 2 sets: 8–10 reps, top 30 lb"]);
+  });
+
+  it('says "no set detail" when no sets are logged — never a count from the laps', async () => {
+    const db = makeTestDb();
+    const { userId, prefs } = await makeTestUser(db);
+    // Exercise laps, no logged session.
+    await strengthActivity(db, userId, "act-laps-only", "2026-10-03", 1800);
+    await setAndRestLaps(db, "act-laps-only", ["T1041", "T1041", "T1055"]);
+    // A watch session still being written is not there yet.
+    await strengthActivity(db, userId, "act-pending", "2026-10-01", 2400);
+    await setAndRestLaps(db, "act-pending", ["T1041"]);
+    await loggedSession(db, userId, "act-pending", WATCH_SETS, { payloadHash: "pending" });
+    // No exercise laps and nothing logged: nothing to describe, as before.
+    await strengthActivity(db, userId, "act-bare", "2026-09-30", 1200);
+
+    const lines = section((await buildDossier(db, userId, prefs, TODAY)).text);
+    expect(lines.slice(1)).toEqual(["2026-10-03 · 30min · no set detail", "2026-10-01 · 40min · no set detail"]);
+  });
+
+  it("stays bounded: the five latest sessions, at most twelve exercises each", async () => {
+    const db = makeTestDb();
+    const { userId, prefs } = await makeTestUser(db);
+    for (let i = 0; i < 6; i++) {
+      const id = `act-${i}`;
+      await strengthActivity(db, userId, id, addDays(TODAY, -1 - i), 3600);
+      const moves = i === 0 ? 14 : 1;
+      await loggedSession(
+        db,
+        userId,
+        id,
+        Array.from({ length: moves }, (_, m) => ({ exerciseId: `coros:Move ${String(m + 1).padStart(2, "0")}`, reps: 5 })),
+      );
+    }
+
+    const lines = section((await buildDossier(db, userId, prefs, TODAY)).text).slice(1);
+    expect(lines.map((l) => l.slice(0, 10))).toEqual(["2026-10-04", "2026-10-03", "2026-10-02", "2026-10-01", "2026-09-30"]);
+    const names = Array.from({ length: 12 }, (_, m) => `Move ${String(m + 1).padStart(2, "0")} 1 set: 5 reps`);
+    expect(lines[0]).toBe(`2026-10-04 · 60min · ${names.join(" · ")} · +2 more exercises`);
   });
 
   it("is omitted entirely when there is no strength work to describe", async () => {
