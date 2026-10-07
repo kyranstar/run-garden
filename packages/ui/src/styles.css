@@ -4475,6 +4475,14 @@ button.session-chip {
   flex: none;
   margin-bottom: var(--space-5);
 }
+/* Every sheet's ✕: a 44px square of its own (ruling 2b-R12). It was a small button, 42×36, that took the floor only
+   as a pad — on every sheet, the player's included, where it is reached for at arm's length. */
+.sheet-close {
+  flex: none;
+  width: var(--tap);
+  height: var(--tap);
+  padding: 0;
+}
 .sheet-body {
   flex: 1 1 auto;
   min-height: 0;

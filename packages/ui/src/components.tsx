@@ -1334,7 +1334,7 @@ export function Sheet({
         <div className="sheet-handle" aria-hidden />
         <div className="row-between sheet-head">
           <h2 id={titleId}>{title}</h2>
-          <button className="btn btn-small" onClick={onClose} aria-label="Close">
+          <button className="btn sheet-close" onClick={onClose} aria-label="Close">
             <IconClose size={16} />
           </button>
         </div>

@@ -115,6 +115,20 @@ describe("program settings' segments (audit 2a-UI M2)", () => {
   });
 });
 
+describe("every sheet's Close (ruling 2b-R12)", () => {
+  it("is a 44px square of its own, not a small button whose 36px box takes the floor only as a pad", () => {
+    // Measured 42×36 on every sheet — the player's swap, how-to, settings and leave sheets, the session sheet, Plan's.
+    const close = rule(".sheet-close");
+    expect(close.width).toBe("var(--tap)");
+    expect(close.height).toBe("var(--tap)");
+    expect(close.padding).toBe("0");
+    const source = readFileSync(fileURLToPath(new URL("../src/components.tsx", import.meta.url)), "utf8");
+    const sheet = source.slice(source.indexOf("export function Sheet("), source.indexOf("export function ConfirmDialog"));
+    expect(sheet).toMatch(/<button className="btn sheet-close" onClick=\{onClose\} aria-label="Close">/);
+    expect(sheet).not.toContain("btn-small");
+  });
+});
+
 describe("the player's Settings at every width (ruling 2b-R8)", () => {
   it("the header's icons are 44px boxes and nothing hides one below md; only the key list in its sheet waits for md", () => {
     const icon = rule(".player-icon");
