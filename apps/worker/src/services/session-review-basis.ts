@@ -196,27 +196,36 @@ function recordsRows(db: Db, userId: string, opts: { keep: Array<[string, string
       )
     ),
     runs AS (SELECT pid, grp, SUM(calm) AS len FROM calmed GROUP BY pid, grp)
-    SELECT 'chain' AS kind, t.canon AS a, t.ord AS n, t.x AS x,
-           f.v AS v, f.u AS u,
-           (SELECT MAX(d2.reps) FROM ds d2 JOIN s s2 ON s2.id = d2.sid
-             WHERE d2.canon = t.canon AND d2.kg IS NOT NULL AND ABS(d2.kg - t.x) < ${same} AND s2.ord >= t.ord) AS y
-    FROM chain t
-    JOIN (SELECT sid, canon, v, u, kg, ROW_NUMBER() OVER (PARTITION BY sid, canon, kg ORDER BY ei, si) AS rn FROM ds WHERE kg IS NOT NULL) f
-      ON f.sid = t.sid AND f.canon = t.canon AND f.kg = t.x AND f.rn = 1
-    UNION ALL SELECT 'bare', canon, NULL, NULL, NULL, NULL, MAX(reps) FROM ds WHERE kg IS NULL GROUP BY canon
-    UNION ALL SELECT 'hold', canon, NULL, NULL, NULL, NULL, MAX(secs) FROM ds WHERE secs > 0 GROUP BY canon
-    UNION ALL SELECT DISTINCT 'touched', k.canon, NULL, NULL, NULL, NULL, NULL FROM k JOIN touched t ON t.raw = k.raw
-    UNION ALL SELECT 'count', NULL, COUNT(*), NULL, NULL, NULL, NULL FROM s
-    UNION ALL SELECT 'block', NULL, MAX(block_number), NULL, NULL, NULL, NULL FROM s
-    UNION ALL SELECT DISTINCT 'blockrise', NULL, b, NULL, NULL, NULL, NULL FROM blocks WHERE prev IS NOT NULL AND b > prev
-    UNION ALL SELECT 'bell', NULL, NULL, MAX(x), NULL, NULL, NULL FROM bells
-    UNION ALL SELECT 'bellaward', NULL, NULL, x, NULL, NULL, NULL FROM bells WHERE prev IS NOT NULL AND x > prev + ${same}
-    UNION ALL SELECT 'week', week, c, NULL, NULL, NULL, NULL FROM wc WHERE week >= ${opts.from}
-    UNION ALL SELECT 'streak', week, n, NULL, NULL, NULL, NULL FROM streak WHERE week >= ${opts.from}
-    UNION ALL SELECT 'beststreak', NULL, MAX(len), NULL, NULL, NULL, NULL FROM (SELECT COUNT(*) AS len FROM goal GROUP BY island)
-    UNION ALL SELECT DISTINCT 'family', wk.week, NULL, NULL, NULL, t.raw, NULL FROM touched t JOIN wk ON wk.sid = t.sid WHERE wk.week >= ${opts.from}
-    UNION ALL SELECT 'calmnow', r.pid, r.len, NULL, NULL, NULL, NULL FROM runs r WHERE r.grp = (SELECT MAX(grp) FROM calmed c WHERE c.pid = r.pid)
-    UNION ALL SELECT 'calmbest', pid, MAX(len), NULL, NULL, NULL, NULL FROM runs GROUP BY pid
+    -- D1 takes at most five terms in one compound SELECT: the rows come in four groups of at most four.
+    SELECT * FROM (
+      SELECT 'chain' AS kind, t.canon AS a, t.ord AS n, t.x AS x,
+             f.v AS v, f.u AS u,
+             (SELECT MAX(d2.reps) FROM ds d2 JOIN s s2 ON s2.id = d2.sid
+               WHERE d2.canon = t.canon AND d2.kg IS NOT NULL AND ABS(d2.kg - t.x) < ${same} AND s2.ord >= t.ord) AS y
+      FROM chain t
+      JOIN (SELECT sid, canon, v, u, kg, ROW_NUMBER() OVER (PARTITION BY sid, canon, kg ORDER BY ei, si) AS rn FROM ds WHERE kg IS NOT NULL) f
+        ON f.sid = t.sid AND f.canon = t.canon AND f.kg = t.x AND f.rn = 1
+      UNION ALL SELECT 'bare', canon, NULL, NULL, NULL, NULL, MAX(reps) FROM ds WHERE kg IS NULL GROUP BY canon
+      UNION ALL SELECT 'hold', canon, NULL, NULL, NULL, NULL, MAX(secs) FROM ds WHERE secs > 0 GROUP BY canon
+      UNION ALL SELECT DISTINCT 'touched', k.canon, NULL, NULL, NULL, NULL, NULL FROM k JOIN touched t ON t.raw = k.raw
+    )
+    UNION ALL SELECT * FROM (
+      SELECT 'count', NULL, COUNT(*), NULL, NULL, NULL, NULL FROM s
+      UNION ALL SELECT 'block', NULL, MAX(block_number), NULL, NULL, NULL, NULL FROM s
+      UNION ALL SELECT DISTINCT 'blockrise', NULL, b, NULL, NULL, NULL, NULL FROM blocks WHERE prev IS NOT NULL AND b > prev
+      UNION ALL SELECT 'bell', NULL, NULL, MAX(x), NULL, NULL, NULL FROM bells
+    )
+    UNION ALL SELECT * FROM (
+      SELECT 'bellaward', NULL, NULL, x, NULL, NULL, NULL FROM bells WHERE prev IS NOT NULL AND x > prev + ${same}
+      UNION ALL SELECT 'week', week, c, NULL, NULL, NULL, NULL FROM wc WHERE week >= ${opts.from}
+      UNION ALL SELECT 'streak', week, n, NULL, NULL, NULL, NULL FROM streak WHERE week >= ${opts.from}
+      UNION ALL SELECT 'beststreak', NULL, MAX(len), NULL, NULL, NULL, NULL FROM (SELECT COUNT(*) AS len FROM goal GROUP BY island)
+    )
+    UNION ALL SELECT * FROM (
+      SELECT DISTINCT 'family', wk.week, NULL, NULL, NULL, t.raw, NULL FROM touched t JOIN wk ON wk.sid = t.sid WHERE wk.week >= ${opts.from}
+      UNION ALL SELECT 'calmnow', r.pid, r.len, NULL, NULL, NULL, NULL FROM runs r WHERE r.grp = (SELECT MAX(grp) FROM calmed c WHERE c.pid = r.pid)
+      UNION ALL SELECT 'calmbest', pid, MAX(len), NULL, NULL, NULL, NULL FROM runs GROUP BY pid
+    )
   `) as Promise<RecordsRow[]>;
 }
 

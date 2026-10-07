@@ -59,6 +59,39 @@ function installBoundVariableCap(sqlite: Database.Database, cap: number): void {
 }
 
 /**
+ * D1's ceiling on the terms of one compound SELECT (`SQLITE_LIMIT_COMPOUND_SELECT`): five, measured on wrangler's
+ * local D1 (six terms: "too many terms in compound SELECT"). better-sqlite3 allows 500, so a query of sixteen
+ * `UNION ALL`s passed every local test and answered 500 on the first real request (fix wave 2b-B, the review basis).
+ */
+export const D1_COMPOUND_SELECT_LIMIT = 5;
+
+/** The most terms any one compound SELECT in `sql` has (a parenthesised subquery or CTE body is its own). */
+export function compoundTerms(sql: string): number {
+  // Strings and comments out, in one pass left to right (an apostrophe in a comment opens no string).
+  const text = sql.replace(/'(?:[^']|'')*'|--[^\n]*|\/\*[\s\S]*?\*\//g, (m) => (m.startsWith("'") ? "''" : " "));
+  const open = [1];
+  let most = 1;
+  for (const m of text.matchAll(/\(|\)|\b(?:UNION|INTERSECT|EXCEPT)\b/gi)) {
+    if (m[0] === "(") open.push(1);
+    else if (m[0] === ")") most = Math.max(most, open.pop() ?? 1);
+    else open[open.length - 1]! += 1;
+  }
+  return Math.max(most, ...open);
+}
+
+/** Make the test driver refuse what D1 refuses: a compound SELECT of more than `cap` terms. */
+function installCompoundSelectCap(sqlite: Database.Database, cap: number): void {
+  const prepare = sqlite.prepare.bind(sqlite);
+  (sqlite as unknown as { prepare: unknown }).prepare = (...args: unknown[]) => {
+    const terms = compoundTerms(String(args[0]));
+    if (terms > cap) {
+      throw new Error(`D1_ERROR: too many terms in compound SELECT: SQLITE_ERROR (${terms} terms, D1 allows ${cap})`);
+    }
+    return (prepare as (...a: unknown[]) => unknown)(...args);
+  };
+}
+
+/**
  * Report every statement the application executes (its SQL text), for tests
  * that count statements against D1's per-invocation budget or prove a code
  * path writes nothing.
@@ -112,7 +145,11 @@ export function makeTestDb(
   }
   // Installed after the migrations: DDL binds nothing, and the cap should only
   // ever police application queries.
-  if (opts.boundVariableCap !== undefined) installBoundVariableCap(sqlite, opts.boundVariableCap);
+  if (opts.boundVariableCap !== undefined) {
+    installBoundVariableCap(sqlite, opts.boundVariableCap);
+    // A test as strict as D1 about binds is as strict about compound SELECTs.
+    installCompoundSelectCap(sqlite, D1_COMPOUND_SELECT_LIMIT);
+  }
   if (opts.onStatement || opts.onRows) installStatementHook(sqlite, opts.onStatement ?? (() => undefined), opts.onRows);
   return drizzle(sqlite, { schema }) as unknown as Db;
 }
