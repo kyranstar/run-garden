@@ -21,12 +21,14 @@
  *     hour, the same session by the adoption scorer, a mobility session the watch filed as Strength included), the
  *     save joins that activity instead — one physical session, one activity: COROS keeps its metrics and its id, the
  *     row takes the app's title and sport, and the watch's own performed session for it is deleted (ruling 2b-R3).
- *  4. The slot's match (`app_session`, confidence 1) unless the slot already has one (the save still lands; the match
- *     is skipped and said); the slot → `completed` on the session's day, `content_state = 'done'`, its discipline the
- *     build's.
+ *  4. The slot's match (`app_session`, confidence 1). The app's save supersedes the matcher's automatic guesses —
+ *     another activity on this slot, the joined watch activity on another slot — but never a manual match (ruling
+ *     2b-R5, `planMatch`); when it cannot match, the save still lands and says why. The slot → `completed` on the
+ *     session's day, `content_state = 'done'`, its discipline the build's.
  *  5. The review: ratings and "not for me" → `exercise_prefs`, the new move's first day; an accepted graduation →
  *     the block's lift (once: a retried save finds the lift already switched).
- *  6. The garden replays from the session's own day.
+ *  6. The garden replays from the earliest day the save touched: the slot's, the session's, a displaced activity's
+ *     or a reopened slot's.
  *
  * Never writes to COROS (an app session is never pushed to the watch in 2b). Every write waits for the restore
  * marker to be clear. Every statement stays under D1's 100 bound variables.
@@ -69,8 +71,12 @@ import { claimUserLock, releaseUserLock } from "./locks.js";
 import { engineDataFor, SessionNotFoundError } from "./session-build.js";
 import { PENDING_HASH, removeWatchSessionStatements, WATCH_SOURCE } from "./watch-sets.js";
 
-/** What a save says beside the session, when something did not go the usual way. */
-export type SaveNote = "slot_already_matched" | "activity_matched_elsewhere" | "slot_gone" | "graduation_skipped";
+/**
+ * What a save says beside the session, when something did not go the usual way. `superseded_auto_match`: the matcher's
+ * own guess — this slot completed by another activity, or the joined watch activity filed on another slot — gave way
+ * to this session (ruling 2b-R5; the other activity counts as extra training, the other slot is open again).
+ */
+export type SaveNote = "slot_already_matched" | "activity_matched_elsewhere" | "slot_gone" | "graduation_skipped" | "superseded_auto_match";
 
 export type SaveOutcome =
   | { status: "saved"; performedId: string; activityId: string; matched: boolean; notes: SaveNote[] }
@@ -369,7 +375,7 @@ export async function savePerformedSession(db: Db, userId: string, performedId: 
   const lockKind = `save:${performedId}`;
   const token = await claimUserLock(db, userId, lockKind, 1);
   if (!token) return { status: "busy" };
-  let outcome: SaveOutcome;
+  let written: Written;
   try {
     // What another request committed while this one waited for the lock is the answer.
     const existing = await stored();
@@ -380,48 +386,144 @@ export async function savePerformedSession(db: Db, userId: string, performedId: 
     try {
       // A restore can begin while this one read; checked again just before the first write.
       if (await restoreInProgress(db, userId)) return { status: "restoring" };
-      outcome = await write(db, userId, p, hash, slot, existing?.activityId ?? null, ctx);
+      written = await write(db, userId, p, hash, slot, existing?.activityId ?? null, ctx);
     } finally {
       await releaseMergeLocks(db, userId, merge);
     }
   } finally {
     await releaseUserLock(db, userId, lockKind, token);
   }
-  // The garden replays from the session's own day (it stands down by itself while a restore runs).
-  await resimulateFrom(db, userId, p.localDate, ctx.prefs, new Date(ctx.now)).catch(() => undefined);
-  return outcome;
+  // The garden replays from the earliest day the save touched (it stands down by itself while a restore runs).
+  await resimulateFrom(db, userId, written.replayFrom, ctx.prefs, new Date(ctx.now)).catch(() => undefined);
+  return written.outcome;
 }
+
+/**
+ * The matches the ingest's matcher makes by itself (completion.ts): the only ones an app session supersedes (ruling
+ * 2b-R5 — its "time-based" match is `scored_auto`). Anything else — `manual`, another `app_session`, a method this
+ * code does not know — was someone's decision, and stands.
+ */
+const AUTOMATIC_MATCHES: ReadonlySet<string> = new Set(["scored_auto", "coros_plan_link"]);
 
 /** The slot's match as the save will leave it: the decision, read now, and its statements. */
 interface MatchPlan {
   matched: boolean;
   notes: SaveNote[];
   statements: AtomicStatement[];
+  /** Days the garden must replay from as well: a displaced activity's day, a reopened slot's day (2b-R5, 2b-R7). */
+  alsoFrom: string[];
 }
 
-async function planMatch(db: Db, slot: SlotRow, performedId: string, activityId: string, now: string): Promise<MatchPlan> {
-  if (slot.archivedAt !== null) return { matched: false, notes: ["slot_gone"], statements: [] };
+const localDayOf = (a: Pick<ActivityRow, "startTime" | "startTimeLocal">) => (a.startTimeLocal ?? a.startTime).slice(0, 10);
+
+/**
+ * Ruling 2b-R5 and its extension (audit 2b-A I-3). The app's own save is the authority over what the matcher guessed:
+ *  - the slot held by an AUTOMATIC match of another activity: that match is undone, its activity returns to unmatched
+ *    (extra training on its day), and the slot becomes this session's (`superseded_auto_match`);
+ *  - the session's activity (the watch's copy it joined) AUTOMATICALLY matched to another slot: that match is undone
+ *    and that slot reopens (`unresolved`, as an unmatch leaves it), and the activity becomes this slot's;
+ *  - the same activity already automatically matched to this slot: the match becomes the app session's
+ *    (`app_session`, confidence 1), so nothing later reads it as a guess;
+ *  - a manual match — on this slot, or of the activity elsewhere — is never superseded: the save lands, unmatched,
+ *    and says which (`slot_already_matched`, `activity_matched_elsewhere`).
+ * A retry finds its own `app:` match on the slot and changes nothing.
+ */
+async function planMatch(db: Db, userId: string, slot: SlotRow, performedId: string, activityId: string, now: string): Promise<MatchPlan> {
+  if (slot.archivedAt !== null) return { matched: false, notes: ["slot_gone"], statements: [], alsoFrom: [] };
   const [held] = await db
-    .select({ id: workoutCompletionMatches.id, activityId: workoutCompletionMatches.activityId })
+    .select({ id: workoutCompletionMatches.id, activityId: workoutCompletionMatches.activityId, method: workoutCompletionMatches.method })
     .from(workoutCompletionMatches)
     .where(and(eq(workoutCompletionMatches.workoutId, slot.id), isNull(workoutCompletionMatches.undoneAt)))
     .limit(1);
   const [act] = await db.select({ completionMatchId: activities.completionMatchId }).from(activities).where(eq(activities.id, activityId)).limit(1);
-  if (held && held.activityId !== activityId) return { matched: false, notes: ["slot_already_matched"], statements: [] };
-  if (!held && act?.completionMatchId) return { matched: false, notes: ["activity_matched_elsewhere"], statements: [] };
-  if (held) return { matched: true, notes: [], statements: [] };
-  const matchId = `app:${performedId}`;
-  return {
-    matched: true,
-    notes: [],
-    statements: [
+  // The activity's own live match on ANOTHER slot (a pointer to an undone or vanished match is no match).
+  const elsewhere =
+    act?.completionMatchId && act.completionMatchId !== held?.id
+      ? (
+          await db
+            .select({ id: workoutCompletionMatches.id, workoutId: workoutCompletionMatches.workoutId, method: workoutCompletionMatches.method })
+            .from(workoutCompletionMatches)
+            .where(and(eq(workoutCompletionMatches.id, act.completionMatchId), isNull(workoutCompletionMatches.undoneAt)))
+            .limit(1)
+        ).find((m) => m.workoutId !== slot.id)
+      : undefined;
+
+  const other = held && held.activityId !== activityId ? held : undefined;
+  if (other && !AUTOMATIC_MATCHES.has(other.method)) return { matched: false, notes: ["slot_already_matched"], statements: [], alsoFrom: [] };
+  if (elsewhere && !AUTOMATIC_MATCHES.has(elsewhere.method)) return { matched: false, notes: ["activity_matched_elsewhere"], statements: [], alsoFrom: [] };
+
+  if (held && !other) {
+    // Already this activity's: an automatic guess becomes the app session's own match.
+    const statements = AUTOMATIC_MATCHES.has(held.method)
+      ? [db.update(workoutCompletionMatches).set({ method: "app_session", confidence: 1 }).where(eq(workoutCompletionMatches.id, held.id))]
+      : [];
+    return { matched: true, notes: [], statements, alsoFrom: [] };
+  }
+
+  const statements: AtomicStatement[] = [];
+  const alsoFrom: string[] = [];
+  if (other) {
+    const [displaced] = await db
+      .select({ startTime: activities.startTime, startTimeLocal: activities.startTimeLocal })
+      .from(activities)
+      .where(eq(activities.id, other.activityId))
+      .limit(1);
+    if (displaced) alsoFrom.push(localDayOf(displaced));
+    statements.push(
+      db.update(workoutCompletionMatches).set({ undoneAt: now }).where(eq(workoutCompletionMatches.id, other.id)),
       db
-        .insert(workoutCompletionMatches)
-        .values({ id: matchId, workoutId: slot.id, activityId, confidence: 1, method: "app_session", matchedAt: now })
-        .onConflictDoNothing(),
-      db.update(activities).set({ completionMatchId: matchId, updatedAt: now }).where(eq(activities.id, activityId)),
-    ],
-  };
+        .update(activities)
+        .set({ completionMatchId: null, updatedAt: now })
+        .where(and(eq(activities.id, other.activityId), eq(activities.completionMatchId, other.id))),
+      // Its watch session no longer performed this slot (the slot's pre-check is not its to carry).
+      db
+        .update(performedSessions)
+        .set({ workoutId: null, updatedAt: now })
+        .where(
+          and(
+            eq(performedSessions.userId, userId),
+            eq(performedSessions.source, WATCH_SOURCE),
+            eq(performedSessions.activityId, other.activityId),
+            eq(performedSessions.workoutId, slot.id),
+          ),
+        ),
+    );
+  }
+  if (elsewhere) {
+    const [reopened] = await db
+      .select({ effectiveDate: plannedWorkouts.effectiveDate })
+      .from(plannedWorkouts)
+      .where(and(eq(plannedWorkouts.id, elsewhere.workoutId), eq(plannedWorkouts.userId, userId)))
+      .limit(1);
+    if (reopened) alsoFrom.push(reopened.effectiveDate);
+    statements.push(
+      db.update(workoutCompletionMatches).set({ undoneAt: now }).where(eq(workoutCompletionMatches.id, elsewhere.id)),
+      // As the athlete's own unmatch leaves a slot (routes/plan.ts).
+      db
+        .update(plannedWorkouts)
+        .set({ completionState: "unresolved", resolutionDate: null, updatedAt: now })
+        .where(and(eq(plannedWorkouts.id, elsewhere.workoutId), eq(plannedWorkouts.userId, userId))),
+    );
+  }
+  const matchId = `app:${performedId}`;
+  statements.push(
+    db
+      .insert(workoutCompletionMatches)
+      .values({ id: matchId, workoutId: slot.id, activityId, confidence: 1, method: "app_session", matchedAt: now })
+      // A match an older attempt left is this one: made live again, pointing where this save points.
+      .onConflictDoUpdate({
+        target: workoutCompletionMatches.id,
+        set: { workoutId: slot.id, activityId, confidence: 1, method: "app_session", undoneAt: null },
+      }),
+    db.update(activities).set({ completionMatchId: matchId, updatedAt: now }).where(eq(activities.id, activityId)),
+  );
+  return { matched: true, notes: other || elsewhere ? ["superseded_auto_match"] : [], statements, alsoFrom };
+}
+
+/** What the write phase did, and the earliest day the garden must replay from. */
+interface Written {
+  outcome: SaveOutcome;
+  replayFrom: string;
 }
 
 /**
@@ -438,7 +540,7 @@ async function write(
   slot: SlotRow,
   priorActivityId: string | null,
   ctx: SaveCtx,
-): Promise<SaveOutcome> {
+): Promise<Written> {
   const performedId = p.id;
   const now = ctx.now;
   const timezone = ctx.prefs.timezone;
@@ -491,7 +593,7 @@ async function write(
     .select({ id: performedSessions.id })
     .from(performedSessions)
     .where(and(eq(performedSessions.userId, userId), eq(performedSessions.activityId, activityId), eq(performedSessions.source, WATCH_SOURCE)));
-  const match = await planMatch(db, slot, performedId, activityId, now);
+  const match = await planMatch(db, userId, slot, performedId, activityId, now);
   const prefs = await prefStatements(db, userId, p, now);
   const graduation = await graduationStatements(db, userId, slot, p, now);
   const notes: SaveNote[] = [...match.notes];
@@ -620,5 +722,8 @@ async function write(
   // Commit marker: everything above lands with it, or none of it does.
   statements.push(db.update(performedSessions).set({ payloadHash: hash, updatedAt: now }).where(eq(performedSessions.id, performedId)));
   await runAtomically(db, statements);
-  return { status: "saved", performedId, activityId, matched: match.matched, notes };
+  // The completed slot credits its own day (buildDayInput keys it on effectiveDate), the session its day, and a
+  // displaced activity or a reopened slot theirs: the replay starts at the earliest (rulings 2b-R5, 2b-R7).
+  const replayFrom = [slot.effectiveDate, p.localDate, ...match.alsoFrom].reduce((a, b) => (b < a ? b : a));
+  return { outcome: { status: "saved", performedId, activityId, matched: match.matched, notes }, replayFrom };
 }
