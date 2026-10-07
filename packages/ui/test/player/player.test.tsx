@@ -59,14 +59,20 @@ async function storedStart(): Promise<OfflineDb> {
   return db;
 }
 
-function mount(opts: { getSession?: () => Promise<SessionDto> } = {}) {
+function mount(opts: { getSession?: () => Promise<SessionDto>; writeDelayMs?: number } = {}) {
   const getSession = vi.fn(opts.getSession ?? (() => Promise.reject(new TypeError("Failed to fetch"))));
   host = document.createElement("div");
   document.body.appendChild(host);
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   const player = createElement(PlayerScreen, {
     workoutId: SLOT,
-    deps: { db: () => Promise.resolve(db!), getSession, chimes: noChimes, wake: () => () => undefined },
+    deps: {
+      db: () => Promise.resolve(db!),
+      getSession,
+      chimes: noChimes,
+      wake: () => () => undefined,
+      ...(opts.writeDelayMs === undefined ? {} : { writeDelayMs: opts.writeDelayMs }),
+    },
   });
   root = createRoot(host);
   act(() => {
@@ -91,9 +97,9 @@ function mount(opts: { getSession?: () => Promise<SessionDto> } = {}) {
 }
 
 const flush = () => act(async () => void (await new Promise((r) => setImmediate(r))));
-async function until(check: () => boolean, what: string): Promise<void> {
+async function until(check: () => boolean | Promise<boolean>, what: string): Promise<void> {
   for (let i = 0; i < 300; i += 1) {
-    if (check()) return;
+    if (await check()) return;
     await flush();
   }
   throw new Error(`timed out waiting for: ${what}\n${text()}`);
@@ -332,6 +338,43 @@ describe("Review Focus 1 on the screen — locked for two minutes mid-hold", () 
     });
     expect(text()).toContain("3 of 9");
     expect(text()).toContain("Goblet squat");
+  });
+});
+
+describe("what a tap changes is kept at once (ruling 2b-R13)", () => {
+  type Stored = { live: { entries: Record<string, { sets: Array<{ w: unknown; done: boolean }> }>; reached: number[] } };
+
+  it("a confirmed set is in IndexedDB straight away — no pagehide, no wait for the writer's debounce", async () => {
+    await storedStart();
+    // The writer would wait a minute: only a flush at the tap can have written what follows.
+    mount({ writeDelayMs: 60_000 });
+    await toFirstSet();
+    await click("Done");
+    await type(control("Weight") as HTMLInputElement, "40 lb");
+    await click(/^Confirm/);
+    await until(() => text().includes("4 of 9"), "the rest");
+    // The tab is killed here: nothing more runs. What IndexedDB holds is what a relaunch resumes.
+    let stored = await readLive<Stored>(db!, SLOT);
+    for (let i = 0; i < 20 && stored?.stepIndex !== 3; i++) {
+      await flush();
+      stored = await readLive<Stored>(db!, SLOT);
+    }
+    expect(stored?.stepIndex).toBe(3);
+    expect(stored?.recorder.live.entries.gobletSquat!.sets[0]).toMatchObject({ w: { v: 40, u: "lb" }, done: true });
+  });
+
+  it("so are Skip and a swap", async () => {
+    await storedStart();
+    mount({ writeDelayMs: 60_000 });
+    await until(() => text().includes("1 of 9"), "the first step");
+    await click("Skip");
+    await until(async () => (await readLive(db!, SLOT))?.stepIndex === 1, "Skip kept at once");
+    await click("Skip");
+    await until(async () => (await readLive(db!, SLOT))?.stepIndex === 2, "the second Skip kept at once");
+    await click("Swap");
+    await until(() => !!document.querySelector('[role="dialog"]'), "the swap list");
+    await click("Use");
+    await until(async () => ((await readLive<{ swaps: unknown[] }>(db!, SLOT))?.recorder.swaps.length ?? 0) === 1, "the swap kept at once");
   });
 });
 

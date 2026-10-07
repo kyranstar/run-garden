@@ -72,6 +72,8 @@ export interface PlayerDeps {
   chimes: Chimes;
   /** Hold the screen on; returns release. */
   wake: () => () => void;
+  /** How long the clock's own changes wait before they are written (the live writer's debounce). */
+  writeDelayMs?: number;
 }
 
 const defaultDeps: PlayerDeps = {
@@ -247,20 +249,26 @@ function Playing({ loaded, db, deps }: { loaded: Extract<Loaded, { kind: "ready"
   /** Keeping the session on the device failed (storage full, the database gone): the athlete is told. */
   const [notKept, setNotKept] = useState(false);
 
-  // ── Persistence: every change, debounced; flushed when hidden or left ─────────────────────────────────────────
+  // ── Persistence: every change; what a tap changed at once, the clock's own changes debounced; flushed when hidden
+  //    or left ─────────────────────────────────────────────────────────────────────────────────────────────────────
   useEffect(() => {
     if (!db) return;
-    const w = createLiveWriter(db, { onError: () => setNotKept(true) });
+    const w = createLiveWriter(db, { onError: () => setNotKept(true), delayMs: deps.writeDelayMs });
     writer.current = w;
     return () => {
       writer.current = null;
       w.dispose();
     };
-  }, [db]);
+  }, [db, deps.writeDelayMs]);
+  /** The next change came from a tap (Confirm, Done, Skip, a swap, +15 s, a step, a pause): kept at once. */
+  const tapped = useRef(false);
   useEffect(() => {
     writer.current?.write(toLiveSession(state, Date.now()));
-    // The end of the session is kept at once: a reload right after it comes back to the review, never to the last step.
-    if (state.finished) writer.current?.flush().catch(() => setNotKept(true));
+    // A confirmed set, and every other tap, is kept at once (ruling 2b-R13: a crash loses at most the clock's last
+    // ~2 s, never a set); so is the end of the session — a reload right after it comes back to the review, never to
+    // the last step.
+    if (tapped.current || state.finished) writer.current?.flush().catch(() => setNotKept(true));
+    tapped.current = false;
   }, [state]);
 
   // ── The wall clock: a light tick while playing, and a catch-up whenever the page comes back ────────────────────
@@ -331,9 +339,11 @@ function Playing({ loaded, db, deps }: { loaded: Extract<Loaded, { kind: "ready"
     [focus, src.build, state.swaps],
   );
 
+  /** A tap's change: kept on the device at once (the clock's own ticks go through `refresh`, debounced). */
   const act = (f: (s: PlayerState, t: number) => PlayerState) => {
     const t = Date.now();
     setNow(t);
+    tapped.current = true;
     setState((s) => f(s, t));
   };
   const openPanel = (p: Exclude<Panel, null>) => {
