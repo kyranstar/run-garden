@@ -20,6 +20,30 @@
 - UI rules as 2a (tiers, 44 px floor, plain labels, no captions); the player route renders no tab bar.
 - Tests on Node 21; Playwright offline tests use `context.setOffline(true)`.
 
+## Carried in from the 2a and 2a+ reviews (2026-10-07)
+
+Each lands in the task named; the ledger (`.superpowers/sdd/2026-09-30-phase-2b-player-review-offline/progress.md`)
+records the rulings.
+
+- **Start needs the network; everything after Start works offline** (ruling 2b-R1). A preview built the day before is
+  never started from IndexedDB; the sheet builds the day's session and Start locks it on the server. Task 4.
+- **The stored build carries its place** (`view.location` gains `equipment` and `implements`, which the recorder and
+  the ± weight steppers need offline; audit 2a-build M9). Task 2 (the payload the player stores).
+- **The app's save is the authority over a watch copy** (audits 2a+ M-4 and open question 5): the save deletes any
+  `watch` performed session linked to the same activity, and `upsertWatchSession` already yields to a linked app
+  session, so the app session is the durable merge marker. `performed_sessions` is written before its sets. Task 6.
+- **A GET that says whether the stored build is still current**, so opening the sheet stops POSTing a build every
+  time (Tasks 6–8 report). Task 6.
+- **Program-screen leftovers** from the 2a UI re-review: U1 (the when-line reading under 44 px), U2 (ruling 2a-R13
+  with two app sessions on one day), U3 (a started session shows the reading it was built with), U4/U5 (a stored
+  build adopted by Start writes the row's content; the sheet refreshes Today and Plan after an adoption), U6 (a
+  skipped session heading the card drops the to-do furniture), U7 (keyboard on the scale and pre-check), U8 (tests
+  that pin their claims). Task 7.
+- **Gate before `features.player` flips in production**: one real build request's CPU read from the Workers
+  dashboard (ruling 2a-R8; the bench says cache-miss p50 ≈ 5.9 ms, p95 ≈ 9.7 ms against 10 ms), and a real
+  `session_builds` insert proving D1 takes a ~130 KB bound payload. Both need a program in production, which is a
+  production data change: ask the owner first. Ship checklist, after Task 8.
+
 ## Review Focus
 
 1. **The phone locks mid-hold and unlocks 2 minutes later** — the hold is judged by the half-time rule on resume and the timer shows the true remaining time (or has advanced). Task 4.
