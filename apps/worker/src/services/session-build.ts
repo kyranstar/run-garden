@@ -32,7 +32,7 @@
  */
 import { and, eq, inArray, isNotNull, isNull, ne, notExists, notInArray, or } from "drizzle-orm";
 import { conditionChecks, exercisePrefs, plannedWorkouts, programs, sessionBuilds, userConditions } from "@rg/database";
-import { newId, sessionLead, todayInZone, type AdaptiveConfig, type SessionLead, type UserPreferences } from "@rg/domain";
+import { newId, sessionLead, todayInZone, type AdaptiveConfig, type SessionLead, type UserPreferences, type Weight } from "@rg/domain";
 import {
   CORE_FAMILIES,
   COVERAGE_TARGETS,
@@ -77,8 +77,11 @@ import {
 } from "./engine-inputs.js";
 import { conditionView, isAnswer, latestReading, type ConditionView } from "./condition-views.js";
 
-/** Bump when the engine's behaviour changes: a stored build from an older engine then no longer matches its inputs. */
-export const ENGINE_VERSION = "session-engine-1";
+/**
+ * Bump when the engine's behaviour or the stored build's shape changes: a stored build from an older version then no
+ * longer matches its inputs and is built again on its next open. 2: the view's place carries its gear (ruling 2b-R2).
+ */
+export const ENGINE_VERSION = "session-engine-2";
 
 /**
  * A profile's answer before the session: 0–10 (null = no number), and "feeling off". Neither a number nor "feeling
@@ -118,7 +121,11 @@ export interface SessionView {
   proposedTheme: { id: string; name: string } | null;
   themeReasons: string[];
   minutes: number;
-  location: { id: string; name: string };
+  /**
+   * The place, with what the player needs of it offline (ruling 2b-R2): its equipment ids, and its implement weights
+   * as parsed from the typed list (the log card's ± steppers move through them).
+   */
+  location: { id: string; name: string; equipment: string[]; implements: Record<string, Weight[]> };
   block: { number: number; week: number; weeks: number; core: { family: string; name: string | null }[]; events: string[] } | null;
   /** The exercise id introduced today, if any. */
   newMove: string | null;
@@ -461,7 +468,12 @@ export function composeBuild(input: ComposeInput): Composed {
     proposedTheme: themeRef(v.proposedTheme),
     themeReasons: v.themeReasons,
     minutes: v.minutes,
-    location: { id: v.location.id, name: v.location.name ?? v.location.id },
+    location: {
+      id: v.location.id,
+      name: v.location.name ?? v.location.id,
+      equipment: [...v.location.equipment],
+      implements: Object.fromEntries(Object.entries(v.location.implements ?? {}).map(([k, ws]) => [k, ws.map((w) => ({ v: w.v, u: w.u }))])),
+    },
     block: {
       number: v.block.number,
       week: v.week,

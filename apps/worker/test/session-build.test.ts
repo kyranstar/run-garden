@@ -988,6 +988,64 @@ describe("the sheet's profiles and choices", () => {
   });
 });
 
+describe("the stored build carries its place's gear (ruling 2b-R2)", () => {
+  // The player runs offline from the stored build: the log card's ± weight steppers move through the place's bells,
+  // and the recorder needs the place's gear, so the build's view names both (audit 2a-build M9).
+  it("view.location holds the place's equipment and its implement weights, parsed from the typed list", async () => {
+    await db.insert(schema.locations).values({
+      id: "l-flat",
+      userId,
+      name: "Flat",
+      equipment: ["mat", "kettlebell", "wall"],
+      implements: { kettlebell: "15, 10 lb" },
+      isDefault: true,
+      createdAt: NOW,
+      updatedAt: NOW,
+    });
+    const id = await seedSlot(TODAY);
+    const place = {
+      id: "l-flat",
+      name: "Flat",
+      equipment: ["mat", "kettlebell", "wall"],
+      implements: { kettlebell: [{ v: 10, u: "lb" }, { v: 15, u: "lb" }] },
+    };
+    expect((await buildSession(db, userId, id, {}, ctx())).view!.location).toEqual(place);
+    // As stored: what the sheet reads back and the player keeps in IndexedDB.
+    expect((await loadSession(db, userId, id, TODAY)).view!.location).toEqual(place);
+  });
+
+  it("an account with no place set up gets the library Home's gear and no weights", async () => {
+    const id = await seedSlot(TODAY);
+    const { view } = await buildSession(db, userId, id, {}, ctx());
+    expect(view!.location).toEqual({
+      id: "home",
+      name: "Home",
+      equipment: ["mat", "yoga-block", "kettlebell", "bench", "chair", "wall", "towel"],
+      implements: {},
+    });
+  });
+
+  it("a build stored before the view carried the gear is built again on the next open", async () => {
+    const id = await seedSlot(TODAY);
+    const first = await buildSession(db, userId, id, {}, ctx());
+    // What the previous engine version stored: the same build, its place without gear.
+    const [stored] = await buildsOf(id);
+    const old = first.build!.engineVersion.replace(/^session-engine-\d+/, "session-engine-1");
+    const payload = stored!.payload as { build: Record<string, unknown>; view: Record<string, unknown> };
+    await db
+      .update(sessionBuilds)
+      .set({
+        engineVersion: old,
+        payload: { build: { ...payload.build, engineVersion: old }, view: { ...payload.view, location: { id: "home", name: "Home" } } },
+      })
+      .where(eq(sessionBuilds.id, stored!.id));
+
+    const again = await buildSession(db, userId, id, {}, ctx({ now: LATER }));
+    expect(again.build!.version).toBe(2);
+    expect(again.view!.location).toMatchObject({ id: "home", equipment: expect.arrayContaining(["kettlebell"]) });
+  });
+});
+
 describe("the daily check", () => {
   it("one per profile per day, replaced on a re-check", async () => {
     await activateTmj();

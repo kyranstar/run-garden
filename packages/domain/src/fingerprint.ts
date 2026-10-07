@@ -4,6 +4,14 @@
  * Workers, Node, and browsers with no crypto dependency.
  */
 
+/**
+ * JSON with every object's keys sorted and undefined members left out: equal content always serialises the same.
+ * Also what a performed session's payload hash is taken over, on the client and on the server.
+ */
+export function canonicalJson(value: unknown): string {
+  return stableStringify(value);
+}
+
 function stableStringify(value: unknown): string {
   if (value === null || typeof value !== "object") return JSON.stringify(value) ?? "null";
   if (Array.isArray(value)) return `[${value.map(stableStringify).join(",")}]`;

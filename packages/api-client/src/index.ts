@@ -14,6 +14,7 @@ import type {
   SyncAction,
   UserPreferences,
   WatchCoverageView,
+  Weight,
   WorkoutSyncView,
 } from "@rg/domain";
 import type {
@@ -975,7 +976,11 @@ export interface SessionViewDto {
   proposedTheme: { id: string; name: string } | null;
   themeReasons: string[];
   minutes: number;
-  location: { id: string; name: string };
+  /**
+   * The place, with what the player needs of it offline: its equipment ids and its implement weights as parsed from
+   * the typed list (ruling 2b-R2).
+   */
+  location: { id: string; name: string; equipment: string[]; implements: Record<string, Weight[]> };
   block: { number: number; week: number; weeks: number; core: { family: string; name: string | null }[]; events: string[] } | null;
   /** The exercise id introduced today. */
   newMove: string | null;
