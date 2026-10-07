@@ -15,15 +15,22 @@ export type SaveResult = "saved" | "pending";
 
 const SEND_WAIT_MS = 4_000;
 
-export async function saveSession(db: OfflineDb, wire: PerformedSessionWire, api: OutboxApi, waitMs: number = SEND_WAIT_MS): Promise<SaveResult> {
-  await enqueue(db, wire);
+export async function saveSession(
+  db: OfflineDb,
+  wire: PerformedSessionWire,
+  api: OutboxApi,
+  /** The signed-in account the save belongs to (ruling 2b-R6: the outbox sends only its own). */
+  userId: string,
+  waitMs: number = SEND_WAIT_MS,
+): Promise<SaveResult> {
+  await enqueue(db, wire, userId);
   if (wire.workoutId) {
     await clearLive(db, wire.workoutId);
     await forgetStart(db, wire.workoutId);
   }
   let timer: ReturnType<typeof setTimeout> | null = null;
   await Promise.race([
-    drain(db, api).catch(() => null),
+    drain(db, api, { userId }).catch(() => null),
     new Promise((resolve) => {
       timer = setTimeout(resolve, waitMs);
     }),

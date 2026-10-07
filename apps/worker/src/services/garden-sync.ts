@@ -870,6 +870,30 @@ async function recordGardenChange(db: Db, userId: string, date: LocalDate): Prom
 }
 
 /**
+ * `recordGardenChange` as a statement a caller runs in its own transaction, and an upsert: it lands for an account
+ * that has no `account_state` row yet, and with the caller's writes or not at all. The app's save (session-save.ts)
+ * records the day its replay must start from together with the session, so a replay killed after the commit is not
+ * lost (audit 2b-A M-5): the catch-up stays pending, and the next garden read or hourly cron walks it, capped
+ * (ruling 2b-R7). Nothing is recorded while a restore runs.
+ */
+export function gardenChangeStatement(db: Db, userId: string, date: LocalDate) {
+  const now = nowInstant();
+  return db
+    .insert(accountState)
+    .values({ userId, gardenChangedFrom: date, gardenChangedSeq: 1, gardenCatchUpPending: true, updatedAt: now })
+    .onConflictDoUpdate({
+      target: accountState.userId,
+      set: {
+        gardenChangedFrom: sql`CASE WHEN ${accountState.gardenChangedFrom} IS NULL OR ${accountState.gardenChangedFrom} > ${date} THEN ${date} ELSE ${accountState.gardenChangedFrom} END`,
+        gardenChangedSeq: sql`${accountState.gardenChangedSeq} + 1`,
+        gardenCatchUpPending: true,
+        updatedAt: now,
+      },
+      setWhere: isNull(accountState.restoreId),
+    });
+}
+
+/**
  * Genesis ("start") species: unlocked from the garden's first day, never by
  * an event. Their unlock rows are stamped at `createdDate` by the garden
  * view's heal — after the cursor of a garden whose first day is not walked

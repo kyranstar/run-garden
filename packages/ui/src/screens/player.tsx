@@ -15,7 +15,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import { useQueryClient } from "@tanstack/react-query";
-import { api, type ReviewBasisDto, type SessionDto, type SessionExerciseDto } from "@rg/api-client";
+import { api, type MeResponse, type ReviewBasisDto, type SessionDto, type SessionExerciseDto } from "@rg/api-client";
 import { formatWeight, parseWeight, type Weight, type WeightUnit } from "@rg/domain";
 import type { EngineData } from "@rg/exercise-library";
 import { Lib, Prog, type SlotChoice, type Step } from "@rg/session-engine";
@@ -26,6 +26,7 @@ import { Stepper } from "../components/set-steppers.js";
 import { IconClose, IconInfo, IconSwap } from "../icons.js";
 import { loadBuild, saveBuild, type StoredSessionBuild } from "../offline/builds.js";
 import { offlineDb, type OfflineDb } from "../offline/idb.js";
+import { meWithOfflineFallback } from "../offline/me.js";
 import { createLiveWriter, readLive, writeLive, type LiveWriter } from "../offline/live.js";
 import type { OutboxApi } from "../offline/outbox.js";
 import { chimes as appChimes, type Chimes } from "../player/audio.js";
@@ -66,6 +67,8 @@ export interface PlayerDeps {
   reviewBasis: (workoutId: string) => Promise<ReviewBasisDto>;
   /** The outbox's delivery (Save tries it at once). */
   savePerformed: OutboxApi["savePerformed"];
+  /** Who is signed in, when Start did not say (offline: the answer kept on the device). */
+  whoAmI: () => Promise<string | null>;
   chimes: Chimes;
   /** Hold the screen on; returns release. */
   wake: () => () => void;
@@ -76,6 +79,7 @@ const defaultDeps: PlayerDeps = {
   getSession: api.getSession,
   reviewBasis: api.reviewBasis,
   savePerformed: api.savePerformed,
+  whoAmI: async () => (await meWithOfflineFallback().catch(() => null))?.userId ?? null,
   chimes: appChimes,
   wake: () => holdWakeLock(),
 };
@@ -129,7 +133,7 @@ async function load(workoutId: string, deps: PlayerDeps): Promise<{ loaded: Load
     if (session.contentState === "done") return { loaded: { kind: "done" }, db };
     if (session.contentState !== "started" || !session.build || !session.view) return { loaded: { kind: "unstarted" }, db };
     stored = { workoutId, build: session.build, view: session.view, savedAt: Date.now() };
-    extras = { workoutId, title: session.view.theme?.name ?? "Session", profiles: session.profiles, savedAt: Date.now() };
+    extras = { workoutId, title: session.view.theme?.name ?? "Session", profiles: session.profiles, userId: null, savedAt: Date.now() };
     if (db) {
       await saveBuild(db, session).catch(() => undefined);
       await saveExtras(db, extras).catch(() => undefined);
@@ -240,11 +244,13 @@ function Playing({ loaded, db, deps }: { loaded: Extract<Loaded, { kind: "ready"
   /** A panel paused the countdown: closing it resumes. */
   const pausedByPanel = useRef(false);
   const writer = useRef<LiveWriter | null>(null);
+  /** Keeping the session on the device failed (storage full, the database gone): the athlete is told. */
+  const [notKept, setNotKept] = useState(false);
 
   // ── Persistence: every change, debounced; flushed when hidden or left ─────────────────────────────────────────
   useEffect(() => {
     if (!db) return;
-    const w = createLiveWriter(db);
+    const w = createLiveWriter(db, { onError: () => setNotKept(true) });
     writer.current = w;
     return () => {
       writer.current = null;
@@ -254,13 +260,15 @@ function Playing({ loaded, db, deps }: { loaded: Extract<Loaded, { kind: "ready"
   useEffect(() => {
     writer.current?.write(toLiveSession(state, Date.now()));
     // The end of the session is kept at once: a reload right after it comes back to the review, never to the last step.
-    if (state.finished) void writer.current?.flush();
+    if (state.finished) writer.current?.flush().catch(() => setNotKept(true));
   }, [state]);
 
   // ── The wall clock: a light tick while playing, and a catch-up whenever the page comes back ────────────────────
   const refresh = useCallback(() => {
     const t = Date.now();
     setNow(t);
+    // A write that lands again clears the warning.
+    if (writer.current && writer.current.error === null) setNotKept(false);
     setState((s) => settle(s, t, { autoAdvance: auto }));
   }, [auto]);
   useEffect(() => {
@@ -457,7 +465,7 @@ function Playing({ loaded, db, deps }: { loaded: Extract<Loaded, { kind: "ready"
       const w = writer.current;
       writer.current = null;
       if (w) {
-        await w.flush();
+        await w.flush().catch(() => undefined);
         w.dispose();
       }
     };
@@ -478,7 +486,10 @@ function Playing({ loaded, db, deps }: { loaded: Extract<Loaded, { kind: "ready"
         onSave={async (wire) => {
           await stopWriting();
           if (db) {
-            const result = await saveSession(db, wire, { savePerformed: deps.savePerformed });
+            // The account the save belongs to: Start's, else the one signed in now, else the answer kept here.
+            const userId = extras?.userId ?? qc.getQueryData<MeResponse>(["me"])?.userId ?? (await deps.whoAmI());
+            if (!userId) throw new Error("no signed-in account to save for");
+            const result = await saveSession(db, wire, { savePerformed: deps.savePerformed }, userId);
             refresh(result === "saved");
           } else {
             // No IndexedDB (a private window): straight to the server, or not at all.
@@ -532,6 +543,11 @@ function Playing({ loaded, db, deps }: { loaded: Extract<Loaded, { kind: "ready"
       <div className="player-bar" aria-hidden="true">
         <i style={{ width: `${Math.round((state.index / Math.max(1, total)) * 1000) / 10}%` }} />
       </div>
+      {notKept ? (
+        <p className="player-warn" role="status">
+          This session isn't being kept on this device.
+        </p>
+      ) : null}
 
       <main className="player-main">
         {step && view ? (

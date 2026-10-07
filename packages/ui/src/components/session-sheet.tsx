@@ -20,6 +20,7 @@ import {
   api,
   ApiError,
   type BuildSessionRequest,
+  type MeResponse,
   type SessionDto,
   type SessionItemDto,
   type SessionOverrides,
@@ -124,7 +125,7 @@ export function SessionSheet({ w, today, onClose }: { w: WorkoutDto; today: stri
       // The player plays what Start leaves on the device, never the network (ruling 2b-R1). Without IndexedDB it
       // still opens, online, from the started session.
       await offlineDb()
-        .then((db) => rememberStart(db, next, titleRef.current))
+        .then((db) => rememberStart(db, next, titleRef.current, qc.getQueryData<MeResponse>(["me"])?.userId ?? null))
         .catch(() => undefined);
       navigate(`/session/${encodeURIComponent(w.id)}`);
     },

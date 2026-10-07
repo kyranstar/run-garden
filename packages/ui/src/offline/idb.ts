@@ -34,6 +34,8 @@ export interface OfflineDb {
    * `undefined` to delete it. Resolves, once committed, with what was stored.
    */
   update<T>(store: OfflineStore, key: string, change: (current: T | undefined) => T | undefined): Promise<T | undefined>;
+  /** Empty one store. */
+  clear(store: OfflineStore): Promise<void>;
   close(): void;
 }
 
@@ -84,34 +86,73 @@ function wrap(db: IDBDatabase): OfflineDb {
       await done(t);
       return next;
     },
+    async clear(store: OfflineStore) {
+      const t = tx(store, "readwrite");
+      t.objectStore(store).clear();
+      await done(t);
+    },
     close: () => db.close(),
   };
 }
 
 /**
  * Open (creating or upgrading) the offline database in `factory` — the browser's `indexedDB` unless given one.
- * `onClosed` runs when a newer version opening in another tab makes this connection let go.
+ * `onClosed` runs when a newer version opening in another tab makes this connection let go (at once, so that tab is
+ * never blocked by this one).
+ *
+ * Audit 2b-A M-11: a tab still running older code asks for its own, older version, which fails with `VersionError`
+ * once another tab has upgraded the database; it then takes the database as it now is — an upgrade only adds stores,
+ * so everything this code reads and writes is there. Blocked (an older connection that does not let go), the open
+ * fails; if it succeeds later, nobody is waiting for it any more, and the connection is closed instead of leaked.
  */
 export function openOfflineDb(factory: IDBFactory = indexedDB, onClosed?: () => void): Promise<OfflineDb> {
   return new Promise((resolve, reject) => {
-    const req = factory.open(OFFLINE_DB_NAME, OFFLINE_DB_VERSION);
-    req.onupgradeneeded = (e) => {
-      for (let v = e.oldVersion; v < OFFLINE_DB_VERSION; v++) UPGRADES[v]!(req.result);
-    };
-    req.onsuccess = () => {
-      const db = req.result;
+    let settled = false;
+    const opened = (db: IDBDatabase) => {
+      if (settled) {
+        db.close();
+        return;
+      }
+      settled = true;
       db.onversionchange = () => {
         db.close();
         onClosed?.();
       };
       resolve(wrap(db));
     };
-    req.onerror = () => reject(req.error);
-    req.onblocked = () => reject(new Error("rg-offline is held open by an older tab"));
+    const failed = (error: unknown) => {
+      if (settled) return;
+      settled = true;
+      reject(error);
+    };
+    const req = factory.open(OFFLINE_DB_NAME, OFFLINE_DB_VERSION);
+    req.onupgradeneeded = (e) => {
+      for (let v = e.oldVersion; v < OFFLINE_DB_VERSION; v++) UPGRADES[v]!(req.result);
+    };
+    req.onsuccess = () => opened(req.result);
+    req.onerror = () => {
+      if (req.error?.name !== "VersionError" || settled) return failed(req.error);
+      const current = factory.open(OFFLINE_DB_NAME);
+      current.onsuccess = () => opened(current.result);
+      current.onerror = () => failed(current.error);
+    };
+    req.onblocked = () => failed(new Error("rg-offline is held open by an older tab"));
   });
 }
 
 let shared: Promise<OfflineDb> | null = null;
+const replacedListeners = new Set<() => void>();
+
+/**
+ * Hear when another tab opened a newer version of the offline database and this page's connection let go: the page
+ * is running older code than what stored its data, and should reload (the app does). Returns `stop`.
+ */
+export function onOfflineDbReplaced(listener: () => void): () => void {
+  replacedListeners.add(listener);
+  return () => {
+    replacedListeners.delete(listener);
+  };
+}
 
 /** The app's offline database, opened once per page and shared (reopened after another tab upgrades it). */
 export function offlineDb(): Promise<OfflineDb> {
@@ -119,8 +160,12 @@ export function offlineDb(): Promise<OfflineDb> {
     const forget = () => {
       shared = null;
     };
+    const replaced = () => {
+      forget();
+      for (const listener of replacedListeners) listener();
+    };
     shared =
-      typeof indexedDB === "undefined" ? Promise.reject(new Error("IndexedDB is unavailable")) : openOfflineDb(indexedDB, forget);
+      typeof indexedDB === "undefined" ? Promise.reject(new Error("IndexedDB is unavailable")) : openOfflineDb(indexedDB, replaced);
     shared.catch(forget);
   }
   return shared;

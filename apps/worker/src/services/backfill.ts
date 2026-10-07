@@ -94,7 +94,7 @@ export function nextBackfillAction(
 // Orchestration: jobs, ingest, checkpoint
 
 /** Days the rolling snapshot already covers; backfill starts behind it. */
-const ROLLING_WINDOW_DAYS = 14;
+export const ROLLING_WINDOW_DAYS = 14;
 /** Job statuses that mean a backfill is already under way. */
 const IN_FLIGHT = ["queued", "claimed"] as const;
 

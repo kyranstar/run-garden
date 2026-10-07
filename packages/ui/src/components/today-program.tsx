@@ -16,6 +16,7 @@ import { features } from "../features.js";
 import { chimes } from "../player/audio.js";
 import { offlineDb } from "../offline/idb.js";
 import { outboxEntries } from "../offline/outbox.js";
+import { useSignedInUserId } from "./outbox-sync.js";
 
 export type TodaySession = TodayResponse["todaySessions"][number];
 
@@ -126,9 +127,12 @@ export interface PendingSave {
  * day has an app session (`enabled`): an account with no program never opens the outbox here.
  */
 export function usePendingSaves(enabled: boolean): Readonly<Record<string, PendingSave>> {
+  const userId = useSignedInUserId();
   const outbox = useQuery({ queryKey: ["outbox"], queryFn: async () => outboxEntries(await offlineDb()), enabled, retry: false });
   const out: Record<string, PendingSave> = {};
   for (const e of outbox.data ?? []) {
+    // The signed-in account's own (ruling 2b-R6); while it is not known (offline launch), this device's.
+    if (userId && e.userId !== userId) continue;
     if (e.state === "pending" && e.payload.workoutId) out[e.payload.workoutId] = { minutes: Math.max(1, Math.round(e.payload.seconds / 60)) };
   }
   return out;

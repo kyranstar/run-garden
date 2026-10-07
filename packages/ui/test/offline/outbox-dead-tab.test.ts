@@ -24,10 +24,10 @@ const wire = (): PerformedSessionWire =>
 describe("a lock left by a tab closed mid-send", () => {
   it("a drain that finds it says when it is free (so the caller can come back then)", async () => {
     const db = await openOfflineDb(new IDBFactory());
-    await enqueue(db, wire(), 1000);
+    await enqueue(db, wire(), "user-1", 1000);
     await db.put("meta", "outbox-drain", { owner: "a closed tab", until: 61_000 });
     const savePerformed = vi.fn(async () => ({ status: "saved" }));
-    expect(await drain(db, { savePerformed }, { now: () => 2_000 })).toMatchObject({ locked: true, retryAt: 61_000 });
+    expect(await drain(db, { savePerformed }, { userId: "user-1", now: () => 2_000 })).toMatchObject({ locked: true, retryAt: 61_000 });
     expect(savePerformed).not.toHaveBeenCalled();
     db.close();
   });
@@ -36,12 +36,12 @@ describe("a lock left by a tab closed mid-send", () => {
     vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date"] });
     vi.setSystemTime(2_000);
     const db = await openOfflineDb(new IDBFactory());
-    await enqueue(db, wire(), 1000);
+    await enqueue(db, wire(), "user-1", 1000);
     await db.put("meta", "outbox-drain", { owner: "a closed tab", until: 61_000 });
     const savePerformed = vi.fn(async () => ({ status: "saved" }));
     const win = new EventTarget();
     const doc = Object.assign(new EventTarget(), { visibilityState: "visible" as DocumentVisibilityState });
-    const stop = startOutboxSync({ db: () => Promise.resolve(db), api: { savePerformed }, win, doc });
+    const stop = startOutboxSync({ db: () => Promise.resolve(db), api: { savePerformed }, userId: "user-1", win, doc });
     await vi.waitFor(() => expect(vi.getTimerCount()).toBe(1));
     expect(savePerformed).not.toHaveBeenCalled();
     await vi.advanceTimersByTimeAsync(60_000);

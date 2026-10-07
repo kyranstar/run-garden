@@ -331,6 +331,41 @@ describe("Review Focus 1 on the screen — locked for two minutes mid-hold", () 
   });
 });
 
+describe("keeping the session on the device", () => {
+  it("when a write fails (storage full), the athlete is told; when one lands again, the warning goes", async () => {
+    await storedStart();
+    const real = db!;
+    let full = true;
+    db = {
+      ...real,
+      put: async (store: string, key: string, value: unknown) => {
+        if (store === "live" && full) throw new DOMException("The quota has been exceeded.", "QuotaExceededError");
+        return real.put(store as never, key, value);
+      },
+    } as OfflineDb;
+    mount();
+    await until(() => text().includes("1 of 9"), "the first step");
+    await click("Skip");
+    // The writer waits 250 ms (real time) before it writes.
+    for (let i = 0; i < 50 && !text().includes("isn't being kept on this device"); i++) {
+      await act(async () => {
+        await new Promise((r) => setTimeout(r, 30));
+      });
+    }
+    expect(text()).toContain("isn't being kept on this device");
+    full = false;
+    await click("Skip");
+    await at(T0 + 1000);
+    for (let i = 0; i < 40 && text().includes("isn't being kept"); i++) {
+      await act(async () => {
+        await new Promise((r) => setTimeout(r, 30));
+      });
+      await at(T0 + 1000 + i);
+    }
+    expect(text()).not.toContain("isn't being kept");
+  });
+});
+
 describe("leave and come back", () => {
   it("✕ asks; Leave keeps the session; opening it again resumes on the same step with the timer where it was", async () => {
     await storedStart();

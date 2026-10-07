@@ -15,6 +15,8 @@ export interface PlayerExtras {
   /** The program's name, as the sheet titles the session. */
   title: string;
   profiles: ConditionViewDto[];
+  /** The signed-in account at Start: the save goes to its outbox, offline too (ruling 2b-R6). */
+  userId?: string | null;
   /** Epoch ms. */
   savedAt: number;
 }
@@ -31,9 +33,15 @@ export function loadExtras(db: OfflineDb, workoutId: string): Promise<PlayerExtr
 }
 
 /** Start succeeded: keep the locked build, its view and what the player needs beside them. */
-export async function rememberStart(db: OfflineDb, session: SessionDto, title: string, now: number = Date.now()): Promise<void> {
+export async function rememberStart(
+  db: OfflineDb,
+  session: SessionDto,
+  title: string,
+  userId: string | null,
+  now: number = Date.now(),
+): Promise<void> {
   await saveBuild(db, session, now);
-  await saveExtras(db, { workoutId: session.workoutId, title, profiles: session.profiles, savedAt: now });
+  await saveExtras(db, { workoutId: session.workoutId, title, profiles: session.profiles, userId, savedAt: now });
 }
 
 /** What the review reads of the history (`GET /api/sessions/:id/review-basis`), fetched once while online. */

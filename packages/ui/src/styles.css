@@ -7954,6 +7954,15 @@ button.session-chip::after {
   height: 100%;
   background: var(--green);
 }
+/* Keeping the session on the device failed: said once, plainly, above the step. */
+.player-warn {
+  margin: var(--space-4) var(--space-6) 0;
+  padding: var(--space-3) var(--space-5);
+  border-left: 3px solid var(--warn);
+  color: var(--ink);
+  background: var(--warn-soft);
+  border-radius: var(--radius-xs);
+}
 .player-main {
   display: flex;
   flex-direction: column;

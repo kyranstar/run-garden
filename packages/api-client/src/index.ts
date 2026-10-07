@@ -1263,6 +1263,14 @@ export interface SessionCurrencyDto {
   locked: boolean;
 }
 
+/** What a save says beside the session (worker: services/session-save.ts `SaveNote`). */
+export type SaveNote =
+  | "slot_already_matched"
+  | "activity_matched_elsewhere"
+  | "slot_gone"
+  | "graduation_skipped"
+  | "superseded_auto_match";
+
 /** Exact shape of a 200 from `PUT /api/sessions/performed/:id`. */
 export type SavePerformedDto =
   | {
@@ -1271,7 +1279,13 @@ export type SavePerformedDto =
       /** The session's activity: its own id, or the watch's copy it joined. */
       activityId: string;
       matched: boolean;
-      notes: Array<"slot_already_matched" | "activity_matched_elsewhere" | "slot_gone" | "graduation_skipped">;
+      /**
+       * `superseded_auto_match`: the matcher's own guess (another activity on this slot, or the watch's copy filed on
+       * another slot) gave way to this session — that activity is extra training, that slot is open again (2b-R5).
+       * `slot_already_matched` / `activity_matched_elsewhere`: a match someone made stands; the session is saved
+       * unmatched.
+       */
+      notes: SaveNote[];
     }
   | { status: "same_payload" };
 

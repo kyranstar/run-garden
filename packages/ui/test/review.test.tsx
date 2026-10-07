@@ -52,11 +52,11 @@ const offline = () => Promise.reject(new TypeError("Failed to fetch"));
 async function stored(opts: { build?: SessionBuildDto; basis?: ReviewBasisDto | null } = {}) {
   db = await openOfflineDb(new IDBFactory());
   await saveBuild(db, { workoutId: SLOT, build: opts.build ?? build(), view: view() } as unknown as SessionDto);
-  await saveExtras(db, { workoutId: SLOT, title: "Program one", profiles: profiles(), savedAt: T0 });
+  await saveExtras(db, { workoutId: SLOT, title: "Program one", profiles: profiles(), userId: "user-1", savedAt: T0 });
   if (opts.basis) await saveBasis(db, SLOT, opts.basis);
 }
 
-function mount(opts: { savePerformed?: (id: string, p: unknown) => Promise<unknown> } = {}) {
+function mount(opts: { savePerformed?: (id: string, p: unknown) => Promise<unknown>; whoAmI?: () => Promise<string | null> } = {}) {
   const getSession = vi.fn(offline);
   const savePerformed = vi.fn(opts.savePerformed ?? offline);
   host = document.createElement("div");
@@ -64,7 +64,15 @@ function mount(opts: { savePerformed?: (id: string, p: unknown) => Promise<unkno
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   const player = createElement(PlayerScreen, {
     workoutId: SLOT,
-    deps: { db: () => Promise.resolve(db!), getSession, reviewBasis: vi.fn(offline), savePerformed, chimes: noChimes, wake: () => () => undefined },
+    deps: {
+      db: () => Promise.resolve(db!),
+      getSession,
+      reviewBasis: vi.fn(offline),
+      savePerformed,
+      whoAmI: opts.whoAmI ?? (async () => null),
+      chimes: noChimes,
+      wake: () => () => undefined,
+    },
   });
   root = createRoot(host);
   act(() => {
@@ -156,6 +164,8 @@ async function playThrough() {
 const entry = async () => {
   const all = await outboxEntries(db!);
   expect(all).toHaveLength(1);
+  // Saved for the account that started it (ruling 2b-R6).
+  expect(all[0]!.userId).toBe("user-1");
   return all[0]!;
 };
 
@@ -188,6 +198,29 @@ describe("Review Focus 5 — a session abandoned after two steps", () => {
     expect(getSession).not.toHaveBeenCalled();
     // Still startable on this device, offline: Continue plays a fresh session from the same locked build.
     expect((await loadBuild(db!, SLOT))?.build.buildId).toBe("build-1");
+  });
+});
+
+describe("whose save it is (ruling 2b-R6)", () => {
+  it("Start did not say (a session opened from the server): the account kept on the device is the one it goes to", async () => {
+    await stored();
+    await saveExtras(db!, { workoutId: SLOT, title: "Program one", profiles: profiles(), userId: null, savedAt: T0 });
+    mount({ whoAmI: async () => "user-9" });
+    await abandonAfterTwoSteps();
+    await click("Save");
+    await until(() => text().includes("today screen"), "Today");
+    expect((await outboxEntries(db!)).map((e) => e.userId)).toEqual(["user-9"]);
+  });
+
+  it("no account to save for: nothing is lost — the review stays and says it couldn't save", async () => {
+    await stored();
+    await saveExtras(db!, { workoutId: SLOT, title: "Program one", profiles: profiles(), userId: null, savedAt: T0 });
+    mount({ whoAmI: async () => null });
+    await abandonAfterTwoSteps();
+    await click("Save");
+    await until(() => text().includes("Couldn't save on this device"), "the notice");
+    expect(await outboxEntries(db!)).toEqual([]);
+    expect(control("Save")).toBeDefined();
   });
 });
 

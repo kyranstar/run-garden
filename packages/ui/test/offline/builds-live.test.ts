@@ -129,6 +129,56 @@ describe("live sessions", () => {
     db.close();
   });
 
+  it("a write that fails (storage full, the database gone) is said — to onError and on writer.error — never swallowed; the change stays pending and lands once a write works (audit 2b-A M-8)", async () => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    const db = await openOfflineDb(new IDBFactory());
+    const full = new DOMException("The quota has been exceeded.", "QuotaExceededError");
+    let failing = true;
+    const flaky: OfflineDb = { ...db, put: (store, key, value) => (failing ? Promise.reject(full) : db.put(store, key, value)) };
+    const target = new EventTarget();
+    const doc = Object.assign(new EventTarget(), { visibilityState: "visible" as DocumentVisibilityState });
+    const errors: unknown[] = [];
+    const unhandled: unknown[] = [];
+    const onUnhandled = (e: unknown) => unhandled.push(e);
+    process.on("unhandledRejection", onUnhandled);
+    try {
+      const writer = createLiveWriter(flaky, { target, doc, onError: (e) => errors.push(e) });
+      const s = newLiveSession({ workoutId: "w1", buildId: "b1", recorder: {}, now: 1 });
+      expect(writer.error).toBeNull();
+
+      // The debounced write, the hide flush and the leave flush each say so.
+      writer.write({ ...s, stepIndex: 1 });
+      await vi.advanceTimersByTimeAsync(250);
+      await until(() => errors.length === 1);
+      doc.visibilityState = "hidden";
+      doc.dispatchEvent(new Event("visibilitychange"));
+      await until(() => errors.length === 2);
+      target.dispatchEvent(new Event("pagehide"));
+      await until(() => errors.length === 3);
+      expect(errors.every((e) => e === full)).toBe(true);
+      expect(writer.error).toBe(full);
+      // A caller's own flush is told too.
+      await expect(writer.flush()).rejects.toBe(full);
+
+      // Storage back: the change that never landed lands, and the error clears.
+      failing = false;
+      await writer.flush();
+      expect((await readLive(db, "w1"))?.stepIndex).toBe(1);
+      expect(writer.error).toBeNull();
+
+      // Dispose flushes too, and says when that fails.
+      failing = true;
+      writer.write({ ...s, stepIndex: 2 });
+      writer.dispose();
+      await until(() => errors.length === 4);
+      await new Promise((r) => setImmediate(r));
+      expect(unhandled).toEqual([]);
+    } finally {
+      process.off("unhandledRejection", onUnhandled);
+      db.close();
+    }
+  });
+
   it("asks the browser to keep the storage, and says so; unsupported or refused is never an error", async () => {
     const persist = vi.fn(async () => true);
     expect(await requestPersistentStorage({ persist })).toBe(true);

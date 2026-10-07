@@ -158,12 +158,16 @@ describe("the program session heading the card", () => {
 
   it("saved here and waiting for the server: Done · 31 min · saved, will sync — no coach clause, no Continue", async () => {
     vi.stubGlobal("indexedDB", new IDBFactory());
-    await enqueue(await offlineDb(), {
+    await enqueue(
+      await offlineDb(),
+      {
       id: "22222222-2222-4222-8222-222222222222", source: "app", sourceRef: null, workoutId: SLOT, buildId: "b1", localDate: TODAY,
       startedAt: `${TODAY}T18:00:00.000Z`, endedAt: `${TODAY}T18:31:00.000Z`, seconds: 1860, plannedSeconds: 1800, minutes: 30,
       mode: "consistent", theme: null, locationId: "home", blockRef: null, blockNumber: null, completed: true, stepsTotal: 9,
       stepsDone: 9, movesDone: [], note: null, newMove: null, entries: [], checks: [],
-    });
+      },
+      "user-1",
+    );
     const { card } = await renderCard(todayPayload(slot({ contentState: "started" })));
     for (let i = 0; i < 100 && !card.textContent?.includes("will sync"); i++) {
       await act(async () => {

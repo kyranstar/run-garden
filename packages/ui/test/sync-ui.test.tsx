@@ -19,7 +19,7 @@ import type { PerformedSessionWireInput } from "@rg/domain";
 import { openOfflineDb, type OfflineDb } from "../src/offline/idb.js";
 import { enqueue, outboxEntries } from "../src/offline/outbox.js";
 import { OutboxSync } from "../src/components/outbox-sync.js";
-import { UnsyncedSessions } from "../src/components/unsynced-sessions.js";
+import { refusedFor, UnsyncedSessions } from "../src/components/unsynced-sessions.js";
 import { TodayProgramLead, TodayProgramLine } from "../src/components/today-program.js";
 import { features } from "../src/features.js";
 
@@ -66,14 +66,14 @@ const button = (name: string) => [...document.querySelectorAll<HTMLButtonElement
 describe("OutboxSync", () => {
   it("drains once at app start; a saved session refreshes Today", async () => {
     db = await openOfflineDb(new IDBFactory());
-    await enqueue(db, wire());
+    await enqueue(db, wire(), "user-1");
     const savePerformed = vi.fn(async () => ({ status: "saved" }));
     const qc = new QueryClient();
     const invalidated: string[] = [];
     const spy = vi.spyOn(qc, "invalidateQueries").mockImplementation(async (f) => {
       invalidated.push(String((f as { queryKey?: unknown[] })?.queryKey?.[0]));
     });
-    render(createElement(OutboxSync, { db: () => Promise.resolve(db!), api: { savePerformed } }), qc);
+    render(createElement(OutboxSync, { db: () => Promise.resolve(db!), api: { savePerformed }, userId: "user-1" }), qc);
     await until(async () => (await outboxEntries(db!)).length === 0, "the outbox drained");
     await until(() => invalidated.includes("today"), "Today refreshed");
     expect(savePerformed).toHaveBeenCalledTimes(1);
@@ -82,37 +82,75 @@ describe("OutboxSync", () => {
   });
 });
 
-describe("Settings → Data: a session that couldn't sync", () => {
-  async function conflicted() {
+describe("OutboxSync, before anyone is known to be signed in", () => {
+  it("sends nothing (the outbox sends only the signed-in account's saves)", async () => {
     db = await openOfflineDb(new IDBFactory());
-    const e = await enqueue(db, wire());
-    await db.put("outbox", e.key, { ...e, state: "conflict", lastError: "conflict", attempts: 1 });
+    await enqueue(db, wire(), "user-1");
+    const savePerformed = vi.fn(async () => ({ status: "saved" }));
+    render(createElement(OutboxSync, { db: () => Promise.resolve(db!), api: { savePerformed } }));
+    // Long enough for a drain to have read the outbox and sent (one does in a few ms).
+    await act(async () => {
+      await new Promise((r) => setTimeout(r, 200));
+    });
+    expect(savePerformed).not.toHaveBeenCalled();
+    expect(await outboxEntries(db)).toHaveLength(1);
+  });
+});
+
+describe("Settings → Data: a session that couldn't sync", () => {
+  async function refused(state: "conflict" | "failed") {
+    db = await openOfflineDb(new IDBFactory());
+    const e = await enqueue(db, wire(), "user-1");
+    await db.put("outbox", e.key, { ...e, state, lastError: state === "conflict" ? "conflict" : "http_422 invalid_save", attempts: 1 });
   }
+  const conflicted = () => refused("conflict");
+  const failed = () => refused("failed");
+  const rows = (savePerformed: (...a: unknown[]) => Promise<unknown> = vi.fn()) =>
+    render(createElement(UnsyncedSessions, { db: () => Promise.resolve(db!), api: { savePerformed }, userId: "user-1" }));
 
   it("nothing at all when every session synced or is still on its way (an account with no program sees no change)", async () => {
     db = await openOfflineDb(new IDBFactory());
     // A session waiting for the network is not a refused one.
-    await enqueue(db, wire());
-    const qc = render(createElement(UnsyncedSessions, { db: () => Promise.resolve(db!), api: { savePerformed: vi.fn() } }));
+    await enqueue(db, wire(), "user-1");
+    const qc = render(createElement(UnsyncedSessions, { db: () => Promise.resolve(db!), api: { savePerformed: vi.fn() }, userId: "user-1" }));
     // The outbox has been read (not merely not read yet).
     await until(() => qc.getQueryState(["outbox"])?.status === "success", "the outbox read");
     await flush();
     expect(host!.innerHTML).toBe("");
   });
 
-  it("a refused session is one quiet row with Retry and Discard", async () => {
+  it("a conflict (saved elsewhere with other edits) is one quiet row: Discard only — the server will refuse it every time", async () => {
     await conflicted();
-    render(createElement(UnsyncedSessions, { db: () => Promise.resolve(db!), api: { savePerformed: vi.fn() } }));
+    rows();
     await until(() => text().includes("Couldn't sync one session"), "the row");
     expect(text()).toContain("Oct 8");
+    expect(button("Retry")).toBeUndefined();
+    expect(button("Discard")).toBeDefined();
+  });
+
+  it("a refusal retrying might mend is one quiet row with Retry and Discard", async () => {
+    await failed();
+    rows();
+    await until(() => text().includes("Couldn't sync one session"), "the row");
     expect(button("Retry")).toBeDefined();
     expect(button("Discard")).toBeDefined();
   });
 
+  it("another account's refused session is not this account's row; a pending one is no row at all", async () => {
+    db = await openOfflineDb(new IDBFactory());
+    const mine = await enqueue(db, wire("44444444-4444-4444-8444-444444444444"), "user-1");
+    const theirs = await enqueue(db, wire("55555555-5555-4555-8555-555555555555"), "user-2");
+    const waiting = await enqueue(db, wire("66666666-6666-4666-8666-666666666666"), "user-1");
+    const entries = [{ ...mine, state: "failed" as const }, { ...theirs, state: "conflict" as const }, waiting];
+    expect(refusedFor(entries, "user-1").map((e) => e.key)).toEqual([mine.key]);
+    expect(refusedFor(entries, "user-2").map((e) => e.key)).toEqual([theirs.key]);
+    expect(refusedFor(entries, null)).toEqual([]);
+  });
+
   it("Retry sends it again: saved, the row goes", async () => {
-    await conflicted();
+    await failed();
     const savePerformed = vi.fn(async () => ({ status: "saved" }));
-    render(createElement(UnsyncedSessions, { db: () => Promise.resolve(db!), api: { savePerformed } }));
+    rows(savePerformed);
     await until(() => !!button("Retry"), "the row");
     await act(async () => button("Retry")!.click());
     await until(async () => (await outboxEntries(db!)).length === 0, "sent");
@@ -121,11 +159,11 @@ describe("Settings → Data: a session that couldn't sync", () => {
   });
 
   it("Retry refused again keeps the row", async () => {
-    await conflicted();
+    await failed();
     const savePerformed = vi.fn(async () => {
       throw new ApiError(409, { error: "conflict" });
     });
-    render(createElement(UnsyncedSessions, { db: () => Promise.resolve(db!), api: { savePerformed } }));
+    rows(savePerformed);
     await until(() => !!button("Retry"), "the row");
     await act(async () => button("Retry")!.click());
     await until(() => savePerformed.mock.calls.length === 1, "sent");
@@ -136,7 +174,7 @@ describe("Settings → Data: a session that couldn't sync", () => {
 
   it("Discard asks, then drops it", async () => {
     await conflicted();
-    render(createElement(UnsyncedSessions, { db: () => Promise.resolve(db!), api: { savePerformed: vi.fn() } }));
+    rows();
     await until(() => !!button("Discard"), "the row");
     await act(async () => button("Discard")!.click());
     await until(() => !!button("Discard session"), "the question");

@@ -11,6 +11,7 @@ import { SettingsScreen } from "./screens/settings.js";
 import { WelcomeScreen } from "./screens/welcome.js";
 import { Onboarding } from "./screens/onboarding.js";
 import { PlayerScreen } from "./screens/player.js";
+import { onOfflineDbReplaced } from "./offline/idb.js";
 import { meWithOfflineFallback } from "./offline/me.js";
 import { OutboxSync } from "./components/outbox-sync.js";
 
@@ -154,6 +155,9 @@ function PlayerRoute() {
 }
 
 export function App() {
+  // Another tab opened a newer version of the offline database: this page runs older code than what stores its
+  // sessions now, and its connection has let go — reload onto the new build (audit 2b-A M-11).
+  useEffect(() => onOfflineDbReplaced(() => window.location.reload()), []);
   return (
     <QueryClientProvider client={queryClient}>
       {/* Sessions saved on this device go to the server from app start, exactly once (Phase 2b). */}

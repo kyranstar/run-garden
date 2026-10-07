@@ -27,7 +27,7 @@ import {
 import { md5Hex } from "../md5.js";
 import { RestorePendingNotice } from "./restore-notice.js";
 import { UnsyncedSessions } from "../components/unsynced-sessions.js";
-import { forgetCachedMe } from "../offline/me.js";
+import { forgetOfflineIdentity } from "../offline/me.js";
 
 const TZ_OPTIONS: string[] = (() => {
   const sv = (Intl as unknown as { supportedValuesOf?: (k: string) => string[] }).supportedValuesOf;
@@ -1091,8 +1091,17 @@ export function DataSection({ appOrigin }: { appOrigin?: string } = {}) {
   });
   const origin = appOrigin ?? (typeof window !== "undefined" ? window.location.origin : "");
   const del = useMutation({
-    mutationFn: api.deleteAll,
-    onSuccess: () => {
+    mutationFn: async () => {
+      // Whose unsynced saves go with the account — asked before it is deleted (afterwards `me` is a 401).
+      const userId = me.data?.userId ?? (await api.me().catch(() => null))?.userId ?? null;
+      await api.deleteAll();
+      return userId;
+    },
+    onSuccess: async (userId) => {
+      // Nothing of the deleted account may open on this device afterwards, offline included (ruling 2b-R6 as amended;
+      // audit 2b-A I-1): the service worker's cached answers, the stored builds, the live sessions — and its unsynced
+      // saves, which have no account to go to any more.
+      await forgetOfflineIdentity(userId ? { dropOutboxOf: userId } : {});
       window.location.href = "/";
     },
   });
@@ -1355,8 +1364,9 @@ export function SettingsScreen() {
   const logout = useMutation({
     mutationFn: api.logout,
     onSuccess: async () => {
-      // An offline launch must not find this account's answer afterwards (the service worker's `rg-me` cache).
-      await forgetCachedMe();
+      // An offline launch must not open this account afterwards: its cached answers, stored builds and live sessions
+      // go (ruling 2b-R6). Unsynced saves stay, for this account's next sign-in.
+      await forgetOfflineIdentity();
       window.location.href = "/welcome";
     },
   });

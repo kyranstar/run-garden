@@ -1,6 +1,6 @@
 import { describe, expect, test } from "vitest";
-import { performedSessionSaveSchema, SESSION_FORMATS, SESSION_MODES, type PerformedSessionWire } from "@rg/domain";
-import { FORMAT_IDS, MODE_IDS } from "@rg/exercise-library";
+import { PERFORMED_LIMITS, performedSessionSaveSchema, SESSION_FORMATS, SESSION_MODES, type PerformedSessionWire } from "@rg/domain";
+import { CORE_FAMILIES, FORMAT_IDS, MODE_IDS } from "@rg/exercise-library";
 import {
   Builder, historyFromPerformed, Recorder, Records, Review, toPerformedSave,
   type BuildInput, type HistorySession, type PendingChanges, type PerformedSessionSave, type RecorderMeta,
@@ -185,4 +185,8 @@ describe("historyFromPerformed — rows from other sources", () => {
 test("the domain's mode and format lists are the library's", () => {
   expect([...SESSION_MODES]).toEqual([...MODE_IDS]);
   expect([...SESSION_FORMATS]).toEqual([...FORMAT_IDS]);
+});
+
+test("a save graduates at most one move per core family the library has (audit 2b-A M-4)", () => {
+  expect(PERFORMED_LIMITS.graduations).toBe(CORE_FAMILIES.length);
 });
