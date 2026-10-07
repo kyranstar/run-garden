@@ -30,7 +30,8 @@
  *  6. The garden replays from the earliest day the save touched: the slot's, the session's, a displaced activity's
  *     or a reopened slot's. That day is recorded in the save's own transaction, and the replay is one capped catch-up
  *     step (ruling 2b-R7): a long walk finishes on later garden reads, and a replay killed after the commit is not
- *     lost (audit 2b-A M-5). The session's day must be its slot's or the next, and not after tomorrow (422).
+ *     lost (audit 2b-A M-5). The session's day must be its locked build's (the slot's, when none is locked) or the
+ *     next, and not after tomorrow (422); a slot moved after Start still saves.
  *
  * Never writes to COROS (an app session is never pushed to the watch in 2b). Every write waits for the restore
  * marker to be clear. Every statement stays under D1's 100 bound variables.
@@ -53,6 +54,7 @@ import {
   addDays,
   canonicalJson,
   coreBlockIntentSchema,
+  isLocalDate,
   performedSessionSaveSchema,
   todayInZone,
   toKg,
@@ -115,6 +117,19 @@ function startOf(p: PerformedSessionWire, timezone: string): { startTime: string
     startTimeLocal: started.setZone(timezone).toFormat("yyyy-LL-dd'T'HH:mm:ss"),
     elapsedSeconds: p.startedAt && ended ? Math.max(0, Math.round(ended.diff(started, "seconds").seconds)) : null,
   };
+}
+
+/**
+ * The day the slot's LOCKED build was made for (`payload.build.date`, read in SQL) — the day the session was started,
+ * whatever day the slot shows now. Null when no build of the slot is locked (ruling 2b-R7 as amended).
+ */
+async function lockedBuildDay(db: Db, userId: string, workoutId: string): Promise<string | null> {
+  const [row] = await db
+    .select({ date: sql<string | null>`json_extract(${sessionBuilds.payload}, '$.build.date')` })
+    .from(sessionBuilds)
+    .where(and(eq(sessionBuilds.workoutId, workoutId), eq(sessionBuilds.userId, userId), isNotNull(sessionBuilds.lockedAt)))
+    .limit(1);
+  return typeof row?.date === "string" && isLocalDate(row.date) ? row.date : null;
 }
 
 /** §9.2 from the locked build: a core lift → strength, else yoga; read in SQL, never parsing the payload here. */
@@ -379,12 +394,18 @@ export async function savePerformedSession(db: Db, userId: string, performedId: 
     .where(and(eq(plannedWorkouts.id, p.workoutId), eq(plannedWorkouts.userId, userId)))
     .limit(1);
   if (!slot || (slot.origin !== "program" && slot.origin !== "on_demand")) throw new SessionNotFoundError();
-  // Ruling 2b-R7 (audit 2b-A I-4): the session's day is its slot's — or the next, for a session that ran past
-  // midnight — and never after tomorrow. Anything else is a wrong clock or a bug, and would replay the garden from
-  // wherever it says.
-  if (p.localDate < slot.effectiveDate || p.localDate > addDays(slot.effectiveDate, 1) || p.localDate > addDays(today, 1)) {
+  // Ruling 2b-R7 as amended (audit 2b-A I-4): the session's day is the day its LOCKED build was built and started for
+  // — or the next, for a session that ran past midnight — and never after tomorrow. The slot's own date answers only
+  // when no build was locked: a slot moved between Start and the outbox's drain must still save. Anything else is a
+  // wrong clock or a bug, and would replay the garden from wherever it says.
+  const builtOn = await lockedBuildDay(db, userId, slot.id);
+  const sessionDay = builtOn ?? slot.effectiveDate;
+  if (p.localDate < sessionDay || p.localDate > addDays(sessionDay, 1) || p.localDate > addDays(today, 1)) {
     throw new InvalidSaveError([
-      { message: `the session's day must be its slot's (${slot.effectiveDate}) or the next, and not after tomorrow`, path: ["localDate"] },
+      {
+        message: `the session's day must be ${builtOn ? "its locked build's" : "its slot's"} (${sessionDay}) or the next, and not after tomorrow`,
+        path: ["localDate"],
+      },
     ]);
   }
   if (await restoreInProgress(db, userId)) return { status: "restoring" };
@@ -403,7 +424,7 @@ export async function savePerformedSession(db: Db, userId: string, performedId: 
     try {
       // A restore can begin while this one read; checked again just before the first write.
       if (await restoreInProgress(db, userId)) return { status: "restoring" };
-      written = await write(db, userId, p, hash, slot, existing?.activityId ?? null, ctx);
+      written = await write(db, userId, p, hash, slot, builtOn, existing?.activityId ?? null, ctx);
     } finally {
       await releaseMergeLocks(db, userId, merge);
     }
@@ -567,6 +588,7 @@ async function write(
   p: PerformedSessionWire,
   hash: string,
   slot: SlotRow,
+  builtOn: string | null,
   priorActivityId: string | null,
   ctx: SaveCtx,
 ): Promise<Written> {
@@ -627,9 +649,10 @@ async function write(
   const graduation = await graduationStatements(db, userId, slot, p, now);
   const notes: SaveNote[] = [...match.notes];
   if (!graduation.applied) notes.push("graduation_skipped");
-  // The completed slot credits its own day (buildDayInput keys it on effectiveDate), the session its day, and a
-  // displaced activity or a reopened slot theirs: the replay starts at the earliest (rulings 2b-R5, 2b-R7).
-  const replayFrom = [slot.effectiveDate, p.localDate, ...match.alsoFrom].reduce((a, b) => (b < a ? b : a));
+  // The completed slot credits its own (current) day — buildDayInput keys it on effectiveDate — the session its day,
+  // the build the day it was played for, and a displaced activity or a reopened slot theirs: the replay starts at the
+  // earliest (rulings 2b-R5, 2b-R7 as amended).
+  const replayFrom = [slot.effectiveDate, ...(builtOn ? [builtOn] : []), p.localDate, ...match.alsoFrom].reduce((a, b) => (b < a ? b : a));
 
   // ── Then write it all, as one transaction. ──
   const statements: AtomicStatement[] = [];

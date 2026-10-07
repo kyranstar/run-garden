@@ -696,7 +696,7 @@ describe("the garden replays from the session's own day (§2b step 6)", () => {
   });
 });
 
-describe("ruling 2b-R7: the session's day is its slot's (audit 2b-A I-4)", () => {
+describe("ruling 2b-R7 as amended: the session's day is its locked build's, else its slot's (audit 2b-A I-4)", () => {
   it("refuses a day before the slot's or more than a day after it: invalid_save, nothing written", async () => {
     const s = await started("build");
     statements.length = 0;
@@ -721,6 +721,64 @@ describe("ruling 2b-R7: the session's day is its slot's (audit 2b-A I-4)", () =>
     await save(body);
     await db.update(plannedWorkouts).set({ effectiveDate: "2026-10-09" }).where(eq(plannedWorkouts.id, s.workoutId));
     expect(await save(body)).toEqual({ status: "same_payload" });
+  });
+
+  /** The slot moved to `date` after Start (the athlete in another tab, the coach, a collision pass), before the drain. */
+  const moveSlot = (workoutId: string, date: string) =>
+    db.update(plannedWorkouts).set({ effectiveDate: date }).where(eq(plannedWorkouts.id, workoutId));
+
+  it("amended: the day is the LOCKED build's — a slot moved after Start still saves, completes, and the garden replays from the earliest day touched", async () => {
+    await ensureGarden(db, userId, prefs, "2026-09-28");
+    const s = await started("build"); // built and started on PLAYED
+    const LATE = "2026-10-10T16:00:00.000Z";
+    await advanceGarden(db, userId, prefs, new Date(LATE));
+    // Moved two days back while the save sat in the outbox: the slot now credits that day.
+    const EARLIER = "2026-10-04";
+    await moveSlot(s.workoutId, EARLIER);
+
+    const outcome = await save(payload(s), payload(s).id, { now: LATE });
+    expect(outcome).toMatchObject({ status: "saved", matched: true });
+    expect(await rowOf(s.workoutId)).toMatchObject({ completionState: "completed", contentState: "done", effectiveDate: EARLIER });
+    // The replay reached back to the slot's new day, behind the Monday checkpoint after it.
+    const day = (await db.select().from(gardenDayInputs).where(eq(gardenDayInputs.id, `${userId}:${EARLIER}`)))[0]?.input as unknown as GardenDayInput;
+    expect(day.completedRuns.map((r) => r.workoutId)).toEqual([s.workoutId]);
+  });
+
+  it("amended: the build's day joins the replay — a session past midnight of its Monday build, saved unmatched after the slot moved, is extra training on that Monday", async () => {
+    const MONDAY = "2026-10-05";
+    const LATE = "2026-10-10T16:00:00.000Z";
+    await ensureGarden(db, userId, prefs, "2026-09-28");
+    const workoutId = await seedSlot(MONDAY);
+    const built = await buildSession(db, userId, workoutId, { overrides: { mode: "build" } }, { today: MONDAY, now: "2026-10-05T19:00:00.000Z", prefs });
+    const build = (await startSession(db, userId, workoutId, built.build!.buildId, "2026-10-05T19:00:00.000Z")).build!;
+    await advanceGarden(db, userId, prefs, new Date(LATE));
+    // Moved to Thursday, where the athlete matched another lift by hand: this session cannot match it.
+    await moveSlot(workoutId, "2026-10-08");
+    await db.insert(activities).values({ id: "theirs", userId, startTime: "2026-10-08T14:00:00Z", sport: "strength", durationSeconds: 1500, completionMatchId: "m-hand", createdAt: SAVED, updatedAt: SAVED });
+    await db.insert(workoutCompletionMatches).values({ id: "m-hand", workoutId, activityId: "theirs", confidence: 1, method: "manual", matchedAt: SAVED });
+
+    // Started at 23:40 on the Monday, saved with Tuesday's date.
+    const body = payload({ workoutId, build }, { localDate: PLAYED, startedAt: "2026-10-06T06:40:00.000Z", endedAt: "2026-10-06T07:11:00.000Z" });
+    expect(await save(body, body.id, { now: LATE })).toMatchObject({ status: "saved", matched: false, notes: ["slot_already_matched"] });
+    const monday = (await db.select().from(gardenDayInputs).where(eq(gardenDayInputs.id, `${userId}:${MONDAY}`)))[0]?.input as unknown as GardenDayInput;
+    expect(monday.completedRuns.filter((r) => r.activityId === body.id).map((r) => [r.workoutId, r.unplanned])).toEqual([[`unplanned-${body.id}`, true]]);
+  });
+
+  it("amended: with no build locked, the slot's own day is the reference (an unlocked build's day is not)", async () => {
+    // Built for PLAYED but never started; the slot moved on to the 9th.
+    const workoutId = await seedSlot(PLAYED);
+    const built = await buildSession(db, userId, workoutId, { overrides: { mode: "build" } }, { today: PLAYED, now: PLAYED_NOON, prefs });
+    await moveSlot(workoutId, "2026-10-09");
+    const body = payload({ workoutId, build: built.build! }, { buildId: null, localDate: "2026-10-09" });
+    expect(await save(body, body.id, { now: "2026-10-09T16:00:00.000Z" })).toMatchObject({ status: "saved" });
+  });
+
+  it("amended: a slot moved ahead after Start saves too, and the build's day is still the reference — not the slot's", async () => {
+    const s = await started("build");
+    await moveSlot(s.workoutId, "2026-10-08");
+    // The session's day is the build's (PLAYED), whatever day the slot shows now.
+    await expect(save(payload(s, { localDate: "2026-10-08" }))).rejects.toThrow("invalid_save");
+    expect(await save(payload(s))).toMatchObject({ status: "saved", matched: true });
   });
 });
 
