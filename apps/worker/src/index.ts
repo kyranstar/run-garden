@@ -26,6 +26,8 @@ import { adminRoutes } from "./routes/admin.js";
 import { programRoutes } from "./routes/programs.js";
 import { conditionRoutes, sessionRoutes } from "./routes/sessions.js";
 import { libraryRoutes } from "./routes/library.js";
+import { conditionSettingsRoutes } from "./routes/conditions.js";
+import { placeRoutes } from "./routes/places.js";
 import { makeDb, chunkIds, type Db } from "./services/db.js";
 import { loadPreferences, syncCalendar } from "./services/calendar-sync.js";
 import { advanceGarden } from "./services/garden-sync.js";
@@ -82,6 +84,8 @@ app.route("/api/sync", syncRoutes);
 app.route("/api/programs", programRoutes);
 app.route("/api/sessions", sessionRoutes);
 app.route("/api/conditions", conditionRoutes);
+app.route("/api/conditions", conditionSettingsRoutes);
+app.route("/api/places", placeRoutes);
 app.route("/api/library", libraryRoutes);
 // The parity harness: 404 unless staging or PARITY_ENABLED, then requireUser.
 // Its DTO hash calls this same app in-process, as the caller.

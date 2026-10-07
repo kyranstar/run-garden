@@ -80,6 +80,7 @@ import {
 import { SIMULATION_VERSION } from "@rg/garden-engine";
 import { NORMALIZER_VERSION } from "@rg/providers";
 import { ESTIMATOR_VERSION } from "@rg/scheduling";
+import { EQUIPMENT_IDS } from "@rg/exercise-library";
 import type { AppContext } from "../auth/middleware.js";
 import { chunkIds, type Db } from "../services/db.js";
 import { buildTerrainReport } from "../services/terrain.js";
@@ -1378,6 +1379,8 @@ insightRoutes.post("/dismiss", async (c) => {
 export const settingsRoutes = new Hono<AppContext>();
 settingsRoutes.use("*", requireUser);
 
+const KNOWN_GEAR: ReadonlySet<string> = new Set(EQUIPMENT_IDS);
+
 settingsRoutes.get("/", async (c) => {
   const prefs = await loadPreferences(c.get("db"), c.get("userId"));
   const budget = await llmBudgetStatus(c.get("db"), c.get("userId"));
@@ -1401,6 +1404,8 @@ settingsRoutes.put("/", async (c) => {
   const current = await loadPreferences(db, userId);
   const parsed = userPreferencesSchema.safeParse({ ...current, ...body });
   if (!parsed.success) return c.json({ error: "invalid_preferences", details: parsed.error.issues }, 400);
+  // The wishlist holds gear the library knows, once each (Phase 2c): anything else is dropped, never stored.
+  parsed.data.equipmentWishlist = [...new Set(parsed.data.equipmentWishlist)].filter((id) => KNOWN_GEAR.has(id));
   await savePreferences(db, userId, parsed.data);
   // Flipping COROS writes on must heal any moves that queued while writes
   // were off (or no device was paired) — emitPendingWork's only other call

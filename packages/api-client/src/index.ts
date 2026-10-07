@@ -1038,6 +1038,40 @@ export interface ConditionCheckDto {
   feelingOff: boolean;
 }
 
+// ── Settings: conditions and places (worker routes: routes/conditions.ts, routes/places.ts) ────────────────────
+
+/** A condition profile the library knows, as Settings shows it — labelled by the profile itself. */
+export interface ConditionSettingDto {
+  profileId: string;
+  label: string;
+  active: boolean;
+  /** The day it was first switched on (kept across off and on); null when it never was. */
+  since: string | null;
+}
+
+/** A place and its gear; weights per weighted gear id exactly as typed ("10, 15, 20 lb, 12kg"). */
+export interface PlaceDto {
+  id: string;
+  name: string;
+  equipment: string[];
+  implements: Record<string, string>;
+  isDefault: boolean;
+}
+
+/** Exact shape of `GET /api/places`: the places (default first) and the gear vocabulary, labelled. */
+export interface PlacesResponse {
+  places: PlaceDto[];
+  equipment: Array<{ id: string; label: string; weighted: boolean }>;
+}
+
+/** `POST /api/places`; `PATCH` takes any part of it (`implements` replaced whole). 422 `invalid_place`. */
+export interface PlaceInput {
+  name: string;
+  equipment: string[];
+  implements?: Record<string, string>;
+  isDefault?: true;
+}
+
 // ── Library (worker routes: apps/worker/src/routes/library.ts; service: services/library-view.ts) ──────────────
 
 /**
@@ -1359,6 +1393,18 @@ export const api = {
     put<SavePerformedDto>(`/api/sessions/performed/${encodeURIComponent(performedId)}`, payload),
   /** What the review reads of the history, fetched at Start and kept on the device (a read; 404, 409 `not_built`). */
   reviewBasis: (workoutId: string) => get<ReviewBasisDto>(`/api/sessions/${encodeURIComponent(workoutId)}/review-basis`),
+
+  // ── Settings: conditions and places ─────────────────────────────────────
+  listConditions: () => get<{ profiles: ConditionSettingDto[] }>("/api/conditions"),
+  /** Switch a profile on or off; answers with the whole list. */
+  setCondition: (profileId: string, active: boolean) =>
+    put<{ profiles: ConditionSettingDto[] }>("/api/conditions", { profileId, active }),
+  listPlaces: () => get<PlacesResponse>("/api/places"),
+  createPlace: (body: PlaceInput) => post<{ place: PlaceDto }>("/api/places", body),
+  updatePlace: (id: string, patch: Partial<PlaceInput>) =>
+    request<{ place: PlaceDto }>(`/api/places/${encodeURIComponent(id)}`, { method: "PATCH", body: JSON.stringify(patch) }),
+  /** 409 `{error: "place_in_use", program: {id, name}}` while an active program builds there. */
+  deletePlace: (id: string) => request<{ ok: true }>(`/api/places/${encodeURIComponent(id)}`, { method: "DELETE" }),
 
   // ── Library (worker routes: apps/worker/src/routes/library.ts) ───────────
   listLibrary: (query: LibraryQuery = {}) => get<LibraryListDto>(`/api/library${libraryQueryString(query)}`),

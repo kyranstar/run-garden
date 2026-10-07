@@ -46,16 +46,43 @@ export const formatWeightIn = (w: Weight, unit: WeightUnit): string => `${trim(w
 
 export const sameWeight = (a: Weight, b: Weight): boolean => Math.abs(toKg(a) - toKg(b)) < SAME_WEIGHT_KG;
 
-/** "8, 12, 20 lb" → every bare number takes the trailing unit; mixed units are fine. Sorted, no duplicates. */
+const TOKEN = /\d+(?:\.\d+)?\s*[a-z#]*/g;
+
+/**
+ * "8, 12, 20 lb" → every bare number takes the unit written after it — "10, 15, 20 lb, 12kg" is three weights in
+ * pounds and one in kilos (Phase 2c Review Focus 3) — and a number with no unit after it takes the default unit.
+ * Mixed units are fine. Sorted, no duplicates; junk is dropped (`weightListProblem` says what it was).
+ */
 export function parseWeightList(text: unknown, defaultUnit: WeightUnit): Weight[] {
-  const tokens = String(text ?? "").toLowerCase().match(/\d+(?:\.\d+)?\s*[a-z#]*/g) || [];
-  const lastToken = tokens[tokens.length - 1];
-  const trailing = lastToken != null ? parseWeight(lastToken, defaultUnit) : null;
-  const listUnit = trailing ? trailing.u : defaultUnit;
-  const out: Weight[] = [];
-  for (const token of tokens) {
-    const w = parseWeight(token, listUnit);
-    if (w && !out.some(o => sameWeight(o, w))) out.push(w);
+  const tokens = String(text ?? "").toLowerCase().match(TOKEN) || [];
+  // Right to left: the unit of the nearest token after a bare number that names one.
+  const units: WeightUnit[] = new Array<WeightUnit>(tokens.length);
+  let after = defaultUnit;
+  for (let i = tokens.length - 1; i >= 0; i--) {
+    const own = /[a-z#]/.test(tokens[i]!) ? parseWeight(tokens[i], defaultUnit) : null;
+    if (own) after = own.u;
+    units[i] = after;
   }
+  const out: Weight[] = [];
+  tokens.forEach((token, i) => {
+    const w = parseWeight(token, units[i]!);
+    if (w && !out.some(o => sameWeight(o, w))) out.push(w);
+  });
   return out.sort((a, b) => toKg(a) - toKg(b));
+}
+
+/**
+ * Why a typed list is not a list of weights — the first part that is not one ("12 stone", "x", "0"), or "empty" when
+ * it holds none — or null when every part is a weight. Separators are commas, semicolons, slashes and spaces.
+ */
+export function weightListProblem(text: unknown): string | null {
+  const raw = String(text ?? "");
+  const parts = raw.split(/[,;/]+|\s{2,}/).map(p => p.trim()).filter(Boolean);
+  for (const part of parts) {
+    const tokens = part.toLowerCase().match(TOKEN) || [];
+    const rest = part.toLowerCase().replace(TOKEN, "").trim();
+    if (tokens.length === 0 || rest !== "") return part;
+    for (const token of tokens) if (!parseWeight(token, "kg")) return token.trim();
+  }
+  return parseWeightList(raw, "kg").length === 0 ? "empty" : null;
 }
