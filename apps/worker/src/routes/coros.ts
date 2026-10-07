@@ -161,8 +161,9 @@ corosRoutes.get("/debug/strength-set-stats", async (c) => {
  * The owner runs it from the console of a signed-in app tab. A call the
  * runtime kills (CPU, error 1102) answers with an HTML page, not JSON, and
  * holds the `coros_read` lock for up to five minutes, so the calls after it
- * say `busy`: the loop waits 30 s and tries again, up to 12 times in a row
- * (six minutes), and stops cleanly on anything else that is not `ok`.
+ * say `busy`. On a non-JSON answer, `busy` or `runtime_limit` the loop waits
+ * 30 s and tries again, up to 12 times in a row (six minutes, past the
+ * lock's five); on anything else that is not `ok` it stops cleanly.
  *
  *   (async () => {
  *     const sum = { filled: 0, nothingToLog: 0, appOwned: 0, failures: 0 };
