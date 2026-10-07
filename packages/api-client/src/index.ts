@@ -1038,6 +1038,124 @@ export interface ConditionCheckDto {
   feelingOff: boolean;
 }
 
+// ── Library (worker routes: apps/worker/src/routes/library.ts; service: services/library-view.ts) ──────────────
+
+/**
+ * A move's standing with one switched-on profile: `safe` even on a flare day, `care` allowed with limits (a mode, a
+ * calm check), `never` not allowed.
+ */
+export type LibrarySafety = "safe" | "care" | "never";
+
+/** `GET /api/library` filters. Every one is optional; values outside the vocabularies are 422 `invalid_query`. */
+export interface LibraryQuery {
+  q?: string;
+  pattern?: string;
+  region?: string;
+  role?: string;
+  equipment?: string;
+  /** A place id of the account's, or one of the library's presets (home, gym, mat). */
+  location?: string;
+  /** Only moves safe on a flare day for every switched-on profile. */
+  safe?: boolean;
+}
+
+/** One move as the library list shows it (no how-to text). */
+export interface LibraryRowDto {
+  id: string;
+  name: string;
+  family: string;
+  patterns: string[];
+  regions: string[];
+  roles: string[];
+  equipment: { all: string[]; oneOf: string[] };
+  difficulty: number;
+  /** Per switched-on profile id. */
+  safety: Record<string, LibrarySafety>;
+  rating: 1 | -1 | null;
+  excluded: boolean;
+  pinned: boolean;
+  /** From the account's saves. */
+  saved: boolean;
+  /** The gear the default place lacks for it (any one of `oneOf`); null when it can be done there now. */
+  unlocksWith: { all: string[]; oneOf: string[] } | null;
+}
+
+/** Exact shape of `GET /api/library`. */
+export interface LibraryListDto {
+  /** Moves in the library before filters. */
+  total: number;
+  items: LibraryRowDto[];
+  /** The place `unlocksWith` and the wishlist are judged at. */
+  place: { id: string; name: string };
+  profiles: Array<{ profileId: string; label: string }>;
+  wishlist: Array<{ equipmentId: string; label: string; unlocks: number }>;
+}
+
+/** The athlete's say on one move (`exercise_prefs`). */
+export interface ExercisePrefsDto {
+  exerciseId: string;
+  rating: 1 | -1 | null;
+  excluded: boolean;
+  pinned: boolean;
+  introducedOn: string | null;
+}
+
+/** `PUT /api/library/:id/prefs`: only what is sent changes. */
+export interface ExercisePrefsPatch {
+  rating?: 1 | -1 | null;
+  excluded?: boolean;
+  pinned?: boolean;
+}
+
+/** Exact shape of `GET /api/library/:id`. */
+export interface LibraryItemDto {
+  id: string;
+  name: string;
+  family: string;
+  patterns: string[];
+  regions: string[];
+  roles: string[];
+  equipment: { all: string[]; oneOf: string[] };
+  position: string;
+  laterality: string;
+  load: string;
+  dose: ExerciseRecord["dose"];
+  difficulty: number;
+  tags: string[];
+  text: Omit<ExerciseRecord["text"], "conditions">;
+  /** The move's note for each switched-on profile, labelled by the profile. */
+  conditionNotes: Array<{ profileId: string; label: string; note: string }>;
+  safety: Record<string, LibrarySafety>;
+  easier: Array<{ id: string; name: string }>;
+  harder: Array<{ id: string; name: string }>;
+  prefs: ExercisePrefsDto;
+  saved: boolean;
+  /** Where a saved move came from — the account's own links. */
+  provenance: Array<{ sourceType: string; url: string | null; creator: string | null }>;
+  history: {
+    /** The last five entries, newest first, weights as typed. */
+    last: Array<{
+      date: string;
+      sessionId: string;
+      implement: string | null;
+      perSide: boolean;
+      format: string | null;
+      sets: Array<{ w: Weight | null; reps: number | null; secs: number | null; side: string | null }>;
+    }>;
+    best: { w: Weight | null; reps: number | null; secs: number | null } | null;
+  };
+}
+
+function libraryQueryString(q: LibraryQuery): string {
+  const params = new URLSearchParams();
+  for (const [k, v] of Object.entries(q)) {
+    if (v === undefined || v === "" || v === false) continue;
+    params.set(k, v === true ? "1" : String(v));
+  }
+  const s = params.toString();
+  return s ? `?${s}` : "";
+}
+
 // ── Insights (worker route: apps/worker/src/routes/misc.ts insightRoutes) ──────
 
 /** A weekly narrative row as persisted by `weeklyReviews` — echoed verbatim. */
@@ -1241,6 +1359,14 @@ export const api = {
     put<SavePerformedDto>(`/api/sessions/performed/${encodeURIComponent(performedId)}`, payload),
   /** What the review reads of the history, fetched at Start and kept on the device (a read; 404, 409 `not_built`). */
   reviewBasis: (workoutId: string) => get<ReviewBasisDto>(`/api/sessions/${encodeURIComponent(workoutId)}/review-basis`),
+
+  // ── Library (worker routes: apps/worker/src/routes/library.ts) ───────────
+  listLibrary: (query: LibraryQuery = {}) => get<LibraryListDto>(`/api/library${libraryQueryString(query)}`),
+  /** 404 `not_found` for a move the library does not have. */
+  getLibraryItem: (id: string) => get<LibraryItemDto>(`/api/library/${encodeURIComponent(id)}`),
+  /** Rate, set aside ("not for me") or pin one move; only what is sent changes. */
+  setExercisePrefs: (id: string, patch: ExercisePrefsPatch) =>
+    put<{ prefs: ExercisePrefsDto }>(`/api/library/${encodeURIComponent(id)}/prefs`, patch),
 };
 
 /** Exact shape of `GET /api/sessions/:workoutId/review-basis` (services/session-review-basis.ts). */
