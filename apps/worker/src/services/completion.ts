@@ -695,9 +695,10 @@ export async function ingestActivities(db: Db, input: IngestInput): Promise<Inge
     // extra training, not tomorrow's session. A watch-only session still
     // completes a program slot as before.
     //
-    // The startTime bounds are a coarse, over-inclusive window (startTime is
-    // UTC; the exact local-date filter below is unchanged), so the scan reads
-    // the matching window's days instead of every unmatched activity ever.
+    // No startTime bounds here: the query's row order is the matcher's tie-break
+    // (equal scores keep input order), and a range changes SQLite's plan and so
+    // which of two tying activities wins a slot (re-review 2b-A N-1). The scan
+    // stays the deployed one; the local-date filter below picks the window.
     const appOwned = sql`exists (select 1 from ${performedSessions} where ${performedSessions.activityId} = ${activities.id} and ${performedSessions.source} = 'app')`;
     const displacedByApp = sql`exists (select 1 from workout_completion_matches as undone join workout_completion_matches as app_match on app_match.workout_id = undone.workout_id where undone.activity_id = ${activities.id} and undone.undone_at is not null and app_match.undone_at is null and app_match.method = 'app_session')`;
     const unmatchedActivities = await db
@@ -708,8 +709,6 @@ export async function ingestActivities(db: Db, input: IngestInput): Promise<Inge
           eq(activities.userId, input.userId),
           isNull(activities.completionMatchId),
           ne(activities.source, "import"),
-          gte(activities.startTime, `${addDays(minDate, -1)}T00:00:00`),
-          lte(activities.startTime, `${addDays(maxDate, 2)}T00:00:00`),
           sql`not ${appOwned}`,
           sql`not ${displacedByApp}`,
         ),

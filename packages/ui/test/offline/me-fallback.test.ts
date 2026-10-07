@@ -57,6 +57,21 @@ describe("me with the offline fallback", () => {
     expect(hasLive).not.toHaveBeenCalled();
   });
 
+  it("an offline database that never answers lets the failure stand after the wait — never a spinner for ever (re-review N-2)", async () => {
+    vi.useFakeTimers();
+    try {
+      const caches = cacheStorage({ [ME_CACHE]: { "/api/auth/me": me } });
+      const result = meWithOfflineFallback({ fetchMe: offline, hasLive: () => new Promise<boolean>(() => {}), caches }).then(
+        () => "signed in",
+        () => "failed",
+      );
+      await vi.advanceTimersByTimeAsync(2000);
+      expect(await result).toBe("failed");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("offline with a session in progress: the cached answer", async () => {
     const caches = cacheStorage({ [ME_CACHE]: { "/api/auth/me": me } });
     expect(await meWithOfflineFallback({ fetchMe: offline, hasLive: async () => true, caches })).toEqual(me);

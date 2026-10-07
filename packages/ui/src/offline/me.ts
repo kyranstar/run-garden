@@ -59,7 +59,12 @@ export async function meWithOfflineFallback(
       throw error;
     }
     const hasLive = deps.hasLive ?? (async () => hasLiveSession(await openDb()));
-    const live = await hasLive().catch(() => false);
+    // An offline database that never answers must not hold sign-in on a spinner: after the wait, no live session
+    // (re-review 2b-A N-2) — the "Couldn't reach" screen, as before.
+    const live = await Promise.race([
+      hasLive().catch(() => false),
+      new Promise<boolean>((resolve) => setTimeout(() => resolve(false), FORGET_DB_WAIT_MS)),
+    ]);
     if (!live || !store) throw error;
     const cached = await store.match(ME_URL).catch(() => undefined);
     if (!cached?.ok) throw error;
