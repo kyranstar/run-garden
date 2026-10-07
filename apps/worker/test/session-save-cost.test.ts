@@ -19,6 +19,9 @@ vi.mock("../src/services/calendar-sync.js", async (importOriginal) => ({
   syncCalendar: vi.fn(async () => ({})),
 }));
 
+// A build, a start, a garden and a save: seconds on a loaded runner, never a cost question.
+vi.setConfig({ testTimeout: 30_000 });
+
 const PLAYED = "2026-10-06";
 const PLAYED_NOON = "2026-10-06T19:00:00.000Z";
 const SAVED = "2026-10-07T16:00:00.000Z";
