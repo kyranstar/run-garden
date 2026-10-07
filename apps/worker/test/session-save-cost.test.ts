@@ -85,4 +85,60 @@ describe("a save's D1 statements", () => {
     expect(replay).toBeLessThan(50);
     expect(own + replay).toBeLessThan(90);
   });
+
+  it("the largest save the schema takes is ONE batch of at most 100 statements, each under D1's 100 bound variables (for the staging check)", async () => {
+    const db = makeTestDb({ boundVariableCap: 100 });
+    const { userId, prefs } = await makeTestUser(db);
+    const programId = newId();
+    await db.insert(schema.programs).values({
+      id: programId, userId, kind: "adaptive", name: "Mobility", status: "active", disciplines: ["yoga", "strength"],
+      startDate: null, endDate: null, raceDate: null, source: null, config: adaptiveConfigSchema.parse({ defaultMinutes: 30 }),
+      createdAt: PLAYED_NOON, updatedAt: PLAYED_NOON, archivedAt: null,
+    });
+    const workoutId = slotId(programId, PLAYED);
+    await db.insert(schema.plannedWorkouts).values({
+      id: workoutId, userId, planId: programId, sourceWorkoutId: workoutId, title: "Mobility", category: "yoga", sport: "yoga",
+      originalPlanDate: PLAYED, lastVerifiedCorosDate: "", effectiveDate: PLAYED, effectiveTime: "18:00", sourceContentFingerprint: "program",
+      calendarBlockDurationSeconds: 1800, fallbackEstimatedDurationSeconds: 1800, corosSyncState: "calendar_only",
+      completionState: "scheduled", origin: "program", contentState: "outline", createdAt: PLAYED_NOON, updatedAt: PLAYED_NOON,
+    });
+    const built = await buildSession(db, userId, workoutId, { overrides: { mode: "build" } }, { today: PLAYED, now: PLAYED_NOON, prefs });
+    const build = (await startSession(db, userId, workoutId, built.build!.buildId, PLAYED_NOON)).build!;
+    const { EXERCISES } = await import("@rg/exercise-library");
+    const library = EXERCISES.map((e) => e.id);
+    // Every limit at once: 300 sets (6 × 50), 20 checks, 200 moves reached, a rating and a "not for me" for every
+    // exercise the library has.
+    const body = {
+      id: newId(), source: "app", sourceRef: null, workoutId, buildId: build.buildId, localDate: PLAYED,
+      startedAt: "2026-10-06T19:05:00.000Z", endedAt: "2026-10-06T19:36:00.000Z", seconds: 1860, plannedSeconds: build.plannedSeconds,
+      minutes: 30, mode: build.mode, theme: build.theme, locationId: build.locationId, blockRef: build.blockRef, blockNumber: 1,
+      completed: true, stepsTotal: build.steps.length, stepsDone: build.steps.length,
+      movesDone: Array.from({ length: 200 }, (_, i) => ({ exerciseId: library[i % library.length]!, seconds: 60 })), note: "n".repeat(2000), newMove: null,
+      entries: Array.from({ length: 6 }, (_, e) => ({
+        exerciseId: library[e]!, implement: "kettlebell", format: "straight", perSide: false,
+        sets: Array.from({ length: 50 }, (_, i) => ({ setIndex: i, reps: 8, seconds: null, load: { v: 25, u: "lb" }, flags: ["a", "b"] })),
+      })),
+      checks: Array.from({ length: 10 }, (_, p) => (["pre", "post"] as const).map((kind) => ({ profileId: `profile-${p}`, kind, value: 2, feelingOff: false, at: "2026-10-06T19:05:00.000Z" }))).flat(),
+      review: {
+        ratings: Object.fromEntries(library.map((id) => [id, 1])),
+        excluded: Object.fromEntries(library.map((id) => [id, false])),
+      },
+    };
+    const dbModule = await import("../src/services/db.js");
+    const atomic = dbModule.runAtomically;
+    let batch = -1;
+    vi.spyOn(dbModule, "runAtomically").mockImplementation(async (d, statements) => {
+      batch = statements.length;
+      return atomic(d, statements);
+    });
+    try {
+      expect(await savePerformedSession(db, userId, body.id, body, { now: SAVED, prefs })).toMatchObject({ status: "saved" });
+    } finally {
+      vi.restoreAllMocks();
+    }
+    console.log(`[save] the largest save: one batch of ${batch} statements (${library.length} library exercises rated)`);
+    expect(batch).toBeGreaterThan(50);
+    expect(batch).toBeLessThanOrEqual(100);
+    expect((await db.select().from(schema.performedSets)).length).toBe(300);
+  });
 });
