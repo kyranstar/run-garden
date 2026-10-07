@@ -4,6 +4,11 @@ settings:
   autoInstallPeers: true
   excludeLinksFromLockfile: false
 
+patchedDependencies:
+  wrangler@4.118.0:
+    hash: 3853a07db1d1a6d7ac2f341ac5b4d71449fe9a44576ef88851ae3602638d68cb
+    path: patches/wrangler@4.118.0.patch
+
 importers:
 
   .:
@@ -138,7 +143,7 @@ importers:
         version: 3.2.7(@types/node@22.20.1)(jsdom@25.0.1)(terser@5.49.0)(tsx@4.23.1)
       wrangler:
         specifier: ^4.0.0
-        version: 4.118.0(@cloudflare/workers-types@4.20260702.1)
+        version: 4.118.0(patch_hash=3853a07db1d1a6d7ac2f341ac5b4d71449fe9a44576ef88851ae3602638d68cb)(@cloudflare/workers-types@4.20260702.1)
 
   packages/analytics:
     dependencies:
@@ -6967,7 +6972,7 @@ snapshots:
       '@cloudflare/workerd-linux-arm64': 1.20260730.1
       '@cloudflare/workerd-windows-64': 1.20260730.1
 
-  wrangler@4.118.0(@cloudflare/workers-types@4.20260702.1):
+  wrangler@4.118.0(patch_hash=3853a07db1d1a6d7ac2f341ac5b4d71449fe9a44576ef88851ae3602638d68cb)(@cloudflare/workers-types@4.20260702.1):
     dependencies:
       '@cloudflare/kv-asset-handler': 0.5.0
       '@cloudflare/unenv-preset': 2.16.1(unenv@2.0.0-rc.24)(workerd@1.20260730.1)

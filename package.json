@@ -14,7 +14,10 @@
       "esbuild",
       "workerd",
       "sharp"
-    ]
+    ],
+    "patchedDependencies": {
+      "wrangler@4.118.0": "patches/wrangler@4.118.0.patch"
+    }
   },
   "scripts": {
     "typecheck": "pnpm -r --parallel run typecheck",

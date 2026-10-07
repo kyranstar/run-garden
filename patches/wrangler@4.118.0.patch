@@ -1,0 +1,119 @@
+diff --git a/wrangler-dist/ProxyWorker.js b/wrangler-dist/ProxyWorker.js
+index 2631ee69aa0d96a99d35e7e1d0535c50019c45ec..1bb7001373748ced44f259cc58a1d4bae49bed63 100644
+--- a/wrangler-dist/ProxyWorker.js
++++ b/wrangler-dist/ProxyWorker.js
+@@ -139,26 +139,73 @@ var ProxyWorker = class {
+           headers.set(key, value);
+         }
+       }
+-      void fetch(userWorkerUrl, new Request(request, { headers })).then(async (res) => {
+-        res = new Response(res.body, res);
+-        rewriteUrlRelatedHeaders(res.headers, innerUrl, outerUrl);
+-        await checkForPreviewTokenError(res, this.env, proxyData);
+-        if (isHtmlResponse(res)) {
+-          res = insertLiveReloadScript(request, res, this.env, proxyData);
++      // run-garden patch (backport of wrangler 4.135's fix): a pooled
++      // connection to the UserWorker can be dropped by an idle-close race
++      // (both ends of that hop idle out at 5s); GET/HEAD are retried (up to
++      // 3 attempts), and a failure is reported with the request it belongs
++      // to. Beyond 4.135: any other method gets ONE replay, and only when its
++      // connection was lost — the race drops a request before the UserWorker
++      // reads it — from a copy of the request kept for that purpose.
++      const idempotent = request.method === "GET" || request.method === "HEAD";
++      const replay = idempotent ? void 0 : request.clone();
++      const attemptUserWorkerFetch = (attempt = 0) => void fetch(userWorkerUrl, new Request(attempt > 0 && replay ? replay : request, { headers })).then(
++        async (res) => {
++          if (attempt > 0) {
++            console.warn(
++              `ProxyWorker: ${request.method} ${request.url} recovered on attempt ${attempt + 1} after a dropped connection to the UserWorker`
++            );
++          }
++          res = new Response(res.body, res);
++          rewriteUrlRelatedHeaders(res.headers, innerUrl, outerUrl);
++          await checkForPreviewTokenError(res, this.env, proxyData);
++          if (isHtmlResponse(res)) {
++            res = insertLiveReloadScript(request, res, this.env, proxyData);
++          }
++          if (isSseResponse(res)) {
++            void sendMessageToProxyController(this.env, {
++              type: "sseResponseDetected"
++            });
++          }
++          deferredResponse.resolve(res);
++        },
++        (error) => {
++          const retriable = idempotent ? attempt < 2 : attempt === 0 && String(error?.message).startsWith("Network connection lost");
++          if (isSameUserWorkerOrigin(
++            userWorkerUrl,
++            this.proxyData?.userWorkerUrl
++          ) && retriable) {
++            setTimeout(
++              () => {
++                if (this.proxyData !== proxyData) {
++                  if (idempotent) {
++                    this.requestRetryQueue.set(request, deferredResponse);
++                    this.processQueue();
++                  } else {
++                    deferredResponse.resolve(
++                      new Response(
++                        "Your worker restarted mid-request. Please try sending the request again. Only GET or HEAD requests are retried automatically.",
++                        { status: 503, headers: { "Retry-After": "0" } }
++                      )
++                    );
++                  }
++                  return;
++                }
++                attemptUserWorkerFetch(attempt + 1);
++              },
++              attempt === 0 ? 0 : 250
++            );
++            return;
++          }
++          throw error;
+         }
+-        if (isSseResponse(res)) {
+-          void sendMessageToProxyController(this.env, {
+-            type: "sseResponseDetected"
+-          });
+-        }
+-        deferredResponse.resolve(res);
+-      }).catch((error) => {
++      ).catch((error) => {
+         if (isSameUserWorkerOrigin(userWorkerUrl, this.proxyData?.userWorkerUrl)) {
++          const attemptsNote = ` (failed after ${attempt + 1} ${attempt === 0 ? "attempt" : "attempts"})`;
+           void sendMessageToProxyController(this.env, {
+             type: "error",
+             error: {
+               name: error.name,
+-              message: error.message,
++              message: `${request.method} ${request.url}${attemptsNote}: ${error.message}`,
+               stack: error.stack,
+               cause: error.cause
+             }
+@@ -178,6 +225,7 @@ var ProxyWorker = class {
+           );
+         }
+       });
++      attemptUserWorkerFetch();
+     }
+   }
+ };
+diff --git a/wrangler-dist/cli.js b/wrangler-dist/cli.js
+index 717ca2fb4e02822f8bda411d9070974df2dcdd7e..021d1e6d03ab79ffdc56d8a835255ccaf09320c5 100644
+--- a/wrangler-dist/cli.js
++++ b/wrangler-dist/cli.js
+@@ -431845,6 +431845,14 @@ var init_DevEnv = __esm({
+           logger2.debug(`Error in ${event.source}: ${event.reason}
+ `, event.cause);
+           logger2.debug("=> Error contextual data:", event.data);
++        } else if (event.source === "ProxyController" && event.reason.startsWith("Error inside ProxyWorker")) {
++          // run-garden patch (backport of wrangler 4.135's fix): one failed
++          // request no longer exits the whole dev server.
++          const detail = event.cause.message || event.cause.cause?.message || "unknown error";
++          logger2.error(
++            `${event.reason} (the affected request failed; the dev server continues): ${detail}`
++          );
++          logger2.debug("=> Error contextual data:", event.data);
+         } else if (event.source === "ConfigController" && event.cause instanceof ParseError) {
+           logger2.error(event.cause);
+           this.emit("buildFailed", event);

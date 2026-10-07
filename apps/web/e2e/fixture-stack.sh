@@ -9,6 +9,9 @@
 # `wrangler dev` share one --persist-to directory, otherwise they resolve to
 # different sqlite files. apps/worker/.dev.vars must exist (dummy values are
 # fine in fixture mode); this script never creates or copies secrets.
+#
+# Logs land in the state dir: migrate.log, worker.log, web.log, and
+# supervisor.log once `wrangler dev` has exited and been restarted.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
@@ -45,9 +48,36 @@ npx wrangler d1 migrations apply run-garden-db --local --persist-to "$STATE" >"$
 # No LLM, whatever .dev.vars holds (Ruling C2): fixture mode's coach wake
 # answers with a canned reply, and any other gateway call goes to a dead
 # local port instead of the real gateway.
-npx wrangler dev --port "$API_PORT" --persist-to "$STATE" \
-  --var FIXTURE_MODE:1 --var AI_DEFAULT_ENABLED:0 --var AI_GATEWAY_BASE_URL:http://127.0.0.1:9 \
-  --var "APP_URL:http://localhost:$WEB_PORT" >"$STATE/worker.log" 2>&1 &
+#
+# Supervised: if `wrangler dev` exits on its own, its exit status goes to
+# supervisor.log and it is started again on the same state (already migrated
+# and seeded), so one crash fails what is in flight while it restarts, not
+# every later test. A worker that keeps dying is left down after MAX_RESTARTS.
+# The crash this was added for (a dropped ProxyWorker -> UserWorker connection
+# exiting wrangler 4.118) is fixed in patches/wrangler@4.118.0.patch.
+supervise_worker() {
+  set +e
+  local child="" restarts=0 rc
+  trap 'kill "$child" 2>/dev/null; exit 0' TERM INT
+  while :; do
+    npx wrangler dev --port "$API_PORT" --persist-to "$STATE" \
+      --var FIXTURE_MODE:1 --var AI_DEFAULT_ENABLED:0 --var AI_GATEWAY_BASE_URL:http://127.0.0.1:9 \
+      --var "APP_URL:http://localhost:$WEB_PORT" >>"$STATE/worker.log" 2>&1 &
+    child=$!
+    wait "$child"; rc=$?
+    if [ "$rc" -gt 128 ]; then rc="$rc (signal $((rc - 128)))"; fi
+    if [ "$restarts" -ge "${MAX_RESTARTS:-5}" ]; then
+      echo "$(date -u +%H:%M:%S) wrangler dev exited with status $rc; restarted $restarts times already, leaving it down" >>"$STATE/supervisor.log"
+      exit 1
+    fi
+    restarts=$((restarts + 1))
+    echo "$(date -u +%H:%M:%S) wrangler dev exited with status $rc; restarting ($restarts)" >>"$STATE/supervisor.log"
+    # The old runtime may still hold the port for a moment.
+    lsof -ti "tcp:$API_PORT" -sTCP:LISTEN 2>/dev/null | xargs kill 2>/dev/null
+    sleep 1
+  done
+}
+supervise_worker &
 echo $! >>"$PIDS"
 
 cd "$ROOT"

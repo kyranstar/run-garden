@@ -106,9 +106,22 @@ jobs:
         env:
           RG_BASE: http://localhost:5271
 
+      # wrangler's own errors and the supervisor's restarts can sit far above
+      # the last 80 lines, so they are pulled out first.
       - name: Fixture stack logs
         if: failure()
-        run: tail -n 80 "${TMPDIR:-/tmp}"/rg-e2e-state*/*.log
+        run: |
+          grep -h -e "ERROR" -e "WARNING" -e "ProxyWorker" "${TMPDIR:-/tmp}"/rg-e2e-state*/worker.log || true
+          tail -n 80 "${TMPDIR:-/tmp}"/rg-e2e-state*/*.log
+
+      # A wrangler exit the supervisor recovered from still shows on a green run.
+      - name: Worker restarts
+        if: always()
+        run: |
+          for f in "${TMPDIR:-/tmp}"/rg-e2e-state*/supervisor.log; do
+            [ -f "$f" ] || continue
+            while read -r line; do echo "::warning title=wrangler dev restarted::$line"; done <"$f"
+          done
 
       - name: Upload Playwright report
         if: failure()
