@@ -29,6 +29,7 @@ import {
   NotBuiltError,
   NotTodayError,
   recordCheck,
+  sessionCurrency,
   SessionLockedError,
   SessionNotFoundError,
   StaleBuildError,
@@ -1046,6 +1047,62 @@ describe("the stored build carries its place's gear (ruling 2b-R2)", () => {
   });
 });
 
+describe("is the stored build still current? (GET /api/sessions/:id/current — the sheet stops building on every open)", () => {
+  // `current` means exactly: Start would lock this build as it is (the inputs hash and engine version Start checks).
+  it("right after a build: current, and asking writes nothing", async () => {
+    const id = await seedSlot(TODAY);
+    const built = await buildSession(db, userId, id, {}, ctx());
+    statements.length = 0;
+    expect(await sessionCurrency(db, userId, id, ctx())).toEqual({ workoutId: id, buildId: built.build!.buildId, current: true, locked: false });
+    expect(statements.filter(isWrite)).toEqual([]);
+  });
+
+  it("a new reading or a rating since the build: not current — and Start agrees (stale)", async () => {
+    await activateTmj();
+    const id = await seedSlot(TODAY);
+    const built = await buildSession(db, userId, id, {}, ctx());
+    await recordCheck(db, userId, { profileId: "tmj", value: 6, feelingOff: false }, ctx({ now: LATER }));
+    expect(await sessionCurrency(db, userId, id, ctx({ now: LATER }))).toMatchObject({ buildId: built.build!.buildId, current: false });
+    await expect(startSession(db, userId, id, built.build!.buildId, LATER)).rejects.toThrow("stale");
+
+    // Start built the fresh one: current again, and Start takes it.
+    const fresh = (await loadSession(db, userId, id, TODAY)).build!;
+    expect(await sessionCurrency(db, userId, id, ctx({ now: LATER }))).toMatchObject({ buildId: fresh.buildId, current: true });
+    const rated = fresh.items[0]!.exerciseId;
+    await db.insert(exercisePrefs).values({ id: `${userId}:${rated}`, userId, exerciseId: rated, rating: -1, excluded: false, pinned: false, introducedOn: null, updatedAt: LATER });
+    expect(await sessionCurrency(db, userId, id, ctx({ now: LATER }))).toMatchObject({ current: false });
+  });
+
+  it("no build yet, a day gone, or a slot moved away and back (an outline again): not current", async () => {
+    const id = await seedSlot(TODAY);
+    expect(await sessionCurrency(db, userId, id, ctx())).toEqual({ workoutId: id, buildId: null, current: false, locked: false });
+    const built = await buildSession(db, userId, id, {}, ctx());
+    await db.update(plannedWorkouts).set({ contentState: "outline" }).where(eq(plannedWorkouts.id, id));
+    expect(await sessionCurrency(db, userId, id, ctx())).toMatchObject({ buildId: built.build!.buildId, current: false });
+    await db.update(plannedWorkouts).set({ contentState: "built" }).where(eq(plannedWorkouts.id, id));
+    expect(await sessionCurrency(db, userId, id, ctx({ today: addDays(TODAY, 1) }))).toMatchObject({ current: false });
+  });
+
+  it("a started session is current whatever changed (its build is locked); a preview ahead is current until its inputs change", async () => {
+    await activateTmj();
+    const id = await seedSlot(TODAY);
+    const built = await buildSession(db, userId, id, {}, ctx());
+    await startSession(db, userId, id, built.build!.buildId, NOW);
+    await recordCheck(db, userId, { profileId: "tmj", value: 9, feelingOff: true }, ctx({ now: LATER }));
+    expect(await sessionCurrency(db, userId, id, ctx({ now: LATER }))).toEqual({ workoutId: id, buildId: built.build!.buildId, current: true, locked: true });
+
+    const ahead = await seedSlot(addDays(TODAY, 2));
+    const preview = await buildSession(db, userId, ahead, {}, ctx());
+    expect(await sessionCurrency(db, userId, ahead, ctx())).toMatchObject({ buildId: preview.build!.buildId, current: true });
+  });
+
+  it("another user's slot is not found", async () => {
+    const other = await makeTestUser(db);
+    const theirs = await seedSlot(TODAY, { owner: other.userId, program: await seedProgram(other.userId) });
+    await expect(sessionCurrency(db, userId, theirs, ctx())).rejects.toThrow("not_found");
+  });
+});
+
 describe("the daily check", () => {
   it("one per profile per day, replaced on a re-check", async () => {
     await activateTmj();
@@ -1106,6 +1163,16 @@ describe("the routes", () => {
       makeEnv(),
     );
   };
+
+  it("GET …/current: 200 with whether the shown build is current; 404 for a slot that is not this user's", async () => {
+    const id = await seedSlot(today);
+    const none = await call("GET", `/api/sessions/${id}/current`);
+    expect([none.status, await none.json()]).toEqual([200, { workoutId: id, buildId: null, current: false, locked: false }]);
+    const built = (await (await call("POST", `/api/sessions/${id}/build`, {})).json()) as SessionResponse;
+    const now = await call("GET", `/api/sessions/${id}/current`);
+    expect(await now.json()).toEqual({ workoutId: id, buildId: built.build!.buildId, current: true, locked: false });
+    expect((await call("GET", `/api/sessions/slot-nobody/current`)).status).toBe(404);
+  });
 
   it("GET, build, start: 200 with the session; a build after Start is 409 locked with the locked build", async () => {
     const id = await seedSlot(today);

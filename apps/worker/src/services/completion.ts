@@ -3,6 +3,7 @@ import {
   activities,
   activityLaps,
   activitySourceLinks,
+  performedSessions,
   plannedWorkouts,
   workoutCompletionMatches,
 } from "@rg/database";
@@ -246,6 +247,17 @@ export async function repairTimestamps(db: Db, userId: string): Promise<string[]
   }
 
   return [...affected].sort();
+}
+
+/** Does the app's own performed session of this activity exist (any state)?
+ * Then the app named the row's title and discipline, and they stand. */
+async function appSessionOwns(db: Db, activityId: string): Promise<boolean> {
+  const [row] = await db
+    .select({ id: performedSessions.id })
+    .from(performedSessions)
+    .where(and(eq(performedSessions.activityId, activityId), eq(performedSessions.source, "app")))
+    .limit(1);
+  return row !== undefined;
 }
 
 /** Yoga on one side, strength on the other: a mobility session the app saved
@@ -492,11 +504,16 @@ export async function ingestActivities(db: Db, input: IngestInput): Promise<Inge
       const row = (await db.select().from(activities).where(eq(activities.id, activityId)).limit(1))[0];
       if (row) {
         // COROS is the only source, so a refresh is simply the new normalized
-        // record over the old one, keeping the row's identity.
+        // record over the old one, keeping the row's identity — except what
+        // the app's own session of it named: its title and its discipline
+        // (the watch files a mobility session as Strength). The app's
+        // performed session linked to the activity is the durable mark of
+        // that merge (Phase 0 audit 1 ingest #3; audit 2a+ M-4).
+        const appNamed = (await appSessionOwns(db, activityId)) ? { title: row.title ?? undefined, sport: row.sport } : {};
         await upsertNormalized(
           db,
           input.userId,
-          { ...singleSourceActivity(src), id: activityId },
+          { ...singleSourceActivity(src), id: activityId, ...appNamed },
           activityId,
         );
       }
@@ -579,11 +596,19 @@ export async function ingestActivities(db: Db, input: IngestInput): Promise<Inge
         await upsertSourceLink(db, activityId, src);
       } else if (orphan && bestScore >= ORPHAN_ADOPTION_FLOOR) {
         // COROS is authoritative for every metric; the adopted row keeps only
-        // its identity and anything COROS did not supply.
+        // its identity and anything COROS did not supply. An app row also
+        // keeps what the app named: its title and its discipline (a mobility
+        // session the watch filed as Strength stays yoga — audit 1, ingest #3).
+        const fromApp = orphan.source === "app";
         await upsertNormalized(
           db,
           input.userId,
-          { ...singleSourceActivity(src), id: orphan.id, title: src.title ?? orphan.title ?? undefined },
+          {
+            ...singleSourceActivity(src),
+            id: orphan.id,
+            title: fromApp ? (orphan.title ?? src.title) : (src.title ?? orphan.title ?? undefined),
+            ...(fromApp ? { sport: orphan.sport } : {}),
+          },
           orphan.id,
         );
         activityId = orphan.id;

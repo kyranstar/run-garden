@@ -317,7 +317,8 @@ function slice(id: string): ExerciseSlice | undefined {
 }
 
 const engineDataCache = new Map<string, EngineData>();
-function engineData(active: readonly string[], care: readonly string[]): EngineData {
+/** The engine's data for these active and cared-for profiles, made once per isolate. */
+export function engineDataFor(active: readonly string[], care: readonly string[]): EngineData {
   const key = `${active.join(",")}|${care.join(",")}`;
   let data = engineDataCache.get(key);
   if (!data) {
@@ -386,7 +387,7 @@ export interface Composed {
  */
 export function composeBuild(input: ComposeInput): Composed {
   const { context: c } = input;
-  const data = engineData(c.activeProfiles, c.careProfiles);
+  const data = engineDataFor(c.activeProfiles, c.careProfiles);
   const checks: Record<string, CheckReading> = Object.fromEntries(
     Object.entries(input.checks).map(([p, a]) => [p, { pre: a.pre, post: null, feelingOff: a.feelingOff }]),
   );
@@ -659,7 +660,7 @@ function sheetExtras(context: EngineContext): SheetExtras {
     profiles: context.activeProfiles.map(conditionView),
     choices: {
       modes: [...context.config.modes],
-      themes: engineData(context.activeProfiles, context.careProfiles).themes.map((t) => ({ id: t.id, name: t.name, modes: [...t.modes] })),
+      themes: engineDataFor(context.activeProfiles, context.careProfiles).themes.map((t) => ({ id: t.id, name: t.name, modes: [...t.modes] })),
       locations: context.locations.map((l) => ({ id: l.id, name: l.name ?? l.id })),
     },
   };
@@ -1153,6 +1154,36 @@ export async function startSession(db: Db, userId: string, workoutId: string, bu
     .where(and(eq(plannedWorkouts.id, workoutId), eq(plannedWorkouts.userId, userId)));
   await pruneBuilds(db, workoutId, current.id);
   return readResponse(db, userId, await loadSlot(db, userId, workoutId), today);
+}
+
+/** `GET /api/sessions/:workoutId/current`: whether the build the slot shows is still the one its day's inputs make. */
+export interface SessionCurrency {
+  workoutId: string;
+  /** The build the slot shows (`GET /api/sessions/:workoutId`'s); null when it has none. */
+  buildId: string | null;
+  /**
+   * Start would lock this build as it is: it is locked already, or it is today's (or the preview ahead's) and the
+   * day's inputs still hash to it with this engine. False means the sheet builds again (`POST …/build`).
+   */
+  current: boolean;
+  locked: boolean;
+}
+
+/**
+ * Is the slot's build still current? Reads the day's inputs and hashes them, exactly as Start does — never composes
+ * a build and never writes, so opening the sheet need not POST a build every time. Throws `SessionNotFoundError`.
+ */
+export async function sessionCurrency(db: Db, userId: string, workoutId: string, ctx: BuildCtx): Promise<SessionCurrency> {
+  const row = await loadSlot(db, userId, workoutId);
+  const builds = await loadBuilds(db, userId, workoutId);
+  const shown = currentBuild(row, builds, ctx.today);
+  const out = { workoutId, buildId: shown?.id ?? null, locked: lockedOf(row, builds) };
+  if (out.locked) return { ...out, current: shown !== null };
+  if (!shown || row.effectiveDate < ctx.today) return { ...out, current: false };
+  // A slot moved away and back is an outline again: its stored build needs a build request to be the row's again.
+  if (shown.version > 0 && row.contentState !== "built") return { ...out, current: false };
+  const inputs = await dayInputs(db, userId, row, builds, {}, ctx);
+  return { ...out, current: shown.inputsHash === inputs.inputsHash && shown.engineVersion === inputs.version };
 }
 
 /**
