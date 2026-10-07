@@ -30,10 +30,10 @@ import { doseText, type DoseStep, type DoseTarget } from "@rg/domain";
 import { Banner, CompletionPill, EmptyState, formatDayLong, formatTime, Sheet, Spinner } from "../components.js";
 import { features } from "../features.js";
 import { IconInfo, IconSwap } from "../icons.js";
-import { offlineDb } from "../offline/idb.js";
+import { offlineDb, type OfflineDb } from "../offline/idb.js";
 import { requestPersistentStorage } from "../offline/live.js";
 import { chimes } from "../player/audio.js";
-import { rememberStart } from "../player/stored.js";
+import { rememberStart, saveBasis } from "../player/stored.js";
 import { MoveSheet } from "../screens/move-sheet.js";
 import { CheckScale, checkWord, conditionChipLabel, FeelingOffToggle } from "./condition-check-sheet.js";
 import { ExerciseHowto, type HowtoTarget } from "./exercise-howto.js";
@@ -55,6 +55,8 @@ export const FORMAT_LABEL: Record<string, string> = { flow: "Flow", superset: "S
 /** The time picker's lengths (the build takes 10–90). */
 const MINUTES = [15, 20, 25, 30, 40, 45, 60, 75, 90];
 const PICKER_TITLE: Record<Picker, string> = { mode: "Mode", theme: "Theme", minutes: "Time", place: "Place" };
+/** How long Start waits for the review's basis before the player opens (ruling 2b-R10: Start stays quick). */
+const START_BASIS_WAIT_MS = 1_500;
 
 /** The program's name: the row's title without the theme a build appends. */
 function withoutTheme(title: string, theme: string | null | undefined): string {
@@ -127,13 +129,25 @@ export function SessionSheet({ w, today, onClose }: { w: WorkoutDto; today: stri
       // The player plays what Start leaves on the device, never the network (ruling 2b-R1). Without IndexedDB it
       // still opens, online, from the started session — but it keeps nothing, so the sheet says so first and Continue
       // goes on (audit 2b-B I-2).
+      let db: OfflineDb;
       try {
-        const db = await offlineDb();
+        db = await offlineDb();
         await rememberStart(db, next, titleRef.current, qc.getQueryData<MeResponse>(["me"])?.userId ?? null);
       } catch {
         setNotKept(true);
         return;
       }
+      // The review's basis comes in the same tap (ruling 2b-R10): a network gone right after Start still leaves the
+      // review its records and graduation offers. Waited for only so long; it lands later if slow, and the player
+      // asks for it itself when it isn't there.
+      const buildId = next.build?.buildId;
+      const basis = api
+        .reviewBasis(w.id)
+        .then((b) => (b.buildId === buildId ? saveBasis(db, w.id, b) : undefined))
+        .catch(() => undefined);
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      await Promise.race([basis, new Promise<void>((resolve) => (timer = setTimeout(resolve, START_BASIS_WAIT_MS)))]);
+      clearTimeout(timer);
       navigate(`/session/${encodeURIComponent(w.id)}`);
     },
     // The day's inputs changed since this build (a check, a save, an edit): show the fresh build to Start again. The

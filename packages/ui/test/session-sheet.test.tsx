@@ -16,14 +16,14 @@ import { createRoot, type Root } from "react-dom/client";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { SessionDto, SessionExerciseDto, WorkoutDto } from "@rg/api-client";
+import type { ReviewBasisDto, SessionDto, SessionExerciseDto, WorkoutDto } from "@rg/api-client";
 import { features } from "../src/features.js";
 import { SessionSheet } from "../src/components/session-sheet.js";
 import { WorkoutDetail } from "../src/screens/plan.js";
 import { IDBFactory } from "fake-indexeddb";
 import { offlineDb } from "../src/offline/idb.js";
 import { loadBuild } from "../src/offline/builds.js";
-import { loadExtras } from "../src/player/stored.js";
+import { loadBasis, loadExtras } from "../src/player/stored.js";
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
@@ -245,6 +245,8 @@ function mount(
     detail?: boolean;
     /** The GET answers with this status (and no session) instead. */
     getStatus?: number;
+    /** What `GET …/review-basis` answers: a basis, or "hang" (it never answers). By default a 404. */
+    basis?: ReviewBasisDto | "hang";
   } = {},
 ) {
   const calls: Call[] = [];
@@ -272,6 +274,10 @@ function mount(
         }
         current = { ...current, contentState: "started", locked: true };
         return json(current);
+      }
+      if (path === `/api/sessions/${SLOT}/review-basis` && opts.basis) {
+        if (opts.basis === "hang") return new Promise<Response>(() => undefined);
+        return json(opts.basis);
       }
       if (path === "/api/programs") return json(PROGRAMS);
       if (path === "/api/sync/notes") return json({ notes: [] });
@@ -549,6 +555,43 @@ describe("Start", () => {
     const stored = await loadBuild(db, SLOT);
     expect(stored?.build.buildId).toBe(session().build!.buildId);
     expect(await loadExtras(db, SLOT)).toMatchObject({ title: "Garden program", profiles: session().profiles });
+  });
+
+  it("with the player: Start brings the review's basis in the same tap, before the player opens (ruling 2b-R10)", async () => {
+    features.player = true;
+    vi.stubGlobal("indexedDB", new IDBFactory());
+    const basis = {
+      workoutId: SLOT,
+      buildId: session().build!.buildId,
+      records: { weeklyGoal: 4, awarded: [], bests: {}, weekCounts: {}, weekStreaks: {}, weekFamilies: {}, calm: {}, count: 3, topBlock: 1, heaviestBellKg: null },
+      graduation: { block: null, sessions: [], unit: "lb" },
+      prefs: { ratings: {}, excluded: [] },
+      exercises: {},
+    } as unknown as ReviewBasisDto;
+    const { calls } = mount(session(), { basis });
+    await until(() => body().includes("Supported row"), "the moves");
+    await click("Start · 30 min");
+    await until(() => body().includes("the player"), "the player route");
+    // Already on the device when the player opens: a network gone right after Start still leaves the review its records.
+    expect(await loadBasis(await offlineDb(), SLOT)).toEqual(basis);
+    const order = calls.map((c) => c.path.split("/").pop());
+    expect(order.indexOf("review-basis")).toBeGreaterThan(order.indexOf("start"));
+  });
+
+  it("with the player: a basis slow to come never holds Start up for long — the player opens, and fetches it itself", async () => {
+    features.player = true;
+    vi.stubGlobal("indexedDB", new IDBFactory());
+    mount(session(), { basis: "hang" });
+    await until(() => body().includes("Supported row"), "the moves");
+    const at = performance.now();
+    await click("Start · 30 min");
+    for (let i = 0; i < 600 && !body().includes("the player"); i++) {
+      await act(async () => {
+        await new Promise((r) => setTimeout(r, 5));
+      });
+    }
+    expect(body()).toContain("the player");
+    expect(performance.now() - at).toBeLessThan(3_000);
   });
 
   it("with the player: when the device can't keep the session, the sheet says so and Continue goes on (audit 2b-B I-2)", async () => {
