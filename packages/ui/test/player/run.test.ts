@@ -9,6 +9,7 @@ import {
   confirmLog,
   endSession,
   fromLiveSession,
+  isComplete,
   logTarget,
   next,
   pause,
@@ -175,6 +176,31 @@ describe("pausing, stepping back, and the session's running time", () => {
   it("Next on the last step ends the session", () => {
     const s = next(resume(walkTo(begin(), 8, T0), T0), T0);
     expect(s.finished).toBe(true);
+  });
+});
+
+describe("ending early", () => {
+  it("the set in play when the session ends is not done — reaching it counted it, but it was never confirmed", () => {
+    const atSet = walkTo(begin(), 2, T0);
+    const s = endSession(atSet, T0 + 5 * S);
+    expect(s.finished).toBe(true);
+    expect(s.live.entries.gobletSquat!.sets[0]!.done).toBe(false);
+    const save = saveOf(s, { endedAt: new Date(T0 + 5 * S).toISOString() });
+    expect(save.stepsDone).toBe(2);
+    expect(save.completed).toBe(false);
+  });
+
+  it("a hold in play counts by the half-time rule; under half it is not a step done", () => {
+    const under = endSession(begin(), T0 + 20 * S);
+    expect(saveOf(under, { endedAt: new Date(T0 + 20 * S).toISOString() }).stepsDone).toBe(0);
+    const over = endSession(begin(), T0 + 40 * S);
+    expect(saveOf(over, { endedAt: new Date(T0 + 40 * S).toISOString() }).stepsDone).toBe(1);
+  });
+
+  it("played to the end is complete", () => {
+    const s = next(resume(walkTo(begin(), 8, T0), T0), T0);
+    expect(isComplete(s)).toBe(true);
+    expect(isComplete(endSession(walkTo(begin(), 2, T0), T0))).toBe(false);
   });
 });
 

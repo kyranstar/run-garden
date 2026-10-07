@@ -2148,6 +2148,12 @@ a.note {
 .today-session-skipped {
   color: var(--ink-soft);
 }
+/* A skipped line keeps a way in to Un-skip (2a UI re-review U6). */
+.today-session-end {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-4);
+}
 /* "↑": the move goes up today. */
 .dose-up {
   color: var(--green-ink);
@@ -2192,7 +2198,10 @@ a.note {
 .session-reading {
   display: inline-flex;
   align-items: center;
+  justify-content: center;
   min-height: var(--tap);
+  /* "Knee 1" is 36px of text: the floor is both ways (2a UI re-review U1). */
+  min-width: var(--tap);
   vertical-align: middle;
   font-weight: var(--weight-medium);
 }
@@ -8118,5 +8127,159 @@ button.session-chip::after {
   }
   .player-kbd {
     display: block;
+  }
+}
+
+/* Settings → Data: a session the server refused (Phase 2b). One quiet row. */
+.unsynced-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-4) var(--space-6);
+  color: var(--ink-soft);
+}
+
+/* ── The review (Phase 2b; mocks §5) ──────────────────────────────────────
+   After the last step: the title and ✕, then one card per question — the
+   post-check, the moves, a graduation offer, what is new — a note, and Save
+   with Discard at the foot. One centred column from md, as the player. */
+.review {
+  grid-template-rows: auto 1fr auto;
+}
+.review-head {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: var(--space-5);
+  padding: var(--space-5) var(--space-6) 0;
+}
+.review-title {
+  margin: 0;
+  font-size: var(--text-xl);
+  font-weight: var(--weight-regular);
+  overflow-wrap: anywhere;
+}
+.review-main {
+  display: grid;
+  align-content: start;
+  gap: var(--space-6);
+  min-width: 0;
+  padding: var(--space-6);
+}
+.review-card {
+  display: grid;
+  gap: var(--space-5);
+  min-width: 0;
+  padding: var(--space-6);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--bg-raised);
+  box-shadow: var(--shadow);
+}
+.review-meta {
+  color: var(--ink-soft);
+}
+.review-moves {
+  gap: 0;
+  padding-block: var(--space-3);
+}
+.review-move + .review-move,
+.review-more {
+  border-top: 1px solid var(--border);
+}
+.review-move-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: var(--space-4);
+  min-height: var(--tap);
+  padding-block: var(--space-4);
+}
+.review-move-name {
+  display: grid;
+  gap: var(--space-1);
+  min-width: 0;
+  min-height: var(--tap);
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--ink);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.review-move-name small {
+  color: var(--ink-soft);
+  font-size: var(--text-xs);
+  overflow-wrap: anywhere;
+}
+.review-rate {
+  display: inline-flex;
+  gap: var(--space-3);
+}
+.review-rate .chipbtn,
+.review-sets .chipbtn,
+.review-card .chipbtn {
+  min-height: var(--tap);
+  min-width: var(--tap);
+}
+.review-rate .chipbtn[aria-pressed="true"],
+.review-sets .chipbtn[aria-pressed="true"] {
+  background: var(--green-soft);
+  border-color: var(--green);
+  color: var(--green-ink);
+}
+.review-sets {
+  display: grid;
+  gap: var(--space-5);
+  padding-bottom: var(--space-5);
+}
+.review-sets > .chipbtn,
+.review-set > .chipbtn {
+  justify-self: start;
+}
+.review-set {
+  display: grid;
+  gap: var(--space-4);
+}
+.review-more {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  min-height: var(--tap);
+  padding: var(--space-4) 0;
+  border-inline: 0;
+  border-bottom: 0;
+  background: none;
+  color: var(--ink);
+  font: inherit;
+  cursor: pointer;
+}
+.review-records b {
+  font-weight: var(--weight-medium);
+}
+.review-note {
+  min-height: var(--tap);
+  padding: var(--space-4) var(--space-5);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-md);
+  background: var(--bg-raised);
+  color: var(--ink);
+  font: inherit;
+  resize: vertical;
+}
+.review-actions {
+  gap: var(--space-4);
+}
+@media (min-width: 900px) {
+  .review-head,
+  .review-main {
+    width: 100%;
+    max-width: 560px;
+    margin: 0 auto;
+  }
+  .review-actions .player-primary {
+    min-width: 240px;
   }
 }

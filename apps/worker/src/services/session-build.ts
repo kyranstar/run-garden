@@ -590,13 +590,18 @@ const ownPre = (rows: readonly CheckRow[], workoutId: string, profileId: string)
 /** The day's check rows (the Today chip's) for a profile, among the day's rows. */
 const dailyOf = (rows: readonly CheckRow[], profileId: string): CheckRow[] =>
   rows.filter((r) => r.kind === "daily" && r.profileId === profileId);
+/** Every slot's pre-check rows for a profile among the day's rows, but `except`'s. */
+const dayPre = (rows: readonly CheckRow[], profileId: string, except: string | null = null): CheckRow[] =>
+  rows.filter((r) => r.kind === "pre" && r.profileId === profileId && r.workoutId !== except);
 
 /**
  * The slot's checks on `date`, per active profile: the day's reading (ruling 2a-R13, `latestReading` — the Today
- * chip's own rule) over the slot's own pre-check and, when `date` is today, the day's check — whichever answer was
- * given last. The request's answer, when the request asks about the profile, is the newest reading there is; asked
- * with no answer, it takes the slot's own away and the day's check stands. A profile with no answer is left out
- * (unanswered). What the slot's checks are once the request's are recorded, worked out before anything is written.
+ * chip's own rule) — on today, over the day's check and every slot's pre-check that day (one reading a day, whichever
+ * asked it: two app sessions on a day read the same, as the chip does; 2a UI re-review U2); on another day, over the
+ * slot's own pre-check — whichever answer was given last. The request's answer, when the request asks about the
+ * profile, is the newest reading there is; asked with no answer, it takes the slot's own away and the day's other
+ * answers stand. A profile with no answer is left out (unanswered). What the slot's checks are once the request's are
+ * recorded, worked out before anything is written.
  */
 function resolveChecks(
   rows: readonly CheckRow[],
@@ -609,12 +614,14 @@ function resolveChecks(
   const out: Record<string, CheckAnswer> = {};
   for (const profileId of active) {
     const ask = asked[profileId];
-    const daily = date === today ? dailyOf(rows, profileId) : [];
+    const isToday = date === today;
+    const daily = isToday ? dailyOf(rows, profileId) : [];
+    const others = isToday ? dayPre(rows, profileId, workoutId) : [];
     const pick = ask
       ? isAnswer(ask.pre, ask.feelingOff)
         ? { value: ask.pre, feelingOff: ask.feelingOff }
-        : latestReading(daily)
-      : latestReading([...ownPre(rows, workoutId, profileId), ...daily]);
+        : latestReading([...others, ...daily])
+      : latestReading([...ownPre(rows, workoutId, profileId), ...others, ...daily]);
     if (pick) out[profileId] = { pre: pick.value, feelingOff: pick.feelingOff };
   }
   return out;
@@ -1128,15 +1135,32 @@ export async function buildSession(db: Db, userId: string, workoutId: string, re
  * `NotBuiltError`, `StaleBuildError`.
  */
 export async function startSession(db: Db, userId: string, workoutId: string, buildId: string, now: string): Promise<SessionResponse> {
+  return (await startSessionOutcome(db, userId, workoutId, buildId, now)).session;
+}
+
+/**
+ * `POST /api/sessions/:workoutId/start` (see `startSession`), with what it means for the calendar: a row that is an
+ * outline again (moved away and back, and refreshed meanwhile) takes the build's title, discipline and length as Start
+ * locks it, as a build request would have written them (2a UI re-review U4) — the player may Start what the device
+ * holds with no build request first.
+ */
+export async function startSessionOutcome(
+  db: Db,
+  userId: string,
+  workoutId: string,
+  buildId: string,
+  now: string,
+): Promise<{ session: SessionResponse; calendarChanged: boolean }> {
   const row = await loadSlot(db, userId, workoutId);
   const prefs = await loadPreferences(db, userId);
   const today = todayInZone(prefs.timezone, new Date(now));
   const builds = await loadBuilds(db, userId, workoutId);
-  if (lockedOf(row, builds)) return readResponse(db, userId, row, today, builds);
+  const unchanged = async (session: Promise<SessionResponse>) => ({ session: await session, calendarChanged: false });
+  if (lockedOf(row, builds)) return unchanged(readResponse(db, userId, row, today, builds));
   if (row.effectiveDate !== today) throw new NotTodayError(row.effectiveDate, today);
   const current = currentBuild(row, builds, today);
   if (!current) throw new NotBuiltError();
-  if (await restoreInProgress(db, userId)) return readResponse(db, userId, row, today, builds);
+  if (await restoreInProgress(db, userId)) return unchanged(readResponse(db, userId, row, today, builds));
 
   const ctx: BuildCtx = { today, now, prefs };
   const inputs = await dayInputs(db, userId, row, builds, {}, ctx);
@@ -1145,15 +1169,36 @@ export async function startSession(db: Db, userId: string, workoutId: string, bu
     throw new StaleBuildError(fresh.session, fresh.calendarChanged);
   }
   // A restore can begin while the inputs are read again: checked once more just before the lock (audit M10).
-  if (await restoreInProgress(db, userId)) return readResponse(db, userId, row, today, builds);
+  if (await restoreInProgress(db, userId)) return unchanged(readResponse(db, userId, row, today, builds));
 
+  // An outline again (moved away and back): the row takes the build's content as Start locks it (U4).
+  const adopted = row.contentState === null || row.contentState === "outline";
+  const stored = storedOf(current);
+  const content = adopted
+    ? builtRowContent(
+        inputs.programName ?? row.title,
+        stored.view.theme,
+        stored.build.plannedSeconds,
+        stored.build.items.some((i) => i.block === "core"),
+      )
+    : null;
   await db.update(sessionBuilds).set({ lockedAt: now }).where(eq(sessionBuilds.id, current.id));
   await db
     .update(plannedWorkouts)
-    .set({ contentState: "started", updatedAt: now })
+    .set({
+      ...(content ? { ...content, sessionParams: stored.build.params as unknown as Record<string, unknown> } : {}),
+      contentState: "started",
+      updatedAt: now,
+    })
     .where(and(eq(plannedWorkouts.id, workoutId), eq(plannedWorkouts.userId, userId)));
   await pruneBuilds(db, workoutId, current.id);
-  return readResponse(db, userId, await loadSlot(db, userId, workoutId), today);
+  let calendarChanged = false;
+  if (content) {
+    const change = rowChange(row, content);
+    calendarChanged = change.calendarChanged;
+    if (change.resized) await separateDayCollisions(db, userId, [row.effectiveDate], prefs, { from: today, now });
+  }
+  return { session: await readResponse(db, userId, await loadSlot(db, userId, workoutId), today), calendarChanged };
 }
 
 /** `GET /api/sessions/:workoutId/current`: whether the build the slot shows is still the one its day's inputs make. */

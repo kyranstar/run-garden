@@ -3,10 +3,10 @@
  * build and its view under the slot's id (`offline/builds.ts`); the player also needs what the build does not carry —
  * the session's name and the switched-on condition profiles (their words, scales and rules) — and, for the review,
  * the records and graduation basis the server works out at Start (`basis`). They sit in the same store under
- * `player:<workoutId>`, written at Start (online), read by the player and the review offline, dropped on Save or
- * Discard.
+ * `player:<workoutId>` and `review:<workoutId>`, written at Start (online), read by the player and the review offline,
+ * dropped on Save. Discard keeps them: the slot is still started, and can be played again from them, offline.
  */
-import type { ConditionViewDto, SessionDto } from "@rg/api-client";
+import type { ConditionViewDto, ReviewBasisDto, SessionDto } from "@rg/api-client";
 import { forgetBuild, saveBuild } from "../offline/builds.js";
 import type { OfflineDb } from "../offline/idb.js";
 
@@ -20,6 +20,7 @@ export interface PlayerExtras {
 }
 
 const key = (workoutId: string) => `player:${workoutId}`;
+const basisKey = (workoutId: string) => `review:${workoutId}`;
 
 export function saveExtras(db: OfflineDb, extras: PlayerExtras): Promise<void> {
   return db.put("builds", key(extras.workoutId), extras);
@@ -35,8 +36,18 @@ export async function rememberStart(db: OfflineDb, session: SessionDto, title: s
   await saveExtras(db, { workoutId: session.workoutId, title, profiles: session.profiles, savedAt: now });
 }
 
-/** Saved or discarded: nothing of the session stays on the device but what the outbox holds. */
+/** What the review reads of the history (`GET /api/sessions/:id/review-basis`), fetched once while online. */
+export function saveBasis(db: OfflineDb, workoutId: string, basis: ReviewBasisDto): Promise<void> {
+  return db.put("builds", basisKey(workoutId), basis);
+}
+
+export function loadBasis(db: OfflineDb, workoutId: string): Promise<ReviewBasisDto | undefined> {
+  return db.get<ReviewBasisDto>("builds", basisKey(workoutId));
+}
+
+/** Saved: nothing of the session stays on the device but what the outbox holds. */
 export async function forgetStart(db: OfflineDb, workoutId: string): Promise<void> {
   await forgetBuild(db, workoutId);
   await db.delete("builds", key(workoutId));
+  await db.delete("builds", basisKey(workoutId));
 }

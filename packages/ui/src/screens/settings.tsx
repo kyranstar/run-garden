@@ -26,6 +26,7 @@ import {
 } from "../components.js";
 import { md5Hex } from "../md5.js";
 import { RestorePendingNotice } from "./restore-notice.js";
+import { UnsyncedSessions } from "../components/unsynced-sessions.js";
 import { forgetCachedMe } from "../offline/me.js";
 
 const TZ_OPTIONS: string[] = (() => {
@@ -1157,6 +1158,8 @@ export function DataSection({ appOrigin }: { appOrigin?: string } = {}) {
           onRestoreAgain={() => fileInput.current?.click()}
           ownRestoreId={step.kind === "failed" ? (step.checked?.restoreId ?? null) : null}
         />
+        {/* A session the server refused (Phase 2b): nothing renders when there is none. */}
+        <UnsyncedSessions />
         <div className="btn-row">
           <button className="btn" disabled={exp.isPending} onClick={() => exp.mutate()}>
             {exp.isPending ? "Exporting…" : "Export everything (JSON)"}

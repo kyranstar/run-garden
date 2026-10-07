@@ -222,6 +222,8 @@ let host: HTMLDivElement | null = null;
 beforeEach(() => {
   vi.useFakeTimers({ toFake: ["Date"] });
   vi.setSystemTime(new Date(`${TODAY}T12:00:00`));
+  // Written against the dark state: each case starts with the player off and turns it on where it says so.
+  features.player = false;
 });
 
 afterEach(() => {
@@ -229,7 +231,7 @@ afterEach(() => {
   act(() => root?.unmount());
   host?.remove();
   root = null;
-  features.player = false;
+  features.player = true;
   vi.unstubAllGlobals();
 });
 
@@ -614,6 +616,71 @@ describe("a day ahead, a day gone, a started session", () => {
     expect(builds(calls)).toHaveLength(0);
     expect(button("Continue")).toBeUndefined();
     expect(button("How to do Goblet squat")).toBeTruthy();
+  });
+});
+
+describe("pins from the 2a UI re-review (U3, U5, U7, U8)", () => {
+  it("U3: a started session's when-line shows the reading it was built with, not a later one", async () => {
+    const started = session({
+      contentState: "started",
+      locked: true,
+      checks: { "p-x": { pre: 5, feelingOff: true } },
+      build: { ...session().build!, params: { ...session().build!.params, checks: { "p-x": { pre: 1, feelingOff: false } } } },
+    });
+    mount(started, { w: slot({ contentState: "started" }) });
+    await until(() => body().includes("Supported row"), "the moves");
+    expect(body()).toContain("Knee 1");
+    expect(body()).not.toContain("Knee 5");
+  });
+
+  it("U5: a build that adopts the stored one (same build, the row now built) refreshes Today and Plan", async () => {
+    const { calls } = mount(session({ contentState: "outline" }), { afterBuild: () => session({ contentState: "built" }) });
+    await until(() => builds(calls).length === 1, "the build");
+    await until(() => calls.filter((c) => c.path === "/api/programs").length === 2, "the program card refetched");
+  });
+
+  it("U5: a build that changes nothing refreshes nothing", async () => {
+    const { calls } = mount(session(), { afterBuild: () => session() });
+    await until(() => builds(calls).length === 1, "the build");
+    await act(async () => {
+      await new Promise((r) => setTimeout(r, 30));
+    });
+    expect(calls.filter((c) => c.path === "/api/programs")).toHaveLength(1);
+  });
+
+  it("U7: after Build, focus stays in the sheet — on the reading", async () => {
+    const { calls } = mount(session({ checks: {}, contentState: "outline", build: null, view: null }), { afterBuild: () => session() });
+    await until(() => body().includes("right now"), "the pre-check");
+    await act(async () => {
+      document.querySelector<HTMLButtonElement>(".check-scale [role=radio]")!.click();
+    });
+    await click("Build");
+    await until(() => builds(calls).length === 1 && body().includes("Supported row"), "the build");
+    await until(() => document.activeElement?.classList.contains("session-reading") === true, "focus on the reading");
+  });
+
+  it("U8 (S3): a skipped session's reading is plain text — nothing there can be rebuilt", async () => {
+    mount(session(), { w: slot({ completionState: "skipped" }) });
+    await until(() => body().includes("Supported row"), "the moves");
+    expect(body()).toContain("Knee 1");
+    expect(button("Knee 1")).toBeUndefined();
+  });
+
+  it("U8 (S8b): reopening the pre-check from the reading fills in Feeling off as it stands", async () => {
+    mount(session({ checks: { "p-x": { pre: 1, feelingOff: true } } }));
+    await until(() => body().includes("Supported row"), "the moves");
+    await click("Knee 1 · off");
+    expect(button("Feeling off")!.getAttribute("aria-pressed")).toBe("true");
+  });
+
+  it("U8 (S15): Un-skip refreshes Today and Plan", async () => {
+    const { calls } = mount(session({ contentState: "outline", checks: {}, build: null, view: null }), {
+      w: slot({ contentState: "outline", completionState: "skipped" }),
+    });
+    await until(() => body().includes("Skipped"), "the skipped session");
+    const before = calls.filter((c) => c.path === "/api/programs").length;
+    await click("Un-skip");
+    await until(() => calls.filter((c) => c.path === "/api/programs").length > before, "the program card refetched");
   });
 });
 

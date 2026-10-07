@@ -29,7 +29,18 @@ import type {
   StoredRecord,
   WeeklyTrainingReport,
 } from "@rg/analytics";
-import type { Alternative, BlockId, ExerciseRecord, FormatId, Step, Swaps, Target } from "@rg/session-engine";
+import type {
+  Alternative,
+  Block,
+  BlockId,
+  ExerciseRecord,
+  FormatId,
+  HistorySession,
+  RecordsState,
+  Step,
+  Swaps,
+  Target,
+} from "@rg/session-engine";
 
 /**
  * Typed client for the Run Garden worker API. Same-origin; cookie sessions.
@@ -1228,7 +1239,21 @@ export const api = {
    */
   savePerformed: (performedId: string, payload: PerformedSessionWire) =>
     put<SavePerformedDto>(`/api/sessions/performed/${encodeURIComponent(performedId)}`, payload),
+  /** What the review reads of the history, fetched at Start and kept on the device (a read; 404, 409 `not_built`). */
+  reviewBasis: (workoutId: string) => get<ReviewBasisDto>(`/api/sessions/${encodeURIComponent(workoutId)}/review-basis`),
 };
+
+/** Exact shape of `GET /api/sessions/:workoutId/review-basis` (services/session-review-basis.ts). */
+export interface ReviewBasisDto {
+  workoutId: string;
+  buildId: string;
+  /** `Records.baseline` of the history for this build's day and moves. */
+  records: RecordsState;
+  graduation: { block: Block | null; sessions: HistorySession[]; unit: "lb" | "kg" };
+  prefs: { ratings: Record<string, number>; excluded: string[] };
+  /** Harder moves the block's lifts may graduate to, beyond the build's own slice. */
+  exercises: Record<string, SessionExerciseDto>;
+}
 
 /** Exact shape of `GET /api/sessions/:workoutId/current`. */
 export interface SessionCurrencyDto {

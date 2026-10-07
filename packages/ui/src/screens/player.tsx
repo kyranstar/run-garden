@@ -14,17 +14,20 @@
  */
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
-import { api, type SessionDto, type SessionExerciseDto } from "@rg/api-client";
+import { useQueryClient } from "@tanstack/react-query";
+import { api, type ReviewBasisDto, type SessionDto, type SessionExerciseDto } from "@rg/api-client";
 import { formatWeight, parseWeight, type Weight, type WeightUnit } from "@rg/domain";
 import type { EngineData } from "@rg/exercise-library";
 import { Lib, Prog, type SlotChoice, type Step } from "@rg/session-engine";
 import { Sheet, Spinner } from "../components.js";
 import { ExerciseHowto, type HowtoTarget } from "../components/exercise-howto.js";
 import { BLOCK_LABEL, FORMAT_LABEL } from "../components/session-sheet.js";
+import { Stepper } from "../components/set-steppers.js";
 import { IconClose, IconInfo, IconSwap } from "../icons.js";
 import { loadBuild, saveBuild, type StoredSessionBuild } from "../offline/builds.js";
 import { offlineDb, type OfflineDb } from "../offline/idb.js";
 import { createLiveWriter, readLive, writeLive, type LiveWriter } from "../offline/live.js";
+import type { OutboxApi } from "../offline/outbox.js";
 import { chimes as appChimes, type Chimes } from "../player/audio.js";
 import { commandFor, type PlayerCommand } from "../player/keys.js";
 import {
@@ -47,7 +50,10 @@ import {
   type PlayerSource,
   type PlayerState,
 } from "../player/run.js";
-import { loadExtras, saveExtras, type PlayerExtras } from "../player/stored.js";
+import { loadBasis, loadExtras, saveBasis, saveExtras, type PlayerExtras } from "../player/stored.js";
+import { reviewData } from "../player/review.js";
+import { discardSession, savedHere, saveSession } from "../player/save.js";
+import { ReviewScreen } from "./review.js";
 import { offeredNow } from "../player/swap.js";
 import { clockText, lengthMs, readyMs } from "../player/timer.js";
 import { holdWakeLock } from "../player/wake.js";
@@ -56,12 +62,23 @@ export interface PlayerDeps {
   db: () => Promise<OfflineDb>;
   /** Only when nothing is stored for the slot: a session started on another device, opened online. */
   getSession: (workoutId: string) => Promise<SessionDto>;
+  /** Once, while online, when the review's basis is not on the device yet. */
+  reviewBasis: (workoutId: string) => Promise<ReviewBasisDto>;
+  /** The outbox's delivery (Save tries it at once). */
+  savePerformed: OutboxApi["savePerformed"];
   chimes: Chimes;
   /** Hold the screen on; returns release. */
   wake: () => () => void;
 }
 
-const defaultDeps: PlayerDeps = { db: offlineDb, getSession: api.getSession, chimes: appChimes, wake: () => holdWakeLock() };
+const defaultDeps: PlayerDeps = {
+  db: offlineDb,
+  getSession: api.getSession,
+  reviewBasis: api.reviewBasis,
+  savePerformed: api.savePerformed,
+  chimes: appChimes,
+  wake: () => holdWakeLock(),
+};
 
 const AUTO_KEY = "rg-player-auto-advance";
 function readAuto(): boolean {
@@ -86,7 +103,9 @@ type Loaded =
   /** Built but not started: Start is on its sheet. */
   | { kind: "unstarted" }
   | { kind: "done" }
-  | { kind: "ready"; src: PlayerSource; data: EngineData; extras: PlayerExtras | null; initial: PlayerState };
+  /** Saved on this device, waiting for the server (or refused by it: Settings → Data). */
+  | { kind: "saved" }
+  | { kind: "ready"; src: PlayerSource; data: EngineData; extras: PlayerExtras | null; basis: ReviewBasisDto | null; initial: PlayerState };
 
 /** What IndexedDB holds for the slot (or, online with nothing stored, a session already started elsewhere). */
 async function load(workoutId: string, deps: PlayerDeps): Promise<{ loaded: Loaded; db: OfflineDb | null }> {
@@ -96,6 +115,8 @@ async function load(workoutId: string, deps: PlayerDeps): Promise<{ loaded: Load
   } catch {
     db = null;
   }
+  // Saved here and not yet synced: never a second session for the slot.
+  if (db && (await savedHere(db, workoutId).catch(() => false))) return { loaded: { kind: "saved" }, db };
   let stored: StoredSessionBuild | undefined = db ? await loadBuild(db, workoutId).catch(() => undefined) : undefined;
   let extras: PlayerExtras | null = db ? ((await loadExtras(db, workoutId).catch(() => undefined)) ?? null) : null;
   if (!stored) {
@@ -130,7 +151,9 @@ async function load(workoutId: string, deps: PlayerDeps): Promise<{ loaded: Load
     // In IndexedDB from the first moment: a reload a second later resumes it (and the app opens offline on it).
     if (db) await writeLive(db, toLiveSession(initial, now)).catch(() => undefined);
   }
-  return { loaded: { kind: "ready", src, data, extras, initial }, db };
+  let basis = db ? ((await loadBasis(db, workoutId).catch(() => undefined)) ?? null) : null;
+  if (basis && basis.buildId !== src.build.buildId) basis = null;
+  return { loaded: { kind: "ready", src, data, extras, basis, initial }, db };
 }
 
 export function PlayerScreen({ workoutId, deps: given }: { workoutId: string; deps?: Partial<PlayerDeps> }) {
@@ -163,7 +186,9 @@ export function PlayerScreen({ workoutId, deps: given }: { workoutId: string; de
         ? "This session isn't on this device. Open it while online to start it."
         : loaded.kind === "done"
           ? "This session is done."
-          : "Start this session from its sheet.";
+          : loaded.kind === "saved"
+            ? "This session is saved."
+            : "Start this session from its sheet.";
     return (
       <div className="player player-status">
         <p>{line}</p>
@@ -187,7 +212,26 @@ type Panel = "howto" | "swap" | "keys" | "leave" | null;
 
 function Playing({ loaded, db, deps }: { loaded: Extract<Loaded, { kind: "ready" }>; db: OfflineDb | null; deps: PlayerDeps }) {
   const navigate = useNavigate();
+  const qc = useQueryClient();
   const { src, data, extras } = loaded;
+  const [basis, setBasis] = useState<ReviewBasisDto | null>(loaded.basis);
+  // The review's basis, once, while online (Start's own request may have beaten the player to it, or not).
+  useEffect(() => {
+    if (basis) return;
+    let alive = true;
+    deps
+      .reviewBasis(src.workoutId)
+      .then(async (b) => {
+        if (!alive || b.buildId !== src.build.buildId) return;
+        setBasis(b);
+        if (db) await saveBasis(db, src.workoutId, b).catch(() => undefined);
+      })
+      .catch(() => undefined);
+    return () => {
+      alive = false;
+    };
+  }, [basis, deps, db, src.workoutId, src.build.buildId]);
+  const reviewEngine = useMemo(() => reviewData(src, basis), [src, basis]);
   const [auto, setAuto] = useState(readAuto);
   const [now, setNow] = useState(() => Date.now());
   const [state, setState] = useState<PlayerState>(() => settle(loaded.initial, Date.now(), { autoAdvance: readAuto() }));
@@ -209,6 +253,8 @@ function Playing({ loaded, db, deps }: { loaded: Extract<Loaded, { kind: "ready"
   }, [db]);
   useEffect(() => {
     writer.current?.write(toLiveSession(state, Date.now()));
+    // The end of the session is kept at once: a reload right after it comes back to the review, never to the last step.
+    if (state.finished) void writer.current?.flush();
   }, [state]);
 
   // ── The wall clock: a light tick while playing, and a catch-up whenever the page comes back ────────────────────
@@ -406,15 +452,47 @@ function Playing({ loaded, db, deps }: { loaded: Extract<Loaded, { kind: "ready"
   logRef.current = logOpen;
 
   if (state.finished) {
+    /** Nothing more is written for this session in progress (Save and Discard end it). */
+    const stopWriting = async () => {
+      const w = writer.current;
+      writer.current = null;
+      if (w) {
+        await w.flush();
+        w.dispose();
+      }
+    };
+    const refresh = (saved: boolean) => {
+      void qc.invalidateQueries({ queryKey: ["outbox"] });
+      if (saved) for (const k of ["today", "plan", "plan-week", "programs", "garden"]) void qc.invalidateQueries({ queryKey: [k] });
+    };
     return (
-      <div className="player player-status">
-        <h1 className="display player-name">That's the session</h1>
-        <div className="btn-row">
-          <Link className="btn btn-primary" to="/">
-            Today
-          </Link>
-        </div>
-      </div>
+      <ReviewScreen
+        state={state}
+        onChange={setState}
+        src={src}
+        data={reviewEngine}
+        title={extras?.title ?? src.view.theme?.name ?? ""}
+        profiles={extras?.profiles ?? []}
+        basis={basis}
+        onLeave={() => void leave()}
+        onSave={async (wire) => {
+          await stopWriting();
+          if (db) {
+            const result = await saveSession(db, wire, { savePerformed: deps.savePerformed });
+            refresh(result === "saved");
+          } else {
+            // No IndexedDB (a private window): straight to the server, or not at all.
+            await deps.savePerformed(wire.id, wire);
+            refresh(true);
+          }
+          navigate("/", { replace: true });
+        }}
+        onDiscard={async () => {
+          await stopWriting();
+          if (db) await discardSession(db, src.workoutId).catch(() => undefined);
+          navigate("/", { replace: true });
+        }}
+      />
     );
   }
 
@@ -893,60 +971,39 @@ function LogCard({
   return (
     <div className="player-log" role="group" aria-label="Log this set">
       {t.entry.log === "load" ? (
-        <div className="player-stepper">
-          <label className="eyebrow" htmlFor="player-weight">Weight</label>
-          <button type="button" aria-label="Lighter" onClick={() => stepW(-1)}>
-            −
-          </button>
-          <input
-            id="player-weight"
-            aria-label="Weight"
-            inputMode="decimal"
-            autoComplete="off"
-            value={draft.weight}
-            onChange={(e) => setDraft({ ...draft, weight: e.target.value })}
-          />
-          <button type="button" aria-label="Heavier" onClick={() => stepW(1)}>
-            +
-          </button>
-        </div>
+        <Stepper
+          label="Weight"
+          inputMode="decimal"
+          value={draft.weight}
+          onChange={(weight) => setDraft({ ...draft, weight })}
+          lessLabel="Lighter"
+          moreLabel="Heavier"
+          onLess={() => stepW(-1)}
+          onMore={() => stepW(1)}
+        />
       ) : null}
       {t.entry.metric === "reps" ? (
-        <div className="player-stepper">
-          <label className="eyebrow" htmlFor="player-reps">Reps</label>
-          <button type="button" aria-label="Fewer reps" onClick={() => stepN("reps", -1)}>
-            −
-          </button>
-          <input
-            id="player-reps"
-            aria-label="Reps"
-            inputMode="numeric"
-            autoComplete="off"
-            value={draft.reps}
-            onChange={(e) => setDraft({ ...draft, reps: e.target.value })}
-          />
-          <button type="button" aria-label="More reps" onClick={() => stepN("reps", 1)}>
-            +
-          </button>
-        </div>
+        <Stepper
+          label="Reps"
+          inputMode="numeric"
+          value={draft.reps}
+          onChange={(reps) => setDraft({ ...draft, reps })}
+          lessLabel="Fewer reps"
+          moreLabel="More reps"
+          onLess={() => stepN("reps", -1)}
+          onMore={() => stepN("reps", 1)}
+        />
       ) : (
-        <div className="player-stepper">
-          <label className="eyebrow" htmlFor="player-secs">Seconds</label>
-          <button type="button" aria-label="Fewer seconds" onClick={() => stepN("secs", -5)}>
-            −
-          </button>
-          <input
-            id="player-secs"
-            aria-label="Seconds"
-            inputMode="numeric"
-            autoComplete="off"
-            value={draft.secs}
-            onChange={(e) => setDraft({ ...draft, secs: e.target.value })}
-          />
-          <button type="button" aria-label="More seconds" onClick={() => stepN("secs", 5)}>
-            +
-          </button>
-        </div>
+        <Stepper
+          label="Seconds"
+          inputMode="numeric"
+          value={draft.secs}
+          onChange={(secs) => setDraft({ ...draft, secs })}
+          lessLabel="Fewer seconds"
+          moreLabel="More seconds"
+          onLess={() => stepN("secs", -5)}
+          onMore={() => stepN("secs", 5)}
+        />
       )}
       {flags.length > 0 ? (
         <div className="row player-flags">

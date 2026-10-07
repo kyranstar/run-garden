@@ -66,12 +66,15 @@ export interface PlayerRecord {
   swaps: Array<{ slotKey: string; to: string }>;
 }
 
-/** The engine data the recorder needs: the build's slice of the library and the switched-on profiles' rules. */
-export function playerData(src: Pick<PlayerSource, "build" | "profiles">): EngineData {
+/**
+ * The engine data the recorder needs: the build's slice of the library and the switched-on profiles' rules (plus,
+ * for the review, the harder moves the review basis brought).
+ */
+export function playerData(src: Pick<PlayerSource, "build" | "profiles">, extra: Readonly<Record<string, unknown>> = {}): EngineData {
   return makeEngineData({
     activeProfiles: src.profiles.filter(isProfileId),
     careProfiles: [],
-    exercises: Object.values(src.build.exercises) as unknown as ExerciseRecord[],
+    exercises: Object.values({ ...extra, ...src.build.exercises }) as unknown as ExerciseRecord[],
   });
 }
 
@@ -82,6 +85,13 @@ const cloneLive = (live: Live): Live => deserialize(serialize(live));
 const draft = (s: PlayerState): PlayerState => ({ ...s, live: cloneLive(s.live), restExtra: { ...s.restExtra }, swaps: [...s.swaps] });
 
 const stepAt = (s: PlayerState, i = s.index): Step | undefined => s.live.steps[i];
+
+/** A change to the recorder's state on a copy (the recorder changes what it is given). */
+export function withLive(state: PlayerState, change: (live: Live) => void): PlayerState {
+  const s = draft(state);
+  change(s.live);
+  return s;
+}
 
 /** Leaving the current step at `now`: a hold is judged by the half-time rule; time on a move is added to it. */
 function leave(s: PlayerState, now: number): void {
@@ -243,13 +253,25 @@ export function swapSlot(state: PlayerState, data: EngineData, slotKey: string, 
 export function endSession(state: PlayerState, now: number): PlayerState {
   if (state.finished) return state;
   const s = draft(state);
+  // The step in play counts only if it was done: a set reached but never confirmed was not; a hold by the half-time
+  // rule; a rest is no step.
+  const step = stepAt(s);
+  const held = step ? heldSecs(step, elapsedMs(s.clock, now)) : 0;
+  const notDone = !!step && (step.kind === "set" || (step.kind === "timed" && held < step.seconds / 2));
   leave(s, now);
+  if (notDone && step) {
+    if (step.kind === "set" && step.exerciseId) Recorder.setDone(s.live, step.exerciseId, step.setIndex ?? 0, false);
+    s.live.reached.delete(s.index);
+  }
   s.finished = true;
   s.paused = false;
   s.clock = stoppedClock();
   s.session = stopClock(s.session, now);
   return s;
 }
+
+/** Played to its last step (not ended early). */
+export const isComplete = (state: PlayerState): boolean => state.finished && state.index >= state.live.steps.length;
 
 export interface StepView extends PhaseView {
   step: Step;
