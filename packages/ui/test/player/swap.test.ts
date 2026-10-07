@@ -157,6 +157,28 @@ describe("Review Focus 4 — a swap offered offline after an earlier swap", () =
     expect(checked).toBeGreaterThan(100);
   }, 120_000);
 
+  it("swapped back to the planned move, the slot plays the plan's own steps again, as the server's rebuild does", () => {
+    let checked = 0;
+    for (const input of INPUTS) {
+      const prepared = Builder.prepare(data, input);
+      const plan = Builder.finish(prepared, {});
+      const b = stored(input, plan);
+      const a = plan.items.find((i) => plan.alternatives[i.slotKey]!.length > 0);
+      if (!a) continue;
+      const y = offeredNow(b, [], a.slotKey)[0]!;
+      const made = [{ slotKey: a.slotKey, to: y.id }];
+      const back = offeredNow(b, made, a.slotKey)[0]!;
+      expect(back.id).toBe(a.exercise.id);
+      const day1 = Planner.swap(null, input.today, a.slotKey, a.exercise.id, y.id);
+      const server = Builder.finish(prepared, Planner.swap(day1, input.today, a.slotKey, y.id, back.id).swaps);
+      const offline = planAfter(b, [...made, { slotKey: a.slotKey, to: back.id }]);
+      expect(slotSteps(offline.steps, a.slotKey)).toEqual(back.steps);
+      expect(offline.steps).toEqual(server.steps);
+      checked++;
+    }
+    expect(checked).toBeGreaterThan(10);
+  }, 120_000);
+
   it("superset partners: after one partner is swapped, the other is offered only moves that pair with it", () => {
     let pairs = 0;
     for (const input of INPUTS) {
