@@ -62,6 +62,20 @@ export default defineConfig({
             },
           },
           {
+            // Who is signed in, for an offline launch (Phase 2b: a session in
+            // progress must reopen with the network off — spike report
+            // 2026-10-07). Its own cache, so sign-out can drop exactly it
+            // (packages/ui/src/offline/me.ts, ME_CACHE). A 401 is never
+            // cached: NetworkFirst stores only successful answers.
+            urlPattern: ({ url }) => url.pathname === "/api/auth/me",
+            handler: "NetworkFirst",
+            options: {
+              cacheName: "rg-me",
+              networkTimeoutSeconds: 3,
+              expiration: { maxEntries: 1, maxAgeSeconds: 60 * 60 * 24 * 7 },
+            },
+          },
+          {
             // Runtime-cache read-only GET API responses so recent data is
             // available offline (clearly marked stale in the UI). Workbox
             // matches RegExp routes against the full href, so a ^\/api\/

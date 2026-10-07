@@ -360,7 +360,8 @@ async function libraryResolver(
   };
 }
 
-async function removeWatchSession(db: Db, sessionId: string): Promise<void> {
+/** Delete a watch session and its sets (the app's own session of the same activity owns them: ruling 2b-R3). */
+export async function removeWatchSession(db: Db, sessionId: string): Promise<void> {
   await db.delete(performedSets).where(eq(performedSets.performedSessionId, sessionId));
   await db.delete(performedSessions).where(eq(performedSessions.id, sessionId));
 }

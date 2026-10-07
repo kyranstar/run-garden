@@ -56,7 +56,7 @@ records the rulings.
 
 ### Task 1: Offline spike (a report, not kept code)
 
-**Files:** report `docs/reports/2026-09-30-offline-spike.md`; throwaway code under the scratchpad only.
+**Files:** report `docs/reports/2026-10-07-offline-spike.md`; throwaway code under the scratchpad only.
 
 - [ ] On desktop Chrome and on an iPhone PWA (the owner's device is needed for the iPhone half; do the desktop half and document the steps for the owner), prove: IndexedDB survives a relaunch; the service worker serves the shell and `/api/auth/me` offline; `navigator.wakeLock` works; audio unlocked by a tap keeps chiming for 30 minutes with the screen on. Record results; if anything fails, amend spec §2b before Task 2.
 - [ ] Commit the report: `docs(report): offline spike — IndexedDB, service worker, wake lock, audio`.

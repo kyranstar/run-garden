@@ -7,6 +7,7 @@ import type {
   GardenEvent,
   GardenWeatherState,
   LiftingPlan,
+  PerformedSessionWire,
   PlanBrief,
   ReadinessVerdict,
   SessionLead,
@@ -14,6 +15,7 @@ import type {
   SyncAction,
   UserPreferences,
   WatchCoverageView,
+  Weight,
   WorkoutSyncView,
 } from "@rg/domain";
 import type {
@@ -975,7 +977,11 @@ export interface SessionViewDto {
   proposedTheme: { id: string; name: string } | null;
   themeReasons: string[];
   minutes: number;
-  location: { id: string; name: string };
+  /**
+   * The place, with what the player needs of it offline: its equipment ids and its implement weights as parsed from
+   * the typed list (ruling 2b-R2).
+   */
+  location: { id: string; name: string; equipment: string[]; implements: Record<string, Weight[]> };
   block: { number: number; week: number; weeks: number; core: { family: string; name: string | null }[]; events: string[] } | null;
   /** The exercise id introduced today. */
   newMove: string | null;
@@ -1214,7 +1220,35 @@ export const api = {
     post<SessionDto>(`/api/sessions/${encodeURIComponent(workoutId)}/start`, { buildId }),
   recordCheck: (body: { profileId: string; value: number | null; feelingOff?: boolean }) =>
     post<{ check: ConditionCheckDto | null }>("/api/conditions/checks", body),
+  /** Whether the build the slot shows is still the day's (Start would lock it as it is); never builds. */
+  sessionCurrent: (workoutId: string) => get<SessionCurrencyDto>(`/api/sessions/${encodeURIComponent(workoutId)}/current`),
+  /**
+   * The outbox's delivery of a performed session: saved exactly once by its id. 409 `{error:"conflict"}` when the
+   * same session was saved with other edits; 503 `{error:"busy"}` and 423 are worth retrying; 404 / 422 are not.
+   */
+  savePerformed: (performedId: string, payload: PerformedSessionWire) =>
+    put<SavePerformedDto>(`/api/sessions/performed/${encodeURIComponent(performedId)}`, payload),
 };
+
+/** Exact shape of `GET /api/sessions/:workoutId/current`. */
+export interface SessionCurrencyDto {
+  workoutId: string;
+  buildId: string | null;
+  current: boolean;
+  locked: boolean;
+}
+
+/** Exact shape of a 200 from `PUT /api/sessions/performed/:id`. */
+export type SavePerformedDto =
+  | {
+      status: "saved";
+      performedId: string;
+      /** The session's activity: its own id, or the watch's copy it joined. */
+      activityId: string;
+      matched: boolean;
+      notes: Array<"slot_already_matched" | "activity_matched_elsewhere" | "slot_gone" | "graduation_skipped">;
+    }
+  | { status: "same_payload" };
 
 // ── Account export / restore (worker: services/account-export.ts, account-restore.ts)
 

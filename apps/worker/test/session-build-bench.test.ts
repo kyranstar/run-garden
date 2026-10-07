@@ -29,7 +29,7 @@ import { LOCATION_PRESETS, makeEngineData, EXERCISES } from "@rg/exercise-librar
 import { Hist, Planner, Rng, type Block, type EngineLocation, type HistorySession } from "@rg/session-engine";
 import { schema } from "@rg/database";
 import type { Db } from "../src/services/db.js";
-import { buildSession, composeBuild, type ComposeInput } from "../src/services/session-build.js";
+import { buildSession, composeBuild, sessionCurrency, type ComposeInput } from "../src/services/session-build.js";
 import { slotId } from "../src/services/program-slots.js";
 import { loadBuildHistory, loadHistory, type BuildHistory, type EngineContext } from "../src/services/engine-inputs.js";
 import { makeTestDb, makeTestUser } from "./helpers.js";
@@ -183,9 +183,10 @@ async function store(db: Db, userId: string, history: readonly HistorySession[])
 }
 
 /** Time spent inside SQLite (running statements, building rows): on Workers that is D1's work, not the Worker's CPU. */
-function sqliteClock(db: Db): { reset(): void; ms(): number } {
+function sqliteClock(db: Db): { reset(): void; ms(): number; statements(): number } {
   const client = (db as unknown as { $client: Database.Database }).$client;
   let spent = 0;
+  let count = 0;
   const prepare = client.prepare.bind(client);
   (client as unknown as { prepare: (src: string) => unknown }).prepare = (src: string) => {
     const stmt = prepare(src) as unknown as Record<string, unknown>;
@@ -195,6 +196,7 @@ function sqliteClock(db: Db): { reset(): void; ms(): number } {
       const bound = (f as (...a: unknown[]) => unknown).bind(stmt);
       stmt[method] = (...a: unknown[]) => {
         const t = performance.now();
+        count += 1;
         try {
           return bound(...a);
         } finally {
@@ -204,7 +206,7 @@ function sqliteClock(db: Db): { reset(): void; ms(): number } {
     }
     return stmt;
   };
-  return { reset: () => { spent = 0; }, ms: () => spent };
+  return { reset: () => { spent = 0; count = 0; }, ms: () => spent, statements: () => count };
 }
 
 let all: { history: HistorySession[]; blocks: Block[] };
@@ -428,4 +430,65 @@ describe("build CPU over a 200-session history", () => {
     console.log(`[payload] 40-minute builds: ${sizes.join(", ")} B; a 30-minute build: ${thirty} B`);
     for (const s of sizes) expect(s).toBeLessThanOrEqual(PAYLOAD_BUDGET_BYTES);
   });
+
+  it("asking whether the stored build is current (GET …/current) answers in bytes what a build request that finds it stored answers in ~100 KB", async () => {
+    // Its own program and slot on the day after the history, TMJ active and cared for, a place with bells.
+    const now = "2026-10-01T12:00:00.000Z";
+    const programId = "bench-current";
+    await db.insert(schema.programs).values({
+      id: programId, userId, kind: "adaptive", name: "Mobility", status: "active", disciplines: ["yoga", "strength"],
+      startDate: null, endDate: null, raceDate: null, source: null,
+      config: adaptiveConfigSchema.parse({ defaultMinutes: 30, careProfiles: ["tmj"] }), createdAt: now, updatedAt: now, archivedAt: null,
+    });
+    await db.insert(schema.userConditions).values({ id: `${userId}:tmj`, userId, profileId: "tmj", active: true, since: "2025-01-01", settings: {} }).onConflictDoNothing();
+    const block = blockAt(HISTORY_SESSIONS);
+    await db.insert(schema.programBlocks).values({
+      id: "bench-current-block", programId, number: block.number, kind: "core_block", startDate: block.startedAt, weeks: block.weeks,
+      intent: { core: block.core, rotations: [...block.rotations] }, createdAt: now, updatedAt: now,
+    });
+    const today = firstDay();
+    const workoutId = slotId(programId, today);
+    await db.insert(schema.plannedWorkouts).values({
+      id: workoutId, userId, planId: programId, sourceWorkoutId: workoutId, title: "Mobility", category: "yoga", sport: "yoga",
+      originalPlanDate: today, lastVerifiedCorosDate: "", effectiveDate: today, effectiveTime: "18:00",
+      sourceContentFingerprint: "program", calendarBlockDurationSeconds: 1800, fallbackEstimatedDurationSeconds: 1800,
+      corosSyncState: "calendar_only", completionState: "scheduled", origin: "program", contentState: "outline", createdAt: now, updatedAt: now,
+    });
+    const ctx = { today, now, prefs };
+    await buildSession(db, userId, workoutId, {}, ctx);
+    // The route serialises what the service returns (`c.json`): that is in the request's CPU too.
+    const sample = async (run: () => Promise<unknown>) => {
+      clock.reset();
+      const t = performance.now();
+      const bytes = JSON.stringify(await run()).length;
+      return { js: performance.now() - t - clock.ms(), sqlite: clock.ms(), statements: clock.statements(), bytes };
+    };
+    const hit = () => buildSession(db, userId, workoutId, {}, ctx);
+    const ask = () => sessionCurrency(db, userId, workoutId, ctx);
+    expect((await ask() as { current: boolean }).current).toBe(true);
+    for (let i = 0; i < WARMUP; i++) {
+      await hit();
+      await ask();
+    }
+    type Sample = { js: number; sqlite: number; statements: number; bytes: number };
+    const hits: Sample[] = [];
+    const asks: Sample[] = [];
+    for (let i = 0; i < MEASURED; i++) {
+      hits.push(await sample(hit));
+      asks.push(await sample(ask));
+    }
+    const p50 = (xs: Array<{ js: number }>) => percentile(xs.map((x) => x.js), 50);
+    const sq = (xs: Array<{ sqlite: number }>) => percentile(xs.map((x) => x.sqlite), 50);
+    console.log(
+      `[current] GET …/current: JS p50 ${p50(asks).toFixed(2)} ms (scaled ${scaled(p50(asks)).toFixed(2)} ms), ${asks[0]!.statements} ` +
+        `statements, SQLite's own work p50 ${sq(asks).toFixed(2)} ms, ${asks[0]!.bytes} B; POST …/build finding the build ` +
+        `stored: JS p50 ${p50(hits).toFixed(2)} ms (scaled ${scaled(p50(hits)).toFixed(2)} ms), ${hits[0]!.statements} statements, ` +
+        `SQLite ${sq(hits).toFixed(2)} ms, ${hits[0]!.bytes} B (${HISTORY_SESSIONS}-session history)`,
+    );
+    // Both read and hash the day's inputs (that is most of either's cost); the question answers in bytes, never
+    // writes, and reads no more than the build request does. CPU is logged, not asserted: the two are within noise.
+    expect(asks[0]!.statements).toBeLessThanOrEqual(hits[0]!.statements);
+    expect(asks[0]!.bytes).toBeLessThan(200);
+    expect(hits[0]!.bytes).toBeGreaterThan(50_000);
+  }, 120_000);
 });
