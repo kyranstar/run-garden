@@ -82,6 +82,23 @@ describe("OutboxSync", () => {
   });
 });
 
+describe("OutboxSync, when the sign-in has expired (audit 2b-B M-3)", () => {
+  it("asks again who is signed in — the app then goes to sign-in — and keeps the session waiting", async () => {
+    db = await openOfflineDb(new IDBFactory());
+    await enqueue(db, wire(), "user-1");
+    const savePerformed = vi.fn(async () => Promise.reject(new ApiError(401, { error: "unauthorized" })));
+    const qc = new QueryClient();
+    const invalidated: string[] = [];
+    const spy = vi.spyOn(qc, "invalidateQueries").mockImplementation(async (f) => {
+      invalidated.push(String((f as { queryKey?: unknown[] })?.queryKey?.[0]));
+    });
+    render(createElement(OutboxSync, { db: () => Promise.resolve(db!), api: { savePerformed }, userId: "user-1" }), qc);
+    await until(() => invalidated.includes("me"), "the sign-in asked again");
+    expect(await outboxEntries(db)).toHaveLength(1);
+    spy.mockRestore();
+  });
+});
+
 describe("listening for the signed-in account", () => {
   it("never leaves the ['me'] question without its answer-getter (a refetch through any screen still works)", async () => {
     db = await openOfflineDb(new IDBFactory());

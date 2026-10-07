@@ -14,7 +14,7 @@ import { MemoryRouter, Route, Routes } from "react-router-dom";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { IDBFactory } from "fake-indexeddb";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { ReviewBasisDto, SessionBuildDto, SessionDto } from "@rg/api-client";
+import { ApiError, type ReviewBasisDto, type SessionBuildDto, type SessionDto } from "@rg/api-client";
 import { EXERCISES, makeEngineData } from "@rg/exercise-library";
 import { historyFromPerformed, Records, type Step } from "@rg/session-engine";
 import { performedSessionSaveSchema } from "@rg/domain";
@@ -56,12 +56,20 @@ async function stored(opts: { build?: SessionBuildDto; basis?: ReviewBasisDto | 
   if (opts.basis) await saveBasis(db, SLOT, opts.basis);
 }
 
-function mount(opts: { savePerformed?: (id: string, p: unknown) => Promise<unknown>; whoAmI?: () => Promise<string | null> } = {}) {
+function mount(
+  opts: {
+    savePerformed?: (id: string, p: unknown) => Promise<unknown>;
+    whoAmI?: () => Promise<string | null>;
+    /** How long Save waits for its first send before going to Today. */
+    saveWaitMs?: number;
+    qc?: QueryClient;
+  } = {},
+) {
   const getSession = vi.fn(offline);
   const savePerformed = vi.fn(opts.savePerformed ?? offline);
   host = document.createElement("div");
   document.body.appendChild(host);
-  const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  const qc = opts.qc ?? new QueryClient({ defaultOptions: { queries: { retry: false } } });
   const player = createElement(PlayerScreen, {
     workoutId: SLOT,
     deps: {
@@ -72,6 +80,7 @@ function mount(opts: { savePerformed?: (id: string, p: unknown) => Promise<unkno
       whoAmI: opts.whoAmI ?? (async () => null),
       chimes: noChimes,
       wake: () => () => undefined,
+      ...(opts.saveWaitMs === undefined ? {} : { saveWaitMs: opts.saveWaitMs }),
     },
   });
   root = createRoot(host);
@@ -535,6 +544,58 @@ describe("graduation offers", () => {
     await click("Save");
     await until(() => text().includes("today screen"), "Today");
     expect((await entry()).payload.review.graduations).toEqual([]);
+  });
+});
+
+describe("a first send slower than Save's wait (audit 2b-B M-2)", () => {
+  /** Every query the app is told to refetch, in order, with whether the server had the session by then. */
+  function watched() {
+    const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    const asked: Array<{ key: string; sent: boolean }> = [];
+    let sent = false;
+    vi.spyOn(qc, "invalidateQueries").mockImplementation(async (f) => {
+      asked.push({ key: String((f as { queryKey?: unknown[] })?.queryKey?.[0]), sent });
+    });
+    return { qc, asked, markSent: () => (sent = true) };
+  }
+
+  it("Today reads 'will sync' at once, and refetches when the send lands — not only on the next trigger", async () => {
+    await stored();
+    const { qc, asked, markSent } = watched();
+    let land!: () => void;
+    const landed = new Promise<void>((r) => (land = r));
+    mount({
+      qc,
+      saveWaitMs: 20,
+      savePerformed: async () => {
+        await landed;
+        markSent();
+        return { status: "saved" };
+      },
+    });
+    await abandonAfterTwoSteps();
+    await click("Save");
+    // Save's wait (20 ms, real time) runs out while the send is still out.
+    await act(async () => {
+      await new Promise((r) => setTimeout(r, 60));
+    });
+    await until(() => text().includes("today screen"), "Today");
+    expect((await outboxEntries(db!)).length).toBe(1);
+    land();
+    await until(async () => (await outboxEntries(db!)).length === 0, "the send landed");
+    await until(() => asked.some((a) => a.sent && a.key === "outbox"), "the outbox asked again");
+    expect(asked.filter((a) => a.sent).map((a) => a.key)).toEqual(expect.arrayContaining(["outbox", "today", "plan", "garden"]));
+  });
+
+  it("a send refused for an expired sign-in asks again who is signed in (audit 2b-B M-3)", async () => {
+    await stored();
+    const { qc, asked } = watched();
+    mount({ qc, savePerformed: async () => Promise.reject(new ApiError(401, { error: "unauthorized" })) });
+    await abandonAfterTwoSteps();
+    await click("Save");
+    await until(() => text().includes("today screen"), "Today");
+    await until(() => asked.some((a) => a.key === "me"), "the sign-in asked again");
+    expect((await entry()).lastError).toBe("http_401");
   });
 });
 

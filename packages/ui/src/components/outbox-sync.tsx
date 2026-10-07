@@ -8,11 +8,11 @@
  * With nothing in the outbox (every account without a program) it reads IndexedDB and sends nothing.
  */
 import { useEffect } from "react";
-import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { useQuery, useQueryClient, type QueryClient } from "@tanstack/react-query";
 import { api, type MeResponse } from "@rg/api-client";
 import { offlineDb, type OfflineDb } from "../offline/idb.js";
 import { meWithOfflineFallback } from "../offline/me.js";
-import { startOutboxSync, type OutboxApi } from "../offline/outbox.js";
+import { startOutboxSync, type DrainResult, type OutboxApi } from "../offline/outbox.js";
 
 /** What a saved session changes on screen. */
 export const SAVED_SESSION_QUERIES = ["today", "plan", "plan-week", "programs", "garden", "runs"] as const;
@@ -51,11 +51,20 @@ export function OutboxSync({
       db,
       api: client,
       userId,
-      onDrained: (result) => {
-        void qc.invalidateQueries({ queryKey: ["outbox"] });
-        if (result.saved > 0) for (const k of SAVED_SESSION_QUERIES) void qc.invalidateQueries({ queryKey: [k] });
-      },
+      onDrained: (result) => afterDrain(qc, result),
     });
   }, [db, client, qc, userId]);
   return null;
+}
+
+/**
+ * What a drain changes on screen: the outbox's own lines; Today, Plan and the garden once a session reached the server;
+ * and, when the server said the sign-in has expired, who is signed in — asked again, so the app goes to sign-in rather
+ * than reading "Couldn't load the garden" over a session waiting to sync (audit 2b-B M-3).
+ */
+export function afterDrain(qc: QueryClient, result: Pick<DrainResult, "saved" | "signedOut"> | null): void {
+  void qc.invalidateQueries({ queryKey: ["outbox"] });
+  if (!result) return;
+  if (result.saved > 0) for (const k of SAVED_SESSION_QUERIES) void qc.invalidateQueries({ queryKey: [k] });
+  if (result.signedOut) void qc.invalidateQueries({ queryKey: ["me"] });
 }

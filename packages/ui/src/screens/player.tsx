@@ -20,6 +20,7 @@ import { formatWeight, parseWeight, type Weight, type WeightUnit } from "@rg/dom
 import type { EngineData } from "@rg/exercise-library";
 import { Lib, Prog, type SlotChoice, type Step } from "@rg/session-engine";
 import { Sheet, Spinner } from "../components.js";
+import { afterDrain, SAVED_SESSION_QUERIES } from "../components/outbox-sync.js";
 import { ExerciseHowto, type HowtoTarget } from "../components/exercise-howto.js";
 import { BLOCK_LABEL, FORMAT_LABEL } from "../components/session-sheet.js";
 import { Stepper } from "../components/set-steppers.js";
@@ -74,6 +75,8 @@ export interface PlayerDeps {
   wake: () => () => void;
   /** How long the clock's own changes wait before they are written (the live writer's debounce). */
   writeDelayMs?: number;
+  /** How long Save waits for its first send before it goes to Today ("saved, will sync"). */
+  saveWaitMs?: number;
 }
 
 const defaultDeps: PlayerDeps = {
@@ -494,7 +497,7 @@ function Playing({ loaded, db, deps }: { loaded: Extract<Loaded, { kind: "ready"
     };
     const refresh = (saved: boolean) => {
       void qc.invalidateQueries({ queryKey: ["outbox"] });
-      if (saved) for (const k of ["today", "plan", "plan-week", "programs", "garden"]) void qc.invalidateQueries({ queryKey: [k] });
+      if (saved) for (const k of SAVED_SESSION_QUERIES) void qc.invalidateQueries({ queryKey: [k] });
     };
     return (
       <ReviewScreen
@@ -512,7 +515,12 @@ function Playing({ loaded, db, deps }: { loaded: Extract<Loaded, { kind: "ready"
             // The account the save belongs to: Start's, else the one signed in now, else the answer kept here.
             const userId = extras?.userId ?? qc.getQueryData<MeResponse>(["me"])?.userId ?? (await deps.whoAmI());
             if (!userId) throw new Error("no signed-in account to save for");
-            const result = await saveSession(db, wire, { savePerformed: deps.savePerformed }, userId);
+            // The first send's answer reaches the screens whenever it lands, even after Today shows "will sync"
+            // (audit 2b-B M-2), and an expired sign-in sends the app to sign-in (M-3).
+            const result = await saveSession(db, wire, { savePerformed: deps.savePerformed }, userId, {
+              waitMs: deps.saveWaitMs,
+              onDrained: (r) => afterDrain(qc, r),
+            });
             refresh(result === "saved");
           } else {
             // No IndexedDB (a private window): straight to the server, or not at all.

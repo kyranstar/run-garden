@@ -8,12 +8,12 @@
 import type { PerformedSessionWire } from "@rg/domain";
 import type { OfflineDb } from "../offline/idb.js";
 import { clearLive } from "../offline/live.js";
-import { drain, enqueue, outboxEntries, type OutboxApi } from "../offline/outbox.js";
+import { drain, enqueue, outboxEntries, type DrainResult, type OutboxApi } from "../offline/outbox.js";
 import { forgetStart } from "./stored.js";
 
 export type SaveResult = "saved" | "pending";
 
-const SEND_WAIT_MS = 4_000;
+export const SEND_WAIT_MS = 4_000;
 
 export async function saveSession(
   db: OfflineDb,
@@ -21,7 +21,15 @@ export async function saveSession(
   api: OutboxApi,
   /** The signed-in account the save belongs to (ruling 2b-R6: the outbox sends only its own). */
   userId: string,
-  waitMs: number = SEND_WAIT_MS,
+  opts: {
+    /** How long Save waits for the first send before it answers "pending". */
+    waitMs?: number;
+    /**
+     * The first send's answer, whenever it comes — within the wait or after it (audit 2b-B M-2: a send that outlasts
+     * the wait still lands, and what shows "will sync" must hear it). Null when the drain itself failed.
+     */
+    onDrained?: (result: DrainResult | null) => void;
+  } = {},
 ): Promise<SaveResult> {
   await enqueue(db, wire, userId);
   if (wire.workoutId) {
@@ -29,10 +37,16 @@ export async function saveSession(
     await forgetStart(db, wire.workoutId);
   }
   let timer: ReturnType<typeof setTimeout> | null = null;
+  const sent = drain(db, api, { userId })
+    .catch(() => null)
+    .then((result) => {
+      opts.onDrained?.(result);
+      return result;
+    });
   await Promise.race([
-    drain(db, api, { userId }).catch(() => null),
+    sent,
     new Promise((resolve) => {
-      timer = setTimeout(resolve, waitMs);
+      timer = setTimeout(resolve, opts.waitMs ?? SEND_WAIT_MS);
     }),
   ]);
   if (timer) clearTimeout(timer);
