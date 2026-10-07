@@ -545,7 +545,10 @@ const STRENGTH_SPORT_TYPE = SPORTS.find((s) => s.id === "strength")!.corosCodes[
 
 export type WatchBackfillResult =
   | { status: "fixture_mode" | "not_connected" | "restoring" | "busy" | "runtime_limit" }
+  /** COROS refused or failed a call. */
   | { status: "coros_error"; code?: string }
+  /** The failure was ours (a D1 error, credentials that no longer decrypt), not COROS's. */
+  | { status: "error" }
   | {
       status: "ok";
       /** Activities whose sets were logged. */
@@ -554,7 +557,10 @@ export type WatchBackfillResult =
       nothingToLog: number;
       /** Activities the app's own session turned out to own. */
       appOwned: number;
-      /** Details COROS failed to send; a later walk from the top retries them. */
+      /**
+       * Activities that failed — COROS did not send the detail, or storing it
+       * failed. The cursor passes them; a later walk from the top retries them.
+       */
       failures: number;
       /** Pass as `before` to go on; null when nothing older is left. */
       next: string | null;
@@ -675,27 +681,30 @@ export async function backfillWatchSets(
       if (subrequests + DETAIL_WORST_CASE > WATCH_BACKFILL_SUBREQUEST_BUDGET) break;
       processed += 1;
       last = { startTime: row.startTime, id: row.id };
-      let detail: RawCorosActivityDetail;
+      // One activity's failure — COROS's or ours — is counted and passed; the
+      // rest of the batch, and the walk, go on (audit M-5).
+      let res: UpsertWatchResult;
       try {
-        detail = await client.getActivityDetail(row.labelId, STRENGTH_SPORT_TYPE);
+        const detail = await client.getActivityDetail(row.labelId, STRENGTH_SPORT_TYPE);
+        res = await upsertWatchSession(db, {
+          userId,
+          activity: {
+            activityId: row.id,
+            providerActivityId: row.labelId,
+            startTime: row.startTime,
+            startTimeLocal: row.startTimeLocal,
+            durationSeconds: row.durationSeconds,
+            elapsedSeconds: row.elapsedSeconds,
+          },
+          detail,
+          workoutId: await matchedWorkoutId(db, row.id),
+        });
       } catch (e) {
         if (isRuntimeLimit(e)) throw e;
+        console.error(`[watch-sets] backfill ${row.id}: ${(e instanceof Error ? e.message : String(e)).slice(0, 300)}`);
         done.failures += 1;
         continue;
       }
-      const res = await upsertWatchSession(db, {
-        userId,
-        activity: {
-          activityId: row.id,
-          providerActivityId: row.labelId,
-          startTime: row.startTime,
-          startTimeLocal: row.startTimeLocal,
-          durationSeconds: row.durationSeconds,
-          elapsedSeconds: row.elapsedSeconds,
-        },
-        detail,
-        workoutId: await matchedWorkoutId(db, row.id),
-      });
       if (res.status === "restoring") return { status: "restoring" };
       if (res.status === "written" || res.status === "unchanged") done.filled += 1;
       else if (res.status === "app_owned") done.appOwned += 1;
@@ -706,7 +715,10 @@ export async function backfillWatchSets(
   } catch (e) {
     if (isRuntimeLimit(e)) return { status: "runtime_limit" };
     // Result code only — nothing from the account leaves.
-    return { status: "coros_error", ...(e instanceof CorosApiError && e.resultCode ? { code: e.resultCode } : {}) };
+    if (e instanceof CorosApiError) return { status: "coros_error", ...(e.resultCode ? { code: e.resultCode } : {}) };
+    // Ours, not COROS's: saying "COROS failed" here would be the 2026-08-18 mislabel (coros-read.ts).
+    console.error(`[watch-sets] backfill: ${(e instanceof Error ? e.message : String(e)).slice(0, 300)}`);
+    return { status: "error" };
   } finally {
     await releaseUserLock(db, userId, "coros_read", lock).catch(() => undefined);
   }

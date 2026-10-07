@@ -38,9 +38,19 @@ function recording(server: Server) {
   return { paths, impl };
 }
 
-async function setup() {
+/** `failOnce`: the first statement it matches throws, as a transient D1 error would. */
+async function setup(opts: { failOnce?: RegExp } = {}) {
   const statements: string[] = [];
-  const db = makeTestDb({ onStatement: (sql) => statements.push(sql) });
+  let armed = opts.failOnce !== undefined;
+  const db = makeTestDb({
+    onStatement: (sql) => {
+      statements.push(sql);
+      if (armed && opts.failOnce!.test(sql)) {
+        armed = false;
+        throw new Error("D1_ERROR: transient");
+      }
+    },
+  });
   const { userId } = await makeTestUser(db);
   const server = mockCorosServer();
   const pwdMd5 = createHash("md5").update(server.password, "utf8").digest("hex");
@@ -206,6 +216,37 @@ describe("backfillWatchSets", () => {
       expect.arrayContaining(["lbl-tie-1", "lbl-tie-2"]),
     );
     expect(await sessionsOf(db, userId)).toHaveLength(WATCH_BACKFILL_BATCH + 1);
+  });
+
+  it("counts an activity that fails to store and walks on to the next (audit M-5)", async () => {
+    const { db, userId, server, rec } = await setup({ failOnce: /^\s*insert into "performed_sessions"/i });
+    await stored(db, userId, server, "lbl-broken", "2026-09-12T13:00:00.000Z"); // newest: its write fails
+    await stored(db, userId, server, "lbl-fine", "2026-09-11T13:00:00.000Z");
+    let next: string | null = null;
+    let failures = 0;
+    for (let calls = 0; calls < 10; calls++) {
+      const r = await backfillWatchSets(db, makeEnv(), userId, { fetchImpl: rec.impl, ...(next ? { before: next } : {}) });
+      expect(r.status).toBe("ok");
+      if (r.status !== "ok") break;
+      failures += r.failures;
+      next = r.next;
+      if (!next) break;
+    }
+    expect(failures).toBe(1);
+    expect((await sessionsOf(db, userId)).map((s) => [s.sourceRef, s.payloadHash === "pending"])).toEqual([
+      ["lbl-fine", false],
+    ]);
+  });
+
+  it("reports a failure of our own as `error`, never as COROS's (audit M-5)", async () => {
+    const { db, userId, server, rec } = await setup();
+    await stored(db, userId, server, "lbl-k", "2026-09-12T13:00:00.000Z");
+    // The stored credentials no longer decrypt: our fault, not COROS's.
+    const env = makeEnv({ TOKEN_ENCRYPTION_KEY: Buffer.alloc(32, 9).toString("base64") });
+    expect(await backfillWatchSets(db, env, userId, { fetchImpl: rec.impl })).toEqual({ status: "error" });
+    expect(rec.paths).toEqual([]);
+    // The lock was let go.
+    expect((await backfillWatchSets(db, makeEnv(), userId, { fetchImpl: rec.impl })).status).toBe("ok");
   });
 
   it("counts a detail with nothing to log and goes on", async () => {
