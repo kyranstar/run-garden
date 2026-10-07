@@ -103,6 +103,24 @@ describe("loggedSetsByActivity", () => {
     ]);
   });
 
+  it("a circuit's rounds join one row per exercise, first-seen order, sets in the order done", async () => {
+    const db = makeTestDb();
+    const { userId } = await makeTestUser(db);
+    // Three rounds of squat then row: the watch gives every round of a move its own entry.
+    await appSession(db, userId, "act-circuit", [
+      { entry: 0, exerciseId: "gobletSquat", reps: 10, load: [25, "lb"] },
+      { entry: 1, exerciseId: "coros:T1001", reps: 12, load: null },
+      { entry: 2, exerciseId: "gobletSquat", reps: 9, load: [25, "lb"] },
+      { entry: 3, exerciseId: "coros:T1001", reps: 11, load: null },
+      { entry: 4, exerciseId: "gobletSquat", reps: 8, load: [30, "lb"] },
+    ]);
+    const rows = (await loggedSetsByActivity(db, userId, ["act-circuit"], "lb")).get("act-circuit")!;
+    expect(rows.map((r) => [r.exerciseId, r.sets.map((s) => s.reps)])).toEqual([
+      ["gobletSquat", [10, 9, 8]],
+      ["coros:T1001", [12, 11]],
+    ]);
+  });
+
   it("leaves out activities with nothing logged, and other people's sessions", async () => {
     const { db, userId } = await withWatchSession();
     const other = await makeTestUser(db);

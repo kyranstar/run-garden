@@ -106,17 +106,22 @@ export async function loggedSetsByActivity(
     )
   ).flat();
 
+  // One row per exercise, in the order each first appears, its sets in the order done. A circuit (or a watch session,
+  // whose every round of a move is its own entry) repeats an exercise across entries: those sets join the one row.
   const out = new Map<string, LoggedExerciseDto[]>();
-  const current = new Map<string, { entryIndex: number; exercise: LoggedExerciseDto }>();
+  const byExercise = new Map<string, Map<string, LoggedExerciseDto>>();
   for (const r of sets) {
     const activityId = activityBySession.get(r.performedSessionId)!;
     const list = out.get(activityId) ?? [];
-    let at = current.get(activityId);
-    if (!at || at.entryIndex !== r.entryIndex) {
-      at = { entryIndex: r.entryIndex, exercise: { exerciseId: r.exerciseId, name: exerciseDisplayName(r.exerciseId), sets: [] } };
-      current.set(activityId, at);
-      list.push(at.exercise);
+    const rows = byExercise.get(activityId) ?? new Map<string, LoggedExerciseDto>();
+    byExercise.set(activityId, rows);
+    let exercise = rows.get(r.exerciseId);
+    if (!exercise) {
+      exercise = { exerciseId: r.exerciseId, name: exerciseDisplayName(r.exerciseId), sets: [] };
+      rows.set(r.exerciseId, exercise);
+      list.push(exercise);
     }
+    const at = { exercise };
     const typed: Weight | null =
       r.loadValue !== null && r.loadValue > 0 && (r.loadUnit === "lb" || r.loadUnit === "kg")
         ? { v: r.loadValue, u: r.loadUnit }
