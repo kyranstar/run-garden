@@ -693,7 +693,8 @@ describe("the garden replays from the session's own day (§2b step 6)", () => {
     expect(result.lastSimulatedDate >= "2026-10-05").toBe(true);
     expect((await dayInput("2026-05-04"))!.completedRuns.map((r) => r.workoutId)).toContain(old);
     expect((await db.select().from(accountState).where(eq(accountState.userId, userId)))[0]).toMatchObject({ gardenCatchUpPending: false, gardenChangedFrom: null });
-  });
+    // Five months of garden walked twice: ~3 s here, half a minute on a loaded runner.
+  }, 120_000);
 });
 
 describe("ruling 2b-R7 as amended: the session's day is its locked build's, else its slot's (audit 2b-A I-4)", () => {
