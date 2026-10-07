@@ -142,7 +142,9 @@ async function load(workoutId: string, deps: PlayerDeps): Promise<{ loaded: Load
     if (session.contentState === "done") return { loaded: { kind: "done" }, db };
     if (session.contentState !== "started" || !session.build || !session.view) return { loaded: { kind: "unstarted" }, db };
     stored = { workoutId, build: session.build, view: session.view, savedAt: Date.now() };
-    extras = { workoutId, title: session.view.theme?.name ?? "Session", profiles: session.profiles, userId: null, savedAt: Date.now() };
+    // The signed-in account it is played for: its save, and Today's "Session in progress", are that account's.
+    const userId = await deps.whoAmI().catch(() => null);
+    extras = { workoutId, title: session.view.theme?.name ?? "Session", profiles: session.profiles, userId, savedAt: Date.now() };
     if (db) {
       await saveBuild(db, session).catch(() => undefined);
       await saveExtras(db, extras).catch(() => undefined);
@@ -383,6 +385,8 @@ function Playing({ loaded, db, deps }: { loaded: Extract<Loaded, { kind: "ready"
     const paused = pause(state, t);
     setState(paused);
     if (db) await writeLive(db, toLiveSession(paused, t)).catch(() => undefined);
+    // Today lists it as a session in progress (ruling 2b-R16).
+    void qc.invalidateQueries({ queryKey: ["live-sessions"] });
     navigate("/");
   };
 

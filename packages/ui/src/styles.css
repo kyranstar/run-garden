@@ -2148,6 +2148,13 @@ a.note {
 .today-session-skipped {
   color: var(--ink-soft);
 }
+/* A session left in progress on this device (ruling 2b-R16): its name and step beside a full-size Continue. */
+.today-inprogress-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: var(--space-5);
+}
 /* A skipped line keeps a way in to Un-skip (2a UI re-review U6). */
 .today-session-end {
   display: inline-flex;

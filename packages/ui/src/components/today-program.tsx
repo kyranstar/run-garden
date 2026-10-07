@@ -10,7 +10,7 @@
 import { Link } from "react-router-dom";
 import { useQuery } from "@tanstack/react-query";
 import type { TodayResponse, WorkoutDto } from "@rg/api-client";
-import type { SessionLead } from "@rg/domain";
+import { addDays, type SessionLead } from "@rg/domain";
 import { CategoryDot, formatMinutes, formatTime } from "../components.js";
 import { features } from "../features.js";
 import { chimes } from "../player/audio.js";
@@ -88,10 +88,19 @@ const playHref = (w: WorkoutDto, play: "Start" | "Continue") => (play === "Start
 /** Continue is a tap: audio unlocks inside it (the player's chimes). */
 const unlockAudio = () => chimes.unlock();
 
-/** The player's way in for this session today, or null (no player yet, not today, skipped, or nothing left to play). */
+/**
+ * A started session stays playable while its save would be taken (ruling 2b-R16, after 2b-R7): on its day and the day
+ * after — an evening session left at midnight is not lost to the new day.
+ */
+export function continuable(date: string, today: string): boolean {
+  return date === today || date === addDays(today, -1);
+}
+
+/** The player's way in for this session, or null (no player yet, not its day, skipped, or nothing left to play). */
 function playAction(w: WorkoutDto, today: string): "Start" | "Continue" | null {
-  if (!features.player || w.effectiveDate !== today || w.completionState !== "scheduled" || sessionDone(w)) return null;
-  return w.contentState === "started" ? "Continue" : "Start";
+  if (!features.player || w.completionState !== "scheduled" || sessionDone(w)) return null;
+  if (w.contentState === "started") return continuable(w.effectiveDate, today) ? "Continue" : null;
+  return w.effectiveDate === today ? "Start" : null;
 }
 
 /** "Goblet squat 3 × 6 @ 30 lb ↑ · KB deadlift 3 × 8 · 12 more" */

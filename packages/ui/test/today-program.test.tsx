@@ -217,6 +217,17 @@ describe("TodayProgramLead", () => {
     expect(done).not.toMatch(/Start|Continue/);
   });
 
+  it("with the player: a session started yesterday keeps Continue while its save would be taken; Start is today's only (ruling 2b-R16)", () => {
+    features.player = true;
+    const yesterday = "2026-10-04";
+    const started = text(html(createElement(TodayProgramLead, { session: built({ contentState: "started", effectiveDate: yesterday }), today: TODAY })));
+    expect(started).toContain("Continue");
+    const older = text(html(createElement(TodayProgramLead, { session: built({ contentState: "started", effectiveDate: "2026-10-03" }), today: TODAY })));
+    expect(older).not.toContain("Continue");
+    const builtYesterday = text(html(createElement(TodayProgramLead, { session: built({ effectiveDate: yesterday }), today: TODAY })));
+    expect(builtYesterday).not.toContain("Start");
+  });
+
   it("with the player: Start opens the session's sheet (its pre-check and the Start that locks it, online — 2b-R1); Continue opens the player", () => {
     features.player = true;
     for (const El of [TodayProgramLead, TodayProgramLine]) {

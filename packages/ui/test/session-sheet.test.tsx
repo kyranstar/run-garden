@@ -675,6 +675,25 @@ describe("a day ahead, a day gone, a started session", () => {
     expect(builds(calls)).toHaveLength(0);
   });
 
+  it("started yesterday: Continue stays while its save would be taken; the day before, not (ruling 2b-R16)", async () => {
+    features.player = true;
+    const yesterday = "2026-10-04";
+    const startedOn = (date: string) =>
+      session({ date, contentState: "started", locked: true, build: { ...session().build!, date } });
+    mount(startedOn(yesterday), { w: slot({ effectiveDate: yesterday, contentState: "started" }) });
+    await until(() => body().includes("Supported row"), "the moves");
+    expect(button("Continue")).toBeTruthy();
+    expect(button("Move to today")).toBeUndefined();
+    await click("Continue");
+    await until(() => body().includes("the player"), "the player route");
+    act(() => root?.unmount());
+    host?.remove();
+    const older = "2026-10-03";
+    mount(startedOn(older), { w: slot({ effectiveDate: older, contentState: "started" }) });
+    await until(() => body().includes("Supported row"), "the moves");
+    expect(button("Continue")).toBeUndefined();
+  });
+
   it("started: read-only — no swaps, no pickers, nothing built; Continue only with the player", async () => {
     const started = session({ contentState: "started", locked: true });
     const { calls } = mount(started, { w: slot({ contentState: "started" }) });

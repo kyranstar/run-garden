@@ -37,7 +37,7 @@ import { rememberStart, saveBasis } from "../player/stored.js";
 import { MoveSheet } from "../screens/move-sheet.js";
 import { CheckScale, checkWord, conditionChipLabel, FeelingOffToggle } from "./condition-check-sheet.js";
 import { ExerciseHowto, type HowtoTarget } from "./exercise-howto.js";
-import { MODE_LABEL } from "./today-program.js";
+import { continuable, MODE_LABEL } from "./today-program.js";
 
 type Mode = keyof typeof MODE_LABEL;
 type Picker = "mode" | "theme" | "minutes" | "place";
@@ -275,6 +275,8 @@ export function SessionSheet({ w, today, onClose }: { w: WorkoutDto; today: stri
     target?.focus();
   });
   const canPlay = features.player && date === today && !past && !skipped;
+  // A started session keeps Continue while its save would be taken: its build's day and the day after (ruling 2b-R16).
+  const canContinue = features.player && !skipped && s?.contentState === "started" && continuable(s.build?.date ?? date, today);
   // The pinned foot holds the sheet's actions — and is left out when there are none (loading, or a started or done
   // session without the player), rather than drawn as an empty band (audit 2a-UI M6).
   const actions: React.ReactNode[] = [];
@@ -310,7 +312,7 @@ export function SessionSheet({ w, today, onClose }: { w: WorkoutDto; today: stri
         </button>,
       );
     }
-    if (canPlay && s?.contentState === "started") {
+    if (canContinue) {
       actions.push(
         <button
           key="continue"

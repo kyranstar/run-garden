@@ -716,6 +716,13 @@ describe("ruling 2b-R7 as amended: the session's day is its locked build's, else
     expect(await save(body, body.id, { now: "2026-10-09T16:00:00.000Z" })).toMatchObject({ status: "saved" });
   });
 
+  it("a session started yesterday and continued today (ruling 2b-R16): its save, dated the build's day, is taken", async () => {
+    const s = await started("build");
+    // The day after Start, in the evening: Today offered Continue from the device's session in progress.
+    expect(await save(payload(s), undefined, { now: "2026-10-07T20:00:00.000Z" })).toMatchObject({ status: "saved" });
+    expect(await rowOf(s.workoutId)).toMatchObject({ contentState: "done" });
+  });
+
   it("a committed save's retry is same_payload even after its slot moved", async () => {
     const s = await started("build");
     const body = payload(s);
