@@ -405,12 +405,15 @@ async function plan(db: Db, userId: string, raw: unknown, ctx: ImportCtx): Promi
   };
 
   // The tool's places, preferences and wishlist, read whether or not they are written.
+  const placeSeen = new Set<string>();
   const placesIn = (Array.isArray(file.locations) ? file.locations : []).flatMap((l) => {
     const p = standaloneLocationSchema.safeParse(l);
-    if (!p.success) {
+    // A place the file names twice keeps its first entry.
+    if (!p.success || placeSeen.has(p.data.id)) {
       dropped.add("place");
       return [];
     }
+    placeSeen.add(p.data.id);
     const equipment = [...new Set(p.data.equipment)].filter((g) => {
       if (KNOWN_GEAR.has(g)) return true;
       dropped.add(g);

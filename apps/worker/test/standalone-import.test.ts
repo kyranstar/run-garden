@@ -279,6 +279,20 @@ describe("the first import", () => {
     expect(stored.timezone).toBe(prefs.timezone);
   });
 
+  it("a file naming one place twice keeps the first, and the import still lands", async () => {
+    const twice = backup([v2Session("2026-09-28")], {
+      locations: [
+        { id: "home", name: "Apartment", equipment: ["mat"] },
+        { id: "home", name: "Apartment again", equipment: ["mat", "kettlebell"] },
+      ],
+    });
+    const summary = await run(twice);
+    expect(summary.places).toEqual(["Apartment"]);
+    expect(summary.dropped).toContain("place");
+    expect((await db.select().from(locations)).map((p) => [p.name, p.isDefault])).toEqual([["Apartment", true]]);
+    expect(await db.$count(performedSessions)).toBe(1);
+  });
+
   it("never overwrites what the account already has: its own places, preferences and condition stay", async () => {
     const mine = newId();
     await db.insert(locations).values({ id: mine, userId, name: "My flat", equipment: ["mat"], implements: {}, isDefault: true, createdAt: NOW, updatedAt: NOW });
