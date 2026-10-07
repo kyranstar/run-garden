@@ -43,6 +43,8 @@ export interface ReviewRow {
   isNew: boolean;
   /** A logged move (its sets are kept); otherwise only that it was done. */
   logged: boolean;
+  /** Done, as the save counts it: a logged move with a done set; an unlogged one held half its time (ruling 2b-R15). */
+  done: boolean;
   log: "load" | "time" | "reps" | null;
   metric: "reps" | "time" | null;
   perSide: boolean;
@@ -62,6 +64,7 @@ export function reviewRows(state: PlayerState, exercises: Readonly<Record<string
       const id = state.live.steps[i]?.exerciseId;
       if (id && !ids.includes(id)) ids.push(id);
     });
+  const done = new Set(Recorder.movesDone(state.live));
   return ids.map((id) => {
     const e = state.live.entries[id];
     return {
@@ -69,6 +72,7 @@ export function reviewRows(state: PlayerState, exercises: Readonly<Record<string
       name: exercises[id]?.name ?? id,
       isNew: id === newMove,
       logged: !!e,
+      done: done.has(id),
       log: e?.log ?? null,
       metric: e?.metric ?? null,
       perSide: e?.perSide ?? false,

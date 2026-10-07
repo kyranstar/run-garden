@@ -55,6 +55,12 @@ export interface Live {
   entries: Record<string, LiveEntry>;
   order: string[];
   reached: Set<number>;
+  /**
+   * Timed holds left so far, by step index: true once held at least half its time, false when left before half (and
+   * never held). A hold left before half is no step done, and an unlogged one no move done (ruling 2b-R15). Absent on
+   * a state kept before it existed: every hold reached then counts, as it did.
+   */
+  held?: Record<number, boolean>;
   secs: Record<string, number>;
   runningMs: number;
 }
@@ -122,10 +128,10 @@ function create(data: EngineData, plan: PlanSteps, meta: RecorderMeta): Live {
     };
   }
   for (const id of order) entries[id]!.sets = Array.from(sparse[id]!, s => s || blankSet());
-  return { meta, plan, steps, entries, order, reached: new Set(), secs: {}, runningMs: 0 };
+  return { meta, plan, steps, entries, order, reached: new Set(), held: {}, secs: {}, runningMs: 0 };
 }
 
-/** Reaching a set counts it; a timed hold only counts when you leave it (finishTimed). */
+/** Reaching a set counts it; a timed hold only counts when you leave it having held half of it (finishTimed). */
 function reach(live: Live, index: number): void {
   const step = live.steps[index];
   if (!step) return;
@@ -135,14 +141,38 @@ function reach(live: Live, index: number): void {
   if (set && step.kind !== "timed") set.done = true;
 }
 
-/** Leaving a timed hold: it counts if you held at least half of it, at the time you held (unless you typed one). */
+/**
+ * Leaving a timed hold: it counts if you held at least half of it, at the time you held (unless you typed one) — a
+ * logged hold's set and an unlogged hold alike (ruling 2b-R15). Once held, going back to it and leaving early again
+ * does not undo it.
+ */
 function finishTimed(live: Live, index: number, elapsedSecs: number): void {
   const step = live.steps[index];
-  const e = step && step.exerciseId ? live.entries[step.exerciseId] : undefined;
-  const set = e && step ? e.sets[step.setIndex ?? 0] : undefined;
-  if (!step || !set || step.kind !== "timed" || elapsedSecs < step.seconds / 2) return;
+  if (!step || step.kind !== "timed") return;
+  const held = elapsedSecs >= step.seconds / 2;
+  live.held ??= {};
+  if (held) live.held[index] = true;
+  else if (live.held[index] !== true) live.held[index] = false;
+  const e = step.exerciseId ? live.entries[step.exerciseId] : undefined;
+  const set = e ? e.sets[step.setIndex ?? 0] : undefined;
+  if (!set || !held) return;
   set.done = true;
   if (!set.touched) set.secs = Math.round(elapsedSecs);
+}
+
+/** The steps that count as done: every step reached but a rest, and but a hold left before half its time. */
+function stepsCounted(live: Live): Step[] {
+  return [...live.reached]
+    .sort((a, b) => a - b)
+    .filter(i => live.held?.[i] !== false)
+    .map(i => live.steps[i])
+    .filter((s): s is Step => Boolean(s) && s!.kind !== "rest");
+}
+
+/** The moves done: a logged one with a done set, an unlogged one with a step that counts (in the order reached). */
+function movesDone(live: Live): string[] {
+  return [...new Set(stepsCounted(live).map(s => s.exerciseId).filter((x): x is string => Boolean(x)))]
+    .filter(id => !live.entries[id] || live.entries[id]!.sets.some(x => x.done));
 }
 
 const addSeconds = (live: Live, exId: string, secs: number): void => {
@@ -202,10 +232,10 @@ export interface EndOptions {
 
 function toSession(live: Live, { endedAt, post = {}, note = "", completed = false }: EndOptions): PerformedSessionSave {
   const m = live.meta;
-  const reachedSteps = [...live.reached].sort((a, b) => a - b).map(i => live.steps[i]).filter((s): s is Step => Boolean(s) && s!.kind !== "rest");
-  // Logged moves count when a set is done; unlogged ones (mobility, breathing) when you reached them.
-  const doneIds = [...new Set(reachedSteps.map(s => s.exerciseId).filter((x): x is string => Boolean(x)))]
-    .filter(id => !live.entries[id] || live.entries[id]!.sets.some(x => x.done));
+  const reachedSteps = stepsCounted(live);
+  // Logged moves count when a set is done; unlogged ones (mobility, breathing) when you reached them — a hold only
+  // when you held half of it (ruling 2b-R15).
+  const doneIds = movesDone(live);
   const entries: SavedEntry[] = live.order.map(id => live.entries[id]!).map(e => ({
     id: e.id, implement: e.implement, log: e.log, metric: e.metric, perSide: e.perSide, format: e.format, flags: [...e.flags],
     sets: e.sets.filter(s => s.done).map(s => ({
@@ -254,12 +284,13 @@ function rebase(data: EngineData, old: Live, freshPlan: PlanSteps, index: number
     live.entries[id] = old.entries[id]!;
   }
   old.reached.forEach(k => { if (moved.has(k)) live.reached.add(moved.get(k)!); });
+  for (const [k, held] of Object.entries(old.held ?? {})) if (moved.has(Number(k))) live.held![moved.get(Number(k))!] = held;
   live.secs = { ...old.secs };
   live.runningMs = old.runningMs;
   return live;
 }
 
-export const Recorder = { create, reach, finishTimed, addSeconds, update, setDone, addSet, setFlag, logStepIndex, toSession, rebase };
+export const Recorder = { create, reach, finishTimed, addSeconds, update, setDone, addSet, setFlag, logStepIndex, toSession, rebase, movesDone };
 
 // ---- Review: the decisions made on the review screen (ratings, "not for me", graduations) are held as a
 // pending change set and applied on save, never written while reviewing (spec §5 change 4).

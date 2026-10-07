@@ -181,13 +181,22 @@ describe("pausing, stepping back, and the session's running time", () => {
 
 describe("ending early", () => {
   it("the set in play when the session ends is not done — reaching it counted it, but it was never confirmed", () => {
-    const atSet = walkTo(begin(), 2, T0);
-    const s = endSession(atSet, T0 + 5 * S);
+    // The flow's two sides held to the end (each 3 s + 45 s), then the set reached.
+    const atSet = settle(begin(), T0 + 96 * S, { autoAdvance: true });
+    expect(atSet.index).toBe(2);
+    const s = endSession(atSet, T0 + 101 * S);
     expect(s.finished).toBe(true);
     expect(s.live.entries.gobletSquat!.sets[0]!.done).toBe(false);
-    const save = saveOf(s, { endedAt: new Date(T0 + 5 * S).toISOString() });
+    const save = saveOf(s, { endedAt: new Date(T0 + 101 * S).toISOString() });
     expect(save.stepsDone).toBe(2);
     expect(save.completed).toBe(false);
+  });
+
+  it("holds skipped before half their time are no steps done, and their move is not done (ruling 2b-R15)", () => {
+    const s = endSession(walkTo(begin(), 2, T0), T0 + 5 * S);
+    const save = saveOf(s, { endedAt: new Date(T0 + 5 * S).toISOString() });
+    expect(save.stepsDone).toBe(0);
+    expect(save.done.map((d) => d.id)).toEqual([]);
   });
 
   it("a hold in play counts by the half-time rule; under half it is not a step done", () => {

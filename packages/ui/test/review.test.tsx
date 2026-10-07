@@ -224,6 +224,40 @@ describe("whose save it is (ruling 2b-R6)", () => {
   });
 });
 
+describe("a hold skipped before half its time (ruling 2b-R15)", () => {
+  it("reads Skipped on the review, and the save counts neither the step nor the move", async () => {
+    await stored();
+    mount();
+    // The flow's two sides and the cool-down skipped at once; the sets done; the wall sit skipped at once.
+    await playThrough();
+    await click(/^\d+ more/);
+    const summary = (name: string) => control(new RegExp(`^Edit ${name}`))!.querySelector("small")!.textContent;
+    expect(summary("Low lunge")).toBe("Skipped");
+    expect(summary("Reclined butterfly")).toBe("Skipped");
+    expect(summary("Wall sit")).toBe("Not done");
+    expect(summary("Goblet squat")).toBe("35 lb × 6 · 35 lb × 6 · 35 lb × 6");
+    await click("Save");
+    await until(() => text().includes("today screen"), "Today");
+    const e = await entry();
+    expect(e.payload.stepsDone).toBe(3);
+    expect(e.payload.movesDone.map((m) => m.exerciseId)).toEqual(["gobletSquat"]);
+  });
+
+  it("a hold held half its time or more reads Done", async () => {
+    await stored();
+    mount();
+    await until(() => text().includes("1 of 9"), "the first step");
+    // Left held its whole 45 s (3 s get-ready first); Right skipped at once.
+    vi.setSystemTime(T0 + 48 * S);
+    await click("Skip");
+    await click("Skip");
+    await click("Leave the session");
+    await click("End and review");
+    await until(() => !!control("Save"), "the review");
+    expect(control(/^Edit Low lunge/)!.querySelector("small")!.textContent).toBe("Done");
+  });
+});
+
 describe("the review's keys are the page's, not the player's (audit 2b-B M-1)", () => {
   it("ended with the log card open: Enter in the Note is a new line, and Space and ← do nothing of the player's", async () => {
     await stored();
@@ -379,8 +413,8 @@ describe("the review's own decisions, applied only on Save", () => {
     mount();
     await playThrough();
     expect(text()).toContain("New best: Goblet squat 35 lb × 6");
-    // The cool-down's move was reached (unlogged moves count when reached); the skipped wall sit was not done.
-    expect(text()).toContain("First time: Reclined butterfly");
+    // Skipped at once, the cool-down's hold and the wall sit were not done (ruling 2b-R15): no first time for either.
+    expect(text()).not.toContain("First time: Reclined butterfly");
     expect(text()).not.toContain("First time: Wall sit");
     expect(text()).not.toContain("First time: Goblet squat");
   });

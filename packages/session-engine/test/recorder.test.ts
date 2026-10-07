@@ -134,6 +134,75 @@ test("done lists logged moves with a done set, and unlogged moves you reached", 
   expect(ids.includes(plan.steps[unloggedIndex]!.exerciseId!)).toBe(true);
 });
 
+describe("an unlogged hold counts only when at least half of it ran (ruling 2b-R15)", () => {
+  const setUp = () => {
+    const plan = planFor();
+    const live = Recorder.create(data, plan, meta(plan));
+    const i = plan.steps.findIndex(s => s.kind === "timed" && !s.log);
+    expect(i, "needs an unlogged hold").toBeGreaterThanOrEqual(0);
+    const step = plan.steps[i]!;
+    // The only step of that move: what it says is what the hold says.
+    const only = plan.steps.filter(s => s.exerciseId === step.exerciseId).length === 1;
+    return { plan, live, i, step, only };
+  };
+  const save = (live: Live) => Recorder.toSession(live, { endedAt: "x", note: "", completed: false });
+
+  test("left before half its time: not done, and not a step done", () => {
+    const { live, i, step, only } = setUp();
+    Recorder.reach(live, i);
+    Recorder.finishTimed(live, i, step.seconds / 2 - 1);
+    const s = save(live);
+    expect(s.stepsDone).toBe(0);
+    if (only) expect(s.done.map(d => d.id)).not.toContain(step.exerciseId);
+    expect(Recorder.movesDone(live)).not.toContain(step.exerciseId);
+  });
+
+  test("held half its time or more: done, and a step done", () => {
+    const { live, i, step } = setUp();
+    Recorder.reach(live, i);
+    Recorder.finishTimed(live, i, step.seconds / 2);
+    const s = save(live);
+    expect(s.stepsDone).toBe(1);
+    expect(s.done.map(d => d.id)).toContain(step.exerciseId);
+    expect(Recorder.movesDone(live)).toContain(step.exerciseId);
+  });
+
+  test("held once, then gone back to and skipped: it was held — it stays done", () => {
+    const { live, i, step } = setUp();
+    Recorder.reach(live, i);
+    Recorder.finishTimed(live, i, step.seconds);
+    Recorder.reach(live, i);
+    Recorder.finishTimed(live, i, 0);
+    expect(save(live).stepsDone).toBe(1);
+  });
+
+  test("a logged hold left before half is not a step done either (its set was never done)", () => {
+    const plan = planFor({ theme: themed(["straight"]), minutes: 40 });
+    const i = plan.steps.findIndex(s => s.kind === "timed" && s.log);
+    expect(i, "needs a logged timed step").toBeGreaterThanOrEqual(0);
+    const live = Recorder.create(data, plan, meta(plan));
+    Recorder.reach(live, i);
+    Recorder.finishTimed(live, i, 1);
+    expect(save(live).stepsDone).toBe(0);
+  });
+
+  test("a swap mid-session keeps which holds were held and which were skipped", () => {
+    const { plan, live, i, step } = setUp();
+    for (let k = 0; k <= i; k++) Recorder.reach(live, k);
+    Recorder.finishTimed(live, i, 0);
+    const slot = plan.steps.findIndex((s, k) => k > i && s.kind === "set" && s.log);
+    expect(slot).toBeGreaterThan(i);
+    const slotKey = plan.steps[slot]!.slotKey;
+    const input = baseInput();
+    const to = Builder.alternatives(data, { ...input, swaps: {} }, slotKey, 3)[0]!.id;
+    const fresh = Builder.build(data, { ...input, swaps: { [slotKey]: { from: plan.steps[slot]!.exerciseId, to } } });
+    const next = Recorder.rebase(data, live, fresh, slot, slotKey);
+    expect(next.steps[i]!.exerciseId).toBe(step.exerciseId);
+    expect(save(next).stepsDone).toBe(save(live).stepsDone);
+    expect(Recorder.movesDone(next)).toEqual(Recorder.movesDone(live));
+  });
+});
+
 // A superset's first round is done; the A move is swapped at the start of round 2.
 function midSupersetSwap(format: Theme["formats"][number]) {
   const plan = planFor({ theme: themed([format]) });

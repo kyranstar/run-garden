@@ -231,7 +231,8 @@ function ReviewMove({
   unit: WeightUnit;
 }) {
   const line = setsLine(row);
-  const summary = line || (row.logged ? "Not done" : "Done");
+  // An unlogged hold left before half its time was skipped, and the save says so too (ruling 2b-R15).
+  const summary = line || (row.logged ? "Not done" : row.done ? "Done" : "Skipped");
   return (
     <div className="review-move">
       <div className="review-move-row">
