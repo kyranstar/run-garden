@@ -118,6 +118,22 @@ describe("forgetOfflineIdentity (ruling 2b-R6: delete-all, sign-out, any 401)", 
     await expect(forgetOfflineIdentity({ caches: refusing, db: async () => Promise.reject(new Error("no")) })).resolves.toBeUndefined();
   });
 
+  it("an offline database that never answers does not hold sign-in up: the caches go, and it gives up on the database after 2 s", async () => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    try {
+      const caches = cacheStorage({ [ME_CACHE]: { "/api/auth/me": me }, "rg-shell": {} });
+      let done = false;
+      const forgetting = forgetOfflineIdentity({ caches, db: () => new Promise<OfflineDb>(() => undefined) }).then(() => (done = true));
+      await vi.advanceTimersByTimeAsync(1999);
+      expect(done).toBe(false);
+      await vi.advanceTimersByTimeAsync(1);
+      await forgetting;
+      expect([...caches.store.keys()]).toEqual(["rg-shell"]);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("forgetCachedMe (sign-out's old name) forgets the same", async () => {
     const caches = cacheStorage({ [ME_CACHE]: { "/api/auth/me": me }, [READ_CACHE]: {}, "rg-shell": { "/index.html": {} } });
     await forgetCachedMe(caches);

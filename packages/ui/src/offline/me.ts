@@ -62,6 +62,9 @@ export async function meWithOfflineFallback(
   }
 }
 
+/** How long forgetting waits for the offline database before it lets sign-in or sign-out go on. */
+const FORGET_DB_WAIT_MS = 2000;
+
 /**
  * Ruling 2b-R6: forget everything that lets this device open the account offline — the service worker's `rg-me` and
  * `rg-read-cache`, and the offline database's stored builds and live sessions. The outbox (unsynced saves, tagged
@@ -70,11 +73,19 @@ export async function meWithOfflineFallback(
 export async function forgetOfflineIdentity(deps: OfflineDeps = {}): Promise<void> {
   const store = "caches" in deps ? deps.caches : browserCaches();
   await Promise.all([ME_CACHE, READ_CACHE].map((name) => store?.delete(name).catch(() => false)));
-  try {
+  const clearStores = async () => {
     const db = await (deps.db ?? offlineDb)();
     await Promise.all([db.clear("builds"), db.clear("live")]);
+  };
+  let giveUp: ReturnType<typeof setTimeout> | undefined;
+  try {
+    // Sign-in and sign-out wait for this: a database that never answers (blocked, a broken private mode) must not
+    // hold them up.
+    await Promise.race([clearStores(), new Promise<void>((resolve) => (giveUp = setTimeout(resolve, FORGET_DB_WAIT_MS)))]);
   } catch {
     // No IndexedDB here (a private window, an old browser): nothing was stored in it either.
+  } finally {
+    clearTimeout(giveUp);
   }
 }
 
