@@ -24,7 +24,7 @@ import { afterDrain, SAVED_SESSION_QUERIES } from "../components/outbox-sync.js"
 import { ExerciseHowto, type HowtoTarget } from "../components/exercise-howto.js";
 import { BLOCK_LABEL, FORMAT_LABEL } from "../components/session-sheet.js";
 import { Stepper } from "../components/set-steppers.js";
-import { IconClose, IconInfo, IconSwap } from "../icons.js";
+import { IconClose, IconInfo, IconSettings, IconSwap } from "../icons.js";
 import { loadBuild, saveBuild, type StoredSessionBuild } from "../offline/builds.js";
 import { offlineDb, type OfflineDb } from "../offline/idb.js";
 import { meWithOfflineFallback } from "../offline/me.js";
@@ -566,8 +566,9 @@ function Playing({ loaded, db, deps }: { loaded: Extract<Loaded, { kind: "ready"
               <IconInfo size={18} />
             </button>
           ) : null}
-          <button type="button" className="player-icon player-keys-btn" aria-label="Keys" onClick={() => setPanel("keys")}>
-            ?
+          {/* At every width (ruling 2b-R8): its sheet holds "Move on when a timer ends" — and, from md, the keys. */}
+          <button type="button" className="player-icon" aria-label="Settings" onClick={() => setPanel("keys")}>
+            <IconSettings size={18} />
           </button>
         </span>
       </header>
@@ -630,7 +631,7 @@ function Playing({ loaded, db, deps }: { loaded: Extract<Loaded, { kind: "ready"
               · <kbd>S</kbd> swap
             </>
           ) : null}{" "}
-          · <kbd>I</kbd> how-to · <kbd>?</kbd> keys
+          · <kbd>I</kbd> how-to · <kbd>?</kbd> settings
         </p>
       </footer>
 
@@ -674,9 +675,10 @@ function Playing({ loaded, db, deps }: { loaded: Extract<Loaded, { kind: "ready"
         </Sheet>
       ) : null}
       {panel === "keys" ? (
-        <Sheet open onClose={closePanel} title="Keys">
+        <Sheet open onClose={closePanel} title="Settings">
           <div className="stack player-keylist">
-            <dl>
+            {/* The keys: shown from md, where there is a keyboard (styles.css). */}
+            <dl aria-label="Keys">
               <dt>
                 <kbd>Space</kbd>
               </dt>

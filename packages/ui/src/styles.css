@@ -7944,9 +7944,6 @@ button.session-chip::after {
   border-color: var(--ink-faint);
   color: var(--ink);
 }
-.player-keys-btn {
-  display: none;
-}
 .player-bar {
   /* scale-exempt: a graphic track, the height of its own fill */
   height: 4px;
@@ -8063,8 +8060,10 @@ button.session-chip::after {
   padding: 0 var(--space-2);
   color: var(--ink-soft);
 }
+/* The player's Settings sheet: "Move on when a timer ends" at every width (ruling 2b-R8); the key list from md, where
+   there is a keyboard. */
 .player-keylist dl {
-  display: grid;
+  display: none;
   grid-template-columns: auto 1fr;
   gap: var(--space-4) var(--space-6);
   margin: 0;
@@ -8126,8 +8125,8 @@ button.session-chip::after {
   .player-count-left {
     display: inline;
   }
-  .player-keys-btn {
-    display: inline-grid;
+  .player-keylist dl {
+    display: grid;
   }
   .player-main,
   .player-actions {

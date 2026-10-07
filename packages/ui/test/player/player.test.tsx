@@ -319,6 +319,43 @@ describe("the keyboard", () => {
   });
 });
 
+describe("moving on when a timer ends, on a phone too (ruling 2b-R8)", () => {
+  it("the player's Settings is a 44px button at every width; its sheet holds the setting, which is kept on the device", async () => {
+    await storedStart();
+    mount();
+    await until(() => text().includes("1 of 9"), "the first step");
+    const settings = control("Settings")!;
+    // Only the shared 44px icon box: nothing that hides it below md (styles.css: `.player-icon`; the key list alone is md+).
+    expect([...settings.classList]).toEqual(["player-icon"]);
+    await click("Settings");
+    await until(() => !!document.querySelector('[role="dialog"]'), "the sheet");
+    const toggle = control("Move on when a timer ends")!;
+    expect(toggle.getAttribute("aria-pressed")).toBe("true");
+    await click("Move on when a timer ends");
+    expect(control("Move on when a timer ends")!.getAttribute("aria-pressed")).toBe("false");
+    expect(localStorage.getItem("rg-player-auto-advance")).toBe("0");
+    await press("Escape");
+    // Opened again later: still off.
+    act(() => root!.unmount());
+    host?.remove();
+    mount();
+    await until(() => text().includes("1 of 9"), "the same step");
+    await click("Settings");
+    await until(() => !!document.querySelector('[role="dialog"]'), "the sheet again");
+    expect(control("Move on when a timer ends")!.getAttribute("aria-pressed")).toBe("false");
+  });
+
+  it("? still opens it from the keyboard", async () => {
+    await storedStart();
+    mount();
+    await until(() => text().includes("1 of 9"), "the first step");
+    await press("?");
+    await until(() => !!document.querySelector('[role="dialog"]'), "the sheet");
+    expect(control("Move on when a timer ends")).toBeDefined();
+    expect(document.querySelector('[role="dialog"] .player-keylist dl')).not.toBeNull();
+  });
+});
+
 describe("Review Focus 1 on the screen — locked mid-hold", () => {
   type Stored = { live: { secs: Record<string, number>; reached: number[] } };
   async function lockAt(ms: number) {

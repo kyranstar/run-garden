@@ -115,6 +115,20 @@ describe("program settings' segments (audit 2a-UI M2)", () => {
   });
 });
 
+describe("the player's Settings at every width (ruling 2b-R8)", () => {
+  it("the header's icons are 44px boxes and nothing hides one below md; only the key list in its sheet waits for md", () => {
+    const icon = rule(".player-icon");
+    expect(icon.width).toBe("var(--tap)");
+    expect(icon.height).toBe("var(--tap)");
+    // The old md-only keys button is gone: the Settings button is a plain `.player-icon`.
+    expect(css).not.toMatch(/\.player-keys-btn\s*\{/);
+    // The key list is a desktop thing: hidden at the base, shown from md (min-width queries only).
+    expect(rule(".player-keylist dl").display).toBe("none");
+    const md = css.slice(css.indexOf("@media (min-width: 900px) {", css.indexOf(".player-keylist dl")));
+    expect(md).toMatch(/^@media \(min-width: 900px\) \{[^@]*\.player-keylist dl\s*\{\s*display: grid;/);
+  });
+});
+
 describe("the swap list's Use, on the player and on the session sheet (audit 2b-B I-1)", () => {
   it("is a 44px box of its own, both ways — not a small button whose 36px box takes the floor only as a pad", () => {
     // Measured on a phone at 390: "Use" 53×36 on the player's ⇄ sheet, used at arm's length mid-session.
