@@ -105,7 +105,7 @@ per slot on first swap.
 A one-day spike proves, on a real phone PWA (iOS Safari standalone) and desktop Chrome, that: IndexedDB survives a
 relaunch; the service worker serves the shell and `/api/auth/me` offline; `navigator.wakeLock` works on the phone;
 audio unlocked by a tap keeps playing chimes for 30 minutes with the screen on. Findings go in
-`docs/reports/2026-09-30-offline-spike.md`; anything that fails changes this section before the slice starts.
+`docs/reports/2026-10-07-offline-spike.md`; anything that fails changes this section before the slice starts.
 
 ### Client storage (`packages/ui/src/offline/`)
 
