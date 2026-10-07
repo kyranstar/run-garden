@@ -22,6 +22,8 @@ import { DataSection, SettingsScreen } from "../../src/screens/settings.js";
 const browser = new IDBFactory();
 let cacheNames: Set<string>;
 let calls: string[];
+/** How long the worker takes to answer `me` (the page's own `me` may not have loaded when the athlete taps). */
+let meDelayMs: number;
 let root: Root | null = null;
 
 beforeAll(() => {
@@ -36,6 +38,7 @@ afterAll(async () => {
 beforeEach(async () => {
   document.body.innerHTML = "";
   calls = [];
+  meDelayMs = 0;
   cacheNames = new Set(["rg-me", "rg-read-cache", "rg-shell"]);
   vi.stubGlobal("caches", {
     match: vi.fn(async () => undefined),
@@ -47,7 +50,10 @@ beforeEach(async () => {
     vi.fn(async (url: string, init?: RequestInit) => {
       const path = url.replace(/\?.*$/, "");
       calls.push(`${init?.method ?? "GET"} ${path}`);
-      if (path === "/api/auth/me") return json({ userId: "u1", email: "runner@example.com", connections: [], fixtureMode: false, restore: null });
+      if (path === "/api/auth/me") {
+        if (meDelayMs > 0) await new Promise((r) => setTimeout(r, meDelayMs));
+        return json({ userId: "u1", email: "runner@example.com", connections: [], fixtureMode: false, restore: null });
+      }
       if (path === "/api/settings") {
         return json({ prefs: DEFAULT_USER_PREFERENCES, llm: { spentDollars: 0, warnDollars: 1, cutoffDollars: 2, maxDollars: 3, warn: false, cutoff: false } });
       }
@@ -117,6 +123,18 @@ describe("the offline identity is forgotten where the athlete ends it (ruling 2b
     expect([...cacheNames]).toEqual(["rg-shell"]);
     await until(async () => (await (await offlineDb()).all("outbox")).length === 1, "the account's saves dropped");
     expect(await (await offlineDb()).all("outbox")).toEqual([{ key: "p2:h", userId: "u2" }]);
+  });
+
+  it("Delete all data tapped before the page knew who is signed in: the account's own saves still go (asked before the delete)", async () => {
+    meDelayMs = 150;
+    mount(DataSection);
+    await click("Delete all data");
+    await click("Really delete everything — cannot be undone");
+    await until(forgotten, "the offline identity forgotten");
+    await until(async () => (await (await offlineDb()).all("outbox")).length === 1, "the account's saves dropped");
+    expect(await (await offlineDb()).all("outbox")).toEqual([{ key: "p2:h", userId: "u2" }]);
+    // Asked before the delete: afterwards the account answers 401.
+    expect(calls.indexOf("GET /api/auth/me")).toBeLessThan(calls.indexOf("POST /api/settings/delete-all"));
   });
 
   it("Sign out: the same, but every unsynced save stays, tagged, for the next sign-in (M-9)", async () => {

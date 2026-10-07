@@ -1090,12 +1090,17 @@ export function DataSection({ appOrigin }: { appOrigin?: string } = {}) {
   });
   const origin = appOrigin ?? (typeof window !== "undefined" ? window.location.origin : "");
   const del = useMutation({
-    mutationFn: api.deleteAll,
-    onSuccess: async () => {
+    mutationFn: async () => {
+      // Whose unsynced saves go with the account — asked before it is deleted (afterwards `me` is a 401).
+      const userId = me.data?.userId ?? (await api.me().catch(() => null))?.userId ?? null;
+      await api.deleteAll();
+      return userId;
+    },
+    onSuccess: async (userId) => {
       // Nothing of the deleted account may open on this device afterwards, offline included (ruling 2b-R6 as amended;
       // audit 2b-A I-1): the service worker's cached answers, the stored builds, the live sessions — and its unsynced
       // saves, which have no account to go to any more.
-      await forgetOfflineIdentity(me.data?.userId ? { dropOutboxOf: me.data.userId } : {});
+      await forgetOfflineIdentity(userId ? { dropOutboxOf: userId } : {});
       window.location.href = "/";
     },
   });
