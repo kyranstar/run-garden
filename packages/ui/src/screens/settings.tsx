@@ -10,6 +10,7 @@ import {
   runRestore,
   type AccountExportFile,
   type CheckedRestore,
+  type PlaceDto,
   type RestoreProgress,
   type RestoreRowError,
   type RestoreSummary,
@@ -20,6 +21,7 @@ import {
   Card,
   formatDayLong,
   formatDayShort,
+  formatShortDate,
   relativeTime,
   Sheet,
   Spinner,
@@ -28,6 +30,8 @@ import { md5Hex } from "../md5.js";
 import { RestorePendingNotice } from "./restore-notice.js";
 import { UnsyncedSessions } from "../components/unsynced-sessions.js";
 import { forgetOfflineIdentity } from "../offline/me.js";
+import { PlaceSheet } from "../components/place-sheet.js";
+import { features } from "../features.js";
 
 const TZ_OPTIONS: string[] = (() => {
   const sv = (Intl as unknown as { supportedValuesOf?: (k: string) => string[] }).supportedValuesOf;
@@ -100,12 +104,31 @@ function NumberField({
 /** Exported for the units-selector unit test (settings.test.tsx). */
 const FEET_PER_METRE = 3.28084;
 
+/** What the Scheduling card saves — its own fields, never another card's. */
+const SCHEDULING_KEYS = [
+  "weekdayMorningTime",
+  "weekdayEveningTime",
+  "weekendMorningTime",
+  "defaultWindow",
+  "eveningReminderTime",
+  "latestEveningFinish",
+  "raceDate",
+  "bufferBeforeMinutes",
+  "bufferAfterMinutes",
+  "raceDistanceKm",
+  "raceCourseProfile",
+  "raceCourseClimbMetres",
+  "timezone",
+] as const satisfies ReadonlyArray<keyof UserPreferences>;
+
 export function SchedulingSection({ prefs }: { prefs: UserPreferences }) {
   const qc = useQueryClient();
   const [draft, setDraft] = useState(prefs);
   const [saved, setSaved] = useState(false);
   const save = useMutation({
-    mutationFn: () => api.updateSettings(draft),
+    // Only this card's own fields: the draft was copied when the page opened, and sending it whole would put back
+    // whatever another card has changed since — a unit, a switch (Phase 2c).
+    mutationFn: () => api.updateSettings(Object.fromEntries(SCHEDULING_KEYS.map((k) => [k, draft[k]])) as Partial<UserPreferences>),
     onSuccess: () => {
       setSaved(true);
       setTimeout(() => setSaved(false), 2500);
@@ -117,7 +140,7 @@ export function SchedulingSection({ prefs }: { prefs: UserPreferences }) {
     setDraft((d) => ({ ...d, [k]: v }));
   // Climb follows the same preference as every other distance: feet for a
   // miles athlete. Storage stays metric.
-  const climbUnit = draft.units === "mi" ? "ft" : "m";
+  const climbUnit = prefs.units === "mi" ? "ft" : "m";
 
   return (
     <Card title="Scheduling">
@@ -255,30 +278,6 @@ export function SchedulingSection({ prefs }: { prefs: UserPreferences }) {
         </datalist>
         <span className="hint">Type to search. Auto-synced from your Google Calendar when you connect it.</span>
       </div>
-      <div className="field">
-        <label htmlFor="s-units">Distance &amp; pace units</label>
-        <select
-          id="s-units"
-          value={draft.units}
-          onChange={(e) => set("units", e.target.value as "km" | "mi")}
-        >
-          <option value="km">Kilometers</option>
-          <option value="mi">Miles</option>
-        </select>
-        <span className="hint">Paces and distances everywhere follow this.</span>
-      </div>
-      <div className="field">
-        <label htmlFor="s-temp">Temperature</label>
-        <select
-          id="s-temp"
-          value={draft.temperatureUnit}
-          onChange={(e) => set("temperatureUnit", e.target.value as "F" | "C")}
-        >
-          <option value="F">Fahrenheit</option>
-          <option value="C">Celsius</option>
-        </select>
-        <span className="hint">Weather on activities follows this.</span>
-      </div>
       <div className="row" style={{ gap: "var(--space-4)" }}>
         <button className="btn btn-primary" disabled={save.isPending} onClick={() => save.mutate()}>
           Save scheduling
@@ -286,6 +285,317 @@ export function SchedulingSection({ prefs }: { prefs: UserPreferences }) {
         {saved ? <span className="pill pill-ok">Saved</span> : null}
         {save.isError ? <span className="pill pill-warn">Couldn't save</span> : null}
       </div>
+    </Card>
+  );
+}
+
+// ── Phase 2c: health conditions, places and equipment, units, import (mocks §7) ─────────────────────────────────
+
+/** Settings saved one at a time, as the control is tapped; the page's settings refresh after. */
+function useSaveSetting() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (partial: Partial<UserPreferences>) => api.updateSettings(partial),
+    onSuccess: async (res) => {
+      // What was saved shows at once: a read still in flight is cancelled first (it would land older settings over
+      // the saved ones), and the refetch below brings the rest.
+      await qc.cancelQueries({ queryKey: ["settings"] });
+      qc.setQueryData(["settings"], (cur: unknown) => ({ ...(cur && typeof cur === "object" ? cur : {}), prefs: res.prefs }));
+      for (const k of ["settings", "today", "plan", "plan-week", "library"]) void qc.invalidateQueries({ queryKey: [k] });
+    },
+  });
+}
+
+/** The settings as they are now (a save elsewhere on the page included), the page's copy until they load. */
+function useLivePrefs(prefs: UserPreferences): UserPreferences {
+  const live = useQuery({ queryKey: ["settings"], queryFn: api.settings });
+  return live.data?.prefs ?? prefs;
+}
+
+/** Each condition profile the library knows, by its own name, with an on/off switch (spec §2c). */
+export function HealthConditionsSection() {
+  const qc = useQueryClient();
+  const list = useQuery({ queryKey: ["conditions"], queryFn: api.listConditions });
+  const toggle = useMutation({
+    mutationFn: (c: { profileId: string; active: boolean }) => api.setCondition(c.profileId, c.active),
+    onSuccess: (res) => {
+      qc.setQueryData(["conditions"], res);
+      for (const k of ["today", "programs", "library", "plan"]) void qc.invalidateQueries({ queryKey: [k] });
+    },
+  });
+  const profiles = list.data?.profiles ?? [];
+  if (list.isError || (list.isSuccess && profiles.length === 0)) return null;
+  return (
+    <Card title="Health conditions" className="settings-new">
+      {profiles.map((p) => {
+        const on = toggle.isPending && toggle.variables?.profileId === p.profileId ? toggle.variables.active : p.active;
+        return (
+          <div key={p.profileId} className="setting-row">
+            <div>
+              <div>{p.label}</div>
+              {on && p.since ? <small>{`Since ${formatShortDate(p.since)}`}</small> : null}
+            </div>
+            <button
+              type="button"
+              role="switch"
+              aria-checked={on}
+              aria-label={p.label}
+              className="program-switch"
+              disabled={toggle.isPending}
+              onClick={() => toggle.mutate({ profileId: p.profileId, active: !p.active })}
+            />
+          </div>
+        );
+      })}
+      {toggle.isError ? <Banner kind="warn">Couldn't save that — try again.</Banner> : null}
+    </Card>
+  );
+}
+
+/** A place's gear in a line: every label, or the count when there are many. */
+function gearLine(place: PlaceDto, labels: Map<string, string>): string {
+  if (place.equipment.length === 0) return "No equipment";
+  if (place.equipment.length > 7) return `${place.equipment.length} items`;
+  return place.equipment.map((id) => labels.get(id) ?? id).join(" · ");
+}
+
+/** The places, each with its gear and weights as typed; a default; the wishlist with what each item unlocks. */
+export function PlacesSection({ prefs }: { prefs: UserPreferences }) {
+  const places = useQuery({ queryKey: ["places"], queryFn: api.listPlaces });
+  const wishlist = useLivePrefs(prefs).equipmentWishlist;
+  const library = useQuery({ queryKey: ["library", "wishlist"], queryFn: () => api.listLibrary(), enabled: wishlist.length > 0 });
+  const saveSetting = useSaveSetting();
+  const [open, setOpen] = useState<PlaceDto | "new" | null>(null);
+  const vocabulary = places.data?.equipment ?? [];
+  const labels = new Map(vocabulary.map((v) => [v.id, v.label]));
+  const unlocks = new Map((library.data?.wishlist ?? []).map((w) => [w.equipmentId, w.unlocks]));
+  const shown = saveSetting.isPending && saveSetting.variables?.equipmentWishlist ? saveSetting.variables.equipmentWishlist : wishlist;
+  const addable = vocabulary.filter((v) => !shown.includes(v.id));
+
+  if (places.isError) return null;
+  return (
+    <Card title="Places & equipment" className="settings-new">
+      {(places.data?.places ?? []).map((p) => (
+        <button key={p.id} type="button" className="place-row" onClick={() => setOpen(p)}>
+          <span className="place-row-main">
+            <b>
+              {p.name}
+              {p.isDefault ? <span className="faint"> · Default</span> : null}
+            </b>
+            <small>{gearLine(p, labels)}</small>
+            {Object.entries(p.implements).map(([id, typed]) => (
+              <small key={id} className="place-weights">{`${labels.get(id) ?? id}: ${typed}`}</small>
+            ))}
+          </span>
+          <span className="faint" aria-hidden>
+            ›
+          </span>
+        </button>
+      ))}
+      <button type="button" className="settings-link" disabled={!places.isSuccess} onClick={() => setOpen("new")}>
+        Add a place
+      </button>
+      <h3 className="settings-subhead">Wishlist</h3>
+      {shown.map((id) => (
+        <div key={id} className="setting-row">
+          <span>{labels.get(id) ?? id}</span>
+          <span className="setting-row-end">
+            {unlocks.has(id) ? <span className="faint">{`+${unlocks.get(id)} moves`}</span> : null}
+            <button
+              type="button"
+              className="icon-tap"
+              aria-label={`Remove ${labels.get(id) ?? id}`}
+              disabled={saveSetting.isPending}
+              onClick={() => saveSetting.mutate({ equipmentWishlist: shown.filter((x) => x !== id) })}
+            >
+              ✕
+            </button>
+          </span>
+        </div>
+      ))}
+      {addable.length > 0 ? (
+        <select
+          className="settings-select"
+          aria-label="Add to wishlist"
+          value=""
+          disabled={saveSetting.isPending || !places.isSuccess}
+          onChange={(e) => {
+            if (e.target.value) saveSetting.mutate({ equipmentWishlist: [...shown, e.target.value] });
+          }}
+        >
+          <option value="">Add to wishlist…</option>
+          {addable.map((v) => (
+            <option key={v.id} value={v.id}>
+              {v.label}
+            </option>
+          ))}
+        </select>
+      ) : null}
+      {saveSetting.isError ? <Banner kind="warn">Couldn't save that — try again.</Banner> : null}
+      {open ? <PlaceSheet place={open === "new" ? null : open} vocabulary={vocabulary} onClose={() => setOpen(null)} /> : null}
+    </Card>
+  );
+}
+
+/** One unit setting as a segmented choice, saved on a tap. */
+function UnitChoice<K extends "units" | "temperatureUnit" | "weightUnit">({
+  name,
+  setting,
+  value,
+  options,
+  save,
+}: {
+  name: string;
+  setting: K;
+  value: UserPreferences[K];
+  options: ReadonlyArray<{ value: UserPreferences[K]; label: string }>;
+  save: ReturnType<typeof useSaveSetting>;
+}) {
+  const pending = save.isPending ? (save.variables as Partial<UserPreferences> | undefined)?.[setting] : undefined;
+  const current = pending ?? value;
+  return (
+    <div className="setting-row">
+      <span>{name}</span>
+      <div className="program-seg units-seg" role="group" aria-label={name}>
+        {options.map((o) => (
+          <button
+            key={o.value}
+            type="button"
+            aria-pressed={current === o.value}
+            disabled={save.isPending}
+            onClick={() => {
+              if (o.value !== current) save.mutate({ [setting]: o.value } as Partial<UserPreferences>);
+            }}
+          >
+            {o.label}
+          </button>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+/** Distance, temperature and weights (spec §2c "Units"): each saved alone, on a tap. */
+export function UnitsSection({ prefs: initial }: { prefs: UserPreferences }) {
+  const prefs = useLivePrefs(initial);
+  const save = useSaveSetting();
+  return (
+    <Card title="Units" className="settings-new">
+      <UnitChoice name="Distance" setting="units" value={prefs.units} options={[{ value: "km", label: "km" }, { value: "mi", label: "mi" }]} save={save} />
+      <UnitChoice name="Temperature" setting="temperatureUnit" value={prefs.temperatureUnit} options={[{ value: "F", label: "°F" }, { value: "C", label: "°C" }]} save={save} />
+      <UnitChoice name="Weights" setting="weightUnit" value={prefs.weightUnit} options={[{ value: "lb", label: "lb" }, { value: "kg", label: "kg" }]} save={save} />
+      {save.isError ? <Banner kind="warn">Couldn't save that — try again.</Banner> : null}
+    </Card>
+  );
+}
+
+/**
+ * Import (spec §2c; mocks §7): the standalone tool's backup — a dry run first, its summary, then Import. Hidden until
+ * the garden gate keeps imported history out of the garden (`features.import`, Phase 2d): nothing reaches the
+ * importer before then. The result sheet with the tool's own numbers side by side is Phase 2c Task 5.
+ */
+export function ImportSection() {
+  const qc = useQueryClient();
+  const [file, setFile] = useState<{ backup: unknown; exportedAt: string | null } | null>(null);
+  const [problem, setProblem] = useState<string | null>(null);
+  const dryRun = useMutation({ mutationFn: (backup: unknown) => api.importStandalone(backup, { dryRun: true }) });
+  const run = useMutation({
+    mutationFn: (backup: unknown) => api.importStandalone(backup),
+    onSuccess: () => {
+      for (const k of ["places", "conditions", "programs", "settings", "library", "today", "plan", "activities"]) void qc.invalidateQueries({ queryKey: [k] });
+    },
+  });
+  if (!features.import) return null;
+
+  const choose = async (e: ChangeEvent<HTMLInputElement>) => {
+    const chosen = e.target.files?.[0];
+    e.target.value = "";
+    if (!chosen) return;
+    setProblem(null);
+    try {
+      const backup = JSON.parse(await chosen.text()) as unknown;
+      const exportedAt = typeof (backup as { lastExport?: unknown })?.lastExport === "string" ? String((backup as { lastExport: string }).lastExport) : null;
+      setFile({ backup, exportedAt });
+      run.reset();
+      dryRun.mutate(backup);
+    } catch {
+      setProblem("That file isn't a backup from the standalone tool.");
+    }
+  };
+  const close = () => {
+    setFile(null);
+    dryRun.reset();
+    run.reset();
+  };
+  const s = run.data ?? dryRun.data;
+  const date = file?.exportedAt && /^\d{4}-\d{2}-\d{2}/.test(file.exportedAt) ? formatShortDate(file.exportedAt.slice(0, 10)) : null;
+
+  return (
+    <Card title="Import" className="settings-new">
+      <label className="place-row place-file">
+        <span className="place-row-main">
+          <b>From the standalone tool…</b>
+          <small>Sessions, block, places and ratings</small>
+        </span>
+        <span className="faint" aria-hidden>
+          ›
+        </span>
+        <input type="file" accept=".json,application/json" className="visually-hidden" onChange={(e) => void choose(e)} />
+      </label>
+      {problem ? <Banner kind="warn">{problem}</Banner> : null}
+      {file ? (
+        <Sheet
+          open
+          onClose={close}
+          title={date ? `Import backup · ${date}` : "Import backup"}
+          footer={
+            run.isSuccess ? (
+              <button type="button" className="btn btn-primary" onClick={close}>
+                Done
+              </button>
+            ) : (
+              <button type="button" className="btn btn-primary" disabled={!dryRun.isSuccess || run.isPending || (s?.sessions.added ?? 0) + (s?.firstImport ? 1 : 0) === 0} onClick={() => run.mutate(file.backup)}>
+                Import
+              </button>
+            )
+          }
+        >
+          {dryRun.isPending ? <Spinner label="Reading the backup" /> : null}
+          {dryRun.isError ? <Banner kind="warn">That file isn't a backup from the standalone tool.</Banner> : null}
+          {run.isError ? <Banner kind="warn">Couldn't import that — try again.</Banner> : null}
+          {s ? (
+            <div className="import-summary">
+              <div className="setting-row">
+                <div>
+                  <b>{run.isSuccess ? `${s.sessions.added} sessions imported` : `${s.sessions.added} sessions`}</b>
+                  {s.sessions.firstDate && s.sessions.lastDate ? <small>{`${formatShortDate(s.sessions.firstDate)} – ${formatShortDate(s.sessions.lastDate)}`}</small> : null}
+                </div>
+              </div>
+              {s.block ? (
+                <div className="setting-row">
+                  <div>
+                    <b>{`Block ${s.block.number} · week ${s.block.week}`}</b>
+                    <small>{`${s.oracle.bestByCoreLift.length} core lifts`}</small>
+                  </div>
+                </div>
+              ) : null}
+              <div className="setting-row">
+                <div>
+                  <b>{`${s.places.length} places · ${s.ratings} ratings`}</b>
+                  {s.places.length ? <small>{s.places.join(", ")}</small> : null}
+                </div>
+              </div>
+              <div className="setting-row">
+                <div>
+                  <b>History stays out of the garden</b>
+                  <small>Activity and records show it</small>
+                </div>
+              </div>
+              {s.sessions.invalid.length ? <small className="faint">{`${s.sessions.invalid.length} sessions skipped`}</small> : null}
+            </div>
+          ) : null}
+        </Sheet>
+      ) : null}
     </Card>
   );
 }
@@ -1383,6 +1693,10 @@ export function SettingsScreen() {
       <ConnectionsSection />
       <CorosConnectSection />
       <SchedulingSection prefs={settings.data.prefs} />
+      <HealthConditionsSection />
+      <PlacesSection prefs={settings.data.prefs} />
+      <UnitsSection prefs={settings.data.prefs} />
+      <ImportSection />
       <CorosSyncSection prefs={settings.data.prefs} />
       <AiSection prefs={settings.data.prefs} />
       <CoachMemorySection />

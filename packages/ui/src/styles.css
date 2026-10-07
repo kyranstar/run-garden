@@ -723,7 +723,8 @@ h1,
 .coach-op-day-h,
 .session-block-head,
 .session-new,
-.howto-head {
+.howto-head,
+.settings-subhead {
   font-size: var(--text-2xs);
   font-weight: var(--weight-medium);
   letter-spacing: 0.06em;
@@ -2542,6 +2543,140 @@ button.session-chip {
 .program-switch[aria-checked="true"]::after {
   left: auto;
   right: 3px;
+}
+.program-switch:disabled {
+  cursor: default;
+  opacity: 0.75;
+}
+
+/* ── Settings: health conditions, places and equipment, units, import (Phase 2c; mocks §7) ───────────────────────
+   One row grammar for the new cards: the words take the squeeze, the control never does, and every row clears the
+   44px floor under any pointer (these are list rows a thumb hits). */
+.setting-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: var(--space-5);
+  min-height: var(--tap);
+  padding: var(--space-3) 0;
+  border-top: 1px solid var(--border);
+}
+.card-title + .setting-row,
+.settings-subhead + .setting-row {
+  border-top: 0;
+}
+.setting-row small,
+.place-row small {
+  display: block;
+  color: var(--ink-soft);
+  font-size: var(--text-xs);
+  overflow-wrap: anywhere;
+}
+.setting-row-end {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-4);
+}
+.units-seg {
+  grid-auto-columns: minmax(var(--tap), max-content);
+}
+.units-seg button {
+  padding: 0 var(--space-5);
+}
+.place-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: var(--space-5);
+  width: 100%;
+  min-height: var(--tap);
+  padding: var(--space-4) 0;
+  border: 0;
+  border-top: 1px solid var(--border);
+  background: none;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.card-title + .place-row {
+  border-top: 0;
+}
+.place-row-main {
+  display: grid;
+  gap: var(--space-1);
+  min-width: 0;
+}
+.place-row-main b {
+  font-weight: var(--weight-medium);
+}
+.place-weights {
+  font-variant-numeric: tabular-nums;
+}
+.settings-link {
+  min-height: var(--tap);
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--green-ink);
+  font: var(--weight-medium) var(--text-sm) var(--font);
+  cursor: pointer;
+}
+.settings-link:disabled {
+  cursor: default;
+  opacity: 0.6;
+}
+.settings-subhead {
+  margin: var(--space-6) 0 var(--space-2);
+}
+.settings-select {
+  min-height: var(--tap);
+  width: 100%;
+  margin-top: var(--space-4);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-md);
+  background: var(--bg-raised);
+  color: var(--ink);
+  font: inherit;
+  padding: 0 var(--space-5);
+}
+@media (min-width: 640px) {
+  .settings-select {
+    max-width: 22rem;
+  }
+}
+.icon-tap {
+  width: var(--tap);
+  height: var(--tap);
+  display: inline-grid;
+  place-items: center;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-md);
+  background: var(--bg-raised);
+  color: var(--ink-soft);
+  font: inherit;
+  cursor: pointer;
+}
+.gear-toggles {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-3);
+}
+.gear-toggles .chipbtn {
+  min-height: var(--tap);
+  color: var(--ink);
+}
+.gear-toggles .chipbtn[aria-pressed="true"] {
+  background: var(--green);
+  border-color: var(--green);
+  color: var(--on-accent);
+}
+.place-problem {
+  color: var(--danger);
+  font-size: var(--text-xs);
+}
+.place-file {
+  position: relative;
 }
 .today-coach-mark {
   flex: none;
