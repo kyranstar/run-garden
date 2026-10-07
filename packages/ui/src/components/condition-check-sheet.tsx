@@ -55,7 +55,8 @@ export function ConditionChips({
 /**
  * The 0–10 grid (two rows), shared by the check sheet and the session pre-check. One choice, so a radiogroup
  * (audit 2a-UI M3): one tab stop — the chosen number, else the first — and the arrow keys, Home and End move the
- * choice. Tapping the chosen number clears it (null), which leaves "Feeling off" alone as an answer.
+ * choice. Tapping the chosen number clears it (null), which leaves "Feeling off" alone as an answer; Space on it keeps
+ * it, as a radio does.
  */
 export function CheckScale({
   label,
@@ -105,7 +106,9 @@ export function CheckScale({
           aria-checked={value === n}
           tabIndex={i === stop ? 0 : -1}
           disabled={disabled}
-          onClick={() => onPick(value === n ? null : n)}
+          // A tap on the chosen number clears it; a key press (Space/Enter: a click with no pointer detail) never
+          // unchecks a radio (2a UI re-review U7).
+          onClick={(e) => onPick(value === n && e.detail > 0 ? null : n)}
           onKeyDown={(e) => onKeyDown(e, i)}
         >
           {n}
@@ -115,10 +118,17 @@ export function CheckScale({
   );
 }
 
-/** "Feeling off" — a toggle, beside the scale. */
-export function FeelingOffToggle({ on, onToggle, disabled }: { on: boolean; onToggle: () => void; disabled?: boolean }) {
+/** "Feeling off" — a toggle, beside the scale. With two profiles asked at once, each is named by its own word. */
+export function FeelingOffToggle({ on, onToggle, disabled, word }: { on: boolean; onToggle: () => void; disabled?: boolean; word?: string }) {
   return (
-    <button type="button" className="chipbtn check-off" aria-pressed={on} disabled={disabled} onClick={onToggle}>
+    <button
+      type="button"
+      className="chipbtn check-off"
+      aria-pressed={on}
+      aria-label={word ? `Feeling off · ${word}` : undefined}
+      disabled={disabled}
+      onClick={onToggle}
+    >
       Feeling off
     </button>
   );

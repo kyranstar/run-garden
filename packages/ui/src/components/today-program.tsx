@@ -4,13 +4,19 @@
  * The one Today card keeps its shape. When the day holds a run, the run keeps the title and its actions and each
  * program session is one line beside it — dot, name, mode · minutes · time, and its own action. On a program day
  * the program session takes the title, with what was built for it in one line. Start and Continue belong to the
- * player (`features.player`); until it exists, Open leads to the session sheet.
+ * player (`features.player`); until it exists, Open leads to the session sheet. Start opens the sheet (its pre-check,
+ * a fresh build and the Start that locks it, online — ruling 2b-R1); Continue opens the player.
  */
 import { Link } from "react-router-dom";
+import { useQuery } from "@tanstack/react-query";
 import type { TodayResponse, WorkoutDto } from "@rg/api-client";
 import type { SessionLead } from "@rg/domain";
 import { CategoryDot, formatMinutes, formatTime } from "../components.js";
 import { features } from "../features.js";
+import { chimes } from "../player/audio.js";
+import { offlineDb } from "../offline/idb.js";
+import { outboxEntries } from "../offline/outbox.js";
+import { useSignedInUserId } from "./outbox-sync.js";
 
 export type TodaySession = TodayResponse["todaySessions"][number];
 
@@ -74,6 +80,14 @@ export const sheetHref = (w: WorkoutDto) => `/plan?workout=${encodeURIComponent(
 /** The player (Phase 2b). */
 export const playerHref = (w: WorkoutDto) => `/session/${encodeURIComponent(w.id)}`;
 
+/**
+ * Where each way in goes. Start opens the session's sheet: the pre-check, a fresh build and the Start that locks it all
+ * happen there, online (ruling 2b-R1). Continue opens the player, which plays what Start left on the device.
+ */
+const playHref = (w: WorkoutDto, play: "Start" | "Continue") => (play === "Start" ? sheetHref(w) : playerHref(w));
+/** Continue is a tap: audio unlocks inside it (the player's chimes). */
+const unlockAudio = () => chimes.unlock();
+
 /** The player's way in for this session today, or null (no player yet, not today, skipped, or nothing left to play). */
 function playAction(w: WorkoutDto, today: string): "Start" | "Continue" | null {
   if (!features.player || w.effectiveDate !== today || w.completionState !== "scheduled" || sessionDone(w)) return null;
@@ -103,47 +117,74 @@ export function LeadLine({ lead }: { lead: SessionLead }) {
   );
 }
 
+/** A session saved on this device and waiting for the server: how long it ran. */
+export interface PendingSave {
+  minutes: number;
+}
+
+/**
+ * The sessions saved on this device that the server has not taken yet, by slot (`["outbox"]`). Read only while the
+ * day has an app session (`enabled`): an account with no program never opens the outbox here.
+ */
+export function usePendingSaves(enabled: boolean): Readonly<Record<string, PendingSave>> {
+  const userId = useSignedInUserId();
+  const outbox = useQuery({ queryKey: ["outbox"], queryFn: async () => outboxEntries(await offlineDb()), enabled, retry: false });
+  const out: Record<string, PendingSave> = {};
+  for (const e of outbox.data ?? []) {
+    // The signed-in account's own (ruling 2b-R6); while it is not known (offline launch), this device's.
+    if (userId && e.userId !== userId) continue;
+    if (e.state === "pending" && e.payload.workoutId) out[e.payload.workoutId] = { minutes: Math.max(1, Math.round(e.payload.seconds / 60)) };
+  }
+  return out;
+}
+
 /** The program session as the card's title: a program day. */
-export function TodayProgramLead({ session, today }: { session: TodaySession; today: string }) {
+export function TodayProgramLead({ session, today, pending = null }: { session: TodaySession; today: string; pending?: PendingSave | null }) {
   const w = session.workout;
   const b = session.build;
-  const play = playAction(w, today);
-  const done = sessionDone(w);
+  // Saved here and waiting for the server: done, as far as the athlete is concerned.
+  const play = pending ? null : playAction(w, today);
+  const done = !!pending || sessionDone(w);
   const skipped = !done && sessionSkipped(w);
   return (
     <>
       <h3 className="today-title">{programName(session)}</h3>
       <p className="today-meta">
-        {b
-          ? [MODE_LABEL[b.mode], b.theme, `${b.minutes} min`, b.place].filter(Boolean).join(" · ")
-          : `${formatTime(w.effectiveTime)} · ${formatMinutes(w.workoutSeconds)}`}
+        {pending
+          ? `Done · ${pending.minutes} min · saved, will sync`
+          : b
+            ? [MODE_LABEL[b.mode], b.theme, `${b.minutes} min`, b.place].filter(Boolean).join(" · ")
+            : `${formatTime(w.effectiveTime)} · ${formatMinutes(w.workoutSeconds)}`}
       </p>
-      {b?.lead && b.lead.moves.length > 0 ? (
+      {!pending && b?.lead && b.lead.moves.length > 0 ? (
         <div className="today-structure">
           <LeadLine lead={b.lead} />
         </div>
       ) : null}
       <div className="btn-row today-actions">
-        {done ? <span className="today-session-done">Done</span> : null}
+        {done && !pending ? <span className="today-session-done">Done</span> : null}
         {skipped ? <span className="today-session-skipped">Skipped</span> : null}
         {play ? (
-          <Link className="btn btn-primary today-play" to={playerHref(w)}>
+          <Link className="btn btn-primary today-play" to={playHref(w, play)} onClick={play === "Continue" ? unlockAudio : undefined}>
             {play}
           </Link>
         ) : null}
-        <Link className={`btn${play || done || skipped ? "" : " btn-primary"}`} to={sheetHref(w)}>
-          Open
-        </Link>
+        {/* Start already opens the sheet. */}
+        {play === "Start" ? null : (
+          <Link className={`btn${play || done || skipped ? "" : " btn-primary"}`} to={sheetHref(w)}>
+            Open
+          </Link>
+        )}
       </div>
     </>
   );
 }
 
 /** A program session as one line under the day's run. */
-export function TodayProgramLine({ session, today }: { session: TodaySession; today: string }) {
+export function TodayProgramLine({ session, today, pending = null }: { session: TodaySession; today: string; pending?: PendingSave | null }) {
   const w = session.workout;
   const b = session.build;
-  const play = playAction(w, today);
+  const play = pending ? null : playAction(w, today);
   const time = formatTime(w.effectiveTime);
   const meta = b ? `${MODE_LABEL[b.mode]} · ${b.minutes} min · ${time}` : `${formatMinutes(w.workoutSeconds)} · ${time}`;
   return (
@@ -153,12 +194,20 @@ export function TodayProgramLine({ session, today }: { session: TodaySession; to
         <span className="today-session-name">{programName(session)}</span>
         <span className="today-session-meta">{meta}</span>
       </div>
-      {sessionDone(w) ? (
+      {pending ? (
+        <span className="today-session-done">Done · will sync</span>
+      ) : sessionDone(w) ? (
         <span className="today-session-done">Done</span>
       ) : sessionSkipped(w) ? (
-        <span className="today-session-skipped">Skipped</span>
+        // Skipped is not today's to-do, but Un-skip is one tap down (2a UI re-review U6).
+        <span className="today-session-end">
+          <span className="today-session-skipped">Skipped</span>
+          <Link className="btn btn-small" to={sheetHref(w)}>
+            Open
+          </Link>
+        </span>
       ) : play ? (
-        <Link className="btn btn-small btn-primary" to={playerHref(w)}>
+        <Link className="btn btn-small btn-primary" to={playHref(w, play)} onClick={play === "Continue" ? unlockAudio : undefined}>
           {play}
         </Link>
       ) : (
@@ -171,12 +220,20 @@ export function TodayProgramLine({ session, today }: { session: TodaySession; to
 }
 
 /** The day's program sessions under its run. */
-export function TodayProgramLines({ sessions, today }: { sessions: readonly TodaySession[]; today: string }) {
+export function TodayProgramLines({
+  sessions,
+  today,
+  pending = {},
+}: {
+  sessions: readonly TodaySession[];
+  today: string;
+  pending?: Readonly<Record<string, PendingSave>>;
+}) {
   if (sessions.length === 0) return null;
   return (
     <div className="today-sessions">
       {sessions.map((s) => (
-        <TodayProgramLine key={s.workout.id} session={s} today={today} />
+        <TodayProgramLine key={s.workout.id} session={s} today={today} pending={pending[s.workout.id] ?? null} />
       ))}
     </div>
   );

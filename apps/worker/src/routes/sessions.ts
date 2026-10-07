@@ -4,6 +4,7 @@
  *
  *   GET    /api/sessions/:workoutId          the slot, its current build (or none), its day's checks, the lock
  *   GET    /api/sessions/:workoutId/current  {buildId, current, locked}: is that build still the day's? (no build made)
+ *   GET    /api/sessions/:workoutId/review-basis  what the review reads of the history, fetched at Start (a read)
  *   POST   /api/sessions/:workoutId/build    {checks?, overrides?, swaps?} → build, or the stored build when the
  *                                            inputs are unchanged; a day ahead is a preview
  *   POST   /api/sessions/:workoutId/start    {buildId} → lock that build, while it is still the day's; idempotent
@@ -31,10 +32,11 @@ import {
   SessionLockedError,
   SessionNotFoundError,
   StaleBuildError,
-  startSession,
+  startSessionOutcome,
   UnknownProfileError,
 } from "../services/session-build.js";
 import { InvalidSaveError, savePerformedSession } from "../services/session-save.js";
+import { reviewBasis } from "../services/session-review-basis.js";
 import { waitUntilSafe } from "../services/wait-until.js";
 
 export const sessionRoutes = new Hono<AppContext>();
@@ -111,6 +113,21 @@ sessionRoutes.get("/:workoutId/current", async (c) => {
   }
 });
 
+/**
+ * What the player's review needs of the history — the records baseline, the graduation basis, the build's moves'
+ * saved prefs — fetched once at Start and kept on the device, so the review works offline (session-review-basis.ts).
+ */
+sessionRoutes.get("/:workoutId/review-basis", async (c) => {
+  const db = c.get("db");
+  const userId = c.get("userId");
+  const prefs = await loadPreferences(db, userId);
+  try {
+    return c.json(await reviewBasis(db, userId, c.req.param("workoutId"), { today: todayInZone(prefs.timezone), unit: prefs.weightUnit }));
+  } catch (e) {
+    return refusal(c, e);
+  }
+});
+
 sessionRoutes.post("/:workoutId/build", async (c) => {
   const db = c.get("db");
   const userId = c.get("userId");
@@ -146,7 +163,10 @@ sessionRoutes.post("/:workoutId/start", async (c) => {
   const parsed = startSchema.safeParse(await c.req.json().catch(() => null));
   if (!parsed.success) return c.json({ error: "invalid_start", issues: parsed.error.issues }, 422);
   try {
-    return c.json(await startSession(db, userId, c.req.param("workoutId"), parsed.data.buildId, nowInstant()));
+    const { session, calendarChanged } = await startSessionOutcome(db, userId, c.req.param("workoutId"), parsed.data.buildId, nowInstant());
+    // An outline again took the build's title and length as Start locked it (U4): the calendar picks that up.
+    if (calendarChanged) waitUntilSafe(c, syncCalendar(db, c.env, userId));
+    return c.json(session);
   } catch (e) {
     if (e instanceof StaleBuildError) {
       if (e.calendarChanged) waitUntilSafe(c, syncCalendar(db, c.env, userId));

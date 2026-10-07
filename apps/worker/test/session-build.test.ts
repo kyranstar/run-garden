@@ -34,8 +34,10 @@ import {
   SessionNotFoundError,
   StaleBuildError,
   startSession,
+  startSessionOutcome,
   type SessionResponse,
 } from "../src/services/session-build.js";
+import { todayConditions } from "../src/services/condition-views.js";
 import { loadEngineContext, loadProgramState, saveProgramState } from "../src/services/engine-inputs.js";
 import { placeSlots, slotId } from "../src/services/program-slots.js";
 import { dayCollides } from "../src/services/day-placement.js";
@@ -473,6 +475,57 @@ describe("building today's session", () => {
         prefs,
       ),
     ).toBe(false);
+  });
+
+  it("U4: Start on a stored build an outline adopted — moved away, refreshed by placement, and back — writes the build's title, discipline and length (2a UI re-review U4)", async () => {
+    const id = await seedSlot(TODAY);
+    const first = await buildSessionOutcome(db, userId, id, { overrides: { mode: "build", minutes: 45 } }, ctx());
+    const built = await rowOf(id);
+    expect(built).toMatchObject({ category: "strength", contentState: "built" });
+    await applyMove(db, { userId, workoutId: id, toDate: addDays(TODAY, 1), toTime: "18:00", source: "app", corosWritesEnabled: false });
+    await placeSlots(db, userId, programId, TODAY, prefs, NOW);
+    await applyMove(db, { userId, workoutId: id, toDate: TODAY, toTime: "18:00", source: "app", corosWritesEnabled: false });
+    expect(await rowOf(id)).toMatchObject({ title: "Mobility", category: "yoga", contentState: "outline" });
+    // The player Starts what the device holds, with no build request first.
+    const started = await startSessionOutcome(db, userId, id, first.session.build!.buildId, LATER);
+    expect(started.session.contentState).toBe("started");
+    expect(await rowOf(id)).toMatchObject({
+      title: built.title,
+      category: "strength",
+      sport: "strength",
+      calendarBlockDurationSeconds: built.calendarBlockDurationSeconds,
+      fallbackEstimatedDurationSeconds: built.fallbackEstimatedDurationSeconds,
+      contentState: "started",
+    });
+    expect(started.calendarChanged).toBe(true);
+  });
+
+  it("U4: Start on a built row writes nothing of its content (only the lock)", async () => {
+    const id = await seedSlot(TODAY);
+    const first = await buildSessionOutcome(db, userId, id, { overrides: { mode: "build" } }, ctx());
+    const before = await rowOf(id);
+    const started = await startSessionOutcome(db, userId, id, first.session.build!.buildId, LATER);
+    expect(started.calendarChanged).toBe(false);
+    const after = await rowOf(id);
+    expect({ ...after, contentState: before.contentState, updatedAt: before.updatedAt }).toEqual(before);
+  });
+
+  it("U8 (W9): an adoption never writes over a slot started meanwhile — the outline guard on the update", async () => {
+    const id = await seedSlot(TODAY);
+    const first = await buildSession(db, userId, id, { overrides: { mode: "build", minutes: 45 } }, ctx());
+    await applyMove(db, { userId, workoutId: id, toDate: addDays(TODAY, 1), toTime: "18:00", source: "app", corosWritesEnabled: false });
+    await placeSlots(db, userId, programId, TODAY, prefs, NOW);
+    await applyMove(db, { userId, workoutId: id, toDate: TODAY, toTime: "18:00", source: "app", corosWritesEnabled: false });
+    const sqlite = (db as unknown as { $client: { prepare(sql: string): { run(...a: unknown[]): unknown } } }).$client;
+    // A Start lands just before the adoption's update: the row is started, still titled as the outline.
+    beforeStatement = (sql) => {
+      if (!/^update "planned_workouts"/i.test(sql)) return;
+      beforeStatement = null;
+      sqlite.prepare("UPDATE planned_workouts SET content_state = 'started', updated_at = ? WHERE id = ?").run(LATER, id);
+    };
+    const again = await buildSession(db, userId, id, {}, ctx({ now: LATER }));
+    expect(again.build).toEqual(first.build);
+    expect(await rowOf(id)).toMatchObject({ title: "Mobility", category: "yoga", contentState: "started" });
   });
 
   it("an override rebuilds as version 2, and only the latest unlocked version is kept", async () => {
@@ -1299,5 +1352,63 @@ describe("the routes", () => {
     expect((await call("POST", `/api/sessions/${id}/start`, { buildId: "any" })).status).toBe(423);
     expect((await call("POST", "/api/conditions/checks", { profileId: "tmj", value: 1 })).status).toBe(423);
     expect((await call("GET", `/api/sessions/${id}`)).status).toBe(200);
+  });
+});
+
+describe("one reading a day, whichever slot asked it (2a UI re-review U2; ruling 2a-R13)", () => {
+  async function twoSlotsToday(): Promise<[string, string]> {
+    await activateTmj();
+    const a = await seedSlot(TODAY);
+    const b = await seedSlot(addDays(TODAY, 2));
+    await applyMove(db, { userId, workoutId: b, toDate: TODAY, toTime: "07:00", source: "app", corosWritesEnabled: false });
+    return [a, b];
+  }
+
+  it("a pre-check on one slot then another: both slots and the chip read the later one", async () => {
+    const [a, b] = await twoSlotsToday();
+    await buildSession(db, userId, a, { checks: { tmj: { pre: 3, feelingOff: false } } }, ctx());
+    await buildSession(db, userId, b, { checks: { tmj: { pre: 8, feelingOff: false } } }, ctx({ now: LATER }));
+    expect((await loadSession(db, userId, a, TODAY)).checks).toEqual({ tmj: { pre: 8, feelingOff: false } });
+    expect((await loadSession(db, userId, b, TODAY)).checks).toEqual({ tmj: { pre: 8, feelingOff: false } });
+    expect((await todayConditions(db, userId, TODAY))[0]!.today).toEqual({ value: 8, feelingOff: false });
+  });
+
+  it("a pre-check on the other slot only answers this one too: it is not asked again", async () => {
+    const [a, b] = await twoSlotsToday();
+    await buildSession(db, userId, b, { checks: { tmj: { pre: 8, feelingOff: false } } }, ctx());
+    expect((await loadSession(db, userId, a, TODAY)).checks).toEqual({ tmj: { pre: 8, feelingOff: false } });
+    // And a build of it is made with that reading.
+    const built = await buildSession(db, userId, a, {}, ctx({ now: LATER }));
+    expect(built.build!.params.checks).toEqual({ tmj: { pre: 8, feelingOff: false } });
+  });
+
+  it("un-answering one slot's pre-check falls back to the day's other answers", async () => {
+    const [a, b] = await twoSlotsToday();
+    await buildSession(db, userId, b, { checks: { tmj: { pre: 2, feelingOff: false } } }, ctx());
+    await buildSession(db, userId, a, { checks: { tmj: { pre: 6, feelingOff: false } } }, ctx({ now: LATER }));
+    const cleared = await buildSession(db, userId, a, { checks: { tmj: { pre: null, feelingOff: false } } }, ctx({ now: "2026-10-07T19:10:00.000Z" }));
+    expect(cleared.checks).toEqual({ tmj: { pre: 2, feelingOff: false } });
+  });
+});
+
+describe("moving a run reads no program (U8, W12: the no-program account's guard)", () => {
+  it("a run moved to another day makes no read of programs", async () => {
+    await db.insert(plannedWorkouts).values({
+      id: "run-1", userId, planId: "coros-plan", sourceWorkoutId: "src-run-1", title: "Easy run", category: "easy", sport: "run",
+      originalPlanDate: TODAY, lastVerifiedCorosDate: TODAY, effectiveDate: TODAY, effectiveTime: "07:00",
+      sourceContentFingerprint: "fp", fallbackEstimatedDurationSeconds: 1800, calendarBlockDurationSeconds: 1800,
+      completionState: "scheduled", createdAt: NOW, updatedAt: NOW,
+    });
+    statements.length = 0;
+    await applyMove(db, { userId, workoutId: "run-1", toDate: addDays(TODAY, 1), toTime: "07:00", source: "app", corosWritesEnabled: false });
+    expect(statements.filter((q) => /from "programs"/i.test(q))).toEqual([]);
+  });
+
+  it("a built program slot moved to another day reads its program once (its name for the outline)", async () => {
+    const id = await seedSlot(TODAY);
+    await buildSession(db, userId, id, {}, ctx());
+    statements.length = 0;
+    await applyMove(db, { userId, workoutId: id, toDate: addDays(TODAY, 1), toTime: "18:00", source: "app", corosWritesEnabled: false });
+    expect(statements.filter((q) => /from "programs"/i.test(q))).toHaveLength(1);
   });
 });

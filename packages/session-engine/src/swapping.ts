@@ -1,4 +1,4 @@
-import type { DoseType } from "@rg/exercise-library";
+import { positionGroup, type DoseType, type ExerciseRecord } from "@rg/exercise-library";
 import type { Step } from "./types.js";
 
 // Swaps as an exact, pure operation on a built plan (audit I1, I2, M4; re-review N1). A swap replaces one slot's
@@ -15,6 +15,20 @@ export interface Pairing {
   patterns: readonly string[];
   positionGroup: string;
 }
+
+/**
+ * Two exercises are the same move in different clothes (e.g. with or without the block) when they share a family and
+ * the same body areas; a session holds one of them.
+ */
+const moveKeyOf = (ex: Pick<ExerciseRecord, "family" | "regions">): string => `${ex.family}|${[...ex.regions].sort().join(",")}`;
+
+/** What superset pairing reads of a move. */
+const pairingOf = (ex: Pick<ExerciseRecord, "dose" | "patterns" | "position">): Pairing => ({
+  doseType: ex.dose.type, patterns: ex.patterns, positionGroup: positionGroup(ex.position),
+});
+
+/** How far swaps may take a plan past its minutes, in seconds: plans are filled to within seconds of the budget. */
+const SLACK_SECONDS = 60;
 
 /** A move a slot can hold, with everything needed to check and play it offline. */
 export interface SlotChoice {
@@ -156,4 +170,4 @@ function consistent(state: SwapState, steps: readonly Step[]): boolean {
   return costOf(steps) <= state.budget + state.slack;
 }
 
-export const Swapping = { offered, fits, apply, splice, consistent, pairable, costOf };
+export const Swapping = { offered, fits, apply, splice, consistent, pairable, costOf, moveKeyOf, pairingOf, SLACK_SECONDS };

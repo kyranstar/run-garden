@@ -70,8 +70,13 @@ function html(el: React.ReactElement): string {
   return renderToStaticMarkup(createElement(QueryClientProvider, { client: qc }, createElement(MemoryRouter, null, el)));
 }
 
-afterEach(() => {
+// These cases were written against the dark state: each starts with the player off and turns it on where it says
+// so; afterwards the shipped default (on) is back.
+beforeEach(() => {
   features.player = false;
+});
+afterEach(() => {
+  features.player = true;
 });
 
 describe("the program card", () => {

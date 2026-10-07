@@ -20,6 +20,7 @@ import {
   api,
   ApiError,
   type BuildSessionRequest,
+  type MeResponse,
   type SessionDto,
   type SessionItemDto,
   type SessionOverrides,
@@ -29,8 +30,12 @@ import { doseText, type DoseStep, type DoseTarget } from "@rg/domain";
 import { Banner, CompletionPill, EmptyState, formatDayLong, formatTime, Sheet, Spinner } from "../components.js";
 import { features } from "../features.js";
 import { IconInfo, IconSwap } from "../icons.js";
+import { offlineDb } from "../offline/idb.js";
+import { requestPersistentStorage } from "../offline/live.js";
+import { chimes } from "../player/audio.js";
+import { rememberStart } from "../player/stored.js";
 import { MoveSheet } from "../screens/move-sheet.js";
-import { CheckScale, conditionChipLabel, FeelingOffToggle } from "./condition-check-sheet.js";
+import { CheckScale, checkWord, conditionChipLabel, FeelingOffToggle } from "./condition-check-sheet.js";
 import { ExerciseHowto, type HowtoTarget } from "./exercise-howto.js";
 import { MODE_LABEL } from "./today-program.js";
 
@@ -38,7 +43,7 @@ type Mode = keyof typeof MODE_LABEL;
 type Picker = "mode" | "theme" | "minutes" | "place";
 
 const BLOCK_ORDER = ["arrive", "prep", "core", "accessory", "care", "cooldown"] as const;
-const BLOCK_LABEL: Record<string, string> = {
+export const BLOCK_LABEL: Record<string, string> = {
   arrive: "Arrive",
   prep: "Prep",
   core: "Core",
@@ -46,7 +51,7 @@ const BLOCK_LABEL: Record<string, string> = {
   cooldown: "Cool-down",
 };
 /** Format markers worth a word; a block of holds or straight sets says nothing more than its name. */
-const FORMAT_LABEL: Record<string, string> = { flow: "Flow", superset: "Superset", circuit: "Circuit", ladder: "Ladder" };
+export const FORMAT_LABEL: Record<string, string> = { flow: "Flow", superset: "Superset", circuit: "Circuit", ladder: "Ladder" };
 /** The time picker's lengths (the build takes 10–90). */
 const MINUTES = [15, 20, 25, 30, 40, 45, 60, 75, 90];
 const PICKER_TITLE: Record<Picker, string> = { mode: "Mode", theme: "Theme", minutes: "Time", place: "Place" };
@@ -83,6 +88,9 @@ export function SessionSheet({ w, today, onClose }: { w: WorkoutDto; today: stri
   /** The pre-check reopened from the reading on the when-line, to change the answer (ruling 2a-R14). */
   const [rechecking, setRechecking] = useState(false);
   const asked = useRef(false);
+  /** After Build: focus the reading (or the sheet) once the pre-check is gone. */
+  const refocus = useRef(false);
+  const body0 = useRef<HTMLDivElement>(null);
 
   const refreshPlan = () => {
     for (const k of ["today", "plan", "plan-week", "programs"]) void qc.invalidateQueries({ queryKey: [k] });
@@ -92,8 +100,14 @@ export function SessionSheet({ w, today, onClose }: { w: WorkoutDto; today: stri
     onSuccess: (next) => {
       const before = qc.getQueryData<SessionDto>(key);
       qc.setQueryData(key, next);
-      // A new build renames and resizes the row; the stored build returned unchanged changed nothing.
-      if (next.build?.buildId !== before?.build?.buildId || next.build?.builtAt !== before?.build?.builtAt) refreshPlan();
+      // A new build renames and resizes the row; so does a stored build adopted by an outline row (the row's state
+      // changes, 2a UI re-review U5). The stored build returned unchanged changed nothing.
+      if (
+        next.build?.buildId !== before?.build?.buildId ||
+        next.build?.builtAt !== before?.build?.builtAt ||
+        next.contentState !== before?.contentState
+      )
+        refreshPlan();
     },
     onError: (err) => {
       const body = err instanceof ApiError ? (err.body as { error?: string; session?: SessionDto } | null) : null;
@@ -101,11 +115,18 @@ export function SessionSheet({ w, today, onClose }: { w: WorkoutDto; today: stri
       else void qc.invalidateQueries({ queryKey: key });
     },
   });
+  /** The session's name as the player shows it (kept for the Start handler, which runs after this render). */
+  const titleRef = useRef("");
   const start = useMutation({
     mutationFn: (buildId: string) => api.startSession(w.id, buildId),
-    onSuccess: (next) => {
+    onSuccess: async (next) => {
       qc.setQueryData(key, next);
       refreshPlan();
+      // The player plays what Start leaves on the device, never the network (ruling 2b-R1). Without IndexedDB it
+      // still opens, online, from the started session.
+      await offlineDb()
+        .then((db) => rememberStart(db, next, titleRef.current, qc.getQueryData<MeResponse>(["me"])?.userId ?? null))
+        .catch(() => undefined);
       navigate(`/session/${encodeURIComponent(w.id)}`);
     },
     // The day's inputs changed since this build (a check, a save, an edit): show the fresh build to Start again. The
@@ -181,7 +202,13 @@ export function SessionSheet({ w, today, onClose }: { w: WorkoutDto; today: stri
           asking.map((p) => [p.profileId, { pre: answers[p.profileId] ?? null, feelingOff: !!off[p.profileId] }]),
         ),
       },
-      { onSuccess: () => setRechecking(false) },
+      {
+        onSuccess: () => {
+          setRechecking(false);
+          // Build leaves with the pre-check: focus goes to the reading, not out of the dialog (2a UI re-review U7).
+          refocus.current = true;
+        },
+      },
     );
   };
   // The reading on the when-line reopens the pre-check, filled in with the reading as it stands.
@@ -198,10 +225,13 @@ export function SessionSheet({ w, today, onClose }: { w: WorkoutDto; today: stri
 
   const program = programs.data?.programs.find((p) => p.id === w.programId);
   const title = program?.name ?? withoutTheme(w.title, s?.view?.theme?.name);
+  titleRef.current = title;
+  // A started or done session reads as it was built — a later check cannot change it (2a UI re-review U3).
+  const shownChecks = s && locked && s.build ? s.build.params.checks : (s?.checks ?? {});
   const readings = s
     ? s.profiles
-        .filter((p) => s.checks[p.profileId])
-        .map((p) => conditionChipLabel({ ...p, today: { value: s.checks[p.profileId]!.pre, feelingOff: s.checks[p.profileId]!.feelingOff } }))
+        .filter((p) => shownChecks[p.profileId])
+        .map((p) => conditionChipLabel({ ...p, today: { value: shownChecks[p.profileId]!.pre, feelingOff: shownChecks[p.profileId]!.feelingOff } }))
     : [];
   const reading = readings.join(" · ");
 
@@ -216,6 +246,13 @@ export function SessionSheet({ w, today, onClose }: { w: WorkoutDto; today: stri
   };
 
   const showBuild = !!(s?.build && view) && !preCheck;
+  useEffect(() => {
+    if (!refocus.current || preCheck) return;
+    refocus.current = false;
+    const el = body0.current;
+    const target = el?.querySelector<HTMLElement>(".session-reading") ?? el?.closest<HTMLElement>('[role="dialog"]');
+    target?.focus();
+  });
   const canPlay = features.player && date === today && !past && !skipped;
   // The pinned foot holds the sheet's actions — and is left out when there are none (loading, or a started or done
   // session without the player), rather than drawn as an empty band (audit 2a-UI M6).
@@ -236,14 +273,33 @@ export function SessionSheet({ w, today, onClose }: { w: WorkoutDto; today: stri
     }
     if (canPlay && showBuild && !locked) {
       actions.push(
-        <button key="start" type="button" className="btn btn-primary" disabled={start.isPending} onClick={() => start.mutate(s!.build!.buildId)}>
+        <button
+          key="start"
+          type="button"
+          className="btn btn-primary"
+          disabled={start.isPending}
+          onClick={() => {
+            // Inside the tap: audio unlocks only in a gesture, and storage is asked to persist (offline spike).
+            chimes.unlock();
+            void requestPersistentStorage();
+            start.mutate(s!.build!.buildId);
+          }}
+        >
           Start · {view!.minutes} min
         </button>,
       );
     }
     if (canPlay && s?.contentState === "started") {
       actions.push(
-        <button key="continue" type="button" className="btn btn-primary" onClick={() => navigate(`/session/${encodeURIComponent(w.id)}`)}>
+        <button
+          key="continue"
+          type="button"
+          className="btn btn-primary"
+          onClick={() => {
+            chimes.unlock();
+            navigate(`/session/${encodeURIComponent(w.id)}`);
+          }}
+        >
           Continue
         </button>,
       );
@@ -304,6 +360,7 @@ export function SessionSheet({ w, today, onClose }: { w: WorkoutDto; today: stri
               <FeelingOffToggle
                 on={!!off[p.profileId]}
                 disabled={build.isPending}
+                word={asking.length > 1 ? checkWord(p.check.label) : undefined}
                 onToggle={() => setOff((o) => ({ ...o, [p.profileId]: !o[p.profileId] }))}
               />
             </div>
@@ -345,7 +402,7 @@ export function SessionSheet({ w, today, onClose }: { w: WorkoutDto; today: stri
 
   return (
     <Sheet open onClose={onClose} title={title} footer={footer}>
-      <div className="stack session-sheet">
+      <div ref={body0} className="stack session-sheet">
         <p className="session-when">
           {formatDayLong(date)} at {formatTime(w.effectiveTime)}
           {reading ? " · " : null}

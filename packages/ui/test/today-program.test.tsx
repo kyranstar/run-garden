@@ -17,7 +17,7 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { MemoryRouter } from "react-router-dom";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { TodayResponse, WorkoutDto } from "@rg/api-client";
 import { features } from "../src/features.js";
 import {
@@ -114,8 +114,13 @@ function html(el: React.ReactElement): string {
 /** Text only, whitespace collapsed — what a reader sees. */
 const text = (markup: string) => markup.replace(/<[^>]+>/g, " ").replace(/&amp;/g, "&").replace(/\s+/g, " ").trim();
 
-afterEach(() => {
+// These cases were written against the dark state: each starts with the player off and turns it on where it says
+// so; afterwards the shipped default (on) is back.
+beforeEach(() => {
   features.player = false;
+});
+afterEach(() => {
+  features.player = true;
 });
 
 // ── Which session takes the title ──────────────────────────────────────────
@@ -210,6 +215,20 @@ describe("TodayProgramLead", () => {
     const done = text(html(createElement(TodayProgramLead, { session: built({ contentState: "done" }), today: TODAY })));
     expect(done).toContain("Done");
     expect(done).not.toMatch(/Start|Continue/);
+  });
+
+  it("with the player: Start opens the session's sheet (its pre-check and the Start that locks it, online — 2b-R1); Continue opens the player", () => {
+    features.player = true;
+    for (const El of [TodayProgramLead, TodayProgramLine]) {
+      const start = [...new DOMParser().parseFromString(html(createElement(El, { session: built(), today: TODAY })), "text/html").querySelectorAll("a")];
+      expect(start.find((a) => a.textContent === "Start")?.getAttribute("href")).toBe("/plan?workout=slot-p1-2026-10-05");
+      const cont = [
+        ...new DOMParser()
+          .parseFromString(html(createElement(El, { session: built({ contentState: "started" }), today: TODAY })), "text/html")
+          .querySelectorAll("a"),
+      ];
+      expect(cont.find((a) => a.textContent === "Continue")?.getAttribute("href")).toBe("/session/slot-p1-2026-10-05");
+    }
   });
 
   it("skipped: says so, with no play action even with the player — Open, not primary, leads to Un-skip (ruling 2a-R15)", () => {
@@ -456,9 +475,16 @@ describe("the check sheet", () => {
     expect(css).not.toContain('.check-scale button[aria-pressed="true"]');
   });
 
+  it("Space on the chosen number keeps it — the radio pattern never unchecks from the keyboard (2a UI re-review U7)", () => {
+    mount(condition({ today: { value: 2, feelingOff: false } }));
+    // A key press on a focused button arrives as a click with no pointer detail.
+    act(() => void byText("2").dispatchEvent(new MouseEvent("click", { bubbles: true, detail: 0 })));
+    expect(buttons().filter((b) => b.getAttribute("aria-checked") === "true").map((b) => b.textContent)).toEqual(["2"]);
+  });
+
   it("tapping the chosen number clears it, so Feeling off alone can be saved (audit 2a-UI M3)", async () => {
     const { calls } = mount(condition({ today: { value: 2, feelingOff: false } }));
-    act(() => byText("2").click());
+    act(() => void byText("2").dispatchEvent(new MouseEvent("click", { bubbles: true, detail: 1 })));
     expect(buttons().filter((b) => b.getAttribute("aria-checked") === "true")).toEqual([]);
     // With nothing chosen the first number is the group's tab stop.
     expect(buttons().filter((b) => b.tabIndex === 0).map((b) => b.textContent)).toEqual(["0"]);

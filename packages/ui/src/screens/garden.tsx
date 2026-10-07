@@ -32,7 +32,15 @@ import { cap, eventSentence, selectArrival, type ArrivalEvent } from "./arrival.
 import { CeremonyCard } from "./arrival-block.js";
 import { BotanicalCard } from "./botanical.js";
 import { MoveSheet } from "./move-sheet.js";
-import { todayCardLayout, TodayProgramLead, TodayProgramLines } from "../components/today-program.js";
+import {
+  isAppSession,
+  sessionDone,
+  sessionSkipped,
+  todayCardLayout,
+  TodayProgramLead,
+  TodayProgramLines,
+  usePendingSaves,
+} from "../components/today-program.js";
 import { ConditionCheckSheet, ConditionChips } from "../components/condition-check-sheet.js";
 import { pickStatusStripMetric, statusStripBaseText } from "../signal-tiles.js";
 import { ReviewPull, SyncPanel, TimezoneNudge } from "./today.js";
@@ -881,10 +889,13 @@ export function DockPill({
   onOpen,
   expanded = false,
   disclosable = true,
+  done = false,
 }: {
   workout: WorkoutDto | null | undefined;
   today: string;
   onOpen: () => void;
+  /** The program session heading the card is done (or saved here): it is not "next" either. */
+  done?: boolean;
   /** True while the card above is open — this row then collapses it. */
   expanded?: boolean;
   /** False when there is no card behind this row (no plan). */
@@ -898,8 +909,10 @@ export function DockPill({
       ? `Rest day · ${relativeDay(workout.effectiveDate, today)}`
       : skipped
         ? `${workout.title} · ${relativeDay(workout.effectiveDate, today)} · skipped`
-        : `${workout.title} · ${relativeDay(workout.effectiveDate, today)} ${formatTime(workout.effectiveTime)}`;
-  const workoutText = !workout || workout.category === "rest" || skipped ? workoutLabel : `Next: ${workoutLabel}`;
+        : done
+          ? `${workout.title} · ${relativeDay(workout.effectiveDate, today)} · done`
+          : `${workout.title} · ${relativeDay(workout.effectiveDate, today)} ${formatTime(workout.effectiveTime)}`;
+  const workoutText = !workout || workout.category === "rest" || skipped || done ? workoutLabel : `Next: ${workoutLabel}`;
   const body = <span className="dock-pill-workout">{workoutText}</span>;
   if (!disclosable) {
     return (
@@ -1170,6 +1183,8 @@ export function GardenScreen() {
   const units = useUnits();
   const garden = useQuery({ queryKey: ["garden"], queryFn: api.garden });
   const today = useQuery({ queryKey: ["today"], queryFn: api.today });
+  // Sessions saved on this device and not yet taken by the server (Phase 2b) — read only on a day with an app session.
+  const pendingSaves = usePendingSaves((today.data?.todaySessions ?? []).some((s) => isAppSession(s.workout)));
   const [selectedPlantId, setSelectedPlantId] = useState<string | null>(null);
   const [openSpeciesId, setOpenSpeciesId] = useState<string | null>(null);
   const [showWeather, setShowWeather] = useState(false);
@@ -1756,6 +1771,11 @@ export function GardenScreen() {
         ? todayLayout.title.workout
         : null;
   const grows = lead ? unlockGrownBy(codex, lead.category) : null;
+  // A program session heading the card that is skipped, done or saved here is not today's to-do (2a UI re-review U6):
+  // no pacing clause for it, no "Finishing it grows…".
+  const leadPending = lead && todayLayout.title?.kind === "program" ? (pendingSaves[lead.id] ?? null) : null;
+  const leadSettled =
+    todayLayout.title?.kind === "program" && !!lead && (sessionSkipped(lead) || sessionDone(lead) || leadPending !== null);
   const toggleBalanceKey = (k: DisciplineKey) =>
     setOpenBalanceKey((cur) => (cur === k ? null : k));
 
@@ -2152,6 +2172,7 @@ export function GardenScreen() {
     today: (
       <>
         <DockPill
+          done={leadSettled && !!lead && !sessionSkipped(lead)}
           workout={w}
           today={d?.today ?? todayDate}
           expanded={dockPanelOpen}
@@ -2181,7 +2202,7 @@ export function GardenScreen() {
               </span>
             </div>
             {todayLayout.title?.kind === "program" ? (
-              <TodayProgramLead session={todayLayout.title.session} today={d!.today} />
+              <TodayProgramLead session={todayLayout.title.session} today={d!.today} pending={leadPending} />
             ) : w.category === "rest" ? (
               <>
                 <h3 className="today-title">Rest day</h3>
@@ -2213,9 +2234,9 @@ export function GardenScreen() {
                 ) : null}
               </>
             )}
-            <TodayProgramLines sessions={todayLayout.lines} today={d!.today} />
+            <TodayProgramLines sessions={todayLayout.lines} today={d!.today} pending={pendingSaves} />
             {(() => {
-              const clause = coachClause(verdict?.level, w.category);
+              const clause = leadSettled ? null : coachClause(verdict?.level, w.category);
               if (!d?.focus && !clause) return null;
               return (
                 <div className="today-coach">
@@ -2239,7 +2260,7 @@ export function GardenScreen() {
                 </div>
               );
             })()}
-            {grows?.progress && w.category !== "rest" ? (
+            {grows?.progress && w.category !== "rest" && !leadSettled ? (
               <button
                 type="button"
                 className="linklike dock-grows"

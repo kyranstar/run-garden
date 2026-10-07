@@ -375,12 +375,18 @@ importers:
       '@rg/domain':
         specifier: workspace:*
         version: link:../domain
+      '@rg/exercise-library':
+        specifier: workspace:*
+        version: link:../exercise-library
       '@rg/garden-engine':
         specifier: workspace:*
         version: link:../garden-engine
       '@rg/garden-renderer':
         specifier: workspace:*
         version: link:../garden-renderer
+      '@rg/session-engine':
+        specifier: workspace:*
+        version: link:../session-engine
       '@tanstack/react-query':
         specifier: ^5.62.0
         version: 5.101.4(react@18.3.1)

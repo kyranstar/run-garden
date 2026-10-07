@@ -2,9 +2,9 @@ import type { WeightUnit } from "@rg/domain";
 import type { CheckReading, EngineData, HistorySession, Mode, Theme } from "@rg/exercise-library";
 import { Blocks } from "./blocks.js";
 import { Builder } from "./builder.js";
+import { Graduation, type GraduationOffer } from "./graduation.js";
 import { HistIndex } from "./hist.js";
 import { Lib } from "./lib.js";
-import { Prog } from "./prog.js";
 import { Proposal } from "./proposal.js";
 import type { Alternative, Block, BuildInput, BuildResult, EngineLocation, HistorySummary, Prefs, Swaps } from "./types.js";
 
@@ -85,11 +85,7 @@ export interface BlockUpdate {
   events: string[];
 }
 
-export interface GraduationOffer {
-  family: string;
-  from: string;
-  to: string;
-}
+export type { GraduationOffer };
 
 const blankDay = (today: string): DayState => ({ date: today, checks: {}, feelingOff: false, override: {}, swaps: {} });
 
@@ -190,24 +186,6 @@ function acceptGraduate(data: EngineData, program: ProgramState, today: string, 
 }
 
 /** Core lifts this session topped out, with the harder move the block can switch to (judged with Home's gear, like the block). */
-function graduationOffers(data: EngineData, program: ProgramState, session: HistorySession): GraduationOffer[] {
-  const block = program.block;
-  if (!block) return [];
-  const sessions = [...program.sessions.filter(s => s.id !== session.id), session];
-  const loc = homeOf(program.locations);
-  const kbWeights = Lib.kettlebellsAt(loc);
-  const offers: GraduationOffer[] = [];
-  for (const f of data.coreFamilies) {
-    const id = block.core[f.id];
-    const ex = id ? Lib.get(data, id) : null;
-    if (!id || !ex || !(session.entries || []).some(e => e && e.id === id && e.sets && e.sets.length)) continue;
-    const ctx = { mode: "build" as const, checks: {}, implement: Lib.implementFor(ex, loc.equipment), kbWeights, unit: program.settings.unit, equipment: loc.equipment };
-    const s = Prog.suggest(data, ex, Prog.historyFor(data, sessions, id), ctx);
-    if (s.action !== "graduate" || !s.graduate) continue;
-    if (Blocks.graduate(data, block, f.id, s.graduate, session.date, loc.equipment) === block) continue;
-    offers.push({ family: f.id, from: id, to: s.graduate });
-  }
-  return offers;
-}
+const graduationOffers = (data: EngineData, program: ProgramState, session: HistorySession): GraduationOffer[] => Graduation.offers(data, program, session);
 
 export const Planner = { planToday, alternatives, blankDay, dayOf, setCheck, setFeelingOff, setOverride, swap, acceptGraduate, graduationOffers, locationOf };

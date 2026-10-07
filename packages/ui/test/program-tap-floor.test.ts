@@ -63,6 +63,9 @@ describe("the reading on the session sheet's when-line (ruling 2a-R14)", () => {
     // measured, a padded reading lost its top 11px. The box itself takes the floor instead.
     const reading = rule(".session-reading");
     expect(reading["min-height"]).toBe("var(--tap)");
+    // Wide enough too: "Knee 1" measured 36.3px wide (2a UI re-review U1) — the floor is both ways.
+    expect(reading["min-width"]).toBe("var(--tap)");
+    expect(reading["justify-content"]).toBe("center");
     expect(reading.display).toBe("inline-flex");
     expect(reading["align-items"]).toBe("center");
     const { relative, after, coarse } = lists();

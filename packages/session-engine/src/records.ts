@@ -29,7 +29,7 @@ export interface Milestone {
   text: string;
 }
 
-interface Best {
+export interface Best {
   kg: number | null;
   w: Weight | null;
   reps: number | null;
@@ -84,83 +84,146 @@ function improve(data: EngineData, best: Best, id: string, sets: HistorySet[]): 
   return out;
 }
 
-function compute(data: EngineData, sessions: readonly (HistorySession | null)[] | null | undefined, { weeklyGoal = 4 }: { weeklyGoal?: number } = {}): { records: RecordEvent[]; milestones: Milestone[] } {
+/**
+ * Everything the records and milestones carry from one session to the next: the fold `compute` runs over a history.
+ * Plain data (no Map or Set), so a baseline can be stored (`baseline`, `forSessionFrom`).
+ */
+export interface RecordsState {
+  weeklyGoal: number;
+  awarded: string[];
+  /** Per canonical exercise id. */
+  bests: Record<string, Best>;
+  /** Per ISO week start. */
+  weekCounts: Record<string, number>;
+  weekStreaks: Record<string, number>;
+  weekFamilies: Record<string, string[]>;
+  /** Per profile id: the calm sessions in a row. */
+  calm: Record<string, number>;
+  count: number;
+  topBlock: number | null;
+  heaviestBellKg: number | null;
+}
+
+const emptyState = (weeklyGoal: number): RecordsState => ({
+  weeklyGoal, awarded: [], bests: {}, weekCounts: {}, weekStreaks: {}, weekFamilies: {}, calm: {}, count: 0, topBlock: null, heaviestBellKg: null,
+});
+
+const has = (rec: object, key: string): boolean => Object.prototype.hasOwnProperty.call(rec, key);
+
+/** One session onto the state (changed in place): what it set and what it earned. */
+function fold(data: EngineData, st: RecordsState, s: HistorySession): { records: RecordEvent[]; milestones: Milestone[] } {
   const records: RecordEvent[] = [];
   const milestones: Milestone[] = [];
-  const awarded = new Set<string>();
-  const bests = new Map<string, Best>();
-  const weekCounts = new Map<string, number>();
-  const weekStreaks = new Map<string, number>();
-  const weekFamilies = new Map<string, Set<string>>();
   const calmProfiles = data.profiles.active.filter(p => p.calmStreakLabel);
-  const calm = new Map<string, number>();
-  let count = 0;
-  let topBlock: number | null = null;
-  let heaviestBellKg: number | null = null;
+  const at = { sessionId: s.id ?? null, date: s.date };
+  const award = (id: string, text: string) => { if (!st.awarded.includes(id)) { st.awarded.push(id); milestones.push({ id, ...at, text }); } };
+  const entries = (s.entries || []).filter(e => e && e.id);
 
-  for (const s of Hist.sorted((sessions || []).filter((x): x is HistorySession => Boolean(x && x.date)))) {
-    const at = { sessionId: s.id ?? null, date: s.date };
-    const award = (id: string, text: string) => { if (!awarded.has(id)) { awarded.add(id); milestones.push({ id, ...at, text }); } };
-    const entries = (s.entries || []).filter(e => e && e.id);
+  for (const raw of Hist.idsIn(s)) {
+    const id = Hist.canonical(data, raw);
+    if (has(st.bests, id)) continue;
+    st.bests[id] = { kg: null, w: null, reps: null, secs: null };
+    const ex = Lib.get(data, id);
+    records.push({ kind: "first", exerciseId: id, ...at, value: null, previous: null, text: `First time: ${ex ? ex.name : id}` });
+  }
+  const setsById = new Map<string, HistorySet[]>();
+  for (const e of entries.filter(countsForBests)) {
+    const id = Hist.canonical(data, e.id);
+    setsById.set(id, [...(setsById.get(id) || []), ...setsOf(e)]);
+  }
+  for (const [id, sets] of setsById) {
+    for (const r of improve(data, st.bests[id]!, id, sets)) records.push({ kind: r.kind, exerciseId: id, ...at, value: r.value, previous: r.previous, text: r.text });
+  }
 
-    for (const raw of Hist.idsIn(s)) {
-      const id = Hist.canonical(data, raw);
-      if (bests.has(id)) continue;
-      bests.set(id, { kg: null, w: null, reps: null, secs: null });
-      const ex = Lib.get(data, id);
-      records.push({ kind: "first", exerciseId: id, ...at, value: null, previous: null, text: `First time: ${ex ? ex.name : id}` });
+  st.count += 1;
+  if (SESSION_COUNTS.includes(st.count)) award(`sessions-${st.count}`, `${st.count} sessions`);
+
+  // A malformed date still counts for records and session totals; it just belongs to no week.
+  const week = isLocalDate(s.date) ? startOfIsoWeek(s.date) : null;
+  if (week) st.weekCounts[week] = (st.weekCounts[week] || 0) + 1;
+  if (week && st.weekCounts[week] === st.weeklyGoal) {
+    const streak = (st.weekStreaks[addDays(week, -7)] || 0) + 1;
+    st.weekStreaks[week] = streak;
+    if (GOAL_STREAKS.includes(streak)) award(`goal-weeks-${streak}`, `${streak} weeks in a row at your goal`);
+  }
+
+  // A calm session per profile: its check ended no higher than it started. The first profile's milestone
+  // ids are `calm-N`; any further profile's are `calm-<profile>-N`.
+  calmProfiles.forEach((p, i) => {
+    const c = s.checks ? s.checks[p.id] : undefined;
+    const n = c && c.pre != null && c.post != null && c.post <= c.pre ? (st.calm[p.id] || 0) + 1 : 0;
+    st.calm[p.id] = n;
+    if (CALM_STREAKS.includes(n)) award(i === 0 ? `calm-${n}` : `calm-${p.id}-${n}`, `${n} ${p.calmStreakLabel} sessions in a row`);
+  });
+
+  if (typeof s.blockNumber === "number") {
+    if (st.topBlock != null && s.blockNumber > st.topBlock) award(`block-${s.blockNumber - 1}`, `Block ${s.blockNumber - 1} complete`);
+    st.topBlock = Math.max(st.topBlock ?? s.blockNumber, s.blockNumber);
+  }
+
+  const bells = entries.filter(isKettlebell).flatMap(setsOf).filter(loaded);
+  const bellKg = maxOf(bells.map(kgOf));
+  if (bellKg != null) {
+    if (st.heaviestBellKg != null && bellKg > st.heaviestBellKg + SAME_KG) {
+      award(`bell-${Math.round(bellKg)}`, `New heaviest bell: ${formatWeight(bells.find(b => kgOf(b) === bellKg)!.w)}`);
     }
-    const setsById = new Map<string, HistorySet[]>();
-    for (const e of entries.filter(countsForBests)) {
-      const id = Hist.canonical(data, e.id);
-      setsById.set(id, [...(setsById.get(id) || []), ...setsOf(e)]);
-    }
-    for (const [id, sets] of setsById) {
-      for (const r of improve(data, bests.get(id)!, id, sets)) records.push({ kind: r.kind, exerciseId: id, ...at, value: r.value, previous: r.previous, text: r.text });
-    }
+    st.heaviestBellKg = Math.max(st.heaviestBellKg ?? bellKg, bellKg);
+  }
 
-    count += 1;
-    if (SESSION_COUNTS.includes(count)) award(`sessions-${count}`, `${count} sessions`);
-
-    // A malformed date still counts for records and session totals; it just belongs to no week.
-    const week = isLocalDate(s.date) ? startOfIsoWeek(s.date) : null;
-    if (week) weekCounts.set(week, (weekCounts.get(week) || 0) + 1);
-    if (week && weekCounts.get(week) === weeklyGoal) {
-      const streak = (weekStreaks.get(addDays(week, -7)) || 0) + 1;
-      weekStreaks.set(week, streak);
-      if (GOAL_STREAKS.includes(streak)) award(`goal-weeks-${streak}`, `${streak} weeks in a row at your goal`);
-    }
-
-    // A calm session per profile: its check ended no higher than it started. The first profile's milestone
-    // ids are `calm-N`; any further profile's are `calm-<profile>-N`.
-    calmProfiles.forEach((p, i) => {
-      const c = s.checks ? s.checks[p.id] : undefined;
-      const n = c && c.pre != null && c.post != null && c.post <= c.pre ? (calm.get(p.id) || 0) + 1 : 0;
-      calm.set(p.id, n);
-      if (CALM_STREAKS.includes(n)) award(i === 0 ? `calm-${n}` : `calm-${p.id}-${n}`, `${n} ${p.calmStreakLabel} sessions in a row`);
-    });
-
-    if (typeof s.blockNumber === "number") {
-      if (topBlock != null && s.blockNumber > topBlock) award(`block-${s.blockNumber - 1}`, `Block ${s.blockNumber - 1} complete`);
-      topBlock = Math.max(topBlock ?? s.blockNumber, s.blockNumber);
-    }
-
-    const bells = entries.filter(isKettlebell).flatMap(setsOf).filter(loaded);
-    const bellKg = maxOf(bells.map(kgOf));
-    if (bellKg != null) {
-      if (heaviestBellKg != null && bellKg > heaviestBellKg + SAME_KG) {
-        award(`bell-${Math.round(bellKg)}`, `New heaviest bell: ${formatWeight(bells.find(b => kgOf(b) === bellKg)!.w)}`);
-      }
-      heaviestBellKg = Math.max(heaviestBellKg ?? bellKg, bellKg);
-    }
-
-    if (!week) continue;
-    const families = weekFamilies.get(week) || new Set<string>();
+  if (week) {
+    const families = new Set(st.weekFamilies[week] || []);
     for (const raw of Hist.idsIn(s)) { const f = Lib.coreFamilyOf(data, Lib.get(data, raw)); if (f) families.add(f); }
-    weekFamilies.set(week, families);
+    st.weekFamilies[week] = [...families];
     if (data.coreFamilies.every(f => families.has(f.id))) award(`all-core-${week}`, "Every core lift trained in one week");
   }
   return { records, milestones };
+}
+
+const valid = (sessions: readonly (HistorySession | null)[] | null | undefined): HistorySession[] =>
+  Hist.sorted((sessions || []).filter((x): x is HistorySession => Boolean(x && x.date)));
+
+function compute(data: EngineData, sessions: readonly (HistorySession | null)[] | null | undefined, { weeklyGoal = 4 }: { weeklyGoal?: number } = {}): { records: RecordEvent[]; milestones: Milestone[] } {
+  const records: RecordEvent[] = [];
+  const milestones: Milestone[] = [];
+  const st = emptyState(weeklyGoal);
+  for (const s of valid(sessions)) {
+    const out = fold(data, st, s);
+    records.push(...out.records);
+    milestones.push(...out.milestones);
+  }
+  return { records, milestones };
+}
+
+/**
+ * A history folded down to what one more session — the newest, on `date`, playing only moves among `ids` — can read
+ * (Phase 2b: the server works it out at Start; the review folds the session played onto it, offline). Bests are
+ * kept only for `ids` (canonical); weeks only from the one before `date`'s.
+ */
+function baseline(
+  data: EngineData,
+  sessions: readonly (HistorySession | null)[] | null | undefined,
+  { ids, date, weeklyGoal = 4 }: { ids: readonly string[]; date: string; weeklyGoal?: number },
+): RecordsState {
+  const st = emptyState(weeklyGoal);
+  for (const s of valid(sessions)) fold(data, st, s);
+  const keep = new Set(ids.map(id => Hist.canonical(data, id)));
+  const from = isLocalDate(date) ? addDays(startOfIsoWeek(date), -7) : null;
+  const recent = <T>(byWeek: Record<string, T>): Record<string, T> =>
+    Object.fromEntries(Object.entries(byWeek).filter(([w]) => from !== null && w >= from));
+  return {
+    ...st,
+    bests: Object.fromEntries(Object.entries(st.bests).filter(([id]) => keep.has(id))),
+    weekCounts: recent(st.weekCounts),
+    weekStreaks: recent(st.weekStreaks),
+    weekFamilies: recent(st.weekFamilies),
+  };
+}
+
+/** What `session` achieved on top of a `baseline` — the same as `forSession` over the whole history. */
+function forSessionFrom(data: EngineData, base: RecordsState, session: HistorySession): { records: RecordEvent[]; milestones: Milestone[] } {
+  const st: RecordsState = JSON.parse(JSON.stringify(base)) as RecordsState;
+  if (!session || !session.date) return { records: [], milestones: [] };
+  return fold(data, st, session);
 }
 
 /** What one session achieved — for the review screen right after saving it. */
@@ -170,4 +233,4 @@ function forSession(data: EngineData, sessions: readonly (HistorySession | null)
   return { records: all.records.filter(mine), milestones: all.milestones.filter(mine) };
 }
 
-export const Records = { compute, forSession };
+export const Records = { compute, forSession, baseline, forSessionFrom };

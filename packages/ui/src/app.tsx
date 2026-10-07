@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { BrowserRouter, Navigate, Route, Routes, useNavigate } from "react-router-dom";
+import { BrowserRouter, Navigate, Route, Routes, useNavigate, useParams } from "react-router-dom";
 import { QueryClient, QueryClientProvider, useQuery } from "@tanstack/react-query";
 import { api, ApiError } from "@rg/api-client";
 import { AppShell } from "./shell.js";
@@ -10,8 +10,10 @@ import { GardenScreen } from "./screens/garden.js";
 import { SettingsScreen } from "./screens/settings.js";
 import { WelcomeScreen } from "./screens/welcome.js";
 import { Onboarding } from "./screens/onboarding.js";
+import { PlayerScreen } from "./screens/player.js";
 import { onOfflineDbReplaced } from "./offline/idb.js";
 import { meWithOfflineFallback } from "./offline/me.js";
+import { OutboxSync } from "./components/outbox-sync.js";
 
 const queryClient = new QueryClient({
   defaultOptions: {
@@ -19,6 +21,10 @@ const queryClient = new QueryClient({
       retry: (count, error) => !(error instanceof ApiError && error.status === 401) && count < 2,
       refetchOnWindowFocus: false,
       staleTime: 15_000,
+      // Offline, a read still goes out: the service worker answers it from its cache (Today, the garden, Plan).
+      // React Query's default ("online") would hold every query paused while the browser says offline, and the
+      // home would read "Couldn't load the garden" over data the device holds (Phase 2b Task 8, journey b).
+      networkMode: "offlineFirst",
     },
   },
 });
@@ -29,6 +35,9 @@ function AuthedApp() {
     // Offline with a session in progress, the last known answer lets the athlete back in (plan 2b Task 3).
     queryFn: () => meWithOfflineFallback(),
     retry: false,
+    // Who is signed in keeps React Query's default: offline it waits, and the shell opens on what the device holds
+    // (plan 2b Task 3) rather than on a service worker slow to answer for it.
+    networkMode: "online",
     // A restore running elsewhere says so until it stops (B10): look again.
     refetchInterval: (q) => (q.state.data?.restore?.running ? 30_000 : false),
   });
@@ -127,16 +136,37 @@ function OnboardingRoute() {
   return <Onboarding onDone={() => navigate("/")} />;
 }
 
+/**
+ * The session player (Phase 2b): full screen, outside the tab shell — no tab bar. It plays what Start left on the
+ * device, so only a real 401 sends it to sign-in; offline, or with the server down, it plays on.
+ */
+function PlayerRoute() {
+  const { workoutId = "" } = useParams();
+  const me = useQuery({ queryKey: ["me"], queryFn: () => meWithOfflineFallback(), retry: false, networkMode: "online" });
+  if (me.isLoading) {
+    return (
+      <div className="player player-status">
+        <Spinner label="Signing in" />
+      </div>
+    );
+  }
+  if (me.isError && me.error instanceof ApiError && me.error.status === 401) return <Navigate to="/welcome" replace />;
+  return <PlayerScreen workoutId={workoutId} />;
+}
+
 export function App() {
   // Another tab opened a newer version of the offline database: this page runs older code than what stores its
   // sessions now, and its connection has let go — reload onto the new build (audit 2b-A M-11).
   useEffect(() => onOfflineDbReplaced(() => window.location.reload()), []);
   return (
     <QueryClientProvider client={queryClient}>
+      {/* Sessions saved on this device go to the server from app start, exactly once (Phase 2b). */}
+      <OutboxSync />
       <BrowserRouter>
         <Routes>
           <Route path="/welcome" element={<WelcomeRoute />} />
           <Route path="/onboarding" element={<OnboardingRoute />} />
+          <Route path="/session/:workoutId" element={<PlayerRoute />} />
           <Route path="/*" element={<AuthedApp />} />
         </Routes>
       </BrowserRouter>

@@ -56,7 +56,10 @@ export interface DrainResult {
   failed: number;
   /** Another drain holds the lock: this one sent nothing. */
   locked: boolean;
-  /** When the first entry still waiting is due again (a timer should drain then); null when nothing is scheduled. */
+  /**
+   * When to drain again (a timer should): the first entry still waiting is due, or — locked out — the other drain's
+   * lock runs out (it may be a tab closed mid-send). Null when nothing is scheduled.
+   */
   retryAt: number | null;
   /** An entry of this account still waits with its backoff spent: only a trigger sends it now. */
   stalled: boolean;
@@ -158,11 +161,12 @@ function classify(error: unknown): Outcome {
 /** A server failure that counts towards OUTBOX_MAX_SAME_5XX: a 5xx, but not the save's own `busy`. */
 const countsAsRepeat = (error: string) => /^http_5\d\d$/.test(error);
 
-async function claimLock(db: OfflineDb, owner: string, now: number, lockMs: number): Promise<boolean> {
+/** The lock for `owner`, or — held by another drain — when that one's lock runs out. */
+async function claimLock(db: OfflineDb, owner: string, now: number, lockMs: number): Promise<{ ok: boolean; until: number }> {
   const held = await db.update<{ owner: string; until: number }>("meta", LOCK_KEY, (lock) =>
     !lock || lock.owner === owner || lock.until <= now ? { owner, until: now + lockMs } : lock,
   );
-  return held?.owner === owner;
+  return { ok: held?.owner === owner, until: held?.until ?? now };
 }
 
 async function releaseLock(db: OfflineDb, owner: string): Promise<void> {
@@ -182,7 +186,9 @@ export async function drain(
   const lockMs = opts.lockMs ?? DEFAULT_LOCK_MS;
   const owner = crypto.randomUUID();
   const result: DrainResult = { saved: 0, conflicts: 0, failed: 0, locked: false, retryAt: null, stalled: false };
-  if (!(await claimLock(db, owner, now(), lockMs))) return { ...result, locked: true };
+  // Locked out: come back when that lock runs out — it may be a tab closed mid-send (Phase 2b Task 8, journey e).
+  const first = await claimLock(db, owner, now(), lockMs);
+  if (!first.ok) return { ...result, locked: true, retryAt: first.until };
   // The drain's answer lands on the entry as it is NOW: Retry's reset stands, and a Discard is never undone.
   const settle = (key: string, change: (current: OutboxEntry) => OutboxEntry) =>
     db.update<OutboxEntry>("outbox", key, (current) => (current ? change(current) : undefined));
@@ -192,7 +198,8 @@ export async function drain(
       const t = now();
       if (opts.mode === "timer" && (entry.nextAttemptAt === null || entry.nextAttemptAt > t)) break;
       // Still ours? (A drain that outlived its lock must not race the one that took it over.)
-      if (!(await claimLock(db, owner, t, lockMs))) return { ...result, locked: true };
+      const still = await claimLock(db, owner, t, lockMs);
+      if (!still.ok) return { ...result, locked: true, retryAt: still.until };
       let outcome: Outcome;
       try {
         await api.savePerformed(entry.performedId, entry.payload);
