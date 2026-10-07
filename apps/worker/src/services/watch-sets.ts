@@ -524,19 +524,24 @@ export async function upsertWatchSession(
 // no session, and the read-now never re-reads a stored activity's detail
 // (it fetches details for unseen activities only). This pass fills them: the
 // stored strength activities that have laps (so their detail had lap items)
-// and no settled session of any source, newest first, a few per call. It is
+// and no settled session of any source, newest first, one per call. It is
 // idempotent — a filled activity drops out — and walks back through history
-// by a cursor, so an activity that turns out to have nothing to log is passed
-// once, not retried forever.
+// by a cursor, so in one walk an activity that turns out to have nothing to
+// log is passed once (a later walk from the top reads it again: it has laps
+// and no session, so it is still a candidate).
 //
-// Budget (Workers Free): at most WATCH_BACKFILL_BATCH detail reads, each at
-// worst three COROS calls (the read, a re-login on an expired token, the
-// retry), well inside 50 external subrequests; D1 statements count against
-// the separate 1,000 internal ceiling. CPU is one detail's JSON and a pure
-// derivation per activity — the same work the read-now does per new activity.
+// Budget (Workers Free): CPU binds first, not subrequests. A call parses one
+// strength detail and writes its sets — about what the read-now spends on one
+// new strength activity, a few ms warm and more on a cold isolate. Four per
+// call were likely to pass the 10 ms CPU limit (audit 2a+ I-1) and die with
+// error 1102 before `finally` let go of the `coros_read` lock. Subrequests: a
+// detail read is at worst three COROS calls (the read, a re-login on an
+// expired token, the retry), far inside 50; D1 statements, about twenty per
+// call, count against the separate 1,000 ceiling. More calls cost nothing but
+// time: the cursor carries the walk.
 
-/** Details read per call. */
-export const WATCH_BACKFILL_BATCH = 4;
+/** Details read per call: one, for Workers Free's 10 ms of CPU (audit 2a+ I-1). */
+export const WATCH_BACKFILL_BATCH = 1;
 /** COROS calls one call may make; a detail read costs at most three. */
 export const WATCH_BACKFILL_SUBREQUEST_BUDGET = 36;
 const DETAIL_WORST_CASE = 3;
@@ -564,6 +569,8 @@ export type WatchBackfillResult =
       failures: number;
       /** Pass as `before` to go on; null when nothing older is left. */
       next: string | null;
+      /** Activities still ahead of `next` — what the rest of the walk will read (counted in the same query; no COROS call). */
+      remaining: number;
       subrequests: number;
     };
 
@@ -636,6 +643,8 @@ export async function backfillWatchSets(
       startTimeLocal: activities.startTimeLocal,
       durationSeconds: activities.durationSeconds,
       elapsedSeconds: activities.elapsedSeconds,
+      // Every candidate from the cursor on, counted before the LIMIT: what is left, in this same statement.
+      candidates: sql<number>`count(*) over ()`,
     })
     .from(activities)
     .innerJoin(
@@ -660,9 +669,10 @@ export async function backfillWatchSets(
     )
     // The id orders a tie, so a cursor's (start, id) pair names one place in the walk.
     .orderBy(desc(activities.startTime), desc(activities.id))
-    .limit(WATCH_BACKFILL_BATCH + 1);
+    .limit(WATCH_BACKFILL_BATCH);
   const done = { filled: 0, nothingToLog: 0, appOwned: 0, failures: 0 };
-  if (rows.length === 0) return { status: "ok", ...done, next: null, subrequests: 0 };
+  if (rows.length === 0) return { status: "ok", ...done, next: null, remaining: 0, subrequests: 0 };
+  const candidates = Number(rows[0]!.candidates);
 
   const lock = await claimUserLock(db, userId, "coros_read", 5);
   if (!lock) return { status: "busy" };
@@ -677,7 +687,7 @@ export async function backfillWatchSets(
     if (!client) return { status: "not_connected" };
     let last: { startTime: string; id: string } | null = null;
     let processed = 0;
-    for (const row of rows.slice(0, WATCH_BACKFILL_BATCH)) {
+    for (const row of rows) {
       if (subrequests + DETAIL_WORST_CASE > WATCH_BACKFILL_SUBREQUEST_BUDGET) break;
       processed += 1;
       last = { startTime: row.startTime, id: row.id };
@@ -710,8 +720,8 @@ export async function backfillWatchSets(
       else if (res.status === "app_owned") done.appOwned += 1;
       else done.nothingToLog += 1;
     }
-    const more = rows.length > processed;
-    return { status: "ok", ...done, next: more && last ? formatWatchCursor(last) : null, subrequests };
+    const remaining = Math.max(0, candidates - processed);
+    return { status: "ok", ...done, next: remaining > 0 && last ? formatWatchCursor(last) : null, remaining, subrequests };
   } catch (e) {
     if (isRuntimeLimit(e)) return { status: "runtime_limit" };
     // Result code only — nothing from the account leaves.

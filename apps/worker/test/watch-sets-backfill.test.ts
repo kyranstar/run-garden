@@ -111,6 +111,24 @@ const sessionsOf = (db: Db, userId: string) =>
   db.select().from(schema.performedSessions).where(eq(schema.performedSessions.userId, userId));
 const detailCalls = (paths: string[]) => paths.filter((p) => p.endsWith("/activity/detail/query"));
 
+/** The owner's console loop: call until `next` is null, adding up what each call did. */
+async function walk(db: Db, userId: string, impl: typeof fetch) {
+  const total = { calls: 0, filled: 0, nothingToLog: 0, appOwned: 0, failures: 0 };
+  let next: string | null = null;
+  do {
+    const r = await backfillWatchSets(db, makeEnv(), userId, { fetchImpl: impl, ...(next ? { before: next } : {}) });
+    expect(r.status).toBe("ok");
+    if (r.status !== "ok") break;
+    total.calls += 1;
+    total.filled += r.filled;
+    total.nothingToLog += r.nothingToLog;
+    total.appOwned += r.appOwned;
+    total.failures += r.failures;
+    next = r.next;
+  } while (next && total.calls < 20);
+  return total;
+}
+
 describe("backfillWatchSets", () => {
   it("logs a stored strength activity's sets from its detail, reading COROS only", async () => {
     const { db, userId, server, rec } = await setup();
@@ -192,8 +210,12 @@ describe("backfillWatchSets", () => {
     const edge = days[days.length - WATCH_BACKFILL_BATCH]!;
     expect(first.next).toBe(`${edge}T13:00:00.000Z~${ids.get(edge)}`);
 
+    expect(first.remaining).toBe(days.length - WATCH_BACKFILL_BATCH);
+
+    // The cursor goes on from there; the walk ends with every one filled.
     const second = await backfillWatchSets(db, makeEnv(), userId, { fetchImpl: rec.impl, before: first.next! });
-    expect(second).toMatchObject({ status: "ok", filled: days.length - WATCH_BACKFILL_BATCH, next: null });
+    expect(second).toMatchObject({ status: "ok", filled: WATCH_BACKFILL_BATCH });
+    expect(await walk(db, userId, rec.impl)).toMatchObject({ filled: days.length - 2 * WATCH_BACKFILL_BATCH });
     expect(await sessionsOf(db, userId)).toHaveLength(days.length);
   });
 
@@ -205,13 +227,7 @@ describe("backfillWatchSets", () => {
     }
     await stored(db, userId, server, "lbl-tie-1", "2026-09-07T13:00:00.000Z");
     await stored(db, userId, server, "lbl-tie-2", "2026-09-07T13:00:00.000Z");
-    let next: string | null = null;
-    for (let calls = 0; calls < 10; calls++) {
-      const r = await backfillWatchSets(db, makeEnv(), userId, { fetchImpl: rec.impl, ...(next ? { before: next } : {}) });
-      expect(r.status).toBe("ok");
-      next = r.status === "ok" ? r.next : null;
-      if (!next) break;
-    }
+    await walk(db, userId, rec.impl);
     expect((await sessionsOf(db, userId)).map((s) => s.sourceRef)).toEqual(
       expect.arrayContaining(["lbl-tie-1", "lbl-tie-2"]),
     );
@@ -222,17 +238,7 @@ describe("backfillWatchSets", () => {
     const { db, userId, server, rec } = await setup({ failOnce: /^\s*insert into "performed_sessions"/i });
     await stored(db, userId, server, "lbl-broken", "2026-09-12T13:00:00.000Z"); // newest: its write fails
     await stored(db, userId, server, "lbl-fine", "2026-09-11T13:00:00.000Z");
-    let next: string | null = null;
-    let failures = 0;
-    for (let calls = 0; calls < 10; calls++) {
-      const r = await backfillWatchSets(db, makeEnv(), userId, { fetchImpl: rec.impl, ...(next ? { before: next } : {}) });
-      expect(r.status).toBe("ok");
-      if (r.status !== "ok") break;
-      failures += r.failures;
-      next = r.next;
-      if (!next) break;
-    }
-    expect(failures).toBe(1);
+    expect(await walk(db, userId, rec.impl)).toMatchObject({ failures: 1, filled: 1 });
     expect((await sessionsOf(db, userId)).map((s) => [s.sourceRef, s.payloadHash === "pending"])).toEqual([
       ["lbl-fine", false],
     ]);
@@ -253,8 +259,22 @@ describe("backfillWatchSets", () => {
     const { db, userId, server, rec } = await setup();
     await stored(db, userId, server, "lbl-ok", "2026-09-10T13:00:00.000Z");
     await stored(db, userId, server, "lbl-empty", "2026-09-11T13:00:00.000Z", { detail: false });
-    const res = await backfillWatchSets(db, makeEnv(), userId, { fetchImpl: rec.impl });
-    expect(res).toMatchObject({ status: "ok", filled: 1, nothingToLog: 1 });
+    expect(await walk(db, userId, rec.impl)).toMatchObject({ filled: 1, nothingToLog: 1 });
+  });
+
+  it("reads one detail per call — Workers Free's 10 ms CPU — and says how many are left (audit I-1)", async () => {
+    const { db, userId, server, rec } = await setup();
+    for (const d of ["2026-09-01", "2026-09-02", "2026-09-03"]) await stored(db, userId, server, `lbl-${d}`, `${d}T13:00:00.000Z`);
+    const first = await backfillWatchSets(db, makeEnv(), userId, { fetchImpl: rec.impl });
+    expect(first).toMatchObject({ status: "ok", filled: 1, remaining: 2 });
+    expect(detailCalls(rec.paths)).toHaveLength(1);
+    if (first.status !== "ok") return;
+    const second = await backfillWatchSets(db, makeEnv(), userId, { fetchImpl: rec.impl, before: first.next! });
+    expect(second).toMatchObject({ status: "ok", filled: 1, remaining: 1 });
+    if (second.status !== "ok") return;
+    const third = await backfillWatchSets(db, makeEnv(), userId, { fetchImpl: rec.impl, before: second.next! });
+    expect(third).toMatchObject({ status: "ok", filled: 1, remaining: 0, next: null });
+    expect(detailCalls(rec.paths)).toHaveLength(3);
   });
 
   it("writes nothing and calls nothing during a restore, in fixture mode, or without a connection", async () => {

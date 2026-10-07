@@ -153,10 +153,39 @@ corosRoutes.get("/debug/strength-set-stats", async (c) => {
 });
 
 /**
- * The watch-sets backfill (Phase 2a+): one bounded batch of stored strength
- * activities gets its logged sets from COROS (read-only). Call again with
- * `?before=<next>` until `next` is null. Idempotent: a filled activity drops
- * out, so running it twice changes nothing.
+ * The watch-sets backfill (Phase 2a+): one stored strength activity per call
+ * gets its logged sets from COROS (read-only). Call again with
+ * `?before=<next>` until `next` is null; `remaining` says how many are left.
+ * Idempotent: a filled activity drops out, so a second walk writes nothing.
+ *
+ * The owner runs it from the console of a signed-in app tab. A call the
+ * runtime kills (CPU, error 1102) answers with an HTML page, not JSON, and
+ * holds the `coros_read` lock for up to five minutes, so the calls after it
+ * say `busy`: the loop waits 30 s and tries again, up to 12 times in a row
+ * (six minutes), and stops cleanly on anything else that is not `ok`.
+ *
+ *   (async () => {
+ *     const sum = { filled: 0, nothingToLog: 0, appOwned: 0, failures: 0 };
+ *     let before = null, waits = 0;
+ *     for (let calls = 0; calls < 2000; ) {
+ *       const url = "/api/coros/watch-sets/backfill" + (before ? "?before=" + encodeURIComponent(before) : "");
+ *       const res = await fetch(url, { method: "POST" }).catch(() => null);
+ *       const r = res ? await res.json().catch(() => null) : null;
+ *       if (!r || r.status === "busy" || r.status === "runtime_limit") {
+ *         if (++waits > 12) return console.log("Stopped: no answer for six minutes. Run it again later; filled ones are skipped.", sum);
+ *         console.log(`HTTP ${res ? res.status : "-"}, ${r ? r.status : "not JSON"}: waiting 30 s (${waits}/12)`);
+ *         await new Promise((ok) => setTimeout(ok, 30_000));
+ *         continue;
+ *       }
+ *       waits = 0;
+ *       calls += 1;
+ *       if (r.status !== "ok") return console.log("Stopped:", r, sum);
+ *       for (const k in sum) sum[k] += r[k];
+ *       console.log(`${r.remaining} left`, sum);
+ *       if (!r.next) return console.log("Done", sum);
+ *       before = r.next;
+ *     }
+ *   })();
  */
 corosRoutes.post("/watch-sets/backfill", async (c) => {
   const before = c.req.query("before");
