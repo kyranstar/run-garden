@@ -20,6 +20,10 @@ const queryClient = new QueryClient({
       retry: (count, error) => !(error instanceof ApiError && error.status === 401) && count < 2,
       refetchOnWindowFocus: false,
       staleTime: 15_000,
+      // Offline, a read still goes out: the service worker answers it from its cache (Today, the garden, Plan).
+      // React Query's default ("online") would hold every query paused while the browser says offline, and the
+      // home would read "Couldn't load the garden" over data the device holds (Phase 2b Task 8, journey b).
+      networkMode: "offlineFirst",
     },
   },
 });
@@ -30,6 +34,9 @@ function AuthedApp() {
     // Offline with a session in progress, the last known answer lets the athlete back in (plan 2b Task 3).
     queryFn: () => meWithOfflineFallback(),
     retry: false,
+    // Who is signed in keeps React Query's default: offline it waits, and the shell opens on what the device holds
+    // (plan 2b Task 3) rather than on a service worker slow to answer for it.
+    networkMode: "online",
     // A restore running elsewhere says so until it stops (B10): look again.
     refetchInterval: (q) => (q.state.data?.restore?.running ? 30_000 : false),
   });
@@ -134,7 +141,7 @@ function OnboardingRoute() {
  */
 function PlayerRoute() {
   const { workoutId = "" } = useParams();
-  const me = useQuery({ queryKey: ["me"], queryFn: () => meWithOfflineFallback(), retry: false });
+  const me = useQuery({ queryKey: ["me"], queryFn: () => meWithOfflineFallback(), retry: false, networkMode: "online" });
   if (me.isLoading) {
     return (
       <div className="player player-status">
