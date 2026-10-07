@@ -19,7 +19,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { SessionDto } from "@rg/api-client";
 import { openOfflineDb, type OfflineDb } from "../../src/offline/idb.js";
 import { saveBuild } from "../../src/offline/builds.js";
-import { readLive } from "../../src/offline/live.js";
+import { readLive, type LiveSession } from "../../src/offline/live.js";
 import { saveExtras } from "../../src/player/stored.js";
 import { PlayerScreen } from "../../src/screens/player.js";
 import type { Chimes } from "../../src/player/audio.js";
@@ -319,25 +319,59 @@ describe("the keyboard", () => {
   });
 });
 
-describe("Review Focus 1 on the screen — locked for two minutes mid-hold", () => {
-  it("comes back on the step and the time the wall clock says", async () => {
-    await storedStart();
-    mount();
-    await until(() => text().includes("1 of 9"), "the first step");
-    // 10 s into the Left side's 45 s hold, the phone locks…
-    await at(T0 + 13 * S);
+describe("Review Focus 1 on the screen — locked mid-hold", () => {
+  type Stored = { live: { secs: Record<string, number>; reached: number[] } };
+  async function lockAt(ms: number) {
+    await at(ms);
     await act(async () => {
       Object.defineProperty(document, "visibilityState", { value: "hidden", configurable: true });
       document.dispatchEvent(new Event("visibilitychange"));
     });
-    // …and is unlocked 2 minutes later: Left ended at 48 s, Right (3 + 45 s) at 96 s; the set waits for Done.
-    vi.setSystemTime(T0 + 133 * S);
+  }
+  async function unlockAt(ms: number) {
+    vi.setSystemTime(ms);
     await act(async () => {
       Object.defineProperty(document, "visibilityState", { value: "visible", configurable: true });
       document.dispatchEvent(new Event("visibilitychange"));
     });
+  }
+  async function kept(): Promise<LiveSession<Stored> | undefined> {
+    await act(async () => window.dispatchEvent(new Event("pagehide")));
+    await until(() => true, "flush");
+    return readLive<Stored>(db!, SLOT);
+  }
+
+  it("comes back on the step and the time the wall clock says: the next hold, part held, the one before judged at its full time", async () => {
+    await storedStart();
+    mount();
+    await until(() => text().includes("1 of 9"), "the first step");
+    // 10 s into the Left side's 45 s hold, the phone locks…
+    await lockAt(T0 + 13 * S);
+    // …and is unlocked at 70 s: Left ran out at 48 s, Right's get-ready ended at 51 s, so 19 s of it are held.
+    await unlockAt(T0 + 70 * S);
+    expect(text()).toContain("2 of 9");
+    expect(text()).toContain("Right side");
+    expect(text()).not.toContain("Get ready");
+    expect(text()).toContain("0:26");
+    const live = await kept();
+    expect(live).toMatchObject({ stepIndex: 1, timerAnchor: T0 + 48 * S, timerBankedMs: 0, paused: false });
+    // Left was held its whole 45 s while the phone was locked — never the 10 s seen before it locked.
+    expect(live?.recorder.live.secs.lowLunge).toBe(45);
+    expect(live?.recorder.live.reached).toEqual([0, 1]);
+  });
+
+  it("a longer lock passes both holds, each at its full time, and waits on the set", async () => {
+    await storedStart();
+    mount();
+    await until(() => text().includes("1 of 9"), "the first step");
+    await lockAt(T0 + 13 * S);
+    // Unlocked 2 minutes later: Left ended at 48 s, Right (3 + 45 s) at 96 s; the set waits for Done.
+    await unlockAt(T0 + 133 * S);
     expect(text()).toContain("3 of 9");
     expect(text()).toContain("Goblet squat");
+    const live = await kept();
+    expect(live).toMatchObject({ stepIndex: 2, timerAnchor: T0 + 96 * S });
+    expect(live?.recorder.live.secs.lowLunge).toBe(90);
   });
 });
 
