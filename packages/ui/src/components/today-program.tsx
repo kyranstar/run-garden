@@ -4,13 +4,15 @@
  * The one Today card keeps its shape. When the day holds a run, the run keeps the title and its actions and each
  * program session is one line beside it — dot, name, mode · minutes · time, and its own action. On a program day
  * the program session takes the title, with what was built for it in one line. Start and Continue belong to the
- * player (`features.player`); until it exists, Open leads to the session sheet.
+ * player (`features.player`); until it exists, Open leads to the session sheet. Start opens the sheet (its pre-check,
+ * a fresh build and the Start that locks it, online — ruling 2b-R1); Continue opens the player.
  */
 import { Link } from "react-router-dom";
 import type { TodayResponse, WorkoutDto } from "@rg/api-client";
 import type { SessionLead } from "@rg/domain";
 import { CategoryDot, formatMinutes, formatTime } from "../components.js";
 import { features } from "../features.js";
+import { chimes } from "../player/audio.js";
 
 export type TodaySession = TodayResponse["todaySessions"][number];
 
@@ -74,6 +76,14 @@ export const sheetHref = (w: WorkoutDto) => `/plan?workout=${encodeURIComponent(
 /** The player (Phase 2b). */
 export const playerHref = (w: WorkoutDto) => `/session/${encodeURIComponent(w.id)}`;
 
+/**
+ * Where each way in goes. Start opens the session's sheet: the pre-check, a fresh build and the Start that locks it all
+ * happen there, online (ruling 2b-R1). Continue opens the player, which plays what Start left on the device.
+ */
+const playHref = (w: WorkoutDto, play: "Start" | "Continue") => (play === "Start" ? sheetHref(w) : playerHref(w));
+/** Continue is a tap: audio unlocks inside it (the player's chimes). */
+const unlockAudio = () => chimes.unlock();
+
 /** The player's way in for this session today, or null (no player yet, not today, skipped, or nothing left to play). */
 function playAction(w: WorkoutDto, today: string): "Start" | "Continue" | null {
   if (!features.player || w.effectiveDate !== today || w.completionState !== "scheduled" || sessionDone(w)) return null;
@@ -127,13 +137,16 @@ export function TodayProgramLead({ session, today }: { session: TodaySession; to
         {done ? <span className="today-session-done">Done</span> : null}
         {skipped ? <span className="today-session-skipped">Skipped</span> : null}
         {play ? (
-          <Link className="btn btn-primary today-play" to={playerHref(w)}>
+          <Link className="btn btn-primary today-play" to={playHref(w, play)} onClick={play === "Continue" ? unlockAudio : undefined}>
             {play}
           </Link>
         ) : null}
-        <Link className={`btn${play || done || skipped ? "" : " btn-primary"}`} to={sheetHref(w)}>
-          Open
-        </Link>
+        {/* Start already opens the sheet. */}
+        {play === "Start" ? null : (
+          <Link className={`btn${play || done || skipped ? "" : " btn-primary"}`} to={sheetHref(w)}>
+            Open
+          </Link>
+        )}
       </div>
     </>
   );
@@ -158,7 +171,7 @@ export function TodayProgramLine({ session, today }: { session: TodaySession; to
       ) : sessionSkipped(w) ? (
         <span className="today-session-skipped">Skipped</span>
       ) : play ? (
-        <Link className="btn btn-small btn-primary" to={playerHref(w)}>
+        <Link className="btn btn-small btn-primary" to={playHref(w, play)} onClick={play === "Continue" ? unlockAudio : undefined}>
           {play}
         </Link>
       ) : (

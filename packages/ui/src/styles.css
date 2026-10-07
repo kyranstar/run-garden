@@ -7867,3 +7867,256 @@ button.session-chip::after {
      miss the floor sideways. */
   .chip { min-width: var(--tap); }
 }
+
+/* ── The session player (Phase 2b; mocks §4) ──────────────────────────────
+   Full screen at every width, outside the tab shell: ✕ · "N of M" · ⇄ ⓘ on
+   top, the progress line, the step in the middle, its actions at the foot.
+   From md the column centres at 520px, the top line names the session and the
+   time left, and the keys show (`?`). Every control is at least a fingertip
+   (44px) here, under a mouse too: the player is used at arm's length. */
+.player {
+  min-height: 100vh;
+  min-height: 100dvh;
+  display: grid;
+  grid-template-rows: auto auto 1fr auto;
+  background: var(--bg);
+  color: var(--ink);
+  padding-top: env(safe-area-inset-top, 0px);
+  padding-bottom: env(safe-area-inset-bottom, 0px);
+}
+.player-status {
+  grid-template-rows: none;
+  place-content: center;
+  justify-items: center;
+  gap: var(--space-6);
+  padding: var(--space-7) var(--space-6);
+  text-align: center;
+}
+.player-top {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: center;
+  gap: var(--space-4);
+  padding: var(--space-5) var(--space-6);
+}
+.player-count {
+  text-align: center;
+  color: var(--ink-soft);
+  font-size: var(--text-sm);
+  min-width: 0;
+}
+.player-count-title,
+.player-count-left {
+  display: none;
+}
+.player-tools {
+  display: flex;
+  gap: var(--space-3);
+}
+.player-icon {
+  width: var(--tap);
+  height: var(--tap);
+  display: inline-grid;
+  place-items: center;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-md);
+  background: var(--bg-raised);
+  color: var(--ink-soft);
+  font: var(--weight-medium) var(--text-md) var(--font);
+  cursor: pointer;
+}
+.player-icon:hover {
+  border-color: var(--ink-faint);
+  color: var(--ink);
+}
+.player-keys-btn {
+  display: none;
+}
+.player-bar {
+  /* scale-exempt: a graphic track, the height of its own fill */
+  height: 4px;
+  margin: 0 var(--space-6);
+  border-radius: var(--radius-hair);
+  background: var(--chart-track);
+  overflow: hidden;
+}
+.player-bar i {
+  display: block;
+  height: 100%;
+  background: var(--green);
+}
+.player-main {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-4);
+  min-width: 0;
+  padding: var(--space-7) var(--space-6);
+  text-align: center;
+}
+/* The name is the page's <h1> in the display face (`.display`): rank 1. */
+.player-name {
+  max-width: 100%;
+  font-weight: var(--weight-regular);
+  line-height: 1.1;
+  text-wrap: balance;
+  overflow-wrap: anywhere;
+}
+.player-big {
+  /* scale-exempt: the one number read from across the room */
+  font-size: 4.2rem;
+  font-weight: var(--weight-regular);
+  line-height: 1;
+  letter-spacing: -0.02em;
+  font-variant-numeric: tabular-nums;
+}
+.player-meta {
+  color: var(--ink-soft);
+}
+.player-next {
+  color: var(--ink-faint);
+  overflow-wrap: anywhere;
+}
+.player-ring {
+  position: relative;
+  width: min(220px, 62vw);
+  aspect-ratio: 1;
+}
+.player-ring svg {
+  display: block;
+  width: 100%;
+  height: 100%;
+}
+.player-ring-track,
+.player-ring-fill {
+  fill: none;
+  stroke-width: 5;
+}
+.player-ring-track {
+  stroke: var(--chart-track);
+}
+.player-ring-fill {
+  stroke: var(--green);
+  stroke-linecap: round;
+}
+.player-ring-face {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-content: center;
+  justify-items: center;
+  gap: var(--space-3);
+}
+.player-actions {
+  display: grid;
+  gap: var(--space-4);
+  padding: var(--space-6);
+}
+.player-primary {
+  width: 100%;
+}
+.player-pair {
+  justify-content: center;
+}
+.player-pair .btn {
+  flex: 1 1 0;
+  max-width: 200px;
+}
+.player-kbd {
+  display: none;
+  margin: 0;
+  font-size: var(--text-2xs);
+  color: var(--ink-faint);
+  text-align: center;
+}
+.player kbd,
+.player-keylist kbd {
+  font-family: var(--font);
+  border: 1px solid var(--border-strong);
+  border-bottom-width: 2px;
+  border-radius: var(--radius-xs);
+  padding: 0 var(--space-2);
+  color: var(--ink-soft);
+}
+.player-keylist dl {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: var(--space-4) var(--space-6);
+  margin: 0;
+}
+.player-keylist dd {
+  margin: 0;
+}
+.player-log {
+  display: grid;
+  gap: var(--space-5);
+  width: min(340px, 100%);
+  padding: var(--space-6);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  background: var(--bg-raised);
+  box-shadow: var(--shadow-sm);
+  text-align: left;
+}
+.player-stepper {
+  display: grid;
+  grid-template-columns: var(--tap) minmax(0, 1fr) var(--tap);
+  align-items: center;
+  gap: var(--space-4);
+}
+.player-stepper label {
+  grid-column: 1 / -1;
+}
+.player-stepper button {
+  min-height: var(--tap);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-md);
+  background: var(--bg-raised);
+  color: var(--ink);
+  font: var(--weight-regular) var(--text-xl) var(--font);
+  cursor: pointer;
+}
+.player-stepper input {
+  width: 100%;
+  min-width: 0;
+  min-height: var(--tap);
+  padding: var(--space-2) var(--space-3);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: var(--bg);
+  color: var(--ink);
+  font: var(--weight-medium) var(--text-xl) var(--font);
+  font-variant-numeric: tabular-nums;
+  text-align: center;
+}
+.player-flags {
+  flex-wrap: wrap;
+}
+.player .chipbtn,
+.player-keylist .chipbtn {
+  min-height: var(--tap);
+}
+@media (min-width: 900px) {
+  .player-count-title,
+  .player-count-left {
+    display: inline;
+  }
+  .player-keys-btn {
+    display: inline-grid;
+  }
+  .player-main,
+  .player-actions {
+    width: 100%;
+    max-width: 520px;
+    margin: 0 auto;
+  }
+  .player-primary {
+    justify-self: center;
+    width: auto;
+    min-width: 240px;
+  }
+  .player-kbd {
+    display: block;
+  }
+}

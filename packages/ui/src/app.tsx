@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { BrowserRouter, Navigate, Route, Routes, useNavigate } from "react-router-dom";
+import { BrowserRouter, Navigate, Route, Routes, useNavigate, useParams } from "react-router-dom";
 import { QueryClient, QueryClientProvider, useQuery } from "@tanstack/react-query";
 import { api, ApiError } from "@rg/api-client";
 import { AppShell } from "./shell.js";
@@ -10,6 +10,7 @@ import { GardenScreen } from "./screens/garden.js";
 import { SettingsScreen } from "./screens/settings.js";
 import { WelcomeScreen } from "./screens/welcome.js";
 import { Onboarding } from "./screens/onboarding.js";
+import { PlayerScreen } from "./screens/player.js";
 import { meWithOfflineFallback } from "./offline/me.js";
 
 const queryClient = new QueryClient({
@@ -126,6 +127,24 @@ function OnboardingRoute() {
   return <Onboarding onDone={() => navigate("/")} />;
 }
 
+/**
+ * The session player (Phase 2b): full screen, outside the tab shell — no tab bar. It plays what Start left on the
+ * device, so only a real 401 sends it to sign-in; offline, or with the server down, it plays on.
+ */
+function PlayerRoute() {
+  const { workoutId = "" } = useParams();
+  const me = useQuery({ queryKey: ["me"], queryFn: () => meWithOfflineFallback(), retry: false });
+  if (me.isLoading) {
+    return (
+      <div className="player player-status">
+        <Spinner label="Signing in" />
+      </div>
+    );
+  }
+  if (me.isError && me.error instanceof ApiError && me.error.status === 401) return <Navigate to="/welcome" replace />;
+  return <PlayerScreen workoutId={workoutId} />;
+}
+
 export function App() {
   return (
     <QueryClientProvider client={queryClient}>
@@ -133,6 +152,7 @@ export function App() {
         <Routes>
           <Route path="/welcome" element={<WelcomeRoute />} />
           <Route path="/onboarding" element={<OnboardingRoute />} />
+          <Route path="/session/:workoutId" element={<PlayerRoute />} />
           <Route path="/*" element={<AuthedApp />} />
         </Routes>
       </BrowserRouter>

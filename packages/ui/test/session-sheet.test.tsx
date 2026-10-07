@@ -20,6 +20,10 @@ import type { SessionDto, SessionExerciseDto, WorkoutDto } from "@rg/api-client"
 import { features } from "../src/features.js";
 import { SessionSheet } from "../src/components/session-sheet.js";
 import { WorkoutDetail } from "../src/screens/plan.js";
+import { IDBFactory } from "fake-indexeddb";
+import { offlineDb } from "../src/offline/idb.js";
+import { loadBuild } from "../src/offline/builds.js";
+import { loadExtras } from "../src/player/stored.js";
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
@@ -525,6 +529,19 @@ describe("Start", () => {
     await until(() => body().includes("the player"), "the player route");
     const start = calls.find((c) => c.path.endsWith("/start") && c.method === "POST");
     expect(start?.body).toEqual({ buildId: session().build!.buildId });
+  });
+
+  it("with the player: Start leaves the locked build, its name and the profiles on the device for the player (2b-R1)", async () => {
+    features.player = true;
+    vi.stubGlobal("indexedDB", new IDBFactory());
+    mount(session());
+    await until(() => body().includes("Supported row"), "the moves");
+    await click("Start · 30 min");
+    await until(() => body().includes("the player"), "the player route");
+    const db = await offlineDb();
+    const stored = await loadBuild(db, SLOT);
+    expect(stored?.build.buildId).toBe(session().build!.buildId);
+    expect(await loadExtras(db, SLOT)).toMatchObject({ title: "Garden program", profiles: session().profiles });
   });
 
   it("with the player: a stale build is replaced by the fresh one, and Start names it", async () => {

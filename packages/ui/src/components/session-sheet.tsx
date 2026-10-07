@@ -29,6 +29,10 @@ import { doseText, type DoseStep, type DoseTarget } from "@rg/domain";
 import { Banner, CompletionPill, EmptyState, formatDayLong, formatTime, Sheet, Spinner } from "../components.js";
 import { features } from "../features.js";
 import { IconInfo, IconSwap } from "../icons.js";
+import { offlineDb } from "../offline/idb.js";
+import { requestPersistentStorage } from "../offline/live.js";
+import { chimes } from "../player/audio.js";
+import { rememberStart } from "../player/stored.js";
 import { MoveSheet } from "../screens/move-sheet.js";
 import { CheckScale, conditionChipLabel, FeelingOffToggle } from "./condition-check-sheet.js";
 import { ExerciseHowto, type HowtoTarget } from "./exercise-howto.js";
@@ -38,7 +42,7 @@ type Mode = keyof typeof MODE_LABEL;
 type Picker = "mode" | "theme" | "minutes" | "place";
 
 const BLOCK_ORDER = ["arrive", "prep", "core", "accessory", "care", "cooldown"] as const;
-const BLOCK_LABEL: Record<string, string> = {
+export const BLOCK_LABEL: Record<string, string> = {
   arrive: "Arrive",
   prep: "Prep",
   core: "Core",
@@ -46,7 +50,7 @@ const BLOCK_LABEL: Record<string, string> = {
   cooldown: "Cool-down",
 };
 /** Format markers worth a word; a block of holds or straight sets says nothing more than its name. */
-const FORMAT_LABEL: Record<string, string> = { flow: "Flow", superset: "Superset", circuit: "Circuit", ladder: "Ladder" };
+export const FORMAT_LABEL: Record<string, string> = { flow: "Flow", superset: "Superset", circuit: "Circuit", ladder: "Ladder" };
 /** The time picker's lengths (the build takes 10–90). */
 const MINUTES = [15, 20, 25, 30, 40, 45, 60, 75, 90];
 const PICKER_TITLE: Record<Picker, string> = { mode: "Mode", theme: "Theme", minutes: "Time", place: "Place" };
@@ -101,11 +105,18 @@ export function SessionSheet({ w, today, onClose }: { w: WorkoutDto; today: stri
       else void qc.invalidateQueries({ queryKey: key });
     },
   });
+  /** The session's name as the player shows it (kept for the Start handler, which runs after this render). */
+  const titleRef = useRef("");
   const start = useMutation({
     mutationFn: (buildId: string) => api.startSession(w.id, buildId),
-    onSuccess: (next) => {
+    onSuccess: async (next) => {
       qc.setQueryData(key, next);
       refreshPlan();
+      // The player plays what Start leaves on the device, never the network (ruling 2b-R1). Without IndexedDB it
+      // still opens, online, from the started session.
+      await offlineDb()
+        .then((db) => rememberStart(db, next, titleRef.current))
+        .catch(() => undefined);
       navigate(`/session/${encodeURIComponent(w.id)}`);
     },
     // The day's inputs changed since this build (a check, a save, an edit): show the fresh build to Start again. The
@@ -198,6 +209,7 @@ export function SessionSheet({ w, today, onClose }: { w: WorkoutDto; today: stri
 
   const program = programs.data?.programs.find((p) => p.id === w.programId);
   const title = program?.name ?? withoutTheme(w.title, s?.view?.theme?.name);
+  titleRef.current = title;
   const readings = s
     ? s.profiles
         .filter((p) => s.checks[p.profileId])
@@ -236,14 +248,33 @@ export function SessionSheet({ w, today, onClose }: { w: WorkoutDto; today: stri
     }
     if (canPlay && showBuild && !locked) {
       actions.push(
-        <button key="start" type="button" className="btn btn-primary" disabled={start.isPending} onClick={() => start.mutate(s!.build!.buildId)}>
+        <button
+          key="start"
+          type="button"
+          className="btn btn-primary"
+          disabled={start.isPending}
+          onClick={() => {
+            // Inside the tap: audio unlocks only in a gesture, and storage is asked to persist (offline spike).
+            chimes.unlock();
+            void requestPersistentStorage();
+            start.mutate(s!.build!.buildId);
+          }}
+        >
           Start · {view!.minutes} min
         </button>,
       );
     }
     if (canPlay && s?.contentState === "started") {
       actions.push(
-        <button key="continue" type="button" className="btn btn-primary" onClick={() => navigate(`/session/${encodeURIComponent(w.id)}`)}>
+        <button
+          key="continue"
+          type="button"
+          className="btn btn-primary"
+          onClick={() => {
+            chimes.unlock();
+            navigate(`/session/${encodeURIComponent(w.id)}`);
+          }}
+        >
           Continue
         </button>,
       );

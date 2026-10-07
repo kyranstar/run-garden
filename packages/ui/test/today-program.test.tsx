@@ -212,6 +212,20 @@ describe("TodayProgramLead", () => {
     expect(done).not.toMatch(/Start|Continue/);
   });
 
+  it("with the player: Start opens the session's sheet (its pre-check and the Start that locks it, online — 2b-R1); Continue opens the player", () => {
+    features.player = true;
+    for (const El of [TodayProgramLead, TodayProgramLine]) {
+      const start = [...new DOMParser().parseFromString(html(createElement(El, { session: built(), today: TODAY })), "text/html").querySelectorAll("a")];
+      expect(start.find((a) => a.textContent === "Start")?.getAttribute("href")).toBe("/plan?workout=slot-p1-2026-10-05");
+      const cont = [
+        ...new DOMParser()
+          .parseFromString(html(createElement(El, { session: built({ contentState: "started" }), today: TODAY })), "text/html")
+          .querySelectorAll("a"),
+      ];
+      expect(cont.find((a) => a.textContent === "Continue")?.getAttribute("href")).toBe("/session/slot-p1-2026-10-05");
+    }
+  });
+
   it("skipped: says so, with no play action even with the player — Open, not primary, leads to Un-skip (ruling 2a-R15)", () => {
     features.player = true;
     for (const session of [outline({ completionState: "skipped" }), built({ completionState: "skipped" })]) {
