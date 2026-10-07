@@ -15,8 +15,23 @@ const instant = z.string().datetime({ offset: true });
 const id = z.string().min(1).max(200);
 const count = z.number().int().min(0);
 
-/** Upper bounds that only refuse junk: a real session is far inside every one. */
-export const PERFORMED_LIMITS = { entries: 100, setsPerEntry: 50, movesDone: 200, checks: 20, flags: 10, note: 2000 } as const;
+/**
+ * Upper bounds that only refuse junk: a real session is far inside every one. They are also what a save can carry and
+ * still complete inside one Worker invocation (audit 2b-A M-4: 5,000 sets took ~1,200 statements and 28 ms of CPU, so
+ * the outbox would have retried it for ever): `sets` counts every set of the session, `graduations` is the library's
+ * number of core families (`CORE_FAMILIES`; a session-engine test keeps the two equal), and the review rates or sets
+ * aside at most the moves the session holds (its entries and moves reached).
+ */
+export const PERFORMED_LIMITS = {
+  entries: 100,
+  setsPerEntry: 50,
+  sets: 300,
+  movesDone: 200,
+  checks: 20,
+  flags: 10,
+  note: 2000,
+  graduations: 5,
+} as const;
 
 /**
  * The sources a save may carry. A stored row may also say `watch`: the COROS ingest derives that session from a watch
@@ -91,8 +106,11 @@ export const reviewChangesSchema = z
     ratings: z.record(id, z.union([z.literal(1), z.literal(-1), z.null()])).default({}),
     /** "Not for me" set (true) or lifted (false), per exercise id. */
     excluded: z.record(id, z.boolean()).default({}),
-    /** Accepted graduation offers: the core family and the harder move it moves to. */
-    graduations: z.array(z.object({ family: z.string().min(1), to: id }).strict()).default([]),
+    /** Accepted graduation offers: the core family and the harder move it moves to (one per family). */
+    graduations: z
+      .array(z.object({ family: z.string().min(1).max(60), to: id }).strict())
+      .max(PERFORMED_LIMITS.graduations)
+      .default([]),
   })
   .strict();
 export type ReviewChanges = z.infer<typeof reviewChangesSchema>;
@@ -143,6 +161,24 @@ export const performedSessionSaveSchema = z
     if (s.source === "import" && s.sourceRef === null) {
       ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["sourceRef"], message: "an import names its source session" });
     }
+    const sets = s.entries.reduce((n, e) => n + e.sets.length, 0);
+    if (sets > PERFORMED_LIMITS.sets) {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["entries"], message: `${sets} sets: a session holds at most ${PERFORMED_LIMITS.sets}` });
+    }
+    const moves = s.entries.length + s.movesDone.length;
+    for (const key of ["ratings", "excluded"] as const) {
+      const n = Object.keys(s.review[key]).length;
+      if (n > moves) {
+        ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["review", key], message: `${n} ${key}: more than the session's ${moves} moves` });
+      }
+    }
+    const families = new Set<string>();
+    s.review.graduations.forEach((g, i) => {
+      if (families.has(g.family)) {
+        ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["review", "graduations", i], message: `a second graduation for ${g.family}` });
+      }
+      families.add(g.family);
+    });
     const seen = new Set<string>();
     s.checks.forEach((c, i) => {
       if (c.kind === "daily") {

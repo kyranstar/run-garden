@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   conditionCheckSchema,
+  PERFORMED_LIMITS,
   performedSessionSaveSchema,
   performedSetSchema,
   type PerformedSessionWireInput,
@@ -103,6 +104,47 @@ describe("performedSessionSaveSchema — the outbox payload", () => {
     expect(withEntry({ ...entry, format: "amrap" })).toBe(false);
     expect(performedSetSchema.safeParse({ setIndex: 0, reps: 5, seconds: null, load: { v: 0, u: "lb" } }).success).toBe(false);
     expect(performedSetSchema.safeParse({ setIndex: 0, reps: 5, seconds: null, load: { v: 10 } }).success).toBe(false);
+  });
+});
+
+describe("performedSessionSaveSchema — limits a real session never reaches (audit 2b-A M-4)", () => {
+  const entry = (exerciseId: string, sets: number) => ({
+    exerciseId,
+    implement: null,
+    format: "straight" as const,
+    perSide: false,
+    sets: Array.from({ length: sets }, (_, i) => ({ setIndex: i, reps: 8, seconds: null, load: null })),
+  });
+
+  it("takes up to 300 sets in all, and refuses more (a save that large could never complete)", () => {
+    const sets = (n: number) => Array.from({ length: n / 50 }, (_, i) => entry(`move-${i}`, 50));
+    expect(performedSessionSaveSchema.safeParse({ ...valid(), entries: sets(300) }).success).toBe(true);
+    const tooMany = performedSessionSaveSchema.safeParse({ ...valid(), entries: [...sets(300), entry("one-more", 1)] });
+    expect(tooMany.success).toBe(false);
+    expect(tooMany.error!.issues.map((i) => i.path)).toEqual([["entries"]]);
+    expect(PERFORMED_LIMITS.sets).toBe(300);
+  });
+
+  it("rates or sets aside at most the moves the session holds (entries + moves reached)", () => {
+    const ids = (n: number) => Object.fromEntries(Array.from({ length: n }, (_, i) => [`move-${i}`, 1 as const]));
+    // valid() holds one entry and one move reached: two.
+    expect(performedSessionSaveSchema.safeParse({ ...valid(), review: { ratings: ids(2), excluded: {} } }).success).toBe(true);
+    const ratings = performedSessionSaveSchema.safeParse({ ...valid(), review: { ratings: ids(3) } });
+    expect(ratings.success).toBe(false);
+    expect(ratings.error!.issues.map((i) => i.path)).toEqual([["review", "ratings"]]);
+    const excluded = performedSessionSaveSchema.safeParse({ ...valid(), review: { excluded: Object.fromEntries(Object.keys(ids(3)).map((k) => [k, true])) } });
+    expect(excluded.error!.issues.map((i) => i.path)).toEqual([["review", "excluded"]]);
+  });
+
+  it("graduates each core family at most once, and no more families than there are", () => {
+    const grad = (family: string) => ({ family, to: `${family}-harder` });
+    const families = ["squat", "hinge", "row", "press", "carry"];
+    expect(performedSessionSaveSchema.safeParse({ ...valid(), review: { graduations: families.map(grad) } }).success).toBe(true);
+    expect(performedSessionSaveSchema.safeParse({ ...valid(), review: { graduations: [...families, "lunge"].map(grad) } }).success).toBe(false);
+    const twice = performedSessionSaveSchema.safeParse({ ...valid(), review: { graduations: [grad("squat"), { family: "squat", to: "other" }] } });
+    expect(twice.success).toBe(false);
+    expect(twice.error!.issues.map((i) => i.path)).toEqual([["review", "graduations", 1]]);
+    expect(PERFORMED_LIMITS.graduations).toBe(5);
   });
 });
 

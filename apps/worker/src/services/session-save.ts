@@ -60,6 +60,7 @@ import {
   type SourceActivity,
   type UserPreferences,
 } from "@rg/domain";
+import { EXERCISES } from "@rg/exercise-library";
 import { ORPHAN_ADOPTION_FLOOR, scoreAgainstStoredRow } from "@rg/providers";
 import { Blocks } from "@rg/session-engine";
 import type { ZodIssue } from "zod";
@@ -224,12 +225,18 @@ function setRows(performedId: string, p: PerformedSessionWire) {
   );
 }
 
+let libraryIds: Set<string> | undefined;
+
 /**
  * The review's preferences: each touched exercise's row as it will be (ratings, "not for me", the new move's first
  * day), upserted whole so one statement serves every field. Read now; the statements run with the rest of the save.
  */
 async function prefStatements(db: Db, userId: string, p: PerformedSessionWire, now: string): Promise<AtomicStatement[]> {
-  const ids = [...new Set([...Object.keys(p.review.ratings), ...Object.keys(p.review.excluded), ...(p.newMove ? [p.newMove] : [])])].sort();
+  // Only the library's exercises: a key it does not have is junk (a bug, a hand-made PUT), never a row (audit 2b-A M-4).
+  libraryIds ??= new Set(EXERCISES.map((e) => e.id));
+  const ids = [...new Set([...Object.keys(p.review.ratings), ...Object.keys(p.review.excluded), ...(p.newMove ? [p.newMove] : [])])]
+    .filter((id) => libraryIds!.has(id))
+    .sort();
   if (ids.length === 0) return [];
   const existing = new Map<string, typeof exercisePrefs.$inferSelect>();
   for (const batch of chunkIds(ids)) {

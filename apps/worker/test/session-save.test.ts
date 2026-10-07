@@ -375,6 +375,20 @@ describe("a save writes the session, its sets and checks, an app activity and th
     await save(payload(s, { entries }));
     expect((await counts()).sets).toBe(150);
   });
+
+  it("refuses the audit's 5,000-set body (P3) before any read or write: it could never complete (audit 2b-A M-4)", async () => {
+    const s = await started("build");
+    const entries = Array.from({ length: 100 }, (_, e) => ({
+      exerciseId: `move-${e}`,
+      implement: "kettlebell",
+      format: "straight" as const,
+      perSide: false,
+      sets: Array.from({ length: 50 }, (_, i) => ({ setIndex: i, reps: 8, seconds: null, load: { v: 20, u: "lb" as const } })),
+    }));
+    statements.length = 0;
+    await expect(save(payload(s, { entries }))).rejects.toThrow("invalid_save");
+    expect(statements).toEqual([]);
+  });
 });
 
 describe("exactly once (§2b step 1; Review Focus 2 and 3)", () => {
@@ -532,6 +546,17 @@ describe("the review's decisions apply on save (§2b step 5)", () => {
     const rows = await db.select().from(exercisePrefs).where(eq(exercisePrefs.userId, userId));
     const byId = Object.fromEntries(rows.map((r) => [r.exerciseId, [r.rating, r.excluded, r.pinned, r.introducedOn]]));
     expect(byId).toEqual({ [a!]: [-1, false, false, PLAYED], [b!]: [null, true, true, "2026-09-01"] });
+  });
+
+  it("a rating or 'not for me' for an exercise the library does not have is dropped, never stored (audit 2b-A M-4)", async () => {
+    const s = await started("build");
+    const a = s.build.items[0]!.exerciseId;
+    expect(await save(payload(s, { review: { ratings: { [a]: 1, "no-such-move": -1 }, excluded: { "not-a-move-either": true } } }))).toMatchObject({
+      status: "saved",
+    });
+    const rows = await db.select().from(exercisePrefs).where(eq(exercisePrefs.userId, userId));
+    expect(rows.find((r) => r.exerciseId === a)).toMatchObject({ rating: 1 });
+    expect(rows.map((r) => r.exerciseId).filter((id) => id.includes("move"))).toEqual([]);
   });
 
   it("a new move met before keeps the day it was first introduced", async () => {
