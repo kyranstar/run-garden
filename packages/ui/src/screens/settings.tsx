@@ -1092,9 +1092,10 @@ export function DataSection({ appOrigin }: { appOrigin?: string } = {}) {
   const del = useMutation({
     mutationFn: api.deleteAll,
     onSuccess: async () => {
-      // Nothing of the deleted account may open on this device afterwards, offline included (ruling 2b-R6; audit
-      // 2b-A I-1): the service worker's cached answers, the stored builds, the live sessions.
-      await forgetOfflineIdentity();
+      // Nothing of the deleted account may open on this device afterwards, offline included (ruling 2b-R6 as amended;
+      // audit 2b-A I-1): the service worker's cached answers, the stored builds, the live sessions — and its unsynced
+      // saves, which have no account to go to any more.
+      await forgetOfflineIdentity(me.data?.userId ? { dropOutboxOf: me.data.userId } : {});
       window.location.href = "/";
     },
   });

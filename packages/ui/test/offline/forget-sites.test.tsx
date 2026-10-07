@@ -1,9 +1,10 @@
 // @vitest-environment jsdom
 /**
- * Ruling 2b-R6 at the two places the athlete ends an account's presence on this device (audit 2b-A I-1, M-9):
- * Settings → Data → "Delete all data" and Settings → "Sign out" both forget the offline identity — the service
- * worker's `rg-me` and `rg-read-cache`, the stored builds and the live sessions — so an offline launch afterwards
- * never opens the account. The outbox's unsynced saves stay (tagged with their account).
+ * Ruling 2b-R6 (as amended) at the two places the athlete ends an account's presence on this device (audit 2b-A
+ * I-1, M-9): Settings → Data → "Delete all data" and Settings → "Sign out" both forget the offline identity — the
+ * service worker's `rg-me` and `rg-read-cache`, the stored builds and the live sessions — so an offline launch
+ * afterwards never opens the account. Sign-out keeps the outbox's unsynced saves (tagged with their account, for its
+ * next sign-in); delete-all drops the deleted account's, and never another account's.
  *
  * Mounted in jsdom against a stubbed worker, a Cache Storage double and a fake IndexedDB (the app's own `offlineDb`).
  */
@@ -59,6 +60,7 @@ beforeEach(async () => {
   await db.put("builds", "w1", { workoutId: "w1" });
   await db.put("live", "w1", { workoutId: "w1", performedId: "p1" });
   await db.put("outbox", "p1:h", { key: "p1:h", userId: "u1" });
+  await db.put("outbox", "p2:h", { key: "p2:h", userId: "u2" });
 });
 
 afterEach(() => {
@@ -106,22 +108,23 @@ async function forgotten(): Promise<boolean> {
 }
 
 describe("the offline identity is forgotten where the athlete ends it (ruling 2b-R6)", () => {
-  it("Delete all data: both caches, the stored builds and the live sessions are gone; the shell and the outbox stay (I-1)", async () => {
+  it("Delete all data: both caches, the stored builds, the live sessions and the account's own unsynced saves are gone; the shell and another account's saves stay (I-1)", async () => {
     mount(DataSection);
     await click("Delete all data");
     await click("Really delete everything — cannot be undone");
     await until(() => calls.includes("POST /api/settings/delete-all"), "the delete-all request");
     await until(forgotten, "the offline identity forgotten");
     expect([...cacheNames]).toEqual(["rg-shell"]);
-    expect(await (await offlineDb()).all("outbox")).toHaveLength(1);
+    await until(async () => (await (await offlineDb()).all("outbox")).length === 1, "the account's saves dropped");
+    expect(await (await offlineDb()).all("outbox")).toEqual([{ key: "p2:h", userId: "u2" }]);
   });
 
-  it("Sign out: the same (M-9)", async () => {
+  it("Sign out: the same, but every unsynced save stays, tagged, for the next sign-in (M-9)", async () => {
     mount(SettingsScreen);
     await click("Sign out");
     await until(() => calls.includes("POST /api/auth/logout"), "the sign-out request");
     await until(forgotten, "the offline identity forgotten");
     expect([...cacheNames]).toEqual(["rg-shell"]);
-    expect(await (await offlineDb()).all("outbox")).toHaveLength(1);
+    expect(await (await offlineDb()).all("outbox")).toHaveLength(2);
   });
 });

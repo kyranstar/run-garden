@@ -130,6 +130,16 @@ export function discardEntry(db: OfflineDb, key: string): Promise<void> {
   return db.delete("outbox", key);
 }
 
+/**
+ * Delete everything: the deleted account's unsynced saves go with it (ruling 2b-R6 as amended). Another account's stay.
+ * Each through `update`, so an entry a drain is answering at that moment is not brought back.
+ */
+export async function discardAccountEntries(db: OfflineDb, userId: string): Promise<void> {
+  for (const entry of await outboxEntries(db, userId)) {
+    await db.update<OutboxEntry>("outbox", entry.key, (current) => (current?.userId === userId ? undefined : current));
+  }
+}
+
 type Outcome = { kind: "saved" } | { kind: "conflict" } | { kind: "failed"; error: string } | { kind: "transient"; error: string };
 
 const TRANSIENT_STATUSES = new Set([401, 408, 423, 425, 429]);

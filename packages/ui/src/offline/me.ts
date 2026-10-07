@@ -10,15 +10,19 @@
  * passed through it — the app takes the cached answer itself, but only while a session is in progress on this device
  * (the player must reopen); otherwise the failure stands ("Couldn't reach").
  *
- * What makes that safe is forgetting: delete-all, sign-out and any 401 forget the offline identity
- * (`forgetOfflineIdentity`): `rg-me`, `rg-read-cache`, and the offline database's stored builds and live sessions. A
- * 401 that reaches the worker after its 3 s timeout (the cached answer already served) purges both caches there too
- * (apps/web/sw-routes.ts). The outbox is kept: its entries are unsynced work, tagged with their account, and never
- * sent under another (outbox.ts).
+ * What makes that safe is forgetting (ruling 2b-R6 as amended):
+ *  - any 401 forgets the account's cached answers, `rg-me` and `rg-read-cache` (`forgetCachedAnswers`) — and NEVER the
+ *    live session or the outbox: a sign-in that expired mid-session must not lose the workout; the session resumes and
+ *    the outbox drains once the athlete signs in again, under the same account. A 401 that reaches the worker after its
+ *    3 s timeout (the cached answer already served) purges both caches there too (apps/web/sw-routes.ts);
+ *  - sign-out forgets the offline identity (`forgetOfflineIdentity`): both caches and the stored builds and live
+ *    sessions; its unsynced saves stay, tagged with the account, for its next sign-in (outbox.ts);
+ *  - delete-all forgets the same, and drops that account's unsynced saves too.
  */
 import { api, ApiError, type MeResponse } from "@rg/api-client";
 import { offlineDb, type OfflineDb } from "./idb.js";
 import { hasLiveSession } from "./live.js";
+import { discardAccountEntries } from "./outbox.js";
 
 /** The service worker's cache for `/api/auth/me` (apps/web/sw-routes.ts). */
 export const ME_CACHE = "rg-me";
@@ -49,8 +53,9 @@ export async function meWithOfflineFallback(
     return await fetchMe();
   } catch (error) {
     if (error instanceof ApiError && error.status === 401) {
-      // Signed out — the session expired, was ended elsewhere, or the account is gone: nothing of it opens offline.
-      await forgetOfflineIdentity({ caches: store, db: openDb });
+      // Signed out — the session expired, was ended elsewhere, or the account is gone: an offline launch must not open
+      // it. The work on this device (a session in progress, unsynced saves) stays for the next sign-in.
+      await forgetCachedAnswers({ caches: store });
       throw error;
     }
     const hasLive = deps.hasLive ?? (async () => hasLiveSession(await openDb()));
@@ -65,17 +70,23 @@ export async function meWithOfflineFallback(
 /** How long forgetting waits for the offline database before it lets sign-in or sign-out go on. */
 const FORGET_DB_WAIT_MS = 2000;
 
-/**
- * Ruling 2b-R6: forget everything that lets this device open the account offline — the service worker's `rg-me` and
- * `rg-read-cache`, and the offline database's stored builds and live sessions. The outbox (unsynced saves, tagged
- * with their account) and its lock stay. Called on delete-all, on sign-out and on any 401. Never throws.
- */
-export async function forgetOfflineIdentity(deps: OfflineDeps = {}): Promise<void> {
+/** On any 401 (ruling 2b-R6 as amended): the account's cached answers go — `rg-me`, `rg-read-cache` — and nothing else. Never throws. */
+export async function forgetCachedAnswers(deps: Pick<OfflineDeps, "caches"> = {}): Promise<void> {
   const store = "caches" in deps ? deps.caches : browserCaches();
   await Promise.all([ME_CACHE, READ_CACHE].map((name) => store?.delete(name).catch(() => false)));
+}
+
+/**
+ * Sign-out and delete-all (ruling 2b-R6 as amended): forget what lets this device open the account offline — the
+ * cached answers (`forgetCachedAnswers`) and the offline database's stored builds and live sessions. The outbox's
+ * unsynced saves stay, tagged with their account, unless `dropOutboxOf` names it (delete-all: the account is gone).
+ * The outbox's lock stays. Never throws.
+ */
+export async function forgetOfflineIdentity(deps: OfflineDeps & { dropOutboxOf?: string } = {}): Promise<void> {
+  await forgetCachedAnswers(deps);
   const clearStores = async () => {
     const db = await (deps.db ?? offlineDb)();
-    await Promise.all([db.clear("builds"), db.clear("live")]);
+    await Promise.all([db.clear("builds"), db.clear("live"), ...(deps.dropOutboxOf ? [discardAccountEntries(db, deps.dropOutboxOf)] : [])]);
   };
   let giveUp: ReturnType<typeof setTimeout> | undefined;
   try {

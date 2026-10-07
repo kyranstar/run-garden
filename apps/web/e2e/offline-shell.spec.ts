@@ -75,6 +75,24 @@ async function signedInUnderTheWorker(page: import("@playwright/test").Page, con
 
 const cacheNames = (page: import("@playwright/test").Page) => page.evaluate(async () => (await caches.keys()).sort());
 
+/** The sessions in progress stored on this device (rg-offline's `live`). */
+const liveSessions = (page: import("@playwright/test").Page) =>
+  page.evaluate(
+    () =>
+      new Promise<number>((resolve, reject) => {
+        const open = indexedDB.open("rg-offline");
+        open.onsuccess = () => {
+          const req = open.result.transaction("live", "readonly").objectStore("live").count();
+          req.onsuccess = () => {
+            open.result.close();
+            resolve(req.result);
+          };
+          req.onerror = () => reject(req.error);
+        };
+        open.onerror = () => reject(open.error);
+      }),
+  );
+
 /** An offline launch: nothing of the account opens (no signed-in nav), whatever the screen says instead. */
 async function offlineLaunchShowsNoAccount(page: import("@playwright/test").Page, context: import("@playwright/test").BrowserContext) {
   await context.setOffline(true);
@@ -104,7 +122,7 @@ test("with nothing in progress, an offline reload opens the signed-in app too (r
   await context.setOffline(false);
 });
 
-test("a session ended elsewhere: the online reload goes to sign-in and forgets, so the offline launch opens nothing (scenario C)", async ({ page, context, baseURL }) => {
+test("a session ended elsewhere: the online reload goes to sign-in and forgets the cached answers, so the offline launch opens nothing — and the workout in progress is kept (scenario C; R6 as amended)", async ({ page, context, baseURL }) => {
   await signedInUnderTheWorker(page, context, baseURL);
   await putLiveSession(page);
   // Ended server-side (an expiry is the same): this device still holds the account's cached answers.
@@ -113,7 +131,10 @@ test("a session ended elsewhere: the online reload goes to sign-in and forgets, 
   await expect(page).toHaveURL(/\/welcome/);
   await expect.poll(() => cacheNames(page)).not.toContain("rg-me");
   expect(await cacheNames(page)).not.toContain("rg-read-cache");
+  // A sign-in that expired mid-session never loses the workout: it resumes after signing in again.
+  expect(await liveSessions(page)).toBe(1);
   await offlineLaunchShowsNoAccount(page, context);
+  expect(await liveSessions(page)).toBe(1);
 });
 
 test("a 401 that reaches the service worker after its 3 s timeout still purges the cached answers (audit 2b-A M-2; scenario F2)", async ({ page, context, baseURL }) => {
