@@ -14,6 +14,7 @@ import { LOCATION_PRESETS } from "@rg/exercise-library";
 import type { Block } from "@rg/session-engine";
 import type { Db } from "../src/services/db.js";
 import {
+  loadBuildHistory,
   loadEngineContext,
   loadHistory,
   loadProgramState,
@@ -74,6 +75,7 @@ async function seedSession(
     source?: string;
     sets?: SetSeed[];
     movesDone?: Array<{ exerciseId: string; seconds: number }>;
+    payloadHash?: string;
   },
 ): Promise<string> {
   const id = o.id ?? newId();
@@ -102,7 +104,7 @@ async function seedSession(
     movesDone: o.movesDone ?? [],
     note: null,
     newMove: null,
-    payloadHash: "h",
+    payloadHash: o.payloadHash ?? "h",
     createdAt: NOW,
     updatedAt: NOW,
   });
@@ -308,6 +310,27 @@ describe("loadHistory", () => {
 
   it("is empty for an account with no sessions", async () => {
     expect(await loadHistory(db, userId)).toEqual([]);
+  });
+
+  it("leaves out a session whose sets are still being written, whole or for a build (audit M-3)", async () => {
+    const settled = await seedSession(userId, {
+      date: "2026-09-20",
+      movesDone: [{ exerciseId: "rdl", seconds: 60 }],
+      sets: [{ entry: 0, exerciseId: "rdl", setIndex: 0, reps: 5 }],
+    });
+    // The watch copy of a later lift whose write died between its session row and its commit marker.
+    await seedSession(userId, {
+      date: "2026-09-21",
+      source: "watch",
+      payloadHash: "pending",
+      theme: "hipsPosture", // so the build's "last themed session" read would find it too
+      movesDone: [{ exerciseId: "deadlift", seconds: 90 }],
+      sets: [{ entry: 0, exerciseId: "deadlift", setIndex: 0, reps: 3, load: { v: 100, u: "kg" } }],
+    });
+    expect((await loadHistory(db, userId)).map((s) => s.id)).toEqual([settled]);
+    const build = await loadBuildHistory(db, userId, "2026-09-25", null);
+    expect(build.sessions.map((s) => s.id)).toEqual([settled]);
+    expect(Object.keys(build.summary.moves)).toEqual(["rdl"]);
   });
 });
 

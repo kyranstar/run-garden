@@ -398,8 +398,13 @@ export async function linkWatchSessionsToWorkouts(
   }
 }
 
-/** Marks a session whose sets are mid-write: never equal to a real hash, so the next refresh redoes it. */
-const PENDING_HASH = "pending";
+/**
+ * Marks a session whose sets are mid-write: never equal to a real hash, so the
+ * next refresh redoes it. Until its commit marker lands the session is absent
+ * to every reader — the feed, the lift graphs, the engine's history (audit 2a+
+ * M-3) — so a write that dies part-way never shows half a session.
+ */
+export const PENDING_HASH = "pending";
 
 /**
  * Writes one activity's watch session, idempotent by (user, 'watch', COROS

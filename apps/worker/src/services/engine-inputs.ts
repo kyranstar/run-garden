@@ -1,7 +1,8 @@
 /**
  * THE SESSION ENGINE'S INPUTS, FROM THE DATABASE (Phase 2 spec §2a "Build API" → Inputs; programme spec §7.2).
  *
- *   history       every `performed_sessions` row of the user, any source, with its done sets and its checks,
+ *   history       every settled `performed_sessions` row of the user (one still being written — `PENDING_HASH` — is
+ *                 not history yet), any source, with its done sets and its checks,
  *                 mapped through the engine's one mapping (`historyFromPerformed`, ruling P1-R3), oldest first —
  *                 for a build, only what it reads: the sessions `Hist.trim` keeps and `Hist.summarize` of the rest,
  *                 both in SQL (`loadBuildHistory`, ruling 2a-R6)
@@ -15,7 +16,7 @@
  * Every list comes back in a fixed order, so the same rows always make the same inputs (and the same inputs hash).
  * Reads only, apart from `saveProgramState` — a no-op while a restore is replacing the account (ruling B2).
  */
-import { and, asc, desc, eq, inArray, isNull, sql } from "drizzle-orm";
+import { and, asc, desc, eq, inArray, isNull, ne, sql } from "drizzle-orm";
 import {
   conditionChecks,
   exercisePrefs,
@@ -56,6 +57,7 @@ import {
 import { restoreInProgress } from "./account-state.js";
 import { loadPreferences } from "./calendar-sync.js";
 import { chunkIds, type Db } from "./db.js";
+import { PENDING_HASH } from "./watch-sets.js";
 
 type SessionRow = typeof performedSessions.$inferSelect;
 type SetRow = typeof performedSets.$inferSelect;
@@ -179,7 +181,7 @@ export async function loadHistory(db: Db, userId: string): Promise<HistorySessio
   const sessions = await db
     .select()
     .from(performedSessions)
-    .where(eq(performedSessions.userId, userId))
+    .where(and(eq(performedSessions.userId, userId), ne(performedSessions.payloadHash, PENDING_HASH)))
     .orderBy(asc(performedSessions.localDate), asc(performedSessions.startedAt), asc(performedSessions.id));
   if (sessions.length === 0) return [];
 
@@ -215,6 +217,7 @@ export interface BuildHistory {
 // and set. The SQL mirrors `toWire` + `historyFromPerformed`: an entry is the sets with one entry index, named by its
 // first set's exercise id and format, and it counts only with a done set; its flags are every set's; the moves a
 // session touched are its entries' ids and `moves_done`. A session's start (`w`) is its start time, else its date.
+// Every read of `performed_sessions` skips a session still being written (`PENDING_HASH`), as `loadHistory` does.
 //
 // Order: SQLite compares start times by bytes, the engine by `localeCompare`. On ISO times the two disagree only
 // between two times equal to the MINUTE and written differently — ".000Z" against "+00:00", and, since the wire
@@ -256,7 +259,7 @@ function historyRows(db: Db, userId: string, date: string, from: string): Promis
       SELECT ps.performed_session_id AS sid, ps.entry_index AS ei, ps.exercise_id AS ex, ps.format AS fmt,
              ${startOf("p")} AS w, p.local_date AS local_date, p.started_at AS started_at, MIN(ps.set_index) AS first_set
       FROM performed_sessions p JOIN performed_sets ps ON ps.performed_session_id = p.id
-      WHERE p.user_id = ${userId}
+      WHERE p.user_id = ${userId} AND p.payload_hash <> ${PENDING_HASH}
       GROUP BY ps.performed_session_id, ps.entry_index
       HAVING SUM(ps.done) > 0
     ),
@@ -266,13 +269,14 @@ function historyRows(db: Db, userId: string, date: string, from: string): Promis
       FROM e WHERE ex <> '' AND (fmt IS NULL OR fmt NOT IN ('ladder', 'circuit'))
     ),
     held AS (
-      SELECT id FROM performed_sessions WHERE user_id = ${userId} AND local_date >= ${from}
+      SELECT id FROM performed_sessions WHERE user_id = ${userId} AND payload_hash <> ${PENDING_HASH} AND local_date >= ${from}
       UNION SELECT id FROM (
-        SELECT id FROM performed_sessions WHERE user_id = ${userId} AND local_date <= ${date}
+        SELECT id FROM performed_sessions WHERE user_id = ${userId} AND payload_hash <> ${PENDING_HASH} AND local_date <= ${date}
         ORDER BY ${NEWEST} LIMIT ${Hist.TRIM.recentSessions + RECENT_SLACK}
       )
       UNION SELECT id FROM (
-        SELECT id FROM performed_sessions WHERE user_id = ${userId} AND local_date < ${date} AND COALESCE(theme, '') <> ''
+        SELECT id FROM performed_sessions WHERE user_id = ${userId} AND payload_hash <> ${PENDING_HASH} AND local_date < ${date}
+          AND COALESCE(theme, '') <> ''
         ORDER BY ${NEWEST} LIMIT ${1 + RECENT_SLACK}
       )
       UNION SELECT sid FROM ranked WHERE rn <= ${Hist.TRIM.progressionEntries + ENTRY_SLACK}
@@ -282,7 +286,7 @@ function historyRows(db: Db, userId: string, date: string, from: string): Promis
       SELECT sid, ex AS raw FROM e WHERE ex <> ''
       UNION ALL
       SELECT p.id, t.atom FROM performed_sessions p, json_tree(p.moves_done) t
-      WHERE p.user_id = ${userId} AND t.key = 'exerciseId' AND COALESCE(t.atom, '') <> ''
+      WHERE p.user_id = ${userId} AND p.payload_hash <> ${PENDING_HASH} AND t.key = 'exerciseId' AND COALESCE(t.atom, '') <> ''
     ),
     touched_on AS (
       SELECT t.raw, ${startOf("p")} AS w, p.local_date AS local_date FROM touched t JOIN performed_sessions p ON p.id = t.sid
