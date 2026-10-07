@@ -224,6 +224,38 @@ describe("whose save it is (ruling 2b-R6)", () => {
   });
 });
 
+describe("the review's keys are the page's, not the player's (audit 2b-B M-1)", () => {
+  it("ended with the log card open: Enter in the Note is a new line, and Space and ← do nothing of the player's", async () => {
+    await stored();
+    mount();
+    await until(() => text().includes("1 of 9"), "the first step");
+    await click("Skip");
+    await click("Skip");
+    await click("Done");
+    expect(control("Weight")).toBeDefined();
+    await click("Leave the session");
+    await click("End and review");
+    await until(() => !!control("Save"), "the review");
+    const note = control("Note") as HTMLTextAreaElement;
+    const keydown = async (key: string, target: EventTarget) => {
+      const e = new KeyboardEvent("keydown", { key, bubbles: true, cancelable: true });
+      await act(async () => void target.dispatchEvent(e));
+      return e;
+    };
+    expect((await keydown("Enter", note)).defaultPrevented).toBe(false);
+    expect((await keydown(" ", document.body)).defaultPrevented).toBe(false);
+    expect((await keydown("ArrowLeft", document.body)).defaultPrevented).toBe(false);
+    expect(control("Save")).toBeDefined();
+    // The set left open was never confirmed: the review shows it as not done, untouched by the keys.
+    await type(note, "line one\nline two");
+    await click("Save");
+    await until(() => text().includes("today screen"), "Today");
+    const e = await entry();
+    expect(e.payload.note).toBe("line one\nline two");
+    expect(e.payload.entries.find((x) => x.exerciseId === "gobletSquat")).toBeUndefined();
+  });
+});
+
 describe("the end of the session is kept at once", () => {
   it("reaching the review is written straight away, not 250 ms later — a reload right after finds the review", async () => {
     await stored();

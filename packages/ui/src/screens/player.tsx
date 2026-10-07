@@ -448,6 +448,8 @@ function Playing({ loaded, db, deps }: { loaded: Extract<Loaded, { kind: "ready"
   runRef.current = run;
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
+      // The review is a page of its own: its fields and buttons take their keys (audit 2b-B M-1).
+      if (finishedRef.current) return;
       const c = commandFor(e, { panelOpen: panelRef.current !== null, logOpen: logRef.current });
       if (c && runRef.current(c)) e.preventDefault();
     };
@@ -458,6 +460,14 @@ function Playing({ loaded, db, deps }: { loaded: Extract<Loaded, { kind: "ready"
   panelRef.current = panel;
   const logRef = useRef(logOpen);
   logRef.current = logOpen;
+  const finishedRef = useRef(state.finished);
+  finishedRef.current = state.finished;
+  // A log card left open when the session ended (✕ → End and review) is closed with it: its draft was never confirmed.
+  useEffect(() => {
+    if (!state.finished) return;
+    setLogOpen(false);
+    setDraft(null);
+  }, [state.finished]);
 
   if (state.finished) {
     /** Nothing more is written for this session in progress (Save and Discard end it). */
