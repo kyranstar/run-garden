@@ -11,14 +11,24 @@ import { useEffect } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { api, type MeResponse } from "@rg/api-client";
 import { offlineDb, type OfflineDb } from "../offline/idb.js";
+import { meWithOfflineFallback } from "../offline/me.js";
 import { startOutboxSync, type OutboxApi } from "../offline/outbox.js";
 
 /** What a saved session changes on screen. */
 export const SAVED_SESSION_QUERIES = ["today", "plan", "plan-week", "programs", "garden", "runs"] as const;
 
-/** The signed-in account, as the screens last heard it (never asked for here). */
+/**
+ * The signed-in account, as the screens last heard it: never asked for here (`enabled: false`), but with the same
+ * question the app's screens ask, so a refetch through any of them asks it the same way.
+ */
 export function useSignedInUserId(): string | null {
-  const me = useQuery<MeResponse>({ queryKey: ["me"], enabled: false });
+  const me = useQuery<MeResponse>({
+    queryKey: ["me"],
+    queryFn: () => meWithOfflineFallback(),
+    enabled: false,
+    retry: false,
+    networkMode: "online",
+  });
   return me.data?.userId ?? null;
 }
 

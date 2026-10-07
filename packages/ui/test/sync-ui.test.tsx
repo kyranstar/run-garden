@@ -10,7 +10,7 @@ import { act, createElement } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { renderToStaticMarkup } from "react-dom/server";
 import { MemoryRouter } from "react-router-dom";
-import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { QueryClient, QueryClientProvider, useQuery } from "@tanstack/react-query";
 import { IDBFactory } from "fake-indexeddb";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { TodayResponse, WorkoutDto } from "@rg/api-client";
@@ -79,6 +79,25 @@ describe("OutboxSync", () => {
     expect(savePerformed).toHaveBeenCalledTimes(1);
     expect(invalidated).toContain("outbox");
     spy.mockRestore();
+  });
+});
+
+describe("listening for the signed-in account", () => {
+  it("never leaves the ['me'] question without its answer-getter (a refetch through any screen still works)", async () => {
+    db = await openOfflineDb(new IDBFactory());
+    const errors = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    // A screen that asks who is signed in, mounted beside OutboxSync (which only listens).
+    function Screen() {
+      useQuery({ queryKey: ["me"], queryFn: async () => ({ userId: "user-1" }) });
+      return null;
+    }
+    render(createElement("div", null, createElement(Screen), createElement(OutboxSync, { db: () => Promise.resolve(db!), api: { savePerformed: vi.fn() } })), qc);
+    await act(async () => {
+      await qc.refetchQueries({ queryKey: ["me"] });
+    });
+    expect(errors.mock.calls.flat().join(" ")).not.toContain("No queryFn");
+    errors.mockRestore();
   });
 });
 
