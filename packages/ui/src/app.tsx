@@ -10,6 +10,7 @@ import { GardenScreen } from "./screens/garden.js";
 import { SettingsScreen } from "./screens/settings.js";
 import { WelcomeScreen } from "./screens/welcome.js";
 import { Onboarding } from "./screens/onboarding.js";
+import { meWithOfflineFallback } from "./offline/me.js";
 
 const queryClient = new QueryClient({
   defaultOptions: {
@@ -24,7 +25,8 @@ const queryClient = new QueryClient({
 function AuthedApp() {
   const me = useQuery({
     queryKey: ["me"],
-    queryFn: api.me,
+    // Offline with a session in progress, the last known answer lets the athlete back in (plan 2b Task 3).
+    queryFn: () => meWithOfflineFallback(),
     retry: false,
     // A restore running elsewhere says so until it stops (B10): look again.
     refetchInterval: (q) => (q.state.data?.restore?.running ? 30_000 : false),

@@ -26,6 +26,7 @@ import {
 } from "../components.js";
 import { md5Hex } from "../md5.js";
 import { RestorePendingNotice } from "./restore-notice.js";
+import { forgetCachedMe } from "../offline/me.js";
 
 const TZ_OPTIONS: string[] = (() => {
   const sv = (Intl as unknown as { supportedValuesOf?: (k: string) => string[] }).supportedValuesOf;
@@ -1350,7 +1351,9 @@ export function SettingsScreen() {
   const me = useQuery({ queryKey: ["me"], queryFn: api.me });
   const logout = useMutation({
     mutationFn: api.logout,
-    onSuccess: () => {
+    onSuccess: async () => {
+      // An offline launch must not find this account's answer afterwards (the service worker's `rg-me` cache).
+      await forgetCachedMe();
       window.location.href = "/welcome";
     },
   });
