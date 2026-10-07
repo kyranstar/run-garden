@@ -1,6 +1,7 @@
 import { defineConfig } from "vite";
 import react from "@vitejs/plugin-react";
 import { VitePWA } from "vite-plugin-pwa";
+import { runtimeCaching } from "./sw-routes";
 
 export default defineConfig({
   plugins: [
@@ -43,53 +44,8 @@ export default defineConfig({
         // simply arrives on the next navigation or reload).
         skipWaiting: true,
         clientsClaim: true,
-        // NOTE: matcher functions and plugins below are stringified into the
-        // generated sw.js — they must stay closure-free.
-        runtimeCaching: [
-          {
-            // Network-first navigations: a normal reload after a deploy paints
-            // the new build; offline falls back to the cached shell. Every
-            // navigation shares the single "/index.html" cache entry (the
-            // worker SPA-fallbacks all app routes to it), so any route works
-            // offline once one load has succeeded.
-            urlPattern: ({ request, url }) =>
-              request.mode === "navigate" && !url.pathname.startsWith("/api/"),
-            handler: "NetworkFirst",
-            options: {
-              cacheName: "rg-shell",
-              networkTimeoutSeconds: 3,
-              plugins: [{ cacheKeyWillBeUsed: async () => "/index.html" }],
-            },
-          },
-          {
-            // Who is signed in, for an offline launch (Phase 2b: a session in
-            // progress must reopen with the network off — spike report
-            // 2026-10-07). Its own cache, so sign-out can drop exactly it
-            // (packages/ui/src/offline/me.ts, ME_CACHE). A 401 is never
-            // cached: NetworkFirst stores only successful answers.
-            urlPattern: ({ url }) => url.pathname === "/api/auth/me",
-            handler: "NetworkFirst",
-            options: {
-              cacheName: "rg-me",
-              networkTimeoutSeconds: 3,
-              expiration: { maxEntries: 1, maxAgeSeconds: 60 * 60 * 24 * 7 },
-            },
-          },
-          {
-            // Runtime-cache read-only GET API responses so recent data is
-            // available offline (clearly marked stale in the UI). Workbox
-            // matches RegExp routes against the full href, so a ^\/api\/
-            // anchor never fires (2026-08 audit P4) — match pathname instead.
-            urlPattern: ({ url }) =>
-              url.pathname.match(/^\/api\/(plan\/today|plan\/workouts|garden|insights|settings)/) !== null,
-            handler: "NetworkFirst",
-            options: {
-              cacheName: "rg-read-cache",
-              networkTimeoutSeconds: 4,
-              expiration: { maxEntries: 40, maxAgeSeconds: 60 * 60 * 24 },
-            },
-          },
-        ],
+        // The runtime routes (shell, who is signed in, read-only API answers): sw-routes.ts.
+        runtimeCaching,
       },
     }),
   ],

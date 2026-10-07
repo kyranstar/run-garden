@@ -34,6 +34,8 @@ export interface OfflineDb {
    * `undefined` to delete it. Resolves, once committed, with what was stored.
    */
   update<T>(store: OfflineStore, key: string, change: (current: T | undefined) => T | undefined): Promise<T | undefined>;
+  /** Empty one store. */
+  clear(store: OfflineStore): Promise<void>;
   close(): void;
 }
 
@@ -83,6 +85,11 @@ function wrap(db: IDBDatabase): OfflineDb {
       };
       await done(t);
       return next;
+    },
+    async clear(store: OfflineStore) {
+      const t = tx(store, "readwrite");
+      t.objectStore(store).clear();
+      await done(t);
     },
     close: () => db.close(),
   };

@@ -1,16 +1,20 @@
 /**
- * Signing in offline with a session in progress (plan Task 3; spike report 2026-10-07): the service worker keeps
- * the last `/api/auth/me` (cache `rg-me`), and when `me` still cannot be fetched the app takes that cached answer —
- * but only while a session is in progress on this device. Without one, the "Couldn't reach" screen stays as it was;
- * signed out (401) is always signed out; signing out forgets the cached answer.
+ * Who is signed in, offline (plan Task 3; spike report 2026-10-07; ruling 2b-R6). The service worker keeps the last
+ * `/api/auth/me` (cache `rg-me`) and answers an offline launch from it for every account — that is the service
+ * worker's route, not this function. When `me` still fails here (the worker could not answer: not in control yet, or
+ * a server error passed through), the app takes the cached answer itself only while a session is in progress on this
+ * device. Signed out (401) is always signed out — and forgets the offline identity (rg-me, rg-read-cache, the stored
+ * builds and live sessions), as delete-all and sign-out do.
  */
 import { describe, expect, it, vi } from "vitest";
+import { IDBFactory } from "fake-indexeddb";
 import { ApiError, type MeResponse } from "@rg/api-client";
-import { forgetCachedMe, ME_CACHE, meWithOfflineFallback } from "../../src/offline/me.js";
+import { openOfflineDb, type OfflineDb } from "../../src/offline/idb.js";
+import { forgetCachedMe, forgetOfflineIdentity, ME_CACHE, meWithOfflineFallback, READ_CACHE } from "../../src/offline/me.js";
 
 const me = { email: "fixture@example.com", fixtureMode: true } as unknown as MeResponse;
 
-/** A Cache Storage double holding one cache. */
+/** A Cache Storage double holding named caches. */
 function cacheStorage(entries: Record<string, Record<string, unknown>> = {}) {
   const store = new Map(Object.entries(entries).map(([name, urls]) => [name, new Map(Object.entries(urls))]));
   return {
@@ -24,6 +28,21 @@ function cacheStorage(entries: Record<string, Record<string, unknown>> = {}) {
 }
 
 const offline = () => Promise.reject(new TypeError("Failed to fetch"));
+
+/** A device with the account's offline traces: both caches, a stored build, a live session, and an unsynced save. */
+async function deviceWithTraces(): Promise<{ db: OfflineDb; caches: ReturnType<typeof cacheStorage> }> {
+  const db = await openOfflineDb(new IDBFactory());
+  await db.put("builds", "w1", { workoutId: "w1" });
+  await db.put("live", "w1", { workoutId: "w1", performedId: "p1" });
+  await db.put("outbox", "p1:h", { key: "p1:h", userId: "u1" });
+  await db.put("meta", "outbox-drain", { owner: "x", until: 0 });
+  const caches = cacheStorage({
+    [ME_CACHE]: { "/api/auth/me": me },
+    [READ_CACHE]: { "/api/garden": { garden: true } },
+    "rg-shell": { "/index.html": {} },
+  });
+  return { db, caches };
+}
 
 describe("me with the offline fallback", () => {
   it("online: the server's answer, the cache never read", async () => {
@@ -45,7 +64,7 @@ describe("me with the offline fallback", () => {
     expect(await meWithOfflineFallback({ fetchMe: down, hasLive: async () => true, caches })).toEqual(me);
   });
 
-  it("offline with nothing in progress: the failure stands (the 'Couldn't reach' screen)", async () => {
+  it("the service worker could not answer and nothing is in progress: the failure stands here (an offline launch normally never gets this far — the worker's rg-me route answers first, for every account: ruling 2b-R6)", async () => {
     const caches = cacheStorage({ [ME_CACHE]: { "/api/auth/me": me } });
     await expect(meWithOfflineFallback({ fetchMe: offline, hasLive: async () => false, caches })).rejects.toThrow("Failed to fetch");
   });
@@ -53,7 +72,22 @@ describe("me with the offline fallback", () => {
   it("signed out is signed out, whatever is in progress or cached", async () => {
     const caches = cacheStorage({ [ME_CACHE]: { "/api/auth/me": me } });
     const signedOut = () => Promise.reject(new ApiError(401, { error: "unauthenticated" }));
-    await expect(meWithOfflineFallback({ fetchMe: signedOut, hasLive: async () => true, caches })).rejects.toMatchObject({ status: 401 });
+    await expect(meWithOfflineFallback({ fetchMe: signedOut, hasLive: async () => true, caches, db: async () => openOfflineDb(new IDBFactory()) })).rejects.toMatchObject({
+      status: 401,
+    });
+  });
+
+  it("a 401 forgets the offline identity: both caches, the stored builds and live sessions — the unsynced saves stay (ruling 2b-R6; audit 2b-A M-2)", async () => {
+    const { db, caches } = await deviceWithTraces();
+    const signedOut = () => Promise.reject(new ApiError(401, { error: "unauthenticated" }));
+    await expect(meWithOfflineFallback({ fetchMe: signedOut, hasLive: async () => true, caches, db: async () => db })).rejects.toMatchObject({
+      status: 401,
+    });
+    expect([...caches.store.keys()]).toEqual(["rg-shell"]);
+    expect(await db.all("builds")).toEqual([]);
+    expect(await db.all("live")).toEqual([]);
+    expect(await db.all("outbox")).toHaveLength(1);
+    db.close();
   });
 
   it("offline with a session in progress but nothing cached, or no Cache Storage, or no IndexedDB: the failure stands", async () => {
@@ -64,9 +98,28 @@ describe("me with the offline fallback", () => {
       meWithOfflineFallback({ fetchMe: offline, hasLive: noIdb, caches: cacheStorage({ [ME_CACHE]: { "/api/auth/me": me } }) }),
     ).rejects.toThrow("Failed to fetch");
   });
+});
 
-  it("signing out forgets the cached answer", async () => {
-    const caches = cacheStorage({ [ME_CACHE]: { "/api/auth/me": me }, "rg-shell": { "/index.html": {} } });
+describe("forgetOfflineIdentity (ruling 2b-R6: delete-all, sign-out, any 401)", () => {
+  it("deletes rg-me and rg-read-cache and empties builds and live; the outbox and its lock stay, and the shell cache", async () => {
+    const { db, caches } = await deviceWithTraces();
+    await forgetOfflineIdentity({ caches, db: async () => db });
+    expect([...caches.store.keys()]).toEqual(["rg-shell"]);
+    expect(await db.all("builds")).toEqual([]);
+    expect(await db.all("live")).toEqual([]);
+    expect(await db.all("outbox")).toEqual([{ key: "p1:h", userId: "u1" }]);
+    expect(await db.get("meta", "outbox-drain")).toBeDefined();
+    db.close();
+  });
+
+  it("never throws: no Cache Storage, no IndexedDB, a cache that refuses", async () => {
+    const refusing = { match: vi.fn(), delete: vi.fn(async () => Promise.reject(new Error("SecurityError"))) };
+    await expect(forgetOfflineIdentity({ caches: undefined, db: async () => Promise.reject(new Error("IndexedDB is unavailable")) })).resolves.toBeUndefined();
+    await expect(forgetOfflineIdentity({ caches: refusing, db: async () => Promise.reject(new Error("no")) })).resolves.toBeUndefined();
+  });
+
+  it("forgetCachedMe (sign-out's old name) forgets the same", async () => {
+    const caches = cacheStorage({ [ME_CACHE]: { "/api/auth/me": me }, [READ_CACHE]: {}, "rg-shell": { "/index.html": {} } });
     await forgetCachedMe(caches);
     expect([...caches.store.keys()]).toEqual(["rg-shell"]);
     await expect(forgetCachedMe(undefined)).resolves.toBeUndefined();
