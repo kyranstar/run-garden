@@ -1,4 +1,5 @@
 import { drizzle } from "drizzle-orm/d1";
+import type { BatchItem } from "drizzle-orm/batch";
 import type { BaseSQLiteDatabase } from "drizzle-orm/sqlite-core";
 import { schema } from "@rg/database";
 
@@ -35,10 +36,38 @@ export async function chunkedInsert<T extends object>(
   // connection answering `result=0000`. Tests never saw it — better-sqlite3 has
   // no such cap — and no reviewer would spot a number that was right when
   // written. A count that cannot be stale is the only version worth having.
+  for (const batch of insertBatches(rows)) await insertBatch(batch);
+}
+
+/** `chunkedInsert`'s batches, for a caller that builds the statements without running them (`runAtomically`). */
+export function insertBatches<T extends object>(rows: readonly T[]): T[][] {
+  if (rows.length === 0) return [];
   const perBatch = Math.max(1, Math.floor(90 / Math.max(1, Object.keys(rows[0] as object).length)));
-  for (let i = 0; i < rows.length; i += perBatch) {
-    await insertBatch(rows.slice(i, i + perBatch));
+  const out: T[][] = [];
+  for (let i = 0; i < rows.length; i += perBatch) out.push(rows.slice(i, i + perBatch));
+  return out;
+}
+
+/** A statement built and not yet run, for `runAtomically`. */
+export type AtomicStatement = BatchItem<"sqlite">;
+
+/**
+ * Run `statements` in order as ONE transaction: all of them land, or none does. D1 runs a `batch()` as a single
+ * transaction (a statement that fails rolls the whole batch back); the better-sqlite3 driver the tests use has no
+ * batch, so there the same statements run inside one native transaction. Each statement still counts against D1's
+ * per-invocation query budget, and each stays under the 100 bound variables on its own.
+ */
+export async function runAtomically(db: Db, statements: readonly AtomicStatement[]): Promise<void> {
+  if (statements.length === 0) return;
+  const d1 = db as unknown as { batch?: (q: readonly [AtomicStatement, ...AtomicStatement[]]) => Promise<unknown> };
+  if (typeof d1.batch === "function") {
+    await d1.batch(statements as [AtomicStatement, ...AtomicStatement[]]);
+    return;
   }
+  const sqlite = db as unknown as { transaction: (run: () => void) => void };
+  sqlite.transaction(() => {
+    for (const s of statements) (s as unknown as { run: () => unknown }).run();
+  });
 }
 
 /**

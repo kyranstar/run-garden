@@ -65,10 +65,19 @@ let statements: string[];
 let userId: string;
 let prefs: UserPreferences;
 let programId: string;
+/** A statement matching this dies (the invocation killed part-way: CPU, the query cap, a dropped connection). */
+let killAt: RegExp | null;
 
 beforeEach(async () => {
   statements = [];
-  db = makeTestDb({ boundVariableCap: 100, onStatement: (sql) => statements.push(sql) });
+  killAt = null;
+  db = makeTestDb({
+    boundVariableCap: 100,
+    onStatement: (sql) => {
+      statements.push(sql);
+      if (killAt?.test(sql)) throw new Error("the invocation died here");
+    },
+  });
   ({ userId, prefs } = await makeTestUser(db));
   programId = await seedProgram(userId);
 });
@@ -422,6 +431,74 @@ describe("exactly once (§2b step 1; Review Focus 2 and 3)", () => {
     expect(await save(body)).toEqual({ status: "same_payload" });
   });
 
+  it("a save that dies at its last write leaves nothing: no session, activity, match or completed slot (audit 2b-A M-3)", async () => {
+    const s = await started("build");
+    const body = payload(s);
+    const before = await rowOf(s.workoutId);
+    // Killed at the commit marker: everything before it in the write phase must go with it (one transaction).
+    killAt = /^update "performed_sessions" set "payload_hash"/;
+    await expect(save(body)).rejects.toThrow("the invocation died here");
+    killAt = null;
+    expect(await counts()).toEqual({ sessions: 0, sets: 0, checks: 0, activities: 0, links: 0, matches: 0 });
+    expect(await rowOf(s.workoutId)).toEqual(before);
+    expect(await db.select().from(exercisePrefs)).toEqual([]);
+    // Nothing is held either: the retry saves it.
+    expect(await save(body)).toMatchObject({ status: "saved", matched: true });
+    expect(await counts()).toEqual({ sessions: 1, sets: 3, checks: 0, activities: 1, links: 1, matches: 1 });
+  });
+
+  it("two PUTs of the same session at once: one saves, the other waits its turn (busy) or finds it saved — one of everything (audit 2b-A M-10)", async () => {
+    const s = await started("build");
+    const body = payload(s);
+    const outcomes = await Promise.all([save(body), save(JSON.parse(JSON.stringify(body)))]);
+    expect(outcomes.filter((o) => o.status === "saved")).toHaveLength(1);
+    expect(outcomes.every((o) => ["saved", "busy", "same_payload"].includes(o.status))).toBe(true);
+    expect(await save(body)).toEqual({ status: "same_payload" });
+    expect(await counts()).toEqual({ sessions: 1, sets: 3, checks: 0, activities: 1, links: 1, matches: 1 });
+  });
+
+  for (const [edits, answer] of [["the same payload", "same_payload"], ["other edits", "conflict"]] as const) {
+    it(`a second delivery (${edits}) that found nothing saved yet, and got the lock just after the first committed, answers ${answer} (audit 2b-A M-10)`, async () => {
+      const s = await started("build");
+      const body = payload(s);
+      const second = edits === "other edits" ? { ...body, note: "the other tab" } : JSON.parse(JSON.stringify(body));
+      const locks = await import("../src/services/locks.js");
+      const claim = locks.claimUserLock;
+      // The second request has read "nothing saved" and asks for the session's lock: the first request runs whole
+      // just then.
+      let first: Promise<unknown> | null = null;
+      vi.spyOn(locks, "claimUserLock").mockImplementation(async (...args) => {
+        if (args[2] === `save:${body.id}` && first === null) {
+          first = save(body);
+          await first;
+        }
+        return claim(...args);
+      });
+      try {
+        expect(await save(second)).toEqual({ status: answer });
+      } finally {
+        vi.restoreAllMocks();
+      }
+      expect(await first).toMatchObject({ status: "saved" });
+      expect((await db.select().from(performedSessions))[0]!.note).toBe("felt good");
+      expect(await counts()).toEqual({ sessions: 1, sets: 3, checks: 0, activities: 1, links: 1, matches: 1 });
+    });
+  }
+
+  it("two PUTs of the same session with different edits at once: one saves, the other is refused or busy, never merged (audit 2b-A M-10)", async () => {
+    const s = await started("build");
+    const body = payload(s);
+    const edited = { ...body, note: "the other tab" };
+    const outcomes = await Promise.all([save(body), save(edited)]);
+    const won = outcomes.findIndex((o) => o.status === "saved");
+    expect(won).toBeGreaterThanOrEqual(0);
+    expect(["conflict", "busy"]).toContain(outcomes[1 - won]!.status);
+    // Delivered again: the loser is a conflict, for good; the stored session is the winner's, whole.
+    expect(await save(won === 0 ? edited : body)).toEqual({ status: "conflict" });
+    expect((await db.select().from(performedSessions))[0]!.note).toBe(won === 0 ? "felt good" : "the other tab");
+    expect(await counts()).toEqual({ sessions: 1, sets: 3, checks: 0, activities: 1, links: 1, matches: 1 });
+  });
+
   it("another save of the same session in flight answers busy, and writes nothing", async () => {
     const s = await started("build");
     const body = payload(s);
@@ -584,6 +661,36 @@ describe("the watch and the app, one physical session (programme spec §10.6; ru
     await ingestActivities(db, { userId, sources: [watch({ contentFingerprint: "fp-2", avgHeartRate: 111 })], strengthDetailsByProviderId: details });
     expect((await db.select().from(activities))[0]).toMatchObject({ title: s.title, sport: "yoga", avgHeartRate: 111 });
     expect((await db.select().from(performedSessions)).map((p) => p.source)).toEqual(["app"]);
+  });
+
+  it("a save waits for a COROS read in flight (the ingest's coros_read lock): busy, nothing written, and the read's lock is left alone (audit 2b-A M-7)", async () => {
+    const s = await started("build");
+    const body = payload(s);
+    // A read-now is ingesting: it looked for an app row to adopt a moment ago and is about to insert the watch's.
+    await db.insert(coachLocks).values({ userId, kind: "coros_read", token: "read-now", claimedAt: new Date().toISOString() });
+    statements.length = 0;
+    expect(await save(body)).toEqual({ status: "busy" });
+    expect(statements.filter((q) => isWrite(q) && !/coach_locks/.test(q))).toEqual([]);
+    expect((await db.select().from(coachLocks)).map((l) => [l.kind, l.token])).toEqual([["coros_read", "read-now"]]);
+
+    // The read finishes (its copy of the session landed meanwhile); the outbox's retry joins it — one activity.
+    await ingestActivities(db, { userId, sources: [watch()] });
+    await db.delete(coachLocks);
+    expect(await save(body)).toMatchObject({ status: "saved" });
+    expect(await db.select().from(activities)).toHaveLength(1);
+    // And the save let go of every claim it took: a read-now after it is not refused.
+    expect(await db.select().from(coachLocks)).toEqual([]);
+  });
+
+  it("a session older than the read window also waits for the deep backfill's lock (the backfill ingests those days)", async () => {
+    const s = await started("build");
+    const body = payload(s);
+    await db.insert(coachLocks).values({ userId, kind: "coros_backfill", token: "backfill", claimedAt: new Date().toISOString() });
+    // Delivered three weeks late: the backfill walks those days.
+    expect(await save(body, body.id, { now: "2026-10-28T16:00:00.000Z" })).toEqual({ status: "busy" });
+    // A session inside the read window does not wait for the backfill.
+    expect(await save(body)).toMatchObject({ status: "saved" });
+    expect((await db.select().from(coachLocks)).map((l) => l.kind)).toEqual(["coros_backfill"]);
   });
 
   it("a watch activity far from the session's time, another sport, or imported is left alone", async () => {

@@ -362,8 +362,15 @@ async function libraryResolver(
 
 /** Delete a watch session and its sets (the app's own session of the same activity owns them: ruling 2b-R3). */
 export async function removeWatchSession(db: Db, sessionId: string): Promise<void> {
-  await db.delete(performedSets).where(eq(performedSets.performedSessionId, sessionId));
-  await db.delete(performedSessions).where(eq(performedSessions.id, sessionId));
+  for (const statement of removeWatchSessionStatements(db, sessionId)) await statement;
+}
+
+/** `removeWatchSession`'s statements, built and not run — for a caller's own transaction (the app save's). */
+export function removeWatchSessionStatements(db: Db, sessionId: string) {
+  return [
+    db.delete(performedSets).where(eq(performedSets.performedSessionId, sessionId)),
+    db.delete(performedSessions).where(eq(performedSessions.id, sessionId)),
+  ] as const;
 }
 
 /** The derived rows re-keyed onto a stored session whose id differs (a restored file's, say). */

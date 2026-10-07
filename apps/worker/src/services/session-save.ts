@@ -8,11 +8,13 @@
  *     hash → `same_payload`, nothing written; with another hash →
  *     `conflict`, nothing written. Only the app's own saves come here (`source = 'app'`), always for a slot of this
  *     user's (an app session always has a row: on-demand sessions have one too).
- *  2. `performed_sessions` first, marked `pending` (every reader treats such a row as absent, and the watch ingest
- *     already yields to it), then `performed_sets` (weights as typed + kg) and the session's checks (`post`, and a
- *     `pre` the sheet has not already recorded for the slot and day), then everything below, and the real hash last
- *     as the commit marker. A save that dies part-way leaves `pending`, and the retry redoes it from the top. A lock
- *     per session id makes a second request for the same session wait (`busy`) instead of interleaving.
+ *  2. Everything is read and decided first; then every write lands in ONE transaction (D1's batch; audit 2b-A M-3):
+ *     `performed_sessions` marked `pending`, `performed_sets` (weights as typed + kg) and the session's checks (`post`,
+ *     and a `pre` the sheet has not already recorded for the slot and day), everything below, and the real hash last
+ *     as the commit marker. A save that dies part-way leaves nothing; a row an older deploy left `pending` is redone
+ *     by the retry. A lock per session id makes a second request for the same session wait (`busy`) instead of
+ *     interleaving, and the COROS ingest's lock keeps a save and an ingest from both inserting the one session
+ *     (audit 2b-A M-7).
  *  3. The activity: normally a new `activities` row with `id = performedId`, `source = 'app'`, the sport of §9.2 (the
  *     locked build holds a core lift → strength, else yoga), the start in UTC and on the athlete's clock, the slot's
  *     title, plus an `app` source link. When the watch's copy of the same session arrived first (a COROS row within an
@@ -39,12 +41,16 @@ import {
   performedSessions,
   performedSets,
   plannedWorkouts,
+  programBlocks,
   sessionBuilds,
   workoutCompletionMatches,
 } from "@rg/database";
 import {
+  addDays,
   canonicalJson,
+  coreBlockIntentSchema,
   performedSessionSaveSchema,
+  todayInZone,
   toKg,
   type PerformedSessionWire,
   type SourceActivity,
@@ -55,12 +61,13 @@ import { Blocks } from "@rg/session-engine";
 import type { ZodIssue } from "zod";
 import { sha256Hex } from "../auth/crypto.js";
 import { restoreInProgress } from "./account-state.js";
-import { chunkedInsert, chunkIds, type Db } from "./db.js";
-import { loadEngineContext, loadProgramState, saveProgramState } from "./engine-inputs.js";
+import { ROLLING_WINDOW_DAYS } from "./backfill.js";
+import { chunkIds, insertBatches, runAtomically, type AtomicStatement, type Db } from "./db.js";
+import { loadEngineContext, loadProgramState } from "./engine-inputs.js";
 import { resimulateFrom } from "./garden-sync.js";
 import { claimUserLock, releaseUserLock } from "./locks.js";
 import { engineDataFor, SessionNotFoundError } from "./session-build.js";
-import { PENDING_HASH, removeWatchSession, WATCH_SOURCE } from "./watch-sets.js";
+import { PENDING_HASH, removeWatchSessionStatements, WATCH_SOURCE } from "./watch-sets.js";
 
 /** What a save says beside the session, when something did not go the usual way. */
 export type SaveNote = "slot_already_matched" | "activity_matched_elsewhere" | "slot_gone" | "graduation_skipped";
@@ -211,11 +218,11 @@ function setRows(performedId: string, p: PerformedSessionWire) {
 
 /**
  * The review's preferences: each touched exercise's row as it will be (ratings, "not for me", the new move's first
- * day), upserted whole so one statement serves every field.
+ * day), upserted whole so one statement serves every field. Read now; the statements run with the rest of the save.
  */
-async function applyPrefs(db: Db, userId: string, p: PerformedSessionWire, now: string): Promise<void> {
+async function prefStatements(db: Db, userId: string, p: PerformedSessionWire, now: string): Promise<AtomicStatement[]> {
   const ids = [...new Set([...Object.keys(p.review.ratings), ...Object.keys(p.review.excluded), ...(p.newMove ? [p.newMove] : [])])].sort();
-  if (ids.length === 0) return;
+  if (ids.length === 0) return [];
   const existing = new Map<string, typeof exercisePrefs.$inferSelect>();
   for (const batch of chunkIds(ids)) {
     for (const r of await db.select().from(exercisePrefs).where(and(eq(exercisePrefs.userId, userId), inArray(exercisePrefs.exerciseId, batch)))) {
@@ -235,7 +242,7 @@ async function applyPrefs(db: Db, userId: string, p: PerformedSessionWire, now: 
       updatedAt: now,
     };
   });
-  await chunkedInsert(rows, (batch) =>
+  return insertBatches(rows).map((batch) =>
     db
       .insert(exercisePrefs)
       .values(batch)
@@ -254,14 +261,20 @@ async function applyPrefs(db: Db, userId: string, p: PerformedSessionWire, now: 
 /**
  * Accepted graduations on the program's block — only the block the session belonged to, and only where its lift is not
  * already the one asked for (a retried save never doubles a rotation). The candidates are judged with the session's
- * place's gear, as the review offered them.
+ * place's gear, as the review offered them. Read and decided now; the block's update runs with the rest of the save.
  */
-async function applyGraduations(db: Db, userId: string, slot: SlotRow, p: PerformedSessionWire, now: string): Promise<boolean> {
-  if (p.review.graduations.length === 0) return true;
+async function graduationStatements(
+  db: Db,
+  userId: string,
+  slot: SlotRow,
+  p: PerformedSessionWire,
+  now: string,
+): Promise<{ applied: boolean; statements: AtomicStatement[] }> {
+  if (p.review.graduations.length === 0) return { applied: true, statements: [] };
   let block = await loadProgramState(db, slot.planId);
-  if (!block || (p.blockRef !== null && block.id !== p.blockRef)) return false;
+  if (!block || (p.blockRef !== null && block.id !== p.blockRef)) return { applied: false, statements: [] };
   const pending = p.review.graduations.filter((g) => block!.core[g.family] !== g.to);
-  if (pending.length === 0) return true;
+  if (pending.length === 0) return { applied: true, statements: [] };
   const context = await loadEngineContext(db, userId, slot.planId, p.locationId ? { locationId: p.locationId } : {});
   const data = engineDataFor(context.activeProfiles, context.careProfiles);
   let applied = true;
@@ -270,8 +283,48 @@ async function applyGraduations(db: Db, userId: string, slot: SlotRow, p: Perfor
     if (next === block) applied = false;
     block = next;
   }
-  await saveProgramState(db, slot.planId, block, now);
-  return applied;
+  // The block came from its stored row (loadProgramState), so this is saveProgramState's update of that row.
+  const intent = coreBlockIntentSchema.parse({ core: block.core, rotations: block.rotations });
+  return {
+    applied,
+    statements: [db.update(programBlocks).set({ intent, weeks: block.weeks, updatedAt: now }).where(eq(programBlocks.id, block.id))],
+  };
+}
+
+/**
+ * The COROS ingest's locks a save takes around its "is the watch's copy here yet?" look and its writes (audit 2b-A
+ * M-7). The ingest looks for an app row to adopt, then inserts its own; the save looks for a COROS row to join, then
+ * inserts its own. Run at the same moment, both would find nothing and the one session would stay two activities for
+ * good (adoption only runs for a new source). The read-now, the hourly sweep and the heal ingest under `coros_read`
+ * (the last 14 days); the deep backfill ingests older days under `coros_backfill`, so a session that old waits for that
+ * too. Claims never wait (`claimUserLock` answers at once), so nothing can deadlock: a save that finds one held answers
+ * `busy` and the outbox retries; a read that finds the save's claim answers `busy` and the next read or hourly sweep
+ * reads it. The save holds them only for its look and its one transaction.
+ */
+const MERGE_LOCKS = { read: { kind: "coros_read", staleMinutes: 5 }, backfill: { kind: "coros_backfill", staleMinutes: 15 } } as const;
+
+async function claimMergeLocks(
+  db: Db,
+  userId: string,
+  localDate: string,
+  today: string,
+): Promise<Array<{ kind: string; token: string }> | null> {
+  // The backfill's newest chunk ends ROLLING_WINDOW_DAYS before today; a day's margin for the clock and the zone.
+  const wanted = localDate <= addDays(today, -(ROLLING_WINDOW_DAYS - 1)) ? [MERGE_LOCKS.read, MERGE_LOCKS.backfill] : [MERGE_LOCKS.read];
+  const held: Array<{ kind: string; token: string }> = [];
+  for (const { kind, staleMinutes } of wanted) {
+    const token = await claimUserLock(db, userId, kind, staleMinutes);
+    if (!token) {
+      await releaseMergeLocks(db, userId, held);
+      return null;
+    }
+    held.push({ kind, token });
+  }
+  return held;
+}
+
+async function releaseMergeLocks(db: Db, userId: string, held: ReadonlyArray<{ kind: string; token: string }>): Promise<void> {
+  for (const { kind, token } of held) await releaseUserLock(db, userId, kind, token).catch(() => undefined);
 }
 
 /** `PUT /api/sessions/performed/:id`. Throws `InvalidSaveError` (422) and `SessionNotFoundError` (404). */
@@ -286,6 +339,7 @@ export async function savePerformedSession(db: Db, userId: string, performedId: 
   // re-parse of it — a deploy that adds a defaulted field must not turn a retry of a committed save into a conflict
   // (audit 2b-A M-6).
   const hash = await sha256Hex(canonicalJson(body));
+  const today = todayInZone(ctx.prefs.timezone, new Date(ctx.now));
 
   const stored = async () =>
     (
@@ -321,9 +375,15 @@ export async function savePerformedSession(db: Db, userId: string, performedId: 
     const existing = await stored();
     const decided = settled(existing);
     if (decided) return decided;
-    // A restore can begin while this one read; checked again just before the first write.
-    if (await restoreInProgress(db, userId)) return { status: "restoring" };
-    outcome = await write(db, userId, p, hash, slot, existing?.activityId ?? null, ctx);
+    const merge = await claimMergeLocks(db, userId, p.localDate, today);
+    if (!merge) return { status: "busy" };
+    try {
+      // A restore can begin while this one read; checked again just before the first write.
+      if (await restoreInProgress(db, userId)) return { status: "restoring" };
+      outcome = await write(db, userId, p, hash, slot, existing?.activityId ?? null, ctx);
+    } finally {
+      await releaseMergeLocks(db, userId, merge);
+    }
   } finally {
     await releaseUserLock(db, userId, lockKind, token);
   }
@@ -332,6 +392,44 @@ export async function savePerformedSession(db: Db, userId: string, performedId: 
   return outcome;
 }
 
+/** The slot's match as the save will leave it: the decision, read now, and its statements. */
+interface MatchPlan {
+  matched: boolean;
+  notes: SaveNote[];
+  statements: AtomicStatement[];
+}
+
+async function planMatch(db: Db, slot: SlotRow, performedId: string, activityId: string, now: string): Promise<MatchPlan> {
+  if (slot.archivedAt !== null) return { matched: false, notes: ["slot_gone"], statements: [] };
+  const [held] = await db
+    .select({ id: workoutCompletionMatches.id, activityId: workoutCompletionMatches.activityId })
+    .from(workoutCompletionMatches)
+    .where(and(eq(workoutCompletionMatches.workoutId, slot.id), isNull(workoutCompletionMatches.undoneAt)))
+    .limit(1);
+  const [act] = await db.select({ completionMatchId: activities.completionMatchId }).from(activities).where(eq(activities.id, activityId)).limit(1);
+  if (held && held.activityId !== activityId) return { matched: false, notes: ["slot_already_matched"], statements: [] };
+  if (!held && act?.completionMatchId) return { matched: false, notes: ["activity_matched_elsewhere"], statements: [] };
+  if (held) return { matched: true, notes: [], statements: [] };
+  const matchId = `app:${performedId}`;
+  return {
+    matched: true,
+    notes: [],
+    statements: [
+      db
+        .insert(workoutCompletionMatches)
+        .values({ id: matchId, workoutId: slot.id, activityId, confidence: 1, method: "app_session", matchedAt: now })
+        .onConflictDoNothing(),
+      db.update(activities).set({ completionMatchId: matchId, updatedAt: now }).where(eq(activities.id, activityId)),
+    ],
+  };
+}
+
+/**
+ * The write phase: everything is read and decided first, then every write lands in ONE transaction (audit 2b-A M-3)
+ * — a save killed part-way leaves nothing behind (no activity without its sets, no completed slot without its
+ * session), and its retry starts clean. The `pending` marker and the commit marker stay as the batch's first and last
+ * statements, so a row left `pending` by an older deploy is still redone by the retry.
+ */
 async function write(
   db: Db,
   userId: string,
@@ -342,7 +440,6 @@ async function write(
   ctx: SaveCtx,
 ): Promise<SaveOutcome> {
   const performedId = p.id;
-  const notes: SaveNote[] = [];
   const now = ctx.now;
   const timezone = ctx.prefs.timezone;
   const discipline = await disciplineOf(db, userId, slot, p.buildId);
@@ -358,6 +455,50 @@ async function write(
   }
   const activityId = joined?.id ?? performedId;
 
+  // ── Read and decide everything first. ──
+  const sheetPre = new Set(
+    (
+      await db
+        .select({ profileId: conditionChecks.profileId })
+        .from(conditionChecks)
+        .where(
+          and(
+            eq(conditionChecks.userId, userId),
+            eq(conditionChecks.localDate, p.localDate),
+            eq(conditionChecks.workoutId, slot.id),
+            eq(conditionChecks.kind, "pre"),
+            isNull(conditionChecks.performedSessionId),
+          ),
+        )
+    ).map((r) => r.profileId),
+  );
+  const checkRows = p.checks
+    .filter((c) => !(c.kind === "pre" && sheetPre.has(c.profileId)))
+    .map((c) => ({
+      id: `${performedId}:${c.kind}:${c.profileId}`,
+      userId,
+      profileId: c.profileId,
+      kind: c.kind,
+      value: c.value,
+      feelingOff: c.feelingOff,
+      localDate: p.localDate,
+      at: c.at,
+      performedSessionId: performedId,
+      workoutId: slot.id,
+    }));
+  // The watch's own copy of the session's sets goes: the app's session owns them (ruling 2b-R3).
+  const watchSessions = await db
+    .select({ id: performedSessions.id })
+    .from(performedSessions)
+    .where(and(eq(performedSessions.userId, userId), eq(performedSessions.activityId, activityId), eq(performedSessions.source, WATCH_SOURCE)));
+  const match = await planMatch(db, slot, performedId, activityId, now);
+  const prefs = await prefStatements(db, userId, p, now);
+  const graduation = await graduationStatements(db, userId, slot, p, now);
+  const notes: SaveNote[] = [...match.notes];
+  if (!graduation.applied) notes.push("graduation_skipped");
+
+  // ── Then write it all, as one transaction. ──
+  const statements: AtomicStatement[] = [];
   // 1. The session, pending until everything below has landed.
   const sessionRow = {
     id: performedId,
@@ -389,54 +530,19 @@ async function write(
     updatedAt: now,
   };
   const { id: _id, userId: _u, createdAt: _c, ...changed } = sessionRow;
-  await db.insert(performedSessions).values(sessionRow).onConflictDoUpdate({ target: performedSessions.id, set: changed });
+  statements.push(db.insert(performedSessions).values(sessionRow).onConflictDoUpdate({ target: performedSessions.id, set: changed }));
 
   // 2. Its sets and checks — a retry clears what an earlier attempt left first.
-  await db.delete(performedSets).where(eq(performedSets.performedSessionId, performedId));
-  await db.delete(conditionChecks).where(and(eq(conditionChecks.userId, userId), eq(conditionChecks.performedSessionId, performedId)));
-  await chunkedInsert(setRows(performedId, p), (batch) => db.insert(performedSets).values(batch));
-  const sheetPre = new Set(
-    (
-      await db
-        .select({ profileId: conditionChecks.profileId })
-        .from(conditionChecks)
-        .where(
-          and(
-            eq(conditionChecks.userId, userId),
-            eq(conditionChecks.localDate, p.localDate),
-            eq(conditionChecks.workoutId, slot.id),
-            eq(conditionChecks.kind, "pre"),
-            isNull(conditionChecks.performedSessionId),
-          ),
-        )
-    ).map((r) => r.profileId),
-  );
-  const checkRows = p.checks
-    .filter((c) => !(c.kind === "pre" && sheetPre.has(c.profileId)))
-    .map((c) => ({
-      id: `${performedId}:${c.kind}:${c.profileId}`,
-      userId,
-      profileId: c.profileId,
-      kind: c.kind,
-      value: c.value,
-      feelingOff: c.feelingOff,
-      localDate: p.localDate,
-      at: c.at,
-      performedSessionId: performedId,
-      workoutId: slot.id,
-    }));
-  await chunkedInsert(checkRows, (batch) => db.insert(conditionChecks).values(batch));
+  statements.push(db.delete(performedSets).where(eq(performedSets.performedSessionId, performedId)));
+  statements.push(db.delete(conditionChecks).where(and(eq(conditionChecks.userId, userId), eq(conditionChecks.performedSessionId, performedId))));
+  for (const batch of insertBatches(setRows(performedId, p))) statements.push(db.insert(performedSets).values(batch));
+  for (const batch of insertBatches(checkRows)) statements.push(db.insert(conditionChecks).values(batch));
 
-  // 3. The activity. The watch's own copy of the session's sets goes: the app's session owns them (ruling 2b-R3).
-  for (const w of await db
-    .select({ id: performedSessions.id })
-    .from(performedSessions)
-    .where(and(eq(performedSessions.userId, userId), eq(performedSessions.activityId, activityId), eq(performedSessions.source, WATCH_SOURCE)))) {
-    await removeWatchSession(db, w.id);
-  }
+  // 3. The activity.
+  for (const w of watchSessions) statements.push(...removeWatchSessionStatements(db, w.id));
   if (joined) {
     // COROS keeps its metrics and its id; the row takes the app's title and discipline (they last: completion.ts).
-    await db.update(activities).set({ title, sport: discipline, updatedAt: now }).where(eq(activities.id, activityId));
+    statements.push(db.update(activities).set({ title, sport: discipline, updatedAt: now }).where(eq(activities.id, activityId)));
   } else {
     const row = {
       id: activityId,
@@ -455,83 +561,64 @@ async function write(
       updatedAt: now,
     };
     // A retry rewrites its own row — unless COROS has adopted it meanwhile (then COROS's metrics stand).
-    await db
-      .insert(activities)
-      .values(row)
-      .onConflictDoUpdate({
-        target: activities.id,
-        set: {
-          startTime: row.startTime,
-          startTimeLocal: row.startTimeLocal,
-          timezone,
-          sport: discipline,
-          durationSeconds: row.durationSeconds,
-          elapsedSeconds: row.elapsedSeconds,
-          title,
-          updatedAt: now,
-        },
-        setWhere: eq(activities.source, "app"),
-      });
+    statements.push(
+      db
+        .insert(activities)
+        .values(row)
+        .onConflictDoUpdate({
+          target: activities.id,
+          set: {
+            startTime: row.startTime,
+            startTimeLocal: row.startTimeLocal,
+            timezone,
+            sport: discipline,
+            durationSeconds: row.durationSeconds,
+            elapsedSeconds: row.elapsedSeconds,
+            title,
+            updatedAt: now,
+          },
+          setWhere: eq(activities.source, "app"),
+        }),
+    );
   }
-  await db
-    .insert(activitySourceLinks)
-    .values({
-      id: `app:${performedId}`,
-      activityId,
-      provider: "app",
-      providerActivityId: performedId,
-      sourceCreatedAt: p.endedAt,
-      sourceUpdatedAt: null,
-      firstSeenAt: now,
-      lastSeenAt: now,
-      contentFingerprint: hash,
-      normalizerVersion: "app-1",
-      sourceVersion: null,
-      rawSummary: null,
-    })
-    .onConflictDoUpdate({ target: [activitySourceLinks.provider, activitySourceLinks.providerActivityId], set: { activityId, contentFingerprint: hash, lastSeenAt: now } });
+  statements.push(
+    db
+      .insert(activitySourceLinks)
+      .values({
+        id: `app:${performedId}`,
+        activityId,
+        provider: "app",
+        providerActivityId: performedId,
+        sourceCreatedAt: p.endedAt,
+        sourceUpdatedAt: null,
+        firstSeenAt: now,
+        lastSeenAt: now,
+        contentFingerprint: hash,
+        normalizerVersion: "app-1",
+        sourceVersion: null,
+        rawSummary: null,
+      })
+      .onConflictDoUpdate({ target: [activitySourceLinks.provider, activitySourceLinks.providerActivityId], set: { activityId, contentFingerprint: hash, lastSeenAt: now } }),
+  );
 
-  // 4. The slot's match, unless something else completed it first.
-  let matched = false;
-  if (slot.archivedAt !== null) {
-    notes.push("slot_gone");
-  } else {
-    const [held] = await db
-      .select({ id: workoutCompletionMatches.id, activityId: workoutCompletionMatches.activityId })
-      .from(workoutCompletionMatches)
-      .where(and(eq(workoutCompletionMatches.workoutId, slot.id), isNull(workoutCompletionMatches.undoneAt)))
-      .limit(1);
-    const [act] = await db.select({ completionMatchId: activities.completionMatchId }).from(activities).where(eq(activities.id, activityId)).limit(1);
-    if (held && held.activityId !== activityId) {
-      notes.push("slot_already_matched");
-    } else if (!held && act?.completionMatchId) {
-      notes.push("activity_matched_elsewhere");
-    } else {
-      if (!held) {
-        const matchId = `app:${performedId}`;
-        await db
-          .insert(workoutCompletionMatches)
-          .values({ id: matchId, workoutId: slot.id, activityId, confidence: 1, method: "app_session", matchedAt: now })
-          .onConflictDoNothing();
-        await db.update(activities).set({ completionMatchId: matchId, updatedAt: now }).where(eq(activities.id, activityId));
-      }
-      matched = true;
-    }
-  }
-  await db
-    .update(plannedWorkouts)
-    .set(
-      matched
-        ? { completionState: "completed", resolutionDate: p.localDate, contentState: "done", category: discipline, sport: discipline, updatedAt: now }
-        : { contentState: "done", updatedAt: now },
-    )
-    .where(and(eq(plannedWorkouts.id, slot.id), eq(plannedWorkouts.userId, userId)));
+  // 4. The slot's match, and the slot.
+  statements.push(...match.statements);
+  statements.push(
+    db
+      .update(plannedWorkouts)
+      .set(
+        match.matched
+          ? { completionState: "completed", resolutionDate: p.localDate, contentState: "done", category: discipline, sport: discipline, updatedAt: now }
+          : { contentState: "done", updatedAt: now },
+      )
+      .where(and(eq(plannedWorkouts.id, slot.id), eq(plannedWorkouts.userId, userId))),
+  );
 
   // 5. The review's decisions.
-  await applyPrefs(db, userId, p, now);
-  if (!(await applyGraduations(db, userId, slot, p, now))) notes.push("graduation_skipped");
+  statements.push(...prefs, ...graduation.statements);
 
-  // Commit marker: everything above has landed.
-  await db.update(performedSessions).set({ payloadHash: hash, updatedAt: now }).where(eq(performedSessions.id, performedId));
-  return { status: "saved", performedId, activityId, matched, notes };
+  // Commit marker: everything above lands with it, or none of it does.
+  statements.push(db.update(performedSessions).set({ payloadHash: hash, updatedAt: now }).where(eq(performedSessions.id, performedId)));
+  await runAtomically(db, statements);
+  return { status: "saved", performedId, activityId, matched: match.matched, notes };
 }
