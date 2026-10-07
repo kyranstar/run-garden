@@ -240,6 +240,24 @@ describe("a set, the log card, the rest", () => {
   });
 });
 
+describe("⇄ mid-session", () => {
+  it("Use plays the alternative; after it ⇄ offers the planned move back first (Task 5)", async () => {
+    await storedStart();
+    mount();
+    await toFirstSet();
+    await click("Swap");
+    await until(() => !!document.querySelector('[role="dialog"]'), "the swap list");
+    expect(text()).toContain("Supported split squat");
+    await click("Use");
+    await until(() => !document.querySelector('[role="dialog"]'), "the list closed");
+    expect(text()).toContain("Supported split squat");
+    expect(text()).toContain("3 of 9");
+    await click("Swap");
+    await until(() => !!document.querySelector('[role="dialog"]'), "the swap list again");
+    expect(document.querySelector('[role="dialog"]')!.textContent).toContain("Goblet squat");
+  });
+});
+
 describe("the keyboard", () => {
   it("Space is Done when nothing has focus — but not while a button has focus", async () => {
     await storedStart();

@@ -188,7 +188,7 @@ function fitsBlock(ctx: Ctx, ex: ExerciseRecord, block: BlockId): boolean {
 const moveKeys = new WeakMap<ExerciseRecord, string>();
 function moveKey(ex: ExerciseRecord): string {
   let key = moveKeys.get(ex);
-  if (key === undefined) { key = `${ex.family}|${[...ex.regions].sort().join(",")}`; moveKeys.set(ex, key); }
+  if (key === undefined) { key = Swapping.moveKeyOf(ex); moveKeys.set(ex, key); }
   return key;
 }
 function movesInPlan(ctx: Ctx): Set<string> {
@@ -596,7 +596,7 @@ function swapItem(item: Item, ex: ExerciseRecord, ctx: Ctx): Item {
   return { ...swapped, format: item.format, sets: item.sets, group: item.group };
 }
 
-const pairingOf = (ex: ExerciseRecord) => ({ doseType: ex.dose.type, patterns: ex.patterns, positionGroup: positionGroup(ex.position) });
+const pairingOf = Swapping.pairingOf;
 
 /** One item's own steps in its group (rests excluded): exactly what groupSteps plays for that slot. */
 function slotSteps(data: EngineData, group: Group, it: Item): Step[] {
@@ -639,7 +639,7 @@ export interface Prepared {
 }
 
 /** How far swaps may take a plan past its minutes: plans are filled to within seconds of the budget. */
-const SWAP_SLACK_SECONDS = 60;
+const SWAP_SLACK_SECONDS = Swapping.SLACK_SECONDS;
 
 /**
  * The unswapped plan and each slot's swap pool: every move the slot may take on its own terms, best first, so a

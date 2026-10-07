@@ -48,6 +48,7 @@ import {
   type PlayerState,
 } from "../player/run.js";
 import { loadExtras, saveExtras, type PlayerExtras } from "../player/stored.js";
+import { offeredNow } from "../player/swap.js";
 import { clockText, lengthMs, readyMs } from "../player/timer.js";
 import { holdWakeLock } from "../player/wake.js";
 
@@ -270,7 +271,11 @@ function Playing({ loaded, db, deps }: { loaded: Extract<Loaded, { kind: "ready"
   const step = view?.step ?? null;
   /** The slot ⇄ and ⓘ are about: the step in play, or during a rest the move that comes next. */
   const focus = useMemo(() => focusStep(state), [state]);
-  const alternatives: SlotChoice[] = focus ? (src.build.alternatives[focus.slotKey] ?? []).filter((a) => a.id !== focus.exerciseId) : [];
+  // What ⇄ offers now: recomputed after each swap with the engine's rules over what the build stored (player/swap.ts).
+  const alternatives: SlotChoice[] = useMemo(
+    () => (focus ? offeredNow(src.build, state.swaps, focus.slotKey).filter((a) => a.id !== focus.exerciseId) : []),
+    [focus, src.build, state.swaps],
+  );
 
   const act = (f: (s: PlayerState, t: number) => PlayerState) => {
     const t = Date.now();
