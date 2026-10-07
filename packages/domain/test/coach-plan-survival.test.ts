@@ -25,7 +25,7 @@
  * exactly. The named probes below cover the specific neighbours that generation
  * would only reach by luck.
  */
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { addDays } from "../src/time.js";
 import {
   addOpDates,
@@ -52,6 +52,9 @@ import {
 import { englishName, liveExerciseCatalog } from "./coach-survival/catalog.js";
 import { INTENTS, REGISTER_B, rngFor, wakeEnvelope, mobilitySession, runSession } from "./coach-survival/plans.js";
 import { dossierHandles, runSample, seedAthlete, type SampleResult } from "./coach-survival/pipeline.js";
+
+// Slow on a loaded runner (ruling 2b-R14): the instrument runs hundreds of seeded plans, and "reproduces exactly from its seed" runs it twice. A per-file timeout, not a cost question.
+vi.setConfig({ testTimeout: 120_000 });
 
 const SEED = Number(process.env.SURVIVAL_SEED ?? 20260817);
 const N = Number(process.env.SURVIVAL_N ?? 800);

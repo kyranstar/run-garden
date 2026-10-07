@@ -28,6 +28,9 @@ vi.mock("../src/services/db.js", async (importOriginal) => {
 // Imported after the mock is registered (vi.mock is hoisted above imports).
 const { default: worker } = await import("../src/index.js");
 
+// Slow on a loaded runner (ruling 2b-R14): each case boots the whole worker against a fresh database. A per-file timeout, not a cost question.
+vi.setConfig({ testTimeout: 120_000 });
+
 /** The env `apps/web/e2e/fixture-stack.sh` boots the worker with. */
 function stackEnv(overrides: Partial<Env> = {}): Env {
   return {

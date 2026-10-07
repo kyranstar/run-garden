@@ -40,6 +40,9 @@ import { copierApp, type CopierEnv } from "../src/copier/index.js";
 import { seedFullAccount } from "./account-fixture.js";
 import { isWrite, makeTestDb, makeTestUser } from "./helpers.js";
 
+// Slow on a loaded runner (ruling 2b-R14): each case seeds two full accounts and copies them. A per-file timeout, not a cost question.
+vi.setConfig({ testTimeout: 120_000 });
+
 const CAP = { boundVariableCap: 100 } as const;
 
 /** A row for a table no account owns, every column filled. */
