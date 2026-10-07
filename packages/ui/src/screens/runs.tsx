@@ -469,10 +469,14 @@ export function formatLoggedSet(s: LoggedSetDto): string {
   return side + [load, count].filter(Boolean).join(" ");
 }
 
-/** What was logged, one line per exercise (Phase 2 mocks §8). */
+/**
+ * What was logged, one line per exercise (Phase 2 mocks §8). `role="list"`:
+ * WebKit drops a `list-style: none` list's semantics, so VoiceOver would not
+ * say "list, 4 items" without it (audit 2a+ M-11).
+ */
 export function LoggedSets({ logged }: { logged: LoggedExerciseDto[] }) {
   return (
-    <ul className="fw-sets" aria-label="Logged sets">
+    <ul className="fw-sets" role="list" aria-label="Logged sets">
       {logged.map((e, i) => (
         <li key={`${i}-${e.exerciseId}`} className="fw-set">
           <b>{e.name}</b>

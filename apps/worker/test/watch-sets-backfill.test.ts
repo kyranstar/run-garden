@@ -38,9 +38,19 @@ function recording(server: Server) {
   return { paths, impl };
 }
 
-async function setup() {
+/** `failOnce`: the first statement it matches throws, as a transient D1 error would. */
+async function setup(opts: { failOnce?: RegExp } = {}) {
   const statements: string[] = [];
-  const db = makeTestDb({ onStatement: (sql) => statements.push(sql) });
+  let armed = opts.failOnce !== undefined;
+  const db = makeTestDb({
+    onStatement: (sql) => {
+      statements.push(sql);
+      if (armed && opts.failOnce!.test(sql)) {
+        armed = false;
+        throw new Error("D1_ERROR: transient");
+      }
+    },
+  });
   const { userId } = await makeTestUser(db);
   const server = mockCorosServer();
   const pwdMd5 = createHash("md5").update(server.password, "utf8").digest("hex");
@@ -100,6 +110,24 @@ async function stored(
 const sessionsOf = (db: Db, userId: string) =>
   db.select().from(schema.performedSessions).where(eq(schema.performedSessions.userId, userId));
 const detailCalls = (paths: string[]) => paths.filter((p) => p.endsWith("/activity/detail/query"));
+
+/** The owner's console loop: call until `next` is null, adding up what each call did. */
+async function walk(db: Db, userId: string, impl: typeof fetch) {
+  const total = { calls: 0, filled: 0, nothingToLog: 0, appOwned: 0, failures: 0 };
+  let next: string | null = null;
+  do {
+    const r = await backfillWatchSets(db, makeEnv(), userId, { fetchImpl: impl, ...(next ? { before: next } : {}) });
+    expect(r.status).toBe("ok");
+    if (r.status !== "ok") break;
+    total.calls += 1;
+    total.filled += r.filled;
+    total.nothingToLog += r.nothingToLog;
+    total.appOwned += r.appOwned;
+    total.failures += r.failures;
+    next = r.next;
+  } while (next && total.calls < 20);
+  return total;
+}
 
 describe("backfillWatchSets", () => {
   it("logs a stored strength activity's sets from its detail, reading COROS only", async () => {
@@ -167,7 +195,8 @@ describe("backfillWatchSets", () => {
   it("does a bounded batch per call, newest first, and walks back by its cursor", async () => {
     const { db, userId, server, rec } = await setup();
     const days = ["2026-09-01", "2026-09-02", "2026-09-03", "2026-09-04", "2026-09-05", "2026-09-06"];
-    for (const d of days) await stored(db, userId, server, `lbl-${d}`, `${d}T13:00:00.000Z`);
+    const ids = new Map<string, string>();
+    for (const d of days) ids.set(d, await stored(db, userId, server, `lbl-${d}`, `${d}T13:00:00.000Z`));
     expect(WATCH_BACKFILL_BATCH).toBeLessThan(days.length);
 
     const first = await backfillWatchSets(db, makeEnv(), userId, { fetchImpl: rec.impl });
@@ -177,19 +206,88 @@ describe("backfillWatchSets", () => {
     expect(detailCalls(rec.paths)).toHaveLength(WATCH_BACKFILL_BATCH);
     const newest = days.slice(-WATCH_BACKFILL_BATCH).map((d) => `lbl-${d}`);
     expect((await sessionsOf(db, userId)).map((s) => s.sourceRef).sort()).toEqual(newest.sort());
-    expect(first.next).toBe(`${days[days.length - WATCH_BACKFILL_BATCH]}T13:00:00.000Z`);
+    // The last activity handled, as `<start>~<id>`.
+    const edge = days[days.length - WATCH_BACKFILL_BATCH]!;
+    expect(first.next).toBe(`${edge}T13:00:00.000Z~${ids.get(edge)}`);
 
+    expect(first.remaining).toBe(days.length - WATCH_BACKFILL_BATCH);
+
+    // The cursor goes on from there; the walk ends with every one filled.
     const second = await backfillWatchSets(db, makeEnv(), userId, { fetchImpl: rec.impl, before: first.next! });
-    expect(second).toMatchObject({ status: "ok", filled: days.length - WATCH_BACKFILL_BATCH, next: null });
+    expect(second).toMatchObject({ status: "ok", filled: WATCH_BACKFILL_BATCH });
+    expect(await walk(db, userId, rec.impl)).toMatchObject({ filled: days.length - 2 * WATCH_BACKFILL_BATCH });
     expect(await sessionsOf(db, userId)).toHaveLength(days.length);
+  });
+
+  it("walks past two activities that share a start time across a batch boundary, filling both (audit M-6)", async () => {
+    const { db, userId, server, rec } = await setup();
+    // Newer ones fill all but the last place of the first batch; the tied pair straddles its edge.
+    for (let i = 0; i < WATCH_BACKFILL_BATCH - 1; i++) {
+      await stored(db, userId, server, `lbl-new-${i}`, `2026-09-${String(20 - i).padStart(2, "0")}T13:00:00.000Z`);
+    }
+    await stored(db, userId, server, "lbl-tie-1", "2026-09-07T13:00:00.000Z");
+    await stored(db, userId, server, "lbl-tie-2", "2026-09-07T13:00:00.000Z");
+    await walk(db, userId, rec.impl);
+    expect((await sessionsOf(db, userId)).map((s) => s.sourceRef)).toEqual(
+      expect.arrayContaining(["lbl-tie-1", "lbl-tie-2"]),
+    );
+    expect(await sessionsOf(db, userId)).toHaveLength(WATCH_BACKFILL_BATCH + 1);
+  });
+
+  it("counts an activity that fails to store and walks on to the next (audit M-5)", async () => {
+    const { db, userId, server, rec } = await setup({ failOnce: /^\s*insert into "performed_sessions"/i });
+    await stored(db, userId, server, "lbl-broken", "2026-09-12T13:00:00.000Z"); // newest: its write fails
+    await stored(db, userId, server, "lbl-fine", "2026-09-11T13:00:00.000Z");
+    expect(await walk(db, userId, rec.impl)).toMatchObject({ failures: 1, filled: 1 });
+    expect((await sessionsOf(db, userId)).map((s) => [s.sourceRef, s.payloadHash === "pending"])).toEqual([
+      ["lbl-fine", false],
+    ]);
+  });
+
+  it("reports a failure of our own as `error`, never as COROS's (audit M-5)", async () => {
+    const { db, userId, server, rec } = await setup();
+    await stored(db, userId, server, "lbl-k", "2026-09-12T13:00:00.000Z");
+    // The stored credentials no longer decrypt: our fault, not COROS's.
+    const env = makeEnv({ TOKEN_ENCRYPTION_KEY: Buffer.alloc(32, 9).toString("base64") });
+    expect(await backfillWatchSets(db, env, userId, { fetchImpl: rec.impl })).toEqual({ status: "error" });
+    expect(rec.paths).toEqual([]);
+    // The lock was let go.
+    expect((await backfillWatchSets(db, makeEnv(), userId, { fetchImpl: rec.impl })).status).toBe("ok");
   });
 
   it("counts a detail with nothing to log and goes on", async () => {
     const { db, userId, server, rec } = await setup();
     await stored(db, userId, server, "lbl-ok", "2026-09-10T13:00:00.000Z");
     await stored(db, userId, server, "lbl-empty", "2026-09-11T13:00:00.000Z", { detail: false });
-    const res = await backfillWatchSets(db, makeEnv(), userId, { fetchImpl: rec.impl });
-    expect(res).toMatchObject({ status: "ok", filled: 1, nothingToLog: 1 });
+    expect(await walk(db, userId, rec.impl)).toMatchObject({ filled: 1, nothingToLog: 1 });
+  });
+
+  it("a walk from the top reads a nothing-to-log activity again, and says so (audit M-7, M-13)", async () => {
+    const { db, userId, server, rec } = await setup();
+    await stored(db, userId, server, "lbl-ok", "2026-09-10T13:00:00.000Z");
+    await stored(db, userId, server, "lbl-empty", "2026-09-11T13:00:00.000Z", { detail: false });
+    expect(await walk(db, userId, rec.impl)).toMatchObject({ filled: 1, nothingToLog: 1 });
+
+    // Its laps are still there and it still has no session, so it is still a candidate: one detail read, reported.
+    rec.paths.length = 0;
+    const again = await backfillWatchSets(db, makeEnv(), userId, { fetchImpl: rec.impl });
+    expect(again).toMatchObject({ status: "ok", filled: 0, nothingToLog: 1, remaining: 0, next: null });
+    expect(detailCalls(rec.paths)).toHaveLength(1);
+  });
+
+  it("reads one detail per call — Workers Free's 10 ms CPU — and says how many are left (audit I-1)", async () => {
+    const { db, userId, server, rec } = await setup();
+    for (const d of ["2026-09-01", "2026-09-02", "2026-09-03"]) await stored(db, userId, server, `lbl-${d}`, `${d}T13:00:00.000Z`);
+    const first = await backfillWatchSets(db, makeEnv(), userId, { fetchImpl: rec.impl });
+    expect(first).toMatchObject({ status: "ok", filled: 1, remaining: 2 });
+    expect(detailCalls(rec.paths)).toHaveLength(1);
+    if (first.status !== "ok") return;
+    const second = await backfillWatchSets(db, makeEnv(), userId, { fetchImpl: rec.impl, before: first.next! });
+    expect(second).toMatchObject({ status: "ok", filled: 1, remaining: 1 });
+    if (second.status !== "ok") return;
+    const third = await backfillWatchSets(db, makeEnv(), userId, { fetchImpl: rec.impl, before: second.next! });
+    expect(third).toMatchObject({ status: "ok", filled: 1, remaining: 0, next: null });
+    expect(detailCalls(rec.paths)).toHaveLength(3);
   });
 
   it("writes nothing and calls nothing during a restore, in fixture mode, or without a connection", async () => {
@@ -235,5 +333,18 @@ describe("POST /api/coros/watch-sets/backfill", () => {
       makeEnv() as Env,
     );
     expect(res.status).toBe(400);
+    const empty = await app.request(
+      "/api/coros/watch-sets/backfill?before=2026-09-15T13:00:00.000Z~",
+      { method: "POST", headers: { Cookie: cookie } },
+      makeEnv() as Env,
+    );
+    expect(empty.status).toBe(400);
+    // The cursor `next` hands back: an instant and the activity id after it.
+    const handed = await app.request(
+      `/api/coros/watch-sets/backfill?before=${encodeURIComponent("2026-09-15T13:00:00.000Z~act-1")}`,
+      { method: "POST", headers: { Cookie: cookie } },
+      makeEnv() as Env,
+    );
+    expect(handed.status).toBe(200);
   });
 });

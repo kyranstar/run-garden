@@ -19,16 +19,19 @@ history the session engine progresses from.
    `intensityValue` agree in scale on items where both are set. This settles the wire unit (the program wire uses
    kg × 1000) before any conversion code is written. No values leave the Worker.
 2. Ingest: when a COROS strength activity's detail is ingested (or refreshed), derive a performed session with
-   `source = 'watch'`, `source_ref = <activity id>`, `activity_id`, `workout_id` = the matched planned row if any,
-   and one `performed_sets` row per work lap item (rest items skipped): exercise id resolved to a library id through
-   the reverse COROS mapping when one exists, else `coros:<originId>`; reps; load stored as reported (kg, converted
-   from the wire scale) with `load_kg`; set index; flags `[]`. Idempotent by `(user, 'watch', source_ref)`; a refresh
-   replaces the sets.
+   `source = 'watch'`, `source_ref = <COROS activity id (labelId)>`, `activity_id`, `workout_id` = the matched
+   planned row if any, and one `performed_sets` row per work lap item (rest items skipped): exercise id resolved to a
+   library id through the reverse COROS mapping when one exists, else `coros:<exerciseNameKey>` (the COROS i18n key;
+   `exerciseId` is not an identity); reps; load stored as reported (kg, converted from the wire scale) with
+   `load_kg`; set index; flags `[]`. Idempotent by `(user, 'watch', source_ref)`; a refresh replaces the sets. The
+   session row carries `payload_hash = 'pending'` until its sets have all landed, and every reader treats such a
+   session as absent.
 3. Precedence: if the activity was adopted from an app session (the app+watch merge), the app's performed session is
    the authority for sets — no `watch` performed session is created.
 4. Display: the Activity feed's inline expansion shows the sets grouped by exercise (names humanized once at the DTO
    boundary), weights in the athlete's weight unit; lift progression cards fill `actual` from logged top sets per week
-   for exercises matching the plan's exercises (by COROS originId or library id).
+   for exercises matching the plan's exercises (by COROS originId — through the catalog's exercise key to
+   `coros:<key>` — or library id).
 5. The session engine's history includes `watch` performed sessions (all sources are history).
 
 ## 3. Not in scope

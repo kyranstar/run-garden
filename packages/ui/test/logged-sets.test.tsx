@@ -52,6 +52,11 @@ describe("LoggedSets", () => {
     // The raw ids never reach the page.
     expect(html).not.toContain("coros:");
   });
+
+  it("keeps its list semantics in Safari, whose VoiceOver drops them from a list-style: none list (audit 2a+ M-11)", () => {
+    const html = renderToStaticMarkup(createElement(LoggedSets, { logged: LOGGED }));
+    expect(html).toMatch(/<ul [^>]*role="list"[^>]*aria-label="Logged sets"|<ul [^>]*aria-label="Logged sets"[^>]*role="list"/);
+  });
 });
 
 const lift: ActivityDto = {

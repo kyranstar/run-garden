@@ -24,7 +24,7 @@ import {
   SPIKE_CONFIRM,
 } from "../services/coros-unmapped-spike.js";
 import { fixtureModeEnabled } from "../env.js";
-import { backfillWatchSets } from "../services/watch-sets.js";
+import { backfillWatchSets, parseWatchCursor } from "../services/watch-sets.js";
 
 /**
  * Cloud COROS connection surface (cloud-direct spec §1). The password's MD5
@@ -153,14 +153,44 @@ corosRoutes.get("/debug/strength-set-stats", async (c) => {
 });
 
 /**
- * The watch-sets backfill (Phase 2a+): one bounded batch of stored strength
- * activities gets its logged sets from COROS (read-only). Call again with
- * `?before=<next>` until `next` is null. Idempotent: a filled activity drops
- * out, so running it twice changes nothing.
+ * The watch-sets backfill (Phase 2a+): one stored strength activity per call
+ * gets its logged sets from COROS (read-only). Call again with
+ * `?before=<next>` until `next` is null; `remaining` says how many are left.
+ * Idempotent: a filled activity drops out, so a second walk writes nothing.
+ *
+ * The owner runs it from the console of a signed-in app tab. A call the
+ * runtime kills (CPU, error 1102) answers with an HTML page, not JSON, and
+ * holds the `coros_read` lock for up to five minutes, so the calls after it
+ * say `busy`. On a non-JSON answer, `busy` or `runtime_limit` the loop waits
+ * 30 s and tries again, up to 12 times in a row (six minutes, past the
+ * lock's five); on anything else that is not `ok` it stops cleanly.
+ *
+ *   (async () => {
+ *     const sum = { filled: 0, nothingToLog: 0, appOwned: 0, failures: 0 };
+ *     let before = null, waits = 0;
+ *     for (let calls = 0; calls < 2000; ) {
+ *       const url = "/api/coros/watch-sets/backfill" + (before ? "?before=" + encodeURIComponent(before) : "");
+ *       const res = await fetch(url, { method: "POST" }).catch(() => null);
+ *       const r = res ? await res.json().catch(() => null) : null;
+ *       if (!r || r.status === "busy" || r.status === "runtime_limit") {
+ *         if (++waits > 12) return console.log("Stopped: no answer for six minutes. Run it again later; filled ones are skipped.", sum);
+ *         console.log(`HTTP ${res ? res.status : "-"}, ${r ? r.status : "not JSON"}: waiting 30 s (${waits}/12)`);
+ *         await new Promise((ok) => setTimeout(ok, 30_000));
+ *         continue;
+ *       }
+ *       waits = 0;
+ *       calls += 1;
+ *       if (r.status !== "ok") return console.log("Stopped:", r, sum);
+ *       for (const k in sum) sum[k] += r[k];
+ *       console.log(`${r.remaining} left`, sum);
+ *       if (!r.next) return console.log("Done", sum);
+ *       before = r.next;
+ *     }
+ *   })();
  */
 corosRoutes.post("/watch-sets/backfill", async (c) => {
   const before = c.req.query("before");
-  if (before !== undefined && !(/^\d{4}-\d{2}-\d{2}T/.test(before) && Number.isFinite(Date.parse(before)))) {
+  if (before !== undefined && !parseWatchCursor(before)) {
     return c.json({ error: "invalid_cursor" }, 400);
   }
   const result = await backfillWatchSets(c.get("db"), c.env, c.get("userId"), before ? { before } : {});

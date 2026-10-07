@@ -112,10 +112,45 @@ describe("loggedSetsByActivity", () => {
     expect((await loggedSetsByActivity(db, other.userId, [ACTIVITY.activityId], "lb")).size).toBe(0);
   });
 
+  it("shows nothing of a session whose sets are still being written (audit M-3)", async () => {
+    // The write dies after its first batch of sets: the session row still says `pending`.
+    let n = 0;
+    const db = makeTestDb({
+      onStatement: (sql) => {
+        if (/^\s*insert into "performed_sets"/i.test(sql) && ++n === 2) throw new Error("worker died mid-write");
+      },
+    });
+    const { userId } = await makeTestUser(db);
+    const twelve = [0, 1, 2, 3].flatMap((ex) =>
+      [0, 1, 2].map((set) => ({ ...workView()[0]!, exerciseIndex: ex, setIndex: set, exerciseNameKey: `T10${41 + ex}` })),
+    );
+    await expect(upsertWatchSession(db, { userId, activity: ACTIVITY, detail: detailOf(twelve) })).rejects.toThrow(/mid-write/);
+    const stored = await db.select().from(schema.performedSets);
+    expect(stored.length).toBeGreaterThan(0); // some sets landed…
+    expect(stored.length).toBeLessThan(12);
+    // …and none of them is shown.
+    expect((await loggedSetsByActivity(db, userId, [ACTIVITY.activityId], "lb")).size).toBe(0);
+  });
+
   it("reads a full page of activities under D1's bind cap", async () => {
     const { db, userId } = await withWatchSession({ cap: true });
     const ids = [...Array.from({ length: 120 }, (_, i) => `act-${i}`), ACTIVITY.activityId];
     expect((await loggedSetsByActivity(db, userId, ids, "lb")).get(ACTIVITY.activityId)).toHaveLength(4);
+  });
+
+  it("reads the sets of more sessions than one IN list holds, under D1's bind cap (audit M-13)", async () => {
+    const db = makeTestDb({ boundVariableCap: D1_BIND_LIMIT });
+    const { userId } = await makeTestUser(db);
+    // 120: past one IN list (90), and past the cap itself were the sets query not chunked.
+    const ids = Array.from({ length: 120 }, (_, i) => `act-${String(i).padStart(3, "0")}`);
+    for (const [i, activityId] of ids.entries()) {
+      await appSession(db, userId, activityId, [{ entry: 0, exerciseId: "gobletSquat", reps: i + 1, load: null }]);
+    }
+    const out = await loggedSetsByActivity(db, userId, ids, "lb");
+    expect(out.size).toBe(120);
+    expect(out.get("act-119")).toEqual([
+      { exerciseId: "gobletSquat", name: "Goblet squat", sets: [{ reps: 120, seconds: null, load: null, side: null }] },
+    ]);
   });
 });
 
@@ -123,7 +158,13 @@ describe("loggedTopKgByWeek — a plan's exercises, their heaviest logged set pe
   /** A Monday: week 1 of the plan. */
   const W1 = "2026-09-28";
 
-  async function session(db: Db, userId: string, localDate: string, sets: Array<[string, number | null, boolean?]>) {
+  async function session(
+    db: Db,
+    userId: string,
+    localDate: string,
+    sets: Array<[string, number | null, boolean?]>,
+    payloadHash = "h",
+  ) {
     const id = newId();
     await db.insert(schema.performedSessions).values({
       id,
@@ -131,7 +172,7 @@ describe("loggedTopKgByWeek — a plan's exercises, their heaviest logged set pe
       source: "watch",
       sourceRef: id,
       localDate,
-      payloadHash: "h",
+      payloadHash,
       createdAt: nowInstant(),
       updatedAt: nowInstant(),
     });
@@ -180,6 +221,16 @@ describe("loggedTopKgByWeek — a plan's exercises, their heaviest logged set pe
       [1, 22.68],
       [2, 30],
     ]);
+  });
+
+  it("counts nothing from a session whose sets are still being written (audit M-3)", async () => {
+    const db = makeTestDb();
+    const { userId } = await makeTestUser(db);
+    await db.insert(schema.corosExercises).values({ id: "41", name: "T1041", updatedAt: nowInstant() });
+    await session(db, userId, "2026-09-30", [["coros:T1041", 20]]);
+    await session(db, userId, "2026-10-01", [["coros:T1041", 90]], "pending"); // half-written: not lifted yet
+    const out = await loggedTopKgByWeek(db, userId, { weekOne: W1, weeks: 3, originIds: ["41"], library: [] });
+    expect([...out.get("41")!.entries()]).toEqual([[1, 20]]);
   });
 
   it("reads nothing when the plan names no exercise the catalog or library knows", async () => {

@@ -3,20 +3,21 @@
  * the performed session linked to the activity, its done sets grouped by
  * exercise in the order done. Every source counts; when more than one session
  * names the activity, the athlete's own record (the app's save, then a watch
- * review, then an import) wins over the watch copy the ingest derived.
+ * review, then an import) wins over the watch copy the ingest derived. A
+ * session still being written (`PENDING_HASH`) is not there yet.
  *
  * This is the DTO boundary: exercise ids become words here and nowhere else
  * (`exerciseDisplayName`), and weights are put in the athlete's unit — a
  * weight already in that unit stays exactly as typed; a converted one is
  * rounded to the half unit (`weightInUnit`).
  */
-import { and, asc, eq, gt, gte, inArray, lte, sql } from "drizzle-orm";
+import { and, asc, eq, gt, gte, inArray, lte, ne, sql } from "drizzle-orm";
 import { corosExercises, performedSessions, performedSets } from "@rg/database";
 import { addDays, weightInUnit, type Weight, type WeightUnit } from "@rg/domain";
 import { EXERCISES, type ExerciseRecord } from "@rg/exercise-library";
 import { COROS_EXERCISE_NAMES } from "@rg/providers";
 import { chunkIds, type Db } from "./db.js";
-import { COROS_EXERCISE_PREFIX, libraryIdsByOrigin, WATCH_SOURCE } from "./watch-sets.js";
+import { COROS_EXERCISE_PREFIX, libraryIdsByOrigin, PENDING_HASH, WATCH_SOURCE } from "./watch-sets.js";
 
 export interface LoggedSetDto {
   reps: number | null;
@@ -73,7 +74,14 @@ export async function loggedSetsByActivity(
             createdAt: performedSessions.createdAt,
           })
           .from(performedSessions)
-          .where(and(eq(performedSessions.userId, userId), inArray(performedSessions.activityId, ids))),
+          .where(
+            and(
+              eq(performedSessions.userId, userId),
+              inArray(performedSessions.activityId, ids),
+              // Mid-write: not there yet (PENDING_HASH).
+              ne(performedSessions.payloadHash, PENDING_HASH),
+            ),
+          ),
       ),
     )
   ).flat();
@@ -172,6 +180,7 @@ export async function loggedTopKgByWeek(
           .where(
             and(
               eq(performedSessions.userId, userId),
+              ne(performedSessions.payloadHash, PENDING_HASH),
               gte(performedSessions.localDate, plan.weekOne),
               lte(performedSessions.localDate, last),
               eq(performedSets.done, true),

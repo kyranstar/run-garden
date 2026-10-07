@@ -13,7 +13,7 @@
 ## Global Constraints
 
 - No COROS writes. Reads only through the existing ingest.
-- Performed rows: `source = 'watch'`, `source_ref = <activity id>`; idempotent; refresh replaces sets; app-merged activities never get a `watch` session.
+- Performed rows: `source = 'watch'`, `source_ref = <COROS activity id (labelId)>` (accepted at audit, open question 1: it survives the activity row being re-created; `activity_id` carries ours); idempotent; refresh replaces sets; app-merged activities never get a `watch` session.
 - Weights stored in kg as reported, converted from the wire scale pinned by Task 1; displayed in the athlete's weight unit.
 - Exercise names humanized once at the DTO boundary (`COROS_EXERCISE_NAMES`), never per surface.
 - Node 21 for tests; gates `pnpm -r typecheck`, `pnpm test`, `pnpm build:web`.
@@ -23,7 +23,7 @@
 1. **A strength activity with rest laps, zero-rep laps, or bodyweight sets (weight 0)** — rest skipped; zero reps kept only if a duration exists; weight 0 = bodyweight (load null).
 2. **The same activity re-ingested after an edit on COROS** — sets replaced, ids stable for the session.
 3. **An app session merged with the watch activity** — no duplicate sets.
-4. **A COROS exercise with no library mapping** — stored as `coros:<originId>` and displayed by its humanized COROS name.
+4. **A COROS exercise with no library mapping** — stored as `coros:<exerciseNameKey>` (the COROS i18n key, e.g. `coros:T1041`; `exerciseId` takes a handful of values across many exercises, so it is not an identity) and displayed by its humanized COROS name. Plan matching goes originId → the catalog's key → `coros:<key>`.
 5. **Mixed units on the watch** — conversion from the wire scale is exact to 0.01 kg.
 
 ---

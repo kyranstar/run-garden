@@ -32,7 +32,7 @@
  * the library id; any other stays `coros:<key>`, a stable id the display
  * layer humanizes once (activity DTO).
  */
-import { and, desc, eq, inArray, isNull, lt, ne, sql } from "drizzle-orm";
+import { and, desc, eq, inArray, isNull, lt, ne, or, sql } from "drizzle-orm";
 import {
   activities,
   activityLaps,
@@ -111,7 +111,11 @@ function num(value: unknown): number | undefined {
   return undefined;
 }
 
-/** Pounds within this of a grid point were typed as that many pounds (ruling 2a+-R2). */
+/**
+ * Pounds within this of a grid point were typed as that many pounds (ruling 2a+-R2). Its accepted cost: a
+ * quarter-kilo weight that happens to lie this close to the grid (24.5 kg = 54.013 lb) reads as pounds — the
+ * `watchLoad` table pins it (audit 2a+ M-10).
+ */
 const LB_TOLERANCE = 0.02;
 
 const nearMultiple = (x: number, step: number): boolean => Math.abs(x / step - Math.round(x / step)) * step <= LB_TOLERANCE;
@@ -398,8 +402,13 @@ export async function linkWatchSessionsToWorkouts(
   }
 }
 
-/** Marks a session whose sets are mid-write: never equal to a real hash, so the next refresh redoes it. */
-const PENDING_HASH = "pending";
+/**
+ * Marks a session whose sets are mid-write: never equal to a real hash, so the
+ * next refresh redoes it. Until its commit marker lands the session is absent
+ * to every reader — the feed, the lift graphs, the engine's history (audit 2a+
+ * M-3) — so a write that dies part-way never shows half a session.
+ */
+export const PENDING_HASH = "pending";
 
 /**
  * Writes one activity's watch session, idempotent by (user, 'watch', COROS
@@ -517,6 +526,58 @@ export async function upsertWatchSession(
   return { status: "written" };
 }
 
+// ── The read-now's heal ───────────────────────────────────────────────────────
+
+/**
+ * Details the read-now re-reads per read to heal watch sets: one, so a read's
+ * CPU stays near what one new strength activity costs (audit 2a+ I-1, M-3).
+ */
+export const WATCH_HEAL_PER_READ = 1;
+/** An upper bound on the candidates read; a two-week window holds a handful. */
+const WATCH_HEAL_CANDIDATES = 30;
+
+/**
+ * The COROS ids (labelIds) of the user's strength activities on or after
+ * `sinceLocalDate` whose sets never landed, or landed only in part: no
+ * settled session of any source, and either a lap naming an exercise (the
+ * detail had sets to read) or a half-written watch session. Newest first.
+ *
+ * The read-now adds the first of them its list holds to the details it reads
+ * (`WATCH_HEAL_PER_READ`): the ingest's unchanged path then logs the sets —
+ * no fingerprint is voided, nothing is re-normalized and no date joins the
+ * garden's replay. Without it only the owner-run backfill repaired a failed
+ * write, since the read-now never re-reads a seen activity's detail.
+ *
+ * Laps naming an exercise, not just any laps: a strength session logged
+ * without exercises has nothing to derive, and would otherwise be read again
+ * on every read for as long as it sat in the window (audit M-7).
+ */
+export async function watchSetsToHeal(db: Db, userId: string, sinceLocalDate: string): Promise<Set<string>> {
+  const rows = await db
+    .select({ labelId: activitySourceLinks.providerActivityId })
+    .from(activities)
+    .innerJoin(
+      activitySourceLinks,
+      and(eq(activitySourceLinks.activityId, activities.id), eq(activitySourceLinks.provider, "coros")),
+    )
+    .where(
+      and(
+        eq(activities.userId, userId),
+        eq(activities.sport, "strength"),
+        // The day it happened where it happened: the activity list's own window is in local dates.
+        sql`coalesce(${activities.startTimeLocal}, ${activities.startTime}) >= ${sinceLocalDate}`,
+        sql`not exists (select 1 from ${performedSessions} where ${performedSessions.userId} = ${activities.userId} and ${performedSessions.activityId} = ${activities.id} and ${performedSessions.payloadHash} <> ${PENDING_HASH})`,
+        or(
+          sql`exists (select 1 from ${activityLaps} where ${activityLaps.activityId} = ${activities.id} and ${activityLaps.exerciseNameKey} is not null)`,
+          sql`exists (select 1 from ${performedSessions} where ${performedSessions.userId} = ${activities.userId} and ${performedSessions.activityId} = ${activities.id} and ${performedSessions.source} = ${WATCH_SOURCE} and ${performedSessions.payloadHash} = ${PENDING_HASH})`,
+        ),
+      ),
+    )
+    .orderBy(desc(activities.startTime), desc(activities.id))
+    .limit(WATCH_HEAL_CANDIDATES);
+  return new Set(rows.map((r) => r.labelId));
+}
+
 // ── The backfill ──────────────────────────────────────────────────────────────
 
 //
@@ -524,19 +585,24 @@ export async function upsertWatchSession(
 // no session, and the read-now never re-reads a stored activity's detail
 // (it fetches details for unseen activities only). This pass fills them: the
 // stored strength activities that have laps (so their detail had lap items)
-// and no settled session of any source, newest first, a few per call. It is
+// and no settled session of any source, newest first, one per call. It is
 // idempotent — a filled activity drops out — and walks back through history
-// by a cursor, so an activity that turns out to have nothing to log is passed
-// once, not retried forever.
+// by a cursor, so in one walk an activity that turns out to have nothing to
+// log is passed once (a later walk from the top reads it again: it has laps
+// and no session, so it is still a candidate).
 //
-// Budget (Workers Free): at most WATCH_BACKFILL_BATCH detail reads, each at
-// worst three COROS calls (the read, a re-login on an expired token, the
-// retry), well inside 50 external subrequests; D1 statements count against
-// the separate 1,000 internal ceiling. CPU is one detail's JSON and a pure
-// derivation per activity — the same work the read-now does per new activity.
+// Budget (Workers Free): CPU binds first, not subrequests. A call parses one
+// strength detail and writes its sets — about what the read-now spends on one
+// new strength activity, a few ms warm and more on a cold isolate. Four per
+// call were likely to pass the 10 ms CPU limit (audit 2a+ I-1) and die with
+// error 1102 before `finally` let go of the `coros_read` lock. Subrequests: a
+// detail read is at worst three COROS calls (the read, a re-login on an
+// expired token, the retry), far inside 50; D1 statements, about twenty per
+// call, count against the separate 1,000 ceiling. More calls cost nothing but
+// time: the cursor carries the walk.
 
-/** Details read per call. */
-export const WATCH_BACKFILL_BATCH = 4;
+/** Details read per call: one, for Workers Free's 10 ms of CPU (audit 2a+ I-1). */
+export const WATCH_BACKFILL_BATCH = 1;
 /** COROS calls one call may make; a detail read costs at most three. */
 export const WATCH_BACKFILL_SUBREQUEST_BUDGET = 36;
 const DETAIL_WORST_CASE = 3;
@@ -545,7 +611,10 @@ const STRENGTH_SPORT_TYPE = SPORTS.find((s) => s.id === "strength")!.corosCodes[
 
 export type WatchBackfillResult =
   | { status: "fixture_mode" | "not_connected" | "restoring" | "busy" | "runtime_limit" }
+  /** COROS refused or failed a call. */
   | { status: "coros_error"; code?: string }
+  /** The failure was ours (a D1 error, credentials that no longer decrypt), not COROS's. */
+  | { status: "error" }
   | {
       status: "ok";
       /** Activities whose sets were logged. */
@@ -554,10 +623,15 @@ export type WatchBackfillResult =
       nothingToLog: number;
       /** Activities the app's own session turned out to own. */
       appOwned: number;
-      /** Details COROS failed to send; a later walk from the top retries them. */
+      /**
+       * Activities that failed — COROS did not send the detail, or storing it
+       * failed. The cursor passes them; a later walk from the top retries them.
+       */
       failures: number;
       /** Pass as `before` to go on; null when nothing older is left. */
       next: string | null;
+      /** Activities still ahead of `next` — what the rest of the walk will read (counted in the same query; no COROS call). */
+      remaining: number;
       subrequests: number;
     };
 
@@ -577,12 +651,41 @@ export async function matchedWorkoutId(db: Db, activityId: string): Promise<stri
   return match?.workoutId ?? null;
 }
 
+/**
+ * Where the walk stopped: the last activity handled, written `<startTime>~<activityId>`.
+ * The id orders activities that share a start time, so no tie at a batch edge
+ * is passed over (audit M-6). A bare instant, the first cursor shape, still
+ * means "older than this".
+ */
+export interface WatchBackfillCursor {
+  startTime: string;
+  id?: string;
+}
+
+const CURSOR_SEPARATOR = "~";
+
+export function formatWatchCursor(c: { startTime: string; id: string }): string {
+  return `${c.startTime}${CURSOR_SEPARATOR}${c.id}`;
+}
+
+/** A client-supplied cursor, shape-checked; null when it is not one. */
+export function parseWatchCursor(raw: string): WatchBackfillCursor | null {
+  const at = raw.indexOf(CURSOR_SEPARATOR);
+  const startTime = at < 0 ? raw : raw.slice(0, at);
+  const id = at < 0 ? undefined : raw.slice(at + 1);
+  if (!/^\d{4}-\d{2}-\d{2}T/.test(startTime) || !Number.isFinite(Date.parse(startTime))) return null;
+  if (id !== undefined && (id.length === 0 || id.length > 200)) return null;
+  return id === undefined ? { startTime } : { startTime, id };
+}
+
 export async function backfillWatchSets(
   db: Db,
   env: Env,
   userId: string,
   opts: { before?: string; fetchImpl?: typeof fetch } = {},
 ): Promise<WatchBackfillResult> {
+  const cursor = opts.before === undefined ? null : parseWatchCursor(opts.before);
+  if (opts.before !== undefined && !cursor) throw new Error("watch-sets backfill: not a cursor");
   // Fixture mode never talks to real providers (repo-wide convention).
   if (fixtureModeEnabled(env)) return { status: "fixture_mode" };
   if (await restoreInProgress(db, userId)) return { status: "restoring" };
@@ -601,6 +704,8 @@ export async function backfillWatchSets(
       startTimeLocal: activities.startTimeLocal,
       durationSeconds: activities.durationSeconds,
       elapsedSeconds: activities.elapsedSeconds,
+      // Every candidate from the cursor on, counted before the LIMIT: what is left, in this same statement.
+      candidates: sql<number>`count(*) over ()`,
     })
     .from(activities)
     .innerJoin(
@@ -611,15 +716,24 @@ export async function backfillWatchSets(
       and(
         eq(activities.userId, userId),
         eq(activities.sport, "strength"),
-        opts.before ? lt(activities.startTime, opts.before) : undefined,
+        cursor === null
+          ? undefined
+          : cursor.id === undefined
+            ? lt(activities.startTime, cursor.startTime)
+            : or(
+                lt(activities.startTime, cursor.startTime),
+                and(eq(activities.startTime, cursor.startTime), lt(activities.id, cursor.id)),
+              ),
         sql`exists (select 1 from ${activityLaps} where ${activityLaps.activityId} = ${activities.id})`,
         sql`not exists (select 1 from ${performedSessions} where ${performedSessions.userId} = ${activities.userId} and ${performedSessions.activityId} = ${activities.id} and ${performedSessions.payloadHash} <> ${PENDING_HASH})`,
       ),
     )
-    .orderBy(desc(activities.startTime))
-    .limit(WATCH_BACKFILL_BATCH + 1);
+    // The id orders a tie, so a cursor's (start, id) pair names one place in the walk.
+    .orderBy(desc(activities.startTime), desc(activities.id))
+    .limit(WATCH_BACKFILL_BATCH);
   const done = { filled: 0, nothingToLog: 0, appOwned: 0, failures: 0 };
-  if (rows.length === 0) return { status: "ok", ...done, next: null, subrequests: 0 };
+  if (rows.length === 0) return { status: "ok", ...done, next: null, remaining: 0, subrequests: 0 };
+  const candidates = Number(rows[0]!.candidates);
 
   const lock = await claimUserLock(db, userId, "coros_read", 5);
   if (!lock) return { status: "busy" };
@@ -632,44 +746,50 @@ export async function backfillWatchSets(
   try {
     const client = await corosClient(db, env, userId, counted);
     if (!client) return { status: "not_connected" };
-    let last: string | null = null;
+    let last: { startTime: string; id: string } | null = null;
     let processed = 0;
-    for (const row of rows.slice(0, WATCH_BACKFILL_BATCH)) {
+    for (const row of rows) {
       if (subrequests + DETAIL_WORST_CASE > WATCH_BACKFILL_SUBREQUEST_BUDGET) break;
       processed += 1;
-      last = row.startTime;
-      let detail: RawCorosActivityDetail;
+      last = { startTime: row.startTime, id: row.id };
+      // One activity's failure — COROS's or ours — is counted and passed; the
+      // rest of the batch, and the walk, go on (audit M-5).
+      let res: UpsertWatchResult;
       try {
-        detail = await client.getActivityDetail(row.labelId, STRENGTH_SPORT_TYPE);
+        const detail = await client.getActivityDetail(row.labelId, STRENGTH_SPORT_TYPE);
+        res = await upsertWatchSession(db, {
+          userId,
+          activity: {
+            activityId: row.id,
+            providerActivityId: row.labelId,
+            startTime: row.startTime,
+            startTimeLocal: row.startTimeLocal,
+            durationSeconds: row.durationSeconds,
+            elapsedSeconds: row.elapsedSeconds,
+          },
+          detail,
+          workoutId: await matchedWorkoutId(db, row.id),
+        });
       } catch (e) {
         if (isRuntimeLimit(e)) throw e;
+        console.error(`[watch-sets] backfill ${row.id}: ${(e instanceof Error ? e.message : String(e)).slice(0, 300)}`);
         done.failures += 1;
         continue;
       }
-      const res = await upsertWatchSession(db, {
-        userId,
-        activity: {
-          activityId: row.id,
-          providerActivityId: row.labelId,
-          startTime: row.startTime,
-          startTimeLocal: row.startTimeLocal,
-          durationSeconds: row.durationSeconds,
-          elapsedSeconds: row.elapsedSeconds,
-        },
-        detail,
-        workoutId: await matchedWorkoutId(db, row.id),
-      });
       if (res.status === "restoring") return { status: "restoring" };
       if (res.status === "written" || res.status === "unchanged") done.filled += 1;
       else if (res.status === "app_owned") done.appOwned += 1;
       else done.nothingToLog += 1;
     }
-    const more = rows.length > processed;
-    return { status: "ok", ...done, next: more ? last : null, subrequests };
+    const remaining = Math.max(0, candidates - processed);
+    return { status: "ok", ...done, next: remaining > 0 && last ? formatWatchCursor(last) : null, remaining, subrequests };
   } catch (e) {
     if (isRuntimeLimit(e)) return { status: "runtime_limit" };
     // Result code only — nothing from the account leaves.
-    return { status: "coros_error", ...(e instanceof CorosApiError && e.resultCode ? { code: e.resultCode } : {}) };
+    if (e instanceof CorosApiError) return { status: "coros_error", ...(e.resultCode ? { code: e.resultCode } : {}) };
+    // Ours, not COROS's: saying "COROS failed" here would be the 2026-08-18 mislabel (coros-read.ts).
+    console.error(`[watch-sets] backfill: ${(e instanceof Error ? e.message : String(e)).slice(0, 300)}`);
+    return { status: "error" };
   } finally {
     await releaseUserLock(db, userId, "coros_read", lock).catch(() => undefined);
   }

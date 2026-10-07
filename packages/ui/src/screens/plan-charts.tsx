@@ -73,6 +73,8 @@ const INK_SOFT = "var(--ink-soft)";
 const DOT_R = 4;
 /** A logged top set's ring (Phase 2a+): the third chart hue, apart from the done dots. */
 const LOGGED = "var(--chart-3)";
+/** Its radius: a 2-wide stroke whose inner edge (5.5) clears a done dot's outer edge (DOT_R + its 1 of halo = 5). */
+const LOGGED_R = DOT_R + 2.5;
 /** Air between a callout's box and the mark it names. */
 const CALLOUT_GAP = 6;
 /** The text box this file reasons with — deliberately the same generous
@@ -439,7 +441,7 @@ export function ProgressionStepChart({
   const logged = s.filter((p): p is typeof p & { actual: number } => p.actual !== undefined);
   const obstacles: Box[] = [
     ...done.map((p) => ({ x: x(p.week) - DOT_R, y: y(p.value) - DOT_R, w: DOT_R * 2, h: DOT_R * 2 })),
-    ...logged.map((p) => ({ x: x(p.week) - DOT_R, y: y(p.actual) - DOT_R, w: DOT_R * 2, h: DOT_R * 2 })),
+    ...logged.map((p) => ({ x: x(p.week) - LOGGED_R, y: y(p.actual) - LOGGED_R, w: LOGGED_R * 2, h: LOGGED_R * 2 })),
   ];
   const peakText = `peak ${peak.value} ${progression.unit}${nowOnPeak ? " · now" : ""}`;
   const peakAt = placeCallout(peakText, x(peak.week), y(peak.value), sc, obstacles);
@@ -503,6 +505,21 @@ export function ProgressionStepChart({
           <line x1={sc.left} y1={sc.base} x2={sc.right} y2={sc.base} stroke="var(--chart-grid)" />
           <StripAnnotations s={sc} race={race} unit={progression.unit} />
           <path d={path} fill="none" stroke={INK_FAINT} strokeWidth="1.5" strokeDasharray="4 3" />
+          {/* Under the done dots, and wider: a set lifted exactly as prescribed
+              (the watch pre-fills the program's weight) puts the ring on the dot,
+              and both stay visible — the dot inside the ring (audit 2a+ M-8). */}
+          {logged.map((p) => (
+            <circle
+              key={`logged-${p.week}`}
+              data-logged={p.week}
+              cx={x(p.week)}
+              cy={y(p.actual)}
+              r={LOGGED_R}
+              fill="var(--bg-raised)"
+              stroke={LOGGED}
+              strokeWidth="2"
+            />
+          ))}
           {done.map((p) => (
             <circle
               key={p.week}
@@ -511,18 +528,6 @@ export function ProgressionStepChart({
               r={DOT_R}
               fill={color}
               stroke="var(--bg-raised)"
-              strokeWidth="2"
-            />
-          ))}
-          {logged.map((p) => (
-            <circle
-              key={`logged-${p.week}`}
-              data-logged={p.week}
-              cx={x(p.week)}
-              cy={y(p.actual)}
-              r={DOT_R}
-              fill="var(--bg-raised)"
-              stroke={LOGGED}
               strokeWidth="2"
             />
           ))}
