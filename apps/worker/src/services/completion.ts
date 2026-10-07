@@ -733,9 +733,18 @@ export async function ingestActivities(db: Db, input: IngestInput): Promise<Inge
         .where(eq(plannedWorkouts.id, m.workoutId));
       stats.matchesCreated += 1;
       stats.completions += 1;
-      // A watch session is logged before matching runs; it learns its workout here.
+      // A watch session is logged before matching runs; it learns its workout
+      // here. Like the sets themselves (ingestWatchSets), the link is
+      // secondary: the match above has landed, and failing the ingest now
+      // would skip this date's replay for good — the stamped fingerprint
+      // keeps the next read from coming back (audit 2a+ M-2).
       if (activityRow.sport === "strength") {
-        await linkWatchSessionsToWorkouts(db, input.userId, [{ activityId: m.activityId, workoutId: m.workoutId }], now);
+        try {
+          await linkWatchSessionsToWorkouts(db, input.userId, [{ activityId: m.activityId, workoutId: m.workoutId }], now);
+        } catch (e) {
+          if (isRuntimeLimit(e)) throw e;
+          console.error(`[watch-sets] link ${m.activityId}: ${(e instanceof Error ? e.message : String(e)).slice(0, 300)}`);
+        }
       }
       // The workout's own day needs resimulating too, not just the activity's
       // day: a cross-day match (matcher's ±1-day window) can complete a

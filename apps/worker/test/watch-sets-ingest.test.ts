@@ -35,6 +35,43 @@ function corosActivity(extra: Partial<SourceActivity> = {}): SourceActivity {
 const sessionsOf = (db: Db, userId: string) =>
   db.select().from(schema.performedSessions).where(eq(schema.performedSessions.userId, userId));
 
+/** A database whose first statement matching `pattern` throws `message`. */
+function failOnce(pattern: RegExp, message: string): Db {
+  let armed = true;
+  return makeTestDb({
+    onStatement: (sql) => {
+      if (armed && pattern.test(sql)) {
+        armed = false;
+        throw new Error(message);
+      }
+    },
+  });
+}
+
+/** The planned lift a COROS program link ("prog-77") completes. */
+async function liftWorkout(db: Db, userId: string, date: string) {
+  await db.insert(schema.plannedWorkouts).values({
+    id: "wo-lift",
+    userId,
+    planId: "p",
+    sourceWorkoutId: "4738:lift",
+    sourceProgramId: "prog-77",
+    title: "Upper",
+    category: "strength",
+    sport: "strength",
+    originalPlanDate: date,
+    lastVerifiedCorosDate: date,
+    effectiveDate: date,
+    effectiveTime: "06:00",
+    sourceContentFingerprint: "fp",
+    fallbackEstimatedDurationSeconds: 2400,
+    calendarBlockDurationSeconds: 2400,
+    completionState: "scheduled",
+    createdAt: nowInstant(),
+    updatedAt: nowInstant(),
+  });
+}
+
 async function setsOf(db: Db, sessionId: string) {
   return (
     await db.select().from(schema.performedSets).where(eq(schema.performedSets.performedSessionId, sessionId))
@@ -157,6 +194,36 @@ describe("ingestActivities → watch sets", () => {
     const rows = await db.select().from(schema.activities);
     expect(rows.map((r) => [r.id, r.source])).toEqual([["app-row", "coros"]]);
     expect(await sessionsOf(db, userId)).toEqual([]);
+  });
+
+  it("a failure naming the workout on the session costs the session its link, never the match or its replay (audit M-2)", async () => {
+    const db = failOnce(/^\s*update "performed_sessions" set "workout_id"/i, "D1_ERROR: transient");
+    const { userId } = await makeTestUser(db);
+    await liftWorkout(db, userId, "2026-09-30"); // the day before: only the match puts its date in the replay
+    const stats = await ingestActivities(db, {
+      userId,
+      sources: [corosActivity({ sourcePlannedWorkoutId: "prog-77" })],
+      strengthDetailsByProviderId: { "lbl-strength-9001": detailOf(workView()) },
+    });
+    expect(stats.matchesCreated).toBe(1);
+    expect(stats.affectedDates).toEqual(["2026-09-30", "2026-10-01"]);
+    const [wo] = await db.select().from(schema.plannedWorkouts);
+    expect(wo!.completionState).toBe("completed");
+    const [s] = await sessionsOf(db, userId);
+    expect(s).toMatchObject({ source: "watch", workoutId: null });
+  });
+
+  it("our own runtime ceiling there still stops the ingest", async () => {
+    const db = failOnce(/^\s*update "performed_sessions" set "workout_id"/i, "Error: Too many subrequests.");
+    const { userId } = await makeTestUser(db);
+    await liftWorkout(db, userId, "2026-10-01");
+    await expect(
+      ingestActivities(db, {
+        userId,
+        sources: [corosActivity({ sourcePlannedWorkoutId: "prog-77" })],
+        strengthDetailsByProviderId: { "lbl-strength-9001": detailOf(workView()) },
+      }),
+    ).rejects.toThrow(/Too many subrequests/);
   });
 
   it("names the workout a match made in the same ingest completed", async () => {
