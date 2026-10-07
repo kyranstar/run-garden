@@ -216,6 +216,13 @@ describe("watchLoad — the unit the athlete most likely typed (rulings 2a+-R1, 
     [127_000, 127, "kg", 127], // a whole kg that is also 279.99 lb: kg wins
     [12_345, 12.345, "kg", 12.345], // neither: kept as the wire's kg
     [2_500, 2.5, "kg", 2.5],
+    // Accepted under ruling 2a+-R2 (audit 2a+ M-10): a quarter-kilo weight within 0.02 lb of the pound grid reads as
+    // pounds. `load_kg` stays exact; a kilograms athlete sees it back to the half kilo (24.5 → 24.5 kg, but
+    // 12.25 → 12 kg). About 44 such weights up to 300 kg. A tighter tolerance would misread pounds instead if COROS
+    // rounds to 10 g — deliberate, not an oversight.
+    [24_500, 54, "lb", 24.5], // 54.013 lb
+    [12_250, 27, "lb", 12.25], // 27.007 lb
+    [7_250, 16, "lb", 7.25], // 15.984 lb
   ])("%d g → %d %s (%d kg)", (grams, value, unit, kg) => {
     const load = watchLoad(grams);
     expect(load).not.toBeNull();

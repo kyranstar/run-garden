@@ -111,7 +111,11 @@ function num(value: unknown): number | undefined {
   return undefined;
 }
 
-/** Pounds within this of a grid point were typed as that many pounds (ruling 2a+-R2). */
+/**
+ * Pounds within this of a grid point were typed as that many pounds (ruling 2a+-R2). Its accepted cost: a
+ * quarter-kilo weight that happens to lie this close to the grid (24.5 kg = 54.013 lb) reads as pounds — the
+ * `watchLoad` table pins it (audit 2a+ M-10).
+ */
 const LB_TOLERANCE = 0.02;
 
 const nearMultiple = (x: number, step: number): boolean => Math.abs(x / step - Math.round(x / step)) * step <= LB_TOLERANCE;
