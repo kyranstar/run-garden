@@ -26,9 +26,14 @@ export const sessionBuilds = sqliteTable(
 
 /**
  * One performed session. `id` is client-generated — the outbox's idempotency
- * key. `source`: app | watch_review | import; `sourceRef` is the source's own
- * session id for imports (NULL for app saves, which the unique index then
- * never binds: SQLite treats NULLs as distinct).
+ * key. `source`: app | watch_review | import, and `watch` — a session the
+ * COROS ingest derives from a watch strength activity's laps (Phase 2a+,
+ * never on the save wire; its id is `watch:<user>:<labelId>`). `sourceRef` is
+ * the source's own session id for imports, the COROS activity id (labelId)
+ * for `watch` (NULL for app saves, which the unique index then never binds:
+ * SQLite treats NULLs as distinct). A `watch` row's `payloadHash` is
+ * `'pending'` while its sets are being written; every reader treats such a
+ * row as absent.
  */
 export const performedSessions = sqliteTable(
   "performed_sessions",

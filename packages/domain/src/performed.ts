@@ -18,6 +18,10 @@ const count = z.number().int().min(0);
 /** Upper bounds that only refuse junk: a real session is far inside every one. */
 export const PERFORMED_LIMITS = { entries: 100, setsPerEntry: 50, movesDone: 200, checks: 20, flags: 10, note: 2000 } as const;
 
+/**
+ * The sources a save may carry. A stored row may also say `watch`: the COROS ingest derives that session from a watch
+ * strength activity (Phase 2a+), and it never arrives on the save wire.
+ */
 export const PERFORMED_SOURCES = ["app", "watch_review", "import"] as const;
 export const performedSourceSchema = z.enum(PERFORMED_SOURCES);
 export type PerformedSource = z.infer<typeof performedSourceSchema>;
