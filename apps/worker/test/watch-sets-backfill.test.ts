@@ -167,7 +167,8 @@ describe("backfillWatchSets", () => {
   it("does a bounded batch per call, newest first, and walks back by its cursor", async () => {
     const { db, userId, server, rec } = await setup();
     const days = ["2026-09-01", "2026-09-02", "2026-09-03", "2026-09-04", "2026-09-05", "2026-09-06"];
-    for (const d of days) await stored(db, userId, server, `lbl-${d}`, `${d}T13:00:00.000Z`);
+    const ids = new Map<string, string>();
+    for (const d of days) ids.set(d, await stored(db, userId, server, `lbl-${d}`, `${d}T13:00:00.000Z`));
     expect(WATCH_BACKFILL_BATCH).toBeLessThan(days.length);
 
     const first = await backfillWatchSets(db, makeEnv(), userId, { fetchImpl: rec.impl });
@@ -177,11 +178,34 @@ describe("backfillWatchSets", () => {
     expect(detailCalls(rec.paths)).toHaveLength(WATCH_BACKFILL_BATCH);
     const newest = days.slice(-WATCH_BACKFILL_BATCH).map((d) => `lbl-${d}`);
     expect((await sessionsOf(db, userId)).map((s) => s.sourceRef).sort()).toEqual(newest.sort());
-    expect(first.next).toBe(`${days[days.length - WATCH_BACKFILL_BATCH]}T13:00:00.000Z`);
+    // The last activity handled, as `<start>~<id>`.
+    const edge = days[days.length - WATCH_BACKFILL_BATCH]!;
+    expect(first.next).toBe(`${edge}T13:00:00.000Z~${ids.get(edge)}`);
 
     const second = await backfillWatchSets(db, makeEnv(), userId, { fetchImpl: rec.impl, before: first.next! });
     expect(second).toMatchObject({ status: "ok", filled: days.length - WATCH_BACKFILL_BATCH, next: null });
     expect(await sessionsOf(db, userId)).toHaveLength(days.length);
+  });
+
+  it("walks past two activities that share a start time across a batch boundary, filling both (audit M-6)", async () => {
+    const { db, userId, server, rec } = await setup();
+    // Newer ones fill all but the last place of the first batch; the tied pair straddles its edge.
+    for (let i = 0; i < WATCH_BACKFILL_BATCH - 1; i++) {
+      await stored(db, userId, server, `lbl-new-${i}`, `2026-09-${String(20 - i).padStart(2, "0")}T13:00:00.000Z`);
+    }
+    await stored(db, userId, server, "lbl-tie-1", "2026-09-07T13:00:00.000Z");
+    await stored(db, userId, server, "lbl-tie-2", "2026-09-07T13:00:00.000Z");
+    let next: string | null = null;
+    for (let calls = 0; calls < 10; calls++) {
+      const r = await backfillWatchSets(db, makeEnv(), userId, { fetchImpl: rec.impl, ...(next ? { before: next } : {}) });
+      expect(r.status).toBe("ok");
+      next = r.status === "ok" ? r.next : null;
+      if (!next) break;
+    }
+    expect((await sessionsOf(db, userId)).map((s) => s.sourceRef)).toEqual(
+      expect.arrayContaining(["lbl-tie-1", "lbl-tie-2"]),
+    );
+    expect(await sessionsOf(db, userId)).toHaveLength(WATCH_BACKFILL_BATCH + 1);
   });
 
   it("counts a detail with nothing to log and goes on", async () => {
@@ -235,5 +259,18 @@ describe("POST /api/coros/watch-sets/backfill", () => {
       makeEnv() as Env,
     );
     expect(res.status).toBe(400);
+    const empty = await app.request(
+      "/api/coros/watch-sets/backfill?before=2026-09-15T13:00:00.000Z~",
+      { method: "POST", headers: { Cookie: cookie } },
+      makeEnv() as Env,
+    );
+    expect(empty.status).toBe(400);
+    // The cursor `next` hands back: an instant and the activity id after it.
+    const handed = await app.request(
+      `/api/coros/watch-sets/backfill?before=${encodeURIComponent("2026-09-15T13:00:00.000Z~act-1")}`,
+      { method: "POST", headers: { Cookie: cookie } },
+      makeEnv() as Env,
+    );
+    expect(handed.status).toBe(200);
   });
 });

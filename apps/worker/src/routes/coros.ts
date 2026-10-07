@@ -24,7 +24,7 @@ import {
   SPIKE_CONFIRM,
 } from "../services/coros-unmapped-spike.js";
 import { fixtureModeEnabled } from "../env.js";
-import { backfillWatchSets } from "../services/watch-sets.js";
+import { backfillWatchSets, parseWatchCursor } from "../services/watch-sets.js";
 
 /**
  * Cloud COROS connection surface (cloud-direct spec §1). The password's MD5
@@ -160,7 +160,7 @@ corosRoutes.get("/debug/strength-set-stats", async (c) => {
  */
 corosRoutes.post("/watch-sets/backfill", async (c) => {
   const before = c.req.query("before");
-  if (before !== undefined && !(/^\d{4}-\d{2}-\d{2}T/.test(before) && Number.isFinite(Date.parse(before)))) {
+  if (before !== undefined && !parseWatchCursor(before)) {
     return c.json({ error: "invalid_cursor" }, 400);
   }
   const result = await backfillWatchSets(c.get("db"), c.env, c.get("userId"), before ? { before } : {});

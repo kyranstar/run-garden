@@ -32,7 +32,7 @@
  * the library id; any other stays `coros:<key>`, a stable id the display
  * layer humanizes once (activity DTO).
  */
-import { and, desc, eq, inArray, isNull, lt, ne, sql } from "drizzle-orm";
+import { and, desc, eq, inArray, isNull, lt, ne, or, sql } from "drizzle-orm";
 import {
   activities,
   activityLaps,
@@ -577,12 +577,41 @@ export async function matchedWorkoutId(db: Db, activityId: string): Promise<stri
   return match?.workoutId ?? null;
 }
 
+/**
+ * Where the walk stopped: the last activity handled, written `<startTime>~<activityId>`.
+ * The id orders activities that share a start time, so no tie at a batch edge
+ * is passed over (audit M-6). A bare instant, the first cursor shape, still
+ * means "older than this".
+ */
+export interface WatchBackfillCursor {
+  startTime: string;
+  id?: string;
+}
+
+const CURSOR_SEPARATOR = "~";
+
+export function formatWatchCursor(c: { startTime: string; id: string }): string {
+  return `${c.startTime}${CURSOR_SEPARATOR}${c.id}`;
+}
+
+/** A client-supplied cursor, shape-checked; null when it is not one. */
+export function parseWatchCursor(raw: string): WatchBackfillCursor | null {
+  const at = raw.indexOf(CURSOR_SEPARATOR);
+  const startTime = at < 0 ? raw : raw.slice(0, at);
+  const id = at < 0 ? undefined : raw.slice(at + 1);
+  if (!/^\d{4}-\d{2}-\d{2}T/.test(startTime) || !Number.isFinite(Date.parse(startTime))) return null;
+  if (id !== undefined && (id.length === 0 || id.length > 200)) return null;
+  return id === undefined ? { startTime } : { startTime, id };
+}
+
 export async function backfillWatchSets(
   db: Db,
   env: Env,
   userId: string,
   opts: { before?: string; fetchImpl?: typeof fetch } = {},
 ): Promise<WatchBackfillResult> {
+  const cursor = opts.before === undefined ? null : parseWatchCursor(opts.before);
+  if (opts.before !== undefined && !cursor) throw new Error("watch-sets backfill: not a cursor");
   // Fixture mode never talks to real providers (repo-wide convention).
   if (fixtureModeEnabled(env)) return { status: "fixture_mode" };
   if (await restoreInProgress(db, userId)) return { status: "restoring" };
@@ -611,12 +640,20 @@ export async function backfillWatchSets(
       and(
         eq(activities.userId, userId),
         eq(activities.sport, "strength"),
-        opts.before ? lt(activities.startTime, opts.before) : undefined,
+        cursor === null
+          ? undefined
+          : cursor.id === undefined
+            ? lt(activities.startTime, cursor.startTime)
+            : or(
+                lt(activities.startTime, cursor.startTime),
+                and(eq(activities.startTime, cursor.startTime), lt(activities.id, cursor.id)),
+              ),
         sql`exists (select 1 from ${activityLaps} where ${activityLaps.activityId} = ${activities.id})`,
         sql`not exists (select 1 from ${performedSessions} where ${performedSessions.userId} = ${activities.userId} and ${performedSessions.activityId} = ${activities.id} and ${performedSessions.payloadHash} <> ${PENDING_HASH})`,
       ),
     )
-    .orderBy(desc(activities.startTime))
+    // The id orders a tie, so a cursor's (start, id) pair names one place in the walk.
+    .orderBy(desc(activities.startTime), desc(activities.id))
     .limit(WATCH_BACKFILL_BATCH + 1);
   const done = { filled: 0, nothingToLog: 0, appOwned: 0, failures: 0 };
   if (rows.length === 0) return { status: "ok", ...done, next: null, subrequests: 0 };
@@ -632,12 +669,12 @@ export async function backfillWatchSets(
   try {
     const client = await corosClient(db, env, userId, counted);
     if (!client) return { status: "not_connected" };
-    let last: string | null = null;
+    let last: { startTime: string; id: string } | null = null;
     let processed = 0;
     for (const row of rows.slice(0, WATCH_BACKFILL_BATCH)) {
       if (subrequests + DETAIL_WORST_CASE > WATCH_BACKFILL_SUBREQUEST_BUDGET) break;
       processed += 1;
-      last = row.startTime;
+      last = { startTime: row.startTime, id: row.id };
       let detail: RawCorosActivityDetail;
       try {
         detail = await client.getActivityDetail(row.labelId, STRENGTH_SPORT_TYPE);
@@ -665,7 +702,7 @@ export async function backfillWatchSets(
       else done.nothingToLog += 1;
     }
     const more = rows.length > processed;
-    return { status: "ok", ...done, next: more ? last : null, subrequests };
+    return { status: "ok", ...done, next: more && last ? formatWatchCursor(last) : null, subrequests };
   } catch (e) {
     if (isRuntimeLimit(e)) return { status: "runtime_limit" };
     // Result code only — nothing from the account leaves.
