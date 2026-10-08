@@ -415,6 +415,34 @@ describe("exactly once (§2b step 1; Review Focus 2 and 3)", () => {
     expect(await db.select().from(performedSessions)).toEqual(before);
   });
 
+  it("a slot holds one app session (ruling 2b-R18): another device's save of it is refused slot_done, and nothing is written", async () => {
+    const s = await started("build");
+    // Device A saved first; device B played the same started slot from its own step 1 and saves its own session.
+    const onA = payload(s);
+    expect(await save(onA)).toMatchObject({ status: "saved" });
+    const before = { sessions: await db.select().from(performedSessions), counts: await counts() };
+    const onB = payload(s, { id: "b2b2b2b2-0000-4000-8000-000000000002", note: "on the other phone", seconds: 1500 });
+    statements.length = 0;
+    expect(await save(onB)).toEqual({ status: "slot_done" });
+    expect(statements.filter((q) => isWrite(q) && !/coach_locks/.test(q))).toEqual([]);
+    expect(await db.select().from(performedSessions)).toEqual(before.sessions);
+    expect(await counts()).toEqual(before.counts);
+    // Every retry of B's says the same; A's own retry is still the same payload.
+    expect(await save(onB)).toEqual({ status: "slot_done" });
+    expect(await save(onA)).toEqual({ status: "same_payload" });
+  });
+
+  it("ruling 2b-R18 is about the app's own sessions: a watch session that performed the slot does not refuse the app's save", async () => {
+    const s = await started("build");
+    await db.insert(performedSessions).values({
+      id: "watch-1", userId, workoutId: s.workoutId, activityId: null, buildId: null, source: "watch", sourceRef: "w-1", localDate: PLAYED,
+      startedAt: "2026-10-06T19:05:00.000Z", endedAt: null, seconds: 1800, plannedSeconds: null, minutes: null, mode: null, theme: null,
+      locationId: null, blockRef: null, blockNumber: null, completed: true, stepsTotal: null, stepsDone: null, movesDone: [],
+      note: null, newMove: null, payloadHash: "h", createdAt: SAVED, updatedAt: SAVED,
+    });
+    expect(await save(payload(s))).toMatchObject({ status: "saved" });
+  });
+
   it("the hash is the client's own, over the body it sent: a retry after a deploy that added a defaulted field is same_payload (audit 2b-A M-6)", async () => {
     const s = await started("build");
     // The client sends its fully parsed payload, built with the schema it shipped with. Say that schema had no
@@ -1191,6 +1219,10 @@ describe("PUT /api/sessions/performed/:id", () => {
     expect([again.status, await again.json()]).toEqual([200, { status: "same_payload" }]);
     const other = await put(`/api/sessions/performed/${body.id}`, { ...body, note: "edited" });
     expect([other.status, await other.json()]).toEqual([409, { error: "conflict" }]);
+    // Another session of the same slot, from another device (ruling 2b-R18).
+    const second = payload(s, { id: "c3c3c3c3-0000-4000-8000-000000000003" });
+    const done = await put(`/api/sessions/performed/${second.id}`, second);
+    expect([done.status, await done.json()]).toEqual([409, { error: "slot_done" }]);
 
     const lost = payload(s, { id: "0b6c7d8e-1111-4222-8333-944455556666", workoutId: "slot-nobody" });
     expect((await put(`/api/sessions/performed/${lost.id}`, lost)).status).toBe(404);

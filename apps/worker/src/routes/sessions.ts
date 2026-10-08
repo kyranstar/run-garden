@@ -201,6 +201,7 @@ sessionRoutes.post("/:workoutId/start", async (c) => {
 /**
  * The player's outbox delivers a performed session here, as often as it needs (services/session-save.ts): 200
  * `{status:"saved", …}` or `{status:"same_payload"}`; 409 `{error:"conflict"}` for the same session with other edits;
+ * 409 `{error:"slot_done"}` for another session of a slot whose app session is saved already (ruling 2b-R18);
  * 404 for a slot that is not this user's; 422 `invalid_save`; 503 `busy` while the same session is being saved (the
  * outbox retries); 423 while a restore runs (`requireUser`, or the save's own check).
  */
@@ -217,6 +218,7 @@ sessionRoutes.put("/performed/:id", async (c) => {
   try {
     const outcome = await savePerformedSession(db, userId, c.req.param("id"), body, { now: nowInstant(), prefs });
     if (outcome.status === "conflict") return c.json({ error: "conflict" }, 409);
+    if (outcome.status === "slot_done") return c.json({ error: "slot_done" }, 409);
     if (outcome.status === "busy") return c.json({ error: "busy" }, 503);
     if (outcome.status === "restoring") return c.json({ error: "restore_in_progress" }, 423);
     return c.json(outcome);

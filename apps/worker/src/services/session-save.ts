@@ -88,6 +88,8 @@ export type SaveOutcome =
   | { status: "saved"; performedId: string; activityId: string; matched: boolean; notes: SaveNote[] }
   | { status: "same_payload" }
   | { status: "conflict" }
+  /** Another app session of this slot is saved already — played on another device (ruling 2b-R18). */
+  | { status: "slot_done" }
   | { status: "restoring" }
   | { status: "busy" };
 
@@ -138,6 +140,29 @@ async function startedBuildDays(db: Db, userId: string, workoutId: string): Prom
       ),
     );
   return [...new Set(rows.map((r) => r.date).filter((d): d is string => typeof d === "string" && isLocalDate(d)))].sort();
+}
+
+/**
+ * Ruling 2b-R18: a slot holds at most one app session. Another one of it already saved — played on another device (a
+ * device's own outbox holds one save per slot) — refuses this one: never a second performed session and activity for
+ * one slot. Read under the merge locks every save of this user takes, so two devices' saves cannot both pass it. A
+ * watch's or an import's session of the slot is not the app's, and leaves it to the save (ruling 2b-R3).
+ */
+async function savedByAnother(db: Db, userId: string, workoutId: string, performedId: string): Promise<boolean> {
+  const [row] = await db
+    .select({ id: performedSessions.id })
+    .from(performedSessions)
+    .where(
+      and(
+        eq(performedSessions.userId, userId),
+        eq(performedSessions.workoutId, workoutId),
+        eq(performedSessions.source, "app"),
+        ne(performedSessions.id, performedId),
+        ne(performedSessions.payloadHash, PENDING_HASH),
+      ),
+    )
+    .limit(1);
+  return row !== undefined;
 }
 
 /** §9.2 from the locked build: a core lift → strength, else yoga; read in SQL, never parsing the payload here. */
@@ -435,6 +460,7 @@ export async function savePerformedSession(db: Db, userId: string, performedId: 
     try {
       // A restore can begin while this one read; checked again just before the first write.
       if (await restoreInProgress(db, userId)) return { status: "restoring" };
+      if (await savedByAnother(db, userId, slot.id, performedId)) return { status: "slot_done" };
       written = await write(db, userId, p, hash, slot, builtOn, existing?.activityId ?? null, ctx);
     } finally {
       await releaseMergeLocks(db, userId, merge);
