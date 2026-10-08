@@ -13,6 +13,7 @@ import {
 import {
   addDays,
   addOpDates,
+  appAuthoredRow,
   sessionSummaryLine,
   newId,
   humanizeWorkoutTitle,
@@ -521,6 +522,9 @@ export type ConvergeRefusal =
    *  impossible and the unpush is worse than the divergence — see
    *  `ownershipProofFor`. */
   | "cannot_unpush_imported"
+  /** A programme or on-demand row (ruling 3-R13): built by its programme, its watch copy changes only by the
+   *  athlete's Send and Take off — never by a coach rewrite, nor by a coach unpush of a body that cannot cross. */
+  | "app_authored"
   /** An imported row whose `source_content_fingerprint` is a LOCAL hash rather
    *  than an observation of COROS — the state every ease left behind until
    *  `sessionColumns` stopped writing that column. One COROS read repairs it
@@ -670,6 +674,8 @@ export async function enqueueContentConvergence(
   },
 ): Promise<ConvergeOutcome> {
   if (!v.corosWritesEnabled) return { refused: "writes_disabled" };
+  // Both directions — the rewrite and the unpush of a body that cannot cross the wire (ruling 3-R13).
+  if (appAuthoredRow(v.workout)) return { refused: "app_authored" };
   const address = watchAddressOf(v.workout);
   if (!address) return { refused: "not_on_the_watch" };
   const proof = await ownershipProofFor(db, v.userId, v.workout);
@@ -1049,6 +1055,13 @@ export async function applyOps(
           out.missed.push(`a session it eases ${found.why}, so nothing was changed`);
           break;
         }
+        // A PROGRAMME SESSION IS BUILT BY ITS PROGRAMME (ruling 3-R13): its content is its build's, and its watch
+        // copy changes only by the athlete's Send and Take off. `validateOps` refuses this op as
+        // `app_built_session`; a proposal stored before that rule is re-checked here, at the tap.
+        if (appAuthoredRow(found.row)) {
+          out.missed.push("a session it eases is built by its programme, so nothing was changed");
+          break;
+        }
         const target = found.row;
         // An ease REPLACES the session, so it writes exactly what a fresh
         // insert writes — one writer, no parallel column list to fall behind.
@@ -1275,6 +1288,11 @@ export async function applyOps(
         const found = await actionable(op.workoutId);
         if (found.why !== undefined) {
           out.missed.push(`a session it re-times ${found.why}, so its length is unchanged`);
+          break;
+        }
+        // Built by its programme (ruling 3-R13): its length is its build's.
+        if (appAuthoredRow(found.row)) {
+          out.missed.push("a session it re-times is built by its programme, so its length is unchanged");
           break;
         }
         const row = found.row;

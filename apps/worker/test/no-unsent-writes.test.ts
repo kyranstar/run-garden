@@ -11,7 +11,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { eq, inArray } from "drizzle-orm";
 import { schema } from "@rg/database";
-import { addDays, type UserPreferences } from "@rg/domain";
+import { addDays, type CoachOp, type CoachSession, type UserPreferences } from "@rg/domain";
 import type { SourcePlannedWorkout } from "@rg/providers";
 import type { Db } from "../src/services/db.js";
 import { emitPendingWork, applyMove } from "../src/services/jobs.js";
@@ -24,6 +24,7 @@ import { reconcileCompletionStates } from "../src/services/reconcile-daily.js";
 import { openMoveIntents, recordIntent } from "../src/services/sync-intents.js";
 import { buildSession, startSession } from "../src/services/session-build.js";
 import { sendToWatch } from "../src/services/watch-push.js";
+import { applyOps } from "../src/services/coach-apply.js";
 import { connectTestCoros, makeTestDb, makeTestUser } from "./helpers.js";
 import { DAY, NOON, seedCatalog, seedProgram, seedSlot, seedTmj, switchOn } from "./watch-push-fixture.js";
 
@@ -106,6 +107,18 @@ describe("the sweep: no write from an unsent session", () => {
     await emitPendingWork(db, userId, { corosWritesEnabled: true });
     await pushAbsentSessions(db, userId, { dryRun: false });
     await convergeDivergedContent(db, userId, { dryRun: false, workoutIds: await appRows() });
+    // The coach's ease and adjust of every app-built slot, as an approval applies them (ruling 3-R13): refused.
+    const ease: CoachSession = { category: "easy", title: "Easy 20", durationMinutes: 20, run: { blocks: [{ kind: "duration", value: 20, intensity: "easy" }] } };
+    await applyOps(
+      db,
+      userId,
+      prefs,
+      "prop-ease",
+      (await appRows()).flatMap((workoutId): CoachOp[] => [
+        { kind: "ease" as const, workoutId, session: ease },
+        { kind: "adjust" as const, workoutId, durationMinutes: 45 },
+      ]),
+    );
     await healLegacySyncState(db, userId);
     // The legacy heal owes no move for an app-built slot (rulings 2a-R4, 3-R3): the emitter above closed every one.
     const appIds = new Set(await appRows());

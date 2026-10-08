@@ -20,6 +20,7 @@ import {
 } from "@rg/database";
 import {
   addDays,
+  appAuthoredRow,
   athleteLimitLines,
   coachExerciseSchema,
   daysBetween,
@@ -223,6 +224,14 @@ const canTarget = (
 ): boolean =>
   (w.completionState === "scheduled" || w.completionState === "planned") &&
   w.effectiveDate >= today;
+
+/**
+ * A PROGRAMME SESSION'S HANDLE IS NARROWER (ruling 3-R13). It is built from its programme, so its content is its
+ * build's and its watch copy changes only by the athlete's Send and Take off: `validateOps` refuses an ease or an
+ * adjust of it as `app_built_session`. Move, skip and remove stay legal, so the handle stays — and says so.
+ */
+const APP_BUILT_MARK = " · programme session — move, skip or remove only; never ease or adjust";
+const appBuiltMark = (w: { origin: string | null }): string => (appAuthoredRow(w) ? APP_BUILT_MARK : "");
 
 export async function buildDossier(
   db: Db,
@@ -464,7 +473,7 @@ export async function buildDossier(
   // because this section is protected from truncation and is where the coach
   // meets its first handle. It is stated once, for the whole document.
   push("UPCOMING 14 DAYS", [
-    `the [wo:...] handle IS the permission: a line that carries one can still be eased, moved or skipped — unless it is marked "skipped", when restore is the only op that may name it — and a line without one is already resolved, or its day has gone. Read those as evidence and never name one in an op.`,
+    `the [wo:...] handle IS the permission: a line that carries one can still be eased, moved or skipped — unless it is marked "skipped", when restore is the only op that may name it, or marked "programme session", which may be moved, skipped or removed but never eased or adjusted — and a line without one is already resolved, or its day has gone. Read those as evidence and never name one in an op.`,
     ...(upcoming.length
       ? upcoming.map(
           (w) =>
@@ -478,7 +487,7 @@ export async function buildDossier(
             // not gone (audit 1, coach finding 10). Without a handle a
             // restore could only happen through a date-matched restoreEach.
             (canTarget(w, today)
-              ? ` [wo:${w.id}]`
+              ? ` [wo:${w.id}]${appBuiltMark(w)}`
               : w.completionState === "skipped" && w.effectiveDate >= today
                 ? ` [wo:${w.id}] · skipped — restore is the only op that may name it`
                 : ` · already ${w.completionState}, so no handle — it cannot be changed`) +
@@ -1126,6 +1135,8 @@ interface UpcomingLiftRow {
   sport: string;
   /** Read only to decide whether this row may carry a handle — see {@link canTarget}. */
   completionState: string;
+  /** A programme session's handle is move/skip/remove only — see {@link appBuiltMark}. */
+  origin: string | null;
   structuredJson: { exercises?: unknown[]; rounds?: number } | null;
 }
 
@@ -1192,7 +1203,7 @@ function strengthPlanLines(
         // the athlete already did today must not gain a handle here that
         // UPCOMING correctly withheld.
         (canTarget(w, today)
-          ? ` [wo:${w.id}]`
+          ? ` [wo:${w.id}]${appBuiltMark(w)}`
           : ` (already ${w.completionState}, no handle — evidence, not a target)`) +
         ` — do not duplicate what is in it:`,
     );

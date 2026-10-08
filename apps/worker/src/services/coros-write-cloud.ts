@@ -217,7 +217,10 @@ export async function executeCloudJobs(
         // athlete has to be told about. (Every archive path supersedes the queued
         // create itself; this catches the rows that reached here anyway — a
         // legacy archive, or one that raced the claim.)
-        if (!job.workout || job.workout.archivedAt) {
+        //
+        // NOR FOR AN APP-BUILT ROW (ruling 3-R13): a program or on-demand
+        // session reaches the watch only through the athlete's own Send.
+        if (!job.workout || job.workout.archivedAt || appAuthoredRow(job.workout)) {
           await db
             .update(corosWriteJobs)
             .set({ status: "superseded", updatedAt: nowInstant() })
@@ -536,6 +539,18 @@ export async function executeCloudJobs(
           continue;
         }
         const spec = parsed.data;
+        // NEVER OVER AN APP-BUILT ROW'S COPY (ruling 3-R13). A program or
+        // on-demand session's copy is the build the athlete sent; only Send and
+        // Take off write it. A rewrite queued before that rule (or by any path
+        // that missed it) is superseded here, before any wire call.
+        if (job.workout && appAuthoredRow(job.workout)) {
+          await db
+            .update(corosWriteJobs)
+            .set({ status: "superseded", updatedAt: nowInstant() })
+            .where(eq(corosWriteJobs.id, job.id));
+          executed += 1;
+          continue;
+        }
         // Freshest threshold wins over the one frozen in at enqueue time, for the
         // same reason a create prefers it — see `latestThresholdPace`. A rewrite
         // is often the SECOND chance to get pace bands onto a session that went

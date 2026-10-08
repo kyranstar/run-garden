@@ -993,6 +993,8 @@ export async function guardrailCtx(
           60,
       ),
       discipline: disciplineOf(w.category, w.sport) as "run" | "strength" | "yoga",
+      // A programme session is move/skip/remove only (ruling 3-R13, `app_built_session`).
+      origin: w.origin,
     }));
   // Trailing 4 weeks of minutes per discipline — what the athlete ACTUALLY
   // did, planned or not.
