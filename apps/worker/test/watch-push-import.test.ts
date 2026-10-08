@@ -147,12 +147,15 @@ async function readNow(span: "full" | "short" = "full") {
   expect((await corosReadNow(db, switchOn(), userId, prefs, { force: true, fetchImpl: readFetch() })).status).toBe("ok");
 }
 
-/** A COROS read: the mock's schedule, normalized and imported directly, over a window the case chooses. */
+/** A full COROS read: the mock's whole schedule, normalized and imported directly. */
 async function importFromCoros() {
   const n = normalizeCorosSchedule(server.state.schedule);
   return importPlanSnapshot(
     db,
-    { userId, plan: { sourcePlanId: n.planId, name: "Container" }, workouts: n.workouts, rangeStart: addDays(DAY, -7), rangeEnd: addDays(DAY, 30), source: "fixture" },
+    {
+      userId, plan: { sourcePlanId: n.planId, name: "Container" }, workouts: n.workouts, rangeStart: addDays(DAY, -7), rangeEnd: addDays(DAY, 30),
+      fullSchedule: true, source: "fixture",
+    },
     prefs,
   );
 }
@@ -288,17 +291,22 @@ describe("the import and a sent session", () => {
     expect(await watchOf(workoutId)).toEqual({ state: "on_watch" });
   });
 
-  it("(e) deleted on COROS (Review Focus 2): after two reads the address is cleared and one note posted — never archived, nothing queued", async () => {
+  it("(e) deleted on COROS (Review Focus 2): after two FULL reads the address is cleared and one note posted — never archived, nothing queued", async () => {
     const { workoutId, stamp } = await pushed();
+    const address = (await rowOf(db, workoutId)).sourceWorkoutId;
     const program = programOn(stamp)!;
     server.state.schedule.entities = server.state.schedule.entities!.filter((e) => String(e.idInPlan) !== String(program.idInPlan));
     server.state.schedule.programs = server.state.schedule.programs!.filter((p) => p !== program);
     const jobsBefore = (await db.select().from(corosWriteJobs).where(eq(corosWriteJobs.workoutId, workoutId))).map((j) => [j.id, j.status]);
-    await importFromCoros();
+    // Ruling 3-R16: a short read proves no absence, however many of them.
+    for (let i = 0; i < 3; i++) await readNow("short");
+    expect(await rowOf(db, workoutId)).toMatchObject({ sourceWorkoutId: address, missingReads: 0 });
+    expect(await notesOf(workoutId)).toEqual([]);
+    await readNow();
     expect((await rowOf(db, workoutId)).archivedAt).toBeNull();
     expect(await notesOf(workoutId)).toEqual([]);
-    await importFromCoros();
-    await importFromCoros();
+    await readNow();
+    await readNow();
     const row = await rowOf(db, workoutId);
     expect(row).toMatchObject({ archivedAt: null, lastVerifiedCorosDate: "", corosSyncState: "calendar_only", sourceWorkoutId: workoutId });
     expect(row.sourceIdInPlan).toBeNull();
@@ -620,5 +628,66 @@ describe("two COROS workouts carrying one stamp", () => {
     expect((await rowOf(db, workoutId)).sourceWorkoutId).toBe(workoutId);
     expect(await rowsAt(theirs)).toEqual([expect.objectContaining({ origin: null, effectiveDate: LATER, archivedAt: null })]);
     expect(await notesOf(workoutId, "watch_copy_removed")).toHaveLength(1);
+  });
+});
+
+/**
+ * ABSENCE IS ONLY PROVABLE ON A FULL READ (audit 3-A life L-6; ruling 3-R16). Between its six-hourly full reads the
+ * read covers today-14 … today+7 only, so a sent copy the athlete moved further out in COROS is simply outside the
+ * window: it counts as missing only on a full read, and the orphan path — which decides a copy is its stamp's only
+ * carrier — acts only on one too. A copy that comes back after a "Removed from your watch" is re-attached: the slot
+ * moves to the copy's day and the false note is dismissed.
+ */
+describe("absence and the read's window", () => {
+  beforeEach(() => setup());
+
+  it("moved in COROS beyond the short read: no 'Removed from your watch'; the next full read follows it", async () => {
+    const { workoutId, stamp } = await pushed();
+    await readNow();
+    const address = (await rowOf(db, workoutId)).sourceWorkoutId;
+    const FAR = addDays(DAY, 10);
+    entityOf(programOn(stamp)!).happenDay = Number(localDateToCorosDay(FAR));
+    for (let i = 0; i < 3; i++) await readNow("short");
+    expect(await notesOf(workoutId)).toEqual([]);
+    expect(await rowOf(db, workoutId)).toMatchObject({ sourceWorkoutId: address, effectiveDate: DAY });
+    expect(await watchOf(workoutId)).toEqual({ state: "on_watch" });
+
+    await readNow();
+    expect(await rowOf(db, workoutId)).toMatchObject({ sourceWorkoutId: address, effectiveDate: FAR, lastVerifiedCorosDate: FAR });
+    expect((await notesOf(workoutId)).map((n) => [n.kind, n.payload])).toEqual([["watch_copy_moved", { previousDate: DAY, newDate: FAR }]]);
+  });
+
+  it("a copy back after 'Removed from your watch' is re-attached: the slot moves to its day, the false note goes", async () => {
+    const { workoutId, stamp } = await pushed();
+    const address = (await rowOf(db, workoutId)).sourceWorkoutId;
+    const program = programOn(stamp)!;
+    const entity = entityOf(program);
+    // Two full reads that miss it (a read the size of COROS's whole schedule can still come back short).
+    server.state.schedule.entities = server.state.schedule.entities!.filter((e) => e !== entity);
+    server.state.schedule.programs = server.state.schedule.programs!.filter((p) => p !== program);
+    await readNow();
+    await readNow();
+    expect((await rowOf(db, workoutId)).sourceWorkoutId).toBe(workoutId);
+    expect(await notesOf(workoutId, "watch_copy_removed")).toHaveLength(1);
+
+    const LATER = addDays(DAY, 2);
+    server.state.schedule.programs!.push(program);
+    server.state.schedule.entities!.push({ ...entity, happenDay: Number(localDateToCorosDay(LATER)) });
+    await readNow();
+    expect(await rowOf(db, workoutId)).toMatchObject({ sourceWorkoutId: address, effectiveDate: LATER, lastVerifiedCorosDate: LATER });
+    expect((await notesOf(workoutId)).map((n) => [n.kind, n.payload])).toEqual([["watch_copy_moved", { previousDate: DAY, newDate: LATER }]]);
+    expect(await watchOf(workoutId)).toEqual({ state: "on_watch" });
+    await readNow();
+    expect(await notesOf(workoutId)).toHaveLength(1);
+  });
+
+  it("a short read neither attaches nor takes off a copy the slot never learned about; a full read does", async () => {
+    const { workoutId, buildId } = await writeWithoutRecording();
+    await removeFromPlan(db, userId, workoutId, { now: NOON, source: "remove_from_plan", prefs });
+    await readNow("short");
+    expect(await jobOf(`unpush:${buildId}`)).toBeUndefined();
+    expect((await db.select().from(plannedWorkouts).where(eq(plannedWorkouts.userId, userId))).filter((r) => r.origin === null && r.effectiveDate === DAY)).toEqual([]);
+    await readNow();
+    expect(await jobOf(`unpush:${buildId}`)).toMatchObject({ kind: "coach_delete_workout", status: "queued" });
   });
 });

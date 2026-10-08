@@ -189,6 +189,7 @@ export async function corosReadNow(
           workouts: snapshot.workouts as never,
           rangeStart,
           rangeEnd,
+          fullSchedule: fullScheduleDue,
           source: "bridge",
         },
         prefs,

@@ -55,6 +55,14 @@ export async function activeSyncNotes(
     );
 }
 
+/** Dismiss a workout's open notes of one kind — what they said is no longer true. */
+export async function dismissSyncNotesOf(db: Db, userId: string, workoutId: string, kind: SyncNoteKind): Promise<void> {
+  await db
+    .update(syncNotes)
+    .set({ dismissedAt: nowInstant() })
+    .where(and(eq(syncNotes.userId, userId), eq(syncNotes.workoutId, workoutId), eq(syncNotes.kind, kind), isNull(syncNotes.dismissedAt)));
+}
+
 export async function dismissSyncNote(db: Db, userId: string, noteId: string): Promise<void> {
   await db
     .update(syncNotes)

@@ -31,7 +31,7 @@ import { chunkedInsert, type Db } from "./db.js";
 import { separateDayCollisions, windowTimeFor } from "./day-placement.js";
 import { loadOwnProgramNames, unstampTitle } from "./coros-stamp.js";
 import { openMoveIntents, resolveIntent } from "./sync-intents.js";
-import { postSyncNote } from "./sync-notes.js";
+import { dismissSyncNotesOf, postSyncNote } from "./sync-notes.js";
 import { reconcileWorkout } from "./reconcile.js";
 import { SETTLED_PUSH, sentBuildIdOf } from "./session-build.js";
 import { queueUnpush, unpushJobId } from "./watch-push.js";
@@ -49,6 +49,13 @@ export interface ImportInput {
   /** The date range this snapshot covers (for absence detection). */
   rangeStart: string;
   rangeEnd: string;
+  /**
+   * The read covered COROS's whole schedule span (the cloud read's six-hourly full read), not just the hourly
+   * today-14 … today+7. Only a full read proves a sent program session's copy absent, or a stamp's carrier its only
+   * one (ruling 3-R16, audit 3-A life L-6): a copy the athlete moved further out is simply outside a short window.
+   * Absent = a short read.
+   */
+  fullSchedule?: boolean;
   source: "bridge" | "fixture" | "official";
 }
 
@@ -751,10 +758,19 @@ export async function importPlanSnapshot(
       // slot gone, or holding another build) it is taken off the watch — the
       // stamp from the push's own payload, the address from the wire, because
       // no verified push recorded either. Never a new row.
+      //
+      // Only on a FULL read (ruling 3-R16): "the only carrier" is a claim about
+      // COROS's whole schedule, and a short read sees a week of it. Until then
+      // the workout is left alone — it carries our stamp, so it is no new row.
+      if (!input.fullSchedule) continue;
       const slot = existingById.get(ours.workoutId);
       const programId = src.planProgramId ?? src.sourceIdInPlan ?? "";
       const holds = slot && !slot.archivedAt ? (await sentBuildIdOf(db, slot.id)) === ours.buildId : false;
       if (slot && holds) {
+        // The slot follows its copy to the copy's day (3-R16) — the athlete may
+        // have moved it in COROS while a read missed it — and a "Removed from
+        // your watch" posted while it was missed was false.
+        const moved = src.date !== slot.effectiveDate;
         await db
           .update(plannedWorkouts)
           .set({
@@ -765,10 +781,23 @@ export async function importPlanSnapshot(
             sourceContentFingerprint: src.contentFingerprint,
             corosSyncState: "synced",
             missingReads: 0,
+            ...(moved
+              ? { effectiveDate: src.date, calendarSyncState: slot.calendarSyncState === "user_deleted" ? "user_deleted" : "pending" }
+              : {}),
             updatedAt: now,
           })
           .where(eq(plannedWorkouts.id, slot.id));
         seenProgramRows.add(slot.id);
+        await dismissSyncNotesOf(db, input.userId, slot.id, "watch_copy_removed");
+        if (moved) {
+          await postSyncNote(db, {
+            userId: input.userId,
+            workoutId: slot.id,
+            kind: "watch_copy_moved",
+            payload: { previousDate: slot.effectiveDate, newDate: src.date },
+          });
+          stats.updatedDates += 1;
+        }
       } else if (
         prefs.corosWritesEnabled &&
         src.sourceIdInPlan &&
@@ -1125,8 +1154,12 @@ export async function importPlanSnapshot(
       // copy is absent when no wire workout carried its stamp — its address
       // proves nothing, COROS recycles them. After two reads without it the
       // address is cleared (the slot is the app's, and doable) and the athlete
-      // told once; nothing sends it again on its own.
+      // told once; nothing sends it again on its own. Counted on FULL reads only
+      // (ruling 3-R16, audit 3-A life L-6): between them the read covers today+7
+      // at most, and a copy the athlete moved further out in COROS is simply
+      // outside the window — two hourly reads told them it was gone.
       if (seenProgramRows.has(w.id) || w.archivedAt || w.completionState !== "scheduled") continue;
+      if (!input.fullSchedule) continue;
       const address = watchAddressOf(w);
       if (!address || address.happenDay < input.rangeStart || address.happenDay > input.rangeEnd) continue;
       const reads = w.missingReads + 1;
