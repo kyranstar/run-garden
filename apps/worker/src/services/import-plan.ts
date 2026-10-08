@@ -24,7 +24,7 @@ import {
   type UserPreferences,
 } from "@rg/domain";
 import { classifyWorkout, estimateDuration, summarizeStages } from "@rg/scheduling";
-import { programTextFingerprint, type RawCorosProgram, type SourcePlannedWorkout, type TrainingPlanInfo } from "@rg/providers";
+import type { SourcePlannedWorkout, TrainingPlanInfo } from "@rg/providers";
 import { isSpikeStamp } from "@rg/coros";
 import { chunkedInsert, type Db } from "./db.js";
 import { separateDayCollisions, windowTimeFor } from "./day-placement.js";
@@ -706,8 +706,7 @@ export async function importPlanSnapshot(
       // stamp from the push's own payload, the address from the wire, because
       // no verified push recorded either. Never a new row.
       const slot = existingById.get(ours.workoutId);
-      const raw = src.raw as { entity?: { planProgramId?: unknown } } | undefined;
-      const programId = String(raw?.entity?.planProgramId ?? src.sourceIdInPlan ?? "");
+      const programId = src.planProgramId ?? src.sourceIdInPlan ?? "";
       const holds = slot && !slot.archivedAt ? (await sentBuildIdOf(db, slot.id)) === ours.buildId : false;
       if (slot && holds) {
         await db
@@ -954,10 +953,11 @@ export async function importPlanSnapshot(
         updates.sourceContentFingerprint = src.contentFingerprint;
         touched = true;
       }
+      // The text fingerprint rides the normalized workout (`normalizeCorosSchedule`): the cloud read strips `raw`,
+      // so a note that needed `raw.program` could never post live (audit 3-A life L-8).
       const push = verifiedPushOf.get(current.id);
-      const wireProgram = (src.raw as { program?: RawCorosProgram } | undefined)?.program;
-      if (push?.payload.observed && wireProgram && !current.archivedAt) {
-        const seen = { wire: src.contentFingerprint, text: programTextFingerprint(wireProgram) };
+      if (push?.payload.observed && src.textFingerprint !== undefined && !current.archivedAt) {
+        const seen = { wire: src.contentFingerprint, text: src.textFingerprint };
         const { observed, noticed } = push.payload;
         const changed = seen.wire !== observed.wire || seen.text !== observed.text;
         const told = noticed !== undefined && noticed.wire === seen.wire && noticed.text === seen.text;

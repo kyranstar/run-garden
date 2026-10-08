@@ -1,8 +1,10 @@
 /**
  * WHAT THE IMPORT DOES WITH A SENT SESSION (Phase 3 Task 7; spec §4.5; ruling 3-R9; Review Focus 2 and 5).
  *
- * Each case starts from a push the lane verified against the mock COROS, then imports a snapshot read from the
- * mock's schedule — the way a COROS read does.
+ * Each case starts from a push the lane verified against the mock COROS, then reads COROS the way production does:
+ * `corosReadNow` (the cron sweep's and Read now's path — `buildSnapshot` strips each workout's `raw`, which is how
+ * "Changed in COROS" went dead live while a suite that imported `normalizeCorosSchedule` directly stayed green, audit
+ * 3-A life L-8). A few cases still import the normalized schedule directly, where the read's window is the point.
  *
  *  - The content is never rewritten: the row keeps its build's title, category, sport, stages and summary; it
  *    records the new wire fingerprint, and a change against what the push OBSERVED posts one "Changed in COROS" note.
@@ -18,9 +20,10 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { and, eq } from "drizzle-orm";
 import { schema } from "@rg/database";
 import { addDays, programSessionPushJobSchema, type UserPreferences } from "@rg/domain";
-import { CorosClient, createWorkout } from "@rg/coros";
+import { COROS_LOCALE_URL, CorosClient, createWorkout } from "@rg/coros";
 import { corosProgramFingerprint, localDateToCorosDay, normalizeCorosSchedule, type RawCorosProgram } from "@rg/providers";
 import type { Db } from "../src/services/db.js";
+import { corosReadNow, corosReadSweep } from "../src/services/coros-read.js";
 import { executeCloudJobs } from "../src/services/coros-write-cloud.js";
 import { exerciseNameMap } from "../src/services/exercise-catalog.js";
 import { importPlanSnapshot } from "../src/services/import-plan.js";
@@ -33,7 +36,7 @@ import { renormalizingCoros } from "../../../packages/coros/test/renormalizing-c
 import { makeTestDb, makeTestUser } from "./helpers.js";
 import { connectMock, DAY, NOON, rowOf, seedCatalog, seedProgram, seedSlot, seedTmj, switchOn } from "./watch-push-fixture.js";
 
-const { corosWriteJobs, plannedWorkouts, sessionBuilds } = schema;
+const { corosWriteJobs, plannedWorkouts, providerConnections, sessionBuilds } = schema;
 
 vi.setConfig({ testTimeout: 30_000 });
 vi.mock("../src/services/calendar-sync.js", async (importOriginal) => ({
@@ -86,7 +89,33 @@ const programOn = (stamp: string): RawCorosProgram | undefined => (server.state.
 const entityOf = (program: RawCorosProgram) =>
   server.state.schedule.entities!.find((e) => String(e.idInPlan) === String(program.idInPlan))!;
 
-/** A COROS read: the mock's schedule, normalized and imported, as the read path does. */
+/**
+ * The read's locale bundle. Real COROS stores a catalog move's name as an i18n key ("T1309" — the push writes the
+ * catalog's own name, and the catalog's names ARE keys) and the read resolves stage names through this bundle; so a
+ * text fingerprint taken over RESOLVED names would differ from the one the push observed on every read.
+ */
+const LOCALE = { T1120: "Warm Up", T1122: "Cool Down", T1123: "Recover", T3001: "Run", sid_run_training: "Run training", T1309: "Scapular slide" };
+const readFetch = (): typeof fetch =>
+  (async (input: string | URL | Request, init?: RequestInit) => {
+    const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
+    if (url === COROS_LOCALE_URL) return new Response(`window.en_US=${JSON.stringify(LOCALE)};`, { status: 200 });
+    return server.fetchImpl(input, init);
+  }) as typeof fetch;
+
+/**
+ * THE PRODUCTION READ (`corosReadNow`, forced as the cron sweep forces it). `full` reads COROS's whole 90-day span,
+ * as the read does every six hours; `short` reads today-14 … today+7, as it does in between.
+ */
+async function readNow(span: "full" | "short" = "full") {
+  const [conn] = await db.select().from(providerConnections).where(eq(providerConnections.userId, userId));
+  const meta = { ...((conn!.meta ?? {}) as Record<string, unknown>) };
+  if (span === "full") delete meta.lastFullScheduleAt;
+  else meta.lastFullScheduleAt = new Date().toISOString();
+  await db.update(providerConnections).set({ meta }).where(eq(providerConnections.id, conn!.id));
+  expect((await corosReadNow(db, switchOn(), userId, prefs, { force: true, fetchImpl: readFetch() })).status).toBe("ok");
+}
+
+/** A COROS read: the mock's schedule, normalized and imported directly, over a window the case chooses. */
 async function importFromCoros() {
   const n = normalizeCorosSchedule(server.state.schedule);
   return importPlanSnapshot(
@@ -111,15 +140,41 @@ const rowsTitled = async (title: string) =>
 describe("(a) a COROS that re-encodes what it stores (Review Focus 5)", () => {
   beforeEach(() => setup(() => renormalizingCoros({ baseMonday: "2026-10-12" })));
 
-  it("posts no note and rewrites nothing", async () => {
+  it("posts no note and rewrites nothing, across three production reads", async () => {
     const { workoutId, stamp } = await pushed();
     const before = await contentOf(workoutId);
-    await importFromCoros();
-    await importFromCoros();
+    await readNow();
+    await readNow("short");
+    await readNow();
     expect(await notesOf(workoutId)).toEqual([]);
     expect(await contentOf(workoutId)).toEqual(before);
     expect(await rowsTitled(stamp)).toEqual([]);
     expect(await watchOf(workoutId)).toEqual({ state: "on_watch" });
+  });
+
+  it("a step renamed in COROS: exactly one 'Changed in COROS' across three production reads", async () => {
+    const { workoutId, stamp } = await pushed();
+    await readNow();
+    const step = programOn(stamp)!.exercises!.find((e) => e.isGroup !== true && Number(e.exerciseType) !== 0)!;
+    step.name = "Renamed in COROS";
+    await readNow();
+    await readNow("short");
+    await readNow();
+    expect((await notesOf(workoutId)).map((n) => n.kind)).toEqual(["watch_copy_changed"]);
+  });
+
+  it("sets changed in COROS: exactly one note, through the cron sweep", async () => {
+    const { workoutId, stamp } = await pushed();
+    const step = programOn(stamp)!.exercises!.find((e) => e.isGroup !== true && Number(e.exerciseType) !== 0)!;
+    step.sets = Number(step.sets ?? 1) + 2;
+    vi.stubGlobal("fetch", readFetch());
+    try {
+      await corosReadSweep(db, switchOn());
+      await corosReadSweep(db, switchOn());
+    } finally {
+      vi.unstubAllGlobals();
+    }
+    expect((await notesOf(workoutId)).map((n) => n.kind)).toEqual(["watch_copy_changed"]);
   });
 });
 
@@ -133,12 +188,12 @@ describe("the import and a sent session", () => {
     const step = program.exercises!.find((e) => e.isGroup !== true)!;
     step.name = "Renamed in COROS";
     step.originId = "0";
-    await importFromCoros();
+    await readNow();
     expect(await contentOf(workoutId)).toEqual(before);
     expect((await rowOf(db, workoutId)).sourceContentFingerprint).toBe(corosProgramFingerprint(program));
     expect(await notesOf(workoutId, "watch_copy_changed")).toHaveLength(1);
     // The same read again tells the athlete nothing new.
-    await importFromCoros();
+    await readNow();
     expect(await notesOf(workoutId, "watch_copy_changed")).toHaveLength(1);
     expect(await notesOf(workoutId)).toHaveLength(1);
   });
@@ -149,11 +204,11 @@ describe("the import and a sent session", () => {
     const program = programOn(stamp)!;
     const step = program.exercises!.find((e) => e.isGroup !== true)!;
     step.targetValue = Number(step.targetValue ?? 0) + 3;
-    await importFromCoros();
+    await readNow();
     expect(await contentOf(workoutId)).toEqual(before);
     expect((await rowOf(db, workoutId)).sourceContentFingerprint).toBe(corosProgramFingerprint(program));
     expect(await notesOf(workoutId, "watch_copy_changed")).toHaveLength(1);
-    await importFromCoros();
+    await readNow();
     expect(await notesOf(workoutId, "watch_copy_changed")).toHaveLength(1);
   });
 

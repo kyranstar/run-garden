@@ -460,6 +460,10 @@ export function normalizeCorosSchedule(
       stages,
       sourceVersion: program?.version != null ? String(program.version) : undefined,
       contentFingerprint: program ? corosProgramFingerprint(program) : fingerprint({ rest: date }),
+      // Over the RAW program, never the resolved stage names: the push's `observed.text` is taken over the raw
+      // read-back, and COROS stores catalog names as i18n keys (audit 3-A life L-8).
+      ...(program ? { textFingerprint: programTextFingerprint(program) } : {}),
+      ...(entity.planProgramId != null ? { planProgramId: String(entity.planProgramId) } : {}),
       isRestDay,
       raw: { entity, program },
     });
