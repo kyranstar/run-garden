@@ -724,7 +724,10 @@ export async function unpushBuild(
   const push = await jobById(db, id);
   const address = watchAddressOf(row);
   const parsed = push ? programSessionPushJobSchema.safeParse(push.payload) : null;
-  if (push?.status === "verified" && address && parsed?.success) {
+  // A DONE SESSION'S COPY STAYS (audit 3-A life U-1): it is the session the athlete did — the record a watch review
+  // pairs with — so nothing takes it off, now or owed.
+  const resolved = row.contentState === "done" || row.completionState === "completed";
+  if (!resolved && push?.status === "verified" && address && parsed?.success) {
     if (!prefs.corosWritesEnabled) {
       await db
         .update(sessionBuilds)
