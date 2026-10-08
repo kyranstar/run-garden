@@ -8,9 +8,10 @@ import { IDBFactory } from "fake-indexeddb";
 import { ApiError } from "@rg/api-client";
 import type { PerformedSessionWireInput } from "@rg/domain";
 import { openOfflineDb } from "../../src/offline/idb.js";
-import { writeLive, newLiveSession } from "../../src/offline/live.js";
-import { enqueue } from "../../src/offline/outbox.js";
+import { newLiveSession, readLive, writeLive } from "../../src/offline/live.js";
+import { enqueue, outboxEntries } from "../../src/offline/outbox.js";
 import { drainUnstarts, forgetUnstart, queuedUnstarts, queueUnstart } from "../../src/offline/unstarts.js";
+import { discardSession } from "../../src/player/save.js";
 
 const ME = "user-1";
 
@@ -80,6 +81,22 @@ describe("queued un-starts", () => {
     expect(await drainUnstarts(db, { unstartSession }, { userId: ME })).toEqual({ unstarted: 0 });
     expect(unstartSession).not.toHaveBeenCalled();
     expect(await queuedUnstarts(db, ME)).toEqual([]);
+    db.close();
+  });
+
+  it("Discard with a save for the slot waiting here neither queues nor sends one: the save decides the slot (re-review 2b-B N-1)", async () => {
+    const db = await openOfflineDb(new IDBFactory());
+    await enqueue(db, save("slot-a"), ME);
+    // Opened again and discarded: the device forgets the session in progress — and leaves the server's slot alone.
+    await writeLive(db, newLiveSession({ workoutId: "slot-a", buildId: "b1", recorder: {} }));
+    await discardSession(db, "slot-a", { userId: ME });
+    expect(await queuedUnstarts(db, ME)).toEqual([]);
+    expect(await readLive(db, "slot-a")).toBeUndefined();
+    // Not knowing the account, Discard sends the un-start at once rather than keeping it: not with a save waiting.
+    const unstartSession = vi.fn(async () => ({}));
+    await discardSession(db, "slot-a", { userId: null, api: { unstartSession }, waitMs: 50 });
+    expect(unstartSession).not.toHaveBeenCalled();
+    expect(await outboxEntries(db)).toHaveLength(1);
     db.close();
   });
 
