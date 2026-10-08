@@ -6464,6 +6464,15 @@ button.session-chip {
   font-size: var(--text-xs);
   color: var(--ink-soft);
 }
+/* The watch's heart rate, and where an imported session came from (Phase 2d). */
+.fw-hr {
+  color: var(--ink-soft);
+  font-variant-numeric: tabular-nums;
+}
+.fw-source {
+  font-size: var(--text-xs);
+  color: var(--ink-faint);
+}
 .fw-coach {
   display: flex;
   gap: var(--space-5);

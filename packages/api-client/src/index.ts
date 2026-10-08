@@ -323,6 +323,8 @@ export interface ActivityDto {
   elevationGainMeters?: number | null;
   /** COROS training load, when reported — drives the effort chip. */
   trainingLoad: number | null;
+  /** Average heart rate, when a watch recorded one — the watch's on a merged app + watch row; never an import's. */
+  avgHeartRate?: number | null;
   /** Self-reported feel 1-5 from the watch, when present. */
   feel: number | null;
   /** Compact lap profile (seconds + pace per lap, in order) for the
@@ -331,18 +333,33 @@ export interface ActivityDto {
   /**
    * What was logged in this session (app, watch review, import or the watch
    * itself), by exercise in the order done — names already in words, weights
-   * already in the athlete's unit. Null when nothing was logged.
+   * as typed (the watch's own copy in the athlete's unit). Null when nothing was logged.
    */
   logged?: LoggedExerciseDto[] | null;
+  /** The performed session behind the row (Phase 2d): where it came from and what it was. Null when there is none. */
+  performed?: PerformedSummaryDto | null;
   /** The planned workout this run completed, or null if it was unplanned. */
   matched: { workoutId: string; title: string; category: string; date: string } | null;
+}
+
+/** What a performed session was, as the Activity feed shows it (worker: services/logged-sets.ts). */
+export interface PerformedSummaryDto {
+  /** The app's own save, a watch review, an import, or the watch's derived copy. */
+  source: "app" | "watch_review" | "import" | "watch";
+  mode: "recovery" | "consistent" | "build" | null;
+  /** The theme's name. */
+  theme: string | null;
+  /** Check values around the session, labelled by the profile itself (`check.label`). */
+  checks: Array<{ profileId: string; label: string; pre: number | null; post: number | null }>;
+  /** Moves played with no set logged: how many, and their time. */
+  played: { moves: number; seconds: number } | null;
 }
 
 /** One logged set, as the activity feed shows it. */
 export interface LoggedSetDto {
   reps: number | null;
   seconds: number | null;
-  /** In the athlete's weight unit; null for a bodyweight or timed set. */
+  /** The athlete's own record (app, watch review, import) as typed; the watch's copy in the athlete's unit. Null for a bodyweight or timed set. */
   load: { v: number; u: "lb" | "kg" } | null;
   side: "left" | "right" | null;
 }
