@@ -728,6 +728,8 @@ function syncNoteText(note: SyncNoteDto): string | null {
   const p = (note.payload ?? {}) as Record<string, unknown>;
   switch (note.kind) {
     case "kept_local_change":
+      // Same day both sides: COROS didn't move it (notes posted before the worker stopped writing them).
+      if (p.keptDate === p.displacedDate) return null;
       return `Kept your ${formatDayShort(p.keptDate as string)} — COROS had moved it to ${formatDayShort(p.displacedDate as string)}`;
     case "adopted_coros_change":
       return `Moved to ${formatDayShort(p.newDate as string)} on COROS`;

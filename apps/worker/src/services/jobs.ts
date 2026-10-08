@@ -530,8 +530,15 @@ export async function applyJobResult(
           // observedDate is optional on the wire (z.string().optional()) — a
           // note with an undefined displacedDate renders broken copy and
           // 400s forever on undo (invalid_note has no displacedDate string
-          // to act on), so only post the note when there's an actual date.
-          if (typeof result.observedDate === "string" && result.observedDate.length > 0) {
+          // to act on), so only post the note when there's an actual date —
+          // and one other than the day the move asked for: on that day COROS
+          // didn't move it (the date landed; the time or content didn't), and
+          // the note read "COROS had moved it to" the same day.
+          if (
+            typeof result.observedDate === "string" &&
+            result.observedDate.length > 0 &&
+            result.observedDate !== job.destinationDate
+          ) {
             await postSyncNote(db, {
               userId,
               workoutId: job.workoutId,

@@ -258,6 +258,42 @@ describe("jobs + intent ledger", () => {
     expect(notes.find((n) => n.kind === "kept_local_change")).toBeUndefined();
   });
 
+  it("applyJobResult verification_failed on the day the move asked for posts no kept_local_change note (COROS didn't move it: the note read 'COROS had moved it to' the same day)", async () => {
+    const db = makeTestDb();
+    const { userId, prefs } = await makeTestUser(db);
+    await connectTestCoros(db, userId);
+    const workoutId = await insertWorkout(db, userId, { lastVerifiedCorosDate: "2026-08-08" });
+    const outcome = await applyMove(db, {
+      userId,
+      workoutId,
+      toDate: "2026-08-10",
+      toTime: "07:00",
+      source: "app",
+      corosWritesEnabled: true,
+    });
+
+    await applyJobResult(
+      db,
+      userId,
+      {
+        jobId: outcome.jobId!,
+        deviceId: "test-executor",
+        outcome: "verification_failed",
+        // The date landed; what failed was something else (the time, the content).
+        observedDate: "2026-08-10",
+        finishedAt: nowInstant(),
+        signature: "s",
+      } as never,
+      prefs,
+    );
+
+    const notes = await db
+      .select()
+      .from(schema.syncNotes)
+      .where(eq(schema.syncNotes.workoutId, workoutId));
+    expect(notes.find((n) => n.kind === "kept_local_change")).toBeUndefined();
+  });
+
   it("emitPendingWork resolves the open intent for an archived workout instead of leaving it stranded open forever", async () => {
     const db = makeTestDb();
     const { userId } = await makeTestUser(db);
