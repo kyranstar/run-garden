@@ -218,6 +218,24 @@ describe("placement", () => {
     expect(await row(slotId(p, day(0, 2)))).toMatchObject({ category: "strength", sport: "strength" });
   });
 
+  it("never puts a session on race day: the week's goal goes on its next ranked day, and a slot already there moves", async () => {
+    const raceDay = day(1, PREFERRED[0]!);
+    const p = await seedProgram(db, userId, { weeklyGoal: 2, preferredDays: PREFERRED, placementWeeksAhead: 2 });
+    // Placed before the race was set: one slot sits on what becomes race day.
+    await placeSlots(db, userId, p, MON, prefs, NOW);
+    expect((await row(slotId(p, raceDay))).archivedAt).toBeNull();
+    const raced = { ...prefs, raceDate: raceDay };
+    const res = await placeSlots(db, userId, p, MON, raced, NOW);
+    expect(res.archived).toContain(slotId(p, raceDay));
+    const live = (await rowsOf(p)).filter((r) => r.archivedAt === null);
+    expect(live.map((r) => r.effectiveDate)).not.toContain(raceDay);
+    // The race week still holds its goal, on another day.
+    const raceWeek = live.filter((r) => r.effectiveDate >= day(1, 0) && r.effectiveDate <= day(1, 6));
+    expect(raceWeek).toHaveLength(2);
+    // And a second pass changes nothing.
+    expect(await placeSlots(db, userId, p, MON, raced, NOW)).toEqual({ placed: [], archived: [] });
+  });
+
   it("is idempotent: a second run places nothing and writes nothing", async () => {
     const writes: string[] = [];
     const recDb = makeTestDb({ boundVariableCap: 100, onStatement: (sql) => isWrite(sql) && writes.push(sql) });

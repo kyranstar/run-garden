@@ -17,7 +17,8 @@
  *  2. THE WEEK'S GOAL goes on `preferredDays` in order, then the week's other days Monday → Sunday, never before
  *     today, one slot of this program per date. Two limits on a NEW slot (ruling 2a-R11): none on today once
  *     today's window has passed in the athlete's zone, and in THIS week only on the days a full week would use
- *     (the first `weeklyGoal` of that order) — a mid-week start or a raised goal never crams the week.
+ *     (the first `weeklyGoal` of that order) — a mid-week start or a raised goal never crams the week. Never on race
+ *     day (`prefs.raceDate`): a flexible slot placed there before the race was set moves to the week's next day.
  *  3. ONLY FLEXIBLE SLOTS MAY GO: a slot that is live, still an outline, unmoved (effective date = planned date),
  *     still scheduled, and after today. Everything else — today's, a moved one, a built one, a past one — is
  *     fixed: it counts toward the goal and stays. Flexible slots on wanted days stay too, so a settled week
@@ -238,6 +239,8 @@ export async function placeSlots(
       const want = new Set<string>();
       for (const date of ranked) {
         if (want.size >= need) break;
+        // Race day is the race's: no session there, and a flexible one placed before the race was set moves off it.
+        if (date === prefs.raceDate) continue;
         if (movable.has(date)) {
           want.add(date);
           continue;
