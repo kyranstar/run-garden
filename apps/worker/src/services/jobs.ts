@@ -23,7 +23,7 @@ import { cloudPresence } from "./sync-status.js";
 import { applyStudioJobResult } from "./studio-push.js";
 import { openIntentFor, openMoveIntents, recordIntent, resolveIntent } from "./sync-intents.js";
 import { postSyncNote } from "./sync-notes.js";
-import { enqueueProgramUnpush } from "./watch-push.js";
+import { enqueueProgramUnpush, runOwedUnpushes } from "./watch-push.js";
 
 /**
  * COROS write-job lifecycle. Jobs are the only path to COROS mutations:
@@ -257,6 +257,10 @@ export async function emitPendingWork(
   opts: { corosWritesEnabled: boolean },
 ): Promise<number> {
   if (!opts.corosWritesEnabled) return 0;
+  // A sent program session's copy whose unpush was owed while writes were off
+  // (moved, or taken off — audit 3-A life L-10): queued now, so no copy stays
+  // stranded on the watch. The unpush lane needs no device to be queued.
+  await runOwedUnpushes(db, userId, nowInstant());
   if (!(await writeCapableDeviceExists(db, userId))) return 0;
   const now = nowInstant();
   const intents = await openMoveIntents(db, userId);

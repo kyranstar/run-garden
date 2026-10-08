@@ -44,7 +44,7 @@ import { openIntentFor, resolveIntent } from "./sync-intents.js";
 import { enqueueUnpushIfOurs } from "./plan-mutations.js";
 import { sentBuildIdOf } from "./session-build.js";
 import { recordedStampFor, SPENT_STAMP_STATUSES } from "./coros-stamp.js";
-import { unpushBuild } from "./watch-push.js";
+import { unlockSentBuild, unpushBuild } from "./watch-push.js";
 
 /**
  * Cloud write consumer (cloud-direct spec §4): the same job queue with all
@@ -480,6 +480,26 @@ export async function executeCloudJobs(
             .update(corosWriteJobs)
             .set({ status: "superseded", updatedAt: nowInstant() })
             .where(eq(corosWriteJobs.id, job.id));
+          executed += 1;
+          continue;
+        }
+        // NOR WHAT SEND WOULD REFUSE NOW (audit 3-A lane L-2 / L-5). The lane may
+        // claim a push long after the tap: after midnight (Send at 23:50 while
+        // the hourly lane held the lock), after the session was done or skipped,
+        // after the athlete turned COROS writes off. Such a push is superseded
+        // with no wire call — it would land on a day gone, or write what the
+        // athlete has resolved, or write at all — and its build is unlocked so
+        // the slot builds and starts as any other, unless the slot is started or
+        // done (Start owns that lock). A started slot of today still pushes.
+        const resolved =
+          row.contentState === "done" ||
+          row.completionState === "completed" ||
+          row.completionState === "skipped" ||
+          row.completionState === "missed";
+        if (spec.happenDay !== todayInZone(prefs.timezone) || resolved || !prefs.corosWritesEnabled) {
+          const now = nowInstant();
+          await db.update(corosWriteJobs).set({ status: "superseded", updatedAt: now }).where(eq(corosWriteJobs.id, job.id));
+          await unlockSentBuild(db, row, spec.buildId, now);
           executed += 1;
           continue;
         }

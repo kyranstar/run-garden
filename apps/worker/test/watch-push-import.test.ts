@@ -31,7 +31,7 @@ import { executeCloudJobs } from "../src/services/coros-write-cloud.js";
 import { exerciseNameMap } from "../src/services/exercise-catalog.js";
 import { applyOps } from "../src/services/coach-apply.js";
 import { importPlanSnapshot } from "../src/services/import-plan.js";
-import { applyMove } from "../src/services/jobs.js";
+import { applyMove, emitPendingWork } from "../src/services/jobs.js";
 import { removeFromPlan } from "../src/services/plan-mutations.js";
 import { buildSession, loadSession } from "../src/services/session-build.js";
 import { activeSyncNotes, postSyncNote } from "../src/services/sync-notes.js";
@@ -544,6 +544,8 @@ describe("the stamps the read may act on", () => {
   it("a stale copy still comes off: moved while COROS writes were off, the slot sent again the next day (V10b)", async () => {
     const { workoutId, stamp } = await pushed();
     await applyMove(db, { userId, workoutId, toDate: TOMORROW, toTime: "18:00", source: "app", corosWritesEnabled: false });
+    // Writes back on (Send needs them): the Settings toggle's catch-up pass queues the unpush owed meanwhile (L-10).
+    await emitPendingWork(db, userId, { corosWritesEnabled: true });
     vi.setSystemTime(new Date(`${TOMORROW}T19:00:00.000Z`));
     const resent = await send(workoutId, TOMORROW);
     for (let i = 0; i < 2; i++) {

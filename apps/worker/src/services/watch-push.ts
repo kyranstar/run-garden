@@ -638,8 +638,12 @@ export async function sendToWatch(
  * copy (a verified push, the row holding its address) gets `unpush:<buildId>`, the stamp-proven delete, with the
  * stamp from the push's own payload; a push still running is left to the lane, which queues the unpush as soon as it
  * verifies. The build is unlocked at once (`$.unsentAt`): a moved slot must build on its new day. A started or done
- * slot keeps its lock (Start owns it). Unpushes run whatever the switch says (ruling 3-R10); none is queued while the
- * athlete's COROS writes are off.
+ * slot keeps its lock (Start owns it). Unpushes run whatever the switch says (ruling 3-R10).
+ *
+ * AN UNPUSH OWED WHILE THE ATHLETE'S COROS WRITES ARE OFF (audit 3-A life L-10) is not queued — nothing writes to
+ * their COROS then — and not forgotten either: it is recorded on the sent build (`$.unpushOwedAt`), which stays
+ * locked so the copy stays accounted for (the push stays the slot's, its stamp recognised), and `runOwedUnpushes`
+ * queues it when writes come back on. Before, the copy was stranded on the old day for good.
  */
 export async function unpushBuild(
   db: Db,
@@ -657,7 +661,14 @@ export async function unpushBuild(
   const push = await jobById(db, id);
   const address = watchAddressOf(row);
   const parsed = push ? programSessionPushJobSchema.safeParse(push.payload) : null;
-  if (prefs.corosWritesEnabled && push?.status === "verified" && address && parsed?.success) {
+  if (push?.status === "verified" && address && parsed?.success) {
+    if (!prefs.corosWritesEnabled) {
+      await db
+        .update(sessionBuilds)
+        .set({ payload: sql`json_set(${sessionBuilds.payload}, ${UNPUSH_OWED_AT_PATH}, ${now})` })
+        .where(and(eq(sessionBuilds.id, buildId), isNotNull(sessionBuilds.lockedAt)));
+      return;
+    }
     await queueUnpush(db, userId, buildId, {
       workoutId: row.id,
       happenDay: address.happenDay,
@@ -667,11 +678,46 @@ export async function unpushBuild(
       corosPlanId: address.corosPlanId,
     }, now);
   }
+  await unlockSentBuild(db, row, buildId, now);
+}
+
+/** The sent build unlocked (`$.unsentAt`), so the slot builds again — unless it is started or done (Start owns it). */
+export async function unlockSentBuild(db: Db, row: Pick<WorkoutRow, "contentState">, buildId: string, now: string): Promise<void> {
   if (row.contentState === "started" || row.contentState === "done") return;
   await db
     .update(sessionBuilds)
     .set({ lockedAt: null, payload: sql`json_set(${sessionBuilds.payload}, ${UNSENT_AT_PATH}, ${now})` })
     .where(and(eq(sessionBuilds.id, buildId), isNotNull(sessionBuilds.lockedAt)));
+}
+
+/** A sent build whose copy's unpush is owed — recorded while the athlete's COROS writes were off (`unpushBuild`). */
+export const UNPUSH_OWED_AT_PATH = "$.unpushOwedAt";
+
+/**
+ * STRANDED-COPY CLEANUP (audit 3-A life L-10): the unpushes owed while the athlete's COROS writes were off, queued
+ * now that they are on — each through `unpushBuild` again (its copy re-read: a copy gone since queues nothing), and
+ * each owed once. Run by the catch-up pass when writes are turned on (`emitPendingWork`). One read when nothing is owed.
+ */
+export async function runOwedUnpushes(db: Db, userId: string, now: string): Promise<number> {
+  const owed = await db
+    .select({ id: sessionBuilds.id, workoutId: sessionBuilds.workoutId })
+    .from(sessionBuilds)
+    .where(
+      and(
+        eq(sessionBuilds.userId, userId),
+        isNotNull(sessionBuilds.lockedAt),
+        sql`json_extract(${sessionBuilds.payload}, ${UNPUSH_OWED_AT_PATH}) is not null`,
+      ),
+    );
+  for (const build of owed) {
+    await db
+      .update(sessionBuilds)
+      .set({ payload: sql`json_remove(${sessionBuilds.payload}, ${UNPUSH_OWED_AT_PATH})` })
+      .where(eq(sessionBuilds.id, build.id));
+    const [row] = await db.select().from(plannedWorkouts).where(eq(plannedWorkouts.id, build.workoutId)).limit(1);
+    if (row) await unpushBuild(db, userId, row, build.id, now, { corosWritesEnabled: true });
+  }
+  return owed.length;
 }
 
 /** What an unpush of a sent copy carries: the stamp-proven delete triple (`coachDeleteWorkoutJobSchema`). */
