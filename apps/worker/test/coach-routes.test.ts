@@ -11,6 +11,7 @@ import type { Env } from "../src/env.js";
 import type { Db } from "../src/services/db.js";
 import { coachRoutes, sweepUserProposals } from "../src/routes/coach.js";
 import { buildDossier } from "../src/services/coach-context.js";
+import { savePreferences } from "../src/services/calendar-sync.js";
 import { createSession, SESSION_COOKIE } from "../src/auth/sessions.js";
 import { makeTestDb, makeTestUser, mountRoutes } from "./helpers.js";
 
@@ -837,6 +838,15 @@ describe("GET /plans/:id/detail (2026-08-11 rework §4)", () => {
     // not in the week line — even though the plan stored it as a kg weight.
     expect(body.progressions.map((pr) => pr.label)).not.toContain("Push-ups");
     expect(body.weeks[0]!.summary).not.toContain("push-ups");
+
+    // The weeks list reads loads in the athlete's unit (Audit C M-8): pounds for this (default) account, kilos once
+    // the athlete switches.
+    expect(prefs.weightUnit).toBe("lb");
+    expect(body.weeks[0]!.summary).toContain("seated front press 114.5lb");
+    expect(body.weeks[0]!.summary).not.toMatch(/\dkg/);
+    await savePreferences(db, userId, { ...prefs, weightUnit: "kg" });
+    const kg = (await (await client().get("/api/coach/plans/sp1/detail")).json()) as typeof body;
+    expect(kg.weeks[0]!.summary).toContain("seated front press 52kg");
   });
 
   it("lift progressions carry the week's heaviest logged set as `actual` (Phase 2a+)", async () => {

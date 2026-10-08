@@ -371,6 +371,26 @@ describe("what the coach can see (2026-08-16 input audit)", () => {
     expect(kg.text).not.toContain("44 lb");
   });
 
+  it("reads a coach-written lift's stored exercises in the athlete's unit too (Audit C M-8)", async () => {
+    const db = makeTestDb();
+    const { userId, prefs } = await makeTestUser(db);
+    const today = "2026-10-05";
+    const at = "2026-10-01T12:00:00.000Z";
+    // No Studio plan: the row carries the coach's own exercise shape in `structured_json`.
+    await db.insert(schema.plannedWorkouts).values({
+      id: "wo-coach-lift", userId, planId: "cp-lift", sourceWorkoutId: "s-coach-lift", title: "Strength Wednesday", category: "strength", sport: "strength",
+      originalPlanDate: addDays(today, 2), lastVerifiedCorosDate: addDays(today, 2), effectiveDate: addDays(today, 2), effectiveTime: "18:00",
+      sourceContentFingerprint: "fp-coach-lift", calendarBlockDurationSeconds: 2400, stageSummary: "3 × 8 Goblet Squat",
+      structuredJson: { exercises: [{ name: "Goblet Squat", sets: 3, reps: 8, weight: { type: "kg", value: 20 }, restSeconds: 90 }] },
+      createdAt: at, updatedAt: at,
+    });
+    const lb = await buildDossier(db, userId, { ...prefs, weightUnit: "lb" }, today);
+    expect(lb.text).toContain("  · Goblet Squat 3×8 @ 44 lb (20 kg)");
+    const kg = await buildDossier(db, userId, { ...prefs, weightUnit: "kg" }, today);
+    expect(kg.text).toContain("  · Goblet Squat 3×8 @ 20 kg");
+    expect(kg.text).not.toContain("44 lb");
+  });
+
   it("names a placeholder session's actual contents on the UPCOMING line", async () => {
     const db = makeTestDb();
     const { userId, prefs } = await makeTestUser(db);
