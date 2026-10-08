@@ -525,3 +525,73 @@ describe("the stamps the read may act on", () => {
     expect(programsNamed(stamp)).toHaveLength(1);
   });
 });
+
+/**
+ * TWO COROS WORKOUTS CARRYING ONE STAMP (audit 3-A life L-3). The athlete copies the sent session in the COROS app and
+ * the copy keeps its name. The slot keeps its recorded copy while that address still carries its stamp; the other is
+ * the athlete's own workout — imported as an ordinary COROS session, never attached to the slot, never taken off. A
+ * workout is only ever an orphan of ours when it is the ONLY one in the read carrying the stamp.
+ */
+describe("two COROS workouts carrying one stamp", () => {
+  beforeEach(() => setup());
+
+  const LATER = addDays(DAY, 3);
+  const rowsAt = async (address: string) =>
+    (await db.select().from(plannedWorkouts).where(eq(plannedWorkouts.userId, userId))).filter((r) => r.sourceWorkoutId === address);
+  /** The athlete copies the sent session to `LATER` in the COROS app: a new workout (its own program id), same name. */
+  function athleteCopies(stamp: string): string {
+    const original = programOn(stamp)!;
+    server.state.schedule.programs!.push({ ...structuredClone(original), idInPlan: "99", id: "9999" });
+    server.state.schedule.entities!.push({
+      ...structuredClone(entityOf(original)), idInPlan: "99", planProgramId: "99", happenDay: Number(localDateToCorosDay(LATER)),
+    });
+    return `${server.state.schedule.id}:99`;
+  }
+
+  it("the slot keeps its recorded copy, the second is the athlete's, and it survives an app move", async () => {
+    const { workoutId, buildId, stamp } = await pushed();
+    const recorded = (await rowOf(db, workoutId)).sourceWorkoutId;
+    const theirs = athleteCopies(stamp);
+    const seen: string[] = [];
+    for (let i = 0; i < 4; i++) {
+      await readNow();
+      const r = await rowOf(db, workoutId);
+      seen.push(`${r.sourceWorkoutId}@${r.lastVerifiedCorosDate}`);
+    }
+    expect(seen).toEqual(Array(4).fill(`${recorded}@${DAY}`));
+    expect(await rowsAt(theirs)).toEqual([expect.objectContaining({ origin: null, effectiveDate: LATER, archivedAt: null })]);
+    expect((await rowsAt(theirs))[0]!.title).not.toBe(stamp); // the stamp is plumbing, never a session's name
+    expect(await jobOf(`unpush:${buildId}`)).toBeUndefined();
+
+    // The athlete moves the session in the app: only the recorded copy comes off the watch.
+    await applyMove(db, { userId, workoutId, toDate: TOMORROW, toTime: "18:00", source: "app", corosWritesEnabled: true });
+    expect((await jobOf(`unpush:${buildId}`))!.payload).toMatchObject({ idInPlan: recorded.split(":")[1], happenDay: DAY });
+    await lane();
+    expect(programsNamed(stamp).map((p) => String(p.idInPlan))).toEqual(["99"]);
+    for (let i = 0; i < 2; i++) {
+      await readNow();
+      await lane();
+    }
+    expect(programsNamed(stamp).map((p) => String(p.idInPlan))).toEqual(["99"]);
+    expect(await rowsAt(theirs)).toEqual([expect.objectContaining({ origin: null, effectiveDate: LATER, archivedAt: null })]);
+  });
+
+  it("the athlete then deletes the original: the copy stays theirs — never attached, never taken off", async () => {
+    const { workoutId, buildId, stamp } = await pushed();
+    const theirs = athleteCopies(stamp);
+    await readNow();
+    expect(await rowsAt(theirs)).toHaveLength(1);
+    const original = programOn(stamp)!;
+    server.state.schedule.entities = server.state.schedule.entities!.filter((e) => String(e.idInPlan) !== String(original.idInPlan));
+    server.state.schedule.programs = server.state.schedule.programs!.filter((p) => p !== original);
+    for (let i = 0; i < 3; i++) {
+      await readNow();
+      await lane();
+    }
+    expect(programsNamed(stamp).map((p) => String(p.idInPlan))).toEqual(["99"]);
+    expect(await jobOf(`unpush:${buildId}`)).toBeUndefined();
+    expect((await rowOf(db, workoutId)).sourceWorkoutId).toBe(workoutId);
+    expect(await rowsAt(theirs)).toEqual([expect.objectContaining({ origin: null, effectiveDate: LATER, archivedAt: null })]);
+    expect(await notesOf(workoutId, "watch_copy_removed")).toHaveLength(1);
+  });
+});

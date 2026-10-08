@@ -594,6 +594,12 @@ export async function importPlanSnapshot(
 
   const seenSourceIds = new Set<string>();
 
+  /** How many wire workouts in this read carry each stamp of ours: an orphan is only ever its stamp's one carrier. */
+  const stampCarriers = new Map<string, number>();
+  for (const src of admitted) {
+    if (pushByStamp.has(src.title)) stampCarriers.set(src.title, (stampCarriers.get(src.title) ?? 0) + 1);
+  }
+
   for (const src of admitted) {
     seenSourceIds.add(src.sourceWorkoutId);
     // The athlete-facing title for this wire workout: ours un-stamped, anyone
@@ -620,16 +626,32 @@ export async function importPlanSnapshot(
 
     // RULING 3-R9. A program row claims a wire workout only when the workout
     // carries that row's recorded stamp: an address is a claim, and COROS
-    // recycles them — the old slot may now hold the athlete's own run. And a
-    // wire workout carrying a program stamp of ours is only ever its own slot's,
-    // never another row's to be rewritten into — unless that row's own verified
-    // create or rewrite stamped it (a coach session titled like the program, on
-    // its day: audit 3-A V1b).
-    const ours = pushByStamp.get(src.title);
-    const claimants = (existingByAddress.get(src.sourceWorkoutId) ?? []).filter((w) =>
+    // recycles them — the old slot may now hold the athlete's own run.
+    //
+    // A wire workout carrying a program stamp of ours is the slot's in exactly
+    // two cases (audit 3-A life L-3): it sits at the address the slot recorded
+    // for that stamp, or it is the stamp's ONLY carrier in this read (an
+    // orphan: a copy the slot never learned about). Two carriers and the one
+    // at the recorded address is the slot's; any other is the athlete's own —
+    // a copy made in the COROS app keeps the name — and goes through the
+    // ordinary flow below as a COROS workout: never attached, never taken off.
+    // While the stamp is ours, a non-program row still claims a workout that is
+    // its own: one its verified coach create or rewrite stamped (audit 3-A V1b),
+    // or the very COROS program it was imported from (`sourceProgramId` is
+    // COROS's program id, which a recycled slot does not share) — so the
+    // athlete's copy stays theirs even after the original is gone.
+    const pushed = pushByStamp.get(src.title);
+    const atAddress = existingByAddress.get(src.sourceWorkoutId) ?? [];
+    const recordedHere =
+      pushed !== undefined && atAddress.some((w) => appAuthoredRow(w) && verifiedPushOf.get(w.id)?.payload.name === src.title);
+    const ours = pushed !== undefined && !recordedHere && stampCarriers.get(src.title) === 1 ? pushed : undefined;
+    const stampIsOurs = recordedHere || ours !== undefined;
+    const claimants = atAddress.filter((w) =>
       appAuthoredRow(w)
         ? verifiedPushOf.get(w.id)?.payload.name === src.title
-        : ours === undefined || ownCoachStamps.has(`${w.id}\n${src.title}`),
+        : !stampIsOurs ||
+          ownCoachStamps.has(`${w.id}\n${src.title}`) ||
+          (w.sourceProgramId !== null && w.sourceProgramId === src.sourceProgramId),
     );
     if (claimants.length > 1) stats.contestedAddresses += 1;
     const current = resolveClaimant(claimants, {
