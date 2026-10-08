@@ -1,4 +1,4 @@
-import { useUnits } from "../use-units.js";
+import { useUnits, useWeightUnit } from "../use-units.js";
 import { useRef, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { api, type CoachPlanDto, type PlanDetailResponse } from "@rg/api-client";
@@ -32,6 +32,7 @@ export function StudioModal({
   onRename: (id: string, name: string) => void;
 }) {
   const units = useUnits();
+  const weightUnit = useWeightUnit();
   const isNew = planId === "new-run" || planId === "new-lift";
   const plan = plans.find((p) => p.id === planId);
   const detail = useQuery<PlanDetailResponse>({
@@ -276,7 +277,7 @@ export function StudioModal({
 
             {d.progressions.length > 0 ? (
               <div className="prog-chips">
-                {d.progressions.map((p) => progressionInUnits(p, units)).map((p) => (
+                {d.progressions.map((p) => progressionInUnits(p, units, weightUnit)).map((p) => (
                   <span key={p.key} className="prog-chip">
                     <span className="prog-chip-label">{p.label}</span>
                     <span className="prog-chip-value num">
@@ -293,11 +294,11 @@ export function StudioModal({
                   ? d.progressions
                       .filter((p) => p.key.startsWith("lift:") && p.key !== "lift:weekly-sets")
                       .slice(0, 2)
-                      .map((p) => <ProgressionStepChart key={p.key} progression={progressionInUnits(p, units)} discipline="lift" raceWeek={raceWeek} raceLabel={raceLabel} />)
+                      .map((p) => <ProgressionStepChart key={p.key} progression={progressionInUnits(p, units, weightUnit)} discipline="lift" raceWeek={raceWeek} raceLabel={raceLabel} />)
                   : [
                       ...d.progressions
                         .filter((p) => p.key === "run:long-run")
-                        .map((p) => <ProgressionStepChart key={p.key} progression={progressionInUnits(p, units)} discipline="run" raceWeek={raceWeek} raceLabel={raceLabel} />),
+                        .map((p) => <ProgressionStepChart key={p.key} progression={progressionInUnits(p, units, weightUnit)} discipline="run" raceWeek={raceWeek} raceLabel={raceLabel} />),
                       ...d.progressions
                         .filter((p) => p.key === "run:weekly-minutes")
                         .map((p) => <PlannedVsActualBars key={p.key} progression={p} raceWeek={raceWeek} raceLabel={raceLabel} />),

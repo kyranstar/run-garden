@@ -1,4 +1,5 @@
 import type { PlanProgression } from "@rg/api-client";
+import { formatWeightIn, weightInUnit, type WeightUnit } from "@rg/domain";
 import { useRef } from "react";
 import { ChartFrame } from "../charts.js";
 import {
@@ -18,9 +19,22 @@ import {
 } from "../chart-kit.js";
 
 const KM_PER_MI = 1.609344;
-/** Distance progressions render in the athlete's display units; non-distance
- * units (kg, min, reps) pass through untouched (units sweep 2026-08-14). */
-export function progressionInUnits(p: PlanProgression, units: "km" | "mi"): PlanProgression {
+/** Progressions render in the athlete's display units: distance in km or mi (units sweep 2026-08-14), a lift's
+ * kilograms in the athlete's weight unit, to the half pound (Audit 2c-A MINOR-5; the prescription itself stays in
+ * kilograms). Other units (min, sets) pass through untouched. */
+export function progressionInUnits(p: PlanProgression, units: "km" | "mi", weightUnit: WeightUnit = "kg"): PlanProgression {
+  if (p.unit === "kg") {
+    if (weightUnit === "kg") return p;
+    const w = (v: number) => weightInUnit({ v, u: "kg" }, weightUnit);
+    return {
+      ...p,
+      unit: weightUnit,
+      from: w(p.from),
+      to: w(p.to),
+      now: p.now === null ? null : w(p.now),
+      series: p.series.map((pt) => ({ ...pt, value: w(pt.value), ...(pt.actual !== undefined ? { actual: w(pt.actual) } : {}) })),
+    };
+  }
   if ((p.unit !== "km" && p.unit !== "mi") || p.unit === units) return p;
   const f = p.unit === "mi" ? KM_PER_MI : 1 / KM_PER_MI;
   const c = (v: number) => Math.round(v * f * 10) / 10;
@@ -32,6 +46,11 @@ export function progressionInUnits(p: PlanProgression, units: "km" | "mi"): Plan
     now: p.now === null ? null : c(p.now),
     series: p.series.map((pt) => ({ ...pt, value: c(pt.value), ...(pt.actual !== undefined ? { actual: c(pt.actual) } : {}) })),
   };
+}
+
+/** A plan exercise's prescribed load as the athlete reads it: kilograms in their weight unit; bodyweight as it is. */
+export function prescribedLoad(weight: { type: "kg"; value: number } | { type: "bodyweight" }, unit: WeightUnit): string {
+  return weight.type === "kg" ? formatWeightIn({ v: weight.value, u: "kg" }, unit) : "bodyweight";
 }
 
 

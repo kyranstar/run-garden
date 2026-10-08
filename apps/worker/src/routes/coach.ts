@@ -1076,7 +1076,7 @@ coachRoutes.get("/plans/:id/detail", async (c) => {
       state: "firm" as const,
       volumeTarget: null,
       keySessions: [],
-      summary: liftWeekSummary(plan, i + 1),
+      summary: liftWeekSummary(plan, i + 1, prefs.weightUnit),
       done: doneWeeks.has(i + 1),
       current: currentWeek === i + 1,
     }));

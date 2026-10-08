@@ -19,6 +19,8 @@ import {
 } from "@rg/domain";
 import { Banner, formatDayLong, formatDayShort, Sheet, Spinner } from "../components.js";
 import { IconAlert, IconCheck, IconChevron, IconSync } from "../icons.js";
+import { useWeightUnit } from "../use-units.js";
+import { prescribedLoad } from "./plan-charts.js";
 
 /**
  * Plan Studio — the Plan screen's collapsible lifting-plan authoring section.
@@ -536,6 +538,8 @@ function SessionCard({
   undoing: boolean;
   undoError: string | null;
 }) {
+  // The plan's kilos, read in the athlete's weight unit (Audit 2c-A MINOR-5); the prescription stays in kg.
+  const weightUnit = useWeightUnit();
   return (
     <div className="studio-session">
       <div className="studio-session-head">
@@ -549,7 +553,7 @@ function SessionCard({
       <ul className="studio-exercise-list">
         {session.exercises.map((ex, i) => (
           <li key={i}>
-            {ex.name} — {ex.sets}×{ex.reps} @ {ex.weight.type === "bodyweight" ? "bodyweight" : `${ex.weight.value} kg`}
+            {ex.name} — {ex.sets}×{ex.reps} @ {prescribedLoad(ex.weight, weightUnit)}
             {ex.note ? ` (${ex.note})` : ""}
           </li>
         ))}
