@@ -108,8 +108,7 @@ describe("Today: a session in progress on this device (ruling 2b-R16)", () => {
     db = await openOfflineDb(new IDBFactory());
     await inProgress("slot-y", YESTERDAY, "user-1");
     render({});
-    await settle();
-    expect(text()).toContain("Session in progress");
+    await until(() => text().includes("Session in progress") && !!continueLink(), "the line and Continue");
     expect(text()).toContain("Program slot-y");
     expect(text()).toContain("step 3 of 9");
     const link = [...host!.querySelectorAll("a")].find((a) => a.textContent === "Continue");
@@ -121,8 +120,7 @@ describe("Today: a session in progress on this device (ruling 2b-R16)", () => {
     db = await openOfflineDb(new IDBFactory());
     await inProgress("slot-y", YESTERDAY, "user-1", { ended: true });
     render({});
-    await settle();
-    expect(text()).toContain("ready to save");
+    await until(() => text().includes("ready to save"), "ready to save");
   });
 
   it("only the signed-in account's; not one the Today card already shows; nothing at all when there is none", async () => {
@@ -131,12 +129,18 @@ describe("Today: a session in progress on this device (ruling 2b-R16)", () => {
     await inProgress("slot-today", TODAY, "user-1");
     render({ shown: ["slot-today"] });
     await settle();
+    await act(async () => {
+      await new Promise((r) => setTimeout(r, 100));
+    });
     expect(host!.innerHTML).toBe("");
     act(() => root?.unmount());
     host?.remove();
     // Before anyone is known to be signed in: nothing.
     render({ userId: null });
     await settle();
+    await act(async () => {
+      await new Promise((r) => setTimeout(r, 100));
+    });
     expect(host!.innerHTML).toBe("");
   });
 });
@@ -152,15 +156,14 @@ describe("Today: a session in progress here that another device saved (ruling 2b
         return "done";
       },
     });
-    await settle();
+    await until(() => text().includes("Saved on another device"), "saved elsewhere");
     expect(asked).toEqual(["slot-y"]);
-    expect(text()).toContain("Saved on another device");
     expect(text()).toContain("Program slot-y");
     expect(continueLink()).toBeUndefined();
     await act(async () => button("Discard")!.click());
-    await settle();
+    await until(() => !!button("Discard this copy"), "the confirm");
     await act(async () => button("Discard this copy")!.click());
-    await settle();
+    await until(() => host!.innerHTML === "", "forgotten here");
     // Gone from the device — the session in progress, its build and what Start kept — and nothing asked of the server
     // (the slot is done there; no un-start is queued).
     expect(await readLive(db, "slot-y")).toBeUndefined();
