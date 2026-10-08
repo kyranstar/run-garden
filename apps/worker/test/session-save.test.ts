@@ -136,11 +136,13 @@ async function seedSlot(date: string, owner = userId, program = programId): Prom
   return id;
 }
 
-/** A slot built and started on PLAYED: `recovery` holds no core lift (yoga, §9.2), `build` holds one (strength). */
-async function started(mode: "recovery" | "build" = "build") {
-  const workoutId = await seedSlot(PLAYED);
-  const built = await buildSession(db, userId, workoutId, { overrides: { mode } }, { today: PLAYED, now: PLAYED_NOON, prefs });
-  const locked = await startSession(db, userId, workoutId, built.build!.buildId, PLAYED_NOON);
+/** A slot built and started on `day` (PLAYED unless said), at noon in Los Angeles: `recovery` holds no core lift (yoga,
+ * §9.2), `build` holds one (strength). */
+async function started(mode: "recovery" | "build" = "build", day = PLAYED) {
+  const noon = `${day}T19:00:00.000Z`;
+  const workoutId = await seedSlot(day);
+  const built = await buildSession(db, userId, workoutId, { overrides: { mode } }, { today: day, now: noon, prefs });
+  const locked = await startSession(db, userId, workoutId, built.build!.buildId, noon);
   return { workoutId, build: locked.build!, title: (await rowOf(workoutId)).title };
 }
 
@@ -642,8 +644,14 @@ describe("the review's decisions apply on save (§2b step 5)", () => {
 });
 
 describe("the garden replays from the session's own day (§2b step 6)", () => {
-  // The 2d epoch gate (APP_SESSION_EPOCH) is not there yet: today an app session credits through the completed slot,
-  // with the slot's discipline. When the gate lands, this asserts the post-epoch case.
+  // App sessions grow the garden from APP_SESSION_EPOCH (2026-10-08, ruling 2d-R1; the gate itself is
+  // garden-app-sessions.test.ts): these sessions are played the week after it, where an app session credits through
+  // the completed slot, with the slot's discipline.
+  const AFTER = "2026-10-13"; // PLAYED, a week on: a Tuesday
+  const AFTER_SAVED = "2026-10-14T16:00:00.000Z";
+  /** What the review saves for a session played at noon on AFTER. */
+  const afterEpoch = (s: { workoutId: string; build: BuildPayload }, over: Partial<PerformedSessionWireInput> = {}) =>
+    payload(s, { localDate: AFTER, startedAt: "2026-10-13T19:05:00.000Z", endedAt: "2026-10-13T19:36:00.000Z", ...over });
   const dayInput = async (date: string): Promise<GardenDayInput | undefined> =>
     (await db.select().from(gardenDayInputs).where(eq(gardenDayInputs.id, `${userId}:${date}`)))[0]?.input as unknown as
       | GardenDayInput
@@ -651,49 +659,50 @@ describe("the garden replays from the session's own day (§2b step 6)", () => {
 
   for (const [mode, axis] of [["build", "strength"], ["recovery", "yoga"]] as const) {
     it(`a ${mode === "build" ? "strength" : "mobility"} session credits ${axis}, once, on the day it was done`, async () => {
-      await ensureGarden(db, userId, prefs, "2026-09-28");
-      const s = await started(mode);
-      await advanceGarden(db, userId, prefs, new Date(SAVED));
+      await ensureGarden(db, userId, prefs, "2026-10-05");
+      const s = await started(mode, AFTER);
+      await advanceGarden(db, userId, prefs, new Date(AFTER_SAVED));
       // Yesterday's slot still open: the garden's grace window holds the day back.
-      expect(await dayInput(PLAYED)).toBeUndefined();
+      expect(await dayInput(AFTER)).toBeUndefined();
 
-      await save(payload(s));
+      const body = afterEpoch(s);
+      await save(body, body.id, { now: AFTER_SAVED });
 
-      const credited = (await dayInput(PLAYED))!.completedRuns;
+      const credited = (await dayInput(AFTER))!.completedRuns;
       expect(credited).toHaveLength(1);
-      expect(credited[0]).toMatchObject({ workoutId: s.workoutId, discipline: axis, activityId: payload(s).id });
+      expect(credited[0]).toMatchObject({ workoutId: s.workoutId, discipline: axis, activityId: body.id });
       expect(credited[0]!.unplanned).toBeUndefined();
     });
   }
 
   /** Four days on: the garden has walked past the slot's day, which counted as missed while the slot stood open. */
-  const LATE = "2026-10-10T16:00:00.000Z";
+  const LATE = "2026-10-17T16:00:00.000Z";
   async function closedDay() {
-    await ensureGarden(db, userId, prefs, "2026-09-28");
-    const s = await started("build");
+    await ensureGarden(db, userId, prefs, "2026-10-05");
+    const s = await started("build", AFTER);
     await advanceGarden(db, userId, prefs, new Date(LATE));
-    expect((await dayInput(PLAYED))!.completedRuns).toEqual([]);
+    expect((await dayInput(AFTER))!.completedRuns).toEqual([]);
     return s;
   }
 
   it("a session that ran past midnight replays from its slot's day, which the completed slot credits (ruling 2b-R7)", async () => {
     // A Monday slot: the garden's weekly checkpoint is that very day, so a replay from the next day would start after it.
-    const MONDAY = "2026-10-05";
-    await ensureGarden(db, userId, prefs, "2026-09-28");
+    const MONDAY = "2026-10-12";
+    await ensureGarden(db, userId, prefs, "2026-10-05");
     const workoutId = await seedSlot(MONDAY);
-    const built = await buildSession(db, userId, workoutId, { overrides: { mode: "build" } }, { today: MONDAY, now: "2026-10-05T19:00:00.000Z", prefs });
-    const build = (await startSession(db, userId, workoutId, built.build!.buildId, "2026-10-05T19:00:00.000Z")).build!;
+    const built = await buildSession(db, userId, workoutId, { overrides: { mode: "build" } }, { today: MONDAY, now: "2026-10-12T19:00:00.000Z", prefs });
+    const build = (await startSession(db, userId, workoutId, built.build!.buildId, "2026-10-12T19:00:00.000Z")).build!;
     await advanceGarden(db, userId, prefs, new Date(LATE));
     expect((await dayInput(MONDAY))!.completedRuns).toEqual([]);
     // Started at 23:40 on the slot's day, saved with the next day's date.
-    const body = payload({ workoutId, build }, { localDate: PLAYED, startedAt: "2026-10-06T06:40:00.000Z", endedAt: "2026-10-06T07:11:00.000Z" });
+    const body = afterEpoch({ workoutId, build }, { startedAt: "2026-10-13T06:40:00.000Z", endedAt: "2026-10-13T07:11:00.000Z" });
     expect(await save(body, body.id, { now: LATE })).toMatchObject({ status: "saved", matched: true });
     expect((await dayInput(MONDAY))!.completedRuns.map((r) => r.workoutId)).toEqual([workoutId]);
   });
 
   it("a replay killed after the commit is not lost: the day is on record, and the next garden read credits it (audit 2b-A M-5)", async () => {
     const s = await closedDay();
-    const body = payload(s);
+    const body = afterEpoch(s);
     // The replay dies at its first day; the save itself had committed.
     killAt = /^insert into "garden_day_inputs"/;
     expect(await save(body, body.id, { now: LATE })).toMatchObject({ status: "saved" });
@@ -702,41 +711,43 @@ describe("the garden replays from the session's own day (§2b step 6)", () => {
     expect(await save(body, body.id, { now: LATE })).toEqual({ status: "same_payload" });
     // The next garden read (or the hourly cron) walks the change on record.
     await advanceGarden(db, userId, prefs, new Date(LATE));
-    expect((await dayInput(PLAYED))!.completedRuns.map((r) => r.workoutId)).toEqual([s.workoutId]);
+    expect((await dayInput(AFTER))!.completedRuns.map((r) => r.workoutId)).toEqual([s.workoutId]);
   });
 
   it("an old session replays through the capped catch-up: the save stays inside D1's query budget, and the next garden reads finish the walk (ruling 2b-R7, audit 2b-A I-4)", async () => {
-    await ensureGarden(db, userId, prefs, "2026-05-01");
+    // A tablet that saved it offline the week the player went live, and only came online five months later.
+    const OLD = "2026-10-12"; // a Monday
+    const ONLINE = "2027-03-17T16:00:00.000Z";
+    await ensureGarden(db, userId, prefs, "2026-10-09");
     const s = await started("build");
-    const old = await seedSlot("2026-05-04");
-    await advanceGarden(db, userId, prefs, new Date(SAVED));
-    // A tablet that saved it offline in May and only now came online.
+    const old = await seedSlot(OLD);
+    await advanceGarden(db, userId, prefs, new Date(ONLINE));
     const body = payload(s, {
       workoutId: old,
       buildId: null,
-      localDate: "2026-05-04",
-      startedAt: "2026-05-04T19:05:00.000Z",
-      endedAt: "2026-05-04T19:36:00.000Z",
+      localDate: OLD,
+      startedAt: "2026-10-12T19:05:00.000Z",
+      endedAt: "2026-10-12T19:36:00.000Z",
     });
     statements.length = 0;
-    expect(await save(body)).toMatchObject({ status: "saved", matched: true });
+    expect(await save(body, body.id, { now: ONLINE })).toMatchObject({ status: "saved", matched: true });
     console.log(`[save] a 156-day-old session: ${statements.length} statements, save and capped replay together`);
     expect(statements.length).toBeLessThan(800);
     const [account] = await db.select().from(accountState).where(eq(accountState.userId, userId));
     expect(account!.gardenCatchUpPending).toBe(true);
-    // The save's own step walked a month from the start of May, no more.
+    // The save's own step walked a month from the garden's first day, no more.
     const [state] = await db.select().from(schema.gardenState).where(eq(schema.gardenState.userId, userId));
-    expect(state!.lastSimulatedDate < "2026-06-05").toBe(true);
+    expect(state!.lastSimulatedDate < "2026-11-13").toBe(true);
 
     let steps = 0;
     let result: Awaited<ReturnType<typeof advanceGarden>>;
     do {
-      result = await advanceGarden(db, userId, prefs, new Date(SAVED));
+      result = await advanceGarden(db, userId, prefs, new Date(ONLINE));
       steps += 1;
     } while (result.resimPending && steps < 10);
     expect(result.resimPending).toBeFalsy();
-    expect(result.lastSimulatedDate >= "2026-10-05").toBe(true);
-    expect((await dayInput("2026-05-04"))!.completedRuns.map((r) => r.workoutId)).toContain(old);
+    expect(result.lastSimulatedDate >= "2027-03-15").toBe(true);
+    expect((await dayInput(OLD))!.completedRuns.map((r) => r.workoutId)).toContain(old);
     expect((await db.select().from(accountState).where(eq(accountState.userId, userId)))[0]).toMatchObject({ gardenCatchUpPending: false, gardenChangedFrom: null });
     // Five months of garden walked twice: ~3 s here, half a minute on a loaded runner.
   }, 120_000);
@@ -781,15 +792,18 @@ describe("ruling 2b-R7 as amended: the session's day is its locked build's, else
     db.update(plannedWorkouts).set({ effectiveDate: date }).where(eq(plannedWorkouts.id, workoutId));
 
   it("amended: the day is the LOCKED build's — a slot moved after Start still saves, completes, and the garden replays from the earliest day touched", async () => {
-    await ensureGarden(db, userId, prefs, "2026-09-28");
-    const s = await started("build"); // built and started on PLAYED
-    const LATE = "2026-10-10T16:00:00.000Z";
+    // A week after APP_SESSION_EPOCH (ruling 2d-R1), where an app session credits the garden.
+    const AFTER = "2026-10-13";
+    await ensureGarden(db, userId, prefs, "2026-10-05");
+    const s = await started("build", AFTER);
+    const LATE = "2026-10-17T16:00:00.000Z";
     await advanceGarden(db, userId, prefs, new Date(LATE));
     // Moved two days back while the save sat in the outbox: the slot now credits that day.
-    const EARLIER = "2026-10-04";
+    const EARLIER = "2026-10-11";
     await moveSlot(s.workoutId, EARLIER);
 
-    const outcome = await save(payload(s), payload(s).id, { now: LATE });
+    const body = payload(s, { localDate: AFTER, startedAt: "2026-10-13T19:05:00.000Z", endedAt: "2026-10-13T19:36:00.000Z" });
+    const outcome = await save(body, body.id, { now: LATE });
     expect(outcome).toMatchObject({ status: "saved", matched: true });
     expect(await rowOf(s.workoutId)).toMatchObject({ completionState: "completed", contentState: "done", effectiveDate: EARLIER });
     // The replay reached back to the slot's new day, behind the Monday checkpoint after it.
@@ -798,20 +812,21 @@ describe("ruling 2b-R7 as amended: the session's day is its locked build's, else
   });
 
   it("amended: the build's day joins the replay — a session past midnight of its Monday build, saved unmatched after the slot moved, is extra training on that Monday", async () => {
-    const MONDAY = "2026-10-05";
-    const LATE = "2026-10-10T16:00:00.000Z";
-    await ensureGarden(db, userId, prefs, "2026-09-28");
+    // A week after APP_SESSION_EPOCH (ruling 2d-R1), where an app session credits the garden.
+    const MONDAY = "2026-10-12";
+    const LATE = "2026-10-17T16:00:00.000Z";
+    await ensureGarden(db, userId, prefs, "2026-10-05");
     const workoutId = await seedSlot(MONDAY);
-    const built = await buildSession(db, userId, workoutId, { overrides: { mode: "build" } }, { today: MONDAY, now: "2026-10-05T19:00:00.000Z", prefs });
-    const build = (await startSession(db, userId, workoutId, built.build!.buildId, "2026-10-05T19:00:00.000Z")).build!;
+    const built = await buildSession(db, userId, workoutId, { overrides: { mode: "build" } }, { today: MONDAY, now: "2026-10-12T19:00:00.000Z", prefs });
+    const build = (await startSession(db, userId, workoutId, built.build!.buildId, "2026-10-12T19:00:00.000Z")).build!;
     await advanceGarden(db, userId, prefs, new Date(LATE));
     // Moved to Thursday, where the athlete matched another lift by hand: this session cannot match it.
-    await moveSlot(workoutId, "2026-10-08");
-    await db.insert(activities).values({ id: "theirs", userId, startTime: "2026-10-08T14:00:00Z", sport: "strength", durationSeconds: 1500, completionMatchId: "m-hand", createdAt: SAVED, updatedAt: SAVED });
+    await moveSlot(workoutId, "2026-10-15");
+    await db.insert(activities).values({ id: "theirs", userId, startTime: "2026-10-15T14:00:00Z", sport: "strength", durationSeconds: 1500, completionMatchId: "m-hand", createdAt: SAVED, updatedAt: SAVED });
     await db.insert(workoutCompletionMatches).values({ id: "m-hand", workoutId, activityId: "theirs", confidence: 1, method: "manual", matchedAt: SAVED });
 
     // Started at 23:40 on the Monday, saved with Tuesday's date.
-    const body = payload({ workoutId, build }, { localDate: PLAYED, startedAt: "2026-10-06T06:40:00.000Z", endedAt: "2026-10-06T07:11:00.000Z" });
+    const body = payload({ workoutId, build }, { localDate: "2026-10-13", startedAt: "2026-10-13T06:40:00.000Z", endedAt: "2026-10-13T07:11:00.000Z" });
     expect(await save(body, body.id, { now: LATE })).toMatchObject({ status: "saved", matched: false, notes: ["slot_already_matched"] });
     const monday = (await db.select().from(gardenDayInputs).where(eq(gardenDayInputs.id, `${userId}:${MONDAY}`)))[0]?.input as unknown as GardenDayInput;
     expect(monday.completedRuns.filter((r) => r.activityId === body.id).map((r) => [r.workoutId, r.unplanned])).toEqual([[`unplanned-${body.id}`, true]]);
@@ -1043,24 +1058,27 @@ describe("ruling 2b-R5: the app's session supersedes an automatic match, never a
 
   for (const method of ["scored_auto", "coros_plan_link"]) {
     it(`a ${method} match of another activity yields: undone, that activity extra training once, the slot the app session's`, async () => {
-      const s = await started("build");
-      await otherActivity("morning-lift");
-      await matched("m-auto", s.workoutId, "morning-lift", method);
+      // A week after APP_SESSION_EPOCH (ruling 2d-R1), where the app's session credits the garden.
+      const AFTER = "2026-10-13";
+      const AFTER_SAVED = "2026-10-14T16:00:00.000Z";
+      const s = await started("build", AFTER);
+      await otherActivity("morning-lift", "2026-10-13T14:00:00Z");
+      await matched("m-auto", s.workoutId, "morning-lift", method, AFTER);
       // The watch logged that lift's sets, and the match named its workout (linkWatchSessionsToWorkouts).
-      await db.insert(performedSessions).values({ id: "watch-morning", userId, workoutId: s.workoutId, activityId: "morning-lift", source: "watch", sourceRef: "lbl-morning", localDate: PLAYED, payloadHash: "h", createdAt: SAVED, updatedAt: SAVED });
-      const body = payload(s);
+      await db.insert(performedSessions).values({ id: "watch-morning", userId, workoutId: s.workoutId, activityId: "morning-lift", source: "watch", sourceRef: "lbl-morning", localDate: AFTER, payloadHash: "h", createdAt: SAVED, updatedAt: SAVED });
+      const body = payload(s, { localDate: AFTER, startedAt: "2026-10-13T19:05:00.000Z", endedAt: "2026-10-13T19:36:00.000Z" });
 
-      expect(await save(body)).toEqual({ status: "saved", performedId: body.id, activityId: body.id, matched: true, notes: ["superseded_auto_match"] });
+      expect(await save(body, body.id, { now: AFTER_SAVED })).toEqual({ status: "saved", performedId: body.id, activityId: body.id, matched: true, notes: ["superseded_auto_match"] });
       // That lift's own session no longer performed this slot (the slot's pre-check is not its to carry).
       expect((await db.select().from(performedSessions).where(eq(performedSessions.id, "watch-morning")))[0]!.workoutId).toBeNull();
-      expect((await db.select().from(workoutCompletionMatches).where(eq(workoutCompletionMatches.id, "m-auto")))[0]!.undoneAt).toBe(SAVED);
+      expect((await db.select().from(workoutCompletionMatches).where(eq(workoutCompletionMatches.id, "m-auto")))[0]!.undoneAt).toBe(AFTER_SAVED);
       expect(await active()).toEqual([[s.workoutId, body.id, "app_session"]]);
       expect(await pointer("morning-lift")).toBeNull();
       expect(await pointer(body.id)).toBe(`app:${body.id}`);
-      expect(await rowOf(s.workoutId)).toMatchObject({ completionState: "completed", resolutionDate: PLAYED, contentState: "done" });
+      expect(await rowOf(s.workoutId)).toMatchObject({ completionState: "completed", resolutionDate: AFTER, contentState: "done" });
 
       // The day credits the slot once, with the app's session, and the displaced lift once, as extra training.
-      const day = await buildDayInput(db, userId, PLAYED, prefs);
+      const day = await buildDayInput(db, userId, AFTER, prefs);
       expect(day.completedRuns.map((r) => [r.workoutId, r.activityId, r.unplanned ?? false])).toEqual([
         [s.workoutId, body.id, false],
         ["unplanned-morning-lift", "morning-lift", true],

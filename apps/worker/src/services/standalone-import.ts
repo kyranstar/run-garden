@@ -25,8 +25,8 @@
  * count, sessions and volume per week for the last eight weeks, the best set per core lift, records, before/after
  * pairs, block number and week) — for the owner to hold against the tool's Progress tab.
  *
- * Imported history never enters the garden (spec P8): the garden gate lands in 2d, and until it does nothing in the
- * app reaches this importer. Never writes to COROS.
+ * Imported history never enters the garden (spec P8; ruling 2d-R3): every garden read leaves `source = 'import'` rows
+ * out (garden-sync's `gardenSees`), so an import changes no past garden. Never writes to COROS.
  */
 import { and, eq, inArray } from "drizzle-orm";
 import { DateTime } from "luxon";
