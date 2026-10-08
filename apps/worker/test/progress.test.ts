@@ -20,6 +20,7 @@ import { addDays, newId, startOfIsoWeek, type UserPreferences } from "@rg/domain
 import { importStandalone, type ImportSummary } from "../src/services/standalone-import.js";
 import { ingestActivities } from "../src/services/completion.js";
 import { loadProgress } from "../src/services/progress.js";
+import { PENDING_HASH } from "../src/services/watch-sets.js";
 import type { Db } from "../src/services/db.js";
 import { makeTestDb, makeTestUser } from "./helpers.js";
 import { detailOf, workView } from "./watch-sets-fixture.js";
@@ -154,6 +155,22 @@ describe("one physical session counts once", () => {
       const id = newId();
       await db.insert(performedSessions).values({
         id, userId, activityId, source, localDate: "2026-09-29", payloadHash: "h", createdAt: NOW, updatedAt: NOW,
+      });
+      await db.insert(performedSets).values({
+        id: newId(), performedSessionId: id, entryIndex: 0, exerciseId: "gobletSquat", setIndex: 0,
+        reps: 10, loadValue: kgs, loadUnit: "kg", loadKg: kgs, done: true,
+      });
+    }
+    const p = await loadProgress(db, userId, TODAY, "lb");
+    expect(p.volume).toMatchObject({ status: "ok", value: { thisWeekKg: 200 }, sampleSize: 1 });
+  });
+
+  it("a watch session still being written (pending) is not there yet: it counts nothing (Audit 2d M-2)", async () => {
+    const settled = newId();
+    const pending = newId();
+    for (const [id, hash, kgs] of [[settled, "h", 20], [pending, PENDING_HASH, 50]] as const) {
+      await db.insert(performedSessions).values({
+        id, userId, activityId: newId(), source: "watch", localDate: "2026-09-29", payloadHash: hash, createdAt: NOW, updatedAt: NOW,
       });
       await db.insert(performedSets).values({
         id: newId(), performedSessionId: id, entryIndex: 0, exerciseId: "gobletSquat", setIndex: 0,

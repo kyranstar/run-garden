@@ -124,6 +124,12 @@ describe("the expansion", () => {
     expect(html).not.toContain("bpm");
   });
 
+  it("an imported session is never offered to a workout: no 'Link to a workout' (Audit 2d M-2, the UI half of I-2)", () => {
+    expect(renderDetail(imported)).not.toContain("Link to a workout");
+    // The same row from the watch, unmatched, is offered.
+    expect(renderDetail({ ...imported, performed: { ...imported.performed!, source: "watch" } })).toContain("Link to a workout");
+  });
+
   it("a session of played-only moves still says what was done", () => {
     const html = renderDetail({ ...merged, logged: null });
     expect(html).toContain("9 moves");
