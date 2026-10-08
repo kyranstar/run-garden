@@ -6,8 +6,10 @@
  *    saving different edits of the same session is a second entry beside the first, never over it. The server
  *    arbitrates per session id: the first payload it takes wins, the other is refused `409 conflict`.
  *  - Sent in the order saved. 2xx (including `200 {status: "same_payload"}`) or `409 same_payload` removes the entry.
- *    `409 conflict` keeps it, flagged `conflict` (Settings → Data: "Couldn't sync one session", Retry / Discard). A
- *    refusal retrying cannot fix (400, 403, 404, 413, 422, …) is flagged `failed` the same way.
+ *    `409 conflict` keeps it, flagged `conflict` (Settings → Data: "Couldn't sync one session", Discard); so does
+ *    `409 slot_done` — another session of the slot was saved first, on another device (ruling 2b-R18; Settings → Data:
+ *    "Saved on another device", Discard). A refusal retrying cannot fix (400, 403, 404, 413, 422, …) is flagged
+ *    `failed` the same way (Retry / Discard).
  *  - A network error, a timeout, 401, 408, 423 (a restore running), 429 or 5xx backs off — 1 s, 5 s, 30 s, then only on
  *    the next trigger (app start, `online`, the page becoming visible, and every 5 minutes while the page is visible)
  *    — and stops the drain, so nothing saved later goes first. A trigger does not wait for the backoff.
@@ -152,7 +154,17 @@ export async function discardAccountEntries(db: OfflineDb, userId: string): Prom
   }
 }
 
-type Outcome = { kind: "saved" } | { kind: "conflict" } | { kind: "failed"; error: string } | { kind: "transient"; error: string };
+/**
+ * Why an entry is a `conflict`: the same session saved with other edits (`conflict`), or another session of its slot
+ * saved first — on another device (`slot_done`, ruling 2b-R18). Either way the server refuses it every time.
+ */
+export const SLOT_DONE = "slot_done";
+
+type Outcome =
+  | { kind: "saved" }
+  | { kind: "conflict"; why: "conflict" | typeof SLOT_DONE }
+  | { kind: "failed"; error: string }
+  | { kind: "transient"; error: string };
 
 const TRANSIENT_STATUSES = new Set([401, 408, 423, 425, 429]);
 
@@ -160,7 +172,8 @@ function classify(error: unknown): Outcome {
   if (!(error instanceof ApiError)) return { kind: "transient", error: "network" };
   const code = (error.body as { error?: unknown } | null)?.error;
   if (error.status === 409 && code === "same_payload") return { kind: "saved" };
-  if (error.status === 409 && code === "conflict") return { kind: "conflict" };
+  if (error.status === 409 && code === "conflict") return { kind: "conflict", why: "conflict" };
+  if (error.status === 409 && code === SLOT_DONE) return { kind: "conflict", why: SLOT_DONE };
   // The save's own 503 says another delivery of it holds its lock (or the COROS read does): plainly transient.
   if (error.status === 503 && code === "busy") return { kind: "transient", error: "http_503 busy" };
   if (error.status >= 500 || TRANSIENT_STATUSES.has(error.status)) return { kind: "transient", error: `http_${error.status}` };
@@ -220,7 +233,8 @@ export async function drain(
         await db.delete("outbox", entry.key);
         result.saved += 1;
       } else if (outcome.kind === "conflict") {
-        await settle(entry.key, (e) => ({ ...e, state: "conflict", lastError: "conflict", attempts: e.attempts + 1 }));
+        const why = outcome.why;
+        await settle(entry.key, (e) => ({ ...e, state: "conflict", lastError: why, attempts: e.attempts + 1 }));
         result.conflicts += 1;
       } else if (outcome.kind === "failed") {
         await settle(entry.key, (e) => ({ ...e, state: "failed", lastError: outcome.error, attempts: e.attempts + 1 }));

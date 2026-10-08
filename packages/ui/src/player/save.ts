@@ -91,6 +91,16 @@ export async function discardSession(
   if (timer) clearTimeout(timer);
 }
 
+/**
+ * The device's copy of a session the server already has as done — saved on another device (ruling 2b-R18): it is
+ * forgotten here (the session in progress and what Start left), and the server's slot is left alone (no un-start: it
+ * would be refused, and the slot is not this copy's to change).
+ */
+export async function discardHere(db: OfflineDb, workoutId: string): Promise<void> {
+  await clearLive(db, workoutId);
+  await forgetStart(db, workoutId);
+}
+
 /** A session of this slot saved on this device and still waiting for the server (or refused by it). */
 export async function savedHere(db: OfflineDb, workoutId: string): Promise<boolean> {
   return (await outboxEntries(db)).some((e) => e.payload.workoutId === workoutId);

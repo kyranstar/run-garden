@@ -5,16 +5,23 @@
  * "Session in progress" for each session in progress the device holds for the signed-in account, with Continue; the
  * day's own sessions keep their Continue on the card and are not listed twice.
  *
- * Read from the device only (`live`, and the name Start kept beside the build): for an account with no program there is
- * never a session in progress, and nothing renders.
+ * Read from the device (`live`, and the name Start kept beside the build) — and, before Continue is offered, the slot
+ * as the server has it (ruling 2b-R18, re-review 2b-B N-3): a session played and saved on another device is done there,
+ * and this device's copy is offered for Discard only ("Saved on another device"), never Continue — its save would be
+ * a second session for the slot. A server that can't answer in time (offline, a slow network) leaves Continue to the
+ * device, as offline play needs. For an account with no program there is never a session in progress, and nothing
+ * renders.
  */
+import { useState } from "react";
 import { Link } from "react-router-dom";
-import { useQuery } from "@tanstack/react-query";
-import { formatDayShort } from "../components.js";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { api, type SessionDto } from "@rg/api-client";
+import { ConfirmDialog, formatDayShort } from "../components.js";
 import { loadBuild } from "../offline/builds.js";
 import { offlineDb, type OfflineDb } from "../offline/idb.js";
 import { liveSessions } from "../offline/live.js";
 import { chimes } from "../player/audio.js";
+import { discardHere } from "../player/save.js";
 import { loadExtras } from "../player/stored.js";
 
 export interface SessionInProgress {
@@ -49,11 +56,39 @@ export async function sessionsInProgress(db: OfflineDb, userId: string): Promise
   return out.sort((a, b) => a.startedAt - b.startedAt).map(({ startedAt: _startedAt, ...s }) => s);
 }
 
+export type SlotState = SessionDto["contentState"];
+
+/** How long the line waits for the server before it leaves Continue to the device. */
+export const SLOT_CHECK_WAIT_MS = 3_000;
+
+const askServer = async (workoutId: string): Promise<SlotState> => (await api.getSession(workoutId)).contentState;
+
+/** What the server has each slot as — null where it can't say within `waitMs` (offline, slow, the slot gone). */
+export async function slotStates(
+  ids: readonly string[],
+  ask: (workoutId: string) => Promise<SlotState>,
+  waitMs: number,
+): Promise<Record<string, SlotState | null>> {
+  const one = async (id: string): Promise<SlotState | null> => {
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    try {
+      return await Promise.race([ask(id), new Promise<null>((resolve) => (timer = setTimeout(() => resolve(null), waitMs)))]);
+    } catch {
+      return null;
+    } finally {
+      clearTimeout(timer);
+    }
+  };
+  return Object.fromEntries(await Promise.all(ids.map(async (id) => [id, await one(id)] as const)));
+}
+
 export function SessionsInProgress({
   today,
   shown,
   userId,
   db = offlineDb,
+  slotState = askServer,
+  checkWaitMs = SLOT_CHECK_WAIT_MS,
 }: {
   today: string;
   /** The sessions the Today card already shows, with their own Continue. */
@@ -61,7 +96,13 @@ export function SessionsInProgress({
   /** The signed-in account; nothing is shown before it is known. */
   userId: string | null;
   db?: () => Promise<OfflineDb>;
+  /** The slot as the server has it (`GET /api/sessions/:id`). */
+  slotState?: (workoutId: string) => Promise<SlotState>;
+  checkWaitMs?: number;
 }) {
+  const qc = useQueryClient();
+  const [discarding, setDiscarding] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
   const q = useQuery({
     queryKey: ["live-sessions", userId],
     queryFn: async () => sessionsInProgress(await db(), userId!),
@@ -70,24 +111,75 @@ export function SessionsInProgress({
     staleTime: 0,
   });
   const items = (q.data ?? []).filter((s) => !shown.includes(s.workoutId));
+  const ids = items.map((s) => s.workoutId);
+  const server = useQuery({
+    queryKey: ["live-sessions-server", userId, ids],
+    queryFn: () => slotStates(ids, slotState, checkWaitMs),
+    enabled: ids.length > 0,
+    retry: false,
+    staleTime: 0,
+    // Asked whatever the browser says of the network: a check that can't be answered leaves Continue to the device.
+    networkMode: "always",
+  });
   if (items.length === 0) return null;
+  const checked = server.data;
+
+  const discard = async (workoutId: string) => {
+    setBusy(true);
+    try {
+      await discardHere(await db(), workoutId);
+      setDiscarding(null);
+      await qc.invalidateQueries({ queryKey: ["live-sessions", userId] });
+    } finally {
+      setBusy(false);
+    }
+  };
+
   return (
     <section className="dock-panel today-inprogress" aria-label="Session in progress">
-      {items.map((s) => (
-        <div key={s.workoutId} className="today-inprogress-row">
-          <div className="today-session-text">
-            <span className="today-session-name">Session in progress · {s.title}</span>
-            <span className="today-session-meta">
-              {[s.date ? (s.date === today ? "Today" : formatDayShort(s.date)) : null, s.step === null ? "ready to save" : `step ${s.step} of ${s.steps}`]
-                .filter(Boolean)
-                .join(" · ")}
-            </span>
+      {items.map((s) => {
+        const savedElsewhere = checked?.[s.workoutId] === "done";
+        return (
+          <div key={s.workoutId} className="today-inprogress-row">
+            <div className="today-session-text">
+              <span className="today-session-name">
+                {savedElsewhere ? "Saved on another device" : "Session in progress"} · {s.title}
+              </span>
+              <span className="today-session-meta">
+                {[s.date ? (s.date === today ? "Today" : formatDayShort(s.date)) : null, s.step === null ? "ready to save" : `step ${s.step} of ${s.steps}`]
+                  .filter(Boolean)
+                  .join(" · ")}
+              </span>
+            </div>
+            {checked === undefined ? (
+              // Not offered before the server has said whether the slot is still to be played (ruling 2b-R18).
+              <button type="button" className="btn btn-primary" disabled>
+                Continue
+              </button>
+            ) : savedElsewhere ? (
+              <button type="button" className="btn" onClick={() => setDiscarding(s.workoutId)}>
+                Discard
+              </button>
+            ) : (
+              <Link className="btn btn-primary" to={`/session/${encodeURIComponent(s.workoutId)}`} onClick={() => chimes.unlock()}>
+                Continue
+              </Link>
+            )}
           </div>
-          <Link className="btn btn-primary" to={`/session/${encodeURIComponent(s.workoutId)}`} onClick={() => chimes.unlock()}>
-            Continue
-          </Link>
-        </div>
-      ))}
+        );
+      })}
+      <ConfirmDialog
+        open={discarding !== null}
+        onClose={() => setDiscarding(null)}
+        title="Discard this device's copy?"
+        confirmLabel="Discard this copy"
+        busy={busy}
+        onConfirm={() => {
+          if (discarding) void discard(discarding);
+        }}
+      >
+        This session was saved on another device. What this device kept of it won't be saved.
+      </ConfirmDialog>
     </section>
   );
 }

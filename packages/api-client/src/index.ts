@@ -1437,7 +1437,8 @@ export const api = {
   sessionCurrent: (workoutId: string) => get<SessionCurrencyDto>(`/api/sessions/${encodeURIComponent(workoutId)}/current`),
   /**
    * The outbox's delivery of a performed session: saved exactly once by its id. 409 `{error:"conflict"}` when the
-   * same session was saved with other edits; 503 `{error:"busy"}` and 423 are worth retrying; 404 / 422 are not.
+   * same session was saved with other edits; 409 `{error:"slot_done"}` when another session of its slot was saved
+   * first, on another device (ruling 2b-R18); 503 `{error:"busy"}` and 423 are worth retrying; 404 / 422 are not.
    */
   savePerformed: (performedId: string, payload: PerformedSessionWire) =>
     put<SavePerformedDto>(`/api/sessions/performed/${encodeURIComponent(performedId)}`, payload),

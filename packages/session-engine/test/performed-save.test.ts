@@ -84,8 +84,9 @@ describe("toPerformedSave → historyFromPerformed", () => {
       startedAt: "2026-09-29T18:00:00.000Z", endedAt: "2026-09-29T18:41:00.000Z", seconds: 2400, plannedSeconds: save.plannedSeconds,
       minutes: 40, mode: "build", theme: "t", locationId: "home", blockRef: block.id, blockNumber: block.number, completed: true,
       stepsTotal: save.stepsTotal,
-      stepsDone: save.stepsDone, note: "felt strong", newMove: save.newMove,
+      stepsDone: save.stepsDone, movesPlanned: save.movesPlanned, note: "felt strong", newMove: save.newMove,
     });
+    expect(wire.movesPlanned).toBeGreaterThan(0);
     expect(wire.movesDone).toEqual(save.done.map(d => ({ exerciseId: d.id, seconds: d.secs })));
     expect(wire.checks).toEqual([
       { profileId: "tmj", kind: "pre", value: 1, feelingOff: false, at: "2026-09-29T18:00:00.000Z" },

@@ -30,7 +30,7 @@
  *
  * Every writer here is a no-op while a restore is replacing the account (ruling B2).
  */
-import { and, eq, inArray, isNotNull, isNull, ne, notExists, notInArray, or } from "drizzle-orm";
+import { and, eq, inArray, isNotNull, isNull, ne, notExists, notInArray, or, sql } from "drizzle-orm";
 import { conditionChecks, exercisePrefs, performedSessions, plannedWorkouts, programs, sessionBuilds, userConditions } from "@rg/database";
 import { newId, sessionLead, todayInZone, type AdaptiveConfig, type SessionLead, type UserPreferences, type Weight } from "@rg/domain";
 import {
@@ -793,11 +793,19 @@ async function recordPreChecks(
   }
 }
 
-/** Keep one unlocked build per workout — `keep` — plus any locked one. */
+/**
+ * A build started and then un-started (ruling 2b-R19) says when in its payload, `$.unstartedAt`. It stays on record,
+ * unlocked: a save made from it may still be waiting on another device, and the day it was built for is still that
+ * session's day (session-save's date check reads it, `startedBuildDays`).
+ */
+export const UNSTARTED_AT_PATH = "$.unstartedAt";
+const neverStarted = () => sql`json_extract(${sessionBuilds.payload}, ${UNSTARTED_AT_PATH}) is null`;
+
+/** Keep one unlocked build per workout — `keep` — plus any locked one, and any started once (ruling 2b-R19). */
 async function pruneBuilds(db: Db, workoutId: string, keep: string): Promise<void> {
   await db
     .delete(sessionBuilds)
-    .where(and(eq(sessionBuilds.workoutId, workoutId), ne(sessionBuilds.id, keep), isNull(sessionBuilds.lockedAt)));
+    .where(and(eq(sessionBuilds.workoutId, workoutId), ne(sessionBuilds.id, keep), isNull(sessionBuilds.lockedAt), neverStarted()));
 }
 
 /** Planned seconds as the calendar books them: rounded up to 5 minutes. */
@@ -1219,6 +1227,8 @@ export async function startSessionOutcome(
  * `POST /api/sessions/:workoutId/unstart`: the player's Discard (ruling 2b-R9). A started slot goes back to `built`
  * and its build is unlocked, so Today offers Start again rather than a Continue that would replay the discarded
  * session; the sheet then shows the same build (or a fresh one, when the day's inputs moved on), and Start locks it.
+ * The build stays on record, marked un-started (ruling 2b-R19): a save made from it on another device may still arrive,
+ * and its day is still that session's, even after the slot moves.
  *
  * Refused (`PerformedExistsError`) once a performed session exists for the slot — the session was saved, from this
  * device or another, and a save is never taken back. The refusal is also written into the update itself, so a save
@@ -1255,9 +1265,10 @@ export async function unstartSession(db: Db, userId: string, workoutId: string, 
     );
   const after = await loadSlot(db, userId, workoutId);
   if (after.contentState !== "built") throw new PerformedExistsError();
+  // Unlocked, but kept on record with its day (ruling 2b-R19): another device's save made from it may still arrive.
   await db
     .update(sessionBuilds)
-    .set({ lockedAt: null })
+    .set({ lockedAt: null, payload: sql`json_set(${sessionBuilds.payload}, ${UNSTARTED_AT_PATH}, ${ctx.now})` })
     .where(and(eq(sessionBuilds.workoutId, workoutId), eq(sessionBuilds.userId, userId), isNotNull(sessionBuilds.lockedAt)));
   return readResponse(db, userId, after, ctx.today);
 }

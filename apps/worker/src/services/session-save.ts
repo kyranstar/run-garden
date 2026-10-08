@@ -30,13 +30,14 @@
  *  6. The garden replays from the earliest day the save touched: the slot's, the session's, a displaced activity's
  *     or a reopened slot's. That day is recorded in the save's own transaction, and the replay is one capped catch-up
  *     step (ruling 2b-R7): a long walk finishes on later garden reads, and a replay killed after the commit is not
- *     lost (audit 2b-A M-5). The session's day must be its locked build's (the slot's, when none is locked) or the
- *     next, and not after tomorrow (422); a slot moved after Start still saves.
+ *     lost (audit 2b-A M-5). The session's day must be a started build's — the locked one, or one un-started since
+ *     (ruling 2b-R19) — (the slot's, when none was ever started) or the next, and not after tomorrow (422); a slot
+ *     moved after Start still saves.
  *
  * Never writes to COROS (an app session is never pushed to the watch in 2b). Every write waits for the restore
  * marker to be clear. Every statement stays under D1's 100 bound variables.
  */
-import { and, eq, gte, inArray, isNotNull, isNull, lte, ne, sql } from "drizzle-orm";
+import { and, eq, gte, inArray, isNotNull, isNull, lte, ne, or, sql } from "drizzle-orm";
 import { DateTime } from "luxon";
 import {
   activities,
@@ -73,7 +74,7 @@ import { chunkIds, insertBatches, runAtomically, type AtomicStatement, type Db }
 import { loadEngineContext, loadProgramState } from "./engine-inputs.js";
 import { gardenChangeStatement, resimulateFrom } from "./garden-sync.js";
 import { claimUserLock, releaseUserLock } from "./locks.js";
-import { engineDataFor, SessionNotFoundError } from "./session-build.js";
+import { engineDataFor, SessionNotFoundError, UNSTARTED_AT_PATH } from "./session-build.js";
 import { PENDING_HASH, removeWatchSessionStatements, WATCH_SOURCE } from "./watch-sets.js";
 
 /**
@@ -87,6 +88,8 @@ export type SaveOutcome =
   | { status: "saved"; performedId: string; activityId: string; matched: boolean; notes: SaveNote[] }
   | { status: "same_payload" }
   | { status: "conflict" }
+  /** Another app session of this slot is saved already — played on another device (ruling 2b-R18). */
+  | { status: "slot_done" }
   | { status: "restoring" }
   | { status: "busy" };
 
@@ -120,16 +123,46 @@ function startOf(p: PerformedSessionWire, timezone: string): { startTime: string
 }
 
 /**
- * The day the slot's LOCKED build was made for (`payload.build.date`, read in SQL) — the day the session was started,
- * whatever day the slot shows now. Null when no build of the slot is locked (ruling 2b-R7 as amended).
+ * The days the slot's STARTED builds were made for (`payload.build.date`, read in SQL): the locked one's, and those of
+ * builds started once and un-started since (`$.unstartedAt`, kept on record — ruling 2b-R19) — the days a session of
+ * the slot was started, whatever day the slot shows now. Empty when no build of the slot was ever started (ruling 2b-R7
+ * as amended).
  */
-async function lockedBuildDay(db: Db, userId: string, workoutId: string): Promise<string | null> {
-  const [row] = await db
+async function startedBuildDays(db: Db, userId: string, workoutId: string): Promise<string[]> {
+  const rows = await db
     .select({ date: sql<string | null>`json_extract(${sessionBuilds.payload}, '$.build.date')` })
     .from(sessionBuilds)
-    .where(and(eq(sessionBuilds.workoutId, workoutId), eq(sessionBuilds.userId, userId), isNotNull(sessionBuilds.lockedAt)))
+    .where(
+      and(
+        eq(sessionBuilds.workoutId, workoutId),
+        eq(sessionBuilds.userId, userId),
+        or(isNotNull(sessionBuilds.lockedAt), sql`json_extract(${sessionBuilds.payload}, ${UNSTARTED_AT_PATH}) is not null`),
+      ),
+    );
+  return [...new Set(rows.map((r) => r.date).filter((d): d is string => typeof d === "string" && isLocalDate(d)))].sort();
+}
+
+/**
+ * Ruling 2b-R18: a slot holds at most one app session. Another one of it already saved — played on another device (a
+ * device's own outbox holds one save per slot) — refuses this one: never a second performed session and activity for
+ * one slot. Read under the merge locks every save of this user takes, so two devices' saves cannot both pass it. A
+ * watch's or an import's session of the slot is not the app's, and leaves it to the save (ruling 2b-R3).
+ */
+async function savedByAnother(db: Db, userId: string, workoutId: string, performedId: string): Promise<boolean> {
+  const [row] = await db
+    .select({ id: performedSessions.id })
+    .from(performedSessions)
+    .where(
+      and(
+        eq(performedSessions.userId, userId),
+        eq(performedSessions.workoutId, workoutId),
+        eq(performedSessions.source, "app"),
+        ne(performedSessions.id, performedId),
+        ne(performedSessions.payloadHash, PENDING_HASH),
+      ),
+    )
     .limit(1);
-  return typeof row?.date === "string" && isLocalDate(row.date) ? row.date : null;
+  return row !== undefined;
 }
 
 /** §9.2 from the locked build: a core lift → strength, else yoga; read in SQL, never parsing the payload here. */
@@ -395,19 +428,22 @@ export async function savePerformedSession(db: Db, userId: string, performedId: 
     .limit(1);
   if (!slot || (slot.origin !== "program" && slot.origin !== "on_demand")) throw new SessionNotFoundError();
   // Ruling 2b-R7 as amended (audit 2b-A I-4): the session's day is the day its LOCKED build was built and started for
-  // — or the next, for a session that ran past midnight — and never after tomorrow. The slot's own date answers only
-  // when no build was locked: a slot moved between Start and the outbox's drain must still save. Anything else is a
-  // wrong clock or a bug, and would replay the garden from wherever it says.
-  const builtOn = await lockedBuildDay(db, userId, slot.id);
-  const sessionDay = builtOn ?? slot.effectiveDate;
-  if (p.localDate < sessionDay || p.localDate > addDays(sessionDay, 1) || p.localDate > addDays(today, 1)) {
+  // — or the next, for a session that ran past midnight — and never after tomorrow. A build started once and
+  // un-started since counts too (ruling 2b-R19): another device's save made from it may drain after the Discard and a
+  // move. The slot's own date answers only when no build was ever started: a slot moved between Start and the outbox's
+  // drain must still save. Anything else is a wrong clock or a bug, and would replay the garden from wherever it says.
+  const startedOn = await startedBuildDays(db, userId, slot.id);
+  const days = startedOn.length > 0 ? startedOn : [slot.effectiveDate];
+  const sessionDay = days.find((d) => p.localDate >= d && p.localDate <= addDays(d, 1));
+  if (sessionDay === undefined || p.localDate > addDays(today, 1)) {
     throw new InvalidSaveError([
       {
-        message: `the session's day must be ${builtOn ? "its locked build's" : "its slot's"} (${sessionDay}) or the next, and not after tomorrow`,
+        message: `the session's day must be ${startedOn.length > 0 ? "a started build's" : "its slot's"} (${days.join(", ")}) or the next, and not after tomorrow`,
         path: ["localDate"],
       },
     ]);
   }
+  const builtOn = startedOn.length > 0 ? sessionDay : null;
   if (await restoreInProgress(db, userId)) return { status: "restoring" };
 
   const lockKind = `save:${performedId}`;
@@ -424,6 +460,7 @@ export async function savePerformedSession(db: Db, userId: string, performedId: 
     try {
       // A restore can begin while this one read; checked again just before the first write.
       if (await restoreInProgress(db, userId)) return { status: "restoring" };
+      if (await savedByAnother(db, userId, slot.id, performedId)) return { status: "slot_done" };
       written = await write(db, userId, p, hash, slot, builtOn, existing?.activityId ?? null, ctx);
     } finally {
       await releaseMergeLocks(db, userId, merge);

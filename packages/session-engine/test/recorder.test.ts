@@ -76,6 +76,19 @@ test("toSession keeps only done sets with the right fields, and lists the exerci
   expect(s.stepsDone).toBe(plan.steps.filter((st, i) => i < plan.steps.length / 2 && st.kind !== "rest").length);
 });
 
+test("the save counts every move the session held, done or skipped (ruling 2b-R17: what the review may rate)", () => {
+  const plan = planFor();
+  const live = Recorder.create(data, plan, meta(plan));
+  const held = new Set(plan.steps.filter(st => st.kind !== "rest" && st.exerciseId).map(st => st.exerciseId!));
+  expect(held.size).toBeGreaterThan(2);
+  // Nothing reached: nothing done, every move still the session's.
+  const none = Recorder.toSession(live, { endedAt: "x", note: "", completed: false });
+  expect(none.done).toEqual([]);
+  expect(none.movesPlanned).toBe(held.size);
+  plan.steps.forEach((_, k) => Recorder.reach(live, k));
+  expect(Recorder.toSession(live, { endedAt: "x", note: "", completed: true }).movesPlanned).toBe(held.size);
+});
+
 test("ladder rungs become sets with their own rep targets and the format is recorded", () => {
   const plan = planFor({ theme: themed(["ladder"]), minutes: 40 });
   const g = plan.groups.find(x => x.format === "ladder");
@@ -320,8 +333,15 @@ describe("review: decisions are a pending change set, applied on save (spec §5 
     const applied = Review.apply(data, { prefs, block, today: "2026-09-29", equipment: home.equipment }, changes);
     expect(applied.prefs).toEqual({ ratings: { b: -1 }, excluded: ["y"], pinned: [] });
     expect(applied.block).toBe(block);
-    // Rating twice the same way within one review returns to the saved value.
-    expect(Review.pending(Review.rate(Review.rate(Review.start(), prefs, "b", 1), prefs, "b", 1), []).ratings).toEqual({ b: null });
+    // Rating twice the same way within one review returns to the saved value: no decision is left (ruling 2b-R17), so
+    // the save names no move for it.
+    expect(Review.pending(Review.rate(Review.rate(Review.start(), prefs, "b", 1), prefs, "b", 1), []).ratings).toEqual({});
+    expect(Review.pending(Review.rate(Review.rate(Review.start(), prefs, "y", "never"), prefs, "y", "never"), []).excluded).toEqual({});
+    // Taking a SAVED rating or exclusion back off is a decision: it stays, to clear what was saved.
+    const cleared = Review.rate(Review.rate(Review.rate(Review.start(), prefs, "a", -1), prefs, "a", -1), prefs, "x", "never");
+    expect(Review.pending(cleared, [])).toMatchObject({ ratings: { a: null }, excluded: { x: false } });
+    // And back to what was saved again: nothing pending.
+    expect(Review.pending(Review.rate(Review.rate(Review.start(), prefs, "a", 1), prefs, "a", 1), []).ratings).toEqual({});
   });
 
   test("a graduation accepted in review applies on save, and a withdrawn offer is pruned", () => {

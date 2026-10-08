@@ -136,6 +136,23 @@ describe("performedSessionSaveSchema — limits a real session never reaches (au
     expect(excluded.error!.issues.map((i) => i.path)).toEqual([["review", "excluded"]]);
   });
 
+  it("counts every move the session held — its plan's, done or skipped — plus its entries (ruling 2b-R17)", () => {
+    const ids = (n: number) => Object.fromEntries(Array.from({ length: n }, (_, i) => [`move-${i}`, -1 as const]));
+    // A mobility session whose four holds were all skipped: nothing done, nothing logged, every row rated.
+    const skipped = { ...valid(), entries: [], movesDone: [], movesPlanned: 4 };
+    expect(performedSessionSaveSchema.safeParse({ ...skipped, review: { ratings: ids(4) } }).success).toBe(true);
+    expect(performedSessionSaveSchema.safeParse({ ...skipped, review: { excluded: { "move-0": true, "move-3": true } } }).success).toBe(true);
+    // valid() logs one entry: its plan's four moves plus that entry.
+    expect(performedSessionSaveSchema.safeParse({ ...valid(), movesPlanned: 4, review: { ratings: ids(5) } }).success).toBe(true);
+    const over = performedSessionSaveSchema.safeParse({ ...valid(), movesPlanned: 4, review: { ratings: ids(6) } });
+    expect(over.error!.issues.map((i) => i.path)).toEqual([["review", "ratings"]]);
+    // Only junk is refused: a plan holds no more moves than a session may have done.
+    const junk = performedSessionSaveSchema.safeParse({ ...valid(), movesPlanned: PERFORMED_LIMITS.movesDone + 1 });
+    expect(junk.error!.issues.map((i) => i.path)).toEqual([["movesPlanned"]]);
+    // Without it (an import, a watch review, an outbox entry saved before it existed): the moves done count, as before.
+    expect(performedSessionSaveSchema.parse(valid())).not.toHaveProperty("movesPlanned");
+  });
+
   it("graduates each core family at most once, and no more families than there are", () => {
     const grad = (family: string) => ({ family, to: `${family}-harder` });
     const families = ["squat", "hinge", "row", "press", "carry"];

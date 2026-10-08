@@ -8,7 +8,8 @@
  * the stored build when nothing changed), so a reading given on the Today chip is always the one built with.
  *
  *  - A day ahead is a preview (no pre-check, never startable); a day gone offers "Move to today".
- *  - A started or done session is read-only: no pickers, no swaps.
+ *  - A started or done session is read-only: no pickers, no swaps. A done one this device still holds in progress was
+ *    saved on another device (ruling 2b-R18): that copy is offered for Discard only, never Continue.
  *  - A skipped session says so and offers Un-skip, and nothing else: no pre-check, no build, no Skip (ruling 2a-R15).
  *  - Start (and Continue) belong to the player, which arrives in 2b: hidden behind `features.player` until then.
  *  - "Don't show again" on a swap writes the move's prefs (`PUT /api/library/:id/prefs`, 2c): left out until then.
@@ -27,12 +28,13 @@ import {
   type WorkoutDto,
 } from "@rg/api-client";
 import { doseText, type DoseStep, type DoseTarget } from "@rg/domain";
-import { Banner, CompletionPill, EmptyState, formatDayLong, formatTime, Sheet, Spinner } from "../components.js";
+import { Banner, CompletionPill, ConfirmDialog, EmptyState, formatDayLong, formatTime, Sheet, Spinner } from "../components.js";
 import { features } from "../features.js";
 import { IconInfo, IconSwap } from "../icons.js";
 import { offlineDb, type OfflineDb } from "../offline/idb.js";
-import { requestPersistentStorage } from "../offline/live.js";
+import { readLive, requestPersistentStorage } from "../offline/live.js";
 import { chimes } from "../player/audio.js";
+import { discardHere } from "../player/save.js";
 import { rememberStart, saveBasis } from "../player/stored.js";
 import { MoveSheet } from "../screens/move-sheet.js";
 import { CheckScale, checkWord, conditionChipLabel, FeelingOffToggle } from "./condition-check-sheet.js";
@@ -274,6 +276,29 @@ export function SessionSheet({ w, today, onClose }: { w: WorkoutDto; today: stri
     const target = el?.querySelector<HTMLElement>(".session-reading") ?? el?.closest<HTMLElement>('[role="dialog"]');
     target?.focus();
   });
+  // Done on the server while this device still holds the session in progress: it was played and saved on another
+  // device (ruling 2b-R18). This device's copy is offered for Discard only — never Continue, whose save would be a
+  // second session for the slot (the server refuses it, 409 slot_done).
+  const doneOnServer = features.player && s?.contentState === "done";
+  const copyHere = useQuery({
+    queryKey: ["live-session", w.id],
+    queryFn: async () => (await readLive(await offlineDb(), w.id)) ?? null,
+    enabled: doneOnServer,
+    retry: false,
+    staleTime: 0,
+    networkMode: "always",
+  });
+  const savedElsewhere = doneOnServer && !!copyHere.data;
+  const [discardingCopy, setDiscardingCopy] = useState(false);
+  const discardCopy = useMutation({
+    mutationFn: async () => discardHere(await offlineDb(), w.id),
+    networkMode: "always",
+    onSuccess: () => {
+      setDiscardingCopy(false);
+      void qc.invalidateQueries({ queryKey: ["live-session", w.id] });
+      void qc.invalidateQueries({ queryKey: ["live-sessions"] });
+    },
+  });
   const canPlay = features.player && date === today && !past && !skipped;
   // A started session keeps Continue while its save would be taken: its build's day and the day after (ruling 2b-R16).
   const canContinue = features.player && !skipped && s?.contentState === "started" && continuable(s.build?.date ?? date, today);
@@ -324,6 +349,13 @@ export function SessionSheet({ w, today, onClose }: { w: WorkoutDto; today: stri
           }}
         >
           Continue
+        </button>,
+      );
+    }
+    if (savedElsewhere) {
+      actions.push(
+        <button key="discard-copy" type="button" className="btn" disabled={discardCopy.isPending} onClick={() => setDiscardingCopy(true)}>
+          Discard this device's copy
         </button>,
       );
     }
@@ -442,8 +474,21 @@ export function SessionSheet({ w, today, onClose }: { w: WorkoutDto; today: stri
             This session isn't being kept on this device. It plays while you're online, and a reload starts it again.
           </Banner>
         ) : null}
+        {savedElsewhere ? (
+          <p className="session-status">Saved on another device. This device still holds a copy of it, which won't be saved.</p>
+        ) : null}
         {body}
       </div>
+      <ConfirmDialog
+        open={discardingCopy}
+        onClose={() => setDiscardingCopy(false)}
+        title="Discard this device's copy?"
+        confirmLabel="Discard this copy"
+        busy={discardCopy.isPending}
+        onConfirm={() => discardCopy.mutate()}
+      >
+        This session was saved on another device. What this device kept of it won't be saved.
+      </ConfirmDialog>
       {picker && view && s ? (
         <ChoiceSheet
           title={PICKER_TITLE[picker]}

@@ -2,15 +2,16 @@
  * "COULDN'T SYNC ONE SESSION" (Phase 2 spec §2b "Client storage"; plan 2b Task 7) — Settings → Data. A session the
  * server refused stays in the outbox, flagged, never silently dropped or written over: one quiet row each, for the
  * signed-in account's own (ruling 2b-R6). What it offers is the outbox's `entryActions` (audit 2b-A M-8): a `conflict`
- * (the same session saved elsewhere with other edits — the server keeps the first and refuses any other, every time)
- * can only be discarded; a `failed` one can be sent again (Retry) or discarded. Nothing renders when there is none.
+ * (the same session saved elsewhere with other edits — the server keeps the first and refuses any other, every time;
+ * or, reading "Saved on another device", another session of its slot saved first there — ruling 2b-R18) can only be
+ * discarded; a `failed` one can be sent again (Retry) or discarded. Nothing renders when there is none.
  */
 import { useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { api } from "@rg/api-client";
 import { ConfirmDialog, formatShortDate } from "../components.js";
 import { offlineDb, type OfflineDb } from "../offline/idb.js";
-import { discardEntry, drain, entryActions, outboxEntries, retryEntry, type OutboxApi, type OutboxEntry } from "../offline/outbox.js";
+import { discardEntry, drain, entryActions, outboxEntries, retryEntry, SLOT_DONE, type OutboxApi, type OutboxEntry } from "../offline/outbox.js";
 import { SAVED_SESSION_QUERIES, useSignedInUserId } from "./outbox-sync.js";
 
 /** The rows: the signed-in account's own refused sessions (ruling 2b-R6), those Settings can act on. */
@@ -67,7 +68,7 @@ export function UnsyncedSessions({
       {refused.map((e) => (
         <div key={e.key} className="unsynced-row">
           <span>
-            Couldn't sync one session · {formatShortDate(e.payload.localDate)}
+            {e.lastError === SLOT_DONE ? "Saved on another device" : "Couldn't sync one session"} · {formatShortDate(e.payload.localDate)}
           </span>
           <span className="btn-row">
             {entryActions(e).includes("retry") ? (

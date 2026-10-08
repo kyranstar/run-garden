@@ -21,7 +21,7 @@ import type { GardenDayInput } from "@rg/garden-engine";
 import type { Env } from "../src/env.js";
 import type { Db } from "../src/services/db.js";
 import { sha256Hex } from "../src/auth/crypto.js";
-import { buildSession, startSession, type BuildPayload } from "../src/services/session-build.js";
+import { buildSession, startSession, unstartSession, type BuildPayload } from "../src/services/session-build.js";
 import { loadProgramState } from "../src/services/engine-inputs.js";
 import { slotId } from "../src/services/program-slots.js";
 import { ingestActivities } from "../src/services/completion.js";
@@ -415,6 +415,34 @@ describe("exactly once (§2b step 1; Review Focus 2 and 3)", () => {
     expect(await db.select().from(performedSessions)).toEqual(before);
   });
 
+  it("a slot holds one app session (ruling 2b-R18): another device's save of it is refused slot_done, and nothing is written", async () => {
+    const s = await started("build");
+    // Device A saved first; device B played the same started slot from its own step 1 and saves its own session.
+    const onA = payload(s);
+    expect(await save(onA)).toMatchObject({ status: "saved" });
+    const before = { sessions: await db.select().from(performedSessions), counts: await counts() };
+    const onB = payload(s, { id: "b2b2b2b2-0000-4000-8000-000000000002", note: "on the other phone", seconds: 1500 });
+    statements.length = 0;
+    expect(await save(onB)).toEqual({ status: "slot_done" });
+    expect(statements.filter((q) => isWrite(q) && !/coach_locks/.test(q))).toEqual([]);
+    expect(await db.select().from(performedSessions)).toEqual(before.sessions);
+    expect(await counts()).toEqual(before.counts);
+    // Every retry of B's says the same; A's own retry is still the same payload.
+    expect(await save(onB)).toEqual({ status: "slot_done" });
+    expect(await save(onA)).toEqual({ status: "same_payload" });
+  });
+
+  it("ruling 2b-R18 is about the app's own sessions: a watch session that performed the slot does not refuse the app's save", async () => {
+    const s = await started("build");
+    await db.insert(performedSessions).values({
+      id: "watch-1", userId, workoutId: s.workoutId, activityId: null, buildId: null, source: "watch", sourceRef: "w-1", localDate: PLAYED,
+      startedAt: "2026-10-06T19:05:00.000Z", endedAt: null, seconds: 1800, plannedSeconds: null, minutes: null, mode: null, theme: null,
+      locationId: null, blockRef: null, blockNumber: null, completed: true, stepsTotal: null, stepsDone: null, movesDone: [],
+      note: null, newMove: null, payloadHash: "h", createdAt: SAVED, updatedAt: SAVED,
+    });
+    expect(await save(payload(s))).toMatchObject({ status: "saved" });
+  });
+
   it("the hash is the client's own, over the body it sent: a retry after a deploy that added a defaulted field is same_payload (audit 2b-A M-6)", async () => {
     const s = await started("build");
     // The client sends its fully parsed payload, built with the schema it shipped with. Say that schema had no
@@ -557,6 +585,23 @@ describe("the review's decisions apply on save (§2b step 5)", () => {
     const rows = await db.select().from(exercisePrefs).where(eq(exercisePrefs.userId, userId));
     expect(rows.find((r) => r.exerciseId === a)).toMatchObject({ rating: 1 });
     expect(rows.map((r) => r.exerciseId).filter((id) => id.includes("move"))).toEqual([]);
+  });
+
+  it("a session whose moves were all skipped still saves its ratings of them (ruling 2b-R17, re-review 2b-B C-A)", async () => {
+    const s = await started("build");
+    const ids = [...new Set(s.build.items.map((i) => i.exerciseId))];
+    // Nothing logged, nothing done: every move was skipped, and the review 👎'd each one.
+    const body = payload(s, {
+      entries: [],
+      movesDone: [],
+      movesPlanned: ids.length,
+      completed: false,
+      stepsDone: 0,
+      review: { ratings: Object.fromEntries(ids.map((id) => [id, -1 as const])) },
+    });
+    expect(await save(body)).toMatchObject({ status: "saved" });
+    const rows = await db.select().from(exercisePrefs).where(eq(exercisePrefs.userId, userId));
+    expect(Object.fromEntries(rows.map((r) => [r.exerciseId, r.rating]))).toEqual(Object.fromEntries(ids.map((id) => [id, -1])));
   });
 
   it("a new move met before keeps the day it was first introduced", async () => {
@@ -779,6 +824,33 @@ describe("ruling 2b-R7 as amended: the session's day is its locked build's, else
     await moveSlot(workoutId, "2026-10-09");
     const body = payload({ workoutId, build: built.build! }, { buildId: null, localDate: "2026-10-09" });
     expect(await save(body, body.id, { now: "2026-10-09T16:00:00.000Z" })).toMatchObject({ status: "saved" });
+  });
+
+  it("ruling 2b-R19: a save waiting on another device lands after the slot was un-started, moved and built again (re-review 2b-B N-2)", async () => {
+    const s = await started("build"); // device A plays it on PLAYED; its save waits in A's outbox
+    const NINTH = "2026-10-09";
+    const LATER = "2026-10-09T16:00:00.000Z";
+    // Device B Discards (the un-start), the slot is moved to the 9th, and B opens it that day (a new build, then Start).
+    await unstartSession(db, userId, s.workoutId, { today: PLAYED, now: PLAYED_NOON });
+    await moveSlot(s.workoutId, NINTH);
+    const rebuilt = await buildSession(db, userId, s.workoutId, { overrides: { mode: "recovery" } }, { today: NINTH, now: LATER, prefs });
+    expect(rebuilt.build!.buildId).not.toBe(s.build.buildId);
+    // A comes back online on the 9th: its session, dated the day its build was started for, is taken.
+    expect(await save(payload(s), undefined, { now: LATER })).toMatchObject({ status: "saved" });
+    expect(await rowOf(s.workoutId)).toMatchObject({ contentState: "done", effectiveDate: NINTH });
+  });
+
+  it("ruling 2b-R19: the day of a build that was started once still counts after a new Start on the slot's new day", async () => {
+    const s = await started("build");
+    const NINTH = "2026-10-09";
+    const LATER = "2026-10-09T16:00:00.000Z";
+    await unstartSession(db, userId, s.workoutId, { today: PLAYED, now: PLAYED_NOON });
+    await moveSlot(s.workoutId, NINTH);
+    const rebuilt = await buildSession(db, userId, s.workoutId, { overrides: { mode: "recovery" } }, { today: NINTH, now: LATER, prefs });
+    await startSession(db, userId, s.workoutId, rebuilt.build!.buildId, LATER);
+    // Either build's day is the session's: A's (PLAYED) and the new one's (the 9th); any other day is still refused.
+    await expect(save(payload(s, { localDate: "2026-10-08" }), undefined, { now: LATER })).rejects.toThrow("invalid_save");
+    expect(await save(payload(s), undefined, { now: LATER })).toMatchObject({ status: "saved" });
   });
 
   it("amended: a slot moved ahead after Start saves too, and the build's day is still the reference — not the slot's", async () => {
@@ -1147,6 +1219,10 @@ describe("PUT /api/sessions/performed/:id", () => {
     expect([again.status, await again.json()]).toEqual([200, { status: "same_payload" }]);
     const other = await put(`/api/sessions/performed/${body.id}`, { ...body, note: "edited" });
     expect([other.status, await other.json()]).toEqual([409, { error: "conflict" }]);
+    // Another session of the same slot, from another device (ruling 2b-R18).
+    const second = payload(s, { id: "c3c3c3c3-0000-4000-8000-000000000003" });
+    const done = await put(`/api/sessions/performed/${second.id}`, second);
+    expect([done.status, await done.json()]).toEqual([409, { error: "slot_done" }]);
 
     const lost = payload(s, { id: "0b6c7d8e-1111-4222-8333-944455556666", workoutId: "slot-nobody" });
     expect((await put(`/api/sessions/performed/${lost.id}`, lost)).status).toBe(404);

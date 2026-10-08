@@ -13,9 +13,10 @@ import { IDBFactory } from "fake-indexeddb";
 import { afterEach, describe, expect, it } from "vitest";
 import type { SessionDto } from "@rg/api-client";
 import { openOfflineDb, type OfflineDb } from "../src/offline/idb.js";
-import { saveBuild } from "../src/offline/builds.js";
-import { writeLive } from "../src/offline/live.js";
-import { saveExtras } from "../src/player/stored.js";
+import { loadBuild, saveBuild } from "../src/offline/builds.js";
+import { readLive, writeLive } from "../src/offline/live.js";
+import { queuedUnstarts } from "../src/offline/unstarts.js";
+import { loadExtras, saveExtras } from "../src/player/stored.js";
 import { beginPlayer, endSession, playerData, toLiveSession } from "../src/player/run.js";
 import { SessionsInProgress } from "../src/components/sessions-in-progress.js";
 import { build, profiles, view } from "./player/fixtures.js";
@@ -49,7 +50,16 @@ async function inProgress(workoutId: string, date: string, userId: string | null
   await writeLive(db!, toLiveSession(s, T + 60_000));
 }
 
-function render(props: { shown?: readonly string[]; userId?: string | null }) {
+/** The server can't be asked (offline): what every case gets unless it says otherwise. */
+const offline = () => Promise.reject(new TypeError("Failed to fetch"));
+
+function render(props: {
+  shown?: readonly string[];
+  userId?: string | null;
+  /** What the server has the slot as (`GET /api/sessions/:id`'s contentState). */
+  slotState?: (workoutId: string) => Promise<SessionDto["contentState"]>;
+  checkWaitMs?: number;
+}) {
   host = document.createElement("div");
   document.body.appendChild(host);
   root = createRoot(host);
@@ -67,12 +77,16 @@ function render(props: { shown?: readonly string[]; userId?: string | null }) {
             shown: props.shown ?? [],
             userId: props.userId === undefined ? "user-1" : props.userId,
             db: () => Promise.resolve(db!),
+            slotState: props.slotState ?? offline,
+            ...(props.checkWaitMs === undefined ? {} : { checkWaitMs: props.checkWaitMs }),
           }),
         ),
       ),
     ),
   );
 }
+const continueLink = () => [...host!.querySelectorAll("a")].find((a) => a.textContent === "Continue");
+const button = (name: string) => [...document.querySelectorAll<HTMLButtonElement>("button")].find((b) => b.textContent?.trim() === name);
 const flush = () => act(async () => void (await new Promise((r) => setImmediate(r))));
 async function settle() {
   for (let i = 0; i < 60; i++) await flush();
@@ -114,5 +128,68 @@ describe("Today: a session in progress on this device (ruling 2b-R16)", () => {
     render({ userId: null });
     await settle();
     expect(host!.innerHTML).toBe("");
+  });
+});
+
+describe("Today: a session in progress here that another device saved (ruling 2b-R18, re-review 2b-B N-3)", () => {
+  it("the server has the slot as done: no Continue — 'Saved on another device', Discard only, which forgets it here alone", async () => {
+    db = await openOfflineDb(new IDBFactory());
+    await inProgress("slot-y", YESTERDAY, "user-1");
+    const asked: string[] = [];
+    render({
+      slotState: async (id) => {
+        asked.push(id);
+        return "done";
+      },
+    });
+    await settle();
+    expect(asked).toEqual(["slot-y"]);
+    expect(text()).toContain("Saved on another device");
+    expect(text()).toContain("Program slot-y");
+    expect(continueLink()).toBeUndefined();
+    await act(async () => button("Discard")!.click());
+    await settle();
+    await act(async () => button("Discard this copy")!.click());
+    await settle();
+    // Gone from the device — the session in progress, its build and what Start kept — and nothing asked of the server
+    // (the slot is done there; no un-start is queued).
+    expect(await readLive(db, "slot-y")).toBeUndefined();
+    expect(await loadBuild(db, "slot-y")).toBeUndefined();
+    expect(await loadExtras(db, "slot-y")).toBeUndefined();
+    expect(await queuedUnstarts(db, "user-1")).toEqual([]);
+    expect(host!.innerHTML).toBe("");
+  });
+
+  it("the server has it started still: Continue, as before", async () => {
+    db = await openOfflineDb(new IDBFactory());
+    await inProgress("slot-y", YESTERDAY, "user-1");
+    render({ slotState: async () => "started" });
+    await settle();
+    expect(continueLink()?.getAttribute("href")).toBe("/session/slot-y");
+    expect(text()).not.toContain("Saved on another device");
+  });
+
+  it("no Continue before the server has answered; one that can't answer in time (a slow network) leaves Continue to the device", async () => {
+    db = await openOfflineDb(new IDBFactory());
+    await inProgress("slot-y", YESTERDAY, "user-1");
+    let answer!: (s: SessionDto["contentState"]) => void;
+    render({ slotState: () => new Promise((r) => (answer = r)) });
+    await settle();
+    expect(text()).toContain("Session in progress");
+    expect(continueLink()).toBeUndefined();
+    await act(async () => answer("done"));
+    await settle();
+    expect(text()).toContain("Saved on another device");
+    expect(continueLink()).toBeUndefined();
+    act(() => root?.unmount());
+    host?.remove();
+    // A server that never answers: after the wait, the device's own session is offered as before.
+    render({ slotState: () => new Promise(() => undefined), checkWaitMs: 20 });
+    await settle();
+    await act(async () => {
+      await new Promise((r) => setTimeout(r, 60));
+    });
+    await settle();
+    expect(continueLink()?.getAttribute("href")).toBe("/session/slot-y");
   });
 });

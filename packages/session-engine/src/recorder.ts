@@ -89,6 +89,8 @@ export interface PerformedSessionSave extends HistorySession {
   completed: boolean;
   stepsTotal: number;
   stepsDone: number;
+  /** How many moves the session held, done or skipped: what the review may rate (ruling 2b-R17). */
+  movesPlanned: number;
   note: string;
   newMove: string | null;
   done: Array<{ id: string; secs: number }>;
@@ -256,6 +258,7 @@ function toSession(live: Live, { endedAt, post = {}, note = "", completed = fals
     blockId: m.block ? m.block.id : null, blockNumber: m.block ? m.block.number : null,
     completed: Boolean(completed),
     stepsTotal: live.steps.filter(s => s.kind !== "rest").length, stepsDone: reachedSteps.length,
+    movesPlanned: new Set(live.steps.filter(s => s.kind !== "rest" && s.exerciseId).map(s => s.exerciseId)).size,
     checks, note, newMove: m.newMove || null,
     done: doneIds.map(id => ({ id, secs: Math.round(live.secs[id] || 0) })),
     entries,
@@ -323,10 +326,23 @@ const ratingNow = (prefs: Pick<Prefs, "ratings">, review: ReviewState, exId: str
 const excludedNow = (prefs: Pick<Prefs, "excluded">, review: ReviewState, exId: string): boolean =>
   has(review.excluded, exId) ? Boolean(review.excluded[exId]) : prefs.excluded.includes(exId);
 
-/** 👍 / 👎 toggles against what's saved plus what's pending; "never" toggles "not for me". */
+/** `rec` with `exId` set to `value` — or without it when `value` is what is saved: no decision is left (ruling 2b-R17). */
+function decide<T>(rec: Readonly<Record<string, T>>, exId: string, value: T, saved: T): Record<string, T> {
+  const { [exId]: _dropped, ...rest } = rec;
+  return value === saved ? rest : { ...rest, [exId]: value };
+}
+
+/**
+ * 👍 / 👎 toggles against what's saved plus what's pending; "never" toggles "not for me". A toggle back to what is saved
+ * leaves no pending decision for the move (ruling 2b-R17: a rating taken off again is no rating, and the save names no
+ * key for it); taking off a SAVED rating is a decision — null, to clear it.
+ */
 function rate(review: ReviewState, prefs: Pick<Prefs, "ratings" | "excluded">, exId: string, value: 1 | -1 | "never"): ReviewState {
-  if (value === "never") return { ...review, excluded: { ...review.excluded, [exId]: !excludedNow(prefs, review, exId) } };
-  return { ...review, ratings: { ...review.ratings, [exId]: ratingNow(prefs, review, exId) === value ? null : value } };
+  if (value === "never") {
+    return { ...review, excluded: decide(review.excluded, exId, !excludedNow(prefs, review, exId), prefs.excluded.includes(exId)) };
+  }
+  const next = ratingNow(prefs, review, exId) === value ? null : value;
+  return { ...review, ratings: decide(review.ratings, exId, next, prefs.ratings[exId] ?? null) };
 }
 
 function graduateInReview(review: ReviewState, family: string, to: string, accepted: boolean): ReviewState {
