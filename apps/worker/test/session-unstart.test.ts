@@ -88,6 +88,22 @@ describe("unstartSession", () => {
     expect(again).toMatchObject({ contentState: "started", locked: true });
   });
 
+  it("keeps the started build on record (ruling 2b-R19): unlocked, its day known, through a move and a new build", async () => {
+    const { workoutId, session } = await started();
+    await unstartSession(db, userId, workoutId, ctx());
+    // Moved to the next day and opened there: a new build of the slot, which prunes the builds never started.
+    const NEXT = "2026-10-07";
+    await db.update(plannedWorkouts).set({ effectiveDate: NEXT }).where(eq(plannedWorkouts.id, workoutId));
+    const fresh = await buildSession(db, userId, workoutId, {}, { today: NEXT, now: `${NEXT}T19:00:00.000Z`, prefs });
+    expect(fresh.build!.buildId).not.toBe(session.build!.buildId);
+    const rows = await db.select().from(sessionBuilds).where(eq(sessionBuilds.workoutId, workoutId));
+    const kept = rows.find((b) => b.id === session.build!.buildId);
+    expect(kept?.lockedAt).toBeNull();
+    expect((kept?.payload as { build?: { date?: string } } | undefined)?.build?.date).toBe(DAY);
+    // The slot shows the new day's build, not the one kept on record.
+    expect((await loadSession(db, userId, workoutId, NEXT)).build?.buildId).toBe(fresh.build!.buildId);
+  });
+
   it("is idempotent: a slot already built answers as it is, and writes nothing", async () => {
     const { workoutId } = await started();
     const first = await unstartSession(db, userId, workoutId, ctx());

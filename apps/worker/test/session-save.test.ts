@@ -21,7 +21,7 @@ import type { GardenDayInput } from "@rg/garden-engine";
 import type { Env } from "../src/env.js";
 import type { Db } from "../src/services/db.js";
 import { sha256Hex } from "../src/auth/crypto.js";
-import { buildSession, startSession, type BuildPayload } from "../src/services/session-build.js";
+import { buildSession, startSession, unstartSession, type BuildPayload } from "../src/services/session-build.js";
 import { loadProgramState } from "../src/services/engine-inputs.js";
 import { slotId } from "../src/services/program-slots.js";
 import { ingestActivities } from "../src/services/completion.js";
@@ -796,6 +796,33 @@ describe("ruling 2b-R7 as amended: the session's day is its locked build's, else
     await moveSlot(workoutId, "2026-10-09");
     const body = payload({ workoutId, build: built.build! }, { buildId: null, localDate: "2026-10-09" });
     expect(await save(body, body.id, { now: "2026-10-09T16:00:00.000Z" })).toMatchObject({ status: "saved" });
+  });
+
+  it("ruling 2b-R19: a save waiting on another device lands after the slot was un-started, moved and built again (re-review 2b-B N-2)", async () => {
+    const s = await started("build"); // device A plays it on PLAYED; its save waits in A's outbox
+    const NINTH = "2026-10-09";
+    const LATER = "2026-10-09T16:00:00.000Z";
+    // Device B Discards (the un-start), the slot is moved to the 9th, and B opens it that day (a new build, then Start).
+    await unstartSession(db, userId, s.workoutId, { today: PLAYED, now: PLAYED_NOON });
+    await moveSlot(s.workoutId, NINTH);
+    const rebuilt = await buildSession(db, userId, s.workoutId, { overrides: { mode: "recovery" } }, { today: NINTH, now: LATER, prefs });
+    expect(rebuilt.build!.buildId).not.toBe(s.build.buildId);
+    // A comes back online on the 9th: its session, dated the day its build was started for, is taken.
+    expect(await save(payload(s), undefined, { now: LATER })).toMatchObject({ status: "saved" });
+    expect(await rowOf(s.workoutId)).toMatchObject({ contentState: "done", effectiveDate: NINTH });
+  });
+
+  it("ruling 2b-R19: the day of a build that was started once still counts after a new Start on the slot's new day", async () => {
+    const s = await started("build");
+    const NINTH = "2026-10-09";
+    const LATER = "2026-10-09T16:00:00.000Z";
+    await unstartSession(db, userId, s.workoutId, { today: PLAYED, now: PLAYED_NOON });
+    await moveSlot(s.workoutId, NINTH);
+    const rebuilt = await buildSession(db, userId, s.workoutId, { overrides: { mode: "recovery" } }, { today: NINTH, now: LATER, prefs });
+    await startSession(db, userId, s.workoutId, rebuilt.build!.buildId, LATER);
+    // Either build's day is the session's: A's (PLAYED) and the new one's (the 9th); any other day is still refused.
+    await expect(save(payload(s, { localDate: "2026-10-08" }), undefined, { now: LATER })).rejects.toThrow("invalid_save");
+    expect(await save(payload(s), undefined, { now: LATER })).toMatchObject({ status: "saved" });
   });
 
   it("amended: a slot moved ahead after Start saves too, and the build's day is still the reference — not the slot's", async () => {
