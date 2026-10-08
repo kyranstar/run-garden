@@ -1063,7 +1063,9 @@ export type WatchUnavailableReason =
   | "not_connected"
   | "too_long"
   | "empty"
-  | "taking_off";
+  | "taking_off"
+  /** Send's 409 only: this build's copy is on the watch already (its removal failed or was neutralised) — Take off. */
+  | "already_sent";
 
 /**
  * `ready` → Send to watch; `sending` → "Sending…"; `on_watch` → "On your watch" with Take off watch; `failed` →

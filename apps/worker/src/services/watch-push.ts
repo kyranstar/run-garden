@@ -261,7 +261,13 @@ export type WatchUnavailable =
   | "too_long"
   | "empty"
   /** An unpush of this build is queued or running: Send waits for it (a re-send would be a silent no-op). */
-  | "taking_off";
+  | "taking_off"
+  /**
+   * Send's 409 only (audit 3-A L-7 / L-9): this build's copy is on the watch already — taken off, but its removal
+   * failed or a restore neutralised it — so there is nothing Send could queue. The sheet shows it on the watch, with
+   * Take off.
+   */
+  | "already_sent";
 
 export interface WatchState {
   state: "unavailable" | "ready" | "sending" | "on_watch" | "failed" | "off_watch";
@@ -319,6 +325,14 @@ function ownCatalog(payload: ProgramSessionPushJob): Map<string, string> {
 
 const IN_FLIGHT = ["queued", "claimed", "in_progress", "verifying"] as const;
 const isInFlight = (status: string): boolean => (IN_FLIGHT as readonly string[]).includes(status);
+
+/**
+ * Push statuses Send queues afresh: a failed one (Retry), one whose copy was taken off or that never ran, and one a
+ * restore neutralised (audit 3-A L-7 / L-9) — the athlete's Send is the new act a restored job waits for. (Every
+ * `SETTLED_PUSH` status, spelled out: this module sits on an import cycle with session-build.ts, whose constants
+ * may not be initialised yet when this one is.)
+ */
+const REQUEUEABLE_PUSH = ["failed", "needs_attention", "superseded", "cancelled", "restored"] as const;
 
 async function jobById(db: Db, id: string) {
   const [job] = await db.select().from(corosWriteJobs).where(eq(corosWriteJobs.id, id)).limit(1);
@@ -414,9 +428,23 @@ function stateOfPush(status: string, row: WorkoutRow): WatchState {
 }
 
 /**
+ * A COPY LEFT ON THE WATCH (audit 3-A L-7 / L-9): the build was sent and taken off — so it is unlocked, and no longer
+ * "sent" — but its removal did not go through: the unpush failed for good, or a restore neutralised it. Its push is
+ * still verified and no unpush of it is on its way. Returns that push, or null.
+ */
+async function copyLeftOnWatch(db: Db, buildId: string) {
+  const push = await jobById(db, pushJobId(buildId));
+  if (push?.status !== "verified") return null;
+  const unpush = await jobById(db, unpushJobId(buildId));
+  return unpush && isInFlight(unpush.status) ? null : push;
+}
+
+/**
  * What the sheet shows about the watch. A sent build: its push queued or running → `sending`; failed → `failed`;
  * verified with the copy's address on the row → `on_watch`, without one (removed in COROS) → `off_watch`. Not sent:
- * `ready`, or `unavailable` with the reason. Asked only while the switch is on (the routes answer null otherwise).
+ * `ready`, or `unavailable` with the reason — except the shown build's copy left on the watch (`copyLeftOnWatch`),
+ * which shows as its verified push does, so the sheet offers Take off (queueing its removal again) and never a Send
+ * that could queue nothing. Asked only while the switch is on (the routes answer null otherwise).
  */
 export async function watchStateOf(
   db: Db,
@@ -431,6 +459,8 @@ export async function watchStateOf(
   if (sent) {
     const push = await jobById(db, pushJobId(sent));
     if (push) return stateOfPush(push.status, row);
+  } else if (session.build && (await copyLeftOnWatch(db, session.build.buildId))) {
+    return stateOfPush("verified", row);
   }
   const reason = await unavailableReason(db, userId, row, session, prefs, todayOf(prefs));
   return reason ? { state: "unavailable", reason } : { state: "ready" };
@@ -453,11 +483,18 @@ async function programNameOf(db: Db, row: WorkoutRow): Promise<string> {
  * whose push was queued before keeps that push's stamp for its day — unless another session holds it now (only a
  * push that was taken off or never ran gives its stamp up); then, as at a first Send, the day's free stamp.
  */
-async function pushPayloadFor(db: Db, userId: string, row: WorkoutRow, build: BuildPayload): Promise<{ payload: ProgramSessionPushJob; plan: WatchPlan; catalog: Map<string, string> }> {
+async function pushPayloadFor(
+  db: Db,
+  userId: string,
+  row: WorkoutRow,
+  build: BuildPayload,
+  /** The build's push as the caller read it (null: none); read here when not given. */
+  known?: Awaited<ReturnType<typeof jobById>>,
+): Promise<{ payload: ProgramSessionPushJob; plan: WatchPlan; catalog: Map<string, string> }> {
   const { catalog, deps } = await planDeps(db);
   const plan = watchStepsFromBuild(build, deps);
   const taken = await takenStampsOn(db, userId, row.effectiveDate, { jobId: pushJobId(build.buildId) });
-  const earlier = await jobById(db, pushJobId(build.buildId));
+  const earlier = known !== undefined ? known : await jobById(db, pushJobId(build.buildId));
   const prior = earlier ? programSessionPushJobSchema.safeParse(earlier.payload) : null;
   const fixed = prior?.success && prior.data.happenDay === row.effectiveDate && !taken.has(prior.data.name) ? prior.data.name : null;
   const stamp = fixed ?? programStamp(await programNameOf(db, row), row.effectiveDate, taken);
@@ -502,27 +539,29 @@ async function previewOf(
  * (Send would be refused for that reason).
  *
  * WHICH PAYLOAD (audit W-2 / W-8). A push queued, running or verified previews its own payload, against a catalog
- * made from that payload (`ownCatalog`): it is what was sent, whatever the catalog says now. Any other build — not
- * sent, or its push failed (Retry) or settled (sent again) — previews exactly the payload Send would queue now, so
- * Retry with this preview's digest is never refused.
+ * made from that payload (`ownCatalog`): it is what was sent, whatever the catalog says now — the sent build's, or
+ * the shown build's when it was taken off while its push ran (Send keeps that push) or its copy was left on the
+ * watch. Any other build — not sent, or its push failed (Retry) or settled (sent again) — previews exactly the
+ * payload Send would queue now, so Retry with this preview's digest is never refused.
  */
 export async function watchPreview(db: Db, env: Env, userId: string, workoutId: string, ctx: BuildCtx): Promise<WatchPreviewDto> {
   const row = await loadSlot(db, userId, workoutId);
   const session = await loadSession(db, userId, workoutId, ctx.today);
-  const sent = await sentBuildIdOf(db, row.id);
+  const sent = (await sentBuildIdOf(db, row.id)) ?? session.build?.buildId;
   const pushed = sent ? await jobById(db, pushJobId(sent)) : null;
   const own = pushed && (isInFlight(pushed.status) || pushed.status === "verified") ? programSessionPushJobSchema.safeParse(pushed.payload) : null;
   if (own?.success) return previewOf(own.data, ownCatalog(own.data), null, ctx.prefs.weightUnit);
   const reason = await unavailableReason(db, userId, row, session, ctx.prefs, ctx.today);
   if (reason && reason !== "too_long" && reason !== "empty") throw new WatchUnavailableError(reason);
-  const made = await pushPayloadFor(db, userId, row, session.build!);
+  const made = await pushPayloadFor(db, userId, row, session.build!, sent === session.build!.buildId ? pushed : undefined);
   return previewOf(made.payload, made.catalog, made.plan.refusal, ctx.prefs.weightUnit);
 }
 
 /**
  * `POST /api/sessions/:workoutId/send-to-watch` `{buildId}`: lock the build as Start does (it must still be the day's
  * current build; `content_state` stays `built`) and queue `push:<buildId>` (spec §4.3). A second send while the push
- * is queued, running or verified is a no-op; a failed or superseded one is queued afresh. Throws
+ * is queued, running or verified is a no-op; a failed, superseded or restored one is queued afresh; a build whose
+ * copy was left on the watch (`copyLeftOnWatch`) is refused `already_sent` — Send never answers 200 for nothing. Throws
  * `SessionNotFoundError`, `WatchUnavailableError`, `StaleBuildError` (with the fresh session), `NotTodayError`,
  * `NotBuiltError`, `RestoringError`, `StalePreviewError`. The answer carries its `watch` state.
  *
@@ -559,12 +598,27 @@ export async function sendToWatch(
   const reason = await slotRefusal(db, userId, row, ctx.prefs, ctx.today);
   if (reason) throw new WatchUnavailableError(reason);
 
+  /** The payload to queue; null when the build's push is still running and is what reaches the watch. */
   let payload: ProgramSessionPushJob | null = null;
   /** Send's preconditions on the build it would send, then the payload — all before anything is written. */
   const prepare = async (slot: WorkoutRow, build: BuildPayload | null, profiles: readonly string[], checks: Readonly<Record<string, unknown>>) => {
     const refusal = await buildRefusal(db, slot, build, profiles, checks);
     if (refusal) throw new WatchUnavailableError(refusal);
-    const made = await pushPayloadFor(db, userId, slot, build!);
+    const earlier = await jobById(db, pushJobId(build!.buildId));
+    // NOTHING TO QUEUE IS A 409, NEVER A SILENT 200 (audit 3-A L-7 / L-9): this build's copy is on the watch already
+    // (taken off, but its removal failed or a restore neutralised it). Take off is what the sheet offers for it.
+    if (earlier?.status === "verified") throw new WatchUnavailableError("already_sent");
+    const running = earlier && isInFlight(earlier.status) ? programSessionPushJobSchema.safeParse(earlier.payload) : null;
+    if (running?.success) {
+      // Taken off while its push ran, and sent again: that push is what reaches the watch (the lane keeps its copy
+      // once the build is locked again), so it is what the preview showed, and nothing new is queued.
+      if (opts.digest !== undefined && (await pushDigest(running.data)) !== opts.digest) {
+        throw new StalePreviewError(await previewOf(running.data, ownCatalog(running.data), null, ctx.prefs.weightUnit));
+      }
+      payload = null;
+      return;
+    }
+    const made = await pushPayloadFor(db, userId, slot, build!, earlier);
     if (opts.digest !== undefined && (await pushDigest(made.payload)) !== opts.digest) {
       throw new StalePreviewError(await previewOf(made.payload, made.catalog, made.plan.refusal, ctx.prefs.weightUnit));
     }
@@ -591,8 +645,9 @@ export async function sendToWatch(
     }
   }
   const build = session.build!;
-  const valid = programSessionPushJobSchema.parse(payload);
   const id = pushJobId(build.buildId);
+  if (payload === null) return { ...session, watch: { state: "sending" } };
+  const valid = programSessionPushJobSchema.parse(payload);
   const inserted = await db
     .insert(corosWriteJobs)
     .values({
@@ -611,9 +666,10 @@ export async function sendToWatch(
     .onConflictDoNothing()
     .returning({ id: corosWriteJobs.id });
   if (inserted.length === 0) {
-    // The build was sent before: a failed push, or one whose copy was taken off (superseded). Queued afresh — new
-    // steps and stamp from today's catalog, the retry count reset, the old observation gone.
-    await db
+    // The build was sent before: a failed push, one whose copy was taken off (superseded), or one a restore
+    // neutralised. Queued afresh — the steps from today's catalog, the stamp kept, the retry count reset, the old
+    // observation gone.
+    const requeued = await db
       .update(corosWriteJobs)
       .set({
         status: "queued",
@@ -627,7 +683,14 @@ export async function sendToWatch(
         requestedAt: ctx.now,
         updatedAt: ctx.now,
       })
-      .where(and(eq(corosWriteJobs.id, id), inArray(corosWriteJobs.status, ["failed", "needs_attention", "superseded", "cancelled"])));
+      .where(and(eq(corosWriteJobs.id, id), inArray(corosWriteJobs.status, [...REQUEUEABLE_PUSH])))
+      .returning({ id: corosWriteJobs.id });
+    if (requeued.length === 0) {
+      // Neither inserted nor queued afresh — another request changed the push since `prepare` read it. "Sending" is
+      // the answer only while that push is on its way; anything else is a 409, never a silent 200.
+      const push = await jobById(db, id);
+      if (!push || !isInFlight(push.status)) throw new WatchUnavailableError("already_sent");
+    }
   }
   // The session `lockCurrentBuild` answered with is the slot as it now stands; the push just queued is `sending`.
   return { ...session, watch: { state: "sending" } };
@@ -771,7 +834,14 @@ export async function queueUnpush(db: Db, userId: string, buildId: string, paylo
       requestedAt: now,
       updatedAt: now,
     })
-    .where(and(eq(corosWriteJobs.id, id), inArray(corosWriteJobs.status, ["verified", "failed", "superseded", "cancelled", "needs_attention"])));
+    .where(
+      and(
+        eq(corosWriteJobs.id, id),
+        // `restored` too (audit 3-A L-7): an unpush a restore neutralised removed nothing, and the athlete's Take off
+        // is the new act it waits for.
+        inArray(corosWriteJobs.status, ["verified", "failed", "superseded", "cancelled", "needs_attention", "restored"]),
+      ),
+    );
 }
 
 /** Supersede a queued push, queue `unpush:<buildId>` for a pushed one, unlock the sent build (json_set `$.unsentAt`). */
@@ -786,9 +856,22 @@ export async function enqueueProgramUnpush(
   if (sent) await unpushBuild(db, userId, row, sent, now, prefs);
 }
 
-/** `POST /api/sessions/:workoutId/take-off-watch`: `enqueueProgramUnpush` for the slot; a no-op when nothing was sent. */
+/**
+ * `POST /api/sessions/:workoutId/take-off-watch`: `enqueueProgramUnpush` for the slot — or, with nothing sent, for
+ * the shown build's copy left on the watch (`copyLeftOnWatch`: taken off before, but its unpush failed for good or a
+ * restore neutralised it), whose removal is queued again (audit 3-A L-7). A no-op when neither holds.
+ */
 export async function takeOffWatch(db: Db, userId: string, workoutId: string, ctx: BuildCtx): Promise<SessionResponse> {
   const row = await loadSlot(db, userId, workoutId);
-  await enqueueProgramUnpush(db, userId, row, ctx.now, ctx.prefs);
-  return loadSession(db, userId, workoutId, ctx.today);
+  const sent = await sentBuildIdOf(db, row.id);
+  if (sent) {
+    await unpushBuild(db, userId, row, sent, ctx.now, ctx.prefs);
+    return loadSession(db, userId, workoutId, ctx.today);
+  }
+  const session = await loadSession(db, userId, workoutId, ctx.today);
+  const shown = session.build?.buildId;
+  if (!shown || !(await copyLeftOnWatch(db, shown))) return session;
+  // Its build is unlocked already (a locked one with a verified push would be the sent build): the session stands.
+  await unpushBuild(db, userId, row, shown, ctx.now, ctx.prefs);
+  return session;
 }

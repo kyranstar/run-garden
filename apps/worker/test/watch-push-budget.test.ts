@@ -157,6 +157,19 @@ describe("Take off", () => {
     expect((await jobOf(`unpush:${buildId}`))!.status).toBe("queued");
     expect(m.total).toBeLessThanOrEqual(BUDGET);
   });
+
+  it("of a copy left on the watch (its unpush neutralised by a restore): requeues it within the budget", async () => {
+    const { workoutId, buildId } = await builtSlot();
+    await sendToWatch(db, switchOn(), userId, workoutId, buildId, ctx());
+    await executeCloudJobs(db, switchOn(), userId, prefs, { fetchImpl: server.fetchImpl });
+    await invoke("POST", `${workoutId}/take-off-watch`, {});
+    await db.update(corosWriteJobs).set({ status: "restored" }).where(eq(corosWriteJobs.id, `unpush:${buildId}`));
+    const m = await invoke("POST", `${workoutId}/take-off-watch`, {});
+    report("Take off (a copy left on the watch)", m);
+    expect(m.res.status).toBe(200);
+    expect((await jobOf(`unpush:${buildId}`))!.status).toBe("queued");
+    expect(m.total).toBeLessThanOrEqual(BUDGET);
+  });
 });
 
 describe("POST /api/sessions/watch/drain", () => {

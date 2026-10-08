@@ -23,8 +23,8 @@
  * THE WATCH (Phase 3, spec §4, §6). Every session response carries `watch` — null while the switch
  * (`WATCH_PUSH_ENABLED`) is off, so nothing about the watch renders — through one helper, `withWatch`. Off, the three
  * watch routes answer 404. Send answers 409 with the reason it is not offered (`not_today`, `not_built`, `done`,
- * `precheck`, `writes_off`, `not_connected`, `too_long`, `empty`, `taking_off`), `stale` with the fresh session, or
- * `stale_preview` with the fresh preview (the payload is not the one the athlete was shown).
+ * `precheck`, `writes_off`, `not_connected`, `too_long`, `empty`, `taking_off`, `already_sent`), `stale` with the
+ * fresh session, or `stale_preview` with the fresh preview (the payload is not the one the athlete was shown).
  */
 import { Hono, type Context } from "hono";
 import { z, type ZodError } from "zod";
