@@ -1,6 +1,7 @@
 import { DateTime } from "luxon";
 import type { Instant, LocalDate, LocalTime, SchedulingPreferences } from "@rg/domain";
 import { windowOfTime } from "./windows.js";
+import { schedulingZone } from "./zone.js";
 
 /**
  * Reminder policy:
@@ -32,10 +33,9 @@ export function planReminders(
     return { overrideMinutes: [prefs.eveningPreRunReminderMinutes] };
   }
 
-  const eventStart = DateTime.fromISO(eventStartInstant, { zone: "utc" }).setZone(prefs.timezone);
-  const prevEvening = DateTime.fromISO(`${date}T${prefs.eveningReminderTime}`, {
-    zone: prefs.timezone,
-  }).minus({ days: 1 });
+  const zone = schedulingZone(prefs.timezone);
+  const eventStart = DateTime.fromISO(eventStartInstant, { zone: "utc" }).setZone(zone);
+  const prevEvening = DateTime.fromISO(`${date}T${prefs.eveningReminderTime}`, { zone }).minus({ days: 1 });
 
   const minutesBefore = Math.round(eventStart.diff(prevEvening, "minutes").minutes);
   const overrides = [prefs.preRunReminderMinutes];
@@ -46,7 +46,7 @@ export function planReminders(
   }
 
   // The message references the workout start (not the padded block start).
-  const runStart = DateTime.fromISO(`${date}T${workoutStartTime}`, { zone: prefs.timezone });
+  const runStart = DateTime.fromISO(`${date}T${workoutStartTime}`, { zone });
   const timeLabel = runStart.toFormat(runStart.minute === 0 ? "h a" : "h:mm a");
 
   return {
