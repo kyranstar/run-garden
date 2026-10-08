@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { corosProgramFingerprint, FIXTURE_PLAN_ID } from "@rg/providers";
 import { CorosClient } from "../src/client.js";
 import { executeMoveJob, type MoveJob } from "../src/write-executor.js";
@@ -14,6 +14,15 @@ const loginMd5 = (client: CorosClientType, email: string, password: string) =>
 
 
 const BASE_MONDAY = "2026-08-03";
+// The executor's id sweep reads today-180 … today+240, so these August fixtures fall out of it as the calendar moves
+// (this file failed from about 2027-01-20). Only Date is faked: the mock's async timers keep running.
+beforeEach(() => {
+  vi.useFakeTimers({ toFake: ["Date"] });
+  vi.setSystemTime(new Date("2026-09-02T12:00:00Z"));
+});
+afterEach(() => {
+  vi.useRealTimers();
+});
 // Fixture: idInPlan 11 = "Threshold 5x5" on D+1 (Tue 2026-08-04); Friday D+4 is free.
 const ORIGINAL = "2026-08-04";
 const DESTINATION = "2026-08-07";

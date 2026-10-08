@@ -181,9 +181,14 @@ async function click(label: string): Promise<void> {
 
 beforeEach(() => {
   document.body.innerHTML = "";
+  // The restore summary names a date ("since Sunday, September 20.") and adds the year once today is in another
+  // year — pin today (Date only; the UI's timers stay real).
+  vi.useFakeTimers({ toFake: ["Date"] });
+  vi.setSystemTime(new Date("2026-10-08T12:00:00Z"));
 });
 
 afterEach(() => {
+  vi.useRealTimers();
   act(() => root?.unmount());
   root = null;
   vi.unstubAllGlobals();
