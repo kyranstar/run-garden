@@ -51,6 +51,19 @@ export type FormatId = (typeof FORMAT_IDS)[number];
 export const LOAD_IMPLEMENTS = ["kettlebell", "dumbbells", "barbell", "cable", "machine"] as const;
 export type LoadImplement = (typeof LOAD_IMPLEMENTS)[number];
 
+/**
+ * Implement classes, for curating a COROS mapping (`CorosMapping`, audit 3-A W-5). Kettlebell and dumbbells are ONE
+ * class — a hand-held free weight; barbell, cable, machine and band are each their own.
+ */
+export const IMPLEMENT_CLASS = {
+  kettlebell: "hand-held",
+  dumbbells: "hand-held",
+  barbell: "barbell",
+  cable: "cable",
+  machine: "machine",
+  band: "band",
+} as const satisfies Partial<Record<EquipmentId, string>>;
+
 const LABELS: Record<string, string> = {
   squat: "Squats", hinge: "Hinging", lunge: "Lunges", carry: "Carries", rotate: "Rotation",
   mobility: "Mobility work", breathe: "Breathing", release: "Release work",
