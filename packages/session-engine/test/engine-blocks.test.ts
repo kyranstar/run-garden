@@ -181,4 +181,39 @@ describe("beyond the standalone suite", () => {
       expect(next.core.squat).not.toBe("heavySquat");
     });
   });
+
+  describe("a block lift set aside as \"not for me\" (Phase 2c Review Focus 4)", () => {
+    const first: Block = { id: "b1", number: 1, startedAt: "2026-09-01", weeks: 5, core: { squat: "gobletSquat", hinge: "deadlift", row: "supportedRow", press: "floorPress", carry: "suitcaseCarry" }, rotations: [] };
+
+    test("mid-block it rotates out at once, with that reason, even when pinned or already rotated today", () => {
+      for (const pinned of [[], ["gobletSquat"]]) {
+        const { block: next, events } = Blocks.ensure(data, first, ctx({ today: "2026-09-10", prefs: { ...prefs, excluded: ["gobletSquat"], pinned } }));
+        expect(next.core.squat).not.toBe("gobletSquat");
+        expect(next.core.squat).toBeTruthy();
+        expect(next.rotations).toEqual([{ family: "squat", from: "gobletSquat", to: next.core.squat, date: "2026-09-10", why: "not for me" }]);
+        expect(events).toEqual([expect.stringMatching(/^gobletSquat → .+: not for me\.$/)]);
+        // Nothing else in the block moved.
+        expect({ ...next.core, squat: null }).toEqual({ ...first.core, squat: null });
+      }
+      // The family already rotated today (a stall): the athlete's own "not for me" still applies.
+      const rotatedToday: Block = { ...first, core: { ...first.core, squat: "tempoSquat" }, rotations: [{ family: "squat", from: "gobletSquat", to: "tempoSquat", date: "2026-09-10", why: "no progress in 3 sessions" }] };
+      const after = Blocks.ensure(data, rotatedToday, ctx({ today: "2026-09-10", prefs: { ...prefs, excluded: ["tempoSquat"] } })).block;
+      expect(after.core.squat).not.toBe("tempoSquat");
+      expect(after.core.squat).not.toBe("gobletSquat");
+      expect(after.rotations[1]).toMatchObject({ family: "squat", from: "tempoSquat", why: "not for me" });
+    });
+
+    test("a pinned lift set aside is not carried into the next block", () => {
+      const old = { ...first, startedAt: "2026-07-01" };
+      const next = Blocks.ensure(data, old, ctx({ today: "2026-09-03", prefs: { ...prefs, excluded: ["deadlift"], pinned: ["deadlift"] } })).block;
+      expect(next.number).toBe(2);
+      expect(next.core.hinge).toBe("rdl");
+    });
+
+    test("a lift that is not the block's changes nothing", () => {
+      const same = Blocks.ensure(data, first, ctx({ today: "2026-09-10", prefs: { ...prefs, excluded: ["frontSquat"] } }));
+      expect(same.block).toEqual(first);
+      expect(same.events).toEqual([]);
+    });
+  });
 });

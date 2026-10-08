@@ -1,8 +1,7 @@
 /**
- * Settings — the "Distance & pace units" selector (units sweep, 2026-08).
- * SchedulingSection binds the select to draft.units like every other field;
- * the save mutation already sends the whole draft, so no new wiring exists
- * to test beyond the render: both options, the hint, and the bound value.
+ * Settings — the distance unit (units sweep, 2026-08), which Phase 2c moved
+ * from Scheduling to the Units card (mocks §7; its saving is tested in
+ * settings-cards.test.tsx), and the race course climb's unit beside its box.
  * Static-markup render, same harness as studio-modal.test.tsx.
  */
 import { createElement } from "react";
@@ -10,7 +9,7 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { describe, expect, it } from "vitest";
 import { DEFAULT_USER_PREFERENCES, type UserPreferences } from "@rg/domain";
-import { SchedulingSection } from "../src/screens/settings.js";
+import { SchedulingSection, UnitsSection } from "../src/screens/settings.js";
 
 function render(prefs: UserPreferences): string {
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false, staleTime: Infinity } } });
@@ -19,21 +18,23 @@ function render(prefs: UserPreferences): string {
   );
 }
 
-describe("SchedulingSection units selector", () => {
-  it("renders the select with both options and the everywhere-follows hint", () => {
-    const html = render(DEFAULT_USER_PREFERENCES);
-    expect(html).toContain("Distance &amp; pace units");
-    expect(html).toContain('id="s-units"');
-    expect(html).toContain(">Kilometers<");
-    expect(html).toContain(">Miles<");
-    expect(html).toContain("Paces and distances everywhere follow this.");
+describe("the distance unit (moved to the Units card, Phase 2c)", () => {
+  const units = (prefs: UserPreferences) => {
+    const qc = new QueryClient({ defaultOptions: { queries: { retry: false, staleTime: Infinity } } });
+    return renderToStaticMarkup(createElement(QueryClientProvider, { client: qc }, createElement(UnitsSection, { prefs })));
+  };
+
+  it("Scheduling no longer carries it; the Units card offers km and mi", () => {
+    expect(render(DEFAULT_USER_PREFERENCES)).not.toContain('id="s-units"');
+    const html = units(DEFAULT_USER_PREFERENCES);
+    expect(html).toContain('aria-label="Distance"');
+    expect(html).toMatch(/>km</);
+    expect(html).toMatch(/>mi</);
   });
 
-  it("binds to draft.units — km prefs select Kilometers, mi prefs select Miles", () => {
-    const km = render(DEFAULT_USER_PREFERENCES); // schema default is km
-    expect(km).toMatch(/<option value="km" selected="">/);
-    const mi = render({ ...DEFAULT_USER_PREFERENCES, units: "mi" });
-    expect(mi).toMatch(/<option value="mi" selected="">/);
+  it("binds to prefs.units — km prefs press km, mi prefs press mi", () => {
+    expect(units(DEFAULT_USER_PREFERENCES)).toMatch(/aria-label="Distance"><button type="button" aria-pressed="true">km</);
+    expect(units({ ...DEFAULT_USER_PREFERENCES, units: "mi" })).toMatch(/aria-pressed="true">mi</);
   });
 });
 

@@ -90,8 +90,8 @@ function start(data: EngineData, prev: Block | null, ctx: FullCtx): Block {
   const core: Record<string, string | null> = {};
   for (const fam of data.coreFamilies) {
     const prevId = prev ? prev.core[fam.id] ?? null : null;
-    const pinnedLift = prevId && (ctx.prefs.pinned || []).includes(prevId) ? Lib.get(data, prevId) : null;
-    // A pin never carries a lift an active profile rules out.
+    // A pin never carries a lift the athlete has since set aside ("not for me") or an active profile rules out.
+    const pinnedLift = prevId && (ctx.prefs.pinned || []).includes(prevId) && !(ctx.prefs.excluded || []).includes(prevId) ? Lib.get(data, prevId) : null;
     const pinned = pinnedLift && !forbiddenBy(data, pinnedLift) ? pinnedLift : null;
     const pick = pinned || pickVariant(data, fam.id, ctx, prevId);
     core[fam.id] = pick ? pick.id : null;
@@ -134,9 +134,12 @@ function ensure(data: EngineData, block: Block | null, ctx: BlockCtx, hist?: His
     if (!id) continue;
     const lift = Lib.get(data, id);
     const ruledOut = lift ? forbiddenBy(data, lift) : null;   // e.g. assigned while no profile was active
-    if (!ruledOut && c.prefs.pinned.includes(id)) continue;
-    if (rotations.some(r => r.family === fam.id && r.date === ctx.today)) continue;   // at most once a day
-    const why = ruledOut ? `not allowed with ${ruledOut.label}` : rotateReason(data, id, sessions, { ...block, core, rotations }, fam.id, c.hist);
+    // The athlete's own "not for me" (Phase 2c): over a pin, and not held to the once-a-day rule — the lift is never
+    // offered back this block, so it cannot flip-flop.
+    const setAside = c.prefs.excluded.includes(id);
+    if (!ruledOut && !setAside && c.prefs.pinned.includes(id)) continue;
+    if (!setAside && rotations.some(r => r.family === fam.id && r.date === ctx.today)) continue;   // at most once a day
+    const why = ruledOut ? `not allowed with ${ruledOut.label}` : setAside ? "not for me" : rotateReason(data, id, sessions, { ...block, core, rotations }, fam.id, c.hist);
     if (!why) continue;
     // Lifts rotated out earlier in this block stay out.
     const out = [id, ...rotations.filter(r => r.family === fam.id).map(r => r.from).filter((x): x is string => Boolean(x))];

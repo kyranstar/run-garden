@@ -1,6 +1,6 @@
 import { describe, expect, test } from "vitest";
 import {
-  LB_TO_KG, formatWeight, formatWeightIn, parseWeight, parseWeightList, sameWeight, toKg, userPreferencesSchema, weightInUnit,
+  LB_TO_KG, formatWeight, formatWeightIn, parseWeight, parseWeightList, sameWeight, toKg, userPreferencesSchema, weightInUnit, weightListProblem,
 } from "../src/index.js";
 
 // Ported from the standalone tests/units.test.js (Units.* → the named functions). Weights are kept in the
@@ -55,6 +55,30 @@ describe("weights (units.test.js)", () => {
   test("same compares weights across units", () => {
     expect(sameWeight({ v: 12, u: "kg" }, { v: 26.455, u: "lb" })).toBe(true);
     expect(sameWeight({ v: 12, u: "kg" }, { v: 25, u: "lb" })).toBe(false);
+  });
+});
+
+describe("a typed list read the way it was written (Phase 2c Review Focus 3)", () => {
+  test("a bare number takes the unit written after it, so each part keeps its own unit", () => {
+    expect(parseWeightList("10, 15, 20 lb, 12kg", "kg")).toEqual([
+      { v: 10, u: "lb" },
+      { v: 15, u: "lb" },
+      { v: 20, u: "lb" },
+      { v: 12, u: "kg" },
+    ]);
+    // With no unit after it, the default unit.
+    expect(parseWeightList("12 kg, 16", "lb")).toEqual([{ v: 16, u: "lb" }, { v: 12, u: "kg" }]);
+    expect(parseWeightList("8, 12, 16", "kg")).toEqual([{ v: 8, u: "kg" }, { v: 12, u: "kg" }, { v: 16, u: "kg" }]);
+  });
+
+  test("weightListProblem says what a list cannot hold, and nothing for one it can", () => {
+    expect(weightListProblem("10, 15, 20 lb, 12kg")).toBeNull();
+    expect(weightListProblem("8 12 16 kg")).toBeNull();
+    expect(weightListProblem("  ")).toBe("empty");
+    expect(weightListProblem("light, heavy")).toBe("light");
+    expect(weightListProblem("10, 12 stone")).toBe("12 stone");
+    expect(weightListProblem("10, x, 20 lb")).toBe("x");
+    expect(weightListProblem("0, 10 lb")).toBe("0");
   });
 });
 
