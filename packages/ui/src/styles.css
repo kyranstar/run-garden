@@ -2591,7 +2591,8 @@ button.session-chip {
   gap: var(--space-4);
 }
 .units-seg {
-  grid-auto-columns: minmax(var(--tap), max-content);
+  /* One cell width for every units row, so the rows' controls line up (Audit 2c-A MINOR-6). */
+  grid-auto-columns: max(var(--tap), 3.25rem);
 }
 .units-seg button {
   padding: 0 var(--space-5);

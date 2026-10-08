@@ -456,15 +456,32 @@ describe("writes", () => {
 });
 
 describe("POST /api/import/standalone", () => {
-  function makeEnv(): Env {
-    return { DB: {} as Env["DB"], ASSETS: {} as Env["ASSETS"], APP_URL: "app.test", SESSION_SECRET: "s" } as Env;
+  function makeEnv(importEnabled = true): Env {
+    return {
+      DB: {} as Env["DB"],
+      ASSETS: {} as Env["ASSETS"],
+      APP_URL: "app.test",
+      SESSION_SECRET: "s",
+      ...(importEnabled ? { IMPORT_ENABLED: "1" } : {}),
+    } as Env;
   }
-  const call = async (path: string, body: unknown, cookie?: string) =>
+  const call = async (path: string, body: unknown, cookie?: string, importEnabled = true) =>
     mountRoutes(db, "/api/import", importRoutes).request(
       path,
       { method: "POST", headers: { Cookie: cookie ?? `${SESSION_COOKIE}=${await createSession(db, userId, "test")}`, "Content-Type": "application/json" }, body: typeof body === "string" ? body : JSON.stringify(body) },
-      makeEnv(),
+      makeEnv(importEnabled),
     );
+
+  it("refuses to write until IMPORT_ENABLED is set (the 2d garden gate); the dry run still answers (Audit 2c-A I-1)", async () => {
+    const refused = await call("/api/import/standalone", backup(history()), undefined, false);
+    expect(refused.status).toBe(404);
+    expect(await db.$count(performedSessions)).toBe(0);
+    expect(await db.$count(schema.activities)).toBe(0);
+    expect(await db.$count(schema.programs)).toBe(0);
+    const dry = await call("/api/import/standalone?dryRun=1", backup(history()), undefined, false);
+    expect(dry.status).toBe(200);
+    expect(((await dry.json()) as ImportSummary).dryRun).toBe(true);
+  });
 
   it("?dryRun=1 answers the summary and writes nothing; without it, imports", async () => {
     const dry = await call("/api/import/standalone?dryRun=1", backup(history()));

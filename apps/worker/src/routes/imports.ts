@@ -8,7 +8,10 @@
  * 503 `busy` while another import of the account is writing. A first import makes the adaptive program: its slots
  * are placed here, after the import, through the one rule the hourly pass uses, and the calendar books them.
  *
- * Not reachable from the app until the garden gate (Phase 2d) keeps imported history out of the garden.
+ * Not reachable from the app until the garden gate (Phase 2d) keeps imported history out of the garden — and refused
+ * on the server too (404 `not_found`, nothing written) unless the Worker var IMPORT_ENABLED is "1": hiding the screen
+ * is not enough, since a hand-made call would credit the garden with the imported sessions (Audit 2c-A IMPORTANT-1).
+ * The dry run, which writes nothing, always answers.
  */
 import { Hono } from "hono";
 import { nowInstant, todayInZone } from "@rg/domain";
@@ -33,6 +36,7 @@ importRoutes.post("/standalone", async (c) => {
     return c.json({ error: "invalid_backup", issues: [{ path: [], message: "not JSON" }] }, 422);
   }
   const dryRun = ["1", "true"].includes(c.req.query("dryRun") ?? "");
+  if (!dryRun && c.env.IMPORT_ENABLED !== "1") return c.json({ error: "not_found" }, 404);
   const prefs = await loadPreferences(db, userId);
   const today = todayInZone(prefs.timezone);
   const now = nowInstant();

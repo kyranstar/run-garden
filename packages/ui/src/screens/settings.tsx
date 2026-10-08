@@ -370,7 +370,9 @@ export function PlacesSection({ prefs }: { prefs: UserPreferences }) {
   const labels = new Map(vocabulary.map((v) => [v.id, v.label]));
   const unlocks = new Map((library.data?.wishlist ?? []).map((w) => [w.equipmentId, w.unlocks]));
   const shown = saveSetting.isPending && saveSetting.variables?.equipmentWishlist ? saveSetting.variables.equipmentWishlist : wishlist;
-  const addable = vocabulary.filter((v) => !shown.includes(v.id));
+  // Gear the default place already has is not a wish (Audit 2c-A MINOR-7).
+  const owned = new Set((places.data?.places ?? []).find((p) => p.isDefault)?.equipment ?? []);
+  const addable = vocabulary.filter((v) => !shown.includes(v.id) && !owned.has(v.id));
 
   if (places.isError) return null;
   return (

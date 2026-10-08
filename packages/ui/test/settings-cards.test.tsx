@@ -248,6 +248,16 @@ describe("Places & equipment", () => {
     expect(text()).toContain("Home");
   });
 
+  it("the wishlist never offers gear the default place already has (Audit 2c-A MINOR-7)", async () => {
+    fakeWorker({ places: [HOME] });
+    mount(createElement(PlacesSection, { prefs: DEFAULT_USER_PREFERENCES }));
+    await until(() => !!byName("Add to wishlist"), "the wishlist picker");
+    const offered = [...(byName("Add to wishlist") as HTMLSelectElement).options].map((o) => o.value);
+    expect(offered).not.toContain("mat");
+    expect(offered).not.toContain("kettlebell");
+    expect(offered).toContain("band");
+  });
+
   it("the wishlist: what each item would unlock, remove one, add another — one setting saved each time", async () => {
     const { calls } = fakeWorker({ prefs: { equipmentWishlist: ["band"] } });
     mount(createElement(PlacesSection, { prefs: { ...DEFAULT_USER_PREFERENCES, equipmentWishlist: ["band"] } }));

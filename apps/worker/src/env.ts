@@ -10,6 +10,9 @@ export interface Env {
   /** "1" turns on the hash-only parity endpoints (/api/admin/parity/*)
    * outside staging. Var; unset in production unless a rehearsal needs it. */
   PARITY_ENABLED?: string;
+  /** "1" lets POST /api/import/standalone write (a dry run always answers). Off until the Phase 2d garden gate keeps
+   * imported history out of the garden; 2d sets it in the same change. Var. */
+  IMPORT_ENABLED?: string;
 
   // Secrets
   SESSION_SECRET: string;
