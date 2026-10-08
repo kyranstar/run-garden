@@ -1103,13 +1103,26 @@ export interface StandaloneImportSummaryDto {
     total: number;
     added: number;
     alreadyImported: number;
+    /** The file's readable sessions, first and last day. */
     firstDate: string | null;
     lastDate: string | null;
+    /** The sessions this import adds, first and last day (null when it adds none). */
+    addedFirstDate: string | null;
+    addedLastDate: string | null;
     invalid: Array<{ index: number; id: string | null; reason: string }>;
   };
   unknownMoves: number;
-  program: { name: string };
+  /**
+   * What the import does to the adaptive program (ruling 2d-R5): `created` the tool's program (`name`), `adopted` the
+   * file's block into the athlete's program (`name`, its own settings kept), `kept` nothing (`name` when the account
+   * has exactly one active program). A later import always keeps.
+   */
+  program: { outcome: "created" | "adopted" | "kept"; name: string | null };
+  /** The weight unit before and after the import (ruling 2d-R6). */
+  weightUnit: { before: "lb" | "kg"; after: "lb" | "kg" };
+  /** The file's places the import writes, by name. */
   places: string[];
+  /** Move ratings the import writes. */
   ratings: number;
   block: { number: number; week: number; weeks: number } | null;
   dropped: string[];

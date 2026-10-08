@@ -10,6 +10,9 @@
  *  - The Import card stays hidden until the garden gate (`features.import`): nothing reaches the importer.
  */
 import { act, createElement, type ReactElement } from "react";
+import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
+import { dirname, join } from "node:path";
 import { createRoot, type Root } from "react-dom/client";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -350,20 +353,33 @@ describe("Import", () => {
 // ── Phase 2c Task 5: the summary sheet (mocks §7) and the result sheet (the tool's numbers, to compare) ────────────
 
 /** A synthetic summary, as the worker answers it (with `?dryRun=1`: the same, nothing written). */
-function summary(over: { dryRun?: boolean; added?: number; firstImport?: boolean; invalid?: number } = {}): StandaloneImportSummaryDto {
+type SummaryOver = Partial<Pick<StandaloneImportSummaryDto, "dryRun" | "firstImport" | "program" | "weightUnit" | "places" | "ratings">> & {
+  added?: number;
+  invalid?: number;
+  firstDate?: string;
+  lastDate?: string;
+  addedFirstDate?: string | null;
+  addedLastDate?: string | null;
+};
+function summary(over: SummaryOver = {}): StandaloneImportSummaryDto {
   const weeks = ["2026-08-10", "2026-08-17", "2026-08-24", "2026-08-31", "2026-09-07", "2026-09-14", "2026-09-21", "2026-09-28"];
   const added = over.added ?? 18;
+  const firstDate = over.firstDate ?? "2026-08-03";
+  const lastDate = over.lastDate ?? "2026-09-30";
   return {
     dryRun: over.dryRun ?? true,
     firstImport: over.firstImport ?? true,
     sessions: {
-      total: 18, added, alreadyImported: 18 - added, firstDate: "2026-08-03", lastDate: "2026-09-30",
+      total: 18, added, alreadyImported: 18 - added, firstDate, lastDate,
+      addedFirstDate: over.addedFirstDate !== undefined ? over.addedFirstDate : added ? firstDate : null,
+      addedLastDate: over.addedLastDate !== undefined ? over.addedLastDate : added ? lastDate : null,
       invalid: Array.from({ length: over.invalid ?? 0 }, (_, i) => ({ index: i, id: null, reason: "date: invalid" })),
     },
     unknownMoves: 0,
-    program: { name: "Care" },
-    places: ["Apartment", "Gym", "Mat only"],
-    ratings: 2,
+    program: over.program ?? { outcome: "created", name: "Care" },
+    weightUnit: over.weightUnit ?? { before: "lb", after: "lb" },
+    places: over.places ?? ["Apartment", "Gym", "Mat only"],
+    ratings: over.ratings ?? 2,
     block: { number: 2, week: 3, weeks: 5 },
     dropped: [],
     written: { sessions: added, sets: 40, checks: 30, activities: added, program: 1, block: 1, places: 3, prefs: 5, condition: 1, preferences: 1 },
@@ -385,7 +401,9 @@ function summary(over: { dryRun?: boolean; added?: number; firstImport?: boolean
 }
 
 /** The worker the Import card talks to: the dry run and the import answer `answer(dryRun)`. */
-function importWorker(answer: (dryRun: boolean) => StandaloneImportSummaryDto | null) {
+/** A refusal the worker answers instead of a summary. */
+type Refusal = { status: number; body: unknown };
+function importWorker(answer: (dryRun: boolean) => StandaloneImportSummaryDto | Refusal | null) {
   const calls: Array<{ path: string; body: unknown }> = [];
   vi.stubGlobal(
     "fetch",
@@ -393,6 +411,7 @@ function importWorker(answer: (dryRun: boolean) => StandaloneImportSummaryDto | 
       if (url.startsWith("/api/import/standalone") && req?.method === "POST") {
         calls.push({ path: url, body: JSON.parse(String(req.body)) });
         const s = answer(url.includes("dryRun=1"));
+        if (s && "status" in s) return new Response(JSON.stringify(s.body), { status: s.status, headers: { "Content-Type": "application/json" } });
         return s
           ? new Response(JSON.stringify(s), { status: 200, headers: { "Content-Type": "application/json" } })
           : new Response(JSON.stringify({ error: "invalid_backup", issues: [] }), { status: 422, headers: { "Content-Type": "application/json" } });
@@ -439,13 +458,87 @@ describe("Import: the summary sheet (mocks §7)", () => {
     const dialog = document.querySelector('[role="dialog"]')!;
     expect(dialog.textContent).toContain("Import backup · Sep 30");
     expect(rowsOf(".import-summary .setting-row")).toEqual([
-      "18 sessions Aug 3 – Sep 30",
-      "Block 2 · week 3 3 core lifts",
+      "18 sessions Aug 3 – Sep 30, 2026",
+      "Makes the program Care Block 2 · week 3 · 3 core lifts",
       "3 places · 2 ratings Apartment, Gym, Mat only",
+      "Weights in lb As in the tool",
       "History stays out of the garden Activity and records show it",
     ]);
     // The tool's numbers wait for the import; nothing is written yet.
     expect(text()).not.toContain("Per week");
+    expect((byName("Import") as HTMLButtonElement).disabled).toBe(false);
+  });
+
+  /** The summary sheet's rows for a dry run answering `over`. */
+  async function summaryRows(over: SummaryOver) {
+    importWorker((dry) => summary({ ...over, dryRun: dry }));
+    mount(createElement(ImportSection));
+    await choose(JSON.stringify(BACKUP));
+    await until(() => text().includes("History stays out of the garden"), "the summary");
+    return rowsOf(".import-summary .setting-row");
+  }
+
+  it("an account with its own program, no block yet: the sheet says the block goes into it (ruling 2d-R5)", async () => {
+    const rows = await summaryRows({ program: { outcome: "adopted", name: "Mornings" }, places: [], ratings: 1 });
+    expect(rows).toContain("Mornings takes block 2 · week 3 3 core lifts · its own settings stay");
+    expect(rows.join(" | ")).not.toMatch(/Makes the program|stays as it is/);
+  });
+
+  it("an account whose program is under way: the sheet says it stays as it is, and the file's block is not used", async () => {
+    const rows = await summaryRows({ program: { outcome: "kept", name: "Mornings" }, places: [], ratings: 0 });
+    expect(rows).toContain("Your program Mornings stays as it is The file's block isn't used");
+    expect(rows.join(" | ")).not.toMatch(/Block 2|takes block|Makes the program/);
+  });
+
+  it("several programs, none named: they all stay", async () => {
+    const rows = await summaryRows({ program: { outcome: "kept", name: null } });
+    expect(rows).toContain("Your programs stay as they are The file's block isn't used");
+  });
+
+  it("lists only what is written: no places row when the account keeps its own, ratings alone when some are new (Audit C M-1)", async () => {
+    const rows = await summaryRows({ places: [], ratings: 1 });
+    expect(rows).toContain("1 rating");
+    expect(rows.join(" | ")).not.toMatch(/place|Apartment/);
+    document.body.innerHTML = "";
+    const none = await summaryRows({ places: [], ratings: 0 });
+    expect(none.join(" | ")).not.toMatch(/rating|place/);
+  });
+
+  it("says what happens to the weight unit: switched to the tool's, or the account's kept (ruling 2d-R6)", async () => {
+    expect(await summaryRows({ weightUnit: { before: "lb", after: "kg" } })).toContain("Weights switch to kg The tool's setting");
+    document.body.innerHTML = "";
+    importWorker((dry) => {
+      const s = summary({ dryRun: dry, weightUnit: { before: "lb", after: "lb" } });
+      return { ...s, oracle: { ...s.oracle, unit: "kg" } };
+    });
+    mount(createElement(ImportSection));
+    await choose(JSON.stringify(BACKUP));
+    await until(() => text().includes("History stays out of the garden"), "the summary");
+    expect(rowsOf(".import-summary .setting-row")).toContain("Weights stay in lb Your setting here");
+  });
+
+  it("a later import: the new sessions and their own span, and that nothing else changes (Audit C M-1, M-2)", async () => {
+    const rows = await summaryRows({ firstImport: false, added: 4, addedFirstDate: "2026-10-05", addedLastDate: "2026-10-07" });
+    expect(rows).toEqual([
+      "4 new sessions Oct 5 – Oct 7, 2026",
+      "Nothing else changes Program, places and settings stay as they are",
+      "History stays out of the garden Activity and records show it",
+    ]);
+  });
+
+  it("a span across a new year carries both years and reads oldest first; one session is one session (Audit C M-2)", async () => {
+    const rows = await summaryRows({ added: 183, firstDate: "2025-10-06", lastDate: "2026-09-28" });
+    expect(rows[0]).toBe("183 sessions Oct 6, 2025 – Sep 28, 2026");
+    document.body.innerHTML = "";
+    const one = await summaryRows({ added: 1, invalid: 1, firstDate: "2026-09-28", lastDate: "2026-09-28" });
+    expect(one[0]).toBe("1 session Sep 28, 2026");
+    expect(text()).toContain("1 session skipped");
+    expect(text()).not.toContain("1 sessions");
+  });
+
+  it("a first import whose file brings no new session still offers Import: its settings and block come in (Audit C M-8)", async () => {
+    await summaryRows({ added: 0, firstImport: true, program: { outcome: "adopted", name: "Mornings" } });
+    expect(text()).not.toContain("Nothing new to import");
     expect((byName("Import") as HTMLButtonElement).disabled).toBe(false);
   });
 
@@ -473,6 +566,61 @@ describe("Import: the summary sheet (mocks §7)", () => {
   });
 });
 
+describe("Import: each refusal in its own words (Audit C M-3)", () => {
+  beforeEach(() => {
+    features.import = true;
+  });
+
+  it("a backup from a newer version of the tool says so, not that it isn't a backup", async () => {
+    importWorker(() => ({ status: 422, body: { error: "invalid_backup", reason: "newer_version", issues: [] } }));
+    mount(createElement(ImportSection));
+    await choose(JSON.stringify({ ...BACKUP, version: 3 }));
+    await until(() => text().includes("a newer version of the standalone tool"), "the refusal");
+    expect(text()).not.toContain("isn't a backup");
+    expect((byName("Import") as HTMLButtonElement).disabled).toBe(true);
+  });
+
+  it("a dry run the worker cannot answer is not called a bad file", async () => {
+    importWorker(() => ({ status: 500, body: { error: "internal" } }));
+    mount(createElement(ImportSection));
+    await choose(JSON.stringify(BACKUP));
+    await until(() => text().includes("Couldn't read that file — try again."), "the refusal");
+    expect(text()).not.toContain("isn't a backup");
+  });
+
+  async function importRefused(refusal: Refusal) {
+    importWorker((dry) => (dry ? summary({ dryRun: true }) : refusal));
+    mount(createElement(ImportSection));
+    await choose(JSON.stringify(BACKUP));
+    await until(() => !!byName("Import") && !(byName("Import") as HTMLButtonElement).disabled, "the summary");
+    await press("Import");
+  }
+
+  it("Import while a restore runs says to import after it", async () => {
+    await importRefused({ status: 423, body: { error: "restore_in_progress" } });
+    await until(() => text().includes("A restore is running — import after it finishes."), "the refusal");
+  });
+
+  it("Import while another import writes says so", async () => {
+    await importRefused({ status: 503, body: { error: "busy" } });
+    await until(() => text().includes("Another import is running — try again in a moment."), "the refusal");
+  });
+
+  it("any other failure of Import asks to try again", async () => {
+    await importRefused({ status: 500, body: { error: "internal" } });
+    await until(() => text().includes("Couldn't import that — try again."), "the refusal");
+  });
+});
+
+describe("Import: the row shows keyboard focus (Audit C M-4)", () => {
+  it("the file row draws the focus ring when its hidden input has keyboard focus", () => {
+    const css = readFileSync(join(dirname(fileURLToPath(import.meta.url)), "../src/styles.css"), "utf8");
+    const rule = css.match(/\.place-file:has\(input:focus-visible\)\s*\{([^}]*)\}/);
+    expect(rule, "a .place-file:has(input:focus-visible) rule").not.toBeNull();
+    expect(rule![1]).toMatch(/outline:\s*2px solid var\(--focus\)/);
+  });
+});
+
 describe("Import: the result sheet — the tool's own numbers, to compare with its Progress tab", () => {
   beforeEach(() => {
     features.import = true;
@@ -494,6 +642,17 @@ describe("Import: the result sheet — the tool's own numbers, to compare with i
     expect(calls[1]!.body).toEqual(BACKUP);
     expect(byName("Import")).toBeUndefined();
     expect(byName("Done")).toBeDefined();
+    expect(rowsOf(".import-result > .setting-row")).toEqual(["18 sessions imported Aug 3 – Sep 30, 2026"]);
+  });
+
+  it("one session imported is one session, and its span is the new sessions' (Audit C M-2)", async () => {
+    importWorker((dry) => summary({ dryRun: dry, added: 1, firstImport: false, addedFirstDate: "2026-10-07", addedLastDate: "2026-10-07" }));
+    mount(createElement(ImportSection));
+    await choose(JSON.stringify(BACKUP));
+    await until(() => !!byName("Import") && !(byName("Import") as HTMLButtonElement).disabled, "the summary");
+    await press("Import");
+    await until(() => text().includes("1 session imported"), "the result");
+    expect(rowsOf(".import-result > .setting-row")).toEqual(["1 session imported Oct 7, 2026"]);
   });
 
   it("the totals as the tool shows them: sessions, records, before-and-after pairs, the block", async () => {

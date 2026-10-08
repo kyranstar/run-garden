@@ -2693,6 +2693,12 @@ button.session-chip {
 .place-file {
   position: relative;
 }
+/* The row's file input is visually hidden: keyboard focus on it draws the ring on the row (Audit C M-4). */
+.place-file:has(input:focus-visible) {
+  outline: 2px solid var(--focus);
+  outline-offset: 2px;
+  border-radius: var(--radius-xs);
+}
 /* The import's result: the standalone tool's numbers, laid out as its Progress tab reads them (Phase 2c Task 5).
    Read-only rows, so no tap floor; numbers line up in tabular figures, right-aligned, the week label left. */
 .import-result .settings-subhead {
