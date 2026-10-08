@@ -469,12 +469,13 @@ if (appAuthoredRow(workout)) {
 **Interfaces:**
 - Consumes: `api.watchPreview`, `api.sendToWatch`, `api.takeOffWatch`, `api.drainWatch`, `SessionDto.watch`, the approved mocks (Task 1).
 - **The drain (fix wave 3-A, ruling 3-R11).** Send and Take off only queue: neither runs the push lane in its own request (Workers Free budget, every Phase 3 request ≤ 45 D1 statements + COROS fetches). On a 200 from either, the sheet calls `api.drainWatch()` at once (`POST /api/sessions/watch/drain` → `{executed}`; a new request that runs at most one of this athlete's queued pushes or unpushes; 404 while the switch is off), then reads the session (`api.getSession`) for the state, and polls it while `watch.state === "sending"`. A failed drain call is not an error to show: the hourly lane is the fallback, and the sheet keeps "Sending…".
+- **The preview is what is sent (fix wave 3-A, audit W-2 / W-8).** `api.watchPreview` answers `digest`, the digest of the payload it rendered; Send posts `{buildId, digest}` (`api.sendToWatch(workoutId, buildId, digest)`), and the route requires it. When the payload Send would queue differs (another session took the stamp, the catalog synced), it answers 409 `{error: "stale_preview", preview}` and writes nothing: the sheet swaps `preview` in for the one it shows, and the next Send carries its digest. A `failed` push previews what Retry will send (Retry posts that preview's digest, so it never loops on 409); a push queued, running or on the watch previews its own payload. The stamp is fixed at the build's first Send.
 
 - [ ] **Step 1: Write the failing tests:**
   - `watch: null` → nothing about the watch renders (sheet and Today).
-  - `ready` → Send to watch opens the preview. Each row shows the name, target, kg with the athlete's unit beside it (`11.3 kg · 25 lb`), the overview, and the rest. Send posts `{buildId}` and the sheet shows Sending….
-  - `too_long` → no Send, the line "Too long for the watch". `failed` → Couldn't send + Retry. `on_watch` → On your watch + Take off watch, which confirms first. `off_watch` → nothing.
-  - 409 `stale` → the fresh session replaces the sheet's (as Start does).
+  - `ready` → Send to watch opens the preview. Each row shows the name, target, kg with the athlete's unit beside it (`11.3 kg · 25 lb`), the overview, and the rest. Send posts `{buildId, digest}` (the shown preview's) and the sheet shows Sending….
+  - `too_long` → no Send, the line "Too long for the watch". `failed` → Couldn't send + Retry (Retry previews first, and posts that preview's digest). `on_watch` → On your watch + Take off watch, which confirms first. `off_watch` → nothing.
+  - 409 `stale` → the fresh session replaces the sheet's (as Start does). 409 `stale_preview` → the fresh `preview` replaces the shown one, nothing is sent until the athlete taps Send again.
   - Keyboard: Enter on Send; Esc closes the preview.
 - [ ] **Step 2: Implement** to the approved mocks. Run the screenshot matrix (360/390/768/1280/1440 × light/dark), the zero-overflow check, and tap-target hit tests on every new control.
 - [ ] **Step 3: Run the gates.** Commit `feat(ui): send to watch — preview, states and take off`.

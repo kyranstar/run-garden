@@ -21,6 +21,7 @@
 import { and, eq, inArray, isNotNull, ne, sql } from "drizzle-orm";
 import { corosWriteJobs, plannedWorkouts, programs, providerConnections, sessionBuilds } from "@rg/database";
 import {
+  canonicalJson,
   programSessionPushJobSchema,
   STAMPING_JOB_KINDS,
   todayInZone,
@@ -41,6 +42,7 @@ import { buildProgramWatchProgram, FREE_TEXT_ORIGIN_ID, previewOfProgram, type P
 import { COROS_EXERCISE_NAMES, localDateToCorosDay } from "@rg/providers";
 import type { Step } from "@rg/session-engine";
 import { watchPushEnabled, type Env } from "../env.js";
+import { sha256Hex } from "../auth/crypto.js";
 import type { Db } from "./db.js";
 import { corosKeyOf } from "./coros-exercise-map.js";
 import { freeStamp, STAMP_SEPARATOR, stampName, takenStampsOn } from "./coros-stamp.js";
@@ -273,6 +275,11 @@ export interface WatchPreviewDto {
   steps: Array<ProgramPreviewStep & { load: Weight | null }>;
   freeText: number;
   refusal: WatchRefusal | null;
+  /**
+   * The digest of the payload this preview rendered (`pushDigest`). Send carries it back: a payload that would differ
+   * is refused 409 `stale_preview` with the fresh preview (audit W-2 / W-8), so what is sent is what was shown.
+   */
+  digest: string;
 }
 
 /** Send (or its preview) is not offered now; `reason` is the sheet's word for why. */
@@ -280,6 +287,34 @@ export class WatchUnavailableError extends Error {
   constructor(public readonly reason: WatchUnavailable) {
     super(reason);
   }
+}
+
+/**
+ * Send named a preview whose payload is not the one it would queue now (another session took the stamp, the catalog
+ * synced, the build's steps resolve differently): nothing is written, and `preview` is the fresh one to show.
+ */
+export class StalePreviewError extends Error {
+  constructor(public readonly preview: WatchPreviewDto) {
+    super("stale_preview");
+  }
+}
+
+/**
+ * THE DIGEST OF WHAT A PUSH WRITES: its payload without the lane's own bookkeeping (`attempts`, `observed`), as
+ * canonical JSON, SHA-256. The preview answers it and Send compares it, so the two are one payload or Send refuses.
+ */
+export async function pushDigest(payload: ProgramSessionPushJob): Promise<string> {
+  const { workoutId, buildId, happenDay, name, session } = payload;
+  return sha256Hex(canonicalJson({ workoutId, buildId, happenDay, name, session }));
+}
+
+/**
+ * The catalog a sent payload was resolved against, made from the payload itself: each catalog step's id → the T-code
+ * it carries. A sent push previews against this, never the live catalog — a row COROS re-keyed since must not break
+ * (or change) the preview of what was sent (audit W-2).
+ */
+function ownCatalog(payload: ProgramSessionPushJob): Map<string, string> {
+  return new Map(payload.session.steps.filter((s) => s.originId !== FREE_TEXT_ORIGIN_ID).map((s) => [s.originId, s.name]));
 }
 
 const IN_FLIGHT = ["queued", "claimed", "in_progress", "verifying"] as const;
@@ -409,12 +444,23 @@ async function programNameOf(db: Db, row: WorkoutRow): Promise<string> {
   return program?.name?.trim() || row.title;
 }
 
-/** The push's payload for a build on its slot's day: the resolved steps and the day's free stamp. */
+/**
+ * The push's payload for a build on its slot's day: the steps resolved against today's catalog, and the stamp.
+ *
+ * THE STAMP IS FIXED AT THE BUILD'S FIRST SEND (audit W-8, U-3). A failed or restored push may have landed a copy
+ * unrecorded, under its stamp; Retry must carry that very stamp, so the lane's `already_present` finds the copy
+ * instead of writing a second one under a new name (a program renamed since would otherwise change it). So a build
+ * whose push was queued before keeps that push's stamp for its day — unless another session holds it now (only a
+ * push that was taken off or never ran gives its stamp up); then, as at a first Send, the day's free stamp.
+ */
 async function pushPayloadFor(db: Db, userId: string, row: WorkoutRow, build: BuildPayload): Promise<{ payload: ProgramSessionPushJob; plan: WatchPlan; catalog: Map<string, string> }> {
   const { catalog, deps } = await planDeps(db);
   const plan = watchStepsFromBuild(build, deps);
   const taken = await takenStampsOn(db, userId, row.effectiveDate, { jobId: pushJobId(build.buildId) });
-  const stamp = programStamp(await programNameOf(db, row), row.effectiveDate, taken);
+  const earlier = await jobById(db, pushJobId(build.buildId));
+  const prior = earlier ? programSessionPushJobSchema.safeParse(earlier.payload) : null;
+  const fixed = prior?.success && prior.data.happenDay === row.effectiveDate && !taken.has(prior.data.name) ? prior.data.name : null;
+  const stamp = fixed ?? programStamp(await programNameOf(db, row), row.effectiveDate, taken);
   const payload = {
     workoutId: row.id,
     buildId: build.buildId,
@@ -431,42 +477,46 @@ function loadOf(grams: number | null, unit: UserPreferences["weightUnit"]): Weig
   return { v: weightInUnit({ v: grams / 1000, u: "kg" }, unit), u: unit };
 }
 
+/** A payload's preview: read off the very program the push would write (the preview IS the wire), with its digest. */
+async function previewOf(
+  payload: ProgramSessionPushJob,
+  catalog: Map<string, string>,
+  refusal: WatchRefusal | null,
+  unit: UserPreferences["weightUnit"],
+): Promise<WatchPreviewDto> {
+  const freeText = payload.session.steps.filter((s) => s.originId === FREE_TEXT_ORIGIN_ID).length;
+  const head = { buildId: payload.buildId, stamp: payload.name, freeText, digest: await pushDigest(payload) };
+  if (refusal) return { ...head, steps: [], refusal };
+  const program = buildProgramWatchProgram(
+    { happenDay: String(localDateToCorosDay(payload.happenDay)), name: payload.name, session: payload.session },
+    catalog,
+  );
+  const steps = previewOfProgram(program, (key) => COROS_EXERCISE_NAMES[key]).map((s) => ({ ...s, load: loadOf(s.grams, unit) }));
+  return { ...head, steps, refusal: null };
+}
+
 /**
  * `GET /api/sessions/:workoutId/watch-preview`: the steps as the watch will hold them, read off the very program the
- * push would write (the preview IS the wire), and the stamp it would carry. A sent build previews what was sent. A
- * build the watch cannot take says why in `refusal`, with no steps. Throws `SessionNotFoundError`,
- * `WatchUnavailableError` (Send would be refused for that reason).
+ * push would write (the preview IS the wire), the stamp it would carry, and the digest Send carries back. A build the
+ * watch cannot take says why in `refusal`, with no steps. Throws `SessionNotFoundError`, `WatchUnavailableError`
+ * (Send would be refused for that reason).
+ *
+ * WHICH PAYLOAD (audit W-2 / W-8). A push queued, running or verified previews its own payload, against a catalog
+ * made from that payload (`ownCatalog`): it is what was sent, whatever the catalog says now. Any other build — not
+ * sent, or its push failed (Retry) or settled (sent again) — previews exactly the payload Send would queue now, so
+ * Retry with this preview's digest is never refused.
  */
 export async function watchPreview(db: Db, env: Env, userId: string, workoutId: string, ctx: BuildCtx): Promise<WatchPreviewDto> {
   const row = await loadSlot(db, userId, workoutId);
   const session = await loadSession(db, userId, workoutId, ctx.today);
   const sent = await sentBuildIdOf(db, row.id);
-  let payload: ProgramSessionPushJob;
-  let catalog: Map<string, string>;
-  let refusal: WatchRefusal | null;
-  let freeText: number;
   const pushed = sent ? await jobById(db, pushJobId(sent)) : null;
-  const parsed = pushed ? programSessionPushJobSchema.safeParse(pushed.payload) : null;
-  if (parsed?.success) {
-    payload = parsed.data;
-    catalog = await exerciseNameMap(db);
-    refusal = null;
-    freeText = payload.session.steps.filter((s) => s.originId === FREE_TEXT_ORIGIN_ID).length;
-  } else {
-    const reason = await unavailableReason(db, userId, row, session, ctx.prefs, ctx.today);
-    if (reason && reason !== "too_long" && reason !== "empty") throw new WatchUnavailableError(reason);
-    const made = await pushPayloadFor(db, userId, row, session.build!);
-    ({ payload, catalog } = made);
-    refusal = made.plan.refusal;
-    freeText = made.plan.freeText;
-  }
-  if (refusal) return { buildId: payload.buildId, stamp: payload.name, steps: [], freeText, refusal };
-  const program = buildProgramWatchProgram(
-    { happenDay: String(localDateToCorosDay(payload.happenDay)), name: payload.name, session: payload.session },
-    catalog,
-  );
-  const steps = previewOfProgram(program, (key) => COROS_EXERCISE_NAMES[key]).map((s) => ({ ...s, load: loadOf(s.grams, ctx.prefs.weightUnit) }));
-  return { buildId: payload.buildId, stamp: payload.name, steps, freeText, refusal: null };
+  const own = pushed && (isInFlight(pushed.status) || pushed.status === "verified") ? programSessionPushJobSchema.safeParse(pushed.payload) : null;
+  if (own?.success) return previewOf(own.data, ownCatalog(own.data), null, ctx.prefs.weightUnit);
+  const reason = await unavailableReason(db, userId, row, session, ctx.prefs, ctx.today);
+  if (reason && reason !== "too_long" && reason !== "empty") throw new WatchUnavailableError(reason);
+  const made = await pushPayloadFor(db, userId, row, session.build!);
+  return previewOf(made.payload, made.catalog, made.plan.refusal, ctx.prefs.weightUnit);
 }
 
 /**
@@ -474,12 +524,16 @@ export async function watchPreview(db: Db, env: Env, userId: string, workoutId: 
  * current build; `content_state` stays `built`) and queue `push:<buildId>` (spec §4.3). A second send while the push
  * is queued, running or verified is a no-op; a failed or superseded one is queued afresh. Throws
  * `SessionNotFoundError`, `WatchUnavailableError`, `StaleBuildError` (with the fresh session), `NotTodayError`,
- * `NotBuiltError`, `RestoringError`. The answer carries its `watch` state.
+ * `NotBuiltError`, `RestoringError`, `StalePreviewError`. The answer carries its `watch` state.
  *
  * NO LANE RUNS HERE, and the shape is Start's (ruling 3-R11, the Workers Free budget): the slot is read once, the
  * build is checked and locked by `lockCurrentBuild` (its session is the answer), and the payload is made before the
  * lock so that every refusal writes nothing. The client then asks for the push in a request of its own
  * (`POST /api/sessions/watch/drain`); the hourly lane is the fallback.
+ *
+ * THE PREVIEW IS WHAT IS SENT (audit W-2 / W-8): `opts.digest` is the digest of the preview the athlete saw (the
+ * route requires it). The payload made here must have that digest, else `StalePreviewError` with the fresh preview,
+ * before anything is written. A no-op Send (the push already queued, running or verified) checks nothing.
  */
 export async function sendToWatch(
   db: Db,
@@ -488,6 +542,7 @@ export async function sendToWatch(
   workoutId: string,
   buildId: string,
   ctx: BuildCtx,
+  opts: { digest?: string } = {},
 ): Promise<SessionResponse> {
   if (!watchPushEnabled(env)) throw new WatchUnavailableError("writes_off");
   const row = await loadSlot(db, userId, workoutId);
@@ -509,7 +564,11 @@ export async function sendToWatch(
   const prepare = async (slot: WorkoutRow, build: BuildPayload | null, profiles: readonly string[], checks: Readonly<Record<string, unknown>>) => {
     const refusal = await buildRefusal(db, slot, build, profiles, checks);
     if (refusal) throw new WatchUnavailableError(refusal);
-    payload = (await pushPayloadFor(db, userId, slot, build!)).payload;
+    const made = await pushPayloadFor(db, userId, slot, build!);
+    if (opts.digest !== undefined && (await pushDigest(made.payload)) !== opts.digest) {
+      throw new StalePreviewError(await previewOf(made.payload, made.catalog, made.plan.refusal, ctx.prefs.weightUnit));
+    }
+    payload = made.payload;
   };
   let session: SessionResponse;
   if (sent) {

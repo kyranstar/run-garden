@@ -10,7 +10,7 @@
  *   POST   /api/sessions/:workoutId/start    {buildId} → lock that build, while it is still the day's; idempotent
  *   POST   /api/sessions/:workoutId/unstart  the player's Discard: back to built, the build unlocked; idempotent
  *   GET    /api/sessions/:workoutId/watch-preview   the steps as the watch will hold them (Phase 3)
- *   POST   /api/sessions/:workoutId/send-to-watch   {buildId} → lock the build (it stays `built`), queue its push
+ *   POST   /api/sessions/:workoutId/send-to-watch   {buildId, digest} → lock the build (it stays `built`), queue its push
  *   POST   /api/sessions/:workoutId/take-off-watch  supersede a queued push, or queue the unpush of a pushed one
  *   PUT    /api/sessions/performed/:id       a performed session from the player's outbox, saved exactly once
  *   POST   /api/conditions/checks            {profileId, value, feelingOff} → the day's check
@@ -23,7 +23,8 @@
  * THE WATCH (Phase 3, spec §4, §6). Every session response carries `watch` — null while the switch
  * (`WATCH_PUSH_ENABLED`) is off, so nothing about the watch renders — through one helper, `withWatch`. Off, the three
  * watch routes answer 404. Send answers 409 with the reason it is not offered (`not_today`, `not_built`, `done`,
- * `precheck`, `writes_off`, `not_connected`, `too_long`, `empty`, `taking_off`) or `stale` with the fresh session.
+ * `precheck`, `writes_off`, `not_connected`, `too_long`, `empty`, `taking_off`), `stale` with the fresh session, or
+ * `stale_preview` with the fresh preview (the payload is not the one the athlete was shown).
  */
 import { Hono, type Context } from "hono";
 import { z, type ZodError } from "zod";
@@ -51,7 +52,7 @@ import {
   unstartSession,
   type SessionResponse,
 } from "../services/session-build.js";
-import { sendToWatch, takeOffWatch, watchPreview, watchStateOf, WatchUnavailableError } from "../services/watch-push.js";
+import { sendToWatch, StalePreviewError, takeOffWatch, watchPreview, watchStateOf, WatchUnavailableError } from "../services/watch-push.js";
 import { executeCloudJobs } from "../services/coros-write-cloud.js";
 import { InvalidSaveError, savePerformedSession } from "../services/session-save.js";
 import { reviewBasis } from "../services/session-review-basis.js";
@@ -230,7 +231,8 @@ sessionRoutes.post("/:workoutId/start", async (c) => {
 /** Off, the watch routes do not exist. */
 const switchedOff = (c: Context<AppContext>): Response | null => (watchPushEnabled(c.env) ? null : c.json({ error: "not_found" }, 404));
 
-const sendSchema = z.object({ buildId: z.string().min(1).max(200) }).strict();
+/** Send names the build and the preview the athlete saw: `digest` is that preview's (audit W-2 / W-8). */
+const sendSchema = z.object({ buildId: z.string().min(1).max(200), digest: z.string().min(1).max(200) }).strict();
 
 /** The steps as the watch will hold them, read off the program the push would write; the stamp it would carry. */
 sessionRoutes.get("/:workoutId/watch-preview", async (c) => {
@@ -250,7 +252,9 @@ sessionRoutes.get("/:workoutId/watch-preview", async (c) => {
 /**
  * Lock the build the athlete previewed and queue its push. NO LANE RUNS IN THIS REQUEST (ruling 3-R11: the Workers
  * Free budget): the client follows up with `POST /api/sessions/watch/drain`, its own invocation; the hourly lane is
- * the fallback. The answer carries its `watch` state (`sending`).
+ * the fallback. The answer carries its `watch` state (`sending`). `{buildId, digest}`: the digest of the preview the
+ * athlete saw; 409 `{error: "stale_preview", preview}` when the payload Send would queue is not that one (nothing
+ * written — show `preview`, and Send names its digest).
  */
 sessionRoutes.post("/:workoutId/send-to-watch", async (c) => {
   const off = switchedOff(c);
@@ -262,14 +266,19 @@ sessionRoutes.post("/:workoutId/send-to-watch", async (c) => {
   const prefs = await loadPreferences(db, userId);
   try {
     return c.json(
-      await sendToWatch(db, c.env, userId, c.req.param("workoutId"), parsed.data.buildId, {
-        today: todayInZone(prefs.timezone),
-        now: nowInstant(),
-        prefs,
-      }),
+      await sendToWatch(
+        db,
+        c.env,
+        userId,
+        c.req.param("workoutId"),
+        parsed.data.buildId,
+        { today: todayInZone(prefs.timezone), now: nowInstant(), prefs },
+        { digest: parsed.data.digest },
+      ),
     );
   } catch (e) {
     if (e instanceof WatchUnavailableError) return c.json({ error: e.reason }, 409);
+    if (e instanceof StalePreviewError) return c.json({ error: "stale_preview", preview: e.preview }, 409);
     if (e instanceof StaleBuildError) {
       if (e.calendarChanged) waitUntilSafe(c, syncCalendar(db, c.env, userId));
       return c.json({ error: "stale", session: await withWatch(c, e.session) }, 409);
