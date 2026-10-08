@@ -9,20 +9,24 @@ import { describe, expect, it } from "vitest";
 import { WATCH_MAX_STEPS, WATCH_NAME_MAX, WATCH_OVERVIEW_MAX, WATCH_STAMP_MAX, type Weight } from "@rg/domain";
 import type { Step } from "@rg/session-engine";
 import type { BuildPayload, ExerciseSlice } from "../src/services/session-build.js";
-import { programStamp, watchStepsFromBuild, type WatchPlanDeps } from "../src/services/watch-push.js";
+import { EXERCISES as LIBRARY } from "@rg/exercise-library";
+import { cutAtWord, programStamp, watchNameOf, watchStepsFromBuild, type WatchPlanDeps } from "../src/services/watch-push.js";
 
 const GOBLET_CATALOG_ID = "4258276155475001301";
 
-/** A library slice with only what the watch reads: the name and the first focus cue. */
-const slice = (id: string, name: string, focus: string): ExerciseSlice =>
-  ({ id, name, text: { focus: [focus] } }) as unknown as ExerciseSlice;
+/** A library slice with only what the watch reads: the name, the first focus cue and the laterality. */
+const slice = (id: string, name: string, focus: string, laterality = "bilateral"): ExerciseSlice =>
+  ({ id, name, laterality, text: { focus: [focus] } }) as unknown as ExerciseSlice;
 
 const EXERCISES: Record<string, ExerciseSlice> = {
   gobletSquat: slice("gobletSquat", "Goblet squat", "Knees track over your toes."),
   chinTuck: slice("chinTuck", "Chin tuck hold", "Long neck, eyes level."),
   slRdl: slice("slRdl", "Single-leg Romanian deadlift with reach", "Hips stay square to the floor while the free leg reaches long behind you."),
   bandRow: slice("bandRow", "Band row", "Squeeze the shoulder blades."),
-  sidePlank: slice("sidePlank", "Side plank", "Hips high."),
+  sidePlank: slice("sidePlank", "Side plank", "Hips high.", "unilateral"),
+  oneArmRow: slice("oneArmRow", "One-arm row", "The shoulder blade moves.", "unilateral"),
+  splitSquat: slice("splitSquat", "Split squat hold", "Front shin stays tall.", "unilateral"),
+  deadBug: slice("deadBug", "Dead bug", "Low back stays down.", "alternating"),
 };
 
 const step = (over: Partial<Step>): Step => ({
@@ -126,6 +130,108 @@ describe("watchStepsFromBuild — sides, rests and names", () => {
   });
 });
 
+describe("watchStepsFromBuild — a one-sided set is a Left/Right pair (audit W-1)", () => {
+  // The engine prices a unilateral set as both sides (`setSeconds` × 2) and the player says "8 each side"; only a
+  // timed window carries its side. One watch step would prescribe half the work — the coach lane's lesson (d52833e).
+  it("a unilateral move's set with no side → left then right: same move, target and weight; the rest on the right", () => {
+    const plan = watchStepsFromBuild(build([step({ exerciseId: "oneArmRow", target: { reps: 8, w: { v: 25, u: "lb" } } }), rest(75)]), deps);
+    const pair = { originId: "0", name: "One-arm row", target: { kind: "reps", reps: 8 }, grams: 11_340 };
+    expect(plan.steps).toEqual([
+      { ...pair, restSeconds: 0, overview: "left side · The shoulder blade moves.", side: "left" },
+      { ...pair, restSeconds: 75, overview: "right side · The shoulder blade moves.", side: "right" },
+    ]);
+  });
+
+  it("a bodyweight one-sided hold set is a pair too; a catalog move keeps its catalog id on both", () => {
+    const plan = watchStepsFromBuild(
+      build([step({ exerciseId: "splitSquat", target: { secs: 30 } }), step({ exerciseId: "sidePlank", target: { reps: 5 } })]),
+      { ...deps, catalogIdByKey: new Map([["T1185", "4258276155475001185"]]) },
+    );
+    expect(plan.steps.map((s) => [s.name, s.side, s.target, s.grams])).toEqual([
+      ["Split squat hold", "left", { kind: "hold", seconds: 30 }, null],
+      ["Split squat hold", "right", { kind: "hold", seconds: 30 }, null],
+      ["T1185", "left", { kind: "reps", reps: 5 }, null],
+      ["T1185", "right", { kind: "reps", reps: 5 }, null],
+    ]);
+    expect(plan.steps.slice(2).every((s) => s.originId === "4258276155475001185")).toBe(true);
+  });
+
+  it("stays one step: an alternating or bilateral move's set, a set that names its side, a timed window", () => {
+    const plan = watchStepsFromBuild(
+      build([
+        step({ exerciseId: "deadBug", target: { reps: 10 } }),
+        step({ target: { reps: 8 } }),
+        step({ exerciseId: "oneArmRow", side: "Left", target: { reps: 8 } }),
+        step({ kind: "timed", exerciseId: "sidePlank", side: "Right", seconds: 30 }),
+      ]),
+      deps,
+    );
+    expect(plan.steps.map((s) => s.side)).toEqual([null, null, "left", "right"]);
+  });
+
+  it("the pair counts as two steps toward the watch's limit", () => {
+    const sets = (n: number) => Array.from({ length: n }, () => step({ exerciseId: "oneArmRow", target: { reps: 8 } }));
+    expect(watchStepsFromBuild(build(sets(WATCH_MAX_STEPS / 2)), deps).steps).toHaveLength(WATCH_MAX_STEPS);
+    expect(watchStepsFromBuild(build(sets(WATCH_MAX_STEPS / 2)), deps).refusal).toBeNull();
+    expect(watchStepsFromBuild(build(sets(WATCH_MAX_STEPS / 2 + 1)), deps).refusal).toBe("too_long");
+  });
+});
+
+describe("watchStepsFromBuild — a long name, and one watch name per move (audit W-6)", () => {
+  const CUE = "Let the forehead rest.";
+  const MORE: Record<string, ExerciseSlice> = {
+    ...EXERCISES,
+    childHands: slice("childHands", "Child's pose · forehead on stacked hands", CUE),
+    childBlock: slice("childBlock", "Child's pose · forehead on block", CUE),
+    hamBridge: slice("hamBridge", "Hamstring bridge with heels on a chair", "Hips level."),
+    shake: slice("shake", "Supine hip shake · hands under sacrum", "Tiny movements.", "unilateral"),
+    gobletFree: slice("gobletFree", "Goblet Squat", "Elbows inside the knees."), // free text named like COROS's T1301
+  };
+  const namesOf = (b: BuildPayload) => watchStepsFromBuild(b, deps).steps.map((s) => s.name);
+
+  it("a name over 30 with ' · ' goes as the move; its qualifier leads the overview, after the side", () => {
+    const plan = watchStepsFromBuild(
+      build([step({ kind: "timed", exerciseId: "childHands", seconds: 60 }), step({ exerciseId: "shake", target: { reps: 10 } })], MORE),
+      deps,
+    );
+    expect(plan.steps.map((s) => [s.name, s.overview])).toEqual([
+      ["Child's pose", `forehead on stacked hands · ${CUE}`],
+      ["Supine hip shake", "left side · hands under sacrum · Tiny movements."],
+      ["Supine hip shake", "right side · hands under sacrum · Tiny movements."],
+    ]);
+  });
+
+  it("any other long name is cut at a word, never ending on a word like 'on' or 'a'", () => {
+    expect(namesOf(build([step({ exerciseId: "hamBridge", target: { reps: 8 } })], MORE))).toEqual(["Hamstring bridge with heels"]);
+  });
+
+  it("two different moves never share a watch name: the later one gets (2); a move keeps its one name all session", () => {
+    const sets = ["childHands", "childBlock", "childHands", "childBlock"].map((id) => step({ kind: "timed", exerciseId: id, seconds: 60 }));
+    expect(namesOf(build(sets, MORE))).toEqual(["Child's pose", "Child's pose (2)", "Child's pose", "Child's pose (2)"]);
+  });
+
+  it("a free-text name a catalog step of the session already shows (its English name) gets (2), whatever comes first", () => {
+    const steps = [step({ exerciseId: "gobletFree", target: { reps: 8 } }), step({ target: { reps: 8 } })];
+    expect(namesOf(build(steps, MORE))).toEqual(["Goblet Squat (2)", "T1301"]);
+  });
+
+  it("the shipped library: each move's watch name fits, never dangles, and a build of every move names each once", () => {
+    for (const e of LIBRARY) {
+      const { name, qualifier } = watchNameOf(e.name);
+      expect(name.length, e.id).toBeLessThanOrEqual(WATCH_NAME_MAX);
+      expect(name, e.id).not.toMatch(/\s(a|an|and|at|by|for|from|in|of|on|or|the|to|under|with)$/i);
+      if (qualifier) expect(`${name} · ${qualifier}`, e.id).toBe(e.name);
+    }
+    const every = build(
+      LIBRARY.map((e) => step({ exerciseId: e.id, target: { reps: 5 } })),
+      Object.fromEntries(LIBRARY.map((e) => [e.id, e as unknown as ExerciseSlice])),
+    );
+    const names = watchStepsFromBuild(every, { catalogIdByKey: new Map(), keyOf: () => null }).steps.filter((s) => s.side !== "right").map((s) => s.name.toLowerCase());
+    expect(names).toHaveLength(LIBRARY.length);
+    expect(new Set(names).size).toBe(LIBRARY.length);
+  });
+});
+
 describe("watchStepsFromBuild — refusals and determinism", () => {
   it("more than 200 work steps → too_long; none → empty", () => {
     const many = Array.from({ length: WATCH_MAX_STEPS + 1 }, () => step({ target: { reps: 5 } }));
@@ -164,5 +270,53 @@ describe("programStamp", () => {
     expect(second).not.toBe(first);
     expect(second.length).toBeLessThanOrEqual(WATCH_STAMP_MAX);
     expect(second.endsWith(" — 2026-10-09 (2)")).toBe(true);
+  });
+});
+
+describe("cuts never leave half a character (audit W-3, lane L-6, lane U-4)", () => {
+  /** A lone surrogate does not survive UTF-8: what COROS would store is not what the read-back looks for. */
+  const wellFormed = (s: string) => new TextDecoder().decode(new TextEncoder().encode(s)) === s;
+  const bytes = (s: string) => new TextEncoder().encode(s).length;
+  /** The spike's stamp, "RG SPIKE — SAFE TO DELETE 2026-10-04": 36 characters, 38 UTF-8 bytes (the em dash is 3). */
+  const PROVEN_STAMP_BYTES = 38;
+  const FAMILY = "👨‍👩‍👧"; // one character on screen: three emoji joined by two zero-width joiners
+
+  it("a stamp cut inside a run of emoji keeps whole emoji: at most 36 characters and 38 UTF-8 bytes", () => {
+    for (const name of ["💪".repeat(16), `Strength${"💪".repeat(10)}`, `S${"💪".repeat(12)}`]) {
+      for (const taken of [new Set<string>(), new Set([programStamp(name, "2026-10-09", new Set())])]) {
+        const stamp = programStamp(name, "2026-10-09", taken);
+        expect(wellFormed(stamp), stamp).toBe(true);
+        expect(stamp.length).toBeLessThanOrEqual(WATCH_STAMP_MAX);
+        expect(bytes(stamp), stamp).toBeLessThanOrEqual(PROVEN_STAMP_BYTES);
+        expect(stamp).toMatch(/^(Strength|S)?(💪)+ — 2026-10-09( \(2\))?$/u);
+      }
+    }
+  });
+
+  it("a stamp of a name in accented letters stays within the proven 38 bytes; a plain ASCII one is cut as before", () => {
+    const stamp = programStamp("Entraînement général à la maison", "2026-10-09", new Set());
+    expect(bytes(stamp)).toBeLessThanOrEqual(PROVEN_STAMP_BYTES);
+    expect(stamp).toBe("Entraînement général — 2026-10-09");
+    expect(programStamp("Strength and conditioning for the hills", "2026-10-09", new Set())).toBe("Strength and — 2026-10-09");
+    const word = "Supercalifragilisticexpialidocious";
+    expect(programStamp(word, "2026-10-09", new Set())).toBe("Supercalifragilisticexp — 2026-10-09");
+    expect(programStamp(word, "2026-10-09", new Set(["Supercalifragilisticexp — 2026-10-09"]))).toBe("Supercalifragilisti — 2026-10-09 (2)");
+  });
+
+  it("a joined emoji is one character: the cut keeps it whole or drops it, never a dangling joiner", () => {
+    expect(programStamp(FAMILY.repeat(5), "2026-10-09", new Set())).toBe(`${FAMILY} — 2026-10-09`);
+    expect(cutAtWord(FAMILY.repeat(4), 20)).toBe(FAMILY.repeat(2)); // 8 UTF-16 units each
+    expect(cutAtWord(`Row ${FAMILY.repeat(4)}`, 20)).toBe("Row"); // one word too long: cut back to the word before
+  });
+
+  it("a step name or overview cut inside an emoji is whole emoji only", () => {
+    const name = cutAtWord(`Kettlebell${"😀".repeat(20)}`, WATCH_NAME_MAX);
+    expect(wellFormed(name)).toBe(true);
+    expect(name).toBe(`Kettlebell${"😀".repeat(10)}`);
+    const emoji: Record<string, ExerciseSlice> = { e: slice("e", `Swing${"🔥".repeat(20)}`, `Hips${"🔥".repeat(60)}`) };
+    const [s] = watchStepsFromBuild(build([step({ exerciseId: "e", target: { reps: 5 } })], emoji), deps).steps;
+    expect(wellFormed(s!.name) && wellFormed(s!.overview)).toBe(true);
+    expect(s!.name.length).toBeLessThanOrEqual(WATCH_NAME_MAX);
+    expect(s!.overview.length).toBeLessThanOrEqual(WATCH_OVERVIEW_MAX);
   });
 });

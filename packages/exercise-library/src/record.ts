@@ -30,6 +30,14 @@ export interface ExerciseText {
 /**
  * A library move's place in the COROS strength catalog (Phase 3, spec §2). Only `exact` is ever pushed; `close` and
  * `generic` stay on record and the move goes to the watch as free text (spike outcome A).
+ *
+ * CURATING ONE. `exact` means the same movement with the same implement CLASS (`IMPLEMENT_CLASS`): kettlebell and
+ * dumbbells are one class, a hand-held free weight; barbell, cable, machine and band are each their own. So a row done
+ * with a kettlebell or dumbbells is exact to COROS's "One Arm Dumbbell Row" (the watch may name a dumbbell for a
+ * kettlebell set — same lift, and `exact` is what lets a lap pair by T-code), while our kettlebell-or-dumbbell deadlift
+ * is only `close` to COROS's "Deadlifts" (the barbell lift) and a band face pull only `close` to its cable one. A COROS
+ * name that names no implement ("Goblet Squat") is judged on the movement alone. Audit 3-A W-5; the library's
+ * coros-mapping test holds every exact key whose COROS name names an implement to this rule.
  */
 export interface CorosMapping {
   /** The COROS catalog T-code ("T1041") — what `coros_exercises.name` and a lap's `exerciseNameKey` carry. */

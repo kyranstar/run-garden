@@ -43,6 +43,16 @@ describe("computedCorosKey", () => {
     expect([...GENERIC_COROS_KEYS].sort()).toEqual(["T1120", "T1121", "T1122", "T1123"]);
   });
 
+  it("is the exact English name only: no alias rewrites a name into another movement's (ruling 3-R1, audit W-4)", () => {
+    // Each of these reached a catalog key through the import matcher's alias tables, a different movement each time.
+    for (const name of ["Hip bridge", "Calf raise", "Heel raise", "Front plank", "Forearm plank", "Tempo squat", "Slow push-up", "DB row", "KB swing", "Air squat", "Wall squat"]) {
+      expect(computedCorosKey({ name }), name).toBeNull();
+    }
+    // Case, punctuation, accents and plurals still fold away.
+    expect(computedCorosKey({ name: "single-leg hip bridges" })).toBe("T1219"); // COROS: "Single-Leg Hip Bridge"
+    expect(computedCorosKey({ name: "PUSH-UPS" })).toBe("T1004"); // COROS: "Push-ups"
+  });
+
   it("only ever names a strength-catalog key (never a run segment or a coach)", () => {
     // "Run" is a T3xxx run-workout segment, not a strength exercise.
     expect(computedCorosKey({ name: "Run" })).toBeNull();
@@ -107,11 +117,22 @@ describe("libraryIdsByKey", () => {
     expect(new Set(map.values()).size).toBe(map.size);
   });
 
-  it("over the shipped library: every lift the computed tier would map was looked at by hand", () => {
-    // A name match is not a movement match ("Glute bridge" computes to COROS's Hip Thrust through an alias).
-    const unreviewed = EXERCISES.filter(
-      (e) => e.roles.some((r) => r === "core" || r === "accessory") && !e.providers?.coros && computedCorosKey(e) !== null,
-    ).map((e) => e.id);
+  it("over the shipped library: every move the computed tier would map was looked at by hand, whatever its role", () => {
+    // A name match is not a movement match: a move of ANY role (activation, mobility, jaw …) the computed tier maps
+    // must carry a curated mapping, so the watch never gets a catalog step no one checked (audit W-4).
+    const unreviewed = EXERCISES.filter((e) => !e.providers?.coros && computedCorosKey(e) !== null).map((e) => e.id);
     expect(unreviewed).toEqual([]);
+    // The guard is not vacuous: a record of a role the old guard skipped is caught.
+    const stray = { ...EXERCISES[0]!, id: "stray", name: "Single-leg hip bridge", roles: ["activation"], providers: undefined } as unknown as ExerciseRecord;
+    expect([stray].filter((e) => !e.providers?.coros && computedCorosKey(e) !== null).map((e) => e.id)).toEqual(["stray"]);
+  });
+
+  it("over the shipped library: no two moves give the watch the same catalog step", () => {
+    const byKey = new Map<string, string[]>();
+    for (const e of EXERCISES) {
+      const key = corosKeyOf(e.id);
+      if (key) byKey.set(key, [...(byKey.get(key) ?? []), e.id]);
+    }
+    expect([...byKey].filter(([, ids]) => ids.length > 1)).toEqual([]);
   });
 });

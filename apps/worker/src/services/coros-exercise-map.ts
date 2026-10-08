@@ -13,16 +13,20 @@
  *    doubtful catalog step worse than none: it would show another movement's
  *    name and animation).
  *  - COMPUTED: every record no one curated gets the unique strength-catalog
- *    T-code whose English name (`COROS_EXERCISE_NAMES`) normalizes
- *    (`normalizeExerciseKey`) to the record's name. Two T-codes with that
+ *    T-code whose English name (`COROS_EXERCISE_NAMES`) has the record's
+ *    strict key (`strictExerciseKey`: case, punctuation, accents, plurals —
+ *    never the import matcher's word or phrase aliases, which turn "Hip
+ *    bridge" into COROS's Hip Thrust; audit 3-A W-4). Two T-codes with that
  *    name, or none, means no mapping. Exact name only: no fuzzy match.
+ *    The library test holds that no shipped move of any role reaches this
+ *    tier unreviewed: a computed match is curated by hand before it ships.
  *
  * Pure and deterministic, from public data only (the catalog's T-codes and
  * COROS's own English locale) — no D1 read anywhere in here.
  */
 import { EXERCISES, type ExerciseRecord } from "@rg/exercise-library";
 import { COROS_EXERCISE_NAMES } from "@rg/providers";
-import { normalizeExerciseKey } from "./exercise-catalog.js";
+import { strictExerciseKey } from "./exercise-catalog.js";
 
 /** The generic catalog steps (Warm Up, Training, Cool Down, Rest): never a movement's mapping. */
 export const GENERIC_COROS_KEYS: ReadonlySet<string> = new Set(["T1120", "T1121", "T1122", "T1123"]);
@@ -42,7 +46,7 @@ function keysByName(): Map<string, string | null> {
   const out = new Map<string, string | null>();
   for (const [key, english] of Object.entries(COROS_EXERCISE_NAMES)) {
     if (!STRENGTH_KEY.test(key) || GENERIC_COROS_KEYS.has(key)) continue;
-    const name = normalizeExerciseKey(english);
+    const name = strictExerciseKey(english);
     if (!name) continue;
     out.set(name, out.has(name) ? null : key);
   }
@@ -51,7 +55,7 @@ function keysByName(): Map<string, string | null> {
 
 /** The unique T-code whose English name normalizes to the record's name; null for none or several. */
 export function computedCorosKey(record: Pick<ExerciseRecord, "name">): string | null {
-  const name = normalizeExerciseKey(record.name ?? "");
+  const name = strictExerciseKey(record.name ?? "");
   return name ? (keysByName().get(name) ?? null) : null;
 }
 

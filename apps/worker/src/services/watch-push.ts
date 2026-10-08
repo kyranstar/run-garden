@@ -8,7 +8,8 @@
  *
  *  - Every work step of the build is one watch step. A timed window is a hold;
  *    a set is its reps, else its seconds, else open. Per-side windows stay two
- *    steps, each overview naming its side.
+ *    steps, each overview naming its side, and a one-sided set (a unilateral
+ *    move's set with no side) becomes such a Left/Right pair (audit W-1).
  *  - A move whose T-code (`corosKeyOf`, ruling 3-R1) the athlete's catalog holds
  *    goes as that catalog step; every other move goes as free text on
  *    `originId "0"` (spike outcome A), its name cut at a word to 30 characters
@@ -30,6 +31,7 @@ import {
   WATCH_NAME_MAX,
   WATCH_OVERVIEW_MAX,
   WATCH_STAMP_MAX,
+  WATCH_STAMP_MAX_BYTES,
   type ProgramSessionPushJob,
   type ProgramWatchStep,
   type UserPreferences,
@@ -74,17 +76,46 @@ export interface WatchPlan {
   refusal: WatchRefusal | null;
 }
 
+const utf8 = new TextEncoder();
+const graphemes = typeof Intl.Segmenter === "function" ? new Intl.Segmenter(undefined, { granularity: "grapheme" }) : null;
+
+/** How a library name sets a variant apart ("Child's pose · forehead on block"), and how an overview joins its parts. */
+const QUALIFIER = " · ";
+/** A word a cut name must not end on: "Child's pose · forehead on" reads as a sentence cut off. */
+const DANGLING_WORD = /\s+(?:a|an|and|at|by|for|from|in|of|on|or|the|to|under|with)$/iu;
+const TRAILING_SEPARATOR = /[\s·,;:—–-]+$/u;
+
 /**
- * `text` cut at a word boundary to at most `max` characters, with no dangling
- * separator; a single word longer than `max` is cut hard (ruling 3-R6).
+ * `text` as the characters a reader sees — grapheme clusters (workerd and Node segment them), else code points — so a
+ * cut between two of them never leaves half an emoji, a lone surrogate or a dangling joiner (audit W-3, lane L-6).
  */
-export function cutAtWord(text: string, max: number): string {
+function charactersOf(text: string): string[] {
+  return graphemes ? Array.from(graphemes.segment(text), (s) => s.segment) : Array.from(text);
+}
+
+/**
+ * `text` cut at a word boundary to at most `max` characters (UTF-16 units, what the schemas count) and `maxBytes`
+ * UTF-8 bytes, whole characters only, with no dangling separator; a single word longer than that is cut hard, still
+ * between characters (ruling 3-R6).
+ */
+export function cutAtWord(text: string, max: number, maxBytes = Number.POSITIVE_INFINITY): string {
   const t = text.trim();
-  if (t.length <= max) return t;
-  const head = t.slice(0, max + 1);
-  const space = head.lastIndexOf(" ");
-  const cut = (space > 0 ? head.slice(0, space) : t.slice(0, max)).replace(/[\s·,;:—–-]+$/u, "");
-  return cut || t.slice(0, max);
+  if (t.length <= max && (maxBytes === Number.POSITIVE_INFINITY || utf8.encode(t).length <= maxBytes)) return t;
+  const chars = charactersOf(t);
+  let hard = "";
+  let bytes = 0;
+  let n = 0;
+  for (; n < chars.length; n++) {
+    const ch = chars[n]!;
+    const b = utf8.encode(ch).length;
+    if (hard.length + ch.length > max || bytes + b > maxBytes) break;
+    hard += ch;
+    bytes += b;
+  }
+  // A space right after the hard cut means every word in it is whole; else cut back to the last space inside it.
+  const space = /^\s/u.test(chars[n] ?? "") ? hard.length : hard.lastIndexOf(" ");
+  const cut = (space > 0 ? hard.slice(0, space) : hard).replace(TRAILING_SEPARATOR, "");
+  return cut || hard;
 }
 
 function targetOf(s: Step): ProgramWatchStep["target"] {
@@ -99,14 +130,71 @@ function targetOf(s: Step): ProgramWatchStep["target"] {
   return { kind: "open" };
 }
 
-function overviewOf(side: Step["side"], cue: string | undefined): string {
+/** The side, then the qualifier a long name gave up, then the first cue — at most WATCH_OVERVIEW_MAX characters. */
+function overviewOf(side: Step["side"], qualifier: string | null, cue: string | undefined): string {
   const sideText = side === "Left" ? "left side" : side === "Right" ? "right side" : null;
-  return cutAtWord([sideText, cue?.trim()].filter((p): p is string => Boolean(p)).join(" · "), WATCH_OVERVIEW_MAX);
+  return cutAtWord([sideText, qualifier, cue?.trim()].filter((p): p is string => Boolean(p)).join(QUALIFIER), WATCH_OVERVIEW_MAX);
+}
+
+/**
+ * A free-text move's name as the watch shows it, at most WATCH_NAME_MAX characters (ruling 3-R6, audit W-6). A longer
+ * "<move> · <qualifier>" goes as the move, its qualifier leading the overview; any other long name is cut at a word,
+ * never ending on a word like "on" or "with".
+ */
+export function watchNameOf(libraryName: string): { name: string; qualifier: string | null } {
+  const t = libraryName.trim();
+  if (t.length <= WATCH_NAME_MAX) return { name: t, qualifier: null };
+  const at = t.indexOf(QUALIFIER);
+  const head = at > 0 ? t.slice(0, at).trim() : "";
+  if (head && head.length <= WATCH_NAME_MAX) return { name: head, qualifier: t.slice(at + QUALIFIER.length).trim() || null };
+  let name = cutAtWord(t, WATCH_NAME_MAX);
+  while (DANGLING_WORD.test(name)) name = name.replace(DANGLING_WORD, "").replace(TRAILING_SEPARATOR, "");
+  return { name, qualifier: null };
+}
+
+/**
+ * Each free-text move's watch name and qualifier. Two different moves never share a watch name within one program
+ * (audit W-6): a name a catalog step of the session already shows (its English name), or an earlier free-text move
+ * holds (by first appearance in the build), gets " (2)", " (3)", cut to fit. The same build gives the same names.
+ */
+function freeTextNames(build: BuildPayload, deps: WatchPlanDeps): Map<string, { name: string; qualifier: string | null }> {
+  const catalogKey = (id: string): string | null => {
+    const key = deps.keyOf(id);
+    return key && deps.catalogIdByKey.has(key) ? key : null;
+  };
+  const moves = [...new Set(build.steps.flatMap((s) => (s.kind !== "rest" && s.exerciseId && build.exercises[s.exerciseId] ? [s.exerciseId] : [])))];
+  const taken = new Set(
+    moves.flatMap((id) => {
+      const key = catalogKey(id);
+      return key ? [(COROS_EXERCISE_NAMES[key] ?? key).toLowerCase()] : [];
+    }),
+  );
+  const out = new Map<string, { name: string; qualifier: string | null }>();
+  for (const id of moves) {
+    if (catalogKey(id)) continue;
+    const { name, qualifier } = watchNameOf(build.exercises[id]!.name);
+    let unique = name;
+    for (let n = 2; taken.has(unique.toLowerCase()); n++) unique = `${cutAtWord(name, WATCH_NAME_MAX - ` (${n})`.length)} (${n})`;
+    taken.add(unique.toLowerCase());
+    out.set(id, { name: unique, qualifier });
+  }
+  return out;
+}
+
+/**
+ * The sides one build step goes to the watch as. A set of a unilateral move with no side is work on BOTH sides — the
+ * engine prices it so (`setSeconds` × 2) and the player says "each side" — so it is a Left then a Right step, one lap
+ * each, as the coach lane does since 2026-08-17 (audit W-1): one step would prescribe half the work. A timed window
+ * already carries its side; an alternating move is one step, as the app shows it.
+ */
+function sidesOf(s: Step, record: { laterality: string }): Array<Step["side"]> {
+  return s.kind === "set" && s.side === null && record.laterality === "unilateral" ? ["Left", "Right"] : [s.side];
 }
 
 /** The build's steps as the watch will hold them. Pure: the same build gives the same steps. */
 export function watchStepsFromBuild(build: BuildPayload, deps: WatchPlanDeps): WatchPlan {
   const steps: ProgramWatchStep[] = [];
+  const names = freeTextNames(build, deps);
   for (const s of build.steps) {
     if (s.kind === "rest") {
       const prev = steps.at(-1);
@@ -118,15 +206,18 @@ export function watchStepsFromBuild(build: BuildPayload, deps: WatchPlanDeps): W
     if (!record) continue;
     const key = deps.keyOf(s.exerciseId);
     const originId = key ? deps.catalogIdByKey.get(key) : undefined;
-    steps.push({
-      originId: originId ?? FREE_TEXT_ORIGIN_ID,
-      name: originId ? key! : cutAtWord(record.name, WATCH_NAME_MAX),
-      target: targetOf(s),
-      grams: s.target?.w ? Math.round(toKg(s.target.w) * 1000) : null,
-      restSeconds: 0,
-      overview: overviewOf(s.side, record.text.focus[0]),
-      side: s.side === "Left" ? "left" : s.side === "Right" ? "right" : null,
-    });
+    const free = originId ? null : names.get(s.exerciseId)!;
+    for (const side of sidesOf(s, record)) {
+      steps.push({
+        originId: originId ?? FREE_TEXT_ORIGIN_ID,
+        name: originId ? key! : free!.name,
+        target: targetOf(s),
+        grams: s.target?.w ? Math.round(toKg(s.target.w) * 1000) : null,
+        restSeconds: 0,
+        overview: overviewOf(side, free?.qualifier ?? null, record.text.focus[0]),
+        side: side === "Left" ? "left" : side === "Right" ? "right" : null,
+      });
+    }
   }
   const refusal: WatchRefusal | null =
     steps.length === 0 ? "empty" : steps.length > WATCH_MAX_STEPS ? "too_long" : null;
@@ -134,7 +225,7 @@ export function watchStepsFromBuild(build: BuildPayload, deps: WatchPlanDeps): W
 }
 
 /**
- * `<program name> — <date>`, at most WATCH_STAMP_MAX characters (ruling 3-R5):
+ * `<program name> — <date>`, at most WATCH_STAMP_MAX characters and WATCH_STAMP_MAX_BYTES bytes (ruling 3-R5):
  * the name cut to fit, then " (2)", " (3)" while `taken` holds the stamp — two
  * sessions of one day, or a coach session of the same title, each get their own.
  */
@@ -142,7 +233,8 @@ export function programStamp(programName: string, date: string, taken: ReadonlyS
   for (let n = 1; ; n++) {
     const suffix = n === 1 ? "" : ` (${n})`;
     const room = WATCH_STAMP_MAX - STAMP_SEPARATOR.length - date.length - suffix.length;
-    const stamp = `${stampName(cutAtWord(programName, room), date)}${suffix}`;
+    const roomBytes = WATCH_STAMP_MAX_BYTES - utf8.encode(`${STAMP_SEPARATOR}${date}${suffix}`).length;
+    const stamp = `${stampName(cutAtWord(programName, room, roomBytes), date)}${suffix}`;
     if (!taken.has(stamp)) return stamp;
   }
 }
