@@ -20,7 +20,7 @@ describe("the real library (data.test.js)", () => {
 
   test("the library has about 70 exercises and keeps every pass-1 id", () => {
     expect(EXERCISES.length).toBeGreaterThanOrEqual(65);
-    expect(EXERCISES.length).toBe(120);
+    expect(EXERCISES.length).toBe(126);
     for (const id of PASS1_IDS) expect(get(id), `missing pass-1 id ${id}`).toBeTruthy();
   });
 
