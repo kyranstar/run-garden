@@ -33,7 +33,11 @@ describe("graduation: the basis's trimmed history gives the offers the whole his
     it(`${world.name}: every session of three seeded histories, as the one played`, () => {
       let compared = 0;
       let offered = 0;
-      for (const seed of ["g1", "g2", "g3"]) {
+      // Three histories at least; past three, more until one has offered something (in the TMJ world a lift tops out
+      // its range on clean sessions rarely, and which histories it does in shifts whenever the library grows).
+      const seeds = Array.from({ length: 16 }, (_, k) => `g${k + 1}`);
+      for (const [k, seed] of seeds.entries()) {
+        if (k >= 3 && offered > 0) break;
         const { sessions, blocks } = seededHistory(world.data, world.renamed, seed, 120);
         sessions.forEach((played, i) => {
           const block = blocks[i] ?? null;

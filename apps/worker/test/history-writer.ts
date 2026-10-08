@@ -13,7 +13,9 @@ const NOW = "2026-10-01T00:00:00.000Z";
 export async function writeHistory(db: Db, userId: string, sessions: readonly HistorySession[], seed: string): Promise<void> {
   const rng = Rng.create(`write|${seed}`);
   for (const [i, s] of sessions.entries()) {
-    const workoutId = rng() < 0.6 ? `w-${seed}-${i % 9}` : null;
+    // A slot of its own, as a program's slots are one per day. (Nine slots shared across the whole history piled each
+    // slot's sheet pre-checks up with the history's length, which no account does, and the cost test below measured that.)
+    const workoutId = rng() < 0.6 ? `w-${seed}-${i}` : null;
     await db.insert(schema.performedSessions).values({
       id: s.id, userId, workoutId, activityId: null, buildId: null, source: s.mode ? "app" : "import", sourceRef: s.mode ? null : `ref-${s.id}`,
       localDate: s.date, startedAt: s.startedAt, endedAt: null, seconds: 1800, plannedSeconds: 1800, minutes: 30,
