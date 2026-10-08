@@ -235,6 +235,25 @@ function fold(name: string): string {
     .join(" ");
 }
 
+/**
+ * The STRICT key — the COROS mapping's computed tier (ruling 3-R1: exact English name only). Case, punctuation,
+ * accents and plurals fold away, and nothing else: no word alias, no phrase alias. "single-leg hip bridges" still meets
+ * COROS's "Single-Leg Hip Bridge"; "Hip bridge" no longer meets its "Hip Thrust" (audit 3-A W-4).
+ */
+export function strictExerciseKey(name: string): string {
+  return name
+    .toLowerCase()
+    .normalize("NFKD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .replace(/&/g, " and ")
+    .replace(/[^a-z0-9]+/g, " ")
+    .trim()
+    .split(" ")
+    .filter(Boolean)
+    .map(singular)
+    .join(" ");
+}
+
 export function normalizeExerciseKey(name: string): string {
   // Phrase aliases are matched on the FOLDED form, so "heel raises",
   // "Heel Raise" and "heel-raises" all reach the same entry. Their values
