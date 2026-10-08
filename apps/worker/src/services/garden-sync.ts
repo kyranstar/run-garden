@@ -67,10 +67,12 @@ import { disciplineOf } from "@rg/analytics";
 const DEW_EPOCH = "2026-08-19";
 
 /** App sessions (`activities.source = 'app'`) grow the garden from the day the player went live in production
- * (ruling 2d-R1), by the session's day on the athlete's own clock. One dated earlier — only a clock-skewed device can
- * save one — credits nothing, at any read: the same promise as DEW_EPOCH, that a resim never mints credit across
- * history the athlete already watched. */
-export const APP_SESSION_EPOCH: LocalDate = "2026-10-08";
+ * (ruling 2d-R1), by the session's day on the athlete's own clock: it went live 2026-10-08 02:25Z, which was the
+ * evening of 2026-10-07 in the athlete's zone, so the epoch is that local day (Audit 2d I-1) — a session played that
+ * evening credits, as the deployed code already credited it. One dated earlier — only a clock-skewed device can save
+ * one — credits nothing, at any read: the same promise as DEW_EPOCH, that a resim never mints credit across history
+ * the athlete already watched. */
+export const APP_SESSION_EPOCH: LocalDate = "2026-10-07";
 import { chunkedInsert, chunkIds, type Db } from "./db.js";
 import { isRestoring, loadAccountState, patchAccountState, restoreInProgress } from "./account-state.js";
 import { claimUserLock, releaseUserLock } from "./locks.js";

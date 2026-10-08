@@ -1,8 +1,8 @@
 /**
  * THE GARDEN GATES (Phase 2d Task 1; spec §2d "Garden"; rulings 2d-R1, 2d-R2, 2d-R3; Review Focus 1 and 2).
  *
- *  - App sessions (`activities.source = 'app'`) grow the garden from APP_SESSION_EPOCH, 2026-10-08 — the day the
- *    player went live (ruling 2d-R1). One dated earlier on the athlete's own clock (only a clock-skewed device can
+ *  - App sessions (`activities.source = 'app'`) grow the garden from APP_SESSION_EPOCH, 2026-10-07 — the day the
+ *    player went live, on the athlete's clock (ruling 2d-R1; Audit 2d I-1). One dated earlier on the athlete's own clock (only a clock-skewed device can
  *    save one) credits nothing, at any read.
  *  - Imported history (`activities.source = 'import'`) never reaches the garden, at ANY read (ruling 2d-R3): a year of
  *    it leaves every day's inputs, the garden state and the event stream byte-identical.
@@ -473,7 +473,7 @@ describe("Review Focus 2: app sessions grow the garden from APP_SESSION_EPOCH (r
     activity(db, { id, date, time, sport, source: "app", seconds: 1860 });
 
   it("is the day the player went live in production", () => {
-    expect(APP_SESSION_EPOCH).toBe("2026-10-08");
+    expect(APP_SESSION_EPOCH).toBe("2026-10-07");
   });
 
   it("an unplanned app session on the epoch day credits; one the day before (a clock-skewed device) does not", async () => {
@@ -487,14 +487,21 @@ describe("Review Focus 2: app sessions grow the garden from APP_SESSION_EPOCH (r
     expect(credited.map((r) => [r.workoutId, r.discipline, r.unplanned])).toEqual([["unplanned-app-epoch", "yoga", true]]);
   });
 
-  it("the day is the athlete's own clock: 20:30 on Oct 7 in Los Angeles (03:30Z on the 8th) is before the epoch", async () => {
+  it("the day is the athlete's own clock: 20:30 on Oct 6 in Los Angeles (03:30Z on the 7th) is before the epoch", async () => {
     const db = makeTestDb({ boundVariableCap: 100 });
     const prefs = await fixedUser(db);
-    await appSession(db, "app-late", "2026-10-07", "20:30");
+    await appSession(db, "app-late", "2026-10-06", "20:30");
     const [row] = await db.select().from(activities);
     expect(row!.startTime.slice(0, 10)).toBe(APP_SESSION_EPOCH);
-    expect((await buildDayInput(db, USER, "2026-10-07", prefs)).completedRuns).toEqual([]);
+    expect((await buildDayInput(db, USER, "2026-10-06", prefs)).completedRuns).toEqual([]);
     expect((await buildDayInput(db, USER, APP_SESSION_EPOCH, prefs)).completedRuns).toEqual([]);
+  });
+
+  it("the evening the player went live (Oct 7, 19:25 in Los Angeles = 02:25Z on the 8th) credits (Audit 2d I-1)", async () => {
+    const db = makeTestDb({ boundVariableCap: 100 });
+    const prefs = await fixedUser(db);
+    await appSession(db, "app-launch-evening", "2026-10-07", "20:30", "yoga");
+    expect((await buildDayInput(db, USER, "2026-10-07", prefs)).completedRuns.length).toBe(1);
   });
 
   it("a slot an app session completed: on the epoch day it credits, the day before it does not — and the week's adherence counts only the one that credits", async () => {
