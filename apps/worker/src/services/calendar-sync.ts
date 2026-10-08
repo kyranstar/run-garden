@@ -109,6 +109,32 @@ export interface CalendarSyncStats {
   adopted?: number;
   recreated?: number;
   orphansDeleted?: number;
+  /** The run stopped at CALENDAR_OPS_PER_RUN ops; `deferred` more wait for the next run. */
+  capped?: true;
+  deferred?: number;
+}
+
+/**
+ * Most ops one sync executes; the rest wait for the next run. Each op is a Google call and up to two D1 writes (a
+ * move more), and one invocation on Workers Free has 50 subrequests and a few milliseconds of CPU: a first sync, a
+ * token reset or a change touching every event (a description format, a buffer) once meant 70+ Google calls in one
+ * invocation, which the runtime killed part-way, leaving the run `running` (2026-10-03 on). The half-hourly cron
+ * spends one invocation on this and then the COROS sweeps, so 20 leaves them room. A capped run keeps the sync
+ * token it read with, so whatever it did not get to — a move or deletion the athlete made in Google included — is
+ * in the next run's feed again.
+ */
+export const CALENDAR_OPS_PER_RUN = 20;
+
+/**
+ * The ops a run executes: all of them within the budget; past it, the sessions still ahead first (soonest first),
+ * then the past ones (latest first) — a first sync or a token reset books the coming weeks before the two behind.
+ */
+function opsThisRun(ops: ReconcileOp[], dateOf: Map<string, string>, today: string): ReconcileOp[] {
+  if (ops.length <= CALENDAR_OPS_PER_RUN) return ops;
+  const date = (op: ReconcileOp) => dateOf.get(op.workoutId) ?? "";
+  const ahead = ops.filter((op) => date(op) >= today).sort((a, b) => date(a).localeCompare(date(b)));
+  const behind = ops.filter((op) => date(op) < today).sort((a, b) => date(b).localeCompare(date(a)));
+  return [...ahead, ...behind].slice(0, CALENDAR_OPS_PER_RUN);
 }
 
 export async function syncCalendar(
@@ -332,17 +358,28 @@ export async function syncCalendar(
     removedWorkoutIds,
   });
 
-  await executeOps(db, env, userId, client, calendarId, ops, prefs, stats);
-
-  // ── One-shot post-restore reconcile, part 2: the orphan sweep (B6 c) ────
-  if (postRestore && fullRead) {
-    const done = postRestore.sweep
-      ? await sweepOrphans(db, client, calendarId, env.APP_URL, listResult.items as RawGoogleEvent[], stats)
-      : true;
-    await patchAccountState(db, userId, { calendarReconcile: done ? null : { phase: "sweeping", sweep: true } });
+  const runNow = opsThisRun(ops, new Map(workouts.map((w) => [w.id, w.effectiveDate])), today);
+  await executeOps(db, env, userId, client, calendarId, runNow, prefs, stats);
+  if (ops.length > runNow.length) {
+    stats.capped = true;
+    stats.deferred = ops.length - runNow.length;
   }
 
-  if (listResult.nextSyncToken) {
+  // ── One-shot post-restore reconcile, part 2: the orphan sweep (B6 c) ────
+  // Its deletions come out of the same per-run budget. A capped run leaves the
+  // reconcile open (full reads go on) and its token unsaved, whatever it swept.
+  if (postRestore && fullRead) {
+    const budget = Math.min(POST_RESTORE_DELETE_CAP, CALENDAR_OPS_PER_RUN - runNow.length);
+    const swept = postRestore.sweep
+      ? budget > 0 &&
+        (await sweepOrphans(db, client, calendarId, env.APP_URL, listResult.items as RawGoogleEvent[], stats, budget))
+      : true;
+    await patchAccountState(db, userId, {
+      calendarReconcile: swept && !stats.capped ? null : { phase: "sweeping", sweep: postRestore.sweep && !swept },
+    });
+  }
+
+  if (listResult.nextSyncToken && !stats.capped) {
     const now = nowInstant();
     if (cursorRows[0]) {
       await db
@@ -702,8 +739,9 @@ async function adoptAndRecreate(
  * day before the window is still a live row's), and against every account
  * (a row of another account is never this sweep's to judge). An unstamped
  * event is never deleted: it may predate the stamp, or belong to another
- * deployment writing into the same calendar. At most
- * POST_RESTORE_DELETE_CAP deletions per sync; returns true once none remain.
+ * deployment writing into the same calendar. At most `cap` (at most
+ * POST_RESTORE_DELETE_CAP, less what the run's ordinary ops spent of
+ * CALENDAR_OPS_PER_RUN) deletions per sync; returns true once none remain.
  */
 async function sweepOrphans(
   db: Db,
@@ -712,6 +750,7 @@ async function sweepOrphans(
   appUrl: string,
   items: RawGoogleEvent[],
   stats: CalendarSyncStats,
+  cap: number,
 ): Promise<boolean> {
   const origin = appOrigin(appUrl);
   if (!origin) return true;
@@ -720,7 +759,7 @@ async function sweepOrphans(
   );
   const named = await workoutIdsWithRows(db, stamped.map((e) => workoutIdFromEvent(e.extendedProperties)!));
   const orphans = stamped.filter((e) => !named.has(workoutIdFromEvent(e.extendedProperties)!));
-  for (const e of orphans.slice(0, POST_RESTORE_DELETE_CAP)) {
+  for (const e of orphans.slice(0, cap)) {
     try {
       await client.deleteEvent(calendarId, e.id);
       stats.deleted += 1;
@@ -730,7 +769,7 @@ async function sweepOrphans(
       return false; // tried again on the next full read
     }
   }
-  return orphans.length <= POST_RESTORE_DELETE_CAP;
+  return orphans.length <= cap;
 }
 
 /** Restore a user-deleted event (explicit user action). */

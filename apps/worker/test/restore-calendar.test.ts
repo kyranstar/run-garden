@@ -20,7 +20,7 @@
  *      same calendar keeps its events;
  *  (b) recreates a restored link's event that is gone, unless the file held
  *      a user_deleted suppression for it;
- *  (c) deletes, at most 25 per sync and resuming on later syncs, events that
+ *  (c) deletes, at most 25 per sync (and the run's op budget) and resuming on later syncs, events that
  *      carry THIS app's origin and whose rgWorkoutId names no row — never an
  *      unstamped event, never one from another origin, never on a partial or
  *      failed read, and not at all when the restore came back short.
@@ -117,7 +117,13 @@ vi.mock("../src/services/google-calendar.js", async (importOriginal) => ({
   googleCalendarClient: vi.fn(async () => google.fake),
 }));
 
-import { loadPreferences, savePreferences, syncCalendar } from "../src/services/calendar-sync.js";
+import {
+  CALENDAR_OPS_PER_RUN,
+  loadPreferences,
+  POST_RESTORE_DELETE_CAP,
+  savePreferences,
+  syncCalendar,
+} from "../src/services/calendar-sync.js";
 import { loadAccountState } from "../src/services/account-state.js";
 
 const env = { APP_URL: "https://app.test" } as Env;
@@ -347,12 +353,13 @@ describe("the one-shot post-restore calendar reconcile (B6)", () => {
     expect(await linkOf(db, archived)).toBeNull();
   });
 
-  it("deletes at most 25 orphans a sync and resumes on the next full read", async () => {
+  it("deletes at most a run's op budget of orphans a sync and resumes on the next full read", async () => {
     const { db, userId, today, fake } = await restoredAccount();
     const orphans = Array.from({ length: 30 }, (_, i) => fake.add({ workoutId: `orphan-${i}`, date: addDays(today, 1 + (i % 10)) }));
 
     await syncCalendar(db, env, userId);
-    expect(orphans.filter((id) => !fake.live(id))).toHaveLength(25);
+    // 25 a sync, and never more than the run's own budget (CALENDAR_OPS_PER_RUN, cron reliability 2026-10-08).
+    expect(orphans.filter((id) => !fake.live(id))).toHaveLength(Math.min(POST_RESTORE_DELETE_CAP, CALENDAR_OPS_PER_RUN));
     expect((await loadAccountState(db, userId))?.calendarReconcile).toEqual({ phase: "sweeping", sweep: true });
 
     fake.calls = [];
