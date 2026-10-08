@@ -4,9 +4,11 @@
  *   POST /standalone            the standalone tool's backup file as the body → the import's summary
  *   POST /standalone?dryRun=1   the same summary, nothing written (the summary sheet before Import)
  *
- * 422 `invalid_backup` for a body that is not JSON or not a backup; 423 while a restore is replacing the account;
- * 503 `busy` while another import of the account is writing. A first import makes the adaptive program: its slots
- * are placed here, after the import, through the one rule the hourly pass uses, and the calendar books them.
+ * 422 `invalid_backup` for a body that is not JSON or not a backup (with `reason: "newer_version"` for a backup the
+ * tool wrote in a newer format); 423 while a restore is replacing the account; 503 `busy` while another import of the
+ * account is writing. Only a first import into an account with no adaptive program makes one (ruling 2d-R5): its
+ * slots are placed here, after the import, through the one rule the hourly pass uses, and the calendar books them. A
+ * block adopted into the athlete's own program places nothing and books nothing.
  *
  * Not reachable from the app until the garden gate (Phase 2d) keeps imported history out of the garden — and refused
  * on the server too (404 `not_found`, nothing written) unless the Worker var IMPORT_ENABLED is "1": hiding the screen
@@ -51,7 +53,9 @@ importRoutes.post("/standalone", async (c) => {
     }
     return c.json(summary);
   } catch (e) {
-    if (e instanceof InvalidBackupError) return c.json({ error: "invalid_backup", issues: e.issues.slice(0, 20) }, 422);
+    if (e instanceof InvalidBackupError) {
+      return c.json({ error: "invalid_backup", ...(e.reason ? { reason: e.reason } : {}), issues: e.issues.slice(0, 20) }, 422);
+    }
     if (e instanceof RestoreInProgressError) return c.json({ error: "restore_in_progress" }, 423);
     if (e instanceof ImportBusyError) return c.json({ error: "busy" }, 503);
     throw e;

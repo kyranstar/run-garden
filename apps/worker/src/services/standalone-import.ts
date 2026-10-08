@@ -13,12 +13,18 @@
  *     `performed_sessions`, `performed_sets` (weights as typed + kg), its `condition_checks`, and an `activities` row
  *     (`source = 'import'`, strength when it holds a core lift else yoga — §9.2 — and never matched: the matcher and
  *     the save leave `import` rows alone).
- *  3. The first import only (no program the import made exists yet) also brings the tool's settings: the adaptive
- *     program (named by the profile's care label, config from the tool's settings), its current block, the places
- *     (when the account has none of its own), the move preferences (never over a row the account already has), the
- *     condition switched on since the first session's day (unless the account already set it), the weight unit
- *     (unless the athlete chose one here) and the wishlist (merged into theirs). Later imports never touch them, so
- *     nothing the athlete changed here is overwritten.
+ *  3. The first import only (no first-import marker yet: a `provider_cursor_state` row the first import writes, in
+ *     its own transaction, whatever it brought) also brings the tool's settings. The PROGRAM (ruling 2d-R5, Audit C
+ *     C-1): the import never makes a second adaptive program. An account with none gets the tool's (named by the
+ *     profile's care label, config from the tool's settings) and its current block — `created`; an account whose one
+ *     active adaptive program has no block yet and no session done on its slots takes the tool's block into that
+ *     program — same program, its row (name, config, source) untouched, no slot placed — `adopted`; any other account
+ *     keeps its programs and blocks exactly as they are — `kept`. Then the places (when the account has none of its
+ *     own), the move preferences (never over a row the account already has), the condition switched on since the
+ *     first session's day (unless the account already set it), the weight unit (ruling 2d-R6: only when the account
+ *     is still on the default AND none of its places keeps a weight list typed with no unit, which means the unit in
+ *     force) and the wishlist (merged into theirs). Later imports never touch them, so nothing the athlete changed
+ *     here is overwritten.
  *  4. Everything lands as ONE transaction, under a per-account lock (a second import at once is `busy`), refused while
  *     a restore is replacing the account. A dry run reads only and answers the summary the import would.
  *
@@ -30,7 +36,7 @@
  * Imported history never enters the garden (spec P8; ruling 2d-R3): every garden read leaves `source = 'import'` rows
  * out (garden-sync's `gardenSees`), so an import changes no past garden. Never writes to COROS.
  */
-import { and, eq, inArray } from "drizzle-orm";
+import { and, asc, eq, inArray } from "drizzle-orm";
 import { DateTime } from "luxon";
 import {
   activities,
@@ -39,8 +45,10 @@ import {
   locations,
   performedSessions,
   performedSets,
+  plannedWorkouts,
   programBlocks,
   programs,
+  providerCursorState,
   userConditions,
   userPreferences,
 } from "@rg/database";
@@ -52,6 +60,7 @@ import {
   isLocalDate,
   newId,
   parseStandaloneSession,
+  parseWeightList,
   performedSessionSaveSchema,
   SESSION_FORMATS,
   SESSION_MODES,
@@ -95,13 +104,30 @@ import { Stats, type LiftPoint, type ToolSession } from "./standalone-stats.js";
 const PROFILE_ID = "tmj";
 const SOURCE = "import";
 const LOCK = "standalone_import";
-/** `programs.source.app` of the program the first import makes: the marker that the first import happened. */
+/** `programs.source.app` of the program the first import makes, and the provider of the first-import marker. */
 const APP = "tmj_tool";
+/** The backup version this importer reads. */
+const BACKUP_VERSION = 2;
+
+/** Why a file is refused beyond "not a backup": one the tool wrote in a newer format than this importer reads. */
+export type InvalidBackupReason = "newer_version";
 
 export class InvalidBackupError extends Error {
-  constructor(public readonly issues: ReadonlyArray<Pick<ZodIssue, "message" | "path">>) {
+  constructor(
+    public readonly issues: ReadonlyArray<Pick<ZodIssue, "message" | "path">>,
+    public readonly reason: InvalidBackupReason | null = null,
+  ) {
     super("invalid_backup");
   }
+}
+
+/** The file as a backup, or `InvalidBackupError` — saying so when the tool wrote it in a newer format (Audit C M-3). */
+function envelopeOf(raw: unknown) {
+  const envelope = standaloneBackupSchema.safeParse(raw);
+  if (envelope.success) return envelope.data;
+  const { app, version } = (raw !== null && typeof raw === "object" ? raw : {}) as { app?: unknown; version?: unknown };
+  const newer = app === APP && typeof version === "number" && version > BACKUP_VERSION;
+  throw new InvalidBackupError(envelope.error.issues, newer ? "newer_version" : null);
 }
 
 export class ImportBusyError extends Error {
@@ -263,17 +289,29 @@ export interface ImportSummary {
     /** New sessions this import adds. */
     added: number;
     alreadyImported: number;
+    /** The first and last day of the file's readable sessions. */
     firstDate: string | null;
     lastDate: string | null;
+    /** The first and last day of the sessions this import adds (null when it adds none). */
+    addedFirstDate: string | null;
+    addedLastDate: string | null;
     /** Sessions skipped, by their place in the file: the tool's id when it has one, and why. */
     invalid: Array<{ index: number; id: string | null; reason: string }>;
   };
   /** Move ids in the sessions the library does not know (kept as they are; the engine ignores them). */
   unknownMoves: number;
-  program: { name: string };
-  /** The places in the file, by name. */
+  /**
+   * What the import does to the account's adaptive program (ruling 2d-R5): `created` — the tool's program (this
+   * name, the file's block); `adopted` — the file's block goes into the athlete's program (its name), which keeps
+   * its own settings and slots; `kept` — the program stays exactly as it is (named when the account has exactly one
+   * active adaptive program). A later import always keeps.
+   */
+  program: { outcome: ProgramOutcome; name: string | null };
+  /** The weight unit before and after the import (ruling 2d-R6): the tool's only on a first import that may take it. */
+  weightUnit: { before: WeightUnit; after: WeightUnit };
+  /** The file's places the import writes, by name (none when the account has its own, or on a later import). */
   places: string[];
-  /** Moves the file rates. */
+  /** Move ratings the import writes (never over a move the account already has a preference for). */
   ratings: number;
   block: { number: number; week: number; weeks: number } | null;
   /** Things in the file the import could not use (gear, wishlist items or rated moves the library does not have). */
@@ -334,10 +372,59 @@ interface PrefRow {
   introducedOn: string | null;
 }
 
+export type ProgramOutcome = "created" | "adopted" | "kept";
+
 /** The program the first import made, if one exists (the route places its slots after the import). */
 export async function importedProgramId(db: Db, userId: string): Promise<string | null> {
   const rows = await db.select({ id: programs.id, source: programs.source }).from(programs).where(and(eq(programs.userId, userId), eq(programs.kind, "adaptive")));
   return rows.find((r) => (r.source as { app?: unknown } | null)?.app === APP)?.id ?? null;
+}
+
+/** The first-import marker's row id: written by the first import, whatever it did to the program. */
+const markerId = (userId: string) => `${userId}:${APP}:first_import`;
+
+/** Has a first import already brought the tool's settings into this account? */
+async function firstImportDone(db: Db, userId: string): Promise<boolean> {
+  const [row] = await db.select({ id: providerCursorState.id }).from(providerCursorState).where(eq(providerCursorState.id, markerId(userId))).limit(1);
+  return !!row;
+}
+
+/**
+ * Ruling 2d-R5: what a first import does to the program. `adoptInto` is the athlete's program that takes the file's
+ * block. Never a second adaptive program: an account with any (a retired one too) is `kept` unless its ONE active
+ * program has no block and no session done on its slots yet.
+ */
+async function programPlan(
+  db: Db,
+  userId: string,
+  o: { first: boolean; hasBlock: boolean; careLabel: string },
+): Promise<{ outcome: ProgramOutcome; name: string | null; adoptInto: string | null }> {
+  const rows = await db
+    .select({ id: programs.id, name: programs.name, status: programs.status, archivedAt: programs.archivedAt })
+    .from(programs)
+    .where(and(eq(programs.userId, userId), eq(programs.kind, "adaptive")))
+    .orderBy(asc(programs.createdAt), asc(programs.id));
+  if (rows.length === 0) return o.first ? { outcome: "created", name: o.careLabel, adoptInto: null } : { outcome: "kept", name: null, adoptInto: null };
+  const active = rows.filter((r) => r.status === "active" && r.archivedAt === null);
+  const only = active.length === 1 ? active[0]! : null;
+  const kept = { outcome: "kept" as const, name: only?.name ?? null, adoptInto: null };
+  if (!o.first || !o.hasBlock || !only) return kept;
+  const [block] = await db.select({ id: programBlocks.id }).from(programBlocks).where(eq(programBlocks.programId, only.id)).limit(1);
+  if (block) return kept;
+  const [done] = await db
+    .select({ id: performedSessions.id })
+    .from(performedSessions)
+    .innerJoin(plannedWorkouts, eq(performedSessions.workoutId, plannedWorkouts.id))
+    .where(and(eq(performedSessions.userId, userId), eq(plannedWorkouts.planId, only.id)))
+    .limit(1);
+  if (done) return kept;
+  return { outcome: "adopted", name: only.name, adoptInto: only.id };
+}
+
+/** A stored weight list whose meaning depends on the unit in force: a weight in it has no unit after it (2d-R6). */
+function meansTheUnitInForce(value: unknown): boolean {
+  if (typeof value !== "string") return false;
+  return JSON.stringify(parseWeightList(value, "lb")) !== JSON.stringify(parseWeightList(value, "kg"));
 }
 
 /** Everything read from the file and the account, decided before anything is written. */
@@ -359,9 +446,7 @@ async function alreadyImported(db: Db, userId: string, refs: readonly string[]):
 }
 
 async function plan(db: Db, userId: string, raw: unknown, ctx: ImportCtx): Promise<Plan> {
-  const envelope = standaloneBackupSchema.safeParse(raw);
-  if (!envelope.success) throw new InvalidBackupError(envelope.error.issues);
-  const file = envelope.data;
+  const file = envelopeOf(raw);
   const account = await loadPreferences(db, userId);
   const settingsParsed = standaloneSettingsSchema.safeParse(file.settings ?? {});
   const settings = settingsParsed.success ? settingsParsed.data : {};
@@ -384,6 +469,7 @@ async function plan(db: Db, userId: string, raw: unknown, ctx: ImportCtx): Promi
   const imported = await alreadyImported(db, userId, valid.map((v) => v.wire.sourceRef!));
   const fresh = valid.filter((v) => !imported.has(v.wire.sourceRef!));
   const dates = valid.map((v) => v.wire.localDate).sort();
+  const freshDates = fresh.map((v) => v.wire.localDate).sort();
   const unknown = new Set(valid.flatMap((v) => [...v.wire.entries.map((e) => e.exerciseId), ...v.wire.movesDone.map((m) => m.exerciseId)]).values());
   const unknownMoves = [...unknown].filter((id) => !sc.known(id)).length;
 
@@ -482,12 +568,10 @@ async function plan(db: Db, userId: string, raw: unknown, ctx: ImportCtx): Promi
     if (!row) prefRows.set(id, (row = { rating: null, excluded: false, pinned: false, introducedOn: null }));
     return row;
   };
-  let ratings = 0;
   for (const [raw, v] of Object.entries(filePrefs.ratings)) {
     const id = libraryId(raw);
     if (!id || v === 0) continue;
     prefOf(id).rating = v > 0 ? 1 : -1;
-    ratings += 1;
   }
   for (const raw of filePrefs.excluded) {
     const id = libraryId(raw);
@@ -514,14 +598,21 @@ async function plan(db: Db, userId: string, raw: unknown, ctx: ImportCtx): Promi
   });
 
   // What the first import would write, against what the account already has.
-  const firstImport = (await importedProgramId(db, userId)) === null;
+  const firstImport = !(await firstImportDone(db, userId));
   const careLabel = profileById(PROFILE_ID).care?.block.label ?? profileById(PROFILE_ID).label;
+  const program = await programPlan(db, userId, { first: firstImport, hasBlock: !!block, careLabel });
   let placesToWrite: typeof placesIn = [];
   let prefsToWrite: Array<[string, PrefRow]> = [];
   let conditionToWrite = false;
+  let unitAfter: WeightUnit = account.weightUnit;
   if (firstImport) {
-    const [ownPlace] = await db.select({ id: locations.id }).from(locations).where(eq(locations.userId, userId)).limit(1);
-    placesToWrite = ownPlace ? [] : placesIn;
+    const own = await db.select({ implements: locations.implements }).from(locations).where(eq(locations.userId, userId));
+    placesToWrite = own.length ? [] : placesIn;
+    // Ruling 2d-R6: the tool's unit only for an account that never chose one here (a unit other than the default is
+    // a choice: nothing else writes one) and whose places hold no list that a change of unit would re-read.
+    const chosen = account.weightUnit !== DEFAULT_USER_PREFERENCES.weightUnit;
+    const bare = own.some((p) => Object.values(p.implements ?? {}).some(meansTheUnitInForce));
+    if (!chosen && !bare) unitAfter = unit;
     const ids = [...prefRows.keys()].sort();
     const have = new Set<string>();
     for (const chunk of chunkIds(ids)) {
@@ -539,11 +630,16 @@ async function plan(db: Db, userId: string, raw: unknown, ctx: ImportCtx): Promi
   const summary: ImportSummary = {
     dryRun: ctx.dryRun,
     firstImport,
-    sessions: { total: file.sessions.length, added: fresh.length, alreadyImported: valid.length - fresh.length, firstDate: dates[0] ?? null, lastDate: dates[dates.length - 1] ?? null, invalid },
+    sessions: {
+      total: file.sessions.length, added: fresh.length, alreadyImported: valid.length - fresh.length,
+      firstDate: dates[0] ?? null, lastDate: dates[dates.length - 1] ?? null,
+      addedFirstDate: freshDates[0] ?? null, addedLastDate: freshDates[freshDates.length - 1] ?? null, invalid,
+    },
     unknownMoves,
-    program: { name: careLabel },
-    places: placesIn.map((p) => p.name),
-    ratings,
+    program: { outcome: program.outcome, name: program.name },
+    weightUnit: { before: account.weightUnit, after: unitAfter },
+    places: placesToWrite.map((p) => p.name),
+    ratings: prefsToWrite.filter(([, p]) => p.rating !== null).length,
     block: block && blockWeek !== null ? { number: block.number, week: blockWeek, weeks: block.weeks } : null,
     dropped: [...dropped].sort(),
     written: {
@@ -551,8 +647,8 @@ async function plan(db: Db, userId: string, raw: unknown, ctx: ImportCtx): Promi
       sets: setsCount,
       checks: checksCount,
       activities: fresh.length,
-      program: firstImport ? 1 : 0,
-      block: firstImport && block ? 1 : 0,
+      program: program.outcome === "created" ? 1 : 0,
+      block: block && program.outcome !== "kept" ? 1 : 0,
       places: placesToWrite.length,
       prefs: prefsToWrite.length,
       condition: firstImport && conditionToWrite ? 1 : 0,
@@ -568,22 +664,26 @@ async function plan(db: Db, userId: string, raw: unknown, ctx: ImportCtx): Promi
     if (firstImport) {
       const placeIds = new Map(placesToWrite.map((p) => [p.sourceId, newId()]));
       const defaultSource = placesToWrite.find((p) => p.sourceId === settings.location)?.sourceId ?? placesToWrite[0]?.sourceId ?? null;
-      const config: AdaptiveConfig = adaptiveConfigSchema.parse({
-        weeklyGoal: goal,
-        blockWeeks: clampInt(settings.blockWeeks, 4, 6, 5),
-        defaultMinutes: clampInt(settings.defaultMinutes, 10, 90, 30),
-        defaultLocationId: defaultSource ? placeIds.get(defaultSource)! : null,
-        careProfiles: [PROFILE_ID],
-      });
-      const programId = newId();
-      out.push(
-        wdb.insert(programs).values({
-          id: programId, userId, kind: "adaptive", name: careLabel, status: "active", disciplines: ["yoga", "strength"],
-          startDate: null, endDate: null, raceDate: null, source: { app: APP, importedAt: now }, config,
-          createdAt: now, updatedAt: now, archivedAt: null,
-        }),
-      );
-      if (block) {
+      // The program the file's block goes into: the one made here, or the athlete's (its row untouched); none when kept.
+      let programId: string | null = program.adoptInto;
+      if (program.outcome === "created") {
+        const config: AdaptiveConfig = adaptiveConfigSchema.parse({
+          weeklyGoal: goal,
+          blockWeeks: clampInt(settings.blockWeeks, 4, 6, 5),
+          defaultMinutes: clampInt(settings.defaultMinutes, 10, 90, 30),
+          defaultLocationId: defaultSource ? placeIds.get(defaultSource)! : null,
+          careProfiles: [PROFILE_ID],
+        });
+        programId = newId();
+        out.push(
+          wdb.insert(programs).values({
+            id: programId, userId, kind: "adaptive", name: careLabel, status: "active", disciplines: ["yoga", "strength"],
+            startDate: null, endDate: null, raceDate: null, source: { app: APP, importedAt: now }, config,
+            createdAt: now, updatedAt: now, archivedAt: null,
+          }),
+        );
+      }
+      if (block && programId) {
         out.push(
           wdb.insert(programBlocks).values({
             id: newId(), programId, number: block.number, kind: "core_block", startDate: block.startedAt, weeks: block.weeks,
@@ -609,11 +709,11 @@ async function plan(db: Db, userId: string, raw: unknown, ctx: ImportCtx): Promi
             .onConflictDoNothing(),
         );
       }
-      // Never over what the athlete set here (Audit 2c-A MINOR-2): a unit other than the default was chosen (nothing
-      // else writes one), so it stays; the wishlist is theirs plus the file's new gear.
+      // Never over what the athlete set here (Audit 2c-A MINOR-2, ruling 2d-R6): the unit decided above; the wishlist
+      // is theirs plus the file's new gear.
       const next = userPreferencesSchema.parse({
         ...account,
-        weightUnit: account.weightUnit !== DEFAULT_USER_PREFERENCES.weightUnit ? account.weightUnit : unit,
+        weightUnit: unitAfter,
         equipmentWishlist: [...new Set([...account.equipmentWishlist, ...wishlist])],
       });
       out.push(
@@ -621,6 +721,13 @@ async function plan(db: Db, userId: string, raw: unknown, ctx: ImportCtx): Promi
           .insert(userPreferences)
           .values({ userId, prefs: next as unknown as Record<string, unknown>, updatedAt: now })
           .onConflictDoUpdate({ target: userPreferences.userId, set: { prefs: next as unknown as Record<string, unknown>, updatedAt: now } }),
+      );
+      // The first import happened: every later one brings sessions only.
+      out.push(
+        wdb
+          .insert(providerCursorState)
+          .values({ id: markerId(userId), userId, provider: APP, cursorKey: "first_import", value: now, updatedAt: now })
+          .onConflictDoNothing(),
       );
     }
 
@@ -701,10 +808,9 @@ export async function importStandalone(db: Db, userId: string, raw: unknown, ctx
 /** Cheaply: could this file write anything — a first import, or a session id not imported yet? A file that is not a
  * backup is refused here, before the lock. */
 async function mayWrite(db: Db, userId: string, raw: unknown): Promise<boolean> {
-  const envelope = standaloneBackupSchema.safeParse(raw);
-  if (!envelope.success) throw new InvalidBackupError(envelope.error.issues);
-  if ((await importedProgramId(db, userId)) === null) return true;
-  const refs = [...new Set(envelope.data.sessions.flatMap((s) => {
+  const file = envelopeOf(raw);
+  if (!(await firstImportDone(db, userId))) return true;
+  const refs = [...new Set(file.sessions.flatMap((s) => {
     const id = (s as { id?: unknown } | null)?.id;
     return typeof id === "string" && id.length > 0 ? [id] : [];
   }))];

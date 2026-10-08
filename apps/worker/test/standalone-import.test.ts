@@ -4,10 +4,10 @@
  * Every backup here is SYNTHETIC (fixtures/standalone-backup.ts). The service runs with a fixed today and clock;
  * the route test asserts nothing that depends on the real one.
  */
-import { beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { asc, eq } from "drizzle-orm";
 import { schema } from "@rg/database";
-import { addDays, KG_TO_LB, newId, nowInstant, startOfIsoWeek, type UserPreferences } from "@rg/domain";
+import { adaptiveConfigSchema, addDays, KG_TO_LB, newId, nowInstant, startOfIsoWeek, type UserPreferences } from "@rg/domain";
 import { EXERCISES, makeEngineData, TMJ } from "@rg/exercise-library";
 import { historyFromPerformed, Records } from "@rg/session-engine";
 import type { Db } from "../src/services/db.js";
@@ -20,7 +20,9 @@ import {
   standaloneContext,
   type ImportSummary,
 } from "../src/services/standalone-import.js";
-import { RestoreInProgressError } from "../src/services/programs.js";
+import { createAdaptiveProgram, RestoreInProgressError, updateProgram } from "../src/services/programs.js";
+import { placeSlots } from "../src/services/program-slots.js";
+import { loadProgramState } from "../src/services/engine-inputs.js";
 import { claimUserLock } from "../src/services/locks.js";
 import { loadPreferences, savePreferences } from "../src/services/calendar-sync.js";
 import { importRoutes } from "../src/routes/imports.js";
@@ -28,6 +30,19 @@ import { createSession, SESSION_COOKIE } from "../src/auth/sessions.js";
 import { isWrite, makeTestDb, makeTestUser, mountRoutes } from "./helpers.js";
 import { backup, entry, history, kg, lb, v1Session, v2Session } from "./fixtures/standalone-backup.js";
 import { ORACLE_CASE_TODAY, oracleCaseBackup, oracleCaseSessions, toolOutputs } from "./fixtures/standalone-oracle-case.js";
+
+/** The calendar the route books after an import: counted, never called for real. */
+const cal = vi.hoisted(() => ({ syncs: 0 }));
+vi.mock("../src/services/calendar-sync.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../src/services/calendar-sync.js")>()),
+  syncCalendar: vi.fn(async () => {
+    cal.syncs += 1;
+    return {};
+  }),
+}));
+afterEach(() => {
+  vi.useRealTimers();
+});
 
 const {
   accountState,
@@ -230,6 +245,14 @@ describe("invalid sessions", () => {
     }
     expect(statements.filter(isWrite)).toEqual([]);
   });
+
+  it("a backup from a newer version of the tool is refused, and says why (Audit C M-3)", async () => {
+    await expect(run({ app: "tmj_tool", version: 3, sessions: [] })).rejects.toMatchObject({ reason: "newer_version" });
+    await expect(run({ app: "tmj_tool", version: 3, sessions: [] }, { dryRun: true })).rejects.toMatchObject({ reason: "newer_version" });
+    // An older or a foreign file is simply not a backup.
+    await expect(run({ app: "tmj_tool", version: 1, sessions: [] })).rejects.toMatchObject({ reason: null });
+    await expect(run({ app: "other", version: 3, sessions: [] })).rejects.toMatchObject({ reason: null });
+  });
 });
 
 describe("the first import", () => {
@@ -307,6 +330,9 @@ describe("the first import", () => {
     await db.insert(userConditions).values({ id: `${userId}:tmj`, userId, profileId: "tmj", active: false, since: "2026-01-01", settings: {} });
     const summary = await run(backup(history()));
     expect(summary.written).toMatchObject({ places: 0, prefs: 4, condition: 0 });
+    // The summary lists what is written: none of the file's places, and only the ratings the account lacked.
+    expect(summary.places).toEqual([]);
+    expect(summary.ratings).toBe(1);
     expect((await db.select().from(locations)).map((p) => p.name)).toEqual(["My flat"]);
     expect((await db.select().from(programs))[0]!.config).toMatchObject({ defaultLocationId: null });
     expect((await db.select().from(exercisePrefs).where(eq(exercisePrefs.exerciseId, "chinTuck")))[0]!.rating).toBe(-1);
@@ -328,8 +354,212 @@ describe("the first import", () => {
 
   it("an account still on the default unit takes the tool's", async () => {
     expect((await loadPreferences(db, userId)).weightUnit).toBe("lb");
-    await run(backup(history(), { settings: { unit: "kg", weeklyGoal: 3 } }));
+    const summary = await run(backup(history(), { settings: { unit: "kg", weeklyGoal: 3 } }));
     expect((await loadPreferences(db, userId)).weightUnit).toBe("kg");
+    expect(summary.weightUnit).toEqual({ before: "lb", after: "kg" });
+  });
+});
+
+// ── Ruling 2d-R6: the tool's weight unit only where nothing here already means the account's ─────────────────────
+
+describe("the weight unit on a first import (ruling 2d-R6)", () => {
+  const kgTool = () => backup([v2Session("2026-09-28")], { settings: { unit: "kg", weeklyGoal: 3 } });
+  const myPlace = (implementsText: Record<string, string>) =>
+    db.insert(locations).values({ id: newId(), userId, name: "Home", equipment: ["mat", "kettlebell"], implements: implementsText, isDefault: true, createdAt: NOW, updatedAt: NOW });
+
+  it("stays the account's when one of its places keeps a weight list typed with no unit — that list means the account's unit", async () => {
+    await myPlace({ kettlebell: "10, 15, 20, 25, 30" });
+    const places = await db.select().from(locations);
+    const summary = await run(kgTool());
+    expect((await loadPreferences(db, userId)).weightUnit).toBe("lb");
+    expect(summary.weightUnit).toEqual({ before: "lb", after: "lb" });
+    // The dry run says the same, and the place itself is untouched.
+    expect(await db.select().from(locations)).toEqual(places);
+  });
+
+  it("a list whose last weight has no unit after it counts as typed with no unit", async () => {
+    await myPlace({ kettlebell: "8 kg, 12" });
+    expect((await run(kgTool(), { dryRun: true })).weightUnit).toEqual({ before: "lb", after: "lb" });
+  });
+
+  it("is the tool's when every list of the account's names its unit", async () => {
+    await myPlace({ kettlebell: "10, 15, 20 lb", dumbbells: "12kg" });
+    const summary = await run(kgTool());
+    expect((await loadPreferences(db, userId)).weightUnit).toBe("kg");
+    expect(summary.weightUnit).toEqual({ before: "lb", after: "kg" });
+  });
+
+  it("a unit the athlete chose here stays, and the summary says so", async () => {
+    await savePreferences(db, userId, { ...(await loadPreferences(db, userId)), weightUnit: "kg" });
+    expect((await run(backup(history()), { dryRun: true })).weightUnit).toEqual({ before: "kg", after: "kg" });
+  });
+
+  it("a later import never moves the unit", async () => {
+    await run(backup([v2Session("2026-09-28")]));
+    const summary = await run(kgTool());
+    expect(summary.firstImport).toBe(false);
+    expect(summary.weightUnit).toEqual({ before: "lb", after: "lb" });
+    expect((await loadPreferences(db, userId)).weightUnit).toBe("lb");
+  });
+});
+
+// ── Ruling 2d-R5 (Audit C C-1): the import never makes a second adaptive program ────────────────────────────────
+
+describe("an account that already has a program (ruling 2d-R5)", () => {
+  /** A program the athlete made in the app (`source` null, as createAdaptiveProgram writes it), its slots placed. */
+  async function appProgram(name = "Mornings"): Promise<string> {
+    const id = await createAdaptiveProgram(db, userId, { name, config: adaptiveConfigSchema.parse({ weeklyGoal: 3, preferredDays: [1, 3, 5] }) }, NOW);
+    await placeSlots(db, userId, id, TODAY, prefs, NOW);
+    expect(await db.$count(plannedWorkouts)).toBeGreaterThan(0);
+    return id;
+  }
+  const TOOL_INTENT = {
+    core: { squat: "gobletSquat", hinge: "deadlift", row: "supportedRow", press: "floorPress", carry: "suitcaseCarry" },
+    rotations: [{ family: "row", from: "proneYTW", to: "supportedRow", date: "2026-09-24", why: "no progress in 3 sessions" }],
+  };
+
+  it("one with no block and no session yet takes the tool's block: the same program, its settings untouched, no new slots", async () => {
+    const id = await appProgram();
+    const before = await snapshot();
+    const summary = await run(backup(history()));
+    expect(summary.firstImport).toBe(true);
+    expect(summary.program).toEqual({ outcome: "adopted", name: "Mornings" });
+    expect(summary.written).toMatchObject({ program: 0, block: 1 });
+    const after = await snapshot();
+    // The program row is byte-identical: its name, config (goal, days, place), source and stamps are the athlete's.
+    expect(after.programs).toEqual(before.programs);
+    expect(after.slots).toEqual(before.slots);
+    expect(after.blocks).toHaveLength(1);
+    expect(after.blocks[0]).toMatchObject({ programId: id, number: 2, kind: "core_block", startDate: "2026-09-21", weeks: 5, intent: TOOL_INTENT });
+    // The engine reads it as that program's block: the next build carries on the tool's block 2.
+    expect(await loadProgramState(db, id)).toMatchObject({ number: 2, startedAt: "2026-09-21", weeks: 5, core: TOOL_INTENT.core, rotations: TOOL_INTENT.rotations });
+    // The rest of a first import still lands.
+    expect(after.places.map((p) => p.name).sort()).toEqual(["Apartment", "Gym", "Mat only"]);
+    expect(after.conditions).toHaveLength(1);
+  });
+
+  it("one that already has a block stays exactly as it is, and so do its blocks and slots", async () => {
+    const id = await appProgram();
+    await db.insert(programBlocks).values({
+      id: "blk-own", programId: id, number: 1, kind: "core_block", startDate: "2026-10-05", weeks: 5,
+      intent: { core: { squat: "boxSquat" }, rotations: [] }, createdAt: NOW, updatedAt: NOW,
+    });
+    const before = await snapshot();
+    const summary = await run(backup(history()));
+    expect(summary.firstImport).toBe(true);
+    expect(summary.program).toEqual({ outcome: "kept", name: "Mornings" });
+    expect(summary.written).toMatchObject({ program: 0, block: 0 });
+    const after = await snapshot();
+    expect(after.programs).toEqual(before.programs);
+    expect(after.blocks).toEqual(before.blocks);
+    expect(after.slots).toEqual(before.slots);
+  });
+
+  it("one with a session done on one of its slots stays as it is, even with no block", async () => {
+    const id = await appProgram();
+    const [slot] = await db.select().from(plannedWorkouts).where(eq(plannedWorkouts.planId, id)).limit(1);
+    await db.insert(performedSessions).values({
+      id: "ps-watch", userId, workoutId: slot!.id, activityId: null, buildId: null, source: "watch", sourceRef: "lbl-1",
+      localDate: slot!.effectiveDate, seconds: 1500, completed: true, payloadHash: "h", createdAt: NOW, updatedAt: NOW,
+    });
+    const before = await snapshot();
+    const summary = await run(backup(history()));
+    expect(summary.program).toEqual({ outcome: "kept", name: "Mornings" });
+    expect(summary.written).toMatchObject({ program: 0, block: 0 });
+    const after = await snapshot();
+    expect(after.programs).toEqual(before.programs);
+    expect(after.blocks).toEqual([]);
+  });
+
+  it("an account whose only program is retired gets no second one", async () => {
+    const id = await appProgram();
+    await updateProgram(db, userId, id, { status: "retired" }, NOW);
+    const before = await snapshot();
+    const summary = await run(backup(history()));
+    expect(summary.program.outcome).toBe("kept");
+    expect(summary.written).toMatchObject({ program: 0, block: 0 });
+    const after = await snapshot();
+    expect(after.programs).toEqual(before.programs);
+    expect(after.blocks).toEqual([]);
+  });
+
+  it("two active programs: neither is changed, no third is made, and the summary names none", async () => {
+    await appProgram("Mornings");
+    await appProgram("Evenings");
+    const before = await snapshot();
+    const summary = await run(backup(history()));
+    expect(summary.program).toEqual({ outcome: "kept", name: null });
+    const after = await snapshot();
+    expect(after.programs).toEqual(before.programs);
+    expect(after.blocks).toEqual([]);
+  });
+
+  it("an account with no program gets the tool's, as before", async () => {
+    const summary = await run(backup(history()));
+    expect(summary.program).toEqual({ outcome: "created", name: TMJ.care!.block.label });
+    expect(summary.written).toMatchObject({ program: 1, block: 1 });
+    expect(await db.$count(programs)).toBe(1);
+  });
+
+  const cases: Array<[string, () => Promise<unknown>]> = [
+    ["created", async () => undefined],
+    ["adopted", () => appProgram()],
+    [
+      "kept",
+      async () => {
+        const id = await appProgram();
+        await db.insert(programBlocks).values({ id: "blk-own", programId: id, number: 1, kind: "core_block", startDate: "2026-10-05", weeks: 5, intent: { core: {}, rotations: [] }, createdAt: NOW, updatedAt: NOW });
+      },
+    ],
+  ];
+  it.each(cases)("%s: the dry run says it first, and importing again adds only new sessions, never touching the program", async (outcome, setup) => {
+    await setup();
+    const file = backup(history());
+    const dry = await run(file, { dryRun: true });
+    expect(dry.program.outcome).toBe(outcome);
+    const real = await run(file);
+    expect({ ...dry, dryRun: false }).toEqual(real);
+
+    // The athlete changes their program and places here in between.
+    await db.update(programs).set({ name: "Renamed" });
+    await db.update(locations).set({ name: "Moved" });
+    const before = await snapshot();
+    statements.length = 0;
+    const again = await run(file, { now: LATER });
+    expect(again.firstImport).toBe(false);
+    expect(again.program.outcome).toBe("kept");
+    expect(statements.filter(isWrite)).toEqual([]);
+    expect(await snapshot()).toEqual(before);
+
+    const later = await run(backup([...history(), v2Session("2026-10-05")], { block: { number: 3, startedAt: "2026-10-05", weeks: 4, core: { squat: "boxSquat" }, rotations: [] } }), { now: LATER });
+    expect(later.written).toMatchObject({ sessions: 1, program: 0, block: 0, places: 0, prefs: 0, condition: 0, preferences: 0 });
+    const after = await snapshot();
+    expect(after.programs).toEqual(before.programs);
+    expect(after.blocks).toEqual(before.blocks);
+    expect(after.places).toEqual(before.places);
+    expect(after.slots).toEqual(before.slots);
+  });
+
+  it("a first import with no block in the file leaves the program alone, and a later file's block never goes in", async () => {
+    await appProgram();
+    const first = await run(backup(history(), { block: null }));
+    expect(first.program).toEqual({ outcome: "kept", name: "Mornings" });
+    expect(first.written).toMatchObject({ program: 0, block: 0 });
+    const later = await run(backup([...history(), v2Session("2026-10-05")]), { now: LATER });
+    expect(later.program.outcome).toBe("kept");
+    expect(later.written).toMatchObject({ sessions: 1, program: 0, block: 0 });
+    expect(await db.select().from(programBlocks)).toEqual([]);
+  });
+
+  it("a first import with no session in it still counts: the next one brings no settings again", async () => {
+    await appProgram();
+    const first = await run(backup([]));
+    expect(first).toMatchObject({ firstImport: true, program: { outcome: "adopted" } });
+    await savePreferences(db, userId, { ...(await loadPreferences(db, userId)), equipmentWishlist: [] });
+    const second = await run(backup([v2Session("2026-09-28")]), { now: LATER });
+    expect(second.firstImport).toBe(false);
+    expect(second.written).toMatchObject({ sessions: 1, preferences: 0 });
+    expect((await loadPreferences(db, userId)).equipmentWishlist).toEqual([]);
   });
 });
 
@@ -355,6 +585,8 @@ describe("Review Focus 1: a backup exported twice, a week apart", () => {
     expect(again.firstImport).toBe(false);
     expect(statements.filter(isWrite)).toEqual([]);
     expect(await snapshot()).toEqual(before);
+    // Nothing of the file's settings is written again, so the summary lists none (Audit C M-1).
+    expect(again).toMatchObject({ places: [], ratings: 0, sessions: { addedFirstDate: null, addedLastDate: null } });
 
     // A week later: two more sessions, and the tool's own settings, places, ratings and block moved on.
     const fresh = [v2Session("2026-10-05", { entries: [entry("gobletSquat", [{ w: lb(35), reps: 8 }], { implement: "kettlebell" })] }), v2Session("2026-10-07")];
@@ -367,6 +599,8 @@ describe("Review Focus 1: a backup exported twice, a week apart", () => {
     });
     const second = await run(week2, { now: LATER });
     expect(second.sessions).toMatchObject({ total: week1.length + 2, added: 2, alreadyImported: week1.length });
+    // The span is the new sessions', not the whole file's (Audit C M-2).
+    expect(second.sessions).toMatchObject({ firstDate: "2026-08-03", lastDate: "2026-10-07", addedFirstDate: "2026-10-05", addedLastDate: "2026-10-07" });
     const after = await snapshot();
     const isNew = (ref: string | null) => fresh.some((f) => f.id === ref);
     const newIds = new Set(after.sessions.filter((s) => isNew(s.sourceRef)).map((s) => s.id));
@@ -562,6 +796,47 @@ describe("POST /api/import/standalone", () => {
     expect(real.status).toBe(200);
     expect(((await real.json()) as ImportSummary).dryRun).toBe(false);
     expect(await db.$count(performedSessions)).toBe(18);
+  });
+
+  it("an account with its own program: the import places no slot and books no calendar; its program and slots stay (ruling 2d-R5)", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(new Date(NOW));
+    const id = await createAdaptiveProgram(db, userId, { name: "Mornings", config: adaptiveConfigSchema.parse({ weeklyGoal: 3, preferredDays: [1, 3, 5] }) }, NOW);
+    await placeSlots(db, userId, id, TODAY, prefs, NOW);
+    const programRows = await db.select().from(programs);
+    const slots = await db.select().from(plannedWorkouts);
+    expect(slots.length).toBeGreaterThan(0);
+    cal.syncs = 0;
+    const res = await call("/api/import/standalone", backup(history()));
+    expect(res.status).toBe(200);
+    expect(((await res.json()) as ImportSummary).program).toEqual({ outcome: "adopted", name: "Mornings" });
+    expect(await db.select().from(programs)).toEqual(programRows);
+    expect(await db.select().from(plannedWorkouts)).toEqual(slots);
+    expect(cal.syncs).toBe(0);
+  });
+
+  it("an account with no program: the program the import makes gets its slots and one calendar booking — once", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(new Date(NOW));
+    cal.syncs = 0;
+    const res = await call("/api/import/standalone", backup(history()));
+    expect(((await res.json()) as ImportSummary).program.outcome).toBe("created");
+    const [program] = await db.select().from(programs);
+    const slots = await db.select().from(plannedWorkouts).where(eq(plannedWorkouts.planId, program!.id));
+    expect(slots.length).toBeGreaterThan(0);
+    expect(cal.syncs).toBe(1);
+    cal.syncs = 0;
+    expect((await call("/api/import/standalone", backup(history()))).status).toBe(200);
+    expect(await db.select().from(plannedWorkouts)).toEqual(slots);
+    expect(cal.syncs).toBe(0);
+  });
+
+  it("a backup from a newer tool: 422 with the reason, so the sheet can say so (Audit C M-3)", async () => {
+    const res = await call("/api/import/standalone?dryRun=1", { app: "tmj_tool", version: 3, sessions: [] });
+    expect(res.status).toBe(422);
+    expect(await res.json()).toMatchObject({ error: "invalid_backup", reason: "newer_version" });
+    const plain = await call("/api/import/standalone?dryRun=1", { hello: 1 });
+    expect(await plain.json()).not.toHaveProperty("reason");
   });
 
   it("422 for a file that is not a backup or not JSON; 401 signed out; 423 while restoring", async () => {
