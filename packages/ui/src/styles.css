@@ -2781,16 +2781,27 @@ button.session-chip {
   flex-direction: column;
   gap: var(--space-5);
 }
-/* The label column fits the longest axis name, "Yoga & mobility" (86px at
-   --text-2xs; 2d), in rem so it grows with the text — one width for all three
-   rows keeps the tracks aligned. */
+/* Two rows per meter, as the mocks lay it out (2d): the axis name and its caption
+   share the top row, and the track runs the full width below, so the longest
+   name, "Yoga & mobility", never narrows the meter (Audit 2d M-1). */
 .lately .balance-bar {
   display: grid;
-  grid-template-columns: 6rem 1fr 56px;
-  gap: var(--space-5);
-  align-items: center;
+  grid-template-columns: minmax(0, 1fr) auto;
+  grid-template-areas:
+    "label caption"
+    "track track";
+  column-gap: var(--space-4);
+  row-gap: var(--space-2);
+  align-items: baseline;
+}
+.lately .balance-bar-label {
+  grid-area: label;
+}
+.lately .balance-bar-track {
+  grid-area: track;
 }
 .lately .balance-bar-caption {
+  grid-area: caption;
   text-align: right;
 }
 
