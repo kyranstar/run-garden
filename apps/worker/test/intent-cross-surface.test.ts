@@ -89,7 +89,10 @@ let date: string;
 
 beforeEach(async () => {
   db = makeTestDb();
-  ({ userId, prefs } = await makeTestUser(db));
+  // A kilograms athlete: the readers here compare WORDS, and the coach's manifest and the stored summary write a
+  // prescribed load in kilos whatever the unit. The Plan sheet's lines follow the athlete's unit (Audit C M-6) —
+  // pounds with the kilos kept, for a pounds athlete — pinned by its own test below.
+  ({ userId, prefs } = await makeTestUser(db, { weightUnit: "kg" }));
   cookie = `${SESSION_COOKIE}=${await createSession(db, userId)}`;
   today = todayInZone(prefs.timezone);
   date = addDaysIso(today, 3);
@@ -278,6 +281,50 @@ describe("five readers describe the same session", () => {
       }
     });
   }
+});
+
+describe("the Plan sheet reads a coach lift in the athlete's weight unit (Audit C M-6)", () => {
+  const liftSession = () =>
+    coachOpSchema.parse({
+      kind: "add",
+      date,
+      session: {
+        category: "strength",
+        title: "Units day",
+        durationMinutes: 40,
+        lift: {
+          exercises: [
+            { name: "Goblet squat", sets: 3, reps: 8, weight: { type: "kg", value: 20 }, restSeconds: 90 },
+            { name: "Push-up", sets: 2, reps: 10, weight: { type: "bodyweight" }, restSeconds: 90 },
+          ],
+        },
+      },
+    }) as CoachOp & { kind: "add" };
+
+  /** The exercise lines of the one lift row, through every plan route that lists it. */
+  async function linesFor(weightUnit: "lb" | "kg") {
+    const user = await makeTestUser(db, { weightUnit });
+    const op = liftSession();
+    const out = await applyOps(db, user.userId, user.prefs, `units-${weightUnit}`, [op]);
+    const id = out.created[0]!;
+    const session = `${SESSION_COOKIE}=${await createSession(db, user.userId)}`;
+    const app = mountRoutes(db, "/api/plan", planRoutes);
+    const get = async (path: string) => (await app.request(path, { headers: { Cookie: session } }, ENV)).json();
+    const detail = ((await get(`/api/plan/workouts/${id}`)) as { workout: WorkoutDto }).workout;
+    const list = ((await get(`/api/plan/workouts?start=${date}&end=${date}`)) as { workouts: Array<WorkoutDto & { id: string }> }).workouts.find((w) => w.id === id)!;
+    return { op, detail: detail.exercises!.map((e) => e.line), list: list.exercises!.map((e) => e.line) };
+  }
+
+  it("an lb athlete reads pounds with the prescription's kilos kept; a kg athlete reads kilos", async () => {
+    const lb = await linesFor("lb");
+    expect(lb.detail).toEqual(lb.op.session.lift!.exercises.map((e) => formatExercise(e, "lb")));
+    expect(lb.detail[0]).toContain("@ 44 lb (20 kg)");
+    expect(lb.list).toEqual(lb.detail);
+    const kg = await linesFor("kg");
+    expect(kg.detail[0]).toContain("@ 20 kg");
+    expect(kg.detail[0]).not.toContain("lb");
+    expect(kg.list).toEqual(kg.detail);
+  });
 });
 
 describe("a multi-date add says how many days it is", () => {

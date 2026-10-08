@@ -44,6 +44,7 @@ import {
   type UserPreferences,
   type WatchCoverageView,
   type WatchSessionShape,
+  type WeightUnit,
   type WorkoutSyncView,
   type WriteLane,
 } from "@rg/domain";
@@ -393,6 +394,8 @@ function workoutDto(
    * coach-authored sessions, which have no stage rows at all.
    */
   derivedStageSummary?: string,
+  /** The athlete's weight unit: a coach lift's prescribed kilos read in it (Audit C M-6). */
+  unit?: WeightUnit,
 ) {
   // COROS structured names are frequently opaque codes ("T1004") — every UI
   // surface gets the humanized name; the raw one rides along as corosName
@@ -454,15 +457,18 @@ function workoutDto(
     // invent its own notation, and carrying the ONE fact the flat
     // stageSummary cannot: which movements the watch's own library knows
     // (2026-08-16). `onWatch: false` is why a session is app-only.
-    ...exercisesDto(w.structuredJson),
+    ...exercisesDto(w.structuredJson, unit),
   };
 }
 
 /** `structured_json` → the DTO's exercise lines. Tolerant of every historical
  * shape in the column (studio exercises, coach exercises, junk) — a session
- * detail must never fail to render because an old row is shaped oddly. */
+ * detail must never fail to render because an old row is shaped oddly. A
+ * prescribed load reads in the athlete's unit, the kilos kept beside pounds
+ * ("@ 44 lb (20 kg)"), as the Studio card, the charts and the dossier read it. */
 function exercisesDto(
   structured: { exercises?: unknown[]; rounds?: number } | null,
+  unit?: WeightUnit,
 ): { exercises?: Array<{ name: string; line: string; onWatch: boolean }>; exerciseRounds?: number } {
   const raw = structured?.exercises;
   if (!Array.isArray(raw) || raw.length === 0) return {};
@@ -473,7 +479,7 @@ function exercisesDto(
       return typeof name === "string" ? [{ name, line: name, onWatch: false }] : [];
     }
     return [
-      { name: parsed.data.name, line: formatExercise(parsed.data), onWatch: !!parsed.data.originId },
+      { name: parsed.data.name, line: formatExercise(parsed.data, unit), onWatch: !!parsed.data.originId },
     ];
   });
   if (exercises.length === 0) return {};
@@ -726,15 +732,15 @@ planRoutes.get("/today", async (c) => {
 
   return c.json({
     today,
-    nextWorkout: next ? workoutDto(next, syncViews.get(next.id), catalog) : null,
-    upcoming: upcoming.map((w) => workoutDto(w, syncViews.get(w.id), catalog)),
+    nextWorkout: next ? workoutDto(next, syncViews.get(next.id), catalog, undefined, prefs.weightUnit) : null,
+    upcoming: upcoming.map((w) => workoutDto(w, syncViews.get(w.id), catalog, undefined, prefs.weightUnit)),
     todaySessions: todaySessionRows.map((t) => ({
-      workout: workoutDto(t.row, syncViews.get(t.row.id), catalog),
+      workout: workoutDto(t.row, syncViews.get(t.row.id), catalog, undefined, prefs.weightUnit),
       build: t.build,
     })),
     conditions,
-    unresolved: unresolved.map((w) => workoutDto(w, syncViews.get(w.id), catalog)),
-    needsAttention: attention.map((w) => workoutDto(w, syncViews.get(w.id), catalog)),
+    unresolved: unresolved.map((w) => workoutDto(w, syncViews.get(w.id), catalog, undefined, prefs.weightUnit)),
+    needsAttention: attention.map((w) => workoutDto(w, syncViews.get(w.id), catalog, undefined, prefs.weightUnit)),
     sync: {
       pendingCorosJobs: pendingJobs.length,
       corosConnected: presence.online,
@@ -812,7 +818,7 @@ planRoutes.get("/workouts", async (c) => {
     today,
     plan: primary ? { name: primary.name, startDate: primary.startDate, endDate: primary.endDate } : null,
     corosWritesEnabled: prefs.corosWritesEnabled,
-    workouts: rows.map((w) => workoutDto(w, syncViews.get(w.id), catalog)),
+    workouts: rows.map((w) => workoutDto(w, syncViews.get(w.id), catalog, undefined, prefs.weightUnit)),
   });
 });
 
@@ -1027,7 +1033,7 @@ planRoutes.get("/week", async (c) => {
       date,
       workouts: rows
         .filter((w) => w.effectiveDate === date)
-        .map((w) => workoutDto(w, syncViews.get(w.id), catalog)),
+        .map((w) => workoutDto(w, syncViews.get(w.id), catalog, undefined, prefs.weightUnit)),
     };
   });
 
@@ -1189,6 +1195,7 @@ planRoutes.get("/workouts/:id", async (c) => {
       syncViews.get(w.id),
       catalog,
       stages.length > 0 ? summarizeStageRows(stages) : undefined,
+      prefs.weightUnit,
     ),
     durationEstimate: w.durationEstimate,
     stages,
