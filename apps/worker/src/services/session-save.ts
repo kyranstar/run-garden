@@ -74,7 +74,7 @@ import { chunkIds, insertBatches, runAtomically, type AtomicStatement, type Db }
 import { loadEngineContext, loadProgramState } from "./engine-inputs.js";
 import { gardenChangeStatement, resimulateFrom } from "./garden-sync.js";
 import { claimUserLock, releaseUserLock } from "./locks.js";
-import { engineDataFor, SessionNotFoundError, UNSTARTED_AT_PATH } from "./session-build.js";
+import { engineDataFor, sentBuildIdOf, SessionNotFoundError, UNSTARTED_AT_PATH } from "./session-build.js";
 import { PENDING_HASH, removeWatchSessionStatements, WATCH_SOURCE } from "./watch-sets.js";
 
 /**
@@ -433,7 +433,10 @@ export async function savePerformedSession(db: Db, userId: string, performedId: 
   // move. The slot's own date answers only when no build was ever started: a slot moved between Start and the outbox's
   // drain must still save. Anything else is a wrong clock or a bug, and would replay the garden from wherever it says.
   const startedOn = await startedBuildDays(db, userId, slot.id);
-  const days = startedOn.length > 0 ? startedOn : [slot.effectiveDate];
+  // A SENT build COROS moved (Phase 3, spec §4.5): the import adopts the move, the build stays locked, and the
+  // session's day is the slot's new one — the watch session happens there, and so may the app's.
+  const sentMoved = startedOn.length > 0 && !startedOn.includes(slot.effectiveDate) && (await sentBuildIdOf(db, slot.id)) !== null;
+  const days = startedOn.length > 0 ? [...startedOn, ...(sentMoved ? [slot.effectiveDate] : [])].sort() : [slot.effectiveDate];
   const sessionDay = days.find((d) => p.localDate >= d && p.localDate <= addDays(d, 1));
   if (sessionDay === undefined || p.localDate > addDays(today, 1)) {
     throw new InvalidSaveError([

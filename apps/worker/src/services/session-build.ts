@@ -1206,7 +1206,26 @@ export async function lockCurrentBuild(
   const today = todayInZone(prefs.timezone, new Date(now));
   const builds = await loadBuilds(db, userId, workoutId);
   const unchanged = async (session: Promise<SessionResponse>) => ({ session: await session, calendarChanged: false });
-  if (lockedOf(row, builds)) return unchanged(readResponse(db, userId, row, today, builds));
+  if (lockedOf(row, builds)) {
+    // START ON A SENT BUILD (Phase 3, spec §4.4): the athlete takes the phone along. The slot is `built` with the
+    // build on the watch locked; Start plays that very build — `started`, no rebuild, no new hash check (a locked
+    // build never changes). It must be the build the athlete was shown, on the slot's day.
+    if (opts.as === "start" && row.contentState === "built") {
+      const sent = await sentBuildIdOf(db, workoutId);
+      const locked = builds.find((b) => b.lockedAt !== null);
+      if (sent && locked && sent === locked.id) {
+        if (row.effectiveDate !== today) throw new NotTodayError(row.effectiveDate, today);
+        if (buildId !== sent) throw new StaleBuildError(await readResponse(db, userId, row, today, builds), false);
+        if (await restoreInProgress(db, userId)) return unchanged(readResponse(db, userId, row, today, builds));
+        await db
+          .update(plannedWorkouts)
+          .set({ contentState: "started", updatedAt: now })
+          .where(and(eq(plannedWorkouts.id, workoutId), eq(plannedWorkouts.userId, userId), eq(plannedWorkouts.contentState, "built")));
+        return unchanged(readResponse(db, userId, await loadSlot(db, userId, workoutId), today));
+      }
+    }
+    return unchanged(readResponse(db, userId, row, today, builds));
+  }
   if (row.effectiveDate !== today) throw new NotTodayError(row.effectiveDate, today);
   const current = currentBuild(row, builds, today);
   if (!current) throw new NotBuiltError();
@@ -1329,11 +1348,23 @@ export async function unstartSession(db: Db, userId: string, workoutId: string, 
     );
   const after = await loadSlot(db, userId, workoutId);
   if (after.contentState !== "built") throw new PerformedExistsError();
+  // A build on its way to the watch, or on it (Phase 3, spec §4.4), stays locked: the watch holds that build, and
+  // Start plays it again. A failed push holds nothing; its build unlocks as any other.
+  const sent = await sentBuildIdOf(db, workoutId);
+  const [push] = sent ? await db.select({ status: corosWriteJobs.status }).from(corosWriteJobs).where(eq(corosWriteJobs.id, pushJobId(sent))) : [];
+  const keep = sent && push && push.status !== "failed" && push.status !== "needs_attention" ? sent : null;
   // Unlocked, but kept on record with its day (ruling 2b-R19): another device's save made from it may still arrive.
   await db
     .update(sessionBuilds)
     .set({ lockedAt: null, payload: sql`json_set(${sessionBuilds.payload}, ${UNSTARTED_AT_PATH}, ${ctx.now})` })
-    .where(and(eq(sessionBuilds.workoutId, workoutId), eq(sessionBuilds.userId, userId), isNotNull(sessionBuilds.lockedAt)));
+    .where(
+      and(
+        eq(sessionBuilds.workoutId, workoutId),
+        eq(sessionBuilds.userId, userId),
+        isNotNull(sessionBuilds.lockedAt),
+        ...(keep ? [ne(sessionBuilds.id, keep)] : []),
+      ),
+    );
   return readResponse(db, userId, after, ctx.today);
 }
 

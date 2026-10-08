@@ -26,7 +26,7 @@
 
 import { and, desc, eq, gte, inArray, isNotNull, isNull } from "drizzle-orm";
 import { auditEvents, dailyHealth, plannedWorkouts, plannedWorkoutStages } from "@rg/database";
-import { newId, nowInstant, todayInZone, watchAddressOf } from "@rg/domain";
+import { appAuthoredRow, newId, nowInstant, todayInZone, watchAddressOf } from "@rg/domain";
 import { chunkIds, type Db } from "./db.js";
 import { loadPreferences } from "./calendar-sync.js";
 import { enqueueWatchCreate, sessionColumns, watchPushable, writeStages } from "./coach-apply.js";
@@ -66,7 +66,9 @@ export interface PushAbsentOptions {
  *  - an addressed row is COROS's to hold and belongs to the content lane, not
  *    this one;
  *  - a completed row's watch copy would be a plan for a session already done;
- *  - a past row would put history on the athlete's watch.
+ *  - a past row would put history on the athlete's watch;
+ *  - a program or on-demand slot reaches the watch only by the athlete's own
+ *    Send (Phase 3, ruling 2a-R4 extended): never pushed from here.
  */
 export async function pushAbsentSessions(
   db: Db,
@@ -101,6 +103,7 @@ export async function pushAbsentSessions(
       )
   ).filter(
     (row) =>
+      !appAuthoredRow(row) &&
       watchAddressOf(row) === null &&
       row.completionState !== "completed" &&
       (opts.workoutIds === undefined || opts.workoutIds.includes(row.id)),

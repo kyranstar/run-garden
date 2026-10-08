@@ -153,7 +153,10 @@ describe("moving an app-authored session with no watch address", () => {
     expect(await openIntentFor(db, userId, "slot-e", "move")).toBeNull();
   });
 
-  it("an app-authored row that DOES hold a watch address keeps the COROS write lane", async () => {
+  // Ruling 3-R3 (Phase 3) replaced "keeps the COROS write lane": a program session's watch copy is never re-dated —
+  // its build is made for its day. A sent copy is taken off instead (watch-push-lifecycle.test.ts); a row holding an
+  // address that no send of the app's put there has nothing of the app's to take off.
+  it("an app-authored row that DOES hold a watch address is never re-dated on the watch", async () => {
     const from = addDays(today, 2);
     await seedAppRow("slot-f", from);
     await db
@@ -174,8 +177,9 @@ describe("moving an app-authored session with no watch address", () => {
       source: "app",
       corosWritesEnabled: true,
     });
-    expect(outcome.jobId).toBeTruthy();
-    expect(await jobsFor("slot-f")).toHaveLength(1);
-    expect(await openIntentFor(db, userId, "slot-f", "move")).not.toBeNull();
+    expect(outcome.jobId).toBeUndefined();
+    expect(await jobsFor("slot-f")).toEqual([]);
+    expect(await openIntentFor(db, userId, "slot-f", "move")).toBeNull();
+    expect(await emitPendingWork(db, userId, { corosWritesEnabled: true })).toBe(0);
   });
 });

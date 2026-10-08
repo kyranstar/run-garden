@@ -11,6 +11,7 @@ import {
 } from "@rg/database";
 import {
   addDays,
+  appAuthoredRow,
   newId,
   nowInstant,
   todayInZone,
@@ -111,7 +112,7 @@ export function mirrorGroupKey(
  * day ("I'll do both on Wednesday") are two sessions, not one served twice (audit 2a-model I1).
  */
 function appAuthoredSession(w: { origin: string | null }): boolean {
-  return w.origin === "program" || w.origin === "on_demand";
+  return appAuthoredRow(w);
 }
 
 /**
