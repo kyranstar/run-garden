@@ -467,7 +467,8 @@ if (appAuthoredRow(workout)) {
 - Test: `packages/ui/test/watch-preview-sheet.test.tsx`; add to `packages/ui/test/session-sheet.test.tsx`, `today-card-program.test.tsx`, `responsive.test.tsx`, `program-tap-floor.test.ts`
 
 **Interfaces:**
-- Consumes: `api.watchPreview`, `api.sendToWatch`, `api.takeOffWatch`, `SessionDto.watch`, the approved mocks (Task 1).
+- Consumes: `api.watchPreview`, `api.sendToWatch`, `api.takeOffWatch`, `api.drainWatch`, `SessionDto.watch`, the approved mocks (Task 1).
+- **The drain (fix wave 3-A, ruling 3-R11).** Send and Take off only queue: neither runs the push lane in its own request (Workers Free budget, every Phase 3 request ≤ 45 D1 statements + COROS fetches). On a 200 from either, the sheet calls `api.drainWatch()` at once (`POST /api/sessions/watch/drain` → `{executed}`; a new request that runs at most one of this athlete's queued pushes or unpushes; 404 while the switch is off), then reads the session (`api.getSession`) for the state, and polls it while `watch.state === "sending"`. A failed drain call is not an error to show: the hourly lane is the fallback, and the sheet keeps "Sending…".
 
 - [ ] **Step 1: Write the failing tests:**
   - `watch: null` → nothing about the watch renders (sheet and Today).

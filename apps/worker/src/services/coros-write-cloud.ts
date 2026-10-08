@@ -229,7 +229,12 @@ export async function executeCloudJobs(
   env: Env,
   userId: string,
   prefs: UserPreferences,
-  opts: { cap?: number; fetchImpl?: typeof fetch } = {},
+  opts: {
+    cap?: number;
+    fetchImpl?: typeof fetch;
+    /** Claim only a program push or its unpush — the session sheet's targeted drain (ruling 3-R11). */
+    watchOnly?: boolean;
+  } = {},
 ): Promise<{ executed: number }> {
   const cap = opts.cap ?? 3;
   const fetchImpl = opts.fetchImpl ?? fetch;
@@ -258,6 +263,7 @@ export async function executeCloudJobs(
       // Its unpush is a `coach_delete_workout` and runs either way (ruling 3-R10).
       const job = await claimNextJob(db, userId, CLOUD_DEVICE_ID, {
         excludeKinds: ["backfill", ...(watchPushEnabled(env) ? [] : ["program_session_push"])],
+        ...(opts.watchOnly ? { watchOnly: true } : {}),
       });
       if (!job) break;
 
