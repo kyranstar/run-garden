@@ -3107,6 +3107,11 @@ button.session-chip {
     color: rgba(var(--on-scene-rgb), 0.86);
     text-shadow: var(--scene-text-shadow);
   }
+  /* The page's selected / hover ink is dark — on the scene a selected label went nearly invisible. */
+  .hud-topright .balance-bar:hover .balance-bar-label,
+  .hud-topright .balance-bar-active .balance-bar-label {
+    color: var(--on-scene);
+  }
   .hud-topright .balance-bar-caption {
     color: rgba(var(--on-scene-rgb), 0.62);
     text-shadow: var(--scene-text-shadow);
