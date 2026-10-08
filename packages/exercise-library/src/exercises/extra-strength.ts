@@ -16,6 +16,7 @@ export const EXTRA_STRENGTH = defineExercises([
     dose: { type: "reps", range: [6, 10], sets: [2, 3], restSec: 75, startKg: 8 },
     conditions: { tmj: { clench: 1, neckLoad: 0, faceDown: false } },
     difficulty: 4,
+    providers: { coros: { key: "T1164", confidence: "exact", method: "curated" } }, // COROS: Split Bench Squat
     easier: ["bwBulgarianSplitSquat"],
     text: {
       summary: "Back foot on a bench, weight at your chest or sides; lower straight down on the front leg and drive up.",
@@ -50,6 +51,7 @@ export const EXTRA_STRENGTH = defineExercises([
     dose: { type: "reps", range: [6, 10], sets: [2, 3], restSec: 60 },
     conditions: { tmj: { clench: 0, neckLoad: 0, faceDown: false } },
     difficulty: 3,
+    providers: { coros: { key: "T1164", confidence: "close", method: "curated" } }, // COROS: Split Bench Squat; the loaded one holds the exact key
     easier: ["bwSplitSquat"],
     harder: ["bulgarianSplitSquat"],
     text: {
@@ -85,6 +87,7 @@ export const EXTRA_STRENGTH = defineExercises([
     dose: { type: "time", range: [30, 60], sets: [2, 3], restSec: 45 },
     conditions: { tmj: { clench: 1, neckLoad: 0, faceDown: false } },
     difficulty: 2,
+    providers: { coros: { key: "T1231", confidence: "exact", method: "curated" } }, // COROS: Wall Sit
     text: {
       summary: "Back against a wall, slide down until the knees are bent, and hold while breathing slowly.",
       setup: [
@@ -428,6 +431,7 @@ export const EXTRA_STRENGTH = defineExercises([
     dose: { type: "reps", range: [6, 12], sets: [2, 3], restSec: 45 },
     conditions: { tmj: { clench: 1, neckLoad: 0, faceDown: false } },
     difficulty: 2,
+    providers: { coros: { key: "T1184", confidence: "exact", method: "curated" } }, // COROS: Kneeling Push-Ups
     easier: ["wallPushup"],
     harder: ["pushup"],
     text: {
@@ -463,6 +467,7 @@ export const EXTRA_STRENGTH = defineExercises([
     dose: { type: "reps", range: [6, 10], sets: [2, 3], restSec: 60, startKg: 8 },
     conditions: { tmj: { clench: 1, neckLoad: 0, faceDown: false } },
     difficulty: 3,
+    providers: { coros: { key: "T1302", confidence: "close", method: "curated" } }, // COROS: Dumbbell Bench Press: ours is one arm
     easier: ["floorPress"],
     text: {
       summary: "Lie on a bench and press one weight up from the chest while the body stays still.",

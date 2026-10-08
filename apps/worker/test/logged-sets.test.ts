@@ -79,7 +79,8 @@ describe("loggedSetsByActivity", () => {
         ],
       },
       { exerciseId: "coros:T1010", name: "Planks", sets: [{ reps: null, seconds: 45, load: null, side: null }] },
-      { exerciseId: "coros:T1004", name: "Push-ups", sets: [{ reps: 15, seconds: null, load: null, side: null }] },
+      // Phase 3 Task 2: T1004 is the library push-up's curated key, so its sets carry the library id and name.
+      { exerciseId: "pushup", name: "Push-up", sets: [{ reps: 15, seconds: null, load: null, side: null }] },
     ]);
   });
 
@@ -210,8 +211,8 @@ describe("loggedTopKgByWeek — a plan's exercises, their heaviest logged set pe
     }
   }
 
-  const exact = (id: string, originId: string) =>
-    ({ id, providers: { coros: { originId, confidence: "exact", method: "curated" } } }) as unknown as ExerciseRecord;
+  const exact = (id: string, key: string) =>
+    ({ id, name: `${id} move`, providers: { coros: { key, confidence: "exact", method: "curated" } } }) as unknown as ExerciseRecord;
 
   it("matches a plan exercise by its catalog key or its library mapping, week by week", async () => {
     const db = makeTestDb({ boundVariableCap: D1_BIND_LIMIT });
@@ -232,7 +233,8 @@ describe("loggedTopKgByWeek — a plan's exercises, their heaviest logged set pe
       weekOne: W1,
       weeks: 3,
       originIds: ["41", "name:sled push"],
-      library: [exact("benchPressLib", "41")],
+      // The plan's "41" is the catalog row named T1041; the library move mapped to T1041 is claimed through that key.
+      library: [exact("benchPressLib", "T1041")],
     });
     expect([...out.keys()]).toEqual(["41"]);
     expect([...out.get("41")!.entries()]).toEqual([

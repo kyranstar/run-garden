@@ -16,6 +16,7 @@ export const UPPER = defineExercises([
     dose: { type: "reps", range: [8, 12], sets: [2, 4], restSec: 60, startKg: 12 },
     conditions: { tmj: { clench: 1, neckLoad: 0, faceDown: false } },
     difficulty: 2,
+    providers: { coros: { key: "T1309", confidence: "exact", method: "curated" } }, // COROS: One Arm Dumbbell Row
     tags: ["desk-relief"],
     text: {
       summary: "One hand supported on a bench or chair, row the weight toward your hip.",
@@ -84,6 +85,7 @@ export const UPPER = defineExercises([
     dose: { type: "reps", range: [8, 12], sets: [2, 4], restSec: 60, startKg: 20 },
     conditions: { tmj: { clench: 1, neckLoad: 0, faceDown: false } },
     difficulty: 2,
+    providers: { coros: { key: "T1053", confidence: "exact", method: "curated" } }, // COROS: Seated Cable Row
     text: {
       summary: "Sit tall at a cable row and pull the handle to your lower ribs.",
       setup: ["Sit with feet on the platform, knees soft.", "Hold the handle with arms long and chest tall."],
@@ -177,6 +179,7 @@ export const UPPER = defineExercises([
     dose: { type: "reps", range: [12, 15], sets: [2, 3], restSec: 45 },
     conditions: { tmj: { clench: 0, neckLoad: 0, faceDown: false } },
     difficulty: 1,
+    providers: { coros: { key: "T1352", confidence: "close", method: "curated" } }, // COROS: Face Pull: the cable lift; ours is a band
     tags: ["desk-relief"],
     text: {
       summary: "Anchor a band at head height and pull it toward your face, elbows high.",
@@ -208,6 +211,7 @@ export const UPPER = defineExercises([
     dose: { type: "reps", range: [12, 15], sets: [2, 3], restSec: 45, startKg: 7 },
     conditions: { tmj: { clench: 0, neckLoad: 0, faceDown: false } },
     difficulty: 2,
+    providers: { coros: { key: "T1352", confidence: "exact", method: "curated" } }, // COROS: Face Pull
     tags: ["desk-relief"],
     text: {
       summary: "Rope on a high cable, pull toward your face with the elbows high and wide.",
@@ -239,6 +243,7 @@ export const UPPER = defineExercises([
     dose: { type: "reps", range: [6, 10], sets: [2, 3], restSec: 60, startKg: 8 },
     conditions: { tmj: { clench: 1, neckLoad: 0, faceDown: false } },
     difficulty: 2,
+    providers: { coros: { key: "T1316", confidence: "close", method: "curated" } }, // COROS: Floor Press: implement unknown; ours is one arm at a time
     text: {
       summary: "Lying on your back, press the weight up with one arm; the floor limits the range.",
       setup: [
@@ -303,6 +308,7 @@ export const UPPER = defineExercises([
     dose: { type: "reps", range: [6, 12], sets: [2, 3], restSec: 45 },
     conditions: { tmj: { clench: 1, neckLoad: 0, faceDown: false } },
     difficulty: 2,
+    providers: { coros: { key: "T1241", confidence: "exact", method: "curated" } }, // COROS: Incline Push-Up
     easier: ["wallPushup"],
     harder: ["pushup"],
     text: {
@@ -329,6 +335,7 @@ export const UPPER = defineExercises([
     dose: { type: "reps", range: [5, 12], sets: [2, 3], restSec: 60 },
     conditions: { tmj: { clench: 1, neckLoad: 0, faceDown: false } },
     difficulty: 3,
+    providers: { coros: { key: "T1004", confidence: "exact", method: "curated" } }, // COROS: Push-ups
     easier: ["inclinePushup"],
     text: {
       summary: "A full push-up from the floor with a straight body.",

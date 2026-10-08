@@ -18,7 +18,7 @@ import { corosConnectionStatus } from "../services/coros-connection.js";
 import { applyMove } from "../services/jobs.js";
 import { executeCloudJobs } from "../services/coros-write-cloud.js";
 import { openMoveIntents } from "../services/sync-intents.js";
-import { activeSyncNotes, dismissSyncNote } from "../services/sync-notes.js";
+import { activeSyncNotes, dismissSyncNote, DISMISS_ONLY_NOTE_KINDS } from "../services/sync-notes.js";
 import { computeSyncStatus } from "../services/sync-status.js";
 import { pushStudioPlan, undoStudioAdoption } from "../services/studio-push.js";
 import { corosReadNow } from "../services/coros-read.js";
@@ -227,6 +227,9 @@ syncRoutes.post("/notes/:id/undo", async (c) => {
   const note = notes.find((n) => n.id === noteId);
   if (!note) return c.json({ error: "not_found" }, 404);
   const payload = (note.payload ?? {}) as Record<string, unknown>;
+  // A sent program session's notes only inform (Phase 3): the app kept its version, or the copy is gone from the
+  // watch — there is no change of the app's to take back.
+  if ((DISMISS_ONLY_NOTE_KINDS as readonly string[]).includes(note.kind)) return c.json({ error: "not_undoable" }, 422);
 
   switch (note.kind) {
     case "kept_local_change": {

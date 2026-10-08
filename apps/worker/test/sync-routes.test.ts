@@ -497,6 +497,18 @@ describe("POST /api/sync/notes/:id/undo", () => {
     expect(await res.json()).toEqual({ error: "not_found" });
   });
 
+  it.each(["watch_copy_changed", "watch_copy_removed"] as const)(
+    "refuses %s (Phase 3): 422 not_undoable, and the note stays",
+    async (kind) => {
+      const workoutId = await insertWorkout({ effectiveDate: "2026-08-10" });
+      const noteId = await postSyncNote(db, { userId, workoutId, kind, payload: { date: "2026-08-10" } });
+      const res = await client().post(`/api/sync/notes/${noteId}/undo`);
+      expect(res.status).toBe(422);
+      expect(await res.json()).toEqual({ error: "not_undoable" });
+      expect((await activeSyncNotes(db, userId)).map((n) => n.id)).toContain(noteId);
+    },
+  );
+
   it("kept_local_change undo-before-re-emit-lands: COROS already at displacedDate — effectiveDate moves back, the stale queued job is superseded, the intent resolves, state is synced", async () => {
     const workoutId = await insertWorkout({ effectiveDate: "2026-08-10" });
     // COROS was already read back to the displaced date (jobs.ts's

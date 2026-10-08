@@ -73,7 +73,7 @@ describe("upsertWatchSession", () => {
       ["coros:T1055", 10, null, 12, "kg"],
       ["coros:T1055", 9, null, 12, "kg"],
       ["coros:T1010", null, 45, null, null],
-      ["coros:T1004", 15, null, null, null],
+      ["pushup", 15, null, null, null], // Phase 3 Task 2: T1004 is the library push-up's curated key
     ]);
   });
 
@@ -234,35 +234,31 @@ describe("upsertWatchSession — guards", () => {
 });
 
 describe("upsertWatchSession — the library's reverse COROS mapping (Review Focus 4)", () => {
-  const record = (id: string, originId: string, confidence: "exact" | "close" | "generic") =>
-    ({ id, providers: { coros: { originId, confidence, method: "curated" } } }) as unknown as ExerciseRecord;
+  // Phase 3 Task 2: mappings key on the T-code, so the reverse mapping needs no catalog read.
+  const record = (id: string, key: string, confidence: "exact" | "close" | "generic") =>
+    ({ id, name: `${id} move`, providers: { coros: { key, confidence, method: "curated" } } }) as unknown as ExerciseRecord;
 
-  it("maps a key to the library id through the catalog, for an exact mapping only", async () => {
-    const { db, userId } = await setup();
-    await db.insert(schema.corosExercises).values([
-      { id: "41", name: "T1041", updatedAt: nowInstant() },
-      { id: "55", name: "T1055", updatedAt: nowInstant() },
-    ]);
+  it("maps a key to the library id for an exact mapping only, with no catalog read", async () => {
+    const { db, userId, statements } = await setup();
     await upsertWatchSession(
       db,
       { userId, activity: ACTIVITY, detail: detailOf(workView()) },
-      { library: [record("benchPress", "41", "exact"), record("oneArmRow", "55", "close")] },
+      { library: [record("benchPress", "T1041", "exact"), record("oneArmRow", "T1055", "close")] },
     );
     const [s] = await sessionsOf(db, userId);
     const ids = [...new Set((await setsOf(db, s!.id)).map((r) => r.exerciseId))];
     expect(ids).toEqual(["benchPress", "coros:T1055", "coros:T1010", "coros:T1004"]);
+    expect(statements.filter((q) => q.includes("coros_exercises"))).toEqual([]);
   });
 
   it("keeps the COROS key when two library moves claim the same exercise", async () => {
     const { db, userId } = await setup();
-    await db.insert(schema.corosExercises).values([{ id: "41", name: "T1041", updatedAt: nowInstant() }]);
     await upsertWatchSession(
       db,
       { userId, activity: ACTIVITY, detail: detailOf(workView()) },
-      { library: [record("benchPress", "41", "exact"), record("floorPress", "41", "exact")] },
+      { library: [record("benchPress", "T1041", "exact"), record("floorPress", "T1041", "exact")] },
     );
     const [s] = await sessionsOf(db, userId);
     expect((await setsOf(db, s!.id))[0]!.exerciseId).toBe("coros:T1041");
   });
 });
-

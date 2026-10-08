@@ -16,6 +16,7 @@ export const CORE_CARRY = defineExercises([
     dose: { type: "reps", range: [10, 15], secsPerRep: 4 },
     conditions: { tmj: { clench: 0, neckLoad: 0, faceDown: false } },
     difficulty: 1,
+    providers: { coros: { key: "T1132", confidence: "close", method: "curated" } }, // COROS: Lie on Your Back Glute Bridge; ours squeezes a block
     harder: ["singleLegBridge"],
     text: {
       summary: "Squeeze a block between the knees, lift the hips, pause, and lower slowly.",
@@ -46,6 +47,7 @@ export const CORE_CARRY = defineExercises([
     dose: { type: "reps", range: [10, 15], secsPerRep: 4 },
     conditions: { tmj: { clench: 0, neckLoad: 0, faceDown: false } },
     difficulty: 1,
+    providers: { coros: { key: "T1132", confidence: "exact", method: "curated" } }, // COROS: Lie on Your Back Glute Bridge (the name computes to Hip Thrust through an alias)
     harder: ["singleLegBridge"],
     text: {
       summary: "Lift the hips from the floor with the glutes, pause, and lower slowly.",
@@ -136,6 +138,7 @@ export const CORE_CARRY = defineExercises([
     dose: { type: "time", range: [20, 40], sets: [2, 3], restSec: 30 },
     conditions: { tmj: { clench: 1, neckLoad: 0, faceDown: false } },
     difficulty: 2,
+    providers: { coros: { key: "T1185", confidence: "close", method: "curated" } }, // COROS: Side Plank: ours is the short lever
     text: {
       summary: "On your side with knees bent, lift the hips into a straight line and hold.",
       setup: ["Lie on your side, elbow under the shoulder, knees bent behind you.", "Stack the hips and shoulders."],
@@ -165,6 +168,7 @@ export const CORE_CARRY = defineExercises([
     dose: { type: "reps", range: [6, 10], sets: [2, 3], restSec: 30, secsPerRep: 4 },
     conditions: { tmj: { clench: 0, neckLoad: 0, faceDown: false } },
     difficulty: 2,
+    providers: { coros: { key: "T1243", confidence: "exact", method: "curated" } }, // COROS: Dead Bug
     text: {
       summary: "On your back, slowly lower opposite arm and leg while the low back stays heavy.",
       setup: ["Lie on your back, arms reaching to the ceiling.", "Knees bent 90° above the hips."],
@@ -194,6 +198,7 @@ export const CORE_CARRY = defineExercises([
     dose: { type: "reps", range: [6, 10], sets: [2, 3], restSec: 30, secsPerRep: 5 },
     conditions: { tmj: { clench: 0, neckLoad: 0, faceDown: false } },
     difficulty: 1,
+    providers: { coros: { key: "T1150", confidence: "exact", method: "curated" } }, // COROS: Bird Dog
     text: {
       summary: "On hands and knees, reach one arm and the opposite leg long without twisting.",
       setup: ["Hands under shoulders, knees under hips.", "Imagine a cup of water balanced on your low back."],
@@ -224,6 +229,7 @@ export const CORE_CARRY = defineExercises([
     dose: { type: "carry", range: [30, 60], sets: [2, 3], restSec: 60, startKg: 12 },
     conditions: { tmj: { clench: 1, neckLoad: 1, faceDown: false } },
     difficulty: 2,
+    providers: { coros: { key: "T1310", confidence: "close", method: "curated" } }, // COROS: Farmer's Walk: ours is one-sided
     text: {
       summary: "Walk slowly with a weight in one hand, standing tall without leaning.",
       setup: ["Stand next to the weight and pick it up with a hinge, not a rounded back.", "Hold it at your side, arm long."],
@@ -284,6 +290,7 @@ export const CORE_CARRY = defineExercises([
     dose: { type: "carry", range: [30, 60], sets: [2, 3], restSec: 60, startKg: 16 },
     conditions: { tmj: { clench: 2, neckLoad: 1, faceDown: false } },
     difficulty: 2,
+    providers: { coros: { key: "T1310", confidence: "exact", method: "curated" } }, // COROS: Farmer's Walk
     text: {
       summary: "Walk tall holding a dumbbell in each hand, shoulders down and back.",
       setup: ["Pick up a dumbbell in each hand with a hinge.", "Stand tall with the arms long."],

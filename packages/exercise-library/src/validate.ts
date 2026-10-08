@@ -96,6 +96,10 @@ export function validateLibrary(data: EngineData, options: ValidateOptions = {})
       if (typeof note !== "string" || !note.trim()) err(id, `text.conditions.${p.id} is required`);
     }
 
+    // A COROS mapping names a catalog T-code, never a per-account catalog id or a name (Phase 3, spec §2).
+    const coros = ex.providers?.coros;
+    if (coros && !/^T\d{4}$/.test(String(coros.key))) err(id, `providers.coros.key "${String(coros.key)}" is not a COROS T-code`);
+
     // Provenance is private (spec §3.1): never a sources field, a link, or a creator handle.
     if ("sources" in ex) err(id, "sources are private and never part of the library");
     if (PROVENANCE.test(JSON.stringify(ex))) err(id, "carries a link or a handle (provenance stays private)");

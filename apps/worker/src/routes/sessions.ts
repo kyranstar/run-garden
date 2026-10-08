@@ -9,6 +9,9 @@
  *                                            inputs are unchanged; a day ahead is a preview
  *   POST   /api/sessions/:workoutId/start    {buildId} → lock that build, while it is still the day's; idempotent
  *   POST   /api/sessions/:workoutId/unstart  the player's Discard: back to built, the build unlocked; idempotent
+ *   GET    /api/sessions/:workoutId/watch-preview   the steps as the watch will hold them (Phase 3)
+ *   POST   /api/sessions/:workoutId/send-to-watch   {buildId} → lock the build (it stays `built`), queue its push
+ *   POST   /api/sessions/:workoutId/take-off-watch  supersede a queued push, or queue the unpush of a pushed one
  *   PUT    /api/sessions/performed/:id       a performed session from the player's outbox, saved exactly once
  *   POST   /api/conditions/checks            {profileId, value, feelingOff} → the day's check
  *
@@ -16,10 +19,18 @@
  * day ahead), 409 `locked` with the locked session, 409 `not_built`, 409 `stale` with the fresh session (Start named a
  * build the day's inputs no longer make); 422 for an invalid body or a profile that is not switched on. Everything engine-shaped lives in `services/session-build.ts`. A restore in progress is refused
  * (423) by `requireUser` before any write runs.
+ *
+ * THE WATCH (Phase 3, spec §4, §6). Every session response carries `watch` — null while the switch
+ * (`WATCH_PUSH_ENABLED`) is off, so nothing about the watch renders — through one helper, `withWatch`. Off, the three
+ * watch routes answer 404. Send answers 409 with the reason it is not offered (`not_today`, `not_built`, `done`,
+ * `precheck`, `writes_off`, `not_connected`, `too_long`, `empty`, `taking_off`) or `stale` with the fresh session.
  */
 import { Hono, type Context } from "hono";
 import { z, type ZodError } from "zod";
+import { eq } from "drizzle-orm";
+import { plannedWorkouts } from "@rg/database";
 import { nowInstant, sessionModeSchema, todayInZone } from "@rg/domain";
+import { watchPushEnabled } from "../env.js";
 import type { AppContext } from "../auth/middleware.js";
 import { requireUser } from "../auth/middleware.js";
 import { loadPreferences, syncCalendar } from "../services/calendar-sync.js";
@@ -38,7 +49,10 @@ import {
   startSessionOutcome,
   UnknownProfileError,
   unstartSession,
+  type SessionResponse,
 } from "../services/session-build.js";
+import { sendToWatch, takeOffWatch, watchPreview, watchStateOf, WatchUnavailableError } from "../services/watch-push.js";
+import { executeCloudJobs } from "../services/coros-write-cloud.js";
 import { InvalidSaveError, savePerformedSession } from "../services/session-save.js";
 import { reviewBasis } from "../services/session-review-basis.js";
 import { waitUntilSafe } from "../services/wait-until.js";
@@ -84,11 +98,24 @@ const checkSchema = z
 
 const invalid = (c: Context<AppContext>, error: ZodError) => c.json({ error: "invalid_build", issues: error.issues }, 422);
 
+/**
+ * THE ONE PLACE a session response gets its `watch` (Phase 3): null while the switch is off, else the state the sheet
+ * shows. Every route that answers with a session — and every refusal that carries one — goes through here.
+ */
+async function withWatch(c: Context<AppContext>, session: SessionResponse): Promise<SessionResponse> {
+  if (!watchPushEnabled(c.env)) return { ...session, watch: null };
+  const db = c.get("db");
+  const userId = c.get("userId");
+  const [row] = await db.select().from(plannedWorkouts).where(eq(plannedWorkouts.id, session.workoutId)).limit(1);
+  if (!row || row.userId !== userId) return { ...session, watch: null };
+  return { ...session, watch: await watchStateOf(db, c.env, userId, row, session, await loadPreferences(db, userId)) };
+}
+
 /** The errors every session route shares, as responses; anything else is rethrown. */
-function refusal(c: Context<AppContext>, e: unknown): Response {
+async function refusal(c: Context<AppContext>, e: unknown): Promise<Response> {
   if (e instanceof SessionNotFoundError) return c.json({ error: "not_found" }, 404);
   if (e instanceof NotTodayError) return c.json({ error: "not_today", date: e.date, today: e.today }, 409);
-  if (e instanceof SessionLockedError) return c.json({ error: "locked", session: e.session }, 409);
+  if (e instanceof SessionLockedError) return c.json({ error: "locked", session: await withWatch(c, e.session) }, 409);
   if (e instanceof NotBuiltError) return c.json({ error: "not_built" }, 409);
   if (e instanceof UnknownProfileError) return c.json({ error: "unknown_profile" }, 422);
   throw e;
@@ -99,7 +126,7 @@ sessionRoutes.get("/:workoutId", async (c) => {
   const userId = c.get("userId");
   const prefs = await loadPreferences(db, userId);
   try {
-    return c.json(await loadSession(db, userId, c.req.param("workoutId"), todayInZone(prefs.timezone)));
+    return c.json(await withWatch(c, await loadSession(db, userId, c.req.param("workoutId"), todayInZone(prefs.timezone))));
   } catch (e) {
     return refusal(c, e);
   }
@@ -155,7 +182,7 @@ sessionRoutes.post("/:workoutId/build", async (c) => {
     // A new build of the day renames and resizes the row: the calendar picks it up through the existing
     // reconciler. A stored build returned unchanged (or a preview) changed nothing it shows.
     if (calendarChanged) waitUntilSafe(c, syncCalendar(db, c.env, userId));
-    return c.json(session);
+    return c.json(await withWatch(c, session));
   } catch (e) {
     return refusal(c, e);
   }
@@ -171,7 +198,7 @@ sessionRoutes.post("/:workoutId/unstart", async (c) => {
   const userId = c.get("userId");
   const prefs = await loadPreferences(db, userId);
   try {
-    return c.json(await unstartSession(db, userId, c.req.param("workoutId"), { today: todayInZone(prefs.timezone), now: nowInstant() }));
+    return c.json(await withWatch(c, await unstartSession(db, userId, c.req.param("workoutId"), { today: todayInZone(prefs.timezone), now: nowInstant() })));
   } catch (e) {
     if (e instanceof PerformedExistsError) return c.json({ error: "performed" }, 409);
     if (e instanceof RestoringError) return c.json({ error: "restore_in_progress" }, 423);
@@ -188,12 +215,77 @@ sessionRoutes.post("/:workoutId/start", async (c) => {
     const { session, calendarChanged } = await startSessionOutcome(db, userId, c.req.param("workoutId"), parsed.data.buildId, nowInstant());
     // An outline again took the build's title and length as Start locked it (U4): the calendar picks that up.
     if (calendarChanged) waitUntilSafe(c, syncCalendar(db, c.env, userId));
-    return c.json(session);
+    return c.json(await withWatch(c, session));
   } catch (e) {
     if (e instanceof StaleBuildError) {
       if (e.calendarChanged) waitUntilSafe(c, syncCalendar(db, c.env, userId));
-      return c.json({ error: "stale", session: e.session }, 409);
+      return c.json({ error: "stale", session: await withWatch(c, e.session) }, 409);
     }
+    return refusal(c, e);
+  }
+});
+
+// ── The watch (Phase 3) ──────────────────────────────────────────────────────────────────────────────────────
+
+/** Off, the watch routes do not exist. */
+const switchedOff = (c: Context<AppContext>): Response | null => (watchPushEnabled(c.env) ? null : c.json({ error: "not_found" }, 404));
+
+const sendSchema = z.object({ buildId: z.string().min(1).max(200) }).strict();
+
+/** The steps as the watch will hold them, read off the program the push would write; the stamp it would carry. */
+sessionRoutes.get("/:workoutId/watch-preview", async (c) => {
+  const off = switchedOff(c);
+  if (off) return off;
+  const db = c.get("db");
+  const userId = c.get("userId");
+  const prefs = await loadPreferences(db, userId);
+  try {
+    return c.json(await watchPreview(db, c.env, userId, c.req.param("workoutId"), { today: todayInZone(prefs.timezone), now: nowInstant(), prefs }));
+  } catch (e) {
+    if (e instanceof WatchUnavailableError) return c.json({ error: e.reason }, 409);
+    return refusal(c, e);
+  }
+});
+
+/** Lock the build the athlete previewed and queue its push; the lane runs at once (as the plan routes run it). */
+sessionRoutes.post("/:workoutId/send-to-watch", async (c) => {
+  const off = switchedOff(c);
+  if (off) return off;
+  const db = c.get("db");
+  const userId = c.get("userId");
+  const parsed = sendSchema.safeParse(await c.req.json().catch(() => null));
+  if (!parsed.success) return c.json({ error: "invalid_send", issues: parsed.error.issues }, 422);
+  const prefs = await loadPreferences(db, userId);
+  try {
+    const session = await sendToWatch(db, c.env, userId, c.req.param("workoutId"), parsed.data.buildId, {
+      today: todayInZone(prefs.timezone),
+      now: nowInstant(),
+      prefs,
+    });
+    waitUntilSafe(c, executeCloudJobs(db, c.env, userId, prefs).catch(() => undefined));
+    return c.json(await withWatch(c, session));
+  } catch (e) {
+    if (e instanceof WatchUnavailableError) return c.json({ error: e.reason }, 409);
+    if (e instanceof StaleBuildError) {
+      if (e.calendarChanged) waitUntilSafe(c, syncCalendar(db, c.env, userId));
+      return c.json({ error: "stale", session: await withWatch(c, e.session) }, 409);
+    }
+    return refusal(c, e);
+  }
+});
+
+/** Take the sent session off the watch (or stop it reaching it); its build is unlocked at once. Idempotent. */
+sessionRoutes.post("/:workoutId/take-off-watch", async (c) => {
+  const off = switchedOff(c);
+  if (off) return off;
+  const db = c.get("db");
+  const userId = c.get("userId");
+  const prefs = await loadPreferences(db, userId);
+  try {
+    const session = await takeOffWatch(db, userId, c.req.param("workoutId"), { today: todayInZone(prefs.timezone), now: nowInstant(), prefs });
+    waitUntilSafe(c, executeCloudJobs(db, c.env, userId, prefs).catch(() => undefined));
+    return c.json(await withWatch(c, session));
+  } catch (e) {
     return refusal(c, e);
   }
 });

@@ -739,10 +739,17 @@ function syncNoteText(note: SyncNoteDto): string | null {
       return `“${p.sessionTitle as string}” was removed on COROS`;
     case "race_move_rejected":
       return "Races can't be moved from the calendar — the event was left where the plan has it. If the race date is wrong, update Race day in Settings.";
+    case "watch_copy_changed":
+      return "Changed in COROS — Run Garden kept its version";
+    case "watch_copy_removed":
+      return "Removed from your watch";
     default:
       return null;
   }
 }
+
+/** Notes that only inform (Phase 3): nothing to undo, so no Undo. */
+const DISMISS_ONLY = new Set<SyncNoteDto["kind"]>(["watch_copy_changed", "watch_copy_removed"]);
 
 /**
  * Dismissible feed of active sync notes (sync-transparency Task 12) —
@@ -777,7 +784,7 @@ export function SyncNotesStack({
             <div className="btn-row">
               {err ? (
                 <span className="faint">{err}</span>
-              ) : (
+              ) : DISMISS_ONLY.has(note.kind) ? null : (
                 <button
                   className="btn btn-small"
                   disabled={undoPendingId === note.id}

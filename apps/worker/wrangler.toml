@@ -63,6 +63,9 @@ AI_GATEWAY_MODEL = "anthropic/claude-haiku-4.5"
 # The standalone import writes (POST /api/import/standalone without dryRun) — on since Phase 2d gated the garden
 # against imported history (routes/imports.ts).
 IMPORT_ENABLED = "1"
+# WATCH_PUSH_ENABLED (program sessions on the watch, Phase 3) is deliberately ABSENT here and in staging: the switch
+# is off until the owner approves the first live push (plan 2026-10-08-phase-3-watch.md Task 12), which sets it in its
+# own commit. wrangler-config.test.ts fails while it is set.
 
 # ── Staging (inert: no crons, outbound fetch guarded — see docs/STAGING.md) ──
 # vars, d1_databases and triggers are declared in full; nothing here points at

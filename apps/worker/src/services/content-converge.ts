@@ -73,6 +73,7 @@ import {
   syncIntents,
 } from "@rg/database";
 import {
+  appAuthoredRow,
   coachSessionSchema,
   COACH_STAMPING_JOB_KINDS,
   newId,
@@ -362,6 +363,16 @@ export async function convergeDivergedContent(
       reports.push({
         ...base,
         reason: `row is ${row.archivedAt ? "archived" : row.completionState} — its watch copy is history, not a plan`,
+      });
+      continue;
+    }
+
+    // A program or on-demand slot's watch copy is its locked build, sent by the athlete (Phase 3, spec §4.5): never
+    // rewritten or unpushed from here — its only writes are a Send and the cleanup of that send.
+    if (appAuthoredRow(row)) {
+      reports.push({
+        ...base,
+        reason: "an app-built session: its watch copy is the build the athlete sent, and only Send or Take off writes it",
       });
       continue;
     }

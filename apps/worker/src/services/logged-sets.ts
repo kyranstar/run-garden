@@ -20,7 +20,8 @@ import { addDays, SESSION_MODES, weightInUnit, type SessionMode, type Weight, ty
 import { EXERCISES, isProfileId, profileById, THEMES, type ExerciseRecord } from "@rg/exercise-library";
 import { COROS_EXERCISE_NAMES } from "@rg/providers";
 import { chunkIds, type Db } from "./db.js";
-import { COROS_EXERCISE_PREFIX, libraryIdsByOrigin, PENDING_HASH, WATCH_SOURCE } from "./watch-sets.js";
+import { libraryIdsByKey } from "./coros-exercise-map.js";
+import { COROS_EXERCISE_PREFIX, PENDING_HASH, WATCH_SOURCE } from "./watch-sets.js";
 
 export interface LoggedSetDto {
   reps: number | null;
@@ -379,17 +380,19 @@ export async function loggedTopKgByWeek(
   const originsOf = new Map<string, string[]>();
   const claim = (exerciseId: string, originId: string) =>
     originsOf.set(exerciseId, [...(originsOf.get(exerciseId) ?? []), originId]);
+  // The catalog row names the plan exercise's T-code: the watch logs `coros:<key>`, and the library move mapped to
+  // that key is what the app (and, since Phase 3 Task 2, the watch for a mapped key) logs.
+  const byKey = libraryIdsByKey(plan.library);
   for (const batch of chunkIds(origins)) {
     const rows = await db
       .select({ id: corosExercises.id, name: corosExercises.name })
       .from(corosExercises)
       .where(inArray(corosExercises.id, batch));
-    for (const r of rows) claim(`${COROS_EXERCISE_PREFIX}${r.name}`, r.id);
-  }
-  const byOrigin = libraryIdsByOrigin(plan.library);
-  for (const origin of origins) {
-    const libraryId = byOrigin.get(origin);
-    if (libraryId) claim(libraryId, origin);
+    for (const r of rows) {
+      claim(`${COROS_EXERCISE_PREFIX}${r.name}`, r.id);
+      const libraryId = byKey.get(r.name);
+      if (libraryId) claim(libraryId, r.id);
+    }
   }
   if (originsOf.size === 0) return out;
 

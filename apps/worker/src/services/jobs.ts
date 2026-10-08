@@ -9,6 +9,7 @@ import {
   scheduleOverrides,
 } from "@rg/database";
 import {
+  appAuthoredRow,
   isStudioJobKind,
   newId,
   nowInstant,
@@ -22,6 +23,7 @@ import { cloudPresence } from "./sync-status.js";
 import { applyStudioJobResult } from "./studio-push.js";
 import { openIntentFor, openMoveIntents, recordIntent, resolveIntent } from "./sync-intents.js";
 import { postSyncNote } from "./sync-notes.js";
+import { enqueueProgramUnpush } from "./watch-push.js";
 
 /**
  * COROS write-job lifecycle. Jobs are the only path to COROS mutations:
@@ -113,7 +115,7 @@ async function enqueueMoveJob(
  * address, and the normal write lane applies again.
  */
 export function appOnlySession(w: typeof plannedWorkouts.$inferSelect): boolean {
-  return (w.origin === "program" || w.origin === "on_demand") && watchAddressOf(w) === null;
+  return appAuthoredRow(w) && watchAddressOf(w) === null;
 }
 
 /**
@@ -154,19 +156,30 @@ export async function applyMove(db: Db, req: MoveRequest): Promise<MoveOutcome> 
     source: req.source === "calendar_edit" ? "calendar_drag" : "user_move",
   });
 
-  const appOnly = appOnlySession(workout);
+  const appAuthored = appAuthoredRow(workout);
   const dateChanged = req.toDate !== workout.lastVerifiedCorosDate;
   const writesPossible =
-    !appOnly && req.corosWritesEnabled && (await writeCapableDeviceExists(db, req.userId));
+    !appAuthored && req.corosWritesEnabled && (await writeCapableDeviceExists(db, req.userId));
 
   let corosSyncState: string;
   let jobId: string | undefined;
 
-  if (appOnly) {
-    // Nothing is owed to COROS: the intent records the move and closes at
-    // once, so the catch-up pass (`emitPendingWork`) has nothing to emit.
-    corosSyncState = "calendar_only";
+  if (appAuthored) {
+    // Rulings 2a-R4 and 3-R3: a program session's watch copy is never
+    // re-dated — its build is made for its day (the pre-check, 2a-R7). The
+    // intent closes at once, so the catch-up pass has nothing to emit. A date
+    // change takes a sent copy off the watch (a queued push is superseded, a
+    // pushed one gets its stamp-proven unpush) and unlocks the sent build, so
+    // the new day builds as any moved slot does; with nothing sent it is the
+    // calendar's move alone.
     await resolveIntent(db, intentId, now);
+    if (fromDate !== req.toDate) {
+      await enqueueProgramUnpush(db, req.userId, workout, now, { corosWritesEnabled: req.corosWritesEnabled });
+      corosSyncState = "calendar_only";
+    } else {
+      // A time-only change: COROS has no time of day, so the watch copy (if any) is still right.
+      corosSyncState = workout.corosSyncState;
+    }
   } else if (!dateChanged) {
     // Same-COROS-date time change: COROS has no time-of-day, nothing to write.
     corosSyncState = workout.corosSyncState === "needs_attention" ? "needs_attention" : "synced";
@@ -272,10 +285,11 @@ export async function emitPendingWork(
       await resolveIntent(db, intent.id, now);
       continue;
     }
-    if (appOnlySession(workout)) {
-      // Ruling 2a-R4: an app-authored session the watch does not hold has no
-      // COROS date to converge (e.g. an intent the one-shot legacy heal opened
-      // for a calendar_only slot). Closed, never turned into a job.
+    if (appAuthoredRow(workout)) {
+      // Rulings 2a-R4 and 3-R3: an app-authored session has no COROS date to
+      // converge — never re-dated on the watch, sent or not (e.g. an intent the
+      // one-shot legacy heal opened for a calendar_only slot). Closed, never
+      // turned into a job.
       await resolveIntent(db, intent.id, now);
       continue;
     }

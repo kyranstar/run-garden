@@ -11,6 +11,7 @@ import {
   normalizeCorosActivity,
   normalizeCorosLaps,
   normalizeCorosSchedule,
+  programTextFingerprint,
 } from "../src/coros/normalize.js";
 import type { RawCorosActivityListItem } from "../src/coros/raw-types.js";
 import { fixtureRawSchedule, FIXTURE_PLAN_ID } from "../src/fixtures/coros-schedule.js";
@@ -625,3 +626,62 @@ describe("comparing a program we sent with the one the server stored", () => {
   });
 });
 
+
+/**
+ * THE TEXT OF A PROGRAM (Phase 3 Task 3): the names and overviews of its real
+ * steps, in wire order. `corosProgramFingerprint` covers numbers and structure
+ * but no step text, so a step renamed in COROS was invisible to it; this is the
+ * fingerprint a sent program session's push records, and the next import
+ * compares (spec §4.5, Review Focus 5).
+ */
+describe("programTextFingerprint", () => {
+  const program = {
+    idInPlan: 3,
+    name: "Strength program — 2026-10-09",
+    sportType: 4,
+    exercises: [
+      { id: 1, name: "Group", exerciseType: 0, isGroup: true, groupId: "0", sets: 1, sortNo: 16777216, overview: "" },
+      { id: 2, name: "T1301", exerciseType: 2, isGroup: false, groupId: "1", targetType: 3, targetValue: 8, sortNo: 16842752, overview: "Knees out" },
+      { id: 3, name: "Group", exerciseType: 0, isGroup: true, groupId: "0", sets: 1, sortNo: 33554432 },
+      { id: 4, name: "Chin tuck hold", exerciseType: 2, isGroup: false, groupId: "3", targetType: 2, targetValue: 30, sortNo: 33619968, overview: "" },
+    ],
+  };
+
+  it("ignores containers, numbers and the program's own name", () => {
+    const fp = programTextFingerprint(program);
+    const renumbered = {
+      ...program,
+      name: "Renamed — 2026-10-09",
+      duration: 999,
+      exercises: program.exercises.map((e) => ({ ...e, targetValue: String(Number(e.targetValue ?? 0) + 1), groupId: Number(e.groupId) })),
+    };
+    expect(programTextFingerprint(renumbered as never)).toBe(fp);
+    const regrouped = { ...program, exercises: program.exercises.map((e) => (e.isGroup ? { ...e, name: "Repeat", overview: "x" } : e)) };
+    expect(programTextFingerprint(regrouped)).toBe(fp);
+  });
+
+  it("treats an absent overview as an empty one (COROS drops empty ones)", () => {
+    const dropped = { ...program, exercises: program.exercises.map(({ overview, ...e }) => (overview === "" ? e : { ...e, overview })) };
+    expect(programTextFingerprint(dropped)).toBe(programTextFingerprint(program));
+  });
+
+  it("reads wire order (sortNo, then index), not array order", () => {
+    const reversed = { ...program, exercises: [...program.exercises].reverse() };
+    expect(programTextFingerprint(reversed)).toBe(programTextFingerprint(program));
+  });
+
+  it("changes when a step is renamed, re-cued, reordered, added or dropped", () => {
+    const fp = programTextFingerprint(program);
+    const at = (i: number, patch: Record<string, unknown>) => ({
+      ...program,
+      exercises: program.exercises.map((e, n) => (n === i ? { ...e, ...patch } : e)),
+    });
+    expect(programTextFingerprint(at(1, { name: "T1150" }))).not.toBe(fp);
+    expect(programTextFingerprint(at(3, { overview: "long neck" }))).not.toBe(fp);
+    expect(programTextFingerprint(at(1, { sortNo: 40000000 }))).not.toBe(fp);
+    expect(programTextFingerprint({ ...program, exercises: program.exercises.slice(0, 2) })).not.toBe(fp);
+    expect(
+      programTextFingerprint({ ...program, exercises: [...program.exercises, { ...program.exercises[3]!, id: 5, sortNo: 33685504 }] }),
+    ).not.toBe(fp);
+  });
+});

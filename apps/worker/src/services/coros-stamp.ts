@@ -43,7 +43,7 @@
 
 import { and, desc, eq, gte, inArray, lte, or } from "drizzle-orm";
 import { corosWriteJobs } from "@rg/database";
-import { COACH_STAMPING_JOB_KINDS } from "@rg/domain";
+import { PROGRAM_STAMPING_JOB_KINDS, STAMPING_JOB_KINDS } from "@rg/domain";
 import type { Db } from "./db.js";
 
 /**
@@ -75,7 +75,7 @@ export function stampName(title: string, date: string): string {
  * watch, in the app and in Google Calendar. Exactly the bug this module exists
  * for, one job kind later.
  */
-const CREATE_KINDS = [...COACH_STAMPING_JOB_KINDS, "create_scheduled_workout"];
+const CREATE_KINDS = [...STAMPING_JOB_KINDS, "create_scheduled_workout"];
 
 /**
  * `stamp → the title we meant`, for every workout this account created on COROS
@@ -92,6 +92,13 @@ const CREATE_KINDS = [...COACH_STAMPING_JOB_KINDS, "create_scheduled_workout"];
  * whose name equals its title has nothing to strip, and one whose name is not a
  * prefix-extension of its title is some other naming scheme we should not be
  * quietly rewriting titles from.
+ *
+ * EXCEPT A PROGRAM PUSH (Phase 3). Its stamp is `<program name> — <date>`, the
+ * program name CUT to fit 36 characters (ruling 3-R5) and " (2)" added on a
+ * same-day collision, while its title is the slot's own ("Strength program ·
+ * Upper"). It extends no title, by construction, and it is still exactly a name
+ * this account emitted: the job kind is the proof, so it maps whenever it
+ * differs from the title.
  */
 export async function loadOwnProgramNames(
   db: Db,
@@ -111,7 +118,7 @@ export async function loadOwnProgramNames(
       )
     : undefined;
   const rows = await db
-    .select({ payload: corosWriteJobs.payload })
+    .select({ kind: corosWriteJobs.kind, payload: corosWriteJobs.payload })
     .from(corosWriteJobs)
     .where(and(eq(corosWriteJobs.userId, userId), inArray(corosWriteJobs.kind, CREATE_KINDS), inWindow));
   const out = new Map<string, string>();
@@ -121,7 +128,8 @@ export async function loadOwnProgramNames(
     const title = payload?.session?.title;
     if (typeof name !== "string" || typeof title !== "string" || title.length === 0) continue;
     if (name === title) continue;
-    if (!name.startsWith(`${title}${STAMP_SEPARATOR}`)) continue;
+    const program = (PROGRAM_STAMPING_JOB_KINDS as readonly string[]).includes(row.kind);
+    if (!program && !name.startsWith(`${title}${STAMP_SEPARATOR}`)) continue;
     out.set(name, title);
   }
   return out;
@@ -177,7 +185,8 @@ export async function recordedStampFor(
       and(
         eq(corosWriteJobs.userId, userId),
         eq(corosWriteJobs.workoutId, workoutId),
-        inArray(corosWriteJobs.kind, [...COACH_STAMPING_JOB_KINDS]),
+        // A program push stamps too (Phase 3): its copy is removed by the same proof.
+        inArray(corosWriteJobs.kind, [...STAMPING_JOB_KINDS]),
         eq(corosWriteJobs.status, "verified"),
       ),
     )

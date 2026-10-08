@@ -37,7 +37,6 @@ import {
   activities,
   activityLaps,
   activitySourceLinks,
-  corosExercises,
   performedSessions,
   performedSets,
   providerConnections,
@@ -45,11 +44,12 @@ import {
 } from "@rg/database";
 import { fingerprint, LB_TO_KG, nowInstant, SPORTS } from "@rg/domain";
 import { CorosApiError } from "@rg/coros";
-import { EXERCISES, type ExerciseRecord } from "@rg/exercise-library";
+import type { ExerciseRecord } from "@rg/exercise-library";
 import type { RawCorosActivityDetail, RawCorosLapItem } from "@rg/providers";
 import { fixtureModeEnabled, type Env } from "../env.js";
 import { restoreInProgress } from "./account-state.js";
 import { corosClient } from "./coros-connection.js";
+import { libraryIdsByKey } from "./coros-exercise-map.js";
 import { chunkedInsert, chunkIds, type Db } from "./db.js";
 import { claimUserLock, releaseUserLock } from "./locks.js";
 import { isRuntimeLimit } from "./runtime-limit.js";
@@ -313,51 +313,13 @@ export type UpsertWatchResult = {
     | "restoring";
 };
 
-/** The library's exact COROS mappings, originId → library id; an originId two records claim maps to neither. */
-function reverseMapping(library: readonly ExerciseRecord[]): Map<string, string> {
-  const claims = new Map<string, string[]>();
-  for (const e of library) {
-    const coros = e.providers?.coros;
-    if (!coros || coros.confidence !== "exact") continue;
-    claims.set(coros.originId, [...(claims.get(coros.originId) ?? []), e.id]);
-  }
-  const out = new Map<string, string>();
-  for (const [originId, ids] of claims) if (ids.length === 1) out.set(originId, ids[0]!);
-  return out;
-}
-
-let libraryReverse: Map<string, string> | null = null;
-
-/** The library's exact COROS mappings (originId → library id); the shipped library when none is given. */
-export function libraryIdsByOrigin(library?: readonly ExerciseRecord[]): Map<string, string> {
-  return library ? reverseMapping(library) : (libraryReverse ??= reverseMapping(EXERCISES));
-}
-
 /**
- * exerciseNameKey → library id for the keys in this detail: the catalog row
- * named by the key gives its originId, the library's exact mapping of that
- * originId the library id. No library mapping at all → no catalog read.
+ * exerciseNameKey → library id: the T-code a library move maps to (Phase 3
+ * Task 2, `libraryIdsByKey`). Keyed on the T-code, so no catalog read.
  */
-async function libraryResolver(
-  db: Db,
-  detail: Pick<RawCorosActivityDetail, "lapList">,
-  library: readonly ExerciseRecord[] | undefined,
-): Promise<(nameKey: string) => string | null> {
-  const byOrigin = libraryIdsByOrigin(library);
-  if (byOrigin.size === 0) return () => null;
-  const keys = [...new Set(readLapType(detail).map(nameKeyOf).filter((k): k is string => k !== null))];
-  const originsByKey = new Map<string, Set<string>>();
-  for (const batch of chunkIds(keys)) {
-    const rows = await db
-      .select({ id: corosExercises.id, name: corosExercises.name })
-      .from(corosExercises)
-      .where(inArray(corosExercises.name, batch));
-    for (const r of rows) originsByKey.set(r.name, (originsByKey.get(r.name) ?? new Set()).add(r.id));
-  }
-  return (nameKey) => {
-    const origins = [...(originsByKey.get(nameKey) ?? [])];
-    return origins.length === 1 ? (byOrigin.get(origins[0]!) ?? null) : null;
-  };
+function libraryResolver(library: readonly ExerciseRecord[] | undefined): (nameKey: string) => string | null {
+  const byKey = libraryIdsByKey(library);
+  return (nameKey) => byKey.get(nameKey) ?? null;
 }
 
 /** Delete a watch session and its sets (the app's own session of the same activity owns them: ruling 2b-R3). */
@@ -470,7 +432,7 @@ export async function upsertWatchSession(
   }
 
   const workoutId = input.workoutId === undefined ? (existing?.workoutId ?? null) : input.workoutId;
-  const libraryIdFor = await libraryResolver(db, input.detail, deps.library);
+  const libraryIdFor = libraryResolver(deps.library);
   const fresh = deriveWatchSession(input.detail, activity, userId, { now, workoutId, libraryIdFor });
   if (!fresh) {
     if (!existing) return { status: "no_sets" };

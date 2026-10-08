@@ -37,6 +37,7 @@ import {
   todayInZone,
   watchAddressOf,
   watchCoverage,
+  WATCH_CREATE_JOB_KINDS,
   type LocalDate,
   type PlannedWorkout,
   type SessionLead,
@@ -314,7 +315,7 @@ async function loadWorkoutViews(
 
   const pendingIds = new Set<string>();
   const failedIds = new Set<string>();
-  /** Rows a verified coach create put on the watch — the stamp `enqueueUnpushIfOurs`
+  /** Rows a verified coach create or program push put on the watch — the stamp `enqueueUnpushIfOurs`
    * authorizes an unpush with. Imported rows never get a coach create. */
   const pushedIds = new Set<string>();
   // What the lane is DOING about each row, in the action layer's own three
@@ -324,7 +325,7 @@ async function loadWorkoutViews(
   const lanes = new Map<string, WriteLane>();
   for (const jobs of jobChunks) {
     for (const j of jobs) {
-      if (j.kind === "coach_create_workout" && j.status === "verified") pushedIds.add(j.workoutId);
+      if ((WATCH_CREATE_JOB_KINDS as readonly string[]).includes(j.kind) && j.status === "verified") pushedIds.add(j.workoutId);
       if ((IN_FLIGHT_JOB_STATUSES as readonly string[]).includes(j.status)) {
         pendingIds.add(j.workoutId);
         if (lanes.get(j.workoutId) !== "sending") {

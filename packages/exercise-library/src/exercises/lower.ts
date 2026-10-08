@@ -16,6 +16,7 @@ export const LOWER = defineExercises([
     dose: { type: "reps", range: [5, 8], sets: [2, 4], restSec: 75, startKg: 12 },
     conditions: { tmj: { clench: 1, neckLoad: 0, faceDown: false } },
     difficulty: 2,
+    providers: { coros: { key: "T1301", confidence: "exact", method: "curated" } }, // COROS: Goblet Squat
     easier: ["boxSquat"],
     text: {
       summary: "Hold the weight at your chest and sit down between your heels.",
@@ -53,6 +54,7 @@ export const LOWER = defineExercises([
     dose: { type: "reps", range: [8, 12], sets: [2, 3], restSec: 45 },
     conditions: { tmj: { clench: 0, neckLoad: 0, faceDown: false } },
     difficulty: 1,
+    providers: { coros: { key: "T1291", confidence: "close", method: "curated" } }, // COROS: Box Squat: the barbell lift; ours is bodyweight to a bench
     harder: ["tempoSquat"],
     text: {
       summary: "Sit back to lightly touch a bench or chair, then stand up tall.",
@@ -179,6 +181,7 @@ export const LOWER = defineExercises([
     dose: { type: "reps", range: [6, 10], sets: [2, 3], restSec: 45 },
     conditions: { tmj: { clench: 1, neckLoad: 0, faceDown: false } },
     difficulty: 2,
+    providers: { coros: { key: "T1296", confidence: "exact", method: "curated" } }, // COROS: Step-Ups
     text: {
       summary: "Step up onto a bench or sturdy chair, driving through the top foot.",
       setup: ["Stand facing a bench or a chair braced against a wall.", "Place one whole foot on it."],
@@ -209,6 +212,7 @@ export const LOWER = defineExercises([
     dose: { type: "reps", range: [6, 10], sets: [2, 4], restSec: 75, startKg: 16 },
     conditions: { tmj: { clench: 1, neckLoad: 0, faceDown: false } },
     difficulty: 2,
+    providers: { coros: { key: "T1067", confidence: "close", method: "curated" } }, // COROS: Deadlifts: the barbell lift; ours is a kettlebell or dumbbells
     harder: ["rdl"],
     text: {
       summary: "Hinge to the weight between your feet, stand tall, and set it down quietly.",
@@ -242,6 +246,7 @@ export const LOWER = defineExercises([
     dose: { type: "reps", range: [6, 10], sets: [2, 3], restSec: 75, startKg: 12 },
     conditions: { tmj: { clench: 1, neckLoad: 0, faceDown: false } },
     difficulty: 3,
+    providers: { coros: { key: "T1305", confidence: "exact", method: "curated" } }, // COROS: Dumbbell Romanian Deadlift (T1287 is the barbell one)
     easier: ["deadlift"],
     text: {
       summary: "Hold the weight, soften the knees, and hinge to mid-shin before standing tall.",
@@ -272,6 +277,7 @@ export const LOWER = defineExercises([
     dose: { type: "reps", range: [6, 10], sets: [2, 3], restSec: 45 },
     conditions: { tmj: { clench: 0, neckLoad: 0, faceDown: false } },
     difficulty: 2,
+    providers: { coros: { key: "T1187", confidence: "close", method: "curated" } }, // COROS: Single Leg Deadlift: ours is an unloaded reach
     text: {
       summary: "Hinge on one leg as the other reaches back, then stand tall.",
       setup: ["Stand on one leg with a soft knee.", "Fingertips on a wall or chair if you need balance."],
@@ -301,6 +307,7 @@ export const LOWER = defineExercises([
     dose: { type: "reps", range: [6, 12], sets: [2, 3], restSec: 45 },
     conditions: { tmj: { clench: 0, neckLoad: 0, faceDown: false } },
     difficulty: 2,
+    providers: { coros: { key: "T1219", confidence: "exact", method: "curated" } }, // COROS: Single-Leg Hip Bridge
     easier: ["bridge"],
     text: {
       summary: "One foot planted, the other knee pulled in; drive the hips up through the heel.",

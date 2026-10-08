@@ -47,7 +47,8 @@ describe("GET /api/activities — logged sets", () => {
     const body = await feed("lb");
     const lift = body.activities.find((a) => a.sport === "strength")!;
     const run = body.activities.find((a) => a.sport === "run")!;
-    expect(lift.logged!.map((e) => e.name)).toEqual(["Bench Press", "Dumbbell Row", "Planks", "Push-ups"]);
+    // Push-up is the library's name: T1004 is the library push-up's curated key (Phase 3 Task 2).
+    expect(lift.logged!.map((e) => e.name)).toEqual(["Bench Press", "Dumbbell Row", "Planks", "Push-up"]);
     expect(lift.logged![0]!.sets[0]).toMatchObject({ reps: 8, load: { v: 50, u: "lb" } });
     expect(run.logged).toBeNull();
   });

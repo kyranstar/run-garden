@@ -37,8 +37,10 @@ import {
   addDays,
   coachSessionSchema,
   daysBetween,
+  isProgramWatchSession,
   studioSessionSchema,
   type CoachSession,
+  type ProgramWatchSession,
   type StudioSession,
   type StudioWeight,
 } from "@rg/domain";
@@ -47,12 +49,14 @@ import {
   corosDayToLocalDate,
   corosProgramFingerprint,
   localDateToCorosDay,
+  programTextFingerprint,
   type RawCorosEntity,
   type RawCorosExercise,
   type RawCorosProgram,
   type RawCorosSchedule,
 } from "@rg/providers";
 import type { CorosClient, CorosProgramMetrics } from "./client.js";
+import { buildProgramWatchProgram } from "./program-watch.js";
 
 // ── Product-facing interfaces ───────────────────────────────────────────────
 
@@ -66,8 +70,9 @@ export interface CreateWorkoutSpec {
    */
   name: string;
   /** A studio LIFT session, or a coach session (run sessions push as
-   * structured run programs; coach lift sessions share the studio shape). */
-  session: StudioSession | CoachSession;
+   * structured run programs; coach lift sessions share the studio shape), or
+   * a program session's resolved watch steps (Phase 3, `buildProgramWatchProgram`). */
+  session: StudioSession | CoachSession | ProgramWatchSession;
   /** The athlete's COROS-measured lactate-threshold pace (sec/km). When
    * present, run blocks carry pace targets derived from it; when absent the
    * workout pushes with no intensity target, exactly as before. */
@@ -161,6 +166,14 @@ export interface CreateResult {
    * stamp describes a program that was never written.
    */
   wireFingerprint?: string;
+  /**
+   * `programTextFingerprint` of the program the read-back found — the step
+   * names and overviews as COROS stores them. Set wherever `wireFingerprint`
+   * is observed, and on a same-day `already_present` (the program found there
+   * is the one on the wire). A sent program session records it beside the wire
+   * fingerprint, so the import can tell a step renamed in COROS (Phase 3).
+   */
+  wireTextFingerprint?: string;
   error?: string;
 }
 
@@ -705,6 +718,139 @@ function stepOverview(step: StrengthStep): string {
 }
 
 /**
+ * What one real (non-container) strength step carries on the wire, whichever
+ * builder resolved it: the studio/coach strength builder (the catalog's name
+ * for its originId) or the program-session builder (a T-code, or free text on
+ * `originId "0"`, spike outcome A).
+ */
+export interface StrengthChildSpec {
+  originId: string;
+  /** What the wire names the step. */
+  name: string;
+  /** A TIMED HOLD: `targetType 2`. Wins over `reps`. */
+  holdSeconds?: number;
+  /** A rep count: `targetType 3`. With neither, the step is OPEN (`targetType 0`). */
+  reps?: number;
+  weight: WireWeight;
+  restSeconds: number;
+  /** Prose for the step's one free-text slot; empty sends the metadata's `""`. */
+  overview: string;
+}
+
+/**
+ * One real (non-container) step. `sortNo` is the caller's business: §5.3
+ * numbers sub-steps `groupSort + 2^16·(j+1)`.
+ */
+export function strengthChild(
+  step: StrengthChildSpec,
+  id: number,
+  groupId: number,
+  sortNo: number,
+): RawCorosExercise {
+  const overview = step.overview;
+  const child: RawCorosExercise = {
+    ...EXERCISE_METADATA,
+    id,
+    name: step.name,
+    exerciseType: 2, // main / training
+    sportType: 4,
+    // A TIMED HOLD is a time target, not a rep count. Hardcoding REPS meant
+    // a wall sit could only go to the watch as "3 × 1 rep" with the real
+    // prescription stranded in prose. `targetType: 2 = time(s)` has been on
+    // the wire all along and `normalize.ts` already reads it back.
+    // A step with NEITHER ("three ramping sets, stop when it gets heavy")
+    // is an OPEN step: no target value can be honest, and `normalize.ts`
+    // maps an unknown targetType to `durationType: "open"`.
+    ...(step.holdSeconds != null
+      ? { targetType: 2, targetValue: step.holdSeconds }
+      : step.reps != null
+        ? { targetType: 3, targetValue: step.reps }
+        : { targetType: 0, targetValue: 0 }),
+    sets: 1,
+    sortNo,
+    restType: step.restSeconds > 0 ? REST_TYPE_EXPLICIT : REST_TYPE_SKIP,
+    restValue: step.restSeconds > 0 ? step.restSeconds : 0,
+    groupId: String(groupId),
+    isGroup: false,
+    originId: step.originId,
+    ...(overview ? { overview } : {}),
+  };
+  applyWeightIntensity(child, step.weight);
+  return child;
+}
+
+/** The repeat-group container: `sets` is the repeat count (§(d)). */
+export function strengthContainer(id: number, sets: number, sortNo: number): RawCorosExercise {
+  return {
+    ...EXERCISE_METADATA,
+    id,
+    name: "Group",
+    exerciseType: 0, // repeat-group container
+    sportType: 4,
+    intensityType: 0,
+    intensityValue: 0,
+    targetType: 2, // TIME per iteration
+    targetValue: CONTAINER_SECONDS_PER_SET,
+    sets,
+    sortNo,
+    restType: REST_TYPE_SKIP, // §5.4 pins the container itself to "skip rests"
+    restValue: 0,
+    groupId: "0",
+    isGroup: true,
+    originId: "0",
+  };
+}
+
+/**
+ * The structured strength program (sportType 4) around its steps.
+ * `exerciseNum` counts real steps only — containers must NOT count (§5.4).
+ * `idInPlan`/`planId` are placeholders the create splices before the write.
+ */
+export function strengthProgram(
+  name: string,
+  exercises: RawCorosExercise[],
+  realSteps: number,
+  totalSets: number,
+): RawCorosProgram {
+  return {
+    idInPlan: 0,
+    planId: "",
+    name,
+    overview: "",
+    sportType: 4,
+    subType: 65535, // structured
+    duration: 0, // server-computed via /training/program/calculate
+    estimatedTime: 0,
+    trainingLoad: 0,
+    estimatedValue: 0,
+    estimatedType: 0,
+    distance: 0,
+    estimatedDistance: 0,
+    exerciseNum: realSteps, // real steps only — containers must NOT count
+    totalSets,
+    hybridTotalSets: 0,
+    gradeSystemVersion: 0,
+    poolLength: 0,
+    poolLengthId: 0,
+    poolLengthUnit: 0,
+    referExercise: { gradeSystem: 0, hrType: 0, intensityType: 1, valueType: 1 },
+    fastIntensityTypeName: "weight",
+    sourceUrl: "",
+    videoCoverUrl: "",
+    videoUrl: "",
+    targetType: 0,
+    targetValue: 0,
+    type: 0,
+    unit: 0,
+    access: 1,
+    authorId: "0",
+    pbVersion: 2,
+    version: 0,
+    exercises,
+  };
+}
+
+/**
  * Build a structured strength program (sportType 4) from one STUDIO session
  * or one COACH lift/mobility session — both vocabularies, each parsed with
  * its own schema (`readStrengthSession`).
@@ -740,6 +886,9 @@ export function buildStrengthProgram(
   spec: CreateWorkoutSpec,
   catalog: Map<string, string>,
 ): RawCorosProgram {
+  if (isProgramWatchSession(spec.session)) {
+    throw new Error(`cannot build "${spec.name}": a program session builds through buildProgramWatchProgram`);
+  }
   const { steps, rounds } = readStrengthSession(spec.session, spec.name);
   if (steps.length === 0) {
     throw new Error(`cannot build "${spec.name}": the session has no exercises`);
@@ -768,60 +917,26 @@ export function buildStrengthProgram(
     id: number,
     groupId: number,
     sortNo: number,
-  ): RawCorosExercise => {
-    const overview = stepOverview(step);
-    const child: RawCorosExercise = {
-      ...EXERCISE_METADATA,
+  ): RawCorosExercise =>
+    strengthChild(
+      {
+        originId: step.originId,
+        // The catalog is the authority at push time — and its names are the
+        // T-codes the app resolves for display, so nothing is appended to them.
+        name: catalog.get(step.originId)!,
+        holdSeconds: step.holdSeconds,
+        reps: step.reps,
+        weight: step.weight,
+        restSeconds: step.restSeconds,
+        overview: stepOverview(step),
+      },
       id,
-      // The catalog is the authority at push time — and its names are the
-      // T-codes the app resolves for display, so nothing is appended to them.
-      name: catalog.get(step.originId)!,
-      exerciseType: 2, // main / training
-      sportType: 4,
-      // A TIMED HOLD is a time target, not a rep count. Hardcoding REPS meant
-      // a wall sit could only go to the watch as "3 × 1 rep" with the real
-      // prescription stranded in prose. `targetType: 2 = time(s)` has been on
-      // the wire all along and `normalize.ts` already reads it back.
-      // A step with NEITHER ("three ramping sets, stop when it gets heavy")
-      // is an OPEN step: no target value can be honest, and `normalize.ts`
-      // maps an unknown targetType to `durationType: "open"`.
-      ...(step.holdSeconds != null
-        ? { targetType: 2, targetValue: step.holdSeconds }
-        : step.reps != null
-          ? { targetType: 3, targetValue: step.reps }
-          : { targetType: 0, targetValue: 0 }),
-      sets: 1,
+      groupId,
       sortNo,
-      restType: step.restSeconds > 0 ? REST_TYPE_EXPLICIT : REST_TYPE_SKIP,
-      restValue: step.restSeconds > 0 ? step.restSeconds : 0,
-      groupId: String(groupId),
-      isGroup: false,
-      originId: step.originId,
-      ...(overview ? { overview } : {}),
-    };
-    applyWeightIntensity(child, step.weight);
-    return child;
-  };
+    );
 
   /** The repeat-group container: `sets` is the repeat count (§(d)). */
-  const containerOf = (id: number, sets: number, sortNo: number): RawCorosExercise => ({
-    ...EXERCISE_METADATA,
-    id,
-    name: "Group",
-    exerciseType: 0, // repeat-group container
-    sportType: 4,
-    intensityType: 0,
-    intensityValue: 0,
-    targetType: 2, // TIME per iteration
-    targetValue: CONTAINER_SECONDS_PER_SET,
-    sets,
-    sortNo,
-    restType: REST_TYPE_SKIP, // §5.4 pins the container itself to "skip rests"
-    restValue: 0,
-    groupId: "0",
-    isGroup: true,
-    originId: "0",
-  });
+  const containerOf = strengthContainer;
 
   const exercises: RawCorosExercise[] = [];
   let realSteps = 0;
@@ -879,42 +994,7 @@ export function buildStrengthProgram(
     });
   }
 
-  return {
-    idInPlan: 0,
-    planId: "",
-    name: spec.name,
-    overview: "",
-    sportType: 4,
-    subType: 65535, // structured
-    duration: 0, // server-computed via /training/program/calculate
-    estimatedTime: 0,
-    trainingLoad: 0,
-    estimatedValue: 0,
-    estimatedType: 0,
-    distance: 0,
-    estimatedDistance: 0,
-    exerciseNum: realSteps, // real steps only — containers must NOT count
-    totalSets,
-    hybridTotalSets: 0,
-    gradeSystemVersion: 0,
-    poolLength: 0,
-    poolLengthId: 0,
-    poolLengthUnit: 0,
-    referExercise: { gradeSystem: 0, hrType: 0, intensityType: 1, valueType: 1 },
-    fastIntensityTypeName: "weight",
-    sourceUrl: "",
-    videoCoverUrl: "",
-    videoUrl: "",
-    targetType: 0,
-    targetValue: 0,
-    type: 0,
-    unit: 0,
-    access: 1,
-    authorId: "0",
-    pbVersion: 2,
-    version: 0,
-    exercises,
-  };
+  return strengthProgram(spec.name, exercises, realSteps, totalSets);
 }
 
 /**
@@ -922,7 +1002,7 @@ export function buildStrengthProgram(
  * (`coachSessionSchema`'s one-body refinement), and a `StudioSession` carries
  * none of them, so the presence of `run` is the whole test.
  */
-export function isRunSession(session: StudioSession | CoachSession): boolean {
+export function isRunSession(session: StudioSession | CoachSession | ProgramWatchSession): boolean {
   return Boolean((session as { run?: unknown }).run);
 }
 
@@ -946,6 +1026,11 @@ export function buildProgramFor(
   spec: CreateWorkoutSpec,
   catalog: Map<string, string>,
 ): RawCorosProgram {
+  // A program session first: its steps are already resolved and carry no
+  // discipline body, so neither of the other builders could read it.
+  if (isProgramWatchSession(spec.session)) {
+    return buildProgramWatchProgram({ ...spec, session: spec.session }, catalog);
+  }
   if (isRunSession(spec.session)) {
     return buildRunProgram({
       happenDay: spec.happenDay,
@@ -1637,7 +1722,21 @@ export async function createWorkout(
       };
       if (existing.date === date) {
         log(`  "${spec.name}" is already on ${date} (idInPlan ${ids.serverIdInPlan})`);
-        return { ok: true, reason: "already_present", ...ids, ...owed };
+        // The program found there IS the one on the wire: what it observed is
+        // reported as a fresh create's read-back is, so a caller that retried a
+        // create whose response was lost records the same fingerprints (Phase 3).
+        return {
+          ok: true,
+          reason: "already_present",
+          ...ids,
+          ...owed,
+          ...(existing.program
+            ? {
+                wireFingerprint: corosProgramFingerprint(existing.program),
+                wireTextFingerprint: programTextFingerprint(existing.program),
+              }
+            : {}),
+        };
       }
       // NO ids on the cross-day refusal. `serverIdInPlan`/`serverProgramId`
       // mean "the workout THIS call put on THIS day" — the contract that makes
@@ -1794,7 +1893,14 @@ export async function createWorkout(
       // into "3 × open Reverse Lunge / open Reverse Lunge", reps gone,
       // movements duplicated, minutes after the push succeeded.
       const observed = found.program ? corosProgramFingerprint(found.program) : undefined;
-      return { ok: true, code, ...ids, ...owed, wireFingerprint: observed ?? wireFingerprint };
+      return {
+        ok: true,
+        code,
+        ...ids,
+        ...owed,
+        wireFingerprint: observed ?? wireFingerprint,
+        wireTextFingerprint: programTextFingerprint(found.program ?? program),
+      };
     }
     if (elsewhere) {
       return {

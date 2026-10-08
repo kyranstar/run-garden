@@ -6,7 +6,7 @@ import {
   studioPlanPushes,
   studioPlans,
 } from "@rg/database";
-import { newId, nowInstant } from "@rg/domain";
+import { appAuthoredRow, newId, nowInstant } from "@rg/domain";
 import { recordIntent } from "./sync-intents.js";
 import type { Db } from "./db.js";
 
@@ -50,6 +50,9 @@ export async function healLegacySyncState(db: Db, userId: string): Promise<{ hea
       ),
     );
   for (const w of flagged) {
+    // A program or on-demand slot is never re-dated on the watch (rulings 2a-R4, 3-R3): no sync state to heal, no
+    // move to owe.
+    if (appAuthoredRow(w)) continue;
     if (w.effectiveDate === w.lastVerifiedCorosDate) {
       await db
         .update(plannedWorkouts)
