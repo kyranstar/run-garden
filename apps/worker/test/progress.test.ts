@@ -53,8 +53,9 @@ describe("over an imported history: the standalone tool's own numbers", () => {
     expect(p.weightUnit).toBe("lb");
     expect(p.volume.status).toBe("ok");
     if (p.volume.status !== "ok") return;
-    expect(p.volume.value.weeks.map((w) => ({ week: w.weekStart, volumeKg: w.kg }))).toEqual(summary.oracle.weeklyVolumeKg);
-    expect(p.volume.value.thisWeekKg).toBe(summary.oracle.weeklyVolumeKg.at(-1)!.volumeKg);
+    // The tool keeps whole kilos (Audit 2c-A MINOR-1); the tile keeps a tenth.
+    expect(p.volume.value.weeks.map((w) => ({ week: w.weekStart, kg: Math.round(w.kg) }))).toEqual(summary.oracle.weeklyVolume.map((w) => ({ week: w.week, kg: w.kg })));
+    expect(Math.round(p.volume.value.thisWeekKg)).toBe(summary.oracle.weeklyVolume.at(-1)!.kg);
   });
 
   it("the condition trend: the file's pairs inside the window, their means, labelled by the profile", async () => {

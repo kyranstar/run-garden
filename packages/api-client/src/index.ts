@@ -1125,12 +1125,24 @@ export interface StandaloneImportSummaryDto {
     condition: number;
     preferences: number;
   };
-  /** The standalone tool's own numbers over the file, to hold against its Progress tab. */
+  /** The standalone tool's own numbers over the file, as its Progress tab shows them, to hold side by side with it. */
   oracle: {
+    /** The unit the tool's Progress tab shows weights in (the tool's own setting). */
+    unit: "lb" | "kg";
     sessionCount: number;
+    /** The last eight weeks, oldest first, by their Mondays. */
     sessionsPerWeek: Array<{ week: string; sessions: number }>;
-    weeklyVolumeKg: Array<{ week: string; volumeKg: number }>;
-    bestByCoreLift: Array<{ family: string; exerciseId: string; name: string; best: { w: Weight | null; reps: number | null; secs: number | null } | null }>;
+    /** Whole kilos as the tool keeps them, and the whole number in `unit` its Progress tab shows. */
+    weeklyVolume: Array<{ week: string; kg: number; inUnit: number }>;
+    /** `latest` is the number on the tool's lift tile: the last session's top set, weight as typed. */
+    bestByCoreLift: Array<{
+      family: string;
+      exerciseId: string;
+      name: string;
+      best: { w: Weight | null; reps: number | null; secs: number | null } | null;
+      latest: { date: string; w: Weight | null; reps: number | null; secs: number | null } | null;
+    }>;
+    /** Records as the Progress tab lists them: new bests and milestones, never a first time. */
     records: number;
     prePostPairs: number;
     block: { number: number; week: number } | null;

@@ -108,11 +108,14 @@ export function backup(sessions: unknown[], extra: Record<string, unknown> = {})
 export function history(): unknown[] {
   const out: unknown[] = [];
   const days = ["2026-08-03", "2026-08-06", "2026-08-10", "2026-08-13"];
+  // Pass-1 entries carry `log` and `metric` as the tool's own pass-1 shapes do (its stats.test.js): its Progress
+  // volume counts only `load` × `reps` entries.
+  const loadReps = { log: "load", metric: "reps" };
   out.push(
-    v1Session(days[0]!, { entries: [{ id: "gobletSquat", bilateral: false, implement: "Kettlebell", sets: [{ w: lb(20), reps: 8 }, { w: lb(20), reps: 8 }] }] }),
-    v1Session(days[1]!, { plan: { phase: "flare" }, pre: 5, post: 4, entries: [{ id: "chinTuck", sets: [{ w: null, reps: null, secs: 30 }] }] }),
-    v1Session(days[2]!, { entries: [{ id: "supportedRow", bilateral: true, implement: "Kettlebell", sets: [{ w: lb(20), reps: 10 }] }] }),
-    v1Session(days[3]!, { pre: null, post: null, entries: [{ id: "deadlift", bilateral: false, sets: [{ w: lb(30), reps: 8 }] }] }),
+    v1Session(days[0]!, { entries: [{ id: "gobletSquat", ...loadReps, bilateral: false, implement: "Kettlebell", sets: [{ w: lb(20), reps: 8 }, { w: lb(20), reps: 8 }] }] }),
+    v1Session(days[1]!, { plan: { phase: "flare" }, pre: 5, post: 4, entries: [{ id: "chinTuck", log: "time", metric: "time", sets: [{ w: null, reps: null, secs: 30 }] }] }),
+    v1Session(days[2]!, { entries: [{ id: "supportedRow", ...loadReps, bilateral: true, implement: "Kettlebell", sets: [{ w: lb(20), reps: 10 }] }] }),
+    v1Session(days[3]!, { pre: null, post: null, entries: [{ id: "deadlift", ...loadReps, bilateral: false, sets: [{ w: lb(30), reps: 8 }] }] }),
   );
   const v2Days = [
     "2026-08-17", "2026-08-20", "2026-08-24", "2026-08-27", "2026-08-31", "2026-09-03", "2026-09-07", "2026-09-10",

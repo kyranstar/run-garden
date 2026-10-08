@@ -7,7 +7,7 @@
 import { beforeEach, describe, expect, it } from "vitest";
 import { asc, eq } from "drizzle-orm";
 import { schema } from "@rg/database";
-import { addDays, newId, nowInstant, type UserPreferences } from "@rg/domain";
+import { addDays, KG_TO_LB, newId, nowInstant, startOfIsoWeek, type UserPreferences } from "@rg/domain";
 import { EXERCISES, makeEngineData, TMJ } from "@rg/exercise-library";
 import { historyFromPerformed, Records } from "@rg/session-engine";
 import type { Db } from "../src/services/db.js";
@@ -20,7 +20,6 @@ import {
   standaloneContext,
   type ImportSummary,
 } from "../src/services/standalone-import.js";
-import { Stats } from "../src/services/standalone-stats.js";
 import { RestoreInProgressError } from "../src/services/programs.js";
 import { claimUserLock } from "../src/services/locks.js";
 import { loadPreferences, savePreferences } from "../src/services/calendar-sync.js";
@@ -28,6 +27,7 @@ import { importRoutes } from "../src/routes/imports.js";
 import { createSession, SESSION_COOKIE } from "../src/auth/sessions.js";
 import { isWrite, makeTestDb, makeTestUser, mountRoutes } from "./helpers.js";
 import { backup, entry, history, kg, lb, v1Session, v2Session } from "./fixtures/standalone-backup.js";
+import { ORACLE_CASE_TODAY, oracleCaseBackup, oracleCaseSessions, toolOutputs } from "./fixtures/standalone-oracle-case.js";
 
 const {
   accountState,
@@ -156,7 +156,7 @@ describe("Review Focus 2: a pass-1 session", () => {
       plan: { phase: "flare", setup: "kettlebell" },
       pre: 4,
       post: 3,
-      entries: [{ id: "kbGoblet", bilateral: true, implement: "Kettlebell", clenched: true, sets: [{ w: lb(25), reps: 8 }, null, {}] }],
+      entries: [{ id: "kbGoblet", log: "load", metric: "reps", bilateral: true, implement: "Kettlebell", clenched: true, sets: [{ w: lb(25), reps: 8 }, null, {}] }],
       done: [{ id: "kbGoblet", secs: 300 }],
     });
     const summary = await run(backup([s], { block: null }), { exercises: renamed });
@@ -169,9 +169,9 @@ describe("Review Focus 2: a pass-1 session", () => {
     expect(sets.map((r) => [r.exerciseId, r.implement, r.perSide, r.flags, r.loadValue, r.loadUnit, r.reps])).toEqual([
       ["gobletSquat", "kettlebell", true, ["clenched"], 25, "lb", 8],
     ]);
-    // Per-side volume counts both sides: 25 lb × 8 × 2.
-    const week = summary.oracle.weeklyVolumeKg.find((w) => w.week === "2026-09-28")!;
-    expect(week.volumeKg).toBe(Math.round(25 * 8 * 2 * 0.45359237 * 10) / 10);
+    // Per-side volume counts both sides: 25 lb × 8 × 2, in whole kilos, and in pounds as the tool's Progress shows it.
+    const week = summary.oracle.weeklyVolume.find((w) => w.week === "2026-09-28")!;
+    expect(week).toEqual({ week: "2026-09-28", kg: 181, inUnit: 399 });
     // The engine reads it back as one move, per side, flagged.
     expect(historyFromPerformed(normalized(s, renamed)).entries).toEqual([
       { id: "gobletSquat", implement: "kettlebell", perSide: true, format: null, flags: ["clenched"], sets: [{ w: lb(25), reps: 8, secs: null }] },
@@ -388,40 +388,83 @@ describe("the dry run", () => {
   });
 });
 
-describe("the oracle numbers", () => {
-  it("equal the standalone Stats and Records over the same backup", async () => {
-    const file = backup(history());
-    const { oracle } = await run(file, { dryRun: true });
-
-    // The same sessions, normalised as the import reads them.
-    const ctx = standaloneContext({ exercises: EXERCISES, timezone: prefs.timezone, unit: "lb" });
-    const wires = file.sessions.map((raw, i) => {
-      const out = normalizeStandaloneSession(raw, `p${i}`, ctx);
-      if (!out.ok) throw new Error(out.reason);
-      return out.session;
+describe("the oracle numbers (Audit 2c-A MINOR-1)", () => {
+  it("are the standalone tool's own outputs over a synthetic backup — copied from the tool, not recomputed", async () => {
+    const { oracle } = await run(oracleCaseBackup(), { dryRun: true, today: ORACLE_CASE_TODAY });
+    expect(oracle.unit).toBe("kg");
+    expect(oracle.sessionCount).toBe(oracleCaseSessions.length);
+    expect(oracle.sessionsPerWeek).toEqual(toolOutputs.weekly.map((w) => ({ week: w.week, sessions: w.sessions })));
+    // Whole kilos as the tool keeps them, and as its Progress tab shows them in its unit (kg here: the same).
+    expect(oracle.weeklyVolume).toEqual(toolOutputs.weekly.map((w) => ({ week: w.week, kg: w.volumeKg, inUnit: w.volumeKg })));
+    expect(oracle.prePostPairs).toBe(toolOutputs.pairs);
+    // Records as the Progress tab lists them: new bests and milestones, never a first time.
+    expect(oracle.records).toBe(toolOutputs.progressRecords);
+    expect(oracle.block).toEqual({ number: 1, week: 2 });
+    // The lift tile's number: the last session's top set, as typed.
+    expect(Object.fromEntries(oracle.bestByCoreLift.map((b) => [b.exerciseId, b.latest]))).toEqual({
+      gobletSquat: { date: "2026-09-28", w: toolOutputs.latest.gobletSquat!.top, reps: 7, secs: null },
+      deadlift: { date: "2026-09-24", w: toolOutputs.latest.deadlift!.top, reps: 5, secs: null },
+      supportedRow: { date: "2026-09-28", w: toolOutputs.latest.supportedRow!.top, reps: 5, secs: null },
+      floorPress: null,
+      suitcaseCarry: { date: "2026-09-28", w: toolOutputs.latest.suitcaseCarry!.top, reps: 3, secs: null },
     });
-    const weeks = Stats.weekly(wires, 8, TODAY);
-    const data = makeEngineData({ activeProfiles: ["tmj"], careProfiles: [], exercises: EXERCISES });
-    const hist = wires.map(historyFromPerformed);
+  });
 
+  it("over a history in pounds: whole kilos, and pounds as the Progress tab rounds them from those kilos", async () => {
+    const { oracle } = await run(backup(history()), { dryRun: true });
+    expect(oracle.unit).toBe("lb");
     expect(oracle.sessionCount).toBe(18);
-    expect(oracle.sessionsPerWeek).toEqual(weeks.map((w) => ({ week: w.week, sessions: w.sessions })));
     expect(oracle.sessionsPerWeek.map((w) => w.sessions)).toEqual([2, 2, 2, 2, 2, 2, 2, 0]);
     expect(oracle.sessionsPerWeek[0]!.week).toBe("2026-08-17");
-    expect(oracle.weeklyVolumeKg).toEqual(weeks.map((w) => ({ week: w.week, volumeKg: w.volumeKg })));
     // Week of Aug 17 by hand: goblet 20 lb × (8+8) and × (8+7), row 20 lb × 10 per side twice, deadlift 16 kg × 6.
-    expect(oracle.weeklyVolumeKg[0]!.volumeKg).toBe(Math.round(((320 + 400 + 300 + 400) * 0.45359237 + 96) * 10) / 10);
-    expect(oracle.records).toBe(Records.compute(data, hist).records.length);
-    expect(oracle.records).toBeGreaterThan(0);
+    const aug17 = (320 + 400 + 300 + 400) * 0.45359237 + 96;
+    expect(oracle.weeklyVolume[0]).toEqual({ week: "2026-08-17", kg: Math.round(aug17), inUnit: Math.round(Math.round(aug17) * KG_TO_LB) });
+    for (const w of oracle.weeklyVolume) {
+      expect(Number.isInteger(w.kg)).toBe(true);
+      expect(w.inUnit).toBe(Math.round(w.kg * KG_TO_LB));
+    }
+    // Every set the tool logs as load × reps, both sides of a per-side lift, whole kilos per week.
+    const tool = (backup(history()).sessions as Array<{ date: string; entries: Array<{ log?: string; metric?: string; perSide?: boolean; bilateral?: boolean; sets: Array<{ w: { v: number; u: string } | null; reps: number | null }> }> }>);
+    const byWeek = new Map<string, number>();
+    for (const s of tool) {
+      for (const e of s.entries) {
+        if (e.log !== "load" || e.metric !== "reps") continue;
+        for (const set of e.sets) {
+          if (!set.w || !set.reps) continue;
+          const k = startOfIsoWeek(s.date);
+          byWeek.set(k, (byWeek.get(k) ?? 0) + (set.w.u === "kg" ? set.w.v : set.w.v * 0.45359237) * set.reps * ((e.perSide ?? e.bilateral) ? 2 : 1));
+        }
+      }
+    }
+    expect(oracle.weeklyVolume.map((w) => w.kg)).toEqual(oracle.weeklyVolume.map((w) => Math.round(byWeek.get(w.week) ?? 0)));
+
+    // Records as Progress counts them: the engine's records less the first times, plus its milestones.
+    const ctx = standaloneContext({ exercises: EXERCISES, timezone: prefs.timezone, unit: "lb" });
+    const hist = backup(history()).sessions.map((raw, i) => {
+      const out = normalizeStandaloneSession(raw, `p${i}`, ctx);
+      if (!out.ok) throw new Error(out.reason);
+      return historyFromPerformed(out.session);
+    });
+    const all = Records.compute(makeEngineData({ activeProfiles: ["tmj"], careProfiles: [], exercises: EXERCISES }), hist, { weeklyGoal: 3 });
+    expect(all.records.some((r) => r.kind === "first")).toBe(true);
+    expect(oracle.records).toBe(all.records.filter((r) => r.kind !== "first").length + all.milestones.length);
+
     expect(oracle.prePostPairs).toBe(16);
     expect(oracle.block).toEqual({ number: 2, week: 3 });
-    expect(oracle.bestByCoreLift).toEqual([
+    expect(oracle.bestByCoreLift.map(({ latest: _l, ...b }) => b)).toEqual([
       { family: "squat", exerciseId: "gobletSquat", name: "Goblet squat", best: { w: lb(35), reps: 8, secs: null } },
       { family: "hinge", exerciseId: "deadlift", name: expect.any(String), best: { w: kg(16), reps: 8, secs: null } },
       { family: "row", exerciseId: "supportedRow", name: expect.any(String), best: { w: lb(35), reps: 10, secs: null } },
       { family: "press", exerciseId: "floorPress", name: expect.any(String), best: null },
       { family: "carry", exerciseId: "suitcaseCarry", name: expect.any(String), best: null },
     ]);
+    expect(oracle.bestByCoreLift[0]!.latest).toEqual({ date: "2026-09-30", w: lb(35), reps: 8, secs: null });
+  });
+
+  it("the unit is the tool's own setting, and the account's when the file has none", async () => {
+    const noUnit = backup([v2Session("2026-09-28")], { settings: { weeklyGoal: 3 } });
+    expect((await run(noUnit, { dryRun: true })).oracle.unit).toBe(prefs.weightUnit);
+    expect((await run(backup([v2Session("2026-09-28")], { settings: { unit: "kg" } }), { dryRun: true })).oracle.unit).toBe("kg");
   });
 });
 
