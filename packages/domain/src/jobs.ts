@@ -2,6 +2,7 @@ import { z } from "zod";
 import { isLocalDate } from "./time.js";
 import { studioSessionSchema } from "./studio.js";
 import { coachSessionSchema } from "./coach.js";
+import { programWatchSessionSchema, WATCH_STAMP_MAX } from "./watch-push.js";
 
 export const COROS_WRITE_JOB_STATUSES = [
   "queued", // waiting for a capable executor
@@ -200,6 +201,39 @@ export const COACH_STAMPING_JOB_KINDS = [
   "coach_create_workout",
   "coach_update_workout",
 ] as const;
+
+/**
+ * TODAY'S PROGRAM SESSION, SENT TO THE WATCH (Phase 3, spec §4.3). Queued by `POST
+ * /api/sessions/:workoutId/send-to-watch` under the id `push:<buildId>`, so a second send of the same build is the
+ * same job. The payload carries the RESOLVED steps — catalog ids, free-text names, grams — so what was previewed is
+ * what is sent; the executor re-checks every catalog id against the current catalog before any wire call. Run only
+ * while the switch (`WATCH_PUSH_ENABLED`) is on.
+ */
+export const programSessionPushJobSchema = z
+  .object({
+    workoutId: z.string().min(1),
+    /** The locked build the steps were made from; the slot must still hold it locked when the job runs. */
+    buildId: z.string().min(1),
+    happenDay: localDate,
+    /** The stamp: program name AND ownership proof, ≤ WATCH_STAMP_MAX. */
+    name: z.string().min(1).max(WATCH_STAMP_MAX),
+    session: programWatchSessionSchema,
+    /** Executor-side retry counter (transient failures requeue, cap 3). */
+    attempts: z.number().int().min(0).optional(),
+    /** Written at verify: the fingerprints of what the read-back found. */
+    observed: z.object({ wire: z.string(), text: z.string() }).strict().optional(),
+  })
+  .strict();
+export type ProgramSessionPushJob = z.infer<typeof programSessionPushJobSchema>;
+
+/** Kinds whose payload names a program a PROGRAM session's send wrote to COROS. */
+export const PROGRAM_STAMPING_JOB_KINDS = ["program_session_push"] as const;
+
+/** Every kind whose payload names a program this account wrote to COROS: the stamp reader reads them all. */
+export const STAMPING_JOB_KINDS = [...COACH_STAMPING_JOB_KINDS, ...PROGRAM_STAMPING_JOB_KINDS] as const;
+
+/** Every kind that CREATES a session on the watch (a verified one is what an unpush is authorized by). */
+export const WATCH_CREATE_JOB_KINDS = ["coach_create_workout", "program_session_push"] as const;
 
 /** Pulls a coach-pushed session back off the watch when its plan week is
  * reshaped or the plan retired — without this the 90-day COROS read

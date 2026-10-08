@@ -21,7 +21,13 @@ export interface RemoveResult {
  * re-date it there) once they run. A removal is not among them: a queued unpush
  * is the archive's own aftermath, never a competing claim.
  */
-const WATCH_PLACING_KINDS = ["coach_create_workout", "move_scheduled_workout", "coach_update_workout"] as const;
+const WATCH_PLACING_KINDS = [
+  "coach_create_workout",
+  "move_scheduled_workout",
+  "coach_update_workout",
+  // A sent program session (Phase 3): a queued push of a removed slot never runs.
+  "program_session_push",
+] as const;
 
 /**
  * AN ARCHIVED ROW'S QUEUED WATCH WRITES ARE SETTLED, NOT LEFT TO RUN (audit 1,

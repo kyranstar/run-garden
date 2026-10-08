@@ -1722,12 +1722,20 @@ export async function createWorkout(
       };
       if (existing.date === date) {
         log(`  "${spec.name}" is already on ${date} (idInPlan ${ids.serverIdInPlan})`);
+        // The program found there IS the one on the wire: what it observed is
+        // reported as a fresh create's read-back is, so a caller that retried a
+        // create whose response was lost records the same fingerprints (Phase 3).
         return {
           ok: true,
           reason: "already_present",
           ...ids,
           ...owed,
-          ...(existing.program ? { wireTextFingerprint: programTextFingerprint(existing.program) } : {}),
+          ...(existing.program
+            ? {
+                wireFingerprint: corosProgramFingerprint(existing.program),
+                wireTextFingerprint: programTextFingerprint(existing.program),
+              }
+            : {}),
         };
       }
       // NO ids on the cross-day refusal. `serverIdInPlan`/`serverProgramId`

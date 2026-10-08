@@ -967,6 +967,8 @@ describe("Start (Review Focus 3)", () => {
       view: null,
       profiles: [expect.objectContaining({ profileId: "tmj" })],
       choices: expect.objectContaining({ modes: ["recovery", "consistent", "build"] }),
+      // Phase 3: every session answer carries the watch; the service's is null until a route attaches it.
+      watch: null,
     });
     await recordCheck(db, userId, { profileId: "tmj", value: 3, feelingOff: true }, ctx());
     const built = await buildSession(db, userId, id, {}, ctx());

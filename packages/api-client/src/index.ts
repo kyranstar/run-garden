@@ -1040,6 +1040,57 @@ export interface SessionDto {
     themes: Array<{ id: string; name: string; modes: SessionMode[] }>;
     locations: Array<{ id: string; name: string }>;
   };
+  /**
+   * The session on the watch (Phase 3). The worker always sends it: null while the switch is off, and then nothing
+   * about the watch renders. Optional here only because a session cached on the device before Phase 3 lacks it.
+   */
+  watch?: WatchStateDto | null;
+}
+
+/** Why Send to watch is not offered (`watch.reason`), and the 409 `error` of a refused send. */
+export type WatchUnavailableReason =
+  | "not_today"
+  | "not_built"
+  | "done"
+  | "precheck"
+  | "writes_off"
+  | "not_connected"
+  | "too_long"
+  | "empty"
+  | "taking_off";
+
+/**
+ * `ready` → Send to watch; `sending` → "Sending…"; `on_watch` → "On your watch" with Take off watch; `failed` →
+ * "Couldn't send" with Retry; `off_watch` (removed in COROS) and `unavailable` → nothing to send.
+ */
+export interface WatchStateDto {
+  state: "unavailable" | "ready" | "sending" | "on_watch" | "failed" | "off_watch";
+  reason?: WatchUnavailableReason;
+}
+
+/** One step as the watch will show it, read off the wire program (the preview IS the wire). */
+export interface WatchPreviewStepDto {
+  /** The English name of a catalog step; the free text of a move the catalog does not hold. */
+  name: string;
+  freeText: boolean;
+  target: { kind: "reps"; reps: number } | { kind: "hold"; seconds: number } | { kind: "open" };
+  /** kg × 1000 as the watch holds it; null = bodyweight. */
+  grams: number | null;
+  /** The same weight in the athlete's unit, beside the kg ("11.3 kg · 25 lb"). */
+  load: Weight | null;
+  overview: string;
+  restSeconds: number;
+}
+
+/** `GET /api/sessions/:workoutId/watch-preview`. */
+export interface WatchPreviewDto {
+  buildId: string;
+  /** The program name the watch shows: `<program> — <date>`, " (2)" for a second session that day. */
+  stamp: string;
+  steps: WatchPreviewStepDto[];
+  freeText: number;
+  /** Set: no Send ("Too long for the watch"), and no steps. */
+  refusal: "empty" | "too_long" | null;
 }
 
 /** A switched-on condition profile as the UI labels it: its check's label and scale, and its care label. */
@@ -1493,6 +1544,16 @@ export const api = {
    * 409 `{error: "performed"}` once a performed session exists for the slot; 423 while a restore runs.
    */
   unstartSession: (workoutId: string) => post<SessionDto>(`/api/sessions/${encodeURIComponent(workoutId)}/unstart`, {}),
+  /** The steps as the watch will hold them (Phase 3). 404 while the switch is off; 409 `{error: reason}`. */
+  watchPreview: (workoutId: string) => get<WatchPreviewDto>(`/api/sessions/${encodeURIComponent(workoutId)}/watch-preview`),
+  /**
+   * Send the previewed build to the watch: the build locks (the slot stays built) and its push is queued. 409
+   * `{error: reason}` (`WatchUnavailableReason`) or `{error: "stale", session}` (show `session`, preview again).
+   */
+  sendToWatch: (workoutId: string, buildId: string) =>
+    post<SessionDto>(`/api/sessions/${encodeURIComponent(workoutId)}/send-to-watch`, { buildId }),
+  /** Take the sent session off the watch (or stop it reaching it); idempotent. */
+  takeOffWatch: (workoutId: string) => post<SessionDto>(`/api/sessions/${encodeURIComponent(workoutId)}/take-off-watch`, {}),
   recordCheck: (body: { profileId: string; value: number | null; feelingOff?: boolean }) =>
     post<{ check: ConditionCheckDto | null }>("/api/conditions/checks", body),
   /** Whether the build the slot shows is still the day's (Start would lock it as it is); never builds. */

@@ -238,5 +238,6 @@ describe("createWorkout with a program session, end to end", () => {
     expect(again).toMatchObject({ ok: true, reason: "already_present" });
     expect(server.counts.scheduleWrites).toBe(writes);
     expect(again.wireTextFingerprint).toBe(programTextFingerprint(storedProgram(server)));
+    expect(again.wireFingerprint).toBe(corosProgramFingerprint(storedProgram(server)));
   });
 });

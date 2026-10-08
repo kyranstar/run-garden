@@ -31,7 +31,7 @@
  * Every writer here is a no-op while a restore is replacing the account (ruling B2).
  */
 import { and, eq, inArray, isNotNull, isNull, ne, notExists, notInArray, or, sql } from "drizzle-orm";
-import { conditionChecks, exercisePrefs, performedSessions, plannedWorkouts, programs, sessionBuilds, userConditions } from "@rg/database";
+import { conditionChecks, corosWriteJobs, exercisePrefs, performedSessions, plannedWorkouts, programs, sessionBuilds, userConditions } from "@rg/database";
 import { newId, sessionLead, todayInZone, type AdaptiveConfig, type SessionLead, type UserPreferences, type Weight } from "@rg/domain";
 import {
   CORE_FAMILIES,
@@ -76,6 +76,7 @@ import {
   type EngineContext,
 } from "./engine-inputs.js";
 import { conditionView, isAnswer, latestReading, type ConditionView } from "./condition-views.js";
+import type { WatchState } from "./watch-push.js";
 
 /**
  * Bump when the engine's behaviour or the stored build's shape changes: a stored build from an older version then no
@@ -199,6 +200,11 @@ export interface SessionResponse {
   profiles: ConditionView[];
   /** What the sheet's chips can pick. */
   choices: SessionChoices;
+  /**
+   * The session on the watch (Phase 3): null while the switch is off, and nothing about the watch renders. The
+   * routes attach it (`withWatch`); a service answer carries null until they do.
+   */
+  watch: WatchState | null;
 }
 
 /** The program's modes; the themes a build can take, each with the modes it suits; the account's places. */
@@ -542,7 +548,8 @@ export function composeBuild(input: ComposeInput): Composed {
 
 // ── Reads ─────────────────────────────────────────────────────────────────────────────────────────────────────
 
-async function loadSlot(db: Db, userId: string, workoutId: string): Promise<SlotRow> {
+/** The user's live program / on-demand row, or `SessionNotFoundError`. */
+export async function loadSlot(db: Db, userId: string, workoutId: string): Promise<SlotRow> {
   const [row] = await db
     .select()
     .from(plannedWorkouts)
@@ -554,7 +561,8 @@ async function loadSlot(db: Db, userId: string, workoutId: string): Promise<Slot
   return row;
 }
 
-async function loadBuilds(db: Db, userId: string, workoutId: string): Promise<BuildRow[]> {
+/** The slot's builds, newest version first. */
+export async function loadBuilds(db: Db, userId: string, workoutId: string): Promise<BuildRow[]> {
   const rows = await db
     .select()
     .from(sessionBuilds)
@@ -720,6 +728,7 @@ function respond(
     view: shown?.view ?? null,
     profiles: extras.profiles,
     choices: extras.choices,
+    watch: null,
   };
 }
 
@@ -839,7 +848,7 @@ function rowChange(row: SlotRow, next: ReturnType<typeof builtRowContent>): { re
   return { resized, calendarChanged: resized || next.title !== row.title || next.category !== row.category };
 }
 
-type BuildCtx = { today: string; now: string; prefs: UserPreferences };
+export type BuildCtx = { today: string; now: string; prefs: UserPreferences };
 
 /** Everything a build of a slot on its day reads, and the hash over it. */
 interface DayInputs {
@@ -1173,6 +1182,25 @@ export async function startSessionOutcome(
   buildId: string,
   now: string,
 ): Promise<{ session: SessionResponse; calendarChanged: boolean }> {
+  return lockCurrentBuild(db, userId, workoutId, buildId, now, { as: "start" });
+}
+
+/**
+ * Lock the build the athlete was shown — Start's lock, and Send to watch's (Phase 3, ruling 3-R2): only while it is
+ * still the day's current build and the day's inputs still make it, else `StaleBuildError` with the fresh build (made
+ * as `POST /build {}` makes it) and nothing locked. `as: "start"` marks the slot `started` (an outline again takes the
+ * build's content, U4); `as: "send"` sets `locked_at` and leaves `content_state` as it is — the slot stays `built`
+ * until it is started or done. A slot already locked returns as it is. Throws `SessionNotFoundError`,
+ * `NotTodayError`, `NotBuiltError`, `StaleBuildError`.
+ */
+export async function lockCurrentBuild(
+  db: Db,
+  userId: string,
+  workoutId: string,
+  buildId: string,
+  now: string,
+  opts: { as: "start" | "send" },
+): Promise<{ session: SessionResponse; calendarChanged: boolean }> {
   const row = await loadSlot(db, userId, workoutId);
   const prefs = await loadPreferences(db, userId);
   const today = todayInZone(prefs.timezone, new Date(now));
@@ -1193,8 +1221,9 @@ export async function startSessionOutcome(
   // A restore can begin while the inputs are read again: checked once more just before the lock (audit M10).
   if (await restoreInProgress(db, userId)) return unchanged(readResponse(db, userId, row, today, builds));
 
-  // An outline again (moved away and back): the row takes the build's content as Start locks it (U4).
-  const adopted = row.contentState === null || row.contentState === "outline";
+  // An outline again (moved away and back): the row takes the build's content as Start locks it (U4). Send never
+  // reaches an outline (it refuses `not_built` first) and changes nothing on the row.
+  const adopted = opts.as === "start" && (row.contentState === null || row.contentState === "outline");
   const stored = storedOf(current);
   const content = adopted
     ? builtRowContent(
@@ -1205,14 +1234,16 @@ export async function startSessionOutcome(
       )
     : null;
   await db.update(sessionBuilds).set({ lockedAt: now }).where(eq(sessionBuilds.id, current.id));
-  await db
-    .update(plannedWorkouts)
-    .set({
-      ...(content ? { ...content, sessionParams: stored.build.params as unknown as Record<string, unknown> } : {}),
-      contentState: "started",
-      updatedAt: now,
-    })
-    .where(and(eq(plannedWorkouts.id, workoutId), eq(plannedWorkouts.userId, userId)));
+  if (opts.as === "start") {
+    await db
+      .update(plannedWorkouts)
+      .set({
+        ...(content ? { ...content, sessionParams: stored.build.params as unknown as Record<string, unknown> } : {}),
+        contentState: "started",
+        updatedAt: now,
+      })
+      .where(and(eq(plannedWorkouts.id, workoutId), eq(plannedWorkouts.userId, userId)));
+  }
   await pruneBuilds(db, workoutId, current.id);
   let calendarChanged = false;
   if (content) {
@@ -1221,6 +1252,39 @@ export async function startSessionOutcome(
     if (change.resized) await separateDayCollisions(db, userId, [row.effectiveDate], prefs, { from: today, now });
   }
   return { session: await readResponse(db, userId, await loadSlot(db, userId, workoutId), today), calendarChanged };
+}
+
+/** A push job's id for a build (`push:<buildId>`): one per build, so sending the same build twice is one job. */
+export const pushJobId = (buildId: string): string => `push:${buildId}`;
+
+/** Push statuses that no longer hold a copy on the watch, nor will put one there. */
+const SETTLED_PUSH = ["superseded", "cancelled", "restored"] as const;
+
+/**
+ * The slot's locked build that a non-superseded `program_session_push` names — the build that was sent; null when
+ * none was sent (Phase 3). A failed push still names its build: Retry sends that build again.
+ */
+export async function sentBuildIdOf(db: Db, workoutId: string): Promise<string | null> {
+  const locked = await db
+    .select({ id: sessionBuilds.id })
+    .from(sessionBuilds)
+    .where(and(eq(sessionBuilds.workoutId, workoutId), isNotNull(sessionBuilds.lockedAt)));
+  if (locked.length === 0) return null;
+  const pushes = await db
+    .select({ id: corosWriteJobs.id })
+    .from(corosWriteJobs)
+    .where(
+      and(
+        inArray(
+          corosWriteJobs.id,
+          locked.map((b) => pushJobId(b.id)),
+        ),
+        eq(corosWriteJobs.kind, "program_session_push"),
+        notInArray(corosWriteJobs.status, [...SETTLED_PUSH]),
+      ),
+    );
+  const sent = locked.find((b) => pushes.some((j) => j.id === pushJobId(b.id)));
+  return sent?.id ?? null;
 }
 
 /**

@@ -13,6 +13,10 @@ export interface Env {
   /** "1" lets POST /api/import/standalone write (a dry run always answers). Off until the Phase 2d garden gate keeps
    * imported history out of the garden; 2d sets it in the same change. Var. */
   IMPORT_ENABLED?: string;
+  /** "1" turns on program sessions on the watch (Phase 3, spec §6): the watch routes answer and queued pushes run.
+   * A global switch, not a preference (ruling 3-R4). Absent (off) in every environment until the owner-approved first
+   * push; off, nothing Phase 3 adds writes to COROS (unpushes and deletes still run, ruling 3-R10). Var. */
+  WATCH_PUSH_ENABLED?: string;
 
   // Secrets
   SESSION_SECRET: string;
@@ -44,6 +48,9 @@ export interface Env {
 }
 
 export const stagingEnabled = (env: Env): boolean => env.STAGING === "1";
+
+/** The watch switch (Phase 3): only "1" is on. A missing env (a test host with none) is off. */
+export const watchPushEnabled = (env: Env | undefined): boolean => env?.WATCH_PUSH_ENABLED === "1";
 
 export function fixtureModeEnabled(env: Env): boolean {
   return env.FIXTURE_MODE === "1";

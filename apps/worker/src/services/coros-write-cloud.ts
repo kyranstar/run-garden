@@ -10,6 +10,7 @@ import {
   type UserPreferences,
 } from "@rg/domain";
 import {
+  buildProgramWatchProgram,
   createWorkout,
   deleteWorkout,
   executeMoveJob,
@@ -25,8 +26,9 @@ import {
   coachUpdateWorkoutJobSchema,
   createScheduledWorkoutJobSchema,
   deleteScheduledWorkoutJobSchema,
+  programSessionPushJobSchema,
 } from "@rg/domain";
-import type { Env } from "../env.js";
+import { watchPushEnabled, type Env } from "../env.js";
 import type { Db } from "./db.js";
 import { restoreInProgress } from "./account-state.js";
 import { corosClient } from "./coros-connection.js";
@@ -38,6 +40,8 @@ import { claimUserLock, releaseUserLock } from "./locks.js";
 import { exerciseNameMap } from "./exercise-catalog.js";
 import { openIntentFor, resolveIntent } from "./sync-intents.js";
 import { enqueueUnpushIfOurs } from "./plan-mutations.js";
+import { sentBuildIdOf } from "./session-build.js";
+import { unpushBuild } from "./watch-push.js";
 
 /**
  * Cloud write consumer (cloud-direct spec §4): the same job queue with all
@@ -179,7 +183,13 @@ export async function executeCloudJobs(
       // Backfill chunks have their own worker-side walker with pacing —
       // excluded at claim time so a queued backfill can never head-of-line-
       // block moves and studio pushes (2026-08-12 incident).
-      const job = await claimNextJob(db, userId, CLOUD_DEVICE_ID, { excludeKinds: ["backfill"] });
+      //
+      // A program push is excluded the same way while the watch switch is off
+      // (Phase 3, spec §6): it waits, queued, and nothing behind it waits for it.
+      // Its unpush is a `coach_delete_workout` and runs either way (ruling 3-R10).
+      const job = await claimNextJob(db, userId, CLOUD_DEVICE_ID, {
+        excludeKinds: ["backfill", ...(watchPushEnabled(env) ? [] : ["program_session_push"])],
+      });
       if (!job) break;
 
       let outcome: Omit<CorosWriteResult, "deviceId" | "finishedAt" | "signature">;
@@ -341,6 +351,148 @@ export async function executeCloudJobs(
                     claimedAt: null,
                     updatedAt: done,
                   }
+                : retryable && attempts < 3
+                  ? {
+                      status: "queued",
+                      claimedByDeviceId: null,
+                      claimedAt: null,
+                      payload: { ...spec, attempts },
+                      updatedAt: done,
+                    }
+                  : {
+                      status: "failed",
+                      lastErrorCategory: result.reason ?? "error",
+                      lastErrorDetail: detailOf(result.error),
+                      updatedAt: done,
+                    },
+            )
+            .where(eq(corosWriteJobs.id, job.id));
+          if (isRuntimeLimit(result.error)) outOfBudget = true;
+        }
+        executed += 1;
+        continue;
+      } else if (job.kind === "program_session_push") {
+        // TODAY'S PROGRAM SESSION, SENT (Phase 3, spec §4.3). The same create+verify
+        // core as a coach create, reporting onto the slot's row; the payload
+        // carries the resolved steps, so what was previewed is what is written.
+        const parsed = programSessionPushJobSchema.safeParse(job.payload);
+        if (!parsed.success) {
+          await db
+            .update(corosWriteJobs)
+            .set({
+              status: "failed",
+              lastErrorCategory: "malformed_payload",
+              lastErrorDetail: detailOf(parsed.error),
+              updatedAt: nowInstant(),
+            })
+            .where(eq(corosWriteJobs.id, job.id));
+          executed += 1;
+          continue;
+        }
+        const spec = parsed.data;
+        // THE ROW IS READ AGAIN BEFORE ANYTHING IS WRITTEN. A slot archived,
+        // moved off the push's day, or holding another locked build since the
+        // send is not what was previewed for that day: superseded, no wire call.
+        const row = job.workout;
+        const sent = row ? await sentBuildIdOf(db, row.id) : null;
+        if (!row || row.archivedAt || row.effectiveDate !== spec.happenDay || sent !== spec.buildId) {
+          await db
+            .update(corosWriteJobs)
+            .set({ status: "superseded", updatedAt: nowInstant() })
+            .where(eq(corosWriteJobs.id, job.id));
+          executed += 1;
+          continue;
+        }
+        const catalog = await exerciseNameMap(db);
+        const createSpec = {
+          happenDay: String(localDateToCorosDay(spec.happenDay)),
+          name: spec.name,
+          session: spec.session,
+        };
+        // EVERY CATALOG ID IS RE-CHECKED BEFORE ANY WIRE CALL (spec §4.2): a
+        // move whose catalog row left (or now names another exercise) fails the
+        // job outright — retrying cannot bring it back, and the athlete sends
+        // again from a fresh preview.
+        try {
+          buildProgramWatchProgram(createSpec, catalog);
+        } catch (e) {
+          await db
+            .update(corosWriteJobs)
+            .set({ status: "failed", lastErrorCategory: "error", lastErrorDetail: detailOf(e), updatedAt: nowInstant() })
+            .where(eq(corosWriteJobs.id, job.id));
+          executed += 1;
+          continue;
+        }
+        const result = await createWorkout(client, createSpec, {
+          catalog,
+          // Explicit, never the executor's own clock default (the observation
+          // span is anchored on it).
+          today: todayInZone(prefs.timezone),
+          log: () => undefined,
+        });
+        const done = nowInstant();
+        if (result.ok) {
+          await db
+            .update(plannedWorkouts)
+            .set({
+              corosSyncState: "synced",
+              lastVerifiedCorosDate: spec.happenDay,
+              ...(result.wireFingerprint ? { sourceContentFingerprint: result.wireFingerprint } : {}),
+              ...(result.serverPlanId != null && result.serverIdInPlan != null
+                ? {
+                    sourceWorkoutId: `${result.serverPlanId}:${result.serverIdInPlan}`,
+                    sourceIdInPlan: String(result.serverIdInPlan),
+                    ...(result.serverProgramId != null ? { sourceProgramId: String(result.serverProgramId) } : {}),
+                  }
+                : {}),
+              updatedAt: done,
+            })
+            .where(eq(plannedWorkouts.id, spec.workoutId));
+          // What the read-back OBSERVED — COROS's own encoding, never ours: the
+          // import compares the next read with exactly these (Review Focus 5).
+          const observed =
+            result.wireFingerprint && result.wireTextFingerprint
+              ? { observed: { wire: result.wireFingerprint, text: result.wireTextFingerprint } }
+              : {};
+          const { attempts: _attempts, observed: _old, ...kept } = spec;
+          await db
+            .update(corosWriteJobs)
+            .set({
+              status: "verified",
+              verifiedAt: done,
+              completedAt: done,
+              updatedAt: done,
+              lastErrorCategory: null,
+              payload: { ...kept, ...observed },
+            })
+            .where(eq(corosWriteJobs.id, job.id));
+          // MOVED OR REMOVED WHILE THE PUSH RAN (Review Focus 3). The move or the
+          // archive could not cancel a claimed push and had no address to unpush
+          // by; now the copy is recorded, so its unpush is queued at once.
+          const [landed] = await db.select().from(plannedWorkouts).where(eq(plannedWorkouts.id, spec.workoutId)).limit(1);
+          if (
+            landed &&
+            (landed.archivedAt || landed.effectiveDate !== spec.happenDay || (await sentBuildIdOf(db, landed.id)) !== spec.buildId)
+          ) {
+            await unpushBuild(db, userId, landed, spec.buildId, done, prefs);
+          }
+        } else {
+          // The coach create's retry taxonomy: transient outcomes requeue (cap 3),
+          // a runtime ceiling requeues without counting.
+          const attempts = (spec.attempts ?? 0) + 1;
+          const retryable =
+            result.reason === "slot_occupied" ||
+            result.reason === "not_visible" ||
+            result.reason === "error" ||
+            result.reason === undefined;
+          console.error(
+            `program push ${retryable && attempts < 3 ? "retrying" : "FAILED"} (attempt ${attempts}): ${result.reason ?? ""}`,
+          );
+          await db
+            .update(corosWriteJobs)
+            .set(
+              isRuntimeLimit(result.error)
+                ? { status: "queued", claimedByDeviceId: null, claimedAt: null, updatedAt: done }
                 : retryable && attempts < 3
                   ? {
                       status: "queued",
