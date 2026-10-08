@@ -287,7 +287,8 @@ describe("a watch-only strength session (the live account today)", () => {
     await ingestActivities(db, { userId, sources: [watch()], strengthDetailsByProviderId: watchDetails });
     const [row] = await feed();
     expect(row!.avgHeartRate).toBe(104);
-    expect(row!.logged!.map((e) => e.name)).toEqual(["Bench Press", "Dumbbell Row", "Planks", "Push-ups"]);
+    // Push-up is the library's name: T1004 is the library push-up's curated key (Phase 3 Task 2).
+    expect(row!.logged!.map((e) => e.name)).toEqual(["Bench Press", "Dumbbell Row", "Planks", "Push-up"]);
     // 12 kg on the watch → 26.5 lb for a pounds athlete: the watch's copy is not the athlete's typing (2a+).
     expect(row!.logged![1]!.sets[0]!.load).toEqual({ v: 26.5, u: "lb" });
     expect(row!.performed).toEqual({ source: "watch", mode: null, theme: null, checks: [], played: null });

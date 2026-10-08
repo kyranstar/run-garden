@@ -103,7 +103,7 @@ describe("ingestActivities → watch sets", () => {
       ["coros:T1055", 10, 12, "kg"],
       ["coros:T1055", 9, 12, "kg"],
       ["coros:T1010", null, null, null],
-      ["coros:T1004", 15, null, null],
+      ["pushup", 15, null, null], // T1004 is the library push-up's curated key (Phase 3 Task 2)
     ]);
   });
 

@@ -27,8 +27,13 @@ export interface ExerciseText {
   conditions: Readonly<Record<string, string>>;
 }
 
+/**
+ * A library move's place in the COROS strength catalog (Phase 3, spec §2). Only `exact` is ever pushed; `close` and
+ * `generic` stay on record and the move goes to the watch as free text (spike outcome A).
+ */
 export interface CorosMapping {
-  originId: string;
+  /** The COROS catalog T-code ("T1041") — what `coros_exercises.name` and a lap's `exerciseNameKey` carry. */
+  key: string;
   confidence: "exact" | "close" | "generic";
   method: "curated" | "computed";
 }

@@ -148,6 +148,7 @@ export const EXTRA_CORE = defineExercises([
     dose: { type: "time", range: [15, 30], sets: [2, 3], restSec: 45 },
     conditions: { tmj: { clench: 2, neckLoad: 1, faceDown: false } },
     difficulty: 3,
+    providers: { coros: { key: "T1368", confidence: "close", method: "curated" } }, // COROS: Copenhagen Plank: ours is the short lever
     easier: ["sidePlank"],
     text: {
       summary: "Side plank with the top knee resting on a bench or chair seat, lifting the hips with the inner thigh.",
@@ -217,6 +218,7 @@ export const EXTRA_CORE = defineExercises([
     dose: { type: "time", range: [20, 40], sets: [2, 3], restSec: 45 },
     conditions: { tmj: { clench: 1, neckLoad: 1, faceDown: false } },
     difficulty: 3,
+    providers: { coros: { key: "T1185", confidence: "exact", method: "curated" } }, // COROS: Side Plank
     easier: ["sidePlankKnees"],
     harder: ["copenhagenPlank"],
     text: {
