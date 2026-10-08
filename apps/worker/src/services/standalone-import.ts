@@ -13,8 +13,9 @@
  *     `performed_sessions`, `performed_sets` (weights as typed + kg), its `condition_checks`, and an `activities` row
  *     (`source = 'import'`, strength when it holds a core lift else yoga — §9.2 — and never matched: the matcher and
  *     the save leave `import` rows alone).
- *  3. The first import only (no first-import marker yet: a `provider_cursor_state` row the first import writes, in
- *     its own transaction, whatever it brought) also brings the tool's settings. The PROGRAM (ruling 2d-R5, Audit C
+ *  3. The first import only (no first-import marker yet — a `provider_cursor_state` row the first import writes, in
+ *     its own transaction, whatever it brought — and no imported session, which a restore brings back when it drops
+ *     the marker) also brings the tool's settings. The PROGRAM (ruling 2d-R5, Audit C
  *     C-1): the import never makes a second adaptive program. An account with none gets the tool's (named by the
  *     profile's care label, config from the tool's settings) and its current block — `created`; an account whose one
  *     active adaptive program has no block yet and no session done on its slots takes the tool's block into that
@@ -383,10 +384,21 @@ export async function importedProgramId(db: Db, userId: string): Promise<string 
 /** The first-import marker's row id: written by the first import, whatever it did to the program. */
 const markerId = (userId: string) => `${userId}:${APP}:first_import`;
 
-/** Has a first import already brought the tool's settings into this account? */
+/**
+ * Has a first import already brought the tool's settings into this account? The marker says so, and so does any
+ * imported session: a restore never brings the marker back (provider cursors are never restored) but does bring the
+ * sessions, so a restored account is not offered a first import again (re-review C R-1). A restore of a backup from
+ * before any import brings neither, and the next import is a first one again.
+ */
 async function firstImportDone(db: Db, userId: string): Promise<boolean> {
-  const [row] = await db.select({ id: providerCursorState.id }).from(providerCursorState).where(eq(providerCursorState.id, markerId(userId))).limit(1);
-  return !!row;
+  const [marker] = await db.select({ id: providerCursorState.id }).from(providerCursorState).where(eq(providerCursorState.id, markerId(userId))).limit(1);
+  if (marker) return true;
+  const [session] = await db
+    .select({ id: performedSessions.id })
+    .from(performedSessions)
+    .where(and(eq(performedSessions.userId, userId), eq(performedSessions.source, SOURCE)))
+    .limit(1);
+  return !!session;
 }
 
 /**

@@ -28,6 +28,7 @@ import { loadPreferences, savePreferences } from "../src/services/calendar-sync.
 import { importRoutes } from "../src/routes/imports.js";
 import { createSession, SESSION_COOKIE } from "../src/auth/sessions.js";
 import { isWrite, makeTestDb, makeTestUser, mountRoutes } from "./helpers.js";
+import { exportAll, restoreAll } from "./restore-driver.js";
 import { backup, entry, history, kg, lb, v1Session, v2Session } from "./fixtures/standalone-backup.js";
 import { ORACLE_CASE_TODAY, oracleCaseBackup, oracleCaseSessions, toolOutputs } from "./fixtures/standalone-oracle-case.js";
 
@@ -357,6 +358,49 @@ describe("the first import", () => {
     const summary = await run(backup(history(), { settings: { unit: "kg", weeklyGoal: 3 } }));
     expect((await loadPreferences(db, userId)).weightUnit).toBe("kg");
     expect(summary.weightUnit).toEqual({ before: "lb", after: "kg" });
+  });
+});
+
+// ── Re-review C R-1: "the first import happened" comes back with a restore ─────────────────────────────────────────
+
+describe("after an account restore (re-review C R-1)", () => {
+  const kgTool = () => backup(history(), { settings: { unit: "kg", weeklyGoal: 3 } });
+
+  it("of a backup made after the import: the next import is not a first one, and the settings stay as the athlete left them", async () => {
+    const first = await run(kgTool());
+    expect(first).toMatchObject({ firstImport: true, weightUnit: { before: "lb", after: "kg" } });
+    // The athlete sets their unit back and clears the wishlist the import brought.
+    await savePreferences(db, userId, { ...(await loadPreferences(db, userId)), weightUnit: "lb", equipmentWishlist: [] });
+    const file = await exportAll(db, userId);
+    await restoreAll(db, userId, file);
+    // A restore never brings provider cursors back, so the first-import marker is gone.
+    expect(await db.$count(schema.providerCursorState)).toBe(0);
+    const before = await snapshot();
+
+    statements.length = 0;
+    const again = await run(kgTool(), { now: LATER });
+    expect(again.firstImport).toBe(false);
+    expect(again.written).toMatchObject({ sessions: 0, preferences: 0, places: 0, prefs: 0, condition: 0, block: 0 });
+    expect(again.weightUnit).toEqual({ before: "lb", after: "lb" });
+    expect(statements.filter(isWrite)).toEqual([]);
+    expect(await snapshot()).toEqual(before);
+    expect(await loadPreferences(db, userId)).toMatchObject({ weightUnit: "lb", equipmentWishlist: [] });
+  });
+
+  it("of a backup from before any import: the next import is a first one again", async () => {
+    // A session of the athlete's own (not imported), and another account that has imported: neither counts.
+    await db.insert(performedSessions).values({
+      id: "ps-watch", userId, workoutId: null, activityId: null, buildId: null, source: "watch", sourceRef: "lbl-1",
+      localDate: "2026-09-28", seconds: 1500, completed: true, payloadHash: "h", createdAt: NOW, updatedAt: NOW,
+    });
+    const other = (await makeTestUser(db)).userId;
+    await importStandalone(db, other, kgTool(), { today: TODAY, now: NOW, timezone: prefs.timezone, dryRun: false });
+    const file = await exportAll(db, userId);
+    await run(kgTool());
+    await restoreAll(db, userId, file);
+    expect((await db.select().from(performedSessions).where(eq(performedSessions.userId, userId))).map((s) => s.source)).toEqual(["watch"]);
+    const again = await run(kgTool(), { now: LATER });
+    expect(again).toMatchObject({ firstImport: true, weightUnit: { before: "lb", after: "kg" }, written: { sessions: 18, preferences: 1 } });
   });
 });
 
