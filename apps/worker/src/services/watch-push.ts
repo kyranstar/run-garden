@@ -77,16 +77,20 @@ export interface WatchPlan {
 }
 
 const utf8 = new TextEncoder();
+const graphemes = typeof Intl.Segmenter === "function" ? new Intl.Segmenter(undefined, { granularity: "grapheme" }) : null;
+
+/** How a library name sets a variant apart ("Child's pose · forehead on block"), and how an overview joins its parts. */
+const QUALIFIER = " · ";
+/** A word a cut name must not end on: "Child's pose · forehead on" reads as a sentence cut off. */
+const DANGLING_WORD = /\s+(?:a|an|and|at|by|for|from|in|of|on|or|the|to|under|with)$/iu;
+const TRAILING_SEPARATOR = /[\s·,;:—–-]+$/u;
 
 /**
  * `text` as the characters a reader sees — grapheme clusters (workerd and Node segment them), else code points — so a
  * cut between two of them never leaves half an emoji, a lone surrogate or a dangling joiner (audit W-3, lane L-6).
  */
 function charactersOf(text: string): string[] {
-  if (typeof Intl.Segmenter === "function") {
-    return Array.from(new Intl.Segmenter(undefined, { granularity: "grapheme" }).segment(text), (s) => s.segment);
-  }
-  return Array.from(text);
+  return graphemes ? Array.from(graphemes.segment(text), (s) => s.segment) : Array.from(text);
 }
 
 /**
@@ -110,7 +114,7 @@ export function cutAtWord(text: string, max: number, maxBytes = Number.POSITIVE_
   }
   // A space right after the hard cut means every word in it is whole; else cut back to the last space inside it.
   const space = /^\s/u.test(chars[n] ?? "") ? hard.length : hard.lastIndexOf(" ");
-  const cut = (space > 0 ? hard.slice(0, space) : hard).replace(/[\s·,;:—–-]+$/u, "");
+  const cut = (space > 0 ? hard.slice(0, space) : hard).replace(TRAILING_SEPARATOR, "");
   return cut || hard;
 }
 
@@ -131,12 +135,6 @@ function overviewOf(side: Step["side"], qualifier: string | null, cue: string | 
   const sideText = side === "Left" ? "left side" : side === "Right" ? "right side" : null;
   return cutAtWord([sideText, qualifier, cue?.trim()].filter((p): p is string => Boolean(p)).join(QUALIFIER), WATCH_OVERVIEW_MAX);
 }
-
-/** How a library name sets a variant apart: "Child's pose · forehead on block". */
-const QUALIFIER = " · ";
-/** A word a cut name must not end on: "Child's pose · forehead on" reads as a sentence cut off. */
-const DANGLING_WORD = /\s+(?:a|an|and|at|by|for|from|in|of|on|or|the|to|under|with)$/iu;
-const TRAILING_SEPARATOR = /[\s·,;:—–-]+$/u;
 
 /**
  * A free-text move's name as the watch shows it, at most WATCH_NAME_MAX characters (ruling 3-R6, audit W-6). A longer
