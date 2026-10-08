@@ -79,6 +79,8 @@ export const TMJ: ConditionProfile = {
     const r = read(a);
     return r.clench <= 1 && r.neckLoad <= 1 && !r.faceDown;
   },
+  // The jaw is up today: the line recovery and the hold rule draw.
+  flare: (r) => r.pre != null && r.pre >= HIGH_PRE,
 
   recoveryReason(ctx) {
     const pre = ctx.reading.pre;

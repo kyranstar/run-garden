@@ -134,7 +134,13 @@ describe("the expansion", () => {
 describe("the feed", () => {
   it("shows the mode and the check values on the row; 'Imported' stays inside the expansion", () => {
     const html = renderFeed([merged, imported]);
-    expect(html).toContain("Consistent · Jaw 2 → 1");
+    expect(html.replace(/<[^>]+>/g, "")).toContain("Consistent · Jaw 2 → 1");
     expect(html).not.toContain("Imported");
+  });
+
+  it("the row's line wraps between facts, never inside one ('Jaw 2' / '→ 1')", () => {
+    const html = renderFeed([merged]);
+    expect(html).toContain('<span class="fw-bit">Jaw 2 → 1</span>');
+    expect(html).toContain('<span class="fw-bit">Consistent</span>');
   });
 });

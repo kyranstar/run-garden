@@ -20,14 +20,17 @@ import type {
 } from "@rg/domain";
 import type {
   AerobicEfficiencyValue,
+  ConditionTrendValue,
   ConsistencyReport,
   DecouplingValue,
   Discipline,
   EvidenceCard,
   InterpretedMetric,
+  LiftTopSetsValue,
   MetricResult,
   StoredRecord,
   WeeklyTrainingReport,
+  WeeklyVolumeValue,
 } from "@rg/analytics";
 import type {
   Alternative,
@@ -1294,6 +1297,23 @@ export interface InsightsResponse {
       verdict: "under_prepared" | "matched" | "over_prepared";
     } | null;
   };
+  /**
+   * The Progress tiles (Phase 2d; worker: services/progress.ts), the same under every discipline: the last eight
+   * weeks of logged sessions. Optional only for a payload cached before it existed.
+   */
+  progress?: ProgressDto;
+}
+
+/** The Progress tiles' numbers: every one a MetricResult that says honestly when there is too little. */
+export interface ProgressDto {
+  /** The athlete's weight unit: what the volume tile speaks. */
+  weightUnit: "lb" | "kg";
+  /** One per switched-on profile, labelled by the profile itself (`check.label`). */
+  conditions: Array<{ profileId: string; label: string; trend: MetricResult<ConditionTrendValue> }>;
+  /** Kilograms, weight × reps, both sides of a one-sided move. */
+  volume: MetricResult<WeeklyVolumeValue>;
+  /** The current block's core lifts, in family order: kilograms inside, labelled in the unit last used. */
+  lifts: Array<{ exerciseId: string; name: string; trend: MetricResult<LiftTopSetsValue> }>;
 }
 
 // ── Endpoints ────────────────────────────────────────────────────────────────

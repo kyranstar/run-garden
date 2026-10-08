@@ -98,6 +98,7 @@ import {
 } from "../services/completion.js";
 import { resimulateFrom } from "../services/garden-sync.js";
 import { performedByActivity } from "../services/logged-sets.js";
+import { loadProgress } from "../services/progress.js";
 import { enqueueBackfill, runBackfillChunkCloud } from "../services/backfill.js";
 import { deleteOrphanedChildren, wipeAccountData } from "../services/account-tables.js";
 import {
@@ -510,6 +511,9 @@ insightRoutes.get("/", async (c) => {
   const twelveWeeksAgo = addDays(startOfIsoWeek(today), -7 * 12);
   const twentySixWeeksAgo = addDays(startOfIsoWeek(today), -7 * 26);
   const range = { start: twelveWeeksAgo, end: today };
+  // The Progress tiles (Phase 2d Task 3): the same under every discipline, read from their own eight-week window
+  // alongside everything below.
+  const progressRead = loadProgress(db, userId, today, prefs.weightUnit);
 
   // Every independent query at once. Activities are stored as UTC instants but
   // bucketed by LOCAL date, so the fetch is padded a day on the early side and
@@ -1366,6 +1370,7 @@ insightRoutes.get("/", async (c) => {
       discipline === "run"
         ? await buildTerrainReport(db, userId, prefs, todayInZone(prefs.timezone))
         : undefined,
+    progress: await progressRead,
   });
 });
 

@@ -100,6 +100,11 @@ export interface ConditionProfile {
   coreCandidate(a: Attrs): boolean;
   blockAssignable(ex: ExerciseRecord): boolean;
   flareSafe(a: Attrs): boolean;
+  /**
+   * The profile's flare definition (one-workout-system spec §6: "a flare (profile-defined)"): a day whose reading
+   * meets it is a flare day — counted on the Progress condition tile, and the day the flare-safe rules exist for.
+   */
+  flare(reading: CheckReading): boolean;
 
   // Proposal (mode): reasons are the profile's own words
   recoveryReason(ctx: ProposalCtx): string | null;
