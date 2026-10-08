@@ -26,7 +26,9 @@ import type { Db } from "../src/services/db.js";
 import { corosReadNow, corosReadSweep } from "../src/services/coros-read.js";
 import { executeCloudJobs } from "../src/services/coros-write-cloud.js";
 import { exerciseNameMap } from "../src/services/exercise-catalog.js";
+import { applyOps } from "../src/services/coach-apply.js";
 import { importPlanSnapshot } from "../src/services/import-plan.js";
+import { applyMove } from "../src/services/jobs.js";
 import { removeFromPlan } from "../src/services/plan-mutations.js";
 import { buildSession, loadSession } from "../src/services/session-build.js";
 import { activeSyncNotes } from "../src/services/sync-notes.js";
@@ -34,7 +36,9 @@ import { sendToWatch, takeOffWatch, watchStateOf } from "../src/services/watch-p
 import { mockCorosServer, type MockCorosServer } from "../../../packages/coros/test/mock-coros-server.js";
 import { renormalizingCoros } from "../../../packages/coros/test/renormalizing-coros.js";
 import { makeTestDb, makeTestUser } from "./helpers.js";
-import { connectMock, DAY, NOON, rowOf, seedCatalog, seedProgram, seedSlot, seedTmj, switchOn } from "./watch-push-fixture.js";
+import {
+  connectMock, DAY, makeEnv, NOON, PROGRAM_NAME, rowOf, seedCatalog, seedProgram, seedSlot, seedTmj, switchOn, TOMORROW,
+} from "./watch-push-fixture.js";
 
 const { corosWriteJobs, plannedWorkouts, providerConnections, sessionBuilds } = schema;
 
@@ -70,22 +74,48 @@ afterEach(() => {
 
 const ctx = () => ({ today: DAY, now: NOON, prefs });
 
-/** A slot built today and sent, and — unless `run: false` — its push verified by the lane. */
-async function pushed(opts: { run?: boolean; id?: string } = {}): Promise<{ workoutId: string; buildId: string; stamp: string }> {
-  const workoutId = await seedSlot(db, userId, programId, DAY, opts.id);
-  const built = await buildSession(db, userId, workoutId, { checks: { tmj: { pre: 2, feelingOff: false } } }, ctx());
+/** The lane, as the cron runs it — with the switch on unless the case says otherwise. */
+const lane = (env = switchOn()) => executeCloudJobs(db, env, userId, prefs, { fetchImpl: server.fetchImpl });
+
+/** The slot built on `day` (today, in the case's clock) and sent, and — unless `run: false` — its push verified. */
+async function send(workoutId: string, day: string, opts: { run?: boolean } = {}): Promise<{ buildId: string; stamp: string }> {
+  const at = { today: day, now: `${day}T19:00:00.000Z`, prefs };
+  const built = await buildSession(db, userId, workoutId, { checks: { tmj: { pre: 2, feelingOff: false } } }, at);
   const buildId = built.build!.buildId;
-  await sendToWatch(db, switchOn(), userId, workoutId, buildId, ctx());
+  await sendToWatch(db, switchOn(), userId, workoutId, buildId, at);
   if (opts.run !== false) {
-    await executeCloudJobs(db, switchOn(), userId, prefs, { fetchImpl: server.fetchImpl });
+    await lane();
     expect((await jobOf(`push:${buildId}`))!.status).toBe("verified");
   }
   const stamp = programSessionPushJobSchema.parse((await jobOf(`push:${buildId}`))!.payload).name;
-  return { workoutId, buildId, stamp };
+  return { buildId, stamp };
+}
+
+/** A slot built today and sent, and — unless `run: false` — its push verified by the lane. */
+async function pushed(opts: { run?: boolean; id?: string } = {}): Promise<{ workoutId: string; buildId: string; stamp: string }> {
+  const workoutId = await seedSlot(db, userId, programId, DAY, opts.id);
+  return { workoutId, ...(await send(workoutId, DAY, opts)) };
+}
+
+/** The executor dies between the write and the record: the copy is on COROS, the push still claimed. */
+async function writeWithoutRecording(): Promise<{ workoutId: string; buildId: string; stamp: string }> {
+  const sent = await pushed({ run: false });
+  const payload = programSessionPushJobSchema.parse((await jobOf(`push:${sent.buildId}`))!.payload);
+  await db.update(corosWriteJobs).set({ status: "claimed" }).where(eq(corosWriteJobs.id, `push:${sent.buildId}`));
+  const client = new CorosClient({ region: "us", fetchImpl: server.fetchImpl, logger: () => undefined });
+  await client.loginWithHash(server.email, createHash("md5").update(server.password, "utf8").digest("hex"));
+  const result = await createWorkout(
+    client,
+    { happenDay: String(localDateToCorosDay(payload.happenDay)), name: payload.name, session: payload.session },
+    { catalog: await exerciseNameMap(db), today: DAY },
+  );
+  expect(result.ok).toBe(true);
+  return sent;
 }
 
 const jobOf = async (id: string) => (await db.select().from(corosWriteJobs).where(eq(corosWriteJobs.id, id)))[0];
 const programOn = (stamp: string): RawCorosProgram | undefined => (server.state.schedule.programs ?? []).find((p) => p.name === stamp);
+const programsNamed = (name: string): RawCorosProgram[] => (server.state.schedule.programs ?? []).filter((p) => p.name === name);
 const entityOf = (program: RawCorosProgram) =>
   server.state.schedule.entities!.find((e) => String(e.idInPlan) === String(program.idInPlan))!;
 
@@ -251,22 +281,6 @@ describe("the import and a sent session", () => {
     expect((await db.select().from(corosWriteJobs).where(eq(corosWriteJobs.workoutId, workoutId))).map((j) => [j.id, j.status])).toEqual(jobsBefore);
   });
 
-  async function writeWithoutRecording(): Promise<{ workoutId: string; buildId: string; stamp: string }> {
-    // The executor dies between the write and the record: the copy is on COROS, the push still claimed.
-    const sent = await pushed({ run: false });
-    const payload = programSessionPushJobSchema.parse((await jobOf(`push:${sent.buildId}`))!.payload);
-    await db.update(corosWriteJobs).set({ status: "claimed" }).where(eq(corosWriteJobs.id, `push:${sent.buildId}`));
-    const client = new CorosClient({ region: "us", fetchImpl: server.fetchImpl, logger: () => undefined });
-    await client.loginWithHash(server.email, createHash("md5").update(server.password, "utf8").digest("hex"));
-    const result = await createWorkout(
-      client,
-      { happenDay: String(localDateToCorosDay(payload.happenDay)), name: payload.name, session: payload.session },
-      { catalog: await exerciseNameMap(db), today: DAY },
-    );
-    expect(result.ok).toBe(true);
-    return sent;
-  }
-
   it("(f) a copy the row never learned about is attached to its slot by its stamp — never a new row", async () => {
     const { workoutId, stamp } = await writeWithoutRecording();
     expect(watchOf).toBeDefined();
@@ -372,5 +386,142 @@ describe("(h) Take off watch, then Send again", () => {
     expect(await rowsTitled(stamp)).toEqual([]);
     expect((await rowOf(db, workoutId)).sourceIdInPlan).not.toBeNull();
     expect(await notesOf(workoutId)).toEqual([]);
+  });
+});
+
+/**
+ * WHICH STAMPS ARE STILL OURS (audit 3-A life L-1(a), V1b, L-7). Only a push that may still hold a copy names one —
+ * queued, claimed, in progress, verifying, verified, failed or needing attention; never one superseded (its copy was
+ * proven gone), cancelled, or neutralised by a restore. A row of the athlete's or the coach's keeps a workout its own
+ * verified create stamped. And the read never revives an unpush: what it queues, it only ever inserts.
+ */
+describe("the stamps the read may act on", () => {
+  beforeEach(() => setup());
+
+  const liftAdd = (title: string, date: string) => ({
+    kind: "add",
+    date,
+    session: {
+      category: "strength",
+      title,
+      durationMinutes: 30,
+      lift: { exercises: [{ originId: "4258276155475001301", name: "Goblet Squat", sets: 3, reps: 8, weight: { type: "bodyweight" }, restSeconds: 60 }] },
+    },
+  });
+  /**
+   * The coach adds a session titled like the program on its day, its create stamped exactly like the sent copy. The
+   * stamp chooser (3-R12) keeps a coach stamp off a push that may still hold a copy; the name is pinned here so the
+   * import's own rule is what the case proves.
+   */
+  async function coachAddsSameStamp(stamp: string): Promise<string> {
+    const coachId = (await applyOps(db, userId, prefs, "prop-coach", [liftAdd(PROGRAM_NAME, DAY) as never])).created[0]!;
+    const [job] = await db
+      .select()
+      .from(corosWriteJobs)
+      .where(and(eq(corosWriteJobs.workoutId, coachId), eq(corosWriteJobs.kind, "coach_create_workout")));
+    await db
+      .update(corosWriteJobs)
+      .set({ payload: { ...(job!.payload as Record<string, unknown>), name: stamp } })
+      .where(eq(corosWriteJobs.id, job!.id));
+    return coachId;
+  }
+
+  it("taken off, then the coach adds the program's title that day: the read leaves the coach's workout alone (switch off)", async () => {
+    const { workoutId, buildId, stamp } = await pushed();
+    await takeOffWatch(db, userId, workoutId, ctx());
+    await lane();
+    expect((await jobOf(`push:${buildId}`))!.status).toBe("superseded");
+    expect((await jobOf(`unpush:${buildId}`))!.status).toBe("verified");
+    const coachId = await coachAddsSameStamp(stamp);
+    const OFF = makeEnv(); // WATCH_PUSH_ENABLED absent, as in production today
+    await lane(OFF);
+    const coachAddress = (await rowOf(db, coachId)).sourceWorkoutId;
+    expect(coachAddress).not.toBe(coachId);
+    expect(programsNamed(stamp)).toHaveLength(1);
+
+    await readNow();
+    expect((await jobOf(`unpush:${buildId}`))!.status).toBe("verified");
+    await lane(OFF);
+    await readNow();
+    await readNow();
+    expect(programsNamed(stamp)).toHaveLength(1);
+    expect(await rowOf(db, coachId)).toMatchObject({ sourceWorkoutId: coachAddress, archivedAt: null });
+    expect((await rowOf(db, workoutId)).sourceWorkoutId).toBe(workoutId);
+  });
+
+  it("a spent stamp: after Take off, a COROS workout carrying it is the athlete's — imported, never unpushed", async () => {
+    const { workoutId, buildId, stamp } = await pushed();
+    const program = structuredClone(programOn(stamp)!);
+    const entity = structuredClone(entityOf(programOn(stamp)!));
+    await takeOffWatch(db, userId, workoutId, ctx());
+    await lane();
+    expect((await jobOf(`push:${buildId}`))!.status).toBe("superseded");
+    // The athlete makes the same workout again in COROS, under the very name.
+    server.state.schedule.programs!.push({ ...program, idInPlan: "99", id: "9999" });
+    server.state.schedule.entities!.push({ ...entity, idInPlan: "99", planProgramId: "99" });
+    const writes = server.counts.scheduleWrites;
+    await readNow();
+    await lane();
+    expect((await jobOf(`unpush:${buildId}`))!.status).toBe("verified");
+    expect(server.counts.scheduleWrites).toBe(writes);
+    const theirs = (await db.select().from(plannedWorkouts).where(eq(plannedWorkouts.userId, userId))).filter((r) =>
+      r.sourceWorkoutId.endsWith(":99"),
+    );
+    expect(theirs).toHaveLength(1);
+    expect(theirs[0]).toMatchObject({ origin: null, effectiveDate: DAY, archivedAt: null });
+    expect((await rowOf(db, workoutId)).sourceWorkoutId).toBe(workoutId);
+  });
+
+  it("a failed push never claims a coach workout carrying its stamp", async () => {
+    server.addSilentlyFails = true; // COROS answers 0000 and keeps nothing: not_visible, three times
+    const { workoutId, buildId, stamp } = await pushed({ run: false });
+    for (let i = 0; i < 4 && (await jobOf(`push:${buildId}`))!.status !== "failed"; i++) await lane();
+    expect((await jobOf(`push:${buildId}`))!.status).toBe("failed");
+    server.addSilentlyFails = false;
+    const coachId = await coachAddsSameStamp(stamp);
+    await lane();
+    const coachAddress = (await rowOf(db, coachId)).sourceWorkoutId;
+    expect(coachAddress).not.toBe(coachId);
+
+    await readNow();
+    await readNow();
+    await readNow();
+    expect((await rowOf(db, workoutId)).sourceWorkoutId).toBe(workoutId);
+    expect(await rowOf(db, coachId)).toMatchObject({ sourceWorkoutId: coachAddress, archivedAt: null });
+    expect(programsNamed(stamp)).toHaveLength(1);
+  });
+
+  it("a push the restore neutralised names nothing: the read neither attaches nor unpushes its copy", async () => {
+    const { workoutId, buildId, stamp } = await writeWithoutRecording();
+    await db.update(corosWriteJobs).set({ status: "restored" }).where(eq(corosWriteJobs.id, `push:${buildId}`));
+    const writes = server.counts.scheduleWrites;
+    await readNow();
+    await lane();
+    expect(await jobOf(`unpush:${buildId}`)).toBeUndefined();
+    expect((await rowOf(db, workoutId)).sourceWorkoutId).toBe(workoutId);
+    expect(server.counts.scheduleWrites).toBe(writes);
+    expect(programsNamed(stamp)).toHaveLength(1);
+  });
+
+  it("an unpush that failed for good is never revived by a read: no COROS write across three reads (L-7)", async () => {
+    const { workoutId, buildId, stamp } = await pushed();
+    server.deleteRejectResult = "1031";
+    await applyMove(db, { userId, workoutId, toDate: TOMORROW, toTime: "18:00", source: "app", corosWritesEnabled: true });
+    for (let i = 0; i < 4 && (await jobOf(`unpush:${buildId}`))!.status !== "failed"; i++) await lane();
+    expect((await jobOf(`unpush:${buildId}`))!.status).toBe("failed");
+    // Tomorrow: the slot is built and sent on its new day; the old copy is still on COROS under its own stamp.
+    vi.setSystemTime(new Date(`${TOMORROW}T19:00:00.000Z`));
+    const resent = await send(workoutId, TOMORROW);
+    expect(resent.stamp).not.toBe(stamp);
+    expect(programsNamed(stamp)).toHaveLength(1);
+
+    const writes = server.counts.scheduleWrites;
+    for (let i = 0; i < 3; i++) {
+      await readNow();
+      expect((await jobOf(`unpush:${buildId}`))!.status).toBe("failed");
+      await lane();
+    }
+    expect(server.counts.scheduleWrites).toBe(writes);
+    expect(programsNamed(stamp)).toHaveLength(1);
   });
 });
