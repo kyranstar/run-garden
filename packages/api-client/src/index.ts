@@ -1094,6 +1094,23 @@ export interface PlaceInput {
 
 // ── Import (worker route: routes/imports.ts; service: services/standalone-import.ts) ───────────────────────────
 
+/**
+ * Exact shape of `POST /api/import/provenance` (services/provenance-import.ts; with or without `?dryRun=1`): counts
+ * only — a saved post's link or creator never comes back.
+ */
+export interface ProvenanceImportSummaryDto {
+  dryRun: boolean;
+  /** Links in the file (one per source). */
+  items: number;
+  /** Library moves those links name. */
+  moves: number;
+  added: number;
+  updated: number;
+  unchanged: number;
+  /** Links whose move this library doesn't have — left out. */
+  unknownMoves: number;
+}
+
 /** Exact shape of `POST /api/import/standalone` (with or without `?dryRun=1`: the same summary). */
 export interface StandaloneImportSummaryDto {
   dryRun: boolean;
@@ -1526,6 +1543,12 @@ export const api = {
    */
   importStandalone: (backup: unknown, opts: { dryRun?: boolean } = {}) =>
     post<StandaloneImportSummaryDto>(`/api/import/standalone${opts.dryRun ? "?dryRun=1" : ""}`, backup, 120_000),
+  /**
+   * A saved-post links file (built locally by apps/worker/scripts/build-provenance.mjs; the parsed file) → counts;
+   * `dryRun` writes nothing. 422 `invalid_provenance`, 413 `too_large`, 423 while restoring.
+   */
+  importProvenance: (file: unknown, opts: { dryRun?: boolean } = {}) =>
+    post<ProvenanceImportSummaryDto>(`/api/import/provenance${opts.dryRun ? "?dryRun=1" : ""}`, file),
 
   // ── Library (worker routes: apps/worker/src/routes/library.ts) ───────────
   listLibrary: (query: LibraryQuery = {}) => get<LibraryListDto>(`/api/library${libraryQueryString(query)}`),

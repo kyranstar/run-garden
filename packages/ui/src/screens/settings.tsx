@@ -763,7 +763,112 @@ export function ImportSection() {
           {s && !finished ? <ImportSummaryRows s={s} /> : null}
         </Sheet>
       ) : null}
+      <SavedLinksImport />
     </Card>
+  );
+}
+
+const NOT_A_LINKS_FILE = "That file isn't a saved-post links file.";
+
+/** Why reading or importing a saved-post links file was refused, in its own words. */
+function linksRefusal(e: unknown, step: "read" | "import"): string {
+  const status = e instanceof ApiError ? e.status : null;
+  const body = (e instanceof ApiError ? e.body : null) as { reason?: unknown } | null;
+  if (status === 422 && body?.reason === "newer_version") return "That links file is newer than this app reads.";
+  if (status === 422) return NOT_A_LINKS_FILE;
+  if (status === 413) return "That file is too large to be a saved-post links file.";
+  if (status === 423) return "A restore is running — import after it finishes.";
+  return step === "read" ? "Couldn't read that file — try again." : "Couldn't import that — try again.";
+}
+
+/**
+ * Settings → Import → "Saved-post links…" (spec §2c "Provenance import"; plan 2c Task 6): the private file the owner
+ * builds on their own machine (apps/worker/scripts/build-provenance.mjs) — a dry run first and its counts, then
+ * Import. The worker answers counts only; no link or name is shown here.
+ */
+function SavedLinksImport() {
+  const qc = useQueryClient();
+  const [file, setFile] = useState<{ links: unknown } | null>(null);
+  const [problem, setProblem] = useState<string | null>(null);
+  const dryRun = useMutation({ mutationFn: (links: unknown) => api.importProvenance(links, { dryRun: true }) });
+  const run = useMutation({
+    mutationFn: (links: unknown) => api.importProvenance(links),
+    onSuccess: () => void qc.invalidateQueries({ queryKey: ["library"] }),
+  });
+
+  const choose = async (e: ChangeEvent<HTMLInputElement>) => {
+    const chosen = e.target.files?.[0];
+    e.target.value = "";
+    if (!chosen) return;
+    setProblem(null);
+    try {
+      const links = JSON.parse(await chosen.text()) as unknown;
+      setFile({ links });
+      run.reset();
+      dryRun.mutate(links);
+    } catch {
+      setProblem(NOT_A_LINKS_FILE);
+    }
+  };
+  const close = () => {
+    setFile(null);
+    dryRun.reset();
+    run.reset();
+  };
+  const s = run.data ?? dryRun.data;
+  const nothingNew = !!dryRun.data && dryRun.data.added + dryRun.data.updated === 0;
+  const finished = run.isSuccess || nothingNew;
+  const changes = s ? [s.added ? `${s.added.toLocaleString("en-US")} new` : null, s.updated ? `${s.updated.toLocaleString("en-US")} changed` : null].filter(Boolean).join(" · ") : "";
+
+  return (
+    <>
+      <label className="place-row place-file">
+        <span className="place-row-main">
+          <b>Saved-post links…</b>
+          <small>Where your saved moves came from</small>
+        </span>
+        <span className="faint" aria-hidden>
+          ›
+        </span>
+        <input type="file" accept=".json,application/json" className="visually-hidden" aria-label="Saved-post links file" onChange={(e) => void choose(e)} />
+      </label>
+      {problem ? <Banner kind="warn">{problem}</Banner> : null}
+      {file ? (
+        <Sheet
+          open
+          onClose={close}
+          title="Import saved-post links"
+          footer={
+            finished ? (
+              <button type="button" className="btn btn-primary" onClick={close}>
+                Done
+              </button>
+            ) : (
+              <button type="button" className="btn btn-primary" disabled={!dryRun.isSuccess || run.isPending} onClick={() => run.mutate(file.links)}>
+                Import
+              </button>
+            )
+          }
+        >
+          {dryRun.isPending ? <Spinner label="Reading the file" /> : null}
+          {dryRun.isError ? <Banner kind="warn">{linksRefusal(dryRun.error, "read")}</Banner> : null}
+          {run.isError ? <Banner kind="warn">{linksRefusal(run.error, "import")}</Banner> : null}
+          {s ? (
+            <div className="links-summary">
+              {run.isSuccess ? (
+                <SummaryRow title={`${counted(s.added + s.updated, "link")} imported`} note={counted(s.moves, "move")} />
+              ) : nothingNew ? (
+                <SummaryRow title="Nothing new to import" note={`${counted(s.unchanged, "link")} already here`} />
+              ) : (
+                <SummaryRow title={`${counted(s.items - s.unknownMoves, "link")} for ${counted(s.moves, "move")}`} note={changes} />
+              )}
+              {finished ? null : <SummaryRow title="Stays private" note="Only you see where a move came from" />}
+              {s.unknownMoves ? <small className="faint">{`${counted(s.unknownMoves, "link")} name a move this library doesn't have — left out`}</small> : null}
+            </div>
+          ) : null}
+        </Sheet>
+      ) : null}
+    </>
   );
 }
 

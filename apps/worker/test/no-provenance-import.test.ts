@@ -27,6 +27,11 @@ const GUARDED = [
   join(ROOT, "apps", "worker", "test", "fixtures", "standalone-oracle-case.ts"),
   join(ROOT, "apps", "worker", "test", "standalone-import.test.ts"),
   join(ROOT, "apps", "worker", "test", "standalone-stats.test.ts"),
+  // The saved-post links: the builder reads private files from paths it is given and names none; its tests and the
+  // import's are synthetic.
+  join(ROOT, "apps", "worker", "scripts", "build-provenance.mjs"),
+  join(ROOT, "apps", "worker", "test", "build-provenance.test.ts"),
+  join(ROOT, "apps", "worker", "test", "provenance-import.test.ts"),
 ];
 
 test("the library package and the import's fixtures hold no links, handles or social site names", () => {
