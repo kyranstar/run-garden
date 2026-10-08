@@ -823,7 +823,9 @@ export type SyncNoteKind =
   /** A sent program session changed in COROS; the app kept its version. Dismiss only (undo answers 422). */
   | "watch_copy_changed"
   /** A sent program session's copy was deleted in COROS. Dismiss only (undo answers 422). */
-  | "watch_copy_removed";
+  | "watch_copy_removed"
+  /** A sent program session's copy was moved in COROS; the slot followed it. Dismiss only (undo answers 422). */
+  | "watch_copy_moved";
 
 export interface SyncNoteDto {
   id: string;

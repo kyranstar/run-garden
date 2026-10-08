@@ -743,13 +743,15 @@ function syncNoteText(note: SyncNoteDto): string | null {
       return "Changed in COROS — Run Garden kept its version";
     case "watch_copy_removed":
       return "Removed from your watch";
+    case "watch_copy_moved":
+      return `Moved to ${formatDayShort(p.newDate as string)} on your watch`;
     default:
       return null;
   }
 }
 
 /** Notes that only inform (Phase 3): nothing to undo, so no Undo. */
-const DISMISS_ONLY = new Set<SyncNoteDto["kind"]>(["watch_copy_changed", "watch_copy_removed"]);
+const DISMISS_ONLY = new Set<SyncNoteDto["kind"]>(["watch_copy_changed", "watch_copy_removed", "watch_copy_moved"]);
 
 /**
  * Dismissible feed of active sync notes (sync-transparency Task 12) —

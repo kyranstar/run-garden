@@ -31,11 +31,13 @@ import { importPlanSnapshot } from "../src/services/import-plan.js";
 import { applyMove } from "../src/services/jobs.js";
 import { removeFromPlan } from "../src/services/plan-mutations.js";
 import { buildSession, loadSession } from "../src/services/session-build.js";
-import { activeSyncNotes } from "../src/services/sync-notes.js";
+import { activeSyncNotes, postSyncNote } from "../src/services/sync-notes.js";
+import { syncRoutes } from "../src/routes/sync.js";
+import { createSession, SESSION_COOKIE } from "../src/auth/sessions.js";
 import { sendToWatch, takeOffWatch, watchStateOf } from "../src/services/watch-push.js";
 import { mockCorosServer, type MockCorosServer } from "../../../packages/coros/test/mock-coros-server.js";
 import { renormalizingCoros } from "../../../packages/coros/test/renormalizing-coros.js";
-import { makeTestDb, makeTestUser } from "./helpers.js";
+import { makeTestDb, makeTestUser, mountRoutes } from "./helpers.js";
 import {
   connectMock, DAY, makeEnv, NOON, PROGRAM_NAME, rowOf, seedCatalog, seedProgram, seedSlot, seedTmj, switchOn, TOMORROW,
 } from "./watch-push-fixture.js";
@@ -249,15 +251,40 @@ describe("the import and a sent session", () => {
     expect((await rowOf(db, workoutId)).stageSummary).toBe("the app's own words");
   });
 
-  it("(d) moved on COROS (Review Focus 2): the date follows, the build stays locked, still on the watch", async () => {
+  it("(d) moved on COROS (Review Focus 2): the date follows, the build stays locked, still on the watch — and the note only informs", async () => {
     const { workoutId, buildId, stamp } = await pushed();
     const LATER = addDays(DAY, 2);
     entityOf(programOn(stamp)!).happenDay = Number(localDateToCorosDay(LATER));
-    await importFromCoros();
+    await readNow();
     const row = await rowOf(db, workoutId);
     expect(row).toMatchObject({ effectiveDate: LATER, lastVerifiedCorosDate: LATER, archivedAt: null });
-    expect(await notesOf(workoutId, "adopted_coros_change")).toHaveLength(1);
+    // Ruling 3-R15: "Moved to … on your watch", dismiss-only — an Undo would take the copy off the watch.
+    const notes = await notesOf(workoutId);
+    expect(notes.map((n) => [n.kind, n.payload])).toEqual([["watch_copy_moved", { previousDate: DAY, newDate: LATER }]]);
     expect((await db.select().from(sessionBuilds).where(eq(sessionBuilds.id, buildId)))[0]!.lockedAt).not.toBeNull();
+    expect(await watchOf(workoutId)).toEqual({ state: "on_watch" });
+  });
+
+  it("(d) Undo on a sent session's move note answers 422 not_undoable, and nothing comes off the watch (3-R15)", async () => {
+    const { workoutId, buildId, stamp } = await pushed();
+    const LATER = addDays(DAY, 1);
+    entityOf(programOn(stamp)!).happenDay = Number(localDateToCorosDay(LATER));
+    await readNow();
+    const moved = (await notesOf(workoutId, "watch_copy_moved"))[0]!;
+    // A note posted before 3-R15 shipped, of the kind that offered Undo: the route is the backstop.
+    const legacy = await postSyncNote(db, { userId, workoutId, kind: "adopted_coros_change", payload: { previousDate: DAY, newDate: LATER } });
+    const app = mountRoutes(db, "/api/sync", syncRoutes);
+    const cookie = `${SESSION_COOKIE}=${await createSession(db, userId)}`;
+    for (const id of [moved.id, legacy]) {
+      const res = await app.request(`/api/sync/notes/${id}/undo`, { method: "POST", headers: { Cookie: cookie } }, switchOn());
+      expect(res.status).toBe(422);
+      expect(await res.json()).toEqual({ error: "not_undoable" });
+    }
+    await lane();
+    expect(await jobOf(`unpush:${buildId}`)).toBeUndefined();
+    expect(programsNamed(stamp)).toHaveLength(1);
+    expect(await rowOf(db, workoutId)).toMatchObject({ effectiveDate: LATER, lastVerifiedCorosDate: LATER });
+    expect((await notesOf(workoutId)).map((n) => n.id).sort()).toEqual([moved.id, legacy].sort());
     expect(await watchOf(workoutId)).toEqual({ state: "on_watch" });
   });
 

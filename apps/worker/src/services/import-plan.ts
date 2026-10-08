@@ -963,7 +963,10 @@ export async function importPlanSnapshot(
           await postSyncNote(db, {
             userId: input.userId,
             workoutId: current.id,
-            kind: "adopted_coros_change",
+            // A sent program session's move only informs (ruling 3-R15): its
+            // Undo would be a move of a sent slot, which takes the copy off the
+            // watch (3-R3) — a delete behind a button labelled Undo.
+            kind: programRow ? "watch_copy_moved" : "adopted_coros_change",
             payload: { previousDate: action.note.previousDate, newDate: corosDate },
           });
         }
