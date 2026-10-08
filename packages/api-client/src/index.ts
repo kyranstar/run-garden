@@ -1229,6 +1229,11 @@ export const api = {
    */
   startSession: (workoutId: string, buildId: string) =>
     post<SessionDto>(`/api/sessions/${encodeURIComponent(workoutId)}/start`, { buildId }),
+  /**
+   * The player's Discard: the started slot back to built, its build unlocked (Today offers Start again). Idempotent;
+   * 409 `{error: "performed"}` once a performed session exists for the slot; 423 while a restore runs.
+   */
+  unstartSession: (workoutId: string) => post<SessionDto>(`/api/sessions/${encodeURIComponent(workoutId)}/unstart`, {}),
   recordCheck: (body: { profileId: string; value: number | null; feelingOff?: boolean }) =>
     post<{ check: ConditionCheckDto | null }>("/api/conditions/checks", body),
   /** Whether the build the slot shows is still the day's (Start would lock it as it is); never builds. */

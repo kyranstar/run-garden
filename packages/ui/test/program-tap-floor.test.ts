@@ -114,3 +114,42 @@ describe("program settings' segments (audit 2a-UI M2)", () => {
     expect(7 * TAP + 6 * gap).toBeLessThanOrEqual(width);
   });
 });
+
+describe("every sheet's Close (ruling 2b-R12)", () => {
+  it("is a 44px square of its own, not a small button whose 36px box takes the floor only as a pad", () => {
+    // Measured 42×36 on every sheet — the player's swap, how-to, settings and leave sheets, the session sheet, Plan's.
+    const close = rule(".sheet-close");
+    expect(close.width).toBe("var(--tap)");
+    expect(close.height).toBe("var(--tap)");
+    expect(close.padding).toBe("0");
+    const source = readFileSync(fileURLToPath(new URL("../src/components.tsx", import.meta.url)), "utf8");
+    const sheet = source.slice(source.indexOf("export function Sheet("), source.indexOf("export function ConfirmDialog"));
+    expect(sheet).toMatch(/<button className="btn sheet-close" onClick=\{onClose\} aria-label="Close">/);
+    expect(sheet).not.toContain("btn-small");
+  });
+});
+
+describe("the player's Settings at every width (ruling 2b-R8)", () => {
+  it("the header's icons are 44px boxes and nothing hides one below md; only the key list in its sheet waits for md", () => {
+    const icon = rule(".player-icon");
+    expect(icon.width).toBe("var(--tap)");
+    expect(icon.height).toBe("var(--tap)");
+    // The old md-only keys button is gone: the Settings button is a plain `.player-icon`.
+    expect(css).not.toMatch(/\.player-keys-btn\s*\{/);
+    // The key list is a desktop thing: hidden at the base, shown from md (min-width queries only).
+    expect(rule(".player-keylist dl").display).toBe("none");
+    const md = css.slice(css.indexOf("@media (min-width: 900px) {", css.indexOf(".player-keylist dl")));
+    expect(md).toMatch(/^@media \(min-width: 900px\) \{[^@]*\.player-keylist dl\s*\{\s*display: grid;/);
+  });
+});
+
+describe("the swap list's Use, on the player and on the session sheet (audit 2b-B I-1)", () => {
+  it("is a 44px box of its own, both ways — not a small button whose 36px box takes the floor only as a pad", () => {
+    // Measured on a phone at 390: "Use" 53×36 on the player's ⇄ sheet, used at arm's length mid-session.
+    const use = rule(".choice-move > .btn");
+    expect(px(use["min-height"]!)).toBeGreaterThanOrEqual(TAP);
+    expect(px(use["min-width"]!)).toBeGreaterThanOrEqual(TAP);
+    // A row is the move's name and reasons beside the button: centred, so the taller button never misaligns them.
+    expect(rule(".choice-move")["align-items"]).toBe("center");
+  });
+});

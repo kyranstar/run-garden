@@ -14,7 +14,7 @@ import { MemoryRouter, Route, Routes } from "react-router-dom";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { IDBFactory } from "fake-indexeddb";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { ReviewBasisDto, SessionBuildDto, SessionDto } from "@rg/api-client";
+import { ApiError, type ReviewBasisDto, type SessionBuildDto, type SessionDto } from "@rg/api-client";
 import { EXERCISES, makeEngineData } from "@rg/exercise-library";
 import { historyFromPerformed, Records, type Step } from "@rg/session-engine";
 import { performedSessionSaveSchema } from "@rg/domain";
@@ -22,6 +22,7 @@ import { openOfflineDb, type OfflineDb } from "../src/offline/idb.js";
 import { loadBuild, saveBuild } from "../src/offline/builds.js";
 import { readLive } from "../src/offline/live.js";
 import { outboxEntries } from "../src/offline/outbox.js";
+import { drainUnstarts, queuedUnstarts } from "../src/offline/unstarts.js";
 import { saveBasis, saveExtras } from "../src/player/stored.js";
 import { PlayerScreen } from "../src/screens/player.js";
 import type { Chimes } from "../src/player/audio.js";
@@ -56,12 +57,22 @@ async function stored(opts: { build?: SessionBuildDto; basis?: ReviewBasisDto | 
   if (opts.basis) await saveBasis(db, SLOT, opts.basis);
 }
 
-function mount(opts: { savePerformed?: (id: string, p: unknown) => Promise<unknown>; whoAmI?: () => Promise<string | null> } = {}) {
+function mount(
+  opts: {
+    savePerformed?: (id: string, p: unknown) => Promise<unknown>;
+    whoAmI?: () => Promise<string | null>;
+    /** How long Save waits for its first send before going to Today. */
+    saveWaitMs?: number;
+    qc?: QueryClient;
+    unstartSession?: (workoutId: string) => Promise<unknown>;
+  } = {},
+) {
   const getSession = vi.fn(offline);
   const savePerformed = vi.fn(opts.savePerformed ?? offline);
+  const unstartSession = vi.fn(opts.unstartSession ?? offline);
   host = document.createElement("div");
   document.body.appendChild(host);
-  const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  const qc = opts.qc ?? new QueryClient({ defaultOptions: { queries: { retry: false } } });
   const player = createElement(PlayerScreen, {
     workoutId: SLOT,
     deps: {
@@ -69,9 +80,11 @@ function mount(opts: { savePerformed?: (id: string, p: unknown) => Promise<unkno
       getSession,
       reviewBasis: vi.fn(offline),
       savePerformed,
+      unstartSession,
       whoAmI: opts.whoAmI ?? (async () => null),
       chimes: noChimes,
       wake: () => () => undefined,
+      ...(opts.saveWaitMs === undefined ? {} : { saveWaitMs: opts.saveWaitMs }),
     },
   });
   root = createRoot(host);
@@ -93,7 +106,7 @@ function mount(opts: { savePerformed?: (id: string, p: unknown) => Promise<unkno
       ),
     );
   });
-  return { getSession, savePerformed };
+  return { getSession, savePerformed, unstartSession };
 }
 
 const flush = () => act(async () => void (await new Promise((r) => setImmediate(r))));
@@ -184,9 +197,9 @@ describe("Review Focus 5 — a session abandoned after two steps", () => {
     expect(getSession).not.toHaveBeenCalled();
   });
 
-  it("Discard keeps nothing: no outbox entry, no session in progress, nothing sent — and the slot keeps its build, not done", async () => {
+  it("Discard keeps nothing and un-starts the slot (ruling 2b-R9): no outbox entry, no session in progress, nothing saved", async () => {
     await stored();
-    const { getSession, savePerformed } = mount();
+    const { getSession, savePerformed, unstartSession } = mount({ unstartSession: async () => ({ workoutId: SLOT, contentState: "built" }) });
     await abandonAfterTwoSteps();
     await click("Discard");
     await until(() => !!control("Discard session"), "the question");
@@ -196,8 +209,29 @@ describe("Review Focus 5 — a session abandoned after two steps", () => {
     expect(await readLive(db!, SLOT)).toBeUndefined();
     expect(savePerformed).not.toHaveBeenCalled();
     expect(getSession).not.toHaveBeenCalled();
-    // Still startable on this device, offline: Continue plays a fresh session from the same locked build.
-    expect((await loadBuild(db!, SLOT))?.build.buildId).toBe("build-1");
+    // The server's slot is built again — Today offers Start, not Continue — and the device forgets the start, so it can
+    // never replay the discarded session's build.
+    expect(unstartSession).toHaveBeenCalledWith(SLOT);
+    expect(await loadBuild(db!, SLOT)).toBeUndefined();
+    expect(await queuedUnstarts(db!, "user-1")).toEqual([]);
+  });
+
+  it("Discard offline: the un-start waits on the device and goes when the network is back", async () => {
+    await stored();
+    const { unstartSession } = mount();
+    await abandonAfterTwoSteps();
+    await click("Discard");
+    await until(() => !!control("Discard session"), "the question");
+    await click("Discard session");
+    await until(() => text().includes("today screen"), "Today");
+    expect(unstartSession).toHaveBeenCalledWith(SLOT);
+    expect((await queuedUnstarts(db!, "user-1")).map((u) => u.workoutId)).toEqual([SLOT]);
+    expect(await loadBuild(db!, SLOT)).toBeUndefined();
+    // Online again: the outbox's triggers send it, once.
+    const online = vi.fn(async () => ({}));
+    expect(await drainUnstarts(db!, { unstartSession: online }, { userId: "user-1" })).toEqual({ unstarted: 1 });
+    expect(online).toHaveBeenCalledWith(SLOT);
+    expect(await queuedUnstarts(db!, "user-1")).toEqual([]);
   });
 });
 
@@ -221,6 +255,122 @@ describe("whose save it is (ruling 2b-R6)", () => {
     await until(() => text().includes("Couldn't save on this device"), "the notice");
     expect(await outboxEntries(db!)).toEqual([]);
     expect(control("Save")).toBeDefined();
+  });
+});
+
+describe("the review's own inputs are kept with the session (audit 2b-B M-4)", () => {
+  it("left from the review and opened again later: the post-check, the note and a 👍 are still there, and the session ends when it ended", async () => {
+    await stored();
+    mount();
+    // Ended at 96 s.
+    await abandonAfterTwoSteps();
+    await click("0", controls("0").find((b) => b.getAttribute("role") === "radio"));
+    await type(control("Note") as HTMLTextAreaElement, "kept");
+    await click(/^👍 Low lunge/);
+    // ✕ on the review: Leave, no question asked. The phone is put away; the session is opened again ten minutes on.
+    await click("Leave the session");
+    await until(() => text().includes("today screen"), "Today");
+    act(() => root!.unmount());
+    host?.remove();
+    vi.setSystemTime(T0 + 696 * S);
+    mount();
+    await until(() => !!control("Save"), "the review again");
+    expect(controls("0").find((b) => b.getAttribute("role") === "radio")!.getAttribute("aria-checked")).toBe("true");
+    expect((control("Note") as HTMLTextAreaElement).value).toBe("kept");
+    expect(control(/^👍 Low lunge/)!.getAttribute("aria-pressed")).toBe("true");
+    await click("Save");
+    await until(() => text().includes("today screen"), "Today");
+    const e = await entry();
+    expect(e.payload.endedAt).toBe(new Date(T0 + 96 * S).toISOString());
+    expect(e.payload.note).toBe("kept");
+    expect(e.payload.review.ratings).toEqual({ lowLunge: 1 });
+    expect(e.payload.checks).toEqual(expect.arrayContaining([expect.objectContaining({ profileId: "tmj", kind: "post", value: 0 })]));
+  });
+
+  it("two tabs on one review with the same answers save the same payload (one session, never a conflict)", async () => {
+    await stored();
+    mount();
+    await abandonAfterTwoSteps();
+    await type(control("Note") as HTMLTextAreaElement, "same");
+    await act(async () => window.dispatchEvent(new Event("pagehide")));
+    await until(() => true, "flush");
+    act(() => root!.unmount());
+    host?.remove();
+    // The second tab opens the same review a minute later and saves; then the first does, with the same note.
+    vi.setSystemTime(T0 + 156 * S);
+    mount();
+    await until(() => !!control("Save"), "the review in the second tab");
+    expect((control("Note") as HTMLTextAreaElement).value).toBe("same");
+    await click("Save");
+    await until(() => text().includes("today screen"), "Today");
+    const [first] = await outboxEntries(db!);
+    expect(first!.payload.endedAt).toBe(new Date(T0 + 96 * S).toISOString());
+  });
+});
+
+describe("a hold skipped before half its time (ruling 2b-R15)", () => {
+  it("reads Skipped on the review, and the save counts neither the step nor the move", async () => {
+    await stored();
+    mount();
+    // The flow's two sides and the cool-down skipped at once; the sets done; the wall sit skipped at once.
+    await playThrough();
+    await click(/^\d+ more/);
+    const summary = (name: string) => control(new RegExp(`^Edit ${name}`))!.querySelector("small")!.textContent;
+    expect(summary("Low lunge")).toBe("Skipped");
+    expect(summary("Reclined butterfly")).toBe("Skipped");
+    expect(summary("Wall sit")).toBe("Not done");
+    expect(summary("Goblet squat")).toBe("35 lb × 6 · 35 lb × 6 · 35 lb × 6");
+    await click("Save");
+    await until(() => text().includes("today screen"), "Today");
+    const e = await entry();
+    expect(e.payload.stepsDone).toBe(3);
+    expect(e.payload.movesDone.map((m) => m.exerciseId)).toEqual(["gobletSquat"]);
+  });
+
+  it("a hold held half its time or more reads Done", async () => {
+    await stored();
+    mount();
+    await until(() => text().includes("1 of 9"), "the first step");
+    // Left held its whole 45 s (3 s get-ready first); Right skipped at once.
+    vi.setSystemTime(T0 + 48 * S);
+    await click("Skip");
+    await click("Skip");
+    await click("Leave the session");
+    await click("End and review");
+    await until(() => !!control("Save"), "the review");
+    expect(control(/^Edit Low lunge/)!.querySelector("small")!.textContent).toBe("Done");
+  });
+});
+
+describe("the review's keys are the page's, not the player's (audit 2b-B M-1)", () => {
+  it("ended with the log card open: Enter in the Note is a new line, and Space and ← do nothing of the player's", async () => {
+    await stored();
+    mount();
+    await until(() => text().includes("1 of 9"), "the first step");
+    await click("Skip");
+    await click("Skip");
+    await click("Done");
+    expect(control("Weight")).toBeDefined();
+    await click("Leave the session");
+    await click("End and review");
+    await until(() => !!control("Save"), "the review");
+    const note = control("Note") as HTMLTextAreaElement;
+    const keydown = async (key: string, target: EventTarget) => {
+      const e = new KeyboardEvent("keydown", { key, bubbles: true, cancelable: true });
+      await act(async () => void target.dispatchEvent(e));
+      return e;
+    };
+    expect((await keydown("Enter", note)).defaultPrevented).toBe(false);
+    expect((await keydown(" ", document.body)).defaultPrevented).toBe(false);
+    expect((await keydown("ArrowLeft", document.body)).defaultPrevented).toBe(false);
+    expect(control("Save")).toBeDefined();
+    // The set left open was never confirmed: the review shows it as not done, untouched by the keys.
+    await type(note, "line one\nline two");
+    await click("Save");
+    await until(() => text().includes("today screen"), "Today");
+    const e = await entry();
+    expect(e.payload.note).toBe("line one\nline two");
+    expect(e.payload.entries.find((x) => x.exerciseId === "gobletSquat")).toBeUndefined();
   });
 });
 
@@ -347,8 +497,8 @@ describe("the review's own decisions, applied only on Save", () => {
     mount();
     await playThrough();
     expect(text()).toContain("New best: Goblet squat 35 lb × 6");
-    // The cool-down's move was reached (unlogged moves count when reached); the skipped wall sit was not done.
-    expect(text()).toContain("First time: Reclined butterfly");
+    // Skipped at once, the cool-down's hold and the wall sit were not done (ruling 2b-R15): no first time for either.
+    expect(text()).not.toContain("First time: Reclined butterfly");
     expect(text()).not.toContain("First time: Wall sit");
     expect(text()).not.toContain("First time: Goblet squat");
   });
@@ -419,6 +569,58 @@ describe("graduation offers", () => {
     await click("Save");
     await until(() => text().includes("today screen"), "Today");
     expect((await entry()).payload.review.graduations).toEqual([]);
+  });
+});
+
+describe("a first send slower than Save's wait (audit 2b-B M-2)", () => {
+  /** Every query the app is told to refetch, in order, with whether the server had the session by then. */
+  function watched() {
+    const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    const asked: Array<{ key: string; sent: boolean }> = [];
+    let sent = false;
+    vi.spyOn(qc, "invalidateQueries").mockImplementation(async (f) => {
+      asked.push({ key: String((f as { queryKey?: unknown[] })?.queryKey?.[0]), sent });
+    });
+    return { qc, asked, markSent: () => (sent = true) };
+  }
+
+  it("Today reads 'will sync' at once, and refetches when the send lands — not only on the next trigger", async () => {
+    await stored();
+    const { qc, asked, markSent } = watched();
+    let land!: () => void;
+    const landed = new Promise<void>((r) => (land = r));
+    mount({
+      qc,
+      saveWaitMs: 20,
+      savePerformed: async () => {
+        await landed;
+        markSent();
+        return { status: "saved" };
+      },
+    });
+    await abandonAfterTwoSteps();
+    await click("Save");
+    // Save's wait (20 ms, real time) runs out while the send is still out.
+    await act(async () => {
+      await new Promise((r) => setTimeout(r, 60));
+    });
+    await until(() => text().includes("today screen"), "Today");
+    expect((await outboxEntries(db!)).length).toBe(1);
+    land();
+    await until(async () => (await outboxEntries(db!)).length === 0, "the send landed");
+    await until(() => asked.some((a) => a.sent && a.key === "outbox"), "the outbox asked again");
+    expect(asked.filter((a) => a.sent).map((a) => a.key)).toEqual(expect.arrayContaining(["outbox", "today", "plan", "garden"]));
+  });
+
+  it("a send refused for an expired sign-in asks again who is signed in (audit 2b-B M-3)", async () => {
+    await stored();
+    const { qc, asked } = watched();
+    mount({ qc, savePerformed: async () => Promise.reject(new ApiError(401, { error: "unauthorized" })) });
+    await abandonAfterTwoSteps();
+    await click("Save");
+    await until(() => text().includes("today screen"), "Today");
+    await until(() => asked.some((a) => a.key === "me"), "the sign-in asked again");
+    expect((await entry()).lastError).toBe("http_401");
   });
 });
 

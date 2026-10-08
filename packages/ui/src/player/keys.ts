@@ -1,7 +1,8 @@
 /**
  * THE PLAYER'S KEYS (spec §2b "Player"; mocks §4, desktop): Space = the primary action, only when no control has focus
  * (a focused button presses itself on Space — acting on it too would act twice); Enter = confirm the log card; Esc =
- * close a panel and carry on; ←/→ = previous / next step; S = swap; I = how-to; ? = the key list. Typing in a field
+ * close a panel and carry on; ←/→ = previous / next step; S = swap; I = how-to; ? = the player's settings (the key list
+ * and "Move on when a timer ends"; the header's Settings button opens the same sheet at every width). Typing in a field
  * types; while a panel is open only Esc (and Enter, for the log) act. A key with Ctrl, ⌘ or Alt is the browser's.
  */
 export type PlayerCommand = "primary" | "confirm" | "close" | "prev" | "next" | "swap" | "howto" | "keys";

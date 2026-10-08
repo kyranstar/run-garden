@@ -2148,6 +2148,13 @@ a.note {
 .today-session-skipped {
   color: var(--ink-soft);
 }
+/* A session left in progress on this device (ruling 2b-R16): its name and step beside a full-size Continue. */
+.today-inprogress-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: var(--space-5);
+}
 /* A skipped line keeps a way in to Un-skip (2a UI re-review U6). */
 .today-session-end {
   display: inline-flex;
@@ -2364,6 +2371,12 @@ button.session-chip {
 }
 .choice-move:last-child {
   border-bottom: 0;
+}
+/* Use is a full 44px box both ways (audit 2b-B I-1): the ⇄ sheet is used at arm's length mid-session, where a 36px
+   small button measured 53×36. */
+.choice-move > .btn {
+  min-height: var(--tap);
+  min-width: var(--tap);
 }
 .choice-move-text {
   display: grid;
@@ -4461,6 +4474,14 @@ button.session-chip {
 .sheet-head {
   flex: none;
   margin-bottom: var(--space-5);
+}
+/* Every sheet's ✕: a 44px square of its own (ruling 2b-R12). It was a small button, 42×36, that took the floor only
+   as a pad — on every sheet, the player's included, where it is reached for at arm's length. */
+.sheet-close {
+  flex: none;
+  width: var(--tap);
+  height: var(--tap);
+  padding: 0;
 }
 .sheet-body {
   flex: 1 1 auto;
@@ -7938,9 +7959,6 @@ button.session-chip::after {
   border-color: var(--ink-faint);
   color: var(--ink);
 }
-.player-keys-btn {
-  display: none;
-}
 .player-bar {
   /* scale-exempt: a graphic track, the height of its own fill */
   height: 4px;
@@ -8057,8 +8075,10 @@ button.session-chip::after {
   padding: 0 var(--space-2);
   color: var(--ink-soft);
 }
+/* The player's Settings sheet: "Move on when a timer ends" at every width (ruling 2b-R8); the key list from md, where
+   there is a keyboard. */
 .player-keylist dl {
-  display: grid;
+  display: none;
   grid-template-columns: auto 1fr;
   gap: var(--space-4) var(--space-6);
   margin: 0;
@@ -8120,8 +8140,8 @@ button.session-chip::after {
   .player-count-left {
     display: inline;
   }
-  .player-keys-btn {
-    display: inline-grid;
+  .player-keylist dl {
+    display: grid;
   }
   .player-main,
   .player-actions {

@@ -346,6 +346,21 @@ describe("startOutboxSync", () => {
   });
 });
 
+describe("a send refused for an expired sign-in (audit 2b-B M-3)", () => {
+  it("keeps the entry waiting and says the sign-in is gone, so the app can ask the athlete to sign in", async () => {
+    const db = await freshDb();
+    await enqueue(db, save("s1"), ME, 1000);
+    const api: OutboxApi = { savePerformed: vi.fn(async () => Promise.reject(new ApiError(401, { error: "unauthorized" }))) };
+    const result = await drain(db, api, { userId: ME, now: () => 5000 });
+    expect(result).toMatchObject({ saved: 0, signedOut: true });
+    expect(await outboxEntries(db)).toMatchObject([{ performedId: "s1", state: "pending", lastError: "http_401" }]);
+    // Anything else is not a lost sign-in.
+    const { api: flaky } = server({ s1: ["offline"] });
+    expect(await drain(db, flaky, { userId: ME, now: () => 99_000 })).toMatchObject({ signedOut: false });
+    db.close();
+  });
+});
+
 describe("the outbox belongs to the account that saved (ruling 2b-R6; audit 2b-A M-9)", () => {
   it("tags each entry with its account; a drain sends only the signed-in account's, and leaves another's untouched", async () => {
     const db = await freshDb();

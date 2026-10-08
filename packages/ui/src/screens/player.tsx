@@ -20,15 +20,17 @@ import { formatWeight, parseWeight, type Weight, type WeightUnit } from "@rg/dom
 import type { EngineData } from "@rg/exercise-library";
 import { Lib, Prog, type SlotChoice, type Step } from "@rg/session-engine";
 import { Sheet, Spinner } from "../components.js";
+import { afterDrain, SAVED_SESSION_QUERIES } from "../components/outbox-sync.js";
 import { ExerciseHowto, type HowtoTarget } from "../components/exercise-howto.js";
 import { BLOCK_LABEL, FORMAT_LABEL } from "../components/session-sheet.js";
 import { Stepper } from "../components/set-steppers.js";
-import { IconClose, IconInfo, IconSwap } from "../icons.js";
+import { IconClose, IconInfo, IconSettings, IconSwap } from "../icons.js";
 import { loadBuild, saveBuild, type StoredSessionBuild } from "../offline/builds.js";
 import { offlineDb, type OfflineDb } from "../offline/idb.js";
 import { meWithOfflineFallback } from "../offline/me.js";
 import { createLiveWriter, readLive, writeLive, type LiveWriter } from "../offline/live.js";
 import type { OutboxApi } from "../offline/outbox.js";
+import type { UnstartApi } from "../offline/unstarts.js";
 import { chimes as appChimes, type Chimes } from "../player/audio.js";
 import { commandFor, type PlayerCommand } from "../player/keys.js";
 import {
@@ -67,11 +69,17 @@ export interface PlayerDeps {
   reviewBasis: (workoutId: string) => Promise<ReviewBasisDto>;
   /** The outbox's delivery (Save tries it at once). */
   savePerformed: OutboxApi["savePerformed"];
+  /** Discard's un-start (ruling 2b-R9): the slot back to built on the server. */
+  unstartSession: UnstartApi["unstartSession"];
   /** Who is signed in, when Start did not say (offline: the answer kept on the device). */
   whoAmI: () => Promise<string | null>;
   chimes: Chimes;
   /** Hold the screen on; returns release. */
   wake: () => () => void;
+  /** How long the clock's own changes wait before they are written (the live writer's debounce). */
+  writeDelayMs?: number;
+  /** How long Save waits for its first send before it goes to Today ("saved, will sync"). */
+  saveWaitMs?: number;
 }
 
 const defaultDeps: PlayerDeps = {
@@ -79,6 +87,7 @@ const defaultDeps: PlayerDeps = {
   getSession: api.getSession,
   reviewBasis: api.reviewBasis,
   savePerformed: api.savePerformed,
+  unstartSession: api.unstartSession,
   whoAmI: async () => (await meWithOfflineFallback().catch(() => null))?.userId ?? null,
   chimes: appChimes,
   wake: () => holdWakeLock(),
@@ -133,7 +142,9 @@ async function load(workoutId: string, deps: PlayerDeps): Promise<{ loaded: Load
     if (session.contentState === "done") return { loaded: { kind: "done" }, db };
     if (session.contentState !== "started" || !session.build || !session.view) return { loaded: { kind: "unstarted" }, db };
     stored = { workoutId, build: session.build, view: session.view, savedAt: Date.now() };
-    extras = { workoutId, title: session.view.theme?.name ?? "Session", profiles: session.profiles, userId: null, savedAt: Date.now() };
+    // The signed-in account it is played for: its save, and Today's "Session in progress", are that account's.
+    const userId = await deps.whoAmI().catch(() => null);
+    extras = { workoutId, title: session.view.theme?.name ?? "Session", profiles: session.profiles, userId, savedAt: Date.now() };
     if (db) {
       await saveBuild(db, session).catch(() => undefined);
       await saveExtras(db, extras).catch(() => undefined);
@@ -244,23 +255,32 @@ function Playing({ loaded, db, deps }: { loaded: Extract<Loaded, { kind: "ready"
   /** A panel paused the countdown: closing it resumes. */
   const pausedByPanel = useRef(false);
   const writer = useRef<LiveWriter | null>(null);
-  /** Keeping the session on the device failed (storage full, the database gone): the athlete is told. */
-  const [notKept, setNotKept] = useState(false);
+  /**
+   * Keeping the session on the device failed (storage full, the database gone), or the device has no IndexedDB at all
+   * (blocked site data, a broken private mode): the athlete is told, from the first moment (audit 2b-B I-2).
+   */
+  const [notKept, setNotKept] = useState(db === null);
 
-  // ── Persistence: every change, debounced; flushed when hidden or left ─────────────────────────────────────────
+  // ── Persistence: every change; what a tap changed at once, the clock's own changes debounced; flushed when hidden
+  //    or left ─────────────────────────────────────────────────────────────────────────────────────────────────────
   useEffect(() => {
     if (!db) return;
-    const w = createLiveWriter(db, { onError: () => setNotKept(true) });
+    const w = createLiveWriter(db, { onError: () => setNotKept(true), delayMs: deps.writeDelayMs });
     writer.current = w;
     return () => {
       writer.current = null;
       w.dispose();
     };
-  }, [db]);
+  }, [db, deps.writeDelayMs]);
+  /** The next change came from a tap (Confirm, Done, Skip, a swap, +15 s, a step, a pause): kept at once. */
+  const tapped = useRef(false);
   useEffect(() => {
     writer.current?.write(toLiveSession(state, Date.now()));
-    // The end of the session is kept at once: a reload right after it comes back to the review, never to the last step.
-    if (state.finished) writer.current?.flush().catch(() => setNotKept(true));
+    // A confirmed set, and every other tap, is kept at once (ruling 2b-R13: a crash loses at most the clock's last
+    // ~2 s, never a set); so is the end of the session — a reload right after it comes back to the review, never to
+    // the last step.
+    if (tapped.current || state.finished) writer.current?.flush().catch(() => setNotKept(true));
+    tapped.current = false;
   }, [state]);
 
   // ── The wall clock: a light tick while playing, and a catch-up whenever the page comes back ────────────────────
@@ -331,9 +351,11 @@ function Playing({ loaded, db, deps }: { loaded: Extract<Loaded, { kind: "ready"
     [focus, src.build, state.swaps],
   );
 
+  /** A tap's change: kept on the device at once (the clock's own ticks go through `refresh`, debounced). */
   const act = (f: (s: PlayerState, t: number) => PlayerState) => {
     const t = Date.now();
     setNow(t);
+    tapped.current = true;
     setState((s) => f(s, t));
   };
   const openPanel = (p: Exclude<Panel, null>) => {
@@ -363,6 +385,8 @@ function Playing({ loaded, db, deps }: { loaded: Extract<Loaded, { kind: "ready"
     const paused = pause(state, t);
     setState(paused);
     if (db) await writeLive(db, toLiveSession(paused, t)).catch(() => undefined);
+    // Today lists it as a session in progress (ruling 2b-R16).
+    void qc.invalidateQueries({ queryKey: ["live-sessions"] });
     navigate("/");
   };
 
@@ -448,6 +472,8 @@ function Playing({ loaded, db, deps }: { loaded: Extract<Loaded, { kind: "ready"
   runRef.current = run;
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
+      // The review is a page of its own: its fields and buttons take their keys (audit 2b-B M-1).
+      if (finishedRef.current) return;
       const c = commandFor(e, { panelOpen: panelRef.current !== null, logOpen: logRef.current });
       if (c && runRef.current(c)) e.preventDefault();
     };
@@ -458,6 +484,14 @@ function Playing({ loaded, db, deps }: { loaded: Extract<Loaded, { kind: "ready"
   panelRef.current = panel;
   const logRef = useRef(logOpen);
   logRef.current = logOpen;
+  const finishedRef = useRef(state.finished);
+  finishedRef.current = state.finished;
+  // A log card left open when the session ended (✕ → End and review) is closed with it: its draft was never confirmed.
+  useEffect(() => {
+    if (!state.finished) return;
+    setLogOpen(false);
+    setDraft(null);
+  }, [state.finished]);
 
   if (state.finished) {
     /** Nothing more is written for this session in progress (Save and Discard end it). */
@@ -471,7 +505,7 @@ function Playing({ loaded, db, deps }: { loaded: Extract<Loaded, { kind: "ready"
     };
     const refresh = (saved: boolean) => {
       void qc.invalidateQueries({ queryKey: ["outbox"] });
-      if (saved) for (const k of ["today", "plan", "plan-week", "programs", "garden"]) void qc.invalidateQueries({ queryKey: [k] });
+      if (saved) for (const k of SAVED_SESSION_QUERIES) void qc.invalidateQueries({ queryKey: [k] });
     };
     return (
       <ReviewScreen
@@ -489,7 +523,12 @@ function Playing({ loaded, db, deps }: { loaded: Extract<Loaded, { kind: "ready"
             // The account the save belongs to: Start's, else the one signed in now, else the answer kept here.
             const userId = extras?.userId ?? qc.getQueryData<MeResponse>(["me"])?.userId ?? (await deps.whoAmI());
             if (!userId) throw new Error("no signed-in account to save for");
-            const result = await saveSession(db, wire, { savePerformed: deps.savePerformed }, userId);
+            // The first send's answer reaches the screens whenever it lands, even after Today shows "will sync"
+            // (audit 2b-B M-2), and an expired sign-in sends the app to sign-in (M-3).
+            const result = await saveSession(db, wire, { savePerformed: deps.savePerformed }, userId, {
+              waitMs: deps.saveWaitMs,
+              onDrained: (r) => afterDrain(qc, r),
+            });
             refresh(result === "saved");
           } else {
             // No IndexedDB (a private window): straight to the server, or not at all.
@@ -500,7 +539,25 @@ function Playing({ loaded, db, deps }: { loaded: Extract<Loaded, { kind: "ready"
         }}
         onDiscard={async () => {
           await stopWriting();
-          if (db) await discardSession(db, src.workoutId).catch(() => undefined);
+          // The slot is un-started (ruling 2b-R9): Today offers Start again, never a Continue that replays this session.
+          const replanned = () => {
+            for (const k of ["today", "plan", "plan-week", "programs"]) void qc.invalidateQueries({ queryKey: [k] });
+          };
+          const unstart = { unstartSession: deps.unstartSession };
+          if (db) {
+            const userId = extras?.userId ?? qc.getQueryData<MeResponse>(["me"])?.userId ?? (await deps.whoAmI().catch(() => null));
+            await discardSession(db, src.workoutId, {
+              userId,
+              api: unstart,
+              waitMs: deps.saveWaitMs,
+              onDrained: (r) => {
+                if (r && r.unstarted > 0) replanned();
+              },
+            }).catch(() => undefined);
+          } else {
+            await deps.unstartSession(src.workoutId).catch(() => undefined);
+          }
+          replanned();
           navigate("/", { replace: true });
         }}
       />
@@ -535,8 +592,9 @@ function Playing({ loaded, db, deps }: { loaded: Extract<Loaded, { kind: "ready"
               <IconInfo size={18} />
             </button>
           ) : null}
-          <button type="button" className="player-icon player-keys-btn" aria-label="Keys" onClick={() => setPanel("keys")}>
-            ?
+          {/* At every width (ruling 2b-R8): its sheet holds "Move on when a timer ends" — and, from md, the keys. */}
+          <button type="button" className="player-icon" aria-label="Settings" onClick={() => setPanel("keys")}>
+            <IconSettings size={18} />
           </button>
         </span>
       </header>
@@ -599,7 +657,7 @@ function Playing({ loaded, db, deps }: { loaded: Extract<Loaded, { kind: "ready"
               · <kbd>S</kbd> swap
             </>
           ) : null}{" "}
-          · <kbd>I</kbd> how-to · <kbd>?</kbd> keys
+          · <kbd>I</kbd> how-to · <kbd>?</kbd> settings
         </p>
       </footer>
 
@@ -624,7 +682,7 @@ function Playing({ loaded, db, deps }: { loaded: Extract<Loaded, { kind: "ready"
                 </div>
                 <button
                   type="button"
-                  className="btn btn-small"
+                  className="btn"
                   onClick={() => {
                     pausedByPanel.current = false;
                     setPanel(null);
@@ -643,9 +701,10 @@ function Playing({ loaded, db, deps }: { loaded: Extract<Loaded, { kind: "ready"
         </Sheet>
       ) : null}
       {panel === "keys" ? (
-        <Sheet open onClose={closePanel} title="Keys">
+        <Sheet open onClose={closePanel} title="Settings">
           <div className="stack player-keylist">
-            <dl>
+            {/* The keys: shown from md, where there is a keyboard (styles.css). */}
+            <dl aria-label="Keys">
               <dt>
                 <kbd>Space</kbd>
               </dt>

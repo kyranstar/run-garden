@@ -10,13 +10,13 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import type { ConditionViewDto, ReviewBasisDto } from "@rg/api-client";
 import { formatWeight, parseWeight, type Weight, type WeightUnit } from "@rg/domain";
 import type { EngineData } from "@rg/exercise-library";
-import { Lib, Prog, Review, type ReviewState } from "@rg/session-engine";
+import { Lib, Prog, Review } from "@rg/session-engine";
 import { ConfirmDialog } from "../components.js";
 import { CheckScale, checkWord } from "../components/condition-check-sheet.js";
 import { Stepper } from "../components/set-steppers.js";
 import { IconClose } from "../icons.js";
 import { editSet, reviewFacts, reviewRows, savedPrefs, setDone, setsLine, wireOf, type ReviewRow } from "../player/review.js";
-import type { PlayerSource, PlayerState } from "../player/run.js";
+import type { PlayerSource, PlayerState, ReviewKept } from "../player/run.js";
 import type { PerformedSessionWire } from "@rg/domain";
 
 export function ReviewScreen({
@@ -42,17 +42,19 @@ export function ReviewScreen({
   onDiscard: () => Promise<void>;
   onLeave: () => void;
 }) {
-  const [post, setPost] = useState<Record<string, number | null>>({});
-  const [note, setNote] = useState("");
-  const [review, setReview] = useState<ReviewState>(() => Review.start());
+  // The review's own inputs live in the session kept on the device (audit 2b-B M-4): a reload, a crash or Leave keeps
+  // them, and two tabs on one review read the same ones.
+  const kept: ReviewKept = state.review ?? { post: {}, note: "", review: Review.start() };
+  const { post, note, review } = kept;
+  const keep = (change: Partial<ReviewKept>) => onChange({ ...state, review: { ...kept, ...change } });
   const [open, setOpen] = useState<string | null>(null);
   const [all, setAll] = useState(false);
   const [discarding, setDiscarding] = useState(false);
   const [busy, setBusy] = useState(false);
   const [failed, setFailed] = useState(false);
 
-  // As of now: the session's running time stopped at the end, so this only dates the save.
-  const endedAt = useMemo(() => new Date().toISOString(), []);
+  // When the session ended, kept with it: reopening the review later never re-dates it.
+  const endedAt = useMemo(() => new Date(state.finishedAt ?? Date.now()).toISOString(), [state.finishedAt]);
   const facts = useMemo(() => reviewFacts(state, src, data, basis, { post, note }, endedAt), [state, src, data, basis, post, note, endedAt]);
   // An edit that withdraws an offer withdraws a yes to it too.
   const shown = Review.prune(review, facts.offers);
@@ -97,7 +99,7 @@ export function ReviewScreen({
                 min={p.check.min}
                 max={p.check.max}
                 value={post[p.profileId] ?? null}
-                onPick={(n) => setPost((cur) => ({ ...cur, [p.profileId]: n }))}
+                onPick={(n) => keep({ post: { ...post, [p.profileId]: n } })}
               />
             </section>
           );
@@ -113,7 +115,7 @@ export function ReviewScreen({
                 onToggle={() => setOpen(open === row.exerciseId ? null : row.exerciseId)}
                 rating={prefs.ratings[row.exerciseId] ?? null}
                 excluded={prefs.excluded.includes(row.exerciseId)}
-                onRate={(v) => setReview((r) => Review.rate(r, savedPrefs(basis), row.exerciseId, v))}
+                onRate={(v) => keep({ review: Review.rate(review, savedPrefs(basis), row.exerciseId, v) })}
                 state={state}
                 onChange={onChange}
                 src={src}
@@ -140,11 +142,11 @@ export function ReviewScreen({
                   type="button"
                   className={`btn${accepted ? " btn-primary" : ""}`}
                   aria-pressed={accepted}
-                  onClick={() => setReview((r) => Review.graduate(r, o.family, o.to, true))}
+                  onClick={() => keep({ review: Review.graduate(review, o.family, o.to, true) })}
                 >
                   Switch
                 </button>
-                <button type="button" className="btn" onClick={() => setReview((r) => Review.graduate(r, o.family, o.to, false))}>
+                <button type="button" className="btn" onClick={() => keep({ review: Review.graduate(review, o.family, o.to, false) })}>
                   Not yet
                 </button>
               </div>
@@ -167,7 +169,7 @@ export function ReviewScreen({
           </section>
         ) : null}
 
-        <textarea className="review-note" aria-label="Note" placeholder="Note" rows={2} value={note} onChange={(e) => setNote(e.target.value)} />
+        <textarea className="review-note" aria-label="Note" placeholder="Note" rows={2} value={note} onChange={(e) => keep({ note: e.target.value })} />
         {failed ? <p className="review-meta">Couldn't save on this device. Try again.</p> : null}
       </main>
       <footer className="player-actions review-actions">
@@ -231,7 +233,8 @@ function ReviewMove({
   unit: WeightUnit;
 }) {
   const line = setsLine(row);
-  const summary = line || (row.logged ? "Not done" : "Done");
+  // An unlogged hold left before half its time was skipped, and the save says so too (ruling 2b-R15).
+  const summary = line || (row.logged ? "Not done" : row.done ? "Done" : "Skipped");
   return (
     <div className="review-move">
       <div className="review-move-row">

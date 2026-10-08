@@ -9,7 +9,7 @@
  *    keeps;
  *  - the build composed from them is byte-identical to the build composed from the whole history.
  */
-import { beforeAll, describe, expect, it } from "vitest";
+import { beforeAll, describe, expect, it, vi } from "vitest";
 import { adaptiveConfigSchema, addDays, newId } from "@rg/domain";
 import { schema } from "@rg/database";
 import { Hist, Rng, type Block, type HistorySession } from "@rg/session-engine";
@@ -18,6 +18,9 @@ import type { Db } from "../src/services/db.js";
 import { composeBuild } from "../src/services/session-build.js";
 import { loadBuildHistory, loadHistory, type EngineContext } from "../src/services/engine-inputs.js";
 import { makeTestDb, makeTestUser } from "./helpers.js";
+
+// Slow on a loaded runner (ruling 2b-R14): the differential composes dozens of builds from two seeded histories. A per-file timeout, not a cost question.
+vi.setConfig({ testTimeout: 120_000 });
 
 const NOW = "2026-10-01T00:00:00.000Z";
 const world = WORLDS[0]!;

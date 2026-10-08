@@ -23,6 +23,7 @@
 import { ApiError } from "@rg/api-client";
 import { canonicalJson, performedSessionSaveSchema, type PerformedSessionWire, type PerformedSessionWireInput } from "@rg/domain";
 import type { OfflineDb } from "./idb.js";
+import { drainUnstarts } from "./unstarts.js";
 
 export type OutboxState = "pending" | "conflict" | "failed";
 
@@ -45,9 +46,10 @@ export interface OutboxEntry {
   createdAt: number;
 }
 
-/** What sending needs: the api client's `savePerformed`. */
+/** What sending needs: the api client's `savePerformed` — and `unstartSession`, for Discards that wait (ruling 2b-R9). */
 export interface OutboxApi {
   savePerformed(performedId: string, payload: PerformedSessionWire): Promise<unknown>;
+  unstartSession?(workoutId: string): Promise<unknown>;
 }
 
 export interface DrainResult {
@@ -63,6 +65,13 @@ export interface DrainResult {
   retryAt: number | null;
   /** An entry of this account still waits with its backoff spent: only a trigger sends it now. */
   stalled: boolean;
+  /**
+   * The server answered 401: this device's sign-in has expired. The entry waits (it drains after sign-in, under the
+   * same account); the app should ask the athlete to sign in again (audit 2b-B M-3).
+   */
+  signedOut: boolean;
+  /** Discards made offline that the server has now taken (`startOutboxSync` only; ruling 2b-R9). */
+  unstarted?: number;
 }
 
 export const OUTBOX_BACKOFF_MS = [1_000, 5_000, 30_000] as const;
@@ -185,7 +194,7 @@ export async function drain(
   const now = opts.now ?? Date.now;
   const lockMs = opts.lockMs ?? DEFAULT_LOCK_MS;
   const owner = crypto.randomUUID();
-  const result: DrainResult = { saved: 0, conflicts: 0, failed: 0, locked: false, retryAt: null, stalled: false };
+  const result: DrainResult = { saved: 0, conflicts: 0, failed: 0, locked: false, retryAt: null, stalled: false, signedOut: false };
   // Locked out: come back when that lock runs out — it may be a tab closed mid-send (Phase 2b Task 8, journey e).
   const first = await claimLock(db, owner, now(), lockMs);
   if (!first.ok) return { ...result, locked: true, retryAt: first.until };
@@ -217,6 +226,7 @@ export async function drain(
         await settle(entry.key, (e) => ({ ...e, state: "failed", lastError: outcome.error, attempts: e.attempts + 1 }));
         result.failed += 1;
       } else {
+        if (outcome.error === "http_401") result.signedOut = true;
         const t = now();
         const after = await settle(entry.key, (e) => {
           const attempts = e.attempts + 1;
@@ -274,7 +284,11 @@ export function startOutboxSync(opts: {
     }
     running = (async () => {
       try {
-        const result = await drain(await opts.db(), opts.api, { userId: opts.userId, mode });
+        const db = await opts.db();
+        const result = await drain(db, opts.api, { userId: opts.userId, mode });
+        // Discards made offline go on the same triggers, after the saves (one waiting for the slot drops them).
+        const unstart = opts.api.unstartSession?.bind(opts.api);
+        if (unstart) result.unstarted = (await drainUnstarts(db, { unstartSession: unstart }, { userId: opts.userId }).catch(() => null))?.unstarted ?? 0;
         if (stopped) return;
         if (timer) clearTimeout(timer);
         timer =

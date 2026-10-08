@@ -41,6 +41,8 @@ import {
   TodayProgramLines,
   usePendingSaves,
 } from "../components/today-program.js";
+import { useSignedInUserId } from "../components/outbox-sync.js";
+import { SessionsInProgress } from "../components/sessions-in-progress.js";
 import { ConditionCheckSheet, ConditionChips } from "../components/condition-check-sheet.js";
 import { pickStatusStripMetric, statusStripBaseText } from "../signal-tiles.js";
 import { ReviewPull, SyncPanel, TimezoneNudge } from "./today.js";
@@ -1185,6 +1187,7 @@ export function GardenScreen() {
   const today = useQuery({ queryKey: ["today"], queryFn: api.today });
   // Sessions saved on this device and not yet taken by the server (Phase 2b) — read only on a day with an app session.
   const pendingSaves = usePendingSaves((today.data?.todaySessions ?? []).some((s) => isAppSession(s.workout)));
+  const signedIn = useSignedInUserId();
   const [selectedPlantId, setSelectedPlantId] = useState<string | null>(null);
   const [openSpeciesId, setOpenSpeciesId] = useState<string | null>(null);
   const [showWeather, setShowWeather] = useState(false);
@@ -2171,6 +2174,13 @@ export function GardenScreen() {
        the card is the page. */
     today: (
       <>
+        {/* A session left in progress on this device — yesterday's, after midnight — stays one tap away (ruling
+            2b-R16); today's own keep their Continue on the card below. */}
+        <SessionsInProgress
+          today={d?.today ?? todayDate}
+          shown={(d?.todaySessions ?? []).map((s) => s.workout.id)}
+          userId={signedIn}
+        />
         <DockPill
           done={leadSettled && !!lead && !sessionSkipped(lead)}
           workout={w}

@@ -19,7 +19,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { SessionDto } from "@rg/api-client";
 import { openOfflineDb, type OfflineDb } from "../../src/offline/idb.js";
 import { saveBuild } from "../../src/offline/builds.js";
-import { readLive } from "../../src/offline/live.js";
+import { readLive, type LiveSession } from "../../src/offline/live.js";
 import { saveExtras } from "../../src/player/stored.js";
 import { PlayerScreen } from "../../src/screens/player.js";
 import type { Chimes } from "../../src/player/audio.js";
@@ -59,14 +59,20 @@ async function storedStart(): Promise<OfflineDb> {
   return db;
 }
 
-function mount(opts: { getSession?: () => Promise<SessionDto> } = {}) {
+function mount(opts: { getSession?: () => Promise<SessionDto>; writeDelayMs?: number; noIndexedDb?: boolean } = {}) {
   const getSession = vi.fn(opts.getSession ?? (() => Promise.reject(new TypeError("Failed to fetch"))));
   host = document.createElement("div");
   document.body.appendChild(host);
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   const player = createElement(PlayerScreen, {
     workoutId: SLOT,
-    deps: { db: () => Promise.resolve(db!), getSession, chimes: noChimes, wake: () => () => undefined },
+    deps: {
+      db: () => (opts.noIndexedDb ? Promise.reject(new Error("IndexedDB is unavailable")) : Promise.resolve(db!)),
+      getSession,
+      chimes: noChimes,
+      wake: () => () => undefined,
+      ...(opts.writeDelayMs === undefined ? {} : { writeDelayMs: opts.writeDelayMs }),
+    },
   });
   root = createRoot(host);
   act(() => {
@@ -91,9 +97,9 @@ function mount(opts: { getSession?: () => Promise<SessionDto> } = {}) {
 }
 
 const flush = () => act(async () => void (await new Promise((r) => setImmediate(r))));
-async function until(check: () => boolean, what: string): Promise<void> {
+async function until(check: () => boolean | Promise<boolean>, what: string): Promise<void> {
   for (let i = 0; i < 300; i += 1) {
-    if (check()) return;
+    if (await check()) return;
     await flush();
   }
   throw new Error(`timed out waiting for: ${what}\n${text()}`);
@@ -248,6 +254,10 @@ describe("⇄ mid-session", () => {
     await click("Swap");
     await until(() => !!document.querySelector('[role="dialog"]'), "the swap list");
     expect(text()).toContain("Supported split squat");
+    // Every Use is a full-size button: 44px tall (styles.css `.choice-move > .btn`), never the 36px small one.
+    const uses = [...document.querySelectorAll<HTMLButtonElement>('[role="dialog"] button')].filter((b) => b.textContent === "Use");
+    expect(uses.length).toBeGreaterThan(0);
+    for (const u of uses) expect([...u.classList]).toEqual(["btn"]);
     await click("Use");
     await until(() => !document.querySelector('[role="dialog"]'), "the list closed");
     expect(text()).toContain("Supported split squat");
@@ -309,25 +319,146 @@ describe("the keyboard", () => {
   });
 });
 
-describe("Review Focus 1 on the screen — locked for two minutes mid-hold", () => {
-  it("comes back on the step and the time the wall clock says", async () => {
+describe("moving on when a timer ends, on a phone too (ruling 2b-R8)", () => {
+  it("the player's Settings is a 44px button at every width; its sheet holds the setting, which is kept on the device", async () => {
     await storedStart();
     mount();
     await until(() => text().includes("1 of 9"), "the first step");
-    // 10 s into the Left side's 45 s hold, the phone locks…
-    await at(T0 + 13 * S);
+    const settings = control("Settings")!;
+    // Only the shared 44px icon box: nothing that hides it below md (styles.css: `.player-icon`; the key list alone is md+).
+    expect([...settings.classList]).toEqual(["player-icon"]);
+    await click("Settings");
+    await until(() => !!document.querySelector('[role="dialog"]'), "the sheet");
+    const toggle = control("Move on when a timer ends")!;
+    expect(toggle.getAttribute("aria-pressed")).toBe("true");
+    await click("Move on when a timer ends");
+    expect(control("Move on when a timer ends")!.getAttribute("aria-pressed")).toBe("false");
+    expect(localStorage.getItem("rg-player-auto-advance")).toBe("0");
+    await press("Escape");
+    // Opened again later: still off.
+    act(() => root!.unmount());
+    host?.remove();
+    mount();
+    await until(() => text().includes("1 of 9"), "the same step");
+    await click("Settings");
+    await until(() => !!document.querySelector('[role="dialog"]'), "the sheet again");
+    expect(control("Move on when a timer ends")!.getAttribute("aria-pressed")).toBe("false");
+  });
+
+  it("? still opens it from the keyboard", async () => {
+    await storedStart();
+    mount();
+    await until(() => text().includes("1 of 9"), "the first step");
+    await press("?");
+    await until(() => !!document.querySelector('[role="dialog"]'), "the sheet");
+    expect(control("Move on when a timer ends")).toBeDefined();
+    expect(document.querySelector('[role="dialog"] .player-keylist dl')).not.toBeNull();
+  });
+});
+
+describe("Review Focus 1 on the screen — locked mid-hold", () => {
+  type Stored = { live: { secs: Record<string, number>; reached: number[] } };
+  async function lockAt(ms: number) {
+    await at(ms);
     await act(async () => {
       Object.defineProperty(document, "visibilityState", { value: "hidden", configurable: true });
       document.dispatchEvent(new Event("visibilitychange"));
     });
-    // …and is unlocked 2 minutes later: Left ended at 48 s, Right (3 + 45 s) at 96 s; the set waits for Done.
-    vi.setSystemTime(T0 + 133 * S);
+  }
+  async function unlockAt(ms: number) {
+    vi.setSystemTime(ms);
     await act(async () => {
       Object.defineProperty(document, "visibilityState", { value: "visible", configurable: true });
       document.dispatchEvent(new Event("visibilitychange"));
     });
+  }
+  async function kept(): Promise<LiveSession<Stored> | undefined> {
+    await act(async () => window.dispatchEvent(new Event("pagehide")));
+    await until(() => true, "flush");
+    return readLive<Stored>(db!, SLOT);
+  }
+
+  it("comes back on the step and the time the wall clock says: the next hold, part held, the one before judged at its full time", async () => {
+    await storedStart();
+    mount();
+    await until(() => text().includes("1 of 9"), "the first step");
+    // 10 s into the Left side's 45 s hold, the phone locks…
+    await lockAt(T0 + 13 * S);
+    // …and is unlocked at 70 s: Left ran out at 48 s, Right's get-ready ended at 51 s, so 19 s of it are held.
+    await unlockAt(T0 + 70 * S);
+    expect(text()).toContain("2 of 9");
+    expect(text()).toContain("Right side");
+    expect(text()).not.toContain("Get ready");
+    expect(text()).toContain("0:26");
+    const live = await kept();
+    expect(live).toMatchObject({ stepIndex: 1, timerAnchor: T0 + 48 * S, timerBankedMs: 0, paused: false });
+    // Left was held its whole 45 s while the phone was locked — never the 10 s seen before it locked.
+    expect(live?.recorder.live.secs.lowLunge).toBe(45);
+    expect(live?.recorder.live.reached).toEqual([0, 1]);
+  });
+
+  it("a longer lock passes both holds, each at its full time, and waits on the set", async () => {
+    await storedStart();
+    mount();
+    await until(() => text().includes("1 of 9"), "the first step");
+    await lockAt(T0 + 13 * S);
+    // Unlocked 2 minutes later: Left ended at 48 s, Right (3 + 45 s) at 96 s; the set waits for Done.
+    await unlockAt(T0 + 133 * S);
     expect(text()).toContain("3 of 9");
     expect(text()).toContain("Goblet squat");
+    const live = await kept();
+    expect(live).toMatchObject({ stepIndex: 2, timerAnchor: T0 + 96 * S });
+    expect(live?.recorder.live.secs.lowLunge).toBe(90);
+  });
+});
+
+describe("what a tap changes is kept at once (ruling 2b-R13)", () => {
+  type Stored = { live: { entries: Record<string, { sets: Array<{ w: unknown; done: boolean }> }>; reached: number[] } };
+
+  it("a confirmed set is in IndexedDB straight away — no pagehide, no wait for the writer's debounce", async () => {
+    await storedStart();
+    // The writer would wait a minute: only a flush at the tap can have written what follows.
+    mount({ writeDelayMs: 60_000 });
+    await toFirstSet();
+    await click("Done");
+    await type(control("Weight") as HTMLInputElement, "40 lb");
+    await click(/^Confirm/);
+    await until(() => text().includes("4 of 9"), "the rest");
+    // The tab is killed here: nothing more runs. What IndexedDB holds is what a relaunch resumes.
+    let stored = await readLive<Stored>(db!, SLOT);
+    for (let i = 0; i < 20 && stored?.stepIndex !== 3; i++) {
+      await flush();
+      stored = await readLive<Stored>(db!, SLOT);
+    }
+    expect(stored?.stepIndex).toBe(3);
+    expect(stored?.recorder.live.entries.gobletSquat!.sets[0]).toMatchObject({ w: { v: 40, u: "lb" }, done: true });
+  });
+
+  it("so are Skip and a swap", async () => {
+    await storedStart();
+    mount({ writeDelayMs: 60_000 });
+    await until(() => text().includes("1 of 9"), "the first step");
+    await click("Skip");
+    await until(async () => (await readLive(db!, SLOT))?.stepIndex === 1, "Skip kept at once");
+    await click("Skip");
+    await until(async () => (await readLive(db!, SLOT))?.stepIndex === 2, "the second Skip kept at once");
+    await click("Swap");
+    await until(() => !!document.querySelector('[role="dialog"]'), "the swap list");
+    await click("Use");
+    await until(async () => ((await readLive<{ swaps: unknown[] }>(db!, SLOT))?.recorder.swaps.length ?? 0) === 1, "the swap kept at once");
+  });
+});
+
+describe("a device with no IndexedDB (audit 2b-B I-2)", () => {
+  it("plays the session started online — and says from the first moment that it isn't being kept here", async () => {
+    const started = { workoutId: SLOT, contentState: "started", build: build(), view: view(), profiles: profiles() } as unknown as SessionDto;
+    mount({ noIndexedDb: true, getSession: async () => started });
+    await until(() => text().includes("1 of 9"), "the first step");
+    expect(text()).toContain("This session isn't being kept on this device.");
+    // Nothing ever clears it: no write can land.
+    await click("Skip");
+    await at(T0 + 5 * S);
+    expect(text()).toContain("This session isn't being kept on this device.");
   });
 });
 

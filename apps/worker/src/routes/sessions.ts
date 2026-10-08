@@ -8,6 +8,7 @@
  *   POST   /api/sessions/:workoutId/build    {checks?, overrides?, swaps?} → build, or the stored build when the
  *                                            inputs are unchanged; a day ahead is a preview
  *   POST   /api/sessions/:workoutId/start    {buildId} → lock that build, while it is still the day's; idempotent
+ *   POST   /api/sessions/:workoutId/unstart  the player's Discard: back to built, the build unlocked; idempotent
  *   PUT    /api/sessions/performed/:id       a performed session from the player's outbox, saved exactly once
  *   POST   /api/conditions/checks            {profileId, value, feelingOff} → the day's check
  *
@@ -27,13 +28,16 @@ import {
   loadSession,
   NotBuiltError,
   NotTodayError,
+  PerformedExistsError,
   recordCheck,
+  RestoringError,
   sessionCurrency,
   SessionLockedError,
   SessionNotFoundError,
   StaleBuildError,
   startSessionOutcome,
   UnknownProfileError,
+  unstartSession,
 } from "../services/session-build.js";
 import { InvalidSaveError, savePerformedSession } from "../services/session-save.js";
 import { reviewBasis } from "../services/session-review-basis.js";
@@ -153,6 +157,24 @@ sessionRoutes.post("/:workoutId/build", async (c) => {
     if (calendarChanged) waitUntilSafe(c, syncCalendar(db, c.env, userId));
     return c.json(session);
   } catch (e) {
+    return refusal(c, e);
+  }
+});
+
+/**
+ * The player's Discard (ruling 2b-R9): a started slot back to `built`, its build unlocked — Today offers Start again.
+ * 200 with the session (also when it was built already); 409 `performed` once a performed session exists for it; 404
+ * for a slot that is not this user's; 423 while a restore runs.
+ */
+sessionRoutes.post("/:workoutId/unstart", async (c) => {
+  const db = c.get("db");
+  const userId = c.get("userId");
+  const prefs = await loadPreferences(db, userId);
+  try {
+    return c.json(await unstartSession(db, userId, c.req.param("workoutId"), { today: todayInZone(prefs.timezone), now: nowInstant() }));
+  } catch (e) {
+    if (e instanceof PerformedExistsError) return c.json({ error: "performed" }, 409);
+    if (e instanceof RestoringError) return c.json({ error: "restore_in_progress" }, 423);
     return refusal(c, e);
   }
 });
