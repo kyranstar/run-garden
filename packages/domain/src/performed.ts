@@ -20,7 +20,7 @@ const count = z.number().int().min(0);
  * still complete inside one Worker invocation (audit 2b-A M-4: 5,000 sets took ~1,200 statements and 28 ms of CPU, so
  * the outbox would have retried it for ever): `sets` counts every set of the session, `graduations` is the library's
  * number of core families (`CORE_FAMILIES`; a session-engine test keeps the two equal), and the review rates or sets
- * aside at most the moves the session holds (its entries and moves reached).
+ * aside at most the moves the session holds: its plan's, done or skipped, and its entries (ruling 2b-R17).
  */
 export const PERFORMED_LIMITS = {
   entries: 100,
@@ -148,6 +148,12 @@ export const performedSessionSaveSchema = z
       .array(z.object({ exerciseId: id, seconds: count }).strict())
       .max(PERFORMED_LIMITS.movesDone)
       .default([]),
+    /**
+     * How many moves the session's plan held, done or skipped (ruling 2b-R17): what the review may rate or set aside,
+     * with the entries. The app's own saves send it; without it (an import, a watch review, an outbox entry saved
+     * before it existed) the moves done count instead. Never stored: it only bounds the review.
+     */
+    movesPlanned: count.max(PERFORMED_LIMITS.movesDone).optional(),
     note: z.string().max(PERFORMED_LIMITS.note).nullable(),
     /** The move introduced in this session, if any. */
     newMove: id.nullable(),
@@ -165,7 +171,8 @@ export const performedSessionSaveSchema = z
     if (sets > PERFORMED_LIMITS.sets) {
       ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["entries"], message: `${sets} sets: a session holds at most ${PERFORMED_LIMITS.sets}` });
     }
-    const moves = s.entries.length + s.movesDone.length;
+    // The review may rate any move the session held — a skipped one too (ruling 2b-R17) — and no more than those.
+    const moves = s.entries.length + Math.max(s.movesDone.length, s.movesPlanned ?? 0);
     for (const key of ["ratings", "excluded"] as const) {
       const n = Object.keys(s.review[key]).length;
       if (n > moves) {

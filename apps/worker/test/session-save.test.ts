@@ -559,6 +559,23 @@ describe("the review's decisions apply on save (§2b step 5)", () => {
     expect(rows.map((r) => r.exerciseId).filter((id) => id.includes("move"))).toEqual([]);
   });
 
+  it("a session whose moves were all skipped still saves its ratings of them (ruling 2b-R17, re-review 2b-B C-A)", async () => {
+    const s = await started("build");
+    const ids = [...new Set(s.build.items.map((i) => i.exerciseId))];
+    // Nothing logged, nothing done: every move was skipped, and the review 👎'd each one.
+    const body = payload(s, {
+      entries: [],
+      movesDone: [],
+      movesPlanned: ids.length,
+      completed: false,
+      stepsDone: 0,
+      review: { ratings: Object.fromEntries(ids.map((id) => [id, -1 as const])) },
+    });
+    expect(await save(body)).toMatchObject({ status: "saved" });
+    const rows = await db.select().from(exercisePrefs).where(eq(exercisePrefs.userId, userId));
+    expect(Object.fromEntries(rows.map((r) => [r.exerciseId, r.rating]))).toEqual(Object.fromEntries(ids.map((id) => [id, -1])));
+  });
+
   it("a new move met before keeps the day it was first introduced", async () => {
     const s = await started("build");
     const b = s.build.items[1]!.exerciseId;

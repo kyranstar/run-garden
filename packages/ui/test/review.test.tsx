@@ -327,6 +327,43 @@ describe("a hold skipped before half its time (ruling 2b-R15)", () => {
     expect(e.payload.movesDone.map((m) => m.exerciseId)).toEqual(["gobletSquat"]);
   });
 
+  it("a skipped hold can still be rated (ruling 2b-R17): 👎 on it and Save saves, sent at once, the rating with it", async () => {
+    // Re-review 2b-B C-A: the save was refused at once ("Couldn't save on this device") — the rating outnumbered the
+    // moves the session did, and Discard was the only way out.
+    await stored();
+    const { savePerformed } = mount({ savePerformed: async () => ({ status: "saved" }) });
+    await until(() => text().includes("1 of 9"), "the first step");
+    // Both sides of the flow skipped at once: Low lunge was never held.
+    await click("Skip");
+    await click("Skip");
+    await until(() => text().includes("3 of 9"), "the third step");
+    await click("Leave the session");
+    await click("End and review");
+    await until(() => !!control("Save"), "the review");
+    expect(control(/^Edit Low lunge/)!.querySelector("small")!.textContent).toBe("Skipped");
+    await click(/^👎 Low lunge/);
+    await click("Save");
+    await until(() => text().includes("today screen"), "Today");
+    await until(async () => (await outboxEntries(db!)).length === 0, "the outbox drained");
+    expect(text()).not.toContain("Couldn't save on this device");
+    expect(savePerformed).toHaveBeenCalledTimes(1);
+    const sent = savePerformed.mock.calls[0]![1] as { review: { ratings: Record<string, number | null> }; movesDone: unknown[] };
+    expect(sent.movesDone).toEqual([]);
+    expect(sent.review.ratings).toEqual({ lowLunge: -1 });
+  });
+
+  it("a rating made on the review and taken off again is no rating at all: the payload has no key for it", async () => {
+    await stored();
+    mount();
+    await abandonAfterTwoSteps();
+    await click(/^👍 Low lunge/);
+    await click(/^👍 Low lunge/);
+    expect(control(/^👍 Low lunge/)!.getAttribute("aria-pressed")).toBe("false");
+    await click("Save");
+    await until(() => text().includes("today screen"), "Today");
+    expect((await entry()).payload.review.ratings).toEqual({});
+  });
+
   it("a hold held half its time or more reads Done", async () => {
     await stored();
     mount();
