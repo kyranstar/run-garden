@@ -148,4 +148,12 @@ describe("liftWeekSummary", () => {
     expect(summary).not.toContain("pull-ups");
     expect(summary).toBe("bench press 6kg · 9 sets");
   });
+
+  it("reads in the athlete's weight unit; the plan's kilos stay the prescription (Audit 2c-A MINOR-5)", () => {
+    const full = { ...plan([[kg("Bench Press", 20, 3), kg("Squat", 60, 3)]]), name: "P", brief: { durationWeeks: 1 } } as unknown as LiftingPlan;
+    expect(liftWeekSummary(full, 1)).toBe("squat 60kg, bench press 20kg · 6 sets");
+    expect(liftWeekSummary(full, 1, "kg")).toBe("squat 60kg, bench press 20kg · 6 sets");
+    // To the half pound, as every converted weight in the app.
+    expect(liftWeekSummary(full, 1, "lb")).toBe("squat 132.5lb, bench press 44lb · 6 sets");
+  });
 });

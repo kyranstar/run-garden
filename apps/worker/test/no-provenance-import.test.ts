@@ -24,6 +24,7 @@ function files(dir: string): string[] {
 const GUARDED = [
   ...files(join(ROOT, "packages", "exercise-library", "src")),
   join(ROOT, "apps", "worker", "test", "fixtures", "standalone-backup.ts"),
+  join(ROOT, "apps", "worker", "test", "fixtures", "standalone-oracle-case.ts"),
   join(ROOT, "apps", "worker", "test", "standalone-import.test.ts"),
   join(ROOT, "apps", "worker", "test", "standalone-stats.test.ts"),
 ];

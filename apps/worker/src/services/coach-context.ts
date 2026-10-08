@@ -26,10 +26,12 @@ import {
   formatExercise,
   formatWeight,
   humanizeWorkoutTitle,
+  loadInUnit,
   type GuardrailCtx,
   type LocalDate,
   type UserPreferences,
   type Weight,
+  type WeightUnit,
 } from "@rg/domain";
 import { COROS_EXERCISE_NAMES } from "@rg/providers";
 import { disciplineOf } from "@rg/analytics";
@@ -446,7 +448,7 @@ export async function buildDossier(
     .where(eq(studioPlans.userId, userId))
     .orderBy(desc(studioPlans.updatedAt))
     .limit(1);
-  push("STRENGTH PLAN", strengthPlanLines(studio, upcoming, catalogRawNames, today));
+  push("STRENGTH PLAN", strengthPlanLines(studio, upcoming, catalogRawNames, today, prefs.weightUnit));
 
   // 3 · UPCOMING 14 DAYS — every scheduled session with the [wo:id] handle
   // ease/move/skip ops need. Without this section the coach could not name a
@@ -1142,6 +1144,8 @@ function strengthPlanLines(
   upcoming: UpcomingLiftRow[],
   catalogRawNames: Map<string, string>,
   today: LocalDate,
+  /** The athlete's weight unit: the plan's lifts read in it, kilos kept beside pounds (Audit 2c-A MINOR-5). */
+  unit: WeightUnit,
 ): string[] {
   const lines: string[] = [];
   if (!studio) {
@@ -1192,7 +1196,7 @@ function strengthPlanLines(
           : ` (already ${w.completionState}, no handle — evidence, not a target)`) +
         ` — do not duplicate what is in it:`,
     );
-    const rendered = liftExerciseLines(w, byTitle, catalogRawNames);
+    const rendered = liftExerciseLines(w, byTitle, catalogRawNames, unit);
     if (rendered.length === 0) {
       lines.push(
         "  · exercises not stored on this session — the UPCOMING line's `contains:` is everything that is known about it",
@@ -1233,20 +1237,21 @@ function liftExerciseLines(
   w: UpcomingLiftRow,
   byTitle: Map<string, unknown[]>,
   catalogRawNames: Map<string, string>,
+  unit: WeightUnit,
 ): string[] {
   const stored = w.structuredJson?.exercises;
   if (Array.isArray(stored) && stored.length > 0) {
     return stored.flatMap((e) => {
       const parsed = coachExerciseSchema.safeParse(e);
       if (!parsed.success) {
-        const line = studioExerciseLine(e, catalogRawNames);
+        const line = studioExerciseLine(e, catalogRawNames, unit);
         return line ? [line] : [];
       }
       // `formatExercise` carries the cue AND the rest itself since 2026-08-17
       // — this line used to append `note` here and nowhere else, which is
       // precisely how the coach came to read a prescription the athlete's own
       // session sheet did not show. One renderer, one line, both audiences.
-      return [formatExercise(parsed.data)];
+      return [formatExercise(parsed.data, unit)];
     });
   }
   const match =
@@ -1256,14 +1261,15 @@ function liftExerciseLines(
       .sort((a, b) => b[0].length - a[0].length)[0]?.[1];
   if (!match) return [];
   return match.flatMap((e) => {
-    const line = studioExerciseLine(e, catalogRawNames);
+    const line = studioExerciseLine(e, catalogRawNames, unit);
     return line ? [line] : [];
   });
 }
 
-/** One Studio-shaped exercise as a line: name, sets×reps, load, rest, note,
+/** One Studio-shaped exercise as a line: name, sets×reps, load (in the
+ * athlete's weight unit, the prescription's kilos beside pounds), rest, note,
  * and the catalog id — the id is what makes "already prescribed" checkable. */
-function studioExerciseLine(e: unknown, catalogRawNames: Map<string, string>): string | null {
+function studioExerciseLine(e: unknown, catalogRawNames: Map<string, string>, unit: WeightUnit): string | null {
   if (typeof e !== "object" || e === null) return null;
   const o = e as Record<string, unknown>;
   const originId = typeof o.originId === "string" ? o.originId : null;
@@ -1277,7 +1283,7 @@ function studioExerciseLine(e: unknown, catalogRawNames: Map<string, string>): s
   const weight = o.weight as { type?: unknown; value?: unknown } | undefined;
   const load =
     weight?.type === "kg" && typeof weight.value === "number"
-      ? ` @ ${weight.value} kg`
+      ? ` @ ${loadInUnit(weight.value, unit)}`
       : weight?.type === "bodyweight"
         ? " bodyweight"
         : "";

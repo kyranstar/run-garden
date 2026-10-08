@@ -133,7 +133,7 @@ function sessionSummary(s: CoachSession): string {
  * coach.ts, so the manifest and the sheet cannot disagree about what
  * "3×8/side @ 4s down" means. */
 function blockDetail(b: CoachExerciseBlock): string[] {
-  return b.rounds ? [formatExerciseBlock(b)] : b.exercises.map(formatExercise);
+  return b.rounds ? [formatExerciseBlock(b)] : b.exercises.map((e) => formatExercise(e));
 }
 
 function runBlockDetail(b: CoachRunBlock): string {

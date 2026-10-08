@@ -72,6 +72,16 @@ export function parseWeightList(text: unknown, defaultUnit: WeightUnit): Weight[
 }
 
 /**
+ * A typed list as it is kept (Audit 2c-A MINOR-4): one that names a unit anywhere stays exactly as typed; one with
+ * none ("10, 15, 20") gets the unit in force when it was typed appended ("10, 15, 20 kg"), so switching Weights later
+ * never changes what it means. For text `weightListProblem` accepts (numbers and unit words only).
+ */
+export function withWeightUnit(text: string, unit: WeightUnit): string {
+  const typed = text.trim();
+  return /[a-z#]/i.test(typed) ? typed : `${typed} ${unit}`;
+}
+
+/**
  * Why a typed list is not a list of weights — the first part that is not one ("12 stone", "x", "0"), or "empty" when
  * it holds none — or null when every part is a weight. Separators are commas, semicolons, slashes and spaces.
  */

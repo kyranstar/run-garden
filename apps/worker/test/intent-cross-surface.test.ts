@@ -215,7 +215,7 @@ describe("five readers describe the same session", () => {
       // ── pair 5 · the manifest's detail vs the DTO's exercise lines ────────
       if (body && body.exercises.length > 0) {
         const dtoLines = (seen.dto.exercises ?? []).map((e) => e.line);
-        const fromFormatter = body.exercises.map(formatExercise);
+        const fromFormatter = body.exercises.map((e) => formatExercise(e));
         expect(dtoLines, "the DTO renders exercises its own way").toEqual(fromFormatter);
         const expectedManifest = body.rounds
           ? [formatExerciseBlock(body)]
@@ -309,7 +309,7 @@ describe("a multi-date add says how many days it is", () => {
     expect(dossierLines).toHaveLength(dates.length);
     for (const line of lines) {
       expect(line.summary).toBe(`${session.title} · ${session.durationMinutes} min`);
-      expect(line.detail).toEqual(session.mobility!.exercises.map(formatExercise));
+      expect(line.detail).toEqual(session.mobility!.exercises.map((e) => formatExercise(e)));
     }
   });
 });
@@ -340,7 +340,7 @@ describe("the readers still agree after the session is mutated", () => {
     const line = upcomingLine(dossier.text, workoutId)!;
 
     // The prescription every surface shows is the NEW one…
-    const expectedLines = to.lift!.exercises.map(formatExercise);
+    const expectedLines = to.lift!.exercises.map((e) => formatExercise(e));
     expect((dto.exercises ?? []).map((e) => e.line)).toEqual(expectedLines);
     expect(row!.stageSummary).toBe(formatExerciseBlock(to.lift!));
     expect(line).toContain(formatExerciseBlock(to.lift!));

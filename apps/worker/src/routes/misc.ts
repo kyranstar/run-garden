@@ -96,7 +96,7 @@ import {
   repairTimestamps,
   rowToNormalized,
 } from "../services/completion.js";
-import { resimulateFrom } from "../services/garden-sync.js";
+import { gardenSeesSql, resimulateFrom } from "../services/garden-sync.js";
 import { performedByActivity } from "../services/logged-sets.js";
 import { loadProgress } from "../services/progress.js";
 import { enqueueBackfill, runBackfillChunkCloud } from "../services/backfill.js";
@@ -355,13 +355,14 @@ activityRoutes.post("/backfill", async (c) => {
   });
 });
 
-/** Unmatched run activities that could complete an open workout. */
+/** Unmatched run activities that could complete an open workout — never one the garden does not see (imported
+ * history; an app session before APP_SESSION_EPOCH), which the match route refuses (Audit 2d I-2). */
 activityRoutes.get("/unmatched", async (c) => {
   const rows = await c
     .get("db")
     .select()
     .from(activities)
-    .where(and(eq(activities.userId, c.get("userId")), isNull(activities.completionMatchId)))
+    .where(and(eq(activities.userId, c.get("userId")), isNull(activities.completionMatchId), gardenSeesSql()))
     .orderBy(desc(activities.startTime))
     .limit(20);
   return c.json({

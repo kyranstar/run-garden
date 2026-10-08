@@ -12,10 +12,11 @@ import {
   type CheckedRestore,
   type PlaceDto,
   type RestoreProgress,
+  type StandaloneImportSummaryDto,
   type RestoreRowError,
   type RestoreSummary,
 } from "@rg/api-client";
-import type { UserPreferences } from "@rg/domain";
+import { formatWeightIn, withWeightUnit, type UserPreferences, type Weight, type WeightUnit } from "@rg/domain";
 import {
   Banner,
   Card,
@@ -362,7 +363,8 @@ function gearLine(place: PlaceDto, labels: Map<string, string>): string {
 /** The places, each with its gear and weights as typed; a default; the wishlist with what each item unlocks. */
 export function PlacesSection({ prefs }: { prefs: UserPreferences }) {
   const places = useQuery({ queryKey: ["places"], queryFn: api.listPlaces });
-  const wishlist = useLivePrefs(prefs).equipmentWishlist;
+  const live = useLivePrefs(prefs);
+  const wishlist = live.equipmentWishlist;
   const library = useQuery({ queryKey: ["library", "wishlist"], queryFn: () => api.listLibrary(), enabled: wishlist.length > 0 });
   const saveSetting = useSaveSetting();
   const [open, setOpen] = useState<PlaceDto | "new" | null>(null);
@@ -385,8 +387,9 @@ export function PlacesSection({ prefs }: { prefs: UserPreferences }) {
               {p.isDefault ? <span className="faint"> · Default</span> : null}
             </b>
             <small>{gearLine(p, labels)}</small>
+            {/* A list kept with no unit (saved before lists took one) is read in the unit in force: show it (Audit 2c-A MINOR-4). */}
             {Object.entries(p.implements).map(([id, typed]) => (
-              <small key={id} className="place-weights">{`${labels.get(id) ?? id}: ${typed}`}</small>
+              <small key={id} className="place-weights">{`${labels.get(id) ?? id}: ${withWeightUnit(typed, live.weightUnit)}`}</small>
             ))}
           </span>
           <span className="faint" aria-hidden>
@@ -491,10 +494,98 @@ export function UnitsSection({ prefs: initial }: { prefs: UserPreferences }) {
   );
 }
 
+type ImportOracle = StandaloneImportSummaryDto["oracle"];
+type OracleSet = { w: Weight | null; reps: number | null; secs: number | null };
+
+/** A set as the tool's lift tile writes it: the weight in the tool's unit × reps, else the reps, else the hold. */
+function oracleSet(s: OracleSet, unit: WeightUnit): string {
+  if (s.w) return `${formatWeightIn(s.w, unit)}${s.reps != null ? ` × ${s.reps}` : s.secs ? ` · ${s.secs} s` : ""}`;
+  return s.reps != null ? `${s.reps} reps` : s.secs ? `${s.secs} s` : "—";
+}
+
 /**
- * Import (spec §2c; mocks §7): the standalone tool's backup — a dry run first, its summary, then Import. Hidden until
- * the garden gate keeps imported history out of the garden (`features.import`, Phase 2d): nothing reaches the
- * importer before then. The result sheet with the tool's own numbers side by side is Phase 2c Task 5.
+ * The standalone tool's own numbers over the file, laid out as its Progress tab reads them, for the owner to hold
+ * side by side with that tab (Phase 2c Task 5; the oracle — Audit 2c-A MINOR-1): the totals, each of the last eight
+ * weeks (sessions; volume in the tool's unit, and the whole kilos beside pounds), and each core lift's latest top set
+ * as its lift tile shows it, with the best.
+ */
+function ImportNumbers({ oracle }: { oracle: ImportOracle }) {
+  const unit = oracle.unit;
+  const pounds = unit !== "kg";
+  const count = (n: number) => n.toLocaleString("en-US");
+  return (
+    <>
+      <h3 className="settings-subhead">Progress</h3>
+      <div className="import-compare">
+        <div className="setting-row">
+          <span>Sessions</span>
+          <b className="num">{count(oracle.sessionCount)}</b>
+        </div>
+        <div className="setting-row">
+          <span>Records</span>
+          <b className="num">{count(oracle.records)}</b>
+        </div>
+        <div className="setting-row">
+          <span>Before and after</span>
+          <b className="num">{count(oracle.prePostPairs)}</b>
+        </div>
+        {oracle.block ? (
+          <div className="setting-row">
+            <span>Block</span>
+            <b className="num">{`${oracle.block.number} · week ${oracle.block.week}`}</b>
+          </div>
+        ) : null}
+      </div>
+      <h3 className="settings-subhead">Per week</h3>
+      <table className="import-weeks num">
+        <thead>
+          <tr>
+            <th scope="col">Week</th>
+            <th scope="col">Sessions</th>
+            <th scope="col">{unit}</th>
+            {pounds ? <th scope="col">kg</th> : null}
+          </tr>
+        </thead>
+        <tbody>
+          {oracle.sessionsPerWeek.map((w, i) => {
+            const v = oracle.weeklyVolume[i];
+            return (
+              <tr key={w.week}>
+                <th scope="row">{formatShortDate(w.week)}</th>
+                <td>{count(w.sessions)}</td>
+                <td>{v ? count(v.inUnit) : "—"}</td>
+                {pounds ? <td>{v ? count(v.kg) : "—"}</td> : null}
+              </tr>
+            );
+          })}
+        </tbody>
+      </table>
+      {oracle.bestByCoreLift.length > 0 ? (
+        <>
+          <h3 className="settings-subhead">Lifts</h3>
+          <div className="import-lifts">
+            {oracle.bestByCoreLift.map((l) => (
+              <div key={l.exerciseId} className="setting-row">
+                <div>
+                  <b>{l.name}</b>
+                  {l.latest ? <small>{`Latest ${oracleSet(l.latest, unit)}`}</small> : null}
+                  {l.best ? <small>{`Best ${oracleSet(l.best, unit)}`}</small> : null}
+                  {!l.latest && !l.best ? <small>Not logged</small> : null}
+                </div>
+              </div>
+            ))}
+          </div>
+        </>
+      ) : null}
+    </>
+  );
+}
+
+/**
+ * Import (spec §2c; mocks §7; Phase 2c Task 5): the standalone tool's backup — a dry run first and its summary (what
+ * comes in; history stays out of the garden), then Import, then the tool's own numbers to compare with its Progress
+ * tab (`ImportNumbers`). A backup already imported shows those numbers straight away. Hidden until the garden gate
+ * keeps imported history out of the garden (`features.import`, Phase 2d): nothing reaches the importer before then.
  */
 export function ImportSection() {
   const qc = useQueryClient();
@@ -531,6 +622,10 @@ export function ImportSection() {
   };
   const s = run.data ?? dryRun.data;
   const date = file?.exportedAt && /^\d{4}-\d{2}-\d{2}/.test(file.exportedAt) ? formatShortDate(file.exportedAt.slice(0, 10)) : null;
+  // A backup already imported: nothing would be written, so its numbers show at once.
+  const nothingNew = !!dryRun.data && dryRun.data.sessions.added === 0 && !dryRun.data.firstImport;
+  const finished = run.isSuccess || nothingNew;
+  const span = s?.sessions.firstDate && s.sessions.lastDate ? `${formatShortDate(s.sessions.firstDate)} – ${formatShortDate(s.sessions.lastDate)}` : null;
 
   return (
     <Card title="Import" className="settings-new">
@@ -551,12 +646,12 @@ export function ImportSection() {
           onClose={close}
           title={date ? `Import backup · ${date}` : "Import backup"}
           footer={
-            run.isSuccess ? (
+            finished ? (
               <button type="button" className="btn btn-primary" onClick={close}>
                 Done
               </button>
             ) : (
-              <button type="button" className="btn btn-primary" disabled={!dryRun.isSuccess || run.isPending || (s?.sessions.added ?? 0) + (s?.firstImport ? 1 : 0) === 0} onClick={() => run.mutate(file.backup)}>
+              <button type="button" className="btn btn-primary" disabled={!dryRun.isSuccess || run.isPending} onClick={() => run.mutate(file.backup)}>
                 Import
               </button>
             )
@@ -565,12 +660,24 @@ export function ImportSection() {
           {dryRun.isPending ? <Spinner label="Reading the backup" /> : null}
           {dryRun.isError ? <Banner kind="warn">That file isn't a backup from the standalone tool.</Banner> : null}
           {run.isError ? <Banner kind="warn">Couldn't import that — try again.</Banner> : null}
-          {s ? (
+          {s && finished ? (
+            <div className="import-result">
+              <div className="setting-row">
+                <div>
+                  <b>{run.isSuccess ? `${s.sessions.added} sessions imported` : "Nothing new to import"}</b>
+                  {span ? <small>{span}</small> : null}
+                </div>
+              </div>
+              {s.sessions.invalid.length ? <small className="faint">{`${s.sessions.invalid.length} sessions skipped`}</small> : null}
+              <ImportNumbers oracle={s.oracle} />
+            </div>
+          ) : null}
+          {s && !finished ? (
             <div className="import-summary">
               <div className="setting-row">
                 <div>
-                  <b>{run.isSuccess ? `${s.sessions.added} sessions imported` : `${s.sessions.added} sessions`}</b>
-                  {s.sessions.firstDate && s.sessions.lastDate ? <small>{`${formatShortDate(s.sessions.firstDate)} – ${formatShortDate(s.sessions.lastDate)}`}</small> : null}
+                  <b>{`${s.sessions.added} sessions`}</b>
+                  {span ? <small>{span}</small> : null}
                 </div>
               </div>
               {s.block ? (

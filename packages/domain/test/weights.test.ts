@@ -1,6 +1,7 @@
 import { describe, expect, test } from "vitest";
 import {
   LB_TO_KG, formatWeight, formatWeightIn, parseWeight, parseWeightList, sameWeight, toKg, userPreferencesSchema, weightInUnit, weightListProblem,
+  withWeightUnit,
 } from "../src/index.js";
 
 // Ported from the standalone tests/units.test.js (Units.* → the named functions). Weights are kept in the
@@ -79,6 +80,16 @@ describe("a typed list read the way it was written (Phase 2c Review Focus 3)", (
     expect(weightListProblem("10, 12 stone")).toBe("12 stone");
     expect(weightListProblem("10, x, 20 lb")).toBe("x");
     expect(weightListProblem("0, 10 lb")).toBe("0");
+  });
+
+  test("a list typed with no unit anywhere is kept with the unit then in force; one that names a unit is kept as typed (Audit 2c-A MINOR-4)", () => {
+    expect(withWeightUnit("10, 15, 20", "kg")).toBe("10, 15, 20 kg");
+    expect(withWeightUnit(" 8 12 16 ", "lb")).toBe("8 12 16 lb");
+    expect(withWeightUnit("10, 15, 20 lb, 12kg", "kg")).toBe("10, 15, 20 lb, 12kg");
+    expect(withWeightUnit("12 kg, 16", "lb")).toBe("12 kg, 16");
+    expect(withWeightUnit("25#", "kg")).toBe("25#");
+    // Read back in any unit, it means what it meant when it was typed.
+    expect(parseWeightList(withWeightUnit("10, 15, 20", "kg"), "lb")).toEqual([{ v: 10, u: "kg" }, { v: 15, u: "kg" }, { v: 20, u: "kg" }]);
   });
 });
 

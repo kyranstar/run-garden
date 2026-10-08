@@ -1,4 +1,4 @@
-import type { LiftingPlan } from "@rg/domain";
+import { weightInUnit, type LiftingPlan, type WeightUnit } from "@rg/domain";
 
 /**
  * Deterministic progression extractors (rework spec §4): the numbers a plan
@@ -212,8 +212,9 @@ export function runProgressions(weeks: RunWeekFacts[], currentWeek: number | nul
   return out;
 }
 
-/** "bench 125, squat 175 · 44 sets" — the weeks-list one-liner for a studio week. */
-export function liftWeekSummary(plan: LiftingPlan, weekIndex1: number): string {
+/** "bench 125, squat 175 · 44 sets" — the weeks-list one-liner for a studio week, its loads in the athlete's weight
+ * unit (to the half pound; the plan's kilos stay the prescription — Audit 2c-A MINOR-5). */
+export function liftWeekSummary(plan: LiftingPlan, weekIndex1: number, unit: WeightUnit = "kg"): string {
   const week = plan.weeks[weekIndex1 - 1];
   if (!week) return "";
   const heaviest = new Map<string, number>();
@@ -227,6 +228,6 @@ export function liftWeekSummary(plan: LiftingPlan, weekIndex1: number): string {
     }
   }
   const top = [...heaviest.entries()].sort((a, b) => b[1] - a[1]).slice(0, 2);
-  const lifts = top.map(([name, kg]) => `${name.toLowerCase()} ${kg}kg`).join(", ");
+  const lifts = top.map(([name, kg]) => `${name.toLowerCase()} ${weightInUnit({ v: kg, u: "kg" }, unit)}${unit}`).join(", ");
   return [lifts, `${sets} sets`].filter(Boolean).join(" · ");
 }

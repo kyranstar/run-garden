@@ -2693,6 +2693,39 @@ button.session-chip {
 .place-file {
   position: relative;
 }
+/* The import's result: the standalone tool's numbers, laid out as its Progress tab reads them (Phase 2c Task 5).
+   Read-only rows, so no tap floor; numbers line up in tabular figures, right-aligned, the week label left. */
+.import-result .settings-subhead {
+  margin-top: var(--space-6);
+}
+.import-compare .setting-row b,
+.import-lifts small {
+  font-variant-numeric: tabular-nums;
+}
+.import-weeks {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: var(--text-sm);
+  font-variant-numeric: tabular-nums;
+}
+.import-weeks th,
+.import-weeks td {
+  padding: var(--space-2) 0 var(--space-2) var(--space-4);
+  border-top: 1px solid var(--border);
+  text-align: right;
+  white-space: nowrap;
+}
+.import-weeks thead th {
+  border-top: 0;
+  color: var(--ink-soft);
+  font-size: var(--text-xs);
+  font-weight: var(--weight-medium);
+}
+.import-weeks th:first-child {
+  padding-left: 0;
+  text-align: left;
+  font-weight: var(--weight-medium);
+}
 .today-coach-mark {
   flex: none;
   width: 26px;

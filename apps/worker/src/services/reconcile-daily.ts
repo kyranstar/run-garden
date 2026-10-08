@@ -13,7 +13,9 @@ import type { Db } from "./db.js";
  */
 
 const SYNC_GRACE_DAYS = 1; // window passes → wait one full day before asking
-const AUTO_MISS_DAYS = 7; // unresolved this long → counts as missed
+/** Unresolved this long → counts as missed. The garden reads it too: a slot completed only by an activity the garden
+ * does not see is, to the garden, still open, and misses this many days after its day (garden-sync, Audit 2d I-2). */
+export const AUTO_MISS_DAYS = 7;
 
 export interface ReconcileStats {
   markedUnresolved: number;

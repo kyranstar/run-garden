@@ -1,5 +1,6 @@
 import { z } from "zod";
 import { formatStageDuration } from "./duration.js";
+import { formatWeightIn, type WeightUnit } from "./weights.js";
 
 /**
  * The coach's typed vocabulary (spec: docs/superpowers/specs/2026-08-06-
@@ -666,8 +667,13 @@ export type CoachExercise = z.infer<typeof coachExerciseSchema>;
  * a choice (a flow, a circuit that does not pause) and reads as "no rest"; so
  * are 15s, 20s and 2 min, and those are the numbers a session is designed
  * around.
+ *
+ * `unit` reads the load in the athlete's weight unit (Audit 2c-A MINOR-5): in
+ * pounds the prescription's kilos ride beside the converted number ("@ 44 lb
+ * (20 kg)"), so whoever writes the next prescription keeps the exact kilos;
+ * without it (or in kilograms) the line is as it always was.
  */
-export function formatExercise(e: CoachExercise): string {
+export function formatExercise(e: CoachExercise, unit?: WeightUnit): string {
   // Sets alone is a legitimate prescription ("three ramping sets"), so the
   // reps-less case gets its own honest rendering rather than "3×undefined".
   const work =
@@ -677,7 +683,7 @@ export function formatExercise(e: CoachExercise): string {
         ? `${e.sets}×${e.reps}`
         : `${e.sets} sets`;
   const side = e.perSide ? "/side" : "";
-  const load = e.weight.type === "kg" ? ` @ ${e.weight.value} kg` : "";
+  const load = e.weight.type === "kg" ? ` @ ${loadInUnit(e.weight.value, unit)}` : "";
   const tempo = e.eccentricSeconds !== undefined ? ` (${e.eccentricSeconds}s down)` : "";
   // The same duration vocabulary as every other prescribed span in the app —
   // "90s", "2 min", "1:45" — never a second spelling of 45 seconds.
@@ -689,6 +695,11 @@ export function formatExercise(e: CoachExercise): string {
         : `, ${formatStageDuration(e.restSeconds)} rest`;
   const note = e.note ? ` — ${e.note}` : "";
   return `${e.name} ${work}${side}${load}${tempo}${rest}${note}`;
+}
+
+/** A prescribed load in kilograms as a line reads it: "20 kg", or in pounds "44 lb (20 kg)" (the kilos kept). */
+export function loadInUnit(kg: number, unit?: WeightUnit): string {
+  return unit === "lb" ? `${formatWeightIn({ v: kg, u: "kg" }, "lb")} (${kg} kg)` : `${kg} kg`;
 }
 
 /**
@@ -1127,7 +1138,7 @@ export function offCatalogExercises(s: CoachSession): string[] {
 
 /** A whole block as one line — "3 rounds: Wall sit 1×45s · Plank 1×45s". */
 export function formatExerciseBlock(b: CoachExerciseBlock): string {
-  const line = b.exercises.map(formatExercise).join(" · ");
+  const line = b.exercises.map((e) => formatExercise(e)).join(" · ");
   return b.rounds ? `${b.rounds} rounds: ${line}` : line;
 }
 

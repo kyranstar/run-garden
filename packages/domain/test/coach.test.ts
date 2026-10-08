@@ -318,6 +318,19 @@ describe("the schema accepts vocabulary and normalises it", () => {
     expect(circuit.lift?.exercises).toHaveLength(14);
   });
 
+  it("reads a load in the athlete's weight unit when asked, the prescription's kilos beside pounds (Audit 2c-A MINOR-5)", () => {
+    const s = coachSessionSchema.parse({
+      category: "strength",
+      title: "Goblet day",
+      durationMinutes: 40,
+      lift: { exercises: [{ name: "Goblet squat", sets: 3, reps: 8, weight: "20kg" }] },
+    });
+    const e = sessionExercises(s)[0]!;
+    expect(formatExercise(e)).toBe("Goblet squat 3×8 @ 20 kg");
+    expect(formatExercise(e, "kg")).toBe("Goblet squat 3×8 @ 20 kg");
+    expect(formatExercise(e, "lb")).toBe("Goblet squat 3×8 @ 44 lb (20 kg)");
+  });
+
   it("takes a set count as the whole prescription", () => {
     const s = coachSessionSchema.parse({
       category: "strength",

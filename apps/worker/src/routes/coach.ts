@@ -32,7 +32,7 @@ import type { AppContext } from "../auth/middleware.js";
 import { requireUser } from "../auth/middleware.js";
 import { restoreInProgress } from "../services/account-state.js";
 import { loadPreferences, syncCalendar } from "../services/calendar-sync.js";
-import { resimulateFrom } from "../services/garden-sync.js";
+import { resimulateFrom, unseenCompletions } from "../services/garden-sync.js";
 import { waitUntilSafe } from "../services/wait-until.js";
 import { ensureRead } from "../services/coach-reads.js";
 import { LLM_BUDGET } from "../services/llm.js";
@@ -885,6 +885,7 @@ coachRoutes.get("/plans/:id/detail", async (c) => {
       cp.id,
       loose ? (dates[0] ?? cp.startDate) : cp.startDate,
       loose ? (dates.at(-1) ?? cp.endDate) : cp.endDate,
+      unseenCompletions,
     );
     return c.json({
       plan: {
@@ -1076,7 +1077,7 @@ coachRoutes.get("/plans/:id/detail", async (c) => {
       state: "firm" as const,
       volumeTarget: null,
       keySessions: [],
-      summary: liftWeekSummary(plan, i + 1),
+      summary: liftWeekSummary(plan, i + 1, prefs.weightUnit),
       done: doneWeeks.has(i + 1),
       current: currentWeek === i + 1,
     }));
@@ -1157,7 +1158,7 @@ export async function sweepUserProposals(db: Db, userId: string, timezone: strin
       .update(coachPlans)
       .set({ status: "completed", updatedAt: nowInstant() })
       .where(eq(coachPlans.id, p.id));
-    const adh = await coachBlockAdherence(db, userId, p.id, p.startDate, p.endDate);
+    const adh = await coachBlockAdherence(db, userId, p.id, p.startDate, p.endDate, unseenCompletions);
     await receipt(
       db,
       userId,

@@ -11,7 +11,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { describe, expect, it } from "vitest";
 import type { CoachPlanDto, PlanDetailResponse, PlanProgression } from "@rg/api-client";
 import { StudioModal } from "../src/screens/studio-modal.js";
-import { PlannedVsActualBars, ProgressionStepChart } from "../src/screens/plan-charts.js";
+import { PlannedVsActualBars, prescribedLoad, progressionInUnits, ProgressionStepChart } from "../src/screens/plan-charts.js";
 
 const noop = () => undefined;
 
@@ -90,6 +90,16 @@ describe("StudioModal — detail mode", () => {
     expect(html).not.toContain("Really retire");
   });
 
+  it("a pounds athlete reads the lift chips and charts in pounds (Audit 2c-A MINOR-5)", () => {
+    const qc = new QueryClient({ defaultOptions: { queries: { retry: false, staleTime: Infinity } } });
+    qc.setQueryData(prime.key, prime.data);
+    qc.setQueryData(["settings"], { prefs: { units: "km", weightUnit: "lb" }, llm: null });
+    const html = renderToStaticMarkup(createElement(QueryClientProvider, { client: qc }, createElement(MemoryRouter, null, createElement(StudioModal, props))));
+    // 52 → 66 kg, to the half pound.
+    expect(html).toContain("114.5 → <b>145.5 lb</b>");
+    expect(html).not.toContain("66 kg");
+  });
+
   it("intake mode renders the interview CTA and no weeks section", () => {
     const html = renderWithCache(
       createElement(StudioModal, { ...props, planId: "new-run" }),
@@ -97,6 +107,29 @@ describe("StudioModal — detail mode", () => {
     expect(html).toContain("Plan running with your coach");
     expect(html).toContain("Start the interview");
     expect(html).not.toContain("studio-modal-weeks");
+  });
+});
+
+describe("lift loads in the athlete's weight unit (Audit 2c-A MINOR-5)", () => {
+  const withActual: PlanProgression = { ...bench, series: [{ week: 1, value: 52, done: true, actual: 53.5 }, { week: 2, value: 66 }] };
+
+  it("a kilogram lift series converts to pounds, the logged tops too; kilograms pass through", () => {
+    const lb = progressionInUnits(withActual, "km", "lb");
+    expect(lb).toMatchObject({ unit: "lb", from: 114.5, to: 145.5, now: 123.5 });
+    expect(lb.series).toEqual([{ week: 1, value: 114.5, done: true, actual: 118 }, { week: 2, value: 145.5 }]);
+    expect(progressionInUnits(withActual, "km", "kg")).toBe(withActual);
+    expect(progressionInUnits(withActual, "km")).toBe(withActual);
+  });
+
+  it("other units are left as they are", () => {
+    const sets: PlanProgression = { ...bench, key: "lift:weekly-sets", unit: "sets" };
+    expect(progressionInUnits(sets, "mi", "lb")).toBe(sets);
+  });
+
+  it("a prescribed load reads in the athlete's unit; bodyweight stays bodyweight", () => {
+    expect(prescribedLoad({ type: "kg", value: 20 }, "lb")).toBe("44 lb");
+    expect(prescribedLoad({ type: "kg", value: 20 }, "kg")).toBe("20 kg");
+    expect(prescribedLoad({ type: "bodyweight" }, "lb")).toBe("bodyweight");
   });
 });
 

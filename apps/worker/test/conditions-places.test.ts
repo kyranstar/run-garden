@@ -192,6 +192,21 @@ describe("places and equipment", () => {
     ]);
   });
 
+  it("a list typed with no unit is saved with the unit then in force, so toggling Weights never changes what it means (Audit 2c-A MINOR-4)", async () => {
+    const setUnit = async (weightUnit: "lb" | "kg") => expect((await settings("PUT", "/api/settings", { weightUnit })).status).toBe(200);
+    await setUnit("kg");
+    const created = await places("POST", "/api/places", { name: "Home", equipment: ["kettlebell", "dumbbells"], implements: { kettlebell: "10, 15, 20", dumbbells: "5, 10 lb" } });
+    const { place } = (await created.json()) as { place: { id: string; implements: Record<string, string> } };
+    expect(place.implements).toEqual({ kettlebell: "10, 15, 20 kg", dumbbells: "5, 10 lb" });
+    await setUnit("lb");
+    const programId = await seedProgram("Mobility", place.id);
+    const ctx = await loadEngineContext(db, userId, programId, {});
+    expect(ctx.location.implements?.kettlebell).toEqual([{ v: 10, u: "kg" }, { v: 15, u: "kg" }, { v: 20, u: "kg" }]);
+    // A change typed in pounds now: the unit in force then.
+    const patched = await places("PATCH", `/api/places/${place.id}`, { implements: { kettlebell: "35, 40" } });
+    expect(((await patched.json()) as { place: { implements: Record<string, string> } }).place.implements).toEqual({ kettlebell: "35, 40 lb" });
+  });
+
   it("validates gear against the vocabulary and every list as weights; nothing is written for a refusal", async () => {
     const bad = [
       { name: "X", equipment: ["mat", "trampoline"] },

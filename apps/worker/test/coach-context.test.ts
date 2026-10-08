@@ -340,6 +340,37 @@ describe("what the coach can see (2026-08-16 input audit)", () => {
     expect(d.text).toContain('· contains: 3 × open Wall Sit');
   });
 
+  it("reads the plan's lifts in the athlete's weight unit, the prescription's kilos beside pounds (Audit 2c-A MINOR-5)", async () => {
+    const db = makeTestDb();
+    const { userId, prefs } = await makeTestUser(db);
+    const today = "2026-10-05";
+    const wednesday = addDays(today, 2);
+    const at = "2026-10-01T12:00:00.000Z";
+    const title = "W1 Wed - Goblet day";
+    await db.insert(schema.studioPlans).values({
+      id: "sp-units",
+      userId,
+      brief: { goal: "general", durationWeeks: 4, sessionsPerWeek: 1, sessionMinutes: 40, startDate: today },
+      plan: {
+        name: "Units",
+        weeks: [{ sessions: [{ title, weekday: 3, exercises: [{ originId: "x-goblet", name: "Goblet Squat", sets: 3, reps: 8, weight: { type: "kg", value: 20 }, restSeconds: 90 }] }] }],
+      },
+      version: 1,
+      createdAt: at,
+      updatedAt: at,
+    });
+    await db.insert(schema.plannedWorkouts).values({
+      id: "wo-goblet", userId, planId: "imported", sourceWorkoutId: "s-goblet", title: `${title} — wk 1`, category: "strength", sport: "strength",
+      originalPlanDate: wednesday, lastVerifiedCorosDate: wednesday, effectiveDate: wednesday, effectiveTime: "18:00",
+      sourceContentFingerprint: "fp-goblet", calendarBlockDurationSeconds: 2400, stageSummary: "3 × 8 Goblet Squat", createdAt: at, updatedAt: at,
+    });
+    const lb = await buildDossier(db, userId, { ...prefs, weightUnit: "lb" }, today);
+    expect(lb.text).toContain("Goblet Squat 3×8 @ 44 lb (20 kg)");
+    const kg = await buildDossier(db, userId, { ...prefs, weightUnit: "kg" }, today);
+    expect(kg.text).toContain("Goblet Squat 3×8 @ 20 kg");
+    expect(kg.text).not.toContain("44 lb");
+  });
+
   it("names a placeholder session's actual contents on the UPCOMING line", async () => {
     const db = makeTestDb();
     const { userId, prefs } = await makeTestUser(db);

@@ -16,14 +16,16 @@
  *  3. The first import only (no program the import made exists yet) also brings the tool's settings: the adaptive
  *     program (named by the profile's care label, config from the tool's settings), its current block, the places
  *     (when the account has none of its own), the move preferences (never over a row the account already has), the
- *     condition switched on since the first session's day (unless the account already set it), the weight unit and
- *     the wishlist. Later imports never touch them, so nothing the athlete changed here is overwritten.
+ *     condition switched on since the first session's day (unless the account already set it), the weight unit
+ *     (unless the athlete chose one here) and the wishlist (merged into theirs). Later imports never touch them, so
+ *     nothing the athlete changed here is overwritten.
  *  4. Everything lands as ONE transaction, under a per-account lock (a second import at once is `busy`), refused while
  *     a restore is replacing the account. A dry run reads only and answers the summary the import would.
  *
- * The summary carries the ORACLE numbers — the tool's own Stats and Records over the backup's sessions (session
- * count, sessions and volume per week for the last eight weeks, the best set per core lift, records, before/after
- * pairs, block number and week) — for the owner to hold against the tool's Progress tab.
+ * The summary carries the ORACLE numbers — the tool's own Stats over the backup's sessions in the tool's own shape,
+ * and its Records counted as its Progress tab lists them (session count, sessions and volume per week for the last
+ * eight weeks in whole kilos and in the tool's unit, the best and the latest set per core lift, records, before/after
+ * pairs, block number and week) — for the owner to hold against the tool's Progress tab (Audit 2c-A MINOR-1).
  *
  * Imported history never enters the garden (spec P8; ruling 2d-R3): every garden read leaves `source = 'import'` rows
  * out (garden-sync's `gardenSees`), so an import changes no past garden. Never writes to COROS.
@@ -46,6 +48,7 @@ import {
   adaptiveConfigSchema,
   canonicalJson,
   coreBlockIntentSchema,
+  DEFAULT_USER_PREFERENCES,
   isLocalDate,
   newId,
   parseStandaloneSession,
@@ -61,6 +64,7 @@ import {
   toKg,
   userPreferencesSchema,
   weightListProblem,
+  withWeightUnit,
   type AdaptiveConfig,
   type PerformedSessionWire,
   type StandaloneSession,
@@ -85,7 +89,7 @@ import { loadPreferences } from "./calendar-sync.js";
 import { chunkIds, insertBatches, runAtomically, type AtomicStatement, type Db } from "./db.js";
 import { claimUserLock, releaseUserLock } from "./locks.js";
 import { RestoreInProgressError } from "./programs.js";
-import { Stats } from "./standalone-stats.js";
+import { Stats, type LiftPoint, type ToolSession } from "./standalone-stats.js";
 
 /** The condition the standalone tool is about: its checks, its flag and its care. */
 const PROFILE_ID = "tmj";
@@ -167,7 +171,8 @@ function weightOf(w: unknown, unit: WeightUnit): Weight | null {
 const MODES: ReadonlySet<string> = new Set(SESSION_MODES);
 const FORMATS: ReadonlySet<string> = new Set(SESSION_FORMATS);
 
-export type Normalized = { ok: true; session: PerformedSessionWire; strength: boolean } | { ok: false; reason: string };
+/** A session normalised: Run Garden's wire, and the tool's own session as checked (what the oracle reads). */
+export type Normalized = { ok: true; session: PerformedSessionWire; strength: boolean; tool: StandaloneSession } | { ok: false; reason: string };
 
 /** The first problem as a short reason: where, and what — never a value from the file. */
 const reasonOf = (issues: ReadonlyArray<Pick<ZodIssue, "message" | "path">>): string => {
@@ -243,7 +248,7 @@ export function normalizeStandaloneSession(raw: unknown, performedId: string, ct
     checks,
   });
   if (!wire.success) return { ok: false, reason: reasonOf(wire.error.issues) };
-  return { ok: true, session: wire.data, strength: entries.some((e) => ctx.isCoreLift(e.exerciseId)) };
+  return { ok: true, session: wire.data, strength: entries.some((e) => ctx.isCoreLift(e.exerciseId)), tool: s };
 }
 
 // ── The summary ───────────────────────────────────────────────────────────────────────────────────────────────────
@@ -275,15 +280,37 @@ export interface ImportSummary {
   dropped: string[];
   /** What the import writes (a dry run: would write). */
   written: { sessions: number; sets: number; checks: number; activities: number; program: number; block: number; places: number; prefs: number; condition: number; preferences: number };
-  oracle: {
-    sessionCount: number;
-    sessionsPerWeek: Array<{ week: string; sessions: number }>;
-    weeklyVolumeKg: Array<{ week: string; volumeKg: number }>;
-    bestByCoreLift: Array<{ family: string; exerciseId: string; name: string; best: { w: Weight | null; reps: number | null; secs: number | null } | null }>;
-    records: number;
-    prePostPairs: number;
-    block: { number: number; week: number } | null;
-  };
+  oracle: Oracle;
+}
+
+/**
+ * The standalone tool's own numbers over the file's sessions, as its Progress tab shows them (Audit 2c-A MINOR-1), for
+ * the owner to hold side by side with that tab.
+ */
+export interface Oracle {
+  /** The unit the tool's Progress tab shows weights in: the tool's own setting (the account's when the file has none). */
+  unit: WeightUnit;
+  sessionCount: number;
+  /** The last eight weeks, oldest first, by their Mondays. */
+  sessionsPerWeek: Array<{ week: string; sessions: number }>;
+  /** The same weeks: whole kilos as the tool keeps them, and the whole number in `unit` its Progress tab shows. */
+  weeklyVolume: Array<{ week: string; kg: number; inUnit: number }>;
+  /**
+   * The block's core lifts: the best set in the history (Run Garden's records engine), and `latest`, the number on
+   * the tool's lift tile — the last session's top set, weight as typed.
+   */
+  bestByCoreLift: Array<{
+    family: string;
+    exerciseId: string;
+    name: string;
+    best: { w: Weight | null; reps: number | null; secs: number | null } | null;
+    latest: { date: string; w: Weight | null; reps: number | null; secs: number | null } | null;
+  }>;
+  /** Records as the Progress tab lists them: new bests (never a first time) and milestones. */
+  records: number;
+  /** Sessions with both a before and an after number. */
+  prePostPairs: number;
+  block: { number: number; week: number } | null;
 }
 
 export interface ImportCtx {
@@ -344,7 +371,7 @@ async function plan(db: Db, userId: string, raw: unknown, ctx: ImportCtx): Promi
 
   // Sessions: each on its own.
   const invalid: ImportSummary["sessions"]["invalid"] = [];
-  const valid: Array<{ wire: PerformedSessionWire; strength: boolean }> = [];
+  const valid: Array<{ wire: PerformedSessionWire; strength: boolean; tool: StandaloneSession }> = [];
   const seen = new Set<string>();
   file.sessions.forEach((rawSession, index) => {
     const out = normalizeStandaloneSession(rawSession, newId(), sc);
@@ -352,7 +379,7 @@ async function plan(db: Db, userId: string, raw: unknown, ctx: ImportCtx): Promi
     if (!out.ok) return invalid.push({ index, id, reason: out.reason });
     if (seen.has(out.session.sourceRef!)) return invalid.push({ index, id, reason: "the same session id again" });
     seen.add(out.session.sourceRef!);
-    valid.push({ wire: out.session, strength: out.strength });
+    valid.push({ wire: out.session, strength: out.strength, tool: out.tool });
   });
   const imported = await alreadyImported(db, userId, valid.map((v) => v.wire.sourceRef!));
   const fresh = valid.filter((v) => !imported.has(v.wire.sourceRef!));
@@ -373,19 +400,32 @@ async function plan(db: Db, userId: string, raw: unknown, ctx: ImportCtx): Promi
     : null;
   if (blockParsed && !block) dropped.add("block");
 
-  // The oracle: the tool's own numbers over every session in the file.
+  // The oracle: the tool's own numbers over every session the import reads, in the tool's own shape and file order
+  // (Stats reads what Run Garden's sessions no longer carry: how each entry was logged), shown in the tool's unit.
   const wires = valid.map((v) => v.wire);
-  const weeks = Stats.weekly(wires, 8, ctx.today);
+  const toolSessions = valid.map((v) => v.tool as unknown as ToolSession);
+  const weeks = Stats.weekly(toolSessions, 8, ctx.today, unit);
   const data = makeEngineData({ activeProfiles: [PROFILE_ID], careProfiles: [], exercises: sc.exercises });
   const history = wires.map(historyFromPerformed);
   const goal = clampInt(settings.weeklyGoal, 1, 7, 4);
   const coreIds = block ? CORE_FAMILIES.flatMap((f) => (block.intent.core[f.id] ? [{ family: f.id, id: block.intent.core[f.id]! }] : [])) : [];
   const base = Records.baseline(data, history, { ids: coreIds.map((c) => c.id), date: ctx.today, weeklyGoal: goal });
+  const lifts = Stats.lifts(toolSessions, unit);
+  /** The lift tile's number: the last point of the move's series (a renamed move's old id is the same move). */
+  const latestOf = (id: string): Oracle["bestByCoreLift"][number]["latest"] => {
+    const last = lifts
+      .filter((l) => sc.canonical(l.id) === id)
+      .map((l) => l.points[l.points.length - 1]!)
+      .reduce<LiftPoint | null>((a, p) => (a === null || p.date >= a.date ? p : a), null);
+    return last ? { date: last.date, w: last.top, reps: last.reps, secs: last.secs } : null;
+  };
+  const progress = Records.compute(data, history, { weeklyGoal: goal });
   const blockWeek = block ? Blocks.weekOf({ startedAt: block.startedAt }, ctx.today) : null;
-  const oracle: ImportSummary["oracle"] = {
+  const oracle: Oracle = {
+    unit,
     sessionCount: wires.length,
     sessionsPerWeek: weeks.map((w) => ({ week: w.week, sessions: w.sessions })),
-    weeklyVolumeKg: weeks.map((w) => ({ week: w.week, volumeKg: w.volumeKg })),
+    weeklyVolume: weeks.map((w) => ({ week: w.week, kg: w.volumeKg, inUnit: Stats.volumeInUnit(w.volumeKg, unit) })),
     bestByCoreLift: coreIds.map(({ family, id }) => {
       const b = base.bests[id];
       return {
@@ -393,14 +433,12 @@ async function plan(db: Db, userId: string, raw: unknown, ctx: ImportCtx): Promi
         exerciseId: id,
         name: Lib.get(data, id)?.name ?? id,
         best: b && (b.w !== null || b.reps !== null || b.secs !== null) ? { w: b.w, reps: b.reps, secs: b.secs } : null,
+        latest: latestOf(id),
       };
     }),
-    records: Records.compute(data, history, { weeklyGoal: goal }).records.length,
-    prePostPairs: wires.filter((w) => {
-      const pre = w.checks.find((c) => c.profileId === PROFILE_ID && c.kind === "pre");
-      const post = w.checks.find((c) => c.profileId === PROFILE_ID && c.kind === "post");
-      return pre?.value != null && post?.value != null;
-    }).length,
+    // As the Progress tab lists them: first times are not shown there; milestones are.
+    records: progress.records.filter((r) => r.kind !== "first").length + progress.milestones.length,
+    prePostPairs: toolSessions.filter((s) => s.pre != null && s.post != null).length,
     block: block && blockWeek !== null ? { number: block.number, week: blockWeek } : null,
   };
 
@@ -424,7 +462,8 @@ async function plan(db: Db, userId: string, raw: unknown, ctx: ImportCtx): Promi
       const text = (p.data as Record<string, unknown>)[gear] as { weights?: unknown } | undefined;
       const typed = typeof text?.weights === "string" ? text.weights.trim() : "";
       if (typed === "" || !equipment.includes(gear)) continue;
-      if (weightListProblem(typed) === null) lists[gear] = typed;
+      // A list the tool kept with no unit meant the tool's (Audit 2c-A MINOR-4).
+      if (weightListProblem(typed) === null) lists[gear] = withWeightUnit(typed, unit);
       else dropped.add(`${gear} weights`);
     }
     return [{ sourceId: p.data.id, name: p.data.name, equipment, lists }];
@@ -570,7 +609,13 @@ async function plan(db: Db, userId: string, raw: unknown, ctx: ImportCtx): Promi
             .onConflictDoNothing(),
         );
       }
-      const next = userPreferencesSchema.parse({ ...account, weightUnit: unit, equipmentWishlist: wishlist });
+      // Never over what the athlete set here (Audit 2c-A MINOR-2): a unit other than the default was chosen (nothing
+      // else writes one), so it stays; the wishlist is theirs plus the file's new gear.
+      const next = userPreferencesSchema.parse({
+        ...account,
+        weightUnit: account.weightUnit !== DEFAULT_USER_PREFERENCES.weightUnit ? account.weightUnit : unit,
+        equipmentWishlist: [...new Set([...account.equipmentWishlist, ...wishlist])],
+      });
       out.push(
         wdb
           .insert(userPreferences)
