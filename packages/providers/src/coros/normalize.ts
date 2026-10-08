@@ -269,6 +269,35 @@ export function corosProgramFingerprint(program: RawCorosProgram): string {
 }
 
 /**
+ * THE TEXT OF A PROGRAM: the name and overview of each REAL step (repeat-group
+ * containers dropped), in wire order — `sortNo`, then array order (Phase 3,
+ * spec §4.5).
+ *
+ * `corosProgramFingerprint` covers numbers and structure and no step text, so a
+ * step renamed or re-cued in COROS changes nothing it sees. A sent program
+ * session records this one beside it, as observed on the read-back, and the
+ * import compares both. An absent overview is an empty one (COROS drops empty
+ * overviews on save); names are compared exactly, as COROS returns them.
+ */
+export function programTextFingerprint(program: RawCorosProgram): string {
+  return fingerprint(programStepsInWireOrder(program).map((e) => [String(e.name ?? ""), String(e.overview ?? "")]));
+}
+
+/** A program's REAL steps (repeat-group containers dropped), in wire order: `sortNo`, then array order. */
+export function programStepsInWireOrder(program: RawCorosProgram | undefined): RawCorosExercise[] {
+  const steps = (program?.exercises ?? [])
+    .map((e, index) => ({ e, index }))
+    .filter(({ e }) => e.isGroup !== true && Number(e.exerciseType) !== 0);
+  steps.sort((x, y) => {
+    const a = Number(x.e.sortNo);
+    const b = Number(y.e.sortNo);
+    if (Number.isFinite(a) && Number.isFinite(b) && a !== b) return a - b;
+    return x.index - y.index;
+  });
+  return steps.map(({ e }) => e);
+}
+
+/**
  * WHICH FIELDS TWO PROGRAMS DISAGREE ON — the fingerprint's own components,
  * named, for a refusal a person has to act on.
  *
