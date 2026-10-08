@@ -64,6 +64,42 @@ async function realDeps(): Promise<{ catalog: Map<string, string>; deps: WatchPl
   return { catalog, deps: { catalogIdByKey: catalogIdsByKey(catalog), keyOf: (id) => corosKeyOf(id) } };
 }
 
+describe("weights on the watch are kg; the preview carries the athlete's pounds beside them (W-7, ruling 3-R14)", () => {
+  it("a pounds athlete's 25 lb set: 11340 g in kg on the wire, and the preview row carries 25 lb beside it", async () => {
+    // The sheet renders "11.3 kg · 25 lb" (Task 8) from `grams` and `load`; the wire stays kg-only (owner decision).
+    expect(prefs.weightUnit).toBe("lb");
+    const workoutId = await seedSlot(db, userId, programId, DAY);
+    const build = (await buildToday(db, userId, prefs, workoutId)).build!;
+    const typed = build.steps.flatMap((s) => (s.target?.w ? [s.target.w] : []));
+    expect(typed).toContainEqual({ v: 25, u: "lb" }); // supportedRow in the fixed-seed build
+    expect(typed.every((w) => w.u === "lb")).toBe(true);
+
+    const preview = await watchPreview(db, switchOn(), userId, workoutId, { today: DAY, now: NOON, prefs });
+    const row = preview.steps.find((s) => s.grams === 11_340)!;
+    expect(row).toMatchObject({ name: "One Arm Dumbbell Row", grams: 11_340, load: { v: 25, u: "lb" } });
+    const weighted = preview.steps.filter((s) => s.grams !== null);
+    expect(weighted.length).toBe(typed.length + oneSidedSets(build).filter((s) => s.target?.w).length); // a pair weighs twice
+    for (const s of weighted) {
+      expect(s.load?.u).toBe("lb");
+      expect(Math.abs(s.load!.v * 453.59237 - s.grams!)).toBeLessThan(0.5 * 453.59237); // the same weight, to the half pound
+    }
+    expect(preview.steps.filter((s) => s.grams === null).every((s) => s.load === null)).toBe(true);
+
+    // On the wire: kg × 1000, display unit "6" (kg) — never pounds (ruling 3-R14).
+    const { catalog, deps } = await realDeps();
+    const steps = watchStepsFromBuild(build, deps).steps;
+    const program = buildProgramWatchProgram({ happenDay: "20261009", name: preview.stamp, session: { kind: "program_watch", title: PROGRAM_NAME, steps } }, catalog);
+    const wire = (program.exercises as Array<Record<string, unknown>>).filter((e) => e.exerciseType !== 0 && Number(e.intensityCustom) === 0);
+    expect(wire.length).toBe(weighted.length);
+    expect(wire.every((e) => String(e.intensityDisplayUnit) === "6")).toBe(true);
+    expect(wire.filter((e) => e.intensityValue === 11_340).length).toBe(preview.steps.filter((s) => s.grams === 11_340).length);
+
+    // A kilos athlete sees the same grams, and kilos beside them.
+    const kilos = await watchPreview(db, switchOn(), userId, workoutId, { today: DAY, now: NOON, prefs: { ...prefs, weightUnit: "kg" } });
+    expect(kilos.steps.find((s) => s.grams === 11_340)!.load).toEqual({ v: 11.34, u: "kg" });
+  });
+});
+
 describe("a one-sided set on the watch (W-1)", () => {
   it("the fixture's build: each one-sided set is a left/right pair in one container, the rest on the right", async () => {
     const workoutId = await seedSlot(db, userId, programId, DAY);
