@@ -12,7 +12,7 @@
  * the rest to the next run — which finds them again, because a capped run does not advance the sync token: a
  * change the athlete made in Google that waited behind the cap is still in the next run's feed.
  */
-import { beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { eq } from "drizzle-orm";
 import { schema } from "@rg/database";
 import { addDays, newId, nowInstant, todayInZone } from "@rg/domain";
@@ -118,6 +118,8 @@ beforeEach(async () => {
   google = new FakeGoogleApi();
   globalThis.fetch = google.fetch;
 });
+
+afterEach(() => vi.restoreAllMocks());
 
 /** `count` workouts, one a day from `from` days after today (tomorrow by default), in that order. */
 async function seedWorkouts(count: number, from = 1): Promise<string[]> {
@@ -266,5 +268,27 @@ describe("a calendar sync's work per run (cron reliability)", () => {
     expect(google.lists.at(-1)).toMatch(/^incremental:/);
     expect(google.lists).not.toContain("incremental:0");
     expect([...google.writes].sort()).toEqual(ids.map((id) => `insert:${id}`).sort());
+  });
+
+  it("adopting the athlete's moves builds no date formatter per move", async () => {
+    const ids = await seedWorkouts(12);
+    await syncUntilSettled();
+    for (const id of ids) {
+      const event = google.byWorkout(id)!;
+      const later = (iso: string) => new Date(Date.parse(iso) + 3_600_000).toISOString();
+      event.body = { ...event.body, start: { dateTime: later(event.body.start.dateTime) }, end: { dateTime: later(event.body.end.dateTime) } };
+      google.bump(event);
+    }
+    let built = 0;
+    const Real = Intl.DateTimeFormat;
+    const counting = new Proxy(Real, {
+      construct: (target, args) => ((built += 1), Reflect.construct(target, args)),
+      apply: (target, self, args) => ((built += 1), Reflect.apply(target, self, args)),
+    });
+    vi.spyOn(Intl, "DateTimeFormat", "get").mockReturnValue(counting);
+    const stats = await syncCalendar(db, env, userId);
+    expect(stats.userMovesAccepted).toBe(12);
+    // The run's own date work (today in the athlete's zone, the moves' local clock) — never one per move.
+    expect(built).toBeLessThanOrEqual(3);
   });
 });

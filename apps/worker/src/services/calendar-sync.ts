@@ -320,12 +320,14 @@ export async function syncCalendar(
   // unchanged events aren't misread as deleted.
   if (syncToken) {
     const changedIds = new Set(actual.map((a) => a.eventId));
+    // By id, not a scan per link: a scan per link was quadratic in the window.
+    const workoutIdSet = new Set(workouts.map((x) => x.id));
+    const desiredByWorkout = new Map(desired.map((x) => [x.workoutId, x]));
     for (const link of links) {
       if (!changedIds.has(link.eventId)) {
         // Unchanged since last sync: reconstruct "actual" from our last write.
-        const w = workouts.find((x) => x.id === link.workoutId);
-        const d = desired.find((x) => x.workoutId === link.workoutId);
-        if (w && link.lastWrittenFingerprint && d) {
+        const d = desiredByWorkout.get(link.workoutId);
+        if (workoutIdSet.has(link.workoutId) && link.lastWrittenFingerprint && d) {
           actual.push({
             eventId: link.eventId,
             status: "confirmed",
@@ -525,15 +527,7 @@ async function executeOneOp(
       case "accept_user_move": {
         // Adopt the user's manual calendar change; queue COROS if date changed.
         const local = new Date(op.newStart);
-        const zoned = new Intl.DateTimeFormat("en-CA", {
-          timeZone: prefs.timezone,
-          year: "numeric",
-          month: "2-digit",
-          day: "2-digit",
-          hour: "2-digit",
-          minute: "2-digit",
-          hour12: false,
-        }).formatToParts(local);
+        const zoned = localClockFormat(prefs.timezone).formatToParts(local);
         const get = (type: string) => zoned.find((p) => p.type === type)?.value ?? "";
         // The event start includes the before-buffer; workout starts after it.
         const startMinutes =
@@ -580,6 +574,26 @@ async function executeOneOp(
       }
     }
   }
+}
+
+/** One formatter per zone for the moves' local clock: building one costs far more than using it, and a run can
+ * adopt many moves. */
+const clockFormats = new Map<string, Intl.DateTimeFormat>();
+function localClockFormat(timezone: string): Intl.DateTimeFormat {
+  let format = clockFormats.get(timezone);
+  if (!format) {
+    format = new Intl.DateTimeFormat("en-CA", {
+      timeZone: timezone,
+      year: "numeric",
+      month: "2-digit",
+      day: "2-digit",
+      hour: "2-digit",
+      minute: "2-digit",
+      hour12: false,
+    });
+    clockFormats.set(timezone, format);
+  }
+  return format;
 }
 
 function rebuildWithNotes(
