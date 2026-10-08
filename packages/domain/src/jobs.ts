@@ -222,6 +222,11 @@ export const programSessionPushJobSchema = z
     attempts: z.number().int().min(0).optional(),
     /** Written at verify: the fingerprints of what the read-back found. */
     observed: z.object({ wire: z.string(), text: z.string() }).strict().optional(),
+    /**
+     * Written by the import: the fingerprints of the COROS copy it last told the athlete about ("Changed in COROS"),
+     * so one change is one note, however many reads see it.
+     */
+    noticed: z.object({ wire: z.string(), text: z.string() }).strict().optional(),
   })
   .strict();
 export type ProgramSessionPushJob = z.infer<typeof programSessionPushJobSchema>;

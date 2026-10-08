@@ -7,7 +7,14 @@ const NOTE_TTL_MS = 7 * 24 * 60 * 60_000;
 
 export type SyncNoteKind =
   | "kept_local_change" | "adopted_coros_change" | "adopted_coros_edit" | "adopted_coros_removal"
-  | "race_move_rejected";
+  | "race_move_rejected"
+  /** A sent program session changed in COROS; the app kept its version (Phase 3, spec §4.5). Dismiss only. */
+  | "watch_copy_changed"
+  /** A sent program session's copy was deleted in COROS; its address is cleared, the slot stays (§4.5). Dismiss only. */
+  | "watch_copy_removed";
+
+/** Note kinds that only inform: there is nothing to undo (the undo route answers 422 `not_undoable`). */
+export const DISMISS_ONLY_NOTE_KINDS: readonly SyncNoteKind[] = ["watch_copy_changed", "watch_copy_removed"];
 
 export async function postSyncNote(
   db: Db,

@@ -819,7 +819,11 @@ export type SyncNoteKind =
   | "adopted_coros_change"
   | "adopted_coros_edit"
   | "adopted_coros_removal"
-  | "race_move_rejected";
+  | "race_move_rejected"
+  /** A sent program session changed in COROS; the app kept its version. Dismiss only (undo answers 422). */
+  | "watch_copy_changed"
+  /** A sent program session's copy was deleted in COROS. Dismiss only (undo answers 422). */
+  | "watch_copy_removed";
 
 export interface SyncNoteDto {
   id: string;

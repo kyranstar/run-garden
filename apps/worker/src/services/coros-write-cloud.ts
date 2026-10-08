@@ -1,7 +1,8 @@
 import { ZodError } from "zod";
-import { and, desc, eq, isNotNull } from "drizzle-orm";
+import { and, desc, eq, isNotNull, sql } from "drizzle-orm";
 import { corosWriteJobs, dailyHealth, plannedWorkouts } from "@rg/database";
 import {
+  appAuthoredRow,
   nowInstant,
   todayInZone,
   watchAddressOf,
@@ -41,6 +42,7 @@ import { exerciseNameMap } from "./exercise-catalog.js";
 import { openIntentFor, resolveIntent } from "./sync-intents.js";
 import { enqueueUnpushIfOurs } from "./plan-mutations.js";
 import { sentBuildIdOf } from "./session-build.js";
+import { recordedStampFor } from "./coros-stamp.js";
 import { unpushBuild } from "./watch-push.js";
 
 /**
@@ -744,6 +746,13 @@ export async function executeCloudJobs(
           continue;
         }
         const spec = parsed.data;
+        // A PROGRAM ROW'S ADDRESS IS ITS NEWEST SENT COPY'S (Phase 3): only when
+        // the row's recorded stamp is the one this job deletes is that address
+        // this copy's. Otherwise (a copy the row never recorded, or an older one
+        // a later send replaced) the payload's address is the copy's, and the
+        // row is left exactly as it is.
+        const program = job.workout !== null && appAuthoredRow(job.workout);
+        const rowsCopy = !program || (await recordedStampFor(db, userId, spec.workoutId)) === spec.name;
         // WHERE COROS HOLDS IT NOW, not where it stood when the unpush was
         // queued (audit 1, coach finding 1). A move that was already in flight
         // when the session was removed lands first — the lock serialises them —
@@ -752,7 +761,7 @@ export async function executeCloudJobs(
         // and left the session on the watch. The row's verified address is
         // re-read at claim; the payload's is the fallback for a row that no
         // longer proves one. The stamp still authorizes the delete either way.
-        const heldAt = job.workout ? watchAddressOf(job.workout) : null;
+        const heldAt = job.workout && rowsCopy ? watchAddressOf(job.workout) : null;
         const target = heldAt ?? {
           happenDay: spec.happenDay,
           idInPlan: spec.idInPlan,
@@ -782,10 +791,37 @@ export async function executeCloudJobs(
           // "synced". Harmless while the only unpushes were archive-time ones
           // (archived rows do not render), and not harmless now that a live row
           // can be unpushed because its new content cannot cross the wire.
-          await db
-            .update(plannedWorkouts)
-            .set({ corosSyncState: "calendar_only", lastVerifiedCorosDate: "", updatedAt: done })
-            .where(eq(plannedWorkouts.id, spec.workoutId));
+          //
+          // A PROGRAM ROW'S COPY, GONE (Phase 3, spec §4.4): the address is reset
+          // to the row's own id, and the push that put that copy there is
+          // superseded — so Send queues it afresh. Only now, never at enqueue:
+          // until the delete verifies the copy is still on the watch, and the
+          // import must keep recognising its stamp.
+          if (rowsCopy) {
+            await db
+              .update(plannedWorkouts)
+              .set({
+                corosSyncState: "calendar_only",
+                lastVerifiedCorosDate: "",
+                ...(program ? { sourceWorkoutId: spec.workoutId, sourceIdInPlan: null, sourceProgramId: null } : {}),
+                updatedAt: done,
+              })
+              .where(eq(plannedWorkouts.id, spec.workoutId));
+          }
+          if (program) {
+            await db
+              .update(corosWriteJobs)
+              .set({ status: "superseded", updatedAt: done })
+              .where(
+                and(
+                  eq(corosWriteJobs.userId, userId),
+                  eq(corosWriteJobs.workoutId, spec.workoutId),
+                  eq(corosWriteJobs.kind, "program_session_push"),
+                  eq(corosWriteJobs.status, "verified"),
+                  sql`json_extract(${corosWriteJobs.payload}, '$.name') = ${spec.name}`,
+                ),
+              );
+          }
           await db
             .update(corosWriteJobs)
             .set({ status: "verified", verifiedAt: done, completedAt: done, updatedAt: done })

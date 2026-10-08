@@ -14,13 +14,17 @@ import {
   appAuthoredRow,
   newId,
   nowInstant,
+  programSessionPushJobSchema,
   todayInZone,
+  watchAddressOf,
+  WATCH_CREATE_JOB_KINDS,
   type ArchiveReason,
+  type ProgramSessionPushJob,
   type PlannedStage,
   type UserPreferences,
 } from "@rg/domain";
 import { classifyWorkout, estimateDuration, summarizeStages } from "@rg/scheduling";
-import type { SourcePlannedWorkout, TrainingPlanInfo } from "@rg/providers";
+import { programTextFingerprint, type RawCorosProgram, type SourcePlannedWorkout, type TrainingPlanInfo } from "@rg/providers";
 import { isSpikeStamp } from "@rg/coros";
 import { chunkedInsert, type Db } from "./db.js";
 import { separateDayCollisions, windowTimeFor } from "./day-placement.js";
@@ -28,6 +32,8 @@ import { loadOwnProgramNames, unstampTitle } from "./coros-stamp.js";
 import { openMoveIntents, resolveIntent } from "./sync-intents.js";
 import { postSyncNote } from "./sync-notes.js";
 import { reconcileWorkout } from "./reconcile.js";
+import { sentBuildIdOf } from "./session-build.js";
+import { queueUnpush } from "./watch-push.js";
 
 /**
  * Plan import + COROS reconciliation (rules 1–11 of the sync spec, see
@@ -347,6 +353,32 @@ export async function importPlanSnapshot(
     end: input.rangeEnd,
   });
 
+  // ── Sent program sessions (Phase 3, spec §4.5, ruling 3-R9) ─────────────────
+  // Read once, never per row. Every program push this account queued, whatever
+  // its status, names a stamp that is ours (`pushByStamp`): a wire workout
+  // carrying one is only ever its own slot's — even one whose write the
+  // executor never recorded. The VERIFIED push of a row (`verifiedPushOf`) is
+  // the row's recorded stamp and what the push observed: a program row claims a
+  // wire workout only when it carries that stamp, and a change is measured
+  // against what COROS stored, never against what we sent.
+  const pushByStamp = new Map<string, { jobId: string; workoutId: string; buildId: string; payload: ProgramSessionPushJob }>();
+  const verifiedPushOf = new Map<string, { jobId: string; verifiedAt: string; payload: ProgramSessionPushJob }>();
+  for (const job of await db
+    .select({ id: corosWriteJobs.id, workoutId: corosWriteJobs.workoutId, status: corosWriteJobs.status, payload: corosWriteJobs.payload, verifiedAt: corosWriteJobs.verifiedAt })
+    .from(corosWriteJobs)
+    .where(and(eq(corosWriteJobs.userId, input.userId), eq(corosWriteJobs.kind, "program_session_push")))) {
+    const parsed = programSessionPushJobSchema.safeParse(job.payload);
+    if (!parsed.success) continue;
+    pushByStamp.set(parsed.data.name, { jobId: job.id, workoutId: job.workoutId, buildId: parsed.data.buildId, payload: parsed.data });
+    if (job.status !== "verified") continue;
+    const prev = verifiedPushOf.get(job.workoutId);
+    if (!prev || (job.verifiedAt ?? "") > prev.verifiedAt) {
+      verifiedPushOf.set(job.workoutId, { jobId: job.id, verifiedAt: job.verifiedAt ?? "", payload: parsed.data });
+    }
+  }
+  /** Program rows a wire workout of this snapshot carried by their stamp: present, whatever their address says. */
+  const seenProgramRows = new Set<string>();
+
   // ── Why a row left vs. whether it may come back ─────────────────────────────
   //
   // Two different facts, and this file used to keep them in one place:
@@ -534,7 +566,7 @@ export async function importPlanSnapshot(
         .where(
           and(
             eq(corosWriteJobs.userId, input.userId),
-            inArray(corosWriteJobs.kind, ["coach_create_workout", "coach_update_workout"]),
+            inArray(corosWriteJobs.kind, [...WATCH_CREATE_JOB_KINDS, "coach_update_workout"]),
           ),
         )
     ).map((r) => r.workoutId),
@@ -566,13 +598,23 @@ export async function importPlanSnapshot(
     });
     const stageSummary = src.stages.length > 0 ? summarizeStages(src.stages) : undefined;
 
-    const claimants = existingByAddress.get(src.sourceWorkoutId) ?? [];
+    // RULING 3-R9. A program row claims a wire workout only when the workout
+    // carries that row's recorded stamp: an address is a claim, and COROS
+    // recycles them — the old slot may now hold the athlete's own run. And a
+    // wire workout carrying a program stamp of ours is only ever its own slot's,
+    // never another row's to be rewritten into.
+    const ours = pushByStamp.get(src.title);
+    const claimants = (existingByAddress.get(src.sourceWorkoutId) ?? []).filter((w) =>
+      appAuthoredRow(w) ? verifiedPushOf.get(w.id)?.payload.name === src.title : ours === undefined,
+    );
     if (claimants.length > 1) stats.contestedAddresses += 1;
     const current = resolveClaimant(claimants, {
       title,
       date: src.date,
       planId: planRowsBySourceId.get(src.sourcePlanId)!.id,
     });
+    const programRow = current !== undefined && appAuthoredRow(current);
+    if (programRow) seenProgramRows.add(current.id);
 
     // A row whose CONTENT the app claims and COROS has not got is
     // `calendar_only`, whatever the DATES say (2026-08-17). `ease` writes
@@ -597,19 +639,20 @@ export async function importPlanSnapshot(
     // its own coarse filing, not a replacement (Ruling A2).
     if (
       current &&
+      !programRow &&
       sportFlipped(current, src.sport) &&
       current.completionState === "completed"
     ) {
       stats.skippedForeignWorkouts += 1;
       continue;
     }
-    if (current && sportFlipped(current, src.sport) && contentIntentIds.has(current.id)) {
+    if (current && !programRow && sportFlipped(current, src.sport) && contentIntentIds.has(current.id)) {
       // Not a recycled slot: the coach's approved ease flipped this row's
       // sport locally. Same content claim as rule 7 — the app wins.
       stats.unchanged += 1;
       continue;
     }
-    if (current && sportFlipped(current, src.sport)) {
+    if (current && !programRow && sportFlipped(current, src.sport)) {
       // The athlete's window. Whether this session can actually HAVE it — or
       // has to queue up behind what already occupies the day — is settled once
       // for the whole snapshot by `separateDayCollisions` below, which can see
@@ -652,6 +695,51 @@ export async function importPlanSnapshot(
         .where(eq(plannedWorkouts.id, current.id));
       await replaceStages(db, current.id, src);
       stats.replacedRecycled += 1;
+      continue;
+    }
+
+    if (!current && ours) {
+      // A COPY THE ROW NEVER LEARNED ABOUT (spec §4.5): the executor wrote it
+      // and died before recording it. It is attached to the slot it was sent
+      // for while that slot still holds the build it carries; otherwise (the
+      // slot gone, or holding another build) it is taken off the watch — the
+      // stamp from the push's own payload, the address from the wire, because
+      // no verified push recorded either. Never a new row.
+      const slot = existingById.get(ours.workoutId);
+      const raw = src.raw as { entity?: { planProgramId?: unknown } } | undefined;
+      const programId = String(raw?.entity?.planProgramId ?? src.sourceIdInPlan ?? "");
+      const holds = slot && !slot.archivedAt ? (await sentBuildIdOf(db, slot.id)) === ours.buildId : false;
+      if (slot && holds) {
+        await db
+          .update(plannedWorkouts)
+          .set({
+            sourceWorkoutId: src.sourceWorkoutId,
+            sourceIdInPlan: src.sourceIdInPlan ?? null,
+            sourceProgramId: programId || null,
+            lastVerifiedCorosDate: src.date,
+            sourceContentFingerprint: src.contentFingerprint,
+            corosSyncState: "synced",
+            missingReads: 0,
+            updatedAt: now,
+          })
+          .where(eq(plannedWorkouts.id, slot.id));
+        seenProgramRows.add(slot.id);
+      } else if (prefs.corosWritesEnabled && src.sourceIdInPlan && programId) {
+        await queueUnpush(
+          db,
+          input.userId,
+          ours.buildId,
+          {
+            workoutId: ours.workoutId,
+            happenDay: src.date,
+            name: src.title,
+            idInPlan: src.sourceIdInPlan,
+            programId,
+            corosPlanId: src.sourcePlanId,
+          },
+          now,
+        );
+      }
       continue;
     }
 
@@ -856,7 +944,32 @@ export async function importPlanSnapshot(
       }
     }
 
-    if (src.contentFingerprint !== current.sourceContentFingerprint && contentIntentIds.has(current.id)) {
+    if (programRow) {
+      // A SENT PROGRAM SESSION'S CONTENT IS ITS LOCKED BUILD'S (ruling 3-R9).
+      // Rule 7, the recycled-slot rewrite and the wording heal never write its
+      // title, category, sport, stages or summary — the 2026-08-18 echo lesson.
+      // The row records the wire as observed; when that differs from what the
+      // push observed, the athlete is told once, and the app keeps its version.
+      if (src.contentFingerprint !== current.sourceContentFingerprint) {
+        updates.sourceContentFingerprint = src.contentFingerprint;
+        touched = true;
+      }
+      const push = verifiedPushOf.get(current.id);
+      const wireProgram = (src.raw as { program?: RawCorosProgram } | undefined)?.program;
+      if (push?.payload.observed && wireProgram && !current.archivedAt) {
+        const seen = { wire: src.contentFingerprint, text: programTextFingerprint(wireProgram) };
+        const { observed, noticed } = push.payload;
+        const changed = seen.wire !== observed.wire || seen.text !== observed.text;
+        const told = noticed !== undefined && noticed.wire === seen.wire && noticed.text === seen.text;
+        if (changed && !told) {
+          await postSyncNote(db, { userId: input.userId, workoutId: current.id, kind: "watch_copy_changed", payload: { date: src.date } });
+          await db
+            .update(corosWriteJobs)
+            .set({ payload: { ...push.payload, noticed: seen } as unknown as Record<string, unknown>, updatedAt: now })
+            .where(eq(corosWriteJobs.id, push.jobId));
+        }
+      }
+    } else if (src.contentFingerprint !== current.sourceContentFingerprint && contentIntentIds.has(current.id)) {
       // Rule 7 exception (audit#3 D1): the coach eased this session and the
       // athlete approved — the app's content wins over the snapshot, every
       // snapshot, or the approval silently un-happens within one pull.
@@ -950,6 +1063,35 @@ export async function importPlanSnapshot(
 
   // ── Rule 8: workouts that disappeared upstream (double-read confirmation) ──
   for (const w of existing) {
+    if (appAuthoredRow(w)) {
+      // A SENT PROGRAM SESSION IS NEVER ARCHIVED BY ABSENCE (ruling 3-R9). Its
+      // copy is absent when no wire workout carried its stamp — its address
+      // proves nothing, COROS recycles them. After two reads without it the
+      // address is cleared (the slot is the app's, and doable) and the athlete
+      // told once; nothing sends it again on its own.
+      if (seenProgramRows.has(w.id) || w.archivedAt || w.completionState !== "scheduled") continue;
+      const address = watchAddressOf(w);
+      if (!address || address.happenDay < input.rangeStart || address.happenDay > input.rangeEnd) continue;
+      const reads = w.missingReads + 1;
+      if (reads >= 2) {
+        await db
+          .update(plannedWorkouts)
+          .set({
+            sourceWorkoutId: w.id,
+            sourceIdInPlan: null,
+            sourceProgramId: null,
+            lastVerifiedCorosDate: "",
+            corosSyncState: "calendar_only",
+            missingReads: 0,
+            updatedAt: now,
+          })
+          .where(eq(plannedWorkouts.id, w.id));
+        await postSyncNote(db, { userId: input.userId, workoutId: w.id, kind: "watch_copy_removed", payload: { date: address.happenDay } });
+      } else {
+        await db.update(plannedWorkouts).set({ missingReads: reads, updatedAt: now }).where(eq(plannedWorkouts.id, w.id));
+      }
+      continue;
+    }
     if (seenSourceIds.has(w.sourceWorkoutId)) continue;
     if (w.archivedAt) continue;
     if (w.completionState !== "scheduled") continue;

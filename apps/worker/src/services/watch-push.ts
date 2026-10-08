@@ -466,56 +466,74 @@ export async function unpushBuild(
   const address = watchAddressOf(row);
   const parsed = push ? programSessionPushJobSchema.safeParse(push.payload) : null;
   if (prefs.corosWritesEnabled && push?.status === "verified" && address && parsed?.success) {
-    const payload = {
+    await queueUnpush(db, userId, buildId, {
       workoutId: row.id,
       happenDay: address.happenDay,
       name: parsed.data.name,
       idInPlan: address.idInPlan,
       programId: address.programId,
       corosPlanId: address.corosPlanId,
-    };
-    const unpush = unpushJobId(buildId);
-    const inserted = await db
-      .insert(corosWriteJobs)
-      .values({
-        id: unpush,
-        userId,
-        workoutId: row.id,
-        kind: "coach_delete_workout",
-        expectedContentFingerprint: push.expectedContentFingerprint,
-        originalDate: address.happenDay,
-        destinationDate: address.happenDay,
-        payload,
-        requestedAt: now,
-        status: "queued",
-        updatedAt: now,
-      })
-      .onConflictDoNothing()
-      .returning({ id: corosWriteJobs.id });
-    if (inserted.length === 0) {
-      // Taken off before (and sent again since): the settled unpush is queued afresh for this copy.
-      await db
-        .update(corosWriteJobs)
-        .set({
-          status: "queued",
-          claimedByDeviceId: null,
-          claimedAt: null,
-          verifiedAt: null,
-          completedAt: null,
-          lastErrorCategory: null,
-          lastErrorDetail: null,
-          payload,
-          requestedAt: now,
-          updatedAt: now,
-        })
-        .where(and(eq(corosWriteJobs.id, unpush), inArray(corosWriteJobs.status, ["verified", "failed", "superseded", "cancelled", "needs_attention"])));
-    }
+    }, now);
   }
   if (row.contentState === "started" || row.contentState === "done") return;
   await db
     .update(sessionBuilds)
     .set({ lockedAt: null, payload: sql`json_set(${sessionBuilds.payload}, ${UNSENT_AT_PATH}, ${now})` })
     .where(and(eq(sessionBuilds.id, buildId), isNotNull(sessionBuilds.lockedAt)));
+}
+
+/** What an unpush of a sent copy carries: the stamp-proven delete triple (`coachDeleteWorkoutJobSchema`). */
+export interface ProgramUnpushPayload {
+  workoutId: string;
+  happenDay: string;
+  name: string;
+  idInPlan: string;
+  programId: string;
+  corosPlanId: string;
+}
+
+/**
+ * Queue `unpush:<buildId>` — a `coach_delete_workout`, so it runs whatever the switch says (ruling 3-R10) — or, when
+ * that copy was taken off before and the build sent again since, queue the settled one afresh for this copy. A live
+ * one is left as it is. The caller has checked the athlete's COROS writes are on.
+ */
+export async function queueUnpush(db: Db, userId: string, buildId: string, payload: ProgramUnpushPayload, now: string): Promise<void> {
+  const id = unpushJobId(buildId);
+  const inserted = await db
+    .insert(corosWriteJobs)
+    .values({
+      id,
+      userId,
+      workoutId: payload.workoutId,
+      kind: "coach_delete_workout",
+      expectedContentFingerprint: "",
+      originalDate: payload.happenDay,
+      destinationDate: payload.happenDay,
+      payload: { ...payload },
+      requestedAt: now,
+      status: "queued",
+      updatedAt: now,
+    })
+    .onConflictDoNothing()
+    .returning({ id: corosWriteJobs.id });
+  if (inserted.length > 0) return;
+  await db
+    .update(corosWriteJobs)
+    .set({
+      status: "queued",
+      claimedByDeviceId: null,
+      claimedAt: null,
+      verifiedAt: null,
+      completedAt: null,
+      lastErrorCategory: null,
+      lastErrorDetail: null,
+      payload: { ...payload },
+      originalDate: payload.happenDay,
+      destinationDate: payload.happenDay,
+      requestedAt: now,
+      updatedAt: now,
+    })
+    .where(and(eq(corosWriteJobs.id, id), inArray(corosWriteJobs.status, ["verified", "failed", "superseded", "cancelled", "needs_attention"])));
 }
 
 /** Supersede a queued push, queue `unpush:<buildId>` for a pushed one, unlock the sent build (json_set `$.unsentAt`). */
