@@ -1554,7 +1554,10 @@ export const api = {
 
   // ── Sessions (worker routes: apps/worker/src/routes/sessions.ts) ─────────
   getSession: (workoutId: string) => get<SessionDto>(`/api/sessions/${encodeURIComponent(workoutId)}`),
-  buildSession: (workoutId: string, body: BuildSessionRequest = {}) =>
+  /** The slot's state alone — no build or view (Today's Continue check, re-review 2b-B2 M-3). 404 `not_found`. */
+  getSessionState: (workoutId: string) =>
+    get<Pick<SessionDto, "workoutId" | "contentState">>(`/api/sessions/${encodeURIComponent(workoutId)}/state`),
+  buildSession:(workoutId: string, body: BuildSessionRequest = {}) =>
     post<SessionDto>(`/api/sessions/${encodeURIComponent(workoutId)}/build`, body),
   /**
    * Lock the build the athlete was shown. 409 `{error: "stale", session}` when it is no longer the one the day's inputs

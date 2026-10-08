@@ -1314,3 +1314,45 @@ describe("PUT /api/sessions/performed/:id", () => {
     expect(await db.select().from(activities).where(and(eq(activities.userId, userId)))).toEqual([]);
   });
 });
+
+describe("GET /api/sessions/:workoutId/state — Today's Continue check (re-review 2b-B2 M-3)", () => {
+  let cookie: string;
+  beforeEach(async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(new Date(SAVED));
+    cookie = `${SESSION_COOKIE}=${await createSession(db, userId, "test")}`;
+    return () => vi.useRealTimers();
+  });
+  const get = (path: string) => mountRoutes(db, "/api/sessions", sessionRoutes).request(path, { headers: { Cookie: cookie } }, makeEnv());
+
+  it("answers the slot's state alone — no build read, a few bytes, however many builds the slot keeps", async () => {
+    const s = await started("build");
+    // Discarded and started again: the slot keeps both builds (ruling 2b-R19), each a whole session.
+    await unstartSession(db, userId, s.workoutId, { today: PLAYED, now: PLAYED_NOON });
+    const rebuilt = await buildSession(db, userId, s.workoutId, { overrides: { mode: "recovery" } }, { today: PLAYED, now: PLAYED_NOON, prefs });
+    await startSession(db, userId, s.workoutId, rebuilt.build!.buildId, PLAYED_NOON);
+    const whole = await (await get(`/api/sessions/${s.workoutId}`)).text();
+
+    statements.length = 0;
+    const res = await get(`/api/sessions/${s.workoutId}/state`);
+    expect(res.status).toBe(200);
+    const body = await res.text();
+    expect(JSON.parse(body)).toEqual({ workoutId: s.workoutId, contentState: "started" });
+    expect(body.length).toBeLessThan(120);
+    expect(whole.length).toBeGreaterThan(20 * body.length);
+    expect(statements.filter((q) => /session_builds/.test(q))).toEqual([]);
+    expect(statements.filter((q) => /planned_workouts/.test(q))).toHaveLength(1);
+    // The signed-in check and the slot's row: nothing else.
+    expect(statements.length).toBeLessThanOrEqual(3);
+
+    // Saved (on another device): done.
+    expect(await save(payload({ workoutId: s.workoutId, build: rebuilt.build! }))).toMatchObject({ status: "saved" });
+    expect(await (await get(`/api/sessions/${s.workoutId}/state`)).json()).toEqual({ workoutId: s.workoutId, contentState: "done" });
+  });
+
+  it("404 for a slot that is not the athlete's, or not a program session", async () => {
+    const theirs = await seedSlot(PLAYED, (await makeTestUser(db)).userId);
+    expect((await get(`/api/sessions/${theirs}/state`)).status).toBe(404);
+    expect((await get(`/api/sessions/slot-nobody/state`)).status).toBe(404);
+  });
+});

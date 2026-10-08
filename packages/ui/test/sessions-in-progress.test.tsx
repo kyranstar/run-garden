@@ -10,7 +10,7 @@ import { createRoot, type Root } from "react-dom/client";
 import { MemoryRouter } from "react-router-dom";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { IDBFactory } from "fake-indexeddb";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import type { SessionDto } from "@rg/api-client";
 import { openOfflineDb, type OfflineDb } from "../src/offline/idb.js";
 import { loadBuild, saveBuild } from "../src/offline/builds.js";
@@ -32,6 +32,7 @@ afterEach(() => {
   root = null;
   db?.close();
   db = null;
+  vi.unstubAllGlobals();
 });
 
 const TODAY = "2026-10-09";
@@ -56,8 +57,8 @@ const offline = () => Promise.reject(new TypeError("Failed to fetch"));
 function render(props: {
   shown?: readonly string[];
   userId?: string | null;
-  /** What the server has the slot as (`GET /api/sessions/:id`'s contentState). */
-  slotState?: (workoutId: string) => Promise<SessionDto["contentState"]>;
+  /** What the server has the slot as (`GET /api/sessions/:id/state`); null: the component's own ask, over `fetch`. */
+  slotState?: ((workoutId: string) => Promise<SessionDto["contentState"]>) | null;
   checkWaitMs?: number;
 }) {
   host = document.createElement("div");
@@ -77,7 +78,7 @@ function render(props: {
             shown: props.shown ?? [],
             userId: props.userId === undefined ? "user-1" : props.userId,
             db: () => Promise.resolve(db!),
-            slotState: props.slotState ?? offline,
+            ...(props.slotState === null ? {} : { slotState: props.slotState ?? offline }),
             ...(props.checkWaitMs === undefined ? {} : { checkWaitMs: props.checkWaitMs }),
           }),
         ),
@@ -171,6 +172,23 @@ describe("Today: a session in progress here that another device saved (ruling 2b
     expect(await loadExtras(db, "slot-y")).toBeUndefined();
     expect(await queuedUnstarts(db, "user-1")).toEqual([]);
     expect(host!.innerHTML).toBe("");
+  });
+
+  it("asks the server for the slot's state alone, never the whole session (re-review 2b-B2 M-3)", async () => {
+    db = await openOfflineDb(new IDBFactory());
+    await inProgress("slot-y", YESTERDAY, "user-1");
+    const asked: string[] = [];
+    const json = (body: unknown, status: number) => new Response(JSON.stringify(body), { status, headers: { "Content-Type": "application/json" } });
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (url: string) => {
+        asked.push(url);
+        return url === "/api/sessions/slot-y/state" ? json({ workoutId: "slot-y", contentState: "done" }, 200) : json({ error: "not_found" }, 404);
+      }),
+    );
+    render({ slotState: null });
+    await until(() => text().includes("Saved on another device"), "saved elsewhere");
+    expect(asked).toEqual(["/api/sessions/slot-y/state"]);
   });
 
   it("the server has it started still: Continue, as before", async () => {
