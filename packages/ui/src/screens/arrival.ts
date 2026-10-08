@@ -121,7 +121,7 @@ export function eventSentence(e: GardenEvent): string | null {
     case "soil_tended":
       return "Strength work fed the soil.";
     case "life_tended":
-      return "Yoga brought the meadow back to life.";
+      return "Yoga & mobility brought the meadow back to life.";
     case "adventure_logged":
       return e.detail
         ? `A ${sportLabel(e.detail).toLowerCase()} fed the garden — wild air does it good.`

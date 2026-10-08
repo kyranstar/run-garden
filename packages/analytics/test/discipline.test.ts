@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { disciplineOf, sessionNoun, supportsMetric } from "../src/discipline.js";
+import { disciplineLabel, disciplineOf, sessionNoun, supportsMetric } from "../src/discipline.js";
 import { computeRecords, type RunSample } from "../src/records.js";
 
 function sample(id: string, date: string, seconds: number, sport = "strength"): RunSample {
@@ -16,6 +16,14 @@ function sample(id: string, date: string, seconds: number, sport = "strength"): 
     category: sport === "strength" ? "strength" : "yoga",
   };
 }
+
+describe("disciplineLabel", () => {
+  it('names the third axis "Yoga & mobility" (Phase 2d); the other two keep their names', () => {
+    expect(disciplineLabel("run")).toBe("Running");
+    expect(disciplineLabel("strength")).toBe("Strength");
+    expect(disciplineLabel("yoga")).toBe("Yoga & mobility");
+  });
+});
 
 describe("sessionNoun", () => {
   it("never calls a lift or a yoga session a run", () => {

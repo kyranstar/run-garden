@@ -48,7 +48,7 @@ const FILTERS: { key: DisciplineFilter; label: string; chipClass: string }[] = [
   { key: "all", label: "All", chipClass: "chip-all" },
   { key: "run", label: "Runs", chipClass: "chip-run" },
   { key: "strength", label: "Lifting", chipClass: "chip-strength" },
-  { key: "yoga", label: "Yoga", chipClass: "chip-yoga" },
+  { key: "yoga", label: "Yoga & mobility", chipClass: "chip-yoga" },
   { key: "adventure", label: "Adventures", chipClass: "chip-adventure" },
 ];
 
