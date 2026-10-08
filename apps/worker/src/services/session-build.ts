@@ -1199,13 +1199,22 @@ export async function lockCurrentBuild(
   workoutId: string,
   buildId: string,
   now: string,
-  opts: { as: "start" | "send" },
-): Promise<{ session: SessionResponse; calendarChanged: boolean }> {
+  opts: {
+    as: "start" | "send";
+    /** The caller's preferences, already loaded (Send's budget, ruling 3-R11); read here otherwise. */
+    prefs?: UserPreferences;
+    /**
+     * Send's own preconditions, asked of the build about to be locked once it is proven current — before anything is
+     * written, so a refusal thrown here locks nothing. Not asked of a build that was locked already.
+     */
+    beforeLock?: (v: { row: SlotRow; build: BuildPayload; profiles: readonly string[]; checks: Record<string, CheckAnswer> }) => Promise<void>;
+  },
+): Promise<{ session: SessionResponse; calendarChanged: boolean; lockedNow: boolean }> {
   const row = await loadSlot(db, userId, workoutId);
-  const prefs = await loadPreferences(db, userId);
+  const prefs = opts.prefs ?? (await loadPreferences(db, userId));
   const today = todayInZone(prefs.timezone, new Date(now));
   const builds = await loadBuilds(db, userId, workoutId);
-  const unchanged = async (session: Promise<SessionResponse>) => ({ session: await session, calendarChanged: false });
+  const unchanged = async (session: Promise<SessionResponse>) => ({ session: await session, calendarChanged: false, lockedNow: false });
   if (lockedOf(row, builds)) {
     // START ON A SENT BUILD (Phase 3, spec §4.4): the athlete takes the phone along. The slot is `built` with the
     // build on the watch locked; Start plays that very build — `started`, no rebuild, no new hash check (a locked
@@ -1237,6 +1246,7 @@ export async function lockCurrentBuild(
     const fresh = await commitBuild(db, userId, row, builds, inputs, ctx);
     throw new StaleBuildError(fresh.session, fresh.calendarChanged);
   }
+  await opts.beforeLock?.({ row, build: toPayload(current, new Set()).build, profiles: inputs.context.activeProfiles, checks: inputs.checks });
   // A restore can begin while the inputs are read again: checked once more just before the lock (audit M10).
   if (await restoreInProgress(db, userId)) return unchanged(readResponse(db, userId, row, today, builds));
 
@@ -1270,7 +1280,7 @@ export async function lockCurrentBuild(
     calendarChanged = change.calendarChanged;
     if (change.resized) await separateDayCollisions(db, userId, [row.effectiveDate], prefs, { from: today, now });
   }
-  return { session: await readResponse(db, userId, await loadSlot(db, userId, workoutId), today), calendarChanged };
+  return { session: await readResponse(db, userId, await loadSlot(db, userId, workoutId), today), calendarChanged, lockedNow: true };
 }
 
 /** A push job's id for a build (`push:<buildId>`): one per build, so sending the same build twice is one job. */

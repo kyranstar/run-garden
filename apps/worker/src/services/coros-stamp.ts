@@ -41,7 +41,7 @@
  * to address a delete.
  */
 
-import { and, desc, eq, gte, inArray, lte, or } from "drizzle-orm";
+import { and, desc, eq, gte, inArray, lte, ne, notInArray, or, sql } from "drizzle-orm";
 import { corosWriteJobs } from "@rg/database";
 import { PROGRAM_STAMPING_JOB_KINDS, STAMPING_JOB_KINDS } from "@rg/domain";
 import type { Db } from "./db.js";
@@ -60,6 +60,65 @@ export const STAMP_SEPARATOR = " — ";
  */
 export function stampName(title: string, date: string): string {
   return `${title}${STAMP_SEPARATOR}${date}`;
+}
+
+/**
+ * ONE STAMP CHOOSER FOR EVERY LANE (Audit 3-A lane L-1, ruling 3-R12).
+ *
+ * The date makes a stamp unique only while one session per day carries a title. Two sessions of one title on one
+ * day — two coach adds, a coach add titled like the program, two slots of one program — would carry ONE stamp, and
+ * the lane's `already_present` then adopted the first copy for the second row: two rows claiming one COROS workout,
+ * and taking either off deleted both. So every lane picks its stamp here: the base, then " (2)", " (3)" … while
+ * `taken` holds it. The suffix format is part of the grammar stamp recognition reads, so it lives in one place.
+ */
+export const stampSuffix = (n: number): string => (n === 1 ? "" : ` (${n})`);
+
+/** The first of `make("")`, `make(" (2)")`, `make(" (3)")` … that `taken` does not hold. */
+export function freeStamp(make: (suffix: string) => string, taken: ReadonlySet<string>): string {
+  for (let n = 1; ; n++) {
+    const stamp = make(stampSuffix(n));
+    if (!taken.has(stamp)) return stamp;
+  }
+}
+
+/** The coach's stamp for a session on a day: `${title} — ${date}`, then " (2)" … while `taken` holds it. */
+export function coachStamp(title: string, date: string, taken: ReadonlySet<string>): string {
+  return freeStamp((suffix) => `${stampName(title, date)}${suffix}`, taken);
+}
+
+/**
+ * Stamping-job statuses that hold no copy on COROS and never will: a superseded job never wrote (or its copy was
+ * proven gone by the unpush that superseded it), a cancelled one never ran. Every other status may hold one — a
+ * failed create can land unrecorded, a restored job may have run after the backup was taken.
+ */
+export const SPENT_STAMP_STATUSES = ["superseded", "cancelled"] as const;
+
+/**
+ * Every stamp this account has put (or may be putting) on COROS for `date`, across every stamping job of both lanes —
+ * coach creates and rewrites, program pushes — that may still hold a copy. A recorded address' stamp is one of these
+ * (it is a verified job's). `except.jobId` leaves out the caller's own job (a re-send keeps its stamp free for
+ * itself); `except.workoutId` leaves out every job of the caller's own row (a rewrite keeping its own stamp).
+ */
+export async function takenStampsOn(
+  db: Db,
+  userId: string,
+  date: string,
+  except: { jobId?: string; workoutId?: string } = {},
+): Promise<Set<string>> {
+  const rows = await db
+    .select({ payload: corosWriteJobs.payload })
+    .from(corosWriteJobs)
+    .where(
+      and(
+        eq(corosWriteJobs.userId, userId),
+        inArray(corosWriteJobs.kind, [...STAMPING_JOB_KINDS]),
+        notInArray(corosWriteJobs.status, [...SPENT_STAMP_STATUSES]),
+        sql`json_extract(${corosWriteJobs.payload}, '$.happenDay') = ${date}`,
+        ...(except.jobId ? [ne(corosWriteJobs.id, except.jobId)] : []),
+        ...(except.workoutId ? [ne(corosWriteJobs.workoutId, except.workoutId)] : []),
+      ),
+    );
+  return new Set(rows.map((r) => (r.payload as { name?: unknown } | null)?.name).filter((n): n is string => typeof n === "string"));
 }
 
 /**

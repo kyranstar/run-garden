@@ -247,7 +247,11 @@ sessionRoutes.get("/:workoutId/watch-preview", async (c) => {
   }
 });
 
-/** Lock the build the athlete previewed and queue its push; the lane runs at once (as the plan routes run it). */
+/**
+ * Lock the build the athlete previewed and queue its push. NO LANE RUNS IN THIS REQUEST (ruling 3-R11: the Workers
+ * Free budget): the client follows up with `POST /api/sessions/watch/drain`, its own invocation; the hourly lane is
+ * the fallback. The answer carries its `watch` state (`sending`).
+ */
 sessionRoutes.post("/:workoutId/send-to-watch", async (c) => {
   const off = switchedOff(c);
   if (off) return off;
@@ -257,24 +261,28 @@ sessionRoutes.post("/:workoutId/send-to-watch", async (c) => {
   if (!parsed.success) return c.json({ error: "invalid_send", issues: parsed.error.issues }, 422);
   const prefs = await loadPreferences(db, userId);
   try {
-    const session = await sendToWatch(db, c.env, userId, c.req.param("workoutId"), parsed.data.buildId, {
-      today: todayInZone(prefs.timezone),
-      now: nowInstant(),
-      prefs,
-    });
-    waitUntilSafe(c, executeCloudJobs(db, c.env, userId, prefs).catch(() => undefined));
-    return c.json(await withWatch(c, session));
+    return c.json(
+      await sendToWatch(db, c.env, userId, c.req.param("workoutId"), parsed.data.buildId, {
+        today: todayInZone(prefs.timezone),
+        now: nowInstant(),
+        prefs,
+      }),
+    );
   } catch (e) {
     if (e instanceof WatchUnavailableError) return c.json({ error: e.reason }, 409);
     if (e instanceof StaleBuildError) {
       if (e.calendarChanged) waitUntilSafe(c, syncCalendar(db, c.env, userId));
       return c.json({ error: "stale", session: await withWatch(c, e.session) }, 409);
     }
+    if (e instanceof RestoringError) return c.json({ error: "restore_in_progress" }, 423);
     return refusal(c, e);
   }
 });
 
-/** Take the sent session off the watch (or stop it reaching it); its build is unlocked at once. Idempotent. */
+/**
+ * Take the sent session off the watch (or stop it reaching it); its build is unlocked at once. Idempotent. No lane
+ * runs in this request either (ruling 3-R11): the client follows up with the drain.
+ */
 sessionRoutes.post("/:workoutId/take-off-watch", async (c) => {
   const off = switchedOff(c);
   if (off) return off;
@@ -283,11 +291,26 @@ sessionRoutes.post("/:workoutId/take-off-watch", async (c) => {
   const prefs = await loadPreferences(db, userId);
   try {
     const session = await takeOffWatch(db, userId, c.req.param("workoutId"), { today: todayInZone(prefs.timezone), now: nowInstant(), prefs });
-    waitUntilSafe(c, executeCloudJobs(db, c.env, userId, prefs).catch(() => undefined));
     return c.json(await withWatch(c, session));
   } catch (e) {
     return refusal(c, e);
   }
+});
+
+/**
+ * `POST /api/sessions/watch/drain`: run at most ONE of this user's queued watch jobs — a push or an unpush — in a
+ * request of its own (ruling 3-R11: Send and Take off run no lane, and one push fits a Workers Free invocation with
+ * room to spare). The sheet calls it right after Send and Take off, then reads the session for the state. Coach work
+ * and older jobs of other kinds are left to the lanes that run them. 404 while the switch is off. `{executed}`.
+ */
+sessionRoutes.post("/watch/drain", async (c) => {
+  const off = switchedOff(c);
+  if (off) return off;
+  const db = c.get("db");
+  const userId = c.get("userId");
+  const prefs = await loadPreferences(db, userId);
+  const { executed } = await executeCloudJobs(db, c.env, userId, prefs, { cap: 1, watchOnly: true });
+  return c.json({ executed });
 });
 
 /**

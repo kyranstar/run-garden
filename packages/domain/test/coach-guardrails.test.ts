@@ -179,6 +179,16 @@ const CASES: Record<
     ctx: ctx(),
     says: "takes it off the plan",
   },
+  app_built_session: {
+    // Ruling 3-R13: a programme session is built from its programme; the coach may move, skip or remove it only.
+    ops: [{ kind: "ease", workoutId: "w-prog", session: easy() }],
+    ctx: ctx({
+      workouts: [
+        { id: "w-prog", date: "2026-08-06", title: "Strength program", category: "strength", completionState: "scheduled", durationMinutes: 30, discipline: "strength", origin: "program" },
+      ],
+    }),
+    says: "never eased or re-timed",
+  },
 };
 
 describe("every rule chooses a side", () => {

@@ -43,13 +43,14 @@ import type { Step } from "@rg/session-engine";
 import { watchPushEnabled, type Env } from "../env.js";
 import type { Db } from "./db.js";
 import { corosKeyOf } from "./coros-exercise-map.js";
-import { STAMP_SEPARATOR, stampName } from "./coros-stamp.js";
+import { freeStamp, STAMP_SEPARATOR, stampName, takenStampsOn } from "./coros-stamp.js";
 import { exerciseNameMap } from "./exercise-catalog.js";
 import {
   loadSession,
   loadSlot,
   lockCurrentBuild,
   pushJobId,
+  RestoringError,
   sentBuildIdOf,
   StaleBuildError,
   type BuildCtx,
@@ -230,13 +231,12 @@ export function watchStepsFromBuild(build: BuildPayload, deps: WatchPlanDeps): W
  * sessions of one day, or a coach session of the same title, each get their own.
  */
 export function programStamp(programName: string, date: string, taken: ReadonlySet<string>): string {
-  for (let n = 1; ; n++) {
-    const suffix = n === 1 ? "" : ` (${n})`;
+  // The one chooser both lanes use (ruling 3-R12): only the name's cut is the program lane's own.
+  return freeStamp((suffix) => {
     const room = WATCH_STAMP_MAX - STAMP_SEPARATOR.length - date.length - suffix.length;
     const roomBytes = WATCH_STAMP_MAX_BYTES - utf8.encode(`${STAMP_SEPARATOR}${date}${suffix}`).length;
-    const stamp = `${stampName(cutAtWord(programName, room, roomBytes), date)}${suffix}`;
-    if (!taken.has(stamp)) return stamp;
-  }
+    return `${stampName(cutAtWord(programName, room, roomBytes), date)}${suffix}`;
+  }, taken);
 }
 
 // ── The service part ─────────────────────────────────────────────────────────────────────────────────────────
@@ -333,18 +333,49 @@ async function unavailableReason(
   prefs: Pick<UserPreferences, "corosWritesEnabled">,
   today: string,
 ): Promise<WatchUnavailable | null> {
+  return (
+    (await slotRefusal(db, userId, row, prefs, today)) ??
+    (await buildRefusal(db, row, session.build, session.profiles.map((p) => p.profileId), session.checks))
+  );
+}
+
+/** The refusals the slot itself answers — writes, the connection, the day, done — before any build is read. */
+async function slotRefusal(
+  db: Db,
+  userId: string,
+  row: WorkoutRow,
+  prefs: Pick<UserPreferences, "corosWritesEnabled">,
+  today: string,
+): Promise<WatchUnavailable | null> {
   if (!prefs.corosWritesEnabled) return "writes_off";
   if (!(await corosConnected(db, userId))) return "not_connected";
   if (row.effectiveDate !== today) return "not_today";
   if (row.contentState === "done" || row.completionState === "completed") return "done";
-  const build = session.build;
+  return null;
+}
+
+/** The refusals the build answers: current and built for the day, the pre-check answered, nothing coming off, fits. */
+async function buildRefusal(
+  db: Db,
+  row: WorkoutRow,
+  build: BuildPayload | null,
+  profiles: readonly string[],
+  checks: Readonly<Record<string, unknown>>,
+): Promise<WatchUnavailable | null> {
   if (!build || build.version === 0 || build.date !== row.effectiveDate || (row.contentState !== "built" && row.contentState !== "started")) {
     return "not_built";
   }
-  if (session.profiles.some((p) => !session.checks[p.profileId])) return "precheck";
+  if (profiles.some((p) => !checks[p])) return "precheck";
   const unpush = await jobById(db, unpushJobId(build.buildId));
   if (unpush && isInFlight(unpush.status)) return "taking_off";
   return watchStepsFromBuild(build, NO_CATALOG).refusal;
+}
+
+/** The sheet's state for a push just read: the row decides between on and off the watch for a verified one. */
+function stateOfPush(status: string, row: WorkoutRow): WatchState {
+  if (isInFlight(status)) return { state: "sending" };
+  if (status === "verified") return { state: watchAddressOf(row) ? "on_watch" : "off_watch" };
+  return { state: "failed" };
 }
 
 /**
@@ -364,9 +395,7 @@ export async function watchStateOf(
   const sent = await sentBuildIdOf(db, row.id);
   if (sent) {
     const push = await jobById(db, pushJobId(sent));
-    if (push && isInFlight(push.status)) return { state: "sending" };
-    if (push?.status === "verified") return { state: watchAddressOf(row) ? "on_watch" : "off_watch" };
-    if (push) return { state: "failed" };
+    if (push) return stateOfPush(push.status, row);
   }
   const reason = await unavailableReason(db, userId, row, session, prefs, todayOf(prefs));
   return reason ? { state: "unavailable", reason } : { state: "ready" };
@@ -380,27 +409,12 @@ async function programNameOf(db: Db, row: WorkoutRow): Promise<string> {
   return program?.name?.trim() || row.title;
 }
 
-/** Every stamp this account has put (or is putting) on COROS for `date`, but `exceptJobId`'s own. */
-async function takenStamps(db: Db, userId: string, date: string, exceptJobId: string): Promise<Set<string>> {
-  const rows = await db
-    .select({ payload: corosWriteJobs.payload })
-    .from(corosWriteJobs)
-    .where(
-      and(
-        eq(corosWriteJobs.userId, userId),
-        inArray(corosWriteJobs.kind, [...STAMPING_JOB_KINDS]),
-        ne(corosWriteJobs.id, exceptJobId),
-        sql`json_extract(${corosWriteJobs.payload}, '$.happenDay') = ${date}`,
-      ),
-    );
-  return new Set(rows.map((r) => (r.payload as { name?: unknown } | null)?.name).filter((n): n is string => typeof n === "string"));
-}
-
 /** The push's payload for a build on its slot's day: the resolved steps and the day's free stamp. */
 async function pushPayloadFor(db: Db, userId: string, row: WorkoutRow, build: BuildPayload): Promise<{ payload: ProgramSessionPushJob; plan: WatchPlan; catalog: Map<string, string> }> {
   const { catalog, deps } = await planDeps(db);
   const plan = watchStepsFromBuild(build, deps);
-  const stamp = programStamp(await programNameOf(db, row), row.effectiveDate, await takenStamps(db, userId, row.effectiveDate, pushJobId(build.buildId)));
+  const taken = await takenStampsOn(db, userId, row.effectiveDate, { jobId: pushJobId(build.buildId) });
+  const stamp = programStamp(await programNameOf(db, row), row.effectiveDate, taken);
   const payload = {
     workoutId: row.id,
     buildId: build.buildId,
@@ -460,7 +474,12 @@ export async function watchPreview(db: Db, env: Env, userId: string, workoutId: 
  * current build; `content_state` stays `built`) and queue `push:<buildId>` (spec §4.3). A second send while the push
  * is queued, running or verified is a no-op; a failed or superseded one is queued afresh. Throws
  * `SessionNotFoundError`, `WatchUnavailableError`, `StaleBuildError` (with the fresh session), `NotTodayError`,
- * `NotBuiltError`. The caller runs the lane.
+ * `NotBuiltError`, `RestoringError`. The answer carries its `watch` state.
+ *
+ * NO LANE RUNS HERE, and the shape is Start's (ruling 3-R11, the Workers Free budget): the slot is read once, the
+ * build is checked and locked by `lockCurrentBuild` (its session is the answer), and the payload is made before the
+ * lock so that every refusal writes nothing. The client then asks for the push in a request of its own
+ * (`POST /api/sessions/watch/drain`); the hourly lane is the fallback.
  */
 export async function sendToWatch(
   db: Db,
@@ -472,26 +491,47 @@ export async function sendToWatch(
 ): Promise<SessionResponse> {
   if (!watchPushEnabled(env)) throw new WatchUnavailableError("writes_off");
   const row = await loadSlot(db, userId, workoutId);
-  let session = await loadSession(db, userId, workoutId, ctx.today);
   const sent = await sentBuildIdOf(db, row.id);
   if (sent) {
-    if (sent !== buildId) throw new StaleBuildError(session, false);
     const push = await jobById(db, pushJobId(sent));
     // Queued, running, or done: nothing to send. Only a failed push is sent again (Retry).
-    if (push && push.status !== "failed" && push.status !== "needs_attention") return session;
+    if (push && push.status !== "failed" && push.status !== "needs_attention") {
+      const session = await loadSession(db, userId, workoutId, ctx.today);
+      if (sent !== buildId) throw new StaleBuildError(session, false);
+      return { ...session, watch: stateOfPush(push.status, row) };
+    }
   }
-  const reason = await unavailableReason(db, userId, row, session, ctx.prefs, ctx.today);
+  const reason = await slotRefusal(db, userId, row, ctx.prefs, ctx.today);
   if (reason) throw new WatchUnavailableError(reason);
-  if (!sent) {
-    if (session.locked) {
-      // Started in the app (or locked otherwise): the locked build is the one the watch gets.
+
+  let payload: ProgramSessionPushJob | null = null;
+  /** Send's preconditions on the build it would send, then the payload — all before anything is written. */
+  const prepare = async (slot: WorkoutRow, build: BuildPayload | null, profiles: readonly string[], checks: Readonly<Record<string, unknown>>) => {
+    const refusal = await buildRefusal(db, slot, build, profiles, checks);
+    if (refusal) throw new WatchUnavailableError(refusal);
+    payload = (await pushPayloadFor(db, userId, slot, build!)).payload;
+  };
+  let session: SessionResponse;
+  if (sent) {
+    // Retry: the sent build is locked, and it is the one the watch gets.
+    session = await loadSession(db, userId, workoutId, ctx.today);
+    if (sent !== buildId) throw new StaleBuildError(session, false);
+    await prepare(row, session.build, session.profiles.map((p) => p.profileId), session.checks);
+  } else {
+    const locked = await lockCurrentBuild(db, userId, workoutId, buildId, ctx.now, {
+      as: "send",
+      prefs: ctx.prefs,
+      beforeLock: (v) => prepare(v.row, v.build, v.profiles, v.checks),
+    });
+    session = locked.session;
+    if (!locked.lockedNow) {
+      // Locked before (started in the app): that build is the one the watch gets — or a restore began meanwhile.
+      if (!session.locked) throw new RestoringError();
       if (session.build?.buildId !== buildId) throw new StaleBuildError(session, false);
-    } else {
-      session = (await lockCurrentBuild(db, userId, workoutId, buildId, ctx.now, { as: "send" })).session;
+      await prepare(row, session.build, session.profiles.map((p) => p.profileId), session.checks);
     }
   }
   const build = session.build!;
-  const { payload } = await pushPayloadFor(db, userId, row, build);
   const valid = programSessionPushJobSchema.parse(payload);
   const id = pushJobId(build.buildId);
   const inserted = await db
@@ -530,7 +570,8 @@ export async function sendToWatch(
       })
       .where(and(eq(corosWriteJobs.id, id), inArray(corosWriteJobs.status, ["failed", "needs_attention", "superseded", "cancelled"])));
   }
-  return loadSession(db, userId, workoutId, ctx.today);
+  // The session `lockCurrentBuild` answered with is the slot as it now stands; the push just queued is `sending`.
+  return { ...session, watch: { state: "sending" } };
 }
 
 /**

@@ -1577,6 +1577,12 @@ export const api = {
     post<SessionDto>(`/api/sessions/${encodeURIComponent(workoutId)}/send-to-watch`, { buildId }),
   /** Take the sent session off the watch (or stop it reaching it); idempotent. */
   takeOffWatch: (workoutId: string) => post<SessionDto>(`/api/sessions/${encodeURIComponent(workoutId)}/take-off-watch`, {}),
+  /**
+   * Run the queued push or unpush now, in a request of its own: Send and Take off only queue (ruling 3-R11, the
+   * Workers Free budget). Call it right after either answers 200, then read the session for the state. Runs at most
+   * one of this athlete's watch jobs; 404 while the switch is off.
+   */
+  drainWatch: () => post<{ executed: number }>("/api/sessions/watch/drain", {}),
   recordCheck: (body: { profileId: string; value: number | null; feelingOff?: boolean }) =>
     post<{ check: ConditionCheckDto | null }>("/api/conditions/checks", body),
   /** Whether the build the slot shows is still the day's (Start would lock it as it is); never builds. */

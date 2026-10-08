@@ -1,6 +1,7 @@
 import { addDays } from "./time.js";
 import { addOpDates, sessionSport } from "./coach.js";
 import type { CoachOp, CoachSession } from "./coach.js";
+import { appAuthoredRow } from "./watch-address.js";
 
 /**
  * The floor outside the model (spec §4): pure, exhaustive, unit-tested.
@@ -49,6 +50,12 @@ export interface GuardrailWorkout {
   completionState: string;
   durationMinutes: number;
   discipline: "run" | "strength" | "yoga";
+  /**
+   * The row's `origin`: a program or on-demand session is built from its programme (ruling 3-R13), so the coach may
+   * move, skip or remove it but never ease or adjust it. Optional so hand-written fixtures still compile; absent
+   * reads as a coach or imported row.
+   */
+  origin?: string | null;
 }
 
 export interface SoftRule {
@@ -121,7 +128,8 @@ export type GuardrailRule =
   | "race_week_intensity"
   | "event_taper"
   | "beyond_horizon"
-  | "never_skip_race";
+  | "never_skip_race"
+  | "app_built_session";
 
 export type RuleClass = "fatal" | "advisory";
 
@@ -179,6 +187,13 @@ export const RULE_CLASS: Record<GuardrailRule, RuleClass> = {
    * rather than the whole wake, which is exactly why it moved.
    */
   runaway_size: "fatal",
+  /**
+   * An ease or adjust of a programme (or on-demand) session (ruling 3-R13). Its content is its build's, and its
+   * watch copy changes only by the athlete's Send and Take off: an ease would rewrite the copy on COROS under a coach
+   * stamp the athlete's Take off can no longer prove. Fatal because the apply refuses it too (`applyOps` re-checks);
+   * the coach may still move, skip or remove it.
+   */
+  app_built_session: "fatal",
 
   /** Two hard days in a row. Real, and real is exactly why the athlete gets
    * to decide: front-loading before a trip is a legitimate thing to buy. */
@@ -987,6 +1002,13 @@ export function validateOps(
           "touch_resolved",
           i,
           `${humanDate(targeted.date)} has already been and gone — the past can't be rewritten`,
+        );
+      }
+      if ((op.kind === "ease" || op.kind === "adjust") && appAuthoredRow({ origin: targeted.origin ?? null })) {
+        found(
+          "app_built_session",
+          i,
+          `${humanDate(targeted.date)} is a programme session, built from its programme — it can be moved, skipped or removed, never eased or re-timed`,
         );
       }
       if (op.kind === "skip" && targeted.category === "race") {

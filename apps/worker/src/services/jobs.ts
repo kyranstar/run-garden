@@ -1,4 +1,4 @@
-import { and, desc, eq, inArray, lt, ne, notInArray } from "drizzle-orm";
+import { and, desc, eq, inArray, like, lt, ne, notInArray, or } from "drizzle-orm";
 import {
   auditEvents,
   backfillState,
@@ -335,7 +335,15 @@ export async function claimNextJob(
   db: Db,
   userId: string,
   deviceId: string,
-  opts: { excludeKinds?: readonly string[] } = {},
+  opts: {
+    excludeKinds?: readonly string[];
+    /**
+     * Only the watch's own jobs: a program push (`push:<buildId>`) or its unpush (`unpush:<buildId>`) — the targeted
+     * drain the session sheet calls after Send and Take off (ruling 3-R11). Nothing else is claimed, so an older
+     * queued coach job never takes the drain's one slot.
+     */
+    watchOnly?: boolean;
+  } = {},
 ): Promise<
   | (typeof corosWriteJobs.$inferSelect & {
       workout: typeof plannedWorkouts.$inferSelect | null;
@@ -367,6 +375,14 @@ export async function claimNextJob(
         eq(corosWriteJobs.userId, userId),
         eq(corosWriteJobs.status, "queued"),
         ...(opts.excludeKinds?.length ? [notInArray(corosWriteJobs.kind, [...opts.excludeKinds])] : []),
+        ...(opts.watchOnly
+          ? [
+              or(
+                eq(corosWriteJobs.kind, "program_session_push"),
+                and(eq(corosWriteJobs.kind, "coach_delete_workout"), like(corosWriteJobs.id, "unpush:%")),
+              ),
+            ]
+          : []),
       ),
     )
     .orderBy(corosWriteJobs.requestedAt)

@@ -1,9 +1,10 @@
 import { ZodError } from "zod";
-import { and, desc, eq, isNotNull, sql } from "drizzle-orm";
+import { and, desc, eq, inArray, isNotNull, ne, notInArray, or, sql } from "drizzle-orm";
 import { corosWriteJobs, dailyHealth, plannedWorkouts } from "@rg/database";
 import {
   appAuthoredRow,
   nowInstant,
+  STAMPING_JOB_KINDS,
   todayInZone,
   watchAddressOf,
   type CoachSession,
@@ -42,7 +43,7 @@ import { exerciseNameMap } from "./exercise-catalog.js";
 import { openIntentFor, resolveIntent } from "./sync-intents.js";
 import { enqueueUnpushIfOurs } from "./plan-mutations.js";
 import { sentBuildIdOf } from "./session-build.js";
-import { recordedStampFor } from "./coros-stamp.js";
+import { recordedStampFor, SPENT_STAMP_STATUSES } from "./coros-stamp.js";
 import { unpushBuild } from "./watch-push.js";
 
 /**
@@ -141,6 +142,72 @@ function contentRewriteRetryable(reason: UpdateContentReason | undefined): boole
   );
 }
 
+/**
+ * NEVER ADOPT ANOTHER SESSION'S COPY (Audit 3-A lane L-1, ruling 3-R12).
+ *
+ * `createWorkout` answers a same-day `already_present` from the stamp alone: "a workout carrying this name is already
+ * on the day". For a retried create (a lost response, a late-visible write) that copy is this job's own, and adopting
+ * it is the idempotence the stamp exists for. But when two sessions carried one stamp — a queue from before the one
+ * chooser, two Sends racing — the copy is the OTHER session's, and adopting it made two rows claim one workout:
+ * taking either off deleted both, and the import archived the survivor. So a found copy is adopted only when nobody
+ * else holds it: no other row records that address as verified, and no other job that may hold a copy carries the
+ * stamp on that day. The same row's own coach jobs (a rewrite keeping its stamp) are its own history; another
+ * build's push of the same slot is another holder.
+ */
+async function heldByAnother(
+  db: Db,
+  userId: string,
+  job: { id: string; workoutId: string },
+  stamp: { name: string; happenDay: string },
+  result: { serverPlanId?: string; serverIdInPlan?: string },
+): Promise<boolean> {
+  if (result.serverPlanId != null && result.serverIdInPlan != null) {
+    const [row] = await db
+      .select({ id: plannedWorkouts.id })
+      .from(plannedWorkouts)
+      .where(
+        and(
+          eq(plannedWorkouts.userId, userId),
+          eq(plannedWorkouts.sourceWorkoutId, `${result.serverPlanId}:${result.serverIdInPlan}`),
+          ne(plannedWorkouts.id, job.workoutId),
+          ne(plannedWorkouts.lastVerifiedCorosDate, ""),
+        ),
+      )
+      .limit(1);
+    if (row) return true;
+  }
+  const [other] = await db
+    .select({ id: corosWriteJobs.id })
+    .from(corosWriteJobs)
+    .where(
+      and(
+        eq(corosWriteJobs.userId, userId),
+        inArray(corosWriteJobs.kind, [...STAMPING_JOB_KINDS]),
+        ne(corosWriteJobs.id, job.id),
+        or(ne(corosWriteJobs.workoutId, job.workoutId), eq(corosWriteJobs.kind, "program_session_push")),
+        notInArray(corosWriteJobs.status, [...SPENT_STAMP_STATUSES]),
+        sql`json_extract(${corosWriteJobs.payload}, '$.name') = ${stamp.name}`,
+        sql`json_extract(${corosWriteJobs.payload}, '$.happenDay') = ${stamp.happenDay}`,
+      ),
+    )
+    .limit(1);
+  return other !== undefined;
+}
+
+/** The job fails for good — retrying cannot change who holds the copy. No session name in the log line. */
+async function refuseAdoption(db: Db, job: { id: string }, lane: string): Promise<void> {
+  console.error(`${lane} FAILED (${job.id}): the copy already on the day under its stamp is held by another session — not adopted`);
+  await db
+    .update(corosWriteJobs)
+    .set({
+      status: "failed",
+      lastErrorCategory: "error",
+      lastErrorDetail: "already_present: the copy under this stamp is held by another session; it was not adopted",
+      updatedAt: nowInstant(),
+    })
+    .where(eq(corosWriteJobs.id, job.id));
+}
+
 /** Mirror of the bridge's toStudioJob: re-validate before touching the
  * user's real calendar, even though this process built the payload. */
 function toStudioJob(job: { id: string; kind: string; payload: unknown }): StudioJob | undefined {
@@ -162,7 +229,12 @@ export async function executeCloudJobs(
   env: Env,
   userId: string,
   prefs: UserPreferences,
-  opts: { cap?: number; fetchImpl?: typeof fetch } = {},
+  opts: {
+    cap?: number;
+    fetchImpl?: typeof fetch;
+    /** Claim only a program push or its unpush — the session sheet's targeted drain (ruling 3-R11). */
+    watchOnly?: boolean;
+  } = {},
 ): Promise<{ executed: number }> {
   const cap = opts.cap ?? 3;
   const fetchImpl = opts.fetchImpl ?? fetch;
@@ -191,6 +263,7 @@ export async function executeCloudJobs(
       // Its unpush is a `coach_delete_workout` and runs either way (ruling 3-R10).
       const job = await claimNextJob(db, userId, CLOUD_DEVICE_ID, {
         excludeKinds: ["backfill", ...(watchPushEnabled(env) ? [] : ["program_session_push"])],
+        ...(opts.watchOnly ? { watchOnly: true } : {}),
       });
       if (!job) break;
 
@@ -217,7 +290,10 @@ export async function executeCloudJobs(
         // athlete has to be told about. (Every archive path supersedes the queued
         // create itself; this catches the rows that reached here anyway — a
         // legacy archive, or one that raced the claim.)
-        if (!job.workout || job.workout.archivedAt) {
+        //
+        // NOR FOR AN APP-BUILT ROW (ruling 3-R13): a program or on-demand
+        // session reaches the watch only through the athlete's own Send.
+        if (!job.workout || job.workout.archivedAt || appAuthoredRow(job.workout)) {
           await db
             .update(corosWriteJobs)
             .set({ status: "superseded", updatedAt: nowInstant() })
@@ -268,7 +344,9 @@ export async function executeCloudJobs(
           );
         }
         const done = nowInstant();
-        if (result.ok) {
+        if (result.ok && result.reason === "already_present" && (await heldByAnother(db, userId, job, spec, result))) {
+          await refuseAdoption(db, job, "coach create");
+        } else if (result.ok) {
           // Stamp the WIRE fingerprint so a follow-up move compares like with
           // like (audit#2 #12) — the app-side FNV stamp guaranteed a
           // content_changed mismatch until the next snapshot healed it.
@@ -433,7 +511,9 @@ export async function executeCloudJobs(
           log: () => undefined,
         });
         const done = nowInstant();
-        if (result.ok) {
+        if (result.ok && result.reason === "already_present" && (await heldByAnother(db, userId, job, spec, result))) {
+          await refuseAdoption(db, job, "program push");
+        } else if (result.ok) {
           await db
             .update(plannedWorkouts)
             .set({
@@ -536,6 +616,18 @@ export async function executeCloudJobs(
           continue;
         }
         const spec = parsed.data;
+        // NEVER OVER AN APP-BUILT ROW'S COPY (ruling 3-R13). A program or
+        // on-demand session's copy is the build the athlete sent; only Send and
+        // Take off write it. A rewrite queued before that rule (or by any path
+        // that missed it) is superseded here, before any wire call.
+        if (job.workout && appAuthoredRow(job.workout)) {
+          await db
+            .update(corosWriteJobs)
+            .set({ status: "superseded", updatedAt: nowInstant() })
+            .where(eq(corosWriteJobs.id, job.id));
+          executed += 1;
+          continue;
+        }
         // Freshest threshold wins over the one frozen in at enqueue time, for the
         // same reason a create prefers it — see `latestThresholdPace`. A rewrite
         // is often the SECOND chance to get pace bands onto a session that went
