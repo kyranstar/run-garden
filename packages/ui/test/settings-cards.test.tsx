@@ -14,7 +14,7 @@ import { createRoot, type Root } from "react-dom/client";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { DEFAULT_USER_PREFERENCES, type UserPreferences } from "@rg/domain";
-import type { ConditionSettingDto, PlaceDto } from "@rg/api-client";
+import type { ConditionSettingDto, PlaceDto, StandaloneImportSummaryDto } from "@rg/api-client";
 import { features } from "../src/features.js";
 import {
   HealthConditionsSection,
@@ -344,5 +344,212 @@ describe("Import", () => {
     mount(createElement(ImportSection));
     expect(text()).toContain("From the standalone tool…");
     expect(document.querySelector('input[type="file"]')).not.toBeNull();
+  });
+});
+
+// ── Phase 2c Task 5: the summary sheet (mocks §7) and the result sheet (the tool's numbers, to compare) ────────────
+
+/** A synthetic summary, as the worker answers it (with `?dryRun=1`: the same, nothing written). */
+function summary(over: { dryRun?: boolean; added?: number; firstImport?: boolean; invalid?: number } = {}): StandaloneImportSummaryDto {
+  const weeks = ["2026-08-10", "2026-08-17", "2026-08-24", "2026-08-31", "2026-09-07", "2026-09-14", "2026-09-21", "2026-09-28"];
+  const added = over.added ?? 18;
+  return {
+    dryRun: over.dryRun ?? true,
+    firstImport: over.firstImport ?? true,
+    sessions: {
+      total: 18, added, alreadyImported: 18 - added, firstDate: "2026-08-03", lastDate: "2026-09-30",
+      invalid: Array.from({ length: over.invalid ?? 0 }, (_, i) => ({ index: i, id: null, reason: "date: invalid" })),
+    },
+    unknownMoves: 0,
+    program: { name: "Care" },
+    places: ["Apartment", "Gym", "Mat only"],
+    ratings: 2,
+    block: { number: 2, week: 3, weeks: 5 },
+    dropped: [],
+    written: { sessions: added, sets: 40, checks: 30, activities: added, program: 1, block: 1, places: 3, prefs: 5, condition: 1, preferences: 1 },
+    oracle: {
+      unit: "lb",
+      sessionCount: 18,
+      sessionsPerWeek: weeks.map((week, i) => ({ week, sessions: i === 7 ? 0 : 2 })),
+      weeklyVolume: weeks.map((week, i) => ({ week, kg: i === 7 ? 0 : 700 + 10 * i, inUnit: i === 7 ? 0 : Math.round((700 + 10 * i) * 2.20462262) })),
+      bestByCoreLift: [
+        { family: "squat", exerciseId: "gobletSquat", name: "Goblet squat", best: { w: { v: 40, u: "lb" }, reps: 5, secs: null }, latest: { date: "2026-09-30", w: { v: 35, u: "lb" }, reps: 8, secs: null } },
+        { family: "hinge", exerciseId: "deadlift", name: "Deadlift", best: { w: { v: 16, u: "kg" }, reps: 8, secs: null }, latest: { date: "2026-09-28", w: { v: 16, u: "kg" }, reps: 6, secs: null } },
+        { family: "press", exerciseId: "floorPress", name: "Floor press", best: null, latest: null },
+      ],
+      records: 7,
+      prePostPairs: 16,
+      block: { number: 2, week: 3 },
+    },
+  };
+}
+
+/** The worker the Import card talks to: the dry run and the import answer `answer(dryRun)`. */
+function importWorker(answer: (dryRun: boolean) => StandaloneImportSummaryDto | null) {
+  const calls: Array<{ path: string; body: unknown }> = [];
+  vi.stubGlobal(
+    "fetch",
+    vi.fn(async (url: string, req?: RequestInit) => {
+      if (url.startsWith("/api/import/standalone") && req?.method === "POST") {
+        calls.push({ path: url, body: JSON.parse(String(req.body)) });
+        const s = answer(url.includes("dryRun=1"));
+        return s
+          ? new Response(JSON.stringify(s), { status: 200, headers: { "Content-Type": "application/json" } })
+          : new Response(JSON.stringify({ error: "invalid_backup", issues: [] }), { status: 422, headers: { "Content-Type": "application/json" } });
+      }
+      return new Response(JSON.stringify({}), { status: 200, headers: { "Content-Type": "application/json" } });
+    }),
+  );
+  return calls;
+}
+
+const BACKUP = { app: "tmj_tool", version: 2, sessions: [], lastExport: "2026-09-30T08:00:00.000Z" };
+
+async function choose(contents: string) {
+  const input = document.querySelector<HTMLInputElement>('input[type="file"]')!;
+  const file = new File([contents], "backup.json", { type: "application/json" });
+  // jsdom's File has no text(); a browser's does.
+  Object.defineProperty(file, "text", { value: async () => contents });
+  Object.defineProperty(input, "files", { value: [file], configurable: true });
+  await act(async () => {
+    input.dispatchEvent(new Event("change", { bubbles: true }));
+  });
+}
+
+/** Each matching element's text, its separate text nodes joined by a space. */
+const rowsOf = (selector: string) =>
+  [...document.querySelectorAll(selector)].map((r) => {
+    const parts: string[] = [];
+    const walk = document.createTreeWalker(r, NodeFilter.SHOW_TEXT);
+    for (let n = walk.nextNode(); n; n = walk.nextNode()) if (n.textContent?.trim()) parts.push(n.textContent.trim());
+    return parts.join(" ").replace(/\s+/g, " ");
+  });
+
+describe("Import: the summary sheet (mocks §7)", () => {
+  beforeEach(() => {
+    features.import = true;
+  });
+
+  it("a backup file is read with a dry run; the sheet says what will come in and that history stays out of the garden", async () => {
+    const calls = importWorker((dry) => summary({ dryRun: dry }));
+    mount(createElement(ImportSection));
+    await choose(JSON.stringify(BACKUP));
+    await until(() => text().includes("History stays out of the garden"), "the summary");
+    expect(calls).toEqual([{ path: "/api/import/standalone?dryRun=1", body: BACKUP }]);
+    const dialog = document.querySelector('[role="dialog"]')!;
+    expect(dialog.textContent).toContain("Import backup · Sep 30");
+    expect(rowsOf(".import-summary .setting-row")).toEqual([
+      "18 sessions Aug 3 – Sep 30",
+      "Block 2 · week 3 3 core lifts",
+      "3 places · 2 ratings Apartment, Gym, Mat only",
+      "History stays out of the garden Activity and records show it",
+    ]);
+    // The tool's numbers wait for the import; nothing is written yet.
+    expect(text()).not.toContain("Per week");
+    expect((byName("Import") as HTMLButtonElement).disabled).toBe(false);
+  });
+
+  it("a file that is not a backup says so, and nothing is sent", async () => {
+    const calls = importWorker(() => summary());
+    mount(createElement(ImportSection));
+    await choose("{not json");
+    await until(() => text().includes("That file isn't a backup from the standalone tool."), "the refusal");
+    expect(calls).toEqual([]);
+  });
+
+  it("a JSON file the worker refuses says so in the sheet, and Import stays off", async () => {
+    importWorker(() => null);
+    mount(createElement(ImportSection));
+    await choose(JSON.stringify({ hello: 1 }));
+    await until(() => text().includes("That file isn't a backup from the standalone tool."), "the refusal");
+    expect((byName("Import") as HTMLButtonElement).disabled).toBe(true);
+  });
+
+  it("says how many sessions it skips", async () => {
+    importWorker((dry) => summary({ dryRun: dry, invalid: 2 }));
+    mount(createElement(ImportSection));
+    await choose(JSON.stringify(BACKUP));
+    await until(() => text().includes("2 sessions skipped"), "the skipped count");
+  });
+});
+
+describe("Import: the result sheet — the tool's own numbers, to compare with its Progress tab", () => {
+  beforeEach(() => {
+    features.import = true;
+  });
+
+  async function imported() {
+    const calls = importWorker((dry) => summary({ dryRun: dry }));
+    mount(createElement(ImportSection));
+    await choose(JSON.stringify(BACKUP));
+    await until(() => !!byName("Import") && !(byName("Import") as HTMLButtonElement).disabled, "the summary");
+    await press("Import");
+    await until(() => text().includes("18 sessions imported"), "the result");
+    return calls;
+  }
+
+  it("Import sends the file once, without the dry run; the sheet then shows what came in", async () => {
+    const calls = await imported();
+    expect(calls.map((c) => c.path)).toEqual(["/api/import/standalone?dryRun=1", "/api/import/standalone"]);
+    expect(calls[1]!.body).toEqual(BACKUP);
+    expect(byName("Import")).toBeUndefined();
+    expect(byName("Done")).toBeDefined();
+  });
+
+  it("the totals as the tool shows them: sessions, records, before-and-after pairs, the block", async () => {
+    await imported();
+    expect(rowsOf(".import-compare .setting-row")).toEqual(["Sessions 18", "Records 7", "Before and after 16", "Block 2 · week 3"]);
+  });
+
+  it("each of the last eight weeks: sessions, and volume in the tool's unit beside the whole kilos", async () => {
+    await imported();
+    const head = rowsOf(".import-weeks thead th");
+    expect(head).toEqual(["Week", "Sessions", "lb", "kg"]);
+    const rows = [...document.querySelectorAll(".import-weeks tbody tr")].map((tr) => [...tr.querySelectorAll("th, td")].map((c) => c.textContent));
+    expect(rows).toHaveLength(8);
+    expect(rows[0]).toEqual(["Aug 10", "2", "1,543", "700"]);
+    expect(rows[7]).toEqual(["Sep 28", "0", "0", "0"]);
+  });
+
+  it("each core lift: its latest top set as the tool's lift tile shows it, in the tool's unit, and its best", async () => {
+    await imported();
+    expect(rowsOf(".import-lifts .setting-row")).toEqual([
+      "Goblet squat Latest 35 lb × 8 Best 40 lb × 5",
+      "Deadlift Latest 35.5 lb × 6 Best 35.5 lb × 8",
+      "Floor press Not logged",
+    ]);
+  });
+
+  it("a tool set to kilograms shows one volume column", async () => {
+    importWorker((dry) => {
+      const s = summary({ dryRun: dry });
+      return { ...s, oracle: { ...s.oracle, unit: "kg", weeklyVolume: s.oracle.weeklyVolume.map((w) => ({ ...w, inUnit: w.kg })) } };
+    });
+    mount(createElement(ImportSection));
+    await choose(JSON.stringify(BACKUP));
+    await until(() => !!byName("Import") && !(byName("Import") as HTMLButtonElement).disabled, "the summary");
+    await press("Import");
+    await until(() => text().includes("18 sessions imported"), "the result");
+    expect(rowsOf(".import-weeks thead th")).toEqual(["Week", "Sessions", "kg"]);
+    expect(rowsOf(".import-lifts .setting-row")[1]).toBe("Deadlift Latest 16 kg × 6 Best 16 kg × 8");
+  });
+
+  it("a backup already imported: nothing to import, and the numbers to compare straight away", async () => {
+    const calls = importWorker((dry) => summary({ dryRun: dry, added: 0, firstImport: false }));
+    mount(createElement(ImportSection));
+    await choose(JSON.stringify(BACKUP));
+    await until(() => text().includes("Nothing new to import"), "the summary");
+    expect(byName("Import")).toBeUndefined();
+    expect(rowsOf(".import-compare .setting-row")[0]).toBe("Sessions 18");
+    await press("Done");
+    expect(document.querySelector('[role="dialog"]')).toBeNull();
+    expect(calls).toHaveLength(1);
+  });
+
+  it("Done closes the sheet; plain labels, and no condition word of the UI's own", async () => {
+    await imported();
+    expect(text()).not.toMatch(/TMJ|Jaw|jaw/);
+    await press("Done");
+    expect(document.querySelector('[role="dialog"]')).toBeNull();
   });
 });
