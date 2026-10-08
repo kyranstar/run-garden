@@ -58,7 +58,7 @@ const save = (id: string, over: Partial<PerformedSessionWireInput> = {}): Perfor
  * A server double: answers each PUT with the next scripted outcome for that session id, recording every call. 503 is
  * the save's own `busy`; 500 and 502 are a server failing (a Worker killed at its CPU or query limit, say).
  */
-function server(script: Record<string, Array<"ok" | "same_payload_200" | "same_payload_409" | "conflict" | "offline" | 422 | 500 | 502 | 503>>) {
+function server(script: Record<string, Array<"ok" | "same_payload_200" | "same_payload_409" | "conflict" | "slot_done" | "offline" | 422 | 500 | 502 | 503>>) {
   const calls: string[] = [];
   const api: OutboxApi = {
     savePerformed: vi.fn(async (id: string, payload: PerformedSessionWire) => {
@@ -69,6 +69,7 @@ function server(script: Record<string, Array<"ok" | "same_payload_200" | "same_p
       if (next === "same_payload_200") return { status: "same_payload" };
       if (next === "same_payload_409") throw new ApiError(409, { error: "same_payload" });
       if (next === "conflict") throw new ApiError(409, { error: "conflict" });
+      if (next === "slot_done") throw new ApiError(409, { error: "slot_done" });
       if (next === "offline") throw new TypeError("Failed to fetch");
       if (next === 500 || next === 502) throw new ApiError(next, null);
       throw new ApiError(next, { error: next === 422 ? "invalid_save" : "busy" });
@@ -173,6 +174,20 @@ describe("drain", () => {
     await drain(db, api, { userId: ME, now: () => 10_000 });
     expect(calls).toEqual(["a", "b", "a"]);
     expect(await outboxEntries(db)).toEqual([]);
+    db.close();
+  });
+
+  it("a session of a slot another device saved first (409 slot_done, ruling 2b-R18) is a conflict: flagged as such, Discard only, never sent again by itself", async () => {
+    const db = await freshDb();
+    await enqueue(db, save("a"), ME, 1000);
+    await enqueue(db, save("b"), ME, 2000);
+    const { api, calls } = server({ a: ["slot_done"], b: ["ok"] });
+    expect(await drain(db, api, { userId: ME, now: () => 5000 })).toMatchObject({ saved: 1, conflicts: 1, failed: 0 });
+    const [left] = await outboxEntries(db);
+    expect(left).toMatchObject({ performedId: "a", state: "conflict", lastError: "slot_done" });
+    expect(entryActions(left!)).toEqual(["discard"]);
+    await drain(db, api, { userId: ME, now: () => 9000 });
+    expect(calls).toEqual(["a", "b"]);
     db.close();
   });
 

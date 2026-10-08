@@ -22,7 +22,8 @@ import { SessionSheet } from "../src/components/session-sheet.js";
 import { WorkoutDetail } from "../src/screens/plan.js";
 import { IDBFactory } from "fake-indexeddb";
 import { offlineDb } from "../src/offline/idb.js";
-import { loadBuild } from "../src/offline/builds.js";
+import { loadBuild, saveBuild } from "../src/offline/builds.js";
+import { newLiveSession, readLive, writeLive } from "../src/offline/live.js";
 import { loadBasis, loadExtras } from "../src/player/stored.js";
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
@@ -691,6 +692,37 @@ describe("a day ahead, a day gone, a started session", () => {
     const older = "2026-10-03";
     mount(startedOn(older), { w: slot({ effectiveDate: older, contentState: "started" }) });
     await until(() => body().includes("Supported row"), "the moves");
+    expect(button("Continue")).toBeUndefined();
+  });
+
+  it("done on the server, in progress on this device (saved on another device, ruling 2b-R18): no Continue — this copy is offered for Discard only", async () => {
+    features.player = true;
+    vi.stubGlobal("indexedDB", new IDBFactory());
+    const db = await offlineDb();
+    await saveBuild(db, { workoutId: SLOT, build: session().build, view: session().view } as unknown as SessionDto);
+    await writeLive(db, newLiveSession({ workoutId: SLOT, buildId: session().build!.buildId, recorder: {} }));
+    const { calls } = mount(session({ contentState: "done", locked: true }), { w: slot({ contentState: "done" }) });
+    await until(() => body().includes("Saved on another device"), "the device's copy");
+    expect(button("Continue")).toBeUndefined();
+    await click("Discard this device's copy");
+    await until(() => !!button("Discard this copy"), "the question");
+    await click("Discard this copy");
+    await until(() => !body().includes("Saved on another device"), "the copy gone");
+    expect(await readLive(db, SLOT)).toBeUndefined();
+    expect(await loadBuild(db, SLOT)).toBeUndefined();
+    // The server's slot is left as it is: nothing but reads.
+    expect(calls.filter((c) => c.method !== "GET")).toEqual([]);
+  });
+
+  it("done, and nothing of it on this device: nothing to offer", async () => {
+    features.player = true;
+    vi.stubGlobal("indexedDB", new IDBFactory());
+    mount(session({ contentState: "done", locked: true }), { w: slot({ contentState: "done", completionState: "completed" }) });
+    await until(() => body().includes("Supported row"), "the moves");
+    await act(async () => {
+      await new Promise((r) => setTimeout(r, 30));
+    });
+    expect(body()).not.toContain("Saved on another device");
     expect(button("Continue")).toBeUndefined();
   });
 

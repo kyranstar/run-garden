@@ -184,6 +184,18 @@ describe("Settings → Data: a session that couldn't sync", () => {
     expect(button("Discard")).toBeDefined();
   });
 
+  it("a session of a slot saved on another device first (409 slot_done, ruling 2b-R18) says so: Discard only", async () => {
+    db = await openOfflineDb(new IDBFactory());
+    const e = await enqueue(db, wire(), "user-1");
+    await db.put("outbox", e.key, { ...e, state: "conflict", lastError: "slot_done", attempts: 1 });
+    rows();
+    await until(() => text().includes("Saved on another device"), "the row");
+    expect(text()).toContain("Oct 8");
+    expect(text()).not.toContain("Couldn't sync");
+    expect(button("Retry")).toBeUndefined();
+    expect(button("Discard")).toBeDefined();
+  });
+
   it("a refusal retrying might mend is one quiet row with Retry and Discard", async () => {
     await failed();
     rows();
