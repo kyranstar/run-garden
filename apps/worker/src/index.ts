@@ -1,4 +1,4 @@
-import { Hono, type MiddlewareHandler } from "hono";
+import { Hono, type Handler, type MiddlewareHandler } from "hono";
 import { and, eq, gte, inArray, isNull, lte } from "drizzle-orm";
 import {
   activities,
@@ -112,9 +112,23 @@ app.post("/api/dev/seed", requireUser, async (c) => {
   return c.json(result);
 });
 
-// Static assets (the built web app) are served by the assets binding for all
-// non-/api routes via wrangler's run_worker_first configuration.
-app.all("*", async (c) => c.env.ASSETS.fetch(c.req.raw));
+/**
+ * Static assets (the built web app), served by the assets binding. Requests under
+ * /assets/ come through here (wrangler's run_worker_first) so that a build file
+ * the assets don't hold answers 404, never the app's page: while a deploy rolls
+ * out, a new service worker can ask a location still on the old build for a new
+ * file, and the page cached under a script's address left the installed app blank
+ * until the next deploy (2026-10-08). A 404 fails the worker's install instead,
+ * so the old one keeps serving and the next update check tries again.
+ */
+export const serveAsset: Handler<AppContext> = async (c) => {
+  const res = await c.env.ASSETS.fetch(c.req.raw);
+  if (c.req.path.startsWith("/assets/") && (res.headers.get("content-type") ?? "").startsWith("text/html")) {
+    return c.text("not found", 404, { "Cache-Control": "no-store" });
+  }
+  return res;
+};
+app.all("*", serveAsset);
 
 // ── Cron ─────────────────────────────────────────────────────────────────────
 

@@ -14,6 +14,36 @@
     <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
     <link rel="apple-touch-icon" href="/icons/icon-192.png" />
     <title>Run Garden</title>
+    <script>
+      // An offline copy can hold the page where the app's script belongs (a deploy still rolling out answered the new
+      // script with the page, 2026-10-08), so the script fails to load and the app stays blank. Then drop the offline
+      // copy of the build and the service worker, and load again from the network — once per tab, so it can't loop.
+      addEventListener(
+        "error",
+        function (e) {
+          var t = e.target;
+          if (!t || t.tagName !== "SCRIPT" || !t.src || t.src.indexOf("/assets/") < 0) return;
+          try {
+            if (sessionStorage.getItem("rg-reloaded-build")) return;
+            sessionStorage.setItem("rg-reloaded-build", "1");
+          } catch (_) {
+            return;
+          }
+          var workers = navigator.serviceWorker
+            ? navigator.serviceWorker.getRegistrations().then(function (rs) {
+                return Promise.all(rs.map(function (r) { return r.unregister(); }));
+              })
+            : null;
+          var build = window.caches
+            ? caches.keys().then(function (ks) {
+                return Promise.all(ks.filter(function (k) { return k.indexOf("workbox-precache") === 0; }).map(function (k) { return caches.delete(k); }));
+              })
+            : null;
+          Promise.all([workers, build]).catch(function () {}).then(function () { location.reload(); });
+        },
+        true,
+      );
+    </script>
   </head>
   <body>
     <div id="root"></div>
