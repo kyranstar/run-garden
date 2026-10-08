@@ -163,3 +163,21 @@ describe("TMJ profile — progression, selection, milestones, care", () => {
     });
   });
 });
+
+describe("TMJ profile — the flare definition (Phase 2d: flare days on the condition tile)", () => {
+  // The day's reading at the profile's "up today" line (5): the same line recovery and the hold rule draw.
+  it.each([[null, false], [0, false], [4, false], [5, true], [9, true]] as const)("flare: a reading of %s → %s", (pre, expected) => {
+    expect(TMJ.flare(reading(pre))).toBe(expected);
+  });
+
+  it("feeling off is a reason for recovery, not a flare", () => {
+    expect(TMJ.flare(reading(null, { feelingOff: true }))).toBe(false);
+    expect(TMJ.recoveryReason(ctx({ feelingOff: true }))).not.toBeNull();
+  });
+
+  it("agrees with recovery's own threshold: a flare reading always proposes recovery", () => {
+    for (const pre of [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10]) {
+      expect(TMJ.recoveryReason(ctx({ pre, last: null })) === `Jaw/head is at ${pre} right now.`).toBe(TMJ.flare(reading(pre)));
+    }
+  });
+});

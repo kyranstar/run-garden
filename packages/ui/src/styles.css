@@ -719,6 +719,7 @@ h1,
 .today-eyebrow,
 .lately-eyebrow,
 .dash-eyebrow,
+.progress-eyebrow,
 .coach-op-verb,
 .coach-op-day-h,
 .session-block-head,
@@ -6317,6 +6318,112 @@ button.session-chip {
   white-space: nowrap;
 }
 
+/* Progress tiles (Phase 2d, mocks §8): two across on a phone, the lift tiles
+   the whole row; four across from md, a lift tile two of them. */
+.progress-tiles {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: var(--space-5);
+  width: 100%;
+}
+.progress-tile {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  min-width: 0;
+  padding: var(--space-5);
+  background: var(--bg-raised);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow);
+}
+.progress-tile-wide {
+  grid-column: 1 / -1;
+}
+/* Its type is the shared eyebrow rank (`.eyebrow, …` above). */
+.progress-eyebrow {
+  overflow-wrap: anywhere;
+}
+.progress-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: var(--space-2) var(--space-4);
+}
+.progress-value b {
+  font-size: var(--text-xl);
+  font-weight: var(--weight-medium);
+  font-variant-numeric: tabular-nums;
+}
+.progress-meta {
+  font-size: var(--text-xs);
+  color: var(--ink-soft);
+  font-variant-numeric: tabular-nums;
+}
+.progress-wait {
+  margin: 0;
+  font-size: var(--text-sm);
+  color: var(--ink-soft);
+}
+.progress-spark {
+  display: block;
+  width: 100%;
+}
+.progress-spark svg {
+  display: block;
+  width: 100%;
+  height: 44px;
+  overflow: visible;
+}
+.progress-line-before,
+.progress-line-after,
+.progress-line-lift {
+  fill: none;
+  stroke-width: 2;
+  vector-effect: non-scaling-stroke;
+  stroke-linejoin: round;
+}
+.progress-line-before {
+  stroke: var(--chart-2);
+}
+.progress-line-after {
+  stroke: var(--chart-1);
+}
+.progress-line-lift {
+  stroke: var(--chart-3);
+}
+.progress-dot-after {
+  fill: var(--chart-1);
+}
+.progress-dot-lift {
+  fill: var(--chart-3);
+}
+.progress-key-before {
+  color: var(--chart-2);
+}
+.progress-key-after {
+  color: var(--chart-1);
+}
+.progress-bar {
+  fill: var(--chart-track);
+}
+.progress-bar-now {
+  fill: var(--chart-1);
+}
+.progress-range {
+  display: flex;
+  justify-content: space-between;
+}
+@media (min-width: 900px) {
+  .progress-tiles {
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+  }
+  .progress-tile-wide {
+    grid-column: span 2;
+  }
+}
+
 /* The feed: weeks with a story, rows that open in place. */
 .fw-week {
   display: flex;
@@ -6407,6 +6514,10 @@ button.session-chip {
   font-size: var(--text-xs);
   color: var(--ink-soft);
 }
+/* One fact of the row's second line: it wraps between facts, never inside one. */
+.fw-bit {
+  white-space: nowrap;
+}
 .fw-caret {
   margin-left: auto;
   flex: none;
@@ -6466,6 +6577,15 @@ button.session-chip {
   margin: 0;
   font-size: var(--text-xs);
   color: var(--ink-soft);
+}
+/* The watch's heart rate, and where an imported session came from (Phase 2d). */
+.fw-hr {
+  color: var(--ink-soft);
+  font-variant-numeric: tabular-nums;
+}
+.fw-source {
+  font-size: var(--text-xs);
+  color: var(--ink-faint);
 }
 .fw-coach {
   display: flex;

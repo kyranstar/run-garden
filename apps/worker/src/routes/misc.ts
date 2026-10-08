@@ -97,7 +97,8 @@ import {
   rowToNormalized,
 } from "../services/completion.js";
 import { resimulateFrom } from "../services/garden-sync.js";
-import { loggedSetsByActivity } from "../services/logged-sets.js";
+import { performedByActivity } from "../services/logged-sets.js";
+import { loadProgress } from "../services/progress.js";
 import { enqueueBackfill, runBackfillChunkCloud } from "../services/backfill.js";
 import { deleteOrphanedChildren, wipeAccountData } from "../services/account-tables.js";
 import {
@@ -249,8 +250,10 @@ activityRoutes.get("/", async (c) => {
 
   // Compact lap profiles for the list's pace-shape micro chart: seconds +
   // pace per lap, in lap order. One chunked query for the whole page. The
-  // logged sets (any source) ride alongside, in the athlete's weight unit.
-  const [lapChunks, logged] = await Promise.all([
+  // performed session behind each row rides alongside (Phase 2d Task 2): its
+  // logged sets (the athlete's own as typed, the watch's copy in the
+  // athlete's unit) and what it was — source, mode, theme, check values.
+  const [lapChunks, performed] = await Promise.all([
     Promise.all(
       chunkIds(rows.map((r) => r.id)).map((ids) =>
         db
@@ -266,7 +269,7 @@ activityRoutes.get("/", async (c) => {
       ),
     ),
     loadPreferences(db, userId).then((prefs) =>
-      loggedSetsByActivity(db, userId, rows.map((r) => r.id), prefs.weightUnit),
+      performedByActivity(db, userId, rows.map((r) => r.id), prefs.weightUnit),
     ),
   ]);
   const lapsByActivity = new Map<string, Array<{ lapIndex: number; s: number; p: number | null }>>();
@@ -303,9 +306,12 @@ activityRoutes.get("/", async (c) => {
         avgPaceSecPerKm: a.avgPaceSecPerKm,
         elevationGainMeters: a.elevationGainMeters,
         trainingLoad: a.trainingLoad,
+        // The watch's, on a merged app + watch row (COROS is the metric authority); none on an import.
+        avgHeartRate: a.avgHeartRate ?? null,
         feel: a.telemetry?.feelRating ?? null,
         laps: laps.length > 1 ? laps : null,
-        logged: logged.get(a.id) ?? null,
+        logged: performed.get(a.id)?.logged ?? null,
+        performed: performed.get(a.id)?.performed ?? null,
         matched: wo
           ? {
               workoutId: wo.id,
@@ -505,6 +511,9 @@ insightRoutes.get("/", async (c) => {
   const twelveWeeksAgo = addDays(startOfIsoWeek(today), -7 * 12);
   const twentySixWeeksAgo = addDays(startOfIsoWeek(today), -7 * 26);
   const range = { start: twelveWeeksAgo, end: today };
+  // The Progress tiles (Phase 2d Task 3): the same under every discipline, read from their own eight-week window
+  // alongside everything below.
+  const progressRead = loadProgress(db, userId, today, prefs.weightUnit);
 
   // Every independent query at once. Activities are stored as UTC instants but
   // bucketed by LOCAL date, so the fetch is padded a day on the early side and
@@ -1361,6 +1370,7 @@ insightRoutes.get("/", async (c) => {
       discipline === "run"
         ? await buildTerrainReport(db, userId, prefs, todayInZone(prefs.timezone))
         : undefined,
+    progress: await progressRead,
   });
 });
 

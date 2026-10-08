@@ -7,6 +7,7 @@ import {
   type InsightsResponse,
   type LoggedExerciseDto,
   type LoggedSetDto,
+  type PerformedSummaryDto,
   type WorkoutDto,
 } from "@rg/api-client";
 import { addDays, isAdventureSport, sportLabel } from "@rg/domain";
@@ -37,6 +38,9 @@ import { MetricDrilldown, RENDERED_METRIC_IDS, ReviewBody, SignalsPanel } from "
 import { CoachRead } from "./coach-read.js";
 import { useCorosReadNow } from "./use-coros-read.js";
 import { CorosCheck } from "./coros-check.js";
+import { checkWord } from "../components/condition-check-sheet.js";
+import { MODE_LABEL } from "../components/today-program.js";
+import { ProgressTiles, progressShown } from "./progress-tiles.js";
 
 function dayDiff(a: string, b: string): number {
   return Math.round((Date.parse(a) - Date.parse(b)) / 86_400_000);
@@ -70,15 +74,16 @@ const EMPTY_COPY: Record<DisciplineFilter, { art: string; title: string; body: s
     title: "No runs yet",
     body: "Completed runs from COROS appear here. Use “Backfill history” in Settings to pull your past sessions.",
   },
+  // Program sessions land here too (Phase 2d): the app's own, the watch's, and imported ones.
   strength: {
     art: "🏋️",
     title: "No lifts yet",
-    body: "Completed strength sessions from COROS appear here.",
+    body: "Completed strength sessions appear here.",
   },
   yoga: {
     art: "🧘",
-    title: "No yoga sessions yet",
-    body: "Completed yoga sessions from COROS appear here.",
+    title: "No yoga or mobility sessions yet",
+    body: "Completed yoga and mobility sessions appear here.",
   },
   adventure: {
     art: "🥾",
@@ -470,11 +475,18 @@ export function formatLoggedSet(s: LoggedSetDto): string {
 }
 
 /**
- * What was logged, one line per exercise (Phase 2 mocks §8). `role="list"`:
+ * What was logged, one line per exercise (Phase 2 mocks §8), and last the
+ * moves played without a set ("9 more moves · 14 min"). `role="list"`:
  * WebKit drops a `list-style: none` list's semantics, so VoiceOver would not
  * say "list, 4 items" without it (audit 2a+ M-11).
  */
-export function LoggedSets({ logged }: { logged: LoggedExerciseDto[] }) {
+export function LoggedSets({
+  logged,
+  played = null,
+}: {
+  logged: LoggedExerciseDto[];
+  played?: PerformedSummaryDto["played"];
+}) {
   return (
     <ul className="fw-sets" role="list" aria-label="Logged sets">
       {logged.map((e, i) => (
@@ -483,8 +495,50 @@ export function LoggedSets({ logged }: { logged: LoggedExerciseDto[] }) {
           <small>{e.sets.map(formatLoggedSet).join(" · ")}</small>
         </li>
       ))}
+      {played ? (
+        <li className="fw-set">
+          <b>{logged.length > 0 ? `${played.moves} more ${played.moves === 1 ? "move" : "moves"}` : countNoun(played.moves, "move")}</b>
+          <small>{formatMinutes(played.seconds)}</small>
+        </li>
+      ) : null}
     </ul>
   );
+}
+
+/** A session's check values in the profile's own word (`check.label`'s first): "Jaw 2 → 1", "Jaw 2", "Jaw → 1". */
+export function checkValues(checks: PerformedSummaryDto["checks"]): string[] {
+  return checks.flatMap((c) => {
+    const word = checkWord(c.label);
+    if (c.pre !== null && c.post !== null) return [`${word} ${c.pre} → ${c.post}`];
+    if (c.pre !== null) return [`${word} ${c.pre}`];
+    if (c.post !== null) return [`${word} → ${c.post}`];
+    return [];
+  });
+}
+
+/**
+ * A feed row's second line. Duration, distance, pace — never load: the
+ * expansion's effort line owns that number (one voice per fact). A program
+ * session adds what it was (mocks §8): its mode, its theme when the title does
+ * not already carry it, and its check values — "31 min · Consistent · Jaw 2 → 1".
+ */
+export function feedRowMeta(a: ActivityDto, units: Units): string {
+  return feedRowBits(a, units).join(" · ");
+}
+
+/** The row's second line, fact by fact: a line may wrap between them, never inside one ("Jaw 2 → 1"). */
+export function feedRowBits(a: ActivityDto, units: Units): string[] {
+  const p = a.performed ?? null;
+  return [
+    isAdventureSport(a.sport) ? sportLabel(a.sport) : null,
+    formatMinutes(a.durationSeconds),
+    a.distanceMeters ? formatDistance(a.distanceMeters, units) : null,
+    a.avgPaceSecPerKm ? formatPace(a.avgPaceSecPerKm, units) : null,
+    p?.mode ? MODE_LABEL[p.mode] : null,
+    p?.theme && !(a.title ?? "").includes(p.theme) ? p.theme : null,
+    ...(p ? checkValues(p.checks) : []),
+    a.elevationGainMeters != null && a.elevationGainMeters >= 20 ? `↑ ${Math.round(a.elevationGainMeters)} m` : null,
+  ].filter((b): b is string => !!b);
 }
 
 /** An expanded session's insights, in place (System 2). */
@@ -508,17 +562,26 @@ export function ActivityDetail({
   });
   const [generating, setGenerating] = useState(false);
   const clause = efficiencyClause(efficiency, a.id);
+  const played = a.performed?.played ?? null;
+  // Imported history is a record of the past, never a plan's work: it is not offered for linking (ruling 2d-R3).
+  const imported = a.performed?.source === "import";
   return (
     <div className="fw-detail">
-      {a.logged && a.logged.length > 0 ? <LoggedSets logged={a.logged} /> : null}
+      {(a.logged && a.logged.length > 0) || played ? <LoggedSets logged={a.logged ?? []} played={played} /> : null}
       {a.laps ? <PaceShape laps={a.laps} units={units} durationSeconds={a.durationSeconds} /> : null}
       <p className="fw-statline">
         <EffortChip load={a.trainingLoad} feel={a.feel} />
+        {a.avgHeartRate != null && a.avgHeartRate > 0 ? (
+          <span className="fw-hr" title="Average heart rate">
+            avg {Math.round(a.avgHeartRate)} bpm
+          </span>
+        ) : null}
+        {imported ? <span className="fw-source">Imported</span> : null}
         {a.matched ? (
           <span className="pill pill-ok" title={`Counted as your ${a.matched.title}`}>
             ✓ {a.matched.title}
           </span>
-        ) : (
+        ) : imported ? null : (
           <button type="button" className="btn btn-small" onClick={() => onLink(a)}>
             Link to a workout
           </button>
@@ -651,6 +714,14 @@ export function RunsScreen() {
 
       {data ? (
         <>
+          {/* Program sessions' numbers (Phase 2d, mocks §8): beside every view but the running ones. */}
+          {filter !== "run" && filter !== "adventure" && progressShown(data.progress) ? (
+            <section className="dash-sect" aria-label="Progress">
+              <h2 className="dash-eyebrow">Progress</h2>
+              <ProgressTiles progress={data.progress} />
+            </section>
+          ) : null}
+
           <section className="dash-sect" aria-label="Training">
             {recentTraining.length === 0 ? (
               <p className="muted">Completed sessions will appear here.</p>
@@ -799,13 +870,6 @@ export function RunsScreen() {
                   const dow = ["SUN", "MON", "TUE", "WED", "THU", "FRI", "SAT"][
                     new Date(`${a.date}T12:00:00Z`).getUTCDay()
                   ];
-                  // Duration, distance, pace — never load: the expansion's
-                  // effort line owns that number (one voice per fact).
-                  const statBits = [
-                    formatMinutes(a.durationSeconds),
-                    a.distanceMeters ? formatDistance(a.distanceMeters, units) : null,
-                    a.avgPaceSecPerKm ? formatPace(a.avgPaceSecPerKm, units) : null,
-                  ].filter(Boolean);
                   return (
                     <article key={a.id} className={`fw-act act-hue-${catKey}${open ? " fw-act-open" : ""}`}>
                       <button
@@ -821,11 +885,12 @@ export function RunsScreen() {
                         <span className="fw-what">
                           <b>{a.title || sportLabel(a.sport)}</b>
                           <small>
-                            {isAdventureSport(a.sport) ? `${sportLabel(a.sport)} · ` : ""}
-                            {statBits.join(" · ")}
-                            {a.elevationGainMeters != null && a.elevationGainMeters >= 20
-                              ? ` · ↑ ${Math.round(a.elevationGainMeters)} m`
-                              : ""}
+                            {feedRowBits(a, units).map((bit, i) => (
+                              <span key={i}>
+                                {i > 0 ? " · " : ""}
+                                <span className="fw-bit">{bit}</span>
+                              </span>
+                            ))}
                           </small>
                         </span>
                         <span className="fw-caret" aria-hidden="true">

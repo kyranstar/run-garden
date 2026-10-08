@@ -940,6 +940,8 @@ describe("payload shape", () => {
         "efficiency",
         "evidence",
         "interpreted",
+        // Phase 2d: the Progress tiles (insights-progress-route.test.ts).
+        "progress",
         "records",
         "reviews",
         "terrain",
