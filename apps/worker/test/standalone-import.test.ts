@@ -305,6 +305,25 @@ describe("the first import", () => {
     expect((await db.select().from(exercisePrefs).where(eq(exercisePrefs.exerciseId, "chinTuck")))[0]!.rating).toBe(-1);
     expect(await db.select().from(userConditions)).toEqual([{ id: `${userId}:tmj`, userId, profileId: "tmj", active: false, since: "2026-01-01", settings: {} }]);
   });
+
+  it("keeps a weight unit the athlete chose here, and merges the wishlist into theirs (Audit 2c-A MINOR-2)", async () => {
+    await savePreferences(db, userId, { ...(await loadPreferences(db, userId)), weightUnit: "kg", equipmentWishlist: ["foam-roller", "band"] });
+    const summary = await run(backup(history()));
+    expect(summary.firstImport).toBe(true);
+    const stored = await loadPreferences(db, userId);
+    // The file says lb; kg is not the default, so the athlete chose it.
+    expect(stored.weightUnit).toBe("kg");
+    // Theirs first, then the file's new ones (known gear, once each).
+    expect(stored.equipmentWishlist).toEqual(["foam-roller", "band", "massage-ball"]);
+    // The sessions' bare numbers still mean the tool's unit, and the oracle shows the tool's unit.
+    expect(summary.oracle.unit).toBe("lb");
+  });
+
+  it("an account still on the default unit takes the tool's", async () => {
+    expect((await loadPreferences(db, userId)).weightUnit).toBe("lb");
+    await run(backup(history(), { settings: { unit: "kg", weeklyGoal: 3 } }));
+    expect((await loadPreferences(db, userId)).weightUnit).toBe("kg");
+  });
 });
 
 describe("Review Focus 1: a backup exported twice, a week apart", () => {
@@ -544,5 +563,25 @@ describe("POST /api/import/standalone", () => {
     expect((await call("/api/import/standalone", backup([]), "")).status).toBe(401);
     await db.insert(accountState).values({ userId, restoreId: newId(), restoreStartedAt: nowInstant(), updatedAt: nowInstant() });
     expect((await call("/api/import/standalone", backup([]))).status).toBe(423);
+  });
+
+  it("while a restore is replacing the account, the dry run still answers at the route — and only the dry run (Audit 2c-A MINOR-3)", async () => {
+    await db.insert(accountState).values({ userId, restoreId: newId(), restoreStartedAt: nowInstant(), updatedAt: nowInstant() });
+    const cookie = `${SESSION_COOKIE}=${await createSession(db, userId, "test")}`;
+    statements.length = 0;
+    for (const q of ["?dryRun=1", "?dryRun=true"]) {
+      const dry = await call(`/api/import/standalone${q}`, backup(history()), cookie);
+      expect(dry.status).toBe(200);
+      expect((await dry.json()) as ImportSummary).toMatchObject({ dryRun: true, sessions: { added: 18 } });
+    }
+    expect(statements.filter(isWrite)).toEqual([]);
+    // Refused at the middleware, before the route runs: with the import still switched off the route itself would
+    // answer 404, so a 423 here can only be the middleware's.
+    for (const q of ["", "?dryRun=0", "?dryRun=", "?dryrun=1"]) {
+      for (const enabled of [true, false]) {
+        expect((await call(`/api/import/standalone${q}`, backup(history()), cookie, enabled)).status, `${q} ${enabled}`).toBe(423);
+      }
+    }
+    expect(await db.$count(performedSessions)).toBe(0);
   });
 });

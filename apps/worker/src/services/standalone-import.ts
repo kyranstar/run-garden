@@ -16,8 +16,9 @@
  *  3. The first import only (no program the import made exists yet) also brings the tool's settings: the adaptive
  *     program (named by the profile's care label, config from the tool's settings), its current block, the places
  *     (when the account has none of its own), the move preferences (never over a row the account already has), the
- *     condition switched on since the first session's day (unless the account already set it), the weight unit and
- *     the wishlist. Later imports never touch them, so nothing the athlete changed here is overwritten.
+ *     condition switched on since the first session's day (unless the account already set it), the weight unit
+ *     (unless the athlete chose one here) and the wishlist (merged into theirs). Later imports never touch them, so
+ *     nothing the athlete changed here is overwritten.
  *  4. Everything lands as ONE transaction, under a per-account lock (a second import at once is `busy`), refused while
  *     a restore is replacing the account. A dry run reads only and answers the summary the import would.
  *
@@ -47,6 +48,7 @@ import {
   adaptiveConfigSchema,
   canonicalJson,
   coreBlockIntentSchema,
+  DEFAULT_USER_PREFERENCES,
   isLocalDate,
   newId,
   parseStandaloneSession,
@@ -605,7 +607,13 @@ async function plan(db: Db, userId: string, raw: unknown, ctx: ImportCtx): Promi
             .onConflictDoNothing(),
         );
       }
-      const next = userPreferencesSchema.parse({ ...account, weightUnit: unit, equipmentWishlist: wishlist });
+      // Never over what the athlete set here (Audit 2c-A MINOR-2): a unit other than the default was chosen (nothing
+      // else writes one), so it stays; the wishlist is theirs plus the file's new gear.
+      const next = userPreferencesSchema.parse({
+        ...account,
+        weightUnit: account.weightUnit !== DEFAULT_USER_PREFERENCES.weightUnit ? account.weightUnit : unit,
+        equipmentWishlist: [...new Set([...account.equipmentWishlist, ...wishlist])],
+      });
       out.push(
         wdb
           .insert(userPreferences)

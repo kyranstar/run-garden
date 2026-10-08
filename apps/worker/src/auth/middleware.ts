@@ -35,7 +35,8 @@ export async function withDb(c: Context<AppContext>, next: Next): Promise<void |
 /**
  * Requests that still go through while a restore is replacing the account:
  * the restore itself, deleting everything, signing in/out, and the app-open
- * COROS pull (which answers "restoring" and writes nothing).
+ * COROS pull (which answers "restoring" and writes nothing). (And the import's
+ * dry run: `openWhileRestoring`.)
  */
 const OPEN_WHILE_RESTORING = [
   /^\/api\/settings\/restore\//,
@@ -44,6 +45,13 @@ const OPEN_WHILE_RESTORING = [
   /^\/api\/(coros|sync)\/read-now$/,
 ];
 const MUTATING = new Set(["POST", "PUT", "PATCH", "DELETE"]);
+
+/** Open while restoring: the routes above, and the standalone import's DRY RUN — a read that writes nothing, with
+ * the same `dryRun` reading the route uses (Audit 2c-A MINOR-3). The import itself stays refused. */
+function openWhileRestoring(c: Context<AppContext>): boolean {
+  if (OPEN_WHILE_RESTORING.some((re) => re.test(c.req.path))) return true;
+  return c.req.path === "/api/import/standalone" && ["1", "true"].includes(c.req.query("dryRun") ?? "");
+}
 
 /** Browser-session authentication (cookie).
  *
@@ -59,7 +67,7 @@ export async function requireUser(c: Context<AppContext>, next: Next): Promise<v
   c.set("userEmail", session.email);
   if (
     MUTATING.has(c.req.method) &&
-    !OPEN_WHILE_RESTORING.some((re) => re.test(c.req.path)) &&
+    !openWhileRestoring(c) &&
     (await restoreInProgress(c.get("db"), session.userId))
   ) {
     return c.json({ error: "restore_in_progress" }, 423);
