@@ -232,7 +232,9 @@ describe("its cost does not grow with the history (ruling 2b-R11)", () => {
     expect(hundred.statements - none.statements).toBeLessThanOrEqual(4);
     // The rows the Worker maps: what the newest weeks and each lift's newest sessions hold, not the history — once each
     // lift has its newest few sessions (by 400 here), more history adds none.
-    expect(thousand.rows).toBeLessThanOrEqual(four.rows + 10);
+    // Within 10 %: which sessions fall inside the newest weeks shifts with the runner's time zone (CI is UTC), by a
+    // few tens of rows either way at every size, so a fixed margin flaked; growth with the history would be far larger.
+    expect(thousand.rows).toBeLessThanOrEqual(Math.ceil(four.rows * 1.1));
     expect(thousand.rows).toBeLessThan(600);
   });
 });

@@ -91,6 +91,16 @@ const flush = () => act(async () => void (await new Promise((r) => setImmediate(
 async function settle() {
   for (let i = 0; i < 60; i++) await flush();
 }
+/** Waits (real time, up to 3 s) for what the IndexedDB and the server check settle into — a fixed number of ticks was
+ * not enough on a loaded CI runner. */
+async function until(check: () => boolean, what: string) {
+  for (let i = 0; i < 600 && !check(); i++) {
+    await act(async () => {
+      await new Promise((r) => setTimeout(r, 5));
+    });
+  }
+  if (!check()) throw new Error(`timed out waiting for: ${what} — ${text()}`);
+}
 const text = () => (host?.textContent ?? "").replace(/\s+/g, " ").trim();
 
 describe("Today: a session in progress on this device (ruling 2b-R16)", () => {
@@ -164,7 +174,7 @@ describe("Today: a session in progress here that another device saved (ruling 2b
     db = await openOfflineDb(new IDBFactory());
     await inProgress("slot-y", YESTERDAY, "user-1");
     render({ slotState: async () => "started" });
-    await settle();
+    await until(() => !!continueLink(), "Continue");
     expect(continueLink()?.getAttribute("href")).toBe("/session/slot-y");
     expect(text()).not.toContain("Saved on another device");
   });
@@ -174,22 +184,16 @@ describe("Today: a session in progress here that another device saved (ruling 2b
     await inProgress("slot-y", YESTERDAY, "user-1");
     let answer!: (s: SessionDto["contentState"]) => void;
     render({ slotState: () => new Promise((r) => (answer = r)) });
-    await settle();
-    expect(text()).toContain("Session in progress");
+    await until(() => text().includes("Session in progress") && !!answer, "the line, the server asked");
     expect(continueLink()).toBeUndefined();
     await act(async () => answer("done"));
-    await settle();
-    expect(text()).toContain("Saved on another device");
+    await until(() => text().includes("Saved on another device"), "saved elsewhere");
     expect(continueLink()).toBeUndefined();
     act(() => root?.unmount());
     host?.remove();
     // A server that never answers: after the wait, the device's own session is offered as before.
     render({ slotState: () => new Promise(() => undefined), checkWaitMs: 20 });
-    await settle();
-    await act(async () => {
-      await new Promise((r) => setTimeout(r, 60));
-    });
-    await settle();
+    await until(() => !!continueLink(), "Continue after the wait");
     expect(continueLink()?.getAttribute("href")).toBe("/session/slot-y");
   });
 });
