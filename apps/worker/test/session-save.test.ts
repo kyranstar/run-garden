@@ -21,7 +21,7 @@ import type { GardenDayInput } from "@rg/garden-engine";
 import type { Env } from "../src/env.js";
 import type { Db } from "../src/services/db.js";
 import { sha256Hex } from "../src/auth/crypto.js";
-import { buildSession, startSession, unstartSession, type BuildPayload } from "../src/services/session-build.js";
+import { buildSession, pushJobId, startSession, unstartSession, type BuildPayload } from "../src/services/session-build.js";
 import { loadProgramState } from "../src/services/engine-inputs.js";
 import { slotId } from "../src/services/program-slots.js";
 import { ingestActivities } from "../src/services/completion.js";
@@ -866,6 +866,52 @@ describe("ruling 2b-R7 as amended: the session's day is its locked build's, else
     // Either build's day is the session's: A's (PLAYED) and the new one's (the 9th); any other day is still refused.
     await expect(save(payload(s, { localDate: "2026-10-08" }), undefined, { now: LATER })).rejects.toThrow("invalid_save");
     expect(await save(payload(s), undefined, { now: LATER })).toMatchObject({ status: "saved" });
+  });
+
+  describe("the payload's own started build sets the day (re-review 2b-B2 M-2)", () => {
+    const NINTH = "2026-10-09";
+    const LATER = "2026-10-09T16:00:00.000Z";
+    /** B1 started on PLAYED and un-started; the slot moved to the 9th and B2 built and started there. */
+    async function twoStarts() {
+      const first = await started("build");
+      await unstartSession(db, userId, first.workoutId, { today: PLAYED, now: PLAYED_NOON });
+      await moveSlot(first.workoutId, NINTH);
+      const rebuilt = await buildSession(db, userId, first.workoutId, { overrides: { mode: "recovery" } }, { today: NINTH, now: LATER, prefs });
+      const second = { workoutId: first.workoutId, build: (await startSession(db, userId, first.workoutId, rebuilt.build!.buildId, LATER)).build! };
+      return { first, second };
+    }
+    const onNinth = { localDate: NINTH, startedAt: "2026-10-09T15:05:00.000Z", endedAt: "2026-10-09T15:36:00.000Z" };
+
+    it("a save naming one started build is not taken on another's day", async () => {
+      const { first, second } = await twoStarts();
+      statements.length = 0;
+      // B2's session dated B1's day (a wrong clock), and B1's dated B2's day: both refused, nothing written.
+      await expect(save(payload(second), undefined, { now: LATER })).rejects.toThrow("invalid_save");
+      await expect(save(payload(first, onNinth), undefined, { now: LATER })).rejects.toThrow("invalid_save");
+      expect(statements.filter(isWrite)).toEqual([]);
+      // Each on its own build's day is taken.
+      expect(await save(payload(second, onNinth), undefined, { now: LATER })).toMatchObject({ status: "saved" });
+    });
+
+    it("a save naming no started build still takes any started build's day (ruling 2b-R19)", async () => {
+      const { first } = await twoStarts();
+      expect(await save(payload(first, { buildId: null }), undefined, { now: LATER })).toMatchObject({ status: "saved" });
+    });
+
+    it("the slot's new day after COROS moved a sent build is that build's, not an older started build's", async () => {
+      const { first, second } = await twoStarts();
+      // B2 was sent to the watch, and COROS moved the copy to the 11th (the import adopted the move).
+      await db.insert(schema.corosWriteJobs).values({
+        id: pushJobId(second.build.buildId), userId, workoutId: second.workoutId, kind: "program_session_push", expectedContentFingerprint: "fp",
+        originalDate: NINTH, destinationDate: NINTH, requestedAt: LATER, status: "succeeded", updatedAt: LATER,
+      });
+      const ELEVENTH = "2026-10-11";
+      await moveSlot(second.workoutId, ELEVENTH);
+      const onEleventh = { localDate: ELEVENTH, startedAt: "2026-10-11T15:05:00.000Z", endedAt: "2026-10-11T15:36:00.000Z" };
+      const at = "2026-10-11T20:00:00.000Z";
+      await expect(save(payload(first, onEleventh), undefined, { now: at })).rejects.toThrow("invalid_save");
+      expect(await save(payload(second, onEleventh), undefined, { now: at })).toMatchObject({ status: "saved" });
+    });
   });
 
   it("amended: a slot moved ahead after Start saves too, and the build's day is still the reference — not the slot's", async () => {
