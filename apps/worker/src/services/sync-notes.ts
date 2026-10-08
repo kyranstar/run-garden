@@ -11,10 +11,15 @@ export type SyncNoteKind =
   /** A sent program session changed in COROS; the app kept its version (Phase 3, spec §4.5). Dismiss only. */
   | "watch_copy_changed"
   /** A sent program session's copy was deleted in COROS; its address is cleared, the slot stays (§4.5). Dismiss only. */
-  | "watch_copy_removed";
+  | "watch_copy_removed"
+  /**
+   * A sent program session's copy was moved in COROS; the slot followed it (`{ previousDate, newDate }`). Dismiss only
+   * (ruling 3-R15): moving a sent session back takes its copy off the watch (3-R3), which no Undo may do.
+   */
+  | "watch_copy_moved";
 
 /** Note kinds that only inform: there is nothing to undo (the undo route answers 422 `not_undoable`). */
-export const DISMISS_ONLY_NOTE_KINDS: readonly SyncNoteKind[] = ["watch_copy_changed", "watch_copy_removed"];
+export const DISMISS_ONLY_NOTE_KINDS: readonly SyncNoteKind[] = ["watch_copy_changed", "watch_copy_removed", "watch_copy_moved"];
 
 export async function postSyncNote(
   db: Db,
@@ -48,6 +53,14 @@ export async function activeSyncNotes(
         gt(syncNotes.expiresAt, nowInstant()),
       ),
     );
+}
+
+/** Dismiss a workout's open notes of one kind — what they said is no longer true. */
+export async function dismissSyncNotesOf(db: Db, userId: string, workoutId: string, kind: SyncNoteKind): Promise<void> {
+  await db
+    .update(syncNotes)
+    .set({ dismissedAt: nowInstant() })
+    .where(and(eq(syncNotes.userId, userId), eq(syncNotes.workoutId, workoutId), eq(syncNotes.kind, kind), isNull(syncNotes.dismissedAt)));
 }
 
 export async function dismissSyncNote(db: Db, userId: string, noteId: string): Promise<void> {

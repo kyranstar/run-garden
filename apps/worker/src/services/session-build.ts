@@ -1277,7 +1277,7 @@ export async function lockCurrentBuild(
 export const pushJobId = (buildId: string): string => `push:${buildId}`;
 
 /** Push statuses that no longer hold a copy on the watch, nor will put one there. */
-const SETTLED_PUSH = ["superseded", "cancelled", "restored"] as const;
+export const SETTLED_PUSH = ["superseded", "cancelled", "restored"] as const;
 
 /**
  * The slot's locked build that a non-superseded `program_session_push` names — the build that was sent; null when

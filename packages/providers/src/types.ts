@@ -22,6 +22,15 @@ export interface SourcePlannedWorkout {
   stages: PlannedStage[];
   sourceVersion?: string;
   contentFingerprint: string;
+  /**
+   * COROS only: `programTextFingerprint` of the RAW program — its steps' names and overviews exactly as COROS stores
+   * them (a catalog move's name is an i18n key such as "T3001", never the resolved name). It rides the normalized
+   * shape because the cloud read strips `raw` (`buildSnapshot`), and a sent session's "Changed in COROS" compares it
+   * with what the push observed (Phase 3, spec §4.5).
+   */
+  textFingerprint?: string;
+  /** COROS only: the entity's `planProgramId`, the third id of a delete's triple (survives the `raw` strip too). */
+  planProgramId?: string;
   isRestDay: boolean;
   raw?: unknown;
 }

@@ -9,7 +9,7 @@ import {
   studioPlanPushes,
   studioPlans,
 } from "@rg/database";
-import { newId, nowInstant, todayInZone } from "@rg/domain";
+import { appAuthoredRow, newId, nowInstant, todayInZone } from "@rg/domain";
 import type { AppContext } from "../auth/middleware.js";
 import { requireUser } from "../auth/middleware.js";
 import { deriveBackfillStatus } from "../services/backfill.js";
@@ -211,7 +211,9 @@ syncRoutes.post("/notes/:id/dismiss", async (c) => {
 //    it can't re-move COROS after the undo).
 //  - adopted_coros_change: an import adopted a COROS-side date change; undo
 //    is a normal user move back to the previous date, so it goes through the
-//    same `applyMove` path a manual drag would.
+//    same `applyMove` path a manual drag would. Never for an APP-BUILT row
+//    (422 `not_undoable`, ruling 3-R15): moving a sent session takes its copy
+//    off the watch; its moves post the dismiss-only `watch_copy_moved`.
 //  - adopted_coros_edit / adopted_coros_removal: a Plan Studio push row was
 //    adopted (spec §2) after COROS drift; undo forwards to the shared
 //    `undoStudioAdoption` (also used by `/api/studio/adoption/:pushId/undo`)
@@ -245,6 +247,7 @@ syncRoutes.post("/notes/:id/undo", async (c) => {
           )[0]
         : undefined;
       if (!workout || workout.archivedAt) return c.json({ error: "not_found" }, 404);
+      if (appAuthoredRow(workout)) return c.json({ error: "not_undoable" }, 422);
       const prefs = await loadPreferences(db, userId);
       try {
         await applyMove(db, {
@@ -273,6 +276,11 @@ syncRoutes.post("/notes/:id/undo", async (c) => {
           .limit(1)
       )[0];
       if (!workout) return c.json({ error: "not_found" }, 404);
+      // An app-built session (a program slot, an on-demand one) is never moved
+      // back by an Undo (ruling 3-R15): a move of a sent one takes its copy off
+      // the watch (3-R3). The backstop for notes posted before its moves got
+      // their own dismiss-only kind, `watch_copy_moved`.
+      if (appAuthoredRow(workout)) return c.json({ error: "not_undoable" }, 422);
       const prefs = await loadPreferences(db, userId);
       try {
         await applyMove(db, {
