@@ -12,4 +12,4 @@
  *
  * A plain object (not `as const`) so a test can switch a feature on for the length of one case.
  */
-export const features: { player: boolean; import: boolean } = { player: true, import: false };
+export const features: { player: boolean; import: boolean } = { player: true, import: true };

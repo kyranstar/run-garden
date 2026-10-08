@@ -60,6 +60,9 @@ FIXTURE_MODE = "0"
 AI_DEFAULT_ENABLED = "1"
 # LLM via Vercel AI Gateway (OpenAI-compatible). Key is a secret; model is here.
 AI_GATEWAY_MODEL = "anthropic/claude-haiku-4.5"
+# The standalone import writes (POST /api/import/standalone without dryRun) — on since Phase 2d gated the garden
+# against imported history (routes/imports.ts).
+IMPORT_ENABLED = "1"
 
 # ── Staging (inert: no crons, outbound fetch guarded — see docs/STAGING.md) ──
 # vars, d1_databases and triggers are declared in full; nothing here points at
