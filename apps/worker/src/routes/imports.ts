@@ -3,6 +3,8 @@
  *
  *   POST /standalone            the standalone tool's backup file as the body → the import's summary
  *   POST /standalone?dryRun=1   the same summary, nothing written (the summary sheet before Import)
+ *   POST /provenance            a saved-post links file (built locally by scripts/build-provenance.mjs) → counts
+ *   POST /provenance?dryRun=1   the same counts, nothing written
  *
  * 422 `invalid_backup` for a body that is not JSON or not a backup (with `reason: "newer_version"` for a backup the
  * tool wrote in a newer format); 423 while a restore is replacing the account; 503 `busy` while another import of the
@@ -23,6 +25,7 @@ import { loadPreferences, syncCalendar } from "../services/calendar-sync.js";
 import { placeSlots } from "../services/program-slots.js";
 import { RestoreInProgressError } from "../services/programs.js";
 import { importedProgramId, ImportBusyError, importStandalone, InvalidBackupError } from "../services/standalone-import.js";
+import { importProvenance, InvalidProvenanceError } from "../services/provenance-import.js";
 import { waitUntilSafe } from "../services/wait-until.js";
 
 export const importRoutes = new Hono<AppContext>();
@@ -58,6 +61,37 @@ importRoutes.post("/standalone", async (c) => {
     }
     if (e instanceof RestoreInProgressError) return c.json({ error: "restore_in_progress" }, 423);
     if (e instanceof ImportBusyError) return c.json({ error: "busy" }, 503);
+    throw e;
+  }
+});
+
+/** The largest provenance file the route reads (a real one is a few dozen kilobytes). */
+export const MAX_PROVENANCE_BYTES = 1_000_000;
+
+/**
+ * Saved-post links (services/provenance-import.ts): 422 `invalid_provenance` (with `reason: "newer_version"` for a
+ * newer file) — its issues name paths, never values; 413 `too_large` past `MAX_PROVENANCE_BYTES`; 423 while a restore
+ * is replacing the account (the dry run too: it is a POST, and nothing about it needs to answer mid-restore). It never
+ * touches the garden, so it needs no IMPORT_ENABLED gate. The answer is counts only.
+ */
+importRoutes.post("/provenance", async (c) => {
+  if (Number(c.req.header("content-length") ?? 0) > MAX_PROVENANCE_BYTES) return c.json({ error: "too_large" }, 413);
+  const text = await c.req.text();
+  if (text.length > MAX_PROVENANCE_BYTES) return c.json({ error: "too_large" }, 413);
+  let body: unknown;
+  try {
+    body = JSON.parse(text);
+  } catch {
+    return c.json({ error: "invalid_provenance", issues: [{ path: [], message: "not JSON" }] }, 422);
+  }
+  const dryRun = ["1", "true"].includes(c.req.query("dryRun") ?? "");
+  try {
+    return c.json(await importProvenance(c.get("db"), c.get("userId"), body, { now: nowInstant(), dryRun }));
+  } catch (e) {
+    if (e instanceof InvalidProvenanceError) {
+      return c.json({ error: "invalid_provenance", ...(e.reason ? { reason: e.reason } : {}), issues: e.issues.slice(0, 20) }, 422);
+    }
+    if (e instanceof RestoreInProgressError) return c.json({ error: "restore_in_progress" }, 423);
     throw e;
   }
 });

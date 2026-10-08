@@ -17,7 +17,7 @@ import { createRoot, type Root } from "react-dom/client";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { DEFAULT_USER_PREFERENCES, type UserPreferences } from "@rg/domain";
-import type { ConditionSettingDto, PlaceDto, StandaloneImportSummaryDto } from "@rg/api-client";
+import type { ConditionSettingDto, PlaceDto, ProvenanceImportSummaryDto, StandaloneImportSummaryDto } from "@rg/api-client";
 import { features } from "../src/features.js";
 import {
   HealthConditionsSection,
@@ -710,5 +710,119 @@ describe("Import: the result sheet — the tool's own numbers, to compare with i
     expect(text()).not.toMatch(/TMJ|Jaw|jaw/);
     await press("Done");
     expect(document.querySelector('[role="dialog"]')).toBeNull();
+  });
+});
+
+// ── Phase 2c Task 6: Settings → Import → "Saved-post links…" (the private file the local builder writes) ──────────
+
+/** A synthetic summary of `POST /api/import/provenance` — counts only, as the worker answers. */
+function linksSummary(over: Partial<ProvenanceImportSummaryDto> = {}): ProvenanceImportSummaryDto {
+  return { dryRun: true, items: 3, moves: 2, added: 2, updated: 1, unchanged: 0, unknownMoves: 0, ...over };
+}
+/** A synthetic links file (the builder's format, made-up items with no link). */
+const LINKS = { format: "rg-provenance", version: 1, items: [{ exerciseId: "gobletSquat", sourceType: "example", url: null, creator: null, sourceKey: "k1" }] };
+
+function linksWorker(answer: (dryRun: boolean) => ProvenanceImportSummaryDto | Refusal) {
+  const calls: Array<{ path: string; body: unknown }> = [];
+  vi.stubGlobal(
+    "fetch",
+    vi.fn(async (url: string, req?: RequestInit) => {
+      if (url.startsWith("/api/import/provenance") && req?.method === "POST") {
+        calls.push({ path: url, body: JSON.parse(String(req.body)) });
+        const s = answer(url.includes("dryRun=1"));
+        const [status, body] = "status" in s ? [s.status, s.body] : [200, s];
+        return new Response(JSON.stringify(body), { status, headers: { "Content-Type": "application/json" } });
+      }
+      return new Response(JSON.stringify({}), { status: 200, headers: { "Content-Type": "application/json" } });
+    }),
+  );
+  return calls;
+}
+
+async function chooseLinks(contents: string) {
+  const input = document.querySelector<HTMLInputElement>('input[type="file"][aria-label="Saved-post links file"]');
+  if (!input) throw new Error(`no links file input\n${document.body.textContent}`);
+  const file = new File([contents], "provenance.json", { type: "application/json" });
+  Object.defineProperty(file, "text", { value: async () => contents });
+  Object.defineProperty(input, "files", { value: [file], configurable: true });
+  await act(async () => {
+    input.dispatchEvent(new Event("change", { bubbles: true }));
+  });
+}
+
+describe("Import: saved-post links", () => {
+  beforeEach(() => {
+    features.import = true;
+  });
+
+  it("a second row takes the links file, in plain words", () => {
+    linksWorker(() => linksSummary());
+    mount(createElement(ImportSection));
+    expect(rowsOf(".place-file")).toEqual(["From the standalone tool… Sessions, block, places and ratings ›", "Saved-post links… Where your saved moves came from ›"]);
+  });
+
+  it("reads the file with a dry run; the sheet counts the links and says they stay private", async () => {
+    const calls = linksWorker((dry) => linksSummary({ dryRun: dry }));
+    mount(createElement(ImportSection));
+    await chooseLinks(JSON.stringify(LINKS));
+    await until(() => text().includes("Stays private"), "the summary");
+    expect(calls).toEqual([{ path: "/api/import/provenance?dryRun=1", body: LINKS }]);
+    expect(document.querySelector('[role="dialog"]')!.textContent).toContain("Import saved-post links");
+    expect(rowsOf(".links-summary .setting-row")).toEqual(["3 links for 2 moves 2 new · 1 changed", "Stays private Only you see where a move came from"]);
+    expect((byName("Import") as HTMLButtonElement).disabled).toBe(false);
+  });
+
+  it("says how many links name a move this library doesn't have", async () => {
+    linksWorker((dry) => linksSummary({ dryRun: dry, unknownMoves: 2 }));
+    mount(createElement(ImportSection));
+    await chooseLinks(JSON.stringify(LINKS));
+    await until(() => text().includes("2 links name a move this library doesn't have — left out"), "the left-out count");
+  });
+
+  it("Import sends the file once without the dry run, then says what came in; Done closes", async () => {
+    const calls = linksWorker((dry) => linksSummary({ dryRun: dry }));
+    mount(createElement(ImportSection));
+    await chooseLinks(JSON.stringify(LINKS));
+    await until(() => !!byName("Import") && !(byName("Import") as HTMLButtonElement).disabled, "the summary");
+    await press("Import");
+    await until(() => text().includes("3 links imported"), "the result");
+    expect(calls.map((c) => c.path)).toEqual(["/api/import/provenance?dryRun=1", "/api/import/provenance"]);
+    expect(calls[1]!.body).toEqual(LINKS);
+    expect(rowsOf(".links-summary .setting-row")[0]).toBe("3 links imported 2 moves");
+    expect(byName("Import")).toBeUndefined();
+    await press("Done");
+    expect(document.querySelector('[role="dialog"]')).toBeNull();
+  });
+
+  it("a file already imported: nothing new, and Done", async () => {
+    const calls = linksWorker((dry) => linksSummary({ dryRun: dry, added: 0, updated: 0, unchanged: 3 }));
+    mount(createElement(ImportSection));
+    await chooseLinks(JSON.stringify(LINKS));
+    await until(() => text().includes("Nothing new to import"), "the summary");
+    expect(rowsOf(".links-summary .setting-row")[0]).toBe("Nothing new to import 3 links already here");
+    expect(byName("Import")).toBeUndefined();
+    await press("Done");
+    expect(calls).toHaveLength(1);
+  });
+
+  it("each refusal in its own words", async () => {
+    const cases: Array<[Refusal | "not json", string]> = [
+      ["not json", "That file isn't a saved-post links file."],
+      [{ status: 422, body: { error: "invalid_provenance", issues: [] } }, "That file isn't a saved-post links file."],
+      [{ status: 422, body: { error: "invalid_provenance", reason: "newer_version", issues: [] } }, "That links file is newer than this app reads."],
+      [{ status: 413, body: { error: "too_large" } }, "That file is too large to be a saved-post links file."],
+      [{ status: 423, body: { error: "restore_in_progress" } }, "A restore is running — import after it finishes."],
+      [{ status: 500, body: { error: "internal" } }, "Couldn't read that file — try again."],
+    ];
+    for (const [refusal, words] of cases) {
+      linksWorker(() => (refusal === "not json" ? linksSummary() : refusal));
+      mount(createElement(ImportSection));
+      await chooseLinks(refusal === "not json" ? "{nope" : JSON.stringify(LINKS));
+      await until(() => text().includes(words), words);
+      act(() => root?.unmount());
+      host?.remove();
+      root = null;
+      document.body.innerHTML = "";
+    }
   });
 });
