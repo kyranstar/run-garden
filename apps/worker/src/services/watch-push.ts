@@ -8,7 +8,8 @@
  *
  *  - Every work step of the build is one watch step. A timed window is a hold;
  *    a set is its reps, else its seconds, else open. Per-side windows stay two
- *    steps, each overview naming its side.
+ *    steps, each overview naming its side, and a one-sided set (a unilateral
+ *    move's set with no side) becomes such a Left/Right pair (audit W-1).
  *  - A move whose T-code (`corosKeyOf`, ruling 3-R1) the athlete's catalog holds
  *    goes as that catalog step; every other move goes as free text on
  *    `originId "0"` (spike outcome A), its name cut at a word to 30 characters
@@ -104,6 +105,16 @@ function overviewOf(side: Step["side"], cue: string | undefined): string {
   return cutAtWord([sideText, cue?.trim()].filter((p): p is string => Boolean(p)).join(" · "), WATCH_OVERVIEW_MAX);
 }
 
+/**
+ * The sides one build step goes to the watch as. A set of a unilateral move with no side is work on BOTH sides — the
+ * engine prices it so (`setSeconds` × 2) and the player says "each side" — so it is a Left then a Right step, one lap
+ * each, as the coach lane does since 2026-08-17 (audit W-1): one step would prescribe half the work. A timed window
+ * already carries its side; an alternating move is one step, as the app shows it.
+ */
+function sidesOf(s: Step, record: { laterality: string }): Array<Step["side"]> {
+  return s.kind === "set" && s.side === null && record.laterality === "unilateral" ? ["Left", "Right"] : [s.side];
+}
+
 /** The build's steps as the watch will hold them. Pure: the same build gives the same steps. */
 export function watchStepsFromBuild(build: BuildPayload, deps: WatchPlanDeps): WatchPlan {
   const steps: ProgramWatchStep[] = [];
@@ -118,15 +129,17 @@ export function watchStepsFromBuild(build: BuildPayload, deps: WatchPlanDeps): W
     if (!record) continue;
     const key = deps.keyOf(s.exerciseId);
     const originId = key ? deps.catalogIdByKey.get(key) : undefined;
-    steps.push({
-      originId: originId ?? FREE_TEXT_ORIGIN_ID,
-      name: originId ? key! : cutAtWord(record.name, WATCH_NAME_MAX),
-      target: targetOf(s),
-      grams: s.target?.w ? Math.round(toKg(s.target.w) * 1000) : null,
-      restSeconds: 0,
-      overview: overviewOf(s.side, record.text.focus[0]),
-      side: s.side === "Left" ? "left" : s.side === "Right" ? "right" : null,
-    });
+    for (const side of sidesOf(s, record)) {
+      steps.push({
+        originId: originId ?? FREE_TEXT_ORIGIN_ID,
+        name: originId ? key! : cutAtWord(record.name, WATCH_NAME_MAX),
+        target: targetOf(s),
+        grams: s.target?.w ? Math.round(toKg(s.target.w) * 1000) : null,
+        restSeconds: 0,
+        overview: overviewOf(side, record.text.focus[0]),
+        side: side === "Left" ? "left" : side === "Right" ? "right" : null,
+      });
+    }
   }
   const refusal: WatchRefusal | null =
     steps.length === 0 ? "empty" : steps.length > WATCH_MAX_STEPS ? "too_long" : null;

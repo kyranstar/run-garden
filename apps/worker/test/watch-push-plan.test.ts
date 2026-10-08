@@ -13,16 +13,19 @@ import { programStamp, watchStepsFromBuild, type WatchPlanDeps } from "../src/se
 
 const GOBLET_CATALOG_ID = "4258276155475001301";
 
-/** A library slice with only what the watch reads: the name and the first focus cue. */
-const slice = (id: string, name: string, focus: string): ExerciseSlice =>
-  ({ id, name, text: { focus: [focus] } }) as unknown as ExerciseSlice;
+/** A library slice with only what the watch reads: the name, the first focus cue and the laterality. */
+const slice = (id: string, name: string, focus: string, laterality = "bilateral"): ExerciseSlice =>
+  ({ id, name, laterality, text: { focus: [focus] } }) as unknown as ExerciseSlice;
 
 const EXERCISES: Record<string, ExerciseSlice> = {
   gobletSquat: slice("gobletSquat", "Goblet squat", "Knees track over your toes."),
   chinTuck: slice("chinTuck", "Chin tuck hold", "Long neck, eyes level."),
   slRdl: slice("slRdl", "Single-leg Romanian deadlift with reach", "Hips stay square to the floor while the free leg reaches long behind you."),
   bandRow: slice("bandRow", "Band row", "Squeeze the shoulder blades."),
-  sidePlank: slice("sidePlank", "Side plank", "Hips high."),
+  sidePlank: slice("sidePlank", "Side plank", "Hips high.", "unilateral"),
+  oneArmRow: slice("oneArmRow", "One-arm row", "The shoulder blade moves.", "unilateral"),
+  splitSquat: slice("splitSquat", "Split squat hold", "Front shin stays tall.", "unilateral"),
+  deadBug: slice("deadBug", "Dead bug", "Low back stays down.", "alternating"),
 };
 
 const step = (over: Partial<Step>): Step => ({
@@ -123,6 +126,53 @@ describe("watchStepsFromBuild — sides, rests and names", () => {
   it("skips steps with no move or a move the build does not carry", () => {
     const plan = watchStepsFromBuild(build([step({ exerciseId: null }), step({ exerciseId: "ghost" }), step({ target: { reps: 5 } })]), deps);
     expect(plan.steps).toHaveLength(1);
+  });
+});
+
+describe("watchStepsFromBuild — a one-sided set is a Left/Right pair (audit W-1)", () => {
+  // The engine prices a unilateral set as both sides (`setSeconds` × 2) and the player says "8 each side"; only a
+  // timed window carries its side. One watch step would prescribe half the work — the coach lane's lesson (d52833e).
+  it("a unilateral move's set with no side → left then right: same move, target and weight; the rest on the right", () => {
+    const plan = watchStepsFromBuild(build([step({ exerciseId: "oneArmRow", target: { reps: 8, w: { v: 25, u: "lb" } } }), rest(75)]), deps);
+    const pair = { originId: "0", name: "One-arm row", target: { kind: "reps", reps: 8 }, grams: 11_340 };
+    expect(plan.steps).toEqual([
+      { ...pair, restSeconds: 0, overview: "left side · The shoulder blade moves.", side: "left" },
+      { ...pair, restSeconds: 75, overview: "right side · The shoulder blade moves.", side: "right" },
+    ]);
+  });
+
+  it("a bodyweight one-sided hold set is a pair too; a catalog move keeps its catalog id on both", () => {
+    const plan = watchStepsFromBuild(
+      build([step({ exerciseId: "splitSquat", target: { secs: 30 } }), step({ exerciseId: "sidePlank", target: { reps: 5 } })]),
+      { ...deps, catalogIdByKey: new Map([["T1185", "4258276155475001185"]]) },
+    );
+    expect(plan.steps.map((s) => [s.name, s.side, s.target, s.grams])).toEqual([
+      ["Split squat hold", "left", { kind: "hold", seconds: 30 }, null],
+      ["Split squat hold", "right", { kind: "hold", seconds: 30 }, null],
+      ["T1185", "left", { kind: "reps", reps: 5 }, null],
+      ["T1185", "right", { kind: "reps", reps: 5 }, null],
+    ]);
+    expect(plan.steps.slice(2).every((s) => s.originId === "4258276155475001185")).toBe(true);
+  });
+
+  it("stays one step: an alternating or bilateral move's set, a set that names its side, a timed window", () => {
+    const plan = watchStepsFromBuild(
+      build([
+        step({ exerciseId: "deadBug", target: { reps: 10 } }),
+        step({ target: { reps: 8 } }),
+        step({ exerciseId: "oneArmRow", side: "Left", target: { reps: 8 } }),
+        step({ kind: "timed", exerciseId: "sidePlank", side: "Right", seconds: 30 }),
+      ]),
+      deps,
+    );
+    expect(plan.steps.map((s) => s.side)).toEqual([null, null, "left", "right"]);
+  });
+
+  it("the pair counts as two steps toward the watch's limit", () => {
+    const sets = (n: number) => Array.from({ length: n }, () => step({ exerciseId: "oneArmRow", target: { reps: 8 } }));
+    expect(watchStepsFromBuild(build(sets(WATCH_MAX_STEPS / 2)), deps).steps).toHaveLength(WATCH_MAX_STEPS);
+    expect(watchStepsFromBuild(build(sets(WATCH_MAX_STEPS / 2)), deps).refusal).toBeNull();
+    expect(watchStepsFromBuild(build(sets(WATCH_MAX_STEPS / 2 + 1)), deps).refusal).toBe("too_long");
   });
 });
 
