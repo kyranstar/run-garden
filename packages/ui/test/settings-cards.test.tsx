@@ -642,7 +642,28 @@ describe("Import: the result sheet — the tool's own numbers, to compare with i
     expect(calls[1]!.body).toEqual(BACKUP);
     expect(byName("Import")).toBeUndefined();
     expect(byName("Done")).toBeDefined();
-    expect(rowsOf(".import-result > .setting-row")).toEqual(["18 sessions imported Aug 3 – Sep 30, 2026"]);
+    expect(rowsOf(".import-result > .setting-row")).toEqual(["18 sessions imported Aug 3 – Sep 30, 2026", "Made the program Care Block 2 · week 3 · 3 core lifts"]);
+  });
+
+  /** The result sheet's own rows after a dry run answering `dry` and an import answering `real`. */
+  async function resultRows(dry: SummaryOver, real: SummaryOver) {
+    importWorker((isDry) => summary({ ...(isDry ? dry : real), dryRun: isDry }));
+    mount(createElement(ImportSection));
+    await choose(JSON.stringify(BACKUP));
+    await until(() => !!byName("Import") && !(byName("Import") as HTMLButtonElement).disabled, "the summary");
+    await press("Import");
+    await until(() => text().includes("imported"), "the result");
+    return rowsOf(".import-result > .setting-row");
+  }
+
+  it("says what the import did to the program, as it landed (re-review C R-4)", async () => {
+    const mornings = { outcome: "adopted", name: "Mornings" } as const;
+    expect((await resultRows({ program: mornings }, { program: mornings }))[1]).toBe("Mornings took block 2 · week 3 3 core lifts · its own settings stay");
+    document.body.innerHTML = "";
+    // The dry run said adopted, but a block the app started meanwhile kept the program as it was: the result says so.
+    const kept = await resultRows({ program: mornings }, { program: { outcome: "kept", name: "Mornings" } });
+    expect(kept[1]).toBe("Your program Mornings stays as it is The file's block isn't used");
+    expect(kept.join(" | ")).not.toMatch(/took block|takes block/);
   });
 
   it("one session imported is one session, and its span is the new sessions' (Audit C M-2)", async () => {
@@ -657,7 +678,8 @@ describe("Import: the result sheet — the tool's own numbers, to compare with i
 
   it("the totals as the tool shows them: sessions, records, before-and-after pairs, the block", async () => {
     await imported();
-    expect(rowsOf(".import-compare .setting-row")).toEqual(["Sessions 18", "Records 7", "Before and after 16", "Block 2 · week 3"]);
+    // The block is the tool's: the app's program may be on its own (a kept import, re-review C R-4).
+    expect(rowsOf(".import-compare .setting-row")).toEqual(["Sessions 18", "Records 7", "Before and after 16", "Block in the tool 2 · week 3"]);
   });
 
   it("each of the last eight weeks: sessions, and volume in the tool's unit beside the whole kilos", async () => {

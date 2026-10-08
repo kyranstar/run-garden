@@ -531,7 +531,7 @@ function ImportNumbers({ oracle }: { oracle: ImportOracle }) {
         </div>
         {oracle.block ? (
           <div className="setting-row">
-            <span>Block</span>
+            <span>Block in the tool</span>
             <b className="num">{`${oracle.block.number} · week ${oracle.block.week}`}</b>
           </div>
         ) : null}
@@ -620,15 +620,21 @@ function SummaryRow({ title, note }: { title: string; note?: string | null }) {
   );
 }
 
-/** What the import does to the program — one of ruling 2d-R5's three. */
-function ProgramOutcomeRow({ s }: { s: ImportSummary }) {
+/**
+ * What the import does to the program — one of ruling 2d-R5's three; `done`: what it did, as it landed (the result
+ * sheet, re-review C R-4 — a build meanwhile can make an adoption `kept`).
+ */
+function ProgramOutcomeRow({ s, done = false }: { s: ImportSummary; done?: boolean }) {
   const block = s.block ? `block ${s.block.number} · week ${s.block.week}` : null;
   const lifts = counted(s.oracle.bestByCoreLift.length, "core lift");
   const name = s.program.name;
   if (s.program.outcome === "created") {
-    return <SummaryRow title={`Makes the program ${name ?? ""}`.trim()} note={block ? `${block[0]!.toUpperCase()}${block.slice(1)} · ${lifts}` : null} />;
+    const title = `${done ? "Made" : "Makes"} the program ${name ?? ""}`.trim();
+    return <SummaryRow title={title} note={block ? `${block[0]!.toUpperCase()}${block.slice(1)} · ${lifts}` : null} />;
   }
-  if (s.program.outcome === "adopted") return <SummaryRow title={`${name ?? "Your program"} takes ${block ?? "the file's block"}`} note={`${lifts} · its own settings stay`} />;
+  if (s.program.outcome === "adopted") {
+    return <SummaryRow title={`${name ?? "Your program"} ${done ? "took" : "takes"} ${block ?? "the file's block"}`} note={`${lifts} · its own settings stay`} />;
+  }
   return (
     <SummaryRow
       title={name ? `Your program ${name} stays as it is` : "Your programs stay as they are"}
@@ -752,7 +758,10 @@ export function ImportSection() {
           {s && finished ? (
             <div className="import-result">
               {run.isSuccess ? (
-                <SummaryRow title={`${counted(s.sessions.added, "session")} imported`} note={importSpan(s.sessions.addedFirstDate, s.sessions.addedLastDate)} />
+                <>
+                  <SummaryRow title={`${counted(s.sessions.added, "session")} imported`} note={importSpan(s.sessions.addedFirstDate, s.sessions.addedLastDate)} />
+                  {s.firstImport ? <ProgramOutcomeRow s={s} done /> : null}
+                </>
               ) : (
                 <SummaryRow title="Nothing new to import" note={importSpan(s.sessions.firstDate, s.sessions.lastDate)} />
               )}
