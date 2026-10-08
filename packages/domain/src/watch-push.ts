@@ -16,6 +16,12 @@ export const WATCH_NAME_MAX = 30;
 export const WATCH_OVERVIEW_MAX = 80;
 /** The longest stamp proven to round-trip live (the spike's), ruling 3-R5. */
 export const WATCH_STAMP_MAX = 36;
+/**
+ * …and that stamp in UTF-8 bytes: "RG SPIKE — SAFE TO DELETE 2026-10-04" is 36 characters, 38 bytes (the em dash is
+ * 3). A stamp keeps to both, so an accented or emoji name is never longer on the wire than what was proven (audit 3-A
+ * lane U-4). Every cut (stamp, step name, overview) also keeps whole characters (W-3, lane L-6).
+ */
+export const WATCH_STAMP_MAX_BYTES = 38;
 /** At most this many real steps reach the watch ("Too long for the watch"). */
 export const WATCH_MAX_STEPS = 200;
 

@@ -31,6 +31,7 @@ import {
   WATCH_NAME_MAX,
   WATCH_OVERVIEW_MAX,
   WATCH_STAMP_MAX,
+  WATCH_STAMP_MAX_BYTES,
   type ProgramSessionPushJob,
   type ProgramWatchStep,
   type UserPreferences,
@@ -75,17 +76,42 @@ export interface WatchPlan {
   refusal: WatchRefusal | null;
 }
 
+const utf8 = new TextEncoder();
+
 /**
- * `text` cut at a word boundary to at most `max` characters, with no dangling
- * separator; a single word longer than `max` is cut hard (ruling 3-R6).
+ * `text` as the characters a reader sees — grapheme clusters (workerd and Node segment them), else code points — so a
+ * cut between two of them never leaves half an emoji, a lone surrogate or a dangling joiner (audit W-3, lane L-6).
  */
-export function cutAtWord(text: string, max: number): string {
+function charactersOf(text: string): string[] {
+  if (typeof Intl.Segmenter === "function") {
+    return Array.from(new Intl.Segmenter(undefined, { granularity: "grapheme" }).segment(text), (s) => s.segment);
+  }
+  return Array.from(text);
+}
+
+/**
+ * `text` cut at a word boundary to at most `max` characters (UTF-16 units, what the schemas count) and `maxBytes`
+ * UTF-8 bytes, whole characters only, with no dangling separator; a single word longer than that is cut hard, still
+ * between characters (ruling 3-R6).
+ */
+export function cutAtWord(text: string, max: number, maxBytes = Number.POSITIVE_INFINITY): string {
   const t = text.trim();
-  if (t.length <= max) return t;
-  const head = t.slice(0, max + 1);
-  const space = head.lastIndexOf(" ");
-  const cut = (space > 0 ? head.slice(0, space) : t.slice(0, max)).replace(/[\s·,;:—–-]+$/u, "");
-  return cut || t.slice(0, max);
+  if (t.length <= max && (maxBytes === Number.POSITIVE_INFINITY || utf8.encode(t).length <= maxBytes)) return t;
+  const chars = charactersOf(t);
+  let hard = "";
+  let bytes = 0;
+  let n = 0;
+  for (; n < chars.length; n++) {
+    const ch = chars[n]!;
+    const b = utf8.encode(ch).length;
+    if (hard.length + ch.length > max || bytes + b > maxBytes) break;
+    hard += ch;
+    bytes += b;
+  }
+  // A space right after the hard cut means every word in it is whole; else cut back to the last space inside it.
+  const space = /^\s/u.test(chars[n] ?? "") ? hard.length : hard.lastIndexOf(" ");
+  const cut = (space > 0 ? hard.slice(0, space) : hard).replace(/[\s·,;:—–-]+$/u, "");
+  return cut || hard;
 }
 
 function targetOf(s: Step): ProgramWatchStep["target"] {
@@ -147,7 +173,7 @@ export function watchStepsFromBuild(build: BuildPayload, deps: WatchPlanDeps): W
 }
 
 /**
- * `<program name> — <date>`, at most WATCH_STAMP_MAX characters (ruling 3-R5):
+ * `<program name> — <date>`, at most WATCH_STAMP_MAX characters and WATCH_STAMP_MAX_BYTES bytes (ruling 3-R5):
  * the name cut to fit, then " (2)", " (3)" while `taken` holds the stamp — two
  * sessions of one day, or a coach session of the same title, each get their own.
  */
@@ -155,7 +181,8 @@ export function programStamp(programName: string, date: string, taken: ReadonlyS
   for (let n = 1; ; n++) {
     const suffix = n === 1 ? "" : ` (${n})`;
     const room = WATCH_STAMP_MAX - STAMP_SEPARATOR.length - date.length - suffix.length;
-    const stamp = `${stampName(cutAtWord(programName, room), date)}${suffix}`;
+    const roomBytes = WATCH_STAMP_MAX_BYTES - utf8.encode(`${STAMP_SEPARATOR}${date}${suffix}`).length;
+    const stamp = `${stampName(cutAtWord(programName, room, roomBytes), date)}${suffix}`;
     if (!taken.has(stamp)) return stamp;
   }
 }

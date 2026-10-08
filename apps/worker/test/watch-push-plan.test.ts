@@ -9,7 +9,7 @@ import { describe, expect, it } from "vitest";
 import { WATCH_MAX_STEPS, WATCH_NAME_MAX, WATCH_OVERVIEW_MAX, WATCH_STAMP_MAX, type Weight } from "@rg/domain";
 import type { Step } from "@rg/session-engine";
 import type { BuildPayload, ExerciseSlice } from "../src/services/session-build.js";
-import { programStamp, watchStepsFromBuild, type WatchPlanDeps } from "../src/services/watch-push.js";
+import { cutAtWord, programStamp, watchStepsFromBuild, type WatchPlanDeps } from "../src/services/watch-push.js";
 
 const GOBLET_CATALOG_ID = "4258276155475001301";
 
@@ -214,5 +214,53 @@ describe("programStamp", () => {
     expect(second).not.toBe(first);
     expect(second.length).toBeLessThanOrEqual(WATCH_STAMP_MAX);
     expect(second.endsWith(" — 2026-10-09 (2)")).toBe(true);
+  });
+});
+
+describe("cuts never leave half a character (audit W-3, lane L-6, lane U-4)", () => {
+  /** A lone surrogate does not survive UTF-8: what COROS would store is not what the read-back looks for. */
+  const wellFormed = (s: string) => new TextDecoder().decode(new TextEncoder().encode(s)) === s;
+  const bytes = (s: string) => new TextEncoder().encode(s).length;
+  /** The spike's stamp, "RG SPIKE — SAFE TO DELETE 2026-10-04": 36 characters, 38 UTF-8 bytes (the em dash is 3). */
+  const PROVEN_STAMP_BYTES = 38;
+  const FAMILY = "👨‍👩‍👧"; // one character on screen: three emoji joined by two zero-width joiners
+
+  it("a stamp cut inside a run of emoji keeps whole emoji: at most 36 characters and 38 UTF-8 bytes", () => {
+    for (const name of ["💪".repeat(16), `Strength${"💪".repeat(10)}`, `S${"💪".repeat(12)}`]) {
+      for (const taken of [new Set<string>(), new Set([programStamp(name, "2026-10-09", new Set())])]) {
+        const stamp = programStamp(name, "2026-10-09", taken);
+        expect(wellFormed(stamp), stamp).toBe(true);
+        expect(stamp.length).toBeLessThanOrEqual(WATCH_STAMP_MAX);
+        expect(bytes(stamp), stamp).toBeLessThanOrEqual(PROVEN_STAMP_BYTES);
+        expect(stamp).toMatch(/^(Strength|S)?(💪)+ — 2026-10-09( \(2\))?$/u);
+      }
+    }
+  });
+
+  it("a stamp of a name in accented letters stays within the proven 38 bytes; a plain ASCII one is cut as before", () => {
+    const stamp = programStamp("Entraînement général à la maison", "2026-10-09", new Set());
+    expect(bytes(stamp)).toBeLessThanOrEqual(PROVEN_STAMP_BYTES);
+    expect(stamp).toBe("Entraînement général — 2026-10-09");
+    expect(programStamp("Strength and conditioning for the hills", "2026-10-09", new Set())).toBe("Strength and — 2026-10-09");
+    const word = "Supercalifragilisticexpialidocious";
+    expect(programStamp(word, "2026-10-09", new Set())).toBe("Supercalifragilisticexp — 2026-10-09");
+    expect(programStamp(word, "2026-10-09", new Set(["Supercalifragilisticexp — 2026-10-09"]))).toBe("Supercalifragilisti — 2026-10-09 (2)");
+  });
+
+  it("a joined emoji is one character: the cut keeps it whole or drops it, never a dangling joiner", () => {
+    expect(programStamp(FAMILY.repeat(5), "2026-10-09", new Set())).toBe(`${FAMILY} — 2026-10-09`);
+    expect(cutAtWord(FAMILY.repeat(4), 20)).toBe(FAMILY.repeat(2)); // 8 UTF-16 units each
+    expect(cutAtWord(`Row ${FAMILY.repeat(4)}`, 20)).toBe("Row"); // one word too long: cut back to the word before
+  });
+
+  it("a step name or overview cut inside an emoji is whole emoji only", () => {
+    const name = cutAtWord(`Kettlebell${"😀".repeat(20)}`, WATCH_NAME_MAX);
+    expect(wellFormed(name)).toBe(true);
+    expect(name).toBe(`Kettlebell${"😀".repeat(10)}`);
+    const emoji: Record<string, ExerciseSlice> = { e: slice("e", `Swing${"🔥".repeat(20)}`, `Hips${"🔥".repeat(60)}`) };
+    const [s] = watchStepsFromBuild(build([step({ exerciseId: "e", target: { reps: 5 } })], emoji), deps).steps;
+    expect(wellFormed(s!.name) && wellFormed(s!.overview)).toBe(true);
+    expect(s!.name.length).toBeLessThanOrEqual(WATCH_NAME_MAX);
+    expect(s!.overview.length).toBeLessThanOrEqual(WATCH_OVERVIEW_MAX);
   });
 });
