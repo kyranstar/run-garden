@@ -15,7 +15,7 @@ import {
   type RestoreRowError,
   type RestoreSummary,
 } from "@rg/api-client";
-import type { UserPreferences } from "@rg/domain";
+import { withWeightUnit, type UserPreferences } from "@rg/domain";
 import {
   Banner,
   Card,
@@ -362,7 +362,8 @@ function gearLine(place: PlaceDto, labels: Map<string, string>): string {
 /** The places, each with its gear and weights as typed; a default; the wishlist with what each item unlocks. */
 export function PlacesSection({ prefs }: { prefs: UserPreferences }) {
   const places = useQuery({ queryKey: ["places"], queryFn: api.listPlaces });
-  const wishlist = useLivePrefs(prefs).equipmentWishlist;
+  const live = useLivePrefs(prefs);
+  const wishlist = live.equipmentWishlist;
   const library = useQuery({ queryKey: ["library", "wishlist"], queryFn: () => api.listLibrary(), enabled: wishlist.length > 0 });
   const saveSetting = useSaveSetting();
   const [open, setOpen] = useState<PlaceDto | "new" | null>(null);
@@ -385,8 +386,9 @@ export function PlacesSection({ prefs }: { prefs: UserPreferences }) {
               {p.isDefault ? <span className="faint"> · Default</span> : null}
             </b>
             <small>{gearLine(p, labels)}</small>
+            {/* A list kept with no unit (saved before lists took one) is read in the unit in force: show it (Audit 2c-A MINOR-4). */}
             {Object.entries(p.implements).map(([id, typed]) => (
-              <small key={id} className="place-weights">{`${labels.get(id) ?? id}: ${typed}`}</small>
+              <small key={id} className="place-weights">{`${labels.get(id) ?? id}: ${withWeightUnit(typed, live.weightUnit)}`}</small>
             ))}
           </span>
           <span className="faint" aria-hidden>

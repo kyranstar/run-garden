@@ -279,6 +279,13 @@ describe("the first import", () => {
     expect(stored.timezone).toBe(prefs.timezone);
   });
 
+  it("a place's list the tool kept with no unit lands with the tool's unit, whatever the account's (Audit 2c-A MINOR-4)", async () => {
+    await savePreferences(db, userId, { ...(await loadPreferences(db, userId)), weightUnit: "kg" });
+    await run(backup([v2Session("2026-09-28")], { locations: [{ id: "home", name: "Apartment", equipment: ["mat", "kettlebell"], kettlebell: { weights: "10, 15, 20" } }] }));
+    const [home] = await db.select().from(locations);
+    expect(home!.implements).toEqual({ kettlebell: "10, 15, 20 lb" });
+  });
+
   it("a file naming one place twice keeps the first, and the import still lands", async () => {
     const twice = backup([v2Session("2026-09-28")], {
       locations: [

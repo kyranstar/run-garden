@@ -3,8 +3,10 @@
  *
  * A place is a name, the gear there (ids from the library's vocabulary) and, for gear that takes weights, the
  * weights as the athlete typed them ("10, 15, 20 lb, 12kg") — stored exactly as typed, checked by
- * `weightListProblem`, and read by the build through `parseWeightList` (each weight in its own unit). A list for gear
- * the place does not have is not kept, and an empty one is no list.
+ * `weightListProblem`, and read by the build through `parseWeightList` (each weight in its own unit). A list typed
+ * with no unit at all is stored with the athlete's unit then in force appended ("10, 15, 20" → "10, 15, 20 kg"), so
+ * toggling Weights never changes what it means (Audit 2c-A MINOR-4). A list for gear the place does not have is not
+ * kept, and an empty one is no list.
  *
  * One place is the default: the first one made, or the one last marked; deleting it promotes the oldest other.
  * A place an active program builds at (`config.defaultLocationId`) cannot be deleted. Every write is refused while a
@@ -13,9 +15,10 @@
 import { and, asc, desc, eq, ne } from "drizzle-orm";
 import { z } from "zod";
 import { locations, programs } from "@rg/database";
-import { formatWeight, newId, weightListProblem, type Weight } from "@rg/domain";
+import { formatWeight, newId, weightListProblem, withWeightUnit, type Weight, type WeightUnit } from "@rg/domain";
 import { EQUIPMENT_IDS, LOAD_IMPLEMENTS } from "@rg/exercise-library";
 import { restoreInProgress } from "./account-state.js";
+import { loadPreferences } from "./calendar-sync.js";
 import { runAtomically, type AtomicStatement, type Db } from "./db.js";
 import { RestoreInProgressError } from "./programs.js";
 
@@ -78,15 +81,21 @@ export const placePatchSchema = z
   .refine((p) => Object.keys(p).length > 0, { message: "nothing to change" });
 export type PlacePatch = z.input<typeof placePatchSchema>;
 
-/** The lists worth keeping: for gear the place has, typed text with something in it, trimmed. */
-function keptLists(lists: Record<string, string | undefined> | undefined, equipment: readonly string[]): Record<string, string> {
+/**
+ * The lists worth keeping: for gear the place has, typed text with something in it, trimmed — and a list that names
+ * no unit with the athlete's unit then in force appended (Audit 2c-A MINOR-4), so toggling Weights later never
+ * changes what it means.
+ */
+function keptLists(lists: Record<string, string | undefined> | undefined, equipment: readonly string[], unit: WeightUnit): Record<string, string> {
   const out: Record<string, string> = {};
   for (const [key, text] of Object.entries(lists ?? {}).sort(([a], [b]) => a.localeCompare(b))) {
     if (typeof text !== "string" || text.trim() === "" || !equipment.includes(key)) continue;
-    out[key] = text.trim();
+    out[key] = withWeightUnit(text, unit);
   }
   return out;
 }
+
+const unitInForce = async (db: Db, userId: string): Promise<WeightUnit> => (await loadPreferences(db, userId)).weightUnit;
 
 /** A stored list as text: typed text as it is; weights an older writer stored parsed, written out. */
 function asTyped(stored: Record<string, unknown> | null | undefined): Record<string, string> {
@@ -148,7 +157,7 @@ export async function createPlace(db: Db, userId: string, input: PlaceCreate, no
       userId,
       name: p.name,
       equipment: [...p.equipment],
-      implements: keptLists(p.implements, p.equipment),
+      implements: keptLists(p.implements, p.equipment, await unitInForce(db, userId)),
       isDefault,
       createdAt: now,
       updatedAt: now,
@@ -171,7 +180,7 @@ export async function updatePlace(db: Db, userId: string, id: string, input: Pla
       .set({
         name: p.name ?? row.name,
         equipment: [...equipment],
-        implements: keptLists(lists, equipment),
+        implements: keptLists(lists, equipment, await unitInForce(db, userId)),
         ...(p.isDefault ? { isDefault: true } : {}),
         updatedAt: now,
       })

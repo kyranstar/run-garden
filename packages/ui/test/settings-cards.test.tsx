@@ -187,6 +187,13 @@ describe("Places & equipment", () => {
     expect(rows[1]).not.toContain("Default");
   });
 
+  it("a list kept with no unit shows the unit the build reads it in (Audit 2c-A MINOR-4)", async () => {
+    const bare: PlaceDto = { ...HOME, implements: { kettlebell: "10, 15, 20" } };
+    fakeWorker({ places: [bare], prefs: { weightUnit: "kg" } });
+    mount(createElement(PlacesSection, { prefs: { ...DEFAULT_USER_PREFERENCES, weightUnit: "kg" } }));
+    await until(() => text().includes("Kettlebell: 10, 15, 20 kg"), "the unit on the card");
+  });
+
   it("Review Focus 3: a list typed \"10, 15, 20 lb, 12kg\" is sent exactly as typed and shown back as typed", async () => {
     const { calls, state } = fakeWorker({ places: [HOME] });
     mount(createElement(PlacesSection, { prefs: DEFAULT_USER_PREFERENCES }));

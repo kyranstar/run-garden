@@ -64,6 +64,7 @@ import {
   toKg,
   userPreferencesSchema,
   weightListProblem,
+  withWeightUnit,
   type AdaptiveConfig,
   type PerformedSessionWire,
   type StandaloneSession,
@@ -461,7 +462,8 @@ async function plan(db: Db, userId: string, raw: unknown, ctx: ImportCtx): Promi
       const text = (p.data as Record<string, unknown>)[gear] as { weights?: unknown } | undefined;
       const typed = typeof text?.weights === "string" ? text.weights.trim() : "";
       if (typed === "" || !equipment.includes(gear)) continue;
-      if (weightListProblem(typed) === null) lists[gear] = typed;
+      // A list the tool kept with no unit meant the tool's (Audit 2c-A MINOR-4).
+      if (weightListProblem(typed) === null) lists[gear] = withWeightUnit(typed, unit);
       else dropped.add(`${gear} weights`);
     }
     return [{ sourceId: p.data.id, name: p.data.name, equipment, lists }];
