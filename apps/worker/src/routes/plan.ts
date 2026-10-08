@@ -57,7 +57,7 @@ import { loadPreferences, restoreCalendarEvent, savePreferences, syncCalendar } 
 import { chunkIds, type Db } from "../services/db.js";
 import { applyMove } from "../services/jobs.js";
 import { removeFromPlan, unskipWorkout } from "../services/plan-mutations.js";
-import { recentGardenEvents, resimulateFrom } from "../services/garden-sync.js";
+import { gardenSees, recentGardenEvents, resimulateFrom } from "../services/garden-sync.js";
 import {
   openContentIntentTargets,
   openMoveIntents,
@@ -1474,6 +1474,10 @@ planRoutes.post("/workouts/:id/match", async (c) => {
       .limit(1)
   )[0];
   if (!w || !a) return c.json({ error: "not_found" }, 404);
+  // An activity the garden does not see (imported history; an app session before APP_SESSION_EPOCH) never completes
+  // a workout: matched, it would erase the row's miss and count toward a block's adherence on a session the garden
+  // never credited (Audit 2d I-2). Refused before anything is written.
+  if (!gardenSees(a)) return c.json({ error: "not_in_garden" }, 422);
   if (a.completionMatchId) return c.json({ error: "activity_already_matched" }, 422);
   const held = await db
     .select({ id: workoutCompletionMatches.id })

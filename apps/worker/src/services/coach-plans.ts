@@ -38,15 +38,22 @@ export function isLoosePlan(plan: { id: string }): boolean {
   return plan.id.startsWith(LOOSE_PLAN_ID_PREFIX);
 }
 
+/**
+ * A completion the garden does not see is not done (Audit 2d I-2; rulings 2d-R1, 2d-R3): `unseen` is the garden's own
+ * reader of which completed rows those are (garden-sync's `unseenCompletions` — passed in, so this module never
+ * imports the garden and no caller can count without it). Such a row stays in the denominator, as a miss would.
+ */
 export async function coachBlockAdherence(
   db: Db,
   userId: string,
   planId: string,
   startDate: string,
   endDate: string,
+  unseen: (db: Db, workoutIds: string[]) => Promise<Set<string>>,
 ): Promise<number | null> {
   const rows = await db
     .select({
+      id: plannedWorkouts.id,
       state: plannedWorkouts.completionState,
       category: plannedWorkouts.category,
       sanctionedBy: plannedWorkouts.sanctionedBy,
@@ -65,7 +72,9 @@ export async function coachBlockAdherence(
   );
   const denom = resolved.filter((r) => r.state === "completed" || r.sanctionedBy !== "coach");
   if (denom.length === 0) return null;
-  const done = denom.filter((r) => r.state === "completed").length;
+  const completed = denom.filter((r) => r.state === "completed");
+  const notSeen = await unseen(db, completed.map((r) => r.id));
+  const done = completed.filter((r) => !notSeen.has(r.id)).length;
   return done / denom.length;
 }
 

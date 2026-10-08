@@ -75,6 +75,7 @@ import { chunkedInsert, chunkIds, type Db } from "./db.js";
 import { isRestoring, loadAccountState, patchAccountState, restoreInProgress } from "./account-state.js";
 import { claimUserLock, releaseUserLock } from "./locks.js";
 import { coachBlockAdherence, COACHED_BLOCK_ADHERENCE, plansEndedOn } from "./coach-plans.js";
+import { AUTO_MISS_DAYS } from "./reconcile-daily.js";
 import {
   VISITOR_HINTS,
   VISITOR_LINES,
@@ -99,13 +100,13 @@ const CHECKPOINT_WEEKDAY = 1; // Mondays
  * session (a COROS row, counted once) included. With no app or import rows this is true of every row, which is what
  * keeps the live account's past garden where it was.
  */
-function gardenSees(a: { source: string; startTime: string; startTimeLocal: string | null }): boolean {
+export function gardenSees(a: { source: string; startTime: string; startTimeLocal: string | null }): boolean {
   if (a.source === "import") return false;
   return a.source !== "app" || (a.startTimeLocal ?? a.startTime).slice(0, 10) >= APP_SESSION_EPOCH;
 }
 
 /** `gardenSees` as SQL, for the reads that stop at their first row in the database. Three binds. */
-function gardenSeesSql(): SQL {
+export function gardenSeesSql(): SQL {
   return and(
     ne(activities.source, "import"),
     or(ne(activities.source, "app"), gte(sql`coalesce(${activities.startTimeLocal}, ${activities.startTime})`, APP_SESSION_EPOCH)),
@@ -260,7 +261,9 @@ export async function buildDayInput(
           )[0]
         : undefined;
       // Rulings 2d-R1, 2d-R3: a completion the garden does not see (imported history; an app session dated before
-      // APP_SESSION_EPOCH) credits nothing — the slot reads as if that session had not happened.
+      // APP_SESSION_EPOCH) credits nothing — the slot reads as if that session had not happened: still OPEN, so it
+      // misses as an open slot does, AUTO_MISS_DAYS after its day (`lapsed` below; Audit 2d I-2). The match route
+      // refuses such an activity, so only a write that bypasses it can make one.
       if (activity && !gardenSees(activity)) continue;
       const startHourLocal = activity
         ? Number((activity.startTimeLocal ?? activity.startTime).slice(11, 13))
@@ -386,9 +389,34 @@ export async function buildDayInput(
   // days upgrades the day to observed rest below. Deterministic from
   // resolution rows, so replay is exact.
   const sanctionedHere = resolvedHere.filter((w) => w.sanctionedBy === "coach");
-  const missedRuns = resolvedHere
-    .filter((w) => w.sanctionedBy !== "coach")
-    .map((w) => ({ workoutId: w.id }));
+  // Audit 2d I-2: a slot completed only by an activity the garden does not see is, to the garden, still open — so it
+  // misses where an open slot does: the daily reconcile misses one AUTO_MISS_DAYS after its day, and that is the day
+  // it lands (an auto-missed row lands there too, so matching one changes nothing). A miss resolved on another day
+  // by hand loses that day to the match, which overwrites it; the debit itself is never lost. One read, the join
+  // stopping at no row for every account without such a completion.
+  const lapsed = await db
+    .select({ id: plannedWorkouts.id })
+    .from(plannedWorkouts)
+    .innerJoin(
+      workoutCompletionMatches,
+      and(eq(workoutCompletionMatches.workoutId, plannedWorkouts.id), isNull(workoutCompletionMatches.undoneAt)),
+    )
+    .innerJoin(activities, eq(activities.id, workoutCompletionMatches.activityId))
+    .where(
+      and(
+        eq(plannedWorkouts.userId, userId),
+        eq(plannedWorkouts.completionState, "completed"),
+        eq(plannedWorkouts.effectiveDate, addDays(date, -AUTO_MISS_DAYS)),
+        isNull(plannedWorkouts.archivedAt),
+        ne(plannedWorkouts.category, "rest"),
+        or(isNull(plannedWorkouts.sanctionedBy), ne(plannedWorkouts.sanctionedBy, "coach")),
+        not(gardenSeesSql()),
+      ),
+    );
+  const missedRuns = [
+    ...resolvedHere.filter((w) => w.sanctionedBy !== "coach").map((w) => ({ workoutId: w.id })),
+    ...lapsed.map((w) => ({ workoutId: w.id })),
+  ];
   let mercyToday = false;
   if (sanctionedHere.length > 0) {
     // The rolling-week lookback counts prior sanctions by the same landing
@@ -544,7 +572,7 @@ export async function buildDayInput(
   // block adherence, counts a coached block (→ the Keystone pine).
   const endedYesterday = await plansEndedOn(db, userId, addDays(date, -1));
   for (const plan of endedYesterday) {
-    const adh = await coachBlockAdherence(db, userId, plan.id, plan.startDate, plan.endDate);
+    const adh = await coachBlockAdherence(db, userId, plan.id, plan.startDate, plan.endDate, unseenCompletions);
     if (adh !== null && adh >= COACHED_BLOCK_ADHERENCE) {
       input.coachedBlockCompleted = true;
       break;
@@ -596,7 +624,7 @@ export async function buildDayInput(
 
 /** Of these completed workouts, the ones whose active completion is an activity the garden does not see
  * (`gardenSees`). One read per 90 ids — D1's 100 binds — and none for none. */
-async function unseenCompletions(db: Db, workoutIds: string[]): Promise<Set<string>> {
+export async function unseenCompletions(db: Db, workoutIds: string[]): Promise<Set<string>> {
   const unseen = new Set<string>();
   for (const ids of chunkIds(workoutIds)) {
     const rows = await db
