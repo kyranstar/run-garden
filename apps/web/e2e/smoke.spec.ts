@@ -43,7 +43,13 @@ test("Garden home leads with the Today card and its workout", async ({ page }) =
   await page.goto("/");
   await openTodayCard(page);
   await expect(page.locator(".dock-panel").getByRole("heading").first()).toBeVisible();
-  await expect(page.getByRole("button", { name: "Move" }).first()).toBeVisible();
+  // The day's lead and its action: a run's Move or View workout, or — on a day the fixture holds only its program
+  // session (the fixture places one on today; on a weekday with no fixture run it leads the card) — Start or Open.
+  await expect(
+    page.locator(".dock-panel").getByRole("button", { name: /^(Move|View workout)$/ })
+      .or(page.locator(".dock-panel").getByRole("link", { name: /^(Start|Open|Continue)$/ }))
+      .first(),
+  ).toBeVisible();
 });
 
 test("Plan renders the week calendar with no COROS warning", async ({ page }) => {
@@ -85,8 +91,18 @@ test("Settings exposes the COROS connection and data controls", async ({ page })
 });
 
 test("Moving a workout opens the move sheet", async ({ page }) => {
-  await page.goto("/");
-  await openTodayCard(page);
-  await page.getByRole("button", { name: "Move" }).first().click();
-  await expect(page.getByRole("dialog")).toBeVisible();
+  // A run still ahead in the fixture plan, opened by its own link — the Today card leads with the program session on
+  // a weekday with no fixture run, so it is not always a run's card.
+  await page.goto("/plan");
+  const runId = await page.evaluate(async () => {
+    const res = await fetch("/api/plan/workouts", { credentials: "include" });
+    const body = (await res.json()) as { workouts?: Array<{ id: string; sport: string; origin?: string | null; completionState: string; effectiveDate: string }> } | Array<{ id: string; sport: string; origin?: string | null; completionState: string; effectiveDate: string }>;
+    const list = Array.isArray(body) ? body : (body.workouts ?? []);
+    const today = new Date().toISOString().slice(0, 10);
+    return list.find((w) => w.sport === "run" && !w.origin && w.completionState === "scheduled" && w.effectiveDate >= today)?.id ?? null;
+  });
+  expect(runId).not.toBeNull();
+  await page.goto(`/plan?workout=${encodeURIComponent(runId!)}`);
+  await page.getByRole("dialog").getByRole("button", { name: "Move" }).first().click();
+  await expect(page.getByRole("dialog").last()).toBeVisible();
 });
