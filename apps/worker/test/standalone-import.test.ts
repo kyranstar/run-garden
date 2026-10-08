@@ -41,8 +41,23 @@ vi.mock("../src/services/calendar-sync.js", async (importOriginal) => ({
     return {};
   }),
 }));
+/** Runs once, just before the import's one batch — after it planned under its lock: what lands meanwhile (re-review C R-2). */
+const race = vi.hoisted(() => ({ before: null as null | (() => Promise<unknown>) }));
+vi.mock("../src/services/db.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../src/services/db.js")>();
+  return {
+    ...actual,
+    runAtomically: async (...args: Parameters<typeof actual.runAtomically>) => {
+      const hook = race.before;
+      race.before = null;
+      await hook?.();
+      return actual.runAtomically(...args);
+    },
+  };
+});
 afterEach(() => {
   vi.useRealTimers();
+  race.before = null;
 });
 
 const {
@@ -593,6 +608,74 @@ describe("an account that already has a program (ruling 2d-R5)", () => {
     expect(later.program.outcome).toBe("kept");
     expect(later.written).toMatchObject({ sessions: 1, program: 0, block: 0 });
     expect(await db.select().from(programBlocks)).toEqual([]);
+  });
+
+  describe("checked again as the import writes (re-review C R-2)", () => {
+    const ownBlock = (programId: string, number: number) =>
+      db.insert(programBlocks).values({
+        id: "blk-own", programId, number, kind: "core_block", startDate: "2026-10-09", weeks: 5,
+        intent: { core: { squat: "boxSquat" }, rotations: [] }, createdAt: NOW, updatedAt: NOW,
+      });
+
+    it.each([1, 2])("a block the app starts meanwhile (block %i) stays the only one, and the import says kept", async (number) => {
+      const id = await appProgram();
+      race.before = () => ownBlock(id, number);
+      const summary = await run(backup(history()));
+      expect(summary.program).toEqual({ outcome: "kept", name: "Mornings" });
+      expect(summary.written).toMatchObject({ program: 0, block: 0, places: 3, preferences: 1 });
+      expect((await db.select().from(programBlocks)).map((b) => [b.id, b.number])).toEqual([["blk-own", number]]);
+      // The rest of the first import still lands.
+      expect(await db.$count(performedSessions)).toBe(18);
+      expect(await db.$count(locations)).toBe(3);
+    });
+
+    it("a session done on one of its slots meanwhile: the program takes no block", async () => {
+      const id = await appProgram();
+      const [slot] = await db.select().from(plannedWorkouts).where(eq(plannedWorkouts.planId, id)).limit(1);
+      race.before = () =>
+        db.insert(performedSessions).values({
+          id: "ps-watch", userId, workoutId: slot!.id, activityId: null, buildId: null, source: "watch", sourceRef: "lbl-1",
+          localDate: slot!.effectiveDate, seconds: 1500, completed: true, payloadHash: "h", createdAt: NOW, updatedAt: NOW,
+        });
+      const summary = await run(backup(history()));
+      expect(summary.program).toEqual({ outcome: "kept", name: "Mornings" });
+      expect(summary.written).toMatchObject({ program: 0, block: 0 });
+      expect(await db.select().from(programBlocks)).toEqual([]);
+    });
+
+    it("the program retired meanwhile: it takes no block", async () => {
+      const id = await appProgram();
+      race.before = () => updateProgram(db, userId, id, { status: "retired" }, NOW);
+      const summary = await run(backup(history()));
+      expect(summary.program).toEqual({ outcome: "kept", name: null });
+      expect(summary.written).toMatchObject({ program: 0, block: 0 });
+      expect(await db.select().from(programBlocks)).toEqual([]);
+    });
+
+    it("a second active program made meanwhile: neither takes the block", async () => {
+      await appProgram();
+      race.before = () => createAdaptiveProgram(db, userId, { name: "Evenings", config: adaptiveConfigSchema.parse({ weeklyGoal: 3 }) }, NOW);
+      const summary = await run(backup(history()));
+      expect(summary.program).toEqual({ outcome: "kept", name: null });
+      expect(summary.written).toMatchObject({ program: 0, block: 0 });
+      expect(await db.select().from(programBlocks)).toEqual([]);
+    });
+
+    it("an account with no program, one made in the app meanwhile: no second program, no block", async () => {
+      race.before = () => createAdaptiveProgram(db, userId, { name: "Mornings", config: adaptiveConfigSchema.parse({ weeklyGoal: 3 }) }, NOW);
+      const summary = await run(backup(history()));
+      expect(summary.program).toEqual({ outcome: "kept", name: "Mornings" });
+      expect(summary.written).toMatchObject({ program: 0, block: 0, places: 3 });
+      expect((await db.select().from(programs)).map((p) => [p.name, p.source])).toEqual([["Mornings", null]]);
+      expect(await db.select().from(programBlocks)).toEqual([]);
+    });
+
+    it("nothing meanwhile: the guarded writes land as planned", async () => {
+      const id = await appProgram();
+      race.before = async () => undefined;
+      expect((await run(backup(history()))).program.outcome).toBe("adopted");
+      expect((await db.select().from(programBlocks)).map((b) => [b.programId, b.number])).toEqual([[id, 2]]);
+    });
   });
 
   it("a first import with no session in it still counts: the next one brings no settings again", async () => {
