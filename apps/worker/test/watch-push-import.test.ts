@@ -4,14 +4,17 @@
  * Each case starts from a push the lane verified against the mock COROS, then reads COROS the way production does:
  * `corosReadNow` (the cron sweep's and Read now's path — `buildSnapshot` strips each workout's `raw`, which is how
  * "Changed in COROS" went dead live while a suite that imported `normalizeCorosSchedule` directly stayed green, audit
- * 3-A life L-8). A few cases still import the normalized schedule directly, where the read's window is the point.
+ * 3-A life L-8). A few cases import the normalized schedule directly (a full read) where the read path adds nothing.
  *
  *  - The content is never rewritten: the row keeps its build's title, category, sport, stages and summary; it
  *    records the new wire fingerprint, and a change against what the push OBSERVED posts one "Changed in COROS" note.
- *  - A move in COROS is adopted (the existing date adoption); the build stays locked.
- *  - Absent for two reads: the address is cleared and one "Removed from your watch" note posted. Never archived.
- *  - A copy the row never learned about (the executor died between write and record) is attached to its slot by its
- *    stamp, or unpushed when its slot is gone or holds another build. Never a new row.
+ *  - A move in COROS is adopted (the existing date adoption); the build stays locked; the note only informs (3-R15).
+ *  - Absent for two FULL reads: the address is cleared and one "Removed from your watch" note posted. Never archived.
+ *    A short read proves nothing (3-R16).
+ *  - A copy the row never learned about (the executor died between write and record) — its stamp's ONLY carrier, on
+ *    a full read — is attached to its slot, or unpushed (insert-only) when its slot is gone or holds another build.
+ *    Never a new row. A second carrier is the athlete's own workout.
+ *  - Only a push that may still hold a copy names a stamp: never a superseded, cancelled or restored one.
  *  - A program row claims a wire workout only by its own stamp: a recycled address is someone else's workout.
  *  - Take off watch: the unpush verified resets the address and supersedes the push; Send queues it afresh.
  */
@@ -536,6 +539,19 @@ describe("the stamps the read may act on", () => {
     expect((await rowOf(db, workoutId)).sourceWorkoutId).toBe(workoutId);
     expect(server.counts.scheduleWrites).toBe(writes);
     expect(programsNamed(stamp)).toHaveLength(1);
+  });
+
+  it("a stale copy still comes off: moved while COROS writes were off, the slot sent again the next day (V10b)", async () => {
+    const { workoutId, stamp } = await pushed();
+    await applyMove(db, { userId, workoutId, toDate: TOMORROW, toTime: "18:00", source: "app", corosWritesEnabled: false });
+    vi.setSystemTime(new Date(`${TOMORROW}T19:00:00.000Z`));
+    const resent = await send(workoutId, TOMORROW);
+    for (let i = 0; i < 2; i++) {
+      await readNow();
+      await lane();
+    }
+    expect(programsNamed(stamp)).toEqual([]);
+    expect(programsNamed(resent.stamp)).toHaveLength(1);
   });
 
   it("an unpush that failed for good is never revived by a read: no COROS write across three reads (L-7)", async () => {
