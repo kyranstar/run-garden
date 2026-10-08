@@ -31,8 +31,8 @@
  *     or a reopened slot's. That day is recorded in the save's own transaction, and the replay is one capped catch-up
  *     step (ruling 2b-R7): a long walk finishes on later garden reads, and a replay killed after the commit is not
  *     lost (audit 2b-A M-5). The session's day must be a started build's — the locked one, or one un-started since
- *     (ruling 2b-R19) — (the slot's, when none was ever started) or the next, and not after tomorrow (422); a slot
- *     moved after Start still saves.
+ *     (ruling 2b-R19); the payload's own when it names one (re-review 2b-B2 M-2) — (the slot's, when none was ever
+ *     started) or the next, and not after tomorrow (422); a slot moved after Start still saves.
  *
  * Never writes to COROS (an app session is never pushed to the watch in 2b). Every write waits for the restore
  * marker to be clear. Every statement stays under D1's 100 bound variables.
@@ -123,14 +123,14 @@ function startOf(p: PerformedSessionWire, timezone: string): { startTime: string
 }
 
 /**
- * The days the slot's STARTED builds were made for (`payload.build.date`, read in SQL): the locked one's, and those of
+ * The slot's STARTED builds and the days they were made for (`payload.build.date`, read in SQL): the locked one, and
  * builds started once and un-started since (`$.unstartedAt`, kept on record — ruling 2b-R19) — the days a session of
  * the slot was started, whatever day the slot shows now. Empty when no build of the slot was ever started (ruling 2b-R7
  * as amended).
  */
-async function startedBuildDays(db: Db, userId: string, workoutId: string): Promise<string[]> {
+async function startedBuilds(db: Db, userId: string, workoutId: string): Promise<Array<{ id: string; date: string }>> {
   const rows = await db
-    .select({ date: sql<string | null>`json_extract(${sessionBuilds.payload}, '$.build.date')` })
+    .select({ id: sessionBuilds.id, date: sql<string | null>`json_extract(${sessionBuilds.payload}, '$.build.date')` })
     .from(sessionBuilds)
     .where(
       and(
@@ -139,7 +139,7 @@ async function startedBuildDays(db: Db, userId: string, workoutId: string): Prom
         or(isNotNull(sessionBuilds.lockedAt), sql`json_extract(${sessionBuilds.payload}, ${UNSTARTED_AT_PATH}) is not null`),
       ),
     );
-  return [...new Set(rows.map((r) => r.date).filter((d): d is string => typeof d === "string" && isLocalDate(d)))].sort();
+  return rows.flatMap((r) => (typeof r.date === "string" && isLocalDate(r.date) ? [{ id: r.id, date: r.date }] : []));
 }
 
 /**
@@ -430,23 +430,28 @@ export async function savePerformedSession(db: Db, userId: string, performedId: 
   // Ruling 2b-R7 as amended (audit 2b-A I-4): the session's day is the day its LOCKED build was built and started for
   // — or the next, for a session that ran past midnight — and never after tomorrow. A build started once and
   // un-started since counts too (ruling 2b-R19): another device's save made from it may drain after the Discard and a
-  // move. The slot's own date answers only when no build was ever started: a slot moved between Start and the outbox's
-  // drain must still save. Anything else is a wrong clock or a bug, and would replay the garden from wherever it says.
-  const startedOn = await startedBuildDays(db, userId, slot.id);
+  // move. A save naming one of those builds takes THAT build's day only (re-review 2b-B2 M-2); any started build's day
+  // answers only a save naming none. The slot's own date answers only when no build was ever started: a slot moved
+  // between Start and the outbox's drain must still save. Anything else is a wrong clock or a bug, and would replay the
+  // garden from wherever it says.
+  const started = await startedBuilds(db, userId, slot.id);
+  const own = p.buildId === null ? undefined : started.find((b) => b.id === p.buildId);
   // A SENT build COROS moved (Phase 3, spec §4.5): the import adopts the move, the build stays locked, and the
   // session's day is the slot's new one — the watch session happens there, and so may the app's.
-  const sentMoved = startedOn.length > 0 && !startedOn.includes(slot.effectiveDate) && (await sentBuildIdOf(db, slot.id)) !== null;
-  const days = startedOn.length > 0 ? [...startedOn, ...(sentMoved ? [slot.effectiveDate] : [])].sort() : [slot.effectiveDate];
+  const sentId = started.length > 0 ? await sentBuildIdOf(db, slot.id) : null;
+  const sentMoved = sentId !== null && (own === undefined || own.id === sentId);
+  const days =
+    started.length > 0
+      ? [...new Set([...(own ? [own.date] : started.map((b) => b.date)), ...(sentMoved ? [slot.effectiveDate] : [])])].sort()
+      : [slot.effectiveDate];
   const sessionDay = days.find((d) => p.localDate >= d && p.localDate <= addDays(d, 1));
   if (sessionDay === undefined || p.localDate > addDays(today, 1)) {
+    const whose = own ? "its build's" : started.length > 0 ? "a started build's" : "its slot's";
     throw new InvalidSaveError([
-      {
-        message: `the session's day must be ${startedOn.length > 0 ? "a started build's" : "its slot's"} (${days.join(", ")}) or the next, and not after tomorrow`,
-        path: ["localDate"],
-      },
+      { message: `the session's day must be ${whose} (${days.join(", ")}) or the next, and not after tomorrow`, path: ["localDate"] },
     ]);
   }
-  const builtOn = startedOn.length > 0 ? sessionDay : null;
+  const builtOn = started.length > 0 ? sessionDay : null;
   if (await restoreInProgress(db, userId)) return { status: "restoring" };
 
   const lockKind = `save:${performedId}`;

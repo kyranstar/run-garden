@@ -28,8 +28,9 @@ reporting a mismatch. It is generic — it names no person, account, file, or va
      garden, past or present.
    - *N sessions skipped* (only if any) — sessions the import could not read; every number below leaves them out.
    - If anything looks wrong, close the sheet: nothing has been written. Report it (§4) before importing.
-4. Press **Import**. The sheet then shows the tool's own numbers (§2). Keep it open, or re-open it later: choosing
-   the same file again writes nothing ("Nothing new to import") and shows the same numbers.
+4. Press **Import**. The sheet then says what happened to the program (on a first import) and shows the tool's own
+   numbers (§2). Keep it open, or re-open it later: choosing the same file again writes nothing ("Nothing new to
+   import") and shows the same numbers.
 
 ### What the first import changes — and what it never does
 
@@ -41,6 +42,9 @@ reporting a mismatch. It is generic — it names no person, account, file, or va
     stay as they are;
   - anything else (a program already under way, more than one, or only a retired one) → the program stays exactly as
     it is, and the tool's block is not used.
+
+  A program with no place of its own will use the imported default place: when the import brings the tool's places
+  (only when you have none), that program's next sessions are built at the tool's default place.
 - **The weight unit.** It becomes the tool's only if Weights in Settings → Units was never changed from the default
   AND none of your places has a weight list typed without a unit (such a list means the unit in force, so switching
   would change what it means). Otherwise yours stays. The summary sheet says which; check Settings → Units after.
@@ -66,9 +70,9 @@ numbers that tab shows:
 
 The other rows have no number to compare with on that tab, so they are for reference only:
 
-- Progress → **Sessions**, **Records**, **Before and after** and **Block**: the tab shows no total of sessions, lists
-  at most the 12 most recent records (never a count), plots before/after for the last 30 sessions (never a count of
-  pairs), and does not show the block.
+- Progress → **Sessions**, **Records**, **Before and after** and **Block in the tool**: the tab shows no total of
+  sessions, lists at most the 12 most recent records (never a count), plots before/after for the last 30 sessions
+  (never a count of pairs), and does not show the block.
 - Lifts → **Best**: the tile shows the latest top set and its change since the first, not a best.
 - Per week → **kg** beside pounds (pounds tools only): the same week's whole kilos.
 

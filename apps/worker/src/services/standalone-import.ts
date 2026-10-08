@@ -13,8 +13,9 @@
  *     `performed_sessions`, `performed_sets` (weights as typed + kg), its `condition_checks`, and an `activities` row
  *     (`source = 'import'`, strength when it holds a core lift else yoga — §9.2 — and never matched: the matcher and
  *     the save leave `import` rows alone).
- *  3. The first import only (no first-import marker yet: a `provider_cursor_state` row the first import writes, in
- *     its own transaction, whatever it brought) also brings the tool's settings. The PROGRAM (ruling 2d-R5, Audit C
+ *  3. The first import only (no first-import marker yet — a `provider_cursor_state` row the first import writes, in
+ *     its own transaction, whatever it brought — and no imported session, which a restore brings back when it drops
+ *     the marker) also brings the tool's settings. The PROGRAM (ruling 2d-R5, Audit C
  *     C-1): the import never makes a second adaptive program. An account with none gets the tool's (named by the
  *     profile's care label, config from the tool's settings) and its current block — `created`; an account whose one
  *     active adaptive program has no block yet and no session done on its slots takes the tool's block into that
@@ -26,7 +27,11 @@
  *     force) and the wishlist (merged into theirs). Later imports never touch them, so nothing the athlete changed
  *     here is overwritten.
  *  4. Everything lands as ONE transaction, under a per-account lock (a second import at once is `busy`), refused while
- *     a restore is replacing the account. A dry run reads only and answers the summary the import would.
+ *     a restore is replacing the account. A dry run reads only and answers the summary the import would. The lock
+ *     does not hold back a build or a program made in the app, so the program decision is checked again by the
+ *     writes themselves (re-review C R-2): the program goes in only while the account has no adaptive one, and the
+ *     block only while its program is still the one active program with no block and no session done on its slots.
+ *     What did not land, the answer says: the outcome is then `kept`.
  *
  * The summary carries the ORACLE numbers — the tool's own Stats over the backup's sessions in the tool's own shape,
  * and its Records counted as its Progress tab lists them (session count, sessions and volume per week for the last
@@ -36,7 +41,7 @@
  * Imported history never enters the garden (spec P8; ruling 2d-R3): every garden read leaves `source = 'import'` rows
  * out (garden-sync's `gardenSees`), so an import changes no past garden. Never writes to COROS.
  */
-import { and, asc, eq, inArray } from "drizzle-orm";
+import { and, asc, eq, exists, getTableColumns, inArray, isNull, ne, notExists, sql, type SQL } from "drizzle-orm";
 import { DateTime } from "luxon";
 import {
   activities,
@@ -383,10 +388,21 @@ export async function importedProgramId(db: Db, userId: string): Promise<string 
 /** The first-import marker's row id: written by the first import, whatever it did to the program. */
 const markerId = (userId: string) => `${userId}:${APP}:first_import`;
 
-/** Has a first import already brought the tool's settings into this account? */
+/**
+ * Has a first import already brought the tool's settings into this account? The marker says so, and so does any
+ * imported session: a restore never brings the marker back (provider cursors are never restored) but does bring the
+ * sessions, so a restored account is not offered a first import again (re-review C R-1). A restore of a backup from
+ * before any import brings neither, and the next import is a first one again.
+ */
 async function firstImportDone(db: Db, userId: string): Promise<boolean> {
-  const [row] = await db.select({ id: providerCursorState.id }).from(providerCursorState).where(eq(providerCursorState.id, markerId(userId))).limit(1);
-  return !!row;
+  const [marker] = await db.select({ id: providerCursorState.id }).from(providerCursorState).where(eq(providerCursorState.id, markerId(userId))).limit(1);
+  if (marker) return true;
+  const [session] = await db
+    .select({ id: performedSessions.id })
+    .from(performedSessions)
+    .where(and(eq(performedSessions.userId, userId), eq(performedSessions.source, SOURCE)))
+    .limit(1);
+  return !!session;
 }
 
 /**
@@ -421,6 +437,38 @@ async function programPlan(
   return { outcome: "adopted", name: only.name, adoptInto: only.id };
 }
 
+/**
+ * `INSERT … SELECT <row> WHERE <guard>`: the row lands only if the guard still holds when the batch runs — what
+ * `programPlan` decided, checked again inside the import's one transaction (re-review C R-2).
+ */
+function insertWhere<T extends typeof programs | typeof programBlocks>(wdb: Db, table: T, row: T["$inferInsert"], guard: SQL) {
+  const values = Object.entries(getTableColumns(table))
+    .filter(([, col]) => !col.shouldDisableInsert())
+    .map(([key, col]) => sql.param((row as Record<string, unknown>)[key] ?? null, col));
+  return wdb.insert(table as typeof programs).select(sql`select ${sql.join(values, sql`, `)} where ${guard}`);
+}
+
+/** The account still has no adaptive program (any status): the one rule under which the import makes one. */
+const noAdaptiveProgram = (wdb: Db, userId: string): SQL =>
+  notExists(wdb.select({ id: programs.id }).from(programs).where(and(eq(programs.userId, userId), eq(programs.kind, "adaptive"))));
+
+/** `programId` is still the account's one active adaptive program, with no block and no session done on its slots. */
+function mayTakeBlock(wdb: Db, userId: string, programId: string): SQL {
+  const active = and(eq(programs.userId, userId), eq(programs.kind, "adaptive"), eq(programs.status, "active"), isNull(programs.archivedAt));
+  return and(
+    exists(wdb.select({ id: programs.id }).from(programs).where(and(active, eq(programs.id, programId)))),
+    notExists(wdb.select({ id: programs.id }).from(programs).where(and(active, ne(programs.id, programId)))),
+    notExists(wdb.select({ id: programBlocks.id }).from(programBlocks).where(eq(programBlocks.programId, programId))),
+    notExists(
+      wdb
+        .select({ id: performedSessions.id })
+        .from(performedSessions)
+        .innerJoin(plannedWorkouts, eq(performedSessions.workoutId, plannedWorkouts.id))
+        .where(and(eq(performedSessions.userId, userId), eq(plannedWorkouts.planId, programId))),
+    ),
+  )!;
+}
+
 /** A stored weight list whose meaning depends on the unit in force: a weight in it has no unit after it (2d-R6). */
 function meansTheUnitInForce(value: unknown): boolean {
   if (typeof value !== "string") return false;
@@ -431,6 +479,8 @@ function meansTheUnitInForce(value: unknown): boolean {
 interface Plan {
   summary: ImportSummary;
   statements: (db: Db) => Promise<AtomicStatement[]>;
+  /** After the statements ran: the summary as it landed (a guarded program or block that did not land is `kept`). */
+  landed: (db: Db) => Promise<ImportSummary>;
 }
 
 async function alreadyImported(db: Db, userId: string, refs: readonly string[]): Promise<Set<string>> {
@@ -658,15 +708,17 @@ async function plan(db: Db, userId: string, raw: unknown, ctx: ImportCtx): Promi
   };
 
   const themeName = new Map(THEMES.map((t) => [t.id, t.name]));
+  // The program the file's block goes into: the one made here, or the athlete's (its row untouched); none when kept.
+  const createdId = firstImport && program.outcome === "created" ? newId() : null;
+  const programId: string | null = firstImport ? createdId ?? program.adoptInto : null;
+  const blockId = block && programId ? newId() : null;
   const statements = async (wdb: Db): Promise<AtomicStatement[]> => {
     const out: AtomicStatement[] = [];
     const now = ctx.now;
     if (firstImport) {
       const placeIds = new Map(placesToWrite.map((p) => [p.sourceId, newId()]));
       const defaultSource = placesToWrite.find((p) => p.sourceId === settings.location)?.sourceId ?? placesToWrite[0]?.sourceId ?? null;
-      // The program the file's block goes into: the one made here, or the athlete's (its row untouched); none when kept.
-      let programId: string | null = program.adoptInto;
-      if (program.outcome === "created") {
+      if (createdId) {
         const config: AdaptiveConfig = adaptiveConfigSchema.parse({
           weeklyGoal: goal,
           blockWeeks: clampInt(settings.blockWeeks, 4, 6, 5),
@@ -674,22 +726,19 @@ async function plan(db: Db, userId: string, raw: unknown, ctx: ImportCtx): Promi
           defaultLocationId: defaultSource ? placeIds.get(defaultSource)! : null,
           careProfiles: [PROFILE_ID],
         });
-        programId = newId();
-        out.push(
-          wdb.insert(programs).values({
-            id: programId, userId, kind: "adaptive", name: careLabel, status: "active", disciplines: ["yoga", "strength"],
-            startDate: null, endDate: null, raceDate: null, source: { app: APP, importedAt: now }, config,
-            createdAt: now, updatedAt: now, archivedAt: null,
-          }),
-        );
+        const row = {
+          id: createdId, userId, kind: "adaptive", name: careLabel, status: "active", disciplines: ["yoga", "strength"],
+          startDate: null, endDate: null, raceDate: null, source: { app: APP, importedAt: now }, config,
+          createdAt: now, updatedAt: now, archivedAt: null,
+        };
+        out.push(insertWhere(wdb, programs, row, noAdaptiveProgram(wdb, userId)));
       }
-      if (block && programId) {
-        out.push(
-          wdb.insert(programBlocks).values({
-            id: newId(), programId, number: block.number, kind: "core_block", startDate: block.startedAt, weeks: block.weeks,
-            intent: block.intent, createdAt: now, updatedAt: now,
-          }),
-        );
+      if (block && programId && blockId) {
+        const row = {
+          id: blockId, programId, number: block.number, kind: "core_block", startDate: block.startedAt, weeks: block.weeks,
+          intent: block.intent, createdAt: now, updatedAt: now,
+        };
+        out.push(insertWhere(wdb, programBlocks, row, mayTakeBlock(wdb, userId, programId)).onConflictDoNothing());
       }
       const placeRows = placesToWrite.map((p) => ({
         id: placeIds.get(p.sourceId)!, userId, name: p.name, equipment: p.equipment, implements: p.lists,
@@ -778,7 +827,22 @@ async function plan(db: Db, userId: string, raw: unknown, ctx: ImportCtx): Promi
     for (const batch of insertBatches(activityRows)) out.push(wdb.insert(activities).values(batch));
     return out;
   };
-  return { summary, statements };
+
+  const landed = async (rdb: Db): Promise<ImportSummary> => {
+    if (!createdId && !blockId) return summary;
+    const programIn = !createdId || (await rdb.select({ id: programs.id }).from(programs).where(eq(programs.id, createdId)).limit(1)).length > 0;
+    const blockIn = !blockId || (await rdb.select({ id: programBlocks.id }).from(programBlocks).where(eq(programBlocks.id, blockId)).limit(1)).length > 0;
+    if (programIn && blockIn) return summary;
+    // Something the plan did not see landed first (a build, a program made in the app): the guarded writes held back.
+    const outcome: ProgramOutcome = createdId ? (programIn ? "created" : "kept") : blockIn ? "adopted" : "kept";
+    const name = outcome === "kept" ? (await programPlan(rdb, userId, { first: false, hasBlock: false, careLabel })).name : summary.program.name;
+    return {
+      ...summary,
+      program: { outcome, name },
+      written: { ...summary.written, program: programIn ? summary.written.program : 0, block: blockIn ? summary.written.block : 0 },
+    };
+  };
+  return { summary, statements, landed };
 }
 
 /**
@@ -799,7 +863,7 @@ export async function importStandalone(db: Db, userId: string, raw: unknown, ctx
     if (Object.values(locked.summary.written).every((n) => n === 0)) return locked.summary;
     if (await restoreInProgress(db, userId)) throw new RestoreInProgressError();
     await runAtomically(db, await locked.statements(db));
-    return locked.summary;
+    return await locked.landed(db);
   } finally {
     await releaseUserLock(db, userId, LOCK, token);
   }

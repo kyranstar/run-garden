@@ -3,6 +3,7 @@
  * `/api/conditions` — the day's condition check (the Today chip).
  *
  *   GET    /api/sessions/:workoutId          the slot, its current build (or none), its day's checks, the lock
+ *   GET    /api/sessions/:workoutId/state    {workoutId, contentState}: the slot's state alone (Today's Continue check)
  *   GET    /api/sessions/:workoutId/current  {buildId, current, locked}: is that build still the day's? (no build made)
  *   GET    /api/sessions/:workoutId/review-basis  what the review reads of the history, fetched at Start (a read)
  *   POST   /api/sessions/:workoutId/build    {checks?, overrides?, swaps?} → build, or the stored build when the
@@ -37,6 +38,7 @@ import { loadPreferences, syncCalendar } from "../services/calendar-sync.js";
 import {
   buildSessionOutcome,
   loadSession,
+  loadSessionState,
   NotBuiltError,
   NotTodayError,
   PerformedExistsError,
@@ -127,6 +129,15 @@ sessionRoutes.get("/:workoutId", async (c) => {
   const prefs = await loadPreferences(db, userId);
   try {
     return c.json(await withWatch(c, await loadSession(db, userId, c.req.param("workoutId"), todayInZone(prefs.timezone))));
+  } catch (e) {
+    return refusal(c, e);
+  }
+});
+
+/** The slot's content state alone: Today's check before Continue on a session left in progress (ruling 2b-R18). */
+sessionRoutes.get("/:workoutId/state", async (c) => {
+  try {
+    return c.json(await loadSessionState(c.get("db"), c.get("userId"), c.req.param("workoutId")));
   } catch (e) {
     return refusal(c, e);
   }

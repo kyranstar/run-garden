@@ -28,6 +28,7 @@ import { loadPreferences, savePreferences } from "../src/services/calendar-sync.
 import { importRoutes } from "../src/routes/imports.js";
 import { createSession, SESSION_COOKIE } from "../src/auth/sessions.js";
 import { isWrite, makeTestDb, makeTestUser, mountRoutes } from "./helpers.js";
+import { exportAll, restoreAll } from "./restore-driver.js";
 import { backup, entry, history, kg, lb, v1Session, v2Session } from "./fixtures/standalone-backup.js";
 import { ORACLE_CASE_TODAY, oracleCaseBackup, oracleCaseSessions, toolOutputs } from "./fixtures/standalone-oracle-case.js";
 
@@ -40,8 +41,23 @@ vi.mock("../src/services/calendar-sync.js", async (importOriginal) => ({
     return {};
   }),
 }));
+/** Runs once, just before the import's one batch — after it planned under its lock: what lands meanwhile (re-review C R-2). */
+const race = vi.hoisted(() => ({ before: null as null | (() => Promise<unknown>) }));
+vi.mock("../src/services/db.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../src/services/db.js")>();
+  return {
+    ...actual,
+    runAtomically: async (...args: Parameters<typeof actual.runAtomically>) => {
+      const hook = race.before;
+      race.before = null;
+      await hook?.();
+      return actual.runAtomically(...args);
+    },
+  };
+});
 afterEach(() => {
   vi.useRealTimers();
+  race.before = null;
 });
 
 const {
@@ -360,6 +376,49 @@ describe("the first import", () => {
   });
 });
 
+// ── Re-review C R-1: "the first import happened" comes back with a restore ─────────────────────────────────────────
+
+describe("after an account restore (re-review C R-1)", () => {
+  const kgTool = () => backup(history(), { settings: { unit: "kg", weeklyGoal: 3 } });
+
+  it("of a backup made after the import: the next import is not a first one, and the settings stay as the athlete left them", async () => {
+    const first = await run(kgTool());
+    expect(first).toMatchObject({ firstImport: true, weightUnit: { before: "lb", after: "kg" } });
+    // The athlete sets their unit back and clears the wishlist the import brought.
+    await savePreferences(db, userId, { ...(await loadPreferences(db, userId)), weightUnit: "lb", equipmentWishlist: [] });
+    const file = await exportAll(db, userId);
+    await restoreAll(db, userId, file);
+    // A restore never brings provider cursors back, so the first-import marker is gone.
+    expect(await db.$count(schema.providerCursorState)).toBe(0);
+    const before = await snapshot();
+
+    statements.length = 0;
+    const again = await run(kgTool(), { now: LATER });
+    expect(again.firstImport).toBe(false);
+    expect(again.written).toMatchObject({ sessions: 0, preferences: 0, places: 0, prefs: 0, condition: 0, block: 0 });
+    expect(again.weightUnit).toEqual({ before: "lb", after: "lb" });
+    expect(statements.filter(isWrite)).toEqual([]);
+    expect(await snapshot()).toEqual(before);
+    expect(await loadPreferences(db, userId)).toMatchObject({ weightUnit: "lb", equipmentWishlist: [] });
+  });
+
+  it("of a backup from before any import: the next import is a first one again", async () => {
+    // A session of the athlete's own (not imported), and another account that has imported: neither counts.
+    await db.insert(performedSessions).values({
+      id: "ps-watch", userId, workoutId: null, activityId: null, buildId: null, source: "watch", sourceRef: "lbl-1",
+      localDate: "2026-09-28", seconds: 1500, completed: true, payloadHash: "h", createdAt: NOW, updatedAt: NOW,
+    });
+    const other = (await makeTestUser(db)).userId;
+    await importStandalone(db, other, kgTool(), { today: TODAY, now: NOW, timezone: prefs.timezone, dryRun: false });
+    const file = await exportAll(db, userId);
+    await run(kgTool());
+    await restoreAll(db, userId, file);
+    expect((await db.select().from(performedSessions).where(eq(performedSessions.userId, userId))).map((s) => s.source)).toEqual(["watch"]);
+    const again = await run(kgTool(), { now: LATER });
+    expect(again).toMatchObject({ firstImport: true, weightUnit: { before: "lb", after: "kg" }, written: { sessions: 18, preferences: 1 } });
+  });
+});
+
 // ── Ruling 2d-R6: the tool's weight unit only where nothing here already means the account's ─────────────────────
 
 describe("the weight unit on a first import (ruling 2d-R6)", () => {
@@ -494,6 +553,34 @@ describe("an account that already has a program (ruling 2d-R5)", () => {
     expect(after.blocks).toEqual([]);
   });
 
+  it("a session done off the program (a watch lift on another plan's row) does not stop the program taking the block (re-review C R-3)", async () => {
+    const id = await appProgram();
+    await db.insert(plannedWorkouts).values({
+      id: "coach-lift-1", userId, planId: "coach-plan", sourceWorkoutId: "coach-lift-1", title: "Lift", category: "strength", sport: "strength",
+      originalPlanDate: "2026-09-28", lastVerifiedCorosDate: "", effectiveDate: "2026-09-28", effectiveTime: "18:00",
+      sourceContentFingerprint: "coach", calendarBlockDurationSeconds: 1800, fallbackEstimatedDurationSeconds: 1800,
+      corosSyncState: "calendar_only", completionState: "completed", origin: "coach", contentState: null, createdAt: NOW, updatedAt: NOW,
+    });
+    await db.insert(performedSessions).values({
+      id: "ps-watch", userId, workoutId: "coach-lift-1", activityId: null, buildId: null, source: "watch", sourceRef: "lbl-1",
+      localDate: "2026-09-28", seconds: 1500, completed: true, payloadHash: "h", createdAt: NOW, updatedAt: NOW,
+    });
+    const summary = await run(backup(history()));
+    expect(summary.program).toEqual({ outcome: "adopted", name: "Mornings" });
+    expect((await db.select().from(programBlocks)).map((b) => [b.programId, b.number])).toEqual([[id, 2]]);
+  });
+
+  it("an active program and an older retired one: the block goes into the active one (re-review C R-3)", async () => {
+    const old = await createAdaptiveProgram(db, userId, { name: "Old", config: adaptiveConfigSchema.parse({ weeklyGoal: 2 }) }, "2026-09-01T12:00:00.000Z");
+    await updateProgram(db, userId, old, { status: "retired" }, "2026-09-02T12:00:00.000Z");
+    const id = await appProgram();
+    const oldRow = await db.select().from(programs).where(eq(programs.id, old));
+    const summary = await run(backup(history()));
+    expect(summary.program).toEqual({ outcome: "adopted", name: "Mornings" });
+    expect((await db.select().from(programBlocks)).map((b) => [b.programId, b.number])).toEqual([[id, 2]]);
+    expect(await db.select().from(programs).where(eq(programs.id, old))).toEqual(oldRow);
+  });
+
   it("an account with no program gets the tool's, as before", async () => {
     const summary = await run(backup(history()));
     expect(summary.program).toEqual({ outcome: "created", name: TMJ.care!.block.label });
@@ -549,6 +636,74 @@ describe("an account that already has a program (ruling 2d-R5)", () => {
     expect(later.program.outcome).toBe("kept");
     expect(later.written).toMatchObject({ sessions: 1, program: 0, block: 0 });
     expect(await db.select().from(programBlocks)).toEqual([]);
+  });
+
+  describe("checked again as the import writes (re-review C R-2)", () => {
+    const ownBlock = (programId: string, number: number) =>
+      db.insert(programBlocks).values({
+        id: "blk-own", programId, number, kind: "core_block", startDate: "2026-10-09", weeks: 5,
+        intent: { core: { squat: "boxSquat" }, rotations: [] }, createdAt: NOW, updatedAt: NOW,
+      });
+
+    it.each([1, 2])("a block the app starts meanwhile (block %i) stays the only one, and the import says kept", async (number) => {
+      const id = await appProgram();
+      race.before = () => ownBlock(id, number);
+      const summary = await run(backup(history()));
+      expect(summary.program).toEqual({ outcome: "kept", name: "Mornings" });
+      expect(summary.written).toMatchObject({ program: 0, block: 0, places: 3, preferences: 1 });
+      expect((await db.select().from(programBlocks)).map((b) => [b.id, b.number])).toEqual([["blk-own", number]]);
+      // The rest of the first import still lands.
+      expect(await db.$count(performedSessions)).toBe(18);
+      expect(await db.$count(locations)).toBe(3);
+    });
+
+    it("a session done on one of its slots meanwhile: the program takes no block", async () => {
+      const id = await appProgram();
+      const [slot] = await db.select().from(plannedWorkouts).where(eq(plannedWorkouts.planId, id)).limit(1);
+      race.before = () =>
+        db.insert(performedSessions).values({
+          id: "ps-watch", userId, workoutId: slot!.id, activityId: null, buildId: null, source: "watch", sourceRef: "lbl-1",
+          localDate: slot!.effectiveDate, seconds: 1500, completed: true, payloadHash: "h", createdAt: NOW, updatedAt: NOW,
+        });
+      const summary = await run(backup(history()));
+      expect(summary.program).toEqual({ outcome: "kept", name: "Mornings" });
+      expect(summary.written).toMatchObject({ program: 0, block: 0 });
+      expect(await db.select().from(programBlocks)).toEqual([]);
+    });
+
+    it("the program retired meanwhile: it takes no block", async () => {
+      const id = await appProgram();
+      race.before = () => updateProgram(db, userId, id, { status: "retired" }, NOW);
+      const summary = await run(backup(history()));
+      expect(summary.program).toEqual({ outcome: "kept", name: null });
+      expect(summary.written).toMatchObject({ program: 0, block: 0 });
+      expect(await db.select().from(programBlocks)).toEqual([]);
+    });
+
+    it("a second active program made meanwhile: neither takes the block", async () => {
+      await appProgram();
+      race.before = () => createAdaptiveProgram(db, userId, { name: "Evenings", config: adaptiveConfigSchema.parse({ weeklyGoal: 3 }) }, NOW);
+      const summary = await run(backup(history()));
+      expect(summary.program).toEqual({ outcome: "kept", name: null });
+      expect(summary.written).toMatchObject({ program: 0, block: 0 });
+      expect(await db.select().from(programBlocks)).toEqual([]);
+    });
+
+    it("an account with no program, one made in the app meanwhile: no second program, no block", async () => {
+      race.before = () => createAdaptiveProgram(db, userId, { name: "Mornings", config: adaptiveConfigSchema.parse({ weeklyGoal: 3 }) }, NOW);
+      const summary = await run(backup(history()));
+      expect(summary.program).toEqual({ outcome: "kept", name: "Mornings" });
+      expect(summary.written).toMatchObject({ program: 0, block: 0, places: 3 });
+      expect((await db.select().from(programs)).map((p) => [p.name, p.source])).toEqual([["Mornings", null]]);
+      expect(await db.select().from(programBlocks)).toEqual([]);
+    });
+
+    it("nothing meanwhile: the guarded writes land as planned", async () => {
+      const id = await appProgram();
+      race.before = async () => undefined;
+      expect((await run(backup(history()))).program.outcome).toBe("adopted");
+      expect((await db.select().from(programBlocks)).map((b) => [b.programId, b.number])).toEqual([[id, 2]]);
+    });
   });
 
   it("a first import with no session in it still counts: the next one brings no settings again", async () => {

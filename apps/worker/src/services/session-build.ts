@@ -707,6 +707,11 @@ async function loadExtras(db: Db, userId: string, row: SlotRow): Promise<SheetEx
   }
 }
 
+const contentStateOf = (row: SlotRow): SessionResponse["contentState"] => {
+  const state = row.contentState;
+  return state === "built" || state === "started" || state === "done" ? state : "outline";
+};
+
 function respond(
   row: SlotRow,
   builds: readonly BuildRow[],
@@ -717,11 +722,10 @@ function respond(
 ): SessionResponse {
   const current = currentBuild(row, builds, today);
   const shown = current ? toPayload(current, hidden) : null;
-  const state = row.contentState;
   return {
     workoutId: row.id,
     date: row.effectiveDate,
-    contentState: state === "built" || state === "started" || state === "done" ? state : "outline",
+    contentState: contentStateOf(row),
     locked: lockedOf(row, builds),
     checks,
     build: shown?.build ?? null,
@@ -742,6 +746,16 @@ async function readResponse(db: Db, userId: string, row: SlotRow, today: string,
 /** `GET /api/sessions/:workoutId`: the slot, its current build (or none), its day's checks, and the lock. */
 export async function loadSession(db: Db, userId: string, workoutId: string, today: string): Promise<SessionResponse> {
   return readResponse(db, userId, await loadSlot(db, userId, workoutId), today);
+}
+
+/**
+ * `GET /api/sessions/:workoutId/state`: the slot's content state alone — Today's check before it offers Continue on a
+ * session left in progress (ruling 2b-R18). One read of the slot row: never its builds, each a whole session kept
+ * (re-review 2b-B2 M-3).
+ */
+export async function loadSessionState(db: Db, userId: string, workoutId: string): Promise<Pick<SessionResponse, "workoutId" | "contentState">> {
+  const row = await loadSlot(db, userId, workoutId);
+  return { workoutId: row.id, contentState: contentStateOf(row) };
 }
 
 // ── Writes ────────────────────────────────────────────────────────────────────────────────────────────────────

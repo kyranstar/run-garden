@@ -61,7 +61,8 @@ export type SlotState = SessionDto["contentState"];
 /** How long the line waits for the server before it leaves Continue to the device. */
 export const SLOT_CHECK_WAIT_MS = 3_000;
 
-const askServer = async (workoutId: string): Promise<SlotState> => (await api.getSession(workoutId)).contentState;
+/** The slot's state alone: never the whole session, its build and view (re-review 2b-B2 M-3). */
+const askServer = async (workoutId: string): Promise<SlotState> => (await api.getSessionState(workoutId)).contentState;
 
 /** What the server has each slot as — null where it can't say within `waitMs` (offline, slow, the slot gone). */
 export async function slotStates(
@@ -96,7 +97,7 @@ export function SessionsInProgress({
   /** The signed-in account; nothing is shown before it is known. */
   userId: string | null;
   db?: () => Promise<OfflineDb>;
-  /** The slot as the server has it (`GET /api/sessions/:id`). */
+  /** The slot as the server has it (`GET /api/sessions/:id/state`). */
   slotState?: (workoutId: string) => Promise<SlotState>;
   checkWaitMs?: number;
 }) {
