@@ -553,6 +553,34 @@ describe("an account that already has a program (ruling 2d-R5)", () => {
     expect(after.blocks).toEqual([]);
   });
 
+  it("a session done off the program (a watch lift on another plan's row) does not stop the program taking the block (re-review C R-3)", async () => {
+    const id = await appProgram();
+    await db.insert(plannedWorkouts).values({
+      id: "coach-lift-1", userId, planId: "coach-plan", sourceWorkoutId: "coach-lift-1", title: "Lift", category: "strength", sport: "strength",
+      originalPlanDate: "2026-09-28", lastVerifiedCorosDate: "", effectiveDate: "2026-09-28", effectiveTime: "18:00",
+      sourceContentFingerprint: "coach", calendarBlockDurationSeconds: 1800, fallbackEstimatedDurationSeconds: 1800,
+      corosSyncState: "calendar_only", completionState: "completed", origin: "coach", contentState: null, createdAt: NOW, updatedAt: NOW,
+    });
+    await db.insert(performedSessions).values({
+      id: "ps-watch", userId, workoutId: "coach-lift-1", activityId: null, buildId: null, source: "watch", sourceRef: "lbl-1",
+      localDate: "2026-09-28", seconds: 1500, completed: true, payloadHash: "h", createdAt: NOW, updatedAt: NOW,
+    });
+    const summary = await run(backup(history()));
+    expect(summary.program).toEqual({ outcome: "adopted", name: "Mornings" });
+    expect((await db.select().from(programBlocks)).map((b) => [b.programId, b.number])).toEqual([[id, 2]]);
+  });
+
+  it("an active program and an older retired one: the block goes into the active one (re-review C R-3)", async () => {
+    const old = await createAdaptiveProgram(db, userId, { name: "Old", config: adaptiveConfigSchema.parse({ weeklyGoal: 2 }) }, "2026-09-01T12:00:00.000Z");
+    await updateProgram(db, userId, old, { status: "retired" }, "2026-09-02T12:00:00.000Z");
+    const id = await appProgram();
+    const oldRow = await db.select().from(programs).where(eq(programs.id, old));
+    const summary = await run(backup(history()));
+    expect(summary.program).toEqual({ outcome: "adopted", name: "Mornings" });
+    expect((await db.select().from(programBlocks)).map((b) => [b.programId, b.number])).toEqual([[id, 2]]);
+    expect(await db.select().from(programs).where(eq(programs.id, old))).toEqual(oldRow);
+  });
+
   it("an account with no program gets the tool's, as before", async () => {
     const summary = await run(backup(history()));
     expect(summary.program).toEqual({ outcome: "created", name: TMJ.care!.block.label });
