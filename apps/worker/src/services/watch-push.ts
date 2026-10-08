@@ -41,7 +41,7 @@ import type { Step } from "@rg/session-engine";
 import { watchPushEnabled, type Env } from "../env.js";
 import type { Db } from "./db.js";
 import { corosKeyOf } from "./coros-exercise-map.js";
-import { STAMP_SEPARATOR, stampName } from "./coros-stamp.js";
+import { freeStamp, STAMP_SEPARATOR, stampName, takenStampsOn } from "./coros-stamp.js";
 import { exerciseNameMap } from "./exercise-catalog.js";
 import {
   loadSession,
@@ -139,12 +139,11 @@ export function watchStepsFromBuild(build: BuildPayload, deps: WatchPlanDeps): W
  * sessions of one day, or a coach session of the same title, each get their own.
  */
 export function programStamp(programName: string, date: string, taken: ReadonlySet<string>): string {
-  for (let n = 1; ; n++) {
-    const suffix = n === 1 ? "" : ` (${n})`;
+  // The one chooser both lanes use (ruling 3-R12): only the name's cut is the program lane's own.
+  return freeStamp((suffix) => {
     const room = WATCH_STAMP_MAX - STAMP_SEPARATOR.length - date.length - suffix.length;
-    const stamp = `${stampName(cutAtWord(programName, room), date)}${suffix}`;
-    if (!taken.has(stamp)) return stamp;
-  }
+    return `${stampName(cutAtWord(programName, room), date)}${suffix}`;
+  }, taken);
 }
 
 // ── The service part ─────────────────────────────────────────────────────────────────────────────────────────
@@ -288,27 +287,12 @@ async function programNameOf(db: Db, row: WorkoutRow): Promise<string> {
   return program?.name?.trim() || row.title;
 }
 
-/** Every stamp this account has put (or is putting) on COROS for `date`, but `exceptJobId`'s own. */
-async function takenStamps(db: Db, userId: string, date: string, exceptJobId: string): Promise<Set<string>> {
-  const rows = await db
-    .select({ payload: corosWriteJobs.payload })
-    .from(corosWriteJobs)
-    .where(
-      and(
-        eq(corosWriteJobs.userId, userId),
-        inArray(corosWriteJobs.kind, [...STAMPING_JOB_KINDS]),
-        ne(corosWriteJobs.id, exceptJobId),
-        sql`json_extract(${corosWriteJobs.payload}, '$.happenDay') = ${date}`,
-      ),
-    );
-  return new Set(rows.map((r) => (r.payload as { name?: unknown } | null)?.name).filter((n): n is string => typeof n === "string"));
-}
-
 /** The push's payload for a build on its slot's day: the resolved steps and the day's free stamp. */
 async function pushPayloadFor(db: Db, userId: string, row: WorkoutRow, build: BuildPayload): Promise<{ payload: ProgramSessionPushJob; plan: WatchPlan; catalog: Map<string, string> }> {
   const { catalog, deps } = await planDeps(db);
   const plan = watchStepsFromBuild(build, deps);
-  const stamp = programStamp(await programNameOf(db, row), row.effectiveDate, await takenStamps(db, userId, row.effectiveDate, pushJobId(build.buildId)));
+  const taken = await takenStampsOn(db, userId, row.effectiveDate, { jobId: pushJobId(build.buildId) });
+  const stamp = programStamp(await programNameOf(db, row), row.effectiveDate, taken);
   const payload = {
     workoutId: row.id,
     buildId: build.buildId,

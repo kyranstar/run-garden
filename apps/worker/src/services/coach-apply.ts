@@ -30,7 +30,7 @@ import {
 import { runBlockRoles } from "@rg/coros";
 import { chunkIds, chunkedInsert, type Db } from "./db.js";
 import { separateDayCollisions, windowTimeFor } from "./day-placement.js";
-import { recordedStampFor, stampName } from "./coros-stamp.js";
+import { coachStamp, recordedStampFor, stampName, takenStampsOn } from "./coros-stamp.js";
 import { applyMove } from "./jobs.js";
 import { openIntentFor, recordIntent } from "./sync-intents.js";
 import {
@@ -437,6 +437,9 @@ export async function enqueueWatchCreate(
 ): Promise<string | null> {
   if (!watchPushable(session)) return null;
   const jobId = `${id}-push`;
+  // The stamp is unique per day across both lanes (ruling 3-R12): a second session of this title on this day — a
+  // coach add or a sent program session — already holds the base, so this one gets " (2)".
+  const name = coachStamp(session.title, date, await takenStampsOn(db, userId, date, { jobId }));
   {
     const insert = db
       .insert(corosWriteJobs)
@@ -456,7 +459,7 @@ export async function enqueueWatchCreate(
         payload: {
           workoutId: id,
           happenDay: date,
-          name: stampName(session.title, date),
+          name,
           session,
           ...(thresholdPaceSecPerKm ? { thresholdPaceSecPerKm } : {}),
         },
@@ -483,7 +486,7 @@ export async function enqueueWatchCreate(
             payload: {
               workoutId: id,
               happenDay: date,
-              name: stampName(session.title, date),
+              name,
               session,
               ...(thresholdPaceSecPerKm ? { thresholdPaceSecPerKm } : {}),
             },
@@ -747,6 +750,17 @@ export async function enqueueContentConvergence(
   }
 
   const jobId = `${v.workout.id}-content-${from}-${to}`;
+  // A coach-created session's new stamp comes from the one chooser (ruling 3-R12), its own row's jobs left out: a
+  // rewrite that keeps its title keeps the stamp it already carries, " (n)" included.
+  let name = v.session.title;
+  if (proof.kind === "stamp") {
+    const base = stampName(v.session.title, address.happenDay);
+    const own = proof.recordedName;
+    name =
+      own === base || (own.startsWith(base) && /^ \(\d+\)$/.test(own.slice(base.length)))
+        ? own
+        : coachStamp(v.session.title, address.happenDay, await takenStampsOn(db, v.userId, address.happenDay, { workoutId: v.workout.id }));
+  }
   const insert = db
     .insert(corosWriteJobs)
     .values({
@@ -772,10 +786,7 @@ export async function enqueueContentConvergence(
         // when the name genuinely EXTENDS the title, so `name === title` is
         // skipped and `unstampTitle` passes it straight through) and it makes
         // the watch read what the app reads, which is the point.
-        name:
-          proof.kind === "stamp"
-            ? stampName(v.session.title, address.happenDay)
-            : v.session.title,
+        name,
         ...(proof.kind === "stamp"
           ? { recordedName: proof.recordedName }
           : {
