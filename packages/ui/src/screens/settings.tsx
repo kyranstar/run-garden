@@ -581,6 +581,96 @@ function ImportNumbers({ oracle }: { oracle: ImportOracle }) {
   );
 }
 
+type ImportSummary = StandaloneImportSummaryDto;
+
+/** "1 session", "183 sessions". */
+const counted = (n: number, one: string, many = `${one}s`) => `${n.toLocaleString("en-US")} ${n === 1 ? one : many}`;
+
+/**
+ * A span of days with its year, oldest first (Audit C M-2): "Aug 3 – Sep 30, 2026"; across a new year both years,
+ * "Oct 6, 2025 – Sep 28, 2026"; one day, "Sep 28, 2026".
+ */
+function importSpan(a: string | null, b: string | null): string | null {
+  if (!a || !b) return null;
+  const [first, last] = a <= b ? [a, b] : [b, a];
+  const day = (d: string) => `${formatShortDate(d)}, ${d.slice(0, 4)}`;
+  if (first === last) return day(last);
+  return first.slice(0, 4) === last.slice(0, 4) ? `${formatShortDate(first)} – ${day(last)}` : `${day(first)} – ${day(last)}`;
+}
+
+/** Why the dry run (`read`) or the import was refused, in its own words (Audit C M-3). */
+function importRefusal(e: unknown, step: "read" | "import"): string {
+  const status = e instanceof ApiError ? e.status : null;
+  const body = (e instanceof ApiError ? e.body : null) as { error?: unknown; reason?: unknown } | null;
+  if (status === 422 && body?.reason === "newer_version") return "That backup is from a newer version of the standalone tool — Run Garden can't read it yet.";
+  if (status === 422) return "That file isn't a backup from the standalone tool.";
+  if (status === 423) return "A restore is running — import after it finishes.";
+  if (status === 503 && body?.error === "busy") return "Another import is running — try again in a moment.";
+  return step === "read" ? "Couldn't read that file — try again." : "Couldn't import that — try again.";
+}
+
+function SummaryRow({ title, note }: { title: string; note?: string | null }) {
+  return (
+    <div className="setting-row">
+      <div>
+        <b>{title}</b>
+        {note ? <small>{note}</small> : null}
+      </div>
+    </div>
+  );
+}
+
+/** What the import does to the program — one of ruling 2d-R5's three. */
+function ProgramOutcomeRow({ s }: { s: ImportSummary }) {
+  const block = s.block ? `block ${s.block.number} · week ${s.block.week}` : null;
+  const lifts = counted(s.oracle.bestByCoreLift.length, "core lift");
+  const name = s.program.name;
+  if (s.program.outcome === "created") {
+    return <SummaryRow title={`Makes the program ${name ?? ""}`.trim()} note={block ? `${block[0]!.toUpperCase()}${block.slice(1)} · ${lifts}` : null} />;
+  }
+  if (s.program.outcome === "adopted") return <SummaryRow title={`${name ?? "Your program"} takes ${block ?? "the file's block"}`} note={`${lifts} · its own settings stay`} />;
+  return (
+    <SummaryRow
+      title={name ? `Your program ${name} stays as it is` : "Your programs stay as they are"}
+      note={s.block ? "The file's block isn't used" : null}
+    />
+  );
+}
+
+/** The weight unit after the import (ruling 2d-R6): the tool's, or the account's kept. */
+function WeightUnitRow({ s }: { s: ImportSummary }) {
+  const { before, after } = s.weightUnit;
+  if (after !== before) return <SummaryRow title={`Weights switch to ${after}`} note="The tool's setting" />;
+  if (s.oracle.unit !== before) return <SummaryRow title={`Weights stay in ${before}`} note="Your setting here" />;
+  return <SummaryRow title={`Weights in ${before}`} note="As in the tool" />;
+}
+
+/**
+ * The summary sheet (mocks §7): only what the import will write (Audit C M-1) — the new sessions and their span, and
+ * on a first import what happens to the program, the places and ratings it adds and the weight unit — and that
+ * history stays out of the garden.
+ */
+function ImportSummaryRows({ s }: { s: ImportSummary }) {
+  const added = s.firstImport ? counted(s.sessions.added, "session") : counted(s.sessions.added, "new session");
+  const settings = [s.places.length ? counted(s.places.length, "place") : null, s.ratings ? counted(s.ratings, "rating") : null].filter(Boolean);
+  return (
+    <div className="import-summary">
+      <SummaryRow title={added} note={importSpan(s.sessions.addedFirstDate, s.sessions.addedLastDate)} />
+      {s.firstImport ? (
+        <>
+          <ProgramOutcomeRow s={s} />
+          {settings.length ? <SummaryRow title={settings.join(" · ")} note={s.places.length ? s.places.join(", ") : null} /> : null}
+          <WeightUnitRow s={s} />
+        </>
+      ) : (
+        <SummaryRow title="Nothing else changes" note="Program, places and settings stay as they are" />
+      )}
+      <SummaryRow title="History stays out of the garden" note="Activity and records show it" />
+      {s.sessions.invalid.length ? <small className="faint">{`${counted(s.sessions.invalid.length, "session")} skipped`}</small> : null}
+    </div>
+  );
+}
+
 /**
  * Import (spec §2c; mocks §7; Phase 2c Task 5): the standalone tool's backup — a dry run first and its summary (what
  * comes in; history stays out of the garden), then Import, then the tool's own numbers to compare with its Progress
@@ -625,7 +715,6 @@ export function ImportSection() {
   // A backup already imported: nothing would be written, so its numbers show at once.
   const nothingNew = !!dryRun.data && dryRun.data.sessions.added === 0 && !dryRun.data.firstImport;
   const finished = run.isSuccess || nothingNew;
-  const span = s?.sessions.firstDate && s.sessions.lastDate ? `${formatShortDate(s.sessions.firstDate)} – ${formatShortDate(s.sessions.lastDate)}` : null;
 
   return (
     <Card title="Import" className="settings-new">
@@ -658,51 +747,20 @@ export function ImportSection() {
           }
         >
           {dryRun.isPending ? <Spinner label="Reading the backup" /> : null}
-          {dryRun.isError ? <Banner kind="warn">That file isn't a backup from the standalone tool.</Banner> : null}
-          {run.isError ? <Banner kind="warn">Couldn't import that — try again.</Banner> : null}
+          {dryRun.isError ? <Banner kind="warn">{importRefusal(dryRun.error, "read")}</Banner> : null}
+          {run.isError ? <Banner kind="warn">{importRefusal(run.error, "import")}</Banner> : null}
           {s && finished ? (
             <div className="import-result">
-              <div className="setting-row">
-                <div>
-                  <b>{run.isSuccess ? `${s.sessions.added} sessions imported` : "Nothing new to import"}</b>
-                  {span ? <small>{span}</small> : null}
-                </div>
-              </div>
-              {s.sessions.invalid.length ? <small className="faint">{`${s.sessions.invalid.length} sessions skipped`}</small> : null}
+              {run.isSuccess ? (
+                <SummaryRow title={`${counted(s.sessions.added, "session")} imported`} note={importSpan(s.sessions.addedFirstDate, s.sessions.addedLastDate)} />
+              ) : (
+                <SummaryRow title="Nothing new to import" note={importSpan(s.sessions.firstDate, s.sessions.lastDate)} />
+              )}
+              {s.sessions.invalid.length ? <small className="faint">{`${counted(s.sessions.invalid.length, "session")} skipped`}</small> : null}
               <ImportNumbers oracle={s.oracle} />
             </div>
           ) : null}
-          {s && !finished ? (
-            <div className="import-summary">
-              <div className="setting-row">
-                <div>
-                  <b>{`${s.sessions.added} sessions`}</b>
-                  {span ? <small>{span}</small> : null}
-                </div>
-              </div>
-              {s.block ? (
-                <div className="setting-row">
-                  <div>
-                    <b>{`Block ${s.block.number} · week ${s.block.week}`}</b>
-                    <small>{`${s.oracle.bestByCoreLift.length} core lifts`}</small>
-                  </div>
-                </div>
-              ) : null}
-              <div className="setting-row">
-                <div>
-                  <b>{`${s.places.length} places · ${s.ratings} ratings`}</b>
-                  {s.places.length ? <small>{s.places.join(", ")}</small> : null}
-                </div>
-              </div>
-              <div className="setting-row">
-                <div>
-                  <b>History stays out of the garden</b>
-                  <small>Activity and records show it</small>
-                </div>
-              </div>
-              {s.sessions.invalid.length ? <small className="faint">{`${s.sessions.invalid.length} sessions skipped`}</small> : null}
-            </div>
-          ) : null}
+          {s && !finished ? <ImportSummaryRows s={s} /> : null}
         </Sheet>
       ) : null}
     </Card>
