@@ -9,7 +9,8 @@ import { describe, expect, it } from "vitest";
 import { WATCH_MAX_STEPS, WATCH_NAME_MAX, WATCH_OVERVIEW_MAX, WATCH_STAMP_MAX, type Weight } from "@rg/domain";
 import type { Step } from "@rg/session-engine";
 import type { BuildPayload, ExerciseSlice } from "../src/services/session-build.js";
-import { cutAtWord, programStamp, watchStepsFromBuild, type WatchPlanDeps } from "../src/services/watch-push.js";
+import { EXERCISES as LIBRARY } from "@rg/exercise-library";
+import { cutAtWord, programStamp, watchNameOf, watchStepsFromBuild, type WatchPlanDeps } from "../src/services/watch-push.js";
 
 const GOBLET_CATALOG_ID = "4258276155475001301";
 
@@ -173,6 +174,61 @@ describe("watchStepsFromBuild — a one-sided set is a Left/Right pair (audit W-
     expect(watchStepsFromBuild(build(sets(WATCH_MAX_STEPS / 2)), deps).steps).toHaveLength(WATCH_MAX_STEPS);
     expect(watchStepsFromBuild(build(sets(WATCH_MAX_STEPS / 2)), deps).refusal).toBeNull();
     expect(watchStepsFromBuild(build(sets(WATCH_MAX_STEPS / 2 + 1)), deps).refusal).toBe("too_long");
+  });
+});
+
+describe("watchStepsFromBuild — a long name, and one watch name per move (audit W-6)", () => {
+  const CUE = "Let the forehead rest.";
+  const MORE: Record<string, ExerciseSlice> = {
+    ...EXERCISES,
+    childHands: slice("childHands", "Child's pose · forehead on stacked hands", CUE),
+    childBlock: slice("childBlock", "Child's pose · forehead on block", CUE),
+    hamBridge: slice("hamBridge", "Hamstring bridge with heels on a chair", "Hips level."),
+    shake: slice("shake", "Supine hip shake · hands under sacrum", "Tiny movements.", "unilateral"),
+    gobletFree: slice("gobletFree", "Goblet Squat", "Elbows inside the knees."), // free text named like COROS's T1301
+  };
+  const namesOf = (b: BuildPayload) => watchStepsFromBuild(b, deps).steps.map((s) => s.name);
+
+  it("a name over 30 with ' · ' goes as the move; its qualifier leads the overview, after the side", () => {
+    const plan = watchStepsFromBuild(
+      build([step({ kind: "timed", exerciseId: "childHands", seconds: 60 }), step({ exerciseId: "shake", target: { reps: 10 } })], MORE),
+      deps,
+    );
+    expect(plan.steps.map((s) => [s.name, s.overview])).toEqual([
+      ["Child's pose", `forehead on stacked hands · ${CUE}`],
+      ["Supine hip shake", "left side · hands under sacrum · Tiny movements."],
+      ["Supine hip shake", "right side · hands under sacrum · Tiny movements."],
+    ]);
+  });
+
+  it("any other long name is cut at a word, never ending on a word like 'on' or 'a'", () => {
+    expect(namesOf(build([step({ exerciseId: "hamBridge", target: { reps: 8 } })], MORE))).toEqual(["Hamstring bridge with heels"]);
+  });
+
+  it("two different moves never share a watch name: the later one gets (2); a move keeps its one name all session", () => {
+    const sets = ["childHands", "childBlock", "childHands", "childBlock"].map((id) => step({ kind: "timed", exerciseId: id, seconds: 60 }));
+    expect(namesOf(build(sets, MORE))).toEqual(["Child's pose", "Child's pose (2)", "Child's pose", "Child's pose (2)"]);
+  });
+
+  it("a free-text name a catalog step of the session already shows (its English name) gets (2), whatever comes first", () => {
+    const steps = [step({ exerciseId: "gobletFree", target: { reps: 8 } }), step({ target: { reps: 8 } })];
+    expect(namesOf(build(steps, MORE))).toEqual(["Goblet Squat (2)", "T1301"]);
+  });
+
+  it("the shipped library: each move's watch name fits, never dangles, and a build of every move names each once", () => {
+    for (const e of LIBRARY) {
+      const { name, qualifier } = watchNameOf(e.name);
+      expect(name.length, e.id).toBeLessThanOrEqual(WATCH_NAME_MAX);
+      expect(name, e.id).not.toMatch(/\s(a|an|and|at|by|for|from|in|of|on|or|the|to|under|with)$/i);
+      if (qualifier) expect(`${name} · ${qualifier}`, e.id).toBe(e.name);
+    }
+    const every = build(
+      LIBRARY.map((e) => step({ exerciseId: e.id, target: { reps: 5 } })),
+      Object.fromEntries(LIBRARY.map((e) => [e.id, e as unknown as ExerciseSlice])),
+    );
+    const names = watchStepsFromBuild(every, { catalogIdByKey: new Map(), keyOf: () => null }).steps.filter((s) => s.side !== "right").map((s) => s.name.toLowerCase());
+    expect(names).toHaveLength(LIBRARY.length);
+    expect(new Set(names).size).toBe(LIBRARY.length);
   });
 });
 

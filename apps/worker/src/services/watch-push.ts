@@ -126,9 +126,61 @@ function targetOf(s: Step): ProgramWatchStep["target"] {
   return { kind: "open" };
 }
 
-function overviewOf(side: Step["side"], cue: string | undefined): string {
+/** The side, then the qualifier a long name gave up, then the first cue — at most WATCH_OVERVIEW_MAX characters. */
+function overviewOf(side: Step["side"], qualifier: string | null, cue: string | undefined): string {
   const sideText = side === "Left" ? "left side" : side === "Right" ? "right side" : null;
-  return cutAtWord([sideText, cue?.trim()].filter((p): p is string => Boolean(p)).join(" · "), WATCH_OVERVIEW_MAX);
+  return cutAtWord([sideText, qualifier, cue?.trim()].filter((p): p is string => Boolean(p)).join(QUALIFIER), WATCH_OVERVIEW_MAX);
+}
+
+/** How a library name sets a variant apart: "Child's pose · forehead on block". */
+const QUALIFIER = " · ";
+/** A word a cut name must not end on: "Child's pose · forehead on" reads as a sentence cut off. */
+const DANGLING_WORD = /\s+(?:a|an|and|at|by|for|from|in|of|on|or|the|to|under|with)$/iu;
+const TRAILING_SEPARATOR = /[\s·,;:—–-]+$/u;
+
+/**
+ * A free-text move's name as the watch shows it, at most WATCH_NAME_MAX characters (ruling 3-R6, audit W-6). A longer
+ * "<move> · <qualifier>" goes as the move, its qualifier leading the overview; any other long name is cut at a word,
+ * never ending on a word like "on" or "with".
+ */
+export function watchNameOf(libraryName: string): { name: string; qualifier: string | null } {
+  const t = libraryName.trim();
+  if (t.length <= WATCH_NAME_MAX) return { name: t, qualifier: null };
+  const at = t.indexOf(QUALIFIER);
+  const head = at > 0 ? t.slice(0, at).trim() : "";
+  if (head && head.length <= WATCH_NAME_MAX) return { name: head, qualifier: t.slice(at + QUALIFIER.length).trim() || null };
+  let name = cutAtWord(t, WATCH_NAME_MAX);
+  while (DANGLING_WORD.test(name)) name = name.replace(DANGLING_WORD, "").replace(TRAILING_SEPARATOR, "");
+  return { name, qualifier: null };
+}
+
+/**
+ * Each free-text move's watch name and qualifier. Two different moves never share a watch name within one program
+ * (audit W-6): a name a catalog step of the session already shows (its English name), or an earlier free-text move
+ * holds (by first appearance in the build), gets " (2)", " (3)", cut to fit. The same build gives the same names.
+ */
+function freeTextNames(build: BuildPayload, deps: WatchPlanDeps): Map<string, { name: string; qualifier: string | null }> {
+  const catalogKey = (id: string): string | null => {
+    const key = deps.keyOf(id);
+    return key && deps.catalogIdByKey.has(key) ? key : null;
+  };
+  const moves = [...new Set(build.steps.flatMap((s) => (s.kind !== "rest" && s.exerciseId && build.exercises[s.exerciseId] ? [s.exerciseId] : [])))];
+  const taken = new Set(
+    moves.flatMap((id) => {
+      const key = catalogKey(id);
+      return key ? [(COROS_EXERCISE_NAMES[key] ?? key).toLowerCase()] : [];
+    }),
+  );
+  const out = new Map<string, { name: string; qualifier: string | null }>();
+  for (const id of moves) {
+    if (catalogKey(id)) continue;
+    const { name, qualifier } = watchNameOf(build.exercises[id]!.name);
+    let unique = name;
+    for (let n = 2; taken.has(unique.toLowerCase()); n++) unique = `${cutAtWord(name, WATCH_NAME_MAX - ` (${n})`.length)} (${n})`;
+    taken.add(unique.toLowerCase());
+    out.set(id, { name: unique, qualifier });
+  }
+  return out;
 }
 
 /**
@@ -144,6 +196,7 @@ function sidesOf(s: Step, record: { laterality: string }): Array<Step["side"]> {
 /** The build's steps as the watch will hold them. Pure: the same build gives the same steps. */
 export function watchStepsFromBuild(build: BuildPayload, deps: WatchPlanDeps): WatchPlan {
   const steps: ProgramWatchStep[] = [];
+  const names = freeTextNames(build, deps);
   for (const s of build.steps) {
     if (s.kind === "rest") {
       const prev = steps.at(-1);
@@ -155,14 +208,15 @@ export function watchStepsFromBuild(build: BuildPayload, deps: WatchPlanDeps): W
     if (!record) continue;
     const key = deps.keyOf(s.exerciseId);
     const originId = key ? deps.catalogIdByKey.get(key) : undefined;
+    const free = originId ? null : names.get(s.exerciseId)!;
     for (const side of sidesOf(s, record)) {
       steps.push({
         originId: originId ?? FREE_TEXT_ORIGIN_ID,
-        name: originId ? key! : cutAtWord(record.name, WATCH_NAME_MAX),
+        name: originId ? key! : free!.name,
         target: targetOf(s),
         grams: s.target?.w ? Math.round(toKg(s.target.w) * 1000) : null,
         restSeconds: 0,
-        overview: overviewOf(side, record.text.focus[0]),
+        overview: overviewOf(side, free?.qualifier ?? null, record.text.focus[0]),
         side: side === "Left" ? "left" : side === "Right" ? "right" : null,
       });
     }

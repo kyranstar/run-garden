@@ -5,7 +5,8 @@
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { EXERCISES } from "@rg/exercise-library";
-import type { UserPreferences } from "@rg/domain";
+import { adaptiveConfigSchema, type UserPreferences } from "@rg/domain";
+import { schema } from "@rg/database";
 import { buildProgramWatchProgram } from "@rg/coros";
 import type { Step } from "@rg/session-engine";
 import type { Db } from "../src/services/db.js";
@@ -14,7 +15,7 @@ import { exerciseNameMap } from "../src/services/exercise-catalog.js";
 import { corosKeyOf } from "../src/services/coros-exercise-map.js";
 import { catalogIdsByKey, watchPreview, watchStepsFromBuild, type WatchPlanDeps } from "../src/services/watch-push.js";
 import { connectTestCoros, makeTestDb, makeTestUser } from "./helpers.js";
-import { buildToday, DAY, NOON, seedCatalog, seedProgram, seedSlot, seedTmj, switchOn } from "./watch-push-fixture.js";
+import { buildToday, DAY, NOON, PROGRAM_NAME, seedCatalog, seedSlot, seedTmj, switchOn } from "./watch-push-fixture.js";
 
 vi.setConfig({ testTimeout: 60_000 });
 vi.mock("../src/services/calendar-sync.js", async (importOriginal) => ({
@@ -35,9 +36,22 @@ beforeEach(async () => {
   await connectTestCoros(db, userId);
   await seedTmj(db, userId);
   await seedCatalog(db);
-  programId = await seedProgram(db, userId);
+  programId = await seedProgramAs(PROGRAM_ID);
 });
 afterEach(() => vi.useRealTimers());
+
+/** The build's seed is the date and the program id, so a fixed id makes the build the same every run. */
+const PROGRAM_ID = "prog-0";
+
+/** `seedProgram`'s program, under a fixed id. */
+async function seedProgramAs(id: string): Promise<string> {
+  await db.insert(schema.programs).values({
+    id, userId, kind: "adaptive", name: PROGRAM_NAME, status: "active", disciplines: ["strength", "yoga"],
+    startDate: null, endDate: null, raceDate: null, source: null,
+    config: adaptiveConfigSchema.parse({ defaultMinutes: 30 }), createdAt: NOON, updatedAt: NOON, archivedAt: null,
+  });
+  return id;
+}
 
 const lateralityOf = new Map(EXERCISES.map((e) => [e.id, e.laterality]));
 
@@ -92,17 +106,28 @@ describe("a one-sided set on the watch (W-1)", () => {
     }
   });
 
-  it("across real builds of 20–90 minutes the watch holds at most 38 steps, far under the 200 limit", async () => {
+  it("across 200 real builds (40 programs × 20–90 minutes) the watch holds at most 39 steps, far under the 200 limit", async () => {
+    // Measured when the pairs went in: 22–39 steps, 2–6 one-sided sets a build; a 45+ minute session tops out at 39.
     const { deps } = await realDeps();
     let most = 0;
-    for (const minutes of [20, 30, 45, 60, 90]) {
-      const workoutId = await seedSlot(db, userId, programId, DAY, `slot-${minutes}`);
-      const s = await buildSession(db, userId, workoutId, { checks: { tmj: { pre: 2, feelingOff: false } }, overrides: { minutes } }, { today: DAY, now: NOON, prefs });
-      const plan = watchStepsFromBuild(s.build!, deps);
-      expect(plan.refusal).toBeNull();
-      expect(plan.steps.filter((x) => x.side === "left").length).toBeGreaterThanOrEqual(oneSidedSets(s.build!).length);
-      most = Math.max(most, plan.steps.length);
+    let fewestOneSided = Infinity;
+    for (let p = 1; p <= 40; p++) {
+      const program = await seedProgramAs(`prog-${p}`);
+      for (const minutes of [20, 30, 45, 60, 90]) {
+        const workoutId = await seedSlot(db, userId, program, DAY, `slot-${p}-${minutes}`);
+        const s = await buildSession(db, userId, workoutId, { checks: { tmj: { pre: 2, feelingOff: false } }, overrides: { minutes } }, { today: DAY, now: NOON, prefs });
+        const plan = watchStepsFromBuild(s.build!, deps);
+        expect(plan.refusal).toBeNull();
+        const work = s.build!.steps.filter((x) => x.kind !== "rest" && x.exerciseId && s.build!.exercises[x.exerciseId]);
+        expect(plan.steps).toHaveLength(work.length + oneSidedSets(s.build!).length);
+        most = Math.max(most, plan.steps.length);
+        fewestOneSided = Math.min(fewestOneSided, oneSidedSets(s.build!).length);
+        // W-6: one watch name per move — as many distinct names as distinct moves.
+        const moves = new Set(work.map((x) => x.exerciseId));
+        expect(new Set(plan.steps.map((x) => x.name.toLowerCase())).size).toBe(moves.size);
+      }
     }
-    expect(most).toBeLessThanOrEqual(38);
+    expect(fewestOneSided).toBeGreaterThanOrEqual(1); // every build carries the case W-1 is about
+    expect(most).toBeLessThanOrEqual(39);
   });
 });
