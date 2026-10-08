@@ -1,4 +1,4 @@
-import { and, asc, desc, eq, gt, gte, inArray, isNull, lt, lte, max, min, notInArray, sql } from "drizzle-orm";
+import { and, asc, desc, eq, gt, gte, inArray, isNull, lt, lte, max, min, ne, not, notInArray, or, sql, type SQL } from "drizzle-orm";
 import {
   accountState,
   activities,
@@ -65,7 +65,13 @@ import { disciplineOf } from "@rg/analytics";
  * retroactively mint dew across history the athlete already watched accrue
  * ("counts start at zero the day this ships" is a promise to them). */
 const DEW_EPOCH = "2026-08-19";
-import { chunkedInsert, type Db } from "./db.js";
+
+/** App sessions (`activities.source = 'app'`) grow the garden from the day the player went live in production
+ * (ruling 2d-R1), by the session's day on the athlete's own clock. One dated earlier — only a clock-skewed device can
+ * save one — credits nothing, at any read: the same promise as DEW_EPOCH, that a resim never mints credit across
+ * history the athlete already watched. */
+export const APP_SESSION_EPOCH: LocalDate = "2026-10-08";
+import { chunkedInsert, chunkIds, type Db } from "./db.js";
 import { isRestoring, loadAccountState, patchAccountState, restoreInProgress } from "./account-state.js";
 import { claimUserLock, releaseUserLock } from "./locks.js";
 import { coachBlockAdherence, COACHED_BLOCK_ADHERENCE, plansEndedOn } from "./coach-plans.js";
@@ -85,6 +91,26 @@ import {
  */
 
 const CHECKPOINT_WEEKDAY = 1; // Mondays
+
+/**
+ * Does the garden see this activity at all? (rulings 2d-R1, 2d-R3; spec §2d) Imported history (`source = 'import'`)
+ * never — at every read, so importing the standalone tool's past leaves every garden byte-identical; an app session
+ * only from APP_SESSION_EPOCH on; everything else as it always did, the watch's sessions and a merged app + watch
+ * session (a COROS row, counted once) included. With no app or import rows this is true of every row, which is what
+ * keeps the live account's past garden where it was.
+ */
+function gardenSees(a: { source: string; startTime: string; startTimeLocal: string | null }): boolean {
+  if (a.source === "import") return false;
+  return a.source !== "app" || (a.startTimeLocal ?? a.startTime).slice(0, 10) >= APP_SESSION_EPOCH;
+}
+
+/** `gardenSees` as SQL, for the reads that stop at their first row in the database. Three binds. */
+function gardenSeesSql(): SQL {
+  return and(
+    ne(activities.source, "import"),
+    or(ne(activities.source, "app"), gte(sql`coalesce(${activities.startTimeLocal}, ${activities.startTime})`, APP_SESSION_EPOCH)),
+  )!;
+}
 
 export async function loadGarden(db: Db, userId: string): Promise<GardenSnapshot | null> {
   const rows = await db.select().from(gardenState).where(eq(gardenState.userId, userId)).limit(1);
@@ -233,6 +259,9 @@ export async function buildDayInput(
             await db.select().from(activities).where(eq(activities.id, match.activityId)).limit(1)
           )[0]
         : undefined;
+      // Rulings 2d-R1, 2d-R3: a completion the garden does not see (imported history; an app session dated before
+      // APP_SESSION_EPOCH) credits nothing — the slot reads as if that session had not happened.
+      if (activity && !gardenSees(activity)) continue;
       const startHourLocal = activity
         ? Number((activity.startTimeLocal ?? activity.startTime).slice(11, 13))
         : undefined;
@@ -285,18 +314,21 @@ export async function buildDayInput(
   // whether SQLite walked activities_user_time_idx or the table. Explicit
   // chronological order (id tiebreak) is what the index path always
   // returned, and makes the derivation deterministic across engines.
-  const dayActivities = await db
-    .select()
-    .from(activities)
-    .where(
-      and(
-        eq(activities.userId, userId),
-        isNull(activities.completionMatchId),
-        gte(activities.startTime, `${addDays(date, -1)}T00:00:00`),
-        lte(activities.startTime, `${addDays(date, 2)}T00:00:00`),
-      ),
-    )
-    .orderBy(asc(activities.startTime), asc(activities.id));
+  // Rulings 2d-R1, 2d-R3: the unplanned sessions and the adventures below read only what the garden sees.
+  const dayActivities = (
+    await db
+      .select()
+      .from(activities)
+      .where(
+        and(
+          eq(activities.userId, userId),
+          isNull(activities.completionMatchId),
+          gte(activities.startTime, `${addDays(date, -1)}T00:00:00`),
+          lte(activities.startTime, `${addDays(date, 2)}T00:00:00`),
+        ),
+      )
+      .orderBy(asc(activities.startTime), asc(activities.id))
+  ).filter(gardenSees);
   for (const a of dayActivities) {
     const d = (a.startTimeLocal ?? a.startTime).slice(0, 10);
     if (d !== date || (a.sport !== "run" && a.sport !== "strength" && a.sport !== "yoga")) continue;
@@ -499,6 +531,7 @@ export async function buildDayInput(
                   eq(activities.sport, "run"),
                   gte(activities.startTimeLocal, addDays(date, -DEW_TENDED_DAYS)),
                   lt(activities.startTimeLocal, addDays(date, 1)),
+                  gardenSeesSql(),
                 ),
               )
               .limit(1);
@@ -547,14 +580,33 @@ export async function buildDayInput(
         ),
     );
     if (planned.length > 0) {
-      const done = planned.filter(
+      const completed = planned.filter(
         (w) => w.completionState === "completed",
-      ).length;
+      );
+      // Rulings 2d-R1, 2d-R3: a slot whose completion the garden does not see is not done here either — the same
+      // reading as the day's own completed-slot path above.
+      const unseen = await unseenCompletions(db, completed.map((w) => w.id));
+      const done = completed.filter((w) => !unseen.has(w.id)).length;
       input.weekAdherence = done / planned.length;
     }
   }
 
   return input;
+}
+
+/** Of these completed workouts, the ones whose active completion is an activity the garden does not see
+ * (`gardenSees`). One read per 90 ids — D1's 100 binds — and none for none. */
+async function unseenCompletions(db: Db, workoutIds: string[]): Promise<Set<string>> {
+  const unseen = new Set<string>();
+  for (const ids of chunkIds(workoutIds)) {
+    const rows = await db
+      .select({ workoutId: workoutCompletionMatches.workoutId })
+      .from(workoutCompletionMatches)
+      .innerJoin(activities, eq(activities.id, workoutCompletionMatches.activityId))
+      .where(and(inArray(workoutCompletionMatches.workoutId, ids), isNull(workoutCompletionMatches.undoneAt), not(gardenSeesSql())));
+    for (const r of rows) unseen.add(r.workoutId);
+  }
+  return unseen;
 }
 
 /** Is every workout on this date resolved (nothing still awaiting sync)? */
@@ -1566,6 +1618,7 @@ export async function buildGardenView(
     const match = rows
       .filter(
         (a) =>
+          gardenSees(a) &&
           isAdventureSport(a.sport) &&
           (a.startTimeLocal ?? a.startTime).slice(0, 10) === lastAdventureDate,
       )
@@ -1603,7 +1656,7 @@ export async function buildGardenView(
     await db
       .select({ startTime: activities.startTime, startTimeLocal: activities.startTimeLocal })
       .from(activities)
-      .where(and(eq(activities.userId, userId), eq(activities.sport, "run")))
+      .where(and(eq(activities.userId, userId), eq(activities.sport, "run"), gardenSeesSql()))
       .orderBy(desc(activities.startTime))
       .limit(1)
   )[0];

@@ -10,8 +10,10 @@ export type Discipline = "run" | "strength" | "yoga";
 
 export const DISCIPLINES: readonly Discipline[] = ["run", "strength", "yoga"] as const;
 
+/** The discipline as the garden's axis is named (Phase 2d: the third axis is "Yoga & mobility" — a mobility session
+ * grows it too). A yoga SESSION's own words stay "Yoga" / `sessionNoun`. */
 export function disciplineLabel(d: Discipline): string {
-  return d === "run" ? "Running" : d === "strength" ? "Strength" : "Yoga";
+  return d === "run" ? "Running" : d === "strength" ? "Strength" : "Yoga & mobility";
 }
 
 /**

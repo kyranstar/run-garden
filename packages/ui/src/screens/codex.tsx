@@ -216,7 +216,7 @@ export function unlockGrownBy(codex: CodexEntry[], category: string): CodexEntry
 export const NUDGE_DISCIPLINE_LABEL: Record<NudgeDiscipline, string> = {
   run: "Run",
   strength: "Lift",
-  yoga: "Yoga",
+  yoga: "Yoga & mobility",
 };
 
 /** A planned workout, reduced to what the landing calculation needs. */

@@ -219,13 +219,14 @@ type DisciplineKey = "run" | "strength" | "yoga";
 const BALANCE_BARS: Array<{ key: DisciplineKey; label: string }> = [
   { key: "run", label: "Run" },
   { key: "strength", label: "Lift" },
-  { key: "yoga", label: "Yoga" },
+  // The third axis's name (Phase 2d): a mobility session grows it too. The `yoga` key stays.
+  { key: "yoga", label: "Yoga & mobility" },
 ];
 
 const WEAKEST_COPY: Record<DisciplineKey, string> = {
   run: "The garden misses your runs.",
   strength: "The garden misses your lifting.",
-  yoga: "The garden misses your yoga.",
+  yoga: "The garden misses your yoga & mobility.",
 };
 
 function healthDescriptor(health: number): string {
@@ -371,7 +372,7 @@ const AXIS_ECO: Record<DisciplineKey, { feeds: string; damageNow: string }> = {
     damageNow: "The soil is thinning now — one session feeds it.",
   },
   yoga: {
-    feeds: "Yoga tends the meadow's life — variety, blooms, and the butterflies they bring.",
+    feeds: "Yoga & mobility tend the meadow's life — variety, blooms, and the butterflies they bring.",
     damageNow: "The meadow is quieting now — one session wakes it.",
   },
 };
@@ -381,7 +382,7 @@ const AXIS_ECO: Record<DisciplineKey, { feeds: string; damageNow: string }> = {
  * starts costing the garden, what it feeds (with the live stat), the nearest
  * unlock this workout type is walking toward, and the week's trio.
  */
-function BalanceDetail({
+export function BalanceDetail({
   k,
   balance,
   snapshot,
@@ -467,7 +468,7 @@ function BalanceDetail({
         </button>
       ) : null}
       <p className="balance-detail-week">
-        This week: Run {wkMark(wk.run)} · Lift {wkMark(wk.strength)} · Yoga {wkMark(wk.yoga)}
+        This week: Run {wkMark(wk.run)} · Lift {wkMark(wk.strength)} · Yoga &amp; mobility {wkMark(wk.yoga)}
         {wk.adventure ? " · Adventure ✓" : ""}
         {wkDone === 2 ? " — one more discipline makes a balanced week (the Harmony willow is watching)." : ""}
       </p>
