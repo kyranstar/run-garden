@@ -48,6 +48,7 @@ import {
   type WeightUnit,
   type WorkoutSyncView,
   type WriteLane,
+  appAuthoredRow,
 } from "@rg/domain";
 import { conditionWord, DEFAULT_GARDEN_CONFIG, type GardenSnapshot } from "@rg/garden-engine";
 import { proposeReschedules, summarizeStageRows } from "@rg/scheduling";
@@ -1438,6 +1439,11 @@ planRoutes.post("/workouts/:id/move", async (c) => {
   const parsed = moveSchema.safeParse(await c.req.json());
   if (!parsed.success) return c.json({ error: "invalid_request" }, 400);
   const prefs = await loadPreferences(db, userId);
+  const [row] = await db
+    .select({ origin: plannedWorkouts.origin })
+    .from(plannedWorkouts)
+    .where(and(eq(plannedWorkouts.id, c.req.param("id")), eq(plannedWorkouts.userId, userId)))
+    .limit(1);
   try {
     const outcome = await applyMove(db, {
       userId,
@@ -1447,10 +1453,13 @@ planRoutes.post("/workouts/:id/move", async (c) => {
       source: "app",
       corosWritesEnabled: prefs.corosWritesEnabled,
     });
-    // Cloud-direct: the queued write executes now, not when a Mac wakes.
-    waitUntilSafe(c, executeCloudJobs(db, c.env, userId, prefs).catch(() => undefined),);
+    // Cloud-direct: the queued write executes now, not when a Mac wakes. A programme session's watch copy comes off
+    // in its own request instead (ruling 3-R11, re-review 3-B NEW-1): the client drains it, so this invocation stays
+    // within the free plan's per-request budget.
+    const watchDrain = row !== undefined && appAuthoredRow(row) && watchPushEnabled(c.env);
+    if (!watchDrain) waitUntilSafe(c, executeCloudJobs(db, c.env, userId, prefs).catch(() => undefined),);
     await syncCalendar(db, c.env, userId).catch(() => undefined);
-    return c.json(outcome);
+    return c.json({ ...outcome, ...(watchDrain ? { watchDrain: true } : {}) });
   } catch (e) {
     const msg = e instanceof Error ? e.message : "move_failed";
     return c.json({ error: msg }, msg === "races_cannot_move" ? 422 : 500);
@@ -1632,7 +1641,7 @@ planRoutes.post("/workouts/:id/remove", async (c) => {
   const userId = c.get("userId");
   const id = c.req.param("id");
   const [exists] = await db
-    .select({ id: plannedWorkouts.id })
+    .select({ id: plannedWorkouts.id, origin: plannedWorkouts.origin })
     .from(plannedWorkouts)
     .where(and(eq(plannedWorkouts.id, id), eq(plannedWorkouts.userId, userId)))
     .limit(1);
@@ -1640,14 +1649,16 @@ planRoutes.post("/workouts/:id/remove", async (c) => {
   const prefs = await loadPreferences(db, userId);
   const removed = await removeFromPlan(db, userId, id, { now: nowInstant(), source: "remove_from_plan", prefs });
   if (!removed.removed || !removed.effectiveDate) return c.json({ ok: true });
-  // Cloud-direct: the unpush a pushed session needs executes now.
-  waitUntilSafe(c, executeCloudJobs(db, c.env, userId, prefs).catch(() => undefined));
+  // Cloud-direct: the unpush a pushed session needs executes now — for a programme session in its own request, which
+  // the client drains (ruling 3-R11, re-review 3-B NEW-1).
+  const watchDrain = appAuthoredRow(exists) && watchPushEnabled(c.env);
+  if (!watchDrain) waitUntilSafe(c, executeCloudJobs(db, c.env, userId, prefs).catch(() => undefined));
   await syncCalendar(db, c.env, userId).catch(() => undefined);
   const today = todayInZone(prefs.timezone);
   // A removed past workout must stop counting against the garden.
   const resimFrom = removed.effectiveDate < today ? removed.effectiveDate : today;
   await resimulateFrom(db, userId, resimFrom, prefs, new Date(), REQUEST_GARDEN_STEP).catch(() => undefined);
-  return c.json({ ok: true });
+  return c.json({ ok: true, ...(watchDrain ? { watchDrain: true } : {}) });
 });
 
 planRoutes.post("/workouts/:id/restore-calendar", async (c) => {

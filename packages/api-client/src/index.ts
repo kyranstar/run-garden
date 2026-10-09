@@ -1468,6 +1468,16 @@ export interface ProgressDto {
 
 // ── Endpoints ────────────────────────────────────────────────────────────────
 
+/**
+ * A move or remove of a programme session queues its watch copy's take-off and leaves running it to a request of its
+ * own (ruling 3-R11: the free plan's per-request budget) — `watchDrain` in the answer. Fire that drain and move on;
+ * the hourly lane runs it anyway if this one never lands.
+ */
+function drainedWatch<T extends { watchDrain?: boolean }>(res: T): T {
+  if (res.watchDrain) void post<{ executed: number }>("/api/sessions/watch/drain", {}).catch(() => undefined);
+  return res;
+}
+
 export const api = {
   me: () => get<MeResponse>("/api/auth/me"),
   logout: () => post("/api/auth/logout"),
@@ -1478,11 +1488,13 @@ export const api = {
     ),
   workout: (id: string) => get<Record<string, unknown> & { workout: WorkoutDto }>(`/api/plan/workouts/${id}`),
   candidates: (id: string) => get<CandidateResponse>(`/api/plan/workouts/${id}/candidates`),
-  move: (id: string, toDate: string, toTime: string) =>
-    post<{ workoutId: string; corosSyncState: CorosSyncState }>(`/api/plan/workouts/${id}/move`, {
-      toDate,
-      toTime,
-    }),
+  move: async (id: string, toDate: string, toTime: string) =>
+    drainedWatch(
+      await post<{ workoutId: string; corosSyncState: CorosSyncState; watchDrain?: boolean }>(`/api/plan/workouts/${id}/move`, {
+        toDate,
+        toTime,
+      }),
+    ),
   skip: (id: string) => post(`/api/plan/workouts/${id}/skip`),
   unskipWorkout: (id: string) => post(`/api/plan/workouts/${id}/unskip`),
   defer: (id: string) => post(`/api/plan/workouts/${id}/defer`),
@@ -1490,7 +1502,7 @@ export const api = {
   unmatch: (id: string) => post(`/api/plan/workouts/${id}/unmatch`),
   restoreCalendar: (id: string) => post(`/api/plan/workouts/${id}/restore-calendar`),
   retryCoros: (id: string) => post(`/api/plan/workouts/${id}/retry-coros`),
-  removeWorkout: (id: string) => post(`/api/plan/workouts/${id}/remove`),
+  removeWorkout: async (id: string) => drainedWatch(await post<{ ok: true; watchDrain?: boolean }>(`/api/plan/workouts/${id}/remove`)),
   garden: () =>
     get<Record<string, unknown> & { balance: DisciplineBalance; seen: GardenSeenState | null }>(
       "/api/garden",

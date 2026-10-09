@@ -5,6 +5,7 @@ import type { Db } from "./db.js";
 import { recordedStampFor } from "./coros-stamp.js";
 import { openIntentFor, recordIntent, resolveIntent, type IntentSource } from "./sync-intents.js";
 import { enqueueProgramUnpush } from "./watch-push.js";
+import { sentBuildIdOf } from "./session-build.js";
 
 /**
  * The athlete's own plan mutations, as services — so the coach's ops and the
@@ -156,15 +157,17 @@ export async function enqueueUnpushIfOurs(
   now: string,
   prefs: UserPreferences,
 ): Promise<void> {
-  if (!prefs.corosWritesEnabled) {
-    // A SENT PROGRAMME SLOT REMOVED WHILE WRITES ARE OFF (re-review C-3a, the L-10 class): nothing writes to their
-    // COROS now, but the copy is not forgotten — the unpush is recorded as owed on the sent build, exactly as a Take
-    // off or a move with writes off records it, and `runOwedUnpushes` queues it when writes come back on. Before,
-    // this path recorded nothing and the copy stayed on the watch for good. (A coach row has no build to owe it on;
-    // that gap is older than this and stays as it was.)
-    if (appAuthoredRow(w)) await enqueueProgramUnpush(db, userId, w, now, prefs);
+  // A SENT PROGRAMME SLOT comes off through its sent build's unpush (`unpush:<buildId>`), writes on or off — the job
+  // Take off and a move queue, and the one the client's targeted drain runs in a request of its own (ruling 3-R11,
+  // re-review 3-B NEW-1). The address path below queued `<id>-unpush`, which that drain does not take, so a removed
+  // copy waited for the hourly lane. Writes off: the unpush is recorded as owed on the sent build, as a Take off or a
+  // move with writes off records it, and `runOwedUnpushes` queues it when writes come back on (re-review C-3a).
+  if (appAuthoredRow(w) && (await sentBuildIdOf(db, w.id))) {
+    await enqueueProgramUnpush(db, userId, w, now, prefs);
     return;
   }
+  // (A coach row has no build to owe it on; that gap is older than this and stays as it was.)
+  if (!prefs.corosWritesEnabled) return;
   // ADDRESS, NOT SYNC STATE. This gate used to read `corosSyncState !==
   // "synced"`, and that column is not a statement about whether COROS holds
   // the row — it is a statement about whether the two agree. An eased session
