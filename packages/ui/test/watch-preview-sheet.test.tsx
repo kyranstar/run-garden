@@ -192,6 +192,8 @@ describe("the preview of what the watch will show", () => {
   it("keyboard: Send takes the focus once the steps are in (Enter sends); Escape closes the preview", async () => {
     const { onClose } = mount();
     await until(() => !!sendButton(), "Send");
+    // Full width on a phone; from lg at least 240px in a plain row (styles.css `.watch-send`; audit 3-B UI-11).
+    expect(sendButton()!.classList.contains("watch-send")).toBe(true);
     await until(() => document.activeElement === sendButton(), "Send focused");
     await act(async () => {
       document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));

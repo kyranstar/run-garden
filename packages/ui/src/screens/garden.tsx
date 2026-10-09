@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { Link } from "react-router-dom";
-import { keepPreviousData, useQuery } from "@tanstack/react-query";
+import { keepPreviousData, useQuery, useQueryClient } from "@tanstack/react-query";
 import { api, type ActivityDto, type DisciplineBalance, type TodayResponse, type WorkoutDto } from "@rg/api-client";
 import {
   addDays,
@@ -40,8 +40,10 @@ import {
   TodayProgramLead,
   TodayProgramLines,
   usePendingSaves,
+  useRefusedReviews,
 } from "../components/today-program.js";
 import { useSignedInUserId } from "../components/outbox-sync.js";
+import { watchReviewQuery } from "../components/watch-review-sheet.js";
 import { SessionsInProgress } from "../components/sessions-in-progress.js";
 import { ConditionCheckSheet, ConditionChips } from "../components/condition-check-sheet.js";
 import { pickStatusStripMetric, statusStripBaseText } from "../signal-tiles.js";
@@ -1187,9 +1189,18 @@ export function GardenScreen() {
   const garden = useQuery({ queryKey: ["garden"], queryFn: api.garden });
   const today = useQuery({ queryKey: ["today"], queryFn: api.today });
   // Sessions saved on this device and not yet taken by the server (Phase 2b) — read only on a day with an app session.
-  const pendingSaves = usePendingSaves(
-    (today.data?.todaySessions ?? []).some((s) => isAppSession(s.workout)) || (today.data?.watchReviews?.length ?? 0) > 0,
-  );
+  const outboxRead = (today.data?.todaySessions ?? []).some((s) => isAppSession(s.workout)) || (today.data?.watchReviews?.length ?? 0) > 0;
+  const pendingSaves = usePendingSaves(outboxRead);
+  // The quick reviews offered (Phase 3) — less any this device saved that the server refused, the slot saved first.
+  const refusedReviews = useRefusedReviews(outboxRead);
+  const watchReviews = (today.data?.watchReviews ?? []).filter((o) => !refusedReviews.has(o.workoutId));
+  // …each read ahead (audit 3-B UI-9): the service worker keeps the answer, so "Log your session" opens offline too —
+  // Today itself comes from its cache — and online the sheet opens on it. Nothing is read while nothing is offered.
+  const qc = useQueryClient();
+  const offered = watchReviews.map((o) => o.workoutId).join(" ");
+  useEffect(() => {
+    for (const id of offered ? offered.split(" ") : []) void qc.prefetchQuery(watchReviewQuery(id));
+  }, [qc, offered]);
   const signedIn = useSignedInUserId();
   const [selectedPlantId, setSelectedPlantId] = useState<string | null>(null);
   const [openSpeciesId, setOpenSpeciesId] = useState<string | null>(null);
@@ -1781,7 +1792,7 @@ export function GardenScreen() {
   // no pacing clause for it, no "Finishing it grows…".
   const leadPending = lead && todayLayout.title?.kind === "program" ? (pendingSaves[lead.id] ?? null) : null;
   // Its quick review, when the watch did it and the review is offered (Phase 3).
-  const leadOffer = lead && todayLayout.title?.kind === "program" ? (d?.watchReviews?.find((o) => o.workoutId === lead.id) ?? null) : null;
+  const leadOffer = lead && todayLayout.title?.kind === "program" ? (watchReviews.find((o) => o.workoutId === lead.id) ?? null) : null;
   const leadSettled =
     todayLayout.title?.kind === "program" && !!lead && (sessionSkipped(lead) || sessionDone(lead) || leadPending !== null);
   const toggleBalanceKey = (k: DisciplineKey) =>
@@ -2258,7 +2269,7 @@ export function GardenScreen() {
               sessions={todayLayout.lines}
               today={d!.today}
               pending={pendingSaves}
-              offers={d?.watchReviews ?? []}
+              offers={watchReviews}
               leadId={todayLayout.title?.kind === "program" ? todayLayout.title.session.workout.id : null}
             />
             {(() => {

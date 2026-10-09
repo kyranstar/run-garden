@@ -53,7 +53,12 @@ export const runtimeCaching: RuntimeCaching[] = [
     // available offline (clearly marked stale in the UI). Workbox
     // matches RegExp routes against the full href, so a ^\/api\/
     // anchor never fires (2026-08 audit P4) — match pathname instead.
-    urlPattern: ({ url }) => url.pathname.match(/^\/api\/(plan\/today|plan\/workouts|garden|insights|settings)/) !== null,
+    // The quick review's basis too (Phase 3; audit 3-B UI-9): Today, from this cache, offers "Log your session" offline,
+    // and the sheet it opens reads the basis Today read ahead. Its save re-checks the activity and the build server-side,
+    // so a basis from the cache cannot write wrong data. Nothing else of a session is kept.
+    urlPattern: ({ url }) =>
+      url.pathname.match(/^\/api\/(plan\/today|plan\/workouts|garden|insights|settings)/) !== null ||
+      /^\/api\/sessions\/[^/]+\/watch-review$/.test(url.pathname),
     handler: "NetworkFirst",
     options: {
       cacheName: "rg-read-cache",

@@ -1406,6 +1406,7 @@ export function ConfirmDialog({
   confirmLabel,
   onConfirm,
   busy,
+  error,
 }: {
   open: boolean;
   onClose: () => void;
@@ -1416,7 +1417,17 @@ export function ConfirmDialog({
   confirmLabel: string;
   onConfirm: () => void;
   busy?: boolean;
+  /** The last try did not go through: said here, and the dialog stays open to try again. */
+  error?: ReactNode;
 }) {
+  // The press that failed pinned the dialog's frame (`usePinnedTop`): below lg its height is held, and growth goes to
+  // the body's scroll region. So the line takes the explanation's place — one line in one line's room — and is brought
+  // into view should it wrap.
+  const errorRef = useRef<HTMLParagraphElement>(null);
+  const hasError = !!error;
+  useEffect(() => {
+    if (hasError) errorRef.current?.scrollIntoView?.({ block: "nearest" });
+  }, [hasError]);
   return (
     <Sheet
       open={open}
@@ -1439,7 +1450,13 @@ export function ConfirmDialog({
         </div>
       }
     >
-      <p>{children}</p>
+      {error ? (
+        <p ref={errorRef} className="confirm-error" role="alert">
+          {error}
+        </p>
+      ) : (
+        <p>{children}</p>
+      )}
     </Sheet>
   );
 }

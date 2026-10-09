@@ -13,17 +13,27 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { api, type MeResponse, type WatchReviewBasisDto } from "@rg/api-client";
-import { formatWeight, parseWeight, type PerformedSessionWire, type PerformedSet, type Weight, type WeightUnit } from "@rg/domain";
-import { Prog } from "@rg/session-engine";
+import {
+  formatWeight,
+  parseWeight,
+  PERFORMED_LIMITS,
+  type PerformedSessionWire,
+  type PerformedSet,
+  type Weight,
+  type WeightUnit,
+} from "@rg/domain";
+import { Lib, Prog } from "@rg/session-engine";
 import { Banner, formatDayLong, Sheet, Spinner } from "../components.js";
 import { offlineDb } from "../offline/idb.js";
 import { meWithOfflineFallback } from "../offline/me.js";
+import { outboxEntries } from "../offline/outbox.js";
 import { saveSession, type SaveResult } from "../player/save.js";
 import { CheckScale, checkWord } from "./condition-check-sheet.js";
 import { afterDrain, SAVED_SESSION_QUERIES } from "./outbox-sync.js";
 import { Stepper } from "./set-steppers.js";
 
 type Entry = Omit<WatchReviewBasisDto["entries"][number], "sets"> & { sets: PerformedSet[] };
+export type ReviewSaveResult = SaveResult | "conflict";
 
 /** One set as its line reads: "30 lb × 6", "8", "45 s", "20 kg · 30 s". */
 function setText(s: PerformedSet): string {
@@ -32,11 +42,65 @@ function setText(s: PerformedSet): string {
   return s.reps !== null ? `${formatWeight(s.load)} × ${s.reps}` : [formatWeight(s.load), count].filter(Boolean).join(" · ");
 }
 
-/** A move's sets in one line — one figure per set (per side pair for a one-sided move: "… each side"). */
+/**
+ * A one-sided move's sets as numbered pairs, in order: a left starts a set, a right after it completes it — a side the
+ * watch did not log (a lap skipped) leaves its half empty. A set with no side takes the next one by position.
+ * Returns each set's number, by index.
+ */
+function sideSetNumbers(sets: readonly Pick<PerformedSet, "side">[]): number[] {
+  const out: number[] = [];
+  let n = 0;
+  let open = false; // the current set has its left and waits for its right
+  sets.forEach((s, i) => {
+    const side = s.side ?? (i % 2 === 0 ? "left" : "right");
+    if (side === "right" && open) open = false;
+    else {
+      n += 1;
+      open = side === "left";
+    }
+    out.push(n);
+  });
+  return out;
+}
+
+/**
+ * A move's sets in one line — one figure per set; a one-sided move's per set ("… each side", the left's figure), and
+ * a side the watch did not log says so ("25 s left only"; audit 3-B UI-6) rather than the line claiming both.
+ */
 export function entryLine(e: Pick<Entry, "perSide" | "sets">): string {
-  const sets = e.perSide ? e.sets.filter((_, i) => i % 2 === 0) : e.sets;
-  const text = sets.map(setText).filter(Boolean).join(" · ");
-  return e.perSide && text ? `${text} each side` : text;
+  if (!e.perSide) return e.sets.map(setText).filter(Boolean).join(" · ");
+  const numbers = sideSetNumbers(e.sets);
+  const pairs: Array<{ left?: PerformedSet; right?: PerformedSet }> = [];
+  e.sets.forEach((s, i) => {
+    const pair = (pairs[numbers[i]! - 1] ??= {});
+    if ((s.side ?? (i % 2 === 0 ? "left" : "right")) === "left") pair.left = s;
+    else pair.right = s;
+  });
+  if (pairs.every((p) => p.left && p.right)) {
+    const text = pairs.map((p) => setText(p.left!)).filter(Boolean).join(" · ");
+    return text ? `${text} each side` : text;
+  }
+  return pairs
+    .flatMap((p) => {
+      const text = setText((p.left ?? p.right)!);
+      if (!text) return [];
+      return [p.left && p.right ? `${text} each side` : `${text} ${p.left ? "left" : "right"} only`];
+    })
+    .join(" · ");
+}
+
+/**
+ * The quick review's basis as the sheet reads it — and as Today reads it ahead while it is offered (audit 3-B UI-9):
+ * the service worker keeps the answer (its read cache), so the sheet opens offline too; online, it opens on what Today
+ * read. 404 once it is no longer offered.
+ */
+export function watchReviewQuery(workoutId: string) {
+  return {
+    queryKey: ["watch-review", workoutId],
+    queryFn: () => api.watchReview(workoutId),
+    staleTime: 5 * 60_000,
+    gcTime: 30 * 60_000,
+  };
 }
 
 export function WatchReviewSheet({
@@ -50,21 +114,31 @@ export function WatchReviewSheet({
   /** The program's name, on the sheet's first line. */
   title: string;
   onClose: () => void;
-  /** Saved: "saved" when the server took it, "pending" when it waits in the outbox ("will sync"). */
-  onSaved: (result: SaveResult) => void;
+  /**
+   * Saved: "saved" when the server took it, "pending" when it waits in the outbox ("will sync"), "conflict" when the
+   * server refused it because the slot was saved first (409 `slot_done`; the conflict row in Settings → Data).
+   */
+  onSaved: (result: ReviewSaveResult) => void;
   /** How long Save waits for the first send (tests). */
   saveWaitMs?: number;
 }) {
   const qc = useQueryClient();
-  const basis = useQuery({
-    queryKey: ["watch-review", workoutId],
-    queryFn: () => api.watchReview(workoutId),
-    staleTime: Number.POSITIVE_INFINITY,
-    gcTime: 0,
-    refetchOnWindowFocus: false,
-  });
+  const basis = useQuery({ ...watchReviewQuery(workoutId), refetchOnWindowFocus: false });
   // A basis missing its entries (an older worker, a broken answer) is one that could not load.
   const b = basis.data && Array.isArray(basis.data.entries) ? basis.data : null;
+  // THE ATHLETE'S KETTLEBELLS where the session was built (audit 3-B UI-6): a kettlebell move's weight steps through
+  // them, as the player's review does — never the 2.5 kg / 5 lb grid, whose 17.5 kg no bell has. The basis does not
+  // carry them; the session (its build's place) does, read only when a move is a kettlebell's. Unread (offline), the
+  // grid it is.
+  const kbSession = useQuery({
+    queryKey: ["session", workoutId],
+    queryFn: () => api.getSession(workoutId),
+    enabled: !!b?.entries.some((e) => e.implement === "kettlebell"),
+    staleTime: 5 * 60_000,
+    retry: false,
+    refetchOnWindowFocus: false,
+  });
+  const kbWeights = useMemo(() => (kbSession.data?.view ? Lib.kettlebellsAt(kbSession.data.view.location) : []), [kbSession.data]);
   const [entries, setEntries] = useState<Entry[] | null>(null);
   useEffect(() => {
     if (b && entries === null) setEntries(b.entries.map((e) => ({ ...e, sets: e.sets.map(({ from: _from, ...s }) => s) })));
@@ -121,23 +195,29 @@ export function WatchReviewSheet({
       review: { ratings: {}, excluded: {}, graduations: [] },
     };
     try {
-      let result: SaveResult;
-      try {
-        const db = await offlineDb();
+      let result: ReviewSaveResult;
+      // No IndexedDB here (a private window): straight to the server, or not at all. ONLY then — a save the outbox
+      // refuses (its schema) never goes around it (audit 3-B UI-7): it would fail offline with nothing kept.
+      const db = await offlineDb().catch(() => null);
+      if (db) {
         const userId = qc.getQueryData<MeResponse>(["me"])?.userId ?? (await meWithOfflineFallback().catch(() => null))?.userId ?? null;
         if (!userId) throw new Error("no signed-in account to save for");
         result = await saveSession(db, wire, { savePerformed: api.savePerformed }, userId, {
           waitMs: saveWaitMs,
           onDrained: (r) => afterDrain(qc, r),
         });
-      } catch (e) {
-        // No IndexedDB here (a private window): straight to the server, or not at all.
-        if (e instanceof Error && e.message === "no signed-in account to save for") throw e;
+        // Still in the outbox is not always "will sync": refused because the slot was saved first (409 `slot_done`),
+        // it is the conflict in Settings → Data — closed as that, and Today no longer offers it (audit 3-B UI-5).
+        if (result === "pending" && (await outboxEntries(db)).some((e) => e.performedId === wire.id && e.state === "conflict")) {
+          result = "conflict";
+        }
+      } else {
         await api.savePerformed(wire.id, wire);
         result = "saved";
       }
       void qc.invalidateQueries({ queryKey: ["outbox"] });
-      if (result === "saved") for (const k of SAVED_SESSION_QUERIES) void qc.invalidateQueries({ queryKey: [k] });
+      // Saved — or saved first by another session: Today, Plan and the garden show the slot done either way.
+      if (result !== "pending") for (const k of SAVED_SESSION_QUERIES) void qc.invalidateQueries({ queryKey: [k] });
       onSaved(result);
     } catch {
       setFailed(true);
@@ -147,7 +227,7 @@ export function WatchReviewSheet({
 
   const foot = (
     <div className="btn-row btn-row--split">
-      <button type="button" className="btn btn-primary" disabled={busy || !entries} onClick={() => void save()}>
+      <button type="button" className="btn btn-primary review-save" disabled={busy || !entries} onClick={() => void save()}>
         Save
       </button>
       <button type="button" className="btn" disabled={busy} onClick={onClose}>
@@ -194,13 +274,9 @@ export function WatchReviewSheet({
             {visible.map(({ e, i }) => (
               <div key={`${e.exerciseId}-${i}`} className="review-move">
                 <div className="review-move-row">
-                  <button
-                    type="button"
-                    className="review-move-name"
-                    aria-expanded={open === i}
-                    aria-label={`Edit ${e.name}`}
-                    onClick={() => setOpen(open === i ? null : i)}
-                  >
+                  {/* Named by what it shows — the move and the values to check (audit 3-B UI-10); aria-expanded says it
+                      opens. */}
+                  <button type="button" className="review-move-name" aria-expanded={open === i} onClick={() => setOpen(open === i ? null : i)}>
                     <b>{e.name}</b>{" "}
                     <small className="num">{entryLine(e)}</small>
                   </button>
@@ -211,7 +287,7 @@ export function WatchReviewSheet({
                 {open === i ? (
                   <div className="review-sets">
                     {e.sets.map((s, j) => (
-                      <SetEditor key={j} entry={e} set={s} index={j} unit={b.unit} onEdit={(change) => editSet(i, j, change)} />
+                      <SetEditor key={j} entry={e} set={s} index={j} unit={b.unit} kbWeights={kbWeights} onEdit={(change) => editSet(i, j, change)} />
                     ))}
                   </div>
                 ) : null}
@@ -225,7 +301,16 @@ export function WatchReviewSheet({
             ) : null}
           </section>
         ) : null}
-        <textarea className="review-note" aria-label="Note" placeholder="Note" rows={2} value={note} onChange={(e) => setNote(e.target.value)} />
+        {/* At most what the server takes (audit 3-B UI-7): a longer note could not be kept, offline or not. */}
+        <textarea
+          className="review-note"
+          aria-label="Note"
+          placeholder="Note"
+          rows={2}
+          maxLength={PERFORMED_LIMITS.note}
+          value={note}
+          onChange={(e) => setNote(e.target.value.slice(0, PERFORMED_LIMITS.note))}
+        />
         {failed ? <p className="review-meta">Couldn't save on this device. Try again.</p> : null}
       </>
     );
@@ -243,12 +328,15 @@ function SetEditor({
   set,
   index,
   unit,
+  kbWeights,
   onEdit,
 }: {
   entry: Entry;
   set: PerformedSet;
   index: number;
   unit: WeightUnit;
+  /** The athlete's kettlebells where the session was built, light to heavy (empty: not known here). */
+  kbWeights: Weight[];
   onEdit: (change: Partial<PerformedSet>) => void;
 }) {
   const timed = set.reps === null && set.seconds !== null;
@@ -260,10 +348,12 @@ function SetEditor({
     const w = text.trim() === "" ? null : parseWeight(text, set.load?.u ?? unit);
     if (w !== null || text.trim() === "") onEdit({ load: w });
   };
+  // The entry's implement and the bells, as the player's review steps (a kettlebell move: bell to bell).
   const stepWeight = (dir: 1 | -1) => {
-    const base: Weight | null = parseWeight(weight, set.load?.u ?? unit) ?? set.load ?? null;
+    const bell = entry.implement === "kettlebell" ? kbWeights[0] : undefined;
+    const base: Weight | null = parseWeight(weight, set.load?.u ?? unit) ?? set.load ?? bell ?? null;
     if (!base) return;
-    commitWeight(formatWeight(Prog.stepWeight(base, dir, { implement: null, kbWeights: [] })));
+    commitWeight(formatWeight(Prog.stepWeight(base, dir, { implement: entry.implement, kbWeights })));
   };
   const commitCount = (text: string) => {
     setCount(text);
@@ -271,7 +361,8 @@ function SetEditor({
     if (text.trim() !== "" && Number.isFinite(n) && n >= 0) onEdit(timed ? { seconds: Math.round(n) } : { reps: Math.round(n) });
   };
   const step = timed ? 5 : 1;
-  const n = entry.perSide ? Math.floor(index / 2) + 1 : index + 1;
+  // A one-sided move's set number follows its sides (a side the watch did not log leaves its set half empty).
+  const n = entry.perSide ? sideSetNumbers(entry.sets)[index]! : index + 1;
   const side = set.side === "left" ? " · Left" : set.side === "right" ? " · Right" : "";
   return (
     <div className="review-set">

@@ -15,7 +15,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { IDBFactory } from "fake-indexeddb";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { WatchReviewBasisDto } from "@rg/api-client";
-import { WatchReviewSheet } from "../src/components/watch-review-sheet.js";
+import { entryLine, WatchReviewSheet } from "../src/components/watch-review-sheet.js";
 import { offlineDb } from "../src/offline/idb.js";
 import { discardEntry, outboxEntries } from "../src/offline/outbox.js";
 
@@ -93,13 +93,16 @@ afterEach(() => {
 
 const json = (b: unknown, status = 200) => new Response(JSON.stringify(b), { status, headers: { "Content-Type": "application/json" } });
 
-function mount(opts: { put?: () => Response | Promise<Response> } = {}) {
+function mount(opts: { put?: () => Response | Promise<Response>; basis?: unknown; session?: unknown } = {}) {
   const puts: unknown[] = [];
+  const reads: string[] = [];
   vi.stubGlobal(
     "fetch",
     vi.fn(async (url: string, init?: RequestInit) => {
       const path = url.replace(/\?.*$/, "");
-      if (path === `/api/sessions/${SLOT}/watch-review`) return json(BASIS);
+      if ((init?.method ?? "GET") === "GET") reads.push(path);
+      if (path === `/api/sessions/${SLOT}/watch-review`) return json(opts.basis ?? BASIS);
+      if (path === `/api/sessions/${SLOT}` && opts.session) return json(opts.session);
       if (path.startsWith("/api/sessions/performed/") && init?.method === "PUT") {
         puts.push(JSON.parse(String(init.body)));
         return opts.put ? opts.put() : json({ status: "saved", performedId: "x", activityId: "act-1", matched: true, notes: [] });
@@ -123,7 +126,7 @@ function mount(opts: { put?: () => Response | Promise<Response> } = {}) {
       ),
     );
   });
-  return { puts, onClose, onSaved };
+  return { puts, onClose, onSaved, qc, reads };
 }
 
 async function until(check: () => boolean | Promise<boolean>, what: string): Promise<void> {
@@ -171,10 +174,10 @@ describe("Log your session — the sheet", () => {
   it("a row opens to its steppers, as the player's review does; an edit and Done go into the save", async () => {
     const { onSaved, puts } = mount();
     await until(() => !!document.querySelector(".review-move"), "the moves");
-    await click("Edit Goblet squat");
+    await click(/^Goblet squat/);
     expect(document.querySelectorAll(".review-set")).toHaveLength(3);
     await click(/^1 more/);
-    await click("Edit Supine twist");
+    await click(/^Supine twist/);
     await click("Done");
     await click("Save");
     await until(() => onSaved.mock.calls.length === 1, "onSaved");
@@ -237,6 +240,144 @@ describe("Log your session — the sheet", () => {
     await until(() => onSaved.mock.calls.length === 1, "onSaved");
     await until(async () => (await entries())[0]?.state === "conflict", "the conflict");
     expect((await entries())[0]).toMatchObject({ state: "conflict", lastError: "slot_done" });
+  });
+
+  it("409 slot_done closes the review as a conflict — not as waiting to sync — and Today is read again (audit 3-B UI-5)", async () => {
+    const { onSaved, qc } = mount({ put: () => json({ error: "slot_done" }, 409) });
+    qc.setQueryData(["today"], { today: "2026-10-08" });
+    await until(() => !!document.querySelector(".review-move"), "the moves");
+    await click("Save");
+    await until(() => onSaved.mock.calls.length === 1, "onSaved");
+    expect(onSaved).toHaveBeenCalledWith("conflict");
+    expect(qc.getQueryState(["today"])?.isInvalidated).toBe(true);
+  });
+
+  it("each move's row is named by what it shows — the move and the values to check (audit 3-B UI-10; WCAG 2.5.3)", async () => {
+    mount();
+    await until(() => !!document.querySelector(".review-move"), "the moves");
+    const row = document.querySelector<HTMLButtonElement>(".review-move-name")!;
+    expect(row.hasAttribute("aria-label")).toBe(false);
+    expect(text(row)).toBe("Goblet squat 30 lb × 6 · 30 lb × 6 · 30 lb × 5");
+    expect(row.getAttribute("aria-expanded")).toBe("false");
+    // From lg, Save keeps at least 200px beside Not now (styles.css `.review-save`; audit 3-B UI-11).
+    expect(button("Save")!.classList.contains("review-save")).toBe(true);
+  });
+
+  const typeNote = async (value: string) => {
+    const note = document.querySelector<HTMLTextAreaElement>("textarea.review-note")!;
+    await act(async () => {
+      Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")!.set!.call(note, value);
+      note.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    return note;
+  };
+
+  it("the note holds at most what the server takes (2,000 characters): a long one still saves through the outbox, offline too (audit 3-B UI-7)", async () => {
+    const { onSaved, puts } = mount({ put: () => Promise.reject(new TypeError("Failed to fetch")) });
+    await until(() => !!document.querySelector(".review-move"), "the moves");
+    const note = await typeNote("x".repeat(2_500));
+    expect(note.maxLength).toBe(2_000);
+    expect(note.value).toHaveLength(2_000);
+    await click("Save");
+    await until(() => onSaved.mock.calls.length === 1, "onSaved");
+    expect(onSaved).toHaveBeenCalledWith("pending");
+    const waiting = await entries();
+    expect(waiting).toHaveLength(1);
+    expect((waiting[0]!.payload as { note: string }).note).toHaveLength(2_000);
+    // The one PUT is the outbox's own try (offline), never a save around it.
+    expect(puts).toHaveLength(1);
+    expect(document.body.textContent).not.toContain("Couldn't save");
+  });
+
+  it("a save the outbox refuses never goes around it, straight to the server (audit 3-B UI-7)", async () => {
+    const goblet = (BASIS as unknown as { entries: Array<{ sets: unknown[] }> }).entries[0]!;
+    const tooMany = { ...goblet, sets: Array.from({ length: 51 }, (_, i) => ({ ...(goblet.sets[0] as object), setIndex: i })) };
+    const basis = { ...(BASIS as object), entries: [tooMany] };
+    const { onSaved, puts } = mount({ basis });
+    await until(() => !!document.querySelector(".review-move"), "the moves");
+    await click("Save");
+    await until(() => document.body.textContent?.includes("Couldn't save on this device. Try again.") ?? false, "the failure");
+    expect(puts).toEqual([]);
+    expect(onSaved).not.toHaveBeenCalled();
+    expect(await entries()).toEqual([]);
+  });
+
+  describe("audit 3-B UI-6", () => {
+    const set = (i: number, over: Record<string, unknown>) => ({ setIndex: i, side: null, reps: 8, seconds: null, load: null, done: true, flags: [], from: "watch", ...over });
+    const kbBasis = (over: Record<string, unknown> = {}) => ({
+      ...(BASIS as object),
+      entries: [
+        {
+          exerciseId: "kbSwing",
+          name: "Kettlebell swing",
+          perSide: false,
+          format: "straight",
+          implement: "kettlebell",
+          sets: [set(0, { load: { v: 16, u: "kg" } }), set(1, { load: { v: 16, u: "kg" } })],
+          ...over,
+        },
+      ],
+    });
+    /** The session as GET /api/sessions/:id answers it: built at home, where the bells are 12, 16 and 24 kg. */
+    const atHome = { workoutId: SLOT, view: { location: { id: "home", name: "Home", equipment: ["kettlebell"], implements: { kettlebell: [{ v: 24, u: "kg" }, { v: 12, u: "kg" }, { v: 16, u: "kg" }] } } } };
+    const weight = () => document.querySelector<HTMLInputElement>(".review-set input[inputmode=decimal]")!.value;
+
+    it("a kettlebell move's weight steps through the athlete's bells where the session was built, as the player's review does", async () => {
+      mount({ basis: kbBasis(), session: atHome });
+      await until(() => !!document.querySelector(".review-move"), "the moves");
+      await click(/^Kettlebell swing/);
+      await until(() => document.querySelectorAll(".review-set").length === 2, "the sets");
+      await click("Heavier");
+      await until(() => weight() === "24 kg", "the next bell up (24 kg, not the 2.5 kg grid's 17.5)");
+      await click("Lighter");
+      await click("Lighter");
+      expect(weight()).toBe("12 kg");
+    });
+
+    it("the session is read for its bells only when a move is a kettlebell's", async () => {
+      const { reads } = mount({ session: atHome });
+      await until(() => !!document.querySelector(".review-move"), "the moves");
+      await click(/^Goblet squat/);
+      await click("Heavier");
+      expect(reads).not.toContain(`/api/sessions/${SLOT}`);
+    });
+
+    it("a one-sided move's line shows a side the watch did not log (L, R, L: the right of set 2 missing)", async () => {
+      const side = (i: number, s: "left" | "right", seconds: number) => set(i, { side: s, reps: null, seconds });
+      mount({
+        basis: kbBasis({
+          exerciseId: "plank", name: "Side plank", perSide: true, format: "holds", implement: null,
+          sets: [side(0, "left", 30), side(1, "right", 30), side(2, "left", 25)],
+        }),
+      });
+      await until(() => !!document.querySelector(".review-move"), "the moves");
+      expect(text(document.querySelector(".review-move-name"))).toBe("Side plank 30 s each side · 25 s left only");
+      await click(/^Side plank/);
+      expect([...document.querySelectorAll(".review-set > .eyebrow")].map((e) => text(e))).toEqual(["Set 1 · Left", "Set 1 · Right", "Set 2 · Left"]);
+    });
+
+    it("…and set 1's right missing (L, L, R): the set numbers follow the sides, not the position", async () => {
+      const side = (i: number, s: "left" | "right", seconds: number) => set(i, { side: s, reps: null, seconds });
+      mount({
+        basis: kbBasis({
+          exerciseId: "plank", name: "Side plank", perSide: true, format: "holds", implement: null,
+          sets: [side(0, "left", 30), side(1, "left", 25), side(2, "right", 25)],
+        }),
+      });
+      await until(() => !!document.querySelector(".review-move"), "the moves");
+      expect(text(document.querySelector(".review-move-name"))).toBe("Side plank 30 s left only · 25 s each side");
+      await click(/^Side plank/);
+      expect([...document.querySelectorAll(".review-set > .eyebrow")].map((e) => text(e))).toEqual(["Set 1 · Left", "Set 2 · Left", "Set 2 · Right"]);
+    });
+
+    it("…and a right with no left before it (R, L, R): right only, then a set of both", () => {
+      const s = (side: "left" | "right", seconds: number) => ({ setIndex: 0, side, reps: null, seconds, load: null, done: true, flags: [] });
+      expect(entryLine({ perSide: true, sets: [s("right", 20), s("left", 30), s("right", 30)] })).toBe("20 s right only · 30 s each side");
+    });
+
+    it("both sides of every set: the line as before — one figure per set, each side", async () => {
+      expect(entryLine({ perSide: true, sets: [{ setIndex: 0, side: "left", reps: null, seconds: 30, load: null, done: true, flags: [] }, { setIndex: 1, side: "right", reps: null, seconds: 30, load: null, done: true, flags: [] }] })).toBe("30 s each side");
+    });
   });
 
   it("Not now closes and keeps nothing", async () => {

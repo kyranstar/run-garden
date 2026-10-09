@@ -50,3 +50,34 @@ describe("the rg-me route", () => {
     expect(runtimeCaching.map((r) => r.options?.cacheName)).toEqual(["rg-shell", "rg-me", "rg-read-cache"]);
   });
 });
+
+describe("the read cache (rg-read-cache)", () => {
+  const readCache = () => runtimeCaching.find((r) => r.options?.cacheName === "rg-read-cache")!;
+  /** The matcher as sw.js holds it: its own source, closure-free. */
+  const matches = (path: string) => {
+    const fn = new Function(`return (${String(readCache().urlPattern)});`)() as (p: { url: URL; request: { mode: string } }) => boolean;
+    return fn({ url: new URL(`https://run.garden.test${path}`), request: { mode: "cors" } });
+  };
+
+  it("answers Today, Plan, the garden, insights and settings offline, as before", () => {
+    for (const path of ["/api/plan/today", "/api/plan/workouts", "/api/garden", "/api/insights", "/api/settings"]) expect(matches(path), path).toBe(true);
+    expect(readCache()).toMatchObject({ handler: "NetworkFirst", options: { networkTimeoutSeconds: 4 } });
+  });
+
+  it("answers the quick review's basis offline, so the Log your session Today offers opens offline (audit 3-B UI-9)", () => {
+    expect(matches("/api/sessions/slot-p1-2026-10-08/watch-review")).toBe(true);
+  });
+
+  it("keeps nothing else of a session: the sheet, the preview, the review basis, a save", () => {
+    for (const path of [
+      "/api/sessions/slot-p1-2026-10-08",
+      "/api/sessions/slot-p1-2026-10-08/watch-preview",
+      "/api/sessions/slot-p1-2026-10-08/review-basis",
+      "/api/sessions/slot-p1-2026-10-08/watch-review/x",
+      "/api/sessions/performed/abc",
+      "/api/sessions/watch/drain",
+    ]) {
+      expect(matches(path), path).toBe(false);
+    }
+  });
+});

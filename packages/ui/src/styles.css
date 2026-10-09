@@ -19,6 +19,9 @@
   --accent-soft: #e9ebf7;
   --warn: #a4661d;
   --warn-soft: #f7ecda;
+  /* Warn TEXT on the soft warn band (the watch's "Couldn't send"): --warn on --warn-soft is 4.00:1 in light mode,
+     under AA for its medium 14–16px words; this is 5.35:1 (audit 3-B UI-8). Dark mode keeps --warn (5.46:1). */
+  --warn-ink: #8a5414;
   --danger: #a44434;
   --danger-soft: #f7e4df;
   /* Deeper than --danger so a 1.5px glyph stroke (the heatmap's missed ✕)
@@ -289,6 +292,7 @@
     --accent-soft: #272b3d;
     --warn: #d0a05a;
     --warn-soft: #3a3020;
+    --warn-ink: #d0a05a;
     --danger: #d08070;
     --danger-soft: #3c2722;
     --danger-ink: #e5a294;
@@ -355,6 +359,7 @@
   --accent-soft: #272b3d;
   --warn: #d0a05a;
   --warn-soft: #3a3020;
+  --warn-ink: #d0a05a;
   --danger: #d08070;
   --danger-soft: #3c2722;
   --danger-ink: #e5a294;
@@ -2375,12 +2380,50 @@ button.session-chip {
 /* Couldn't send, Too long for the watch: a state to act on, never colour alone (the icon and the words). */
 .watch-state--warn {
   background: var(--warn-soft);
-  color: var(--warn);
+  color: var(--warn-ink);
   border-radius: var(--radius-sm);
   padding: var(--space-2) var(--space-2) var(--space-2) var(--space-5);
 }
 .watch-state--solo {
   padding: var(--space-4) var(--space-5);
+}
+/* A confirm's "couldn't" line (Take off watch, audit 3-B UI-3), in the explanation's place: the AA warn ink (UI-8). */
+.confirm-error {
+  color: var(--warn-ink);
+  font-weight: var(--weight-medium);
+}
+/* Send to watch offered: the state's status region is kept, empty and out of the way, so what Send leads to is
+   announced (audit 3-B UI-10). */
+.watch-state.visually-hidden {
+  min-height: 0;
+  padding: 0;
+}
+/* FROM LG, AS DRAWN (approved mocks "Desktop · 1280"; audit 3-B UI-11): the session sheet's foot is ONE row — Start ·
+   Send to watch · Move · Skip — with the watch's state, when there is one, on a row of its own above it; a split row's
+   buttons keep their own width rather than stretching across the sheet (the phone's two stretched rows stay below
+   lg); the preview's Send is at least 240px and the review's Save at least 200px. */
+@media (min-width: 1024px) {
+  .session-foot {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: var(--space-5) var(--space-4);
+  }
+  .session-foot > .watch-state {
+    flex: 1 1 100%;
+  }
+  .session-foot > .btn-row {
+    display: contents;
+  }
+  .btn-row--split > .btn {
+    flex: 0 1 auto;
+  }
+  .watch-send {
+    min-width: 240px;
+  }
+  .review-save {
+    min-width: 200px;
+  }
 }
 .watch-spin {
   width: 16px;

@@ -21,7 +21,7 @@
  * watch still offers Send to watch: its preview says so where Send would be (owner call 8). A sent session's build is
  * the watch's — read-only — but Start, Move and Skip stay (Move takes it off the watch). Send and Take off only queue
  * (ruling 3-R11): right after either, the sheet asks for the drain (a request of its own that runs the job) and then
- * reads the session, and reads it again every few seconds while it is "Sending…".
+ * reads the session, and reads it again on a backoff while it is "Sending…" (`WATCH_POLL_S`), for about five minutes.
  */
 import { useEffect, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
@@ -69,8 +69,54 @@ const MINUTES = [15, 20, 25, 30, 40, 45, 60, 75, 90];
 const PICKER_TITLE: Record<Picker, string> = { mode: "Mode", theme: "Theme", minutes: "Time", place: "Place" };
 /** How long Start waits for the review's basis before the player opens (ruling 2b-R10: Start stays quick). */
 const START_BASIS_WAIT_MS = 1_500;
-/** How often the sheet reads the session again while it is "Sending…" (the drain, or the hourly lane, runs the push). */
-const WATCH_POLL_MS = 4_000;
+/**
+ * "SENDING…" READS AGAIN ON A BACKOFF, THEN STOPS (audit 3-B UI-1): 4, 4, 8, 15, 30 and 60 s, then each minute — nine
+ * reads, about five minutes. The drain right after Send runs the push in a few seconds when COROS answers; when it
+ * cannot (COROS slow or down, a token refreshing), the job waits for the hourly lane, and a read every 4 s for as long
+ * as the sheet was open cost ≈20 D1 statements each (900 requests an hour on the Workers Free plan) for a state that
+ * could not change. So: once, ≈30 s in, the drain is asked for again (one heavy request, never a loop); then the reads
+ * stop and the sheet keeps "Sending…" — coming back to the page reads once more (`refetchOnWindowFocus` while
+ * sending), and so does opening the sheet again. Nothing is read while the page is hidden or the sheet is closed.
+ */
+export const WATCH_POLL_S: readonly number[] = [4, 4, 8, 15, 30, 60, 60, 60, 60];
+/** The read the drain goes before: the fourth, ≈31 s in. */
+const WATCH_DRAIN_READ = 3;
+
+/**
+ * The clock the "Sending…" reads run on: the page's own timers. Tests drive a clock of their own here — faking the
+ * global timers for minutes of fake time would also fire the test runner's own RPC timeouts.
+ */
+export const sendingPollClock = {
+  set: (run: () => void, ms: number): unknown => setTimeout(run, ms),
+  clear: (id: unknown): void => clearTimeout(id as ReturnType<typeof setTimeout>),
+};
+
+/** While `sending`: `read` on the backoff above, the drain before the fourth read; restarted each time it starts sending. */
+function useSendingPoll(sending: boolean, read: () => void, drain: () => Promise<unknown>): void {
+  const latest = useRef({ read, drain });
+  latest.current = { read, drain };
+  useEffect(() => {
+    if (!sending) return;
+    let stopped = false;
+    let timer: unknown;
+    const tick = async (i: number) => {
+      // Hidden: no read, as React Query's own interval would not; the page coming back reads once.
+      if (document.visibilityState !== "hidden") {
+        if (i === WATCH_DRAIN_READ) await latest.current.drain().catch(() => undefined);
+        if (stopped) return;
+        latest.current.read();
+      }
+      if (!stopped && i + 1 < WATCH_POLL_S.length) timer = sendingPollClock.set(() => void tick(i + 1), WATCH_POLL_S[i + 1]! * 1_000);
+    };
+    timer = sendingPollClock.set(() => void tick(0), WATCH_POLL_S[0]! * 1_000);
+    return () => {
+      stopped = true;
+      sendingPollClock.clear(timer);
+    };
+  }, [sending]);
+}
+/** The watch states of a SENT build (its push queued, running, failed or verified). */
+const SENT_STATES: ReadonlyArray<string> = ["sending", "on_watch", "failed", "off_watch"];
 
 /** The program's name: the row's title without the theme a build appends. */
 function withoutTheme(title: string, theme: string | null | undefined): string {
@@ -95,8 +141,9 @@ export function SessionSheet({ w, today, onClose }: { w: WorkoutDto; today: stri
   const session = useQuery({
     queryKey: key,
     queryFn: () => api.getSession(w.id),
-    // "Sending…" moves on when the push runs: read again until it has.
-    refetchInterval: (q) => (q.state.data?.watch?.state === "sending" ? WATCH_POLL_MS : false),
+    // "Sending…" moves on when the push runs (`useSendingPoll` below): its reads may have stopped, or the page was away
+    // — coming back reads once. Otherwise the app's rule: nothing is read on focus.
+    refetchOnWindowFocus: (q) => q.state.data?.watch?.state === "sending",
   });
   const gone = session.error instanceof ApiError && session.error.status === 404;
   const programs = useQuery({ queryKey: ["programs"], queryFn: api.listPrograms, staleTime: 60_000 });
@@ -203,10 +250,18 @@ export function SessionSheet({ w, today, onClose }: { w: WorkoutDto; today: stri
   });
   // The watch (Phase 3). Send (in the preview) and Take off only QUEUE (ruling 3-R11): the drain runs the job in a
   // request of its own, then the session says how it went. A drain that fails is no error to show — the hourly lane
-  // runs the job, and the sheet keeps "Sending…" (and reads again) until it has.
+  // runs the job, and the sheet keeps "Sending…" until it has (reading again on a backoff, `useSendingPoll`).
   const [previewing, setPreviewing] = useState(false);
   const [confirmingTakeOff, setConfirmingTakeOff] = useState(false);
+  /**
+   * After Send or Take off, the control that opened the dialog is gone — replaced by the new state's row — so the
+   * dialog's own focus restore lands nowhere (on <body>, outside the modal; audit 3-B UI-4). Once the sheet shows the
+   * state the write answered, focus goes to that state's control (Take off watch, Retry, Send to watch), else the sheet.
+   */
+  const refocusWatchOn = useRef<string | null>(null);
+  const watchControl = useRef<HTMLButtonElement>(null);
   const afterWatchWrite = (next: SessionDto) => {
+    refocusWatchOn.current = next.watch?.state ?? "none";
     qc.setQueryData(key, next);
     refreshPlan();
     void api
@@ -223,11 +278,24 @@ export function SessionSheet({ w, today, onClose }: { w: WorkoutDto; today: stri
       setConfirmingTakeOff(false);
       afterWatchWrite(next);
     },
-    onError: () => {
-      setConfirmingTakeOff(false);
-      void qc.invalidateQueries({ queryKey: key });
-    },
+    // Offline, or refused: the confirm stays open and says so (audit 3-B UI-3) — never closed as if it went through.
+    onError: () => void qc.invalidateQueries({ queryKey: key }),
   });
+  const askTakeOff = () => {
+    takeOff.reset();
+    setConfirmingTakeOff(true);
+  };
+  useSendingPoll(
+    session.data?.watch?.state === "sending",
+    () => void qc.invalidateQueries({ queryKey: key }),
+    // The one more drain: what it ran shows on Today and Plan too ("On your watch").
+    () => api.drainWatch().finally(refreshPlan),
+  );
+  const takeOffButton = (
+    <button ref={watchControl} type="button" className="btn" disabled={takeOff.isPending} onClick={askTakeOff}>
+      Take off watch
+    </button>
+  );
 
   const s = session.data;
   const date = s?.date ?? w.effectiveDate;
@@ -320,6 +388,13 @@ export function SessionSheet({ w, today, onClose }: { w: WorkoutDto; today: stri
     const target = el?.querySelector<HTMLElement>(".session-reading") ?? el?.closest<HTMLElement>('[role="dialog"]');
     target?.focus();
   });
+  // After a watch write, once the sheet shows the state it answered (the closing dialog has restored focus by then).
+  const watchState = s?.watch?.state ?? "none";
+  useEffect(() => {
+    if (refocusWatchOn.current === null || refocusWatchOn.current !== watchState) return;
+    refocusWatchOn.current = null;
+    (watchControl.current ?? body0.current?.closest<HTMLElement>('[role="dialog"]'))?.focus();
+  });
   // Done on the server while this device still holds the session in progress: it was played and saved on another
   // device (ruling 2b-R18). This device's copy is offered for Discard only — never Continue, whose save would be a
   // second session for the slot (the server refuses it, 409 slot_done).
@@ -348,12 +423,16 @@ export function SessionSheet({ w, today, onClose }: { w: WorkoutDto; today: stri
   const canContinue = features.player && !skipped && s?.contentState === "started" && continuable(s.build?.date ?? date, today);
   // SENT TO THE WATCH (Phase 3): Send locks the build and the slot stays built. The build is the watch's, so nothing
   // rebuilds it — but the session is still today's to do: Start plays that very build, Move takes it off the watch,
-  // Skip leaves the watch alone.
-  const sentHere = !!s && s.locked && s.contentState === "built";
+  // Skip leaves the watch alone. Sent is what the session's watch says, never the lock alone (audit 3-B UI-13): a
+  // locked build still built is also a Start whose two writes split, or one sent before the switch went off — and
+  // that sheet stays read-only, as it was before the watch.
   const watch = s?.watch ?? null;
-  // Nothing about the watch on a skipped session (2a-R15: Un-skip and nothing else) or a done one (its copy is the
-  // session the athlete did, and stays).
-  const watchShown = !!s && !!watch && !skipped && s.contentState !== "done" && w.completionState !== "completed";
+  const sentHere = !!s && s.locked && s.contentState === "built" && !!watch && SENT_STATES.includes(watch.state);
+  // Nothing about the watch on a done session (its copy is the session the athlete did, and stays). A skipped one offers
+  // Un-skip and nothing else (2a-R15) — unless its copy is still on the watch, which Skip leaves alone: then it says so,
+  // with Take off watch (audit 3-B UI-12).
+  const watchShown =
+    !!s && !!watch && s.contentState !== "done" && w.completionState !== "completed" && (!skipped || watch.state === "on_watch");
   const offersSend =
     watchShown && showBuild && (watch!.state === "ready" || (watch!.state === "unavailable" && watch!.reason === "too_long"));
   // The pinned foot holds the sheet's actions — and is left out when there are none (loading, or a started or done
@@ -434,39 +513,48 @@ export function SessionSheet({ w, today, onClose }: { w: WorkoutDto; today: stri
       );
     }
   }
-  // The watch's state, in the foot where Send to watch was tapped (owner call 7), each with its one action.
+  // The watch's state, in the foot where Send to watch was tapped (owner call 7), each with its one action. "Sending…"
+  // offers Take off too (owner, 2026-10-09): a push that cannot run for a while (COROS unreachable) is stopped there,
+  // the queued push superseded — not only by Move.
+  //
+  // ONE STATUS REGION, KEPT (audit 3-B UI-10): from Send to watch through Sending… to On your watch or Couldn't send, the
+  // row and its `role="status"` label are the same nodes, so the outcome the athlete waits for is announced — a live
+  // region added with its words already in it often is not. While there is nothing to say (Send to watch offered) the
+  // row is there, empty and visually hidden. The action sits beside the label, outside the region.
+  const watchLive = watchShown && (offersSend || ["sending", "on_watch", "failed"].includes(watch!.state));
   let watchRow: React.ReactNode = null;
-  if (watchShown && watch!.state === "sending") {
-    watchRow = (
-      <div key="watch" className="watch-state" role="status">
-        <span className="watch-state-label watch-state-label--muted">
+  if (watchLive) {
+    const state = watch!.state;
+    const said =
+      state === "sending" ? (
+        <>
           <span className="watch-spin" aria-hidden="true" />
           Sending…
-        </span>
-      </div>
-    );
-  } else if (watchShown && watch!.state === "on_watch") {
-    watchRow = (
-      <div key="watch" className="watch-state">
-        <span className="watch-state-label watch-state-label--ok">
+        </>
+      ) : state === "on_watch" ? (
+        <>
           <IconWatch size={16} />
           On your watch
-        </span>
-        <button type="button" className="btn" disabled={takeOff.isPending} onClick={() => setConfirmingTakeOff(true)}>
-          Take off watch
-        </button>
-      </div>
-    );
-  } else if (watchShown && watch!.state === "failed") {
-    watchRow = (
-      <div key="watch" className="watch-state watch-state--warn">
-        <span className="watch-state-label">
+        </>
+      ) : state === "failed" ? (
+        <>
           <IconAlert size={16} />
           Couldn't send
+        </>
+      ) : null;
+    const tone = state === "sending" ? " watch-state-label--muted" : state === "on_watch" ? " watch-state-label--ok" : "";
+    watchRow = (
+      <div key="watch" className={!said ? "watch-state visually-hidden" : state === "failed" ? "watch-state watch-state--warn" : "watch-state"}>
+        <span role="status" className={`watch-state-label${tone}`}>
+          {said}
         </span>
-        <button type="button" className="btn btn-small" onClick={() => setPreviewing(true)}>
-          Retry
-        </button>
+        {state === "sending" || state === "on_watch" ? (
+          takeOffButton
+        ) : state === "failed" ? (
+          <button ref={watchControl} type="button" className="btn btn-small" onClick={() => setPreviewing(true)}>
+            Retry
+          </button>
+        ) : null}
       </div>
     );
   }
@@ -476,7 +564,7 @@ export function SessionSheet({ w, today, onClose }: { w: WorkoutDto; today: stri
     footRows.push(
       <div key="send" className="btn-row btn-row--split">
         {startButton}
-        <button type="button" className="btn" onClick={() => setPreviewing(true)}>
+        <button ref={watchControl} type="button" className="btn" onClick={() => setPreviewing(true)}>
           <IconWatch size={16} />
           Send to watch
         </button>
@@ -485,7 +573,8 @@ export function SessionSheet({ w, today, onClose }: { w: WorkoutDto; today: stri
   }
   if (actions.length > 0) footRows.push(<div key="actions" className="btn-row">{actions}</div>);
   // One column, top to bottom as drawn: the sheet's foot stacks its children in reverse (styles.css `.sheet-foot`).
-  const footer = footRows.length > 0 ? <div className="session-foot">{footRows}</div> : null;
+  // Without the watch in it, the action row sits straight in the foot, as it did before the watch (audit 3-B UI-2).
+  const footer = watchLive ? <div className="session-foot">{footRows}</div> : (footRows[0] ?? null);
 
   let body: React.ReactNode;
   if (session.isLoading) body = <Spinner label="Loading the session" />;
@@ -604,6 +693,7 @@ export function SessionSheet({ w, today, onClose }: { w: WorkoutDto; today: stri
         confirmLabel="Take off watch"
         busy={takeOff.isPending}
         onConfirm={() => takeOff.mutate()}
+        error={takeOff.isError ? "Couldn't take it off — try again." : null}
       >
         It stays in the app.
       </ConfirmDialog>

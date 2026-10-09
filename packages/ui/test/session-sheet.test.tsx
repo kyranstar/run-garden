@@ -18,7 +18,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { ReviewBasisDto, SessionDto, SessionExerciseDto, WorkoutDto } from "@rg/api-client";
 import { features } from "../src/features.js";
-import { SessionSheet } from "../src/components/session-sheet.js";
+import { SessionSheet, sendingPollClock } from "../src/components/session-sheet.js";
 import { WorkoutDetail } from "../src/screens/plan.js";
 import { IDBFactory } from "fake-indexeddb";
 import { offlineDb } from "../src/offline/idb.js";
@@ -250,6 +250,8 @@ function mount(
     basis?: ReviewBasisDto | "hang";
     /** Asked first (the watch routes): an answer, or undefined to fall through. `set` changes what the GET answers. */
     route?: (call: Call, set: (next: SessionDto) => void) => Response | undefined;
+    /** The query defaults, over `retry: false` (the app's own: `refetchOnWindowFocus: false`, `staleTime: 15_000`). */
+    queries?: Record<string, unknown>;
   } = {},
 ) {
   const calls: Call[] = [];
@@ -292,7 +294,7 @@ function mount(
   );
   host = document.createElement("div");
   document.body.appendChild(host);
-  const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  const qc = new QueryClient({ defaultOptions: { queries: { retry: false, ...opts.queries } } });
   const sheet = opts.detail
     ? createElement(WorkoutDetail, { w: opts.w ?? slot(), today: opts.today ?? TODAY, corosWritesEnabled: false, onClose: () => undefined })
     : createElement(SessionSheet, { w: opts.w ?? slot(), today: opts.today ?? TODAY, onClose: () => undefined });
@@ -1029,5 +1031,375 @@ describe("the watch in the session sheet's foot (Phase 3 Task 8)", () => {
     await click("Send");
     await until(() => !!button("Start · 45 min"), "the fresh session");
     expect(body()).not.toContain("Garden program — 2026-10-05");
+  });
+
+  const confirmTakeOff = async () => {
+    const confirm = [...document.querySelectorAll<HTMLButtonElement>(".btn-danger")].find((b) => b.textContent === "Take off watch")!;
+    await act(async () => confirm.click());
+  };
+
+  it("sending: Take off watch too (owner, 2026-10-09) — it asks first, then the queued push is superseded and Send is offered again", async () => {
+    features.player = true;
+    const { calls } = mount(session({ locked: true, watch: { state: "sending" } }), { route: watchRoutes() });
+    await until(() => body().includes("Sending…"), "Sending…");
+    await click("Take off watch");
+    expect(body()).toContain("Take this session off your watch?");
+    expect(calls.some((c) => c.path.endsWith("/take-off-watch"))).toBe(false);
+    await confirmTakeOff();
+    await until(() => !!button(/Send to watch/), "ready again");
+    expect(body()).not.toContain("Sending…");
+    expect(watchCalls(calls)).toEqual(["POST …/take-off-watch", "POST /api/sessions/watch/drain"]);
+  });
+
+  it("a failed Take off says so, and the confirm stays open to try again (audit 3-B UI-3)", async () => {
+    features.player = true;
+    let offline = true;
+    const routes = watchRoutes();
+    const { calls } = mount(session({ locked: true, watch: { state: "on_watch" } }), {
+      route: (c, set) => {
+        if (c.path.endsWith("/take-off-watch") && offline) throw new TypeError("Failed to fetch");
+        return routes(c, set);
+      },
+    });
+    await until(() => body().includes("On your watch"), "On your watch");
+    // The press pinned the confirm's frame (below lg its height is held): the line is brought into view in its body.
+    const shown: Element[] = [];
+    Element.prototype.scrollIntoView = function (this: Element) {
+      shown.push(this);
+    };
+    await click("Take off watch");
+    await confirmTakeOff();
+    await until(() => body().includes("Couldn't take it off — try again."), "the failure");
+    expect(body()).toContain("Take this session off your watch?");
+    // In the explanation's place: one line in one line's room (the press held the frame).
+    expect(body()).not.toContain("It stays in the app.");
+    expect(document.querySelector(".confirm-error")?.getAttribute("role")).toBe("alert");
+    expect(shown).toContain(document.querySelector(".confirm-error"));
+    delete (Element.prototype as { scrollIntoView?: unknown }).scrollIntoView;
+    // Tried again, it goes through: the confirm closes, Send is offered again.
+    offline = false;
+    await confirmTakeOff();
+    await until(() => !!button(/Send to watch/), "ready again");
+    expect(body()).not.toContain("Take this session off your watch?");
+    expect(body()).not.toContain("Couldn't take it off");
+    expect(watchCalls(calls).filter((c) => c.endsWith("/take-off-watch"))).toHaveLength(2);
+  });
+
+  it("a skipped session still on the watch: On your watch + Take off watch beside Un-skip (audit 3-B UI-12)", async () => {
+    features.player = true;
+    const { calls } = mount(session({ locked: true, watch: { state: "on_watch" } }), {
+      w: slot({ completionState: "skipped" }),
+      route: watchRoutes({ afterTakeOff: session({ watch: { state: "unavailable", reason: "taking_off" } }) }),
+    });
+    await until(() => body().includes("On your watch") && !!button("Un-skip"), "the skipped sheet");
+    expect(button("Start · 30 min")).toBeUndefined();
+    expect(button("Move")).toBeUndefined();
+    await click("Take off watch");
+    await confirmTakeOff();
+    await until(() => !body().includes("On your watch"), "taken off");
+    expect(button("Un-skip")).toBeTruthy();
+    expect(watchCalls(calls)).toEqual(["POST …/take-off-watch", "POST /api/sessions/watch/drain"]);
+  });
+
+  const sheetDialog = () => [...document.querySelectorAll<HTMLElement>('[role="dialog"]')].find((d) => d.textContent?.includes("Supported row"));
+
+  it("after Send, focus is in the sheet — on the new state's Take off watch, not lost to the page (audit 3-B UI-4)", async () => {
+    features.player = true;
+    mount(session({ watch: { state: "ready" } }), { route: watchRoutes() });
+    await until(() => !!button(/Send to watch/), "Send to watch");
+    const opener = button(/Send to watch/) as HTMLButtonElement;
+    opener.focus();
+    await act(async () => opener.click());
+    await until(() => document.activeElement === button("Send"), "Send focused");
+    await click("Send");
+    await until(() => body().includes("Sending…") && !body().includes("Garden program — 2026-10-05"), "Sending…");
+    await until(() => document.activeElement === button("Take off watch"), "focus on Take off watch");
+    expect(sheetDialog()!.contains(document.activeElement)).toBe(true);
+  });
+
+  it("after Take off, focus goes to Send to watch — or, with nothing about the watch left to act on, the sheet (audit 3-B UI-4)", async () => {
+    features.player = true;
+    mount(session({ locked: true, watch: { state: "on_watch" } }), { route: watchRoutes() });
+    await until(() => body().includes("On your watch"), "On your watch");
+    (button("Take off watch") as HTMLButtonElement).focus();
+    await click("Take off watch");
+    await confirmTakeOff();
+    await until(() => document.activeElement === button(/Send to watch/), "focus on Send to watch");
+    act(() => root?.unmount());
+    host?.remove();
+
+    mount(session({ locked: true, watch: { state: "on_watch" } }), {
+      route: watchRoutes({ afterTakeOff: session({ watch: { state: "unavailable", reason: "taking_off" } }) }),
+    });
+    await until(() => body().includes("On your watch"), "On your watch");
+    (button("Take off watch") as HTMLButtonElement).focus();
+    await click("Take off watch");
+    await confirmTakeOff();
+    await until(() => !body().includes("On your watch") && !body().includes("Take this session off"), "taken off");
+    await until(() => document.activeElement === sheetDialog(), "focus on the sheet");
+  });
+
+  it("the watch's state is announced: one status region in the foot, kept from Send to watch through Sending… to On your watch (audit 3-B UI-10)", async () => {
+    features.player = true;
+    // The drain answers when the test says so: "Sending…" first, then the push has run.
+    let release: () => void = () => undefined;
+    const routes = watchRoutes();
+    mount(session({ watch: { state: "ready" } }), {
+      route: (c, set) => {
+        if (c.path !== "/api/sessions/watch/drain") return routes(c, set);
+        return new Promise<Response>((resolve) => {
+          release = () => {
+            set(session({ locked: true, watch: { state: "on_watch" } }));
+            resolve(new Response(JSON.stringify({ executed: 1 }), { status: 200, headers: { "Content-Type": "application/json" } }));
+          };
+        }) as unknown as Response;
+      },
+    });
+    await until(() => !!button(/Send to watch/), "Send to watch");
+    const status = () => document.querySelectorAll('.sheet-foot [role="status"]');
+    expect(status()).toHaveLength(1);
+    const region = status()[0]!;
+    expect(region.textContent).toBe("");
+    // Nothing to see while there is nothing to say: the empty region takes no room.
+    expect(region.closest(".watch-state")!.classList.contains("visually-hidden")).toBe(true);
+    await click(/Send to watch/);
+    await until(() => !!button("Send"), "the preview");
+    await click("Send");
+    await until(() => body().includes("Sending…"), "Sending…");
+    expect(status()[0]).toBe(region);
+    expect(region.textContent).toBe("Sending…");
+    expect(region.contains(button("Take off watch")!)).toBe(false);
+    await act(async () => release());
+    await until(() => body().includes("On your watch"), "On your watch");
+    expect(status()).toHaveLength(1);
+    expect(status()[0]).toBe(region);
+    expect(region.textContent).toBe("On your watch");
+  });
+
+  it("a skipped session not on the watch: nothing about the watch, as before (2a-R15)", async () => {
+    features.player = true;
+    for (const watch of [{ state: "ready" }, { state: "sending" }, { state: "failed" }]) {
+      mount(session({ watch } as Partial<SessionDto>), { w: slot({ completionState: "skipped" }) });
+      await until(() => !!button("Un-skip") && body().includes("Supported row"), "the skipped sheet, loaded");
+      expect(document.querySelector(".watch-state")).toBeNull();
+      expect(button(/Send to watch|Take off watch|Retry/)).toBeUndefined();
+      act(() => root?.unmount());
+      host?.remove();
+    }
+  });
+});
+
+describe("while Sending…, the sheet reads again on a backoff and then stops (audit 3-B UI-1)", () => {
+  // The poll's own clock (`sendingPollClock`) is driven here, second by second; every other timer is the real one (a
+  // global fake advanced by minutes also fires the test runner's own RPC timeouts).
+  const clock = { now: 0, seq: 0, due: [] as Array<{ at: number; id: number; run: () => void }> };
+  const real = { ...sendingPollClock };
+  beforeEach(() => {
+    clock.now = 0;
+    clock.due = [];
+    sendingPollClock.set = (run, ms) => {
+      clock.seq += 1;
+      clock.due.push({ at: clock.now + ms, id: clock.seq, run });
+      return clock.seq;
+    };
+    sendingPollClock.clear = (id) => {
+      clock.due = clock.due.filter((t) => t.id !== id);
+    };
+  });
+  afterEach(() => Object.assign(sendingPollClock, real));
+  /** Let what a tick started (the drain, the read, React's render) land. */
+  const settle = async () => {
+    for (let i = 0; i < 4; i += 1) {
+      await act(async () => {
+        await new Promise((r) => setTimeout(r, 2));
+      });
+    }
+  };
+  const advance = async (ms: number) => {
+    const end = clock.now + ms;
+    for (;;) {
+      clock.due.sort((a, b) => a.at - b.at);
+      const next = clock.due[0];
+      if (!next || next.at > end) break;
+      clock.due.shift();
+      clock.now = next.at;
+      next.run();
+      await settle();
+    }
+    clock.now = end;
+  };
+  const reads = (calls: Call[]) => calls.filter((c) => c.method === "GET" && c.path === `/api/sessions/${SLOT}`).length;
+  const drains = (calls: Call[]) => calls.filter((c) => c.path === "/api/sessions/watch/drain").length;
+  const json = (b: unknown) => new Response(JSON.stringify(b), { status: 200, headers: { "Content-Type": "application/json" } });
+  /** The drain runs nothing (COROS unreachable, the job backing off): the push stays queued. */
+  const stuck = (c: Call): Response | undefined => (c.path === "/api/sessions/watch/drain" ? json({ executed: 0 }) : undefined);
+
+  async function loaded(what: string) {
+    await until(() => body().includes(what), what);
+    await settle();
+  }
+
+  /** Seconds after `t0` (on the poll's clock) of each read and each drain, over `seconds`. */
+  async function timeline(calls: Call[], seconds: number, t0 = clock.now) {
+    const out = { reads: [] as number[], drains: [] as number[] };
+    let r = reads(calls);
+    let d = drains(calls);
+    for (let s = 0; s < seconds; s += 1) {
+      await advance(1_000);
+      for (; reads(calls) > r; r += 1) out.reads.push(Math.round((clock.now - t0) / 1_000));
+      for (; drains(calls) > d; d += 1) out.drains.push(Math.round((clock.now - t0) / 1_000));
+    }
+    return out;
+  }
+  /** The page's clock moves on too (React Query's staleness reads `Date`). */
+  const later = (ms: number) => vi.setSystemTime(new Date(Date.now() + ms));
+
+  it("opened on Sending…: reads at 4, 8, 16, 31, 61 s and each minute to about five minutes — one drain, ≈30 s in — then none", async () => {
+    features.player = true;
+    const { calls } = mount(session({ locked: true, watch: { state: "sending" } }), { route: stuck });
+    await loaded("Sending…");
+    const seen = await timeline(calls, 15 * 60);
+    expect(seen.reads).toEqual([4, 8, 16, 31, 61, 121, 181, 241, 301]);
+    expect(seen.drains).toEqual([31]);
+    // Still Sending… (the hourly lane runs the push): it says so, and reads no more.
+    expect(body()).toContain("Sending…");
+  });
+
+  it("after Send: the drain at once, then the same backoff — two drains in all", async () => {
+    features.player = true;
+    const routes = (c: Call, set: (next: SessionDto) => void): Response | undefined => {
+      if (c.path.endsWith("/watch-preview")) {
+        return json({ buildId: "b1", stamp: "Garden program — 2026-10-05", steps: [], freeText: 0, refusal: null, digest: "d" });
+      }
+      if (c.path.endsWith("/send-to-watch")) {
+        const next = session({ locked: true, watch: { state: "sending" } });
+        set(next);
+        return json(next);
+      }
+      return stuck(c);
+    };
+    const { calls } = mount(session({ watch: { state: "ready" } }), { route: routes });
+    await loaded("Send to watch");
+    await click(/Send to watch/);
+    await until(() => !!button("Send"), "the preview");
+    const t0 = clock.now;
+    expect(drains(calls)).toBe(0);
+    await click("Send");
+    await settle();
+    // The drain at once (in Send's own tap), and its read.
+    expect(drains(calls)).toBe(1);
+    const seen = await timeline(calls, 15 * 60, t0);
+    expect(seen.drains).toEqual([31]);
+    expect(seen.reads).toEqual([4, 8, 16, 31, 61, 121, 181, 241, 301]);
+    expect(drains(calls)).toBe(2);
+  });
+
+  it("stops at once when the state moves on", async () => {
+    features.player = true;
+    let n = 0;
+    const { calls } = mount(session({ locked: true, watch: { state: "sending" } }), {
+      route: (c) => {
+        if (c.method === "GET" && c.path === `/api/sessions/${SLOT}` && (n += 1) >= 3) return json(session({ locked: true, watch: { state: "on_watch" } }));
+        return stuck(c);
+      },
+    });
+    await loaded("Sending…");
+    const seen = await timeline(calls, 10 * 60);
+    expect(seen.reads).toEqual([4, 8]);
+    expect(seen.drains).toEqual([]);
+    expect(body()).toContain("On your watch");
+  });
+
+  it("reads nothing while the page is hidden or after the sheet closes", async () => {
+    features.player = true;
+    const { calls } = mount(session({ locked: true, watch: { state: "sending" } }), { route: stuck });
+    await loaded("Sending…");
+    Object.defineProperty(document, "visibilityState", { configurable: true, get: () => "hidden" });
+    try {
+      const hidden = await timeline(calls, 10 * 60);
+      expect(hidden).toEqual({ reads: [], drains: [] });
+    } finally {
+      delete (document as unknown as Record<string, unknown>).visibilityState;
+    }
+    act(() => root?.unmount());
+    host?.remove();
+
+    // Closed while Sending… (the sheet is unmounted): nothing more, from the first read on.
+    const again = mount(session({ locked: true, watch: { state: "sending" } }), { route: stuck });
+    await loaded("Sending…");
+    act(() => root?.unmount());
+    root = null;
+    expect(await timeline(again.calls, 10 * 60)).toEqual({ reads: [], drains: [] });
+  });
+
+  it("coming back to the page while still Sending… reads once (its poll may have stopped) — the app reads nothing on focus otherwise", async () => {
+    features.player = true;
+    const app = { refetchOnWindowFocus: false, staleTime: 15_000 };
+    const { calls } = mount(session({ locked: true, watch: { state: "sending" } }), { route: stuck, queries: app });
+    await loaded("Sending…");
+    await timeline(calls, 10 * 60);
+    later(10 * 60_000);
+    const before = reads(calls);
+    await act(async () => {
+      window.dispatchEvent(new Event("visibilitychange"));
+    });
+    await settle();
+    expect(reads(calls)).toBe(before + 1);
+    act(() => root?.unmount());
+    host?.remove();
+
+    // Not sending (the switch off, or on the watch): the app's own rule — nothing read on coming back.
+    for (const watch of [null, { state: "on_watch" }]) {
+      const other = mount(session({ locked: true, watch } as Partial<SessionDto>), { route: stuck, queries: app });
+      await loaded("Supported row");
+      later(60_000);
+      const was = reads(other.calls);
+      await act(async () => {
+        window.dispatchEvent(new Event("visibilitychange"));
+      });
+      await settle();
+      expect(reads(other.calls)).toBe(was);
+      act(() => root?.unmount());
+      host?.remove();
+    }
+  });
+});
+
+describe("with the switch off, the sheet is as it was before the watch (audit 3-B UI-13, UI-2)", () => {
+  for (const watch of ["null", "absent"] as const) {
+    it(`a locked build still built (a Start whose two writes split; sent before the switch went off), watch ${watch}: read-only, no foot`, async () => {
+      features.player = true;
+      const s = session({ locked: true, contentState: "built", ...(watch === "null" ? { watch: null } : {}) } as Partial<SessionDto>);
+      if (watch === "absent") delete (s as { watch?: unknown }).watch;
+      mount(s);
+      await until(() => body().includes("Supported row"), "the moves");
+      expect(document.querySelector(".sheet-foot")).toBeNull();
+      expect(button("Start · 30 min")).toBeUndefined();
+      expect(button("Move")).toBeUndefined();
+      expect(button("Skip")).toBeUndefined();
+      expect(document.querySelectorAll(".session-chips button")).toHaveLength(0);
+    });
+
+    it(`watch ${watch}: the foot's action row sits straight in the foot, with no wrapper`, async () => {
+      features.player = true;
+      const s = session(watch === "null" ? ({ watch: null } as Partial<SessionDto>) : {});
+      if (watch === "absent") delete (s as { watch?: unknown }).watch;
+      mount(s);
+      await until(() => !!button("Start · 30 min"), "Start");
+      expect(document.querySelector(".session-foot")).toBeNull();
+      const row = document.querySelector(".sheet-foot > .btn-row");
+      expect([...(row?.querySelectorAll("button") ?? [])].map((b) => b.textContent)).toEqual(["Start · 30 min", "Move", "Skip"]);
+    });
+  }
+
+  it("a locked build still built and SENT (the watch says so): Start, Move and Skip stay", async () => {
+    features.player = true;
+    for (const state of ["sending", "on_watch", "failed"] as const) {
+      mount(session({ locked: true, contentState: "built", watch: { state } } as Partial<SessionDto>));
+      await until(() => body().includes("Supported row"), "the moves");
+      expect([button("Start · 30 min"), button("Move"), button("Skip")].every(Boolean)).toBe(true);
+      act(() => root?.unmount());
+      host?.remove();
+    }
   });
 });

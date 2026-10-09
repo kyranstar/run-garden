@@ -704,7 +704,8 @@ describe("the no-plan state", () => {
 describe("the watch's surfaces exist at every width (Phase 3 Tasks 8 and 10)", () => {
   // The session sheet's foot, the preview of what the watch will show, Today's "On your watch" and the quick review's
   // sheet: phone-first rules in the base layer, nothing a width query adds or takes away (the review's set rows only
-  // line up from md, under its own class).
+  // line up from md, under its own class) — but the foot's ROWS, which from lg lie as the approved mocks draw them
+  // (audit 3-B UI-11; below).
   const WATCH_CLASSES = [
     ".session-foot",
     ".btn-row--split",
@@ -723,9 +724,37 @@ describe("the watch's surfaces exist at every width (Phase 3 Tasks 8 and 10)", (
     for (const cls of WATCH_CLASSES) expect(baseLayer, cls).toMatch(new RegExp(`${esc(cls)}[\\s,{:>]`));
   });
 
-  it("no width query touches any of them", () => {
+  /** The lg rules that lay the foot's rows out as drawn (below): the only width rules allowed on these classes. */
+  const DESKTOP_FOOT = /^\s*\.session-foot(\s*>\s*\.(watch-state|btn-row))?\s*\{[^}]*\}|^\s*\.btn-row--split\s*>\s*\.btn\s*\{[^}]*\}/gm;
+
+  it("no width query touches any of them — but the desktop foot's rows, from lg", () => {
     for (const block of widthBlocks) {
-      for (const cls of WATCH_CLASSES) expect(block.body, `${block.condition} ${cls}`).not.toMatch(new RegExp(`${esc(cls)}(?![\\w-])`));
+      const body = block.condition === "(min-width: 1024px)" ? block.body.replace(DESKTOP_FOOT, "") : block.body;
+      for (const cls of WATCH_CLASSES) expect(body, `${block.condition} ${cls}`).not.toMatch(new RegExp(`${esc(cls)}(?![\\w-])`));
     }
+  });
+});
+
+describe("from lg the watch's foots lie as the approved mocks draw them (audit 3-B UI-11)", () => {
+  const lg = widthBlocks.filter((b) => b.condition === "(min-width: 1024px)").map((b) => b.body).join("\n");
+  const rule = (selector: string) => {
+    const esc = selector.replace(/[.*+?^${}()|[\]\\-]/g, "\\$&").replace(/\s+/g, "\\s*");
+    return new RegExp(`(?:^|[}\\s])${esc}\\s*\\{([^}]*)\\}`, "m").exec(lg)?.[1] ?? null;
+  };
+
+  it("the session sheet: ONE row — Start · Send to watch · Move · Skip — under the watch's state on a row of its own", () => {
+    expect(rule(".session-foot")).toMatch(/display:\s*flex/);
+    expect(rule(".session-foot")).toMatch(/flex-wrap:\s*wrap/);
+    expect(rule(".session-foot > .btn-row")).toMatch(/display:\s*contents/);
+    expect(rule(".session-foot > .watch-state")).toMatch(/flex:\s*1 1 100%/);
+  });
+
+  it("the split rows' buttons keep their own width (Start · Send to watch; Save · Not now; the preview's Send)", () => {
+    expect(rule(".btn-row--split > .btn")).toMatch(/flex:\s*0 1 auto/);
+  });
+
+  it("the preview's Send is at least 240px, the review's Save at least 200px", () => {
+    expect(rule(".watch-send")).toMatch(/min-width:\s*240px/);
+    expect(rule(".review-save")).toMatch(/min-width:\s*200px/);
   });
 });

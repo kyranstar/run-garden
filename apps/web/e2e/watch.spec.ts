@@ -6,15 +6,14 @@ import { test, expect } from "./fixtures.js";
  *
  *   (a) The switch off (the default stack): nothing about the watch on the session sheet or Today.
  *   (b) The switch on: answer the pre-check → Send to watch → the preview lists the build's moves → Send (Enter) →
- *       "Sending…" (the fixture's COROS connection holds no credentials, so the push stays queued) → taken off → nothing
- *       about the watch remains but Send to watch.
+ *       "Sending…" (the fixture's COROS connection holds no credentials, so the push stays queued) → Take off watch,
+ *       confirmed → nothing about the watch remains but Send to watch.
  *   (c) The switch on: Send → `POST /api/dev/watch-session` (today's sent session done on the watch) → Today offers
  *       "Log your session" → the sheet opens prefilled → Save → Today shows the session done; through the API: one
  *       activity for the slot, its one performed session the review, no watch copy.
  *
- * (b) deviates from the plan's wording in one place, after the approved mocks: "Sending…" carries no action (owner
- * call 7 draws each state with its one action, and Sending… has none), so the push still queued is taken off through
- * the same request the sheet's Take off watch sends, and the sheet is read again.
+ * (b) follows the owner's decision of 2026-10-09: "Sending…" offers Take off watch (it asks first), which supersedes
+ * the queued push.
  *
  * Run: `RG_E2E_WATCH=1 RG_API_PORT=… RG_WEB_PORT=… bash apps/web/e2e/fixture-stack.sh`, then
  * `RG_E2E_WATCH=1 RG_BASE=http://localhost:<web> pnpm --filter @rg/web exec playwright test watch` (both projects:
@@ -103,19 +102,42 @@ test("(a) the switch off: nothing about the watch on the sheet or Today", async 
   expect((await context.request.get(`${baseURL}/api/sessions/${slot.id}/watch-preview`)).status()).toBe(404);
 });
 
+/**
+ * Reload once no /api request is in flight: Send and Take off drain and then read the session, Today and Plan, and
+ * WebKit reports a fetch a reload cuts off as a page error (the page-error guard then fails the test).
+ */
+function quietReload(page: Page): () => Promise<void> {
+  let inflight = 0;
+  const api = (r: { url(): string }) => new URL(r.url()).pathname.startsWith("/api/");
+  page.on("request", (r) => void (api(r) && (inflight += 1)));
+  for (const done of ["requestfinished", "requestfailed"] as const) page.on(done, (r) => void (api(r) && (inflight -= 1)));
+  return async () => {
+    await expect.poll(() => inflight, { timeout: 15_000 }).toBe(0);
+    await page.reload();
+  };
+}
+
 test("(b) Send to watch: the preview, Send, Sending… — and taken off, nothing about the watch remains", async ({ page, context, baseURL }) => {
   test.skip(!WATCH, "needs RG_E2E_WATCH=1 (the switch on)");
+  const reload = quietReload(page);
   const slot = await slotToDo(context.request, baseURL!);
   await openSheet(page, slot);
   await send(page);
   // Still queued: the fixture's COROS connection holds no credentials, so the drain runs nothing.
-  await page.reload();
+  await reload();
   await expect(page.getByText("Sending…")).toBeVisible({ timeout: 30_000 });
-  // Taken off (the request the sheet's Take off watch sends), then read again.
-  expect((await context.request.post(`${baseURL}/api/sessions/${slot.id}/take-off-watch`, { data: {} })).ok()).toBeTruthy();
-  await page.reload();
+  // Take off watch, from Sending… (owner, 2026-10-09): it asks first, then the queued push is superseded.
+  await page.getByRole("button", { name: "Take off watch" }).click();
+  const confirm = page.getByRole("dialog", { name: "Take this session off your watch?" });
+  await confirm.getByRole("button", { name: "Take off watch" }).click();
+  await expect(confirm).toHaveCount(0);
   await expect(page.getByRole("button", { name: "Send to watch" })).toBeVisible({ timeout: 30_000 });
-  await expect(page.locator(".watch-state")).toHaveCount(0);
+  await expect(page.getByText("Sending…")).toHaveCount(0);
+  // Read again from the server: the same.
+  await reload();
+  await expect(page.getByRole("button", { name: "Send to watch" })).toBeVisible({ timeout: 30_000 });
+  // Nothing about the watch shows — its status region waits, empty and visually hidden (audit 3-B UI-10).
+  await expect(page.locator(".watch-state:not(.visually-hidden)")).toHaveCount(0);
 });
 
 test("(c) done on the watch: Log your session, prefilled, saved once — one activity, the review its session", async ({ page, context, baseURL }) => {
