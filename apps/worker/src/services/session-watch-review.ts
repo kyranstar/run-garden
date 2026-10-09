@@ -304,8 +304,12 @@ async function sessionDays(db: Db, r: Reviewed): Promise<string[]> {
 
 const within = (date: string, days: readonly string[]): boolean => days.some((d) => date >= d && date <= addDays(d, 1));
 
-/** Another session of the slot — or of its watch activity — is the app's own or a review already (3-R8): none to offer. */
-async function claimedAlready(db: Db, userId: string, slotId: string, activityId: string): Promise<boolean> {
+/**
+ * Another session of the slot — or of its watch activity — is the app's own or a review already (3-R8): none to offer,
+ * and none to save. The save asks it too, with its own id left out (audit 3-B S-3): asking the slot alone let an
+ * outbox review land on an activity another slot's app session had joined — one physical session counted twice.
+ */
+async function claimedAlready(db: Db, userId: string, slotId: string, activityId: string, except?: string): Promise<boolean> {
   const [row] = await db
     .select({ id: performedSessions.id })
     .from(performedSessions)
@@ -315,6 +319,7 @@ async function claimedAlready(db: Db, userId: string, slotId: string, activityId
         or(eq(performedSessions.workoutId, slotId), eq(performedSessions.activityId, activityId)),
         inArray(performedSessions.source, ["app", "watch_review"]),
         ne(performedSessions.payloadHash, PENDING_HASH),
+        ...(except !== undefined ? [ne(performedSessions.id, except)] : []),
       ),
     )
     .limit(1);
@@ -521,7 +526,7 @@ export async function saveWatchReview(db: Db, userId: string, p: PerformedSessio
     if (!merge) return { status: "busy" };
     try {
       if (await restoreInProgress(db, userId)) return { status: "restoring" };
-      if (await savedByAnother(db, userId, slot.id, p.id)) return { status: "slot_done" };
+      if (await claimedAlready(db, userId, slot.id, r.activity.id, p.id)) return { status: "slot_done" };
       await runAtomically(db, await reviewStatements(db, userId, p, hash, r, ctx.now));
     } finally {
       await releaseMergeLocks(db, userId, merge);

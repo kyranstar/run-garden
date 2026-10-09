@@ -619,6 +619,35 @@ describe("saveWatchReview — one session on the watch's activity, saved once", 
     expect(await save(body)).toEqual({ status: "slot_done" });
   });
 
+  it("an app session of ANOTHER slot already on the watch activity → slot_done: one activity, one session (audit 3-B S-3)", async () => {
+    const s = await sentSlot();
+    const { activityId } = await watchDone(s);
+    const body = await reviewBody(s.workoutId); // the sheet opened while the review was offered: an outbox entry
+    // Slot B (on demand, same day), manually matched elsewhere: its app save joins the watch's activity X.
+    await db.insert(plannedWorkouts).values({
+      id: "slot-b", userId, planId: PROGRAM, sourceWorkoutId: "slot-b", title: "Extra lift", category: "strength", sport: "strength",
+      originalPlanDate: DAY, lastVerifiedCorosDate: "", effectiveDate: DAY, effectiveTime: "18:30", sourceContentFingerprint: "program",
+      calendarBlockDurationSeconds: 1800, fallbackEstimatedDurationSeconds: 1800, corosSyncState: "calendar_only",
+      completionState: "completed", origin: "on_demand", contentState: "outline", createdAt: NOON, updatedAt: NOON,
+    });
+    await db.insert(activities).values({
+      id: "act-y", userId, corosActivityId: null, source: "coros", startTime: `${DAY}T15:00:00Z`, sport: "strength", durationSeconds: 900,
+      sourceMergeConfidence: 1, createdAt: NOON, updatedAt: NOON,
+    });
+    await db.insert(workoutCompletionMatches).values({ id: "m-y", workoutId: "slot-b", activityId: "act-y", confidence: 1, method: "manual", matchedAt: NOON });
+    await db.update(activities).set({ completionMatchId: "m-y" }).where(eq(activities.id, "act-y"));
+    const appB: PerformedSessionWireInput = {
+      id: "1b2c3d4e-5f60-4718-8a9b-0c1d2e3f4a5b", source: "app", sourceRef: null, workoutId: "slot-b", buildId: null,
+      localDate: DAY, startedAt: STARTED, endedAt: `${DAY}T19:37:00.000Z`, seconds: 1920, plannedSeconds: null, minutes: null, mode: null,
+      theme: null, locationId: null, blockRef: null, blockNumber: null, completed: true, stepsTotal: null, stepsDone: null, movesDone: [],
+      note: null, newMove: null, entries: [], checks: [], review: {},
+    };
+    expect(await save(appB)).toMatchObject({ status: "saved", activityId, matched: false });
+    expect(await save(body)).toEqual({ status: "slot_done" });
+    const onX = await db.select({ source: performedSessions.source }).from(performedSessions).where(eq(performedSessions.activityId, activityId));
+    expect(onX.filter((r) => r.source !== "watch")).toEqual([{ source: "app" }]);
+  });
+
   it("a later refresh of the activity: the watch copy stays gone, and the slot's title and the build's sport stay", async () => {
     const s = await sentSlot();
     const { activityId } = await watchDone(s);
