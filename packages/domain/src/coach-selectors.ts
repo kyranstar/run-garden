@@ -1,6 +1,13 @@
-import { isSelectorOp, type CoachAuthoredOp, type CoachOp, type WorkoutSelector } from "./coach.js";
-import type { GuardrailWorkout } from "./coach-guardrails.js";
+import {
+  isSelectorOp,
+  type CoachAuthoredOp,
+  type CoachOp,
+  type CoachSelectorOp,
+  type WorkoutSelector,
+} from "./coach.js";
+import { refusedOnAppBuilt, type GuardrailWorkout } from "./coach-guardrails.js";
 import { addDays } from "./time.js";
+import { appAuthoredRow } from "./watch-address.js";
 
 /**
  * SELECTOR EXPANSION (spec: 2026-09-20-coach-plan-management-design.md §2).
@@ -42,11 +49,35 @@ export interface SelectorExpansion {
   empty: { opIndex: number; detail: string }[];
 }
 
-/** What each verb is allowed to land on. */
-function targetable(w: GuardrailWorkout, verb: string, today: string): boolean {
+/** The ordinary op each selector verb resolves into. */
+const RESOLVES_TO = {
+  moveEach: "move",
+  skipEach: "skip",
+  removeEach: "remove",
+  restoreEach: "restore",
+  adjustEach: "adjust",
+} as const satisfies Record<CoachSelectorOp["kind"], CoachOp["kind"]>;
+
+/**
+ * A programme (or on-demand) session the verb's op may not touch (ruling 3-R13): an `adjustEach` over a week that
+ * holds one SKIPS it — it is not the coach's to re-time — rather than resolving onto the fatal `app_built_session` and
+ * binning every other session in the request (re-review NEW-1). Move, skip and remove stay legal on it. Only an op
+ * that names such a row by its own handle is refused.
+ */
+function appBuiltRefuses(w: GuardrailWorkout, verb: CoachSelectorOp["kind"]): boolean {
+  return refusedOnAppBuilt(RESOLVES_TO[verb]) && appAuthoredRow({ origin: w.origin ?? null });
+}
+
+/** Still on the calendar in the state the verb acts on — before asking whose session it is. */
+function live(w: GuardrailWorkout, verb: CoachSelectorOp["kind"], today: string): boolean {
   if (w.date < today) return false;
   if (verb === "restoreEach") return w.completionState === "skipped";
   return w.completionState === "scheduled" || w.completionState === "planned";
+}
+
+/** What each verb is allowed to land on. */
+function targetable(w: GuardrailWorkout, verb: CoachSelectorOp["kind"], today: string): boolean {
+  return live(w, verb, today) && !appBuiltRefuses(w, verb);
 }
 
 function matches(w: GuardrailWorkout, sel: WorkoutSelector): boolean {
@@ -59,7 +90,11 @@ function matches(w: GuardrailWorkout, sel: WorkoutSelector): boolean {
 }
 
 /** Why nothing matched, in the terms the coach used to ask. */
-function emptyDetail(sel: WorkoutSelector, verb: string): string {
+function emptyDetail(sel: WorkoutSelector, verb: CoachSelectorOp["kind"], onlyAppBuilt: boolean): string {
+  // Said plainly, so the repair round re-scopes instead of guessing at another range: the sessions ARE there.
+  if (onlyAppBuilt) {
+    return `the only sessions it reaches are programme sessions, which can be moved, skipped or removed but never re-timed`;
+  }
   if (sel.by === "ids") {
     return `none of the ${sel.ids.length} named session${sel.ids.length === 1 ? "" : "s"} can still be changed`;
   }
@@ -135,7 +170,10 @@ export function expandSelectors(
         }
       }
     }
-    if (produced.length === 0) empty.push({ opIndex, detail: emptyDetail(op.select, op.kind) });
+    if (produced.length === 0) {
+      const onlyAppBuilt = snapshot.some((w) => live(w, op.kind, today) && appBuiltRefuses(w, op.kind) && matches(w, op.select));
+      empty.push({ opIndex, detail: emptyDetail(op.select, op.kind, onlyAppBuilt) });
+    }
     out.push(...produced);
   });
 
