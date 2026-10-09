@@ -812,4 +812,91 @@ describe("a sent copy renamed in the COROS app (audit 3-A life L-5)", () => {
     expect(await rowsTitled(RENAMED)).toHaveLength(1);
     expect(await notesOf(workoutId, "watch_copy_removed")).toEqual([]);
   });
+
+  /**
+   * AUDIT 3-B S-1. COROS numbers a new placement `planProgramId = idInPlan`, so "the recorded program id" is the address
+   * again: the athlete deletes the sent copy, adds their own workout that day, COROS recycles the slot — address, day,
+   * "program id" and sport all match. Only the content tells: a rename changes the name, never the steps.
+   */
+  it("not the copy: the athlete's own workout at the recycled address (planProgramId = idInPlan), other steps — never claimed, never taken off", async () => {
+    const { workoutId, buildId, stamp } = await pushed();
+    const program = programOn(stamp)!;
+    const entity = entityOf(program);
+    program.id = "sv-program-athlete-1";
+    program.name = "My own legs";
+    program.exercises = (program.exercises ?? []).slice(0, 2).map((e) => ({ ...e, sets: 5 }) as typeof e);
+    entity.id = "sv-entity-athlete-1";
+    entity.planProgramId = String(entity.idInPlan);
+    await readNow("short");
+    expect(programSessionPushJobSchema.parse((await jobOf(`push:${buildId}`))!.payload).renamed).toBeUndefined();
+    expect(await rowsTitled("My own legs")).toHaveLength(1);
+    // Take off before the full reads settle it: the unpush carries the stamp, which nothing on COROS carries.
+    await takeOffWatch(db, userId, workoutId, ctx());
+    expect((await jobOf(`unpush:${buildId}`))!.payload).toMatchObject({ name: stamp });
+    await lane();
+    expect(programsNamed("My own legs")).toHaveLength(1);
+  });
+
+  it("not the copy: the app's OWN coach session at the recycled address keeps its workout (audit 3-B U-a)", async () => {
+    const { workoutId, buildId, stamp } = await pushed();
+    const slot = await rowOf(db, workoutId);
+    // The athlete deleted the sent copy; the coach's lift that day landed at the freed idInPlan — same steps, even.
+    const coachStamp = `Coach lift — ${DAY}`;
+    programOn(stamp)!.name = coachStamp;
+    await db.insert(plannedWorkouts).values({
+      id: "coach-lift", userId, planId: "coach-adhoc", sourceWorkoutId: slot.sourceWorkoutId, sourceIdInPlan: slot.sourceIdInPlan,
+      sourceProgramId: slot.sourceProgramId, title: "Coach lift", category: "strength", sport: "strength", originalPlanDate: DAY,
+      lastVerifiedCorosDate: DAY, effectiveDate: DAY, effectiveTime: "07:00", completionState: "scheduled", corosSyncState: "synced",
+      sourceContentFingerprint: "fp", calendarBlockDurationSeconds: 1800, createdAt: NOON, updatedAt: NOON,
+    });
+    await db.insert(corosWriteJobs).values({
+      id: "coach-lift-push", userId, workoutId: "coach-lift", kind: "coach_create_workout", expectedContentFingerprint: "fp",
+      originalDate: DAY, destinationDate: DAY, requestedAt: NOON, status: "verified", verifiedAt: NOON, updatedAt: NOON,
+      payload: { workoutId: "coach-lift", happenDay: DAY, name: coachStamp, session: { title: "Coach lift" } },
+    });
+    await readNow();
+    expect(programSessionPushJobSchema.parse((await jobOf(`push:${buildId}`))!.payload).renamed).toBeUndefined();
+    expect(await rowOf(db, "coach-lift")).toMatchObject({ archivedAt: null, title: "Coach lift", lastVerifiedCorosDate: DAY });
+    await takeOffWatch(db, userId, workoutId, ctx());
+    await lane();
+    expect(programsNamed(coachStamp)).toHaveLength(1);
+  });
+
+  it("renamed, then renamed BACK to the stamp: the recorded name is dropped and Take off takes the copy off (audit 3-B S-2)", async () => {
+    const { workoutId, buildId, stamp } = await pushed();
+    programOn(stamp)!.name = RENAMED;
+    await readNow();
+    expect(programSessionPushJobSchema.parse((await jobOf(`push:${buildId}`))!.payload).renamed).toBe(RENAMED);
+    programsNamed(RENAMED)[0]!.name = stamp;
+    await readNow("short");
+    expect(programSessionPushJobSchema.parse((await jobOf(`push:${buildId}`))!.payload).renamed).toBeUndefined();
+    expect(await watchOf(workoutId)).toEqual({ state: "on_watch" });
+    await takeOffWatch(db, userId, workoutId, ctx());
+    expect((await jobOf(`unpush:${buildId}`))!.payload).toMatchObject({ name: stamp });
+    await lane();
+    expect((await jobOf(`unpush:${buildId}`))!.status).toBe("verified");
+    expect(programsNamed(stamp)).toEqual([]);
+    expect(await watchOf(workoutId)).toEqual({ state: "ready" });
+  });
+
+  it("the renamed copy deleted and a workout of the same name added elsewhere that day: the name is dropped, Take off leaves it", async () => {
+    const { workoutId, buildId, stamp } = await pushed();
+    const program = programOn(stamp)!;
+    program.name = RENAMED;
+    await readNow();
+    expect(programSessionPushJobSchema.parse((await jobOf(`push:${buildId}`))!.payload).renamed).toBe(RENAMED);
+    // The athlete deletes the renamed copy, then adds a workout of their own under that very name, at another idInPlan.
+    const entity = entityOf(program);
+    const own = { ...JSON.parse(JSON.stringify(program)), id: "sv-program-athlete-2", idInPlan: "77", name: RENAMED };
+    own.exercises = own.exercises.slice(0, 1);
+    server.state.schedule.programs = server.state.schedule.programs!.filter((p) => p !== program);
+    server.state.schedule.entities = server.state.schedule.entities!.filter((e) => e !== entity);
+    server.state.schedule.programs.push(own);
+    server.state.schedule.entities.push({ ...entity, id: "sv-entity-athlete-2", idInPlan: "77", planProgramId: "77" });
+    await readNow("short");
+    expect(programSessionPushJobSchema.parse((await jobOf(`push:${buildId}`))!.payload).renamed).toBeUndefined();
+    await takeOffWatch(db, userId, workoutId, ctx());
+    await lane();
+    expect(programsNamed(RENAMED)).toHaveLength(1);
+  });
 });

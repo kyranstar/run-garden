@@ -269,6 +269,16 @@ export function corosProgramFingerprint(program: RawCorosProgram): string {
 }
 
 /**
+ * A PROGRAM'S STRUCTURE: `corosProgramFingerprint` without the program's name — every number, target and step it
+ * covers, and nothing a rename in the COROS app changes. What tells a sent copy the athlete renamed from another
+ * workout COROS placed at the copy's recycled address (audit 3-B S-1): the address, the day and the entity's
+ * `planProgramId` (COROS numbers a new placement `planProgramId = idInPlan`) are all the slot's again; the steps are not.
+ */
+export function corosStructureFingerprint(program: RawCorosProgram): string {
+  return corosProgramFingerprint({ ...program, name: undefined });
+}
+
+/**
  * THE TEXT OF A PROGRAM: the name and overview of each REAL step (repeat-group
  * containers dropped), in wire order — `sortNo`, then array order (Phase 3,
  * spec §4.5).
@@ -462,7 +472,7 @@ export function normalizeCorosSchedule(
       contentFingerprint: program ? corosProgramFingerprint(program) : fingerprint({ rest: date }),
       // Over the RAW program, never the resolved stage names: the push's `observed.text` is taken over the raw
       // read-back, and COROS stores catalog names as i18n keys (audit 3-A life L-8).
-      ...(program ? { textFingerprint: programTextFingerprint(program) } : {}),
+      ...(program ? { textFingerprint: programTextFingerprint(program), structureFingerprint: corosStructureFingerprint(program) } : {}),
       ...(entity.planProgramId != null ? { planProgramId: String(entity.planProgramId) } : {}),
       isRestDay,
       raw: { entity, program },

@@ -599,6 +599,15 @@ export async function importPlanSnapshot(
       .map((r) => `${r.workoutId}\n${r.name as string}`),
   );
 
+  /**
+   * Every name a watch write of ours stamped — coach creates and rewrites, program pushes — whatever its status. A wire
+   * workout carrying one is never a sent copy the athlete renamed (audit 3-B U-a): the coach's own session, landed at
+   * the freed address of a copy the athlete deleted, is the coach row's.
+   */
+  const ourStamps = new Set(watchWrites.flatMap((r) => (typeof r.name === "string" ? [r.name] : [])));
+  /** Program rows a wire workout of this read was claimed by as their renamed copy (audit 3-A life L-5). */
+  const renamedSeen = new Set<string>();
+
   const seenSourceIds = new Set<string>();
 
   /** How many wire workouts in this read carry each stamp of ours: an orphan is only ever its stamp's one carrier. */
@@ -654,11 +663,20 @@ export async function importPlanSnapshot(
     // gone, posted "Removed from your watch". It is the slot's copy when no workout of this read carries the slot's
     // stamp and this one sits at the slot's RECORDED address, on its recorded day, under its recorded program id, and
     // is no sport of another kind (a recycled slot holds something else). Then the slot claims it as it is.
+    //
+    // THE ADDRESS IS NOT ENOUGH (audit 3-B S-1). COROS numbers a new placement `planProgramId = idInPlan`, so the
+    // "recorded program id" is the address again: the athlete deletes the copy, adds their own workout that day, COROS
+    // recycles the slot, and every check above passes — then Take off deleted the athlete's own workout. A rename
+    // changes the NAME only, so the copy's steps must be exactly what the push observed: its structure (the wire
+    // fingerprint without the name) and its step text. And a name one of our own writes stamped is never a rename
+    // (audit 3-B U-a): the coach's session at that freed address is the coach row's.
     const renamedCopyOf =
-      pushed === undefined
+      pushed === undefined && !ourStamps.has(src.title) && !ownProgramNames.has(src.title)
         ? atAddress.find((w) => {
             const push = appAuthoredRow(w) && !w.archivedAt ? verifiedPushOf.get(w.id) : undefined;
             if (!push || stampCarriers.has(push.payload.name)) return false;
+            const observed = push.payload.observed;
+            if (!observed?.structure || src.structureFingerprint !== observed.structure || src.textFingerprint !== observed.text) return false;
             const programId = src.planProgramId ?? src.sourceIdInPlan ?? "";
             return w.lastVerifiedCorosDate === src.date && !!w.sourceProgramId && w.sourceProgramId === programId && !sportFlipped(w, src.sport);
           })
@@ -684,6 +702,7 @@ export async function importPlanSnapshot(
     if (programRow) seenProgramRows.add(current.id);
     if (renamedCopyOf && current === renamedCopyOf) {
       // Its new name, on record for the unpush (it is no stamp: nothing is ever claimed by it).
+      renamedSeen.add(current.id);
       const push = verifiedPushOf.get(current.id)!;
       if (push.payload.renamed !== src.title) {
         push.payload = { ...push.payload, renamed: src.title };
@@ -1170,6 +1189,24 @@ export async function importPlanSnapshot(
     } else {
       stats.unchanged += 1;
     }
+  }
+
+  // A RENAMED COPY'S NAME HOLDS ONLY WHILE EACH READ FINDS THAT COPY AGAIN (audit 3-B S-2). The unpush deletes by
+  // it, and the delete proves nothing else: a copy renamed back to the stamp left Take off failing `stamp_mismatch`
+  // for good, and a renamed copy the athlete deleted — then a workout of theirs under that very name — was the
+  // name's one carrier that day, and went. A read whose window holds the slot's address and did not claim the renamed
+  // copy (the stamp is back, something else is there, or nothing is) drops the name; the stamp is the proof again.
+  for (const [workoutId, push] of verifiedPushOf) {
+    if (push.payload.renamed === undefined || renamedSeen.has(workoutId)) continue;
+    const row = existingById.get(workoutId);
+    const address = row ? watchAddressOf(row) : null;
+    if (!address || address.happenDay < input.rangeStart || address.happenDay > input.rangeEnd) continue;
+    const { renamed: _dropped, ...kept } = push.payload;
+    push.payload = kept;
+    await db
+      .update(corosWriteJobs)
+      .set({ payload: kept as unknown as Record<string, unknown>, updatedAt: now })
+      .where(eq(corosWriteJobs.id, push.jobId));
   }
 
   // ── Rule 8: workouts that disappeared upstream (double-read confirmation) ──

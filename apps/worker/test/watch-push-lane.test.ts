@@ -12,7 +12,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { eq } from "drizzle-orm";
 import { schema } from "@rg/database";
 import { programSessionPushJobSchema, type UserPreferences } from "@rg/domain";
-import { corosProgramFingerprint, programTextFingerprint, type RawCorosProgram } from "@rg/providers";
+import { corosProgramFingerprint, corosStructureFingerprint, programTextFingerprint, type RawCorosProgram } from "@rg/providers";
 import type { Db } from "../src/services/db.js";
 import { executeCloudJobs } from "../src/services/coros-write-cloud.js";
 import { buildSession } from "../src/services/session-build.js";
@@ -96,7 +96,7 @@ describe("a queued push runs", () => {
     const payload = programSessionPushJobSchema.parse(job!.payload);
     const stored = storedProgram(payload.name)!;
     expect(stored).toBeDefined();
-    expect(payload.observed).toEqual({ wire: corosProgramFingerprint(stored), text: programTextFingerprint(stored) });
+    expect(payload.observed).toEqual({ wire: corosProgramFingerprint(stored), text: programTextFingerprint(stored), structure: corosStructureFingerprint(stored) });
 
     const row = await rowOf(db, workoutId);
     const entity = server.state.schedule.entities!.find((e) => String(e.idInPlan) === String(stored.idInPlan))!;
@@ -273,7 +273,7 @@ describe("against a COROS that re-encodes what it stores (Review Focus 5)", () =
     const payload = programSessionPushJobSchema.parse(job!.payload);
     const stored = storedProgram(payload.name)!;
     expect((server as unknown as { reencoded: number }).reencoded).toBe(1);
-    expect(payload.observed).toEqual({ wire: corosProgramFingerprint(stored), text: programTextFingerprint(stored) });
+    expect(payload.observed).toEqual({ wire: corosProgramFingerprint(stored), text: programTextFingerprint(stored), structure: corosStructureFingerprint(stored) });
     expect((await rowOf(db, workoutId)).sourceContentFingerprint).toBe(corosProgramFingerprint(stored));
   });
 });

@@ -220,8 +220,12 @@ export const programSessionPushJobSchema = z
     session: programWatchSessionSchema,
     /** Executor-side retry counter (transient failures requeue, cap 3). */
     attempts: z.number().int().min(0).optional(),
-    /** Written at verify: the fingerprints of what the read-back found. */
-    observed: z.object({ wire: z.string(), text: z.string() }).strict().optional(),
+    /**
+     * Written at verify: the fingerprints of what the read-back found. `structure` is `wire` without the program's
+     * name (audit 3-B S-1): a copy renamed in the COROS app is claimed only while it still matches it; a push verified
+     * before it was recorded claims no renamed copy.
+     */
+    observed: z.object({ wire: z.string(), text: z.string(), structure: z.string().optional() }).strict().optional(),
     /**
      * Written by the import: the fingerprints of the COROS copy it last told the athlete about ("Changed in COROS"),
      * so one change is one note, however many reads see it.
@@ -229,8 +233,11 @@ export const programSessionPushJobSchema = z
     noticed: z.object({ wire: z.string(), text: z.string() }).strict().optional(),
     /**
      * Written by the import (audit 3-A life L-5): the name COROS holds the copy under after the athlete renamed it in
-     * the COROS app — found at the slot's recorded address, day and program id with no workout carrying the stamp.
-     * Never a stamp (nothing is claimed by it): only the unpush addresses the renamed copy by it.
+     * the COROS app — found at the slot's recorded address, day and program id with no workout carrying the stamp, and
+     * the steps exactly as the push observed them (`observed.structure` and `observed.text`, audit 3-B S-1). Never a
+     * stamp (nothing is claimed by it): only the unpush addresses the renamed copy by it. It holds only while each read
+     * finds the renamed copy again: a read that finds the stamp back, or anything else (or nothing) at the address,
+     * drops it (audit 3-B S-2).
      */
     renamed: z.string().min(1).max(200).optional(),
   })
