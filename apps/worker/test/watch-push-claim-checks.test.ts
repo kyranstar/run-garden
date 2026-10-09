@@ -17,6 +17,7 @@ import { addDays, programSessionPushJobSchema, type UserPreferences } from "@rg/
 import type { Db } from "../src/services/db.js";
 import { executeCloudJobs } from "../src/services/coros-write-cloud.js";
 import { applyMove, emitPendingWork } from "../src/services/jobs.js";
+import { removeFromPlan } from "../src/services/plan-mutations.js";
 import { loadSession } from "../src/services/session-build.js";
 import { sendToWatch, takeOffWatch, watchStateOf } from "../src/services/watch-push.js";
 import { mockCorosServer, type MockCorosServer } from "../../../packages/coros/test/mock-coros-server.js";
@@ -191,6 +192,22 @@ describe("an unpush owed while writes are off (L-10)", () => {
     await db.update(corosWriteJobs).set({ status: "failed", lastErrorCategory: "stamp_mismatch" }).where(eq(corosWriteJobs.id, `unpush:${buildId}`));
     await emitPendingWork(db, userId, { corosWritesEnabled: true });
     expect((await jobOf(`unpush:${buildId}`))!.status).toBe("failed");
+  });
+
+  // Re-review C-3a: the removal path (the athlete's remove, the coach's `remove`, archiveWeek) recorded nothing.
+  it("removed from the plan with writes off: owed; writes back on → the copy comes off, once", async () => {
+    const { workoutId, buildId, stamp } = await onWatch();
+    await removeFromPlan(db, userId, workoutId, { now: NOON, source: "remove_from_plan", prefs: writesOff() });
+    expect((await rowOf(db, workoutId)).archivedAt).not.toBeNull();
+    expect((await db.select().from(corosWriteJobs)).filter((j) => j.kind === "coach_delete_workout")).toEqual([]);
+    expect(copiesNamed(stamp)).toBe(1);
+    await emitPendingWork(db, userId, { corosWritesEnabled: true });
+    await lane();
+    const deletes = (await db.select().from(corosWriteJobs)).filter((j) => j.kind === "coach_delete_workout");
+    expect(deletes.map((d) => [d.id, d.status])).toEqual([[`unpush:${buildId}`, "verified"]]);
+    expect(copiesNamed(stamp)).toBe(0);
+    await emitPendingWork(db, userId, { corosWritesEnabled: true });
+    expect((await db.select().from(corosWriteJobs)).filter((j) => j.kind === "coach_delete_workout")).toHaveLength(1);
   });
 
   it("nothing owed: the catch-up pass queues no unpush", async () => {
