@@ -97,6 +97,7 @@ import {
   rowToNormalized,
 } from "../services/completion.js";
 import { gardenSeesSql, resimulateFrom } from "../services/garden-sync.js";
+import { findGardenHoles } from "../services/garden-holes.js";
 import { performedByActivity } from "../services/logged-sets.js";
 import { loadProgress } from "../services/progress.js";
 import { enqueueBackfill, runBackfillChunkCloud } from "../services/backfill.js";
@@ -1430,6 +1431,22 @@ settingsRoutes.put("/", async (c) => {
   return c.json({ ok: true, prefs: parsed.data });
 });
 
+/**
+ * Has the garden lost credit it was owed? (cron reliability, part 3; services/garden-holes.ts). Read-only, the
+ * signed-in account only, counts and dates only. `?fold=1` also folds the stored inputs from genesis (one simulated
+ * day per day — the only check that sees a replay killed as it persisted); `?from=YYYY-MM-DD` narrows the per-day
+ * checks. `replayFrom` is the day a replay must start from to heal what it found.
+ */
+settingsRoutes.get("/diagnostics/garden", async (c) => {
+  const from = c.req.query("from");
+  if (from !== undefined && !/^\d{4}-\d{2}-\d{2}$/.test(from)) return c.json({ error: "bad_from" }, 400);
+  const report = await findGardenHoles(c.get("db"), c.get("userId"), {
+    fold: c.req.query("fold") === "1",
+    ...(from !== undefined ? { from } : {}),
+  });
+  return c.json(report);
+});
+
 settingsRoutes.get("/diagnostics", async (c) => {
   const db = c.get("db");
   const userId = c.get("userId");
@@ -1457,8 +1474,10 @@ settingsRoutes.get("/diagnostics", async (c) => {
     .limit(10);
   const garden = (await db.select().from(gardenState).where(eq(gardenState.userId, userId)).limit(1))[0];
   const budget = await llmBudgetStatus(db, userId);
-  // The connection's own stamp — sync_runs 'coros_read' has no writer since
-  // Phase C, and the limit-10 runs window made this read "never" anyway.
+  // The connection's own stamp, stamped by every successful pull. sync_runs
+  // 'coros_read' (written again by the half-hourly cron since cron
+  // reliability part 3) says the sweep RAN, not that a pull succeeded — and
+  // the limit-10 runs window would miss it anyway.
   const lastCorosRead = connections.find((p) => p.provider === "coros")?.lastSyncAt ?? null;
 
   return c.json({

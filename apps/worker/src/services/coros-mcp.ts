@@ -997,22 +997,34 @@ export async function probeMcpTool(
 }
 
 /** All connected athletes, throttled — riding the same cron as the COROS
- * read sweep. Sleep lands wake-date keyed, so one pull a night is plenty. */
+ * read sweep. Sleep lands wake-date keyed, so one pull a night is plenty.
+ * `onlyUserId`: one account's turn (the half-hourly cron runs each account's
+ * COROS work under its own run row). Returns how many pulls it made. */
 export async function corosMcpSleepSweep(
   db: Db,
   env: Env,
   loadTimezone: (userId: string) => Promise<string>,
   fetchImpl: typeof fetch = fetch,
-): Promise<void> {
+  onlyUserId?: string,
+): Promise<number> {
   const rows = await db
     .select()
     .from(providerConnections)
-    .where(and(eq(providerConnections.provider, PROVIDER), eq(providerConnections.status, "connected")));
+    .where(
+      and(
+        eq(providerConnections.provider, PROVIDER),
+        eq(providerConnections.status, "connected"),
+        ...(onlyUserId !== undefined ? [eq(providerConnections.userId, onlyUserId)] : []),
+      ),
+    );
+  let pulled = 0;
   for (const row of rows) {
     const last = row.lastSyncAt ? Date.parse(row.lastSyncAt) : 0;
     if (Date.now() - last < SYNC_MIN_INTERVAL_MS) continue;
     if (await restoreInProgress(db, row.userId)) continue;
     const timezone = await loadTimezone(row.userId);
+    pulled += 1;
     await syncCorosMcpSleep(db, env, row.userId, timezone, fetchImpl).catch(() => undefined);
   }
+  return pulled;
 }

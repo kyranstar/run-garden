@@ -153,9 +153,10 @@ export async function computeSyncStatus(
         .where(eq(studioPlans.userId, userId))
         .orderBy(desc(studioPlans.createdAt))
         .limit(1),
-      // Phase C deleted the only writer of sync_runs kind='coros_read' — the
-      // honest freshness is the connection's own lastSyncAt, stamped by every
-      // successful pull (audit finding 11).
+      // The honest freshness is the connection's own lastSyncAt, stamped by
+      // every successful pull (audit finding 11). sync_runs kind='coros_read'
+      // (the half-hourly sweep's run row, cron reliability part 3) records
+      // that the sweep ran and what it did, not that a pull succeeded.
       db
         .select({ lastSyncAt: providerConnections.lastSyncAt })
         .from(providerConnections)
