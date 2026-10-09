@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { Link } from "react-router-dom";
-import { keepPreviousData, useQuery } from "@tanstack/react-query";
+import { keepPreviousData, useQuery, useQueryClient } from "@tanstack/react-query";
 import { api, type ActivityDto, type DisciplineBalance, type TodayResponse, type WorkoutDto } from "@rg/api-client";
 import {
   addDays,
@@ -43,6 +43,7 @@ import {
   useRefusedReviews,
 } from "../components/today-program.js";
 import { useSignedInUserId } from "../components/outbox-sync.js";
+import { watchReviewQuery } from "../components/watch-review-sheet.js";
 import { SessionsInProgress } from "../components/sessions-in-progress.js";
 import { ConditionCheckSheet, ConditionChips } from "../components/condition-check-sheet.js";
 import { pickStatusStripMetric, statusStripBaseText } from "../signal-tiles.js";
@@ -1193,6 +1194,13 @@ export function GardenScreen() {
   // The quick reviews offered (Phase 3) — less any this device saved that the server refused, the slot saved first.
   const refusedReviews = useRefusedReviews(outboxRead);
   const watchReviews = (today.data?.watchReviews ?? []).filter((o) => !refusedReviews.has(o.workoutId));
+  // …each read ahead (audit 3-B UI-9): the service worker keeps the answer, so "Log your session" opens offline too —
+  // Today itself comes from its cache — and online the sheet opens on it. Nothing is read while nothing is offered.
+  const qc = useQueryClient();
+  const offered = watchReviews.map((o) => o.workoutId).join(" ");
+  useEffect(() => {
+    for (const id of offered ? offered.split(" ") : []) void qc.prefetchQuery(watchReviewQuery(id));
+  }, [qc, offered]);
   const signedIn = useSignedInUserId();
   const [selectedPlantId, setSelectedPlantId] = useState<string | null>(null);
   const [openSpeciesId, setOpenSpeciesId] = useState<string | null>(null);

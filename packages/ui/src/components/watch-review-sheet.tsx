@@ -89,6 +89,20 @@ export function entryLine(e: Pick<Entry, "perSide" | "sets">): string {
     .join(" · ");
 }
 
+/**
+ * The quick review's basis as the sheet reads it — and as Today reads it ahead while it is offered (audit 3-B UI-9):
+ * the service worker keeps the answer (its read cache), so the sheet opens offline too; online, it opens on what Today
+ * read. 404 once it is no longer offered.
+ */
+export function watchReviewQuery(workoutId: string) {
+  return {
+    queryKey: ["watch-review", workoutId],
+    queryFn: () => api.watchReview(workoutId),
+    staleTime: 5 * 60_000,
+    gcTime: 30 * 60_000,
+  };
+}
+
 export function WatchReviewSheet({
   workoutId,
   title,
@@ -109,13 +123,7 @@ export function WatchReviewSheet({
   saveWaitMs?: number;
 }) {
   const qc = useQueryClient();
-  const basis = useQuery({
-    queryKey: ["watch-review", workoutId],
-    queryFn: () => api.watchReview(workoutId),
-    staleTime: Number.POSITIVE_INFINITY,
-    gcTime: 0,
-    refetchOnWindowFocus: false,
-  });
+  const basis = useQuery({ ...watchReviewQuery(workoutId), refetchOnWindowFocus: false });
   // A basis missing its entries (an older worker, a broken answer) is one that could not load.
   const b = basis.data && Array.isArray(basis.data.entries) ? basis.data : null;
   // THE ATHLETE'S KETTLEBELLS where the session was built (audit 3-B UI-6): a kettlebell move's weight steps through

@@ -323,6 +323,38 @@ describe("Log your session (Phase 3 Task 10; approved mocks §3)", () => {
     expect(card.textContent).not.toContain("Yesterday");
   });
 
+  describe("offline, Log your session still opens (audit 3-B UI-9)", () => {
+    const basisReads = () =>
+      vi.mocked(globalThis.fetch).mock.calls.filter(([url]) => String(url).replace(/\?.*$/, "") === `/api/sessions/${SLOT}/watch-review`).length;
+    const settle = async () => {
+      for (let i = 0; i < 20; i++) {
+        await act(async () => {
+          await new Promise((r) => setTimeout(r, 10));
+        });
+      }
+    };
+
+    it("Today reads an offered review's basis ahead — the service worker keeps it — and the sheet opens on it, not reading it again", async () => {
+      const { card } = await renderCard({ ...todayPayload(done), watchReviews: [offer()] });
+      await settle();
+      expect(basisReads()).toBe(1);
+      await act(async () => (button(card, "Log your session") as HTMLButtonElement).click());
+      await settle();
+      expect([...document.querySelectorAll("[role=dialog] h2")].map((h) => h.textContent)).toContain("Log your session");
+      expect(basisReads()).toBe(1);
+    });
+
+    it("no offer (the switch off, nothing done on the watch): no basis is read", async () => {
+      for (const payload of [{ ...todayPayload(done), watchReviews: [] }, { ...todayPayload(done) }]) {
+        await renderCard(payload);
+        await settle();
+        expect(vi.mocked(globalThis.fetch).mock.calls.some(([url]) => String(url).includes("/watch-review"))).toBe(false);
+        act(() => root?.unmount());
+        host?.remove();
+      }
+    });
+  });
+
   it("Log your session opens the sheet (not the full-screen review)", async () => {
     const { card } = await renderCard({ ...todayPayload(done), watchReviews: [offer()] });
     await act(async () => (button(card, "Log your session") as HTMLButtonElement).click());
