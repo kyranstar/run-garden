@@ -253,6 +253,9 @@ describe("the sweep's work is bounded per invocation", () => {
     await halfHourly(db, acct.env); // the sweep that ingests the mock's activities
     await advanceGarden(db, acct.userId, acct.prefs); // the replay it left on record, finished
     expect(await replayMarker(db, acct.userId)).toBeNull();
+    // Nothing new on the watch from here on (a re-read of the same activities can still count as an ingest on some
+    // calendars — the fixture's own history merges with them — and this case is the sweep that ingests nothing).
+    acct.coros.state.activities = [];
     // A deep backlog: six more efforts waiting for their read (a connect's, a backfill digest's).
     const done = await db
       .select({ id: schema.coachReads.id })

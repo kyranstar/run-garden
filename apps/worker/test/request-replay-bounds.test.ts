@@ -274,6 +274,13 @@ describe("a request walks at most REQUEST_REPLAY_MAX_DAYS of garden, whatever is
         expect(view.snapshot).toEqual(preView.snapshot);
         expect(view.previewEvents).toEqual(preView.previewEvents);
         expect(view.condition).toBe(preView.condition);
+        // The day slider: every simulated day, none skipped, ending where the garden shows.
+        const timeline = (await (await mountRoutes(run.db, "/api/garden", gardenRoutes).request("/api/garden/timeline", { headers: { Cookie: w.cookie } }, ENV)).json()) as {
+          days: Array<{ date: string }>;
+        };
+        const dates = timeline.days.map((d) => d.date);
+        expect(dates.at(-1)).toBe(before.day);
+        expect(dates.every((d, i) => i === 0 || d === addDays(dates[i - 1]!, 1))).toBe(true);
       }
     }
     console.log(`[requests] garden days walked per call with a ${REPLAY_DAYS}-day replay on record: ${JSON.stringify(walked)}`);
