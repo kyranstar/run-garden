@@ -53,7 +53,10 @@ describe("the hourly garden step", () => {
     }
     expect(Math.max(...walked)).toBe(CRON_GARDEN_MAX_DAYS);
     expect(walked.every((d) => d <= CRON_GARDEN_MAX_DAYS)).toBe(true);
-    expect(walked.reduce((a, b) => a + b, 0)).toBeGreaterThanOrEqual(9);
+    expect(walked.filter((d) => d > 0).length).toBeGreaterThanOrEqual(3); // it took several runs
+    // Every day between where it started and where it ended was walked once, by one run or another.
+    const daysBetween = (Date.parse(lastSimulated) - Date.parse(start)) / 86_400_000;
+    expect(walked.reduce((a, b) => a + b, 0)).toBe(daysBetween);
     expect(walked.at(-1)).toBe(0); // caught up
 
     // The same days walked in one go from the same start: the same garden, byte for byte.
@@ -95,7 +98,8 @@ describe("one heavy step per account per invocation", () => {
       expect([r.days > 1, r.llm > 0, r.coros > 0].filter(Boolean).length).toBeLessThanOrEqual(1);
       expect(r.llm).toBeLessThanOrEqual(2); // one read: its call, and at most one repair
     }
-    expect(runs.slice(0, 2).map((r) => r.heavyStep)).toEqual(["garden", "garden"]);
+    expect(runs[0]!.heavyStep).toBe("garden");
+    for (const r of runs) if (r.days > 1) expect(r.heavyStep).toBe("garden");
     expect(runs.filter((r) => r.heavyStep === "coach_read")).toHaveLength(2);
     expect(runs.filter((r) => r.heavyStep === "coros_write")).toHaveLength(1);
     expect(runs.at(-1)!.heavyStep).toBeNull();
