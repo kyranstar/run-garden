@@ -8753,6 +8753,40 @@ button.session-chip::after {
 .review-actions {
   gap: var(--space-4);
 }
+/* LOG YOUR SESSION (Phase 3; approved mocks §3): the review's cards in a sheet — the session's line, the post-check,
+   the moves as lines that open to their steppers, a note. From md a set is one row: its label, the steppers, Done. */
+.watch-review-when {
+  margin: 0;
+  color: var(--ink-soft);
+}
+.review-chev {
+  color: var(--ink-faint);
+}
+/* Done, squared off: a pill's rounded ends are no part of its hit area, and the 44px square's corners must be. */
+.watch-review .review-set > .chipbtn {
+  border-radius: var(--radius-md);
+}
+@media (min-width: 900px) {
+  .watch-review .review-set {
+    grid-template-columns: 5rem minmax(0, 1fr) minmax(0, 1fr) auto;
+    align-items: end;
+    column-gap: var(--space-6);
+  }
+  .watch-review .review-set > .eyebrow,
+  .watch-review .review-set > .chipbtn {
+    align-self: end;
+    margin-bottom: var(--space-3);
+  }
+  /* The steppers' names once, on the first set: each input still carries its own (`aria-label`). */
+  .watch-review .review-set + .review-set .player-stepper > label {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    overflow: hidden;
+    clip: rect(0 0 0 0);
+    white-space: nowrap;
+  }
+}
 @media (min-width: 900px) {
   .review-head,
   .review-main {

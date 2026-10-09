@@ -702,9 +702,21 @@ describe("the no-plan state", () => {
 });
 
 describe("the watch's surfaces exist at every width (Phase 3 Tasks 8 and 10)", () => {
-  // The session sheet's foot, the preview of what the watch will show and Today's "On your watch": phone-first rules
-  // in the base layer, nothing a width query adds or takes away.
-  const WATCH_CLASSES = [".session-foot", ".btn-row--split", ".watch-state", ".watch-state-label", ".wsteps", ".wstep", ".wstep-free", ".today-on-watch"];
+  // The session sheet's foot, the preview of what the watch will show, Today's "On your watch" and the quick review's
+  // sheet: phone-first rules in the base layer, nothing a width query adds or takes away (the review's set rows only
+  // line up from md, under its own class).
+  const WATCH_CLASSES = [
+    ".session-foot",
+    ".btn-row--split",
+    ".watch-state",
+    ".watch-state-label",
+    ".wsteps",
+    ".wstep",
+    ".wstep-free",
+    ".today-on-watch",
+    ".watch-review-when",
+    ".review-chev",
+  ];
   const esc = (s: string) => s.replace(/[.*+?^${}()|[\]\\-]/g, "\\$&");
 
   it("every one is styled in the base layer", () => {

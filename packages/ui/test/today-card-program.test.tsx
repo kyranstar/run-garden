@@ -14,7 +14,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { initialSnapshot } from "@rg/garden-engine";
 import { GardenScreen } from "../src/screens/garden.js";
 import { features } from "../src/features.js";
-import { enqueue } from "../src/offline/outbox.js";
+import { discardEntry, enqueue, outboxEntries } from "../src/offline/outbox.js";
 import { offlineDb } from "../src/offline/idb.js";
 
 vi.mock("@rg/garden-renderer", () => ({ GardenScene: () => null }));
@@ -215,7 +215,7 @@ describe("a sent session on Today (Phase 3 Task 8; approved mocks §2 'Today · 
     expect(line.querySelector(".today-session-text .today-on-watch")?.textContent).toBe("On your watch");
   });
 
-  it("not on the watch, or the switch off (false, or a payload from before Phase 3): nothing about the watch", async () => {
+  it("not on the watch, or the switch off (false, or a payload from before Phase 3): nothing about the watch — beside done, neither", async () => {
     for (const onWatch of [false, undefined]) {
       const { card } = await renderCard(sentPayload(onWatch));
       expect(card.querySelector(".today-on-watch")).toBeNull();
@@ -223,5 +223,80 @@ describe("a sent session on Today (Phase 3 Task 8; approved mocks §2 'Today · 
       act(() => root?.unmount());
       host?.remove();
     }
+  });
+});
+
+describe("Log your session (Phase 3 Task 10; approved mocks §3)", () => {
+  // The page's offline database is opened once and shared across this file's cases: each starts with no save waiting.
+  beforeEach(async () => {
+    const db = await offlineDb().catch(() => null);
+    if (db) for (const e of await outboxEntries(db)) await discardEntry(db, e.key);
+  });
+  const done = slot({ completionState: "completed" });
+  const offer = (over: Record<string, unknown> = {}) => ({ workoutId: SLOT, title: "Program one", date: TODAY, seconds: 1920, category: "strength", ...over });
+  const button = (root: ParentNode, name: string) => [...root.querySelectorAll("button, a")].find((b) => b.textContent?.trim() === name);
+
+  it("heading the card: Done, then Log your session (primary), then Open", async () => {
+    const { card } = await renderCard({ ...todayPayload(done), watchReviews: [offer()] });
+    const actions = card.querySelector(".today-actions")!;
+    expect([...actions.children].map((c) => c.textContent?.trim())).toEqual(["Done", "Log your session", "Open"]);
+    expect(button(actions, "Log your session")!.className).toContain("btn-primary");
+  });
+
+  it("under the day's run: Log your session in place of Done", async () => {
+    const run = { ...slot({ id: "run-1", title: "Easy Run", category: "easy", sport: "run", origin: null, contentState: null, programId: null, effectiveTime: "07:00" }) };
+    const payload = { ...todayPayload(run), todaySessions: [{ workout: run, build: null }, { workout: done, build: null }], watchReviews: [offer()] };
+    const { card } = await renderCard(payload);
+    const line = card.querySelector(".today-session")!;
+    expect(button(line, "Log your session")).toBeTruthy();
+    expect(line.querySelector(".today-session-done")).toBeNull();
+  });
+
+  it("yesterday's, the next morning: its own line — the program, Yesterday · 32 min, Log your session", async () => {
+    const yesterday = "2026-10-07";
+    const { card } = await renderCard({ ...todayPayload(slot()), watchReviews: [offer({ workoutId: "slot-p1-2026-10-07", date: yesterday })] });
+    const lines = [...card.querySelectorAll(".today-session")];
+    const line = lines.find((l) => l.textContent?.includes("Yesterday"))!;
+    expect(line.querySelector(".today-session-name")?.textContent).toBe("Program one");
+    expect(line.querySelector(".today-session-meta")?.textContent).toBe("Yesterday · 32 min");
+    expect(button(line, "Log your session")).toBeTruthy();
+  });
+
+  it("no offer (a done slot, a review saved, the switch off): no Log your session", async () => {
+    for (const watchReviews of [[], undefined]) {
+      const { card } = await renderCard({ ...todayPayload(slot({ contentState: "done", completionState: "completed" })), ...(watchReviews ? { watchReviews } : {}) });
+      expect(card.textContent).not.toContain("Log your session");
+      act(() => root?.unmount());
+      host?.remove();
+    }
+  });
+
+  it("saved here and waiting for the server: will sync, and no Log your session", async () => {
+    vi.stubGlobal("indexedDB", new IDBFactory());
+    await enqueue(
+      await offlineDb(),
+      {
+        id: "33333333-3333-4333-8333-333333333333", source: "watch_review", sourceRef: "lbl-1", workoutId: SLOT, buildId: "b1", localDate: TODAY,
+        startedAt: `${TODAY}T18:00:00.000Z`, endedAt: `${TODAY}T18:32:00.000Z`, seconds: 1920, plannedSeconds: null, minutes: null,
+        mode: null, theme: null, locationId: null, blockRef: null, blockNumber: null, completed: true, stepsTotal: null,
+        stepsDone: null, movesDone: [], note: null, newMove: null, entries: [], checks: [],
+      },
+      "user-1",
+    );
+    const { card } = await renderCard({ ...todayPayload(done), watchReviews: [offer()] });
+    for (let i = 0; i < 100 && !card.textContent?.includes("will sync"); i++) {
+      await act(async () => {
+        await new Promise((r) => setTimeout(r, 10));
+      });
+    }
+    expect(card.textContent).toContain("will sync");
+    expect(card.textContent).not.toContain("Log your session");
+  });
+
+  it("Log your session opens the sheet (not the full-screen review)", async () => {
+    const { card } = await renderCard({ ...todayPayload(done), watchReviews: [offer()] });
+    await act(async () => (button(card, "Log your session") as HTMLButtonElement).click());
+    const titles = [...document.querySelectorAll("[role=dialog] h2")].map((h) => h.textContent);
+    expect(titles).toContain("Log your session");
   });
 });

@@ -218,7 +218,7 @@ export interface TodayResponse {
    * the program's name, the session's day, how long the watch session ran. Empty while the switch is off; absent from a
    * payload cached before Phase 3.
    */
-  watchReviews?: Array<{ workoutId: string; title: string; date: string; seconds: number }>;
+  watchReviews?: Array<{ workoutId: string; title: string; date: string; seconds: number; category: string }>;
   /** The condition chips: switched-on profiles with today's reading; empty without an active program. */
   conditions: Array<ConditionViewDto & { today: { value: number | null; feelingOff: boolean } | null }>;
   unresolved: WorkoutDto[];

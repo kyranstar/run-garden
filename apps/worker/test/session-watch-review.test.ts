@@ -482,14 +482,17 @@ describe("Today's watchReviews", () => {
     statements = 0;
     const res = await mountRoutes(db, "/api/plan", planRoutes).request("/api/plan/today", { headers: { Cookie: cookie } }, env);
     const d1 = statements;
-    return { body: (await res.json()) as { watchReviews: Array<{ workoutId: string; title: string; date: string; seconds: number }> }, d1 };
+    return {
+      body: (await res.json()) as { watchReviews: Array<{ workoutId: string; title: string; date: string; seconds: number; category: string }> },
+      d1,
+    };
   }
 
   it("today's offered slot, and yesterday's the next morning; not two days on; within the budget", async () => {
     const s = await sentSlot();
     await watchDone(s);
     const now = await today();
-    expect(now.body.watchReviews).toEqual([{ workoutId: s.workoutId, title: PROGRAM_NAME, date: DAY, seconds: 1920 }]);
+    expect(now.body.watchReviews).toEqual([{ workoutId: s.workoutId, title: PROGRAM_NAME, date: DAY, seconds: 1920, category: "strength" }]);
     console.info(`[budget] GET /today with a review offered: ${now.d1} D1 + 0 COROS = ${now.d1}`);
     expect(now.d1).toBeLessThanOrEqual(BUDGET);
     expect((await today(switchOn(), `${TOMORROW}T16:00:00.000Z`)).body.watchReviews.map((r) => r.workoutId)).toEqual([s.workoutId]);

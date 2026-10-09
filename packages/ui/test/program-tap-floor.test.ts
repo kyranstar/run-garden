@@ -170,6 +170,17 @@ describe("the watch's controls (Phase 3 Task 8)", () => {
     expect(band["align-items"]).toBe("center");
   });
 
+  it("Log your session's sheet (Task 10): each move's row, its steppers, Done and the note take the floor themselves", () => {
+    // ("N more" is the player's review's own row, measured with it.)
+    expect(rule(".review-move-name")["min-height"]).toBe("var(--tap)");
+    expect(rule(".player-stepper button")["min-height"]).toBe("var(--tap)");
+    expect(rule(".player-stepper input")["min-height"]).toBe("var(--tap)");
+    const chip = rule(".review-rate .chipbtn,\n.review-sets .chipbtn,\n.review-card .chipbtn");
+    expect(chip["min-height"]).toBe("var(--tap)");
+    expect(chip["min-width"]).toBe("var(--tap)");
+    expect(rule(".review-note")["min-height"]).toBe("var(--tap)");
+  });
+
   it("the session sheet's foot rows are at least a pad's reach apart", () => {
     const reach = (TAP - px(rule(".btn-small")["--tap-own"]!)) / 2;
     expect(px(rule(".session-foot").gap!)).toBeGreaterThanOrEqual(reach);

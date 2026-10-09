@@ -399,6 +399,8 @@ export interface WatchReviewOffer {
   date: string;
   /** How long the watch session ran. */
   seconds: number;
+  /** The slot's category: Today's dot. */
+  category: string;
 }
 
 /**
@@ -415,6 +417,7 @@ export async function watchReviewOffers(db: Db, userId: string, today: string): 
       workoutId: plannedWorkouts.id,
       title: sql<string>`coalesce(${programs.name}, ${plannedWorkouts.title})`,
       effectiveDate: plannedWorkouts.effectiveDate,
+      category: plannedWorkouts.category,
       buildDate,
       sent: sql<number>`${sent}`,
       seconds: activities.durationSeconds,
@@ -448,7 +451,7 @@ export async function watchReviewOffers(db: Db, userId: string, today: string): 
     seen.add(r.workoutId);
     const days = r.sent && r.effectiveDate !== r.buildDate ? [r.buildDate, r.effectiveDate] : [r.buildDate];
     const date = days.filter((d) => d === today || d === yesterday).sort().at(-1) ?? r.buildDate;
-    out.push({ workoutId: r.workoutId, title: r.title, date, seconds: Math.max(0, Math.round(r.seconds)) });
+    out.push({ workoutId: r.workoutId, title: r.title, date, seconds: Math.max(0, Math.round(r.seconds)), category: r.category });
   }
   return out;
 }
