@@ -199,8 +199,11 @@ describe("POST send-to-watch — refusals write nothing", () => {
   it("409 stale when the fresh build changes the calendar block: no calendar sync in Send's invocation", async () => {
     const { workoutId, buildId } = await builtSlot();
     const preview = (await (await call("GET", `${workoutId}/watch-preview`)).json()) as { digest: string };
-    const blockBefore = (await rowOf(db, workoutId)).calendarBlockDurationSeconds;
-    // A longer default since the build: the day's build is now a different length — a new calendar block.
+    // A longer default since the build makes the day's build stale. Whether it also changes the build's LENGTH depends
+    // on the mode the engine picks (seeded by the program's random id), so the slot's block is set to a length no build
+    // makes: the fresh build always moves the calendar block, deterministically.
+    const blockBefore = 600;
+    await db.update(schema.plannedWorkouts).set({ calendarBlockDurationSeconds: blockBefore }).where(eq(schema.plannedWorkouts.id, workoutId));
     await db.update(schema.programs).set({ config: adaptiveConfigSchema.parse({ defaultMinutes: 60 }) }).where(eq(schema.programs.id, programId));
     vi.mocked(syncCalendar).mockClear();
     const res = await call("POST", `${workoutId}/send-to-watch`, { body: { buildId, digest: preview.digest } });
