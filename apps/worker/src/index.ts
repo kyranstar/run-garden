@@ -44,6 +44,7 @@ import { executeCloudJobs } from "./services/coros-write-cloud.js";
 import { purgeExpiredSessions, createSession, sessionCookie } from "./auth/sessions.js";
 import { purgeExpiredStates } from "./auth/google.js";
 import { ensureFixtureUser, seedFixtures } from "./services/fixtures.js";
+import { seedWatchSession } from "./services/fixture-watch-session.js";
 import { accountsRestoring, restoreInProgress } from "./services/account-state.js";
 import { placeSlotsForAllPrograms } from "./services/program-slots.js";
 
@@ -111,6 +112,24 @@ app.post("/api/dev/seed", requireUser, async (c) => {
   const result = await seedFixtures(c.get("db"), c.env, c.get("userId"));
   return c.json(result);
 });
+
+/**
+ * Fixture mode only (Phase 3 Task 11, the e2e journey): today's sent session done on the watch — a COROS strength
+ * activity, its watch session from synthetic laps and the scorer's match — so Today offers "Log your session". 404
+ * outside fixture mode (it does not exist there); 409 `no_sent_session` without a sent session today.
+ */
+app.post(
+  "/api/dev/watch-session",
+  async (c, next) => (fixtureModeEnabled(c.env) ? next() : c.json({ error: "not_found" }, 404)),
+  requireUser,
+  async (c) => {
+    const db = c.get("db");
+    const userId = c.get("userId");
+    const result = await seedWatchSession(db, userId, await loadPreferences(db, userId));
+    if (result.status !== "ok") return c.json({ error: result.status }, 409);
+    return c.json(result);
+  },
+);
 
 /**
  * Static assets (the built web app), served by the assets binding. Requests under

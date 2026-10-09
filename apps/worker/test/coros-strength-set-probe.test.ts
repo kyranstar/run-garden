@@ -372,6 +372,9 @@ describe("GET /api/coros/debug/strength-set-stats", () => {
           kgThousandthsOfTwoAndAHalfPounds: 2,
         },
         exerciseId: { present: 7, absent: 3, distinct: 5 },
+        // Phase 3 Task 11: what a lap's exercise key looks like, and whether it points into the program — counts only.
+        exerciseNameKeyShape: { tcode: 9, other: 0, empty: 1 },
+        programExerciseIndex: { present: 9, absent: 1, distinct: 9 },
       },
       summary: {
         present: 3,
@@ -435,6 +438,26 @@ describe("GET /api/coros/debug/strength-set-stats", () => {
         expect(text, `${query || "default"}: leaked fixture value ${JSON.stringify(value)}`).not.toContain(value);
       }
     }
+  });
+
+  it("?providerActivityId= narrows the probe to that one activity, and never echoes the id (Phase 3 Task 11)", async () => {
+    const { db, userId, prefs, server, get } = await setup();
+    await connect(db, userId, server);
+    seedActivities(server, todayInZone(prefs.timezone));
+    const res = await get("/api/coros/debug/strength-set-stats?providerActivityId=lbl-strength-b-5528");
+    expect(res.status).toBe(200);
+    const text = await res.text();
+    expect(text).not.toContain("lbl-strength-b-5528");
+    const body = JSON.parse(text) as StrengthSetProbeBody;
+    expect(body).toMatchObject({ strengthActivities: 1, activitiesScanned: 1, activitiesWithLapItems: 1 });
+    expect(body.lapItems.total).toBe(3);
+    expect(body.lapItems.exerciseNameKeyShape).toEqual({ tcode: 3, other: 0, empty: 0 });
+    expect(body.lapItems.programExerciseIndex).toEqual({ present: 3, absent: 0, distinct: 3 });
+    // An id that is no strength activity of the window: nothing read.
+    const none = (await (await get("/api/coros/debug/strength-set-stats?providerActivityId=lbl-run-7740")).json()) as StrengthSetProbeBody;
+    expect(none).toMatchObject({ strengthActivities: 0, activitiesScanned: 0 });
+    // Only an id's characters.
+    expect((await get("/api/coros/debug/strength-set-stats?providerActivityId=a%20b")).status).toBe(400);
   });
 
   it("clamps the window to 1..120 days and refuses a non-integer", async () => {
