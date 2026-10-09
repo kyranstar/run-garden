@@ -15,7 +15,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { IDBFactory } from "fake-indexeddb";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { WatchReviewBasisDto } from "@rg/api-client";
-import { WatchReviewSheet } from "../src/components/watch-review-sheet.js";
+import { entryLine, WatchReviewSheet } from "../src/components/watch-review-sheet.js";
 import { offlineDb } from "../src/offline/idb.js";
 import { discardEntry, outboxEntries } from "../src/offline/outbox.js";
 
@@ -93,13 +93,16 @@ afterEach(() => {
 
 const json = (b: unknown, status = 200) => new Response(JSON.stringify(b), { status, headers: { "Content-Type": "application/json" } });
 
-function mount(opts: { put?: () => Response | Promise<Response>; basis?: unknown } = {}) {
+function mount(opts: { put?: () => Response | Promise<Response>; basis?: unknown; session?: unknown } = {}) {
   const puts: unknown[] = [];
+  const reads: string[] = [];
   vi.stubGlobal(
     "fetch",
     vi.fn(async (url: string, init?: RequestInit) => {
       const path = url.replace(/\?.*$/, "");
+      if ((init?.method ?? "GET") === "GET") reads.push(path);
       if (path === `/api/sessions/${SLOT}/watch-review`) return json(opts.basis ?? BASIS);
+      if (path === `/api/sessions/${SLOT}` && opts.session) return json(opts.session);
       if (path.startsWith("/api/sessions/performed/") && init?.method === "PUT") {
         puts.push(JSON.parse(String(init.body)));
         return opts.put ? opts.put() : json({ status: "saved", performedId: "x", activityId: "act-1", matched: true, notes: [] });
@@ -123,7 +126,7 @@ function mount(opts: { put?: () => Response | Promise<Response>; basis?: unknown
       ),
     );
   });
-  return { puts, onClose, onSaved, qc };
+  return { puts, onClose, onSaved, qc, reads };
 }
 
 async function until(check: () => boolean | Promise<boolean>, what: string): Promise<void> {
@@ -295,6 +298,84 @@ describe("Log your session — the sheet", () => {
     expect(puts).toEqual([]);
     expect(onSaved).not.toHaveBeenCalled();
     expect(await entries()).toEqual([]);
+  });
+
+  describe("audit 3-B UI-6", () => {
+    const set = (i: number, over: Record<string, unknown>) => ({ setIndex: i, side: null, reps: 8, seconds: null, load: null, done: true, flags: [], from: "watch", ...over });
+    const kbBasis = (over: Record<string, unknown> = {}) => ({
+      ...(BASIS as object),
+      entries: [
+        {
+          exerciseId: "kbSwing",
+          name: "Kettlebell swing",
+          perSide: false,
+          format: "straight",
+          implement: "kettlebell",
+          sets: [set(0, { load: { v: 16, u: "kg" } }), set(1, { load: { v: 16, u: "kg" } })],
+          ...over,
+        },
+      ],
+    });
+    /** The session as GET /api/sessions/:id answers it: built at home, where the bells are 12, 16 and 24 kg. */
+    const atHome = { workoutId: SLOT, view: { location: { id: "home", name: "Home", equipment: ["kettlebell"], implements: { kettlebell: [{ v: 24, u: "kg" }, { v: 12, u: "kg" }, { v: 16, u: "kg" }] } } } };
+    const weight = () => document.querySelector<HTMLInputElement>(".review-set input[inputmode=decimal]")!.value;
+
+    it("a kettlebell move's weight steps through the athlete's bells where the session was built, as the player's review does", async () => {
+      mount({ basis: kbBasis(), session: atHome });
+      await until(() => !!document.querySelector(".review-move"), "the moves");
+      await click(/^Kettlebell swing/);
+      await until(() => document.querySelectorAll(".review-set").length === 2, "the sets");
+      await click("Heavier");
+      await until(() => weight() === "24 kg", "the next bell up (24 kg, not the 2.5 kg grid's 17.5)");
+      await click("Lighter");
+      await click("Lighter");
+      expect(weight()).toBe("12 kg");
+    });
+
+    it("the session is read for its bells only when a move is a kettlebell's", async () => {
+      const { reads } = mount({ session: atHome });
+      await until(() => !!document.querySelector(".review-move"), "the moves");
+      await click(/^Goblet squat/);
+      await click("Heavier");
+      expect(reads).not.toContain(`/api/sessions/${SLOT}`);
+    });
+
+    it("a one-sided move's line shows a side the watch did not log (L, R, L: the right of set 2 missing)", async () => {
+      const side = (i: number, s: "left" | "right", seconds: number) => set(i, { side: s, reps: null, seconds });
+      mount({
+        basis: kbBasis({
+          exerciseId: "plank", name: "Side plank", perSide: true, format: "holds", implement: null,
+          sets: [side(0, "left", 30), side(1, "right", 30), side(2, "left", 25)],
+        }),
+      });
+      await until(() => !!document.querySelector(".review-move"), "the moves");
+      expect(text(document.querySelector(".review-move-name"))).toBe("Side plank 30 s each side · 25 s left only");
+      await click(/^Side plank/);
+      expect([...document.querySelectorAll(".review-set > .eyebrow")].map((e) => text(e))).toEqual(["Set 1 · Left", "Set 1 · Right", "Set 2 · Left"]);
+    });
+
+    it("…and set 1's right missing (L, L, R): the set numbers follow the sides, not the position", async () => {
+      const side = (i: number, s: "left" | "right", seconds: number) => set(i, { side: s, reps: null, seconds });
+      mount({
+        basis: kbBasis({
+          exerciseId: "plank", name: "Side plank", perSide: true, format: "holds", implement: null,
+          sets: [side(0, "left", 30), side(1, "left", 25), side(2, "right", 25)],
+        }),
+      });
+      await until(() => !!document.querySelector(".review-move"), "the moves");
+      expect(text(document.querySelector(".review-move-name"))).toBe("Side plank 30 s left only · 25 s each side");
+      await click(/^Side plank/);
+      expect([...document.querySelectorAll(".review-set > .eyebrow")].map((e) => text(e))).toEqual(["Set 1 · Left", "Set 2 · Left", "Set 2 · Right"]);
+    });
+
+    it("…and a right with no left before it (R, L, R): right only, then a set of both", () => {
+      const s = (side: "left" | "right", seconds: number) => ({ setIndex: 0, side, reps: null, seconds, load: null, done: true, flags: [] });
+      expect(entryLine({ perSide: true, sets: [s("right", 20), s("left", 30), s("right", 30)] })).toBe("20 s right only · 30 s each side");
+    });
+
+    it("both sides of every set: the line as before — one figure per set, each side", async () => {
+      expect(entryLine({ perSide: true, sets: [{ setIndex: 0, side: "left", reps: null, seconds: 30, load: null, done: true, flags: [] }, { setIndex: 1, side: "right", reps: null, seconds: 30, load: null, done: true, flags: [] }] })).toBe("30 s each side");
+    });
   });
 
   it("Not now closes and keeps nothing", async () => {
