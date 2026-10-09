@@ -31,6 +31,7 @@ import {
   performedSessions,
   performedSets,
   plannedWorkouts,
+  programBlocks,
   programs,
   sessionBuilds,
   workoutCompletionMatches,
@@ -39,6 +40,7 @@ import {
   addDays,
   isLocalDate,
   SESSION_FORMATS,
+  sessionModeSchema,
   type PerformedSessionWire,
   type PerformedSet,
   type SessionFormat,
@@ -319,6 +321,9 @@ async function claimedAlready(db: Db, userId: string, slotId: string, activityId
   return row !== undefined;
 }
 
+/** A non-negative number read out of a stored payload, rounded whole; null for anything else. */
+const wholeOrNull = (n: unknown): number | null => (typeof n === "number" && Number.isFinite(n) && n >= 0 ? Math.round(n) : null);
+
 /** A UTC instant as the save's wire takes it. */
 const instant = (iso: string): string => new Date(iso).toISOString();
 
@@ -534,14 +539,26 @@ export async function saveWatchReview(db: Db, userId: string, p: PerformedSessio
  */
 async function reviewStatements(db: Db, userId: string, p: PerformedSessionWire, hash: string, r: Reviewed, now: string): Promise<AtomicStatement[]> {
   // §9.2 from the locked build: a core lift → strength, else yoga (the watch files a mobility session as Strength).
-  const [core] = await db
+  // And in the same read, what the session WAS, from the locked build the review is of — never from the client, whose
+  // sheet has none of it (audit 3-B S-6): the engine reads mode (the 48-hour rule), theme (the rotation) and block
+  // (block awards) from history, and a watch build-day stored null proposed `build` again the next day.
+  const built = (path: string) => sql`json_extract(${sessionBuilds.payload}, ${path})`;
+  const [locked] = await db
     .select({
       core: sql<number>`exists (select 1 from json_each(${sessionBuilds.payload}, '$.build.items') where json_extract(value, '$.block') = 'core')`,
+      mode: sql<string | null>`${built("$.build.mode")}`,
+      theme: sql<string | null>`${built("$.build.theme")}`,
+      minutes: sql<number | null>`${built("$.build.minutes")}`,
+      plannedSeconds: sql<number | null>`${built("$.build.plannedSeconds")}`,
+      locationId: sql<string | null>`${built("$.build.locationId")}`,
+      blockRef: sql<string | null>`${built("$.build.blockRef")}`,
+      blockNumber: sql<number | null>`(select ${programBlocks.number} from ${programBlocks} where ${programBlocks.id} = ${built("$.build.blockRef")})`,
     })
     .from(sessionBuilds)
     .where(eq(sessionBuilds.id, r.build.id))
     .limit(1);
-  const discipline = core?.core ? "strength" : "yoga";
+  const discipline = locked?.core ? "strength" : "yoga";
+  const mode = sessionModeSchema.safeParse(locked?.mode);
   const prefs = await prefStatements(db, userId, p, now);
   const statements: AtomicStatement[] = [];
   const row = {
@@ -556,13 +573,13 @@ async function reviewStatements(db: Db, userId: string, p: PerformedSessionWire,
     startedAt: p.startedAt,
     endedAt: p.endedAt,
     seconds: p.seconds,
-    plannedSeconds: p.plannedSeconds,
-    minutes: p.minutes,
-    mode: p.mode,
-    theme: p.theme,
-    locationId: p.locationId,
-    blockRef: p.blockRef,
-    blockNumber: p.blockNumber,
+    plannedSeconds: wholeOrNull(locked?.plannedSeconds),
+    minutes: wholeOrNull(locked?.minutes),
+    mode: mode.success ? mode.data : null,
+    theme: locked?.theme ?? null,
+    locationId: locked?.locationId ?? null,
+    blockRef: locked?.blockRef ?? null,
+    blockNumber: locked?.blockRef ? wholeOrNull(locked.blockNumber) : null,
     completed: p.completed,
     stepsTotal: p.stepsTotal,
     stepsDone: p.stepsDone,

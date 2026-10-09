@@ -14,6 +14,7 @@ import { and, eq, isNull } from "drizzle-orm";
 import { schema } from "@rg/database";
 import {
   adaptiveConfigSchema,
+  addDays,
   canonicalJson,
   type PerformedSessionWireInput,
   type PerformedSet,
@@ -30,7 +31,7 @@ import { sessionRoutes } from "../src/routes/sessions.js";
 import { ingestActivities } from "../src/services/completion.js";
 import { corosKeyOf } from "../src/services/coros-exercise-map.js";
 import { buildDayInput } from "../src/services/garden-sync.js";
-import { pushJobId, startSession, type BuildPayload } from "../src/services/session-build.js";
+import { buildSession, pushJobId, startSession, type BuildPayload } from "../src/services/session-build.js";
 import { savePerformedSession } from "../src/services/session-save.js";
 import { pairWatchSets, watchReviewBasis } from "../src/services/session-watch-review.js";
 import { upsertWatchSession } from "../src/services/watch-sets.js";
@@ -677,6 +678,53 @@ describe("saveWatchReview — one session on the watch's activity, saved once", 
     // The client's own hash is the one kept (the outbox keys by it).
     const [row] = await db.select().from(performedSessions);
     expect(row!.payloadHash).toBe(await sha256Hex(canonicalJson(body)));
+  });
+
+  it("records mode, theme, minutes, location and block from the LOCKED BUILD, whatever the client sent (audit 3-B S-6)", async () => {
+    const s = await sentSlot();
+    await watchDone(s);
+    // The sheet sends them all null (the basis carries none); a hand-made PUT could send anything.
+    const body = await reviewBody(s.workoutId, { mode: "recovery", theme: "not-a-theme", minutes: 5, blockRef: "blk-x", blockNumber: 9 });
+    expect((await save(body)).status).toBe("saved");
+    const [row] = await db.select().from(performedSessions).where(eq(performedSessions.id, body.id));
+    const [block] = await db.select().from(schema.programBlocks).where(eq(schema.programBlocks.id, s.build.blockRef ?? ""));
+    expect(s.build.blockRef).not.toBeNull();
+    expect(row).toMatchObject({
+      mode: s.build.mode,
+      theme: s.build.theme,
+      minutes: s.build.minutes,
+      plannedSeconds: s.build.plannedSeconds,
+      locationId: s.build.locationId,
+      blockRef: s.build.blockRef,
+      blockNumber: block!.number,
+    });
+  });
+
+  it("a build-mode session done on the watch and reviewed: the next day's build gives it 48 hours, as after an app save (audit 3-B S-6)", async () => {
+    // Three earlier sessions this week (so the weekly gate passes), none of them build.
+    for (const [i, d] of [[1, addDays(DAY, -1)], [2, addDays(DAY, -2)], [3, addDays(DAY, -3)]] as const) {
+      await db.insert(performedSessions).values({
+        id: `prior-${i}`, userId, workoutId: null, activityId: null, buildId: null, source: "import", sourceRef: null, localDate: d,
+        startedAt: `${d}T18:00:00.000Z`, endedAt: null, seconds: 1800, mode: "consistent", theme: null, completed: true,
+        movesDone: [], payloadHash: `h-${i}`, createdAt: NOON, updatedAt: NOON,
+      });
+    }
+    const workoutId = await seedSlot(DAY);
+    const at = { today: DAY, now: NOON, prefs };
+    const built = await buildSession(db, userId, workoutId, { checks: { tmj: { pre: 2, feelingOff: false } }, overrides: { mode: "build" } }, at);
+    expect(built.build!.mode).toBe("build");
+    await sendToWatch(db, switchOn(), userId, workoutId, built.build!.buildId, at);
+    const [b] = await db.select().from(sessionBuilds).where(eq(sessionBuilds.id, built.build!.buildId));
+    await watchDone({ workoutId, build: { ...(b!.payload as { build: BuildPayload }).build, buildId: b!.id } });
+    expect((await save(await reviewBody(workoutId))).status).toBe("saved");
+
+    vi.setSystemTime(new Date(`${TOMORROW}T19:00:00.000Z`));
+    const next = await buildSession(
+      db, userId, await seedSlot(TOMORROW), { checks: { tmj: { pre: 2, feelingOff: false } } },
+      { today: TOMORROW, now: `${TOMORROW}T19:00:00.000Z`, prefs },
+    );
+    expect(next.build!.mode).not.toBe("build");
+    expect(next.build!.modeReasons.join(" ")).toMatch(/48 hours/);
   });
 
   it("a review whose push job never existed but whose build was sent then failed still pairs with the locked build", async () => {
