@@ -1,6 +1,7 @@
 import { DateTime } from "luxon";
 import type { Instant, LocalDate, LocalTime, SchedulingPreferences } from "@rg/domain";
 import { isWeekend } from "@rg/domain";
+import { schedulingZone } from "./zone.js";
 
 export type DayWindow = "morning" | "evening";
 
@@ -16,13 +17,13 @@ export function preferredTimeFor(
 
 /** A wall-clock time on a date in the user's zone, as a UTC instant. DST-safe via Luxon. */
 export function zonedInstant(date: LocalDate, time: LocalTime, timezone: string): Instant {
-  const dt = DateTime.fromISO(`${date}T${time}`, { zone: timezone });
+  const dt = DateTime.fromISO(`${date}T${time}`, { zone: schedulingZone(timezone) });
   if (!dt.isValid) throw new Error(`Invalid zoned datetime ${date}T${time} in ${timezone}`);
   return dt.toUTC().toISO({ suppressMilliseconds: true })!;
 }
 
 export function instantToZoned(instant: Instant, timezone: string): DateTime {
-  return DateTime.fromISO(instant, { zone: "utc" }).setZone(timezone);
+  return DateTime.fromISO(instant, { zone: "utc" }).setZone(schedulingZone(timezone));
 }
 
 export function windowOfTime(time: LocalTime): DayWindow {
@@ -43,7 +44,7 @@ export function computeBlock(
   workoutSeconds: number,
   prefs: SchedulingPreferences,
 ): ScheduledBlock {
-  const workoutStart = DateTime.fromISO(`${date}T${time}`, { zone: prefs.timezone });
+  const workoutStart = DateTime.fromISO(`${date}T${time}`, { zone: schedulingZone(prefs.timezone) });
   const blockStart = workoutStart.minus({ minutes: prefs.bufferBeforeMinutes });
   const workoutEnd = workoutStart.plus({ seconds: workoutSeconds });
   const blockEnd = workoutEnd.plus({ minutes: prefs.bufferAfterMinutes });
@@ -63,9 +64,10 @@ export function fitsEvening(
   workoutSeconds: number,
   prefs: SchedulingPreferences,
 ): boolean {
-  const start = DateTime.fromISO(`${date}T${time}`, { zone: prefs.timezone });
+  const zone = schedulingZone(prefs.timezone);
+  const start = DateTime.fromISO(`${date}T${time}`, { zone });
   const finish = start.plus({ seconds: workoutSeconds, minutes: prefs.bufferAfterMinutes });
-  const latest = DateTime.fromISO(`${date}T${prefs.latestEveningFinish}`, { zone: prefs.timezone });
+  const latest = DateTime.fromISO(`${date}T${prefs.latestEveningFinish}`, { zone });
   return finish <= latest;
 }
 
@@ -85,11 +87,12 @@ export function latestEveningEndBefore(
   busy: BusyInterval[],
   timezone: string,
 ): DateTime | undefined {
-  const prevStart = DateTime.fromISO(`${date}T00:00`, { zone: timezone }).minus({ hours: 6 });
-  const dayStart = DateTime.fromISO(`${date}T00:00`, { zone: timezone }).plus({ hours: 4 });
+  const zone = schedulingZone(timezone);
+  const prevStart = DateTime.fromISO(`${date}T00:00`, { zone }).minus({ hours: 6 });
+  const dayStart = DateTime.fromISO(`${date}T00:00`, { zone }).plus({ hours: 4 });
   let latest: DateTime | undefined;
   for (const b of busy) {
-    const end = DateTime.fromISO(b.end, { zone: "utc" }).setZone(timezone);
+    const end = DateTime.fromISO(b.end, { zone: "utc" }).setZone(zone);
     if (end > prevStart && end < dayStart) {
       if (!latest || end > latest) latest = end;
     }
