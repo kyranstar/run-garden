@@ -225,11 +225,18 @@ export function SessionSheet({ w, today, onClose }: { w: WorkoutDto; today: stri
       setConfirmingTakeOff(false);
       afterWatchWrite(next);
     },
-    onError: () => {
-      setConfirmingTakeOff(false);
-      void qc.invalidateQueries({ queryKey: key });
-    },
+    // Offline, or refused: the confirm stays open and says so (audit 3-B UI-3) — never closed as if it went through.
+    onError: () => void qc.invalidateQueries({ queryKey: key }),
   });
+  const askTakeOff = () => {
+    takeOff.reset();
+    setConfirmingTakeOff(true);
+  };
+  const takeOffButton = (
+    <button type="button" className="btn" disabled={takeOff.isPending} onClick={askTakeOff}>
+      Take off watch
+    </button>
+  );
 
   const s = session.data;
   const date = s?.date ?? w.effectiveDate;
@@ -355,9 +362,11 @@ export function SessionSheet({ w, today, onClose }: { w: WorkoutDto; today: stri
   // that sheet stays read-only, as it was before the watch.
   const watch = s?.watch ?? null;
   const sentHere = !!s && s.locked && s.contentState === "built" && !!watch && SENT_STATES.includes(watch.state);
-  // Nothing about the watch on a skipped session (2a-R15: Un-skip and nothing else) or a done one (its copy is the
-  // session the athlete did, and stays).
-  const watchShown = !!s && !!watch && !skipped && s.contentState !== "done" && w.completionState !== "completed";
+  // Nothing about the watch on a done session (its copy is the session the athlete did, and stays). A skipped one offers
+  // Un-skip and nothing else (2a-R15) — unless its copy is still on the watch, which Skip leaves alone: then it says so,
+  // with Take off watch (audit 3-B UI-12).
+  const watchShown =
+    !!s && !!watch && s.contentState !== "done" && w.completionState !== "completed" && (!skipped || watch.state === "on_watch");
   const offersSend =
     watchShown && showBuild && (watch!.state === "ready" || (watch!.state === "unavailable" && watch!.reason === "too_long"));
   // The pinned foot holds the sheet's actions — and is left out when there are none (loading, or a started or done
@@ -438,7 +447,9 @@ export function SessionSheet({ w, today, onClose }: { w: WorkoutDto; today: stri
       );
     }
   }
-  // The watch's state, in the foot where Send to watch was tapped (owner call 7), each with its one action.
+  // The watch's state, in the foot where Send to watch was tapped (owner call 7), each with its one action. "Sending…"
+  // offers Take off too (owner, 2026-10-09): a push that cannot run for a while (COROS unreachable) is stopped there,
+  // the queued push superseded — not only by Move.
   let watchRow: React.ReactNode = null;
   if (watchShown && watch!.state === "sending") {
     watchRow = (
@@ -447,6 +458,7 @@ export function SessionSheet({ w, today, onClose }: { w: WorkoutDto; today: stri
           <span className="watch-spin" aria-hidden="true" />
           Sending…
         </span>
+        {takeOffButton}
       </div>
     );
   } else if (watchShown && watch!.state === "on_watch") {
@@ -456,9 +468,7 @@ export function SessionSheet({ w, today, onClose }: { w: WorkoutDto; today: stri
           <IconWatch size={16} />
           On your watch
         </span>
-        <button type="button" className="btn" disabled={takeOff.isPending} onClick={() => setConfirmingTakeOff(true)}>
-          Take off watch
-        </button>
+        {takeOffButton}
       </div>
     );
   } else if (watchShown && watch!.state === "failed") {
@@ -609,6 +619,7 @@ export function SessionSheet({ w, today, onClose }: { w: WorkoutDto; today: stri
         confirmLabel="Take off watch"
         busy={takeOff.isPending}
         onConfirm={() => takeOff.mutate()}
+        error={takeOff.isError ? "Couldn't take it off — try again in a moment." : null}
       >
         It stays in the app.
       </ConfirmDialog>

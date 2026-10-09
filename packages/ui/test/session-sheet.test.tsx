@@ -1030,6 +1030,77 @@ describe("the watch in the session sheet's foot (Phase 3 Task 8)", () => {
     await until(() => !!button("Start · 45 min"), "the fresh session");
     expect(body()).not.toContain("Garden program — 2026-10-05");
   });
+
+  const confirmTakeOff = async () => {
+    const confirm = [...document.querySelectorAll<HTMLButtonElement>(".btn-danger")].find((b) => b.textContent === "Take off watch")!;
+    await act(async () => confirm.click());
+  };
+
+  it("sending: Take off watch too (owner, 2026-10-09) — it asks first, then the queued push is superseded and Send is offered again", async () => {
+    features.player = true;
+    const { calls } = mount(session({ locked: true, watch: { state: "sending" } }), { route: watchRoutes() });
+    await until(() => body().includes("Sending…"), "Sending…");
+    await click("Take off watch");
+    expect(body()).toContain("Take this session off your watch?");
+    expect(calls.some((c) => c.path.endsWith("/take-off-watch"))).toBe(false);
+    await confirmTakeOff();
+    await until(() => !!button(/Send to watch/), "ready again");
+    expect(body()).not.toContain("Sending…");
+    expect(watchCalls(calls)).toEqual(["POST …/take-off-watch", "POST /api/sessions/watch/drain"]);
+  });
+
+  it("a failed Take off says so, and the confirm stays open to try again (audit 3-B UI-3)", async () => {
+    features.player = true;
+    let offline = true;
+    const routes = watchRoutes();
+    const { calls } = mount(session({ locked: true, watch: { state: "on_watch" } }), {
+      route: (c, set) => {
+        if (c.path.endsWith("/take-off-watch") && offline) throw new TypeError("Failed to fetch");
+        return routes(c, set);
+      },
+    });
+    await until(() => body().includes("On your watch"), "On your watch");
+    await click("Take off watch");
+    await confirmTakeOff();
+    await until(() => body().includes("Couldn't take it off — try again in a moment."), "the failure");
+    expect(body()).toContain("Take this session off your watch?");
+    expect(document.querySelector(".confirm-error")?.getAttribute("role")).toBe("alert");
+    // Tried again, it goes through: the confirm closes, Send is offered again.
+    offline = false;
+    await confirmTakeOff();
+    await until(() => !!button(/Send to watch/), "ready again");
+    expect(body()).not.toContain("Take this session off your watch?");
+    expect(body()).not.toContain("Couldn't take it off");
+    expect(watchCalls(calls).filter((c) => c.endsWith("/take-off-watch"))).toHaveLength(2);
+  });
+
+  it("a skipped session still on the watch: On your watch + Take off watch beside Un-skip (audit 3-B UI-12)", async () => {
+    features.player = true;
+    const { calls } = mount(session({ locked: true, watch: { state: "on_watch" } }), {
+      w: slot({ completionState: "skipped" }),
+      route: watchRoutes({ afterTakeOff: session({ watch: { state: "unavailable", reason: "taking_off" } }) }),
+    });
+    await until(() => body().includes("On your watch") && !!button("Un-skip"), "the skipped sheet");
+    expect(button("Start · 30 min")).toBeUndefined();
+    expect(button("Move")).toBeUndefined();
+    await click("Take off watch");
+    await confirmTakeOff();
+    await until(() => !body().includes("On your watch"), "taken off");
+    expect(button("Un-skip")).toBeTruthy();
+    expect(watchCalls(calls)).toEqual(["POST …/take-off-watch", "POST /api/sessions/watch/drain"]);
+  });
+
+  it("a skipped session not on the watch: nothing about the watch, as before (2a-R15)", async () => {
+    features.player = true;
+    for (const watch of [{ state: "ready" }, { state: "sending" }, { state: "failed" }]) {
+      mount(session({ watch } as Partial<SessionDto>), { w: slot({ completionState: "skipped" }) });
+      await until(() => !!button("Un-skip") && body().includes("Supported row"), "the skipped sheet, loaded");
+      expect(document.querySelector(".watch-state")).toBeNull();
+      expect(button(/Send to watch|Take off watch|Retry/)).toBeUndefined();
+      act(() => root?.unmount());
+      host?.remove();
+    }
+  });
 });
 
 describe("with the switch off, the sheet is as it was before the watch (audit 3-B UI-13, UI-2)", () => {

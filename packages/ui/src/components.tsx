@@ -1406,6 +1406,7 @@ export function ConfirmDialog({
   confirmLabel,
   onConfirm,
   busy,
+  error,
 }: {
   open: boolean;
   onClose: () => void;
@@ -1416,6 +1417,8 @@ export function ConfirmDialog({
   confirmLabel: string;
   onConfirm: () => void;
   busy?: boolean;
+  /** The last try did not go through: said here, and the dialog stays open to try again. */
+  error?: ReactNode;
 }) {
   return (
     <Sheet
@@ -1440,6 +1443,11 @@ export function ConfirmDialog({
       }
     >
       <p>{children}</p>
+      {error ? (
+        <div className="confirm-error" role="alert">
+          <Banner kind="warn">{error}</Banner>
+        </div>
+      ) : null}
     </Sheet>
   );
 }
