@@ -32,6 +32,7 @@ import { importRoutes } from "./routes/imports.js";
 import { makeDb, chunkIds, type Db } from "./services/db.js";
 import { loadPreferences, syncCalendar } from "./services/calendar-sync.js";
 import { advanceGarden } from "./services/garden-sync.js";
+import { CRON_GARDEN_MAX_DAYS } from "./services/cron-limits.js";
 import { runBackfillChunkCloud, sweepStaleBackfills } from "./services/backfill.js";
 import { closeStrandedSyncRuns, sweepStaleSuppressions, reconcileCompletionStates, startSyncRun, finishSyncRun } from "./services/reconcile-daily.js";
 import { generateWeeklyReview } from "./services/llm.js";
@@ -181,15 +182,6 @@ export async function halfHourly(db: Db, env: Env): Promise<void> {
   await purgeExpiredSessions(db);
   await purgeExpiredStates(db);
 }
-
-/**
- * How many days the hourly cron's garden step may simulate in one invocation — the plain walk forward, a restore's
- * catch-up step and a version upgrade's rebuild alike (cron reliability, part 2). A day costs ~0.8 ms of CPU in node
- * and ~11 D1 statements; a garden 45 days behind cost one invocation 36 ms and 480 statements on a realistic account,
- * several times what the free plan lets an invocation spend. The daily case walks one day; anything longer finishes
- * over the next runs, each persisting where it stopped (and a garden read walks the rest at once, before it renders).
- */
-export const CRON_GARDEN_MAX_DAYS = 3;
 
 /** The step an hourly run spent its budget on, in its run row's stats (`heavyStep`); null when none had work. */
 export type HourlyHeavyStep = "garden" | "coach_read" | "coros_write";
