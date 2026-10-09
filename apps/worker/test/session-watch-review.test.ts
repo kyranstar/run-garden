@@ -347,6 +347,40 @@ describe("pairWatchSets (ruling 3-R7)", () => {
     const [goblet] = pairWatchSets(build, [{ exerciseId: "goblet", sets: watchSets(3) }]);
     expect(goblet!.sets.map((s) => s.from)).toEqual(["watch", "watch", "watch"]);
   });
+
+  it("a MAPPED move skipped on the watch leaves the free-text moves pairing by order (audit 3-B S-7)", () => {
+    // `goblet` reaches the watch by its T-code: it only ever comes back under its own id, never as a `coros:` entry.
+    const build = miniBuild([{ id: "goblet", sets: 2 }, { id: "freeA", sets: 2 }, { id: "freeB", sets: 2 }]);
+    const entries = pairWatchSets(
+      build,
+      [
+        { exerciseId: "coros:T9001", sets: watchSets(2, { reps: 11 }) },
+        { exerciseId: "coros:T9002", sets: watchSets(2, { reps: 12 }) },
+      ],
+      (id) => id === "goblet",
+    );
+    expect(entries.map((e) => [e.exerciseId, e.sets.map((s) => [s.from, s.reps])])).toEqual([
+      ["freeA", [["watch", 11], ["watch", 11]]],
+      ["freeB", [["watch", 12], ["watch", 12]]],
+      ["goblet", [["target", 8], ["target", 8]]],
+    ]);
+  });
+
+  it("the real sent build: its one mapped move skipped, every free-text move still prefills from the watch (audit 3-B S-7)", async () => {
+    const s = await sentSlot();
+    const mapped = mappedItems(s.build);
+    const free = s.build.items.filter((i) => !corosKeyOf(i.exerciseId));
+    expect(mapped.length).toBeGreaterThan(0);
+    expect(free.length).toBeGreaterThan(1);
+    const sets3 = (reps: number) => watchSets(3, { reps });
+    const entries = pairWatchSets(s.build, [
+      ...mapped.slice(1).map((m) => ({ exerciseId: m.exerciseId, sets: sets3(8) })),
+      ...free.map((_, k) => ({ exerciseId: `coros:T90${10 + k}`, sets: sets3(11) })),
+    ]);
+    expect(entries.filter((e) => e.exerciseId.startsWith("coros:"))).toEqual([]);
+    const freeIds = new Set(free.map((f) => f.exerciseId));
+    expect(entries.filter((e) => freeIds.has(e.exerciseId) && e.sets[0]!.from === "watch")).toHaveLength(free.length);
+  });
 });
 
 // ── 2. When the review is offered ─────────────────────────────────────────────────────────────────────────────────

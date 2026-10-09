@@ -49,6 +49,7 @@ import { activeProfileIds, conditionView, type ConditionView } from "./condition
 import { insertBatches, runAtomically, type AtomicStatement, type Db } from "./db.js";
 import { exerciseDisplayName } from "./logged-sets.js";
 import { gardenChangeStatement } from "./garden-sync.js";
+import { corosKeyOf, libraryIdsByKey } from "./coros-exercise-map.js";
 import { claimUserLock, releaseUserLock } from "./locks.js";
 import { pushJobId, SessionNotFoundError, SETTLED_PUSH, type BuildPayload } from "./session-build.js";
 import {
@@ -130,16 +131,32 @@ function buildEntries(build: BuildPayload): Array<{ exerciseId: string; perSide:
 }
 
 /**
+ * A build move whose laps come back from the watch under its OWN library id: it reaches the watch by its T-code, and
+ * that T-code resolves back to it (`libraryIdsByKey`, the derivation's own map). Such a move never comes back as a
+ * `coros:` entry — skipped on the watch, it simply has no laps.
+ */
+export function mappedOnWatch(exerciseId: string): boolean {
+  const key = corosKeyOf(exerciseId);
+  return key !== null && libraryIdsByKey().get(key) === exerciseId;
+}
+
+/**
  * RULING 3-R7. The watch's entries paired with the build's: by library id first; then, for what is left, by order —
- * only when the build's entries left and the watch's UNMAPPED entries left (`coros:<T-code>`: a free-text step's laps)
- * number the same. A mapped watch entry the build does not hold is a move added on the watch: never paired by order,
+ * only when the build's FREE-TEXT entries left and the watch's UNMAPPED entries left (`coros:<T-code>`: a free-text
+ * step's laps) number the same. A mapped build move left over was skipped on the watch (it could only have come back
+ * under its own id), so it takes no part in the count: one skipped mapped move no longer un-pairs every free-text move
+ * (audit 3-B S-7). A mapped watch entry the build does not hold is a move added on the watch: never paired by order,
  * kept as its own entry. A paired entry shows what the watch logged — one lap per set, or per side of a one-sided move
  * (left, right, alternating), each pair answering one build set — and only where the watch logged fewer, the build's
  * remaining targets (not done). An entry with nothing logged shows its targets, not done (a skipped move).
  *
  * Order: the paired entries in the build's order, then the watch's own, then the build's with nothing logged.
  */
-export function pairWatchSets(build: BuildPayload, watch: ReadonlyArray<WatchEntry>): WatchReviewEntry[] {
+export function pairWatchSets(
+  build: BuildPayload,
+  watch: ReadonlyArray<WatchEntry>,
+  mapped: (exerciseId: string) => boolean = mappedOnWatch,
+): WatchReviewEntry[] {
   const entries = buildEntries(build);
   const pairedWith = new Map<number, number>();
   const used = new Set<number>();
@@ -150,7 +167,7 @@ export function pairWatchSets(build: BuildPayload, watch: ReadonlyArray<WatchEnt
       used.add(w);
     }
   });
-  const buildLeft = entries.map((_, b) => b).filter((b) => !pairedWith.has(b));
+  const buildLeft = entries.map((_, b) => b).filter((b) => !pairedWith.has(b) && !mapped(entries[b]!.exerciseId));
   const watchLeft = watch.map((_, w) => w).filter((w) => !used.has(w) && unmapped(watch[w]!.exerciseId));
   if (buildLeft.length > 0 && buildLeft.length === watchLeft.length) {
     buildLeft.forEach((b, i) => {
